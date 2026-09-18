@@ -78,9 +78,14 @@ func TestBandFillSurvivesMarkdownStyling(t *testing.T) {
 // TestReasoningRendersMarkdown: the GUI's ReasoningBubble defaults to the RENDERED view (its Raw
 // toggle is opt-in), so reasoning is markdown here too — with the label kept on the first row and the
 // continuation rows indented past it.
+//
+// The label asserts "reasoning", which is the GUI's own word for the block. It used to be "thinking",
+// which named the ACTIVITY and was drawn in the hint style — so a 60,909-character reasoning stream
+// rendered as a dim footnote, and the operator's report was "No reasoning block". See
+// reasoning_block_test.go.
 func TestReasoningRendersMarkdown(t *testing.T) {
 	out := RenderItems([]ChatItem{{Kind: KindReasoning, Text: "## Step one\n\n> because of the constraint"}}, 60)
-	if !strings.Contains(out, "thinking") {
+	if !strings.Contains(out, "reasoning") {
 		t.Fatalf("the reasoning label was lost:\n%s", out)
 	}
 	if strings.Contains(out, "##") {

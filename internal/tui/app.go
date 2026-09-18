@@ -227,10 +227,24 @@ type App struct {
 	// refresh re-seats rows by id, and an index-keyed mark would silently move to a different
 	// conversation). nil = nothing marked.
 	convMarked map[string]bool
-	// convCollapsed is the conversations rail's collapsed folders, keyed by category id. Session state,
-	// exactly as the GUI's per-page collapse is LOCAL state (`orchicon.categories.<page>.collapsed`) and
-	// not server state — neither client makes a grouping's open/closed a tenant fact.
+	// convCollapsed is the conversations rail's collapsed folders, keyed by category id.
+	//
+	// IT IS PERSISTED, and this comment used to say the opposite — that it was session state "exactly as
+	// the GUI's per-page collapse is LOCAL state". That reasoning was wrong about the GUI: its collapse
+	// lives in the BROWSER's localStorage, which survives a relaunch, so "local" there still means
+	// remembered. Here it meant a restart forgot it, which is the operator's "Conversation categories
+	// don't stay collapsed when you leave orch and come back in." See persistCollapsedGroups.
 	convCollapsed map[string]bool
+
+	// reasoningFolded is the set of FOLDED reasoning blocks in the open conversation, keyed by the
+	// ChatItem's Key (stable per block, because the controller assigns it).
+	//
+	// PER-OPERATOR and per-conversation, in memory only: the operator's ask was "a arrow on the left to
+	// expand and collapse", and a fold is a reading gesture, not a fact about the conversation. It is NOT
+	// persisted, unlike the rail's folders — a block the operator collapsed to skim past an hour ago is not
+	// something they want still hidden tomorrow, and the reasoning's own char count remains visible either
+	// way.
+	reasoningFolded map[string]bool
 	// bulkConfirm hosts the confirm dialog for a destructive bulk rail operation (nil = closed), and
 	// bulkConfirmRun is what the affirmative choice dispatches.
 	bulkConfirm    *kit2.Dialog
@@ -381,6 +395,7 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string) *
 		loaded:          map[TabID]bool{},
 		chatStreams:     map[string]*kit2.Stream{},
 		transcriptLines: map[string][]string{},
+		reasoningFolded: map[string]bool{},
 		footer: footerModel{
 			URL:           profile.URL,
 			ServerVersion: serverVersion,
@@ -444,6 +459,11 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string) *
 	} else {
 		m.applyThemeAndRefresh(theme.DefaultName)
 	}
+	// The persisted fold state comes from the same file, at the same moment, for the same reason: a
+	// display preference that only takes effect after the operator has re-toggled it is the bug the
+	// operator reported ("Conversation categories don't stay collapsed when you leave orch and come back
+	// in"). Silent on failure by design — see prefs.go.
+	m.loadCollapsedGroups()
 	return m
 }
 
@@ -2754,7 +2774,7 @@ func (m *App) syncTranscript(convID string, str *kit2.Stream, items []chat.ChatI
 	if m.transcriptLines == nil {
 		m.transcriptLines = map[string][]string{}
 	}
-	body := chat.RenderItems(chat.GroupByPhase(items), w)
+	body := chat.RenderItems(chat.GroupByPhase(items), w, m.foldedReasoning)
 	var lines []string
 	if body != "" {
 		lines = strings.Split(strings.TrimRight(body, "\n"), "\n")

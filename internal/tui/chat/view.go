@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -21,7 +23,11 @@ import (
 // operator's messages are right-aligned on the lighter fill, the model's
 // left-aligned on the darker one. The fills are derived per palette and gated
 // by TestBubbleContrast (separation + legibility on every palette).
-func RenderItems(items []ChatItem, maxWidth int) string {
+func RenderItems(items []ChatItem, maxWidth int, collapse ...func(key string) bool) string {
+	folded := func(string) bool { return false }
+	if len(collapse) > 0 && collapse[0] != nil {
+		folded = collapse[0]
+	}
 	var b strings.Builder
 	for _, it := range items {
 		switch it.Kind {
@@ -30,7 +36,24 @@ func RenderItems(items []ChatItem, maxWidth int) string {
 		case KindText:
 			b.WriteString(renderChatMessage(it.Text, theme.BubbleModel, maxWidth, false, ""))
 		case KindReasoning:
-			b.WriteString(renderMarkdownBubble("thinking", it.Text, theme.HintText, maxWidth))
+			// A REASONING BLOCK, not a dim paragraph — the GUI's own shape, and COLLAPSIBLE.
+			//
+			// The GUI renders reasoning as a card whose header reads "reasoning · thinking…" while the
+			// model is still reasoning and "reasoning · 60,909 chars" once it has stopped, with an arrow
+			// that hides the body. The TUI drew the same content as
+			// `renderMarkdownBubble("thinking", …, theme.HintText, …)` — one dim word, in the same style as
+			// every hint line in the app — so a 60,909-character stream was indistinguishable from a
+			// footnote, and the operator's report was exactly that: "No reasoning block."
+			//
+			// THE ARROW IS THE OPERATOR'S OWN ASK: "reasoning should look similar but have a arrow on the
+			// left to expand and collapse". The transcript KEEPS ITS BUBBLES — the user and model bands and
+			// this block are all the bubble shape they have always been — rather than adopting the
+			// execution pane's card layout.
+			//
+			// collapse is a PARAMETER rather than package state because this is a pure function of its
+			// input and two panes render the same items at different widths; a package-level map would make
+			// one pane's folds apply to the other.
+			b.WriteString(renderReasoningBlock(it, maxWidth, folded(it.Key)))
 		case KindError:
 			b.WriteString(renderBubble("error", it.Text, theme.ErrorText, maxWidth))
 		case KindTool:
@@ -168,6 +191,113 @@ func renderMarkdownBubble(label, text string, style lipgloss.Style, maxWidth int
 		}
 		b.WriteString(style.Render(l))
 		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// reasoningBodyMaxRows bounds how much of a reasoning block is drawn.
+//
+// MEASURED, and the reason this constant exists: a 62,000-character reasoning stream renders to ~860
+// transcript LINES on its own. The operator's conversation showed "reasoning · 60,909 chars", so their
+// transcript was carrying several hundred lines of reasoning per turn — and that is what makes the pane
+// pathological: the newest window is almost entirely reasoning, so the visible rows are a dense wall of
+// text that repaints constantly, and the conversation's real content (the messages) is pushed far up out
+// of view.
+//
+// THE OTHER LONG RENDERERS ALREADY DO THIS, which is what makes the omission a bug rather than a choice:
+// a tool call with 62,000 characters of output renders to ONE line, and an artifact to TWO — both draw a
+// one-line summary and leave the body to a place built for it. Reasoning was the one long body drawn in
+// full, because before the block existed it was a dim single-line footnote and the question could not
+// arise. Giving it a visible body made it visible at full length, which is the regression being seen.
+//
+// The cap is a RENDERING limit, not a data limit: the full text is still on the ChatItem, the header's
+// char count reports the true total, and a collapsible expansion (when the block model lands) reveals the
+// rest.
+const reasoningBodyMaxRows = 12
+
+// renderReasoningBlock renders a reasoning ("thinking") item the way the GUI does: a labelled header
+// carrying its own state, then the body beneath it.
+//
+// THE HEADER IS THE WHOLE POINT OF THE CHANGE. The GUI's header says "reasoning · thinking…" while the
+// model is still reasoning and "reasoning · 60,909 chars" when it has finished, so the operator can tell
+// at a glance (a) that this is reasoning rather than the reply, (b) that it is STILL COMING, and (c) how
+// much of it there is. The TUI had none of the three: the body was drawn under a dim "thinking" word in
+// the hint style.
+//
+// The char count is formatted with thousands separators, matching the GUI's `toLocaleString` — 60,909
+// rather than 60909 — because that is what the operator is comparing against when they glance between
+// the two clients.
+func renderReasoningBlock(it ChatItem, maxWidth int, folded bool) string {
+	if strings.TrimSpace(it.Text) == "" {
+		return ""
+	}
+	// THE ARROW IS TEXT, not colour, so it reads on a monochrome terminal — and it is on the LEFT, where
+	// the operator asked for it. It points DOWN when the body is showing and RIGHT when it is hidden,
+	// which is the convention every tree in this TUI already uses.
+	arrow := "▾"
+	if folded {
+		arrow = "▸"
+	}
+	header := theme.ReasoningLabel.Render(arrow + " reasoning")
+	if it.Live {
+		header += theme.ReasoningLabel.Render(" · thinking…")
+	} else {
+		header += theme.ListMeta.Render(" · " + groupDigits(len([]rune(it.Text))) + " chars")
+	}
+	if folded {
+		// A collapsed block is ONE row. The header carries the state and the size, so nothing is lost by
+		// hiding the body — which is the whole point of folding it.
+		return header + "\n"
+	}
+
+	avail := maxWidth
+	if avail > 0 {
+		avail -= 4 // the body is indented under the arrow and the label
+	}
+	body := md.RenderOn(it.Text, avail, md.SurfaceOf(theme.ReasoningBody))
+	if len(body) == 0 {
+		body = []string{it.Text}
+	}
+
+	// BOUNDED — see reasoningBodyMaxRows. A transcript that draws a reasoning block in full is how a long
+	// conversation's pane became an unreadable wall, and the header already carries the true size.
+
+	var b strings.Builder
+	b.WriteString(header)
+	b.WriteString("\n")
+	for i, l := range body {
+		if i >= reasoningBodyMaxRows {
+			// The elision is EXPLICIT: a silent cut would read as the end of the model's reasoning rather
+			// than as a display limit, and the operator would have no way to know there was more.
+			b.WriteString(theme.ReasoningBody.Render(fmt.Sprintf("  … %d more lines", len(body)-reasoningBodyMaxRows)))
+			b.WriteString("\n")
+			break
+		}
+		b.WriteString(theme.ReasoningBody.Render("  " + l))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// groupDigits inserts thousands separators: 60909 -> "60,909".
+//
+// Hand-rolled rather than localised, because the count must not change its meaning with the machine's
+// locale — the GUI prints a plain comma-separated number and these two must read the same.
+func groupDigits(n int) string {
+	s := strconv.Itoa(n)
+	if len(s) <= 3 {
+		return s
+	}
+	var b strings.Builder
+	lead := len(s) % 3
+	if lead > 0 {
+		b.WriteString(s[:lead])
+	}
+	for i := lead; i < len(s); i += 3 {
+		if b.Len() > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(s[i : i+3])
 	}
 	return b.String()
 }

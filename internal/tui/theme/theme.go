@@ -355,10 +355,23 @@ var (
 	StatusErr  = lipgloss.NewStyle()
 	StatusBusy = lipgloss.NewStyle()
 
-	HelpOverlay  = lipgloss.NewStyle()
-	ErrorText    = lipgloss.NewStyle()
-	HintText     = lipgloss.NewStyle()
-	SpinnerStyle = lipgloss.NewStyle()
+	HelpOverlay = lipgloss.NewStyle()
+	ErrorText   = lipgloss.NewStyle()
+	HintText    = lipgloss.NewStyle()
+
+	// ReasoningBlock paints a reasoning ("thinking") block's BODY, and ReasoningLabel its header. They
+	// exist because the GUI gives reasoning a look of its own — violet, collapsible, labelled "reasoning ·
+	// thinking…" or "·· 60,909 chars" — and the TUI was rendering the same content as a dim paragraph
+	// indistinguishable from a hint line. The operator: "No reasoning block."
+	//
+	// The colour is the palette's indigo (the GUI's violet token has no direct terminal equivalent; indigo
+	// is the same family and is already the palette's "attention, not error" accent). The BODY is
+	// deliberately dimmer than the label: reasoning is context for reading a reply, not the reply, and
+	// making it compete with the model's own words would be the noise the operator complained about on
+	// the executions list.
+	ReasoningLabel = lipgloss.NewStyle()
+	ReasoningBody  = lipgloss.NewStyle()
+	SpinnerStyle   = lipgloss.NewStyle()
 
 	DiffAdd         = lipgloss.NewStyle()
 	DiffDel         = lipgloss.NewStyle()
@@ -461,6 +474,8 @@ func buildStyles(t Theme) {
 		Padding(1, 2)
 	ErrorText = lipgloss.NewStyle().Foreground(t.Err)
 	HintText = lipgloss.NewStyle().Foreground(t.TextDim)
+	ReasoningLabel = lipgloss.NewStyle().Foreground(t.AccentIndigo).Bold(true)
+	ReasoningBody = lipgloss.NewStyle().Foreground(t.TextDim)
 	SpinnerStyle = lipgloss.NewStyle().Foreground(t.AccentCyan)
 
 	DiffAdd = lipgloss.NewStyle().Foreground(t.OK).Background(t.SurfaceAlt)

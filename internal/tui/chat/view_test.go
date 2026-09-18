@@ -18,7 +18,11 @@ func TestRenderItemsShapes(t *testing.T) {
 	out := RenderItems(items, 80)
 	// Chat bubbles are shaded and aligned (user right, model left) rather than
 	// label-prefixed, so assert the BODY text plus the structural shapes.
-	for _, want := range []string{"hello there friend", "hi! doing the thing", "thinking", "⚙ bash", "⬒ main.go", "error", "boom", "session ses_1"} {
+	//
+	// The reasoning entry asserts "reasoning" rather than the old "thinking": the block is now labelled
+	// for what it IS (the GUI's own word) instead of for the activity, which read as a status line. See
+	// reasoning_block_test.go for the states that header has to carry.
+	for _, want := range []string{"hello there friend", "hi! doing the thing", "reasoning", "⚙ bash", "⬒ main.go", "error", "boom", "session ses_1"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("render missing %q:\n%s", want, out)
 		}

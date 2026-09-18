@@ -213,7 +213,7 @@ func (m *App) panelTranscript(w, n int) []string {
 		return lines[:n]
 	}
 	items := m.chatStore.snapshot(m.chatConvID)
-	rendered := chat.RenderItems(chat.GroupByPhase(items), w)
+	rendered := chat.RenderItems(chat.GroupByPhase(items), w, m.foldedReasoning)
 	lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
 	if len(lines) == 1 && lines[0] == "" {
 		lines = nil

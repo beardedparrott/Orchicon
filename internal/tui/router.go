@@ -786,6 +786,20 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		if m.railOwnsVerticalKey(k.String()) {
 			return m, nil
 		}
+		// THE REASONING FOLD, before the transcript's scroll keys so it cannot be swallowed by them.
+		//
+		// ctrl+o rather than a bare letter: every letter on this pane is a rail chord (e: rename,
+		// ctrl+n: new, space: mark), and the transcript itself is not a text input, so a ctrl chord is the
+		// only shape guaranteed free. It toggles the LAST reasoning block — the newest one, which is the
+		// one the operator is looking at while a reply streams — because the Ask transcript has no
+		// per-block cursor and adding one would make every arrow key ambiguous between scrolling and
+		// selecting.
+		if m.active == TabAsk && m.askPane == askPaneConversation && k.String() == "ctrl+o" {
+			if cmd := m.toggleLastReasoningBlock(); cmd {
+				m.onChatWake()
+			}
+			return m, nil
+		}
 		// THE CONVERSATION OWNS THE VERTICAL KEYS WHEN IT IS SELECTED. Without this the
 		// transcript had no keyboard scroll at all: the rail claimed these keys whenever it
 		// was visible — which is whenever a conversation is open — so the operator's only way
