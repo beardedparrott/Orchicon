@@ -302,6 +302,18 @@ func (m *App) openLaunchForm() {
 	f.Set("name", name)
 	f.Set("slug", launchProjectSlug(name))
 	f.OnSubmit = m.launchSubmit
+	// FOCUSED, OR IT DOES NOT LOOK EDITABLE. `Focused` is render-only (kit2.Form
+	// draws the ▸ cursor marker and the placeholder only when it is true), so a form
+	// that omits it renders every field as a plain "Label: value" line — which reads
+	// as a read-only summary of the defaults, not as something to type into. The
+	// operator hit exactly that: "didn't actually give me the option to edit any of
+	// the fields, just simply ctrl+s to save defaults". Typing worked the whole time;
+	// there was nothing on screen to say so.
+	//
+	// NewForm now defaults this to true (the class fix — the three other call sites
+	// had each remembered it by hand), and this assignment is kept as the local
+	// statement of intent.
+	f.Focused = true
 	m.launch.Phase = launchForm
 	m.launch.Form = f
 }

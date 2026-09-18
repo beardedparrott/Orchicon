@@ -795,6 +795,46 @@ func (m *App) modalWidth() int {
 	return w
 }
 
+// modalPanelFittingContent wraps a body in a modal panel WIDE ENOUGH TO SHOW IT,
+// starting from the standard modal width.
+//
+// It exists for the one overlay whose body is hardcoded prose rather than a form:
+// the connection screen writes its hint paragraphs as literal strings with their own
+// line breaks, so it cannot reflow to a narrower box. A Panel truncates each body
+// line to its interior width (kit2.Panel: innerW = w-2, then ansi.Truncate), so the
+// standard 72-cell cap cut the last few words off three of those hints — a NEW
+// artifact, introduced by giving this overlay a solid panel instead of splicing it
+// raw across the full viewport.
+//
+// So the panel takes the width its content needs, clamped to the viewport with the
+// same 4-cell margin modalWidth uses. Sizing a box to its content cannot clip it; a
+// fixed-cap box can, and did.
+func (m *App) modalPanelFittingContent(body string) string {
+	w := m.modalWidth()
+	if need := widestLineWidth(body) + 2; need > w { // +2 for the border cells
+		if limit := m.width - 4; need > limit {
+			need = limit
+		}
+		if need > w {
+			w = need
+		}
+	}
+	return m.modalPanel(body, w)
+}
+
+// widestLineWidth is the display width of the widest line in s. Display cells, not
+// runes: the border box is measured in cells, and these bodies contain the ▸/↑/→
+// glyphs and en-dashes the hints are written with.
+func widestLineWidth(s string) int {
+	w := 0
+	for _, l := range strings.Split(s, "\n") {
+		if n := lipgloss.Width(l); n > w {
+			w = n
+		}
+	}
+	return w
+}
+
 // renameConvKey drives the rename modal. The modal OWNS every key while it is open (like the model
 // picker): a form whose keystrokes could reach the composer behind it would let a save chord land in
 // a message.
@@ -1991,7 +2031,15 @@ func (m App) viewFrame() string {
 		return fillView(m.overlayCentered(base, overlay), w, h)
 	}
 	if m.palette.connectOpen {
-		return fillView(m.overlayCentered(base, m.connectOverlayView()), w, h)
+		// SOLID, LIKE EVERY OTHER MODAL. The connection form's View is NOT a rectangle —
+		// its title and hint rows are written at their natural width while its input rows
+		// are not, so splicing it raw over the frame let the base show through the gaps
+		// and the ragged rows tripped the splice, shifting everything after them.
+		// modalPanel normalizes it to one opaque, uniformly-sized panel; this path was
+		// the only overlay still splicing raw, which is why /connect was the one surface
+		// that looked broken (the operator's screenshot: the launch page's own text
+		// showing through two overlapping box outlines).
+		return fillView(m.overlayCentered(base, m.modalPanelFittingContent(m.connectOverlayView())), w, h)
 	}
 	if m.palette.PaletteOpen() {
 		base = m.paletteComposerView(base)

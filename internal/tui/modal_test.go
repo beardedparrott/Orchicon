@@ -310,6 +310,18 @@ func TestRenameModalActuallyDrawsThePanel(t *testing.T) {
 	m.conversations[0].Title = "a title long enough that the form's field row is the widest line in it"
 	m.openRenameConversation(m.conversations[0].ID, m.conversations[0].Title)
 
+	// SET THE FORM'S WIDTH EXACTLY AS THE HOST DOES, before rendering the expectation.
+	//
+	// This is not incidental setup. renameConvView assigns the form the modal's INNER
+	// width during the frame render, and the FOCUSED row is rendered PADDED TO THAT
+	// WIDTH (theme.ListItemSelected.Render(Pad(l, width))) while an unfocused row is not
+	// padded at all. So a panel computed at the form's pre-render width is a different
+	// panel from the one the frame paints, and the comparison fails on the padded row.
+	//
+	// That went unnoticed while forms defaulted to UNFOCUSED and no row was padded. It
+	// surfaced when NewForm began defaulting Focused to true — which is the change that
+	// made this modal render a cursor marker at all, having never done so before.
+	m.renameConv.Width = m.modalInnerWidth()
 	panel := m.modalPanel(m.renameConv.View(), m.modalWidth())
 	panelRows := splitLines(panel)
 	pw := panelWidth(panel)

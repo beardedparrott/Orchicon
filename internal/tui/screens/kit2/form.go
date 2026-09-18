@@ -232,7 +232,24 @@ func NewForm(title string, specs ...FieldSpec) *Form {
 		Values: map[string]string{},
 		Multi:  map[string]map[string]bool{},
 		Errors: map[string]string{},
-		pos:    map[string]int{},
+		// FOCUSED BY DEFAULT, because a form is only ever constructed to be handed to
+		// the operator — there is no such thing as a form being built for nobody.
+		//
+		// AND IT IS LOAD-BEARING: `Focused` is render-only, but without it Form.View
+		// draws no ▸ cursor marker and no placeholder, so a perfectly functional,
+		// fully keyboard-driven form renders as an inert "Label: value" list. Every
+		// field still accepts typing; nothing says so. That is not a subtle failure —
+		// the operator read it as read-only and reported that the form "didn't
+		// actually give me the option to edit any of the fields".
+		//
+		// It used to default to false and be set by hand at each call site, which
+		// worked only because three of them remembered. This is the same shape of
+		// trap as the ephemeral gate's default and the transcript's wrap opt-in: a
+		// safety-relevant flag whose zero value means "do not work". A host that
+		// genuinely wants an unfocused form sets it (or calls a Blur), and the test
+		// beside this package pins the default so it cannot quietly revert.
+		Focused: true,
+		pos:     map[string]int{},
 	}
 	for _, s := range specs {
 		if s.Initial != "" {
