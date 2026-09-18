@@ -853,13 +853,18 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 			m.notice = "couldn't open the form: " + msg.err.Error()
 			return m, nil
 		}
-		m.formMCPLoaded = msg.mcpLoaded
+		m.formMCPLoaded = msg.data.mcpLoaded
+		// Cache the runtime-image options so the next form costs no round trip — the same
+		// treatment the work-item form's image list gets.
+		if len(msg.data.images) > 0 {
+			m.images = msg.data.images
+		}
 		switch msg.mode {
 		case formCreateProject:
 			// Same as create-item: the pane, not a modal.
-			m.Base.BeginDetailEdit("New project", m.newProjectCreateFormWith(msg.mcpServers, msg.mcpSelected))
+			m.Base.BeginDetailEdit("New project", m.newProjectCreateFormWith(msg.data))
 		case formEditProject:
-			m.Base.BeginDetailEdit("Edit project", m.newProjectEditFormWith(msg.project, msg.mcpServers, msg.mcpSelected))
+			m.Base.BeginDetailEdit("Edit project", m.newProjectEditFormWith(msg.project, msg.data))
 		case formProjectDir:
 			m.Base.BeginDetailEdit("Project directory", m.newProjectDirForm(msg.project))
 		}

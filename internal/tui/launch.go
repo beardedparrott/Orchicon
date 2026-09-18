@@ -71,6 +71,9 @@ type launchPrompt struct {
 	// MCPServers is the tenant's MCP entry list, carried so the create form can offer
 	// the selection. Empty means the list did not load, and the field is then absent.
 	MCPServers []*apiv1.MCPServer
+	// Images is the runtime-image list, carried so the create form's image field can be a
+	// picker. Empty means the list did not load, and the field falls back to free text.
+	Images []kit2.Option
 }
 
 // launchPromptMsg is the launch check's result.
@@ -94,6 +97,9 @@ type launchPromptMsg struct {
 	// mcpServers are the tenant's MCP entries, loaded so the launch form can offer the
 	// same selection the Work screen's create does.
 	mcpServers []*apiv1.MCPServer
+	// images are the runtime images, loaded for the same reason: the launch form's image
+	// field is a picker, so its options must exist before the form is built.
+	images []kit2.Option
 }
 
 // launchCreatedMsg reports a successful create-and-attach.
@@ -137,17 +143,26 @@ func (m *App) checkLaunchProject() tea.Cmd {
 		})); err != nil {
 			visible = false
 		}
-		// The MCP selection rides along on this same round trip rather than a second one:
-		// the launch form offers the same fields as the Work screen's create, and its
-		// options need the server list. A failure here just means no MCP field — it must
-		// not block a prompt whose purpose is to let the operator work.
+		// The MCP selection AND the runtime-image options ride along on this same round trip
+		// rather than a second one: the launch form offers the same fields as the Work screen's
+		// create, and both need a list. A failure here just means the MCP field is absent and the
+		// image field falls back to free text — it must not block a prompt whose purpose is to let
+		// the operator work.
 		var servers []*apiv1.MCPServer
 		if cl.MCP != nil {
 			if list, err := cl.MCP.ListMCPServers(ctx, connect.NewRequest(&apiv1.MCPServerListRequest{})); err == nil {
 				servers = list.Msg.GetServers()
 			}
 		}
-		return launchPromptMsg{dir: dir, need: true, visible: visible, mcpServers: servers}
+		var images []kit2.Option
+		if cl.Images != nil {
+			if lr, err := cl.Images.ListRuntimeImages(ctx, connect.NewRequest(&apiv1.ListRuntimeImagesRequest{PageSize: 100})); err == nil {
+				for _, img := range lr.Msg.GetRuntimeImages() {
+					images = append(images, kit2.Option{Value: img.GetTag(), Label: img.GetName() + " (" + img.GetTag() + ")"})
+				}
+			}
+		}
+		return launchPromptMsg{dir: dir, need: true, visible: visible, mcpServers: servers, images: images}
 	}
 }
 
@@ -208,8 +223,8 @@ func launchProjectSlug(name string) string {
 }
 
 // beginLaunchPrompt raises the prompt: the blank screen carrying the question.
-func (m *App) beginLaunchPrompt(dir string, visible bool, mcpServers []*apiv1.MCPServer) {
-	m.launch = &launchPrompt{Dir: dir, Phase: launchAsking, Visible: visible, MCPServers: mcpServers}
+func (m *App) beginLaunchPrompt(dir string, visible bool, mcpServers []*apiv1.MCPServer, images []kit2.Option) {
+	m.launch = &launchPrompt{Dir: dir, Phase: launchAsking, Visible: visible, MCPServers: mcpServers, Images: images}
 }
 
 // dismissLaunchPrompt closes the prompt and continues into the app normally — the
@@ -307,7 +322,7 @@ func (m *App) openLaunchForm() {
 		return
 	}
 	name := launchProjectName(m.launch.Dir)
-	specs := append(work.ProjectFormFields(nil), kit2.FieldSpec{
+	specs := append(work.ProjectFormFields(nil, m.launch.Images), kit2.FieldSpec{
 		Name:        "project_dir",
 		Label:       "Directory",
 		Kind:        kit2.KText,

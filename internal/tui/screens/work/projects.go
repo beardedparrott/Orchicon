@@ -48,35 +48,46 @@ type projectFormMsg struct {
 	project *apiv1.Project
 	dirInfo string
 	err     error
-	// mcpServers are the tenant's available MCP entries, and mcpSelected is this
-	// project's current selection. Both are carried HERE rather than read from a cache
-	// when the form is built, because the MCP select must show the project's CURRENT
-	// choice — a multi-select that opened empty would silently clear the selection on
-	// save (kit2.Form seeds Multi from Initial for exactly this reason).
+	// data is everything the form needs beyond the project row: the runtime-image options and
+	// the MCP selection. One struct rather than a growing parameter list, because every piece of
+	// it is ASYNC (each needs its own round trip) and they all arrive together.
+	data projectFormData
+}
+
+// projectFormData is what the project form cannot get from the project row itself.
+//
+// THE RUNTIME-IMAGE OPTIONS ARE HERE because the field is a PICKER: the operator chooses an
+// image from a list rather than typing a tag, as they do on a work item. That list is a round
+// trip, so the form cannot be built before it lands — the same reason the MCP selection is here.
+//
+// THE MCP SELECTION IS HERE because it is not carried on the Project message at all (ListProjects
+// and GetProject omit it), so it needs GetProjectMCPServers.
+type projectFormData struct {
+	images      []kit2.Option
 	mcpServers  []*apiv1.MCPServer
 	mcpSelected []string
-	// mcpLoaded records whether the MCP data arrived, which is what decides whether the
-	// submit path may WRITE the selection. It must not write on a failed load: an empty
-	// field would then clear a selection nobody touched.
-	mcpLoaded bool
+	mcpLoaded   bool
 }
 
 // prepProjectForm fetches what the form needs and opens it.
 //
-// IT LOADS THE MCP DATA TOO, because a project's MCP selection is NOT carried on the
-// Project message: the form cannot be prefilled from GetProject alone, so the selection
-// needs its own round trip (GetProjectMCPServers). Doing it in one command keeps a
-// single async step rather than a second state machine for one field.
+// IT LOADS THE OPTION LISTS TOO: the runtime-image field is a picker and the MCP selection is not
+// on the Project message, so neither can be prefilled from GetProject alone. One command keeps a
+// single async step rather than a state machine per field.
 //
-// id is empty for a CREATE, which needs the server list but has no existing selection.
+// id is empty for a CREATE, which needs the option lists but has no existing selection.
 //
-// A FAILED MCP LOAD DOES NOT BLOCK THE FORM. The MCP selection is one field among eight;
-// failing the whole edit because the MCP service is unhappy would make the project's
-// name, directory and goals uneditable for no reason. On failure the field is absent and
-// nothing is written for it.
+// A FAILED OPTION LOAD DOES NOT BLOCK THE FORM, and the lists are independent: the image field
+// falls back to free text (a tag can always be typed) and the MCP field is absent. Failing the
+// whole edit because one service is unhappy would make the project's name, directory and goals
+// uneditable for no reason.
+//
+// NOTHING IS WRITTEN TO m HERE. This runs off the UI goroutine, so the image options are carried
+// in the message and cached by the handler instead (see the projectFormMsg case in Update).
 func (m *Model) prepProjectForm(mode, id string) tea.Cmd {
 	m.formLoading = true
 	cl := m.cl
+	cached := m.images
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
@@ -88,19 +99,27 @@ func (m *Model) prepProjectForm(mode, id string) tea.Cmd {
 			}
 			msg.project = resp.Msg.GetProject()
 		}
+		msg.data.images = cached
+		if msg.data.images == nil && cl.Images != nil {
+			if lr, err := cl.Images.ListRuntimeImages(ctx, connect.NewRequest(&apiv1.ListRuntimeImagesRequest{PageSize: 100})); err == nil {
+				for _, img := range lr.Msg.GetRuntimeImages() {
+					msg.data.images = append(msg.data.images, kit2.Option{Value: img.GetTag(), Label: img.GetName() + " (" + img.GetTag() + ")"})
+				}
+			}
+		}
 		if cl.MCP != nil {
 			list, err := cl.MCP.ListMCPServers(ctx, connect.NewRequest(&apiv1.MCPServerListRequest{}))
 			if err == nil {
-				msg.mcpServers = list.Msg.GetServers()
-				msg.mcpLoaded = true
+				msg.data.mcpServers = list.Msg.GetServers()
+				msg.data.mcpLoaded = true
 				if id != "" {
 					if sel, serr := cl.MCP.GetProjectMCPServers(ctx, connect.NewRequest(&apiv1.ProjectMCPServersGetRequest{ProjectId: id})); serr == nil {
-						msg.mcpSelected = sel.Msg.GetMcpServerIds()
+						msg.data.mcpSelected = sel.Msg.GetMcpServerIds()
 					} else {
-						// The list loaded but THIS project's selection did not, so we do not
-						// know what it is. Treating that as "nothing selected" would let a save
-						// clear a selection the operator never saw.
-						msg.mcpLoaded = false
+						// The list loaded but THIS project's selection did not, so we do not know what
+						// it is. Treating that as "nothing selected" would let a save clear a selection
+						// the operator never saw.
+						msg.data.mcpLoaded = false
 					}
 				}
 			}
@@ -132,18 +151,19 @@ func (m *Model) prepEditProject(mode string) tea.Cmd {
 // THERE IS NO project_dir FIELD HERE. CreateProject has no directory, so the hosts
 // that need one (edit, and the launch prompt) append it themselves; see
 // newProjectEditForm.
-func ProjectFormFields(p *apiv1.Project) []kit2.FieldSpec {
+func ProjectFormFields(p *apiv1.Project, images []kit2.Option) []kit2.FieldSpec {
 	initial := func(fn func() string) string {
 		if p == nil {
 			return ""
 		}
 		return fn()
 	}
+	current := initial(p.GetDefaultRuntimeImage)
 	return []kit2.FieldSpec{
 		{Name: "name", Label: "Name", Kind: kit2.KText, Required: true, Placeholder: "Orchicon", Initial: initial(p.GetName)},
 		{Name: "slug", Label: "Slug", Kind: kit2.KText, Placeholder: "orchicon", Initial: initial(p.GetSlug)},
 		{Name: "goals", Label: "Goals", Kind: kit2.KText, Placeholder: "key=value, key2=value2", Initial: initial(func() string { return goalsText(p.GetGoals()) })},
-		{Name: "default_runtime_image", Label: "Default runtime image", Kind: kit2.KText, Placeholder: "empty = inherit tenant/base", Initial: initial(p.GetDefaultRuntimeImage)},
+		runtimeImageField(current, images),
 		{
 			Name: "git_strategy", Label: "Git strategy", Kind: kit2.KSelect,
 			Options: gitStrategyOptions(), Initial: gitStrategyField(p),
@@ -157,9 +177,54 @@ func ProjectFormFields(p *apiv1.Project) []kit2.FieldSpec {
 			Placeholder: "0 = no additional restriction", Initial: maxConcurrentField(p),
 		},
 		{
-			Name: "context_files", Label: "Context files", Kind: kit2.KTextArea,
-			Placeholder: "one absolute path per line", Initial: initial(func() string { return contextFilesText(p.GetContextFiles()) }),
+			Name: "context_files", Label: contextFilesLabel, Kind: kit2.KTextArea,
+			Placeholder: contextFilesPlaceholder, Initial: initial(func() string { return contextFilesText(p.GetContextFiles()) }),
 		},
+	}
+}
+
+// contextFilesLabel and contextFilesPlaceholder carry the guidance for the one field whose meaning
+// is not obvious from its name.
+//
+// THE RULE IS IN THE LABEL because the label is the only part of a field row that is ALWAYS drawn:
+// it stays visible while the operator types, whereas the placeholder is replaced by the caret the
+// moment the field takes the cursor. The expensive mistake here is a path the server rejects after
+// a save — context_files must be inside the project directory (the only directory guaranteed to be
+// mounted where workers run), and a path outside it is recorded happily and then invisible to the
+// worker, which is the worst of both.
+//
+// The wording states the RULES without restating the validator, and enforces nothing: validation is
+// the server's (contextfiles.Validate / ValidateWithin), and a second client-side copy would
+// eventually disagree with it.
+const (
+	contextFilesLabel = "Context files (abs paths inside the project dir)"
+	// A DIRECTORY IS ALLOWED and is the more useful choice for most projects, which is worth
+	// saying — the field's name reads like it wants files only.
+	contextFilesPlaceholder = "one path per line · a directory is read in full"
+)
+
+// runtimeImageField is the project's default runtime image.
+//
+// A PICKER WHEN THE LIST LOADED, a plain text field otherwise — the same shape the work item's
+// runtime-image field has (workitems.go:401), and the same shape this form gives MCP. The fallback
+// matters: the operator can always type a tag, so a failed ListRuntimeImages must not cost them
+// the ability to set one, and it must not silently omit the field either.
+//
+// EMPTY MEANS INHERIT, so the picker offers that explicitly rather than relying on "no option is
+// selected": the request carries an empty string for it (see wireProjectForm) and the server reads
+// that as "fall back to the tenant default".
+func runtimeImageField(current string, images []kit2.Option) kit2.FieldSpec {
+	if len(images) == 0 {
+		return kit2.FieldSpec{
+			Name: "default_runtime_image", Label: "Default runtime image", Kind: kit2.KText,
+			Placeholder: "empty = inherit tenant/base", Initial: current,
+		}
+	}
+	opts := append([]kit2.Option{{Value: "", Label: "— inherit tenant/base —"}}, images...)
+	return kit2.FieldSpec{
+		Name: "default_runtime_image", Label: "Default runtime image", Kind: kit2.KPicker,
+		Options: pickerOptsWithCurrent(opts, current, "image "),
+		Initial: current,
 	}
 }
 
@@ -228,12 +293,14 @@ func (m *Model) setProjectMCPServers(ctx context.Context, projectID string, ids 
 
 // newProjectCreateForm builds the create form from the shared field list.
 func (m *Model) newProjectCreateForm() *kit2.Form {
-	return m.newProjectCreateFormWith(nil, nil)
+	return m.newProjectCreateFormWith(projectFormData{})
 }
 
-// newProjectCreateFormWith adds the MCP selection when it was loaded.
-func (m *Model) newProjectCreateFormWith(servers []*apiv1.MCPServer, selected []string) *kit2.Form {
-	f := kit2.NewForm("New project", withMCP(ProjectFormFields(nil), servers, selected)...)
+// newProjectCreateFormWith adds the option lists that need a round trip: the runtime-image picker
+// and the MCP selection.
+func (m *Model) newProjectCreateFormWith(d projectFormData) *kit2.Form {
+	specs := withMCP(ProjectFormFields(nil, d.images), d.mcpServers, d.mcpSelected)
+	f := kit2.NewForm("New project", specs...)
 	m.wireProjectForm(f, formCreateProject, "")
 	return f
 }
@@ -241,16 +308,16 @@ func (m *Model) newProjectCreateFormWith(servers []*apiv1.MCPServer, selected []
 // newProjectEditForm builds the edit form: the shared fields PREFILLED, plus the
 // directory (which CreateProject cannot carry and this path therefore owns).
 func (m *Model) newProjectEditForm(p *apiv1.Project) *kit2.Form {
-	return m.newProjectEditFormWith(p, nil, nil)
+	return m.newProjectEditFormWith(p, projectFormData{})
 }
 
-// newProjectEditFormWith adds the MCP selection when it was loaded.
-func (m *Model) newProjectEditFormWith(p *apiv1.Project, servers []*apiv1.MCPServer, selected []string) *kit2.Form {
-	specs := append(ProjectFormFields(p), kit2.FieldSpec{
+// newProjectEditFormWith adds the option lists that need a round trip.
+func (m *Model) newProjectEditFormWith(p *apiv1.Project, d projectFormData) *kit2.Form {
+	specs := append(ProjectFormFields(p, d.images), kit2.FieldSpec{
 		Name: "project_dir", Label: "Project dir", Kind: kit2.KText,
 		Initial: p.GetProjectDir(), Placeholder: "/home/me/projects/orchicon",
 	})
-	specs = withMCP(specs, servers, selected)
+	specs = withMCP(specs, d.mcpServers, d.mcpSelected)
 	f := kit2.NewForm("Edit project", specs...)
 	m.wireProjectForm(f, formEditProject, p.GetId())
 	return f

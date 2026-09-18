@@ -59,7 +59,7 @@ func TestEditFormPrefillsTheMCPSelection(t *testing.T) {
 	p := &apiv1.Project{Id: "proj-1", Name: "Thing"}
 	servers := []*apiv1.MCPServer{{Id: "m1", Name: "filesystem", Enabled: true}}
 
-	f := m.newProjectEditFormWith(p, servers, []string{"m1"})
+	f := m.newProjectEditFormWith(p, projectFormData{mcpServers: servers, mcpSelected: []string{"m1"}})
 	spec := f.Spec("mcp_servers")
 	if spec == nil {
 		t.Fatal("the edit form has no mcp_servers field even though servers are available")

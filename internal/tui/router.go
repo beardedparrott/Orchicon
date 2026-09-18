@@ -372,7 +372,7 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	// would fall through to the screens and be lost.
 	if lm, ok := msg.(launchPromptMsg); ok {
 		if lm.need {
-			m.beginLaunchPrompt(lm.dir, lm.visible, lm.mcpServers)
+			m.beginLaunchPrompt(lm.dir, lm.visible, lm.mcpServers, lm.images)
 		}
 		return m, nil
 	}
@@ -729,11 +729,22 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			m.refreshStreamStatus()
 			return m, cmd
 		}
-	} else if isKey && m.chatFocus == focusComposer && k.String() == "/" {
+	} else if isKey && m.chatFocus == focusComposer && k.String() == "/" && strings.TrimSpace(m.dock.Value()) == "" {
 		// The composer OWNS the typing: the "/" goes into the buffer
 		// FIRST so the operator's text ("/pro") stays visible in the bar
 		// while the palette above filters on it (Phase 3 finding 4 — the
 		// palette used to swallow the query and the bar stayed empty).
+		//
+		// ONLY ON AN EMPTY COMPOSER, which is the operator's rule: "if you type a / in your
+		// prompt after there is already text in the screen, we should assume the user is NOT
+		// trying to run a slash command and should NOT pop up the slash command reference
+		// box." A slash mid-sentence is punctuation — a path, a date, "and/or" — and opening a
+		// command list over what someone is writing is the modal-steals-your-keystrokes class
+		// of annoyance. With the condition unmet the key falls through to the dock below and is
+		// typed literally.
+		//
+		// The empty test is TrimSpace, matching the rule the rail's chords use: a buffer of
+		// only whitespace is empty for this purpose, so leading spaces do not block a command.
 		_, cmd := m.dock.Update(k)
 		m.openPalette()
 		m.refreshStreamStatus()

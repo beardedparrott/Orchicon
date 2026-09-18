@@ -102,7 +102,7 @@ func TestLaunchPrefillsFromTheDirectory(t *testing.T) {
 func TestThePromptAsksBeforeItShowsTheForm(t *testing.T) {
 	m := newTestApp()
 	m.launchDir = "/tmp/scratch"
-	m.beginLaunchPrompt("/tmp/scratch", true, nil)
+	m.beginLaunchPrompt("/tmp/scratch", true, nil, nil)
 
 	if m.launch == nil {
 		t.Fatal("beginLaunchPrompt did not raise the prompt")
@@ -146,7 +146,7 @@ func TestThePromptAsksBeforeItShowsTheForm(t *testing.T) {
 // question from the one person who might now want a different answer.
 func TestDecliningLeavesNoRecordAndNoPrompt(t *testing.T) {
 	m := newTestApp()
-	m.beginLaunchPrompt("/tmp/scratch", true, nil)
+	m.beginLaunchPrompt("/tmp/scratch", true, nil, nil)
 
 	next, _ := m.launchKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	if next.launch != nil {
@@ -170,7 +170,7 @@ func TestDecliningLeavesNoRecordAndNoPrompt(t *testing.T) {
 func TestEscDeclinesFromBothSteps(t *testing.T) {
 	// From the question.
 	m := newTestApp()
-	m.beginLaunchPrompt("/tmp/scratch", true, nil)
+	m.beginLaunchPrompt("/tmp/scratch", true, nil, nil)
 	next, _ := m.launchKey(tea.KeyMsg{Type: tea.KeyEsc})
 	if next.launch != nil {
 		t.Error("esc on the question did not decline")
@@ -178,7 +178,7 @@ func TestEscDeclinesFromBothSteps(t *testing.T) {
 
 	// From the form.
 	m2 := newTestApp()
-	m2.beginLaunchPrompt("/tmp/scratch", true, nil)
+	m2.beginLaunchPrompt("/tmp/scratch", true, nil, nil)
 	withForm, _ := m2.launchKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
 	if withForm.launch == nil || withForm.launch.Form == nil {
 		t.Fatal("fixture: the form did not open")
@@ -197,7 +197,7 @@ func TestEscDeclinesFromBothSteps(t *testing.T) {
 // field could not do that at all.
 func TestTheLaunchFormCarriesTheDirectoryField(t *testing.T) {
 	m := newTestApp()
-	m.beginLaunchPrompt("/home/me/projects/thing", true, nil)
+	m.beginLaunchPrompt("/home/me/projects/thing", true, nil, nil)
 	m.openLaunchForm()
 	if m.launch.Form == nil {
 		t.Fatal("openLaunchForm did not build a form")
@@ -258,14 +258,14 @@ func TestNoLaunchDirMeansNoPrompt(t *testing.T) {
 func TestTheQuestionWarnsWhenThePlaneCannotSeeTheDirectory(t *testing.T) {
 	// The plane CAN see it: no warning, and nothing about mounting.
 	ok := newTestApp()
-	ok.beginLaunchPrompt("/tmp/scratch", true, nil)
+	ok.beginLaunchPrompt("/tmp/scratch", true, nil, nil)
 	if got := ok.launchView(100, 30); strings.Contains(got, "cannot see") {
 		t.Error("the question warns that the plane cannot see a directory it CAN see")
 	}
 
 	// The plane CANNOT see it: say so, and say what to do about it.
 	blind := newTestApp()
-	blind.beginLaunchPrompt("/mnt/elsewhere/thing", false, nil)
+	blind.beginLaunchPrompt("/mnt/elsewhere/thing", false, nil, nil)
 	got := blind.launchView(100, 30)
 	if !strings.Contains(got, "cannot see") {
 		t.Error("the question does not warn that the control plane cannot see the directory — the project " +

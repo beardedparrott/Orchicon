@@ -1341,11 +1341,63 @@ func (f *Form) display(s FieldSpec) string {
 		}
 		return v
 	default:
-		if v == "" && f.Focused && f.current() != nil && f.current().Name == s.Name {
-			return s.Placeholder
+		// AN EMPTY FIELD SHOWS ITS PLACEHOLDER, whoever is on it.
+		//
+		// This used to require the field to be the CURSOR (`f.current().Name == s.Name`), and
+		// the cursor's editable fields never reach this branch — they render through
+		// valueWithCaret above. The two conditions were therefore MUTUALLY EXCLUSIVE, so no
+		// placeholder could ever appear on an editable field: every hint written for every
+		// form in this client was dead text. Measured on the project form, all eight fields
+		// printed blank or bare.
+		if v == "" {
+			return placeholderText(s.Placeholder)
 		}
 		return v
 	}
+}
+
+// hintForPlaceholder renders a field's placeholder as ghost text followed by the caret, fitted to
+// the cells available.
+//
+// THE FIT IS WHAT KEEPS IT HONEST: a placeholder longer than the value column would wrap the row
+// and shift every field below it, so the box would change height as the cursor moved. It is
+// truncated with an ellipsis instead — the operator loses the tail of a hint at a narrow width,
+// which is the same trade the hint row makes and far better than a form that jumps.
+func hintForPlaceholder(placeholder string, avail int) string {
+	const caretRune = "\u258f" // ▏
+	cells := avail - 1         // one reserved for the caret
+	if cells < 1 {
+		return caretRune
+	}
+	text := ansi.Truncate(placeholderText(placeholder), cells, "…")
+	// Pad to the caret so a shorter hint still ends with the caret at the value position,
+	// rather than jittering left and right as the operator tabs between fields.
+	if pad := cells - lipgloss.Width(text); pad > 0 {
+		text += strings.Repeat(" ", pad)
+	}
+	return text + caretRune
+}
+
+// placeholderText renders a placeholder in the PARENTHESES IDIOM this form already uses for
+// "nothing is set, and here is what that means": KMultiSelect renders "(none)" and KModel renders
+// "— none —".
+//
+// IT IS NOT COSMETIC. A placeholder shown bare is indistinguishable from a VALUE — an operator
+// opening a form that reads "Slug: orchicon" cannot tell whether the slug is set or is merely the
+// suggested shape — and dimming it is not available here: a styled span covering part of a field
+// row cuts the row's own background from that point on (the full-row spans in this file pad to the
+// width first for exactly that reason). Parentheses mark the text as guidance with no styling at
+// all.
+func placeholderText(placeholder string) string {
+	p := strings.TrimSpace(placeholder)
+	if p == "" {
+		return ""
+	}
+	// Do not double up when a placeholder is already written as a parenthetical.
+	if strings.HasPrefix(p, "(") && strings.HasSuffix(p, ")") {
+		return p
+	}
+	return "(" + p + ")"
 }
 
 // valueWithCaret renders an editable field's value with a caret at the edit
@@ -1606,9 +1658,57 @@ func (f *Form) View() string {
 			if avail < 8 {
 				avail = 8
 			}
-			line = prefix + f.valueWithCaret(s.Name, avail)
+			// AN EMPTY FIELD SHOWS ITS PLACEHOLDER, then the caret. The caret alone says
+			// "type here" but never WHAT to type, and this is the only field the operator is
+			// looking at — the others can reach their placeholders through display(), which
+			// this branch deliberately bypasses. Without this, guidance existed on every
+			// field except the one being filled in.
+			//
+			// The placeholder is rendered in the PARENTHESES idiom the form already uses for
+			// "nothing set, and here is what that means" (KMultiSelect renders "(none)",
+			// KModel renders "— none —"), so it reads as guidance rather than as a value.
+			// No inner styling: the row is wrapped in one style afterwards, and an inner hint
+			// span would cut the row's background short from that point on.
+			if f.Values[s.Name] == "" && s.Placeholder != "" {
+				// THE HINT FITS THE ACTUAL SPACE, without the 8-cell floor above.
+				//
+				// That floor exists so a VALUE has room to be windowed while it is edited — a
+				// caret needs somewhere to live. A HINT needs no such room, and applying the
+				// floor to it measured a row WIDER than the form: with a long label ("Context
+				// files (abs paths inside the project dir): ") the floor forced eight cells of
+				// hint where there was no space, so the row wrapped. Measured on the project
+				// edit form: 13 rows with the hint showing, 12 once the field was filled — the
+				// form JUMPS by a row the moment the operator types, which is the failure the
+				// hint was supposed to prevent rather than cause.
+				hintAvail := width - lipgloss.Width(prefix)
+				if hintAvail < 1 {
+					hintAvail = 1
+				}
+				line = prefix + hintForPlaceholder(s.Placeholder, hintAvail)
+			} else {
+				line = prefix + f.valueWithCaret(s.Name, avail)
+			}
 		default:
 			val := f.display(s)
+			// A PLACEHOLDER ON AN UNFOCUSED ROW IS FITTED TOO, exactly as it is on the cursor's row.
+			//
+			// display() renders the hint in full — it has no width to fit against — and an unfitted
+			// hint WRAPS, which is how a field that is merely NOT THE CURSOR added a row to the
+			// form. Measured on the project edit form's context-files field, whose label is long:
+			// 13 rows with the hint showing and 12 once the operator typed one character into it,
+			// so the form jumped by a row as they filled it in — the failure the hint was meant to
+			// prevent rather than cause.
+			//
+			// Only for editable single-line kinds: a multi-line or reference field has its own value
+			// rendering below (the flattened "(N lines)" form, the picker's chosen label), and a
+			// placeholder is always one line of prose.
+			if s.Placeholder != "" && f.editable(s.Kind) && f.Values[s.Name] == "" {
+				if avail := width - lipgloss.Width(prefix); avail > 0 {
+					// NO CARET: this row does not hold the cursor. The hint still ends where the
+					// operator's typing will appear, so the form reads consistently field to field.
+					val = ansi.Truncate(val, avail, "…")
+				}
+			}
 			// A multi-line value on an UNFOCUSED row must not emit its newlines: the host
 			// pads this string to the pane width, so raw breaks split one field into
 			// several visual rows and shift everything below. Flattened, with the break
