@@ -172,18 +172,11 @@ func (l *List) View(focused bool) string {
 	}
 	for i := l.Offset; i < end; i++ {
 		it := l.Items[i]
-		row := "  " + it.Title
-		if it.Meta != "" {
-			pad := l.Width - 4 - len([]rune(it.Title)) - len([]rune(it.Meta))
-			if pad < 1 {
-				pad = 1
-			}
-			row += strings.Repeat(" ", pad) + it.Meta
-		}
+		row := listRow(it, l.Width)
 		if i == l.Cursor {
-			b.WriteString(theme.ListItemSelected.Render(truncate(row, l.Width)))
+			b.WriteString(theme.ListItemSelected.Render(row))
 		} else {
-			b.WriteString(theme.ListItem.Render(truncate(row, l.Width)))
+			b.WriteString(theme.ListItem.Render(row))
 		}
 		b.WriteString("\n")
 	}
@@ -543,6 +536,76 @@ func StatusBadge(s string) string {
 	return st.Render(s)
 }
 
+// listRow composes ONE list row at a given width: the indent, the title, and the right-aligned Meta.
+//
+// THE META IS RESERVED FIRST AND THE TITLE IS TRUNCATED INTO WHAT REMAINS. That ordering IS the fix
+// for the operator's report, and the previous ordering was the bug:
+//
+//	"Both Workflow Runs and Executions titles are too long and you can't see the status. I think we
+//	 should have workflow name - title - status, but maybe cut off text to ensure they all show up on
+//	 the screen visibly."
+//
+// The old code built `"  " + Title + pad + Meta` and then truncated the WHOLE string from the RIGHT
+// (`truncate(row, l.Width)`). A title longer than the pane therefore consumed the padding AND THEN the
+// status: the row read "Some Very Long Workflow Name · A Long Work Item Ti…" and the status — the one
+// field the operator scans a run list for, and the only field that CHANGES while a run is live — was
+// cut off the end. An executions row is `workflow · work item` beside `running · Worker`, and at 80
+// columns the two overflow, so the status was the first thing lost.
+//
+// Reserving Meta first makes the status UNCONDITIONALLY VISIBLE, which is the invariant the operator
+// asked for ("ensure they all show up on the screen visibly"). It also means a row's status can no
+// longer be truncated away by the very data it describes — which is why the Execution list looked
+// "frozen" while actually repainting correctly: the row WAS refreshing, but the changing field was the
+// one being cut off.
+//
+// Degenerate widths are handled in order of what matters: the status outlives the title (it is the
+// scan field), the indent goes first (pure chrome), and a title too wide for a very narrow pane is
+// truncated from its END — never by eating Meta.
+func listRow(it Item, width int) string {
+	const indent = "  "
+	if width <= 0 {
+		// Unsized: no budget to honour, so nothing is truncated and nothing is invented.
+		if it.Meta == "" {
+			return indent + it.Title
+		}
+		return indent + it.Title + indent + it.Meta
+	}
+	// A row narrower than the indent alone: emit what fits and stop.
+	if width <= len(indent) {
+		return truncate(indent, width)
+	}
+	body := width - len(indent)
+
+	if it.Meta == "" {
+		return indent + truncate(it.Title, body)
+	}
+
+	// Minimum two spaces of breathing room between the title and the status, so the two never read as
+	// one string ("...Item Tirunning").
+	const gap = 2
+
+	// THE STATUS WINS THE SPACE. If the meta cannot fit alongside the gap, print it in what there is —
+	// the operator needs "running" more than a partial title.
+	if len([]rune(it.Meta))+gap > body {
+		return indent + truncate(it.Meta, body)
+	}
+
+	// The title gets everything left after the status, the gap, and the indent.
+	titleRoom := body - gap - len([]rune(it.Meta))
+	if titleRoom < 1 {
+		return indent + truncate(it.Meta, body)
+	}
+	t := truncate(it.Title, titleRoom)
+	pad := body - len([]rune(t)) - len([]rune(it.Meta))
+	if pad < 1 {
+		pad = 1
+	}
+	return indent + t + strings.Repeat(" ", pad) + it.Meta
+}
+
+// truncate shortens s to at most w RUNES, marking the cut with an ellipsis so a shortened value is
+// never mistaken for the whole one. A wide glyph counts as one rune, which is why the row budget is
+// counted in runes throughout (see listRow).
 func truncate(s string, w int) string {
 	if w <= 0 {
 		return s
