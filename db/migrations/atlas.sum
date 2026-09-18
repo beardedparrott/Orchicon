@@ -1,4 +1,4 @@
-h1:s6zeiCbLVcgNtQcj/1m6IbzX46vY8b0fs31TDW/WUQM=
+h1:SVlTy5Fr3oeUcJR4fHzo3eKkca/j8mk3rGZCSA6E3lI=
 20260712192105_initial_schema.sql h1:Nmt8ON+bI6fpWFAB1ofgseoxZ2Yr19rlBSuSpWYESJU=
 20260712192105_initial_schema_down.sql h1:RDSZVdJtR8DJx9HvT6WrBdEOEoJpM/46JutUdlPs5wU=
 20260712223028_add_outbox.sql h1:+idZYfVIjOHjGIluT5JM5M0dMF6L1+VmeHeGy66DLEI=
@@ -169,3 +169,5 @@ h1:s6zeiCbLVcgNtQcj/1m6IbzX46vY8b0fs31TDW/WUQM=
 20260924000000_backfill_loop_decision_missing_verdict_down.sql h1:4ITfkUQIs+j2PFh22I7tAv4e8wCJbZT0w9gE8kBm/tE=
 20260925000000_retire_recovery_retry_delay.sql h1:fanea7omPxuUMmz6yJGp6orS4s8LyMesD58TPFW7DfQ=
 20260925000000_retire_recovery_retry_delay_down.sql h1:oEvHyx0ptYms4izlIeglocWv9g05uwcbJh4THzaGGmg=
+20260926000000_ephemeral_records.sql h1:NyruZQfuJND5hrx8Bh2hgRGOwpQW+p5LjUwc/BwZVAw=
+20260926000000_ephemeral_records_down.sql h1:DKRXgqDsWfuPmei7QsY3H8PIbXM1hIiG3zAugqlDRtg=
