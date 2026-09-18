@@ -17,10 +17,18 @@ import (
 
 // useTempConfigDir points the config at a temp dir for the duration of the test, so a test never reads or
 // writes the developer's real ~/.orchicon/config. It returns the path.
+//
+// IT ALSO ENABLES PREFS PERSISTENCE, which the test-binary default disables (see collapsedPrefsPath): the
+// package-wide sandbox that contains OTHER config writers must not double as an opt-in to writing fold
+// state, or every test in the package would share one file. A test that genuinely wants to exercise
+// persistence says so here — and says it back afterwards.
 func useTempConfigDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("ORCHICON_CONFIG_DIR", dir)
+	prev := collapsePrefsDisabled
+	collapsePrefsDisabled = false
+	t.Cleanup(func() { collapsePrefsDisabled = prev })
 	return filepath.Join(dir, "config")
 }
 

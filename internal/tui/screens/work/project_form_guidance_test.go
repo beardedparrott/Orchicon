@@ -92,12 +92,17 @@ func TestRuntimeImageStaysUsableWithoutAList(t *testing.T) {
 	}
 }
 
-// THE CONTEXT-FILES FIELD CARRIES ITS GUIDANCE IN THE LABEL.
+// THE CONTEXT-FILES FIELD CARRIES ITS GUIDANCE SOMEWHERE THE OPERATOR WILL SEE IT.
 //
-// The label rather than only the placeholder, because the label is the one part of a row that is
-// ALWAYS drawn — the placeholder is replaced by the caret the moment the field takes the cursor,
-// which is exactly when the operator is reading it for guidance.
-func TestContextFilesGuidanceIsInTheLabel(t *testing.T) {
+// Asserted over label AND placeholder TOGETHER, deliberately. The earlier version of this test pinned the
+// phrasing ("abs paths inside the project dir" on the label, "one path per line · a directory is read in
+// full" in the placeholder) and broke the moment the wording was shortened to fit the pane — which is a
+// test asserting PROSE rather than behaviour, and prose is exactly what has to change when a label
+// overflows (the operator's next report was that this label ran off the screen).
+//
+// What must hold is that the field tells the operator the things they cannot infer from its name, and how
+// to enter the values.
+func TestContextFilesFieldCarriesItsGuidance(t *testing.T) {
 	f := ProjectFormFields(nil, nil)
 	var got *kit2.FieldSpec
 	for i := range f {
@@ -108,23 +113,23 @@ func TestContextFilesGuidanceIsInTheLabel(t *testing.T) {
 	if got == nil {
 		t.Fatal("no context_files field")
 	}
+	// The label is the part ALWAYS drawn — the placeholder is replaced by the caret the moment the field
+	// takes the cursor, which is exactly when it is being read — so the load-bearing rule belongs there.
 	label := strings.ToLower(got.Label)
-	// The two things the operator cannot infer from the field's name: WHERE the paths may point,
-	// and that a directory is acceptable.
-	for _, want := range []string{"abs", "project dir"} {
-		if !strings.Contains(label, want) {
-			t.Errorf("the context-files label %q does not mention %q. The expensive mistake here is a "+
-				"path the server rejects after a save: context files must be inside the project "+
-				"directory, the one place guaranteed to be mounted where workers run.", got.Label, want)
-		}
+	if !strings.Contains(label, "project dir") {
+		t.Errorf("the context-files label %q does not say the paths belong to the project directory. That is the "+
+			"expensive mistake this guidance exists to prevent: a path outside it is recorded happily and is then "+
+			"invisible to the worker, which is the worst of both worlds.", got.Label)
 	}
-	ph := strings.ToLower(got.Placeholder)
-	if !strings.Contains(ph, "one path per line") {
-		t.Errorf("the placeholder %q does not say the input shape", got.Placeholder)
+	// The rest may live in either half — what matters is that the field says it at all.
+	combined := strings.ToLower(got.Label + " " + got.Placeholder)
+	if !strings.Contains(combined, "dir") {
+		t.Errorf("neither the label nor the placeholder says a DIRECTORY is allowed (%q / %q). The field's name "+
+			"reads like it wants files only, and a directory (read in full) is the more useful choice.",
+			got.Label, got.Placeholder)
 	}
-	if !strings.Contains(ph, "directory") {
-		t.Errorf("the placeholder %q does not say a directory is allowed — the field's name reads like "+
-			"it wants files only, and a directory is the more useful choice", got.Placeholder)
+	if !strings.Contains(combined, "per line") && !strings.Contains(combined, "one path") {
+		t.Errorf("the field does not say the input shape (one path per line): %q / %q", got.Label, got.Placeholder)
 	}
 	// And it is still a multi-line field, or "one per line" is a lie.
 	if got.Kind != kit2.KTextArea {

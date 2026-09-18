@@ -1,5 +1,11 @@
 package tui
 
+import (
+	"os"
+
+	"github.com/beardedparrott/orchicon/internal/tui/config"
+)
+
 // isolate_test.go — TEST HERMETICITY, set up once for the whole package.
 //
 // WHY THIS FILE EXISTS. NewApp reads the fold preferences from ~/.orchicon/config at CONSTRUCTION, so a
@@ -23,4 +29,23 @@ package tui
 //
 // Tests that WANT to exercise the persistence set ORCHICON_CONFIG_DIR to a temp dir, which
 // collapsedPrefsPath honours even here — see prefs_wire_test.go.
-func init() { collapsePrefsDisabled = true }
+//
+// AND THE WHOLE CONFIG DIR IS REDIRECTED TOO, not only the prefs reader, because a WRITER was escaping.
+// The operator, twice: "I have a feeling when I do a rebuild, it is modifying my config file because
+// everytime I rebuild it ALWAYS goes back to the blueish dark theme." They were right, and the cause was
+// a TEST: TestThemeCommand drives `/theme light` then `/theme dark`, and SetTheme persists the choice
+// through config.DefaultPath() — so every `go test ./...` wrote `theme = "dark"` into the real config,
+// for BOTH the top-level value and the profile (which is SetTheme's signature, and exactly what their
+// file showed). `make rebuild-dev` runs the suite, so every rebuild reset the theme they had chosen.
+//
+// collapsePrefsDisabled could not catch that: it is consulted by collapsedPrefsPath only, and SetTheme
+// resolves the path itself. Redirecting the ENV makes every config write in this package land in a temp
+// dir — the prefs reader, SetTheme, and the connection-screen save — so a future test that persists
+// something cannot reach the developer's real config even by accident. That is the property worth having:
+// the previous fix guarded one reader, and the next writer simply did not go through it.
+func init() {
+	collapsePrefsDisabled = true
+	if dir, err := os.MkdirTemp("", "orchicon-test-config"); err == nil {
+		_ = os.Setenv(config.EnvConfigDir, dir)
+	}
+}

@@ -146,7 +146,17 @@ run: fetch-tags fe-build ## Run the control plane from source
 	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon
 
 test: ## Run Go tests
-	$(GO) test ./...
+	@# A TEST MUST NEVER TOUCH THE DEVELOPER'S REAL CONFIG.
+	@#
+	@# One did: TestThemeCommand drives `/theme light` then `/theme dark`, and SetTheme persists the
+	@# choice to ~/.orchicon/config — so `make test`, and therefore `make rebuild-dev` (ci → test),
+	@# silently reset the operator's chosen theme to dark on EVERY REBUILD. They noticed ("everytime I
+	@# rebuild it ALWAYS goes back to the blueish dark theme") and the cause was here, not in the build.
+	@#
+	@# The package redirects its own config dir too (internal/tui/isolate_test.go); this contains ANY
+	@# package that writes config without asking, now or later. Declared at the command rather than
+	@# exported into each test binary so there is no per-package opt-in to forget.
+	ORCHICON_CONFIG_DIR="$$(mktemp -d)" $(GO) test ./...
 
 vet: ## Run go vet
 	$(GO) vet ./...

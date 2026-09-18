@@ -56,17 +56,22 @@ var collapsePrefsDisabled = false
 //
 // Precedence, most explicit first:
 //
-//  1. ORCHICON_CONFIG_DIR — a deliberate relocation, honoured everywhere including tests. This is how a
-//     test that WANTS to exercise persistence opts in.
-//  2. under `go test` with no explicit relocation — "", meaning isolated. Derived from the test binary
-//     itself rather than from each test remembering to opt out, so a test written later cannot forget.
+//  1. under `go test` with prefs DISABLED — "", meaning isolated. This is the DEFAULT in a test binary,
+//     derived from the binary itself rather than from each test remembering to opt out, so a test written
+//     later cannot forget. It now outranks the env var below, and the reason is a change worth stating:
+//     the suite sets ORCHICON_CONFIG_DIR for the WHOLE package to contain OTHER config writers (see
+//     isolate_test.go). If a redirected value also counted as a prefs opt-in, every test in the package
+//     would share one sandbox file — a collapse in one test would collapse a folder in the next, which is
+//     the exact cross-test contamination this function was written to stop. A SANDBOX IS NOT AN OPT-IN.
+//  2. ORCHICON_CONFIG_DIR — a deliberate relocation, honoured when prefs are enabled (a test that cleared
+//     the flag, or a real run). This is how a test that WANTS to exercise persistence opts in.
 //  3. otherwise the real config path.
 func collapsedPrefsPath() string {
-	if dir := strings.TrimSpace(os.Getenv("ORCHICON_CONFIG_DIR")); dir != "" {
-		return filepath.Join(dir, config.FileName)
-	}
 	if collapsePrefsDisabled {
 		return ""
+	}
+	if dir := strings.TrimSpace(os.Getenv("ORCHICON_CONFIG_DIR")); dir != "" {
+		return filepath.Join(dir, config.FileName)
 	}
 	path, err := config.DefaultPath()
 	if err != nil {

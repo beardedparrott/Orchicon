@@ -193,14 +193,22 @@ func ProjectFormFields(p *apiv1.Project, images []kit2.Option) []kit2.FieldSpec 
 // mounted where workers run), and a path outside it is recorded happily and then invisible to the
 // worker, which is the worst of both.
 //
-// The wording states the RULES without restating the validator, and enforces nothing: validation is
-// the server's (contextfiles.Validate / ValidateWithin), and a second client-side copy would
-// eventually disagree with it.
+// BOTH STRINGS ARE SIZED TO THE MODAL. The launch form renders inside a panel whose interior is 70 cells
+// at the standard width; a row is `  ` + label + `: ` + value, so the pair must fit in 66. The first
+// version of this guidance did not — "Context files (abs paths inside the project dir)" beside "(one path
+// per line · a directory is read in full)" overflowed, and the operator saw it cut mid-word with an
+// ellipsis, which is the guidance defeated. Looking at their own screenshot, they reported the labels as
+// being "off the screen". The two facts worth the space are WHERE the paths may point and the INPUT
+// SHAPE, so both live in the label and stay visible.
+//
+// The wording states the RULES without restating the validator, and enforces nothing: validation is the
+// server's (contextfiles.Validate / ValidateWithin), and a second client-side copy would eventually
+// disagree with it.
 const (
-	contextFilesLabel = "Context files (abs paths inside the project dir)"
-	// A DIRECTORY IS ALLOWED and is the more useful choice for most projects, which is worth
-	// saying — the field's name reads like it wants files only.
-	contextFilesPlaceholder = "one path per line · a directory is read in full"
+	contextFilesLabel = "Context files (in project dir, one per line)"
+	// A DIRECTORY IS ALLOWED and is the more useful choice for most projects, which is worth saying —
+	// the field's name reads like it wants files only.
+	contextFilesPlaceholder = "(dirs read in full)"
 )
 
 // runtimeImageField is the project's default runtime image.
