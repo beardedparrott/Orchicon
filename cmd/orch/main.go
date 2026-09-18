@@ -179,8 +179,19 @@ func run(fl *flags) error {
 	// ORCHICON_THEME wins over the file, so a palette can be pinned where the
 	// config is not persisted.
 	applyStoredTheme(profile, cfg)
+	// The launch prompt asks about the directory the operator is sitting in, computed
+	// ONCE here: the app takes it as an option, and a later shell in this session is
+	// passed "" so a reconnect never re-asks. os.Getwd can fail (a deleted cwd); that
+	// is not worth failing a launch over — no directory simply means no question.
+	launchDir, _ := os.Getwd()
+	firstShell := true
 	for {
-		reconnect, err := runShell(profile)
+		dir := ""
+		if firstShell {
+			dir = launchDir
+		}
+		firstShell = false
+		reconnect, err := runShell(profile, dir)
 		if !reconnect {
 			return err
 		}
@@ -269,7 +280,14 @@ func applyStoredTheme(p *config.Profile, cfg *config.Config) {
 // shell until the user quits. Returns (reconnect=true, nil) when the
 // shell exited for re-auth (/connect) — main's loop then re-runs the
 // connection screen with the updated profile.
-func runShell(profile *config.Profile) (bool, error) {
+func runShell(profile *config.Profile, launchDir string) (bool, error) {
+	// The launch-time project prompt is armed ONLY on the FIRST shell of a launch.
+	//
+	// A /connect round trip (or a rejected stored session) re-enters this function,
+	// and that is a CONTINUATION of the session rather than a new launch: asking the
+	// same question again there would be exactly the nagging the feature is built to
+	// avoid, and the operator has already given an answer this session.
+	launchOption := tui.WithLaunchDir(launchDir)
 	vr, err := client.Ping(context.Background(), profile.URL, profile.InsecureSkipVerify)
 	if err != nil {
 		// Non-blocking per the plan: stale config still opens the shell;
@@ -307,7 +325,7 @@ func runShell(profile *config.Profile) (bool, error) {
 	if probeErr != nil && connect.CodeOf(probeErr) == connect.CodeUnauthenticated {
 		return true, nil // main reopens the connection screen, with a reason
 	}
-	app := tui.NewApp(cl, profile, serverVersion)
+	app := tui.NewApp(cl, profile, serverVersion, launchOption)
 	if identity != "" {
 		app.SetIdentity(identity)
 	}

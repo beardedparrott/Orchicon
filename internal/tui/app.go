@@ -7,6 +7,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -155,6 +156,15 @@ type App struct {
 	help          helpModel
 	routes        []KeyRoute
 	quitting      bool
+	// launchDir is the directory orch was launched from, set ONLY by the real
+	// client (tui.WithLaunchDir) and empty in tests and embedders. Empty means the
+	// launch check never runs — which is why every existing NewApp caller is
+	// unaffected by the launch prompt existing at all.
+	launchDir string
+	// launch is the launch-time project prompt while it is up (nil = not showing).
+	// It is an App-level overlay rather than a screen because it exists BEFORE any
+	// tab has been chosen and must not be reachable as a tab.
+	launch *launchPrompt
 	// refreshGen identifies the CURRENT rolling-refresh chain. Every tick carries the generation that
 	// armed it and is dropped when it no longer matches, so switching tabs cannot leave the old chain
 	// running (which would multiply the refresh rate on every switch) — see refresh.go.
@@ -407,8 +417,28 @@ func (m *App) diffPaneWidth() int {
 	return width
 }
 
+// AppOption customizes App construction. Options are how the launch prompt stays
+// opt-in: everything it needs arrives through one, so a test or an embedder that
+// passes none behaves exactly as before.
+type AppOption func(*App)
+
+// WithLaunchDir tells the app which directory orch was launched from, enabling the
+// launch-time project prompt (launch.go). An empty dir disables it.
+func WithLaunchDir(dir string) AppOption {
+	return func(m *App) {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			return
+		}
+		if abs, err := filepath.Abs(dir); err == nil {
+			dir = abs
+		}
+		m.launchDir = filepath.Clean(dir)
+	}
+}
+
 // NewApp builds the shell over an established client set.
-func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string) *App {
+func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string, opts ...AppOption) *App {
 	m := &App{
 		clients: cl,
 		profile: profile,
@@ -503,6 +533,10 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string) *
 	// operator reported ("Conversation categories don't stay collapsed when you leave orch and come back
 	// in"). Silent on failure by design — see prefs.go.
 	m.loadCollapsedGroups()
+	// Caller options LAST, so anything they set wins over the defaults above.
+	for _, o := range opts {
+		o(m)
+	}
 	return m
 }
 
@@ -1705,6 +1739,15 @@ func (m *App) Init() tea.Cmd {
 	// poke only arrives when the server chooses to emit one, and the follow-up reply that made this
 	// necessary is written durably without any live event at all.
 	cmds = append(cmds, refreshCmd(m.refreshGen))
+	// THE LAUNCH CHECK — one question, and only when this directory is unattached.
+	//
+	// It runs ALONGSIDE the first loads rather than before them, so a slow check
+	// never delays startup and a failed one costs nothing: until the answer lands,
+	// the app is simply the normal launch page. That also keeps the worst case
+	// honest — if the plane cannot be listed, no question is asked at all.
+	if m.launchDir != "" {
+		cmds = append(cmds, m.checkLaunchProject())
+	}
 	if c := m.drainStaged(); c != nil {
 		cmds = append(cmds, c)
 	}
@@ -1936,6 +1979,12 @@ func (m App) viewFrame() string {
 	// inline drawing over the terminal (Phase 3 overlay discipline). The
 	// final fillView re-normalizes the composited result to exactly w×h so
 	// no overlay can ever change the row count or open a hole.
+	// THE LAUNCH PROMPT OWNS THE WHOLE FRAME while it is up: the question (and then
+	// the create modal) REPLACES the shell rather than layering over it, so nothing
+	// behind it can read as "the app already started".
+	if m.launch != nil {
+		return m.launchView(w, h)
+	}
 	base := m.baseView(w, h)
 	if m.help.open {
 		overlay := m.help.view(m.routes) + "\n" + strings.Join(m.slash.helpLines(), "\n")

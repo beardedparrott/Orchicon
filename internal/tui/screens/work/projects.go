@@ -61,15 +61,29 @@ func (m *Model) prepEditProject(mode string) tea.Cmd {
 	}
 }
 
+// ProjectCreateFields is the project-create form's FIELD LIST, exported so a second
+// host builds the SAME form rather than a copy of it that can drift — the
+// operator's ask for the launch prompt was to reuse "the project-create form +
+// RPC".
+//
+// NOTE THERE IS NO project_dir FIELD, and that is the API's shape rather than an
+// omission: CreateProject takes name/slug/goals/default_runtime_image and no
+// directory, so a directory is attached by a FOLLOWING UpdateProject. This screen
+// sets it from the edit form; the launch prompt (launch.go) appends its own dir
+// field and applies it the same way.
+func ProjectCreateFields() []kit2.FieldSpec {
+	return []kit2.FieldSpec{
+		{Name: "name", Label: "Name", Kind: kit2.KText, Required: true, Placeholder: "Orchicon"},
+		{Name: "slug", Label: "Slug", Kind: kit2.KText, Placeholder: "orchicon"},
+		{Name: "goals", Label: "Goals", Kind: kit2.KText, Placeholder: "key=value, key2=value2"},
+		{Name: "default_runtime_image", Label: "Default runtime image", Kind: kit2.KText, Placeholder: "empty = inherit tenant/base"},
+	}
+}
+
 // newProjectCreateForm builds the create form (name / slug / goals /
 // default runtime image).
 func (m *Model) newProjectCreateForm() *kit2.Form {
-	f := kit2.NewForm("New project",
-		kit2.FieldSpec{Name: "name", Label: "Name", Kind: kit2.KText, Required: true, Placeholder: "Orchicon"},
-		kit2.FieldSpec{Name: "slug", Label: "Slug", Kind: kit2.KText, Placeholder: "orchicon"},
-		kit2.FieldSpec{Name: "goals", Label: "Goals", Kind: kit2.KText, Placeholder: "key=value, key2=value2"},
-		kit2.FieldSpec{Name: "default_runtime_image", Label: "Default runtime image", Kind: kit2.KText, Placeholder: "empty = inherit tenant/base"},
-	)
+	f := kit2.NewForm("New project", ProjectCreateFields()...)
 	m.wireProjectForm(f, formCreateProject, "")
 	return f
 }
@@ -101,7 +115,7 @@ func (m *Model) wireProjectForm(f *kit2.Form, mode, id string) {
 	f.Width = 70
 	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
 		name := strings.TrimSpace(v["name"])
-		goals := parseGoals(v["goals"])
+		goals := ParseGoals(v["goals"])
 		switch mode {
 		case formCreateProject:
 			req := &apiv1.CreateProjectRequest{
@@ -216,9 +230,14 @@ func goalsText(raw string) string {
 	return raw
 }
 
-// parseGoals converts "key=value, key2=value2" into GoalFields. An empty
-// input clears the goals (the proto's empty-fields semantics).
-func parseGoals(v string) []*apiv1.GoalField {
+// ParseGoals parses the goals field's "key=value, key2=value2" text into the
+// wire shape. An empty input clears the goals (the proto's empty-fields
+// semantics).
+//
+// EXPORTED so a second host runs the SAME parsing — a goal list is part of the
+// create request's meaning, and two parsers would eventually disagree about an
+// edge (a bare key, a value containing '=').
+func ParseGoals(v string) []*apiv1.GoalField {
 	var out []*apiv1.GoalField
 	for _, part := range strings.Split(v, ",") {
 		part = strings.TrimSpace(part)

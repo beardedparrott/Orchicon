@@ -366,6 +366,46 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		m.refreshComposerHint()
 		return m, nil
 	}
+	// THE LAUNCH CHECK'S RESULT lands here, and it may arrive BEFORE the prompt is up
+	// (m.launch is nil until we decide to ask) — so it has to be handled outside the
+	// "prompt is showing" guard below, or the very message that RAISES the prompt
+	// would fall through to the screens and be lost.
+	if lm, ok := msg.(launchPromptMsg); ok {
+		if lm.need {
+			m.beginLaunchPrompt(lm.dir)
+		}
+		return m, nil
+	}
+	// THE LAUNCH PROMPT OWNS EVERY KEY while it is up — ABOVE the help overlay and
+	// above every route, because it is the first screen of the session: a keystroke
+	// answering its question must not also open help, switch tabs, or reach the
+	// composer behind it. Same discipline as the rename and category modals.
+	if m.launch != nil {
+		switch msg := msg.(type) {
+		case launchCreatedMsg:
+			// Done: continue into the app exactly as a normal launch would (the Ask
+			// "New" page is the launch default and was never left).
+			m.dismissLaunchPrompt()
+			return m, nil
+		case launchFailedMsg:
+			// KEEP THE FORM OPEN with the reason on it, so the operator can correct
+			// and retry rather than losing everything they typed.
+			if m.launch.Form != nil {
+				m.launch.Form.SubmitErr = msg.err.Error()
+			}
+			return m, nil
+		case tea.KeyMsg:
+			return m.launchKey(msg)
+		}
+		return m, nil
+	}
+	// Results for a prompt that is no longer up (declined while the create was in
+	// flight, or a duplicate) are SWALLOWED rather than falling through as unknown
+	// messages a screen might act on.
+	switch msg.(type) {
+	case launchCreatedMsg, launchFailedMsg:
+		return m, nil
+	}
 	if m.help.open {
 		if k, ok := msg.(tea.KeyMsg); ok && (k.String() == "esc" || k.String() == "?") {
 			m.help.open = false
