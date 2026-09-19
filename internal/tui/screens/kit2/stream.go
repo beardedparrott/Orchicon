@@ -45,6 +45,16 @@ type Stream struct {
 	//
 	// Following is an INTENT, so it is remembered rather than re-derived.
 	follow bool
+	// rowLine maps each PAINTED body row to the LOGICAL line index it shows, built by View.
+	//
+	// It exists so a CLICK can be resolved to content. A row is not a line: wrapOverflow expands an
+	// over-wide line into several rows and drops the oldest when they exceed the budget, so
+	// `row + Offset` is wrong whenever wrapping or tail-trimming happened. The map is recorded during the
+	// render that produced the rows the operator is looking at, which is the only moment the two are
+	// guaranteed to agree.
+	//
+	// nil until the first View, and -1 for a row with nothing behind it (padding past the content).
+	rowLine []int
 }
 
 // NewStream builds a sized stream.
@@ -305,6 +315,11 @@ func (s *Stream) View() string {
 	var b strings.Builder
 	rows := s.bodyRows()
 	vis := s.Visible()
+	// Row → logical line, rebuilt alongside the rows so the two cannot disagree.
+	rowLine := make([]int, rows)
+	for i := range rowLine {
+		rowLine[i] = -1
+	}
 	if s.wrapOverflow {
 		// Expand the window into the rows the lines actually need.
 		//
@@ -312,28 +327,67 @@ func (s *Stream) View() string {
 		// will fit and something must be dropped — and what is dropped must be the OLDEST, because the
 		// transcript follows the newest line. Dropping the newest would make the safety net worse than the
 		// truncation it replaced: the operator would lose sight of the live reply.
-		expanded := make([]string, 0, len(vis))
-		for _, l := range vis {
-			expanded = append(expanded, wrapLine(l, s.Width)...)
+		type expRow struct {
+			text string
+			line int
+		}
+		expanded := make([]expRow, 0, len(vis))
+		for i, l := range vis {
+			for _, w := range wrapLine(l, s.Width) {
+				expanded = append(expanded, expRow{text: w, line: s.Offset + i})
+			}
 		}
 		if len(expanded) > rows {
 			expanded = expanded[len(expanded)-rows:]
 		}
-		vis = expanded
+		// PAINT FROM ROW 0. Only the TRIM above drops rows, and it drops from the HEAD; a short transcript
+		// therefore starts at the top exactly as the non-wrapped path does. An earlier version of this branch
+		// computed a `start` offset and bottom-aligned short content — a rendering change nobody asked for,
+		// caught by the geometry probe when its markers moved a dozen rows down the pane.
+		for i := 0; i < rows; i++ {
+			line := ""
+			if i < len(expanded) {
+				line = expanded[i].text
+				rowLine[i] = expanded[i].line
+			}
+			b.WriteString(Pad(line, s.Width))
+			b.WriteString("\n")
+		}
+		s.rowLine = rowLine
+		if s.Notice != "" {
+			b.WriteString(Pad(theme.HintText.Render(s.Notice), s.Width))
+		}
+		return strings.TrimSuffix(b.String(), "\n")
 	}
 	for i := 0; i < rows; i++ {
 		line := ""
 		if i < len(vis) {
 			line = vis[i]
+			rowLine[i] = s.Offset + i
 		}
 		b.WriteString(Pad(line, s.Width))
 		b.WriteString("\n")
 	}
+	s.rowLine = rowLine
 	if s.Notice != "" {
 		// INSIDE the row budget, not appended past it — see bodyRows.
 		b.WriteString(Pad(theme.HintText.Render(s.Notice), s.Width))
 	}
 	return strings.TrimSuffix(b.String(), "\n")
+}
+
+// LineAtRow resolves a PAINTED body row (0-based, from the top of the body) to the logical line
+// index it shows, or -1 when the row holds nothing (padding past the content, or before the first
+// render).
+//
+// This is the click geometry. It is answered from the LAST render rather than recomputed, because a
+// row is not a line — see the rowLine field — and only the render that painted the operator's screen
+// knows which line each row came from.
+func (s *Stream) LineAtRow(row int) int {
+	if row < 0 || row >= len(s.rowLine) {
+		return -1
+	}
+	return s.rowLine[row]
 }
 
 // Overflowing reports whether the stream's content is taller than the rows it

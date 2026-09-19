@@ -1069,6 +1069,19 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 	// see my initial test user message" and "any additional user messages show
 	// up, but that initial message does not", because only the first message was
 	// outside the visible window.
+	// A CLICK ON ONE OF THE OPERATOR'S OWN MESSAGES COPIES IT.
+	//
+	// The operator: "I would like to make clicking on a user message in conversations auto copy to
+	// clipboard." Placed BEFORE the generic "a click in the content region focuses it" handling below, so a
+	// click that lands on a message does the useful thing rather than only moving focus.
+	//
+	// It copies through the SAME osc-52 path a drag-select uses (clipState.copyCmd), so the confirmation is
+	// the toast the operator already knows and there is no second copy mechanism to keep working.
+	if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft && m.active == TabAsk && m.chatConvID != "" {
+		if text, ok := m.transcriptUserMessageAtFrameRow(mo.Y); ok && m.clip != nil {
+			return m, m.clip.copyCmd(text)
+		}
+	}
 	if (mo.Button == tea.MouseButtonWheelUp || mo.Button == tea.MouseButtonWheelDown) && m.active == TabAsk && m.chatConvID != "" {
 		delta := -3
 		if mo.Button == tea.MouseButtonWheelDown {

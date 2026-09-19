@@ -288,6 +288,9 @@ type App struct {
 	// set, so an extension is an Append and anything else a reload.
 	chatStreams     map[string]*kit2.Stream
 	transcriptLines map[string][]string
+	// transcriptSpans is each conversation's rendered item geometry, from the same render that produced
+	// transcriptLines. It is what a click resolves against.
+	transcriptSpans map[string][]chat.ItemSpan
 	pendingDetail   tea.Cmd
 	lastScreenKeys  string
 
@@ -1350,6 +1353,21 @@ func (m *App) refreshComposerHint() {
 			ctx = rail + " · " + ctx
 		}
 	}
+	// THE TRANSCRIPT'S OWN AFFORDANCE, and it belongs to the composer because that is where this client
+	// advertises what the keys and the mouse can do. The operator asked for it by name alongside the
+	// gesture itself: "clicking on a user message in conversations auto copy to clipboard ... and we should
+	// add a hint in the composer saying as such."
+	//
+	// Named for the OPERATOR'S OWN messages rather than "a message", because that is what the gesture does
+	// — a click on the model's reply is deliberately inert (see transcriptUserMessageAtFrameRow) — and a
+	// hint that promised more than the code delivers would be the interface lying.
+	if m.active == TabAsk && m.chatConvID != "" {
+		if ctx == "" {
+			ctx = transcriptCopyHint
+		} else {
+			ctx += " · " + transcriptCopyHint
+		}
+	}
 	before := m.dock.Lines()
 	m.dock.SetContext(ctx)
 	// A longer hint can gain a row, which changes the rows the dock leaves for
@@ -1358,6 +1376,9 @@ func (m *App) refreshComposerHint() {
 		m.refreshLayout()
 	}
 }
+
+// transcriptCopyHint is the composer's advertisement for the transcript's click gesture.
+const transcriptCopyHint = "click your message to copy"
 
 // formComposerHint is what the composer advertises while ANY screen has a form open. It names only
 // keys the form actually honours, so the hint is true in that state — see refreshComposerHint.
@@ -3124,7 +3145,14 @@ func (m *App) syncTranscript(convID string, str *kit2.Stream, items []chat.ChatI
 	if m.transcriptLines == nil {
 		m.transcriptLines = map[string][]string{}
 	}
-	body := chat.RenderItems(chat.GroupByPhase(items), w, m.foldedReasoning)
+	// RenderItemsSpans, not RenderItems: the spans are the CLICK GEOMETRY, and they come from the same
+	// render that produced the lines being drawn — so a click cannot resolve against a layout the screen
+	// is not showing. Stored per conversation, beside transcriptLines.
+	body, spans := chat.RenderItemsSpans(chat.GroupByPhase(items), w, m.foldedReasoning)
+	if m.transcriptSpans == nil {
+		m.transcriptSpans = map[string][]chat.ItemSpan{}
+	}
+	m.transcriptSpans[convID] = spans
 	var lines []string
 	if body != "" {
 		lines = strings.Split(strings.TrimRight(body, "\n"), "\n")
@@ -3209,6 +3237,51 @@ func turnActivityNotice(silent time.Duration, beforeContent bool) string {
 	default:
 		return fmt.Sprintf("%s · last activity %ds ago", verb, secs)
 	}
+}
+
+// transcriptUserMessageAtFrameRow resolves a click at a FRAME row to the operator's own message text,
+// when the click landed on one.
+//
+// THREE COORDINATE SPACES, and each is a place this can be wrong:
+//
+//	frame row  → body row   (subtract where the transcript's first line is drawn)
+//	body row   → body LINE  (kit2.Stream.LineAtRow, because a wrapped row is not a line)
+//	body line  → the ITEM   (chat.ItemSpan, from the render that drew it)
+//
+// The first is derived rather than guessed: the screen block starts one row below the tab chrome
+// (tabBarRows + 1), the pane's border is one row, the pane's title is one row, the detail's fields take
+// one row each, and a blank separator sits between the fields and the body — the same rows Detail.View
+// writes and Detail.BodyHeightFor subtracts. A test pins the derivation against a real rendered frame,
+// so a layout change fails there rather than silently copying the wrong message.
+func (m *App) transcriptUserMessageAtFrameRow(frameRow int) (string, bool) {
+	str := m.TranscriptStream(m.chatConvID)
+	if str == nil {
+		return "", false
+	}
+	line := str.LineAtRow(frameRow - m.transcriptBodyTopRow())
+	if line < 0 {
+		return "", false
+	}
+	for _, sp := range m.transcriptSpans[m.chatConvID] {
+		// ONLY the operator's own messages, which is what was asked for: the useful gesture is "get MY
+		// message back" — to re-send it, quote it, or paste it somewhere else.
+		if sp.Kind == chat.KindUser && sp.Contains(line) && strings.TrimSpace(sp.Text) != "" {
+			return sp.Text, true
+		}
+	}
+	return "", false
+}
+
+// transcriptBodyTopRow is the frame row at which the transcript's FIRST body line is drawn.
+func (m *App) transcriptBodyTopRow() int {
+	fieldRows := 0
+	if s := m.screens[TabAsk]; s != nil {
+		if fp, ok := s.(interface{ DetailFieldCount() int }); ok {
+			fieldRows = fp.DetailFieldCount()
+		}
+	}
+	// screen top + pane border + pane title + the detail's fields + the blank separator.
+	return tabBarRows + 1 + 1 + 1 + fieldRows + 1
 }
 
 // ScrollTranscript wheels the open transcript by delta lines (the operator

@@ -24,13 +24,55 @@ import (
 // operator's messages are right-aligned on the lighter fill, the model's
 // left-aligned on the darker one. The fills are derived per palette and gated
 // by TestBubbleContrast (separation + legibility on every palette).
-func RenderItems(items []ChatItem, maxWidth int, collapse ...func(key string) bool) string {
+// ItemSpan records where one rendered item's lines landed in the transcript body.
+//
+// It is the CLICK GEOMETRY for the transcript: a body line resolves to the item that produced it, so a
+// click on the operator's own message can copy that message. Lines rather than rows because the caller
+// knows its own wrapping — see kit2.Stream.LineAtRow, which answers the row half.
+type ItemSpan struct {
+	Kind  ItemKind
+	Key   string
+	Text  string // the item's copyable text ("" when there is nothing worth copying)
+	Line  int    // 0-based first line of this item in the body
+	Lines int    // how many body lines it occupies
+}
+
+// Contains reports whether a body line belongs to this item.
+func (s ItemSpan) Contains(line int) bool {
+	return line >= s.Line && line < s.Line+s.Lines
+}
+
+// copyTextFor is what a click on this item should put on the clipboard.
+//
+// THE RAW TEXT, not the rendered form: the rendered band carries the speaker label, the attachment
+// markers and whatever padding and styling the theme applied, so pasting it back would paste the
+// transcript's furniture along with the words.
+func copyTextFor(it ChatItem) string {
+	switch it.Kind {
+	case KindUser, KindText, KindReasoning, KindError:
+		return it.Text
+	}
+	return ""
+}
+
+// RenderItemsSpans renders the transcript AND reports where each item's lines landed.
+//
+// The caller that wants to resolve a click needs both; the caller that only paints wants the string, so
+// RenderItems delegates and discards the spans. ONE implementation rather than two, because a second
+// render pass for the geometry would be a second thing to keep in step with the first — and the failure
+// mode of drift here is a click that copies the WRONG message.
+func RenderItemsSpans(items []ChatItem, maxWidth int, collapse ...func(key string) bool) (string, []ItemSpan) {
 	folded := func(string) bool { return false }
 	if len(collapse) > 0 && collapse[0] != nil {
 		folded = collapse[0]
 	}
 	var b strings.Builder
+	spans := make([]ItemSpan, 0, len(items))
+	lineIdx := 0
 	for _, it := range items {
+		// Where this item's text starts, so the lines it produced can be attributed to it afterwards
+		// WITHOUT duplicating the switch below, which would drift from it.
+		before := b.Len()
 		switch it.Kind {
 		case KindUser:
 			b.WriteString(renderChatMessage(userTextWithMarkers(it), theme.BubbleUser, maxWidth, true, userBandLabel))
@@ -68,8 +110,22 @@ func RenderItems(items []ChatItem, maxWidth int, collapse ...func(key string) bo
 			}
 			b.WriteString(theme.HintText.Render(truncateRow(meta, maxWidth)) + "\n")
 		}
+		// Attribute the lines this item wrote. `before` is a byte offset into the builder, and the slice
+		// shares its backing array, so this costs a scan of the item's own text rather than a copy of the
+		// whole body per item.
+		lines := strings.Count(b.String()[before:], "\n")
+		spans = append(spans, ItemSpan{
+			Kind: it.Kind, Key: it.Key, Text: copyTextFor(it), Line: lineIdx, Lines: lines,
+		})
+		lineIdx += lines
 	}
-	return b.String()
+	return b.String(), spans
+}
+
+// RenderItems renders the transcript. See RenderItemsSpans for the same render with its line geometry.
+func RenderItems(items []ChatItem, maxWidth int, collapse ...func(key string) bool) string {
+	body, _ := RenderItemsSpans(items, maxWidth, collapse...)
+	return body
 }
 
 // chatBandGap is the number of BLANK rows emitted after each message band, so

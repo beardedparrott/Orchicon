@@ -168,3 +168,59 @@ func TestADeliberateScrollStillStopsTheFollow(t *testing.T) {
 		t.Error("scrolling to the bottom did not resume the follow")
 	}
 }
+
+// LineAtRow IS THE CLICK GEOMETRY: it maps a PAINTED row to the LOGICAL line behind it.
+//
+// A row is not a line. wrapOverflow expands an over-wide line into several rows and drops the oldest when
+// they exceed the budget, so `row + Offset` is wrong in exactly the cases the transcript hits — a wide
+// line after a reflow, a scrollback that trims. The map is recorded by the render that painted the rows,
+// which is the only moment the two are guaranteed to agree.
+func TestLineAtRowMapsPaintedRowsToLogicalLines(t *testing.T) {
+	s := NewStream("t", 20, 5)
+	s.WrapOverflow()
+	s.SetLines([]string{"a", "b", "c", "d", "e", "f"})
+	s.View()
+
+	// A following view shows the TAIL, so the newest line is at the bottom and the row above it is the
+	// line before.
+	last := s.LineAtRow(s.bodyRows() - 1)
+	if last != len(s.Lines)-1 {
+		t.Errorf("the bottom row maps to line %d, want the newest (%d)", last, len(s.Lines)-1)
+	}
+	above := s.LineAtRow(s.bodyRows() - 2)
+	if above != len(s.Lines)-2 {
+		t.Errorf("the row above the bottom maps to line %d, want %d", above, len(s.Lines)-2)
+	}
+	// Past the end, and before the start, resolve to nothing rather than to line 0.
+	if got := s.LineAtRow(-1); got != -1 {
+		t.Errorf("LineAtRow(-1) = %d, want -1", got)
+	}
+	if got := s.LineAtRow(s.bodyRows()); got != -1 {
+		t.Errorf("LineAtRow(past the end) = %d, want -1", got)
+	}
+}
+
+// AND A WRAPPED LINE OCCUPIES SEVERAL ROWS — every one of which maps back to that SAME logical line.
+// This is the case `row + Offset` gets wrong, so it is the reason the map exists.
+func TestEveryRowOfAWrappedLineMapsToThatLine(t *testing.T) {
+	s := NewStream("t", 10, 6)
+	s.WrapOverflow()
+	// One over-wide line, preceded by short ones so the wrap is the tail.
+	s.SetLines([]string{"x", strings.Repeat("w", 25)})
+	s.View()
+
+	rowsForWrapped := map[int]int{}
+	for row := 0; row < s.bodyRows(); row++ {
+		if line := s.LineAtRow(row); line >= 0 {
+			rowsForWrapped[line]++
+		}
+	}
+	// The over-wide line is logical line 1, and 25 cells at width 10 is 3 rows.
+	if got := rowsForWrapped[1]; got != 3 {
+		t.Errorf("the wrapped line occupies %d painted rows, want 3 — the row→line map is not accounting "+
+			"for the wrap, so a click on its second row would resolve to the wrong line", got)
+	}
+	if got := rowsForWrapped[0]; got != 1 {
+		t.Errorf("the short line above occupies %d rows, want 1", got)
+	}
+}
