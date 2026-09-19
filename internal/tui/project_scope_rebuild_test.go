@@ -180,9 +180,9 @@ func TestThePickerFromInitOffersTheRealProjects(t *testing.T) {
 	m := appWithProjectService(t, projects)
 	runCtx(t, m, m.Init(), runCtxCmdBudget)
 
-	runSlashTUI(t, m, "/projects")
+	runSlashTUI(t, m, "/project")
 	if m.projectPick == nil {
-		t.Fatal("/projects opened no picker")
+		t.Fatal("/project opened no picker")
 	}
 	labels := make([]string, 0, len(m.projectPick.options))
 	for _, o := range m.projectPick.options {
@@ -249,10 +249,10 @@ func TestTheFilterNarrowsToTheMatchingProject(t *testing.T) {
 	m := appWithProjectService(t, projects)
 	runCtx(t, m, m.Init(), runCtxCmdBudget)
 
-	runSlashTUI(t, m, "/projects Orch")
+	runSlashTUI(t, m, "/project Orch")
 
 	if m.projectPick == nil {
-		t.Fatal("/projects with a filter opened no picker")
+		t.Fatal("/project with a filter opened no picker")
 	}
 	labels := make([]string, 0, len(m.projectPick.options))
 	for _, o := range m.projectPick.options {
@@ -269,10 +269,10 @@ func TestAFilterWithNoMatchExplainsItself(t *testing.T) {
 	m := appWithProjectService(t, projects)
 	runCtx(t, m, m.Init(), runCtxCmdBudget)
 
-	runSlashTUI(t, m, "/projects zzzz")
+	runSlashTUI(t, m, "/project zzzz")
 
 	if m.projectPick == nil {
-		t.Fatal("/projects with an unmatched filter opened no picker")
+		t.Fatal("/project with an unmatched filter opened no picker")
 	}
 	if len(m.projectPick.options) != 0 {
 		t.Errorf("an unmatched filter produced %d options", len(m.projectPick.options))

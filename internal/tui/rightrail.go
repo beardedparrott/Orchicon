@@ -152,10 +152,11 @@ func (m *App) rightRailView() string {
 		// become invisible and the pane reads as broken rather than as filtered.
 		//
 		// It names the workspace and the way out, which is the one thing the operator needs and cannot get from an
-		// empty box.
+		// empty box. IT NAMES /project — the SINGULAR — because that is the command that switches workspace;
+		// /projects goes to the Projects pane and would leave the operator on the wrong screen.
 		body = append(body,
 			theme.HintText.Render(truncateRight("none in "+label, innerW)),
-			theme.HintText.Render(truncateRight("/projects to switch", innerW)),
+			theme.HintText.Render(truncateRight("/project to switch", innerW)),
 		)
 	default:
 		// THE RAIL RENDERS ITS ROWS, not m.conversations: a grouping is a row of its own, and the members

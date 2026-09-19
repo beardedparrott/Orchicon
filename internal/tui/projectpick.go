@@ -327,15 +327,15 @@ func (m *App) setProjectScope(scope string) {
 }
 
 // openProjectPicker opens the picker for a purpose. It loads the project list first when the rail has none —
-// /projects is how a TUI-only operator discovers projects, so it must not require having looked at the rail
-// first.
+// /project is how a TUI-only operator discovers projects, so it must not require having looked at the rail
+// first. (/projects is a different command — it opens the Work area's Projects PANE; see slash.go.)
 func (m *App) openProjectPicker(moveConvID string) tea.Cmd {
 	return m.openProjectPickerFiltered(moveConvID, "")
 }
 
 // openProjectPickerFiltered opens the picker with the option list narrowed to a filter string.
 //
-// The operator: "If I type '/projects Orch', it would show me the project Orchicon." The filter matches the
+// The operator: "If I type '/project Orch', it would show me the project Orchicon." The filter matches the
 // project NAME or its id, case-insensitively, as a SUBSTRING — so a partial word still finds it, and the
 // operator is never left staring at an empty list wondering whether the project exists. "All projects" and
 // "No project" are dropped while a filter is active: neither is a project, and matching them on the literal
@@ -382,7 +382,7 @@ func (m *App) projectOptionsFiltered(filter string) []projectScopeOption {
 }
 
 // onRailProjectsApplied refreshes an OPEN picker after a project load, so the list is never stale behind the
-// overlay: /projects on a cold rail would otherwise show only the conversations' own ids and no project names.
+// overlay: /project on a cold rail would otherwise show only the conversations' own ids and no project names.
 func (m *App) onRailProjectsApplied() {
 	if m.projectPick == nil {
 		return

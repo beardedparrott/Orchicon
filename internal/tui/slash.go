@@ -309,13 +309,24 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		},
 	})
 	add(SlashCommand{
-		Name: "/projects", Usage: "/projects [<filter>]",
-		Aliases: []string{"/project"},
-		Desc:    "choose the PROJECT WORKSPACE the conversations rail shows (type text to filter the list)",
+		// THE NAME IS THE SINGULAR, AND THAT IS A DELIBERATE LINE: /project SWITCHES the workspace,
+		// /projects NAVIGATES to the Projects pane.
+		//
+		// The operator drew it: "make /project be the command to switch projects and /projects is the slash command
+		// to go to the projects screen."
+		//
+		// IT ALSO FIXES A SHADOWING BUG THIS COMMAND CAUSED. The Work screen declares a "projects" source
+		// (screens/work/screen.go: AddSource(srcProjects, "Projects", …)), so the slash registry GENERATES a
+		// /projects that switches to the Work area and focuses that pane. buildSlashRegistry adds its generated
+		// commands FIRST and its explicit ones after, and `add` overwrites by name — so a picker named /projects
+		// took the name for good, and the Projects pane became unreachable by command. The plural now belongs to
+		// the pane it was always meant for.
+		Name: "/project", Usage: "/project [<filter>]",
+		Desc:    "switch the PROJECT WORKSPACE the conversations rail shows (type text to filter the list)",
 		MinArgs: 0,
 		Run: func(m *App, args []string) tea.Cmd {
-			// BARE, OR WITH A FILTER, IT OPENS THE LIST. The operator: "When you type /projects it should
-			// automatically show you the list of projects to choose from (i.e. If I type '/projects Orch', it
+			// BARE, OR WITH A FILTER, IT OPENS THE LIST. The operator: "When you type /project it should
+			// automatically show you the list of projects to choose from (i.e. If I type '/project Orch', it
 			// would show me the project Orchicon."
 			//
 			// So the argument is a FILTER, not a selection: it narrows the list and the operator still picks
@@ -329,12 +340,12 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		Desc:    "move the OPEN conversation into another project workspace",
 		MinArgs: 0,
 		Run: func(m *App, args []string) tea.Cmd {
-			// A SEPARATE NAME RATHER THAN AN ARGUMENT ON /projects. Both open the same list and the picker's
+			// A SEPARATE NAME RATHER THAN AN ARGUMENT ON /project. Both open the same list and the picker's
 			// title says which question it is asking, but the two acts are different — a VIEW versus a WRITE —
-			// and overloading one name made "/projects Orch" ambiguous between "filter to Orch" and "move this
+			// and overloading one name made "/project Orch" ambiguous between "filter to Orch" and "move this
 			// chat to Orch".
 			if m.chatConvID == "" {
-				m.dock.SetError("no conversation is open — /projects chooses the workspace")
+				m.dock.SetError("no conversation is open — /project chooses the workspace")
 				return nil
 			}
 			return m.openProjectPickerFiltered(m.chatConvID, "")

@@ -31,8 +31,10 @@ func TestAScopeThatHoldsNothingExplainsItself(t *testing.T) {
 	if !strings.Contains(view, "none in Delta") {
 		t.Errorf("the rail does not say which workspace is empty: %q", view)
 	}
-	if !strings.Contains(view, "/projects") {
-		t.Errorf("the empty state does not name the way out — /projects is how the operator switches workspace: %q", view)
+	// IT NAMES THE SINGULAR. /projects is the NAVIGATION command — it takes the operator to the Work area's
+	// Projects pane, which is not how you leave an empty workspace.
+	if !strings.Contains(view, "/project to switch") {
+		t.Errorf("the empty state does not name the way out — /project is how the operator switches workspace: %q", view)
 	}
 }
 

@@ -351,14 +351,17 @@ func TestThePickerOwnsItsKeys(t *testing.T) {
 	}
 }
 
-// /projects TAKES A FILTER, NOT A SELECTION. The operator: "If I type '/projects Orch', it would show me the
+// /project TAKES A FILTER, NOT A SELECTION. The operator: "If I type '/project Orch', it would show me the
 // project Orchicon." So the argument narrows the list and the operator still picks from it — and a prefix that
 // matches several projects shows all of them rather than guessing at one.
-func TestProjectsWithAnArgumentFiltersTheList(t *testing.T) {
+//
+// THE NAME IS THE SINGULAR, which is the operator's later correction (they first reported this as /projects; that
+// name has since been given back to the navigation command — see TestTheTwoProjectCommandsDoDifferentThings).
+func TestTheProjectCommandTakesAFilterNotASelection(t *testing.T) {
 	m := scopePlane(t)
-	runSlashTUI(t, m, "/projects beta")
+	runSlashTUI(t, m, "/project beta")
 	if m.projectPick == nil {
-		t.Fatal("/projects with a filter did not open the picker")
+		t.Fatal("/project with a filter did not open the picker")
 	}
 	if len(m.projectPick.options) != 1 || m.projectPick.options[0].Label != "Beta" {
 		t.Fatalf("the filter did not narrow the list to Beta: %+v", m.projectPick.options)
@@ -366,14 +369,14 @@ func TestProjectsWithAnArgumentFiltersTheList(t *testing.T) {
 
 	// CASE-INSENSITIVE, and a partial word finds it — the operator should not have to remember the casing, or
 	// type a whole name.
-	runSlashTUI(t, m, "/projects ALP")
+	runSlashTUI(t, m, "/project ALP")
 	if len(m.projectPick.options) != 1 || m.projectPick.options[0].Label != "Alpha" {
 		t.Errorf("a case-insensitive partial filter did not find Alpha: %+v", m.projectPick.options)
 	}
 
 	// ALL PROJECTS AND NO PROJECT ARE NOT PROJECTS: neither may survive a filter, or "No" would match "No
 	// project" and a filter for a real project could be polluted by a non-project row.
-	runSlashTUI(t, m, "/projects no")
+	runSlashTUI(t, m, "/project no")
 	for _, o := range m.projectPick.options {
 		if o.Value == projectScopeAll || o.Value == unassignedScope {
 			t.Errorf("the non-project scope %q survived a filter", o.Label)
@@ -382,7 +385,7 @@ func TestProjectsWithAnArgumentFiltersTheList(t *testing.T) {
 
 	// A FILTER THAT MATCHES NOTHING SHOWS AN EMPTY LIST, and the picker says why — never a silent list that
 	// looks like the tenant has no projects.
-	runSlashTUI(t, m, "/projects zzzz")
+	runSlashTUI(t, m, "/project zzzz")
 	if len(m.projectPick.options) != 0 {
 		t.Errorf("a non-matching filter left %d options", len(m.projectPick.options))
 	}
@@ -391,16 +394,46 @@ func TestProjectsWithAnArgumentFiltersTheList(t *testing.T) {
 	}
 }
 
-// AND IT IS REACHABLE AS /projects AND /project — the operator typed the plural, and the singular was the
-// previous name, so both resolve rather than one being a silent "unknown command".
-func TestBothProjectSpellingsResolve(t *testing.T) {
-	m := scopePlane(t)
-	for _, name := range []string{"/projects", "/project"} {
-		m.projectPick = nil
-		runSlashTUI(t, m, name)
-		if m.projectPick == nil {
-			t.Errorf("%s did not open the picker", name)
-		}
+// THE TWO COMMANDS DO DIFFERENT THINGS, and BOTH have to keep working.
+//
+// The operator: "make /project be the command to switch projects and /projects is the slash command to go to the
+// projects screen." The split is a fix as well as a preference: this command used to be NAMED /projects with
+// /project as an alias, and `add` overwrites by name while buildSlashRegistry registers its explicit commands
+// AFTER the generated ones — so the picker took the name /projects permanently and SHADOWED the navigation
+// command the registry generates from the Work screen's "projects" source (screens/work/screen.go). The Projects
+// pane became unreachable by command, which is what the operator noticed.
+func TestTheTwoProjectCommandsDoDifferentThings(t *testing.T) {
+	m := appWithProjectService(t, &stubProjectList{names: []string{"Orchicon", "ai-tools"}})
+
+	// THE SINGULAR SWITCHES THE WORKSPACE. It opens the picker and stays where the operator is: choosing a
+	// workspace is a VIEW, not a navigation.
+	m.projectPick = nil
+	runSlashTUI(t, m, "/project")
+	if m.projectPick == nil {
+		t.Fatal("/project did not open the scope picker")
+	}
+	if got := m.ActiveTab(); got != TabAsk {
+		t.Errorf("/project switched to tab %q — switching the WORKSPACE is not a navigation", got)
+	}
+
+	// THE PLURAL NAVIGATES to the Work area's Projects pane, and must NOT open the picker.
+	m.projectPick = nil
+	runSlashTUI(t, m, "/projects")
+	if m.projectPick != nil {
+		t.Error("/projects opened the scope picker: the generated navigation command is shadowed again, and the " +
+			"Projects pane is unreachable by command")
+	}
+	if got := m.ActiveTab(); got != TabWork {
+		t.Errorf("/projects left the shell on tab %q, want the Work area", got)
+	}
+
+	// AND THE REGISTRY SAYS WHICH IS WHICH, which is the layer the bug was at — a name collision, not a
+	// behaviour. The picker's own description is the marker, so this cannot pass by both resolving to one thing.
+	if nav := m.slash.resolve("/projects"); nav == nil || strings.Contains(nav.Desc, "WORKSPACE") {
+		t.Errorf("/projects resolves to the workspace picker rather than the navigation command: %+v", nav)
+	}
+	if sw := m.slash.resolve("/project"); sw == nil || !strings.Contains(sw.Desc, "WORKSPACE") {
+		t.Errorf("/project does not resolve to the workspace picker: %+v", sw)
 	}
 }
 
@@ -426,14 +459,14 @@ func TestTheMoveActionIsReachableAndDistinct(t *testing.T) {
 	}
 }
 
-// BARE /projects NEEDS NO CONVERSATION AT ALL. Choosing the workspace is a VIEW, and a fresh session has no
+// BARE /project NEEDS NO CONVERSATION AT ALL. Choosing the workspace is a VIEW, and a fresh session has no
 // conversation open — so the list must open regardless. (The MOVE form's own refusal is asserted above.)
 func TestChoosingTheWorkspaceNeedsNoOpenConversation(t *testing.T) {
 	m := scopePlane(t)
 	m.chatConvID = ""
-	runSlashTUI(t, m, "/projects")
+	runSlashTUI(t, m, "/project")
 	if m.projectPick == nil {
-		t.Error("bare /projects needs an open conversation to list workspaces, which it must not")
+		t.Error("bare /project needs an open conversation to list workspaces, which it must not")
 	}
 }
 

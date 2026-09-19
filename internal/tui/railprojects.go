@@ -80,7 +80,7 @@ func (m *App) projectLabelFor(projectID string) string {
 	return projectID
 }
 
-// resolveProjectRef was removed with the argument-as-selection form of the command: /projects takes a FILTER
+// resolveProjectRef was removed with the argument-as-selection form of the command: /project takes a FILTER
 // now, and moving a conversation goes through the picker's own action (see projectPickerKey), so nothing needs
 // to turn a project name into an id from a slash argument any more.
 
