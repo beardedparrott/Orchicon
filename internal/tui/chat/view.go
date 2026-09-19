@@ -21,7 +21,8 @@ import (
 // MergeSessionItems); this renders what it is given.
 //
 // The two speakers are separated by a FULL-WIDTH background band: the
-// operator's messages are right-aligned on the lighter fill, the model's
+// operator's messages are right-aligned as a BLOCK on the lighter fill (one left
+// edge shared by every row; flush right when the message is short), the model's
 // left-aligned on the darker one. The fills are derived per palette and gated
 // by TestBubbleContrast (separation + legibility on every palette).
 // ItemSpan records where one rendered item's lines landed in the transcript body.
@@ -221,7 +222,9 @@ const userBandLabel = "You"
 // (the operator's "a whole background color change behind the entire block of
 // text ... from beginning to end of the width of the conversation for each
 // section ... a lighter or darker color"). The operator's messages sit at the
-// RIGHT of their band, the model's at the LEFT.
+// RIGHT of their band as a BLOCK — one left edge shared by every row, so a
+// wrapped message does not begin each line at a different column — and the
+// model's at the LEFT.
 //
 // The padding is rendered INSIDE the style, which is the whole point: filling
 // only the text and leaving the margin unstyled is what made an earlier
@@ -314,55 +317,88 @@ func renderChatMessageSpansOpts(text string, style lipgloss.Style, maxWidth int,
 	if userBreaks {
 		renderMD = md.RenderUserOnSpans
 	}
-	body, mdSpans := renderMD(text, inner, md.SurfaceOf(style), copyGlyph)
+	// THE OPERATOR'S BAND IS RIGHT-ALIGNED AS A BLOCK, AND THE LABEL IS PAID FOR OUT OF THE SAME BUDGET.
+	//
+	// The operator: "See how when it drops a line it starts from the right and not the left? It leaves a large
+	// whitespace in front of the subsequent lines." Right-aligning each row INDIVIDUALLY is what did that: a
+	// wrapped message came out flush right on every line, so line 2 onwards each began at a different column —
+	// the last line of a block could start half-way across the pane.
+	//
+	// The corrected shape is a right-aligned BLOCK with ONE left edge, exactly as the GUI's bubble is (its text
+	// is left-aligned inside a box that sits on the right). The edge is the flush-right position of the WIDEST
+	// row, so a message that fits on one line is still flush right — the shape the operator asked for and
+	// TestUserBubbleRightAlignedModelLeftAligned pins — while a wrapped one gets a single consistent margin.
+	//
+	// AND THE BODY IS WRAPPED TO A WIDTH THAT ALREADY EXCLUDES THE LABEL. Rendering at the full inner width and
+	// then CUTTING the first row to make room for the label silently dropped the tail of the first line of every
+	// long message — up to the label's own width in characters, gone, which is the same class of invisible data
+	// loss the overflow guard below was added for. Reserving the label's cells BEFORE the wrap removes the cut,
+	// and it is also what guarantees the block can never run into the label.
+	labelW := 0
+	bodyWidth := inner
+	if label != "" {
+		labelW = lipgloss.Width(label)
+		// The 1-cell leading pad, the label, and one space between it and the text.
+		bodyWidth = inner - labelW - 1
+		if bodyWidth < 8 {
+			bodyWidth = 8
+		}
+	}
+	body, mdSpans := renderMD(text, bodyWidth, md.SurfaceOf(style), copyGlyph)
 	if len(body) == 0 {
 		body = []string{text}
 	}
 
+	// blockLeft is where every row of the operator's block starts.
+	blockLeft := 1
+	if right {
+		widest := 0
+		for _, l := range body {
+			if w := lipgloss.Width(l); w > widest {
+				widest = w
+			}
+		}
+		blockLeft = 1 + inner - widest
+		// NEVER FURTHER LEFT THAN ONE SPACE AFTER THE LABEL, so a wide message hangs beneath the label rather
+		// than running into it. bodyWidth reserves exactly that much, so the two agree by construction.
+		if floor := 1 + labelW + 1; blockLeft < floor {
+			blockLeft = floor
+		}
+	}
+
 	var out strings.Builder
 	for i, l := range body {
-		// THE LABEL IS PART OF THE ROW'S BUDGET, and it used to be spent OUTSIDE it. `gap` floors at 1, so
-		// when a line left no room for the label the row came out as `1 + label + 1 + line + 1` — WIDER
-		// than the pane. Measured at width 80: an 81-cell user row. The stream's Pad() then TRUNCATES the
-		// row to the pane width, so the line silently lost its last cell — text disappearing off the right
-		// edge, which is what a sentence cut mid-word looks like.
-		//
-		// The line is therefore shortened to the room left after the label, so the row is exactly the pane's
-		// width and nothing overflows.
-		if i == 0 && label != "" {
-			room := inner - lipgloss.Width(label) - 2 // the 1-cell leading and trailing padding, plus the label
-			if room < 1 {
-				room = 1
-			}
-			if lipgloss.Width(l) > room {
-				l = truncateCells(l, room)
-			}
-		}
-		pad := inner - lipgloss.Width(l)
-		if pad < 0 {
-			pad = 0
-		}
 		var row string
 		switch {
 		case i == 0 && label != "":
-			// Label at the band's LEFT edge, text at the RIGHT: the speaker is
-			// named and the alignment still reads as the operator's side. A
-			// right-aligned band with no label is genuinely easy to miss — and
-			// when a message looked absent the only way to tell "not rendered"
-			// from "rendered and overlooked" was to be told which it was.
-			gap := pad - lipgloss.Width(label)
+			// The label sits at the band's left edge and the text aligns to the BLOCK, so a one-line message
+			// still reads as the operator's side (flush right) while a wrapped one hangs beneath the label
+			// with every line sharing this column. A right-aligned band with no label is genuinely easy to
+			// miss — and when a message looked absent, the label's presence is what told "not rendered" from
+			// "rendered and overlooked".
+			gap := blockLeft - 1 - labelW
 			if gap < 1 {
 				gap = 1
 			}
-			row = " " + label + strings.Repeat(" ", gap) + l + " "
+			row = " " + label + strings.Repeat(" ", gap) + l
 		case right:
-			row = " " + strings.Repeat(" ", pad) + l + " "
+			pad := blockLeft - 1
+			if pad < 1 {
+				pad = 1
+			}
+			row = " " + strings.Repeat(" ", pad) + l
 		default:
-			row = " " + l + strings.Repeat(" ", pad) + " "
+			row = " " + l
+		}
+		// EVERY ROW IS PADDED TO THE PANE, so the fill runs edge to edge and consecutive rows are the same
+		// width. The padding is INSIDE the style, which is what makes the band a block rather than "text with
+		// a background".
+		if pad := pane - lipgloss.Width(row); pad > 0 {
+			row += strings.Repeat(" ", pad)
 		}
 		// AND THE ROW IS CLAMPED TO THE PANE ON EVERY PATH, so no band can hand the stream a line it would
-		// have to truncate. The label case above is the one that could overflow; this makes the invariant
-		// hold for all three.
+		// have to truncate. The arithmetic above holds (see blockLeft), so this is the invariant's guard
+		// rather than a load-bearing cut.
 		row = truncateCells(row, pane)
 		out.WriteString(style.Render(row))
 		out.WriteString("\n")
