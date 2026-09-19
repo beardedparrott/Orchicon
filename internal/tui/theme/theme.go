@@ -384,6 +384,14 @@ var (
 	// 2.0): rounded border + inner horizontal padding over the surface fill.
 	ComposerBox = lipgloss.NewStyle()
 
+	// ComposerSelect paints the composer's rows while the WHOLE buffer is selected (ctrl+a).
+	//
+	// It is the SAME selection fill the list rows and the active tab already use, so "selected" means one
+	// thing across the TUI rather than one per surface. It exists because the operator reported the missing
+	// half of the feature: "when I hit ctrl+a in the composer it DOES select all but it doesn't actually
+	// show the cursor highlight over all of the text, it just gives you a little message."
+	ComposerSelect = lipgloss.NewStyle()
+
 	StatusOK   = lipgloss.NewStyle()
 	StatusWarn = lipgloss.NewStyle()
 	StatusErr  = lipgloss.NewStyle()
@@ -546,6 +554,10 @@ func buildStyles(t Theme) {
 	// it is the dark colour, which is what a caret is on both. It also stays legible by construction: the two
 	// tokens are contrast-gated against each other (see TestStructuralContrast).
 	ComposerCursor = lipgloss.NewStyle().Foreground(t.Text).Background(t.Bg)
+	// The white-on-Select pairing is the same one MenuRowSel and ListItemSelected use, and it is contrast-gated
+	// for every palette by TestSelectionFillCarriesWhiteText — so a theme that cannot carry the fill fails the
+	// suite rather than painting an unreadable composer.
+	ComposerSelect = lipgloss.NewStyle().Foreground(white).Background(t.Select)
 	ReasoningLabel = lipgloss.NewStyle().Foreground(t.AccentIndigo).Bold(true)
 	ReasoningBody = lipgloss.NewStyle().Foreground(t.TextDim)
 	SpinnerStyle = lipgloss.NewStyle().Foreground(t.AccentCyan)

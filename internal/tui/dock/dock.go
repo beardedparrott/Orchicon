@@ -914,7 +914,30 @@ func (m *Model) View() string {
 	if m.Chip != "" {
 		rows = append(rows, theme.ListMeta.Render(fit("["+m.Chip+"]", inner)))
 	}
-	for i, l := range m.inputLines() {
+	// WHILE THE WHOLE BUFFER IS SELECTED THE ROWS ARE PAINTED ON THE SELECTION FILL.
+	//
+	// The operator: "it DOES select all but it doesn't actually show the cursor highlight over all of the text,
+	// it just gives you a little message that the text is highlighted." The message was ALL there was: this
+	// loop rendered the buffer exactly as it does when nothing is selected, so the only evidence of ctrl+a was
+	// the notice strip. A selection you cannot see is a selection you cannot trust — and the next keystroke
+	// silently REPLACES the whole draft, which is a data-loss trap if the state was not visible.
+	selecting := m.selectAll
+	input := m.inputLines()
+	if selecting {
+		input = m.selectionLines()
+	}
+	for i, l := range input {
+		if selecting {
+			// ONE UNIFORM FILL ACROSS THE ROW, prompt included and padded to the box's inner width. Nothing
+			// inside the selection competes for attention (no prompt colour, no caret): the fill IS the answer
+			// to "did ctrl+a do anything".
+			prefix := "  "
+			if i == 0 {
+				prefix = "❯ "
+			}
+			rows = append(rows, theme.ComposerSelect.Render(fit(prefix+l, inner)))
+			continue
+		}
 		if i == 0 {
 			// The dock paints the prompt on the first input row (the
 			// textarea's own prompt stays empty so wrapped rows are not
@@ -976,6 +999,35 @@ func (m *Model) inputLines() []string {
 		src = src[:n]
 	}
 	out := append([]string{}, src...)
+	for len(out) < n {
+		out = append(out, "")
+	}
+	return out
+}
+
+// selectionLines returns the composer's input rows as PLAIN text with NO caret, for the SELECTED state.
+//
+// IT RENDERS A BLURRED COPY OF THE TEXTAREA rather than the live one, because bubbles' caret is a
+// REVERSE-VIDEO BLOCK: left in place it punches a hole in the selection fill at the caret's cell and reads as
+// an artefact rather than as part of the selection. Blur() has NO return value, so unlike styledTa's Focus/Blur
+// there is no BlinkCmd for this to accidentally execute and cancel the caret's blink with (see inputLines for
+// the bug that caused) — and it is called on a COPY, so the dock's own textarea keeps its focus.
+//
+// The rows are ANSI-STRIPPED because the textarea paints every cell with its own base style (Foreground Text on
+// Background Surface). An outer fill would never show through that: the inner background wins cell by cell. What
+// survives the strip is exactly the characters the operator typed, which is what the caller then fills.
+func (m *Model) selectionLines() []string {
+	ta := m.ta
+	ta.Blur()
+	n := m.InputRows()
+	src := strings.Split(ta.View(), "\n")
+	if len(src) > n {
+		src = src[:n]
+	}
+	out := make([]string, 0, n)
+	for _, l := range src {
+		out = append(out, ansi.Strip(l))
+	}
 	for len(out) < n {
 		out = append(out, "")
 	}
