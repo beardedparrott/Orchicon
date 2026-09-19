@@ -55,7 +55,7 @@ func (m *App) toggleConvMark() {
 		if m.convMarked == nil {
 			m.convMarked = map[string]bool{}
 		}
-		ids := m.railRowsInFolder(*f)
+		ids := m.railRowsInFolder(f.catID)
 		all := len(ids) > 0
 		for _, id := range ids {
 			if !m.convMarked[id] {
@@ -217,7 +217,7 @@ func (m *App) railItemKey(k string) (bool, tea.Cmd) {
 	if f := m.railFolderAt(m.convSel); f != nil {
 		switch k {
 		case "enter":
-			m.toggleConvFolder(f.key)
+			m.toggleConvFolder(f.catID)
 			m.refreshStreamStatus()
 			return true, nil
 		case categoryRenameChord:

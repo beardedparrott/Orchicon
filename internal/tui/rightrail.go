@@ -115,8 +115,15 @@ func (m *App) rightRailView() string {
 	}
 
 	title := "Conversations"
-	if n := len(m.conversations); n > 0 && m.convErr == "" {
-		title = fmt.Sprintf("Conversations (%d)", n)
+	// THE ACTIVE PROJECT IS THE RAIL'S TITLE, because a scope you cannot see is a scope you forget you are in —
+	// and the operator explicitly wanted projects to be WORKSPACES, so which workspace is in force has to be
+	// legible from the rail itself rather than only from a notice that has already faded.
+	label := projectScopeLabel(m.projectScope, projectScopeOptions(m.railProjects, m.conversations))
+	if m.projectScope != projectScopeAll {
+		title = "Conversations · " + label
+	}
+	if n := len(m.scopedConversations()); n > 0 && m.convErr == "" {
+		title = title + fmt.Sprintf(" (%d)", n)
 	}
 
 	var body []string
@@ -174,21 +181,13 @@ func (m *App) rightRailView() string {
 func (m *App) railLine(r railRow, i, w int) string {
 	if r.folder {
 		arrow := "▾"
-		if m.convCollapsed[r.key] {
+		if m.convCollapsed[r.catID] {
 			arrow = "▸"
 		}
 		// The count is the FOLDER's total, not its visible members: collapsing must not make the number
 		// change, or the operator would think items vanished.
 		meta := fmt.Sprintf("%d", r.count)
-		// AN ARCHIVED PROJECT IS MARKED, because the association rule is "active or otherwise" and a
-		// folder that looks identical to a working one would hide the one fact the operator needs before
-		// asking an agent to do work in it.
-		if r.status != "" && r.status != "active" {
-			meta = r.status + " " + meta
-		}
-		// INDENTED BY DEPTH so the two levels read as two levels: a project folder is flush, the category
-		// folders inside it are one cell in. A tenant with no projects has one level and is unaffected.
-		title := strings.Repeat(" ", r.depth) + arrow + " " + r.title
+		title := arrow + " " + r.title
 		avail := w - 1 - lipgloss.Width(meta)
 		if lipgloss.Width(title) > avail {
 			title = truncateRight(title, avail)
@@ -228,10 +227,20 @@ func (m *App) railLine(r railRow, i, w int) string {
 // THE GROUPING IS NOT NAMED HERE, because the row is INSIDE its folder: repeating the category on every
 // member is the same fact twice, and the GUI does not do it either. (An earlier version tagged the row,
 // before the rail could nest — the test that caught the duplication is why this note exists.)
+//
+// THE PROJECT **IS** NAMED, but only in the ONE scope where it is not already answered by the rail's title: with
+// "All projects" active the rail is showing several workspaces at once, and a chat's project is then the thing
+// you cannot see. Inside a project scope every visible row is that project by construction, so repeating it per
+// row would be the same duplication this comment already warns about.
 func (m *App) conversationRow(c chat.Conversation, i, w int) string {
 	meta := fmt.Sprintf("%d msgs", c.MessageN)
 	if c.TurnInFly {
 		meta = "running"
+	}
+	if m.projectScope == projectScopeAll {
+		if label := m.projLabelForConv(c); label != "" {
+			meta = label + " · " + meta
+		}
 	}
 	marker := " "
 	if m.convMarked[c.ID] {
@@ -325,7 +334,7 @@ func (m *App) openRailConversation(row int) tea.Cmd {
 	// This lives here rather than only in railItemKey because the shell's ENTER branch claims enter for
 	// the rail before the screen's key path runs — so a folder's enter arrived here and did nothing.
 	if f := m.railFolderAt(row); f != nil {
-		m.toggleConvFolder(f.key)
+		m.toggleConvFolder(f.catID)
 		return nil
 	}
 	idx := m.railConvIndexAt(row)

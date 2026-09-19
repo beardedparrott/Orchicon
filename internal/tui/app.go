@@ -320,6 +320,13 @@ type App struct {
 	// operator's "a list that can be dragged to and also created from". Refreshed with the conversations, so a
 	// project made in the other client appears here without a relaunch.
 	railProjects []railProject
+	// projectScope is the ACTIVE PROJECT the rail is filtered by — the operator's "Projects are WORKSPACES" and
+	// "/project to set the active project". It defaults to projectScopeAll so nothing that predates the project
+	// column (which defaults to empty) is hidden on launch.
+	projectScope string
+	// projectPick is the /project modal (nil = closed). It chooses the scope, or moves one conversation — see
+	// projectpick.go for why the two share the control.
+	projectPick  *projectPicker
 	convRailOpen bool
 	// askPane records which Ask pane holds the keyboard. Left/right select between the
 	// conversations rail and the open conversation, and the vertical keys follow the
@@ -2095,6 +2102,11 @@ func (m App) viewFrame() string {
 	}
 	if m.assignForm != nil {
 		base = m.assignCategoryView(base, w, h)
+	}
+	// The /project picker sits in the same layer: the shell owns the surface it names, and it must cover the
+	// rail whose scope it is changing.
+	if m.projectPick != nil {
+		base = m.overlayCentered(base, m.projectPickerView())
 	}
 	// The bulk confirm (a destructive rail operation) sits in the same layer, for the same reason: the
 	// shell owns the surface it names.

@@ -20,6 +20,7 @@ import (
 	"github.com/charmbracelet/bubbletea"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/tui/chat"
 )
 
 // projectStatusWord renders the proto enum as the domain word the server uses for a project's status
@@ -45,20 +46,24 @@ func projectStatusWord(st apiv1.ProjectStatus) string {
 	}
 }
 
-// projectForConv resolves the project a conversation is in, when the rail knows it.
-func (m *App) projectForConv(convID string) (railProject, bool) {
-	for _, c := range m.conversations {
-		if c.ID != convID {
-			continue
-		}
-		for _, p := range m.railProjects {
-			if p.ID == c.ProjectID {
-				return p, true
-			}
-		}
-		return railProject{}, false
+// projLabelForConv names the project a conversation sits in, for a rail row. It returns "" when the
+// conversation is unassigned — an unassigned chat is not "in" anything, and inventing a label for it would
+// put a word on a row where the absence is the fact.
+//
+// An ARCHIVED project still names itself, because the association rule is "active or otherwise" and a chat
+// parked in an archived workspace is exactly the case where the operator needs telling.
+func (m *App) projLabelForConv(c chat.Conversation) string {
+	if c.ProjectID == "" {
+		return ""
 	}
-	return railProject{}, false
+	for _, p := range m.railProjects {
+		if p.ID == c.ProjectID {
+			return p.Name
+		}
+	}
+	// Not in the project list: the column carries no foreign key, so this is a stale association. The raw id is
+	// ugly and honest, and it is better than silently rendering the chat as unassigned when it is not.
+	return c.ProjectID
 }
 
 // projectLabelFor renders a project id for a notice: its name, the raw id when the project is unknown (a stale
@@ -105,32 +110,6 @@ func (m *App) setConversationProject(convID, projectID string) tea.Cmd {
 		return nil
 	}
 	return m.chat.SetConversationProject(convID, projectID)
-}
-
-// conversationProjectLine is the one-line project context shown under the open conversation's header, so
-// "which project is this chat in" is answerable without looking at the rail.
-//
-// Empty when the rail has no project list yet AND the conversation is unassigned, so the pane does not grow a
-// row to say nothing.
-func (m *App) conversationProjectLine(convID string) string {
-	for _, c := range m.conversations {
-		if c.ID != convID {
-			continue
-		}
-		if c.ProjectID == "" {
-			return "no project"
-		}
-		for _, p := range m.railProjects {
-			if p.ID == c.ProjectID {
-				if p.Status != "" && p.Status != "active" {
-					return p.Name + " (" + p.Status + ")"
-				}
-				return p.Name
-			}
-		}
-		return "unknown project " + c.ProjectID
-	}
-	return ""
 }
 
 // railProject is the minimum the rail needs to draw a project folder. Deliberately not the whole
@@ -185,6 +164,9 @@ func (m *App) onRailProjects(msg railProjectsMsg) tea.Cmd {
 		return nil
 	}
 	m.railProjects = msg.Projects
+	// A picker opened on a cold rail showed only the conversations' own ids; now that the names have arrived,
+	// refresh the list behind the overlay so /project never presents raw ids to someone who just asked for it.
+	m.onRailProjectsApplied()
 	// The cursor can be past the end of a shorter or longer list now.
 	if m.convSel >= len(m.railRows()) {
 		m.convSel = max(0, len(m.railRows())-1)

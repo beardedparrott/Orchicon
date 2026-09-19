@@ -310,35 +310,28 @@ func buildSlashRegistry(m *App) *slashRegistry {
 	})
 	add(SlashCommand{
 		Name: "/project", Usage: "/project [<name-or-id> | none]",
-		Desc:    "show or set which PROJECT this conversation belongs to (its folder groups the conversations rail)",
+		Desc:    "pick the PROJECT WORKSPACE the conversations rail shows (no argument opens a list), or move the OPEN conversation into one",
 		MinArgs: 0,
 		Run: func(m *App, args []string) tea.Cmd {
 			want := strings.TrimSpace(strings.Join(args, " "))
-			// NO ARGUMENT LISTS WHAT CAN BE CHOSEN, which is also how the operator discovers the names. It
-			// prints the current association first so the answer to "where am I" is the first thing on screen.
+			// NO ARGUMENT OPENS THE PICKER, which is what the operator asked for: "A list should pop up to make it
+			// easier to pick the right one when you type /project slash command." It chooses the SCOPE (the active
+			// workspace), which is the plain reading of "/project to set the active project".
 			if want == "" {
-				cur := "(none)"
-				if p, ok := m.projectForConv(m.chatConvID); ok {
-					cur = p.Name
-				}
-				if len(m.railProjects) == 0 {
-					m.dock.SetNotice("project: " + cur + " — no projects exist yet")
-					return nil
-				}
-				names := make([]string, 0, len(m.railProjects))
-				for _, p := range m.railProjects {
-					names = append(names, p.Name)
-				}
-				m.dock.SetNotice("project: " + cur + " — choose: " + strings.Join(names, " | ") + " (or none)")
+				return m.openProjectPicker("")
+			}
+			// WITH AN ARGUMENT IT MOVES THE OPEN CONVERSATION — the arity-based split the other commands use
+			// (/theme lists, /theme dark sets). Moving a chat between workspaces is a different act from choosing
+			// which workspace to look at, and it needs a conversation open to mean anything.
+			if m.chatConvID == "" {
+				m.dock.SetError("no conversation is open — /project with no argument picks the workspace")
 				return nil
 			}
-			// "none" UNASSIGNS, which is a real operation rather than an absence of one: a chat has to be
-			// able to leave a project that was archived out from under it.
 			if strings.EqualFold(want, "none") {
-				return m.setConversationProject(m.chatConvID, "")
+				return m.setConversationProject(m.chatConvID, unassignedScope)
 			}
-			// Resolved by ID or by NAME, case-insensitively — the operator typed a project name in the GUI
-			// and should not have to look up an id to say the same thing here.
+			// Resolved by ID or by NAME, case-insensitively — the operator typed a project name in the GUI and
+			// should not have to look up an id to say the same thing here.
 			id, ok := m.resolveProjectRef(want)
 			if !ok {
 				m.dock.SetError("no project matches " + want + " — /project lists them")

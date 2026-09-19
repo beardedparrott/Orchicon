@@ -1,0 +1,328 @@
+package tui
+
+// projectpick.go — /project's PICKER, and the project SCOPE the conversations rail shows.
+//
+// The operator, after the first attempt rendered projects as a second list beside the categories:
+//
+//   "I wanted a hierarchy. So a conversation would belong to a project and inside the project it would still
+//    have the normal categories we had before. ... Projects are WORKSPACES essentially. ... In the TUI the
+//    equivalent would be /project to set the active project. A list should pop up to make it easier to pick the
+//    right one when you type /project slash command."
+//
+// So a project is a SCOPE the rail is filtered by, not a row in it. Choosing one narrows which conversations the
+// rail shows; the category folders are unchanged and simply hold fewer items. And it is picked from a LIST,
+// because a command that only accepts a name you have to already know is not an interface.
+//
+// WHY A BESPOKE MODAL RATHER THAN kit2.ModelPicker: that control walks the adapter/provider/model grammar in
+// three tiers and commits a ref. A project is one flat choice out of a handful, so reusing it would mean
+// pretending a project is a model. This is the same shape as the shell's other small modals (the rename box, the
+// bulk confirm): state on the App, a centred overlay, keys routed while it is open.
+
+import (
+	"fmt"
+	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/beardedparrott/orchicon/internal/tui/chat"
+	"github.com/beardedparrott/orchicon/internal/tui/theme"
+)
+
+// projectScopeAll is the scope that filters nothing. It is the DEFAULT, deliberately: the project column is
+// additive and defaults to empty, so a default that filtered would make every conversation that predates this
+// feature look deleted on launch.
+const projectScopeAll = "__all__"
+
+// unassignedScope is the scope holding conversations with no project. It is a real scope and not the absence of
+// one — those chats have to stay reachable, and this is also where a chat goes when it is moved out of a project.
+const unassignedScope = ""
+
+// projectScopeOption is one entry in the picker, and in the scope's own vocabulary.
+type projectScopeOption struct {
+	// Value is the scope: a project id, unassignedScope, or projectScopeAll.
+	Value string
+	Label string
+	// Count is how many conversations the scope actually holds — a count of ITEMS, not of a project's rows.
+	Count int
+	// Archived marks a project that is not active, so the option can say so. The association rule is the
+	// operator's "active or otherwise", so an archived project is a valid workspace and the one fact worth
+	// knowing before working in it is that it is not active.
+	Archived bool
+}
+
+// filterConversationsByScope returns the conversations visible in a scope.
+//
+// The GUI's equivalent decides the same thing for the same reason, from the same column — see
+// frontend/src/lib/conversationProjects.ts. Two clients, one rule.
+func filterConversationsByScope(convs []chat.Conversation, scope string) []chat.Conversation {
+	if scope == projectScopeAll {
+		return convs
+	}
+	out := make([]chat.Conversation, 0, len(convs))
+	for _, c := range convs {
+		if c.ProjectID == scope {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// projectScopeOptions builds the picker's contents: All projects, every project, any project id still referenced
+// by a conversation, and No project.
+//
+// EVERY PROJECT IS LISTED even with no conversations, and the count then reads 0 — that is information rather
+// than an omission: it is how the operator knows a workspace is empty before switching to it. A project that is
+// merely REFERENCED still gets an option too, because the column carries no foreign key: a conversation can
+// outlive its project, and without an option for that id the chat would be unreachable from the rail entirely.
+func projectScopeOptions(projects []railProject, convs []chat.Conversation) []projectScopeOption {
+	counts := map[string]int{}
+	for _, c := range convs {
+		counts[c.ProjectID]++
+	}
+	known := map[string]bool{}
+	out := []projectScopeOption{
+		{Value: projectScopeAll, Label: "All projects", Count: len(convs)},
+	}
+	for _, p := range projects {
+		known[p.ID] = true
+		out = append(out, projectScopeOption{
+			Value:    p.ID,
+			Label:    p.Name,
+			Count:    counts[p.ID],
+			Archived: p.Status != "" && p.Status != "active",
+		})
+	}
+	// Referenced-but-unlisted project ids, sorted so the list does not reshuffle between opens.
+	var orphans []string
+	for id := range counts {
+		if id != unassignedScope && !known[id] {
+			orphans = append(orphans, id)
+		}
+	}
+	sortStrings(orphans)
+	for _, id := range orphans {
+		out = append(out, projectScopeOption{
+			Value: id, Label: "unknown project " + id, Count: counts[id], Archived: true,
+		})
+	}
+	out = append(out, projectScopeOption{Value: unassignedScope, Label: "No project", Count: counts[unassignedScope]})
+	return out
+}
+
+// projectScopeLabel names a scope for display, falling back to the raw value for a scope with no option.
+func projectScopeLabel(scope string, opts []projectScopeOption) string {
+	for _, o := range opts {
+		if o.Value == scope {
+			return o.Label
+		}
+	}
+	if scope == "" {
+		return "No project"
+	}
+	return scope
+}
+
+// sortStrings is a plain insertion sort — the orphan list is tiny, and importing sort for it would be noise next
+// to the rest of this file's dependencies.
+func sortStrings(s []string) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j] < s[j-1]; j-- {
+			s[j], s[j-1] = s[j-1], s[j]
+		}
+	}
+}
+
+// projectPicker is the /project modal: a list of scopes the operator picks from.
+type projectPicker struct {
+	options []projectScopeOption
+	sel     int
+	// moveConvID is the conversation being MOVED when the picker was opened to reassign one, "" when it is
+	// choosing the RAIL'S SCOPE. The two are the same question ("which project?") with different consequences,
+	// so they share the control and the title says which one you are answering.
+	moveConvID string
+}
+
+// scopePickerTitle is the overlay's heading, which is what tells the two uses apart.
+func (p *projectPicker) title() string {
+	if p.moveConvID != "" {
+		return "MOVE CONVERSATION TO PROJECT"
+	}
+	return "PROJECT WORKSPACE"
+}
+
+// move attempts to move the selection. It returns false at the edges so the caller can fall through to another
+// binding — the same contract the screens' pickers use, so a stale key is never silently swallowed.
+func (p *projectPicker) move(delta int) bool {
+	if len(p.options) == 0 {
+		return false
+	}
+	next := p.sel + delta
+	if next < 0 || next >= len(p.options) {
+		return false
+	}
+	p.sel = next
+	return true
+}
+
+// selected returns the option under the cursor.
+func (p *projectPicker) selected() (projectScopeOption, bool) {
+	if p.sel < 0 || p.sel >= len(p.options) {
+		return projectScopeOption{}, false
+	}
+	return p.options[p.sel], true
+}
+
+// selectByValue parks the cursor on a value, so reopening the picker shows where you currently are.
+func (p *projectPicker) selectByValue(v string) {
+	for i, o := range p.options {
+		if o.Value == v {
+			p.sel = i
+			return
+		}
+	}
+}
+
+// projectPickerView renders the overlay. It is a CENTRED RECTANGLE of fixed width, which is what
+// overlayCentered requires — a ragged width would make the splice leave gaps.
+func (m *App) projectPickerView() string {
+	p := m.projectPick
+	if p == nil {
+		return ""
+	}
+	const w = 52
+	inner := w - 4
+	var b strings.Builder
+	b.WriteString(theme.MenuTitle.Render(truncateRight(p.title(), inner)) + "\n")
+	if p.moveConvID != "" {
+		title := p.moveConvID
+		for _, c := range m.conversations {
+			if c.ID == p.moveConvID {
+				title = c.Title
+			}
+		}
+		b.WriteString(theme.HintText.Render(truncateRight("for: "+title, inner)) + "\n")
+	}
+	b.WriteString(theme.HintText.Render(strings.Repeat("─", inner)) + "\n")
+	if len(p.options) == 0 {
+		b.WriteString(theme.HintText.Render(truncateRight("no projects yet — create one in Work", inner)) + "\n")
+	}
+	for i, o := range p.options {
+		// The archived marker and the count are dim right-hand context, so the name column stays readable and
+		// the numbers line up across rows.
+		meta := fmt.Sprintf("%d", o.Count)
+		if o.Archived {
+			meta = "archived " + meta
+		}
+		name := truncateRight(o.Label, max(1, inner-lipgloss.Width(meta)-3))
+		pad := max(1, inner-1-lipgloss.Width(name)-lipgloss.Width(meta))
+		marker := "  "
+		if i == p.sel {
+			marker = "▸ "
+		}
+		row := marker + truncateRight(name+strings.Repeat(" ", pad)+meta, inner-2)
+		if i == p.sel {
+			b.WriteString(theme.ListItemSelected.Render(row) + "\n")
+			continue
+		}
+		b.WriteString(theme.ListItem.Render(row) + "\n")
+	}
+	b.WriteString(theme.HintText.Render(truncateRight("↑/↓ choose · enter select · esc cancel", inner)))
+	return b.String()
+}
+
+// projectPickerKey routes a key to the open picker. Handled=false means the key was not ours (so Esc can close
+// it, and anything else falls through) — the same shape as the shell's other modals.
+func (m *App) projectPickerKey(k tea.KeyMsg) (handled bool, cmd tea.Cmd) {
+	p := m.projectPick
+	if p == nil {
+		return false, nil
+	}
+	switch k.String() {
+	case "esc":
+		m.projectPick = nil
+		return true, nil
+	case "up", "ctrl+p":
+		p.move(-1)
+		return true, nil
+	case "down", "ctrl+n":
+		p.move(1)
+		return true, nil
+	case "enter":
+		opt, ok := p.selected()
+		if !ok {
+			m.projectPick = nil
+			return true, nil
+		}
+		m.projectPick = nil
+		if p.moveConvID != "" {
+			return true, m.setConversationProject(p.moveConvID, opt.Value)
+		}
+		m.setProjectScope(opt.Value)
+		return true, nil
+	}
+	return false, nil
+}
+
+// projectPickerKeyCmd adapts projectPickerKey to the router's (model, cmd) shape.
+//
+// The picker CONSUMES every key while it is open, including ones it does not recognise — that is the modal
+// discipline the shell's other overlays follow, and it is what stops a stray chord from acting on the rail
+// behind the list that is about to re-scope it.
+func (m *App) projectPickerKeyCmd(k tea.KeyMsg) tea.Cmd {
+	_, cmd := m.projectPickerKey(k)
+	return cmd
+}
+
+// setProjectScope switches the rail's workspace and says so.
+//
+// The label is looked up fresh so the notice names the project rather than echoing an id. The cursor is clamped
+// because the visible row list just changed underneath it, and a selection past the end would leave the rail
+// pointing at nothing.
+func (m *App) setProjectScope(scope string) {
+	m.projectScope = scope
+	opts := projectScopeOptions(m.railProjects, m.conversations)
+	label := projectScopeLabel(scope, opts)
+	m.dock.SetNotice("project: " + label)
+	if m.convSel >= len(m.railRows()) {
+		m.convSel = max(0, len(m.railRows())-1)
+	}
+	m.convScroll = 0
+}
+
+// openProjectPicker opens the picker for a purpose. It loads the project list first when the rail has none —
+// /project is how a TUI-only operator discovers projects, so it must not require having looked at the rail first.
+func (m *App) openProjectPicker(moveConvID string) tea.Cmd {
+	p := &projectPicker{options: projectScopeOptions(m.railProjects, m.conversations), moveConvID: moveConvID}
+	if moveConvID == "" {
+		p.selectByValue(m.projectScope)
+	} else {
+		// For a move, park the cursor on the conversation's CURRENT project so the list opens where it is.
+		for _, c := range m.conversations {
+			if c.ID == moveConvID {
+				p.selectByValue(c.ProjectID)
+				break
+			}
+		}
+	}
+	m.projectPick = p
+	if len(m.railProjects) == 0 && m.clients != nil {
+		return m.loadRailProjects()
+	}
+	return nil
+}
+
+// onRailProjectsApplied refreshes an OPEN picker after a project load, so the list is never stale behind the
+// overlay: /project on a cold rail would otherwise show only the conversations' own ids and no project names.
+func (m *App) onRailProjectsApplied() {
+	if m.projectPick == nil {
+		return
+	}
+	keep := m.projectPick.sel
+	m.projectPick.options = projectScopeOptions(m.railProjects, m.conversations)
+	if keep < len(m.projectPick.options) {
+		m.projectPick.sel = keep
+	} else if len(m.projectPick.options) > 0 {
+		m.projectPick.sel = len(m.projectPick.options) - 1
+	}
+}

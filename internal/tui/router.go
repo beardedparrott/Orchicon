@@ -489,6 +489,15 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		}
 		return m, nil
 	}
+	// The /project picker owns every key while it is up, like the modals above and for the same reason: it is
+	// layered over the rail it is about to re-scope, so a keystroke aimed at the list must never reach the
+	// rail's own chords or the composer. It is checked HERE, above every route, so no chord can pre-empt it.
+	if m.projectPick != nil {
+		if k, ok := msg.(tea.KeyMsg); ok {
+			return m, m.projectPickerKeyCmd(k)
+		}
+		return m, nil
+	}
 	// Category write results and the category list land here rather than in a screen: the modal and the
 	// cache are the shell's, so the shell reconciles them.
 	switch msg := msg.(type) {
