@@ -110,6 +110,13 @@ var (
 	// block actually copies it — md is a leaf several callers share, and a copy marker on a pane that cannot
 	// copy would be a false promise.
 	blockGlyph string
+
+	// hardBreaks, when true for the duration of a render, keeps a SOURCE NEWLINE inside a paragraph as a line
+	// break instead of collapsing it to a space. It is set per render by RenderUserOnSpans and is false on every
+	// other path, which is what leaves the assistant's prose reflowing as it always has. Scoped like blockGlyph
+	// (set inside the render lock, cleared by its defer) rather than being an argument threaded through the
+	// whole renderer, because the renderer's entry points differ only in this one bit.
+	hardBreaks bool
 )
 
 // SetCodeChip sets the inline-code chip's colours. The theme calls it on every switch, so the chip
@@ -425,14 +432,43 @@ func RenderOn(src string, width int, sf Surface) []string {
 // AFFORDANCE. copyGlyph, when non-empty, is drawn on each block's label row (see codeBlock) — the caller
 // passes it only for a surface where clicking a block actually copies it.
 func RenderOnSpans(src string, width int, sf Surface, copyGlyph ...string) ([]string, []CodeSpan) {
+	return renderWith(src, width, sf, false, copyGlyph...)
+}
+
+// RenderUserOnSpans is RenderOnSpans for text the OPERATOR TYPED: a newline in it is a LINE BREAK.
+//
+// The operator, about their own messages in both clients: "I would like the user sent message to be formatted
+// properly on the screen. Right now it's all just a bunch of text bunched up. It should respect the format that
+// it was typed in, including newlines, bullets, numbered lists, etc."
+//
+// BULLETS AND LISTS ALREADY RENDERED. The gap was the NEWLINE: CommonMark makes a single newline inside a
+// paragraph a SPACE, so a message typed across four lines became one flowing block, re-wrapped to the pane.
+//
+// IT IS A SEPARATE ENTRY POINT RATHER THAN A PACKAGE SETTING because md is a LEAF MANY CALLERS SHARE — the
+// assistant transcript, work-item descriptions, artifact previews and the execution panes all render through
+// here, and the same text is re-rendered whenever a pane is resized. Opting in per render is what stops this
+// from silently re-wrapping every stored description in the product. The GUI makes the identical distinction
+// behind markdown.tsx's preserveBreaks prop, so the two clients agree about whose newlines are load-bearing.
+func RenderUserOnSpans(src string, width int, sf Surface, copyGlyph ...string) ([]string, []CodeSpan) {
+	return renderWith(src, width, sf, true, copyGlyph...)
+}
+
+// renderWith is the shared body of the two span entry points: they differ only in whether a source newline
+// inside a paragraph is a line break. One body, so a fix to layout cannot land on one path and miss the other.
+func renderWith(src string, width int, sf Surface, userBreaks bool, copyGlyph ...string) ([]string, []CodeSpan) {
 	renderMu.Lock()
 	defer renderMu.Unlock()
 	chipSurface, chipOn = sf, true
 	blockGlyph = ""
+	hardBreaks = userBreaks
 	if len(copyGlyph) > 0 {
 		blockGlyph = copyGlyph[0]
 	}
-	defer func() { chipOn, chipSurface = false, Surface{}; blockGlyph = "" }()
+	defer func() {
+		chipOn, chipSurface = false, Surface{}
+		blockGlyph = ""
+		hardBreaks = false
+	}()
 	return renderSpans(src, width)
 }
 
@@ -894,10 +930,20 @@ func inline(n ast.Node, src []byte, base attr) []span {
 		switch c := c.(type) {
 		case *ast.Text:
 			appendText(string(c.Segment.Value(src)), base)
-			// A SOFT break is a source newline INSIDE a paragraph. CommonMark (and therefore
-			// react-markdown, which the GUI uses) treats it as a space, so the clients agree.
+			// A SOFT break is a source newline INSIDE a paragraph. CommonMark (and therefore react-markdown,
+			// which the GUI uses) treats it as a space, so the clients agree by default — and for the MODEL'S
+			// prose that is right, because it is machine-wrapped and joining its lines is what lets it reflow.
+			//
+			// FOR TEXT THE OPERATOR TYPED IT IS WRONG: the line they broke is a line they meant, and collapsing
+			// it is the "bunch of text bunched up" they reported. hardBreaks is set only by RenderUserOnSpans,
+			// and emitting "\n" here reuses the HardLineBreak path below — the same newline wrapSpans already
+			// honours — rather than inventing a second way to break a line.
 			if c.SoftLineBreak() {
-				appendText(" ", base)
+				if hardBreaks {
+					appendText("\n", base)
+				} else {
+					appendText(" ", base)
+				}
 			}
 			if c.HardLineBreak() {
 				appendText("\n", base)

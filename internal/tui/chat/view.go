@@ -142,7 +142,7 @@ func renderItems(items []ChatItem, maxWidth int, folded func(key string) bool, c
 			if copyGlyph != "" {
 				label = label + " " + copyGlyph
 			}
-			body, cs := renderChatMessageSpans(userTextWithMarkers(it), theme.BubbleUser, maxWidth, true, label, copyGlyph)
+			body, cs := renderUserChatMessageSpans(userTextWithMarkers(it), theme.BubbleUser, maxWidth, true, label, copyGlyph)
 			b.WriteString(body)
 			code = cs
 		case KindText:
@@ -255,7 +255,33 @@ func renderChatMessage(text string, style lipgloss.Style, maxWidth int, right bo
 // the padding change a row's CONTENT, never how many rows there are — so a markdown row index is already an
 // item-relative line number. That equality is what chat.CodeSpan rests on, and it is why the geometry is
 // lifted from the same render rather than recomputed from the painted text.
+//
+// THIS IS THE MODEL'S SIDE of the transcript, so it keeps CommonMark's soft break: the model's prose is
+// machine-wrapped and joining its lines is what lets it reflow to the pane. See renderUserChatMessageSpans for
+// the operator's, which does not.
 func renderChatMessageSpans(text string, style lipgloss.Style, maxWidth int, right bool, label, copyGlyph string) (string, []CodeSpan) {
+	return renderChatMessageSpansOpts(text, style, maxWidth, right, label, copyGlyph, false)
+}
+
+// renderUserChatMessageSpans is renderChatMessageSpans for the OPERATOR'S OWN band: A NEWLINE THEY TYPED IS A
+// LINE BREAK.
+//
+// The operator, on their own messages: "Right now it's all just a bunch of text bunched up. It should respect
+// the format that it was typed in, including newlines, bullets, numbered lists, etc." Bullets and lists already
+// rendered; a typed newline did not, because CommonMark makes one inside a paragraph a SPACE and the band then
+// re-wrapped the result to the pane width. Every line the operator broke was flattened into a flowing block.
+//
+// THE SPLIT IS BY AUTHOR, NOT BY SURFACE. Both bands run through this file, so the alternative — keeping the
+// soft break everywhere and letting the operator's line breaks go — is what shipped. Splitting here rather
+// than at md's entry point would be the same thing; the option lives in md because the collapse happens in the
+// parser, and md is where the parser is.
+func renderUserChatMessageSpans(text string, style lipgloss.Style, maxWidth int, right bool, label, copyGlyph string) (string, []CodeSpan) {
+	return renderChatMessageSpansOpts(text, style, maxWidth, right, label, copyGlyph, true)
+}
+
+// renderChatMessageSpansOpts is the shared body: the two entry points differ only in whether a source newline
+// inside a paragraph is a line break.
+func renderChatMessageSpansOpts(text string, style lipgloss.Style, maxWidth int, right bool, label, copyGlyph string, userBreaks bool) (string, []CodeSpan) {
 	if strings.TrimSpace(text) == "" {
 		return "", nil
 	}
@@ -281,7 +307,14 @@ func renderChatMessageSpans(text string, style lipgloss.Style, maxWidth int, rig
 	//
 	// The width is the band's INNER width, so a markdown line can never exceed the pane: there is no
 	// horizontal scroll in the band to fall back on.
-	body, mdSpans := md.RenderOnSpans(text, inner, md.SurfaceOf(style), copyGlyph)
+	//
+	// THE RENDERER IS CHOSEN BY WHO WROTE THE TEXT — see renderUserChatMessageSpans: the operator's own band
+	// keeps the newlines they typed, the model's collapses them so its prose reflows.
+	renderMD := md.RenderOnSpans
+	if userBreaks {
+		renderMD = md.RenderUserOnSpans
+	}
+	body, mdSpans := renderMD(text, inner, md.SurfaceOf(style), copyGlyph)
 	if len(body) == 0 {
 		body = []string{text}
 	}

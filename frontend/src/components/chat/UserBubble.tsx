@@ -23,7 +23,9 @@ export function UserBubble({ text, source = "you", className }: UserBubbleProps)
           </span>
         </div>
         <div className="break-words [overflow-wrap:anywhere]">
-          <Markdown>{text}</Markdown>
+          {/* preserveBreaks: this is the operator's OWN text. The line breaks they typed are the line breaks
+              they meant — the operator's "it's all just a bunch of text bunched up". */}
+          <Markdown preserveBreaks>{text}</Markdown>
         </div>
       </div>
     </div>
