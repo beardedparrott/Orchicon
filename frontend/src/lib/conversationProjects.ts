@@ -167,3 +167,40 @@ export function scopeOptions(
 export function scopeLabel(scope: string, options: readonly ScopeOption[]): string {
   return options.find((o) => o.value === scope)?.label ?? scope;
 }
+
+/**
+ * categoriesForScope returns the FOLDERS a scope should show.
+ *
+ * The operator, on the first build that had a project dropdown:
+ *
+ *   "In the GUI, folders are visible no matter what project you are on. This is wrong. You should only see the
+ *    categories/folders of the currently selected project."
+ *
+ * They were looking at "No project" — a scope holding ZERO conversations — and seeing all five of their folders,
+ * because the sidebar rendered every category it knew about rather than the ones the scope actually used. The
+ * folders were not empty; their conversations were simply in another project.
+ *
+ * ALL PROJECTS IS EXEMPT, and that exemption is load-bearing rather than a special case. That scope filters
+ * nothing, so it is where a folder you JUST created lives: creating one assigns no conversations (the dialog
+ * takes only a name and a description), so hiding empty folders everywhere would make a brand-new folder vanish
+ * the instant it was made — and the drag-into-it gesture it exists for would be impossible. It is also the
+ * documented behaviour the other grouped lists already have (see the TUI's categoryGroupsFor: "EMPTY CATEGORIES
+ * ARE INCLUDED, which is the GUI's behaviour ... so an operator who created 'Frontend' sees the folder even
+ * before anything is in it").
+ *
+ * In a SPECIFIC scope the opposite is true: a folder with nothing in it THERE is not part of that workspace, and
+ * showing it is what the operator reported as wrong. A folder that holds conversations in another project is
+ * exactly the case they saw — five folders, all of them belonging to Orchicon, on a screen scoped elsewhere.
+ *
+ * FILTERING BY MEMBERSHIP IS SAFE FOR THE UNDERLYING GROUPING, which is why this can be a display rule rather
+ * than a change to the grouping itself: a dropped folder has no members IN THE SCOPE by definition, so no scoped
+ * conversation can be misfiled into "Uncategorized" by its removal.
+ */
+export function categoriesForScope<T extends { id: string }>(
+  categories: readonly T[],
+  categorized: ReadonlyMap<string, string[]>,
+  scope: string,
+): T[] {
+  if (scope === ALL_PROJECTS) return [...categories];
+  return categories.filter((c) => (categorized.get(c.id)?.length ?? 0) > 0);
+}

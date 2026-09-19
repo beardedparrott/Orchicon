@@ -18,6 +18,7 @@ import { describe, expect, it } from "vitest";
 import { ProjectStatus } from "@/api/gen/orchicon/api/v1/project_pb";
 import {
   ALL_PROJECTS,
+  categoriesForScope,
   filterConversationsByScope,
   isArchivedProject,
   projectStatusWord,
@@ -155,6 +156,48 @@ describe("scopeLabel", () => {
 
   it("falls back to the raw value for a scope with no option", () => {
     expect(scopeLabel("p-nope", scopeOptions(projects, convs))).toBe("p-nope");
+  });
+});
+
+// FOLDERS BELONG TO THE WORKSPACE THEY HAVE CONVERSATIONS IN.
+//
+// The operator: "In the GUI, folders are visible no matter what project you are on. This is wrong. You should
+// only see the categories/folders of the currently selected project." They were on "No project" — zero
+// conversations — and seeing all five of their folders, whose conversations were all in another project.
+describe("categoriesForScope", () => {
+  const all = [{ id: "f-automation" }, { id: "f-workflows" }, { id: "f-docs" }];
+  // Only two of the three folders hold anything in this scope; the third holds conversations in another project.
+  const categorized = new Map<string, string[]>([
+    ["f-automation", ["c1"]],
+    ["f-workflows", ["c2", "c3"]],
+  ]);
+
+  it("hides a folder with nothing in the current scope", () => {
+    expect(categoriesForScope(all, categorized, "p-orchicon").map((c) => c.id)).toEqual([
+      "f-automation",
+      "f-workflows",
+    ]);
+  });
+
+  it("shows NOTHING in a scope that holds no conversations", () => {
+    // THE REPORTED CASE, exactly: five folders on a screen scoped to an empty workspace.
+    expect(categoriesForScope(all, new Map(), "")).toEqual([]);
+  });
+
+  it("keeps EVERY folder in All projects", () => {
+    // This is what lets a folder you just created be visible: creating one assigns no conversations, so a
+    // membership rule applied here would make it vanish the instant it was made — and the folder exists to be
+    // dragged into. It is also the documented behaviour of the other grouped lists.
+    expect(categoriesForScope(all, new Map(), ALL_PROJECTS)).toEqual(all);
+  });
+
+  it("preserves the server's category order", () => {
+    // The order comes from the categories list (sort_order, then name); this filter must not reshuffle it.
+    const ordered = [{ id: "f-docs" }, { id: "f-automation" }, { id: "f-workflows" }];
+    expect(categoriesForScope(ordered, categorized, "p-1").map((c) => c.id)).toEqual([
+      "f-automation",
+      "f-workflows",
+    ]);
   });
 });
 

@@ -36,6 +36,7 @@ import { cn } from "@/lib/utils";
 import { ProjectScopeSelect } from "@/components/conversations/ProjectScopeSelect";
 import {
   ALL_PROJECTS,
+  categoriesForScope,
   filterConversationsByScope,
   scopeLabel,
   scopeOptions,
@@ -1174,6 +1175,22 @@ function AskOrchiconPage() {
     return getItemsForCategory(convPrefs.state, scopedConversations.map((c) => c.id));
   }, [scopedConversations, convPrefs.state]);
 
+  // THE FOLDERS THIS SCOPE ACTUALLY USES.
+  //
+  // The operator: "In the GUI, folders are visible no matter what project you are on. This is wrong. You should
+  // only see the categories/folders of the currently selected project." The sidebar rendered every category the
+  // tenant has, so five folders showed on a screen scoped to "No project" — none of them empty, all of them
+  // holding conversations that live in a different project.
+  //
+  // The RULE lives in lib/conversationProjects as a pure function, because this route component cannot be
+  // rendered by the test setup — logic left inline here is logic nothing can assert. This is only the wiring:
+  // the SCOPED grouping in, the folders to draw out. ALL_PROJECTS deliberately keeps every folder, so one you
+  // just created is visible to drag into (creating a folder assigns no conversations).
+  const visibleCategories = useMemo(
+    () => categoriesForScope(convPrefs.state.categories, categorizedConversations.categorized, projectScope),
+    [convPrefs.state.categories, categorizedConversations, projectScope],
+  );
+
   // Seed existing conversations into "Software Development" once on first load
   useEffect(() => {
     if (conversations && conversations.length > 0) {
@@ -1526,49 +1543,63 @@ function AskOrchiconPage() {
       {/* Right sidebar — conversations panel (w-72 glass-panel, route-local per ADR-0.1) */}
       {!panelCollapsed ? (
         <aside id="conversation-history-panel" data-testid="conversation-history-panel" className="hidden lg:flex w-72 glass-panel rounded-2xl flex-col overflow-hidden border border-black/10 dark:border-white/10 shadow-2xl relative z-20 shrink-0 h-full max-h-full">
-          <div className="p-3.5 border-b border-black/10 dark:border-white/10 flex items-center justify-between shrink-0">
-            <div className="flex items-center space-x-2 text-muted-foreground">
-              <MessageSquare aria-hidden="true" className="w-4 h-4 text-cyan-700 dark:text-cyan-400" />
-              <span className="text-xs font-semibold uppercase tracking-wider">Conversations</span>
+          {/* THE HEADER IS TWO ROWS, and that is a FIX rather than a style choice.
+              The panel is w-72 (288px) with 14px of padding, so it has 260px of content — and this row was
+              carrying a title, a scope dropdown AND three 44px buttons, which needs roughly 410. `justify-between`
+              then pushed the last control past the panel's `overflow-hidden` edge. The operator: "the new folder
+              icon is cut off."
+              Two things make the room. The buttons are 32px rather than 44px targets, which is safe because THIS
+              ASIDE IS `hidden lg:flex` — it only exists at desktop widths, and the mobile sheet has its own
+              header that keeps its 44px targets for touch. And the scope dropdown gets a row of its own, which is
+              what it deserves: it is the workspace picker, and a project name is worth far more legible than
+              truncated into whatever sliver the title left. */}
+          <div className="p-3.5 border-b border-black/10 dark:border-white/10 shrink-0 flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <div className="flex min-w-0 flex-1 items-center space-x-2 text-muted-foreground">
+                <MessageSquare aria-hidden="true" className="w-4 h-4 shrink-0 text-cyan-700 dark:text-cyan-400" />
+                <span className="truncate text-xs font-semibold uppercase tracking-wider">Conversations</span>
+              </div>
+              <div className="flex shrink-0 items-center gap-0.5">
+                <button
+                  onClick={() => setFolderDialogOpen(true)}
+                  className="flex h-8 w-8 items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition"
+                  title="New folder"
+                  aria-label="New folder"
+                >
+                  <FolderPlus aria-hidden="true" className="w-4 h-4" />
+                </button>
+                <Link
+                  to="/ask-orchicon"
+                  search={{ conversationId: undefined } as never}
+                  onClick={(e: React.MouseEvent) => { e.preventDefault(); handleNewChat(); }}
+                  className="flex h-8 w-8 items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition"
+                  title="New Chat"
+                  aria-label="New conversation"
+                >
+                  <Plus aria-hidden="true" className="w-4 h-4" />
+                </Link>
+                <button
+                  onClick={togglePanel}
+                  aria-expanded={!panelCollapsed}
+                  aria-controls="conversation-history-panel"
+                  aria-label={panelCollapsed ? "Expand conversation history" : "Collapse conversation history"}
+                  className="flex h-8 w-8 items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30"
+                  title="Collapse Panel"
+                >
+                  <PanelRightClose aria-hidden="true" className="w-4 h-4" />
+                </button>
+              </div>
             </div>
             {/* THE PROJECT SCOPE DROPDOWN. The operator: "a dropdown at the top of the conversation bar that
                 allows you to pick a project, and then under that project you would only see THAT PROJECT'S
-                Conversations and Categories. Projects are WORKSPACES essentially." */}
+                Conversations and Categories. Projects are WORKSPACES essentially." Full width, on its own row,
+                so the project name is readable. */}
             <ProjectScopeSelect
+              fullWidth
               options={projectScopeOptions}
               value={projectScope}
               onChange={setProjectScope}
             />
-            <div className="flex items-center space-x-1">
-              <button
-                onClick={() => setFolderDialogOpen(true)}
-                className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition"
-                title="New folder"
-                aria-label="New folder"
-              >
-                <FolderPlus aria-hidden="true" className="w-4 h-4" />
-              </button>
-              <Link
-                to="/ask-orchicon"
-                search={{ conversationId: undefined } as never}
-                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleNewChat(); }}
-                className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition"
-                title="New Chat"
-                aria-label="New conversation"
-              >
-                <Plus aria-hidden="true" className="w-4 h-4" />
-              </Link>
-              <button
-                onClick={togglePanel}
-                aria-expanded={!panelCollapsed}
-                aria-controls="conversation-history-panel"
-                aria-label={panelCollapsed ? "Expand conversation history" : "Collapse conversation history"}
-                className="p-1 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30"
-                title="Collapse Panel"
-              >
-                <PanelRightClose aria-hidden="true" className="w-4 h-4" />
-              </button>
-            </div>
           </div>
           <div className="flex-1 overflow-y-auto p-2 space-y-1">
           {convsLoading && (
@@ -1599,8 +1630,10 @@ function AskOrchiconPage() {
               {/* THE CATEGORY FOLDERS, WITHIN THE SELECTED PROJECT. The operator: "a conversation would belong
                   to a project and inside the project it would still have the normal categories we had before."
                   These folders are the SAME machinery as before — the only thing that changed is that they now
-                  receive the SCOPED set of conversations, so each holds only this project's chats. */}
-              {convPrefs.state.categories.map((category) => {
+                  receive the SCOPED set of conversations, so each holds only this project's chats.
+                  AND THE LIST IS SCOPE-FILTERED, not the full category set: a folder holding nothing in this
+                  workspace is not part of it. See visibleCategories. */}
+              {visibleCategories.map((category) => {
                 const folderConvIds = categorizedConversations.categorized.get(category.id) ?? [];
                 const isCollapsed = convPrefs.collapsed.has(category.id);
                 const isOver = overFolderId === category.id;
@@ -1659,7 +1692,7 @@ function AskOrchiconPage() {
                 onStopConv={handleStopConversation}
                 activeDragId={activeDragId}
                 isOver={overFolderId === "__uncategorized__"}
-                hasFolders={convPrefs.state.categories.length > 0}
+                hasFolders={visibleCategories.length > 0}
                 renderMoveControl={renderMoveControl}
               />
             </SortableContext>
@@ -1726,7 +1759,7 @@ function AskOrchiconPage() {
               {!convsLoading && scopedConversations.length === 0 && <p className="text-xs text-center text-muted-foreground py-4">{projectScope === ALL_PROJECTS ? "No conversations yet" : `No conversations in ${scopeLabel(projectScope, projectScopeOptions)}`}</p>}
               <DndContext sensors={dndSensors} collisionDetection={pointerWithin} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd} onDragCancel={handleDragCancel}>
                 <SortableContext items={scopedConversations.map((c) => c.id)} strategy={verticalListSortingStrategy}>
-                  {convPrefs.state.categories.map((category) => {
+                  {visibleCategories.map((category) => {
                     const folderConvIds = categorizedConversations.categorized.get(category.id) ?? [];
                     const isCollapsed = convPrefs.collapsed.has(category.id);
                     const isOver = overFolderId === category.id;
@@ -1735,7 +1768,7 @@ function AskOrchiconPage() {
                       <FolderItem key={category.id} id={category.id} name={category.name} isCollapsed={isCollapsed} isOver={isOver} isRenaming={isRenaming} renameValue={folderRenameValue} renameInputRef={folderRenameInputRef} onToggle={() => convPrefs.toggleCollapsed(category.id)} onStartRename={() => startRenameFolder(category.id, category.name)} onSaveRename={() => saveRenameFolder(category.id)} onCancelRename={cancelRenameFolder} onRenameChange={setFolderRenameValue} onDelete={() => convPrefs.deleteCategory(category.id)} convIds={folderConvIds} convById={convById} activeConvId={activeConvId} renamingConvId={renamingConvId} convRenameValue={renameValue} convRenameInputRef={renameInputRef} onSelectConv={(id) => { setMobileSheetOpen(false); setActiveConvId(id); }} onStartRenameConv={startRenameConv} onSaveRenameConv={saveRenameConv} onCancelRenameConv={cancelRenameConv} onRenameConvChange={setRenameValue} onDeleteConv={handleDeleteConv} onStopConv={handleStopConversation} activeDragId={activeDragId} renderMoveControl={renderMoveControl} />
                     );
                   })}
-                  <UncategorizedDropZone id="__uncategorized__" convIds={categorizedConversations.uncategorized} convById={convById} activeConvId={activeConvId} renamingConvId={renamingConvId} renameValue={renameValue} renameInputRef={renameInputRef} onSelectConv={(id) => { setMobileSheetOpen(false); setActiveConvId(id); }} onStartRenameConv={startRenameConv} onSaveRenameConv={saveRenameConv} onCancelRenameConv={cancelRenameConv} onRenameConvChange={setRenameValue} onDeleteConv={handleDeleteConv} onStopConv={handleStopConversation} activeDragId={activeDragId} isOver={overFolderId === "__uncategorized__"} hasFolders={convPrefs.state.categories.length > 0} renderMoveControl={renderMoveControl} />
+                  <UncategorizedDropZone id="__uncategorized__" convIds={categorizedConversations.uncategorized} convById={convById} activeConvId={activeConvId} renamingConvId={renamingConvId} renameValue={renameValue} renameInputRef={renameInputRef} onSelectConv={(id) => { setMobileSheetOpen(false); setActiveConvId(id); }} onStartRenameConv={startRenameConv} onSaveRenameConv={saveRenameConv} onCancelRenameConv={cancelRenameConv} onRenameConvChange={setRenameValue} onDeleteConv={handleDeleteConv} onStopConv={handleStopConversation} activeDragId={activeDragId} isOver={overFolderId === "__uncategorized__"} hasFolders={visibleCategories.length > 0} renderMoveControl={renderMoveControl} />
                 </SortableContext>
                 <DragOverlay dropAnimation={null}>
                   {activeDragId ? <div className="rounded-md bg-background border shadow-md px-3 py-2 text-sm text-foreground max-w-[200px] truncate">{convById.get(activeDragId)?.title || "New conversation"}</div> : null}
@@ -2727,25 +2760,31 @@ function ConversationItem({
             )}
           </div>
           {!isRenaming && (
-            <span className="shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
-              {/* MOVE TO PROJECT. The sidebar is a SCOPED view rather than one folder per project, so there is
-                  no project folder to drag a conversation onto — an explicit control is what keeps a chat from
-                  being stuck in whichever project it was created in. It is the same popover as the header's. */}
+            <span className="shrink-0 flex items-center gap-0.5">
+              {/* MOVE TO PROJECT — ALWAYS VISIBLE, where rename and delete stay hover-revealed.
+                  The sidebar is a SCOPED view rather than one folder per project, so there is no project folder
+                  to drag a conversation onto; this control is the only way a chat changes project. The operator,
+                  on the version where it was hover-gated: "I also don't think there is currently a gui way to
+                  move a conversation to a different project like in the tui." They were right — it existed but
+                  only appeared under the pointer, so the affordance was indistinguishable from absent. An action
+                  with no other route cannot be hidden behind a hover. */}
               {renderMoveControl?.(convId, projectId ?? "")}
-              <button
-                onClick={onStartRename}
-                className="text-muted-foreground hover:text-foreground"
-                title="Rename"
-              >
-                <Pencil aria-hidden="true" className="h-3 w-3" />
-              </button>
-              <button
-                onClick={onDelete}
-                className="text-muted-foreground hover:text-destructive"
-                title="Delete"
-              >
-                <Trash2 aria-hidden="true" className="h-3 w-3" />
-              </button>
+              <span className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100">
+                <button
+                  onClick={onStartRename}
+                  className="text-muted-foreground hover:text-foreground"
+                  title="Rename"
+                >
+                  <Pencil aria-hidden="true" className="h-3 w-3" />
+                </button>
+                <button
+                  onClick={onDelete}
+                  className="text-muted-foreground hover:text-destructive"
+                  title="Delete"
+                >
+                  <Trash2 aria-hidden="true" className="h-3 w-3" />
+                </button>
+              </span>
             </span>
           )}
         </div>

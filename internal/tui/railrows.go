@@ -12,10 +12,14 @@ package tui
 // them. That is not a hierarchy the operator wanted; it is two rival groupings of the same list. It is deleted.
 //
 // WHAT A PROJECT IS HERE: a FILTER. The rail shows the conversations in the active scope, and the category
-// grouping runs over THAT set exactly as it always did. The folders, their order, the empty-folder rule, the
-// Uncategorized rule, the counts, the collapse state, the rename/delete chords and the drop targets are all
-// untouched — they simply hold fewer items. The hierarchy therefore falls out of the existing code rather than
-// being built beside it, which is why this file got SMALLER and why nothing about categories can regress.
+// grouping runs over THAT set exactly as it always did. The folders, their order, the Uncategorized rule, the
+// counts, the collapse state, the rename/delete chords and the drop targets are all untouched — they simply hold
+// fewer items. The hierarchy therefore falls out of the existing code rather than being built beside it, which is
+// why this file got SMALLER and why nothing about categories can regress.
+//
+// THE ONE THING SCOPING DOES CHANGE is WHICH FOLDERS ARE DRAWN: a category with nothing in the active workspace
+// is not part of it, so it is filtered out of the group list below (All projects keeps every folder — see the
+// comment there). The folder rule itself is otherwise untouched.
 //
 // M.convSel indexes THIS list, not m.conversations: the cursor moves through what is on screen, and a scoped-out
 // conversation is not on screen. Every site that wants the conversation behind the cursor goes through
@@ -96,6 +100,36 @@ func (m *App) railRows() []railRow {
 		items = append(items, screenkit.Item{ID: c.ID, Title: c.Title})
 	}
 	groups := m.categoryGroupsFor(apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_CONVERSATION)
+	// AND THE FOLDERS ARE SCOPED TO THE WORKSPACE, not just the rows inside them.
+	//
+	// The operator, on the GUI: "In the GUI, folders are visible no matter what project you are on. This is wrong.
+	// You should only see the categories/folders of the currently selected project." The rail had the same fault —
+	// categoryGroupsFor deliberately includes EMPTY categories (the GUI's documented behaviour, so a folder you
+	// just created is visible to drag into), and that is right in All projects and wrong inside a workspace: the
+	// operator scoped to a project and got a screen of folders whose conversations all live somewhere else.
+	//
+	// ALL PROJECTS IS EXEMPT for exactly that reason — it filters nothing, so it is where a newly created folder
+	// lives and where the drag-into-it gesture has to be possible. Same rule, same exemption, as the GUI's
+	// categoriesForScope; two clients cannot disagree about which folders a workspace has.
+	//
+	// FILTERING BY MEMBERSHIP CANNOT MISFILE ANYTHING. A group dropped here has no member IN THE SCOPE by
+	// construction, so no scoped conversation can be left "stray" and land in Uncategorized — which is what
+	// GroupItemsByCategory does with an assignment naming a group it was not handed.
+	if m.projectScope != projectScopeAll {
+		used := make(map[string]bool, len(scoped))
+		for _, c := range scoped {
+			if catID, _ := m.CategoryOf(apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_CONVERSATION, c.ID); catID != "" {
+				used[catID] = true
+			}
+		}
+		kept := make([]screenkit.GroupSpec, 0, len(groups))
+		for _, g := range groups {
+			if used[g.ID] {
+				kept = append(kept, g)
+			}
+		}
+		groups = kept
+	}
 	grouped := screenkit.GroupItemsByCategory(items, groups, func(id string) string {
 		catID, _ := m.CategoryOf(apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_CONVERSATION, id)
 		return catID

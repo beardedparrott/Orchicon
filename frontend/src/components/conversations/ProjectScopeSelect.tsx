@@ -35,6 +35,14 @@ interface ProjectScopeSelectProps {
   compact?: boolean;
   /** Accessible name. The two usages mean different things, so they must not share a default. */
   label?: string;
+  /**
+   * fullWidth stretches the trigger to its container.
+   *
+   * For the sidebar header, where this control IS the workspace picker and sits on its own row. The default
+   * caps it at 150px so it can share a row with a title, which truncates a long project name to a few
+   * characters — the worst possible outcome for the control that answers "which project am I looking at?".
+   */
+  fullWidth?: boolean;
 }
 
 export function ProjectScopeSelect({
@@ -43,6 +51,7 @@ export function ProjectScopeSelect({
   onChange,
   compact = false,
   label = "Project",
+  fullWidth = false,
 }: ProjectScopeSelectProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -70,7 +79,7 @@ export function ProjectScopeSelect({
   const currentLabel = current?.label ?? value;
 
   return (
-    <div ref={rootRef} className="relative">
+    <div ref={rootRef} className={cn("relative", fullWidth && "w-full")}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -83,7 +92,10 @@ export function ProjectScopeSelect({
           "flex items-center gap-1 rounded transition text-muted-foreground hover:text-foreground hover:bg-accent",
           compact
             ? "p-0.5"
-            : "max-w-[150px] border border-black/10 dark:border-white/10 px-2 py-1 text-xs",
+            : cn(
+                "border border-black/10 dark:border-white/10 px-2 py-1 text-xs",
+                fullWidth ? "w-full" : "max-w-[150px]",
+              ),
         )}
       >
         <FolderClosed aria-hidden="true" className={compact ? "h-3 w-3" : "h-3.5 w-3.5 shrink-0"} />
