@@ -715,7 +715,19 @@
     --card-foreground: 20 20% 96%;
     --popover: 12 25% 12%;
     --popover-foreground: 20 20% 96%;
-    --primary: 350 89% 62%;
+    /* EMBER NIGHT WEARS THE TUI'S EMBER ACCENT.
+     *
+     * The base already matched the TUI's ember palette exactly (background 12 30% 8%, foreground
+     * 20 20% 96% — the same hsl values in frontend/src/lib/themes.ts and internal/tui/theme), but the
+     * ACCENT was rose (350) where the TUI's is orange (25 89% 58%). That is the difference an operator
+     * notices: the two clients advertise the same theme and looked like different colour families.
+     *
+     * The operator: "edit the GUI theme 'ember night' to match the color scheme more with 'ember' in the
+     * TUI and make that default for the gui." So `--primary` is the TUI's accent verbatim, and every other
+     * rose accent below follows it — a theme whose focus ring and scrollbar disagreed with its own primary
+     * would be a half-done edit.
+     */
+    --primary: 25 89% 58%;
     --primary-foreground: 12 30% 8%;
     --secondary: 12 20% 16%;
     --secondary-foreground: 20 20% 96%;
@@ -727,9 +739,13 @@
     --destructive-foreground: 20 20% 96%;
     --border: 12 15% 17%;
     --input: 12 15% 20%;
-    --ring: 350 89% 62%;
+    --ring: 25 89% 58%;
     --mesh-bg: 12 30% 8%;
-    --mesh-glow-1: 350 89% 58%;
+    /* The mesh glows stay a WARM TRIO rather than one hue: they are the ambient background, and three
+     * passes of the same orange read as a flat wash. Centred on the TUI's accent — orange, amber, and a
+     * deeper red-orange — which is the same family the TUI's ember mixes.
+     */
+    --mesh-glow-1: 25 89% 58%;
     --mesh-glow-2: 38 92% 50%;
     --mesh-glow-3: 25 90% 55%;
     --mesh-glow-1-a: 0.12;
@@ -744,19 +760,23 @@
     --glass-menu-bg-a: 0.82;
     --glass-menu-border: 0 0% 100%;
     --glass-menu-border-a: 0.10;
-    --glass-menu-shadow: 0 20px 50px rgba(0, 0, 0, 0.5), 0 0 15px rgba(251, 113, 133, 0.10);
+    /* The literal rgba accents are the TUI accent's RGB (hsl(25 89% 58%) ≈ rgb(243 132 53)), written out
+     * because a box-shadow cannot take an hsl token here. They were rose (#fb7185) — the same hue mismatch as
+     * --primary, in the three places that take a colour literal instead of a token.
+     */
+    --glass-menu-shadow: 0 20px 50px rgba(0, 0, 0, 0.5), 0 0 15px rgba(243, 132, 53, 0.10);
     --glass-input-bg: 12 25% 12%;
     --glass-input-bg-a: 0.38;
     --glass-input-border: 0 0% 100%;
     --glass-input-border-a: 0.12;
     --glass-input-inset: inset 0 1px 2px rgba(255, 255, 255, 0.05);
-    --glass-input-glow: 0 0 20px rgba(251, 113, 133, 0.05);
-    --glass-input-focus: 350 89% 62%;
+    --glass-input-glow: 0 0 20px rgba(243, 132, 53, 0.05);
+    --glass-input-focus: 25 89% 58%;
     --glass-input-focus-a: 0.50;
-    --glass-input-focus-glow: 0 0 25px rgba(251, 113, 133, 0.2);
+    --glass-input-focus-glow: 0 0 25px rgba(243, 132, 53, 0.2);
     --scroll-thumb: 0 0% 100%;
     --scroll-thumb-a: 0.15;
-    --scroll-thumb-hover: 350 89% 62%;
+    --scroll-thumb-hover: 25 89% 58%;
     --scroll-thumb-hover-a: 0.40;
     /* Nav active — dark (pixel-identical to pre-fix) */
     --nav-active-from: 189 94% 43%;
