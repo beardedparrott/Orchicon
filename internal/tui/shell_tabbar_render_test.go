@@ -44,35 +44,27 @@ func TestShellFirstLineRendersTabBar(t *testing.T) {
 	}
 }
 
-// TestQuitRouteIssuesQuitCmd pins the quit contract: the global quit route
-// (q / ctrl+c) must return a tea.Quit command from dispatch, not merely
-// blank the view. QA on the TUI foundation found q/ctrl+c hanging the TUI
+// TestQuitRouteIssuesQuitCmd pins the quit contract: the global quit route (ctrl+c) must return a tea.Quit
+// command from dispatch, not merely blank the view. QA on the TUI foundation found q/ctrl+c hanging the TUI
 // because the route only set the quitting flag.
 //
-// IT IS DRIVEN FROM CONTENT FOCUS, because that is where the global route owns these keys. The composer
-// holds the focus by default and is a TEXT INPUT: while it has the focus `q` is a character in the
-// operator's message and must not reach this route — which is the bug this precondition surfaced, since
-// `q` used to bypass the composer and quit orch mid-message. ctrl+c is unaffected either way: the
-// composer has its own documented hard-escape for it.
+// `q` IS NO LONGER PART OF IT — the operator: "if you hit it outside of the composer then it still quits.
+// We should remove that completely." The route is ctrl+c alone; TestQDoesNotQuitFromAnyFocus asserts the
+// other half of that, from every focus level.
 func TestQuitRouteIssuesQuitCmd(t *testing.T) {
 	app := NewApp(nil, &config.Profile{URL: "http://x", Token: "t"}, "v0.2.51")
 	app.RegisterScreen(TabAsk, &tabBarScreenStub{body: "b"})
 	app.setFocus(focusContent)
 
-	for name, key := range map[string]tea.KeyMsg{
-		"q":      {Type: tea.KeyRunes, Runes: []rune{'q'}},
-		"ctrl+c": {Type: tea.KeyCtrlC},
-	} {
-		got, cmd := app.dispatch(key)
-		if !got.quitting {
-			t.Errorf("%s: quitting flag not set", name)
-		}
-		if cmd == nil {
-			t.Fatalf("%s: dispatch returned nil cmd — TUI would hang on quit", name)
-		}
-		if _, ok := cmd().(tea.QuitMsg); !ok {
-			t.Errorf("%s: cmd did not produce tea.QuitMsg", name)
-		}
+	got, cmd := app.dispatch(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if !got.quitting {
+		t.Error("ctrl+c: quitting flag not set")
+	}
+	if cmd == nil {
+		t.Fatal("ctrl+c: dispatch returned nil cmd — TUI would hang on quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("ctrl+c: cmd did not produce tea.QuitMsg")
 	}
 }
 

@@ -197,11 +197,19 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 			},
 		},
 		{
-			Name: "quit", Keys: "q / ctrl+c", Scope: "global",
-			Match: func(msg tea.Msg) bool {
-				k, ok := msg.(tea.KeyMsg)
-				return ok && (k.String() == "q" || k.String() == "ctrl+c")
-			},
+			// QUIT IS CTRL+C ONLY. `q` was here too, and it is gone at the operator's request: "So 'q'
+			// doesn't quit inside the composer anymore but if you hit it outside of the composer then it
+			// still quits. We should remove that completely."
+			//
+			// The composer half was a bug — typing q in a message exited orch — and fixing only that left a
+			// HALF-BINDING, which is worse than either extreme: the same key quits or types depending on a
+			// focus state the operator cannot see. A key that sometimes ends the program is a trap, and `q`
+			// is a letter people reach for constantly (quit, question, quick).
+			//
+			// ctrl+c needs no such reasoning: it is the conventional terminal interrupt, it is never text, and
+			// the router documents it as the hard escape that "always works, even mid-composition".
+			Name: "quit", Keys: "ctrl+c", Scope: "global",
+			Match:  keyMatcher("ctrl+c"),
 			Handle: func(m *App, _ tea.Msg) bool { m.quitting = true; return true },
 		},
 		{

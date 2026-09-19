@@ -111,17 +111,51 @@ func TestCtrlCStillQuitsFromTheComposer(t *testing.T) {
 	}
 }
 
-// Q STILL QUITS WHEN THE COMPOSER DOES NOT HOLD THE FOCUS, which is the conventional binding and is
-// unchanged: the composer branch is simply not reached from content focus.
-func TestQStillQuitsOutsideTheComposer(t *testing.T) {
-	m := newTestApp()
-	m.dock.Focus()
-	m.setFocus(focusContent)
-	m.chatFocus = focusContent
+// Q DOES NOT QUIT ANYWHERE — not in the composer, not outside it.
+//
+// The operator: "So 'q' doesn't quit inside the composer anymore but if you hit it outside of the composer
+// then it still quits. We should remove that completely." The half-binding was worse than either extreme:
+// the same key ends the program or types a letter depending on a focus state the operator cannot see.
+//
+// Asserted from EVERY focus level, because "we removed it" has to mean the binding is gone rather than
+// moved.
+func TestQDoesNotQuitFromAnyFocus(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		focus func(*App)
+	}{
+		{"composer", func(m *App) { m.setFocus(focusComposer) }},
+		{"content", func(m *App) { m.setFocus(focusContent) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestApp()
+			tc.focus(m)
+			nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+			if nm.(*App).quitting {
+				t.Errorf("`q` still quits from %s focus — the operator asked for the binding to be removed "+
+					"completely, not fixed on one side of it", tc.name)
+			}
+		})
+	}
+}
 
-	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
-	if !nm.(*App).quitting {
-		t.Error("`q` no longer quits when the composer is unfocused — the global quit route should still " +
-			"answer it there, since no text input is claiming the key")
+// AND CTRL+C IS THE QUIT, from both focuses — so removing the q binding did not leave the session without
+// a way out.
+func TestCtrlCIsTheQuitFromEveryFocus(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		focus func(*App)
+	}{
+		{"composer", func(m *App) { m.setFocus(focusComposer) }},
+		{"content", func(m *App) { m.setFocus(focusContent) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestApp()
+			tc.focus(m)
+			nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+			if !nm.(*App).quitting {
+				t.Errorf("ctrl+c does not quit from %s focus — the quit binding is gone entirely", tc.name)
+			}
+		})
 	}
 }
