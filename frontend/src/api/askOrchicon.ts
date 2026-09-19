@@ -44,16 +44,44 @@ export function useCreateConversation() {
       modelRef?: string;
       initialMessage?: string;
       mode?: ConversationMode;
+      // projectId places the conversation in a project from birth — the
+      // per-project "new conversation" button in the sidebar. Empty (the
+      // default) creates an unassigned conversation, which is what every other
+      // caller wants.
+      projectId?: string;
     }) => {
       const res = await askOrchiconClient.createConversation({
         modelRef: opts.modelRef ?? "",
         initialMessage: opts.initialMessage ?? "",
         mode: opts.mode ?? ConversationMode.BRAINSTORM,
+        projectId: opts.projectId ?? "",
       });
       return res.conversation as Conversation | undefined;
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: askKeys.conversations });
+    },
+  });
+}
+
+// useSetConversationProject moves a conversation into a project, or unassigns it
+// with an empty projectId. It is what the sidebar's project folders accept on a
+// drop and what its per-project "new conversation" button sets at create time —
+// the same rpc the TUI's /project calls, so the two clients cannot disagree
+// about what "belongs to a project" means.
+export function useSetConversationProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (opts: { id: string; projectId: string }) => {
+      const res = await askOrchiconClient.setConversationProject({
+        id: opts.id,
+        projectId: opts.projectId,
+      });
+      return res.conversation as Conversation | undefined;
+    },
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: askKeys.conversations });
+      qc.invalidateQueries({ queryKey: askKeys.conversation(variables.id) });
     },
   });
 }

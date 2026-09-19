@@ -34,6 +34,13 @@ import { ModeToggle } from "@/components/ui/mode-toggle";
 import { useAskMetricsLive } from "@/lib/ask-metrics";
 import { cn } from "@/lib/utils";
 import {
+  PROJECT_DROP_PREFIX,
+  groupConversationsByProject,
+  isArchivedProject,
+  projectDropId,
+  projectIdFromDropId,
+} from "@/lib/conversationProjects";
+import {
   useListConversations,
   useCreateConversation,
   useDeleteConversation,
@@ -43,6 +50,7 @@ import {
   useAbortConversationTurn,
   useSetConversationMode,
   useSetConversationModel,
+  useSetConversationProject,
   useCompactConversation,
   askKeys,
 } from "@/api/askOrchicon";
@@ -83,6 +91,8 @@ import {
   type DragOverEvent,
 } from "@dnd-kit/core";
 import { useDroppable } from "@dnd-kit/core";
+import { useListProjects } from "@/api/projects";
+import type { Project } from "@/api/gen/orchicon/api/v1/project_pb";
 import { useDraggable } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 
@@ -388,6 +398,18 @@ function AskOrchiconPage() {
     setListPollMs(anyStreaming || serverRunning ? 3000 : false);
   }, [conversations, anyStreaming]);
   const createConv = useCreateConversation();
+  // setConvProject moves a conversation into a project — what a drop on a project folder in the sidebar
+  // resolves to, and the same rpc the TUI's /project calls.
+  const setConvProject = useSetConversationProject();
+  // The tenant's projects, for the sidebar's PROJECT grouping. Every project is listed, including ones with
+  // no conversations: those empty folders are the destination the operator asked for ("a list that can be
+  // dragged to and also created from"), and a list derived from the conversations could never contain one.
+  const { data: projects } = useListProjects();
+  // pendingProject is where the NEXT lazily-created conversation will land. The sidebar's per-project "+"
+  // sets it and clears the open conversation, so the hero's first send creates the chat inside that project
+  // rather than unassigned — the GUI's answer to "create from this project". Cleared once consumed, so a
+  // later new chat does not silently inherit a one-off choice.
+  const [pendingProject, setPendingProject] = useState("");
   const deleteConv = useDeleteConversation();
   const updateTitle = useUpdateConversationTitle();
   const abortTurn = useAbortConversationTurn();
@@ -1084,6 +1106,17 @@ function AskOrchiconPage() {
       if (!over) return;
       const convId = String(active.id);
       const targetId = String(over.id);
+      // Drop on a PROJECT folder = move the conversation into that project. Routed through the pure helper so
+      // the distinction that matters — "a project, possibly the unassigned one" vs "not a project" — is
+      // asserted by a test rather than by reading this branch.
+      const projectId = projectIdFromDropId(targetId);
+      if (projectId !== null) {
+        setConvProject.mutate(
+          { id: convId, projectId },
+          { onError: () => toast.error("Failed to move conversation", { title: "Error" }) },
+        );
+        return;
+      }
       // Drop on "uncategorized" = remove assignment
       if (targetId === "__uncategorized__") {
         convPrefs.assignItem(convId, "");
@@ -1095,7 +1128,7 @@ function AskOrchiconPage() {
         }
       }
     },
-    [convPrefs, armClickSuppressionBackstop],
+    [convPrefs, armClickSuppressionBackstop, setConvProject, toast],
   );
 
   // A cancelled drag (e.g. Escape) still ends with a possible click under the
@@ -1112,6 +1145,34 @@ function AskOrchiconPage() {
     if (!conversations) return { categorized: new Map<string, string[]>(), uncategorized: [] as string[] };
     return getItemsForCategory(convPrefs.state, conversations.map((c) => c.id));
   }, [conversations, convPrefs.state]);
+
+  // The conversations grouped by PROJECT — the sidebar's outer level. Built from the conversation list's own
+  // projectId (lib/conversationProjects), so a conversation whose project no longer exists still appears: an
+  // orphaned chat must stay reachable rather than vanish from every group.
+  const convIdsByProject = useMemo(() => groupConversationsByProject(conversations), [conversations]);
+
+  // Sidebar grouping: projects are the PARENT level, categories remain available. They are two ways of
+  // arranging the same list and rendering both at once would show every conversation twice, so it is a
+  // choice. Defaults to projects whenever there is at least one, because that is the level the operator asked
+  // for; a tenant with no projects sees exactly the sidebar it always had.
+  const [sidebarGrouping, setSidebarGrouping] = useState<"project" | "category">("project");
+  const showProjectFolders = sidebarGrouping === "project" && (projects?.length ?? 0) > 0;
+
+  // Arm the next lazily-created conversation to land in a project. The conversation itself is created on the
+  // first send, so this cannot leave a trail of empty chats behind repeated clicks.
+  const handleCreateInProject = useCallback(
+    (projectId: string) => {
+      setPendingProject(projectId);
+      setActiveConvId(null);
+      toast.info(
+        projectId
+          ? `New conversation will be created in ${projects?.find((p) => p.id === projectId)?.name ?? projectId}`
+          : "New conversation will be unassigned",
+        { title: "New conversation" },
+      );
+    },
+    [projects, toast],
+  );
 
   // Seed existing conversations into "Software Development" once on first load
   useEffect(() => {
@@ -1203,12 +1264,16 @@ function AskOrchiconPage() {
                       // The model chosen on the hero, if any — this is what makes
                       // the chip work before a conversation exists.
                       modelRef: pendingModel,
+                      // The project the operator aimed at, when they started from a
+                      // project folder's "+". Empty means unassigned.
+                      projectId: pendingProject,
                     });
                     if (conv?.id) {
                       // Consumed by THIS conversation; a later new chat starts
                       // from the tenant default again rather than silently
                       // inheriting a one-off choice.
                       setPendingModel("");
+                      setPendingProject("");
                       setActiveConvId(conv.id);
                       const ok = await sendStreaming(conv.id, text, attachments);
                       if (!ok) {
@@ -1466,6 +1531,40 @@ function AskOrchiconPage() {
               <MessageSquare aria-hidden="true" className="w-4 h-4 text-cyan-700 dark:text-cyan-400" />
               <span className="text-xs font-semibold uppercase tracking-wider">Conversations</span>
             </div>
+            {/* THE GROUPING SWITCH. Projects are the second, higher level; categories are the first. Both
+                arrange the same list, so showing both would duplicate every conversation — this is how the
+                operator chooses, and it defaults to projects when any exist. Hidden entirely when there are no
+                projects, because a switch with one option is noise. */}
+            {(projects?.length ?? 0) > 0 && (
+              <div className="flex items-center rounded-md border border-black/10 dark:border-white/10 p-0.5 text-[10px] uppercase tracking-wide">
+                <button
+                  type="button"
+                  onClick={() => setSidebarGrouping("project")}
+                  aria-pressed={sidebarGrouping === "project"}
+                  className={cn(
+                    "px-1.5 py-0.5 rounded transition",
+                    sidebarGrouping === "project"
+                      ? "bg-accent/60 text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  Projects
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSidebarGrouping("category")}
+                  aria-pressed={sidebarGrouping === "category"}
+                  className={cn(
+                    "px-1.5 py-0.5 rounded transition",
+                    sidebarGrouping === "category"
+                      ? "bg-accent/60 text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  Folders
+                </button>
+              </div>
+            )}
             <div className="flex items-center space-x-1">
               <button
                 onClick={() => setFolderDialogOpen(true)}
@@ -1521,6 +1620,29 @@ function AskOrchiconPage() {
               items={conversations?.map((c) => c.id) ?? []}
               strategy={verticalListSortingStrategy}
             >
+              {/* THE PROJECT LEVEL, or the category folders — never both (see sidebarGrouping). */}
+              {showProjectFolders ? (
+                <ProjectFolderList
+                  projects={projects ?? []}
+                  convIdsByProject={convIdsByProject}
+                  convById={convById}
+                  activeConvId={activeConvId}
+                  renamingConvId={renamingConvId}
+                  renameValue={renameValue}
+                  renameInputRef={renameInputRef}
+                  onSelectConv={setActiveConvId}
+                  onStartRenameConv={startRenameConv}
+                  onSaveRenameConv={saveRenameConv}
+                  onCancelRenameConv={cancelRenameConv}
+                  onRenameConvChange={setRenameValue}
+                  onDeleteConv={handleDeleteConv}
+                  onStopConv={handleStopConversation}
+                  activeDragId={activeDragId}
+                  pendingProject={pendingProject}
+                  onCreateInProject={handleCreateInProject}
+                />
+              ) : (
+                <>
               {/* Folders */}
               {convPrefs.state.categories.map((category) => {
                 const folderConvIds = categorizedConversations.categorized.get(category.id) ?? [];
@@ -1582,6 +1704,8 @@ function AskOrchiconPage() {
                 isOver={overFolderId === "__uncategorized__"}
                 hasFolders={convPrefs.state.categories.length > 0}
               />
+                </>
+              )}
             </SortableContext>
             <DragOverlay dropAnimation={null}>
               {activeDragId ? (
@@ -2497,6 +2621,9 @@ function ChatInputField({
 
 // --- Conversation sidebar components ---
 
+// PROJECT_DROP_PREFIX is imported from lib/conversationProjects, where the drop routing that consumes it is a
+// pure function a test can pin (this file cannot be rendered in the test setup).
+
 interface ConversationItemProps {
   convId: string;
   title: string;
@@ -2882,6 +3009,244 @@ function UncategorizedDropZone({
           />
         );
       })}
+    </div>
+  );
+}
+
+interface ProjectFolderListProps {
+  projects: Project[];
+  /** Conversation ids per project id; the "" key holds the unassigned ones. */
+  convIdsByProject: Map<string, string[]>;
+  convById: Map<string, Conversation>;
+  activeConvId: string | null;
+  renamingConvId: string | null;
+  renameValue: string;
+  renameInputRef: React.MutableRefObject<HTMLInputElement | null>;
+  onSelectConv: (id: string) => void;
+  onStartRenameConv: (id: string, title: string, e: React.MouseEvent) => void;
+  onSaveRenameConv: (id: string) => void;
+  onCancelRenameConv: () => void;
+  onRenameConvChange: (value: string) => void;
+  onDeleteConv: (id: string, e: React.MouseEvent) => void;
+  onStopConv: (id: string) => void;
+  activeDragId: string | null;
+  /** Where a new conversation started from this folder will land. */
+  pendingProject: string;
+  onCreateInProject: (projectId: string) => void;
+}
+
+// ProjectFolderList is the conversations sidebar's SECOND, HIGHER LEVEL: one folder per project, each holding
+// that project's conversations.
+//
+// The operator: "We need to make a second higher level in organization for conversations. It should be another
+// drop down where all of the conversations are associated with Projects in a parent category. For every project
+// that is created (active or otherwise), there should be a list that can be dragged to and also created from.
+// ... In the gui we can have more than one create conversation button next to the Project."
+//
+// So every project is rendered — INCLUDING ones with no conversations. An empty folder is the whole point: it
+// is a destination, and a list built only from the conversations could never contain a project that has none.
+// Each header carries the "create here" button the operator asked for.
+//
+// IT SITS INSIDE THE EXISTING DndContext rather than beside it, so a conversation can be dragged from anywhere
+// in the sidebar onto a project folder and land in that project. The drop is routed by the id prefix, which is
+// what keeps a project from ever being confused with a category folder.
+function ProjectFolderList({
+  projects,
+  convIdsByProject,
+  convById,
+  activeConvId,
+  renamingConvId,
+  renameValue,
+  renameInputRef,
+  onSelectConv,
+  onStartRenameConv,
+  onSaveRenameConv,
+  onCancelRenameConv,
+  onRenameConvChange,
+  onDeleteConv,
+  onStopConv,
+  activeDragId,
+  pendingProject,
+  onCreateInProject,
+}: ProjectFolderListProps) {
+  // The unassigned group is rendered LAST and only when something is in it: a permanent empty "No project"
+  // folder would be furniture rather than a fact, and with no projects at all there is nothing to be
+  // unassigned FROM.
+  const unassigned = convIdsByProject.get("") ?? [];
+
+  return (
+    <div className="space-y-1 pb-1" data-testid="project-folders">
+      {projects.map((p) => (
+        <ProjectFolder
+          key={p.id}
+          projectId={p.id}
+          name={p.name}
+          status={p.status}
+          convIds={convIdsByProject.get(p.id) ?? []}
+          convById={convById}
+          activeConvId={activeConvId}
+          renamingConvId={renamingConvId}
+          renameValue={renameValue}
+          renameInputRef={renameInputRef}
+          onSelectConv={onSelectConv}
+          onStartRenameConv={onStartRenameConv}
+          onSaveRenameConv={onSaveRenameConv}
+          onCancelRenameConv={onCancelRenameConv}
+          onRenameConvChange={onRenameConvChange}
+          onDeleteConv={onDeleteConv}
+          onStopConv={onStopConv}
+          activeDragId={activeDragId}
+          isCreatingHere={pendingProject === p.id}
+          onCreateHere={() => onCreateInProject(p.id)}
+        />
+      ))}
+      {(unassigned.length > 0 || projects.length > 0) && (
+        <ProjectFolder
+          projectId=""
+          name="No project"
+          convIds={unassigned}
+          convById={convById}
+          activeConvId={activeConvId}
+          renamingConvId={renamingConvId}
+          renameValue={renameValue}
+          renameInputRef={renameInputRef}
+          onSelectConv={onSelectConv}
+          onStartRenameConv={onStartRenameConv}
+          onSaveRenameConv={onSaveRenameConv}
+          onCancelRenameConv={onCancelRenameConv}
+          onRenameConvChange={onRenameConvChange}
+          onDeleteConv={onDeleteConv}
+          onStopConv={onStopConv}
+          activeDragId={activeDragId}
+          isCreatingHere={pendingProject === ""}
+          onCreateHere={() => onCreateInProject("")}
+        />
+      )}
+    </div>
+  );
+}
+
+interface ProjectFolderProps {
+  projectId: string;
+  name: string;
+  status?: string;
+  convIds: string[];
+  convById: Map<string, Conversation>;
+  activeConvId: string | null;
+  renamingConvId: string | null;
+  renameValue: string;
+  renameInputRef: React.MutableRefObject<HTMLInputElement | null>;
+  onSelectConv: (id: string) => void;
+  onStartRenameConv: (id: string, title: string, e: React.MouseEvent) => void;
+  onSaveRenameConv: (id: string) => void;
+  onCancelRenameConv: () => void;
+  onRenameConvChange: (value: string) => void;
+  onDeleteConv: (id: string, e: React.MouseEvent) => void;
+  onStopConv: (id: string) => void;
+  activeDragId: string | null;
+  isCreatingHere: boolean;
+  onCreateHere: () => void;
+}
+
+function ProjectFolder({
+  projectId,
+  name,
+  status,
+  convIds,
+  convById,
+  activeConvId,
+  renamingConvId,
+  renameValue,
+  renameInputRef,
+  onSelectConv,
+  onStartRenameConv,
+  onSaveRenameConv,
+  onCancelRenameConv,
+  onRenameConvChange,
+  onDeleteConv,
+  onStopConv,
+  activeDragId,
+  isCreatingHere,
+  onCreateHere,
+}: ProjectFolderProps) {
+  const { setNodeRef, isOver } = useDroppable({ id: projectDropId(projectId) });
+
+  // An ARCHIVED project says so — see isArchivedProject for why both the enum's name and the domain word are
+  // accepted.
+  const archived = isArchivedProject(status);
+
+  return (
+    <div
+      ref={setNodeRef}
+      data-testid={`project-folder-${projectId || "unassigned"}`}
+      className={cn(
+        "rounded-md transition-colors",
+        isOver && "bg-accent/50 ring-1 ring-ring",
+      )}
+    >
+      <div className="flex items-center gap-1 px-2 py-1.5 group/proj">
+        <FolderClosed aria-hidden="true" className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+        <span className="text-xs font-medium text-foreground truncate">{name}</span>
+        {archived && (
+          <span className="text-[10px] uppercase tracking-wide text-muted-foreground shrink-0">
+            archived
+          </span>
+        )}
+        <span className="ml-auto text-[10px] text-muted-foreground tabular-nums shrink-0">
+          {convIds.length}
+        </span>
+        {/* ONE CREATE BUTTON PER PROJECT — the operator: "in the gui we can have more than one create
+            conversation button next to the Project." It arms the NEXT conversation to be created inside this
+            project; the conversation itself is still created lazily on the first send, so this cannot leave a
+            row of empty chats behind every click. */}
+        <button
+          type="button"
+          onClick={onCreateHere}
+          title={`New conversation in ${name}`}
+          aria-label={`New conversation in ${name}`}
+          className={cn(
+            "shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground hover:bg-accent transition",
+            isCreatingHere ? "opacity-100 text-foreground" : "opacity-0 group-hover/proj:opacity-100",
+          )}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="w-3 h-3" aria-hidden="true">
+            <path d="M12 5v14M5 12h14" strokeLinecap="round" />
+          </svg>
+        </button>
+      </div>
+      {convIds.length === 0 ? (
+        // AN EMPTY FOLDER IS A DROP TARGET, not a blank. Saying so is what turns it from an absence into an
+        // affordance — the operator asked for a list things can be dragged TO.
+        <p className="px-2 pb-1.5 pl-7 text-[11px] text-muted-foreground/70 italic">
+          drag a conversation here
+        </p>
+      ) : (
+        convIds.map((convId) => {
+          const conv = convById.get(convId);
+          if (!conv) return null;
+          return (
+            <ConversationItem
+              key={convId}
+              convId={convId}
+              title={conv.title}
+              lastMessagePreview={conv.lastMessagePreview}
+              isRunning={conv.turnInFlight ?? false}
+              onStop={() => onStopConv(convId)}
+              isActive={activeConvId === convId}
+              isRenaming={renamingConvId === convId}
+              renameValue={renameValue}
+              renameInputRef={renameInputRef}
+              onSelect={() => onSelectConv(convId)}
+              onStartRename={(e) => onStartRenameConv(convId, conv.title, e)}
+              onSaveRename={() => onSaveRenameConv(convId)}
+              onCancelRename={onCancelRenameConv}
+              onRenameChange={onRenameConvChange}
+              onDelete={(e) => onDeleteConv(convId, e)}
+              isDragging={activeDragId === convId}
+            />
+          );
+        })
+      )}
     </div>
   );
 }
