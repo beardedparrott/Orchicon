@@ -48,9 +48,16 @@ func TestShellFirstLineRendersTabBar(t *testing.T) {
 // (q / ctrl+c) must return a tea.Quit command from dispatch, not merely
 // blank the view. QA on the TUI foundation found q/ctrl+c hanging the TUI
 // because the route only set the quitting flag.
+//
+// IT IS DRIVEN FROM CONTENT FOCUS, because that is where the global route owns these keys. The composer
+// holds the focus by default and is a TEXT INPUT: while it has the focus `q` is a character in the
+// operator's message and must not reach this route — which is the bug this precondition surfaced, since
+// `q` used to bypass the composer and quit orch mid-message. ctrl+c is unaffected either way: the
+// composer has its own documented hard-escape for it.
 func TestQuitRouteIssuesQuitCmd(t *testing.T) {
 	app := NewApp(nil, &config.Profile{URL: "http://x", Token: "t"}, "v0.2.51")
 	app.RegisterScreen(TabAsk, &tabBarScreenStub{body: "b"})
+	app.setFocus(focusContent)
 
 	for name, key := range map[string]tea.KeyMsg{
 		"q":      {Type: tea.KeyRunes, Runes: []rune{'q'}},

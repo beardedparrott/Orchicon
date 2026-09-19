@@ -285,17 +285,33 @@ func keyMatcher(s string) func(tea.Msg) bool {
 	}
 }
 
-// composerBypassKeys are the structural chords that reach the global
-// routes even while the composer is focused (the launch default): tab
-// switches, the conversations-rail toggle, and quit. The textarea would
-// otherwise consume them as editing no-ops (it consumes EVERY key —
-// unknown chords are silent no-ops that still report consumed), locking
-// the shell chrome behind a focus escape forever.
+// composerBypassKeys are the structural chords that reach the global routes even while the composer is
+// focused (the launch default): tab switches, the conversations-rail toggle, and quit. The textarea
+// would otherwise consume them as editing no-ops (it consumes EVERY key — unknown chords are silent
+// no-ops that still report consumed), locking the shell chrome behind a focus escape forever.
+//
+// EVERY KEY HERE MUST BE UNABLE TO BE TEXT — see the `q` note in the map. Tab and the ctrl chords
+// qualify; a printable character never does, because while the composer holds the focus a printable
+// character is the operator's message.
 var composerBypassKeys = map[string]bool{
-	"ctrl+r": true, "ctrl+c": true, "ctrl+d": true, "q": true,
-	// TAB is structural chrome (the tab bar is the shell's spine). LEFT/RIGHT are
-	// deliberately NOT here: in a text box they are cursor movement, which is what
-	// the operator expects from a composer.
+	"ctrl+r": true, "ctrl+c": true, "ctrl+d": true,
+	// NOT a bare `q`, AND ITS ABSENCE IS LOAD-BEARING. It used to be here, which made the LETTER q skip
+	// the composer and fall through to the global routes — one of which is `quit` on `q`/`ctrl+c`. So
+	// TYPING THE LETTER q ANYWHERE IN A CHAT MESSAGE EXITED ORCH AND DROPPED TO THE COMMAND LINE, without
+	// even inserting the character first. The operator: "The last two times I was typing a message into
+	// the chat, orch just exited and dropped to the command line. Are you able to see the reason why?" —
+	// no message containing q (question, request, quote) could be typed at all, and it had been that way
+	// since Phase 2a with nothing asserting otherwise.
+	//
+	// The rule this map exists for is that the textarea consumes EVERY key it is handed, so a global chord
+	// the composer is allowed to eat is unreachable. Every OTHER entry is a ctrl chord or tab: keys that
+	// can only be a command. `q` is TEXT, and a key that is text while typing must never be a bypass —
+	// stated generally, so the class is impossible rather than this instance fixed.
+	//
+	// Quitting from the composer is still reachable by ctrl+c, which the router documents as the hard
+	// escape that "always works, even mid-composition". `q` remains the quit when the composer does NOT
+	// hold the focus (content focus, the rails, a list) — conventional, and unchanged, because the
+	// composer branch is simply not reached there.
 	"tab": true, "shift+tab": true,
 	// ctrl+y STOPS the in-flight reply. It is here for the same structural reason as the others, and it
 	// is the reason the stop chord works at all: the textarea CONSUMES every key it is handed (unknown

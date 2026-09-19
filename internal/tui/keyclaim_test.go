@@ -65,10 +65,18 @@ func TestScreenKeyClaimBypassesShellRoutes(t *testing.T) {
 		t.Fatalf("claimed keys must reach the screen, got %v", cs.keys)
 	}
 
-	// With the claim released the shell routes own their keys again.
+	// With the claim released the shell routes own their keys again — FROM CONTENT FOCUS.
+	//
+	// That precondition is the point rather than plumbing. The composer (the dock) holds the focus by
+	// default and is ANOTHER owner of printable keys — not a claim, but a text input — so while it has the
+	// focus `q` is the operator's character and the shell route must NOT see it. That is precisely the bug
+	// the composer tests found: `q` used to bypass the composer and QUIT ORCH MID-MESSAGE. Asserting "with
+	// no claim, q must quit" while the composer was focused was therefore asserting that bug, so the claim
+	// contract is now tested from the state where the global route legitimately owns the key.
+	m.setFocus(focusContent)
 	cs.claim = false
 	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
 	if !nm.(*App).quitting {
-		t.Fatal("with no claim, q must quit")
+		t.Fatal("with no claim and the composer unfocused, q must quit")
 	}
 }
