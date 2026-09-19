@@ -486,6 +486,19 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string, o
 		},
 	}
 	m.dock = dock.New()
+	// THE RAIL OPENS ON ALL PROJECTS, which is what the field's own doc has always claimed — and what it must be
+	// for the launch-directory default to be reachable at all.
+	//
+	// IT WAS NEVER SET, so the zero value stood and a fresh shell opened on unassignedScope ("") — the picker's
+	// "No project" — and filterConversationsByScope then showed ONLY chats with no project. Two consequences, both
+	// observed: on this instance every conversation is assigned to Orchicon, so the rail opened EMPTY, and
+	// applyLaunchDirScope refused to fire because its guard is "only while the scope is still the untouched
+	// default" (it compared against projectScopeAll and found "").
+	//
+	// Setting it here rather than relaxing the guard is deliberate: "" is now reachable ONLY by the operator
+	// choosing No project, which sets projectScopeChosen, so the guard's question — has the operator chosen a
+	// workspace? — stays exactly answerable.
+	m.projectScope = projectScopeAll
 	if profile != nil && profile.Newline != "" {
 		m.dock.Newlines = dock.ParseNewlineMode(profile.Newline)
 	}

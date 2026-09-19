@@ -102,6 +102,36 @@ func runCtx(t *testing.T, m *App, cmd tea.Cmd, budget time.Duration) {
 	}
 }
 
+// A FRESH SHELL OPENS ON ALL PROJECTS, so nothing that predates the project column is hidden on launch.
+//
+// THIS WAS A REAL BUG, not a test adjustment. projectScopeAll is "__all__" and NOTHING ever assigned it, so the
+// zero value ("") stood — and "" is unassignedScope, the picker's "No project". A fresh shell therefore filtered
+// the rail to unassigned chats only: on this instance that is an EMPTY rail, because every conversation now
+// belongs to Orchicon. It also silently disabled the launch-directory default, whose guard is "only while the
+// scope is untouched", because it compared the untouched value against projectScopeAll and found "".
+func TestAFreshShellOpensOnAllProjects(t *testing.T) {
+	m := appWithProjectService(t, &stubProjectList{})
+	if m.projectScope != projectScopeAll {
+		t.Errorf("a fresh shell opened on scope %q, want %q (All projects) — anything else hides conversations on "+
+			"launch and blocks the launch-directory default", m.projectScope, projectScopeAll)
+	}
+}
+
+// AND IT STAYS THERE WHEN NOTHING MATCHES, rather than falling to "No project": an unmatched launch directory is
+// not a reason to hide the list, and inventing a workspace is worse than none.
+func TestAnUnmatchedLaunchDirectoryStillOpensOnAllProjects(t *testing.T) {
+	m := appWithProjectService(t, &stubProjectList{
+		names:  []string{"Orchicon"},
+		direcs: []string{"/home/me/projects/Orchicon"},
+	})
+	m.launchDir = "/tmp/somewhere-else"
+	runCtx(t, m, m.Init(), 3*time.Second)
+
+	if m.projectScope != projectScopeAll {
+		t.Errorf("scope = %q after launching from an unmatched directory, want All projects", m.projectScope)
+	}
+}
+
 // A NORMAL SESSION FETCHES THE PROJECT LIST. This is the operator's report at the level it happened: not "the
 // picker showed the wrong list" but "the request was never made".
 func TestInitFetchesTheProjectList(t *testing.T) {

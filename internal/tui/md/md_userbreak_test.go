@@ -45,11 +45,15 @@ func TestATypedNewlineStaysALineInUserText(t *testing.T) {
 }
 
 // EVERY line of a longer, hand-wrapped message survives — the case that produced "a bunch of text bunched up".
+//
+// THE BULLET MARKER IS THE RENDERER'S, not the source's: "- x" is a list item and md draws it with its own "• ".
+// So this asserts the CONTENT of each line, which is what "a line was lost" means — asserting the source's marker
+// would fail on a render that lost nothing.
 func TestALongHandWrappedMessageKeepsAllItsLines(t *testing.T) {
 	src := "Bug report:\n\n- the rail shows 1-0/0\n- the counter never moves\n\nPlease fix."
 	lines, _ := RenderUserOnSpans(src, 60, Surface{})
 
-	for _, want := range []string{"Bug report:", "- the rail shows 1-0/0", "- the counter never moves",
+	for _, want := range []string{"Bug report:", "the rail shows 1-0/0", "the counter never moves",
 		"Please fix."} {
 		found := false
 		for _, l := range lines {
