@@ -99,6 +99,15 @@ type Theme struct {
 	// whereas a fill must be dark enough for white to read on it.
 	Select lipgloss.Color
 
+	// Tool is a TOOL ROW's name — the transcript's ledger of what the model called.
+	//
+	// IT IS ITS OWN TOKEN rather than a borrow of Busy, which is what it was. The value is the same
+	// today; what changes is that a tool row can no longer be recoloured by a future change to the
+	// MEANING of "busy". Busy means an in-flight turn, while a tool row records calls already made, and
+	// borrowing a status token for a structural element is the same trap the GUI fell into when its
+	// accent wore the theme's ERROR colour.
+	Tool lipgloss.Color
+
 	// Status.
 	OK, Warn, Err, Busy lipgloss.Color
 }
@@ -129,6 +138,11 @@ var Dark = Theme{
 	Warn:         lipgloss.Color("#fbbf24"),
 	Err:          lipgloss.Color("#fb7185"),
 	Busy:         lipgloss.Color("#22d3ee"),
+	// Tool mirrors Busy here, as for every generated palette: a tool row's colour is its own token, and
+	// leaving it unset would render tool rows with NO colour on this theme while ember's had one — a
+	// theme-dependent change in what the transcript shows, which the operator would meet as "the tool rows
+	// are grey on dark".
+	Tool: lipgloss.Color("#22d3ee"),
 }
 
 // Light is the GUI's default (light) palette. Token sources (:root in
@@ -163,6 +177,7 @@ var Light = Theme{
 	Warn:         lipgloss.Color("#92400e"),
 	Err:          lipgloss.Color("#be123c"),
 	Busy:         lipgloss.Color("#155e75"),
+	Tool:         lipgloss.Color("#155e75"),
 }
 
 // GruvboxDark is a TUI-native palette (Morhetz's Gruvbox, dark). Terminal
@@ -187,6 +202,7 @@ var GruvboxDark = Theme{
 	Warn:         lipgloss.Color("#fabd2f"),
 	Err:          lipgloss.Color("#fb4934"),
 	Busy:         lipgloss.Color("#83a598"),
+	Tool:         lipgloss.Color("#83a598"),
 }
 
 // GruvboxLight is the light variant of the same palette.
@@ -208,6 +224,7 @@ var GruvboxLight = Theme{
 	Warn:         lipgloss.Color("#7a5000"),
 	Err:          lipgloss.Color("#9d0006"),
 	Busy:         lipgloss.Color("#076678"),
+	Tool:         lipgloss.Color("#076678"),
 }
 
 // registry is the selectable theme set, in /theme listing order. It is
@@ -262,7 +279,12 @@ func Use(name string) bool {
 	// surface it sits on, with the theme's own body text on it. Both are contrast-gated (see
 	// TestStructuralContrast), which is what makes the pair legible in light AND dark palettes — the
 	// whole point, since reverse video could not be made legible at all.
-	md.SetCodeChip(string(t.Text), string(t.SurfaceAlt))
+	md.SetCodeChip(string(t.Accent), string(t.SurfaceAlt))
+	// THE STRUCTURAL ACCENT, which colours headings and list markers. The second argument is the body
+	// text — the colour the accent is drawn INSIDE — playing the same role as the chip's first argument,
+	// and for the same reason: a `\x1b[39m` close would drop the rest of the line to the terminal's
+	// default foreground.
+	md.SetAccentColor(string(t.Accent), string(t.Text))
 	return true
 }
 
@@ -362,6 +384,14 @@ var (
 	StatusOK   = lipgloss.NewStyle()
 	StatusWarn = lipgloss.NewStyle()
 	StatusErr  = lipgloss.NewStyle()
+	// ToolName paints a TOOL ROW's name and ToolMeta its arguments and result.
+	//
+	// ToolName is its OWN token (Theme.Tool) rather than a borrow of StatusBusy, which is what it was: a
+	// tool row is the ledger of calls already made, while Busy means an in-flight turn. The same colour
+	// today, but a change to what "busy" means can no longer recolour the transcript's tool rows.
+	ToolName = lipgloss.NewStyle()
+	ToolMeta = lipgloss.NewStyle()
+
 	StatusBusy = lipgloss.NewStyle()
 
 	HelpOverlay = lipgloss.NewStyle()
@@ -478,6 +508,13 @@ func buildStyles(t Theme) {
 	StatusWarn = lipgloss.NewStyle().Foreground(t.Warn)
 	StatusErr = lipgloss.NewStyle().Foreground(t.Err)
 	StatusBusy = lipgloss.NewStyle().Foreground(t.Busy)
+	// ToolName paints a TOOL ROW's name, ToolMeta its arguments and result.
+	//
+	// ToolName is its OWN token (Theme.Tool) rather than a borrow of StatusBusy, which is what it was: a
+	// tool row is the ledger of calls already made, while Busy means an in-flight turn. The same colour
+	// today, but a change to what "busy" means can no longer recolour the transcript's tool rows.
+	ToolName = lipgloss.NewStyle().Foreground(t.Tool)
+	ToolMeta = lipgloss.NewStyle().Foreground(t.TextFaint)
 
 	HelpOverlay = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).

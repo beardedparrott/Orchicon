@@ -132,6 +132,9 @@ func (s paletteSpec) theme() Theme {
 		Warn:         lipgloss.Color(warn),
 		Err:          lipgloss.Color(err),
 		Busy:         lipgloss.Color(busy),
+		// The tool row's colour is the busy hue TODAY, promoted to a token of its own so its meaning is
+		// its own — see the field's comment. Same value, so nothing moves on screen.
+		Tool: lipgloss.Color(busy),
 	}
 }
 

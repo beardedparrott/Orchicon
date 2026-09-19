@@ -431,12 +431,12 @@ func renderToolRow(t *ParsedTool, maxWidth int) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString(theme.StatusBusy.Render("⚙ " + t.ToolName))
+	b.WriteString(theme.ToolName.Render("⚙ " + t.ToolName))
 	if t.Input != "" {
 		b.WriteString(theme.HintText.Render(" " + firstLine(t.Input)))
 	}
 	if t.Output != "" {
-		b.WriteString(theme.ListMeta.Render(" → " + firstLine(t.Output)))
+		b.WriteString(theme.ToolMeta.Render(" → " + firstLine(t.Output)))
 	}
 	b.WriteString("\n")
 	return truncateLine(b.String(), maxWidth)

@@ -92,6 +92,14 @@ var (
 	chipFg, chipBg string // set by SetCodeChip (the theme)
 	chipSurface    Surface
 	chipOn         bool
+
+	// accentFg/accentRestore are the STRUCTURAL ACCENT and the colour text returns to after it, both
+	// set by SetAccentColor (the theme).
+	//
+	// The restore exists for the same reason the chip's does: `\x1b[39m` would drop the rest of the
+	// line to the terminal's default foreground, so the close re-asserts the colour the accent was
+	// drawn inside rather than resetting.
+	accentFg, accentRestore string
 )
 
 // SetCodeChip sets the inline-code chip's colours. The theme calls it on every switch, so the chip
@@ -103,6 +111,44 @@ func SetCodeChip(fg, bg string) {
 	renderMu.Lock()
 	defer renderMu.Unlock()
 	chipFg, chipBg = fg, bg
+}
+
+// SetAccentColor sets the STRUCTURAL ACCENT — the colour of a heading and a list marker — and the
+// colour text returns to after it.
+//
+// The operator, wanting the transcript to read more like a richly-formatted client: "I would like to
+// make it more enhanced." Headings and bullets are the two biggest structural signals a terminal can
+// still add, since it cannot show the GUI's type scale.
+//
+// BOTH arguments are required for the accent to be used at all: an accent with nothing to restore to
+// would leave the rest of the line in the accent colour, so it is applied only when the pair is complete
+// AND parseable — the same rule the chip follows, and for the same reason.
+func SetAccentColor(fg, restore string) {
+	renderMu.Lock()
+	defer renderMu.Unlock()
+	accentFg, accentRestore = fg, restore
+}
+
+// accentActive reports whether a structural accent can be drawn.
+func accentActive() bool {
+	if accentFg == "" || accentRestore == "" {
+		return false
+	}
+	return sgr(38, accentFg) != "" && sgr(38, accentRestore) != ""
+}
+
+// accentOpen starts the accent; accentClose returns to the colour it was drawn inside.
+func accentOpen() string  { return sgr(38, accentFg) }
+func accentClose() string { return sgr(38, accentRestore) }
+
+// AccentMarker wraps a run of text — a list marker, which is written into an INDENT rather than emitted
+// as a span — in the structural accent. Returns the text unchanged when no accent is configured, so a
+// caller that has not set one renders exactly as before.
+func AccentMarker(text string) string {
+	if !accentActive() {
+		return text
+	}
+	return accentOpen() + text + accentClose()
 }
 
 // sgr builds an SGR sequence for a #rrggbb colour with the given selector (38 foreground, 48
@@ -183,7 +229,8 @@ const (
 	aStrike
 	aFaint
 	aUnderline
-	aCode // an inline "chip": themed colours when a surface is declared, reverse video otherwise
+	aCode   // an inline "chip": themed colours when a surface is declared, reverse video otherwise
+	aAccent // a STRUCTURAL run — a heading, a list marker — in the theme's accent colour
 )
 
 // sgrCodes maps each attribute to its SGR code.
@@ -248,6 +295,13 @@ func (s span) render() string {
 	if s.a&aCode != 0 && chipActive() {
 		rest := s.a &^ aCode
 		return chipOpen() + rest.open() + s.text + rest.off() + chipClose()
+	}
+	// A STRUCTURAL ACCENT SPAN — a heading — is drawn in the theme's accent and then restored to the
+	// colour it sits inside, exactly as the chip does. Checked AFTER the chip, so a heading that
+	// contained a code span still renders its chip properly.
+	if s.a&aAccent != 0 && accentActive() {
+		rest := s.a &^ aAccent
+		return accentOpen() + rest.open() + s.text + rest.off() + accentClose()
 	}
 	return s.a.open() + s.text + s.a.off()
 }
@@ -457,11 +511,18 @@ func (r *renderer) blocks(n ast.Node, in indent) {
 func (r *renderer) block(n ast.Node, in indent) {
 	switch n := n.(type) {
 	case *ast.Heading:
-		// Headings are BOLD plus the blank-line separation above. A terminal cannot do the GUI's
-		// type scale (h1 20px → h3 16px), and the GUI gives headings no colour either — weight and
-		// spacing are the signals both clients have, and a heading rendered flat would lose the
-		// structure the author wrote.
-		spans := inline(n, r.src, aBold)
+		// Headings are BOLD plus the blank-line separation above — AND the theme's accent colour.
+		//
+		// A terminal cannot do the GUI's type scale (h1 20px → h3 16px), so weight and spacing are the
+		// signals both clients had, and a heading rendered flat would lose the structure the author
+		// wrote. That reasoning still holds; what it missed is that weight alone is a WEAK signal in a
+		// wall of text, which is the operator's "I would like to make it more enhanced." Colour is the
+		// one remaining signal a terminal has, and its absence was never a decision about the accent —
+		// only about the type scale.
+		//
+		// The accent is DECORATIVE here, never the only cue: a monochrome terminal, or one with no accent
+		// configured, still gets the bold and the spacing (see accentActive).
+		spans := inline(n, r.src, aBold|aAccent)
 		r.emit(in, spans)
 
 	case *ast.Paragraph, *ast.TextBlock:
@@ -579,7 +640,7 @@ func (r *renderer) list(n *ast.List, in indent) {
 			}
 		}
 		hang := strings.Repeat(" ", lipgloss.Width(marker))
-		itemIn := in.with(in.first+marker, in.rest+hang)
+		itemIn := in.with(in.first+AccentMarker(marker), in.rest+hang)
 		// An item's own blocks are rendered at the item's indent; the sibling blank-line policy does
 		// not apply INSIDE an item, so a two-paragraph item stays tight.
 		for c := item.FirstChild(); c != nil; c = c.NextSibling() {
