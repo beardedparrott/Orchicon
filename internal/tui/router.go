@@ -1092,6 +1092,13 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 	// It copies through the SAME osc-52 path a drag-select uses (clipState.copyCmd), so the confirmation is
 	// the toast the operator already knows and there is no second copy mechanism to keep working.
 	if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft && m.active == TabAsk && m.chatConvID != "" {
+		// A CODE BLOCK IS CHECKED FIRST, because it sits INSIDE a message: the message rule below would
+		// otherwise win and copy the whole message — band indent, prose and all — when the operator clicked
+		// the one part of it they wanted verbatim. The later rule is a superset of this one, so the ordering
+		// is what makes the specific gesture reachable at all.
+		if src, ok := m.transcriptCodeBlockAtFrameRow(mo.Y); ok && m.clip != nil {
+			return m, m.clip.copyCmd(src)
+		}
 		if text, ok := m.transcriptUserMessageAtFrameRow(mo.Y); ok && m.clip != nil {
 			return m, m.clip.copyCmd(text)
 		}

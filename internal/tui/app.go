@@ -3272,6 +3272,36 @@ func (m *App) transcriptUserMessageAtFrameRow(frameRow int) (string, bool) {
 	return "", false
 }
 
+// transcriptCodeBlockAtFrameRow resolves a click at a FRAME row to the SOURCE of a code block under it.
+//
+// This is the gesture the operator asked for after discovering that selecting a block cannot be made clean:
+// "You can't copy just the block itself with no added ... I also think the click treatment like we did with the
+// user message would be an added bonus." A selection copies CELLS, so it carries the band's one-cell indent on
+// every line — and a leading space cannot be trimmed, because it is indistinguishable from a real code
+// indent. The click copies the fence's exact contents instead: no indent, no border, no fill, no wrap
+// artefacts. It is the one copy path with nothing to strip.
+//
+// Same three coordinate spaces as transcriptUserMessageAtFrameRow (frame row → body row → body line → item),
+// and the same derivation of where the body starts.
+func (m *App) transcriptCodeBlockAtFrameRow(frameRow int) (string, bool) {
+	str := m.TranscriptStream(m.chatConvID)
+	if str == nil {
+		return "", false
+	}
+	line := str.LineAtRow(frameRow - m.transcriptBodyTopRow())
+	if line < 0 {
+		return "", false
+	}
+	// The ITEM is found first, then the block within it: an item's block offsets are relative to the item, so
+	// the item has to answer for the line before its blocks can be asked about it.
+	for _, sp := range m.transcriptSpans[m.chatConvID] {
+		if sp.Contains(line) {
+			return sp.CodeAt(line)
+		}
+	}
+	return "", false
+}
+
 // transcriptBodyTopRow is the frame row at which the transcript's FIRST body line is drawn.
 func (m *App) transcriptBodyTopRow() int {
 	fieldRows := 0

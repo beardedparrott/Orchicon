@@ -35,11 +35,42 @@ type ItemSpan struct {
 	Text  string // the item's copyable text ("" when there is nothing worth copying)
 	Line  int    // 0-based first line of this item in the body
 	Lines int    // how many body lines it occupies
+	// Code is where this item's CODE BLOCKS landed, in lines RELATIVE to Line, each with the fence's source.
+	//
+	// It exists because copying a block by SELECTING it cannot be made clean. The operator: "You can't copy just
+	// the block itself with no added." The rendered band indents every line by one cell, and unlike trailing
+	// padding that leading space cannot be trimmed — it is indistinguishable from a real code indent, and
+	// trimming it would silently destroy the meaning of Python and Makefile bodies. So a click copies the
+	// SOURCE instead, which has no indent, no pane border and no fill padding to strip, because it never went
+	// through the renderer at all.
+	Code []CodeSpan
+}
+
+// CodeSpan is one code block's place within an item, and the code itself.
+type CodeSpan struct {
+	Line   int // 0-based line of the block's first row, relative to the item
+	Lines  int // how many lines it occupies, label row included
+	Lang   string
+	Source string // the fence's contents, verbatim
 }
 
 // Contains reports whether a body line belongs to this item.
 func (s ItemSpan) Contains(line int) bool {
 	return line >= s.Line && line < s.Line+s.Lines
+}
+
+// CodeAt returns the SOURCE of the code block containing a body line, when one does.
+//
+// The lookup offsets by the item's own start, so a click anywhere on the block — its label row included —
+// resolves to the same code.
+func (s ItemSpan) CodeAt(line int) (string, bool) {
+	rel := line - s.Line
+	for _, c := range s.Code {
+		if rel >= c.Line && rel < c.Line+c.Lines {
+			return c.Source, true
+		}
+	}
+	return "", false
 }
 
 // copyTextFor is what a click on this item should put on the clipboard.
@@ -73,11 +104,18 @@ func RenderItemsSpans(items []ChatItem, maxWidth int, collapse ...func(key strin
 		// Where this item's text starts, so the lines it produced can be attributed to it afterwards
 		// WITHOUT duplicating the switch below, which would drift from it.
 		before := b.Len()
+		// code is this item's block geometry, when its kind renders markdown with a surface. The zero value is
+		// "no blocks", which is what every other kind contributes.
+		var code []CodeSpan
 		switch it.Kind {
 		case KindUser:
-			b.WriteString(renderChatMessage(userTextWithMarkers(it), theme.BubbleUser, maxWidth, true, userBandLabel))
+			body, cs := renderChatMessageSpans(userTextWithMarkers(it), theme.BubbleUser, maxWidth, true, userBandLabel)
+			b.WriteString(body)
+			code = cs
 		case KindText:
-			b.WriteString(renderChatMessage(it.Text, theme.BubbleModel, maxWidth, false, ""))
+			body, cs := renderChatMessageSpans(it.Text, theme.BubbleModel, maxWidth, false, "")
+			b.WriteString(body)
+			code = cs
 		case KindReasoning:
 			// A REASONING BLOCK, not a dim paragraph — the GUI's own shape, and COLLAPSIBLE.
 			//
@@ -115,7 +153,7 @@ func RenderItemsSpans(items []ChatItem, maxWidth int, collapse ...func(key strin
 		// whole body per item.
 		lines := strings.Count(b.String()[before:], "\n")
 		spans = append(spans, ItemSpan{
-			Kind: it.Kind, Key: it.Key, Text: copyTextFor(it), Line: lineIdx, Lines: lines,
+			Kind: it.Kind, Key: it.Key, Text: copyTextFor(it), Line: lineIdx, Lines: lines, Code: code,
 		})
 		lineIdx += lines
 	}
@@ -174,8 +212,19 @@ func userTextWithMarkers(it ChatItem) string {
 }
 
 func renderChatMessage(text string, style lipgloss.Style, maxWidth int, right bool, label string) string {
+	body, _ := renderChatMessageSpans(text, style, maxWidth, right, label)
+	return body
+}
+
+// renderChatMessageSpans is renderChatMessage PLUS where its code blocks landed.
+//
+// The mapping needs NO adjustment: this function writes exactly one band row per markdown line — the label and
+// the padding change a row's CONTENT, never how many rows there are — so a markdown row index is already an
+// item-relative line number. That equality is what chat.CodeSpan rests on, and it is why the geometry is
+// lifted from the same render rather than recomputed from the painted text.
+func renderChatMessageSpans(text string, style lipgloss.Style, maxWidth int, right bool, label string) (string, []CodeSpan) {
 	if strings.TrimSpace(text) == "" {
-		return ""
+		return "", nil
 	}
 	pane := maxWidth
 	if pane <= 0 {
@@ -199,7 +248,7 @@ func renderChatMessage(text string, style lipgloss.Style, maxWidth int, right bo
 	//
 	// The width is the band's INNER width, so a markdown line can never exceed the pane: there is no
 	// horizontal scroll in the band to fall back on.
-	body := md.RenderOn(text, inner, md.SurfaceOf(style))
+	body, mdSpans := md.RenderOnSpans(text, inner, md.SurfaceOf(style))
 	if len(body) == 0 {
 		body = []string{text}
 	}
@@ -257,7 +306,18 @@ func renderChatMessage(text string, style lipgloss.Style, maxWidth int, right bo
 	for i := 0; i < chatBandGap; i++ {
 		out.WriteString("\n")
 	}
-	return out.String()
+	// The blocks, in lines relative to THIS ITEM — which is the band's own row numbering, since one markdown
+	// line became exactly one row above.
+	code := make([]CodeSpan, 0, len(mdSpans))
+	for _, s := range mdSpans {
+		code = append(code, CodeSpan{
+			Line:   s.FirstRow,
+			Lines:  s.LastRow - s.FirstRow + 1,
+			Lang:   s.Lang,
+			Source: s.Source,
+		})
+	}
+	return out.String(), code
 }
 
 // truncateCells shortens s to at most w DISPLAY CELLS (not runes, not bytes), so a wide glyph or an ANSI

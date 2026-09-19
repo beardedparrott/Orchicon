@@ -382,17 +382,24 @@ func Render(src string, width int) []string {
 // which the span renderer reads. Keeping one body means a fix to layout cannot land in one path and
 // miss the other.
 func render(src string, width int) []string {
+	lines, _ := renderSpans(src, width)
+	return lines
+}
+
+// renderSpans is render plus the geometry of every code block it emitted. The CLAMP applies to the lines
+// only and cannot change their COUNT, so the row indexes the blocks recorded stay valid.
+func renderSpans(src string, width int) ([]string, []CodeSpan) {
 	if width < 1 {
 		width = 1
 	}
 	if strings.TrimSpace(src) == "" {
-		return nil
+		return nil, nil
 	}
 	srcBytes := []byte(src)
 	doc := parser.Parse(text.NewReader(srcBytes))
 	r := &renderer{width: width, src: srcBytes}
 	r.blocks(doc, indent{})
-	return clampWidth(r.out, width)
+	return clampWidth(r.out, width), r.codeSpans
 }
 
 // RenderOn renders with a declared SURFACE: the colours the output is drawn inside. It enables the
@@ -407,6 +414,17 @@ func RenderOn(src string, width int, sf Surface) []string {
 	chipSurface, chipOn = sf, true
 	defer func() { chipOn, chipSurface = false, Surface{} }()
 	return render(src, width)
+}
+
+// RenderOnSpans is RenderOn plus where each code block landed and what its source was. The render is the SAME
+// one — a second pass to recover the geometry would be a second thing to keep in step, and drift here copies
+// the wrong code.
+func RenderOnSpans(src string, width int, sf Surface) ([]string, []CodeSpan) {
+	renderMu.Lock()
+	defer renderMu.Unlock()
+	chipSurface, chipOn = sf, true
+	defer func() { chipOn, chipSurface = false, Surface{} }()
+	return renderSpans(src, width)
 }
 
 // RenderOnString is RenderOn joined with newlines.
@@ -496,10 +514,29 @@ func (in indent) prefixWidth() int {
 	return b
 }
 
+// CodeSpan records where a fenced/indented code block landed in a render's output, AND carries its SOURCE.
+//
+// It exists so a click on a block can copy the CODE rather than the block's rendered cells — see
+// chat.ItemSpan.CodeAt. Copying the rendered form cannot be made clean: the band the block sits in indents
+// every line by a cell, and unlike trailing padding a leading space CANNOT be trimmed, because it is
+// indistinguishable from a real code indent. The source has none of it.
+type CodeSpan struct {
+	FirstRow, LastRow int    // row indexes into the []string the render returned
+	Lang              string // the fence's info string, when it had one
+	Source            string // the fence's contents, verbatim
+}
+
+// ContainsRow reports whether a rendered row belongs to this block.
+func (c CodeSpan) ContainsRow(row int) bool { return row >= c.FirstRow && row <= c.LastRow }
+
+// renderer holds one render's state.
 type renderer struct {
 	width int
 	src   []byte
 	out   []string
+	// codeSpans are the blocks this render emitted, for a caller that wants the click geometry. Recorded on
+	// every render (the cost is one append per block); the callers that do not want them discard them.
+	codeSpans []CodeSpan
 }
 
 // --- line emission -------------------------------------------------------------------------------
@@ -743,6 +780,9 @@ func (r *renderer) codeBlock(n ast.Node, in indent, lang []byte) {
 	if avail < 4 {
 		avail = 4
 	}
+	// THE SPAN STARTS AT THE LABEL, so a click on the dim `bash` line copies the block too — it is the block's
+	// own header, and a label would otherwise be a dead spot one row above a live one.
+	start := len(r.out)
 	if len(lang) > 0 {
 		r.raw(in.first + "\x1b[2m" + truncate(string(lang), avail) + "\x1b[22m")
 	}
@@ -782,6 +822,15 @@ func (r *renderer) codeBlock(n ast.Node, in indent, lang []byte) {
 			r.raw(in.rest + codeBlockLine(part, band))
 		}
 	}
+	// THE SOURCE IS THE FENCE'S CONTENT, reassembled from the lines this block read — not scraped back out of
+	// r.out, which would carry the fill's padding, the indent and whatever colour codes the theme set. An
+	// EMPTY block writes no rows, so it records LastRow < FirstRow and is never resolved.
+	r.codeSpans = append(r.codeSpans, CodeSpan{
+		FirstRow: start,
+		LastRow:  len(r.out) - 1,
+		Lang:     string(lang),
+		Source:   strings.Join(lines, "\n"),
+	})
 }
 
 // codeBlockLine renders one code line inside the block's fill, padded on the RIGHT to the BAND's width so the
