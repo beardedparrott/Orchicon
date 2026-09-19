@@ -309,35 +309,35 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		},
 	})
 	add(SlashCommand{
-		Name: "/project", Usage: "/project [<name-or-id> | none]",
-		Desc:    "pick the PROJECT WORKSPACE the conversations rail shows (no argument opens a list), or move the OPEN conversation into one",
+		Name: "/projects", Usage: "/projects [<filter>]",
+		Aliases: []string{"/project"},
+		Desc:    "choose the PROJECT WORKSPACE the conversations rail shows (type text to filter the list)",
 		MinArgs: 0,
 		Run: func(m *App, args []string) tea.Cmd {
-			want := strings.TrimSpace(strings.Join(args, " "))
-			// NO ARGUMENT OPENS THE PICKER, which is what the operator asked for: "A list should pop up to make it
-			// easier to pick the right one when you type /project slash command." It chooses the SCOPE (the active
-			// workspace), which is the plain reading of "/project to set the active project".
-			if want == "" {
-				return m.openProjectPicker("")
-			}
-			// WITH AN ARGUMENT IT MOVES THE OPEN CONVERSATION — the arity-based split the other commands use
-			// (/theme lists, /theme dark sets). Moving a chat between workspaces is a different act from choosing
-			// which workspace to look at, and it needs a conversation open to mean anything.
+			// BARE, OR WITH A FILTER, IT OPENS THE LIST. The operator: "When you type /projects it should
+			// automatically show you the list of projects to choose from (i.e. If I type '/projects Orch', it
+			// would show me the project Orchicon."
+			//
+			// So the argument is a FILTER, not a selection: it narrows the list and the operator still picks
+			// from it. Narrowing rather than auto-selecting also keeps a prefix from being a commitment — "Orch"
+			// matching two projects shows both rather than guessing.
+			return m.openProjectPickerFiltered("", strings.TrimSpace(strings.Join(args, " ")))
+		},
+	})
+	add(SlashCommand{
+		Name: "/project-move", Usage: "/project-move",
+		Desc:    "move the OPEN conversation into another project workspace",
+		MinArgs: 0,
+		Run: func(m *App, args []string) tea.Cmd {
+			// A SEPARATE NAME RATHER THAN AN ARGUMENT ON /projects. Both open the same list and the picker's
+			// title says which question it is asking, but the two acts are different — a VIEW versus a WRITE —
+			// and overloading one name made "/projects Orch" ambiguous between "filter to Orch" and "move this
+			// chat to Orch".
 			if m.chatConvID == "" {
-				m.dock.SetError("no conversation is open — /project with no argument picks the workspace")
+				m.dock.SetError("no conversation is open — /projects chooses the workspace")
 				return nil
 			}
-			if strings.EqualFold(want, "none") {
-				return m.setConversationProject(m.chatConvID, unassignedScope)
-			}
-			// Resolved by ID or by NAME, case-insensitively — the operator typed a project name in the GUI and
-			// should not have to look up an id to say the same thing here.
-			id, ok := m.resolveProjectRef(want)
-			if !ok {
-				m.dock.SetError("no project matches " + want + " — /project lists them")
-				return nil
-			}
-			return m.setConversationProject(m.chatConvID, id)
+			return m.openProjectPickerFiltered(m.chatConvID, "")
 		},
 	})
 	add(SlashCommand{

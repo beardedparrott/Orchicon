@@ -141,6 +141,9 @@ type projectPicker struct {
 	// choosing the RAIL'S SCOPE. The two are the same question ("which project?") with different consequences,
 	// so they share the control and the title says which one you are answering.
 	moveConvID string
+	// filter is the text the picker was opened with (""), kept so a project list arriving AFTER the overlay
+	// opened can be narrowed the same way instead of silently widening (see onRailProjectsApplied).
+	filter string
 }
 
 // scopePickerTitle is the overlay's heading, which is what tells the two uses apart.
@@ -204,8 +207,17 @@ func (m *App) projectPickerView() string {
 		b.WriteString(theme.HintText.Render(truncateRight("for: "+title, inner)) + "\n")
 	}
 	b.WriteString(theme.HintText.Render(strings.Repeat("─", inner)) + "\n")
+	if p.filter != "" {
+		// THE FILTER IS SHOWN, so a narrowed list cannot be mistaken for a list that IS everything — the
+		// operator typed "Orch", saw one row, and needs to know why.
+		b.WriteString(theme.HintText.Render(truncateRight("filter: "+p.filter, inner)) + "\n")
+	}
 	if len(p.options) == 0 {
-		b.WriteString(theme.HintText.Render(truncateRight("no projects yet — create one in Work", inner)) + "\n")
+		msg := "no projects yet — create one in Work"
+		if p.filter != "" {
+			msg = "nothing matches " + p.filter
+		}
+		b.WriteString(theme.HintText.Render(truncateRight(msg, inner)) + "\n")
 	}
 	for i, o := range p.options {
 		// The archived marker and the count are dim right-hand context, so the name column stays readable and
@@ -227,7 +239,16 @@ func (m *App) projectPickerView() string {
 		}
 		b.WriteString(theme.ListItem.Render(row) + "\n")
 	}
-	b.WriteString(theme.HintText.Render(truncateRight("↑/↓ choose · enter select · esc cancel", inner)))
+	// THE FOOTER NAMES BOTH ACTS. `m` moves the OPEN conversation into the highlighted workspace instead of
+	// switching the rail to it — the same list answering the same question, with the write spelled out rather
+	// than hidden behind a chord nobody could guess. It is offered only when there is a conversation to move.
+	hint := "↑/↓ choose · enter switch workspace · esc cancel"
+	if p.moveConvID != "" {
+		hint = "↑/↓ choose · enter move here · esc cancel"
+	} else if m.chatConvID != "" {
+		hint = "↑/↓ choose · enter switch · m move the open chat · esc cancel"
+	}
+	b.WriteString(theme.HintText.Render(truncateRight(hint, inner)))
 	return b.String()
 }
 
@@ -260,6 +281,18 @@ func (m *App) projectPickerKey(k tea.KeyMsg) (handled bool, cmd tea.Cmd) {
 		}
 		m.setProjectScope(opt.Value)
 		return true, nil
+	case "m":
+		// MOVE THE OPEN CONVERSATION to the highlighted workspace — the write, where `enter` is the view. The
+		// unassigned scope is a legitimate target: a chat has to be able to leave a project.
+		if p.moveConvID != "" || m.chatConvID == "" {
+			return false, nil // already in move mode, or nothing to move: not this key's gesture
+		}
+		opt, ok := p.selected()
+		if !ok {
+			return true, nil
+		}
+		m.projectPick = nil
+		return true, m.setConversationProject(m.chatConvID, opt.Value)
 	}
 	return false, nil
 }
@@ -281,6 +314,9 @@ func (m *App) projectPickerKeyCmd(k tea.KeyMsg) tea.Cmd {
 // pointing at nothing.
 func (m *App) setProjectScope(scope string) {
 	m.projectScope = scope
+	// A DELIBERATE CHOICE, recorded so the launch-directory default can never overrule it — including in the
+	// window before the project list has landed.
+	m.projectScopeChosen = true
 	opts := projectScopeOptions(m.railProjects, m.conversations)
 	label := projectScopeLabel(scope, opts)
 	m.dock.SetNotice("project: " + label)
@@ -291,17 +327,31 @@ func (m *App) setProjectScope(scope string) {
 }
 
 // openProjectPicker opens the picker for a purpose. It loads the project list first when the rail has none —
-// /project is how a TUI-only operator discovers projects, so it must not require having looked at the rail first.
+// /projects is how a TUI-only operator discovers projects, so it must not require having looked at the rail
+// first.
 func (m *App) openProjectPicker(moveConvID string) tea.Cmd {
-	p := &projectPicker{options: projectScopeOptions(m.railProjects, m.conversations), moveConvID: moveConvID}
-	if moveConvID == "" {
-		p.selectByValue(m.projectScope)
-	} else {
-		// For a move, park the cursor on the conversation's CURRENT project so the list opens where it is.
-		for _, c := range m.conversations {
-			if c.ID == moveConvID {
-				p.selectByValue(c.ProjectID)
-				break
+	return m.openProjectPickerFiltered(moveConvID, "")
+}
+
+// openProjectPickerFiltered opens the picker with the option list narrowed to a filter string.
+//
+// The operator: "If I type '/projects Orch', it would show me the project Orchicon." The filter matches the
+// project NAME or its id, case-insensitively, as a SUBSTRING — so a partial word still finds it, and the
+// operator is never left staring at an empty list wondering whether the project exists. "All projects" and
+// "No project" are dropped while a filter is active: neither is a project, and matching them on the literal
+// text would be a false hit.
+func (m *App) openProjectPickerFiltered(moveConvID, filter string) tea.Cmd {
+	p := &projectPicker{options: m.projectOptionsFiltered(filter), moveConvID: moveConvID, filter: filter}
+	if filter == "" {
+		if moveConvID == "" {
+			p.selectByValue(m.projectScope)
+		} else {
+			// For a move, park the cursor on the conversation's CURRENT project so the list opens where it is.
+			for _, c := range m.conversations {
+				if c.ID == moveConvID {
+					p.selectByValue(c.ProjectID)
+					break
+				}
 			}
 		}
 	}
@@ -312,17 +362,40 @@ func (m *App) openProjectPicker(moveConvID string) tea.Cmd {
 	return nil
 }
 
+// projectOptionsFiltered is projectScopeOptions narrowed by a filter string (see openProjectPickerFiltered).
+func (m *App) projectOptionsFiltered(filter string) []projectScopeOption {
+	opts := projectScopeOptions(m.railProjects, m.conversations)
+	if filter == "" {
+		return opts
+	}
+	needle := strings.ToLower(filter)
+	kept := make([]projectScopeOption, 0, len(opts))
+	for _, o := range opts {
+		if o.Value == projectScopeAll || o.Value == unassignedScope {
+			continue
+		}
+		if strings.Contains(strings.ToLower(o.Label), needle) || strings.Contains(strings.ToLower(o.Value), needle) {
+			kept = append(kept, o)
+		}
+	}
+	return kept
+}
+
 // onRailProjectsApplied refreshes an OPEN picker after a project load, so the list is never stale behind the
-// overlay: /project on a cold rail would otherwise show only the conversations' own ids and no project names.
+// overlay: /projects on a cold rail would otherwise show only the conversations' own ids and no project names.
 func (m *App) onRailProjectsApplied() {
 	if m.projectPick == nil {
 		return
 	}
 	keep := m.projectPick.sel
-	m.projectPick.options = projectScopeOptions(m.railProjects, m.conversations)
+	// REBUILD THROUGH THE SAME FILTER the picker was opened with, so a list that lands after the overlay opened
+	// cannot silently widen it past what the operator asked for.
+	m.projectPick.options = m.projectOptionsFiltered(m.projectPick.filter)
 	if keep < len(m.projectPick.options) {
 		m.projectPick.sel = keep
 	} else if len(m.projectPick.options) > 0 {
 		m.projectPick.sel = len(m.projectPick.options) - 1
+	} else {
+		m.projectPick.sel = 0
 	}
 }

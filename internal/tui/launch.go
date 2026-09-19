@@ -177,18 +177,28 @@ func (m *App) checkLaunchProject() tea.Cmd {
 // /home/me/project-notes is NOT inside /home/me/project, and a bare HasPrefix test
 // says it is.
 func dirTiedToProject(projects []*apiv1.Project, dir string) bool {
-	want := filepath.Clean(dir)
 	for _, p := range projects {
-		pd := strings.TrimSpace(p.GetProjectDir())
-		if pd == "" {
-			continue
-		}
-		got := filepath.Clean(pd)
-		if got == want || strings.HasPrefix(want, got+string(filepath.Separator)) {
+		if dirInsideProject(p.GetProjectDir(), dir) {
 			return true
 		}
 	}
 	return false
+}
+
+// dirInsideProject reports whether dir is the project directory itself or lives under it.
+//
+// ONE IMPLEMENTATION, TWO CALLERS: the launch prompt's "is this directory unattached?" and the rail's "which
+// project is the workspace I was launched in?". They are the same question about the same paths, and a second
+// copy of the boundary rule is how the two would come to disagree — the launch prompt declaring a directory
+// attached while the rail could not name its project, or the reverse.
+func dirInsideProject(projectDir, dir string) bool {
+	want := filepath.Clean(dir)
+	pd := strings.TrimSpace(projectDir)
+	if pd == "" {
+		return false
+	}
+	got := filepath.Clean(pd)
+	return got == want || strings.HasPrefix(want, got+string(filepath.Separator))
 }
 
 // launchProjectName suggests a project name: the directory's own base name.

@@ -351,41 +351,152 @@ func TestThePickerOwnsItsKeys(t *testing.T) {
 	}
 }
 
-// /project WITH AN ARGUMENT MOVES THE OPEN CONVERSATION, by NAME and case-insensitively — the same name the
-// operator would type in the GUI's dialog.
-func TestProjectWithANameMovesTheOpenConversationByItsName(t *testing.T) {
+// /projects TAKES A FILTER, NOT A SELECTION. The operator: "If I type '/projects Orch', it would show me the
+// project Orchicon." So the argument narrows the list and the operator still picks from it — and a prefix that
+// matches several projects shows all of them rather than guessing at one.
+func TestProjectsWithAnArgumentFiltersTheList(t *testing.T) {
 	m := scopePlane(t)
-	m.chatConvID = "c-1"
-	if _, ok := m.resolveProjectRef("bEtA"); !ok {
-		t.Error("a project name is not resolvable case-insensitively")
+	runSlashTUI(t, m, "/projects beta")
+	if m.projectPick == nil {
+		t.Fatal("/projects with a filter did not open the picker")
 	}
-	if err := runSlashTUI(t, m, "/project nope"); !strings.Contains(err, "no project matches") {
-		t.Errorf("an unknown project name was not reported: %q", err)
+	if len(m.projectPick.options) != 1 || m.projectPick.options[0].Label != "Beta" {
+		t.Fatalf("the filter did not narrow the list to Beta: %+v", m.projectPick.options)
+	}
+
+	// CASE-INSENSITIVE, and a partial word finds it — the operator should not have to remember the casing, or
+	// type a whole name.
+	runSlashTUI(t, m, "/projects ALP")
+	if len(m.projectPick.options) != 1 || m.projectPick.options[0].Label != "Alpha" {
+		t.Errorf("a case-insensitive partial filter did not find Alpha: %+v", m.projectPick.options)
+	}
+
+	// ALL PROJECTS AND NO PROJECT ARE NOT PROJECTS: neither may survive a filter, or "No" would match "No
+	// project" and a filter for a real project could be polluted by a non-project row.
+	runSlashTUI(t, m, "/projects no")
+	for _, o := range m.projectPick.options {
+		if o.Value == projectScopeAll || o.Value == unassignedScope {
+			t.Errorf("the non-project scope %q survived a filter", o.Label)
+		}
+	}
+
+	// A FILTER THAT MATCHES NOTHING SHOWS AN EMPTY LIST, and the picker says why — never a silent list that
+	// looks like the tenant has no projects.
+	runSlashTUI(t, m, "/projects zzzz")
+	if len(m.projectPick.options) != 0 {
+		t.Errorf("a non-matching filter left %d options", len(m.projectPick.options))
+	}
+	if view := m.projectPickerView(); !strings.Contains(view, "nothing matches") {
+		t.Errorf("an empty filtered list does not say why: %q", view)
 	}
 }
 
-// AND "none" UNASSIGNS, handled BEFORE name resolution so the keyword cannot be shadowed by a project's name.
-func TestProjectNoneUnassigns(t *testing.T) {
+// AND IT IS REACHABLE AS /projects AND /project — the operator typed the plural, and the singular was the
+// previous name, so both resolve rather than one being a silent "unknown command".
+func TestBothProjectSpellingsResolve(t *testing.T) {
 	m := scopePlane(t)
-	m.chatConvID = "c-1"
-	runSlashTUI(t, m, "/project none")
-	if strings.Contains(m.dock.Err, "no project matches") {
-		t.Errorf("\"none\" was treated as a project name: %q", m.dock.Err)
+	for _, name := range []string{"/projects", "/project"} {
+		m.projectPick = nil
+		runSlashTUI(t, m, name)
+		if m.projectPick == nil {
+			t.Errorf("%s did not open the picker", name)
+		}
 	}
 }
 
-// WITH NOTHING OPEN, THE MOVE FORM SAYS SO — while bare /project still opens the workspace list, which needs no
-// conversation at all.
-func TestProjectMoveWithoutAnOpenConversationExplainsItself(t *testing.T) {
+// THE OPEN CONVERSATION CAN STILL BE MOVED, but by its OWN action rather than by overloading the workspace
+// command — `m` in the picker, and /project-move to open it in that mode.
+func TestTheMoveActionIsReachableAndDistinct(t *testing.T) {
 	m := scopePlane(t)
+	m.chatConvID = "c-1"
+	runSlashTUI(t, m, "/project-move")
+	if m.projectPick == nil || m.projectPick.moveConvID != "c-1" {
+		t.Fatalf("/project-move did not open the picker in move mode: %+v", m.projectPick)
+	}
+	// Its title says it is a WRITE, which is what tells the two uses apart.
+	if view := m.projectPickerView(); !strings.Contains(view, "MOVE") {
+		t.Errorf("the move picker does not say it is a move: %q", view)
+	}
+
+	// With nothing open, it explains itself instead of opening a picker whose enter would do nothing.
+	m.projectPick = nil
 	m.chatConvID = ""
-	if err := runSlashTUI(t, m, "/project Alpha"); !strings.Contains(err, "no conversation is open") {
+	if err := runSlashTUI(t, m, "/project-move"); !strings.Contains(err, "no conversation is open") {
 		t.Errorf("moving with nothing open gave %q", err)
 	}
-	m.projectPick = nil
-	runSlashTUI(t, m, "/project")
+}
+
+// BARE /projects NEEDS NO CONVERSATION AT ALL. Choosing the workspace is a VIEW, and a fresh session has no
+// conversation open — so the list must open regardless. (The MOVE form's own refusal is asserted above.)
+func TestChoosingTheWorkspaceNeedsNoOpenConversation(t *testing.T) {
+	m := scopePlane(t)
+	m.chatConvID = ""
+	runSlashTUI(t, m, "/projects")
 	if m.projectPick == nil {
-		t.Error("bare /project needs an open conversation to list workspaces, which it must not")
+		t.Error("bare /projects needs an open conversation to list workspaces, which it must not")
+	}
+}
+
+// THE WIRING IS THE BUG, SO THE WIRING IS TESTED.
+//
+// Every other test in this file covers a PURE function — the filter, the launch-directory match, the active
+// project. None of them would have caught the fault the operator actually hit, which was that the project list
+// was never FETCHED in a normal session: Init() loaded the conversations directly, so loadRailProjects never
+// ran, and the picker offered nothing but "All projects". A test of the matching rule cannot see a missing
+// request.
+//
+// So this drives the real message path: a conversations load on a plane whose project list has never landed
+// must ALSO fetch the projects, and the fetch must actually reach the ProjectService.
+func TestAConversationsLoadAlsoFetchesProjects(t *testing.T) {
+	projects := &stubProjectList{names: []string{"Orchicon", "ai-tools"}}
+	m := appWithProjectService(t, projects)
+	m.railProjectsLoaded = false
+	m.railProjects = nil
+
+	// A conversations load, exactly as the controller delivers it.
+	nm, cmd := m.Update(chat.ConversationsMsg{Convs: []chat.Conversation{{ID: "c1", Title: "one"}}})
+	app, ok := nm.(*App)
+	if !ok || app == nil {
+		t.Fatal("Update returned a non-App model")
+	}
+	if cmd == nil {
+		t.Fatal("a conversations load produced no command, so the projects would never be fetched — this is " +
+			"precisely the state that left the workspace picker empty")
+	}
+	// Run the batch. bubbletea batches into a tea.BatchMsg holding the sub-commands.
+	for _, c := range flattenCmds(cmd()) {
+		if msg := c(); msg != nil {
+			app.Update(msg)
+		}
+	}
+	if app.railProjectsLoaded != true {
+		t.Error("the project list was never marked loaded, so the fetch did not complete")
+	}
+	if projects.calls == 0 {
+		t.Error("the ProjectService was never called — the conversations load fetched no projects")
+	}
+	if got := len(app.railProjects); got != 2 {
+		t.Errorf("railProjects = %d, want 2 (the picker would show no real projects)", got)
+	}
+}
+
+// AND IT DOES NOT RE-FETCH ONCE LOADED — the self-healing retry must not become a per-load request for a
+// tenant whose project list is legitimately empty.
+func TestProjectsAreFetchedOnlyOnce(t *testing.T) {
+	projects := &stubProjectList{}
+	m := appWithProjectService(t, projects)
+	m.railProjectsLoaded = true // as after a successful load
+
+	_, cmd := m.Update(chat.ConversationsMsg{Convs: []chat.Conversation{{ID: "c1"}}})
+	if cmd != nil {
+		for _, c := range flattenCmds(cmd()) {
+			if msg := c(); msg != nil {
+				m.Update(msg)
+			}
+		}
+	}
+	if projects.calls != 0 {
+		t.Errorf("the project list was re-fetched %d time(s) after it had loaded", projects.calls)
 	}
 }
 

@@ -322,8 +322,16 @@ type App struct {
 	railProjects []railProject
 	// projectScope is the ACTIVE PROJECT the rail is filtered by — the operator's "Projects are WORKSPACES" and
 	// "/project to set the active project". It defaults to projectScopeAll so nothing that predates the project
-	// column (which defaults to empty) is hidden on launch.
+	// column (which defaults to empty) is hidden on launch, and is then pointed at the launch directory's own
+	// project (see applyLaunchDirScope) once the project list arrives.
 	projectScope string
+	// projectScopeChosen records that the operator picked the workspace THEMSELVES, which is what stops the
+	// launch-directory default from overruling them. It is set by setProjectScope and never cleared: choosing a
+	// workspace is a decision about this session.
+	projectScopeChosen bool
+	// railProjectsLoaded records that a project load SUCCEEDED, so a failed one is retried by the next
+	// conversations load rather than leaving an empty picker for the session.
+	railProjectsLoaded bool
 	// projectPick is the /project modal (nil = closed). It chooses the scope, or moves one conversation — see
 	// projectpick.go for why the two share the control.
 	projectPick  *projectPicker
@@ -1833,7 +1841,7 @@ func (m *App) Init() tea.Cmd {
 	// The startup tab loads here; every other tab loads on first activation
 	// (ensureLoaded, called from SwitchTo).
 	m.ensureLoaded(m.active)
-	cmds = append(cmds, m.waitChat(), m.chat.LoadConversations(), m.fetchAskDefaultModel())
+	cmds = append(cmds, m.waitChat(), m.chat.LoadConversations(), m.loadRailProjects(), m.fetchAskDefaultModel())
 	// The category list is loaded ONCE at startup alongside everything else, so the first assignment the
 	// operator makes already has its picker populated. The assign modal also triggers a load if the
 	// cache is empty (a session that started before the server had any, or a failed first load), so this
@@ -2702,6 +2710,16 @@ func (m *App) onConversations(msg chat.ConversationsMsg) tea.Cmd {
 	// when the grouping was created in the OTHER client: the shell's cache is loaded once at startup, so
 	// before this the rail could only ever show groupings that existed when the TUI began.
 	m.applyCategorySet(apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_CONVERSATION, msg.Categories, msg.Assignments)
+	// AND THE PROJECT LIST, IF IT NEVER LANDED. The two are fetched together where the shell can arrange it, but
+	// they arrive on separate paths and only ONE of them was wired everywhere: Init() loads conversations
+	// directly, so the project list was never fetched in a normal session and the workspace picker offered
+	// nothing but "All projects". This is the self-healing half — every conversations load retries while the
+	// project list is still missing, whichever path asked for the conversations. (railProjectsLoaded, not
+	// len(railProjects): a tenant with no projects must not re-request on every load forever.)
+	if !m.railProjectsLoaded && m.clients != nil {
+		m.conversations = msg.Convs
+		return tea.Batch(m.onChatWake(), m.loadRailProjects(), m.waitChat())
+	}
 	m.conversations = msg.Convs
 	if m.convSel >= len(m.railRows()) {
 		m.convSel = 0
@@ -3649,6 +3667,11 @@ func (m *App) createConversationAndSend(text, preamble string) tea.Cmd {
 	// new conversation and the strip is correct from the first render.
 	model := m.currentAskModel()
 	mode := m.chat.PendingMode()
+	// THE ACTIVE WORKSPACE, READ HERE — on the tea loop, where the shell's state is current — and captured by
+	// the command below. The operator: "any conversation you make should be tied to the project that is
+	// currently set across all of orch." A conversation created while a workspace is chosen belongs to it; from
+	// All projects (or No project) it is created unassigned, which is what those scopes mean.
+	projectID := m.activeProjectID()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
@@ -3659,8 +3682,9 @@ func (m *App) createConversationAndSend(text, preamble string) tea.Cmd {
 		// calls createConversation({mode}) with no initialMessage and then
 		// sendStreaming(conv.id, text) — see ask-orchicon.tsx.
 		resp, err := cl.Ask.CreateConversation(ctx, connect.NewRequest(&apiv1.CreateConversationRequest{
-			ModelRef: model,
-			Mode:     mode,
+			ModelRef:  model,
+			Mode:      mode,
+			ProjectId: projectID,
 		}))
 		if err != nil {
 			return chat.ErrMsg{Where: "create conversation", Err: err}

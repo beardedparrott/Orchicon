@@ -80,21 +80,9 @@ func (m *App) projectLabelFor(projectID string) string {
 	return projectID
 }
 
-// resolveProjectRef matches a project by id or by name, case-insensitively. Ids win, so a project whose name
-// happens to look like another project's id can still be named unambiguously.
-func (m *App) resolveProjectRef(ref string) (string, bool) {
-	for _, p := range m.railProjects {
-		if p.ID == ref {
-			return p.ID, true
-		}
-	}
-	for _, p := range m.railProjects {
-		if strings.EqualFold(p.Name, ref) {
-			return p.ID, true
-		}
-	}
-	return "", false
-}
+// resolveProjectRef was removed with the argument-as-selection form of the command: /projects takes a FILTER
+// now, and moving a conversation goes through the picker's own action (see projectPickerKey), so nothing needs
+// to turn a project name into an id from a slash argument any more.
 
 // setConversationProject moves the OPEN conversation into a project (or unassigns it) — the write behind
 // /project, and the same rpc the GUI's folder drop target calls.
@@ -112,13 +100,15 @@ func (m *App) setConversationProject(convID, projectID string) tea.Cmd {
 	return m.chat.SetConversationProject(convID, projectID)
 }
 
-// railProject is the minimum the rail needs to draw a project folder. Deliberately not the whole
-// apiv1.Project: the rail prints a name, a status and a count, and holding the full message would invite the
-// rail to grow opinions about fields it has no business rendering.
+// railProject is the minimum the rail needs to draw a project folder — plus its DIRECTORY, which is what ties a
+// launch directory to a workspace.
 type railProject struct {
 	ID     string
 	Name   string
 	Status string
+	// Dir is the project's project_dir. It is here so the rail can answer "which workspace was I launched in?"
+	// with the SAME boundary rule the launch prompt uses (dirInsideProject) rather than a second one.
+	Dir string
 }
 
 // railProjectsMsg carries the project list back to the shell.
@@ -152,7 +142,10 @@ func (m *App) loadRailProjects() tea.Cmd {
 		}
 		out := make([]railProject, 0, len(resp.Msg.GetProjects()))
 		for _, p := range resp.Msg.GetProjects() {
-			out = append(out, railProject{ID: p.GetId(), Name: p.GetName(), Status: projectStatusWord(p.GetStatus())})
+			out = append(out, railProject{
+				ID: p.GetId(), Name: p.GetName(), Status: projectStatusWord(p.GetStatus()),
+				Dir: strings.TrimSpace(p.GetProjectDir()),
+			})
 		}
 		return railProjectsMsg{Projects: out}
 	}
@@ -161,9 +154,20 @@ func (m *App) loadRailProjects() tea.Cmd {
 // onRailProjects applies a fetched project list.
 func (m *App) onRailProjects(msg railProjectsMsg) tea.Cmd {
 	if msg.Err != "" {
+		// LEFT UNLOADED ON FAILURE, deliberately: railProjectsLoaded stays false so the next conversations load
+		// retries. Marking it loaded on a failure would leave the operator with an empty picker for the rest of
+		// the session over one transient error.
 		return nil
 	}
 	m.railProjects = msg.Projects
+	m.railProjectsLoaded = true
+	// THE WORKSPACE FROM THE LAUNCH DIRECTORY, when the operator has not chosen one.
+	//
+	// The operator: "The default project in the TUI should be the one based on the directory you launched it
+	// from." It is applied HERE rather than at startup because the project list is what answers it — there is
+	// nothing to match a directory against until it arrives — and only while the scope is UNCHOSEN, so it can
+	// never override a deliberate selection (including one made in the moment before the list landed).
+	m.applyLaunchDirScope()
 	// A picker opened on a cold rail showed only the conversations' own ids; now that the names have arrived,
 	// refresh the list behind the overlay so /project never presents raw ids to someone who just asked for it.
 	m.onRailProjectsApplied()
@@ -172,4 +176,59 @@ func (m *App) onRailProjects(msg railProjectsMsg) tea.Cmd {
 		m.convSel = max(0, len(m.railRows())-1)
 	}
 	return nil
+}
+
+// applyLaunchDirScope points the rail at the workspace the operator launched from, once, and only while they
+// have not chosen for themselves.
+//
+// A directory that matches NOTHING leaves the scope at All projects: an unmatched launch directory is not a
+// reason to hide the conversation list, and inventing a default workspace would be worse than none.
+func (m *App) applyLaunchDirScope() {
+	if m.projectScopeChosen || m.launchDir == "" || m.projectScope != projectScopeAll {
+		return
+	}
+	p, ok := m.projectForDir(m.launchDir)
+	if !ok {
+		return
+	}
+	m.projectScope = p.ID
+}
+
+// projectForDir resolves the project a directory belongs to, using the SAME boundary rule the launch prompt
+// uses (dirInsideProject) — one rule, so the prompt cannot call a directory attached while the rail cannot name
+// its project.
+//
+// The DEEPEST match wins. A directory can sit inside two projects (a nested repo, or a project whose dir is a
+// parent of another's), and the more specific one is the workspace the operator is actually in.
+func (m *App) projectForDir(dir string) (railProject, bool) {
+	var best railProject
+	bestLen := -1
+	for _, p := range m.railProjects {
+		if !dirInsideProject(p.Dir, dir) {
+			continue
+		}
+		if n := len(strings.TrimSpace(p.Dir)); n > bestLen {
+			best, bestLen = p, n
+		}
+	}
+	return best, bestLen >= 0
+}
+
+// activeProjectID is the project a NEW conversation belongs to: the selected workspace, when it names a real
+// project.
+//
+// Empty for All projects and for the No-project scope, which is what those scopes mean. A scope naming a project
+// the rail does not know (a stale selection) is also empty rather than passed through: the server REJECTS an
+// unknown project id on create, so forwarding one would fail the send outright instead of filing the chat as
+// unassigned.
+func (m *App) activeProjectID() string {
+	if m.projectScope == projectScopeAll || m.projectScope == unassignedScope {
+		return ""
+	}
+	for _, p := range m.railProjects {
+		if p.ID == m.projectScope {
+			return p.ID
+		}
+	}
+	return ""
 }

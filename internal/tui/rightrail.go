@@ -115,13 +115,12 @@ func (m *App) rightRailView() string {
 	}
 
 	title := "Conversations"
-	// THE ACTIVE PROJECT IS THE RAIL'S TITLE, because a scope you cannot see is a scope you forget you are in —
-	// and the operator explicitly wanted projects to be WORKSPACES, so which workspace is in force has to be
-	// legible from the rail itself rather than only from a notice that has already faded.
+	// THE ACTIVE WORKSPACE IS THE RAIL'S TITLE, always — the operator: "In the conversations list rail at the top,
+	// it should say the project name that is currently selected." A scope you cannot see is a scope you forget
+	// you are in, and naming it only when it is a project leaves "All projects" unlabelled, which is exactly the
+	// state where a chat can be filed anywhere.
 	label := projectScopeLabel(m.projectScope, projectScopeOptions(m.railProjects, m.conversations))
-	if m.projectScope != projectScopeAll {
-		title = "Conversations · " + label
-	}
+	title = "Conversations · " + label
 	if n := len(m.scopedConversations()); n > 0 && m.convErr == "" {
 		title = title + fmt.Sprintf(" (%d)", n)
 	}
@@ -143,6 +142,21 @@ func (m *App) rightRailView() string {
 		body = append(body, theme.HintText.Render(truncateRight("loading conversations…", innerW)))
 	case len(m.conversations) == 0:
 		body = append(body, theme.HintText.Render(truncateRight("none yet — type below", innerW)))
+	case len(m.scopedConversations()) == 0:
+		// A SCOPE THAT HOLDS NOTHING IS NOT AN EMPTY RAIL.
+		//
+		// This state is NEW and it is reachable on the operator's own instance: the launch directory now selects
+		// its project as the workspace, and every conversation that predates the project column is unassigned — so
+		// scoping to a project can filter the whole list out. Without this case the rail fell into the default
+		// branch below, drew NO rows at all and printed a counter of "1-0/0": the operator's own 29 conversations
+		// become invisible and the pane reads as broken rather than as filtered.
+		//
+		// It names the workspace and the way out, which is the one thing the operator needs and cannot get from an
+		// empty box.
+		body = append(body,
+			theme.HintText.Render(truncateRight("none in "+label, innerW)),
+			theme.HintText.Render(truncateRight("/projects to switch", innerW)),
+		)
 	default:
 		// THE RAIL RENDERS ITS ROWS, not m.conversations: a grouping is a row of its own, and the members
 		// of a collapsed folder are not rows at all.
