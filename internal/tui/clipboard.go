@@ -61,9 +61,97 @@ type clipState struct {
 	ax, ay int
 	hx, hy int
 
+	// region is the pane the CURRENT drag started in, and hasRegion says whether one was found. Both are
+	// set by the shell at drag start (see App.selectionRegionAt) rather than computed here, because only
+	// the shell knows the layout — and a method value captured on the App would hold a STALE one, since
+	// App is a value model copied on every Update.
+	region    clipRegion
+	hasRegion bool
+
 	// toast is the transient confirmation line; toastSeq guards its timer.
 	toast    string
 	toastSeq int
+}
+
+// clipRegion is the pane a selection is confined to.
+//
+// The operator: "When copying something in conversations it is copying the ENTER line even past the
+// conversations window into the conversation list." A selection here is a RECTANGLE over the whole frame —
+// deliberate, since the shell is the only layer that owns the frame — but the practical effect is that a
+// drag from the transcript into the conversations rail copies BOTH, interleaved line by line, which is
+// never what someone selecting a message wants.
+type clipRegion struct{ x0, y0, x1, y1 int }
+
+// setRegion confines the next drag to a pane; clearRegion leaves it unbounded.
+func (c *clipState) setRegion(r clipRegion) { c.region, c.hasRegion = r, true }
+func (c *clipState) clearRegion()           { c.region, c.hasRegion = clipRegion{}, false }
+
+// selectionRegionAt classifies a frame CELL to the PANE that owns it, so a drag can be confined to the
+// pane its anchor fell in.
+//
+// It mirrors baseView's arithmetic exactly rather than re-deriving a layout of its own: the shell paints
+// the chrome (tabBarRows) · one blank separator · the body — the active screen, then the slide-out strip,
+// then the dock — · the footer, and the diff pane and the conversations rail are joined as extra COLUMNS
+// over the WHOLE body. Those three facts are the entire geometry, and they are the reason this lives on
+// the App (which owns them) and not on clipState (which is handed the finished frame and cannot tell one
+// column from another).
+//
+// A cell it cannot classify returns false, leaving the selection UNBOUNDED — the behaviour that existed
+// before any of this. An unclassified cell degrades to what it always did rather than being clipped to a
+// guess, which would silently drop text from a pane the operator did mean to select.
+//
+// WHY THE SCREEN BLOCK AND NOT "JUST THE TRANSCRIPT": on the Ask tab the screen block IS the transcript
+// pane — border, title, fields, body — so confining to it confines to the transcript. Doing it this way
+// also makes the DOCK a pane of its own, which is what stops a drag out of the transcript from picking up
+// the composer's hint line: the operator's "copying the ENTER line".
+func (m *App) selectionRegionAt(x, y int) (clipRegion, bool) {
+	w, h := m.width, m.height
+	if w <= 0 || h <= 0 || x < 0 || x >= w || y < 0 || y >= h {
+		return clipRegion{}, false
+	}
+	top := tabBarRows + 1 // row 0 the tab bar, row 1 the rule, row 2 the blank separator
+	screenRows, panelRows, dockRows := m.screenRows(), m.panelRows(), m.dock.Lines()
+	bottom := top + screenRows + panelRows + dockRows - 1
+	// THE FOOTER IS NOT A PANE, and a body taller than the frame is truncated by fillView — so the last
+	// row that can carry one is the row above the footer.
+	if last := h - 2; bottom > last {
+		bottom = last
+	}
+	if y < top || y > bottom {
+		return clipRegion{}, false
+	}
+	// The rail and the diff pane are joined over the whole body, so they claim their columns before the
+	// center column is considered. Their widths are subtracted in contentWidth(), so the three never
+	// overlap and the order of these two checks cannot matter.
+	if m.railVisible() && x >= w-ConversationsRailWidth {
+		return clipRegion{w - ConversationsRailWidth, top, w - 1, bottom}, true
+	}
+	left := 0
+	if m.diffOpen && m.diffPane != nil {
+		if x < m.diffPaneWidth() {
+			return clipRegion{0, top, m.diffPaneWidth() - 1, bottom}, true
+		}
+		left = m.diffPaneWidth()
+	}
+	right := left + m.contentWidth() - 1
+	// Three panes stacked in the center column: the screen, the strip, the dock.
+	switch {
+	case y < top+screenRows:
+		return clipRegion{left, top, right, top + screenRows - 1}, true
+	case y < top+screenRows+panelRows:
+		return clipRegion{left, top + screenRows, right, top + screenRows + panelRows - 1}, true
+	}
+	return clipRegion{left, top + screenRows + panelRows, right, bottom}, true
+}
+
+func clampTo(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 // setFrame records the frame the renderer just painted. The selection is expressed in ITS cells.
@@ -94,29 +182,91 @@ func (c *clipState) bounds() (x0, y0, x1, y1 int, ok bool) {
 	if y0 > y1 || (y0 == y1 && x0 > x1) {
 		x0, y0, x1, y1 = x1, y1, x0, y0
 	}
+	// CONFINED TO THE PANE THE DRAG STARTED IN — the operator's "even past the conversations window into
+	// the conversation list". See clipRegion.
+	if c.hasRegion {
+		x0 = clampTo(x0, c.region.x0, c.region.x1)
+		x1 = clampTo(x1, c.region.x0, c.region.x1)
+		y0 = clampTo(y0, c.region.y0, c.region.y1)
+		y1 = clampTo(y1, c.region.y0, c.region.y1)
+	}
 	if x0 == x1 && y0 == y1 {
 		return 0, 0, 0, 0, false
 	}
 	return x0, y0, x1, y1, true
 }
 
+// rowExtent is the first and last cell of a row that carry CONTENT.
+//
+// TWO EXCLUSIONS, and both are things the operator met in a paste:
+//
+//   - the pane's BORDER cells are chrome, not content, so selecting across the transcript otherwise puts
+//     a `│` at the start of every copied line — the "weird pipes and characters". The pane's own border is
+//     the same glyph the code block used to draw.
+//   - the REGION this selection began in, so a drag into the rail does not take the rail with it.
+//
+// Only box-drawing characters count as border: a plain `|` is CONTENT, and excluding it would corrupt a
+// copy of code that contains one.
+func (c *clipState) rowExtent(row int) (int, int) {
+	lo, hi := 0, c.rowWidth(row)-1
+	// THE REGION COMES FIRST, THEN THE BORDER STRIP — and the order is load-bearing, not stylistic.
+	//
+	// Stripping first would strip the FRAME's outermost border cells and leave the REGION's own border
+	// inside the span: a drag to the right edge of the transcript would still copy the transcript pane's own
+	// `│`, which is precisely the glyph the operator pasted. Confining first means the cells stripped are the
+	// ones the selection actually reached, so the pane edge is clean whichever pane the drag came from.
+	if c.hasRegion {
+		lo = clampTo(lo, c.region.x0, c.region.x1)
+		hi = clampTo(hi, c.region.x0, c.region.x1)
+	}
+	for lo < hi && c.isBorderCell(row, lo) {
+		lo++
+	}
+	for hi > lo && c.isBorderCell(row, hi) {
+		hi--
+	}
+	return lo, hi
+}
+
+// isBorderCell reports whether the cell at (row, col) is a pane border character.
+func (c *clipState) isBorderCell(row, col int) bool {
+	if row < 0 || row >= len(c.frame) || col < 0 {
+		return false
+	}
+	switch strings.TrimSpace(cellText(c.frame[row], col, col)) {
+	case "│", "┃", "║":
+		return true
+	}
+	return false
+}
+
 // span returns the cell range this row contributes to the selection, or ok=false when the row is
 // outside it. The first and last rows are PARTIAL (from the anchor / to the head); the rows between
 // them are taken whole, which is what makes a multi-row drag copy what it visually covers.
+//
+// EVERY RANGE COMES FROM rowExtent, so the border exclusion and the region confinement apply to the
+// MIDDLE rows as well as the ends — which is where they matter: a multi-row drag across two panes takes
+// its middle rows whole, and "whole" used to mean the entire frame width.
 func (c *clipState) span(row, x0, y0, x1, y1 int) (int, int, bool) {
 	if row < y0 || row > y1 {
 		return 0, 0, false
 	}
+	lo, hi := c.rowExtent(row)
+	var sx, ex int
 	switch {
 	case y0 == y1:
-		return x0, x1, true
+		sx, ex = clampTo(x0, lo, hi), clampTo(x1, lo, hi)
 	case row == y0:
-		return x0, c.rowWidth(row) - 1, true
+		sx, ex = clampTo(x0, lo, hi), hi
 	case row == y1:
-		return 0, x1, true
+		sx, ex = lo, clampTo(x1, lo, hi)
 	default:
-		return 0, c.rowWidth(row) - 1, true
+		sx, ex = lo, hi
 	}
+	if sx > ex {
+		return 0, 0, false
+	}
+	return sx, ex, true
 }
 
 // rowWidth is a row's cell width (the frame is padded, so rows are uniform; this is a guard).

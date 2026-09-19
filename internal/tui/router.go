@@ -984,6 +984,20 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 	// consumed — that is what keeps clicking intact), so nothing here can swallow a click that a
 	// click should have got.
 	if m.clip != nil {
+		// CONFINEMENT IS DECIDED AT THE PRESS, from the pane the drag STARTS in. Set here rather than
+		// inside clipState because only the shell knows the layout — and a method value captured on the
+		// App would hold a stale copy of it, since App is a value model.
+		//
+		// THE LEFT BUTTON ONLY, the same condition beginDrag uses. A wheel event arrives as a press too
+		// (bubbletea reports the wheel as a button), so keying on the action alone would let a scroll
+		// rewrite the region of a drag already in progress.
+		if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft {
+			if r, ok := m.selectionRegionAt(mo.X, mo.Y); ok {
+				m.clip.setRegion(r)
+			} else {
+				m.clip.clearRegion()
+			}
+		}
 		if consumed, copyText := m.clip.handleMouse(mo); consumed {
 			if copyText != "" {
 				return m, m.clip.copyCmd(copyText)
