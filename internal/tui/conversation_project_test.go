@@ -24,6 +24,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -463,12 +464,15 @@ func TestAConversationsLoadAlsoFetchesProjects(t *testing.T) {
 		t.Fatal("a conversations load produced no command, so the projects would never be fetched — this is " +
 			"precisely the state that left the workspace picker empty")
 	}
-	// Run the batch. bubbletea batches into a tea.BatchMsg holding the sub-commands.
-	for _, c := range flattenCmds(cmd()) {
-		if msg := c(); msg != nil {
-			app.Update(msg)
-		}
-	}
+	// DRAIN IT THROUGH runCtx, NEVER BY CALLING EACH MEMBER INLINE.
+	//
+	// THIS IS WHERE THE SUITE HUNG, so the reason stays written down beside the code that caused it: the batch
+	// is tea.Batch(onChatWake, loadRailProjects, waitChat), and waitChat is
+	// `select { case <-wake: …; case c := <-cmds: … }` with no timeout and nobody sending. Calling it directly
+	// blocks that goroutine FOREVER — there is no budget and no bail-out — so `make rebuild-dev` sat inside
+	// internal/tui and never reached internal/version or the frontend build. runCtx runs each command under a
+	// BOUNDED wait and skips one that does not answer, which is exactly what a long-lived waiter is.
+	runCtx(t, app, cmd, 3*time.Second)
 	if app.railProjectsLoaded != true {
 		t.Error("the project list was never marked loaded, so the fetch did not complete")
 	}
@@ -488,13 +492,9 @@ func TestProjectsAreFetchedOnlyOnce(t *testing.T) {
 	m.railProjectsLoaded = true // as after a successful load
 
 	_, cmd := m.Update(chat.ConversationsMsg{Convs: []chat.Conversation{{ID: "c1"}}})
-	if cmd != nil {
-		for _, c := range flattenCmds(cmd()) {
-			if msg := c(); msg != nil {
-				m.Update(msg)
-			}
-		}
-	}
+	// The same BOUNDED drain as its sibling above: whatever this batch holds, one blocking waiter inside it must
+	// not be able to hang the package.
+	runCtx(t, m, cmd, 3*time.Second)
 	if projects.calls != 0 {
 		t.Errorf("the project list was re-fetched %d time(s) after it had loaded", projects.calls)
 	}

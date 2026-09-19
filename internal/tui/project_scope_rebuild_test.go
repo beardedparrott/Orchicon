@@ -25,19 +25,50 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 )
 
+// runCtx's two hard bounds. See its doc comment for why each exists.
+const (
+	// runCtxMaxSteps bounds how many commands ONE drain will walk, so a graph that fans out without a timer
+	// cannot spin the loop.
+	runCtxMaxSteps = 500
+	// runCtxTotalBudget bounds the WALL CLOCK of one drain. It is needed because the per-command budget is only
+	// paid by commands that DO NOT ANSWER, so a chain of several long-lived waiters adds up rather than ending.
+	runCtxTotalBudget = 30 * time.Second
+)
+
 // runCtx drains a command the way bubbletea's runtime does — flattening batches, feeding each result back into
-// Update so follow-on commands are produced — but with a BOUNDED wait per command.
+// Update so follow-on commands are produced — but BOUNDED, so a command graph that never terminates cannot hang
+// the suite.
 //
-// The bound matters: some of the shell's commands (the chat-wake waiter) block until the next poke, so running
-// them synchronously would hang the test rather than exercising the load. A command that does not answer within
-// the budget is treated as a long-lived waiter and skipped, which is what it is.
+// IT IS BOUNDED THREE WAYS, and the first two each exist because of a way this kind of helper has ALREADY hung a
+// full `make rebuild-dev`:
+//
+//   - THE RE-ARMED REFRESH TICK ENDS THE DRAIN. Init batches refreshCmd(), which is a tea.Tick, and
+//     handleRefreshTick re-arms itself UNCONDITIONALLY — "Re-arm unconditionally, even when the refresh did
+//     nothing". At the default 5s period the per-command budget expires first and the chain is never followed,
+//     but that margin is an accident rather than a guarantee: liverefresh_probe_test.go and refresh_test.go each
+//     set refreshPeriod to 1ms for their own tests, and a tick that cheap would loop here forever. So the tick is
+//     TERMINAL by construction. This helper drains the STARTUP LOADS; the rolling window is not a load.
+//   - A COMMAND THAT DOES NOT ANSWER IS SKIPPED, because that is what a long-lived waiter is: waitChat blocks on
+//     `select { case <-wake: …; case c := <-cmds: … }` until the next poke. Calling one INLINE, with no budget,
+//     is the other way this hung — see TestAConversationsLoadAlsoFetchesProjects.
+//   - maxSteps and the total deadline are the general backstop, so a graph that fans out without a timer cannot
+//     spin the loop either.
+//
+// The per-command budget is the caller's, and it is deliberately generous: every command drained here is a
+// loopback RPC, a pure function, or an infinite waiter, so the budget's only job is to distinguish the third.
+// Being wrong in the generous direction costs wall clock; being wrong in the mean direction would skip a real
+// load and make the suite flaky under load.
 func runCtx(t *testing.T, m *App, cmd tea.Cmd, budget time.Duration) {
 	t.Helper()
 	if cmd == nil {
 		return
 	}
+	deadline := time.Now().Add(runCtxTotalBudget)
 	queue := []tea.Cmd{cmd}
-	for len(queue) > 0 {
+	for steps := 0; len(queue) > 0 && steps < runCtxMaxSteps; steps++ {
+		if time.Now().After(deadline) {
+			return
+		}
 		c := queue[0]
 		queue = queue[1:]
 		if c == nil {
@@ -52,6 +83,10 @@ func runCtx(t *testing.T, m *App, cmd tea.Cmd, budget time.Duration) {
 			continue // a blocking waiter, not a load
 		}
 		if msg == nil {
+			continue
+		}
+		// THE ROLLING WINDOW'S TICK IS TERMINAL — see the doc comment. Following its re-arm never returns.
+		if _, isTick := msg.(refreshTickMsg); isTick {
 			continue
 		}
 		// A batch is delivered as both the BatchMsg and its members; expanding here mirrors the runtime.
