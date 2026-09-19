@@ -200,7 +200,7 @@ func TestWatchRedialOnDrop(t *testing.T) {
 	c.state["c1"] = &convState{streaming: true, pendingReplyID: "a1"}
 	c.mu.Unlock()
 
-	c.dropStream("c1", context.Canceled)
+	c.dropStream("c1", 0, context.Canceled)
 	// The shell executes drained Cmds (tea programs run what Update
 	// returns) — the watch re-dial must be invoked, not just received.
 	for _, cmd := range drainCmds(t, cmds, 1) {
@@ -234,7 +234,7 @@ func TestUnackedFailureTearsDown(t *testing.T) {
 	c.mu.Lock()
 	c.state["c1"] = &convState{streaming: true} // not yet acked
 	c.mu.Unlock()
-	c.dropStream("c1", context.Canceled)
+	c.dropStream("c1", 0, context.Canceled)
 	c.mu.Lock()
 	st := c.state["c1"]
 	if st.streaming || st.optimisticUser != "" || st.sentText != "" {

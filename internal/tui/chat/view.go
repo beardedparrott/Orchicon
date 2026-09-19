@@ -97,6 +97,33 @@ func RenderItemsSpans(items []ChatItem, maxWidth int, collapse ...func(key strin
 	if len(collapse) > 0 && collapse[0] != nil {
 		folded = collapse[0]
 	}
+	return renderItems(items, maxWidth, folded, "")
+}
+
+// CopyGlyph marks what the operator can CLICK TO COPY in the transcript.
+//
+// The operator: "We should put a little icon on user messages and code blocks in conversations in the TUI
+// indicating to people that they can be copied." A gesture nobody can see is a gesture nobody has, and both
+// of these are clicks rather than drags — drag-select exists everywhere, so the things that are specially
+// clickable are precisely the things worth marking.
+//
+// Two joined squares: the copy glyph terminals and TUI editors already use, drawn dim so it reads as an
+// affordance rather than as content.
+const CopyGlyph = "⧉"
+
+// RenderItemsSpansWithCopy is RenderItemsSpans drawn for a surface where clicking a message or a code block
+// copies it, so both say so.
+//
+// IT IS A SEPARATE ENTRY POINT RATHER THAN PACKAGE STATE because the transcript is rendered by more than one
+// caller and only the Ask pane wires the click: the slide-out strip on the other screens is a view of the
+// same conversation but a click there does nothing, and marking it copyable would be a lie. Passing the glyph
+// is what keeps the affordance where the gesture is.
+func RenderItemsSpansWithCopy(items []ChatItem, maxWidth int, copyGlyph string, collapse func(key string) bool) (string, []ItemSpan) {
+	return renderItems(items, maxWidth, collapse, copyGlyph)
+}
+
+// renderItems is the shared body: the two entry points differ only in whether a copy affordance is drawn.
+func renderItems(items []ChatItem, maxWidth int, folded func(key string) bool, copyGlyph string) (string, []ItemSpan) {
 	var b strings.Builder
 	spans := make([]ItemSpan, 0, len(items))
 	lineIdx := 0
@@ -109,11 +136,17 @@ func RenderItemsSpans(items []ChatItem, maxWidth int, collapse ...func(key strin
 		var code []CodeSpan
 		switch it.Kind {
 		case KindUser:
-			body, cs := renderChatMessageSpans(userTextWithMarkers(it), theme.BubbleUser, maxWidth, true, userBandLabel)
+			// THE AFFORDANCE RIDES THE BAND LABEL. The operator's own message is the one the operator can
+			// click to get back, so the marker belongs beside the label that already says whose it is.
+			label := userBandLabel
+			if copyGlyph != "" {
+				label = label + " " + copyGlyph
+			}
+			body, cs := renderChatMessageSpans(userTextWithMarkers(it), theme.BubbleUser, maxWidth, true, label, copyGlyph)
 			b.WriteString(body)
 			code = cs
 		case KindText:
-			body, cs := renderChatMessageSpans(it.Text, theme.BubbleModel, maxWidth, false, "")
+			body, cs := renderChatMessageSpans(it.Text, theme.BubbleModel, maxWidth, false, "", copyGlyph)
 			b.WriteString(body)
 			code = cs
 		case KindReasoning:
@@ -212,7 +245,7 @@ func userTextWithMarkers(it ChatItem) string {
 }
 
 func renderChatMessage(text string, style lipgloss.Style, maxWidth int, right bool, label string) string {
-	body, _ := renderChatMessageSpans(text, style, maxWidth, right, label)
+	body, _ := renderChatMessageSpans(text, style, maxWidth, right, label, "")
 	return body
 }
 
@@ -222,7 +255,7 @@ func renderChatMessage(text string, style lipgloss.Style, maxWidth int, right bo
 // the padding change a row's CONTENT, never how many rows there are — so a markdown row index is already an
 // item-relative line number. That equality is what chat.CodeSpan rests on, and it is why the geometry is
 // lifted from the same render rather than recomputed from the painted text.
-func renderChatMessageSpans(text string, style lipgloss.Style, maxWidth int, right bool, label string) (string, []CodeSpan) {
+func renderChatMessageSpans(text string, style lipgloss.Style, maxWidth int, right bool, label, copyGlyph string) (string, []CodeSpan) {
 	if strings.TrimSpace(text) == "" {
 		return "", nil
 	}
@@ -248,7 +281,7 @@ func renderChatMessageSpans(text string, style lipgloss.Style, maxWidth int, rig
 	//
 	// The width is the band's INNER width, so a markdown line can never exceed the pane: there is no
 	// horizontal scroll in the band to fall back on.
-	body, mdSpans := md.RenderOnSpans(text, inner, md.SurfaceOf(style))
+	body, mdSpans := md.RenderOnSpans(text, inner, md.SurfaceOf(style), copyGlyph)
 	if len(body) == 0 {
 		body = []string{text}
 	}

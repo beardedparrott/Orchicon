@@ -1590,9 +1590,34 @@ func (m *App) OpenAskConversation(id string) tea.Cmd {
 	// numbers and the mode pill were cut off (the operator's "the context is off
 	// the screen").
 	m.refreshLayout()
+	// RE-ATTACH TO A TURN THAT IS STILL RUNNING SERVER-SIDE. The operator: "When I leave an chat and go back
+	// into it, it loses the 'orchicon is thinking...' and watchdog." Opening a conversation is exactly when the
+	// shell learns the server's view of it (the rail row carries turn_in_flight and the pending assistant id),
+	// so this is the one place that can restore the slot the pane's notices are derived from.
+	//
+	// It is safe to do unconditionally: Reattach refuses when a live local stream already owns the slot, so a
+	// turn started in THIS client keeps its own stream. Only a gap is filled.
+	re := m.reattachRunningTurn(id)
 	// A conversation switch changes whose usage the strip reports, so re-read it
 	// (the previous conversation's numbers must never linger under a new chat).
-	return tea.Batch(m.chat.OpenConversation(id), m.refreshMetrics())
+	return tea.Batch(m.chat.OpenConversation(id), m.refreshMetrics(), re)
+}
+
+// reattachRunningTurn restores the stream slot for a conversation whose turn the server still reports as
+// running, when this client has no live stream for it.
+//
+// The rail row is the source: it is the freshest server-side view the shell holds, and it is reloaded after
+// every send and on every completion, so it is never staler than the pane. A row with no turn in flight (or no
+// pending assistant id) is nothing to re-attach to, and returns nil.
+func (m *App) reattachRunningTurn(convID string) tea.Cmd {
+	if m.chat == nil {
+		return nil
+	}
+	c, ok := m.conversationByID(convID)
+	if !ok || !c.TurnInFly || c.PendingReplyID == "" {
+		return nil
+	}
+	return m.chat.Reattach(convID, c.PendingReplyID)
 }
 
 // onExecutionSessionLoaded paints the merged session view into the
@@ -2793,12 +2818,27 @@ func (s *chatStore) mergeHistory(convID string, history []chat.ChatItem) {
 	// optimistic echo has to be matched against.
 	already := make(map[string]bool, len(history))
 	var durableUser []string
+	// THE DURABLE MIRROR OF THE IN-FLIGHT REPLY, if it has one. See below for why this is the thing that
+	// stops the reply rendering twice.
+	var mirrorText, mirrorReasoning string
 	for _, it := range history {
 		if it.Key != "" {
 			already[it.Key] = true
 		}
 		if it.Kind == chat.KindUser {
 			durableUser = append(durableUser, it.Text)
+		}
+		// The assistant row's key is "m-<messageID>"; the per-part reasoning keys are "m-<id>-r<j>". The
+		// LONGEST text for the message is what the mirror currently holds.
+		if it.Kind == chat.KindText && strings.HasPrefix(it.Key, "m-") && !strings.Contains(it.Key, "-r") {
+			if len(it.Text) > len(mirrorText) {
+				mirrorText = it.Text
+			}
+		}
+		if it.Kind == chat.KindReasoning && strings.HasPrefix(it.Key, "m-") {
+			if len(it.Text) > len(mirrorReasoning) {
+				mirrorReasoning = it.Text
+			}
 		}
 	}
 	kept := make([]chat.ChatItem, 0, len(live))
@@ -2813,6 +2853,31 @@ func (s *chatStore) mergeHistory(convID string, history []chat.ChatItem) {
 		// words. Its key is generated locally, so it is never in `already`.
 		if it.Kind == chat.KindUser && strings.HasPrefix(it.Key, "draft-") && matchesAny(durableUser, it.Text) {
 			continue
+		}
+		// THE LIVE HALF OF A REPLY THAT IS ALSO DURABLE — the duplication this function still had, and why
+		// a mid-turn poll showed the reply twice.
+		//
+		// The server mirrors the running turn's collected text and reasoning into the acked assistant row
+		// every 250ms, and the TUI polls for it MID-TURN (that is the whole point of the poll — see
+		// runTurnPoll). But the two halves are keyed in DIFFERENT NAMESPACES: the durable row is "m-<id>"
+		// and a streamed chunk is "st-<seq>", so the identity rule above can never match them, and every
+		// mid-turn merge appended the mirror's copy of the reply to the live copy already on screen.
+		//
+		// MEASURED before this fix, on a send + one chunk + one mid-turn poll:
+		//   [user/m-1 "A"] [text/m-2 "reply1"] [text/st-1 "reply1"]      <- the reply, twice
+		//
+		// So a live chunk is dropped when the mirror ALREADY CARRIES ITS TEXT. That is deliberately a
+		// content test rather than "drop every live chunk once a mirror exists": the mirror is written per
+		// part and can lag, so dropping the live half wholesale would blank the newest text for up to a
+		// poll interval. Comparing text keeps whatever the mirror has not caught up with.
+		if (it.Kind == chat.KindText || it.Kind == chat.KindReasoning) && it.Live {
+			mirror := mirrorText
+			if it.Kind == chat.KindReasoning {
+				mirror = mirrorReasoning
+			}
+			if mirror != "" && strings.Contains(mirror, it.Text) {
+				continue // the durable mirror already carries this text
+			}
 		}
 		kept = append(kept, it)
 	}
@@ -3163,10 +3228,15 @@ func (m *App) syncTranscript(convID string, str *kit2.Stream, items []chat.ChatI
 	if m.transcriptLines == nil {
 		m.transcriptLines = map[string][]string{}
 	}
-	// RenderItemsSpans, not RenderItems: the spans are the CLICK GEOMETRY, and they come from the same
-	// render that produced the lines being drawn — so a click cannot resolve against a layout the screen
-	// is not showing. Stored per conversation, beside transcriptLines.
-	body, spans := chat.RenderItemsSpans(chat.GroupByPhase(items), w, m.foldedReasoning)
+	// RenderItemsSpansWithCopy, not RenderItemsSpans: the copy glyph marks the two things on THIS surface that
+	// a click copies — the operator's own message and each code block — and this is the Ask transcript, which
+	// is where that gesture is wired. The slide-out strip on the other screens renders the same conversation
+	// with RenderItems and shows no glyph, because a click there does nothing.
+	//
+	// The spans are the CLICK GEOMETRY, and they come from the same render that produced the lines being
+	// drawn — so a click cannot resolve against a layout the screen is not showing. Stored per conversation,
+	// beside transcriptLines.
+	body, spans := chat.RenderItemsSpansWithCopy(chat.GroupByPhase(items), w, chat.CopyGlyph, m.foldedReasoning)
 	if m.transcriptSpans == nil {
 		m.transcriptSpans = map[string][]chat.ItemSpan{}
 	}
@@ -3422,7 +3492,10 @@ func (m *App) onConversationMutated(msg chat.ConversationMutatedMsg) tea.Cmd {
 // onStreamDone resolves a finished turn: the durable transcript is re-read (the
 // completion authority), the header is refreshed, and the stat strip updates.
 func (m *App) onStreamDone(msg chat.StreamDoneMsg) tea.Cmd {
-	m.chat.EndStream(msg.ConvID)
+	// THE GENERATION IS PASSED THROUGH, and it is what keeps an interjection from ending its own turn: the
+	// superseded stream closes too, and its close must not clear the slot belonging to the turn that replaced
+	// it. See convState.gen.
+	m.chat.EndStream(msg.ConvID, msg.Gen)
 	// A finished turn is when new usage lands, so this is the LIVE update: the
 	// stat strip re-reads the session's tokens / cache / cost and refreshes.
 	//

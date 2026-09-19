@@ -171,8 +171,10 @@ func TestComposerStopHintAppearsOnlyWhileAReplyStreams(t *testing.T) {
 		t.Fatalf("the stop affordance must appear while a reply streams: %q", h)
 	}
 
-	// The normal end of a turn clears the slot, and the affordance goes with it.
-	m.onStreamDone(chat.StreamDoneMsg{ConvID: "c1"})
+	// The normal end of a turn clears the slot, and the affordance goes with it. The generation is the
+	// slot's own, which is what consume() carries into StreamDoneMsg — a StreamDoneMsg with the wrong
+	// generation is a stream that was SUPERSEDED, and must leave this slot alone.
+	m.onStreamDone(chat.StreamDoneMsg{ConvID: "c1", Gen: m.chat.CurrentGen("c1")})
 	if h := m.dock.Hint(); strings.Contains(h, "ctrl+y") {
 		t.Fatalf("the stop affordance must disappear when the reply ends: %q", h)
 	}

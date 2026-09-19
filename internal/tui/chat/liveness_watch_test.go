@@ -103,7 +103,7 @@ func TestAStalledStreamGoesReconnectingAndQueuesARedial(t *testing.T) {
 		t.Fatal("fixture: the slot is not stale, so this test would measure nothing")
 	}
 
-	c.dropStream("c1", errStreamStalled)
+	c.dropStream("c1", 0, errStreamStalled)
 
 	st := c.state["c1"]
 	if !st.streaming {
@@ -129,7 +129,7 @@ func TestAStallBeforeTheAckTearsTheTurnDown(t *testing.T) {
 	c.Bind(&recorder{conn: map[string]bool{}}, cmds)
 
 	c.state["c1"] = &convState{streaming: true, pendingReplyID: "", lastActivity: now()}
-	c.dropStream("c1", errStreamStalled)
+	c.dropStream("c1", 0, errStreamStalled)
 
 	if c.state["c1"].streaming {
 		t.Error("a pre-ack stream that died left the slot streaming — nothing will ever resolve it, so the " +

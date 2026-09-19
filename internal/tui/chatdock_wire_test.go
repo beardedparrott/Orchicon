@@ -109,7 +109,7 @@ func TestTranscriptReplacesWhenIdleMergesWhenStreaming(t *testing.T) {
 	}
 
 	// Idle: the transcript replaces the live buffer.
-	m.chat.EndStream("c1")
+	m.chat.EndStream("c1", m.chat.CurrentGen("c1"))
 	m.Update(chat.TranscriptMsg{ConvID: "c1", Items: []chat.ChatItem{
 		{Kind: chat.KindUser, Text: "hi", Key: "m-1"},
 		{Kind: chat.KindText, Text: "reply", Key: "m-2"},

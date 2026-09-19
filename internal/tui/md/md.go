@@ -105,6 +105,11 @@ var (
 	// block line re-uses chipSurface for the same reason the chip does: `\x1b[39m` would drop the rest of the
 	// line — and the bubble band behind it — to the terminal's defaults.
 	blockFg, blockBg string
+	// blockGlyph is the optional COPY AFFORDANCE drawn on a block's label row. It is scoped per render (see
+	// RenderOnSpans) rather than configured once, because it must appear ONLY on a surface where clicking a
+	// block actually copies it — md is a leaf several callers share, and a copy marker on a pane that cannot
+	// copy would be a false promise.
+	blockGlyph string
 )
 
 // SetCodeChip sets the inline-code chip's colours. The theme calls it on every switch, so the chip
@@ -416,14 +421,18 @@ func RenderOn(src string, width int, sf Surface) []string {
 	return render(src, width)
 }
 
-// RenderOnSpans is RenderOn plus where each code block landed and what its source was. The render is the SAME
-// one — a second pass to recover the geometry would be a second thing to keep in step, and drift here copies
-// the wrong code.
-func RenderOnSpans(src string, width int, sf Surface) ([]string, []CodeSpan) {
+// RenderOnSpans is RenderOn plus where each code block landed and what its source was, and an optional COPY
+// AFFORDANCE. copyGlyph, when non-empty, is drawn on each block's label row (see codeBlock) — the caller
+// passes it only for a surface where clicking a block actually copies it.
+func RenderOnSpans(src string, width int, sf Surface, copyGlyph ...string) ([]string, []CodeSpan) {
 	renderMu.Lock()
 	defer renderMu.Unlock()
 	chipSurface, chipOn = sf, true
-	defer func() { chipOn, chipSurface = false, Surface{} }()
+	blockGlyph = ""
+	if len(copyGlyph) > 0 {
+		blockGlyph = copyGlyph[0]
+	}
+	defer func() { chipOn, chipSurface = false, Surface{}; blockGlyph = "" }()
 	return renderSpans(src, width)
 }
 
@@ -783,8 +792,19 @@ func (r *renderer) codeBlock(n ast.Node, in indent, lang []byte) {
 	// THE SPAN STARTS AT THE LABEL, so a click on the dim `bash` line copies the block too — it is the block's
 	// own header, and a label would otherwise be a dead spot one row above a live one.
 	start := len(r.out)
-	if len(lang) > 0 {
-		r.raw(in.first + "\x1b[2m" + truncate(string(lang), avail) + "\x1b[22m")
+	// THE LABEL ROW CARRIES THE COPY AFFORDANCE, and the row is emitted whenever EITHER a language or an
+	// affordance is present — so a fence with no language still shows the operator that the block beneath it is
+	// clickable. Both sit ABOVE the fill and outside it, so selecting the code never picks up the label or the
+	// glyph.
+	label := string(lang)
+	if blockGlyph != "" {
+		if label != "" {
+			label += " "
+		}
+		label += blockGlyph
+	}
+	if label != "" {
+		r.raw(in.first + "\x1b[2m" + truncate(label, avail) + "\x1b[22m")
 	}
 	// THE LINES ARE COLLECTED FIRST, because the band's width is derived from them — see below. Nothing about
 	// the output depends on this being a second pass; the widest line simply has to be known before the first

@@ -50,6 +50,18 @@ type convState struct {
 	streaming      bool
 	reconnecting   bool
 	pendingReplyID string
+	// gen identifies the stream this slot currently belongs to. It is bumped by every SEND, and each
+	// stream carries the generation it started under, so a stream that has been SUPERSEDED cannot tear
+	// down the slot its successor owns.
+	//
+	// WITHOUT IT, AN INTERJECTION KILLED ITS OWN TURN'S STATE. Interjecting supersedes the running turn,
+	// which closes the OLD stream cleanly — that close arrives as StreamDoneMsg and cleared `streaming`
+	// and `pendingReplyID` for the conversation, i.e. for the NEW turn the operator had just started. The
+	// visible effects are exactly the reported ones: the thinking indicator and the watchdog vanished the
+	// moment the interjection was accepted, the poll fell to the non-streaming REPLACE path and discarded
+	// the live reply, and the transcript could keep a half-merged copy of both turns. A generation turns
+	// "a stream ended" into "THIS stream ended", which is the fact the slot actually needs.
+	gen uint64
 	// optimisticUser is the not-yet-persisted sent text (rendered
 	// immediately; replaced by the transcript row once ListMessages
 	// returns it).
@@ -152,6 +164,15 @@ type Conversation struct {
 	// because every site that renders a conversation needs it and a parallel map is one more thing that can
 	// disagree with the list it describes.
 	ProjectID string
+	// PendingReplyID is the acked assistant message id of a turn the SERVER reports as still running, or "".
+	//
+	// IT IS WHAT LETS THIS CLIENT RE-ATTACH TO ITS OWN TURN, which is the reported bug: "When I leave an chat
+	// and go back into it, it loses the 'orchicon is thinking...' and watchdog." The server-side turn registry
+	// is the authority and it survives leaving the pane (and a refresh, and another device); without this field
+	// the shell had nothing to restore FROM, so re-entering a conversation mid-turn showed an idle pane with a
+	// reply that was quietly still being written. turn_in_flight alone is not enough — the Watch RPC needs the
+	// assistant message id, which is what makes the re-attach address THIS turn and not a stale one.
+	PendingReplyID string
 }
 
 // Registrar is the minimal subscription hook the controller needs
@@ -243,8 +264,12 @@ type ConversationMutatedMsg struct {
 }
 
 // StreamDoneMsg marks the goroutine forwarding loop ended (exported —
-// the shell's dispatch consumes it).
-type StreamDoneMsg struct{ ConvID string }
+// the shell's dispatch consumes it). Gen is the generation of the stream that ended, so a stream
+// superseded by an interjection cannot clear the slot of the turn that replaced it.
+type StreamDoneMsg struct {
+	ConvID string
+	Gen    uint64
+}
 
 func (s StreamDoneMsg) isMsg() {}
 
@@ -566,6 +591,9 @@ func (c *Controller) LoadConversations() tea.Cmd {
 				ModelRef:  cv.GetModelRef(),
 				Mode:      cv.GetMode(),
 				ProjectID: cv.GetProjectId(),
+				// Read at list time, so a conversation the server reports as mid-turn is recognisable as such the
+				// moment the rail loads — which is what the re-attach on open needs.
+				PendingReplyID: cv.GetPendingAssistantMessageId(),
 			})
 		}
 		return ConversationsMsg{Convs: convs, Categories: resp.Msg.GetCategories(), Assignments: resp.Msg.GetAssignments()}
@@ -730,17 +758,22 @@ func (c *Controller) SendWithAttachments(convID, text, contextPreamble string, f
 	c.mu.Lock()
 	if st := c.state[convID]; st != nil {
 		st.lastActivity = now()
+		// A NEW GENERATION FOR EVERY SEND: the stream this command is about to open owns the slot from
+		// here, so any stream already running belongs to the previous generation and its end must be
+		// ignored (see convState.gen).
+		st.gen++
 	}
+	gen := c.state[convID].gen
 	c.mu.Unlock()
-	go c.runLivenessWatch(convID)
+	go c.runLivenessWatch(convID, gen)
 	go c.runTurnPoll(convID)
-	return c.startStream(convID, full, call, files)
+	return c.startStream(convID, full, call, files, gen)
 }
 
 // startStream opens the ChatStream/InterjectConversationTurn and returns
 // a Cmd whose first message is a synthetic turnStarted placeholder (the
-// actual ack arrives via the forwarding goroutine).
-func (c *Controller) startStream(convID, full, call string, files []*apiv1.AttachmentInput) tea.Cmd {
+// actual ack arrives via the forwarding goroutine). — gen is the slot generation this stream owns.
+func (c *Controller) startStream(convID, full, call string, files []*apiv1.AttachmentInput, gen uint64) tea.Cmd {
 	ctx := context.Background()
 	return func() tea.Msg {
 		var (
@@ -764,7 +797,7 @@ func (c *Controller) startStream(convID, full, call string, files []*apiv1.Attac
 			c.failStream(convID, err)
 			return ErrMsg{Where: call, Err: err}
 		}
-		go c.consume(convID, stream)
+		go c.consume(convID, gen, stream)
 		// RE-ARM BOTH, and HERE it is correct to arm after the call returns: this is a RE-DIAL of a turn
 		// that was already acknowledged, so a failed re-dial is already covered by the poll running since
 		// the original send (see SendWithAttachments). Arming on success keeps each liveness watch tied
@@ -774,7 +807,7 @@ func (c *Controller) startStream(convID, full, call string, files []*apiv1.Attac
 			st.lastActivity = now()
 		}
 		c.mu.Unlock()
-		go c.runLivenessWatch(convID)
+		go c.runLivenessWatch(convID, gen)
 		go c.runTurnPoll(convID)
 		return nil
 	}
@@ -783,17 +816,22 @@ func (c *Controller) startStream(convID, full, call string, files []*apiv1.Attac
 // consume forwards stream events into the tea channel via the returned
 // messages (bubbletea re-dispatches what the Cmd returns; extra events
 // ride the channel the program gave us at NewController time).
-func (c *Controller) consume(convID string, stream *connect.ServerStreamForClient[apiv1.ChatStreamResponse]) {
+//
+// gen is the slot generation this stream belongs to, and it is carried into every terminal outcome
+// below so a stream that was SUPERSEDED mid-flight (an interjection) cannot clear or tear down the
+// slot the replacement turn owns.
+func (c *Controller) consume(convID string, gen uint64, stream *connect.ServerStreamForClient[apiv1.ChatStreamResponse]) {
 	for stream.Receive() {
 		c.handleEvent(convID, stream.Msg())
 	}
 	if err := stream.Err(); err != nil && err != io.EOF {
-		c.dropStream(convID, err)
+		c.dropStream(convID, gen, err)
 		return
 	}
-	// graceful server close: slot clears on the next poll resolution
+	// graceful server close: the slot clears on the next poll resolution — unless this stream has
+	// already been superseded, in which case the slot belongs to someone else and must be left alone.
 	if c.cmds != nil {
-		c.cmds <- func() tea.Msg { return StreamDoneMsg{ConvID: convID} }
+		c.cmds <- func() tea.Msg { return StreamDoneMsg{ConvID: convID, Gen: gen} }
 	}
 }
 
@@ -809,11 +847,70 @@ func (c *Controller) Watch(convID, assistantMessageID string) tea.Cmd {
 			// NotFound (turn over) → poll resolves completion; not fatal.
 			return nil
 		}
-		go c.consume(convID, stream)
+		go c.consume(convID, c.CurrentGen(convID), stream)
 		// The watchdog and the durable poll are NOT armed here — see SendWithAttachments. Arming them at
 		// this point would gate them behind this call returning, which is the failure they exist to cover.
 		return nil
 	}
+}
+
+// currentGen reads the slot's generation without bumping it. A RE-DIAL (Watch) belongs to the turn it
+// is re-attaching to, so it must adopt that generation rather than mint a new one — minting one would
+// make the live turn's own stream look superseded.
+//
+// Exported because the SHELL needs it too: EndStream is generation-guarded, so any caller outside this
+// package that legitimately ends the current turn (a Stop, or a test driving this path) has to name the
+// generation it means rather than leaving it implicit.
+func (c *Controller) CurrentGen(convID string) uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if st := c.state[convID]; st != nil {
+		return st.gen
+	}
+	return 0
+}
+
+// Reattach restores the stream slot for a turn the SERVER reports as running, when this client has no live
+// stream for it. It returns the Watch command (nil when there was nothing to re-attach to).
+//
+// THE OPERATOR: "When I leave an chat and go back into it, it loses the 'orchicon is thinking...' and
+// watchdog." Leaving the pane does not stop the turn — the collector runs on the server and mirrors its
+// progress into the acked assistant row every 250ms — but the CLIENT's slot is what drives the thinking
+// notice, the watchdog age and the completion poll, and nothing restored it. Returning to the conversation
+// therefore looked like an idle chat whose reply happened to appear later.
+//
+// A LIVE LOCAL SLOT ALWAYS WINS. Server state only fills a gap, exactly as the GUI's re-attach effect does: a
+// turn started in this client keeps its own stream until it completes, and re-attaching would replace a
+// working stream with a second one.
+//
+// gen is NOT bumped. This is not a new send — it adopts the generation of the turn it is re-attaching to, so
+// the live turn's own stream (if any arrives later) is not treated as superseded.
+func (c *Controller) Reattach(convID, pendingReplyID string) tea.Cmd {
+	if convID == "" || pendingReplyID == "" {
+		return nil
+	}
+	c.mu.Lock()
+	st := c.state[convID]
+	if st == nil {
+		st = &convState{}
+		c.state[convID] = st
+	}
+	if st.streaming {
+		c.mu.Unlock()
+		return nil // a live local stream is authoritative over the server's flag
+	}
+	st.streaming = true
+	st.reconnecting = true
+	st.pendingReplyID = pendingReplyID
+	st.lastActivity = now()
+	gen := st.gen
+	c.mu.Unlock()
+	// ARM BOTH, for the same reason the send path does: the thinking notice and the stall detection have to
+	// run for a turn this client did not start, and the poll is what actually paints the reply — the Watch
+	// stream is the bonus.
+	go c.runLivenessWatch(convID, gen)
+	go c.runTurnPoll(convID)
+	return c.Watch(convID, pendingReplyID)
 }
 
 // pollTranscript re-fetches the durable transcript (completion
@@ -828,9 +925,14 @@ func (c *Controller) Poll(convID string) tea.Cmd { return c.pollTranscript(convI
 // EndStream clears a conversation's stream slot when the server closed
 // the stream cleanly (consume's EOF path pushed StreamDoneMsg). The
 // ListMessages poll that follows is the completion authority.
-func (c *Controller) EndStream(convID string) {
+//
+// gen MUST MATCH THE SLOT'S. This is the guard that makes interjection work: the superseded turn's
+// stream also closes cleanly, and without the check that close would clear the slot belonging to the
+// turn that replaced it — killing the thinking indicator, the watchdog and the pending-reply id the
+// moment the operator interjected.
+func (c *Controller) EndStream(convID string, gen uint64) {
 	c.mu.Lock()
-	if st := c.state[convID]; st != nil {
+	if st := c.state[convID]; st != nil && st.gen == gen {
 		st.streaming = false
 		st.reconnecting = false
 		st.pendingReplyID = ""
@@ -866,7 +968,7 @@ func (c *Controller) AbortTurn(convID string) tea.Cmd {
 		if err != nil {
 			return AbortTurnMsg{ConvID: convID, Err: err.Error()}
 		}
-		c.EndStream(convID)
+		c.EndStream(convID, c.CurrentGen(convID))
 		c.clearReconnecting(convID)
 		return AbortTurnMsg{ConvID: convID}
 	}
@@ -1004,11 +1106,20 @@ func (c *Controller) failStream(convID string, err error) {
 // dropStream handles a socket drop mid-stream (stream.Err() after the
 // receive loop): acked turns re-dial WatchTurnStream; the poll remains
 // the completion authority either way.
-func (c *Controller) dropStream(convID string, err error) {
+//
+// gen GUARDS THE TEARDOWN. A drop from a stream that has already been superseded must not touch the
+// slot: the pre-ack branch below CLEARS `streaming`, which for a superseding interjection would end
+// the turn the operator had just started. The acked branch is guarded too, for the same reason — its
+// Watch would re-attach to the OLD turn's assistant id, which no longer exists.
+func (c *Controller) dropStream(convID string, gen uint64, err error) {
 	c.mu.Lock()
 	st := c.state[convID]
+	if st == nil || st.gen != gen {
+		c.mu.Unlock()
+		return // a superseded stream's failure is not this slot's business
+	}
 	watch := ""
-	if st != nil && st.streaming {
+	if st.streaming {
 		if st.pendingReplyID != "" {
 			// acked turn: the server-side collector keeps running — slot
 			// stays streaming, goes reconnecting, watch re-dials the hub.
@@ -1089,16 +1200,21 @@ func (c *Controller) runTurnPoll(convID string) {
 // SILENCE IS ONLY A FAULT WHILE STREAMING, and the check stops as soon as the slot is not. That is
 // also why it cannot re-dial a COMPLETED turn: completion clears `streaming` (EndStream, on the poll
 // resolution) before the timeout could fire.
-func (c *Controller) runLivenessWatch(convID string) {
+//
+// gen IS THE GENERATION IT WATCHES. The watch belongs to ONE send, so it stops when the slot has moved
+// on instead of reporting on whatever turn happens to be current. Without that, a watch armed for a turn
+// that was superseded (an interjection) would eventually judge the NEW turn's slot stale and tear it
+// down — the watchdog causing the very failure it exists to prevent.
+func (c *Controller) runLivenessWatch(convID string, gen uint64) {
 	ticker := time.NewTicker(askLivenessCheckInterval)
 	defer ticker.Stop()
 	for range ticker.C {
-		stop, stale := c.livenessCheck(convID)
+		stop, stale := c.livenessCheckFor(convID, gen)
 		if stop {
 			return
 		}
 		if stale {
-			c.dropStream(convID, errStreamStalled)
+			c.dropStream(convID, gen, errStreamStalled)
 			return
 		}
 	}
@@ -1112,7 +1228,23 @@ func (c *Controller) runLivenessWatch(convID string) {
 func (c *Controller) livenessCheck(convID string) (stop, stale bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return livenessVerdict(c.state[convID])
+}
+
+// livenessCheckFor is livenessCheck scoped to the generation that ARMED the watch: a slot that has moved
+// on belongs to a newer turn and this watch has nothing left to say about it.
+func (c *Controller) livenessCheckFor(convID string, gen uint64) (stop, stale bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	st := c.state[convID]
+	if st != nil && st.gen != gen {
+		return true, false // superseded: this watch's turn is over
+	}
+	return livenessVerdict(st)
+}
+
+// livenessVerdict is the shared judgement, so the generation-aware and -agnostic paths cannot disagree.
+func livenessVerdict(st *convState) (stop, stale bool) {
 	if st == nil || !st.streaming {
 		return true, false // the turn is over, stopped, or the slot is gone
 	}
