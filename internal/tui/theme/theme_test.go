@@ -77,20 +77,20 @@ func TestProfileDegradation(t *testing.T) {
 //
 // Both are asserted here rather than trusted, because the failure is invisible: nothing errors, the
 // theme is simply not the one that was asked for.
-func TestTheLaunchDefaultIsEmberAndDark(t *testing.T) {
+func TestTheLaunchDefaultIsForestAndDark(t *testing.T) {
 	th := Lookup(DefaultName)
 	if th == nil {
 		t.Fatalf("the launch default %q does not resolve — orch would silently fall back to the base "+
 			"palette at startup, so the requested default would never appear", DefaultName)
 	}
-	if DefaultName != "ember" {
-		t.Errorf("the launch default is %q, want \"ember\" (the operator's request). If this was changed "+
+	if DefaultName != "forest" {
+		t.Errorf("the launch default is %q, want \"forest\" (the operator's request). If this was changed "+
 			"deliberately, update the comment on DefaultName too.", DefaultName)
 	}
 	// Dark means the background is darker than the text — the same test cursor_caret_test.go uses.
 	if relLuminance(string(th.Bg)) >= relLuminance(string(th.Text)) {
 		t.Errorf("the launch default %q is a LIGHT palette (bg %s, text %s) — the request was for the "+
-			"DARK one; \"ember-light\" is the light sibling and is easy to select by mistake",
+			"DARK one; \"forest-light\" is the light sibling and is easy to select by mistake",
 			DefaultName, th.Bg, th.Text)
 	}
 	// And it must be active on a fresh process, since `active` is what every render reads before any

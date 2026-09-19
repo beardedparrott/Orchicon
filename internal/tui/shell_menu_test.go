@@ -156,8 +156,8 @@ func TestThemeRegistryAndConfig(t *testing.T) {
 			t.Errorf("theme %q must be registered", want)
 		}
 	}
-	if theme.DefaultName != "ember" {
-		t.Fatalf("default theme = %q, want ember (the operator's request)", theme.DefaultName)
+	if theme.DefaultName != "forest" {
+		t.Fatalf("default theme = %q, want forest (the operator's request)", theme.DefaultName)
 	}
 	if !theme.Use("light") {
 		t.Fatal("theme.Use(light) must switch")
