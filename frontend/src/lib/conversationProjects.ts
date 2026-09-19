@@ -10,6 +10,8 @@
 // drop down where all of the conversations are associated with Projects in a parent category. For every project
 // that is created (active or otherwise), there should be a list that can be dragged to and also created from."
 
+import { ProjectStatus } from "@/api/gen/orchicon/api/v1/project_pb";
+
 /**
  * PROJECT_DROP_PREFIX namespaces a project folder's droppable id.
  *
@@ -65,14 +67,57 @@ export function groupConversationsByProject(
 }
 
 /**
+ * projectStatusWord renders a project's status as the domain word the server uses for it.
+ *
+ * ⚠️ THE CLIENT RECEIVES A NUMBER. `ProjectStatus` is a NUMERIC proto enum (ACTIVE = 2, ARCHIVED = 4, …), so a
+ * helper that only compares STRINGS silently mis-classifies the wire value: comparing 2 against
+ * "PROJECT_STATUS_ACTIVE" is true, and an ACTIVE project would be reported as archived. That is precisely the
+ * bug this function replaced — it compiled because the type error was at the call site, and the first version
+ * of these tests missed it because they only exercised the string spellings.
+ *
+ * Both forms are accepted so one helper serves every caller, including one that already normalized. UNSPECIFIED
+ * and anything unrecognised map to "" — a status the client cannot name is better rendered as nothing than as a
+ * word that might be wrong.
+ */
+export function projectStatusWord(status: ProjectStatus | string | undefined): string {
+  if (typeof status === "number") {
+    switch (status) {
+      case ProjectStatus.DRAFTING:
+        return "drafting";
+      case ProjectStatus.ACTIVE:
+        return "active";
+      case ProjectStatus.PAUSED:
+        return "paused";
+      case ProjectStatus.ARCHIVED:
+        return "archived";
+      case ProjectStatus.DELETED:
+        return "deleted";
+      default:
+        return ""; // UNSPECIFIED, or a value this client does not know
+    }
+  }
+  if (typeof status === "string") {
+    const s = status.trim().toLowerCase();
+    if (s === "") return "";
+    // The enum's NAME form, which some serializations produce (bypassing the numeric enum).
+    if (s.startsWith("project_status_")) {
+      const word = s.slice("project_status_".length);
+      return word === "unspecified" ? "" : word;
+    }
+    return s;
+  }
+  return "";
+}
+
+/**
  * isArchivedProject reports whether a project's status means "not active".
  *
- * The API reports the status as the enum's NAME ("PROJECT_STATUS_ARCHIVED") while the server's domain word is
- * lowercase ("archived"), and both spellings reach the client depending on where a value came from — so both
- * are accepted. An unknown or empty status is NOT archived: marking a working project as archived is a worse
- * error than leaving the marker off.
+ * The association rule is the operator's "active or otherwise": an archived project is a valid home for a
+ * conversation, and the one fact worth showing is that it is ARCHIVED. Every non-active status qualifies
+ * (drafting, paused, archived, deleted) because none of them means "ready to work in"; UNSPECIFIED does not,
+ * because calling a working project archived is the worse error. See projectStatusWord for the numeric trap.
  */
-export function isArchivedProject(status: string | undefined): boolean {
-  if (!status) return false;
-  return status !== "PROJECT_STATUS_ACTIVE" && status !== "active";
+export function isArchivedProject(status: ProjectStatus | string | undefined): boolean {
+  const word = projectStatusWord(status);
+  return word !== "" && word !== "active";
 }

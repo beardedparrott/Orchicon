@@ -11,12 +11,14 @@
 
 import { describe, expect, it } from "vitest";
 
+import { ProjectStatus } from "@/api/gen/orchicon/api/v1/project_pb";
 import {
   PROJECT_DROP_PREFIX,
   groupConversationsByProject,
   isArchivedProject,
   projectDropId,
   projectIdFromDropId,
+  projectStatusWord,
 } from "@/lib/conversationProjects";
 
 describe("project drop ids", () => {
@@ -79,8 +81,22 @@ describe("grouping conversations by project", () => {
 });
 
 describe("archived projects", () => {
-  it("recognises both spellings the client can receive", () => {
-    // The proto enum's name and the server's domain word both reach this layer depending on origin.
+  // ⚠️ THE NUMERIC ENUM IS THE CASE THAT MATTERS, and the first version of this file did not test it. The
+  // client receives a NUMBER (ACTIVE = 2, ARCHIVED = 4), and a string-only comparison classifies 2 as "not
+  // active" — every ACTIVE project would have been marked archived in the sidebar. The type error at the call
+  // site is what surfaced it; these assertions are what will stop it coming back.
+  it("classifies the NUMERIC proto enum correctly", () => {
+    expect(isArchivedProject(ProjectStatus.ACTIVE)).toBe(false);
+    expect(isArchivedProject(ProjectStatus.ARCHIVED)).toBe(true);
+    expect(isArchivedProject(ProjectStatus.PAUSED)).toBe(true);
+    expect(isArchivedProject(ProjectStatus.DRAFTING)).toBe(true);
+    expect(isArchivedProject(ProjectStatus.DELETED)).toBe(true);
+    // UNSPECIFIED must NOT be marked: calling a working project archived is the worse error.
+    expect(isArchivedProject(ProjectStatus.UNSPECIFIED)).toBe(false);
+  });
+
+  it("still recognises both string spellings", () => {
+    // The proto enum's name, and the server's domain word — both reach this layer depending on origin.
     expect(isArchivedProject("PROJECT_STATUS_ARCHIVED")).toBe(true);
     expect(isArchivedProject("archived")).toBe(true);
     expect(isArchivedProject("paused")).toBe(true);
@@ -89,8 +105,20 @@ describe("archived projects", () => {
   it("does NOT mark an active or unknown project as archived", () => {
     expect(isArchivedProject("PROJECT_STATUS_ACTIVE")).toBe(false);
     expect(isArchivedProject("active")).toBe(false);
-    // An unknown/empty status must leave the marker OFF: calling a working project archived is the worse error.
     expect(isArchivedProject("")).toBe(false);
     expect(isArchivedProject(undefined)).toBe(false);
+  });
+
+  it("renders the status word the same way for both forms", () => {
+    expect(projectStatusWord(ProjectStatus.ACTIVE)).toBe("active");
+    expect(projectStatusWord(ProjectStatus.ARCHIVED)).toBe("archived");
+    expect(projectStatusWord("PROJECT_STATUS_ARCHIVED")).toBe("archived");
+    expect(projectStatusWord("archived")).toBe("archived");
+    // Unknown values render as nothing rather than as a word that might be wrong. The cast is deliberate: a
+    // server that grew a status this client has not been rebuilt for is exactly the case being guarded, and it
+    // is unreachable through the type system by construction — which is why it needs a test.
+    expect(projectStatusWord(ProjectStatus.UNSPECIFIED)).toBe("");
+    expect(projectStatusWord(999 as ProjectStatus)).toBe("");
+    expect(projectStatusWord(undefined)).toBe("");
   });
 });

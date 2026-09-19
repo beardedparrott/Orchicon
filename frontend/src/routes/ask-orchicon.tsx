@@ -12,6 +12,7 @@ import {
   Brain,
   Pencil,
   FolderPlus,
+  FolderClosed,
   ChevronRight,
   GripVertical,
   MessageSquare,
@@ -34,7 +35,6 @@ import { ModeToggle } from "@/components/ui/mode-toggle";
 import { useAskMetricsLive } from "@/lib/ask-metrics";
 import { cn } from "@/lib/utils";
 import {
-  PROJECT_DROP_PREFIX,
   groupConversationsByProject,
   isArchivedProject,
   projectDropId,
@@ -92,6 +92,7 @@ import {
 } from "@dnd-kit/core";
 import { useDroppable } from "@dnd-kit/core";
 import { useListProjects } from "@/api/projects";
+import { ProjectStatus } from "@/api/gen/orchicon/api/v1/project_pb";
 import type { Project } from "@/api/gen/orchicon/api/v1/project_pb";
 import { useDraggable } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
@@ -3129,7 +3130,9 @@ function ProjectFolderList({
 interface ProjectFolderProps {
   projectId: string;
   name: string;
-  status?: string;
+  // The proto enum, NOT a string: the wire value is numeric (see lib/conversationProjects' projectStatusWord,
+  // which is what turns it into a word and why this is typed rather than widened to `string`).
+  status?: ProjectStatus;
   convIds: string[];
   convById: Map<string, Conversation>;
   activeConvId: string | null;
