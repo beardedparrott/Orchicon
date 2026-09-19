@@ -295,6 +295,87 @@ func (m *Model) RestoreDraft() bool {
 	return true
 }
 
+// boxContentCol is the box's left chrome before anything is painted inside it: one border cell plus the
+// ComposerBox style's two cells of horizontal padding. The prompt (`❯ `) then sits before the text on EVERY
+// input row — continuation rows are indented to match — so the text always starts promptWidth further right.
+const boxContentCol = 1 + 2
+
+// Caret reports the caret's line and column.
+//
+// Exported for the SHELL's tests: the caret is placed from geometry the shell computes (where the dock starts
+// in the frame), so asserting that a click landed correctly needs to read it back from outside this package.
+func (m *Model) Caret() (line, col int) {
+	return m.ta.Line(), m.ta.LineInfo().ColumnOffset
+}
+
+// TextOrigin is the dock row and column at which the input's TEXT begins.
+//
+// Both halves are derived from the render rather than guessed: the box paints its top border first, the chip
+// row (when there is one) sits above the input inside the box, and the prompt precedes the text.
+func (m *Model) TextOrigin() (row, col int) {
+	row = 1 // the box's top border
+	if m.Chip != "" {
+		row++ // the chip is the box's first inner row
+	}
+	return row, boxContentCol + promptWidth
+}
+
+// ClickAt places the caret at a click inside the composer, in DOCK coordinates (the shell converts from the
+// frame, since only it knows where the dock starts). It reports whether the click was one it could place.
+//
+// The operator: "I also just realized you can't use your mouse in the composer to change the position of your
+// cursor." The gesture cannot come from the terminal: orch runs with tea.WithMouseCellMotion(), so the
+// terminal hands every press to the program instead of placing the caret itself. Selecting text and placing a
+// caret are the same gesture at that level, so the app has to do both — the selection lives in the shell
+// (clipboard.go) and the caret belongs here, next to the widget that owns it.
+//
+// EXACT FOR UNWRAPPED CONTENT. Every input row is the prompt followed by the textarea's row, so visual row r
+// is logical line r whenever no line soft-wraps; the caret then lands on the line clicked and at the column
+// clicked.
+//
+// A CLICK ON A SOFT-WRAPPED LINE IS DELIBERATELY NOT RESOLVED. The textarea's wrap grid is unexported, and a
+// caret placed by GUESSING at it would land somewhere plausible and wrong — worse than doing nothing, because
+// the operator cannot tell it was a guess. Reporting false leaves the caret where the keyboard put it. The
+// same applies to a click that misses the box's input rows.
+func (m *Model) ClickAt(x, y int) bool {
+	originRow, originCol := m.TextOrigin()
+	vis := y - originRow
+	if vis < 0 || vis >= m.InputRows() {
+		return false
+	}
+	tw := m.taWidth()
+	lines := strings.Split(m.ta.Value(), "\n")
+	for _, ln := range lines {
+		if lipgloss.Width(ln) > tw {
+			return false // soft-wrapped — see above
+		}
+	}
+	// A CLICK LEFT OF THE TEXT IS A CLICK AT ITS START, not a refusal: the prompt is two cells of chrome the
+	// operator may well have clicked on the way to column one.
+	if x < originCol {
+		x = originCol
+	}
+	// BELOW THE TEXT IS THE END OF THE TEXT, which is what a box does: clicking the empty space under a short
+	// message puts the caret after the last character rather than refusing or jumping to a line.
+	atEnd := vis >= len(lines)
+	target := vis
+	if atEnd {
+		target = len(lines) - 1
+	}
+	for m.ta.Line() < target {
+		m.ta.CursorDown()
+	}
+	for m.ta.Line() > target {
+		m.ta.CursorUp()
+	}
+	if atEnd {
+		m.ta.CursorEnd()
+		return true
+	}
+	m.ta.SetCursor(x - originCol)
+	return true
+}
+
 // boxInner is the box's content width: the dock width minus the box chrome
 // (border + inner padding). An unset/too-narrow width falls back to a sane
 // default — the shell pads/truncates every frame row to the real width, so

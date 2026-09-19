@@ -992,6 +992,13 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 		// (bubbletea reports the wheel as a button), so keying on the action alone would let a scroll
 		// rewrite the region of a drag already in progress.
 		if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft {
+			// A CLICK IN THE COMPOSER MOVES THE CARET, and is resolved FIRST: the composer is a pane the generic
+			// click handling would otherwise treat as content to focus, and placing the caret is the useful thing
+			// to do there. A press is never consumed, so a drag that starts in the composer still selects — the
+			// same press does both.
+			if m.composerClickAt(mo.X, mo.Y) {
+				return m, nil
+			}
 			if r, ok := m.selectionRegionAt(mo.X, mo.Y); ok {
 				m.clip.setRegion(r)
 			} else {

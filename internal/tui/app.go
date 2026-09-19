@@ -3272,6 +3272,33 @@ func (m *App) transcriptUserMessageAtFrameRow(frameRow int) (string, bool) {
 	return "", false
 }
 
+// composerTopRow is the frame row of the composer dock's FIRST line: the chrome, then the screen block, then
+// the slide-out strip, then the dock — the same order baseView paints them in.
+func (m *App) composerTopRow() int {
+	return tabBarRows + 1 + m.screenRows() + m.panelRows()
+}
+
+// composerClickAt routes a click in the composer to the caret, reporting whether it landed there.
+//
+// It converts FRAME coordinates to the dock's own, which is the half only the shell can do: the dock is handed
+// a width and rendered at the bottom of the body, so it has no idea which frame row it starts on.
+func (m *App) composerClickAt(x, y int) bool {
+	if y < m.composerTopRow() {
+		return false
+	}
+	left := 0
+	if m.diffOpen && m.diffPane != nil {
+		left = m.diffPaneWidth()
+		if x < left {
+			return false // the diff pane's own columns
+		}
+	}
+	if x >= left+m.contentWidth() {
+		return false // the conversations rail's own columns
+	}
+	return m.dock.ClickAt(x-left, y-m.composerTopRow())
+}
+
 // transcriptCodeBlockAtFrameRow resolves a click at a FRAME row to the SOURCE of a code block under it.
 //
 // This is the gesture the operator asked for after discovering that selecting a block cannot be made clean:
