@@ -1,110 +1,183 @@
-// conversationProjects.test.ts — the conversations sidebar's PROJECT level, at the seams where it can be wrong.
+// conversationProjects.test.ts — the conversations sidebar's PROJECT SCOPE, at the seams where it can be wrong.
 //
-// The operator: "We need to make a second higher level in organization for conversations. It should be another
-// drop down where all of the conversations are associated with Projects in a parent category. For every project
-// that is created (active or otherwise), there should be a list that can be dragged to and also created from."
+// The operator, correcting the first attempt:
 //
-// The sidebar itself is a route component this test setup cannot render, so the logic that decides WHERE a drop
-// lands and HOW conversations group was pulled into lib/conversationProjects. That logic is what these tests
-// pin — and the drop routing is the one that matters most, because getting it wrong moves a conversation into
-// the wrong thing (or unassigns it) with no error anywhere.
+//   "The implementation is wrong. You separated categories out as 'folders' and then you made them two
+//    completely different panes. ... I wanted a hierarchy. So a conversation would belong to a project and
+//    inside the project it would still have the normal categories we had before. I think the better alternative
+//    to what you did would be a dropdown at the top of the conversation bar that allows you to pick a project,
+//    and then under that project you would only see THAT PROJECT'S Conversations and Categories. Projects are
+//    WORKSPACES essentially."
+//
+// The sidebar is a route component this test setup cannot render, so the scope logic was pulled into
+// lib/conversationProjects as pure functions. These tests pin the two things that decide what the operator
+// actually sees: WHICH conversations a scope contains, and WHAT the dropdown offers.
 
 import { describe, expect, it } from "vitest";
 
 import { ProjectStatus } from "@/api/gen/orchicon/api/v1/project_pb";
 import {
-  PROJECT_DROP_PREFIX,
-  groupConversationsByProject,
+  ALL_PROJECTS,
+  filterConversationsByScope,
   isArchivedProject,
-  projectDropId,
-  projectIdFromDropId,
   projectStatusWord,
+  scopeLabel,
+  scopeOptions,
 } from "@/lib/conversationProjects";
 
-describe("project drop ids", () => {
-  it("round-trips a project id", () => {
-    expect(projectDropId("p-1")).toBe("proj:p-1");
-    expect(projectIdFromDropId(projectDropId("p-1"))).toBe("p-1");
+const convs = [
+  { id: "c1", projectId: "p-1" },
+  { id: "c2", projectId: "p-2" },
+  { id: "c3", projectId: "p-1" },
+  { id: "c4", projectId: "" },
+  { id: "c5" }, // no projectId at all — the same state as ""
+  { id: "c6", projectId: "p-gone" }, // its project no longer exists
+];
+
+const projects = [
+  { id: "p-1", name: "Alpha", status: ProjectStatus.ACTIVE },
+  { id: "p-2", name: "Beta", status: ProjectStatus.ACTIVE },
+  { id: "p-3", name: "Gamma", status: ProjectStatus.ARCHIVED },
+];
+
+describe("filtering conversations by scope", () => {
+  it("shows ONLY the scope's conversations — the whole point of a workspace", () => {
+    // The operator: "you would only see THAT PROJECT'S Conversations and Categories ... You can't see the other
+    // categories and conversations from the other projects unless you click on the drop down again."
+    expect(filterConversationsByScope(convs, "p-1").map((c) => c.id)).toEqual(["c1", "c3"]);
+    expect(filterConversationsByScope(convs, "p-2").map((c) => c.id)).toEqual(["c2"]);
   });
 
-  it("distinguishes the UNASSIGNED project from a non-project target", () => {
-    // "" is the unassign gesture — a real, intentional move.
-    expect(projectIdFromDropId(projectDropId(""))).toBe("");
-    // A category folder id, or the uncategorized zone, is NOT a project: null, so the caller falls through to
-    // the category path. Returning "" here would unassign a conversation on every drop onto a folder.
-    expect(projectIdFromDropId("cat-abc")).toBeNull();
-    expect(projectIdFromDropId("__uncategorized__")).toBeNull();
+  it("excludes other projects' conversations from a project scope", () => {
+    const got = filterConversationsByScope(convs, "p-1").map((c) => c.id);
+    for (const other of ["c2", "c4", "c5", "c6"]) {
+      expect(got).not.toContain(other);
+    }
   });
 
-  it("does not mistake a category id that merely contains the prefix", () => {
-    // A prefix match must be a PREFIX match. An id that happens to contain "proj:" mid-string is not a project.
-    expect(projectIdFromDropId("cat:proj:x")).toBeNull();
+  it("treats ALL_PROJECTS as filtering nothing", () => {
+    expect(filterConversationsByScope(convs, ALL_PROJECTS)).toHaveLength(convs.length);
   });
 
-  it("keeps the prefix distinct from the uncategorized sentinel", () => {
-    expect(PROJECT_DROP_PREFIX).not.toBe("__uncategorized__");
-    expect(projectDropId("")).not.toBe("__uncategorized__");
-  });
-});
-
-describe("grouping conversations by project", () => {
-  it("buckets each conversation under its project, in list order", () => {
-    const got = groupConversationsByProject([
-      { id: "c1", projectId: "p-1" },
-      { id: "c2", projectId: "p-2" },
-      { id: "c3", projectId: "p-1" },
-    ]);
-    expect(got.get("p-1")).toEqual(["c1", "c3"]);
-    expect(got.get("p-2")).toEqual(["c2"]);
+  it("treats the EMPTY scope as the unassigned group, not as 'all'", () => {
+    // "" is a meaningful scope — unassigned chats are a place things live and must stay reachable. Conflating it
+    // with ALL_PROJECTS would make them unfindable in any project scope AND unspecial in the all-project one.
+    expect(filterConversationsByScope(convs, "").map((c) => c.id)).toEqual(["c4", "c5"]);
+    expect(filterConversationsByScope(convs, "")).not.toHaveLength(convs.length);
   });
 
-  it("puts unassigned conversations under the empty key", () => {
-    const got = groupConversationsByProject([
-      { id: "c1", projectId: "" },
-      { id: "c2" }, // absent projectId is the same state as ""
-    ]);
-    expect(got.get("")).toEqual(["c1", "c2"]);
-  });
-
-  it("KEEPS a conversation whose project is gone", () => {
-    // The column has no foreign key, so a conversation can outlive its project. If the grouping dropped it, the
-    // chat would be unreachable from the sidebar entirely — the worst outcome, and a silent one.
-    const got = groupConversationsByProject([{ id: "orphan", projectId: "p-deleted" }]);
-    expect(got.get("p-deleted")).toEqual(["orphan"]);
-    expect([...got.values()].flat()).toContain("orphan");
+  it("keeps a conversation whose project is gone reachable", () => {
+    // The column has no foreign key, so a chat can outlive its project. Its scope still lists it.
+    expect(filterConversationsByScope(convs, "p-gone").map((c) => c.id)).toEqual(["c6"]);
   });
 
   it("handles an empty or missing list", () => {
-    expect(groupConversationsByProject([]).size).toBe(0);
-    expect(groupConversationsByProject(undefined).size).toBe(0);
+    expect(filterConversationsByScope([], "p-1")).toEqual([]);
+    expect(filterConversationsByScope(undefined, "p-1")).toEqual([]);
   });
 });
 
-describe("archived projects", () => {
-  // ⚠️ THE NUMERIC ENUM IS THE CASE THAT MATTERS, and the first version of this file did not test it. The
-  // client receives a NUMBER (ACTIVE = 2, ARCHIVED = 4), and a string-only comparison classifies 2 as "not
-  // active" — every ACTIVE project would have been marked archived in the sidebar. The type error at the call
-  // site is what surfaced it; these assertions are what will stop it coming back.
+describe("the scope dropdown's options", () => {
+  it("offers All projects first, then every project, then No project", () => {
+    const got = scopeOptions(projects, convs).map((o) => o.value);
+    expect(got[0]).toBe(ALL_PROJECTS);
+    expect(got.slice(1, 4)).toEqual(["p-1", "p-2", "p-3"]);
+    expect(got[got.length - 1]).toBe("");
+  });
+
+  it("LISTS EVERY PROJECT EVEN WITH NO CONVERSATIONS, counted as 0", () => {
+    // The operator: "For every project that is created (active or otherwise), there should be a list that can be
+    // dragged to and also created from." A project absent from the dropdown could not be chosen as a workspace,
+    // and the 0 is information: it is how you know the scope is empty before clicking it.
+    const gamma = scopeOptions(projects, convs).find((o) => o.value === "p-3");
+    expect(gamma).toBeDefined();
+    expect(gamma?.count).toBe(0);
+  });
+
+  it("counts each scope's ACTUAL conversations", () => {
+    const opts = scopeOptions(projects, convs);
+    expect(opts.find((o) => o.value === ALL_PROJECTS)?.count).toBe(6);
+    expect(opts.find((o) => o.value === "p-1")?.count).toBe(2);
+    expect(opts.find((o) => o.value === "p-2")?.count).toBe(1);
+    expect(opts.find((o) => o.value === "")?.count).toBe(2);
+  });
+
+  it("marks an archived project so the option can say so", () => {
+    const opts = scopeOptions(projects, convs);
+    expect(opts.find((o) => o.value === "p-3")?.archived).toBe(true);
+    expect(opts.find((o) => o.value === "p-1")?.archived).toBe(false);
+  });
+
+  it("gives a project id that is only REFERENCED its own option", () => {
+    // Without this the conversation would be unreachable from the sidebar entirely — the worst outcome, and a
+    // silent one. It is labelled with the raw id, which is ugly and honest.
+    const gone = scopeOptions(projects, convs).find((o) => o.value === "p-gone");
+    expect(gone).toBeDefined();
+    expect(gone?.label).toContain("p-gone");
+    expect(gone?.count).toBe(1);
+  });
+
+  it("orders orphaned ids deterministically, so the menu does not reshuffle", () => {
+    const twice = [
+      scopeOptions(projects, convs).map((o) => o.value),
+      scopeOptions(projects, convs).map((o) => o.value),
+    ];
+    expect(twice[0]).toEqual(twice[1]);
+  });
+
+  it("still offers All projects and No project with no projects configured", () => {
+    // With nothing configured AND nothing unassigned-but-orphaned, those are the only two scopes there are.
+    const unassignedOnly = [{ id: "c1", projectId: "" }];
+    expect(scopeOptions([], unassignedOnly).map((o) => o.value)).toEqual([ALL_PROJECTS, ""]);
+  });
+
+  it("still surfaces an orphaned id when NO projects are configured at all", () => {
+    // The orphan rule does not depend on the project list existing: a conversation referencing a project the
+    // tenant cannot see must stay reachable whether or not any other project is configured. With NO projects
+    // listed, every referenced id is by definition orphaned — so all of them get an option, sorted.
+    //
+    // (My first two expectations here were wrong in different ways, and both times the CODE was right: first I
+    // asserted the orphan would vanish with the project list, then that only "p-gone" was orphaned. A
+    // conversation whose project is simply not in this page's project list is unreachable by name, so it needs
+    // its own option too — which is exactly what the function does.)
+    const got = scopeOptions([], convs).map((o) => o.value);
+    expect(got).toEqual([ALL_PROJECTS, "p-1", "p-2", "p-gone", ""]);
+  });
+});
+
+describe("scopeLabel", () => {
+  it("names the scope from the options", () => {
+    const opts = scopeOptions(projects, convs);
+    expect(scopeLabel("p-1", opts)).toBe("Alpha");
+    expect(scopeLabel("", opts)).toBe("No project");
+    expect(scopeLabel(ALL_PROJECTS, opts)).toBe("All projects");
+  });
+
+  it("falls back to the raw value for a scope with no option", () => {
+    expect(scopeLabel("p-nope", scopeOptions(projects, convs))).toBe("p-nope");
+  });
+});
+
+describe("project status", () => {
+  // ⚠️ THE NUMERIC ENUM IS THE CASE THAT MATTERS. The client receives a NUMBER (ACTIVE = 2, ARCHIVED = 4), and a
+  // string-only comparison classifies 2 as "not active" — every ACTIVE project would be marked archived.
   it("classifies the NUMERIC proto enum correctly", () => {
     expect(isArchivedProject(ProjectStatus.ACTIVE)).toBe(false);
     expect(isArchivedProject(ProjectStatus.ARCHIVED)).toBe(true);
     expect(isArchivedProject(ProjectStatus.PAUSED)).toBe(true);
     expect(isArchivedProject(ProjectStatus.DRAFTING)).toBe(true);
     expect(isArchivedProject(ProjectStatus.DELETED)).toBe(true);
-    // UNSPECIFIED must NOT be marked: calling a working project archived is the worse error.
     expect(isArchivedProject(ProjectStatus.UNSPECIFIED)).toBe(false);
   });
 
   it("still recognises both string spellings", () => {
-    // The proto enum's name, and the server's domain word — both reach this layer depending on origin.
     expect(isArchivedProject("PROJECT_STATUS_ARCHIVED")).toBe(true);
     expect(isArchivedProject("archived")).toBe(true);
-    expect(isArchivedProject("paused")).toBe(true);
-  });
-
-  it("does NOT mark an active or unknown project as archived", () => {
     expect(isArchivedProject("PROJECT_STATUS_ACTIVE")).toBe(false);
     expect(isArchivedProject("active")).toBe(false);
+  });
+
+  it("does not mark an unknown or absent status", () => {
     expect(isArchivedProject("")).toBe(false);
     expect(isArchivedProject(undefined)).toBe(false);
   });
@@ -114,9 +187,6 @@ describe("archived projects", () => {
     expect(projectStatusWord(ProjectStatus.ARCHIVED)).toBe("archived");
     expect(projectStatusWord("PROJECT_STATUS_ARCHIVED")).toBe("archived");
     expect(projectStatusWord("archived")).toBe("archived");
-    // Unknown values render as nothing rather than as a word that might be wrong. The cast is deliberate: a
-    // server that grew a status this client has not been rebuilt for is exactly the case being guarded, and it
-    // is unreachable through the type system by construction — which is why it needs a test.
     expect(projectStatusWord(ProjectStatus.UNSPECIFIED)).toBe("");
     expect(projectStatusWord(999 as ProjectStatus)).toBe("");
     expect(projectStatusWord(undefined)).toBe("");

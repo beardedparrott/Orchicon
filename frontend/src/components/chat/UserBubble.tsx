@@ -16,9 +16,9 @@ export function UserBubble({ text, source = "you", className }: UserBubbleProps)
 
   return (
     <div className={`flex justify-end ${className ?? ""}`}>
-      <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-primary px-4 py-2.5 text-sm text-primary-foreground shadow-sm">
+      <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-user-bubble px-4 py-2.5 text-sm text-user-bubble-foreground shadow-sm">
         <div className="mb-0.5 flex items-center justify-end gap-2">
-          <span className="text-[10px] font-medium uppercase tracking-wide text-primary-foreground/70">
+          <span className="text-[10px] font-medium uppercase tracking-wide text-user-bubble-foreground/70">
             {label}
           </span>
         </div>

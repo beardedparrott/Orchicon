@@ -68,6 +68,21 @@
     --nav-active-border: 189 94% 43%;
     --nav-active-glow: 189 94% 43%;
     --nav-inactive-cyan: 188 86% 53%;
+
+    /* THE USER CONVERSATION BUBBLE, as its OWN pair of tokens rather than a borrow of --primary.
+     *
+     * The operator: "the newly edited Ember Night in the GUI I am not a fan of the orange conversation bubble
+     * for users. Please change that to something else." The user bubble was painted with `bg-primary`, so it
+     * inherited whatever the ACCENT was — which turned Ember Night's orange accent into a wall of orange behind
+     * every message the operator wrote. The accent is the theme's identity and belongs on buttons and focus
+     * rings; the bubble is a SURFACE, and they are not the same decision.
+     *
+     * These DEFAULT TO THE ACCENT (the var() resolves against whatever --primary the element's theme set), so
+     * every existing theme keeps exactly the look it has today and nothing had to be re-tuned. A theme that
+     * wants a different bubble overrides the pair, which is what Ember Night does.
+     */
+    --user-bubble: var(--primary);
+    --user-bubble-foreground: var(--primary-foreground);
   }
   .dark {
     --kind-sky: 199 89% 60%;
@@ -747,6 +762,20 @@
     --border: 12 29% 30%;
     --input: 12 29% 30%;
     --ring: 25 89% 58%;
+
+    /* THE USER BUBBLE IS NOT THE ACCENT. The operator, on the orange: "I am not a fan of the orange
+     * conversation bubble for users. Please change that to something else."
+     *
+     * These are the values internal/tui/theme derives for its ember USER BAND — bubbleFills() lifts the
+     * background 17% toward white for the operator's messages (#1b110e -> #423937) and blends the text against
+     * that fill (#f7f4f3). So the GUI's bubble is now the same surface the TUI paints, which is the parity the
+     * operator asked for when they matched this theme to ember in the first place: a NEUTRAL lift, not a
+     * second helping of the accent.
+     *
+     * internal/tui/theme/ember_gui_match_test.go recomputes these from the TUI palette and fails if they drift.
+     */
+    --user-bubble: 11 9% 24%;
+    --user-bubble-foreground: 16 19% 96%;
     --mesh-bg: 14 32% 8%;
     /* The ambient trio is the TUI's accent family: its accent (orange), its AccentIndigo (+30°, the
      * yellow sibling) and its AccentCyan (a deep amber). One hue in three passes reads as a flat wash.

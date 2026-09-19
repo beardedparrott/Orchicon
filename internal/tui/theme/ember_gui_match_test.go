@@ -144,6 +144,23 @@ func TestTheGUIEmberThemeMatchesTheTUIPalette(t *testing.T) {
 		{"--mesh-glow-2", string(ember.AccentIndigo), "the ambient trio's second pass"},
 		{"--mesh-glow-3", string(ember.AccentCyan), "the ambient trio's third pass"},
 	}
+	// THE USER CONVERSATION BUBBLE IS THE TUI'S OWN USER BAND, and it is asserted HERE rather than left to
+	// inspection because that is exactly how it went wrong. The bubble was painted with `bg-primary`, so it
+	// inherited the accent — and when this theme's accent became ember's orange, every message the operator wrote
+	// turned into a wall of orange ("I am not a fan of the orange conversation bubble for users").
+	//
+	// The TUI derives its user band from bubbleFills(), not from the accent, so recomputing it here is what keeps
+	// the two clients showing the same thing — and it is a different value from --primary, which is the point.
+	userFill, _ := bubbleFills(string(ember.Bg), string(ember.Accent))
+	if hslOf(t, userFill) == hslOf(t, string(ember.Accent)) {
+		t.Fatalf("fixture: the TUI's user band equals its accent (%s), so this assertion could not tell the two "+
+			"apart", userFill)
+	}
+	cases = append(cases, struct {
+		token string
+		hex   string
+		role  string
+	}{"--user-bubble", userFill, "the operator's conversation bubble (the TUI's user band, NOT the accent)"})
 	for _, c := range cases {
 		got, ok := tokens[c.token]
 		if !ok {

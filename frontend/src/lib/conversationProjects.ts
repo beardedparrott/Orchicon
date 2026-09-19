@@ -1,69 +1,59 @@
-// conversationProjects.ts — the two pieces of logic behind the conversations sidebar's PROJECT level.
+// conversationProjects.ts — the PROJECT SCOPE of the conversations sidebar, as pure functions.
 //
-// They live here, as pure functions, for one reason: the sidebar is a 2900-line route component that cannot be
-// rendered in this project's test setup (there is no renderHook/`@testing-library/react`), so logic left inline
-// there is logic nothing can assert. Pulled out, the drop routing — which decides whether a drag lands in a
-// project, a category folder or the unassigned zone, and therefore which RPC runs — becomes something a test
-// can pin.
+// The operator, correcting the first attempt:
 //
-// The operator: "We need to make a second higher level in organization for conversations. It should be another
-// drop down where all of the conversations are associated with Projects in a parent category. For every project
-// that is created (active or otherwise), there should be a list that can be dragged to and also created from."
+//   "The implementation is wrong. You separated categories out as 'folders' and then you made them two
+//    completely different panes. ... I wanted a hierarchy. So a conversation would belong to a project and
+//    inside the project it would still have the normal categories we had before. I think the better alternative
+//    to what you did would be a dropdown at the top of the conversation bar that allows you to pick a project,
+//    and then under that project you would only see THAT PROJECT'S Conversations and Categories. Projects are
+//    WORKSPACES essentially."
+//
+// So a project is a SCOPE, not a sibling view: you pick one, and the categories reappear inside it holding only
+// that project's conversations. The category machinery is untouched — it just receives a narrower set of items.
+//
+// These live here as pure functions because the sidebar is a 2900-line route component this project's test setup
+// cannot render (there is no `@testing-library/react`, so no renderHook). Logic left inline there is logic
+// nothing can assert.
 
 import { ProjectStatus } from "@/api/gen/orchicon/api/v1/project_pb";
 
 /**
- * PROJECT_DROP_PREFIX namespaces a project folder's droppable id.
+ * ALL_PROJECTS is the scope that filters nothing.
  *
- * It exists because three kinds of drop target share one DndContext: project folders, category folders, and the
- * uncategorized zone. A category id is opaque, so without a prefix a project and a category could collide — and
- * the collision would silently move a conversation into the wrong thing.
+ * It is the DEFAULT, and that is deliberate rather than lazy: the project column is additive and defaults to
+ * empty, so every conversation that existed before this feature is unassigned. A default that hid them would
+ * make an operator's entire chat history appear to have been deleted on first load.
  */
-export const PROJECT_DROP_PREFIX = "proj:";
+export const ALL_PROJECTS = "__all__";
 
-/** projectDropId is the droppable id for a project folder. The unassigned group uses the bare prefix. */
-export function projectDropId(projectId: string): string {
-  return PROJECT_DROP_PREFIX + projectId;
-}
-
-/**
- * projectIdFromDropId returns the project a drop id addresses, or null when it is not a project folder.
- *
- * The null case is load-bearing: the caller must be able to tell "this is a project, and its id is the empty
- * string (unassign)" from "this is a category folder". Both are otherwise falsy-ish, and treating the second
- * as the first would unassign a conversation on every drop onto a folder.
- */
-export function projectIdFromDropId(dropId: string): string | null {
-  if (!dropId.startsWith(PROJECT_DROP_PREFIX)) return null;
-  return dropId.slice(PROJECT_DROP_PREFIX.length);
-}
-
-/** The minimum a conversation must expose to be grouped. Structural, so the proto type satisfies it. */
-export interface ProjectGroupable {
+/** The minimum a conversation must expose to be scoped. Structural, so the proto type satisfies it. */
+export interface ScopedConversation {
   id: string;
   projectId?: string;
 }
 
+/** The minimum a project must expose to be an option. */
+export interface ScopedProject {
+  id: string;
+  name: string;
+  status?: ProjectStatus | string;
+}
+
 /**
- * groupConversationsByProject buckets conversation ids by project, with "" holding the unassigned ones.
+ * filterConversationsByScope returns the conversations visible in a scope.
  *
- * IT GROUPS THE CONVERSATIONS, NOT THE PROJECT LIST. A conversation whose project has been deleted still has to
- * appear somewhere — an orphaned chat that vanished from the sidebar would be unreachable — so the buckets come
- * from the conversations themselves and the project folders are rendered from the project list beside them. A
- * project id that matches nothing still yields a bucket, which the sidebar shows as an "unknown project" folder
- * rather than dropping the chat.
+ * A scope is a project id, "" for the unassigned ones, or ALL_PROJECTS. Note that "" is a MEANINGFUL scope and
+ * not the same as ALL_PROJECTS: unassigned conversations are a group you can look at, move things into, and
+ * need to find. Conflating the two would leave them unreachable.
  */
-export function groupConversationsByProject(
-  conversations: readonly ProjectGroupable[] | undefined,
-): Map<string, string[]> {
-  const out = new Map<string, string[]>();
-  for (const c of conversations ?? []) {
-    const key = c.projectId ?? "";
-    const list = out.get(key);
-    if (list) list.push(c.id);
-    else out.set(key, [c.id]);
-  }
-  return out;
+export function filterConversationsByScope<T extends ScopedConversation>(
+  conversations: readonly T[] | undefined,
+  scope: string,
+): T[] {
+  const all = conversations ?? [];
+  if (scope === ALL_PROJECTS) return [...all];
+  return all.filter((c) => (c.projectId ?? "") === scope);
 }
 
 /**
@@ -71,13 +61,11 @@ export function groupConversationsByProject(
  *
  * ⚠️ THE CLIENT RECEIVES A NUMBER. `ProjectStatus` is a NUMERIC proto enum (ACTIVE = 2, ARCHIVED = 4, …), so a
  * helper that only compares STRINGS silently mis-classifies the wire value: comparing 2 against
- * "PROJECT_STATUS_ACTIVE" is true, and an ACTIVE project would be reported as archived. That is precisely the
- * bug this function replaced — it compiled because the type error was at the call site, and the first version
- * of these tests missed it because they only exercised the string spellings.
+ * "PROJECT_STATUS_ACTIVE" is true, and an ACTIVE project would be reported as archived. That was a real bug in
+ * the first version of this file; it compiled because the type error surfaced at the call site instead.
  *
- * Both forms are accepted so one helper serves every caller, including one that already normalized. UNSPECIFIED
- * and anything unrecognised map to "" — a status the client cannot name is better rendered as nothing than as a
- * word that might be wrong.
+ * Both forms are accepted so one helper serves every caller. UNSPECIFIED and anything unrecognised map to "" —
+ * a status the client cannot name is better rendered as nothing than as a word that might be wrong.
  */
 export function projectStatusWord(status: ProjectStatus | string | undefined): string {
   if (typeof status === "number") {
@@ -113,11 +101,69 @@ export function projectStatusWord(status: ProjectStatus | string | undefined): s
  * isArchivedProject reports whether a project's status means "not active".
  *
  * The association rule is the operator's "active or otherwise": an archived project is a valid home for a
- * conversation, and the one fact worth showing is that it is ARCHIVED. Every non-active status qualifies
- * (drafting, paused, archived, deleted) because none of them means "ready to work in"; UNSPECIFIED does not,
- * because calling a working project archived is the worse error. See projectStatusWord for the numeric trap.
+ * conversation, and the one fact worth showing is that it is not active. UNSPECIFIED does not qualify — calling
+ * a working project archived is the worse error. See projectStatusWord for the numeric trap.
  */
 export function isArchivedProject(status: ProjectStatus | string | undefined): boolean {
   const word = projectStatusWord(status);
   return word !== "" && word !== "active";
+}
+
+/** A scope as it appears in the dropdown. */
+export interface ScopeOption {
+  /** The scope value: a project id, "" for unassigned, or ALL_PROJECTS. */
+  value: string;
+  label: string;
+  /** How many conversations the scope holds — a count of the ACTUAL items, not of the project's rows. */
+  count: number;
+  /** True when the project is not active, so the option can say so. */
+  archived: boolean;
+}
+
+/**
+ * scopeOptions builds the dropdown's contents: All projects, every project, any project id still referenced by
+ * a conversation, and No project — the last first-class because it is a place conversations live.
+ *
+ * AN UNKNOWN ID GETS AN OPTION. The project column carries no foreign key, so a conversation can outlive its
+ * project; without an option for that id the chat would be unreachable from the sidebar entirely, which is the
+ * worst outcome and a silent one. It is labelled with the raw id, which is ugly and honest.
+ *
+ * EVERY PROJECT IS LISTED even with zero conversations — the operator's "for every project that is created
+ * (active or otherwise)". The count then reads 0, which is information rather than an omission: it is how you
+ * know the scope is empty before clicking it.
+ */
+export function scopeOptions(
+  projects: readonly ScopedProject[] | undefined,
+  conversations: readonly ScopedConversation[] | undefined,
+): ScopeOption[] {
+  const counts = new Map<string, number>();
+  for (const c of conversations ?? []) {
+    const k = c.projectId ?? "";
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+  const known = new Set<string>();
+  const out: ScopeOption[] = [
+    { value: ALL_PROJECTS, label: "All projects", count: (conversations ?? []).length, archived: false },
+  ];
+  for (const p of projects ?? []) {
+    known.add(p.id);
+    out.push({
+      value: p.id,
+      label: p.name,
+      count: counts.get(p.id) ?? 0,
+      archived: isArchivedProject(p.status),
+    });
+  }
+  // Referenced-but-missing project ids, in a stable order so the menu does not reshuffle between renders.
+  const orphaned = [...counts.keys()].filter((k) => k !== "" && !known.has(k)).sort();
+  for (const id of orphaned) {
+    out.push({ value: id, label: `unknown project ${id}`, count: counts.get(id) ?? 0, archived: true });
+  }
+  out.push({ value: "", label: "No project", count: counts.get("") ?? 0, archived: false });
+  return out;
+}
+
+/** scopeLabel is the name of a scope, for the dropdown's closed state. */
+export function scopeLabel(scope: string, options: readonly ScopeOption[]): string {
+  return options.find((o) => o.value === scope)?.label ?? scope;
 }
