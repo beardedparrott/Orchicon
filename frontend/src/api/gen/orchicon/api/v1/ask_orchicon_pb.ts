@@ -180,6 +180,17 @@ export class Conversation extends Message<Conversation> {
    */
   turnLastActivityAt?: Timestamp;
 
+  /**
+   * project_id is the project this conversation belongs to, or "" when it is
+   * unassigned. It is the second, higher level of organization over
+   * conversations (categories being the first), and it is also the CONTEXT the
+   * agent is told about: the project's project_dir is the folder the chat's work
+   * happens in, so a client shows it and the prompt carries it.
+   *
+   * @generated from field: string project_id = 15;
+   */
+  projectId = "";
+
   constructor(data?: PartialMessage<Conversation>) {
     super();
     proto3.util.initPartial(data, this);
@@ -202,6 +213,7 @@ export class Conversation extends Message<Conversation> {
     { no: 12, name: "pending_assistant_message_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 13, name: "turn_progressing", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
     { no: 14, name: "turn_last_activity_at", kind: "message", T: Timestamp },
+    { no: 15, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Conversation {

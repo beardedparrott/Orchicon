@@ -96,6 +96,12 @@ message Conversation {
   // lets the frontend compute how long the turn has been quiet (and show a
   // stale/stopped state) without polling the bus.
   google.protobuf.Timestamp turn_last_activity_at = 14;
+  // project_id is the project this conversation belongs to, or "" when it is
+  // unassigned. It is the second, higher level of organization over
+  // conversations (categories being the first), and it is also the CONTEXT the
+  // agent is told about: the project's project_dir is the folder the chat's work
+  // happens in, so a client shows it and the prompt carries it.
+  string project_id = 15;
 }
 
 // ChatMessage is a single message within a conversation.

@@ -48,6 +48,21 @@ service AskOrchiconService {
   // already-open chat instead of starting a new one.
   rpc SetConversationModel(SetConversationModelRequest) returns (SetConversationModelResponse);
 
+  // SetConversationProject places a conversation in a PROJECT (or clears it),
+  // which is the second, higher level of organization over conversations: the
+  // rail and the GUI sidebar list projects as the parent group, every project
+  // gets a folder whether or not it has conversations yet, and this rpc is what
+  // a drag-into-a-folder or a TUI /project resolves to.
+  //
+  // A project is the workspace the chat's work happens in — its project_dir is
+  // the directory the Ask file/shell suite is scoped to — so setting it also
+  // tells the agent WHICH project folder the chat belongs to, and that is what
+  // makes all three modes context-aware (see BuildSystemPrompt). An EMPTY
+  // project_id unassigns the conversation. An unknown id is rejected: a
+  // conversation can be unassigned, but it can never point at a project that
+  // does not exist.
+  rpc SetConversationProject(SetConversationProjectRequest) returns (SetConversationProjectResponse);
+
   // Messages.
 
   // ListMessages returns messages for a conversation, ordered by
@@ -172,6 +187,10 @@ message CreateConversationRequest {
   string initial_message = 2;
   // mode is the starting persona. Unset/UNSPECIFIED defaults to BRAINSTORM.
   ConversationMode mode = 3;
+  // project_id is the project this conversation belongs to. Empty creates an
+  // unassigned conversation; the GUI's per-project "new conversation" button
+  // and the TUI's create-in-folder both set it. An unknown id is rejected.
+  string project_id = 4;
 }
 
 message CreateConversationResponse {
@@ -196,6 +215,18 @@ message SetConversationModelRequest {
 }
 
 message SetConversationModelResponse {
+  Conversation conversation = 1;
+}
+
+message SetConversationProjectRequest {
+  string id = 1;
+  // project_id is the project to place the conversation in. Empty UNASSIGNS it
+  // (the conversation survives, it just leaves the project folder). A non-empty
+  // id must name an existing project.
+  string project_id = 2;
+}
+
+message SetConversationProjectResponse {
   Conversation conversation = 1;
 }
 

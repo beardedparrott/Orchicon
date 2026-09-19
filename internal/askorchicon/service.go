@@ -465,10 +465,25 @@ func (s *Service) CreateConversation(ctx context.Context, req *connect.Request[a
 	defer ttx.Rollback(ctx)
 
 	convRow := db.ConversationRow{
-		ID:       db.NewID(),
-		TenantID: tenantID,
-		ModelRef: req.Msg.ModelRef,
-		Mode:     mode,
+		ID:        db.NewID(),
+		TenantID:  tenantID,
+		ModelRef:  req.Msg.ModelRef,
+		Mode:      mode,
+		ProjectID: strings.TrimSpace(req.Msg.ProjectId),
+	}
+	// THE PROJECT MUST EXIST — the "active or otherwise" rule the operator set. GetProject filters on tenant and
+	// id ONLY (no status predicate), so an ARCHIVED project is a valid home for a conversation and only an
+	// unknown id is refused. A create that named a project nobody could resolve would land the conversation in a
+	// folder the rail could never render, which is worse than refusing it here with a message that names the
+	// problem.
+	if convRow.ProjectID != "" {
+		if _, err := db.GetProject(ctx, ttx.Tx, tenantID, convRow.ProjectID); err != nil {
+			if errors.Is(err, db.ErrNotFound) {
+				return nil, connect.NewError(connect.CodeNotFound,
+					fmt.Errorf("project %q not found — create it first, or leave project_id empty", convRow.ProjectID))
+			}
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
 	}
 	row, err := db.CreateConversation(ctx, ttx.Tx, convRow)
 	if err != nil {
@@ -496,7 +511,7 @@ func (s *Service) CreateConversation(ctx context.Context, req *connect.Request[a
 	}
 
 	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.created", "conversation", row.ID,
-		nil, audit.Snapshot(map[string]any{"mode": mode, "model_ref": req.Msg.ModelRef})); err != nil {
+		nil, audit.Snapshot(map[string]any{"mode": mode, "model_ref": req.Msg.ModelRef, "project_id": convRow.ProjectID})); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.created: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
@@ -895,6 +910,7 @@ func conversationRowToProto(r db.ConversationRow, messageCount int, lastPreview 
 		ModelRef:                  r.ModelRef,
 		SessionId:                 r.SessionID,
 		Mode:                      conversationModeToProto(r.Mode),
+		ProjectId:                 r.ProjectID,
 		MessageCount:              int32(messageCount),
 		LastMessagePreview:        lastPreview,
 		TurnInFlight:              s.inFlight,
@@ -905,6 +921,64 @@ func conversationRowToProto(r db.ConversationRow, messageCount int, lastPreview 
 		UpdatedAt:                 timestamppb.New(r.UpdatedAt),
 	}
 	return p
+}
+
+// SetConversationProject places a conversation in a project, or clears the association when project_id is
+// empty. It is the server half of the second level of organization over conversations: the GUI's project
+// folder drop target, its per-project "new conversation" button, and the TUI's /project all resolve here.
+//
+// TWO RULES, both deliberate:
+//
+//   - A NON-EMPTY id must name a project THIS TENANT can see, and GetProject applies no status predicate — an
+//     archived project is a valid home, which is the operator's "active or otherwise".
+//   - An EMPTY id UNASSIGNS the conversation rather than failing. A conversation must always be able to leave a
+//     project (a project can be archived out from under it), and "unassigned" is a state both clients render.
+//
+// The project is read inside the SAME tenant transaction as the write, so a project deleted between the check
+// and the update cannot leave a conversation pointing at it.
+func (s *Service) SetConversationProject(ctx context.Context, req *connect.Request[apiv1.SetConversationProjectRequest]) (*connect.Response[apiv1.SetConversationProjectResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	projectID := strings.TrimSpace(req.Msg.ProjectId)
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	if projectID != "" {
+		if _, err := db.GetProject(ctx, ttx.Tx, tenantID, projectID); err != nil {
+			if errors.Is(err, db.ErrNotFound) {
+				return nil, connect.NewError(connect.CodeNotFound,
+					fmt.Errorf("project %q not found", projectID))
+			}
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+	}
+	row, err := db.SetConversationProject(ctx, ttx.Tx, tenantID, req.Msg.Id, projectID)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("conversation not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.project_changed", "conversation", row.ID,
+		nil, audit.Snapshot(map[string]any{"project_id": projectID})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.project_changed: %w", err))
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	count, _ := db.CountConversationMessages(ctx, ttx.Tx, tenantID, row.ID)
+	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
+	stallWindow := s.chatStallWindow(ctx, ttx.Tx, tenantID)
+	return connect.NewResponse(&apiv1.SetConversationProjectResponse{
+		Conversation: conversationRowToProto(row, count, preview, s.turnStatus(row.ID, stallWindow)),
+	}), nil
 }
 
 // turnStatusInfo is the server-confirmed snapshot of a conversation's running

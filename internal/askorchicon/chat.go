@@ -789,6 +789,12 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// Inject the tenant's enabled projects so the agent always has
 	// up-to-date context about what it operates on (fresh per message).
 	projectContext := s.fetchProjectContext(ctx, tenantID)
+	// AND WHICH ONE THIS CHAT IS IN, which is a different statement from the list below: the operator's "we
+	// should add context to all three modes to know which chat belongs to which project folder". The list says
+	// what exists; this says where this conversation's work happens, and it is what makes the file/shell suite's
+	// scope SELF-EVIDENT rather than something the agent has to spend a tool call discovering. Built from the
+	// already-loaded conversation row, so it costs one project lookup and no extra conversation read.
+	convProject := s.conversationProjectContext(ctx, tenantID, conv)
 
 	// System prompt variants for the session transport: the seed variant
 	// (DB history included) is used when a fresh session is created (first
@@ -798,8 +804,8 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// mode: the mode is applied per message as the opencode per-turn `system`
 	// field, so a mid-conversation mode switch changes the next message's
 	// persona with no session change or serve restart.
-	seedSystem := buildSystemPrompt(conv.Mode, cfg, s.toolRegistry, prevMessages, true, attachments, projectContext)
-	reuseSystem := buildSystemPrompt(conv.Mode, cfg, s.toolRegistry, prevMessages, false, attachments, projectContext)
+	seedSystem := buildSystemPrompt(conv.Mode, cfg, s.toolRegistry, prevMessages, true, attachments, projectContext, convProject)
+	reuseSystem := buildSystemPrompt(conv.Mode, cfg, s.toolRegistry, prevMessages, false, attachments, projectContext, convProject)
 
 	// --- 4. Launch the detached reply collector and stream events to the
 	// client. The stream channel is buffered so the collector never blocks.
@@ -1076,7 +1082,7 @@ func (s *Service) AbortConversationTurn(ctx context.Context, req *connect.Reques
 // prior turns. When false (the steady-state follow-up on a live session) no
 // history block is emitted: the history already lives in the session, and
 // re-injecting it would double tokens and can confuse the model.
-func buildSystemPrompt(mode string, cfg db.AgentConfigRow, registry *ToolRegistry, history []db.MessageRow, includeHistory bool, attachments []*apiv1.AttachmentInput, projectContext string) string {
+func buildSystemPrompt(mode string, cfg db.AgentConfigRow, registry *ToolRegistry, history []db.MessageRow, includeHistory bool, attachments []*apiv1.AttachmentInput, projectContext, convProject string) string {
 	var b strings.Builder
 
 	b.WriteString(BuildSystemPrompt(mode, cfg, registry))
@@ -1127,6 +1133,18 @@ func buildSystemPrompt(mode string, cfg db.AgentConfigRow, registry *ToolRegistr
 		}
 		b.WriteString("\n")
 	}
+
+	b.WriteString("## This conversation's project\n")
+	if convProject != "" {
+		b.WriteString(convProject)
+		b.WriteString("\n")
+	} else {
+		b.WriteString("This conversation is not assigned to a project, so it has no project directory of its own. " +
+			"The file/shell suite still operates on the tenant's first active project_dir — call ask_file_root to see " +
+			"which. Assign one with SetConversationProject (the TUI's /project, or a project folder in the GUI) to " +
+			"give this chat a workspace of its own.\n")
+	}
+	b.WriteString("\n")
 
 	b.WriteString("## Enabled projects\n")
 	if projectContext != "" {
@@ -2361,6 +2379,55 @@ func (s *Service) fetchProjectContext(ctx context.Context, tenantID string) stri
 			b.WriteString(fmt.Sprintf(" — %s", g))
 		}
 		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// conversationProjectContext names the project THIS conversation belongs to, and says what that means for the
+// turn about to run.
+//
+// The operator: "Also we should add context to all three modes to know which chat belongs to which project
+// folder. We need better organization here." The tenant-wide project list (fetchProjectContext) answers "what
+// exists"; this answers "where am I", which is the question the agent actually needs answered before it
+// touches a path. It is the SAME block for all three modes because it is built here, from the conversation,
+// rather than inside any one persona's prompt — a mode is a way of thinking, not a different filesystem.
+//
+// An ARCHIVED project is still named. The operator's rule for the association was "active or otherwise", so a
+// chat parked in an archived project should be told that, not silently stripped of its context — the status is
+// printed precisely so the agent can say "this project is archived" instead of guessing.
+//
+// Returns "" when the conversation is unassigned or the project cannot be read, and the caller prints the
+// unassigned text instead. A failure here must never fail the turn: the context is an aid, not a
+// precondition.
+func (s *Service) conversationProjectContext(ctx context.Context, tenantID string, conv db.ConversationRow) string {
+	if conv.ProjectID == "" {
+		return ""
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return ""
+	}
+	defer ttx.Rollback(ctx)
+	p, err := db.GetProject(ctx, ttx.Tx, tenantID, conv.ProjectID)
+	if err != nil {
+		// A project deleted out from under the conversation (archived, or hard-deleted with its tenant). The turn
+		// proceeds unassigned rather than failing; the rail and the GUI both render the same stale id as an
+		// unknown project, so the operator sees the same thing the agent does not get told.
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("This chat belongs to the project **%s** (ID %s, status %s)", p.Name, p.ID, p.Status))
+	if p.ProjectDir != "" {
+		b.WriteString(fmt.Sprintf(", whose directory is `%s`", p.ProjectDir))
+	}
+	b.WriteString(".\n")
+	if p.ProjectDir != "" {
+		b.WriteString(fmt.Sprintf("That directory is the folder this conversation's work happens in — treat paths "+
+			"in this chat as relative to `%s` unless a message says otherwise, and create or edit files there rather "+
+			"than in some other project's tree.\n", p.ProjectDir))
+	}
+	if p.Status != "" && p.Status != "active" {
+		b.WriteString(fmt.Sprintf("NOTE: this project is `%s`, not active — say so if a request depends on it running.\n", p.Status))
 	}
 	return b.String()
 }

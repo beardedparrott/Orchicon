@@ -147,8 +147,14 @@ type Conversation struct {
 	// lets the frontend compute how long the turn has been quiet (and show a
 	// stale/stopped state) without polling the bus.
 	TurnLastActivityAt *timestamppb.Timestamp `protobuf:"bytes,14,opt,name=turn_last_activity_at,json=turnLastActivityAt,proto3" json:"turn_last_activity_at,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// project_id is the project this conversation belongs to, or "" when it is
+	// unassigned. It is the second, higher level of organization over
+	// conversations (categories being the first), and it is also the CONTEXT the
+	// agent is told about: the project's project_dir is the folder the chat's work
+	// happens in, so a client shows it and the prompt carries it.
+	ProjectId     string `protobuf:"bytes,15,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Conversation) Reset() {
@@ -277,6 +283,13 @@ func (x *Conversation) GetTurnLastActivityAt() *timestamppb.Timestamp {
 		return x.TurnLastActivityAt
 	}
 	return nil
+}
+
+func (x *Conversation) GetProjectId() string {
+	if x != nil {
+		return x.ProjectId
+	}
+	return ""
 }
 
 // ChatMessage is a single message within a conversation.
@@ -1272,7 +1285,7 @@ var File_orchicon_api_v1_ask_orchicon_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_ask_orchicon_proto_rawDesc = "" +
 	"\n" +
-	"\"orchicon/api/v1/ask_orchicon.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf2\x04\n" +
+	"\"orchicon/api/v1/ask_orchicon.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x91\x05\n" +
 	"\fConversation\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x14\n" +
@@ -1291,7 +1304,9 @@ const file_orchicon_api_v1_ask_orchicon_proto_rawDesc = "" +
 	"\x0eturn_in_flight\x18\v \x01(\bR\fturnInFlight\x12?\n" +
 	"\x1cpending_assistant_message_id\x18\f \x01(\tR\x19pendingAssistantMessageId\x12)\n" +
 	"\x10turn_progressing\x18\r \x01(\bR\x0fturnProgressing\x12M\n" +
-	"\x15turn_last_activity_at\x18\x0e \x01(\v2\x1a.google.protobuf.TimestampR\x12turnLastActivityAt\"\xc4\x03\n" +
+	"\x15turn_last_activity_at\x18\x0e \x01(\v2\x1a.google.protobuf.TimestampR\x12turnLastActivityAt\x12\x1d\n" +
+	"\n" +
+	"project_id\x18\x0f \x01(\tR\tprojectId\"\xc4\x03\n" +
 	"\vChatMessage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12'\n" +
 	"\x0fconversation_id\x18\x02 \x01(\tR\x0econversationId\x12\x12\n" +
