@@ -225,7 +225,36 @@ func (c *clipState) rowExtent(row int) (int, int) {
 	for hi > lo && c.isBorderCell(row, hi) {
 		hi--
 	}
+	// AND THE HIGHLIGHT STOPS WHERE THE CONTENT STOPS.
+	//
+	// The frame pads every row out to the pane, so a selection used to be DRAWN across the full width even for a
+	// row holding two words — and the operator, looking at a code block inside one: "I still am copying the
+	// entire band versus just the code block area. We should lock how far it goes on the screen."
+	//
+	// The COPY was already tight (text() right-trims each row), so this changes what the selection LOOKS like —
+	// and the look was the whole complaint, because the highlight is the only evidence the operator has about
+	// what they are about to copy. Making it agree with the extraction is the fix.
+	//
+	// AN ALL-BLANK ROW KEEPS ITS EXTENT, which matters for more than looks: span() reports ok=false when its
+	// range inverts, so a blank row narrowed to nothing would be DROPPED from the selection — and a blank line
+	// between two paragraphs of copied prose would vanish, running them together.
+	if last := c.lastNonBlank(row, lo, hi); last > lo {
+		hi = last
+	}
 	return lo, hi
+}
+
+// lastNonBlank is the rightmost cell of a range that holds content, or -1 when the range is all blanks.
+func (c *clipState) lastNonBlank(row, lo, hi int) int {
+	if row < 0 || row >= len(c.frame) {
+		return -1
+	}
+	for i := hi; i >= lo; i-- {
+		if strings.TrimSpace(cellText(c.frame[row], i, i)) != "" {
+			return i
+		}
+	}
+	return -1
 }
 
 // isBorderCell reports whether the cell at (row, col) is a pane border character.

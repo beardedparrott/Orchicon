@@ -141,7 +141,12 @@ func renderItems(items []ChatItem, maxWidth int, folded func(key string) bool, c
 			// click to get back, so the marker belongs beside the label that already says whose it is.
 			label := userBandLabel
 			if copyGlyph != "" {
-				label = label + " " + copyGlyph
+				// THE GLYPH IS BOLD, the same weight change the code block's affordance got. The operator: "that
+				// little symbol ... is too tiny". Bold is the only weight a terminal has, and this pair is the
+				// whole of what marks the band as clickable. (The WORD lives on the code block's label row rather
+				// than here: a band label is on every single message, and "You ⧉ copyable" on all of them would be
+				// noise — the composer's hint row already says "click your message to copy".)
+				label = label + " \x1b[1m" + copyGlyph + "\x1b[22m"
 			}
 			body, cs := renderUserChatMessageSpans(userTextWithMarkers(it), theme.BubbleUser, maxWidth, true, label, copyGlyph)
 			b.WriteString(body)

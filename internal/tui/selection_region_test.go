@@ -220,3 +220,57 @@ func TestACopiedRowDropsTheTrailingPadding(t *testing.T) {
 			"of trailing blanks is not part of what the operator selected", got)
 	}
 }
+
+// AND THE SELECTION DOES NOT PAINT ACROSS THE PANE.
+//
+// The frame pads every row out to the pane width, so the highlight used to run to the edge even for a row
+// holding two words. The operator, over a code block inside such a row:
+//
+//	"Here is a screenshot showing I still am copying the entire band versus just the code block area. We should
+//	 lock how far it goes on the screen."
+//
+// The COPY was already tight — text() right-trims, which the test above pins — so this is about the LOOK, and
+// the look was the complaint: the highlight is the only evidence the operator has of what they are about to copy.
+func TestTheSelectionHighlightStopsAtTheContent(t *testing.T) {
+	const pane = 40
+	const code = "ls -la"
+	c := &clipState{}
+	c.setFrame(code + strings.Repeat(" ", pane-len(code)) + "\n")
+	c.setRegion(clipRegion{x0: 0, y0: 0, x1: pane - 1, y1: 0})
+	c.beginDrag(0, 0)
+	c.extend(pane-1, 0)
+
+	sx, ex, ok := c.span(0, 0, 0, pane-1, 0)
+	if !ok {
+		t.Fatal("fixture: the selection does not cover the row")
+	}
+	if sx != 0 {
+		t.Errorf("the span starts at column %d, want 0", sx)
+	}
+	if want := len(code) - 1; ex != want {
+		t.Errorf("the selection spans columns %d..%d of a %d-cell pane, but the content ends at column %d — a "+
+			"highlight that runs to the pane edge is the operator's \"it copies the entire band\": %q",
+			sx, ex, pane, want, c.frame[0])
+	}
+}
+
+// AND A BLANK LINE INSIDE A SELECTION STILL BELONGS TO IT.
+//
+// This is the guard on the rule above. A row narrowed to nothing would invert its range, span() reports ok=false
+// for that, and the row would be DROPPED — so a blank line between two paragraphs of copied prose would vanish
+// and run them together. The narrowing therefore applies only to rows that HAVE content past the margin.
+func TestABlankLineInsideASelectionIsKept(t *testing.T) {
+	const pane = 40
+	c := &clipState{}
+	blank := strings.Repeat(" ", pane)
+	c.setFrame("first" + strings.Repeat(" ", pane-5) + "\n" + blank + "\n" + "third" + strings.Repeat(" ", pane-5) + "\n")
+	c.setRegion(clipRegion{x0: 0, y0: 0, x1: pane - 1, y1: 2})
+	c.beginDrag(0, 0)
+	c.extend(pane-1, 2)
+
+	got := c.text()
+	if got != "first\n\nthird" {
+		t.Errorf("the copy is %q, want the blank line preserved as its own line — the paragraph gap was "+
+			"swallowed by the highlight clamping", got)
+	}
+}

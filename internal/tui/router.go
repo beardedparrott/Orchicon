@@ -1005,8 +1005,22 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 			// click handling would otherwise treat as content to focus, and placing the caret is the useful thing
 			// to do there. A press is never consumed, so a drag that starts in the composer still selects — the
 			// same press does both.
+			//
+			// AND IT FOCUSES THE COMPOSER, which is the half that was missing: placing the caret does NOT make the
+			// dock focused, and the dock draws its caret ONLY when it is focused (unfocused, bubbles renders the
+			// character with the plain text style — no reverse video, nothing to see). So the caret really was
+			// being moved and the operator could not tell, because every path that had taken focus away left it
+			// away: click a message to copy it (the composer's own hint row advertises that), then click back into
+			// the composer, and the caret was placed but invisible and the keyboard still typed into the
+			// transcript. "clicking in the composer to change the placement of the cursor is broken again."
+			//
+			// The three lines are the SAME three every other focus-the-composer path uses (see the welcome-page
+			// and inDockRows branches below, and ctrl+g): set the focus, carry the footer hint, and hand out the
+			// blink starter so the caret animates rather than sitting solid.
 			if m.composerClickAt(mo.X, mo.Y) {
-				return m, nil
+				m.setFocus(focusComposer)
+				m.footer.ComposerFocus = true
+				return m, m.dock.TakeBlinkStart()
 			}
 			if r, ok := m.selectionRegionAt(mo.X, mo.Y); ok {
 				m.clip.setRegion(r)

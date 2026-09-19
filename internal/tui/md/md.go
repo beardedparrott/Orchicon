@@ -180,6 +180,18 @@ func blockActive() bool {
 func blockOpen() string  { return sgr(38, blockFg) + sgr(48, blockBg) }
 func blockClose() string { return chipClose() }
 
+// blockLabelOpen/blockLabelClose style a code block's LABEL row — the `<lang> · ⧉ copyable` line above the fill.
+//
+// BOLD, and in the structural accent when the theme has configured one. The row used to be FAINT (`\x1b[2m`),
+// which made the one control on the block the quietest thing on the screen: the operator read it as decoration
+// and could not tell the block was clickable at all. A terminal cannot change the font, so weight and colour are
+// the levers — and the wording (see codeBlock) does the rest.
+//
+// `\x1b[22m` closes BOTH bold and faint, so it is the correct close for either open, and it is a TARGETED reset:
+// it cannot clear the colours of whatever surface hosts this row.
+func blockLabelOpen() string  { return "\x1b[1m" + accentOpen() }
+func blockLabelClose() string { return accentClose() + "\x1b[22m" }
+
 // accentActive reports whether a structural accent can be drawn.
 func accentActive() bool {
 	if accentFg == "" || accentRestore == "" {
@@ -832,15 +844,22 @@ func (r *renderer) codeBlock(n ast.Node, in indent, lang []byte) {
 	// affordance is present — so a fence with no language still shows the operator that the block beneath it is
 	// clickable. Both sit ABOVE the fill and outside it, so selecting the code never picks up the label or the
 	// glyph.
+	//
+	// AND THE AFFORDANCE NOW SAYS WHAT IT IS. It used to be the bare glyph, drawn FAINT — and the operator, who
+	// could not tell what it meant: "That little symbol you have for both user chat and code blocks currently is
+	// too tiny and doesn't really tell me 'copyable'. Maybe the font should be different and something should
+	// actually say 'copyable'." A terminal cannot change the font, so the two levers left are WEIGHT and COLOUR,
+	// and both are now used: the row is BOLD and takes the theme's structural accent. And it carries the WORD,
+	// which is the part that actually answers the question.
 	label := string(lang)
 	if blockGlyph != "" {
 		if label != "" {
-			label += " "
+			label += " · "
 		}
-		label += blockGlyph
+		label += blockGlyph + " copyable"
 	}
 	if label != "" {
-		r.raw(in.first + "\x1b[2m" + truncate(label, avail) + "\x1b[22m")
+		r.raw(in.first + blockLabelOpen() + truncate(label, avail) + blockLabelClose())
 	}
 	// THE LINES ARE COLLECTED FIRST, because the band's width is derived from them — see below. Nothing about
 	// the output depends on this being a second pass; the widest line simply has to be known before the first
