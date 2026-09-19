@@ -277,7 +277,7 @@ func (m *App) projectPickerKey(k tea.KeyMsg) (handled bool, cmd tea.Cmd) {
 		}
 		m.projectPick = nil
 		if p.moveConvID != "" {
-			return true, m.setConversationProject(p.moveConvID, opt.Value)
+			return true, m.moveConversationTo(p.moveConvID, opt.Value)
 		}
 		m.setProjectScope(opt.Value)
 		return true, nil
@@ -292,7 +292,7 @@ func (m *App) projectPickerKey(k tea.KeyMsg) (handled bool, cmd tea.Cmd) {
 			return true, nil
 		}
 		m.projectPick = nil
-		return true, m.setConversationProject(m.chatConvID, opt.Value)
+		return true, m.moveConversationTo(m.chatConvID, opt.Value)
 	}
 	return false, nil
 }
@@ -333,15 +333,16 @@ func (m *App) openProjectPicker(moveConvID string) tea.Cmd {
 	return m.openProjectPickerFiltered(moveConvID, "")
 }
 
-// openProjectPickerFiltered opens the picker with the option list narrowed to a filter string.
+// openProjectPickerFiltered opens the picker for a PURPOSE, with the option list narrowed to a filter string.
 //
 // The operator: "If I type '/project Orch', it would show me the project Orchicon." The filter matches the
 // project NAME or its id, case-insensitively, as a SUBSTRING — so a partial word still finds it, and the
-// operator is never left staring at an empty list wondering whether the project exists. "All projects" and
-// "No project" are dropped while a filter is active: neither is a project, and matching them on the literal
-// text would be a false hit.
+// operator is never left staring at an empty list wondering whether the project exists.
+//
+// THE OPTION LIST DEPENDS ON THE PURPOSE (see pickerOptions): a move target list has no "All projects" row.
+// The filter rules themselves live in filterScopeOptions.
 func (m *App) openProjectPickerFiltered(moveConvID, filter string) tea.Cmd {
-	p := &projectPicker{options: m.projectOptionsFiltered(filter), moveConvID: moveConvID, filter: filter}
+	p := &projectPicker{options: m.pickerOptions(moveConvID, filter), moveConvID: moveConvID, filter: filter}
 	if filter == "" {
 		if moveConvID == "" {
 			p.selectByValue(m.projectScope)
@@ -364,7 +365,36 @@ func (m *App) openProjectPickerFiltered(moveConvID, filter string) tea.Cmd {
 
 // projectOptionsFiltered is projectScopeOptions narrowed by a filter string (see openProjectPickerFiltered).
 func (m *App) projectOptionsFiltered(filter string) []projectScopeOption {
+	return filterScopeOptions(projectScopeOptions(m.railProjects, m.conversations), filter)
+}
+
+// projectMoveOptions is the target list for MOVING a conversation.
+//
+// "All projects" is NOT a place to put a conversation. It is a way to LOOK at the list, and __all__ is not a
+// project id — the server rejects it, so a move onto it fails with a 404 that reads like the app is broken. The
+// GUI's own move control filters it out for exactly this reason; the TUI offered it, ONE ROW UP from the first
+// project, in a picker whose cursor opens on the conversation's current project.
+//
+// "No project" STAYS. A conversation has to be able to leave a project, and that is the only target that says so.
+func (m *App) projectMoveOptions() []projectScopeOption {
 	opts := projectScopeOptions(m.railProjects, m.conversations)
+	out := make([]projectScopeOption, 0, len(opts))
+	for _, o := range opts {
+		if o.Value == projectScopeAll {
+			continue
+		}
+		out = append(out, o)
+	}
+	return out
+}
+
+// filterScopeOptions narrows a scope/move option list to a filter string.
+//
+// The filter matches the project NAME or its id, case-insensitively, as a SUBSTRING — so a partial word still
+// finds it, and the operator is never left staring at an empty list wondering whether the project exists. The
+// two non-project scopes are dropped while a filter is active: neither is a project, and matching them on the
+// literal text would be a false hit ("No" finding "No project").
+func filterScopeOptions(opts []projectScopeOption, filter string) []projectScopeOption {
 	if filter == "" {
 		return opts
 	}
@@ -381,6 +411,50 @@ func (m *App) projectOptionsFiltered(filter string) []projectScopeOption {
 	return kept
 }
 
+// pickerOptions builds a picker's option list for its PURPOSE. One entry point, because the two purposes differ
+// in exactly one row and a second list would be a second place to get it wrong.
+func (m *App) pickerOptions(moveConvID, filter string) []projectScopeOption {
+	if moveConvID != "" {
+		return filterScopeOptions(m.projectMoveOptions(), filter)
+	}
+	return m.projectOptionsFiltered(filter)
+}
+
+// moveConversationTo is the WRITE behind every move gesture, guarded in one place.
+//
+// TWO GUARDS, both of them fixes for what the operator hit:
+//
+//   - ALL PROJECTS IS REFUSED as a target. The server rejects __all__ as a project id, so this would be a doomed
+//     write whose only outcome is "project move failed: ..." — which reads as a broken app rather than as a bad
+//     target. projectMoveOptions no longer OFFERS it; this refuses it if it arrives by any other route (the `m`
+//     key, whose picker is the SCOPE list and legitimately contains it).
+//   - A TARGET THAT CHANGES NOTHING SAYS SO. The move picker's cursor OPENS ON the conversation's current
+//     project, so Enter without moving the cursor is the most natural thing to press — and it used to write, tell
+//     the operator "moved to <the project it was already in>", and reload to a list where the chat was still
+//     sitting exactly where it was. That is the operator's "it is still just sitting there in the same list".
+//     Nothing was broken; nothing was REPORTED either. Now it says "already in X" and writes nothing.
+func (m *App) moveConversationTo(convID, target string) tea.Cmd {
+	if target == projectScopeAll {
+		m.dock.SetError("All projects is a view, not a destination — pick a project, or No project")
+		return nil
+	}
+	for _, c := range m.conversations {
+		if c.ID != convID {
+			continue
+		}
+		if c.ProjectID == target {
+			label := m.projectLabelFor(target)
+			if target == "" {
+				label = "No project"
+			}
+			m.dock.SetNotice("already in " + label + " — nothing to move")
+			return nil
+		}
+		break
+	}
+	return m.setConversationProject(convID, target)
+}
+
 // onRailProjectsApplied refreshes an OPEN picker after a project load, so the list is never stale behind the
 // overlay: /project on a cold rail would otherwise show only the conversations' own ids and no project names.
 func (m *App) onRailProjectsApplied() {
@@ -388,9 +462,10 @@ func (m *App) onRailProjectsApplied() {
 		return
 	}
 	keep := m.projectPick.sel
-	// REBUILD THROUGH THE SAME FILTER the picker was opened with, so a list that lands after the overlay opened
-	// cannot silently widen it past what the operator asked for.
-	m.projectPick.options = m.projectOptionsFiltered(m.projectPick.filter)
+	// REBUILD THROUGH THE SAME PURPOSE AND FILTER the picker was opened with, so a list that lands after the
+	// overlay opened can neither silently widen it past what the operator asked for NOR re-offer "All projects"
+	// as a move target (which is why this goes through pickerOptions rather than rebuilds the list itself).
+	m.projectPick.options = m.pickerOptions(m.projectPick.moveConvID, m.projectPick.filter)
 	if keep < len(m.projectPick.options) {
 		m.projectPick.sel = keep
 	} else if len(m.projectPick.options) > 0 {

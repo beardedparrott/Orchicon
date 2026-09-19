@@ -47,6 +47,32 @@ type stubAskParity struct {
 	// abortedID records the conversation a Stop was issued for (the GUI's Stop
 	// button calls the same RPC).
 	abortedID string
+
+	// projectMoveFor records the conversation whose project was changed, and the target — the pair a test needs
+	// to tell "the write happened" from "the rail merely reloaded".
+	//
+	// THIS RPC HAD NO STUB AT ALL, and that is why the move shipped broken: with no implementation, the embedded
+	// Unimplemented handler answers every call, so NO test could move a conversation and the reload path could
+	// not be exercised end to end. The missing fixture was the missing coverage.
+	projectMoveFor  string
+	projectMoveDest string
+}
+
+func (s *stubAskParity) SetConversationProject(_ context.Context, req *connect.Request[apiv1.SetConversationProjectRequest]) (*connect.Response[apiv1.SetConversationProjectResponse], error) {
+	s.projectMoveFor = req.Msg.GetId()
+	s.projectMoveDest = req.Msg.GetProjectId()
+	// THE STUB PERSISTS THE MOVE, because ListConversations reads this same slice. A stub that only recorded the
+	// call would reload the OLD project ids and every "did it leave the rail?" assertion would fail for a reason
+	// that has nothing to do with the shell.
+	for _, c := range s.convs {
+		if c.GetId() == req.Msg.GetId() {
+			c.ProjectId = req.Msg.GetProjectId()
+			break
+		}
+	}
+	return connect.NewResponse(&apiv1.SetConversationProjectResponse{
+		Conversation: &apiv1.Conversation{Id: req.Msg.GetId(), ProjectId: req.Msg.GetProjectId()},
+	}), nil
 }
 
 // AbortConversationTurn is the Stop path. The server treats it as idempotent, so
