@@ -31,26 +31,50 @@ type Stream struct {
 	Notice string
 	// wrapOverflow makes View WRAP an over-wide line rather than truncating it. See WrapOverflow.
 	wrapOverflow bool
+	// follow is the AUTO-FOLLOW INTENT: true while the view is pinned to the newest line, false once the
+	// operator has deliberately scrolled away from it.
+	//
+	// IT IS SEPARATE FROM Offset BECAUSE AtBottom() IS POSITIONAL, and a position changes underneath the
+	// operator without them doing anything: this stream is re-sized on every wake from the pane's body
+	// height, which moves with the dock's own row count. A pane that gains a row — or content that gains
+	// one — leaves a FOLLOWING view one row short of the bottom, so AtBottom() answers false and the view
+	// silently stops following. That is the operator's report: "I also had to manually scroll down to see
+	// that streaming was happening. After I did that once it was fine" — the scroll re-pinned it and
+	// nothing else could, because every auto-follow rule in this file re-derived the intent from a
+	// position the resize had just invalidated.
+	//
+	// Following is an INTENT, so it is remembered rather than re-derived.
+	follow bool
 }
 
 // NewStream builds a sized stream.
 func NewStream(title string, w, h int) *Stream {
-	return &Stream{Title: title, Width: w, Height: h}
+	// follow starts TRUE: a stream the operator has not touched shows its newest content, which is the
+	// whole point of a live transcript.
+	return &Stream{Title: title, Width: w, Height: h, follow: true}
 }
 
-// SetSize resizes the stream viewport.
-func (s *Stream) SetSize(w, h int) { s.Width, s.Height = w, h; s.clamp() }
-
-// Append adds lines. The offset is preserved unless the stream was already
-// pinned to the bottom (the auto-follow rule).
-func (s *Stream) Append(lines ...string) {
-	follow := s.AtBottom()
-	s.Lines = append(s.Lines, lines...)
-	if follow {
+// SetSize resizes the stream viewport, KEEPING A FOLLOWING VIEW PINNED.
+//
+// This is where the intent must be RE-APPLIED rather than re-derived: the height change moves the
+// bottom, so a view that was following would otherwise end up a row short of it and stop.
+func (s *Stream) SetSize(w, h int) {
+	s.Width, s.Height = w, h
+	if s.follow {
 		s.ScrollToBottom()
-	} else {
-		s.clamp()
+		return
 	}
+	s.clampOffset()
+}
+
+// Append adds lines. The offset is preserved unless the stream is FOLLOWING (the auto-follow rule).
+func (s *Stream) Append(lines ...string) {
+	s.Lines = append(s.Lines, lines...)
+	if s.follow {
+		s.ScrollToBottom()
+		return
+	}
+	s.clampOffset()
 }
 
 // SetLines replaces the transcript (e.g. a reload) — always re-pins to the
@@ -74,13 +98,12 @@ func (s *Stream) SetLines(lines []string) {
 // block, a re-grouped phase) can leave the old offset past the end, and an out-of-range offset renders an
 // empty window — see Visible(), which returns nil for it.
 func (s *Stream) ReplaceLines(lines []string) {
-	wasBottom := s.AtBottom()
 	s.Lines = append([]string{}, lines...)
-	if wasBottom {
+	if s.follow {
 		s.ScrollToBottom()
 		return
 	}
-	s.clamp()
+	s.clampOffset()
 }
 
 // innerH is the visible line count.
@@ -100,12 +123,12 @@ func (s *Stream) innerH() int {
 // [15,19), dropped line 19, and made AtBottom() false so the next chunk would not have been followed
 // either.
 func (s *Stream) SetNotice(n string) {
-	wasBottom := s.AtBottom()
 	s.Notice = n
-	if wasBottom {
+	if s.follow {
 		s.ScrollToBottom()
+		return
 	}
-	s.clamp()
+	s.clampOffset()
 }
 
 // bodyRows is the rows available to the TRANSCRIPT, which is innerH minus the notice row when a
@@ -143,13 +166,27 @@ func (s *Stream) maxOffset() int {
 // AtBottom reports whether the viewport is pinned to the last line.
 func (s *Stream) AtBottom() bool { return s.Offset >= s.maxOffset() }
 
-// ScrollToBottom pins the viewport to the newest line.
-func (s *Stream) ScrollToBottom() { s.Offset = s.maxOffset() }
+// Following reports whether the view is pinned to the newest line — the INTENT, not the current
+// position. See the follow field for why the two differ.
+func (s *Stream) Following() bool { return s.follow }
+
+// ScrollToBottom pins the viewport to the newest line AND starts following it.
+func (s *Stream) ScrollToBottom() { s.Offset = s.maxOffset(); s.follow = true }
 
 // Wheel scrolls by delta lines (positive = down).
-func (s *Stream) Wheel(delta int) { s.Offset += delta; s.clamp() }
+//
+// A wheel gesture is DELIBERATE, so this is the one place that changes the follow intent: scrolling up
+// away from the newest line stops the auto-follow, and coming back to the bottom resumes it.
+func (s *Stream) Wheel(delta int) {
+	s.Offset += delta
+	s.clampOffset()
+	s.follow = s.Offset >= s.maxOffset()
+}
 
-func (s *Stream) clamp() {
+// clampOffset keeps the offset within the content WITHOUT touching the follow intent — because the
+// reason for a clamp is almost always that the CONTENT or the WINDOW changed size, not that the operator
+// moved. Clearing follow there is the bug this field exists to prevent.
+func (s *Stream) clampOffset() {
 	if s.Offset > s.maxOffset() {
 		s.Offset = s.maxOffset()
 	}
@@ -264,7 +301,7 @@ func skipEscape(s string, i int) int {
 func (s *Stream) View() string {
 	// Clamp first, so a caller that assigned Notice directly (bypassing SetNotice) still cannot draw a
 	// window that starts past the last page.
-	s.clamp()
+	s.clampOffset()
 	var b strings.Builder
 	rows := s.bodyRows()
 	vis := s.Visible()

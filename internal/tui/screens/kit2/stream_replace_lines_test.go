@@ -103,3 +103,68 @@ func TestReplaceLinesClampsWhenTheContentShrinks(t *testing.T) {
 		t.Errorf("offset %d is past the maximum %d", s.Offset, s.maxOffset())
 	}
 }
+
+// A RESIZE MUST NOT STOP THE FOLLOW — THE OPERATOR'S "I had to scroll down once".
+//
+// AtBottom() is POSITIONAL, so it answers false for reasons that have nothing to do with intent: this
+// stream is re-sized on every wake from the pane's body height, which moves with the dock's own row count.
+// A pane that gains a row leaves a FOLLOWING view one row short of the bottom, and every auto-follow rule
+// that re-derived its answer from that position then stopped following — permanently, because SetNotice
+// only re-pinned when already at the bottom. The operator scrolled once to recover, which is the tell:
+// scrolling was the only thing that could restore the pin.
+//
+// Following is now an INTENT, remembered across content and window changes.
+func TestAResizeDoesNotStopTheFollow(t *testing.T) {
+	lines := make([]string, 40)
+	for i := range lines {
+		lines[i] = "line"
+	}
+	s := streamOf(lines, 30, 10)
+	if !s.Following() {
+		t.Fatal("fixture: a fresh stream should be following")
+	}
+
+	// The window GROWS a row (the dock shrank, the notice went away, a field row changed) — ordinary
+	// during a live turn.
+	s.SetSize(30, 11)
+	if !s.Following() {
+		t.Error("growing the window stopped the follow — the view is a row short of a bottom that moved " +
+			"under it, which is not a decision the operator made")
+	}
+	// And SHRINKS, the other direction.
+	s.SetSize(30, 9)
+	if !s.Following() {
+		t.Error("shrinking the window stopped the follow")
+	}
+	// A replace after a resize still follows, which is what the operator was missing.
+	s.ReplaceLines(append(append([]string{}, lines...), "the newest line"))
+	if !s.AtBottom() {
+		t.Error("the newest line is off screen after a resize plus a replace — this is the \"I had to " +
+			"manually scroll down to see that streaming was happening\"")
+	}
+}
+
+// AND A DELIBERATE SCROLL STILL STOPS IT — the fix must not make the view impossible to hold still
+// while reading earlier content.
+func TestADeliberateScrollStillStopsTheFollow(t *testing.T) {
+	lines := make([]string, 40)
+	for i := range lines {
+		lines[i] = "line"
+	}
+	s := streamOf(lines, 30, 10)
+
+	s.Wheel(-5) // the operator scrolls up
+	if s.Following() {
+		t.Fatal("scrolling up did not stop the follow — new content would drag the operator back down")
+	}
+	// Content arriving does not move it.
+	s.ReplaceLines(append(append([]string{}, lines...), "more"))
+	if s.AtBottom() {
+		t.Error("a replace re-pinned a view the operator had deliberately scrolled away from")
+	}
+	// And scrolling back to the bottom resumes the follow, so the way back is not a special gesture.
+	s.Wheel(1000)
+	if !s.Following() {
+		t.Error("scrolling to the bottom did not resume the follow")
+	}
+}

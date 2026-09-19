@@ -2986,21 +2986,25 @@ func (m *App) onChatWake() tea.Cmd {
 			// reading a transcript, and it is the TRANSCRIPT that looks broken when a reply cannot arrive.
 			// Same slot and same row cost as "reconnecting…", so nothing moves.
 			str.SetNotice("⚠ disconnected — replies will resume when the plane returns (r retries now)")
-		case m.chat.IsStreaming(m.chatConvID) && awaitingReply(items):
-			// THE GUI's thinking indicator, matched verbatim. The GUI renders "Orchicon is thinking…"
-			// while a turn is streaming and has produced NO content yet (ask-orchicon.tsx: "Thinking
-			// indicator — visible until any streaming content arrives"), so the operator sees that
-			// their message was received before the first token lands. The TUI had no equivalent: after
-			// sending, the pane showed the operator's own message and then sat silent until the reply
-			// started, which reads as a hang on a slow model.
+		case m.chat.IsStreaming(m.chatConvID):
+			// THE ACTIVITY LINE RUNS FOR THE WHOLE TURN, not only before the first token.
 			//
-			// AND IT NOW CARRIES THE ACTIVITY AGE, which is the operator's ask: "add the line at the
-			// bottom of the chat stream so a user knows activity is happening." A bare "thinking…" is
-			// static text — identical whether the stream is delivering a chunk every second or nothing
-			// at all, which is exactly the ambiguity that made this failure undiagnosable from outside.
-			// The age comes from the watchdog's own clock (lastActivity), so the line cannot claim
+			// It used to require `awaitingReply(items)` — the GUI's rule, where the indicator is "visible
+			// until any streaming content arrives". That is right for a THINKING indicator and wrong for an
+			// ACTIVITY line, and the operator reported the difference as a bug: "After the initial
+			// 'Orchicon is thinking...', streaming started and the 'Orchicon is thinking...' went away and
+			// never came back."
+			//
+			// What they lost was the only signal that the stream is ALIVE. Mid-reply is exactly when it
+			// matters: a long tool call, a slow provider or a stalled socket look identical from the
+			// outside, and with the line gone nothing on screen changes until the reply finishes. So the
+			// notice now tracks the TURN, and the verb follows the PHASE — "thinking" before there is
+			// anything to read, "replying" once there is — which keeps the GUI's wording where the GUI uses
+			// it and extends the line where the operator asked for it.
+			//
+			// The age comes from the watchdog's own clock (lastActivity), so the line cannot claim a
 			// liveness the liveness check would contradict.
-			str.SetNotice(thinkingNotice(m.chat.SilenceSince(m.chatConvID)))
+			str.SetNotice(turnActivityNotice(m.chat.SilenceSince(m.chatConvID), awaitingReply(items)))
 		default:
 			str.SetNotice("")
 		}
@@ -3158,44 +3162,52 @@ func linesPrefix(lines, prefix []string) bool {
 // (nil when that conversation has never rendered).
 func (m *App) TranscriptStream(convID string) *kit2.Stream { return m.chatStreams[convID] }
 
-// thinkingNotice is the transcript's activity line while a turn is streaming: the thinking
-// indicator, plus how long the stream has been quiet.
+// turnActivityNotice is the transcript's activity line while a turn is streaming: what the turn is doing,
+// plus how long the stream has been quiet.
 //
-// IT REPORTS, IT DOES NOT GUESS. The number is the age of the last event received, so it cannot
-// claim activity that is not happening — and as it grows the operator can see the model is genuinely
-// silent rather than merely slow. The wording escalates honestly: silence is EXPECTED during a long
-// reasoning phase (only the server's 15s heartbeat must keep arriving), so "no output for 20s"
-// describes a normal quiet stretch, while the 35s line states the watchdog's imminent verdict so the
-// connection banner that follows reads as the continuation of one story rather than a new fault.
+// THE VERB FOLLOWS THE PHASE. Before any content, the GUI's own wording applies — "Orchicon is
+// thinking…", which is what the operator sees while their message is being read. Once text has arrived,
+// the turn is no longer thinking, it is REPLYING, and saying "thinking" under a half-written answer would
+// be wrong; "replying" keeps the line honest and keeps it present, which is the point.
 //
-// silent <= 0 means "no activity recorded" — the moment between sending and the stream's first
-// event — so it shows the plain indicator rather than an absurd "0s ago".
-func thinkingNotice(silent time.Duration) string {
+// IT REPORTS, IT DOES NOT GUESS. The number is the age of the last event received, so it cannot claim
+// activity that is not happening — and as it grows the operator can see the model is genuinely silent
+// rather than merely slow. The wording escalates honestly: silence is EXPECTED during a long reasoning
+// phase (only the server's 15s heartbeat must keep arriving), so "no output for 20s" describes a normal
+// quiet stretch, while the 35s line states the watchdog's imminent verdict so the connection banner that
+// follows reads as the continuation of one story rather than a new fault.
+//
+// silent <= 0 means "no activity recorded" — the moment between sending and the stream's first event — so
+// it shows the bare line rather than an absurd "0s ago".
+func turnActivityNotice(silent time.Duration, beforeContent bool) string {
 	const (
 		// ONE SECOND, not five. The operator asked for the line to be visible immediately — "we should
-		// print the watchdog line right away so users know it's there" — because a line that only
-		// appears after five seconds of silence is invisible during a busy turn, which is exactly when
-		// they went looking for it. One second is the shortest age that is not an absurd "0s ago", and
-		// the age only redraws on the 5s tick anyway, so this cannot twitch.
+		// print the watchdog line right away so users know it's there" — because a line that only appears
+		// after five seconds of silence is invisible during a busy turn, which is exactly when they went
+		// looking for it.
 		showAgeAfter = time.Second
-		// Past the server's heartbeat interval (15s) plus slack, silence is worth stating: a LIVE
+		// Past the server's heartbeat interval (15s) plus slack, silence is worth stating plainly: a LIVE
 		// stream can never reach it, because the heartbeat keeps arriving.
 		warnAfter = 25 * time.Second
-		// The watchdog re-dials at 40s (askStreamStalled). Naming that just before it happens turns
-		// an unexplained stall into a stated one.
+		// The watchdog re-dials at 40s (askStreamStalled). Naming that just before it happens turns an
+		// unexplained stall into a stated one.
 		reDialAfter = 35 * time.Second
 	)
+	verb := "Orchicon is replying…"
+	if beforeContent {
+		verb = "Orchicon is thinking…"
+	}
 	if silent <= 0 || silent < showAgeAfter {
-		return "Orchicon is thinking…"
+		return verb
 	}
 	secs := int(silent.Round(time.Second) / time.Second)
 	switch {
 	case silent >= reDialAfter:
-		return fmt.Sprintf("Orchicon is thinking… · no output for %ds — the stream will re-attach if it stays silent", secs)
+		return fmt.Sprintf("%s · no output for %ds — the stream will re-attach if it stays silent", verb, secs)
 	case silent >= warnAfter:
-		return fmt.Sprintf("Orchicon is thinking… · no output for %ds", secs)
+		return fmt.Sprintf("%s · no output for %ds", verb, secs)
 	default:
-		return fmt.Sprintf("Orchicon is thinking… · last activity %ds ago", secs)
+		return fmt.Sprintf("%s · last activity %ds ago", verb, secs)
 	}
 }
 
