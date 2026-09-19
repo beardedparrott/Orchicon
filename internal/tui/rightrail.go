@@ -174,13 +174,21 @@ func (m *App) rightRailView() string {
 func (m *App) railLine(r railRow, i, w int) string {
 	if r.folder {
 		arrow := "▾"
-		if m.convCollapsed[r.catID] {
+		if m.convCollapsed[r.key] {
 			arrow = "▸"
 		}
 		// The count is the FOLDER's total, not its visible members: collapsing must not make the number
 		// change, or the operator would think items vanished.
 		meta := fmt.Sprintf("%d", r.count)
-		title := arrow + " " + r.title
+		// AN ARCHIVED PROJECT IS MARKED, because the association rule is "active or otherwise" and a
+		// folder that looks identical to a working one would hide the one fact the operator needs before
+		// asking an agent to do work in it.
+		if r.status != "" && r.status != "active" {
+			meta = r.status + " " + meta
+		}
+		// INDENTED BY DEPTH so the two levels read as two levels: a project folder is flush, the category
+		// folders inside it are one cell in. A tenant with no projects has one level and is unaffected.
+		title := strings.Repeat(" ", r.depth) + arrow + " " + r.title
 		avail := w - 1 - lipgloss.Width(meta)
 		if lipgloss.Width(title) > avail {
 			title = truncateRight(title, avail)
@@ -199,7 +207,15 @@ func (m *App) railLine(r railRow, i, w int) string {
 	if r.conv < 0 || r.conv >= len(m.conversations) {
 		return ""
 	}
-	return m.conversationRow(m.conversations[r.conv], i, w)
+	row := m.conversationRow(m.conversations[r.conv], i, w)
+	// A conversation nests one cell deeper than the old single level when it sits under a project, so the
+	// hierarchy is visible on the rows too — not only on the folders above them. It is TRUNCATED at the
+	// pane's width rather than allowed to overflow, because an over-wide row is cut by the stream anyway
+	// and the cut would land on the meta column.
+	if r.depth > 1 {
+		row = truncateRight(strings.Repeat(" ", r.depth-1)+row, w)
+	}
+	return row
 }
 
 // conversationRow renders one rail conversation row (title + meta).
@@ -309,7 +325,7 @@ func (m *App) openRailConversation(row int) tea.Cmd {
 	// This lives here rather than only in railItemKey because the shell's ENTER branch claims enter for
 	// the rail before the screen's key path runs — so a folder's enter arrived here and did nothing.
 	if f := m.railFolderAt(row); f != nil {
-		m.toggleConvFolder(f.catID)
+		m.toggleConvFolder(f.key)
 		return nil
 	}
 	idx := m.railConvIndexAt(row)

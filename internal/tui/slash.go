@@ -309,6 +309,45 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		},
 	})
 	add(SlashCommand{
+		Name: "/project", Usage: "/project [<name-or-id> | none]",
+		Desc:    "show or set which PROJECT this conversation belongs to (its folder groups the conversations rail)",
+		MinArgs: 0,
+		Run: func(m *App, args []string) tea.Cmd {
+			want := strings.TrimSpace(strings.Join(args, " "))
+			// NO ARGUMENT LISTS WHAT CAN BE CHOSEN, which is also how the operator discovers the names. It
+			// prints the current association first so the answer to "where am I" is the first thing on screen.
+			if want == "" {
+				cur := "(none)"
+				if p, ok := m.projectForConv(m.chatConvID); ok {
+					cur = p.Name
+				}
+				if len(m.railProjects) == 0 {
+					m.dock.SetNotice("project: " + cur + " — no projects exist yet")
+					return nil
+				}
+				names := make([]string, 0, len(m.railProjects))
+				for _, p := range m.railProjects {
+					names = append(names, p.Name)
+				}
+				m.dock.SetNotice("project: " + cur + " — choose: " + strings.Join(names, " | ") + " (or none)")
+				return nil
+			}
+			// "none" UNASSIGNS, which is a real operation rather than an absence of one: a chat has to be
+			// able to leave a project that was archived out from under it.
+			if strings.EqualFold(want, "none") {
+				return m.setConversationProject(m.chatConvID, "")
+			}
+			// Resolved by ID or by NAME, case-insensitively — the operator typed a project name in the GUI
+			// and should not have to look up an id to say the same thing here.
+			id, ok := m.resolveProjectRef(want)
+			if !ok {
+				m.dock.SetError("no project matches " + want + " — /project lists them")
+				return nil
+			}
+			return m.setConversationProject(m.chatConvID, id)
+		},
+	})
+	add(SlashCommand{
 		Name: "/model", Usage: "/model <model_ref>",
 		Desc:    "set the Ask model new conversations are created with (persists to the conversation row's model_ref)",
 		MinArgs: 1,

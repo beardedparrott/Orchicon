@@ -55,7 +55,7 @@ func (m *App) toggleConvMark() {
 		if m.convMarked == nil {
 			m.convMarked = map[string]bool{}
 		}
-		ids := m.railRowsInFolder(f.catID)
+		ids := m.railRowsInFolder(*f)
 		all := len(ids) > 0
 		for _, id := range ids {
 			if !m.convMarked[id] {
@@ -217,14 +217,23 @@ func (m *App) railItemKey(k string) (bool, tea.Cmd) {
 	if f := m.railFolderAt(m.convSel); f != nil {
 		switch k {
 		case "enter":
-			m.toggleConvFolder(f.catID)
+			m.toggleConvFolder(f.key)
 			m.refreshStreamStatus()
 			return true, nil
 		case categoryRenameChord:
+			// A PROJECT FOLDER IS NOT A CATEGORY. hasCat is what keeps a project's name from being
+			// renamed (or deleted) through the category chords — the chords stay available on the row
+			// and simply do not apply, rather than the rail growing a second contextual key set.
+			if !f.hasCat() {
+				return false, nil
+			}
 			m.OpenRenameCategory(f.catID)
 			m.refreshStreamStatus()
 			return true, nil
 		case categoryDeleteChord:
+			if !f.hasCat() {
+				return false, nil
+			}
 			m.OpenDeleteCategory(f.catID)
 			m.refreshStreamStatus()
 			return true, nil
@@ -387,7 +396,12 @@ func (m *App) railHintLine() string {
 	// the operator looks, the composer is where the keys live). Naming them only for folder rows keeps the
 	// hint about what the cursor can actually do.
 	if f := m.railFolderAt(m.convSel); f != nil {
-		parts = append(parts, "enter: collapse/expand", categoryRenameChord+": rename group", categoryDeleteChord+": delete group")
+		if f.hasCat() {
+			parts = append(parts, "enter: collapse/expand", categoryRenameChord+": rename group", categoryDeleteChord+": delete group")
+		} else {
+			// A PROJECT FOLDER: the arrow and the group mark, but nothing to rename — see railItemKey.
+			parts = append(parts, "enter: collapse/expand", "space: mark every chat in it")
+		}
 	}
 	if n := m.convMarkedCount(); n >= kit2.BulkThreshold {
 		parts = append(parts, conversationBulkDeleteChord+": delete "+fmt.Sprintf("%d", n))

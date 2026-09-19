@@ -1254,6 +1254,19 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		return nil
 	case chat.ConversationsMsg:
 		return tea.Batch(m.onConversations(msg), m.waitChat())
+	case railProjectsMsg:
+		// The project folder names, fetched alongside the conversations (see loadRailProjects).
+		return m.onRailProjects(msg)
+	case chat.ConversationProjectSetMsg:
+		if msg.Err != "" {
+			m.dock.SetError("project move failed: " + msg.Err)
+			return m.waitChat()
+		}
+		// The rail re-fetches rather than patching the row locally: the move changes which FOLDER the chat is
+		// in, and the folder list is a server-side fact. A local patch would leave the old folder's count
+		// stale and could show the chat in two places after a failed write.
+		m.dock.SetNotice("moved to " + m.projectLabelFor(msg.ProjectID))
+		return tea.Batch(m.reloadConversations(), m.waitChat())
 	case chat.ConversationCreatedMsg:
 		if msg.Err != "" {
 			m.dock.SetError(msg.Err)

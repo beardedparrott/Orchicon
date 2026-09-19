@@ -144,6 +144,14 @@ type Conversation struct {
 	MessageN  int32
 	ModelRef  string
 	Mode      apiv1.ConversationMode
+	// ProjectID is the project this conversation belongs to, or "" when unassigned (the API's empty string, kept
+	// as-is rather than normalized into a sentinel so the rail and the GUI agree on what "unassigned" looks like).
+	//
+	// It is what the rail GROUPS BY: the operator's "second higher level in organization for conversations ...
+	// associated with Projects in a parent category". A plain field on the row rather than a map beside it,
+	// because every site that renders a conversation needs it and a parallel map is one more thing that can
+	// disagree with the list it describes.
+	ProjectID string
 }
 
 // Registrar is the minimal subscription hook the controller needs
@@ -212,6 +220,14 @@ type ConversationCreatedMsg struct {
 	ConvID   string
 	ModelRef string
 	Err      string
+}
+
+// ConversationProjectSetMsg reports the outcome of a conversation's project change
+// (SetConversationProject) so the shell can reconcile the rail's project grouping.
+type ConversationProjectSetMsg struct {
+	ID        string
+	ProjectID string
+	Err       string
 }
 
 // ConversationMutatedMsg reports the outcome of a conversation write
@@ -356,7 +372,10 @@ func ParseMode(s string) (apiv1.ConversationMode, bool) {
 
 // CreateConversation creates a conversation with the given model + persona
 // (the GUI's New chat: model_ref + mode are create-time fields).
-func (c *Controller) CreateConversation(modelRef string, mode apiv1.ConversationMode, initialMessage string) tea.Cmd {
+//
+// projectID places it in a project from birth — the TUI's "create in this project folder". An empty id creates
+// an unassigned conversation, which is what every other caller wants.
+func (c *Controller) CreateConversation(modelRef string, mode apiv1.ConversationMode, initialMessage, projectID string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
@@ -364,12 +383,32 @@ func (c *Controller) CreateConversation(modelRef string, mode apiv1.Conversation
 			ModelRef:       modelRef,
 			InitialMessage: initialMessage,
 			Mode:           mode,
+			ProjectId:      projectID,
 		}))
 		if err != nil {
 			return ConversationCreatedMsg{Err: err.Error()}
 		}
 		cv := resp.Msg.GetConversation()
 		return ConversationCreatedMsg{ConvID: cv.GetId(), ModelRef: cv.GetModelRef()}
+	}
+}
+
+// SetConversationProject moves a conversation into a project (or unassigns it with an
+// empty id) — SetConversationProject. It is what the rail's /project command and its
+// create-in-folder gesture both resolve to, so the TUI cannot disagree with the GUI
+// about what "belongs to a project" means.
+func (c *Controller) SetConversationProject(id, projectID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		resp, err := c.cl.Ask.SetConversationProject(ctx, connect.NewRequest(&apiv1.SetConversationProjectRequest{
+			Id:        id,
+			ProjectId: projectID,
+		}))
+		if err != nil {
+			return ConversationProjectSetMsg{ID: id, Err: err.Error()}
+		}
+		return ConversationProjectSetMsg{ID: id, ProjectID: resp.Msg.GetConversation().GetProjectId()}
 	}
 }
 
@@ -526,6 +565,7 @@ func (c *Controller) LoadConversations() tea.Cmd {
 				MessageN:  cv.GetMessageCount(),
 				ModelRef:  cv.GetModelRef(),
 				Mode:      cv.GetMode(),
+				ProjectID: cv.GetProjectId(),
 			})
 		}
 		return ConversationsMsg{Convs: convs, Categories: resp.Msg.GetCategories(), Assignments: resp.Msg.GetAssignments()}

@@ -197,8 +197,9 @@ func TestPendingModeReachesANewConversation(t *testing.T) {
 		t.Errorf("the notice does not say the mode applies to the next conversation: %q", m.dock.Notice)
 	}
 
-	// Creating the conversation carries it.
-	cmd := m.chat.CreateConversation("", m.chat.PendingMode(), "hello")
+	// Creating the conversation carries it. The fourth argument is the PROJECT: empty here, because this
+	// test is about the mode — the project-aware create is covered by conversation_project_rail_test.go.
+	cmd := m.chat.CreateConversation("", m.chat.PendingMode(), "hello", "")
 	if cmd == nil {
 		t.Fatal("CreateConversation produced no command")
 	}

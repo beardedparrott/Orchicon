@@ -314,7 +314,13 @@ type App struct {
 	panelOpen     bool
 	panelScroll   int
 	conversations []chat.Conversation
-	convRailOpen  bool
+	// railProjects is the tenant's projects, for the rail's PROJECT grouping (railprojects.go). It is held
+	// here rather than derived from `conversations` because the rail has to show projects with NO
+	// conversations — those empty folders are what makes it a place to move a chat INTO, which is the
+	// operator's "a list that can be dragged to and also created from". Refreshed with the conversations, so a
+	// project made in the other client appears here without a relaunch.
+	railProjects []railProject
+	convRailOpen bool
 	// askPane records which Ask pane holds the keyboard. Left/right select between the
 	// conversations rail and the open conversation, and the vertical keys follow the
 	// selection: on the rail they move the rail's cursor, in the conversation they scroll
@@ -2684,7 +2690,7 @@ func (m *App) reloadConversations() tea.Cmd {
 	}
 	m.convLoading = true
 	m.convLoaded = false
-	return m.chat.LoadConversations()
+	return tea.Batch(m.chat.LoadConversations(), m.loadRailProjects())
 }
 
 // drainRailCmd returns (once) the staged conversations-rail reload cmd.
