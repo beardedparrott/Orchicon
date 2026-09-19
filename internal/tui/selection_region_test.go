@@ -194,3 +194,29 @@ func TestAPressWithNoMotionCopiesNothing(t *testing.T) {
 			"did", got)
 	}
 }
+
+// A SELECTED CODE BLOCK COPIES CODE, NOT THE FILL'S PADDING.
+//
+// The operator's worry was that the block "is printing tab/spaces all the way to the end of the width" — and
+// the copy is where that would actually hurt, since a paste carrying a run of blanks is a paste nobody can
+// use. Two defences, and this is the second: the band no longer runs to the pane, and the padding a row DOES
+// carry is stripped from the copy. It is asserted on clipState directly because that is the layer that decides
+// what the clipboard receives, and the behaviour is easy to lose without noticing — the selection would still
+// look right on screen.
+//
+// (The FIRST defence, that there is no leading space to trim, is md's and is asserted there:
+// TestCodeBlockBandIsTheCodesWidthNotThePanes. A leading space cannot be trimmed here — it is
+// indistinguishable from real indentation — which is exactly why the renderer must not emit one.)
+func TestACopiedRowDropsTheTrailingPadding(t *testing.T) {
+	c := &clipState{}
+	// A row as the code block paints it: the code, then the fill's padding out to the band's width.
+	c.setFrame("ls -la" + strings.Repeat(" ", 30) + "\n")
+	c.setRegion(clipRegion{x0: 0, y0: 0, x1: 39, y1: 0})
+	c.beginDrag(0, 0)
+	c.extend(39, 0)
+	got := c.text()
+	if got != "ls -la" {
+		t.Errorf("the copy carries the fill's padding: %q — selecting a code block must yield code, and a run "+
+			"of trailing blanks is not part of what the operator selected", got)
+	}
+}

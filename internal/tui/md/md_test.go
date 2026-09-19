@@ -457,3 +457,92 @@ func TestCodeBlockNeedsASurfaceToFill(t *testing.T) {
 		t.Fatalf("code content lost: %q", joined)
 	}
 }
+
+// --- the band's WIDTH --------------------------------------------------------------------------------
+
+// A SHORT COMMAND GETS A SHORT BAND. The operator, after the first version: "I am thinking on top of odd
+// characters it is printing tab/spaces all the way to the end of the width."
+//
+// They were reading the FILL, which was padded to the PANE so the band always ran to the last column. This is
+// the assertion that stops it coming back, and it is stated as the exact number rather than "less than the
+// width": a band that drifted narrower or wider by a cell is a band whose margin changed, and the margin is
+// the only thing making the block readable as a block.
+func TestCodeBlockBandIsTheCodesWidthNotThePanes(t *testing.T) {
+	SetCodeBlock("#c0c0c0", "#202020")
+	defer SetCodeBlock("", "")
+	sf := SurfaceTokens(lipgloss.Color("#c0c0c0"), lipgloss.Color("#101010"))
+
+	// "ls -la" is 6 cells, and the band is exactly that: the padding is all on the right (see the asymmetry
+	// note in codeBlock), so there is no margin to add and nothing in front of the code to copy.
+	lines := RenderOn("```\nls -la\n```", 40, sf)
+	for _, l := range lines {
+		if !strings.Contains(l, "\x1b[48;2;") {
+			continue
+		}
+		if w := lipgloss.Width(l); w != 6 {
+			t.Errorf("a 6-cell command painted a %d-cell band, want 6 — the band is being padded to the pane: "+
+				"%q", w, strip(l))
+		}
+		// AND THE BAND STARTS ON THE CODE. A leading inset is the one kind of padding a copy cannot trim, so
+		// the fill's first cell has to BE the first character of the code.
+		if got := strip(l); !strings.HasPrefix(got, "ls -la") {
+			t.Errorf("the band does not start on the code, so a selection from its left edge would paste a "+
+				"leading space: %q", got)
+		}
+	}
+}
+
+// AND A LONG LINE STILL GETS THE WHOLE PANE, because the band is capped rather than sized: sizing it to the
+// content must not become a way for code to be TIGHTENED into a narrower wrap than the pane allows.
+func TestALongCodeLineStillFillsThePane(t *testing.T) {
+	SetCodeBlock("#c0c0c0", "#202020")
+	defer SetCodeBlock("", "")
+	sf := SurfaceTokens(lipgloss.Color("#c0c0c0"), lipgloss.Color("#101010"))
+
+	long := strings.Repeat("x", 60)
+	widths := []int{}
+	for _, l := range RenderOn("```\n"+long+"\n```", 40, sf) {
+		if strings.Contains(l, "\x1b[48;2;") {
+			widths = append(widths, lipgloss.Width(l))
+		}
+	}
+	if len(widths) == 0 {
+		t.Fatal("the block painted no fill at all")
+	}
+	for _, w := range widths {
+		if w != 40 {
+			t.Errorf("a 60-cell line wrapped inside a %d-cell band at a 40-cell pane, want the full 40", w)
+		}
+	}
+}
+
+// A TAB IS AS WIDE AS IT PAINTS.
+//
+// lipgloss.Width scores a tab as zero, so a band sized from it is short by one tab stop per tab — and the
+// lines that suffer are the tab-indented ones, i.e. Python and Makefile bodies. At eight-column tab stops
+// the line below paints 17 cells and measures 9, so the fill ended eight cells before the text did. The band
+// has to be sized in the cells the terminal will actually paint.
+func TestATabbedLineSizesTheBandToItsTrueWidth(t *testing.T) {
+	SetCodeBlock("#c0c0c0", "#202020")
+	defer SetCodeBlock("", "")
+	sf := SurfaceTokens(lipgloss.Color("#c0c0c0"), lipgloss.Color("#101010"))
+
+	// One tab (to column 8) then "if x > 0:" (9 cells) = 17; "def f(x):" is 9 and is padded out to it.
+	lines := RenderOn("```python\ndef f(x):\n\tif x > 0:\n```", 60, sf)
+	bands := 0
+	for _, l := range lines {
+		if !strings.Contains(l, "\x1b[48;2;") {
+			continue
+		}
+		bands++
+		// Measured in PAINTED cells, which is the whole point: codeWidth counts the tab as the eight columns
+		// the terminal will draw, while lipgloss.Width would still see nine.
+		if w := codeWidth(strip(l)); w != 17 {
+			t.Errorf("the tab-indented band is %d painted cells, want 17 (the tab expands to column 8, then 9 "+
+				"characters): %q", w, strip(l))
+		}
+	}
+	if bands != 2 {
+		t.Fatalf("expected two filled lines, got %d", bands)
+	}
+}

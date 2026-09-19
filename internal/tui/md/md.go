@@ -715,6 +715,20 @@ func taskCheckbox(item ast.Node) (checked bool, ok bool) {
 // selection. The optional language label stays, as a dim word ABOVE the fill and outside it, so selecting
 // the code does not pick the label up.
 //
+// THE BAND IS THE CODE'S WIDTH, NOT THE PANE'S. The operator, on the first version of this: "I am thinking
+// on top of odd characters it is printing tab/spaces all the way to the end of the width." They were reading
+// the FILL, which was padded to the pane's full width so the band always ran to the last column — a
+// screenful of trailing blanks behind a five-character command. Sizing the band to the widest line keeps the
+// containment and drops the blanks, and it is what the GUI's `<pre>` does anyway: it fits its CONTENT rather
+// than its container.
+//
+// AND THE PADDING IS ALL ON THE RIGHT, because the two sides behave differently in a copy and only one of
+// them is safe. The right padding exists solely to square off the rectangle, and a COPY trims trailing blanks
+// (see clipState.text), so it costs nothing. A left inset of one cell — which is what this had, for looks —
+// lands in the paste as a leading space on EVERY line, and a leading space is an IndentationError in Python:
+// the block would look contained and paste broken. So the fill's left edge IS the code's first column, and
+// there is nothing in front of the code to copy. (Measured: the copy came out " ls -la" before this.)
+//
 // (The GUI's padded, rounded `<pre>` is the shape this is imitating, less the frame.)
 //
 // LONG LINES ARE WRAPPED, NOT TRUNCATED. The operator's instruction — "we can scroll horizontally
@@ -732,34 +746,60 @@ func (r *renderer) codeBlock(n ast.Node, in indent, lang []byte) {
 	if len(lang) > 0 {
 		r.raw(in.first + "\x1b[2m" + truncate(string(lang), avail) + "\x1b[22m")
 	}
-	inner := avail - 1 // one space of padding inside the fill
-	if inner < 4 {
-		inner = 4
-	}
+	// THE LINES ARE COLLECTED FIRST, because the band's width is derived from them — see below. Nothing about
+	// the output depends on this being a second pass; the widest line simply has to be known before the first
+	// one is painted.
+	lines := make([]string, 0, n.Lines().Len())
+	widest := 0
 	for i := 0; i < n.Lines().Len(); i++ {
+		// Bound to a local first: At returns a Segment VALUE, and Value has a pointer receiver.
 		seg := n.Lines().At(i)
 		line := strings.TrimRight(string(seg.Value(r.src)), "\n")
+		lines = append(lines, line)
+		if w := codeWidth(line); w > widest {
+			widest = w
+		}
+	}
+	// The band: as wide as the widest line, never wider than the pane. The floor keeps a one-word block from
+	// being an unreadable sliver — it only ever adds padding to the RIGHT, which a copy trims — and the
+	// re-clamp after it is what stops the floor from pushing the band past `avail` in a very narrow pane.
+	band := widest
+	if band > avail {
+		band = avail
+	}
+	if band < 4 {
+		band = 4
+		if band > avail {
+			band = avail
+		}
+	}
+	inner := band
+	if inner < 1 {
+		inner = 1
+	}
+	for _, line := range lines {
 		for _, part := range wrapCode(line, inner) {
-			r.raw(in.rest + codeBlockLine(part, avail))
+			r.raw(in.rest + codeBlockLine(part, band))
 		}
 	}
 }
 
-// codeBlockLine renders one code line inside the block's fill, padded to the block's width so the fill is a
-// rectangle rather than a ragged edge.
+// codeBlockLine renders one code line inside the block's fill, padded on the RIGHT to the BAND's width so the
+// fill is a rectangle rather than a ragged edge. The band is the block's own width, not the pane's, and the
+// code starts AT THE FILL'S LEFT EDGE — see codeBlock for why the padding is asymmetric.
 //
 // The padding sits INSIDE the colours, before the close, so the fill covers it — the same discipline the
-// inline chip follows. With no block colours configured the line degrades to plain indentation, which keeps
-// this renderer usable without a theme (md is a leaf several callers share).
+// inline chip follows. With no block colours configured the line degrades to plain text, which keeps this
+// renderer usable without a theme (md is a leaf several callers share).
 func codeBlockLine(part string, avail int) string {
 	if !blockActive() {
-		return " " + part
+		return part
 	}
-	pad := avail - 1 - lipgloss.Width(part)
+	pad := avail - codeWidth(part)
 	if pad < 0 {
 		pad = 0
 	}
-	return blockOpen() + " " + part + strings.Repeat(" ", pad) + blockClose()
+	return blockOpen() + part + strings.Repeat(" ", pad) + blockClose()
 }
 
 // --- inline extraction ---------------------------------------------------------------------------
@@ -971,27 +1011,60 @@ func hardSplit(s string, width int) []string {
 	return out
 }
 
+// codeTabStop is the column a tab advances to: the terminal default, every eight columns.
+const codeTabStop = 8
+
+// codeWidth is the VISUAL width of a code line: lipgloss.Width, EXCEPT that a tab counts for the cells it
+// actually paints.
+//
+// lipgloss.Width scores a tab as ZERO — anstyle treats it as a control character — which is right for prose
+// and wrong for code. A terminal expands a tab to the next tab stop, so a tab-indented line is among the
+// WIDEST things in a block while measuring as the narrowest, and anything sized from lipgloss.Width is short
+// by one tab stop per tab. Measured on a Python body:
+//
+//	"\tif x > 0:"   lipgloss.Width = 9   painted = 17
+//
+// so the fill ended eight cells before the text did — ragged on exactly the lines most likely to be
+// tab-indented, which is the shape the operator's "tab/spaces" remark was about. The band starts at column 0
+// in the common case, which is where the tab-stop assumption is exact.
+func codeWidth(s string) int {
+	w := 0
+	for _, r := range s {
+		w += codeRuneWidth(r, w)
+	}
+	return w
+}
+
+// codeRuneWidth is one rune's advance from a given column — a tab's depends on where it begins, which is why
+// this cannot be a per-rune constant.
+func codeRuneWidth(r rune, col int) int {
+	if r == '\t' {
+		return codeTabStop - col%codeTabStop
+	}
+	return lipgloss.Width(string(r))
+}
+
 // wrapCode wraps one code line at width, breaking at WORD boundaries where possible and hard at the
 // boundary when a single token cannot fit (the operator asked for word wrap; a URL or a minified blob
 // still has to fit).
 //
-// Leading whitespace is significant in code, so a line that already fits is returned untouched by the
-// caller — this is only reached for a line that overflows.
+// codeWidth, not lipgloss.Width: a tab occupies the cells it paints, and a wrap measured without them lets
+// a tab-indented line run past the band it is drawn in.
 func wrapCode(line string, width int) []string {
 	if width < 1 {
 		width = 1
 	}
-	if lipgloss.Width(line) <= width {
+	if codeWidth(line) <= width {
 		return []string{line}
 	}
 	// Break at the last space that fits; fall back to a hard split when there is none.
 	var out []string
 	rest := line
-	for lipgloss.Width(rest) > width && rest != "" {
+	for codeWidth(rest) > width && rest != "" {
 		cut, sp := -1, -1
 		w := 0
 		for i, r := range rest {
-			rw := lipgloss.Width(string(r))
+			rw := codeRuneWidth(r, w)
 			if w+rw > width {
 				break
 			}
