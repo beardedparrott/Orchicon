@@ -100,6 +100,11 @@ var (
 	// line to the terminal's default foreground, so the close re-asserts the colour the accent was
 	// drawn inside rather than resetting.
 	accentFg, accentRestore string
+
+	// blockFg/blockBg are the CODE BLOCK's colours, set by SetCodeBlock (the theme). The restore after a
+	// block line re-uses chipSurface for the same reason the chip does: `\x1b[39m` would drop the rest of the
+	// line — and the bubble band behind it — to the terminal's defaults.
+	blockFg, blockBg string
 )
 
 // SetCodeChip sets the inline-code chip's colours. The theme calls it on every switch, so the chip
@@ -128,6 +133,40 @@ func SetAccentColor(fg, restore string) {
 	defer renderMu.Unlock()
 	accentFg, accentRestore = fg, restore
 }
+
+// SetCodeBlock sets the code block's colours: the code's foreground and the raised fill behind it.
+//
+// The fill IS the block's containment — see codeBlock for why the border glyphs had to go. Both colours are
+// required for it to be used, the same fail-closed rule as the chip: a block drawn on a fill with no usable
+// foreground would be the illegibility this exists to avoid.
+func SetCodeBlock(fg, bg string) {
+	renderMu.Lock()
+	defer renderMu.Unlock()
+	blockFg, blockBg = fg, bg
+}
+
+// blockActive reports whether a code block can be drawn on its fill.
+//
+// FOUR CONDITIONS, and the last two are the same fail-closed rule the chip follows. The block's own pair
+// has to PARSE — and, because the fill is closed by RESTORING the surface rather than resetting (see
+// codeBlockLine), that surface has to be restorable too. A render with no declared surface is exactly what
+// md.Render is, and several callers use it, so without this check a block on that path would paint a fill
+// it can never close: the rest of the ROW would keep the block's background, and the band behind it with
+// it. Degrading to plain indentation is the honest outcome there — the same choice the chip makes when it
+// falls back to reverse video.
+func blockActive() bool {
+	if blockFg == "" || blockBg == "" {
+		return false
+	}
+	if sgr(38, chipSurface.Fg) == "" || sgr(48, chipSurface.Bg) == "" {
+		return false
+	}
+	return sgr(38, blockFg) != "" && sgr(48, blockBg) != ""
+}
+
+// blockOpen starts a code line's fill; blockClose restores the surface it was drawn inside.
+func blockOpen() string  { return sgr(38, blockFg) + sgr(48, blockBg) }
+func blockClose() string { return chipClose() }
 
 // accentActive reports whether a structural accent can be drawn.
 func accentActive() bool {
@@ -662,8 +701,21 @@ func taskCheckbox(item ast.Node) (checked bool, ok bool) {
 	return false, false
 }
 
-// codeBlock renders a fenced/indented block inside a light border, which is the terminal analogue of
-// the GUI's padded, rounded `\<pre\>`.
+// codeBlock renders a fenced/indented block as a FILLED BLOCK — a raised background, no border glyphs.
+//
+// IT USED TO WEAR A `│`-AND-`┌─` FRAME, and that frame CORRUPTED EVERY COPY. The operator: "Code blocks
+// aren't really contained codeblocks that allow me to easily copy items, it has weird pipes and characters
+// and it screws up the copy." They are right, and the cause is structural: a copy takes the CELLS that were
+// painted, so a decorative `│ ` on every line and a `┌─`/`└─` around them land in the clipboard along with
+// the code. There is no way to have both — a glyph inside the selection is copied — so containment has to be
+// something the code block IS rather than something drawn beside it.
+//
+// A BACKGROUND FILL IS THAT CONTAINMENT, and it is the trick the inline-code chip already uses: the block is
+// visibly a block, each line is indented one space inside it, and there is not one character to corrupt a
+// selection. The optional language label stays, as a dim word ABOVE the fill and outside it, so selecting
+// the code does not pick the label up.
+//
+// (The GUI's padded, rounded `<pre>` is the shape this is imitating, less the frame.)
 //
 // LONG LINES ARE WRAPPED, NOT TRUNCATED. The operator's instruction — "we can scroll horizontally
 // some and also use word wrap when needed as long as it only takes up the width of the pane it is
@@ -673,24 +725,41 @@ func taskCheckbox(item ast.Node) (checked bool, ok bool) {
 // whitespace is meaning in code); only an over-wide line is wrapped, at word boundaries with a hard
 // split for a token that cannot fit at all.
 func (r *renderer) codeBlock(n ast.Node, in indent, lang []byte) {
-	avail := r.width - in.prefixWidth() - 2 // the "│ " frame
+	avail := r.width - in.prefixWidth()
 	if avail < 4 {
 		avail = 4
 	}
-	head := "┌─"
 	if len(lang) > 0 {
-		head += " " + string(lang)
+		r.raw(in.first + "\x1b[2m" + truncate(string(lang), avail) + "\x1b[22m")
 	}
-	r.raw(in.first + "\x1b[2m" + truncate(head, r.width-in.prefixWidth()) + "\x1b[22m")
-
+	inner := avail - 1 // one space of padding inside the fill
+	if inner < 4 {
+		inner = 4
+	}
 	for i := 0; i < n.Lines().Len(); i++ {
 		seg := n.Lines().At(i)
 		line := strings.TrimRight(string(seg.Value(r.src)), "\n")
-		for _, part := range wrapCode(line, avail) {
-			r.raw(in.rest + "\x1b[2m│\x1b[22m " + part)
+		for _, part := range wrapCode(line, inner) {
+			r.raw(in.rest + codeBlockLine(part, avail))
 		}
 	}
-	r.raw(in.rest + "\x1b[2m└─\x1b[22m")
+}
+
+// codeBlockLine renders one code line inside the block's fill, padded to the block's width so the fill is a
+// rectangle rather than a ragged edge.
+//
+// The padding sits INSIDE the colours, before the close, so the fill covers it — the same discipline the
+// inline chip follows. With no block colours configured the line degrades to plain indentation, which keeps
+// this renderer usable without a theme (md is a leaf several callers share).
+func codeBlockLine(part string, avail int) string {
+	if !blockActive() {
+		return " " + part
+	}
+	pad := avail - 1 - lipgloss.Width(part)
+	if pad < 0 {
+		pad = 0
+	}
+	return blockOpen() + " " + part + strings.Repeat(" ", pad) + blockClose()
 }
 
 // --- inline extraction ---------------------------------------------------------------------------

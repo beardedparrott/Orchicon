@@ -285,6 +285,10 @@ func Use(name string) bool {
 	// and for the same reason: a `\x1b[39m` close would drop the rest of the line to the terminal's
 	// default foreground.
 	md.SetAccentColor(string(t.Accent), string(t.Text))
+	// AND THE CODE BLOCK, which is a filled block rather than a bordered one so a copy of it is clean code
+	// (see md.codeBlock). The fill is the theme's raised surface and the text is the body colour, so the
+	// block reads as a block and its contents read as code — not as prose on a slightly different grey.
+	md.SetCodeBlock(string(t.Text), string(t.SurfaceAlt))
 	return true
 }
 

@@ -266,7 +266,9 @@ func TestNarrowTableFallsBackWithoutLosingValues(t *testing.T) {
 	}
 }
 
-func TestCodeBlockIsFramedAndPreserved(t *testing.T) {
+// THE BLOCK KEEPS ITS LANGUAGE AND ITS INDENTATION, on the plain path and on the surface path alike — the
+// rename from "IsFramed" is the point: the frame is gone (see TestCodeBlockDrawsAFillAndNoFrameGlyphs).
+func TestCodeBlockKeepsLanguageAndIndentation(t *testing.T) {
 	src := "```go\nx := 1\n  indented()\n```"
 	lines := plain(Render(src, 40))
 	joined := strings.Join(lines, "\n")
@@ -410,5 +412,48 @@ func TestNoOverflowAtEveryWidthInRange(t *testing.T) {
 				t.Fatalf("width %d: line is %d cells: %q", width, w, strip(ln))
 			}
 		}
+	}
+}
+
+// --- the code block's containment -------------------------------------------------------------------
+
+// A CODE BLOCK IS A FILLED BLOCK WITH NO FRAME — the operator: "Code blocks aren't really contained
+// codeblocks that allow me to easily copy items, it has weird pipes and characters and it screws up the
+// copy."
+//
+// The frame glyphs are asserted ABSENT, which is the assertion that would have caught the original: `│`
+// and `┌` are ordinary printable cells, so a selection over the block copies them into whatever the
+// operator pastes into. And the FILL is asserted PRESENT as a real SGR background, so "no glyphs" cannot
+// be satisfied by rendering nothing at all.
+func TestCodeBlockDrawsAFillAndNoFrameGlyphs(t *testing.T) {
+	SetCodeBlock("#c0c0c0", "#202020")
+	defer SetCodeBlock("", "")
+	lines := RenderOn("```go\nx := 1\n```", 40, SurfaceTokens(lipgloss.Color("#c0c0c0"), lipgloss.Color("#101010")))
+	joined := strings.Join(lines, "\n")
+	for _, glyph := range []string{"│", "┌", "└", "┃", "║"} {
+		if strings.Contains(joined, glyph) {
+			t.Errorf("the code block draws the frame glyph %q, which lands in a copy of it: %q", glyph, joined)
+		}
+	}
+	if !strings.Contains(joined, "\x1b[48;2;") {
+		t.Errorf("the block has no background fill, so it is not contained at all: %q", joined)
+	}
+	if !strings.Contains(joined, "x := 1") {
+		t.Fatalf("code content lost: %q", joined)
+	}
+}
+
+// AND WITHOUT A DECLARED SURFACE THE FILL IS NOT DRAWN, because it could not be closed — the fail-closed
+// rule in blockActive. md.Render is the path several callers use, and a fill it cannot close would leave
+// the rest of each row wearing the block's background.
+func TestCodeBlockNeedsASurfaceToFill(t *testing.T) {
+	SetCodeBlock("#c0c0c0", "#202020")
+	defer SetCodeBlock("", "")
+	joined := strings.Join(Render("```\nx := 1\n```", 40), "\n")
+	if strings.Contains(joined, "\x1b[48;2;") {
+		t.Errorf("a fill was drawn on the plain Render path, where there is no surface to close back to: %q", joined)
+	}
+	if !strings.Contains(joined, "x := 1") {
+		t.Fatalf("code content lost: %q", joined)
 	}
 }
