@@ -25,7 +25,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 )
 
-// runCtx's two hard bounds. See its doc comment for why each exists.
+// runCtx's three hard bounds. See its doc comment for why each exists.
 const (
 	// runCtxMaxSteps bounds how many commands ONE drain will walk, so a graph that fans out without a timer
 	// cannot spin the loop.
@@ -33,6 +33,21 @@ const (
 	// runCtxTotalBudget bounds the WALL CLOCK of one drain. It is needed because the per-command budget is only
 	// paid by commands that DO NOT ANSWER, so a chain of several long-lived waiters adds up rather than ending.
 	runCtxTotalBudget = 30 * time.Second
+	// runCtxCmdBudget is how long ONE command may take before the drain calls it a long-lived waiter and moves on.
+	//
+	// THE VALUE BARELY MATTERS, WHICH IS THE POINT. Every command a drain needs an answer from is a pure function
+	// or an in-process loopback RPC — microseconds against an httptest server on 127.0.0.1 — and every command it
+	// does NOT need an answer from (waitChat: `select` on two channels nobody sends to) blocks FOREVER. Nothing
+	// sits in between, so 250ms, 3s and 30s all draw the same line; the number only decides how much dead time the
+	// suite pays for the waiters.
+	//
+	// IT WAS 3s, and that is where ~60 seconds of `make rebuild-dev` went: eight drains, roughly twenty blocking
+	// commands, three seconds each. The operator felt it ("I don't want a 72 second test") and was right to.
+	//
+	// The failure mode of being too MEAN is a visible one: a load that genuinely took longer gets skipped and the
+	// test's own assertion then fails, loudly, rather than the suite passing on an untested path. That is the
+	// acceptable direction to be wrong in, and it is why this is short rather than generous.
+	runCtxCmdBudget = 250 * time.Millisecond
 )
 
 // runCtx drains a command the way bubbletea's runtime does — flattening batches, feeding each result back into
@@ -54,10 +69,10 @@ const (
 //   - maxSteps and the total deadline are the general backstop, so a graph that fans out without a timer cannot
 //     spin the loop either.
 //
-// The per-command budget is the caller's, and it is deliberately generous: every command drained here is a
-// loopback RPC, a pure function, or an infinite waiter, so the budget's only job is to distinguish the third.
-// Being wrong in the generous direction costs wall clock; being wrong in the mean direction would skip a real
-// load and make the suite flaky under load.
+// The per-command budget is runCtxCmdBudget, and its doc comment says why the exact value does not matter: the
+// commands drained here are pure functions, in-process loopback RPCs (microseconds), or infinite waiters. Being
+// wrong in the generous direction costs wall clock — which is exactly what a 3s budget cost, sixty seconds of
+// it; being wrong in the mean direction skips a real load and the test's own assertion then fails VISIBLY.
 func runCtx(t *testing.T, m *App, cmd tea.Cmd, budget time.Duration) {
 	t.Helper()
 	if cmd == nil {
@@ -125,7 +140,7 @@ func TestAnUnmatchedLaunchDirectoryStillOpensOnAllProjects(t *testing.T) {
 		direcs: []string{"/home/me/projects/Orchicon"},
 	})
 	m.launchDir = "/tmp/somewhere-else"
-	runCtx(t, m, m.Init(), 3*time.Second)
+	runCtx(t, m, m.Init(), runCtxCmdBudget)
 
 	if m.projectScope != projectScopeAll {
 		t.Errorf("scope = %q after launching from an unmatched directory, want All projects", m.projectScope)
@@ -142,7 +157,7 @@ func TestInitFetchesTheProjectList(t *testing.T) {
 	m := appWithProjectService(t, projects)
 	m.launchDir = "/home/me/projects/Orchicon"
 
-	runCtx(t, m, m.Init(), 3*time.Second)
+	runCtx(t, m, m.Init(), runCtxCmdBudget)
 
 	if projects.callCount() == 0 {
 		t.Fatal("Init() never called ListProjects — the workspace picker would offer nothing but \"All \"+\n" +
@@ -163,7 +178,7 @@ func TestThePickerFromInitOffersTheRealProjects(t *testing.T) {
 		direcs: []string{"/home/me/projects/Orchicon", "/home/me/ai-tools"},
 	}
 	m := appWithProjectService(t, projects)
-	runCtx(t, m, m.Init(), 3*time.Second)
+	runCtx(t, m, m.Init(), runCtxCmdBudget)
 
 	runSlashTUI(t, m, "/projects")
 	if m.projectPick == nil {
@@ -197,7 +212,7 @@ func TestInitScopesToTheLaunchDirectory(t *testing.T) {
 	m := appWithProjectService(t, projects)
 	m.launchDir = "/home/me/projects/Orchicon/src/nested"
 
-	runCtx(t, m, m.Init(), 3*time.Second)
+	runCtx(t, m, m.Init(), runCtxCmdBudget)
 
 	if m.projectScope != "prj-Orchicon" {
 		t.Errorf("projectScope = %q after launching from inside the Orchicon project, want prj-Orchicon — "+
@@ -220,7 +235,7 @@ func TestTheRailTitleNamesTheLaunchWorkspace(t *testing.T) {
 	m := appWithProjectService(t, projects)
 	m.launchDir = "/home/me/projects/Orchicon"
 
-	runCtx(t, m, m.Init(), 3*time.Second)
+	runCtx(t, m, m.Init(), runCtxCmdBudget)
 
 	view := m.rightRailView()
 	if !strings.Contains(view, "Orchicon") {
@@ -232,7 +247,7 @@ func TestTheRailTitleNamesTheLaunchWorkspace(t *testing.T) {
 func TestTheFilterNarrowsToTheMatchingProject(t *testing.T) {
 	projects := &stubProjectList{names: []string{"Orchicon", "ai-tools", "Cigar Tracker"}}
 	m := appWithProjectService(t, projects)
-	runCtx(t, m, m.Init(), 3*time.Second)
+	runCtx(t, m, m.Init(), runCtxCmdBudget)
 
 	runSlashTUI(t, m, "/projects Orch")
 
@@ -252,7 +267,7 @@ func TestTheFilterNarrowsToTheMatchingProject(t *testing.T) {
 func TestAFilterWithNoMatchExplainsItself(t *testing.T) {
 	projects := &stubProjectList{names: []string{"Orchicon"}}
 	m := appWithProjectService(t, projects)
-	runCtx(t, m, m.Init(), 3*time.Second)
+	runCtx(t, m, m.Init(), runCtxCmdBudget)
 
 	runSlashTUI(t, m, "/projects zzzz")
 
@@ -273,7 +288,7 @@ func TestAFilterWithNoMatchExplainsItself(t *testing.T) {
 func TestAFailedProjectLoadIsRetried(t *testing.T) {
 	projects := &stubProjectList{names: []string{"Orchicon"}, failFirst: true}
 	m := appWithProjectService(t, projects)
-	runCtx(t, m, m.Init(), 3*time.Second)
+	runCtx(t, m, m.Init(), runCtxCmdBudget)
 
 	if m.railProjectsLoaded {
 		t.Fatal("fixture: the first load was supposed to fail")
@@ -287,7 +302,7 @@ func TestAFailedProjectLoadIsRetried(t *testing.T) {
 	if app, ok := nm.(*App); ok {
 		*m = *app
 	}
-	runCtx(t, m, cmd, 3*time.Second)
+	runCtx(t, m, cmd, runCtxCmdBudget)
 
 	if len(m.railProjects) != 1 {
 		t.Errorf("railProjects = %d after a retry, want 1 — a transient failure left the picker empty for the "+
