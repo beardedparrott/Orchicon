@@ -478,6 +478,15 @@ func UpdateWorkerCurrentVersion(ctx context.Context, tx pgx.Tx, tenantID, id str
 	return w, nil
 }
 
+// jsonbOrDefault returns a non-NULL jsonb literal for a nil field, so an
+// unset jsonb column takes the schema default instead of violating NOT NULL.
+func jsonbOrDefault(v []byte, def string) []byte {
+	if v == nil {
+		return []byte(def)
+	}
+	return v
+}
+
 // CreateWorkerVersion inserts a new worker version snapshot row within
 // the given tenant transaction. The version number is computed by the
 // caller (max+1). Status starts as "draft".
@@ -496,11 +505,18 @@ func CreateWorkerVersion(ctx context.Context, tx pgx.Tx, v WorkerVersionRow) (Wo
 			gated_tools, budget_overrides, execution_policy_ref, concurrency_limit,
 			recovery_workflow_ref, labels, published_at, created_at`
 	row := v
+	// The jsonb columns are NOT NULL with schema defaults ([] / {}), but a caller
+	// that leaves a field nil binds SQL NULL and trips the constraint instead of
+	// taking the default. Coalesce to the column's OWN default so a
+	// partially-populated row behaves the way the schema intends (the DB-backed
+	// tests seed rows exactly this way).
 	err := tx.QueryRow(ctx, q,
 		v.ID, v.TenantID, v.WorkerID, v.Version, v.VersionNote, v.Status,
-		v.ModelRef, v.Role, v.Skills, v.Behavior, v.AgentsMD, v.ContextSources, v.Permissions,
-		v.GatedTools, v.BudgetOverrides, v.ExecutionPolicyRef, v.ConcurrencyLimit,
-		v.RecoveryWorkflowRef, v.Labels,
+		v.ModelRef, v.Role, v.Skills, v.Behavior, v.AgentsMD,
+		jsonbOrDefault(v.ContextSources, "[]"), jsonbOrDefault(v.Permissions, "{}"),
+		jsonbOrDefault(v.GatedTools, "[]"), jsonbOrDefault(v.BudgetOverrides, "{}"),
+		v.ExecutionPolicyRef, v.ConcurrencyLimit,
+		v.RecoveryWorkflowRef, jsonbOrDefault(v.Labels, "{}"),
 	).Scan(
 		&row.ID, &row.TenantID, &row.WorkerID, &row.Version, &row.VersionNote, &row.Status,
 		&row.ModelRef, &row.Role, &row.Skills, &row.Behavior, &row.AgentsMD, &row.ContextSources, &row.Permissions,

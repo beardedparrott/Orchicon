@@ -131,17 +131,27 @@ func TestRunNeedsServeAdapterKinds(t *testing.T) {
 		return w.ID
 	}
 
+	// runNeedsServe resolves each step's worker version through the DB exactly
+	// as dispatch does, and production always hands it the tenant tx (see the
+	// runNeedsServe callers in workflow_reconciler.go). A nil tx panics inside
+	// db.GetLatestWorkerVersion, so hold a real one open for the reads.
+	readTx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readTx.Rollback(ctx)
+
 	nativeWorker := seedWorkerVersion(t, "native", "orchicon/deepseek/deepseek-v4-flash")
 	ocWorker := seedWorkerVersion(t, "oc", "anthropic/claude-sonnet-4")
 
-	nativeOnly := r.runNeedsServe(ctx, nil, approvalTestTenant, db.WorkflowRunRow{}, []workflow.StepWire{
+	nativeOnly := r.runNeedsServe(ctx, readTx.Tx, approvalTestTenant, db.WorkflowRunRow{}, []workflow.StepWire{
 		{ID: "w", Kind: domain.StepKindTask, Ref: nativeWorker},
 	})
 	if nativeOnly {
 		t.Error("native-only run needsServe = true, want false")
 	}
 
-	mixed := r.runNeedsServe(ctx, nil, approvalTestTenant, db.WorkflowRunRow{}, []workflow.StepWire{
+	mixed := r.runNeedsServe(ctx, readTx.Tx, approvalTestTenant, db.WorkflowRunRow{}, []workflow.StepWire{
 		{ID: "w", Kind: domain.StepKindTask, Ref: nativeWorker},
 		{ID: "w2", Kind: domain.StepKindTask, Ref: ocWorker},
 	})
@@ -151,7 +161,7 @@ func TestRunNeedsServeAdapterKinds(t *testing.T) {
 
 	// Unresolvable worker → conservative opencode demand (parity with the
 	// pre-fix gate).
-	unknown := r.runNeedsServe(ctx, nil, approvalTestTenant, db.WorkflowRunRow{}, []workflow.StepWire{
+	unknown := r.runNeedsServe(ctx, readTx.Tx, approvalTestTenant, db.WorkflowRunRow{}, []workflow.StepWire{
 		{ID: "w", Kind: domain.StepKindTask, Ref: "w-does-not-exist"},
 	})
 	if !unknown {
