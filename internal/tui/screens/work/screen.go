@@ -101,6 +101,15 @@ type Model struct {
 	// BEHIND the modal and scrolled it.
 	formLoading bool
 
+	// bulkSetIDs is the SNAPSHOT of the marked ids taken when the bulk workflow/image picker was
+	// opened. The modal owns the keys while it is up, so the write must target the selection the
+	// operator confirmed rather than whatever is marked when the confirm finally lands.
+	bulkSetIDs []string
+	// parentIDs is the set of ids that have at least one child — the TUI's sequence-parent
+	// detector, the counterpart of the GUI's parentIdSet. Guarded by viewMu: it is written by
+	// fetchWorkItems, which runs off the update loop.
+	parentIDs map[string]bool
+
 	// formMCPLoaded records whether the OPEN project form's MCP data arrived. It is
 	// consulted at submit time to decide whether the MCP selection may be WRITTEN: the
 	// field is absent when the load failed, and an absent field must not be read as "the
@@ -442,6 +451,18 @@ func (m *Model) fetchWorkItems(ctx context.Context, pageToken string) ([]kit2.It
 	if err != nil {
 		return nil, "", err
 	}
+	// The sequence-parent set: any item that is some other item's parent. Used by the bulk-set
+	// confirm to call out that a parent's OWN binding is inert (its children each run their own
+	// workflows). Built from the same page the rows come from.
+	parents := map[string]bool{}
+	for _, w := range resp.Msg.GetWorkItems() {
+		if p := w.GetParentId(); p != "" {
+			parents[p] = true
+		}
+	}
+	m.viewMu.Lock()
+	m.parentIDs = parents
+	m.viewMu.Unlock()
 	return rowsFor(view, resp.Msg.GetWorkItems(), m.SortMode()), resp.Msg.GetNextPageToken(), nil
 }
 
@@ -671,12 +692,33 @@ func (m *Model) bulkItemActions(ids []string) []kit2.Action {
 			m.notice = "selection cleared"
 		},
 	}
-	return []kit2.Action{archive, del, clear}
+	// The bulk workflow/runtime-image set. It is the SCALAR case the comment above explicitly does
+	// not cover: a workflow binding is ONE picker, ONE value, identical for every selected item —
+	// nothing per item to review — which is the shape BulkUpdateWorkerModel already proved out for
+	// the Workers pane. It carries no Confirm of its own because the VALUES are chosen FIRST: the
+	// picker opens here (via openAction's interception) and the confirm that names the count and
+	// the values is raised from the form's submit.
+	setwf := kit2.Action{
+		Label: label("set workflow & image"), Key: keyBulkSet, Source: srcWorkItems,
+		// No RPC of its own: openAction intercepts this action and opens the picker instead.
+		Do: func(context.Context) error { return nil },
+	}
+	return []kit2.Action{archive, del, setwf, clear}
 }
 
 // openAction opens the confirmation dialog for an action that needs one, or
 // runs it immediately.
 func (m *Model) openAction(a kit2.Action) tea.Cmd {
+	// PICKER-FIRST: the VALUE is chosen before the confirm, so the confirm can name it. Every entry
+	// point (the action bar, the key chord) converges here, so this is the ONE place the picker
+	// needs to open — a second call site would be a second chance to drift.
+	if a.Key == keyBulkSet {
+		m.bulkSetIDs = m.Base.BulkIDs()
+		if len(m.bulkSetIDs) == 0 {
+			return nil
+		}
+		return m.prepBulkSet()
+	}
 	if !a.NeedsConfirm() {
 		return m.runAction(a)
 	}
@@ -842,9 +884,19 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 			m.Base.BeginDetailEdit("Edit work item", m.newItemEditForm(msg.item))
 		case formStatusItem:
 			m.Base.BeginDetailEdit("Status & priority", m.newItemStatusForm(msg.item))
+		case formBulkSetItem:
+			// The MODAL host, not the details pane: a bulk write is not about the active row. The
+			// details pane is the active row's host; the modal is the screen's "not about this row"
+			// host (the runtime-image create form uses it too).
+			m.form = m.newBulkSetForm(msg.workflows, msg.images)
+			if msg.hiddenWorkflows > 0 {
+				m.notice = fmt.Sprintf("%d workflow(s) hidden — not published, or has no steps", msg.hiddenWorkflows)
+			}
 		}
 		m.formMode, m.formID = msg.mode, msg.item.GetId()
-		m.notice = ""
+		if msg.mode != formBulkSetItem {
+			m.notice = ""
+		}
 		return m, nil
 
 	case projectFormMsg:
@@ -1098,7 +1150,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		if src == srcWorkItems && m.ViewMode() == viewTree {
 			return m.reorderChildren(1), true
 		}
-	case "y", "a", "R":
+	case "y", "a", "R", keyBulkSet:
 		if a, ok := m.actionByKey(msg.String()); ok {
 			return m.openAction(a), true
 		}

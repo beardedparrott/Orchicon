@@ -34,6 +34,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useToast } from "@/components/ui/toast";
 import { useBatchMoveWorkItems } from "@/components/work-items/batch-move";
 import { useBatchRunWorkItems } from "@/components/work-items/batch-run";
+import { useBatchSetWorkItems } from "@/components/work-items/batch-set";
+import { BulkSetDialog } from "@/components/work-items/bulk-set-dialog";
 import { computeBlockState, buildTreeData, filterItemsByKindStatus } from "@/components/work-items/dependency-utils";
 import {
   KIND_FILTER_OPTIONS,
@@ -94,6 +96,8 @@ function WorkItemsPage() {
   const batchArchive = useBatchArchiveWorkItems();
   const { moveItems, isPending: movePending } = useBatchMoveWorkItems(projectId);
   const runWorkItems = useBatchRunWorkItems(projectId);
+  const batchSet = useBatchSetWorkItems(projectId);
+  const [setDialogOpen, setSetDialogOpen] = useState(false);
   const toast = useToast();
   const reorder = useReorderWorkItems();
   const restoreWorkItem = useRestoreWorkItem(projectId);
@@ -290,6 +294,25 @@ function WorkItemsPage() {
     void runWorkItems.runSelected(runIds, { itemsById, parentIdSet });
   };
 
+  // Bulk set of `workflow_id` + `runtime_image`: the SAME marked-selection primitive as Run —
+  // it acts on the visible-selected set, and the selection does not have to be archiveable or
+  // startable for a scalar field to be written.
+  const handleSetWorkflowImage = () => {
+    if (selected.size === 0) return;
+    setSetDialogOpen(true);
+  };
+  /** The visible-intersected selection the dialog will write to (the same set Run uses). */
+  const setTargetIds = useMemo(
+    () => [...selected].filter((id) => visibleIdsSet.has(id)),
+    [selected, visibleIdsSet],
+  );
+  /** Ids of that selection which are SEQUENCE PARENTS — their own binding is INERT, and the
+   *  dialog says so rather than letting the operator believe they routed the parent. */
+  const setTargetParentIds = useMemo(
+    () => setTargetIds.filter((id) => parentIdSet.has(id)),
+    [setTargetIds, parentIdSet],
+  );
+
 
 
   // Expand/Collapse all (ADR-WIT-4): the parent ids come from the FULL
@@ -373,7 +396,22 @@ function WorkItemsPage() {
         movePending={movePending}
         onRunSelected={handleRunSelected}
         runPending={runWorkItems.isPending}
+        onSetWorkflowImage={handleSetWorkflowImage}
+        setPending={batchSet.isPending}
         visibleSelectedCount={visibleSelectedCount}
+      />
+
+      <BulkSetDialog
+        open={setDialogOpen}
+        onOpenChange={setSetDialogOpen}
+        count={setTargetIds.length}
+        parentIds={setTargetParentIds}
+        isPending={batchSet.isPending}
+        onSubmit={(target) => {
+          const titles = new Map((items ?? []).map((i) => [i.id, i.title] as const));
+          void batchSet.setSelected(setTargetIds, target, titles);
+          setSetDialogOpen(false);
+        }}
       />
 
       {!hasProjects && (
