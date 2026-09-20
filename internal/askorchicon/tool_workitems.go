@@ -313,6 +313,16 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	if err != nil {
 		return nil, err
 	}
+	// Workflow-first enforcement at CREATE, mirroring the Connect Create
+	// handler: a SCHEDULED item with no workflow binding has nothing to run —
+	// the delivered schedule-time gate rejects that shape on the UPDATE path,
+	// so run it here too (the two surfaces must not drift). A freshly created
+	// item has no children, so this is the leaf case.
+	if scheduledStartAt != nil {
+		if err := workitem.ValidateSequenceSchedule(ctx, ttx.Tx, tenantID, created); err != nil {
+			return nil, err
+		}
+	}
 	// Outbox: the MCP path honors invariant #3 for work item mutations.
 	if err := workitem.EnqueueWorkItemEvent(ctx, ttx.Tx, "work_item.created", created); err != nil {
 		return nil, err
@@ -646,6 +656,25 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		effItem := current
 		effItem.WorkflowID = nil
 		if err := workitem.ValidateSequenceSchedule(ctx, ttx.Tx, tenantID, effItem); err != nil {
+			return nil, err
+		}
+	}
+	// Workflow-first enforcement (standalone dispatch is retired) — the
+	// mirror of the Connect Update handler so the two surfaces cannot drift: a
+	// STATUS TRANSITION into a runnable status (ready / assigned / scheduled /
+	// running) is rejected when the resulting item has no workflow binding,
+	// because nothing would execute it. Non-status edits and status no-ops are
+	// never gated; a sequence parent with children is exempt.
+	if update.Status != nil && *update.Status != current.Status {
+		effWorkflowPtr := (*string)(nil)
+		if effWorkflow != "" {
+			effWorkflowPtr = &effWorkflow
+		}
+		children, err := db.ListDirectChildren(ctx, ttx.Tx, tenantID, current.ID)
+		if err != nil {
+			return nil, err
+		}
+		if err := workitem.ValidateWorkflowFirstTransition(current.Title, *update.Status, effWorkflowPtr, len(children) > 0); err != nil {
 			return nil, err
 		}
 	}

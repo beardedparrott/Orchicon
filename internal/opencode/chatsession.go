@@ -14,13 +14,37 @@ import (
 // adapter that maps the raw opencode bus vocabulary onto the
 // scheduler-neutral SessionEvent surface the Ask drain loop consumes.
 
-// hostServeClient returns the always-on host serve's session client, or nil
-// when the serve transport is unavailable.
+// hostServeClient returns the host serve's session client, or nil when the
+// serve transport is unavailable. It never STARTS the serve — callers that
+// may need the serve started go through ensureHostServeClient.
 func (a *Adapter) hostServeClient() *SessionClient {
 	if a.host == nil {
 		return nil
 	}
 	return a.host.Client()
+}
+
+// ensureHostServeClient returns the host serve's session client, starting
+// the serve on FIRST demand (AC 2). Every Ask turn whose transport resolves
+// to the opencode adapter comes through here, so an Ask session on an
+// opencode-resolved transport is itself a demand trigger — while a plane
+// whose Ask default resolves natively never starts one.
+//
+// The error is the start failure verbatim (disabled kill-switch, missing
+// binary, serve never ready): the Ask turn fails LOUDLY with the reason
+// instead of silently degrading (AC 4).
+func (a *Adapter) ensureHostServeClient(ctx context.Context) (*SessionClient, error) {
+	if a.host == nil {
+		return nil, errors.New("host opencode serve unavailable — Ask chat transport is disabled")
+	}
+	if err := a.host.EnsureStarted(ctx); err != nil {
+		return nil, fmt.Errorf("host opencode serve unavailable — Ask chat transport is disabled: %w", err)
+	}
+	c := a.host.Client()
+	if c == nil {
+		return nil, errors.New("host opencode serve unavailable — Ask chat transport is disabled")
+	}
+	return c, nil
 }
 
 // SessionOwnerKind implements scheduler.SessionOwnerKind: sessions created
@@ -35,9 +59,9 @@ func (a *Adapter) SessionOwnerKind() string { return "opencode" }
 // fresh session on the host serve. An Ask turn has no project directory, so
 // the request goes out unscoped (mirrors the historical chat behavior).
 func (a *Adapter) CreateConversationSession(ctx context.Context, conversationID, title string) (string, error) {
-	c := a.hostServeClient()
-	if c == nil {
-		return "", errors.New("host opencode serve unavailable — Ask chat transport is disabled")
+	c, err := a.ensureHostServeClient(ctx)
+	if err != nil {
+		return "", err
 	}
 	sid, err := c.CreateSession(ctx, title)
 	if err != nil {
@@ -59,9 +83,9 @@ func (a *Adapter) SendTurnMessage(ctx context.Context, conversationID, sessionID
 // sender for Ask turns. Attachments go out as inline data: URLs (no
 // UploadAttachment/BlobStore dependency — mirroring the host serve client).
 func (a *Adapter) SendTurnMessageWithAttachments(ctx context.Context, conversationID, sessionID, system, modelRef, text string, attachments []scheduler.ChatAttachment) error {
-	c := a.hostServeClient()
-	if c == nil {
-		return errors.New("host opencode serve unavailable — Ask chat transport is disabled")
+	c, err := a.ensureHostServeClient(ctx)
+	if err != nil {
+		return err
 	}
 	var parts []AttachmentPart
 	if len(attachments) > 0 {
@@ -70,7 +94,7 @@ func (a *Adapter) SendTurnMessageWithAttachments(ctx context.Context, conversati
 			parts = append(parts, AttachmentPart{Name: at.Name, MimeType: at.MimeType, Data: at.Data})
 		}
 	}
-	err := c.SendMessageWithAttachments(ctx, sessionID, system, modelRef, text, parts)
+	err = c.SendMessageWithAttachments(ctx, sessionID, system, modelRef, text, parts)
 	if err != nil && errors.Is(err, ErrSessionNotFound) {
 		return scheduler.ErrSessionNotFound
 	}
@@ -80,8 +104,13 @@ func (a *Adapter) SendTurnMessageWithAttachments(ctx context.Context, conversati
 // AbortConversationSession implements scheduler.ChatTurnClient, stopping a
 // live turn on a session so the model stops generating now.
 func (a *Adapter) AbortConversationSession(ctx context.Context, sessionID string) error {
-	c := a.hostServeClient()
-	if c == nil {
+	// Abort is BEST-EFFORT: a turn can only be live on a serve that was
+	// already started, so a serve that cannot be reached here has nothing to
+	// abort. EnsureStarted keeps the lazy path uniform (a live turn implies a
+	// live serve → the fast path), and the error is not surfaced because
+	// there is no turn to fail.
+	c, err := a.ensureHostServeClient(ctx)
+	if err != nil {
 		return nil
 	}
 	return c.Abort(ctx, sessionID)
@@ -90,9 +119,9 @@ func (a *Adapter) AbortConversationSession(ctx context.Context, sessionID string
 // ReplyPermission implements scheduler.ChatTurnClient, auto-approving a
 // permission.asked signal.
 func (a *Adapter) ReplyPermission(ctx context.Context, sessionID, permissionID string) error {
-	c := a.hostServeClient()
-	if c == nil {
-		return errors.New("host opencode serve unavailable — Ask chat transport is disabled")
+	c, err := a.ensureHostServeClient(ctx)
+	if err != nil {
+		return err
 	}
 	return c.ReplyPermission(ctx, sessionID, permissionID)
 }
@@ -103,9 +132,9 @@ func (a *Adapter) ReplyPermission(ctx context.Context, sessionID, permissionID s
 // event classification. The Ask drain loop consumes only SessionEvents — it
 // never sees the raw opencode bus type.
 func (a *Adapter) Subscribe(ctx context.Context, conversationID string) (scheduler.SessionBus, error) {
-	c := a.hostServeClient()
-	if c == nil {
-		return nil, errors.New("host opencode serve unavailable — Ask chat transport is disabled")
+	c, err := a.ensureHostServeClient(ctx)
+	if err != nil {
+		return nil, err
 	}
 	sub, err := c.Subscribe(ctx)
 	if err != nil {
@@ -223,7 +252,11 @@ func (a *ClientSessionAdapter) CompactConversationSession(ctx context.Context, o
 // session_run.doCompact). Unlike the native adapter there is no history to
 // reduce first: opencode's own summarize handles the session it holds.
 func (a *Adapter) CompactConversationSession(ctx context.Context, opts scheduler.CompactConversationOpts) (scheduler.ChatCompaction, error) {
-	return compactOnServe(ctx, a.hostServeClient(), opts)
+	c, err := a.ensureHostServeClient(ctx)
+	if err != nil {
+		return scheduler.ChatCompaction{}, err
+	}
+	return compactOnServe(ctx, c, opts)
 }
 
 // compactOnServe is the shared opencode compaction path.

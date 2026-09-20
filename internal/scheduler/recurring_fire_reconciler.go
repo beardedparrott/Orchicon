@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -145,9 +146,16 @@ func (r *RecurringFireReconciler) scanAndFire(ctx context.Context) reconciler.Re
 			}
 			continue
 		}
-		if ref.workflowID == nil {
-			r.log.Warn("recurring_fire: recurring leaf with no workflow skipped",
+		if ref.workflowID == nil || *ref.workflowID == "" {
+			// Standalone dispatch is retired: a recurring leaf with no
+			// workflow can never fire. Fail it LOUDLY — the item status plus
+			// an actionable reason surfaced on the item, and a "failed" row
+			// in the recurring ledger — instead of skipping it silently.
+			reason := fmt.Sprintf("Cannot fire recurring item %q: no workflow is set, so there is nothing to run. Bind a workflow to resume firing.", ref.id)
+			r.log.Error("recurring_fire: recurring leaf with no workflow — failing loudly",
 				"work_item", ref.id)
+			failNoWorkflowItemTx(ctx, r.pool, r.log, ref.tenantID, ref.id, reason)
+			r.recordFire(ctx, ref.tenantID, ref.id, "failed", "", reason)
 			continue
 		}
 		// Advance next_run_at before firing so idempotency holds even

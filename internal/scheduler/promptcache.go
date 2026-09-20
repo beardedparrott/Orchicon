@@ -2,17 +2,10 @@ package scheduler
 
 import (
 	"container/list"
-	"log/slog"
 	"sync"
 
 	"github.com/beardedparrott/orchicon/internal/contextfiles"
 )
-
-// standalonePromptLog is the logger the standalone composite path uses
-// for prefix-cache hit/miss lines. buildStandaloneComposite is a package
-// function (no reconciler receiver), so it logs through the default
-// logger — same destination the daemon's structured log goes to.
-func standalonePromptLog() *slog.Logger { return slog.Default() }
 
 // Context-section prefix cache (ADR-0009 D5): the rendered context-file
 // sections are the bulk of the static prompt prefix, and re-rendering

@@ -154,6 +154,29 @@ func TestContinueSessionFireAndForget(t *testing.T) {
 	}
 }
 
+// TestContinueSessionTriggersLazyHostServeAndFailsLoud pins AC 2 + AC 4 for
+// the follow-up continuation: a follow-up that cannot reuse the original
+// serve is opencode DEMAND, so it must go through HostServe.EnsureStarted
+// (the lazy start) — and when the operator kill-switch blocks that, it must
+// return that loud reason rather than a generic "no serve".
+func TestContinueSessionTriggersLazyHostServeAndFailsLoud(t *testing.T) {
+	t.Setenv("ORCHICON_OPCODE_SESSION_TRANSPORT", "0")
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	a := &Adapter{log: log, host: NewHostServe(log, t.TempDir(), "")}
+
+	_, err := a.ContinueSession(context.Background(), ContinueSessionOpts{
+		ExecutionID: "exec_lazy",
+		TenantID:    "tnt_dev",
+		Message:     "hello",
+	})
+	if err == nil {
+		t.Fatal("ContinueSession with the host serve kill-switched returned nil, want the loud reason")
+	}
+	if !strings.Contains(err.Error(), "ORCHICON_OPCODE_SESSION_TRANSPORT=0") {
+		t.Fatalf("error %q must surface the EnsureStarted kill-switch reason (the follow-up must TRIGGER the lazy start, not skip it)", err)
+	}
+}
+
 // TestContinueSessionNoServeIsSynchronousError verifies that when no serve is
 // reachable the RPC returns an immediate error (the UI shows a real error, not
 // a hung connection).

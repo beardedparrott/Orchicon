@@ -29,7 +29,13 @@ type ContinueSessionOpts = scheduler.ContinueSessionOpts
 // when the client disconnects mid-turn. No new execution/work item is ever
 // created.
 func (a *Adapter) ContinueSession(ctx context.Context, opts ContinueSessionOpts) (string, error) {
-	client, sessionID, reuse := a.followUpSession(ctx, opts)
+	client, sessionID, reuse, err := a.followUpSession(ctx, opts)
+	if err != nil {
+		// Fail-fast and LOUD (AC 4): the serve could not be started (operator
+		// kill-switch, missing binary, never ready) — surface the reason
+		// verbatim rather than degrading or waiting.
+		return "", err
+	}
 	if client == nil {
 		return "", fmt.Errorf("no opencode serve available for the follow-up")
 	}
@@ -120,7 +126,7 @@ func (a *Adapter) ContinueSession(ctx context.Context, opts ContinueSessionOpts)
 // followUpSession resolves the client + session for a follow-up. The
 // transport is the OPENCODE ADAPTER'S OWN persistent host transport — a
 // follow-up belongs to the execution's ADAPTER, never to a per-execution
-// "execution serve". Returns (client, sessionID, reused).
+// "execution serve". Returns (client, sessionID, reused, err).
 //
 // opts.AdapterKind is the identity recorded in the transcript's session_info
 // part and decides whether the recorded session is THIS adapter's to
@@ -140,12 +146,12 @@ func (a *Adapter) ContinueSession(ctx context.Context, opts ContinueSessionOpts)
 //     session identity means nothing here, so never re-attach; seed fresh.
 //
 // The fresh seed always lands on the adapter's persistent transport.
-func (a *Adapter) followUpSession(ctx context.Context, opts ContinueSessionOpts) (*SessionClient, string, bool) {
+func (a *Adapter) followUpSession(ctx context.Context, opts ContinueSessionOpts) (*SessionClient, string, bool, error) {
 	switch opts.AdapterKind {
 	case adapter.KindOpencode:
 		if opts.SessionID != "" {
 			if client := a.hostClient(); client != nil && client.SessionExists(ctx, opts.SessionID) {
-				return client, opts.SessionID, true
+				return client, opts.SessionID, true, nil
 			}
 		}
 	case "":
@@ -155,20 +161,39 @@ func (a *Adapter) followUpSession(ctx context.Context, opts ContinueSessionOpts)
 		if opts.ServeURL != "" && opts.SessionID != "" {
 			orig := NewSessionClient(opts.ServeURL, opts.ServePassword, opts.ProjectDir)
 			if orig.Healthy(ctx) {
-				return orig, opts.SessionID, true
+				return orig, opts.SessionID, true, nil
 			}
 		}
 	}
-	client := a.hostClient()
-	if client == nil {
-		return nil, "", false
+	// Fresh session on this adapter's persistent transport.
+	if client := a.hostClient(); client != nil {
+		// The adapter's transport is already up (the persistent host serve
+		// holds the session store across restarts): seed on it directly.
+		sid, err := client.CreateSession(ctx, opts.ExecutionID+"-followup")
+		if err == nil && sid != "" {
+			return client, sid, false, nil
+		}
+		a.log.Warn("follow-up session create failed", "execution", opts.ExecutionID, "error", err)
+		return nil, "", false, nil
 	}
-	sid, err := client.CreateSession(ctx, opts.ExecutionID+"-followup")
-	if err == nil && sid != "" {
-		return client, sid, false
+	if a.host != nil {
+		// Lazy host serve (AC 2): a follow-up continuation that cannot reuse
+		// its session IS opencode demand, so the host serve starts HERE on
+		// first demand rather than at plane boot. EnsureStarted's error is the
+		// loud reason (kill-switch / missing binary / never ready) and is
+		// returned verbatim — no silent degradation (AC 4).
+		if err := a.host.EnsureStarted(ctx); err != nil {
+			return nil, "", false, fmt.Errorf("host opencode serve unavailable for the follow-up: %w", err)
+		}
+		if client := a.host.Client(); client != nil {
+			sid, err := client.CreateSession(ctx, opts.ExecutionID+"-followup")
+			if err == nil && sid != "" {
+				return client, sid, false, nil
+			}
+			a.log.Warn("follow-up session create failed", "execution", opts.ExecutionID, "error", err)
+		}
 	}
-	a.log.Warn("follow-up session create failed", "execution", opts.ExecutionID, "error", err)
-	return nil, "", false
+	return nil, "", false, nil
 }
 
 // hostClient returns the session client for the adapter's PERSISTENT host

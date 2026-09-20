@@ -290,6 +290,45 @@ func IsStartableForAutoStart(status string) bool {
 	}
 }
 
+// runnableWorkflowStatuses are the statuses in which a work item is
+// expected to execute. Reaching one of them without a workflow binding
+// means there is nothing to run: the standalone (v0.1) dispatch path that
+// used to execute workflow-less items is retired.
+var runnableWorkflowStatuses = map[string]bool{
+	domain.WorkItemReady:     true,
+	domain.WorkItemAssigned:  true,
+	domain.WorkItemScheduled: true,
+	domain.WorkItemRunning:   true,
+}
+
+// IsRunnableStatus reports whether status is a pre-run/run status (ready,
+// assigned, scheduled, running) — the statuses ValidateWorkflowFirstTransition
+// gates on a workflow binding.
+func IsRunnableStatus(status string) bool { return runnableWorkflowStatuses[status] }
+
+// ValidateWorkflowFirstTransition enforces workflow-first execution: an item
+// may not enter a runnable status (ready / assigned / scheduled / running)
+// without a workflow binding, because nothing would execute it — standalone
+// dispatch is retired. A sequence PARENT with children is exempt: it is a
+// container that contributes ordering only and never executes itself (its
+// children each carry their own binding). hasChildren must be computed by the
+// caller in the same transaction.
+//
+// Exported so the Connect Update handler and the Ask Orchicon update tool
+// apply the identical precondition (AGENTS.md: the two surfaces cannot drift).
+func ValidateWorkflowFirstTransition(title, newStatus string, workflowID *string, hasChildren bool) error {
+	if !runnableWorkflowStatuses[newStatus] {
+		return nil
+	}
+	if hasChildren {
+		return nil
+	}
+	if workflowID != nil && *workflowID != "" {
+		return nil
+	}
+	return fmt.Errorf("Cannot move %q to %q: no workflow is set, so there is nothing to run. Bind a workflow first.", title, newStatus)
+}
+
 // AutoStartDeclinedWarning returns the user-facing explanation carried by
 // UpdateWorkItemResponse.warning and the Ask Orchicon update tool result
 // when an EXPLICIT auto_start_workflow=true was declined because the
@@ -364,9 +403,6 @@ func requireTenant(ctx context.Context) (string, error) {
 //     LEAF — must have a non-empty workflow_id bound. Container children
 //     with their own children arm nested sequences and are exempt, but
 //     their descendants are validated recursively.
-//   - oneShot: no worker-assigned (one-shot) child may exist anywhere in
-//     the subtree. One-shots run through the standalone ready/assigned
-//     path and remain available for standalone tasks only.
 //   - badWorkflow: a leaf's bound workflow must resolve to a published or
 //     deprecated workflow (the StartWorkflow precondition) so a fire-time
 //     failure can't occur — reject at schedule time instead. A bound
@@ -377,7 +413,7 @@ func requireTenant(ctx context.Context) (string, error) {
 // The walk is tenant-scoped and depth-bounded (max 4 levels). Shared by
 // the Connect UpdateWorkItem paths and the Ask Orchicon tools so the two
 // surfaces cannot drift (AGENTS.md Ask-Orchicon-sync rule).
-func ValidateSequenceSubtree(ctx context.Context, tx pgx.Tx, tenantID string, parent db.WorkItemRow) (noWorkflow, oneShot, badWorkflow []string, err error) {
+func ValidateSequenceSubtree(ctx context.Context, tx pgx.Tx, tenantID string, parent db.WorkItemRow) (noWorkflow, badWorkflow []string, err error) {
 	var walk func(id string) error
 	walk = func(id string) error {
 		children, err := db.ListDirectChildren(ctx, tx, tenantID, id)
@@ -385,9 +421,6 @@ func ValidateSequenceSubtree(ctx context.Context, tx pgx.Tx, tenantID string, pa
 			return err
 		}
 		for _, c := range children {
-			if len(c.AssignedWorkerRef) > 0 {
-				oneShot = append(oneShot, c.Title)
-			}
 			grandchildren, err := db.ListDirectChildren(ctx, tx, tenantID, c.ID)
 			if err != nil {
 				return err
@@ -411,9 +444,9 @@ func ValidateSequenceSubtree(ctx context.Context, tx pgx.Tx, tenantID string, pa
 		return nil
 	}
 	if err := walk(parent.ID); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
-	return noWorkflow, oneShot, badWorkflow, nil
+	return noWorkflow, badWorkflow, nil
 }
 
 // BuildSequenceValidationError composes the schedule-time rejection message
@@ -421,7 +454,7 @@ func ValidateSequenceSubtree(ctx context.Context, tx pgx.Tx, tenantID string, pa
 // design contract exactly:
 //
 //	> Cannot schedule "Parent Title": 2 children have no workflow set — "Feature A", "Task C". Bind workflows or remove them from the sequence.
-func BuildSequenceValidationError(parentTitle string, noWorkflow, oneShot, badWorkflow []string) error {
+func BuildSequenceValidationError(parentTitle string, noWorkflow, badWorkflow []string) error {
 	var parts []string
 	if len(noWorkflow) > 0 {
 		noun, verb := "child", "has"
@@ -437,14 +470,9 @@ func BuildSequenceValidationError(parentTitle string, noWorkflow, oneShot, badWo
 		}
 		parts = append(parts, fmt.Sprintf("%d %s %s a workflow that is not runnable — %s", len(badWorkflow), noun, verb, quoteTitles(badWorkflow)))
 	}
-	if len(oneShot) > 0 {
-		parts = append(parts, fmt.Sprintf("%s worker-assigned (one-shot) and cannot run in a sequence", quoteTitles(oneShot)))
-	}
 	msg := fmt.Sprintf("Cannot schedule %q: %s.", parentTitle, strings.Join(parts, "; "))
 	if len(noWorkflow) > 0 || len(badWorkflow) > 0 {
 		msg += " Bind workflows or remove them from the sequence."
-	} else if len(oneShot) > 0 {
-		msg += " Remove them from the chain."
 	}
 	return errors.New(msg)
 }

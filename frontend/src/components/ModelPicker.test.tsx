@@ -95,8 +95,12 @@ describe("ModelPicker (three-tier, ADR-0004)", () => {
 
   it("degrades to the default adapter kind when kinds are unavailable", () => {
     expect(src).toContain("DEFAULT_ADAPTER_KIND");
+    // AC 5 moved this guard into the orchicon-first `adapterList` useMemo (the
+    // old inline ternary is gone); the fallback itself is unchanged — an
+    // unloaded or EMPTY kinds fetch degrades to DEFAULT_ADAPTER_KIND rather
+    // than rendering an empty adapter tier.
     expect(src).toMatch(
-      /adapterKinds && adapterKinds\.length > 0 \? adapterKinds : \[DEFAULT_ADAPTER_KIND\]/,
+      /if \(!adapterKinds \|\| adapterKinds\.length === 0\) return \[DEFAULT_ADAPTER_KIND\];/,
     );
   });
 

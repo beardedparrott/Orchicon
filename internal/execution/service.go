@@ -720,6 +720,19 @@ func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Requ
 		"_follow_up_message":   q,
 		"_is_follow_up":        "true",
 	})
+	// Workflow-first: standalone dispatch is retired, so the follow-up item
+	// must be workflow-BOUND to be dispatchable — the TaskReconciler's only
+	// remaining non-step-run dispatch path is "a workflow-bound item", and it
+	// FAILS a workflow-less ready item loudly. Without this binding the
+	// follow-up would be created and then immediately failed (nothing to run
+	// inside). Inherit the parent item's binding; without one there is nothing
+	// to execute the follow-up, so reject loudly here instead of creating a
+	// doomed item.
+	followUpWorkflowID := task.WorkflowID
+	if followUpWorkflowID == nil || *followUpWorkflowID == "" {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("Cannot start a follow-up for %q: its work item has no workflow bound, so nothing would execute the follow-up. Bind a workflow to the item first.", task.Title))
+	}
 	newWI := db.WorkItemRow{
 		ID:                db.NewID(),
 		TenantID:          tenantID,
@@ -728,6 +741,7 @@ func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Requ
 		Kind:              domain.WorkItemKindTask,
 		Title:             fmt.Sprintf("Follow-up: %s", strings.TrimSpace(task.Title)),
 		Status:            domain.WorkItemReady,
+		WorkflowID:        followUpWorkflowID,
 		AssignedWorkerRef: task.AssignedWorkerRef,
 		Priority:          task.Priority,
 		PromptContext:     promptCtx,

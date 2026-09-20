@@ -17,20 +17,22 @@ import (
 	"github.com/beardedparrott/orchicon/internal/domain"
 )
 
-// newBlockedStandaloneEnv seeds the fixture a standalone dispatch needs:
-// a project (for project_dir resolution), a task with an assigned worker,
-// and a ready opencode adapter with free capacity. Project teardown is
-// handled by newSequenceTestEnv's cleanup.
+// newBlockedStandaloneEnv seeds the fixture a dispatch needs: a project (for
+// project_dir resolution), a published workflow binding, a task with an
+// assigned worker, and a ready opencode adapter with free capacity. Project
+// teardown is handled by newSequenceTestEnv's cleanup.
 func newBlockedStandaloneEnv(t *testing.T) (*sequenceTestEnv, db.WorkItemRow) {
 	t.Helper()
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
+	wfID := seedPublishedWorkflow(t, env.pool, env.proj.ID)
 
 	task := db.WorkItemRow{
 		ID: db.NewID(), TenantID: approvalTestTenant, ProjectID: env.proj.ID,
 		Kind: domain.WorkItemKindTask, Title: "Blocked Task",
 		Status:            domain.WorkItemReady,
 		AssignedWorkerRef: []byte(`{"worker_id":"w_se_devops_engineer","version":1}`),
+		WorkflowID:        &wfID,
 	}
 	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
@@ -287,11 +289,13 @@ func TestStandaloneBlockedNotDispatchedWorkflowBound(t *testing.T) {
 func newBlockedStandalonePair(t *testing.T, env *sequenceTestEnv, idx int) (task, blocker db.WorkItemRow) {
 	t.Helper()
 	ctx := context.Background()
+	wfID := seedPublishedWorkflow(t, env.pool, env.proj.ID)
 	task = db.WorkItemRow{
 		ID: db.NewID(), TenantID: approvalTestTenant, ProjectID: env.proj.ID,
 		Kind: domain.WorkItemKindTask, Title: "Blocked Task " + db.NewID()[:6],
 		Status:            domain.WorkItemReady,
 		AssignedWorkerRef: []byte(`{"worker_id":"w_se_devops_engineer","version":1}`),
+		WorkflowID:        &wfID,
 	}
 	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
@@ -332,6 +336,11 @@ func TestStandaloneBlockedScanRotationClearsBacklog(t *testing.T) {
 	// any residue so the window is fully deterministic.
 	purgeScanResidue(t, approvalTestPool(t))
 	env := newSequenceTestEnv(t)
+	// Seed this test's own high-capacity adapter: without it the dispatch
+	// batch is bounded by whatever ambient adapter the shared tenant happens
+	// to carry (capacity 5 on the sandbox plane), and the backlog can never
+	// clear — a capacity artefact, not a rotation regression.
+	seedReadyAdapter(t, env.pool)
 	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
 
 	// More blocked tasks than scanBatchSize forces rotation across passes.

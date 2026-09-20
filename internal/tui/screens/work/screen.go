@@ -80,6 +80,12 @@ type Model struct {
 	// offer parents from the chosen project (it used to list every project).
 	parentProject map[string]string
 
+	// names resolves the IDS the detail pane carries into the names an
+	// operator reads (workflow, project, parent). It is filled from the lists
+	// this screen ALREADY fetches — no extra request — and it is mutex-guarded
+	// because the pane it feeds is rendered off the update loop. See names.go.
+	names nameIndex
+
 	// form is the open typed form (nil = closed).
 	form     *kit2.Form
 	formMode string
@@ -100,6 +106,15 @@ type Model struct {
 	// ClaimsKeys reports true the vertical keys fell through to the list
 	// BEHIND the modal and scrolled it.
 	formLoading bool
+
+	// bulkSetIDs is the SNAPSHOT of the marked ids taken when the bulk workflow/image picker was
+	// opened. The modal owns the keys while it is up, so the write must target the selection the
+	// operator confirmed rather than whatever is marked when the confirm finally lands.
+	bulkSetIDs []string
+	// parentIDs is the set of ids that have at least one child — the TUI's sequence-parent
+	// detector, the counterpart of the GUI's parentIdSet. Guarded by viewMu: it is written by
+	// fetchWorkItems, which runs off the update loop.
+	parentIDs map[string]bool
 
 	// formMCPLoaded records whether the OPEN project form's MCP data arrived. It is
 	// consulted at submit time to decide whether the MCP selection may be WRITTEN: the
@@ -363,6 +378,38 @@ func (m *Model) finishDateTimePicker() tea.Cmd {
 // Notice returns the last action's status line ("" = none).
 func (m *Model) Notice() string { return m.notice }
 
+// projectLabel resolves a project id to its name from the in-memory index, or "" when it is not
+// known (the caller then renders the raw id — see named).
+//
+// It reads ONLY the mutex-guarded index, which is fed by BOTH sources the operator's projects can
+// arrive from: the Projects page (fetchProjects) and a work-item form prep (m.projects). Scanning
+// m.projects here instead would read a slice written on the update loop from the detail fetch,
+// which runs off it — the race the mutex exists to prevent — and would add nothing, since that
+// slice is already in the index.
+func (m *Model) projectLabel(id string) string { return m.names.projectName(id) }
+
+// projectNameIndex / workflowNameIndex turn an option list into an id→name index for the name
+// index above.
+func projectNameIndex(opts []projectOpt) map[string]string {
+	out := make(map[string]string, len(opts))
+	for _, o := range opts {
+		if o.ID != "" {
+			out[o.ID] = o.Name
+		}
+	}
+	return out
+}
+
+func workflowNameIndex(opts []workflowOpt) map[string]string {
+	out := make(map[string]string, len(opts))
+	for _, o := range opts {
+		if o.ID != "" {
+			out[o.ID] = o.Name
+		}
+	}
+	return out
+}
+
 // ViewMode returns the work-items display grouping.
 func (m *Model) ViewMode() viewMode {
 	m.viewMu.Lock()
@@ -387,13 +434,20 @@ func (m *Model) fetchProjects(ctx context.Context, pageToken string) ([]kit2.Ite
 		return nil, "", err
 	}
 	items := make([]kit2.Item, 0, len(resp.Msg.Projects))
+	names := make(map[string]string, len(resp.Msg.Projects))
 	for _, p := range resp.Msg.Projects {
 		meta := strings.ToLower(strings.TrimPrefix(p.GetStatus().String(), "PROJECT_STATUS_"))
 		if dir := p.GetProjectDir(); dir != "" {
 			meta += " · " + dir
 		}
 		items = append(items, kit2.Item{ID: p.GetId(), Title: p.GetName(), Meta: meta})
+		// The same page that draws the Projects pane is the index the WORK ITEM
+		// detail pane resolves `project` from. Free: no request of its own.
+		if p.GetId() != "" {
+			names[p.GetId()] = p.GetName()
+		}
 	}
+	m.names.setProjects(names)
 	return items, resp.Msg.NextPageToken, nil
 }
 
@@ -442,6 +496,30 @@ func (m *Model) fetchWorkItems(ctx context.Context, pageToken string) ([]kit2.It
 	if err != nil {
 		return nil, "", err
 	}
+	// The workflow names are read HERE, inside a fetch this screen already makes, so the
+	// detail pane can resolve `workflow` on a cold screen — with no form ever opened —
+	// instead of only after a form prep populated m.workflows. TTL-cached: at most one
+	// extra request per nameIndexWorkflowTTL, never one per row (names.go).
+	m.loadWorkflowNames(ctx)
+	// Index the RAW page (before rowsFor turns it into display rows) so the detail pane can
+	// resolve a `parent` to its title from what is already loaded — and, in the same pass, the
+	// sequence-parent SET: any item that is some other item's parent, which the bulk-set confirm
+	// uses to call out that a parent's OWN binding is inert (its children each run their own
+	// workflows). Both are free: it is the page this fetch just returned.
+	names := make(map[string]string, len(resp.Msg.GetWorkItems()))
+	parents := map[string]bool{}
+	for _, w := range resp.Msg.GetWorkItems() {
+		if w.GetId() != "" {
+			names[w.GetId()] = w.GetTitle()
+		}
+		if p := w.GetParentId(); p != "" {
+			parents[p] = true
+		}
+	}
+	m.names.setItems(names)
+	m.viewMu.Lock()
+	m.parentIDs = parents
+	m.viewMu.Unlock()
 	return rowsFor(view, resp.Msg.GetWorkItems(), m.SortMode()), resp.Msg.GetNextPageToken(), nil
 }
 
@@ -499,15 +577,25 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 			{Key: "title", Value: w.GetTitle()},
 			{Key: "kind", Value: kindBadge(w.GetKind())},
 			{Key: "status", Value: statusPill(w.GetStatus())},
-			{Key: "parent", Value: w.GetParentId()},
-			{Key: "project", Value: w.GetProjectId()},
+			// The five IDENTIFIER fields below carry a resolved NAME with the id
+			// retained beside it, because that is what an operator can act on (the
+			// raw guid "won't mean anything to anyone") while the id is what support
+			// asks for. An id that does not resolve renders as the raw id.
+			{Key: "parent", Value: named(m.names.itemTitle(w.GetParentId()), w.GetParentId())},
+			{Key: "project", Value: named(m.projectLabel(w.GetProjectId()), w.GetProjectId())},
 			{Key: "priority", Value: screenkit.FmtInt(int(w.GetPriority()))},
 			{Key: "budgets", Value: w.GetBudgets()},
 			{Key: "context window", Value: screenkit.FmtInt(int(w.GetContextWindow()))},
 			{Key: "runtime image", Value: w.GetRuntimeImage()},
+			// worker stays the RAW assigned-worker ref: there is no worker list on this
+			// Model, resolving a ref would mean a new list RPC plus a cache for a value
+			// the operator quotes verbatim, and the GUI shows it raw too.
 			{Key: "worker", Value: w.GetAssignedWorkerRef()},
-			{Key: "workflow", Value: w.GetWorkflowId()},
-			{Key: "workflow run", Value: w.GetWorkflowRunId()},
+			{Key: "workflow", Value: named(m.names.workflowName(w.GetWorkflowId()), w.GetWorkflowId())},
+			// A workflow RUN has no name of its own — it is not a named entity — so it gets
+			// the GUI's rendering: a shortened id, not the 26-character ULID, and not an
+			// invented label.
+			{Key: "workflow run", Value: shortRunID(w.GetWorkflowRunId())},
 			{Key: "auto-start", Value: boolStr(w.GetAutoStartWorkflow())},
 			{Key: "scheduled", Value: screenkit.FmtTime(w.GetScheduledStartAt())},
 			// The numeric sort_order is deliberately NOT shown: a bare float is
@@ -671,12 +759,33 @@ func (m *Model) bulkItemActions(ids []string) []kit2.Action {
 			m.notice = "selection cleared"
 		},
 	}
-	return []kit2.Action{archive, del, clear}
+	// The bulk workflow/runtime-image set. It is the SCALAR case the comment above explicitly does
+	// not cover: a workflow binding is ONE picker, ONE value, identical for every selected item —
+	// nothing per item to review — which is the shape BulkUpdateWorkerModel already proved out for
+	// the Workers pane. It carries no Confirm of its own because the VALUES are chosen FIRST: the
+	// picker opens here (via openAction's interception) and the confirm that names the count and
+	// the values is raised from the form's submit.
+	setwf := kit2.Action{
+		Label: label("set workflow & image"), Key: keyBulkSet, Source: srcWorkItems,
+		// No RPC of its own: openAction intercepts this action and opens the picker instead.
+		Do: func(context.Context) error { return nil },
+	}
+	return []kit2.Action{archive, del, setwf, clear}
 }
 
 // openAction opens the confirmation dialog for an action that needs one, or
 // runs it immediately.
 func (m *Model) openAction(a kit2.Action) tea.Cmd {
+	// PICKER-FIRST: the VALUE is chosen before the confirm, so the confirm can name it. Every entry
+	// point (the action bar, the key chord) converges here, so this is the ONE place the picker
+	// needs to open — a second call site would be a second chance to drift.
+	if a.Key == keyBulkSet {
+		m.bulkSetIDs = m.Base.BulkIDs()
+		if len(m.bulkSetIDs) == 0 {
+			return nil
+		}
+		return m.prepBulkSet()
+	}
 	if !a.NeedsConfirm() {
 		return m.runAction(a)
 	}
@@ -814,6 +923,12 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		if len(msg.workflows) > 0 {
 			m.workflows = msg.workflows
 		}
+		// The form prep carries the SAME two lists the pickers are built from, so it
+		// is the other half of the name index: workflows have no other source on this
+		// Model, and the prep's project list covers the projects source not having
+		// loaded yet.
+		m.names.setProjects(projectNameIndex(msg.projects))
+		m.names.setWorkflows(workflowNameIndex(msg.workflows))
 		if len(msg.parents) > 0 {
 			m.parents = msg.parents
 		}
@@ -842,9 +957,19 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 			m.Base.BeginDetailEdit("Edit work item", m.newItemEditForm(msg.item))
 		case formStatusItem:
 			m.Base.BeginDetailEdit("Status & priority", m.newItemStatusForm(msg.item))
+		case formBulkSetItem:
+			// The MODAL host, not the details pane: a bulk write is not about the active row. The
+			// details pane is the active row's host; the modal is the screen's "not about this row"
+			// host (the runtime-image create form uses it too).
+			m.form = m.newBulkSetForm(msg.workflows, msg.images)
+			if msg.hiddenWorkflows > 0 {
+				m.notice = fmt.Sprintf("%d workflow(s) hidden — not published, or has no steps", msg.hiddenWorkflows)
+			}
 		}
 		m.formMode, m.formID = msg.mode, msg.item.GetId()
-		m.notice = ""
+		if msg.mode != formBulkSetItem {
+			m.notice = ""
+		}
 		return m, nil
 
 	case projectFormMsg:
@@ -1098,7 +1223,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		if src == srcWorkItems && m.ViewMode() == viewTree {
 			return m.reorderChildren(1), true
 		}
-	case "y", "a", "R":
+	case "y", "a", "R", keyBulkSet:
 		if a, ok := m.actionByKey(msg.String()); ok {
 			return m.openAction(a), true
 		}

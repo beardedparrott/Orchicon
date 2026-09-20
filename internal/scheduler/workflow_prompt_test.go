@@ -247,13 +247,6 @@ func TestCompositePromptTodoListDirectives(t *testing.T) {
 			t.Errorf("composite prompt missing %q; got:\n%s", want, out)
 		}
 	}
-
-	// The standalone (non-workflow) dispatch path must carry the same block
-	// via the shared stable prefix.
-	standalone, _ := buildStandaloneComposite(nil, db.ExecutionRow{}, item, worker, "", "", "")
-	if !strings.Contains(standalone, "## Todo list") {
-		t.Errorf("standalone composite missing the Todo list block")
-	}
 }
 
 // TestCompositePromptEfficiencyAndBatchingDirectives verifies every worker's
@@ -376,17 +369,6 @@ func TestCompositePromptGitGuidanceForBareWorker(t *testing.T) {
 	} {
 		if strings.Contains(out, forbid) {
 			t.Errorf("workflow composite must not assume a branch for a non-repo run; found %q", forbid)
-		}
-	}
-
-	// Standalone (non-workflow) dispatch path must carry the same in-place floor.
-	standalone, _ := buildStandaloneComposite(nil, db.ExecutionRow{}, item, bare, "", "", "")
-	for _, want := range []string{
-		"no git branch or worktree",
-		"Do not create branches, commit, push, or open pull requests",
-	} {
-		if !strings.Contains(standalone, want) {
-			t.Errorf("standalone composite missing %q for a bare worker; got:\n%s", want, standalone)
 		}
 	}
 }

@@ -116,9 +116,14 @@ func newRecoveryGateTestEnv(t *testing.T, strategy string) *recoveryGateTestEnv 
 	// CreateWorkflowRun does not insert runtime_ready (column default false);
 	// flip it true explicitly so reconcileRun's headless runtime gate does
 	// not bump the run version mid-pass (which would stale the optimistic
-	// lock at the terminal-state update).
+	// lock at the terminal-state update). Likewise, worktree_status defaults
+	// to 'pending' and the dispatch section HOLDS every step of a pending
+	// non-branch run until the WorktreeReconciler admits it (ready/skipped) —
+	// this fixture runs only the WorkflowReconciler, so the run must be
+	// pre-admitted or no step ever dispatches.
 	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, run.ID, run.Version, db.UpdateWorkflowRunFields{
-		RuntimeReady: boolPtr(true),
+		RuntimeReady:   boolPtr(true),
+		WorktreeStatus: strPtr(domain.WorktreeReady),
 	}); err != nil {
 		t.Fatalf("set run runtime_ready: %v", err)
 	}

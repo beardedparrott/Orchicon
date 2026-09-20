@@ -71,6 +71,10 @@ export interface WorkItemsFilterBarProps {
   /** Bulk "Run" (ADR-WI-9): start the visible-selected set. */
   onRunSelected: () => void;
   runPending: boolean;
+  /** Bulk set of `workflow_id` + `runtime_image` on the selected set (the counterpart of the
+   *  single-item form, and the remedy for "an item with no workflow binding cannot run"). */
+  onSetWorkflowImage: () => void;
+  setPending: boolean;
   /** Count of selected items that are currently visible (the button label). */
   visibleSelectedCount: number;
 }
@@ -108,6 +112,8 @@ export function WorkItemsFilterBar({
   movePending,
   onRunSelected,
   runPending,
+  onSetWorkflowImage,
+  setPending,
   visibleSelectedCount,
 }: WorkItemsFilterBarProps) {
   const selectClass =
@@ -310,6 +316,15 @@ export function WorkItemsFilterBar({
             >
               <Play aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
               Run {visibleSelectedCount}
+            </Button>
+            <Button
+              variant="default"
+              size="sm"
+              onClick={onSetWorkflowImage}
+              disabled={setPending}
+              title="Set the workflow and runtime image on every selected work item"
+            >
+              Set workflow &amp; image…
             </Button>
             <Button
               variant="destructive"
