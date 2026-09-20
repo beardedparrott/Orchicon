@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -52,6 +53,10 @@ type poolEntry struct {
 	mounts     []MountSpec
 	serveCfg   string
 	projectDir string
+	// adapterKinds is the run's boot profile (CreateRequest.AdapterKinds),
+	// carried so a reset container keeps the same profile — and therefore
+	// re-keys under the same environment instead of drifting (AC 4).
+	adapterKinds []string
 	// servePort/PW/URL are the published serve creds (set once the serve is
 	// up; reused on idempotent checkouts).
 	servePort     int
@@ -117,6 +122,19 @@ func poolEnvKey(req CreateRequest, hostFp string) string {
 	// reuse a warm token-bearing container (the pre-fix leak class).
 	if req.GitStrategy != "" {
 		_, _ = io.WriteString(h, "gs="+req.GitStrategy+"\n")
+	}
+	// The BOOT PROFILE (the adapter kinds the run's step workers need) is a
+	// credential-relevant host input: it decides which adapter install
+	// mounts (the host's model config/auth) the container is created with
+	// and which in-container serve it warms. A container warmed for an
+	// opencode run must never be reused for a native-only run and vice
+	// versa — fold the sorted profile into the key so a profile change
+	// invalidates the pooled container (AC 4). A NIL profile folds away: it
+	// denotes the legacy "unspecified" case, which resolves to the default
+	// (opencode) profile anyway. An explicitly EMPTY (non-nil) profile keys
+	// distinct from both — it demands no adapter kind.
+	if req.AdapterKinds != nil {
+		_, _ = io.WriteString(h, "demand="+strings.Join(requestedKinds(req), ",")+"\n")
 	}
 	if hostFp != "" {
 		_, _ = io.WriteString(h, "host="+hostFp+"\n")
@@ -222,6 +240,7 @@ func (p *daemonPool) checkout(ctx context.Context, runID string, req CreateReque
 		mounts:        req.Mounts,
 		serveCfg:      req.ServeConfig,
 		projectDir:    req.ProjectDir,
+		adapterKinds:  req.AdapterKinds,
 		servePort:     resp.ServePort,
 		servePassword: resp.ServePassword,
 		serveURL:      resp.ServeURL,
@@ -285,6 +304,10 @@ func (p *daemonPool) resetAndPool(old *poolEntry) {
 		Mounts:      old.mounts,
 		ServeConfig: old.serveCfg,
 		ProjectDir:  old.projectDir,
+		// The boot profile MUST survive the reset: dropping it would (a)
+		// re-create a native-only container with opencode mounts and (b)
+		// re-key the container under the wrong environment (AC 4).
+		AdapterKinds: old.adapterKinds,
 	}
 	envKey := poolEnvKey(req, p.d.hostInputsFingerprint())
 	name := poolName(envKey)
@@ -300,6 +323,7 @@ func (p *daemonPool) resetAndPool(old *poolEntry) {
 		mounts:        old.mounts,
 		serveCfg:      old.serveCfg,
 		projectDir:    old.projectDir,
+		adapterKinds:  old.adapterKinds,
 		servePort:     resp.ServePort,
 		servePassword: resp.ServePassword,
 		serveURL:      resp.ServeURL,

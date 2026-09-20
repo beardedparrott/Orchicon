@@ -13,8 +13,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/secretcrypto"
 	"github.com/beardedparrott/orchicon/internal/workflow"
 	"github.com/jackc/pgx/v5"
@@ -213,7 +215,11 @@ func (l *Lifecycle) buildCreateRequest(ctx context.Context, run db.WorkflowRunRo
 	// projects run in place at the project dir. Mirror the reconciler's
 	// isInsideWorkTree decision so the baked base matches the eventual
 	// execution cwd.
-	req.ServeConfig = l.serveConfigFor(run.RuntimeImage, runWorktreeBase(ctx, projectDir, run.ID), run.ID, planeEnv)
+	demand := l.adapterDemandFor(ctx, run)
+	req.AdapterKinds = demand.Kinds()
+	if demand.Has(opencodeAdapterKind) {
+		req.ServeConfig = l.serveConfigFor(run.RuntimeImage, runWorktreeBase(ctx, projectDir, run.ID), run.ID, planeEnv)
+	}
 	// Secrets: decrypt per-work-item selection and inject as container env.
 	// KEK is plane-only — resolved once at server construction (env override
 	// or the per-instance data-dir key); the daemon blindly injects -e (same
@@ -445,6 +451,65 @@ func (l *Lifecycle) mintPlaneCredential(ctx context.Context, run db.WorkflowRunR
 // identities — a worker ID is not an identity and fails writes with
 // SQLSTATE 23503 (audit_events_actor_identity_fk).
 func automationIdentitySubject(runID string) string { return "run:" + runID }
+
+// adapterDemandFor resolves the run's BOOT PROFILE — the set of adapter
+// kinds its step workers resolve to — through the ONE shared demand-set
+// primitive (adapter.AdapterDemandSet, Task C). It gathers the same per-step
+// model refs the run-start gate gathers (scheduler.runNeedsServe: by worker
+// version NUMBER when the step pins one, else the latest staged version) and
+// folds every load failure to the CONSERVATIVE opencode demand, mirroring
+// the gate's rule: an unresolvable step behaves exactly as it did before the
+// gate became adapter-aware (gated + warmed), rather than silently skipping
+// the container an opencode step might need. The plane half and the host
+// half therefore feed the same primitive and can never disagree (AC 7).
+func (l *Lifecycle) adapterDemandFor(ctx context.Context, run db.WorkflowRunRow) adapter.DemandSet {
+	// adapter.AdapterDemandSet("") is the conservative default: a ref that
+	// yields no kind contributes the default adapter kind (opencode).
+	conservative := adapter.AdapterDemandSet("")
+	if run.WorkflowID == "" {
+		return conservative
+	}
+	ttx, err := l.pool.BeginTenantTx(ctx, run.TenantID)
+	if err != nil {
+		l.log.Warn("boot profile: begin tx failed — assuming adapter demand", "run", run.ID, "error", err)
+		return conservative
+	}
+	defer ttx.Rollback(ctx)
+	wv, err := db.GetWorkflowVersion(ctx, ttx.Tx, run.TenantID, run.WorkflowID, run.WorkflowVersion)
+	if err != nil {
+		l.log.Warn("boot profile: workflow version lookup failed", "run", run.ID, "workflow", run.WorkflowID, "error", err)
+		return conservative
+	}
+	steps, err := workflow.ParseSteps(wv.Steps)
+	if err != nil {
+		l.log.Warn("boot profile: workflow steps parse failed", "run", run.ID, "error", err)
+		return conservative
+	}
+	var refs []string
+	for _, s := range steps {
+		switch s.Kind {
+		case domain.StepKindTask, domain.StepKindApproval:
+		default:
+			continue // no worker ref → no adapter → no demand
+		}
+		if s.Ref == "" {
+			continue
+		}
+		var modelRef string
+		if s.WorkerVersion > 0 {
+			if v, verr := db.GetWorkerVersionByNumber(ctx, ttx.Tx, run.TenantID, s.Ref, s.WorkerVersion); verr == nil {
+				modelRef = v.ModelRef
+			}
+		}
+		if modelRef == "" {
+			if v, verr := db.GetLatestWorkerVersion(ctx, ttx.Tx, run.TenantID, s.Ref, true); verr == nil {
+				modelRef = v.ModelRef
+			}
+		}
+		refs = append(refs, modelRef)
+	}
+	return adapter.AdapterDemandSet(refs...)
+}
 
 // resolveWorkflowStepWorker returns the first PUBLISHED, role-bound worker
 // referenced by any step of the run's workflow version, or "" when the run

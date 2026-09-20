@@ -101,3 +101,64 @@ func TestPoolEnvKeyStabilityAndInvalidation(t *testing.T) {
 		t.Fatalf("identical env with empty host fp must produce the same key")
 	}
 }
+
+// TestPoolEnvKeyBootProfileInvalidation is AC 4: the boot profile (the set of
+// adapter kinds the run's step workers need) colors the pool key, so a
+// container warmed for opencode is NEVER reused for a native-only run and vice
+// versa. It also pins that the reset-shaped reconstruction (resetAndPool
+// rebuilds the CreateRequest from the entry's own fields) re-keys identically
+// — dropping the profile there would silently re-key the container under the
+// wrong environment.
+func TestPoolEnvKeyBootProfileInvalidation(t *testing.T) {
+	base := CreateRequest{Image: "img:v1", Mounts: []MountSpec{{Source: "/a", Dest: "/b"}}}
+
+	oc := base
+	oc.AdapterKinds = []string{"opencode"}
+	native := base
+	native.AdapterKinds = []string{"orchicon"}
+	mixed := base
+	mixed.AdapterKinds = []string{"opencode", "orchicon"}
+	mixedReordered := base
+	mixedReordered.AdapterKinds = []string{"orchicon", "opencode"}
+	explicitEmpty := base
+	explicitEmpty.AdapterKinds = []string{}
+	absent := base // nil: legacy "unspecified" profile
+
+	kOC := poolEnvKey(oc, "hostfp")
+	kNative := poolEnvKey(native, "hostfp")
+	kMixed := poolEnvKey(mixed, "hostfp")
+	kEmpty := poolEnvKey(explicitEmpty, "hostfp")
+	kAbsent := poolEnvKey(absent, "hostfp")
+
+	if kOC == kNative {
+		t.Fatal("an opencode container and a native-only container must never pool (same key)")
+	}
+	if kOC == kMixed || kNative == kMixed {
+		t.Fatal("a mixed profile must key distinctly from single-kind profiles")
+	}
+	if kEmpty == kOC || kEmpty == kNative || kEmpty == kAbsent {
+		t.Fatal("an explicitly empty profile must key distinctly (it demands no adapter kind)")
+	}
+	if kAbsent == kNative {
+		t.Fatal("the legacy absent profile resolves to the default demand and must not pool with native-only")
+	}
+	if poolEnvKey(oc, "hostfp") != kOC {
+		t.Fatal("the same boot profile must produce the same key")
+	}
+	if poolEnvKey(mixedReordered, "hostfp") != kMixed {
+		t.Fatal("profile order must not change the key (the key hashes a sorted profile)")
+	}
+
+	// resetAndPool rebuilds the request from the pool entry's own fields; the
+	// boot profile MUST ride along, or the reset container re-keys wrong.
+	rebuilt := CreateRequest{
+		Image:        oc.Image,
+		Mounts:       oc.Mounts,
+		ServeConfig:  oc.ServeConfig,
+		ProjectDir:   oc.ProjectDir,
+		AdapterKinds: oc.AdapterKinds,
+	}
+	if got := poolEnvKey(rebuilt, "hostfp"); got != kOC {
+		t.Fatalf("a reset-shaped rebuild must keep the key: %q != %q", got, kOC)
+	}
+}

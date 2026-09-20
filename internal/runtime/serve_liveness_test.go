@@ -5,6 +5,8 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+
+	"github.com/beardedparrott/orchicon/internal/adapter"
 )
 
 // TestRunServeLivenessGate verifies the liveness-gated idempotent path: a
@@ -22,8 +24,12 @@ func TestRunServeLivenessGate(t *testing.T) {
 	// the default port, so serveHealthy fails).
 	h.mu.Lock()
 	h.cmd[serveExecID] = newExecSession(serveExecID)
-	h.servePw = "dead-serve-password"
-	h.serveStarted = true
+	// The opencode serve slot, registered-but-dead: the supervisor keys serve
+	// state by adapter kind now (one serve per demanded kind), so the wedge
+	// is seeded on the default (opencode) kind's slot.
+	h.serves = map[string]*serveState{
+		adapter.DefaultAdapterKind: {execID: serveExecID, pw: "dead-serve-password", started: true},
+	}
 	h.mu.Unlock()
 
 	pr, pw := io.Pipe()
