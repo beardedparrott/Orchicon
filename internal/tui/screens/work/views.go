@@ -59,16 +59,24 @@ func statusPill(s apiv1.WorkItemStatus) string {
 	return name
 }
 
-// workItemMeta is the row's right-hand context: the state pill.
+// workItemMeta is the row's right-hand context: the state pill, plus the PR mark.
 //
 // IT CARRIES THE STATE AND NOTHING DERIVED FROM THE LEGACY WORKER REF. The `· assigned` suffix that used to
 // sit here was doubly wrong: it duplicated the state pill (an item whose status IS `assigned` read
 // "assigned · assigned"), and it was derived from assigned_worker_ref, which no longer describes how work is
 // routed — WORKFLOWS carry the worker, per the operator: "work is set via workflows and not individual
-// workers. That I believe was left over from old original code." Priority is deliberately not here either;
-// the PR mark below is what the row reports beyond its state.
-func workItemMeta(w *apiv1.WorkItem) string {
-	return statusPill(w.GetStatus())
+// workers. That I believe was left over from old original code."
+//
+// PRIORITY IS GONE and the PR MARK TOOK ITS PLACE, which is the operator's trade: "I don't really care about
+// viewing the priority levels in the work item list. Let's remove the priority level in list and put PR Merged
+// if a PR has merged." Priority is still on the details pane, where there is room for it; the list row spends
+// its one token on the fact an operator scans a list for — whether the work actually LANDED.
+func workItemMeta(w *apiv1.WorkItem, prs prIndex) string {
+	meta := statusPill(w.GetStatus())
+	if prs.merged(w.GetId()) {
+		meta += " · PR merged"
+	}
+	return meta
 }
 
 // rowTitle is a tree row's cell text: its kind badge and its title. The INDENT
@@ -114,7 +122,7 @@ func stepNumber(seqIndex map[string]int, groupSize, depth int, id string) string
 // The fetch no longer walks that cursor, so this should never see a repeat. It is guarded anyway,
 // because the failure mode is silent and a duplicated row is indistinguishable from a duplicated
 // work item — the operator had no way to tell whether the DATA was wrong or the view was.
-func treeRows(items []*apiv1.WorkItem, mode sortMode) []kit2.Item {
+func treeRows(items []*apiv1.WorkItem, mode sortMode, prs prIndex) []kit2.Item {
 	// Dedupe by id, first occurrence wins, keeping the server's order for the survivors.
 	deduped := make([]*apiv1.WorkItem, 0, len(items))
 	seenID := map[string]bool{}
@@ -160,7 +168,7 @@ func treeRows(items []*apiv1.WorkItem, mode sortMode) []kit2.Item {
 			out = append(out, kit2.Item{
 				ID:          w.GetId(),
 				Title:       stepNumber(seqIndex, len(kids), depth, w.GetId()) + rowTitle(w),
-				Meta:        workItemMeta(w),
+				Meta:        workItemMeta(w, prs),
 				Depth:       depth,
 				Parent:      parent,
 				HasChildren: len(byParent[w.GetId()]) > 0,
@@ -273,12 +281,13 @@ func archiveRows(items []*apiv1.WorkItem, mode sortMode) []kit2.Item {
 	return out
 }
 
-// rowsFor maps a page of work items into the rows of the selected view.
-func rowsFor(view viewMode, items []*apiv1.WorkItem, mode sortMode) []kit2.Item {
+// rowsFor maps a page of work items into the rows of the selected view. prs is the PR index for this page (nil
+// when the executions fetch is unavailable), used by the Tree rows' meta so a merged PR is visible in the list.
+func rowsFor(view viewMode, items []*apiv1.WorkItem, mode sortMode, prs prIndex) []kit2.Item {
 	if view == viewArchive {
 		return archiveRows(items, mode)
 	}
-	return treeRows(items, mode)
+	return treeRows(items, mode, prs)
 }
 
 // descendants returns the ids of every transitive child of id.
