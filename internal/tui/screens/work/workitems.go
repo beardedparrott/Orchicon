@@ -56,6 +56,10 @@ type itemFormMsg struct {
 	// as ids the operator would have to know).
 	parents []kit2.Option
 	images  []kit2.Option
+	// hiddenWorkflows is how many workflow templates the bulk-set picker EXCLUDED because they
+	// cannot run (not PUBLISHED/DEPRECATED, or with no steps). It is reported so the operator is
+	// never left wondering where a template went.
+	hiddenWorkflows int
 	// parentKinds maps each parent option's id to its kind, so the create form
 	// can derive the child kind from the chosen parent; parentProjects maps it
 	// to its project, because a parent must be in the child's project.
