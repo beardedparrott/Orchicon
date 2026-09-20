@@ -78,8 +78,11 @@ type Server struct {
 	// Rotating on-disk log writer (nil when not detached). Settings →
 	// Defaults log management values are live-applied to it.
 	logWriter *logging.RotatingWriter
-	// serveCancel stops the host opencode serve on plane shutdown.
-	serveCancel context.CancelFunc
+	// hostServe is the DEMAND-KEYED host opencode serve (lazy: started on
+	// the first opencode demand). Held so plane shutdown stops it and its
+	// supervision goroutine; nil when the session transport is disabled by
+	// the operator kill-switch or no data dir is available.
+	hostServe *opencode.HostServe
 }
 
 // New constructs a Server from configuration. It opens the DB pool,
@@ -213,6 +216,34 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		webhookDisp = webhook.NewDispatcher(pool, sub, log)
 	}
 
+	// Adapter demand set at boot (AC 1/AC 6): whether this plane is
+	// "opencode-free" is a COMPUTED consequence of the model refs the
+	// tenant actually references (tenant Ask default ∪ dispatchable worker
+	// refs, see internal/adapter.TenantDemandSet) — never a configuration
+	// flag. When no demanded kind needs the opencode serve, the boot path
+	// must not probe for the binary at all.
+	//
+	// An unavailable demand set falls BACK to probing (the historical
+	// behavior) rather than guessing the plane is opencode-free — a
+	// mis-guessed probe costs a wasted LookPath, a mis-guessed skip would
+	// hide the CLI from discovery entirely.
+	opencodeInDemand := true
+	if dtx, derr := pool.BeginTenantTx(context.Background(), cfg.DeploymentTenantID); derr != nil {
+		log.Warn("adapter demand set unavailable at boot — probing for opencode as before", "error", derr)
+	} else {
+		demand, dserr := adapter.TenantDemandSet(context.Background(), dtx.Tx, cfg.DeploymentTenantID)
+		dtx.Rollback(context.Background())
+		if dserr != nil {
+			log.Warn("adapter demand set unavailable at boot — probing for opencode as before", "error", dserr)
+		} else {
+			opencodeInDemand = demand.Has(adapter.DefaultAdapterKind)
+			if !opencodeInDemand {
+				log.Info("plane is opencode-free — no opencode binary probed at boot",
+					"tenant", cfg.DeploymentTenantID, "demanded_kinds", strings.Join(demand.Kinds(), ","))
+			}
+		}
+	}
+
 	// Model discoverer: shells out to opencode CLI to list models (the
 	// legacy opencode/claude adapter picker path). Binary resolution: the
 	// ORCHICON_OPENCODE_BIN env override first (the path the discovery
@@ -221,37 +252,47 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// they confuse users during connection issues). Without the binary the
 	// discoverer stays nil and ListOpenCodeModels returns the actionable
 	// Unimplemented error naming the env var.
+	//
+	// Both discoverers are only constructed when opencode is actually in
+	// DEMAND (AC 1): a native-only plane never runs `opencode` at boot.
 	var modelDiscoverer *aigateway.ModelDiscoverer
-	opencodeBin := os.Getenv("ORCHICON_OPENCODE_BIN")
-	if opencodeBin == "" {
-		if p, err := exec.LookPath("opencode"); err == nil {
-			opencodeBin = p
-		}
-	}
-	if opencodeBin != "" {
-		if _, err := os.Stat(opencodeBin); err == nil {
-			modelDiscoverer = aigateway.NewModelDiscoverer(log, opencodeBin)
-		} else {
-			log.Warn("ORCHICON_OPENCODE_BIN set but not found, ignoring", "path", opencodeBin, "error", err)
-		}
-	}
-	if modelDiscoverer == nil {
-		log.Warn("opencode binary not found — model discovery disabled (set ORCHICON_OPENCODE_BIN or install opencode on PATH)")
-	}
-
-	// MCP discoverer: shells out to opencode CLI to list MCP servers.
-	// NO mock fallback (same directive as the model discoverer): without
-	// the binary the discoverer stays nil and ListOpenCodeMCPs returns
-	// the actionable Unimplemented error. Well-known MCP servers are a
-	// curated picker convenience in the LIVE discoverer's output, not a
-	// mock plane — they merge into real CLI results (configured wins).
 	var mcpDiscoverer *aigateway.MCPDiscoverer
-	if bin := opencodeBin; bin != "" {
-		mcpDiscoverer = aigateway.NewMCPDiscoverer(log, bin)
-	} else if p, err := exec.LookPath("opencode"); err == nil {
-		mcpDiscoverer = aigateway.NewMCPDiscoverer(log, p)
+	if opencodeInDemand {
+		var opencodeBin string
+		if override := os.Getenv("ORCHICON_OPENCODE_BIN"); override != "" {
+			opencodeBin = override
+		}
+		if opencodeBin == "" {
+			if p, err := exec.LookPath("opencode"); err == nil {
+				opencodeBin = p
+			}
+		}
+		if opencodeBin != "" {
+			if _, err := os.Stat(opencodeBin); err == nil {
+				modelDiscoverer = aigateway.NewModelDiscoverer(log, opencodeBin)
+			} else {
+				log.Warn("ORCHICON_OPENCODE_BIN set but not found, ignoring", "path", opencodeBin, "error", err)
+			}
+		}
+		if modelDiscoverer == nil {
+			log.Warn("opencode binary not found — model discovery disabled (set ORCHICON_OPENCODE_BIN or install opencode on PATH)")
+		}
+
+		// MCP discoverer: shells out to opencode CLI to list MCP servers.
+		// NO mock fallback (same directive as the model discoverer): without
+		// the binary the discoverer stays nil and ListOpenCodeMCPs returns
+		// the actionable Unimplemented error. Well-known MCP servers are a
+		// curated picker convenience in the LIVE discoverer's output, not a
+		// mock plane — they merge into real CLI results (configured wins).
+		if bin := opencodeBin; bin != "" {
+			mcpDiscoverer = aigateway.NewMCPDiscoverer(log, bin)
+		} else if p, err := exec.LookPath("opencode"); err == nil {
+			mcpDiscoverer = aigateway.NewMCPDiscoverer(log, p)
+		} else {
+			log.Warn("opencode binary not found — MCP discovery disabled (set ORCHICON_OPENCODE_BIN or install opencode on PATH)")
+		}
 	} else {
-		log.Warn("opencode binary not found — MCP discovery disabled (set ORCHICON_OPENCODE_BIN or install opencode on PATH)")
+		log.Info("opencode model/MCP discovery disabled — the adapter demand set contains no opencode")
 	}
 
 	// Reconciler framework (docs/03 §2). Phase 5 registers the
@@ -270,16 +311,20 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// scheduler-defined contract interfaces.
 	dispatcher := scheduler.NewDispatcher()
 
-	// Always-on host opencode serve for the in-process execution
+	// Demand-keyed host opencode serve for the in-process execution
 	// population (Stage 3 session transport): standalone dispatches,
 	// follow-ups, and any execution not bound to a workflow-run container
-	// run as persistent sessions on it. The plane supervises the serve
-	// (spawn on boot + health watchdog with restart), so the session host
-	// is never down. With the one-shot subprocess path removed, a serve
-	// failure now means those executions fail fast (failed_to_start)
-	// rather than degrading to a second transport.
+	// run as persistent sessions on it. It is NOT started here — the serve
+	// starts on the FIRST opencode demand (HostServe.EnsureStarted, reached
+	// through the adapter's sessionClientFor and the Ask ChatTurnClient
+	// methods) and is then supervised exactly as before (health watchdog +
+	// restart with backoff; sessions survive a restart because they live in
+	// the dedicated data dir). A plane whose adapter demand set contains no
+	// opencode therefore never spawns a serve and never probes for the
+	// binary (AC 1/AC 2). With the one-shot subprocess path removed, a serve
+	// failure at first demand means those executions fail fast
+	// (failed_to_start) rather than degrading to a second transport.
 	var hostServe *opencode.HostServe
-	var serveCancel context.CancelFunc
 	if os.Getenv("ORCHICON_OPCODE_SESSION_TRANSPORT") != "0" {
 		dataDir := ""
 		if home, herr := os.UserHomeDir(); herr == nil {
@@ -287,15 +332,6 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		}
 		if dataDir != "" {
 			hostServe = opencode.NewHostServe(log, dataDir, "")
-			serveCtx, cancel := context.WithCancel(context.Background())
-			serveCancel = cancel
-			go func() {
-				if err := hostServe.Start(serveCtx); err != nil {
-					log.Warn("host opencode serve unavailable — session-dependent executions will fail fast", "error", err)
-					return
-				}
-				hostServe.Watch(serveCtx)
-			}()
 			adapterBridge.SetHostServe(hostServe)
 		} else {
 			log.Warn("host opencode serve data dir unavailable — sessions disabled")
@@ -632,6 +668,25 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	nativeBridge.SetFileEditHook(newFileEditHook(feSvc, log))
 	dispatcher.Register("orchicon", nativeBridge)
 
+	// Per-adapter enable/disable (AC 3): every kind named in
+	// ORCHICON_DISABLED_ADAPTER_KINDS is switched OFF for this plane.
+	// Resolving such a kind fails with a LOUD, actionable reason
+	// (ErrAdapterDisabled), and the TaskReconciler BLOCKS the work item
+	// instead of requeueing it — a disabled adapter kind can never be fixed
+	// by retrying, so a silent ready→failed→ready loop is exactly what must
+	// not happen. The kill-switch ORCHICON_OPCODE_SESSION_TRANSPORT=0 stays
+	// the harder, fail-fast override (it disables the session transport
+	// itself, AC 4). A name that is not registered is harmless (Disable is a
+	// set insert) and is logged so a typo is visible.
+	for _, kind := range strings.Split(os.Getenv("ORCHICON_DISABLED_ADAPTER_KINDS"), ",") {
+		kind = strings.TrimSpace(kind)
+		if kind == "" {
+			continue
+		}
+		dispatcher.Disable(kind)
+		log.Warn("adapter kind disabled by ORCHICON_DISABLED_ADAPTER_KINDS — dispatches of this kind fail loudly", "kind", kind)
+	}
+
 	// Wrap with OTel tracing interceptor (spans on every API call).
 	handler = telemetry.Middleware(handler)
 
@@ -643,7 +698,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 
 	s := &Server{cfg: cfg, log: log, pool: pool, httpSrv: httpSrv, otel: otelShutdown,
 		blobs: blobs, authH: authHandler, webhookD: webhookDisp, logWriter: logWriter,
-		serveCancel: serveCancel}
+		hostServe: hostServe}
 	if pub != nil {
 		// Outbox retention: published rows older than the configured window
 		// are pruned on a schedule in bounded batches. Retention <= 0 disables
@@ -802,11 +857,13 @@ func (s *Server) Run(ctx context.Context) error {
 	s.log.Info("starting orchicon control plane",
 		"version", version.Current().String(), "http", s.cfg.HTTPAddr)
 
-	// The host opencode serve lives as long as the plane (its watchdog
-	// reaps it on shutdown via the cancel).
+	// The demand-keyed host opencode serve lives as long as the plane once
+	// it has been started; stop it (and its supervision) on shutdown. Nil
+	// when the plane never needed it — an opencode-free plane has nothing
+	// running to reap.
 	defer func() {
-		if s.serveCancel != nil {
-			s.serveCancel()
+		if s.hostServe != nil {
+			s.hostServe.Stop()
 		}
 	}()
 

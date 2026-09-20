@@ -264,6 +264,22 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 		return NewSessionClient(baseURL, resp.ServePassword, executionDir(manifest))
 	}
 	if a.host != nil {
+		// Lazy host serve (AC 2): the in-process serve starts on FIRST
+		// opencode demand. Standalone dispatches, workflow-run local
+		// executions, and follow-up continuations all arrive here through
+		// Adapter.Start, so a plane with no opencode demand never spawns
+		// (or probes for) the serve at all (AC 1).
+		//
+		// The failure is LOUD and fail-fast: EnsureStarted's error (disabled
+		// transport kill-switch, missing binary, serve never ready) is
+		// logged verbatim, and returning nil preserves the caller's existing
+		// nil-client failure path — the execution fails rather than
+		// degrading to a second transport.
+		if err := a.host.EnsureStarted(ctx); err != nil {
+			a.log.Warn("session transport: host opencode serve unavailable — failing execution",
+				"execution", manifest.ExecutionID, "error", err)
+			return nil
+		}
 		return a.host.Client()
 	}
 	return nil

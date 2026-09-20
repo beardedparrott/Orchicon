@@ -495,6 +495,26 @@ func CreateWorkerVersion(ctx context.Context, tx pgx.Tx, v WorkerVersionRow) (Wo
 			context_sources, permissions,
 			gated_tools, budget_overrides, execution_policy_ref, concurrency_limit,
 			recovery_workflow_ref, labels, published_at, created_at`
+	// Every jsonb column on worker_versions is NOT NULL with a schema default.
+	// The INSERT names them explicitly, so a caller that leaves a field at its
+	// zero value sends an explicit NULL — which OVERRIDES the column default
+	// and violates NOT NULL. Normalize each to the column's own default so an
+	// omitted field means exactly what the schema intends.
+	if len(v.ContextSources) == 0 {
+		v.ContextSources = []byte("[]")
+	}
+	if len(v.Permissions) == 0 {
+		v.Permissions = []byte("{}")
+	}
+	if len(v.GatedTools) == 0 {
+		v.GatedTools = []byte("[]")
+	}
+	if len(v.BudgetOverrides) == 0 {
+		v.BudgetOverrides = []byte("{}")
+	}
+	if len(v.Labels) == 0 {
+		v.Labels = []byte("{}")
+	}
 	row := v
 	err := tx.QueryRow(ctx, q,
 		v.ID, v.TenantID, v.WorkerID, v.Version, v.VersionNote, v.Status,
@@ -849,4 +869,41 @@ func NextWorkerVersionNumber(ctx context.Context, tx pgx.Tx, tenantID, workerID 
 		return 0, fmt.Errorf("db: next worker version number: %w", err)
 	}
 	return maxVersion + 1, nil
+}
+
+// ListPublishedWorkerModelRefs returns each dispatchable worker's latest
+// PUBLISHED version model_ref for a tenant — one entry per worker, in
+// worker-id order (stable). It is the worker half of the adapter demand
+// set (internal/adapter.TenantDemandSet): a worker that never publishes
+// dispatches nothing and contributes no demand.
+//
+// Status mirrors dispatchability (TaskReconciler.selectWorker accepts
+// published + deprecated), and drafts are excluded because their refs are
+// not yet dispatchable. Refs are returned VERBATIM (empty included) — the
+// demand-set primitive owns the conservative empty→default-kind rule, so
+// there is exactly one place that decides what an unresolvable ref means.
+func ListPublishedWorkerModelRefs(ctx context.Context, tx pgx.Tx, tenantID string) ([]string, error) {
+	const q = `SELECT DISTINCT ON (w.id) v.model_ref
+		FROM workers w
+		JOIN worker_versions v ON v.worker_id = w.id AND v.tenant_id = w.tenant_id
+		WHERE w.tenant_id = $1 AND w.status IN ('published', 'deprecated')
+			AND v.status = 'published'
+		ORDER BY w.id, v.version DESC`
+	rows, err := tx.Query(ctx, q, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("db: list published worker model refs: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var ref string
+		if err := rows.Scan(&ref); err != nil {
+			return nil, fmt.Errorf("db: scan published worker model ref: %w", err)
+		}
+		out = append(out, ref)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: list published worker model refs: %w", err)
+	}
+	return out, nil
 }

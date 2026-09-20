@@ -1,10 +1,27 @@
 package scheduler
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
 )
+
+// ErrAdapterDisabled is the sentinel Resolve returns for an
+// administratively disabled adapter kind. It is PERMANENT by definition:
+// retrying cannot re-enable a kind, so the TaskReconciler blocks the work
+// item with the reason instead of requeueing it (AC 3 — a loud failure, not
+// a silent requeue loop). Deliberately distinct from the transient
+// adapter-unreachable failure that keeps the requeue-with-backoff path.
+var ErrAdapterDisabled = errors.New("adapter disabled")
+
+// ErrAdapterKindUnregistered is the sentinel Resolve returns when no bridge
+// is registered for a kind. A DECLARED kind that is not dispatcher-
+// registered (today: "claude", a declared kind in
+// internal/adapter/providers.go) resolves here — also permanent, because no
+// retry can register a bridge. Callers must fail loudly rather than falling
+// back to some other adapter silently.
+var ErrAdapterKindUnregistered = errors.New("no adapter bridge registered")
 
 // Dispatcher routes executions to the AdapterBridge for the adapter kind
 // parsed from the execution's model_ref (adapter.ParseModelRef(ref).Adapter).
@@ -19,12 +36,54 @@ import (
 type Dispatcher struct {
 	mu      sync.RWMutex
 	bridges map[string]AdapterBridge
+	// disabled holds adapter kinds administratively switched OFF for this
+	// plane (per-adapter enable/disable, AC 3). A disabled kind stays
+	// REGISTERED — disabling is a switch, never a deregistration — so
+	// Resolve can name the kind and say exactly why it will not dispatch,
+	// instead of falling back to another adapter silently.
+	disabled map[string]struct{}
 }
 
 // NewDispatcher creates an empty Dispatcher. Adapters register via
 // Register before the reconciler loop starts.
 func NewDispatcher() *Dispatcher {
-	return &Dispatcher{bridges: make(map[string]AdapterBridge)}
+	return &Dispatcher{
+		bridges:  make(map[string]AdapterBridge),
+		disabled: make(map[string]struct{}),
+	}
+}
+
+// Disable marks an adapter kind administratively disabled for this plane.
+// Every later Resolve of that kind fails with ErrAdapterDisabled, which the
+// TaskReconciler turns into a LOUD permanent dispatch failure (the work item
+// is blocked with the reason) rather than a silent requeue. Idempotent and
+// safe to call at runtime; an empty kind is ignored (it can never resolve
+// anyway). Seeded at server construction from
+// ORCHICON_DISABLED_ADAPTER_KINDS.
+func (d *Dispatcher) Disable(kind string) {
+	if kind == "" {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.disabled == nil {
+		d.disabled = make(map[string]struct{})
+	}
+	d.disabled[kind] = struct{}{}
+}
+
+// DisabledKinds returns the administratively disabled kinds, sorted. An
+// empty Dispatcher (or one with nothing disabled) yields an empty non-nil
+// slice.
+func (d *Dispatcher) DisabledKinds() []string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	out := make([]string, 0, len(d.disabled))
+	for k := range d.disabled {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Register associates the bridge with the given adapter kind (e.g.
@@ -56,9 +115,12 @@ func (d *Dispatcher) Resolve(kind string) (AdapterBridge, error) {
 	if kind == "" {
 		return nil, fmt.Errorf("no adapter kind specified (empty model_ref adapter segment) — cannot resolve a bridge")
 	}
+	if _, off := d.disabled[kind]; off {
+		return nil, fmt.Errorf("%w: adapter kind %q is disabled — re-enable it to dispatch (configured via ORCHICON_DISABLED_ADAPTER_KINDS)", ErrAdapterDisabled, kind)
+	}
 	b, ok := d.bridges[kind]
 	if !ok {
-		return nil, fmt.Errorf("no adapter bridge registered for kind %q — register it at server construction or fix the worker's model_ref (registered kinds: %s)", kind, d.kindsLocked())
+		return nil, fmt.Errorf("%w for kind %q — register it at server construction or fix the worker's model_ref (registered kinds: %s)", ErrAdapterKindUnregistered, kind, d.kindsLocked())
 	}
 	return b, nil
 }

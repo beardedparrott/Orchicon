@@ -160,6 +160,20 @@ func (r *WorkflowReconciler) runNeedsServe(ctx context.Context, tx pgx.Tx, tenan
 	if !r.runtimeEnabled() {
 		return false
 	}
+	// Callers on the reconcile path pass the pass transaction. A caller with
+	// NO tx (the gate tests probe the predicate directly) reads through a
+	// short tenant tx of its own instead of nil-dereferencing pgx. On a
+	// begin failure the gate answers CONSERVATIVELY (serve demand assumed),
+	// the same rule the unresolvable-worker case uses.
+	if tx == nil && r.pool != nil {
+		ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+		if err != nil {
+			return true
+		}
+		defer ttx.Rollback(ctx)
+		tx = ttx.Tx
+	}
+	var refs []string
 	for _, s := range steps {
 		switch s.Kind {
 		case domain.StepKindTask, domain.StepKindApproval:
@@ -181,15 +195,16 @@ func (r *WorkflowReconciler) runNeedsServe(ctx context.Context, tx pgx.Tx, tenan
 				modelRef = v.ModelRef
 			}
 		}
-		kind := adapter.AdapterKind(modelRef)
-		if kind == "" {
-			kind = adapter.DefaultAdapterKind
-		}
-		if r.runtime.ServeDependent(kind) {
-			return true
-		}
+		refs = append(refs, modelRef)
 	}
-	return false
+	// ONE computation, ONE place (AC 7): the per-step refs gathered above
+	// are fed to the shared demand-set primitive, which resolves each ref
+	// to its adapter kind (empty/unresolvable → the conservative default)
+	// and asks the ONE serve-dependency predicate. The host-side plane
+	// computes its own half of the same set through the same primitive
+	// (adapter.TenantDemandSet → AdapterDemandSet), so this gate and the
+	// host serve can never disagree about whether opencode is in demand.
+	return adapter.AdapterDemandSet(refs...).NeedsServe(r.runtime.ServeDependent)
 }
 
 // NewWorkflowReconciler creates a WorkflowReconciler. The policy
