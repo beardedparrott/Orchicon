@@ -114,15 +114,21 @@ func (m *App) commitAskModel(ref string) tea.Cmd {
 // model_ref reported no model — and because the context window resolves from the
 // ref, the strip showed a bare occupancy with no limit.
 func (m *App) currentAskModel() string {
+	// THE OPEN CONVERSATION'S ROW IS READ FROM THE SHELL'S OWN LIST, not the chat
+	// controller's: chat.Controller.Conversations() returns a slice nothing ever
+	// writes, so this lookup ALWAYS missed and the composer reported the pending
+	// selection / tenant default instead of the ref the server actually holds on
+	// the conversation — which also made the strip's divergence guard
+	// (composerModelDiverged) unable to converge. m.conversations is the list the
+	// shell loads and reloads, and its rows carry the server's model_ref. Exactly
+	// the fix currentModeLabel applies for the mode pill.
+	if m.chatConvID != "" {
+		if c, ok := m.conversationByID(m.chatConvID); ok && c.ModelRef != "" {
+			return c.ModelRef
+		}
+	}
 	if m.chat == nil {
 		return m.askDefaultModel
-	}
-	if m.chatConvID != "" {
-		for _, c := range m.chat.Conversations() {
-			if c.ID == m.chatConvID && c.ModelRef != "" {
-				return c.ModelRef
-			}
-		}
 	}
 	if pending := m.chat.PendingModel(); pending != "" {
 		return pending
@@ -385,11 +391,19 @@ func (m *App) composerModelDiverged() bool {
 }
 
 // metricsModel is the ask model ref for the strip's left side ("" when unknown).
+//
+// It is pushed from the CONVERSATION ROW (currentAskModel), the source the ref
+// actually lives on — not from m.metrics, which only describes the ref its read
+// was issued for. A `/model` set by another client lands on the row first, and
+// a field read from the metrics would sit one RPC behind it (or, before
+// currentAskModel was pointed at the shell's list, never move at all). The
+// metrics read still matters for the NUMBERS and the context window, which is
+// why composerModelDiverged re-issues it on a ref change.
 func (m *App) metricsModel() string {
 	if m.chatConvID == "" {
 		return ""
 	}
-	return m.metrics.model
+	return m.currentAskModel()
 }
 
 // metricsStats is the NUMERIC half of the strip (no model) — the right side.

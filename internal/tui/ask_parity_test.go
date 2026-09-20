@@ -561,3 +561,44 @@ func TestRailModelChangeTriggersAStripMetricsRefresh(t *testing.T) {
 		t.Fatal("a rail model change must trigger a metrics refresh so the strip follows")
 	}
 }
+
+// AC 9, the strip's MODEL field — the SAME class as the mode pill, and the one
+// the divergence guard depends on. The composer reports the model from
+// currentAskModel(), whose documented first source is "the open conversation's
+// model_ref". It read that from the chat controller's Conversations() slice,
+// which NOTHING ever writes (see currentModeLabel for the same bug) — so the
+// lookup always missed and the field reported the pending selection / tenant
+// default forever, never following the conversation the server actually has.
+// The consequence is not only a wrong label: composerModelDiverged() compares
+// that never-fresh value against the rail row, so it could NEVER converge and
+// every conversations reload bought a metrics RPC — the opposite of the guard's
+// stated purpose.
+func TestComposerModelFieldReadsTheServersConversationRow(t *testing.T) {
+	m, _ := newAskApp(t)
+	m.railProjectsLoaded = true
+	m.chatConvID = "c1"
+	m.askDefaultModel = "orchicon/deepseek/deepseek-flash"
+
+	m.onConversations(chat.ConversationsMsg{Convs: []chat.Conversation{
+		{ID: "c1", ModelRef: "opencode/anthropic/claude-sonnet-4"},
+	}})
+
+	if got := m.currentAskModel(); got != "opencode/anthropic/claude-sonnet-4" {
+		t.Fatalf("the composer must report the open conversation's server-side model_ref, got %q", got)
+	}
+
+	// A completed metrics read resolves the model from exactly that source (see
+	// refreshMetrics), so the strip's model field lands on the row's ref…
+	m.metrics = sessionMetrics{have: true, model: m.currentAskModel()}
+	m.syncComposerStats()
+	if m.dock.Model != "opencode/anthropic/claude-sonnet-4" {
+		t.Fatalf("the strip must show the conversation's server-side ref, got %q", m.dock.Model)
+	}
+
+	// …and the divergence guard then CONVERGES: a further reload must not
+	// re-read the metrics (before the fix it could never converge, so every list
+	// poll bought a GetUsage RPC).
+	if m.composerModelDiverged() {
+		t.Fatal("the strip must converge on the row's ref — otherwise every list poll buys a metrics RPC")
+	}
+}
