@@ -308,7 +308,11 @@ func (m *App) paletteHandleKey(k tea.KeyMsg) (bool, tea.Cmd) {
 		// user sees their input live (the palette floats above the composer
 		// line — operator requirement), then the filter re-seeds from the
 		// buffer (no second source of truth for the query).
-		consumed, cmd := m.dock.Update(tea.KeyMsg(k))
+		// composerKey, NOT dock.Update: this branch forwards every key the palette does not case itself,
+		// and that set includes the dock's second spelling of Enter (ctrl+j — the LF some terminals send).
+		// Updating the dock directly here ATE the message: the composer emptied and the pending send was
+		// never collected by anyone. See composerKey.
+		consumed, cmd := m.composerKey(tea.KeyMsg(k))
 		m.palette.query = strings.TrimPrefix(m.dock.Value(), "/")
 		m.refreshPalette()
 		return consumed, cmd

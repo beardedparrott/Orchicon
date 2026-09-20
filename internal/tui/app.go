@@ -3766,6 +3766,36 @@ func (m *App) authRetryInline() bool {
 // up one row too tall — and the row the pane's viewport clips is the NOTICE, which is drawn last.
 func (m *App) RepaintTranscript() tea.Cmd { return m.onChatWake() }
 
+// composerKey is THE way to hand a message to the composer.
+//
+// EVERY caller of dock.Update MUST go through it, and the reason is that the dock's Enter path does TWO
+// things at once: it CLEARS the buffer and it parks the message in a pending slot for the shell to collect.
+// Only the shell can dispatch it (the dock has no client). So a caller that updated the dock and never
+// collected the pending send SWALLOWED THE OPERATOR'S MESSAGE — the composer emptied, nothing was ever
+// sent, no optimistic echo was appended, no turn started, and nothing on screen changed. The operator's
+// words for exactly that: "I don't see the orchicon is thinking and I have to send another message" and
+// "my message does not appear when this happens".
+//
+// THERE WERE FOUR CALLERS OF dock.Update AND EXACTLY ONE COLLECTED. The other three forwarded a key and
+// dropped whatever it produced — and the one that matters is the slash PALETTE, because it forwards every
+// key it does not case itself to the dock: `enter` is cased there but `ctrl+j` is NOT, and ctrl+j is the
+// dock's own second spelling of Enter (see dock.enterKey — some terminals and PTY configurations send LF,
+// which bubbletea reports as KeyCtrlJ). With the palette open, that Enter was a message eater.
+//
+// This fixes the SHAPE rather than that one hole: with one funnel, "a key that produces a send is
+// dispatched" is true by construction, and a future fifth caller cannot reintroduce the bug by forgetting
+// a convention.
+func (m *App) composerKey(msg tea.Msg) (handled bool, cmd tea.Cmd) {
+	handled, cmd = m.dock.Update(msg)
+	if text := m.dock.SendRequest(); text != "" {
+		// Batched with whatever the key produced, so the edit and the send it triggered cannot be separated
+		// (or one of them lost).
+		cmd = tea.Batch(cmd, m.sendFromComposer(text))
+		m.refreshStreamStatus()
+	}
+	return handled, cmd
+}
+
 // sendChat sends text to the conversation with the context preamble AND the pending attachments.
 //
 // The attachments are read from the pending set here, at the single place every send passes through, so the

@@ -542,7 +542,7 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	// tea.KeyMsg). Without this the tick reached the shell and was dropped, so the
 	// caret never blinked no matter what the dock did with it.
 	if bm, ok := msg.(cursor.BlinkMsg); ok {
-		_, cmd := m.dock.Update(bm)
+		_, cmd := m.composerKey(bm)
 		return m, cmd
 	}
 	k, isKey := msg.(tea.KeyMsg)
@@ -778,7 +778,7 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		//
 		// The empty test is TrimSpace, matching the rule the rail's chords use: a buffer of
 		// only whitespace is empty for this purpose, so leading spaces do not block a command.
-		_, cmd := m.dock.Update(k)
+		_, cmd := m.composerKey(k)
 		m.openPalette()
 		m.refreshStreamStatus()
 		return m, cmd
@@ -837,7 +837,7 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 				// structural chord: skip the composer, the routes below
 				// own it (switchTab routes, quit, rail toggle).
 			} else {
-				consumed, cmd := m.dock.Update(msg)
+				consumed, cmd := m.composerKey(msg)
 				switch k.String() {
 				case "ctrl+z":
 					// Escalate to the full conversation view with this conversation
@@ -872,9 +872,9 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 					}
 				}
 				if consumed {
-					if text := m.dock.SendRequest(); text != "" {
-						cmd = m.sendFromComposer(text)
-					}
+					// The pending send was already collected and dispatched by composerKey above, so the
+					// returned cmd carries it. This site used to be the ONLY place that collected it, which
+					// is what made the other three callers a message-eating hole — see composerKey.
 					m.refreshStreamStatus()
 					return m, cmd
 				}
