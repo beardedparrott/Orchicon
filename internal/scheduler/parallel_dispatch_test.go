@@ -50,6 +50,8 @@ func newParallelScanEnv(t *testing.T, n int) (*sequenceTestEnv, []db.WorkItemRow
 	ctx := context.Background()
 
 	var tasks []db.WorkItemRow
+	// Workflow-first: dispatching an item requires a workflow binding.
+	wfID := seedPublishedWorkflow(t, env.pool, env.proj.ID)
 	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
 		t.Fatal(err)
@@ -60,6 +62,7 @@ func newParallelScanEnv(t *testing.T, n int) (*sequenceTestEnv, []db.WorkItemRow
 			Kind: domain.WorkItemKindTask, Title: "Parallel Task " + db.NewID()[:6],
 			Status:            domain.WorkItemReady,
 			AssignedWorkerRef: []byte(`{"worker_id":"w_se_devops_engineer","version":1}`),
+			WorkflowID:        &wfID,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -189,6 +192,7 @@ func TestParallelScanBlockedClearsAndDispatchesSamePass(t *testing.T) {
 	env, tasks := newParallelScanEnv(t, 1)
 	ctx := context.Background()
 	ready := tasks[0]
+	wfID := seedPublishedWorkflow(t, env.pool, env.proj.ID)
 
 	// A second item parked blocked, whose blocker already succeeded.
 	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
@@ -200,6 +204,7 @@ func TestParallelScanBlockedClearsAndDispatchesSamePass(t *testing.T) {
 		Kind: domain.WorkItemKindTask, Title: "Clearing " + db.NewID()[:6],
 		Status:            domain.WorkItemBlocked,
 		AssignedWorkerRef: []byte(`{"worker_id":"w_se_devops_engineer","version":1}`),
+		WorkflowID:        &wfID,
 	})
 	if err != nil {
 		t.Fatal(err)

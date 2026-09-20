@@ -145,51 +145,6 @@ func TestBuildRecoveryFileContentEmptyTail(t *testing.T) {
 	}
 }
 
-// TestBuildStandaloneCompositeRecoveryBlock verifies the standalone path
-// renders the ## Recovery file reference for a same-worker recovery seed
-// and nothing for a fresh/different-worker dispatch.
-func TestBuildStandaloneCompositeRecoveryBlock(t *testing.T) {
-	p, err := pgxpool.New(context.Background(), "postgres://nohost:5432/nope?sslmode=disable")
-	if err != nil {
-		t.Fatal(err)
-	}
-	p.Close()
-	pool := &db.Pool{Pool: p}
-	exec := db.ExecutionRow{TenantID: "tnt_test"}
-
-	// Same-worker recovery → reference present.
-	withSeed, _ := buildStandaloneComposite(pool, exec, db.WorkItemRow{
-		TenantID: "tnt_test",
-		Title:    "Recover me",
-		Results:  recoveryResultJSON("exec abc failed", "exec-1", "w1"),
-	}, db.WorkerVersionRow{WorkerID: "w1", Role: "Engineer"}, "", "", "")
-	if !strings.Contains(withSeed, recoveryFileReferenceMarker) {
-		t.Errorf("standalone composite must reference the recovery file when the seed matches")
-	}
-	if !strings.Contains(withSeed, "## Recovery") {
-		t.Errorf("standalone composite missing ## Recovery block")
-	}
-
-	// Different worker → no reference.
-	diffWorker, _ := buildStandaloneComposite(pool, exec, db.WorkItemRow{
-		TenantID: "tnt_test",
-		Title:    "Recover me",
-		Results:  recoveryResultJSON("exec abc failed", "exec-1", "w1"),
-	}, db.WorkerVersionRow{WorkerID: "w2", Role: "Engineer"}, "", "", "")
-	if strings.Contains(diffWorker, recoveryFileReferenceMarker) {
-		t.Error("different-worker standalone composite must not reference the recovery file")
-	}
-	if strings.Contains(diffWorker, "## Recovery") {
-		t.Error("different-worker standalone composite must not show a recovery block")
-	}
-
-	// Fresh dispatch → no reference.
-	fresh, _ := buildStandaloneComposite(pool, exec, db.WorkItemRow{TenantID: "tnt_test", Title: "Fresh"}, db.WorkerVersionRow{WorkerID: "w1", Role: "Engineer"}, "", "", "")
-	if strings.Contains(fresh, recoveryFileReferenceMarker) {
-		t.Error("fresh dispatch must not reference the recovery file")
-	}
-}
-
 // TestBuildCompositePromptRecoveryBlock verifies the workflow path renders
 // the ## Recovery file reference for a same-worker seed and keeps the
 // summary-only narrative (NO file reference) for a different worker.

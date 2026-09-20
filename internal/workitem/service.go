@@ -352,12 +352,19 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	// No schedule-time validation at create: a freshly created item has no
-	// children (so the sequence case can't apply), and auto_start_workflow
-	// on a workflow-less item is a stored preference — nothing fires until
-	// a workflow is bound (the auto-start fire path below no-ops for a
-	// workflow-less leaf). Scheduling/run-immediately on an UPDATE validates
-	// and rejects a workflow-less leaf there.
+	// Workflow-first enforcement at CREATE: a SCHEDULED item with no workflow
+	// binding is a zombie — its start time comes due and nothing can run it
+	// (standalone dispatch is retired). The delivered schedule-time gate
+	// rejects that shape on the UPDATE path; run it here too so create and
+	// update cannot drift. A freshly created item has no children, so this is
+	// the leaf case: bind a workflow or drop the schedule. auto_start_workflow
+	// on a workflow-less item stays a stored preference (nothing fires until a
+	// workflow is bound).
+	if scheduledStartAt != nil {
+		if err := ValidateSequenceSchedule(ctx, ttx.Tx, tenantID, created); err != nil {
+			return nil, err
+		}
+	}
 	if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.created", created); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -1221,6 +1228,18 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		}
 		hasChildren := s.itemHasChildren(ctx, tenantID, current.ID)
 		if err := ValidateRecurringWorkflowBinding(true, hasChildren, effWorkflow); err != nil {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+		}
+	}
+	// Workflow-first enforcement (standalone dispatch is retired): a STATUS
+	// TRANSITION into a runnable status (ready / assigned / scheduled /
+	// running) is rejected when the resulting item has no workflow binding —
+	// nothing would ever execute it. A non-status edit (title, description,
+	// …) and a status no-op are never gated. A sequence parent with children
+	// is exempt: it orders its children and never executes itself.
+	if fields.Status != nil && *fields.Status != current.Status {
+		effWorkflow := effItem.WorkflowID
+		if err := ValidateWorkflowFirstTransition(current.Title, *fields.Status, effWorkflow, s.itemHasChildren(ctx, tenantID, current.ID)); err != nil {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
 		}
 	}
@@ -2501,13 +2520,18 @@ func attachBlockedByBatch(ctx context.Context, tx pgx.Tx, tenantID string, items
 // query for the rows that carry provenance, avoiding an N+1 per idea.
 func attachSpawnedByTitlesBatch(ctx context.Context, tx pgx.Tx, tenantID string, items []*apiv1.WorkItem) error {
 	ids := make([]string, 0, len(items))
-	byID := map[string]*apiv1.WorkItem{}
+	// One spawner commonly produces SEVERAL items (an automation that spawned
+	// two ideas, or a rejected idea plus the same-run promoted one), so the
+	// index must hold a SLICE per provenance id: a plain id->item map keeps
+	// only the last row and silently leaves every earlier sibling without a
+	// badge.
+	byID := map[string][]*apiv1.WorkItem{}
 	for _, it := range items {
 		if it == nil || it.SpawnedBy == "" {
 			continue
 		}
 		ids = append(ids, it.SpawnedBy)
-		byID[it.SpawnedBy] = it
+		byID[it.SpawnedBy] = append(byID[it.SpawnedBy], it)
 	}
 	if len(ids) == 0 {
 		return nil
@@ -2517,7 +2541,7 @@ func attachSpawnedByTitlesBatch(ctx context.Context, tx pgx.Tx, tenantID string,
 		return err
 	}
 	for id, title := range titles {
-		if it, ok := byID[id]; ok {
+		for _, it := range byID[id] {
 			it.SpawnedByTitle = title
 		}
 	}
@@ -2713,15 +2737,15 @@ func ValidateSequenceSchedule(ctx context.Context, tx pgx.Tx, tenantID string, i
 		}
 		return nil // a workflow-bound leaf is a normal bound run
 	}
-	noWorkflow, oneShot, badWorkflow, err := ValidateSequenceSubtree(ctx, tx, tenantID, item)
+	noWorkflow, badWorkflow, err := ValidateSequenceSubtree(ctx, tx, tenantID, item)
 	if err != nil {
 		return mapDBError(err)
 	}
-	if len(noWorkflow) == 0 && len(oneShot) == 0 && len(badWorkflow) == 0 {
+	if len(noWorkflow) == 0 && len(badWorkflow) == 0 {
 		return nil
 	}
 	return connect.NewError(connect.CodeInvalidArgument,
-		BuildSequenceValidationError(item.Title, noWorkflow, oneShot, badWorkflow))
+		BuildSequenceValidationError(item.Title, noWorkflow, badWorkflow))
 }
 
 // maybeStartSequence starts a sequence run for a parent with children

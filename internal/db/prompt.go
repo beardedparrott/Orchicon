@@ -12,8 +12,8 @@ import (
 // interactive session. It is the identity statement that distinguishes an
 // in-Orchicon worker (operates autonomously, reports via the ORCHICON WORKER
 // SUMMARY contract) from a human-facing session (must ask before
-// PRing/merging). Both composite builders (the scheduler's
-// buildStandaloneComposite and the workflow buildCompositePrompt) emit it so
+// PRing/merging). The workflow composite builder (the scheduler's
+// buildCompositePrompt) emits it so
 // every dispatch carries the same self-definition. Kept in sync with
 // cannedWorkerIdentity (the first sentence) in seed_workers.go — they live in
 // the same package so a drift is immediately visible.
