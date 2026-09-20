@@ -258,7 +258,7 @@ const transparentSuffix = "-transparent"
 // 50 rows of `-transparent` twins would bury the palettes they are actually choosing between. The suffix
 // rule above means nothing is LOST by that — `/theme forest-transparent` still works for any palette,
 // which is the escape hatch a short list is allowed to have.
-var transparentListed = []string{"obsidian", "forest", "lumen", "light"}
+var transparentListed = []string{"obsidian", "forest", "tokyo-night", "lumen", "light", "github-light"}
 
 // registry is the selectable theme set, in /theme listing order. It is
 // TUI-OWNED: these palettes are chosen for terminal contrast and are NOT a
@@ -274,6 +274,10 @@ var registry = buildRegistry()
 // stable listing order (bases first, then dark families, then light).
 func buildRegistry() []*Theme {
 	out := []*Theme{&Dark, &Light, &GruvboxDark, &GruvboxLight}
+	// The hand-written community ports (theme_named.go), then the generated families. Both are listed
+	// before the transparent variants so a reader of `/theme` sees the palettes first and the see-through
+	// modes after them.
+	out = append(out, namedThemes...)
 	for _, t := range derivedThemes {
 		out = append(out, t)
 	}
@@ -358,6 +362,9 @@ func Lookup(name string) *Theme {
 // globals. It deliberately reads no registry — buildRegistry builds that registry, so a dependency in this
 // direction would be an initialisation cycle.
 func findBase(name string) *Theme {
+	if t := lookupNamed(name); t != nil {
+		return t
+	}
 	if t := lookupDerived(name); t != nil {
 		return t
 	}

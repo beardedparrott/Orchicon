@@ -203,10 +203,17 @@ func TestBubbleContrast(t *testing.T) {
 				t.Errorf("%s: the %s bubble (%s) is indistinguishable from the background (%s)", name, label, c, bg)
 			}
 		}
-		// Text must stay readable on BOTH fills.
+		// Text must stay readable on BOTH fills — measured against the colour the bubble ACTUALLY DRAWS,
+		// via bubbleText. That is not a loosening: bubbleText is what picks the bubble's foreground, and it
+		// is allowed to move the palette's text out of the way on a fill the text cannot be read on (see its
+		// own note — a mid-tone foreground such as One Dark's has no room on a lifted bubble). Measuring
+		// th.Text here instead would demand readability from a colour this code never draws, which would
+		// either fail a readable pair or force every palette's bubbles to be flattened for the worst case.
 		for label, c := range map[string]string{"user": us, "model": ms} {
-			if r := contrastRatio(string(th.Text), c); r < 4.0 {
-				t.Errorf("%s: text on the %s bubble (%s) is %.2f:1 — unreadable", name, label, c, r)
+			drawn := string(bubbleText(c, *th))
+			if r := contrastRatio(drawn, c); r < 4.0 {
+				t.Errorf("%s: the bubble text (%s) on the %s bubble (%s) is %.2f:1 — unreadable",
+					name, drawn, label, c, r)
 			}
 		}
 	}

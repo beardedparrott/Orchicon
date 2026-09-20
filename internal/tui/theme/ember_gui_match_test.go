@@ -151,6 +151,8 @@ func TestTheGUIEmberThemeMatchesTheTUIPalette(t *testing.T) {
 	//
 	// The TUI derives its user band from bubbleFills(), not from the accent, so recomputing it here is what keeps
 	// the two clients showing the same thing — and it is a different value from --primary, which is the point.
+	// The palette's TEXT is passed because the lift is now bounded by it (see bubbleFills); this test would
+	// otherwise assert against a fill the runtime never produces.
 	userFill, _ := bubbleFills(string(ember.Bg), string(ember.Accent))
 	if hslOf(t, userFill) == hslOf(t, string(ember.Accent)) {
 		t.Fatalf("fixture: the TUI's user band equals its accent (%s), so this assertion could not tell the two "+
