@@ -1,3 +1,5 @@
+//go:build !windows
+
 package mcpclient
 
 import (
@@ -21,10 +23,14 @@ import (
 // live plane (or a session in progress). No disk registry is needed — the
 // environment marker is written by newStdioTransport on every launch.
 //
-// Only works on Linux/BSD where /proc and process groups exist; on other
-// platforms it is a no-op. Callers hook this into the boot/periodic adopt
-// sweep of Server.Run (ADR-0008: stdio children cannot outlive a dead
-// control plane).
+// Only works on Linux/BSD where /proc and process groups exist — and the build tag above says
+// so, which it did NOT before. The runtime guard below (`procAvailable`) has always been here,
+// and for a while it was the ONLY guard: the file carried no build tag, so it compiled
+// everywhere and this package failed to build for Windows on `syscall.Kill` / `syscall.ESRCH`,
+// which do not exist there. That is not a runtime-degradation issue — it is a compile error in
+// the release matrix, so a runtime check can never cover it. Callers hook this into the
+// boot/periodic adopt sweep of Server.Run (ADR-0008: stdio children cannot outlive a dead
+// control plane); see sweep_windows.go for the no-op the other platforms get.
 func SweepStaleChildren(ctx context.Context, log *slog.Logger) {
 	if !procAvailable() {
 		return

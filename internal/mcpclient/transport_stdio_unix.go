@@ -5,7 +5,6 @@ package mcpclient
 import (
 	"os"
 	"os/exec"
-	"syscall"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -23,10 +22,10 @@ func newStdioTransport(spec ServerSpec) (*mcp.CommandTransport, error) {
 		return nil, errUnconfiguredCommand(spec)
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Pdeathsig: syscall.SIGKILL,
-		Setpgid:   true,
-	}
+	// The process attributes are PER-OS: PDEATHSIG is Linux-only and Setpgid is portable, so the
+	// two live in their own files and this one just asks for the platform's answer. Writing the
+	// literal inline here is what broke the darwin release builds.
+	cmd.SysProcAttr = stdioSysProcAttr()
 	// Environment markers let the boot-time sweep identify MCP children
 	// (see sweep.go) and give the child context about its owning server.
 	cmd.Env = append(os.Environ(),
