@@ -14,6 +14,7 @@ import (
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/aigateway"
+	"github.com/beardedparrott/orchicon/internal/askmode"
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/blobstore"
@@ -1046,9 +1047,12 @@ func (s *Service) chatStallWindow(ctx context.Context, tx pgx.Tx, tenantID strin
 // share one identity, one project awareness and one tool surface, and differ
 // in what they DO with a request.
 const (
-	modeBrainstorm = "brainstorm"
-	modeIteration  = "iteration"
-	modeQuickWork  = "quick_work"
+	// ALIASED TO internal/askmode, not restated. The policy table is keyed by these strings, so a mode spelled
+	// one way here and another way there would be a mode the boundary silently does not apply to — and "both are
+	// "brainstorm"" is not a property a test can be relied on to notice. One definition, two names.
+	modeBrainstorm = askmode.Brainstorm
+	modeIteration  = askmode.Iteration
+	modeQuickWork  = askmode.QuickWork
 )
 
 // conversationModeFromProto validates + normalizes a proto ConversationMode

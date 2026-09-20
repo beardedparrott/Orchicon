@@ -351,6 +351,35 @@ type ChatAttachment struct {
 	Data     []byte
 }
 
+// ToolPolicy is the resolved tool restriction for ONE Ask turn: the mode it applies to, and the tool names that
+// mode may not run.
+//
+// It carries the RESOLVED list rather than the mode alone, so an adapter never needs the policy table — it is
+// handed the outcome. That is what keeps the boundary in one place (internal/askmode) while letting each adapter
+// apply it through whatever mechanism it has: a config block it rewrites, a flag on an invocation, an allow-list
+// it filters, or (for the native transport) its own tool layer, which needs nothing passed at all.
+type ToolPolicy struct {
+	Mode   string
+	Denied []string
+}
+
+// ChatToolRestrictor is the OPTIONAL capability for an adapter that can ENFORCE a per-turn tool policy.
+//
+// ITS PURPOSE IS TWO THINGS, and the second is the one that matters most as adapters multiply:
+//
+//  1. The hook. An adapter that can restrict tools implements this and applies the policy its own way.
+//  2. THE HONEST ANSWER TO "IS THIS TURN ACTUALLY ENFORCED?". Not every adapter can restrict per turn — it
+//     depends on whether its mechanism is per-invocation or per-process, and that is not something the platform
+//     can assume. An adapter that does NOT implement this is dispatching a turn where the mode boundary is
+//     PROSE ONLY, and the caller can say so (askorchicon logs it) rather than believing the boundary holds
+//     everywhere and discovering otherwise only when a mode does something it should not have.
+//
+// It is OPTIONAL by design, mirroring ChatCompactor and SendTurnMessageWithAttachments: an adapter without the
+// capability is a known, reportable state rather than an error.
+type ChatToolRestrictor interface {
+	RestrictChatTools(ctx context.Context, policy ToolPolicy) error
+}
+
 // SessionEvent is one turn-visible signal an Ask drain loop consumes,
 // adapter-neutral. Adapters map their own event/protocol vocabulary onto
 // these turn-visible kinds; the askorchicon service and scheduler see only

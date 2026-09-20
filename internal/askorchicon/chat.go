@@ -849,6 +849,13 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 		return "", nil, nil, connect.NewError(connect.CodeFailedPrecondition,
 			fmt.Errorf("Ask Orchicon could not resolve an adapter for this conversation: %w", cerr))
 	} else if client != nil {
+		// THE MODE BOUNDARY, HANDED TO THE ADAPTER THAT WILL RUN THE TURN.
+		//
+		// The native transport enforces it at its own tool layer, so this is a declaration (see
+		// internal/orchicon/askrestrict.go). An adapter WITHOUT the capability gets the policy too — as a log line
+		// saying the boundary is prose-only for this turn, so "is this enforced?" has an answer per turn rather
+		// than an assumption. See applyAskToolPolicy.
+		s.applyAskToolPolicy(ctx, client, conv.Mode, modelRef)
 		// Adapter-scoped session identity (AC: cross-adapter switch). The
 		// persisted conversation session id belongs to the adapter that
 		// created it (the transport the model originally ran on). When the
