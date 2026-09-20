@@ -45,60 +45,9 @@ func itoa(v int) string {
 	return string(b)
 }
 
-// THE APP BACKGROUND IS NOT PAINTED, AND THE TINTS ARE. The two halves in one test, because a version of
-// this that dropped the background AND the surfaces would pass a one-sided check while destroying the
-// feature the operator confirmed they wanted.
-func TestATransparentThemePaintsNoBackgroundButKeepsTints(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() {
-		lipgloss.SetColorProfile(termenv.Ascii)
-		Use(DefaultName)
-	})
-
-	for _, name := range []string{"forest-transparent", "light-transparent"} {
-		if !Use(name) {
-			t.Fatalf("Use(%q) failed", name)
-		}
-		th := Active()
-		if !th.Transparent {
-			t.Fatalf("%s: Transparent flag is false", name)
-		}
-
-		// (1) THE APP BACKGROUND: no sequence at all, so the terminal shows through.
-		if out := ScreenBg.Render("x"); bgSeq(out) {
-			t.Errorf("%s: ScreenBg emitted a background (%q) — the frame would paint over the terminal "+
-				"instead of showing it", name, out)
-		}
-		// Nor the app-background COLOUR by any other route (the panel borders and the tab bar paint
-		// through theme.Bg, so this catches a site that bypassed ScreenBg).
-		if want := rgbOf(t, string(th.Bg)); strings.Contains(ScreenBg.Render("x"), want) {
-			t.Errorf("%s: the app background %s is still being painted somewhere", name, th.Bg)
-		}
-		// (2) THE TINTS REMAIN — this is the half that makes it a theme rather than bare text.
-		if out := SurfaceBg.Render("x"); !bgSeq(out) {
-			t.Errorf("%s: SurfaceBg painted nothing — panels would lose their tint", name)
-		}
-		if out := ListItemSelected.Render("x"); !bgSeq(out) {
-			t.Errorf("%s: the selection fill painted nothing", name)
-		}
-		// (3) THE CHAT BANDS ARE UNPAINTED, like the app background. The operator: "Message blocks and composer
-		// are not transparent. I thought we decided on changing the tint on those items so they look
-		// semi-transparent as well?" — the first version left the transcript solid while the background and the
-		// composer were see-through, which was simply inconsistent. The speakers are still tellable apart by
-		// the operator's band label rather than by a fill, which the transcript test asserts.
-		if out := BubbleModel.Render("x"); bgSeq(out) {
-			t.Errorf("%s: the model band is FILLED (%q) on a transparent theme — the chat surface would not be "+
-				"see-through", name, out)
-		}
-		if out := BubbleUser.Render("x"); bgSeq(out) {
-			t.Errorf("%s: the operator's band is FILLED (%q) on a transparent theme", name, out)
-		}
-	}
-}
-
-// THE COMPOSER FOLLOWS THE BACKGROUND, NOT THE PANELS. It is the one fill the operator asked to be
-// transparent too, which is why it has a token of its own.
-func TestTheComposerIsTransparentWhilePanelsAreNot(t *testing.T) {
+// THE COMPOSER IS UNPAINTED ON A TRANSPARENT THEME AND FILLED ON A SOLID ONE, and the two are checked together
+// because the solid half is what stops "unpainted" from passing on a theme that has simply stopped painting.
+func TestTheComposerIsTransparentOnATransparentTheme(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() {
 		lipgloss.SetColorProfile(termenv.Ascii)
@@ -112,9 +61,6 @@ func TestTheComposerIsTransparentWhilePanelsAreNot(t *testing.T) {
 	if out := ComposerBg.Render(""); bgSeq(out) {
 		t.Errorf("the composer's repair style painted a background (%q) — its repair would re-paint the "+
 			"box the theme exists to leave alone", out)
-	}
-	if out := SurfaceBg.Render("x"); !bgSeq(out) {
-		t.Error("the panel surface lost its tint on a transparent theme")
 	}
 
 	// AND THE SOLID THEME IS UNCHANGED — the composer is a filled panel there, as before.
@@ -220,6 +166,68 @@ func TestEveryTransparentThemeNamesItself(t *testing.T) {
 		}
 		if !th.Transparent && strings.Contains(name, "transparent") {
 			t.Errorf("theme %q is named transparent but is not", name)
+		}
+	}
+}
+
+// A TRANSPARENT THEME LETS THE TERMINAL THROUGH EVERYWHERE — THAT IS THE WHOLE FEATURE.
+//
+// The operator, after a version that kept the panels painted so a light palette stayed readable: "now the
+// transparents are not transparent at all ... only transparent in the top left corner. The terminal should bleed
+// through everywhere but with the light tint of the color scheme coming through."
+//
+// So this test asserts the SURFACES the app would otherwise own are all unpainted: the frame background, the
+// panel fill, the composer, the tab strip and both chat bands. The palette's character then comes through in
+// its FOREGROUNDS — text, borders, accents — which is the "light tint of the colour scheme" that IS expressible.
+//
+// THE TWO FILLS THAT REMAIN ARE CONTENT, NOT SURFACES, and they are asserted as such here so the exception is
+// pinned rather than accidental: the selection fill (a selection the operator cannot see is a selection they
+// cannot trust) and the raised fill behind a code span / code block / diff line (a code span with no chip is not
+// a code span). Both carry their own text and are gated as self-contained pairs.
+func TestATransparentThemePaintsNoSurfacesAtAll(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(termenv.Ascii)
+		Use(DefaultName)
+	})
+
+	for _, name := range []string{"forest-transparent", "light-transparent", "tokyo-night-transparent"} {
+		if !Use(name) {
+			t.Fatalf("Use(%q) failed", name)
+		}
+		th := Active()
+		if !th.Transparent {
+			t.Fatalf("%s: Transparent flag is false", name)
+		}
+
+		// THE SURFACES: not one sequence between them.
+		for label, out := range map[string]string{
+			"the frame background": ScreenBg.Render("x"),
+			"the panel fill":       PanelBgStyle.Render("x"),
+			"the panel rows":       OpaquePanel("x", 1),
+			"the composer box":     ComposerBox.Render("x"),
+			"the composer repair":  ComposerBg.Render(""),
+			"the tab strip":        TabBar.Render("x"),
+			"the model band":       BubbleModel.Render("x"),
+			"the operator band":    BubbleUser.Render("x"),
+		} {
+			if bgSeq(out) {
+				t.Errorf("%s: %s is painted (%q) on a transparent theme — the terminal cannot bleed through",
+					name, label, out)
+			}
+		}
+
+		// AND THE CONTENT FILLS REMAIN, because they are the two things that stop working without a fill.
+		if out := ListItemSelected.Render("x"); !bgSeq(out) {
+			t.Errorf("%s: the selection fill painted nothing — a selected row would be invisible", name)
+		}
+		// The RAISED fill is SurfaceAlt (the code chip / code block / diff line goes through it). It is NOT
+		// SurfaceBg, which is the panel fill and is unpainted with the rest of the surfaces — keeping those two
+		// straight is the whole distinction this test exists to hold.
+		raised := lipgloss.NewStyle().Background(SurfaceAlt).Render("x")
+		if !bgSeq(raised) {
+			t.Errorf("%s: the raised fill %s painted nothing — a code span would stop reading as a code span",
+				name, SurfaceAlt)
 		}
 	}
 }

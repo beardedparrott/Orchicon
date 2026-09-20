@@ -36,162 +36,100 @@ func paintSeq(c lipgloss.TerminalColor) string {
 	return out[:i]
 }
 
-// A TRANSPARENT SESSION PAINTS NO APP BACKGROUND, WHILE ITS TINTS SURVIVE.
+// A TRANSPARENT SESSION PAINTS NO SURFACES — THE TERMINAL BLEEDS THROUGH EVERYWHERE.
 //
-// BOTH DIRECTIONS ARE ASSERTED. Absence alone would pass on a frame that had simply stopped painting —
-// indistinguishable from a broken theme, and shippable as "transparency works" while every panel,
-// selection fill and bubble had quietly become bare text on the operator's wallpaper.
-func TestATransparentSessionPaintsNoAppBackground(t *testing.T) {
+// This is the operator's report, verbatim: "now the transparents are not transparent at all ... only transparent
+// in the top left corner. The terminal should bleed through everywhere but with the light tint of the color
+// scheme coming through."
+//
+// ASSERTED PER-CELL RATHER THAN PER-THEME, because the frame is where a transparency can be undone: the shell
+// wraps every row in a base style and then runs two repairs (padScreenLine's bgOpaque and the composer's
+// RepairAfterResets) whose whole job is to RE-PAINT the background after any inner reset. A transparency the
+// styles honoured and the repairs undid would pass every test in the theme package and still paint solid cells
+// here.
+//
+// THE ALLOWED FILLS ARE THE CONTENT ONES. A screen may still paint the raised fill (a code chip, a code block, a
+// diff line) and the selection fill: those are content that stops working without a fill, not surfaces — see
+// theme.buildStyles. Everything else must be UNPAINTED, and "everything else" includes the panel fill, which is
+// the one that was covering the screen.
+func TestATransparentSessionPaintsNoSurfaces(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() {
 		lipgloss.SetColorProfile(termenv.Ascii)
 		theme.Use(theme.DefaultName)
 	})
 
-	m := phase3App(120, 40)
-	if !m.SetTheme("forest-transparent") {
-		t.Fatal("SetTheme(forest-transparent) failed")
-	}
-	m.dock.SetValue("hello")
-	m.refreshLayout()
-
-	base := theme.Lookup("forest")
-	if base == nil {
-		t.Fatal("fixture: the forest palette is missing")
-	}
-	frame := m.baseView(120, 40)
-
-	// The app background's sequence is what WOULD be painted for this palette — the active theme leaves it
-	// unpainted, so asking the renderer for it is the only way to search for "the colour that must not
-	// appear".
-	if appBg := paintSeq(base.Bg); appBg != "" && strings.Contains(frame, appBg) {
-		t.Errorf("the app background %s (%q) appears in a TRANSPARENT session's frame — cells are being "+
-			"painted over the terminal, which is what the theme exists to prevent", base.Bg, appBg)
-	}
-	// And the tints the operator confirmed they want are still there: the panel surface, which every pane
-	// on screen carries.
-	if panel := paintSeq(base.Surface); panel != "" && !strings.Contains(frame, panel) {
-		t.Errorf("the panel surface tint %s (%q) is MISSING from a transparent session's frame — panels "+
-			"would have no fill at all", base.Surface, panel)
-	}
-}
-
-// A SOLID SESSION IS UNCHANGED — the mechanism must not have made every theme transparent.
-func TestASolidSessionStillPaintsItsBackground(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() {
-		lipgloss.SetColorProfile(termenv.Ascii)
-		theme.Use(theme.DefaultName)
-	})
-
-	m := phase3App(120, 40)
-	if !m.SetTheme("forest") {
-		t.Fatal("SetTheme(forest) failed")
-	}
-	base := theme.Lookup("forest")
-	if appBg := paintSeq(base.Bg); appBg != "" && !strings.Contains(m.baseView(120, 40), appBg) {
-		t.Errorf("a SOLID session no longer paints its background %s", base.Bg)
-	}
-}
-
-// SWITCHING FROM A TRANSPARENT THEME BACK TO A SOLID ONE RE-PAINTS THE FRAME IMMEDIATELY.
-//
-// This is the stateful half, and it is the shape of the operator's earlier report ("when switching from a
-// dark to light theme it may be keeping the composer black"): a style captured or cached at one palette
-// and read at another. The frame is rendered after each switch rather than only inspected in the model.
-func TestSwitchingOutOfATransparentThemeRepaintsTheFrame(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() {
-		lipgloss.SetColorProfile(termenv.Ascii)
-		theme.Use(theme.DefaultName)
-	})
-
-	m := phase3App(120, 40)
-	if !m.SetTheme("forest-transparent") {
-		t.Fatal("SetTheme(forest-transparent) failed")
-	}
-	m.dock.SetValue("hello")
-	appBg := paintSeq(theme.Lookup("forest").Bg)
-	if appBg == "" {
-		t.Fatal("fixture: could not resolve the app background's sequence")
-	}
-	if strings.Contains(m.baseView(120, 40), appBg) {
-		t.Fatal("fixture: the transparent theme painted the app background")
-	}
-
-	if !m.SetTheme("forest") {
-		t.Fatal("SetTheme(forest) failed")
-	}
-	if frame := m.baseView(120, 40); !strings.Contains(frame, appBg) {
-		t.Error("after switching back to a SOLID theme the frame still has no app background — the " +
-			"transparency leaked into the next theme")
-	}
-}
-
-// A TRANSPARENT SESSION LEAVES THE STRUCTURAL PADDING TO THE TERMINAL AND STILL TINTS ITS PANELS.
-//
-// THIS IS THE PRECISE FORM OF THE INVARIANT, and it had to be restated because the loose form was wrong in
-// both directions. "The palette's background must not appear anywhere in the frame" passed trivially on the
-// LAUNCH PAGE (which has no panes) and would have failed the moment a pane was on screen — because a panel
-// legitimately paints that exact colour. The colour is not the point; WHERE it is painted is.
-//
-//	the app's own fill — the gap row, the padding around and between panes — must be UNPAINTED
-//	a PANEL must carry its tint, so text on it stays legible whatever the terminal looks like
-//
-// Getting the second half wrong is the operator's "the light transparent themes are almost impossible to
-// see/read": the panes were painting through the app background, so a light palette's dark text landed on a
-// dark terminal with nothing behind it.
-func TestATransparentSessionLeavesPaddingUnpaintedAndPanelsTinted(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() {
-		lipgloss.SetColorProfile(termenv.Ascii)
-		theme.Use(theme.DefaultName)
-	})
-
-	// A screen with REAL panes: the Work tab's list and detail, which is where the operator sees this.
+	// A screen with REAL panes on both sides, which is where the operator sees this.
 	m := phase3App(120, 40)
 	m.SwitchTo(TabWork)
 	m = runApp(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
-	if !m.SetTheme("lumen-transparent") {
-		t.Fatal("SetTheme(lumen-transparent) failed")
+	if !m.SetTheme("tokyo-night-transparent") {
+		t.Fatal("SetTheme(tokyo-night-transparent) failed")
 	}
-	base := theme.Lookup("lumen")
-	panelTint := paintSeq(base.Bg)
-	if panelTint == "" {
-		t.Fatal("fixture: no panel tint resolved")
+	th := theme.Active()
+	panelFill := paintSeq(th.Bg)
+	if panelFill == "" {
+		t.Fatal("fixture: no panel fill resolved")
+	}
+
+	// Everything the frame is ALLOWED to paint.
+	allowed := map[string]bool{}
+	for _, c := range []lipgloss.TerminalColor{th.SurfaceAlt, th.Select} {
+		if seq := strings.TrimPrefix(paintSeq(c), "\x1b["); seq != "" {
+			allowed[seq] = true
+		}
+	}
+	if len(allowed) != 2 {
+		t.Fatalf("fixture: resolved %d allowed fills, want 2", len(allowed))
 	}
 
 	rows := strings.Split(m.baseView(120, 40), "\n")
 	if len(rows) < 4 {
 		t.Fatalf("fixture: frame has only %d rows", len(rows))
 	}
-	// (1) THE STRUCTURAL PADDING IS UNPAINTED. Row tabBarRows is the blank separator the shell paints between
-	// the chrome and the body — pure padding, so nothing but the app background ever fills it.
-	gap := rows[tabBarRows]
-	if got := bgSeqsIn(gap); len(got) != 0 {
-		t.Errorf("the shell's blank separator row is painted %v on a TRANSPARENT theme — the terminal cannot "+
-			"show through", got)
+	// THE REGION SCANNED IS ABOVE THE COMPOSER, and it is scoped deliberately rather than for convenience. The
+	// composer's CARET is a solid block by design (a see-through cursor is not a thing), and its style paints the
+	// GROUND as its background — so on a dark terminal its sequence is byte-identical to a painted panel's and
+	// cannot be told apart by inspection. The composer's own transparency is asserted where it belongs, in the
+	// dock and theme packages; what this test covers is the region the operator was complaining about, where the
+	// panes, the rails and the tab strip were covering the screen.
+	composerTop := m.composerTopRow()
+	if composerTop > len(rows) {
+		composerTop = len(rows)
 	}
-	// (2) AND THE PANELS KEEP THEIR TINT, which is what makes their text readable.
-	tinted := 0
-	for _, r := range rows {
-		if strings.Contains(r, panelTint) {
-			tinted++
+	painted := 0
+	for i := 0; i < composerTop; i++ {
+		for _, seq := range bgSeqsIn(rows[i]) {
+			painted++
+			if !allowed[seq] {
+				t.Errorf("frame row %d paints %q, which is not a content fill — a surface is stopping the "+
+					"terminal from bleeding through (the panel fill is %q)", i, seq,
+					strings.TrimPrefix(panelFill, "\x1b["))
+			}
 		}
 	}
-	if tinted == 0 {
-		t.Errorf("no row carries the panel tint %s on a transparent theme — the panes have lost their fill, "+
-			"which is the operator's \"the light transparent themes are almost impossible to see/read\"",
-			panelTint)
+	if painted == 0 {
+		t.Error("the frame painted no fills at all above the composer, so this check proved nothing")
 	}
 
-	// (3) AND A SOLID THEME PAINTS THE PADDING, so "unpainted" cannot pass by the shell having stopped
-	// painting anything at all.
-	if !m.SetTheme("lumen") {
-		t.Fatal("SetTheme(lumen) failed")
+	// The shell's blank separator row is pure padding and must be completely unpainted — the "top left corner"
+	// the operator could see through is the only part of a surface-painted frame that is not covered.
+	if got := bgSeqsIn(rows[tabBarRows]); len(got) != 0 {
+		t.Errorf("the shell's blank separator row is painted %v on a transparent theme", got)
 	}
-	rows = strings.Split(m.baseView(120, 40), "\n")
-	if got := bgSeqsIn(rows[tabBarRows]); len(got) == 0 {
-		t.Error("the blank separator row is unpainted on a SOLID theme — the frame stopped painting")
+
+	// AND A SOLID THEME DOES PAINT SURFACES, so none of the above can pass on a frame that stopped painting.
+	if !m.SetTheme("tokyo-night") {
+		t.Fatal("SetTheme(tokyo-night) failed")
+	}
+	solidPanel := paintSeq(theme.Active().Bg)
+	found := false
+	for _, r := range strings.Split(m.baseView(120, 40), "\n") {
+		if strings.Contains(r, solidPanel) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("a SOLID session does not paint its panel fill %s anywhere", solidPanel)
 	}
 }

@@ -557,6 +557,14 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string, o
 	m.chatFocus = focusComposer
 	m.dock.Focus()
 	m.footer.ComposerFocus = true
+	// THE TERMINAL'S OWN BACKGROUND IS ASKED FOR ONCE, HERE, before bubbletea takes the tty.
+	//
+	// A transparent theme has to adapt its foregrounds to whatever is behind the app (see
+	// theme.transparent_adapt.go), and reading that means querying the terminal and waiting for its reply on
+	// stdin — which must not happen while bubbletea is draining the same tty. NewApp runs before
+	// tea.NewProgram, so this is the safe window; termenv caches the answer for the process, so a later switch
+	// to a transparent theme costs nothing.
+	theme.PrimeTerminalGround()
 	// THE THEME IS APPLIED AND THE COMPOSER RE-PINNED, in that order and in one place. The dock was
 	// constructed above with the DEFAULT palette captured into its textarea, so a session whose theme
 	// came from config rendered its composer in the wrong colours — see applyThemeAndRefresh.

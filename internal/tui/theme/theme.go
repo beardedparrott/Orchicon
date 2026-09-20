@@ -317,6 +317,14 @@ func Use(name string) bool {
 	if t == nil {
 		return false
 	}
+	// A TRANSPARENT THEME IS ADAPTED TO THE TERMINAL FIRST — see transparent_adapt.go. It happens HERE rather
+	// than in the palette or in the render path because this is the single point where "this palette is being
+	// used" is known, and because everything downstream (the styles, the markdown tokens, the contrast gates,
+	// the operator's screen) must agree on ONE effective palette. The registry is never mutated: Lookup hands
+	// back the pristine palette, the adaptation is a copy, so switching back and forth cannot compound it.
+	if t.Transparent {
+		t = adaptTransparentForTerminal(t)
+	}
 	active = t
 	buildStyles(*t)
 	// The markdown renderer's inline-code chip follows the palette like every other token. It is
@@ -581,15 +589,27 @@ func buildStyles(t Theme) {
 	// and was documented as such long before this theme needed it.
 	bg := t.Bg
 	composerFill := t.Surface
+	surface := t.Surface
 	if t.Transparent {
 		bg = lipgloss.Color("")
 		composerFill = lipgloss.Color("")
+		// Surface is the INACTIVE-TAB and panel fill, so it goes with the background. SurfaceAlt does NOT: it is
+		// the code chip / code block / diff fill, which is CONTENT rather than a surface — see
+		// transparent_adapt.go for why those keep a fill.
+		surface = lipgloss.Color("")
 	}
 	Bg = bg
 	ComposerFill = composerFill
-	// THE PANEL TINT DOES NOT FOLLOW THE TRANSPARENCY — see PanelBg. It is the palette's Bg, painted.
-	PanelBg = t.Bg
-	Surface = t.Surface
+	// THE PANEL TINT FOLLOWS THE TRANSPARENCY, like the app background and the composer.
+	//
+	// The operator: "now the transparents are not transparent at all ... the terminal should bleed through
+	// everywhere but with the light tint of the color scheme coming through." The previous cut kept panels
+	// painted to make a light transparent theme readable on a dark terminal, which is a real problem — but a
+	// panel that paints a fill is exactly what stops the bleed-through, so the readability is solved in the
+	// FOREGROUNDS instead (see adaptTransparentForTerminal) and the panels get out of the way with everything
+	// else.
+	PanelBg = bg
+	Surface = surface
 	SurfaceAlt = t.SurfaceAlt
 	Border = t.Border
 	BorderFaint = t.BorderFaint
@@ -608,7 +628,7 @@ func buildStyles(t Theme) {
 	white := lipgloss.Color("#f8fafc")
 
 	ScreenBg = lipgloss.NewStyle().Background(bg)
-	SurfaceBg = lipgloss.NewStyle().Background(t.Surface)
+	SurfaceBg = lipgloss.NewStyle().Background(surface)
 	// PanelBgStyle is the BACKGROUND-ONLY panel tint, derived FROM PanelBg rather than recomputed.
 	//
 	// IT WAS RECOMPUTED FROM t.Bg, which is the same value TODAY and a second source of truth forever: a test
@@ -646,7 +666,7 @@ func buildStyles(t Theme) {
 	BubbleUser = bubbleBand(bu, t)
 	BubbleModel = bubbleBand(bm, t)
 
-	TabInactive = lipgloss.NewStyle().Foreground(t.TextDim).Background(t.Surface).Padding(0, 1)
+	TabInactive = lipgloss.NewStyle().Foreground(t.TextDim).Background(surface).Padding(0, 1)
 	TabActive = lipgloss.NewStyle().Foreground(white).Bold(true).Background(t.Select).Padding(0, 1)
 	TabBar = lipgloss.NewStyle().Background(bg).Padding(0, 1)
 	TabBarUnderline = lipgloss.NewStyle().Foreground(t.Border).Background(bg)
