@@ -50,6 +50,36 @@ const (
 	runCtxCmdBudget = 250 * time.Millisecond
 )
 
+// runCmdBounded invokes ONE command and returns the message it produced, or nil when it did not answer within
+// the budget.
+//
+// IT EXISTS BECAUSE AN UNBOUNDED COMMAND IS AN UNBOUNDED TEST. runCtx bounds the commands it drains, but several
+// other helpers in this package invoke a command INLINE — `msg := cmd()` — protected only by a DEPTH cap, and a
+// depth cap is no defence against a command that BLOCKS: the depth stays low and the wait never ends.
+//
+// That is not hypothetical. Adding a conversations reload to the Ask refresh tick put waitChat — which selects on
+// two channels nobody sends to outside a live session — into a tick's command tree, and the tick tests sat there
+// until the package timeout. The reload is now gated so it is not requested in those tests, but the lesson is the
+// general one this helper enforces: any command may be a waiter, so nothing in a test may call one unbounded.
+//
+// The budget is runCtxCmdBudget, shared with the drainer: a command either answers in microseconds (a pure
+// function, an in-process loopback RPC) or it never answers at all, so the exact value does not matter — it only
+// decides how long a waiter costs. A command that times out leaves its goroutine parked; that is the same trade
+// runCtx makes, and it is bounded by the test process.
+func runCmdBounded(cmd tea.Cmd, budget time.Duration) tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+	select {
+	case msg := <-done:
+		return msg
+	case <-time.After(budget):
+		return nil // a blocking waiter, not a load
+	}
+}
+
 // runCtx drains a command the way bubbletea's runtime does — flattening batches, feeding each result back into
 // Update so follow-on commands are produced — but BOUNDED, so a command graph that never terminates cannot hang
 // the suite.

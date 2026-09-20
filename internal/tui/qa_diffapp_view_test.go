@@ -82,7 +82,7 @@ func openPaneViaD(m *App) *App {
 			if c == nil {
 				continue
 			}
-			if sub := c(); sub != nil {
+			if sub := runCmdBounded(c, runCtxCmdBudget); sub != nil {
 				nm2, _ := m.Update(sub)
 				m = nm2.(*App)
 			}

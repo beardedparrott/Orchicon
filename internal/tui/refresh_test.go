@@ -86,7 +86,7 @@ func TestRefreshTickRefreshesAndReArms(t *testing.T) {
 		if c == nil {
 			continue
 		}
-		if _, ok := c().(refreshTickMsg); ok {
+		if _, ok := runCmdBounded(c, runCtxCmdBudget).(refreshTickMsg); ok {
 			found = true
 		}
 	}
@@ -139,7 +139,7 @@ func TestStaleTickDoesNotRefreshOrMultiply(t *testing.T) {
 		if c == nil {
 			continue
 		}
-		if tick, ok := c().(refreshTickMsg); ok && tick.gen != m.refreshGen {
+		if tick, ok := runCmdBounded(c, runCtxCmdBudget).(refreshTickMsg); ok && tick.gen != m.refreshGen {
 			t.Errorf("re-armed with the stale generation %d, want the current %d — chains would multiply",
 				tick.gen, m.refreshGen)
 		}

@@ -75,7 +75,7 @@ func runCmd(t *testing.T, m *App, cmd tea.Cmd) *App {
 			if c == nil {
 				continue
 			}
-			if sub := c(); sub != nil {
+			if sub := runCmdBounded(c, runCtxCmdBudget); sub != nil {
 				nm, _ := m.Update(sub)
 				m = nm.(*App)
 			}

@@ -24,17 +24,29 @@ import (
 // which is what bubbletea does between the command and Update. It returns the updated App.
 //
 // A nil command, or one that produces nothing, returns the model unchanged.
+//
+// IT IS BOUNDED, because it is the helper most tests reach for and it used to be unbounded TWICE: the recursion had
+// no depth cap, and each member was invoked INLINE — so a command that BLOCKS hung the suite while the depth stayed
+// low. That is the shape that already cost this package a ten-minute timeout once (a conversations reload on the
+// refresh tick put waitChat, a blocking waiter, into a tick's command tree). A test helper's failure mode is a
+// hang rather than a failure, so the only real defence is to bound it — see runCmdBounded and runCtx.
 func runCmdDelivering(t *testing.T, m *App, cmd tea.Cmd) *App {
 	t.Helper()
-	if cmd == nil || m == nil {
+	return runCmdDeliveringDepth(t, m, cmd, 0)
+}
+
+// runCmdDeliveringDepth is runCmdDelivering with the recursion bounded.
+func runCmdDeliveringDepth(t *testing.T, m *App, cmd tea.Cmd, depth int) *App {
+	t.Helper()
+	if cmd == nil || m == nil || depth > 6 {
 		return m
 	}
-	switch msg := cmd().(type) {
+	switch msg := runCmdBounded(cmd, runCtxCmdBudget).(type) {
 	case nil:
 		return m
 	case tea.BatchMsg:
 		for _, c := range msg {
-			m = runCmdDelivering(t, m, c)
+			m = runCmdDeliveringDepth(t, m, c, depth+1)
 		}
 		return m
 	default:

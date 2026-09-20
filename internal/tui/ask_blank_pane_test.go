@@ -165,7 +165,7 @@ func runCmdTreeForTest(t *testing.T, m *App, cmd tea.Cmd, depth int) {
 	if cmd == nil || depth > 6 {
 		return
 	}
-	msg := cmd()
+	msg := runCmdBounded(cmd, runCtxCmdBudget)
 	if msg == nil {
 		return
 	}

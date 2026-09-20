@@ -146,7 +146,26 @@ func (m *App) refreshActiveView() tea.Cmd {
 		//
 		// It is the LIST only, and it does not set convLoading: this is a background reconcile, not the first
 		// load, so it must not flash the rail's loading state every five seconds.
-		load := m.chat.LoadConversations()
+		//
+		// AND IT ONLY RUNS WHEN THERE IS A LIST TO KEEP CURRENT — `convLoaded` is "a successful rail load has
+		// landed". That gate is both the right behaviour and a HANG FIX, and it is worth being precise about
+		// because the second half is not obvious:
+		//
+		//   - Behaviour: re-reading a list that was never loaded is pointless, and in a session whose first load
+		//     FAILED it would hammer a plane that is already unhappy. That case has an explicit retry (the rail's
+		//     "click to retry"), which is where recovery belongs.
+		//   - The hang: a ConversationsMsg arriving while no project list has landed sends onConversations down
+		//     its SELF-HEALING branch, which returns waitChat() — the blocking waiter that selects on two
+		//     channels nobody sends to outside a live session. On a TIMER that is a command chain that never
+		//     ends, and it hung this package the moment the reload was added here: the tick tests drive the
+		//     window directly against an app that has never loaded a list, so every tick produced a
+		//     ConversationsMsg and therefore a waitChat, and two of those drainers invoke commands INLINE.
+		//     (They are bounded now — see runCmdBounded — so the next such command cannot do this again, but the
+		//     gate is what stops it being asked for at all.)
+		var load tea.Cmd
+		if m.convLoaded {
+			load = m.chat.LoadConversations()
+		}
 		if r, ok := s.(Refresher); ok {
 			return tea.Batch(m.onChatWake(), r.RefreshView(), load)
 		}

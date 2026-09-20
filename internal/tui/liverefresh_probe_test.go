@@ -127,7 +127,7 @@ func execCmdTree(t *testing.T, cmd tea.Cmd, depth int) {
 	if cmd == nil || depth > 5 {
 		return
 	}
-	msg := cmd()
+	msg := runCmdBounded(cmd, runCtxCmdBudget)
 	if batch, ok := msg.(tea.BatchMsg); ok {
 		for _, c := range batch {
 			execCmdTree(t, c, depth+1)
