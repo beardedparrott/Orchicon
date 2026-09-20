@@ -358,3 +358,40 @@ func TestBulkSetDoesNotDisturbArchiveAndDelete(t *testing.T) {
 		}
 	}
 }
+
+// 10. A CLIENT WITHOUT THE IMAGE SERVICE MUST NOT BE DEREFERENCED. prepBulkSet's own guard promises
+// this path "never PANICs on a missing client", and the image fetch was the one dereference it did
+// not cover — so a screen wired without `Images` would take the whole TUI down the moment the
+// operator pressed W. The picker must still open, offering the workflow it CAN set.
+func TestBulkSetPickerSurvivesAMissingImageClient(t *testing.T) {
+	p := newPlane()
+	p.workflows = []*apiv1.Workflow{{
+		Id: "wf-1", Name: "Fanout", Status: apiv1.WorkflowStatus_WORKFLOW_STATUS_PUBLISHED,
+	}}
+	p.workflowVersions = map[string]*apiv1.WorkflowVersion{
+		"wf-1": {Id: "v1", WorkflowId: "wf-1", Steps: `[{"id":"s1"}]`},
+	}
+	m := bulkSetModel(t, p)
+	m.cl.Images = nil
+
+	f := openBulkSet(t, m, 2) // panics here without the guard
+
+	if got := optionValues(f.Spec("workflow").Options); !containsStr(got, "wf-1") {
+		t.Errorf("workflow options = %v, want the runnable wf-1 offered", got)
+	}
+	// The image picker still carries its two sentinels: a workflow-only set is still possible.
+	got := optionValues(f.Spec("runtime_image").Options)
+	for _, want := range []string{bulkSetSkip, bulkSetClear} {
+		if !containsStr(got, want) {
+			t.Errorf("image options = %v, want the %q sentinel", got, want)
+		}
+	}
+}
+
+func optionValues(opts []kit2.Option) []string {
+	values := make([]string, 0, len(opts))
+	for _, o := range opts {
+		values = append(values, o.Value)
+	}
+	return values
+}

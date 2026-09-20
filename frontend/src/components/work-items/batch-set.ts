@@ -183,9 +183,25 @@ export function useRunnableWorkflowOptions(): {
     return out;
   }, [candidates, versions]);
 
+  // `hidden` counts only the ones we have PROVEN cannot run: a status that is not
+  // PUBLISHED/DEPRECATED, a version fetch that failed, or a version with no steps. A candidate whose
+  // version is still IN FLIGHT is NOT counted — the dialog renders this as "N workflows hidden — not
+  // published, or has no steps. Binding one would produce an item that cannot run", and saying that
+  // about a template that merely had not loaded yet is a false claim, not a cosmetic one.
+  const hidden = useMemo(() => {
+    // Status is known from the list itself, before any version is fetched.
+    let n = (list.data?.length ?? 0) - candidates.length;
+    candidates.forEach((w, i) => {
+      const q = versions[i];
+      if (!q || q.isPending) return;
+      if (q.isError || !isRunnableWorkflow(w, q.data?.latestVersion)) n += 1;
+    });
+    return n;
+  }, [list.data, candidates, versions]);
+
   return {
     options,
-    hidden: (list.data?.length ?? 0) - options.length,
+    hidden,
     isLoading: list.isLoading,
   };
 }

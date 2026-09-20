@@ -151,13 +151,17 @@ func (m *Model) prepBulkSet() tea.Cmd {
 		msg.workflows = wfs
 		msg.hiddenWorkflows = hidden
 		// The runtime-image list is the SAME source the create/edit forms use: value = the tag the
-		// request carries.
-		if lr, err := cl.Images.ListRuntimeImages(ctx, connect.NewRequest(&apiv1.ListRuntimeImagesRequest{PageSize: 100})); err == nil {
-			for _, img := range lr.Msg.GetRuntimeImages() {
-				msg.images = append(msg.images, kit2.Option{
-					Value: img.GetTag(),
-					Label: img.GetName() + " (" + img.GetTag() + ")",
-				})
+		// request carries. A client without the image service still gets a usable picker (a
+		// workflow-only set), but it must not be DEREFERENCED — the guard at the top of this function
+		// promises this path never panics on a missing client, and `Images` is one of those clients.
+		if cl.Images != nil {
+			if lr, err := cl.Images.ListRuntimeImages(ctx, connect.NewRequest(&apiv1.ListRuntimeImagesRequest{PageSize: 100})); err == nil {
+				for _, img := range lr.Msg.GetRuntimeImages() {
+					msg.images = append(msg.images, kit2.Option{
+						Value: img.GetTag(),
+						Label: img.GetName() + " (" + img.GetTag() + ")",
+					})
+				}
 			}
 		}
 		return msg
