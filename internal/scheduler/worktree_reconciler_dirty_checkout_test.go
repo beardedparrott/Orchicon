@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -141,9 +142,17 @@ func TestSkippedRefusedWhenDirty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
+	// Release the tenant connection on EVERY exit path: an early t.Fatalf must
+	// not leak the tx, or the package-level pool.Close blocks forever and the
+	// whole scheduler suite times out (a failure that used to masquerade as a
+	// hang). Rollback after Commit is a no-op.
+	defer ttx.Rollback(ctx)
+	// UNIQUE slug: a fixed slug collides with residue in the SHARED tnt_dev
+	// tenant on any second run (CreateProject fails, the test aborts). The
+	// sibling fixture (newWorktreeTestEnv) already derives its slug this way.
 	proj, err := db.CreateProject(ctx, ttx.Tx, db.ProjectRow{
 		ID: db.NewID(), TenantID: approvalTestTenant,
-		Name: "Dirty Gate Project", Slug: "dirty-gate-" + stray[:4],
+		Name: "Dirty Gate Project", Slug: "dirty-gate-" + strings.ToLower(db.NewID()),
 		Status: "active", Goals: []byte("[]"),
 		ProjectDir: plain,
 	})
