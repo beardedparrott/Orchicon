@@ -210,6 +210,18 @@ var paletteSpecs = []paletteSpec{
 	{name: "rose-light", dark: false, bgH: 350, bgS: 100, bgL: 98, accentH: 346, accentS: 77, accentL: 44, textH: 222, textS: 47, textL: 11},
 	{name: "teal-light", dark: false, bgH: 173, bgS: 60, bgL: 98, accentH: 173, accentS: 80, accentL: 32, textH: 222, textS: 47, textL: 11},
 	{name: "slate-light", dark: false, bgH: 210, bgS: 20, bgL: 98, accentH: 215, accentS: 25, accentL: 42, textH: 222, textS: 47, textL: 11},
+
+	// COFFEE, at the operator's request, and the request is the interesting part: "Catpuccin-mocha and latte
+	// looks blue. Shouldn't a cappacunio type of theme be more brown?" The NAME misleads and the PALETTE is
+	// faithful — Catppuccin's own Mocha base is #1e1e2e, a blue-purple, and its accents are blue and mauve, so
+	// it genuinely is not brown. Rather than repaint a ported palette and misrepresent it, these are the
+	// brown ones: a warm dark roast and a light cream, defined here in the same HSL terms as the rest of the
+	// generated families so they inherit the derivation AND its contrast floors.
+	//
+	// espresso is a deep, low-lightness roast (the darkness of a shot, not of a bean);
+	// cafe is the same family in light — cream paper with coffee-dark text.
+	{name: "espresso", dark: true, bgH: 24, bgS: 22, bgL: 8, accentH: 30, accentS: 62, accentL: 56, textH: 34, textS: 24, textL: 94},
+	{name: "cafe", dark: false, bgH: 33, bgS: 45, bgL: 97, accentH: 26, accentS: 58, accentL: 34, textH: 24, textS: 32, textL: 13},
 }
 
 // derivedThemes is the spec set built into palettes once at startup.

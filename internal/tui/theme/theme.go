@@ -394,11 +394,15 @@ func transparentCopy(base *Theme, name string) *Theme {
 // the fallback, so changing it changes how orch looks out of the box and nothing at all for an
 // operator who has already chosen a palette.
 //
-// FOREST, at the operator's request: "I would like forest to be the default theme for the TUI". It is the
-// `forest` palette from theme_palettes.go — the deep-green family — and NOT "forest-light" beside it, which is
-// the same family in light mode. Lookup matches the name exactly, so a typo here would fall back to the base
-// dark palette without an error; theme_test.go asserts this name resolves, and that it is a DARK palette.
-const DefaultName = "forest"
+// SLATE, at the operator's request: "I think Slate is pretty sleek and professional. Let's make that the
+// default theme over ember." It is the `slate` palette from theme_palettes.go — the low-saturation grey-blue
+// family — and NOT "slate-light" beside it, which is the same family in light mode. Lookup matches the name
+// exactly, so a typo here would fall back to the base dark palette without an error; theme_test.go asserts
+// this name resolves, and that it is a DARK palette.
+//
+// (It previously named `forest`, also at the operator's request; this supersedes that choice. `forest` is
+// unchanged and still selectable — only the out-of-the-box default moved.)
+const DefaultName = "slate"
 
 // Resolved active colors, re-pointed by Use. Render paths read these via
 // the styles; direct color reads stay possible for layout math.

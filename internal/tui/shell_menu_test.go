@@ -156,8 +156,11 @@ func TestThemeRegistryAndConfig(t *testing.T) {
 			t.Errorf("theme %q must be registered", want)
 		}
 	}
-	if theme.DefaultName != "forest" {
-		t.Fatalf("default theme = %q, want forest (the operator's request)", theme.DefaultName)
+	// THE DEFAULT IS ASSERTED HERE AS WELL AS IN THE THEME PACKAGE, which is not redundant: this test reads it
+	// through the SHELL (the /theme listing and the config the shell writes), so a default that changed in one
+	// place and not the other would show up as a disagreement between what launches and what is offered.
+	if theme.DefaultName != "slate" {
+		t.Fatalf("default theme = %q, want slate (the operator's request)", theme.DefaultName)
 	}
 	if !theme.Use("light") {
 		t.Fatal("theme.Use(light) must switch")
