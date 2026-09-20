@@ -86,7 +86,7 @@ The frontend is a TypeScript/React SPA with a visual React Flow workflow editor,
 | OTel Collector | otel-contrib 0.119 | Pipeline fan-out: traces → Tempo, logs → Loki, metrics → VM |
 | Object Storage | Local filesystem or S3 | Blob store abstraction |
 | Policy Engine | OPA v1 (Rego) | Governance policy evaluation |
-| Runtime Adapter | OpenCode CLI | Default AI agent runtime (pluggable via gRPC) |
+| Runtime Adapter | **Built-in native engine (default)**, plus external adapters (OpenCode, …) | Sessions run inside the control plane by default, so **no adapter CLI is required**. External adapters are pluggable over gRPC and mounted from the operator's host install when a run asks for one — never bundled |
 | Deployment | Single container (`deploy/container/`) | `orchicon container` PID-1 supervisor runs the whole stack in one image (GHCR `ghcr.io/beardedparrott/orchicon`); `scripts/container.sh` manages dev (`orchicon-cnt-dev`, :8080/:3002) and prod (`orchicon-cnt-prod`, :8091/:3003) instances |
 
 ---
@@ -108,7 +108,7 @@ graph TB
         WebhookDispatch[Webhook Dispatcher]
         Policy[OPA Policy Engine]
         RecoveryEngine[Recovery Engine]
-        AdapterBridge[OpenCode Adapter Bridge]
+        AdapterBridge[Adapter Bridges<br/>native engine + external adapters]
         AIGateway[AI Gateway<br/>Model / MCP Discovery]
         Telemetry[OpenTelemetry Setup<br/>Tracer / Meter / Logger]
         BlobStore[BlobStore<br/>Local / S3]
@@ -130,7 +130,8 @@ graph TB
     subgraph "Runtime"
         RuntimeDaemon[orchicon runtime-daemon<br/>host · owns Docker socket]
         RuntimeContainer[orchicon-runtime-&lt;runID&gt;<br/>per active workflow run]
-        OpenCode[OpenCode CLI<br/>inside runtime container]
+        NativeEngine[orchicon native engine<br/>in-process · default]
+        OpenCode[OpenCode CLI<br/>optional · inside runtime container]
         FutureRuntime[Future Runtimes<br/>gRPC Sidecar]
     end
 
@@ -148,15 +149,16 @@ graph TB
     Reconcilers --> PG
     Reconcilers --> OutboxRelay
     Reconcilers --> AdapterBridge
+    AdapterBridge --> NativeEngine
+    AdapterBridge --> OpenCode
     OutboxRelay --> NATS
     NATS --> WebhookDispatch
     WebhookDispatch --> HTTP
-    AdapterBridge --> OpenCode
     AdapterBridge --> RuntimeDaemon
     RuntimeDaemon --> RuntimeContainer
     RuntimeContainer --> OpenCode
     AdapterBridge -.-> FutureRuntime
-    AIGateway --> OpenCode
+    AIGateway -.-> OpenCode
     Connect --> Policy
     Connect --> RecoveryEngine
     Telemetry --> OTel
@@ -539,9 +541,9 @@ Orchicon/
 - **Docker** (for the single-container deployment; the headless `orchicon serve` binary needs no external services)
 - **curl** + **tar** (for one-liner install)
 - **buf** and **atlas** (install via `make tools`)
-- **opencode** CLI (required for runtime dispatch — [install guide](https://opencode.ai))
+- *(optional)* **opencode** CLI — only if you want to dispatch work to OpenCode as a runtime. Orchicon's built-in engine needs **nothing installed**; see the adapter note below
 
-> **Orchicon never ships runtime adapter CLIs in its images.** opencode (and, in the future, Claude Code / Codex) is installed by the operator **on the host** and bind-mounted into the containers at runtime — the images contain no adapter binary. This keeps the product redistributable regardless of an adapter's license (Claude Code's terms, for example, prohibit bundling it with a product). The installer verifies opencode is present on the host and fails with a clear message if it is not; the adapter resolves it from `PATH` or `~/.opencode/bin`.
+> **Adapters are optional, and Orchicon never ships one.** Its built-in native engine runs sessions inside the control plane, so a fresh install is complete with **no adapter CLI present** — nothing is probed for, and nothing fails. If you want to run work on OpenCode (or a future adapter such as Claude Code / Codex), install it **on the host**: it is bind-mounted into the containers at runtime and resolved from `PATH` or `~/.opencode/bin`. The images contain no adapter binary, which keeps the product redistributable regardless of an adapter's licence (Claude Code's terms, for example, prohibit bundling it with a product).
 
 ### One-Line Install (Linux / macOS)
 
@@ -580,7 +582,7 @@ Orchicon's runtime layer (the runtime daemon, its unix socket, and the container
 
 | Flag | Description |
 |---|---|
-| `--version <tag>` | Install a specific version (e.g. `v0.2.0`). Default: latest. |
+| `--version <tag>` | Install a specific version (e.g. `v0.3.0`). Default: latest. |
 | `--install-dir <dir>` | Installation directory (default: `~/.local/bin`). |
 | `--uninstall` | Remove Orchicon from the install directory. |
 | `--dry-run` | Print what would happen without making changes. |
@@ -1326,7 +1328,7 @@ Worker executions run inside **one short-lived container per active workflow run
 
 **Stuck-run detection (no leaked containers):** a container is only reaped when its run reaches a terminal state, so any run that can never progress would hold one forever (the adopt sweep treats every running run as active and keeps the container alive). The reconciler therefore fails a run **at start** — reaping the container and, for a sequence child, halting the parent's chain — when the published version has an **empty step DAG** (`steps=[]`), when its workflow **version row is gone** (workflow deleted / raw-seeded run), or when the runtime image can't be resolved (this failure is now committed, not rolled back by the deferred rollback). It also un-wedges **orphaned step references**: `pollTaskStep` fails a running task step terminal when its work item was hard-deleted mid-run, and falls through to the recovery block (after the dispatch-link grace) when its execution row is gone — instead of waiting forever, which previously left the run `running` and its container up indefinitely.
 
-**Runtime adapter CLIs are mounted, never baked:** the images contain **no adapter binary**. The daemon mounts the operator's host `~/.opencode` install (read-only) into every runtime container and puts its `bin/` on PATH, so the supervisor can exec `opencode` — the same mount `container.sh`/`orchicon install` add to the main container for in-process dispatch. The supervisor's `argv[0]` allowlist (`runtimeBinAllowlist` in `internal/runtime/agent.go`) lists the adapter binaries Orchicon may exec — `opencode` today; `claude`/`codex` get one added entry when those adapters land. This is the licensing-safe pattern for all future adapters: **the product mounts the operator's own install; it never ships, downloads, or redistributes the CLI.**
+**Runtime adapter CLIs are mounted, never baked:** the images contain **no adapter binary**. When a run's boot profile demands OpenCode — decided **per run** from the model refs that run will dispatch — the daemon mounts the operator's host `~/.opencode` install (read-only) into that runtime container and puts its `bin/` on PATH, so the supervisor can exec `opencode`. A run on the built-in engine mounts nothing at all, and `container.sh`/`orchicon install` add the same mount to the main container, conditionally, for in-process dispatch. The supervisor's `argv[0]` allowlist (`runtimeBinAllowlist` in `internal/runtime/agent.go`) lists the adapter binaries Orchicon may exec — `opencode` today; `claude`/`codex` get one added entry when those adapters land. This is the licensing-safe pattern for all future adapters: **the product mounts the operator's own install; it never ships, downloads, or redistributes the CLI.**
 
 **Security model — no root process in the runtime container:**
 
