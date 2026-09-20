@@ -207,10 +207,16 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 			m.Notice("theme " + item.ID + " is already active")
 			return true, nil
 		}
-		m.applyTheme(item.ID)
 		m.Notice("theme: " + item.ID)
-		return true, nil
+		return true, m.applyTheme(item.ID)
 	}
+
+	// MOVING THROUGH THE THEMES APPLIES THEM. This is the hook that makes the themes list a PREVIEW rather
+	// than a set of labels to pick from: the operator asked for exactly that — "auto switch to the theme as
+	// the user is moving through them with the arrow keys or clicking on them as opposed to having to hit
+	// enter to select" — and it mirrors the GUI, where clicking a theme switches to it. Enter still applies
+	// (above) and is still the only gesture that also writes the notice.
+	m.Base.OnHighlight = func() tea.Cmd { return m.previewTheme() }
 
 	m.rpcAdminProbe = func(ctx context.Context) error {
 		if m.cl == nil || m.cl.Auth == nil {
@@ -659,14 +665,51 @@ func (m *Model) fetchThemes(ctx context.Context, pageToken string) ([]kit2.Item,
 // applyTheme switches the TUI palette through the shell (the shell owns the
 // profile and the construction-captured styles), then reconciles this pane so
 // the active marker moves.
-func (m *Model) applyTheme(name string) {
+//
+// IT RETURNS THE RECONCILE COMMAND rather than discarding it. `m.Refresh(name)` only STAGES the reload and
+// hands back the command that performs it, so the previous `m.Refresh("themes")` — whose return value went
+// nowhere — left the pane showing the palette that WAS active until something else happened to refresh it.
+// Invisible while a theme switch was a deliberate Enter press the operator followed with a glance; obvious
+// now that moving the cursor applies live, where the "active" marker tracking the cursor IS the feedback
+// that the preview took.
+func (m *Model) applyTheme(name string) tea.Cmd {
 	type themer interface{ SetTheme(string) bool }
 	if sh, ok := m.Shell().(themer); ok {
 		sh.SetTheme(name)
 	} else if !theme.Use(name) {
-		return
+		return nil
 	}
-	m.Refresh("themes")
+	return m.Refresh("themes")
+}
+
+// previewTheme applies the palette under the cursor as the operator MOVES through the list.
+//
+// The operator: "when selecting themes, we should auto switch to the theme as the user is moving through
+// them with the arrow keys or clicking on them as opposed to having to hit enter to select." The gesture is
+// the PREVIEW, and it mirrors the GUI, where clicking a theme switches to it.
+//
+// THREE GUARDS, each of which would otherwise make moving through this list unpleasant:
+//
+//   - A SOURCE CHECK, because this hook is installed on the shared Base and fires for every source on this
+//     screen. Applying a palette because the cursor moved over a SECRET would be absurd, and the check is
+//     also what keeps this from reacting to a reload re-seating the cursor.
+//   - A SECTION HEADING is not a theme. The rows carry DARK / LIGHT with an EMPTY id (see fetchThemes), so
+//     arrowing onto a heading must move the cursor WITHOUT changing the palette.
+//   - THE ALREADY-ACTIVE THEME IS NOT RE-APPLIED. Without this, parking on the active row and pressing up
+//     and back down would re-persist the config and rewrite the notice on every keystroke — a theme
+//     "switch" that is really no change, reported as if it were one.
+func (m *Model) previewTheme() tea.Cmd {
+	if m.ActiveSourceName() != "themes" {
+		return nil
+	}
+	item, ok := m.ActiveItem()
+	if !ok || item.ID == "" {
+		return nil
+	}
+	if item.ID == theme.Active().Name {
+		return nil
+	}
+	return m.applyTheme(item.ID)
 }
 
 func (m *Model) fetchSettings(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
