@@ -459,10 +459,23 @@ func (m *Model) editFormFor(w *apiv1.WorkItem, projOpts []kit2.Option) *kit2.For
 		kit2.FieldSpec{Name: "priority", Label: "Priority", Kind: kit2.KNumber, Initial: strconv.Itoa(int(w.GetPriority())), Validate: validateNonNegativeInt},
 		kit2.FieldSpec{Name: "budgets", Label: "Budgets", Kind: kit2.KJSON, Initial: w.GetBudgets(), Validate: validateJSON},
 		kit2.FieldSpec{Name: "context_window", Label: "Context window", Kind: kit2.KNumber, Initial: strconv.Itoa(int(w.GetContextWindow())), Validate: validateNonNegativeInt},
+		// SEEDED from the item, like every other field in this form. Initial: is the ONLY thing
+		// that populates the form's value map (kit2.NewForm writes f.Values[name] only when
+		// Initial != ""), so a reference picker WITHOUT it opens on "— none —" AND sends "" on
+		// save: an operator who opens an item only to correct its priority would silently unbind
+		// the workflow that drives it and clear the container image it runs in. The proto reads
+		// empty as the unbind ("bind/unbind to a workflow template"; "empty = base image"), so
+		// the blank field IS a write, not a display shortfall.
+		//
+		// pickerOptsWithCurrent guarantees the value is LISTED; it selects nothing, so it cannot
+		// substitute for the seed. The GUI seeds both fields the same way
+		// (frontend/src/routes/work-items_.$id.tsx:303-304) — this is the TUI catching up.
 		kit2.FieldSpec{Name: "workflow", Label: "Workflow", Kind: kit2.KPicker,
-			Options: pickerOptsWithCurrent(m.workflowPickerOpts(), w.GetWorkflowId(), "workflow ")},
+			Options: pickerOptsWithCurrent(m.workflowPickerOpts(), w.GetWorkflowId(), "workflow "),
+			Initial: w.GetWorkflowId()},
 		kit2.FieldSpec{Name: "runtime_image", Label: "Runtime image", Kind: kit2.KPicker,
-			Options: pickerOptsWithCurrent(m.images, w.GetRuntimeImage(), "image ")},
+			Options: pickerOptsWithCurrent(m.images, w.GetRuntimeImage(), "image "),
+			Initial: w.GetRuntimeImage()},
 		kit2.FieldSpec{Name: "context_files", Label: "Context files", Kind: kit2.KText, Initial: strings.Join(w.GetContextFiles(), ",")},
 		// A DAY AND A TIME, chosen from ONE modal calendar + clock — never typed, never a preset.
 		//
