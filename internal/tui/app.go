@@ -2340,12 +2340,49 @@ func wrapPlain(s string, width int) []string {
 	return out
 }
 
-// centeredWelcomeView renders the launch block — the large brand lockup, the
-// composer box, and the tagline — vertically centered in the w×h body region.
-// The composer keeps its own rendering (border, hint row, palette target);
-// only its width and position change, so typing, slash commands and drafts
-// behave identically to the docked layout.
-func (m App) centeredWelcomeView(w, h int) []string {
+// welcomeComposer is WHERE the launch page's centered composer box is DRAWN, in FRAME coordinates.
+//
+// It exists because the launch page is the one layout where the composer is NOT at the bottom of the
+// frame: it is centered inside the body region and narrower than the layout width. Two things need to
+// know that geometry — the paint, and a click that has to be converted from frame coordinates into the
+// dock's own — and the operator's report is exactly what happens when only one of them knows it:
+//
+//	"Clicking into the composer at a specific coordinate should move the cursor to that coordinate.
+//	 This WAS working but is no longer working again."
+//
+// It works when the composer is DOCKED (composerTopRow is the true row) and not on the launch page,
+// where composerTopRow() pointed at a row the box is not on and the click missed it entirely.
+//
+// ONE computation, read by both (see welcomeLayout), so a change to the centering cannot desync the
+// caret from the box an operator clicked.
+type welcomeComposer struct {
+	// Top is the frame row of the box's FIRST line (its top border); Left is its first CELL.
+	// Width is the box's width and Rows how many rows it spans.
+	Top, Left, Width, Rows int
+}
+
+// contains reports whether a frame coordinate lands inside the drawn box.
+func (g welcomeComposer) contains(x, y int) bool {
+	return x >= g.Left && x < g.Left+g.Width && y >= g.Top && y < g.Top+g.Rows
+}
+
+// bodyTopRow is the frame row of the body region's FIRST row. The chrome above it is the tab bar and its
+// underline rule (tabBarRows) plus the one blank separator (row 2) — the same derivation composerTopRow
+// and selectionRegionAt use, named once so the launch page's centered geometry cannot be off by the
+// chrome it is drawn under.
+func bodyTopRow() int { return tabBarRows + 1 }
+
+// welcomeLayout builds the launch block — the large brand lockup, the composer box, and the tagline —
+// vertically centered in the w×h body region, AND reports where the composer box landed in that block.
+//
+// The composer keeps its own rendering (border, hint row, palette target); only its width and position
+// change, so typing, slash commands and drafts behave identically to the docked layout.
+//
+// The row of the box is DERIVED from the block it is composed into (a leading blank, the wordmark,
+// a blank, then the box) rather than hardcoded, because the wordmark is FIVE rows on a wide terminal
+// and ONE row on a narrow one — a constant here would be wrong on exactly the terminals where the
+// layout has already changed shape.
+func (m App) welcomeLayout(w, h int) ([]string, welcomeComposer) {
 	boxW := w * 2 / 3
 	if boxW > 76 {
 		boxW = 76
@@ -2384,6 +2421,7 @@ func (m App) centeredWelcomeView(w, h int) []string {
 	block = append(block, "")
 	block = append(block, brand...)
 	block = append(block, "")
+	blockRow := len(block) // the box's first row WITHIN the block
 	block = append(block, boxLines...)
 	block = append(block, "")
 	block = append(block, tagline...)
@@ -2398,6 +2436,13 @@ func (m App) centeredWelcomeView(w, h int) []string {
 	for i := 0; i < top; i++ {
 		out = append(out, "")
 	}
+	// The box's LEFT edge. Every box line is exactly boxW wide (ComposerBox pads its inner rows and adds
+	// its border), so one pad serves them all — and it is the same pad the lines below are drawn with,
+	// derived once here rather than re-derived by the click mapping.
+	boxLeft := (w - boxW) / 2
+	if boxLeft < 0 {
+		boxLeft = 0
+	}
 	for _, l := range block {
 		pad := (w - lipgloss.Width(l)) / 2
 		if pad < 0 {
@@ -2411,7 +2456,18 @@ func (m App) centeredWelcomeView(w, h int) []string {
 	if len(out) > h {
 		out = out[:h]
 	}
-	return out
+	return out, welcomeComposer{
+		Top:   bodyTopRow() + top + blockRow,
+		Left:  boxLeft,
+		Width: boxW,
+		Rows:  len(boxLines),
+	}
+}
+
+// centeredWelcomeView renders the centered launch block (see welcomeLayout, which owns the layout).
+func (m App) centeredWelcomeView(w, h int) []string {
+	rows, _ := m.welcomeLayout(w, h)
+	return rows
 }
 
 // safeView renders the active screen, tolerating a nil screen (the shell
@@ -3428,7 +3484,37 @@ func (m *App) composerTopRow() int {
 //
 // It converts FRAME coordinates to the dock's own, which is the half only the shell can do: the dock is handed
 // a width and rendered at the bottom of the body, so it has no idea which frame row it starts on.
+//
+// THE LAUNCH PAGE IS A DIFFERENT GEOMETRY, and that is the whole of this fix. When the composer is DOCKED it
+// starts at composerTopRow() and spans the content column. On the launch page (Ask → New, the screen orch
+// opens on) it is CENTERED in the body region and NARROWER than the content column — so composerTopRow()
+// names a row the box is not on, the conversion hands ClickAt a negative row, ClickAt refuses it, and the
+// caret never moves. The operator: "Clicking into the composer at a specific coordinate should move the
+// cursor to that coordinate. This WAS working but is no longer working again." — it worked on the
+// conversation view and not on the page they start from.
+//
+// The geometry comes from welcomeLayout, the SAME computation the paint uses, so the two cannot drift.
 func (m *App) composerClickAt(x, y int) bool {
+	if m.welcomeMode() {
+		_, g := m.welcomeLayout(m.contentWidth(), m.contentHeight()+m.dock.Lines())
+		if !g.contains(x, y) {
+			// Outside the drawn box — the centered margins, or the brand/tagline above and below. A click
+			// there is not a composer click, so it must fall through to the rest of the frame's handling
+			// rather than being swallowed.
+			return false
+		}
+		// ClickAt measures the box it is placing the caret in (the prompt offset, the input rows, the
+		// textarea's width), so it MUST be given the width the box was DRAWN at rather than the layout
+		// width — otherwise its column arithmetic describes a box that is not on screen. The dock's own
+		// width is restored immediately: outside this paint, the invariant is
+		// m.dock.Width == contentWidth() (see refreshLayout), and a dock left narrow would mis-report
+		// its row count to the layout on the next frame.
+		prev := m.dock.Width
+		m.dock.Width = g.Width
+		ok := m.dock.ClickAt(x-g.Left, y-g.Top)
+		m.dock.Width = prev
+		return ok
+	}
 	if y < m.composerTopRow() {
 		return false
 	}
