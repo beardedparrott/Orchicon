@@ -503,6 +503,32 @@ export function showRecurringBadge(item: WorkItem): boolean {
   return isRecurringItem(item) && item.status !== WorkItemStatus.RECURRING;
 }
 
+// ---------------------------------------------------------------------------
+// Auto-start requires a bound workflow (the client half of the workflow-first rule)
+// ---------------------------------------------------------------------------
+
+/** True when a save would send a combination the plane rejects: an item told to
+ *  start immediately on save with NO workflow bound. Task A makes that item
+ *  permanently unrunnable — every transition to ready/assigned/scheduled/running
+ *  is refused, and the reconciler backstops fail loudly — so the form must not
+ *  offer the state and the save handler must refuse it before the mutation goes
+ *  out.
+ *
+ *  It is the SAME rule as the TUI's `autoStartRefusal`
+ *  (internal/tui/screens/work/workitems.go): auto_start requires a bound
+ *  workflow. The create form has no auto-start control at all
+ *  (routes/work-items_.new.tsx), so the gap is this page's edit card, which stays
+ *  visible on an item WITH CHILDREN (`editWorkflowId || hasChildren`) and
+ *  therefore survives the workflow being cleared back to "-- No workflow --". */
+export function autoStartBlocked(autoStart: boolean, workflowId: string): boolean {
+  return autoStart && !workflowId.trim();
+}
+
+/** The refusal shown when auto-start is attempted with no workflow bound. It
+ *  names the FIX (either of the two fields to change), not the failed rule. */
+export const AUTO_START_NEEDS_WORKFLOW =
+  "Start immediately on save needs a workflow — pick one in Workflow template, or untick it.";
+
 /** Relative age of a work item from its created_at ("just now", "2d ago"). */
 export function relativeAge(createdAt?: WorkItem["createdAt"], now = Date.now()): string {
   if (!createdAt) return "";

@@ -28,6 +28,8 @@ import {
   showRecurringBadge,
   MANUALLY_UNMOVABLE_STATUSES,
   STATUS_FILTER_OPTIONS,
+  autoStartBlocked,
+  AUTO_START_NEEDS_WORKFLOW,
 } from "@/components/work-items/work-item-meta";
 
 describe("kind meta palette variants", () => {
@@ -262,5 +264,30 @@ describe("skipped status (terminal-success, skip-status/depends_on interplay)", 
   it("is system-managed (not manually movable) and filterable", () => {
     expect(MANUALLY_UNMOVABLE_STATUSES.has(WorkItemStatus.SKIPPED)).toBe(true);
     expect(STATUS_FILTER_OPTIONS.map((o) => o.value)).toContain(WorkItemStatus.SKIPPED);
+  });
+});
+
+// Auto-start requires a bound workflow — the GUI half of the workflow-first rule.
+// The route imports THIS predicate and refuses the save with it, so the unit test
+// covers the rule that ships rather than a re-implementation of it.
+describe("autoStartBlocked (auto-start needs a bound workflow)", () => {
+  it("refuses auto-start with no workflow bound", () => {
+    expect(autoStartBlocked(true, "")).toBe(true);
+    // Whitespace is not a binding.
+    expect(autoStartBlocked(true, "   ")).toBe(true);
+  });
+
+  it("allows auto-start once a workflow is bound", () => {
+    expect(autoStartBlocked(true, "wf-1")).toBe(false);
+  });
+
+  it("does not block a save that is not asking for auto-start", () => {
+    expect(autoStartBlocked(false, "")).toBe(false);
+    expect(autoStartBlocked(false, "wf-1")).toBe(false);
+  });
+
+  it("names both fixes in the refusal the operator sees", () => {
+    expect(AUTO_START_NEEDS_WORKFLOW).toMatch(/workflow/i);
+    expect(AUTO_START_NEEDS_WORKFLOW).toMatch(/untick/i);
   });
 });
