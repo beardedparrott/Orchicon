@@ -9,7 +9,6 @@ import {
   Loader2,
   Square,
   RefreshCw,
-  Brain,
   Pencil,
   FolderPlus,
   ChevronRight,
@@ -30,6 +29,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { AskModelChip } from "@/components/AskModelChip";
 import { Button } from "@/components/ui/button";
 import { LiveDuration } from "@/components/ui/live-duration";
+import { ModeIcon } from "@/components/ui/ModeIcon";
 import { ModeToggle } from "@/components/ui/mode-toggle";
 import { useAskMetricsLive } from "@/lib/ask-metrics";
 import { cn } from "@/lib/utils";
@@ -41,6 +41,7 @@ import {
   scopeLabel,
   scopeOptions,
 } from "@/lib/conversationProjects";
+import { conversationModeLabel, conversationModeMeta } from "@/lib/conversationModes";
 import {
   useListConversations,
   useCreateConversation,
@@ -1366,9 +1367,19 @@ function AskOrchiconPage() {
                 <h2 className="text-sm font-medium truncate">
                   {activeConv?.title || "Ask Orchicon"}
                 </h2>
-                <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-900/30 dark:text-violet-300">
-                  <Brain aria-hidden="true" className="h-2.5 w-2.5" />
-                  Brainstorm
+                {/* THE MODE THIS CONVERSATION IS ACTUALLY IN.
+                    This pill read "Brainstorm" on every conversation whatever its real mode — one of three
+                    places carrying the same hardcoded single-mode assumption (lib/conversationModes.ts makes
+                    the list one thing now). It is worth fixing rather than leaving as a cosmetic oddity: the
+                    mode is ENFORCED by the platform, so in Iteration the planning tools are refused and in
+                    Brainstorm the work tools are, which makes a pill that names the wrong mode a statement
+                    about what this conversation can DO, not just a mislabel. */}
+                <span
+                  className="shrink-0 inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-900/30 dark:text-violet-300"
+                  title={conversationModeMeta(localMode)?.blurb}
+                >
+                  <ModeIcon mode={localMode} className="h-2.5 w-2.5" />
+                  {conversationModeLabel(localMode)}
                 </span>
                 {/* The model answering this conversation — surfaced so a
                     silent fallback to the free model is never invisible. */}
