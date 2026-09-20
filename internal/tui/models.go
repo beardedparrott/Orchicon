@@ -142,9 +142,14 @@ func (m *App) currentModeLabel() string {
 	if m.chat == nil {
 		return ""
 	}
+	// THE SHELL'S OWN LIST, not the controller's. `m.chat.Conversations()` returns a slice nothing ever
+	// writes, so this lookup ALWAYS missed and the pill fell through to the pending mode — meaning the TUI's
+	// mode readout never once reflected the conversation's persisted mode. It showed the last mode this process
+	// happened to set. That is the operator's complaint, and it is worse than "stale": it was disconnected from
+	// the server entirely. `m.conversations` is the list the shell loads and reloads, and its rows carry Mode.
 	mode := m.chat.PendingMode()
 	if m.chatConvID != "" {
-		for _, c := range m.chat.Conversations() {
+		for _, c := range m.conversations {
 			if c.ID == m.chatConvID {
 				mode = c.Mode
 			}

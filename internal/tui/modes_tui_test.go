@@ -209,3 +209,66 @@ func TestPendingModeReachesANewConversation(t *testing.T) {
 	}
 	_ = tea.Batch
 }
+
+// THE PILL READS THE OPEN CONVERSATION'S PERSISTED MODE.
+//
+// This is the path that had NEVER worked, which is why it had no test. currentModeLabel looked the
+// conversation up in `m.chat.Conversations()` — a slice nothing in the codebase ever writes — so the lookup
+// always missed and the pill fell through to the pending mode. It showed the last mode this PROCESS had set,
+// never the conversation's own. The operator, seeing it disagree with the server:
+//
+//	"we need to fix the whole stale pill. If someone sets the mode in the GUI or TUI, it should not matter. It
+//	 should change for both."
+//
+// The stale pending mode here is the point of the test: with a conversation open, the CONVERSATION wins.
+func TestThePillReadsTheOpenConversationsMode(t *testing.T) {
+	m := scopePlane(t)
+	m.chatConvID = "c-1"
+	for i := range m.conversations {
+		if m.conversations[i].ID == "c-1" {
+			m.conversations[i].Mode = apiv1.ConversationMode_CONVERSATION_MODE_ITERATION
+		}
+	}
+	// A stale pending mode, exactly the one the pill used to show instead.
+	m.chat.SetPendingMode(apiv1.ConversationMode_CONVERSATION_MODE_QUICK_WORK)
+
+	if got := m.currentModeLabel(); got != "iteration" {
+		t.Errorf("the pill reports %q with c-1 open and in iteration — it is reading the pending mode rather than "+
+			"the conversation, which is the staleness the operator reported", got)
+	}
+}
+
+// AND CHANGING AN OPEN CONVERSATION'S MODE DOES NOT LEAK INTO THE NEXT NEW ONE.
+//
+// The operator: "When someone creates a new conversation, it should always default back to brainstorm unless
+// they do /mode again." The pending mode used to be set unconditionally by /mode, so switching the conversation
+// you were in also changed what the NEXT one would be created with.
+func TestSwitchingAnOpenConversationDoesNotChangeTheDefaultForTheNext(t *testing.T) {
+	m := scopePlane(t)
+	m.chatConvID = "c-1"
+	m.chat.SetPendingMode(apiv1.ConversationMode_CONVERSATION_MODE_BRAINSTORM)
+
+	if err := runSlashTUI(t, m, "/mode iteration"); err != "" {
+		t.Fatalf("/mode iteration returned an error notice: %s", err)
+	}
+	if got := m.chat.PendingMode(); got != apiv1.ConversationMode_CONVERSATION_MODE_BRAINSTORM {
+		t.Errorf("the pending mode became %v after switching an OPEN conversation — the mode leaked forward to the "+
+			"next new conversation", got)
+	}
+}
+
+// AND A NEW CHAT RESETS THE PENDING MODE, so a mode picked for a conversation cannot survive it.
+//
+// The controller's pending mode is the pre-conversation choice (the launch page's selector), and it is
+// legitimate — but it belongs to the conversation it created, not to every conversation afterwards.
+func TestANewChatStartsFromTheDefaultMode(t *testing.T) {
+	m := scopePlane(t)
+	m.chat.SetPendingMode(apiv1.ConversationMode_CONVERSATION_MODE_ITERATION)
+
+	m.newChat()
+
+	if got := m.chat.PendingMode(); got != apiv1.ConversationMode_CONVERSATION_MODE_BRAINSTORM {
+		t.Errorf("a new chat inherited %v as its mode, want brainstorm — a new conversation must start at the "+
+			"default unless the operator sets it again", got)
+	}
+}

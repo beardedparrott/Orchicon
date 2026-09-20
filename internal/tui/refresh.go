@@ -133,10 +133,24 @@ func (m *App) refreshActiveView() tea.Cmd {
 	// the transcript), which SETS the pane's body and erases the transcript onChatWake just painted. The
 	// operator: "the conversation pane is completely blank on every chat." See ask.Model.RefreshView.
 	if m.active == TabAsk {
+		// AND THE CONVERSATIONS THEMSELVES ARE RE-READ, which is what keeps a MODE change made in the OTHER
+		// client from being invisible here.
+		//
+		// The operator: "If someone sets the mode in the GUI or TUI, it should not matter. It should change for
+		// both." There is no conversation-changes stream to subscribe to (the Ask service has List/Get and the
+		// per-turn streams, and nothing that broadcasts a mode change), so a re-read on the tick is the
+		// mechanism that makes the two clients agree. Five seconds is the existing cadence for this window, and
+		// it is also what bounds the window in which the pill can disagree with the boundary the SERVER will
+		// actually enforce — the case that matters, because a stale pill turns a correct refusal into an
+		// inexplicable one.
+		//
+		// It is the LIST only, and it does not set convLoading: this is a background reconcile, not the first
+		// load, so it must not flash the rail's loading state every five seconds.
+		load := m.chat.LoadConversations()
 		if r, ok := s.(Refresher); ok {
-			return tea.Batch(m.onChatWake(), r.RefreshView())
+			return tea.Batch(m.onChatWake(), r.RefreshView(), load)
 		}
-		return m.onChatWake()
+		return tea.Batch(m.onChatWake(), load)
 	}
 	if r, ok := s.(Refresher); ok {
 		return r.RefreshView()

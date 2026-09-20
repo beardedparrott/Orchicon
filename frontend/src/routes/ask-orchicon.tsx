@@ -395,7 +395,17 @@ function AskOrchiconPage() {
   );
   useEffect(() => {
     const serverRunning = conversations?.some((c) => c.turnInFlight) ?? false;
-    setListPollMs(anyStreaming || serverRunning ? 3000 : false);
+    // AND IT KEEPS POLLING WHEN EVERYTHING IS SETTLED, slowly.
+    //
+    // It used to stop entirely (`: false`), which meant a change made in the OTHER client never arrived: the
+    // operator — "if someone sets the mode in the GUI or TUI, it should not matter. It should change for both."
+    // There is no conversation-changes stream to subscribe to (the Ask service has List/Get and the per-turn
+    // streams, and nothing that broadcasts a mode change), so a slow poll is what makes the two clients agree.
+    //
+    // 5s at rest is the same cadence the TUI's rolling window already uses for its own list re-read, and it is
+    // the bound on how long the mode control can disagree with the boundary the SERVER will enforce — which is
+    // the case that matters, because a stale control turns a correct refusal into an inexplicable one.
+    setListPollMs(anyStreaming || serverRunning ? 3000 : 5000);
   }, [conversations, anyStreaming]);
   const createConv = useCreateConversation();
   // The tenant's projects, for the scope dropdown. Every project is listed, including ones with no
@@ -581,6 +591,13 @@ function AskOrchiconPage() {
 
   const handleNewChat = useCallback(() => {
     setActiveConvId(null);
+    // A NEW CONVERSATION STARTS AT THE DEFAULT MODE, the same rule the TUI applies.
+    //
+    // The operator: "When someone creates a new conversation, it should always default back to brainstorm unless
+    // they do /mode again." Without this the mode LEAKED FORWARD: the sync effect only writes localMode when
+    // there IS an active conversation, so after New Chat the previous conversation's mode stayed in state and
+    // was handed to the next conversation at creation. A mode belongs to the conversation that was set on.
+    setLocalMode(ConversationMode.BRAINSTORM);
   }, []);
 
   const handleDeleteConv = useCallback(

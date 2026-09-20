@@ -397,8 +397,15 @@ func buildSlashRegistry(m *App) *slashRegistry {
 				m.dock.SetError("unknown mode " + args[0] + " — available: " + strings.Join(chat.ModeNames(), ", "))
 				return nil
 			}
-			m.chat.SetPendingMode(mode)
+			// THE PENDING MODE IS ONLY SET WHEN THERE IS NOTHING OPEN TO SET IT ON.
+			//
+			// It used to be set unconditionally, so switching the mode of the conversation you were in ALSO
+			// changed what the NEXT new conversation would be created with — the mode leaked forward. The
+			// operator: "When someone creates a new conversation, it should always default back to brainstorm
+			// unless they do /mode again." Pending is for the pre-conversation choice (the launch page's mode
+			// selector, which is legitimate and kept); changing an OPEN conversation is about that conversation.
 			if m.chatConvID == "" {
+				m.chat.SetPendingMode(mode)
 				m.dock.SetNotice("mode " + m.currentModeLabel() + " applies to the next new conversation")
 				return nil
 			}

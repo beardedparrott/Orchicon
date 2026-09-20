@@ -765,6 +765,13 @@ func (m *App) newChat() {
 	m.chatConvID = ""
 	if m.chat != nil {
 		m.chat.SetActive("")
+		// A NEW CONVERSATION STARTS AT THE DEFAULT MODE.
+		//
+		// The operator: "When someone creates a new conversation, it should always default back to brainstorm
+		// unless they do /mode again." Clearing the pending mode here is what makes that true even after the
+		// pre-conversation choice has been used: a mode picked on the launch page belongs to the conversation it
+		// created, not to every conversation afterwards.
+		m.chat.SetPendingMode(apiv1.ConversationMode_CONVERSATION_MODE_BRAINSTORM)
 	}
 	m.SwitchTo(TabAsk)
 	m.EnsureSubscriptions(TabAsk)
