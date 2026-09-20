@@ -487,6 +487,11 @@ func (m *Model) fetchWorkItems(ctx context.Context, pageToken string) ([]kit2.It
 	if err != nil {
 		return nil, "", err
 	}
+	// The workflow names are read HERE, inside a fetch this screen already makes, so the
+	// detail pane can resolve `workflow` on a cold screen — with no form ever opened —
+	// instead of only after a form prep populated m.workflows. TTL-cached: at most one
+	// extra request per nameIndexWorkflowTTL, never one per row (names.go).
+	m.loadWorkflowNames(ctx)
 	// Index the RAW page (before rowsFor turns it into display rows) so the detail
 	// pane can resolve a `parent` to its title from what is already loaded. The
 	// titles are all this needs, and it costs nothing: it is the page this fetch

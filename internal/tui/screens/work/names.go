@@ -16,9 +16,18 @@ package work
 // fetches to a screen that needs none — the opposite of the no-per-row-RPC rule this exists to
 // satisfy.
 //
-// NO TTL. A TTL bounds how stale a CACHED RPC may be; these maps are rewritten by the very fetch
-// that rewrites the pane they feed (the work-item page, the Projects page, the form prep), so they
-// can never be staler than the rows drawn beside them.
+// NO TTL on the project and work-item maps. A TTL bounds how stale a CACHED RPC may be; those two
+// maps are rewritten by the very fetch that rewrites the pane they feed (the Projects page, the
+// work-item page), so they can never be staler than the rows drawn beside them.
+//
+// The WORKFLOW map is the exception, and it is why this file also owns ONE fetch. Nothing else on
+// this screen lists workflows — the only caller was the form prep (prepCreateItem / prepEditItem),
+// so a screen whose operator had not opened a form yet (the common case: the detail pane is drawn
+// the moment the list lands) still printed the raw workflow id. The GUI resolves it from the
+// workflow list its page loads on entry, so the TUI now loads the same list itself, TTL-cached and
+// piggybacked on a source fetch this screen already makes (see loadWorkflowNames), in the shape of
+// execution/names.go. That is the ONE cached fetch the no-per-row-RPC rule allows — never a
+// GetWorkflow per rendered row.
 //
 // The mutex is a CORRECTNESS requirement, not decoration: kit2's DetailFn runs inside a tea.Cmd
 // closure (kit2/base.go:1529, :1546), i.e. OFF the update loop, while the indices are written ON
@@ -28,9 +37,26 @@ package work
 // it did before this file existed, so nothing can get worse and AC4's fallback is the default.
 
 import (
+	"context"
 	"sync"
+	"time"
 
+	"connectrpc.com/connect"
+
+	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
+)
+
+const (
+	// nameIndexWorkflowTTL bounds how long a resolved workflow name is trusted. Names change
+	// rarely (a workflow rename), and the alternative — listing workflows on every source fetch —
+	// would add an RPC to every reload of a 5s refresh window. It is the same 30s cadence
+	// execution/names.go uses, so the two clients stay in the same order of freshness.
+	nameIndexWorkflowTTL = 30 * time.Second
+	// nameIndexWorkflowPage is how many workflows the index reads. Workflows are few (tens), so
+	// this covers every real tenant with room to spare; a workflow outside the page still renders
+	// — it falls back to its raw id — so this is a display limit, never a correctness one.
+	nameIndexWorkflowPage = 500
 )
 
 // shortRunIDWidth is how many runes of a workflow-run id are kept. It is the GUI's own rule
@@ -40,9 +66,12 @@ const shortRunIDWidth = 13
 
 type nameIndex struct {
 	mu        sync.Mutex
-	workflows map[string]string // workflow id   → name  (the form prep's workflow list)
+	workflows map[string]string // workflow id   → name  (the workflow list + the form prep)
 	projects  map[string]string // project id    → name  (the Projects page + the form prep)
 	items     map[string]string // work item id  → title (the loaded work-item page)
+	// workflowsAt is when the workflow map was last (re)read. The zero value is "never loaded",
+	// so the first source fetch loads it and a screen with no client simply stays on raw ids.
+	workflowsAt time.Time
 }
 
 // workflowName returns the workflow's name, or "" when it is not known.
@@ -80,13 +109,51 @@ func (n *nameIndex) itemTitle(id string) string {
 // paths fetch workflows (the edit prep does not list projects, for instance), and a message that
 // carries no list must not erase one an earlier fetch established — the same rule screen.go
 // already applies to m.workflows (`if len(msg.workflows) > 0`).
+//
+// The TIMESTAMP is stamped either way: it answers "when did we last look", and a tenant with no
+// workflows at all must not make every source fetch ask again.
 func (n *nameIndex) setWorkflows(m map[string]string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.workflowsAt = time.Now()
 	if len(m) == 0 {
 		return
 	}
+	n.workflows = m
+}
+
+// workflowNamesStale reports whether the workflow map needs (re)reading.
+func (n *nameIndex) workflowNamesStale() bool {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	n.workflows = m
+	return time.Since(n.workflowsAt) > nameIndexWorkflowTTL
+}
+
+// loadWorkflowNames reads the workflow list into the name index, at most once per TTL, best effort.
+//
+// It is called from the WORK-ITEM source fetch (fetchWorkItems), i.e. inside the fetch the screen
+// already performs, so the names are in memory before the pane that reads them is drawn — the shape
+// execution/names.go uses for its run index. A failure is swallowed on purpose: a name lookup is
+// decoration over an id that already renders, and it must never turn "list the work items" into an
+// error. Callers where m.cl is absent (unit tests with no client) simply keep the raw ids.
+func (m *Model) loadWorkflowNames(ctx context.Context) {
+	if !m.names.workflowNamesStale() {
+		return
+	}
+	if m.cl == nil || m.cl.Workflows == nil {
+		return
+	}
+	resp, err := m.cl.Workflows.ListWorkflows(ctx, connect.NewRequest(&apiv1.ListWorkflowsRequest{
+		PageSize: nameIndexWorkflowPage,
+	}))
+	if err != nil {
+		return
+	}
+	opts := make([]workflowOpt, 0, len(resp.Msg.GetWorkflows()))
+	for _, w := range resp.Msg.GetWorkflows() {
+		opts = append(opts, workflowOpt{ID: w.GetId(), Name: w.GetName()})
+	}
+	m.names.setWorkflows(workflowNameIndex(opts))
 }
 
 // setProjects swaps the project index, under the same empty-map rule as setWorkflows.

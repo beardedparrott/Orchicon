@@ -179,3 +179,33 @@ func TestDetailKeepsTheWorkerRef(t *testing.T) {
 		t.Fatalf("worker field = %q, want the ref verbatim", got)
 	}
 }
+
+// The WORKFLOW name must resolve on a COLD screen — from the list fetch alone, with NO form ever
+// opened. The detail pane is drawn the moment the items land, so a name that only exists after a
+// form prep is a name the operator does not have in the flow they actually use (open the tab, look
+// at the pane). The GUI resolves it from the workflow list its page loads on entry; this is the
+// TUI's parity half, and it must stay ONE cached fetch — never one per row.
+func TestDetailResolvesWorkflowNameOnAColdScreen(t *testing.T) {
+	p, m := detailPlane(t)
+	// Exactly the shell's own screen load: page 1 of every source, nothing else. No 'n', no 'e'.
+	load(t, m, srcProjects)
+	load(t, m, srcWorkItems)
+
+	run(t, m, m.Base.RequestDetail(srcWorkItems, "wi-child"))
+	if got, want := fieldValue(t, m, "workflow"), "Fanout  (wf-1)"; got != want {
+		t.Fatalf("workflow field = %q, want %q — the name must resolve with no form opened", got, want)
+	}
+	if got, want := fieldValue(t, m, "project"), "Orchicon  (proj-1)"; got != want {
+		t.Fatalf("project field = %q, want %q", got, want)
+	}
+
+	// Re-reading the pane, and reloading the list, must not multiply the name lookup: the index is
+	// TTL-cached, so a screen that renders N rows still pays for AT MOST one workflow list.
+	for i := 0; i < 3; i++ {
+		run(t, m, m.Base.RequestDetail(srcWorkItems, "wi-child"))
+	}
+	load(t, m, srcWorkItems)
+	if got := p.wfListCallCount(); got != 1 {
+		t.Fatalf("ListWorkflows calls = %d, want 1 (one cached fetch, never per row)", got)
+	}
+}

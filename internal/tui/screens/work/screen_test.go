@@ -69,8 +69,8 @@ type fakePlane struct {
 	projMCPSet    []*apiv1.ProjectMCPServersSetRequest
 	// mcpServers is what ListMCPServers returns; mcpError, when set, makes it fail —
 	// which is how a test exercises the "the MCP data did not load" path.
-	mcpServers  []*apiv1.MCPServer
-	mcpError    error
+	mcpServers []*apiv1.MCPServer
+	mcpError   error
 	// updateErr, when set, makes UpdateWorkItem fail the way a SERVER-SIDE
 	// rejection does (Task A's workflow-first gate is the reason it exists): the
 	// write never lands, so nothing is recorded and nothing is mutated.
@@ -78,6 +78,9 @@ type fakePlane struct {
 	// listCalls counts the LIST RPCs a detail render could reach for if it resolved
 	// names by fetching. Resolving a work item's detail must add NONE of them.
 	listCalls int
+	// wfListCalls counts the workflow-name fetches on their own, so a test can pin that the
+	// name index is loaded ONCE (TTL-cached) rather than once per rendered row.
+	wfListCalls int
 	dirProbes   []string
 	imgCreated  []*apiv1.CreateRuntimeImageRequest
 	imgUpdated  []*apiv1.UpdateRuntimeImageRequest
@@ -115,6 +118,14 @@ func (p *fakePlane) listCallCount() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.listCalls
+}
+
+// wfListCallCount reports how many ListWorkflows calls the plane has served — the name index must
+// cost at most one per TTL, not one per row.
+func (p *fakePlane) wfListCallCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.wfListCalls
 }
 
 // ---------- WorkItemService ----------
@@ -492,6 +503,7 @@ func (p *fakePlane) ListProjectFiles(_ context.Context, req *connect.Request[api
 func (p *fakePlane) ListWorkflows(context.Context, *connect.Request[apiv1.ListWorkflowsRequest]) (*connect.Response[apiv1.ListWorkflowsResponse], error) {
 	p.mu.Lock()
 	p.listCalls++
+	p.wfListCalls++
 	p.mu.Unlock()
 	return connect.NewResponse(&apiv1.ListWorkflowsResponse{Workflows: []*apiv1.Workflow{{Id: "wf-1", Name: "Fanout"}}}), nil
 }
