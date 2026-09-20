@@ -589,6 +589,19 @@ func (m *App) RegisterScreen(id TabID, s Screen) {
 	}
 }
 
+// rebindScreens re-points every live screen's shell reference at THIS App.
+//
+// Called on every dispatch — see the call site for why the reference goes stale at all (`App.Update` has a
+// value receiver) and what it cost. Kept beside newScreen so the two halves of the contract are read together:
+// newScreen gives a screen its shell at construction, and this keeps it correct for the App's whole life.
+func (m *App) rebindScreens() {
+	for _, s := range m.screens {
+		if ss, ok := s.(interface{ SetShell(any) }); ok {
+			ss.SetShell(m)
+		}
+	}
+}
+
 // newScreen constructs a tab's screen and injects the shell reference.
 //
 // This used to be hand-written inside each factory and Control's was MISSING,

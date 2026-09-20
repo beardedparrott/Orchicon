@@ -185,41 +185,7 @@ func TestTheComposerIsPaintedOnlyInTheActivePalettesColours(t *testing.T) {
 		if !m.SetTheme(name) {
 			t.Fatalf("SetTheme(%q) failed", name)
 		}
-		th := theme.Active()
-
-		// Every fill the composer is ALLOWED to use, resolved through the same renderer the frame uses.
-		// The ESCAPE is trimmed because bgSeqsIn reports sequences as they appear inside a row (starting at
-		// "48;") — comparing one form against the other matches nothing, which is exactly how a first
-		// version of this test reported every palette as broken.
-		userFill, modelFill := theme.BubbleFills()
-		allowed := map[string]bool{}
-		for _, c := range []lipgloss.TerminalColor{
-			th.Bg, th.Surface, th.SurfaceAlt, th.Select,
-			lipgloss.Color(userFill), lipgloss.Color(modelFill),
-		} {
-			if seq := strings.TrimPrefix(paintSeq(c), "\x1b["); seq != "" {
-				allowed[seq] = true
-			}
-		}
-		if len(allowed) < 3 {
-			t.Fatalf("%s: fixture resolved only %d fills", name, len(allowed))
-		}
-
-		rows := composerLines(t, m)
-		found := 0
-		for _, r := range rows {
-			for _, seq := range bgSeqsIn(r) {
-				found++
-				if !allowed[seq] {
-					t.Errorf("%s: the composer paints %q, which is NOT one of this palette's fills — a cell is "+
-						"left holding another theme's colour, which is the operator's \"keeping the composer "+
-						"black\" after a dark-to-light switch", name, seq)
-				}
-			}
-		}
-		if found == 0 {
-			t.Errorf("%s: the composer painted no fill at all, so this check proved nothing", name)
-		}
+		assertComposerPaintsOnlyTheActivePalette(t, m, name)
 	}
 }
 
@@ -248,4 +214,42 @@ func bgSeqsIn(s string) []string {
 		}
 	}
 	return out
+}
+
+// assertComposerPaintsOnlyTheActivePalette is the shared form of the invariant above, for tests that reach a
+// palette switch by a DIFFERENT route (the Themes pane, the /theme command) and then need the same verdict on
+// the composer.
+//
+// It exists because the weaker "is the right fill present / is the old one gone" check cannot see the actual
+// failure: a stale composer keeps the fill of the palette the DOCK WAS BUILT WITH, which is neither the one
+// being switched to nor always the one being switched from. Measured on the pane path with the rebind
+// disabled, the box CHROME followed the new palette (its style is package state) while the TEXT CELLS kept the
+// base dark palette's fill — so "does it contain the new fill" was true and "has the old fill gone" was true,
+// and the composer was still visibly wrong.
+func assertComposerPaintsOnlyTheActivePalette(t *testing.T, m *App, where string) {
+	t.Helper()
+	th := theme.Active()
+	userFill, modelFill := theme.BubbleFills()
+	allowed := map[string]bool{}
+	for _, c := range []lipgloss.TerminalColor{
+		th.Bg, th.Surface, th.SurfaceAlt, th.Select,
+		lipgloss.Color(userFill), lipgloss.Color(modelFill),
+	} {
+		if seq := strings.TrimPrefix(paintSeq(c), "\x1b["); seq != "" {
+			allowed[seq] = true
+		}
+	}
+	found := 0
+	for _, r := range composerLines(t, m) {
+		for _, seq := range bgSeqsIn(r) {
+			found++
+			if !allowed[seq] {
+				t.Errorf("%s: the composer paints %q, which is not one of the active palette's (%s) fills — a "+
+					"cell is left holding another palette's colour", where, seq, th.Name)
+			}
+		}
+	}
+	if found == 0 {
+		t.Errorf("%s: the composer painted no fill at all, so this check proved nothing", where)
+	}
 }

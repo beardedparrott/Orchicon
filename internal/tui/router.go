@@ -377,6 +377,25 @@ func (m *App) screenOwnsTab() bool {
 // focused, then evaluates global chords (tab switching still works via
 // explicit chords the dock does not bind), then the screen.
 func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
+	// EVERY SCREEN IS RE-POINTED AT THIS APP, on every message, because THIS is the App that survives.
+	//
+	// `App.Update` has a VALUE receiver, so bubbletea copies the App for each message and the model it keeps is
+	// a NEW address every time — and a screen constructed during one of those Updates was handed a pointer to
+	// THAT copy. From the next message onward it therefore talked to an App that no longer existed, and it
+	// showed: switching a theme from the Control→Themes pane set the palette globally (`theme.Use` is package
+	// state, so the switch LOOKED like it worked) while re-pinning the composer on the dead copy, leaving the
+	// live one a white box on a dark palette — the operator's "I switched from a light theme to a dark theme
+	// and now the composer is a white box". The same staleness silently dropped anything else a screen pushed
+	// through its shell: notices, mutation feedback, refreshes.
+	//
+	// The fix is here rather than in each screen because this is the ONE place that holds the surviving App, and
+	// a screen cannot fix it for itself — the reference it was given is simply the wrong one. Doing it on every
+	// message makes staleness impossible to reintroduce, the same way one funnel for the composer's send
+	// (composerKey) made a swallowed message impossible.
+	//
+	// It is cheap: an interface assertion per screen (a handful), on a path that already walks the whole
+	// screen/route tree.
+	m.rebindScreens()
 	if wm, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width, m.height = wm.Width, wm.Height
 		m.footer.Width = wm.Width
