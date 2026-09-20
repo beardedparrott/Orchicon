@@ -148,3 +148,12 @@ func bubbleFills(bg, accent string) (user, model string) {
 // the theme gates use, with headroom over TestBubbleContrast's own 4.0 so a palette tweak cannot land just
 // under the gate.
 const bubbleTextTarget = 4.5
+
+// BubbleFills exposes the ACTIVE palette's bubble fills as hex.
+//
+// Exported for the shell's tests, which assert that the chat surface is painted only in the active palette's
+// colours: a bubble fill is one of those colours, and a test that could not name it would have to allow any
+// background it happened not to recognise — which is the hole the check exists to close.
+func BubbleFills() (user, model string) {
+	return bubbleFills(string(Active().Bg), string(Active().Accent))
+}
