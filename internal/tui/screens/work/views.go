@@ -10,7 +10,6 @@ package work
 // or sort can never silently renumber the sequence.
 
 import (
-	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -60,16 +59,16 @@ func statusPill(s apiv1.WorkItemStatus) string {
 	return name
 }
 
-// workItemMeta is the row's right-hand context: state pill + priority.
+// workItemMeta is the row's right-hand context: the state pill.
+//
+// IT CARRIES THE STATE AND NOTHING DERIVED FROM THE LEGACY WORKER REF. The `· assigned` suffix that used to
+// sit here was doubly wrong: it duplicated the state pill (an item whose status IS `assigned` read
+// "assigned · assigned"), and it was derived from assigned_worker_ref, which no longer describes how work is
+// routed — WORKFLOWS carry the worker, per the operator: "work is set via workflows and not individual
+// workers. That I believe was left over from old original code." Priority is deliberately not here either;
+// the PR mark below is what the row reports beyond its state.
 func workItemMeta(w *apiv1.WorkItem) string {
-	meta := statusPill(w.GetStatus())
-	if p := w.GetPriority(); p != 0 {
-		meta += fmt.Sprintf(" · p%d", p)
-	}
-	if w.GetAssignedWorkerRef() != "" {
-		meta += " · assigned"
-	}
-	return meta
+	return statusPill(w.GetStatus())
 }
 
 // rowTitle is a tree row's cell text: its kind badge and its title. The INDENT

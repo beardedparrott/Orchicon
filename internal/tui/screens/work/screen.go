@@ -587,10 +587,6 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 			{Key: "budgets", Value: w.GetBudgets()},
 			{Key: "context window", Value: screenkit.FmtInt(int(w.GetContextWindow()))},
 			{Key: "runtime image", Value: w.GetRuntimeImage()},
-			// worker stays the RAW assigned-worker ref: there is no worker list on this
-			// Model, resolving a ref would mean a new list RPC plus a cache for a value
-			// the operator quotes verbatim, and the GUI shows it raw too.
-			{Key: "worker", Value: w.GetAssignedWorkerRef()},
 			{Key: "workflow", Value: named(m.names.workflowName(w.GetWorkflowId()), w.GetWorkflowId())},
 			// A workflow RUN has no name of its own — it is not a named entity — so it gets
 			// the GUI's rendering: a shortened id, not the 26-character ULID, and not an
