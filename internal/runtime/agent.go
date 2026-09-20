@@ -397,10 +397,18 @@ func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
 		return
 	}
 
+	// Snapshot the registry under mu, then RELEASE it before the health
+	// probe: serveHealthy is an HTTP call with a 2s timeout, and holding
+	// h.mu across it would stall every other registry operation (the
+	// daemon's readiness ping, exec starts, watchExec reaping) for the
+	// length of a wedged serve's timeout.
 	h.mu.Lock()
 	st := h.serveStateLocked(kind)
 	pw := st.pw
-	if existing, ok := h.cmd[execID]; ok {
+	existing, registered := h.cmd[execID]
+	if registered {
+		cachedPw := pw
+		h.mu.Unlock()
 		// This kind's serve is already registered. Liveness-gate the
 		// idempotent path: a WEDGED serve (process alive but not answering
 		// health) must NOT be reported as up — that was the failure mode
@@ -409,13 +417,16 @@ func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
 		// answers, kill it and drop it from the registry NOW so the fresh
 		// start below can register a new session without racing the stale
 		// entry (watchExec also removes it once the process is reaped).
-		if pw != "" && serveHealthy(port, pw) {
-			h.mu.Unlock()
-			_ = enc.Encode(AgentEvent{Event: "serve", Port: port, Password: pw, PlaneEnabled: h.sandboxAvailable()})
+		if cachedPw != "" && serveHealthy(port, cachedPw) {
+			_ = enc.Encode(AgentEvent{Event: "serve", Port: port, Password: cachedPw, PlaneEnabled: h.sandboxAvailable()})
 			return
 		}
 		h.log.Warn("serve registered but not healthy — restarting", "kind", kind, "pid", existing.pidOrZero())
 		existing.kill()
+		// Re-take mu for the registry mutation. Only runServe/startServeAgain
+		// register sessions and both serialize on serveMu, so nothing can have
+		// registered a newer session under execID in the window.
+		h.mu.Lock()
 		delete(h.cmd, execID)
 	}
 	if pw == "" {

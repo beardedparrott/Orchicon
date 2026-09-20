@@ -1,9 +1,11 @@
 package runtime
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
@@ -185,5 +187,49 @@ func TestAdapterHostMountsFileShapeGate(t *testing.T) {
 		if a == filepath.Join(home, ".opencode")+":"+filepath.Join(home, ".opencode")+":ro" {
 			t.Fatalf("a directory at the CLI path must not mount as an install: %v", got)
 		}
+	}
+}
+
+// TestAdapterKindsWireDistinction pins the rollout signal ACROSS THE WIRE:
+// the boot profile rides CreateRequest through JSON to the daemon, and the
+// nil-vs-empty distinction is load-bearing — a NIL profile (a pre-change
+// plane, or `"adapter_kinds":null`) is the legacy "unspecified" case and
+// resolves to the default (opencode) demand, while an explicitly EMPTY
+// profile means "this run demands no adapter kind" and mounts nothing
+// (AC 1/AC 3). Keeping the field free of `omitempty` is what preserves an
+// empty profile as `[]` instead of dropping it to an absent/null field;
+// this test fails if someone adds omitempty, which would silently re-mount
+// model config/auth into a native-only container.
+func TestAdapterKindsWireDistinction(t *testing.T) {
+	roundTrip := func(in []string) []string {
+		t.Helper()
+		blob, err := json.Marshal(CreateRequest{AdapterKinds: in})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if in == nil && !strings.Contains(string(blob), `"adapter_kinds":null`) {
+			t.Fatalf("a nil profile must marshal as an explicit null adapter_kinds, got %s", blob)
+		}
+		var out CreateRequest
+		if err := json.Unmarshal(blob, &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		return out.AdapterKinds
+	}
+
+	if got := roundTrip(nil); got != nil {
+		t.Errorf("a nil (legacy/unspecified) profile must survive as nil, got %#v", got)
+	}
+	if got := roundTrip([]string{}); got == nil {
+		t.Error("an explicitly empty profile must survive as EMPTY, not nil — nil means the default opencode demand (mounts + serve)")
+	}
+	if got := requestedKinds(CreateRequest{AdapterKinds: roundTrip([]string{})}); len(got) != 0 {
+		t.Errorf("a round-tripped empty profile must demand nothing, got %v", got)
+	}
+	if got := requestedKinds(CreateRequest{AdapterKinds: roundTrip(nil)}); !reflect.DeepEqual(got, []string{adapter.DefaultAdapterKind}) {
+		t.Errorf("a round-tripped nil profile must resolve to the default demand, got %v", got)
+	}
+	if got := requestedKinds(CreateRequest{AdapterKinds: roundTrip([]string{"orchicon"})}); !reflect.DeepEqual(got, []string{"orchicon"}) {
+		t.Errorf("a round-tripped native-only profile must survive verbatim, got %v", got)
 	}
 }

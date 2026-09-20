@@ -88,11 +88,11 @@ func TestStandardHostMountArgsConditionalOpencode(t *testing.T) {
 		kinds       []string
 		wantAdapter bool
 	}{
-		{"native-only", []string{"orchicon"}, false},         // AC 1
-		{"opencode-only", []string{"opencode"}, true},        // AC 5
-		{"mixed", []string{"opencode", "orchicon"}, true},    // AC 2
-		{"absent/legacy profile", nil, true},                 // rollout: legacy plane
-		{"explicitly empty profile", []string{}, false},      // no demand
+		{"native-only", []string{"orchicon"}, false},      // AC 1
+		{"opencode-only", []string{"opencode"}, true},     // AC 5
+		{"mixed", []string{"opencode", "orchicon"}, true}, // AC 2
+		{"absent/legacy profile", nil, true},              // rollout: legacy plane
+		{"explicitly empty profile", []string{}, false},   // no demand
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
