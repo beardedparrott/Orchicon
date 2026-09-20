@@ -83,6 +83,24 @@ func hueToRGB(p, q, t float64) float64 {
 type Theme struct {
 	Name string
 
+	// Transparent makes the APP BACKGROUND unpainted, so whatever the terminal has behind orch — its own
+	// background colour, its transparency, a compositor's blur — shows through the frame. The operator, on
+	// opencode's themes: "I would like a couple of semi-transparent background themes for dark and light."
+	//
+	// WHAT IT DOES NOT DO, and this is the whole design: the TINTS STAY. Panels, bubbles, selection fills,
+	// code chips and the diff surface keep their palette colours, so a transparent theme still reads as a
+	// structured UI rather than as bare text on the operator's wallpaper. The operator, confirming exactly
+	// that: "Yes the tints should definitely be there."
+	//
+	// WHY THERE IS NO ALPHA. A terminal cell has a foreground and a background and nothing in between: there
+	// is no opacity channel to set, so "80% transparent" is not a value that can be expressed. What IS
+	// expressible is "this cell is not painted at all", which is what every transparent theme in every TUI
+	// means by the word — and it composes correctly with a transparent terminal, where the app's own idea of
+	// a background would otherwise be the one thing blocking the effect. The palette's Bg colour is kept on
+	// the struct (derivations still need it, and the contrast gates still measure against it); it is simply
+	// not painted.
+	Transparent bool
+
 	// Surfaces (from the GUI's --background / --card / --secondary /
 	// --muted / --border / --input tokens).
 	Bg, Surface, SurfaceAlt, Border, BorderFaint lipgloss.Color
@@ -227,6 +245,21 @@ var GruvboxLight = Theme{
 	Tool:         lipgloss.Color("#076678"),
 }
 
+// transparentSuffix marks a palette whose app background is left unpainted. It is a SUFFIX RULE rather
+// than a table: `Lookup` resolves `<any palette>-transparent` by taking that palette and setting its
+// Transparent flag, so EVERY theme has a see-through variant and a new palette gains one for free — no
+// second copy of its colours to keep in step, and no way for the pair to drift apart.
+const transparentSuffix = "-transparent"
+
+// transparentListed are the transparent variants shown in the picker.
+//
+// THE OPERATOR ASKED FOR "a couple of semi-transparent background themes for dark and light", so the LIST is
+// deliberately a couple each rather than every palette doubled: the picker is a list an operator reads, and
+// 50 rows of `-transparent` twins would bury the palettes they are actually choosing between. The suffix
+// rule above means nothing is LOST by that — `/theme forest-transparent` still works for any palette,
+// which is the escape hatch a short list is allowed to have.
+var transparentListed = []string{"obsidian", "forest", "tokyo-night", "lumen", "light", "github-light"}
+
 // registry is the selectable theme set, in /theme listing order. It is
 // TUI-OWNED: these palettes are chosen for terminal contrast and are NOT a
 // copy of the GUI's CSS tokens (bar dark/light, which are ported and then
@@ -241,8 +274,24 @@ var registry = buildRegistry()
 // stable listing order (bases first, then dark families, then light).
 func buildRegistry() []*Theme {
 	out := []*Theme{&Dark, &Light, &GruvboxDark, &GruvboxLight}
+	// The hand-written community ports (theme_named.go), then the generated families. Both are listed
+	// before the transparent variants so a reader of `/theme` sees the palettes first and the see-through
+	// modes after them.
+	out = append(out, namedThemes...)
 	for _, t := range derivedThemes {
 		out = append(out, t)
+	}
+	// The transparent variants are appended LAST rather than interleaved: they are a MODE of a palette rather
+	// than a family of their own, and the picker groups the list into DARK/LIGHT sections anyway (see
+	// IsDark), so appending here costs no grouping correctness and keeps the palette list readable.
+	//
+	// THIS WALKS findBase, NOT Lookup. Lookup reads the registry, so calling it here would be an
+	// initialisation cycle (registry -> buildRegistry -> Lookup -> registry) — and the cycle is the
+	// compiler catching a real ordering question rather than a formality.
+	for _, base := range transparentListed {
+		if src := findBase(base); src != nil {
+			out = append(out, transparentCopy(src, base+transparentSuffix))
+		}
 	}
 	return out
 }
@@ -267,6 +316,14 @@ func Use(name string) bool {
 	t := Lookup(name)
 	if t == nil {
 		return false
+	}
+	// A TRANSPARENT THEME IS ADAPTED TO THE TERMINAL FIRST — see transparent_adapt.go. It happens HERE rather
+	// than in the palette or in the render path because this is the single point where "this palette is being
+	// used" is known, and because everything downstream (the styles, the markdown tokens, the contrast gates,
+	// the operator's screen) must agree on ONE effective palette. The registry is never mutated: Lookup hands
+	// back the pristine palette, the adaptation is a copy, so switching back and forth cannot compound it.
+	if t.Transparent {
+		t = adaptTransparentForTerminal(t)
 	}
 	active = t
 	buildStyles(*t)
@@ -293,16 +350,51 @@ func Use(name string) bool {
 }
 
 // Lookup resolves a theme name (nil when unknown).
+//
+// A `<palette>-transparent` name resolves to that palette with its app background unpainted — see
+// transparentSuffix. The suffix is handled AFTER the exact lookup so a palette literally named with those
+// characters would still win, and the base is resolved by exact name, so there is no recursion.
 func Lookup(name string) *Theme {
-	if t := lookupDerived(name); t != nil {
+	if t := findBase(name); t != nil {
 		return t
 	}
-	for _, t := range registry {
-		if t.Name == name {
-			return t
+	if base, ok := strings.CutSuffix(name, transparentSuffix); ok {
+		if src := findBase(base); src != nil {
+			return transparentCopy(src, name)
 		}
 	}
 	return nil
+}
+
+// findBase resolves a BASE palette by EXACT name: the derived families first, then the hand-written
+// globals. It deliberately reads no registry — buildRegistry builds that registry, so a dependency in this
+// direction would be an initialisation cycle.
+func findBase(name string) *Theme {
+	if t := lookupNamed(name); t != nil {
+		return t
+	}
+	if t := lookupDerived(name); t != nil {
+		return t
+	}
+	switch name {
+	case Dark.Name:
+		return &Dark
+	case Light.Name:
+		return &Light
+	case GruvboxDark.Name:
+		return &GruvboxDark
+	case GruvboxLight.Name:
+		return &GruvboxLight
+	}
+	return nil
+}
+
+// transparentCopy is the same palette with its app background left unpainted, under a new name.
+func transparentCopy(base *Theme, name string) *Theme {
+	cp := *base
+	cp.Name = name
+	cp.Transparent = true
+	return &cp
 }
 
 // DefaultName is the launch default: the palette used when the config and the environment name no
@@ -310,17 +402,43 @@ func Lookup(name string) *Theme {
 // the fallback, so changing it changes how orch looks out of the box and nothing at all for an
 // operator who has already chosen a palette.
 //
-// FOREST, at the operator's request: "I would like forest to be the default theme for the TUI". It is the
-// `forest` palette from theme_palettes.go — the deep-green family — and NOT "forest-light" beside it, which is
-// the same family in light mode. Lookup matches the name exactly, so a typo here would fall back to the base
-// dark palette without an error; theme_test.go asserts this name resolves, and that it is a DARK palette.
-const DefaultName = "forest"
+// SLATE, at the operator's request: "I think Slate is pretty sleek and professional. Let's make that the
+// default theme over ember." It is the `slate` palette from theme_palettes.go — the low-saturation grey-blue
+// family — and NOT "slate-light" beside it, which is the same family in light mode. Lookup matches the name
+// exactly, so a typo here would fall back to the base dark palette without an error; theme_test.go asserts
+// this name resolves, and that it is a DARK palette.
+//
+// (It previously named `forest`, also at the operator's request; this supersedes that choice. `forest` is
+// unchanged and still selectable — only the out-of-the-box default moved.)
+const DefaultName = "slate"
 
 // Resolved active colors, re-pointed by Use. Render paths read these via
 // the styles; direct color reads stay possible for layout math.
 var (
-	Bg           lipgloss.TerminalColor
-	Surface      lipgloss.TerminalColor
+	// Bg is the APP BACKGROUND, and it is UNPAINTED (an empty colour) on a transparent theme — see
+	// Theme.Transparent. Every consumer already paints through it (ScreenBg, screenBase, the kit2 panels,
+	// the tab bar, the diff panel), so a transparent theme needs no per-site special cases: the value they
+	// all read is the one that changes.
+	Bg      lipgloss.TerminalColor
+	Surface lipgloss.TerminalColor
+	// ComposerFill is the COMPOSER's background, which is the one fill that follows the app background's
+	// transparency rather than the panels'. The operator: "Composer should also be transparent as well on
+	// transparent themes." It is a token of its own so the dock never has to know whether the active theme
+	// is transparent — it asks for the composer's fill and gets the right answer either way.
+	ComposerFill lipgloss.TerminalColor
+	// PanelBg is the background every PANEL paints — a screen's pane, a rail, a dialog, a picker. It is the
+	// palette's own Bg colour and it is ALWAYS PAINTED, transparent theme or not.
+	//
+	// THIS IS THE DISTINCTION A TRANSPARENT THEME TURNS ON, and getting it wrong is what made the light
+	// variants unreadable: the panes were painting through theme.Bg, so "transparent app background" silently
+	// became "transparent panes" too — and a light palette's dark text landed on the OPERATOR'S dark terminal
+	// with nothing behind it. Measured on lumen-transparent against a dark terminal: a screen of black text on
+	// black. The operator: "the light transparent themes are almost impossible to see/read."
+	//
+	// So the rule is: the APP BACKGROUND (the frame fill, the gaps between panes, the tab bar strip, the footer
+	// strip, the composer) may be left to the terminal; a PANEL always carries its tint, because a panel is a
+	// surface with text on it and it has to be legible regardless of what the terminal looks like.
+	PanelBg      lipgloss.TerminalColor
 	SurfaceAlt   lipgloss.TerminalColor
 	Border       lipgloss.TerminalColor
 	BorderFaint  lipgloss.TerminalColor
@@ -354,6 +472,15 @@ var (
 	// that must re-assert a surface background without adding a border or
 	// padding. Never render content through it.
 	SurfaceBg = lipgloss.NewStyle()
+
+	// ComposerBg is the BACKGROUND-ONLY form of the COMPOSER's fill. It differs from SurfaceBg on a
+	// transparent theme, where the composer is unpainted and the panels are not — so the composer's own
+	// repair must ask for this one, and never for SurfaceBg.
+	ComposerBg = lipgloss.NewStyle()
+
+	// PanelBgStyle is the BACKGROUND-ONLY form of PanelBg: the tint a panel's rows, padding and reset repairs
+	// are painted with. Always painted, on every theme — see PanelBg.
+	PanelBgStyle = lipgloss.NewStyle()
 
 	// Tab bar: inactive tabs are dim glass, the active tab carries the
 	// GUI nav's cyan→indigo active gradient (approximated with the filled
@@ -449,8 +576,40 @@ var (
 )
 
 func buildStyles(t Theme) {
-	Bg = t.Bg
-	Surface = t.Surface
+	// THE EFFECTIVE BACKGROUND, which is the whole of the transparency mechanism.
+	//
+	// An EMPTY lipgloss colour renders NO background sequence at all (verified against the library: a style
+	// whose only property is `Background(lipgloss.Color(""))` emits nothing), so "transparent" here is not
+	// a simulation or a very-dark colour — the cells are genuinely not painted.
+	//
+	// That choice also makes the frame's repair machinery degrade correctly rather than fight it:
+	// bgOpaque and RepairAfterResets both derive their re-assert sequence from a zero-width render of
+	// ScreenBg and RETURN THE LINE UNCHANGED when that render is empty. On a transparent theme there is no
+	// background to re-assert, which is exactly true — the code path already existed for "no background",
+	// and was documented as such long before this theme needed it.
+	bg := t.Bg
+	composerFill := t.Surface
+	surface := t.Surface
+	if t.Transparent {
+		bg = lipgloss.Color("")
+		composerFill = lipgloss.Color("")
+		// Surface is the INACTIVE-TAB and panel fill, so it goes with the background. SurfaceAlt does NOT: it is
+		// the code chip / code block / diff fill, which is CONTENT rather than a surface — see
+		// transparent_adapt.go for why those keep a fill.
+		surface = lipgloss.Color("")
+	}
+	Bg = bg
+	ComposerFill = composerFill
+	// THE PANEL TINT FOLLOWS THE TRANSPARENCY, like the app background and the composer.
+	//
+	// The operator: "now the transparents are not transparent at all ... the terminal should bleed through
+	// everywhere but with the light tint of the color scheme coming through." The previous cut kept panels
+	// painted to make a light transparent theme readable on a dark terminal, which is a real problem — but a
+	// panel that paints a fill is exactly what stops the bleed-through, so the readability is solved in the
+	// FOREGROUNDS instead (see adaptTransparentForTerminal) and the panels get out of the way with everything
+	// else.
+	PanelBg = bg
+	Surface = surface
 	SurfaceAlt = t.SurfaceAlt
 	Border = t.Border
 	BorderFaint = t.BorderFaint
@@ -468,20 +627,49 @@ func buildStyles(t Theme) {
 	// accent pills in both themes.
 	white := lipgloss.Color("#f8fafc")
 
-	ScreenBg = lipgloss.NewStyle().Background(t.Bg)
-	SurfaceBg = lipgloss.NewStyle().Background(t.Surface)
+	ScreenBg = lipgloss.NewStyle().Background(bg)
+	SurfaceBg = lipgloss.NewStyle().Background(surface)
+	// PanelBgStyle is the BACKGROUND-ONLY panel tint, derived FROM PanelBg rather than recomputed.
+	//
+	// IT WAS RECOMPUTED FROM t.Bg, which is the same value TODAY and a second source of truth forever: a test
+	// that disabled PanelBg (to prove the pane-tint behaviour was what made a transparent theme readable)
+	// left the STYLE still painting, so the assertion stayed green and the proof was vacuous. Deriving one from
+	// the other makes the drift impossible and the proof real.
+	PanelBgStyle = lipgloss.NewStyle().Background(PanelBg)
+	// ComposerBg is the BACKGROUND-ONLY composer fill, for the resets the composer's own rows repair —
+	// the same shape as SurfaceBg, and unpainted on a transparent theme so the repair has nothing to
+	// re-assert there (the operator's "Composer should also be transparent as well on transparent themes").
+	ComposerBg = lipgloss.NewStyle().Background(composerFill)
 
 	// Bubbles: a clearly different fill for the operator's own messages vs the
 	// model's, with the bubble's own text colour (the plain text colour is
 	// chosen against the BACKGROUND, not against a lifted bubble).
+	// The bubble FILLS are derived from the palette's own Bg hex, deliberately NOT from the effective
+	// background above: on a transparent theme the effective value is unpainted, and a bubble derived from
+	// "no colour" would be a bubble derived from black. The palette's colour is what the tint is made of.
 	bu, bm := bubbleFills(string(t.Bg), string(t.Accent))
-	BubbleUser = lipgloss.NewStyle().Background(lipgloss.Color(bu)).Foreground(bubbleText(bu, t))
-	BubbleModel = lipgloss.NewStyle().Background(lipgloss.Color(bm)).Foreground(bubbleText(bm, t))
+	// ON A TRANSPARENT THEME NEITHER BAND IS FILLED, so the chat surface is as see-through as the rest of the
+	// theme. The operator, on the first version: "Message blocks and composer are not transparent. I thought we
+	// decided on changing the tint on those items so they look semi-transparent as well?" — and they are right
+	// that the two were inconsistent: the app background and the composer had been left to the terminal while
+	// the transcript's bands stayed solid.
+	//
+	// THE TWO SPEAKERS ARE STILL TELLABLE APART, which is what the fills were for: the operator's band already
+	// carries its "You" label (chat.view's userBandLabel), so the label does the job the fill was doing. That
+	// is why both can go rather than one, and it is the honest shape of "semi-transparent".
+	//
+	// (Nothing here can blend: a terminal cell has a foreground and a background and no alpha, so "80% opaque"
+	// is not expressible — see Theme.Transparent. Leaving the fill off is what every TUI means by the word.)
+	if t.Transparent {
+		bu, bm = "", ""
+	}
+	BubbleUser = bubbleBand(bu, t)
+	BubbleModel = bubbleBand(bm, t)
 
-	TabInactive = lipgloss.NewStyle().Foreground(t.TextDim).Background(t.Surface).Padding(0, 1)
+	TabInactive = lipgloss.NewStyle().Foreground(t.TextDim).Background(surface).Padding(0, 1)
 	TabActive = lipgloss.NewStyle().Foreground(white).Bold(true).Background(t.Select).Padding(0, 1)
-	TabBar = lipgloss.NewStyle().Background(t.Bg).Padding(0, 1)
-	TabBarUnderline = lipgloss.NewStyle().Foreground(t.Border).Background(t.Bg)
+	TabBar = lipgloss.NewStyle().Background(bg).Padding(0, 1)
+	TabBarUnderline = lipgloss.NewStyle().Foreground(t.Border).Background(bg)
 
 	MenuPanel = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -512,7 +700,7 @@ func buildStyles(t Theme) {
 	ComposerBox = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(t.Border).
-		Background(t.Surface).
+		Background(composerFill).
 		Padding(0, 2)
 
 	StatusOK = lipgloss.NewStyle().Foreground(t.OK)
@@ -553,6 +741,12 @@ func buildStyles(t Theme) {
 	// its own SURFACE colour — so on every dark palette the caret is the light colour and on every light one
 	// it is the dark colour, which is what a caret is on both. It also stays legible by construction: the two
 	// tokens are contrast-gated against each other (see TestStructuralContrast).
+	// THE CARET KEEPS THE PALETTE'S SOLID COLOUR, EVEN ON A TRANSPARENT THEME, and the caret gate is what
+	// caught it: with the background unpainted the caret's character inherited the terminal's own colour,
+	// which nothing here can certify as legible on the block behind it. That is not a test to relax — a
+	// caret is a FILLED BLOCK, not a surface, so the honest rendering is the palette's own colour. On a
+	// transparent theme the frame is see-through and the cursor is solid, which is exactly how a terminal
+	// cursor behaves.
 	ComposerCursor = lipgloss.NewStyle().Foreground(t.Text).Background(t.Bg)
 	// The white-on-Select pairing is the same one MenuRowSel and ListItemSelected use, and it is contrast-gated
 	// for every palette by TestSelectionFillCarriesWhiteText — so a theme that cannot carry the fill fails the
@@ -580,7 +774,7 @@ func buildStyles(t Theme) {
 	DiffLineNoNew = lipgloss.NewStyle().Foreground(t.TextFaint)
 	DiffGutter = lipgloss.NewStyle().Foreground(t.TextFaint)
 	DiffPanel = lipgloss.NewStyle().
-		Background(t.Bg).
+		Background(bg).
 		Border(lipgloss.RoundedBorder(), false, false, false, true).
 		BorderForeground(t.Border)
 	DiffTabActive = lipgloss.NewStyle().Foreground(white).Bold(true).Background(t.Select).Padding(0, 1)
@@ -631,6 +825,26 @@ func Opaque(s string, w int) string {
 		s += strings.Repeat(" ", pad)
 	}
 	return repairResets(ScreenBg.Render(s))
+}
+
+// OpaquePanel is Opaque for a PANEL: the padding and the reset repair use the PANEL's tint rather than the app
+// background's.
+//
+// IT EXISTS BECAUSE THE TWO DIVERGED, and the divergence is the whole point of a transparent theme. On a solid
+// theme they are the same colour, so one function did for both; on a transparent theme the app background is
+// UNPAINTED, and a panel padded or repaired through it would punch an invisible — or worse, a
+// terminal-coloured — hole through the panel it is drawing.
+func OpaquePanel(s string, w int) string {
+	if w < 1 {
+		return s
+	}
+	if lipgloss.Width(s) > w {
+		s = ansi.Truncate(s, w, "")
+	}
+	if pad := w - lipgloss.Width(s); pad > 0 {
+		s += strings.Repeat(" ", pad)
+	}
+	return RepairAfterResets(PanelBgStyle.Render(s), PanelBgStyle)
 }
 
 // RepairAfterResets re-asserts a BACKGROUND-ONLY style's background after

@@ -557,6 +557,14 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string, o
 	m.chatFocus = focusComposer
 	m.dock.Focus()
 	m.footer.ComposerFocus = true
+	// THE TERMINAL'S OWN BACKGROUND IS ASKED FOR ONCE, HERE, before bubbletea takes the tty.
+	//
+	// A transparent theme has to adapt its foregrounds to whatever is behind the app (see
+	// theme.transparent_adapt.go), and reading that means querying the terminal and waiting for its reply on
+	// stdin — which must not happen while bubbletea is draining the same tty. NewApp runs before
+	// tea.NewProgram, so this is the safe window; termenv caches the answer for the process, so a later switch
+	// to a transparent theme costs nothing.
+	theme.PrimeTerminalGround()
 	// THE THEME IS APPLIED AND THE COMPOSER RE-PINNED, in that order and in one place. The dock was
 	// constructed above with the DEFAULT palette captured into its textarea, so a session whose theme
 	// came from config rendered its composer in the wrong colours — see applyThemeAndRefresh.
@@ -586,6 +594,19 @@ func (m *App) RegisterScreen(id TabID, s Screen) {
 	m.screens[id] = s
 	if m.active == "" {
 		m.active = id
+	}
+}
+
+// rebindScreens re-points every live screen's shell reference at THIS App.
+//
+// Called on every dispatch — see the call site for why the reference goes stale at all (`App.Update` has a
+// value receiver) and what it cost. Kept beside newScreen so the two halves of the contract are read together:
+// newScreen gives a screen its shell at construction, and this keeps it correct for the App's whole life.
+func (m *App) rebindScreens() {
+	for _, s := range m.screens {
+		if ss, ok := s.(interface{ SetShell(any) }); ok {
+			ss.SetShell(m)
+		}
 	}
 }
 
@@ -2340,12 +2361,49 @@ func wrapPlain(s string, width int) []string {
 	return out
 }
 
-// centeredWelcomeView renders the launch block — the large brand lockup, the
-// composer box, and the tagline — vertically centered in the w×h body region.
-// The composer keeps its own rendering (border, hint row, palette target);
-// only its width and position change, so typing, slash commands and drafts
-// behave identically to the docked layout.
-func (m App) centeredWelcomeView(w, h int) []string {
+// welcomeComposer is WHERE the launch page's centered composer box is DRAWN, in FRAME coordinates.
+//
+// It exists because the launch page is the one layout where the composer is NOT at the bottom of the
+// frame: it is centered inside the body region and narrower than the layout width. Two things need to
+// know that geometry — the paint, and a click that has to be converted from frame coordinates into the
+// dock's own — and the operator's report is exactly what happens when only one of them knows it:
+//
+//	"Clicking into the composer at a specific coordinate should move the cursor to that coordinate.
+//	 This WAS working but is no longer working again."
+//
+// It works when the composer is DOCKED (composerTopRow is the true row) and not on the launch page,
+// where composerTopRow() pointed at a row the box is not on and the click missed it entirely.
+//
+// ONE computation, read by both (see welcomeLayout), so a change to the centering cannot desync the
+// caret from the box an operator clicked.
+type welcomeComposer struct {
+	// Top is the frame row of the box's FIRST line (its top border); Left is its first CELL.
+	// Width is the box's width and Rows how many rows it spans.
+	Top, Left, Width, Rows int
+}
+
+// contains reports whether a frame coordinate lands inside the drawn box.
+func (g welcomeComposer) contains(x, y int) bool {
+	return x >= g.Left && x < g.Left+g.Width && y >= g.Top && y < g.Top+g.Rows
+}
+
+// bodyTopRow is the frame row of the body region's FIRST row. The chrome above it is the tab bar and its
+// underline rule (tabBarRows) plus the one blank separator (row 2) — the same derivation composerTopRow
+// and selectionRegionAt use, named once so the launch page's centered geometry cannot be off by the
+// chrome it is drawn under.
+func bodyTopRow() int { return tabBarRows + 1 }
+
+// welcomeLayout builds the launch block — the large brand lockup, the composer box, and the tagline —
+// vertically centered in the w×h body region, AND reports where the composer box landed in that block.
+//
+// The composer keeps its own rendering (border, hint row, palette target); only its width and position
+// change, so typing, slash commands and drafts behave identically to the docked layout.
+//
+// The row of the box is DERIVED from the block it is composed into (a leading blank, the wordmark,
+// a blank, then the box) rather than hardcoded, because the wordmark is FIVE rows on a wide terminal
+// and ONE row on a narrow one — a constant here would be wrong on exactly the terminals where the
+// layout has already changed shape.
+func (m App) welcomeLayout(w, h int) ([]string, welcomeComposer) {
 	boxW := w * 2 / 3
 	if boxW > 76 {
 		boxW = 76
@@ -2384,6 +2442,7 @@ func (m App) centeredWelcomeView(w, h int) []string {
 	block = append(block, "")
 	block = append(block, brand...)
 	block = append(block, "")
+	blockRow := len(block) // the box's first row WITHIN the block
 	block = append(block, boxLines...)
 	block = append(block, "")
 	block = append(block, tagline...)
@@ -2398,6 +2457,13 @@ func (m App) centeredWelcomeView(w, h int) []string {
 	for i := 0; i < top; i++ {
 		out = append(out, "")
 	}
+	// The box's LEFT edge. Every box line is exactly boxW wide (ComposerBox pads its inner rows and adds
+	// its border), so one pad serves them all — and it is the same pad the lines below are drawn with,
+	// derived once here rather than re-derived by the click mapping.
+	boxLeft := (w - boxW) / 2
+	if boxLeft < 0 {
+		boxLeft = 0
+	}
 	for _, l := range block {
 		pad := (w - lipgloss.Width(l)) / 2
 		if pad < 0 {
@@ -2411,7 +2477,18 @@ func (m App) centeredWelcomeView(w, h int) []string {
 	if len(out) > h {
 		out = out[:h]
 	}
-	return out
+	return out, welcomeComposer{
+		Top:   bodyTopRow() + top + blockRow,
+		Left:  boxLeft,
+		Width: boxW,
+		Rows:  len(boxLines),
+	}
+}
+
+// centeredWelcomeView renders the centered launch block (see welcomeLayout, which owns the layout).
+func (m App) centeredWelcomeView(w, h int) []string {
+	rows, _ := m.welcomeLayout(w, h)
+	return rows
 }
 
 // safeView renders the active screen, tolerating a nil screen (the shell
@@ -3428,7 +3505,37 @@ func (m *App) composerTopRow() int {
 //
 // It converts FRAME coordinates to the dock's own, which is the half only the shell can do: the dock is handed
 // a width and rendered at the bottom of the body, so it has no idea which frame row it starts on.
+//
+// THE LAUNCH PAGE IS A DIFFERENT GEOMETRY, and that is the whole of this fix. When the composer is DOCKED it
+// starts at composerTopRow() and spans the content column. On the launch page (Ask → New, the screen orch
+// opens on) it is CENTERED in the body region and NARROWER than the content column — so composerTopRow()
+// names a row the box is not on, the conversion hands ClickAt a negative row, ClickAt refuses it, and the
+// caret never moves. The operator: "Clicking into the composer at a specific coordinate should move the
+// cursor to that coordinate. This WAS working but is no longer working again." — it worked on the
+// conversation view and not on the page they start from.
+//
+// The geometry comes from welcomeLayout, the SAME computation the paint uses, so the two cannot drift.
 func (m *App) composerClickAt(x, y int) bool {
+	if m.welcomeMode() {
+		_, g := m.welcomeLayout(m.contentWidth(), m.contentHeight()+m.dock.Lines())
+		if !g.contains(x, y) {
+			// Outside the drawn box — the centered margins, or the brand/tagline above and below. A click
+			// there is not a composer click, so it must fall through to the rest of the frame's handling
+			// rather than being swallowed.
+			return false
+		}
+		// ClickAt measures the box it is placing the caret in (the prompt offset, the input rows, the
+		// textarea's width), so it MUST be given the width the box was DRAWN at rather than the layout
+		// width — otherwise its column arithmetic describes a box that is not on screen. The dock's own
+		// width is restored immediately: outside this paint, the invariant is
+		// m.dock.Width == contentWidth() (see refreshLayout), and a dock left narrow would mis-report
+		// its row count to the layout on the next frame.
+		prev := m.dock.Width
+		m.dock.Width = g.Width
+		ok := m.dock.ClickAt(x-g.Left, y-g.Top)
+		m.dock.Width = prev
+		return ok
+	}
 	if y < m.composerTopRow() {
 		return false
 	}
@@ -3569,6 +3676,12 @@ func (m *App) onStreamDone(msg chat.StreamDoneMsg) tea.Cmd {
 	// The turn slot is gone as of EndStream above, so the stop affordance must go with it (the
 	// affordance is derived from that state, and re-derived here).
 	m.refreshComposerHint()
+	// AND THE SEND ACK SETTLES WITH THE TURN. The ack means "handed over, nothing back yet", and this is the
+	// one path every completed turn reaches — the graceful close of its stream. It is the second settle (the
+	// first is the TurnStarted ack) because the two cover different failures: a stream whose ack the tea
+	// channel dropped, or a turn that was already acked when the shell attached to it, would otherwise leave
+	// "sending …" on screen for good. Guarded, so a connection banner written before this is not erased.
+	m.dock.SettleSendingAck()
 	return tea.Batch(m.chat.Poll(msg.ConvID), m.refreshMetrics(), m.chat.LoadConversations())
 }
 
@@ -3673,6 +3786,36 @@ func (m *App) authRetryInline() bool {
 // landing changes the pane's field count and therefore its body height, so a stream sized before it can end
 // up one row too tall — and the row the pane's viewport clips is the NOTICE, which is drawn last.
 func (m *App) RepaintTranscript() tea.Cmd { return m.onChatWake() }
+
+// composerKey is THE way to hand a message to the composer.
+//
+// EVERY caller of dock.Update MUST go through it, and the reason is that the dock's Enter path does TWO
+// things at once: it CLEARS the buffer and it parks the message in a pending slot for the shell to collect.
+// Only the shell can dispatch it (the dock has no client). So a caller that updated the dock and never
+// collected the pending send SWALLOWED THE OPERATOR'S MESSAGE — the composer emptied, nothing was ever
+// sent, no optimistic echo was appended, no turn started, and nothing on screen changed. The operator's
+// words for exactly that: "I don't see the orchicon is thinking and I have to send another message" and
+// "my message does not appear when this happens".
+//
+// THERE WERE FOUR CALLERS OF dock.Update AND EXACTLY ONE COLLECTED. The other three forwarded a key and
+// dropped whatever it produced — and the one that matters is the slash PALETTE, because it forwards every
+// key it does not case itself to the dock: `enter` is cased there but `ctrl+j` is NOT, and ctrl+j is the
+// dock's own second spelling of Enter (see dock.enterKey — some terminals and PTY configurations send LF,
+// which bubbletea reports as KeyCtrlJ). With the palette open, that Enter was a message eater.
+//
+// This fixes the SHAPE rather than that one hole: with one funnel, "a key that produces a send is
+// dispatched" is true by construction, and a future fifth caller cannot reintroduce the bug by forgetting
+// a convention.
+func (m *App) composerKey(msg tea.Msg) (handled bool, cmd tea.Cmd) {
+	handled, cmd = m.dock.Update(msg)
+	if text := m.dock.SendRequest(); text != "" {
+		// Batched with whatever the key produced, so the edit and the send it triggered cannot be separated
+		// (or one of them lost).
+		cmd = tea.Batch(cmd, m.sendFromComposer(text))
+		m.refreshStreamStatus()
+	}
+	return handled, cmd
+}
 
 // sendChat sends text to the conversation with the context preamble AND the pending attachments.
 //

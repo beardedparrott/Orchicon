@@ -207,6 +207,23 @@ type Base struct {
 	// lets a screen make activation do the natural thing for the selection (the
 	// Themes pane APPLIES the highlighted palette).
 	OnActivate func() (handled bool, cmd tea.Cmd)
+
+	// OnHighlight, when set, runs after the cursor LANDS ON A NEW ROW while the LIST has focus — an arrow
+	// move (up/down/j/k) or a mouse click. It is how the Themes pane applies a palette AS the operator
+	// moves through the list, so the choice can be seen rather than guessed at.
+	//
+	// The operator: "when selecting themes, we should auto switch to the theme as the user is moving
+	// through them with the arrow keys or clicking on them as opposed to having to hit enter to select."
+	//
+	// It is a SEPARATE hook from OnActivate rather than a second call to it, because the two mean different
+	// things: OnActivate is "the operator committed to this row" (Enter/Space) and may take the key, whereas
+	// this is "the cursor moved" and can never consume anything — the row's detail still loads underneath
+	// it. A screen that wants live preview must therefore still implement OnActivate for the commit gesture,
+	// and the pane must not treat a moved cursor as a decision.
+	//
+	// The returned cmd is batched with the row's own detail load, so a live preview repaint and the detail
+	// landing cannot arrive out of order.
+	OnHighlight func() tea.Cmd
 }
 
 // AddSource registers a fetchable list pane.
@@ -1006,7 +1023,7 @@ func (b *Base) key(msg tea.KeyMsg) (bool, tea.Cmd) {
 			b.detail.Wheel(-2)
 		} else {
 			b.curTable().Move(-1)
-			return true, b.loadDetail()
+			return true, b.afterHighlight()
 		}
 		return true, nil
 	case "down", "j":
@@ -1014,7 +1031,7 @@ func (b *Base) key(msg tea.KeyMsg) (bool, tea.Cmd) {
 			b.detail.Wheel(2)
 		} else {
 			b.curTable().Move(1)
-			return true, b.loadDetail()
+			return true, b.afterHighlight()
 		}
 		return true, nil
 	case "left":
@@ -1118,6 +1135,28 @@ func (b *Base) key(msg tea.KeyMsg) (bool, tea.Cmd) {
 		}
 	}
 	return false, nil
+}
+
+// afterHighlight is the landing path for a cursor MOVE: the screen's OnHighlight hook first (the Themes
+// pane previews the palette live), then the row's own detail load.
+//
+// One method because THREE gestures reach it — up, down, and a row click — and they must stay identical: a
+// click that previewed but an arrow that did not (or the reverse) is exactly the asymmetry this codebase
+// keeps finding in its rails and menus.
+func (b *Base) afterHighlight() tea.Cmd {
+	var cmds []tea.Cmd
+	if b.OnHighlight != nil {
+		if c := b.OnHighlight(); c != nil {
+			cmds = append(cmds, c)
+		}
+	}
+	if c := b.loadDetail(); c != nil {
+		cmds = append(cmds, c)
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
 }
 
 // activateSelected runs the ACTIVATE gesture on the selected row: a screen's
@@ -1441,7 +1480,9 @@ func (b *Base) mouse(msg tea.MouseMsg) tea.Cmd {
 			b.active = p
 			b.focusD = false
 			b.setFocusForPane()
-			return b.loadDetail()
+			// A CLICK MOVES THE CURSOR TOO, so it fires the same hook an arrow does — the operator's
+			// "moving through them with the arrow keys or clicking on them" is one gesture here.
+			return b.afterHighlight()
 		}
 	}
 	return nil

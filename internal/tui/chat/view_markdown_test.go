@@ -147,3 +147,28 @@ func TestBandPaddingStillApplies(t *testing.T) {
 	}
 	_ = theme.BubbleModel
 }
+
+// THE OPERATOR'S BAND STAYS IDENTIFIABLE WITH NO FILL.
+//
+// On a transparent theme neither chat band is painted (see theme.buildStyles), so the FILL can no longer be what
+// tells the two speakers apart. It does not have to be: the operator's band carries its own label, and this pins
+// that the label survives the removal of the fill — because the removal was justified by exactly this, and a
+// justification nothing asserts is a guess.
+func TestTheOperatorBandIsLabelledWithNoFill(t *testing.T) {
+	t.Cleanup(func() { theme.Use(theme.DefaultName) })
+	if !theme.Use("forest-transparent") {
+		t.Fatal("forest-transparent is not available")
+	}
+	if out := theme.BubbleUser.Render("x"); strings.Contains(out, "48;") {
+		t.Fatalf("fixture: the operator's band is filled on a transparent theme (%q)", out)
+	}
+
+	var b strings.Builder
+	_ = b
+	// The band is rendered through the same path the transcript uses.
+	body, _ := renderUserChatMessageSpans("hello", theme.BubbleUser, 40, true, userBandLabel, "")
+	if !strings.Contains(body, userBandLabel) {
+		t.Errorf("with no fill the operator's band lost its %q label, so nothing distinguishes it from the "+
+			"model's:\n%q", userBandLabel, body)
+	}
+}

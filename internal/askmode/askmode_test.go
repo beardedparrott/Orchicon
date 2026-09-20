@@ -81,6 +81,28 @@ func TestInOrchiconWorkStaysAvailable(t *testing.T) {
 	}
 }
 
+// THE DISPATCH PATH'S OWN TOOLS ARE NEVER ON A DENY LIST.
+//
+// A mode that builds a worker, a workflow and a work item for a job has to be able to PUBLISH what it built and
+// READ the facts it must ask the user about. Those tools are new, so they are allowed today by the table's shape
+// (it is a deny list) — which is exactly why this is asserted rather than assumed: a future edit that added one of
+// them to the denials would leave Quick Work able to create a draft workflow it can never start, and nothing else
+// in the suite would notice.
+func TestTheDispatchPathToolsAreNeverDenied(t *testing.T) {
+	for _, mode := range []string{Brainstorm, QuickWork} {
+		for _, tool := range []string{
+			"create_worker", "publish_worker_version", "create_workflow", "publish_workflow_version",
+			"create_work_item", "get_current_conversation", "list_project_branches", "get_project",
+			"list_adapter_kinds", "get_workflow_run", "list_executions", "get_execution",
+		} {
+			if !Allows(mode, tool) {
+				t.Errorf("%s may not run %q — this is the dispatch path itself, and denying it leaves the mode "+
+					"able to build only inert machinery", mode, tool)
+			}
+		}
+	}
+}
+
 // AN UNKNOWN OR EMPTY MODE IS NOT A BOUNDARY.
 func TestAnUnknownModeAllowsEverything(t *testing.T) {
 	for _, mode := range []string{"", "not-a-mode", "Brainstorm"} {

@@ -714,10 +714,10 @@ func Frame(content string, w, h int) string {
 		if cols < w {
 			l += strings.Repeat(" ", w-cols)
 		}
-		lines[i] = theme.ScreenBg.Render(l)
+		lines[i] = theme.PanelBgStyle.Render(l)
 	}
 	for len(lines) < h {
-		lines = append(lines, theme.ScreenBg.Render(strings.Repeat(" ", w)))
+		lines = append(lines, theme.PanelBgStyle.Render(strings.Repeat(" ", w)))
 	}
 	return strings.Join(lines, "\n")
 }

@@ -183,6 +183,27 @@ func TestBubbleContrast(t *testing.T) {
 		bg := string(th.Bg)
 		user := BubbleUser.GetBackground()
 		model := BubbleModel.GetBackground()
+
+		// A TRANSPARENT THEME'S BANDS ARE UNPAINTED — deliberately, so the chat surface is see-through like the
+		// rest of the theme. There is no fill to measure, so the requirement inverts: both bands must paint
+		// NOTHING (a band that quietly kept a fill would be the operator's "message blocks ... are not
+		// transparent"), and the speakers must still be tellable apart by something other than a fill — which
+		// the transcript provides as the operator's "You" label (see chat.view's userBandLabel).
+		if th.Transparent {
+			for label, c := range map[string]lipgloss.TerminalColor{"user": user, "model": model} {
+				if c != nil && string(colorHex(c)) != "" {
+					t.Errorf("%s: the %s band is FILLED (%s) on a transparent theme — the chat surface would "+
+						"not be see-through", name, label, colorHex(c))
+				}
+			}
+			// And its text must still be the palette's own, readable on the PANEL it sits on.
+			if r := contrastRatio(string(th.Text), string(th.Surface)); r < 3.0 {
+				t.Errorf("%s: the band text on the panel fill is %.2f:1 — the transcript would be unreadable "+
+					"even though the bands themselves are see-through", name, r)
+			}
+			continue
+		}
+
 		if user == nil || model == nil {
 			t.Fatalf("%s: bubble fills are unset", name)
 		}
@@ -203,10 +224,17 @@ func TestBubbleContrast(t *testing.T) {
 				t.Errorf("%s: the %s bubble (%s) is indistinguishable from the background (%s)", name, label, c, bg)
 			}
 		}
-		// Text must stay readable on BOTH fills.
+		// Text must stay readable on BOTH fills — measured against the colour the bubble ACTUALLY DRAWS,
+		// via bubbleText. That is not a loosening: bubbleText is what picks the bubble's foreground, and it
+		// is allowed to move the palette's text out of the way on a fill the text cannot be read on (see its
+		// own note — a mid-tone foreground such as One Dark's has no room on a lifted bubble). Measuring
+		// th.Text here instead would demand readability from a colour this code never draws, which would
+		// either fail a readable pair or force every palette's bubbles to be flattened for the worst case.
 		for label, c := range map[string]string{"user": us, "model": ms} {
-			if r := contrastRatio(string(th.Text), c); r < 4.0 {
-				t.Errorf("%s: text on the %s bubble (%s) is %.2f:1 — unreadable", name, label, c, r)
+			drawn := string(bubbleText(c, *th))
+			if r := contrastRatio(drawn, c); r < 4.0 {
+				t.Errorf("%s: the bubble text (%s) on the %s bubble (%s) is %.2f:1 — unreadable",
+					name, drawn, label, c, r)
 			}
 		}
 	}

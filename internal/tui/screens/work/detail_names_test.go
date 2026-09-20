@@ -123,7 +123,6 @@ func TestDetailFallsBackToRawIds(t *testing.T) {
 		{"project", "proj-missing"},
 		{"parent", "wi-missing"},
 		{"workflow", "wf-missing"},
-		{"worker", "w-9"},
 	} {
 		got := fieldValue(t, m, tc.key)
 		if got != tc.want {
@@ -168,15 +167,41 @@ func TestDetailShortensTheWorkflowRunID(t *testing.T) {
 	}
 }
 
-// The worker ref is a REF, not a resolvable name: there is no worker list on this Model, and the value
-// is what the operator quotes. It must survive verbatim.
-func TestDetailKeepsTheWorkerRef(t *testing.T) {
-	_, m := detailPlane(t)
+// THE WORKER FIELD IS GONE FROM THE DETAIL PANE, and asserted as an ABSENCE — the strongest form
+// available for a removed surface.
+//
+// The operator: "work items in the TUI are still showing the worker field. This is not necessary ...
+// Work is set via WORKFLOWS and not individual workers. That I believe was left over from old original
+// code." It is the same disposition that already removed the assign ACTION (see
+// TestAssignIsRemovedFromWorkItems): the ref survives as a nullable column for historical rows, and the TUI
+// stops presenting it as a live field of a work item. The item still carries a worker ref in the payload —
+// which is exactly why a prompt-level assertion is not enough, and why this checks the RENDERED pane.
+func TestDetailDoesNotShowAWorkerField(t *testing.T) {
+	p, m := detailPlane(t)
 	load(t, m, srcWorkItems)
 
+	// detailPlane's item carries AssignedWorkerRef "w-3" — so this is a real value the pane must NOT print.
+	p.mu.Lock()
+	got := p.items["wi-child"].GetAssignedWorkerRef()
+	p.mu.Unlock()
+	if got != "w-3" {
+		t.Fatalf("fixture no longer carries a worker ref (%q) — this test would pass vacuously", got)
+	}
+
 	run(t, m, m.Base.RequestDetail(srcWorkItems, "wi-child"))
-	if got := fieldValue(t, m, "worker"); got != "w-3" {
-		t.Fatalf("worker field = %q, want the ref verbatim", got)
+	// NOTE: fieldValue cannot express this — it FAILS when the field is absent, which is exactly the
+	// state being asserted. Read the pane's fields directly instead.
+	_, fields, _ := m.Base.DetailForTest()
+	for _, f := range fields {
+		if f.Key == "worker" {
+			t.Fatalf("the detail pane still renders a worker field (%q) — how work is routed is the WORKFLOW's "+
+				"business, and this ref is the leftover the operator asked to drop", f.Value)
+		}
+		// And the raw ref must not leak under any OTHER label on the pane either: renaming the field
+		// while still printing the ref would satisfy a key-only check and miss the point.
+		if strings.Contains(f.Value, "w-3") {
+			t.Fatalf("the worker ref leaked onto the pane as %q=%q", f.Key, f.Value)
+		}
 	}
 }
 

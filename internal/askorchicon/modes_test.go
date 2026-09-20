@@ -162,13 +162,45 @@ func TestQuickWorkDispatchesEphemerally(t *testing.T) {
 		"created with the ephemeral flag set",
 		"HARD-deleted when the job ends",
 		"do NOT appear in any console list",
-		// The model_ref rule.
-		"THE WORKER RUNS ON YOUR MODEL",
 		// The failure rule, in the operator's words.
 		"ON FAILURE: DIAGNOSE, REPORT, OFFER A RE-RUN",
+		// THE MODEL IS ASKED AND NAMED, not assumed. This REPLACES the old
+		// "THE WORKER RUNS ON YOUR MODEL" assertion, which pinned the rule the
+		// operator reversed: the worker no longer silently inherits the agent's
+		// model, and the agent must offer the real ref by name every dispatch.
+		"ASK WHICH MODEL ON EVERY NEW DISPATCH",
+		"Would you like to use the current model",
+		"or would you like to choose a different one for this run?",
+		"orchicon_get_current_conversation",
+		// GIT IS CONFIRMED, NOT ASSUMED — strategy, and BOTH branches.
+		"ASK WHICH BRANCHES ON EVERY NEW DISPATCH",
+		"WHICH BRANCH TO CLONE OFF",
+		"WHICH BRANCH TO MERGE INTO",
+		"orchicon_list_project_branches",
+		// The protocol can actually produce a RUNNABLE workflow: both halves
+		// are published, which the old protocol omitted entirely — leaving a
+		// draft that nothing could dispatch.
+		"Publish the worker",
+		"Publish the workflow",
+		"publish_workflow_version",
+		// Ephemeral items cannot nest.
+		"TOP-LEVEL ONLY",
+		// The seeded pair is an EXAMPLE, never the machinery.
+		"never as the machinery",
+		"Do NOT bind them for a job",
+		// The platform sweep is a backstop, not a cleanup substitute.
+		"BACKSTOP",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("quick work is missing %q", want)
+		}
+	}
+	// The REVERSED rule must be GONE: a prompt still saying the worker runs on the agent's model, and that the
+	// agent must not ask, would fight the instruction it now carries.
+	for _, forbid := range []string{"THE WORKER RUNS ON YOUR MODEL", "do not ask the user to choose one"} {
+		if strings.Contains(p, forbid) {
+			t.Errorf("quick work still carries the superseded model rule %q — the worker model is now a per-dispatch "+
+				"question the agent must ask, so the old prohibition cannot stay", forbid)
 		}
 	}
 	// The cleanup must be unconditional: success, failure AND abandonment.

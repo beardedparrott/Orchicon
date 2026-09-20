@@ -618,6 +618,12 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// cancellation — so the mode survives the detach that carries the rest of the turn.
 	ctx = withAskMode(ctx, conv.Mode)
 
+	// THE CONVERSATION ID RIDES WITH THE MODE, for the same reason and by the same rule: a tool that must report
+	// THIS session's own facts (get_current_conversation: which conversation, which model_ref) reads them from the
+	// row this value names, rather than being told them by the model. Stamped here — before the WithoutCancel
+	// detach below — so it survives into every tool call of the turn, exactly as the mode does.
+	ctx = withAskConversation(ctx, convID)
+
 	// sessionIDOverride is the session the new turn dispatches on. Normally
 	// the conversation's persisted session; set to "" below (forcing a fresh
 	// seeded session) when the interject supersedes a WEDGED turn (D4) so the

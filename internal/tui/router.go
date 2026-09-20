@@ -377,6 +377,25 @@ func (m *App) screenOwnsTab() bool {
 // focused, then evaluates global chords (tab switching still works via
 // explicit chords the dock does not bind), then the screen.
 func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
+	// EVERY SCREEN IS RE-POINTED AT THIS APP, on every message, because THIS is the App that survives.
+	//
+	// `App.Update` has a VALUE receiver, so bubbletea copies the App for each message and the model it keeps is
+	// a NEW address every time — and a screen constructed during one of those Updates was handed a pointer to
+	// THAT copy. From the next message onward it therefore talked to an App that no longer existed, and it
+	// showed: switching a theme from the Control→Themes pane set the palette globally (`theme.Use` is package
+	// state, so the switch LOOKED like it worked) while re-pinning the composer on the dead copy, leaving the
+	// live one a white box on a dark palette — the operator's "I switched from a light theme to a dark theme
+	// and now the composer is a white box". The same staleness silently dropped anything else a screen pushed
+	// through its shell: notices, mutation feedback, refreshes.
+	//
+	// The fix is here rather than in each screen because this is the ONE place that holds the surviving App, and
+	// a screen cannot fix it for itself — the reference it was given is simply the wrong one. Doing it on every
+	// message makes staleness impossible to reintroduce, the same way one funnel for the composer's send
+	// (composerKey) made a swallowed message impossible.
+	//
+	// It is cheap: an interface assertion per screen (a handful), on a path that already walks the whole
+	// screen/route tree.
+	m.rebindScreens()
 	if wm, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width, m.height = wm.Width, wm.Height
 		m.footer.Width = wm.Width
@@ -542,7 +561,7 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	// tea.KeyMsg). Without this the tick reached the shell and was dropped, so the
 	// caret never blinked no matter what the dock did with it.
 	if bm, ok := msg.(cursor.BlinkMsg); ok {
-		_, cmd := m.dock.Update(bm)
+		_, cmd := m.composerKey(bm)
 		return m, cmd
 	}
 	k, isKey := msg.(tea.KeyMsg)
@@ -778,7 +797,7 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		//
 		// The empty test is TrimSpace, matching the rule the rail's chords use: a buffer of
 		// only whitespace is empty for this purpose, so leading spaces do not block a command.
-		_, cmd := m.dock.Update(k)
+		_, cmd := m.composerKey(k)
 		m.openPalette()
 		m.refreshStreamStatus()
 		return m, cmd
@@ -837,7 +856,7 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 				// structural chord: skip the composer, the routes below
 				// own it (switchTab routes, quit, rail toggle).
 			} else {
-				consumed, cmd := m.dock.Update(msg)
+				consumed, cmd := m.composerKey(msg)
 				switch k.String() {
 				case "ctrl+z":
 					// Escalate to the full conversation view with this conversation
@@ -872,9 +891,9 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 					}
 				}
 				if consumed {
-					if text := m.dock.SendRequest(); text != "" {
-						cmd = m.sendFromComposer(text)
-					}
+					// The pending send was already collected and dispatched by composerKey above, so the
+					// returned cmd carries it. This site used to be the ONLY place that collected it, which
+					// is what made the other three callers a message-eating hole — see composerKey.
 					m.refreshStreamStatus()
 					return m, cmd
 				}
@@ -1316,6 +1335,12 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		m.refreshComposerHint()
 		m.onChatWake()
 		return tea.Batch(m.chat.LoadConversations(), m.waitChat())
+	case chat.TurnAckedMsg:
+		// THE SEND RESOLVED: the server acked the turn, so the composer's "sending …" is no longer true and is
+		// settled. THIS IS THE CASE THAT WAS MISSING — see TurnAckedMsg, and onStreamDone for the end-of-turn
+		// settle that covers an ack the channel dropped.
+		m.dock.SettleSendingAck()
+		return m.waitChat()
 	case chat.TurnResolvedMsg:
 		return m.waitChat()
 	case chat.StreamDoneMsg:
@@ -1335,9 +1360,11 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 	case chatConvCreatedMsg:
 		m.askMode = askConversations // a session now exists: show it
 		m.chatConvID = msg.convID
-		// The send landed: clear the composer's "sending …" ack (set by the dock
-		// when Enter fired) so it cannot linger as a stale promise.
-		m.dock.SetNotice("")
+		// The send landed: settle the composer's "sending …" ack (set by the dock when
+		// Enter fired) so it cannot linger as a stale promise. Guarded, like every other
+		// settle, so a connection banner that arrived while the create was in flight is
+		// not erased by the create landing.
+		m.dock.SettleSendingAck()
 		m.chat.SetActive(msg.convID)
 		// Optimistic echo of the operator's own message. The existing-conversation
 		// path appends this; the create path did not, so the FIRST send from any

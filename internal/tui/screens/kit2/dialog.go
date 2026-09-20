@@ -99,7 +99,7 @@ func (d *Dialog) Box(w, h int) string {
 		default:
 			content = ""
 		}
-		rows = append(rows, border.Render("│")+theme.ScreenBg.Render(Pad(" "+content, innerW))+border.Render("│"))
+		rows = append(rows, border.Render("│")+theme.PanelBgStyle.Render(Pad(" "+content, innerW))+border.Render("│"))
 	}
 	rows = append(rows, border.Render("└"+strings.Repeat("─", w-2)+"┘"))
 	out := strings.Join(rows, "\n")

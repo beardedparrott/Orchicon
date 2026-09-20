@@ -41,10 +41,14 @@ type fakePlane struct {
 	apiv1connect.UnimplementedMCPServiceHandler
 	apiv1connect.UnimplementedRuntimeImageServiceHandler
 	apiv1connect.UnimplementedWorkflowServiceHandler
+	// ExecutionService is embedded for the work-item PR surface: the screen reads runs to learn which items have
+	// a merged PR. Only ListExecutions is implemented; everything else stays unimplemented.
+	apiv1connect.UnimplementedExecutionServiceHandler
 
 	mu        sync.Mutex
 	items     map[string]*apiv1.WorkItem
 	order     []string
+	execs     []*apiv1.WorkerExecution // newest first, as ListExecutions returns them
 	projects  map[string]*apiv1.Project
 	projOrder []string
 	// projectMCP is each project's MCP selection, as GetProjectMCPServers would report it.
@@ -107,6 +111,36 @@ func (p *fakePlane) addItem(w *apiv1.WorkItem) *apiv1.WorkItem {
 	p.items[w.GetId()] = w
 	p.order = append(p.order, w.GetId())
 	return w
+}
+
+// addExec seeds one execution for the PR surface. Callers append NEWEST FIRST, which is the order
+// ListExecutions returns them in (created_at desc) and the order the PR index relies on.
+func (p *fakePlane) addExec(e *apiv1.WorkerExecution) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.execs = append(p.execs, e)
+}
+
+// ListExecutions serves the work-item PR surface. It honors the task_id and project_id filters the RPC
+// defines — the real request path is what the screen uses, so the fake must answer the same questions the
+// server would rather than always returning everything.
+func (p *fakePlane) ListExecutions(_ context.Context, req *connect.Request[apiv1.ListExecutionsRequest]) (*connect.Response[apiv1.ListExecutionsResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var out []*apiv1.WorkerExecution
+	for _, e := range p.execs {
+		if tid := req.Msg.GetTaskId(); tid != "" && e.GetTaskId() != tid {
+			continue
+		}
+		if pid := req.Msg.GetProjectId(); pid != "" {
+			// A project filter is honored against the ITEM's project, the way the server joins them.
+			if w := p.items[e.GetTaskId()]; w == nil || w.GetProjectId() != pid {
+				continue
+			}
+		}
+		out = append(out, e)
+	}
+	return connect.NewResponse(&apiv1.ListExecutionsResponse{Executions: out}), nil
 }
 
 // setUpdateErr makes every later UpdateWorkItem fail the way a server-side rejection does. It takes
@@ -658,11 +692,32 @@ func newModel(t *testing.T, p *fakePlane) *Model {
 	mux.Handle(apiv1connect.NewMCPServiceHandler(p))
 	mux.Handle(apiv1connect.NewRuntimeImageServiceHandler(p))
 	mux.Handle(apiv1connect.NewWorkflowServiceHandler(p))
+	// The ExecutionService backs the work-item PR surface (the list's `PR merged` mark and the details pane's
+	// `pr url`): the PR lives on the RUN, and the join to the item is execution.task_id. Unseeded, it returns
+	// an empty page, which is exactly the "no PRs anywhere" case the screen must survive.
+	mux.Handle(apiv1connect.NewExecutionServiceHandler(p))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	m := New(client.New(client.Options{BaseURL: srv.URL}), subs.NewRegistry(), "")
 	m.SetSize(400, 40)
 	return m
+}
+
+// metaFor reads one rendered LIST row's meta by id ("" when the id is not on screen).
+//
+// It reads through SourcesForTest — the same hook the other tests use to see what the pane draws — so the
+// assertion is on the RENDERED row rather than on the row builder's inputs.
+func metaFor(t *testing.T, m *Model, id string) string {
+	t.Helper()
+	for _, s := range m.Base.SourcesForTest() {
+		for _, it := range s.Items {
+			if it.ID == id {
+				return it.Meta
+			}
+		}
+	}
+	t.Fatalf("no row for %q on screen", id)
+	return ""
 }
 
 func kmsg(s string) tea.KeyMsg {

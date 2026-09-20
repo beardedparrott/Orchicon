@@ -258,7 +258,7 @@ func (dp *DatePicker) View() string {
 		if i < len(body) {
 			content = body[i]
 		}
-		b.WriteString(border.Render("│") + theme.ScreenBg.Render(Pad(content, innerW)) + border.Render("│"))
+		b.WriteString(border.Render("│") + theme.PanelBgStyle.Render(Pad(content, innerW)) + border.Render("│"))
 		b.WriteString("\n")
 	}
 	b.WriteString(border.Render("└" + strings.Repeat("─", w-2) + "┘"))

@@ -214,8 +214,8 @@ func (m *Model) ApplyTheme() { m.themeStyles() }
 //     bubbles re-resolve it against the styles just set.
 func (m *Model) styledTa() textarea.Model {
 	ta := m.ta
-	base := lipgloss.NewStyle().Background(theme.Surface).Foreground(theme.Text)
-	dim := lipgloss.NewStyle().Background(theme.Surface).Foreground(theme.TextFaint)
+	base := lipgloss.NewStyle().Background(theme.ComposerFill).Foreground(theme.Text)
+	dim := lipgloss.NewStyle().Background(theme.ComposerFill).Foreground(theme.TextFaint)
 
 	ta.FocusedStyle.Base = base
 	ta.BlurredStyle.Base = base
@@ -320,6 +320,139 @@ func (m *Model) TextOrigin() (row, col int) {
 	return row, boxContentCol + promptWidth
 }
 
+// caretRow is one VISUAL row of the composer's input: the logical line it belongs to, and the rune range
+// within that line which this row displays.
+type caretRow struct{ line, start, end int }
+
+// goToTop walks the cursor to the very FIRST visual row (line 0, row offset 0).
+//
+// IT IS NOT CursorStart(), and that cost a round trip to find out: `CursorStart` only calls `SetCursor(0)`, so
+// it moves the cursor to the start of the LINE IT IS ALREADY ON and leaves `row` untouched. A walk that began
+// with it therefore started wherever the operator's caret happened to be — one row of map for a three-line
+// draft, and a click that landed at the end of the buffer.
+//
+// The stop condition is the ROW OFFSET as well as the line, because `CursorUp` within a soft-wrapped line
+// moves to the previous VISUAL row and leaves `Line()` unchanged; stopping on an unchanged line would end the
+// walk halfway up a wrapped line.
+func (m *Model) goToTop() {
+	for i := 0; i < walkLimit; i++ {
+		li := m.ta.LineInfo()
+		if m.ta.Line() == 0 && li.RowOffset == 0 {
+			return
+		}
+		beforeLine, beforeStart, beforeRow := m.ta.Line(), li.StartColumn, li.RowOffset
+		m.ta.CursorUp()
+		li2 := m.ta.LineInfo()
+		if m.ta.Line() == beforeLine && li2.StartColumn == beforeStart && li2.RowOffset == beforeRow {
+			return // the cursor cannot move: this is already the top
+		}
+	}
+}
+
+// walkLimit bounds every cursor walk in this file. It is a guard, not an expectation: one iteration per visual
+// row, so it is generous by orders of magnitude for any real prompt, and a widget that somehow never reports a
+// move ends the walk rather than spinning.
+const walkLimit = 100000
+
+// caretRows enumerates the input's visual rows by WALKING THE TEXTAREA'S OWN CURSOR, and restores the cursor
+// afterwards.
+//
+// WHY IT DOES NOT COMPUTE THE LAYOUT ITSELF, which is what this used to do and what made the click fail. The
+// textarea wraps with `cellbuf.Wrap` — a WORD-WRAPPING algorithm: it breaks at word boundaries and splits a
+// word only when it must. So "the number of rows a line takes" is NOT `ceil(cells/width)`; a 200-cell line in
+// a 70-cell box may take 3 rows or 4 depending on where its words fall, and nothing outside the widget can
+// predict which. (The dock's `visualRows()` still approximates that for SIZING, which is why the composer
+// grows a touch less readily than it could — a separate, cosmetic shortfall, left alone here.)
+//
+// The widget's cursor is the one thing that knows the real layout, and it answers through public API:
+// `CursorDown` moves exactly ONE VISUAL ROW and — by its own construction — leaves the cursor at the START of
+// the row it moved to (`m.col = nli.StartColumn`). So walking from the top and reading `Line()` plus
+// `LineInfo().StartColumn` at each step gives the exact row map, for any content, with no guess about
+// wrapping.
+//
+// THE WALK RESTORES THE CURSOR, which is why it runs only on a CLICK (a rare gesture where moving the caret
+// is the whole point) and never per render: it disturbs cursor state, so doing it on every frame would quietly
+// break the operator's vertical cursor movement.
+func (m *Model) caretRows() []caretRow {
+	// Remember the caret, so a click that turns out not to be placeable leaves it alone.
+	saveLine := m.ta.Line()
+	li := m.ta.LineInfo()
+	saveCol := li.StartColumn + li.ColumnOffset
+
+	m.goToTop()
+	rows := []caretRow{{line: m.ta.Line(), start: 0}}
+	for i := 0; i < walkLimit; i++ {
+		atLine, atStart := m.ta.Line(), m.ta.LineInfo().StartColumn
+		m.ta.CursorDown()
+		if m.ta.Line() == atLine && m.ta.LineInfo().StartColumn == atStart {
+			break // the cursor could not move: this was the last visual row
+		}
+		rows = append(rows, caretRow{line: m.ta.Line(), start: m.ta.LineInfo().StartColumn})
+	}
+
+	// Close each row's rune range: a row ends where the next row ON THE SAME LINE begins, and the last row of
+	// a line ends at the line's own length.
+	lineLens := make([]int, 0, 16)
+	for _, ln := range strings.Split(m.ta.Value(), "\n") {
+		lineLens = append(lineLens, len([]rune(ln)))
+	}
+	for i := range rows {
+		if i+1 < len(rows) && rows[i+1].line == rows[i].line {
+			rows[i].end = rows[i+1].start
+		} else if rows[i].line < len(lineLens) {
+			rows[i].end = lineLens[rows[i].line]
+		}
+		if rows[i].end < rows[i].start {
+			rows[i].end = rows[i].start
+		}
+	}
+
+	// Restore by ROW INDEX, which the map itself tells us. Walking back by line alone is not enough: a
+	// soft-wrapped line spans several rows and `CursorUp` moves between them without `Line()` changing, so a
+	// "get back to line N" restore can land on the wrong row of the right line.
+	//
+	// THE LAST MATCHING ROW WINS, because that is the row the WIDGET considers the caret to be on at a row
+	// boundary: its own `LineInfo` reports RowOffset i+1 when the column sits exactly at a row's end, i.e. the
+	// caret belongs to the FOLLOWING row.
+	saveRow := 0
+	for i, r := range rows {
+		if r.line == saveLine && saveCol >= r.start && saveCol <= r.end {
+			saveRow = i
+		}
+	}
+	m.goToTop()
+	for i := 0; i < saveRow; i++ {
+		m.ta.CursorDown()
+	}
+	m.ta.SetCursor(saveCol)
+	return rows
+}
+
+// runeAtCell returns the rune index within row r that a click `cell` cells into the row lands on.
+//
+// It accumulates DISPLAY WIDTH rather than counting runes, so a line containing double-width characters puts
+// the caret under the glyph the operator actually clicked instead of at half its position.
+func (m *Model) runeAtCell(r caretRow, cell int) int {
+	if cell <= 0 {
+		return r.start
+	}
+	lines := strings.Split(m.ta.Value(), "\n")
+	if r.line < 0 || r.line >= len(lines) {
+		return r.start
+	}
+	runes := []rune(lines[r.line])
+	width, idx := 0, r.start
+	for idx < r.end && idx < len(runes) {
+		w := lipgloss.Width(string(runes[idx]))
+		if width+w > cell {
+			break
+		}
+		width += w
+		idx++
+	}
+	return idx
+}
+
 // ClickAt places the caret at a click inside the composer, in DOCK coordinates (the shell converts from the
 // frame, since only it knows where the dock starts). It reports whether the click was one it could place.
 //
@@ -329,50 +462,67 @@ func (m *Model) TextOrigin() (row, col int) {
 // caret are the same gesture at that level, so the app has to do both — the selection lives in the shell
 // (clipboard.go) and the caret belongs here, next to the widget that owns it.
 //
-// EXACT FOR UNWRAPPED CONTENT. Every input row is the prompt followed by the textarea's row, so visual row r
-// is logical line r whenever no line soft-wraps; the caret then lands on the line clicked and at the column
-// clicked.
+// IT PLACES THE CARET ON WRAPPED CONTENT TOO, which it did not. The previous version refused the WHOLE click
+// if ANY line wrapped — so pasting a paragraph and then clicking anywhere did nothing at all, which is the
+// operator's report: "I pasted in a large amount of text and then tried clicking somewhere and it did not
+// move the cursor to that position." The refusal was honest (the old code could not resolve a wrapped row) and
+// useless (it disabled the gesture exactly when there was the most text to edit). See caretRows for how the
+// row map is now obtained EXACTLY.
 //
-// A CLICK ON A SOFT-WRAPPED LINE IS DELIBERATELY NOT RESOLVED. The textarea's wrap grid is unexported, and a
-// caret placed by GUESSING at it would land somewhere plausible and wrong — worse than doing nothing, because
-// the operator cannot tell it was a guess. Reporting false leaves the caret where the keyboard put it. The
-// same applies to a click that misses the box's input rows.
+// THE ONE CASE IT STILL REFUSES is a SCROLLED area whose offset cannot be observed from outside the widget
+// (`m.viewport` is unexported and its offset is history-dependent). Two states of that case ARE resolvable
+// and are handled: content that FITS (offset necessarily zero) and content whose caret sits at the END of the
+// buffer — where typing and pasting leave it, and which makes the widget pin the caret to the bottom row,
+// fixing the offset at `total - height`. The rest is refused rather than guessed at, because a caret placed on
+// a guess is worse than one that stayed put: the operator cannot tell it was a guess.
 func (m *Model) ClickAt(x, y int) bool {
 	originRow, originCol := m.TextOrigin()
 	vis := y - originRow
 	if vis < 0 || vis >= m.InputRows() {
 		return false
 	}
-	tw := m.taWidth()
-	lines := strings.Split(m.ta.Value(), "\n")
-	for _, ln := range lines {
-		if lipgloss.Width(ln) > tw {
-			return false // soft-wrapped — see above
+	rows := m.caretRows()
+	offset := 0
+	if total := len(rows); total > m.InputRows() {
+		// The area is scrolled. The offset is knowable in exactly one state: the caret at the end of the
+		// buffer, which pins it to the bottom row.
+		lines := strings.Split(m.ta.Value(), "\n")
+		li := m.ta.LineInfo()
+		last := len([]rune(lines[len(lines)-1]))
+		atEnd := m.ta.Line() == len(lines)-1 && li.StartColumn+li.ColumnOffset == last
+		if !atEnd {
+			return false
 		}
+		offset = total - m.InputRows()
 	}
+	target := offset + vis
+
 	// A CLICK LEFT OF THE TEXT IS A CLICK AT ITS START, not a refusal: the prompt is two cells of chrome the
 	// operator may well have clicked on the way to column one.
 	if x < originCol {
 		x = originCol
 	}
+
 	// BELOW THE TEXT IS THE END OF THE TEXT, which is what a box does: clicking the empty space under a short
 	// message puts the caret after the last character rather than refusing or jumping to a line.
-	atEnd := vis >= len(lines)
-	target := vis
-	if atEnd {
-		target = len(lines) - 1
-	}
-	for m.ta.Line() < target {
-		m.ta.CursorDown()
-	}
-	for m.ta.Line() > target {
-		m.ta.CursorUp()
-	}
-	if atEnd {
+	if target >= len(rows) {
+		m.goToTop()
+		for i := 0; i < len(rows); i++ {
+			m.ta.CursorDown()
+		}
 		m.ta.CursorEnd()
 		return true
 	}
-	m.ta.SetCursor(x - originCol)
+
+	// Walk to the clicked row and drop the caret `runeAtCell` into it. Walking is how the row is reached
+	// exactly: `CursorDown` moves one visual row and lands at that row's start, so `n` steps puts the caret at
+	// the beginning of visual row `n` whatever the wrapping is. The walk starts from the TOP — see goToTop for
+	// why that is not `CursorStart`.
+	m.goToTop()
+	for i := 0; i < target; i++ {
+		m.ta.CursorDown()
+	}
+	m.ta.SetCursor(m.runeAtCell(rows[target], x-originCol))
 	return true
 }
 
@@ -636,6 +786,30 @@ func (m *Model) SetError(s string) { m.Err = s }
 // SetNotice sets the status strip ("" clears).
 func (m *Model) SetNotice(s string) { m.Notice = s }
 
+// SendingAck is the transient ack the composer writes the instant Enter fires, so a send that produces no
+// visible reaction cannot be mistaken for a dead key (see the enter case in Update).
+//
+// IT IS A CONSTANT BECAUSE TWO PACKAGES NOW SPEAK ABOUT IT. The shell settles it when it learns the send
+// resolved, and a settle that cleared the strip UNCONDITIONALLY would wipe whatever the operator is being
+// told — a connection banner, a context-injection notice — so the shell clears this exact string and
+// nothing else. Spelling the text in two places is how one of them comes to disagree with the other.
+const SendingAck = "sending …"
+
+// SettleSendingAck clears the strip IF it still holds the send ack, reporting whether it did.
+//
+// WHY IT IS GUARDED. "Every terminal outcome must replace the ack" is the rule (see setChatError), and the
+// outcome is always written AFTER the ack — so a settle that arrived late (a turn ack racing a connection
+// banner) must not erase the more informative text. Unconditional clearing was survivable while the only
+// callers were failure paths; once completion settles it too, the guard is what keeps a banner that
+// arrived first.
+func (m *Model) SettleSendingAck() bool {
+	if m.Notice != SendingAck {
+		return false
+	}
+	m.Notice = ""
+	return true
+}
+
 // SetReplyInFlight toggles the STOP affordance on the affordance row (see Hint). The shell sets it from
 // the chat controller's live streaming state, so the advertised chord and the running turn can never
 // disagree.
@@ -738,7 +912,7 @@ func (m *Model) Update(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 			// Enter-with-an-empty-composer to open the active tab's menu
 			// (menuActivationKey, shell.go), so this branch only ever runs with
 			// something to send.
-			m.Notice = "sending …"
+			m.Notice = SendingAck
 			return true, m.requestSend()
 		default:
 			ta, cmd := m.ta.Update(msg)
@@ -974,12 +1148,19 @@ func (m *Model) View() string {
 	// carry styled spans (prompt, hint, the textarea's own cursor styling),
 	// and each one's reset would otherwise switch the background off for the
 	// rest of the row — the "hole" the operator saw as soon as they typed.
-	// The repair takes the BACKGROUND-ONLY surface style: ComposerBox itself
+	// The repair takes the composer's BACKGROUND-ONLY fill: ComposerBox itself
 	// has a border + padding, and re-asserting through THAT injected border
-	// glyphs into the row.
+	// glyphs into the row. It is ComposerBg and NOT SurfaceBg because the two
+	// differ on a transparent theme, where the composer is unpainted and the panels
+	// are not — repairing through the surface would paint the box the one thing the
+	// theme exists to leave alone.
+	//
+	// On a transparent theme this repair is a NO-OP by construction: the style
+	// renders no sequence at all, and RepairAfterResets returns the row unchanged
+	// when there is nothing to re-assert.
 	return theme.RepairAfterResets(
 		theme.ComposerBox.Render(strings.Join(fitAll(rows, inner), "\n")),
-		theme.SurfaceBg)
+		theme.ComposerBg)
 }
 
 // inputLines returns exactly InputRows() rows of the input view (the

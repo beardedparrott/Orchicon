@@ -177,6 +177,25 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Required: []string{"project_id", "path"},
 		},
 
+		// --- Session (this conversation) ---
+		{
+			Name:        "get_current_conversation",
+			Description: "Read THIS conversation's own session facts: its conversation id, its mode, and the model_ref it resolves to with the source of that value (conversation = the conversation carries its own ref; tenant_default = it falls back to the tenant's DefaultAskOrchiconModel). Use it to name the current model in full (adapter/provider/model) before asking the user whether to reuse it for a dispatch.",
+			Mutating:    false,
+			Fn:          toolGetCurrentConversation,
+			Properties:  map[string]PropertySchema{},
+		},
+		{
+			Name:        "list_project_branches",
+			Description: "Report a project's git identity: whether project_dir is a git work tree, its current branch, its default branch, and the local + origin branch names. Read-only and safe (fixed argv, no shell, cwd pinned to the project dir). Use it to OFFER real branches when confirming which branch a run should clone off and which branch its PR should merge into.",
+			Mutating:    false,
+			Fn:          toolListProjectBranches,
+			Properties: map[string]PropertySchema{
+				"project_id": {Type: "string", Description: "Project ID"},
+			},
+			Required: []string{"project_id"},
+		},
+
 		// --- Work Items ---
 		{
 			Name:        "list_work_items",
@@ -512,6 +531,18 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"confirm_delete_runs": {Type: "boolean", Description: "Required to delete a non-ephemeral workflow that has run history. Ignored for ephemeral (Quick Work) workflows."},
 			},
 			Required: []string{"id"},
+		},
+
+		{
+			Name:        "publish_workflow_version",
+			Description: "Publish a draft workflow version, making it immutable and RUNNABLE. Provide workflow_id and optionally the version number (defaults to the latest draft). A workflow created by create_workflow starts as a DRAFT and cannot be bound or run until it is published — publish it before creating the work item that uses it.",
+			Mutating:    true,
+			Fn:          toolPublishWorkflowVersion,
+			Properties: map[string]PropertySchema{
+				"workflow_id": {Type: "string", Description: "Workflow ID"},
+				"version":     {Type: "number", Description: "Optional version number to publish (defaults to the latest draft)"},
+			},
+			Required: []string{"workflow_id"},
 		},
 
 		// --- Workflow Runs ---

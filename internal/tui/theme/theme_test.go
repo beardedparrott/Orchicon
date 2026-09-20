@@ -77,20 +77,21 @@ func TestProfileDegradation(t *testing.T) {
 //
 // Both are asserted here rather than trusted, because the failure is invisible: nothing errors, the
 // theme is simply not the one that was asked for.
-func TestTheLaunchDefaultIsForestAndDark(t *testing.T) {
+func TestTheLaunchDefaultIsSlateAndDark(t *testing.T) {
 	th := Lookup(DefaultName)
 	if th == nil {
 		t.Fatalf("the launch default %q does not resolve — orch would silently fall back to the base "+
 			"palette at startup, so the requested default would never appear", DefaultName)
 	}
-	if DefaultName != "forest" {
-		t.Errorf("the launch default is %q, want \"forest\" (the operator's request). If this was changed "+
+	if DefaultName != "slate" {
+		t.Errorf("the launch default is %q, want \"slate\" (the operator's request: \"I think Slate is "+
+			"pretty sleek and professional. Let's make that the default theme\"). If this was changed "+
 			"deliberately, update the comment on DefaultName too.", DefaultName)
 	}
 	// Dark means the background is darker than the text — the same test cursor_caret_test.go uses.
 	if relLuminance(string(th.Bg)) >= relLuminance(string(th.Text)) {
 		t.Errorf("the launch default %q is a LIGHT palette (bg %s, text %s) — the request was for the "+
-			"DARK one; \"forest-light\" is the light sibling and is easy to select by mistake",
+			"DARK one; \"slate-light\" is the light sibling and is easy to select by mistake",
 			DefaultName, th.Bg, th.Text)
 	}
 	// And it must be active on a fresh process, since `active` is what every render reads before any

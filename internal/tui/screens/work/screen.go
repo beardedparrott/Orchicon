@@ -116,6 +116,11 @@ type Model struct {
 	// fetchWorkItems, which runs off the update loop.
 	parentIDs map[string]bool
 
+	// runsByItem is the page's PR index: work item id -> its runs' PR surfaces, newest first. It feeds the
+	// list's `PR merged` mark and the details pane's `pr url` field. Written by fetchWorkItems and read by
+	// the detail pane, both off the update loop, so it is guarded by viewMu like parentIDs. See prindex.go.
+	runsByItem prIndex
+
 	// formMCPLoaded records whether the OPEN project form's MCP data arrived. It is
 	// consulted at submit time to decide whether the MCP selection may be WRITTEN: the
 	// field is absent when the load failed, and an absent field must not be read as "the
@@ -520,7 +525,14 @@ func (m *Model) fetchWorkItems(ctx context.Context, pageToken string) ([]kit2.It
 	m.viewMu.Lock()
 	m.parentIDs = parents
 	m.viewMu.Unlock()
-	return rowsFor(view, resp.Msg.GetWorkItems(), m.SortMode()), resp.Msg.GetNextPageToken(), nil
+	// The PR surface for this page: one extra call, the same one the GUI makes for the same reason, so the list
+	// can say a run's PR merged and the details pane can carry its URL. Best effort — a failure leaves the list
+	// exactly as it was (see fetchItemPRs).
+	prs := m.fetchItemPRs(ctx, resp.Msg.GetWorkItems())
+	m.viewMu.Lock()
+	m.runsByItem = prs
+	m.viewMu.Unlock()
+	return rowsFor(view, resp.Msg.GetWorkItems(), m.SortMode(), prs), resp.Msg.GetNextPageToken(), nil
 }
 
 func (m *Model) fetchImages(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
@@ -572,38 +584,44 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 			return "", nil, "", err
 		}
 		w := resp.Msg.GetWorkItem()
+		// The pane's IDENTITY block. The `pr url` field is spliced in right after `status` — at the TOP, where
+		// the operator asked for it: "add a field at the top of the details pane that shows the URL".
 		fields := []kit2.Field{
 			{Key: "id", Value: w.GetId()},
 			{Key: "title", Value: w.GetTitle()},
 			{Key: "kind", Value: kindBadge(w.GetKind())},
 			{Key: "status", Value: statusPill(w.GetStatus())},
+		}
+		// NO PR ON RECORD IS NO FIELD — never a blank row and never an invented value, the same discipline the
+		// workflow-run field follows. The URL comes from the run that actually landed when one did, because that
+		// is the change an operator is going to look at.
+		if url, state := m.itemPRLink(w.GetId()); url != "" {
+			fields = append(fields, kit2.Field{Key: "pr url", Value: prDisplay(url, state)})
+		}
+		fields = append(fields,
 			// The five IDENTIFIER fields below carry a resolved NAME with the id
 			// retained beside it, because that is what an operator can act on (the
 			// raw guid "won't mean anything to anyone") while the id is what support
 			// asks for. An id that does not resolve renders as the raw id.
-			{Key: "parent", Value: named(m.names.itemTitle(w.GetParentId()), w.GetParentId())},
-			{Key: "project", Value: named(m.projectLabel(w.GetProjectId()), w.GetProjectId())},
-			{Key: "priority", Value: screenkit.FmtInt(int(w.GetPriority()))},
-			{Key: "budgets", Value: w.GetBudgets()},
-			{Key: "context window", Value: screenkit.FmtInt(int(w.GetContextWindow()))},
-			{Key: "runtime image", Value: w.GetRuntimeImage()},
-			// worker stays the RAW assigned-worker ref: there is no worker list on this
-			// Model, resolving a ref would mean a new list RPC plus a cache for a value
-			// the operator quotes verbatim, and the GUI shows it raw too.
-			{Key: "worker", Value: w.GetAssignedWorkerRef()},
-			{Key: "workflow", Value: named(m.names.workflowName(w.GetWorkflowId()), w.GetWorkflowId())},
+			kit2.Field{Key: "parent", Value: named(m.names.itemTitle(w.GetParentId()), w.GetParentId())},
+			kit2.Field{Key: "project", Value: named(m.projectLabel(w.GetProjectId()), w.GetProjectId())},
+			kit2.Field{Key: "priority", Value: screenkit.FmtInt(int(w.GetPriority()))},
+			kit2.Field{Key: "budgets", Value: w.GetBudgets()},
+			kit2.Field{Key: "context window", Value: screenkit.FmtInt(int(w.GetContextWindow()))},
+			kit2.Field{Key: "runtime image", Value: w.GetRuntimeImage()},
+			kit2.Field{Key: "workflow", Value: named(m.names.workflowName(w.GetWorkflowId()), w.GetWorkflowId())},
 			// A workflow RUN has no name of its own — it is not a named entity — so it gets
 			// the GUI's rendering: a shortened id, not the 26-character ULID, and not an
 			// invented label.
-			{Key: "workflow run", Value: shortRunID(w.GetWorkflowRunId())},
-			{Key: "auto-start", Value: boolStr(w.GetAutoStartWorkflow())},
-			{Key: "scheduled", Value: screenkit.FmtTime(w.GetScheduledStartAt())},
+			kit2.Field{Key: "workflow run", Value: shortRunID(w.GetWorkflowRunId())},
+			kit2.Field{Key: "auto-start", Value: boolStr(w.GetAutoStartWorkflow())},
+			kit2.Field{Key: "scheduled", Value: screenkit.FmtTime(w.GetScheduledStartAt())},
 			// The numeric sort_order is deliberately NOT shown: a bare float is
 			// meaningless to a human. The step position is visible in the list
 			// itself, where it can be compared against its siblings.
-			{Key: "archived from", Value: w.GetArchivedFromStatus()},
-			{Key: "updated", Value: screenkit.FmtTime(w.GetUpdatedAt())},
-		}
+			kit2.Field{Key: "archived from", Value: w.GetArchivedFromStatus()},
+			kit2.Field{Key: "updated", Value: screenkit.FmtTime(w.GetUpdatedAt())},
+		)
 		return "Work Item: " + w.GetTitle(), fields, detailBody(w), nil
 
 	case srcImages:
@@ -1227,6 +1245,17 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		if a, ok := m.actionByKey(msg.String()); ok {
 			return m.openAction(a), true
 		}
+		// keyBulkSet IS THE ONE CHORD IN THIS GROUP THAT IS NOT ALWAYS OFFERED, so it is the one that could
+		// fall through in silence. It exists only for a BULK selection (2+ marked): below that,
+		// actionsForSelection offers the single-row actions instead, actionByKey finds nothing, and the key
+		// did NOTHING AT ALL — indistinguishable from a dead key, which is how a chord stays undiscoverable
+		// however loudly the hint names it. Refused out loud, with the two routes to the thing they meant
+		// (the same shape as the Workers pane's bulk set-model refusal).
+		if msg.String() == keyBulkSet {
+			m.notice = keyBulkSet + " sets a workflow + runtime image for SEVERAL items at once — " +
+				"space to mark 2 or more first, or e to set one item's fields"
+			return nil, true
+		}
 	case kit2.DeleteChord, kit2.DeleteChordAlias:
 		// ONE delete gesture, TWO keys. `ctrl+x` is the client's canonical delete chord
 		// (kit2.DeleteChord — the operator asked for it "across the board", and the
@@ -1332,7 +1361,21 @@ func (m *Model) HintLine() string {
 	case srcImages:
 		return theme.HintText.Render("n: new image · e: edit spec · b: build (live logs) · x: delete · enter: detail")
 	default:
-		return theme.HintText.Render("n: new · /: search · e: edit · s: status · y: auto-start · +/-: move step · a: archive · x: delete · v/T/Z: view · o/O: collapse · enter: detail")
+		// THE BULK SET IS NAMED HERE, AND IT WAS NAMED NOWHERE. Its chord (keyBulkSet) existed, and the action
+		// bar offered it once a selection existed — but a chord that is only ever discoverable by already
+		// having done the thing it needs is not discoverable. The operator: "We recently added bulk workflow
+		// and runtime image setting but the workers didn't add a shortcut helper in the composer to tell
+		// people that they can and how to do it. We need one for W." So the chord, what it DOES, and HOW to
+		// get there (mark two or more) are all stated — one line when there is no selection, and the
+		// selection's own line once there is, which is the shape the Workers pane's bulk set-model already
+		// uses (see execution.markHint).
+		if n := m.Base.MarkCount(); n > 1 {
+			return theme.HintText.Render(fmt.Sprintf("%d marked", n) + " · " +
+				keyBulkSet + ": set workflow & image · esc: clear · ↑↓: move · enter: detail")
+		}
+		return theme.HintText.Render("n: new · /: search · e: edit · s: status · y: auto-start · +/-: move step · " +
+			"a: archive · x: delete · " + keyBulkSet + ": set workflow & image (space marks 2+) · " +
+			"v/T/Z: view · o/O: collapse · enter: detail")
 	}
 }
 
