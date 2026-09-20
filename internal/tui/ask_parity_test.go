@@ -500,3 +500,105 @@ func TestAwaitingReplyTracksTheModelFirstContent(t *testing.T) {
 		t.Error("a follow-up after an earlier reply IS a pending reply")
 	}
 }
+
+// AC 9 (client freshness): the composer's mode pill is re-pushed by the SAME
+// reload that updates the conversation list it reads.
+//
+// The pill reads currentModeLabel(), which reads m.conversations. Before the
+// fix the strip was written ONLY from a COMPLETED METRICS READ, so `/mode` —
+// which reloads the list but completes no turn — left the pill on the previous
+// mode until an unrelated turn finished or the conversation was reopened. That
+// is the operator's report, verbatim: "when you switch a mode, it doesn't update
+// in the composer unless you move away from the chat and then move back".
+func TestConversationReloadRePushesTheComposerModePill(t *testing.T) {
+	m, _ := newAskApp(t)
+	m.railProjectsLoaded = true // exercise the main onConversations branch
+	m.chatConvID = "c1"
+
+	// The first load seeds the pill from the row's persisted mode.
+	m.onConversations(chat.ConversationsMsg{Convs: []chat.Conversation{
+		{ID: "c1", Mode: apiv1.ConversationMode_CONVERSATION_MODE_BRAINSTORM},
+	}})
+	if m.dock.Mode != "brainstorm" {
+		t.Fatalf("a reload must push the row's mode into the pill, got %q", m.dock.Mode)
+	}
+
+	// The server moves the mode on (this process's /mode, or the other client's)
+	// and a reload follows: the pill must follow IMMEDIATELY — no metrics read, no
+	// re-open required.
+	m.onConversations(chat.ConversationsMsg{Convs: []chat.Conversation{
+		{ID: "c1", Mode: apiv1.ConversationMode_CONVERSATION_MODE_QUICK_WORK},
+	}})
+	if m.dock.Mode != "quick work" {
+		t.Fatalf("the reload must re-push the mode pill; a stale %q is the reported bug", m.dock.Mode)
+	}
+}
+
+// AC 9 (the strip's OTHER fields — same class): the model and stat fields derive
+// from m.metrics, which a list reload does not touch. When the open
+// conversation's row now names a DIFFERENT model (a `/model` set in the other
+// client), the reload must re-read the metrics so those fields follow it too —
+// and must NOT re-read when nothing moved (no metrics RPC per list poll).
+func TestRailModelChangeTriggersAStripMetricsRefresh(t *testing.T) {
+	m, _ := newAskApp(t)
+	m.railProjectsLoaded = true
+	m.chatConvID = "c1"
+	m.metrics = sessionMetrics{have: true, model: "opencode/anthropic/claude-sonnet-4"}
+
+	// Same model on the row: no refresh.
+	m.onConversations(chat.ConversationsMsg{Convs: []chat.Conversation{
+		{ID: "c1", ModelRef: "opencode/anthropic/claude-sonnet-4"},
+	}})
+	if m.composerModelDiverged() {
+		t.Fatal("an unchanged model must not trigger a metrics refresh on every list reload")
+	}
+
+	// The row moved to a different model: the strip must re-read.
+	m.onConversations(chat.ConversationsMsg{Convs: []chat.Conversation{
+		{ID: "c1", ModelRef: "orchicon/deepseek/deepseek-flash"},
+	}})
+	if !m.composerModelDiverged() {
+		t.Fatal("a rail model change must trigger a metrics refresh so the strip follows")
+	}
+}
+
+// AC 9, the strip's MODEL field — the SAME class as the mode pill, and the one
+// the divergence guard depends on. The composer reports the model from
+// currentAskModel(), whose documented first source is "the open conversation's
+// model_ref". It read that from the chat controller's Conversations() slice,
+// which NOTHING ever writes (see currentModeLabel for the same bug) — so the
+// lookup always missed and the field reported the pending selection / tenant
+// default forever, never following the conversation the server actually has.
+// The consequence is not only a wrong label: composerModelDiverged() compares
+// that never-fresh value against the rail row, so it could NEVER converge and
+// every conversations reload bought a metrics RPC — the opposite of the guard's
+// stated purpose.
+func TestComposerModelFieldReadsTheServersConversationRow(t *testing.T) {
+	m, _ := newAskApp(t)
+	m.railProjectsLoaded = true
+	m.chatConvID = "c1"
+	m.askDefaultModel = "orchicon/deepseek/deepseek-flash"
+
+	m.onConversations(chat.ConversationsMsg{Convs: []chat.Conversation{
+		{ID: "c1", ModelRef: "opencode/anthropic/claude-sonnet-4"},
+	}})
+
+	if got := m.currentAskModel(); got != "opencode/anthropic/claude-sonnet-4" {
+		t.Fatalf("the composer must report the open conversation's server-side model_ref, got %q", got)
+	}
+
+	// A completed metrics read resolves the model from exactly that source (see
+	// refreshMetrics), so the strip's model field lands on the row's ref…
+	m.metrics = sessionMetrics{have: true, model: m.currentAskModel()}
+	m.syncComposerStats()
+	if m.dock.Model != "opencode/anthropic/claude-sonnet-4" {
+		t.Fatalf("the strip must show the conversation's server-side ref, got %q", m.dock.Model)
+	}
+
+	// …and the divergence guard then CONVERGES: a further reload must not
+	// re-read the metrics (before the fix it could never converge, so every list
+	// poll bought a GetUsage RPC).
+	if m.composerModelDiverged() {
+		t.Fatal("the strip must converge on the row's ref — otherwise every list poll buys a metrics RPC")
+	}
+}
