@@ -628,8 +628,23 @@ func buildStyles(t Theme) {
 	// background above: on a transparent theme the effective value is unpainted, and a bubble derived from
 	// "no colour" would be a bubble derived from black. The palette's colour is what the tint is made of.
 	bu, bm := bubbleFills(string(t.Bg), string(t.Accent))
-	BubbleUser = lipgloss.NewStyle().Background(lipgloss.Color(bu)).Foreground(bubbleText(bu, t))
-	BubbleModel = lipgloss.NewStyle().Background(lipgloss.Color(bm)).Foreground(bubbleText(bm, t))
+	// ON A TRANSPARENT THEME NEITHER BAND IS FILLED, so the chat surface is as see-through as the rest of the
+	// theme. The operator, on the first version: "Message blocks and composer are not transparent. I thought we
+	// decided on changing the tint on those items so they look semi-transparent as well?" — and they are right
+	// that the two were inconsistent: the app background and the composer had been left to the terminal while
+	// the transcript's bands stayed solid.
+	//
+	// THE TWO SPEAKERS ARE STILL TELLABLE APART, which is what the fills were for: the operator's band already
+	// carries its "You" label (chat.view's userBandLabel), so the label does the job the fill was doing. That
+	// is why both can go rather than one, and it is the honest shape of "semi-transparent".
+	//
+	// (Nothing here can blend: a terminal cell has a foreground and a background and no alpha, so "80% opaque"
+	// is not expressible — see Theme.Transparent. Leaving the fill off is what every TUI means by the word.)
+	if t.Transparent {
+		bu, bm = "", ""
+	}
+	BubbleUser = bubbleBand(bu, t)
+	BubbleModel = bubbleBand(bm, t)
 
 	TabInactive = lipgloss.NewStyle().Foreground(t.TextDim).Background(t.Surface).Padding(0, 1)
 	TabActive = lipgloss.NewStyle().Foreground(white).Bold(true).Background(t.Select).Padding(0, 1)

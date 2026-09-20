@@ -149,6 +149,19 @@ func bubbleFills(bg, accent string) (user, model string) {
 // under the gate.
 const bubbleTextTarget = 4.5
 
+// bubbleBand builds a message band: a FILLED band when fill is a colour, and a plain text style when it is
+// empty (a transparent theme — see buildStyles).
+//
+// The empty case takes the palette's own Text rather than running it through bubbleText: with no fill, the
+// band's text sits on whatever is behind it (the PANEL tint), and that pair is the one the palette is built
+// and gated for.
+func bubbleBand(fill string, t Theme) lipgloss.Style {
+	if fill == "" {
+		return lipgloss.NewStyle().Foreground(t.Text)
+	}
+	return lipgloss.NewStyle().Background(lipgloss.Color(fill)).Foreground(bubbleText(fill, t))
+}
+
 // BubbleFills exposes the ACTIVE palette's bubble fills as hex.
 //
 // Exported for the shell's tests, which assert that the chat surface is painted only in the active palette's

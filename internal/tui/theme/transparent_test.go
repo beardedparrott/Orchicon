@@ -81,9 +81,17 @@ func TestATransparentThemePaintsNoBackgroundButKeepsTints(t *testing.T) {
 		if out := ListItemSelected.Render("x"); !bgSeq(out) {
 			t.Errorf("%s: the selection fill painted nothing", name)
 		}
-		if out := BubbleModel.Render("x"); !bgSeq(out) {
-			t.Errorf("%s: the model bubble painted nothing — a transparent theme must still separate "+
-				"the two speakers", name)
+		// (3) THE CHAT BANDS ARE UNPAINTED, like the app background. The operator: "Message blocks and composer
+		// are not transparent. I thought we decided on changing the tint on those items so they look
+		// semi-transparent as well?" — the first version left the transcript solid while the background and the
+		// composer were see-through, which was simply inconsistent. The speakers are still tellable apart by
+		// the operator's band label rather than by a fill, which the transcript test asserts.
+		if out := BubbleModel.Render("x"); bgSeq(out) {
+			t.Errorf("%s: the model band is FILLED (%q) on a transparent theme — the chat surface would not be "+
+				"see-through", name, out)
+		}
+		if out := BubbleUser.Render("x"); bgSeq(out) {
+			t.Errorf("%s: the operator's band is FILLED (%q) on a transparent theme", name, out)
 		}
 	}
 }
