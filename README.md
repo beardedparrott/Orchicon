@@ -25,18 +25,23 @@ deployment, troubleshooting, and every subsystem.
 - **Event bus**: NATS JetStream
 - **Telemetry**: OpenTelemetry → Grafana stack (Tempo + Loki + VictoriaMetrics) — fully separated infra
 - **Policy**: Rego (Open Policy Agent)
-- **Runtime adapters**: gRPC sidecars (OpenCode first)
+- **Runtime adapters**: pluggable gRPC sidecars — a **built-in native engine runs by default and needs nothing installed**, plus external adapters such as OpenCode. Adapters are optional and never bundled.
 - **Frontend**: TypeScript + React + Vite + Connect-ES
 
 ## Last Release Changes
 
-- **Autonomous research & the Idea Cloud**: Orchicon can now run its own product research and propose what to build next.
-- **Cost discipline, built in**: v0.2.0 treats token spend as a first-class constraint.
-- **A sleeker, faster interface**: The control plane UI has been redesigned for clarity and speed: a cleaner shell and navigation, category folders for organizing workers, workflows, and conversations, drag-and-drop that just works, and an expanded theme system — 20 hand-tuned themes across light and dark.
-- **Runtime reliability**: self-healing container pools (stale daemons and leaked containers eliminated), stale-binary detection, and runs that self-heal across backend failures instead of wedging.
-- **Scheduler resilience**: cancel/abort actually stops the model session; recovery survives DAG pass limits; PR-merge loops and orphaned branch references fixed.
-- **Automation pipeline hardening**: role-scoped plane access with deny-by-default security, loud failures instead of silent no-ops, and a dedicated Rejected view for the Idea Cloud.
-- **Developer experience**: one-command full rebuild (`make rebuild-dev` / `rebuild-prod`), automatic version tagging on develop, BuildKit-cached container builds.
+- **OpenCode is optional**: Orchicon no longer requires an external runtime CLI: its own native engine runs sessions inside the control plane, and the OpenCode serve is started **only when something actually needs it**.
+- **A complete terminal client**: `orch` is no longer a launcher alongside the GUI: it is a full client, with read *and* write parity across **all seven domains**.
+- **Work is workflow-first**: Every run is now a workflow: standalone dispatch is retired, so a work item with no bound workflow cannot be scheduled, and the platform tells you when you create it rather than failing later at run time.
+- **Ask Orchicon**: Its three modes are now enforced by the **platform**, not requested in prose: the tools a mode may not use are withheld from it and refused at the point of execution, so "Brainstorm will not write your files" is a refusal a model cannot talk its way past — and the boundary is adapter-agnostic, so a new runtime inherits it.
+- **Runs execute in containers, and the plane heals itself**: Worker executions run in an isolated container per workflow run, drawn from a warm pool so dispatch never cold-starts, and reset between runs so no state crosses a boundary.
+- **Quick Work hands off end to end**: The dispatch mode whose whole purpose is to hand work over now actually does it: it asks the model question, confirms git, and publishes the workflow and work item so a run fires — with the DevOps step opening and merging the pull request.
+- OpenCode is now **optional everywhere**: the installer no longer warns that a runtime CLI is missing, and the docs describe adapters as pluggable rather than required.
+- **Scheduler and dispatch**: cancel and abort genuinely stop the model session; recovery survives DAG pass limits; PR-merge loops and orphaned branch references fixed; tool-wedge recovery no longer kills a live turn; a tool-hang is redirected instead of orphaning the worker.
+- **Ask Orchicon sessions**: follow-ups resolve against the *execution's* adapter rather than the host; tool-call replay no longer 400s after a model switch; attachments deliver; the phantom "budget" workers reported in Ask is gone.
+- **Terminal client**: a key that produced a send could be silently swallowed; clicking now places the caret on wrapped and scrolled text; a stale shell reference stopped every notice (and half of every theme switch) from landing; lazy screen loads, scroll preservation and tab focus corrected.
+- **Diff pipeline and telemetry**: the file-edit ledger no longer reports empty on live runs; diffs are server-computed; per-event invalidations are coalesced; the outbox is throttled with retention so a chatty run cannot flood the database.
+- **Runtime images**: build from the terminal with live logs, and set them across a selection in bulk.
 
 Full details: [release notes on GitHub](https://github.com/beardedparrott/Orchicon/releases).
 
@@ -50,13 +55,15 @@ curl -fsSL https://orchicon.dev/install | bash
 
 The installer downloads the binary, then runs `orchicon install` to set up everything: pull the published images, start the runtime daemon, launch the single-container instance, and print how to connect / start / stop. (Pass `--no-setup` to install only the binary.)
 
-> **Runtime adapter CLI required on the host (installed by you, never shipped).** Orchicon does **not** bundle opencode (or any future adapter CLI like Claude Code / Codex) in its images — the operator installs it on the host and it is bind-mounted into the containers at runtime. This keeps the product redistributable regardless of an adapter's license (Claude Code's terms prohibit bundling). Install opencode first:
+> **Adapters are optional — the native engine needs nothing installed.** Orchicon ships its own runtime engine and runs sessions inside the control plane, so a fresh install is complete on its own: no adapter CLI, no binary probe, no serve. Install an external adapter (OpenCode, and future ones like Claude Code / Codex) only if you want to run work on that runtime. Orchicon **never bundles or ships** an adapter CLI — your own host install is bind-mounted into the containers at runtime, which keeps the product redistributable regardless of an adapter's licence (Claude Code's terms prohibit bundling).
+>
+> To use OpenCode as a runtime:
 >
 > ```bash
 > curl -fsSL https://opencode.ai/install | bash
 > ```
 >
-> `orchicon install` verifies it's present and fails with a clear message otherwise.
+> `orchicon install` no longer requires it. A plane whose model refs need no adapter never probes for the binary, never starts a serve, and never mounts it into a container — see [DOCUMENTATION.md](DOCUMENTATION.md).
 
 ```powershell
 # Windows (PowerShell) — runs the stack inside WSL2
@@ -91,7 +98,7 @@ Project directories are entered in the UI as their **WSL path** — a Windows pr
 
 | Flag | Description |
 |---|---|
-| `--version <tag>` | Install a specific version (e.g. `v0.2.0`). Default: latest. |
+| `--version <tag>` | Install a specific version (e.g. `v0.3.0`). Default: latest. |
 | `--install-dir <dir>` | Installation directory (default: `~/.local/bin`). On Windows this is a **WSL path** (the binary installs inside the distro). |
 | `--no-setup` | Install the binary only — do not pull images / start the runtime daemon / launch the container. |
 | `--uninstall` | Remove Orchicon from the install directory. |
@@ -101,7 +108,7 @@ Project directories are entered in the UI as their **WSL path** — a Windows pr
 
 ```bash
 # Install a specific version
-curl -fsSL https://orchicon.dev/install | bash -s -- --version v0.2.0
+curl -fsSL https://orchicon.dev/install | bash -s -- --version v0.3.0
 
 # Uninstall
 curl -fsSL https://orchicon.dev/install | bash -s -- --uninstall
@@ -137,7 +144,7 @@ and [DOCUMENTATION.md §Single-Container Deployment](DOCUMENTATION.md).
 | `orchicon container` | Run the whole stack as PID 1 (container image) |
 | `orchicon install` | One-command setup: pull images, start the runtime daemon, launch the container, print connection info |
 | `orchicon runtime-daemon` | Host process owning the Docker socket; owns the warm pool of per-workflow runtime containers |
-| `orchicon runtime-supervisor` | Runtime container PID 1 (hosts the container's opencode serve) |
+| `orchicon runtime-supervisor` | Runtime container PID 1 (hosts the container's adapter serve, when the run needs one) |
 | `orchicon runtime-client` | Forwards daemon requests (serve handshake / ping) into the runtime container |
 | `scripts/container.sh up dev\|prod` | Start a single-container instance |
 | `scripts/container.sh runtime-daemon` / `runtime-stop` | Start / stop the runtime daemon |

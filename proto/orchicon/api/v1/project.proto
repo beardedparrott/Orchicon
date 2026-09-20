@@ -59,6 +59,13 @@ message Project {
   // call (e.g. https://github.com/{owner}/{repo}/pull/new/{branch}).
   string repo_slug = 13;
   GitStrategy git_strategy = 14;
+  // default_runtime_image is the project-level default runtime container
+  // image tag. Empty = inherit tenant/base; copied onto work items at
+  // create time when the caller passes no runtime_image.
+  string default_runtime_image = 15;
+  // execution_mode selects always-container (runtime, default) vs
+  // in-process (local, with honest prompt + DSN fence).
+  ExecutionMode execution_mode = 16;
 }
 
 // ContextFiles is a wrapper so UpdateProjectRequest can distinguish
@@ -98,6 +105,17 @@ enum GitStrategy {
   GIT_STRATEGY_NONE = 3;
 }
 
+// ExecutionMode controls where native executions run
+// (always-container runtime):
+//   - runtime: executions run inside the run's container (default).
+//   - local: in-process execution allowed, with an honest prompt block
+//     and a hard DSN fence refusing live-plane writes.
+enum ExecutionMode {
+  EXECUTION_MODE_UNSPECIFIED = 0;
+  EXECUTION_MODE_RUNTIME = 1;
+  EXECUTION_MODE_LOCAL = 2;
+}
+
 // Request/response messages for ProjectService (docs/07 §3.1).
 message CreateProjectRequest {
   string tenant_id = 1;
@@ -106,6 +124,10 @@ message CreateProjectRequest {
   repeated GoalField goals = 4; // converted to JSON by the server
   string request_id = 5; // idempotency key (docs/07 §5.5)
   GitStrategy git_strategy = 6;
+  // default_runtime_image seeds projects.default_runtime_image (empty =
+  // inherit tenant/base). execution_mode defaults to runtime.
+  string default_runtime_image = 7;
+  ExecutionMode execution_mode = 8;
 }
 
 message GetProjectRequest {
@@ -140,6 +162,10 @@ message UpdateProjectRequest {
   // restriction).
   optional int32 max_concurrent_runs = 8;
   optional GitStrategy git_strategy = 9;
+  // default_runtime_image: set the project default (empty string clears it
+  // back to inherit); nil = unchanged (field-mask semantics).
+  optional string default_runtime_image = 10;
+  optional ExecutionMode execution_mode = 11;
 }
 
 message ListProjectFilesRequest {

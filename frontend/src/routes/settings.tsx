@@ -1,7 +1,9 @@
 import * as React from "react";
 import { createRoute } from "@tanstack/react-router";
 import { useState, useEffect, useCallback } from "react";
-import { Sun, Moon, Check, Save, BookOpen, Palette, SlidersHorizontal, Database, Download, RotateCcw, Folder, ArrowUp, Loader2, Trash2, Clock } from "lucide-react";
+import { Sun, Moon, Check, Save, BookOpen, Palette, SlidersHorizontal, Database, Download, RotateCcw, Folder, ArrowUp, Loader2, Trash2, Clock, Plug, Cable } from "lucide-react";
+import { ProvidersTab } from "@/components/ProvidersTab";
+import { MCPServersTab } from "@/components/MCPServersTab";
 
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -10,6 +12,7 @@ import { LIGHT_THEMES, DARK_THEMES } from "@/lib/themes";
 import { useThemeStore } from "@/lib/theme-store";
 import { emptyWarnings, parseBudgetDefaults, buildBudgetDefaults, defaultCompactTiers, type BudgetWarnings, type CompactTiers } from "@/lib/budget-defaults";
 import { useGetSettings, useUpdateSettings, useGetBackups, useCreateBackup, useRestoreBackup, useDeleteBackup } from "@/api/settings";
+import type { TenantSecret } from "@/api/gen/orchicon/api/v1/secret_pb";
 import { useListDirPath } from "@/api/projectFiles";
 import { ModelPicker } from "@/components/ModelPicker";
 import { Button } from "@/components/ui/button";
@@ -21,7 +24,7 @@ export const Route = createRoute({
   component: SettingsPage,
 });
 
-type SettingsTab = "appearance" | "defaults" | "session" | "backups" | "secrets" | "guide";
+type SettingsTab = "appearance" | "defaults" | "session" | "backups" | "secrets" | "providers" | "mcp" | "guide";
 
 function SettingsPage() {
   const [tab, setTab] = useState<SettingsTab>("appearance");
@@ -42,6 +45,8 @@ function SettingsPage() {
           ["session", "Session", Clock],
           ["backups", "Backups", Database],
           ["secrets", "Secrets", Database],
+          ["providers", "Providers", Plug],
+          ["mcp", "MCP", Cable],
           ["guide", "User Guide", BookOpen],
         ] as const).map(([id, label, Icon]) => (
           <button
@@ -65,6 +70,8 @@ function SettingsPage() {
       {tab === "session" && <SessionTab />}
       {tab === "backups" && <BackupsTab />}
       {tab === "secrets" && <SecretsTab />}
+      {tab === "providers" && <ProvidersTab />}
+      {tab === "mcp" && <MCPServersTab />}
       {tab === "guide" && <UserGuideTab />}
     </div>
   );
@@ -116,10 +123,10 @@ function BackupsTab() {
         backupSchedule: draftSchedule,
         backupRetentionDays: parseInt(draftRetention) || 0,
         backupDirectory: draftDirectory,
-      } as any);
+      });
       setMessage("Backup settings saved.");
-    } catch (e: any) {
-      setMessage(`Error: ${e.message}`);
+    } catch (e) {
+      setMessage(`Error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setSaving(false);
     }
@@ -132,8 +139,8 @@ function BackupsTab() {
       const sizeMB = Number(info.sizeBytes) / 1024 / 1024;
       setMessage(`Backup created: ${info.name} (${sizeMB.toFixed(1)} MB)`);
       refetchBackups();
-    } catch (e: any) {
-      setMessage(`Error: ${e.message}`);
+    } catch (e) {
+      setMessage(`Error: ${e instanceof Error ? e.message : String(e)}`);
     }
   }, [createBackup, refetchBackups]);
 
@@ -145,8 +152,8 @@ function BackupsTab() {
       await restoreBackup.mutateAsync({ name });
       setMessage(`Restored from "${name}". Refreshing...`);
       setTimeout(() => window.location.reload(), 2000);
-    } catch (e: any) {
-      setMessage(`Error: ${e.message}`);
+    } catch (e) {
+      setMessage(`Error: ${e instanceof Error ? e.message : String(e)}`);
       setRestoring(null);
     }
   }, [restoreBackup]);
@@ -158,8 +165,8 @@ function BackupsTab() {
     try {
       await deleteBackup.mutateAsync({ name });
       setMessage(`Deleted "${name}".`);
-    } catch (e: any) {
-      setMessage(`Error: ${e.message}`);
+    } catch (e) {
+      setMessage(`Error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setDeleting(null);
     }
@@ -475,6 +482,7 @@ function DefaultsTab() {
   const [draftNudgeMax, setDraftNudgeMax] = useState("");
   const [draftNudgeReplyWindow, setDraftNudgeReplyWindow] = useState("");
   const [draftNudgeCooldown, setDraftNudgeCooldown] = useState("");
+  const [draftToolHang, setDraftToolHang] = useState("");
   const [draftBudgetTokens, setDraftBudgetTokens] = useState("");
   const [draftBudgetCost, setDraftBudgetCost] = useState("");
   const [draftBudgetWallClock, setDraftBudgetWallClock] = useState("");
@@ -491,6 +499,10 @@ function DefaultsTab() {
   const [draftLogMaxFiles, setDraftLogMaxFiles] = useState("");
   const [draftMaxConcurrentRuns, setDraftMaxConcurrentRuns] = useState("");
   const [saving, setSaving] = useState(false);
+  // Save errors MUST surface (QA round 3: try/finally with no catch
+  // swallowed them — a rejected save looked identical to a successful one,
+  // and the old flagged ref reloaded on the next visit: "it's not saving").
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     if (settings) {
@@ -504,6 +516,7 @@ function DefaultsTab() {
       setDraftNudgeMax(String(settings.stallNudgeMax ?? ""));
       setDraftNudgeReplyWindow(String(settings.stallNudgeReplyWindowSeconds ?? ""));
       setDraftNudgeCooldown(String(settings.stallNudgeCooldownSeconds ?? ""));
+      setDraftToolHang(String(settings.stallToolHangSeconds ?? ""));
       const budget = parseBudgetDefaults(settings.defaultBudgetOverrides);
       setDraftBudgetTokens(budget.tokens);
       setDraftBudgetCost(budget.costUsd);
@@ -525,18 +538,20 @@ function DefaultsTab() {
 
   async function handleSave() {
     setSaving(true);
+    setSaveError(null);
     try {
       await updateSettings.mutateAsync({
         defaultWorkerModel: draftWorkerModel,
         defaultAskOrchiconModel: draftAskOrchiconModel,
-        stallNoProgressWindowSeconds: parseInt(draftNoProgress) || 0,
-        stallNoFileDiffWindowSeconds: parseInt(draftNoFileDiff) || 0,
-        stallTextLoopWindowSeconds: parseInt(draftTextLoop) || 0,
+        stallNoProgressWindowSeconds: BigInt(parseInt(draftNoProgress) || 0),
+        stallNoFileDiffWindowSeconds: BigInt(parseInt(draftNoFileDiff) || 0),
+        stallTextLoopWindowSeconds: BigInt(parseInt(draftTextLoop) || 0),
         stallRepetitionCount: parseInt(draftRepetitionCount) || 0,
-        stallRepetitionWindowSeconds: parseInt(draftRepetitionWindow) || 0,
+        stallRepetitionWindowSeconds: BigInt(parseInt(draftRepetitionWindow) || 0),
         stallNudgeMax: parseInt(draftNudgeMax) || 0,
-        stallNudgeReplyWindowSeconds: parseInt(draftNudgeReplyWindow) || 0,
-        stallNudgeCooldownSeconds: parseInt(draftNudgeCooldown) || 0,
+        stallNudgeReplyWindowSeconds: BigInt(parseInt(draftNudgeReplyWindow) || 0),
+        stallNudgeCooldownSeconds: BigInt(parseInt(draftNudgeCooldown) || 0),
+        stallToolHangSeconds: BigInt(parseInt(draftToolHang) || 0),
         defaultBudgetOverrides: buildBudgetDefaults(
           draftBudgetTokens,
           draftBudgetCost,
@@ -546,15 +561,18 @@ function DefaultsTab() {
           draftCompactTiers,
           draftWarn,
         ),
-        executionReapGraceSeconds: parseInt(draftReapGrace) || 0,
+        executionReapGraceSeconds: BigInt(parseInt(draftReapGrace) || 0),
         executionReapConsecutiveFailures: parseInt(draftReapFailures) || 0,
         logDirectory: draftLogDirectory,
-        logMaxSizeMb: parseInt(draftLogMaxSize) || 0,
-        logRollIntervalHours: parseInt(draftLogRollInterval) || 0,
+        logMaxSizeMb: BigInt(parseInt(draftLogMaxSize) || 0),
+        logRollIntervalHours: BigInt(parseInt(draftLogRollInterval) || 0),
         logRetentionDays: parseInt(draftLogRetention) || 0,
         logMaxFiles: parseInt(draftLogMaxFiles) || 0,
         maxConcurrentRuns: parseInt(draftMaxConcurrentRuns) || 0,
-      } as any);
+      });
+    } catch (e) {
+      // Surface the rejection (validation errors included) — never swallow.
+      setSaveError(String(e));
     } finally {
       setSaving(false);
     }
@@ -590,10 +608,17 @@ function DefaultsTab() {
               <ModelPicker
                 value={draftAskOrchiconModel}
                 onChange={setDraftAskOrchiconModel}
+                askMode
               />
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {saveError && (
+        <p role="alert" className="text-sm text-destructive">
+          Save failed: {saveError}
+        </p>
       )}
 
       {!isLoading && (
@@ -663,6 +688,13 @@ function DefaultsTab() {
                 value={draftNudgeCooldown}
                 onChange={setDraftNudgeCooldown}
                 placeholder="60"
+              />
+              <StallField
+                label="Tool hang (seconds)"
+                description="A tool call with no events for longer than this has its in-flight turn aborted (session kept) and a course-correcting redirect injected. 0 = default 180s; negative = disabled."
+                value={draftToolHang}
+                onChange={setDraftToolHang}
+                placeholder="180"
               />
             </div>
           </CardContent>
@@ -1105,9 +1137,9 @@ function SessionTab() {
     setSaving(true);
     try {
       await updateSettings.mutateAsync({
-        sessionAccessTokenTtlSeconds: parseInt(draftAccessTtl) || 0,
-        sessionRefreshTokenTtlSeconds: parseInt(draftRefreshTtl) || 0,
-      } as any);
+        sessionAccessTokenTtlSeconds: BigInt(parseInt(draftAccessTtl) || 0),
+        sessionRefreshTokenTtlSeconds: BigInt(parseInt(draftRefreshTtl) || 0),
+      });
     } finally {
       setSaving(false);
     }
@@ -1373,7 +1405,7 @@ function CompactTiersEditor({
 
 
 function SecretsTab() {
-  const [secrets, setSecrets] = React.useState<any[]>([]);
+  const [secrets, setSecrets] = React.useState<TenantSecret[]>([]);
   const [name, setName] = React.useState("");
   const [value, setValue] = React.useState("");
   const [desc, setDesc] = React.useState("");
@@ -1384,9 +1416,9 @@ function SecretsTab() {
     setLoading(true);
     try {
       const { secretsClient } = await import("@/api/clients");
-      const res: any = await secretsClient.listSecrets({});
+      const res = await secretsClient.listSecrets({});
       setSecrets(res.secrets || []);
-    } catch (e: any) { setMsg(String(e.message||e)) } finally { setLoading(false) }
+    } catch (e) { setMsg(e instanceof Error ? e.message : String(e)) } finally { setLoading(false) }
   }, []);
   React.useEffect(() => { load() }, [load]);
 
@@ -1396,7 +1428,7 @@ function SecretsTab() {
       const { secretsClient } = await import("@/api/clients");
       await secretsClient.createSecret({ name, value, description: desc });
       setName(""); setValue(""); setDesc(""); load(); setMsg("Secret created.");
-    } catch (e: any) { setMsg(String(e.message||e)) }
+    } catch (e) { setMsg(e instanceof Error ? e.message : String(e)) }
   };
   const del = async (id: string) => {
     if (!confirm("Delete secret?")) return;
@@ -1410,14 +1442,14 @@ function SecretsTab() {
         <CardHeader><CardTitle>Secrets</CardTitle><CardDescription>Tenant-scoped encrypted secrets (e.g. TAVILY_API_KEY). Values are encrypted at rest (AES-256-GCM) and injected as container env at dispatch. Never stored in plaintext.</CardDescription></CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-2 sm:grid-cols-3">
-            <Input placeholder="NAME (e.g. TAVILY_API_KEY)" value={name} onChange={(e:any)=>setName(e.target.value.toUpperCase())} />
-            <Input placeholder="value" type="password" value={value} onChange={(e:any)=>setValue(e.target.value)} />
-            <Input placeholder="description" value={desc} onChange={(e:any)=>setDesc(e.target.value)} />
+            <Input placeholder="NAME (e.g. TAVILY_API_KEY)" value={name} onChange={(e)=>setName(e.target.value.toUpperCase())} />
+            <Input placeholder="value" type="password" value={value} onChange={(e)=>setValue(e.target.value)} />
+            <Input placeholder="description" value={desc} onChange={(e)=>setDesc(e.target.value)} />
           </div>
           <Button onClick={create} disabled={!name||!value}>Create secret</Button>
           {msg && <p className="text-sm text-muted-foreground">{msg}</p>}
           {loading ? <p className="text-sm">Loading…</p> : (
-            <table className="w-full text-sm"><thead><tr className="text-muted-foreground text-left"><th>Name</th><th>Description</th><th></th></tr></thead><tbody>{secrets.map((s:any)=>(<tr key={s.id} className="border-t"><td className="font-mono py-2">{s.name}</td><td>{s.description}</td><td><Button variant="outline" size="sm" onClick={()=>del(s.id)}>Delete</Button></td></tr>))}</tbody></table>
+            <table className="w-full text-sm"><thead><tr className="text-muted-foreground text-left"><th>Name</th><th>Description</th><th></th></tr></thead><tbody>{secrets.map((s)=>(<tr key={s.id} className="border-t"><td className="font-mono py-2">{s.name}</td><td>{s.description}</td><td><Button variant="outline" size="sm" onClick={()=>del(s.id)}>Delete</Button></td></tr>))}</tbody></table>
           )}
         </CardContent>
       </Card>

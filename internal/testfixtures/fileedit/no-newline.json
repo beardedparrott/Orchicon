@@ -1,0 +1,10 @@
+{
+  "name": "no-trailing-newline",
+  "path": "notes/draft.md",
+  "before": "first line\nsecond line",
+  "after": "first line\nSECOND line",
+  "expected_kind": "modify",
+  "expected_unified_diff": "--- a/notes/draft.md\n+++ b/notes/draft.md\n@@ -1,2 +1,2 @@\n first line\n-second line\n\\ No newline at end of file\n+SECOND line\n\\ No newline at end of file\n",
+  "expected_binary": false,
+  "expected_truncated": false
+}

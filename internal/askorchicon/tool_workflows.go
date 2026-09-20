@@ -6,12 +6,24 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 	"github.com/beardedparrott/orchicon/internal/workflow"
 )
 
 func toolListWorkflows(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		// IncludeEphemeral opts the caller into machine-managed transient
+		// workflows (Quick Work). Default FALSE: the Workflows screen and an
+		// agent's list both render rows a human reads, and a throwaway
+		// workflow showing up there is exactly the leak this prevents.
+		IncludeEphemeral bool `json:"include_ephemeral"`
+	}
+	if len(args) > 0 && string(args) != "null" {
+		json.Unmarshal(args, &params)
+	}
 	tenantID := tenant.FromContext(ctx)
 	ttx, err := pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -19,7 +31,8 @@ func toolListWorkflows(ctx context.Context, pool *db.Pool, args json.RawMessage)
 	}
 	defer ttx.Rollback(ctx)
 	workflows, err := db.ListWorkflows(ctx, ttx.Tx, db.ListWorkflowsFilter{
-		TenantID: tenantID,
+		TenantID:       tenantID,
+		EphemeralScope: ephemeralScopeFor(params.IncludeEphemeral),
 	})
 	if err != nil {
 		return nil, err
@@ -106,6 +119,10 @@ func toolCreateWorkflow(ctx context.Context, pool *db.Pool, args json.RawMessage
 		Type        string          `json:"type"`
 		GitStrategy string          `json:"git_strategy"`
 		ProjectID   string          `json:"project_id"`
+		// Ephemeral marks the workflow machine-managed and transient (Quick
+		// Work). It is hidden from the Workflows view and is meant to be
+		// removed with delete_workflow when the job ends.
+		Ephemeral bool `json:"ephemeral"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -137,6 +154,7 @@ func toolCreateWorkflow(ctx context.Context, pool *db.Pool, args json.RawMessage
 		Steps:       rawJSON(params.Steps),
 		Inputs:      rawJSON(params.Inputs),
 		Outputs:     rawJSON(params.Outputs),
+		Ephemeral:   params.Ephemeral,
 	}
 	if err := workflow.ValidateCreateWorkflowInput(&in); err != nil {
 		return nil, err
@@ -156,5 +174,166 @@ func toolCreateWorkflow(ctx context.Context, pool *db.Pool, args json.RawMessage
 	return rowWithExtra(created, map[string]any{
 		"version":    createdVersion.Version,
 		"version_id": createdVersion.ID,
+	})
+}
+
+// toolDeleteWorkflow permanently removes a workflow AND ITS ENTIRE RUN HISTORY,
+// matching the DeleteWorkflow RPC (internal/workflow/service.go:324).
+//
+// THE GAP IT CLOSES: db.DeleteWorkflow and the RPC both existed; there was no
+// MCP tool. That is the same shape of gap `hard_delete_work_item` had — a real
+// capability an agent could not reach — and here it blocks Quick Work's whole
+// contract: an ephemeral workflow that cannot be deleted is an invisible record
+// that stays forever.
+//
+// ONE GUARD, and it is about the cascade rather than the row: DeleteWorkflow
+// removes the workflow's step runs, its runs, its versions and its edit locks.
+// For an ephemeral workflow that is exactly right — the runs belong to the one
+// job. For a REAL workflow it destroys history, and the agent cannot see how
+// much history it is about to destroy. So a non-ephemeral workflow that has any
+// runs is refused unless the caller states confirm_delete_runs=true, which
+// turns an unconsidered call into a deliberate one. An ephemeral workflow needs
+// no confirmation: everything it owns was created for the job being cleaned up.
+//
+// The audit is recorded because the delete is irreversible and removes the rows
+// that would otherwise be the evidence.
+func toolDeleteWorkflow(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ID                string `json:"id"`
+		ConfirmDeleteRuns bool   `json:"confirm_delete_runs"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, fmt.Errorf("invalid args: %w", err)
+	}
+	if params.ID == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	tenantID := tenant.FromContext(ctx)
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer ttx.Rollback(ctx)
+	current, err := db.GetWorkflow(ctx, ttx.Tx, tenantID, params.ID)
+	if err != nil {
+		return nil, err
+	}
+	if !current.Ephemeral && !params.ConfirmDeleteRuns {
+		runs, err := db.ListWorkflowRuns(ctx, ttx.Tx, db.ListWorkflowRunsFilter{
+			TenantID:   tenantID,
+			WorkflowID: current.ID,
+			PageSize:   1,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if len(runs) > 0 {
+			return nil, fmt.Errorf("workflow %q has run history: deleting it permanently removes every run and "+
+				"step run it has ever produced. This is not an ephemeral (Quick Work) workflow, so pass "+
+				"confirm_delete_runs=true only if destroying that history is intended", current.Name)
+		}
+	}
+	before := audit.Snapshot(map[string]any{
+		"id":         current.ID,
+		"name":       current.Name,
+		"status":     current.Status,
+		"type":       current.Type,
+		"project_id": current.ProjectID,
+		"ephemeral":  current.Ephemeral,
+	})
+	if err := db.DeleteWorkflow(ctx, ttx.Tx, tenantID, current.ID); err != nil {
+		return nil, err
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "workflow.deleted", "workflow", current.ID, before, nil); err != nil {
+		return nil, err
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{"id": current.ID, "deleted": true, "ephemeral": current.Ephemeral})
+}
+
+// toolPublishWorkflowVersion publishes a workflow's draft version so the workflow becomes RUNNABLE, mirroring
+// Service.PublishWorkflow (internal/workflow/service.go).
+//
+// THE GAP IT CLOSES, and why Quick Work could not work without it. create_workflow seeds a DRAFT version
+// (internal/workflow/create.go sets Status=draft and CurrentVersion=0), the scheduler only dispatches published
+// work, and a work item binds "a published workflow to run". Workers had publish_worker_version; WORKFLOWS HAD
+// NOTHING — db.PublishWorkflowVersion was reachable only from tests. So the ephemeral protocol's "create the
+// workflow" step built something that could never be started, and the failure was passive: the bound item sat
+// pending with no error anywhere to explain why. An agent assembling a throwaway workflow for one job must be
+// able to make it runnable in the same session, and an agent that cannot is one that ships inert runs.
+//
+// The version argument is OPTIONAL: omitted, it publishes the latest draft, which is what the
+// create-then-publish flow always wants. Given, it must NAME a draft — publishing a version that is already
+// published is a failed precondition rather than a silent no-op, so a stale call is visible instead of looking
+// like success.
+func toolPublishWorkflowVersion(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		WorkflowID string `json:"workflow_id"`
+		Version    int    `json:"version"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, fmt.Errorf("invalid args: %w", err)
+	}
+	if params.WorkflowID == "" {
+		return nil, fmt.Errorf("workflow_id is required")
+	}
+	tenantID := tenant.FromContext(ctx)
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer ttx.Rollback(ctx)
+
+	current, err := db.GetWorkflow(ctx, ttx.Tx, tenantID, params.WorkflowID)
+	if err != nil {
+		return nil, err
+	}
+	target := params.Version
+	if target <= 0 {
+		latest, err := db.GetLatestWorkflowVersion(ctx, ttx.Tx, tenantID, params.WorkflowID, false)
+		if err != nil {
+			return nil, err
+		}
+		target = latest.Version
+	}
+	version, err := db.GetWorkflowVersion(ctx, ttx.Tx, tenantID, params.WorkflowID, target)
+	if err != nil {
+		return nil, err
+	}
+	if version.Status != domain.WorkflowVersionDraft {
+		return nil, fmt.Errorf("workflow version v%d is not a draft (status=%s) — only a draft can be published, and "+
+			"a published version is already runnable", version.Version, version.Status)
+	}
+	published, err := db.PublishWorkflowVersion(ctx, ttx.Tx, tenantID, params.WorkflowID, version.Version)
+	if err != nil {
+		return nil, err
+	}
+	// Deprecate the previously-current published version so exactly one version is active, matching the RPC
+	// (a workflow with two 'published' versions would leave the run path's choice arbitrary).
+	if current.CurrentVersion > 0 {
+		if _, err := ttx.Tx.Exec(ctx,
+			`UPDATE workflow_versions SET status = 'deprecated'
+			 WHERE tenant_id = $1 AND workflow_id = $2 AND version = $3 AND status = 'published'`,
+			tenantID, params.WorkflowID, current.CurrentVersion); err != nil {
+			return nil, fmt.Errorf("deprecate previous published version: %w", err)
+		}
+	}
+	updated, err := db.UpdateWorkflowCurrentVersion(ctx, ttx.Tx, tenantID, params.WorkflowID, current.Version, version.Version)
+	if err != nil {
+		return nil, err
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "workflow.published", "workflow", updated.ID,
+		audit.Snapshot(map[string]any{"id": current.ID, "status": current.Status, "current_version": current.CurrentVersion}),
+		audit.Snapshot(map[string]any{"id": updated.ID, "status": updated.Status, "current_version": updated.CurrentVersion})); err != nil {
+		return nil, fmt.Errorf("audit workflow.published: %w", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return rowWithExtra(updated, map[string]any{
+		"version":    published.Version,
+		"version_id": published.ID,
 	})
 }

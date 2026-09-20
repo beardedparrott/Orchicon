@@ -68,7 +68,15 @@ design-notes/
 site/install
 site/install.ps1
 deploy/container/orchicon
+deploy/container/orch
 deploy/runtime/orchicon
+deploy/runtime/orch
+# The TUI client binary (built by `make build` / `go build ./cmd/orch`);
+# a bare `go build ./cmd/orch` drops it in the repo root.
+/orch
+/orch.exe
+# Nested runtime state dir (root /.orchicon/ is ignored above).
+/internal/orchicon/.orchicon/
 .playwright-mcp/
 
 # Orchicon: ignore nested step worktrees (parallel-branch children)

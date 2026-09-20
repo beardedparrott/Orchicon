@@ -6,10 +6,10 @@ import (
 	"os"
 	"testing"
 
+	assets "github.com/beardedparrott/orchicon"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/migrate"
-	assets "github.com/beardedparrott/orchicon"
 )
 
 func TestUpdateWorkItemVersionConflictDistinct(t *testing.T) {
@@ -38,6 +38,8 @@ func TestUpdateWorkItemVersionConflictDistinct(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Self-cleaning: see db.CleanupProject.
+	db.CleanupProject(t, pool, tenant, proj.ID)
 	item, err := db.CreateWorkItem(ctx, ttx.Tx, db.WorkItemRow{
 		ID: db.NewID(), TenantID: tenant, ProjectID: proj.ID, Kind: domain.WorkItemKindTask, Title: "vc", Description: "d", AcceptanceCriteria: "ac", Status: domain.WorkItemPending, Priority: 1,
 	})

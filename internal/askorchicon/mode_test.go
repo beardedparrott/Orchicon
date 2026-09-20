@@ -26,8 +26,18 @@ func TestBuildSystemPromptBrainstorm(t *testing.T) {
 		"Tenant additional instructions.",
 		"## About Orchicon",
 		"Be planner first, implementer second",
+		"ALWAYS ask clarifying questions",
+		"source-code truth",
+		"NEVER light",
+		"Context is our friend",
 		"Workflow & runtime prompt",
 		"workflow they want to bind",
+		"[<title>](/work-items/<id>)",
+		"Never a bare id",
+		"NEW parent or place under an EXISTING parent",
+		"2-3 obvious candidate parents",
+		"Never assume parent_id",
+		"use defaults",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("brainstorm prompt missing %q", want)
@@ -128,7 +138,7 @@ func TestModePersistsAcrossTurns(t *testing.T) {
 	s := newChatService(t, pool, client)
 	ctx := tenant.WithID(context.Background(), "tnt_dev")
 	convID := createConversation(t, pool, "")
-	ack1, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	ack1, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
 	if err != nil {
 		t.Fatalf("first turn: %v", err)
 	}

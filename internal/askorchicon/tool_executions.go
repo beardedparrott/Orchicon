@@ -66,6 +66,13 @@ func toolGetExecution(ctx context.Context, pool *db.Pool, args json.RawMessage) 
 	if err != nil {
 		return nil, err
 	}
+	// The worker_executions row columns are write-never (always zero) —
+	// fill the totals from the usage-records sum (best-effort) so agents
+	// stop reporting 0 tokens for executions with real spend.
+	if tokens, cost, uerr := db.SumUsageForExecution(ctx, ttx.Tx, tenantID, exec.ID); uerr == nil {
+		exec.TokenUsage = tokens
+		exec.CostUSD = cost
+	}
 	return json.Marshal(exec)
 }
 

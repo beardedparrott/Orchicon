@@ -109,7 +109,7 @@ func TestResolveApprovalWorkItems(t *testing.T) {
 func TestBuildApprovalStepResult(t *testing.T) {
 	prev := []byte(`{"_recovery_summary":"the first attempt failed"}`)
 	got := buildApprovalStepResult(
-		"ticket-01", "composite prompt", "w_se_code_approver", 7,
+		"ticket-01", "composite prompt", "fp1234", "w_se_code_approver", 7,
 		"Senior SWE", "the upstream summary", []string{"a.go", "b.go"}, "the AC",
 		prev,
 	)
@@ -140,7 +140,7 @@ func TestBuildApprovalStepResult(t *testing.T) {
 	}
 
 	// A fresh dispatch (no prior result) must NOT carry a recovery summary.
-	fresh := buildApprovalStepResult("ticket-01", "p", "w_se_code_approver", 7, "", "", nil, "", nil)
+	fresh := buildApprovalStepResult("ticket-01", "p", "fp", "w_se_code_approver", 7, "", "", nil, "", nil)
 	var fm map[string]any
 	_ = json.Unmarshal(fresh, &fm)
 	if _, ok := fm["_recovery_summary"]; ok {

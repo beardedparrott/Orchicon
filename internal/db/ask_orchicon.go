@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -20,24 +21,35 @@ type ConversationRow struct {
 	// systems-thinking partner) — brainstorm is the sole mode since 2026-08-26.
 	// Read at turn-dispatch time and applied per message via the opencode
 	// per-turn system prompt.
-	Mode      string
+	Mode string
+	// ProjectID is the project this conversation belongs to, or "" when unassigned.
+	//
+	// The SECOND level of organization over conversations (categories are the
+	// first, and an orthogonal axis — a label someone applied, rather than a fact
+	// about the chat). It is also the CONTEXT the agent is told about: a project's
+	// project_dir is the folder the chat's work happens in.
+	ProjectID string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	// MessageCount is populated by the LIST query only (ListConversations); the
+	// single-row queries leave it 0 because their callers compute the count
+	// separately via CountConversationMessages. See scanConversationWithCount.
+	MessageCount int
 }
 
 // MessageRow is the in-memory representation of an ask_orchicon_messages row.
 type MessageRow struct {
-	ID              string
-	TenantID        string
-	ConversationID  string
-	Role            string
-	Content         string
-	ToolCalls       []byte
-	ToolResults     []byte
-	Attachments     []byte
-	Metadata        []byte
-	Reasoning       []string
-	CreatedAt       time.Time
+	ID             string
+	TenantID       string
+	ConversationID string
+	Role           string
+	Content        string
+	ToolCalls      []byte
+	ToolResults    []byte
+	Attachments    []byte
+	Metadata       []byte
+	Reasoning      []string
+	CreatedAt      time.Time
 }
 
 // AgentConfigRow is the in-memory representation of an ask_orchicon_agent_config row.
@@ -57,18 +69,47 @@ type AgentConfigRow struct {
 	UpdatedAt       time.Time
 }
 
+// conversationCols is the column list every conversation query returns, in scanConversation's order.
+//
+// IT IS ONE SOURCE RATHER THAN EIGHT COPIES, because the RETURNING lists and the scans have to agree EXACTLY:
+// a column added to one query and missed in another is a runtime scan error on whichever path was missed, and
+// this file had NINE such lists (the insert, the get, the list, three updates' RETURNING, and two scans).
+// Adding project_id would otherwise have been a nine-place edit with eight chances to miss one.
+var conversationCols = []string{
+	"id", "tenant_id", "title", "model_ref", "session_id", "mode", "project_id", "created_at", "updated_at",
+}
+
+// conversationSelect renders conversationCols for a query, optionally qualified (the LIST query aliases the
+// table as `c` because it computes a correlated message count).
+func conversationSelect(qualifier string) string {
+	parts := make([]string, 0, len(conversationCols))
+	for _, c := range conversationCols {
+		if qualifier != "" {
+			parts = append(parts, qualifier+"."+c)
+			continue
+		}
+		parts = append(parts, c)
+	}
+	return strings.Join(parts, ", ")
+}
+
 // --- Conversations ---
 
 func CreateConversation(ctx context.Context, tx pgx.Tx, c ConversationRow) (ConversationRow, error) {
 	// An empty mode falls back to the migration's 'brainstorm' default
 	// (COALESCE guards any caller that omits it), so absent/unspecified
 	// always lands on the default persona.
-	const q = `INSERT INTO ask_orchicon_conversations (id, tenant_id, title, model_ref, mode)
-		VALUES ($1, $2, $3, $4, COALESCE(NULLIF($5, ''), 'brainstorm'))
-		RETURNING id, tenant_id, title, model_ref, session_id, mode, created_at, updated_at`
+	//
+	// project_id takes the row's value verbatim; an empty one is the column's own default, i.e. unassigned. The
+	// service validates a NON-empty id against the projects table before it gets here (see
+	// Service.SetConversationProject), so this layer stays a plain write.
+	q := `INSERT INTO ask_orchicon_conversations (id, tenant_id, title, model_ref, mode, project_id)
+		VALUES ($1, $2, $3, $4, COALESCE(NULLIF($5, ''), 'brainstorm'), $6)
+		RETURNING ` + conversationSelect("")
 	row := c
-	err := tx.QueryRow(ctx, q, c.ID, c.TenantID, c.Title, c.ModelRef, c.Mode).Scan(
-		&row.ID, &row.TenantID, &row.Title, &row.ModelRef, &row.SessionID, &row.Mode, &row.CreatedAt, &row.UpdatedAt,
+	err := tx.QueryRow(ctx, q, c.ID, c.TenantID, c.Title, c.ModelRef, c.Mode, c.ProjectID).Scan(
+		&row.ID, &row.TenantID, &row.Title, &row.ModelRef, &row.SessionID, &row.Mode, &row.ProjectID,
+		&row.CreatedAt, &row.UpdatedAt,
 	)
 	if err != nil {
 		return ConversationRow{}, fmt.Errorf("db: create conversation: %w", err)
@@ -77,8 +118,7 @@ func CreateConversation(ctx context.Context, tx pgx.Tx, c ConversationRow) (Conv
 }
 
 func GetConversation(ctx context.Context, tx pgx.Tx, tenantID, id string) (ConversationRow, error) {
-	const q = `SELECT id, tenant_id, title, model_ref, session_id, mode, created_at, updated_at
-		FROM ask_orchicon_conversations WHERE tenant_id = $1 AND id = $2`
+	q := `SELECT ` + conversationSelect("") + ` FROM ask_orchicon_conversations WHERE tenant_id = $1 AND id = $2`
 	row, err := tx.Query(ctx, q, tenantID, id)
 	if err != nil {
 		return ConversationRow{}, fmt.Errorf("db: get conversation: %w", err)
@@ -94,17 +134,26 @@ func ListConversations(ctx context.Context, tx pgx.Tx, tenantID string, limit in
 	var rows []ConversationRow
 	var q string
 	var args []any
+	// message_count is part of the LIST shape (scanConversationWithCount). It is
+	// a correlated COUNT so one query serves the whole page: both the rail and
+	// the conversation detail display a per-conversation message count, and
+	// without it ListConversations reported 0 for EVERY row while
+	// GetConversation reported the real number — the same conversation rendered
+	// as "0 msgs" in one place and "messages 2" in another. The predicate
+	// mirrors CountConversationMessages exactly so the two cannot disagree.
+	listCols := `SELECT ` + conversationSelect("c") + `,
+			(SELECT COUNT(*) FROM ask_orchicon_messages m
+			  WHERE m.tenant_id = c.tenant_id AND m.conversation_id = c.id)
+		FROM ask_orchicon_conversations c`
 	if afterID != "" {
-		q = `SELECT id, tenant_id, title, model_ref, session_id, mode, created_at, updated_at
-			FROM ask_orchicon_conversations
-			WHERE tenant_id = $1 AND updated_at < (SELECT updated_at FROM ask_orchicon_conversations WHERE tenant_id = $1 AND id = $2)
-			ORDER BY updated_at DESC LIMIT $3`
+		q = listCols + `
+			WHERE c.tenant_id = $1 AND c.updated_at < (SELECT p.updated_at FROM ask_orchicon_conversations p WHERE p.tenant_id = $1 AND p.id = $2)
+			ORDER BY c.updated_at DESC LIMIT $3`
 		args = []any{tenantID, afterID, limit}
 	} else {
-		q = `SELECT id, tenant_id, title, model_ref, session_id, mode, created_at, updated_at
-			FROM ask_orchicon_conversations
-			WHERE tenant_id = $1
-			ORDER BY updated_at DESC LIMIT $2`
+		q = listCols + `
+			WHERE c.tenant_id = $1
+			ORDER BY c.updated_at DESC LIMIT $2`
 		args = []any{tenantID, limit}
 	}
 	iter, err := tx.Query(ctx, q, args...)
@@ -113,7 +162,7 @@ func ListConversations(ctx context.Context, tx pgx.Tx, tenantID string, limit in
 	}
 	defer iter.Close()
 	for iter.Next() {
-		r, err := scanConversation(iter)
+		r, err := scanConversationWithCount(iter)
 		if err != nil {
 			return nil, err
 		}
@@ -126,9 +175,9 @@ func ListConversations(ctx context.Context, tx pgx.Tx, tenantID string, limit in
 }
 
 func UpdateConversationTitle(ctx context.Context, tx pgx.Tx, tenantID, id, title string) (ConversationRow, error) {
-	const q = `UPDATE ask_orchicon_conversations SET title = $3, updated_at = now()
+	q := `UPDATE ask_orchicon_conversations SET title = $3, updated_at = now()
 		WHERE tenant_id = $1 AND id = $2
-		RETURNING id, tenant_id, title, model_ref, session_id, mode, created_at, updated_at`
+		RETURNING ` + conversationSelect("")
 	row, err := tx.Query(ctx, q, tenantID, id, title)
 	if err != nil {
 		return ConversationRow{}, fmt.Errorf("db: update conversation title: %w", err)
@@ -145,12 +194,52 @@ func UpdateConversationTitle(ctx context.Context, tx pgx.Tx, tenantID, id, title
 // turn-dispatch time and applied via the opencode per-turn system prompt, so
 // no session change or serve restart is needed. Returns the updated row.
 func UpdateConversationMode(ctx context.Context, tx pgx.Tx, tenantID, id, mode string) (ConversationRow, error) {
-	const q = `UPDATE ask_orchicon_conversations SET mode = $3, updated_at = now()
+	q := `UPDATE ask_orchicon_conversations SET mode = $3, updated_at = now()
 		WHERE tenant_id = $1 AND id = $2
-		RETURNING id, tenant_id, title, model_ref, session_id, mode, created_at, updated_at`
+		RETURNING ` + conversationSelect("")
 	row, err := tx.Query(ctx, q, tenantID, id, mode)
 	if err != nil {
 		return ConversationRow{}, fmt.Errorf("db: update conversation mode: %w", err)
+	}
+	defer row.Close()
+	if row.Next() {
+		return scanConversation(row)
+	}
+	return ConversationRow{}, ErrNotFound
+}
+
+// UpdateConversationModel persists a conversation's model_ref override. An
+// empty modelRef clears the override (the conversation then resolves the
+// tenant default at dispatch). Mirrors UpdateConversationMode's RETURNING
+// contract so the caller can echo the updated row.
+func UpdateConversationModel(ctx context.Context, tx pgx.Tx, tenantID, id, modelRef string) (ConversationRow, error) {
+	q := `UPDATE ask_orchicon_conversations SET model_ref = $3, updated_at = now()
+		WHERE tenant_id = $1 AND id = $2
+		RETURNING ` + conversationSelect("")
+	row, err := tx.Query(ctx, q, tenantID, id, modelRef)
+	if err != nil {
+		return ConversationRow{}, fmt.Errorf("db: update conversation model: %w", err)
+	}
+	defer row.Close()
+	if row.Next() {
+		return scanConversation(row)
+	}
+	return ConversationRow{}, ErrNotFound
+}
+
+// SetConversationProject moves a conversation into a project, or clears the association when projectID is
+// empty. It is the write behind the TUI rail's create/move, the GUI's project-folder drop target and the
+// /project command — ONE write, so the clients cannot disagree about what "belongs to a project" means.
+//
+// The caller validates a non-empty id against the projects table first (see Service.SetConversationProject);
+// this layer is a plain write, mirroring UpdateConversationMode's contract.
+func SetConversationProject(ctx context.Context, tx pgx.Tx, tenantID, id, projectID string) (ConversationRow, error) {
+	q := `UPDATE ask_orchicon_conversations SET project_id = $3, updated_at = now()
+		WHERE tenant_id = $1 AND id = $2
+		RETURNING ` + conversationSelect("")
+	row, err := tx.Query(ctx, q, tenantID, id, projectID)
+	if err != nil {
+		return ConversationRow{}, fmt.Errorf("db: set conversation project: %w", err)
 	}
 	defer row.Close()
 	if row.Next() {
@@ -219,10 +308,12 @@ func CreateMessage(ctx context.Context, tx pgx.Tx, m MessageRow) (MessageRow, er
 }
 
 // UpsertMessage creates a message row under its id or replaces the existing
-// one's content/reasoning/metadata. The running turn's PARTIAL reply is
-// written under the acked assistant message id as it is collected (so a
-// client that lost the live stream can watch it grow via ListMessages); the
-// finalize then upserts the complete reply over the partial. The row is only
+// one's content/reasoning/metadata AND tool ledger (tool_calls/tool_results
+// are part of the conflict overwrite so live tool activity mirrored mid-turn
+// is never resurrected over the terminal snapshot). The running turn's PARTIAL
+// reply is written under the acked assistant message id as it is collected
+// (so a client that lost the live stream can watch it grow via ListMessages);
+// the finalize then upserts the complete reply over the partial. The row is only
 // ever visible while the turn is in flight (its terminal state is written by
 // the finalize).
 func UpsertMessage(ctx context.Context, tx pgx.Tx, m MessageRow) (MessageRow, error) {
@@ -236,7 +327,9 @@ func UpsertMessage(ctx context.Context, tx pgx.Tx, m MessageRow) (MessageRow, er
 		ON CONFLICT (tenant_id, id) DO UPDATE SET
 			content = EXCLUDED.content,
 			reasoning = EXCLUDED.reasoning,
-			metadata = EXCLUDED.metadata
+			metadata = EXCLUDED.metadata,
+			tool_calls = EXCLUDED.tool_calls,
+			tool_results = EXCLUDED.tool_results
 		RETURNING id, tenant_id, conversation_id, role, content, tool_calls, tool_results, attachments, metadata, reasoning, created_at`
 	row := m
 	err := tx.QueryRow(ctx, q, m.ID, m.TenantID, m.ConversationID, m.Role, m.Content,
@@ -384,8 +477,23 @@ func UpsertAgentConfig(ctx context.Context, tx pgx.Tx, tenantID string, c AgentC
 
 func scanConversation(row pgx.Rows) (ConversationRow, error) {
 	var r ConversationRow
-	if err := row.Scan(&r.ID, &r.TenantID, &r.Title, &r.ModelRef, &r.SessionID, &r.Mode, &r.CreatedAt, &r.UpdatedAt); err != nil {
+	if err := row.Scan(&r.ID, &r.TenantID, &r.Title, &r.ModelRef, &r.SessionID, &r.Mode, &r.ProjectID,
+		&r.CreatedAt, &r.UpdatedAt); err != nil {
 		return ConversationRow{}, fmt.Errorf("db: scan conversation: %w", err)
+	}
+	return r, nil
+}
+
+// scanConversationWithCount scans the LIST shape: scanConversation's columns plus
+// the trailing per-conversation message count. It is separate from
+// scanConversation because only ListConversations selects that column — the
+// single-row Get/Update queries all share conversationSelect's list, which the
+// scan above consumes.
+func scanConversationWithCount(row pgx.Rows) (ConversationRow, error) {
+	var r ConversationRow
+	if err := row.Scan(&r.ID, &r.TenantID, &r.Title, &r.ModelRef, &r.SessionID, &r.Mode, &r.ProjectID,
+		&r.CreatedAt, &r.UpdatedAt, &r.MessageCount); err != nil {
+		return ConversationRow{}, fmt.Errorf("db: scan conversation with count: %w", err)
 	}
 	return r, nil
 }

@@ -15,7 +15,6 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
@@ -51,6 +50,8 @@ func newParallelScanEnv(t *testing.T, n int) (*sequenceTestEnv, []db.WorkItemRow
 	ctx := context.Background()
 
 	var tasks []db.WorkItemRow
+	// Workflow-first: dispatching an item requires a workflow binding.
+	wfID := seedPublishedWorkflow(t, env.pool, env.proj.ID)
 	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
 		t.Fatal(err)
@@ -61,21 +62,14 @@ func newParallelScanEnv(t *testing.T, n int) (*sequenceTestEnv, []db.WorkItemRow
 			Kind: domain.WorkItemKindTask, Title: "Parallel Task " + db.NewID()[:6],
 			Status:            domain.WorkItemReady,
 			AssignedWorkerRef: []byte(`{"worker_id":"w_se_devops_engineer","version":1}`),
+			WorkflowID:        &wfID,
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
 		tasks = append(tasks, created)
 	}
-	now := time.Now().UTC()
-	if _, err := db.CreateAdapter(ctx, ttx.Tx, db.AdapterRow{
-		ID: db.NewID(), TenantID: approvalTestTenant,
-		Kind: "opencode", Version: "test", Endpoint: "localhost:0",
-		Capabilities: []byte("{}"), Status: "ready",
-		MaxConcurrentExecutions: 64, LastHeartbeatAt: &now,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	_ = createTestAdapter(t, env.pool, "opencode", 64)
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +104,7 @@ func TestParallelScanDispatchesAllReadyInOnePass(t *testing.T) {
 	purgeScanTenant(t, approvalTestPool(t))
 	env, tasks := newParallelScanEnv(t, 6)
 	ctx := context.Background()
-	rec := NewTaskReconciler(env.pool, slog.Default(), &manifestCaptureBridge{})
+	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
 	peakInFlight := newInFlightProbe(rec)
 
 	if res := rec.Reconcile(ctx, ""); res.Error != nil {
@@ -136,7 +130,7 @@ func TestParallelScanDispatchLimitBoundsConcurrency(t *testing.T) {
 	purgeScanTenant(t, approvalTestPool(t))
 	env, tasks := newParallelScanEnv(t, 6)
 	ctx := context.Background()
-	rec := NewTaskReconciler(env.pool, slog.Default(), &manifestCaptureBridge{})
+	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
 	rec.SetDispatchConcurrency(2)
 	peakInFlight := newInFlightProbe(rec)
 
@@ -171,7 +165,7 @@ func TestParallelScanDependencyBlockedNotDispatched(t *testing.T) {
 	blocker := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Blocker", nil, nil)
 	addDependency(t, env.pool, env.proj.ID, blocker.ID, blocked.ID, domain.DependencyBlocks)
 
-	rec := NewTaskReconciler(env.pool, slog.Default(), &manifestCaptureBridge{})
+	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
 	if res := rec.Reconcile(ctx, ""); res.Error != nil {
 		t.Fatalf("scan: %v", res.Error)
 	}
@@ -198,6 +192,7 @@ func TestParallelScanBlockedClearsAndDispatchesSamePass(t *testing.T) {
 	env, tasks := newParallelScanEnv(t, 1)
 	ctx := context.Background()
 	ready := tasks[0]
+	wfID := seedPublishedWorkflow(t, env.pool, env.proj.ID)
 
 	// A second item parked blocked, whose blocker already succeeded.
 	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
@@ -209,6 +204,7 @@ func TestParallelScanBlockedClearsAndDispatchesSamePass(t *testing.T) {
 		Kind: domain.WorkItemKindTask, Title: "Clearing " + db.NewID()[:6],
 		Status:            domain.WorkItemBlocked,
 		AssignedWorkerRef: []byte(`{"worker_id":"w_se_devops_engineer","version":1}`),
+		WorkflowID:        &wfID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -220,7 +216,7 @@ func TestParallelScanBlockedClearsAndDispatchesSamePass(t *testing.T) {
 	addDependency(t, env.pool, env.proj.ID, blocker.ID, created.ID, domain.DependencyBlocks)
 	setStatus(t, env.pool, blocker.ID, domain.WorkItemSucceeded)
 
-	rec := NewTaskReconciler(env.pool, slog.Default(), &manifestCaptureBridge{})
+	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
 	if res := rec.Reconcile(ctx, ""); res.Error != nil {
 		t.Fatalf("scan: %v", res.Error)
 	}

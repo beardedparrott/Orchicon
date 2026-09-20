@@ -148,6 +148,60 @@ func (GitStrategy) EnumDescriptor() ([]byte, []int) {
 	return file_orchicon_api_v1_project_proto_rawDescGZIP(), []int{1}
 }
 
+// ExecutionMode controls where native executions run
+// (always-container runtime):
+//   - runtime: executions run inside the run's container (default).
+//   - local: in-process execution allowed, with an honest prompt block
+//     and a hard DSN fence refusing live-plane writes.
+type ExecutionMode int32
+
+const (
+	ExecutionMode_EXECUTION_MODE_UNSPECIFIED ExecutionMode = 0
+	ExecutionMode_EXECUTION_MODE_RUNTIME     ExecutionMode = 1
+	ExecutionMode_EXECUTION_MODE_LOCAL       ExecutionMode = 2
+)
+
+// Enum value maps for ExecutionMode.
+var (
+	ExecutionMode_name = map[int32]string{
+		0: "EXECUTION_MODE_UNSPECIFIED",
+		1: "EXECUTION_MODE_RUNTIME",
+		2: "EXECUTION_MODE_LOCAL",
+	}
+	ExecutionMode_value = map[string]int32{
+		"EXECUTION_MODE_UNSPECIFIED": 0,
+		"EXECUTION_MODE_RUNTIME":     1,
+		"EXECUTION_MODE_LOCAL":       2,
+	}
+)
+
+func (x ExecutionMode) Enum() *ExecutionMode {
+	p := new(ExecutionMode)
+	*p = x
+	return p
+}
+
+func (x ExecutionMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ExecutionMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_orchicon_api_v1_project_proto_enumTypes[2].Descriptor()
+}
+
+func (ExecutionMode) Type() protoreflect.EnumType {
+	return &file_orchicon_api_v1_project_proto_enumTypes[2]
+}
+
+func (x ExecutionMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ExecutionMode.Descriptor instead.
+func (ExecutionMode) EnumDescriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_project_proto_rawDescGZIP(), []int{2}
+}
+
 // GoalField is a single key-value pair describing a project goal.
 type GoalField struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -281,8 +335,15 @@ type Project struct {
 	// tree. Empty when the project is not git-backed (or origin is unknown).
 	// Used to derive deterministic per-branch PR links without a provider
 	// call (e.g. https://github.com/{owner}/{repo}/pull/new/{branch}).
-	RepoSlug      string      `protobuf:"bytes,13,opt,name=repo_slug,json=repoSlug,proto3" json:"repo_slug,omitempty"`
-	GitStrategy   GitStrategy `protobuf:"varint,14,opt,name=git_strategy,json=gitStrategy,proto3,enum=orchicon.api.v1.GitStrategy" json:"git_strategy,omitempty"`
+	RepoSlug    string      `protobuf:"bytes,13,opt,name=repo_slug,json=repoSlug,proto3" json:"repo_slug,omitempty"`
+	GitStrategy GitStrategy `protobuf:"varint,14,opt,name=git_strategy,json=gitStrategy,proto3,enum=orchicon.api.v1.GitStrategy" json:"git_strategy,omitempty"`
+	// default_runtime_image is the project-level default runtime container
+	// image tag. Empty = inherit tenant/base; copied onto work items at
+	// create time when the caller passes no runtime_image.
+	DefaultRuntimeImage string `protobuf:"bytes,15,opt,name=default_runtime_image,json=defaultRuntimeImage,proto3" json:"default_runtime_image,omitempty"`
+	// execution_mode selects always-container (runtime, default) vs
+	// in-process (local, with honest prompt + DSN fence).
+	ExecutionMode ExecutionMode `protobuf:"varint,16,opt,name=execution_mode,json=executionMode,proto3,enum=orchicon.api.v1.ExecutionMode" json:"execution_mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -415,6 +476,20 @@ func (x *Project) GetGitStrategy() GitStrategy {
 	return GitStrategy_GIT_STRATEGY_UNSPECIFIED
 }
 
+func (x *Project) GetDefaultRuntimeImage() string {
+	if x != nil {
+		return x.DefaultRuntimeImage
+	}
+	return ""
+}
+
+func (x *Project) GetExecutionMode() ExecutionMode {
+	if x != nil {
+		return x.ExecutionMode
+	}
+	return ExecutionMode_EXECUTION_MODE_UNSPECIFIED
+}
+
 // ContextFiles is a wrapper so UpdateProjectRequest can distinguish
 // "don't update" from "clear context files" via optional.
 type ContextFiles struct {
@@ -532,15 +607,19 @@ func (x *FileTreeEntry) GetChildren() []*FileTreeEntry {
 
 // Request/response messages for ProjectService (docs/07 §3.1).
 type CreateProjectRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	Slug          string                 `protobuf:"bytes,3,opt,name=slug,proto3" json:"slug,omitempty"`
-	Goals         []*GoalField           `protobuf:"bytes,4,rep,name=goals,proto3" json:"goals,omitempty"`                          // converted to JSON by the server
-	RequestId     string                 `protobuf:"bytes,5,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"` // idempotency key (docs/07 §5.5)
-	GitStrategy   GitStrategy            `protobuf:"varint,6,opt,name=git_strategy,json=gitStrategy,proto3,enum=orchicon.api.v1.GitStrategy" json:"git_strategy,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	TenantId    string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	Name        string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Slug        string                 `protobuf:"bytes,3,opt,name=slug,proto3" json:"slug,omitempty"`
+	Goals       []*GoalField           `protobuf:"bytes,4,rep,name=goals,proto3" json:"goals,omitempty"`                          // converted to JSON by the server
+	RequestId   string                 `protobuf:"bytes,5,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"` // idempotency key (docs/07 §5.5)
+	GitStrategy GitStrategy            `protobuf:"varint,6,opt,name=git_strategy,json=gitStrategy,proto3,enum=orchicon.api.v1.GitStrategy" json:"git_strategy,omitempty"`
+	// default_runtime_image seeds projects.default_runtime_image (empty =
+	// inherit tenant/base). execution_mode defaults to runtime.
+	DefaultRuntimeImage string        `protobuf:"bytes,7,opt,name=default_runtime_image,json=defaultRuntimeImage,proto3" json:"default_runtime_image,omitempty"`
+	ExecutionMode       ExecutionMode `protobuf:"varint,8,opt,name=execution_mode,json=executionMode,proto3,enum=orchicon.api.v1.ExecutionMode" json:"execution_mode,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *CreateProjectRequest) Reset() {
@@ -613,6 +692,20 @@ func (x *CreateProjectRequest) GetGitStrategy() GitStrategy {
 		return x.GitStrategy
 	}
 	return GitStrategy_GIT_STRATEGY_UNSPECIFIED
+}
+
+func (x *CreateProjectRequest) GetDefaultRuntimeImage() string {
+	if x != nil {
+		return x.DefaultRuntimeImage
+	}
+	return ""
+}
+
+func (x *CreateProjectRequest) GetExecutionMode() ExecutionMode {
+	if x != nil {
+		return x.ExecutionMode
+	}
+	return ExecutionMode_EXECUTION_MODE_UNSPECIFIED
 }
 
 type GetProjectRequest struct {
@@ -817,8 +910,12 @@ type UpdateProjectRequest struct {
 	// restriction).
 	MaxConcurrentRuns *int32       `protobuf:"varint,8,opt,name=max_concurrent_runs,json=maxConcurrentRuns,proto3,oneof" json:"max_concurrent_runs,omitempty"`
 	GitStrategy       *GitStrategy `protobuf:"varint,9,opt,name=git_strategy,json=gitStrategy,proto3,enum=orchicon.api.v1.GitStrategy,oneof" json:"git_strategy,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// default_runtime_image: set the project default (empty string clears it
+	// back to inherit); nil = unchanged (field-mask semantics).
+	DefaultRuntimeImage *string        `protobuf:"bytes,10,opt,name=default_runtime_image,json=defaultRuntimeImage,proto3,oneof" json:"default_runtime_image,omitempty"`
+	ExecutionMode       *ExecutionMode `protobuf:"varint,11,opt,name=execution_mode,json=executionMode,proto3,enum=orchicon.api.v1.ExecutionMode,oneof" json:"execution_mode,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *UpdateProjectRequest) Reset() {
@@ -912,6 +1009,20 @@ func (x *UpdateProjectRequest) GetGitStrategy() GitStrategy {
 		return *x.GitStrategy
 	}
 	return GitStrategy_GIT_STRATEGY_UNSPECIFIED
+}
+
+func (x *UpdateProjectRequest) GetDefaultRuntimeImage() string {
+	if x != nil && x.DefaultRuntimeImage != nil {
+		return *x.DefaultRuntimeImage
+	}
+	return ""
+}
+
+func (x *UpdateProjectRequest) GetExecutionMode() ExecutionMode {
+	if x != nil && x.ExecutionMode != nil {
+		return *x.ExecutionMode
+	}
+	return ExecutionMode_EXECUTION_MODE_UNSPECIFIED
 }
 
 type ListProjectFilesRequest struct {
@@ -1227,7 +1338,7 @@ const file_orchicon_api_v1_project_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value\"@\n" +
 	"\n" +
 	"GoalFields\x122\n" +
-	"\x06fields\x18\x01 \x03(\v2\x1a.orchicon.api.v1.GoalFieldR\x06fields\"\x90\x04\n" +
+	"\x06fields\x18\x01 \x03(\v2\x1a.orchicon.api.v1.GoalFieldR\x06fields\"\x8b\x05\n" +
 	"\aProject\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x12\n" +
@@ -1246,14 +1357,16 @@ const file_orchicon_api_v1_project_proto_rawDesc = "" +
 	"\rcontext_files\x18\v \x03(\tR\fcontextFiles\x12.\n" +
 	"\x13max_concurrent_runs\x18\f \x01(\x05R\x11maxConcurrentRuns\x12\x1b\n" +
 	"\trepo_slug\x18\r \x01(\tR\brepoSlug\x12?\n" +
-	"\fgit_strategy\x18\x0e \x01(\x0e2\x1c.orchicon.api.v1.GitStrategyR\vgitStrategy\"$\n" +
+	"\fgit_strategy\x18\x0e \x01(\x0e2\x1c.orchicon.api.v1.GitStrategyR\vgitStrategy\x122\n" +
+	"\x15default_runtime_image\x18\x0f \x01(\tR\x13defaultRuntimeImage\x12E\n" +
+	"\x0eexecution_mode\x18\x10 \x01(\x0e2\x1e.orchicon.api.v1.ExecutionModeR\rexecutionMode\"$\n" +
 	"\fContextFiles\x12\x14\n" +
 	"\x05files\x18\x01 \x03(\tR\x05files\"\x8a\x01\n" +
 	"\rFileTreeEntry\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x15\n" +
 	"\x06is_dir\x18\x03 \x01(\bR\x05isDir\x12:\n" +
-	"\bchildren\x18\x04 \x03(\v2\x1e.orchicon.api.v1.FileTreeEntryR\bchildren\"\xed\x01\n" +
+	"\bchildren\x18\x04 \x03(\v2\x1e.orchicon.api.v1.FileTreeEntryR\bchildren\"\xe8\x02\n" +
 	"\x14CreateProjectRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
@@ -1261,7 +1374,9 @@ const file_orchicon_api_v1_project_proto_rawDesc = "" +
 	"\x05goals\x18\x04 \x03(\v2\x1a.orchicon.api.v1.GoalFieldR\x05goals\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x05 \x01(\tR\trequestId\x12?\n" +
-	"\fgit_strategy\x18\x06 \x01(\x0e2\x1c.orchicon.api.v1.GitStrategyR\vgitStrategy\"#\n" +
+	"\fgit_strategy\x18\x06 \x01(\x0e2\x1c.orchicon.api.v1.GitStrategyR\vgitStrategy\x122\n" +
+	"\x15default_runtime_image\x18\a \x01(\tR\x13defaultRuntimeImage\x12E\n" +
+	"\x0eexecution_mode\x18\b \x01(\x0e2\x1e.orchicon.api.v1.ExecutionModeR\rexecutionMode\"#\n" +
 	"\x11GetProjectRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x86\x02\n" +
 	"\x13ListProjectsRequest\x12\x1b\n" +
@@ -1277,7 +1392,7 @@ const file_orchicon_api_v1_project_proto_rawDesc = "" +
 	"\a_status\"t\n" +
 	"\x14ListProjectsResponse\x124\n" +
 	"\bprojects\x18\x01 \x03(\v2\x18.orchicon.api.v1.ProjectR\bprojects\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\x80\x04\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xb2\x05\n" +
 	"\x14UpdateProjectRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\x04name\x18\x02 \x01(\tH\x00R\x04name\x88\x01\x01\x12\x17\n" +
@@ -1289,14 +1404,19 @@ const file_orchicon_api_v1_project_proto_rawDesc = "" +
 	"projectDir\x88\x01\x01\x12G\n" +
 	"\rcontext_files\x18\a \x01(\v2\x1d.orchicon.api.v1.ContextFilesH\x04R\fcontextFiles\x88\x01\x01\x123\n" +
 	"\x13max_concurrent_runs\x18\b \x01(\x05H\x05R\x11maxConcurrentRuns\x88\x01\x01\x12D\n" +
-	"\fgit_strategy\x18\t \x01(\x0e2\x1c.orchicon.api.v1.GitStrategyH\x06R\vgitStrategy\x88\x01\x01B\a\n" +
+	"\fgit_strategy\x18\t \x01(\x0e2\x1c.orchicon.api.v1.GitStrategyH\x06R\vgitStrategy\x88\x01\x01\x127\n" +
+	"\x15default_runtime_image\x18\n" +
+	" \x01(\tH\aR\x13defaultRuntimeImage\x88\x01\x01\x12J\n" +
+	"\x0eexecution_mode\x18\v \x01(\x0e2\x1e.orchicon.api.v1.ExecutionModeH\bR\rexecutionMode\x88\x01\x01B\a\n" +
 	"\x05_nameB\a\n" +
 	"\x05_slugB\b\n" +
 	"\x06_goalsB\x0e\n" +
 	"\f_project_dirB\x10\n" +
 	"\x0e_context_filesB\x16\n" +
 	"\x14_max_concurrent_runsB\x0f\n" +
-	"\r_git_strategy\"^\n" +
+	"\r_git_strategyB\x18\n" +
+	"\x16_default_runtime_imageB\x11\n" +
+	"\x0f_execution_mode\"^\n" +
 	"\x17ListProjectFilesRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
 	"\asubpath\x18\x02 \x01(\tR\asubpath\x12\x19\n" +
@@ -1331,7 +1451,11 @@ const file_orchicon_api_v1_project_proto_rawDesc = "" +
 	"\x18GIT_STRATEGY_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12GIT_STRATEGY_LOCAL\x10\x01\x12\x13\n" +
 	"\x0fGIT_STRATEGY_PR\x10\x02\x12\x15\n" +
-	"\x11GIT_STRATEGY_NONE\x10\x03B\xc6\x01\n" +
+	"\x11GIT_STRATEGY_NONE\x10\x03*e\n" +
+	"\rExecutionMode\x12\x1e\n" +
+	"\x1aEXECUTION_MODE_UNSPECIFIED\x10\x00\x12\x1a\n" +
+	"\x16EXECUTION_MODE_RUNTIME\x10\x01\x12\x18\n" +
+	"\x14EXECUTION_MODE_LOCAL\x10\x02B\xc6\x01\n" +
 	"\x13com.orchicon.api.v1B\fProjectProtoP\x01ZCgithub.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1;apiv1\xa2\x02\x03OAX\xaa\x02\x0fOrchicon.Api.V1\xca\x02\x0fOrchicon\\Api\\V1\xe2\x02\x1bOrchicon\\Api\\V1\\GPBMetadata\xea\x02\x11Orchicon::Api::V1b\x06proto3"
 
 var (
@@ -1346,49 +1470,53 @@ func file_orchicon_api_v1_project_proto_rawDescGZIP() []byte {
 	return file_orchicon_api_v1_project_proto_rawDescData
 }
 
-var file_orchicon_api_v1_project_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_orchicon_api_v1_project_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
 var file_orchicon_api_v1_project_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_orchicon_api_v1_project_proto_goTypes = []any{
 	(ProjectStatus)(0),               // 0: orchicon.api.v1.ProjectStatus
 	(GitStrategy)(0),                 // 1: orchicon.api.v1.GitStrategy
-	(*GoalField)(nil),                // 2: orchicon.api.v1.GoalField
-	(*GoalFields)(nil),               // 3: orchicon.api.v1.GoalFields
-	(*Project)(nil),                  // 4: orchicon.api.v1.Project
-	(*ContextFiles)(nil),             // 5: orchicon.api.v1.ContextFiles
-	(*FileTreeEntry)(nil),            // 6: orchicon.api.v1.FileTreeEntry
-	(*CreateProjectRequest)(nil),     // 7: orchicon.api.v1.CreateProjectRequest
-	(*GetProjectRequest)(nil),        // 8: orchicon.api.v1.GetProjectRequest
-	(*ListProjectsRequest)(nil),      // 9: orchicon.api.v1.ListProjectsRequest
-	(*ListProjectsResponse)(nil),     // 10: orchicon.api.v1.ListProjectsResponse
-	(*UpdateProjectRequest)(nil),     // 11: orchicon.api.v1.UpdateProjectRequest
-	(*ListProjectFilesRequest)(nil),  // 12: orchicon.api.v1.ListProjectFilesRequest
-	(*ListProjectFilesResponse)(nil), // 13: orchicon.api.v1.ListProjectFilesResponse
-	(*ArchiveProjectRequest)(nil),    // 14: orchicon.api.v1.ArchiveProjectRequest
-	(*PauseProjectRequest)(nil),      // 15: orchicon.api.v1.PauseProjectRequest
-	(*ProjectEvent)(nil),             // 16: orchicon.api.v1.ProjectEvent
-	(*timestamppb.Timestamp)(nil),    // 17: google.protobuf.Timestamp
+	(ExecutionMode)(0),               // 2: orchicon.api.v1.ExecutionMode
+	(*GoalField)(nil),                // 3: orchicon.api.v1.GoalField
+	(*GoalFields)(nil),               // 4: orchicon.api.v1.GoalFields
+	(*Project)(nil),                  // 5: orchicon.api.v1.Project
+	(*ContextFiles)(nil),             // 6: orchicon.api.v1.ContextFiles
+	(*FileTreeEntry)(nil),            // 7: orchicon.api.v1.FileTreeEntry
+	(*CreateProjectRequest)(nil),     // 8: orchicon.api.v1.CreateProjectRequest
+	(*GetProjectRequest)(nil),        // 9: orchicon.api.v1.GetProjectRequest
+	(*ListProjectsRequest)(nil),      // 10: orchicon.api.v1.ListProjectsRequest
+	(*ListProjectsResponse)(nil),     // 11: orchicon.api.v1.ListProjectsResponse
+	(*UpdateProjectRequest)(nil),     // 12: orchicon.api.v1.UpdateProjectRequest
+	(*ListProjectFilesRequest)(nil),  // 13: orchicon.api.v1.ListProjectFilesRequest
+	(*ListProjectFilesResponse)(nil), // 14: orchicon.api.v1.ListProjectFilesResponse
+	(*ArchiveProjectRequest)(nil),    // 15: orchicon.api.v1.ArchiveProjectRequest
+	(*PauseProjectRequest)(nil),      // 16: orchicon.api.v1.PauseProjectRequest
+	(*ProjectEvent)(nil),             // 17: orchicon.api.v1.ProjectEvent
+	(*timestamppb.Timestamp)(nil),    // 18: google.protobuf.Timestamp
 }
 var file_orchicon_api_v1_project_proto_depIdxs = []int32{
-	2,  // 0: orchicon.api.v1.GoalFields.fields:type_name -> orchicon.api.v1.GoalField
+	3,  // 0: orchicon.api.v1.GoalFields.fields:type_name -> orchicon.api.v1.GoalField
 	0,  // 1: orchicon.api.v1.Project.status:type_name -> orchicon.api.v1.ProjectStatus
-	17, // 2: orchicon.api.v1.Project.created_at:type_name -> google.protobuf.Timestamp
-	17, // 3: orchicon.api.v1.Project.updated_at:type_name -> google.protobuf.Timestamp
+	18, // 2: orchicon.api.v1.Project.created_at:type_name -> google.protobuf.Timestamp
+	18, // 3: orchicon.api.v1.Project.updated_at:type_name -> google.protobuf.Timestamp
 	1,  // 4: orchicon.api.v1.Project.git_strategy:type_name -> orchicon.api.v1.GitStrategy
-	6,  // 5: orchicon.api.v1.FileTreeEntry.children:type_name -> orchicon.api.v1.FileTreeEntry
-	2,  // 6: orchicon.api.v1.CreateProjectRequest.goals:type_name -> orchicon.api.v1.GoalField
-	1,  // 7: orchicon.api.v1.CreateProjectRequest.git_strategy:type_name -> orchicon.api.v1.GitStrategy
-	0,  // 8: orchicon.api.v1.ListProjectsRequest.status:type_name -> orchicon.api.v1.ProjectStatus
-	4,  // 9: orchicon.api.v1.ListProjectsResponse.projects:type_name -> orchicon.api.v1.Project
-	3,  // 10: orchicon.api.v1.UpdateProjectRequest.goals:type_name -> orchicon.api.v1.GoalFields
-	5,  // 11: orchicon.api.v1.UpdateProjectRequest.context_files:type_name -> orchicon.api.v1.ContextFiles
-	1,  // 12: orchicon.api.v1.UpdateProjectRequest.git_strategy:type_name -> orchicon.api.v1.GitStrategy
-	6,  // 13: orchicon.api.v1.ListProjectFilesResponse.entries:type_name -> orchicon.api.v1.FileTreeEntry
-	17, // 14: orchicon.api.v1.ProjectEvent.occurred_at:type_name -> google.protobuf.Timestamp
-	15, // [15:15] is the sub-list for method output_type
-	15, // [15:15] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	2,  // 5: orchicon.api.v1.Project.execution_mode:type_name -> orchicon.api.v1.ExecutionMode
+	7,  // 6: orchicon.api.v1.FileTreeEntry.children:type_name -> orchicon.api.v1.FileTreeEntry
+	3,  // 7: orchicon.api.v1.CreateProjectRequest.goals:type_name -> orchicon.api.v1.GoalField
+	1,  // 8: orchicon.api.v1.CreateProjectRequest.git_strategy:type_name -> orchicon.api.v1.GitStrategy
+	2,  // 9: orchicon.api.v1.CreateProjectRequest.execution_mode:type_name -> orchicon.api.v1.ExecutionMode
+	0,  // 10: orchicon.api.v1.ListProjectsRequest.status:type_name -> orchicon.api.v1.ProjectStatus
+	5,  // 11: orchicon.api.v1.ListProjectsResponse.projects:type_name -> orchicon.api.v1.Project
+	4,  // 12: orchicon.api.v1.UpdateProjectRequest.goals:type_name -> orchicon.api.v1.GoalFields
+	6,  // 13: orchicon.api.v1.UpdateProjectRequest.context_files:type_name -> orchicon.api.v1.ContextFiles
+	1,  // 14: orchicon.api.v1.UpdateProjectRequest.git_strategy:type_name -> orchicon.api.v1.GitStrategy
+	2,  // 15: orchicon.api.v1.UpdateProjectRequest.execution_mode:type_name -> orchicon.api.v1.ExecutionMode
+	7,  // 16: orchicon.api.v1.ListProjectFilesResponse.entries:type_name -> orchicon.api.v1.FileTreeEntry
+	18, // 17: orchicon.api.v1.ProjectEvent.occurred_at:type_name -> google.protobuf.Timestamp
+	18, // [18:18] is the sub-list for method output_type
+	18, // [18:18] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_project_proto_init() }
@@ -1403,7 +1531,7 @@ func file_orchicon_api_v1_project_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_project_proto_rawDesc), len(file_orchicon_api_v1_project_proto_rawDesc)),
-			NumEnums:      2,
+			NumEnums:      3,
 			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   0,

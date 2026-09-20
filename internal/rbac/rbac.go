@@ -56,6 +56,10 @@ func EntitlementFor(procedure string) Entitlement {
 // serviceToResource maps a Connect service name to the RBAC resource.
 func serviceToResource(service string) string {
 	switch service {
+	case "ProviderService":
+		return "provider"
+	case "MCPService":
+		return "mcp"
 	case "ProjectService":
 		return "project"
 	case "WorkItemService":

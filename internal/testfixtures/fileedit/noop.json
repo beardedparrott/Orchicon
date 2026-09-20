@@ -1,0 +1,11 @@
+{
+  "name": "noop-identical-content",
+  "path": "docs/same.md",
+  "before": "unchanged\ncontent\n",
+  "after": "unchanged\ncontent\n",
+  "expected_kind": "modify",
+  "expected_unified_diff": "",
+  "expected_binary": false,
+  "expected_truncated": false,
+  "expected_skip_entry": true
+}

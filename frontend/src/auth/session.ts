@@ -265,6 +265,12 @@ export function ensureSession(): Promise<SessionInfo> {
           const result = await refreshWithRetry();
           if (result.ok) {
             useSessionStore.getState().setSession(result.session);
+            // Arm the proactive refresh here too — the interactive-login
+            // path (startLocalLogin/startSignup) already arms it; the
+            // bootstrap path (every full page load) never did, so an
+            // actively-used tab drifted to a dead token at the 15-minute
+            // access-TTL boundary and mutations 401'd raw.
+            scheduleLoginProactiveRefresh(result.session);
             useSessionStore.getState().setLoading(false);
             return result.session;
           }
@@ -278,6 +284,10 @@ export function ensureSession(): Promise<SessionInfo> {
         // verify it against the server.
         const s = await fetchSession();
         useSessionStore.getState().setSession(s);
+        if (s.authenticated) {
+          // Same arming contract as the refresh-bootstrap path above.
+          scheduleLoginProactiveRefresh(s);
+        }
         useSessionStore.getState().setLoading(false);
         return s;
       } catch {

@@ -37,7 +37,7 @@ type PolicyVersionRow struct {
 	Scope         string
 	ScopeRef      string
 	Effect        string
-	RegoModule     string
+	RegoModule    string
 	Query         string
 	PublishedAt   *time.Time
 	CreatedAt     time.Time
@@ -105,7 +105,7 @@ func GetPolicy(ctx context.Context, tx pgx.Tx, tenantID, id string) (PolicyRow, 
 // ListPoliciesFilter scopes a list query to a tenant, optionally
 // filtered by decision point and status.
 type ListPoliciesFilter struct {
-	TenantID       string
+	TenantID      string
 	DecisionPoint string // empty = all
 	Status        string // empty = all
 	PageSize      int
@@ -351,7 +351,7 @@ type UpdatePolicyVersionFields struct {
 	Scope         *string
 	ScopeRef      *string
 	Effect        *string
-	RegoModule     *string
+	RegoModule    *string
 	Query         *string
 	VersionNote   *string
 }
@@ -508,7 +508,7 @@ func GetPolicyDecisionByTrace(ctx context.Context, tx pgx.Tx, tenantID, traceID 
 
 // ListPolicyDecisionsFilter scopes the decision log query.
 type ListPolicyDecisionsFilter struct {
-	TenantID       string
+	TenantID      string
 	DecisionPoint string
 	TargetType    string
 	TargetID      string

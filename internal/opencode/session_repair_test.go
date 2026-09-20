@@ -94,11 +94,11 @@ func TestCapToolOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	small := strings.Repeat("a", 512)
-	if got := capToolOutput(small); got != small {
+	if got := capToolOutput(small, "", "", ""); got != small {
 		t.Fatalf("under-cap output was altered")
 	}
 	big := strings.Repeat("b", 8192)
-	got := capToolOutput(big)
+	got := capToolOutput(big, "", "", "")
 	if len(got) >= len(big) {
 		t.Fatalf("over-cap output not truncated: in=%d out=%d", len(big), len(got))
 	}
@@ -110,7 +110,7 @@ func TestCapToolOutput(t *testing.T) {
 	if err := os.Setenv("ORCHICON_MAX_TOOL_OUTPUT_BYTES", "0"); err != nil {
 		t.Fatal(err)
 	}
-	if got := capToolOutput(big); got != big {
+	if got := capToolOutput(big, "", "", ""); got != big {
 		t.Fatalf("disabled cap altered output")
 	}
 }
@@ -119,6 +119,7 @@ func TestCapToolOutput(t *testing.T) {
 // state.output is capped in a copy (the live event is untouched); a part
 // without tool output passes through unchanged.
 func TestCapPartOutput(t *testing.T) {
+	a := &Adapter{}
 	if err := os.Setenv("ORCHICON_MAX_TOOL_OUTPUT_BYTES", "1024"); err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +131,7 @@ func TestCapPartOutput(t *testing.T) {
 			"output": big,
 		},
 	}
-	got := capPartOutput(part)
+	got := a.capPartOutput(part, "exec1", "")
 	cp := got.(map[string]any)
 	st := cp["state"].(map[string]any)
 	if out := st["output"].(string); len(out) >= len(big) {
@@ -142,7 +143,7 @@ func TestCapPartOutput(t *testing.T) {
 	}
 
 	// A non-tool part passes through.
-	if got := capPartOutput("not-a-map"); got != "not-a-map" {
+	if got := a.capPartOutput("not-a-map", "exec1", ""); got != "not-a-map" {
 		t.Fatalf("non-map part was altered")
 	}
 }

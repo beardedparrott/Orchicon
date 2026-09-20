@@ -11,8 +11,8 @@
 // metadata — the new layout makes the live chat the primary surface
 // and the context sidebar the secondary reference.
 import { createRoute, useNavigate } from "@tanstack/react-router";
-import { useQueryClient } from "@tanstack/react-query";
-import { Pause, Play, Square, Trash2, ArrowLeft } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { Pause, Play, Square, Trash2, ArrowLeft, PanelLeft, PanelLeftClose } from "lucide-react";
 
 import {
   useGetExecution,
@@ -27,9 +27,16 @@ import {
 import { executionKeys } from "@/api/executions";
 import { useGetUsage } from "@/api/aigateway";
 import { usageKeys } from "@/api/aigateway";
+import { useGetWorkItem } from "@/api/workItems";
+import { useDebouncedInvalidation } from "@/lib/useDebouncedInvalidation";
+import { executionStreamEnabled } from "@/lib/debouncedInvalidation";
+import type { StreamStatus } from "@/api/useStream";
 import { Markdown } from "@/components/markdown";
 import { SessionChatPane } from "@/components/executions/SessionChatPane";
+import { WorkerSummaryCard } from "@/components/executions/WorkerSummaryCard";
 import { ExecutionContextSidebar } from "@/components/executions/ExecutionContextSidebar";
+import { DiffSidebar, type DiffTab } from "@/components/diffs/DiffSidebar";
+import { usePersistentState } from "@/lib/diff/usePersistentState";
 import { PrLinkChip } from "@/components/work-items/work-item-card";
 import { worktreeTileItems } from "@/components/WorktreeTiles";
 import { Button } from "@/components/ui/button";
@@ -45,16 +52,46 @@ export const Route = createRoute({
 
 function ExecutionDetailPage() {
   const { id } = Route.useParams();
-  const qc = useQueryClient();
 
-  const { data: exec, isLoading, error } = useGetExecution(id);
+  // Stream status is mirrored into state so useGetExecution's pollMs can
+  // depend on it (the stream hook itself needs isTerminal from exec, which
+  // comes from useGetExecution — a cross-hook cycle broken by this state).
+  // Declared before useGetExecution so its pollMs option can read it.
+  const [streamStatus, setStreamStatus] = useState<StreamStatus>("idle");
+
+  const { data: exec, isLoading, error } = useGetExecution(id, {
+    // Pause the 1s detail poll while the event stream is healthy in this
+    // tab — the stream is the liveness source then, and the poll's HTTP
+    // slot is freed for the heavy transcript fetch. Resumes automatically
+    // when the stream drops (closed/error/reconnecting).
+    pollMs: streamStatus === "open" ? 0 : 1_000,
+  });
   const { data: usage } = useGetUsage({ executionId: id });
+  // The bound work item's declared context window (adapter parity): a
+  // native-engine execution's model may not appear in opencode model
+  // discovery (custom local providers), so the sidebar's window resolver
+  // gets an explicit fallback from the work item that scheduled this run.
+  const { data: workItem } = useGetWorkItem(exec?.taskId ?? "");
+  const declaredContextWindow =
+    workItem?.contextWindow && Number(workItem.contextWindow) > 0
+      ? Number(workItem.contextWindow)
+      : undefined;
   const pauseExec = usePauseExecution();
   const resumeExec = useResumeExecution();
   const cancelExec = useCancelExecution();
   const deleteExec = useDeleteExecution();
 
   const navigate = useNavigate();
+
+  // Diff sidebar state — persisted per execution so it survives navigation
+  // within the session (per acceptance criteria). Closed is the default for
+  // first-time users (usePersistentState reads the localStorage default).
+  const [diffOpen, setDiffOpen] = usePersistentState(`execution:${id}:open`, false);
+  const [diffTab, setDiffTab] = usePersistentState<DiffTab>(`execution:${id}:tab`, "diff");
+  const [diffPath, setDiffPath] = usePersistentState(`execution:${id}:selectedPath`, "");
+  const toggleDiffSidebar = useCallback(() => {
+    setDiffOpen((prev) => !prev);
+  }, [setDiffOpen]);
 
   // Live event stream (docs/10 §4). Subscribes to
   // StreamExecutionEvents filtered to this execution. onEvent
@@ -65,15 +102,32 @@ function ExecutionDetailPage() {
   // the usage records so the Context card + token bars go live too (their
   // query has no refetch interval of its own — it would otherwise sit
   // stale until a manual refresh).
+  //
+  // Invalidations are coalesced behind a trailing debounce so a
+  // token-frequency burst collapses to one batch (not N synchronous
+  // refetches that saturate the per-origin HTTP/1.1 connection budget),
+  // and the stream is gated by liveness so terminal executions never hold
+  // a connection.
+  const scheduleInvalidation = useDebouncedInvalidation([
+    executionKeys.detail(id),
+    executionKeys.session(id),
+    executionKeys.todos(id),
+    usageKeys.records(undefined, id),
+  ]);
+  // Liveness gate: terminal executions (7/8/9/10) never hold a stream
+  // connection. Computed from the fetched exec (may be undefined while
+  // loading — the gate then stays closed until data arrives).
+  const isTerminal =
+    exec?.status === 7 ||
+    exec?.status === 8 ||
+    exec?.status === 9 ||
+    exec?.status === 10;
   const { events, status } = useStreamExecutionEvents({
     executionId: id,
-    onEvent: () => {
-      qc.invalidateQueries({ queryKey: executionKeys.detail(id) });
-      qc.invalidateQueries({ queryKey: executionKeys.session(id) });
-      qc.invalidateQueries({ queryKey: executionKeys.todos(id) });
-      qc.invalidateQueries({ queryKey: usageKeys.records(undefined, id) });
-    },
+    enabled: executionStreamEnabled(id, isTerminal),
+    onEvent: scheduleInvalidation,
   });
+  useEffect(() => setStreamStatus(status), [status]);
 
   // Tier 2 pending approvals (docs/05 §7.1).
   const { data: pendingApprovals } = useListPendingApprovals(id);
@@ -96,9 +150,7 @@ function ExecutionDetailPage() {
 
   const isRunning = exec.status === 2 || exec.status === 3;
   const isPaused = exec.status === 6;
-  const isTerminal = exec.status === 7 || exec.status === 8 || exec.status === 9 || exec.status === 10;
   const isFailed = exec.status === 10 || exec.status === 8;
-
   return (
     <div className="space-y-4">
       {/* Compact top action bar — back to list, ID, status pill,
@@ -116,6 +168,22 @@ function ExecutionDetailPage() {
           >
             <ArrowLeft aria-hidden="true" className="h-4 w-4" />
             <span className="ml-1 hidden sm:inline">Back</span>
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={toggleDiffSidebar}
+            className="shrink-0"
+            aria-expanded={diffOpen}
+            aria-label="Toggle diff sidebar"
+            data-testid="execution-diff-sidebar-trigger"
+          >
+            {diffOpen ? (
+              <PanelLeftClose aria-hidden="true" className="h-4 w-4" />
+            ) : (
+              <PanelLeft aria-hidden="true" className="h-4 w-4" />
+            )}
+            <span className="ml-1 hidden sm:inline">Diff</span>
           </Button>
           <h1 className="text-base font-semibold tracking-tight sm:text-lg">
             Execution
@@ -175,6 +243,24 @@ function ExecutionDetailPage() {
           on the right. Stacks on screens narrower than lg. */}
       <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
         <div className="space-y-4 min-w-0">
+          {/* Left diff rail — slide-out file-edit + diff side-by-side view.
+              Rendered as a flex sibling so the live session chat stays fully
+              visible and interactive alongside it (chat column is flex-1
+              min-w-0). Distinct from ExecutionContextSidebar on the right. */}
+          <div className="flex gap-3 min-w-0">
+            <DiffSidebar
+              open={diffOpen}
+              onClose={() => setDiffOpen(false)}
+              ownerKind="execution"
+              ownerId={exec.id}
+              isLive={isRunning}
+              title="Diff"
+              tab={diffTab}
+              onTabChange={setDiffTab}
+              selectedPath={diffPath}
+              onSelectPath={setDiffPath}
+            />
+            <div className="flex flex-1 min-w-0 flex-col space-y-4">
           {/* Failure card: pulled out of the sidebar so the operator
               sees the error first when something breaks. */}
           {exec.errorMessage && (
@@ -196,6 +282,14 @@ function ExecutionDetailPage() {
             <ApprovalDialog approvals={pendingApprovals} />
           )}
 
+          {/* Worker summary — first-class at-a-glance verification that the
+              worker passed its ORCHICON WORKER SUMMARY. Rendered ABOVE the
+              session panes so it shows regardless of whether the event
+              stream or session transcript is present (a native-bridge run
+              has Conversation == [] and sparse events, so the summary would
+              otherwise sit unseen in Output). */}
+          <WorkerSummaryCard output={exec.output} />
+
           {/* Live chat — the primary surface (Ask-Orchicon-grade session
               view; user messages right, assistant left, composer that
               nudges the live session without creating work). */}
@@ -214,12 +308,15 @@ function ExecutionDetailPage() {
               structured metadata (worker, adapter, task, workflow)
               since that data doesn't fit naturally in the sidebar. */}
           <ExecutionContextFooter exec={exec} />
+            </div>
+          </div>
         </div>
 
         <ExecutionContextSidebar
           exec={exec}
           events={events}
           usage={usage ?? []}
+          contextWindow={declaredContextWindow}
           streamStatus={status}
           executionId={exec.id}
         />

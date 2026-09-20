@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -41,13 +42,21 @@ func runInstall(args []string, log *slog.Logger) error {
 		return fmt.Errorf("docker is required (start Docker first): %v: %s", err, strings.TrimSpace(string(out)))
 	}
 
-	// 1.5. The runtime adapter CLI (opencode) must be installed on the
-	// HOST — Orchicon never ships adapter CLIs in its images (licensing;
-	// Claude Code, for example, prohibits bundling). It is bind-mounted
-	// into the containers at runtime, so fail loudly here rather than
-	// letting every worker execution fail later with "binary not found".
-	if err := requireAdapterCLI("opencode"); err != nil {
-		return err
+	// 1.5. An external adapter CLI is OPTIONAL. Orchicon ships its own runtime
+	// engine, so this install is complete without one and nothing below needs
+	// opencode on the host. Report it when present, so the operator knows it will
+	// be used, and say nothing when it is absent — there is nothing to fix.
+	//
+	// THIS USED TO FAIL THE INSTALL. It called requireAdapterCLI("opencode") and
+	// returned the error, so `orchicon install` refused to proceed on any host
+	// without an external adapter — a hard prerequisite that stopped being true
+	// once the plane gained its own engine. The binary is still mounted from the
+	// host when present (below), which is what keeps the images redistributable,
+	// but that is a capability rather than a requirement.
+	if adapterCLIPresent("opencode") {
+		fmt.Println("orchicon: opencode found on this host — optional, and it will be used as a runtime when a model ref asks for it")
+	} else {
+		fmt.Println("orchicon: no external adapter CLI found — the built-in engine will run sessions (nothing to install)")
 	}
 
 	// 2. Ensure the published images are present (skip the pull when the
@@ -99,25 +108,102 @@ func runInstall(args []string, log *slog.Logger) error {
 		time.Sleep(2 * time.Second)
 	}
 
-	printInstallInfo(instance, name, dataVolume, socketDir, healthURL, runtimeImage)
+	// 6. Install/refresh the `orch` companion launcher on PATH (the thin
+	// remote TUI client). Non-fatal: a missing sibling binary or a clobber
+	// guard only warns.
+	installDir := env("ORCHICON_INSTALL_DIR", defaultInstallDir())
+	installOrchLauncher(installDir)
+
+	printInstallInfo(instance, name, dataVolume, socketDir, healthURL, runtimeImage, installDir)
 	return nil
 }
 
-// requireAdapterCLI verifies an adapter CLI is installed on the host
-// (on PATH or at ~/.<name>/bin/<name>). Orchicon never ships adapter CLIs
-// in its images — the operator installs them and they are bind-mounted
-// into the containers at runtime.
-func requireAdapterCLI(name string) error {
-	if _, err := exec.LookPath(name); err == nil {
-		return nil
+// defaultInstallDir returns the default launcher install directory
+// (~/.local/bin), mirroring scripts/install.sh.
+func defaultInstallDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ".local/bin"
 	}
-	if home, herr := os.UserHomeDir(); herr == nil {
-		cand := filepath.Join(home, "."+name, "bin", name)
-		if st, err := os.Stat(cand); err == nil && !st.IsDir() {
-			return nil
+	return filepath.Join(home, ".local", "bin")
+}
+
+// installOrchLauncher symlinks the sibling `orch` binary (next to the
+// running executable) into installDir. Idempotent: an existing symlink we
+// own is refreshed in place; a pre-existing regular file is warned + skipped
+// unless ORCHICON_FORCE_LAUNCHER=1 replaces it; a missing sibling binary is
+// a non-fatal warning.
+func installOrchLauncher(installDir string) {
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Printf("warning: could not locate the running executable to find the sibling orch binary: %v\n", err)
+		return
+	}
+	installOrchLauncherFrom(exe, installDir)
+}
+
+// installOrchLauncherFrom symlinks the sibling `orch` binary next to the
+// given executable path into installDir. Split out so tests can pass a
+// controlled executable path (os.Executable() is not redirectable).
+func installOrchLauncherFrom(exe, installDir string) {
+	sibling := filepath.Join(filepath.Dir(exe), "orch")
+	if runtime.GOOS == "windows" {
+		sibling += ".exe"
+	}
+	if _, err := os.Stat(sibling); err != nil {
+		fmt.Printf("warning: sibling orch binary not found next to %s — skipping launcher install (build with `make build` to produce bin/orch)\n", exe)
+		return
+	}
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		fmt.Printf("warning: could not create install dir %s: %v\n", installDir, err)
+		return
+	}
+	link := filepath.Join(installDir, "orch")
+	if runtime.GOOS == "windows" {
+		link += ".exe"
+	}
+	// Refresh an owned symlink in place.
+	if st, err := os.Lstat(link); err == nil && st.Mode()&os.ModeSymlink != 0 {
+		if target, err := os.Readlink(link); err == nil && target == sibling {
+			fmt.Printf("orch launcher already installed: %s\n", link)
+			return
 		}
+		_ = os.Remove(link)
+	} else if err == nil {
+		// A regular file (or other non-symlink) occupies the path.
+		if os.Getenv("ORCHICON_FORCE_LAUNCHER") != "1" {
+			fmt.Printf("warning: %s exists and is not an orch symlink — skipping (set ORCHICON_FORCE_LAUNCHER=1 to replace)\n", link)
+			return
+		}
+		fmt.Printf("replacing existing %s (ORCHICON_FORCE_LAUNCHER=1)\n", link)
+		_ = os.Remove(link)
 	}
-	return fmt.Errorf("%s is required but not installed on this host — Orchicon does not ship adapter CLIs in its images (install it first, e.g. for opencode: curl -fsSL https://opencode.ai/install | bash)", name)
+	if err := os.Symlink(sibling, link); err != nil {
+		fmt.Printf("warning: could not symlink orch launcher: %v\n", err)
+		return
+	}
+	fmt.Printf("orch launcher installed: %s → %s\n", link, sibling)
+}
+
+// adapterCLIPresent reports whether an adapter CLI is installed on the host
+// (on PATH or at ~/.<name>/bin/<name>).
+//
+// IT IS A PRESENCE CHECK, NOT A REQUIREMENT. It was requireAdapterCLI and returned
+// an error, which made `orchicon install` refuse to run on a host with no external
+// adapter — true when opencode was the only way to run anything, and false since the
+// plane gained its own engine. When the binary IS present it is still bind-mounted
+// into the containers (see the mount list above), so its absence costs the operator
+// only that capability, never the install.
+func adapterCLIPresent(name string) bool {
+	if _, err := exec.LookPath(name); err == nil {
+		return true
+	}
+	home, herr := os.UserHomeDir()
+	if herr != nil {
+		return false
+	}
+	st, err := os.Stat(filepath.Join(home, "."+name, "bin", name))
+	return err == nil && !st.IsDir()
 }
 
 // ensureInstallDaemon starts the runtime daemon if its socket is not
@@ -247,6 +333,17 @@ func ensureInstallContainer(instance, name, dataVolume, socketDir, image string)
 	return nil
 }
 
+// dirOnPath reports whether dir is on the current PATH (mirrors the
+// install.sh PATH hint check).
+func dirOnPath(dir string) bool {
+	for _, p := range filepath.SplitList(os.Getenv("PATH")) {
+		if p == dir {
+			return true
+		}
+	}
+	return false
+}
+
 // imagePresent reports whether a Docker image tag exists locally.
 func imagePresent(img string) bool {
 	out, err := exec.Command("docker", "image", "inspect", img).CombinedOutput()
@@ -269,7 +366,7 @@ func containerExists(name string) (bool, error) {
 	return strings.TrimSpace(string(out)) != "", nil
 }
 
-func printInstallInfo(instance, name, dataVolume, socketDir, healthURL, runtimeImage string) {
+func printInstallInfo(instance, name, dataVolume, socketDir, healthURL, runtimeImage, installDir string) {
 	controlPort := "8080"
 	grafanaPort := "3002"
 	if instance == "prod" {
@@ -292,6 +389,12 @@ func printInstallInfo(instance, name, dataVolume, socketDir, healthURL, runtimeI
 	fmt.Printf("  Runtime daemon (per-workflow runtime containers): running\n")
 	fmt.Printf("    socket: %s/runtime.sock   runtime image: %s\n", socketDir, runtimeImage)
 	fmt.Printf("  Data: volume %s (preserved across restarts)\n", dataVolume)
+	fmt.Println()
+	fmt.Printf("  orch launcher: %s/orch (remote TUI client)\n", installDir)
+	if !dirOnPath(installDir) {
+		fmt.Printf("  %s is not on your PATH — add it to your shell profile:\n", installDir)
+		fmt.Printf("    export PATH=\"$PATH:%s\"\n", installDir)
+	}
 	fmt.Println()
 	fmt.Println("  Per-workflow runtime containers are used automatically when a")
 	fmt.Println("  workflow runs. Open the UI, log in with the dev IdP, and create")

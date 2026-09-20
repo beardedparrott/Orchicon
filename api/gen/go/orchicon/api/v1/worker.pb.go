@@ -295,8 +295,7 @@ type WorkerVersion struct {
 	Version             int32                  `protobuf:"varint,3,opt,name=version,proto3" json:"version,omitempty"` // monotonic integer
 	VersionNote         string                 `protobuf:"bytes,4,opt,name=version_note,json=versionNote,proto3" json:"version_note,omitempty"`
 	Status              WorkerVersionStatus    `protobuf:"varint,5,opt,name=status,proto3,enum=orchicon.api.v1.WorkerVersionStatus" json:"status,omitempty"`
-	RuntimeRef          string                 `protobuf:"bytes,6,opt,name=runtime_ref,json=runtimeRef,proto3" json:"runtime_ref,omitempty"`                 // adapter kind, e.g. "opencode"
-	ModelRef            string                 `protobuf:"bytes,7,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`                       // exact provider + model id; no failover (docs/05 §11)
+	ModelRef            string                 `protobuf:"bytes,7,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`                       // canonical adapter/provider/model (ADR-0003): segment 1 = the dispatch adapter, segment 2 = the provider, and the remainder is the model id VERBATIM (internal slashes preserved). A legacy 1/2-segment ref is still readable and infers adapter "opencode". No failover (docs/05 §11).
 	SystemPrompt        string                 `protobuf:"bytes,8,opt,name=system_prompt,json=systemPrompt,proto3" json:"system_prompt,omitempty"`           // Markdown + template variables (docs/05 §11); rendered inline in the composite prompt
 	ContextSources      string                 `protobuf:"bytes,9,opt,name=context_sources,json=contextSources,proto3" json:"context_sources,omitempty"`     // JSON: ordered list of context source refs
 	Permissions         string                 `protobuf:"bytes,10,opt,name=permissions,proto3" json:"permissions,omitempty"`                                // JSON: capability allowlist (docs/05 §7)
@@ -312,10 +311,16 @@ type WorkerVersion struct {
 	// truth; `system_prompt` above is the composed view (Role + Skills +
 	// Behavior + AGENTS.md joined with `# Heading` separators) built server-side.
 	// When all four are empty, `system_prompt` holds the raw prompt (legacy).
-	Role          string `protobuf:"bytes,19,opt,name=role,proto3" json:"role,omitempty"`                         // the worker's identity/role statement
-	Skills        string `protobuf:"bytes,20,opt,name=skills,proto3" json:"skills,omitempty"`                     // bullet-style skill list
-	Behavior      string `protobuf:"bytes,21,opt,name=behavior,proto3" json:"behavior,omitempty"`                 // working-style guidance
-	AgentsMd      string `protobuf:"bytes,22,opt,name=agents_md,json=agentsMd,proto3" json:"agents_md,omitempty"` // project-level conventions (AGENTS.md)
+	Role     string `protobuf:"bytes,19,opt,name=role,proto3" json:"role,omitempty"`                         // the worker's identity/role statement
+	Skills   string `protobuf:"bytes,20,opt,name=skills,proto3" json:"skills,omitempty"`                     // bullet-style skill list
+	Behavior string `protobuf:"bytes,21,opt,name=behavior,proto3" json:"behavior,omitempty"`                 // working-style guidance
+	AgentsMd string `protobuf:"bytes,22,opt,name=agents_md,json=agentsMd,proto3" json:"agents_md,omitempty"` // project-level conventions (AGENTS.md)
+	// adapter is the COMPUTED per-worker adapter selection (ADR-0005 D2):
+	// the parsed adapter segment of model_ref (server-side, read-only —
+	// never stored separately; the ref is the only store). Legacy 1/2-segment
+	// refs report the inferred default kind ("opencode"); an empty ref
+	// reports empty. Dispatch resolves the bridge from this kind.
+	Adapter       string `protobuf:"bytes,23,opt,name=adapter,proto3" json:"adapter,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -383,13 +388,6 @@ func (x *WorkerVersion) GetStatus() WorkerVersionStatus {
 		return x.Status
 	}
 	return WorkerVersionStatus_WORKER_VERSION_STATUS_UNSPECIFIED
-}
-
-func (x *WorkerVersion) GetRuntimeRef() string {
-	if x != nil {
-		return x.RuntimeRef
-	}
-	return ""
 }
 
 func (x *WorkerVersion) GetModelRef() string {
@@ -504,6 +502,13 @@ func (x *WorkerVersion) GetAgentsMd() string {
 	return ""
 }
 
+func (x *WorkerVersion) GetAdapter() string {
+	if x != nil {
+		return x.Adapter
+	}
+	return ""
+}
+
 // EditLock is an explicit advisory lock on a Worker for the visual
 // editor (docs/07 §3.3). Prevents concurrent edits; other users see
 // "currently being edited by [user]" and can view read-only. Lock
@@ -598,15 +603,13 @@ const file_orchicon_api_v1_worker_proto_rawDesc = "" +
 	"created_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
 	"updated_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x19\n" +
-	"\brole_ref\x18\r \x01(\tR\aroleRef\"\xbb\x06\n" +
+	"\brole_ref\x18\r \x01(\tR\aroleRef\"\xba\x06\n" +
 	"\rWorkerVersion\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tworker_id\x18\x02 \x01(\tR\bworkerId\x12\x18\n" +
 	"\aversion\x18\x03 \x01(\x05R\aversion\x12!\n" +
 	"\fversion_note\x18\x04 \x01(\tR\vversionNote\x12<\n" +
-	"\x06status\x18\x05 \x01(\x0e2$.orchicon.api.v1.WorkerVersionStatusR\x06status\x12\x1f\n" +
-	"\vruntime_ref\x18\x06 \x01(\tR\n" +
-	"runtimeRef\x12\x1b\n" +
+	"\x06status\x18\x05 \x01(\x0e2$.orchicon.api.v1.WorkerVersionStatusR\x06status\x12\x1b\n" +
 	"\tmodel_ref\x18\a \x01(\tR\bmodelRef\x12#\n" +
 	"\rsystem_prompt\x18\b \x01(\tR\fsystemPrompt\x12'\n" +
 	"\x0fcontext_sources\x18\t \x01(\tR\x0econtextSources\x12 \n" +
@@ -625,7 +628,8 @@ const file_orchicon_api_v1_worker_proto_rawDesc = "" +
 	"\x04role\x18\x13 \x01(\tR\x04role\x12\x16\n" +
 	"\x06skills\x18\x14 \x01(\tR\x06skills\x12\x1a\n" +
 	"\bbehavior\x18\x15 \x01(\tR\bbehavior\x12\x1b\n" +
-	"\tagents_md\x18\x16 \x01(\tR\bagentsMd\"\xbc\x01\n" +
+	"\tagents_md\x18\x16 \x01(\tR\bagentsMd\x12\x18\n" +
+	"\aadapter\x18\x17 \x01(\tR\aadapterJ\x04\b\x06\x10\a\"\xbc\x01\n" +
 	"\bEditLock\x12\x1f\n" +
 	"\vresource_id\x18\x01 \x01(\tR\n" +
 	"resourceId\x12\x17\n" +

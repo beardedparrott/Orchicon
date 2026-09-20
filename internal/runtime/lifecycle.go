@@ -13,8 +13,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/secretcrypto"
 	"github.com/beardedparrott/orchicon/internal/workflow"
 	"github.com/jackc/pgx/v5"
@@ -23,6 +25,26 @@ import (
 // devTenantID mirrors the single-dev-tenant assumption used by the
 // reconcilers (docs/03 §1). Multi-tenant scheduling arrives with auth.
 const devTenantID = "tnt_dev"
+
+// opencodeAdapterKind is the adapter kind whose executions need the
+// in-container opencode serve. Kept as a local constant so the runtime
+// layer does not import the scheduler (and to keep the single seam the
+// adapter namespace lands on explicit).
+const opencodeAdapterKind = "opencode"
+
+// runtimeNoServeImage is the legacy sentinel RuntimeImage value the
+// WorkflowReconciler used to stamp on runs with no serve-dependent adapter
+// demand (pre-always-container arm gate). It is NEVER written on new runs:
+// imageForRun always persists the resolved image. The constant survives
+// only so EnsureServing/Adopt can recognize legacy rows (which have no
+// container to probe/adopt) without failing them. The daemon never sees it.
+const runtimeNoServeImage = "no-serve"
+
+// NoServeImage is the exported legacy sentinel; see runtimeNoServeImage.
+// New code must not stamp it — imageForRun always returns the resolved
+// image. It remains exported for the serve-skip comparisons on legacy rows
+// and for tests asserting it never collides with a real image tag.
+const NoServeImage = runtimeNoServeImage
 
 // worktreeDirName mirrors the WorktreeReconciler's namespace under
 // project_dir where per-run worktrees are provisioned
@@ -73,8 +95,10 @@ func isInsideWorkTree(ctx context.Context, projectDir string) bool {
 // reaped based on workflow run state, and gates execution dispatch on the
 // container's opencode serve being proven usable. It talks to the
 // host-side daemon through runtime.Client. A nil client (no daemon socket
-// — headless `orchicon serve`) makes every operation a no-op so the
-// control plane degrades to in-process execution.
+// — headless `orchicon serve`) makes EnsureServing/ReapForRun/Adopt no-ops
+// and makes EnsureForRun return a LOUD error: silent in-process degrade in
+// runtime mode is gone (local execution_mode is the explicit opt-out, and
+// the reconciler never calls EnsureForRun for it).
 type Lifecycle struct {
 	client *Client
 	pool   *db.Pool
@@ -191,7 +215,11 @@ func (l *Lifecycle) buildCreateRequest(ctx context.Context, run db.WorkflowRunRo
 	// projects run in place at the project dir. Mirror the reconciler's
 	// isInsideWorkTree decision so the baked base matches the eventual
 	// execution cwd.
-	req.ServeConfig = l.serveConfigFor(run.RuntimeImage, runWorktreeBase(ctx, projectDir, run.ID), run.ID, planeEnv)
+	demand := l.adapterDemandFor(ctx, run)
+	req.AdapterKinds = demand.Kinds()
+	if demand.Has(opencodeAdapterKind) {
+		req.ServeConfig = l.serveConfigFor(run.RuntimeImage, runWorktreeBase(ctx, projectDir, run.ID), run.ID, planeEnv)
+	}
 	// Secrets: decrypt per-work-item selection and inject as container env.
 	// KEK is plane-only — resolved once at server construction (env override
 	// or the per-instance data-dir key); the daemon blindly injects -e (same
@@ -424,6 +452,65 @@ func (l *Lifecycle) mintPlaneCredential(ctx context.Context, run db.WorkflowRunR
 // SQLSTATE 23503 (audit_events_actor_identity_fk).
 func automationIdentitySubject(runID string) string { return "run:" + runID }
 
+// adapterDemandFor resolves the run's BOOT PROFILE — the set of adapter
+// kinds its step workers resolve to — through the ONE shared demand-set
+// primitive (adapter.AdapterDemandSet, Task C). It gathers the same per-step
+// model refs the run-start gate gathers (scheduler.runNeedsServe: by worker
+// version NUMBER when the step pins one, else the latest staged version) and
+// folds every load failure to the CONSERVATIVE opencode demand, mirroring
+// the gate's rule: an unresolvable step behaves exactly as it did before the
+// gate became adapter-aware (gated + warmed), rather than silently skipping
+// the container an opencode step might need. The plane half and the host
+// half therefore feed the same primitive and can never disagree (AC 7).
+func (l *Lifecycle) adapterDemandFor(ctx context.Context, run db.WorkflowRunRow) adapter.DemandSet {
+	// adapter.AdapterDemandSet("") is the conservative default: a ref that
+	// yields no kind contributes the default adapter kind (opencode).
+	conservative := adapter.AdapterDemandSet("")
+	if run.WorkflowID == "" {
+		return conservative
+	}
+	ttx, err := l.pool.BeginTenantTx(ctx, run.TenantID)
+	if err != nil {
+		l.log.Warn("boot profile: begin tx failed — assuming adapter demand", "run", run.ID, "error", err)
+		return conservative
+	}
+	defer ttx.Rollback(ctx)
+	wv, err := db.GetWorkflowVersion(ctx, ttx.Tx, run.TenantID, run.WorkflowID, run.WorkflowVersion)
+	if err != nil {
+		l.log.Warn("boot profile: workflow version lookup failed", "run", run.ID, "workflow", run.WorkflowID, "error", err)
+		return conservative
+	}
+	steps, err := workflow.ParseSteps(wv.Steps)
+	if err != nil {
+		l.log.Warn("boot profile: workflow steps parse failed", "run", run.ID, "error", err)
+		return conservative
+	}
+	var refs []string
+	for _, s := range steps {
+		switch s.Kind {
+		case domain.StepKindTask, domain.StepKindApproval:
+		default:
+			continue // no worker ref → no adapter → no demand
+		}
+		if s.Ref == "" {
+			continue
+		}
+		var modelRef string
+		if s.WorkerVersion > 0 {
+			if v, verr := db.GetWorkerVersionByNumber(ctx, ttx.Tx, run.TenantID, s.Ref, s.WorkerVersion); verr == nil {
+				modelRef = v.ModelRef
+			}
+		}
+		if modelRef == "" {
+			if v, verr := db.GetLatestWorkerVersion(ctx, ttx.Tx, run.TenantID, s.Ref, true); verr == nil {
+				modelRef = v.ModelRef
+			}
+		}
+		refs = append(refs, modelRef)
+	}
+	return adapter.AdapterDemandSet(refs...)
+}
+
 // resolveWorkflowStepWorker returns the first PUBLISHED, role-bound worker
 // referenced by any step of the run's workflow version, or "" when the run
 // is not a workflow run or no step worker qualifies (deny-by-default).
@@ -463,12 +550,34 @@ func (l *Lifecycle) resolveWorkflowStepWorker(ctx context.Context, tx pgx.Tx, ru
 	return ""
 }
 
+// ServeDependent implements the scheduler.RuntimeLifecycle capability
+// probe: the only serve-dependent adapter kind today is "opencode" (the
+// in-container opencode serve). The native "orchicon" kind needs no serve
+// — but it DOES need the container (always-container): native sessions
+// exec inside the run's container, never in-process on the host. The
+// empty/legacy kinds resolve through the adapter package's default kind so
+// the predicate and the dispatcher cannot disagree.
+func (l *Lifecycle) ServeDependent(kind string) bool {
+	if kind == "" {
+		kind = opencodeAdapterKind
+	}
+	return kind == opencodeAdapterKind
+}
+
 // EnsureForRun creates the runtime container for a workflow run
 // (idempotent) with its opencode serve warmed at create time. Executions
 // dispatch into this container for the whole lifetime of the run.
+//
+// Always-container: a container is created for EVERY run regardless of
+// adapter kind — native sessions exec inside it (same mount/toolchain
+// path as opencode). The needsServe split lives in EnsureServing (the
+// readiness PROBE), not here. A nil client (headless `orchicon serve`
+// without Docker) is a LOUD error — the reconciler calls this only in
+// runtime mode; local mode is the explicit opt-out and never reaches here,
+// so silent host-exec degrade is impossible.
 func (l *Lifecycle) EnsureForRun(ctx context.Context, run db.WorkflowRunRow) error {
 	if l.client == nil {
-		return nil
+		return fmt.Errorf("runtime daemon not reachable — project is in runtime mode and no container can be created: switch the project to local execution_mode or start the runtime daemon")
 	}
 	if !l.client.Ready(ctx) {
 		return fmt.Errorf("runtime daemon not reachable")
@@ -496,7 +605,19 @@ func (l *Lifecycle) EnsureForRun(ctx context.Context, run db.WorkflowRunRow) err
 // execution for the run until this returns nil — a cold-starting serve that
 // would previously fail the first dispatch's 30s window now gets the full
 // window at run start, off the dispatch hot path.
-func (l *Lifecycle) EnsureServing(ctx context.Context, run db.WorkflowRunRow) error {
+//
+// Serve-less runs (needsServe=false — native-only, no opencode demand)
+// return nil immediately: EnsureForRun already created their container,
+// there is no serve to prove, and the reconciler must not gate or fail
+// them on one. Legacy no-serve rows (RuntimeImage == runtimeNoServeImage,
+// armed before always-container — no container exists) also return nil.
+func (l *Lifecycle) EnsureServing(ctx context.Context, run db.WorkflowRunRow, needsServe bool) error {
+	if run.RuntimeImage == runtimeNoServeImage {
+		return nil
+	}
+	if !needsServe {
+		return nil
+	}
 	if l.client == nil {
 		return nil
 	}
@@ -633,6 +754,9 @@ func (l *Lifecycle) Adopt(ctx context.Context) error {
 		return fmt.Errorf("adopt: list runs: %w", err)
 	}
 	for _, run := range runs {
+		if run.RuntimeImage == runtimeNoServeImage {
+			continue // legacy no-serve row: no container to adopt
+		}
 		if err := l.EnsureForRun(ctx, run); err != nil {
 			l.log.Warn("adopt: ensure runtime failed", "run", run.ID, "error", err)
 		}

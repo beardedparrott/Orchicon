@@ -43,6 +43,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/beardedparrott/orchicon/internal/adapter"
 )
 
 // defaultServeUsername is the HTTP basic-auth username opencode serves
@@ -163,6 +165,29 @@ func (c *SessionClient) Healthy(ctx context.Context) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
+// SessionExists reports whether THIS serve still holds a session id — the
+// re-attach probe for a follow-up. The transport's own store is the only
+// authority: its URL changes across plane restarts while its sessions
+// persist, so URL equality is not a usable proxy for continuity.
+//
+// Fail-closed: a blank id, an unreachable serve, a 404 (ErrSessionNotFound)
+// or any other error all report false, so a follow-up seeds a FRESH session
+// from the durable transcript rather than assuming a session it cannot see.
+func (c *SessionClient) SessionExists(ctx context.Context, sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/session/"+url.PathEscape(sessionID), nil, &out); err != nil {
+		return false
+	}
+	return true
+}
+
 // probeServe exercises the serve's full readiness surface: it must answer
 // /global/health AND accept a real session-create round-trip. A cold-starting
 // serve answers health before its session machinery is up, so health alone is
@@ -248,8 +273,16 @@ func (c *SessionClient) SendMessage(ctx context.Context, sessionID, system, mode
 	return c.SendMessageWithAttachments(ctx, sessionID, system, modelRef, text, nil)
 }
 
-// SendMessageWithAttachments appends a user message with optional image/file parts.
-// Text is always first; image parts are added as base64 data URLs for vision models.
+// SendMessageWithAttachments appends a user message with optional file
+// parts. The wire shape follows the serve's prompt_async schema (vendored
+// SDK ground truth:
+// @opencode-ai/sdk v2 types.gen.d.ts — TextPartInput {type:"text",
+// text} | FilePartInput {type:"file", mime, url, filename?}). There is
+// NO "image" part type and NO mimeType/data keys: images AND text files
+// alike go out as {type:"file", mime, url: dataURL, filename?} — a
+// single url carrying the data: URL (never data+url together). Text files
+// (.md/.txt) inline as data: URLs so the send is one POST with no
+// upload-path dependency (UploadAttachment untouched).
 func (c *SessionClient) SendMessageWithAttachments(ctx context.Context, sessionID, system, modelRef, text string, attachments []AttachmentPart) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -261,16 +294,18 @@ func (c *SessionClient) SendMessageWithAttachments(ctx context.Context, sessionI
 		if a.MimeType == "" {
 			a.MimeType = "application/octet-stream"
 		}
-		// Opencode serve accepts file/image parts as data URLs; use image type for images.
-		if len(a.Data) > 0 {
-			b64 := base64.StdEncoding.EncodeToString(a.Data)
-			dataURL := "data:" + a.MimeType + ";base64," + b64
-			if isImageMime(a.MimeType) {
-				parts = append(parts, map[string]any{"type": "image", "mimeType": a.MimeType, "data": b64, "url": dataURL})
-			} else {
-				parts = append(parts, map[string]any{"type": "file", "mimeType": a.MimeType, "url": dataURL, "filename": a.Name})
-			}
+		if len(a.Data) == 0 {
+			continue
 		}
+		// FilePartInput: {type:"file", mime, url, filename?}. The url
+			// carries the data: URL (images for vision, text files
+			// inline); filename is set when known.
+		dataURL := "data:" + a.MimeType + ";base64," + base64.StdEncoding.EncodeToString(a.Data)
+		part := map[string]any{"type": "file", "mime": a.MimeType, "url": dataURL}
+		if a.Name != "" {
+			part["filename"] = a.Name
+		}
+		parts = append(parts, part)
 	}
 	if len(parts) == 0 {
 		parts = append(parts, map[string]any{"type": "text", "text": text})
@@ -282,7 +317,10 @@ func (c *SessionClient) SendMessageWithAttachments(ctx context.Context, sessionI
 		body["system"] = system
 	}
 	if modelRef != "" {
-		if provider, model, ok := splitModelRef(modelRef); ok {
+		// Left-greedy split: segment 1 = adapter (consumed by the control
+		// plane, dropped before the serve call), segment 2 = provider,
+		// remainder = model verbatim (slashes preserved — ADR-0003).
+		if provider, model, ok := adapter.SplitForServe(modelRef); ok {
 			body["model"] = map[string]any{"providerID": provider, "modelID": model}
 		}
 	}
@@ -297,10 +335,6 @@ type AttachmentPart struct {
 	Name     string
 	MimeType string
 	Data     []byte
-}
-
-func isImageMime(m string) bool {
-	return len(m) >= 6 && m[:6] == "image/"
 }
 
 // Abort cancels the session's running turn. The session (and its history)
@@ -325,6 +359,8 @@ func (c *SessionClient) Abort(ctx context.Context, sessionID string) error {
 //
 // The opencode summarize contract uses camelCase keys: `providerID`,
 // `modelID` (unlike SendMessage's snake_case `provider_id`).
+// (the adapter segment is consumed by the control plane and dropped
+// before the serve call — ADR-0003).
 func (c *SessionClient) Compact(ctx context.Context, sessionID, providerID, modelID string) error {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
@@ -523,6 +559,52 @@ func LegacyEventFromBus(evt BusEvent) (map[string]any, bool) {
 	return nil, false
 }
 
+// ToolStartFromBus reports the tool name when a bus event is the START of a
+// tool call — a tool part whose state is still in flight (status "running",
+// or any status other than a completed/error resolution). This is the
+// tool-start signal the in-flight tool-hang watchdog arms on.
+//
+// It deliberately sits OUTSIDE LegacyEventFromBus, which only maps COMPLETED
+// tool parts (matching run.ts: a tool is emitted only when
+// completed/errored). A hung tool — one stuck at "running" forever — never
+// produces a completed part, so the legacy mapping alone could never arm the
+// watchdog that is supposed to interrupt exactly that hang (D6 review
+// finding). Callers observe the start from the RAW bus event BEFORE the
+// completed/error filter and arm the hang window; the resolution (the
+// completed/error legacy event) disarms it.
+//
+// Returns ("", false) when the event is not a tool-start (non-tool parts,
+// tool parts already resolved, or events that carry no tool name).
+func ToolStartFromBus(evt BusEvent) (tool string, ok bool) {
+	props := evt.Properties
+	if evt.Type != "message.part.updated" {
+		return "", false
+	}
+	part, _ := props["part"].(map[string]any)
+	if part == nil {
+		return "", false
+	}
+	ptype, _ := part["type"].(string)
+	if ptype != "tool" {
+		return "", false
+	}
+	tool, _ = part["tool"].(string)
+	if tool == "" {
+		return "", false
+	}
+	// A tool part with a completed/error status is a RESOLUTION, not a start —
+	// the start event for that call (if any) already fired earlier. A part
+	// without a status (or with "running"/"pending") is an in-flight start.
+	status := ""
+	if state, ok := part["state"].(map[string]any); ok {
+		status, _ = state["status"].(string)
+	}
+	if status == "completed" || status == "error" {
+		return "", false
+	}
+	return tool, true
+}
+
 // TokenDeltaInfoFromBus reports whether a bus event is a mid-generation token
 // delta and returns the incremental text plus the part kind it belongs to
 // ("text", "reasoning", or "" when the event does not carry a kind — callers
@@ -646,7 +728,10 @@ func (c *SessionClient) do(ctx context.Context, method, path string, body any) e
 		if resp.StatusCode == http.StatusNotFound {
 			return ErrSessionNotFound
 		}
-		return fmt.Errorf("opencode serve %s %s: http %d", method, path, resp.StatusCode)
+		// Surface the serve's validation message (truncated): a bare
+			// "http 400" hides which part key the serve rejected.
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return fmt.Errorf("opencode serve %s %s: http %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 	return nil
 }
@@ -672,14 +757,4 @@ func (c *SessionClient) doJSON(ctx context.Context, method, path string, body, o
 		}
 	}
 	return nil
-}
-
-// splitModelRef splits "provider/model" into (provider, model). Returns
-// ok=false when there is no "/" separator.
-func splitModelRef(ref string) (provider, model string, ok bool) {
-	ref = strings.TrimSpace(ref)
-	if i := strings.IndexByte(ref, '/'); i > 0 {
-		return ref[:i], ref[i+1:], true
-	}
-	return "", "", false
 }

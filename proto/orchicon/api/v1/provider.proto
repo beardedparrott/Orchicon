@@ -1,0 +1,126 @@
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+// ProviderEntry is one merged provider row (ADR-0006 D4): built-ins render
+// read-only (is_custom=false); customs are operator-editable. Plaintext
+// tokens NEVER appear here — only has_token_stored + the secret name.
+message ProviderEntry {
+  string id = 1;
+  string display_name = 2;
+  string kind = 3;
+  string base_url = 4;
+  string base_url_override = 5;
+  bool enabled = 6;
+  string auth_mode = 7;
+  bool is_custom = 8;
+  bool read_only = 9;
+  bool has_token_stored = 10;
+  string token_secret_name = 11;
+  int64 num_ctx_default = 12;
+  // Hidden model ids (visibility toggles). Empty for customs that never
+  // hid anything.
+  repeated string hidden_models = 13;
+  // Operator-added manual model entries (custom providers). Present so the
+  // UI can render existing entries when editing; the write path uses
+  // ProviderUpdateSettingsRequest.manual_models.
+  repeated ProviderManualModel manual_models = 14;
+}
+
+message ProviderListRequest {}
+message ProviderListResponse {
+  repeated ProviderEntry providers = 1;
+}
+
+message ProviderUpdateSettingsRequest {
+  string provider_id = 1;
+  optional bool enabled = 2;
+  optional string base_url_override = 3;
+  repeated string hidden_models = 4;
+  optional int64 num_ctx_default = 5;
+  // Manual model entries (custom providers only): operator-added model ids
+  // with optional context/max-output/reasoning hints. Append mode merges by
+  // id (entry wins); replace_manual_models=true swaps the whole list.
+  repeated ProviderManualModel manual_models = 6;
+  optional bool replace_manual_models = 7;
+}
+
+// ProviderManualModel mirrors orchicon.ModelInfo hint fields (ADR-0006 D1).
+message ProviderManualModel {
+  string id = 1;
+  int64 context = 2;
+  int64 max_output = 3;
+  bool reasoning = 4;
+}
+message ProviderUpdateSettingsResponse {
+  ProviderEntry provider = 1;
+}
+
+message ProviderCreateCustomRequest {
+  string display_name = 1;
+  string ref_id = 2;
+  string base_url = 3;
+  string auth_mode = 4;
+}
+message ProviderCreateCustomResponse {
+  ProviderEntry provider = 1;
+}
+
+message ProviderUpdateCustomRequest {
+  string ref_id = 1;
+  optional string display_name = 2;
+  optional string base_url = 3;
+  optional string auth_mode = 4;
+}
+message ProviderUpdateCustomResponse {
+  ProviderEntry provider = 1;
+}
+
+message ProviderDeleteCustomRequest {
+  string ref_id = 1;
+}
+message ProviderReferencingWorker {
+  string worker_id = 1;
+  string worker_name = 2;
+  string model_ref = 3;
+}
+message ProviderDeleteCustomResponse {
+  repeated ProviderReferencingWorker referencing_workers = 1;
+}
+
+message ProviderSetTokenRequest {
+  string provider_id = 1;
+  string token = 2;
+}
+message ProviderSetTokenResponse {
+  string secret_name = 1;
+}
+
+message ProviderClearTokenRequest {
+  string provider_id = 1;
+}
+message ProviderClearTokenResponse {}
+
+// ProviderModel is one sourcing-view row (ADR-0006 D4): source
+// distinguishes catalog|probe|manual; warn_no_context is the WARN
+// annotation for selectable models lacking a context hint.
+message ProviderModel {
+  string id = 1;
+  int64 context = 2;
+  int64 max_output = 3;
+  bool reasoning = 4;
+  string source = 5;
+  bool warn_no_context = 6;
+  bool visible = 7;
+}
+
+message ProviderModelsRequest {
+  string provider_id = 1;
+}
+message ProviderModelsResponse {
+  repeated ProviderModel models = 1;
+  bool degraded = 2;
+  // false when the provider is disabled (settings view only — the pickers
+  // consume enabled providers only via the loader/merged view).
+  bool enabled = 3;
+}

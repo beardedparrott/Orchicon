@@ -47,7 +47,34 @@ type ProjectRow struct {
 
 	// GitStrategy controls how worktrees materialize: local=push branch only, pr=push+PR, none=ephemeral. Values: local, pr, none.
 	GitStrategy string
+
+	// DefaultRuntimeImage is the project-level default runtime container
+	// image tag (always-container runtime). NULL (nil) = inherit
+	// tenant/base. Copied onto work items at create time when the caller
+	// passes an empty runtime_image; explicit per-item values win, and
+	// updating the default never retro-mutates existing items.
+	DefaultRuntimeImage *string
+
+	// ExecutionMode controls where native executions run: "runtime"
+	// (default) = always-container, "local" = in-process allowed with an
+	// honest prompt block + a hard DSN fence.
+	ExecutionMode string
 }
+
+// Execution modes for ProjectRow.ExecutionMode (always-container runtime):
+//   - ExecutionModeRuntime (default): executions run inside the run's
+//     container; runtime mode fails LOUD without a daemon.
+//   - ExecutionModeLocal: in-process execution allowed; the prompt renders
+//     an honest local block and the dispatcher enforces the DSN fence.
+const (
+	ExecutionModeRuntime = "runtime"
+	ExecutionModeLocal   = "local"
+)
+
+// BaseRuntimeImage is the fallback image of the resolve chain
+// (explicit work-item image -> project default -> base). It is never
+// empty and never the no-serve sentinel.
+const BaseRuntimeImage = "orchicon-runtime:base"
 
 // ErrNotFound is returned when a single-row query matches no rows. The
 // data-access layer treats this as a not-found condition; the API layer
@@ -70,21 +97,25 @@ var ErrVersionConflict = errors.New("db: version conflict")
 // and RLS is the backstop (docs/09 §8.5).
 func CreateProject(ctx context.Context, tx pgx.Tx, p ProjectRow) (ProjectRow, error) {
 	const q = `INSERT INTO projects
-		(id, tenant_id, name, slug, status, goals, project_dir, max_concurrent_runs, git_strategy)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		(id, tenant_id, name, slug, status, goals, project_dir, max_concurrent_runs, git_strategy, default_runtime_image, execution_mode)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at,
-			project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy`
+			project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy, default_runtime_image, execution_mode`
 	row := p
 	if row.GitStrategy == "" {
 		row.GitStrategy = "local"
 	}
 	p.GitStrategy = row.GitStrategy
+	if row.ExecutionMode == "" {
+		row.ExecutionMode = ExecutionModeRuntime
+	}
+	p.ExecutionMode = row.ExecutionMode
 	err := tx.QueryRow(ctx, q,
-		p.ID, p.TenantID, p.Name, p.Slug, p.Status, p.Goals, p.ProjectDir, p.MaxConcurrentRuns, p.GitStrategy,
+		p.ID, p.TenantID, p.Name, p.Slug, p.Status, p.Goals, p.ProjectDir, p.MaxConcurrentRuns, p.GitStrategy, p.DefaultRuntimeImage, p.ExecutionMode,
 	).Scan(
 		&row.ID, &row.TenantID, &row.Name, &row.Slug, &row.Status, &row.Goals,
 		&row.Version, &row.CreatedAt, &row.UpdatedAt,
-		&row.ProjectDir, &row.ContextFiles, &row.MaxConcurrentRuns, &row.GitWorkTree, &row.GitDetectedAt, &row.RepoSlug, &row.GitStrategy,
+		&row.ProjectDir, &row.ContextFiles, &row.MaxConcurrentRuns, &row.GitWorkTree, &row.GitDetectedAt, &row.RepoSlug, &row.GitStrategy, &row.DefaultRuntimeImage, &row.ExecutionMode,
 	)
 	if err != nil {
 		return ProjectRow{}, fmt.Errorf("db: create project: %w", err)
@@ -97,13 +128,13 @@ func CreateProject(ctx context.Context, tx pgx.Tx, p ProjectRow) (ProjectRow, er
 // isolation layer; RLS is the backstop (docs/09 §8.5).
 func GetProject(ctx context.Context, tx pgx.Tx, tenantID, id string) (ProjectRow, error) {
 	const q = `SELECT id, tenant_id, name, slug, status, goals, version,
-		created_at, updated_at, project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy
+		created_at, updated_at, project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy, default_runtime_image, execution_mode
 		FROM projects WHERE id = $1 AND tenant_id = $2`
 	var p ProjectRow
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
-		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy,
+		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy, &p.DefaultRuntimeImage, &p.ExecutionMode,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ProjectRow{}, ErrNotFound
@@ -136,11 +167,6 @@ func ListProjects(ctx context.Context, tx pgx.Tx, f ListProjectsFilter) ([]Proje
 	args := []any{f.TenantID}
 	where := `tenant_id = $1`
 	idx := 2
-	if f.AfterID != "" {
-		where += fmt.Sprintf(` AND id > $%d`, idx)
-		args = append(args, f.AfterID)
-		idx++
-	}
 	if f.Search != "" {
 		where += fmt.Sprintf(` AND (name ILIKE $%d OR slug ILIKE $%d)`, idx, idx)
 		args = append(args, "%"+f.Search+"%")
@@ -164,11 +190,31 @@ func ListProjects(ctx context.Context, tx pgx.Tx, f ListProjectsFilter) ([]Proje
 	if f.SortOrder == "desc" {
 		sortOrder = "DESC"
 	}
+	// THE CURSOR MUST AGREE WITH THE ORDER. It used to be a bare `id > $n` while the default ordering
+	// is (created_at ASC, ...) — two different orders, so page 2 could both repeat and skip rows. That
+	// is not theoretical here: the live tenant has 499 project pairs whose id order DISAGREES with
+	// their created_at order, because an id is minted when a row is CREATED while created_at is
+	// assigned by the database, and a bulk import or a restored dump reorders the two.
+	//
+	// The cursor is now a keyset on the SAME (sort key, id) tuple the ORDER BY uses — the pattern
+	// ListExecutions and ListWorkItems already use — so page N+1 continues exactly where page N
+	// stopped, whatever the direction and whichever column is the sort key.
+	if f.AfterID != "" {
+		cmp := ">"
+		if sortOrder == "DESC" {
+			cmp = "<"
+		}
+		where += fmt.Sprintf(` AND (%s, id) %s (
+			SELECT p2.%s, p2.id FROM projects p2
+			WHERE p2.tenant_id = $1 AND p2.id = $%d)`, sortBy, cmp, sortBy, idx)
+		args = append(args, f.AfterID)
+		idx++
+	}
 	q := fmt.Sprintf(`SELECT id, tenant_id, name, slug, status, goals, version,
-		created_at, updated_at, project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy
+		created_at, updated_at, project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy, default_runtime_image, execution_mode
 		FROM projects
 		WHERE %s
-		ORDER BY %s %s LIMIT $%d`, where, sortBy, sortOrder, idx)
+		ORDER BY %s %s, id %s LIMIT $%d`, where, sortBy, sortOrder, sortOrder, idx)
 	args = append(args, f.PageSize)
 	rows, err := tx.Query(ctx, q, args...)
 	if err != nil {
@@ -180,7 +226,7 @@ func ListProjects(ctx context.Context, tx pgx.Tx, f ListProjectsFilter) ([]Proje
 		var p ProjectRow
 		if err := rows.Scan(&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status,
 			&p.Goals, &p.Version, &p.CreatedAt, &p.UpdatedAt,
-			&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy); err != nil {
+			&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy, &p.DefaultRuntimeImage, &p.ExecutionMode); err != nil {
 			return nil, fmt.Errorf("db: scan project: %w", err)
 		}
 		out = append(out, p)
@@ -194,13 +240,15 @@ func ListProjects(ctx context.Context, tx pgx.Tx, f ListProjectsFilter) ([]Proje
 // fields are written; nil fields are left untouched (field-mask
 // semantics — docs/07 §5.4).
 type UpdateProjectFields struct {
-	Name              *string
-	Slug              *string
-	Goals             *[]byte
-	ProjectDir        *string
-	ContextFiles      *[]byte
-	MaxConcurrentRuns *int
-	GitStrategy       *string
+	Name                *string
+	Slug                *string
+	Goals               *[]byte
+	ProjectDir          *string
+	ContextFiles        *[]byte
+	MaxConcurrentRuns   *int
+	GitStrategy         *string
+	DefaultRuntimeImage *string
+	ExecutionMode       *string
 }
 
 // UpdateProject applies a partial update with optimistic concurrency.
@@ -251,13 +299,23 @@ func UpdateProject(ctx context.Context, tx pgx.Tx, tenantID, id string, expected
 		args = append(args, *f.GitStrategy)
 		setIdx++
 	}
+	if f.DefaultRuntimeImage != nil {
+		q += fmt.Sprintf(`, default_runtime_image = $%d`, setIdx)
+		args = append(args, *f.DefaultRuntimeImage)
+		setIdx++
+	}
+	if f.ExecutionMode != nil {
+		q += fmt.Sprintf(`, execution_mode = $%d`, setIdx)
+		args = append(args, *f.ExecutionMode)
+		setIdx++
+	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
-	q += ` RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at, project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy`
+	q += ` RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at, project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy, default_runtime_image, execution_mode`
 	var p ProjectRow
 	err := tx.QueryRow(ctx, q, args...).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
-		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy,
+		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy, &p.DefaultRuntimeImage, &p.ExecutionMode,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ProjectRow{}, ErrNotFound
@@ -278,12 +336,12 @@ func UpdateProjectGitDetection(ctx context.Context, tx pgx.Tx, tenantID, id stri
 	q := `UPDATE projects SET updated_at = now(), version = version + 1,
 		git_work_tree = $4, git_detected_at = now(), repo_slug = $5
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
-		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at, project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy`
+		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at, project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy, default_runtime_image, execution_mode`
 	var p ProjectRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, isWorkTree, repoSlug).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
-		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy,
+		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy, &p.DefaultRuntimeImage, &p.ExecutionMode,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ProjectRow{}, ErrNotFound
@@ -294,49 +352,84 @@ func UpdateProjectGitDetection(ctx context.Context, tx pgx.Tx, tenantID, id stri
 	return p, nil
 }
 
-// DeleteProject hard-deletes a project and cascades to all owned entities
-// (work items, workflows, workflow versions, workflow runs, step runs).
-// The tenant_id is injected into the WHERE clause for isolation.
+// DeleteProject removes a project and EVERYTHING that belongs to it.
+//
+// THE CASCADE IS THE CONTRACT, and it used to be incomplete in a way that reached production and
+// stayed there. The work hierarchy was covered (step runs, runs, versions, workflows, dependencies,
+// work items) but the TELEMETRY tables were not — and none of them has an FK to projects, so nothing
+// blocked the delete and nothing pointed at the leftovers afterwards. Measured on the live dev
+// tenant after every project had been removed: 1264 orphaned worker_executions, 150 orphaned
+// recovery_executions, 9959 orphaned usage_records and 132 orphaned recurring_run_history rows, all
+// carrying a project_id that no longer existed. Deleting a project in the GUI left all of it behind;
+// the DB-backed tests, which create and drop projects constantly, left a large share of it.
+//
+// Nine tables carry a project_id and only ONE of them (project_mcp_servers) declares a foreign key,
+// which is exactly why this has to be explicit: a missing delete is silent rather than an error.
+//
+// ORDER MATTERS, leaves first, so nothing is left mid-cascade if a later statement fails and so the
+// row counts a caller observes step down rather than flicker:
+//
+//  1. execution_session_parts  — children of the executions (they DO cascade, but deleting them
+//     first keeps this function correct even if that FK is ever changed)
+//  2. usage_records            — reference executions AND the project
+//  3. worker_executions        — the project's executions
+//  4. continuation_plans       — children of the recoveries
+//  5. recovery_step_runs       — children of the recoveries
+//  6. recovery_executions      — the project's recoveries
+//  7. recurring_run_history    — references the runs (deleted below) and the work items
+//  8. workflow_step_runs       — children of the runs
+//  9. workflow_runs
+//
+// 10. workflow_versions        — children of the workflows
+// 11. workflows
+// 12. work_item_attachments    — children of the work items
+// 13. work_item_dependencies
+// 14. work_items
+// 15. project_mcp_servers      — the one real FK to projects
+// 16. the project
+//
+// Every statement is scoped by BOTH tenant_id and the project, so a cross-tenant id can never match
+// (defence in depth behind row-level security).
 func DeleteProject(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
-	// Cascade: delete step runs for all workflow runs in this project
-	if _, err := tx.Exec(ctx,
-		`DELETE FROM workflow_step_runs
-		 WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE tenant_id = $1 AND project_id = $2)`,
-		tenantID, id); err != nil {
-		return fmt.Errorf("db: delete project cascade step runs: %w", err)
+	// Each entry is one cascade step; the loop keeps the order auditable in one place rather than
+	// spread over 60 lines of near-identical statements, where a missing one is invisible.
+	steps := []struct {
+		what string
+		q    string
+	}{
+		{"execution session parts", `DELETE FROM execution_session_parts
+			WHERE execution_id IN (SELECT id FROM worker_executions WHERE tenant_id = $1 AND project_id = $2)`},
+		{"usage records", `DELETE FROM usage_records WHERE tenant_id = $1 AND project_id = $2`},
+		{"worker executions", `DELETE FROM worker_executions WHERE tenant_id = $1 AND project_id = $2`},
+		{"continuation plans", `DELETE FROM continuation_plans
+			WHERE recovery_id IN (SELECT id FROM recovery_executions WHERE tenant_id = $1 AND project_id = $2)`},
+		{"recovery step runs", `DELETE FROM recovery_step_runs
+			WHERE recovery_id IN (SELECT id FROM recovery_executions WHERE tenant_id = $1 AND project_id = $2)`},
+		{"recovery executions", `DELETE FROM recovery_executions WHERE tenant_id = $1 AND project_id = $2`},
+		{"recurring run history", `DELETE FROM recurring_run_history
+			WHERE tenant_id = $1 AND (
+				workflow_run_id IN (SELECT id FROM workflow_runs WHERE tenant_id = $1 AND project_id = $2)
+				OR work_item_id IN (SELECT id FROM work_items WHERE tenant_id = $1 AND project_id = $2))`},
+		{"workflow step runs", `DELETE FROM workflow_step_runs
+			WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE tenant_id = $1 AND project_id = $2)`},
+		{"workflow runs", `DELETE FROM workflow_runs WHERE tenant_id = $1 AND project_id = $2`},
+		{"workflow versions", `DELETE FROM workflow_versions
+			WHERE workflow_id IN (SELECT id FROM workflows WHERE tenant_id = $1 AND project_id = $2)`},
+		{"workflows", `DELETE FROM workflows WHERE tenant_id = $1 AND project_id = $2`},
+		{"work item attachments", `DELETE FROM work_item_attachments
+			WHERE work_item_id IN (SELECT id FROM work_items WHERE tenant_id = $1 AND project_id = $2)`},
+		{"work item dependencies", `DELETE FROM work_item_dependencies WHERE tenant_id = $1 AND project_id = $2`},
+		{"work items", `DELETE FROM work_items WHERE tenant_id = $1 AND project_id = $2`},
+		{"project mcp servers", `DELETE FROM project_mcp_servers WHERE tenant_id = $1 AND project_id = $2`},
 	}
-	// Cascade: delete workflow runs
-	if _, err := tx.Exec(ctx,
-		`DELETE FROM workflow_runs WHERE tenant_id = $1 AND project_id = $2`,
-		tenantID, id); err != nil {
-		return fmt.Errorf("db: delete project cascade workflow runs: %w", err)
+	for _, s := range steps {
+		if _, err := tx.Exec(ctx, s.q, tenantID, id); err != nil {
+			return fmt.Errorf("db: delete project cascade %s: %w", s.what, err)
+		}
 	}
-	// Cascade: delete workflow versions
-	if _, err := tx.Exec(ctx,
-		`DELETE FROM workflow_versions
-		 WHERE workflow_id IN (SELECT id FROM workflows WHERE tenant_id = $1 AND project_id = $2)`,
-		tenantID, id); err != nil {
-		return fmt.Errorf("db: delete project cascade workflow versions: %w", err)
-	}
-	// Cascade: delete workflows
-	if _, err := tx.Exec(ctx,
-		`DELETE FROM workflows WHERE tenant_id = $1 AND project_id = $2`,
-		tenantID, id); err != nil {
-		return fmt.Errorf("db: delete project cascade workflows: %w", err)
-	}
-	// Cascade: delete work item dependencies
-	if _, err := tx.Exec(ctx,
-		`DELETE FROM work_item_dependencies WHERE project_id = $1 AND tenant_id = $2`,
-		id, tenantID); err != nil {
-		return fmt.Errorf("db: delete project cascade work item dependencies: %w", err)
-	}
-	// Cascade: delete work items
-	if _, err := tx.Exec(ctx,
-		`DELETE FROM work_items WHERE project_id = $1 AND tenant_id = $2`,
-		id, tenantID); err != nil {
-		return fmt.Errorf("db: delete project cascade work items: %w", err)
-	}
-	// Delete the project itself
+	// The project itself. A missing row is not an error here: the caller may be retrying a delete
+	// whose cascade already ran, and the contract this function owes is "the project and its data are
+	// gone" — which is true either way.
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM projects WHERE id = $1 AND tenant_id = $2`,
 		id, tenantID); err != nil {
@@ -353,12 +446,12 @@ func ArchiveProject(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 		SET status = 'archived', updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
 		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at,
-			project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy`
+			project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy, default_runtime_image, execution_mode`
 	var p ProjectRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
-		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy,
+		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy, &p.DefaultRuntimeImage, &p.ExecutionMode,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ProjectRow{}, ErrNotFound

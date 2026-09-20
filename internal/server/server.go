@@ -10,6 +10,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -21,17 +22,24 @@ import (
 	"time"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/aigateway"
 	"github.com/beardedparrott/orchicon/internal/api"
+	"github.com/beardedparrott/orchicon/internal/askorchicon"
 	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/backup"
 	"github.com/beardedparrott/orchicon/internal/blobstore"
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
+	"github.com/beardedparrott/orchicon/internal/ephemeral"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
+	"github.com/beardedparrott/orchicon/internal/fileedit"
 	"github.com/beardedparrott/orchicon/internal/logging"
+	"github.com/beardedparrott/orchicon/internal/mcpclient"
+	"github.com/beardedparrott/orchicon/internal/mcpsettings"
 	"github.com/beardedparrott/orchicon/internal/opencode"
+	"github.com/beardedparrott/orchicon/internal/orchicon"
 	"github.com/beardedparrott/orchicon/internal/outbox"
 	"github.com/beardedparrott/orchicon/internal/policy"
 	"github.com/beardedparrott/orchicon/internal/project"
@@ -42,6 +50,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/secretcrypto"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
+	"github.com/beardedparrott/orchicon/internal/tenant"
 	"github.com/beardedparrott/orchicon/internal/version"
 	"github.com/beardedparrott/orchicon/internal/webhook"
 	"github.com/beardedparrott/orchicon/internal/workflow"
@@ -69,8 +78,11 @@ type Server struct {
 	// Rotating on-disk log writer (nil when not detached). Settings →
 	// Defaults log management values are live-applied to it.
 	logWriter *logging.RotatingWriter
-	// serveCancel stops the host opencode serve on plane shutdown.
-	serveCancel context.CancelFunc
+	// hostServe is the DEMAND-KEYED host opencode serve (lazy: started on
+	// the first opencode demand). Held so plane shutdown stops it and its
+	// supervision goroutine; nil when the session transport is disabled by
+	// the operator kill-switch or no data dir is available.
+	hostServe *opencode.HostServe
 }
 
 // New constructs a Server from configuration. It opens the DB pool,
@@ -118,10 +130,15 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		log.Warn("seed dev tenant failed (continuing)", "error", err)
 	}
 
-	// Seed canned workers for the dev tenant so they're available for
+	// Seed canned workers for the deployment tenant so they're available for
 	// workflow templates and manual dispatch. Idempotent — workers that
 	// already exist are skipped or updated with current data.
-	if err := db.SeedDevWorkers(context.Background(), pool); err != nil {
+	//
+	// The tenant is PASSED IN. This call used to rely on SeedDevWorkers hardcoding "tnt_dev", which
+	// meant a deployment configured with any other tenant (ORCHICON_DEPLOYMENT_TENANT_ID) seeded its
+	// canned workers into tnt_dev — where they were invisible to the very deployment that needed
+	// them, while polluting a tenant it does not own.
+	if err := db.SeedDevWorkers(context.Background(), pool, cfg.DeploymentTenantID); err != nil {
 		log.Warn("seed dev workers failed (continuing)", "error", err)
 	}
 
@@ -199,24 +216,83 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		webhookDisp = webhook.NewDispatcher(pool, sub, log)
 	}
 
-	// Model discoverer: shells out to opencode CLI to list models.
-	// Falls back to a static mock list in dev mode when opencode is
-	// not on PATH (docs/04 §6).
-	var modelDiscoverer *aigateway.ModelDiscoverer
-	if _, err := exec.LookPath("opencode"); err == nil {
-		modelDiscoverer = aigateway.NewModelDiscoverer(log, "opencode")
+	// Adapter demand set at boot (AC 1/AC 6): whether this plane is
+	// "opencode-free" is a COMPUTED consequence of the model refs the
+	// tenant actually references (tenant Ask default ∪ dispatchable worker
+	// refs, see internal/adapter.TenantDemandSet) — never a configuration
+	// flag. When no demanded kind needs the opencode serve, the boot path
+	// must not probe for the binary at all.
+	//
+	// An unavailable demand set falls BACK to probing (the historical
+	// behavior) rather than guessing the plane is opencode-free — a
+	// mis-guessed probe costs a wasted LookPath, a mis-guessed skip would
+	// hide the CLI from discovery entirely.
+	opencodeInDemand := true
+	if dtx, derr := pool.BeginTenantTx(context.Background(), cfg.DeploymentTenantID); derr != nil {
+		log.Warn("adapter demand set unavailable at boot — probing for opencode as before", "error", derr)
 	} else {
-		log.Warn("opencode binary not found on PATH, using mock model list", "error", err)
-		modelDiscoverer = aigateway.MockModelDiscoverer(log)
+		demand, dserr := adapter.TenantDemandSet(context.Background(), dtx.Tx, cfg.DeploymentTenantID)
+		dtx.Rollback(context.Background())
+		if dserr != nil {
+			log.Warn("adapter demand set unavailable at boot — probing for opencode as before", "error", dserr)
+		} else {
+			opencodeInDemand = demand.Has(adapter.DefaultAdapterKind)
+			if !opencodeInDemand {
+				log.Info("plane is opencode-free — no opencode binary probed at boot",
+					"tenant", cfg.DeploymentTenantID, "demanded_kinds", strings.Join(demand.Kinds(), ","))
+			}
+		}
 	}
 
-	// MCP discoverer: shells out to opencode CLI to list MCP servers.
+	// Model discoverer: shells out to opencode CLI to list models (the
+	// legacy opencode/claude adapter picker path). Binary resolution: the
+	// ORCHICON_OPENCODE_BIN env override first (the path the discovery
+	// error message has always advertised), then PATH. NO mock fallback in
+	// any mode (operator directive: never serve synthesized model lists —
+	// they confuse users during connection issues). Without the binary the
+	// discoverer stays nil and ListOpenCodeModels returns the actionable
+	// Unimplemented error naming the env var.
+	//
+	// Both discoverers are only constructed when opencode is actually in
+	// DEMAND (AC 1): a native-only plane never runs `opencode` at boot.
+	var modelDiscoverer *aigateway.ModelDiscoverer
 	var mcpDiscoverer *aigateway.MCPDiscoverer
-	if _, err := exec.LookPath("opencode"); err == nil {
-		mcpDiscoverer = aigateway.NewMCPDiscoverer(log, "opencode")
+	if opencodeInDemand {
+		var opencodeBin string
+		if override := os.Getenv("ORCHICON_OPENCODE_BIN"); override != "" {
+			opencodeBin = override
+		}
+		if opencodeBin == "" {
+			if p, err := exec.LookPath("opencode"); err == nil {
+				opencodeBin = p
+			}
+		}
+		if opencodeBin != "" {
+			if _, err := os.Stat(opencodeBin); err == nil {
+				modelDiscoverer = aigateway.NewModelDiscoverer(log, opencodeBin)
+			} else {
+				log.Warn("ORCHICON_OPENCODE_BIN set but not found, ignoring", "path", opencodeBin, "error", err)
+			}
+		}
+		if modelDiscoverer == nil {
+			log.Warn("opencode binary not found — model discovery disabled (set ORCHICON_OPENCODE_BIN or install opencode on PATH)")
+		}
+
+		// MCP discoverer: shells out to opencode CLI to list MCP servers.
+		// NO mock fallback (same directive as the model discoverer): without
+		// the binary the discoverer stays nil and ListOpenCodeMCPs returns
+		// the actionable Unimplemented error. Well-known MCP servers are a
+		// curated picker convenience in the LIVE discoverer's output, not a
+		// mock plane — they merge into real CLI results (configured wins).
+		if bin := opencodeBin; bin != "" {
+			mcpDiscoverer = aigateway.NewMCPDiscoverer(log, bin)
+		} else if p, err := exec.LookPath("opencode"); err == nil {
+			mcpDiscoverer = aigateway.NewMCPDiscoverer(log, p)
+		} else {
+			log.Warn("opencode binary not found — MCP discovery disabled (set ORCHICON_OPENCODE_BIN or install opencode on PATH)")
+		}
 	} else {
-		log.Warn("opencode binary not found on PATH, using mock MCP server list", "error", err)
-		mcpDiscoverer = aigateway.MockMCPDiscoverer(log)
+		log.Info("opencode model/MCP discovery disabled — the adapter demand set contains no opencode")
 	}
 
 	// Reconciler framework (docs/03 §2). Phase 5 registers the
@@ -226,17 +302,29 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// (docs/04 §6). If the binary is absent, the bridge runs in
 	// simulation mode for dev verification.
 	adapterBridge := opencode.New(log)
+	// The Dispatcher is the shared routing substrate: adapters register
+	// under their kind at construction (below), and the TaskReconciler +
+	// server RPC paths resolve the bridge per execution from the
+	// execution's adapter kind (adapter.AdapterKind(model_ref))
+	// — ADR-0003). Concrete adapter types appear ONLY here, at
+	// construction/registration; every other path goes through the
+	// scheduler-defined contract interfaces.
+	dispatcher := scheduler.NewDispatcher()
 
-	// Always-on host opencode serve for the in-process execution
+	// Demand-keyed host opencode serve for the in-process execution
 	// population (Stage 3 session transport): standalone dispatches,
 	// follow-ups, and any execution not bound to a workflow-run container
-	// run as persistent sessions on it. The plane supervises the serve
-	// (spawn on boot + health watchdog with restart), so the session host
-	// is never down. With the one-shot subprocess path removed, a serve
-	// failure now means those executions fail fast (failed_to_start)
-	// rather than degrading to a second transport.
+	// run as persistent sessions on it. It is NOT started here — the serve
+	// starts on the FIRST opencode demand (HostServe.EnsureStarted, reached
+	// through the adapter's sessionClientFor and the Ask ChatTurnClient
+	// methods) and is then supervised exactly as before (health watchdog +
+	// restart with backoff; sessions survive a restart because they live in
+	// the dedicated data dir). A plane whose adapter demand set contains no
+	// opencode therefore never spawns a serve and never probes for the
+	// binary (AC 1/AC 2). With the one-shot subprocess path removed, a serve
+	// failure at first demand means those executions fail fast
+	// (failed_to_start) rather than degrading to a second transport.
 	var hostServe *opencode.HostServe
-	var serveCancel context.CancelFunc
 	if os.Getenv("ORCHICON_OPCODE_SESSION_TRANSPORT") != "0" {
 		dataDir := ""
 		if home, herr := os.UserHomeDir(); herr == nil {
@@ -244,15 +332,6 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		}
 		if dataDir != "" {
 			hostServe = opencode.NewHostServe(log, dataDir, "")
-			serveCtx, cancel := context.WithCancel(context.Background())
-			serveCancel = cancel
-			go func() {
-				if err := hostServe.Start(serveCtx); err != nil {
-					log.Warn("host opencode serve unavailable — session-dependent executions will fail fast", "error", err)
-					return
-				}
-				hostServe.Watch(serveCtx)
-			}()
 			adapterBridge.SetHostServe(hostServe)
 		} else {
 			log.Warn("host opencode serve data dir unavailable — sessions disabled")
@@ -272,6 +351,13 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// on error rather than failing, so the recording path never blocks on a
 	// subprocess and falls back to adapter cost on any miss/error.
 	usageRecorder.SetPricingResolver(func(ctx context.Context, provider, model string) (*apiv1.ModelCost, bool) {
+		// G5: the opencode binary may be absent (modelDiscoverer == nil —
+		// "model discovery disabled"). ListModels has no nil-receiver guard,
+		// so an orchicon-only Ask turn that records usage would nil-panic
+		// here. Fail closed (no pricing) instead.
+		if modelDiscoverer == nil {
+			return nil, false
+		}
 		models, err := modelDiscoverer.ListModels(ctx, provider)
 		if err != nil {
 			return nil, false
@@ -300,9 +386,11 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			CompletionTokens: in.CompletionTokens,
 			ReasoningTokens:  in.ReasoningTokens,
 			CostUSD:          in.CostUSD,
-			CorrelationID:    in.CorrelationID,
-			TraceID:          in.TraceID,
-			WorkflowRunID:    in.WorkflowRunID,
+			// Adapter parity: the opencode runtime is the adapter kind here.
+			AdapterKind:   "opencode",
+			CorrelationID: in.CorrelationID,
+			TraceID:       in.TraceID,
+			WorkflowRunID: in.WorkflowRunID,
 		})
 		return err
 	})
@@ -322,7 +410,53 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		return ttx.Commit(ctx)
 	})
 
-	taskRec := scheduler.NewTaskReconciler(pool, log, adapterBridge)
+	// Diff pipeline (file-edit ledger): ground-truth, server-computed diffs
+	// for every file the session touches. The hook parses the worktree
+	// engine's structured file_edits output (batch_write/write/edit) and
+	// takes server-side after-snapshots for the opencode built-in
+	// write/edit; entries persist to file_edit_ledger and stream on the
+	// execution event channel. Best-effort like the transcript writer: a
+	// ledger gap never fails the session.
+	feStore := fileedit.NewPGStore(pool)
+	feSvc := fileedit.NewService(feStore, log)
+	if pub != nil {
+		feSvc.Publisher = func(ownerKind, ownerID string, row *db.FileEditLedgerRow) {
+			if ownerKind != db.FileEditOwnerExecution || pub == nil {
+				return
+			}
+			payload, err := json.Marshal(map[string]any{
+				"event_type":   "execution.file_edit",
+				"tenant_id":    row.TenantID,
+				"execution_id": row.OwnerID,
+				"owner_kind":   ownerKind,
+				"owner_id":     ownerID,
+				"edit":         fileedit.RowToProto(row),
+				"occurred_at":  time.Now().UTC().Format(time.RFC3339Nano),
+			})
+			if err != nil {
+				return
+			}
+			_ = pub.Publish(context.Background(),
+				eventbus.SubjectFor("execution", "file_edit"),
+				row.ID, payload)
+		}
+	}
+	// File-edit ledger hook (diff pipeline): the execution population's
+	// ingestion point — engine file_edits output tried first for
+	// write/edit, observer fallback for genuine built-in usage
+	// (internal/server/fileedit_hook.go).
+	adapterBridge.SetFileEditHook(newFileEditHook(feSvc, log))
+
+	// Register the opencode bridge under its adapter kind. This is the
+	// ONLY place the concrete adapter appears in a dispatch-capable
+	// position — every downstream path resolves it from the Dispatcher by
+	// the execution's parsed adapter kind (ADR-0003).
+	dispatcher.Register("opencode", adapterBridge)
+
+	taskRec := scheduler.NewTaskReconciler(pool, log, dispatcher)
+	// Diff pipeline (AC 4): at every terminal transition the file-edit
+	// ledger reconciles against the run worktree's git state (best-effort).
+	taskRec.SetFileEditReconciler(newFileEditReconciler(pool, log))
 	// Bounded in-pass fan-out for the scan pass: independent ready tasks
 	// dispatch concurrently (ORCHICON_DISPATCH_CONCURRENCY, default 4).
 	taskRec.SetDispatchConcurrency(cfg.DispatchConcurrency)
@@ -347,6 +481,18 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	if err := runtimeimage.SeedCannedImages(context.Background(), pool, log, rtClient); err != nil {
 		log.Warn("seed canned runtime images failed (continuing)", "error", err)
 	}
+	// adapterKind resolves the execution's adapter kind for mid-run RPCs.
+	// It PREFERS the execution's recorded adapter_id (→ the adapters row's
+	// kind), which names the adapter the execution actually DISPATCHED
+	// under; it falls back to the worker's latest published version's
+	// model_ref only when the execution carries no adapter_id (legacy
+	// rows). This fixes the case where the worker's latest version changed
+	// adapter kind between dispatch and the mid-run call — the RPC must
+	// route to the bridge that actually ran the execution, not the latest
+	// one. The dispatcher then routes the bridge lookup by kind.
+	adapterKind := func(ctx context.Context, execID string) (string, error) {
+		return resolveAdapterKind(ctx, pool, cfg.DeploymentTenantID, execID)
+	}
 	deps := api.Dependencies{
 		Pool:              pool,
 		Log:               log,
@@ -360,22 +506,186 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		Mode:              cfg.Mode,
 		ModelDiscoverer:   modelDiscoverer,
 		MCPDiscoverer:     mcpDiscoverer,
+		AdapterKinds:      dispatcher.Kinds,
+		AdapterChatKinds:  dispatcher.ChatKinds,
+		Dispatcher:        dispatcher,
 		BlobStore:         blobs,
 		PostgresDSN:       cfg.PostgresDSN,
 		RuntimeClient:     rtClient,
+		// adapterKind resolves the execution's adapter kind for mid-run RPCs
+		// (dispatching adapter_id preferred, worker model_ref fallback) via
+		// the shared resolver and dispatcher.
 		SendExecutionMessage: func(ctx context.Context, execID, message string) error {
-			return adapterBridge.SendExecutionMessage(ctx, execID, message)
+			kind, err := adapterKind(ctx, execID)
+			if err != nil {
+				return fmt.Errorf("resolve adapter for execution %s: %w", execID, err)
+			}
+			bridge, err := dispatcher.Resolve(kind)
+			if err != nil {
+				return err
+			}
+			inj, ok := bridge.(scheduler.MessageInjector)
+			if !ok {
+				return fmt.Errorf("adapter kind %q does not support mid-run message injection", kind)
+			}
+			return inj.SendExecutionMessage(ctx, execID, message)
 		},
-		ContinueSession: func(ctx context.Context, opts opencode.ContinueSessionOpts) (string, error) {
-			return adapterBridge.ContinueSession(ctx, opts)
+		ContinueSession: func(ctx context.Context, opts scheduler.ContinueSessionOpts) (string, error) {
+			kind, err := adapterKind(ctx, opts.ExecutionID)
+			if err != nil {
+				return "", fmt.Errorf("resolve adapter for execution %s: %w", opts.ExecutionID, err)
+			}
+			bridge, err := dispatcher.Resolve(kind)
+			if err != nil {
+				return "", err
+			}
+			cont, ok := bridge.(scheduler.SessionContinuer)
+			if !ok {
+				return "", fmt.Errorf("adapter kind %q does not support follow-up sessions", kind)
+			}
+			return cont.ContinueSession(ctx, opts)
 		},
 		AbortExecution: func(ctx context.Context, execID, reason string) error {
-			return adapterBridge.AbortExecution(ctx, execID, reason)
+			kind, err := adapterKind(ctx, execID)
+			if err != nil {
+				return fmt.Errorf("resolve adapter for execution %s: %w", execID, err)
+			}
+			bridge, err := dispatcher.Resolve(kind)
+			if err != nil {
+				return err
+			}
+			aborter, ok := bridge.(scheduler.Aborter)
+			if !ok {
+				return fmt.Errorf("adapter kind %q does not support live-session abort", kind)
+			}
+			return aborter.AbortExecution(ctx, execID, reason)
 		},
-		HostServe: hostServe,
+		HostServe:  hostServe,
 		SecretsKEK: secretsKEK,
+		// UsageRecorder wires the shared AI Gateway recorder into Ask
+		// Orchicon so Ask sessions capture live usage per adapter.
+		UsageRecorder: usageRecorder,
+		// FileEditService wires the diff-pipeline ledger into Ask Orchicon:
+		// Ask conversations ledger file edits from real file-state
+		// snapshots (owner_kind ask_conversation) — the same ground truth
+		// executions record.
+		FileEditService: feSvc,
 	}
-	handler := api.Mount(mux, deps)
+	handler := api.Mount(mux, &deps)
+
+	// Native in-process session engine (adapter kind "orchicon"). The
+	// Dispatcher treats it like any other adapter: Start blocks until the
+	// terminal OnResult, and the mid-run injection / continuation / abort
+	// RPC paths resolve it via the same capability assertions. The
+	// provider registry is constructed lazily by api.Mount (providers
+	// settings core) — resolve it through the deps hook when the first
+	// orchicon-kind execution dispatches.
+	nativeBridge := orchicon.NewBridge(
+		orchiconRegistryResolver(&deps, pool, secretsKEK, log),
+		"",
+		log,
+	)
+	// MCP server storage (ADR-0008): sessions resolve worker → project →
+	// tenant-default selections over the tenant-configured server list and
+	// ${SECRET_NAME} refs resolve to stored plaintext before connect.
+	// With no configured servers the source returns an empty list and
+	// sessions run without MCP tools (never an error).
+	nativeBridge.SetConfigSource(mcpsettings.NewConfigSource(pool))
+	nativeBridge.SetMCPSecretResolver(func(ctx context.Context, tenantID string, env, headers map[string]string) (map[string]string, map[string]string, error) {
+		return mcpsettings.ResolveSecretRefs(ctx, pool, secretsKEK, tenantID, env, headers)
+	})
+	nativeBridge.SetUsageRecorder(func(ctx context.Context, in scheduler.UsageRecord) error {
+		_, err := usageRecorder.Record(ctx, aigateway.UsageInput{
+			TenantID:         in.TenantID,
+			ProjectID:        in.ProjectID,
+			TaskID:           in.TaskID,
+			ExecutionID:      in.ExecutionID,
+			WorkerID:         in.WorkerID,
+			Provider:         in.Provider,
+			Model:            in.Model,
+			PromptTokens:     in.PromptTokens,
+			CacheReadTokens:  in.CacheReadTokens,
+			CacheWriteTokens: in.CacheWriteTokens,
+			CompletionTokens: in.CompletionTokens,
+			ReasoningTokens:  in.ReasoningTokens,
+			CostUSD:          in.CostUSD,
+			// AdapterKind/SessionID are carried through so ONE callback serves both
+			// shapes: a worker execution self-describes as "orchicon" with an empty
+			// SessionID, while an Ask turn carries the kind parsed from its
+			// model_ref plus the conversation id it is attributed to.
+			AdapterKind:   in.AdapterKind,
+			SessionID:     in.SessionID,
+			CorrelationID: in.CorrelationID,
+			TraceID:       in.TraceID,
+			WorkflowRunID: in.WorkflowRunID,
+		})
+		return err
+	})
+	// Session-terminal prefix-cache telemetry (D3, ADR-0009 D6): the native
+	// bridge drains the per-session cache rollup to the OTel metrics
+	// recorder (hit/miss counters + hit-rate gauge). Live usage only.
+	nativeBridge.SetCacheSink(func(ctx context.Context, exec db.ExecutionRow, st orchicon.CacheStats) {
+		_ = usageRecorder.RecordPrefixCache(ctx, exec.TenantID, exec.ProjectID, exec.WorkerID, exec.ID, st.Turns, st.Hits, st.MissWrites, st.CacheReadTokens, st.CacheWriteTokens)
+	})
+	nativeBridge.SetSessionStore(func(ctx context.Context, execID, tenantID string, parts []db.SessionPart) error {
+		ttx, err := pool.BeginTenantTx(ctx, tenantID)
+		if err != nil {
+			return err
+		}
+		defer ttx.Rollback(ctx)
+		if err := db.AppendExecutionSessionParts(ctx, ttx.Tx, tenantID, parts); err != nil {
+			return err
+		}
+		return ttx.Commit(ctx)
+	})
+	// Ask-time product tools (askorchicon registry) for native Ask turns:
+	// without this the model answers from the system prompt with no tool
+	// calls while the host-serve path acts. Mount constructed the Ask
+	// service above and stored it back on deps.
+	if deps.AskService != nil {
+		nativeBridge.SetAskTools(deps.AskService.NativeAskTools())
+		// The Ask file/shell suite's in-process bash carries the execution
+		// guard's destructive-command shim (worker-path parity). Wire the
+		// instance logger for its warnings; the shim dir is closed at
+		// daemon shutdown (s.Close below).
+		askorchicon.SetAskGuardLogger(log)
+	} else {
+		log.Warn("native Ask turns have no tool provider (Ask service unavailable) — orchicon-adapter conversations are text-only")
+	}
+	// Ask session history persistence: per-session JSON under the instance
+	// data dir so orchicon-adapter conversations survive a server restart
+	// (in-memory history alone used to reset every follow-up to a blank
+	// context while the persisted session id took the no-history path).
+	if cfg.DataDir != "" {
+		nativeBridge.SetAskHistoryDir(filepath.Join(cfg.DataDir, "ask-history"))
+	} else {
+		log.Warn("native Ask history persistence disabled (no data dir) — orchicon-adapter conversations lose context on restart")
+	}
+	// File-edit ledger hook (diff pipeline) for the native-loop family: the
+	// same constructor as the opencode adapter above — the session fires it
+	// once per completed registry result in executeTools, so every
+	// native-loop provider (ollama, commandcode, …) ledgers through one site.
+	nativeBridge.SetFileEditHook(newFileEditHook(feSvc, log))
+	dispatcher.Register("orchicon", nativeBridge)
+
+	// Per-adapter enable/disable (AC 3): every kind named in
+	// ORCHICON_DISABLED_ADAPTER_KINDS is switched OFF for this plane.
+	// Resolving such a kind fails with a LOUD, actionable reason
+	// (ErrAdapterDisabled), and the TaskReconciler BLOCKS the work item
+	// instead of requeueing it — a disabled adapter kind can never be fixed
+	// by retrying, so a silent ready→failed→ready loop is exactly what must
+	// not happen. The kill-switch ORCHICON_OPCODE_SESSION_TRANSPORT=0 stays
+	// the harder, fail-fast override (it disables the session transport
+	// itself, AC 4). A name that is not registered is harmless (Disable is a
+	// set insert) and is logged so a typo is visible.
+	for _, kind := range strings.Split(os.Getenv("ORCHICON_DISABLED_ADAPTER_KINDS"), ",") {
+		kind = strings.TrimSpace(kind)
+		if kind == "" {
+			continue
+		}
+		dispatcher.Disable(kind)
+		log.Warn("adapter kind disabled by ORCHICON_DISABLED_ADAPTER_KINDS — dispatches of this kind fail loudly", "kind", kind)
+	}
 
 	// Wrap with OTel tracing interceptor (spans on every API call).
 	handler = telemetry.Middleware(handler)
@@ -388,9 +698,16 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 
 	s := &Server{cfg: cfg, log: log, pool: pool, httpSrv: httpSrv, otel: otelShutdown,
 		blobs: blobs, authH: authHandler, webhookD: webhookDisp, logWriter: logWriter,
-		serveCancel: serveCancel}
+		hostServe: hostServe}
 	if pub != nil {
-		s.relay = outbox.NewRelay(pool, pub, log)
+		// Outbox retention: published rows older than the configured window
+		// are pruned on a schedule in bounded batches. Retention <= 0 disables
+		// pruning (ORCHICON_OUTBOX_RETENTION_DAYS=0).
+		s.relay = outbox.NewRelay(pool, pub, log,
+			outbox.WithRetention(time.Duration(cfg.OutboxRetentionDays)*24*time.Hour),
+			outbox.WithPruneBatch(cfg.OutboxPruneBatch),
+			outbox.WithPruneInterval(cfg.OutboxPruneInterval),
+		)
 	}
 
 	// Wire the direct NATS publisher for low-latency execution event
@@ -418,9 +735,15 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			// Route executions that belong to a workflow run into that
 			// workflow's runtime container instead of a local subprocess.
 			adapterBridge.SetRuntimeClient(rtClient)
+			// Always-container native: the native bridge routes `bash`
+			// into the run's container (same lease the gate ensured).
+			nativeBridge.SetRuntimeClient(rtClient)
 			// Execution liveness: fail executions orphaned by a plane
 			// restart or a lost runtime container so recovery re-dispatches.
-			s.reaper = scheduler.NewExecutionReaper(pool, adapterBridge.IsExecutionActive, taskRec.FailLostExecution, log)
+			// The probe resolves the execution's adapter kind (worker
+			// model_ref → dispatcher) and type-asserts the LivenessReporter
+			// capability; a bridge without it reports inactive (fail-closed).
+			s.reaper = scheduler.NewExecutionReaper(pool, activeProbe(dispatcher, pool, log), taskRec.FailLostExecution, log)
 			log.Info("workflow runtime daemon connected", "socket", cfg.RuntimeSocket)
 		} else {
 			log.Warn("workflow runtime daemon not reachable — in-process execution", "socket", cfg.RuntimeSocket)
@@ -428,7 +751,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	}
 	// Headless: still reap in-process executions orphaned by a restart.
 	if s.reaper == nil {
-		s.reaper = scheduler.NewExecutionReaper(pool, adapterBridge.IsExecutionActive, taskRec.FailLostExecution, log)
+		s.reaper = scheduler.NewExecutionReaper(pool, activeProbe(dispatcher, pool, log), taskRec.FailLostExecution, log)
 	}
 	workflowRec := scheduler.NewWorkflowReconciler(pool, log, policyEngine, taskRec, recoveryEngine, runtimeLifecycle)
 	// Bounded in-pass fan-out for the post-commit inline dispatch: parallel
@@ -505,10 +828,12 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		}
 	})
 
-	// Seed an in-process OpenCode adapter registration so the
-	// TaskReconciler can find a ready adapter for dispatch (docs/04 §6.3:
-	// in-process adapter for dev only). Idempotent.
+	// Seed in-process adapter registrations (opencode + the native
+	// orchicon session engine) so the TaskReconciler can find a ready
+	// adapter for dispatch (docs/04 §6.3: in-process adapter for dev
+	// only). Idempotent.
 	seedDevAdapter(context.Background(), pool, log)
+	seedNativeAdapter(context.Background(), pool, log)
 
 	return s, nil
 }
@@ -532,11 +857,13 @@ func (s *Server) Run(ctx context.Context) error {
 	s.log.Info("starting orchicon control plane",
 		"version", version.Current().String(), "http", s.cfg.HTTPAddr)
 
-	// The host opencode serve lives as long as the plane (its watchdog
-	// reaps it on shutdown via the cancel).
+	// The demand-keyed host opencode serve lives as long as the plane once
+	// it has been started; stop it (and its supervision) on shutdown. Nil
+	// when the plane never needed it — an opencode-free plane has nothing
+	// running to reap.
 	defer func() {
-		if s.serveCancel != nil {
-			s.serveCancel()
+		if s.hostServe != nil {
+			s.hostServe.Stop()
 		}
 	}()
 
@@ -566,59 +893,60 @@ func (s *Server) Run(ctx context.Context) error {
 	// process is gone (plane restart / lost runtime container) so
 	// recovery re-dispatches instead of leaving the workflow stuck.
 	if s.runtime != nil {
-		go func() {
-			sweep := time.NewTicker(30 * time.Second)
-			defer sweep.Stop()
-			var once bool
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				default:
-				}
-				if !once {
-					select {
-					case <-ctx.Done():
-						return
-					case <-time.After(1 * time.Second):
-					}
-					once = true
-				}
-				if err := s.runtime.Adopt(ctx); err != nil {
-					s.log.Warn("workflow runtime adopt failed", "error", err)
-				}
-				if s.reaper != nil {
-					if err := s.reaper.Reap(ctx); err != nil {
-						s.log.Warn("execution liveness reap failed", "error", err)
-					}
-				}
-				select {
-				case <-ctx.Done():
-					return
-				case <-sweep.C:
+		go runOnStartupThenEvery(ctx, 1*time.Second, 30*time.Second, func() {
+			if err := s.runtime.Adopt(ctx); err != nil {
+				s.log.Warn("workflow runtime adopt failed", "error", err)
+			}
+			if s.reaper != nil {
+				if err := s.reaper.Reap(ctx); err != nil {
+					s.log.Warn("execution liveness reap failed", "error", err)
 				}
 			}
-		}()
+		})
 	} else if s.reaper != nil {
-		go func() {
-			sweep := time.NewTicker(30 * time.Second)
-			defer sweep.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(1 * time.Second):
-					if err := s.reaper.Reap(ctx); err != nil {
-						s.log.Warn("execution liveness reap failed", "error", err)
-					}
-				case <-sweep.C:
-					if err := s.reaper.Reap(ctx); err != nil {
-						s.log.Warn("execution liveness reap failed", "error", err)
-					}
-				}
+		go runOnStartupThenEvery(ctx, 1*time.Second, 30*time.Second, func() {
+			if err := s.reaper.Reap(ctx); err != nil {
+				s.log.Warn("execution liveness reap failed", "error", err)
 			}
-		}()
+		})
 	}
+
+	// EPHEMERAL ABANDONMENT SWEEP (Ask Orchicon Quick Work). Quick Work
+	// creates a worker, a workflow and a work item per job, hides them from
+	// every human view, and hard-deletes them when the job ends. The deletion
+	// is done by the AGENT, so it is the one step that cannot be guaranteed:
+	// a killed process or a crashed plane leaves the records behind —
+	// invisible, and still there. That is the exact state the hard-delete
+	// rule exists to prevent, so the sweep is the backstop for that one
+	// failure mode. Tenants are enumerated, and each tenant's deletes run in
+	// its own RLS transaction.
+	//
+	// First pass after a minute (a plane that just restarted may have inherited
+	// a crashed run's transients), then every 10 minutes. A plane with no
+	// transients pays an index probe on an empty partial index.
+	//
+	// The warm-up-then-ticker shape is runOnStartupThenEvery's, for the reason
+	// documented there: written inline as a `time.After` case beside the
+	// ticker's case, the ticker becomes unreachable and the sweep runs at the
+	// WARM-UP cadence instead of the interval.
+	go func() {
+		sweeper := ephemeral.NewSweeper(s.pool, s.log)
+		runOnStartupThenEvery(ctx, 1*time.Minute, ephemeral.SweepInterval, func() {
+			if _, err := sweeper.Sweep(ctx); err != nil {
+				s.log.Warn("ephemeral sweep failed", "error", err)
+			}
+		})
+	}()
+
+	// MCP stdio stale-child sweep (ADR-0008): MCP server subprocesses
+	// spawned for sessions carry ORCHICON_MCP_STDIO=1. PDEATHSIG reaps
+	// them when the plane dies in-process, but a plane crash (SIGKILL /
+	// OOM) reparents live children to PID 1. Sweep at boot (1s) and every
+	// 30s: any marked child whose parent is PID 1 has no controlling
+	// execution and is killed (process group).
+	go runOnStartupThenEvery(ctx, 1*time.Second, 30*time.Second, func() {
+		mcpclient.SweepStaleChildren(ctx, s.log)
+	})
 
 	// Phase 9: webhook dispatcher (NATS consumer → HTTP POST + retries +
 	// dead-letter — docs/07 §3.11). Degrades gracefully when NATS is
@@ -802,13 +1130,19 @@ func (s *Server) heartbeatDevAdapter(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			caps := opencode.BuildCapabilitiesJSON()
 			ttx, err := s.pool.BeginTenantTx(ctx, "tnt_dev")
 			if err != nil {
 				continue
 			}
+			// Heartbeat both in-process dev adapters (opencode + native
+			// orchicon) so selectAdapter can dispatch beyond the initial
+			// heartbeat TTL for either kind.
+			caps := opencode.BuildCapabilitiesJSON()
 			if err := db.HeartbeatAdapter(ctx, ttx.Tx, "tnt_dev", "adp_opencode_dev", []byte(caps)); err != nil {
 				s.log.Warn("dev adapter heartbeat failed", "error", err)
+			}
+			if err := db.HeartbeatAdapter(ctx, ttx.Tx, "tnt_dev", "adp_orchicon_dev", []byte(orchicon.BuildCapabilitiesJSON())); err != nil {
+				s.log.Warn("dev native adapter heartbeat failed", "error", err)
 			}
 			_ = ttx.Commit(ctx)
 		}
@@ -845,14 +1179,83 @@ func (s *Server) indexHealthLoop(ctx context.Context) {
 	}
 }
 
+// resolveAdapterKind resolves the adapter kind of an execution for
+// mid-run RPC routing. It PREFERS the execution's recorded adapter_id
+// (→ the adapters row's kind), which names the adapter the execution
+// actually DISPATCHED under; it falls back to the worker's latest
+// published version's model_ref only when the execution carries no
+// adapter_id (legacy rows). This keeps the RPC routed to the bridge that
+// actually ran the execution even when the worker's latest version changed
+// adapter kind since dispatch. G3: the tenant is resolved from the request
+// context when present, else the deployment tenant (bridge-level / system
+// paths).
+func resolveAdapterKind(ctx context.Context, pool *db.Pool, deploymentTenant, execID string) (string, error) {
+	tid := tenant.FromContext(ctx)
+	if tid == "" {
+		tid = deploymentTenant
+	}
+	tx, err := pool.BeginTenantTx(ctx, tid)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx)
+	exec, err := db.GetExecution(ctx, tx.Tx, tid, execID)
+	if err != nil {
+		return "", err
+	}
+	// Prefer the dispatching adapter row. A non-empty adapter_id whose row
+	// resolves is authoritative for THIS execution regardless of what the
+	// latest worker version now points at.
+	if exec.AdapterID != nil && *exec.AdapterID != "" {
+		adp, aerr := db.GetAdapter(ctx, tx.Tx, tid, *exec.AdapterID)
+		if aerr == nil && adp.Kind != "" {
+			return adp.Kind, nil
+		}
+		// Adapter row missing/invalid — fall through to the worker-path
+		// resolution below (never leave a mid-run RPC unresolved).
+	}
+	ver, err := db.GetLatestWorkerVersion(ctx, tx.Tx, tid, exec.WorkerID, true)
+	if err != nil {
+		return "", err
+	}
+	kind := adapter.AdapterKind(ver.ModelRef)
+	if kind == "" {
+		// Same fallback the reconciler applies at dispatch time: an
+		// empty/malformed model_ref dispatches under the legacy default
+		// kind, so mid-run RPCs must resolve the SAME kind or they would
+		// fail executions that dispatched fine.
+		kind = adapter.DefaultAdapterKind
+	}
+	return kind, nil
+}
+
 // seedDevAdapter registers an in-process OpenCode adapter so the
 // TaskReconciler can find a ready adapter for dispatch during local
 // development (docs/04 §6.3: "for local dev, an in-process adapter is
 // supported for tests only, never production"). Idempotent — re-runs
 // on every boot update the heartbeat timestamp.
 func seedDevAdapter(ctx context.Context, pool *db.Pool, log *slog.Logger) {
+	seedDevAdapterKind(ctx, pool, log, "adp_opencode_dev", "opencode", opencode.BuildCapabilitiesJSON)
+}
+
+// seedNativeAdapter registers the in-process native session engine
+// (adapter kind "orchicon") the same way seedDevAdapter registers
+// opencode, so a worker with model_ref orchicon/<provider>/<model> (the
+// ref's adapter segment governs dispatch per resolveAdapterRowKind)
+// can find a ready adapter row at dispatch.
+// Without this row, selectAdapter finds no ready adapter of kind
+// "orchicon" and the task requeues forever (the dispatch black hole).
+// Idempotent — re-runs on every boot update the heartbeat timestamp.
+func seedNativeAdapter(ctx context.Context, pool *db.Pool, log *slog.Logger) {
+	seedDevAdapterKind(ctx, pool, log, "adp_orchicon_dev", "orchicon", orchicon.BuildCapabilitiesJSON)
+}
+
+// seedDevAdapterKind is the shared body behind seedDevAdapter and
+// seedNativeAdapter: upsert a ready in-process adapter row for the given
+// id/kind, heartbeating when the row already exists. caps builds the
+// capabilities JSON for the kind.
+func seedDevAdapterKind(ctx context.Context, pool *db.Pool, log *slog.Logger, adapterID, kind string, caps func() string) {
 	tenantID := "tnt_dev"
-	adapterID := "adp_opencode_dev"
 
 	ttx, err := pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -865,8 +1268,7 @@ func seedDevAdapter(ctx context.Context, pool *db.Pool, log *slog.Logger) {
 	_, err = db.GetAdapter(ctx, ttx.Tx, tenantID, adapterID)
 	if err == nil {
 		// Already registered — just heartbeat.
-		caps := opencode.BuildCapabilitiesJSON()
-		if err := db.HeartbeatAdapter(ctx, ttx.Tx, tenantID, adapterID, []byte(caps)); err != nil {
+		if err := db.HeartbeatAdapter(ctx, ttx.Tx, tenantID, adapterID, []byte(caps())); err != nil {
 			log.Warn("seed dev adapter: heartbeat failed", "error", err)
 			return
 		}
@@ -880,10 +1282,10 @@ func seedDevAdapter(ctx context.Context, pool *db.Pool, log *slog.Logger) {
 	row := db.AdapterRow{
 		ID:                      adapterID,
 		TenantID:                tenantID,
-		Kind:                    "opencode",
+		Kind:                    kind,
 		Version:                 "0.1.0",
 		Endpoint:                "in-process",
-		Capabilities:            []byte(opencode.BuildCapabilitiesJSON()),
+		Capabilities:            []byte(caps()),
 		Status:                  domain.AdapterReady,
 		MaxConcurrentExecutions: 5,
 	}
@@ -895,5 +1297,63 @@ func seedDevAdapter(ctx context.Context, pool *db.Pool, log *slog.Logger) {
 		log.Warn("seed dev adapter: commit failed", "error", err)
 		return
 	}
-	log.Info("seeded dev opencode adapter", "id", adapterID)
+	log.Info("seeded dev adapter", "id", adapterID, "kind", kind)
+}
+
+// activeProbe returns the execution-reaper liveness probe for the
+// dispatcher. The probe resolves the execution's adapter kind from the
+// worker's model_ref, looks up the bridge, and type-asserts the
+// LivenessReporter capability. A bridge without the capability reports
+// inactive (fail-closed), matching the pre-dispatcher behavior for kinds
+// that never supported liveness — the reaper never panics.
+func activeProbe(dispatcher *scheduler.Dispatcher, pool *db.Pool, log *slog.Logger) func(exec db.ExecutionRow) bool {
+	return func(exec db.ExecutionRow) bool {
+		ctx := context.Background()
+		tx, err := pool.BeginTenantTx(ctx, "tnt_dev")
+		if err != nil {
+			log.Warn("liveness probe: begin tx failed", "execution", exec.ID, "error", err)
+			return false
+		}
+		defer tx.Rollback(ctx)
+		ver, err := db.GetLatestWorkerVersion(ctx, tx.Tx, "tnt_dev", exec.WorkerID, true)
+		if err != nil {
+			log.Warn("liveness probe: worker version lookup failed", "execution", exec.ID, "error", err)
+			return false
+		}
+		kind := adapter.AdapterKind(ver.ModelRef)
+		if kind == "" {
+			// Same fallback the reconciler applies at dispatch time: an
+			// empty/malformed model_ref dispatches under the legacy default
+			// kind, so the liveness probe must resolve the SAME kind or it
+			// would fail-closed executions that dispatched fine.
+			kind = adapter.DefaultAdapterKind
+		}
+		bridge, err := dispatcher.Resolve(kind)
+		if err != nil {
+			log.Warn("liveness probe: no bridge for kind", "execution", exec.ID, "kind", kind, "error", err)
+			return false
+		}
+		rep, ok := bridge.(scheduler.LivenessReporter)
+		if !ok {
+			log.Warn("liveness probe: bridge does not support liveness", "execution", exec.ID, "kind", kind)
+			return false
+		}
+		return rep.IsExecutionActive(exec.ID)
+	}
+}
+
+// orchiconRegistryResolver returns a lazily-resolving ProviderResolver
+// for the native session engine. The providers registry is constructed
+// inside api.Mount (the providers settings core, ADR-0006); the resolver
+// defers to it on first dispatch so construction order stays a single
+// Mount call.
+func orchiconRegistryResolver(deps *api.Dependencies, pool *db.Pool, kek []byte, log *slog.Logger) orchicon.ProviderResolver {
+	return orchicon.ProviderResolverFunc(func(ctx context.Context, tenantID, providerID string) (orchicon.Provider, error) {
+		svc := deps.ProvidersService
+		if svc == nil {
+			return nil, fmt.Errorf("providers service not yet constructed (api.Mount) — orchicon adapter kind not ready")
+		}
+		reg := svc.Registry()
+		return reg.Get(ctx, tenantID, providerID)
+	})
 }

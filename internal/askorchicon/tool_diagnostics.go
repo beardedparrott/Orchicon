@@ -144,6 +144,7 @@ func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage
 		StallNudgeMax                    int32   `json:"stall_nudge_max"`
 		StallNudgeReplyWindowSeconds     int64   `json:"stall_nudge_reply_window_seconds"`
 		StallNudgeCooldownSeconds        int64   `json:"stall_nudge_cooldown_seconds"`
+		StallToolHangSeconds             int64   `json:"stall_tool_hang_seconds"`
 		DefaultBudgetOverrides           *string `json:"default_budget_overrides"`
 		ExecutionReapGraceSeconds        int64   `json:"execution_reap_grace_seconds"`
 		ExecutionReapConsecutiveFailures int32   `json:"execution_reap_consecutive_failures"`
@@ -152,6 +153,17 @@ func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
+	}
+	// Validate the default model refs against the shared adapter/provider/model
+	// grammar BEFORE touching the DB (parity with the SettingsService RPC): a
+	// malformed or unknown-adapter ref must never persist through this
+	// agent-controlled second write path into tenant_settings. Empty/unset is
+	// valid (toolValidateModelRef treats it as such).
+	if err := toolValidateModelRef(params.DefaultAskOrchiconModel); err != nil {
+		return nil, fmt.Errorf("default_ask_orchicon_model: %w", err)
+	}
+	if err := toolValidateModelRef(params.DefaultWorkerModel); err != nil {
+		return nil, fmt.Errorf("default_worker_model: %w", err)
 	}
 	var budget []byte
 	if params.DefaultBudgetOverrides != nil {
@@ -181,6 +193,7 @@ func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage
 		StallNudgeMax:                    params.StallNudgeMax,
 		StallNudgeReplyWindowSeconds:     params.StallNudgeReplyWindowSeconds,
 		StallNudgeCooldownSeconds:        params.StallNudgeCooldownSeconds,
+		StallToolHangSeconds:             params.StallToolHangSeconds,
 		DefaultBudgetOverrides:           budget,
 		ExecutionReapGraceSeconds:        params.ExecutionReapGraceSeconds,
 		ExecutionReapConsecutiveFailures: params.ExecutionReapConsecutiveFailures,
@@ -188,6 +201,15 @@ func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage
 		SessionRefreshTokenTtlSeconds:    params.SessionRefreshTokenTtlSeconds,
 	}
 	inRow.Budget = cur.Budget
+	// Preserve the current compaction/memory policy columns when the
+	// client's budget JSON omits the context_compaction/memory keys (D4
+	// partial-update semantics — absent keys must never clobber stored
+	// policy with zeros).
+	inRow.ContextCompactionEnabled = cur.ContextCompactionEnabled
+	inRow.ContextCompactionPressureFrac = cur.ContextCompactionPressureFrac
+	inRow.ContextRecentTurns = cur.ContextRecentTurns
+	inRow.MemoryEnabled = cur.MemoryEnabled
+	inRow.MemoryDigestEntries = cur.MemoryDigestEntries
 	if err := inRow.ApplyBudgetJSON(budget); err != nil {
 		return nil, fmt.Errorf("invalid default_budget_overrides: %w", err)
 	}

@@ -2,23 +2,25 @@ package worker
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/domain"
 )
 
 // Service-level tests for the worker header role binding (role_ref): the
 // binding round-trips through create/get/list, unknown roles are rejected
 // at the API boundary, and — because the binding lives on the header (not
-// the version) — it is editable on published workers, unlike
-// name/description/purpose which stay draft-only. Skipped unless
-// ORCHICON_TEST_DSN points at a disposable database (same convention as
-// the other DB-backed worker tests).
+// the version) — it is editable on every status, including published and
+// retired workers. Header TEXT is editable on every status EXCEPT retired.
+// Skipped unless ORCHICON_TEST_DSN points at a disposable database (same
+// convention as the other DB-backed worker tests).
 //
-//	export ORCHICON_TEST_DSN='postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable'
-//	go test ./internal/worker/ -run 'Test.*RoleRef' -v
+//	export ORCHICON_TEST_DSN='postgres://orchicon:orchicon@localhost:5432/orchicon_scratch?sslmode=disable'
+//	go test ./internal/worker/ -run 'Test.*RoleRef|TestUpdateWorkerPublishedHeaderText|TestUpdateWorkerRetiredHeaderText' -v
 
 // createTestRole creates a tenant-scoped role for the test tenant.
 func createTestRole(t *testing.T, pool *db.Pool, tenantID string) string {
@@ -63,7 +65,6 @@ func TestCreateWorkerRoleRefRoundTrip(t *testing.T) {
 	resp, err := s.CreateWorker(ctx, connect.NewRequest(&apiv1.CreateWorkerRequest{
 		Name:       "role-bound",
 		ModelRef:   "opencode/deepseek-v4-flash",
-		RuntimeRef: "opencode",
 		RoleRef:    roleID,
 	}))
 	if err != nil {
@@ -93,7 +94,6 @@ func TestCreateWorkerUnknownRoleRejected(t *testing.T) {
 	_, err := s.CreateWorker(ctx, connect.NewRequest(&apiv1.CreateWorkerRequest{
 		Name:       "bad-role",
 		ModelRef:   "opencode/deepseek-v4-flash",
-		RuntimeRef: "opencode",
 		RoleRef:    "r_does_not_exist",
 	}))
 	if err == nil {
@@ -127,19 +127,67 @@ func TestUpdateWorkerRoleRefOnPublished(t *testing.T) {
 	}
 }
 
-// TestUpdateWorkerPublishedMixedFieldsRejected: a published worker can
-// change its role binding only — mixing in draft-only header fields is
-// rejected.
-func TestUpdateWorkerPublishedMixedFieldsRejected(t *testing.T) {
+// TestUpdateWorkerPublishedHeaderTextAndRoleInOneCall: a published worker
+// accepts header text AND the role binding in ONE request.
+//
+// This INVERTS the previous contract (TestUpdateWorkerPublishedMixedFieldsRejected,
+// which asserted the pair was refused). The refusal made a published worker's
+// name, purpose and description permanently unfixable — workers.status never
+// returns to draft, so no path could reopen them (104 workers on the dev
+// tenant). Header text is a label, not versioned content: workflow steps
+// reference a worker by ID, and the slug is immutable after create.
+func TestUpdateWorkerPublishedHeaderTextAndRoleInOneCall(t *testing.T) {
 	pool, s, ctx, tenantID := bulkEnv(t)
 	roleID := createTestRole(t, pool, tenantID)
 	id := createPublishedWorker(t, ctx, s, "pub-mixed")
-	_, err := s.UpdateWorker(ctx, connect.NewRequest(&apiv1.UpdateWorkerRequest{Id: id, Name: "renamed", RoleRef: &roleID}))
+
+	resp, err := s.UpdateWorker(ctx, connect.NewRequest(&apiv1.UpdateWorkerRequest{
+		Id: id, Name: "renamed", Purpose: "a new purpose", RoleRef: &roleID,
+	}))
+	if err != nil {
+		t.Fatalf("header text + role on a published worker: %v", err)
+	}
+	if got := resp.Msg.Worker.GetName(); got != "renamed" {
+		t.Errorf("name = %q, want renamed", got)
+	}
+	if got := resp.Msg.Worker.GetPurpose(); got != "a new purpose" {
+		t.Errorf("purpose = %q, want the new purpose", got)
+	}
+	if got := workerRoleRef(t, ctx, s, id); got != roleID {
+		t.Errorf("role_ref = %q, want %q", got, roleID)
+	}
+	// The version trail is untouched by a header change: no new version, and
+	// the existing one stays published.
+	_, status := workerVersionStatus(t, pool, tenantID, id, 1)
+	if status != "published" {
+		t.Errorf("v1 status = %s, want published (a header change is not a version)", status)
+	}
+}
+
+// TestUpdateWorkerRetiredHeaderTextRejected: RETIRED is the one status that
+// still refuses header text, and it must say so clearly. Without the explicit
+// check the request would reach the DB gate, match no row, and surface as
+// "worker not found" — telling the operator the worker does not exist.
+func TestUpdateWorkerRetiredHeaderTextRejected(t *testing.T) {
+	pool, s, ctx, tenantID := bulkEnv(t)
+	id := createPublishedWorker(t, ctx, s, "retired-header")
+	forceWorkerStatus(t, pool, tenantID, id, domain.WorkerRetired)
+
+	_, err := s.UpdateWorker(ctx, connect.NewRequest(&apiv1.UpdateWorkerRequest{Id: id, Name: "renamed"}))
 	if err == nil {
-		t.Fatal("mixed update on published worker: want error")
+		t.Fatal("renaming a retired worker: want an error")
 	}
 	if code := connect.CodeOf(err); code != connect.CodeInvalidArgument {
 		t.Fatalf("error code = %v, want invalid_argument", code)
+	}
+	if msg := err.Error(); strings.Contains(msg, "not found") {
+		t.Errorf("error = %q, want it to name the retired rule rather than claiming the worker is missing", msg)
+	}
+	// The role binding is still accepted on a retired worker — it gates plane
+	// access and is not header content.
+	roleID := createTestRole(t, pool, tenantID)
+	if _, err := s.UpdateWorker(ctx, connect.NewRequest(&apiv1.UpdateWorkerRequest{Id: id, RoleRef: &roleID})); err != nil {
+		t.Fatalf("role binding on a retired worker must still be accepted: %v", err)
 	}
 }
 

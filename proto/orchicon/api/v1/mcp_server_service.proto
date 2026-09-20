@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "orchicon/api/v1/mcp_server.proto";
+
+// MCPService (adapter-settings MCP management): the tenant-facing MCP
+// server surface behind Settings → Adapters → MCP, mirroring
+// ProviderService. CRUD over server entries (stdio + streamable HTTP),
+// the curated registry catalog (list + one-click prefill), explicit-only
+// auto-install with dry-run + runtime detection, write-only credentials
+// via the tenant secrets store, and project/tenant-default selections
+// (references, never copies). The sibling MCP-client task consumes the
+// stored entries at session time.
+service MCPService {
+  rpc ListMCPServers(MCPServerListRequest) returns (MCPServerListResponse);
+  rpc GetMCPServer(MCPServerGetRequest) returns (MCPServerGetResponse);
+  rpc CreateMCPServer(MCPServerCreateRequest) returns (MCPServerCreateResponse);
+  rpc UpdateMCPServer(MCPServerUpdateRequest) returns (MCPServerUpdateResponse);
+  rpc DeleteMCPServer(MCPServerDeleteRequest) returns (MCPServerDeleteResponse);
+
+  rpc ListMCPCatalog(MCPCatalogListRequest) returns (MCPCatalogListResponse);
+  rpc PrefillMCPCatalogEntry(MCPCatalogPrefillRequest) returns (MCPCatalogPrefillResponse);
+
+  rpc InstallMCPRuntime(MCPServerInstallRequest) returns (MCPServerInstallResponse);
+  rpc DetectMCPRuntimes(MCPRuntimeDetectRequest) returns (MCPRuntimeDetectResponse);
+
+  rpc SetMCPServerSecret(MCPServerSetSecretRequest) returns (MCPServerSetSecretResponse);
+  rpc ClearMCPServerSecret(MCPServerClearSecretRequest) returns (MCPServerClearSecretResponse);
+
+  rpc SetProjectMCPServers(ProjectMCPServersSetRequest) returns (ProjectMCPServersSetResponse);
+  rpc GetProjectMCPServers(ProjectMCPServersGetRequest) returns (ProjectMCPServersGetResponse);
+  rpc SetTenantDefaultMCPServers(TenantDefaultMCPServersSetRequest) returns (TenantDefaultMCPServersSetResponse);
+  rpc GetTenantDefaultMCPServers(TenantDefaultMCPServersGetRequest) returns (TenantDefaultMCPServersGetResponse);
+}

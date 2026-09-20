@@ -1,0 +1,10 @@
+{
+  "name": "multi-hunk-three-context",
+  "path": "src/app.go",
+  "before": "a1\na2\na3\na4\na5\na6\na7\na8\na9\na10\na11\na12\na13\na14\na15\n",
+  "after": "A1\na2\na3\na4\na5\na6\na7\na8\na9\na10\na11\na12\na13\na14\nA15\n",
+  "expected_kind": "modify",
+  "expected_unified_diff": "--- a/src/app.go\n+++ b/src/app.go\n@@ -1,4 +1,4 @@\n-a1\n+A1\n a2\n a3\n a4\n@@ -12,4 +12,4 @@\n a12\n a13\n a14\n-a15\n+A15\n",
+  "expected_binary": false,
+  "expected_truncated": false
+}

@@ -34,10 +34,34 @@ service AskOrchiconService {
   rpc UpdateConversationTitle(UpdateConversationTitleRequest) returns (UpdateConversationTitleResponse);
 
   // SetConversationMode switches the active persona for a conversation
-  // (brainstorm <-> orchicon). The change applies from the NEXT message on:
-  // the same opencode session persists and the per-turn system prompt swaps
-  // with no session change or serve restart.
+  // (Brainstorm | Iteration | Quick Work — see BuildSystemPrompt). The change
+  // applies from the NEXT message on: the same opencode session persists and
+  // the per-turn system prompt swaps with no session change or serve restart.
   rpc SetConversationMode(SetConversationModeRequest) returns (SetConversationModeResponse);
+
+  // SetConversationModel retargets a conversation's model_ref. The change
+  // applies from the NEXT message on; when it changes the ADAPTER segment the
+  // bridge is re-resolved for subsequent turns (the serve session is
+  // re-established against the new adapter). An EMPTY ref clears the override,
+  // so the conversation falls back to the tenant default
+  // (default_ask_orchicon_model). This is what lets an operator retarget an
+  // already-open chat instead of starting a new one.
+  rpc SetConversationModel(SetConversationModelRequest) returns (SetConversationModelResponse);
+
+  // SetConversationProject places a conversation in a PROJECT (or clears it),
+  // which is the second, higher level of organization over conversations: the
+  // rail and the GUI sidebar list projects as the parent group, every project
+  // gets a folder whether or not it has conversations yet, and this rpc is what
+  // a drag-into-a-folder or a TUI /project resolves to.
+  //
+  // A project is the workspace the chat's work happens in — its project_dir is
+  // the directory the Ask file/shell suite is scoped to — so setting it also
+  // tells the agent WHICH project folder the chat belongs to, and that is what
+  // makes all three modes context-aware (see BuildSystemPrompt). An EMPTY
+  // project_id unassigns the conversation. An unknown id is rejected: a
+  // conversation can be unassigned, but it can never point at a project that
+  // does not exist.
+  rpc SetConversationProject(SetConversationProjectRequest) returns (SetConversationProjectResponse);
 
   // Messages.
 
@@ -81,6 +105,38 @@ service AskOrchiconService {
   // TurnStarted); reusing the type is deliberate.
   rpc InterjectConversationTurn(InterjectConversationTurnRequest)
       returns (stream ChatStreamResponse);
+
+  // WatchTurnStream re-attaches to an ACKED turn's live event stream after
+  // the ChatStream socket dropped (network blip, server restart,
+  // backgrounded tab) WITHOUT dispatching a new turn. The server looks up
+  // the conversation's in-flight turn in the turn registry and replays
+  // subsequent TextChunk / ReasoningChunk / Heartbeat events to this
+  // stream; if no turn is running (or the assistant message id does not
+  // match the running turn), it returns NotFound and the client falls back
+  // to the ListMessages completion poll. Stale generations never clobber:
+  // the client opens this under its dispatch-gen guards and ignores chunks
+  // once the poll resolves the turn.
+  // buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE — the watch stream is the
+  // same ChatStreamResponse oneof as ChatStream; reusing the type is
+  // deliberate.
+  rpc WatchTurnStream(WatchTurnStreamRequest) returns (stream ChatStreamResponse);
+
+  // CompactConversation compacts a conversation's accumulated context so a
+  // long-running session can keep going instead of failing on the model's
+  // context limit. Adapter-scoped: a session-FUL adapter summarizes its own
+  // session in place (opencode POST /session/{id}/summarize); a SESSIONLESS
+  // adapter (native) reduces the history it would re-send and replaces it
+  // with a summary plus the most recent turns.
+  //
+  // This is the escape hatch for a conversation already past its window: the
+  // sessionless transport re-sends the full history every turn, so once the
+  // history exceeds the window EVERY subsequent send fails and the
+  // conversation is permanently wedged. Compaction is the only way back.
+  //
+  // reason is recorded for the audit trail and the transcript marker:
+  // "manual" (a user asked), "pressure" (the proactive window gate fired),
+  // or "reactive" (a provider context-limit error was caught).
+  rpc CompactConversation(CompactConversationRequest) returns (CompactConversationResponse);
 
   // Attachments.
 
@@ -131,6 +187,10 @@ message CreateConversationRequest {
   string initial_message = 2;
   // mode is the starting persona. Unset/UNSPECIFIED defaults to BRAINSTORM.
   ConversationMode mode = 3;
+  // project_id is the project this conversation belongs to. Empty creates an
+  // unassigned conversation; the GUI's per-project "new conversation" button
+  // and the TUI's create-in-folder both set it. An unknown id is rejected.
+  string project_id = 4;
 }
 
 message CreateConversationResponse {
@@ -143,6 +203,30 @@ message SetConversationModeRequest {
 }
 
 message SetConversationModeResponse {
+  Conversation conversation = 1;
+}
+
+message SetConversationModelRequest {
+  string id = 1;
+  // model_ref is canonical adapter/provider/model (ADR-0003); a legacy
+  // 1/2-segment ref is accepted and infers adapter "opencode". Empty clears
+  // the per-conversation override so the tenant default applies.
+  string model_ref = 2;
+}
+
+message SetConversationModelResponse {
+  Conversation conversation = 1;
+}
+
+message SetConversationProjectRequest {
+  string id = 1;
+  // project_id is the project to place the conversation in. Empty UNASSIGNS it
+  // (the conversation survives, it just leaves the project folder). A non-empty
+  // id must name an existing project.
+  string project_id = 2;
+}
+
+message SetConversationProjectResponse {
   Conversation conversation = 1;
 }
 
@@ -191,6 +275,7 @@ message ChatStreamResponse {
     DoneSignal done = 5;
     TurnStarted turn_started = 6;
     ReasoningChunk reasoning = 7;
+    Heartbeat heartbeat = 8;
   }
 }
 
@@ -209,6 +294,15 @@ message AbortConversationTurnRequest {
 
 message AbortConversationTurnResponse {}
 
+// WatchTurnStreamRequest identifies the running turn to re-attach to: the
+// conversation plus the assistant message id ACKED by the original
+// ChatStream TurnStarted. Both must match the registry entry or the RPC
+// fails with NotFound (no clobber across supersedes).
+message WatchTurnStreamRequest {
+  string conversation_id = 1;
+  string assistant_message_id = 2;
+}
+
 // InterjectConversationTurnRequest identifies the conversation to interject
 // and carries the steering message. The message replaces (supersedes) the
 // in-flight turn and is answered on a fresh turn; attachments are optional.
@@ -216,6 +310,36 @@ message InterjectConversationTurnRequest {
   string conversation_id = 1;
   string message = 2;
   repeated AttachmentInput attachments = 3;
+}
+
+// CompactConversationRequest identifies the conversation to compact.
+message CompactConversationRequest {
+  string conversation_id = 1;
+  // reason records WHY the compaction happened: "manual", "pressure", or
+  // "reactive". Free-form and advisory; recorded verbatim in the audit trail.
+  string reason = 2;
+}
+
+// CompactConversationResponse reports the outcome of a compaction. It is a
+// synchronous result (not a stream): compaction is a single bounded operation
+// and the caller needs only the verdict plus the reason when it declined.
+message CompactConversationResponse {
+  // compacted is false when nothing was done — an empty history, or a
+  // history already small enough that a lossy collapse would cost detail for
+  // no benefit. detail always says why.
+  bool compacted = 1;
+  // detail is a one-line, user-facing explanation of the outcome (shown
+  // verbatim in the transcript marker and the composer notice).
+  string detail = 2;
+  // summary is the generated summary text that replaced the collapsed
+  // history. Empty when compacted is false.
+  string summary = 3;
+  // context_tokens_before / context_tokens_after are the conversation's
+  // prompt size around the compaction — MEASURED only. 0 means "unknown":
+  // this field is never populated from an estimate (an estimate is reported
+  // in detail instead), so a caller can trust a non-zero value as real.
+  int64 context_tokens_before = 4;
+  int64 context_tokens_after = 5;
 }
 
 // --- Attachments ---

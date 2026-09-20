@@ -177,6 +177,34 @@ message RecurringSchedule {
   // anchored at start_date+start_time and truncated to the window.
   string window_start = 7; // HH:MM, inclusive
   string window_end = 8;   // HH:MM, exclusive — must be > window_start
+
+  // timezone is the IANA zone the wall-clock fields above are expressed in
+  // ("America/Chicago", "Europe/Berlin"). It is REQUIRED for a new schedule and
+  // is stamped by the creating client from its own system zone.
+  //
+  // WHY A RECURRENCE NEEDS A ZONE AND A TIMESTAMP DOES NOT. A one-shot
+  // scheduled_start_at is an INSTANT: it converts to UTC by construction and
+  // needs no zone. A recurrence is a WALL-CLOCK RULE — "09:00 every day" — and
+  // that phrase denotes a different instant in summer and winter (09:00 CDT and
+  // 09:00 CST are an hour apart), so it cannot be flattened into a single UTC
+  // instant without losing an hour for half the year. The zone travels with the
+  // rule; the wall clock stays a wall clock. This is the same division iCal
+  // makes with RRULE + TZID, and cron with CRON_TZ.
+  //
+  // EMPTY MEANS UTC, and that is the LEGACY semantic, preserved deliberately: a
+  // schedule written before this field existed must keep firing at exactly the
+  // instant it fires at today, so an empty timezone resolves to UTC. New
+  // schedules always carry a zone. Existing rows are NOT backfilled.
+  //
+  // "Local" IS REJECTED. time.LoadLocation("Local") SUCCEEDS and resolves to the
+  // reading machine's own zone, so it would pass a naive validity check while
+  // meaning something DIFFERENT on the server than on the client — a schedule
+  // stamped "Local" by a Central-time client would fire at the server's local
+  // time (UTC in a container). A zone that is only meaningful relative to
+  // whoever reads it is not a zone.
+  //
+  // Stored as a key inside the recurring_schedule JSONB (no new column).
+  string timezone = 9;
 }
 
 // WorkItemStatus — schedulable kinds follow:

@@ -27,7 +27,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
-	"github.com/beardedparrott/orchicon/internal/opencode"
+	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 	"github.com/beardedparrott/orchicon/internal/transcript"
 	"github.com/jackc/pgx/v5"
@@ -50,15 +50,16 @@ type Service struct {
 	apiv1connect.UnimplementedExecutionServiceHandler
 
 	// sendExecMessage routes a mid-run human message into a live session
-	// execution (Stage 3). Injected by the server (wired to the opencode
-	// adapter's SendExecutionMessage); nil when the session transport is
-	// unavailable → SendExecutionMessage returns Unimplemented.
+	// execution (Stage 3). Injected by the server (dispatcher-based — any
+	// registered MessageInjector adapter kind, e.g. the native orchicon and
+	// opencode bridges, via SendExecutionMessage); nil when the session
+	// transport is unavailable → SendExecutionMessage returns Unimplemented.
 	sendExecMessage func(ctx context.Context, execID, message string) error
 
 	// continueSession runs a one-shot follow-up question against a worker's
 	// session in place (no new execution/work item), recording the reply
 	// into the durable transcript. Injected by the server.
-	continueSession func(ctx context.Context, opts opencode.ContinueSessionOpts) (string, error)
+	continueSession func(ctx context.Context, opts scheduler.ContinueSessionOpts) (string, error)
 
 	// abortSession stops a live execution's opencode session when a human
 	// cancels it (wired to the opencode adapter's AbortExecution). Without it
@@ -77,14 +78,15 @@ type Service struct {
 }
 
 // SetSendExecutionMessage injects the live-session message router (the
-// opencode adapter's SendExecutionMessage). Nil = the RPC is unavailable.
+// dispatcher-resolved MessageInjector — any registered adapter kind, not
+// just opencode). Nil = the RPC is unavailable.
 func (s *Service) SetSendExecutionMessage(fn func(ctx context.Context, execID, message string) error) {
 	s.sendExecMessage = fn
 }
 
 // SetContinueSession injects the in-place follow-up runner (the opencode
 // adapter's ContinueSession). Nil = the RPC is unavailable.
-func (s *Service) SetContinueSession(fn func(ctx context.Context, opts opencode.ContinueSessionOpts) (string, error)) {
+func (s *Service) SetContinueSession(fn func(ctx context.Context, opts scheduler.ContinueSessionOpts) (string, error)) {
 	s.continueSession = fn
 }
 
@@ -142,6 +144,7 @@ func (s *Service) GetExecution(ctx context.Context, req *connect.Request[apiv1.G
 	}
 	p := rowToProto(e)
 	s.enrichSystemPrompt(ctx, ttx.Tx, tenantID, p, e)
+	s.enrichUsageTotals(ctx, ttx.Tx, tenantID, p, e.ID)
 	return connect.NewResponse(&apiv1.GetExecutionResponse{Execution: p}), nil
 }
 
@@ -183,9 +186,34 @@ func (s *Service) ListExecutions(ctx context.Context, req *connect.Request[apiv1
 		return nil, mapDBError(err)
 	}
 	resp := &apiv1.ListExecutionsResponse{}
+	// ENRICH THE PAGE IN ONE QUERY, NOT ONE PER ROW.
+	//
+	// Usage totals are summed for the WHOLE page in a single grouped query (db.SumUsageForExecutions).
+	// It used to be one query per row, which was survivable at one page of 100 and is not now that
+	// every list fetches itself whole: the executions list pulls ~3k rows, so the per-row form issued
+	// ~5,900 queries for a single screen load. The operator: "The initial execution page load is
+	// pretty slow."
+	ids := make([]string, 0, len(execs))
+	for _, e := range execs {
+		ids = append(ids, e.ID)
+	}
+	totals, terr := db.SumUsageForExecutions(ctx, ttx.Tx, tenantID, ids)
+	if terr != nil {
+		// Best-effort, like every enrichment here: the list still renders from the row's own
+		// (write-never) columns rather than failing the whole page over a totals read.
+		s.log.Warn("list executions: usage totals", "error", terr)
+	}
 	for _, e := range execs {
 		p := rowToProto(e)
-		s.enrichSystemPrompt(ctx, ttx.Tx, tenantID, p, e)
+		if t, ok := totals[e.ID]; ok {
+			p.TokenUsage = t.Tokens
+			p.CostUsd = t.CostUSD
+		}
+		// enrichSystemPrompt is DELIBERATELY NOT CALLED HERE. It loads the step run's `_prompt` —
+		// tens of kilobytes of JSON — and it is a DETAIL-ONLY field: the TUI never reads it, and no
+		// list consumer in the GUI does either (only the execution detail route and the worker detail
+		// use it, and both call GetExecution). Paying for it once per row, on a list nobody reads it
+		// from, was most of the load time. GetExecution still enriches it, so the detail is unchanged.
 		resp.Executions = append(resp.Executions, p)
 	}
 	if len(execs) > 0 {
@@ -692,6 +720,19 @@ func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Requ
 		"_follow_up_message":   q,
 		"_is_follow_up":        "true",
 	})
+	// Workflow-first: standalone dispatch is retired, so the follow-up item
+	// must be workflow-BOUND to be dispatchable — the TaskReconciler's only
+	// remaining non-step-run dispatch path is "a workflow-bound item", and it
+	// FAILS a workflow-less ready item loudly. Without this binding the
+	// follow-up would be created and then immediately failed (nothing to run
+	// inside). Inherit the parent item's binding; without one there is nothing
+	// to execute the follow-up, so reject loudly here instead of creating a
+	// doomed item.
+	followUpWorkflowID := task.WorkflowID
+	if followUpWorkflowID == nil || *followUpWorkflowID == "" {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("Cannot start a follow-up for %q: its work item has no workflow bound, so nothing would execute the follow-up. Bind a workflow to the item first.", task.Title))
+	}
 	newWI := db.WorkItemRow{
 		ID:                db.NewID(),
 		TenantID:          tenantID,
@@ -700,6 +741,7 @@ func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Requ
 		Kind:              domain.WorkItemKindTask,
 		Title:             fmt.Sprintf("Follow-up: %s", strings.TrimSpace(task.Title)),
 		Status:            domain.WorkItemReady,
+		WorkflowID:        followUpWorkflowID,
 		AssignedWorkerRef: task.AssignedWorkerRef,
 		Priority:          task.Priority,
 		PromptContext:     promptCtx,
@@ -1035,6 +1077,26 @@ func rowToProto(e db.ExecutionRow) *apiv1.WorkerExecution {
 	return p
 }
 
+// enrichUsageTotals fills the execution's tokenUsage/costUsd from the
+// usage-records sum (the AI Gateway dual-write source of truth). The
+// worker_executions row columns are write-never (always zero), so without
+// this every API consumer — including Ask Orchicon agents — reports 0
+// tokens for executions the detail card correctly shows spend for.
+// Best-effort: a query failure leaves the row values rather than failing
+// the whole read.
+func (s *Service) enrichUsageTotals(ctx context.Context, tx pgx.Tx, tenantID string, p *apiv1.WorkerExecution, executionID string) {
+	if p == nil || executionID == "" {
+		return
+	}
+	tokens, cost, err := db.SumUsageForExecution(ctx, tx, tenantID, executionID)
+	if err != nil {
+		s.log.Warn("usage totals unavailable, leaving row values", "execution", executionID, "error", err)
+		return
+	}
+	p.TokenUsage = tokens
+	p.CostUsd = cost
+}
+
 // enrichSystemPrompt resolves the ACTUAL system prompt the execution was
 // dispatched with — the workflow step run's `_prompt` (per-step composite).
 // The execution detail page must show this, not the shared work item's
@@ -1223,11 +1285,20 @@ func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Req
 	// follow-up's per-message system prompt is applied to the turn, so
 	// without this every follow-up turn would lose the safety block.
 	runtimeImage := ""
+	executionMode := db.ExecutionModeRuntime
+	var wiTitle, wiContext string
+	wiContextWindow := 0
 	if wi, werr := db.GetWorkItem(ctx, ttx.Tx, tenantID, exec.TaskID); werr == nil {
 		runtimeImage = wi.RuntimeImage
+		wiTitle = wi.Title
+		wiContext = wi.Description
+		wiContextWindow = wi.ContextWindow
+		if proj, perr := db.GetProject(ctx, ttx.Tx, tenantID, wi.ProjectID); perr == nil && proj.ExecutionMode == db.ExecutionModeLocal {
+			executionMode = db.ExecutionModeLocal
+		}
 	}
-	context, sessionID, serveURL, servePassword := renderSessionContext(parts)
-	systemPrompt := composeFollowUpPrompt(version, runtimeImage)
+	context, sessionID, serveURL, servePassword, recordedAdapterKind := renderSessionContext(parts)
+	systemPrompt := composeFollowUpPrompt(version, runtimeImage, executionMode)
 	startSeq := int64(0)
 	for _, p := range parts {
 		if p.Seq > startSeq {
@@ -1236,18 +1307,35 @@ func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Req
 	}
 	startSeq++ // next seq after the original run
 
-	reply, err := s.continueSession(ctx, opencode.ContinueSessionOpts{
-		ExecutionID:   msg.ExecutionId,
-		TenantID:      tenantID,
-		SystemPrompt:  systemPrompt,
-		ModelRef:      version.ModelRef,
-		ProjectDir:    projectDir,
-		Message:       msg.Message,
-		Context:       context,
-		SessionID:     sessionID,
-		ServeURL:      serveURL,
-		ServePassword: servePassword,
-		StartSeq:      startSeq,
+	worktreePath := ""
+	if exec.WorktreePath != nil {
+		worktreePath = *exec.WorktreePath
+	}
+
+	reply, err := s.continueSession(ctx, scheduler.ContinueSessionOpts{
+		ExecutionID:        msg.ExecutionId,
+		TenantID:           tenantID,
+		SystemPrompt:       systemPrompt,
+		ModelRef:           version.ModelRef,
+		ProjectDir:         projectDir,
+		Message:            msg.Message,
+		Context:            context,
+		SessionID:          sessionID,
+		ServeURL:           serveURL,
+		ServePassword:      servePassword,
+		AdapterKind:        recordedAdapterKind,
+		WorkerID:           exec.WorkerID,
+		StartSeq:           startSeq,
+		WorktreePath:       worktreePath,
+		RuntimeImage:       runtimeImage,
+		RuntimeWorkflowID:  exec.WorkflowRunID,
+		ExecutionMode:      executionMode,
+		WorkerName:         exec.WorkerName,
+		ProjectID:          exec.ProjectID,
+		TaskID:             exec.TaskID,
+		Goal:               wiTitle,
+		AcceptanceCriteria: wiContext,
+		ContextWindow:      int64(wiContextWindow),
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
@@ -1297,9 +1385,9 @@ func (s *Service) GetExecutionTodos(ctx context.Context, req *connect.Request[ap
 // per-message system prompt would silently drop the HARD-limit safety rules.
 // runtimeImage is the run's runtime container image tag ("" falls back to the
 // default in the prefix text).
-func composeFollowUpPrompt(v db.WorkerVersionRow, runtimeImage string) string {
+func composeFollowUpPrompt(v db.WorkerVersionRow, runtimeImage, executionMode string) string {
 	var sb strings.Builder
-	sb.WriteString(db.StablePromptPrefix(runtimeImage))
+	sb.WriteString(db.StablePromptPrefix(runtimeImage, executionMode))
 	if v.Role == "" && v.Skills == "" && v.Behavior == "" && v.AgentsMD == "" {
 		if v.SystemPrompt != "" {
 			sb.WriteString("\n\n")
@@ -1326,14 +1414,20 @@ func composeFollowUpPrompt(v db.WorkerVersionRow, runtimeImage string) string {
 
 // renderSessionContext renders the durable transcript into a readable
 // chronological context for a follow-up seed and extracts the original
-// session identity (session_info part). The context is bounded so a long
-// session doesn't blow the model window. The per-part rendering is shared
-// with the scheduler's recovery seed via the leaf transcript package.
-func renderSessionContext(parts []db.SessionPart) (context, sessionID, serveURL, servePassword string) {
+// session identity (session_info part): the recorded session id, serve URL,
+// and — for transcripts written since the adapter identity landed — the
+// adapter kind the session belonged to. The adapter kind is what lets the
+// follow-up resolve the transport from the execution's adapter instead of
+// from a per-execution serve; it is empty for legacy rows. The context is
+// bounded so a long session doesn't blow the model window. The per-part
+// rendering is shared with the scheduler's recovery seed via the leaf
+// transcript package.
+func renderSessionContext(parts []db.SessionPart) (context, sessionID, serveURL, servePassword, adapterKind string) {
 	for _, p := range parts {
 		var pl struct {
-			SID  string `json:"session_id"`
-			SURL string `json:"serve_url"`
+			SID   string `json:"session_id"`
+			SURL  string `json:"serve_url"`
+			AKind string `json:"adapter_kind"`
 		}
 		_ = json.Unmarshal(p.Payload, &pl)
 		if pl.SID != "" {
@@ -1342,8 +1436,11 @@ func renderSessionContext(parts []db.SessionPart) (context, sessionID, serveURL,
 		if pl.SURL != "" {
 			serveURL = pl.SURL
 		}
+		if pl.AKind != "" {
+			adapterKind = pl.AKind
+		}
 	}
-	return transcript.RenderParts(parts, 60000, 2000, "\n…(conversation truncated)\n"), sessionID, serveURL, servePassword
+	return transcript.RenderParts(parts, 60000, 2000, "\n…(conversation truncated)\n"), sessionID, serveURL, servePassword, adapterKind
 }
 
 func strPtr(s string) *string { return &s }

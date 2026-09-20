@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
+	"sync"
 
 	"connectrpc.com/connect"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
@@ -21,26 +23,29 @@ import (
 	"github.com/beardedparrott/orchicon/internal/askorchicon"
 	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/blobstore"
+	"github.com/beardedparrott/orchicon/internal/category"
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/execution"
+	"github.com/beardedparrott/orchicon/internal/fileedit"
+	"github.com/beardedparrott/orchicon/internal/mcpsettings"
 	"github.com/beardedparrott/orchicon/internal/middleware"
 	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/policy"
 	"github.com/beardedparrott/orchicon/internal/project"
+	"github.com/beardedparrott/orchicon/internal/providers"
 	"github.com/beardedparrott/orchicon/internal/recovery"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/runtimeimage"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
+	"github.com/beardedparrott/orchicon/internal/secrets"
 	"github.com/beardedparrott/orchicon/internal/settings"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/version"
 	"github.com/beardedparrott/orchicon/internal/webhook"
-	"github.com/beardedparrott/orchicon/internal/category"
 	"github.com/beardedparrott/orchicon/internal/worker"
 	"github.com/beardedparrott/orchicon/internal/workflow"
-	"github.com/beardedparrott/orchicon/internal/secrets"
 	"github.com/beardedparrott/orchicon/internal/workitem"
 )
 
@@ -58,6 +63,17 @@ type Dependencies struct {
 	// (ORCHICON_SECRETS_KEK override, or the per-instance data-dir key).
 	// nil/len != 32 disables the store (fail-closed at the service layer).
 	SecretsKEK []byte
+	// UsageRecorder is the shared AI Gateway usage recorder (Postgres +
+	// OTel dual-write) worker executions use. Wired into Ask Orchicon so
+	// Ask sessions capture live usage per adapter. Nil disables Ask usage
+	// recording.
+	UsageRecorder *aigateway.UsageRecorder
+	// FileEditService is the shared diff-pipeline ledger service (server
+	// constructed over the PG store). Wired into Ask Orchicon so Ask
+	// conversations ledger file edits from real file-state snapshots
+	// (owner_kind ask_conversation) — the same ground truth executions
+	// record. Nil disables the Ask-side ledger.
+	FileEditService *fileedit.Service
 	// GrafanaURL is the base URL of the Grafana UI (default
 	// http://localhost:3000). Used by the /grafana reverse proxy so the
 	// embedded iframe works same-origin (docs/10 §11). Grafana runs with
@@ -73,8 +89,36 @@ type Dependencies struct {
 	// ModelDiscoverer enumerates models from opencode CLI.
 	ModelDiscoverer *aigateway.ModelDiscoverer
 	MCPDiscoverer   *aigateway.MCPDiscoverer
+	// ModelRefRegistry is the per-adapter provider catalog (built-in ∪
+	// tenant custom) for adapter-scoped model listing and legacy 2-segment
+	// inference (ADR-0003). nil falls back to the built-in catalog.
+	ModelRefRegistry adapter.ProviderRegistry
+	// AdapterKinds returns the adapter kinds registered with the Dispatcher
+	// (ADR-0004 D1) — the source of the model picker's adapter bubble tier.
+	// Injected as a func to avoid an api → scheduler import cycle; nil falls
+	// back to the default adapter kind.
+	AdapterKinds func() []string
+	// AdapterChatKinds returns the adapter kinds whose bridge implements the
+	// ChatTurnClient (Ask chat) capability (ADR-0004 D1). It is the
+	// Kinds()-adjacent surface the Ask model picker + conversation-creation
+	// guard consume: a kind that registers but does not implement Ask chat is
+	// still dispatchable for worker executions (AdapterKinds) but is NOT
+	// offered for Ask. Injected as a func to avoid an api → scheduler import
+	// cycle; nil falls back to the default adapter kind.
+	AdapterChatKinds func() []string
+	// Dispatcher is the shared adapter routing substrate (ADR-0003). Ask
+	// Orchicon conversations resolve their adapter kind from the model_ref
+	// through it and drive the resolved ChatTurnClient capability; worker
+	// executions resolve their bridge the same way. It is injected directly
+	// (api.go imports internal/scheduler, so no import cycle).
+	Dispatcher *scheduler.Dispatcher
 	// BlobStore is the object storage abstraction (local filesystem + S3).
 	BlobStore blobstore.Store
+	// ProvidersService is the providers settings core (ADR-0006). Mount
+	// constructs it and stores it back here so the wiring order is a
+	// single Mount call; nil until Mount runs (or in tests that mount
+	// without the secrets KEK — token writes then fail closed).
+	ProvidersService *providers.Service
 	// PostgresDSN is the Postgres connection string for backup/restore.
 	PostgresDSN string
 	// RuntimeClient talks to the host-side runtime daemon over its unix
@@ -82,13 +126,14 @@ type Dependencies struct {
 	// configured (headless serve).
 	RuntimeClient *runtime.Client
 	// SendExecutionMessage routes a mid-run human message into a live
-	// session execution (Stage 3). Nil when the session transport is
-	// unavailable.
+	// execution's adapter session (type-asserts the MessageInjector
+	// capability; a non-supporting bridge yields an actionable error, never
+	// a panic). Nil when the session transport is unavailable.
 	SendExecutionMessage func(ctx context.Context, execID, message string) error
 	// ContinueSession runs a one-shot follow-up question against a worker's
 	// session in place (no new execution/work item). Nil when the session
 	// transport is unavailable.
-	ContinueSession func(ctx context.Context, opts opencode.ContinueSessionOpts) (string, error)
+	ContinueSession func(ctx context.Context, opts scheduler.ContinueSessionOpts) (string, error)
 	// AbortExecution stops a live execution's opencode session when a human
 	// cancels it, so the model stops generating immediately (prevents the
 	// "terminated but still active" token burn). Nil when the session
@@ -100,6 +145,11 @@ type Dependencies struct {
 	// the transport is disabled or the serve could not start — the chat
 	// degrades to the legacy per-message subprocess path.
 	HostServe *opencode.HostServe
+	// AskService is the AskOrchiconService handler Mount constructs. It is
+	// stored back here (like ProvidersService) so the server can wire the
+	// product tool registry into the native bridge's Ask turns — nil until
+	// Mount runs.
+	AskService *askorchicon.Service
 }
 
 // Mount returns an http.Handler serving the Orchicon API. Generated
@@ -107,7 +157,19 @@ type Dependencies struct {
 // per-RPC (docs/07 §6.3). The whole surface is wrapped by the
 // auth-resolution middleware so every tenant-scoped RPC carries
 // identity + tenant context into the data-access layer.
-func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
+//
+// deps is taken by POINTER and mutated: Mount constructs services that
+// callers need back (ProvidersService for the native bridge's lazy
+// ProviderResolver, ModelRefRegistry when nil) and writes them through
+// the pointer. A by-value signature silently dropped those writes into
+// Mount's local copy — the caller's struct stayed nil forever and every
+// orchicon-kind dispatch failed with "providers service not yet
+// constructed" (latent until the runtime_ref retirement made the native
+// path live; regression-pinned by TestMountBackfillsDependencies).
+func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
+	if deps == nil {
+		panic("api.Mount: nil *Dependencies — programming error")
+	}
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
@@ -136,8 +198,46 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	catSvc := category.New(deps.Pool, deps.Log)
 	mux.Handle(apiv1connect.NewCategoryServiceHandler(catSvc, interceptorOpt))
 
-	// WorkerService (docs/07 §3.3).
+	// ProviderService (ADR-0006) — tenant-facing Providers management
+	// surface behind Settings → Adapters. Constructed here (before
+	// WorkerService) so the worker validation path can consume the
+	// tenant's enabled custom provider ids; the handler is registered on
+	// the mux exactly once (the earlier/only Handle call). Note: the
+	// comment above originally grouped this under WorkerService — the
+	// service construction, substrate loader registration, and handler
+	// mount all belong together.
+	providerSvc := providers.NewHandler(deps.Pool, deps.SecretsKEK, deps.Log)
+	// Provider-landscape mutations invalidate the model discoverer's cache
+	// immediately (custom provider CRUD, token saves): new models become
+	// usable right away instead of after the discovery TTL.
+	if deps.ModelDiscoverer != nil {
+		providerSvc.OnProviderChange = deps.ModelDiscoverer.Invalidate
+	}
+	providerSvc.Service().RegisterSubstrateLoader()
+	deps.ProvidersService = providerSvc.Service()
+	mux.Handle(apiv1connect.NewProviderServiceHandler(providerSvc, interceptorOpt))
+
+	// MCPService (adapter-settings MCP management) — tenant-facing MCP
+	// server surface behind Settings → Adapters → MCP: CRUD over server
+	// entries (stdio + streamable HTTP), curated registry catalog with
+	// one-click prefill, explicit-only auto-install (dry-run for CI), and
+	// project/tenant-default selections (references, never copies). The
+	// sibling MCP-client task consumes the stored entries at session time.
+	mcpSvc := mcpsettings.NewHandler(deps.Pool, deps.SecretsKEK, deps.Log)
+	mux.Handle(apiv1connect.NewMCPServiceHandler(mcpSvc, interceptorOpt))
+
 	workerSvc := worker.New(deps.Pool, deps.Log)
+	// Explicit adapter selections validate against the Dispatcher's
+	// registered kinds (ADR-0005 D2) — the injected func avoids the
+	// api → scheduler import cycle.
+	workerSvc.SetAdapterKinds(deps.AdapterKinds)
+	// Tenant custom providers join model-ref validation (ADR-0006 D6): the
+	// global validation registry stays built-in-only; the worker service
+	// merges the requesting tenant's enabled custom ids where tenant
+	// context exists.
+	if deps.ProvidersService != nil {
+		workerSvc.SetCustomProviderIDs(deps.ProvidersService.EnabledCustomProviderIDs)
+	}
 	mux.Handle(apiv1connect.NewWorkerServiceHandler(workerSvc, interceptorOpt))
 
 	// WorkflowService (docs/07 §3.4). Constructed before WorkItemService
@@ -205,7 +305,14 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	if deps.AbortExecution != nil {
 		execSvc.SetAbortExecution(deps.AbortExecution)
 	}
+
 	mux.Handle(apiv1connect.NewExecutionServiceHandler(execSvc, interceptorOpt))
+	// FileEditService (docs/07 §3.8 diff pipeline): the standalone fetch +
+	// stream RPCs for the GUI sidebar / TUI pane over the pool-backed store.
+	if deps.Pool != nil {
+		feSvc := fileedit.NewRPCService(fileedit.NewPGStore(deps.Pool), deps.Log, deps.Subscriber)
+		mux.Handle(apiv1connect.NewFileEditServiceHandler(feSvc, interceptorOpt))
+	}
 
 	// PolicyService (docs/07 §3.5).
 	policySvc := policy.NewService(deps.Pool, deps.Log, deps.PolicyEngine, deps.Subscriber)
@@ -219,8 +326,25 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	telemetrySvc := telemetry.NewService(deps.Pool, deps.TelemetryQuery, deps.Subscriber)
 	mux.Handle(apiv1connect.NewTelemetryServiceHandler(telemetrySvc, interceptorOpt))
 
-	// AIGatewayService (docs/07 §3.10).
-	aiGatewaySvc := aigateway.NewService(deps.Pool, deps.Log, deps.Subscriber, deps.ModelDiscoverer, deps.MCPDiscoverer)
+	// AIGatewayService (docs/07 §3.10). The CLI-aware validation registry
+	// composes BEFORE the gateway and settings services: the static
+	// registry (builtin ∪ tenant customs) wrapped with live CLI provider
+	// discovery, so CLI-namespace refs (e.g. opencode/deepseek/…) validate
+	// at save time and the gateway's models RPC scopes through the same
+	// composition. ModelRefRegistry nil → the composition becomes the
+	// registry.
+	cliRegistry := aigateway.NewCLIProviderRegistry(deps.ModelRefRegistry, deps.ModelDiscoverer)
+	if deps.ModelRefRegistry == nil {
+		deps.ModelRefRegistry = cliRegistry
+	}
+	// Worker model_ref validation shares the same composition as the
+	// picker and settings (builtin ∪ tenant customs ∪ live CLI provider
+	// ids): validation must agree with what the picker offers, or every
+	// freshly-selected ref fails at save ("provider not found"). Without
+	// this, a plugin-served provider like commandcode is picker-valid but
+	// worker-save-invalid.
+	worker.SetModelRefRegistry(cliRegistry)
+	aiGatewaySvc := aigateway.NewService(deps.Pool, deps.Log, deps.Subscriber, deps.ModelDiscoverer, deps.MCPDiscoverer, deps.ModelRefRegistry, deps.AdapterKinds, deps.AdapterChatKinds)
 	mux.Handle(apiv1connect.NewAIGatewayServiceHandler(aiGatewaySvc, interceptorOpt))
 
 	// Phase 9: AuthService (docs/07 §3.12) — API keys, identities, RBAC
@@ -244,6 +368,10 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 
 	// SettingsService — tenant-level configuration defaults.
 	settingsSvc := settings.New(deps.Pool, deps.Log, deps.PostgresDSN)
+	// The settings validator shares the CLI-aware registry (composed above):
+	// the validator must agree with the picker or every CLI-namespace ref
+	// the picker offered fails at save with "provider not found".
+	settingsSvc.SetValidationRegistry(cliRegistry)
 	mux.Handle(apiv1connect.NewSettingsServiceHandler(settingsSvc, interceptorOpt))
 
 	// RuntimeImageService — tenant runtime container image specs + build.
@@ -267,6 +395,13 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 
 	// AskOrchiconService — conversational agent.
 	askSvc := askorchicon.New(deps.Pool, deps.Log, deps.BlobStore, deps.ModelDiscoverer, deps.SecretsKEK)
+	askSvc.SetAdapterKinds(deps.AdapterKinds)
+	askSvc.SetChatKinds(deps.AdapterChatKinds)
+	askSvc.SetDispatcher(deps.Dispatcher)
+	// The Ask update_settings tool write path shares the same CLI-aware model
+	// ref registry as the settings validator/picker: a CLI-namespace ref the
+	// picker offered validates at save through this agent-controlled path too.
+	askSvc.SetValidationRegistry(cliRegistry)
 	if deps.SendExecutionMessage != nil {
 		askSvc.SetSendExecutionMessage(deps.SendExecutionMessage)
 	}
@@ -274,6 +409,87 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	if deps.RuntimeClient != nil {
 		askSvc.SetRuntimeClient(deps.RuntimeClient)
 	}
+	if deps.UsageRecorder != nil {
+		askSvc.SetUsageRecorder(deps.UsageRecorder)
+	}
+	// Diff pipeline (plan step 8): the Ask-side ledger hook + terminal-turn
+	// git reconciliation. Ask conversations ledger file edits with
+	// owner_kind ask_conversation from real file-state snapshots — the
+	// built-in write/edit tools take a plane-side after-read (observer
+	// cache vs fresh read under the conversation's project dir), the
+	// worktree engine tools parse their structured file_edits output. The
+	// terminal hook reconciles the ledger against the project dir's git
+	// state once per turn. Both best-effort; nil service = no ledger.
+	if deps.FileEditService != nil && deps.Pool != nil {
+		feAsk := deps.FileEditService
+		// Per-conversation observers: cache last-seen content per path
+		// (git-HEAD-seeded) for the built-in write/edit after-reads.
+		feAskObs := map[string]*fileedit.Observer{}
+		var feAskMu sync.Mutex
+		feObserver := func(convID, baseDir string) *fileedit.Observer {
+			if baseDir == "" {
+				return nil
+			}
+			feAskMu.Lock()
+			defer feAskMu.Unlock()
+			o, ok := feAskObs[convID]
+			if !ok {
+				o = fileedit.NewObserver(baseDir)
+				feAskObs[convID] = o
+			}
+			return o
+		}
+
+		askSvc.SetFileEditHook(func(ctx context.Context, tenantID, convID, toolName string, input map[string]any, output string) {
+			switch toolName {
+			case "write", "edit":
+				// The worktree engine's single-op write/edit wrappers emit the
+				// structured file_edits payload (exact ground truth) under these
+				// same tool names — try it FIRST and claim the edit when the
+				// output carries a payload (even a funnel-dropped no-op: the
+				// HEAD-seeded observer must not hallucinate a row for it).
+				// Genuine built-in output never contains "file_edits", so the
+				// branch is unambiguous; only then take the plane-side
+				// after-snapshot under the conversation's project dir.
+				if parsed, _ := feAsk.RecordEngineOutput(ctx, tenantID, db.FileEditOwnerAskConversation, convID, toolName, output); parsed > 0 {
+					break
+				}
+				dir := askBaseDir()
+				o := feObserver(convID, dir)
+				if o == nil {
+					return
+				}
+				p, _ := input["filePath"].(string)
+				if p == "" {
+					p, _ = input["path"].(string)
+				}
+				if p == "" {
+					return
+				}
+				tool := fileedit.ToolOpenCodeWrite
+				if toolName == "edit" {
+					tool = fileedit.ToolOpenCodeEdit
+				}
+				if e := o.ObserveAfter(p, tool); e.Path != "" {
+					feAsk.Record(ctx, tenantID, db.FileEditOwnerAskConversation, convID, []fileedit.Entry{e})
+				}
+			case "batch_write":
+				// Worktree engine tool: the engine already computed the
+				// ground-truth diffs in its structured output.
+				feAsk.RecordEngineOutput(ctx, tenantID, db.FileEditOwnerAskConversation, convID, toolName, output)
+			}
+		})
+		askSvc.SetFileEditReconciler(func(ctx context.Context, tenantID, convID string) {
+			dir := askBaseDir()
+			if dir == "" {
+				return
+			}
+			if err := fileedit.ReconcileGit(ctx, fileedit.NewPGStore(deps.Pool), dir, tenantID, db.FileEditOwnerAskConversation, convID, deps.Log); err != nil {
+				deps.Log.Warn("ask file edit ledger git reconciliation failed", "conversation", convID, "dir", dir, "error", err)
+			}
+		})
+	}
+	deps.AskService = askSvc
 	mux.Handle(apiv1connect.NewAskOrchiconServiceHandler(askSvc, interceptorOpt))
 
 	// Grafana UI reverse proxy (docs/10 §11): serves Grafana same-origin
@@ -304,4 +520,19 @@ func Mount(mux *http.ServeMux, deps Dependencies) http.Handler {
 	h := middleware.ResolveAuth(mux, deps.AuthHandler.Issuer(), deps.AuthHandler.Resolver(), deps.Log)
 	_ = blobstore.ErrNotFound
 	return h
+}
+
+// askBaseDir resolves the directory an Ask conversation's file edits
+// resolve against. Ask sessions run on the host opencode serve as
+// directory-less sessions (NewSessionClient directory ""), so relative
+// paths resolve against the server process's working directory — the same
+// base the serve itself uses. Real file state on both sides of the
+// snapshot. Returns "" when the cwd cannot be read — callers then skip
+// ledger observation/reconciliation (never fail the turn).
+func askBaseDir() string {
+	wd, err := os.Getwd()
+	if err != nil || wd == "" {
+		return ""
+	}
+	return wd
 }

@@ -147,9 +147,10 @@ function RuntimeImageDetailPage() {
         // carried no log (do not overwrite the server's own line).
         setBuildLog((prev) => prev || "Runtime image is already up to date — no rebuild needed.");
       }
-    } catch (e: any) {
-      setBuildError(e?.failureReason || String(e));
-      if (e?.logTail) setBuildLog((prev) => prev + "\n" + e.logTail);
+    } catch (e) {
+      const buildErr = e as Error & { failureReason?: string; logTail?: string };
+      setBuildError(buildErr.failureReason || String(e));
+      if (buildErr.logTail) setBuildLog((prev) => prev + "\n" + buildErr.logTail);
     }
   };
 

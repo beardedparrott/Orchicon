@@ -1,0 +1,10 @@
+{
+  "name": "binary-no-diff",
+  "path": "assets/icon.png",
+  "before": null,
+  "after": "PNG\r\n\u0000\u0000binary\u0000payload",
+  "expected_kind": "create",
+  "expected_unified_diff": "",
+  "expected_binary": true,
+  "expected_truncated": false
+}

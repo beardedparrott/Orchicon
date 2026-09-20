@@ -12,8 +12,8 @@ import (
 // interactive session. It is the identity statement that distinguishes an
 // in-Orchicon worker (operates autonomously, reports via the ORCHICON WORKER
 // SUMMARY contract) from a human-facing session (must ask before
-// PRing/merging). Both composite builders (the scheduler's
-// buildStandaloneComposite and the workflow buildCompositePrompt) emit it so
+// PRing/merging). The workflow composite builder (the scheduler's
+// buildCompositePrompt) emits it so
 // every dispatch carries the same self-definition. Kept in sync with
 // cannedWorkerIdentity (the first sentence) in seed_workers.go — they live in
 // the same package so a drift is immediately visible.
@@ -82,14 +82,57 @@ const todoListBlock = "\n## Todo list — maintain it EVERY turn\n" +
 	"- Mark items `completed` **immediately** as the work finishes — never batch completions at the end.\n" +
 	"- Mark items `cancelled` when they become irrelevant instead of silently dropping them.\n" +
 	"- `todowrite` replaces the whole list on every call: always send the full updated array of `{content, status, priority}` items, using only `pending | in_progress | completed | cancelled` statuses.\n" +
-	"- The list is surfaced live in the execution UI — keep it accurate so the operator can track where you are at a glance.\n\n"
+	"- The list is surfaced live in the execution UI — keep it accurate so the operator can track where you are at a glance.\n" +
+	"- `todoread` reads back your LATEST todo list in one cheap call — re-sync mid-run instead of re-deriving it from memory; a stale list reads as no progress.\n\n"
+
+// memoryPlaybookBlock is the shared durable-memory playbook injected into
+// the stable prompt prefix of every worker (StablePromptPrefix). It names
+// the four durable memory tools (memory_write / memory_search / memory_read
+// / memory_list) the model otherwise knows only from one-line schema
+// Descriptions, and separates them from the in-session orchicon_memory_note
+// (mutable-zone digest for the CURRENT run) — the memory_* tools are the
+// project-scoped store that survives per-execution isolation, so cross-step
+// context is inherited, never re-derived.
+const memoryPlaybookBlock = "\n## Memory playbook — project memory survives per-execution isolation\n" +
+	"- On an unfamiliar task, start with `memory_search` for existing project memory before re-deriving context from scratch.\n" +
+	"- `memory_write` persists facts, root causes, and decisions later sessions must inherit — one fact per entry (title + body), tagged by subsystem so it is findable.\n" +
+	"- `memory_read` pulls one full entry by id; `memory_list` browses recent entries (newest first).\n" +
+	"- `orchicon_memory_note` is the in-session digest for the CURRENT run (rendered after the cache breakpoint, replayed on resume) — use it for turn-level notes; use `memory_*` for anything that must outlive this execution.\n" +
+	"- These tools are project-scoped and survive per-execution isolation: cross-step context lives here, not in re-derived reads.\n\n"
 
 // RuntimeEnvironmentBlock is the machine-generated "## Runtime environment"
 // section of the stable prompt prefix. It tells the worker the ground truth
 // about its execution sandbox so it does not waste cycles empirically probing
 // the container (and so it uses the rootless system-library escape hatch
 // instead of hitting a wall).
-func RuntimeEnvironmentBlock(image string) string {
+//
+// mode selects the branch (always-container runtime):
+//   - "runtime" (default, "" legacy): the worker runs INSIDE the run's
+//     ephemeral container — the existing container text with the resolved
+//     image name.
+//   - "local": the worker runs IN-PROCESS on the host — no container, and
+//     127.0.0.1:5432/8080 is the LIVE plane. Only /tmp/orchicon scratch is
+//     safe; DB writes must use a disposable DSN (the dispatcher enforces
+//     the fence and fails closed).
+//
+// KV-cache note: the prefix is shared WITHIN a mode (byte-identical for
+// identical image+mode) and split ACROSS modes — the honest local text
+// must never share cache bytes with the container claim.
+func RuntimeEnvironmentBlock(image, mode string) string {
+	if mode == ExecutionModeLocal {
+		return localEnvironmentBlock()
+	}
+	return containerEnvironmentBlock(image)
+}
+
+// RuntimeEnvironmentBlockLegacy preserves the old one-arg shape for tests
+// and thin wrappers that render the container branch explicitly.
+func runtimeEnvironmentBlockLegacy(image string) string {
+	return containerEnvironmentBlock(image)
+}
+
+// containerEnvironmentBlock renders the runtime-mode (in-container) truth.
+func containerEnvironmentBlock(image string) string {
 	img := strings.TrimSpace(image)
 	if img == "" {
 		img = "the default Orchicon runtime base image"
@@ -104,6 +147,22 @@ func RuntimeEnvironmentBlock(image string) string {
 	sb.WriteString("- System packages are baked at build time; `apt-get install` will not work. If you need a system shared library that is missing (e.g. `libGL.so.1` for a GUI toolkit), fetch and extract it without root:\n\n")
 	sb.WriteString("    apt-get download <pkg> && dpkg-deb -x <pkg>*.deb /tmp/libs && export LD_LIBRARY_PATH=/tmp/libs/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH\n\n")
 	sb.WriteString("- There is no X server and usually no offscreen graphics libs. Prefer headless modes for GUI toolkits (e.g. `QT_QPA_PLATFORM=offscreen`), or install the missing libs with the pattern above.\n")
+	return sb.String()
+}
+
+// localEnvironmentBlock renders the local-mode (in-process on host) HONEST
+// block: no container exists, and the loopback plane addresses are LIVE.
+// This is the prompt half of the local-mode contract; the dispatcher
+// enforces the DSN fence (refuses 127.0.0.1:5432/localhost:5432/
+// 172.17.0.1:8080 writes, fails closed without a disposable DSN).
+func localEnvironmentBlock() string {
+	var sb strings.Builder
+	sb.WriteString("\n## Runtime environment\n\n")
+	sb.WriteString("You are running IN-PROCESS on the host — there is NO container for this run (the project is in `local` execution mode). Everything you install or write outside the project directory persists on the host.\n\n")
+	sb.WriteString("- **LIVE plane warning:** `127.0.0.1:5432`, `localhost:5432`, and `172.17.0.1:8080` are the LIVE Orchicon plane. NEVER point `ORCHICON_TEST_DSN` at them and never write test rows there — the dispatcher refuses those DSNs and fails the execution closed. Use a disposable database (or run with no DSN) for DB-backed tests.\n")
+	sb.WriteString("- **Scratch directory:** `/tmp/orchicon` is the ONE place outside the project you may read and write. Put ephemeral files there (screenshots, logs, downloaded artifacts you need to inspect). Always save final outputs to the project directory.\n")
+	sb.WriteString("- You run as the host user: do not attempt `sudo`.\n")
+	sb.WriteString("- There is no X server and usually no offscreen graphics libs. Prefer headless modes for GUI toolkits (e.g. `QT_QPA_PLATFORM=offscreen`).\n")
 	return sb.String()
 }
 
@@ -123,15 +182,20 @@ func RuntimeEnvironmentBlock(image string) string {
 //
 // The runtime image is per-run (all steps of a run dispatch the same work
 // item, so it is constant within a run), which is what makes the prefix
-// identical across the steps of a run.
-func StablePromptPrefix(runtimeImage string) string {
+// identical across the steps of a run. The prefix is shared WITHIN an
+// execution mode and split ACROSS modes: StablePromptPrefix(image, "local")
+// and StablePromptPrefix(image, "runtime") intentionally differ (honest
+// local block vs container claim) so no cache bytes are shared between the
+// two truths.
+func StablePromptPrefix(runtimeImage, mode string) string {
 	var sb strings.Builder
 	sb.WriteString(WorkerIdentityPreamble)
 	sb.WriteString(safetyBlock)
 	sb.WriteString(efficiencyBlock)
 	sb.WriteString(stepOutputBlock)
 	sb.WriteString(todoListBlock)
-	sb.WriteString(RuntimeEnvironmentBlock(runtimeImage))
+	sb.WriteString(memoryPlaybookBlock)
+	sb.WriteString(RuntimeEnvironmentBlock(runtimeImage, mode))
 	return sb.String()
 }
 
@@ -145,7 +209,16 @@ func StablePromptPrefix(runtimeImage string) string {
 //     push" text that a seeded AGENTS.md may still carry — the guardrail is
 //     the prompt that actually reaches the worker.
 //   - ready → the develop-first git discipline block: work on the branch
-//     recorded for this run (never push/PR/merge to main).
+//     recorded for this run (never push/PR/merge to main). PR/merge
+//     ownership is NOT asserted here — it belongs to the workflow's step
+//     contract and the worker's own prompt (e.g. the Quick Software
+//     Engineer is the all-in-one that opens + merges its own PR; the SDLC
+//     DevOps Engineer step owns PR + merge for that workflow). A shared
+//     block that hardcoded "the DevOps Engineer step creates the PR"
+//     contradicted every non-SDLC workflow (observed: the Quick Work run's
+//     DevOps-less composite instructed the DevOps Engineer worker that
+//     "the DevOps Engineer step creates the PR" while its own profile said
+//     the same, leaving the PR owner ambiguous and blocking real merges).
 //   - anything else (skipped/pending/failed/pruned, or no project) → an
 //     in-place block: this run works directly in project_dir, no branch or
 //     worktree, so the worker must not create branches/commit/push/PR.
@@ -165,7 +238,7 @@ func GitGuidanceBlock(worktreeStatus, worktreeBranch, projectDir, gitStrategy st
 			"- This run is git-backed and works on the branch `" + worktreeBranch + "` recorded for it.\n" +
 			"- Work on a branch created off `develop` (the integration branch where all work lands). **NEVER** commit to, push to, or open a PR into `main` or `develop` directly.\n" +
 			"- Use the branch recorded for this run (`" + worktreeBranch + "`); do not create a new branch unless the previous work was on `main`.\n" +
-			"- You do not open the pull request or merge it — the DevOps Engineer step creates the PR and merges into `develop` after approval.\n\n"
+			"- **PR / merge ownership is defined by YOUR workflow's step contract** — the role text and AGENTS.md in this prompt name who opens the PR and merges into `develop` (some paths are single-step all-in-one workers that open + merge their own PR; others hand off to a dedicated DevOps step). Follow that contract; this block only fixes the branch discipline.\n\n"
 	}
 	// Non-repo (or not-yet-git-backed) run: work in place, no branch.
 	if projectDir != "" {

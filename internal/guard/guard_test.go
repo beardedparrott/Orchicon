@@ -183,3 +183,42 @@ func TestExecutionGuardAppliesToPATH(t *testing.T) {
 		t.Errorf("bash -lc 'echo hi' through guard PATH: expected success, got %v: %s", err, out)
 	}
 }
+
+// TestExecutionGuardAllowsWorktreeScopedDelete pins AC3: a delete resolving
+// inside the worker's directory (the run worktree when provisioned — the
+// guard's projectDir IS the worktree) is allowed; a delete escaping the
+// worktree/project root stays blocked.
+func TestExecutionGuardAllowsWorktreeScopedDelete(t *testing.T) {
+	proj := t.TempDir()
+	g, err := NewExecutionGuard(proj)
+	if err != nil {
+		t.Fatalf("NewExecutionGuard: %v", err)
+	}
+	defer g.Close()
+
+	// Recursive delete INSIDE the worktree (project dir) resolves and succeeds.
+	sub := filepath.Join(proj, "sub")
+	if err := os.MkdirAll(filepath.Join(sub, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "nested", "a.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exit, out := runGuard(t, g, "rm", "-rf", sub)
+	if exit != 0 {
+		t.Fatalf("rm -rf <worktree>/sub: expected exit 0, got %d: %s", exit, out)
+	}
+	if _, err := os.Stat(sub); !os.IsNotExist(err) {
+		t.Fatalf("worktree subdir should have been deleted")
+	}
+
+	// A delete resolving OUTSIDE the worktree/project root stays blocked.
+	other := t.TempDir()
+	exit, out = runGuard(t, g, "rm", "-rf", other)
+	if exit == 0 {
+		t.Fatalf("rm -rf outside the worktree: expected blocked (non-zero exit), got exit 0: %s", out)
+	}
+	if !strings.Contains(out, "ORCHICON GUARD") {
+		t.Fatalf("expected guard message, got: %s", out)
+	}
+}

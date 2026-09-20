@@ -72,6 +72,7 @@ func seedAuditIdentity(t *testing.T, pool *db.Pool, tenantID, subject string) db
 func auditServiceEnv(t *testing.T, tenantID string) (*db.Pool, *Service, context.Context, string, string) {
 	t.Helper()
 	pool := auditTestPool(t)
+	ensureTestTenant(t, pool, tenantID)
 	ident := seedAuditIdentity(t, pool, tenantID, "audit-wk-"+strings.ToLower(db.NewID()))
 	ctx := tenant.WithID(context.Background(), tenantID)
 	ctx = auth.WithIdentity(ctx, auth.ResolvedIdentity{
@@ -98,13 +99,12 @@ func auditEventCount(t *testing.T, pool *db.Pool, tenantID, action, targetType, 
 // worker.published (create + the publish lifecycle action from the AC
 // "assign/publish/deprecate") and asserts reads write nothing.
 func TestAuditServiceWorkerMutations(t *testing.T) {
-	pool, s, ctx, tenantID, _ := auditServiceEnv(t, "tnt_audit_wk_mut")
+	pool, s, ctx, tenantID, _ := auditServiceEnv(t, "tnt_audit_wk_mut_"+strings.ToLower(db.NewID()))
 
 	// CreateWorker → exactly one worker.created row.
 	resp, err := s.CreateWorker(ctx, connect.NewRequest(&apiv1.CreateWorkerRequest{
 		Name:       "Audit Worker " + strings.ToLower(db.NewID()),
 		ModelRef:   "opencode/deepseek-v4-flash-free",
-		RuntimeRef: "opencode",
 	}))
 	if err != nil {
 		t.Fatalf("CreateWorker: %v", err)

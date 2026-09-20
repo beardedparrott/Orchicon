@@ -28,7 +28,10 @@ import { SettingsService } from "@/api/gen/orchicon/api/v1/settings_service_conn
 import { RuntimeImageService } from "@/api/gen/orchicon/api/v1/runtime_image_service_connect";
 import { SecretsService } from "@/api/gen/orchicon/api/v1/secret_service_connect";
 import { CategoryService } from "@/api/gen/orchicon/api/v1/category_service_connect";
-import { getAccessToken, refreshAccessToken } from "@/auth/session";
+import { ProviderService } from "@/api/gen/orchicon/api/v1/provider_service_connect";
+import { MCPService } from "@/api/gen/orchicon/api/v1/mcp_server_service_connect";
+import { FileEditService } from "@/api/gen/orchicon/api/v1/file_edit_service_connect";
+import { getAccessToken, refreshAccessToken, clearAccessToken, useSessionStore } from "@/auth/session";
 import type { RefreshResult } from "@/auth/session";
 
 // Refreshing is a module-level guard so concurrent 401s share one
@@ -79,11 +82,23 @@ const authInterceptor: Interceptor = (next) => async (req) => {
         try {
           return await next(req);
         } catch {
-          // Second attempt also failed: throw the original error.
-          // The app shell will handle the 401.
+          // Second attempt also failed: fall through to the no-session
+          // handoff below (the app shell will handle the 401).
         }
       }
-      // no-session: throw as today.
+      // no-session: the session is genuinely over (the refresh cookie is
+      // absent/invalid — refresh failed definitively). Land the user on
+      // the login page with the destination preserved instead of letting
+      // a raw ConnectError surface inside whatever component fired the
+      // RPC. Clearing the in-memory token + session store keeps the
+      // router guard consistent on any further navigation.
+      clearAccessToken();
+      useSessionStore.getState().setSession({ authenticated: false });
+      if (typeof window !== "undefined" && window.location.pathname !== "/login") {
+        const next = encodeURIComponent(window.location.pathname + window.location.search);
+        window.location.assign(`/login?next=${next}`);
+      }
+      // no-session: throw as today (the redirect takes the page anyway).
     }
     throw err;
   }
@@ -119,3 +134,15 @@ export const categoryClient = createClient(CategoryService, connectTransport);
 
 // Grafana UI base URL for the embedded telemetry explorer (docs/10 §11).
 export const GRAFANA_UI_URL = "/grafana";
+
+// Provider settings service (ADR-0006) — Settings → Adapters Providers tab.
+export const providerClient = createClient(ProviderService, connectTransport);
+
+// MCP server settings service (ADR-0008) — Settings → Adapters → MCP.
+export const mcpClient = createClient(MCPService, connectTransport);
+
+// File-edit ledger (diff pipeline, feature 3) — consumed by the GUI diff
+// sidebar and the TUI pane. Read policy mirrors ExecutionService.
+export const fileEditClient = createClient(FileEditService, connectTransport);
+
+

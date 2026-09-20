@@ -51,10 +51,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/reconciler"
+	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/workflow"
 	"github.com/jackc/pgx/v5"
 )
@@ -106,15 +108,23 @@ type WorkflowReconciler struct {
 // RuntimeLifecycle creates/reaps the per-workflow runtime container and
 // proves its opencode serve usable before a run dispatches. Implemented by
 // runtime.Lifecycle; declared here to keep the reconciler decoupled. A nil
-// implementation disables runtime containers (headless `orchicon serve`).
+// implementation means headless `orchicon serve` (no daemon socket).
 type RuntimeLifecycle interface {
+	// ServeDependent reports whether the adapter kind named by a worker
+	// model_ref needs an in-container serve to run (the opencode bridge
+	// does; the native "orchicon" kind does not — but native still gets a
+	// container via EnsureForRun; this only selects the serve PROBE).
+	// (ADR-0003: model_ref is the single source of truth for adapter kind).
+	ServeDependent(kind string) bool
+	// EnsureForRun creates the run's container (ALL runs in runtime mode,
+	// regardless of kind). LOUD error when no daemon is reachable.
 	EnsureForRun(ctx context.Context, run db.WorkflowRunRow) error
-	// EnsureServing ensures the run's runtime container exists with its
-	// opencode serve brought up, then blocks until the serve is PROVEN
-	// usable (L1: health + a real session-create round-trip). The
-	// reconciler must not dispatch an execution for the run until it
-	// returns nil.
-	EnsureServing(ctx context.Context, run db.WorkflowRunRow) error
+	// EnsureServing blocks until the run's opencode serve is PROVEN usable
+	// (L1: health + a real session-create round-trip) when needsServe is
+	// true; returns nil immediately when false (native-only: the container
+	// from EnsureForRun is enough). The reconciler must not dispatch an
+	// execution for a serve-needing run until this returns nil.
+	EnsureServing(ctx context.Context, run db.WorkflowRunRow, needsServe bool) error
 	ReapForRun(ctx context.Context, runID string) error
 }
 
@@ -129,6 +139,72 @@ func (r *WorkflowReconciler) runtimeEnabled() bool {
 	}
 	rv := reflect.ValueOf(r.runtime)
 	return rv.Kind() != reflect.Ptr || !rv.IsNil()
+}
+
+// runNeedsServe reports whether any worker step of the run resolves to a
+// serve-dependent adapter kind (opencode today). The run's steps are the
+// DAG the run will dispatch; a step's worker version resolves the same way
+// dispatch resolves it (step-pinned version → latest published). A run
+// with NO serve-dependent step needs no opencode serve and no runtime
+// container: gating it on one would hold dispatch ("waiting for
+// dispatch…") and then fail the run when a serve it never uses fails to
+// boot — the observed native-only run failure ("runtime opencode serve
+// failed to become usable").
+//
+// Errors loading a worker version are folded to opencode-demand (the
+// conservative default): an unresolvable worker behaves exactly as it did
+// before this gate became adapter-aware (gated + warmed + failed loudly at
+// the serve, rather than silently skipping the container an opencode step
+// might need).
+func (r *WorkflowReconciler) runNeedsServe(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, steps []workflow.StepWire) bool {
+	if !r.runtimeEnabled() {
+		return false
+	}
+	// Callers on the reconcile path pass the pass transaction. A caller with
+	// NO tx (the gate tests probe the predicate directly) reads through a
+	// short tenant tx of its own instead of nil-dereferencing pgx. On a
+	// begin failure the gate answers CONSERVATIVELY (serve demand assumed),
+	// the same rule the unresolvable-worker case uses.
+	if tx == nil && r.pool != nil {
+		ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+		if err != nil {
+			return true
+		}
+		defer ttx.Rollback(ctx)
+		tx = ttx.Tx
+	}
+	var refs []string
+	for _, s := range steps {
+		switch s.Kind {
+		case domain.StepKindTask, domain.StepKindApproval:
+		default:
+			continue // no worker ref → no adapter → no serve demand
+		}
+		if s.Ref == "" {
+			continue
+		}
+		var modelRef string
+		if s.WorkerVersion > 0 {
+			// By NUMBER, not by id (see GetWorkerVersionByNumber).
+			if v, err := db.GetWorkerVersionByNumber(ctx, tx, tenantID, s.Ref, s.WorkerVersion); err == nil {
+				modelRef = v.ModelRef
+			}
+		}
+		if modelRef == "" {
+			if v, err := db.GetLatestWorkerVersion(ctx, tx, tenantID, s.Ref, true); err == nil {
+				modelRef = v.ModelRef
+			}
+		}
+		refs = append(refs, modelRef)
+	}
+	// ONE computation, ONE place (AC 7): the per-step refs gathered above
+	// are fed to the shared demand-set primitive, which resolves each ref
+	// to its adapter kind (empty/unresolvable → the conservative default)
+	// and asks the ONE serve-dependency predicate. The host-side plane
+	// computes its own half of the same set through the same primitive
+	// (adapter.TenantDemandSet → AdapterDemandSet), so this gate and the
+	// host serve can never disagree about whether opencode is in demand.
+	return adapter.AdapterDemandSet(refs...).NeedsServe(r.runtime.ServeDependent)
 }
 
 // NewWorkflowReconciler creates a WorkflowReconciler. The policy
@@ -553,6 +629,18 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// armed marks a run that left pending in this pass so the worktree
 	// notifier fires post-commit (mirrors the sequence/workflow notifiers).
 	var armed bool
+	needsServe := r.runNeedsServe(ctx, ttx.Tx, tenantID, run, steps)
+	// runLocalMode is the project execution_mode gate: local-mode runs
+	// skip ALL container paths (no EnsureForRun, no gate, no probe) and
+	// dispatch in-process with the honest prompt + DSN fence. Runtime is
+	// the default (preserves current opencode behavior); any read failure
+	// degrades to runtime (fail-open toward the container, never toward
+	// silent host exec).
+	runLocalMode := runExecutionMode(ctx, ttx.Tx, tenantID, run) == db.ExecutionModeLocal
+	// resolvedImage is the run's effective image for this pass (the armed
+	// value, or "" for runs armed before always-container — re-resolved
+	// from the run row below when needed).
+	resolvedImage := run.RuntimeImage
 	if run.Status == domain.WorkflowRunPending {
 		resolved, rerr := r.resolveRuntimeImage(ctx, ttx.Tx, tenantID, run, steps)
 		if rerr != nil {
@@ -572,19 +660,59 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			return nil
 		}
 		updated, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
-			Status:       strPtr(domain.WorkflowRunRunning),
-			RuntimeImage: &resolved,
+			Status: strPtr(domain.WorkflowRunRunning),
 			// The runtime-serve readiness gate: false when a runtime daemon
-			// is wired (the async ensure-serving pass proves the serve and
-			// flips it true), true for headless serve (no container — the
-			// host serve is always-on).
-			RuntimeReady: boolPtr(!r.runtimeEnabled()),
+			// is wired AND the run actually needs a serve (any step
+			// resolves to a serve-dependent adapter kind). Serve-less
+			// (native-only) runs flip the gate immediately below — they
+			// still get a container (always-container), they just don't
+			// wait for the opencode serve probe they never use. Local-mode
+			// runs are ready immediately (no container, no serve).
+			RuntimeReady: boolPtr(runLocalMode || !needsServe || !r.runtimeEnabled()),
+			// Always-container: the run carries the resolved image
+			// (explicit -> project default -> base), never the no-serve
+			// sentinel. needsServe selects only the gate above, not the
+			// image.
+			RuntimeImage: strPtr(imageForRun(resolved, needsServe)),
 		})
 		if err != nil {
 			return fmt.Errorf("transition run to running: %w", err)
 		}
 		run = updated
+		resolvedImage = run.RuntimeImage
 		armed = true
+		// Always-container: EVERY runtime-mode run gets its container
+		// synchronously at arm (idempotent — EnsureForRun is a no-op when
+		// the run already holds a lease), NOT only runs that enter the
+		// gate below. Native-only (serve-less) runs arm with
+		// RuntimeReady=true and would otherwise skip the gate entirely
+		// and dispatch with no container. A daemon/create failure fails
+		// the run LOUD at start (retry resolved tag once -> base -> fail);
+		// never silent host exec. The container ensure runs in autocommit
+		// (outside the pass tx) while the arm update + run_started event
+		// stay in the pass tx: on ensure failure the event write rolls
+		// back with the tx and failRunAtStart commits the terminal state
+		// in its own tx.
+		if !runLocalMode && r.runtimeEnabled() {
+			try := run
+			try.RuntimeImage = resolvedImage
+			if cerr := r.runtime.EnsureForRun(ctx, try); cerr != nil {
+				// Arm-site ensure failed: roll back the arm (the run stays
+				// pending, the run_started event is unwritten) and run the
+				// failover in its own tx — failRunAtStart re-reads the
+				// current row version itself, so the rolled-back arm
+				// version never conflicts.
+				_ = ttx.Rollback(ctx)
+				if err := r.ensureRunContainerFailover(ctx, tenantID, runID, resolvedImage); err != nil {
+					return err
+				}
+				// Failover either retried into success (run still pending
+				// — next pass re-arms) or failed the run LOUD at start
+				// and committed: stop the pass and reap post-commit.
+				reapRuntime = true
+				return nil
+			}
+		}
 		if err := r.enqueueRunEvent(ctx, ttx.Tx, domain.WorkflowEventRunStarted, run, ""); err != nil {
 			return fmt.Errorf("enqueue run_started: %w", err)
 		}
@@ -599,8 +727,44 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// failing the first execution's 30s window) into a deterministic
 	// run-start check.
 	if run.Status == domain.WorkflowRunRunning && !run.RuntimeReady {
+		// Always-container: EVERY runtime-mode run gets a container.
+		// needsServe selects only the opencode serve PROBE, never the
+		// container. Serve-less (native-only) runs flip the gate here —
+		// their container is ensured below without waiting on a serve
+		// they never use. Covers runs armed before always-container
+		// landed (mid-upgrade) and any future path that leaves a
+		// serve-less run gated.
+		needsServeGate := needsServe
 		if r.runtimeEnabled() {
-			r.startEnsureServing(run)
+			needsServeGate = r.runNeedsServe(ctx, ttx.Tx, tenantID, run, steps)
+		}
+		// Local-mode runs clear the gate here unconditionally (no
+		// container, no probe — in-process by explicit opt-out).
+		if runLocalMode {
+			needsServeGate = false
+		}
+		if !needsServeGate {
+			if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
+				RuntimeReady: boolPtr(true),
+			}); err != nil {
+				return fmt.Errorf("clear runtime gate (serve-less run): %w", err)
+			}
+			run.RuntimeReady = true
+		}
+		if r.runtimeEnabled() && !run.RuntimeReady {
+			// Local mode never enters the container path: no EnsureForRun,
+			// no probe — flip ready and progress in-process. The
+			// reconciler pass below clears the gate for local runs.
+			if !runLocalMode {
+				// The container was ensured synchronously at arm above
+				// (every runtime-mode run, regardless of kind). Here only
+				// the async serve probe starts — for serve-needing runs.
+				// (Legacy pre-always-container rows may arrive gated with
+				// no container: re-ensure idempotently — a held lease is
+				// a no-op, a missing daemon fails LOUD via failRunServeGate
+				// semantics below, never silent host exec.)
+				r.startEnsureServing(run, needsServeGate)
+			}
 			// Commit the transition (the deferred rollback would undo it on
 			// the early return) and hold progression until the probe flips
 			// the gate.
@@ -986,10 +1150,14 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 				if branchChild[sr.StepID] {
 					switch sr.WorktreeStatus {
 					case domain.WorktreePending, domain.WorktreePruned, "":
+						// Held + queued for provisioning: collected here,
+						// fired ONCE post-commit (below) — an in-loop fire
+						// here would double-notify (pre-#393 this loop
+						// collected only; #393 added a second in-loop fire
+						// without removing this one, so every held branch
+						// was enqueued with the WorktreeReconciler twice
+						// per pass).
 						branchWorktreeTriggers = append(branchWorktreeTriggers, sr.ID)
-						if r.worktreeNotifier != nil {
-							r.worktreeNotifier(context.Background(), run.ID+":"+sr.ID)
-						}
 						continue
 					case domain.WorktreeFailed:
 						if ferr := r.failStep(ctx, ttx.Tx, tenantID, run, sr, runByID,
@@ -1525,13 +1693,72 @@ func (r *WorkflowReconciler) failRunAtStart(ctx context.Context, tx pgx.Tx, tena
 	return nil
 }
 
+// ensureRunContainerFailover runs the arm-site failover in its own tx:
+// retry the resolved tag once (transient daemon/pool miss), then the base
+// image once; if every attempt fails, fail the run LOUD at start. The arm
+// pass already rolled back on entry, so the run is still pending here —
+// the fail path re-reads the current row (fresh version) and commits the
+// terminal state; the retry-success path leaves the run pending for the
+// next pass to re-arm. Returns nil in both terminal cases (the caller
+// stops the pass and reaps post-commit); a non-nil error is an
+// infrastructure failure the caller returns.
+func (r *WorkflowReconciler) ensureRunContainerFailover(ctx context.Context, tenantID, runID, resolvedImage string) error {
+	if !r.runtimeEnabled() {
+		return nil
+	}
+	img := strings.TrimSpace(resolvedImage)
+	if img == "" || img == runtime.NoServeImage {
+		img = db.BaseRuntimeImage
+	}
+	ftx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return fmt.Errorf("failover begin tx: %w", err)
+	}
+	defer ftx.Rollback(ctx)
+	cur, err := db.GetWorkflowRun(ctx, ftx.Tx, tenantID, runID)
+	if err != nil {
+		return fmt.Errorf("failover get run: %w", err)
+	}
+	try := cur
+	try.RuntimeImage = img
+	// The arm site already attempted EnsureForRun once (in autocommit);
+	// entry here means that attempt failed. Retry the resolved tag once
+	// (transient daemon/pool miss), then fall back to the base image.
+	firstErr := fmt.Errorf("arm-site container ensure failed")
+	if rerr := r.runtime.EnsureForRun(ctx, try); rerr == nil {
+		return nil
+	}
+	if img != db.BaseRuntimeImage {
+		try.RuntimeImage = db.BaseRuntimeImage
+		if berr := r.runtime.EnsureForRun(ctx, try); berr == nil {
+			r.log.Warn("workflow runtime fell back to base image", "run", cur.ID, "resolved", img, "error", firstErr)
+			return nil
+		}
+	}
+	reason := fmt.Sprintf("runtime container could not be created (image %q, then base %q): %v", img, db.BaseRuntimeImage, firstErr)
+	if ferr := r.failRunAtStart(ctx, ftx.Tx, tenantID, cur, reason); ferr != nil {
+		return ferr
+	}
+	if cerr := ftx.Commit(ctx); cerr != nil {
+		return fmt.Errorf("commit fail-at-start: %w", cerr)
+	}
+	return nil
+}
+
 // startEnsureServing kicks off the ASYNC runtime-serve readiness probe for
 // a run (idempotent — one goroutine per run; the in-flight map clears when
 // it finishes). On success it flips the run's runtime_ready gate so the
 // next reconcile pass progresses the DAG; on failure it fails the run at
 // start with the serve error. A plane restart clears the map and the next
 // reconcile pass re-triggers the (idempotent) probe.
-func (r *WorkflowReconciler) startEnsureServing(run db.WorkflowRunRow) {
+//
+// needsServe=false (native-only) returns immediately: the container from
+// ensureRunContainer is enough, there is no serve to probe. The reconciler
+// pass flips the gate itself for those runs; this guard covers races.
+func (r *WorkflowReconciler) startEnsureServing(run db.WorkflowRunRow, needsServe bool) {
+	if !needsServe {
+		return
+	}
 	r.warmingMu.Lock()
 	if r.warming[run.ID] {
 		r.warmingMu.Unlock()
@@ -1547,7 +1774,10 @@ func (r *WorkflowReconciler) startEnsureServing(run db.WorkflowRunRow) {
 			r.warmingMu.Unlock()
 		}()
 		bg := context.Background()
-		if err := r.runtime.EnsureServing(bg, run); err != nil {
+		// startEnsureServing only launches this goroutine when needsServe
+		// is true (early return above), so the probe always runs with
+		// needsServe=true here.
+		if err := r.runtime.EnsureServing(bg, run, true); err != nil {
 			r.log.Error("workflow runtime serve failed to become usable — failing run", "run", run.ID, "error", err)
 			r.failRunServeGate(bg, run, err)
 			return
@@ -1995,7 +2225,11 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			return r.failStep(ctx, tx, tenantID, run, sr, runs,
 				fmt.Errorf("worker step %q has no worker ref", step.Name))
 		}
-		workerVer, err := db.GetWorkerVersionByID(ctx, tx, tenantID, step.Ref, fmt.Sprintf("v%d", step.WorkerVersion))
+		// By NUMBER, not by id. This is the DISPATCH resolution: a step that
+		// pinned a version must run THAT version. The old "v%d" pseudo-id
+		// never matched a row, so every pin silently degraded to
+		// latest-published below (see GetWorkerVersionByNumber).
+		workerVer, err := db.GetWorkerVersionByNumber(ctx, tx, tenantID, step.Ref, step.WorkerVersion)
 		if err != nil {
 			if err == db.ErrNotFound {
 				// Fall back to latest published — supports workflows
@@ -2027,6 +2261,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		// in the DAG — the DB row is untouched.
 		var primaryWID string
 		var composite string
+		var promptFP string // context-file fingerprint (ADR-0009 D5)
 		for _, wid := range upstream {
 			wi, err := db.GetWorkItem(ctx, tx, tenantID, wid)
 			if err != nil {
@@ -2037,9 +2272,13 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 				return fmt.Errorf("load work item: %w", err)
 			}
 			wi.WorkflowStepID = sr.StepID
-			composite, err = r.buildCompositePrompt(ctx, tx, tenantID, wi, workerVer, allSteps, runs)
+			var fp string
+			composite, fp, err = r.buildCompositePrompt(ctx, tx, tenantID, wi, workerVer, allSteps, runs)
 			if err != nil {
 				return fmt.Errorf("build composite prompt for %s: %w", wid, err)
+			}
+			if fp != "" {
+				promptFP = fp
 			}
 			primaryWID = wid
 		}
@@ -2049,10 +2288,11 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		// _worker_version from the step run to build the execution
 		// manifest; the ticket stays untouched.
 		stepResult, _ := json.Marshal(map[string]any{
-			"_work_item_id":   primaryWID,
-			"_prompt":         composite,
-			"_worker_id":      step.Ref,
-			"_worker_version": step.WorkerVersion,
+			"_work_item_id":       primaryWID,
+			"_prompt":             composite,
+			"_prompt_fingerprint": promptFP,
+			"_worker_id":          step.Ref,
+			"_worker_version":     step.WorkerVersion,
 		})
 		// Preserve the recovery narrative across a re-dispatch so the run
 		// view keeps showing it after the step runs again. Carries ALL
@@ -2069,6 +2309,16 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 					if v, ok := prev[k]; ok {
 						newResult[k] = v
 					}
+				}
+				// Pin the re-dispatch to the dead execution's worker
+				// version: model_ref (hence adapter) is a per-version
+				// property, so resolving the step's active version here
+				// could silently switch adapters (v3 opencode vs v4
+				// orchicon). The gate (R7b) fails fast when no pin is
+				// available and the version moved; legacy rows without
+				// the key keep resolving the step version.
+				if rv, ok := prev["_recovery_worker_version"].(float64); ok && rv != 0 {
+					newResult["_worker_version"] = rv
 				}
 				stepResult, _ = json.Marshal(newResult)
 			}
@@ -2294,19 +2544,9 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		switch decision {
 		case cfg.SuccessValue:
 			// Decision is success → proceed forward.
-			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-				Status:    strPtr(domain.StepRunSucceeded),
-				StartedAt: &now,
-				EndedAt:   &now,
-			})
-			if err != nil {
-				return fmt.Errorf("mark loop_decision step succeeded: %w", err)
+			if err := r.loopDecisionAccept(ctx, tx, tenantID, run, sr, step, runs, now, "upstream success"); err != nil {
+				return err
 			}
-			runs[step.ID] = updated
-			if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, updated); err != nil {
-				return fmt.Errorf("enqueue loop_decision step_succeeded: %w", err)
-			}
-			r.log.Info("loop_decision: accepted", "run", run.ID, "step", step.ID)
 
 		case cfg.FailureValue:
 			// Decision is failure → loop back to loop_branch with full context.
@@ -2324,27 +2564,39 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			}
 
 		default:
-			// No decision field found. For the terminal PR loop (devops -> end) an empty decision
-			// means the PR step succeeded without an explicit review signal - this is success, not a re-ask.
-			// The general re-ask path would infinitely loop for step-3rplua0d/step-e75nato1 which depends
-			// only on step-devops-pr. Treat it as success to avoid the wedge that required force_progress.
-			if cfg.LoopBranch == "step-devops-pr" && (cfg.SuccessBranch == "step-l32ezp4b" || cfg.SuccessBranch == "step-end") {
-				updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-					Status:    strPtr(domain.StepRunSucceeded),
-					StartedAt: &now,
-					EndedAt:   &now,
-				})
-				if err != nil {
-					return fmt.Errorf("mark loop_decision step succeeded: %w", err)
+			// No upstream supplied a value in cfg.DecisionField. WHAT THAT MEANS IS
+			// THE WORKFLOW'S CALL, not the engine's — so it is config:
+			//
+			//   reask   (default, and what an ABSENT key means) — re-dispatch the
+			//           reviewer and ask it to state a verdict.
+			//   success — proceed forward. For a gate whose upstream has no verdict
+			//           to give: re-asking it only re-runs the same step, and the
+			//           loop target IS that same step, so the "re-ask" carries no new
+			//           information. It burns the re-ask budget and then fails the
+			//           node — the wedge that needed force_progress.
+			//   fail    — a verdict is mandatory here; refuse immediately.
+			//
+			// This REPLACES a hardcode that recognised the terminal devops loop by
+			// tenant step id (loop_branch "step-devops-pr" plus a success_branch of
+			// "step-l32ezp4b" or "step-end" — the latter a fossil no live row ever
+			// carried). That guard matched only ONE of the two loops it was written
+			// for: SDLC (human approval)'s loop points at step-qonmbwyu, so it kept
+			// re-asking and kept failing. Expressed as a policy it is data the
+			// operator sets, and 20260924000000_backfill_loop_decision_missing_verdict
+			// backfills the loops the hardcode actually rescued.
+			if cfg.OnMissingDecision == MissingDecisionSuccess {
+				if err := r.loopDecisionAccept(ctx, tx, tenantID, run, sr, step, runs, now,
+					"on_missing_decision=success (no upstream verdict)"); err != nil {
+					return err
 				}
-				runs[step.ID] = updated
-				if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, updated); err != nil {
-					return fmt.Errorf("enqueue loop_decision step_succeeded: %w", err)
-				}
-				r.log.Info("loop_decision: terminal devops success (no decision) -> accepted", "run", run.ID, "step", step.ID)
 				break
 			}
-			// No decision field found. Re-ask the reviewer.
+			if cfg.OnMissingDecision == MissingDecisionFail {
+				return r.failStep(ctx, tx, tenantID, run, sr, runs,
+					fmt.Errorf("loop_decision step %q: no decision signal in %q and on_missing_decision is fail",
+						step.Name, cfg.DecisionField))
+			}
+			// Default: re-ask the reviewer.
 			reviewerStepID := ""
 			for _, dep := range step.DependsOn {
 				reviewerStepID = dep
@@ -2371,10 +2623,14 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			}
 			reaskCount := countReaskRuns(reaskList)
 			if reaskCount >= cfg.MaxReask {
-				// Re-ask exhausted — fail the loop node even though the step
-				// run succeeded, because the reviewer never provided a decision.
+				// Re-ask exhausted — fail the loop node even though the step run
+				// succeeded, because the reviewer never provided a decision. Name the
+				// policy in the error: this failure is otherwise a mystery wedge, and
+				// the operator's fix is one config key.
 				return r.failStep(ctx, tx, tenantID, run, sr, runs,
-					fmt.Errorf("loop_decision step %q: reviewer did not provide decision signal after %d attempts", step.Name, cfg.MaxReask))
+					fmt.Errorf("loop_decision step %q: reviewer did not provide decision signal after %d attempts"+
+						" (set config.on_missing_decision to %q if this step has no verdict to give)",
+						step.Name, cfg.MaxReask, MissingDecisionSuccess))
 			}
 
 			r.log.Info("loop_decision: re-asking reviewer",
@@ -2525,6 +2781,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			}
 			var primaryWID string
 			var composite string
+			var promptFP string
 			for _, wid := range upstream {
 				wi, err := db.GetWorkItem(ctx, tx, tenantID, wid)
 				if err != nil {
@@ -2535,9 +2792,13 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 					return fmt.Errorf("load work item: %w", err)
 				}
 				wi.WorkflowStepID = sr.StepID
-				composite, err = r.buildCompositePrompt(ctx, tx, tenantID, wi, workerVer, allSteps, runs)
+				var fp string
+				composite, fp, err = r.buildCompositePrompt(ctx, tx, tenantID, wi, workerVer, allSteps, runs)
 				if err != nil {
 					return fmt.Errorf("build composite prompt for approver: %w", err)
+				}
+				if fp != "" {
+					promptFP = fp
 				}
 				primaryWID = wid
 			}
@@ -2546,7 +2807,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			// inline DispatchTask reads _prompt / _worker_id /
 			// _worker_version from the step run to build the execution
 			// manifest; the ticket stays untouched.
-			stepResult := buildApprovalStepResult(primaryWID, composite, workerRefStr, workerVer.Version,
+			stepResult := buildApprovalStepResult(primaryWID, composite, promptFP, workerRefStr, workerVer.Version,
 				upstreamWorker, upstreamSummary, upstreamFiles, ac, sr.Result)
 			// Clear any stale worker_execution_id (a recovering step
 			// re-dispatched here still references its FAILED execution):
@@ -2699,8 +2960,15 @@ func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID s
 //  3. Work item context — the item's own context files/directories
 //  4. Instructions — read .orchicon/ for previous step results,
 //     then output format including decision prefix
-func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow, worker db.WorkerVersionRow, allSteps []workflow.StepWire, runs map[string]db.WorkflowStepRunRow) (string, error) {
+func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow, worker db.WorkerVersionRow, allSteps []workflow.StepWire, runs map[string]db.WorkflowStepRunRow) (string, string, error) {
 	var sb strings.Builder
+	// contextFP is the sha256 over the project + work-item context-file
+	// stamps (ADR-0009 D5): unchanged files ⇒ unchanged bytes ⇒ the
+	// rendered section is reused verbatim from the prefix cache and the
+	// static prompt prefix stays cache-warm. Returned alongside the
+	// composite so it can ride the step-run meta /
+	// ExecutionManifest.PromptFingerprint.
+	contextFP := "none"
 	// Stable prompt prefix first: shared identity + safety rules + efficiency
 	// directives + runtime environment, built ONLY from shared constants so it
 	// is byte-identical across all workers and steps of a run. llama.cpp's
@@ -2708,7 +2976,9 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	// and reused across every step (and role) of the run. Everything
 	// role/step-specific — worker identity, the task, project context,
 	// instructions, execution history — follows AFTER the prefix.
-	sb.WriteString(db.StablePromptPrefix(wi.RuntimeImage))
+	// Prompt truth: the RUN-effective image (run row, not the wi request)
+	// and the project execution mode (runtime vs local honest block).
+	sb.WriteString(db.StablePromptPrefix(runEffectiveImage(ctx, tx, tenantID, wi), projectExecutionModeForPrompt(ctx, tx, tenantID, wi)))
 
 	// 0. Worker identity — role, skills, behavior, and AGENTS.md.
 	if r := strings.TrimSpace(worker.Role); r != "" {
@@ -2749,7 +3019,11 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 			}
 			var files []string
 			_ = json.Unmarshal(p.ContextFiles, &files)
-			sb2.WriteString(contextfiles.RenderManifest("# Project context", files, p.ProjectDir))
+			section, fp := r.renderContextSectionCached(tenantID, wi.ProjectID, "# Project context", files, p.ProjectDir)
+			sb2.WriteString(section)
+			if fp != "" {
+				contextFP = fp
+			}
 			if sb2.Len() > 0 {
 				sb.WriteString(sb2.String())
 			}
@@ -2771,8 +3045,12 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 			).Scan(&pd)
 			projectDir = pd
 		}
-		if r := contextfiles.RenderManifest("# Work item context", files, projectDir); r != "" {
-			sb.WriteString(r)
+		section, fp := r.renderContextSectionCached(tenantID, wi.ProjectID, "# Work item context", files, projectDir)
+		if section != "" {
+			sb.WriteString(section)
+		}
+		if fp != "" {
+			contextFP = contextFP + "." + fp
 		}
 	}
 
@@ -3143,7 +3421,7 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	}
 	sb.WriteString("If you produce an output file, use the `write` tool (not `bash` with a heredoc). The `write` tool saves the file and orchicon captures it as an inline artifact.\n")
 
-	return sb.String(), nil
+	return sb.String(), contextFP, nil
 }
 
 // runtimeEnvironmentBlock is kept as a thin alias for the shared
@@ -3185,8 +3463,59 @@ func anyDirectCompleted(history []histEntryType) bool {
 	return false
 }
 
+// runExecutionMode returns the run's project execution_mode
+// (runtime|local) for arm routing. Best-effort: empty project or read
+// failure degrades to runtime (fail-open toward the container).
+func runExecutionMode(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow) string {
+	if strings.TrimSpace(run.ProjectID) == "" {
+		return db.ExecutionModeRuntime
+	}
+	p, err := db.GetProject(ctx, tx, tenantID, run.ProjectID)
+	if err != nil {
+		return db.ExecutionModeRuntime
+	}
+	if p.ExecutionMode == db.ExecutionModeLocal {
+		return db.ExecutionModeLocal
+	}
+	return db.ExecutionModeRuntime
+}
+
+// runEffectiveImage returns the run row's RuntimeImage for workflow-bound
+// items (the armed value — the prompt must describe the container the run
+// actually got, not the work-item request), falling back to the item's
+// image for standalone items. Best-effort: read failures degrade to the
+// item image.
+func runEffectiveImage(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow) string {
+	if wi.WorkflowRunID != "" {
+		if run, err := db.GetWorkflowRun(ctx, tx, tenantID, wi.WorkflowRunID); err == nil && strings.TrimSpace(run.RuntimeImage) != "" {
+			return strings.TrimSpace(run.RuntimeImage)
+		}
+	}
+	if img := strings.TrimSpace(wi.RuntimeImage); img != "" {
+		return img
+	}
+	return db.BaseRuntimeImage
+}
+
+// projectExecutionModeForPrompt returns the work item's project
+// execution_mode for prompt branching (runtime vs local honest block).
+// Best-effort: read failures degrade to runtime.
+func projectExecutionModeForPrompt(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow) string {
+	if strings.TrimSpace(wi.ProjectID) == "" {
+		return db.ExecutionModeRuntime
+	}
+	p, err := db.GetProject(ctx, tx, tenantID, wi.ProjectID)
+	if err != nil {
+		return db.ExecutionModeRuntime
+	}
+	if p.ExecutionMode == db.ExecutionModeLocal {
+		return db.ExecutionModeLocal
+	}
+	return db.ExecutionModeRuntime
+}
+
 func runtimeEnvironmentBlock(image string) string {
-	return db.RuntimeEnvironmentBlock(image)
+	return db.RuntimeEnvironmentBlock(image, "")
 }
 
 // walkAncestors walks the parent_id chain from a work item up to the
@@ -3582,10 +3911,18 @@ func readConfigProjectID(config string) string {
 //   - "human_escalation": set the step to approval_pending; a human
 //     must mark the task succeeded to continue.
 //   - "stop": permanent failure — no retry, step is marked failed.
+//
+// There is deliberately NO delay field. live config carries `retry_delay_seconds` — it
+// was written into the seeds and into stored step configs — but NOTHING ever waited on
+// it: the value was parsed here and then read by no code, and the recovery row that
+// carried it was never consulted when a retry was dispatched (there is no deferral
+// mechanism for execution dispatch at all; retries go out immediately). A knob that
+// silently does nothing is worse than no knob, so it is gone. A stored
+// `retry_delay_seconds` key is now IGNORED here and PRESERVED verbatim by the step
+// editors, which never modelled it.
 type stepRecoveryConfig struct {
-	Strategy          string `json:"strategy"`
-	MaxAttempts       int    `json:"max_attempts"`
-	RetryDelaySeconds int    `json:"retry_delay_seconds"`
+	Strategy    string `json:"strategy"`
+	MaxAttempts int    `json:"max_attempts"`
 }
 
 // readStepRecoveryConfig reads the "recovery" block from the step's
@@ -3611,20 +3948,21 @@ func readStepRecoveryConfig(config string) stepRecoveryConfig {
 	if outer.Recovery.MaxAttempts > 0 {
 		cfg.MaxAttempts = outer.Recovery.MaxAttempts
 	}
-	if outer.Recovery.RetryDelaySeconds > 0 {
-		cfg.RetryDelaySeconds = outer.Recovery.RetryDelaySeconds
-	}
 	return cfg
 }
 
 // resolveRuntimeImage determines the runtime container image for a run
-// at start:
+// at start (always-container resolution chain):
 //   - template runs (run.WorkItemID set): the bound work item's stored
-//     runtime_image (backend-stamped; empty = base image);
+//     runtime_image when explicit;
 //   - one-shot runs: the WORK_ITEM canvas markers' work items' stored
-//     runtime_image values. All empty → base image; one distinct non-empty
-//     → that image; two different non-empty values → error (a single
-//     container cannot serve two images).
+//     runtime_image values, which must all agree;
+//   - project default: when the item/marker lookup yields "", the
+//     run's (or marker item's) project default_runtime_image;
+//   - base: empty everywhere resolves to orchicon-runtime:base.
+//
+// Never returns "" and never the no-serve sentinel (the sentinel survives
+// only as an in-memory serve-skip signal, never as a persisted image).
 //
 // The resolved value is stored on the run row so the adapter's self-heal
 // recreates the container with the identical image.
@@ -3634,7 +3972,10 @@ func (r *WorkflowReconciler) resolveRuntimeImage(ctx context.Context, tx pgx.Tx,
 		if err != nil {
 			return "", fmt.Errorf("get bound work item: %w", err)
 		}
-		return strings.TrimSpace(wi.RuntimeImage), nil
+		if img := strings.TrimSpace(wi.RuntimeImage); img != "" {
+			return img, nil
+		}
+		return resolveProjectDefaultImage(ctx, tx, tenantID, run.ProjectID), nil
 	}
 	// One-shot: collect WORK_ITEM markers' images; all must agree.
 	values := []string{}
@@ -3657,7 +3998,34 @@ func (r *WorkflowReconciler) resolveRuntimeImage(ctx context.Context, tx pgx.Tx,
 			values = append(values, img)
 		}
 	}
-	return resolveImageFromValues(values)
+	chosen, err := resolveImageFromValues(values)
+	if err != nil {
+		return "", err
+	}
+	if chosen != "" {
+		return chosen, nil
+	}
+	// One-shot with no explicit image: fall back to the run's project
+	// default, else the base image.
+	return resolveProjectDefaultImage(ctx, tx, tenantID, run.ProjectID), nil
+}
+
+// resolveProjectDefaultImage returns the project's default_runtime_image
+// when set, else the base image. Best-effort: a project-read failure
+// resolves to base (the arm site fails LOUD later only on a real daemon
+// error, never on a missing default).
+func resolveProjectDefaultImage(ctx context.Context, tx pgx.Tx, tenantID, projectID string) string {
+	if strings.TrimSpace(projectID) == "" {
+		return db.BaseRuntimeImage
+	}
+	p, err := db.GetProject(ctx, tx, tenantID, projectID)
+	if err != nil {
+		return db.BaseRuntimeImage
+	}
+	if p.DefaultRuntimeImage != nil && strings.TrimSpace(*p.DefaultRuntimeImage) != "" {
+		return strings.TrimSpace(*p.DefaultRuntimeImage)
+	}
+	return db.BaseRuntimeImage
 }
 
 // resolveImageFromValues applies the one-shot image agreement rule: all
@@ -3743,17 +4111,18 @@ func resolveApprovalWorkItems(sr db.WorkflowStepRunRow, step workflow.StepWire, 
 // review context, and the pending decision marker. When re-dispatching a
 // recovering step, the previous _recovery_* keys are preserved so the
 // recovery-resumed dispatch keeps its seed.
-func buildApprovalStepResult(primaryWID, composite, workerRefStr string, workerVersion int, upstreamWorker, upstreamSummary string, upstreamFiles []string, ac string, prevResult []byte) []byte {
+func buildApprovalStepResult(primaryWID, composite, fingerprint, workerRefStr string, workerVersion int, upstreamWorker, upstreamSummary string, upstreamFiles []string, ac string, prevResult []byte) []byte {
 	stepResult, _ := json.Marshal(map[string]any{
-		"_work_item_id":     primaryWID,
-		"_prompt":           composite,
-		"_worker_id":        workerRefStr,
-		"_worker_version":   workerVersion,
-		"_upstream_worker":  upstreamWorker,
-		"_upstream_summary": upstreamSummary,
-		"_upstream_files":   upstreamFiles,
-		"_ac":               ac,
-		"_decision":         "pending",
+		"_work_item_id":       primaryWID,
+		"_prompt":             composite,
+		"_prompt_fingerprint": fingerprint,
+		"_worker_id":          workerRefStr,
+		"_worker_version":     workerVersion,
+		"_upstream_worker":    upstreamWorker,
+		"_upstream_summary":   upstreamSummary,
+		"_upstream_files":     upstreamFiles,
+		"_ac":                 ac,
+		"_decision":           "pending",
 	})
 	var prev map[string]any
 	_ = json.Unmarshal(prevResult, &prev)
@@ -3824,8 +4193,12 @@ type recoveryTriggerReq struct {
 // dead-execution identity + strategy the dispatch path persists at the
 // recovering transition — all must survive WorkerExecutionID being cleared
 // at re-dispatch so the recovery seed stays resolvable.
+// _recovery_worker_version / _recovery_adapter pin the exact version and
+// adapter the dead execution ran on (model_ref is per-version); the gate
+// fails fast when the step's current version moved off the pin.
 var recoveryResultKeys = []string{
 	"_recovery_summary", "_recovery_execution_id", "_recovery_worker_id",
+	"_recovery_worker_version", "_recovery_adapter",
 	"_failed_execution_id", "_failed_worker_id", "_recovery_strategy",
 }
 
@@ -3886,12 +4259,15 @@ func recoveringStepResult(ctx context.Context, tx pgx.Tx, tenantID, workItemID, 
 // recovery that never resumed — never dispatch cold).
 func (r *WorkflowReconciler) recoveryDispatchReady(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow) (bool, error) {
 	var meta struct {
-		WorkItemID       string `json:"_work_item_id"`
-		FailedExecID     string `json:"_failed_execution_id"`
-		RecoveryExecID   string `json:"_recovery_execution_id"`
-		RecoveryStrategy string `json:"_recovery_strategy"`
-		WorkerID         string `json:"_worker_id"`
-		FailedWorkerID   string `json:"_failed_worker_id"`
+		WorkItemID            string  `json:"_work_item_id"`
+		FailedExecID          string  `json:"_failed_execution_id"`
+		RecoveryExecID        string  `json:"_recovery_execution_id"`
+		RecoveryStrategy      string  `json:"_recovery_strategy"`
+		WorkerID              string  `json:"_worker_id"`
+		WorkerVersion         float64 `json:"_worker_version"`
+		FailedWorkerID        string  `json:"_failed_worker_id"`
+		RecoveryWorkerVersion float64 `json:"_recovery_worker_version"`
+		RecoveryAdapter       string  `json:"_recovery_adapter"`
 	}
 	if err := json.Unmarshal(sr.Result, &meta); err != nil || meta.WorkItemID == "" {
 		// No ticket recorded — cannot gate; dispatchStep/failStep will
@@ -3977,6 +4353,20 @@ func (r *WorkflowReconciler) recoveryDispatchReady(ctx context.Context, tx pgx.T
 		return false, fmt.Errorf(
 			"step recovery worker changed: dead execution ran on %s but step %s is now assigned to %s — manual re-arbitration required",
 			meta.FailedWorkerID, sr.StepID, meta.WorkerID)
+	}
+
+	// R7b — fail fast when the dead execution's worker VERSION no longer
+	// matches the currently-assigned version. Same worker ID with a
+	// different version may resolve a different adapter (model_ref is a
+	// per-version property: v3 opencode vs v4 orchicon), and the recovery
+	// seed + transcript tail are not portable cross-adapter. Pre-deploy
+	// rows carry neither key (both zero) and keep legacy behavior; a
+	// re-dispatch that pinned the dead version (see the recovering
+	// re-dispatch path) always satisfies this check.
+	if meta.RecoveryWorkerVersion != 0 && meta.WorkerVersion != 0 && meta.RecoveryWorkerVersion != meta.WorkerVersion {
+		return false, fmt.Errorf(
+			"step recovery worker version changed: dead execution ran on %s v%v (%s) but step %s is now assigned to %s v%v — manual re-arbitration required",
+			meta.FailedWorkerID, meta.RecoveryWorkerVersion, meta.RecoveryAdapter, sr.StepID, meta.WorkerID, meta.WorkerVersion)
 	}
 
 	// 3. A seed must be resolvable for the exact dispatching worker
@@ -4435,6 +4825,14 @@ func (r *WorkflowReconciler) enqueueRunEvent(ctx context.Context, tx pgx.Tx, eve
 	if stepID != "" {
 		evt["step_id"] = stepID
 	}
+	// Audit: run_started carries the resolved image + execution mode
+	// (acceptance C) so operators can verify what the run dispatched
+	// with. Best-effort — a project-read failure records the unknown
+	// mode rather than failing the event.
+	if eventType == domain.WorkflowEventRunStarted {
+		evt["runtime_image"] = run.RuntimeImage
+		evt["execution_mode"] = runExecutionMode(ctx, tx, run.TenantID, run)
+	}
 	payload, err := json.Marshal(evt)
 	if err != nil {
 		return fmt.Errorf("marshal run event: %w", err)
@@ -4488,7 +4886,50 @@ type loopDecisionConfig struct {
 	SuccessValue  string `json:"success_value"`  // value meaning success; default "success"
 	FailureValue  string `json:"failure_value"`  // value meaning failure; default "failure"
 	MaxReask      int    `json:"max_reask"`      // max re-ask attempts when no decision field found; default 3
+
+	// OnMissingDecision names what to do when NO upstream supplies a value in
+	// DecisionField — the gate has no verdict to route on. Without a policy the
+	// engine had to guess, and it guessed from tenant step ids.
+	//
+	//   "reask"   (default) — re-dispatch the reviewer and ask for a verdict.
+	//   "success" — proceed forward.
+	//   "fail"    — refuse immediately.
+	//
+	// Any value the engine does not recognise is treated as the default, so a typo
+	// degrades to today's behaviour rather than to something new.
+	OnMissingDecision string `json:"on_missing_decision"`
+
+	// DecisionField / SuccessValue / FailureValue are PLATFORM CONTRACT, not operator
+	// preference, and are therefore exposed in NEITHER client's step editor.
+	//
+	// The verdict vocabulary is produced by the platform, not chosen per workflow: the
+	// worker identity preamble tells EVERY worker to "report your result via the
+	// ORCHICON WORKER SUMMARY contract" (db.WorkerIdentityPreamble), the seeded prompts
+	// spell it out as the literal `ORCHICON WORKER SUMMARY: success` / `failure` in 18
+	// places, and extractSummaryDecision NORMALIZES exactly those two words — passing any
+	// other first word through verbatim, which is what makes a custom vocabulary
+	// technically possible.
+	//
+	// That combination is a trap in a form. Point SuccessValue at "done" without also
+	// rewriting every worker prompt (and every approval reviewer's) and no verdict ever
+	// matches, so EVERY gate falls through to the missing-decision path — re-ask until
+	// the budget is spent, then fail. Nothing validates the two against each other, so
+	// the failure mode is silent and total. Left settable in the config (a workflow may
+	// legitimately drive it programmatically) but not offered as a knob.
+	//
+	// DecisionField is the same class for a second reason: the PRIMARY path does not
+	// consult it at all — the upstream step run's decision is decoded from a hardcoded
+	// `_decision` tag above — so only the legacy ticket fallback honours it. Offering it
+	// would move a knob that mostly does nothing.
 }
+
+// The on_missing_decision vocabulary. The engine routes on these exact strings;
+// MissingDecisionReask is the default an absent key resolves to.
+const (
+	MissingDecisionReask   = "reask"
+	MissingDecisionSuccess = "success"
+	MissingDecisionFail    = "fail"
+)
 
 func parseLoopDecisionConfig(config string) loopDecisionConfig {
 	var cfg loopDecisionConfig
@@ -4505,7 +4946,38 @@ func parseLoopDecisionConfig(config string) loopDecisionConfig {
 	if cfg.MaxReask <= 0 {
 		cfg.MaxReask = 3
 	}
+	// An ABSENT key means the general re-ask path, and so does any value outside the
+	// vocabulary. The policy is ADDITIVE: a workflow written before it existed — and one
+	// whose author mistyped the policy — behaves exactly as it did, rather than falling
+	// into a third, invented state. Normalising here (not at the dispatch site) means the
+	// struct always carries a policy the engine actually implements.
+	if cfg.OnMissingDecision != MissingDecisionReask &&
+		cfg.OnMissingDecision != MissingDecisionSuccess &&
+		cfg.OnMissingDecision != MissingDecisionFail {
+		cfg.OnMissingDecision = MissingDecisionReask
+	}
 	return cfg
+}
+
+// loopDecisionAccept records a loop_decision step run as SUCCEEDED — the "proceed
+// forward" action — and emits its step_succeeded event. It has two callers, which
+// differ only in WHY they accepted: an explicit success verdict from an upstream, and
+// the on_missing_decision=success policy (no verdict to read).
+func (r *WorkflowReconciler) loopDecisionAccept(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow, step workflow.StepWire, runs map[string]db.WorkflowStepRunRow, now time.Time, reason string) error {
+	updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+		Status:    strPtr(domain.StepRunSucceeded),
+		StartedAt: &now,
+		EndedAt:   &now,
+	})
+	if err != nil {
+		return fmt.Errorf("mark loop_decision step succeeded: %w", err)
+	}
+	runs[step.ID] = updated
+	if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, updated); err != nil {
+		return fmt.Errorf("enqueue loop_decision step_succeeded: %w", err)
+	}
+	r.log.Info("loop_decision: accepted", "run", run.ID, "step", step.ID, "reason", reason)
+	return nil
 }
 
 // currentLoopIteration returns the current iteration count for a step
@@ -5056,4 +5528,19 @@ func aggregateLoopDecisions(decisions []string, failureValue, successValue strin
 		}
 	}
 	return decision
+}
+
+// imageForRun stamps the runtime image a run carries: ALWAYS the resolved
+// image (explicit work-item -> project default -> base). The needsServe
+// flag is retained at call sites only as the in-memory serve-gate signal
+// (whether the run-start gate must wait for the opencode serve); it no
+// longer selects a sentinel image. runtime.NoServeImage survives only as
+// the internal serve-skip marker for legacy rows, never as a freshly
+// persisted run.RuntimeImage when a container exists.
+func imageForRun(resolved string, needsServe bool) string {
+	_ = needsServe
+	if strings.TrimSpace(resolved) == "" {
+		return db.BaseRuntimeImage
+	}
+	return strings.TrimSpace(resolved)
 }

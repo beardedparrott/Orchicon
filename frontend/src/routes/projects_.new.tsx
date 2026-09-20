@@ -1,10 +1,14 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useFieldArray, useForm } from "react-hook-form";
+import { useState } from "react";
 import { z } from "zod";
 
-import { useCreateProject } from "@/api/projects";
+import { useCreateProject, useUpdateProject } from "@/api/projects";
 import { GoalField } from "@/api/gen/orchicon/api/v1/project_pb";
+import { useAvailableRuntimeImages } from "@/api/runtimeImages";
+import { useSetProjectMCPServers } from "@/api/mcpServers";
+import { MCPPicker, type MCPConfig } from "@/components/MCPPicker";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -47,6 +51,9 @@ const createProjectSchema = z.object({
     .or(z.literal("")),
   goals: z.array(goalFieldSchema).default([]),
   gitStrategy: z.enum(["local", "pr", "none"]).default("local"),
+  defaultRuntimeImage: z.string().optional().default(""),
+  executionMode: z.enum(["runtime", "local"]).default("runtime"),
+  maxConcurrentRuns: z.coerce.number().int().min(0).optional().default(0),
 });
 
 type CreateProjectForm = z.input<typeof createProjectSchema>;
@@ -54,6 +61,16 @@ type CreateProjectForm = z.input<typeof createProjectSchema>;
 function NewProjectPage() {
   const navigate = useNavigate();
   const createProject = useCreateProject();
+  const updateProject = useUpdateProject();
+  const setProjectMCPServers = useSetProjectMCPServers();
+  const [mcpSelection, setMcpSelection] = useState<MCPConfig[]>([]);
+  const { data: availableImages } = useAvailableRuntimeImages();
+  const runtimeOptions = [
+    ...((availableImages as { stockImages?: string[] } | undefined)?.stockImages ?? []),
+    ...((availableImages as { customImages?: string[] } | undefined)?.customImages ?? []),
+  ].filter((img, i, arr) => img && arr.indexOf(img) === i);
+  const defaultImageHint =
+    (availableImages as { defaultImage?: string } | undefined)?.defaultImage || runtimeOptions[0] || "base image";
   const {
     register,
     control,
@@ -63,7 +80,7 @@ function NewProjectPage() {
     formState: { errors, isSubmitting },
   } = useForm({
     resolver: zodResolver(createProjectSchema),
-    defaultValues: { name: "", slug: "", goals: [{ key: "", value: "" }], gitStrategy: "local" as GitStrategy },
+    defaultValues: { name: "", slug: "", goals: [{ key: "", value: "" }], gitStrategy: "local" as GitStrategy, defaultRuntimeImage: "", executionMode: "runtime" as const, maxConcurrentRuns: 0 },
   });
 
   const { fields, append, remove } = useFieldArray({
@@ -72,6 +89,8 @@ function NewProjectPage() {
   });
 
   const gitStrategy = watch("gitStrategy");
+  const defaultRuntimeImage = watch("defaultRuntimeImage");
+  const executionMode = watch("executionMode");
 
   const onSubmit = async (values: CreateProjectForm) => {
     const goals = (values.goals ?? [])
@@ -82,26 +101,55 @@ function NewProjectPage() {
     const fallbackGoals = [...goals];
     // keep a hidden goal for backwards compat until proto is regenerated
     // the backend will prefer the typed field when present
+    let project: { id: string };
     try {
-      // @ts-ignore - git_strategy may not yet be in generated types until `make gen`
-      const project = await (createProject.mutateAsync as any)({
+      // gitStrategy rides on the typed CreateProjectRequest proto field.
+      // defaultRuntimeImage (empty = inherit base) + executionMode ride on
+      // their typed fields — backend already supports them (service.go).
+      project = await createProject.mutateAsync({
         name: values.name,
         slug: values.slug || undefined,
         goals: fallbackGoals.length > 0 ? fallbackGoals : undefined,
         gitStrategy: values.gitStrategy,
-        git_strategy: values.gitStrategy,
+        defaultRuntimeImage: values.defaultRuntimeImage?.trim() ? values.defaultRuntimeImage.trim() : undefined,
+        executionMode: values.executionMode,
       });
-      navigate({ to: "/projects/$id", params: { id: project.id } });
-    } catch (e) {
+    } catch {
       // fallback: encode gitStrategy into goals if proto field not recognized
       const withStrategy = [...fallbackGoals, new GoalField({ key: "__git_strategy", value: values.gitStrategy })];
-      const project = await createProject.mutateAsync({
+      project = await createProject.mutateAsync({
         name: values.name,
         slug: values.slug || undefined,
         goals: withStrategy,
-      } as any);
-      navigate({ to: "/projects/$id", params: { id: project.id } });
+      });
     }
+    // CreateProjectRequest has no max_concurrent_runs field (proto) — apply
+    // it as a second update so the create form can still capture the guard.
+    // (z.coerce input types as unknown/{} — normalize via Number().)
+    const maxRuns =
+      Number((values as { maxConcurrentRuns?: unknown }).maxConcurrentRuns ?? 0) || 0;
+    if (project && maxRuns > 0) {
+      try {
+        await updateProject.mutateAsync({
+          id: project.id,
+          maxConcurrentRuns: maxRuns,
+        });
+      } catch (err) {
+        console.error("Failed to save project concurrency guard", err);
+      }
+    }
+    // Persist MCP server selection (references, never copies) after creation.
+    if (mcpSelection.length > 0) {
+      try {
+        await setProjectMCPServers.mutateAsync({
+          projectId: project.id,
+          mcpServerIds: mcpSelection.map((c) => c.id),
+        });
+      } catch (err) {
+        console.error("Failed to save project MCP selection", err);
+      }
+    }
+    navigate({ to: "/projects/$id", params: { id: project.id } });
   };
 
   return (
@@ -160,6 +208,64 @@ function NewProjectPage() {
               value={gitStrategy as GitStrategy}
               onValueChange={(v) => setValue("gitStrategy", v as GitStrategy)}
             />
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="defaultRuntimeImage">Default runtime image</Label>
+                <select
+                  id="defaultRuntimeImage"
+                  value={defaultRuntimeImage ?? ""}
+                  onChange={(e) => setValue("defaultRuntimeImage", e.target.value)}
+                  className="w-full rounded-xl glass-input px-3 py-1.5 text-sm"
+                >
+                  <option value="">Inherit base ({defaultImageHint})</option>
+                  {runtimeOptions.map((img) => (
+                    <option key={img} value={img}>
+                      {img}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  Copied onto work items at create time when they pass no runtime_image.
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="executionMode">Execution mode</Label>
+                <select
+                  id="executionMode"
+                  value={executionMode ?? "runtime"}
+                  onChange={(e) => setValue("executionMode", e.target.value as "runtime" | "local")}
+                  className="w-full rounded-xl glass-input px-3 py-1.5 text-sm"
+                >
+                  <option value="runtime">runtime — always-container (default)</option>
+                  <option value="local">local — in-process (fenced)</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="maxConcurrentRuns">Max concurrent runs (optional)</Label>
+              <Input
+                id="maxConcurrentRuns"
+                type="number"
+                min={0}
+                placeholder="0 = no additional restriction"
+                {...register("maxConcurrentRuns")}
+              />
+              <p className="text-xs text-muted-foreground">
+                Caps how many executions may run concurrently (effective limit is min(tenant, project)).
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label>MCP servers</Label>
+              <p className="text-xs text-muted-foreground">
+                MCP servers enabled for this project (references — leave
+                empty to inherit the tenant default). Configured in Settings
+                → Adapters → MCP.
+              </p>
+              <MCPPicker value={mcpSelection} onChange={setMcpSelection} />
+            </div>
 
             <div className="space-y-2">
               <Label>Goals</Label>

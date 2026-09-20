@@ -1,0 +1,104 @@
+name: CI
+
+# Standing CI for the Multi-adapter gate. Runs the control-plane gate on
+# every PR targeting `develop` so the no-synthesized-data audit (and the
+# rest of the Go gate) is actually standing, plus the frontend lint+tests.
+#
+# The gate is split the same way the Makefile splits it (`ci-go` vs
+# `fe-lint`/`fe-test`) so the two jobs run fully in parallel:
+#
+#   go-ci   — lint, gen-check, vet, test, synth-data, rls-check.
+#             No Node setup at all: `gen` runs the local protoc-gen-es /
+#             protoc-gen-connect-es plugins from a scratch npm prefix
+#             containing ONLY those two packages (~30s) instead of the
+#             full frontend node_modules (4-7m). The gen-check step then
+#             fails on any drift between regenerated and committed code.
+#             buf is pinned (version + SHA256) via `make tools` — no
+#             80s `go install buf@latest` per run, no @latest drift.
+#   fe-lint — fe-lint + fe-test (vitest) with the full npm install.
+#
+# Notes:
+#   - The TS protoc plugin versions below are pinned to the exact versions
+#     locked in frontend/package-lock.json; a drifting plugin release would
+#     silently change generated code, so they never float.
+#   - rls-check (scripts/check-rls.sh) needs a MIGRATED Postgres: on an
+#     empty database the gate is vacuous (zero tables = zero violations),
+#     so the go-ci job runs a Postgres service and applies the Atlas
+#     migrations (via `go run tools/atlas-ci` — no atlas binary on the
+#     runner) before `make ci-go` with DB_URL exported.
+#   - Hermetic CI: bare runners never install adapter CLIs (opencode
+#     today, claude code etc. tomorrow). The opencode adapter's
+#     binary-resolution seam is stubbed by its tests instead — the
+#     fail-fast tests exercise the real paths with nothing provisioned.
+
+on:
+  pull_request:
+    branches: [develop]
+
+jobs:
+  go-ci:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: orchicon
+          POSTGRES_PASSWORD: orchicon
+          POSTGRES_DB: orchicon
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U orchicon"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DB_URL: postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Install pinned buf (version + SHA256)
+        run: make tools
+
+      - name: Install TS protoc plugins (protoc-gen-es + protoc-gen-connect-es)
+        run: |
+          mkdir -p "$RUNNER_TEMP/protoc-plugins"
+          npm install --prefix "$RUNNER_TEMP/protoc-plugins" \
+            @bufbuild/protoc-gen-es@1.10.1 \
+            @connectrpc/protoc-gen-connect-es@1.7.0
+          echo "$RUNNER_TEMP/protoc-plugins/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Apply migrations (make rls-check non-vacuous)
+        run: go run ./tools/atlas-ci
+
+      - name: Run Go control-plane gate (make ci-go)
+        run: make ci-go
+
+  fe-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        run: cd frontend && npm ci
+
+      - name: Lint frontend
+        run: make fe-lint
+
+      - name: Test frontend (vitest)
+        run: make fe-test

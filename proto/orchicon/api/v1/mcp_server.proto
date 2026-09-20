@@ -1,0 +1,217 @@
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// MCP server transport kinds (Settings → Adapters → MCP). stdio runs a
+// subprocess (command + args + env); streamable-http connects to a remote
+// endpoint (url + headers).
+enum MCPServerTransport {
+  MCP_SERVER_TRANSPORT_UNSPECIFIED = 0;
+  MCP_SERVER_TRANSPORT_STDIO = 1;
+  MCP_SERVER_TRANSPORT_STREAMABLE_HTTP = 2;
+}
+
+// Auto-install outcome states for a server entry. Installations are
+// explicit (operator clicks Install) — never implicit network installs at
+// session time.
+enum MCPInstallStatus {
+  MCP_INSTALL_STATUS_UNSPECIFIED = 0;
+  MCP_INSTALL_STATUS_UNKNOWN = 1;        // not attempted / not a catalog entry
+  MCP_INSTALL_STATUS_NOT_INSTALLED = 2;  // checked, runtime present, nothing installed yet
+  MCP_INSTALL_STATUS_INSTALLING = 3;
+  MCP_INSTALL_STATUS_INSTALLED = 4;
+  MCP_INSTALL_STATUS_FAILED = 5;
+}
+
+// MCPInstallResult is the recorded outcome of an auto-install run.
+message MCPInstallResult {
+  string runtime = 1;       // "npx" | "uvx" | "docker" | "" (remote_url: no install needed)
+  string command = 2;       // full install command run (display only)
+  bool ok = 3;
+  string error = 4;         // failure message; empty on success
+  string installed_at = 5;  // RFC3339; empty when never installed
+}
+
+// MCPServer is one tenant-scoped MCP server entry. Plaintext credentials
+// NEVER appear here — env/header values may be ${SECRET_NAME} references
+// and has_secret_stored reports whether the referenced tenant secret
+// exists. Values are never returned.
+message MCPServer {
+  string id = 1;
+  string name = 2;
+  MCPServerTransport transport = 3;
+  string command = 4;                 // stdio: executable
+  repeated string args = 5;           // stdio: argv array
+  map<string, string> env = 6;        // stdio: env map; values may be ${SECRET_NAME}
+  string url = 7;                     // streamable-http: endpoint
+  map<string, string> headers = 8;    // streamable-http; values may be ${SECRET_NAME}
+  bool enabled = 9;
+  string catalog_slug = 10;           // registry provenance; empty for manual entries
+  MCPInstallStatus install_status = 11;
+  MCPInstallResult install_result = 12; // nullable
+  repeated string required_secrets = 13; // env var names the catalog flags as secrets
+  bool has_secret_stored = 14;          // any of required_secrets present in secrets store
+  google.protobuf.Timestamp created_at = 15;
+  google.protobuf.Timestamp updated_at = 16;
+}
+
+// MCPCatalogEnvVar is one default env var (or header) entry in the
+// curated registry: name, optional default value, secret flag, and a
+// human description.
+message MCPCatalogEnvVar {
+  string name = 1;
+  string default = 2;
+  bool secret = 3;
+  string description = 4;
+}
+
+// MCPCatalogEntry is one entry in the built-in curated registry
+// (code-first static data; versioned with the repo).
+message MCPCatalogEntry {
+  string slug = 1;
+  string display_name = 2;
+  string description = 3;
+  string transport = 4;          // "stdio" | "streamable-http"
+  string install_mechanism = 5;  // "npx" | "uvx" | "docker" | "remote_url"
+  string default_command = 6;    // e.g. "npx" (argv[0] actually run)
+  repeated string default_args = 7;
+  repeated MCPCatalogEnvVar default_env = 8;
+  string default_url = 9;        // for remote_url / streamable-http entries
+  repeated MCPCatalogEnvVar default_headers = 10;
+  string docs_url = 11;
+  repeated string required_env = 12; // secret env var names the entry requires
+}
+
+// Catalog request/response.
+message MCPCatalogListRequest {}
+message MCPCatalogListResponse {
+  repeated MCPCatalogEntry entries = 1;
+}
+
+message MCPCatalogPrefillRequest {
+  string slug = 1;
+}
+message MCPCatalogPrefillResponse {
+  // The prefilled create payload the UI can drop into the form
+  // (one-click add = Prefill then Create; the catalog itself is
+  // read-only and idempotent).
+  MCPCatalogEntry entry = 1;
+  MCPServerCreateRequest prefill = 2;
+}
+
+// CRUD.
+message MCPServerListRequest {}
+message MCPServerListResponse {
+  repeated MCPServer servers = 1;
+}
+
+message MCPServerGetRequest {
+  string id = 1;
+}
+message MCPServerGetResponse {
+  MCPServer server = 1;
+}
+
+message MCPServerCreateRequest {
+  string name = 1;
+  MCPServerTransport transport = 2;
+  string command = 3;              // stdio
+  repeated string args = 4;        // stdio
+  map<string, string> env = 5;     // stdio; values may be ${SECRET_NAME}
+  string url = 6;                  // streamable-http
+  map<string, string> headers = 7; // streamable-http
+  bool enabled = 8;
+  string catalog_slug = 9;
+}
+message MCPServerCreateResponse {
+  MCPServer server = 1;
+}
+
+message MCPServerUpdateRequest {
+  string id = 1;
+  optional string name = 2;              // immutable after create; rejected if set
+  optional MCPServerTransport transport = 3;
+  optional string command = 4;
+  repeated string args = 5;
+  optional bool replace_args = 6;        // true = args replaces stored; false = leave
+  map<string, string> env = 7;
+  optional bool replace_env = 8;
+  optional string url = 9;
+  map<string, string> headers = 10;
+  optional bool replace_headers = 11;
+  optional bool enabled = 12;
+  optional string catalog_slug = 13;
+}
+message MCPServerUpdateResponse {
+  MCPServer server = 1;
+}
+
+message MCPServerDeleteRequest {
+  string id = 1;
+}
+message MCPServerDeleteResponse {}
+
+// Auto-install.
+message MCPServerInstallRequest {
+  string id = 1;
+  bool dry_run = 2;  // true = report what WOULD run; no exec, no DB write
+}
+message MCPServerInstallResponse {
+  MCPServer server = 1;             // updated entry (dry_run: unchanged)
+  bool would_run = 2;               // dry_run: true when an install would be attempted
+  string runtime = 3;               // detected runtime ("npx" | "uvx" | "docker" | "")
+  string command = 4;               // command that would run / ran
+  bool available = 5;               // runtime present on host
+}
+
+message MCPRuntimeDetectRequest {}
+message MCPRuntimeDetectResponse {
+  map<string, bool> available = 1;  // npx / uvx / docker
+}
+
+// Secrets (write-only credentials; provider-token pattern, ADR-0006 D5).
+message MCPServerSetSecretRequest {
+  string id = 1;
+  string name = 2;   // env/header key (or a required secret name)
+  string value = 3;  // plaintext; written to tenant_secrets, never returned
+}
+message MCPServerSetSecretResponse {
+  string secret_name = 1;
+  bool has_secret_stored = 2;
+}
+
+message MCPServerClearSecretRequest {
+  string id = 1;
+  string name = 2;
+}
+message MCPServerClearSecretResponse {}
+
+// Project + tenant-default selections (references, never copies).
+message ProjectMCPServersSetRequest {
+  string project_id = 1;
+  repeated string mcp_server_ids = 2;
+}
+message ProjectMCPServersSetResponse {
+  repeated string mcp_server_ids = 1;
+}
+
+message ProjectMCPServersGetRequest {
+  string project_id = 1;
+}
+message ProjectMCPServersGetResponse {
+  repeated string mcp_server_ids = 1;
+}
+
+message TenantDefaultMCPServersSetRequest {
+  repeated string mcp_server_ids = 1;
+}
+message TenantDefaultMCPServersSetResponse {
+  repeated string mcp_server_ids = 1;
+}
+
+message TenantDefaultMCPServersGetRequest {}
+message TenantDefaultMCPServersGetResponse {
+  repeated string mcp_server_ids = 1;
+}

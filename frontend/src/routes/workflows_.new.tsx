@@ -16,6 +16,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { GitStrategySelect, gitStrategyToProto } from "@/components/GitStrategySelect";
+import { GitStrategy } from "@/api/gen/orchicon/api/v1/project_pb";
 import { Route as rootRoute } from "@/routes/__root";
 
 export const Route = createRoute({
@@ -56,8 +57,8 @@ function NewWorkflowPage() {
 
   const onSubmit = async (values: CreateWorkflowForm) => {
     const rawPayload = values.gitStrategy === "inherit" ? undefined : values.gitStrategy;
-    const gitStrategyPayload = rawPayload ? gitStrategyToProto(rawPayload as any) : undefined;
-    const res = await (createWorkflow.mutateAsync as any)({
+    const gitStrategyPayload = rawPayload ? gitStrategyToProto(rawPayload) : undefined;
+    const res = await createWorkflow.mutateAsync({
       name: values.name,
       projectId: values.type === "one-shot" ? (values.projectId ?? "") : "",
       type: values.type === "repeatable-template" ? "template" : "one_shot",
@@ -65,8 +66,7 @@ function NewWorkflowPage() {
       inputs: "{}",
       outputs: "{}",
       versionNote: values.versionNote ?? "",
-      gitStrategy: gitStrategyPayload,
-      git_strategy: gitStrategyPayload,
+      gitStrategy: gitStrategyPayload ?? GitStrategy.UNSPECIFIED,
     });
     navigate({ to: "/workflows/$id", params: { id: res.workflow.id } });
   };
@@ -90,7 +90,7 @@ function NewWorkflowPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={handleSubmit(onSubmit as any)} className="space-y-4">
+          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="name">Name</Label>
               <Input
@@ -146,8 +146,8 @@ function NewWorkflowPage() {
             )}
 
             <GitStrategySelect
-              value={gitStrategy as any}
-              onValueChange={(v) => setValue("gitStrategy", v as any)}
+              value={gitStrategy ?? "inherit"}
+              onValueChange={(v) => setValue("gitStrategy", v)}
               includeInherit
               inheritDescription={
                 workflowType === "one-shot"

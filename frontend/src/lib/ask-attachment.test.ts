@@ -61,7 +61,7 @@ describe("ask-attachment helpers", () => {
     const big = { name: "big.png", type: "image/png", size: MAX_FILE_BYTES + 1 };
     const r = validateFileForAdd({ file: big, existingCount: 0, existingTotalBytes: 0, queuedCount: 0, queuedBytes: 0 });
     expect(r.ok).toBe(false);
-    expect((r as any).reason).toMatch(/10MB/);
+    if (!r.ok) expect(r.reason).toMatch(/10MB/);
   });
 
   it("validateFileForAdd: total size 20MB", () => {
@@ -69,7 +69,7 @@ describe("ask-attachment helpers", () => {
     // existing 16MB + 5MB = 21MB >20
     const r = validateFileForAdd({ file, existingCount: 0, existingTotalBytes: 16 * 1024 * 1024, queuedCount: 0, queuedBytes: 0 });
     expect(r.ok).toBe(false);
-    expect((r as any).reason).toMatch(/20MB/);
+    if (!r.ok) expect(r.reason).toMatch(/20MB/);
     // queuedBytes also counts
     const r2 = validateFileForAdd({ file, existingCount: 0, existingTotalBytes: 10 * 1024 * 1024, queuedCount: 0, queuedBytes: 10 * 1024 * 1024 });
     expect(r2.ok).toBe(false);
@@ -79,7 +79,7 @@ describe("ask-attachment helpers", () => {
     const f = { name: "bad.exe", type: "application/octet-stream", size: 100 };
     const r = validateFileForAdd({ file: f, existingCount: 0, existingTotalBytes: 0, queuedCount: 0, queuedBytes: 0 });
     expect(r.ok).toBe(false);
-    expect((r as any).reason).toMatch(/Unsupported/);
+    if (!r.ok) expect(r.reason).toMatch(/Unsupported/);
   });
 
   it("attach → send flow sizes match server caps", () => {

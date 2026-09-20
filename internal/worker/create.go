@@ -12,20 +12,18 @@ import (
 
 // CreateWorkerInput is the full input for creating a worker header plus
 // its first draft version. Both the Connect service (Service.CreateWorker)
-// and the AskOrchicon tool adapter (toolCreateWorker) funnel through
-// ValidateCreateWorkerInput + CreateWorkerTx so there is exactly ONE
 // implementation of "create a worker" — the ghost-record bug (tool path
 // committed a workers row with no worker_versions row and dropped
-// model_ref/runtime_ref) was two drifted implementations.
+// model_ref) was two drifted implementations.
 type CreateWorkerInput struct {
 	TenantID     string
+	Adapter      string // explicit adapter selection (ADR-0005 D2); must agree with ModelRef
 	Name         string
 	Slug         string // optional; derived from Name when empty
 	Description  string
 	Purpose      string
 	RoleRef      string // RBAC role binding; empty = no plane access (deny-by-default)
 	VersionNote  string
-	RuntimeRef   string
 	ModelRef     string
 	Role         string
 	Skills       string
@@ -33,12 +31,22 @@ type CreateWorkerInput struct {
 	AgentsMD     string
 	SystemPrompt string // raw prompt; used only when no structured field is set
 
+	// Ephemeral marks this worker as machine-managed and transient (Ask
+	// Orchicon Quick Work's throwaway worker). It is set only by the Ask tool
+	// layer: no UI or Connect handler passes it, because a transient worker
+	// is something an AGENT creates for one job, not something a human files.
+	// Threaded through the row so the create path stays one insert.
+	Ephemeral bool
+
 	// JSON-encoded fields (validated; empty becomes the canonical default).
 	ContextSources  string // JSON array
 	Permissions     string // JSON object
 	GatedTools      string // JSON array
 	BudgetOverrides string // JSON object
 	Labels          string // JSON object
+
+	// NOTE: worker-level RuntimeRef was retired (ADR-0003 single source of
+	// truth): the model_ref's adapter segment alone governs dispatch.
 
 	ExecutionPolicyRef  string
 	ConcurrencyLimit    int
@@ -85,10 +93,13 @@ func ValidateCreateWorkerInput(in *CreateWorkerInput) error {
 	if in.VersionNote, err = validateTextField(in.VersionNote, maxVersionNoteLen, "version_note"); err != nil {
 		return err
 	}
-	if in.RuntimeRef, err = validateTextField(in.RuntimeRef, maxNameLen, "runtime_ref"); err != nil {
+	if in.ModelRef, err = validateModelRef(context.Background(), in.TenantID, in.ModelRef); err != nil {
 		return err
 	}
-	if in.ModelRef, err = validateTextField(in.ModelRef, maxNameLen, "model_ref"); err != nil {
+	if in.Adapter, err = validateAdapterInput(in.Adapter); err != nil {
+		return err
+	}
+	if err := validateAdapterRefAgreement(in.Adapter, in.ModelRef); err != nil {
 		return err
 	}
 	if in.SystemPrompt, err = validateTextField(in.SystemPrompt, maxPromptLen, "system_prompt"); err != nil {
@@ -162,6 +173,7 @@ func CreateWorkerTx(ctx context.Context, tx pgx.Tx, in CreateWorkerInput) (db.Wo
 		Status:         domain.WorkerDraft,
 		CurrentVersion: 0,
 		CreatedBy:      "", // populated when auth lands (Phase 9)
+		Ephemeral:      in.Ephemeral,
 	}
 	created, err := db.CreateWorker(ctx, tx, workerRow)
 	if err != nil {
@@ -179,7 +191,6 @@ func CreateWorkerTx(ctx context.Context, tx pgx.Tx, in CreateWorkerInput) (db.Wo
 		Version:             1,
 		VersionNote:         in.VersionNote,
 		Status:              domain.WorkerVersionDraft,
-		RuntimeRef:          in.RuntimeRef,
 		ModelRef:            in.ModelRef,
 		Role:                in.Role,
 		Skills:              in.Skills,

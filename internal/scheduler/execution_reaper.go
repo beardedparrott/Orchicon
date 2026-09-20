@@ -29,7 +29,7 @@ import (
 // for dev overrides.
 type ExecutionReaper struct {
 	pool   *db.Pool
-	active func(execID string) bool // adapter.IsExecutionActive
+	active func(exec db.ExecutionRow) bool // liveness probe (adapter.IsExecutionActive via LivenessReporter type-assert)
 	fail   func(ctx context.Context, execID, errorMessage string)
 	log    *slog.Logger
 
@@ -39,8 +39,13 @@ type ExecutionReaper struct {
 	notAlive   map[string]int
 }
 
-// NewExecutionReaper creates the liveness reaper.
-func NewExecutionReaper(pool *db.Pool, active func(string) bool, fail func(context.Context, string, string), log *slog.Logger) *ExecutionReaper {
+// NewExecutionReaper creates the liveness reaper. The active probe
+// receives the full execution row so it can resolve the execution's
+// adapter kind (worker model_ref → Dispatcher) and type-assert the
+// LivenessReporter capability — a bridge without the capability reports
+// inactive (fail-closed: the reaper treats it as lost, matching the
+// pre-dispatcher behavior for kinds that never supported liveness).
+func NewExecutionReaper(pool *db.Pool, active func(exec db.ExecutionRow) bool, fail func(context.Context, string, string), log *slog.Logger) *ExecutionReaper {
 	return &ExecutionReaper{pool: pool, active: active, fail: fail, log: log, notAlive: make(map[string]int)}
 }
 
@@ -105,7 +110,7 @@ func (r *ExecutionReaper) Reap(ctx context.Context) error {
 		// tracked in the adapter's in-plane registry. If the adapter is no
 		// longer tracking it, the session runner is gone (plane restart /
 		// runtime container lost) — dead.
-		dead = r.active == nil || !r.active(exec.ID)
+		dead = r.active == nil || !r.active(exec)
 		if !dead {
 			r.forget(exec.ID)
 			continue

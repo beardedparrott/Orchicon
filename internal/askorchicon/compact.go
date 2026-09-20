@@ -86,10 +86,18 @@ func compactProject(r db.ProjectRow) map[string]any {
 	if len(r.Goals) > 0 {
 		_ = json.Unmarshal(r.Goals, &goals)
 	}
-	return map[string]any{
+	// GitStrategy and RepoSlug are carried on the COMPACT row on purpose. GitStrategy decides whether a run
+	// pushes a branch, opens a PR, or gets neither (db.EffectiveGitStrategy), so a caller that must confirm the
+	// strategy before dispatching cannot do it from a list that hides the field — it would have to branch to
+	// get_project for every project just to say which strategy is in force.
+	row := map[string]any{
 		"ID": r.ID, "Name": r.Name, "Slug": r.Slug, "Status": r.Status,
-		"ProjectDir": r.ProjectDir, "Goals": goals,
+		"ProjectDir": r.ProjectDir, "Goals": goals, "GitStrategy": r.GitStrategy,
 	}
+	if r.RepoSlug != nil {
+		row["RepoSlug"] = *r.RepoSlug
+	}
+	return row
 }
 
 func compactWorker(r db.WorkerRow) map[string]any {

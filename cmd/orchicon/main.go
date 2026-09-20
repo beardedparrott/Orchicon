@@ -284,8 +284,9 @@ func runMCP(ctx context.Context, args []string, log *slog.Logger) int {
 	// ORCHICON_MCP_WORKTREE_DIR when it wires this sidecar into a worker's
 	// opencode config, so the sidecar can run inside a DB-less runtime.
 	if wd := os.Getenv("ORCHICON_MCP_WORKTREE_DIR"); wd != "" {
-		mcpSrv := mcp.New(log, nil, mcp.NewWorktreeRegistry(wd))
-		log.Info("mcp server started (worktree tools, stdio transport)", "worktree", wd)
+		pr := os.Getenv("ORCHICON_MCP_PROJECT_DIR")
+		mcpSrv := mcp.New(log, nil, mcp.NewWorktreeRegistry(wd, pr))
+		log.Info("mcp server started (worktree tools, stdio transport)", "worktree", wd, "project", pr)
 		if err := mcpSrv.Run(ctx); err != nil {
 			log.Error("mcp server", "error", err)
 			return 1

@@ -143,12 +143,12 @@ func TestRuntimeEnvironmentBlockEmptyImage(t *testing.T) {
 // runtime env): two prefixes for the same runtime image must be byte-identical,
 // and a different image only changes the image label.
 func TestStablePromptPrefixSameImageIdentical(t *testing.T) {
-	a := db.StablePromptPrefix("orchicon-dev:latest")
-	b := db.StablePromptPrefix("orchicon-dev:latest")
+	a := db.StablePromptPrefix("orchicon-dev:latest", "")
+	b := db.StablePromptPrefix("orchicon-dev:latest", "")
 	if a != b {
 		t.Errorf("stable prefix must be byte-identical for the same image")
 	}
-	if a == db.StablePromptPrefix("orchicon-base:latest") {
+	if a == db.StablePromptPrefix("orchicon-base:latest", "") {
 		t.Errorf("stable prefix must vary with the runtime image")
 	}
 }
@@ -176,11 +176,11 @@ func TestCompositeStablePrefixSharedAcrossWorkers(t *testing.T) {
 		AgentsMD: "## Standards\nWrite ADRs for significant decisions.\n",
 	}
 	r := &WorkflowReconciler{}
-	a, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, swe, nil, nil)
+	a, _, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, swe, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, arch, nil, nil)
+	b, _, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, arch, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func TestCompositePromptTodoListDirectives(t *testing.T) {
 	item := db.WorkItemRow{Title: "Todo directives", Status: "pending", RuntimeImage: "orchicon-dev:latest"}
 	worker := db.WorkerVersionRow{Role: "Engineer"}
 	r := &WorkflowReconciler{}
-	out, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, worker, nil, nil)
+	out, _, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, worker, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,13 +247,6 @@ func TestCompositePromptTodoListDirectives(t *testing.T) {
 			t.Errorf("composite prompt missing %q; got:\n%s", want, out)
 		}
 	}
-
-	// The standalone (non-workflow) dispatch path must carry the same block
-	// via the shared stable prefix.
-	standalone := buildStandaloneComposite(nil, db.ExecutionRow{}, item, worker, "", "")
-	if !strings.Contains(standalone, "## Todo list") {
-		t.Errorf("standalone composite missing the Todo list block")
-	}
 }
 
 // TestCompositePromptEfficiencyAndBatchingDirectives verifies every worker's
@@ -265,7 +258,7 @@ func TestCompositePromptEfficiencyAndBatchingDirectives(t *testing.T) {
 	item := db.WorkItemRow{Title: "Efficiency directives", Status: "pending", RuntimeImage: "orchicon-dev:latest"}
 	worker := db.WorkerVersionRow{Role: "Engineer"}
 	r := &WorkflowReconciler{}
-	out, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, worker, nil, nil)
+	out, _, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, worker, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +288,7 @@ func TestCompositePromptStepOutputDiscipline(t *testing.T) {
 	item := db.WorkItemRow{Title: "Step output discipline", Status: "pending", RuntimeImage: "orchicon-dev:latest"}
 	worker := db.WorkerVersionRow{Role: "Engineer"}
 	r := &WorkflowReconciler{}
-	out, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, worker, nil, nil)
+	out, _, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, worker, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +322,7 @@ func TestCompositePromptNoEmbeddedFactsBlock(t *testing.T) {
 	}
 	steps := []workflow.StepWire{{ID: "step1", Name: "DevOps Engineer", Kind: "task"}}
 	r := &WorkflowReconciler{}
-	out, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, db.WorkerVersionRow{Role: "Engineer"}, steps, runs)
+	out, _, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, db.WorkerVersionRow{Role: "Engineer"}, steps, runs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +348,7 @@ func TestCompositePromptGitGuidanceForBareWorker(t *testing.T) {
 	bare := db.WorkerVersionRow{} // nothing — a custom worker with no git content
 
 	r := &WorkflowReconciler{}
-	out, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, bare, nil, nil)
+	out, _, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, bare, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,17 +371,6 @@ func TestCompositePromptGitGuidanceForBareWorker(t *testing.T) {
 			t.Errorf("workflow composite must not assume a branch for a non-repo run; found %q", forbid)
 		}
 	}
-
-	// Standalone (non-workflow) dispatch path must carry the same in-place floor.
-	standalone := buildStandaloneComposite(nil, db.ExecutionRow{}, item, bare, "", "")
-	for _, want := range []string{
-		"no git branch or worktree",
-		"Do not create branches, commit, push, or open pull requests",
-	} {
-		if !strings.Contains(standalone, want) {
-			t.Errorf("standalone composite missing %q for a bare worker; got:\n%s", want, standalone)
-		}
-	}
 }
 
 // TestCompositePromptGitGuidanceGitBacked verifies the git-backed branch:
@@ -404,10 +386,20 @@ func TestCompositePromptGitGuidanceGitBacked(t *testing.T) {
 		"`feat/my-branch`",
 		"branch created off `develop`",
 		"NEVER** commit to, push to, or open a PR into `main` or `develop`",
+		// PR/merge ownership is workflow-agnostic: the block defers to the
+		// step contract instead of hardcoding a DevOps handoff (the Quick
+		// Work all-in-one worker opens + merges its own PR).
+		"defined by YOUR workflow's step contract",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("git guidance missing %q for a git-backed run; got:\n%s", want, out)
 		}
+	}
+	// The hardcoded SDLC-only handoff is gone from the shared block: a
+	// DevOps-less workflow (Quick Work) must never be told that "the DevOps
+	// Engineer step creates the PR" as a standing instruction.
+	if strings.Contains(out, "DevOps Engineer step creates the PR") {
+		t.Errorf("git guidance must not hardcode the DevOps PR handoff (workflow-agnostic); got:\n%s", out)
 	}
 	if strings.Contains(out, "work in place") {
 		t.Errorf("git-backed run must not get the in-place block; got:\n%s", out)
@@ -474,7 +466,7 @@ func TestCompositePromptOrchiconLocationNote(t *testing.T) {
 	}
 	steps := []workflow.StepWire{{ID: "step1", Name: "Step One", Kind: "task"}}
 	r := &WorkflowReconciler{}
-	out, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, db.WorkerVersionRow{Role: "Engineer"}, steps, runs)
+	out, _, err := r.buildCompositePrompt(ctx, nil, "tnt_test", item, db.WorkerVersionRow{Role: "Engineer"}, steps, runs)
 	if err != nil {
 		t.Fatal(err)
 	}

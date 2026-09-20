@@ -10,7 +10,7 @@ export function BuildLogViewer({ log, title = "Build log" }: { log: string; titl
     if (el) el.scrollTop = el.scrollHeight;
   }, [log]);
   const copy = async () => {
-    try { await navigator.clipboard.writeText(log); } catch {}
+    try { await navigator.clipboard.writeText(log); } catch { /* clipboard unavailable (permissions/insecure context) — copy is best-effort */ }
   };
   if (!log) return null;
   return (

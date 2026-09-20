@@ -1,0 +1,67 @@
+// Orchicon FileEdit messages: the durable file-edit ledger surface.
+//
+// One FileEdit row = one ground-truth, server-computed diff for one path
+// touched by one file-editing tool event of one owner (an execution or an
+// Ask conversation). Diffs are computed from real file-state snapshot pairs
+// (never parsed from tool-output prose) and reconciled against the run
+// worktree's git state on completion. Consumed by the GUI sidebar and the
+// TUI pane via GetSessionFileEdits (fetch/resume) and
+// StreamExecutionEvents' EXECUTION_EVENT_TYPE_FILE_EDIT (live).
+syntax = "proto3";
+
+package orchicon.api.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// FileEdit is one ledger entry.
+message FileEdit {
+  string id = 1;          // ledger row id; doubles as the stream event_id
+  string owner_kind = 2;  // execution | ask_conversation
+  string owner_id = 3;    // execution id or Ask conversation id
+  int64 seq = 4;          // monotonic per owner; doubles as stream sequence
+  string path = 5;        // project/worktree-relative, slash-separated
+  string kind = 6;        // create | modify | delete
+  string unified_diff = 7; // empty for binary files / oversized entries
+  int64 before_size = 8;
+  int64 after_size = 9;
+  string tool = 10;       // batch_write | write | edit | opencode:write | opencode:edit | reconcile:git
+  bool is_binary = 11;
+  bool truncated = 12;
+  bool git_confirmed = 13; // set by the completion-time git reconciliation
+  google.protobuf.Timestamp created_at = 14;
+}
+
+// GetSessionFileEditsRequest fetches an owner's ledger. owner_kind is
+// "execution" or "ask_conversation". from_seq resumes after a sequence
+// (exclusive); 0 = from the start.
+message GetSessionFileEditsRequest {
+  string tenant_id = 1;
+  string owner_kind = 2;
+  string owner_id = 3;
+  optional int64 from_seq = 4;
+}
+
+// GetSessionFileEditsResponse returns the ledger page plus the owner's
+// current max seq (the resume point; 0 when empty).
+message GetSessionFileEditsResponse {
+  repeated FileEdit edits = 1;
+  int64 max_seq = 2;
+}
+
+// StreamFileEditsRequest resumes the live ledger stream for one owner.
+message StreamFileEditsRequest {
+  string tenant_id = 1;
+  string owner_kind = 2;
+  string owner_id = 3;
+  optional int64 from_sequence = 4;
+}
+
+// StreamFileEditsResponse is one live ledger entry. event_id = the ledger
+// row id (stable → dedup survives reconnect); sequence = the ledger seq
+// (monotonic → resume), matching the StreamExecutionEventsResponse
+// envelope conventions.
+message StreamFileEditsResponse {
+  FileEdit event = 1;
+  string event_id = 2;
+  int64 sequence = 3;
+}

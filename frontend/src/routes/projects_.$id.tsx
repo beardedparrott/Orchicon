@@ -11,13 +11,20 @@ import {
   useDeleteProject,
   useGetProject,
   useUpdateProject,
+  protoToExecutionMode,
   projectKeys,
 } from "@/api/projects";
 import { useGetSettings } from "@/api/settings";
+import { useAvailableRuntimeImages } from "@/api/runtimeImages";
 import { useListExecutions } from "@/api/executions";
 import { useListDirPath, useUpdateProjectDir } from "@/api/projectFiles";
 import { useStreamProjectEvents } from "@/api/projectEvents";
+import {
+  useGetProjectMCPServers,
+  useSetProjectMCPServers,
+} from "@/api/mcpServers";
 import { EntityYamlView } from "@/components/EntityYamlView";
+import { MCPPicker, type MCPConfig } from "@/components/MCPPicker";
 import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import {
@@ -63,24 +70,51 @@ function ProjectDetailPage() {
   const [draftGitStrategy, setDraftGitStrategy] = useState<GitStrategy>("local");
   const [savingGitStrategy, setSavingGitStrategy] = useState(false);
   const [savingMaxRuns, setSavingMaxRuns] = useState(false);
+  const [draftDefaultImage, setDraftDefaultImage] = useState("");
+  const [draftExecutionMode, setDraftExecutionMode] = useState<"runtime" | "local">("runtime");
+  const [savingRuntime, setSavingRuntime] = useState(false);
+  const { data: availableImages } = useAvailableRuntimeImages();
+  // MCP server selection (references into Settings → Adapters → MCP).
+  // Auto-refreshes on save via react-query invalidation (mcpKeys.project).
+  const { data: projectMCPServers } = useGetProjectMCPServers(id);
+  const setProjectMCPServers = useSetProjectMCPServers();
+  const [mcpDraft, setMcpDraft] = useState<MCPConfig[]>([]);
+  const [mcpDirty, setMcpDirty] = useState(false);
+  const [savingMCP, setSavingMCP] = useState(false);
+  useEffect(() => {
+    setMcpDraft((projectMCPServers ?? []).map((srvId) => ({ id: srvId })));
+    setMcpDirty(false);
+  }, [projectMCPServers]);
   // Active executions (non-terminal) for the current-vs-limit meter.
   const { data: executions } = useListExecutions({ projectId: id, enabled: !!id });
   const { data: tenantSettings } = useGetSettings();
   const activeExecutions = (executions ?? []).filter((e) =>
     e.status === 1 || e.status === 2 || e.status === 3 || e.status === 4 || e.status === 5 || e.status === 6,
   ).length;
+  const runtimeOptions = [
+    ...((availableImages as { stockImages?: string[] } | undefined)?.stockImages ?? []),
+    ...((availableImages as { customImages?: string[] } | undefined)?.customImages ?? []),
+  ].filter((img, i, arr) => img && arr.indexOf(img) === i);
+  const defaultImageHint =
+    (availableImages as { defaultImage?: string } | undefined)?.defaultImage || runtimeOptions[0] || "base image";
 
   useEffect(() => {
     setDraftMaxRuns(String(project?.maxConcurrentRuns ?? ""));
-    const raw = (project as any)?.gitStrategy ?? (project as any)?.git_strategy ?? (() => {
+    const proj = project as (typeof project & { git_strategy?: unknown; goals?: unknown; defaultRuntimeImage?: unknown; default_runtime_image?: unknown; executionMode?: unknown; execution_mode?: unknown }) | undefined;
+    const raw = proj?.gitStrategy ?? proj?.git_strategy ?? (() => {
       try {
-        const g = JSON.parse((project as any)?.goals ?? "{}");
+        const g = JSON.parse(typeof proj?.goals === "string" ? proj.goals : "{}") as { __git_strategy?: unknown };
         return g.__git_strategy;
-      } catch { return undefined; }
+      } catch { /* goals not JSON — no embedded strategy */ }
+      return undefined;
     })();
-    const mapped = protoToGitStrategy(raw as any);
+    const mapped = protoToGitStrategy(typeof raw === "number" || typeof raw === "string" ? raw : undefined);
     if (mapped) setDraftGitStrategy(mapped);
     else setDraftGitStrategy("local");
+    const imgRaw = proj?.defaultRuntimeImage ?? proj?.default_runtime_image;
+    setDraftDefaultImage(typeof imgRaw === "string" ? imgRaw : "");
+    const execRaw = proj?.executionMode ?? proj?.execution_mode;
+    setDraftExecutionMode(protoToExecutionMode(typeof execRaw === "number" || typeof execRaw === "string" ? execRaw : undefined));
   }, [project]);
 
   const { register, handleSubmit, reset } = useForm({
@@ -249,6 +283,12 @@ function ProjectDetailPage() {
             ...(project.contextFiles?.length
               ? { context_files: project.contextFiles }
               : {}),
+            ...((project as { defaultRuntimeImage?: string }).defaultRuntimeImage
+              ? { default_runtime_image: (project as { defaultRuntimeImage?: string }).defaultRuntimeImage }
+              : {}),
+            ...((project as { executionMode?: number }).executionMode
+              ? { execution_mode: executionModeLabel((project as { executionMode?: number }).executionMode) }
+              : {}),
             created_at: project.createdAt
               ? new Date(
                   Number(project.createdAt.seconds) * 1000,
@@ -396,11 +436,11 @@ function ProjectDetailPage() {
                 <Button
                   variant="outline"
                   disabled={savingGitStrategy}
-                  onClick={() => {
-                    setSavingGitStrategy(true);
-                    (updateProject.mutate as any)(
-                      { id: project.id, gitStrategy: draftGitStrategy, git_strategy: draftGitStrategy },
-                      { onSettled: () => setSavingGitStrategy(false) },
+                    onClick={() => {
+                      setSavingGitStrategy(true);
+                      updateProject.mutate(
+                        { id: project.id, gitStrategy: draftGitStrategy, git_strategy: draftGitStrategy },
+                        { onSettled: () => setSavingGitStrategy(false) },
                     );
                   }}
                 >
@@ -419,6 +459,128 @@ function ProjectDetailPage() {
                   {draftGitStrategy === "none" && "Ephemeral — no push. Work vanishes after success; only Results remain."}
                 </p>
               </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* MCP servers — reference-based selection into the tenant registry */}
+      {project && (
+        <Card>
+          <CardHeader>
+            <CardTitle>MCP servers</CardTitle>
+            <CardDescription>
+              MCP servers enabled for this project (references — editing an
+              entry in Settings → Adapters → MCP updates every consumer).
+              Selections here are the project defaults workers fall back to.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <MCPPicker
+              value={mcpDraft}
+              onChange={(configs) => {
+                setMcpDraft(configs);
+                setMcpDirty(true);
+              }}
+            />
+            {editing && (
+              <Button
+                variant="outline"
+                disabled={savingMCP || !mcpDirty}
+                onClick={() => {
+                  setSavingMCP(true);
+                  setProjectMCPServers.mutate(
+                    {
+                      projectId: project.id,
+                      mcpServerIds: mcpDraft.map((c) => c.id),
+                    },
+                    {
+                      onSettled: () => setSavingMCP(false),
+                      onSuccess: () => setMcpDirty(false),
+                    },
+                  );
+                }}
+              >
+                {savingMCP ? "Saving…" : "Save MCP selection"}
+              </Button>
+            )}
+            {!editing && (
+              <p className="text-xs text-muted-foreground">
+                {mcpDraft.length === 0
+                  ? "No MCP servers selected — workers fall back to the tenant default."
+                  : `${mcpDraft.length} MCP server(s) selected.`}
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Runtime defaults — project-level container image + execution mode */}
+      {project && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Runtime defaults</CardTitle>
+            <CardDescription>
+              Default container image copied onto work items at create time
+              when they pass no runtime_image. Empty = inherit base
+              ({defaultImageHint}). Mode runtime runs inside the container;
+              local allows in-process with an honest prompt + DSN fence.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="default-runtime-image">Default runtime image</Label>
+                <select
+                  id="default-runtime-image"
+                  disabled={!editing}
+                  value={draftDefaultImage}
+                  onChange={(e) => setDraftDefaultImage(e.target.value)}
+                  className="w-full rounded-xl glass-input px-3 py-1.5 text-sm"
+                >
+                  <option value="">Inherit base ({defaultImageHint})</option>
+                  {runtimeOptions.map((img) => (
+                    <option key={img} value={img}>
+                      {img}
+                    </option>
+                  ))}
+                  {draftDefaultImage && !runtimeOptions.includes(draftDefaultImage) && (
+                    <option value={draftDefaultImage}>{draftDefaultImage} (current)</option>
+                  )}
+                </select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="execution-mode">Execution mode</Label>
+                <select
+                  id="execution-mode"
+                  disabled={!editing}
+                  value={draftExecutionMode}
+                  onChange={(e) => setDraftExecutionMode(e.target.value as "runtime" | "local")}
+                  className="w-full rounded-xl glass-input px-3 py-1.5 text-sm"
+                >
+                  <option value="runtime">runtime — always-container (default)</option>
+                  <option value="local">local — in-process (fenced)</option>
+                </select>
+              </div>
+            </div>
+            {editing ? (
+              <Button
+                variant="outline"
+                disabled={savingRuntime}
+                onClick={() => {
+                  setSavingRuntime(true);
+                  updateProject.mutate(
+                    { id: project.id, defaultRuntimeImage: draftDefaultImage, executionMode: draftExecutionMode },
+                    { onSettled: () => setSavingRuntime(false) },
+                  );
+                }}
+              >
+                {savingRuntime ? "Saving…" : "Save runtime defaults"}
+              </Button>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Current: {draftDefaultImage || `inherit (${defaultImageHint})`} · {draftExecutionMode}
+              </p>
             )}
           </CardContent>
         </Card>
@@ -595,6 +757,11 @@ function statusLabel(status: number): string {
   return labels[status] ?? "unknown";
 }
 
+function executionModeLabel(mode: number | undefined): string {
+  if (mode === 2) return "local";
+  return "runtime";
+}
+
 // effectiveLimit mirrors the server's min(tenant, project) formula where 0
 // on either side means "no restriction from that side".
 function effectiveLimit(projectLimit: number, tenantLimit: number): number {
@@ -661,7 +828,7 @@ function DirTree({ path, onNavigate, onSelect, isSaving }: { path: string; onNav
   };
   if (isLoading) return <p className="text-xs text-muted-foreground py-2">Loading…</p>;
   if (error) return <p className="text-xs text-destructive py-2">Error: {String(error)}</p>;
-  const dirs = (data?.entries ?? []).filter((e: any) => e.isDir);
+  const dirs = (data?.entries ?? []).filter((e) => e.isDir);
   return (
     <div className="rounded-md border max-h-[300px] overflow-y-auto">
       <div className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer border-b" onClick={() => onNavigate(parentOf(path))}>
@@ -669,7 +836,7 @@ function DirTree({ path, onNavigate, onSelect, isSaving }: { path: string; onNav
         <span className="text-muted-foreground text-xs">..</span>
       </div>
       {dirs.length === 0 && <p className="px-3 py-4 text-sm text-muted-foreground">Empty directory</p>}
-      {dirs.map((entry: any) => (
+      {dirs.map((entry) => (
         <div key={entry.path} className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted/40 cursor-pointer border-b last:border-0">
           <Folder aria-hidden="true" className="h-4 w-4 text-amber-700 dark:text-amber-500 shrink-0" />
           <span className="flex-1 truncate" onClick={() => onNavigate(entry.path)}>{entry.name}/</span>

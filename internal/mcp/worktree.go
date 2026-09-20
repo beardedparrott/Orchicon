@@ -11,22 +11,28 @@ import (
 
 // worktreeRegistry exposes the composite, context-efficient file tools
 // (batch_read / batch_grep / batch_write) over MCP so a worker calls them
-// exactly like any other opencode tool. The registry is selected instead of
-// the askorchicon (DB) registry when the server is spawned with
+// exactly like any other opencode tool, plus the single-op wrappers
+// (read/write/edit/grep), the `list` directory-listing tool, and the
+// `todoread` todo read-back. The registry is selected instead of the
+// askorchicon (DB) registry when the server is spawned with
 // ORCHICON_MCP_WORKTREE_DIR set; it operates purely on the filesystem within
 // that base directory and needs no Postgres connection.
 //
 // Tool names are NOT prefixed with `orchicon_` — they are intended to be the
 // drop-in replacements for opencode's built-in `read`/`grep`/`write`/`edit`
-// tools, so the model reaches for them naturally.
+// tools, so the model reaches for them naturally. The batch tools remain the
+// documented PREFERRED interface for independent operations (one call
+// carrying several operations = one turn instead of N); the single-op
+// variants are thin wrappers over the same batch engine.
 type worktreeRegistry struct {
-	baseDir string
+	baseDir     string
+	projectRoot string
 }
 
 // NewWorktreeRegistry returns a ToolRegistry bound to a worktree base
 // directory. All path arguments are resolved against it and can never escape.
-func NewWorktreeRegistry(baseDir string) ToolRegistry {
-	return &worktreeRegistry{baseDir: baseDir}
+func NewWorktreeRegistry(baseDir, projectRoot string) ToolRegistry {
+	return &worktreeRegistry{baseDir: baseDir, projectRoot: projectRoot}
 }
 
 func (r *worktreeRegistry) List() []ToolDef {
@@ -62,19 +68,79 @@ func (r *worktreeRegistry) List() []ToolDef {
 			Required: []string{"writes"},
 			Mutating: true,
 		},
+		{
+			Name:        "read",
+			Description: "Read a single file. Thin wrapper over batch_read for a one-file need: pass `path`. Prefer batch_read when reading several files — one call carrying several reads is one turn instead of N.",
+			Properties: map[string]propertySchema{
+				"path":         {Type: "string", Description: "Project-relative file path to read."},
+				"max_bytes":    {Type: "integer", Description: "Output cap (default 128000)."},
+				"line_numbers": {Type: "boolean", Description: "Prefix each line with its 1-based line number."},
+			},
+			Required: []string{"path"},
+		},
+		{
+			Name:        "grep",
+			Description: "Search a literal pattern across a subtree (or a single path). Thin wrapper over batch_grep for a one-pattern need: pass `pattern` and optionally `path`. Prefer batch_grep when searching several patterns.",
+			Properties: map[string]propertySchema{
+				"pattern":       {Type: "string", Description: "Literal substring to match (non-regex)."},
+				"path":          {Type: "string", Description: "Project-relative path/subtree to search (default \".\" — the whole worktree)."},
+				"context_lines": {Type: "integer", Description: "Lines of context before/after a match."},
+				"max_matches":   {Type: "integer", Description: "Bounded match-line cap (default 250)."},
+			},
+			Required: []string{"pattern"},
+		},
+		{
+			Name:        "write",
+			Description: "Write or overwrite a single file. Thin wrapper over batch_write for a one-file need: pass `filePath` and `content`. Prefer batch_write when applying several writes in one call.",
+			Properties: map[string]propertySchema{
+				"filePath": {Type: "string", Description: "Project-relative file path to write."},
+				"content":  {Type: "string", Description: "Full file content."},
+			},
+			Required: []string{"filePath", "content"},
+			Mutating: true,
+		},
+		{
+			Name:        "edit",
+			Description: "Apply an exact string replacement in a single file. Thin wrapper over batch_write for a one-edit need: pass `filePath`, `oldString`, `newString`. Prefer batch_write when applying several edits in one call.",
+			Properties: map[string]propertySchema{
+				"filePath":  {Type: "string", Description: "Project-relative file path to edit."},
+				"oldString": {Type: "string", Description: "Substring to replace (every occurrence is replaced)."},
+				"newString": {Type: "string", Description: "Replacement text."},
+			},
+			Required: []string{"filePath", "oldString", "newString"},
+			Mutating: true,
+		},
+		{
+			Name:        "list",
+			Description: "List a directory's entries (the `ls` equivalent of glob — cheap path enumeration, never content). Pass one or more project-relative paths; directories expand to their entry names (subdirectories suffixed with /), files report their size. Bounded per directory. Prefer glob for pattern-based finding; use list to see what is actually in a directory.",
+			Properties: map[string]propertySchema{
+				"paths":       {Type: "array", Description: "Project-relative directories (or files) to list (default [\".\"])."},
+				"max_entries": {Type: "integer", Description: "Entries returned per directory (default 500)."},
+			},
+		},
+		{
+			Name:        "todoread",
+			Description: "Read back the worker's LATEST todo list (the same list the execution UI renders from your todowrite calls). One cheap call to re-sync your plan mid-run — never re-derive it from memory. Returns each item with its status and priority.",
+			Properties:  map[string]propertySchema{},
+		},
 	}
 }
 
 // Executes a batch tool. The db.Pool is intentionally unused: these are
 // filesystem tools scoped to the worktree base, never the platform DB.
 func (r *worktreeRegistry) Execute(_ context.Context, _ *db.Pool, name string, args json.RawMessage) (json.RawMessage, error) {
+	// b is the scoping boundary for every worktree.* call: reads reach the
+	// worktree + the sanctioned scratch + the READ-only project root (the
+	// run-state .orchicon/<run>/ and architecture-notes); writes reach only
+	// the worktree + scratch, so batch_write never lands in the main checkout.
+	b := worktree.Base{Worktree: r.baseDir, ProjectRoot: r.projectRoot, ScratchDir: worktree.DefaultScratchDir}
 	switch name {
 	case "batch_read":
 		var a worktree.ReadArgs
 		if err := worktree.MarshalArgs(args, &a); err != nil {
 			return nil, fmt.Errorf("batch_read: %w", err)
 		}
-		out, err := worktree.BatchRead(r.baseDir, a)
+		out, err := worktree.BatchRead(b, a)
 		if err != nil {
 			return nil, fmt.Errorf("batch_read: %w", err)
 		}
@@ -84,7 +150,7 @@ func (r *worktreeRegistry) Execute(_ context.Context, _ *db.Pool, name string, a
 		if err := worktree.MarshalArgs(args, &a); err != nil {
 			return nil, fmt.Errorf("batch_grep: %w", err)
 		}
-		out, err := worktree.BatchGrep(r.baseDir, a)
+		out, err := worktree.BatchGrep(b, a)
 		if err != nil {
 			return nil, fmt.Errorf("batch_grep: %w", err)
 		}
@@ -94,9 +160,65 @@ func (r *worktreeRegistry) Execute(_ context.Context, _ *db.Pool, name string, a
 		if err := worktree.MarshalArgs(args, &a); err != nil {
 			return nil, fmt.Errorf("batch_write: %w", err)
 		}
-		out, err := worktree.BatchWrite(r.baseDir, a)
+		out, err := worktree.BatchWrite(b, a)
 		if err != nil {
 			return nil, fmt.Errorf("batch_write: %w", err)
+		}
+		return json.RawMessage(out), nil
+	case "read":
+		var a worktree.SingleReadArgs
+		if err := worktree.MarshalArgs(args, &a); err != nil {
+			return nil, fmt.Errorf("read: %w", err)
+		}
+		out, err := worktree.Read(b, a)
+		if err != nil {
+			return nil, fmt.Errorf("read: %w", err)
+		}
+		return json.RawMessage(out), nil
+	case "grep":
+		var a worktree.SingleGrepArgs
+		if err := worktree.MarshalArgs(args, &a); err != nil {
+			return nil, fmt.Errorf("grep: %w", err)
+		}
+		out, err := worktree.Grep(b, a)
+		if err != nil {
+			return nil, fmt.Errorf("grep: %w", err)
+		}
+		return json.RawMessage(out), nil
+	case "write":
+		var a worktree.SingleWriteArgs
+		if err := worktree.MarshalArgs(args, &a); err != nil {
+			return nil, fmt.Errorf("write: %w", err)
+		}
+		out, err := worktree.SingleWrite(b, a)
+		if err != nil {
+			return nil, fmt.Errorf("write: %w", err)
+		}
+		return json.RawMessage(out), nil
+	case "edit":
+		var a worktree.SingleEditArgs
+		if err := worktree.MarshalArgs(args, &a); err != nil {
+			return nil, fmt.Errorf("edit: %w", err)
+		}
+		out, err := worktree.SingleEdit(b, a)
+		if err != nil {
+			return nil, fmt.Errorf("edit: %w", err)
+		}
+		return json.RawMessage(out), nil
+	case "list":
+		var a worktree.ListArgs
+		if err := worktree.MarshalArgs(args, &a); err != nil {
+			return nil, fmt.Errorf("list: %w", err)
+		}
+		out, err := worktree.List(b, a)
+		if err != nil {
+			return nil, fmt.Errorf("list: %w", err)
+		}
+		return json.RawMessage(out), nil
+	case "todoread":
+		out, err := worktree.TodoRead(b, worktree.TodoReadArgs{})
+		if err != nil {
+			return nil, fmt.Errorf("todoread: %w", err)
 		}
 		return json.RawMessage(out), nil
 	}

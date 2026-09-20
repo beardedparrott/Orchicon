@@ -7,6 +7,9 @@ This file is injected into every Orchicon worker session. Your role, task, accep
 ## Rule 0 — Work within your provisioned worktree
 
 - **The working directory IS your worktree.** Git-backed runs are dispatched with the working directory set to an isolated worktree at `<project_dir>/.orchicon-worktrees/<runID>/`. All file operations, builds, and tests must happen inside this worktree.
+- **Where you run depends on the project's execution mode** (your `## Runtime environment` prompt block states which mode this run uses). In `runtime` mode (default) your session executes INSIDE the run's container: `pwd` is the in-container worktree path, `ORCHICON_TEST_DSN` points at the disposable in-container sandbox plane, and installs die with the container. In `local` mode you run IN-PROCESS on the host: there is NO container, `127.0.0.1:5432/8080` is the LIVE plane (never write test rows there), and only `/tmp/orchicon` scratch is safe.
+- **NEVER work in the prod instance of Orchicon.** You ONLY work inside the runtime container and launch your own disposable `orchicon serve` sandbox instance from there. Never create, mutate, or delete anything on the live/prod plane.
+- **Free models ONLY for any cloud use.** ABSOLUTELY never use a cloud model that is not free (only `-free` models, `ollama/*`, `local-models/*`, or the tenant default free model). If it is not free, you cannot use it for testing.
 - Do all your work inside the worktree; never write to `.orchicon/` or any other control-plane directory.
 - **GOTMPDIR and all scratch directories must live inside the worktree.** Use e.g. `GOTMPDIR=$PWD/.gotmp` for `go test` / `make ci`. The runtime's `/tmp` is a private tmpfs (exec-capable, so Go test binaries run fine — but it is wiped at run end), while scratch must stay inside the worktree — never create `.gotmp/`, `.go-tmp/`, `.qa-gotmp/`, or `.gtmp/` under `.orchicon/` or anywhere else outside your worktree.
 - Scratch inside the worktree is already ignored by the repo `.gitignore`, so it is never committed.
@@ -41,6 +44,23 @@ This file is injected into every Orchicon worker session. Your role, task, accep
 ## Platform changes: keep Ask Orchicon in sync
 
 - If you add/change/remove a first-class entity, RPC, or user-facing capability, update the Ask Orchicon tool registry to match (`internal/askorchicon/tools.go` + the tool files) so the Orchicon MCP/Ask Orchicon surface never drifts from what the platform actually does.
+- If you add or change an Ask Orchicon **mode**, or add an **adapter**, the tool boundary is the platform's rather than the prompt's: the policy table is `internal/askmode`, and an adapter enforces it by implementing `scheduler.ChatToolRestrictor` — without that capability the turn is **prose-only** and the dispatch logs it. Do not restate the policy in a persona or duplicate it per adapter.
+
+## Platform changes: they land in BOTH clients (GUI and TUI)
+
+- Orchicon has **two first-class clients over the same API**: the **GUI** (`frontend/src/**`, React + Connect-ES) and the **TUI** (`internal/tui/**`, `cmd/orch`). Any work in Orchicon must consider BOTH on changes that need made.
+- Concretely: if you add, change, or remove a field, entity, action, setting, or capability, check EITHER client's exposure of it — and then either implement it in both or say plainly in your summary why one is deliberately excluded.
+- A capability that lands in one client and not the other is **incomplete work, not a follow-up**. Parity gaps are the entire reason this rule exists: they are cheap to close while the context is loaded and expensive to reconstruct later.
+- An asymmetry is legitimate only when it is DELIBERATE and written down — in the code (`// ... is deliberately not offered here because ...`) and in your summary. Never leave one silent.
+- Both clients also have a shared surface with Ask Orchicon: a capability the platform can perform should be reachable from Ask's tool registry too (see the previous section).
+
+## Platform-owned contracts (do not make them configurable)
+
+- Some values are produced by the PLATFORM and consumed by the platform — they are not the user's to choose. The clearest case is the **task verdict**: every worker ends its output with `ORCHICON WORKER SUMMARY: success` / `failure`, the scheduler NORMALIZES exactly those two words (`extractSummaryDecision` → `firstWordAsDecision` in `internal/scheduler/reconciler.go`), and that word ROUTES the workflow.
+- **Never add a config field, form input, or setting that repoints a platform-owned contract at a different word.** If a gate routes on a vocabulary the platform generates, changing it on one side silently breaks the other, and NOTHING validates the two against each other — so it fails at run time, on every run, with no warning at edit time.
+- **Never ship a knob nothing honours.** A config key, form field, or DB column with no READER is not a feature; it is a lie in the UI that costs the next person hours. Either implement the behaviour it advertises, or remove the knob.
+  - Precedent: `retry_delay_seconds` was written into the task-step seeds AND into step configs and read by nothing — execution dispatch has no deferral mechanism, so no retry ever waited. It was removed rather than left standing.
+  - Related trap: a knob can be *parsed and stored* yet still dead. Verify a field has a real consumer by finding the code that ACTS on it, not the code that reads it into a struct.
 
 ## Environment baseline (established facts — do not re-verify)
 
@@ -76,12 +96,10 @@ Do not report `ORCHICON WORKER SUMMARY: success` until the worktree is clean and
 
 ## Orchicon tool channels
 
-You may see two Orchicon MCP tool families — they are deliberately separate:
+Plane access is **deny-by-default**. The plane credential is minted only for published workers with a role binding — if your worker has no research/Idea role, you have **no plane channel**: do NOT call `orchicon_plane_*`, and treat the tools' absence as expected (not an error, and never a reason to invent a real-instance write). Real-instance writes are explicitly out of scope unless your task names them.
 
-- **`orchicon_plane_*` (real instance)** — available on **every** runtime image (base, `:gui`, web-research, `:orchicon-dev`) whenever your worker's **role** grants plane access. The image is irrelevant — the gate is your role's entitlements, never the runtime image. Operates on the REAL instance your work item was created on, through the plane API. Use `orchicon_plane_list_idea_items` to read the Idea Cloud — check BOTH `state="active"` (pending triage) and `state="rejected"` (previously dismissed spawns; a hit means a human rejected the idea: never re-propose it) before spawning — and `orchicon_plane_create_idea_item` to spawn idea-state work items — IDEA landing is forced by that tool (provenance from the run's trusted context, never call arguments); a refused spawn or a response without `idea_state: true` is a LOUD platform error to record, never a success.
-- **`orchicon_*` (sandbox)** — available only on `:orchicon-dev` images. Operates on the disposable in-container sandbox plane (its own Postgres, `http://localhost:8080`). Use for DB/migration testing and throwaway records.
-
-If your worker has a role but you see **no** `orchicon_plane_*` tools, that is a **platform bug** (the per-run credential mint failed) — record it as a `FACTS LEARNED:` line and fall back to shipping manifests for the UI; do **NOT** conclude that real-instance access is dev-runtime-only.
+- **`orchicon_*` (sandbox)** — available only on `:orchicon-dev` images. Operates on the disposable in-container sandbox plane (its own Postgres, `http://localhost:8080`). This is the ONLY channel for DB/migration testing and throwaway records.
+- **`orchicon_plane_*` (real instance)** — only for role-bound research workers, operating on the REAL instance your work item was created on through the plane API. Use `orchicon_plane_list_idea_items` to read the Idea Cloud — check BOTH `state="active"` (pending triage) and `state="rejected"` (previously dismissed spawns; a hit means a human rejected the idea: never re-propose it) before spawning — and `orchicon_plane_create_idea_item` to spawn idea-state work items — IDEA landing is forced by that tool (provenance from the run's trusted context, never call arguments); a refused spawn or a response without `idea_state: true` is a LOUD platform error to record, never a success.
 
 Hard rules: **never** use sandbox tools to inspect real work items; **never** use plane tools for throwaway records or migration tests.
 

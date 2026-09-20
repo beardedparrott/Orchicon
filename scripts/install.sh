@@ -30,6 +30,7 @@ CLEAN=false
 FORCE_CLEAN=false
 DRY_RUN=false
 SETUP=true
+INSTALL_ORCH=true  # orch = the thin remote TUI client (skippable via --no-orch)
 
 # --- Colors -----------------------------------------------------------------
 if [ -t 1 ]; then
@@ -54,6 +55,7 @@ while [ $# -gt 0 ]; do
     --force-clean|--nuke|-f) FORCE_CLEAN=true; shift ;;
     --dry-run)         DRY_RUN=true; shift ;;
     --no-setup)        SETUP=false; shift ;;
+    --no-orch)         INSTALL_ORCH=false; shift ;;
     --help|-h)
       cat <<EOF
 Orchicon installer
@@ -345,6 +347,22 @@ main() {
     chmod +x "$bin"
   fi
 
+  # Companion install: orch (the thin remote TUI client) rides in the
+  # same archive. Optional via --no-orch; failure is a warning, not fatal
+  # (older releases predate the companion binary).
+  if [ "$INSTALL_ORCH" = true ] && [ "$DRY_RUN" = false ]; then
+    local orch_bin="$INSTALL_DIR/orch"
+    local extracted_orch
+    extracted_orch="$(find "$tmpdir" -type f -name orch -perm -u+x 2>/dev/null | head -1)"
+    if [ -n "$extracted_orch" ]; then
+      mv "$extracted_orch" "$orch_bin"
+      chmod +x "$orch_bin"
+      ok "orch (remote TUI client) installed: $orch_bin"
+    else
+      warn "orch companion binary not found in archive (older release?) — skipping"
+    fi
+  fi
+
   # Verify
   if [ "$DRY_RUN" = false ]; then
     if "$bin" version 2>/dev/null | head -1; then
@@ -372,13 +390,14 @@ main() {
   # connect / manage it. Skip with --no-setup (headless / CI installs
   # that only want the binary).
   if [ "$SETUP" = true ] && [ "$DRY_RUN" = false ]; then
-    # Orchicon never ships the runtime adapter CLI (opencode) in its
-    # images — the operator installs it on the host and it is mounted
-    # into the containers at runtime. Warn early if it's missing.
-    if ! command -v opencode >/dev/null 2>&1 && [ ! -x "$HOME/.opencode/bin/opencode" ]; then
-      warn "opencode (the AI runtime adapter) is not installed on this host."
-      echo -e "  Orchicon never ships adapter CLIs in its images — install opencode first:"
-      echo -e "  ${D}curl -fsSL https://opencode.ai/install | bash${X}"
+    # Orchicon ships its own runtime engine, so NO adapter CLI is required:
+    # a fresh install is complete on its own. External adapters (opencode and
+    # future ones) are optional — the operator installs one on the host and it
+    # is mounted into the containers at runtime, never baked in. An INFO line
+    # when one IS present, so the operator knows it will be used; silence
+    # otherwise, because there is nothing to fix.
+    if command -v opencode >/dev/null 2>&1 || [ -x "$HOME/.opencode/bin/opencode" ]; then
+      echo -e "  ${D}opencode found on this host — optional, and will be used as a runtime when a model ref asks for it.${X}"
       echo ""
     fi
     echo ""

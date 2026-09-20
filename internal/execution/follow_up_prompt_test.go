@@ -20,7 +20,7 @@ func TestComposeFollowUpPromptCarriesSharedPrefix(t *testing.T) {
 		Behavior: "Write tests alongside implementation.",
 		AgentsMD: "## Git workflow\ncommit early and often.\n",
 	}
-	out := composeFollowUpPrompt(v, "orchicon-dev:latest")
+	out := composeFollowUpPrompt(v, "orchicon-dev:latest", "")
 	for _, want := range []string{
 		"autonomous worker running inside the Orchicon orchestration platform",
 		"## Safety rules (HARD limits)",
@@ -37,7 +37,7 @@ func TestComposeFollowUpPromptCarriesSharedPrefix(t *testing.T) {
 		}
 	}
 	// The stable prefix must be byte-identical to the shared composite head.
-	prefix := db.StablePromptPrefix("orchicon-dev:latest")
+	prefix := db.StablePromptPrefix("orchicon-dev:latest", "")
 	if !strings.HasPrefix(out, prefix) {
 		t.Errorf("follow-up prompt must open with the shared stable prefix")
 	}
@@ -47,8 +47,8 @@ func TestComposeFollowUpPromptCarriesSharedPrefix(t *testing.T) {
 // SystemPrompt fallback is preserved (and still preceded by the prefix).
 func TestComposeFollowUpPromptEmptyWorkerKeepsCustomPrompt(t *testing.T) {
 	v := db.WorkerVersionRow{SystemPrompt: "custom authored system prompt"}
-	out := composeFollowUpPrompt(v, "")
-	if !strings.HasPrefix(out, db.StablePromptPrefix("")) {
+	out := composeFollowUpPrompt(v, "", "")
+	if !strings.HasPrefix(out, db.StablePromptPrefix("", "")) {
 		t.Errorf("custom-prompt follow-up must still open with the stable prefix")
 	}
 	if !strings.Contains(out, "custom authored system prompt") {

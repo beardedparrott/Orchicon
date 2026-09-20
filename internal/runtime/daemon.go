@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/beardedparrott/orchicon/internal/adapter"
 )
 
 // Daemon is the host-side runtime orchestrator. It is the ONLY process
@@ -116,6 +118,19 @@ type CreateRequest struct {
 	// Empty does not default here — the daemon treats "" as "not none" so a
 	// request that omits it retains today's conditional token injection.
 	GitStrategy string `json:"git_strategy,omitempty"`
+	// AdapterKinds is the run's BOOT PROFILE: the set of adapter kinds its
+	// step workers resolve to (adapter.AdapterKind over each step worker's
+	// model_ref), sorted and deduped by the plane. The daemon derives from it
+	// which adapter installs to mount (the opencode config/auth/CLI mounts are
+	// conditional — AC 1/AC 3) and which in-container serves to warm (AC 2).
+	//
+	// A NIL profile is the legacy/unspecified case (a pre-change plane) and
+	// means the default kind (opencode) is demanded, preserving today's
+	// unconditional mounts + serve across a mixed-version rollout. A non-nil
+	// profile is honored verbatim, so an explicitly empty profile mounts
+	// nothing. Deliberately NO omitempty: the nil-vs-empty distinction is the
+	// rollout signal and must survive the wire.
+	AdapterKinds []string `json:"adapter_kinds"`
 }
 
 // CreateResponse is returned by POST /v1/runtimes.
@@ -250,6 +265,10 @@ func (d *Daemon) handleRuntimes(w http.ResponseWriter, r *http.Request) {
 // handleRuntime implements the per-runtime routes:
 //
 //	DELETE /v1/runtimes/{id}      -> release the run's lease (reset to the pool)
+//	POST   /v1/runtimes/{id}/exec  -> run one shell command in the run's
+//	                                 leased container (always-container
+//	                                 native transport; streams JSON-lines
+//	                                 AgentEvents)
 func (d *Daemon) handleRuntime(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/v1/runtimes/")
 	action := ""
@@ -268,9 +287,91 @@ func (d *Daemon) handleRuntime(w http.ResponseWriter, r *http.Request) {
 		// run with no lease (already released / never leased) is a no-op.
 		d.pool.release(id)
 		writeJSON(w, http.StatusOK, map[string]string{"status": "released"})
+	case action == "exec" && r.Method == http.MethodPost:
+		d.handleRuntimeExec(w, r, id)
 	default:
 		httpError(w, http.StatusNotFound, "not found")
 	}
+}
+
+// ExecRequest is the body of POST /v1/runtimes/{id}/exec: one shell
+// command to run inside the run's leased container (always-container
+// native transport). Command/Env/Cwd ride the supervisor's AgentRequest
+// "exec" shape; ProjectDir scopes the execution-guard shim.
+type ExecRequest struct {
+	Command    string   `json:"command"`
+	Env        []string `json:"env,omitempty"`
+	Cwd        string   `json:"cwd,omitempty"`
+	ProjectDir string   `json:"project_dir,omitempty"`
+}
+
+// ExecResult is the terminal result of an exec: collected stdout/stderr
+// plus the exit code (a non-zero exit is a worker-visible RESULT, not a
+// transport error).
+type ExecResult struct {
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+	ExitCode int    `json:"exit_code"`
+}
+
+// handleRuntimeExec runs one shell command in the run's leased container
+// and streams the supervisor's JSON-lines AgentEvents back to the plane.
+// The container name resolves from the warm pool's lease table (the run
+// MUST hold a lease — ensured at run start by EnsureForRun), never from
+// a caller-supplied name, so the control plane cannot exec into an
+// arbitrary container.
+func (d *Daemon) handleRuntimeExec(w http.ResponseWriter, r *http.Request, runID string) {
+	var req ExecRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "bad request: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Command) == "" {
+		httpError(w, http.StatusBadRequest, "command required")
+		return
+	}
+	name := d.pool.containerForRun(runID)
+	if name == "" {
+		httpError(w, http.StatusNotFound, "no runtime container leased for run "+runID)
+		return
+	}
+	reqJSON, err := json.Marshal(AgentRequest{
+		Cmd:        "exec",
+		Argv:       []string{"bash", "-c", req.Command},
+		Env:        req.Env,
+		Cwd:        req.Cwd,
+		ProjectDir: req.ProjectDir,
+	})
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	cmd := exec.Command(d.DockerBin, "exec", "-i", name, "orchicon", "runtime-client")
+	cmd.Stdin = bytes.NewReader(reqJSON)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		httpError(w, http.StatusInternalServerError, "docker exec: "+err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.WriteHeader(http.StatusOK)
+	fl, _ := w.(http.Flusher)
+	// Relay the supervisor's JSON-lines AgentEvents verbatim: the plane
+	// client reassembles {stream,data} chunks and the terminal
+	// {event:exit}/{event:error}. Flush per line so output streams live.
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for sc.Scan() {
+		_, _ = w.Write(append(sc.Bytes(), '\n'))
+		if fl != nil {
+			fl.Flush()
+		}
+	}
+	_ = cmd.Wait()
 }
 
 // validateCreate enforces the daemon's security policy: image allowlist,
@@ -304,6 +405,22 @@ func (d *Daemon) validateCreate(req CreateRequest) error {
 		}
 		if m.Dest == "" {
 			return fmt.Errorf("mount dest required")
+		}
+	}
+	// Boot profile: every demanded adapter kind must be a known adapter kind
+	// (the builtin provider catalog). An unknown kind is a plane bug or a
+	// stale/foreign plane — reject it rather than silently mounting nothing
+	// (or warming nothing) for a kind whose dispatch path is unknown. Blank
+	// entries are ignored (the plane never sends them; requestedKinds folds
+	// them to the default kind anyway).
+	known := adapter.BuiltinAdapterKinds()
+	for _, k := range req.AdapterKinds {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		if _, ok := known[k]; !ok {
+			return fmt.Errorf("adapter kind not allowed: %s", k)
 		}
 	}
 	return nil
@@ -394,67 +511,16 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 		}
 		args = append(args, "-v", m.Source+":"+m.Dest+mo)
 	}
-	// Standard host-home mounts shared by every runtime container:
-	// opencode config (read-only) + data/auth (read-only — the worker
-	// reads model auth, but its sessions/keys are redirected to the
-	// ephemeral FS by the supervisor's isolateOpenCodeData), the runtime
-	// CLI adapter install (read-only — opencode today; Orchicon never
-	// ships the adapter binary in the image, the operator's host install
-	// is mounted here so the supervisor can exec it), and git identity +
-	// credential store (read-only — PR/merge workers). These are appended
-	// by the daemon, not the plane, so the control plane can never request
-	// them.
-	if d.HostHome != "" {
-		// Git identity/credential + push-capable GH_TOKEN are gated on the
-		// run's effective git strategy: a "none" (ephemeral detached-HEAD)
-		// run must never be able to create or push a branch, so it gets NO
-		// .gitconfig/.git-credentials/gh mounts and NO GH_TOKEN. The
-		// opencode model-auth mounts (config, provider auth, adapter CLI)
-		// stay universal — a "none" run still needs model auth and the
-		// adapter to work; only the push surface is removed.
-		gitCreds := req.GitStrategy != "none"
-		if st, err := os.Stat(filepath.Join(d.HostHome, ".config/opencode")); err == nil && st.IsDir() {
-			args = append(args, "-v", filepath.Join(d.HostHome, ".config/opencode")+":"+filepath.Join(d.HostHome, ".config/opencode")+":ro")
-		}
-		if st, err := os.Stat(filepath.Join(d.HostHome, ".local/share/opencode")); err == nil && st.IsDir() {
-			args = append(args, "-v", filepath.Join(d.HostHome, ".local/share/opencode")+":"+filepath.Join(d.HostHome, ".local/share/opencode")+":ro")
-		}
-		if st, err := os.Stat(filepath.Join(d.HostHome, ".opencode", "bin", "opencode")); err == nil && !st.IsDir() {
-			args = append(args, "-v", filepath.Join(d.HostHome, ".opencode")+":"+filepath.Join(d.HostHome, ".opencode")+":ro")
-		}
-		if gitCreds {
-			for _, f := range []string{".gitconfig", ".git-credentials"} {
-				if st, err := os.Stat(filepath.Join(d.HostHome, f)); err == nil && !st.IsDir() {
-					args = append(args, "-v", filepath.Join(d.HostHome, f)+":"+filepath.Join(d.HostHome, f)+":ro")
-				}
-			}
-			// GitHub CLI auth + state (read-only — PR/merge workers run
-			// `gh pr create`/`gh repo create`). Without the hosts.yml mount
-			// gh reports "not authenticated" inside the container even though
-			// the operator is logged in on the host.
-			if st, err := os.Stat(filepath.Join(d.HostHome, ".config", "gh")); err == nil && st.IsDir() {
-				args = append(args, "-v", filepath.Join(d.HostHome, ".config", "gh")+":"+filepath.Join(d.HostHome, ".config", "gh")+":ro")
-			}
-			if st, err := os.Stat(filepath.Join(d.HostHome, ".local", "share", "gh")); err == nil && st.IsDir() {
-				args = append(args, "-v", filepath.Join(d.HostHome, ".local", "share", "gh")+":"+filepath.Join(d.HostHome, ".local", "share", "gh")+":ro")
-			}
-			// The operator's gh token often lives in the OS keyring, which is
-			// NOT available inside containers — hosts.yml alone has no token,
-			// so `gh` reports "not authenticated". Resolve the host's effective
-			// token and pass it as GH_TOKEN so PR/merge workers can actually
-			// create PRs. Best-effort: no gh / no auth / keyring locked → skip.
-			// d.ghToken() is TTL-cached and shared with the pool key fingerprint
-			// so the container's env and the pool key always agree on the token
-			// (no wasteful fresh-create from a mid-checkout rotation race).
-			if tok := d.ghToken(); tok != "" {
-				args = append(args, "-e", "GH_TOKEN="+tok)
-			}
-		}
-		args = append(args, "-e", "HOME="+d.HostHome)
-		// Put the mounted adapter CLI on PATH so the supervisor's
-		// `exec.Command("opencode", ...)` resolves it.
-		args = append(args, "-e", "PATH="+filepath.Join(d.HostHome, ".opencode", "bin")+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-	}
+	// Standard host-home mounts. The ADAPTER installs (opencode
+	// config/auth/CLI today) are CONDITIONAL on the run's boot profile
+	// (AC 1/AC 3): a native-only run mounts nothing opencode-related, so the
+	// host's model config and provider auth never leak into a container that
+	// cannot use them. The git identity/credential surface is NOT
+	// adapter-dependent (every worker pushes through the same git mounts) and
+	// keeps its own git-strategy gate. The mount set is derived from the SAME
+	// declaration the mount-never-bake guard reads, so the mounted set and the
+	// forbidden-bake set cannot drift.
+	args = append(args, d.standardHostMountArgs(req)...)
 	for k, v := range req.Secrets {
 		if k == "" || v == "" {
 			continue
@@ -514,26 +580,36 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 	for time.Now().Before(deadline) {
 		if d.pingRuntime(name) {
 			resp := &CreateResponse{Name: name, Running: true}
+			// Warm the IN-CONTAINER serves the run's boot profile needs
+			// (AC 2/AC 5). The supervisor multiplexes one serve per
+			// serve-dependent kind (keyed on the request's adapter kind)
+			// while native steps keep using the one-shot exec path with no
+			// serve at all. serveKindsFor yields at most the opencode serve
+			// today, so an opencode-demanding run is unchanged. The
+			// `ServeConfig != ""` guard is kept verbatim: an empty config
+			// still means "no serve", so only a demanding profile warms one.
 			if req.ServeConfig != "" {
-				// Start the opencode serve inside the container and publish
-				// its port on the host loopback. A serve that cannot come
-				// up is a hard dispatch error — the one-shot degradation
-				// was removed, so the adapter surfaces this as
-				// failed_to_start → workflow recovery. The container stays
-				// up so the watchdog / a later retry can converge it.
-				port, pw, planeEnabled, serr := d.startServe(name, req)
-				if serr != nil {
-					return nil, fmt.Errorf("start serve in runtime %s: %w", name, serr)
-				}
-				cip := d.containerIP(name)
-				resp.ServePort = port
-				resp.ServePassword = pw
-				resp.ServeURL = fmt.Sprintf("http://%s:%d", cip, port)
-				if planeEnabled && cip != "" {
-					// The supervisor booted the sandbox plane (dev image); the
-					// run-start gate verifies its /healthz on the bridge IP
-					// before any execution dispatches.
-					resp.PlaneURL = fmt.Sprintf("http://%s:%d", cip, sandboxPlanePort)
+				for _, kind := range serveKindsFor(requestedKinds(req)) {
+					// Start the adapter's serve inside the container and
+					// publish its port. A serve that cannot come up is a hard
+					// dispatch error — the one-shot degradation was removed,
+					// so the adapter surfaces this as failed_to_start →
+					// workflow recovery. The container stays up so the
+					// watchdog / a later retry can converge it.
+					port, pw, planeEnabled, serr := d.startServe(name, kind, req)
+					if serr != nil {
+						return nil, fmt.Errorf("start %s serve in runtime %s: %w", kind, name, serr)
+					}
+					cip := d.containerIP(name)
+					resp.ServePort = port
+					resp.ServePassword = pw
+					resp.ServeURL = fmt.Sprintf("http://%s:%d", cip, port)
+					if planeEnabled && cip != "" {
+						// The supervisor booted the sandbox plane (dev image);
+						// the run-start gate verifies its /healthz on the
+						// bridge IP before any execution dispatches.
+						resp.PlaneURL = fmt.Sprintf("http://%s:%d", cip, sandboxPlanePort)
+					}
 				}
 			}
 			return resp, nil
@@ -541,6 +617,70 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 		time.Sleep(250 * time.Millisecond)
 	}
 	return nil, fmt.Errorf("runtime %s started but supervisor socket not ready", name)
+}
+
+// standardHostMountArgs returns the daemon-appended host-home arg block for
+// a create request: the ADAPTER install mounts (conditional on the run's
+// boot profile — AC 1/AC 3), the git identity/credential mounts and the
+// push-capable GH_TOKEN (gated on the run's git strategy, NOT
+// adapter-dependent), HOME, and the mounted adapter CLI's PATH prefix
+// (conditional on the same demand as the mounts, so the prefix never points
+// at an absent host dir).
+//
+// Factored out of createContainer so the mount conditionality is unit
+// testable without docker. The adapter mount set comes from the SAME
+// declaration the mount-never-bake guard reads, so the mounted set and the
+// forbidden-bake set cannot drift.
+func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
+	if d.HostHome == "" {
+		return nil
+	}
+	var args []string
+	// Adapter installs — mounted ONLY when the run's boot profile demands
+	// the kind. A native-only run gets none: the host's model config and
+	// provider auth never leak into a container that cannot use them.
+	args = append(args, adapterHostMounts(d.HostHome, requestedKinds(req)...)...)
+	// Git identity/credential + push-capable GH_TOKEN are gated on the run's
+	// effective git strategy: a "none" (ephemeral detached-HEAD) run must
+	// never be able to create or push a branch, so it gets NO
+	// .gitconfig/.git-credentials/gh mounts and NO GH_TOKEN. Every worker —
+	// native or adapter — pushes through this same surface, so it is not
+	// adapter-gated.
+	if req.GitStrategy != "none" {
+		for _, f := range []string{".gitconfig", ".git-credentials"} {
+			if st, err := os.Stat(filepath.Join(d.HostHome, f)); err == nil && !st.IsDir() {
+				args = append(args, "-v", filepath.Join(d.HostHome, f)+":"+filepath.Join(d.HostHome, f)+":ro")
+			}
+		}
+		// GitHub CLI auth + state (read-only — PR/merge workers run
+		// `gh pr create`/`gh repo create`). Without the hosts.yml mount gh
+		// reports "not authenticated" inside the container even though the
+		// operator is logged in on the host.
+		if st, err := os.Stat(filepath.Join(d.HostHome, ".config", "gh")); err == nil && st.IsDir() {
+			args = append(args, "-v", filepath.Join(d.HostHome, ".config", "gh")+":"+filepath.Join(d.HostHome, ".config", "gh")+":ro")
+		}
+		if st, err := os.Stat(filepath.Join(d.HostHome, ".local", "share", "gh")); err == nil && st.IsDir() {
+			args = append(args, "-v", filepath.Join(d.HostHome, ".local", "share", "gh")+":"+filepath.Join(d.HostHome, ".local", "share", "gh")+":ro")
+		}
+		// The operator's gh token often lives in the OS keyring, which is NOT
+		// available inside containers — hosts.yml alone has no token, so `gh`
+		// reports "not authenticated". Resolve the host's effective token and
+		// pass it as GH_TOKEN so PR/merge workers can actually create PRs.
+		// Best-effort: no gh / no auth / keyring locked → skip. d.ghToken()
+		// is TTL-cached and shared with the pool key fingerprint so the
+		// container's env and the pool key always agree on the token (no
+		// wasteful fresh-create from a mid-checkout rotation race).
+		if tok := d.ghToken(); tok != "" {
+			args = append(args, "-e", "GH_TOKEN="+tok)
+		}
+	}
+	args = append(args, "-e", "HOME="+d.HostHome)
+	// Put the MOUNTED adapter CLI on PATH so the supervisor's
+	// `exec.Command("opencode", ...)` resolves it.
+	if demandsKind(req, adapter.DefaultAdapterKind) {
+		args = append(args, "-e", "PATH="+filepath.Join(d.HostHome, ".opencode", "bin")+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	}
+	return args
 }
 
 // hostGHToken resolves the operator's effective GitHub CLI token
@@ -626,10 +766,14 @@ func (d *Daemon) hostInputsFingerprint() string {
 // back), then resolves the published host loopback port. Returns the
 // host port + the container's serve password, plus whether the image
 // boots the sandbox plane (the daemon publishes its /healthz URL).
-func (d *Daemon) startServe(name string, req CreateRequest) (int, string, bool, error) {
+func (d *Daemon) startServe(name, kind string, req CreateRequest) (int, string, bool, error) {
 	reqJSON, err := json.Marshal(AgentRequest{
-		Cmd:  "serve",
-		Argv: []string{"opencode", "serve", "--hostname", "0.0.0.0", "--port", "4096"},
+		Cmd: "serve",
+		// The demanded adapter kind whose serve this starts. The supervisor
+		// keys its per-adapter serve state on it, so a future adapter's
+		// serve can be multiplexed alongside opencode's (empty → opencode).
+		AdapterKind: kind,
+		Argv:        []string{"opencode", "serve", "--hostname", "0.0.0.0", "--port", "4096"},
 		Env: []string{
 			"OPENCODE_CONFIG_CONTENT=" + req.ServeConfig,
 		},

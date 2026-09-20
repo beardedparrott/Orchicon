@@ -26,6 +26,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/migrate"
 	"github.com/beardedparrott/orchicon/internal/opencode"
+	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
@@ -143,14 +144,14 @@ func TestStartConversationTurnStallAborts(t *testing.T) {
 
 	convID := createConversation(t, pool, "")
 	ctx := context.Background()
-	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	ackID, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
 	if err != nil {
 		t.Fatalf("startConversationTurn: %v", err)
 	}
 
 	// No reply events are fed — the stall monitor trips, aborts the session,
 	// and persists a clear retryable error (not a 30-minute timeout wait).
-	msg := waitForMessage(t, pool, convID, ackID)
+	msg := waitForErrorMessage(t, pool, convID, ackID)
 	if msg.Role != "assistant" {
 		t.Fatalf("acked message role = %q, want assistant", msg.Role)
 	}
@@ -158,9 +159,12 @@ func TestStartConversationTurnStallAborts(t *testing.T) {
 	if err := json.Unmarshal(msg.Metadata, &meta); err != nil {
 		t.Fatalf("unmarshal metadata: %v", err)
 	}
+	// The stall monitor trips, aborts the serve session, and persists a
+	// clear retryable error naming the model + remediation (the deliberate
+	// diagnostics wording from 7390089e1) — not a 30-minute timeout wait.
 	errText, _ := meta["error"].(string)
-	if !strings.Contains(errText, "stuck") || !strings.Contains(errText, "stalled") {
-		t.Errorf("metadata.error = %q, want a stall message mentioning 'stuck' and 'stalled'", errText)
+	if !strings.Contains(errText, "stopped responding") || !strings.Contains(errText, "stalled") {
+		t.Errorf("metadata.error = %q, want a stall message mentioning 'stopped responding' and 'stalled'", errText)
 	}
 	client.mu.Lock()
 	defer client.mu.Unlock()
@@ -181,7 +185,7 @@ func TestStartConversationTurnRepetitionStallAborts(t *testing.T) {
 
 	convID := createConversation(t, pool, "")
 	ctx := context.Background()
-	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	ackID, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
 	if err != nil {
 		t.Fatalf("startConversationTurn: %v", err)
 	}
@@ -195,13 +199,13 @@ func TestStartConversationTurnRepetitionStallAborts(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	msg := waitForMessage(t, pool, convID, ackID)
+	msg := waitForErrorMessage(t, pool, convID, ackID)
 	var meta map[string]any
 	if err := json.Unmarshal(msg.Metadata, &meta); err != nil {
 		t.Fatalf("unmarshal metadata: %v", err)
 	}
 	errText, _ := meta["error"].(string)
-	if !strings.Contains(errText, "stuck") || !strings.Contains(errText, "stalled:repetition") {
+	if !strings.Contains(errText, "stopped responding") || !strings.Contains(errText, "stalled:repetition") {
 		t.Errorf("metadata.error = %q, want a repetition stall message", errText)
 	}
 }
@@ -223,7 +227,7 @@ func TestInterjectConversationTurnSupersedes(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Start a turn; feed a bit of partial content but never idle.
-	ack1, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "first", nil)
+	ack1, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "first", nil)
 	if err != nil {
 		t.Fatalf("first send: %v", err)
 	}
@@ -232,7 +236,7 @@ func TestInterjectConversationTurnSupersedes(t *testing.T) {
 	time.Sleep(100 * time.Millisecond) // let the old collector process the text before the cancel races it
 
 	// 2. Interject (supersede) with a second message.
-	ack2, _, err := s.startConversationTurnOpts(ctx, "tnt_dev", convID, "stop and focus on X", nil, turnDispatchOpts{supersede: true})
+	ack2, _, _, err := s.startConversationTurnOpts(ctx, "tnt_dev", convID, "stop and focus on X", nil, turnDispatchOpts{supersede: true})
 	if err != nil {
 		t.Fatalf("interject: %v", err)
 	}
@@ -301,7 +305,32 @@ func TestInterjectConversationTurnSupersedes(t *testing.T) {
 	}
 }
 
-// waitForMessage polls for a message by id and returns it.
+// waitForErrorMessage polls for a message by id until its metadata carries
+// an error, then returns it. Plain waitForMessage returns the FIRST sighting
+// of the row — which, since the live tool ledger mirrors tool activity into
+// the row mid-turn, may be a partial without the terminal error. Error-path
+// tests must use this helper so they assert the finalize, not the mirror.
+func waitForErrorMessage(t *testing.T, pool *db.Pool, convID, id string) db.MessageRow {
+	t.Helper()
+	deadline := time.After(10 * time.Second)
+	for {
+		for _, m := range listMessages(t, pool, convID) {
+			if m.ID == id {
+				var meta map[string]any
+				if err := json.Unmarshal(m.Metadata, &meta); err == nil {
+					if _, isErr := meta["error"]; isErr {
+						return m
+					}
+				}
+			}
+		}
+		select {
+		case <-time.After(20 * time.Millisecond):
+		case <-deadline:
+			t.Fatalf("error message %s never persisted", id)
+		}
+	}
+}
 func waitForMessage(t *testing.T, pool *db.Pool, convID, id string) db.MessageRow {
 	t.Helper()
 	deadline := time.After(10 * time.Second)
@@ -333,7 +362,7 @@ func TestStartConversationTurnReturnsAckAndPersistsReplyAfterReturn(t *testing.T
 
 	// The RPC returns the ack before any reply exists.
 	ctx := context.Background()
-	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	ackID, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
 	if err != nil {
 		t.Fatalf("startConversationTurn: %v", err)
 	}
@@ -397,12 +426,12 @@ func TestStartConversationTurnRejectsSecondSend(t *testing.T) {
 
 	// A first send starts a turn (the collector registers it).
 	ctx := context.Background()
-	firstAck, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "first", nil)
+	firstAck, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "first", nil)
 	if err != nil {
 		t.Fatalf("first send: %v", err)
 	}
 	// The collector is live; a second send must be rejected.
-	_, _, err = s.startConversationTurn(ctx, "tnt_dev", convID, "second", nil)
+	_, _, _, err = s.startConversationTurn(ctx, "tnt_dev", convID, "second", nil)
 	var cerr *connect.Error
 	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeFailedPrecondition {
 		t.Fatalf("second send error = %v, want FailedPrecondition", err)
@@ -432,7 +461,7 @@ func TestPartialReplyMirroredWhileTurnRuns(t *testing.T) {
 
 	convID := createConversation(t, pool, "")
 	ctx := context.Background()
-	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	ackID, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
 	if err != nil {
 		t.Fatalf("startConversationTurn: %v", err)
 	}
@@ -509,7 +538,7 @@ func TestPartialReplyMirrorsTokenDeltas(t *testing.T) {
 
 	convID := createConversation(t, pool, "")
 	ctx := context.Background()
-	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	ackID, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
 	if err != nil {
 		t.Fatalf("startConversationTurn: %v", err)
 	}
@@ -577,6 +606,80 @@ func TestPartialReplyMirrorsTokenDeltas(t *testing.T) {
 	final := waitForMessage(t, pool, convID, ackID)
 	if strings.TrimSpace(final.Content) != "The answer is 42" {
 		t.Errorf("final reply = %q, want %q (deltas must not leak into the durable record)", final.Content, "The answer is 42")
+	}
+}
+
+// TestPartialReplyTrailingFlush: the mirror freeze class — a final delta
+// burst that ends INSIDE the 200ms throttle window with no further bus
+// events (short final generation, or the stream going quiet). Before the
+// trailing flush the row stayed frozen on the last on-time snapshot until
+// the turn finalized (the exact symptom the mirror exists to fix); the
+// trailing flush must drain the unflushed delta tail ~200ms after the last
+// delta with NO further events.
+func TestPartialReplyTrailingFlush(t *testing.T) {
+	pool := chatDBTestPool(t)
+	client := &fakeSessionClient{}
+	s := newChatService(t, pool, client)
+
+	convID := createConversation(t, pool, "")
+	ctx := context.Background()
+	ackID, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	if err != nil {
+		t.Fatalf("startConversationTurn: %v", err)
+	}
+	waitForSend(t, client, 1)
+
+	// Completed reasoning part, then a delta burst that lands entirely
+	// inside the throttle window. No part completion, no idle — nothing
+	// further feeds the drain loop until the trailing flush fires.
+	client.sub.feed(busReasoning("ses_1", "thinking hard"))
+	client.sub.feed(busDelta("ses_1", "The "))
+	client.sub.feed(busDelta("ses_1", "answer"))
+	client.sub.feed(busDelta("ses_1", " is 42"))
+
+	// The trailing flush must drain the tail within ~200ms of the last
+	// delta — without any further event from the bus.
+	deadline := time.After(3 * time.Second)
+	for {
+		msgs := listMessages(t, pool, convID)
+		var row *db.MessageRow
+		for i := range msgs {
+			if msgs[i].ID == ackID {
+				row = &msgs[i]
+				break
+			}
+		}
+		if row != nil && strings.Contains(row.Content, "The answer is 42") {
+			break
+		}
+		select {
+		case <-time.After(20 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("trailing flush never drained the throttled delta tail")
+		}
+	}
+	if _, ok := s.turns.get(convID); !ok {
+		t.Fatal("turn must still be in flight (a trailing flush is not a completed reply)")
+	}
+
+	// Finalize cleanly: the authoritative reply replaces the delta text and
+	// a stale-but-disarmed timer cannot corrupt it.
+	client.sub.feed(busText("ses_1", "The answer is 42"))
+	client.sub.feed(busIdle("ses_1"))
+	deadline = time.After(5 * time.Second)
+	for {
+		if _, ok := s.turns.get(convID); !ok {
+			break
+		}
+		select {
+		case <-time.After(20 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("turn never released after finalize")
+		}
+	}
+	final := waitForMessage(t, pool, convID, ackID)
+	if strings.TrimSpace(final.Content) != "The answer is 42" {
+		t.Errorf("final reply = %q, want %q (the trailing flush must not corrupt the durable record)", final.Content, "The answer is 42")
 	}
 }
 
@@ -706,7 +809,7 @@ func TestStartConversationTurnTimeoutPersistsError(t *testing.T) {
 
 	convID := createConversation(t, pool, "")
 	ctx := context.Background()
-	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	ackID, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
 	if err != nil {
 		t.Fatalf("startConversationTurn: %v", err)
 	}
@@ -743,13 +846,13 @@ func TestStartConversationTurnTimeoutPersistsError(t *testing.T) {
 func TestStartConversationTurnServeLossFreshSessionFallback(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_REATTACH_BACKOFF", "1ms")
 	pool := chatDBTestPool(t)
-	client := &fakeSessionClient{sendErrs: []error{nil, opencode.ErrSessionNotFound}}
+	client := &fakeSessionClient{sendErrs: []error{nil, scheduler.ErrSessionNotFound}}
 	s := newChatService(t, pool, client)
 
 	convID := createConversation(t, pool, "")
 	setConversationSessionID(t, pool, convID, "ses_orig")
 	ctx := context.Background()
-	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	ackID, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
 	if err != nil {
 		t.Fatalf("startConversationTurn: %v", err)
 	}
@@ -790,5 +893,108 @@ func TestStartConversationTurnServeLossFreshSessionFallback(t *testing.T) {
 	_ = json.Unmarshal(msg.Metadata, &meta)
 	if sid, _ := meta["session_id"].(string); sid != "ses_1" {
 		t.Errorf("metadata.session_id = %q, want ses_1", sid)
+	}
+}
+
+// TestPersistFoldedThinkSegmentsSeparateEntries verifies persistence of a
+// turn containing BOTH a native reasoning part and a folded think body: the
+// assistant message's Reasoning array carries both as SEPARATE entries (no
+// dedupe/merge), and the Content has no think-tag remnant and no leaked body.
+func TestPersistFoldedThinkSegmentsSeparateEntries(t *testing.T) {
+	pool := chatDBTestPool(t)
+	client := &fakeSessionClient{}
+	s := newChatService(t, pool, client)
+
+	convID := createConversation(t, pool, "")
+	ctx := context.Background()
+	ackID, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	if err != nil {
+		t.Fatalf("startConversationTurn: %v", err)
+	}
+	waitForSend(t, client, 1)
+
+	// A native reasoning part, then a folded think body streamed as TEXT
+	// deltas, then a COMPLETED text part that itself carries a folded body.
+	client.sub.feed(busReasoning("ses_1", "native step"))
+	client.sub.feed(busDelta("ses_1", "|<thinking>folded delta"))
+	client.sub.feed(busDelta("ses_1", "|</thinking>"))
+	client.sub.feed(busText("ses_1", "|<thinking>complete-body</thinking>final answer"))
+	client.sub.feed(busIdle("ses_1"))
+
+	msg := waitForMessage(t, pool, convID, ackID)
+	// Content must be the clean text with no think-tag remnant and no leaked
+	// think body.
+	content := strings.TrimSpace(msg.Content)
+	if content != "final answer" {
+		t.Errorf("persisted content = %q, want %q (folded bodies stripped)", content, "final answer")
+	}
+	if strings.Contains(content, "thinking") || strings.Contains(content, "</think") {
+		t.Errorf("persisted content has think remnant: %q", content)
+	}
+	// Both the native reasoning entry and the demuxed folded bodies persist as
+	// SEPARATE entries (no dedupe against native, no merge of folded bodies).
+	want := []string{"native step", "folded delta", "complete-body"}
+	if len(msg.Reasoning) != len(want) {
+		t.Fatalf("persisted reasoning = %v, want %v", msg.Reasoning, want)
+	}
+	for i := range want {
+		if msg.Reasoning[i] != want[i] {
+			t.Errorf("reasoning[%d] = %q, want %q (separate entries)", i, msg.Reasoning[i], want[i])
+		}
+	}
+}
+
+// TestPersistMidThinkSupersedeCleanPartial verifies a supersede mid-think
+// persists a partial whose content is clean text (no think remnant) and whose
+// reasoning array carries the partial folded body.
+func TestPersistMidThinkSupersedeCleanPartial(t *testing.T) {
+	pool := chatDBTestPool(t)
+	client := &fakeSessionClient{}
+	s := newChatService(t, pool, client)
+
+	convID := createConversation(t, pool, "")
+	ctx := context.Background()
+	ackID, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	if err != nil {
+		t.Fatalf("startConversationTurn: %v", err)
+	}
+	waitForSend(t, client, 1)
+
+	// A folded think body streamed as deltas, then a SUPERSEDE (interjection
+	// cancels the collector's context mid-think). The partial folded body must
+	// be flushed to the reasoning channel and the content left clean.
+	client.sub.feed(busDelta("ses_1", "|<thinking>partial body"))
+	// Give the translate→drain pipeline a beat to deliver the delta before
+	// superseding, so the mid-think flush has a body to persist.
+	time.Sleep(100 * time.Millisecond)
+	s.turns.cancel(convID, errTurnSuperseded)
+
+	// The superseded turn persists its partial as a PLAIN assistant message
+	// (content clean, reasoning carries the flushed body).
+	deadline := time.After(5 * time.Second)
+	var row *db.MessageRow
+	for {
+		msgs := listMessages(t, pool, convID)
+		for i := range msgs {
+			if msgs[i].ID == ackID {
+				row = &msgs[i]
+				break
+			}
+		}
+		if row != nil {
+			break
+		}
+		select {
+		case <-time.After(20 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("superseded partial was never persisted")
+		}
+	}
+	if strings.Contains(row.Content, "thinking") || strings.Contains(row.Content, "</think") {
+		t.Errorf("superseded partial content has think remnant: %q", row.Content)
+	}
+	want := []string{"partial body"}
+	if len(row.Reasoning) != len(want) || row.Reasoning[0] != want[0] {
+		t.Errorf("superseded reasoning = %v, want %v (flushed body)", row.Reasoning, want)
 	}
 }

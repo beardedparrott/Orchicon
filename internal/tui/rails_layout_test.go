@@ -1,0 +1,659 @@
+package tui
+
+// rails_layout_test.go — LAYOUT REGRESSION tests for the Ask column layout.
+//
+// History: Phase 2c added a shell-level CONVERSATIONS right rail. The Ask
+// screen ALSO renders the conversation list as its own source pane, so the
+// tab drew THREE columns where the GUI has two — the operator's "there are
+// two conversation panes for some reason". Worse, Shift+Tab closes the rail,
+// so the conversation list vanished and never came back ("conversations go
+// away").
+//
+// The rail is now disabled (railVisible() == false); the screen's source pane
+// is the single conversation list. These tests pin that contract.
+
+import (
+	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/work"
+	"strings"
+	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/beardedparrott/orchicon/internal/tui/screens/ask"
+	"github.com/beardedparrott/orchicon/internal/tui/theme"
+)
+
+var railSizes = [][2]int{{80, 24}, {120, 40}}
+
+// newRailsApp builds a shell on Ask with a session OPEN (so the rail renders —
+// the launch layout deliberately hides the conversations list).
+func newRailsApp(w, h int) *App {
+	m := newTestApp()
+	m.RegisterScreen(TabAsk, ask.New(nil, m.reg))
+	m.dispatch(tea.WindowSizeMsg{Width: w, Height: h})
+	m.SwitchTo(TabAsk)
+	m.chatConvID = "conv-rails"
+	return m
+}
+
+// railLines asserts the render contract (exactly h rows, each exactly w
+// cells) and returns the rows.
+func railLines(t *testing.T, m *App, w, h int) []string {
+	t.Helper()
+	lines := strings.Split(m.View(), "\n")
+	if len(lines) != h {
+		t.Fatalf("%dx%d: %d rows, want exactly %d", w, h, len(lines), h)
+	}
+	for i, l := range lines {
+		if got := lipgloss.Width(l); got != w {
+			t.Fatalf("%dx%d row %d: width %d, want %d", w, h, i, got, w)
+		}
+	}
+	return lines
+}
+
+// The conversation list lives on the shell's right rail, always on for MVP1.
+func TestConversationsRailIsAlwaysOnForAsk(t *testing.T) {
+	for _, size := range railSizes {
+		w, h := size[0], size[1]
+		m := newRailsApp(w, h)
+		if !m.railVisible() {
+			t.Fatalf("%dx%d: the conversations rail must be on for Ask (MVP1)", w, h)
+		}
+		if ConversationsRailWidth < 30 {
+			t.Fatalf("rail width = %d, want it widened (>=30)", ConversationsRailWidth)
+		}
+		railLines(t, m, w, h)
+	}
+}
+
+// Exactly ONE conversation list: the rail. The screen renders the transcript
+// only (Base.HideSources), so the tab no longer draws two lists.
+func TestAskRendersExactlyOneConversationList(t *testing.T) {
+	for _, size := range railSizes {
+		w, h := size[0], size[1]
+		m := newRailsApp(w, h)
+		v := m.View()
+		if n := strings.Count(v, "Conversations"); n < 1 {
+			t.Errorf("%dx%d: conversation-list title missing (the rail panel must render)", w, h)
+		}
+		railLines(t, m, w, h)
+	}
+}
+
+// Shift+Tab toggles the LEFT diff pane and must leave the conversation list
+// alone (the operator: "Shift+Tab should just bring out the diff pane").
+func TestShiftTabTogglesDiffAndKeepsConversations(t *testing.T) {
+	m := newRailsApp(120, 40)
+	if !strings.Contains(m.View(), "Conversations") {
+		t.Fatal("precondition: the conversation list must render")
+	}
+	m.toggleSideRails()
+	if !m.diffOpen {
+		t.Fatal("Shift+Tab must open the diff pane")
+	}
+	if !strings.Contains(m.View(), "Conversations") {
+		t.Fatal("Shift+Tab removed the conversation list")
+	}
+	m.toggleSideRails()
+	if m.diffOpen {
+		t.Fatal("Shift+Tab must close the diff pane again")
+	}
+	railLines(t, m, 120, 40)
+}
+
+// ctrl+r is inert: the rail is always on for MVP1, so the key must not hide
+// it or disturb the frame contract.
+func TestRailToggleIsInert(t *testing.T) {
+	m := newRailsApp(120, 40)
+	_, _ = m.dispatch(tea.KeyMsg{Type: tea.KeyCtrlR})
+	if !m.railVisible() {
+		t.Fatal("ctrl+r hid the always-on conversations rail")
+	}
+	if !strings.Contains(m.View(), "Conversations") {
+		t.Fatal("ctrl+r removed the conversation list")
+	}
+	railLines(t, m, 120, 40)
+}
+
+// TestThemeStepSequence mirrors the real-pty gate's theme step at shell
+// level: "/" opens the palette, typing filters, enter selects /theme (which
+// runs it), then the argument + enter sends "/theme light" — the ACTIVE
+// theme must switch and repaint.
+func TestThemeStepSequence(t *testing.T) {
+	m := newRailsApp(120, 40)
+	m.setFocus(focusComposer)
+	before := theme.Active().Name
+	m.dispatch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if !m.palette.PaletteOpen() {
+		t.Fatal("'/' must open the palette")
+	}
+	for _, r := range "theme" {
+		m.dispatch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	if len(m.palette.filter) == 0 {
+		t.Fatal("palette filter for 'theme' must match /theme")
+	}
+	m.dispatch(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.dock.Value() != "/theme" {
+		t.Fatalf("palette select must leave /theme in the composer, got %q", m.dock.Value())
+	}
+	for _, r := range " light" {
+		m.dispatch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m.dispatch(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := theme.Active().Name; got != "light" {
+		t.Fatalf("theme not switched: active=%s (notice=%q err=%q)", got, m.dock.Notice, m.dock.Err)
+	}
+	if !strings.Contains(lipglossStrip(m.View()), "light") {
+		t.Fatal("switched theme not reflected in the shell view")
+	}
+	t.Cleanup(func() { theme.Use(before) })
+}
+
+func TestMouseClickFocusesComposer(t *testing.T) {
+	for _, size := range railSizes {
+		w, h := size[0], size[1]
+		m := newRailsApp(w, h)
+		m.setFocus(focusContent) // precondition: keyboard focus is on content
+		nm, _ := m.dispatch(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: 20, Y: h - 2})
+		if nm.chatFocus != focusComposer {
+			t.Fatalf("%dx%d: clicking the dock must focus the composer (finding 7)", w, h)
+		}
+		if !nm.Footer().ComposerFocus {
+			t.Fatalf("%dx%d: footer must reflect the composer focus", w, h)
+		}
+	}
+}
+
+func TestSlashDiffTogglesLeftRailFromComposer(t *testing.T) {
+	m := newRailsApp(120, 40)
+	m.chatConvID = "conv-1"
+	c := m.slash.resolve("/diff")
+	if c == nil || c.NoticeOnly() {
+		t.Fatal("/diff must be a registered real command")
+	}
+	// Composer focus is the launch default: /diff works from there (the
+	// `d` key remains a literal character while composing).
+	c.Run(m, nil)
+	if !m.diffOpen {
+		t.Fatal("/diff must open the left diff rail from the composer")
+	}
+	if !strings.Contains(lipglossStrip(m.View()), "✕") {
+		t.Fatal("diff rail not rendered after /diff")
+	}
+	c.Run(m, nil)
+	if m.diffOpen {
+		t.Fatal("/diff must close the rail again (toggle)")
+	}
+}
+
+// The content width must FOLLOW the conversations rail, not merely a resize.
+//
+// railVisible() depends on SHELL STATE (askMode / chatConvID), so the rail
+// appearing shrinks the content area by ConversationsRailWidth with no
+// WindowSizeMsg to drive refreshLayout(). The dock then kept its pre-rail width
+// and baseView's normalizeBlock TRUNCATED its right edge — silently cutting off
+// everything right-aligned:
+//
+//   - the composer's context/token/cache stat strip and the mode pill, at the
+//     bottom right (the operator's "the context information and model picker on
+//     the bottom right are off the screen and I can't see it");
+//   - the operator's OWN message bubbles — user messages are right-aligned, so a
+//     just-sent message was missing from a transcript that plainly contained it
+//     while the left-aligned reply rendered normally.
+//
+// The existing frame tests could not see this: every row is still EXACTLY w
+// cells wide, because truncation preserves the frame contract.
+func TestLayoutWidthFollowsRailVisibility(t *testing.T) {
+	const w, h = 200, 50
+
+	// The launch page shows no conversations rail, so content == full width.
+	m, _ := sendApp(t)
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
+	m = nm.(*App)
+	if m.railVisible() {
+		t.Fatal("fixture: the launch page must not show the conversations rail")
+	}
+	if m.dock.Width != w {
+		t.Fatalf("launch page: dock.Width = %d, want the full width %d", m.dock.Width, w)
+	}
+
+	// The rail comes up through STATE, exactly as the create path brings it up.
+	nm, _ = m.Update(chatConvCreatedMsg{convID: "c1", text: "test"})
+	m = nm.(*App)
+	if !m.railVisible() {
+		t.Fatal("a session must bring the conversations rail up")
+	}
+	want := w - ConversationsRailWidth
+	if m.contentWidth() != want {
+		t.Fatalf("contentWidth() = %d, want %d", m.contentWidth(), want)
+	}
+	if m.dock.Width != want {
+		t.Fatalf("dock.Width = %d with the rail up, want %d — a stale width is truncated at render time, cutting off right-aligned content (the stat strip, the operator's own bubbles)",
+			m.dock.Width, want)
+	}
+	railLines(t, m, w, h)
+
+	// And back the other way: a new chat drops the session and the rail with it.
+	// newChat() runs inside dispatch in the real shell, so the layout is corrected
+	// on that same Update; here it is called directly, so feed one message to
+	// exercise that pass.
+	m.newChat()
+	if m.railVisible() {
+		t.Fatal("/new must return to the launch page with no rail")
+	}
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	m = nm.(*App)
+	if m.dock.Width != w {
+		t.Fatalf("dock.Width = %d after the rail went away, want the full width %d", m.dock.Width, w)
+	}
+}
+
+// The transcript must be SCROLLABLE, and the operator must be told when it is
+// scrolled.
+//
+// The transcript follows the tail, so a reply taller than the pane pushes the
+// operator's own earlier messages off the top. The wheel was handled ONLY for
+// the conversations rail, and on the Ask tab the rail also owns the keyboard
+// (with an empty composer the vertical keys move the rail SELECTION, and
+// railVisible() is true whenever a conversation is open) — so nothing was left
+// for the transcript. A message that was merely off-screen therefore read as a
+// message that was never stored: "I still do not see my initial test user
+// message", while the conversation header showed the correct message count.
+func TestContentRegionWheelScrollsTheTranscript(t *testing.T) {
+	const w, h = 120, 42
+	m, _ := sendApp(t)
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
+	m = nm.(*App)
+	m.askMode = askConversations
+	m.chatConvID = "conv-scroll"
+
+	// A transcript far taller than the pane: this is what a paragraph-sized
+	// reply produces (the live case measured ~35 rendered rows in a ~20-row
+	// viewport).
+	lines := make([]string, 0, 60)
+	for i := 0; i < 60; i++ {
+		lines = append(lines, "line "+strings.Repeat("x", 20))
+	}
+	str := m.transcriptStream(m.chatConvID, 86, 20)
+	str.SetLines(lines)
+	if !str.Overflowing() {
+		t.Fatal("fixture: the transcript must overflow the pane")
+	}
+	if !str.AtBottom() {
+		t.Fatal("fixture: SetLines re-pins to the tail")
+	}
+	if lbl := str.ScrollLabel(); !strings.Contains(lbl, "/60") {
+		t.Fatalf("ScrollLabel = %q, want it to name the total so hidden content above is discoverable", lbl)
+	}
+
+	// The wheel in the CONTENT region (left of the conversations rail) must move
+	// the transcript, not the rail.
+	before := str.Offset
+	_, _ = m.dispatch(tea.MouseMsg{
+		Action: tea.MouseActionPress, Button: tea.MouseButtonWheelUp,
+		X: 20, Y: 10,
+	})
+	if str.Offset >= before {
+		t.Fatalf("wheel-up over the content region left the transcript at offset %d (was %d) — the operator cannot reach their own earlier messages", str.Offset, before)
+	}
+
+	// And the wheel still belongs to the RAIL in the rail's own columns.
+	railSel := m.convSel
+	_, _ = m.dispatch(tea.MouseMsg{
+		Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown,
+		X: w - 2, Y: 10,
+	})
+	if m.convSel == railSel && len(m.conversations) > 1 {
+		t.Fatal("the rail must keep the wheel in its own columns")
+	}
+}
+
+// ctrl+g must reach the composer from ANY state, including one where the screen
+// has latched a key claim.
+//
+// The operator: "when I am in work item view, hitting ctrl+g to get focus to the
+// composer is spotty and usually doesn't work. It will still try and recognize
+// letters being pushed to perform actions as opposed to truly dropping into the
+// composer to type."
+//
+// Both halves were real. The screen-claims gate ran BEFORE the composer branch, so
+// a latched claim (the search box, a form being prepared) swallowed ctrl+g — and
+// because the claim was never dropped, the next letters were routed to the SCREEN
+// as actions. Ctrl+g is now a hard chord in dispatch, ahead of that gate, and it
+// drops the claim so the following keystroke is typing.
+func TestCtrlGReachesTheComposerThroughAScreenKeyClaim(t *testing.T) {
+	m := newTestApp()
+	m.RegisterScreen(TabWork, work.New(nil, m.reg, ""))
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	m = nm.(*App)
+	m.SwitchTo(TabWork)
+
+	ws := m.screens[TabWork].(*work.Model)
+	if !ws.Base.SelectSource("workitems") {
+		t.Fatal("fixture: could not focus the work-items source")
+	}
+	// The latch: the operator opened the search box and moved on without closing
+	// it. This is the state that made the chord "usually" fail.
+	if !ws.Base.StartFilter() {
+		t.Fatal("fixture: work-items is not filterable")
+	}
+	if !ws.ClaimsKeys() {
+		t.Fatal("fixture: the screen must be claiming keys for this to be the real case")
+	}
+	m.setFocus(focusContent)
+
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	m = nm.(*App)
+
+	if m.chatFocus != focusComposer {
+		t.Fatal("ctrl+g did not focus the composer while the screen held a key claim")
+	}
+	if ws.ClaimsKeys() {
+		t.Fatal("ctrl+g must DROP the screen's key claim — otherwise the next letters run actions")
+	}
+	// The search the operator had typed is preserved, not thrown away, and the box
+	// is left so the composer owns the keys.
+	if ws.Base.Filtering() {
+		t.Fatal("the search box must be left, so the composer owns the keys")
+	}
+
+	// And typing now lands in the composer rather than triggering a screen action.
+	//
+	// The probe is a letter that is a SCREEN ACTION when the list owns the keys,
+	// and plain text when the composer does — 'n' opens the create form on the Work
+	// tab. ('q' would be a bad probe: it is deliberately in composerBypassKeys so
+	// quit always works while composing.)
+	m.setFocus(focusComposer)
+	beforeLen := len(m.dock.Value())
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	m = nm.(*App)
+	if len(m.dock.Value()) <= beforeLen {
+		t.Fatalf("composer value = %q, want the typed letter appended — a screen action took it instead", m.dock.Value())
+	}
+	if ws.ClaimsKeys() {
+		t.Fatal("typing into the composer must not re-claim the screen's keys")
+	}
+}
+
+// Tab must advance the focus ring even while the active screen claims the keys.
+//
+// "When tabbing through the main top menu, the tab now just simply stops at Work
+// and doesn't move to Execution in the menu system." The cause is the same
+// latched screen claim that swallowed ctrl+g: the claims gate runs before the
+// routes, so a screen holding a text input (the Work search box, a form being
+// prepared) ate Tab and the ring never advanced. That claim is usually
+// incidental, so the route between areas cannot depend on it being clear.
+func TestTabAdvancesTheRingThroughAScreenKeyClaim(t *testing.T) {
+	m := newTestApp()
+	for _, tb := range Tabs {
+		switch tb.ID {
+		case TabWork:
+			m.RegisterScreen(TabWork, work.New(nil, m.reg, ""))
+		default:
+			m.RegisterScreen(tb.ID, &stubScreen{id: string(tb.ID)})
+		}
+	}
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	m = nm.(*App)
+	m.SwitchTo(TabWork)
+	m.setFocus(focusContent)
+
+	ws := m.screens[TabWork].(*work.Model)
+	if !ws.Base.SelectSource("workitems") || !ws.Base.StartFilter() {
+		t.Fatal("fixture: need the Work search box latched")
+	}
+	if !ws.ClaimsKeys() {
+		t.Fatal("fixture: the screen must be claiming keys")
+	}
+
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = nm.(*App)
+	// Tab must leave the CONTENT (returning to the bar) even though the screen is
+	// claiming keys — a claim is about text input, and the route between areas must
+	// not depend on no latch being set. It does NOT advance to the next tab from
+	// here; advancing is the bar's own gesture (one more Tab).
+	if m.active != TabWork {
+		t.Fatalf("tab from the content must stay on %q, got %q", TabWork, m.active)
+	}
+	if m.chatFocus != focusTabs {
+		t.Fatalf("tab must return to the tab bar through a screen claim, got focus=%v", m.chatFocus)
+	}
+	// And from the bar it advances, latch or no latch.
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = nm.(*App)
+	if m.active != TabExecution {
+		t.Fatalf("tab from the bar left the active tab at %q, want execution", m.active)
+	}
+}
+
+// The operator's five-step navigation model, end to end:
+//
+//  1. Tab moves through the menu
+//  2. up/down move through the submenu
+//  3. Enter selects the submenu
+//
+// The operator's navigation model, end to end:
+//
+//  1. Tab moves through the top-level tabs — and ONLY moves. It must not pop a
+//     submenu open ("submenus should only pop up if you enter on them"), because
+//     an open menu also eats the arrows.
+//  2. Enter on a tab opens that tab's submenu.
+//  3. up/down move through the submenu.
+//  4. Enter selects — which closes the menu AND moves focus into the pane.
+//  5. up/down then move the pane items.
+//
+// The load-bearing parts are that nothing below the tab bar receives keys until a
+// submenu entry is SELECTED ("the project page STILL captures the down/up controls
+// without actually selecting it yet"), and that once selected the arrows do reach
+// the pane ("Executions and Workers ... are locked").
+func TestNavigationModelTabEnterArrows(t *testing.T) {
+	m := newTestApp()
+	for _, tb := range Tabs {
+		switch tb.ID {
+		case TabExecution:
+			m.RegisterScreen(TabExecution, work.New(nil, m.reg, ""))
+		default:
+			m.RegisterScreen(tb.ID, &stubScreen{id: string(tb.ID)})
+		}
+	}
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	m = nm.(*App)
+	m.setFocus(focusComposer)
+	m.SwitchTo(TabAsk)
+
+	// 1. Tab lands on the TAB BAR — no submenu, and nothing below takes keys.
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = nm.(*App)
+	if m.TabMenu() != nil {
+		t.Fatal("step 1: tab must NOT pop the submenu open")
+	}
+	if m.chatFocus != focusTabs {
+		t.Fatalf("step 1: tab must land on the tab bar, got focus=%v", m.chatFocus)
+	}
+
+	// Tab again advances the top-level selection, still with no submenu.
+	first := m.active
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = nm.(*App)
+	if m.active == first {
+		t.Fatalf("step 1: tab must advance the tab ring (still %q)", m.active)
+	}
+	if m.TabMenu() != nil {
+		t.Fatal("step 1: advancing must not pop a submenu either")
+	}
+
+	// 2. Enter opens the submenu.
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm.(*App)
+	if m.TabMenu() == nil {
+		t.Fatal("step 2: enter on the tab bar must open the submenu")
+	}
+
+	// 3. up/down move through it.
+	if len(m.TabMenu().Entries) > 1 {
+		sel := m.TabMenu().Sel
+		nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = nm.(*App)
+		if m.TabMenu() == nil {
+			t.Fatal("step 3: down must not close the submenu")
+		}
+		if m.TabMenu().Sel == sel {
+			t.Fatal("step 3: down must move the submenu selection")
+		}
+	}
+
+	// 4. Enter selects: menu closes, focus moves into the pane.
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm.(*App)
+	if m.TabMenu() != nil {
+		t.Fatal("step 4: enter must close the submenu after selecting")
+	}
+	if m.chatFocus != focusContent {
+		t.Fatalf("step 4: selecting must hand focus to the pane, got %v", m.chatFocus)
+	}
+
+	// 5. The arrows now move the pane list.
+	m.SwitchTo(TabExecution)
+	m.setFocus(focusContent)
+	ws := m.screens[TabExecution].(*work.Model)
+	ws.LoadItems("projects", []kit2.Item{
+		{ID: "p1", Title: "one"}, {ID: "p2", Title: "two"}, {ID: "p3", Title: "three"},
+	}, "")
+	if !ws.Base.SelectSource("projects") {
+		t.Fatal("fixture: could not focus the projects source")
+	}
+	it0, _ := ws.Base.ActiveItem()
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = nm.(*App)
+	itN, _ := ws.Base.ActiveItem()
+	if itN.ID == it0.ID {
+		t.Fatalf("step 5: down must move the pane cursor (still %q)", itN.ID)
+	}
+}
+
+// The COMPLEMENT, and the reason the previous fix went too far: with the tab bar
+// focused and no submenu open, a vertical key must not reach a pane — and must not
+// open a menu either.
+func TestArrowsDoNothingUntilASubmenuEntryIsSelected(t *testing.T) {
+	m := newTestApp()
+	for _, tb := range Tabs {
+		switch tb.ID {
+		case TabWork:
+			m.RegisterScreen(TabWork, work.New(nil, m.reg, ""))
+		default:
+			m.RegisterScreen(tb.ID, &stubScreen{id: string(tb.ID)})
+		}
+	}
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	m = nm.(*App)
+	m.SwitchTo(TabWork)
+	ws := m.screens[TabWork].(*work.Model)
+	ws.LoadItems("projects", []kit2.Item{{ID: "p1", Title: "one"}, {ID: "p2", Title: "two"}}, "")
+	ws.Base.SelectSource("projects")
+
+	// Land on the tab bar and press down: nothing may move, and no menu may open.
+	m.setFocus(focusTabs)
+	it0, _ := ws.Base.ActiveItem()
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = nm.(*App)
+	if m.TabMenu() != nil {
+		t.Fatal("down on the tab bar must not open a submenu")
+	}
+	itN, _ := ws.Base.ActiveItem()
+	if itN.ID != it0.ID {
+		t.Fatalf("down reached the pane (%q → %q) before any selection was made", it0.ID, itN.ID)
+	}
+}
+
+// Tab yields to a WINDOWED MODAL FORM — and ONLY to that.
+//
+// "When inside an edit form, I feel this should be the one place where tab should
+// overwrite the tabbing through menus option. Moving up and down with the arrow
+// keys are fine, but I can definitely see people hitting tab and then being ripped
+// away from the item they were editing."
+//
+// The complement matters as much: an INLINE details-pane editor and a latched
+// search box must NOT take Tab, because yielding to every claim is what made the
+// ring stop at Work.
+func TestTabYieldsOnlyToAWindowedModalForm(t *testing.T) {
+	m := newTestApp()
+	for _, tb := range Tabs {
+		switch tb.ID {
+		case TabWork:
+			m.RegisterScreen(TabWork, work.New(nil, m.reg, ""))
+		default:
+			m.RegisterScreen(tb.ID, &stubScreen{id: string(tb.ID)})
+		}
+	}
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	m = nm.(*App)
+	m.SwitchTo(TabWork)
+	m.setFocus(focusContent)
+
+	// A FORM owns Tab — inline editor or a windowed modal — and the operator settled the
+	// rule explicitly: "ONCE IN EDIT/NEW MODE using down/up OR tab/shift+tab should move
+	// through the edit items as opposed to the top menu bar on every screen. Once you ctrl+s
+	// to save or hit Esc to get out of the editing mode, tab/shift+tab now affects the top
+	// tab menu again."
+	//
+	// This asserts BOTH halves of that: with a form open Tab goes to the FORM (the tab
+	// does not change, and the pane keeps the keyboard); with it closed Tab walks the bar
+	// again. The earlier version of this test asserted the opposite for an inline editor
+	// ("An INLINE details-pane editor must NOT take Tab ... it leaves for the bar"), quoting
+	// an earlier operator preference — the clarification above supersedes it, and that test
+	// passed only because the Work screen was MISSING FormOpen(), so it was satisfied by the
+	// absence rather than by design.
+	ws := m.screens[TabWork].(*work.Model)
+	form := kit2.NewForm("Edit work item",
+		kit2.FieldSpec{Name: "title", Label: "Title", Kind: kit2.KText},
+		kit2.FieldSpec{Name: "body", Label: "Body", Kind: kit2.KTextArea})
+	ws.Base.BeginDetailEdit("Edit work item", form)
+	if !ws.Base.EditingDetail() {
+		t.Fatal("fixture: expected an inline editor")
+	}
+	if !ws.FormOpen() {
+		t.Fatal("an inline editor must report FormOpen — otherwise the shell's Tab chord " +
+			"cannot tell an open form from a resting pane")
+	}
+
+	// A SET of keys the FORM owns while it is open: Tab/Shift+Tab advance and retreat the
+	// field cursor, and the tab must not change.
+	form.Cursor = 0
+	for _, tc := range []struct {
+		key  tea.KeyMsg
+		want int
+	}{
+		{tea.KeyMsg{Type: tea.KeyTab}, 1},
+		{tea.KeyMsg{Type: tea.KeyTab}, 0},
+		{tea.KeyMsg{Type: tea.KeyShiftTab}, 1},
+		{tea.KeyMsg{Type: tea.KeyShiftTab}, 0},
+	} {
+		nm, _ = m.Update(tc.key)
+		m = nm.(*App)
+		if m.active != TabWork {
+			t.Fatalf("%v with a form open moved the tab to %q — the form owns Tab",
+				tc.key, m.active)
+		}
+		if got := ws.Base.DetailForm().Cursor; got != tc.want {
+			t.Fatalf("%v: form field cursor = %d, want %d — Tab must move through the form's items",
+				tc.key, got, tc.want)
+		}
+	}
+
+	// Once the form CLOSES, Tab belongs to the bar again.
+	ws.Base.CloseDetailEdit()
+	if ws.FormOpen() {
+		t.Fatal("fixture: the form did not close")
+	}
+	before := m.active
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = nm.(*App)
+	if m.active == before && m.chatFocus != focusTabs {
+		t.Fatalf("Tab with no form open must walk the tab menu again, got tab=%q focus=%v",
+			m.active, m.chatFocus)
+	}
+}

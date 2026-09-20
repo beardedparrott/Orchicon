@@ -1,6 +1,7 @@
 package askorchicon
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/opencode"
+	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
 // --- Fakes for the Task 1 session transport turn loop ---------------------
@@ -70,7 +73,8 @@ type fakeSessionClient struct {
 	createTitles []string
 	createErr    error
 	sendCalls    []sentMessage
-	sendErrs     []error // consumed in order; nil when exhausted
+	sendParts    [][]scheduler.ChatAttachment // one entry per SendTurnMessageWithAttachments call
+	sendErrs     []error                      // consumed in order; nil when exhausted
 	sendCall     int
 	// sendGate, when non-nil, makes SendMessage block until the channel is
 	// closed. Lets a test hold the send in flight so it can replay events
@@ -83,6 +87,7 @@ type fakeSessionClient struct {
 	aborted      []string
 	replies      []string
 	sub          *fakeBusSub
+	sbus         scheduler.SessionBus
 	subscribeErr error
 	// serveDownFails is the number of Subscribe calls to fail before the
 	// serve "recovers" (a serve that dropped and is restarting). Each failed
@@ -90,7 +95,7 @@ type fakeSessionClient struct {
 	serveDownFails int
 }
 
-func (f *fakeSessionClient) Subscribe(ctx context.Context) (opencode.BusSub, error) {
+func (f *fakeSessionClient) Subscribe(ctx context.Context, conversationID string) (scheduler.SessionBus, error) {
 	// serveDownFails lets a test make the serve "go down": fail the next N
 	// Subscribe calls (a serve that never accepts a connection), then
 	// recover. Each failure decrements the counter, so a test can drop the
@@ -107,11 +112,15 @@ func (f *fakeSessionClient) Subscribe(ctx context.Context) (opencode.BusSub, err
 	}
 	// Reuse the live subscription (existing turn tests feed the stream the
 	// turn is draining). A CLOSED subscription means the serve "restarted" —
-	// the collector's re-attach gets a fresh event stream.
+	// the collector's re-attach gets a fresh event stream. A single cached
+	// SessionBus wrapper is returned so the turn's internal Subscribe and any
+	// test-side Subscribe observe the SAME translated channel (two independent
+	// wrappers would each start a translating goroutine and steal events).
 	if f.sub == nil || isClosed(f.sub.done) {
 		f.sub = newFakeBusSub()
+		f.sbus = opencode.NewSessionBusFromSub(f.sub)
 	}
-	return f.sub, nil
+	return f.sbus, nil
 }
 
 // failNextSubscribes makes the next n Subscribe calls fail (serve down), then
@@ -132,7 +141,7 @@ func isClosed(ch <-chan struct{}) bool {
 	}
 }
 
-func (f *fakeSessionClient) CreateSession(ctx context.Context, title string) (string, error) {
+func (f *fakeSessionClient) CreateConversationSession(ctx context.Context, conversationID, title string) (string, error) {
 	if f.createErr != nil {
 		return "", f.createErr
 	}
@@ -145,7 +154,7 @@ func (f *fakeSessionClient) CreateSession(ctx context.Context, title string) (st
 	return id, nil
 }
 
-func (f *fakeSessionClient) SendMessage(ctx context.Context, sessionID, system, modelRef, text string) error {
+func (f *fakeSessionClient) SendTurnMessage(ctx context.Context, conversationID, sessionID, system, modelRef, text string) error {
 	f.mu.Lock()
 	f.sendCalls = append(f.sendCalls, sentMessage{sessionID, system, modelRef, text})
 	if f.sendCall < len(f.sendErrs) {
@@ -172,7 +181,17 @@ func (f *fakeSessionClient) SendMessage(ctx context.Context, sessionID, system, 
 	return nil
 }
 
-func (f *fakeSessionClient) Abort(ctx context.Context, sessionID string) error {
+// SendTurnMessageWithAttachments is the attachment-aware capability; the
+// test fake implements it so attachment turns test the capability-gated path
+// (recorded just like a plain send — the adapter's classification differs).
+func (f *fakeSessionClient) SendTurnMessageWithAttachments(ctx context.Context, conversationID, sessionID, system, modelRef, text string, attachments []scheduler.ChatAttachment) error {
+	f.mu.Lock()
+	f.sendParts = append(f.sendParts, append([]scheduler.ChatAttachment(nil), attachments...))
+	f.mu.Unlock()
+	return f.SendTurnMessage(ctx, conversationID, sessionID, system, modelRef, text)
+}
+
+func (f *fakeSessionClient) AbortConversationSession(ctx context.Context, sessionID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.aborted = append(f.aborted, sessionID)
@@ -305,7 +324,7 @@ func runTurn(t *testing.T, client *fakeSessionClient, sessionID string, feed fun
 	var resErr error
 	go func() {
 		defer close(done)
-		sub, serr := client.Subscribe(context.Background())
+		sub, serr := client.Subscribe(context.Background(), "conv_1")
 		if serr != nil {
 			resErr = serr
 			return
@@ -318,7 +337,7 @@ func runTurn(t *testing.T, client *fakeSessionClient, sessionID string, feed fun
 			// under -race / load).
 			go func() {
 				waitForSend(t, client, 1)
-				feed(sub.(*fakeBusSub))
+				feed(client.sub)
 			}()
 		}
 		resMsgID, resSid, _, resErr = s.runOpenCodeTurn(context.Background(), client, "tnt_dev",
@@ -404,6 +423,50 @@ func TestRunOpenCodeTurnFollowUpReusesSameSession(t *testing.T) {
 	}
 }
 
+// TestChatTurnSendsAttachments proves an attachment attached to a message
+// reaches the send path via the attachment-aware capability
+// (SendTurnMessageWithAttachments on the scheduler.ChatTurnClient) rather
+// than being dropped by a concrete-type assertion and falling back to a plain
+// SendTurnMessage.
+func TestChatTurnSendsAttachments(t *testing.T) {
+	client := &fakeSessionClient{}
+	imgData := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a}
+	opts := turnCollectOpts{
+		client: client, sessionID: "ses_live", reuseSystem: "REUSE_SYSTEM",
+		modelRef: "opencode/deepseek-v4-flash-free", userMsg: "what is this?",
+		attachments: []*apiv1.AttachmentInput{
+			{Name: "a.png", MimeType: "image/png", Data: imgData},
+		},
+	}
+	go func() {
+		waitForSend(t, client, 1)
+		client.sub.feed(busText("ses_live", "it's a png"))
+		client.sub.feed(busIdle("ses_live"))
+	}()
+	reply, _, _, err := collectTurn(t, client, opts)
+	if err != nil {
+		t.Fatalf("collect error: %v", err)
+	}
+	if reply != "it's a png" {
+		t.Errorf("reply = %q, want %q", reply, "it's a png")
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.sendParts) != 1 {
+		t.Fatalf("SendTurnMessageWithAttachments calls = %d, want 1 (attachment must go through the attachment-aware capability sender)", len(client.sendParts))
+	}
+	got := client.sendParts[0]
+	if len(got) != 1 {
+		t.Fatalf("parts = %d, want 1", len(got))
+	}
+	if got[0].Name != "a.png" || got[0].MimeType != "image/png" {
+		t.Errorf("part = %+v, want name a.png mime image/png", got[0])
+	}
+	if !bytes.Equal(got[0].Data, imgData) {
+		t.Errorf("part data = %v, want %v", got[0].Data, imgData)
+	}
+}
+
 // --- Stale idle before send --------------------------------------------------
 
 // TestRunOpenCodeTurnIgnoresIdleBeforeSend verifies the sent guard: a
@@ -421,7 +484,7 @@ func TestRunOpenCodeTurnIgnoresIdleBeforeSend(t *testing.T) {
 	var resErr error
 	go func() {
 		defer close(done)
-		sub, serr := client.Subscribe(context.Background())
+		sub, serr := client.Subscribe(context.Background(), "conv_1")
 		if serr != nil {
 			resErr = serr
 			return
@@ -453,17 +516,26 @@ func TestRunOpenCodeTurnIgnoresIdleBeforeSend(t *testing.T) {
 	// accepted. The idle must be ignored (sent == false). The stale text is
 	// legitimate telemetry and is relayed; the STALE IDLE must not end the
 	// turn.
+	//
+	// ⚠️ A MARKER TEXT IS FED AFTER THE STALE IDLE, and that marker is the whole reason this test is
+	// deterministic. Waiting for the stale TEXT alone does NOT prove the idle was consumed — the text is
+	// relayed from inside the drain loop's `case "part"` branch, so it can be observed while the loop has
+	// not yet performed its next select, leaving the idle queued. Releasing the send gate at that moment lets
+	// the select take sendCh FIRST (sent = true) and then consume that stale idle as if it were ours, ending
+	// the turn with only the stale text — which is exactly the failure that surfaced as
+	// `collected text = [stale text]` on a loaded machine while passing on an idle one.
+	//
+	// The events channel is FIFO and the drain loop consumes one event per iteration, so when the MARKER is
+	// relayed the idle before it has definitely been consumed — with sent == false, i.e. correctly ignored.
+	// That is the fact this test needs, and it is now established rather than assumed.
 	fsub.feed(busText("ses_1", "stale text"))
 	fsub.feed(busIdle("ses_1"))
-	// Wait until the stale events have been consumed by the drain loop
-	// (stale text processed ⇒ the idle that follows it in the channel was
-	// also consumed while sent == false). Only then release the send gate,
-	// so the stale idle cannot race a later sent == true.
-	for len(col.texts()) < 1 {
+	fsub.feed(busText("ses_1", "stale marker"))
+	for len(col.texts()) < 2 {
 		select {
 		case <-time.After(10 * time.Millisecond):
 		case <-deadline:
-			t.Fatal("stale text was never processed before deadline")
+			t.Fatal("the stale idle was never consumed before deadline")
 		}
 	}
 	// Release the send; then the real turn produces text + the real idle.
@@ -471,6 +543,11 @@ func TestRunOpenCodeTurnIgnoresIdleBeforeSend(t *testing.T) {
 	// the first fresh idle before it processes the sendCh result (sent still
 	// false → correctly ignored); the second idle is consumed after sent has
 	// flipped, so the turn terminates deterministically.
+	//
+	// The gap is a margin rather than a guarantee, and it is the one remaining
+	// timing assumption here — but it is microseconds of work (the send
+	// goroutine has already returned) against 100ms, so it is orders of
+	// magnitude wider than the window that used to be lost.
 	close(client.sendGate)
 	fsub.feed(busText("ses_1", "fresh reply"))
 	fsub.feed(busIdle("ses_1"))
@@ -495,10 +572,13 @@ func TestRunOpenCodeTurnIgnoresIdleBeforeSend(t *testing.T) {
 	// text. Telemetry text is relayed as it arrives (it is the conversation's
 	// own output), but the turn must continue to the post-accept idle and
 	// collect the FRESH reply — if the stale idle had completed the turn we
-	// would only see the stale text.
+	// would see no FRESH REPLY at all, which is the assertion that carries
+	// the test. (Both stale texts are asserted so a change that dropped the
+	// marker cannot make this pass silently.)
 	got := col.texts()
-	if len(got) != 2 || got[0] != "stale text" || got[1] != "fresh reply" {
-		t.Errorf("collected text = %v, want [stale text fresh reply]", got)
+	if len(got) != 3 || got[0] != "stale text" || got[1] != "stale marker" || got[2] != "fresh reply" {
+		t.Errorf("collected text = %v, want [stale text stale marker fresh reply] — the fresh reply missing "+
+			"means the STALE idle ended the turn", got)
 	}
 }
 
@@ -516,7 +596,7 @@ func TestRunOpenCodeTurnTimeoutAborts(t *testing.T) {
 	var resErr error
 	go func() {
 		defer close(done)
-		sub, _ := client.Subscribe(context.Background())
+		sub, _ := client.Subscribe(context.Background(), "conv_1")
 		defer sub.Close()
 		_, _, _, resErr = s.runOpenCodeTurn(context.Background(), client, "tnt_dev",
 			"conv_1", "ses_live", "opencode/deepseek-v4-flash-free",
@@ -565,7 +645,7 @@ func TestRunOpenCodeTurnSessionErrorEndsTurn(t *testing.T) {
 // on the fresh session.
 func TestRunOpenCodeTurnRecreatesLostSession(t *testing.T) {
 	client := &fakeSessionClient{
-		sendErrs: []error{opencode.ErrSessionNotFound},
+		sendErrs: []error{scheduler.ErrSessionNotFound},
 	}
 	// Wait until the retry send has been accepted before feeding text +
 	// idle, otherwise the idle can arrive while sent == false and be
@@ -644,11 +724,11 @@ func TestRunOpenCodeTurnRelaysPermissionAndTool(t *testing.T) {
 	var resErr error
 	go func() {
 		defer close(done)
-		sub, _ := client.Subscribe(context.Background())
+		sub, _ := client.Subscribe(context.Background(), "conv_1")
 		defer sub.Close()
 		go func() {
 			waitForSend(t, client, 1)
-			feed(sub.(*fakeBusSub))
+			feed(client.sub)
 		}()
 		_, _, _, resErr = s.runOpenCodeTurn(context.Background(), client, "tnt_dev",
 			"conv_1", "ses_live", "opencode/deepseek-v4-flash-free",
@@ -729,7 +809,7 @@ func TestRunOpenCodeTurnSubscribeFailureReturnsError(t *testing.T) {
 
 // collectTurn runs collectConversationReply against a fake client and returns
 // when the collector finalizes (success or error).
-func collectTurn(t *testing.T, client sessionTurnClient, opts turnCollectOpts) (string, []string, string, error) {
+func collectTurn(t *testing.T, client scheduler.ChatTurnClient, opts turnCollectOpts) (string, []string, string, error) {
 	t.Helper()
 	s := &Service{log: slog.Default(), turns: newTurnRegistry()}
 	t.Setenv("ORCHICON_ASK_REATTACH_BACKOFF", "1ms")
@@ -1020,7 +1100,7 @@ func TestCollectConversationReplyReattachesOnBusLoss(t *testing.T) {
 // session (serve data dir wiped) creates a FRESH session seeded from the DB
 // transcript (seedSystem) and re-dispatches once.
 func TestCollectConversationReplyRecreatesLostSession(t *testing.T) {
-	client := &fakeSessionClient{sendErrs: []error{opencode.ErrSessionNotFound}}
+	client := &fakeSessionClient{sendErrs: []error{scheduler.ErrSessionNotFound}}
 	opts := turnCollectOpts{
 		client: client, sessionID: "ses_lost", seedSystem: "SEED_SYSTEM", reuseSystem: "REUSE_SYSTEM",
 		modelRef: "opencode/deepseek-v4-flash-free", userMsg: "hello",
@@ -1335,4 +1415,286 @@ func TestTurnRegistrySweep(t *testing.T) {
 	}
 	// The expired cancel fired with errTurnExpired (captured above via
 	// context.Cause on the cancelled context).
+}
+
+// --- Folded think-segment demux (GLM/DeepSeek) -------------------------------
+
+// collectTurnEvents drives collectConversationReply and captures both the
+// partial-mirror snapshots and the stream events so a test can assert the
+// exact channels (text vs reasoning) a folded-think demux produces.
+type turnEvents struct {
+	mu       sync.Mutex
+	partials []struct {
+		text      string
+		reasoning []string
+	}
+	chunks  []string // TextChunk event contents, in order
+	reasons []string // Reasoning event contents, in order
+}
+
+func (e *turnEvents) onStreamEvent(resp *apiv1.ChatStreamResponse) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	switch ev := resp.Event.(type) {
+	case *apiv1.ChatStreamResponse_TextChunk:
+		if ev.TextChunk != nil {
+			e.chunks = append(e.chunks, ev.TextChunk.Content)
+		}
+	case *apiv1.ChatStreamResponse_Reasoning:
+		if ev.Reasoning != nil {
+			e.reasons = append(e.reasons, ev.Reasoning.Content)
+		}
+	}
+}
+
+func (e *turnEvents) onPartial(text string, reasoning []string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.partials = append(e.partials, struct {
+		text      string
+		reasoning []string
+	}{text: text, reasoning: append([]string(nil), reasoning...)})
+}
+
+func (e *turnEvents) snapshot() (partials []struct {
+	text      string
+	reasoning []string
+}, chunks, reasons []string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	partials = append([]struct {
+		text      string
+		reasoning []string
+	}(nil), e.partials...)
+	chunks = append([]string(nil), e.chunks...)
+	reasons = append([]string(nil), e.reasons...)
+	return partials, chunks, reasons
+}
+
+// collectTurnWithEvents runs collectConversationReply and returns the reply,
+// reasoning, sid, error plus the captured stream/partial events.
+func collectTurnWithEvents(t *testing.T, client *fakeSessionClient, opts turnCollectOpts) (string, []string, string, error, *turnEvents) {
+	t.Helper()
+	ev := &turnEvents{}
+	opts.onStreamEvent = ev.onStreamEvent
+	opts.onPartial = ev.onPartial
+	reply, reasoning, sid, err := collectTurn(t, client, opts)
+	return reply, reasoning, sid, err, ev
+}
+
+// TestThinkSegmenterSplitOpenTagAcrossThreeChunks verifies the cross-delta
+// carry-over state machine recognizes a think open/close tag split across
+// three chunks (GLM's folded-think output arrives token by token). No tag
+// fragment may leak into text; the body must come out via the think channel.
+func TestThinkSegmenterSplitOpenTagAcrossThreeChunks(t *testing.T) {
+	var text, body strings.Builder
+	seg := thinkSegmenter{}
+	feed := func(s string) {
+		seg.feed(s, func(t string) { text.WriteString(t) }, func(b string) {}, func(b string) { body.WriteString(b) })
+	}
+	// Open tag split across three chunks: "|<t", "hink", "ing>".
+	feed("|<t")
+	feed("hink")
+	feed("ing>")
+	// Body + close tag split across three chunks: "|</thi", "nking>".
+	feed("hidden body ")
+	feed("|</thi")
+	feed("nking>")
+	// Unterminated trailing think (flushed at the boundary): "|<thinking>more"
+	// is an open tag whose body "more" never gets a close. Must not leak to
+	// text; flushBody drains it to the think channel.
+	feed("|<thinking>more")
+	seg.flushBody(func(b string) { body.WriteString(b) })
+
+	if got := body.String(); got != "hidden body more" {
+		t.Errorf("think body = %q, want %q", got, "hidden body more")
+	}
+	if got := text.String(); got != "" {
+		t.Errorf("text = %q, want empty (no tag fragments leaked)", got)
+	}
+}
+
+// TestCollectConversationReplyFoldedThinkInCompletedTextPart verifies a
+// completed text part carrying a folded think block is demuxed: the reply is
+// the clean text, the reasoning array carries the folded body, and the
+// emitted TextChunk events exclude the body.
+func TestCollectConversationReplyFoldedThinkInCompletedTextPart(t *testing.T) {
+	client := &fakeSessionClient{}
+	opts := turnCollectOpts{
+		client: client, sessionID: "ses_live", reuseSystem: "REUSE_SYSTEM",
+		modelRef: "opencode/deepseek-v4-flash-free", userMsg: "hello",
+	}
+	go func() {
+		waitForSend(t, client, 1)
+		client.sub.feed(busText("ses_live", "|<thinking>hidden</thinking>answer"))
+		client.sub.feed(busIdle("ses_live"))
+	}()
+	reply, reasoning, _, err, ev := collectTurnWithEvents(t, client, opts)
+	if err != nil {
+		t.Fatalf("collect error: %v", err)
+	}
+	if reply != "answer" {
+		t.Errorf("reply = %q, want %q (folded body stripped)", reply, "answer")
+	}
+	want := []string{"hidden"}
+	if len(reasoning) != len(want) || reasoning[0] != want[0] {
+		t.Errorf("reasoning = %v, want %v", reasoning, want)
+	}
+	_, chunks, _ := ev.snapshot()
+	if len(chunks) != 1 || chunks[0] != "answer" {
+		t.Errorf("TextChunk events = %v, want [answer] (body excluded)", chunks)
+	}
+}
+
+// TestCollectConversationReplyFoldedThinkLiveDeltaDemux verifies the common
+// leak case: a folded think body streamed as TEXT deltas (not a native
+// reasoning part), followed by a CLEAN completed text part. The body must grow
+// the live reasoning tail (partial mirror's reasoning side) and commit to the
+// final reasoning array; the text side stays clean.
+func TestCollectConversationReplyFoldedThinkLiveDeltaDemux(t *testing.T) {
+	client := &fakeSessionClient{}
+	opts := turnCollectOpts{
+		client: client, sessionID: "ses_live", reuseSystem: "REUSE_SYSTEM",
+		modelRef: "opencode/deepseek-v4-flash-free", userMsg: "hello",
+	}
+	go func() {
+		waitForSend(t, client, 1)
+		client.sub.feed(busDelta("ses_live", "|<thinking>hi"))
+		client.sub.feed(busDelta("ses_live", " there"))
+		client.sub.feed(busDelta("ses_live", "|</thinking>"))
+		client.sub.feed(busText("ses_live", "answer"))
+		client.sub.feed(busIdle("ses_live"))
+	}()
+	reply, reasoning, _, err, ev := collectTurnWithEvents(t, client, opts)
+	if err != nil {
+		t.Fatalf("collect error: %v", err)
+	}
+	if reply != "answer" {
+		t.Errorf("reply = %q, want %q (delta think body must not leak into text)", reply, "answer")
+	}
+	want := []string{"hi there"}
+	if len(reasoning) != len(want) || reasoning[0] != want[0] {
+		t.Errorf("reasoning = %v, want %v", reasoning, want)
+	}
+	partials, chunks, _ := ev.snapshot()
+	// The live partial mirror's text side must never carry the think body
+	// ("hi there") or a tag remnant. The completed "answer" text legitimately
+	// appears in a partial.
+	for _, p := range partials {
+		if strings.Contains(p.text, "hi there") || strings.Contains(p.text, "think") {
+			t.Errorf("partial text = %q, contains leaked think body/remnant", p.text)
+		}
+	}
+	// TextChunk events must only carry the completed clean text.
+	if len(chunks) != 1 || chunks[0] != "answer" {
+		t.Errorf("TextChunk events = %v, want [answer]", chunks)
+	}
+}
+
+// TestCollectConversationReplyTurnEndsMidThinkFlushesToReasoning verifies a
+// turn that ends (idle) with an UNTERMINATED think block flushes the buffered
+// body to the reasoning channel and leaves content clean.
+func TestCollectConversationReplyTurnEndsMidThinkFlushesToReasoning(t *testing.T) {
+	client := &fakeSessionClient{}
+	opts := turnCollectOpts{
+		client: client, sessionID: "ses_live", reuseSystem: "REUSE_SYSTEM",
+		modelRef: "opencode/deepseek-v4-flash-free", userMsg: "hello",
+	}
+	go func() {
+		waitForSend(t, client, 1)
+		client.sub.feed(busDelta("ses_live", "|<thinking>unterminated"))
+		client.sub.feed(busIdle("ses_live"))
+	}()
+	reply, reasoning, _, err, _ := collectTurnWithEvents(t, client, opts)
+	if err != nil {
+		t.Fatalf("collect error: %v", err)
+	}
+	if reply != "" {
+		t.Errorf("reply = %q, want empty (no leaked think body)", reply)
+	}
+	want := []string{"unterminated"}
+	if len(reasoning) != len(want) || reasoning[0] != want[0] {
+		t.Errorf("reasoning = %v, want %v (flushed)", reasoning, want)
+	}
+}
+
+// TestCollectConversationReplySupersedeMidThinkPersistsCleanPartial verifies a
+// supersede mid-think (context cancel) persists a partial whose content is
+// clean text and whose reasoning array has the partial body.
+func TestCollectConversationReplySupersedeMidThinkPersistsCleanPartial(t *testing.T) {
+	client := &fakeSessionClient{}
+	opts := turnCollectOpts{
+		client: client, sessionID: "ses_live", reuseSystem: "REUSE_SYSTEM",
+		modelRef: "opencode/deepseek-v4-flash-free", userMsg: "hello",
+	}
+	cancelCtx := context.Background()
+	// Use interject-style supersede: cancel the collector context.
+	ctx, cancel := context.WithCancelCause(cancelCtx)
+	s := &Service{log: slog.Default(), turns: newTurnRegistry()}
+	done := make(chan struct{})
+	var reply string
+	var reasoning []string
+	go func() {
+		defer close(done)
+		reply, reasoning, _, _ = s.collectConversationReply(ctx, opts)
+	}()
+	waitForSend(t, client, 1)
+	client.sub.feed(busDelta("ses_live", "|<thinking>partial"))
+	// Give the translate→drain pipeline a beat to deliver the delta before
+	// superseding, so the mid-think flush has a body to persist.
+	select {
+	case <-time.After(100 * time.Millisecond):
+	case <-done:
+	}
+	cancel(errTurnSuperseded)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("superseded collector did not return")
+	}
+	if reply != "" {
+		t.Errorf("reply = %q, want clean (no think body leaked)", reply)
+	}
+	want := []string{"partial"}
+	if len(reasoning) != len(want) || reasoning[0] != want[0] {
+		t.Errorf("reasoning = %v, want %v (flush on supersede)", reasoning, want)
+	}
+	// Ensure no think-tag remnant in the reply content.
+	if strings.Contains(reply, "thinking") || strings.Contains(reply, "</think") {
+		t.Errorf("reply contains think remnant: %q", reply)
+	}
+}
+
+// TestCollectConversationReplyFoldedThinkNoDedupe verifies a native reasoning
+// part AND a folded think body in the same turn coexist as separate reasoning
+// entries (no dedupe/merge against native entries).
+func TestCollectConversationReplyFoldedThinkNoDedupe(t *testing.T) {
+	client := &fakeSessionClient{}
+	opts := turnCollectOpts{
+		client: client, sessionID: "ses_live", reuseSystem: "REUSE_SYSTEM",
+		modelRef: "opencode/deepseek-v4-flash-free", userMsg: "hello",
+	}
+	go func() {
+		waitForSend(t, client, 1)
+		client.sub.feed(busReasoning("ses_live", "think step 1"))
+		client.sub.feed(busDelta("ses_live", "|<thinking>folded</thinking>"))
+		client.sub.feed(busText("ses_live", "answer"))
+		client.sub.feed(busIdle("ses_live"))
+	}()
+	reply, reasoning, _, err, _ := collectTurnWithEvents(t, client, opts)
+	if err != nil {
+		t.Fatalf("collect error: %v", err)
+	}
+	if reply != "answer" {
+		t.Errorf("reply = %q, want answer", reply)
+	}
+	want := []string{"think step 1", "folded"}
+	if len(reasoning) != len(want) {
+		t.Fatalf("reasoning = %v, want %v", reasoning, want)
+	}
+	for i := range want {
+		if reasoning[i] != want[i] {
+			t.Errorf("reasoning[%d] = %q, want %q (no dedupe against native)", i, reasoning[i], want[i])
+		}
+	}
 }

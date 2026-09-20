@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/oklog/ulid/v2"
 )
@@ -108,5 +109,41 @@ func TestParseRepoSlug(t *testing.T) {
 				t.Fatalf("parseRepoSlug(%q) = %q, want %q", tc.remote, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestSlowPassGateSkipsWithinInterval is the dispatch-stall regression
+// guard: after a slow pass has run, the gate must hold (scan takes the
+// slow_skipped path) so a newly armed pending run never waits behind
+// cleanup; once the interval elapses the gate must release. No DB needed —
+// it exercises the real slowPassDue gate scan() calls.
+func TestSlowPassGateSkipsWithinInterval(t *testing.T) {
+	r := &WorktreeReconciler{}
+	r.lastSlowPass = time.Now()
+	if r.slowPassDue() {
+		t.Fatalf("slow gate did not hold immediately after a slow pass (scan would run cleanup instead of skipping it)")
+	}
+	r.lastSlowPass = time.Now().Add(-2 * slowPassInterval)
+	if !r.slowPassDue() {
+		t.Fatalf("slow gate did not release after the interval elapsed (cleanup would starve)")
+	}
+	// Zero value (fresh restart): first tick runs the slow pass so
+	// post-restart cleanup resumes.
+	r = &WorktreeReconciler{}
+	if !r.slowPassDue() {
+		t.Fatalf("zero-value lastSlowPass must read as due (cleanup must resume after restart)")
+	}
+}
+
+// TestSlowPassBudgetExpiry is the per-tick cost-cap guard: an already-past
+// deadline must read as expired (sweep loops return early on the first
+// item check and resume next tick) while a fresh slowPassBudget deadline
+// must not. Exercises the real sweepBudgetExpired helper the sweeps call.
+func TestSlowPassBudgetExpiry(t *testing.T) {
+	if !sweepBudgetExpired(time.Now().Add(-time.Second)) {
+		t.Fatalf("expired budget deadline did not read as expired")
+	}
+	if sweepBudgetExpired(time.Now().Add(slowPassBudget)) {
+		t.Fatalf("fresh slow-pass budget read as expired")
 	}
 }

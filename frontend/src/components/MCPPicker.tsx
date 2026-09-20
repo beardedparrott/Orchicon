@@ -1,20 +1,30 @@
 import { useState, useMemo, useRef, useEffect } from "react";
 
-import { useListOpenCodeMCPs } from "@/api/aigateway";
-import type { OpenCodeMCP } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
+import { useMCPServerList } from "@/api/mcpServers";
+import type { MCPServer } from "@/api/gen/orchicon/api/v1/mcp_server_pb";
 
+// MCPConfig is the reference-shaped selection entry persisted into the
+// worker permissions JSON (`permissions.mcp_servers`): bare server ids
+// (references, never copies — the tenant's mcp_servers row is the source
+// of truth). `command` is retained for display/back-compat with legacy
+// {id, command} shapes; new selections carry id only.
 export interface MCPConfig {
   id: string;
-  command: string;
+  command?: string;
 }
 
 interface MCPPickerProps {
-  value: MCPConfig[];        // selected MCP servers with their configs
+  value: MCPConfig[];        // selected MCP server ids (references)
   onChange: (configs: MCPConfig[]) => void;
 }
 
+// Tenant-backed MCP server picker (ADR-0008): lists the tenant's
+// configured MCP servers (Settings → Adapters → MCP) and persists
+// reference ids. The opencode well-known list was the pre-storage
+// stand-in; the real surface is the tenant registry, and selections are
+// references so editing one server entry updates every consumer.
 export function MCPPicker({ value, onChange }: MCPPickerProps) {
-  const { data: servers, isLoading, error } = useListOpenCodeMCPs();
+  const { data: servers, isLoading, error } = useMCPServerList();
   const [search, setSearch] = useState("");
   const [showDropdown, setShowDropdown] = useState(false);
   const [focusedIdx, setFocusedIdx] = useState(0);
@@ -23,21 +33,24 @@ export function MCPPicker({ value, onChange }: MCPPickerProps) {
 
   const selectedIds = useMemo(() => new Set(value.map((c) => c.id)), [value]);
 
+  // Resolve the selected ids against the tenant list so chips show the
+  // live server name/command (auto-refresh: any server edit re-renders).
   const selected = useMemo(() => {
-    if (!servers) return value as OpenCodeMCP[];
+    if (!servers) return value.map((c) => c.id);
     const byId = new Map(servers.map((s) => [s.id, s]));
-    return value.map((c) => byId.get(c.id) ?? ({ id: c.id, command: c.command, status: "configured" } as OpenCodeMCP));
+    return value.map((c) => byId.get(c.id)?.id ?? c.id);
   }, [servers, value]);
 
   const filtered = useMemo(() => {
-    if (!servers) return [] as OpenCodeMCP[];
+    if (!servers) return [] as MCPServer[];
     let result = servers;
     if (search) {
       const q = search.toLowerCase();
       result = result.filter(
         (s) =>
-          s.id.toLowerCase().includes(q) ||
-          s.command.toLowerCase().includes(q),
+          s.name.toLowerCase().includes(q) ||
+          s.command.toLowerCase().includes(q) ||
+          s.url.toLowerCase().includes(q),
       );
     }
     return result;
@@ -60,7 +73,7 @@ export function MCPPicker({ value, onChange }: MCPPickerProps) {
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
-  function toggleServer(srv: OpenCodeMCP) {
+  function toggleServer(srv: MCPServer) {
     const already = value.findIndex((c) => c.id === srv.id);
     const updated =
       already >= 0
@@ -105,21 +118,24 @@ export function MCPPicker({ value, onChange }: MCPPickerProps) {
       {/* Selected MCP server chips */}
       {selected.length > 0 && (
         <div className="flex flex-wrap gap-1">
-          {selected.map((srv) => (
-            <span
-              key={srv.id}
-              className="inline-flex items-center gap-1 rounded bg-primary/10 px-2 py-0.5 text-xs font-medium"
-            >
-              {srv.id}
-              <button
-                type="button"
-                className="hover:text-destructive"
-                onClick={() => removeServer(srv.id)}
+          {selected.map((id) => {
+            const srv = servers?.find((s) => s.id === id);
+            return (
+              <span
+                key={id}
+                className="inline-flex items-center gap-1 rounded bg-primary/10 px-2 py-0.5 text-xs font-medium"
               >
-                &times;
-              </button>
-            </span>
-          ))}
+                {srv?.name ?? id}
+                <button
+                  type="button"
+                  className="hover:text-destructive"
+                  onClick={() => removeServer(id)}
+                >
+                  &times;
+                </button>
+              </span>
+            );
+          })}
         </div>
       )}
 
@@ -170,31 +186,21 @@ export function MCPPicker({ value, onChange }: MCPPickerProps) {
                   >
                     <div className="min-w-0 flex-1">
                       <div className="font-medium truncate flex items-center gap-2">
-                        {srv.id}
+                        {srv.name}
                         {isSelected && (
                           <span className="text-xs text-primary">Selected</span>
                         )}
                       </div>
                       <div className="text-xs text-muted-foreground truncate font-mono">
-                        {srv.command}
+                        {srv.transport === 1 ? srv.command : srv.url}
                       </div>
                     </div>
                     <div className="shrink-0">
                       <span
                         className={`inline-block h-2 w-2 rounded-full ${
-                          srv.status === "connected"
-                            ? "bg-green-500"
-                            : srv.status === "configured"
-                              ? "bg-yellow-500"
-                              : "bg-blue-500"
+                          srv.enabled ? "bg-green-500" : "bg-gray-400"
                         }`}
-                        title={
-                          srv.status === "connected"
-                            ? "Connected"
-                            : srv.status === "configured"
-                              ? "Configured locally"
-                              : "Available (well-known)"
-                        }
+                        title={srv.enabled ? "Enabled" : "Disabled"}
                       />
                     </div>
                   </button>

@@ -151,6 +151,11 @@ build_image() {
     return 1
   fi
   cp "$PROJECT_ROOT/bin/orchicon" "$CONTEXT/orchicon"
+  if [ ! -f "$PROJECT_ROOT/bin/orch" ]; then
+    log_err "bin/orch not found — run 'make build' first (builds both binaries)"
+    return 1
+  fi
+  cp "$PROJECT_ROOT/bin/orch" "$CONTEXT/orch"
 
   # BuildKit apt cache mounts when the host has buildx; otherwise build the
   # stock Dockerfile with the classic builder. Never hard-require buildx —
@@ -356,6 +361,30 @@ rebuild_image() {
   up_instance "$inst"
 }
 
+# path_is_mounted reports whether the container $1 already has the path $2 covered —
+# by an EXACT bind of that path, or by a bind of a PARENT directory (a project root).
+#
+# The parent case is what keeps a project root from causing a pointless container
+# re-create on every `up` and `sync-mounts`. With $HOME mounted as a root, a project
+# dir under it is fully visible to the plane, but the dir's OWN path never appears in
+# the container's mount Sources — so an exact-match test declares it missing, every
+# time, forever, and re-creates the container for nothing (killing in-flight runs on
+# a running instance).
+#
+# The "$src"/* case requires a following slash, so /home/me/projects-notes is not
+# treated as covered by a /home/me/projects mount.
+path_is_mounted() {
+  local name="$1" pm="$2" src
+  while IFS= read -r src; do
+    [ -z "$src" ] && continue
+    if [ "$src" = "$pm" ]; then return 0; fi
+    case "$pm" in
+      "$src"/*) return 0 ;;
+    esac
+  done < <(docker inspect --format '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' "$name" 2>/dev/null)
+  return 1
+}
+
 # sync_mounts compares the desired project mounts (plane-written manifest +
 # ORCHICON_PROJECT_MOUNTS) against the running container's mounts and
 # rebuilds if any are missing. Docker can't add bind mounts to a running
@@ -375,7 +404,7 @@ sync_mounts() {
   local missing=""
   for pm in $desired; do
     [ -z "$pm" ] && continue
-    if ! docker inspect --format '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' "$NAME" 2>/dev/null | grep -qx "$pm"; then
+    if ! path_is_mounted "$NAME" "$pm"; then
       missing="$missing $pm"
     fi
   done
@@ -407,7 +436,7 @@ up_instance() {
 
   log_dim "Starting $inst instance ($NAME)…"
 
-  # Scoped mounts — NOT the whole $HOME:
+  # Scoped mounts — deliberately narrow, ARMED OVER THE ROOTS ABOVE:
   #   1. opencode config (read-only) + data/auth (rw) so workers can use
   #      the user's real model providers.
   #   2. project dirs/files from the plane-written manifest on the data
@@ -417,6 +446,50 @@ up_instance() {
   #   3. any extra paths in ORCHICON_PROJECT_MOUNTS (space-separated).
   local MOUNTS=()
   local GH_TOKEN_ENV=""
+  # PROJECT ROOTS — WHERE ORCHICON MAY LOOK, DECLARED ONCE.
+  #
+  # THE PROBLEM THIS SOLVES: a bind mount cannot be added to a running container,
+  # so before this, every new project_dir needed a host-side mount change and a
+  # container re-create. "Create a project for the directory I am standing in"
+  # therefore did NOT work immediately — the plane could not see the path until
+  # someone ran `scripts/container.sh up` or `sync-mounts`, and nothing said so
+  # (in container mode validateProjectDir deliberately skips the existence check).
+  #
+  # A ROOT is mounted at its IDENTICAL host path, so every project_dir under it
+  # works the moment it is created, with no restart and no extra command. The
+  # operator grants reach by DECLARING A ROOT (once) and then CREATING A PROJECT
+  # (per directory) — which is the intended permission model.
+  #
+  # Default is $HOME, so "anywhere I would plausibly work" works out of the box.
+  # Override with a colon- or space-separated list to narrow it:
+  #   ORCHICON_PROJECT_ROOTS="/home/me/projects:/srv/work" ... up
+  # Set it to "none" to mount no roots at all (only the manifest + scoped mounts).
+  #
+  # THE MOUNTS BELOW THIS BLOCK COME AFTER THE ROOT ON PURPOSE, and the order is
+  # load-bearing rather than cosmetic: where two bind mounts target the same or a
+  # NESTED path, the more specific destination wins, so the read-only opencode
+  # mounts are re-asserted INSIDE the writable $HOME root and keep their `:ro`.
+  # Moving them above the root would SILENTLY make opencode's config and CLI
+  # writable by the plane — a quiet loss of a deliberate protection. Docker
+  # applies mounts in the order given; do not reorder without re-reading this.
+  local ROOTS_RAW="${ORCHICON_PROJECT_ROOTS:-$HOME}"
+  if [ "$ROOTS_RAW" = "none" ]; then
+    ROOTS_RAW=""
+  fi
+  # Both separators accepted: the env is documented with colons (PATH-like), but a
+  # space-separated value is what ORCHICON_PROJECT_MOUNTS already uses, and people
+  # will reach for either.
+  local roots
+  roots=$(echo "$ROOTS_RAW" | tr ':' ' ')
+  for root in $roots; do
+    [ -z "$root" ] && continue
+    if [ -d "$root" ]; then
+      MOUNTS+=("-v" "$root:$root")
+      log_dim "  project root mounted: $root"
+    else
+      log_warn "  project root not on host (skipping): $root"
+    fi
+  done
   [ -d "$HOME/.config/opencode" ] && MOUNTS+=("-v" "$HOME/.config/opencode:$HOME/.config/opencode:ro")
   [ -d "$HOME/.local/share/opencode" ] && MOUNTS+=("-v" "$HOME/.local/share/opencode:$HOME/.local/share/opencode")
   # Runtime CLI adapter install (read-only) — opencode today. Orchicon never
@@ -468,7 +541,7 @@ up_instance() {
   if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
     local missing=""
     for pm in $project_paths; do
-      if ! docker inspect --format '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' "$NAME" 2>/dev/null | grep -qx "$pm"; then
+      if ! path_is_mounted "$NAME" "$pm"; then
         missing="$missing $pm"
       fi
     done

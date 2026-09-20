@@ -59,6 +59,12 @@ const (
 	// AskOrchiconServiceSetConversationModeProcedure is the fully-qualified name of the
 	// AskOrchiconService's SetConversationMode RPC.
 	AskOrchiconServiceSetConversationModeProcedure = "/orchicon.api.v1.AskOrchiconService/SetConversationMode"
+	// AskOrchiconServiceSetConversationModelProcedure is the fully-qualified name of the
+	// AskOrchiconService's SetConversationModel RPC.
+	AskOrchiconServiceSetConversationModelProcedure = "/orchicon.api.v1.AskOrchiconService/SetConversationModel"
+	// AskOrchiconServiceSetConversationProjectProcedure is the fully-qualified name of the
+	// AskOrchiconService's SetConversationProject RPC.
+	AskOrchiconServiceSetConversationProjectProcedure = "/orchicon.api.v1.AskOrchiconService/SetConversationProject"
 	// AskOrchiconServiceListMessagesProcedure is the fully-qualified name of the AskOrchiconService's
 	// ListMessages RPC.
 	AskOrchiconServiceListMessagesProcedure = "/orchicon.api.v1.AskOrchiconService/ListMessages"
@@ -71,6 +77,12 @@ const (
 	// AskOrchiconServiceInterjectConversationTurnProcedure is the fully-qualified name of the
 	// AskOrchiconService's InterjectConversationTurn RPC.
 	AskOrchiconServiceInterjectConversationTurnProcedure = "/orchicon.api.v1.AskOrchiconService/InterjectConversationTurn"
+	// AskOrchiconServiceWatchTurnStreamProcedure is the fully-qualified name of the
+	// AskOrchiconService's WatchTurnStream RPC.
+	AskOrchiconServiceWatchTurnStreamProcedure = "/orchicon.api.v1.AskOrchiconService/WatchTurnStream"
+	// AskOrchiconServiceCompactConversationProcedure is the fully-qualified name of the
+	// AskOrchiconService's CompactConversation RPC.
+	AskOrchiconServiceCompactConversationProcedure = "/orchicon.api.v1.AskOrchiconService/CompactConversation"
 	// AskOrchiconServiceUploadAttachmentProcedure is the fully-qualified name of the
 	// AskOrchiconService's UploadAttachment RPC.
 	AskOrchiconServiceUploadAttachmentProcedure = "/orchicon.api.v1.AskOrchiconService/UploadAttachment"
@@ -100,10 +112,32 @@ type AskOrchiconServiceClient interface {
 	// UpdateConversationTitle updates the title of a conversation.
 	UpdateConversationTitle(context.Context, *connect.Request[v1.UpdateConversationTitleRequest]) (*connect.Response[v1.UpdateConversationTitleResponse], error)
 	// SetConversationMode switches the active persona for a conversation
-	// (brainstorm <-> orchicon). The change applies from the NEXT message on:
-	// the same opencode session persists and the per-turn system prompt swaps
-	// with no session change or serve restart.
+	// (Brainstorm | Iteration | Quick Work — see BuildSystemPrompt). The change
+	// applies from the NEXT message on: the same opencode session persists and
+	// the per-turn system prompt swaps with no session change or serve restart.
 	SetConversationMode(context.Context, *connect.Request[v1.SetConversationModeRequest]) (*connect.Response[v1.SetConversationModeResponse], error)
+	// SetConversationModel retargets a conversation's model_ref. The change
+	// applies from the NEXT message on; when it changes the ADAPTER segment the
+	// bridge is re-resolved for subsequent turns (the serve session is
+	// re-established against the new adapter). An EMPTY ref clears the override,
+	// so the conversation falls back to the tenant default
+	// (default_ask_orchicon_model). This is what lets an operator retarget an
+	// already-open chat instead of starting a new one.
+	SetConversationModel(context.Context, *connect.Request[v1.SetConversationModelRequest]) (*connect.Response[v1.SetConversationModelResponse], error)
+	// SetConversationProject places a conversation in a PROJECT (or clears it),
+	// which is the second, higher level of organization over conversations: the
+	// rail and the GUI sidebar list projects as the parent group, every project
+	// gets a folder whether or not it has conversations yet, and this rpc is what
+	// a drag-into-a-folder or a TUI /project resolves to.
+	//
+	// A project is the workspace the chat's work happens in — its project_dir is
+	// the directory the Ask file/shell suite is scoped to — so setting it also
+	// tells the agent WHICH project folder the chat belongs to, and that is what
+	// makes all three modes context-aware (see BuildSystemPrompt). An EMPTY
+	// project_id unassigns the conversation. An unknown id is rejected: a
+	// conversation can be unassigned, but it can never point at a project that
+	// does not exist.
+	SetConversationProject(context.Context, *connect.Request[v1.SetConversationProjectRequest]) (*connect.Response[v1.SetConversationProjectResponse], error)
 	// ListMessages returns messages for a conversation, ordered by
 	// created_at ascending (oldest first).
 	ListMessages(context.Context, *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error)
@@ -140,6 +174,36 @@ type AskOrchiconServiceClient interface {
 	// same ChatStreamResponse oneof as ChatStream (TextChunk / ReasoningChunk /
 	// TurnStarted); reusing the type is deliberate.
 	InterjectConversationTurn(context.Context, *connect.Request[v1.InterjectConversationTurnRequest]) (*connect.ServerStreamForClient[v1.ChatStreamResponse], error)
+	// WatchTurnStream re-attaches to an ACKED turn's live event stream after
+	// the ChatStream socket dropped (network blip, server restart,
+	// backgrounded tab) WITHOUT dispatching a new turn. The server looks up
+	// the conversation's in-flight turn in the turn registry and replays
+	// subsequent TextChunk / ReasoningChunk / Heartbeat events to this
+	// stream; if no turn is running (or the assistant message id does not
+	// match the running turn), it returns NotFound and the client falls back
+	// to the ListMessages completion poll. Stale generations never clobber:
+	// the client opens this under its dispatch-gen guards and ignores chunks
+	// once the poll resolves the turn.
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE — the watch stream is the
+	// same ChatStreamResponse oneof as ChatStream; reusing the type is
+	// deliberate.
+	WatchTurnStream(context.Context, *connect.Request[v1.WatchTurnStreamRequest]) (*connect.ServerStreamForClient[v1.ChatStreamResponse], error)
+	// CompactConversation compacts a conversation's accumulated context so a
+	// long-running session can keep going instead of failing on the model's
+	// context limit. Adapter-scoped: a session-FUL adapter summarizes its own
+	// session in place (opencode POST /session/{id}/summarize); a SESSIONLESS
+	// adapter (native) reduces the history it would re-send and replaces it
+	// with a summary plus the most recent turns.
+	//
+	// This is the escape hatch for a conversation already past its window: the
+	// sessionless transport re-sends the full history every turn, so once the
+	// history exceeds the window EVERY subsequent send fails and the
+	// conversation is permanently wedged. Compaction is the only way back.
+	//
+	// reason is recorded for the audit trail and the transcript marker:
+	// "manual" (a user asked), "pressure" (the proactive window gate fired),
+	// or "reactive" (a provider context-limit error was caught).
+	CompactConversation(context.Context, *connect.Request[v1.CompactConversationRequest]) (*connect.Response[v1.CompactConversationResponse], error)
 	// UploadAttachment uploads a file attachment for use in a message.
 	// Returns a URL that can be referenced in subsequent ChatStream calls.
 	UploadAttachment(context.Context, *connect.Request[v1.UploadAttachmentRequest]) (*connect.Response[v1.UploadAttachmentResponse], error)
@@ -200,6 +264,18 @@ func NewAskOrchiconServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationMode")),
 			connect.WithClientOptions(opts...),
 		),
+		setConversationModel: connect.NewClient[v1.SetConversationModelRequest, v1.SetConversationModelResponse](
+			httpClient,
+			baseURL+AskOrchiconServiceSetConversationModelProcedure,
+			connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationModel")),
+			connect.WithClientOptions(opts...),
+		),
+		setConversationProject: connect.NewClient[v1.SetConversationProjectRequest, v1.SetConversationProjectResponse](
+			httpClient,
+			baseURL+AskOrchiconServiceSetConversationProjectProcedure,
+			connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationProject")),
+			connect.WithClientOptions(opts...),
+		),
 		listMessages: connect.NewClient[v1.ListMessagesRequest, v1.ListMessagesResponse](
 			httpClient,
 			baseURL+AskOrchiconServiceListMessagesProcedure,
@@ -222,6 +298,18 @@ func NewAskOrchiconServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			httpClient,
 			baseURL+AskOrchiconServiceInterjectConversationTurnProcedure,
 			connect.WithSchema(askOrchiconServiceMethods.ByName("InterjectConversationTurn")),
+			connect.WithClientOptions(opts...),
+		),
+		watchTurnStream: connect.NewClient[v1.WatchTurnStreamRequest, v1.ChatStreamResponse](
+			httpClient,
+			baseURL+AskOrchiconServiceWatchTurnStreamProcedure,
+			connect.WithSchema(askOrchiconServiceMethods.ByName("WatchTurnStream")),
+			connect.WithClientOptions(opts...),
+		),
+		compactConversation: connect.NewClient[v1.CompactConversationRequest, v1.CompactConversationResponse](
+			httpClient,
+			baseURL+AskOrchiconServiceCompactConversationProcedure,
+			connect.WithSchema(askOrchiconServiceMethods.ByName("CompactConversation")),
 			connect.WithClientOptions(opts...),
 		),
 		uploadAttachment: connect.NewClient[v1.UploadAttachmentRequest, v1.UploadAttachmentResponse](
@@ -259,10 +347,14 @@ type askOrchiconServiceClient struct {
 	deleteConversation        *connect.Client[v1.DeleteConversationRequest, v1.DeleteConversationResponse]
 	updateConversationTitle   *connect.Client[v1.UpdateConversationTitleRequest, v1.UpdateConversationTitleResponse]
 	setConversationMode       *connect.Client[v1.SetConversationModeRequest, v1.SetConversationModeResponse]
+	setConversationModel      *connect.Client[v1.SetConversationModelRequest, v1.SetConversationModelResponse]
+	setConversationProject    *connect.Client[v1.SetConversationProjectRequest, v1.SetConversationProjectResponse]
 	listMessages              *connect.Client[v1.ListMessagesRequest, v1.ListMessagesResponse]
 	chatStream                *connect.Client[v1.ChatStreamRequest, v1.ChatStreamResponse]
 	abortConversationTurn     *connect.Client[v1.AbortConversationTurnRequest, v1.AbortConversationTurnResponse]
 	interjectConversationTurn *connect.Client[v1.InterjectConversationTurnRequest, v1.ChatStreamResponse]
+	watchTurnStream           *connect.Client[v1.WatchTurnStreamRequest, v1.ChatStreamResponse]
+	compactConversation       *connect.Client[v1.CompactConversationRequest, v1.CompactConversationResponse]
 	uploadAttachment          *connect.Client[v1.UploadAttachmentRequest, v1.UploadAttachmentResponse]
 	getAgentConfig            *connect.Client[v1.GetAgentConfigRequest, v1.GetAgentConfigResponse]
 	updateAgentConfig         *connect.Client[v1.UpdateAgentConfigRequest, v1.UpdateAgentConfigResponse]
@@ -299,6 +391,16 @@ func (c *askOrchiconServiceClient) SetConversationMode(ctx context.Context, req 
 	return c.setConversationMode.CallUnary(ctx, req)
 }
 
+// SetConversationModel calls orchicon.api.v1.AskOrchiconService.SetConversationModel.
+func (c *askOrchiconServiceClient) SetConversationModel(ctx context.Context, req *connect.Request[v1.SetConversationModelRequest]) (*connect.Response[v1.SetConversationModelResponse], error) {
+	return c.setConversationModel.CallUnary(ctx, req)
+}
+
+// SetConversationProject calls orchicon.api.v1.AskOrchiconService.SetConversationProject.
+func (c *askOrchiconServiceClient) SetConversationProject(ctx context.Context, req *connect.Request[v1.SetConversationProjectRequest]) (*connect.Response[v1.SetConversationProjectResponse], error) {
+	return c.setConversationProject.CallUnary(ctx, req)
+}
+
 // ListMessages calls orchicon.api.v1.AskOrchiconService.ListMessages.
 func (c *askOrchiconServiceClient) ListMessages(ctx context.Context, req *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error) {
 	return c.listMessages.CallUnary(ctx, req)
@@ -317,6 +419,16 @@ func (c *askOrchiconServiceClient) AbortConversationTurn(ctx context.Context, re
 // InterjectConversationTurn calls orchicon.api.v1.AskOrchiconService.InterjectConversationTurn.
 func (c *askOrchiconServiceClient) InterjectConversationTurn(ctx context.Context, req *connect.Request[v1.InterjectConversationTurnRequest]) (*connect.ServerStreamForClient[v1.ChatStreamResponse], error) {
 	return c.interjectConversationTurn.CallServerStream(ctx, req)
+}
+
+// WatchTurnStream calls orchicon.api.v1.AskOrchiconService.WatchTurnStream.
+func (c *askOrchiconServiceClient) WatchTurnStream(ctx context.Context, req *connect.Request[v1.WatchTurnStreamRequest]) (*connect.ServerStreamForClient[v1.ChatStreamResponse], error) {
+	return c.watchTurnStream.CallServerStream(ctx, req)
+}
+
+// CompactConversation calls orchicon.api.v1.AskOrchiconService.CompactConversation.
+func (c *askOrchiconServiceClient) CompactConversation(ctx context.Context, req *connect.Request[v1.CompactConversationRequest]) (*connect.Response[v1.CompactConversationResponse], error) {
+	return c.compactConversation.CallUnary(ctx, req)
 }
 
 // UploadAttachment calls orchicon.api.v1.AskOrchiconService.UploadAttachment.
@@ -354,10 +466,32 @@ type AskOrchiconServiceHandler interface {
 	// UpdateConversationTitle updates the title of a conversation.
 	UpdateConversationTitle(context.Context, *connect.Request[v1.UpdateConversationTitleRequest]) (*connect.Response[v1.UpdateConversationTitleResponse], error)
 	// SetConversationMode switches the active persona for a conversation
-	// (brainstorm <-> orchicon). The change applies from the NEXT message on:
-	// the same opencode session persists and the per-turn system prompt swaps
-	// with no session change or serve restart.
+	// (Brainstorm | Iteration | Quick Work — see BuildSystemPrompt). The change
+	// applies from the NEXT message on: the same opencode session persists and
+	// the per-turn system prompt swaps with no session change or serve restart.
 	SetConversationMode(context.Context, *connect.Request[v1.SetConversationModeRequest]) (*connect.Response[v1.SetConversationModeResponse], error)
+	// SetConversationModel retargets a conversation's model_ref. The change
+	// applies from the NEXT message on; when it changes the ADAPTER segment the
+	// bridge is re-resolved for subsequent turns (the serve session is
+	// re-established against the new adapter). An EMPTY ref clears the override,
+	// so the conversation falls back to the tenant default
+	// (default_ask_orchicon_model). This is what lets an operator retarget an
+	// already-open chat instead of starting a new one.
+	SetConversationModel(context.Context, *connect.Request[v1.SetConversationModelRequest]) (*connect.Response[v1.SetConversationModelResponse], error)
+	// SetConversationProject places a conversation in a PROJECT (or clears it),
+	// which is the second, higher level of organization over conversations: the
+	// rail and the GUI sidebar list projects as the parent group, every project
+	// gets a folder whether or not it has conversations yet, and this rpc is what
+	// a drag-into-a-folder or a TUI /project resolves to.
+	//
+	// A project is the workspace the chat's work happens in — its project_dir is
+	// the directory the Ask file/shell suite is scoped to — so setting it also
+	// tells the agent WHICH project folder the chat belongs to, and that is what
+	// makes all three modes context-aware (see BuildSystemPrompt). An EMPTY
+	// project_id unassigns the conversation. An unknown id is rejected: a
+	// conversation can be unassigned, but it can never point at a project that
+	// does not exist.
+	SetConversationProject(context.Context, *connect.Request[v1.SetConversationProjectRequest]) (*connect.Response[v1.SetConversationProjectResponse], error)
 	// ListMessages returns messages for a conversation, ordered by
 	// created_at ascending (oldest first).
 	ListMessages(context.Context, *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error)
@@ -394,6 +528,36 @@ type AskOrchiconServiceHandler interface {
 	// same ChatStreamResponse oneof as ChatStream (TextChunk / ReasoningChunk /
 	// TurnStarted); reusing the type is deliberate.
 	InterjectConversationTurn(context.Context, *connect.Request[v1.InterjectConversationTurnRequest], *connect.ServerStream[v1.ChatStreamResponse]) error
+	// WatchTurnStream re-attaches to an ACKED turn's live event stream after
+	// the ChatStream socket dropped (network blip, server restart,
+	// backgrounded tab) WITHOUT dispatching a new turn. The server looks up
+	// the conversation's in-flight turn in the turn registry and replays
+	// subsequent TextChunk / ReasoningChunk / Heartbeat events to this
+	// stream; if no turn is running (or the assistant message id does not
+	// match the running turn), it returns NotFound and the client falls back
+	// to the ListMessages completion poll. Stale generations never clobber:
+	// the client opens this under its dispatch-gen guards and ignores chunks
+	// once the poll resolves the turn.
+	// buf:lint:ignore RPC_REQUEST_RESPONSE_UNIQUE — the watch stream is the
+	// same ChatStreamResponse oneof as ChatStream; reusing the type is
+	// deliberate.
+	WatchTurnStream(context.Context, *connect.Request[v1.WatchTurnStreamRequest], *connect.ServerStream[v1.ChatStreamResponse]) error
+	// CompactConversation compacts a conversation's accumulated context so a
+	// long-running session can keep going instead of failing on the model's
+	// context limit. Adapter-scoped: a session-FUL adapter summarizes its own
+	// session in place (opencode POST /session/{id}/summarize); a SESSIONLESS
+	// adapter (native) reduces the history it would re-send and replaces it
+	// with a summary plus the most recent turns.
+	//
+	// This is the escape hatch for a conversation already past its window: the
+	// sessionless transport re-sends the full history every turn, so once the
+	// history exceeds the window EVERY subsequent send fails and the
+	// conversation is permanently wedged. Compaction is the only way back.
+	//
+	// reason is recorded for the audit trail and the transcript marker:
+	// "manual" (a user asked), "pressure" (the proactive window gate fired),
+	// or "reactive" (a provider context-limit error was caught).
+	CompactConversation(context.Context, *connect.Request[v1.CompactConversationRequest]) (*connect.Response[v1.CompactConversationResponse], error)
 	// UploadAttachment uploads a file attachment for use in a message.
 	// Returns a URL that can be referenced in subsequent ChatStream calls.
 	UploadAttachment(context.Context, *connect.Request[v1.UploadAttachmentRequest]) (*connect.Response[v1.UploadAttachmentResponse], error)
@@ -450,6 +614,18 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 		connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationMode")),
 		connect.WithHandlerOptions(opts...),
 	)
+	askOrchiconServiceSetConversationModelHandler := connect.NewUnaryHandler(
+		AskOrchiconServiceSetConversationModelProcedure,
+		svc.SetConversationModel,
+		connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationModel")),
+		connect.WithHandlerOptions(opts...),
+	)
+	askOrchiconServiceSetConversationProjectHandler := connect.NewUnaryHandler(
+		AskOrchiconServiceSetConversationProjectProcedure,
+		svc.SetConversationProject,
+		connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationProject")),
+		connect.WithHandlerOptions(opts...),
+	)
 	askOrchiconServiceListMessagesHandler := connect.NewUnaryHandler(
 		AskOrchiconServiceListMessagesProcedure,
 		svc.ListMessages,
@@ -472,6 +648,18 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 		AskOrchiconServiceInterjectConversationTurnProcedure,
 		svc.InterjectConversationTurn,
 		connect.WithSchema(askOrchiconServiceMethods.ByName("InterjectConversationTurn")),
+		connect.WithHandlerOptions(opts...),
+	)
+	askOrchiconServiceWatchTurnStreamHandler := connect.NewServerStreamHandler(
+		AskOrchiconServiceWatchTurnStreamProcedure,
+		svc.WatchTurnStream,
+		connect.WithSchema(askOrchiconServiceMethods.ByName("WatchTurnStream")),
+		connect.WithHandlerOptions(opts...),
+	)
+	askOrchiconServiceCompactConversationHandler := connect.NewUnaryHandler(
+		AskOrchiconServiceCompactConversationProcedure,
+		svc.CompactConversation,
+		connect.WithSchema(askOrchiconServiceMethods.ByName("CompactConversation")),
 		connect.WithHandlerOptions(opts...),
 	)
 	askOrchiconServiceUploadAttachmentHandler := connect.NewUnaryHandler(
@@ -512,6 +700,10 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 			askOrchiconServiceUpdateConversationTitleHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceSetConversationModeProcedure:
 			askOrchiconServiceSetConversationModeHandler.ServeHTTP(w, r)
+		case AskOrchiconServiceSetConversationModelProcedure:
+			askOrchiconServiceSetConversationModelHandler.ServeHTTP(w, r)
+		case AskOrchiconServiceSetConversationProjectProcedure:
+			askOrchiconServiceSetConversationProjectHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceListMessagesProcedure:
 			askOrchiconServiceListMessagesHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceChatStreamProcedure:
@@ -520,6 +712,10 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 			askOrchiconServiceAbortConversationTurnHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceInterjectConversationTurnProcedure:
 			askOrchiconServiceInterjectConversationTurnHandler.ServeHTTP(w, r)
+		case AskOrchiconServiceWatchTurnStreamProcedure:
+			askOrchiconServiceWatchTurnStreamHandler.ServeHTTP(w, r)
+		case AskOrchiconServiceCompactConversationProcedure:
+			askOrchiconServiceCompactConversationHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceUploadAttachmentProcedure:
 			askOrchiconServiceUploadAttachmentHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceGetAgentConfigProcedure:
@@ -561,6 +757,14 @@ func (UnimplementedAskOrchiconServiceHandler) SetConversationMode(context.Contex
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.SetConversationMode is not implemented"))
 }
 
+func (UnimplementedAskOrchiconServiceHandler) SetConversationModel(context.Context, *connect.Request[v1.SetConversationModelRequest]) (*connect.Response[v1.SetConversationModelResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.SetConversationModel is not implemented"))
+}
+
+func (UnimplementedAskOrchiconServiceHandler) SetConversationProject(context.Context, *connect.Request[v1.SetConversationProjectRequest]) (*connect.Response[v1.SetConversationProjectResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.SetConversationProject is not implemented"))
+}
+
 func (UnimplementedAskOrchiconServiceHandler) ListMessages(context.Context, *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.ListMessages is not implemented"))
 }
@@ -575,6 +779,14 @@ func (UnimplementedAskOrchiconServiceHandler) AbortConversationTurn(context.Cont
 
 func (UnimplementedAskOrchiconServiceHandler) InterjectConversationTurn(context.Context, *connect.Request[v1.InterjectConversationTurnRequest], *connect.ServerStream[v1.ChatStreamResponse]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.InterjectConversationTurn is not implemented"))
+}
+
+func (UnimplementedAskOrchiconServiceHandler) WatchTurnStream(context.Context, *connect.Request[v1.WatchTurnStreamRequest], *connect.ServerStream[v1.ChatStreamResponse]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.WatchTurnStream is not implemented"))
+}
+
+func (UnimplementedAskOrchiconServiceHandler) CompactConversation(context.Context, *connect.Request[v1.CompactConversationRequest]) (*connect.Response[v1.CompactConversationResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.CompactConversation is not implemented"))
 }
 
 func (UnimplementedAskOrchiconServiceHandler) UploadAttachment(context.Context, *connect.Request[v1.UploadAttachmentRequest]) (*connect.Response[v1.UploadAttachmentResponse], error) {

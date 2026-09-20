@@ -177,13 +177,32 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Required: []string{"project_id", "path"},
 		},
 
+		// --- Session (this conversation) ---
+		{
+			Name:        "get_current_conversation",
+			Description: "Read THIS conversation's own session facts: its conversation id, its mode, and the model_ref it resolves to with the source of that value (conversation = the conversation carries its own ref; tenant_default = it falls back to the tenant's DefaultAskOrchiconModel). Use it to name the current model in full (adapter/provider/model) before asking the user whether to reuse it for a dispatch.",
+			Mutating:    false,
+			Fn:          toolGetCurrentConversation,
+			Properties:  map[string]PropertySchema{},
+		},
+		{
+			Name:        "list_project_branches",
+			Description: "Report a project's git identity: whether project_dir is a git work tree, its current branch, its default branch, and the local + origin branch names. Read-only and safe (fixed argv, no shell, cwd pinned to the project dir). Use it to OFFER real branches when confirming which branch a run should clone off and which branch its PR should merge into.",
+			Mutating:    false,
+			Fn:          toolListProjectBranches,
+			Properties: map[string]PropertySchema{
+				"project_id": {Type: "string", Description: "Project ID"},
+			},
+			Required: []string{"project_id"},
+		},
+
 		// --- Work Items ---
 		{
 			Name:        "list_work_items",
-			Description: "List work items for a project or tenant. Supports filter by status, kind, search. Returns a bounded, compact list ({count, truncated, note, items}) — branch to get_work_item for full detail, or pass next_page_token to page through the rest.",
+			Description: "List work items for a project or tenant. Supports filter by status, kind, search. Returns a bounded, compact list ({count, truncated, note, items}) — branch to get_work_item for full detail, or pass next_page_token to page through the rest. Ephemeral (Quick Work) items are EXCLUDED by default: they are machine-managed and transient, and listing one puts it in front of the operator. Set include_ephemeral=true only to inspect items you created in ephemeral mode.",
 			Mutating:    false,
 			Fn:          toolListWorkItems,
-			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "status": {Type: "string", Description: "Optional status filter"}, "kind": {Type: "string", Description: "Optional kind filter"}, "search": {Type: "string", Description: "Free-text search across title and description"}, "page_token": {Type: "string", Description: "Cursor for the next page — pass the previous response's next_page_token (default: first page)"}},
+			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "status": {Type: "string", Description: "Optional status filter"}, "kind": {Type: "string", Description: "Optional kind filter"}, "search": {Type: "string", Description: "Free-text search across title and description"}, "page_token": {Type: "string", Description: "Cursor for the next page — pass the previous response's next_page_token (default: first page)"}, "include_ephemeral": {Type: "boolean", Description: "Include machine-managed ephemeral (Quick Work) items. Default false — they are hidden from every human view."}},
 		},
 		{
 			Name:        "get_work_item",
@@ -206,7 +225,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Description: "List the Idea Cloud (feature 5.1): idea-state work items with their automation provenance (spawned_by + spawned_by_run_id) and a read-time SpawnedByTitle badge. Idea-state items are system-managed and excluded from the normal Work Items scope; they only become queryable there via promote_idea. Set state=\"rejected\" to read the REJECTED section instead: previously dismissed idea spawns (durable rejection history — also what the automation dedupe gate checks before spawning). Returns a bounded, compact list ({count, truncated, note, items}) — branch to get_work_item for full detail, or pass next_page_token to page through the rest.",
 			Mutating:    false,
 			Fn:          toolListIdeas,
-			Properties: map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "search": {Type: "string", Description: "Free-text search across title and description"}, "state": {Type: "string", Description: "Optional idea population: \"active\" (default) = idea-state items awaiting triage; \"rejected\" = previously dismissed idea spawns"}, "sort_by": {Type: "string", Description: "Optional sort field: title, priority, created_at"}, "sort_order": {Type: "string", Description: "Optional sort order: asc or desc"}, "page_token": {Type: "string", Description: "Optional pagination token (id > cursor)"}, "page_size": {Type: "number", Description: "Optional page size"}},
+			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "search": {Type: "string", Description: "Free-text search across title and description"}, "state": {Type: "string", Description: "Optional idea population: \"active\" (default) = idea-state items awaiting triage; \"rejected\" = previously dismissed idea spawns"}, "sort_by": {Type: "string", Description: "Optional sort field: title, priority, created_at"}, "sort_order": {Type: "string", Description: "Optional sort order: asc or desc"}, "page_token": {Type: "string", Description: "Optional pagination token (id > cursor)"}, "page_size": {Type: "number", Description: "Optional page size"}},
 		},
 		{
 			Name:        "promote_idea",
@@ -226,7 +245,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		},
 		{
 			Name:        "create_work_item",
-			Description: "Create a new work item within a project. Requires title and project_id. Optionally accepts kind, parent_id, description, acceptance_criteria, priority, budgets, context_window, workflow_id, scheduled_start_at, auto_start_workflow, runtime_image, context_files.",
+			Description: "Create a new work item within a project. Requires title and project_id. Optionally accepts kind, parent_id, description, acceptance_criteria, priority, budgets, context_window, workflow_id, scheduled_start_at, auto_start_workflow, runtime_image, context_files, ephemeral. An EPHEMERAL item is machine-managed and transient (Quick Work mode): it is hidden from every human work-item view and must be HARD-DELETED with hard_delete_work_item when the job ends — cancelling it would leave exactly the invisible record it exists to avoid. Ephemeral items are top-level only (no parent_id).",
 			Mutating:    true,
 			Fn:          toolCreateWorkItem,
 			Properties: map[string]PropertySchema{
@@ -237,13 +256,14 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"description":         {Type: "string", Description: "Detailed description (markdown)"},
 				"acceptance_criteria": {Type: "string", Description: "Acceptance criteria (markdown)"},
 				"priority":            {Type: "number", Description: "Priority (1-5)"},
-				"budgets":             {Type: "string", Description: "Budgets as a JSON object (e.g. {\"max_steps\": 10, \"max_cost_usd\": 5})"},
+				"budgets":             {Type: "string", Description: "Budgets as a JSON object (e.g. {\"tool_call_count\": 100, \"max_cost_usd\": 5})"},
 				"context_window":      {Type: "number", Description: "Context window size for the run"},
 				"workflow_id":         {Type: "string", Description: "Workflow template ID to bind this item to (must be a published workflow in the project to run)"},
 				"scheduled_start_at":  {Type: "string", Description: "Scheduled start time (ISO 8601 or 'N minutes from now'). Setting this marks the item scheduled."},
 				"auto_start_workflow": {Type: "boolean", Description: "Start the bound workflow immediately on save (opt-in, default false). Only applies when workflow_id is set and no scheduled_start_at is given; conflicts with a schedule."},
 				"runtime_image":       {Type: "string", Description: "Runtime container image tag; empty = base image"},
 				"context_files":       {Type: "array", Description: "Absolute file or directory paths to include as worker context (same model as project context files)"},
+				"ephemeral":           {Type: "boolean", Description: "Mark the item machine-managed and transient (Quick Work): hidden from every human view and meant to be hard-deleted when the job ends. Default false. Top-level only — rejected with a parent_id."},
 			},
 			Required: []string{"title", "project_id"},
 		},
@@ -260,7 +280,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"acceptance_review":   {Type: "string", Description: "New acceptance review (markdown); empty string clears it (auto-populated by the WorkflowReconciler when a bound run completes)"},
 				"status":              {Type: "string", Description: "New status (pending, scheduled, ready, assigned, running, checkpointing, succeeded, failed, cancelled, recovering)"},
 				"priority":            {Type: "number", Description: "New priority (1-5)"},
-				"budgets":             {Type: "string", Description: "Budgets as a JSON object (e.g. {\"max_steps\": 10, \"max_cost_usd\": 5})"},
+				"budgets":             {Type: "string", Description: "Budgets as a JSON object (e.g. {\"tool_call_count\": 100, \"max_cost_usd\": 5})"},
 				"context_window":      {Type: "number", Description: "Context window size for the run"},
 				"project_id":          {Type: "string", Description: "Reassign to a different project (target must be active)"},
 				"workflow_id":         {Type: "string", Description: "Bind/unbind to a workflow template ID (empty string clears the binding)"},
@@ -323,11 +343,26 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		},
 		{
 			Name:        "delete_work_item",
-			Description: "Soft-delete a work item by ID (status → cancelled). This is reversible via update_work_item.",
+			Description: "Soft-delete a work item by ID (status → cancelled). This is reversible via update_work_item. For an IRREVERSIBLE removal of the row itself, use hard_delete_work_item.",
 			Mutating:    true,
 			Fn:          toolDeleteWorkItem,
 			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Work item ID"}},
 			Required:    []string{"id"},
+		},
+		{
+			// THE HARD DELETE the operator asked for. It is a SEPARATE tool rather than a flag on
+			// delete_work_item, because the two differ in kind and not in degree: one is a reversible status
+			// change and the other destroys the row. An agent that has to name the destructive one has read
+			// the name, which is the only warning a function signature can give.
+			Name: "hard_delete_work_item",
+			Description: "PERMANENTLY remove a work item and its dependencies. IRREVERSIBLE — the row is gone, " +
+				"not cancelled, and cannot be restored. Refused for an item with children (delete them first) " +
+				"and for an idea (dismiss it instead). Use this to clean up work an agent created for one job; " +
+				"use delete_work_item to cancel something an operator may want back.",
+			Mutating:   true,
+			Fn:         toolHardDeleteWorkItem,
+			Properties: map[string]PropertySchema{"id": {Type: "string", Description: "Work item ID"}},
+			Required:   []string{"id"},
 		},
 		{
 			Name:        "archive_work_item",
@@ -349,9 +384,12 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		// --- Workers ---
 		{
 			Name:        "list_workers",
-			Description: "List all workers for the current tenant.",
+			Description: "List all workers for the current tenant. Ephemeral (Quick Work) workers are EXCLUDED by default: they are machine-managed transients, and listing one puts it in front of the operator. Set include_ephemeral=true only to inspect workers you created in ephemeral mode.",
 			Mutating:    false,
 			Fn:          toolListWorkers,
+			Properties: map[string]PropertySchema{
+				"include_ephemeral": {Type: "boolean", Description: "Include machine-managed ephemeral (Quick Work) workers. Default false — they are hidden from every human view."},
+			},
 		},
 		{
 			Name:        "get_worker",
@@ -363,14 +401,13 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		},
 		{
 			Name:        "create_worker",
-			Description: "Create a new worker AND its first draft version (v1) in one transaction — the version persists model_ref/runtime_ref and the prompt fields, so the worker is immediately editable and publishable from the UI. Returns the worker row plus version and version_id.",
+			Description: "Create a new worker AND its first draft version (v1) in one transaction — the version persists model_ref and the prompt fields, so the worker is immediately editable and publishable from the UI. Returns the worker row plus version and version_id. An EPHEMERAL worker is machine-managed and transient (Quick Work mode): hidden from every human view and meant to be removed with delete_worker when the job ends. Pin it to the same model_ref as the agent creating it.",
 			Mutating:    true,
 			Fn:          toolCreateWorker,
 			Properties: map[string]PropertySchema{
 				"name":          {Type: "string", Description: "Worker name"},
 				"purpose":       {Type: "string", Description: "Worker purpose"},
-				"runtime_ref":   {Type: "string", Description: "Runtime reference (e.g. opencode)"},
-				"model_ref":     {Type: "string", Description: "Model reference (e.g. opencode-go/deepseek-v4-flash)"},
+				"model_ref":     {Type: "string", Description: "Model reference (adapter/provider/model, e.g. opencode/opencode-go/deepseek-v4-flash, or the legacy provider/model e.g. opencode-go/deepseek-v4-flash). Segment 1 selects and routes the per-worker adapter (ADR-0005): fresh selections default to the orchicon adapter (e.g. orchicon/commandcode/deepseek/deepseek-v4-flash); legacy 2-segment refs (provider/model) infer and keep dispatching to opencode — existing workers are never repointed. The ref's adapter segment is the single source of truth for dispatch; there is no separate runtime_ref."},
 				"description":   {Type: "string", Description: "Optional human-readable description"},
 				"version_note":  {Type: "string", Description: "Optional note describing draft version 1"},
 				"role":          {Type: "string", Description: "Optional role section for the composed system prompt"},
@@ -378,6 +415,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"behavior":      {Type: "string", Description: "Optional behavior section for the composed system prompt"},
 				"agents_md":     {Type: "string", Description: "Optional AGENTS.md section for the composed system prompt"},
 				"system_prompt": {Type: "string", Description: "Raw system prompt (used only when no role/skills/behavior/agents_md is provided)"},
+				"ephemeral":     {Type: "boolean", Description: "Mark the worker machine-managed and transient (Quick Work): hidden from every human view and meant to be removed with delete_worker when the job ends. Default false."},
 			},
 			Required: []string{"name"},
 		},
@@ -438,9 +476,12 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		// --- Workflows ---
 		{
 			Name:        "list_workflows",
-			Description: "List all workflows for the current tenant.",
+			Description: "List all workflows for the current tenant. Ephemeral (Quick Work) workflows are EXCLUDED by default: they are machine-managed transients, and listing one puts it in front of the operator. Set include_ephemeral=true only to inspect workflows you created in ephemeral mode.",
 			Mutating:    false,
 			Fn:          toolListWorkflows,
+			Properties: map[string]PropertySchema{
+				"include_ephemeral": {Type: "boolean", Description: "Include machine-managed ephemeral (Quick Work) workflows. Default false — they are hidden from every human view."},
+			},
 		},
 		{
 			Name:        "get_workflow",
@@ -463,7 +504,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		},
 		{
 			Name:        "create_workflow",
-			Description: "Create a new workflow AND its first draft version (v1) in one transaction, seeding steps when provided — the workflow is immediately editable and publishable from the UI. Type defaults to template (no project_id) or one_shot (with project_id). description seeds the version-1 note when version_note is empty. Returns the workflow row plus version and version_id.",
+			Description: "Create a new workflow AND its first draft version (v1) in one transaction, seeding steps when provided — the workflow is immediately editable and publishable from the UI. Type defaults to template (no project_id) or one_shot (with project_id). description seeds the version-1 note when version_note is empty. Returns the workflow row plus version and version_id. An EPHEMERAL workflow is machine-managed and transient (Quick Work mode): hidden from every human view and meant to be removed with delete_workflow when the job ends.",
 			Mutating:    true,
 			Fn:          toolCreateWorkflow,
 			Properties: map[string]PropertySchema{
@@ -476,8 +517,32 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"inputs":       {Type: "object", Description: "Optional JSON object of run inputs"},
 				"outputs":      {Type: "object", Description: "Optional JSON object of run outputs"},
 				"project_id":   {Type: "string", Description: "Optional project ID for a project-scoped one_shot workflow (project must be active)"},
+				"ephemeral":    {Type: "boolean", Description: "Mark the workflow machine-managed and transient (Quick Work): hidden from every human view and meant to be removed with delete_workflow when the job ends. Default false."},
 			},
 			Required: []string{"name"},
+		},
+		{
+			Name:        "delete_workflow",
+			Description: "PERMANENTLY delete a workflow by ID, together with ALL of its run history: its runs, its step runs, its versions and its edit locks. This is IRREVERSIBLE and the deleted rows CANNOT BE RESTORED. Use it to clean up an ephemeral (Quick Work) workflow when its job ends — cancelling is not available for workflows, so this is the only removal. Guarded: a NON-ephemeral workflow that has RUNS is refused unless confirm_delete_runs=true, because the agent cannot see how much history it is about to destroy.",
+			Mutating:    true,
+			Fn:          toolDeleteWorkflow,
+			Properties: map[string]PropertySchema{
+				"id":                  {Type: "string", Description: "Workflow ID"},
+				"confirm_delete_runs": {Type: "boolean", Description: "Required to delete a non-ephemeral workflow that has run history. Ignored for ephemeral (Quick Work) workflows."},
+			},
+			Required: []string{"id"},
+		},
+
+		{
+			Name:        "publish_workflow_version",
+			Description: "Publish a draft workflow version, making it immutable and RUNNABLE. Provide workflow_id and optionally the version number (defaults to the latest draft). A workflow created by create_workflow starts as a DRAFT and cannot be bound or run until it is published — publish it before creating the work item that uses it.",
+			Mutating:    true,
+			Fn:          toolPublishWorkflowVersion,
+			Properties: map[string]PropertySchema{
+				"workflow_id": {Type: "string", Description: "Workflow ID"},
+				"version":     {Type: "number", Description: "Optional version number to publish (defaults to the latest draft)"},
+			},
+			Required: []string{"workflow_id"},
 		},
 
 		// --- Workflow Runs ---
@@ -701,8 +766,8 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Fn: func(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 				return toolCreateSecret(ctx, pool, secretsKEK, args)
 			},
-			Properties:  map[string]PropertySchema{"name": {Type: "string", Description: "Secret name (e.g. TAVILY_API_KEY)"}, "value": {Type: "string", Description: "Secret value (plaintext, encrypted at rest)"}, "description": {Type: "string", Description: "Optional description"}},
-			Required:    []string{"name", "value"},
+			Properties: map[string]PropertySchema{"name": {Type: "string", Description: "Secret name (e.g. TAVILY_API_KEY)"}, "value": {Type: "string", Description: "Secret value (plaintext, encrypted at rest)"}, "description": {Type: "string", Description: "Optional description"}},
+			Required:   []string{"name", "value"},
 		},
 		{
 			Name:        "update_secret",
@@ -711,8 +776,8 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Fn: func(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 				return toolUpdateSecret(ctx, pool, secretsKEK, args)
 			},
-			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Secret ID"}, "value": {Type: "string", Description: "New secret value"}, "description": {Type: "string", Description: "New description"}},
-			Required:    []string{"id"},
+			Properties: map[string]PropertySchema{"id": {Type: "string", Description: "Secret ID"}, "value": {Type: "string", Description: "New secret value"}, "description": {Type: "string", Description: "New description"}},
+			Required:   []string{"id"},
 		},
 		{
 			Name:        "delete_secret",
@@ -721,8 +786,8 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Fn: func(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 				return toolDeleteSecret(ctx, pool, secretsKEK, args)
 			},
-			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Secret ID"}},
-			Required:    []string{"id"},
+			Properties: map[string]PropertySchema{"id": {Type: "string", Description: "Secret ID"}},
+			Required:   []string{"id"},
 		},
 
 		// --- Settings ---
@@ -748,10 +813,124 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"stall_nudge_max":                     {Type: "number", Description: "Max liveness probes sent before an advisory stall escalates to fatal (0 = leave unchanged)"},
 				"stall_nudge_reply_window_seconds":    {Type: "number", Description: "Seconds a probe is awaited before the execution is considered unresponsive (0 = leave unchanged)"},
 				"stall_nudge_cooldown_seconds":        {Type: "number", Description: "Seconds between consecutive probes (0 = leave unchanged)"},
+				"stall_tool_hang_seconds":             {Type: "number", Description: "Seconds a tool call with no events is allowed before it is cancelled natively and a course-correcting redirect is injected (0 = leave unchanged; negative = disabled)"},
 				"default_budget_overrides":            {Type: "string", Description: "JSON object of default execution-budget gates (e.g. {\"tokens\":500000,\"cost_usd\":0.5,\"wall_clock_seconds\":7200,\"tool_call_count\":0,\"compact_max_turns\":12}). Empty string = leave unchanged."},
 				"execution_reap_grace_seconds":        {Type: "number", Description: "Liveness reaper grace before a stuck running execution is reaped (0 = leave unchanged)"},
 				"execution_reap_consecutive_failures": {Type: "number", Description: "Liveness probe failures before the reaper acts (0 = leave unchanged)"},
 			},
+		},
+
+		// --- MCP servers (adapter-settings MCP management) ---
+		{
+			Name:        "list_mcp_servers",
+			Description: "List MCP server entries for the current tenant (Settings → Adapters → MCP). Credentials never appear — env/header values are ${SECRET_NAME} references; has_secret_stored reports whether any required secret exists.",
+			Mutating:    false,
+			Fn:          toolListMCPServers,
+		},
+		{
+			Name:        "get_mcp_server",
+			Description: "Get a single MCP server entry by ID (Settings → Adapters → MCP). Credentials never appear — env/header values are ${SECRET_NAME} references.",
+			Mutating:    false,
+			Fn:          toolGetMCPServer,
+			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "MCP server ID"}},
+			Required:    []string{"id"},
+		},
+		{
+			Name:        "create_mcp_server",
+			Description: "Create an MCP server entry (tenant-scoped). Transport is 'stdio' (command + args + env) or 'streamable-http' (url + headers). Catalog entries are one-click added via list_mcp_catalog + create_mcp_server with catalog_slug.",
+			Mutating:    true,
+			Fn:          toolCreateMCPServer,
+			Properties: map[string]PropertySchema{
+				"name":         {Type: "string", Description: "Entry name (immutable after create)"},
+				"transport":    {Type: "string", Description: "'stdio' or 'streamable-http' (default stdio)"},
+				"command":      {Type: "string", Description: "stdio: executable"},
+				"args":         {Type: "array", Description: "stdio: argv array"},
+				"env":          {Type: "object", Description: "stdio: env map; values may be ${SECRET_NAME} references"},
+				"url":          {Type: "string", Description: "streamable-http: endpoint URL"},
+				"headers":      {Type: "object", Description: "streamable-http: headers; values may be ${SECRET_NAME} references"},
+				"enabled":      {Type: "boolean", Description: "Enabled flag (default false)"},
+				"catalog_slug": {Type: "string", Description: "Registry provenance slug, e.g. 'github'"},
+			},
+			Required: []string{"name"},
+		},
+		{
+			Name:        "update_mcp_server",
+			Description: "Update an MCP server entry (name is immutable). Partial update: pass only the fields to change; env/headers merge unless replace_env/replace_headers is true.",
+			Mutating:    true,
+			Fn:          toolUpdateMCPServer,
+			Properties: map[string]PropertySchema{
+				"id":              {Type: "string", Description: "MCP server ID"},
+				"transport":       {Type: "string", Description: "'stdio' or 'streamable-http'"},
+				"command":         {Type: "string", Description: "stdio: executable"},
+				"args":            {Type: "array", Description: "stdio: argv array"},
+				"replace_args":    {Type: "boolean", Description: "Replace args entirely (default merges nothing; args only replace when true)"},
+				"env":             {Type: "object", Description: "stdio: env map; values may be ${SECRET_NAME}"},
+				"replace_env":     {Type: "boolean", Description: "Replace env entirely instead of merging"},
+				"url":             {Type: "string", Description: "streamable-http: endpoint URL"},
+				"headers":         {Type: "object", Description: "streamable-http: headers"},
+				"replace_headers": {Type: "boolean", Description: "Replace headers entirely instead of merging"},
+				"enabled":         {Type: "boolean", Description: "Enabled flag"},
+				"catalog_slug":    {Type: "string", Description: "Registry provenance slug"},
+			},
+			Required: []string{"id"},
+		},
+		{
+			Name:        "delete_mcp_server",
+			Description: "Delete an MCP server entry. Blocked while any project/worker/tenant-default set still references it — clear references first.",
+			Mutating:    true,
+			Fn:          toolDeleteMCPServer,
+			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "MCP server ID"}},
+			Required:    []string{"id"},
+		},
+		{
+			Name:        "install_mcp_server",
+			Description: "Explicit-only auto-install for an MCP server entry (catalog entries with an installable command). Detects the runtime (npx/uvx/docker) on the host, runs the install, records the result on the entry. dry_run=true (or the ORCHICON_MCP_INSTALL_DRYRUN=1 env gate) resolves what WOULD run without executing or writing.",
+			Mutating:    true,
+			Fn:          toolInstallMCPServer,
+			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "MCP server ID"}, "dry_run": {Type: "boolean", Description: "Resolve the install plan without executing (default false)"}},
+			Required:    []string{"id"},
+		},
+		{
+			Name:        "list_mcp_catalog",
+			Description: "List the built-in curated registry of popular MCP servers (filesystem, github, gitlab, postgres, sqlite, fetch, playwright, sentry, slack, and more) with install specs (npx/uvx/docker/remote_url), default config, docs links, and required secrets. One-click add = read an entry, then create_mcp_server with catalog_slug.",
+			Mutating:    false,
+			Fn:          toolListMCPCatalog,
+		},
+		{
+			Name:        "set_mcp_server_secret",
+			Description: "Store a credential for an MCP server entry via the tenant secrets store (AES-256-GCM at rest, same pattern as provider tokens). The key must be a required secret or an existing env/header key of the entry. Values are never returned.",
+			Mutating:    true,
+			Fn: func(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+				return toolSetMCPServerSecret(ctx, pool, secretsKEK, args)
+			},
+			Properties: map[string]PropertySchema{"id": {Type: "string", Description: "MCP server ID"}, "name": {Type: "string", Description: "Env/header key or required secret name (e.g. GITHUB_PERSONAL_ACCESS_TOKEN)"}, "value": {Type: "string", Description: "Secret value (plaintext, encrypted at rest)"}},
+			Required:   []string{"id", "name", "value"},
+		},
+		{
+			Name:        "clear_mcp_server_secret",
+			Description: "Delete a stored credential for an MCP server entry from the tenant secrets store.",
+			Mutating:    true,
+			Fn: func(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+				return toolClearMCPServerSecret(ctx, pool, secretsKEK, args)
+			},
+			Properties: map[string]PropertySchema{"id": {Type: "string", Description: "MCP server ID"}, "name": {Type: "string", Description: "Env/header key or required secret name"}},
+			Required:   []string{"id", "name"},
+		},
+		{
+			Name:        "set_project_mcp_servers",
+			Description: "Replace a project's MCP server selection (references, never copies). Editing an entry updates every consumer automatically.",
+			Mutating:    true,
+			Fn:          toolSetProjectMCPServers,
+			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Project ID"}, "ids": {Type: "array", Description: "MCP server IDs to select (empty = project defaults fall through to tenant default)"}},
+			Required:    []string{"project_id", "ids"},
+		},
+		{
+			Name:        "set_tenant_default_mcp_servers",
+			Description: "Replace the tenant default MCP server set (used when a project/worker has no selection). References, never copies.",
+			Mutating:    true,
+			Fn:          toolSetTenantDefaultMCPServers,
+			Properties:  map[string]PropertySchema{"ids": {Type: "array", Description: "MCP server IDs to select as tenant default (empty = no default)"}},
+			Required:    []string{"ids"},
 		},
 
 		// --- Audit ---

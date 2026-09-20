@@ -70,6 +70,53 @@ func TestGetWorkflowRunCostsWorkItemName(t *testing.T) {
 	}
 }
 
+// TestSumUsageForExecution verifies the per-execution usage-record sum
+// that now backs every per-execution token/cost figure (the
+// worker_executions row columns are write-never). Guarded by
+// ORCHICON_TEST_DSN like the seed tests.
+func TestSumUsageForExecution(t *testing.T) {
+	dsn := os.Getenv("ORCHICON_TEST_DSN")
+	if dsn == "" {
+		t.Skip("ORCHICON_TEST_DSN not set; skipping DB-backed cost test")
+	}
+	ctx := context.Background()
+	pool, err := db.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open test pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	if err := migrate.Run(ctx, pool, assets.MigrationsFS, assets.MigrationsDir); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	const tenant = "tnt_dev"
+	const workflowID = "workflow-cost-test"
+	seedCostData(t, pool, tenant, workflowID)
+
+	ttx, err := pool.BeginTenantTx(ctx, tenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+
+	// exec-cost-1 has a single 150-token / $0.0015 record.
+	tokens, cost, err := db.SumUsageForExecution(ctx, ttx.Tx, tenant, "exec-cost-1")
+	if err != nil {
+		t.Fatalf("SumUsageForExecution: %v", err)
+	}
+	if tokens != 150 || cost != 0.0015 {
+		t.Errorf("exec-cost-1: got %d tokens $%f, want 150 $0.0015", tokens, cost)
+	}
+	// Unknown execution: zero sum, no error (consumers fall back cleanly).
+	tokens, cost, err = db.SumUsageForExecution(ctx, ttx.Tx, tenant, "exec-cost-missing")
+	if err != nil {
+		t.Fatalf("SumUsageForExecution missing: %v", err)
+	}
+	if tokens != 0 || cost != 0 {
+		t.Errorf("missing execution: got %d tokens $%f, want zeros", tokens, cost)
+	}
+}
+
 // seedCostData inserts the minimal row set the run-cost query joins
 // (projects → workflows → work_items → workflow_runs → worker_executions →
 // usage_records) for two bound runs and one one-shot run, all scoped to the
@@ -131,5 +178,112 @@ func seedCostData(t *testing.T, pool *db.Pool, tenant, workflowID string) {
 
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatalf("commit seed: %v", err)
+	}
+}
+
+// TestListUsageRecordsSessionFilter guards the Ask-session read-back path:
+// scope one conversation's usage by session_id, and round-trip the cache
+// counters a chat client needs for its cache-hit ratio.
+//
+// Guarded by ORCHICON_TEST_DSN like the other DB-backed tests:
+//
+//	export ORCHICON_TEST_DSN='postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable'
+//	go test ./internal/db/ -run TestListUsageRecordsSessionFilter -v
+//
+// It guards THREE contracts that a compile alone cannot:
+//  1. the WHERE clause filters on session_id (and ” means UNSCOPED, so
+//     worker-execution queries keep working);
+//  2. the SELECT/scan order carries session_id + the cache counters (the
+//     scan is positional, so a SELECT that lists a column the scanner does
+//     not read — or vice versa — fails here);
+//  3. tenant scoping still holds (a session filter never widens the tenant).
+func TestListUsageRecordsSessionFilter(t *testing.T) {
+	dsn := os.Getenv("ORCHICON_TEST_DSN")
+	if dsn == "" {
+		t.Skip("ORCHICON_TEST_DSN not set; skipping DB-backed usage test")
+	}
+	ctx := context.Background()
+	pool, err := db.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open test pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	if err := migrate.Run(ctx, pool, assets.MigrationsFS, assets.MigrationsDir); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	const tenant = "tnt_dev"
+	ttx, err := pool.BeginTenantTx(ctx, tenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+
+	insert := func(q string, args ...any) {
+		t.Helper()
+		if _, err := ttx.Exec(ctx, q, args...); err != nil {
+			t.Fatalf("seed usage row: %v", err)
+		}
+	}
+	insert(`DELETE FROM usage_records WHERE tenant_id = $1 AND id LIKE 'rec-sess-%'`, tenant)
+
+	// Two rows for conv-a (one with cache counters), one for conv-b, one
+	// worker row with NO session (the unscoped case).
+	insert(`INSERT INTO usage_records (id, tenant_id, session_id, provider, model,
+			prompt_tokens, completion_tokens, total_tokens, cache_read_tokens, cache_write_tokens,
+			cost_usd, occurred_at, created_at)
+		VALUES ('rec-sess-a1', $1, 'conv-a', 'anthropic', 'claude-sonnet-4', 1000, 200, 1200, 800, 100, 0.0100, now(), now())`, tenant)
+	insert(`INSERT INTO usage_records (id, tenant_id, session_id, provider, model,
+			prompt_tokens, completion_tokens, total_tokens, cache_read_tokens, cache_write_tokens,
+			cost_usd, occurred_at, created_at)
+		VALUES ('rec-sess-a2', $1, 'conv-a', 'anthropic', 'claude-sonnet-4', 500, 100, 600, 400, 0, 0.0050, now(), now())`, tenant)
+	insert(`INSERT INTO usage_records (id, tenant_id, session_id, provider, model,
+			prompt_tokens, completion_tokens, total_tokens, cost_usd, occurred_at, created_at)
+		VALUES ('rec-sess-b1', $1, 'conv-b', 'openai', 'gpt-4o', 10, 10, 20, 0.0001, now(), now())`, tenant)
+	insert(`INSERT INTO usage_records (id, tenant_id, session_id, provider, model,
+			prompt_tokens, completion_tokens, total_tokens, cost_usd, occurred_at, created_at)
+		VALUES ('rec-sess-worker', $1, '', 'openai', 'gpt-4o', 7, 7, 14, 0.0002, now(), now())`, tenant)
+
+	// Scoped to conv-a: exactly its two rows, with the cache counters intact.
+	scoped, err := db.ListUsageRecords(ctx, ttx.Tx, db.ListUsageRecordsFilter{
+		TenantID: tenant, SessionID: "conv-a", PageSize: 100,
+	})
+	if err != nil {
+		t.Fatalf("ListUsageRecords(session=conv-a): %v", err)
+	}
+	if len(scoped) != 2 {
+		t.Fatalf("session=conv-a returned %d rows, want 2", len(scoped))
+	}
+	var promptTotal, cacheReadTotal int64
+	for _, r := range scoped {
+		if r.SessionID != "conv-a" {
+			t.Errorf("row %s carries session_id %q, want conv-a", r.ID, r.SessionID)
+		}
+		promptTotal += r.PromptTokens
+		cacheReadTotal += r.CacheReadTokens
+	}
+	if promptTotal != 1500 || cacheReadTotal != 1200 {
+		t.Errorf("conv-a totals = %d prompt / %d cache-read, want 1500 / 1200", promptTotal, cacheReadTotal)
+	}
+
+	// Unscoped: every row for the tenant (worker rows included), so an empty
+	// SessionID never hides usage.
+	all, err := db.ListUsageRecords(ctx, ttx.Tx, db.ListUsageRecordsFilter{TenantID: tenant, PageSize: 200})
+	if err != nil {
+		t.Fatalf("ListUsageRecords(unscoped): %v", err)
+	}
+	if len(all) < 4 {
+		t.Fatalf("unscoped returned %d rows, want at least the 4 seeded", len(all))
+	}
+
+	// A session that has no usage returns an empty slice, not an error.
+	none, err := db.ListUsageRecords(ctx, ttx.Tx, db.ListUsageRecordsFilter{
+		TenantID: tenant, SessionID: "conv-missing", PageSize: 100,
+	})
+	if err != nil {
+		t.Fatalf("ListUsageRecords(session=conv-missing): %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("unknown session returned %d rows, want 0", len(none))
 	}
 }

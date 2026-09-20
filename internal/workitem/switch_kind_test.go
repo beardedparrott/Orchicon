@@ -790,8 +790,8 @@ func TestUpdateWorkItemScheduleFlipsStatusDB(t *testing.T) {
 	// 2. A sibling item with its own schedule is untouched (no bulk flip).
 	sibling := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, &epic.ID)
 	writeItem(t, pool, sibling.ID, sibling.Version, db.UpdateWorkItemFields{
-		Status:            strPtr(domain.WorkItemScheduled),
-		ScheduledStartAt:  &future,
+		Status:           strPtr(domain.WorkItemScheduled),
+		ScheduledStartAt: &future,
 	})
 	after := readItem(t, pool, sibling.ID)
 	if after.Status != domain.WorkItemScheduled {

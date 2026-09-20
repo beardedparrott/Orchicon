@@ -5,7 +5,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
@@ -40,6 +42,30 @@ func TestWorktreePruneLeavesCheckoutClean(t *testing.T) {
 	if !env.rec.isDirtyWorkTree(ctx, env.repo) {
 		t.Fatalf("expected main checkout to be dirty after stray+modify")
 	}
+	// Prune the run FIRST: the provisioned nested worktree makes
+	// `git clean -fd` skip `.orchicon-worktrees/` (git never deletes nested
+	// worktrees without -ff), so restoreWorkTree can only converge once the
+	// worktree is reaped. Mark completed + prune, then restore the stray.
+	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	run, err := db.GetWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID, run.Version, db.UpdateWorkflowRunFields{Status: strPtr(domain.WorkflowRunCompleted)}); err != nil {
+		t.Fatalf("mark completed: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
+		t.Fatalf("prune reconcile: %v", res.Error)
+	}
+	if _, err := os.Stat(env.expectedPath()); !os.IsNotExist(err) {
+		t.Fatalf("worktree dir still exists after prune")
+	}
 	// Clean it via restoreWorkTree and verify
 	if err := env.rec.restoreWorkTree(ctx, env.repo); err != nil {
 		t.Fatalf("restoreWorkTree: %v", err)
@@ -53,28 +79,8 @@ func TestWorktreePruneLeavesCheckoutClean(t *testing.T) {
 	// Restore original README already done by reset --hard
 	_ = orig
 
-	// Now prune the run and verify the worktree dir is gone and checkout still clean
-	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
-	if err != nil {
-		t.Fatalf("begin tx: %v", err)
-	}
-	run, err := db.GetWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID)
-	if err != nil {
-		t.Fatalf("get run: %v", err)
-	}
-	// Mark run completed so prune is allowed to run
-	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, env.run.ID, run.Version, db.UpdateWorkflowRunFields{Status: strPtr(domain.WorkflowRunCompleted)}); err != nil {
-		t.Fatalf("mark completed: %v", err)
-	}
-	if err := ttx.Commit(ctx); err != nil {
-		t.Fatalf("commit: %v", err)
-	}
-	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
-		t.Fatalf("prune reconcile: %v", res.Error)
-	}
-	if _, err := os.Stat(env.expectedPath()); !os.IsNotExist(err) {
-		t.Fatalf("worktree dir still exists after prune")
-	}
+	// The full provision+prune cycle leaves the main checkout clean: the
+	// worktree dir is gone and git status is empty.
 	if env.rec.isDirtyWorkTree(ctx, env.repo) {
 		t.Fatalf("checkout dirty after prune")
 	}
@@ -136,9 +142,17 @@ func TestSkippedRefusedWhenDirty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
+	// Release the tenant connection on EVERY exit path: an early t.Fatalf must
+	// not leak the tx, or the package-level pool.Close blocks forever and the
+	// whole scheduler suite times out (a failure that used to masquerade as a
+	// hang). Rollback after Commit is a no-op.
+	defer ttx.Rollback(ctx)
+	// UNIQUE slug: a fixed slug collides with residue in the SHARED tnt_dev
+	// tenant on any second run (CreateProject fails, the test aborts). The
+	// sibling fixture (newWorktreeTestEnv) already derives its slug this way.
 	proj, err := db.CreateProject(ctx, ttx.Tx, db.ProjectRow{
 		ID: db.NewID(), TenantID: approvalTestTenant,
-		Name: "Dirty Gate Project", Slug: "dirty-gate-" + stray[:4],
+		Name: "Dirty Gate Project", Slug: "dirty-gate-" + strings.ToLower(db.NewID()),
 		Status: "active", Goals: []byte("[]"),
 		ProjectDir: plain,
 	})
@@ -157,6 +171,9 @@ func TestSkippedRefusedWhenDirty(t *testing.T) {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
+	// Self-cleaning: see db.CleanupProject — the fixture tears its project down
+	// through the same cascade the product uses, so it cannot leave residue behind.
+	db.CleanupProject(t, env.pool, approvalTestTenant, proj.ID)
 	// Reconcile should provision (git-backed) and not be refused — dirty in main
 	// repo does not block provisioning of an isolated worktree (only in-place skipped
 	// runs are refused). So this should succeed and leave the main repo dirty (worktree
@@ -195,7 +212,7 @@ func TestOrphanDirSweep(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(artOrphan, ".git"), []byte("gitdir: "+env.repo+"/.git/worktrees/123\n"), 0o644); err != nil {
 		t.Fatalf("write artifact: %v", err)
 	}
-	env.rec.sweepOrphanDirs(ctx, approvalTestTenant)
+	env.rec.sweepOrphanDirs(ctx, approvalTestTenant, time.Now().Add(15*time.Second))
 	// Artifact orphan should be removed, empty orphan also removed (or left if non-empty non-artifact? Our sweep removes empty dirs)
 	// At least the artifact should be gone.
 	if _, err := os.Stat(artOrphan); !os.IsNotExist(err) {

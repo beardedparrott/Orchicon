@@ -16,12 +16,18 @@ import (
 	"github.com/beardedparrott/orchicon/internal/guard"
 )
 
-// HostServe is the always-on opencode serve for the in-process (local)
+// HostServe is the DEMAND-KEYED opencode serve for the in-process (local)
 // execution population: standalone task dispatches, follow-up executions,
 // and any execution that isn't bound to a workflow-run runtime container.
 // One serve per plane hosts a persistent session per execution; the
-// control plane supervises it (spawn on boot, health watchdog, restart
-// with backoff) so the session host is never down.
+// control plane supervises it (spawn on FIRST DEMAND, health watchdog,
+// restart with backoff) so the session host is never down once it exists.
+//
+// It is deliberately NOT started at plane boot: a plane whose adapter demand
+// set contains no opencode (the default for a fresh tenant — native-only
+// worker refs) is "opencode-free", and staying in that state must cost
+// nothing. EnsureStarted is the single demand-keyed entry point every
+// opencode consumer goes through.
 //
 // Isolation: the serve runs against a DEDICATED data dir
 // (~/.local/share/orchicon/opencode) seeded with the operator's model
@@ -45,6 +51,18 @@ type HostServe struct {
 	dataDir  string
 	home     string
 	started  bool
+
+	// startMu serializes LAZY start (EnsureStarted): without it two
+	// concurrent first-demands would each spawn a serve. It is held only
+	// across start + supervision arming, never by the serving paths
+	// themselves.
+	startMu sync.Mutex
+	// superviseCancel stops the supervision goroutine armed by
+	// EnsureStarted (Watch). Nil while the serve was never started lazily.
+	superviseCancel context.CancelFunc
+	// startErr is the most recent EnsureStarted failure, kept so a caller
+	// can surface the SAME loud reason the start produced (nil once up).
+	startErr error
 }
 
 // NewHostServe constructs the host-serve manager. dataDir is the
@@ -150,11 +168,98 @@ func (h *HostServe) Watch(ctx context.Context) {
 	}
 }
 
-// Stop kills the serve process and releases the guard.
+// EnsureStarted starts the host serve ON FIRST DEMAND and arms its
+// supervision, or returns immediately when it is already up. This is the
+// demand-keyed entry point that makes the plane lazy (AC 2): a plane whose
+// adapter demand set contains no opencode never calls it, so no serve is
+// spawned and no opencode binary is probed (AC 1).
+//
+// It is the operator kill-switch's fail-fast point too (AC 4): with
+// ORCHICON_OPCODE_SESSION_TRANSPORT=0 it returns the disabled error rather
+// than silently degrading, and the caller fails the dispatch with that
+// reason.
+//
+// Supervision is unchanged from the boot-spawned topology: Watch polls
+// /global/health and restarts the process with 5s→60s backoff, and the
+// dedicated data dir means sessions survive a restart (the client
+// re-attaches by session id).
+//
+// No idle shutdown ships (DC3): once started, the serve lives for the plane
+// lifetime under Watch. A demand-counted idle reap can be added later behind
+// this same seam without changing any caller.
+func (h *HostServe) EnsureStarted(ctx context.Context) error {
+	h.startMu.Lock()
+	defer h.startMu.Unlock()
+	if h.ready() {
+		return nil
+	}
+	if !h.Enabled() {
+		err := fmt.Errorf("host opencode serve disabled (ORCHICON_OPCODE_SESSION_TRANSPORT=0)")
+		h.mu.Lock()
+		h.startErr = err
+		h.mu.Unlock()
+		return err
+	}
+	if err := h.Start(ctx); err != nil {
+		h.markStartFailed(err)
+		h.log.Warn("host opencode serve lazy start failed", "error", err)
+		return err
+	}
+	sc, cancel := context.WithCancel(context.Background())
+	h.mu.Lock()
+	h.superviseCancel = cancel
+	h.startErr = nil
+	h.mu.Unlock()
+	go h.Watch(sc)
+	h.log.Info("host opencode serve started on demand", "url", h.URL())
+	return nil
+}
+
+// StartError returns the most recent lazy-start failure (nil once the
+// serve is up), so a caller can surface the same loud reason later.
+func (h *HostServe) StartError() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.startErr
+}
+
+// markStartFailed records a failed lazy start AND clears any PARTIAL start
+// state. A failed Start can leave startOnce having already armed `started`
+// and `client` for a process it then killed (a readiness timeout, or a
+// first-demand ctx cancelled during the readiness wait); if that survived,
+// ready() would report a DEAD serve as up, so the next demand would skip the
+// start entirely and no supervision would ever be armed. Resetting forces the
+// next demand to retry, and releases the execution guard the failed attempt
+// installed.
+func (h *HostServe) markStartFailed(err error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.guard != nil {
+		h.guard.Close()
+		h.guard = nil
+	}
+	h.started = false
+	h.client = nil
+	h.startErr = err
+}
+
+// ready reports whether a live serve + client are in place (h.mu-guarded).
+func (h *HostServe) ready() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.started && h.client != nil
+}
+
+// Stop kills the serve process, stops its supervision, and releases the
+// guard.
 func (h *HostServe) Stop() {
 	h.kill()
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.superviseCancel != nil {
+		h.superviseCancel()
+		h.superviseCancel = nil
+	}
 	if h.guard != nil {
 		h.guard.Close()
 		h.guard = nil
@@ -191,7 +296,7 @@ func (h *HostServe) kill() {
 func (h *HostServe) serveConfig() string {
 	cfg := BuildConfigContent(ConfigOptions{
 		AgentName:    workerAgent,
-		AgentPrompt:  workerAgentPrompt,
+		AgentPrompt:  sessionToolShell,
 		DefaultAgent: workerAgent,
 		ModelRef:     "",
 		TenantID:     serveTenantID(),

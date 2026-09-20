@@ -26,8 +26,8 @@ import (
 )
 
 const (
-	maxKindLen    = 63
-	maxVersionLen = 63
+	maxKindLen     = 63
+	maxVersionLen  = 63
 	maxEndpointLen = 500
 )
 
@@ -122,15 +122,15 @@ func mapDBError(err error) error {
 
 func rowToProto(a db.AdapterRow) *apiv1.RuntimeAdapter {
 	p := &apiv1.RuntimeAdapter{
-		Id:                    a.ID,
-		TenantId:               a.TenantID,
-		Kind:                  a.Kind,
-		Version:               a.Version,
-		Endpoint:              a.Endpoint,
-		Capabilities:          string(a.Capabilities),
-		Status:                a.Status,
+		Id:                      a.ID,
+		TenantId:                a.TenantID,
+		Kind:                    a.Kind,
+		Version:                 a.Version,
+		Endpoint:                a.Endpoint,
+		Capabilities:            string(a.Capabilities),
+		Status:                  a.Status,
 		MaxConcurrentExecutions: int32(a.MaxConcurrentExecutions),
-		RegisteredAt:          timestamppb.New(a.RegisteredAt),
+		RegisteredAt:            timestamppb.New(a.RegisteredAt),
 	}
 	if a.LastHeartbeatAt != nil {
 		p.LastHeartbeatAt = timestamppb.New(*a.LastHeartbeatAt)

@@ -126,3 +126,59 @@ func tLogger(t *testing.T) *slog.Logger {
 	t.Helper()
 	return slog.New(slog.NewTextHandler(os.Stderr, nil))
 }
+
+// TestServeStateMultiplexedPerAdapterKind is AC 2's supervisor half: serve
+// state is keyed by adapter kind, so one container can host a serve per
+// demanded kind while native steps (which take the one-shot exec path) hold no
+// serve slot at all. The opencode kind's reserved exec id and port are
+// UNCHANGED, so an opencode-only run behaves exactly as it does today (AC 5).
+func TestServeStateMultiplexedPerAdapterKind(t *testing.T) {
+	// OpenCode parity: the historical reserved id + port, including for an
+	// empty kind (which folds to the default kind).
+	if got := serveExecIDFor("opencode"); got != serveExecID {
+		t.Errorf("serveExecIDFor(opencode) = %q, want the historical %q", got, serveExecID)
+	}
+	if got := servePortFor("opencode"); got != defaultServePort {
+		t.Errorf("servePortFor(opencode) = %d, want %d", got, defaultServePort)
+	}
+	if got := serveExecIDFor(""); got != serveExecID {
+		t.Errorf("serveExecIDFor(\"\") = %q, want the opencode id %q", got, serveExecID)
+	}
+	if got := servePortFor(""); got != defaultServePort {
+		t.Errorf("servePortFor(\"\") = %d, want %d", got, defaultServePort)
+	}
+	// A kind with no bring-up path yet must not collide with opencode's id
+	// or port — the caller fails the handshake instead of binding 4096 twice.
+	if got := serveExecIDFor("claude"); got == serveExecID {
+		t.Error("a second kind must not reuse the opencode reserved exec id")
+	}
+	if got := servePortFor("claude"); got != 0 {
+		t.Errorf("servePortFor(claude) = %d, want 0 (no bring-up path yet)", got)
+	}
+
+	h := newChildRegistry(tLogger(t))
+	h.mu.Lock()
+	oc := h.serveStateLocked("opencode")
+	cl := h.serveStateLocked("claude")
+	oc.pw, oc.started = "oc-pw", true
+	oc.req = AgentRequest{Cmd: "serve", AdapterKind: "opencode"}
+	cl.pw = "cl-pw"
+	_, hasNative := h.serves["orchicon"]
+	h.mu.Unlock()
+
+	if oc == cl {
+		t.Fatal("each adapter kind must hold independent serve state")
+	}
+	if hasNative {
+		t.Error("the native kind must hold no in-container serve slot")
+	}
+	if oc.pw != "oc-pw" || cl.pw != "cl-pw" {
+		t.Fatalf("serve state is not independent: opencode=%q claude=%q", oc.pw, cl.pw)
+	}
+	if !oc.started || cl.started {
+		t.Errorf("started flags leaked across kinds: opencode=%v claude=%v", oc.started, cl.started)
+	}
+	if oc.req.AdapterKind != "opencode" {
+		t.Errorf("opencode serve state lost its request: %+v", oc.req)
+	}
+}

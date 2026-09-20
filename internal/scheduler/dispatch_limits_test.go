@@ -15,7 +15,6 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
@@ -49,6 +48,9 @@ func (s stubDispatchLimiter) InPlaceLimit(ctx context.Context, tx pgx.Tx, tenant
 func seedReadyTask(t *testing.T, pool *db.Pool, projectID string) db.WorkItemRow {
 	t.Helper()
 	ctx := context.Background()
+	// Workflow-first: a dispatchable item must be workflow-bound (standalone
+	// dispatch is retired), so seed a published workflow for the project.
+	wfID := seedPublishedWorkflow(t, pool, projectID)
 	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
 		t.Fatal(err)
@@ -59,6 +61,7 @@ func seedReadyTask(t *testing.T, pool *db.Pool, projectID string) db.WorkItemRow
 		Kind: domain.WorkItemKindTask, Title: "Dispatch Limit Task " + db.NewID()[:6],
 		Status:            domain.WorkItemReady,
 		AssignedWorkerRef: []byte(`{"worker_id":"w_se_devops_engineer","version":1}`),
+		WorkflowID:        &wfID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -79,15 +82,7 @@ func seedReadyAdapter(t *testing.T, pool *db.Pool) {
 		t.Fatal(err)
 	}
 	defer ttx.Rollback(ctx)
-	now := time.Now().UTC()
-	if _, err := db.CreateAdapter(ctx, ttx.Tx, db.AdapterRow{
-		ID: db.NewID(), TenantID: approvalTestTenant,
-		Kind: "opencode", Version: "test", Endpoint: "localhost:0",
-		Capabilities: []byte("{}"), Status: "ready",
-		MaxConcurrentExecutions: 64, LastHeartbeatAt: &now,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	_ = createTestAdapter(t, pool, "opencode", 64)
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +100,7 @@ func TestDispatchLimitGateHoldsSecondUntilSlotFrees(t *testing.T) {
 	first := seedReadyTask(t, env.pool, env.proj.ID)
 	second := seedReadyTask(t, env.pool, env.proj.ID)
 
-	rec := NewTaskReconciler(env.pool, slog.Default(), &manifestCaptureBridge{})
+	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
 	rec.SetDispatchLimiter(stubDispatchLimiter{effLimit: func(string) int { return 1 }})
 
 	if err := rec.reconcileOne(ctx, first.ID, ""); err != nil {
@@ -178,7 +173,7 @@ func TestDispatchLimitNoGateWithoutLimiter(t *testing.T) {
 	first := seedReadyTask(t, env.pool, env.proj.ID)
 	second := seedReadyTask(t, env.pool, env.proj.ID)
 
-	rec := NewTaskReconciler(env.pool, slog.Default(), &manifestCaptureBridge{})
+	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
 	if err := rec.reconcileOne(ctx, first.ID, ""); err != nil {
 		t.Fatalf("dispatch first: %v", err)
 	}
@@ -233,6 +228,9 @@ func TestWorktreeInPlaceSerialization(t *testing.T) {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatalf("commit fixture: %v", err)
 	}
+	// Self-cleaning: see db.CleanupProject — the fixture tears its project down
+	// through the same cascade the product uses, so it cannot leave residue behind.
+	db.CleanupProject(t, env.pool, approvalTestTenant, proj.ID)
 
 	env.rec.SetDispatchLimiter(stubDispatchLimiter{inPlaceLim: func(string) int { return 1 }})
 

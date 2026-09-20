@@ -85,6 +85,9 @@ func createStuckTestProject(t *testing.T, pool *db.Pool) db.ProjectRow {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// Self-cleaning: see db.CleanupProject — the fixture tears its project down
+	// through the same cascade the product uses, so it cannot leave residue behind.
+	db.CleanupProject(t, pool, approvalTestTenant, proj.ID)
 	return proj
 }
 

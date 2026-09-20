@@ -19,7 +19,7 @@ export function RuntimeImageFailureAlert({
   const [open, setOpen] = useState(false);
   const copy = async () => {
     const text = [reason, failedStep ? `Step: ${failedStep}` : "", logTail || buildLog || ""].filter(Boolean).join("\n");
-    try { await navigator.clipboard.writeText(text); } catch {}
+    try { await navigator.clipboard.writeText(text); } catch { /* clipboard unavailable (permissions/insecure context) — copy is best-effort */ }
   };
   if (!reason) return null;
   return (

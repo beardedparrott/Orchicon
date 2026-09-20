@@ -12,7 +12,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { GetCostRequest, GetCostResponse, GetUsageRequest, GetUsageResponse, GetWorkflowCostsRequest, GetWorkflowCostsResponse, ListOpenCodeMCPsRequest, ListOpenCodeMCPsResponse, ListOpenCodeModelsRequest, ListOpenCodeModelsResponse, ListProvidersRequest, ListProvidersResponse, StreamUsageEventsRequest, StreamUsageEventsResponse } from "./ai_gateway_service_pb.js";
+import { GetCostRequest, GetCostResponse, GetUsageRequest, GetUsageResponse, GetWorkflowCostsRequest, GetWorkflowCostsResponse, ListAdapterKindsRequest, ListAdapterKindsResponse, ListOpenCodeMCPsRequest, ListOpenCodeMCPsResponse, ListOpenCodeModelsRequest, ListOpenCodeModelsResponse, ListProvidersRequest, ListProvidersResponse, StreamUsageEventsRequest, StreamUsageEventsResponse } from "./ai_gateway_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -22,8 +22,23 @@ export const AIGatewayService = {
   typeName: "orchicon.api.v1.AIGatewayService",
   methods: {
     /**
+     * ListAdapterKinds returns the adapter kinds currently registered with
+     * the Dispatcher (e.g. "opencode"). New adapters appear automatically
+     * once registered — the picker's adapter bubble tier derives from this.
+     *
+     * @generated from rpc orchicon.api.v1.AIGatewayService.ListAdapterKinds
+     */
+    listAdapterKinds: {
+      name: "ListAdapterKinds",
+      I: ListAdapterKindsRequest,
+      O: ListAdapterKindsResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
      * ListProviders returns the LLM providers known to the gateway
-     * (docs/01 §2, docs/07 §3.10).
+     * (docs/01 §2, docs/07 §3.10). The optional adapter filter scopes the
+     * result to one adapter kind's provider set (built-in profiles ∪ tenant
+     * custom providers); empty = the full global list (current behavior).
      *
      * @generated from rpc orchicon.api.v1.AIGatewayService.ListProviders
      */

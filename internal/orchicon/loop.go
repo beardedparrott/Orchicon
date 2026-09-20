@@ -1,0 +1,1426 @@
+package orchicon
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"runtime/debug"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/beardedparrott/orchicon/internal/scheduler"
+)
+
+// Loop tuning constants (env-tunable, matching the opencode parity
+// surface; defaults below).
+const (
+	// toolParallelism bounds the tool execution worker pool.
+	toolParallelismDefault = 4
+	// textStreamingChunkSize / Delay match opencode's emitTextChunked
+	// pacing so the runtime session pane renders identically.
+	textStreamingChunkSize  = 40
+	textStreamingChunkDelay = 60 * time.Millisecond
+	// maxToolOutputBytes caps one tool result before it re-enters history
+	// (parity with the opencode adapter's context-amplifier guard).
+	maxToolOutputBytes = 128 * 1024 // 128 KiB ≈ ~30k tokens
+	// toolOutputTruncatedMarker marks a capped tool result.
+	toolOutputTruncatedMarker = "\n…[output truncated by Orchicon — use a targeted read/grep on the host or project disk for the full tail]\n"
+	// toolResultGrace is the bounded grace for finishing an in-flight tool
+	// call on cancellation (no new provider call after it).
+	toolResultGrace = 5 * time.Second
+)
+
+// lengthContinuationMaxTurns bounds the StopLength continuation budget:
+// two continuation turns (the same budget shape as the completion probe
+// in completion.go). A session that hits the output cap three times in a
+// row is pathological — it fails honestly instead of looping.
+const lengthContinuationMaxTurns = 2
+
+// loopEnv reads an env-tunable integer with a default.
+func loopEnvInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		var n int
+		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
+}
+
+func toolParallelism() int {
+	return loopEnvInt("ORCHICON_SESSION_TOOL_PARALLELISM", toolParallelismDefault)
+}
+
+// countToolUse records one emitted tool call for the budget ladder's
+// tool_call_count dimension. Counting happens in drain at emission
+// (opencode evtToolUse parity), never at execution: every path — native
+// fast-path, registry pool, concurrent workers — funnels through drain,
+// so this is the single counting point (mutex-guarded for safety).
+func (s *Session) countToolUse() {
+	s.noteMu.Lock()
+	s.toolUses++
+	s.noteMu.Unlock()
+}
+
+// maxOutputTokensEnv / defaultMaxOutputTokens tune the per-turn output cap
+// (the `length` stop-reason ceiling). The hardcoded 4096 previously cut
+// long-form workers mid-generation (the reported stop-reason "length"
+// failures). ORCHICON_SESSION_MAX_OUTPUT_TOKENS overrides; 0 → default.
+const defaultMaxOutputTokens = 32768
+
+func maxOutputTokens() int64 {
+	if v := os.Getenv("ORCHICON_SESSION_MAX_OUTPUT_TOKENS"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultMaxOutputTokens
+}
+
+// turnMaxTokens resolves the per-turn output cap: the model's KNOWN max
+// output (live ModelInfo.MaxOutput) when resolved, bounded above by the
+// env-tunable ceiling — never exceeding what the model reports.
+func (s *Session) turnMaxTokens(ctx context.Context) int64 {
+	cap := maxOutputTokens()
+	if m, _ := s.resolveModelInfo(ctx); m != nil && m.MaxOutput > 0 && m.MaxOutput < cap {
+		return m.MaxOutput
+	}
+	return cap
+}
+
+// Run executes the agent turn loop for the session and streams lifecycle
+// callbacks (OnStarted / OnText / OnToolCall / OnWrittenFiles / OnResult)
+// with full parity to the opencode adapter. It is the session boundary:
+// a `defer recover()` here contains any panic inside the loop (tool
+// execution, provider callback, transcript append) so the control-plane
+// process and sibling executions survive — the execution fails with the
+// panic captured and the transcript marked failed.
+//
+// Run is synchronous and blocks until the loop finishes (terminal
+// OnResult) or the context is cancelled. It is safe to call Run again on
+// the same session (resume): the transcript is reopened in append mode,
+// history is rebuilt by replay, and the loop continues.
+func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallbacks) (err error) {
+	if callbacks == nil {
+		return fmt.Errorf("session: nil callbacks")
+	}
+	// Per-run lifecycle reset (resume parity): Run is safe to call again
+	// on the same session, so each invocation gets a fresh terminal gate,
+	// a live done channel, and a clear probe latch — a resumed session
+	// must be able to deliver its OWN verdict and nudge watchdog.
+	s.terminalMu.Lock()
+	s.terminalFired = false
+	s.terminalMu.Unlock()
+	s.noteMu.Lock()
+	s.nudgePending = false
+	s.nudgeFinished = false
+	s.noteMu.Unlock()
+	s.doneCh = make(chan struct{})
+	// Open (or reopen) the crash-safe transcript FIRST so the panic
+	// boundary below can mark the transcript failed while it is still
+	// open. Defer order is LIFO: Close is registered BEFORE the recover
+	// defer, so on panic the recover runs first (marks failed + appends
+	// the panic error while the file is open), then Close runs.
+	if s.transcript == nil {
+		t, err := s.OpenTranscript()
+		if err != nil {
+			return fmt.Errorf("session: open transcript: %w", err)
+		}
+		s.transcript = t
+		defer func() {
+			if err != nil && s.transcript != nil {
+				_ = s.transcript.Append(TransState, map[string]any{"state": "failed"})
+			}
+			_ = s.transcript.Close()
+		}()
+	}
+	// Panic containment at the session boundary (AC: panic in the loop
+	// fails ONLY this execution — never the plane or siblings). Runs
+	// BEFORE the Close defer above (registered last → runs first). Must
+	// be registered before ANY transcript work (seeding, replay, header)
+	// so a panic there is contained too.
+	defer func() {
+		if r := recover(); r != nil {
+			msg := fmt.Sprintf("session panic recovered: %v\n%s", r, debug.Stack())
+			s.log.Error("session panic contained", "execution", s.id, "panic", r)
+			_ = s.markState(ctx, "failed")
+			if s.transcript != nil {
+				_ = s.transcript.Append(TransError, map[string]any{"error": msg})
+			}
+			s.fireTerminalOnce(callbacks, s.id, false, "panic: "+fmt.Sprint(r))
+			err = fmt.Errorf("%w: %v", ErrPanic, r)
+		}
+	}()
+	// Sequence continuation (opt-in, default off): seed the prior
+	// session's transcript into this one so the new file is
+	// self-contained and replay produces the full prior conversation.
+	// Identity (same worker) is verified by the bridge before this is
+	// set; a seed failure falls back to a fresh session (never leaks
+	// another worker's transcript).
+	if s.continuationPath != "" && s.transcript.Seq() == 0 {
+		if err := s.transcript.Append(TransSession, map[string]any{"identity": s.identity}); err != nil {
+			return fmt.Errorf("session: header: %w", err)
+		}
+		if err := s.transcript.SeedFrom(s.continuationPath); err != nil {
+			s.log.Warn("session: continuation seed failed — starting fresh", "execution", s.id, "error", err)
+			// The header is already appended; drop the seeded path so the
+			// fresh session proceeds normally.
+		} else {
+			s.continued = true
+		}
+		s.continuationPath = "" // seed once — a resume must not re-seed
+	}
+
+	// Replay the transcript into history on resume (idempotent: replays
+	// only the durable lines; the loop appends fresh events after them).
+	if len(s.history) == 0 {
+		if evs, lerr := Load(s.TranscriptPath()); lerr == nil && len(evs) > 0 {
+			s.replay(evs)
+		}
+	}
+
+	// Header (first run) or resume marker.
+	if s.transcript.Seq() == 0 {
+		if err := s.transcript.Append(TransSession, map[string]any{"identity": s.identity}); err != nil {
+			return fmt.Errorf("session: header: %w", err)
+		}
+	}
+	callbacks.OnStarted(ctx, s.id)
+
+	// Follow-up mode (ContinueSession): the prior transcript was replayed
+	// into history above; append the follow-up question as the user message
+	// and run. The goal-append below is skipped — the follow-up question IS
+	// the user message, and the original goal is already in the replayed
+	// history.
+	if s.followUp {
+		if s.followUpQuestion != "" {
+			s.appendUser(TransUserMessage, s.followUpQuestion, "follow_up")
+			if err := s.transcript.Append(TransUserMessage, map[string]any{"text": s.followUpQuestion, "source": "follow_up"}); err != nil {
+				return err
+			}
+		}
+	} else if s.transcript.Seq() == 1 || s.continued {
+		s.appendUser(TransUserMessage, s.identity.Goal, "goal")
+		if err := s.transcript.Append(TransUserMessage, map[string]any{"text": s.identity.Goal, "source": "goal"}); err != nil {
+			return err
+		}
+	}
+
+	// Progress monitor (opencode parity): started for the session's
+	// lifetime; the monitor's stall/recovered callbacks route advisory
+	// signals into nudge interjections and fatal signals into the
+	// terminal failure path. Run in a goroutine — run() blocks on its
+	// ticker loop (a synchronous call would deadlock the turn loop
+	// before the first turn ever streamed).
+	go s.pm.run(
+		func(execID, reason string) {
+			s.handleStallSignal(callbacks, execID, reason)
+		},
+		func(execID, recovered string) {
+			callbacks.OnRecovered(ctx, execID, recovered)
+		},
+	)
+	defer s.pm.close()
+	// Session-end latches for the nudge reply watchdog: registered here so
+	// EVERY exit path (terminal verdict, transcript-error return, panic,
+	// cancellation) stops the watchdog — not just the guarded terminals.
+	defer s.markNudgeFinished()
+	defer s.closeDoneCh()
+
+	// Turn loop — deliberately uncapped (no terminal turn cap; see NOTE
+	// below for why the old max_steps guillotine is gone).
+	steps := 0
+	var lastUsage Usage
+	_ = lastUsage // token-growth telemetry (monitor feeds via observeStepFinish)
+	for {
+		select {
+		case <-ctx.Done():
+			// Cancellation (or the wall-clock deadline): mark cancelled,
+			// leave resumable, no new provider call. The terminal verdict
+			// fires here — fireTerminalOnce dedupes against the monitor's
+			// terminal paths (opencode finish() first-arrival parity).
+			s.recordUndeliveredNudges()
+			_ = s.markState(ctx, "cancelled")
+			s.markNudgeFinished()
+			s.fireTerminalOnce(callbacks, s.id, false, "cancelled")
+			s.closeDoneCh()
+			return nil
+		case <-s.stallCh:
+			// Fatal monitor stall (no_progress / liveness timeout): the
+			// monitor handler already fired the terminal OnResult and the
+			// reconciler's OnStall marked the execution unhealthy — the
+			// loop unwinds WITHOUT a second verdict (opencode parity).
+			_ = s.markState(ctx, "failed")
+			s.markNudgeFinished()
+			s.closeDoneCh()
+			return nil
+		default:
+		}
+
+		steps++
+		// NOTE: there is deliberately NO terminal turn cap here. An
+		// earlier max_steps guillotine (fail the execution past N turns)
+		// punished honest tool-heavy work — 100 tool calls IS 100 turns —
+		// while genuine loops are caught far earlier by the progress
+		// monitor (repetition N-in-window, no-progress window, tool hang),
+		// tool pressure is governed by the budget ladder's tool_call_count
+		// dimension (warn tiers latch, abort tier fails the session), and
+		// wall-clock bounds absolute cost. The opencode path likewise has
+		// no step cap. steps is retained for compaction pacing below.
+
+		// Build the turn request. Two-zone system layout (ADR-0009 D2):
+		// the cached static prefix (composite + thin native layer + env
+		// facts) carries the cache breakpoint; the mutable zone (memory
+		// notes + todo digest) follows AFTER it and is never flagged.
+		req := TurnRequest{
+			Model:     s.identity.Model,
+			System:    s.AssembleSystem(),
+			Messages:  s.history,
+			MaxTokens: s.turnMaxTokens(ctx),
+			// Stable per-execution session id for OpenCode Zen/Go (D1): the
+			// provider requires x-opencode-session per conversation; the
+			// session id == execution id.
+			SessionID: s.id,
+		}
+		// Context-window realization (D5, ollama parity): when the live
+		// hint resolved (or the work item declared a window), ride it as
+		// options.num_ctx on the native /api/chat transport so the server
+		// serves the full window instead of silently truncating to ~4096.
+		// OpenAI-compat transports ignore OllamaNumCtx (the header is
+		// Ollama-only).
+		if hint := s.resolveContextWindow(ctx); hint.Ok && hint.Tokens > 0 {
+			req.OllamaNumCtx = hint.Tokens
+		}
+		if s.tools != nil {
+			req.Tools = s.tools.Defs()
+		}
+		// The native memory-note tool is registered by the loop itself
+		// (session-scoped, never the MCP registry) — deduped in case a
+		// registry already surfaces the same name. The four durable
+		// memory tools (D2) are registered when a store is configured.
+		if !hasToolNamed(req.Tools, memoryNoteToolDef().Name) {
+			req.Tools = append(req.Tools, memoryNoteToolDef())
+		}
+		if s.memStore != nil && s.mp.Enabled {
+			for _, d := range memoryToolDefs() {
+				if !hasToolNamed(req.Tools, d.Name) {
+					req.Tools = append(req.Tools, d)
+				}
+			}
+		}
+
+		// Defense-in-depth (no-tools wire): a provider that reports no
+		// tool capability can never drive a session — the loop IS tool
+		// calls. Silently omitting the tools array makes a tool-trained
+		// model improvise its native token-format tool calls as plain
+		// text ("<｜DSML｜tool_calls>…"), which the loop reads as a
+		// text-only final answer: executions "succeed" in seconds with
+		// markup garbage. Fail fast with an actionable message instead.
+		if len(req.Tools) > 0 && !s.provider.Capabilities().Tools {
+			msg := fmt.Sprintf(
+				"provider %q (model %q) reports no tool-call capability, but Orchicon sessions are tool-driven — refusing to send a tool-less request (the model would improvise tool calls as plain text). Enable tool support for this provider in Settings → Adapters → Providers, or pick a tool-capable model.",
+				s.identity.ProviderID, s.identity.Model)
+			_ = s.transcript.Append(TransError, map[string]any{"error": msg})
+			_ = s.markState(ctx, "failed")
+			s.fireTerminalOnce(callbacks, s.id, false, msg)
+			s.markNudgeFinished()
+			s.closeDoneCh()
+			return nil
+		}
+
+		stream, err := s.provider.StreamTurn(ctx, req)
+		if err != nil {
+			// Pre-stream failure → execution fails (error surfaced).
+			msg := fmt.Sprintf("provider stream failed: %v", err)
+			_ = s.transcript.Append(TransError, map[string]any{"error": msg})
+			_ = s.markState(ctx, "failed")
+			s.fireTerminalOnce(callbacks, s.id, false, msg)
+			s.markNudgeFinished()
+			s.closeDoneCh()
+			return nil
+		}
+
+		text, finish, toolCalls, usage, streamErr := s.drain(ctx, callbacks, stream)
+		_ = stream.Close()
+		s.pm.observeStepFinish(usage)
+		// A completed turn is reply evidence ONLY when it carried content:
+		// an EMPTY turn (zero deltas — deltas already fired nudgeObserved in
+		// drain) proves nothing. 2026-09-09 liveness-kill regression: an
+		// empty probe reply cleared the awaiting probe and reset the probe
+		// budget here, so an empty-turn provider looped the probe forever
+		// (caught by TestQADecisionGateEmptyProbeTurnFailsHonestly).
+		if len(text) > 0 || len(toolCalls) > 0 || usage.OutputTokens > 0 {
+			// A non-empty turn that did NOT answer the outstanding probe
+			// (a bare status line) marks SawReply so the gate spends the
+			// budget slot instead of deferring forever (probe-loop fix).
+			s.noteMu.Lock()
+			if s.completionProbeAwaiting {
+				s.completionProbeSawReply = true
+			}
+			s.noteMu.Unlock()
+			s.nudgeObserved() // a completed turn is reply evidence (parity: resolveProbe)
+		}
+		if streamErr != nil {
+			msg := fmt.Sprintf("stream error: %v", streamErr)
+			s.recordUndeliveredNudges()
+			_ = s.transcript.Append(TransError, map[string]any{"error": msg})
+			_ = s.markState(ctx, "failed")
+			s.fireTerminalOnce(callbacks, s.id, false, msg)
+			s.markNudgeFinished()
+			s.closeDoneCh()
+			return nil
+		}
+		// Per-turn cache metrics (ADR-0009 D6): classify the turn (hit /
+		// miss-write / none) and accumulate cached tokens.
+		s.recordTurnUsage(usage)
+		// Price this turn's LIVE usage for the budget cost gate through the
+		// session model's resolved catalog/probe pricing (shared pipeline —
+		// ModelInfo.CostFor is the same pricing the gateway's usage recorder
+		// applies). 0 when the model has no pricing — the cost dimension
+		// then never fires; never a synthesized estimate.
+		usage.CostUSD = s.priceUsage(ctx, usage)
+		// Per-turn usage emission (D2, opencode step_finish parity): drain
+		// this turn's LIVE provider-reported usage to the per-record sink
+		// (the bridge wires it only when a usage recorder is configured).
+		// Independent of recordTurnUsage — emitting a record never feeds the
+		// per-session CacheStats rollup.
+		if s.usageSink != nil {
+			s.usageSink(ctx, usage)
+		}
+
+		// Guarded compaction at the quiet turn boundary (D1): fires only on
+		// true context-window pressure (live hint), the budget gate, or the
+		// turn-count hygiene gate (compact_max_turns — a chatty session is
+		// compacted periodically even with no budget breach and no window
+		// pressure), from LIVE provider-reported usage. Never fires on token
+		// count alone when no window hint exists. A budget_abort result is
+		// TERMINAL
+		// (opencode parity): the spend crossed the abort tier — the
+		// session fails with the budget_abort reason (recovery owns the
+		// re-dispatch decision).
+		if res := s.maybeCompact(ctx, steps, usage); strings.HasPrefix(res, "budget_abort:") {
+			s.recordUndeliveredNudges()
+			_ = s.transcript.Append(TransError, map[string]any{"error": res})
+			_ = s.markState(ctx, "failed")
+			s.fireTerminalOnce(callbacks, s.id, false, res)
+			s.markNudgeFinished()
+			s.closeDoneCh()
+			return nil
+		}
+
+		// No-progress guard: the time-based progressMonitor (progress.go)
+		// owns repetition/no-progress detection with opencode parity —
+		// windowed history, reset-on-progress, nudge-first escalation.
+		// There is NO same-turn instant-kill in the opencode adapter, so
+		// the native engine has none either (the old ≥2-repeat kill was
+		// the reported false-positive killer of healthy local-model
+		// sessions).
+		lastUsage = usage
+
+		// Tool-swallow guard (2026-09-09 responses.go fix, now
+		// transport-independent): a turn that CARRIES tool calls but ends
+		// with a plain stop reason must finish StopToolUse, never
+		// StopStop. The loop dispatches + persists + feeds back tool
+		// results ONLY on StopToolUse — under StopStop the calls were
+		// counted toward the tool_call_count budget at emission (drain)
+		// but never executed or answered: the model re-emitted the same
+		// announce-then-call turn every round until
+		// budget_abort:tool_call_count failed the session (incident:
+		// 24+ attempts, ~90-100 text parts, 0 tool parts). The responses
+		// transport received this guard in its finalize on 2026-09-09;
+		// the ollama native decoder (and any other transport that maps a
+		// done-with-tool-calls end to StopStop) did not — the guard
+		// belongs HERE, before the switch, so no transport can ever drop
+		// counted-but-unexecuted calls again.
+		if len(toolCalls) > 0 && finish == StopStop {
+			s.log.Info("stop reason promoted StopStop → StopToolUse — pending tool calls must execute",
+				"execution", s.id, "tool_calls", len(toolCalls))
+			finish = StopToolUse
+		}
+
+		switch finish {
+		case StopToolUse:
+			// History parity (BUG-1): the assistant's tool_use message must
+			// PRECEDE the tool results in history. Record the turn's
+			// assistant message (accumulated text + tool_use blocks) into
+			// the transcript BEFORE executing tools (so a crash mid-tool
+			// still replays the assistant turn), then append the same
+			// message to history so the provider sees the full turn.
+			if len(toolCalls) > 0 {
+				if err := s.transcript.Append(TransToolCall, map[string]any{
+					"text": text, "tool_calls": toolCalls,
+				}); err != nil {
+					return err
+				}
+				s.appendAssistantToolUse(text, toolCalls)
+				// First executed tool call = the session has demonstrably
+				// begun its work. The decision-signal gate arms from here
+				// (probe-startup guard, 2026-09-09: the probe fired 6s
+				// after dispatch against a model that had not streamed a
+				// token — no work evidence, no gate).
+				s.noteMu.Lock()
+				s.probeWorkStarted = true
+				s.noteMu.Unlock()
+				// Execute pending tool calls (parallel where independent),
+				// append results to history, drain injection queue, loop.
+				for _, tc := range toolCalls {
+					s.pm.observeToolStart(tc.Name)
+				}
+				results := s.executeTools(ctx, callbacks, toolCalls)
+				// Monitor feed (opencode parity): every executed call is
+				// observed with its result status; a file-writing call is
+				// file progress (resets the advisory windows + repetition
+				// history).
+				for _, r := range results {
+					s.pm.observeToolCall(r.ToolCall.Name, r.ToolCall.ArgsJSON, r.Err != "")
+					if r.Err == "" && isFileWritingTool(r.ToolCall.Name) {
+						s.pm.observeFileDiff()
+					}
+				}
+				for _, r := range results {
+					if err := s.transcript.Append(TransToolResult, r); err != nil {
+						return err
+					}
+				}
+				s.appendToolResults(results)
+			}
+			// Injection drain between tool rounds: a queued user turn
+			// becomes the next user message; the reply streams back into
+			// the same session.
+			if msgs := s.drainInjectedAll(ctx); len(msgs) > 0 {
+				if err := s.appendInjected(msgs); err != nil {
+					return err
+				}
+			}
+			continue
+
+		case StopStop:
+			// Injection drain at EVERY turn boundary (not just tool
+			// rounds): a queued human nudge must be delivered even when
+			// the model just produced a text-only turn. Before settling
+			// on EITHER path (follow-up or the success gate), drain: a
+			// queued nudge becomes the next user turn, the loop continues
+			// so the session answers it, and settles on the NEXT clean
+			// stop. A model that never stops cleanly is already bounded by
+			// the completion probe and stall monitor.
+			if msgs := s.drainInjectedAll(ctx); len(msgs) > 0 {
+				if err := s.appendInjected(msgs); err != nil {
+					return err
+				}
+				continue
+			}
+			// Follow-up mode: a follow-up answers a question; it does NOT
+			// complete a worker run, so there is NO completion contract
+			// here — no decision-signal gate, no substance heuristic, no
+			// probe. Every reply (short or long) is a legitimate turn of a
+			// continuing conversation: the thread lives on the SESSION
+			// (the durable transcript), so the user can keep asking
+			// follow-ups and prior executions stay answerable. We still
+			// fire the terminal OnResult to the follow-up callbacks so the
+			// bridge's reply/empty checks work — but this is a no-op
+			// callback that NEVER re-terminals the execution row (the
+			// execution is already terminal from the main run; the
+			// follow-up merely appends to the shared session). The prior
+			// bug (2026-09-09, exec 01M23KR5AAR2GQXS42XSZBZ5QX) was not
+			// the OnResult — it was the probe/substance heuristic closing
+			// the thread; that is gone.
+			if s.followUp {
+				_ = s.markState(ctx, "done")
+				_ = s.transcript.Append(TransFinish, map[string]any{"stop_reason": string(finish)})
+				s.fireTerminalOnce(callbacks, s.id, true, "")
+				s.markNudgeFinished()
+				s.closeDoneCh()
+				return nil
+			}
+			// Success gate (opencode parity — decision-signal guard): a
+			// session that ends WITHOUT a real ORCHICON WORKER SUMMARY is
+			// not a completed worker. The marker is the worker's contract
+			// sign-off; its absence means the final response was truncated
+			// (StopLength — the output cap mid-monologue), the model
+			// went idle early, or it echoed the marker as a plan
+			// placeholder. First run the completion probe: a fresh turn
+			// asking for the sign-off. The probe turn either delivers the
+			// marker (loop continues; the NEXT StopStop turn settles with
+			// the marker present) or fails the execution honestly when the
+			// probe budget is spent. A genuinely finished session settles.
+			//
+			// Probe-startup guard (2026-09-09, transcript
+			// 01M23C2MTF1ZYYHE8ACK17PMKV): the gate only arms once the
+			// session has executed a tool call. The incident probe fired
+			// 6s after dispatch — before the model's first token — because
+			// an empty/instant first turn read as a "cut-off summary".
+			// With no work evidence there is nothing to be cut off: a
+			// markerless settle before any tool work is just the model
+			// thinking/planning out loud; it settles the turn and the loop
+			// continues (the wall-clock budget ladder is the backstop
+			// against a never-starting session).
+			if !s.decisionMarkerPresent() {
+				s.noteMu.Lock()
+				started := s.probeWorkStarted
+				s.noteMu.Unlock()
+				if !started {
+					// No work yet (no tool call executed): do NOT probe —
+					// the model has not begun, so it cannot be "cut off
+					// mid-summary". Do NOT settle success either (that
+					// would be a hollow success). Just continue: the model
+					// gets another plain provider turn to actually start
+					// (its next turn typically makes tool calls, which arms
+					// the gate for future settles). Bounded by the
+					// wall-clock budget ladder, never by this gate.
+					s.log.Info("markerless settle before any tool work — startup guard, continuing without a probe",
+						"execution", s.id)
+					continue
+				}
+				if !s.runCompletionProbe(ctx, callbacks) {
+					return nil // probe failed the execution — OnResult already fired
+				}
+				continue
+			}
+			_ = s.markState(ctx, "done")
+			_ = s.transcript.Append(TransFinish, map[string]any{"stop_reason": string(finish)})
+			s.fireTerminalOnce(callbacks, s.id, true, "")
+			s.markNudgeFinished()
+			s.closeDoneCh()
+			return nil
+
+		case StopLength:
+			// Output-cap continuation (opencode parity — a truncated turn
+			// is a RECOVERABLE condition, not a terminal failure): the
+			// model hit the per-turn output cap mid-generation. Interject
+			// a continuation turn (bounded, like the completion probe) so
+			// a long-form worker keeps its accumulated context instead of
+			// dying and forcing a cold recovery re-dispatch. After the
+			// continuation budget is spent the execution fails honestly.
+			if !s.runLengthContinuation(ctx, callbacks) {
+				return nil // continuation budget spent — OnResult already fired
+			}
+			continue
+
+		case StopOther, StopError, StopContentFilter:
+			fallthrough
+		default:
+			// A turn that ended WITHOUT the provider's end-of-response
+			// signal is a truncated/aborted response, not a completed one.
+			// StopOther arrives when a provider stream never delivered a
+			// stop reason at all. Neither may be recorded as success.
+			msg := fmt.Sprintf("model terminated with stop reason %q", finish)
+			s.recordUndeliveredNudges()
+			_ = s.transcript.Append(TransError, map[string]any{"error": msg})
+			_ = s.markState(ctx, "failed")
+			s.fireTerminalOnce(callbacks, s.id, false, msg)
+			s.markNudgeFinished()
+			s.closeDoneCh()
+			return nil
+		}
+	}
+}
+
+// checkNoProgress was REMOVED (opencode parity): the time-based
+// progressMonitor (progress.go) owns repetition/no-progress detection with
+// windowed history, reset-on-progress, and nudge-first escalation. The
+// native engine has no same-turn instant-kill — the old ≥2-repeat guard
+// was the reported false-positive killer of healthy local-model sessions
+// (0-usage telemetry made every identical read a fatal stall).
+
+// handleStallSignal is the monitor's onStall callback (opencode parity,
+// nudge-first routing): a FATAL stall (no_progress) surfaces the stall,
+// fires the terminal OnResult(false, reason) (the reconciler's OnStall
+// has already marked the execution unhealthy → recovery), and signals the
+// turn loop through stallCh so it unwinds without a second verdict —
+// the exact onStall shape of the opencode adapter (OnStall(fatal) then
+// finish(false, reason)). An ADVISORY stall injects an escalating nudge
+// into the live session — the worker is responsive and holds full
+// context, so killing it destroys that context for no reason. When the
+// nudge budget is spent the session escalates: the execution is failed
+// with the stall reason (recovery takes over with the evidence).
+//
+// The monitor goroutine owns this handler; the nudge-reply watchdog below
+// is the only other writer. Both route through the same nudgesSent /
+// lastNudgeAt / stallCh state under noteMu.
+func (s *Session) handleStallSignal(callbacks scheduler.ExecutionCallbacks, execID, reason string) {
+	if isFatalStall(reason) {
+		callbacks.OnStall(context.Background(), execID, reason, true)
+		// Terminal verdict (opencode finish(false, reason) parity): the
+		// reconciler's OnStall already flipped the execution unhealthy;
+		// the terminal OnResult carries the reason so recovery gets the
+		// evidence. fireTerminalOnce guards against a double verdict
+		// (e.g. the loop's select raced a concurrent escalation).
+		if s.fireTerminalOnce(callbacks, execID, false, reason) {
+			select {
+			case s.stallCh <- reason:
+			default:
+			}
+		}
+		return
+	}
+	// Advisory: surface the notice, then nudge-first.
+	callbacks.OnStall(context.Background(), execID, reason, false)
+	now := time.Now()
+	s.noteMu.Lock()
+	budgetSpent := s.nudgesSent >= s.nudgeMaxVal
+	inCooldown := now.Sub(s.lastNudgeAt) < s.nudgeCooldownVal
+	s.noteMu.Unlock()
+	if budgetSpent || inCooldown {
+		if budgetSpent {
+			// Nudge budget spent and the pattern persists — escalate to a
+			// fatal stall (opencode parity: "the worker has had its
+			// nudges and has not broken the pattern").
+			esc := reason + ":nudge_budget_spent"
+			s.log.Warn("native session: advisory stall escalated after nudge budget spent",
+				"execution", execID, "reason", reason, "nudges", s.nudgesSent, "max", s.nudgeMaxVal)
+			callbacks.OnStall(context.Background(), execID, esc, true)
+			if s.fireTerminalOnce(callbacks, execID, false, esc) {
+				select {
+				case s.stallCh <- esc:
+				default:
+				}
+			}
+		}
+		return
+	}
+	s.noteMu.Lock()
+	s.nudgesSent++
+	s.lastNudgeAt = now
+	idx := s.nudgesSent - 1
+	s.noteMu.Unlock()
+	if idx >= len(stallNudgeMessages) {
+		idx = len(stallNudgeMessages) - 1
+	}
+	msg := stallNudgeMessages[idx]
+	s.log.Info("native session: advisory stall — nudging live session",
+		"execution", execID, "reason", reason, "nudge", s.nudgesSent, "max", s.nudgeMaxVal)
+	s.queueInjected(msg)
+	s.noteMu.Lock()
+	s.nudgePending = true
+	s.noteMu.Unlock()
+	_ = s.transcript.Append(TransUserMessage, map[string]any{"text": msg, "source": "nudge"})
+	// Nudge reply-window enforcement (opencode parity — the probe
+	// deadline): a nudged session must ANSWER within the window. The
+	// loop drains queued injections between tool rounds, so the reply
+	// lands as continued turn activity; observeText/observeStepFinish
+	// clear pending. No reply within the window → the worker is not
+	// responding to its nudges → fatal stall (the true-hang case).
+	if s.nudgeReplyWindowVal <= 0 {
+		return
+	}
+	window := s.nudgeReplyWindowVal
+	go func() {
+		timer := time.NewTimer(window)
+		defer timer.Stop()
+		tick := time.NewTicker(5 * time.Second)
+		defer tick.Stop()
+		for {
+			select {
+			case <-timer.C:
+				s.noteMu.Lock()
+				// Session end always wins over the watchdog: a finished
+				// session never escalates through the reply window.
+				pending := s.nudgePending && !s.nudgeFinished
+				s.noteMu.Unlock()
+				if pending {
+					s.log.Warn("native session: nudge reply window elapsed with no response — escalating fatal",
+						"execution", execID, "window", window)
+					esc := "stalled:no_file_progress:liveness_probe_no_response"
+					callbacks.OnStall(context.Background(), execID, esc, true)
+					if s.fireTerminalOnce(callbacks, execID, false, esc) {
+						select {
+						case s.stallCh <- esc:
+						default:
+						}
+					}
+				}
+				return
+			case <-tick.C:
+				s.noteMu.Lock()
+				pending := s.nudgePending
+				finished := s.nudgeFinished
+				s.noteMu.Unlock()
+				if finished || !pending {
+					return // the nudged turn replied — probe cleared
+				}
+			case <-s.doneCh:
+				return
+			}
+		}
+	}()
+}
+
+// fireTerminalOnce delivers the terminal OnResult exactly once per
+// session (the monitor goroutine and the turn loop both own terminal
+// paths — opencode parity: finish() is first-arrival-wins). succeeded
+// carries the verdict (true only on the success path); reason is the
+// error message ("" on success). Returns true when THIS call delivered
+// the verdict (the caller may then signal stallCh); false when a verdict
+// already fired.
+func (s *Session) fireTerminalOnce(callbacks scheduler.ExecutionCallbacks, execID string, succeeded bool, reason string) bool {
+	s.terminalMu.Lock()
+	if s.terminalFired {
+		s.terminalMu.Unlock()
+		return false
+	}
+	s.terminalFired = true
+	s.terminalMu.Unlock()
+	callbacks.OnResult(context.Background(), execID, succeeded, s.output.String(), reason)
+	return true
+}
+
+// nudgeObserved marks nudge-reply progress: any text/step activity after
+// a nudge clears the pending probe (the reply IS the liveness evidence).
+//
+// 2026-09-09 probe-loop fix (transcript 01M23C2MTF1ZYYHE8ACK17PMKV): the
+// old version reset completionProbesSent on ANY activity, so a model that
+// answered each probe with a bare status line ("I'll re-sync state…")
+// re-armed the probe forever — 15 probes in ~50s, ZERO tool calls, the
+// worker never started. Now:
+//   - completionProbeAwaiting clears only when the reply carries the
+//     decision marker or the WORKING token (completionProbeReply);
+//   - completionProbesSent NEVER resets — a status-line reply counts as
+//     unanswered, so after completionProbeMaxTurns (2) probes the session
+//     fails honestly with completion_probe_no_response (a model trapped
+//     replying-to-probes is burned budget, not a healthy worker);
+//   - the deferral counter still bounds empty-turn loops.
+func (s *Session) nudgeObserved() {
+	s.noteMu.Lock()
+	s.nudgePending = false
+	// A completed turn is reply evidence only when it ANSWERS the probe:
+	// the marker (the sign-off) or the WORKING token (an explicit continue).
+	// Any other reply (a bare status line) does NOT clear the awaiting
+	// probe and does NOT reset the budget — the next StopStop re-enters
+	// the gate and the budget counts it, bounding the probe loop.
+	if s.completionProbeAwaiting {
+		if kind, idx := completionProbeReply(s.output.String()); kind != probeReplyNone && idx >= 0 {
+			s.completionProbeAwaiting = false
+			s.completionProbeSawReply = false
+			s.completionProbeDeferrals = 0
+			if kind == probeReplyWorking {
+				// WORKING: the model is mid-task and was told it will be
+				// left alone. Disarm the gate entirely — a real continue
+				// turns into tool work, and the marker arrives when the
+				// work's final turn settles.
+				s.completionProbesSent = 0
+			}
+		}
+	}
+	s.noteMu.Unlock()
+}
+
+// markNudgeFinished latches session end so the reply watchdog stops.
+func (s *Session) markNudgeFinished() {
+	s.noteMu.Lock()
+	s.nudgeFinished = true
+	s.noteMu.Unlock()
+}
+
+// closeDoneCh closes the done channel (idempotent) so the nudge reply
+// watchdog exits instead of leaking past session end.
+func (s *Session) closeDoneCh() {
+	if s.doneCh == nil {
+		return
+	}
+	select {
+	case <-s.doneCh:
+	default:
+		close(s.doneCh)
+	}
+}
+
+// runLengthContinuation interjects ONE continuation turn when the model
+// hit the output cap mid-generation (StopLength), up to a bounded budget.
+// Returns true when the loop should continue (the probe was delivered);
+// false when the budget is spent — the execution has been failed and
+// OnResult fired.
+func (s *Session) runLengthContinuation(ctx context.Context, callbacks scheduler.ExecutionCallbacks) bool {
+	if s.lengthContinuationsSent >= lengthContinuationMaxTurns {
+		msg := fmt.Sprintf("model terminated with stop reason \"length\" — output-cap continuation budget of %d spent", lengthContinuationMaxTurns)
+		_ = s.transcript.Append(TransError, map[string]any{"error": msg})
+		_ = s.markState(ctx, "failed")
+		s.fireTerminalOnce(callbacks, s.id, false, msg)
+		s.markNudgeFinished()
+		s.closeDoneCh()
+		return false
+	}
+	s.lengthContinuationsSent++
+	msg := "Your previous response was cut off by the output limit. Continue EXACTLY where you stopped — do not restart, do not repeat what you already wrote. If you were mid-thought, continue it; if the turn is effectively done, deliver the final ORCHICON WORKER SUMMARY now."
+	s.appendUser(TransUserMessage, msg, "length_continuation")
+	if err := s.transcript.Append(TransUserMessage, map[string]any{"text": msg, "source": "length_continuation"}); err != nil {
+		msg := fmt.Sprintf("length continuation transcript append failed: %v", err)
+		_ = s.markState(ctx, "failed")
+		s.fireTerminalOnce(callbacks, s.id, false, msg)
+		s.markNudgeFinished()
+		s.closeDoneCh()
+		return false
+	}
+	s.log.Info("native session: StopLength — sending continuation turn",
+		"execution", s.id, "continuation", s.lengthContinuationsSent, "max", lengthContinuationMaxTurns)
+	return true
+}
+
+// drain reads the turn stream until Finish, mapping every event type onto
+// callbacks (no silent gaps). Returns the turn's accumulated assistant
+// text, the stop reason, the complete tool calls of the turn, the usage,
+// and any mid-stream error.
+func (s *Session) drain(ctx context.Context, callbacks scheduler.ExecutionCallbacks, stream TurnStream) (string, StopReason, []ToolCall, Usage, error) {
+	var text strings.Builder
+	var reasoning strings.Builder
+	var finish StopReason
+	var usage Usage
+	var calls []ToolCall
+	inflight := map[int]*ToolCall{} // index → in-flight call
+
+	for {
+		ev, ok, err := stream.Next(ctx)
+		if err != nil {
+			return text.String(), finish, calls, usage, err
+		}
+		if !ok {
+			break
+		}
+		switch e := ev.(type) {
+		case TextDelta:
+			text.WriteString(e.Text)
+			s.output.WriteString(e.Text)
+			s.pm.observeText()
+			// Only REAL content is reply evidence: an empty-text delta
+			// (providers emit these as keep-alives / turn boundaries)
+			// proves nothing. 2026-09-09 liveness-kill fix — an empty
+			// delta reset the awaiting probe and the probe budget, looping
+			// a silent session's probe forever.
+			if e.Text != "" {
+				s.nudgeObserved() // continued output = the nudged turn replied
+			}
+			s.emitTextChunked(ctx, callbacks, e.Text)
+			_ = s.transcript.Append(TransText, map[string]any{"text": e.Text})
+		case ReasoningDelta:
+			reasoning.WriteString(e.Text)
+			// Parity: reasoning is emitted via a {"kind":"reasoning"}
+			// JSON wrapper and NEVER replayed into history.
+			s.pm.observeText()
+			s.nudgeObserved()
+			payload := map[string]any{"kind": "reasoning", "text": e.Text}
+			callbacks.OnText(ctx, s.id, mustJSON(payload))
+			_ = s.transcript.Append(TransReasoning, map[string]any{"text": e.Text})
+		case ToolCallStart:
+			inflight[e.Index] = &ToolCall{Index: e.Index, ToolCallID: e.ToolCallID, Name: e.Name}
+		case ToolCallDelta:
+			if tc, ok := inflight[e.Index]; ok {
+				tc.ArgsJSON += e.ArgsJSONDelta
+			}
+		case ToolCallEnd:
+			// Complete: promoted to the turn's pending set and counted
+			// toward the tool_call_count budget dimension AT EMISSION
+			// (opencode evtToolUse parity) — so the ladder's abort tier
+			// fires before the over-limit call executes, not a turn
+			// later on stale counts.
+			if tc, ok := inflight[e.Index]; ok {
+				calls = append(calls, *tc)
+				s.countToolUse()
+				delete(inflight, e.Index)
+			}
+		case ToolCall:
+			// Already-complete tool call event.
+			calls = append(calls, e)
+			s.countToolUse()
+		case StreamError:
+			return text.String(), finish, calls, usage, e.Err
+		case Finish:
+			finish = e.StopReason
+			usage = e.Usage
+		}
+	}
+	return text.String(), finish, calls, usage, nil
+}
+
+// hasToolNamed reports whether a tool definition list already carries a
+// name (used to dedupe the loop-registered native tools against the MCP
+// registry surface).
+func hasToolNamed(defs []ToolDef, name string) bool {
+	for _, d := range defs {
+		if d.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// nativeToolName reports whether a call targets a loop-registered
+// session-scoped tool (handled here, never routed to the registry).
+// todowrite is native: the loop stashes its payload into the todo digest
+// (stashMutableToolCall) and answers success itself, so the call never
+// reaches HostTools.Execute as an `unknown tool` — the composite prompt
+// orders a todowrite call every turn, and the native engine must honor it.
+func nativeToolName(name string) bool {
+	return name == "todowrite" || name == memoryNoteToolDef().Name || isMemoryTool(name)
+}
+
+// stashMutableToolCall folds a turn's tool calls into the session's
+// mutable zone state (ADR-0009 D2): the latest todowrite payload is
+// stashed for the todo digest; the memory-note tool appends a note.
+// Name-gated and tolerant — a malformed payload is skipped, never an
+// error to the model.
+func (s *Session) stashMutableToolCall(calls []ToolCall) {
+	for _, c := range calls {
+		switch c.Name {
+		case "todowrite":
+			var probe todoDigestArgs
+			if err := json.Unmarshal([]byte(c.ArgsJSON), &probe); err != nil || probe.Todos == nil {
+				continue
+			}
+			s.noteMu.Lock()
+			s.latestTodos = append([]byte(nil), c.ArgsJSON...)
+			s.noteMu.Unlock()
+		case "orchicon_memory_note":
+			var a struct {
+				Text string `json:"text"`
+			}
+			if err := json.Unmarshal([]byte(c.ArgsJSON), &a); err == nil {
+				s.AddMemoryNote(a.Text)
+			}
+		}
+	}
+}
+
+// executeTools runs the turn's tool calls (parallel where independent —
+// same-turn calls are independent by construction) with a bounded worker
+// pool, and emits OnToolCall + OnWrittenFiles + OnArtifact parity
+// callbacks. A panicking tool is caught per-call and returned as an
+// error result (the loop's boundary recover also catches it).
+func (s *Session) executeTools(ctx context.Context, callbacks scheduler.ExecutionCallbacks, calls []ToolCall) []toolResult {
+	results := make([]toolResult, len(calls))
+	// Mutable-zone state capture (ADR-0009 D2): the latest todowrite
+	// payload and memory notes are folded into the session BEFORE the
+	// calls execute, so the next turn's digest sees this turn's intent.
+	// Session-scoped tools (orchicon_memory_note) are answered here and
+	// never routed to the registry.
+	s.stashMutableToolCall(calls)
+	var pending []int // indices routed to the registry
+	for i, c := range calls {
+		if nativeToolName(c.Name) {
+			var out string
+			var execErr error
+			if isMemoryTool(c.Name) {
+				out, execErr = s.execMemoryTool(ctx, c.Name, c.ArgsJSON)
+			}
+			if execErr != nil {
+				results[i] = toolResult{ToolCall: c, Err: execErr.Error()}
+			} else {
+				if out == "" {
+					out = `{"ok":true}`
+				}
+				results[i] = toolResult{ToolCall: c, Output: out}
+			}
+			callbacks.OnToolCall(ctx, s.id, c.Name, []byte(c.ArgsJSON), []byte(out))
+			continue
+		}
+		pending = append(pending, i)
+	}
+	if s.tools == nil {
+		for _, i := range pending {
+			results[i] = toolResult{ToolCall: calls[i], Err: "tool registry not configured"}
+		}
+		return results
+	}
+	par := toolParallelism()
+	if par < 1 {
+		par = 1
+	}
+	sem := make(chan struct{}, par)
+	var wg sync.WaitGroup
+	for _, i := range pending {
+		c := calls[i]
+		wg.Add(1)
+		go func(i int, c ToolCall) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			// Per-call panic containment (tool-suite tests inject panics).
+			defer func() {
+				if r := recover(); r != nil {
+					results[i] = toolResult{ToolCall: c, Err: fmt.Sprintf("tool %q panicked: %v", c.Name, r)}
+				}
+			}()
+			out, err := s.tools.Execute(ctx, c.Name, c.ArgsJSON)
+			if err != nil {
+				results[i] = toolResult{ToolCall: c, Err: err.Error()}
+				return
+			}
+			// Diff-pipeline ledger hook (native-loop file-edit gap): fired
+			// once per COMPLETED registry result with the PRE-cap output
+			// (the cap may splice the file_edits payload tail out of a
+			// huge batch_write). Failed calls carry no ground truth and
+			// never ledger. The hook owns its error posture (best-effort);
+			// nil = no ledger. This is the single funnel every native-loop
+			// provider (ollama, commandcode, openaicompat, anthropic,
+			// responses) shares — one site covers the whole family.
+			if s.fileEdits != nil {
+				var inputMap map[string]any
+				if err := json.Unmarshal([]byte(c.ArgsJSON), &inputMap); err != nil || inputMap == nil {
+					inputMap = map[string]any{}
+				}
+				s.fileEdits(ctx, s.id, s.identity.TenantID, s.execDir, c.Name, inputMap, out)
+			}
+			capped := capToolOutput(out)
+			results[i] = toolResult{ToolCall: c, Output: capped}
+			// OnToolCall parity (output capped).
+			callbacks.OnToolCall(ctx, s.id, c.Name, []byte(c.ArgsJSON), []byte(capped))
+			// Artifact parity for write/write_artifact tools.
+			if isWriteTool(c.Name) {
+				path, content, ok := parseArtifactInput(c.Name, c.ArgsJSON)
+				if ok {
+					callbacks.OnArtifact(ctx, s.id, path, artifactTypeFromPath(path), content)
+				}
+			}
+			if isFileWritingTool(c.Name) {
+				if path, ok := filePathFromArgs(c.ArgsJSON); ok {
+					s.markWritten(path)
+				}
+			}
+		}(i, c)
+	}
+	wg.Wait()
+	if len(s.writtenList()) > 0 {
+		callbacks.OnWrittenFiles(ctx, s.id, s.writtenList())
+	}
+	return results
+}
+
+// toolResult is one tool execution outcome. The JSON tags are the
+// durable transcript shape (TransToolResult): replay unmarshals these
+// exact keys, so the transcript round-trips.
+type toolResult struct {
+	ToolCall ToolCall `json:"tool_call"`
+	Output   string   `json:"output"`
+	Err      string   `json:"error,omitempty"` // "" on success
+}
+
+// appendAssistantToolUse appends the assistant's turn message to history:
+// the accumulated text (if any) plus one ContentToolUse block per tool
+// call. This is the assistant tool_use message that MUST precede the tool
+// results in history (BUG-1 — provider parity).
+func (s *Session) appendAssistantToolUse(text string, calls []ToolCall) {
+	msg := Message{Role: RoleAssistant}
+	if text != "" {
+		msg.Content = append(msg.Content, Content{Text: &text})
+	}
+	for _, c := range calls {
+		use := &ContentToolUse{ToolCallID: c.ToolCallID, Name: c.Name, ArgsJSON: c.ArgsJSON}
+		msg.Content = append(msg.Content, Content{ToolUse: use})
+	}
+	s.history = append(s.history, msg)
+}
+
+// appendToolResults appends tool results to history as RoleTool messages,
+// merging consecutive tool messages (parity with the Anthropic client's
+// tool-role merge).
+func (s *Session) appendToolResults(results []toolResult) {
+	merged := Message{Role: RoleTool}
+	for _, r := range results {
+		content := r.Output
+		isErr := r.Err != ""
+		if isErr {
+			content = r.Err
+		}
+		merged.Content = append(merged.Content, Content{
+			ToolResult: &ContentToolResult{ToolCallID: r.ToolCall.ToolCallID, Content: content, IsError: isErr},
+		})
+	}
+	s.history = append(s.history, merged)
+}
+
+// appendUser appends a user message to history.
+func (s *Session) appendUser(kind, text, source string) {
+	s.history = append(s.history, Message{Role: RoleUser, Content: []Content{{Text: &text}}})
+}
+
+// emitTextChunked streams text to OnText in 40-char/60ms chunks (parity
+// with opencode's emitTextChunked), honoring cancellation.
+func (s *Session) emitTextChunked(ctx context.Context, callbacks scheduler.ExecutionCallbacks, text string) {
+	if text == "" {
+		return
+	}
+	for i := 0; i < len(text); i += textStreamingChunkSize {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		end := i + textStreamingChunkSize
+		if end > len(text) {
+			end = len(text)
+		}
+		callbacks.OnText(ctx, s.id, text[i:end])
+		if end < len(text) {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(textStreamingChunkDelay):
+			}
+		}
+	}
+}
+
+// markState writes a lifecycle state marker (fsync'd).
+func (s *Session) markState(ctx context.Context, state string) error {
+	return s.transcript.Append(TransState, map[string]any{"state": state})
+}
+
+// replay rebuilds history from the durable transcript (resume path).
+func (s *Session) replay(evs []replayEvent) {
+	for _, e := range evs {
+		switch e.Type {
+		case TransUserMessage:
+			var d struct {
+				Text string `json:"text"`
+			}
+			_ = json.Unmarshal(e.Data, &d)
+			if d.Text != "" {
+				s.appendUser(TransUserMessage, d.Text, "replay")
+			}
+		case TransText:
+			var d struct {
+				Text string `json:"text"`
+			}
+			_ = json.Unmarshal(e.Data, &d)
+			// Reassembled from chunks; the output buffer holds the full text.
+			s.output.WriteString(d.Text)
+		case TransToolCall:
+			// Rebuild the assistant's tool_use turn (BUG-1 parity): the
+			// accumulated text + one ToolUse block per call. This message
+			// MUST precede the following TransToolResult lines in history.
+			var d struct {
+				Text      string     `json:"text"`
+				ToolCalls []ToolCall `json:"tool_calls"`
+			}
+			_ = json.Unmarshal(e.Data, &d)
+			if d.Text != "" {
+				s.output.WriteString(d.Text)
+			}
+			s.appendAssistantToolUse(d.Text, d.ToolCalls)
+		case TransToolResult:
+			var d struct {
+				ToolCall ToolCall `json:"tool_call"`
+				Output   string   `json:"output"`
+				Err      string   `json:"error,omitempty"`
+			}
+			_ = json.Unmarshal(e.Data, &d)
+			merged := Message{Role: RoleTool}
+			merged.Content = append(merged.Content, Content{
+				ToolResult: &ContentToolResult{
+					ToolCallID: d.ToolCall.ToolCallID,
+					// Replay-time cap (2026-09-09 follow-up bloat fix, exec
+					// 01M23KR5AAR2GQXS42XSZBZ5QX): a tool result is capped
+					// at LIVE-time (capToolOutput, maxToolOutputBytes) but
+					// replay feeds the transcript's RAW output back
+					// UNcapped — a long run's tool outputs (each up to
+					// 128 KiB, ~50+ calls) replayed wholesale into a
+					// follow-up = 600KB / ~150K tokens of history, which
+					// free models can't handle (they reply text-only or
+					// nothing, exactly the observed follow-up failure).
+					// Apply the SAME cap on replay so follow-up context
+					// stays proportional. The marker tells the model to
+					// do a targeted read if it needs the full tail.
+					Content: capReplayToolOutput(d.Output), IsError: d.Err != "",
+				},
+			})
+			s.history = append(s.history, merged)
+		}
+	}
+}
+
+// --- injection queue -----------------------------------------------------
+
+// injected holds queued mid-run user turns (SendExecutionMessage).
+type injected struct {
+	mu   sync.Mutex
+	msgs []string
+}
+
+func (s *Session) queueInjected(msg string) {
+	if s.inj == nil {
+		s.inj = &injected{}
+	}
+	s.inj.mu.Lock()
+	s.inj.msgs = append(s.inj.msgs, msg)
+	s.inj.mu.Unlock()
+}
+
+// drainInjectedAll pops ALL queued injected messages in order (called at
+// every turn boundary and terminal path — a burst is delivered together,
+// never one per round). Returns nil when the queue is empty.
+func (s *Session) drainInjectedAll(ctx context.Context) []string {
+	if s.inj == nil {
+		return nil
+	}
+	s.inj.mu.Lock()
+	defer s.inj.mu.Unlock()
+	if len(s.inj.msgs) == 0 {
+		return nil
+	}
+	msgs := s.inj.msgs
+	s.inj.msgs = nil
+	return msgs
+}
+
+// appendInjected appends each queued human message to history AND the
+// transcript (source "human") in order. A transcript failure aborts the
+// session rather than silently dropping the nudge.
+func (s *Session) appendInjected(msgs []string) error {
+	for _, msg := range msgs {
+		s.appendUser(TransUserMessage, msg, "human")
+		if err := s.transcript.Append(TransUserMessage, map[string]any{"text": msg, "source": "human"}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// recordUndeliveredNudges drains any still-queued nudges on a terminal
+// exit path and records a VISIBLE error transcript part naming the dropped
+// message(s), so the session pane shows what was swallowed instead of
+// nothing. No-op when the queue is empty.
+func (s *Session) recordUndeliveredNudges() []string {
+	msgs := s.drainInjectedAll(context.Background())
+	if len(msgs) == 0 {
+		return nil
+	}
+	errMsg := fmt.Sprintf("queued nudge(s) not delivered — execution ended before it could be answered (%d dropped: %q)", len(msgs), strings.Join(msgs, "; "))
+	_ = s.transcript.Append(TransError, map[string]any{"error": errMsg})
+	s.log.Warn("native session: dropped queued nudges at terminal exit", "execution", s.id, "dropped", len(msgs))
+	return msgs
+}
+
+// --- written-files tracking ----------------------------------------------
+
+// markWritten records a written file path (deduped).
+func (s *Session) markWritten(path string) {
+	s.writtenMu.Lock()
+	defer s.writtenMu.Unlock()
+	if s.writtenSet == nil {
+		s.writtenSet = map[string]bool{}
+	}
+	if !s.writtenSet[path] {
+		s.writtenSet[path] = true
+		s.writtenPaths = append(s.writtenPaths, path)
+	}
+}
+
+// writtenList returns the deduped written paths (sorted for determinism).
+func (s *Session) writtenList() []string {
+	s.writtenMu.Lock()
+	defer s.writtenMu.Unlock()
+	out := append([]string(nil), s.writtenPaths...)
+	return out
+}
+
+// --- helpers -------------------------------------------------------------
+
+func mustJSON(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
+// capToolOutput truncates a tool result to maxToolOutputBytes keeping the
+// head + truncation marker (parity with opencode's capToolOutput).
+func capToolOutput(s string) string { return capToolOutputAt(s, maxToolOutputBytes) }
+
+// replayToolOutputCap is the per-tool-result cap applied when a prior
+// session's transcript is REPLAYED into a follow-up (bounded-replay fix,
+// 2026-09-09). The live cap (maxToolOutputBytes, 128 KiB) is for the
+// working context the model is actively using; replaying an entire run's
+// tool outputs at 128 KiB each into a follow-up produced ~600KB / ~150K
+// tokens of history, which free models cannot handle (text-only or empty
+// replies). Follow-up context only needs the HEAD of each prior tool
+// result — the model re-reads/targets when it needs more. 6 KiB ≈ 1.5K
+// tokens per result keeps a long run's replay proportional.
+const replayToolOutputCap = 6 * 1024
+
+// capReplayToolOutput truncates a prior tool result for follow-up replay.
+func capReplayToolOutput(s string) string { return capToolOutputAt(s, replayToolOutputCap) }
+
+// capToolOutputAt truncates s to cap bytes keeping the head + marker.
+func capToolOutputAt(s string, cap int) string {
+	if cap < 1 || len(s) <= cap {
+		return s
+	}
+	head := cap - len(toolOutputTruncatedMarker)
+	if head < 1 {
+		head = 1
+	}
+	return s[:head] + toolOutputTruncatedMarker
+}
+
+// isWriteTool reports whether the tool is an artifact-writing tool.
+func isWriteTool(name string) bool {
+	switch name {
+	case "write", "write_artifact":
+		return true
+	}
+	return false
+}
+
+// isFileWritingTool reports whether the tool writes files (OnWrittenFiles
+// parity).
+func isFileWritingTool(name string) bool {
+	switch name {
+	case "write", "write_artifact", "edit", "batch_write":
+		return true
+	}
+	return false
+}
+
+// filePathFromArgs extracts a "path" field from tool args JSON.
+func filePathFromArgs(argsJSON string) (string, bool) {
+	var d struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &d); err != nil || d.Path == "" {
+		return "", false
+	}
+	return d.Path, true
+}
+
+// parseArtifactInput extracts (path, content) from a write tool's args.
+func parseArtifactInput(name, argsJSON string) (string, string, bool) {
+	var d struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &d); err != nil || d.Path == "" {
+		return "", "", false
+	}
+	return d.Path, d.Content, true
+}
+
+// artifactTypeFromPath maps a file path to an artifact type hint (parity).
+func artifactTypeFromPath(path string) string {
+	switch {
+	case strings.HasSuffix(path, ".md"), strings.HasSuffix(path, ".markdown"):
+		return "markdown"
+	case strings.HasSuffix(path, ".json"):
+		return "json"
+	case strings.HasSuffix(path, ".yaml"), strings.HasSuffix(path, ".yml"):
+		return "yaml"
+	case strings.HasSuffix(path, ".html"), strings.HasSuffix(path, ".htm"):
+		return "html"
+	case strings.HasSuffix(path, ".csv"):
+		return "csv"
+	case strings.HasSuffix(path, ".xml"):
+		return "xml"
+	case strings.HasSuffix(path, ".svg"):
+		return "svg"
+	default:
+		return "text"
+	}
+}
+
+var (
+	_ = errors.Is
+	_ = slog.LevelInfo
+)

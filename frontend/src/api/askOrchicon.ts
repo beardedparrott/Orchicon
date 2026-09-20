@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { askOrchiconClient } from "@/api/clients";
 import type { Conversation } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 import type { ChatMessage } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
+import type { AgentConfig } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 import { ConversationMode } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 
 export const askKeys = {
@@ -43,16 +44,44 @@ export function useCreateConversation() {
       modelRef?: string;
       initialMessage?: string;
       mode?: ConversationMode;
+      // projectId places the conversation in a project from birth — the
+      // per-project "new conversation" button in the sidebar. Empty (the
+      // default) creates an unassigned conversation, which is what every other
+      // caller wants.
+      projectId?: string;
     }) => {
       const res = await askOrchiconClient.createConversation({
         modelRef: opts.modelRef ?? "",
         initialMessage: opts.initialMessage ?? "",
         mode: opts.mode ?? ConversationMode.BRAINSTORM,
+        projectId: opts.projectId ?? "",
       });
       return res.conversation as Conversation | undefined;
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: askKeys.conversations });
+    },
+  });
+}
+
+// useSetConversationProject moves a conversation into a project, or unassigns it
+// with an empty projectId. It is what the sidebar's project folders accept on a
+// drop and what its per-project "new conversation" button sets at create time —
+// the same rpc the TUI's /project calls, so the two clients cannot disagree
+// about what "belongs to a project" means.
+export function useSetConversationProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (opts: { id: string; projectId: string }) => {
+      const res = await askOrchiconClient.setConversationProject({
+        id: opts.id,
+        projectId: opts.projectId,
+      });
+      return res.conversation as Conversation | undefined;
+    },
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: askKeys.conversations });
+      qc.invalidateQueries({ queryKey: askKeys.conversation(variables.id) });
     },
   });
 }
@@ -77,6 +106,24 @@ export function useUpdateConversationTitle() {
       return res.conversation as Conversation | undefined;
     },
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: askKeys.conversations });
+    },
+  });
+}
+
+export function useCompactConversation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (conversationId: string) => {
+      // A synchronous RPC: compaction is one bounded operation, so there is no
+      // stream and no turn. It may run a summarize model call server-side, which
+      // is why the caller must not treat this as an instant write.
+      return await askOrchiconClient.compactConversation({ conversationId, reason: "manual" });
+    },
+    onSuccess: (_res, conversationId) => {
+      // The server rewrote the conversation's history (the summary is a new
+      // message), so both the transcript and the conversation list are stale.
+      qc.invalidateQueries({ queryKey: askKeys.messages(conversationId) });
       qc.invalidateQueries({ queryKey: askKeys.conversations });
     },
   });
@@ -117,7 +164,7 @@ export function useGetAgentConfig() {
 export function useUpdateAgentConfig() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (config: any) => {
+    mutationFn: async (config: AgentConfig) => {
       const res = await askOrchiconClient.updateAgentConfig({ config });
       return res.config;
     },
@@ -138,6 +185,27 @@ export function useSetConversationMode() {
       return res.conversation as Conversation | undefined;
     },
     onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: askKeys.conversations });
+      qc.invalidateQueries({ queryKey: askKeys.conversation(variables.id) });
+    },
+  });
+}
+
+// useSetConversationModel retargets an OPEN conversation's model (ADR-0004
+// picker → SetConversationModel). The change applies from the NEXT message.
+export function useSetConversationModel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (opts: { id: string; modelRef: string }) => {
+      const res = await askOrchiconClient.setConversationModel({
+        id: opts.id,
+        modelRef: opts.modelRef,
+      });
+      return res.conversation as Conversation | undefined;
+    },
+    onSuccess: (_data, variables) => {
+      // The conversation row carries the new model_ref, and the composer's stat
+      // strip reads it back off that row — so both keys must refresh.
       qc.invalidateQueries({ queryKey: askKeys.conversations });
       qc.invalidateQueries({ queryKey: askKeys.conversation(variables.id) });
     },

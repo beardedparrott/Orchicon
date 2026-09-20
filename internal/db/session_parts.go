@@ -50,8 +50,16 @@ func AppendExecutionSessionParts(ctx context.Context, tx pgx.Tx, tenantID string
 // chronological order. beforeSeq paginates backwards (exclusive); 0 = from
 // the start. limit bounds the page.
 func ListExecutionSessionParts(ctx context.Context, tx pgx.Tx, tenantID, executionID string, limit int, beforeSeq int64) ([]SessionPart, error) {
-	if limit <= 0 || limit > 1000 {
+	// A session chat must render the WHOLE transcript. The old 1000 cap
+	// dropped the newest parts (highest seqs) for a long execution — a
+	// follow-up reply (the highest seqs) was silently cut off while the
+	// oldest 1000 parts were returned. A caller that wants a tail passes
+	// beforeSeq; the cap is generous enough to cover a long run.
+	if limit <= 0 {
 		limit = 1000
+	}
+	if limit > 100000 {
+		limit = 100000
 	}
 	var q string
 	var args []any

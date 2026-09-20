@@ -31,11 +31,14 @@ import (
 
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/fileedit"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
+	"github.com/beardedparrott/orchicon/internal/worktree"
 	"go.opentelemetry.io/otel/attribute"
 	otelmetric "go.opentelemetry.io/otel/metric"
 )
@@ -77,6 +80,24 @@ type Adapter struct {
 	// transcript is not recorded (e.g. tests).
 	sessionStore SessionStoreFunc
 
+	// fileEdits is the diff-pipeline hook: on every mutating tool_use event
+	// it parses the tool's structured file_edits output (worktree engine
+	// tools) or takes a server-side after-snapshot (opencode built-in
+	// write/edit) and persists ground-truth ledger entries. Injected by the
+	// server; nil = no ledger (tests, adapters without DB access). The
+	// contract mirrors SessionStoreFunc: best-effort, never blocks the
+	// event loop, all errors are the implementation's concern.
+	fileEdits FileEditHookFunc
+
+	// resolveBinary is the adapter-CLI resolution seam. Default
+	// (resolveOpenCodeBinary) probes PATH then $HOME/.opencode/bin —
+	// Orchicon never ships the binary; the operator's host install is the
+	// single source. Tests override it via SetBinaryResolver so hermetic
+	// CI (bare runners, no adapter CLI installed) exercises the real
+	// fail-fast paths without provisioning anything. Each future adapter
+	// gets its own equivalent resolver + seam.
+	resolveBinary func() (string, error)
+
 	// consecutiveSessionErrors counts back-to-back model-layer session
 	// failures across executions (guarded by mu). When it reaches
 	// sessionErrorRecycleThreshold, the adapter recycles the affected
@@ -97,18 +118,22 @@ type Adapter struct {
 }
 
 // SessionStoreFunc persists transcript entries for one execution. The
-// implementation owns the tenant transaction.
-type SessionStoreFunc func(ctx context.Context, execID, tenantID string, parts []db.SessionPart) error
+// implementation owns the tenant transaction. It is the opencode alias
+// for the scheduler contract type (scheduler.SessionStoreFunc) so the
+// adapter reads identically to how it did before the contract move.
+type SessionStoreFunc = scheduler.SessionStoreFunc
 
 // SetRuntimeClient injects the workflow runtime daemon client. When set,
 // executions with a RuntimeWorkflowID dispatch into that workflow's
-// runtime container; without it the adapter runs in-process.
+// runtime container; without it the adapter runs in-process. It is the
+// opencode implementation of scheduler.ConfigurableBridge.
 func (a *Adapter) SetRuntimeClient(rt *runtime.Client) { a.rt = rt }
 
 // SetHostServe injects the always-on host opencode serve manager. When
 // set AND sessions are enabled, local (in-process) executions run as
 // persistent sessions on it. Nil means no host serve is available — such
-// executions fail fast (the one-shot subprocess path was removed).
+// executions fail fast (the one-shot subprocess path was removed). It is
+// the opencode implementation of scheduler.ConfigurableBridge.
 func (a *Adapter) SetHostServe(hs *HostServe) { a.host = hs }
 
 // SendExecutionMessage routes a mid-run human message into a live session
@@ -171,6 +196,21 @@ func (a *Adapter) sessionsEnabled(manifest scheduler.ExecutionManifest) bool {
 // worktree path when set, else the project dir. The worktree lives under the
 // project dir (.orchicon-worktrees/<runID>), so it is covered by the
 // project-dir mount and passes the project-dir containment checks.
+// engineEditedFromOutput extracts the paths a worktree-engine tool output
+// recorded in its structured file_edits array (empty for every other tool /
+// plain text output). Tolerant: any parse problem yields nil.
+func engineEditedFromOutput(out string) []string {
+	entries, err := fileedit.ParseEngineOutput(out)
+	if err != nil {
+		return nil
+	}
+	paths := make([]string, 0, len(entries))
+	for _, e := range entries {
+		paths = append(paths, e.Path)
+	}
+	return paths
+}
+
 func executionDir(m scheduler.ExecutionManifest) string {
 	if m.WorktreePath != "" {
 		return m.WorktreePath
@@ -184,7 +224,12 @@ func executionDir(m scheduler.ExecutionManifest) string {
 // Returns nil when no serve is available — the caller fails the execution
 // (the legacy one-shot fallback was removed).
 func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.ExecutionManifest) *SessionClient {
-	if a.rt != nil && manifest.RuntimeWorkflowID != "" {
+	// Local execution mode: run in-process via the host serve, never
+	// create/exec a container. The reconciler skipped EnsureForRun for a
+	// local run, so RuntimeWorkflowID has no lease — routing it to
+	// a.rt.Create would silently create a container the run was
+	// explicitly configured NOT to use.
+	if runtimeContainerRouteEnabled(a.rt != nil, manifest) {
 		// The composite worktree MCP tools resolve relative paths against
 		// ORCHICON_MCP_WORKTREE_DIR, which must be the execution's working
 		// directory — the run worktree when provisioned, else the project
@@ -219,9 +264,34 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 		return NewSessionClient(baseURL, resp.ServePassword, executionDir(manifest))
 	}
 	if a.host != nil {
+		// Lazy host serve (AC 2): the in-process serve starts on FIRST
+		// opencode demand. Standalone dispatches, workflow-run local
+		// executions, and follow-up continuations all arrive here through
+		// Adapter.Start, so a plane with no opencode demand never spawns
+		// (or probes for) the serve at all (AC 1).
+		//
+		// The failure is LOUD and fail-fast: EnsureStarted's error (disabled
+		// transport kill-switch, missing binary, serve never ready) is
+		// logged verbatim, and returning nil preserves the caller's existing
+		// nil-client failure path — the execution fails rather than
+		// degrading to a second transport.
+		if err := a.host.EnsureStarted(ctx); err != nil {
+			a.log.Warn("session transport: host opencode serve unavailable — failing execution",
+				"execution", manifest.ExecutionID, "error", err)
+			return nil
+		}
 		return a.host.Client()
 	}
 	return nil
+}
+
+// runtimeContainerRouteEnabled is the always-container routing gate: an
+// opencode session dispatches into the run's container only when a daemon
+// client is wired, the execution belongs to a workflow run, AND the run is
+// NOT in local execution mode. A local run has no container (EnsureForRun
+// skipped) — it uses the host serve (in-process), never a fresh container.
+func runtimeContainerRouteEnabled(hasClient bool, m scheduler.ExecutionManifest) bool {
+	return hasClient && m.RuntimeWorkflowID != "" && m.ExecutionMode != db.ExecutionModeLocal
 }
 
 // RuntimeServeConfig builds the OPENCODE_CONFIG_CONTENT for a runtime
@@ -243,7 +313,7 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 func RuntimeServeConfig(imageTag, projectDir, workflowRunID string, planeEnv map[string]string) string {
 	opts := ConfigOptions{
 		AgentName:    workerAgent,
-		AgentPrompt:  workerAgentPrompt,
+		AgentPrompt:  sessionToolShell,
 		DefaultAgent: workerAgent,
 		ModelRef:     "",
 		SkipUserMCP:  true,
@@ -287,6 +357,19 @@ func RuntimeServeConfig(imageTag, projectDir, workflowRunID string, planeEnv map
 	// process cwd is the last-resort fallback. CompositeTools is only set when
 	// a worktree dir resolves, so the batch MCP is always registered alongside
 	// the read/grep deny (no lockout).
+	// ProjectRoot is the READ-only extra scope the composite worktree tools may
+	// reach for the run-state files (.orchicon/<run>/) and architecture-notes,
+	// which live at the project root — a sibling of the run worktree. Derived
+	// from the worktree path: when the worktree sits under
+	// <root>/.orchicon-worktrees/<runID>, the project root is its
+	// parent-of-parent; in-place runs (worktree == project dir) derive to the
+	// project dir itself. The project root is reachable in-container as an
+	// ancestor of the worktree (projectMount(manifest.ProjectDir)).
+	projectRoot := projectDir
+	if filepath.Base(filepath.Dir(projectDir)) == ".orchicon-worktrees" {
+		projectRoot = filepath.Dir(filepath.Dir(projectDir))
+	}
+	opts.ProjectDir = projectRoot
 	opts.WorktreeDir = projectDir
 	if opts.WorktreeDir == "" {
 		opts.WorktreeDir = os.Getenv("ORCHICON_WORKTREE_DIR")
@@ -353,15 +436,21 @@ func executionSystemPrompt(manifest scheduler.ExecutionManifest) string {
 // runtime does not expose them falls back to the built-ins without error, and
 // it explicitly forbids the granular tools so the model does not keep reaching
 // for read/grep in batches (the conflicting behaviour the old guidance caused).
-const worktreePathDiscipline = "\n\nAll file reads/writes must use paths relative to the current worktree; the main checkout is not accessible.\n"
+const worktreePathDiscipline = "\n\n## File scoping\n" +
+	"- Reads may resolve the project root too: run-state files under `.orchicon/<run>/` and `architecture-notes/` live at the project root, a sibling of this worktree — `batch_read`/`read`/`grep`/`list` can read them (by project-root or `../../.orchicon/<run>/...` path).\n" +
+	"- Writes land ONLY in this worktree and the sanctioned scratch dir `/tmp/orchicon` — never the main checkout at the project root.\n" +
+	"- Deletes are scoped to this worktree and `/tmp/orchicon`; anything escaping the worktree/project root stays blocked.\n"
 
 const batchToolsDiscipline = "\n\n# Tool discipline (composite worktree tools)\n" +
 	"Use the composite file tools for ALL file access:\n" +
 	"- `batch_read` reads several files or a whole directory in ONE call.\n" +
 	"- `batch_grep` searches several patterns across the tree in ONE call.\n" +
 	"- `batch_write` applies several create/overwrite/edit/append writes in ONE atomic call.\n" +
-	"- Do NOT use `read`, `grep`, `glob`, `write`, or `edit` for file access when the batch tools are available — they are fallback-only.\n" +
-	"- Never re-read a file whose content is already in context — every extra tool call re-sends the whole conversation.\n"
+	"- The single-op variants (`read`, `grep`, `write`, `edit`) are thin wrappers over the same batch engine — use them only for a genuinely one-file need; prefer the batch tools for independent operations (one call carrying several operations = one turn instead of N).\n" +
+	"- `list` enumerates a directory's entries cheaply (the `ls` equivalent of glob); `todoread` re-syncs your live todo list.\n" +
+	"- Do NOT use `glob` to read files, and never re-read a file whose content is already in context — every extra tool call re-sends the whole conversation.\n" +
+	"- Bundle independent reads/searches/writes into ONE batch call; never split related work across many micro calls.\n" +
+	"- Oversized tool outputs are truncated head+tail at capture time with the full payload offloaded to disk (<project>/.orchicon/outputs/); the transcript carries the reference — grep/read the offloaded file only if you actually need the middle.\n"
 
 // IsExecutionActive reports whether an in-process execution subprocess is
 // still tracked as running. Used by the execution-liveness reaper to
@@ -378,73 +467,79 @@ func (a *Adapter) IsExecutionActive(execID string) bool {
 
 // UsageRecord is the usage sample the adapter emits on step_finish
 // (docs/04 §6.1 step_finish carries tokens + cost). It is the opencode
-// bridge shape onto the canonical aigateway.UsageInput — the server copies
-// it field-for-field into the gateway's input so the gateway never branches
-// on provider.
-type UsageRecord struct {
-	TenantID         string
-	ProjectID        string
-	TaskID           string
-	ExecutionID      string
-	WorkerID         string
-	Provider         string
-	Model            string
-	PromptTokens     int64
-	CacheReadTokens  int64
-	CacheWriteTokens int64
-	CompletionTokens int64
-	ReasoningTokens  int64
-	CostUSD          float64
-	CorrelationID    string
-	TraceID          string
-	WorkflowRunID    string // immutable link to the workflow run; survives execution deletion
-}
+// alias for the scheduler contract type (scheduler.UsageRecord) — the
+// server copies it field-for-field into the gateway's input so the
+// gateway never branches on provider.
+type UsageRecord = scheduler.UsageRecord
 
 // UsageRecorderFunc records a usage sample. Decoupled from the
 // aigateway package via a function type so the adapter has no import
-// dependency on the gateway (docs/04 §6.0: adapter is a thin bridge).
-type UsageRecorderFunc func(ctx context.Context, in UsageRecord) error
+// dependency on the gateway (docs/04 §6.0: adapter is a thin bridge). It
+// is the opencode alias for the scheduler contract type.
+type UsageRecorderFunc = scheduler.UsageRecorderFunc
 
 // SetUsageRecorder injects the usage recording callback. The server
-// constructs it from the aigateway.UsageRecorder.
+// constructs it from the aigateway.UsageRecorder. It is the opencode
+// implementation of scheduler.ConfigurableBridge.
 func (a *Adapter) SetUsageRecorder(fn UsageRecorderFunc) { a.usageRecorder = fn }
 
 // SetSessionStore injects the durable transcript writer. The server wraps
 // db.AppendExecutionSessionParts in a tenant transaction. Nil = the
-// session transcript is not persisted.
+// session transcript is not persisted. It is the opencode implementation
+// of scheduler.ConfigurableBridge.
 func (a *Adapter) SetSessionStore(fn SessionStoreFunc) { a.sessionStore = fn }
+
+// FileEditHookFunc is the diff-pipeline ledger callback. tool is the tool
+// name (batch_write/write/edit for the worktree engine, opencode built-ins
+// pass their input map for the snapshot path), input/out carry the tool_use
+// event's state. The server implements it over fileedit.Service.
+type FileEditHookFunc func(ctx context.Context, execID, tenantID, execDir, toolName string, input map[string]any, output string)
+
+// SetFileEditHook injects the file-edit ledger hook. Nil = no ledger.
+// It is the opencode implementation of the diff-pipeline wiring point.
+func (a *Adapter) SetFileEditHook(fn FileEditHookFunc) { a.fileEdits = fn }
 
 // workerAgent is the opencode agent name the adapter injects the worker's
 // composed system prompt under (selected with --agent).
 const workerAgent = "orchicon-worker"
 
-// workerAgentPrompt is the MINIMAL system prompt registered for the
-// orchicon-worker agent. It deliberately carries ONLY a tool inventory and
-// tool-call discipline — the worker's actual identity/task/context rides
-// Orchicon's own per-message `system` field. The point is to REPLACE
-// opencode's large built-in `build` agent prompt (which the default agent
-// would otherwise inject into every turn) with this short shell, cutting
-// per-turn tokens. The tool list restores the "which tool fits which job"
-// guidance opencode's build prompt previously supplied, without its
-// verbosity.
-const workerAgentPrompt = "You are an autonomous coding agent.\n\n" +
-	"File access tools (use these for all reading, searching, and writing):\n" +
+// sessionToolShell is the MINIMAL, session-kind-NEUTRAL system prompt registered
+// for the serve's default agent. It deliberately carries ONLY a tool inventory —
+// which tool fits which job — because its purpose is to REPLACE opencode's large
+// built-in `build` agent prompt (a big per-turn token win), not to state an
+// identity, a budget, or a quota discipline.
+//
+// It is shared by EVERY session on the serve: worker executions AND Ask
+// Orchicon conversations. That is exactly why nothing identity- or budget-shaped
+// belongs here. This shell previously opened with "You are an autonomous coding
+// agent.", asserted the granular tools were "disabled", and closed with
+// tool-call-economy rules ("every extra tool call re-sends the whole
+// conversation", "prefer the fewest tool calls that complete the task"). Ask
+// conversations select no agent, so they inherit the serve default — meaning a
+// live conversation was told it was an autonomous coding agent spending a
+// per-call budget, and it duly reported being "almost at my budget" in a session
+// that has no budget at all (Ask carries no budget ladder, no gates and no
+// warning injections; those are worker-only).
+//
+// The worker identity and the tool-economy discipline live where ONLY an
+// execution sees them: db.WorkerIdentityPreamble + db.efficiencyBlock in the
+// worker's composite per-message prompt, and batchToolsDiscipline for
+// composite-tool runs. A worker loses nothing by this shell going neutral; a
+// conversation stops being told it is a worker.
+const sessionToolShell = "File access tools:\n" +
 	"- `batch_read` — read several files or a whole directory in ONE call\n" +
 	"- `batch_grep` — search several patterns across the tree in ONE call\n" +
-	"- `batch_write` — apply several create/overwrite/edit/append writes in ONE atomic call\n\n" +
+	"- `batch_write` — apply several create/overwrite/edit/append writes in ONE atomic call\n" +
+	"- `read` / `grep` / `write` / `edit` — single-file wrappers over the same batch engine (one-op convenience)\n" +
+	"- `list` — enumerate a directory's entries (the `ls` equivalent of glob)\n\n" +
 	"Other tools:\n" +
-	"- `glob` — find files by pattern\n" +
+	"- `glob` — find files by pattern (use it to find paths, never to read)\n" +
 	"- `bash` — run a shell command in the project\n" +
-	"- `todowrite` — maintain the live task-progress list (emit it every turn)\n" +
+	"- `todowrite` / `todoread` — maintain and re-read a task-progress list\n" +
 	"- `webfetch` — fetch web content from a URL\n" +
 	"- `websearch` — search the web (use only if needed)\n" +
 	"- `skill` — load a skill's instructions\n" +
-	"- `orchicon_*` — Orchicon platform tools: projects, work items, workers, workflows, executions, policies, runtime images, usage, settings, and the project-directory list/read tools.\n\n" +
-	"Discipline — read carefully:\n" +
-	"- Do NOT use `read`, `grep`, `write`, or `edit` for file access; they are disabled in favor of the batch tools. Use `glob` only to find paths, never to read.\n" +
-	"- Never re-read a file whose content is already in context — every extra tool call re-sends the whole conversation.\n" +
-	"- Bundle independent reads/searches/writes into ONE batch call; never split related work across many micro calls.\n" +
-	"- Prefer the fewest tool calls that complete the task."
+	"- `orchicon_*` — Orchicon platform tools: projects, work items, workers, workflows, executions, policies, runtime images, usage, settings, and the project-directory list/read tools."
 
 // runtimeContainerBinaryPath is where the runtime daemon bind-mounts its
 // own executable in every runtime container (internal/runtime/daemon.go).
@@ -453,10 +548,39 @@ const workerAgentPrompt = "You are an autonomous coding agent.\n\n" +
 const runtimeContainerBinaryPath = "/usr/local/bin/orchicon"
 
 // New creates an OpenCode adapter bridge.
+// SetBinaryResolver overrides the adapter-CLI resolver (test seam —
+// hermetic CI: bare runners never install adapter CLIs, so tests stub
+// the resolution instead of provisioning a binary; nil restores the
+// default PATH + $HOME/.opencode/bin probe).
+func (a *Adapter) SetBinaryResolver(f func() (string, error)) {
+	if f == nil {
+		f = resolveOpenCodeBinary
+	}
+	a.resolveBinary = f
+}
+
+// resolveOpenCodeBinary is the production resolver: probe PATH, then the
+// operator's host install at $HOME/.opencode/bin (the runtime daemon and
+// scripts/container.sh mount it there — Orchicon never ships the binary).
+func resolveOpenCodeBinary() (string, error) {
+	binary, err := exec.LookPath("opencode")
+	if err != nil {
+		if home, herr := os.UserHomeDir(); herr == nil {
+			cand := filepath.Join(home, ".opencode", "bin", "opencode")
+			if st, serr := os.Stat(cand); serr == nil && !st.IsDir() {
+				return cand, nil
+			}
+		}
+		return "", fmt.Errorf("opencode binary not found on PATH or ~/.opencode/bin (install it on the host: curl -fsSL https://opencode.ai/install | bash; set ORCHICON_SIMULATE_ADAPTER=1 only for offline dev): %w", err)
+	}
+	return binary, nil
+}
+
 func New(log *slog.Logger) *Adapter {
 	return &Adapter{
-		log:      log,
-		sessions: make(map[string]*sessionRun),
+		log:           log,
+		resolveBinary: resolveOpenCodeBinary,
+		sessions:      make(map[string]*sessionRun),
 	}
 }
 
@@ -505,17 +629,12 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 	// standard mounts), so besides PATH we also probe that location
 	// directly. The error is loud either way: the caller (TaskReconciler)
 	// marks the execution failed_to_start and the operator sees it
-	// (AGENTS.md).
-	binary, err := exec.LookPath("opencode")
-	if err != nil {
-		if home, herr := os.UserHomeDir(); herr == nil {
-			cand := filepath.Join(home, ".opencode", "bin", "opencode")
-			if st, serr := os.Stat(cand); serr == nil && !st.IsDir() {
-				binary = cand
-			}
-		}
-	}
-	if binary == "" {
+	// (AGENTS.md). resolveBinary is a test seam (see SetBinaryResolver):
+	// hermetic CI never installs adapter CLIs, so tests stub the resolver
+	// instead of provisioning one — the pattern scales to every future
+	// adapter (claude code etc.), whose tests stub their own resolver.
+	binary, err := a.resolveBinary()
+	if binary == "" || err != nil {
 		return fmt.Errorf("opencode binary not found on PATH or ~/.opencode/bin (install it on the host: curl -fsSL https://opencode.ai/install | bash; set ORCHICON_SIMULATE_ADAPTER=1 only for offline dev): %w", err)
 	}
 
@@ -715,6 +834,13 @@ type execStreamState struct {
 	// it can read what the previous step actually produced.
 	writtenFiles []string
 
+	// engineEditedPaths holds the paths already ledgered by the worktree
+	// engine's structured file_edits output during this run (batch_write
+	// family) — the file_diff fallback skips them so a path never gets two
+	// entries for one edit. Guarded by the same event-loop serialization
+	// as writtenFiles (parseEvent runs on one goroutine per execution).
+	engineEditedPaths map[string]bool
+
 	// truncatedFinish marks a FINAL step_finish that indicates the model
 	// turn was interrupted rather than completed: reason "unknown" with
 	// zero tokens (the signature of a truncated/aborted response — the
@@ -761,6 +887,41 @@ func allTokensZero(tokens map[string]any) bool {
 		}
 	}
 	return true
+}
+
+// parseTodoItems extracts the worker's todo list from a `todowrite` tool
+// input payload. opencode's todowrite input carries the full replacement
+// array under `todos` ({content, status, priority} per item). Malformed
+// items are dropped; items with no content are skipped; a missing status
+// defaults to "pending". This is the exact shape `todoread` (and the native
+// todo surface) renders from.
+func parseTodoItems(inRaw any) []worktree.TodoItem {
+	inputMap, ok := inRaw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	itemsRaw, ok := inputMap["todos"].([]any)
+	if !ok {
+		return nil
+	}
+	items := make([]worktree.TodoItem, 0, len(itemsRaw))
+	for _, ir := range itemsRaw {
+		im, ok := ir.(map[string]any)
+		if !ok {
+			continue
+		}
+		content, _ := im["content"].(string)
+		if content == "" {
+			continue
+		}
+		status, _ := im["status"].(string)
+		priority, _ := im["priority"].(string)
+		if status == "" {
+			status = "pending"
+		}
+		items = append(items, worktree.TodoItem{Content: content, Status: status, Priority: priority})
+	}
+	return items
 }
 
 // parseEvent dispatches a decoded opencode event into the telemetry
@@ -826,9 +987,17 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 		//     }
 		//   }
 		toolName, _ := part["tool"].(string)
+		callID, _ := part["callID"].(string)
 		state, _ := part["state"].(map[string]any)
 		inRaw, _ := state["input"]
 		outStr, _ := state["output"].(string)
+
+		// The ledger hook below must see the PRE-capped output: capToolOutput
+		// splices the tail out of large outputs, which would hide the
+		// file_edits payload of a huge batch_write (the JSON rides at the
+		// end). rawOut is the ledger's copy; outStr stays capped for the UI
+		// fan-out and the durable transcript.
+		rawOut := outStr
 
 		// Cap tool OUTPUT before it is streamed to the UI / persisted into
 		// the durable transcript (which a follow-up or a recovery-resumed
@@ -837,7 +1006,53 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 		// inflates everything downstream of this execution. Truncate with a
 		// clear marker so the worker/operator knows the tail is available on
 		// the host or project disk without ballooning the transcript.
-		outStr = capToolOutput(outStr)
+		outStr = capToolOutput(outStr, executionDir(manifest), execID, callID)
+
+		// Diff pipeline: record the file edits this tool made BEFORE any
+		// early-break branch below — notably the `write` artifact path, which
+		// breaks out of the switch for every write carrying a `content` input
+		// (both the opencode built-in writer AND the worktree engine's
+		// single-op `write` wrapper share that {filePath|path, content}
+		// shape). The hook sees rawOut (PRE-cap — capToolOutput may have
+		// spliced the tail out of outStr, hiding the file_edits payload of a
+		// huge batch_write). Best-effort: the hook owns its error posture; a
+		// ledger gap never fails the session. Only completed calls ledger: an
+		// error/failed/in-flight state carries no ground truth, and failed
+		// edits must never create phantom rows. An absent status keeps the
+		// legacy fire behavior.
+		toolStatus, _ := state["status"].(string)
+		if a.fileEdits != nil && (toolStatus == "" || toolStatus == "completed") {
+			inputMap, _ := inRaw.(map[string]any)
+			if inputMap == nil {
+				inputMap = map[string]any{}
+			}
+			// Remember engine-covered paths so the file_diff fallback never
+			// double-records one edit (the engine entry is the exact one).
+			if toolName == "batch_write" || toolName == "write" || toolName == "edit" {
+				if stats != nil {
+					if stats.engineEditedPaths == nil {
+						stats.engineEditedPaths = map[string]bool{}
+					}
+					for _, e := range engineEditedFromOutput(rawOut) {
+						stats.engineEditedPaths[e] = true
+					}
+				}
+			}
+			a.fileEdits(ctx, execID, execRow.TenantID, executionDir(manifest), toolName, inputMap, rawOut)
+		}
+
+		// Detect `todowrite` (native opencode todo tool) and mirror its
+		// payload into the DB-less sidecar snapshot so `todoread` — and the
+		// native todo surface — can re-sync it without a Postgres
+		// transcript. The todo list is the live task-progress list the
+		// execution UI renders from; snapshotting it here (rather than
+		// re-parsing the durable transcript) is what makes the native todo
+		// surface work for DB-less sessions. Best-effort: a failed snapshot
+		// is a log-level concern, never a tool failure.
+		if toolName == "todowrite" {
+			items := parseTodoItems(inRaw)
+			worktree.SaveTodoSnapshot(worktree.BaseFor(executionDir(manifest)), items)
+		}
 
 		// Detect `write` tool calls (opencode built-in file writer)
 		// and route them as artifacts instead of raw tool calls. The
@@ -966,6 +1181,19 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 				if ok {
 					stats.writtenFiles = append(stats.writtenFiles, p)
 					a.log.Debug("opencode file modified", "execution", execID, "path", p)
+				}
+				// Diff-pipeline fallback (plan step 7): a file_diff for a
+				// path the mutating-tool hook did not cover (an unusual
+				// tool, or a tool whose input shape we don't special-case)
+				// still gets a ledger entry — a plane-side after-read of
+				// real file state under the run's exec dir. Engine-covered
+				// paths (batch_write family) skip this: their entry already
+				// exists with an exact in-engine diff. No-ops (unchanged
+				// files) yield empty entries inside ObserveAfter and are
+				// dropped there.
+				if a.fileEdits != nil && !stats.engineEditedPaths[p] {
+					input := map[string]any{"path": p}
+					a.fileEdits(ctx, execID, execRow.TenantID, executionDir(manifest), "file_diff", input, "")
 				}
 			}
 		}
@@ -1114,7 +1342,12 @@ func (a *Adapter) recordUsage(ctx context.Context, execRow db.ExecutionRow, mani
 		completionTokens == 0 && reasoningTokens == 0 && cost == 0 {
 		return
 	}
-	provider, model := parseModelRef(manifest.ModelRef)
+	provider, model, ok := adapter.SplitForServe(manifest.ModelRef)
+	if !ok {
+		// A malformed/empty model ref on a usage sample: attribute to
+		// "unknown" so the record is never dropped on the parse.
+		provider, model = "unknown", "unknown"
+	}
 	in := UsageRecord{
 		TenantID:         execRow.TenantID,
 		ProjectID:        execRow.ProjectID,
@@ -1184,20 +1417,6 @@ func extractErrorMessage(evt map[string]any) string {
 	return ""
 }
 
-// parseModelRef splits a model ref like "anthropic/claude-sonnet-4" or
-// "opencode/deepseek-v4-flash-free" into (provider, model). If there is
-// no "/", provider is "unknown" and model is the whole ref.
-func parseModelRef(ref string) (provider, model string) {
-	ref = strings.TrimSpace(ref)
-	if ref == "" {
-		return "unknown", "unknown"
-	}
-	if i := strings.IndexByte(ref, '/'); i > 0 {
-		return ref[:i], ref[i+1:]
-	}
-	return "unknown", ref
-}
-
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case float64:
@@ -1215,10 +1434,15 @@ func toInt64(v any) int64 {
 // FULL tool output (a build log, a directory listing) to OnToolCall; an
 // uncapped output is then re-sent on every later turn — the main amplifier
 // behind the observed ~45k-72k context-per-call across workflow runs. Keep
-// the head of the output (the summary/decision part) and mark the truncation
-// so the worker can grep/read the tail from disk if it needs to. Overridable
-// via ORCHICON_MAX_TOOL_OUTPUT_BYTES; < 1 disables the cap.
+// the head + tail of the output (the decision part + the error tail) and
+// offload the FULL payload to the project disk so the worker can
+// grep/read the middle if it needs to. Overridable via
+// ORCHICON_MAX_TOOL_OUTPUT_BYTES; < 1 disables the cap.
 const maxToolOutputBytesDefault = 128 * 1024 // 128 KiB ≈ ~30k tokens
+
+// toolOutputOffloadRatio is the head+tail split of the cap: each side keeps
+// (cap - marker) * ratio / (ratio+1) bytes.
+const toolOutputOffloadRatio = 2 // head:tail = 2:1 — the decision part outweighs the error tail
 
 func maxToolOutputBytes() int {
 	if v := os.Getenv("ORCHICON_MAX_TOOL_OUTPUT_BYTES"); v != "" {
@@ -1229,22 +1453,90 @@ func maxToolOutputBytes() int {
 	return maxToolOutputBytesDefault
 }
 
+// toolOutputOffloadDir returns the directory where oversized tool outputs
+// are offloaded: <project_dir>/.orchicon/outputs/<execution_id>/. The
+// .orchicon/ directory is gitignored (verified: .gitignore:57) and the
+// execution dir is scoped so a giant build log lands in exactly one place.
+// Returns "" when the project dir is not resolvable (offload disabled).
+func toolOutputOffloadDir(projectDir, execID string) string {
+	if projectDir == "" || execID == "" {
+		return ""
+	}
+	p := filepath.Join(projectDir, ".orchicon", "outputs", execID)
+	if err := os.MkdirAll(p, 0o755); err != nil {
+		return ""
+	}
+	return p
+}
+
+// offloadToolOutput writes the full oversized tool output to the offload dir
+// and returns a short reference line the transcript carries instead of the
+// payload. Best-effort: a disk-write failure degrades to the truncated
+// head+tail only (the worker still gets the decision part).
+func offloadToolOutput(projectDir, execID, callID string, full string) string {
+	dir := toolOutputOffloadDir(projectDir, execID)
+	if dir == "" {
+		return ""
+	}
+	name := callID
+	if name == "" {
+		name = fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	p := filepath.Join(dir, name+".out")
+	if err := os.WriteFile(p, []byte(full), 0o644); err != nil {
+		return ""
+	}
+	rel, err := filepath.Rel(projectDir, p)
+	if err != nil {
+		rel = p
+	}
+	return fmt.Sprintf(" (full output offloaded to %s)", rel)
+}
+
 // capToolOutput truncates a tool output to maxToolOutputBytes (128k default),
-// keeping the head + a truncation marker. Returns the string unchanged when
-// under the cap or the cap is disabled.
-func capToolOutput(s string) string {
+// keeping the HEAD (the decision/summary part) + a truncation marker + the
+// TAIL (the error/stack part — the part a worker needs when a build fails).
+// Returns the string unchanged when under the cap or the cap is disabled.
+//
+// projectDir + execID + callID feed the offload path: when the output is
+// over the cap, the FULL payload is written to
+// <projectDir>/.orchicon/outputs/<execID>/<callID>.out and the returned
+// string carries a reference to it (plus the head+tail preview), so the
+// transcript never re-sends the payload and the worker can still reach the
+// full content from disk if needed.
+func capToolOutput(s, projectDir, execID, callID string) string {
 	limit := maxToolOutputBytes()
 	if limit < 1 || len(s) <= limit {
 		return s
 	}
-	head := limit - len(toolOutputTruncatedMarker)
+	offloadRef := offloadToolOutput(projectDir, execID, callID, s)
+	avail := limit - len(toolOutputTruncatedMarker)
+	if avail < 4 {
+		avail = 4
+	}
+	head := avail * toolOutputOffloadRatio / (toolOutputOffloadRatio + 1)
+	tail := avail - head
 	if head < 1 {
 		head = 1
 	}
-	return s[:head] + toolOutputTruncatedMarker
+	if tail < 1 {
+		tail = 1
+	}
+	// The offload ref is part of the returned string; shrink the preview if
+	// the ref alone pushes past the cap (extremely long callIDs).
+	for len(toolOutputTruncatedMarker)+len(offloadRef)+head+tail > limit {
+		if head > 1 {
+			head--
+		} else if tail > 1 {
+			tail--
+		} else {
+			break
+		}
+	}
+	return s[:head] + toolOutputTruncatedMarker + offloadRef + s[len(s)-tail:]
 }
 
-const toolOutputTruncatedMarker = "\n…[output truncated by Orchicon — use a targeted read/grep on the host or project disk for the full tail]\n"
+const toolOutputTruncatedMarker = "\n…[output truncated by Orchicon — head+tail shown, full payload on disk]\n"
 
 // capPartOutput applies the tool-output cap to a legacy event's `part`
 // map (the durable-transcript shape). It returns the part unchanged when
@@ -1252,7 +1544,7 @@ const toolOutputTruncatedMarker = "\n…[output truncated by Orchicon — use a 
 // copy with state.output replaced by the capped value, so the transcript
 // (re-seeded by follow-ups / recovery-resumed sessions) stays bounded
 // without mutating the event the UI path consumed.
-func capPartOutput(part any) any {
+func (a *Adapter) capPartOutput(part any, execID, projectDir string) any {
 	m, ok := part.(map[string]any)
 	if !ok {
 		return part
@@ -1265,7 +1557,8 @@ func capPartOutput(part any) any {
 	if out == "" {
 		return part
 	}
-	capped := capToolOutput(out)
+	callID, _ := m["callID"].(string)
+	capped := capToolOutput(out, projectDir, execID, callID)
 	if capped == out {
 		return part
 	}
@@ -1317,6 +1610,16 @@ func (a *Adapter) runSimulation(ctx context.Context, execRow db.ExecutionRow, ma
 // Compile-time assertion that Adapter satisfies the AdapterBridge
 // interface.
 var _ scheduler.AdapterBridge = (*Adapter)(nil)
+
+// Compile-time assertions that Adapter satisfies the Ask chat-session
+// capability interfaces it implements as an OPTIONAL surface (the same
+// capability pattern as MessageInjector/Aborter): a bridge that registers
+// under its kind and implements ChatTurnClient can drive Ask conversation
+// turns; a bridge that does not surfaces an actionable "does not support
+// Ask chat" error at the Dispatch boundary (never a panic). SendTurnMessageWithAttachments
+// is the attachment-aware variant mirroring MessageInjector.
+var _ scheduler.ChatTurnClient = (*Adapter)(nil)
+var _ scheduler.SendTurnMessageWithAttachments = (*Adapter)(nil)
 
 // artifactTypeFromPath returns a type label for an artifact based on its
 // file extension. Used by the `write` tool handler to tag artifact events
@@ -1539,3 +1842,4 @@ func projectMount(projectDir string) []runtime.MountSpec {
 	}
 	return []runtime.MountSpec{{Source: projectDir, Dest: projectDir}}
 }
+

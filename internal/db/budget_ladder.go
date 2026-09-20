@@ -92,6 +92,22 @@ func budgetIsZero(l BudgetLadder) bool {
 	return true
 }
 
+// policyIsSet reports whether a TenantSettingsRow carries a compaction or
+// memory policy the caller intends to write (D4). An all-zero policy — the
+// migration defaults are true/0.8/6/true/5, so every meaningful policy
+// disables a feature via an explicit boolean AND still carries a valid
+// numeric — means "not part of this update". Used by the write path to
+// preserve the current policy on partial updates (see UpdateTenantSettings).
+func (r TenantSettingsRow) policyIsSet() bool {
+	if r.ContextCompactionEnabled || r.ContextCompactionPressureFrac != 0 || r.ContextRecentTurns != 0 {
+		return true
+	}
+	if r.MemoryEnabled || r.MemoryDigestEntries != 0 {
+		return true
+	}
+	return false
+}
+
 // ladderDims maps the four budget dimensions to their JSON key names, in
 // the same order parseBudgetSpec reads them.
 var ladderDims = []struct {
@@ -152,6 +168,21 @@ func (r *TenantSettingsRow) BudgetJSON() []byte {
 	// Per-tier compaction toggles are always emitted (NOT NULL DEFAULT
 	// columns), and mergeBudgets layers a worker's override on top.
 	out["compact_tiers"] = []bool{r.Budget.CompactWarnTier, r.Budget.CompactEscalTier, r.Budget.CompactFinalTier}
+	// Compaction + memory policy (D4): the typed tenant_settings columns
+	// serialize as context_compaction / memory objects — the same keys the
+	// native session's policyFromSettings and a worker's budget_overrides
+	// parse, so mergeBudgets layers worker-over-tenant per key. Only
+	// meaningful values are emitted (zero = built-in default) so a fresh
+	// tenant's JSON stays minimal.
+	out["context_compaction"] = map[string]any{
+		"enabled":       r.ContextCompactionEnabled,
+		"pressure_frac": r.ContextCompactionPressureFrac,
+		"recent_turns":  r.ContextRecentTurns,
+	}
+	out["memory"] = map[string]any{
+		"enabled":        r.MemoryEnabled,
+		"digest_entries": r.MemoryDigestEntries,
+	}
 	b, err := json.Marshal(out)
 	if err != nil {
 		// Marshal of a flat map of numbers/strings cannot fail.
@@ -171,13 +202,22 @@ func (r *TenantSettingsRow) ApplyBudgetJSON(budgets []byte) error {
 		return nil
 	}
 	var raw struct {
-		Tokens          *float64 `json:"tokens"`
-		CostUSD         *float64 `json:"cost_usd"`
-		ToolCallCount   *float64 `json:"tool_call_count"`
-		WallClockSecs   *float64 `json:"wall_clock_seconds"`
-		CompactMaxTurns *float64 `json:"compact_max_turns"`
-		CompactTiers    []bool   `json:"compact_tiers"`
-		Warnings        struct {
+		Tokens            *float64 `json:"tokens"`
+		CostUSD           *float64 `json:"cost_usd"`
+		ToolCallCount     *float64 `json:"tool_call_count"`
+		WallClockSecs     *float64 `json:"wall_clock_seconds"`
+		CompactMaxTurns   *float64 `json:"compact_max_turns"`
+		CompactTiers      []bool   `json:"compact_tiers"`
+		ContextCompaction *struct {
+			Enabled      *bool    `json:"enabled"`
+			PressureFrac *float64 `json:"pressure_frac"`
+			RecentTurns  *int     `json:"recent_turns"`
+		} `json:"context_compaction"`
+		Memory *struct {
+			Enabled       *bool `json:"enabled"`
+			DigestEntries *int  `json:"digest_entries"`
+		} `json:"memory"`
+		Warnings struct {
 			Fractions map[string][3]float64 `json:"fractions"`
 			Messages  map[string][3]string  `json:"messages"`
 		} `json:"warnings"`
@@ -215,6 +255,30 @@ func (r *TenantSettingsRow) ApplyBudgetJSON(budgets []byte) error {
 		r.Budget.CompactWarnTier = raw.CompactTiers[0]
 		r.Budget.CompactEscalTier = raw.CompactTiers[1]
 		r.Budget.CompactFinalTier = raw.CompactTiers[2]
+	}
+
+	// Compaction + memory policy (D4): present sub-keys are ingested (with
+	// the same validation policyFromSettings applies — pressure_frac in
+	// (0,1], counts > 0); absent sub-keys leave the current value so a
+	// partial update never clobbers a stored policy with zeros.
+	if cc := raw.ContextCompaction; cc != nil {
+		if cc.Enabled != nil {
+			r.ContextCompactionEnabled = *cc.Enabled
+		}
+		if cc.PressureFrac != nil && *cc.PressureFrac > 0 && *cc.PressureFrac <= 1 {
+			r.ContextCompactionPressureFrac = *cc.PressureFrac
+		}
+		if cc.RecentTurns != nil && *cc.RecentTurns > 0 {
+			r.ContextRecentTurns = *cc.RecentTurns
+		}
+	}
+	if m := raw.Memory; m != nil {
+		if m.Enabled != nil {
+			r.MemoryEnabled = *m.Enabled
+		}
+		if m.DigestEntries != nil && *m.DigestEntries > 0 {
+			r.MemoryDigestEntries = *m.DigestEntries
+		}
 	}
 
 	setFrac := func(dim string, set func(i int, v float64)) {

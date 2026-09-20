@@ -12,8 +12,8 @@
 // @ts-nocheck
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
-import { Message, proto3 } from "@bufbuild/protobuf";
-import { AgentConfig, AttachmentInput, ChatMessage, Conversation, ConversationMode, DoneSignal, ErrorChunk, ReasoningChunk, TextChunk, ToolCallChunk, ToolCallResult } from "./ask_orchicon_pb.js";
+import { Message, proto3, protoInt64 } from "@bufbuild/protobuf";
+import { AgentConfig, AttachmentInput, ChatMessage, Conversation, ConversationMode, DoneSignal, ErrorChunk, Heartbeat, ReasoningChunk, TextChunk, ToolCallChunk, ToolCallResult } from "./ask_orchicon_pb.js";
 import { Category, CategoryAssignment } from "./category_pb.js";
 import { ModelCapabilities } from "./ai_gateway_pb.js";
 
@@ -210,6 +210,15 @@ export class CreateConversationRequest extends Message<CreateConversationRequest
    */
   mode = ConversationMode.UNSPECIFIED;
 
+  /**
+   * project_id is the project this conversation belongs to. Empty creates an
+   * unassigned conversation; the GUI's per-project "new conversation" button
+   * and the TUI's create-in-folder both set it. An unknown id is rejected.
+   *
+   * @generated from field: string project_id = 4;
+   */
+  projectId = "";
+
   constructor(data?: PartialMessage<CreateConversationRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -221,6 +230,7 @@ export class CreateConversationRequest extends Message<CreateConversationRequest
     { no: 1, name: "model_ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "initial_message", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "mode", kind: "enum", T: proto3.getEnumType(ConversationMode) },
+    { no: 4, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateConversationRequest {
@@ -354,6 +364,174 @@ export class SetConversationModeResponse extends Message<SetConversationModeResp
 
   static equals(a: SetConversationModeResponse | PlainMessage<SetConversationModeResponse> | undefined, b: SetConversationModeResponse | PlainMessage<SetConversationModeResponse> | undefined): boolean {
     return proto3.util.equals(SetConversationModeResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.SetConversationModelRequest
+ */
+export class SetConversationModelRequest extends Message<SetConversationModelRequest> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * model_ref is canonical adapter/provider/model (ADR-0003); a legacy
+   * 1/2-segment ref is accepted and infers adapter "opencode". Empty clears
+   * the per-conversation override so the tenant default applies.
+   *
+   * @generated from field: string model_ref = 2;
+   */
+  modelRef = "";
+
+  constructor(data?: PartialMessage<SetConversationModelRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.SetConversationModelRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "model_ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetConversationModelRequest {
+    return new SetConversationModelRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetConversationModelRequest {
+    return new SetConversationModelRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetConversationModelRequest {
+    return new SetConversationModelRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SetConversationModelRequest | PlainMessage<SetConversationModelRequest> | undefined, b: SetConversationModelRequest | PlainMessage<SetConversationModelRequest> | undefined): boolean {
+    return proto3.util.equals(SetConversationModelRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.SetConversationModelResponse
+ */
+export class SetConversationModelResponse extends Message<SetConversationModelResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.Conversation conversation = 1;
+   */
+  conversation?: Conversation;
+
+  constructor(data?: PartialMessage<SetConversationModelResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.SetConversationModelResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "conversation", kind: "message", T: Conversation },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetConversationModelResponse {
+    return new SetConversationModelResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetConversationModelResponse {
+    return new SetConversationModelResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetConversationModelResponse {
+    return new SetConversationModelResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SetConversationModelResponse | PlainMessage<SetConversationModelResponse> | undefined, b: SetConversationModelResponse | PlainMessage<SetConversationModelResponse> | undefined): boolean {
+    return proto3.util.equals(SetConversationModelResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.SetConversationProjectRequest
+ */
+export class SetConversationProjectRequest extends Message<SetConversationProjectRequest> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * project_id is the project to place the conversation in. Empty UNASSIGNS it
+   * (the conversation survives, it just leaves the project folder). A non-empty
+   * id must name an existing project.
+   *
+   * @generated from field: string project_id = 2;
+   */
+  projectId = "";
+
+  constructor(data?: PartialMessage<SetConversationProjectRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.SetConversationProjectRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetConversationProjectRequest {
+    return new SetConversationProjectRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetConversationProjectRequest {
+    return new SetConversationProjectRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetConversationProjectRequest {
+    return new SetConversationProjectRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SetConversationProjectRequest | PlainMessage<SetConversationProjectRequest> | undefined, b: SetConversationProjectRequest | PlainMessage<SetConversationProjectRequest> | undefined): boolean {
+    return proto3.util.equals(SetConversationProjectRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.SetConversationProjectResponse
+ */
+export class SetConversationProjectResponse extends Message<SetConversationProjectResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.Conversation conversation = 1;
+   */
+  conversation?: Conversation;
+
+  constructor(data?: PartialMessage<SetConversationProjectResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.SetConversationProjectResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "conversation", kind: "message", T: Conversation },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetConversationProjectResponse {
+    return new SetConversationProjectResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetConversationProjectResponse {
+    return new SetConversationProjectResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetConversationProjectResponse {
+    return new SetConversationProjectResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SetConversationProjectResponse | PlainMessage<SetConversationProjectResponse> | undefined, b: SetConversationProjectResponse | PlainMessage<SetConversationProjectResponse> | undefined): boolean {
+    return proto3.util.equals(SetConversationProjectResponse, a, b);
   }
 }
 
@@ -695,6 +873,12 @@ export class ChatStreamResponse extends Message<ChatStreamResponse> {
      */
     value: ReasoningChunk;
     case: "reasoning";
+  } | {
+    /**
+     * @generated from field: orchicon.api.v1.Heartbeat heartbeat = 8;
+     */
+    value: Heartbeat;
+    case: "heartbeat";
   } | { case: undefined; value?: undefined } = { case: undefined };
 
   constructor(data?: PartialMessage<ChatStreamResponse>) {
@@ -712,6 +896,7 @@ export class ChatStreamResponse extends Message<ChatStreamResponse> {
     { no: 5, name: "done", kind: "message", T: DoneSignal, oneof: "event" },
     { no: 6, name: "turn_started", kind: "message", T: TurnStarted, oneof: "event" },
     { no: 7, name: "reasoning", kind: "message", T: ReasoningChunk, oneof: "event" },
+    { no: 8, name: "heartbeat", kind: "message", T: Heartbeat, oneof: "event" },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ChatStreamResponse {
@@ -844,6 +1029,54 @@ export class AbortConversationTurnResponse extends Message<AbortConversationTurn
 }
 
 /**
+ * WatchTurnStreamRequest identifies the running turn to re-attach to: the
+ * conversation plus the assistant message id ACKED by the original
+ * ChatStream TurnStarted. Both must match the registry entry or the RPC
+ * fails with NotFound (no clobber across supersedes).
+ *
+ * @generated from message orchicon.api.v1.WatchTurnStreamRequest
+ */
+export class WatchTurnStreamRequest extends Message<WatchTurnStreamRequest> {
+  /**
+   * @generated from field: string conversation_id = 1;
+   */
+  conversationId = "";
+
+  /**
+   * @generated from field: string assistant_message_id = 2;
+   */
+  assistantMessageId = "";
+
+  constructor(data?: PartialMessage<WatchTurnStreamRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.WatchTurnStreamRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "assistant_message_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WatchTurnStreamRequest {
+    return new WatchTurnStreamRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): WatchTurnStreamRequest {
+    return new WatchTurnStreamRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): WatchTurnStreamRequest {
+    return new WatchTurnStreamRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: WatchTurnStreamRequest | PlainMessage<WatchTurnStreamRequest> | undefined, b: WatchTurnStreamRequest | PlainMessage<WatchTurnStreamRequest> | undefined): boolean {
+    return proto3.util.equals(WatchTurnStreamRequest, a, b);
+  }
+}
+
+/**
  * InterjectConversationTurnRequest identifies the conversation to interject
  * and carries the steering message. The message replaces (supersedes) the
  * in-flight turn and is answered on a fresh turn; attachments are optional.
@@ -893,6 +1126,134 @@ export class InterjectConversationTurnRequest extends Message<InterjectConversat
 
   static equals(a: InterjectConversationTurnRequest | PlainMessage<InterjectConversationTurnRequest> | undefined, b: InterjectConversationTurnRequest | PlainMessage<InterjectConversationTurnRequest> | undefined): boolean {
     return proto3.util.equals(InterjectConversationTurnRequest, a, b);
+  }
+}
+
+/**
+ * CompactConversationRequest identifies the conversation to compact.
+ *
+ * @generated from message orchicon.api.v1.CompactConversationRequest
+ */
+export class CompactConversationRequest extends Message<CompactConversationRequest> {
+  /**
+   * @generated from field: string conversation_id = 1;
+   */
+  conversationId = "";
+
+  /**
+   * reason records WHY the compaction happened: "manual", "pressure", or
+   * "reactive". Free-form and advisory; recorded verbatim in the audit trail.
+   *
+   * @generated from field: string reason = 2;
+   */
+  reason = "";
+
+  constructor(data?: PartialMessage<CompactConversationRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.CompactConversationRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "reason", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CompactConversationRequest {
+    return new CompactConversationRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CompactConversationRequest {
+    return new CompactConversationRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CompactConversationRequest {
+    return new CompactConversationRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CompactConversationRequest | PlainMessage<CompactConversationRequest> | undefined, b: CompactConversationRequest | PlainMessage<CompactConversationRequest> | undefined): boolean {
+    return proto3.util.equals(CompactConversationRequest, a, b);
+  }
+}
+
+/**
+ * CompactConversationResponse reports the outcome of a compaction. It is a
+ * synchronous result (not a stream): compaction is a single bounded operation
+ * and the caller needs only the verdict plus the reason when it declined.
+ *
+ * @generated from message orchicon.api.v1.CompactConversationResponse
+ */
+export class CompactConversationResponse extends Message<CompactConversationResponse> {
+  /**
+   * compacted is false when nothing was done — an empty history, or a
+   * history already small enough that a lossy collapse would cost detail for
+   * no benefit. detail always says why.
+   *
+   * @generated from field: bool compacted = 1;
+   */
+  compacted = false;
+
+  /**
+   * detail is a one-line, user-facing explanation of the outcome (shown
+   * verbatim in the transcript marker and the composer notice).
+   *
+   * @generated from field: string detail = 2;
+   */
+  detail = "";
+
+  /**
+   * summary is the generated summary text that replaced the collapsed
+   * history. Empty when compacted is false.
+   *
+   * @generated from field: string summary = 3;
+   */
+  summary = "";
+
+  /**
+   * context_tokens_before / context_tokens_after are the conversation's
+   * prompt size around the compaction — MEASURED only. 0 means "unknown":
+   * this field is never populated from an estimate (an estimate is reported
+   * in detail instead), so a caller can trust a non-zero value as real.
+   *
+   * @generated from field: int64 context_tokens_before = 4;
+   */
+  contextTokensBefore = protoInt64.zero;
+
+  /**
+   * @generated from field: int64 context_tokens_after = 5;
+   */
+  contextTokensAfter = protoInt64.zero;
+
+  constructor(data?: PartialMessage<CompactConversationResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.CompactConversationResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "compacted", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 2, name: "detail", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "summary", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "context_tokens_before", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 5, name: "context_tokens_after", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CompactConversationResponse {
+    return new CompactConversationResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CompactConversationResponse {
+    return new CompactConversationResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CompactConversationResponse {
+    return new CompactConversationResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CompactConversationResponse | PlainMessage<CompactConversationResponse> | undefined, b: CompactConversationResponse | PlainMessage<CompactConversationResponse> | undefined): boolean {
+    return proto3.util.equals(CompactConversationResponse, a, b);
   }
 }
 

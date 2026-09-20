@@ -395,6 +395,14 @@ INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
 mkdir -p "$INSTALL_DIR"
 mv "$BIN" "$INSTALL_DIR/orchicon"
 chmod +x "$INSTALL_DIR/orchicon"
+ORCH="$(find "$TMP" -type f -name orch -perm -u+x 2>/dev/null | head -1)"
+if [ -n "$ORCH" ]; then
+  mv "$ORCH" "$INSTALL_DIR/orch"
+  chmod +x "$INSTALL_DIR/orch"
+  echo "orch (remote TUI client) installed: $INSTALL_DIR/orch"
+else
+  echo "orch companion binary not found in archive (older release?) — skipping"
+fi
 "$INSTALL_DIR/orchicon" version
 rm -rf "$TMP"
 '@
@@ -455,13 +463,13 @@ if ($NoSetup) {
 set -euo pipefail
 INSTALL_DIR="__INSTALL_DIR__"
 INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
-# Orchicon never ships the runtime adapter CLI (opencode) in its images —
-# the operator installs it in the distro and it is mounted into the
-# containers at runtime. Warn early if it is missing.
-if ! command -v opencode >/dev/null 2>&1 && [ ! -x "$HOME/.opencode/bin/opencode" ]; then
-  echo "WARNING: opencode (the AI runtime adapter) is not installed in this WSL distro." >&2
-  echo "  Orchicon never ships adapter CLIs in its images — install opencode first:" >&2
-  echo "  curl -fsSL https://opencode.ai/install | bash" >&2
+# Orchicon ships its own runtime engine, so NO adapter CLI is required — a
+# fresh install is complete on its own. External adapters (opencode and future
+# ones) are optional: installed in the distro by the operator and mounted into
+# the containers at runtime, never baked in. Mentioned only when present.
+if command -v opencode >/dev/null 2>&1 || [ -x "$HOME/.opencode/bin/opencode" ]; then
+  echo "  opencode found in this WSL distro — optional, and will be used as a" >&2
+  echo "  runtime when a model ref asks for it." >&2
   echo "" >&2
 fi
 "$INSTALL_DIR/orchicon" install

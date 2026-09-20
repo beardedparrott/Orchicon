@@ -26,14 +26,18 @@ export const usageKeys = {
     ["usage", "cost", rollup, projectId, taskId] as const,
 };
 
-export function useListOpenCodeModels() {
+export function useListOpenCodeModels(adapter?: string, provider?: string, enabled = true) {
   return useQuery({
-    queryKey: usageKeys.models,
+    queryKey: [...usageKeys.models, adapter ?? "", provider ?? ""],
     queryFn: async () => {
-      const res = await aiGatewayClient.listOpenCodeModels({});
+      const res = await aiGatewayClient.listOpenCodeModels({
+        adapter: adapter ?? "",
+        provider: provider ?? "",
+      });
       return (res.models ?? []) as OpenCodeModel[];
     },
     staleTime: 5 * 60 * 1000, // 5 min cache — models don't change often
+    enabled,
   });
 }
 
@@ -48,11 +52,25 @@ export function useListOpenCodeMCPs() {
   });
 }
 
-export function useListProviders() {
+export function useListAdapterKinds() {
   return useQuery({
-    queryKey: usageKeys.providers,
+    queryKey: ["adapter-kinds"],
     queryFn: async () => {
-      const res = await aiGatewayClient.listProviders({});
+      const res = await aiGatewayClient.listAdapterKinds({});
+      return {
+        kinds: (res.adapterKinds ?? []) as string[],
+        askCapableKinds: (res.askCapableKinds ?? []) as string[],
+      };
+    },
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+export function useListProviders(adapter?: string) {
+  return useQuery({
+    queryKey: adapter ? [...usageKeys.providers, adapter] : usageKeys.providers,
+    queryFn: async () => {
+      const res = await aiGatewayClient.listProviders({ adapter: adapter ?? "" });
       return (res.providers ?? []) as AIProvider[];
     },
   });
@@ -64,7 +82,7 @@ export function useGetUsage(opts?: {
   executionId?: string;
   provider?: string;
   model?: string;
-}) {
+}, enabled = true) {
   return useQuery({
     queryKey: usageKeys.records(opts?.projectId, opts?.executionId, opts?.taskId),
     queryFn: async () => {
@@ -78,6 +96,7 @@ export function useGetUsage(opts?: {
       });
       return (res.records ?? []) as UsageRecord[];
     },
+    enabled,
   });
 }
 

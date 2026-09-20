@@ -829,7 +829,6 @@ func TestIsRecurringScheduleEmpty(t *testing.T) {
 	}
 }
 
-
 // --- Time-window tests (feature: recurring window support) ---
 
 func TestValidateRecurringSchedule_WindowBothRequired(t *testing.T) {

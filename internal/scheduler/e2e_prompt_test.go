@@ -55,7 +55,7 @@ func TestE2EDirectoryInProjectContextPrompt(t *testing.T) {
 	}
 
 	r := &WorkflowReconciler{pool: pool}
-	out, err := r.buildCompositePrompt(ctx, ttx.Tx, approvalTestTenant, item, db.WorkerVersionRow{Role: "Engineer"}, nil, nil)
+	out, _, err := r.buildCompositePrompt(ctx, ttx.Tx, approvalTestTenant, item, db.WorkerVersionRow{Role: "Engineer"}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestE2EWorkItemContextFilesInPrompt(t *testing.T) {
 	}
 
 	r := &WorkflowReconciler{pool: pool}
-	out, err := r.buildCompositePrompt(ctx, ttx.Tx, approvalTestTenant, item, db.WorkerVersionRow{Role: "Engineer"}, nil, nil)
+	out, _, err := r.buildCompositePrompt(ctx, ttx.Tx, approvalTestTenant, item, db.WorkerVersionRow{Role: "Engineer"}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

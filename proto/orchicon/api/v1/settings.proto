@@ -67,6 +67,16 @@ message TenantSettings {
   // Minimum gap between nudges. Seconds. Default 60.
   int64 stall_nudge_cooldown_seconds = 33;
 
+  // --- In-flight tool-hang watchdog ---
+  // A tool call with no events for longer than this window is interrupted
+  // NATIVELY: the call is cancelled, a `cancelled: tool exceeded tool-hang
+  // window` tool result is synthesized, and a course-correcting redirect is
+  // injected as the next user turn (session and cache prefix fully
+  // preserved). Latched once per session; an unheeded hang escalates to the
+  // stall/liveness layer (probe → fatal). Zero = unset (env/code default
+  // 180s); negative = disabled.
+  int64 stall_tool_hang_seconds = 34;
+
   // --- Execution liveness reaper ---
   // The liveness reaper fails executions whose runtime process is gone
   // (control-plane restart, lost runtime container). The liveness probe

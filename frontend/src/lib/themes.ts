@@ -80,7 +80,10 @@ export const DARK_THEMES: Theme[] = [
     id: "orchicon-dark-ember",
     name: "Ember Night",
     mode: "dark",
-    swatches: ["#1c1310", "#2a1e1a", "#fb7185", "#fbbf24", "#fb923c"],
+    // The preview strip follows the accents in index.css: the TUI's ember orange first (it is the
+    // primary), then the warm trio it sits in. It carried rose (#fb7185) while index.css said orange, so
+    // the picker showed a palette the theme did not use — the same mismatch as the tokens, one layer up.
+    swatches: ["#1c1310", "#2a1e1a", "#f38435", "#fbbf24", "#c2410c"],
   },
   {
     id: "orchicon-dark-forest",

@@ -11,6 +11,7 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/backup"
@@ -25,6 +26,14 @@ type Service struct {
 	pool *db.Pool
 	log  *slog.Logger
 	dsn  string // Postgres DSN for backup/restore
+
+	// validationRegistry is the model-ref validation catalog (ADR-0003).
+	// nil = the static builtin catalog. The server injects a CLI-aware
+	// registry so the validator agrees with the picker: CLI-discovered
+	// providers (e.g. deepseek) validate as opencode-adapter providers,
+	// and orchicon/custom providers validate via the merged registry the
+	// server composes (builtin ∪ tenant customs ∪ CLI ids).
+	validationRegistry adapter.ProviderRegistry
 	apiv1connect.UnimplementedSettingsServiceHandler
 }
 
@@ -32,6 +41,22 @@ var _ apiv1connect.SettingsServiceHandler = (*Service)(nil)
 
 func New(pool *db.Pool, log *slog.Logger, dsn string) *Service {
 	return &Service{pool: pool, log: log, dsn: dsn}
+}
+
+// SetValidationRegistry injects the model-ref validation catalog (test /
+// server seam, mirroring worker.SetModelRefRegistry). nil restores the
+// static builtin catalog.
+func (s *Service) SetValidationRegistry(reg adapter.ProviderRegistry) {
+	s.validationRegistry = reg
+}
+
+// registry returns the injected validation registry or the static
+// builtin fallback.
+func (s *Service) registry() adapter.ProviderRegistry {
+	if s.validationRegistry != nil {
+		return s.validationRegistry
+	}
+	return adapter.NewBuiltinProviderCatalog()
 }
 
 func (s *Service) GetSettings(ctx context.Context, req *connect.Request[apiv1.GetSettingsRequest]) (*connect.Response[apiv1.GetSettingsResponse], error) {
@@ -53,16 +78,41 @@ func (s *Service) GetSettings(ctx context.Context, req *connect.Request[apiv1.Ge
 	}), nil
 }
 
+// validateModelRef checks a tenant-default model ref against the
+// adapter/provider/model grammar (ADR-0003) via the injected registry
+// (builtin ∪ CLI-discovered ∪ tenant-custom providers) — never the bare
+// static catalog, or CLI-namespace refs the picker happily offered would
+// be rejected at save ("provider not found"). Empty means unset — valid.
+func (s *Service) validateModelRef(ref string) error {
+	if strings.TrimSpace(ref) == "" {
+		return nil
+	}
+	if _, err := adapter.ParseModelRef(ref, s.registry()); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *Service) UpdateSettings(ctx context.Context, req *connect.Request[apiv1.UpdateSettingsRequest]) (*connect.Response[apiv1.UpdateSettingsResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	// Validate session TTLs before touching the DB.
-	if s := req.Msg.Settings; s != nil {
-		if err := validateSessionTTLs(s.SessionAccessTokenTtlSeconds, s.SessionRefreshTokenTtlSeconds); err != nil {
+	// Validate session TTLs and default model refs before touching the DB.
+	// (Local named `ts`, not `s`: `s` shadows the *Service receiver, which
+	// made the validateModelRef call resolve against the proto message.)
+	if ts := req.Msg.Settings; ts != nil {
+		if err := validateSessionTTLs(ts.SessionAccessTokenTtlSeconds, ts.SessionRefreshTokenTtlSeconds); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		if err := s.validateModelRef(ts.DefaultWorkerModel); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument,
+				fmt.Errorf("default_worker_model: %w", err))
+		}
+		if err := s.validateModelRef(ts.DefaultAskOrchiconModel); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument,
+				fmt.Errorf("default_ask_orchicon_model: %w", err))
 		}
 	}
 
@@ -83,6 +133,15 @@ func (s *Service) UpdateSettings(ctx context.Context, req *connect.Request[apiv1
 	}
 	inRow := settingsProtoToRow(req.Msg.Settings)
 	inRow.Budget = cur.Budget
+	// Same partial-update semantics for the compaction/memory policy (D4):
+	// absent context_compaction/memory keys in the client JSON must leave
+	// the persisted typed columns untouched. Seed from the current row
+	// before ApplyBudgetJSON overlays whatever the client sent.
+	inRow.ContextCompactionEnabled = cur.ContextCompactionEnabled
+	inRow.ContextCompactionPressureFrac = cur.ContextCompactionPressureFrac
+	inRow.ContextRecentTurns = cur.ContextRecentTurns
+	inRow.MemoryEnabled = cur.MemoryEnabled
+	inRow.MemoryDigestEntries = cur.MemoryDigestEntries
 	if err := inRow.ApplyBudgetJSON(inRow.DefaultBudgetOverrides); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("settings: invalid default_budget_overrides: %w", err))
 	}
@@ -179,6 +238,7 @@ func settingsRowToProto(r *db.TenantSettingsRow) *apiv1.TenantSettings {
 		StallNudgeMax:                    r.StallNudgeMax,
 		StallNudgeReplyWindowSeconds:     r.StallNudgeReplyWindowSeconds,
 		StallNudgeCooldownSeconds:        r.StallNudgeCooldownSeconds,
+		StallToolHangSeconds:             r.StallToolHangSeconds,
 		DefaultBudgetOverrides:           string(r.BudgetJSON()),
 		ExecutionReapGraceSeconds:        r.ExecutionReapGraceSeconds,
 		ExecutionReapConsecutiveFailures: r.ExecutionReapConsecutiveFailures,
@@ -230,6 +290,7 @@ func settingsProtoToRow(s *apiv1.TenantSettings) db.TenantSettingsRow {
 		StallNudgeMax:                    s.StallNudgeMax,
 		StallNudgeReplyWindowSeconds:     s.StallNudgeReplyWindowSeconds,
 		StallNudgeCooldownSeconds:        s.StallNudgeCooldownSeconds,
+		StallToolHangSeconds:             s.StallToolHangSeconds,
 		DefaultBudgetOverrides:           []byte(budget),
 		ExecutionReapGraceSeconds:        s.ExecutionReapGraceSeconds,
 		ExecutionReapConsecutiveFailures: s.ExecutionReapConsecutiveFailures,

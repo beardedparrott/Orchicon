@@ -290,6 +290,45 @@ func IsStartableForAutoStart(status string) bool {
 	}
 }
 
+// runnableWorkflowStatuses are the statuses in which a work item is
+// expected to execute. Reaching one of them without a workflow binding
+// means there is nothing to run: the standalone (v0.1) dispatch path that
+// used to execute workflow-less items is retired.
+var runnableWorkflowStatuses = map[string]bool{
+	domain.WorkItemReady:     true,
+	domain.WorkItemAssigned:  true,
+	domain.WorkItemScheduled: true,
+	domain.WorkItemRunning:   true,
+}
+
+// IsRunnableStatus reports whether status is a pre-run/run status (ready,
+// assigned, scheduled, running) — the statuses ValidateWorkflowFirstTransition
+// gates on a workflow binding.
+func IsRunnableStatus(status string) bool { return runnableWorkflowStatuses[status] }
+
+// ValidateWorkflowFirstTransition enforces workflow-first execution: an item
+// may not enter a runnable status (ready / assigned / scheduled / running)
+// without a workflow binding, because nothing would execute it — standalone
+// dispatch is retired. A sequence PARENT with children is exempt: it is a
+// container that contributes ordering only and never executes itself (its
+// children each carry their own binding). hasChildren must be computed by the
+// caller in the same transaction.
+//
+// Exported so the Connect Update handler and the Ask Orchicon update tool
+// apply the identical precondition (AGENTS.md: the two surfaces cannot drift).
+func ValidateWorkflowFirstTransition(title, newStatus string, workflowID *string, hasChildren bool) error {
+	if !runnableWorkflowStatuses[newStatus] {
+		return nil
+	}
+	if hasChildren {
+		return nil
+	}
+	if workflowID != nil && *workflowID != "" {
+		return nil
+	}
+	return fmt.Errorf("Cannot move %q to %q: no workflow is set, so there is nothing to run. Bind a workflow first.", title, newStatus)
+}
+
 // AutoStartDeclinedWarning returns the user-facing explanation carried by
 // UpdateWorkItemResponse.warning and the Ask Orchicon update tool result
 // when an EXPLICIT auto_start_workflow=true was declined because the
@@ -364,9 +403,6 @@ func requireTenant(ctx context.Context) (string, error) {
 //     LEAF — must have a non-empty workflow_id bound. Container children
 //     with their own children arm nested sequences and are exempt, but
 //     their descendants are validated recursively.
-//   - oneShot: no worker-assigned (one-shot) child may exist anywhere in
-//     the subtree. One-shots run through the standalone ready/assigned
-//     path and remain available for standalone tasks only.
 //   - badWorkflow: a leaf's bound workflow must resolve to a published or
 //     deprecated workflow (the StartWorkflow precondition) so a fire-time
 //     failure can't occur — reject at schedule time instead. A bound
@@ -377,7 +413,7 @@ func requireTenant(ctx context.Context) (string, error) {
 // The walk is tenant-scoped and depth-bounded (max 4 levels). Shared by
 // the Connect UpdateWorkItem paths and the Ask Orchicon tools so the two
 // surfaces cannot drift (AGENTS.md Ask-Orchicon-sync rule).
-func ValidateSequenceSubtree(ctx context.Context, tx pgx.Tx, tenantID string, parent db.WorkItemRow) (noWorkflow, oneShot, badWorkflow []string, err error) {
+func ValidateSequenceSubtree(ctx context.Context, tx pgx.Tx, tenantID string, parent db.WorkItemRow) (noWorkflow, badWorkflow []string, err error) {
 	var walk func(id string) error
 	walk = func(id string) error {
 		children, err := db.ListDirectChildren(ctx, tx, tenantID, id)
@@ -385,9 +421,6 @@ func ValidateSequenceSubtree(ctx context.Context, tx pgx.Tx, tenantID string, pa
 			return err
 		}
 		for _, c := range children {
-			if len(c.AssignedWorkerRef) > 0 {
-				oneShot = append(oneShot, c.Title)
-			}
 			grandchildren, err := db.ListDirectChildren(ctx, tx, tenantID, c.ID)
 			if err != nil {
 				return err
@@ -411,9 +444,9 @@ func ValidateSequenceSubtree(ctx context.Context, tx pgx.Tx, tenantID string, pa
 		return nil
 	}
 	if err := walk(parent.ID); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
-	return noWorkflow, oneShot, badWorkflow, nil
+	return noWorkflow, badWorkflow, nil
 }
 
 // BuildSequenceValidationError composes the schedule-time rejection message
@@ -421,7 +454,7 @@ func ValidateSequenceSubtree(ctx context.Context, tx pgx.Tx, tenantID string, pa
 // design contract exactly:
 //
 //	> Cannot schedule "Parent Title": 2 children have no workflow set — "Feature A", "Task C". Bind workflows or remove them from the sequence.
-func BuildSequenceValidationError(parentTitle string, noWorkflow, oneShot, badWorkflow []string) error {
+func BuildSequenceValidationError(parentTitle string, noWorkflow, badWorkflow []string) error {
 	var parts []string
 	if len(noWorkflow) > 0 {
 		noun, verb := "child", "has"
@@ -437,14 +470,9 @@ func BuildSequenceValidationError(parentTitle string, noWorkflow, oneShot, badWo
 		}
 		parts = append(parts, fmt.Sprintf("%d %s %s a workflow that is not runnable — %s", len(badWorkflow), noun, verb, quoteTitles(badWorkflow)))
 	}
-	if len(oneShot) > 0 {
-		parts = append(parts, fmt.Sprintf("%s worker-assigned (one-shot) and cannot run in a sequence", quoteTitles(oneShot)))
-	}
 	msg := fmt.Sprintf("Cannot schedule %q: %s.", parentTitle, strings.Join(parts, "; "))
 	if len(noWorkflow) > 0 || len(badWorkflow) > 0 {
 		msg += " Bind workflows or remove them from the sequence."
-	} else if len(oneShot) > 0 {
-		msg += " Remove them from the chain."
 	}
 	return errors.New(msg)
 }
@@ -503,6 +531,14 @@ type recurringScheduleJSON struct {
 	OutputsMode string   `json:"outputs_mode"`
 	WindowStart string   `json:"window_start,omitempty"`
 	WindowEnd   string   `json:"window_end,omitempty"`
+	// Timezone is the IANA zone the wall-clock fields above are expressed in. The JSON key matches the
+	// proto field name, which is what makes the round trip work: the fire path unmarshals this same blob
+	// straight into apiv1.RecurringSchedule (workitem/recurring.go), so a key here with no proto field — or
+	// the reverse — would silently drop the zone.
+	//
+	// omitempty, so an existing (zone-less) schedule marshals byte-identically to before: nothing rewrites
+	// an empty timezone into the rows that predate the field.
+	Timezone string `json:"timezone,omitempty"`
 }
 
 // IsRecurringScheduleEmpty reports whether a non-nil RecurringSchedule has all
@@ -588,6 +624,16 @@ func ValidateRecurringSchedule(msg *apiv1.RecurringSchedule) ([]byte, error) {
 			}
 		}
 	}
+	// THE ZONE IS VALIDATED HERE, at the boundary, for the same reason every other field is: a typo must
+	// fail the write rather than produce a schedule that silently never fires (or fires in the wrong
+	// zone). RecurringZone rejects the pseudo-zone Local as well as unknown names — see its own note for
+	// why a name that VALIDATES can still be wrong.
+	timezone := strings.TrimSpace(msg.Timezone)
+	if timezone != "" {
+		if _, err := RecurringZone(timezone); err != nil {
+			return nil, err
+		}
+	}
 	schedule := recurringScheduleJSON{
 		Frequency:   freq,
 		Interval:    int(msg.Interval),
@@ -597,6 +643,7 @@ func ValidateRecurringSchedule(msg *apiv1.RecurringSchedule) ([]byte, error) {
 		OutputsMode: domain.NormalizeRecurringOutputsMode(msg.OutputsMode),
 		WindowStart: windowStart,
 		WindowEnd:   windowEnd,
+		Timezone:    timezone,
 	}
 	b, err := json.Marshal(schedule)
 	if err != nil {
@@ -675,15 +722,19 @@ func isInWindow(t time.Time, startMin, endMin int) bool {
 
 func nextWindowStart(t time.Time, startMin int) time.Time {
 	m := t.Hour()*60 + t.Minute()
+	// THE INSTANT'S OWN LOCATION, not time.UTC. These construct the moment the window next opens, and
+	// building it in UTC would move it by the zone offset — a Central schedule with a 09:00-17:00 window
+	// would resume from 03:00 local. t carries the schedule's zone (the anchor is built in it), so its
+	// location is the right one to construct the next window opening in.
 	if m < startMin {
 		// Later today at window start.
 		h, mm := startMin/60, startMin%60
-		return time.Date(t.Year(), t.Month(), t.Day(), h, mm, 0, 0, time.UTC)
+		return time.Date(t.Year(), t.Month(), t.Day(), h, mm, 0, 0, t.Location())
 	}
 	// Next day at window start.
 	h, mm := startMin/60, startMin%60
 	next := t.AddDate(0, 0, 1)
-	return time.Date(next.Year(), next.Month(), next.Day(), h, mm, 0, 0, time.UTC)
+	return time.Date(next.Year(), next.Month(), next.Day(), h, mm, 0, 0, t.Location())
 }
 
 // alignToGrid returns the smallest grid-aligned time >= target for the given
@@ -728,6 +779,37 @@ func alignToGrid(target, anchor time.Time, freq string, interval int) time.Time 
 	}
 }
 
+// RecurringZone resolves a schedule's timezone to a location, and is the ONE definition of what a valid
+// zone is — shared by the write-side validation and the fire path so the two cannot disagree about a
+// schedule one accepted and the other rejects.
+//
+// EMPTY IS UTC, and that is the legacy semantic rather than a fallback: a schedule written before the
+// timezone field existed carries an empty value, and it must keep firing at exactly the instant it fires
+// at today. Nothing backfills it. New schedules always arrive with a zone stamped by the creating client.
+//
+// THE PSEUDO-ZONE Local IS REJECTED, and this is the subtle half. time.LoadLocation("Local") RETURNS NO
+// ERROR — it resolves to whatever machine is reading it, so asking whether a name is loadable says
+// nothing about whether it is a zone. A schedule stamped Local by a Central-time client would PASS
+// validation and then fire at the SERVER's local time, which in a container is UTC: the operator's 09:00
+// becomes 03:00, wearing a name that looked valid at every checkpoint. A zone that only means something
+// relative to its reader is not a zone, so it is refused by name.
+func RecurringZone(name string) (*time.Location, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return time.UTC, nil
+	}
+	if name == "Local" {
+		return nil, errors.New("recurring_schedule.timezone must be an IANA zone name (e.g. America/Chicago); " +
+			"the pseudo-zone Local resolves to whichever machine reads it, so it would mean a different zone " +
+			"on the server than on the client that set it")
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return nil, fmt.Errorf("recurring_schedule.timezone is not a known IANA zone; got %q", name)
+	}
+	return loc, nil
+}
+
 // ComputeNextRunAt computes the first occurrence of a recurring schedule
 // that is >= the given "now" time. The start_date + start_time define the
 // anchor; the frequency/interval/days define the cadence. When a daily
@@ -740,7 +822,19 @@ func ComputeNextRunAt(schedule *apiv1.RecurringSchedule, now time.Time) *time.Ti
 	}
 	startDate := strings.TrimSpace(schedule.StartDate)
 	startTime := strings.TrimSpace(schedule.StartTime)
-	anchor, err := time.Parse("2006-01-02 15:04", startDate+" "+startTime)
+	// THE ANCHOR IS BUILT IN THE SCHEDULE'S OWN ZONE. ParseInLocation (not Parse) is the whole point:
+	// the digits of start_time plus a zone denote an instant, and Parse would have read those digits as
+	// UTC regardless of the zone stored beside them — which is the defect this field exists to fix.
+	//
+	// An unresolvable zone falls back to UTC rather than returning nil. That is deliberate: this function
+	// cannot report an error, and a schedule that has already been accepted must not silently STOP FIRING
+	// because a zone name became unavailable (a tzdata build without that region, say). Firing in the
+	// legacy zone is the safer failure; RecurringZone on the write path is what keeps bad names out.
+	loc, err := RecurringZone(schedule.Timezone)
+	if err != nil {
+		loc = time.UTC
+	}
+	anchor, err := time.ParseInLocation("2006-01-02 15:04", startDate+" "+startTime, loc)
 	if err != nil {
 		return nil
 	}
@@ -770,16 +864,24 @@ func ComputeNextRunAt(schedule *apiv1.RecurringSchedule, now time.Time) *time.Ti
 			}
 		}
 		candidate := anchor
+		// daysSinceAnchor COUNTS CALENDAR-DAY STEPS, rather than dividing elapsed hours by 24.
+		//
+		// The hours/24 division is wrong the moment the anchor carries a ZONE: across a DST transition a
+		// local day is 23 or 25 hours, so after two days the elapsed total is 47 or 49 hours and the
+		// integer division lands on the WRONG day index — a weekly pattern would skip or repeat a
+		// weekday twice a year. Counting the AddDate steps directly is exact, and in UTC (the legacy,
+		// zone-less case, where every day really is 24 hours) it is arithmetic-identical to the old form.
+		daysSinceAnchor := 0
 		for i := 0; i < 1000; i++ {
 			if !candidate.Before(now) {
-				daysSinceAnchor := int(candidate.Sub(anchor).Hours() / 24)
-				if daysSinceAnchor >= 0 && validOffsets[daysSinceAnchor%cadenceDays] {
+				if validOffsets[daysSinceAnchor%cadenceDays] {
 					if !hasWindow || isInWindow(candidate, wsMin, weMin) {
 						return &candidate
 					}
 				}
 			}
 			candidate = candidate.AddDate(0, 0, 1)
+			daysSinceAnchor++
 		}
 		return &anchor
 	}
@@ -853,6 +955,7 @@ func advanceTime(t time.Time, freq string, interval int) time.Time {
 		return t.AddDate(0, 0, interval)
 	}
 }
+
 // ValidateSecretIDs validates per-work-item secret selection: max 10, no empty, no duplicates.
 func ValidateSecretIDs(ids []string) error {
 	if len(ids) > 10 {

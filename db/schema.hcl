@@ -194,6 +194,17 @@ table "projects" {
     default = "local"
     comment = "How worktrees materialize: local=push branch only, pr=push+PR, none=ephemeral"
   }
+  column "default_runtime_image" {
+    type = text
+    null = true
+    comment = "Project-level default runtime image tag; NULL = inherit tenant/base. Copied onto work items at create."
+  }
+  column "execution_mode" {
+    type = text
+    null = false
+    default = "runtime"
+    comment = "runtime = always-container; local = in-process allowed with honest prompt + DSN fence"
+  }
   column "version" {
     type = integer
     null = false
@@ -287,6 +298,13 @@ table "outbox" {
     columns = [column.occurred_at]
     where = "published_at IS NULL"
   }
+  // Retention prune (db.PrunePublishedOutbox): published rows older than
+  // N days are deleted oldest-first in bounded batches. Partial on
+  // published_at IS NOT NULL so the index only covers prunable rows.
+  index "outbox_published_at_idx" {
+    columns = [column.published_at]
+    where = "published_at IS NOT NULL"
+  }
   index "outbox_event_id_idx" {
     unique  = true
     columns = [column.event_id]
@@ -334,6 +352,12 @@ table "workers" {
     null = false
     default = "draft"
   }
+  column "ephemeral" {
+    type    = boolean
+    null    = false
+    default = false
+    comment = "Machine-managed transient worker (Ask Orchicon Quick Work): hidden from the Workers view and hard-deleted when its job ends. See ListWorkersFilter.EphemeralScope."
+  }
   column "current_version" {
     type = integer
     null = false
@@ -371,6 +395,11 @@ table "workers" {
   index "workers_tenant_status_idx" {
     columns = [column.tenant_id, column.status]
   }
+  index "idx_workers_ephemeral_created" {
+    columns = [column.created_at]
+    type    = "btree"
+    where   = "ephemeral"
+  }
 }
 
 table "worker_versions" {
@@ -402,11 +431,6 @@ table "worker_versions" {
     type = text
     null = false
     default = "draft"
-  }
-  column "runtime_ref" {
-    type = text
-    null = false
-    default = ""
   }
   column "model_ref" {
     type = text
@@ -570,6 +594,12 @@ table "work_items" {
     null = true
     comment = "The terminal status the item had when archived; RestoreWorkItem returns the item to this status. NULL = never archived."
   }
+  column "ephemeral" {
+    type    = boolean
+    null    = false
+    default = false
+    comment = "Machine-managed transient item (Ask Orchicon Quick Work): TRUE hides it from every human work-item view and it is hard-deleted when its job ends. Never a parent, never recurring. See ListWorkItemsFilter.EphemeralScope."
+  }
   column "sort_order" {
     type = double
     null = true
@@ -686,6 +716,11 @@ table "work_items" {
   }
   index "idx_work_items_archived_at" {
     columns = [column.archived_at]
+  }
+  index "idx_work_items_ephemeral_created" {
+    columns = [column.created_at]
+    type    = "btree"
+    where   = "ephemeral"
   }
 }
 
@@ -1072,6 +1107,12 @@ table "workflows" {
     null = false
     default = "draft"
   }
+  column "ephemeral" {
+    type    = boolean
+    null    = false
+    default = false
+    comment = "Machine-managed transient workflow (Ask Orchicon Quick Work): hidden from the Workflows view and hard-deleted when its job ends. See ListWorkflowsFilter.EphemeralScope."
+  }
   column "version" {
     type = integer
     null = false
@@ -1102,6 +1143,11 @@ table "workflows" {
   }
   index "workflows_tenant_status_idx" {
     columns = [column.tenant_id, column.status]
+  }
+  index "idx_workflows_ephemeral_created" {
+    columns = [column.created_at]
+    type    = "btree"
+    where   = "ephemeral"
   }
 }
 

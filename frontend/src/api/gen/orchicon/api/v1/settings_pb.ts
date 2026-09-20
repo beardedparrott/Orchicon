@@ -101,6 +101,20 @@ export class TenantSettings extends Message<TenantSettings> {
   stallNudgeCooldownSeconds = protoInt64.zero;
 
   /**
+   * --- In-flight tool-hang watchdog ---
+   * A tool call with no events for longer than this window is interrupted
+   * NATIVELY: the call is cancelled, a `cancelled: tool exceeded tool-hang
+   * window` tool result is synthesized, and a course-correcting redirect is
+   * injected as the next user turn (session and cache prefix fully
+   * preserved). Latched once per session; an unheeded hang escalates to the
+   * stall/liveness layer (probe → fatal). Zero = unset (env/code default
+   * 180s); negative = disabled.
+   *
+   * @generated from field: int64 stall_tool_hang_seconds = 34;
+   */
+  stallToolHangSeconds = protoInt64.zero;
+
+  /**
    * How long an execution must have been running before it becomes
    * eligible for reaping (skips the fresh-dispatch race). Seconds.
    * Default 60.
@@ -269,6 +283,7 @@ export class TenantSettings extends Message<TenantSettings> {
     { no: 31, name: "stall_nudge_max", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 32, name: "stall_nudge_reply_window_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 33, name: "stall_nudge_cooldown_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 34, name: "stall_tool_hang_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 15, name: "execution_reap_grace_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 16, name: "execution_reap_consecutive_failures", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 19, name: "default_budget_overrides", kind: "scalar", T: 9 /* ScalarType.STRING */ },

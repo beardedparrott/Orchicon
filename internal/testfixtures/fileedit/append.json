@@ -1,0 +1,10 @@
+{
+  "name": "append-lines",
+  "path": "log/app.log",
+  "before": "entry1\n",
+  "after": "entry1\nentry2\nentry3\n",
+  "expected_kind": "modify",
+  "expected_unified_diff": "--- a/log/app.log\n+++ b/log/app.log\n@@ -1 +1,3 @@\n entry1\n+entry2\n+entry3\n",
+  "expected_binary": false,
+  "expected_truncated": false
+}

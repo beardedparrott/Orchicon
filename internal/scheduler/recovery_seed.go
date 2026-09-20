@@ -83,6 +83,23 @@ const (
 	// so the dispatch-time append is a no-op for them and only patches
 	// legacy direct-dispatch composites built without the block.
 	recoveryFileReferenceMarker = "Read the file `.orchicon/worker.recovery`"
+
+	// recoveryTailSectionHeading is the heading of the transcript section
+	// inside the seed file. It doubles as the extraction marker when a
+	// churn-only successor carries the PRIOR seed's transcript forward.
+	recoveryTailSectionHeading = "## Dead session transcript (tail)"
+
+	// recoveryChurnScanParts is how deep the productive-window walkback
+	// scans when the raw tail is bootstrap churn. Bounded by the tail
+	// query's 1000-part clamp; a productive window older than this is
+	// out of reach (acceptable degradation — the seed still carries the
+	// prior seed's content or an explicit churn marker).
+	recoveryChurnScanParts = 1000
+
+	// recoverySubstantiveTextMinChars is the minimum length a non-opener
+	// text part needs to count as substantive assistant text (short
+	// acknowledgements between openers are churn, not work).
+	recoverySubstantiveTextMinChars = 80
 )
 
 // recoverySeed is the recovery context the dispatch path acts on. It is
@@ -255,7 +272,7 @@ func buildRecoveryFileContent(workerName string, seed *recoverySeed, tail string
 	}
 	sb.WriteString(recoveryDirective + "\n")
 	if tail != "" {
-		sb.WriteString("\n## Dead session transcript (tail)\n\n")
+		sb.WriteString("\n" + recoveryTailSectionHeading + "\n\n")
 		sb.WriteString(tail)
 		if !strings.HasSuffix(tail, "\n") {
 			sb.WriteString("\n")
@@ -301,17 +318,48 @@ func (r *TaskReconciler) seedRecoveryFile(ctx context.Context, exec db.Execution
 	// degrades the file, never the dispatch.
 	workerName := seed.FailedWorkerID
 	tail := ""
+	churnOnly := false
 	if exec.TenantID != "" {
 		if ttx, err := r.pool.BeginTenantTx(ctx, exec.TenantID); err == nil {
 			if w, err := db.GetWorker(ctx, ttx.Tx, exec.TenantID, seed.FailedWorkerID); err == nil && w.Name != "" {
 				workerName = w.Name
 			}
 			if parts, err := db.ListExecutionSessionPartsTail(ctx, ttx.Tx, exec.TenantID, seed.FailedExecID, recoveryTailMaxParts); err == nil {
-				tail = transcript.RenderTail(parts, recoveryTailMaxBytes)
+				var full []db.SessionPart
+				if tailIsBootstrapChurn(parts) {
+					// Churn tail → scan deeper for the productive
+					// walkback (best-effort: a scan error degrades
+					// to churn-only handling, never to churn-feeding).
+					if fp, err := db.ListExecutionSessionPartsTail(ctx, ttx.Tx, exec.TenantID, seed.FailedExecID, recoveryChurnScanParts); err == nil {
+						full = fp
+					} else {
+						r.log.Warn("recovery seed: churn scan", "execution", seed.FailedExecID, "error", err)
+					}
+				}
+				tail, churnOnly = resolveRecoveryTailContent(parts, full, recoveryTailMaxBytes)
 			} else {
 				r.log.Warn("recovery seed: read transcript tail", "execution", seed.FailedExecID, "error", err)
 			}
 			_ = ttx.Rollback(ctx)
+		}
+	}
+
+	// Churn-only successor: never feed churn forward and never clobber a
+	// richer prior seed. Carry the prior file's transcript tail (it names
+	// its own execution in the footer — append rather than clobber), or an
+	// explicit churn marker when there is no prior transcript to carry.
+	if churnOnly {
+		priorTail := ""
+		if prior, err := os.ReadFile(filepath.Join(projectDir, recoveryFileDir, recoveryFileName)); err == nil {
+			priorTail = extractRecoveryTailSection(string(prior))
+		}
+		if priorTail != "" {
+			if len(priorTail) > recoveryTailMaxBytes {
+				priorTail = priorTail[:recoveryTailMaxBytes]
+			}
+			tail = recoveryChurnCarriedNote + priorTail + "\n"
+		} else {
+			tail = recoveryChurnMarkerNote
 		}
 	}
 
@@ -541,6 +589,201 @@ func (r *TaskReconciler) removeRecoveryFileForSuccess(ctx context.Context, exec 
 		return
 	}
 	r.removeRecoveryFileMatching(projectDir, execID, workerID)
+}
+
+// Bootstrap-churn defense (audit finding 2026-09-10, work item
+// 01M21PZE3QQEZ35418SXCQZZRQ): when a recovery-resumed session dies in
+// bootstrap churn (repeated recovery-opener announcements, no tool
+// activity), its transcript tail is near-identical noise — and each failed
+// attempt poisons the NEXT resume's seed with its own churn. The substance
+// filter below detects such a tail, walks back to the last productive
+// window, and — when no productive window exists at all — carries the
+// PRIOR seed's transcript forward (or an explicit churn marker) instead of
+// feeding the churn forward.
+
+// recoveryOpenerMarkers are the phrases the bootstrap-churn loop itself
+// produces (the seed header, the composite's ## Recovery block, the
+// fail-fast reason, and the worker's own resuming announcements). Case-
+// insensitive substring match.
+var recoveryOpenerMarkers = []string{
+	"recovery-resumed session",
+	"recovery resumed session",
+	"resuming a recovered session",
+	"resuming the recovered session",
+	"stalled in a previous session",
+	"stalled and was recovered",
+	"recovery seed file",
+	"worker.recovery",
+	"this is your recovery",
+}
+
+// Churn notes rendered inside the transcript section so the worker (and a
+// later churn-only successor's carry-forward) can see WHY the tail looks
+// the way it does. These are additive file text; the header/footer/
+// directive contract is unchanged.
+const (
+	recoveryChurnWalkbackNote = "(Note: the dead session's final parts were recovery-resume bootstrap churn — repeated recovery-opener announcements with no tool activity and no file edits — so the transcript tail below starts at the last productive window.)\n\n"
+
+	recoveryChurnCarriedNote = "(Note: the dead session's transcript contained only recovery-resume bootstrap churn — repeated recovery-opener announcements with no tool activity and no file edits — so the transcript tail below is carried forward from the prior recovery seed rather than regenerated from churn.)\n\n"
+
+	recoveryChurnMarkerNote = "(Note: the dead session's transcript contained only recovery-resume bootstrap churn — repeated recovery-opener announcements with no tool activity and no file edits; no productive transcript window exists to seed.)\n\n"
+)
+
+// sessionPartTextContent extracts the rendered text of a user_message or
+// text part, mirroring the transcript renderer's payload shapes.
+func sessionPartTextContent(p db.SessionPart) string {
+	switch p.Kind {
+	case db.SessionPartUserMessage:
+		var pl struct {
+			Text string `json:"text"`
+		}
+		_ = json.Unmarshal(p.Payload, &pl)
+		return pl.Text
+	case db.SessionPartText:
+		var pl struct {
+			Part struct {
+				Text string `json:"text"`
+			} `json:"part"`
+		}
+		_ = json.Unmarshal(p.Payload, &pl)
+		return pl.Part.Text
+	}
+	return ""
+}
+
+// isRecoveryOpenerText reports whether a text part is one of the
+// recovery-opener announcements the bootstrap-churn loop itself produces
+// (case-insensitive substring match against recoveryOpenerMarkers).
+func isRecoveryOpenerText(s string) bool {
+	lower := strings.ToLower(s)
+	for _, m := range recoveryOpenerMarkers {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasFileDiffEvidence reports whether rendered text carries file-edit
+// evidence (a git diff header or unified-diff hunk markers) — the second
+// productive signal alongside tool_use parts.
+func hasFileDiffEvidence(s string) bool {
+	if strings.Contains(s, "diff --git") {
+		return true
+	}
+	for _, line := range strings.Split(s, "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "+++") || strings.HasPrefix(t, "---") {
+			return true
+		}
+	}
+	return false
+}
+
+// partIsProductive reports whether a session part carries substantive
+// work: a tool_use part, file-diff evidence, or non-opener user/assistant
+// text of meaningful length.
+func partIsProductive(p db.SessionPart) bool {
+	if p.Kind == db.SessionPartToolUse {
+		return true
+	}
+	txt := sessionPartTextContent(p)
+	if txt == "" || isRecoveryOpenerText(txt) {
+		return false
+	}
+	if hasFileDiffEvidence(txt) {
+		return true
+	}
+	return len([]rune(strings.TrimSpace(txt))) >= recoverySubstantiveTextMinChars
+}
+
+// tailIsBootstrapChurn applies the heuristic floor to a raw transcript
+// tail: repeated recovery-opener announcements (>=2) with NO tool_use
+// parts, no file-diff evidence, and no substantive text. A genuinely
+// productive tail never classifies as churn.
+func tailIsBootstrapChurn(parts []db.SessionPart) bool {
+	if len(parts) < 2 {
+		return false
+	}
+	openers := 0
+	for _, p := range parts {
+		if p.Kind == db.SessionPartToolUse {
+			return false
+		}
+		txt := sessionPartTextContent(p)
+		if txt == "" {
+			continue // neutral kinds (errors, steps) don't mask churn
+		}
+		if isRecoveryOpenerText(txt) {
+			openers++
+			continue
+		}
+		if hasFileDiffEvidence(txt) {
+			return false
+		}
+		if len([]rune(strings.TrimSpace(txt))) >= recoverySubstantiveTextMinChars {
+			return false
+		}
+	}
+	return openers >= 2
+}
+
+// lastProductiveWindow walks a CHRONOLOGICAL part list backwards to the
+// last productive part and returns the window of up to maxParts parts
+// ending there (everything after it is churn). ok=false when no productive
+// part exists in the entire input.
+func lastProductiveWindow(parts []db.SessionPart, maxParts int) ([]db.SessionPart, bool) {
+	last := -1
+	for i := len(parts) - 1; i >= 0; i-- {
+		if partIsProductive(parts[i]) {
+			last = i
+			break
+		}
+	}
+	if last < 0 {
+		return nil, false
+	}
+	start := last + 1 - maxParts
+	if start < 0 {
+		start = 0
+	}
+	win := make([]db.SessionPart, last+1-start)
+	copy(win, parts[start:last+1])
+	return win, true
+}
+
+// resolveRecoveryTailContent applies the substance filter to the fetched
+// tail: a productive tail renders unchanged; a churn tail renders the last
+// productive window from the deeper scan (prefixed with a churn note); a
+// churn tail with NO productive window anywhere returns churnOnly so the
+// caller carries the prior seed's transcript (or an explicit churn marker)
+// instead of feeding bootstrap churn forward. Caps are unchanged.
+func resolveRecoveryTailContent(tailParts, fullScan []db.SessionPart, maxBytes int) (tail string, churnOnly bool) {
+	if !tailIsBootstrapChurn(tailParts) {
+		return transcript.RenderTail(tailParts, maxBytes), false
+	}
+	if len(fullScan) > 0 {
+		if win, ok := lastProductiveWindow(fullScan, recoveryTailMaxParts); ok {
+			return recoveryChurnWalkbackNote + transcript.RenderTail(win, maxBytes), false
+		}
+	}
+	return "", true
+}
+
+// extractRecoveryTailSection reads the transcript section back out of a
+// prior seed file (everything after the section heading, up to the footer)
+// so a churn-only successor can carry the prior tail forward instead of
+// clobbering it. Returns "" when the file has no transcript section.
+func extractRecoveryTailSection(content string) string {
+	start := strings.Index(content, recoveryTailSectionHeading+"\n\n")
+	if start < 0 {
+		return ""
+	}
+	body := content[start+len(recoveryTailSectionHeading)+2:]
+	if idx := strings.Index(body, "\n"+recoveryFooterExecLine); idx >= 0 {
+		body = body[:idx]
+	}
+	return strings.Trim(body, "\n")
 }
 
 // recoverySeedMetrics holds the OTel counters for the recovery-seed

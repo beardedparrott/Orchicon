@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/slug"
@@ -72,10 +73,12 @@ func toolGetProject(ctx context.Context, pool *db.Pool, args json.RawMessage) (j
 
 func toolCreateProject(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
-		Title      string `json:"title"`
-		Name       string `json:"name"`
-		Goals      string `json:"goals"`
-		ProjectDir string `json:"project_dir"`
+		Title               string `json:"title"`
+		Name                string `json:"name"`
+		Goals               string `json:"goals"`
+		ProjectDir          string `json:"project_dir"`
+		DefaultRuntimeImage string `json:"default_runtime_image"`
+		ExecutionMode       string `json:"execution_mode"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -105,6 +108,18 @@ func toolCreateProject(ctx context.Context, pool *db.Pool, args json.RawMessage)
 		Status:     "active",
 		Goals:      goalsJSON,
 		ProjectDir: params.ProjectDir,
+		DefaultRuntimeImage: func() *string {
+			if v := strings.TrimSpace(params.DefaultRuntimeImage); v != "" {
+				return &v
+			}
+			return nil
+		}(),
+		ExecutionMode: func() string {
+			if params.ExecutionMode == db.ExecutionModeLocal {
+				return db.ExecutionModeLocal
+			}
+			return db.ExecutionModeRuntime
+		}(),
 	})
 	if err != nil {
 		return nil, err
@@ -117,11 +132,13 @@ func toolCreateProject(ctx context.Context, pool *db.Pool, args json.RawMessage)
 
 func toolUpdateProject(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
-		ID         string `json:"id"`
-		Title      string `json:"title"`
-		Name       string `json:"name"`
-		Goals      string `json:"goals"`
-		ProjectDir string `json:"project_dir"`
+		ID                  string  `json:"id"`
+		Title               string  `json:"title"`
+		Name                string  `json:"name"`
+		Goals               string  `json:"goals"`
+		ProjectDir          string  `json:"project_dir"`
+		DefaultRuntimeImage *string `json:"default_runtime_image"`
+		ExecutionMode       *string `json:"execution_mode"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -153,6 +170,22 @@ func toolUpdateProject(ctx context.Context, pool *db.Pool, args json.RawMessage)
 	}
 	if params.ProjectDir != "" {
 		update.ProjectDir = &params.ProjectDir
+	}
+	if params.DefaultRuntimeImage != nil {
+		v := strings.TrimSpace(*params.DefaultRuntimeImage)
+		update.DefaultRuntimeImage = &v
+	}
+	if params.ExecutionMode != nil {
+		switch *params.ExecutionMode {
+		case db.ExecutionModeLocal:
+			m := db.ExecutionModeLocal
+			update.ExecutionMode = &m
+		case db.ExecutionModeRuntime:
+			m := db.ExecutionModeRuntime
+			update.ExecutionMode = &m
+		default:
+			return nil, fmt.Errorf("execution_mode must be runtime or local")
+		}
 	}
 	project, err := db.UpdateProject(ctx, ttx.Tx, tenantID, params.ID, current.Version, update)
 	if err != nil {

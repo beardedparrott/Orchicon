@@ -2,16 +2,38 @@ package opencode
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
 )
+
+// stallRecordingCallbacks records advisory stall reasons (OnStall).
+type stallRecordingCallbacks struct {
+	mu     *sync.Mutex
+	stalls *[]string
+}
+
+func (c *stallRecordingCallbacks) OnStarted(context.Context, string)                          {}
+func (c *stallRecordingCallbacks) OnHealth(context.Context, string, string)                   {}
+func (c *stallRecordingCallbacks) OnRecovered(context.Context, string, string)                {}
+func (c *stallRecordingCallbacks) OnText(context.Context, string, string)                     {}
+func (c *stallRecordingCallbacks) OnToolCall(context.Context, string, string, []byte, []byte) {}
+func (c *stallRecordingCallbacks) OnArtifact(context.Context, string, string, string, string) {}
+func (c *stallRecordingCallbacks) OnWrittenFiles(context.Context, string, []string)           {}
+func (c *stallRecordingCallbacks) OnResult(context.Context, string, bool, string, string)     {}
+func (c *stallRecordingCallbacks) OnStall(_ context.Context, _ string, reason string, _ bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	*c.stalls = append(*c.stalls, reason)
+}
 
 // TestLegacyEventFromBus verifies the bus→legacy event mapping matches the
 // shapes the adapter's parseEvent pipeline consumes.
@@ -88,6 +110,79 @@ func TestLegacyEventFromBus(t *testing.T) {
 			}
 			if got["type"] != tc.wantType {
 				t.Fatalf("type = %v, want %v", got["type"], tc.wantType)
+			}
+		})
+	}
+}
+
+// TestToolStartFromBus verifies the raw-bus-event tool-start signal the
+// in-flight tool-hang watchdog arms on: a tool part still in flight
+// (status "running" or absent) is a start; a resolved part (completed /
+// error) is NOT (the legacy mapping handles it as a tool_use resolution);
+// non-tool and non-message events are not starts.
+func TestToolStartFromBus(t *testing.T) {
+	cases := []struct {
+		name     string
+		evt      BusEvent
+		wantTool string
+		wantOK   bool
+	}{
+		{
+			name: "tool running is a start",
+			evt: BusEvent{Type: "message.part.updated", Properties: map[string]any{
+				"part": map[string]any{"type": "tool", "tool": "bash", "state": map[string]any{"status": "running"}},
+			}},
+			wantTool: "bash", wantOK: true,
+		},
+		{
+			name: "tool without status is a start",
+			evt: BusEvent{Type: "message.part.updated", Properties: map[string]any{
+				"part": map[string]any{"type": "tool", "tool": "read"},
+			}},
+			wantTool: "read", wantOK: true,
+		},
+		{
+			name: "tool completed is NOT a start",
+			evt: BusEvent{Type: "message.part.updated", Properties: map[string]any{
+				"part": map[string]any{"type": "tool", "tool": "bash", "state": map[string]any{"status": "completed", "output": "ok"}},
+			}},
+			wantOK: false,
+		},
+		{
+			name: "tool error is NOT a start",
+			evt: BusEvent{Type: "message.part.updated", Properties: map[string]any{
+				"part": map[string]any{"type": "tool", "tool": "bash", "state": map[string]any{"status": "error", "error": "boom"}},
+			}},
+			wantOK: false,
+		},
+		{
+			name: "text part is not a start",
+			evt: BusEvent{Type: "message.part.updated", Properties: map[string]any{
+				"part": map[string]any{"type": "text", "text": "hi", "time": map[string]any{"start": 1, "end": 2}},
+			}},
+			wantOK: false,
+		},
+		{
+			name: "tool part without a tool name is not a start",
+			evt: BusEvent{Type: "message.part.updated", Properties: map[string]any{
+				"part": map[string]any{"type": "tool", "state": map[string]any{"status": "running"}},
+			}},
+			wantOK: false,
+		},
+		{
+			name:   "non-message event is not a start",
+			evt:    BusEvent{Type: "session.idle", Properties: map[string]any{}},
+			wantOK: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tool, ok := ToolStartFromBus(tc.evt)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if ok && tool != tc.wantTool {
+				t.Fatalf("tool = %q, want %q", tool, tc.wantTool)
 			}
 		})
 	}
@@ -409,11 +504,16 @@ func TestCompletionProbeDecision(t *testing.T) {
 			wantProbe: false, wantFail: true,
 		},
 		{
-			name:      "missing marker fails inside cooldown window",
+			// 2026-09-09 liveness-kill regression (WI: liveness kills
+			// workers): probe #1 was answered by the model seconds later;
+			// when the next idle re-entered the decision INSIDE the probe
+			// cooldown, the old logic returned (fail) and killed an
+			// actively-streaming session. The cooldown must mean WAIT.
+			name:      "cooldown after a recent probe waits, never fails (live-kill regression)",
 			output:    withoutMarker,
-			nudges:    0,
-			lastNudge: now, // just nudged → cooldown blocks another probe
-			wantProbe: false, wantFail: true,
+			nudges:    1,
+			lastNudge: now, // probe #1 just sent, model mid-reply
+			wantProbe: true, wantFail: false,
 		},
 		{
 			name:      "placeholder marker echo is not a real decision",
@@ -463,19 +563,19 @@ func TestCompletionProbeSuppressedAfterCompact(t *testing.T) {
 	now := time.Now()
 	mkRun := func(output string, nudges int, compacted bool) *sessionRun {
 		r := &sessionRun{
-			a:          &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
-			parentCtx:  context.Background(),
-			execRow:    db.ExecutionRow{ID: "exec-probe-compact", TenantID: "tnt_dev"},
-			callbacks:  &liveCallbacks{},
-			client:     NewSessionClient("http://localhost:1", "", ""),
-			done:       make(chan struct{}),
-			stats:      &execStreamState{},
-			output:     strings.Builder{},
-			nudgesSent: nudges,
+			a:           &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
+			parentCtx:   context.Background(),
+			execRow:     db.ExecutionRow{ID: "exec-probe-compact", TenantID: "tnt_dev"},
+			callbacks:   &liveCallbacks{},
+			client:      NewSessionClient("http://localhost:1", "", ""),
+			done:        make(chan struct{}),
+			stats:       &execStreamState{},
+			output:      strings.Builder{},
+			nudgesSent:  nudges,
 			lastNudgeAt: now,
 			// Budget spent → absent the compact gate this would FAIL. The gate
 			// must take precedence so a compacted mid-task pause never fails.
-			nudgeMaxVal:       nudgeMax(),
+			nudgeMaxVal:         nudgeMax(),
 			nudgeReplyWindowVal: time.Hour,
 			nudgeCooldownVal:    time.Nanosecond,
 		}
@@ -507,8 +607,11 @@ func TestCompletionProbeSuppressedAfterCompact(t *testing.T) {
 	}
 
 	// Markerless + NOT compacted + budget spent → still fails (probe budget
-	// exhausted remains the terminal guard for non-compacted runs).
+	// exhausted remains the terminal guard for non-compacted runs). The run
+	// is armed (workStarted — tool work has begun) so the probe-startup
+	// guard does not shadow the budget check being pinned here.
 	r = mkRun("plain text pause", nudgeMax(), false)
+	r.workStarted = true
 	if v := r.maybeProbeCompletion(); !v {
 		t.Fatal("non-compacted markerless idle with spent budget must fail (return true)")
 	}
@@ -624,5 +727,350 @@ func TestStallNoProgressFatal(t *testing.T) {
 	}
 	if errMsg != "stalled:no_progress" {
 		t.Fatalf("reason = %q, want stalled:no_progress", errMsg)
+	}
+}
+
+// TestToolHangWatchdogFiresAndLoopCompletes is the D6 mock-provider test:
+// a tool call goes silent for longer than the hang window. The watchdog
+// must (1) latch once, (2) fire the advisory OnStall with the
+// stalled:tool_hang: reason, (3) inject the course-correcting redirect as
+// the next user turn (SendMessage lands on the mock provider), (4) record
+// the redirect in the durable transcript, and (5) NOT re-fire on a second
+// hang (latch is once per session). The run then completes normally.
+//
+// The tool call is driven through the FULL handleEvent pipeline — the raw
+// `message.part.updated` bus events a real serve emits — so this test also
+// proves the PRODUCTION arming path (D6 review finding): the watchdog arms
+// from the raw tool-start event (status "running"), not from the
+// LegacyEventFromBus completed/error mapping, which never fires for a hung
+// tool.
+func TestToolHangWatchdogFiresAndLoopCompletes(t *testing.T) {
+	var (
+		mu         sync.Mutex
+		sentBodies []string
+		hangSends  int
+		stalls     []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/global/health":
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{"ok":true}`)
+		case strings.HasSuffix(r.URL.Path, "/prompt_async"):
+			body, _ := io.ReadAll(r.Body)
+			mu.Lock()
+			sentBodies = append(sentBodies, string(body))
+			if strings.Contains(string(body), "tool-hang") {
+				hangSends++
+			}
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	callbacks := &stallRecordingCallbacks{stalls: &stalls, mu: &mu}
+	var storedMu sync.Mutex
+	var storedParts []db.SessionPart
+	a := &Adapter{
+		log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		sessionStore: func(_ context.Context, _, _ string, parts []db.SessionPart) error {
+			storedMu.Lock()
+			defer storedMu.Unlock()
+			storedParts = append(storedParts, parts...)
+			return nil
+		},
+	}
+	r := &sessionRun{
+		a:                 a,
+		parentCtx:         context.Background(),
+		execRow:           db.ExecutionRow{ID: "exec-toolhang", TenantID: "tnt_dev"},
+		callbacks:         callbacks,
+		client:            NewSessionClient(srv.URL, "", ""),
+		sessionID:         "ses-toolhang",
+		done:              make(chan struct{}),
+		stats:             &execStreamState{},
+		store:             a.sessionStore,
+		output:            strings.Builder{},
+		toolHangWindowVal: 30 * time.Millisecond,
+	}
+	// A short manual probe timeout would otherwise fire in the background;
+	// the monitor is not started here so no probe goroutines run.
+
+	// The tool call STARTS through the real event pipeline: the raw bus
+	// event carries a tool part with status "running" (the serve's shape
+	// while the tool executes). handleEvent must arm the hang watchdog from
+	// this event alone.
+	r.handleEvent(BusEvent{Type: "message.part.updated", Properties: map[string]any{
+		"sessionID": "ses-toolhang",
+		"part":      map[string]any{"type": "tool", "tool": "bash", "state": map[string]any{"status": "running"}},
+	}})
+	if !r.toolInFlight() {
+		t.Fatal("handleEvent did not arm the hang watchdog from the raw tool-start event (production arming path broken)")
+	}
+	// The tool goes silent past the window.
+	time.Sleep(40 * time.Millisecond)
+	r.checkToolHang()
+
+	// (1) Latched once.
+	if !r.hangLatched {
+		t.Fatal("watchdog did not latch after the hang window elapsed")
+	}
+	// (2) Advisory OnStall fired with the stalled:tool_hang: reason.
+	mu.Lock()
+	stallList := append([]string(nil), stalls...)
+	mu.Unlock()
+	if len(stallList) != 1 || stallList[0] != "stalled:tool_hang:bash" {
+		t.Fatalf("OnStall reasons = %v, want exactly [stalled:tool_hang:bash]", stallList)
+	}
+	// (3) The redirect was sent to the mock provider exactly once.
+	mu.Lock()
+	hangN := hangSends
+	bodies := append([]string(nil), sentBodies...)
+	mu.Unlock()
+	if hangN != 1 {
+		t.Fatalf("hang redirect sends = %d, want exactly 1", hangN)
+	}
+	if len(bodies) == 0 || !strings.Contains(bodies[len(bodies)-1], "tool exceeded tool-hang window") {
+		t.Fatalf("redirect message not sent; bodies=%v", bodies)
+	}
+	// (4) The redirect is in the durable transcript (source tool_hang_redirect).
+	r.flushParts()
+	storedMu.Lock()
+	parts := append([]db.SessionPart(nil), storedParts...)
+	storedMu.Unlock()
+	found := false
+	for _, p := range parts {
+		if p.Kind == db.SessionPartUserMessage && strings.Contains(string(p.Payload), "tool_hang_redirect") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("redirect not recorded in transcript; parts=%+v", parts)
+	}
+	// (5) A second hang does NOT re-fire (latch is once per session). The
+	// second call starts through the pipeline too — with the latch already
+	// set, checkToolHang must no-op.
+	r.handleEvent(BusEvent{Type: "message.part.updated", Properties: map[string]any{
+		"sessionID": "ses-toolhang",
+		"part":      map[string]any{"type": "tool", "tool": "bash", "state": map[string]any{"status": "running"}},
+	}})
+	time.Sleep(40 * time.Millisecond)
+	r.checkToolHang()
+	mu.Lock()
+	hangN = hangSends
+	mu.Unlock()
+	if hangN != 1 {
+		t.Fatalf("second hang re-fired the watchdog (hangSends=%d), want 1 (latched)", hangN)
+	}
+
+	// The loop continues and completes: the tool resolves (the serve emits
+	// the completed part) and the run ends successfully — the watchdog
+	// never poisoned the run.
+	r.handleEvent(BusEvent{Type: "message.part.updated", Properties: map[string]any{
+		"sessionID": "ses-toolhang",
+		"part":      map[string]any{"type": "tool", "tool": "bash", "state": map[string]any{"status": "completed", "output": "ok"}},
+	}})
+	if r.toolInFlight() {
+		t.Fatal("tool resolution must disarm the hang watchdog")
+	}
+	r.handleEvent(BusEvent{Type: "session.idle", Properties: map[string]any{"sessionID": "ses-toolhang"}})
+	// The run's finish path is exercised by the run loop; here we verify the
+	// watchdog left the run in a state where completion is still reachable:
+	// finished must be false (no fatal kill from the watchdog) and the
+	// latch is the only side effect.
+	if r.isFinished() {
+		t.Fatal("watchdog must not kill the session; finished should remain false")
+	}
+}
+
+// TestToolHangNoFalsePositiveOnLongGeneration is the D6 false-positive
+// regression: a tool call that COMPLETES must immediately disarm the hang
+// watchdog, so the model's long post-tool generation (text streaming after
+// the tool's completed part) never trips a hang. The watchdog fires only
+// for a call that is genuinely silent WHILE in flight.
+func TestToolHangNoFalsePositiveOnLongGeneration(t *testing.T) {
+	var (
+		mu        sync.Mutex
+		hangSends int
+		stalls    []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/global/health":
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{"ok":true}`)
+		case strings.HasSuffix(r.URL.Path, "/prompt_async"):
+			mu.Lock()
+			if strings.Contains(r.URL.Path, "tool-hang") {
+				hangSends++
+			}
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	callbacks := &stallRecordingCallbacks{stalls: &stalls, mu: &mu}
+	a := &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	r := &sessionRun{
+		a:                 a,
+		parentCtx:         context.Background(),
+		execRow:           db.ExecutionRow{ID: "exec-toolhang-fp", TenantID: "tnt_dev"},
+		callbacks:         callbacks,
+		client:            NewSessionClient(srv.URL, "", ""),
+		sessionID:         "ses-toolhang-fp",
+		done:              make(chan struct{}),
+		stats:             &execStreamState{},
+		output:            strings.Builder{},
+		toolHangWindowVal: 30 * time.Millisecond,
+	}
+
+	// Tool starts through the pipeline, then completes quickly.
+	r.handleEvent(BusEvent{Type: "message.part.updated", Properties: map[string]any{
+		"sessionID": "ses-toolhang-fp",
+		"part":      map[string]any{"type": "tool", "tool": "bash", "state": map[string]any{"status": "running"}},
+	}})
+	if !r.toolInFlight() {
+		t.Fatal("watchdog not armed at tool start")
+	}
+	r.handleEvent(BusEvent{Type: "message.part.updated", Properties: map[string]any{
+		"sessionID": "ses-toolhang-fp",
+		"part":      map[string]any{"type": "tool", "tool": "bash", "state": map[string]any{"status": "completed", "output": "ok"}},
+	}})
+	if r.toolInFlight() {
+		t.Fatal("tool completion must disarm the hang watchdog immediately")
+	}
+	// The model's long post-tool generation (token deltas + a completed text
+	// part) flows for far longer than the window — the watchdog must not
+	// fire because no tool is in flight.
+	for i := 0; i < 6; i++ {
+		r.handleEvent(BusEvent{Type: "message.part.delta", Properties: map[string]any{
+			"sessionID": "ses-toolhang-fp", "delta": "streaming text ",
+		}})
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(40 * time.Millisecond)
+	r.checkToolHang()
+
+	mu.Lock()
+	hangN, stallList := hangSends, append([]string(nil), stalls...)
+	mu.Unlock()
+	if hangN != 0 || len(stallList) != 0 {
+		t.Fatalf("false positive: hangSends=%d stalls=%v, want 0/empty (no in-flight tool)", hangN, stallList)
+	}
+}
+
+// 2026-09-09 probe-loop fix (transcript 01M23C2MTF1ZYYHE8ACK17PMKV, native
+// parity): classification pins for completionProbeReply — a bare status
+// line is NOT an answer, the WORKING token is, a real marker is.
+func TestCompletionProbeReplyClassification(t *testing.T) {
+	cases := []struct {
+		name   string
+		output string
+		want   int
+	}{
+		{"marker", "text ORCHICON WORKER SUMMARY: success — did it", probeReplySummary},
+		{"working token", "WORKING", probeReplyWorking},
+		{"working token lowercase", "working", probeReplyWorking},
+		{"status line is NOT an answer", "I'll re-sync state and continue.", probeReplyNone},
+		{"working embedded in a word", "I am networking with the team.", probeReplyNone},
+		{"empty", "", probeReplyNone},
+		{"placeholder echo is not a real marker", "ORCHICON WORKER SUMMARY: success — <summary>", probeReplyNone},
+	}
+	for _, tc := range cases {
+		got, idx := completionProbeReply(tc.output)
+		if got != tc.want {
+			t.Errorf("completionProbeReply(%q) = kind %d idx %d, want kind %d", tc.output, got, idx, tc.want)
+		}
+		if tc.want == probeReplyNone && idx != -1 {
+			t.Errorf("probeReplyNone must carry idx -1, got %d", idx)
+		}
+	}
+}
+
+// 2026-09-09 probe-startup guard (transcript 01M23C2MTF1ZYYHE8ACK17PMKV,
+// native parity in qa_completion_test.go): the probe fired 6s after
+// dispatch — BEFORE the model streamed a token — because an empty/instant
+// first turn read as a "cut-off summary". A session with NO work evidence
+// (no tool call yet) cannot be cut off mid-summary. While workStarted is
+// false, a markerless idle must WAIT (no probe, no fail, no settle); the
+// gate arms from the first tool call (observeToolStart).
+func TestCompletionProbeStartupGuardWaitsBeforeWork(t *testing.T) {
+	mkRun := func(output string, workStarted bool) *sessionRun {
+		r := &sessionRun{
+			a:           &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))},
+			parentCtx:   context.Background(),
+			execRow:     db.ExecutionRow{ID: "exec-probe-startup", TenantID: "tnt_dev"},
+			callbacks:   &liveCallbacks{},
+			client:      NewSessionClient("http://localhost:1", "", ""),
+			done:        make(chan struct{}),
+			stats:       &execStreamState{},
+			output:      strings.Builder{},
+			nudgesSent:  0,
+			nudgeMaxVal: nudgeMax(),
+			// Budget + cooldown fully available so ONLY the startup guard
+			// decides the outcome.
+			nudgeReplyWindowVal: time.Hour,
+			nudgeCooldownVal:    time.Nanosecond,
+		}
+		r.output.WriteString(output)
+		if workStarted {
+			r.workStarted = true
+		}
+		return r
+	}
+
+	// Markerless + NO work yet → startup guard WAITS (return true):
+	// no probe is interjected against a worker that never started.
+	r := mkRun("", false)
+	if v := r.maybeProbeCompletion(); !v {
+		t.Fatal("markerless idle before any work must WAIT (return true): no probe, no fail, no settle")
+	}
+	r.mu.Lock()
+	fin := r.finished
+	r.mu.Unlock()
+	if fin {
+		t.Fatal("pre-work markerless idle must not fail (the incident's 6s probe is forbidden)")
+	}
+
+	// Markerless + NO work + budget spent → STILL waits (the startup guard
+	// precedes the budget check — a never-started session is the
+	// wall-clock ladder's owner, not this gate).
+	r = mkRun("", false)
+	r.nudgesSent = nudgeMax()
+	if v := r.maybeProbeCompletion(); !v {
+		t.Fatal("pre-work markerless idle must wait even with budget spent (gate not armed)")
+	}
+	r.mu.Lock()
+	fin, ok := r.finished, r.resultOk
+	r.mu.Unlock()
+	if fin || ok {
+		t.Fatal("pre-work run must never be failed by the probe gate")
+	}
+
+	// Marker present + no work → the normal idle path settles (return
+	// false) — the guard never blocks a genuine delivery.
+	r = mkRun("ORCHICON WORKER SUMMARY: success — done", false)
+	if v := r.maybeProbeCompletion(); v {
+		t.Fatal("marker-present idle must settle (return false) regardless of the guard")
+	}
+
+	// Work HAS begun (tool call observed) → the gate arms normally:
+	// markerless + budget spent → honest fail (the guard is out of the way).
+	r = mkRun("mid-task text", true)
+	r.nudgesSent = nudgeMax()
+	if v := r.maybeProbeCompletion(); !v {
+		t.Fatal("post-work markerless idle with spent budget must fail (return true)")
+	}
+	r.mu.Lock()
+	fin, ok = r.finished, r.resultOk
+	r.mu.Unlock()
+	if !fin || ok {
+		t.Fatal("post-work run with spent probe budget must fail honestly")
 	}
 }

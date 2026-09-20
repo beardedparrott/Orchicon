@@ -3,6 +3,7 @@ import remarkEmoji from "remark-emoji";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
 
+import { remarkHardBreaks } from "@/lib/remarkHardBreaks";
 import { cn } from "@/lib/utils";
 
 const COMPONENTS: Components = {
@@ -78,11 +79,32 @@ const COMPONENTS: Components = {
   ),
 };
 
-export function Markdown({ children, className }: { children?: string | null; className?: string }) {
+export function Markdown({
+  children,
+  className,
+  preserveBreaks = false,
+}: {
+  children?: string | null;
+  className?: string;
+  /**
+   * preserveBreaks keeps a newline the author TYPED as a line break, instead of letting CommonMark collapse it
+   * to a space.
+   *
+   * IT IS OPT-IN, AND THAT IS THE WHOLE POINT. CommonMark's soft break is correct for prose the model wrote —
+   * that text is machine-wrapped and joining its lines is what lets it reflow to any width. It is wrong for
+   * text a person typed by hand, where the line they broke is a line they meant (see remarkHardBreaks.ts). Only
+   * the user-authored surfaces pass it, so enabling it here cannot reflow the assistant's answers, the system
+   * prompt panel, reasoning, or any stored description that happens to be rendered through this component.
+   */
+  preserveBreaks?: boolean;
+}) {
   if (!children) return null;
+  const remarkPlugins = preserveBreaks
+    ? [remarkGfm, remarkEmoji, remarkHardBreaks]
+    : [remarkGfm, remarkEmoji];
   return (
     <div className={cn("prose-custom text-sm leading-relaxed break-words [overflow-wrap:anywhere]", className)}>
-      <ReactMarkdown components={COMPONENTS} remarkPlugins={[remarkGfm, remarkEmoji]}>
+      <ReactMarkdown components={COMPONENTS} remarkPlugins={remarkPlugins}>
         {children}
       </ReactMarkdown>
     </div>

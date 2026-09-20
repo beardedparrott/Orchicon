@@ -370,6 +370,13 @@ func rowToProto(p db.ProjectRow) *apiv1.Project {
 		ContextFiles:      contextFilesFromJSONOrEmpty(p.ContextFiles),
 		MaxConcurrentRuns: int32(p.MaxConcurrentRuns),
 		RepoSlug:          stringOrEmpty(p.RepoSlug),
+		DefaultRuntimeImage: stringOrEmpty(p.DefaultRuntimeImage),
+		ExecutionMode: func() apiv1.ExecutionMode {
+			if p.ExecutionMode == db.ExecutionModeLocal {
+				return apiv1.ExecutionMode_EXECUTION_MODE_LOCAL
+			}
+			return apiv1.ExecutionMode_EXECUTION_MODE_RUNTIME
+		}(),
 	}
 	if p.GitStrategy != "" {
 		if fd := proj.ProtoReflect().Descriptor().Fields().ByName("git_strategy"); fd != nil {

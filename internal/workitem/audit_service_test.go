@@ -85,6 +85,9 @@ func seedAuditProject(t *testing.T, pool *db.Pool, tenantID string) string {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatalf("commit project: %v", err)
 	}
+	// The fixture cleans up after itself, through the SAME cascade the product uses — so a fixture
+	// can never leave a project (or its executions/usage/recoveries) behind in the dev tenant.
+	db.CleanupProject(t, pool, tenantID, proj.ID)
 	return proj.ID
 }
 

@@ -1,6 +1,8 @@
 import { useCallback, useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { Brain, ChevronDown } from "lucide-react";
+import { ChevronDown } from "lucide-react";
+import { ModeIcon } from "@/components/ui/ModeIcon";
+import { CONVERSATION_MODES, conversationModeLabel } from "@/lib/conversationModes";
 import { cn } from "@/lib/utils";
 import { ConversationMode } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 
@@ -11,9 +13,13 @@ interface ModeToggleProps {
   className?: string;
 }
 
-const options = [
-  { value: ConversationMode.BRAINSTORM, label: "Brainstorm", icon: Brain },
-] as const;
+// THE OPTIONS ARE DERIVED, NOT WRITTEN DOWN HERE.
+//
+// This was `[{ value: ConversationMode.BRAINSTORM, ... }]` — a hardcoded single-element array written when only
+// one mode existed. Iteration and Quick Work landed later; nothing made this file know, so the dropdown kept
+// offering Brainstorm alone and the three-mode platform was reachable only from the TUI. The list now comes
+// from the proto enum via lib/conversationModes, so a mode the enum gains appears here by CONSTRUCTION rather
+// than by someone remembering to come back to this file.
 
 export function ModeToggle({
   mode,
@@ -40,15 +46,17 @@ export function ModeToggle({
     }
   }, [open]);
 
-  const current = options.find((o) => o.value === mode) ?? options[0];
-  const CurrentIcon = current.icon;
+  const current =
+    CONVERSATION_MODES.find((o) => o.value === mode) ?? CONVERSATION_MODES[0];
 
   const handleChange = useCallback(
     (next: ConversationMode) => {
       if (next === mode || disabled) return;
       onModeChange(next);
-      const label = "Brainstorm";
-      setAnnouncement(`Switched to ${label} mode`);
+      // THE ANNOUNCEMENT NAMES THE MODE THAT WAS ACTUALLY CHOSEN. It announced the literal "Brainstorm" before,
+      // so every switch to Iteration or Quick Work told a screen reader the wrong mode — the same hardcoded
+      // assumption as the option list, in the one place a sighted operator would never notice it.
+      setAnnouncement(`Switched to ${conversationModeLabel(next)} mode`);
       setOpen(false);
     },
     [mode, disabled, onModeChange],
@@ -84,11 +92,11 @@ export function ModeToggle({
           if (!open) {
             setOpen(true);
           } else {
-            const idx = options.findIndex((o) => o.value === mode);
+            const idx = CONVERSATION_MODES.findIndex((o) => o.value === mode);
             const next =
               e.key === "ArrowDown"
-                ? options[(idx + 1) % options.length]
-                : options[(idx - 1 + options.length) % options.length];
+                ? CONVERSATION_MODES[(idx + 1) % CONVERSATION_MODES.length]
+                : CONVERSATION_MODES[(idx - 1 + CONVERSATION_MODES.length) % CONVERSATION_MODES.length];
             handleChange(next.value);
           }
           break;
@@ -110,6 +118,7 @@ export function ModeToggle({
         role="combobox"
         aria-expanded={open}
         aria-label="Conversation mode"
+        title={current.blurb}
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
         onKeyDown={handleKeyDown}
@@ -120,7 +129,7 @@ export function ModeToggle({
           "disabled:opacity-50 disabled:pointer-events-none",
         )}
       >
-        <CurrentIcon className="h-3.5 w-3.5 text-muted-foreground" />
+        <ModeIcon mode={current.value} className="h-3.5 w-3.5 text-muted-foreground" />
         <span className="hidden sm:inline">{current.label}</span>
         <ChevronDown
           aria-hidden="true" className={cn(
@@ -138,15 +147,15 @@ export function ModeToggle({
             style={menuStyle}
             className="z-50 min-w-[140px] overflow-hidden rounded-xl glass-menu text-popover-foreground animate-in fade-in-0 zoom-in-95"
           >
-            {options.map((opt) => {
+            {CONVERSATION_MODES.map((opt) => {
               const active = mode === opt.value;
-              const Icon = opt.icon;
               return (
                 <button
                   key={opt.value}
                   role="option"
                   aria-selected={active}
                   type="button"
+                  title={opt.blurb}
                   onClick={() => handleChange(opt.value)}
                   className={cn(
                     "flex w-full items-center gap-2 px-3 py-2 text-xs font-medium transition-colors",
@@ -155,7 +164,7 @@ export function ModeToggle({
                     active && "bg-accent text-accent-foreground",
                   )}
                 >
-                  <Icon className="h-3.5 w-3.5" />
+                  <ModeIcon mode={opt.value} className="h-3.5 w-3.5" />
                   {opt.label}
                   {active && (
                     <span className="ml-auto text-primary">✓</span>

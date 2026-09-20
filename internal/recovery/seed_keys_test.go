@@ -2,8 +2,12 @@ package recovery
 
 // Integration tests for the recovery-seed keys published at resume time:
 // the recovery engine must write _recovery_execution_id + _recovery_worker_id
-// beside _recovery_summary so the scheduler's dispatch path can gate the
-// .orchicon/worker.recovery file on the SAME worker being re-dispatched.
+// + _recovery_worker_version + _recovery_adapter beside _recovery_summary so
+// the scheduler's dispatch path can gate the .orchicon/worker.recovery file
+// on the SAME worker being re-dispatched and fail fast when the step's
+// current version moved off the dead execution's version/adapter
+// (model_ref is per-version: same worker ID, different version may mean a
+// different adapter).
 // Both paths are covered: the step-run path (keys land on the step run's
 // result) and the standalone path (keys land on the work item's Results).
 // Skipped unless ORCHICON_TEST_DSN points at a disposable database.
@@ -164,6 +168,12 @@ func TestRecoverySeedKeysStandalone(t *testing.T) {
 	if got, ok := results["_recovery_worker_id"].(string); !ok || got != "w-failed" {
 		t.Errorf("_recovery_worker_id = %q, want w-failed", got)
 	}
+	if got, ok := results["_recovery_worker_version"].(float64); !ok || got != 1 {
+		t.Errorf("_recovery_worker_version = %v, want 1", results["_recovery_worker_version"])
+	}
+	if _, ok := results["_recovery_adapter"]; !ok {
+		t.Errorf("_recovery_adapter missing (still expected: empty when the dead execution carries none)")
+	}
 	if task.Status != domain.WorkItemReady {
 		t.Errorf("task status = %q, want %q (resumed)", task.Status, domain.WorkItemReady)
 	}
@@ -205,6 +215,12 @@ func TestRecoverySeedKeysStepRun(t *testing.T) {
 	}
 	if got, ok := result["_recovery_worker_id"].(string); !ok || got != "w-failed" {
 		t.Errorf("step run _recovery_worker_id = %q, want w-failed", got)
+	}
+	if got, ok := result["_recovery_worker_version"].(float64); !ok || got != 1 {
+		t.Errorf("step run _recovery_worker_version = %v, want 1", result["_recovery_worker_version"])
+	}
+	if _, ok := result["_recovery_adapter"]; !ok {
+		t.Errorf("step run _recovery_adapter missing (still expected: empty when the dead execution carries none)")
 	}
 	if _, ok := result["_recovery_summary"]; !ok {
 		t.Errorf("step run _recovery_summary missing (still expected)")

@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -213,6 +214,53 @@ func (c *Client) RemoveImage(ctx context.Context, ref string) error {
 		return readError(resp.Body)
 	}
 	return nil
+}
+
+// Exec runs one shell command inside the run's leased runtime container
+// (always-container native transport) and returns the collected
+// stdout/stderr + exit code. A non-zero exit is a RESULT (returned with a
+// nil error); only transport failures error. The daemon streams the
+// supervisor's JSON-lines AgentEvents; Exec reassembles them.
+func (c *Client) Exec(ctx context.Context, workflowID string, req ExecRequest) (*ExecResult, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://runtime"+"/v1/runtimes/"+workflowID+"/exec", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.hc.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, readError(resp.Body)
+	}
+	var stdout, stderr strings.Builder
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for sc.Scan() {
+		var ev AgentEvent
+		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
+			continue
+		}
+		switch {
+		case ev.Stream == "stdout":
+			stdout.WriteString(ev.Data)
+		case ev.Stream == "stderr":
+			stderr.WriteString(ev.Data)
+		case ev.Event == "exit":
+			return &ExecResult{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: ev.ExitCode}, nil
+		case ev.Event == "error":
+			return nil, fmt.Errorf("runtime exec: %s", ev.Error)
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, &StreamDroppedError{Err: err}
+	}
+	return nil, &StreamDroppedError{Err: fmt.Errorf("stream ended without exit event")}
 }
 
 func (c *Client) postJSON(ctx context.Context, path string, in, out any) error {

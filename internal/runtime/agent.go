@@ -20,21 +20,28 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/guard"
 )
 
 // AgentRequest is a single dispatch from the daemon to the in-container
 // supervisor. It travels as one JSON document over the supervisor's unix
 // socket (written by `orchicon runtime-client`, which the daemon reaches
-// via `docker exec`). The only commands left after the one-shot exec
-// transport was removed are "ping" (readiness) and "serve" (the container's
-// opencode serve handshake).
+// via `docker exec`). Commands: "ping" (readiness), "serve" (the
+// container's opencode serve handshake), and "exec" (one-shot shell
+// command for always-container native sessions — argv is fixed to
+// bash/sh -c by the allowlist below).
 type AgentRequest struct {
-	Cmd        string   `json:"cmd"` // "ping" | "serve"
-	Argv       []string `json:"argv,omitempty"`
-	Env        []string `json:"env,omitempty"`
-	Cwd        string   `json:"cwd,omitempty"`
-	ProjectDir string   `json:"project_dir,omitempty"`
+	Cmd  string   `json:"cmd"` // "ping" | "serve" | "exec"
+	Argv []string `json:"argv,omitempty"`
+	// AdapterKind is the adapter kind whose serve this request brings up
+	// (the "serve" cmd only). The supervisor keys its per-adapter serve
+	// state on it, so one container can multiplex a serve per demanded kind
+	// (AC 2). Empty → the default adapter kind (opencode).
+	AdapterKind string   `json:"adapter_kind,omitempty"`
+	Env         []string `json:"env,omitempty"`
+	Cwd         string   `json:"cwd,omitempty"`
+	ProjectDir  string   `json:"project_dir,omitempty"`
 }
 
 // AgentEvent is one JSON-lines record the supervisor or the image-build
@@ -136,9 +143,10 @@ var runtimeBinAllowlist = map[string]bool{
 }
 
 // RunSupervisor runs the in-container dispatch loop as PID 1. It accepts
-// ping/serve requests on socketPath and runs each as a child
-// process, streaming stdout/stderr and tracking children by exec_id so a
-// later signal request can target one.
+// ping/serve/exec requests on socketPath: ping (readiness), serve (bring
+// up the container's opencode serve), exec (run one shell command with
+// streamed output — the always-container native transport). Each serve is
+// a tracked child process; execs are one-shot with a terminal exit event.
 func RunSupervisor(socketPath string, log *slog.Logger) error {
 	if socketPath == "" {
 		socketPath = DefaultAgentSocket
@@ -237,19 +245,13 @@ type childRegistry struct {
 	// never both spawn a serve on the same port — the second Start fails
 	// ("address already in use") and would corrupt the registry.
 	serveMu sync.Mutex
-	// servePw is the container's opencode serve password, generated once
-	// by the supervisor on first serve startup and reused for the
-	// container's lifetime so idempotent serve handshakes return a stable
-	// credential.
-	servePw string
-	// serveReq is the AgentRequest the serve was last started with. The
-	// watchdog reuses it to restart the serve (same argv/env/cwd) after a
-	// wedge. Guarded by mu.
-	serveReq AgentRequest
-	// serveStarted marks that the serve has been brought up at least once,
-	// so the watchdog only acts on a serve the plane actually requested.
-	// Guarded by mu.
-	serveStarted bool
+	// serves holds the per-ADAPTER serve state, keyed by adapter kind. The
+	// supervisor MULTIPLEXES one in-container serve per demanded kind (AC 2)
+	// while native steps keep executing through the one-shot exec path
+	// (runExec) with no serve at all. Today only "opencode" is ever
+	// registered; the map is the extensibility seam for the next adapter's
+	// serve. Guarded by mu; lifecycle operations serialize on serveMu.
+	serves map[string]*serveState
 	// sandboxChecked/sandboxOK cache the sandbox-plane self-gate (binary
 	// presence in the image — the image's contents never change while the
 	// container runs). Guarded by mu.
@@ -261,7 +263,43 @@ type childRegistry struct {
 }
 
 func newChildRegistry(log *slog.Logger) *childRegistry {
-	return &childRegistry{log: log, cmd: make(map[string]*execSession)}
+	return &childRegistry{
+		log:    log,
+		cmd:    make(map[string]*execSession),
+		serves: make(map[string]*serveState),
+	}
+}
+
+// serveState is one adapter kind's in-container serve.
+type serveState struct {
+	// execID is the reserved child-registry id this serve is tracked under.
+	execID string
+	// pw is the serve's basic-auth password, generated once by the
+	// supervisor on first startup and reused for the container's lifetime
+	// so idempotent handshakes return a stable credential.
+	pw string
+	// req is the AgentRequest the serve was last started with. The watchdog
+	// reuses it to restart the serve (same argv/env/cwd) after a wedge.
+	req AgentRequest
+	// started marks that this kind's serve has been brought up at least
+	// once, so the watchdog only acts on a serve the plane actually asked
+	// for.
+	started bool
+}
+
+// serveStateLocked returns the serve state for kind, creating it on first
+// use. The caller must hold h.mu.
+func (h *childRegistry) serveStateLocked(kind string) *serveState {
+	kind = normalizedKind(kind)
+	if h.serves == nil {
+		h.serves = make(map[string]*serveState)
+	}
+	st := h.serves[kind]
+	if st == nil {
+		st = &serveState{execID: serveExecIDFor(kind)}
+		h.serves[kind] = st
+	}
+	return st
 }
 
 func (h *childRegistry) serve(conn net.Conn) {
@@ -278,6 +316,8 @@ func (h *childRegistry) serve(conn net.Conn) {
 		_ = enc.Encode(AgentEvent{Pong: true})
 	case "serve":
 		h.runServe(enc, req)
+	case "exec":
+		h.runExec(enc, req)
 	default:
 		_ = enc.Encode(AgentEvent{Event: "error", Error: "unknown cmd: " + req.Cmd})
 	}
@@ -289,6 +329,29 @@ const serveExecID = "__orchicon_serve__"
 // defaultServePort is the container-internal port the serve binds (and
 // the daemon publishes to a random host loopback port).
 const defaultServePort = 4096
+
+// serveExecIDFor returns the reserved exec id for adapter kind's
+// in-container serve. The opencode serve keeps the historical id so the
+// existing teardown/signal paths are unchanged.
+func serveExecIDFor(kind string) string {
+	k := normalizedKind(kind)
+	if k == adapter.DefaultAdapterKind {
+		return serveExecID
+	}
+	return "__orchicon_serve_" + k + "__"
+}
+
+// servePortFor returns the container-internal port adapter kind's serve
+// binds. 0 means the kind has no bring-up path yet, so the caller fails the
+// handshake rather than binding a colliding port. Only opencode — the one
+// dispatcher-registered serve-dependent kind — has one today; a future
+// adapter's serve picks its own free port at the caller.
+func servePortFor(kind string) int {
+	if normalizedKind(kind) == adapter.DefaultAdapterKind {
+		return defaultServePort
+	}
+	return 0
+}
 
 // serveDataDir is the stable per-container XDG_DATA_HOME for the serve.
 // It is deliberately NOT a fresh MkdirTemp per serve start (that is what
@@ -316,42 +379,17 @@ func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
 	h.serveMu.Lock()
 	defer h.serveMu.Unlock()
 
-	h.mu.Lock()
-	if existing, ok := h.cmd[serveExecID]; ok {
-		pw := h.servePw
-		h.mu.Unlock()
-		// Serve already registered. Liveness-gate the idempotent path: a
-		// WEDGED serve (process alive but not answering health) must NOT be
-		// reported as up — that was the failure mode where every dispatch
-		// retry burned its 30s probe against a dead serve and then degraded.
-		// If the registered serve no longer answers, kill it, let it be
-		// removed from the registry, and start a fresh one below.
-		if pw != "" && serveHealthy(defaultServePort, pw) {
-			_ = existing
-			_ = enc.Encode(AgentEvent{Event: "serve", Port: defaultServePort, Password: pw, PlaneEnabled: h.sandboxAvailable()})
-			return
-		}
-		h.log.Warn("serve registered but not healthy — restarting", "pid", existing.pidOrZero())
-		existing.kill()
-		// Fall through: h.cmd[serveExecID] is removed by watchExec once the
-		// killed process exits, so the fresh-start path below can register a
-		// new session without racing the stale entry. To make that immediate
-		// (not waiting on the reap), remove it now.
-		h.mu.Lock()
-		delete(h.cmd, serveExecID)
-		h.mu.Unlock()
-	} else {
-		h.mu.Unlock()
+	kind := normalizedKind(req.AdapterKind)
+	execID := serveExecIDFor(kind)
+	port := servePortFor(kind)
+	if port == 0 {
+		_ = enc.Encode(AgentEvent{Event: "error", Error: "no in-container serve for adapter kind: " + kind})
+		return
 	}
-
-	pw := h.servePw
-	if pw == "" {
-		pw = randomServePassword()
-		h.servePw = pw
-	}
-
+	// argv defaults to `opencode serve --hostname 0.0.0.0 --port <port>`
+	// (the port the daemon publishes); a request may override the argv.
 	if len(req.Argv) == 0 {
-		req.Argv = []string{"opencode", "serve", "--hostname", "0.0.0.0", "--port", fmt.Sprintf("%d", defaultServePort)}
+		req.Argv = []string{"opencode", "serve", "--hostname", "0.0.0.0", "--port", fmt.Sprintf("%d", port)}
 	}
 	base := filepath.Base(req.Argv[0])
 	if !runtimeBinAllowlist[base] {
@@ -359,7 +397,45 @@ func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
 		return
 	}
 
-	s := newExecSession(serveExecID)
+	// Snapshot the registry under mu, then RELEASE it before the health
+	// probe: serveHealthy is an HTTP call with a 2s timeout, and holding
+	// h.mu across it would stall every other registry operation (the
+	// daemon's readiness ping, exec starts, watchExec reaping) for the
+	// length of a wedged serve's timeout.
+	h.mu.Lock()
+	st := h.serveStateLocked(kind)
+	pw := st.pw
+	existing, registered := h.cmd[execID]
+	if registered {
+		cachedPw := pw
+		h.mu.Unlock()
+		// This kind's serve is already registered. Liveness-gate the
+		// idempotent path: a WEDGED serve (process alive but not answering
+		// health) must NOT be reported as up — that was the failure mode
+		// where every dispatch retry burned its 30s probe against a dead
+		// serve and then degraded. If the registered serve no longer
+		// answers, kill it and drop it from the registry NOW so the fresh
+		// start below can register a new session without racing the stale
+		// entry (watchExec also removes it once the process is reaped).
+		if cachedPw != "" && serveHealthy(port, cachedPw) {
+			_ = enc.Encode(AgentEvent{Event: "serve", Port: port, Password: cachedPw, PlaneEnabled: h.sandboxAvailable()})
+			return
+		}
+		h.log.Warn("serve registered but not healthy — restarting", "kind", kind, "pid", existing.pidOrZero())
+		existing.kill()
+		// Re-take mu for the registry mutation. Only runServe/startServeAgain
+		// register sessions and both serialize on serveMu, so nothing can have
+		// registered a newer session under execID in the window.
+		h.mu.Lock()
+		delete(h.cmd, execID)
+	}
+	if pw == "" {
+		pw = randomServePassword()
+		st.pw = pw
+	}
+	h.mu.Unlock()
+
+	s := newExecSession(execID)
 	s.detached = true
 
 	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
@@ -393,9 +469,9 @@ func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
 	}
 
 	h.mu.Lock()
-	h.cmd[serveExecID] = s
-	h.serveReq = req
-	h.serveStarted = true
+	h.cmd[execID] = s
+	st.req = req
+	st.started = true
 	h.mu.Unlock()
 	s.cmd = cmd
 	go h.watchExec(s)
@@ -404,9 +480,9 @@ func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
 	// the plane never races a half-initialized serve.
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		if serveHealthy(defaultServePort, pw) {
-			h.log.Info("runtime opencode serve ready", "port", defaultServePort, "pid", cmd.Process.Pid)
-			_ = enc.Encode(AgentEvent{Event: "serve", Port: defaultServePort, Password: pw, PlaneEnabled: h.sandboxAvailable()})
+		if serveHealthy(port, pw) {
+			h.log.Info("runtime adapter serve ready", "kind", kind, "port", port, "pid", cmd.Process.Pid)
+			_ = enc.Encode(AgentEvent{Event: "serve", Port: port, Password: pw, PlaneEnabled: h.sandboxAvailable()})
 			return
 		}
 		select {
@@ -418,6 +494,94 @@ func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
 	}
 	_ = cmd.Process.Kill()
 	_ = enc.Encode(AgentEvent{Event: "error", Error: "serve did not become ready within 30s"})
+}
+
+// runExec runs one synchronous shell command inside the container — the
+// always-container native transport. Native sessions keep their model loop
+// on the plane but execute every `bash` tool call here: cwd is the
+// in-container worktree path (bind-mounted at the same absolute path as the
+// host, so host and container paths agree), env carries the sandbox DSN,
+// and stdout+stderr stream back as {stream,data} chunks followed by a
+// terminal {event:exit, exit_code} (a non-zero exit is a RESULT the worker
+// course-corrects on, not a transport error). argv[0] is allowlisted to
+// bash/sh (same gate family as the serve's runtimeBinAllowlist) and the
+// execution-guard shim applies, so a worker subprocess cannot run
+// destructive commands even inside the container.
+func (h *childRegistry) runExec(enc *json.Encoder, req AgentRequest) {
+	base := ""
+	if len(req.Argv) > 0 {
+		base = filepath.Base(req.Argv[0])
+	}
+	if base != "bash" && base != "sh" {
+		_ = enc.Encode(AgentEvent{Event: "error", Error: "exec argv[0] not allowlisted: " + base})
+		return
+	}
+	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
+	if req.Cwd != "" {
+		cmd.Dir = req.Cwd
+	}
+	env := agentEnv(req)
+	guardDir, guardErr := guard.MakeGuard("/tmp", req.ProjectDir)
+	if guardErr != nil {
+		h.log.Warn("supervisor: guard not applied to exec", "error", guardErr)
+	} else {
+		env = prependGuard(env, guardDir)
+		defer os.RemoveAll(guardDir)
+	}
+	cmd.Env = env
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		_ = enc.Encode(AgentEvent{Event: "error", Error: err.Error()})
+		return
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		_ = enc.Encode(AgentEvent{Event: "error", Error: err.Error()})
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		_ = enc.Encode(AgentEvent{Event: "error", Error: err.Error()})
+		return
+	}
+	// json.Encoder is not safe for concurrent use: serialize the two
+	// stream pumps through a local mutex.
+	var wmu sync.Mutex
+	write := func(ev AgentEvent) {
+		wmu.Lock()
+		defer wmu.Unlock()
+		_ = enc.Encode(ev)
+	}
+	var wg sync.WaitGroup
+	pump := func(stream string, r io.Reader) {
+		defer wg.Done()
+		buf := make([]byte, 32*1024)
+		for {
+			n, rerr := r.Read(buf)
+			if n > 0 {
+				write(AgentEvent{Stream: stream, Data: string(buf[:n])})
+			}
+			if rerr != nil {
+				return
+			}
+		}
+	}
+	wg.Add(2)
+	go pump("stdout", stdout)
+	go pump("stderr", stderr)
+	werr := cmd.Wait()
+	wg.Wait()
+	code := 0
+	emsg := ""
+	if werr != nil {
+		var ee *exec.ExitError
+		if errors.As(werr, &ee) {
+			code = ee.ExitCode()
+		} else {
+			emsg = werr.Error()
+			code = 1
+		}
+	}
+	write(AgentEvent{Event: "exit", ExitCode: code, Error: emsg})
 }
 
 // pidOrZero returns the child's process id (0 when not started).
@@ -440,59 +604,79 @@ func (h *childRegistry) watchServe() {
 	backoff := serveWatchInterval
 	for {
 		time.Sleep(serveWatchInterval)
+		// Snapshot every STARTED serve (and its registry session) under mu;
+		// health probes and restarts happen outside the lock, per kind.
+		type serveSlot struct {
+			kind string
+			s    *execSession
+			req  AgentRequest
+			pw   string
+			port int
+		}
+		var slots []serveSlot
 		h.mu.Lock()
-		s, ok := h.cmd[serveExecID]
-		req := h.serveReq
-		started := h.serveStarted
-		pw := h.servePw
-		h.mu.Unlock()
-		if !ok || !started || s == nil || s.cmd == nil || s.cmd.Process == nil {
-			backoff = serveWatchInterval
-			continue
-		}
-		if serveHealthy(defaultServePort, pw) {
-			backoff = serveWatchInterval
-			continue
-		}
-		// Unhealthy. Restart with backoff: kill the wedged process, let
-		// watchExec unregister it, then bring the serve back up with the
-		// same request. If the serve has genuinely gone away (crashed), a
-		// fresh one takes its place.
-		h.log.Warn("serve unhealthy — restarting", "pid", s.pidOrZero(), "backoff", backoff.String())
-		time.Sleep(backoff)
-		h.serveMu.Lock()
-		// Re-check under serveMu: a runServe handshake may have already
-		// replaced the serve while we slept. Only restart if the registered
-		// session is still this (wedged) one and still unhealthy.
-		h.mu.Lock()
-		cur, ok := h.cmd[serveExecID]
-		if !ok || cur != s {
-			h.mu.Unlock()
-			h.serveMu.Unlock()
-			backoff = serveWatchInterval
-			continue
-		}
-		if serveHealthy(defaultServePort, h.servePw) {
-			h.mu.Unlock()
-			h.serveMu.Unlock()
-			backoff = serveWatchInterval
-			continue
-		}
-		s.kill()
-		delete(h.cmd, serveExecID)
-		req = h.serveReq
-		h.mu.Unlock()
-		if err := h.startServeAgain(req); err != nil {
-			h.serveMu.Unlock()
-			h.log.Error("serve restart failed", "error", err)
-			if backoff < serveWatchMaxBackoff {
-				backoff *= 2
+		for kind, st := range h.serves {
+			if st == nil || !st.started {
+				continue
 			}
+			if port := servePortFor(kind); port != 0 {
+				if s, ok := h.cmd[st.execID]; ok && s != nil && s.cmd != nil && s.cmd.Process != nil {
+					slots = append(slots, serveSlot{kind: kind, s: s, req: st.req, pw: st.pw, port: port})
+				}
+			}
+		}
+		h.mu.Unlock()
+		if len(slots) == 0 {
+			backoff = serveWatchInterval
 			continue
 		}
-		h.serveMu.Unlock()
-		backoff = serveWatchInterval
-		h.log.Info("serve restarted by watchdog", "port", defaultServePort)
+		for _, sl := range slots {
+			if serveHealthy(sl.port, sl.pw) {
+				backoff = serveWatchInterval
+				continue
+			}
+			// Unhealthy. Restart with backoff: kill the wedged process, let
+			// watchExec unregister it, then bring the serve back up with the
+			// same request. If the serve has genuinely gone away (crashed),
+			// a fresh one takes its place.
+			h.log.Warn("serve unhealthy — restarting", "kind", sl.kind, "pid", sl.s.pidOrZero(), "backoff", backoff.String())
+			time.Sleep(backoff)
+			h.serveMu.Lock()
+			// Re-check under serveMu: a runServe handshake may have already
+			// replaced the serve while we slept. Only restart if the
+			// registered session is still this (wedged) one and still
+			// unhealthy.
+			h.mu.Lock()
+			st := h.serves[sl.kind]
+			cur, ok := h.cmd[serveExecIDFor(sl.kind)]
+			if st == nil || !ok || cur != sl.s {
+				h.mu.Unlock()
+				h.serveMu.Unlock()
+				backoff = serveWatchInterval
+				continue
+			}
+			if serveHealthy(sl.port, st.pw) {
+				h.mu.Unlock()
+				h.serveMu.Unlock()
+				backoff = serveWatchInterval
+				continue
+			}
+			sl.s.kill()
+			delete(h.cmd, st.execID)
+			req := st.req
+			h.mu.Unlock()
+			if err := h.startServeAgain(sl.kind, req); err != nil {
+				h.serveMu.Unlock()
+				h.log.Error("serve restart failed", "kind", sl.kind, "error", err)
+				if backoff < serveWatchMaxBackoff {
+					backoff *= 2
+				}
+				continue
+			}
+			h.serveMu.Unlock()
+			backoff = serveWatchInterval
+			h.log.Info("serve restarted by watchdog", "kind", sl.kind, "port", sl.port)
+		}
 	}
 }
 
@@ -500,9 +684,15 @@ func (h *childRegistry) watchServe() {
 // using the stored AgentRequest. It shares the fresh-start path of
 // runServe but encodes nothing (the requesting plane's conn is long
 // gone) — the daemon's next Create handshake converges to it.
-func (h *childRegistry) startServeAgain(req AgentRequest) error {
+func (h *childRegistry) startServeAgain(kind string, req AgentRequest) error {
+	kind = normalizedKind(kind)
+	execID := serveExecIDFor(kind)
+	port := servePortFor(kind)
+	if port == 0 {
+		return fmt.Errorf("no in-container serve for adapter kind: %s", kind)
+	}
 	if len(req.Argv) == 0 {
-		req.Argv = []string{"opencode", "serve", "--hostname", "0.0.0.0", "--port", fmt.Sprintf("%d", defaultServePort)}
+		req.Argv = []string{"opencode", "serve", "--hostname", "0.0.0.0", "--port", fmt.Sprintf("%d", port)}
 	}
 	base := filepath.Base(req.Argv[0])
 	if !runtimeBinAllowlist[base] {
@@ -510,14 +700,15 @@ func (h *childRegistry) startServeAgain(req AgentRequest) error {
 	}
 
 	h.mu.Lock()
-	pw := h.servePw
+	st := h.serveStateLocked(kind)
+	pw := st.pw
 	if pw == "" {
 		pw = randomServePassword()
-		h.servePw = pw
+		st.pw = pw
 	}
 	h.mu.Unlock()
 
-	s := newExecSession(serveExecID)
+	s := newExecSession(execID)
 	s.detached = true
 
 	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
@@ -546,8 +737,8 @@ func (h *childRegistry) startServeAgain(req AgentRequest) error {
 	}
 
 	h.mu.Lock()
-	h.cmd[serveExecID] = s
-	h.serveReq = req
+	h.cmd[execID] = s
+	h.serveStateLocked(kind).req = req
 	h.mu.Unlock()
 	s.cmd = cmd
 	go h.watchExec(s)
@@ -556,7 +747,7 @@ func (h *childRegistry) startServeAgain(req AgentRequest) error {
 	// converges to a usable serve rather than racing a half-initialized one.
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		if serveHealthy(defaultServePort, pw) {
+		if serveHealthy(port, pw) {
 			return nil
 		}
 		select {

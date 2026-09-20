@@ -30,7 +30,7 @@ func TestRefreshKeepsTurnInFlightAndAccurate(t *testing.T) {
 	ctx := context.Background()
 	convID := createConversation(t, pool, "")
 
-	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	ackID, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
 	if err != nil {
 		t.Fatalf("startConversationTurn: %v", err)
 	}
@@ -86,14 +86,14 @@ func TestStartConversationTurnAdmissionCapBusyError(t *testing.T) {
 	conv3 := createConversation(t, pool, "")
 
 	for _, conv := range []string{conv1, conv2} {
-		if _, _, err := s.startConversationTurn(ctx, "tnt_dev", conv, "busy", nil); err != nil {
+		if _, _, _, err := s.startConversationTurn(ctx, "tnt_dev", conv, "busy", nil); err != nil {
 			t.Fatalf("startConversationTurn %s: %v", conv, err)
 		}
 	}
 
 	// Both slots are full; a third dispatch (a different conversation) exceeds
 	// the cap.
-	_, _, err := s.startConversationTurn(ctx, "tnt_dev", conv3, "third", nil)
+	_, _, _, err := s.startConversationTurn(ctx, "tnt_dev", conv3, "third", nil)
 	if err == nil {
 		t.Fatal("expected a busy error when the concurrent-turn cap is exceeded")
 	}
@@ -130,7 +130,7 @@ func TestInterjectRecyclesWedgedSession(t *testing.T) {
 
 	// Start turn A on the reused session: it registers, subscribes, sends on
 	// ses_live and waits for the reply.
-	ackA, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "first message", nil)
+	ackA, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "first message", nil)
 	if err != nil {
 		t.Fatalf("startConversationTurn: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestInterjectRecyclesWedgedSession(t *testing.T) {
 	waitForSend(t, client, 2)
 
 	// Interject now that the in-flight turn is wedged.
-	ackB, _, err := s.startConversationTurnOpts(ctx, "tnt_dev", convID, "steer it", nil, turnDispatchOpts{supersede: true})
+	ackB, _, _, err := s.startConversationTurnOpts(ctx, "tnt_dev", convID, "steer it", nil, turnDispatchOpts{supersede: true})
 	if err != nil {
 		t.Fatalf("interject: %v", err)
 	}

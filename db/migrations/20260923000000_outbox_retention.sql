@@ -1,0 +1,12 @@
+-- Create index "outbox_published_at_idx" to table: "outbox"
+--
+-- Backs the outbox retention prune (db.PrunePublishedOutbox):
+--   DELETE ... WHERE published_at IS NOT NULL AND published_at < $1
+--   ORDER BY published_at LIMIT $n
+-- The existing outbox_unpublished_idx is partial on (occurred_at)
+-- WHERE published_at IS NULL, so it cannot serve a prune that reads only
+-- published rows — without this index every prune pass seq-scans the whole
+-- table (8.4M rows / 8.4 GB in the incident that motivated retention).
+-- Partial on published_at IS NOT NULL keeps the index limited to prunable
+-- rows; the relay's own poll keeps using outbox_unpublished_idx.
+CREATE INDEX "outbox_published_at_idx" ON "outbox" ("published_at") WHERE ("published_at" IS NOT NULL);

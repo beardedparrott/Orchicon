@@ -39,9 +39,9 @@ var (
 // NewParentID (nil = top-level, which cannot actually trigger here — see
 // ResolveKindSwitch).
 type ChildReparent struct {
-	ChildID     string
+	ChildID      string
 	ChildVersion int
-	NewParentID *string
+	NewParentID  *string
 }
 
 // KindSwitchPlan is the set of mutations ResolveKindSwitch decided. The
@@ -88,8 +88,8 @@ type KindSwitchPlan struct {
 //  1. Parent side:
 //     - newKind == epic → parent_id = NULL (epics are top-level).
 //     - else keep the current parent when it is strictly shallower than
-//       newDepth; otherwise walk up the ancestor chain to the nearest
-//       ancestor shallower than newDepth.
+//     newDepth; otherwise walk up the ancestor chain to the nearest
+//     ancestor shallower than newDepth.
 //     - no parent + non-epic → error: a parent must be chosen explicitly.
 //  2. Child side: each direct child with depth(child) <= newDepth is
 //     reparented to the item's resolved parent (they become siblings).

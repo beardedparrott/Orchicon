@@ -5,18 +5,23 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/adapter"
+	"github.com/beardedparrott/orchicon/internal/aigateway"
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/opencode"
+	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
 // defaultHandshakeTimeout bounds how long a chat turn's attempt waits for
@@ -357,11 +362,11 @@ func (s *Service) ChatStream(ctx context.Context, req *connect.Request[apiv1.Cha
 		return connect.NewError(connect.CodeInvalidArgument, errors.New("message too long (max 10000 characters)"))
 	}
 
-	assistantID, streamEventCh, err := s.startConversationTurn(ctx, tenantID, req.Msg.ConversationId, msg, req.Msg.Attachments)
+	assistantID, streamEventCh, st, err := s.startConversationTurn(ctx, tenantID, req.Msg.ConversationId, msg, req.Msg.Attachments)
 	if err != nil {
 		return err
 	}
-	return s.drainTurnStream(stream, assistantID, streamEventCh)
+	return s.drainTurnStream(stream, req.Msg.ConversationId, assistantID, streamEventCh, st)
 }
 
 // InterjectConversationTurn is the chat equivalent of a worker-execution
@@ -389,30 +394,175 @@ func (s *Service) InterjectConversationTurn(ctx context.Context, req *connect.Re
 		return connect.NewError(connect.CodeInvalidArgument, errors.New("message too long (max 10000 characters)"))
 	}
 
-	assistantID, streamEventCh, err := s.startConversationTurnOpts(ctx, tenantID, req.Msg.ConversationId, msg, req.Msg.Attachments, turnDispatchOpts{supersede: true})
+	assistantID, streamEventCh, st, err := s.startConversationTurnOpts(ctx, tenantID, req.Msg.ConversationId, msg, req.Msg.Attachments, turnDispatchOpts{supersede: true})
 	if err != nil {
 		return err
 	}
-	return s.drainTurnStream(stream, assistantID, streamEventCh)
+	return s.drainTurnStream(stream, req.Msg.ConversationId, assistantID, streamEventCh, st)
+}
+
+// WatchTurnStream re-attaches a dropped socket to an ACKED turn's live
+// event stream WITHOUT dispatching a new turn. It validates the
+// conversation's registry entry AND the assistant message id (a supersede
+// replaces both — a stale watcher gets NotFound, never another turn's
+// chunks), subscribes to the conversation's broadcast hub, and drains until
+// the hub closes (turn finalized/superseded) or the watcher disconnects.
+func (s *Service) WatchTurnStream(ctx context.Context, req *connect.Request[apiv1.WatchTurnStreamRequest], stream *connect.ServerStream[apiv1.ChatStreamResponse]) error {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.ConversationId == "" || req.Msg.AssistantMessageId == "" {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("conversation_id and assistant_message_id must not be empty"))
+	}
+	entry, running := s.turns.get(req.Msg.ConversationId)
+	if !running || entry.assistantMsgID != req.Msg.AssistantMessageId || entry.tenant != tenantID {
+		return connect.NewError(connect.CodeNotFound, errors.New("no running turn for this message — the turn finished or was superseded"))
+	}
+	h, found := s.hubs.get(req.Msg.ConversationId)
+	if !found {
+		return connect.NewError(connect.CodeNotFound, errors.New("no live stream for this turn — the turn finished or was superseded"))
+	}
+	s.log.Info("ask orchicon watch re-attached to running turn", "conversation", req.Msg.ConversationId, "assistant_message", req.Msg.AssistantMessageId)
+	subID, ch := h.subscribe()
+	defer h.unsubscribe(subID)
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case resp, ok := <-ch:
+			if !ok {
+				return nil // hub closed: turn finalized or superseded
+			}
+			if err := stream.Send(resp); err != nil {
+				s.log.Warn("ask orchicon watch stream send failed", "conversation", req.Msg.ConversationId, "assistant_message", req.Msg.AssistantMessageId, "cause", "watcher-gone-send-fail")
+				return nil
+			}
+		}
+	}
+}
+
+// dispatchBufferSize bounds the per-turn dispatch channel (and the hub's per-subscriber buffer,
+// which is sized to match).
+const dispatchBufferSize = 64
+
+// dispatchStreamState carries what a turn's dispatch channel needs so that a DROPPED live event is
+// OBSERVABLE.
+//
+// The channel feeds the HTTP response stream AND the conversation's broadcast hub, so an event that
+// does not fit is lost for the originating client and for every watcher. Dropping is a deliberate
+// trade — the alternative is parking the collector, and the reply still lands durably for the poll
+// to resolve — but it used to be SILENT: no log, no counter, nothing to distinguish "the turn
+// produced nothing" from "the turn produced plenty and every event was thrown away". A live pane
+// that sits on "thinking…" while the turn runs is exactly that ambiguity, so the drop now says so.
+type dispatchStreamState struct {
+	dropped     atomic.Int64
+	drainActive atomic.Bool
+}
+
+// sendOrDrop enqueues a live event, or counts and reports the drop.
+//
+// Logged on the FIRST occurrence and then every maxDropReports events, so a genuinely wedged client
+// produces a handful of lines rather than one per token.
+func sendOrDrop(ch chan<- *apiv1.ChatStreamResponse, resp *apiv1.ChatStreamResponse, st *dispatchStreamState, log *slog.Logger, convID string) {
+	select {
+	case ch <- resp:
+		return
+	default:
+	}
+	n := st.dropped.Add(1)
+	const maxDropReports = 200
+	if n != 1 && n%maxDropReports != 0 {
+		return
+	}
+	// drain_active tells the two causes apart, and they need different fixes: TRUE means the client
+	// is reading too slowly for the turn's output rate (the buffer is a queue); FALSE means nothing
+	// is reading at all — the dispatch stream has ended (a dropped socket, a cancelled request)
+	// while the turn runs on, so every remaining event is thrown away.
+	log.Warn("ask orchicon DROPPED live events — dispatch buffer full",
+		"conversation", convID,
+		"dropped_total", n,
+		"drain_active", st.drainActive.Load(),
+		"cause", "dispatch-channel-full")
 }
 
 // drainTurnStream acks a freshly-started turn with TurnStarted and then
 // drains streaming events to the client until the channel closes (turn
 // complete or error), which lets the RPC return and close the HTTP stream.
-func (s *Service) drainTurnStream(stream *connect.ServerStream[apiv1.ChatStreamResponse], assistantID string, streamEventCh <-chan *apiv1.ChatStreamResponse) error {
+//
+// A ≤20s heartbeat ticker emits Heartbeat keepalives while the turn runs
+// but produces no TextChunk/ReasoningChunk (reasoning-heavy silent phases
+// trip proxy/browser idle timeouts otherwise — the provider-agnostic drop).
+// Heartbeats carry no content; the frontend ignores them for rendering but
+// treats them as socket-liveness proof. Every drained response (chunks AND
+// heartbeats) is also published to the conversation's broadcast hub so a
+// dropped socket can re-dial via WatchTurnStream.
+func (s *Service) drainTurnStream(stream *connect.ServerStream[apiv1.ChatStreamResponse], convID, assistantID string, streamEventCh <-chan *apiv1.ChatStreamResponse, st *dispatchStreamState) error {
+	// Nothing is draining this turn's dispatch channel once this returns, so mark it: a drop after
+	// this point is not "the client is slow", it is "the events have nowhere to go". That is what
+	// sendOrDrop reports as drain_active.
+	defer st.drainActive.Store(false)
 	if err := stream.Send(&apiv1.ChatStreamResponse{
 		Event: &apiv1.ChatStreamResponse_TurnStarted{
 			TurnStarted: &apiv1.TurnStarted{AssistantMessageId: assistantID},
 		},
 	}); err != nil {
+		s.log.Warn("ask orchicon chatstream send failed", "conversation", convID, "assistant_message", assistantID, "cause", "client-gone-send-fail")
 		return err
 	}
-	for resp := range streamEventCh {
+	heartbeat := time.NewTicker(askHeartbeatInterval())
+	defer heartbeat.Stop()
+	send := func(resp *apiv1.ChatStreamResponse) error {
 		if err := stream.Send(resp); err != nil {
-			break // client gone — stop draining
+			s.log.Warn("ask orchicon chatstream send failed", "conversation", convID, "assistant_message", assistantID, "cause", "client-gone-send-fail")
+			return err
+		}
+		return nil
+	}
+	for {
+		select {
+		case resp, ok := <-streamEventCh:
+			if !ok {
+				return nil
+			}
+			if h, found := s.hubs.get(convID); found {
+				h.publish(resp)
+			}
+			if err := send(resp); err != nil {
+				return nil // client gone — stop draining, turn runs on
+			}
+		case <-heartbeat.C:
+			hb := &apiv1.ChatStreamResponse{
+				Event: &apiv1.ChatStreamResponse_Heartbeat{
+					Heartbeat: &apiv1.Heartbeat{ServerTimeUnixMs: time.Now().UnixMilli()},
+				},
+			}
+			if h, found := s.hubs.get(convID); found {
+				h.publish(hb)
+			}
+			// A heartbeat that fails to send IS the drop signal
+			// (idle/proxy timeout or gone client): log it distinctly
+			// and stop draining — the turn continues server-side
+			// and the client re-dials via WatchTurnStream.
+			if err := send(hb); err != nil {
+				s.log.Warn("ask orchicon chatstream heartbeat send failed", "conversation", convID, "assistant_message", assistantID, "cause", "idle-timeout-or-client-gone")
+				return nil
+			}
 		}
 	}
-	return nil
+}
+
+// askHeartbeatInterval is the ChatStream keepalive cadence (≤20s): wire
+// traffic during silent generation so idle timeouts never mistake a
+// healthy-but-quiet turn for a dead socket. Env override
+// ORCHICON_ASK_HEARTBEAT_INTERVAL is a dev/test knob.
+func askHeartbeatInterval() time.Duration {
+	if v := os.Getenv("ORCHICON_ASK_HEARTBEAT_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return 15 * time.Second
 }
 
 // turnDispatchOpts carries the dispatch-mode switches for
@@ -429,7 +579,7 @@ type turnDispatchOpts struct {
 // which the reply (or error) will be persisted. Errors are *connect.Error
 // values with the right code (NotFound for a missing conversation,
 // FailedPrecondition when a turn is already pending — one turn at a time).
-func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, msg string, attachments []*apiv1.AttachmentInput) (string, chan *apiv1.ChatStreamResponse, error) {
+func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, msg string, attachments []*apiv1.AttachmentInput) (string, chan *apiv1.ChatStreamResponse, *dispatchStreamState, error) {
 	return s.startConversationTurnOpts(ctx, tenantID, convID, msg, attachments, turnDispatchOpts{})
 }
 
@@ -441,21 +591,38 @@ func (s *Service) startConversationTurn(ctx context.Context, tenantID, convID, m
 // the conversation's opencode session aborted so the model stops generating
 // NOW — the interjection is answered at the next turn boundary rather than
 // queued behind a stuck turn.
-func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convID, msg string, attachments []*apiv1.AttachmentInput, opts turnDispatchOpts) (string, chan *apiv1.ChatStreamResponse, error) {
+func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convID, msg string, attachments []*apiv1.AttachmentInput, opts turnDispatchOpts) (string, chan *apiv1.ChatStreamResponse, *dispatchStreamState, error) {
 	// --- 0. Load the conversation. Needed up front: the persisted session
 	// id for the supersede serve-abort, plus existence for NotFound. ---
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
-		return "", nil, connect.NewError(connect.CodeInternal, err)
+		return "", nil, nil, connect.NewError(connect.CodeInternal, err)
 	}
 	conv, err := db.GetConversation(ctx, ttx.Tx, tenantID, convID)
 	ttx.Rollback(ctx)
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound) {
-			return "", nil, connect.NewError(connect.CodeNotFound, errors.New("conversation not found"))
+			return "", nil, nil, connect.NewError(connect.CodeNotFound, errors.New("conversation not found"))
 		}
-		return "", nil, connect.NewError(connect.CodeInternal, err)
+		return "", nil, nil, connect.NewError(connect.CodeInternal, err)
 	}
+
+	// THE MODE RIDES THE TURN'S CONTEXT, from here to the tool boundary.
+	//
+	// This is the ONE place a turn learns its mode, and it is deliberately the same read the persona uses
+	// (`buildSystemPrompt(conv.Mode, …)` below): the prompt and the ENFORCEMENT are stamped from the same value,
+	// in the same turn, so the model can never be told it is one mode while the gate believes another. A
+	// mid-conversation switch therefore takes effect on the next message in BOTH halves at once.
+	//
+	// Stamped BEFORE `detached := context.WithoutCancel(ctx)` below, which preserves values and drops only
+	// cancellation — so the mode survives the detach that carries the rest of the turn.
+	ctx = withAskMode(ctx, conv.Mode)
+
+	// THE CONVERSATION ID RIDES WITH THE MODE, for the same reason and by the same rule: a tool that must report
+	// THIS session's own facts (get_current_conversation: which conversation, which model_ref) reads them from the
+	// row this value names, rather than being told them by the model. Stamped here — before the WithoutCancel
+	// detach below — so it survives into every tool call of the turn, exactly as the mode does.
+	ctx = withAskConversation(ctx, convID)
 
 	// sessionIDOverride is the session the new turn dispatches on. Normally
 	// the conversation's persisted session; set to "" below (forcing a fresh
@@ -471,10 +638,12 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 			s.log.Info("conversation turn superseded by interjection", "conversation", convID)
 		}
 		// Abort the serve session so the model stops generating NOW (the
-		// same abort the Stop button uses). Best-effort; idempotent.
+		// same abort the Stop button uses). Best-effort; idempotent. Routed
+		// through the conversation's resolved adapter so a non-opencode
+		// adapter aborts its own session (no opencode hardcoding).
 		if conv.SessionID != "" {
-			if client := s.hostServeClient(); client != nil {
-				_ = client.Abort(context.WithoutCancel(ctx), conv.SessionID)
+			if client := s.resolveClientForAbort(conv.ModelRef); client != nil {
+				_ = client.AbortConversationSession(context.WithoutCancel(ctx), conv.SessionID)
 			}
 		}
 		// D4 (mid-run interjection on a wedged session): the superseded turn
@@ -491,17 +660,17 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 
 	// --- 0.8 Validate attachments (size/count caps — server is authoritative) ---
 	if len(attachments) > 5 {
-		return "", nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("too many attachments (max 5)"))
+		return "", nil, nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("too many attachments (max 5)"))
 	}
 	var totalBytes int
 	for _, a := range attachments {
 		if len(a.Data) > 10*1024*1024 {
-			return "", nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("attachment %q too large (max 10MB)", a.Name))
+			return "", nil, nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("attachment %q too large (max 10MB)", a.Name))
 		}
 		totalBytes += len(a.Data)
 	}
 	if totalBytes > 20*1024*1024 {
-		return "", nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("attachments too large (max 20MB total)"))
+		return "", nil, nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("attachments too large (max 20MB total)"))
 	}
 
 	// --- 1. Register the turn. ---
@@ -518,7 +687,7 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// Checked BEFORE the detached collector context is created so a rejected
 	// dispatch never allocates an un-cancelled context (lostcancel).
 	if _, running := s.turns.get(convID); !running && s.turns.len() >= askMaxConcurrentTurns() {
-		return "", nil, connect.NewError(connect.CodeResourceExhausted,
+		return "", nil, nil, connect.NewError(connect.CodeResourceExhausted,
 			errors.New("too many Ask Orchicon conversations are processing right now — wait for a turn to finish and try again"))
 	}
 	// The turn is registered before the user message is persisted so a
@@ -531,7 +700,7 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	turnCtx, cancelTurn := context.WithCancelCause(detached)
 	token, ok := s.turns.register(convID, tenantID, assistantID, cancelTurn)
 	if !ok {
-		return "", nil, connect.NewError(connect.CodeFailedPrecondition,
+		return "", nil, nil, connect.NewError(connect.CodeFailedPrecondition,
 			errors.New("a reply is still in progress for this conversation — wait for it to complete or stop it first"))
 	}
 	releaseTurn := func() {
@@ -562,17 +731,17 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	ttx, err = s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		releaseTurn()
-		return "", nil, connect.NewError(connect.CodeInternal, err)
+		return "", nil, nil, connect.NewError(connect.CodeInternal, err)
 	}
 	if _, err := db.CreateMessage(ctx, ttx.Tx, userMsg); err != nil {
 		ttx.Rollback(ctx)
 		releaseTurn()
-		return "", nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save user message: %w", err))
+		return "", nil, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save user message: %w", err))
 	}
 	if err := db.UpdateConversationTimestamp(ctx, ttx.Tx, tenantID, convID); err != nil {
 		ttx.Rollback(ctx)
 		releaseTurn()
-		return "", nil, connect.NewError(connect.CodeInternal, err)
+		return "", nil, nil, connect.NewError(connect.CodeInternal, err)
 	}
 	if conv.Title == "" {
 		title := msg
@@ -595,11 +764,11 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 		})); err != nil {
 		ttx.Rollback(ctx)
 		releaseTurn()
-		return "", nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.message_sent: %w", err))
+		return "", nil, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.message_sent: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		releaseTurn()
-		return "", nil, connect.NewError(connect.CodeInternal, err)
+		return "", nil, nil, connect.NewError(connect.CodeInternal, err)
 	}
 
 	// --- 3. Resolve model and build prompts (DB-only, no serve
@@ -619,9 +788,14 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	ttx, err = s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		releaseTurn()
-		return "", nil, connect.NewError(connect.CodeInternal, err)
+		return "", nil, nil, connect.NewError(connect.CodeInternal, err)
 	}
 	prevMessages, _ := db.ListMessages(ctx, ttx.Tx, tenantID, convID, 50, "")
+	// The DB window is what a fresh session replays (the seed prompt) and what
+	// the session-ownership check below reads: sanitize it so no assistant row
+	// carrying tool_calls without matching tool_results can ever be replayed
+	// to a provider (BUG: dangling tool_call replayed to the new provider).
+	prevMessages = sanitizeHistoryRows(prevMessages)
 	cfg, _ := db.GetAgentConfig(ctx, ttx.Tx, tenantID)
 	// The tenant's stall window for THIS turn: read at dispatch time so a
 	// settings change applies to the next turn, and the collector's stall
@@ -632,6 +806,12 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// Inject the tenant's enabled projects so the agent always has
 	// up-to-date context about what it operates on (fresh per message).
 	projectContext := s.fetchProjectContext(ctx, tenantID)
+	// AND WHICH ONE THIS CHAT IS IN, which is a different statement from the list below: the operator's "we
+	// should add context to all three modes to know which chat belongs to which project folder". The list says
+	// what exists; this says where this conversation's work happens, and it is what makes the file/shell suite's
+	// scope SELF-EVIDENT rather than something the agent has to spend a tool call discovering. Built from the
+	// already-loaded conversation row, so it costs one project lookup and no extra conversation read.
+	convProject := s.conversationProjectContext(ctx, tenantID, conv)
 
 	// System prompt variants for the session transport: the seed variant
 	// (DB history included) is used when a fresh session is created (first
@@ -641,31 +821,88 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// mode: the mode is applied per message as the opencode per-turn `system`
 	// field, so a mid-conversation mode switch changes the next message's
 	// persona with no session change or serve restart.
-	seedSystem := buildSystemPrompt(conv.Mode, cfg, s.toolRegistry, prevMessages, true, attachments, projectContext)
-	reuseSystem := buildSystemPrompt(conv.Mode, cfg, s.toolRegistry, prevMessages, false, attachments, projectContext)
+	seedSystem := buildSystemPrompt(conv.Mode, cfg, s.toolRegistry, prevMessages, true, attachments, projectContext, convProject)
+	reuseSystem := buildSystemPrompt(conv.Mode, cfg, s.toolRegistry, prevMessages, false, attachments, projectContext, convProject)
 
 	// --- 4. Launch the detached reply collector and stream events to the
 	// client. The stream channel is buffered so the collector never blocks.
 	// When the channel closes (turn complete or error), the drain goroutine
-	// exits, which lets ChatStream return, closing the HTTP stream. ---
-	streamEventCh := make(chan *apiv1.ChatStreamResponse, 64)
+	// exits, which lets ChatStream return, closing the HTTP stream.
+	// A broadcast hub is (re)created for the conversation alongside the
+	// turn: every drained response is published there too, so a dropped
+	// socket re-dials the SAME turn via WatchTurnStream. Supersede replaces
+	// the hub so stale watchers drain and fall back to the poll. ---
+	s.hubs.create(convID)
+	streamEventCh := make(chan *apiv1.ChatStreamResponse, dispatchBufferSize)
+	st := &dispatchStreamState{}
+	st.drainActive.Store(true)
 	onStreamEvent := func(resp *apiv1.ChatStreamResponse) {
-		select {
-		case streamEventCh <- resp:
-		default:
-			// Channel full — drop event (client may be slow or gone).
-		}
+		sendOrDrop(streamEventCh, resp, st, s.log, convID)
 	}
 
-	if client := s.hostServeClient(); client != nil {
+	// The conversation's adapter is resolved through the shared Dispatcher
+	// by its model_ref kind (ADR-0003 §3/§5). A nil dispatcher (tests /
+	// pre-wiring) falls back to the host opencode serve client. A resolution
+	// failure (unknown kind / adapter lacks the chat capability) is surfaced
+	// as a clean, retryable turn failure — never as a silent opencode fallback
+	// (the AC routing landmine).
+	if client, cerr := s.resolveChatClient(convID, modelRef); cerr != nil {
+		// The turn was already registered above: release it so the
+		// conversation is not wedged behind a turn that will never run
+		// (the TTL sweeper would otherwise hold it for up to 31 minutes).
+		releaseTurn()
+		s.hubs.remove(convID)
+		return "", nil, nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("Ask Orchicon could not resolve an adapter for this conversation: %w", cerr))
+	} else if client != nil {
+		// THE MODE BOUNDARY, HANDED TO THE ADAPTER THAT WILL RUN THE TURN.
+		//
+		// The native transport enforces it at its own tool layer, so this is a declaration (see
+		// internal/orchicon/askrestrict.go). An adapter WITHOUT the capability gets the policy too — as a log line
+		// saying the boundary is prose-only for this turn, so "is this enforced?" has an answer per turn rather
+		// than an assumption. See applyAskToolPolicy.
+		s.applyAskToolPolicy(ctx, client, conv.Mode, modelRef)
+		// Adapter-scoped session identity (AC: cross-adapter switch). The
+		// persisted conversation session id belongs to the adapter that
+		// created it (the transport the model originally ran on). When the
+		// CURRENT model_ref resolves to a DIFFERENT adapter, dispatching the
+		// stored id to that adapter is a cross-adapter leak: a session-ful
+		// adapter (opencode) rejects a foreign/unknown id with an opaque 500
+		// (observed: native synthetic "orchicon-ask:<conv>" sent to opencode
+		// serve → http 500 UnknownError). So before dispatching, if the
+		// stored id is NOT owned by the resolved adapter, force a fresh
+		// session on the new adapter (a non-empty calcSessionID will be
+		// created by the collector's first-path; clearing useSessionID makes
+		// the collector create + persist it). The native adapter is treated
+		// as OWNS-ALL (it accepts any id), so reverse-direction
+		// opencode→native switches keep working without a session reset.
+		useSessionID = s.adapterScopedSessionID(client, useSessionID)
+		// Model-change invalidation (BUG: model switch fails with a dangling
+		// tool-call replay). A session is created under the model that built
+		// it, and the stored one is replayed to whatever model runs the next
+		// turn. When the conversation's model changed, reusing that session
+		// hands the NEW provider history it did not produce — including a
+		// dangling tool call from an interrupted turn. Force a fresh session
+		// so the switch dispatches on sanitized history instead.
+		if useSessionID != "" && sessionCreatedUnderDifferentModel(conv.SessionID, modelRef, prevMessages) {
+			s.log.Warn("ask orchicon model change — creating a fresh session (the stored session belongs to the previous model)",
+				"conversation", convID, "old_session", conv.SessionID, "model", modelRef)
+			useSessionID = ""
+		}
 		// Partial-reply mirror: the collector's onPartial callbacks feed a
 		// throttled flusher that upserts the running turn's collected
-		// text/reasoning under the ACKED assistant message id. A client that
-		// lost the live stream (refresh, another tab/device) polls ListMessages
-		// and watches the reply grow instead of a bare spinner. The flusher is
-		// cancelled and drained BEFORE the finalize so the complete reply
-		// always lands last (no stale partial can clobber it). Its own tiny
-		// tenant tx keeps it off the collector's hot path.
+		// text/reasoning AND live tool ledger under the ACKED assistant message
+		// id. A client that lost the live stream (refresh, another tab/device)
+		// polls ListMessages and watches the reply grow instead of a bare
+		// spinner — and a session killed mid-turn (timeout/abort/crash) leaves
+		// everything up to the kill visible. The flusher is cancelled and
+		// drained BEFORE the finalize so the complete reply always lands last
+		// (no stale partial can clobber it). Its own tiny tenant tx keeps it
+		// off the collector's hot path.
+		// turnLedger is the turn's live tool ledger, shared with the collector
+		// (pointer identity) and snapshotted by every mirror write and the
+		// terminal finalize.
+		turnLedger := newToolLedger()
 		partialMu := &sync.Mutex{}
 		partialDirty := false
 		var partialText string
@@ -684,7 +921,7 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 				}
 				partialMu.Unlock()
 				if dirty {
-					s.upsertPartialMessage(partialCtx, tenantID, convID, assistantID, modelRef, text, rsn)
+					s.upsertPartialMessage(partialCtx, tenantID, convID, assistantID, modelRef, text, rsn, turnLedger)
 					continue
 				}
 				select {
@@ -704,20 +941,21 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 
 		go func() {
 			reply, reasoning, sid, terr := s.collectConversationReply(turnCtx, turnCollectOpts{
-				client:                  client,
-				tenantID:                tenantID,
-				convID:                  convID,
-				token:                   token,
-				assistantMsgID:          assistantID,
-				sessionID:               useSessionID,
-				modelRef:                modelRef,
-				seedSystem:              seedSystem,
-				reuseSystem:             reuseSystem,
-				userMsg:                 msg,
-				attachments:             attachments,
-				onStreamEvent:           onStreamEvent,
-				stallNoProgressSeconds:  settings.StallNoProgressWindowSeconds,
-				onPartial:               onPartial,
+				client:                 client,
+				tenantID:               tenantID,
+				convID:                 convID,
+				token:                  token,
+				assistantMsgID:         assistantID,
+				sessionID:              useSessionID,
+				modelRef:               modelRef,
+				seedSystem:             seedSystem,
+				reuseSystem:            reuseSystem,
+				userMsg:                msg,
+				attachments:            attachments,
+				onStreamEvent:          onStreamEvent,
+				stallNoProgressSeconds: settings.StallNoProgressWindowSeconds,
+				onPartial:              onPartial,
+				ledger:                 turnLedger,
 			})
 			// Drain the partial mirror before finalizing: stop the flusher,
 			// wait for any in-flight write, then write whatever is still dirty
@@ -729,8 +967,15 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 			pText, pReasoning := partialText, append([]string(nil), partialReasoning...)
 			partialMu.Unlock()
 			if dirty {
-				s.upsertPartialMessage(detached, tenantID, convID, assistantID, modelRef, pText, pReasoning)
+				s.upsertPartialMessage(detached, tenantID, convID, assistantID, modelRef, pText, pReasoning, turnLedger)
 			}
+			// The terminal ledger snapshot travels with the finalize: the
+			// collector owns the pointer, so read the final state from it
+			// (every finalize path below persists text + reasoning + tools
+			// atomically — a killed session leaves the tool activity, not
+			// just the text). The superseded-empty case skips the write
+			// entirely (nothing arrived: no row), matching prior behavior.
+			finalLedger := turnLedger
 			// Cause-aware finalize (ADR-ASK-3). The collector returns
 			// context.Cause on cancellation so Stop / supersede / expiry are
 			// distinguished:
@@ -746,15 +991,38 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 				switch {
 				case errors.Is(terr, errTurnSuperseded):
 					if content := strings.TrimSpace(reply); content != "" {
-						s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, content, sid, "", reasoning)
+						s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, content, sid, "", reasoning, finalLedger)
+					} else if finalLedger.hasCalls() {
+						// The turn was interrupted between a tool call and its
+						// result: nothing arrived as text, but the partial mirror
+						// already wrote the row. Finalize it with the REPAIRED ledger
+						// rather than leaving an assistant row whose tool_calls have
+						// no results (the dangling call the new provider rejects).
+						s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", sid, "", reasoning, finalLedger)
 					}
 				case errors.Is(terr, errUserStop):
-					s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", sid, "Turn stopped by the user.", reasoning)
+					s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", sid, "Turn stopped by the user.", reasoning, finalLedger)
 				default:
-					s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", sid, terr.Error(), reasoning)
+					errText := terr.Error()
+					// Surface the failure verbatim on the stream (the TUI dock
+					// notice) as well as in the persisted error row the poll
+					// renders — a provider 400 must reach the operator in the
+					// provider's own words.
+					emitTurnError(onStreamEvent, errText)
+					if isDanglingToolCallProviderError(errText) {
+						// The session that produced the rejection is poisoned: its
+						// replayed history carries a tool call with no result. Drop
+						// the session so the NEXT send creates a fresh one seeded
+						// with sanitized history instead of replaying the poison
+						// forever (the conversation must not wedge on a 400).
+						s.log.Warn("ask orchicon dropping session after a dangling-tool-call provider rejection",
+							"conversation", convID, "session", sid)
+						s.persistConversationSessionID(detached, tenantID, convID, "")
+					}
+					s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", sid, errText, reasoning, finalLedger)
 				}
 			} else {
-				s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, strings.TrimSpace(reply), sid, "", reasoning)
+				s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, strings.TrimSpace(reply), sid, "", reasoning, finalLedger)
 			}
 			close(streamEventCh)
 		}()
@@ -762,12 +1030,13 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 		// No session transport (serve disabled / not started): fail the
 		// turn fast with a clean, visible, retryable error message.
 		releaseTurn()
+		s.hubs.remove(convID)
 		s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", conv.SessionID,
-			"Ask Orchicon is temporarily unavailable — the opencode serve is starting. Please try again in a moment.", []string{})
+			"Ask Orchicon is temporarily unavailable — the opencode serve is starting. Please try again in a moment.", []string{}, nil)
 		close(streamEventCh)
 	}
 
-	return assistantID, streamEventCh, nil
+	return assistantID, streamEventCh, st, nil
 }
 
 // AbortConversationTurn implements the Stop button: it cancels the detached
@@ -805,8 +1074,8 @@ func (s *Service) AbortConversationTurn(ctx context.Context, req *connect.Reques
 	// Best-effort serve abort of the session's running turn (idempotent; no
 	// session or no running turn is a no-op). The session itself is kept.
 	if conv.SessionID != "" {
-		if client := s.hostServeClient(); client != nil {
-			_ = client.Abort(ctx, conv.SessionID)
+		if client := s.resolveClientForAbort(conv.ModelRef); client != nil {
+			_ = client.AbortConversationSession(ctx, conv.SessionID)
 		}
 	}
 	// Audit the Stop action in its own short tx (Abort writes no row itself
@@ -826,7 +1095,8 @@ func (s *Service) AbortConversationTurn(ctx context.Context, req *connect.Reques
 // buildSystemPrompt assembles the per-message `system` prompt for the Ask
 // Orchicon agent. It carries the mode's identity block (BuildSystemPrompt),
 // the enabled-projects context, the tools list, and this message's
-// attachments. mode selects the persona (brainstorm only — orchicon removed); it is the
+// attachments. mode selects the persona (see BuildSystemPrompt for the three modes and what each one is
+// for); it is the
 // conversation's persisted mode read at turn-dispatch time.
 //
 // When includeHistory is true the DB conversation history is ALSO injected
@@ -836,7 +1106,7 @@ func (s *Service) AbortConversationTurn(ctx context.Context, req *connect.Reques
 // prior turns. When false (the steady-state follow-up on a live session) no
 // history block is emitted: the history already lives in the session, and
 // re-injecting it would double tokens and can confuse the model.
-func buildSystemPrompt(mode string, cfg db.AgentConfigRow, registry *ToolRegistry, history []db.MessageRow, includeHistory bool, attachments []*apiv1.AttachmentInput, projectContext string) string {
+func buildSystemPrompt(mode string, cfg db.AgentConfigRow, registry *ToolRegistry, history []db.MessageRow, includeHistory bool, attachments []*apiv1.AttachmentInput, projectContext, convProject string) string {
 	var b strings.Builder
 
 	b.WriteString(BuildSystemPrompt(mode, cfg, registry))
@@ -888,6 +1158,18 @@ func buildSystemPrompt(mode string, cfg db.AgentConfigRow, registry *ToolRegistr
 		b.WriteString("\n")
 	}
 
+	b.WriteString("## This conversation's project\n")
+	if convProject != "" {
+		b.WriteString(convProject)
+		b.WriteString("\n")
+	} else {
+		b.WriteString("This conversation is not assigned to a project, so it has no project directory of its own. " +
+			"The file/shell suite still operates on the tenant's first active project_dir — call ask_file_root to see " +
+			"which. Assign one with SetConversationProject (the TUI's /project, or a project folder in the GUI) to " +
+			"give this chat a workspace of its own.\n")
+	}
+	b.WriteString("\n")
+
 	b.WriteString("## Enabled projects\n")
 	if projectContext != "" {
 		b.WriteString(projectContext)
@@ -898,7 +1180,7 @@ func buildSystemPrompt(mode string, cfg db.AgentConfigRow, registry *ToolRegistr
 	b.WriteString("\n")
 
 	b.WriteString("## Available tools\n")
-	b.WriteString("Orchicon's tools are exposed to you as MCP tools named `orchicon_<tool>` — call them directly through your tool mechanism and the system executes them against Orchicon, returning real results. Mutating tools run only after user confirmation.\n\n")
+	b.WriteString("Orchicon's tools are exposed to you as MCP tools named `orchicon_<tool>` — call them directly through your tool mechanism and the system executes them against Orchicon, returning real results. Mutating tools run only after user confirmation. The native file/shell suite (batch_read, batch_grep, batch_write, read, grep, write, edit, list, glob, bash, ask_file_root) is also on your session as native tools — it operates on the tenant's first active project_dir (ask_file_root reports it).\n\n")
 	for _, td := range registry.List() {
 		mutability := "read-only"
 		if td.Mutating {
@@ -911,29 +1193,107 @@ func buildSystemPrompt(mode string, cfg db.AgentConfigRow, registry *ToolRegistr
 	return b.String()
 }
 
-// sessionTurnClient is the session surface the chat turn loop drives
-// (the session transport). *opencode.SessionClient satisfies it; tests
-// inject a fake to replay bus events without a live serve or a model.
-type sessionTurnClient interface {
-	Subscribe(ctx context.Context) (opencode.BusSub, error)
-	CreateSession(ctx context.Context, title string) (string, error)
-	SendMessage(ctx context.Context, sessionID, system, modelRef, text string) error
-	Abort(ctx context.Context, sessionID string) error
-	ReplyPermission(ctx context.Context, sessionID, permissionID string) error
+// resolveChatClient resolves the ChatTurnClient capability for an Ask
+// conversation from its model_ref adapter kind, routed through the shared
+// Dispatcher (ADR-0003 §3/§5). It is the adapter-neutral transport swap that
+// replaced the opencode-only hostServeClient: the Ask turn drives ANY
+// registered adapter that implements the chat-session capability, with the
+// default/opencode path behaving identically to before.
+//
+// A nil dispatcher (tests / pre-wiring) falls back to the host opencode serve
+// client so behavior is unchanged when no adapter namespace is configured.
+// An unknown adapter kind, or a registered adapter that does NOT implement
+// the chat-session capability, yields an actionable error — never a hardcoded
+// opencode fallback.
+func (s *Service) resolveChatClient(convID, modelRef string) (scheduler.ChatTurnClient, error) {
+	if s.dispatcher == nil {
+		if c := s.testServeClient; c != nil {
+			return c, nil
+		}
+		if c := s.hostServeClient(); c != nil {
+			return c, nil
+		}
+		return nil, fmt.Errorf("Ask Orchicon chat transport is unavailable")
+	}
+	kind := adapter.AdapterKind(modelRef)
+	bridge, err := s.dispatcher.Resolve(kind)
+	if err != nil {
+		return nil, err
+	}
+	client, ok := bridge.(scheduler.ChatTurnClient)
+	if !ok {
+		return nil, fmt.Errorf("adapter kind %q is registered but does not support Ask chat", kind)
+	}
+	return client, nil
+}
+
+// resolveClientForAbort resolves a ChatTurnClient to abort a conversation's
+// live turn (Stop / supersede / Delete / sweeper). It is best-effort: on a
+// resolution failure (no dispatcher, unknown/missing kind) it returns nil and
+// the caller skips the serve abort. This is the abort-path analogue to
+// resolveChatClient but never fails the RPC — abort is idempotent and the
+// durable record is already handled.
+func (s *Service) resolveClientForAbort(modelRef string) scheduler.ChatTurnClient {
+	if c, err := s.resolveChatClient("", modelRef); err == nil {
+		return c
+	}
+	return nil
+}
+
+// adapterScopedSessionID enforces adapter-scoped conversation session
+// identity across a mid-conversation model/adapter switch (WI-3). The
+// persisted conversation session id belongs to the adapter that created it.
+// When the current model_ref resolves to a DIFFERENT adapter, the stored id
+// must not be dispatched to it: a session-ful adapter (opencode) rejects a
+// foreign/unknown id with an opaque 500. This returns the session id the
+// turn may actually use:
+//
+//   - an empty input stays empty (a fresh session is created by the collector);
+//   - the native ("orchicon") adapter owns ALL ids it accepts (it is
+//     deliberately sessionless) — so an opencode→native switch keeps the
+//     stored session id and keeps working;
+//   - any OTHER adapter (or a client that cannot report an owner kind) is
+//     treated as not owning a native-synthetic id ("orchicon-ask:" prefix),
+//     so that id is cleared and the collector creates a fresh session on the
+//     newly-resolved adapter instead of dispatching a foreign id to it.
+func (s *Service) adapterScopedSessionID(client scheduler.ChatTurnClient, sid string) string {
+	if sid == "" {
+		return ""
+	}
+	// The native bridge is OWNS-ALL: it is sessionless and accepts any id, so
+	// the reverse direction (opencode→native) never resets the session.
+	if owner, ok := client.(scheduler.SessionOwnerKind); ok && owner.SessionOwnerKind() == "orchicon" {
+		return sid
+	}
+	// Any non-native adapter must never dispatch a native-synthetic id to its
+	// serve — clear it so the collector creates a fresh session on this
+	// adapter instead.
+	if strings.HasPrefix(sid, scheduler.NativeSessionIDPrefix) {
+		return ""
+	}
+	return sid
 }
 
 // hostServeClient returns the host serve's session client, or nil when the
-// session transport is unavailable (serve disabled, not started, or failed)
-// — the caller fails the turn fast with a clean message (no one-shot
-// fallback). Tests may inject a fake via Service.testServeClient.
-func (s *Service) hostServeClient() sessionTurnClient {
+// session transport is unavailable (serve disabled, not started, or failed).
+// It is the legacy/nil-dispatcher fallback used by resolveChatClient and the
+// abort paths. Tests may inject a fake via Service.testServeClient.
+func (s *Service) hostServeClient() scheduler.ChatTurnClient {
 	if s.testServeClient != nil {
 		return s.testServeClient
 	}
+	return s.clientFromHostServe()
+}
+
+// clientFromHostServe adapts the opencode host serve's SessionClient onto the
+// scheduler.ChatTurnClient capability used by the Ask path. It is the
+// nil-dispatcher / legacy fallback so a plain host serve (no adapter
+// namespace) keeps working. Returns nil when the serve is unavailable.
+func (s *Service) clientFromHostServe() scheduler.ChatTurnClient {
 	if s.hostServe == nil {
 		return nil
 	}
-	return s.hostServe.Client()
+	return opencode.NewClientSessionAdapter(s.hostServe.Client())
 }
 
 // persistConversationSessionID saves the opencode session id on the
@@ -964,7 +1324,7 @@ func (s *Service) persistConversationSessionID(ctx context.Context, tenantID, co
 // across serve restarts, so the session identity here is the starting point,
 // not the final one.
 type turnCollectOpts struct {
-	client         sessionTurnClient
+	client         scheduler.ChatTurnClient
 	tenantID       string
 	convID         string
 	token          uint64
@@ -987,6 +1347,13 @@ type turnCollectOpts struct {
 	// upserts the complete reply over the partial row. Nil when the dispatch
 	// path has no partial mirror (e.g. the no-serve fast-fail).
 	onPartial func(text string, reasoning []string)
+	// ledger is the turn's live tool ledger: tool starts/resolutions recorded
+	// by the drain loop as they happen. Shared across re-attach attempts (the
+	// pointer survives the collector loop) so serve loss never drops tool
+	// history; the partial mirror snapshots it and the finalize persists it
+	// terminally. Nil-safe (methods tolerate a nil receiver); the collector
+	// lazy-inits it when the dispatch path did not provide one (unit tests).
+	ledger *toolLedger
 }
 
 // turnAttemptKind is the outcome of a single subscribe+send+drain attempt.
@@ -1009,36 +1376,6 @@ type turnAttemptResult struct {
 	// wedgeTool names the tool whose call wedged (set only for turnToolWedge).
 	wedgeTool string
 	err       error
-}
-
-// activeToolName returns the name of a tool call that is issued but not yet
-// resolved, from a raw bus event. The serve emits a tool part with
-// state.status "running"/"pending" (non-terminal) while the tool executes;
-// LegacyEventFromBus drops these (it only maps completed/errored tools to
-// "tool_use"), so the chat collector uses this to feed the stall monitor's
-// tool-wedge signal (AC1). ok=false means the event is not an unresolved tool.
-func activeToolName(evt opencode.BusEvent) (string, bool) {
-	if evt.Type != "message.part.updated" {
-		return "", false
-	}
-	props := evt.Properties
-	part, _ := props["part"].(map[string]any)
-	if part == nil {
-		return "", false
-	}
-	if ptype, _ := part["type"].(string); ptype != "tool" {
-		return "", false
-	}
-	state, _ := part["state"].(map[string]any)
-	status, _ := state["status"].(string)
-	if status == "completed" || status == "error" {
-		return "", false
-	}
-	tool, _ := part["tool"].(string)
-	if tool == "" {
-		return "", false
-	}
-	return tool, true
 }
 
 // collectConversationReply is the detached reply collector for one chat
@@ -1064,10 +1401,17 @@ func activeToolName(evt opencode.BusEvent) (string, bool) {
 // the registry cancel).
 func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpts) (text string, reasoning []string, sid string, err error) {
 	defer s.turns.remove(c.convID, c.token)
+	defer s.hubs.remove(c.convID)
 
 	sid = c.sessionID
 	system := c.reuseSystem
 	recreated := false
+	// The live tool ledger survives re-attach attempts (one pointer shared by
+	// every attempt of this turn) so serve loss mid-tool never drops tool
+	// history. Lazy-init covers direct collector tests that build opts by hand.
+	if c.ledger == nil {
+		c.ledger = newToolLedger()
+	}
 	// reconnects counts the bounded session recycles performed on an MCP
 	// wedge. Bounded by ORCHICON_ASK_MCP_RECONNECT_ATTEMPTS (D2) so a wedged
 	// session is healed once (or a small bound) instead of looping.
@@ -1078,7 +1422,7 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 	// later 404 (serve data dir wiped) triggers exactly one more
 	// recreation + DB-transcript re-seed inside the attempt loop.
 	if sid == "" {
-		fresh, cerr := c.client.CreateSession(ctx, "ask-orchicon:"+c.convID)
+		fresh, cerr := c.client.CreateConversationSession(ctx, c.convID, "ask-orchicon:"+c.convID)
 		if cerr != nil {
 			return "", nil, "", fmt.Errorf("create conversation session: %w", cerr)
 		}
@@ -1110,6 +1454,16 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 		// whatever arrived before a re-attach is carried forward, matching
 		// the "partial reasoning is preserved" spirit for error paths.
 		reasoning = append(reasoning, res.reasoning...)
+		// Diff pipeline (AC 4): a turn's terminal transition reconciles the
+		// conversation's file-edit ledger against the project dir's git
+		// state (best-effort — the hook owns its error posture and never
+		// affects the turn result). Both collected and failed turns
+		// reconcile: a failed turn still wrote files worth accounting for.
+		if res.kind == turnCollected || res.kind == turnFailed {
+			if s.fileEditReconciler != nil {
+				s.fileEditReconciler(ctx, c.tenantID, c.convID)
+			}
+		}
 		switch res.kind {
 		case turnCollected:
 			return res.text, reasoning, sid, nil
@@ -1125,21 +1479,43 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 			// A tool call was issued on the session but never resolved (MCP
 			// wedge — AC1). Heal, don't fail: abort the wedged session, create
 			// a FRESH seeded session, and re-dispatch the SAME user message
-			// once (bounded by the reconnect budget). The reply window applies
+			// (bounded by the reconnect budget). The reply window applies
 			// and the turn continues transparently on a healthy session.
 			// Record the wedge so a mid-run interjection (D4) recycles rather
 			// than dispatching onto the (now-stuck) session.
-			s.turns.markWedged(c.convID, c.token)
+			//
+			// 2026-09-09 recycle-fix (operator: this path killed live Ask
+			// sessions mid-merge with "wedged on a tool (bash) and could not
+			// be recovered after 2 attempt(s)"): the recycle must NOT fail
+			// the turn on the LAST budget slot. When the budget is spent,
+			// DO NOT abort the session — the tool may still be running
+			// legitimately on the serve (the wedge window can only
+			// misfire on a slow-but-alive call) — and keep WAITING inside
+			// the reply window instead: the turn stays alive, the tool's
+			// completion (tool_use) still lands through the collector's
+			// event stream, and the reply is preserved. A genuinely hung
+			// session is bounded by the reply window, not by this gate.
+			// The budget now only bounds how many ABORT+RE-DISPATCH
+			// recycles we perform, never whether the turn may continue
+			// listening.
 			if reconnects >= askMCPReconnectAttempts() {
-				return res.text, reasoning, sid, fmt.Errorf("the conversation session wedged on a tool (%s) and could not be recovered after %d attempt(s) — please retry", res.wedgeTool, reconnects+1)
+				s.log.Warn("ask orchicon tool-wedge recycle budget spent — continuing on the live session (turn stays alive; bounded by the reply window)",
+					"conversation", c.convID, "session", sid, "tool", res.wedgeTool, "recycles", reconnects)
+				// Re-enter the attempt loop WITHOUT aborting: the current
+				// session keeps streaming; if the tool completes, the turn
+				// completes. runOneTurnAttempt re-arms the monitor on a
+				// fresh attempt; the reply window (askReplyWindow) bounds
+				// the total lifetime, so this cannot loop forever.
+				continue
 			}
+			s.turns.markWedged(c.convID, c.token)
 			oldSid := sid
 			reconnects++
 			s.log.Warn("ask orchicon session wedged on a tool — recycling to a fresh session",
 				"conversation", c.convID, "old_session", oldSid, "tool", res.wedgeTool, "reconnects", reconnects)
 			// Interrupt the stuck model NOW (idempotent best-effort).
-			_ = c.client.Abort(context.WithoutCancel(ctx), oldSid)
-			fresh, cerr := c.client.CreateSession(ctx, "ask-orchicon:"+c.convID)
+			_ = c.client.AbortConversationSession(context.WithoutCancel(ctx), oldSid)
+			fresh, cerr := c.client.CreateConversationSession(ctx, c.convID, "ask-orchicon:"+c.convID)
 			if cerr != nil {
 				return res.text, reasoning, sid, fmt.Errorf("recreate conversation session after tool wedge: %w", cerr)
 			}
@@ -1198,7 +1574,7 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 	subCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	sub, err := c.client.Subscribe(subCtx)
+	sub, err := c.client.Subscribe(subCtx, c.convID)
 	if err != nil {
 		// The serve never accepted a connection this attempt. When this is
 		// the turn's FIRST connection (serve down at send time) the caller
@@ -1215,26 +1591,24 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 	// and ignored.
 	sendCh := make(chan error, 1)
 	go func() {
-		var sendErr error
-		// If attachments contain images/files, use the extended sender when available.
+		// Attachments require the OPTIONAL attachment-aware capability. When
+		// the adapter lacks it, the turn FAILS LOUDLY (never silently falls
+		// back to text-only) — the AC routing landmine: a non-opencode client
+		// must not drop attachments.
 		if len(c.attachments) > 0 {
-			if sc, ok := c.client.(*opencode.SessionClient); ok {
-				parts := make([]opencode.AttachmentPart, 0, len(c.attachments))
-				for _, a := range c.attachments {
-					parts = append(parts, opencode.AttachmentPart{Name: a.Name, MimeType: a.MimeType, Data: a.Data})
-				}
-				sendErr = sc.SendMessageWithAttachments(subCtx, sid, system, c.modelRef, c.userMsg, parts)
-			} else {
-				sendErr = c.client.SendMessage(subCtx, sid, system, c.modelRef, c.userMsg)
+			acc, ok := c.client.(scheduler.SendTurnMessageWithAttachments)
+			if !ok {
+				sendCh <- fmt.Errorf("adapter for this conversation does not support attachments to Ask chat")
+				return
 			}
-		} else {
-			sendErr = c.client.SendMessage(subCtx, sid, system, c.modelRef, c.userMsg)
-		}
-		if sendErr != nil {
-			sendCh <- sendErr
+			parts := make([]scheduler.ChatAttachment, 0, len(c.attachments))
+			for _, a := range c.attachments {
+				parts = append(parts, scheduler.ChatAttachment{Name: a.Name, MimeType: a.MimeType, Data: a.Data})
+			}
+			sendCh <- acc.SendTurnMessageWithAttachments(subCtx, c.convID, sid, system, c.modelRef, c.userMsg, parts)
 			return
 		}
-		sendCh <- nil
+		sendCh <- c.client.SendTurnMessage(subCtx, c.convID, sid, system, c.modelRef, c.userMsg)
 	}()
 
 	var reply strings.Builder
@@ -1247,9 +1621,46 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 	// subsumes the deltas that built it, so the mirror never double-counts).
 	var liveText strings.Builder
 	var liveReasoning strings.Builder
+	// segThink demuxes folded think segments (GLM/DeepSeek) out of the TEXT
+	// delta stream: think bodies route into the reasoning channel as ONE
+	// growing entry, plain text grows liveText, and tag fragments / leaked
+	// bodies never reach the mirror's text side or the authoritative reply.
+	// Its state carries ACROSS deltas so a tag split into pieces is
+	// recognized. It is REPLACED (reset) at the completed-text-part boundary
+	// because the completed part subsumes the deltas that built it.
+	segThink := thinkSegmenter{}
+	// committedThink tracks bodies already committed to the durable reasoning
+	// slice so a folded body that arrives via BOTH the live delta path and a
+	// later completed text part is not double-counted. This is a dedupe of
+	// the SAME folded body across the two demux channels only — it never
+	// dedupes against native reasoning parts (they are distinct segments).
+	committedThink := map[string]bool{}
 	// lastMirror throttles how often the drain loop snapshots the live buffers
 	// into the partial mirror (the flusher further throttles the DB writes).
 	var lastMirror time.Time
+	// Trailing flush for the throttled mirror: when a delta lands inside the
+	// 200ms throttle window, flushTick is armed for the remainder so the
+	// unflushed delta tail drains shortly after the LAST delta — a short
+	// final burst (or the stream ending entirely) would otherwise freeze the
+	// partial row on the previous snapshot until the turn finalizes (the
+	// exact "nothing until the final message" symptom the mirror exists to
+	// fix). The timer is armed/stopped ONLY on the drain loop's goroutine and
+	// its expiry is consumed by the loop's select below, so mirrorSnapshot's
+	// reads of the live buffers stay single-goroutine by construction (no
+	// locks, no race with the finalize — the timer cannot fire after the
+	// loop returns).
+	flushTick := time.NewTimer(time.Hour)
+	defer flushTick.Stop()
+	flushArmed := false
+	disarmFlush := func() {
+		if !flushTick.Stop() {
+			select {
+			case <-flushTick.C:
+			default:
+			}
+		}
+		flushArmed = false
+	}
 	// mirrorSnapshot builds the live partial snapshot for onPartial:
 	// authoritative completed parts + the delta tail. The reasoning tail is
 	// appended as ONE growing entry (the frontend joins reasoning parts into a
@@ -1260,6 +1671,44 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 			rsn = append(rsn, liveReasoning.String())
 		}
 		return reply.String() + liveText.String(), rsn
+	}
+	// commitThink appends a demuxed folded-think body to the durable reasoning
+	// slice and emits it as a reasoning stream event. It is the SINGLE commit
+	// authority for folded bodies: it is called by the live delta path (a
+	// terminated folded body arriving in the text stream), by the completed-
+	// text-part demux (a folded body carried by a completed part), and by the
+	// terminal flush (an unterminated body at turn end). Each folded body is
+	// committed exactly once — committedThink guards the subsumed case where a
+	// delta-streamed body is REPEATED in the completed part text. This is NOT
+	// a dedupe against native reasoning parts (those are distinct segments and
+	// are always appended separately by the "reasoning" case below).
+	commitThink := func(body string) {
+		if body == "" {
+			return
+		}
+		if committedThink[body] {
+			return
+		}
+		committedThink[body] = true
+		reasoning = append(reasoning, body)
+		if c.onStreamEvent != nil {
+			c.onStreamEvent(&apiv1.ChatStreamResponse{
+				Event: &apiv1.ChatStreamResponse_Reasoning{
+					Reasoning: &apiv1.ReasoningChunk{Content: body},
+				},
+			})
+		}
+	}
+	// flushThinkDrain commits any unterminated folded-think body accumulated in
+	// the live segmenter to the durable reasoning slice (provider truncation /
+	// abort / supersede at turn end — the body must land in the reasoning
+	// channel, NEVER in text). It also clears the live reasoning tail so a
+	// committed body replaces its growing tail in the mirror (matching how a
+	// completed reasoning part resets liveReasoning after appending to the
+	// durable slice).
+	flushThinkDrain := func() {
+		segThink.flushBody(commitThink)
+		liveReasoning.Reset()
 	}
 	sent := false
 	// The handshake bound (ORCHICON_ASK_TIMEOUT) starts after subscribe and
@@ -1299,8 +1748,10 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 			// finalize behaviour per cause, and carry the partial text (the
 			// superseded turn's partial content is persisted as a plain
 			// message).
+			flushThinkDrain()
 			return turnAttemptResult{kind: turnFailed, text: reply.String(), reasoning: reasoning, err: context.Cause(subCtx)}
 		case <-window.C:
+			flushThinkDrain()
 			return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("reply timed out after %s on model %s — the model may be overloaded or unavailable. Check the Ask Orchicon model in Settings → Default models, then retry.", askReplyWindow(), c.modelRef)}
 		case <-handshake.C:
 			if !sent {
@@ -1322,16 +1773,27 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 				// with a clear, retryable message that names the model —
 				// a rate-limited or unavailable provider looks exactly
 				// like a "stuck" model to the user.
-				_ = c.client.Abort(context.WithoutCancel(subCtx), sid)
+				_ = c.client.AbortConversationSession(context.WithoutCancel(subCtx), sid)
 				s.log.Warn("ask orchicon turn stalled", "conversation", c.convID, "session", sid, "model", c.modelRef, "reason", reason)
+				flushThinkDrain()
 				return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("The model (%s) stopped responding (%s). This is often a provider/model issue (rate limit, quota, or an unavailable model). Check the Ask Orchicon model in Settings → Default models, then retry.", c.modelRef, reason)}
+			}
+		case <-flushTick.C:
+			// Trailing mirror flush: the throttle window elapsed with an
+			// unflushed delta tail. Drain it NOW on the drain loop's own
+			// goroutine (single-goroutine snapshot reads by construction).
+			flushArmed = false
+			if c.onPartial != nil {
+				lastMirror = time.Now()
+				snapText, snapRsn := mirrorSnapshot()
+				c.onPartial(snapText, snapRsn)
 			}
 		case res := <-sendCh:
 			if res != nil {
-				if errors.Is(res, opencode.ErrSessionNotFound) && !recreated {
+				if errors.Is(res, scheduler.ErrSessionNotFound) && !recreated {
 					// The serve no longer knows the session (data dir wiped):
 					// recreate + re-seed the DB history and re-dispatch once.
-					fresh, cerr := c.client.CreateSession(ctx, "ask-orchicon:"+c.convID)
+					fresh, cerr := c.client.CreateConversationSession(ctx, c.convID, "ask-orchicon:"+c.convID)
 					if cerr != nil {
 						return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("recreate conversation session: %w", cerr)}
 					}
@@ -1344,141 +1806,291 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 			if !ok {
 				// Bus closed — the serve died mid-reply. Re-attach (bounded
 				// by the reply window in the collector loop).
+				s.log.Warn("ask orchicon serve bus closed mid-turn", "conversation", c.convID, "session", sid, "cause", "sse-bus-close")
+				flushThinkDrain()
 				return turnAttemptResult{kind: turnReattach, reasoning: reasoning}
 			}
-			if esid, _ := evt.Properties["sessionID"].(string); esid != "" && esid != sid {
+			if evt.SessionID != "" && evt.SessionID != sid {
 				continue
 			}
-			switch evt.Type {
-			case "session.idle":
+			switch evt.Kind {
+			case "idle":
 				// Turn complete — but only once OUR message was accepted
 				// (sent). A stale idle from a prior turn (sent == false)
 				// must never complete a new turn.
 				if sent {
+					flushThinkDrain()
 					return turnAttemptResult{kind: turnCollected, text: strings.TrimSpace(reply.String()), reasoning: reasoning}
 				}
-			case "permission.asked":
+			case "permission":
 				// Auto-approve (the --auto equivalent). Session-level deny
 				// rules mean this should rarely fire — defensive only.
-				if pid, _ := evt.Properties["id"].(string); pid != "" {
+				if pid := evt.PermissionID; pid != "" {
 					go func() { _ = c.client.ReplyPermission(subCtx, sid, pid) }()
 				}
-			case "session.error":
+			case "error":
 				// The turn failed at the model/API level: record it and end
-				// the turn (the session is kept).
-				msg := "opencode session error"
-				if errObj, ok := evt.Properties["error"].(map[string]any); ok {
-					if m, ok2 := errObj["message"].(string); ok2 && m != "" {
-						msg = m
-					}
-				}
-				s.log.Warn("opencode session error", "conversation", c.convID, "message", msg)
-				return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: errors.New(msg)}
-			default:
-				// Telemetry: collect completed text and reasoning parts (the
-				// same LegacyEventFromBus mapping executions use). Adjacent
-				// parts are separated so distinct text parts don't
-				// concatenate without a boundary. Reasoning is accumulated
-				// separately — never folded into assistant content (matching
-				// executions). Events observed BEFORE our message was
-				// accepted (sent == false) belong to a prior turn still
-				// draining on the shared bus — they must not leak into this
-				// turn's persisted reply.
+				// the turn (the session is kept). Text carries the failed
+				// message.
+				s.log.Warn("ask orchicon session error", "conversation", c.convID, "message", evt.Text)
+				flushThinkDrain()
+				return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: errors.New(evt.Text)}
+			case "delta":
+				// Mid-generation token deltas are liveness evidence and the
+				// live partial-reply mirror. Events observed BEFORE our
+				// message was accepted (sent == false) belong to a prior turn
+				// still draining on the shared bus — they must not leak into
+				// this turn's persisted reply.
 				if !sent {
 					continue
 				}
-				// Mid-generation token deltas are liveness evidence: feed
-				// them to the stall monitor so a long, slow generation on
-				// a local model resets the no_progress clock instead of
-				// false-tripping the stall. Deltas must NOT flow into the
-				// durable reply text / reasoning / stream events (completed
-				// parts carry the durable record — TokenDeltaFromBus).
-				if delta, kind, ok := opencode.TokenDeltaInfoFromBus(evt); ok {
-					// observe("text") resets lastActivity — for "text" the
-					// monitor ignores the part, so pass nil (no per-delta
-					// allocation).
-					monitor.observe("text", nil)
-					s.turns.markActivity(c.convID, c.token)
-					// Mirror the delta into the live partial row (throttled):
-					// completed parts alone would freeze the mirror between
-					// parts, so a re-attached client would see NO output while
-					// the model streams a long part — the exact 'nothing until
-					// the final message' report. Reasoning deltas grow the
-					// thinking tail; text (or unknown-kind) deltas stream as
-					// text. The finalize overwrites the row with the
-					// authoritative reply, so deltas never corrupt it.
-					if kind == "reasoning" {
-						liveReasoning.WriteString(delta)
-					} else {
-						liveText.WriteString(delta)
+				monitor.observe("text", nil)
+				s.turns.markActivity(c.convID, c.token)
+				// Suspect-kind gate: while the folded-think segmenter has a
+				// think run open, even a native `reasoning` delta is suspect
+				// (the serve streams text AND reasoning through the same
+				// field:"text", so the kind is best-effort) — it stays on the
+				// segmenter road instead of raw-appending to the tail.
+				if evt.IsReasoning && !segThink.inThink() {
+					liveReasoning.WriteString(evt.Text)
+				} else {
+					segThink.feed(evt.Text,
+						func(t string) { liveText.WriteString(t) },
+						func(b string) { liveReasoning.WriteString(b) },
+						func(b string) {
+							liveReasoning.Reset()
+							commitThink(b)
+						},
+					)
+				}
+				if c.onPartial != nil && time.Since(lastMirror) >= 200*time.Millisecond {
+					lastMirror = time.Now()
+					disarmFlush()
+					snapText, snapRsn := mirrorSnapshot()
+					c.onPartial(snapText, snapRsn)
+				} else if c.onPartial != nil && !flushArmed {
+					// Throttled: arm the one-shot trailing flush for the
+					// throttle-window remainder (min 10ms) so the delta tail
+					// drains shortly after the LAST delta — a burst that ends
+					// within the throttle window (short final generation, or
+					// the stream ending entirely) would otherwise freeze the
+					// partial row on the previous snapshot until the turn
+					// finalizes. An on-time flush or a completed part disarms
+					// it; arming keeps the earliest deadline (only arm when
+					// not already armed).
+					delay := 200*time.Millisecond - time.Since(lastMirror)
+					if delay < 10*time.Millisecond {
+						delay = 10 * time.Millisecond
 					}
-					if c.onPartial != nil && time.Since(lastMirror) >= 200*time.Millisecond {
-						lastMirror = time.Now()
+					flushTick.Reset(delay)
+					flushArmed = true
+				}
+			case "tool_part":
+				// A tool call ISSUED but not yet resolved (AC1 MCP-wedge). The
+				// adapter maps the non-terminal tool part to this signal;
+				// LegacyEventFromBus only maps completed/errored tools to
+				// "tool_use", so a wedged tool would otherwise be invisible to
+				// the stall monitor. Feed an explicit tool start so the monitor
+				// can detect the wedge.
+				if !sent {
+					continue
+				}
+				monitor.observeToolStart(evt.Text)
+				s.turns.markActivity(c.convID, c.token)
+				// Live tool ledger: the call is recorded the moment it is
+				// issued (not at completion) and mirrored immediately, so a
+				// session killed while the tool runs still shows the call.
+				c.ledger.recordStart(evt.Text)
+				if c.onPartial != nil {
+					snapText, snapRsn := mirrorSnapshot()
+					c.onPartial(snapText, snapRsn)
+				}
+			case "part":
+				// Completed telemetry part (the same LegacyEventFromBus
+				// mapping executions use — the adapter classified it). Events
+				// before our message was accepted (sent == false) belong to a
+				// prior turn — never leak into this turn's reply.
+				if !sent {
+					continue
+				}
+				monitor.observe(evt.Type, evt.Part)
+				s.turns.markActivity(c.convID, c.token)
+				// Diff pipeline (AC 1): completed mutating tool_use parts on
+				// an Ask turn ledger file edits from real file-state
+				// snapshots — owner_kind ask_conversation, same ground truth
+				// executions record. The hook (server-wired fileedit.Service)
+				// owns the error posture; a ledger gap never fails the turn.
+				// Fired BEFORE the stream callback so the ledger write sees
+				// the full output (the callback may have already forwarded a
+				// capped view).
+				if evt.Type == "tool_use" && s.fileEditHook != nil {
+					toolName, _ := evt.Part["tool"].(string)
+					state, _ := evt.Part["state"].(map[string]any)
+					input, _ := state["input"].(map[string]any)
+					if input == nil {
+						input = map[string]any{}
+					}
+					output, _ := state["output"].(string)
+					s.fileEditHook(ctx, c.tenantID, c.convID, toolName, input, output)
+				}
+				switch evt.Type {
+				case "text":
+					text := evt.Text
+					if text == "" {
+						continue
+					}
+					// Completed text part may itself carry one or more folded
+					// think segments (GLM/DeepSeek). Demux with a FRESH
+					// segmenter (never the live one — the completed part is
+					// authoritative and must not reuse carry-over state from
+					// the delta tail). Folded bodies commit to the durable
+					// reasoning array via commitThink (deduped against a body
+					// the live delta path already committed); the leftover
+					// clean text is what the reply / TextChunk / partial
+					// mirror carry.
+					pseg := thinkSegmenter{}
+					var cleanText strings.Builder
+					var foldedBodies []string
+					pseg.feed(text,
+						func(t string) { cleanText.WriteString(t) },
+						func(b string) {},
+						func(b string) { foldedBodies = append(foldedBodies, b) },
+					)
+					pseg.flushBody(func(b string) { foldedBodies = append(foldedBodies, b) })
+					liveText.Reset()
+					liveReasoning.Reset()
+					segThink.reset()
+					for _, b := range foldedBodies {
+						commitThink(b)
+					}
+					ct := cleanText.String()
+					if ct != "" {
+						reply.WriteString(ct)
+						reply.WriteString("\n\n")
+					}
+					disarmFlush()
+					if c.onPartial != nil {
 						snapText, snapRsn := mirrorSnapshot()
 						c.onPartial(snapText, snapRsn)
 					}
-					continue
-				}
-				// A tool call ISSUED but not yet resolved (AC1 MCP-wedge). The
-				// serve emits a tool part with a non-terminal status before the
-				// tool resolves; LegacyEventFromBus drops these (it only maps
-				// completed/errored tools to "tool_use"), so a wedged tool
-				// would otherwise be invisible to the stall monitor. Feed an
-				// explicit tool start so the monitor can detect the wedge.
-				if tool, ok2 := activeToolName(evt); ok2 {
-					monitor.observeToolStart(tool)
-					s.turns.markActivity(c.convID, c.token)
-					continue
-				}
-				if legacy, ok := opencode.LegacyEventFromBus(evt); ok {
-					t, _ := legacy["type"].(string)
-					part, _ := legacy["part"].(map[string]any)
-					// Activity resets the stall clock: text, reasoning,
-					// step_finish and tool_use all count as progress.
-					monitor.observe(t, part)
-					s.turns.markActivity(c.convID, c.token)
-					switch t {
-					case "text":
-						if text, ok2 := part["text"].(string); ok2 && text != "" {
-							reply.WriteString(text)
-							reply.WriteString("\n\n")
-							// The completed part subsumes the deltas that
-							// built it — reset the live text tail so the
-							// mirror doesn't double-count.
-							liveText.Reset()
-							if c.onPartial != nil {
-								snapText, snapRsn := mirrorSnapshot()
-								c.onPartial(snapText, snapRsn)
-							}
-							if c.onStreamEvent != nil {
-								c.onStreamEvent(&apiv1.ChatStreamResponse{
-									Event: &apiv1.ChatStreamResponse_TextChunk{
-										TextChunk: &apiv1.TextChunk{Content: text},
-									},
-								})
-							}
+					if ct != "" && c.onStreamEvent != nil {
+						c.onStreamEvent(&apiv1.ChatStreamResponse{
+							Event: &apiv1.ChatStreamResponse_TextChunk{
+								TextChunk: &apiv1.TextChunk{Content: ct},
+							},
+						})
+					}
+				case "reasoning":
+					if evt.Text != "" {
+						reasoning = append(reasoning, evt.Text)
+						liveReasoning.Reset()
+						disarmFlush()
+						if c.onPartial != nil {
+							snapText, snapRsn := mirrorSnapshot()
+							c.onPartial(snapText, snapRsn)
 						}
-					case "reasoning":
-						if text, ok2 := part["text"].(string); ok2 && text != "" {
-							reasoning = append(reasoning, text)
-							liveReasoning.Reset()
-							if c.onPartial != nil {
-								snapText, snapRsn := mirrorSnapshot()
-								c.onPartial(snapText, snapRsn)
-							}
-							if c.onStreamEvent != nil {
-								c.onStreamEvent(&apiv1.ChatStreamResponse{
-									Event: &apiv1.ChatStreamResponse_Reasoning{
-										Reasoning: &apiv1.ReasoningChunk{Content: text},
-									},
-								})
-							}
+						if c.onStreamEvent != nil {
+							c.onStreamEvent(&apiv1.ChatStreamResponse{
+								Event: &apiv1.ChatStreamResponse_Reasoning{
+									Reasoning: &apiv1.ReasoningChunk{Content: evt.Text},
+								},
+							})
 						}
+					}
+				case "step_finish":
+					// Step completion carries token usage + cost
+					// (docs/04 §6.1). Ask sessions capture LIVE usage via the
+					// SAME canonical aigateway dual-write worker executions use —
+					// the adapter's previously-dropped step_finish is now
+					// recorded. Live-usage-only: no estimated/synthesized usage.
+					s.recordTurnUsage(ctx, c, evt.Part)
+				case "tool_use":
+					// Live tool ledger: a completed tool call resolves the
+					// in-flight entry (arguments backfilled, result appended)
+					// and mirrors immediately — a killed session leaves the
+					// tool activity visible, not just the text.
+					c.ledger.recordResolve(evt.Part)
+					if c.onPartial != nil {
+						snapText, snapRsn := mirrorSnapshot()
+						c.onPartial(snapText, snapRsn)
 					}
 				}
 			}
 		}
 	}
+}
+
+// recordTurnUsage captures a live usage sample from an Ask step_finish event
+// (docs/04 §6.1: the opencode tokens/cost shape) through the canonical
+// aigateway dual-write worker executions use — Postgres usage_records + OTel
+// metrics (docs/08 §5.2). This is how Ask sessions finally record usage across
+// adapters: the adapter kind is derived from the turn's model_ref, and the
+// usage is attributed to the Ask session (conversation id) via SessionID
+// since a chat turn has no execution/task/project. Live-usage-only: only real
+// step_finish tokens/cost are recorded; no estimated/synthesized usage.
+//
+// A genuinely empty sample (no tokens, no cost) is dropped, mirroring the
+// worker adapter's recordUsage so telemetry stays clean. Best-effort: the
+// recorder's internal errors never block the chat turn (docs/08 §8).
+func (s *Service) recordTurnUsage(ctx context.Context, c turnCollectOpts, part map[string]any) {
+	if s.usageRecorder == nil {
+		return
+	}
+	tokens, _ := part["tokens"].(map[string]any)
+	cost, _ := part["cost"].(float64)
+	promptTokens := toTurnInt64(tokens["input"])
+	cacheReadTokens := toTurnInt64(turnCacheToken(tokens, "read"))
+	cacheWriteTokens := toTurnInt64(turnCacheToken(tokens, "write"))
+	completionTokens := toTurnInt64(tokens["output"])
+	reasoningTokens := toTurnInt64(tokens["reasoning"])
+	if promptTokens == 0 && cacheReadTokens == 0 && cacheWriteTokens == 0 &&
+		completionTokens == 0 && reasoningTokens == 0 && cost == 0 {
+		return
+	}
+	// Derive the provider/model via the adapter-agnostic split and the adapter
+	// kind from segment 1 of the model ref. A malformed ref attributes to
+	// "unknown" so the record is never dropped on the parse.
+	provider, model, ok := adapter.SplitForServe(c.modelRef)
+	if !ok {
+		provider, model = "unknown", "unknown"
+	}
+	_, _ = s.usageRecorder.Record(context.WithoutCancel(ctx), aigateway.UsageInput{
+		TenantID:         c.tenantID,
+		Provider:         provider,
+		Model:            model,
+		PromptTokens:     promptTokens,
+		CacheReadTokens:  cacheReadTokens,
+		CacheWriteTokens: cacheWriteTokens,
+		CompletionTokens: completionTokens,
+		ReasoningTokens:  reasoningTokens,
+		CostUSD:          cost,
+		AdapterKind:      adapter.AdapterKind(c.modelRef),
+		SessionID:        c.convID,
+	})
+}
+
+// turnCacheToken reads a sub-count from the opencode tokens.cache sub-object
+// (e.g. {"cache":{"read":N,"write":M}} → read/write). opencode emits cache
+// counts as a nested object, so a plain lookup of tokens["cache"] would be 0.
+func turnCacheToken(tokens map[string]any, key string) any {
+	if cache, ok := tokens["cache"].(map[string]any); ok {
+		return cache[key]
+	}
+	return nil
+}
+
+// toTurnInt64 normalizes a token count from the JSON-wire opencode shape
+// (float64 / int64 / int) to an int64, defaulting to 0.
+func toTurnInt64(v any) int64 {
+	switch n := v.(type) {
+	case float64:
+		return int64(n)
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	}
+	return 0
 }
 
 // persistConversationReply persists the collected assistant message for a
@@ -1490,7 +2102,7 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 // It runs on the detached context (never the request's). Fail-safe: if the
 // conversation was deleted while the turn ran, the write is skipped (no
 // orphan row).
-func (s *Service) persistConversationReply(ctx context.Context, tenantID, convID, assistantMsgID, modelRef, content, sid, errText string, reasoning []string) {
+func (s *Service) persistConversationReply(ctx context.Context, tenantID, convID, assistantMsgID, modelRef, content, sid, errText string, reasoning []string, ledger *toolLedger) {
 	if s.pool == nil {
 		return
 	}
@@ -1513,14 +2125,24 @@ func (s *Service) persistConversationReply(ctx context.Context, tenantID, convID
 		s.log.Info("conversation gone, dropping turn reply", "conversation", convID)
 		return
 	}
+	// The live tool ledger is snapshotted with the terminal reply: the same
+	// tx carries text + reasoning + tool activity, so a crash lands the full
+	// turn atomically and the finalize's overwrite can never resurrect a
+	// stale partial's tool columns (the UpsertMessage conflict clause
+	// overwrites them with this snapshot).
+	// TERMINAL write: the ledger is repaired (an explicit aborted result is
+	// attached to every call that never resolved) so the DB never holds an
+	// assistant row whose tool_calls have no matching tool_results, however
+	// abnormally the turn ended.
+	ledgerCalls, ledgerResults := ledger.repairedSnapshot()
 	assistantMsg := db.MessageRow{
 		ID:             assistantMsgID,
 		TenantID:       tenantID,
 		ConversationID: convID,
 		Role:           "assistant",
 		Content:        content,
-		ToolCalls:      []byte("[]"),
-		ToolResults:    []byte("[]"),
+		ToolCalls:      ledgerCalls,
+		ToolResults:    ledgerResults,
 		Attachments:    []byte("[]"),
 		Metadata:       metaJSON,
 		Reasoning:      reasoning,
@@ -1542,7 +2164,7 @@ func (s *Service) persistConversationReply(ctx context.Context, tenantID, convID
 // assistant message id (best-effort, its own tiny tenant tx so the collector's
 // hot loop never blocks on the DB). Only visible while the turn is in flight:
 // the finalize (persistConversationReply) upserts the complete reply over it.
-func (s *Service) upsertPartialMessage(ctx context.Context, tenantID, convID, assistantMsgID, modelRef, content string, reasoning []string) {
+func (s *Service) upsertPartialMessage(ctx context.Context, tenantID, convID, assistantMsgID, modelRef, content string, reasoning []string, ledger *toolLedger) {
 	if s.pool == nil {
 		return
 	}
@@ -1553,14 +2175,15 @@ func (s *Service) upsertPartialMessage(ctx context.Context, tenantID, convID, as
 		return
 	}
 	defer ttx.Rollback(ctx)
+	ledgerCalls, ledgerResults := ledger.snapshot()
 	if _, err := db.UpsertMessage(ctx, ttx.Tx, db.MessageRow{
 		ID:             assistantMsgID,
 		TenantID:       tenantID,
 		ConversationID: convID,
 		Role:           "assistant",
 		Content:        content,
-		ToolCalls:      []byte("[]"),
-		ToolResults:    []byte("[]"),
+		ToolCalls:      ledgerCalls,
+		ToolResults:    ledgerResults,
 		Attachments:    []byte("[]"),
 		Metadata:       metaJSON,
 		Reasoning:      reasoning,
@@ -1595,7 +2218,7 @@ func (s *Service) upsertPartialMessage(ctx context.Context, tenantID, convID, as
 // the DB history block); reuseSystem is the steady-state follow-up system
 // (no history — it already lives in the session). Returns the assistant
 // message id, the (possibly recreated) session id, and the elapsed time.
-func (s *Service) runOpenCodeTurn(ctx context.Context, client sessionTurnClient, tenantID, convID, sessionID, modelRef, seedSystem, reuseSystem, userMsg string, cb streamCallback) (msgID, newSessionID string, elapsed time.Duration, err error) {
+func (s *Service) runOpenCodeTurn(ctx context.Context, client scheduler.ChatTurnClient, tenantID, convID, sessionID, modelRef, seedSystem, reuseSystem, userMsg string, cb streamCallback) (msgID, newSessionID string, elapsed time.Duration, err error) {
 	start := time.Now()
 	msgID = db.NewID()
 
@@ -1605,7 +2228,7 @@ func (s *Service) runOpenCodeTurn(ctx context.Context, client sessionTurnClient,
 	sid := sessionID
 	system := reuseSystem
 	if sid == "" {
-		sid, err = client.CreateSession(ctx, "ask-orchicon:"+convID)
+		sid, err = client.CreateConversationSession(ctx, convID, "ask-orchicon:"+convID)
 		if err != nil {
 			return msgID, "", time.Since(start), fmt.Errorf("create conversation session: %w", err)
 		}
@@ -1616,7 +2239,7 @@ func (s *Service) runOpenCodeTurn(ctx context.Context, client sessionTurnClient,
 	// Subscribe BEFORE send so early text chunks aren't missed.
 	subCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	sub, err := client.Subscribe(subCtx)
+	sub, err := client.Subscribe(subCtx, convID)
 	if err != nil {
 		return msgID, sid, time.Since(start), fmt.Errorf("conversation session subscribe: %w", err)
 	}
@@ -1638,10 +2261,10 @@ func (s *Service) runOpenCodeTurn(ctx context.Context, client sessionTurnClient,
 	sendCh := make(chan sendResult, 1)
 	go func() {
 		for {
-			if err := client.SendMessage(subCtx, sid, system, modelRef, userMsg); err != nil {
-				if errors.Is(err, opencode.ErrSessionNotFound) && sessionID != "" && !recreated {
+			if err := client.SendTurnMessage(subCtx, convID, sid, system, modelRef, userMsg); err != nil {
+				if errors.Is(err, scheduler.ErrSessionNotFound) && sessionID != "" && !recreated {
 					s.log.Info("conversation session lost on serve — recreating", "conversation", convID, "session", sid)
-					fresh, cerr := client.CreateSession(ctx, "ask-orchicon:"+convID)
+					fresh, cerr := client.CreateConversationSession(ctx, convID, "ask-orchicon:"+convID)
 					if cerr != nil {
 						sendCh <- sendResult{err: fmt.Errorf("recreate conversation session: %w", cerr)}
 						return
@@ -1670,10 +2293,10 @@ func (s *Service) runOpenCodeTurn(ctx context.Context, client sessionTurnClient,
 			// Client disconnected (Stop button / browser close): abort the
 			// turn so the model stops burning tokens answering a gone
 			// client; the session is preserved for the next message.
-			_ = client.Abort(context.WithoutCancel(ctx), sid)
+			_ = client.AbortConversationSession(context.WithoutCancel(ctx), sid)
 			return msgID, sid, time.Since(start), ctx.Err()
 		case <-timeout.C:
-			_ = client.Abort(context.WithoutCancel(ctx), sid)
+			_ = client.AbortConversationSession(context.WithoutCancel(ctx), sid)
 			return msgID, sid, time.Since(start), fmt.Errorf("request timed out after %s — the model may be overloaded or unavailable", askTimeout())
 		case res := <-sendCh:
 			// Our message was accepted (or rejected). A rejected send is
@@ -1687,54 +2310,41 @@ func (s *Service) runOpenCodeTurn(ctx context.Context, client sessionTurnClient,
 			if !ok {
 				return msgID, sid, time.Since(start), fmt.Errorf("opencode session stream ended")
 			}
-			if esid, _ := evt.Properties["sessionID"].(string); esid != "" && esid != sid {
+			if evt.SessionID != "" && evt.SessionID != sid {
 				continue
 			}
-			switch evt.Type {
-			case "session.idle":
+			switch evt.Kind {
+			case "idle":
 				// Turn complete — but only once OUR message was accepted
 				// (sent). A stale idle from a prior turn (sent == false)
 				// must never complete a new turn.
 				if sent {
 					return msgID, sid, time.Since(start), nil
 				}
-			case "permission.asked":
+			case "permission":
 				// Auto-approve (the --auto equivalent). Session-level deny
 				// rules mean this should rarely fire — defensive only.
-				if pid, _ := evt.Properties["id"].(string); pid != "" {
+				if pid := evt.PermissionID; pid != "" {
 					go func() { _ = client.ReplyPermission(context.WithoutCancel(ctx), sid, pid) }()
 				}
-			case "session.error":
+			case "error":
 				// The turn failed at the model/API level: record it and end
 				// the turn with an error chunk (the session is kept).
-				msg := "opencode session error"
-				if errObj, ok := evt.Properties["error"].(map[string]any); ok {
-					if m, ok2 := errObj["message"].(string); ok2 && m != "" {
-						msg = m
-					}
-				}
-				s.log.Warn("opencode session error", "conversation", convID, "message", msg)
-				return msgID, sid, time.Since(start), errors.New(msg)
-			default:
+				s.log.Warn("opencode session error", "conversation", convID, "message", evt.Text)
+				return msgID, sid, time.Since(start), errors.New(evt.Text)
+			case "part":
 				// Telemetry (text / tool_use / step / reasoning): feed the
-				// SAME mapping executions use (LegacyEventFromBus) into the
-				// chat's callback.
-				if legacy, ok := opencode.LegacyEventFromBus(evt); ok {
-					var part map[string]any
-					if p, ok2 := legacy["part"].(map[string]any); ok2 {
-						part = p
-					}
-					etype, _ := legacy["type"].(string)
-					if etype == "" {
-						continue
-					}
-					if err := cb(opencodeEvent{Type: etype, Part: part}); err != nil {
-						// stream.Send failed — the client is gone. Abort the
-						// turn and stop streaming (the partial response is
-						// still persisted).
-						_ = client.Abort(context.WithoutCancel(ctx), sid)
-						return msgID, sid, time.Since(start), nil
-					}
+				// SAME mapping executions use into the chat's callback.
+				var part map[string]any
+				if evt.Type == "text" || evt.Type == "reasoning" || evt.Type == "tool_use" {
+					part = evt.Part
+				}
+				if err := cb(opencodeEvent{Type: evt.Type, Part: part}); err != nil {
+					// stream.Send failed — the client is gone. Abort the
+					// turn and stop streaming (the partial response is
+					// still persisted).
+					_ = client.AbortConversationSession(context.WithoutCancel(ctx), sid)
+					return msgID, sid, time.Since(start), nil
 				}
 			}
 		}
@@ -1793,6 +2403,55 @@ func (s *Service) fetchProjectContext(ctx context.Context, tenantID string) stri
 			b.WriteString(fmt.Sprintf(" — %s", g))
 		}
 		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// conversationProjectContext names the project THIS conversation belongs to, and says what that means for the
+// turn about to run.
+//
+// The operator: "Also we should add context to all three modes to know which chat belongs to which project
+// folder. We need better organization here." The tenant-wide project list (fetchProjectContext) answers "what
+// exists"; this answers "where am I", which is the question the agent actually needs answered before it
+// touches a path. It is the SAME block for all three modes because it is built here, from the conversation,
+// rather than inside any one persona's prompt — a mode is a way of thinking, not a different filesystem.
+//
+// An ARCHIVED project is still named. The operator's rule for the association was "active or otherwise", so a
+// chat parked in an archived project should be told that, not silently stripped of its context — the status is
+// printed precisely so the agent can say "this project is archived" instead of guessing.
+//
+// Returns "" when the conversation is unassigned or the project cannot be read, and the caller prints the
+// unassigned text instead. A failure here must never fail the turn: the context is an aid, not a
+// precondition.
+func (s *Service) conversationProjectContext(ctx context.Context, tenantID string, conv db.ConversationRow) string {
+	if conv.ProjectID == "" {
+		return ""
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return ""
+	}
+	defer ttx.Rollback(ctx)
+	p, err := db.GetProject(ctx, ttx.Tx, tenantID, conv.ProjectID)
+	if err != nil {
+		// A project deleted out from under the conversation (archived, or hard-deleted with its tenant). The turn
+		// proceeds unassigned rather than failing; the rail and the GUI both render the same stale id as an
+		// unknown project, so the operator sees the same thing the agent does not get told.
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("This chat belongs to the project **%s** (ID %s, status %s)", p.Name, p.ID, p.Status))
+	if p.ProjectDir != "" {
+		b.WriteString(fmt.Sprintf(", whose directory is `%s`", p.ProjectDir))
+	}
+	b.WriteString(".\n")
+	if p.ProjectDir != "" {
+		b.WriteString(fmt.Sprintf("That directory is the folder this conversation's work happens in — treat paths "+
+			"in this chat as relative to `%s` unless a message says otherwise, and create or edit files there rather "+
+			"than in some other project's tree.\n", p.ProjectDir))
+	}
+	if p.Status != "" && p.Status != "active" {
+		b.WriteString(fmt.Sprintf("NOTE: this project is `%s`, not active — say so if a request depends on it running.\n", p.Status))
 	}
 	return b.String()
 }

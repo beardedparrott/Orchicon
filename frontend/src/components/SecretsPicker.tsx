@@ -13,7 +13,8 @@ export function SecretsPicker({ value, onChange }: { value: string[]; onChange: 
       setLoading(true);
       try {
         const res = await secretsClient.listSecrets({});
-        if (!cancelled) setSecrets((res.secrets || []).map((s: any) => ({ id: s.id, name: s.name, description: s.description })));
+        type SecretRow = { id: string; name: string; description?: string };
+        if (!cancelled) setSecrets((res.secrets || []).map((s: SecretRow) => ({ id: s.id, name: s.name, description: s.description ?? "" })));
       } catch { /* ignore */ } finally { if (!cancelled) setLoading(false); }
     })();
     return () => { cancelled = true; };

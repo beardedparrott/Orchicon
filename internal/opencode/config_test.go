@@ -43,7 +43,7 @@ func TestBuildConfigContentRegistersOrchiconMCP(t *testing.T) {
 func TestBuildConfigContentCompositeWorktreeTools(t *testing.T) {
 	out := BuildConfigContent(ConfigOptions{
 		AgentName:      workerAgent,
-		AgentPrompt:    workerAgentPrompt,
+		AgentPrompt:    sessionToolShell,
 		DefaultAgent:   workerAgent,
 		CompositeTools: true,
 		WorktreeDir:    "/worktree",
@@ -83,7 +83,7 @@ func TestBuildConfigContentCompositeWorktreeTools(t *testing.T) {
 }
 
 func TestBuildConfigContentDoesNotDenyReadGrepByDefault(t *testing.T) {
-	out := BuildConfigContent(ConfigOptions{AgentName: workerAgent, AgentPrompt: workerAgentPrompt, DefaultAgent: workerAgent})
+	out := BuildConfigContent(ConfigOptions{AgentName: workerAgent, AgentPrompt: sessionToolShell, DefaultAgent: workerAgent})
 	var cfg map[string]any
 	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
 		t.Fatalf("config content is not valid JSON: %v", err)
@@ -407,8 +407,8 @@ func TestBuildConfigContentToolOutputAndBatchTool(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s config missing tool_output block: %s", name, out)
 		}
-		if to["max_bytes"] != float64(512000) {
-			t.Errorf("%s tool_output.max_bytes = %#v, want 512000", name, to["max_bytes"])
+		if to["max_bytes"] != float64(1000000) {
+			t.Errorf("%s tool_output.max_bytes = %#v, want 1000000", name, to["max_bytes"])
 		}
 		exp, ok := cfg["experimental"].(map[string]any)
 		if !ok {

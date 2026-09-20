@@ -140,15 +140,15 @@ export function useBuildRuntimeImage() {
           finalStatus = chunk.status;
           finalError = chunk.error;
           finalTag = chunk.tag;
-          failureReason = (chunk as any).failureReason || "";
-          failedStep = (chunk as any).failedStep || "";
-          logTail = (chunk as any).logTail || "";
-          failureCategory = (chunk as any).failureCategory || "";
+          failureReason = chunk.failureReason || "";
+          failedStep = chunk.failedStep || "";
+          logTail = chunk.logTail || "";
+          failureCategory = chunk.failureCategory || "";
         }
         if (chunk.skipped) skipped = true;
       }
       if (finalStatus === 4 || finalError) {
-        const err: any = new Error(failureReason || finalError || "image build failed");
+        const err = new Error(failureReason || finalError || "image build failed") as Error & { failureReason?: string; failedStep?: string; logTail?: string; failureCategory?: string };
         err.failureReason = failureReason; err.failedStep = failedStep; err.logTail = logTail; err.failureCategory = failureCategory;
         throw err;
       }

@@ -8,7 +8,41 @@ SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
 # --- Paths -----------------------------------------------------------------
+# Go: prefer the PROJECT-LOCAL toolchain (.dev/tools) when it is provisioned.
+# It lives inside the repo — NOT /tmp, which the container wipes on restart (its
+# tmpfs) — so it survives, and using it needs no shell PATH setup. Falls back to
+# a PATH `go` everywhere else (CI, fresh clones), so this is a no-op for anyone
+# who has not run the project's tool bootstrap. Same prefer-local-else-PATH shape
+# as BUF_BIN below.
+#
+# The GOPATH/GOCACHE/GOTMPDIR exports are not tidiness: with no GOPATH, go
+# defaults to $HOME/go, and a root-owned $HOME fails outright with
+# "mkdir /home/<user>/go: permission denied". Strict `?=` keeps an explicitly
+# exported value winning.
+#
+# .dev/tools/go is the project's own Go, matching go.mod's requirement (verified
+# 1.26.4). GOTOOLCHAIN stays `auto`, so a future go.mod bump resolves the newer
+# toolchain from GOPATH without touching this file. `make toolchain` prints both.
+DEV_TOOLS   := $(CURDIR)/.dev/tools
+DEV_GO      := $(DEV_TOOLS)/go/bin/go
+ifeq ($(wildcard $(DEV_GO)),)
 GO          := go
+else
+GO          := $(DEV_GO)
+GOPATH      ?= $(DEV_TOOLS)/gopath
+export GOPATH
+GOCACHE     ?= $(DEV_TOOLS)/gocache
+export GOCACHE
+GOTMPDIR    ?= $(DEV_TOOLS)/gotmp
+export GOTMPDIR
+# PATH as well: a couple of recipes call a bare `go` (the standing PTY gate), and
+# they must resolve the SAME toolchain rather than whatever the shell happens to
+# have. Deliberately NOT adding .dev/tools/bin — `buf`/`atlas` resolve through
+# BUF_BIN's own prefer-bin-then-PATH rule, and shadowing them here would change
+# which codegen toolchain runs.
+PATH        := $(DEV_TOOLS)/go/bin:$(PATH)
+export PATH
+endif
 BUF         := buf
 ATLAS       := atlas
 NPX         := npx
@@ -37,20 +71,54 @@ help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 # --- Tooling ---------------------------------------------------------------
+# buf is pinned (version + SHA256) and installed into ./bin by `make tools`
+# so codegen is reproducible everywhere: no `@latest` drift, no 80s
+# compile-from-source in CI. Targets resolve buf at recipe time — ./bin/buf
+# when present (CI, or any dev who ran `make tools`), else the PATH binary.
+BUF_VERSION := 1.72.0
+BUF_SHA256  := a9c6186cf6fcf062b247345e1b7b12c26f580c1b2a4bbf4d3fe080abf85ceee8
+BUF_BIN     = $(if $(wildcard $(BIN_DIR)/buf),$(BIN_DIR)/buf,buf)
+
+.PHONY: toolchain
+toolchain: ## Show the Go toolchain + env this Makefile will build with
+	@echo "GO       = $(GO)"
+	@echo "GOPATH   = $(GOPATH)"
+	@echo "GOCACHE  = $(GOCACHE)"
+	@echo "GOTMPDIR = $(GOTMPDIR)"
+	@echo "--- the go command ---"
+	@$(GO) version
+	@echo "--- the toolchain a BUILD uses (go.mod: $(shell sed -n 's/^go //p' go.mod)) ---"
+	@$(GO) env GOTOOLCHAIN
+
 .PHONY: tools
-tools: ## Install buf and atlas into $$GOPATH/bin
-	$(GO) install github.com/bufbuild/buf/cmd/buf@latest
-	@command -v $(ATLAS) >/dev/null 2>&1 || curl -sSfL https://atlasgo.sh | sh
+tools: ## Install pinned buf v$(BUF_VERSION) into bin/ (SHA256-verified)
+	@if [ "$$(uname -m)" != "x86_64" ]; then \
+		echo "==> make tools: pinned buf download is x86_64-only; using buf from PATH"; \
+	elif [ -x "$(BIN_DIR)/buf" ] && "$(BIN_DIR)/buf" --version 2>/dev/null | grep -q "$(BUF_VERSION)"; then \
+		echo "==> buf $(BUF_VERSION) already installed"; \
+	else \
+		mkdir -p $(BIN_DIR); \
+		curl -sSfL -o $(BIN_DIR)/buf.tgz "https://github.com/bufbuild/buf/releases/download/v$(BUF_VERSION)/buf-Linux-x86_64.tar.gz"; \
+		echo "$(BUF_SHA256)  buf.tgz" | (cd $(BIN_DIR) && sha256sum -c -); \
+		tar -xzf $(BIN_DIR)/buf.tgz -C $(BIN_DIR) --strip-components=2 buf/bin/buf; \
+		rm -f $(BIN_DIR)/buf.tgz; \
+		echo "==> installed $(BIN_DIR)/buf v$(BUF_VERSION)"; \
+	fi
 
 # --- Codegen ---------------------------------------------------------------
 .PHONY: gen lint proto
-gen: ## Generate Go + TypeScript from the Protobuf schema (buf generate)
-	PATH="$(CURDIR)/frontend/node_modules/.bin:$$PATH" $(BUF) generate
+gen: tools ## Generate Go + TypeScript from the Protobuf schema (buf generate)
+	PATH="$(CURDIR)/frontend/node_modules/.bin:$$PATH" $(BUF_BIN) generate
 
-lint: ## Lint the Protobuf schema (buf lint)
-	$(BUF) lint
+lint: tools ## Lint the Protobuf schema (buf lint)
+	$(BUF_BIN) lint
 
 proto: lint gen ## Lint + generate
+
+gen-check: ## CI drift gate: regenerate and fail on any diff in generated code
+	$(MAKE) gen
+	@git diff --exit-code -- api/gen frontend/src/api/gen \
+		|| { echo "ERROR: generated code drifted from committed files. Run 'make gen' and commit."; exit 1; }
 
 # --- Go control plane ------------------------------------------------------
 # fetch-tags syncs local tags with origin before a build. `git pull` does
@@ -69,15 +137,26 @@ fetch-tags:
 # UI — exactly how the Ask Orchicon full-viewport fix stayed invisible after
 # a "rebuild". fe-build is stamp-checked, so an unchanged frontend adds no
 # cost to the Go-only iteration loop.
-build: fetch-tags fe-build ## Build the control-plane binary into bin/
+build: fetch-tags fe-build ## Build the control-plane + TUI client binaries into bin/
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orchicon ./cmd/orchicon
+	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orch ./cmd/orch
 
 run: fetch-tags fe-build ## Run the control plane from source
 	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon
 
 test: ## Run Go tests
-	$(GO) test ./...
+	@# A TEST MUST NEVER TOUCH THE DEVELOPER'S REAL CONFIG.
+	@#
+	@# One did: TestThemeCommand drives `/theme light` then `/theme dark`, and SetTheme persists the
+	@# choice to ~/.orchicon/config — so `make test`, and therefore `make rebuild-dev` (ci → test),
+	@# silently reset the operator's chosen theme to dark on EVERY REBUILD. They noticed ("everytime I
+	@# rebuild it ALWAYS goes back to the blueish dark theme") and the cause was here, not in the build.
+	@#
+	@# The package redirects its own config dir too (internal/tui/isolate_test.go); this contains ANY
+	@# package that writes config without asking, now or later. Declared at the command rather than
+	@# exported into each test binary so there is no per-package opt-in to forget.
+	ORCHICON_CONFIG_DIR="$$(mktemp -d)" $(GO) test ./...
 
 vet: ## Run go vet
 	$(GO) vet ./...
@@ -95,6 +174,7 @@ clean: ## Remove local build artifacts and the Go build cache (dev hygiene)
 	$(GO) clean -cache -testcache
 	@command -v $(GO) >/dev/null 2>&1 && go clean -modcache 2>/dev/null || true
 	@rm -f $(BIN_DIR)/orchicon
+	@rm -f $(BIN_DIR)/orch
 	# Stale copies of the binary dropped into the container/runtime build
 	# contexts by older scripts. The runtime image no longer bakes the
 	# binary (the daemon bind-mounts its own executable), so a leftover
@@ -122,8 +202,9 @@ clean-docker: ## Prune dangling Docker images, stopped containers, and unused vo
 	@docker volume prune -f
 
 # --- Database --------------------------------------------------------------
-.PHONY: migrate migrate-diff migrate-hash rls-check
+.PHONY: migrate migrate-diff migrate-hash rls-check synth-data
 migrate: ## Apply pending Atlas migrations to $$DB_URL
+	@command -v $(ATLAS) >/dev/null 2>&1 || curl -sSfL https://atlasgo.sh | sh
 	cd db && $(ATLAS) migrate apply --env local --url "$(DB_URL)"
 
 migrate-diff: ## Generate a new migration from db/schema.hcl (usage: make migrate-diff name=foo)
@@ -136,8 +217,14 @@ migrate-hash: ## Recompute the Atlas migration directory hash (after hand-edits)
 rls-check: ## CI gate: every tenant_id table must have the RLS policy (docs/09 §8.5)
 	scripts/check-rls.sh "$(DB_URL)"
 
+synth-data: ## CI gate: no synthesized data planes in non-test source (ADR-0010)
+	scripts/check_no_synth_data.sh
+
+adapter-bake-guard: ## CI gate: adapter CLIs are MOUNTED, never baked into image layers (ADR-0003/0005)
+	go test ./internal/runtime/ -run 'TestAdapterCLINeverBaked' -count=1 -v
+
 # --- Frontend --------------------------------------------------------------
-.PHONY: fe-install fe-dev fe-build fe-lint
+.PHONY: fe-install fe-dev fe-build fe-lint fe-test
 fe-install: ## Install frontend dependencies
 	cd frontend && npm install
 
@@ -162,6 +249,9 @@ fe-build: ## Build the frontend for production (skipped when dist is up to date;
 
 fe-lint: ## Lint the frontend
 	cd frontend && npm run lint
+
+fe-test: ## Run frontend unit/component tests (vitest; Playwright specs live under test:snapshots/test:a11y/test:scope)
+	cd frontend && npm test
 
 # --- Single container (deployment) -----------------------------------------
 # The single container is the only full-stack deployment (dev + prod as two
@@ -195,31 +285,111 @@ container-ps: ## List orchicon container instances
 
 # --- Full rebuild (one command) --------------------------------------------
 # A single command that runs everything needed before/for an instance rebuild:
-#   1. all checks/tests          (make ci:  lint gen vet test rls-check)
-#   2. migration hash sync       (make migrate-hash — keeps db/migrations/atlas.sum
+#   1. binaries                 (make build — bin/orchicon + bin/orch are built
+#                                FIRST so every check/test exercises the code
+#                               about to ship, never a stale binary: the
+#                                 real-pty smoke gate executes bin/orch)
+#   2. all checks/tests         (make ci:  lint gen vet test rls-check)
+#   3. migration hash sync      (make migrate-hash — keeps db/migrations/atlas.sum
 #                                 in sync so the Atlas CLI path stays happy)
-#   3. frontend + binary + image (container-build force-fe=1 — the frontend is
-#                                 built and embedded into the binary via go:embed)
-#   4. stop/restart the instance (down then up; the container boots with
+#   4. frontend + binary + image (container-build force-fe=1 — the frontend is
+#                                 rebuilt and embedded into the binary via go:embed)
+#   5. stop/restart the instance (down then up; the container boots with
 #                                 MigrateOnBoot=true, which applies any pending
-#                                 embedded migrations — so step 2 is the repo
-#                                 hash sync and step 4 surfaces the DB migration)
+#                                 embedded migrations — so step 3 is the repo
+#                                 hash sync and step 5 surfaces the DB migration)
 #
 # The DB migration itself is applied by the container at boot (migrate.Run), so
 # there is no separate `make migrate` needed here — running it against the
 # instance's Postgres would conflict with the container-owned DB.
 .PHONY: full-rebuild rebuild-dev rebuild-prod
-full-rebuild: ## One command: all checks/tests + migrate-hash + image build + instance restart (usage: make full-rebuild instance=dev|prod)
+full-rebuild: ## One command: binary build + all checks/tests + migrate-hash + image build + instance restart (usage: make full-rebuild instance=dev|prod)
 	@test -n "$(instance)" || { echo "usage: make full-rebuild instance=dev|prod"; exit 1; }
+	$(MAKE) build
 	$(MAKE) ci
 	$(MAKE) migrate-hash
 	$(MAKE) container-rebuild instance=$(instance)
 
 rebuild-dev: ## One command: full checks/tests + rebuild + restart the DEV instance
 	$(MAKE) full-rebuild instance=dev
+	$(MAKE) orch-launcher-dev
 
 rebuild-prod: ## One command: full checks/tests + rebuild + restart the PROD instance
 	$(MAKE) full-rebuild instance=prod
+	$(MAKE) orch-launcher-prod
+
+# --- Dual orch launchers ----------------------------------------------------
+# Two orch clients on PATH: `orch` tracks bin/orch (dev vintage) and
+# `orch-prod` is a snapshot COPY of bin/orch refreshed only by the prod
+# path — so a prod-vintage client survives later `rebuild-dev` runs (the
+# operator holds prod back when dev has breaking changes). Wrapper scripts
+# orch-dev / orch-prod preset ORCHICON_URL per instance and carry a clearly
+# marked ORCHICON_TOKEN line for the user to fill per instance (dev and
+# prod have separate identity stores, so one config token cannot serve
+# both). Wrappers are generated only if absent (never overwritten) and
+# chmod 600.
+LAUNCHER_DIR ?= $(HOME)/.local/bin
+.PHONY: orch-launchers orch-launcher-dev orch-launcher-prod
+orch-launchers: ## Install/refresh the dual orch launchers into ~/.local/bin (orch + orch-prod + wrappers)
+	@test -f $(BIN_DIR)/orch || { echo "ERROR: $(BIN_DIR)/orch not found — run 'make build' first"; exit 1; }
+	@mkdir -p $(LAUNCHER_DIR)
+	# orch: dev-tracked symlink to bin/orch (refreshed on every dev rebuild).
+	@ln -sfn "$(CURDIR)/$(BIN_DIR)/orch" "$(LAUNCHER_DIR)/orch"
+	@echo "==> orch launcher: $(LAUNCHER_DIR)/orch -> bin/orch (dev vintage)"
+	# orch-prod: snapshot COPY of the current bin/orch (moves only on prod rebuild).
+	@cp -f "$(BIN_DIR)/orch" "$(LAUNCHER_DIR)/orch-prod"
+	@chmod +x "$(LAUNCHER_DIR)/orch-prod"
+	@echo "==> orch-prod launcher: $(LAUNCHER_DIR)/orch-prod (snapshot copy, prod vintage)"
+	# Generate-if-absent wrapper scripts (never overwrite an existing file).
+	@if [ ! -f "$(LAUNCHER_DIR)/orch-dev" ]; then \
+		printf '#!/bin/sh\n# orch-dev: dev instance launcher (generated by make orch-launchers).\n# Fill in the token for the DEV instance below (dev and prod have separate\n# identity stores, so each instance needs its own token).\nexport ORCHICON_URL=http://localhost:8080\nexport ORCHICON_TOKEN=\nexec "$(LAUNCHER_DIR)/orch" "$$@"\n' > "$(LAUNCHER_DIR)/orch-dev"; \
+		chmod 600 "$(LAUNCHER_DIR)/orch-dev"; \
+		echo "==> generated $(LAUNCHER_DIR)/orch-dev (fill in ORCHICON_TOKEN)"; \
+	else \
+		echo "==> $(LAUNCHER_DIR)/orch-dev already exists — leaving untouched"; \
+	fi
+	@if [ ! -f "$(LAUNCHER_DIR)/orch-prod" ]; then \
+		printf '#!/bin/sh\n# orch-prod: prod instance launcher (generated by make orch-launchers).\n# Fill in the token for the PROD instance below (dev and prod have separate\n# identity stores, so each instance needs its own token).\nexport ORCHICON_URL=http://localhost:8091\nexport ORCHICON_TOKEN=\nexec "$(LAUNCHER_DIR)/orch-prod" "$$@"\n' > "$(LAUNCHER_DIR)/orch-prod"; \
+		chmod 600 "$(LAUNCHER_DIR)/orch-prod"; \
+		echo "==> generated $(LAUNCHER_DIR)/orch-prod (fill in ORCHICON_TOKEN)"; \
+	else \
+		echo "==> $(LAUNCHER_DIR)/orch-prod already exists — leaving untouched"; \
+	fi
+	@echo ""
+	@echo "  Tokens are per-instance (separate identity stores). Fill ORCHICON_TOKEN"
+	@echo "  in $(LAUNCHER_DIR)/orch-dev and $(LAUNCHER_DIR)/orch-prod."
+
+# orch-launcher-dev refreshes the dev-tracked launcher (orch symlink +
+# orch-dev wrapper) after a dev rebuild.
+orch-launcher-dev: ## Refresh the dev orch launcher after a dev rebuild
+	@test -f $(BIN_DIR)/orch || { echo "ERROR: $(BIN_DIR)/orch not found — run 'make build' first"; exit 1; }
+	@mkdir -p $(LAUNCHER_DIR)
+	@ln -sfn "$(CURDIR)/$(BIN_DIR)/orch" "$(LAUNCHER_DIR)/orch"
+	@echo "==> orch launcher refreshed: $(LAUNCHER_DIR)/orch -> bin/orch (dev vintage)"
+	@if [ ! -f "$(LAUNCHER_DIR)/orch-dev" ]; then \
+		printf '#!/bin/sh\n# orch-dev: dev instance launcher (generated by make orch-launchers).\n# Fill in the token for the DEV instance below (dev and prod have separate\n# identity stores, so each instance needs its own token).\nexport ORCHICON_URL=http://localhost:8080\nexport ORCHICON_TOKEN=\nexec "$(LAUNCHER_DIR)/orch" "$$@"\n' > "$(LAUNCHER_DIR)/orch-dev"; \
+		chmod 600 "$(LAUNCHER_DIR)/orch-dev"; \
+		echo "==> generated $(LAUNCHER_DIR)/orch-dev (fill in ORCHICON_TOKEN)"; \
+	else \
+		echo "==> $(LAUNCHER_DIR)/orch-dev already exists — leaving untouched"; \
+	fi
+
+# orch-launcher-prod refreshes the prod snapshot (orch-prod copy + wrapper)
+# after a prod rebuild. The dev launcher is left untouched, so a prod-vintage
+# client survives later rebuild-dev runs.
+orch-launcher-prod: ## Refresh the prod orch launcher snapshot after a prod rebuild
+	@test -f $(BIN_DIR)/orch || { echo "ERROR: $(BIN_DIR)/orch not found — run 'make build' first"; exit 1; }
+	@mkdir -p $(LAUNCHER_DIR)
+	@cp -f "$(BIN_DIR)/orch" "$(LAUNCHER_DIR)/orch-prod"
+	@chmod +x "$(LAUNCHER_DIR)/orch-prod"
+	@echo "==> orch-prod launcher refreshed: $(LAUNCHER_DIR)/orch-prod (snapshot copy, prod vintage)"
+	@if [ ! -f "$(LAUNCHER_DIR)/orch-prod" ]; then \
+		printf '#!/bin/sh\n# orch-prod: prod instance launcher (generated by make orch-launchers).\n# Fill in the token for the PROD instance below (dev and prod have separate\n# identity stores, so each instance needs its own token).\nexport ORCHICON_URL=http://localhost:8091\nexport ORCHICON_TOKEN=\nexec "$(LAUNCHER_DIR)/orch-prod" "$$@"\n' > "$(LAUNCHER_DIR)/orch-prod"; \
+		chmod 600 "$(LAUNCHER_DIR)/orch-prod"; \
+		echo "==> generated $(LAUNCHER_DIR)/orch-prod (fill in ORCHICON_TOKEN)"; \
+	else \
+		echo "==> $(LAUNCHER_DIR)/orch-prod already exists — leaving untouched"; \
+	fi
 
 # --- Install ---------------------------------------------------------------
 .PHONY: install-dry-run install-uninstall
@@ -230,5 +400,14 @@ install-uninstall: ## Uninstall Orchicon via the install script
 	scripts/install.sh --uninstall
 
 # --- CI --------------------------------------------------------------------
-.PHONY: ci
-ci: lint gen vet test rls-check ## Run the full CI gate locally
+# The CI gate, split the same way .github/workflows/ci.yml splits it:
+# ci-go is the Go control-plane gate (no full Node install — `gen` pulls
+# only the two protoc plugin packages); fe-lint/fe-test are the frontend
+# gate and run in the fe CI job. `ci` is the local convenience union.
+.PHONY: ci ci-go
+ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
+ci: ci-go fe-lint fe-test ## Run the full CI gate locally (Go + frontend)
+
+.PHONY: tui-pty-gate
+tui-pty-gate: ## Standing real-pty TUI verification gate (smoke + mouse + /connect)
+	ORCH_PTY_SMOKE=1 go test ./internal/tui/ -run 'TestPTY' -count=1 -timeout 420s -v

@@ -66,10 +66,24 @@ func seedBulkIdentity(t *testing.T, pool *db.Pool, tenantID, subject string) db.
 // bulkEnv opens a migration-applied pool, seeds an identity, and returns
 // the service + ctx. Each test gets its own tenant so audit rows from
 // sibling tests never bleed across.
+//
+// IT INSERTS THE TENANT ROW TOO. It did not, and that is not a tidiness point:
+// GetOrCreateIdentity writes an `identities` row and NOT a `tenants` row, so a
+// synthetic tenant id was enough to commit workers under a tenant that never
+// existed. There is no FK from workers.tenant_id to tenants (only 5 of the 44
+// tenant-scoped tables carry one — isolation is RLS-only), so nothing refused
+// it. Measured on the dev database before this fix: 314 orphaned worker rows
+// across 238 tenant ids that have no tenant row, created 2026-08-25 through
+// 2026-09-12 by runs of THESE tests pointed at a real database. They are
+// unreachable from any client (RLS scopes every read to app.tenant_id, which
+// no session ever sets to a dead id), which is exactly why the operator could
+// not see them to clean them up. The internal/db DB-backed tests already
+// inserted a tenant row; this brings the internal/worker suite in line.
 func bulkEnv(t *testing.T) (*db.Pool, *Service, context.Context, string) {
 	t.Helper()
 	pool := bulkTestPool(t)
 	tenantID := "tnt_bulk_" + strings.ToLower(db.NewID())
+	ensureTestTenant(t, pool, tenantID)
 	ident := seedBulkIdentity(t, pool, tenantID, "bulk-wk-"+strings.ToLower(db.NewID()))
 	ctx := tenant.WithID(context.Background(), tenantID)
 	ctx = auth.WithIdentity(ctx, auth.ResolvedIdentity{
@@ -83,13 +97,59 @@ func bulkEnv(t *testing.T) (*db.Pool, *Service, context.Context, string) {
 	return pool, s, ctx, tenantID
 }
 
+// ensureTestTenant inserts the tenant row a test's synthetic tenant id refers
+// to, so everything the suite commits belongs to a tenant that actually exists.
+//
+// WHY THIS EXISTS. GetOrCreateIdentity writes an `identities` row and NOT a
+// `tenants` row, so a synthetic tenant id was enough to commit workers under a
+// tenant that never existed. There is no FK from workers.tenant_id to tenants —
+// only 5 of the 44 tenant-scoped tables carry one (categories, mcp_servers,
+// project_mcp_servers, provider_settings, tenant_secrets); isolation is
+// RLS-only — so nothing refused it. Measured on the dev database before this
+// fix: 314 orphaned worker rows across 238 tenant ids with no tenant row,
+// created 2026-08-25 through 2026-09-12 by runs of THIS SUITE pointed at a real
+// database. They are unreachable from any client (RLS scopes every read to
+// app.tenant_id, which no session ever sets to a dead id) — which is precisely
+// why the operator could not see them to clean up.
+//
+// IDEMPOTENT (ON CONFLICT (id) DO NOTHING) because tenant ids here are of two
+// kinds: unique per test, and caller-chosen constants that a rerun reuses. A
+// plain INSERT would error on the second run of the constant ones.
+//
+// THE SLUG IS THE FULL ULID, not a prefix of one. tenants_slug_idx is
+// UNIQUE (slug) — GLOBAL, unlike the worker index (workers_tenant_slug_idx is
+// UNIQUE (tenant_id, slug)) — and a ULID's leading characters are its
+// TIMESTAMP, so a truncated `NewID()[:8]` is identical for every id minted in
+// the same ~256ms window. Every test in this file runs inside that window, so a
+// prefix slug collides on the second test with `duplicate key value violates
+// unique constraint "tenants_slug_idx"`. The internal/db fixtures get away with
+// `NewID()[:8]` for a different reason: they insert their tenant inside a
+// transaction they never commit, so the unique index never sees two of them.
+func ensureTestTenant(t *testing.T, pool *db.Pool, tenantID string) {
+	t.Helper()
+	ctx := context.Background()
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("begin tenant tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+	if _, err := ttx.Exec(ctx,
+		`INSERT INTO tenants (id, slug, name, status) VALUES ($1,$2,$3,'active')
+		 ON CONFLICT (id) DO NOTHING`,
+		tenantID, "t-"+strings.ToLower(db.NewID()), "Test Tenant"); err != nil {
+		t.Fatalf("ensure tenant %s: %v", tenantID, err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit tenant: %v", err)
+	}
+}
+
 // createDraftWorker creates a worker whose only version is a draft.
 func createDraftWorker(t *testing.T, ctx context.Context, s *Service, name string) string {
 	t.Helper()
 	resp, err := s.CreateWorker(ctx, connect.NewRequest(&apiv1.CreateWorkerRequest{
 		Name:       name,
 		ModelRef:   "opencode/deepseek-v4-flash",
-		RuntimeRef: "opencode",
 	}))
 	if err != nil {
 		t.Fatalf("CreateWorker %s: %v", name, err)

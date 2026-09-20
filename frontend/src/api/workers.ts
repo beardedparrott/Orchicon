@@ -11,7 +11,7 @@ import { workerClient } from "@/api/clients";
 import type { Worker } from "@/api/gen/orchicon/api/v1/worker_pb";
 import type { WorkerVersion } from "@/api/gen/orchicon/api/v1/worker_pb";
 import type { WorkerStatus } from "@/api/gen/orchicon/api/v1/worker_pb";
-import type { CreateWorkerRequest, UpdateWorkerVersionRequest, CreateWorkerVersionRequest, WorkerListItem } from "@/api/gen/orchicon/api/v1/worker_service_pb";
+import type { CreateWorkerRequest, UpdateWorkerVersionRequest, CreateWorkerVersionRequest, WorkerListItem, ListWorkersResponse } from "@/api/gen/orchicon/api/v1/worker_service_pb";
 
 // Query keys are centralized so invalidation is type-safe and
 // refactor-proof.
@@ -39,12 +39,13 @@ export function useListWorkers(opts?: { status?: WorkerStatus; search?: string; 
         sortOrder: opts?.sortOrder || "",
       });
       // Prefer items (enriched) with fallback to legacy workers during rollout.
-      if ((res as any).items && (res as any).items.length > 0) {
-        return (res as any).items as WorkerListItem[];
+      const legacy = res as ListWorkersResponse;
+      if (legacy.items && legacy.items.length > 0) {
+        return [...legacy.items] as WorkerListItem[];
       }
-      if ((res as any).workers && (res as any).workers.length > 0) {
+      if (legacy.workers && legacy.workers.length > 0) {
         // Legacy fallback: synthesize items with empty model/status.
-        return (res as any).workers.map((w: Worker) => ({
+        return legacy.workers.map((w: Worker) => ({
           worker: w,
           activeModelRef: "",
           activeVersionStatus: 0,

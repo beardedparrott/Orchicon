@@ -393,6 +393,9 @@ func newBranchDispatchEnv(t *testing.T) *branchDispatchEnv {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatalf("commit fixture: %v", err)
 	}
+	// Self-cleaning: see db.CleanupProject — the fixture tears its project down
+	// through the same cascade the product uses, so it cannot leave residue behind.
+	db.CleanupProject(t, pool, approvalTestTenant, proj.ID)
 	return env
 }
 
@@ -633,21 +636,13 @@ func TestBranchExecutionCwd(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("stamp step run: %v", err)
 	}
-	now := time.Now().UTC()
-	if _, err := db.CreateAdapter(ctx, ttx.Tx, db.AdapterRow{
-		ID: db.NewID(), TenantID: approvalTestTenant,
-		Kind: "opencode", Version: "test", Endpoint: "localhost:0",
-		Capabilities: []byte("{}"), Status: "ready",
-		MaxConcurrentExecutions: 64, LastHeartbeatAt: &now,
-	}); err != nil {
-		t.Fatalf("create adapter: %v", err)
-	}
+	_ = createTestAdapter(t, env.pool, "opencode", 64)
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
 
 	bridge := &manifestCaptureBridge{}
-	taskRec := NewTaskReconciler(env.pool, slog.New(slog.NewTextHandler(os.Stderr, nil)), bridge)
+	taskRec := NewTaskReconciler(env.pool, slog.New(slog.NewTextHandler(os.Stderr, nil)), testDispatcher(bridge))
 	if err := taskRec.reconcileOne(ctx, env.ticketID, srA.ID); err != nil {
 		t.Fatalf("reconcileOne (branch dispatch): %v", err)
 	}
@@ -825,6 +820,9 @@ func TestD4FailedBranchDoesNotSmearRunningSibling(t *testing.T) {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatalf("commit fixture: %v", err)
 	}
+	// Self-cleaning: see db.CleanupProject — the fixture tears its project down
+	// through the same cascade the product uses, so it cannot leave residue behind.
+	db.CleanupProject(t, pool, approvalTestTenant, proj.ID)
 	_ = srA
 
 	getRun := func() db.WorkflowRunRow {

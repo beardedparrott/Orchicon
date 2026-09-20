@@ -29,6 +29,11 @@ type CreateWorkflowInput struct {
 	Steps       string // JSON array string; "" becomes "[]"
 	Inputs      string // JSON object string; "" becomes "{}"
 	Outputs     string // JSON object string; "" becomes "{}"
+	// Ephemeral marks this workflow as machine-managed and transient (Ask
+	// Orchicon Quick Work's throwaway workflow). Set only by the Ask tool
+	// layer: a transient workflow is something an AGENT builds for one job,
+	// not something a human files.
+	Ephemeral bool
 }
 
 // validateJSONString is the string-typed variant of validateJSONField used
@@ -129,6 +134,7 @@ func CreateWorkflowTx(ctx context.Context, tx pgx.Tx, in CreateWorkflowInput) (d
 		Status:         domain.WorkflowDraft,
 		CurrentVersion: 0,
 		GitStrategy:    gitStrategy,
+		Ephemeral:      in.Ephemeral,
 	}
 	created, err := db.CreateWorkflow(ctx, tx, workflowRow)
 	if err != nil {

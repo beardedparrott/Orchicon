@@ -42,6 +42,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -75,12 +77,15 @@ const (
 	RecoveryStrategyHumanEscalation  = "human_escalation"  // PR C — L3 block
 	RecoveryStrategyRetryN           = "retry_n"           // PR C
 
-	// Default retry budget: max 5 recovery attempts for the same task
-	// chain, with 10s delay between retries. These can be overridden via
-	// env vars ORCHICON_RECOVERY_MAX_RETRIES and
-	// ORCHICON_RECOVERY_RETRY_DELAY_SECONDS.
-	defaultMaxRetries        = 5
-	defaultRetryDelaySeconds = 10
+	// Default retry budget: max 5 recovery attempts for the same task chain.
+	//
+	// There are NO env overrides for these. An earlier revision of this comment
+	// claimed ORCHICON_RECOVERY_MAX_RETRIES and ORCHICON_RECOVERY_RETRY_DELAY_SECONDS;
+	// neither name is read anywhere in the tree, so they were documented but never
+	// implemented.
+	//
+	// The delay is gone entirely (see the note on retry_delay_seconds below).
+	defaultMaxRetries = 5
 )
 
 // strategyForWorkItem maps a work item's kind to the recovery strategy
@@ -89,6 +94,60 @@ const (
 // existing behavior); the recovery_X kinds in the enum trigger their
 // corresponding strategy. New recovery kinds can be added without
 // touching this function (they'll default to summarize_restart).
+// deterministicStopErrorPatterns are error signatures of deterministic
+// infrastructure / configuration failures whose retry is guaranteed to fail
+// identically. Recovery of these is pure waste (a resume loop burns cycles
+// and produces noise acceptance reviews) — they must be classified as a
+// non-retryable stop: fail the item loudly with the exact error and clear
+// operator guidance to fix the config, then re-run. See WI-4 class 3.
+var deterministicStopErrorPatterns = []string{
+	`model ref "" has no provider/model`, // empty/invalid model ref
+	`has no provider/model`,              // orchicon bridge: empty provider or model
+	`adapter kind`,                       // unknown/unregistered adapter kind
+	`no suitable adapter`,                // dispatch: adapter kind matches zero rows
+	`no suitable worker`,                 // dispatch: no compatible worker (config)
+	`credential`,                         // absent/invalid credential
+	`authentication failed`,              // provider auth
+	"runtime image not found",            // missing image
+	"runtime image is not ready",         // missing/not-yet-built image
+	"image pull failed",                  // image pull failure
+	"failed_to_start",                    // execution failed before the model even ran
+	"no provider",                        // provider unresolved
+}
+
+// isDeterministicStopError reports whether a failed execution's error is a
+// deterministic configuration/infrastructure failure that a recovery resume
+// loop cannot fix. Such failures are treated as stop-class: no recovery
+// loop, a loud item-level failure carrying the exact error, and a retry
+// only once the underlying config changes.
+func isDeterministicStopError(errText string) bool {
+	if errText == "" {
+		return false
+	}
+	low := strings.ToLower(errText)
+	for _, p := range deterministicStopErrorPatterns {
+		if strings.Contains(low, strings.ToLower(p)) && len(p) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// effectiveStrategy resolves the recovery strategy for a failed execution.
+// The work item's kind drives the default (PR C), but a deterministic
+// config/infra failure (stop-class) ALWAYS resolves to stop — resuming
+// against a broken model ref / credential / image retries the identical
+// failure and burns the resume budget to no end (observed: the Quick Work
+// canned worker with a blank model_ref looped 6 recoveries per run on the
+// same instant 0-token failure). The exact error text is surfaced in the
+// failure summary so the operator sees precisely what must be fixed.
+func strategyForFailure(exec *db.ExecutionRow, kind string) string {
+	if exec != nil && isDeterministicStopError(exec.ErrorMessage) {
+		return RecoveryStrategyStop
+	}
+	return strategyForWorkItem(kind)
+}
+
 func strategyForWorkItem(kind string) string {
 	switch kind {
 	case domain.WorkItemKindRecoveryStop:
@@ -374,6 +433,14 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, st
 
 	recoveryID := db.NewID()
 	now := time.Now().UTC()
+	// NOTE: there is no retry_delay_seconds here, deliberately. The COLUMN exists on
+	// recovery_executions (NOT NULL DEFAULT 10, from 20260721000000_recovery_retry_config.sql)
+	// and this row used to set it from a constant — but nothing ever READ it. There is no
+	// deferral mechanism for execution dispatch at all, so every retry went out
+	// immediately and the value described a wait that never happened. The knob was
+	// removed rather than left advertising behaviour the system does not have. The column
+	// is retained only because migrations are additive-only (no destructive DDL);
+	// 20260925000000_retire_recovery_retry_delay.sql corrects its stale comment.
 	row := db.RecoveryExecutionRow{
 		ID:                 recoveryID,
 		TenantID:           tenantID,
@@ -383,12 +450,11 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, st
 		TriggerReason:      triggerReason,
 		Level:              level,
 		Status:             domain.RecoveryPending,
-		Strategy:           strategyForWorkItem(task.Kind), // PR C — work item kind drives the strategy
+		Strategy:           strategyForFailure(&exec, task.Kind), // PR C + WI-4 stop-class override
 		ResumptionPath:     resumptionPath,
 		BudgetTokensLimit:  budgetTokensLimit,
 		BudgetCostLimitUSD: budgetCostLimit,
 		MaxRetries:         defaultMaxRetries,
-		RetryDelaySeconds:  defaultRetryDelaySeconds,
 		TriggeredAt:        now,
 	}
 	created, err := db.CreateRecoveryExecution(ctx, ttx.Tx, row)
@@ -745,6 +811,76 @@ func (r *Reconciler) quarantineRecovery(ctx context.Context, tenantID, recoveryI
 	return nil
 }
 
+// foldRecoverySummaryToFacts appends the recovery's summary into the
+// run's .orchicon/<run>/facts_learned as a step-attributed entry so ALL of
+// a run's steps see the recovery summary — not just the restarted execution
+// (which receives it via the composite prompt's `_recovery_summary`).
+// Best-effort: a failure to resolve the project dir / run id, or a file
+// error, is logged and never blocks the resume.
+func (r *Reconciler) foldRecoverySummaryToFacts(ctx context.Context, tenantID string, rec db.RecoveryExecutionRow) {
+	if rec.Summary == "" {
+		return
+	}
+	projectDir := ""
+	if ttx, err := r.pool.BeginTenantTx(ctx, tenantID); err == nil {
+		if err := ttx.Tx.QueryRow(ctx,
+			`SELECT project_dir FROM projects WHERE id = $1 AND tenant_id = $2`,
+			rec.ProjectID, tenantID,
+		).Scan(&projectDir); err != nil {
+			projectDir = ""
+		}
+		_ = ttx.Commit(ctx)
+	} else {
+		ttx.Rollback(ctx)
+	}
+	if projectDir == "" {
+		r.log.Warn("recovery fold facts: no project dir", "recovery", rec.ID)
+		return
+	}
+	runID := ""
+	if ttx, err := r.pool.BeginTenantTx(ctx, tenantID); err == nil {
+		if exec, err := db.GetExecution(ctx, ttx.Tx, tenantID, rec.FailedExecutionID); err == nil {
+			runID = exec.WorkflowRunID
+		}
+		_ = ttx.Commit(ctx)
+	} else {
+		ttx.Rollback(ctx)
+	}
+	if runID == "" {
+		r.log.Warn("recovery fold facts: no run id", "recovery", rec.ID)
+		return
+	}
+	orchDir := filepath.Join(projectDir, ".orchicon", runID)
+	if err := os.MkdirAll(orchDir, 0o755); err != nil {
+		r.log.Warn("recovery fold facts: mkdir", "dir", orchDir, "error", err)
+		return
+	}
+	factsPath := filepath.Join(orchDir, "facts_learned")
+	existing := ""
+	if b, err := os.ReadFile(factsPath); err == nil {
+		existing = string(b)
+	}
+	line := "FACTS LEARNED (from Recovery): " + rec.Summary
+	// Dedup exact-string against existing content (terminal idempotency).
+	for _, l := range strings.Split(existing, "\n") {
+		if strings.TrimSpace(l) == line {
+			return
+		}
+	}
+	var sb strings.Builder
+	if existing != "" {
+		sb.WriteString(existing)
+		if !strings.HasSuffix(existing, "\n") {
+			sb.WriteString("\n")
+		}
+	}
+	sb.WriteString(line)
+	sb.WriteString("\n")
+	if err := os.WriteFile(factsPath, []byte(strings.TrimSpace(sb.String())), 0o644); err != nil {
+		r.log.Warn("recovery fold facts: write", "file", factsPath, "error", err)
+	}
+}
+
 // progressRecovery advances a single recovery through its step DAG
 // (docs/06 §3, §9). Idempotent: re-running resumes from the last
 // completed step.
@@ -890,12 +1026,23 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 			// the dead session's transcript back into it. Written beside
 			// _recovery_summary so the scheduler's single recoverySeedFor
 			// predicate reads them all from the same result JSON.
+			// _recovery_worker_version + _recovery_adapter pin the exact
+			// version/adapter the dead execution ran on: same worker ID
+			// with a different version may resolve a different adapter
+			// (e.g. v3 opencode vs v4 orchicon), and the dispatch gate
+			// must fail fast instead of resuming cross-adapter.
 			merged["_recovery_execution_id"] = rec.FailedExecutionID
 			failedWorkerID := ""
+			failedWorkerVersion := 0
+			failedAdapter := ""
 			if failedExec, err := db.GetExecution(ctx, ttx.Tx, tenantID, rec.FailedExecutionID); err == nil {
 				failedWorkerID = failedExec.WorkerID
+				failedWorkerVersion = failedExec.WorkerVersion
+				failedAdapter = adapterRef(failedExec)
 			}
 			merged["_recovery_worker_id"] = failedWorkerID
+			merged["_recovery_worker_version"] = failedWorkerVersion
+			merged["_recovery_adapter"] = failedAdapter
 			mergedJSON, _ := json.Marshal(merged)
 			if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRun.ID, stepRun.Version, db.UpdateWorkflowStepRunFields{
 				Result: &mergedJSON,
@@ -914,10 +1061,16 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 				}
 				wiResults["_recovery_execution_id"] = rec.FailedExecutionID
 				failedWorkerID := ""
+				failedWorkerVersion := 0
+				failedAdapter := ""
 				if failedExec, err := db.GetExecution(ctx, ttx.Tx, tenantID, rec.FailedExecutionID); err == nil {
 					failedWorkerID = failedExec.WorkerID
+					failedWorkerVersion = failedExec.WorkerVersion
+					failedAdapter = adapterRef(failedExec)
 				}
 				wiResults["_recovery_worker_id"] = failedWorkerID
+				wiResults["_recovery_worker_version"] = failedWorkerVersion
+				wiResults["_recovery_adapter"] = failedAdapter
 				wiResultsJSON, _ := json.Marshal(wiResults)
 				_, _ = db.UpdateWorkItem(ctx, ttx.Tx, tenantID, rec.TaskID, task.Version, db.UpdateWorkItemFields{
 					Status:  strPtr(domain.WorkItemReady),
@@ -925,6 +1078,7 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 				})
 			}
 		}
+		r.foldRecoverySummaryToFacts(ctx, tenantID, rec)
 		_ = enqueueRecoveryEvent(ctx, ttx.Tx, domain.RecoveryEventResumed, rec, "", "", rec.TriggerReason, "recovery completed; task resumed to ready", "")
 		progressed = true
 	} else if anyFailed {
@@ -1027,19 +1181,26 @@ func (r *Reconciler) stepCapture(ctx context.Context, tx pgx.Tx, tenantID string
 	if err != nil {
 		return nil, fmt.Errorf("get failed execution: %w", err)
 	}
+	// Spend comes from the usage-records sum (the worker_executions row
+	// columns are write-never and always read zero); fall back to the row
+	// on query failure so capture never fails for telemetry.
+	tokens, cost := exec.TokenUsage, exec.CostUSD
+	if t, c, uerr := db.SumUsageForExecution(ctx, tx, tenantID, exec.ID); uerr == nil {
+		tokens, cost = t, c
+	}
 	snapshot := map[string]any{
 		"execution_id":   exec.ID,
 		"status":         exec.Status,
 		"health_state":   exec.HealthState,
-		"token_usage":    exec.TokenUsage,
-		"cost_usd":       exec.CostUSD,
+		"token_usage":    tokens,
+		"cost_usd":       cost,
 		"worker_id":      exec.WorkerID,
 		"worker_version": exec.WorkerVersion,
 		"started_at":     exec.StartedAt,
 		"ended_at":       exec.EndedAt,
 	}
 	result, _ := json.Marshal(snapshot)
-	r.log.Info("recovery capture", "recovery", rec.ID, "execution", exec.ID, "tokens", exec.TokenUsage, "cost", exec.CostUSD)
+	r.log.Info("recovery capture", "recovery", rec.ID, "execution", exec.ID, "tokens", tokens, "cost", cost)
 	return result, nil
 }
 
@@ -1053,8 +1214,13 @@ func (r *Reconciler) stepSummarize(ctx context.Context, tx pgx.Tx, tenantID stri
 	if err != nil {
 		return nil, fmt.Errorf("get execution: %w", err)
 	}
+	// Same usage-records source as capture (row columns always read zero).
+	tokens, cost := exec.TokenUsage, exec.CostUSD
+	if t, c, uerr := db.SumUsageForExecution(ctx, tx, tenantID, exec.ID); uerr == nil {
+		tokens, cost = t, c
+	}
 	summary := fmt.Sprintf("Execution %s failed after %d tokens ($%.4f). Worker %s v%d. Resuming from captured state.",
-		exec.ID, exec.TokenUsage, exec.CostUSD, exec.WorkerID, exec.WorkerVersion)
+		exec.ID, tokens, cost, exec.WorkerID, exec.WorkerVersion)
 	// Persist the summary on the recovery + refresh rec.Version.
 	updated, err := db.UpdateRecoveryExecution(ctx, tx, tenantID, rec.ID, rec.Version, db.UpdateRecoveryExecutionFields{
 		Summary: &summary,

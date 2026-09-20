@@ -204,5 +204,8 @@ func createProjectWithStatus(t *testing.T, ctx context.Context, pool *db.Pool, t
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatalf("commit project: %v", err)
 	}
+	// Self-cleaning: see db.CleanupProject — the fixture tears its project down
+	// through the same cascade the product uses, so it cannot leave residue behind.
+	db.CleanupProject(t, pool, workItemKindTestTenant, proj.ID)
 	return proj.ID
 }

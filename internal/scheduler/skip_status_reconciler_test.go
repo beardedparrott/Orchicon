@@ -47,6 +47,9 @@ func TestRunCompletionWithSkippedStepMarksWorkItemSkipped(t *testing.T) {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// Self-cleaning: see db.CleanupProject — the fixture tears its project down
+	// through the same cascade the product uses, so it cannot leave residue behind.
+	db.CleanupProject(t, pool, approvalTestTenant, proj.ID)
 
 	item := createWorkItem(t, pool, proj.ID, domain.WorkItemKindTask, "Bound Leaf", nil, &wfID)
 
@@ -126,6 +129,9 @@ func TestRunCompletionSkippedChildAdvancesParentChain(t *testing.T) {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// Self-cleaning: see db.CleanupProject — the fixture tears its project down
+	// through the same cascade the product uses, so it cannot leave residue behind.
+	db.CleanupProject(t, pool, approvalTestTenant, proj.ID)
 
 	env := &sequenceTestEnv{pool: pool, proj: proj}
 	parent := createWorkItem(t, pool, proj.ID, domain.WorkItemKindEpic, "Parent", nil, nil)

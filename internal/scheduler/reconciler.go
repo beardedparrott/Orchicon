@@ -32,7 +32,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/beardedparrott/orchicon/internal/contextfiles"
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
@@ -120,12 +120,21 @@ func (dbDispatchLimiter) InPlaceLimit(ctx context.Context, tx pgx.Tx, tenantID, 
 
 // TaskReconciler implements the reconciler.Reconciler interface for the
 // "task" kind. It polls the work_items table for ready tasks and
-// dispatches them via the AdapterBridge.
+// dispatches them via the AdapterBridge resolved from the Dispatcher by
+// the execution's adapter kind (adapter.AdapterKind(manifest.ModelRef)
+// .Adapter).
 type TaskReconciler struct {
-	pool             *db.Pool
-	log              *slog.Logger
-	bridge           AdapterBridge
-	eventPub         eventbus.Publisher                      // direct NATS publisher for low-latency streaming (bypasses outbox relay)
+	pool       *db.Pool
+	log        *slog.Logger
+	dispatcher *Dispatcher
+	eventPub   eventbus.Publisher // direct NATS publisher for low-latency streaming (bypasses outbox relay)
+	// eventSeq is a monotonic per-process suffix that makes every direct
+	// publish's JetStream MsgID unique. The stream is created with
+	// Duplicates: 5m (internal/eventbus/nats.go), so a CONSTANT MsgID would
+	// make JetStream drop every direct publish after the first within the
+	// window — for per-token execution.text that silently reduced live
+	// streaming to one chunk per 5 minutes per execution (see publishExecEvent).
+	eventSeq         atomic.Uint64
 	workflowNotifier func(ctx context.Context, runID string) // enqueues run for WorkflowReconciler on task completion
 
 	// pendingWrittenFiles holds the file paths a running execution's
@@ -142,6 +151,12 @@ type TaskReconciler struct {
 	// rows) when the backlog exceeds scanBatchSize.
 	blockedMu     sync.Mutex
 	blockedCursor int
+
+	// fileEditReconciler is the diff-pipeline completion hook (optional):
+	// OnResult runs it after the terminal status writeback so the ledger
+	// reconciles against the worktree's git state. Nil = skipped (tests,
+	// DB-less planes). See FileEditReconciler.
+	fileEditReconciler FileEditReconciler
 
 	// dispatchConcurrency bounds how many reconcileOne calls the scan pass
 	// runs concurrently (in flight at once) when fanning out its candidate
@@ -163,10 +178,26 @@ type TaskReconciler struct {
 	dispatchOverlap func(inFlight int)
 }
 
-// NewTaskReconciler creates a TaskReconciler.
-func NewTaskReconciler(pool *db.Pool, log *slog.Logger, bridge AdapterBridge) *TaskReconciler {
-	return &TaskReconciler{pool: pool, log: log, bridge: bridge}
+// NewTaskReconciler creates a TaskReconciler. The dispatcher routes each
+// dispatch to the AdapterBridge registered for the execution's adapter
+// kind (parsed from the worker's model_ref at dispatch time) — never a
+// hardcoded singleton bridge.
+func NewTaskReconciler(pool *db.Pool, log *slog.Logger, dispatcher *Dispatcher) *TaskReconciler {
+	return &TaskReconciler{pool: pool, log: log, dispatcher: dispatcher}
 }
+
+// FileEditReconciler is the diff-pipeline completion hook (optional): when
+// set, OnResult reconciles the execution's file-edit ledger against the run
+// worktree's git state on every terminal transition. Best-effort — a nil
+// hook (tests, DB-less planes) simply skips reconciliation. The server wires
+// this to a closure over fileedit.ReconcileGit + the PGStore (avoids a
+// scheduler → fileedit dependency; the ledger store needs a *db.Pool).
+type FileEditReconciler interface {
+	ReconcileExecutionGit(ctx context.Context, tenantID, execID string)
+}
+
+// SetFileEditReconciler injects the completion-time ledger reconciler.
+func (r *TaskReconciler) SetFileEditReconciler(fe FileEditReconciler) { r.fileEditReconciler = fe }
 
 // SetDispatchConcurrency sets the per-pass concurrency bound for the scan
 // pass (ORCHICON_DISPATCH_CONCURRENCY). Values are clamped to
@@ -254,6 +285,75 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, key string) reconciler.R
 		return reconciler.Result{Error: err}
 	}
 	return reconciler.Result{}
+}
+
+// projectExecutionMode returns the project's execution_mode
+// (runtime|local), defaulting to runtime on any read failure (preserves
+// current opencode behavior; fail-open toward the container, never toward
+// silent host exec).
+func projectExecutionMode(ctx context.Context, tx pgx.Tx, tenantID, projectID string) string {
+	if strings.TrimSpace(projectID) == "" {
+		return db.ExecutionModeRuntime
+	}
+	p, err := db.GetProject(ctx, tx, tenantID, projectID)
+	if err != nil {
+		return db.ExecutionModeRuntime
+	}
+	if p.ExecutionMode == db.ExecutionModeLocal {
+		return db.ExecutionModeLocal
+	}
+	return db.ExecutionModeRuntime
+}
+
+// liveDSNHosts are the loopback/bridge addresses that reach the LIVE plane
+// from an in-process worker. A DSN whose host:port matches one of these is
+// refused by the local-mode fence (fail closed).
+var liveDSNHosts = []string{"127.0.0.1:5432", "localhost:5432", "172.17.0.1:8080"}
+
+// isLiveDSN reports whether a Postgres (or plane-URL) DSN points at the
+// live plane: host ∈ {127.0.0.1:5432, localhost:5432} for DB DSNs, or the
+// string contains the 172.17.0.1:8080 bridge-plane address.
+func isLiveDSN(dsn string) bool {
+	lower := strings.ToLower(strings.TrimSpace(dsn))
+	if strings.Contains(lower, "172.17.0.1:8080") {
+		return true
+	}
+	host := lower
+	// Strip scheme://userinfo@ prefix.
+	if i := strings.LastIndex(host, "@"); i >= 0 {
+		host = host[i+1:]
+	} else if i := strings.Index(host, "://"); i >= 0 {
+		host = host[i+3:]
+	}
+	// Strip path/query.
+	if i := strings.IndexAny(host, "/?"); i >= 0 {
+		host = host[:i]
+	}
+	for _, live := range []string{"127.0.0.1:5432", "localhost:5432"} {
+		if host == live {
+			return true
+		}
+	}
+	return false
+}
+
+// redactDSNHost returns the DSN's host portion for error messages (never
+// the credentials).
+func redactDSNHost(dsn string) string {
+	lower := strings.TrimSpace(dsn)
+	host := lower
+	if i := strings.LastIndex(host, "@"); i >= 0 {
+		host = host[i+1:]
+	} else if i := strings.Index(host, "://"); i >= 0 {
+		host = host[i+3:]
+	}
+	if i := strings.IndexAny(host, "/?"); i >= 0 {
+		host = host[:i]
+	}
+	if host == "" {
+		return "(unparseable DSN)"
+	}
+	return host
 }
 
 // scan is the empty-key scan pass (docs/03 §4): find ready + blocked tasks
@@ -507,6 +607,15 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 		if task.WorkflowRunID != "" {
 			return nil
 		}
+		// Workflow-first enforcement: standalone dispatch is retired, so an
+		// item with no workflow binding can never execute. Fail it loudly
+		// instead of creating an execution with no workflow to run inside.
+		// Placed BEFORE the dependency park/clear writes below so this
+		// transaction holds no row lock when the failure tx takes one.
+		if task.WorkflowID == nil || *task.WorkflowID == "" {
+			r.failNoWorkflow(ctx, tenantID, task)
+			return nil
+		}
 		// Check dependencies satisfied (docs/02 §4 #1, docs/03 §4).
 		satisfied, err := db.CheckDependenciesSatisfied(ctx, ttx.Tx, tenantID, task.ID)
 		if err != nil {
@@ -570,6 +679,23 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 		}
 	}
 
+	// Local-mode DSN fence: in-process executions must never touch the
+	// LIVE plane. When the task's project is in local execution_mode, a
+	// live ORCHICON_TEST_DSN fails the execution CLOSED (blocked, not
+	// warned) — DB-backed tests require a disposable DSN.
+	if task.ProjectID != "" {
+		if mtx, merr := r.pool.BeginTenantTx(context.Background(), tenantID); merr == nil {
+			mode := projectExecutionMode(context.Background(), mtx.Tx, tenantID, task.ProjectID)
+			_ = mtx.Rollback(context.Background())
+			if mode == db.ExecutionModeLocal {
+				if dsn := strings.TrimSpace(os.Getenv("ORCHICON_TEST_DSN")); dsn != "" && isLiveDSN(dsn) {
+					r.log.Error("local-mode DSN fence: refusing live-plane DSN", "task", task.ID, "project", task.ProjectID)
+					return fmt.Errorf("local-mode DSN fence: ORCHICON_TEST_DSN points at the LIVE plane (%q) — use a disposable database or unset it", redactDSNHost(dsn))
+				}
+			}
+		}
+	}
+
 	// Select a Worker (docs/03 §4.1: rule-based). For a workflow step the
 	// worker is pinned by the STEP (stored on the step run by the
 	// WorkflowReconciler), not the ticket.
@@ -589,8 +715,15 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 		}
 	}
 
-	// Select an Adapter (docs/03 §4.2).
-	adapter, err := r.selectAdapter(ctx, ttx.Tx, tenantID, version.RuntimeRef)
+	// Select an Adapter (docs/03 §4.2). ADR-0003 single source of truth:
+	// the row-selection kind derives from the model_ref's parsed adapter
+	// kind — the same source the bridge Resolve at dispatch uses — then
+	// the legacy default kind. Worker-level runtime_ref (the former
+	// independently-settable override that could misroute a native model
+	// to an opencode row) is retired with the runtime_ref column; the
+	// empty-ref fallback that closed the original dispatch black hole
+	// (kind "" matching zero rows, requeueing forever) still applies.
+	adapter, err := r.selectAdapter(ctx, ttx.Tx, tenantID, resolveAdapterRowKind(version.ModelRef))
 	if err != nil {
 		r.log.Warn("no suitable adapter for task", "task", task.ID, "worker", version.WorkerID, "error", err)
 		return nil
@@ -812,7 +945,10 @@ func (r *TaskReconciler) workerVersionForStepRun(ctx context.Context, tx pgx.Tx,
 	_ = json.Unmarshal(sr.Result, &meta)
 	if meta.WorkerID != "" {
 		if meta.WorkerVer > 0 {
-			if v, err := db.GetWorkerVersionByID(ctx, tx, tenantID, meta.WorkerID, fmt.Sprintf("v%d", meta.WorkerVer)); err == nil {
+			// By NUMBER, not by id: _worker_version carries the version
+			// ordinal and worker_versions.id is a ULID, so a "v%d"
+			// pseudo-id could never match (see GetWorkerVersionByNumber).
+			if v, err := db.GetWorkerVersionByNumber(ctx, tx, tenantID, meta.WorkerID, meta.WorkerVer); err == nil {
 				return v, nil
 			}
 		}
@@ -849,7 +985,7 @@ func mustStepWorkItemID(sr db.WorkflowStepRunRow) string {
 // runs in a goroutine so the reconcile loop is not blocked by the
 // adapter call (docs/03 §8: no SELECT FOR UPDATE held across external
 // calls). The bridge updates the execution status as telemetry arrives.
-func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRow, task db.WorkItemRow, version db.WorkerVersionRow, adapter db.AdapterRow) {
+func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRow, task db.WorkItemRow, version db.WorkerVersionRow, adp db.AdapterRow) {
 	// Resolve the project directory so the adapter runs in the correct
 	// working directory (avoids picking up Orchicon's own AGENTS.md etc.).
 	// Use a background context (the reconciler's ctx may expire before
@@ -875,17 +1011,28 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	runtimeImage := ""
 	worktreePath := ""
 	worktreeStatus := ""
-	worktreeBranch := ""
+	// executionMode is the run's project execution_mode (runtime|local)
+	// threaded to the adapters so a LOCAL-mode run never routes bash into
+	// (or creates) a container — the reconciler skipped EnsureForRun for
+	// it, so the lease does not exist and a container would be silently
+	// recreated on the opencode path. Best-effort: read failures default
+	// to runtime (fail-open toward the container, matching the mode
+	// helper).
+	executionMode := db.ExecutionModeRuntime
 	if task.WorkflowRunID != "" {
 		if rtx, err := r.pool.BeginTenantTx(context.Background(), exec.TenantID); err == nil {
 			if run, gerr := db.GetWorkflowRun(context.Background(), rtx.Tx, exec.TenantID, task.WorkflowRunID); gerr == nil {
 				runtimeImage = run.RuntimeImage
 				worktreeStatus = run.WorktreeStatus
-				worktreeBranch = run.WorktreeBranch
 				if run.WorktreeStatus == domain.WorktreeReady && run.WorktreePath != "" {
 					worktreePath = run.WorktreePath
 				}
+				// NOTE: the run-bound composite prompt (step-run _prompt)
+				// already carries the run-effective image+mode — baked by
+				// buildCompositePrompt at dispatch. This runtimeImage is
+				// only the adapter's container self-heal tag.
 			}
+			executionMode = projectExecutionMode(context.Background(), rtx.Tx, exec.TenantID, exec.ProjectID)
 			// D2: a parallel-branch child execution runs in the STEP RUN's
 			// OWN branch worktree — its cwd must be the branch worktree,
 			// not the run worktree. Resolve via the step run LINKED to this
@@ -898,7 +1045,6 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 					sr.WorktreeStatus == domain.WorktreeReady && sr.WorktreePath != "" {
 					worktreeStatus = sr.WorktreeStatus
 					worktreePath = sr.WorktreePath
-					worktreeBranch = sr.WorktreeBranch
 				}
 			}
 			_ = rtx.Rollback(context.Background())
@@ -943,36 +1089,36 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	// agent's `prompt` via OPENCODE_CONFIG_CONTENT so every
 	// conversation turn carries the same context.
 	composite, _ := extractComposite(task.PromptContext)
+	var promptFP string      // context-file fingerprint (ADR-0009 D5)
 	var stepRunResult []byte // step run's full result — carries the _recovery_* seed keys
 	if exec.WorkflowRunID != "" && exec.WorkflowStepID != "" {
 		if stx, err := r.pool.BeginTenantTx(context.Background(), exec.TenantID); err == nil {
 			if sr, err := db.GetWorkflowStepRunByStep(context.Background(), stx.Tx, exec.TenantID, exec.WorkflowRunID, exec.WorkflowStepID); err == nil {
 				stepRunResult = sr.Result
 				var srMeta struct {
-					Prompt string `json:"_prompt"`
+					Prompt      string `json:"_prompt"`
+					Fingerprint string `json:"_prompt_fingerprint"`
 				}
 				_ = json.Unmarshal(sr.Result, &srMeta)
 				if srMeta.Prompt != "" {
 					composite = srMeta.Prompt
+				}
+				if srMeta.Fingerprint != "" {
+					promptFP = srMeta.Fingerprint
 				}
 			}
 			_ = stx.Rollback(context.Background())
 		}
 	}
 	systemPrompt := composite
-	// Fall back to a minimal worker-prompt if no composite was set
-	// (legacy direct-dispatch path: work item dispatched outside a
-	// workflow, so the workflow reconciler never built a composite).
-	// The fallback now builds the SAME shared composite the workflow
-	// path produces (worker identity + task + project context +
-	// work-item context + instructions) so standalone dispatches see
-	// project/work-item context "just like projects" (F5).
-	if systemPrompt == "" {
-		systemPrompt = buildStandaloneComposite(r.pool, exec, task, version, worktreeStatus, worktreeBranch)
-		if strings.TrimSpace(systemPrompt) == "" {
-			systemPrompt = "You are a worker in the Orchicon orchestration system. " +
-				"Complete the work item described in the user message and report back."
-		}
+	// Last-resort bare worker prompt. Every dispatch now happens inside a
+	// workflow run (a step-run dispatch or a workflow-bound item), so the
+	// WorkflowReconciler always writes the composite; this only fires if
+	// that write was lost. Standalone dispatch is retired, so there is no
+	// standalone composite to fall back to.
+	if strings.TrimSpace(systemPrompt) == "" {
+		systemPrompt = "You are a worker in the Orchicon orchestration system. " +
+			"Complete the work item described in the user message and report back."
 	}
 	// Recovery seeding — a HARD gate: if this is a recovery-resumed dispatch
 	// for the SAME worker that died, .orchicon/worker.recovery must exist,
@@ -1005,6 +1151,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	var stallRepWindow int64
 	var stallNudgeMax int32
 	var stallNudgeReplyWindow, stallNudgeCooldown int64
+	var stallToolHang int64
 	var defaultBudgetOverrides []byte
 	{
 		settingsCtx := context.Background()
@@ -1021,6 +1168,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 				stallNudgeMax = s.StallNudgeMax
 				stallNudgeReplyWindow = s.StallNudgeReplyWindowSeconds
 				stallNudgeCooldown = s.StallNudgeCooldownSeconds
+				stallToolHang = s.StallToolHangSeconds
 				defaultBudgetOverrides = s.BudgetJSON()
 			}
 			stx.Rollback(settingsCtx)
@@ -1040,10 +1188,12 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		WorkerID:                     version.WorkerID,
 		WorkerVersion:                version.Version,
 		SystemPrompt:                 systemPrompt,
+		PromptFingerprint:            promptFP,
 		Goal:                         task.Title,
 		AcceptanceCriteria:           task.AcceptanceCriteria,
 		ModelRef:                     version.ModelRef,
 		DefaultModelRef:              defaultModelRef,
+		ContextWindow:                task.ContextWindow,
 		ContextSources:               version.ContextSources,
 		Budgets:                      budgetsJSON,
 		Permissions:                  version.Permissions,
@@ -1051,6 +1201,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		WorktreePath:                 worktreePath,
 		RuntimeWorkflowID:            task.WorkflowRunID,
 		RuntimeImage:                 runtimeImage,
+		ExecutionMode:                executionMode,
 		StallNoProgressWindowSeconds: stallNoProgress,
 		StallNoFileDiffWindowSeconds: stallNoFileDiff,
 		StallTextLoopWindowSeconds:   stallTextLoop,
@@ -1059,12 +1210,207 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		StallNudgeMax:                stallNudgeMax,
 		StallNudgeReplyWindowSeconds: stallNudgeReplyWindow,
 		StallNudgeCooldownSeconds:    stallNudgeCooldown,
+		StallToolHangSeconds:         stallToolHang,
 	}
-	if err := r.bridge.Start(ctx, exec, manifest, r); err != nil {
+	if r.dispatcher == nil {
+		err := fmt.Errorf("no adapter dispatcher configured — the server must register at least one adapter bridge")
+		r.log.Error("adapter dispatch failed", "execution", exec.ID, "error", err)
+		r.markFailedToStart(context.Background(), exec, err.Error())
+		return
+	}
+	// Resolve the adapter bridge from the execution's adapter kind — the
+	// model_ref grammar (adapter.AdapterKind) is the SINGLE source of
+	// truth (ADR-0003). A 2-segment legacy ref (opencode/<model>) resolves
+	// to the default kind "opencode"; an unknown kind fails the execution
+	// with an actionable message (never a panic).
+	modelRef := manifest.ModelRef
+	if modelRef == "" {
+		modelRef = manifest.DefaultModelRef
+	}
+	kind := adapter.AdapterKind(modelRef)
+	if kind == "" {
+		// Empty/malformed model_ref: fall back to the default adapter
+		// kind ("opencode") so legacy workers with single-segment refs
+		// keep dispatching exactly as they did before the dispatcher
+		// (previously the bridge was a hardcoded singleton).
+		kind = adapter.DefaultAdapterKind
+	}
+	// Sequence continuation (opt-in, DEFAULT OFF): consecutive
+	// same-worker tasks in a sequence chain may resume the prior task's
+	// session transcript instead of starting fresh (tightly-coupled
+	// chains where retained context beats isolation). Resolution happens
+	// ONLY for the native engine (kind "orchicon" — the in-process
+	// session engine); opencode/other adapters never resume (their
+	// transcripts are subprocess-bound, not in-process). The flag is set
+	// only when the task has a terminal-success predecessor sibling bound
+	// to the same worker, so identity isolation holds by construction.
+	if kind == "orchicon" && task.ParentID != nil && *task.ParentID != "" {
+		if priorID, ok := r.continuationSessionID(context.Background(), task, version); ok {
+			manifest.SequenceContinue = true
+			manifest.ContinueFromSessionID = priorID
+			r.log.Info("sequence continuation armed",
+				"execution", exec.ID, "prior", priorID, "task", task.ID)
+		}
+	}
+	bridge, err := r.dispatcher.Resolve(kind)
+	if err != nil {
+		r.log.Error("adapter dispatch failed", "execution", exec.ID, "kind", kind, "error", err)
+		// The Resolve error names the missing kind and the registered
+		// kinds — surface it verbatim so the operator can act on it.
+		//
+		// A PERMANENT routing failure — the kind is administratively
+		// disabled, or it is a declared-but-unregistered kind (e.g.
+		// "claude") — can never be fixed by retrying, so requeueing would
+		// spin the item through ready→failed forever (AC 3). Block the
+		// work item with the reason instead: the operator then sees the
+		// failure ON the item rather than an item that keeps returning.
+		if permanentDispatchFailure(err) {
+			r.markFailedToStartPermanent(context.Background(), exec, err.Error())
+			return
+		}
+		r.markFailedToStart(context.Background(), exec, err.Error())
+		return
+	}
+	if err := bridge.Start(ctx, exec, manifest, r); err != nil {
 		r.log.Error("adapter start failed", "execution", exec.ID, "error", err)
 		// Mark the execution as failed_to_start.
 		r.markFailedToStart(context.Background(), exec, err.Error())
 	}
+}
+
+// continuationSessionID resolves the prior session to continue for a
+// sequence-chain task (sequence-continuation flag, opt-in DEFAULT OFF).
+// It returns (sessionID, true) only when:
+//   - the task is a direct child of a sequence parent (ParentID set),
+//   - its immediate predecessor sibling is terminal-success (succeeded or
+//     skipped — a failed/cancelled predecessor never continues),
+//   - the predecessor's assigned worker is the SAME worker as the current
+//     task's (identity isolation by construction: no worker ever resumes
+//     another worker's transcript),
+//   - the predecessor has a completed execution (session id == execution
+//     id for the native engine).
+//
+// The session id for the native engine IS the execution id, so the prior
+// execution's id is the continuation target.
+func (r *TaskReconciler) continuationSessionID(ctx context.Context, task db.WorkItemRow, version db.WorkerVersionRow) (string, bool) {
+	if task.ParentID == nil || *task.ParentID == "" {
+		return "", false
+	}
+	ttx, err := r.pool.BeginTenantTx(context.Background(), task.TenantID)
+	if err != nil {
+		r.log.Warn("continuation: begin tx failed", "task", task.ID, "error", err)
+		return "", false
+	}
+	defer ttx.Rollback(context.Background())
+
+	children, err := db.ListDirectChildren(context.Background(), ttx.Tx, task.TenantID, *task.ParentID)
+	if err != nil {
+		r.log.Warn("continuation: list children failed", "task", task.ID, "error", err)
+		return "", false
+	}
+	idx := -1
+	for i, c := range children {
+		if c.ID == task.ID {
+			idx = i
+			break
+		}
+	}
+	if idx <= 0 {
+		return "", false // no predecessor (first child or not found)
+	}
+	prev := children[idx-1]
+	if !domain.WorkItemIsTerminalSuccess(prev.Status) {
+		return "", false
+	}
+	// Same-worker requirement (identity isolation). The predecessor's
+	// assigned worker is parsed from its AssignedWorkerRef.
+	var ref struct {
+		WorkerID string `json:"worker_id"`
+		Version  int    `json:"version"`
+	}
+	if len(prev.AssignedWorkerRef) == 0 {
+		return "", false
+	}
+	if err := json.Unmarshal(prev.AssignedWorkerRef, &ref); err != nil || ref.WorkerID == "" {
+		return "", false
+	}
+	if ref.WorkerID != version.WorkerID {
+		return "", false // cross-worker never continues
+	}
+	priorExec, err := db.GetLatestExecutionForTask(context.Background(), ttx.Tx, task.TenantID, prev.ID)
+	if err != nil || priorExec.ID == "" {
+		return "", false
+	}
+	// Only a succeeded prior execution is worth continuing from.
+	if priorExec.Status != domain.ExecutionSucceeded {
+		return "", false
+	}
+	return priorExec.ID, true
+}
+
+// mergeWorkItemError merges an actionable error message into a work item's
+// Results JSON under "work_item_error", preserving every existing key (the
+// Results blob also carries _output/_summary and follow-up markers — never
+// clobber it). Shared by every no-workflow loud failure so the three
+// backstops surface the same shape.
+func mergeWorkItemError(results []byte, reason string) []byte {
+	if len(results) == 0 {
+		results = []byte("{}")
+	}
+	var m map[string]any
+	_ = json.Unmarshal(results, &m)
+	if m == nil {
+		m = map[string]any{}
+	}
+	m["work_item_error"] = reason
+	b, _ := json.Marshal(m)
+	return b
+}
+
+// failNoWorkflowItemTx fails a work item that can never execute: standalone
+// dispatch is retired, so an item with no workflow binding has nothing to run
+// inside. Loud by design — the item goes to failed and the actionable reason
+// is surfaced ON the item (results.work_item_error) instead of leaving a
+// zombie runnable row the backstops re-pick forever. The item is re-read in
+// this transaction so the update carries a fresh version (no stale CAS).
+func failNoWorkflowItemTx(ctx context.Context, pool *db.Pool, log *slog.Logger, tenantID, itemID, reason string) {
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		log.Error("fail no-workflow item: begin tx", "work_item", itemID, "error", err)
+		return
+	}
+	defer ttx.Rollback(ctx)
+	item, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, itemID)
+	if err != nil {
+		log.Error("fail no-workflow item: read item", "work_item", itemID, "error", err)
+		return
+	}
+	results := mergeWorkItemError(item.Results, reason)
+	status := domain.WorkItemFailed
+	updated, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, itemID, item.Version, db.UpdateWorkItemFields{
+		Status:  &status,
+		Results: &results,
+	})
+	if err != nil {
+		log.Error("fail no-workflow item: update", "work_item", itemID, "error", err)
+		return
+	}
+	if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.updated", updated); err != nil {
+		log.Error("fail no-workflow item: enqueue event", "work_item", itemID, "error", err)
+		return
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		log.Error("fail no-workflow item: commit", "work_item", itemID, "error", err)
+	}
+}
+
+// failNoWorkflow is the TaskReconciler's backstop for the retired standalone
+// dispatch path: a "ready" item with no workflow binding is failed loudly.
+func (r *TaskReconciler) failNoWorkflow(ctx context.Context, tenantID string, task db.WorkItemRow) {
+	reason := fmt.Sprintf("Cannot dispatch %q: no workflow is set, so there is nothing to run. Bind a workflow to run this item.", task.Title)
+	r.log.Error("task: no-workflow item cannot be dispatched — failing it loudly",
+		"work_item", task.ID, "status", task.Status)
+	failNoWorkflowItemTx(ctx, r.pool, r.log, tenantID, task.ID, reason)
 }
 
 // markFailedToStart transitions an execution to failed_to_start
@@ -1087,21 +1433,67 @@ func (r *TaskReconciler) markFailedToStart(ctx context.Context, exec db.Executio
 		r.log.Error("mark failed_to_start", "execution", exec.ID, "error", err)
 		return
 	}
-	// Requeue the task: status back to ready (standalone only). A
-	// workflow-bound ticket stays "running" for the whole run — its
-	// status is set by the workflow reconciler at run end; the step run
-	// is left to the workflow's poll/recovery path (dispatchLinkGrace →
-	// recovery) instead of being requeued here.
+	// No task requeue: the standalone path that re-armed a failed dispatch
+	// back to "ready" is retired (only a workflow-bound item can be
+	// dispatched, and its status is owned by the workflow reconciler; the
+	// step run is left to the workflow's poll/recovery path instead).
+	if err := ttx.Commit(ctx); err != nil {
+		r.log.Error("commit failed_to_start", "execution", exec.ID, "error", err)
+	}
+}
+
+// permanentDispatchFailure reports whether a dispatcher Resolve error is a
+// PERMANENT routing failure — one no retry can fix: the adapter kind is
+// administratively disabled, or it is a declared-but-unregistered kind (e.g.
+// "claude", declared in internal/adapter/providers.go with no bridge
+// registered). Callers BLOCK the work item with the reason instead of
+// requeueing it into a silent ready→failed→ready loop (AC 3). A TRANSIENT
+// failure (adapter unreachable mid-dispatch) is not permanent and keeps the
+// requeue-with-backoff path. It is a named function rather than an inline
+// expression so the classification lives in ONE place and is directly
+// testable (the test must not re-implement the predicate).
+func permanentDispatchFailure(err error) bool {
+	return errors.Is(err, ErrAdapterDisabled) || errors.Is(err, ErrAdapterKindUnregistered)
+}
+
+// markFailedToStartPermanent is markFailedToStart for a PERMANENT dispatch
+// failure: the execution's adapter kind can never resolve on this plane
+// (administratively disabled, or a declared kind with no registered bridge
+// such as "claude"). The execution transition is identical — failed_to_start
+// with the reason verbatim — but a standalone task is BLOCKED instead of
+// requeued. Requeueing a permanent routing failure is exactly the silent
+// loop AC 3 forbids: the item would go ready → fail → ready forever, with
+// no visible reason attached to the item itself. Blocking keeps the reason
+// on the work item (blocked items are surfaced in the UI), so an operator
+// can re-enable the kind or repoint the worker's model_ref. Workflow-bound
+// tickets behave as before (the run owns their status).
+func (r *TaskReconciler) markFailedToStartPermanent(ctx context.Context, exec db.ExecutionRow, errorMessage string) {
+	ttx, err := r.pool.BeginTenantTx(ctx, exec.TenantID)
+	if err != nil {
+		r.log.Error("begin tx for permanent failed_to_start", "execution", exec.ID, "error", err)
+		return
+	}
+	defer ttx.Rollback(ctx)
+	now := time.Now().UTC()
+	_, err = db.UpdateExecution(ctx, ttx.Tx, exec.TenantID, exec.ID, exec.Version, db.UpdateExecutionFields{
+		Status:       strPtr(domain.ExecutionFailedToStart),
+		EndedAt:      &now,
+		ErrorMessage: &errorMessage,
+	})
+	if err != nil {
+		r.log.Error("mark permanent failed_to_start", "execution", exec.ID, "error", err)
+		return
+	}
 	if exec.WorkflowRunID == "" {
 		if _, err := db.UpdateWorkItem(ctx, ttx.Tx, exec.TenantID, exec.TaskID, 0, db.UpdateWorkItemFields{
-			Status: strPtr(domain.WorkItemReady),
+			Status: strPtr(domain.WorkItemBlocked),
 		}); err != nil {
-			r.log.Error("requeue task after failed_to_start", "task", exec.TaskID, "error", err)
+			r.log.Error("block task after permanent failed_to_start", "task", exec.TaskID, "error", err)
 			return
 		}
 	}
 	if err := ttx.Commit(ctx); err != nil {
-		r.log.Error("commit failed_to_start", "execution", exec.ID, "error", err)
+		r.log.Error("commit permanent failed_to_start", "execution", exec.ID, "error", err)
 	}
 }
 
@@ -1159,6 +1551,21 @@ func (r *TaskReconciler) selectWorker(ctx context.Context, tx pgx.Tx, tenantID s
 
 // selectAdapter selects a registered adapter of the matching kind with
 // a recent heartbeat and free capacity (docs/03 §4.2).
+// resolveAdapterRowKind resolves the kind used for adapter-ROW selection
+// (ADR-0003 single source of truth): the model_ref's parsed adapter kind —
+// the same source the bridge Resolve at dispatch uses — else the legacy
+// default kind. The empty-ref fallback closes the dispatch black hole:
+// kind "" matched zero runtime_adapters rows, so a worker created without
+// a model_ref requeued forever instead of dispatching. Worker-level
+// runtime_ref (the former first-choice kind that could diverge from the
+// ref and misroute dispatch) is retired; nothing reads it anymore.
+func resolveAdapterRowKind(modelRef string) string {
+	if k := adapter.AdapterKind(modelRef); k != "" {
+		return k
+	}
+	return adapter.DefaultAdapterKind
+}
+
 func (r *TaskReconciler) selectAdapter(ctx context.Context, tx pgx.Tx, tenantID, kind string) (db.AdapterRow, error) {
 	adapters, err := db.ListReadyAdaptersByKind(ctx, tx, tenantID, kind, heartbeatTTL)
 	if err != nil {
@@ -1259,6 +1666,14 @@ func (r *TaskReconciler) OnResult(ctx context.Context, execID string, succeeded 
 	// failure reason on a failed execution is never touched.
 	if succeeded {
 		r.clearStallNotice(ctx, execID)
+	}
+	// Diff pipeline (AC 4): reconcile the file-edit ledger against the run
+	// worktree's git state once, at the terminal transition. Best-effort —
+	// the hook owns its error posture and never blocks/fails the transition
+	// (same posture as clearStallNotice). Runs for succeeded AND failed
+	// runs: a failed worker still wrote files worth reconciling.
+	if r.fileEditReconciler != nil {
+		r.fileEditReconciler.ReconcileExecutionGit(ctx, "tnt_dev", execID)
 	}
 	r.transitionWorkItemOnResult(ctx, execID, succeeded, output)
 }
@@ -1661,29 +2076,23 @@ func (r *TaskReconciler) writeOrchiconFiles(ctx context.Context, exec db.Executi
 		facts := extractFactsLearned(summary)
 		if len(facts) > 0 {
 			stepName := r.stepNameForExecution(ctx, exec)
-			existing := ""
-			if b, err := os.ReadFile(filepath.Join(orchDir, "facts_learned")); err == nil {
-				existing = string(b)
+			if err := appendFactsToOrchiconFile(orchDir, stepName, facts); err != nil {
+				r.log.Warn("write facts_learned (from summary)", "error", err)
 			}
-			var sb strings.Builder
-			if existing != "" {
-				sb.WriteString(existing)
-				if !strings.HasSuffix(existing, "\n") {
-					sb.WriteString("\n")
-				}
-			}
-			for _, f := range facts {
-				if stepName != "" {
-					sb.WriteString("FACTS LEARNED (from ")
-					sb.WriteString(stepName)
-					sb.WriteString("): ")
-				} else {
-					sb.WriteString("FACTS LEARNED: ")
-				}
-				sb.WriteString(f)
-				sb.WriteString("\n")
-			}
-			write("facts_learned", strings.TrimSpace(sb.String()))
+		}
+	}
+	// Deterministic terminal-time backstop: at EVERY execution terminal
+	// (succeeded/failed/stalled/fail-lost — the single writeOrchiconFiles
+	// funnel) we also extract any FACTS LEARNED lines from the persisted
+	// session transcript (execution_session_parts). A stall-killed worker
+	// dies before emitting its ORCHICON WORKER SUMMARY, so the worker-emitted
+	// fold-in above would capture nothing; the transcript tail survives the
+	// silent death and is the backstop. Deduplication against the file makes
+	// this idempotent with the worker-emitted path above.
+	stepName := r.stepNameForExecution(ctx, exec)
+	if tFacts := r.extractTranscriptFacts(ctx, exec); len(tFacts) > 0 {
+		if err := appendFactsToOrchiconFile(orchDir, stepName, tFacts); err != nil {
+			r.log.Warn("append facts_learned (from transcript)", "execution", exec.ID, "error", err)
 		}
 	}
 	// The `issues` file is the feedback channel the composite prompt points
@@ -1744,6 +2153,32 @@ func (r *TaskReconciler) writeOrchiconFiles(ctx context.Context, exec db.Executi
 			}
 		}
 	}
+}
+
+// extractTranscriptFacts reads the persisted session-parts transcript tail
+// for an execution (both the opencode and native adapters persist to
+// execution_session_parts) and mechanically extracts any `FACTS LEARNED:`
+// lines the worker's final assistant block recorded — the deterministic
+// terminal-time backstop. Best-effort: returns nil on an empty/absent
+// transcript or any read failure so the existing worker-emitted path is
+// never disturbed.
+func (r *TaskReconciler) extractTranscriptFacts(ctx context.Context, exec db.ExecutionRow) []string {
+	if exec.TenantID == "" || exec.ID == "" {
+		return nil
+	}
+	ttx, err := r.pool.BeginTenantTx(ctx, exec.TenantID)
+	if err != nil {
+		r.log.Warn("transcript facts: begin tx", "execution", exec.ID, "error", err)
+		return nil
+	}
+	defer ttx.Rollback(ctx)
+	parts, err := db.ListExecutionSessionPartsTail(ctx, ttx.Tx, exec.TenantID, exec.ID, factsTranscriptMaxParts)
+	if err != nil {
+		r.log.Warn("transcript facts: read tail", "execution", exec.ID, "error", err)
+		return nil
+	}
+	_ = ttx.Commit(ctx)
+	return extractFactsFromTranscript(parts)
 }
 
 // stepNameForExecution resolves the workflow step name that dispatched an
@@ -1960,10 +2395,16 @@ func (r *TaskReconciler) OnText(ctx context.Context, execID string, text string)
 		r.log.Error("on text: get execution", "execution", execID, "error", err)
 		return
 	}
-	_ = enqueueExecEvent(ctx, ttx.Tx, "execution.text", current, map[string]any{
-		"text": text,
-	})
 	_ = ttx.Commit(ctx)
+	// Per-token text deltas are NOT outboxed (AGENTS.md invariant #3 is
+	// satisfied by the low-frequency state events below): a durable copy of
+	// the transcript already lands in execution_session_parts (the GUI's
+	// reconnecting refetch reads that), and the per-chunk event is
+	// worthless as a durable fallback — JetStream discards after 72h and the
+	// outbox row only bought "wait for NATS to recover" for a transient chat
+	// token. Writing one outbox row per 40-char chunk was 98% of an
+	// 8.4M-row / 8.4 GB table. The direct publish below is the delivery
+	// path (its MsgID is now unique per publish, see publishExecEvent).
 	r.publishExecEvent(ctx, "execution.text", current, map[string]any{
 		"text": text,
 	})
@@ -2130,12 +2571,16 @@ func (r *TaskReconciler) publishExecEvent(ctx context.Context, eventType string,
 		return
 	}
 	subject := eventbus.SubjectFor("execution", eventType)
-	// Use the execution ID + event type as the dedup key so the outbox
-	// relay's eventual publish with its own MsgID (the outbox row ULID)
-	// is a distinct message — the frontend's seenIds dedup catches the
-	// duplicate. This is intentional: the direct publish arrives fast,
-	// the outbox relay provides the durable fallback.
-	dedupID := fmt.Sprintf("direct:%s:%s", e.ID, eventType)
+	// The MsgID MUST be unique per publish. JetStream is configured with
+	// Duplicates: 5m (internal/eventbus/nats.go:74-88), so it silently drops
+	// any publish whose Nats-Msg-Id was seen inside that window. A constant
+	// key here ("direct:<exec>:<type>") therefore stored only the first
+	// event per execution per 5 minutes and left the outbox relay as the
+	// real live path — which is why per-token execution.text could not be
+	// de-outboxed until this suffix existed. eventSeq is a process-monotonic
+	// counter; combined with the execution ID the key is unique across
+	// publishes, exactly as the outbox row ULID is for relay publishes.
+	dedupID := fmt.Sprintf("direct:%s:%s:%d", e.ID, eventType, r.eventSeq.Add(1))
 	if err := r.eventPub.Publish(ctx, subject, dedupID, payload); err != nil {
 		r.log.Warn("publish exec event", "execution", e.ID, "subject", subject, "error", err)
 	}
@@ -2366,20 +2811,19 @@ func extractComposite(pc []byte) (string, error) {
 }
 
 // composeSystemPrompt assembles the worker-only system prompt from the
-// four structured fields (role, skills, behavior, agents_md). Used as
-// a fallback when the WorkflowReconciler did not build a composite
-// (i.e. a work item dispatched outside a workflow, on the legacy
-// direct path). The full system prompt the model sees on every turn
-// is the composite — which itself contains composeSystemPrompt's
-// output prepended under a "# Worker" section.
+// four structured fields (role, skills, behavior, agents_md). The full
+// system prompt the model sees on every turn is the workflow composite —
+// which itself contains composeSystemPrompt's output prepended under a
+// "# Worker" section.
+//
 // workerIdentityPreamble is prepended to every worker system prompt so
 // the model knows it is an autonomous Orchicon worker, not a human
 // operator or an interactive session. It is the identity statement that
 // distinguishes an in-Orchicon worker (operates autonomously, reports
 // via the ORCHICON WORKER SUMMARY contract) from a human-facing session
-// (must ask before PRing/merging). Both composite builders
-// (buildStandaloneComposite and the workflow buildCompositePrompt) emit
-// it so every dispatch carries the same self-definition.
+// (must ask before PRing/merging). The workflow composite builder
+// (buildCompositePrompt) emits it so every dispatch carries the same
+// self-definition.
 //
 // The canonical text lives in internal/db (db.WorkerIdentityPreamble) so
 // the stable prompt prefix (db.StablePromptPrefix) can be built from a
@@ -2404,114 +2848,6 @@ func composeSystemPrompt(v db.WorkerVersionRow) string {
 	add("Behavior", v.Behavior)
 	add("AGENTS.md", v.AgentsMD)
 	return strings.Join(parts, "\n\n")
-}
-
-// buildStandaloneComposite assembles the full worker prompt for a work
-// item dispatched OUTSIDE a workflow (the TaskReconciler's direct
-// dispatch path, where the WorkflowReconciler never built a per-step
-// composite). It produces the same shape the workflow path renders —
-// worker identity, the task, the project directory + project
-// context_files (files AND directories, via the shared renderer), the
-// work item's own context_files, and the worker's contract — so
-// standalone tasks see project + work-item context "just like projects".
-//
-// Best-effort: any DB read failure degrades to the subset that succeeded
-// (the caller falls back to a bare worker prompt if the result is empty).
-func buildStandaloneComposite(pool *db.Pool, exec db.ExecutionRow, task db.WorkItemRow, version db.WorkerVersionRow, worktreeStatus, worktreeBranch string) string {
-	var sb strings.Builder
-	// Stable prefix first: shared identity + safety + efficiency + runtime
-	// environment. Same byte-identical block the workflow path prepends, so a
-	// standalone dispatch and a workflow step share the llama.cpp KV-cache
-	// prefix.
-	sb.WriteString(db.StablePromptPrefix(task.RuntimeImage))
-	if worker := composeSystemPrompt(version); worker != "" {
-		fmt.Fprintf(&sb, "# Worker\n\n%s\n\n", worker)
-	}
-
-	// Task.
-	sb.WriteString("# Task\n\n")
-	fmt.Fprintf(&sb, "Original work item: \"%s\"\n\n", strings.TrimSpace(task.Title))
-	if d := strings.TrimSpace(task.Description); d != "" {
-		fmt.Fprintf(&sb, "Description:\n%s\n\n", d)
-	}
-	if ac := strings.TrimSpace(task.AcceptanceCriteria); ac != "" {
-		fmt.Fprintf(&sb, "Acceptance criteria:\n%s\n\n", ac)
-	}
-
-	// Recovery context: same-worker recovery-resumed dispatch reads the
-	// seed and points at .orchicon/worker.recovery (transcript tail +
-	// already-done directive). A different worker / fresh dispatch gets
-	// no block and never sees the file. buildStandaloneComposite parity
-	// with the workflow path (the recovery engine writes the seed keys
-	// into the work item's Results on resume).
-	if seed := recoverySeedFor(nil, task.Results, version.WorkerID); seed != nil {
-		sb.WriteString(recoveryFileReferenceBlock(seed))
-	}
-
-	// Project context — project_dir + project context_files.
-	projectDir := ""
-	if task.ProjectID != "" {
-		var p db.ProjectRow
-		ctx := context.Background()
-		if ttx, err := pool.BeginTenantTx(ctx, exec.TenantID); err == nil {
-			if proj, err := db.GetProject(ctx, ttx.Tx, exec.TenantID, task.ProjectID); err == nil {
-				p = proj
-			}
-			_ = ttx.Rollback(ctx)
-		}
-		projectDir = p.ProjectDir
-		if p.ProjectDir != "" || len(p.ContextFiles) > 0 {
-			var ctxSB strings.Builder
-			if p.ProjectDir != "" {
-				fmt.Fprintf(&ctxSB, "Working directory: `%s`\n\n", p.ProjectDir)
-			}
-			var files []string
-			_ = json.Unmarshal(p.ContextFiles, &files)
-			ctxSB.WriteString(contextfiles.RenderManifest("# Project context", files, p.ProjectDir))
-			if ctxSB.Len() > 0 {
-				sb.WriteString(ctxSB.String())
-			}
-		}
-	}
-
-	// Work item context — the item's own context_files (same renderer).
-	if len(task.ContextFiles) > 0 {
-		var files []string
-		_ = json.Unmarshal(task.ContextFiles, &files)
-		if r := contextfiles.RenderManifest("# Work item context", files, projectDir); r != "" {
-			sb.WriteString(r)
-		}
-	}
-
-	// Worker's contract.
-	sb.WriteString("# Instructions\n\n")
-	// Git/branch guidance keyed on the run's worktree_status AND effective
-	// git strategy: a non-repo (in-place) run is never told to work on a
-	// branch, and a `none` (ephemeral) run is told the worktree is detached
-	// HEAD with nothing pushed. Same block the workflow composite emits, so
-	// the two dispatch paths agree.
-	gitStrategy := db.DefaultGitStrategy
-	if task.WorkflowID != nil || task.ProjectID != "" {
-		tctx := context.Background()
-		if ttx, err := pool.BeginTenantTx(tctx, exec.TenantID); err == nil {
-			wfID := ""
-			if task.WorkflowID != nil {
-				wfID = *task.WorkflowID
-			}
-			gitStrategy = db.EffectiveGitStrategy(tctx, ttx.Tx, exec.TenantID, wfID, task.ProjectID)
-			_ = ttx.Rollback(tctx)
-		}
-	}
-	sb.WriteString(db.GitGuidanceBlock(worktreeStatus, worktreeBranch, projectDir, gitStrategy))
-	sb.WriteString("The workflow routes on exactly one signal: the word after `ORCHICON WORKER SUMMARY:` — `success` or `failure`. There is no `_issues:` failure channel. If work genuinely cannot be accepted, end with `ORCHICON WORKER SUMMARY: failure` and say what needs fixing in the summary text. Non-blocking observations belong in the summary text only and never affect the routing.\n\n")
-	sb.WriteString("Format:\n")
-	sb.WriteString("```\nORCHICON WORKER SUMMARY: success — Implemented the feature.\n```\n")
-	sb.WriteString("or\n")
-	sb.WriteString("```\nORCHICON WORKER SUMMARY: failure — Found 3 bugs in the implementation.\n```\n\n")
-	sb.WriteString("The first word (`success` or `failure`) is used to route the workflow. The text after `—` is passed to the next stage as the summary of your work.\n\n")
-	sb.WriteString("Keep your final summary concise — under ~500 tokens (roughly 2000 characters). It is re-embedded into every later step's prompt and persisted to `.orchicon/<run>/summary`, so verbosity taxes all downstream steps. `FACTS LEARNED:` lines and blocking feedback are exempt from the cap.\n\n")
-
-	return sb.String()
 }
 
 // summaryMarker is the literal line the worker's prompt instructs it to

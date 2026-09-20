@@ -22,6 +22,7 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
@@ -38,8 +39,17 @@ type Service struct {
 	subscriber    eventbus.Subscriber
 	metrics       *usageMetrics
 	providers     []*apiv1.AIProvider
+	registry      adapter.ProviderRegistry
 	discoverer    *ModelDiscoverer
 	mcpDiscoverer *MCPDiscoverer
+	// adapterKinds returns the adapter kinds registered with the
+	// Dispatcher (ADR-0004 D1). nil falls back to the default adapter
+	// kind so the picker never blanks.
+	adapterKinds func() []string
+	// chatKinds returns the adapter kinds whose bridge implements the
+	// ChatTurnClient (Ask chat) capability (ADR-0004 D1). nil falls back
+	// to the default adapter kind so the Ask picker never blanks.
+	chatKinds func() []string
 	apiv1connect.UnimplementedAIGatewayServiceHandler
 }
 
@@ -51,26 +61,97 @@ var _ apiv1connect.AIGatewayServiceHandler = (*Service)(nil)
 // records usage + cost from adapter telemetry.
 // If discoverer is nil, ListOpenCodeModels returns Unimplemented.
 // If mcpDiscoverer is nil, ListOpenCodeMCPs returns Unimplemented.
-func NewService(pool *db.Pool, log *slog.Logger, sub eventbus.Subscriber, discoverer *ModelDiscoverer, mcpDiscoverer *MCPDiscoverer) *Service {
+// registry supplies the per-adapter provider catalog (built-in profiles ∪
+// tenant custom providers) for adapter-scoped filtering; nil falls back to
+// the built-in catalog.
+func NewService(pool *db.Pool, log *slog.Logger, sub eventbus.Subscriber, discoverer *ModelDiscoverer, mcpDiscoverer *MCPDiscoverer, registry adapter.ProviderRegistry, adapterKinds func() []string, chatKinds func() []string) *Service {
+	if registry == nil {
+		registry = adapter.NewBuiltinProviderCatalog()
+	}
 	return &Service{
 		pool:          pool,
 		log:           log,
 		subscriber:    sub,
 		metrics:       newUsageMetrics(log),
 		providers:     defaultProviders(),
+		registry:      registry,
 		discoverer:    discoverer,
 		mcpDiscoverer: mcpDiscoverer,
+		adapterKinds:  adapterKinds,
+		chatKinds:     chatKinds,
 	}
+}
+
+// SetChatKinds wires the Dispatcher's Ask-capable adapter kinds (ADR-0004
+// D1) into ListAdapterKinds. Nil falls back to the default adapter kind.
+func (s *Service) SetChatKinds(fn func() []string) {
+	s.chatKinds = fn
+}
+
+// ListAdapterKinds returns the adapter kinds currently registered with
+// the Dispatcher (ADR-0004 D1). The model picker's adapter bubble tier
+// derives from this, so a new adapter appears automatically once
+// registered. When no kinds function is injected (headless/test) it
+// falls back to the default adapter kind so the picker never blanks.
+func (s *Service) ListAdapterKinds(ctx context.Context, req *connect.Request[apiv1.ListAdapterKindsRequest]) (*connect.Response[apiv1.ListAdapterKindsResponse], error) {
+	kinds := []string{adapter.DefaultAdapterKind}
+	if s.adapterKinds != nil {
+		if k := s.adapterKinds(); len(k) > 0 {
+			kinds = k
+		}
+	}
+	chatKinds := []string{adapter.DefaultAdapterKind}
+	if s.chatKinds != nil {
+		if k := s.chatKinds(); len(k) > 0 {
+			chatKinds = k
+		}
+	}
+	return connect.NewResponse(&apiv1.ListAdapterKindsResponse{AdapterKinds: kinds, AskCapableKinds: chatKinds}), nil
 }
 
 // ListProviders returns the LLM providers known to the gateway
 // (docs/07 §3.10). Providers are not tenant-scoped in v0.1.
+// The optional adapter filter scopes the result to one adapter kind's
+// provider set: its built-in profiles (registry.Providers, enriched with
+// display info from the gateway provider table where the id matches) ∪
+// tenant-created custom providers (provider-layer task — contract-only
+// today). An unknown adapter kind yields an empty list (never an error)
+// so the picker renders the unknown state flagged for review.
 func (s *Service) ListProviders(ctx context.Context, req *connect.Request[apiv1.ListProvidersRequest]) (*connect.Response[apiv1.ListProvidersResponse], error) {
+	if req.Msg.Adapter != nil && *req.Msg.Adapter != "" {
+		return connect.NewResponse(&apiv1.ListProvidersResponse{Providers: s.providersForAdapter(*req.Msg.Adapter)}), nil
+	}
 	return connect.NewResponse(&apiv1.ListProvidersResponse{Providers: s.providers}), nil
+}
+
+// providersForAdapter builds the adapter-scoped provider list from the
+// registry's per-adapter provider names, enriching each with the gateway
+// provider table's display info where the id matches (falling back to a
+// bare id provider otherwise). Tenant custom providers (custom: true)
+// merge in here once the provider-layer task lands.
+func (s *Service) providersForAdapter(adapterKind string) []*apiv1.AIProvider {
+	names := s.registry.Providers(adapterKind)
+	byID := make(map[string]*apiv1.AIProvider, len(s.providers))
+	for _, p := range s.providers {
+		byID[p.Id] = p
+	}
+	out := make([]*apiv1.AIProvider, 0, len(names))
+	for _, name := range names {
+		if p, ok := byID[name]; ok {
+			out = append(out, p)
+			continue
+		}
+		out = append(out, &apiv1.AIProvider{Id: name, Name: name, Enabled: true})
+	}
+	return out
 }
 
 // ListOpenCodeModels enumerates all models available via the `opencode`
 // CLI by shelling out to `opencode models --verbose` (docs/04 §6).
+// The optional adapter filter narrows the result to one adapter kind's
+// provider set (built-in profiles ∪ tenant custom providers — ADR-0003
+// D3). A legacy 2-segment ref (no adapter) resolves to the default
+// adapter kind.
 func (s *Service) ListOpenCodeModels(ctx context.Context, req *connect.Request[apiv1.ListOpenCodeModelsRequest]) (*connect.Response[apiv1.ListOpenCodeModelsResponse], error) {
 	if s.discoverer == nil {
 		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("model discovery is not configured (set ORCHICON_OPENCODE_BIN or install opencode on PATH)"))
@@ -79,9 +160,32 @@ func (s *Service) ListOpenCodeModels(ctx context.Context, req *connect.Request[a
 	if req.Msg.Provider != nil {
 		provider = *req.Msg.Provider
 	}
+	adapterKind := ""
+	if req.Msg.Adapter != nil {
+		adapterKind = *req.Msg.Adapter
+	}
 	models, err := s.discoverer.ListModels(ctx, provider)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list opencode models: %w", err))
+	}
+	// Scope the result to the adapter's provider list when a filter is set.
+	if adapterKind != "" {
+		providers := s.registry.Providers(adapterKind)
+		if len(providers) == 0 {
+			return nil, connect.NewError(connect.CodeInvalidArgument,
+				fmt.Errorf("unknown adapter kind %q — register an adapter of that kind, or use adapter/provider/model with a known adapter", adapterKind))
+		}
+		allowed := make(map[string]struct{}, len(providers))
+		for _, p := range providers {
+			allowed[p] = struct{}{}
+		}
+		filtered := make([]*apiv1.OpenCodeModel, 0, len(models))
+		for _, m := range models {
+			if _, ok := allowed[m.ProviderId]; ok {
+				filtered = append(filtered, m)
+			}
+		}
+		models = filtered
 	}
 	return connect.NewResponse(&apiv1.ListOpenCodeModelsResponse{Models: models}), nil
 }
@@ -123,6 +227,7 @@ func (s *Service) GetUsage(ctx context.Context, req *connect.Request[apiv1.GetUs
 		ExecutionID: req.Msg.ExecutionId,
 		Provider:    req.Msg.Provider,
 		Model:       req.Msg.Model,
+		SessionID:   req.Msg.SessionId,
 		StartTime:   tsToTime(req.Msg.Start),
 		EndTime:     tsToTime(req.Msg.End),
 		PageSize:    pageSize,
@@ -261,7 +366,7 @@ func (s *Service) GetWorkflowCosts(ctx context.Context, req *connect.Request[api
 							TotalTokens:      workers[k].TotalTokens,
 							PromptTokens:     workers[k].PromptTokens,
 							CompletionTokens: workers[k].CompletionTokens,
-CacheReadTokens:  workers[k].CacheReadTokens,
+							CacheReadTokens:  workers[k].CacheReadTokens,
 							CacheWriteTokens: workers[k].CacheWriteTokens,
 							ReasoningTokens:  workers[k].ReasoningTokens,
 							ExecutionCount:   workers[k].ExecutionCount,
@@ -356,7 +461,14 @@ type usageMetrics struct {
 	tokens     otelmetric.Int64Counter
 	cost       otelmetric.Float64Counter
 	executions otelmetric.Int64Counter
-	initOnce   sync.Once
+
+	// prefix-cache session metrics (D3, ADR-0009 D6): emitted once at
+	// session terminal from live per-turn usage.
+	prefixHit  otelmetric.Int64Counter
+	prefixMiss otelmetric.Int64Counter
+	prefixRate otelmetric.Float64Gauge
+
+	initOnce sync.Once
 }
 
 func newUsageMetrics(log *slog.Logger) *usageMetrics {
@@ -386,6 +498,24 @@ func (m *usageMetrics) ensure() {
 			otelmetric.WithDescription("Total worker executions by outcome"),
 		); err == nil {
 			m.executions = e
+		}
+		if ph, err := telemetry.Meter().Int64Counter(
+			"orchicon_prefix_cache_hit_total",
+			otelmetric.WithDescription("Total prefix-cache hits per session (ADR-0009 D6)"),
+		); err == nil {
+			m.prefixHit = ph
+		}
+		if pm, err := telemetry.Meter().Int64Counter(
+			"orchicon_prefix_cache_miss_total",
+			otelmetric.WithDescription("Total prefix-cache miss-writes per session (ADR-0009 D6)"),
+		); err == nil {
+			m.prefixMiss = pm
+		}
+		if pr, err := telemetry.Meter().Float64Gauge(
+			"orchicon_prefix_cache_hit_rate",
+			otelmetric.WithDescription("Session prefix-cache hit rate (hits / turns) (ADR-0009 D6)"),
+		); err == nil {
+			m.prefixRate = pr
 		}
 	})
 }
@@ -417,6 +547,16 @@ func (m *usageMetrics) emit(ctx context.Context, r *db.UsageRecordRow, modelCost
 		attribute.String("worker", r.WorkerID),
 		attribute.String("provider", r.Provider),
 		attribute.String("model", r.Model),
+	}
+	// Adapter parity attributes: identify the adapter kind that drove the
+	// model call and (for Ask sessions) the conversation. Both are emitted
+	// only when populated so worker records / legacy rows without them never
+	// produce a blank attribute.
+	if r.AdapterKind != "" {
+		attrs = append(attrs, attribute.String("adapter_kind", r.AdapterKind))
+	}
+	if r.SessionID != "" {
+		attrs = append(attrs, attribute.String("session", r.SessionID))
 	}
 	tokens := bucketTokens(r)
 	if m.tokens != nil {

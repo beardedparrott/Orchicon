@@ -1,40 +1,214 @@
-import { useState, useMemo, useRef, useEffect } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import { useListOpenCodeModels } from "@/api/aigateway";
+import { useListAdapterKinds, useListOpenCodeModels } from "@/api/aigateway";
+import { useProviderList, useProviderModelsForPicker } from "@/api/providers";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import type { OpenCodeModel } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
+import type { ProviderEntry } from "@/api/gen/orchicon/api/v1/provider_pb";
+import {
+  DEFAULT_ADAPTER_KIND,
+  ORCHICON_ADAPTER_KIND,
+  catalogModelMatches,
+  formatModelRef,
+  parseModelRef,
+} from "@/lib/model-ref";
+
+// Per-adapter provider scope is no longer static: under legacy CLI
+// adapters the provider pills derive from the live CLI discovery (the old
+// picker's grouping), under orchicon from the merged providers service.
 
 interface ModelPickerProps {
   value: string;
   onChange: (value: string) => void;
+  // askMode flags this picker as the Ask Orchicon model picker: when true,
+  // a selected adapter kind that is registered but does NOT implement Ask
+  // chat (ChatTurnClient) is flagged for review with an amber banner
+  // (ADR-0004 D1) — the Ask-capability guard surfaces at selection time.
+  askMode?: boolean;
+  // inline renders the tiers in NORMAL FLOW inside the caller's container
+  // instead of as an absolutely-positioned dropdown below the input, and keeps
+  // them ALWAYS visible (the host owns dismissal).
+  //
+  // This exists because an `absolute` dropdown is removed from layout: it
+  // contributes no height to its parent and paints outside the parent's box.
+  // A host that anchors a panel at the viewport edge (the Ask composer's model
+  // chip, which opens ABOVE the chat bar) therefore cannot contain it — the
+  // tiers would render detached from the panel. Default false = the original
+  // dropdown behaviour, unchanged for every existing caller.
+  inline?: boolean;
 }
 
-export function ModelPicker({ value, onChange }: ModelPickerProps) {
-  const { data: models, isLoading, error } = useListOpenCodeModels();
+// Three-tier control (ADR-0004): adapter bubble list (registered kinds) →
+// provider list (built-in ∪ tenant custom, adapter-scoped) → searchable model
+// list (provider-scoped). The stored model_ref seeds the selection
+// (legacy 2-segment refs infer adapter `opencode`); saving writes a
+// normalized 3-segment `adapter/provider/model` ref.
+export function ModelPicker({ value, onChange, askMode = false, inline = false }: ModelPickerProps) {
+  const parsed = useMemo(() => parseModelRef(value), [value]);
+
+  const { data: adapterKindsData, error: kindsError } = useListAdapterKinds();
+  const adapterKinds = adapterKindsData?.kinds;
+  const askCapableKinds = adapterKindsData?.askCapableKinds;
+
+  // Seeded adapter/provider from the stored ref; DEFAULT_ADAPTER_KIND when the
+  // ref is empty or unknown (never blank, never hidden).
+  const [adapter, setAdapter] = useState<string>(() => parsed?.adapter ?? DEFAULT_ADAPTER_KIND);
+  const [provider, setProvider] = useState<string>(() => parsed?.provider ?? "");
+  // The lazy useState initializers seed ONLY at mount — an externally-loaded
+  // value (async settings fetch filling the draft AFTER the picker's first
+  // render, e.g. client-side navigation into the Defaults tab) would never
+  // seed the tiers, leaving blank adapter/provider boxes until a hard
+  // refresh. This effect re-seeds the tiers whenever the value changes FROM
+  // OUTSIDE: user selections also flow through onChange→value, so re-seeding
+  // is idempotent for the same ref and only corrects external loads.
+  // While the user is mid-selection (tiers diverged from the stored ref —
+  // the stale-selection-guard state), never yank the tiers back.
+  const lastSeededRef = useRef<string>("");
+  useEffect(() => {
+    if (value === lastSeededRef.current) return; // no external change
+    lastSeededRef.current = value;
+    if (value.trim() === "") return; // empty = fresh selection flow
+    const next = parseModelRef(value);
+    if (!next) return; // malformed — leave tiers as-is (flagged instead)
+    setAdapter(next.adapter);
+    setProvider(next.provider);
+  }, [value]);
   const [search, setSearch] = useState("");
-  const [providerFilter, setProviderFilter] = useState<string>("");
-  const [focusedIdx, setFocusedIdx] = useState(0);
   const [showDropdown, setShowDropdown] = useState(false);
+  // tiersOpen is whether the three tiers are rendered. An INLINE host keeps them
+  // up permanently (the host, not the input's focus, decides when the panel is
+  // open) — without this, an inline picker would render just the search input
+  // and look broken.
+  const tiersOpen = inline || showDropdown;
+  const [focusedIdx, setFocusedIdx] = useState(0);
   const [infoModel, setInfoModel] = useState<OpenCodeModel | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const selectedModel = useMemo(() => {
-    if (!models || !value) return null;
-    return models.find((m) => m.modelRef === value) ?? null;
-  }, [models, value]);
-
+  // Provider tier (ADR-0006): tenant-aware merged view from the providers
+  // service — built-ins plus the tenant's ENABLED custom providers,
+  // projected into the picker's {id, name, custom} shape. Enabled-only:
+  // disabled providers are not selectable.
+  const {
+    data: providerEntries,
+    isLoading: providersLoading,
+    error: providersError,
+  } = useProviderList();
+  // ProviderRegistry semantics (ADR-0003 D3): under the NATIVE kind the
+  // tier is the enabled merged view — providers RESOLVE the model list, so
+  // the tier gates tier 3. Under legacy CLI adapters the tier is a FILTER:
+  // pills derived from the live CLI discovery's distinct providerID values
+  // (the old picker's grouping — opencode, opencode-go, deepseek, …), with
+  // an "All" reset; the model input never requires a selection.
+  const useNativeSourcing = adapter === ORCHICON_ADAPTER_KIND;
+  // ONE unfiltered CLI query serves BOTH the provider pills (distinct
+  // providerID values) and the model list under legacy adapters — two
+  // queries with different keys each shell out `opencode models --verbose`
+  // (~1–2s), doubling the picker's open latency.
+  const legacyModelsQ = useListOpenCodeModels(undefined, undefined, !useNativeSourcing);
   const providers = useMemo(() => {
-    if (!models) return [] as string[];
-    const set = new Set(models.map((m) => m.providerId));
-    return Array.from(set).sort();
-  }, [models]);
+    if (!useNativeSourcing) {
+      const ids = new Map<string, { id: string; name: string; custom: boolean }>();
+      for (const m of legacyModelsQ.data ?? []) {
+        if (m.providerId && !ids.has(m.providerId)) {
+          ids.set(m.providerId, { id: m.providerId, name: m.providerId, custom: false });
+        }
+      }
+      return [{ id: "", name: "All", custom: false }, ...[...ids.values()]];
+    }
+    return (providerEntries ?? [])
+      .filter((p) => p.enabled)
+      .map((p: ProviderEntry) => ({ id: p.id, name: p.displayName || p.id, custom: p.isCustom }));
+  }, [useNativeSourcing, providerEntries, legacyModelsQ.data]);
+  // Model tier — per-adapter data source (ADR-0004): the NATIVE adapter
+  // resolves models from the providers service (vendored catalog ⊕ probe ⊕
+  // manual — the Settings → Adapters sourcing view); the legacy CLI
+  // adapters keep opencode-CLI discovery (whose provider namespace the
+  // native bridge does not share — filtering CLI output by orchicon
+  // providers would be structurally empty). Both hooks run unconditionally
+  // (rules of hooks); each query fetches only for its own source.
+  const nativeModelsQ = useProviderModelsForPicker(
+    useNativeSourcing ? provider : "",
+    useNativeSourcing && provider !== "",
+  );
+  // (legacyModelsQ is declared once, above, feeding both the provider
+  // pills and the model tier — one RPC, two projections.)
+  const models = useNativeSourcing ? nativeModelsQ.models : legacyModelsQ.data;
+  const modelsLoading = useNativeSourcing ? nativeModelsQ.isLoading : legacyModelsQ.isLoading;
+  const modelsError = useNativeSourcing ? nativeModelsQ.error : legacyModelsQ.error;
+
+  // Tier 1 order (AC 5): the ORCHICON adapter leads the rendered list AND is
+  // the fresh-selection default (the seeding effect below). Both halves are
+  // required — a picker that leads with opencode pushes operators toward the
+  // one choice that wakes the host serve this feature exists to leave asleep,
+  // which is exactly what keeps an opencode-free plane the shipped default
+  // rather than a configuration achievement.
+  //
+  // The hoist mirrors the TUI's kit2.ModelPicker.PreferredAdapter rule: put
+  // ORCHICON_ADAPTER_KIND first ONLY when it is actually among the fetched
+  // kinds (a plane that does not register it must never be offered a default
+  // that cannot dispatch — the same rule the seeding effect follows), keep
+  // the remaining kinds in their existing server order, and leave the
+  // [DEFAULT_ADAPTER_KIND] fallback intact for when the kinds fetch failed.
+  // A declared-but-not-dispatchable kind (claude) is never hoisted.
+  const adapterList = useMemo(() => {
+    if (!adapterKinds || adapterKinds.length === 0) return [DEFAULT_ADAPTER_KIND];
+    if (!adapterKinds.includes(ORCHICON_ADAPTER_KIND)) return adapterKinds;
+    return [ORCHICON_ADAPTER_KIND, ...adapterKinds.filter((k) => k !== ORCHICON_ADAPTER_KIND)];
+  }, [adapterKinds]);
+  // Catalog match is by PARSED SEGMENTS (catalogModelMatches), never by raw
+  // value: OpenCodeModel.modelRef is the legacy 2-segment "providerId/id"
+  // (internal/aigateway), so a raw comparison against a 3-segment ref would
+  // false-flag every freshly-written ref (QA BUG-1). parsed === null (empty or
+  // malformed ref) never matches — unknown shapes stay flagged (D5).
+  const modelKnown = parsed !== null && models?.some((m) => catalogModelMatches(parsed, m)) === true;
+  // Stored-ref flags are evaluated against the PARSED ref and the loaded
+  // lists — independent of the current tier selection, so navigating the
+  // tiers mid-re-selection never flags a previously-valid stored ref.
+  const storedAdapterKnown = parsed !== null && adapterList.includes(parsed.adapter);
+  const storedProviderKnown =
+    parsed === null ||
+    parsed.provider === "" ||
+    (providers?.some((p) => p.id === parsed.provider) ?? false);
+  // Provider/model verification is only meaningful within the stored ref's
+  // own adapter scope: while the user browses a different adapter the
+  // provider/model lists are scoped elsewhere, so suppress those flags
+  // instead of false-flagging a previously-valid ref.
+  const adapterDiverged = parsed !== null && parsed.adapter !== adapter;
+
+  // Stale-selection guard: when the seeded adapter/provider are not in the
+  // freshly-loaded lists (unknown/stored refs), keep the flagged state rather
+  // than resetting the stored value.
+
+  // ADR-0005 D5 (default adapter = "orchicon" for FRESH selections): when
+  // the stored ref is empty (no adapter chosen yet) and "orchicon" is a
+  // Dispatcher-registered kind, seed the adapter tier with "orchicon".
+  // Otherwise seed "opencode" (today's registry — the picker degrades to
+  // the only dispatchable kind, never a default that cannot dispatch).
+  // Legacy/stored refs keep their own adapter (never repointed).
+  useEffect(() => {
+    if (value.trim() !== "") return; // stored ref keeps its own selection
+    if (!adapterKinds) return; // kinds not loaded yet — no guessing
+    setAdapter(adapterKinds.includes(ORCHICON_ADAPTER_KIND) ? ORCHICON_ADAPTER_KIND : DEFAULT_ADAPTER_KIND);
+  }, [value, adapterKinds]);
+  const selectedProviderObj = providers?.find((p) => p.id === provider);
+  const customProvider = selectedProviderObj?.custom ?? false;
+
+  const selectedModel = useMemo(() => {
+    if (!models || !parsed) return null;
+    return models.find((m) => catalogModelMatches(parsed, m)) ?? null;
+  }, [models, parsed]);
 
   const filtered = useMemo(() => {
     if (!models) return [] as OpenCodeModel[];
     let result = models;
+    // Legacy adapters: provider pills are OPTIONAL filters ("All" =
+    // unfiltered flat list — the red-cursor gate stays dead).
+    if (!useNativeSourcing && provider) {
+      result = result.filter((m) => m.providerId === provider);
+    }
     if (search) {
       const q = search.toLowerCase();
       result = result.filter(
@@ -46,19 +220,17 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
           m.family.toLowerCase().includes(q),
       );
     }
-    if (providerFilter) {
-      result = result.filter((m) => m.providerId === providerFilter);
-    }
     return result.sort((a, b) => {
       if (a.providerId !== b.providerId) return a.providerId.localeCompare(b.providerId);
       return (a.cost?.input ?? 0) - (b.cost?.input ?? 0);
     });
-  }, [models, search, providerFilter]);
+  }, [models, search, useNativeSourcing, provider]);
 
-  // Reset focused index when filtered list changes
   useEffect(() => setFocusedIdx(0), [filtered.length]);
 
-  // Close dropdown on outside click
+  // Close dropdown on outside click. dropdownRef now wraps the INPUT (the
+  // in-box panel design), so the outside check must exclude the whole
+  // wrapper — checking only the input would close the panel instantly.
   useEffect(() => {
     function handleClick(e: MouseEvent) {
       if (
@@ -74,14 +246,116 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
+  // Adapter selection: rescope provider and reset the model tier (no stale
+  // selection leaks across adapters — ADR-0004 stale-selection guard;
+  // ADR-0005 D4 reset contract: switching adapters NEVER carries the
+  // previous selection into the new scope and no ref is written until a
+  // model under the new adapter is chosen). The panel STAYS OPEN — the
+  // tiers live inside the box now, and closing it here would strand the
+  // user: orchicon with no provider yet renders a DISABLED input that can
+  // never fire onFocus to reopen (QA round 3 bug #2).
+  function selectAdapter(kind: string) {
+    setAdapter(kind);
+    setProvider("");
+    setSearch("");
+  }
+
+  function selectProvider(id: string) {
+    setProvider(id);
+    setSearch("");
+  }
+
   function selectModel(model: OpenCodeModel) {
-    onChange(model.modelRef);
+    // model.id is the bare model id — the model segment of the 3-segment
+    // grammar. model.modelRef is the legacy 2-segment provider/model and
+    // must NOT be used here (it would produce a bogus 4-segment ref).
+    onChange(formatModelRef(adapter, provider, model.id));
     setShowDropdown(false);
     setSearch("");
   }
 
+  // Stored-ref review banner: the picker renders the raw ref flagged for
+  // review whenever the stored value is unknown in any tier (D5) — never
+  // blank, hidden, or erroring. Each tier flags only what its LOADED data
+  // can verify: a failed/absent catalog or a mid-navigation tier scope
+  // never produces a false flag (and no flash-of-banner before queries
+  // resolve). Catalog-known-but-unregistered adapters and 3-seg deleted
+  // providers re-save unchanged; unknown-adapter 3-seg and unknown-provider
+  // 2-seg refs route to re-selection via the tiers.
+  const storedRefFlagged =
+    value.trim() !== "" &&
+    (!parsed ||
+      (adapterKinds !== undefined && !storedAdapterKnown) ||
+      (!adapterDiverged && providers !== undefined && !storedProviderKnown) ||
+      (!adapterDiverged &&
+        parsed !== null &&
+        parsed.provider === provider &&
+        models !== undefined &&
+        !modelKnown) ||
+      (askMode &&
+        adapterKinds !== undefined &&
+        askCapableKinds !== undefined &&
+        storedAdapterKnown &&
+        !askCapableKinds.includes(parsed?.adapter ?? "")));
+
+  const reviewReasons: string[] = [];
+  if (value.trim() !== "") {
+    if (!parsed) {
+      reviewReasons.push("unrecognized ref shape");
+    } else {
+      if (adapterKinds !== undefined && !storedAdapterKnown) {
+        reviewReasons.push("adapter not registered");
+      }
+      // Ask-capability guard (ADR-0004 D1): in Ask mode, a stored adapter
+      // that is registered but does NOT implement Ask chat (ChatTurnClient)
+      // is flagged at selection time — the picker surfaces the guard before
+      // the conversation is created / the first message is sent.
+      if (
+        askMode &&
+        adapterKinds !== undefined &&
+        askCapableKinds !== undefined &&
+        storedAdapterKnown &&
+        !askCapableKinds.includes(parsed.adapter)
+      ) {
+        reviewReasons.push("adapter does not support Ask chat");
+      }
+      if (!adapterDiverged && providers !== undefined && !storedProviderKnown) {
+        reviewReasons.push("provider not found (deleted or unknown)");
+      }
+      if (
+        !adapterDiverged &&
+        parsed.provider === provider &&
+        models !== undefined &&
+        !modelKnown
+      ) {
+        reviewReasons.push("model not found in the selected provider's catalog");
+      }
+    }
+  }
+
+  // Missing context hint → selectable but annotated (D8). Context is the
+  // compaction-critical value; output-max is nice-to-have (most live
+  // /models listings don't carry it — warning on it would amber every row).
+  function missingHints(model: OpenCodeModel): boolean {
+    return !model.limits || !model.limits.context;
+  }
+
+  function formatCost(cost?: { input: number; output: number }) {
+    if (!cost) return "";
+    if (cost.input === 0 && cost.output === 0) return "Free";
+    return `$${cost.input}/${cost.output} per 1M tokens`;
+  }
+
+  function formatLimit(val?: bigint | number | string) {
+    if (!val) return "";
+    const n = Number(val);
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
+    return String(n);
+  }
+
   function handleKeyDown(e: React.KeyboardEvent) {
-    if (!showDropdown) {
+    if (!tiersOpen) {
       if (e.key === "ArrowDown" || e.key === "Enter") {
         setShowDropdown(true);
         e.preventDefault();
@@ -107,22 +381,6 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
     }
   }
 
-  // Format cost display
-  function formatCost(cost?: { input: number; output: number }) {
-    if (!cost) return "";
-    if (cost.input === 0 && cost.output === 0) return "Free";
-    return `$${cost.input}/${cost.output} per 1M tokens`;
-  }
-
-  // Format limit display
-  function formatLimit(val?: bigint | number | string) {
-    if (!val) return "";
-    const n = Number(val);
-    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-    if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
-    return String(n);
-  }
-
   if (infoModel) {
     return (
       <div className="space-y-2">
@@ -139,38 +397,69 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
   }
 
   return (
-    <div className={showDropdown ? "relative space-y-2 z-10" : "relative space-y-2"}>
-      {selectedModel ? (
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-sm font-medium">Selected model:</span>
-          <span className="min-w-0 flex-1 truncate text-sm font-mono text-muted-foreground">
-            {selectedModel.modelRef}
-          </span>
+    <div className="relative">
+      {/* Stored-ref review banner (D5): flagged for review, never blank/hidden. */}
+      {storedRefFlagged && (
+        <div
+          role="alert"
+          className="mb-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <span className="font-medium">Stored model ref flagged for review:</span>{" "}
+              <span className="font-mono">{value}</span>
+              <ul className="mt-1 list-inside list-disc">
+                {reviewReasons.map((r) => (
+                  <li key={r}>{r}</li>
+                ))}
+              </ul>
+              <p className="mt-1 text-amber-700">
+                Re-select below to fix; catalog-known refs re-save unchanged. Unknown-adapter or
+                unknown-provider refs must be re-selected before saving.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ALL THREE TIERS LIVE INSIDE ONE BOX (operator UX directive): the
+          closed state shows the selected ref; clicking opens the panel with
+          search → adapter pills → provider pills → model list. The outside-
+          click effect closes it (inputRef + dropdownRef cover both). */}
+      {/* Closed state: the selected ref as a clickable trigger (no auto-open
+          anywhere — QA round 3: an auto-open effect fought the user on the
+          settings Defaults tab, flash-opening the panel over the review
+          banner on every mount). When nothing is selected the INPUT is the
+          closed state: always enabled, clicking/focusing opens the panel —
+          no dead end (the QA round 3 orchicon trap is covered by the input
+          being clickable, not by forcing the panel open). */}
+      {!inline && selectedModel && !showDropdown ? (
+        <div
+          className="flex w-full cursor-pointer flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5 hover:bg-muted/50"
+          onClick={() => setShowDropdown(true)}
+        >
+          <span className="min-w-0 flex-1 truncate text-sm font-mono">{selectedModel.modelRef}</span>
           <Button
             variant="ghost"
             size="sm"
             className="text-xs"
-            onClick={() => setInfoModel(selectedModel)}
+            onClick={(e) => {
+              e.stopPropagation();
+              setInfoModel(selectedModel);
+            }}
           >
             Info
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              onChange("");
-              setProviderFilter("");
-              setSearch("");
-            }}
-          >
-            Change
-          </Button>
         </div>
       ) : (
-        <>
+        <div ref={dropdownRef} className="relative">
           <Input
             ref={inputRef}
-            placeholder="Search models (type to filter)..."
+            placeholder={
+              useNativeSourcing && !provider
+                ? "Select a provider first"
+                : "Search models..."
+            }
             value={search}
             onChange={(e) => {
               setSearch(e.target.value);
@@ -178,60 +467,133 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
             }}
             onFocus={() => setShowDropdown(true)}
             onKeyDown={handleKeyDown}
+            autoFocus={inline}
           />
-
-          {showDropdown && (
+          {tiersOpen && (
             <div
-              ref={dropdownRef}
-              className="absolute z-[100] mt-1 w-full rounded-xl glass-menu shadow-xl"
-              style={{ maxHeight: "400px", overflow: "hidden", display: "flex", flexDirection: "column" }}
+              className={
+                inline
+                  ? "mt-3 flex flex-col"
+                  : "absolute z-[100] mt-1 w-full rounded-xl glass-menu shadow-xl"
+              }
+              style={{
+                maxHeight: inline ? undefined : "420px",
+                overflow: "hidden",
+                display: "flex",
+                flexDirection: "column",
+              }}
             >
-              {/* Provider filter bar */}
-              <div className="flex gap-1 border-b p-2 overflow-x-auto shrink-0">
-                <button
-                  type="button"
-                  className={`rounded px-2 py-0.5 text-xs whitespace-nowrap ${
-                    !providerFilter ? "bg-primary text-primary-foreground" : "bg-muted hover:bg-muted/80"
-                  }`}
-                  onClick={() => setProviderFilter("")}
-                >
-                  All
-                </button>
-                {providers.map((p) => (
-                  <button
-                    key={p}
-                    type="button"
-                    className={`rounded px-2 py-0.5 text-xs whitespace-nowrap ${
-                      providerFilter === p ? "bg-primary text-primary-foreground" : "bg-muted hover:bg-muted/80"
-                    }`}
-                    onClick={() => setProviderFilter(p)}
-                  >
-                    {p}
-                  </button>
-                ))}
+              {/* Tier 1 — adapter pills (registered kinds, auto from Dispatcher). */}
+              <div className="flex flex-wrap items-center gap-1.5 border-b px-3 py-2">
+                <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Adapter
+                </span>
+                {adapterList.map((kind) => {
+                  const active = kind === adapter;
+                  return (
+                    <button
+                      key={kind}
+                      type="button"
+                      className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                        active
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : "border-border bg-muted text-foreground hover:bg-muted/80"
+                      }`}
+                      onClick={() => selectAdapter(kind)}
+                    >
+                      {kind}
+                    </button>
+                  );
+                })}
+                {kindsError && (
+                  <span className="text-xs text-muted-foreground" title={`${String(kindsError)}`}>
+                    (kinds unavailable — showing default)
+                  </span>
+                )}
               </div>
 
-              {/* Model list */}
+              {/* Tier 2 — provider pills. Orchicon: the provider RESOLVES the
+                  model list (gate applies). Legacy CLI adapters: OPTIONAL
+                  FILTERS from the live CLI discovery with an All reset. */}
+              <div className="flex flex-wrap items-center gap-1.5 border-b px-3 py-2">
+                <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Provider
+                </span>
+                {providersLoading && (
+                  <span className="text-xs text-muted-foreground">Loading providers...</span>
+                )}
+                {providersError && (
+                  <span className="text-xs text-destructive">
+                    Failed to load providers: {String(providersError)}
+                  </span>
+                )}
+                {!providersLoading && !providersError && providers && (
+                  <>
+                    {providers.length === 0 && (
+                      <span className="text-xs text-muted-foreground">
+                        No providers for adapter “{adapter}”
+                      </span>
+                    )}
+                    {providers.map((p: { id: string; name: string; custom: boolean }) => {
+                      const active = p.id === provider;
+                      return (
+                        <div key={p.id} className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
+                              active
+                                ? "border-primary bg-primary text-primary-foreground"
+                                : "border-border bg-muted text-foreground hover:bg-muted/80"
+                            }`}
+                            onClick={() => selectProvider(p.id)}
+                          >
+                            {p.name || p.id}
+                          </button>
+                          {p.custom && (
+                            <span
+                              className="inline-flex items-center rounded bg-purple-100 px-1 py-0.5 text-[10px] font-medium text-purple-700"
+                              title="Manage in Settings → Adapters"
+                            >
+                              custom
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                    {customProvider && (
+                      <span className="self-center text-[10px] text-muted-foreground">
+                        Manage custom providers in Settings → Adapters
+                      </span>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {/* Tier 3 — searchable model list (provider-scoped under
+                  orchicon; flat + optional pill filter under legacy). */}
               <div className="overflow-y-auto" style={{ maxHeight: "320px" }}>
-                {isLoading && (
+                {modelsLoading && (
                   <p className="p-4 text-xs text-muted-foreground text-center">Loading models...</p>
                 )}
-                {error && (
+                {modelsError && (
                   <p className="p-4 text-xs text-destructive text-center">
-                    Failed to load models: {String(error)}
+                    Failed to load models: {String(modelsError)}
                   </p>
                 )}
-                {!isLoading && !error && filtered.length === 0 && (
-                  <p className="p-4 text-xs text-muted-foreground text-center">No models match your search</p>
+                {!modelsLoading && !modelsError && filtered.length === 0 && (
+                  <p className="p-4 text-xs text-muted-foreground text-center">
+                    No models match your search
+                  </p>
                 )}
-                {!isLoading &&
+                {!modelsLoading &&
+                  !modelsError &&
                   filtered.map((model, idx) => (
                     <button
-                      key={model.modelRef}
+                      key={model.modelRef || model.id}
                       type="button"
                       className={`w-full px-3 py-2 text-left text-sm hover:bg-accent flex items-center justify-between gap-2 ${
                         idx === focusedIdx ? "bg-accent" : ""
-                      } ${model.modelRef === value ? "bg-primary/10" : ""}`}
+                      } ${parsed && catalogModelMatches(parsed, model) ? "bg-primary/10" : ""}`}
                       onMouseEnter={() => setFocusedIdx(idx)}
                       onClick={() => selectModel(model)}
                       onDoubleClick={() => {
@@ -242,10 +604,14 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
                       <div className="min-w-0 flex-1">
                         <div className="font-medium truncate">{model.name}</div>
                         <div className="text-xs text-muted-foreground truncate">
-                          <span className="font-mono">{model.providerId}</span>
-                          {" / "}
+                          <span className="font-mono">{model.providerId}</span> /{" "}
                           <span className="font-mono">{model.id}</span>
                         </div>
+                        {missingHints(model) && (
+                          <div className="mt-0.5 text-[10px] text-amber-600">
+                            no context hint — compaction math may misbehave
+                          </div>
+                        )}
                       </div>
                       <div className="text-right shrink-0">
                         <div className="text-xs font-mono">{formatCost(model.cost)}</div>
@@ -258,7 +624,7 @@ export function ModelPicker({ value, onChange }: ModelPickerProps) {
               </div>
             </div>
           )}
-        </>
+        </div>
       )}
     </div>
   );
@@ -278,7 +644,6 @@ function ModelInfoCard({ model, onClose }: { model: OpenCodeModel; onClose: () =
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
         <div className="grid grid-cols-2 gap-3">
-          {/* Cost */}
           <div className="space-y-1">
             <span className="text-xs font-medium text-muted-foreground">Cost per 1M tokens</span>
             {model.cost ? (
@@ -309,7 +674,6 @@ function ModelInfoCard({ model, onClose }: { model: OpenCodeModel; onClose: () =
             )}
           </div>
 
-          {/* Limits */}
           <div className="space-y-1">
             <span className="text-xs font-medium text-muted-foreground">Token limits</span>
             {model.limits ? (
@@ -320,7 +684,9 @@ function ModelInfoCard({ model, onClose }: { model: OpenCodeModel; onClose: () =
                 </div>
                 <div className="flex justify-between">
                   <span>Max input</span>
-                  <span className="font-mono">{Number(model.limits.input || 0).toLocaleString() || "N/A"}</span>
+                  <span className="font-mono">
+                    {Number(model.limits.input || 0).toLocaleString() || "N/A"}
+                  </span>
                 </div>
                 <div className="flex justify-between">
                   <span>Max output</span>
@@ -333,7 +699,6 @@ function ModelInfoCard({ model, onClose }: { model: OpenCodeModel; onClose: () =
           </div>
         </div>
 
-        {/* Capabilities */}
         {model.capabilities && (
           <div>
             <span className="text-xs font-medium text-muted-foreground">Capabilities</span>
@@ -350,16 +715,12 @@ function ModelInfoCard({ model, onClose }: { model: OpenCodeModel; onClose: () =
           </div>
         )}
 
-        {/* Variants (reasoning effort) */}
         {model.variants.length > 0 && (
           <div>
             <span className="text-xs font-medium text-muted-foreground">Reasoning effort variants</span>
             <div className="flex flex-wrap gap-1 mt-1">
               {model.variants.map((v) => (
-                <span
-                  key={v}
-                  className="inline-block rounded bg-muted px-1.5 py-0.5 text-xs font-mono"
-                >
+                <span key={v} className="inline-block rounded bg-muted px-1.5 py-0.5 text-xs font-mono">
                   {v}
                 </span>
               ))}

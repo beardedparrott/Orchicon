@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"testing"
-	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
@@ -70,21 +69,13 @@ func TestWorktreeExecutionRowCarriesRunState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin tx: %v", err)
 	}
-	now := time.Now().UTC()
-	if _, err := db.CreateAdapter(ctx, ttx.Tx, db.AdapterRow{
-		ID: db.NewID(), TenantID: approvalTestTenant,
-		Kind: "opencode", Version: "test", Endpoint: "localhost:0",
-		Capabilities: []byte("{}"), Status: "ready",
-		MaxConcurrentExecutions: 8, LastHeartbeatAt: &now,
-	}); err != nil {
-		t.Fatalf("create adapter: %v", err)
-	}
+	_ = createTestAdapter(t, env.pool, "opencode", 8)
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatalf("commit adapter: %v", err)
 	}
 
 	bridge := &manifestCaptureBridge{}
-	rec := NewTaskReconciler(env.pool, slog.Default(), bridge)
+	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(bridge))
 	if err := rec.reconcileOne(ctx, env.itemID, sr.ID); err != nil {
 		t.Fatalf("reconcileOne: %v", err)
 	}
@@ -153,7 +144,7 @@ func TestWorktreeExecutionRowSkippedRun(t *testing.T) {
 		t.Fatalf("commit step run: %v", err)
 	}
 
-	rec := NewTaskReconciler(env.pool, slog.Default(), &manifestCaptureBridge{})
+	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
 	if err := rec.reconcileOne(ctx, env.itemID, sr.ID); err != nil {
 		t.Fatalf("reconcileOne: %v", err)
 	}

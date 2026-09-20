@@ -68,6 +68,21 @@
     --nav-active-border: 189 94% 43%;
     --nav-active-glow: 189 94% 43%;
     --nav-inactive-cyan: 188 86% 53%;
+
+    /* THE USER CONVERSATION BUBBLE, as its OWN pair of tokens rather than a borrow of --primary.
+     *
+     * The operator: "the newly edited Ember Night in the GUI I am not a fan of the orange conversation bubble
+     * for users. Please change that to something else." The user bubble was painted with `bg-primary`, so it
+     * inherited whatever the ACCENT was — which turned Ember Night's orange accent into a wall of orange behind
+     * every message the operator wrote. The accent is the theme's identity and belongs on buttons and focus
+     * rings; the bubble is a SURFACE, and they are not the same decision.
+     *
+     * These DEFAULT TO THE ACCENT (the var() resolves against whatever --primary the element's theme set), so
+     * every existing theme keeps exactly the look it has today and nothing had to be re-tuned. A theme that
+     * wants a different bubble overrides the pair, which is what Ember Night does.
+     */
+    --user-bubble: var(--primary);
+    --user-bubble-foreground: var(--primary-foreground);
   }
   .dark {
     --kind-sky: 199 89% 60%;
@@ -709,62 +724,105 @@
   }
   [data-theme="orchicon-dark-ember"].dark,
   .dark [data-theme="orchicon-dark-ember"] {
-    --background: 12 30% 8%;
-    --foreground: 20 20% 96%;
-    --card: 12 25% 12%;
-    --card-foreground: 20 20% 96%;
-    --popover: 12 25% 12%;
-    --popover-foreground: 20 20% 96%;
-    --primary: 350 89% 62%;
-    --primary-foreground: 12 30% 8%;
-    --secondary: 12 20% 16%;
-    --secondary-foreground: 20 20% 96%;
-    --muted: 12 15% 17%;
-    --muted-foreground: 20 10% 68%;
-    --accent: 12 15% 17%;
-    --accent-foreground: 20 20% 96%;
+    --background: 14 32% 8%;
+    --foreground: 15 20% 96%;
+    --card: 13 31% 12%;
+    --card-foreground: 15 20% 96%;
+    --popover: 13 31% 12%;
+    --popover-foreground: 15 20% 96%;
+    /* EVERY TOKEN BELOW IS THE TUI'S EMBER PALETTE, VERBATIM.
+     *
+     * The operator, after the first attempt: "You didn't really change the color scheme of the gui theme
+     * Ember Night. I wanted the colors of that gui theme to match the theme of Ember in the TUI. It's close
+     * but not quite the same." THEY WERE RIGHT, AND "CLOSE" WAS THE PROBLEM. That attempt changed only the
+     * ACCENT (rose 350 → the TUI's orange 25) and asserted in this very comment that "the base already
+     * matched exactly" — it did not. The background was 12 30% 8% against the TUI's 14 32% 8%, the card
+     * 12 25% 12% against 13 31% 12%, and the border 12 15% 17% against 12 29% 30% — a difference you can
+     * see, since the TUI's border is nearly twice as light.
+     *
+     * These are the values internal/tui/theme derives for its ember palette (theme_palettes.go builds them
+     * from bgH 12 / accentH 25 / textH 20 with the palette's saturations, then theme.go renders them to
+     * hex). internal/tui/theme/ember_gui_match_test.go READS THIS FILE and compares every token below
+     * against that palette, so the two cannot drift again — which is the failure that produced this
+     * comment.
+     *
+     * The mapping is by ROLE, not by name: the GUI's --card is the TUI's Surface, --secondary/--muted/
+     * --accent are its SurfaceAlt, --muted-foreground is TextDim, and --border is Border.
+     */
+    --primary: 25 89% 58%;
+    --primary-foreground: 14 32% 8%;
+    --secondary: 14 30% 17%;
+    --secondary-foreground: 15 20% 96%;
+    --muted: 14 30% 17%;
+    --muted-foreground: 20 20% 68%;
+    --accent: 14 30% 17%;
+    --accent-foreground: 15 20% 96%;
     --destructive: 0 62% 30%;
-    --destructive-foreground: 20 20% 96%;
-    --border: 12 15% 17%;
-    --input: 12 15% 20%;
-    --ring: 350 89% 62%;
-    --mesh-bg: 12 30% 8%;
-    --mesh-glow-1: 350 89% 58%;
-    --mesh-glow-2: 38 92% 50%;
-    --mesh-glow-3: 25 90% 55%;
+    --destructive-foreground: 15 20% 96%;
+    --border: 12 29% 30%;
+    --input: 12 29% 30%;
+    --ring: 25 89% 58%;
+
+    /* THE USER BUBBLE IS NOT THE ACCENT. The operator, on the orange: "I am not a fan of the orange
+     * conversation bubble for users. Please change that to something else."
+     *
+     * These are the values internal/tui/theme derives for its ember USER BAND — bubbleFills() lifts the
+     * background 17% toward white for the operator's messages (#1b110e -> #423937) and blends the text against
+     * that fill (#f7f4f3). So the GUI's bubble is now the same surface the TUI paints, which is the parity the
+     * operator asked for when they matched this theme to ember in the first place: a NEUTRAL lift, not a
+     * second helping of the accent.
+     *
+     * internal/tui/theme/ember_gui_match_test.go recomputes these from the TUI palette and fails if they drift.
+     */
+    --user-bubble: 11 9% 24%;
+    --user-bubble-foreground: 16 19% 96%;
+    --mesh-bg: 14 32% 8%;
+    /* The ambient trio is the TUI's accent family: its accent (orange), its AccentIndigo (+30°, the
+     * yellow sibling) and its AccentCyan (a deep amber). One hue in three passes reads as a flat wash.
+     */
+    --mesh-glow-1: 25 89% 58%;
+    --mesh-glow-2: 55 89% 58%;
+    --mesh-glow-3: 25 89% 34%;
     --mesh-glow-1-a: 0.12;
     --mesh-glow-2-a: 0.09;
     --mesh-glow-3-a: 0.06;
-    --glass-panel-bg: 12 25% 12%;
+    --glass-panel-bg: 13 31% 12%;
     --glass-panel-bg-a: 0.62;
     --glass-panel-border: 0 0% 100%;
     --glass-panel-border-a: 0.08;
     --glass-panel-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
-    --glass-menu-bg: 12 25% 12%;
+    --glass-menu-bg: 13 31% 12%;
     --glass-menu-bg-a: 0.82;
     --glass-menu-border: 0 0% 100%;
     --glass-menu-border-a: 0.10;
-    --glass-menu-shadow: 0 20px 50px rgba(0, 0, 0, 0.5), 0 0 15px rgba(251, 113, 133, 0.10);
-    --glass-input-bg: 12 25% 12%;
+    /* The literal rgba accents are the TUI accent's RGB (hsl(25 89% 58%) ≈ rgb(243 132 53)), written out
+     * because a box-shadow cannot take an hsl token here. They were rose (#fb7185) — the same hue mismatch as
+     * --primary, in the three places that take a colour literal instead of a token.
+     */
+    --glass-menu-shadow: 0 20px 50px rgba(0, 0, 0, 0.5), 0 0 15px rgba(243, 132, 53, 0.10);
+    --glass-input-bg: 13 31% 12%;
     --glass-input-bg-a: 0.38;
     --glass-input-border: 0 0% 100%;
     --glass-input-border-a: 0.12;
     --glass-input-inset: inset 0 1px 2px rgba(255, 255, 255, 0.05);
-    --glass-input-glow: 0 0 20px rgba(251, 113, 133, 0.05);
-    --glass-input-focus: 350 89% 62%;
+    --glass-input-glow: 0 0 20px rgba(243, 132, 53, 0.05);
+    --glass-input-focus: 25 89% 58%;
     --glass-input-focus-a: 0.50;
-    --glass-input-focus-glow: 0 0 25px rgba(251, 113, 133, 0.2);
+    --glass-input-focus-glow: 0 0 25px rgba(243, 132, 53, 0.2);
     --scroll-thumb: 0 0% 100%;
     --scroll-thumb-a: 0.15;
-    --scroll-thumb-hover: 350 89% 62%;
+    --scroll-thumb-hover: 25 89% 58%;
     --scroll-thumb-hover-a: 0.40;
-    /* Nav active — dark (pixel-identical to pre-fix) */
-    --nav-active-from: 189 94% 43%;
-    --nav-active-to: 239 84% 67%;
-    --nav-active-fg: 187 92% 69%;
-    --nav-active-border: 189 94% 43%;
-    --nav-active-glow: 189 94% 43%;
-    --nav-inactive-cyan: 188 86% 53%;
+    /* Nav active — the accent family, not the shared cyan/indigo gradient. These were left on the
+     * default dark-theme values in the first attempt, which is why the active tab pill still read as a
+     * different theme from everything around it.
+     */
+    --nav-active-from: 25 89% 58%;
+    --nav-active-to: 55 89% 58%;
+    --nav-active-fg: 15 20% 96%;
+    --nav-active-border: 25 89% 58%;
+    --nav-active-glow: 25 89% 58%;
+    --nav-inactive-cyan: 25 89% 34%;
   }
   [data-theme="orchicon-dark-forest"].dark,
   .dark [data-theme="orchicon-dark-forest"] {
