@@ -214,8 +214,8 @@ func (m *Model) ApplyTheme() { m.themeStyles() }
 //     bubbles re-resolve it against the styles just set.
 func (m *Model) styledTa() textarea.Model {
 	ta := m.ta
-	base := lipgloss.NewStyle().Background(theme.Surface).Foreground(theme.Text)
-	dim := lipgloss.NewStyle().Background(theme.Surface).Foreground(theme.TextFaint)
+	base := lipgloss.NewStyle().Background(theme.ComposerFill).Foreground(theme.Text)
+	dim := lipgloss.NewStyle().Background(theme.ComposerFill).Foreground(theme.TextFaint)
 
 	ta.FocusedStyle.Base = base
 	ta.BlurredStyle.Base = base
@@ -998,12 +998,19 @@ func (m *Model) View() string {
 	// carry styled spans (prompt, hint, the textarea's own cursor styling),
 	// and each one's reset would otherwise switch the background off for the
 	// rest of the row — the "hole" the operator saw as soon as they typed.
-	// The repair takes the BACKGROUND-ONLY surface style: ComposerBox itself
+	// The repair takes the composer's BACKGROUND-ONLY fill: ComposerBox itself
 	// has a border + padding, and re-asserting through THAT injected border
-	// glyphs into the row.
+	// glyphs into the row. It is ComposerBg and NOT SurfaceBg because the two
+	// differ on a transparent theme, where the composer is unpainted and the panels
+	// are not — repairing through the surface would paint the box the one thing the
+	// theme exists to leave alone.
+	//
+	// On a transparent theme this repair is a NO-OP by construction: the style
+	// renders no sequence at all, and RepairAfterResets returns the row unchanged
+	// when there is nothing to re-assert.
 	return theme.RepairAfterResets(
 		theme.ComposerBox.Render(strings.Join(fitAll(rows, inner), "\n")),
-		theme.SurfaceBg)
+		theme.ComposerBg)
 }
 
 // inputLines returns exactly InputRows() rows of the input view (the

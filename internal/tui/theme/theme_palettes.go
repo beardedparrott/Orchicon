@@ -28,6 +28,12 @@ type paletteSpec struct {
 	name string
 	dark bool
 
+	// transparent marks the palette as one whose APP BACKGROUND is left
+	// unpainted, so the terminal (and its own transparency) shows through. Every
+	// other token is derived exactly as for a solid palette, which is what keeps
+	// the tints — see Theme.Transparent.
+	transparent bool
+
 	bgH, bgS, bgL float64
 
 	accentH, accentS, accentL float64
@@ -116,6 +122,7 @@ func (s paletteSpec) theme() Theme {
 
 	return Theme{
 		Name:         s.name,
+		Transparent:  s.transparent,
 		Bg:           lipgloss.Color(bg),
 		Surface:      lipgloss.Color(surface),
 		SurfaceAlt:   lipgloss.Color(surfaceAlt),
