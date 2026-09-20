@@ -500,3 +500,64 @@ func TestAwaitingReplyTracksTheModelFirstContent(t *testing.T) {
 		t.Error("a follow-up after an earlier reply IS a pending reply")
 	}
 }
+
+// AC 9 (client freshness): the composer's mode pill is re-pushed by the SAME
+// reload that updates the conversation list it reads.
+//
+// The pill reads currentModeLabel(), which reads m.conversations. Before the
+// fix the strip was written ONLY from a COMPLETED METRICS READ, so `/mode` —
+// which reloads the list but completes no turn — left the pill on the previous
+// mode until an unrelated turn finished or the conversation was reopened. That
+// is the operator's report, verbatim: "when you switch a mode, it doesn't update
+// in the composer unless you move away from the chat and then move back".
+func TestConversationReloadRePushesTheComposerModePill(t *testing.T) {
+	m, _ := newAskApp(t)
+	m.railProjectsLoaded = true // exercise the main onConversations branch
+	m.chatConvID = "c1"
+
+	// The first load seeds the pill from the row's persisted mode.
+	m.onConversations(chat.ConversationsMsg{Convs: []chat.Conversation{
+		{ID: "c1", Mode: apiv1.ConversationMode_CONVERSATION_MODE_BRAINSTORM},
+	}})
+	if m.dock.Mode != "brainstorm" {
+		t.Fatalf("a reload must push the row's mode into the pill, got %q", m.dock.Mode)
+	}
+
+	// The server moves the mode on (this process's /mode, or the other client's)
+	// and a reload follows: the pill must follow IMMEDIATELY — no metrics read, no
+	// re-open required.
+	m.onConversations(chat.ConversationsMsg{Convs: []chat.Conversation{
+		{ID: "c1", Mode: apiv1.ConversationMode_CONVERSATION_MODE_QUICK_WORK},
+	}})
+	if m.dock.Mode != "quick work" {
+		t.Fatalf("the reload must re-push the mode pill; a stale %q is the reported bug", m.dock.Mode)
+	}
+}
+
+// AC 9 (the strip's OTHER fields — same class): the model and stat fields derive
+// from m.metrics, which a list reload does not touch. When the open
+// conversation's row now names a DIFFERENT model (a `/model` set in the other
+// client), the reload must re-read the metrics so those fields follow it too —
+// and must NOT re-read when nothing moved (no metrics RPC per list poll).
+func TestRailModelChangeTriggersAStripMetricsRefresh(t *testing.T) {
+	m, _ := newAskApp(t)
+	m.railProjectsLoaded = true
+	m.chatConvID = "c1"
+	m.metrics = sessionMetrics{have: true, model: "opencode/anthropic/claude-sonnet-4"}
+
+	// Same model on the row: no refresh.
+	m.onConversations(chat.ConversationsMsg{Convs: []chat.Conversation{
+		{ID: "c1", ModelRef: "opencode/anthropic/claude-sonnet-4"},
+	}})
+	if m.composerModelDiverged() {
+		t.Fatal("an unchanged model must not trigger a metrics refresh on every list reload")
+	}
+
+	// The row moved to a different model: the strip must re-read.
+	m.onConversations(chat.ConversationsMsg{Convs: []chat.Conversation{
+		{ID: "c1", ModelRef: "orchicon/deepseek/deepseek-flash"},
+	}})
+	if !m.composerModelDiverged() {
+		t.Fatal("a rail model change must trigger a metrics refresh so the strip follows")
+	}
+}

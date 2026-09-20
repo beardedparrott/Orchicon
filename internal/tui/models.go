@@ -346,6 +346,12 @@ func (m *App) applyMetrics(msg metricsMsg) tea.Cmd {
 }
 
 // syncComposerStats pushes the stat strip and the mode pill into the composer.
+//
+// It is called from the metrics read AND from the conversation-list reload
+// (onConversations), because the strip's three fields derive from TWO sources:
+// the mode pill from m.conversations (currentModeLabel), the model + stats from
+// m.metrics. Any site that reloads one of those sources must re-push the strip,
+// or the composer shows a value the server has already moved past.
 func (m *App) syncComposerStats() {
 	// The MODEL goes in its own field (rendered left) rather than being prefixed
 	// to the stats: a long ref pushed the right-aligned numbers past the pane
@@ -353,6 +359,29 @@ func (m *App) syncComposerStats() {
 	m.dock.Model = m.metricsModel()
 	m.dock.Stats = m.metricsStats()
 	m.dock.Mode = m.currentModeLabel()
+}
+
+// composerModelDiverged reports whether the open conversation's rail row now
+// names a model different from the one the current metrics describe.
+//
+// The strip's model + stat fields are read from m.metrics, which a
+// conversation-list reload does not touch: a `/model` set in the OTHER client
+// (or server-side) lands on the row first, so without this re-read the composer
+// would keep showing the previous model until an unrelated turn completed —
+// the same client-freshness class as the mode pill.
+//
+// Both sides must be non-empty for a divergence to count: an as-yet-unread
+// m.metrics (its own open/switch path already issued the first read) must not
+// turn every list poll into a metrics RPC.
+func (m *App) composerModelDiverged() bool {
+	if m.chatConvID == "" || m.metrics.model == "" {
+		return false
+	}
+	c, ok := m.conversationByID(m.chatConvID)
+	if !ok || c.ModelRef == "" {
+		return false
+	}
+	return c.ModelRef != m.metrics.model
 }
 
 // metricsModel is the ask model ref for the strip's left side ("" when unknown).

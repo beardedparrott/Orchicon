@@ -2738,6 +2738,9 @@ func (m *App) onConversations(msg chat.ConversationsMsg) tea.Cmd {
 	// len(railProjects): a tenant with no projects must not re-request on every load forever.)
 	if !m.railProjectsLoaded && m.clients != nil {
 		m.conversations = msg.Convs
+		// The composer strip is pushed from the list it derives from (AC 9): the
+		// mode pill reads currentModeLabel(), which reads THIS list.
+		m.syncComposerStats()
 		return tea.Batch(m.onChatWake(), m.loadRailProjects(), m.waitChat())
 	}
 	m.conversations = msg.Convs
@@ -2751,10 +2754,27 @@ func (m *App) onConversations(msg chat.ConversationsMsg) tea.Cmd {
 	// delete, and a mark on a conversation that no longer exists would overstate the selection and
 	// aim the next bulk action at a row the server would reject.
 	m.pruneConvMarks()
+	// THE COMPOSER STRIP IS PUSHED FROM ITS OWN SOURCE (AC 9). The mode pill reads
+	// currentModeLabel(), which reads THIS list — so the reload that just landed is
+	// exactly when the pill must be re-pushed. dock.Mode's only other writer was a
+	// COMPLETED METRICS READ, so `/mode` left the pill showing the previous mode
+	// until an unrelated turn finished or the conversation was reopened. That is the
+	// operator's report, verbatim: "when you switch a mode, it doesn't update in the
+	// composer unless you move away from the chat and then move back".
+	m.syncComposerStats()
 	// The detail header reads its title + message count out of THIS list, so a
 	// refresh has to repaint the open pane or the new values sit unrendered
 	// until the next unrelated wake.
-	return m.onChatWake()
+	wake := m.onChatWake()
+	// The MODEL + STATS fields derive from m.metrics, which a rail reload does NOT
+	// refresh: when the open conversation's row now names a different model (a
+	// `/model` set in the other client), re-read the metrics so those fields follow
+	// it too. Only on divergence — a refresh on every reload would put a metrics
+	// RPC on every list poll.
+	if m.composerModelDiverged() {
+		return tea.Batch(wake, m.refreshMetrics())
+	}
+	return wake
 }
 
 // reloadConversations re-fetches the conversations rail from the live API
