@@ -187,6 +187,20 @@ func NewController(cl *client.Clients) *Controller {
 
 // --- tea.Msgs the controller emits (shell dispatches them back) --------
 
+// TurnAckedMsg reports that a dispatched turn has been ACCEPTED by the server — the stream acked it with
+// TurnStarted, so the send has resolved and the turn is genuinely under way.
+//
+// IT EXISTS TO SETTLE THE COMPOSER'S SEND ACK. The dock writes "sending …" the instant Enter fires, and
+// until now only two outcomes replaced it: a FAILURE (setChatError) and a NEW conversation landing
+// (chatConvCreatedMsg). A second message in an EXISTING conversation therefore left the ack on screen for
+// good — the operator's "I also notice a 'sending ...' underneath the composer even when the model is
+// done". Completion is a terminal outcome like any other, so it settles the ack here (the ack is exactly
+// "the send has been handed over and nothing has come back yet") and again on the turn's end, belt and
+// braces, in onStreamDone.
+type TurnAckedMsg struct {
+	ConvID string
+}
+
 // ConversationsMsg carries the loaded conversation list.
 type ConversationsMsg struct {
 	Convs []Conversation
@@ -1022,6 +1036,18 @@ func (c *Controller) handleEvent(convID string, ev *apiv1.ChatStreamResponse) {
 			st.optimisticUser = "" // the user row is now persisted
 		}
 		c.mu.Unlock()
+		// THE ACK IS THE ONE EVENT THAT SAYS THE SEND RESOLVED, so the shell is told about it — this runs on
+		// the stream's own goroutine, and the message settles the composer's "sending …" (see TurnAckedMsg).
+		//
+		// A NON-BLOCKING send, deliberately: the ack is a UI nicety and must never wedge the goroutine that is
+		// draining the turn. A drop here costs nothing — onStreamDone settles the ack on the turn's end — which
+		// is exactly why the settle exists in two places rather than one.
+		if c.cmds != nil {
+			select {
+			case c.cmds <- func() tea.Msg { return TurnAckedMsg{ConvID: convID} }:
+			default:
+			}
+		}
 	case *apiv1.ChatStreamResponse_TextChunk:
 		if content := e.TextChunk.GetContent(); content != "" {
 			c.appendChunk(convID, ChatItem{Kind: KindText, Text: content, At: now(), Live: true, Phase: "p-0"})

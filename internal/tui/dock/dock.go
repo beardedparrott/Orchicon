@@ -636,6 +636,30 @@ func (m *Model) SetError(s string) { m.Err = s }
 // SetNotice sets the status strip ("" clears).
 func (m *Model) SetNotice(s string) { m.Notice = s }
 
+// SendingAck is the transient ack the composer writes the instant Enter fires, so a send that produces no
+// visible reaction cannot be mistaken for a dead key (see the enter case in Update).
+//
+// IT IS A CONSTANT BECAUSE TWO PACKAGES NOW SPEAK ABOUT IT. The shell settles it when it learns the send
+// resolved, and a settle that cleared the strip UNCONDITIONALLY would wipe whatever the operator is being
+// told — a connection banner, a context-injection notice — so the shell clears this exact string and
+// nothing else. Spelling the text in two places is how one of them comes to disagree with the other.
+const SendingAck = "sending …"
+
+// SettleSendingAck clears the strip IF it still holds the send ack, reporting whether it did.
+//
+// WHY IT IS GUARDED. "Every terminal outcome must replace the ack" is the rule (see setChatError), and the
+// outcome is always written AFTER the ack — so a settle that arrived late (a turn ack racing a connection
+// banner) must not erase the more informative text. Unconditional clearing was survivable while the only
+// callers were failure paths; once completion settles it too, the guard is what keeps a banner that
+// arrived first.
+func (m *Model) SettleSendingAck() bool {
+	if m.Notice != SendingAck {
+		return false
+	}
+	m.Notice = ""
+	return true
+}
+
 // SetReplyInFlight toggles the STOP affordance on the affordance row (see Hint). The shell sets it from
 // the chat controller's live streaming state, so the advertised chord and the running turn can never
 // disagree.
@@ -738,7 +762,7 @@ func (m *Model) Update(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 			// Enter-with-an-empty-composer to open the active tab's menu
 			// (menuActivationKey, shell.go), so this branch only ever runs with
 			// something to send.
-			m.Notice = "sending …"
+			m.Notice = SendingAck
 			return true, m.requestSend()
 		default:
 			ta, cmd := m.ta.Update(msg)

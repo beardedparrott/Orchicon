@@ -1316,6 +1316,12 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		m.refreshComposerHint()
 		m.onChatWake()
 		return tea.Batch(m.chat.LoadConversations(), m.waitChat())
+	case chat.TurnAckedMsg:
+		// THE SEND RESOLVED: the server acked the turn, so the composer's "sending …" is no longer true and is
+		// settled. THIS IS THE CASE THAT WAS MISSING — see TurnAckedMsg, and onStreamDone for the end-of-turn
+		// settle that covers an ack the channel dropped.
+		m.dock.SettleSendingAck()
+		return m.waitChat()
 	case chat.TurnResolvedMsg:
 		return m.waitChat()
 	case chat.StreamDoneMsg:
@@ -1335,9 +1341,11 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 	case chatConvCreatedMsg:
 		m.askMode = askConversations // a session now exists: show it
 		m.chatConvID = msg.convID
-		// The send landed: clear the composer's "sending …" ack (set by the dock
-		// when Enter fired) so it cannot linger as a stale promise.
-		m.dock.SetNotice("")
+		// The send landed: settle the composer's "sending …" ack (set by the dock when
+		// Enter fired) so it cannot linger as a stale promise. Guarded, like every other
+		// settle, so a connection banner that arrived while the create was in flight is
+		// not erased by the create landing.
+		m.dock.SettleSendingAck()
 		m.chat.SetActive(msg.convID)
 		// Optimistic echo of the operator's own message. The existing-conversation
 		// path appends this; the create path did not, so the FIRST send from any

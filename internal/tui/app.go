@@ -3655,6 +3655,12 @@ func (m *App) onStreamDone(msg chat.StreamDoneMsg) tea.Cmd {
 	// The turn slot is gone as of EndStream above, so the stop affordance must go with it (the
 	// affordance is derived from that state, and re-derived here).
 	m.refreshComposerHint()
+	// AND THE SEND ACK SETTLES WITH THE TURN. The ack means "handed over, nothing back yet", and this is the
+	// one path every completed turn reaches — the graceful close of its stream. It is the second settle (the
+	// first is the TurnStarted ack) because the two cover different failures: a stream whose ack the tea
+	// channel dropped, or a turn that was already acked when the shell attached to it, would otherwise leave
+	// "sending …" on screen for good. Guarded, so a connection banner written before this is not erased.
+	m.dock.SettleSendingAck()
 	return tea.Batch(m.chat.Poll(msg.ConvID), m.refreshMetrics(), m.chat.LoadConversations())
 }
 
