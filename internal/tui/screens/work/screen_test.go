@@ -87,6 +87,11 @@ type fakePlane struct {
 	imgDeleted  []string
 	builds      []*apiv1.BuildRuntimeImageRequest
 	buildChunks []*apiv1.BuildRuntimeImageResponse
+
+	// workflows / workflowVersions are the bulk-set picker's option source. Empty means the
+	// default one-workflow fixture (see ListWorkflows).
+	workflows        []*apiv1.Workflow
+	workflowVersions map[string]*apiv1.WorkflowVersion
 }
 
 func newPlane() *fakePlane {
@@ -504,8 +509,30 @@ func (p *fakePlane) ListWorkflows(context.Context, *connect.Request[apiv1.ListWo
 	p.mu.Lock()
 	p.listCalls++
 	p.wfListCalls++
-	p.mu.Unlock()
-	return connect.NewResponse(&apiv1.ListWorkflowsResponse{Workflows: []*apiv1.Workflow{{Id: "wf-1", Name: "Fanout"}}}), nil
+	defer p.mu.Unlock()
+	// The default fixture is the one the pre-existing tests expect; a test that seeds
+	// `workflows` gets its own list (so a runnable/stepless/deprecated mix can be exercised).
+	if len(p.workflows) == 0 {
+		return connect.NewResponse(&apiv1.ListWorkflowsResponse{Workflows: []*apiv1.Workflow{{Id: "wf-1", Name: "Fanout"}}}), nil
+	}
+	return connect.NewResponse(&apiv1.ListWorkflowsResponse{Workflows: p.workflows}), nil
+}
+
+// GetWorkflow serves each seeded workflow's latest version, which is the only place the STEPS live
+// (the Workflow message carries none) — so this is what the bulk-set picker's runnable filter reads.
+func (p *fakePlane) GetWorkflow(_ context.Context, req *connect.Request[apiv1.GetWorkflowRequest]) (*connect.Response[apiv1.GetWorkflowResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, w := range p.workflows {
+		if w.GetId() != req.Msg.GetId() {
+			continue
+		}
+		return connect.NewResponse(&apiv1.GetWorkflowResponse{
+			Workflow:      w,
+			LatestVersion: p.workflowVersions[w.GetId()],
+		}), nil
+	}
+	return nil, connect.NewError(connect.CodeNotFound, errors.New("workflow not found"))
 }
 
 // ---------- RuntimeImageService ----------
