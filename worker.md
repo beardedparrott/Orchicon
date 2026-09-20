@@ -44,6 +44,7 @@ This file is injected into every Orchicon worker session. Your role, task, accep
 ## Platform changes: keep Ask Orchicon in sync
 
 - If you add/change/remove a first-class entity, RPC, or user-facing capability, update the Ask Orchicon tool registry to match (`internal/askorchicon/tools.go` + the tool files) so the Orchicon MCP/Ask Orchicon surface never drifts from what the platform actually does.
+- If you add or change an Ask Orchicon **mode**, or add an **adapter**, the tool boundary is the platform's rather than the prompt's: the policy table is `internal/askmode`, and an adapter enforces it by implementing `scheduler.ChatToolRestrictor` — without that capability the turn is **prose-only** and the dispatch logs it. Do not restate the policy in a persona or duplicate it per adapter.
 
 ## Platform changes: they land in BOTH clients (GUI and TUI)
 

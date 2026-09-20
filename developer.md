@@ -125,6 +125,8 @@ For Docker/infra changes, verify the full stack boots (healthz + Grafana on :300
 
 Every time you add/change/remove a first-class entity, RPC, or user-facing capability, update the Ask Orchicon agent to match. The tool surface is `internal/askorchicon/tools.go` (`allTools()`), tool implementations in `tool_*.go` (one per domain), the agent identity in `agent.go`, defaults in `service.go`'s `defaultAgentConfigProto()`. The registry is what the Orchicon MCP server exposes (`orchicon mcp`, `internal/mcp/`) — `BuildConfigContent` registers it by default in every opencode run.
 
+**The mode boundary is a PLATFORM CONTRACT, not prompt text.** Which tools each Ask mode may run lives in `internal/askmode` (one table, mode constants, and the turn's mode as a context value) — a package with NO internal imports precisely so every adapter can read it. **Never restate that table in a persona, and never write a second copy for a new adapter.** The native transport enforces it at both of its own points (the denied tools are withheld from `AskToolDefs(ctx)` and a call is refused in `ExecuteAskTool`); a NEW ADAPTER enforces it by implementing `scheduler.ChatToolRestrictor` — and an adapter that does not is a PROSE-ONLY turn, which `applyAskToolPolicy` logs. Adding claude-code / codex support therefore means implementing that capability, not authoring a policy.
+
 ## Both clients — GUI and TUI — stay in lockstep
 
 Orchicon ships **two first-class clients over the same API**: the GUI (`frontend/src/**`) and the TUI (`internal/tui/**`, `cmd/orch`). Any work in Orchicon must consider BOTH on changes that need made.
