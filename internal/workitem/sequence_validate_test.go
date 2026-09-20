@@ -668,3 +668,51 @@ func reorderSequenceItems(t *testing.T, pool *db.Pool, projID, parentID string, 
 		t.Fatal(err)
 	}
 }
+
+// TestUpdateRejectsRunnableStatusWithoutWorkflowDB (AC 1) drives the Connect
+// surface directly: a status TRANSITION into a runnable status (ready /
+// assigned / scheduled / running) is rejected for a workflow-less item; the
+// same transition passes in the request that binds a workflow; and a sequence
+// parent with children is exempt (a container that never executes itself).
+func TestUpdateRejectsRunnableStatusWithoutWorkflowDB(t *testing.T) {
+	pool := validateParentTestPool(t)
+	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
+	projID := validateParentProject(t, ctx, pool)
+	svc := New(pool, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+
+	leaf := createSequenceItem(t, pool, projID, domain.WorkItemKindTask, "Workflow-less leaf", nil, nil, nil)
+	for _, st := range []string{domain.WorkItemReady, domain.WorkItemAssigned, domain.WorkItemScheduled, domain.WorkItemRunning} {
+		status := statusToProto(st)
+		_, err := svc.UpdateWorkItem(ctx, connect.NewRequest(&apiv1.UpdateWorkItemRequest{Id: leaf.ID, Status: &status}))
+		if err == nil || connect.CodeOf(err) != connect.CodeFailedPrecondition {
+			t.Fatalf("transition to %q with no workflow: got %v, want FailedPrecondition", st, err)
+		}
+	}
+	if got := mustGetSequenceItem(t, pool, leaf.ID).Status; got != domain.WorkItemPending {
+		t.Fatalf("a rejected transition must not persist; status = %q, want pending", got)
+	}
+
+	// The SAME request that binds a workflow is let through (post-update
+	// binding, not the stale row).
+	wf := seedPublishedWorkflowForTest(t, pool, projID, true)
+	assigned := statusToProto(domain.WorkItemAssigned)
+	if _, err := svc.UpdateWorkItem(ctx, connect.NewRequest(&apiv1.UpdateWorkItemRequest{
+		Id: leaf.ID, WorkflowId: &wf, Status: &assigned,
+	})); err != nil {
+		t.Fatalf("transition on the request that binds a workflow rejected: %v", err)
+	}
+	if got := mustGetSequenceItem(t, pool, leaf.ID).Status; got != domain.WorkItemAssigned {
+		t.Fatalf("bound transition status = %q, want assigned", got)
+	}
+
+	// A sequence parent with children owns ordering only — exempt.
+	parent := createSequenceItem(t, pool, projID, domain.WorkItemKindEpic, "Sequence container", nil, nil,
+		[]byte(`{"worker_id":"w1"}`))
+	_ = createSequenceItem(t, pool, projID, domain.WorkItemKindTask, "Bound child", &parent.ID, &wf, nil)
+	running := statusToProto(domain.WorkItemRunning)
+	if _, err := svc.UpdateWorkItem(ctx, connect.NewRequest(&apiv1.UpdateWorkItemRequest{
+		Id: parent.ID, Status: &running,
+	})); err != nil {
+		t.Fatalf("a sequence parent with children must be exempt from the guard, got %v", err)
+	}
+}
