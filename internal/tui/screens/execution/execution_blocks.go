@@ -182,10 +182,7 @@ func blocksFromItems(items []chat.ChatItem, width int) []textBlock {
 				strings.HasSuffix(strings.ToLower(it.Name), ".md")
 		case chat.KindSession:
 			b.kind = blockSession
-			b.summary = "session " + it.SessionID
-			if it.ServeURL != "" {
-				b.summary += " · " + it.ServeURL
-			}
+			b.summary = chat.SessionIdentity(it)
 		default:
 			b.kind = blockText
 			b.body = it.Text

@@ -33,7 +33,7 @@ import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-import { groupByPhase, mergeSessionItems, type ChatItem, type ParsedTool } from "./sessionItems";
+import { groupByPhase, mergeSessionItems, sessionMeta, type ChatItem, type ParsedTool } from "./sessionItems";
 
 interface SessionChatPaneProps {
   executionId: string;
@@ -123,11 +123,15 @@ function transcriptItems(
         }
         break;
       case "session_info":
-        if (typeof pl.session_id === "string" && pl.session_id) {
+        // Rendered as an identity row when the part carries either a session
+        // id or an adapter kind: a native execution has no serve/session id to
+        // point at, only the adapter it ran on.
+        if (typeof pl.session_id === "string" || typeof pl.adapter_kind === "string") {
           out.push({
             kind: "session",
-            sessionId: pl.session_id,
+            sessionId: typeof pl.session_id === "string" ? pl.session_id : "",
             serveUrl: typeof pl.serve_url === "string" ? pl.serve_url : "",
+            adapterKind: typeof pl.adapter_kind === "string" ? pl.adapter_kind : "",
             at,
             key,
           });
@@ -815,8 +819,8 @@ export function SessionChatPane({
                 <div key={item.key} className="flex justify-center">
                   <span className="inline-flex max-w-full items-center gap-1.5 truncate rounded-full border border-border bg-muted/40 px-2.5 py-1 font-mono text-[10px] text-muted-foreground">
                     <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                    <span className="truncate">{item.sessionId}</span>
-                    {item.serveUrl && <span className="opacity-60">{item.serveUrl}</span>}
+                    {item.sessionId && <span className="truncate">{item.sessionId}</span>}
+                    <span className="opacity-60">{sessionMeta(item)}</span>
                   </span>
                 </div>
               );

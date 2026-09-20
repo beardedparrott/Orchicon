@@ -466,11 +466,24 @@ type ContinueSessionOpts struct {
 	// Context is the durable-transcript context used to seed a FRESH
 	// session when the original serve/session is no longer reachable.
 	Context string
-	// Original session identity (from the transcript's session_info part);
-	// re-attached when the serve is still reachable for real continuity.
+	// Original session identity (from the transcript's session_info part).
+	// Re-attach is ADAPTER-SCOPED and best-effort: it happens inside the
+	// resolving adapter's OWN session store, never against a separate
+	// "execution serve" concept. ServeURL is the recorded serve address —
+	// display/diagnostic once the transcript carries an adapter identity,
+	// and only a legacy best-effort hint when AdapterKind is empty.
 	SessionID     string
 	ServeURL      string
 	ServePassword string
+	// AdapterKind is the adapter identity recorded in the transcript's
+	// session_info part (adapter.KindOpencode / adapter.KindOrchicon). It is
+	// INFORMATIONAL for routing — the dispatched adapter already follows from
+	// the execution's worker model_ref — and NORMATIVE for the adapter: it
+	// says whether the recorded SessionID/ServeURL are this adapter's own and
+	// may be re-attached. Empty means a legacy transcript written before the
+	// identity field existed (opencode-shaped fields only), so adapters keep
+	// their historical best-effort continuity path.
+	AdapterKind string
 	// WorkerID is the caller's execution worker. The bridge uses it to
 	// enforce identity isolation by comparing it against the prior
 	// transcript's identity block (a follow-up must belong to the same

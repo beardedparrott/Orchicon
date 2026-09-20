@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
@@ -85,6 +86,16 @@ func TestSessionPartsRecorderShapes(t *testing.T) {
 	// session_info present (pane header).
 	if len(byKind[db.SessionPartSessionInfo]) != 1 {
 		t.Fatalf("session_info parts = %d, want 1 (kinds: %v)", len(byKind[db.SessionPartSessionInfo]), kinds)
+	}
+	// …and it carries the NATIVE adapter identity with NO serve_url key: a
+	// native session runs in-process on the control plane, so there is nothing
+	// to point at (absent, never an empty string).
+	si := byKind[db.SessionPartSessionInfo][0]
+	if si["adapter_kind"] != adapter.KindOrchicon {
+		t.Errorf("session_info adapter_kind = %v, want %q", si["adapter_kind"], adapter.KindOrchicon)
+	}
+	if _, ok := si["serve_url"]; ok {
+		t.Errorf("session_info must carry NO serve_url for a native run: %v", si)
 	}
 	// user goal with source.
 	if len(byKind[db.SessionPartUserMessage]) != 1 {

@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
@@ -460,3 +461,75 @@ func (b *blockingProvider) StreamTurn(ctx context.Context, req TurnRequest) (Tur
 }
 func (b *blockingProvider) ListModels(ctx context.Context) ([]ModelInfo, error) { return nil, nil }
 func (b *blockingProvider) Capabilities() Capabilities                          { return Capabilities{Streaming: true} }
+
+// TestContinueSessionForeignAdapterSkipsIdentityLookup pins AC 1's guard on the
+// NATIVE side: a follow-up whose prior transcript identity was recorded by
+// ANOTHER adapter (opencode) has nothing to verify here — that session id
+// belongs to the other adapter, not to the native in-process engine — so the
+// native follow-up continues from the durable context instead of refusing on an
+// identity mismatch it has no business checking. The skip is SCOPED: the same
+// cross-worker transcript under the NATIVE kind (or a legacy row with no kind)
+// is still refused by identity isolation.
+func TestContinueSessionForeignAdapterSkipsIdentityLookup(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".orchicon", "sessions", "exec_prior.jsonl")
+	writeIdentityTranscript(t, path, Identity{
+		ExecutionID: "exec_prior",
+		WorkerID:    "worker_A",
+		WorkerName:  "worker-a",
+		TenantID:    "tnt_test",
+	})
+
+	// (1) Foreign adapter kind: the prior identity is never looked up here, so
+	// a follow-up whose prior session belonged to ANOTHER worker (and adapter)
+	// proceeds rather than being refused.
+	prov := &mockProvider{turns: []scriptedTurn{
+		{events: []Event{TextDelta{Text: "Continued from context."}}, finish: StopStop, bare: true},
+	}}
+	store := &storesSessionParts{}
+	b := NewBridge(ProviderResolverFunc(func(ctx context.Context, tenantID, providerID string) (Provider, error) {
+		return prov, nil
+	}), dir, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	b.SetSessionStore(store.record)
+
+	if _, err := b.ContinueSession(context.Background(), scheduler.ContinueSessionOpts{
+		ExecutionID: "exec_now",
+		TenantID:    "tnt_test",
+		WorkerID:    "worker_B", // refused if the foreign identity were checked
+		SessionID:   "exec_prior",
+		AdapterKind: adapter.KindOpencode,
+		ModelRef:    "orchicon/mockprov/deepseek-v4-flash",
+		Message:     "Are you done?",
+		Context:     "Prior work summary.",
+		ProjectDir:  dir,
+	}); err != nil {
+		t.Fatalf("a foreign-adapter identity must not be verified here, got: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for !hasKind(store.snapshot(), db.SessionPartText) {
+		if time.Now().After(deadline) {
+			t.Fatalf("follow-up never ran; parts = %+v", store.snapshot())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// (2) The SAME transcript under the native kind (or a legacy row with no
+	// kind at all) still runs the lookup and is refused — the skip is scoped
+	// to foreign kinds only.
+	for _, kind := range []string{adapter.KindOrchicon, ""} {
+		nb := NewBridge(nil, dir, nil)
+		_, err := nb.ContinueSession(context.Background(), scheduler.ContinueSessionOpts{
+			ExecutionID: "exec_now",
+			TenantID:    "tnt_test",
+			WorkerID:    "worker_B",
+			SessionID:   "exec_prior",
+			AdapterKind: kind,
+			ModelRef:    "orchicon/mockprov/deepseek-v4-flash",
+			Message:     "Are you done?",
+			ProjectDir:  dir,
+		})
+		if err == nil || !strings.Contains(err.Error(), "identity isolation") {
+			t.Fatalf("adapter kind %q: cross-worker continuation must be refused, got err = %v", kind, err)
+		}
+	}
+}

@@ -56,6 +56,9 @@ func TestHistoryItemsTextAndReasoningConvergePerStep(t *testing.T) {
 			if i.SessionID != "ses_1" {
 				t.Fatalf("session = %q", i.SessionID)
 			}
+			if i.AdapterKind != "" {
+				t.Fatalf("legacy session part adapter_kind = %q, want empty", i.AdapterKind)
+			}
 		}
 	}
 	if texts != 1 || reasons != 1 || sessions != 1 {
@@ -230,5 +233,69 @@ func TestLiveItemsMalformedPayloadsSafe(t *testing.T) {
 	}
 	if !strings.Contains(items[0].Key, "e2") && items[0].Key != "e2" {
 		t.Fatalf("key = %q", items[0].Key)
+	}
+}
+
+// TestHistoryItemsSessionInfoCarriesAdapterKind pins AC 7's TUI half: the
+// execution's session_info part renders as a session identity item carrying the
+// ADAPTER kind, and a part carrying ONLY the kind still renders — a native
+// (in-process) execution has no serve/session id to point at, only the adapter
+// it ran on.
+func TestHistoryItemsSessionInfoCarriesAdapterKind(t *testing.T) {
+	parts := []*apiv1.ExecutionSessionPart{
+		part(1, "session_info", `{"session_id":"ses_9","serve_url":"http://127.0.0.1:42","adapter_kind":"opencode"}`),
+		part(2, "session_info", `{"session_id":"exec_9","adapter_kind":"orchicon"}`),
+		part(3, "session_info", `{"adapter_kind":"orchicon"}`),
+	}
+	items := HistoryItems(parts)
+	if len(items) != 3 {
+		t.Fatalf("items = %+v, want 3 session identity items", items)
+	}
+	for i, it := range items {
+		if it.Kind != KindSession {
+			t.Fatalf("item %d kind = %q, want %q", i, it.Kind, KindSession)
+		}
+	}
+	if items[0].AdapterKind != "opencode" || items[0].ServeURL != "http://127.0.0.1:42" {
+		t.Fatalf("opencode item = %+v", items[0])
+	}
+	if items[1].AdapterKind != "orchicon" || items[1].SessionID != "exec_9" || items[1].ServeURL != "" {
+		t.Fatalf("native item = %+v", items[1])
+	}
+	if items[2].AdapterKind != "orchicon" || items[2].SessionID != "" {
+		t.Fatalf("kind-only item = %+v", items[2])
+	}
+}
+
+// TestSessionIdentityNamesTheTransport pins the identity string both TUI panes
+// share (and the follow-up surface shows): a native (in-process) run names its
+// transport instead of trailing a blank serve URL, an opencode run shows the
+// adapter and the serve, and a legacy part (no adapter kind) reads as opencode.
+func TestSessionIdentityNamesTheTransport(t *testing.T) {
+	cases := []struct {
+		name string
+		item ChatItem
+		want string
+	}{
+		{
+			name: "opencode",
+			item: ChatItem{Kind: KindSession, SessionID: "ses_2", ServeURL: "http://127.0.0.1:9", AdapterKind: "opencode"},
+			want: "session ses_2 · opencode · http://127.0.0.1:9",
+		},
+		{
+			name: "native",
+			item: ChatItem{Kind: KindSession, SessionID: "exec_2", AdapterKind: "orchicon"},
+			want: "session exec_2 · native · in-process",
+		},
+		{
+			name: "legacy (no adapter kind recorded)",
+			item: ChatItem{Kind: KindSession, SessionID: "ses_old", ServeURL: "http://x"},
+			want: "session ses_old · opencode · http://x",
+		},
+	}
+	for _, tc := range cases {
+		if got := SessionIdentity(tc.item); got != tc.want {
+			t.Errorf("%s: SessionIdentity = %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }

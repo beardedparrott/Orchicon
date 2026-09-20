@@ -33,10 +33,29 @@ export type ChatItem =
   | { kind: "reasoning"; text: string; at: number; key: string; live?: boolean; phase?: string }
   | { kind: "error"; text: string; at: number; key: string }
   | { kind: "artifact"; name: string; type: string; content: string; at: number; key: string }
-  | { kind: "session"; sessionId: string; serveUrl: string; at: number; key: string };
+  | { kind: "session"; sessionId: string; serveUrl: string; adapterKind?: string; at: number; key: string };
 
 export function itemAt(i: ChatItem): number {
   return i.kind === "tool" ? i.tool.at : i.at;
+}
+
+/**
+ * sessionMeta renders a session bubble's transport identity — which adapter
+ * the execution ran on, plus the serve it ran on when there is one.
+ *
+ * A follow-up belongs to the execution's ADAPTER, not to a shared host serve,
+ * so the identity is what the operator needs to see. A native (in-process)
+ * execution has NO serve to point at, so it reads `native · in-process`
+ * instead of leaving a blank URL — parity with the TUI's `SessionIdentity`.
+ */
+export function sessionMeta(item: { sessionId: string; serveUrl: string; adapterKind?: string }): string {
+  // A legacy transcript (written before the identity field existed) came from
+  // opencode — the only session adapter at the time.
+  const kind = item.adapterKind || "opencode";
+  if (kind === "orchicon") {
+    return "native · in-process";
+  }
+  return item.serveUrl ? `${kind} · ${item.serveUrl}` : kind;
 }
 
 // --- phase-keyed grouping ------------------------------------------------

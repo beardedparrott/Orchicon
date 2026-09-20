@@ -656,9 +656,13 @@ func (r *sessionRun) run() error {
 	r.a.log.Info("opencode session created", "execution", r.execRow.ID, "session", sid, "serve", client.BaseURL())
 	// Persist the opencode session identity so the UI can show which
 	// serve/session a worker ran on (troubleshooting + follow-up seed).
+	// adapter_kind records WHICH ADAPTER the session belongs to, so a
+	// follow-up resolves the transport from the execution's adapter rather
+	// than from the (per-boot dynamic) serve URL.
 	r.recordPart(db.SessionPartSessionInfo, map[string]any{
-		"session_id": sid,
-		"serve_url":  client.BaseURL(),
+		"session_id":   sid,
+		"serve_url":    client.BaseURL(),
+		"adapter_kind": adapter.KindOpencode,
 	})
 	// Persist the full system prompt sent to the worker (the per-message
 	// `system` field) so the session chat can show exactly what the worker

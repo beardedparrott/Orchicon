@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/tui/md"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
@@ -15,6 +16,33 @@ import (
 // view.go renders grouped ChatItems as themed terminal rows — the TUI
 // ToolCard/ArtifactCard equivalents: one row per tool call / artifact,
 // wrapped bubble rows for user/assistant/reasoning/error text.
+
+// SessionIdentity renders a KindSession item's transport identity for display:
+// the adapter the execution ran on plus the session id, and the serve it ran on
+// when there is one. A native (in-process) run has NO serve to point at, so it
+// reads `native · in-process` instead of trailing a blank URL. Both TUI panes
+// (and the follow-up surface) share this so the identity shown is the SAME one
+// the follow-up resolves its transport from.
+func SessionIdentity(it ChatItem) string {
+	kind := it.AdapterKind
+	if kind == "" {
+		// Legacy transcript written before adapter identity was recorded:
+		// opencode was the only session adapter then.
+		kind = adapter.KindOpencode
+	}
+	id := it.SessionID
+	if id == "" {
+		id = "(session)"
+	}
+	if kind == adapter.KindOrchicon {
+		return "session " + id + " · native · in-process"
+	}
+	meta := "session " + id + " · " + kind
+	if it.ServeURL != "" {
+		meta += " · " + it.ServeURL
+	}
+	return meta
+}
 
 // RenderItems renders the items into lines clamped to maxWidth (0 =
 // unlimited). Grouping is the caller's concern (GroupByPhase /
@@ -181,10 +209,7 @@ func renderItems(items []ChatItem, maxWidth int, folded func(key string) bool, c
 		case KindArtifact:
 			b.WriteString(renderArtifactRow(it, maxWidth))
 		case KindSession:
-			meta := "session " + it.SessionID
-			if it.ServeURL != "" {
-				meta += " · " + it.ServeURL
-			}
+			meta := SessionIdentity(it)
 			b.WriteString(theme.HintText.Render(truncateRow(meta, maxWidth)) + "\n")
 		}
 		// Attribute the lines this item wrote. `before` is a byte offset into the builder, and the slice
