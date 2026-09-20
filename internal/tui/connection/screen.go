@@ -65,27 +65,44 @@ type Result struct {
 
 // Model is the connection screen bubbletea model.
 type Model struct {
-	probes    ProbeFuncs
-	inputs    [fieldCount]textinput.Model
-	focus     int
-	authAPI   bool // true = API key, false = username+password
-	profile   *config.Profile
+	probes  ProbeFuncs
+	inputs  [fieldCount]textinput.Model
+	focus   int
+	authAPI bool // true = API key, false = username+password
+	profile *config.Profile
 	// storedRefresh carries the existing profile's refresh token through an
 	// edit (API-key switch clears it; password probe overwrites it).
 	storedRefresh string
+	// storedToken is the API KEY that a switch away from API-key mode parked, so
+	// toggling ctrl+a back restores it.
+	//
+	// It is deliberately NOT the profile's Token in password mode: there, Token is
+	// the previous session's minted ACCESS TOKEN — not a password, and not a key.
+	storedToken string
 	// embedded marks the model as the SHELL's in-place /connect overlay:
 	// ctrl+c does not quit the process (esc cancels), tea.Quit is never
 	// emitted on success — the shell polls Result() each Update.
 	embedded bool
-	width     int
-	height    int
-	busy      bool
-	errMsg    string
-	info      string
+	width    int
+	height   int
+	busy     bool
+	errMsg   string
+	info     string
+	// reason is the WHY of this screen: set by the shell when it bounces the
+	// operator here because the stored session could not be authenticated.
+	// Unlike info (which each probe cycle clears), it persists until the
+	// operator signs in or cancels.
+	reason    string
 	saveErr   string
 	insecure  bool
 	connected *Result // set when the probe succeeded (read by cmd/orch)
 }
+
+// SetReason seeds the persistent "why am I being asked" line. A shell that
+// bounced here — /connect, or the launch-time credential check rejecting a
+// dead session — calls this so the operator is asked to sign in WITH A REASON
+// instead of out of nowhere.
+func (m *Model) SetReason(s string) { m.reason = s }
 
 // New creates the connection screen. profile may be nil (first run) or a
 // partially-filled profile (e.g. env URL without token).
@@ -110,21 +127,28 @@ func New(profile *config.Profile, probes ProbeFuncs) Model {
 		if profile.URL != "" {
 			m.inputs[fieldURL].SetValue(profile.URL)
 		}
-		if profile.Token != "" {
-			m.inputs[fieldCredential].SetValue(profile.Token)
-		}
 		if profile.Username != "" {
 			m.inputs[fieldUsername].SetValue(profile.Username)
 		}
 		if profile.AuthMethod == config.AuthPassword {
+			// PASSWORD MODE: the profile's Token is the previous session's minted
+			// ACCESS TOKEN. It is not a password, and showing it in the password
+			// field meant the field arrived pre-satisfied — so submit sent the stale
+			// token as the password, the plane answered HTTP 401, and there was no
+			// way to type the real one over it. Leave the field EMPTY (a password is
+			// never stored) and let the operator type it.
 			m.authAPI = false
+		} else if profile.Token != "" {
+			// API-KEY MODE: the Token IS the key. Park it so a mode switch can
+			// restore it; applyCredentialMode puts it in the field.
+			m.storedToken = profile.Token
 		}
 		// Carry the stored refresh token through an edit — a re-connect of the
 		// same password profile keeps auto-refresh (API-key mode ignores it).
 		m.storedRefresh = profile.RefreshToken
 	}
 	m.applyCredentialMode()
-	m.inputs[fieldURL].Focus()
+	m.setFocus(fieldURL)
 	return m
 }
 
@@ -132,14 +156,76 @@ func New(profile *config.Profile, probes ProbeFuncs) Model {
 // from the active auth mode. API-key mode shows "API key >" with the oc_…
 // placeholder; username+password mode shows "Password >" with a password
 // placeholder — never "API key" in password mode.
+// visibleFields is the fields the operator can edit in the current mode, IN THE
+// ORDER THEY ARE DRAWN.
+//
+// The tab cycle walks THIS rather than the raw 0..fieldCount range. The constants
+// are fieldURL, fieldCredential, fieldUsername — the ORIGINAL two-field API-key
+// layout, with Username bolted on at the end when password mode arrived — but
+// password mode DRAWS URL, Username, Password, with the credential field THIRD.
+// Cycling by index therefore moved focus DOWN to Password and then back UP to
+// Username: the highlight jumped around the form, and a keystroke — or a
+// backspace — landed in the field the operator was not looking at, which is
+// exactly why the password box seemed impossible to clear.
+func (m *Model) visibleFields() []int {
+	if m.authAPI {
+		return []int{fieldURL, fieldCredential}
+	}
+	return []int{fieldURL, fieldUsername, fieldCredential}
+}
+
+// moveFocus advances the focus through visibleFields, wrapping at the ends.
+func (m *Model) moveFocus(delta int) {
+	fs := m.visibleFields()
+	pos := 0
+	for i, f := range fs {
+		if f == m.focus {
+			pos = i
+			break
+		}
+	}
+	pos = (pos + delta + len(fs)) % len(fs)
+	m.setFocus(fs[pos])
+}
+
+// setFocus focuses one field and blurs the rest, leaving the caret at the end so
+// the first keystroke appends and backspace has something to delete.
+func (m *Model) setFocus(field int) {
+	m.focus = field
+	for i := range m.inputs {
+		if i == field {
+			m.inputs[i].Focus()
+		} else {
+			m.inputs[i].Blur()
+		}
+	}
+	m.inputs[field].CursorEnd()
+}
+
+// applyCredentialMode derives the credential field's prompt, placeholder AND VALUE
+// from the active auth mode.
+//
+// The VALUE is the load-bearing part. Deriving only the label is this screen's
+// oldest bug: the field kept whatever it had been given — an API key, or the
+// previous session's access token — while its label changed to "Password > ", so
+// the operator saw a filled password box they had not filled and could not explain.
 func (m *Model) applyCredentialMode() {
 	if m.authAPI {
 		m.inputs[fieldCredential].Prompt = "API key > "
 		m.inputs[fieldCredential].Placeholder = "oc_… (create one in the GUI: Settings → API keys)"
+		// Restore the key a switch away from this mode parked.
+		m.inputs[fieldCredential].SetValue(m.storedToken)
 	} else {
 		m.inputs[fieldCredential].Prompt = "Password > "
 		m.inputs[fieldCredential].Placeholder = "password"
+		// CLEAR: a password is never carried across modes, and neither an API key
+		// nor a stale access token is one.
+		m.inputs[fieldCredential].SetValue("")
 	}
+	// Park the caret at the END: SetValue only moves the cursor when the field was
+	// previously empty, so a restored value could otherwise leave it at position 0
+	// with nothing before it to backspace.
+	m.inputs[fieldCredential].CursorEnd()
 }
 
 func (m *Model) currentURL() string {
@@ -233,6 +319,18 @@ func (m *Model) buildProfile(token, refresh string) *config.Profile {
 	if m.profile != nil && m.profile.Name != "" && m.profile.Name != "default" {
 		name = m.profile.Name
 	}
+	// DISPLAY PREFERENCES are not credentials and must survive this rebuild. The
+	// original profile carried them and this function returns a FRESH struct, so
+	// omitting them DROPPED them: a saved palette was lost for the whole session
+	// (and, because the rebuilt profile is what gets re-saved, the theme was
+	// scrubbed from the config too). `Newline` had the same defect — an operator's
+	// configured newline chord silently reverted to the default. Credentials are
+	// deliberately NOT carried by default (token/username/refresh come from the
+	// form), which is why this is an explicit list and not a struct copy.
+	themeName, newlineMode := "", ""
+	if m.profile != nil {
+		themeName, newlineMode = m.profile.Theme, m.profile.Newline
+	}
 	return &config.Profile{
 		Name:               name,
 		URL:                url_,
@@ -241,6 +339,8 @@ func (m *Model) buildProfile(token, refresh string) *config.Profile {
 		Username:           user,
 		RefreshToken:       refresh,
 		InsecureSkipVerify: m.insecure,
+		Newline:            newlineMode,
+		Theme:              themeName,
 	}
 }
 
@@ -275,15 +375,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, tea.Quit
-		case tea.KeyTab, tea.KeyShiftTab, tea.KeyDown, tea.KeyUp:
-			m.focus = (m.focus + 1) % fieldCount
-			for i := range m.inputs {
-				if i == m.focus {
-					m.inputs[i].Focus()
-				} else {
-					m.inputs[i].Blur()
-				}
-			}
+		case tea.KeyTab, tea.KeyDown:
+			m.moveFocus(1)
+			return m, nil
+		case tea.KeyShiftTab, tea.KeyUp:
+			m.moveFocus(-1)
 			return m, nil
 		case tea.KeyEnter:
 			if msg.Alt {
@@ -291,8 +387,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m.submit()
 		case tea.KeyCtrlA:
+			// Leaving API-key mode: remember the key so switching back restores it.
+			if m.authAPI {
+				m.storedToken = m.credential()
+			}
 			m.authAPI = !m.authAPI
 			m.applyCredentialMode()
+			// The visible field set changes with the mode, and the credential field
+			// is not always the same neighbour — re-seat focus on the first field so
+			// the caret is never left inside a field that is no longer drawn.
+			m.setFocus(fieldURL)
 			m.errMsg = ""
 			m.info = ""
 			// Switching to API-key mode drops the stored password-mode
@@ -416,6 +520,9 @@ func (m Model) View() string {
 	}
 	b.WriteString(theme.DetailKey.Render("Skip TLS verify (ctrl+s): ") + theme.DetailValue.Render(insecure) + "\n")
 
+	if m.reason != "" {
+		b.WriteString("\n" + theme.HintText.Render(m.reason) + "\n")
+	}
 	if m.info != "" {
 		b.WriteString("\n" + theme.StatusBusy.Render(m.info) + "\n")
 	}
@@ -436,6 +543,19 @@ func (m Model) View() string {
 
 // SaveProfile persists the profile to the config file. Passwords are never
 // written — only the minted access token.
+//
+// IT CARRIES FORWARD THE STORED PREFERENCES the connection form cannot know about, and this is a fix
+// rather than tidiness. `res.Profile` is built BY the connection form, which collects a URL and a
+// credential and nothing else — so its Theme is empty. Writing it verbatim BLANKED the profile's saved
+// theme on every launch that passed through the connection screen (first run, and every reauth), which
+// is every launcher-driven launch whose wrapper has an unset ORCHICON_TOKEN. The operator suspected
+// exactly this: "I have a feeling when I do a rebuild, it is modifying my config file." The rebuild was
+// not the cause — but this save was.
+//
+// The TOP-LEVEL theme survives a blanked PROFILE theme (applyStoredTheme falls back to it), which is why
+// the loss was invisible for a launcher-driven session — and why it would bite the moment somebody
+// relied on the per-profile value, or after the top-level fallback changed. Carrying it forward costs
+// nothing and removes the class.
 func SaveProfile(path string, res *Result) error {
 	cfg, err := config.Load(path)
 	if err != nil {
@@ -447,6 +567,16 @@ func SaveProfile(path string, res *Result) error {
 	p := res.Profile
 	if p.Name == "" {
 		p.Name = "default"
+	}
+	// Only when the incoming profile leaves them empty, so a caller that deliberately sets one wins.
+	// These are the fields the connection form does not collect: it asks for a URL and a credential.
+	if prev := cfg.Profiles[p.Name]; prev != nil {
+		if p.Theme == "" {
+			p.Theme = prev.Theme
+		}
+		if p.Newline == "" {
+			p.Newline = prev.Newline
+		}
 	}
 	cfg.Profiles[p.Name] = p
 	cfg.Active = p.Name

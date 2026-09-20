@@ -37,6 +37,17 @@ const (
 	// Backoff base: delay = base * 2^(attempt-1) + jitter(0..500ms).
 	BackoffBase   = 1 * time.Second
 	BackoffJitter = 500 * time.Millisecond
+	// DialWindow is the default for Config.DialWindow — long enough that an
+	// immediate RPC rejection (unimplemented, unauthenticated, refused) wins the
+	// race, short enough that a healthy quiet stream reads as connected.
+	DefaultDialWindow = 2 * time.Second
+	// closeGrace bounds how long Close waits for the loop goroutine to exit.
+	//
+	// Cancelling unblocks a real transport promptly, so a healthy Close returns
+	// immediately and never reaches this; the grace only matters when the loop is
+	// stuck in a call that ignores cancellation, where waiting longer cannot help
+	// and would freeze the caller (Close runs on every tab switch).
+	closeGrace = 500 * time.Millisecond
 )
 
 // Config is the subscription template passed to New. It is lock-free;
@@ -56,8 +67,29 @@ type Config[Resp any] struct {
 	Filter func(Resp) bool
 	// OnEvent is called for each kept event (cache invalidation hook).
 	OnEvent func(Resp)
+	// DialWindow is how long a dial may stay IN FLIGHT before the subscription
+	// reports itself open anyway.
+	//
+	// It exists because of a real property of the streaming client: a
+	// SERVER-streaming call is dispatched through duplexHTTPCall.sendUnary, which
+	// makes the request SYNCHRONOUSLY and therefore does not return until the
+	// response HEADERS arrive — and a Connect server only flushes those on its
+	// first message. A subscription whose server stays quiet (project events fire
+	// only when something changes) therefore blocked inside Open indefinitely, so
+	// the footer showed "connecting…" forever with no error and no retry, even
+	// though the connection was perfectly healthy. Once a dial has been in flight
+	// this long without failing, the transport has accepted it, so the honest
+	// status is "open"; a later failure still flips to error as usual.
+	// Default DefaultDialWindow.
+	DialWindow time.Duration
 	// OnStatus is called on every status transition (footer subscription).
 	OnStatus func(Status)
+	// OnError is called with the underlying dial/stream error whenever one is
+	// recorded. Without it a failing subscription reports only a status, so the
+	// operator sees "connecting…" forever with no reason — which is exactly how
+	// a DEAD ENDPOINT (nothing listening on the configured URL) read as a
+	// mysterious eternal connect.
+	OnError func(error)
 	// MaxEvents ring size (drop-oldest), default DefaultMaxEvents.
 	MaxEvents int
 	// MaxBackoff caps the reconnect delay, default DefaultMaxBackoff.
@@ -102,6 +134,9 @@ func New[Resp any](cfg Config[Resp]) *Sub[Resp] {
 	}
 	if cfg.BackoffBase <= 0 {
 		cfg.BackoffBase = BackoffBase
+	}
+	if cfg.DialWindow <= 0 {
+		cfg.DialWindow = DefaultDialWindow
 	}
 	s := &Sub[Resp]{Config: cfg}
 	s.seen = map[string]struct{}{}
@@ -177,7 +212,30 @@ func (s *Sub[Resp]) Close() {
 	if cancel != nil {
 		cancel()
 	}
-	s.wg.Wait()
+	// A BOUNDED wait. An unbounded wg.Wait() here is a UI freeze waiting to
+	// happen: Close runs on EVERY tab switch (the shell's CloseAll), while the loop
+	// goroutine can be blocked inside a recv() that does not observe cancellation —
+	// a wedged transport, or a stub whose recv never returns. When that happens the
+	// Wait never completes and the caller hangs forever.
+	//
+	// This is not hypothetical: the stream suite HUNG for the full 10m test timeout
+	// (rather than failing) because TestOpenWhileTheDialIsStillInFlight races
+	// connect()'s `<-dialed` against `<-ctx.Done()`, and whenever the dial won the
+	// loop sat in an uninterruptible recv() while Close waited on it — which blocked
+	// `make rebuild-dev` outright.
+	//
+	// The goroutine exits as soon as its blocking call returns (cancelling the
+	// request does unblock a real transport), and if it never does, leaking one
+	// goroutine is strictly better than freezing the UI.
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(closeGrace):
+	}
 }
 
 // wake pokes the loop's select so a pending backoff timer is abandoned
@@ -252,28 +310,65 @@ func (s *Sub[Resp]) connect(ctx context.Context) {
 	s.mu.Unlock()
 	s.setStatus(st)
 
-	recv, err := s.Open(ctx, from)
-	if err != nil {
+	// The dial runs in a goroutine because Open can legitimately block: for a
+	// server-streaming call the client makes the request SYNCHRONOUSLY and waits
+	// for response headers, which a Connect server flushes only on its FIRST
+	// message. A quiet stream would otherwise pin the status at "connecting"
+	// forever — no error, no retry, no explanation.
+	type dialResult struct {
+		recv func() (Resp, error)
+		err  error
+	}
+	dialed := make(chan dialResult, 1)
+	go func() {
+		recv, err := s.Open(ctx, from)
+		dialed <- dialResult{recv: recv, err: err}
+	}()
+
+	// markOpen records that the transport accepted the request.
+	markOpen := func() {
+		s.setStatus(StatusOpen)
 		s.mu.Lock()
-		s.err = err
+		s.attempt = 0
+		s.err = nil
 		s.mu.Unlock()
-		s.setStatus(StatusError)
+	}
+
+	var recv func() (Resp, error)
+	select {
+	case r := <-dialed:
+		if r.err != nil {
+			s.setErr(r.err)
+			s.setStatus(StatusError)
+			return
+		}
+		recv = r.recv
+		markOpen()
+	case <-time.After(s.DialWindow):
+		// Still in flight and not failing: the connection is established, the
+		// server simply has not sent its first message yet.
+		markOpen()
+		select {
+		case r := <-dialed:
+			if r.err != nil {
+				s.setErr(r.err)
+				s.setStatus(StatusError)
+				return
+			}
+			recv = r.recv
+		case <-ctx.Done():
+			return
+		}
+	case <-ctx.Done():
 		return
 	}
-	s.setStatus(StatusOpen) // hook: setStatus("open") + reset attempt AFTER the request resolves
-	s.mu.Lock()
-	s.attempt = 0
-	s.err = nil
-	s.mu.Unlock()
 	for {
 		resp, err := recv()
 		if err != nil {
 			if ctx.Err() != nil {
 				return // closed — do not schedule reconnect
 			}
-			s.mu.Lock()
-			s.err = err
-			s.mu.Unlock()
+			s.setErr(err)
 			if errors.Is(err, io.EOF) {
 				// Stream ended normally (server closed): the hook sets
 				// status "closed" then schedules a reconnect anyway.
@@ -284,6 +379,17 @@ func (s *Sub[Resp]) connect(ctx context.Context) {
 			return
 		}
 		s.pushEvent(resp)
+	}
+}
+
+// setErr records the subscription's last error and forwards it to OnError.
+func (s *Sub[Resp]) setErr(err error) {
+	s.mu.Lock()
+	s.err = err
+	hook := s.OnError
+	s.mu.Unlock()
+	if hook != nil && err != nil {
+		hook(err)
 	}
 }
 

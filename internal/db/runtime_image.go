@@ -26,12 +26,12 @@ type RuntimeImageRow struct {
 	Status             string
 	BuildLog           string
 	Error              string
-	FailureReason    string
-	FailedStep       string
-	LogTail          string
-	FailureCategory  string
+	FailureReason      string
+	FailedStep         string
+	LogTail            string
+	FailureCategory    string
 	Version            int
-	BuiltVersion       int // spec version the current ready image was built from (0 = never built)
+	BuiltVersion       int    // spec version the current ready image was built from (0 = never built)
 	Source             string // "stock" (canned, seeded) or "custom" (tenant-created)
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
@@ -172,12 +172,12 @@ type UpdateRuntimeImageFields struct {
 	Status             *string
 	BuildLog           *string
 	Error              *string
-	BuiltVersion       *int   // set on build success to the spec version the image was built from
-	FailureReason    *string
-	FailedStep       *string
-	LogTail          *string
-	FailureCategory  *string
-	StatusOnly         bool   // true = build-flow transition; do not bump version
+	BuiltVersion       *int // set on build success to the spec version the image was built from
+	FailureReason      *string
+	FailedStep         *string
+	LogTail            *string
+	FailureCategory    *string
+	StatusOnly         bool // true = build-flow transition; do not bump version
 }
 
 // UpdateRuntimeImage updates mutable fields with optimistic concurrency.

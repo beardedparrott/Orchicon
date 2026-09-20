@@ -171,7 +171,8 @@ func (r *WorkflowReconciler) runNeedsServe(ctx context.Context, tx pgx.Tx, tenan
 		}
 		var modelRef string
 		if s.WorkerVersion > 0 {
-			if v, err := db.GetWorkerVersionByID(ctx, tx, tenantID, s.Ref, fmt.Sprintf("v%d", s.WorkerVersion)); err == nil {
+			// By NUMBER, not by id (see GetWorkerVersionByNumber).
+			if v, err := db.GetWorkerVersionByNumber(ctx, tx, tenantID, s.Ref, s.WorkerVersion); err == nil {
 				modelRef = v.ModelRef
 			}
 		}
@@ -2209,7 +2210,11 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			return r.failStep(ctx, tx, tenantID, run, sr, runs,
 				fmt.Errorf("worker step %q has no worker ref", step.Name))
 		}
-		workerVer, err := db.GetWorkerVersionByID(ctx, tx, tenantID, step.Ref, fmt.Sprintf("v%d", step.WorkerVersion))
+		// By NUMBER, not by id. This is the DISPATCH resolution: a step that
+		// pinned a version must run THAT version. The old "v%d" pseudo-id
+		// never matched a row, so every pin silently degraded to
+		// latest-published below (see GetWorkerVersionByNumber).
+		workerVer, err := db.GetWorkerVersionByNumber(ctx, tx, tenantID, step.Ref, step.WorkerVersion)
 		if err != nil {
 			if err == db.ErrNotFound {
 				// Fall back to latest published — supports workflows
@@ -2524,19 +2529,9 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		switch decision {
 		case cfg.SuccessValue:
 			// Decision is success → proceed forward.
-			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-				Status:    strPtr(domain.StepRunSucceeded),
-				StartedAt: &now,
-				EndedAt:   &now,
-			})
-			if err != nil {
-				return fmt.Errorf("mark loop_decision step succeeded: %w", err)
+			if err := r.loopDecisionAccept(ctx, tx, tenantID, run, sr, step, runs, now, "upstream success"); err != nil {
+				return err
 			}
-			runs[step.ID] = updated
-			if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, updated); err != nil {
-				return fmt.Errorf("enqueue loop_decision step_succeeded: %w", err)
-			}
-			r.log.Info("loop_decision: accepted", "run", run.ID, "step", step.ID)
 
 		case cfg.FailureValue:
 			// Decision is failure → loop back to loop_branch with full context.
@@ -2554,27 +2549,39 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			}
 
 		default:
-			// No decision field found. For the terminal PR loop (devops -> end) an empty decision
-			// means the PR step succeeded without an explicit review signal - this is success, not a re-ask.
-			// The general re-ask path would infinitely loop for step-3rplua0d/step-e75nato1 which depends
-			// only on step-devops-pr. Treat it as success to avoid the wedge that required force_progress.
-			if cfg.LoopBranch == "step-devops-pr" && (cfg.SuccessBranch == "step-l32ezp4b" || cfg.SuccessBranch == "step-end") {
-				updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-					Status:    strPtr(domain.StepRunSucceeded),
-					StartedAt: &now,
-					EndedAt:   &now,
-				})
-				if err != nil {
-					return fmt.Errorf("mark loop_decision step succeeded: %w", err)
+			// No upstream supplied a value in cfg.DecisionField. WHAT THAT MEANS IS
+			// THE WORKFLOW'S CALL, not the engine's — so it is config:
+			//
+			//   reask   (default, and what an ABSENT key means) — re-dispatch the
+			//           reviewer and ask it to state a verdict.
+			//   success — proceed forward. For a gate whose upstream has no verdict
+			//           to give: re-asking it only re-runs the same step, and the
+			//           loop target IS that same step, so the "re-ask" carries no new
+			//           information. It burns the re-ask budget and then fails the
+			//           node — the wedge that needed force_progress.
+			//   fail    — a verdict is mandatory here; refuse immediately.
+			//
+			// This REPLACES a hardcode that recognised the terminal devops loop by
+			// tenant step id (loop_branch "step-devops-pr" plus a success_branch of
+			// "step-l32ezp4b" or "step-end" — the latter a fossil no live row ever
+			// carried). That guard matched only ONE of the two loops it was written
+			// for: SDLC (human approval)'s loop points at step-qonmbwyu, so it kept
+			// re-asking and kept failing. Expressed as a policy it is data the
+			// operator sets, and 20260924000000_backfill_loop_decision_missing_verdict
+			// backfills the loops the hardcode actually rescued.
+			if cfg.OnMissingDecision == MissingDecisionSuccess {
+				if err := r.loopDecisionAccept(ctx, tx, tenantID, run, sr, step, runs, now,
+					"on_missing_decision=success (no upstream verdict)"); err != nil {
+					return err
 				}
-				runs[step.ID] = updated
-				if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, updated); err != nil {
-					return fmt.Errorf("enqueue loop_decision step_succeeded: %w", err)
-				}
-				r.log.Info("loop_decision: terminal devops success (no decision) -> accepted", "run", run.ID, "step", step.ID)
 				break
 			}
-			// No decision field found. Re-ask the reviewer.
+			if cfg.OnMissingDecision == MissingDecisionFail {
+				return r.failStep(ctx, tx, tenantID, run, sr, runs,
+					fmt.Errorf("loop_decision step %q: no decision signal in %q and on_missing_decision is fail",
+						step.Name, cfg.DecisionField))
+			}
+			// Default: re-ask the reviewer.
 			reviewerStepID := ""
 			for _, dep := range step.DependsOn {
 				reviewerStepID = dep
@@ -2601,10 +2608,14 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			}
 			reaskCount := countReaskRuns(reaskList)
 			if reaskCount >= cfg.MaxReask {
-				// Re-ask exhausted — fail the loop node even though the step
-				// run succeeded, because the reviewer never provided a decision.
+				// Re-ask exhausted — fail the loop node even though the step run
+				// succeeded, because the reviewer never provided a decision. Name the
+				// policy in the error: this failure is otherwise a mystery wedge, and
+				// the operator's fix is one config key.
 				return r.failStep(ctx, tx, tenantID, run, sr, runs,
-					fmt.Errorf("loop_decision step %q: reviewer did not provide decision signal after %d attempts", step.Name, cfg.MaxReask))
+					fmt.Errorf("loop_decision step %q: reviewer did not provide decision signal after %d attempts"+
+						" (set config.on_missing_decision to %q if this step has no verdict to give)",
+						step.Name, cfg.MaxReask, MissingDecisionSuccess))
 			}
 
 			r.log.Info("loop_decision: re-asking reviewer",
@@ -3885,10 +3896,18 @@ func readConfigProjectID(config string) string {
 //   - "human_escalation": set the step to approval_pending; a human
 //     must mark the task succeeded to continue.
 //   - "stop": permanent failure — no retry, step is marked failed.
+//
+// There is deliberately NO delay field. live config carries `retry_delay_seconds` — it
+// was written into the seeds and into stored step configs — but NOTHING ever waited on
+// it: the value was parsed here and then read by no code, and the recovery row that
+// carried it was never consulted when a retry was dispatched (there is no deferral
+// mechanism for execution dispatch at all; retries go out immediately). A knob that
+// silently does nothing is worse than no knob, so it is gone. A stored
+// `retry_delay_seconds` key is now IGNORED here and PRESERVED verbatim by the step
+// editors, which never modelled it.
 type stepRecoveryConfig struct {
-	Strategy          string `json:"strategy"`
-	MaxAttempts       int    `json:"max_attempts"`
-	RetryDelaySeconds int    `json:"retry_delay_seconds"`
+	Strategy    string `json:"strategy"`
+	MaxAttempts int    `json:"max_attempts"`
 }
 
 // readStepRecoveryConfig reads the "recovery" block from the step's
@@ -3913,9 +3932,6 @@ func readStepRecoveryConfig(config string) stepRecoveryConfig {
 	}
 	if outer.Recovery.MaxAttempts > 0 {
 		cfg.MaxAttempts = outer.Recovery.MaxAttempts
-	}
-	if outer.Recovery.RetryDelaySeconds > 0 {
-		cfg.RetryDelaySeconds = outer.Recovery.RetryDelaySeconds
 	}
 	return cfg
 }
@@ -4855,7 +4871,50 @@ type loopDecisionConfig struct {
 	SuccessValue  string `json:"success_value"`  // value meaning success; default "success"
 	FailureValue  string `json:"failure_value"`  // value meaning failure; default "failure"
 	MaxReask      int    `json:"max_reask"`      // max re-ask attempts when no decision field found; default 3
+
+	// OnMissingDecision names what to do when NO upstream supplies a value in
+	// DecisionField — the gate has no verdict to route on. Without a policy the
+	// engine had to guess, and it guessed from tenant step ids.
+	//
+	//   "reask"   (default) — re-dispatch the reviewer and ask for a verdict.
+	//   "success" — proceed forward.
+	//   "fail"    — refuse immediately.
+	//
+	// Any value the engine does not recognise is treated as the default, so a typo
+	// degrades to today's behaviour rather than to something new.
+	OnMissingDecision string `json:"on_missing_decision"`
+
+	// DecisionField / SuccessValue / FailureValue are PLATFORM CONTRACT, not operator
+	// preference, and are therefore exposed in NEITHER client's step editor.
+	//
+	// The verdict vocabulary is produced by the platform, not chosen per workflow: the
+	// worker identity preamble tells EVERY worker to "report your result via the
+	// ORCHICON WORKER SUMMARY contract" (db.WorkerIdentityPreamble), the seeded prompts
+	// spell it out as the literal `ORCHICON WORKER SUMMARY: success` / `failure` in 18
+	// places, and extractSummaryDecision NORMALIZES exactly those two words — passing any
+	// other first word through verbatim, which is what makes a custom vocabulary
+	// technically possible.
+	//
+	// That combination is a trap in a form. Point SuccessValue at "done" without also
+	// rewriting every worker prompt (and every approval reviewer's) and no verdict ever
+	// matches, so EVERY gate falls through to the missing-decision path — re-ask until
+	// the budget is spent, then fail. Nothing validates the two against each other, so
+	// the failure mode is silent and total. Left settable in the config (a workflow may
+	// legitimately drive it programmatically) but not offered as a knob.
+	//
+	// DecisionField is the same class for a second reason: the PRIMARY path does not
+	// consult it at all — the upstream step run's decision is decoded from a hardcoded
+	// `_decision` tag above — so only the legacy ticket fallback honours it. Offering it
+	// would move a knob that mostly does nothing.
 }
+
+// The on_missing_decision vocabulary. The engine routes on these exact strings;
+// MissingDecisionReask is the default an absent key resolves to.
+const (
+	MissingDecisionReask   = "reask"
+	MissingDecisionSuccess = "success"
+	MissingDecisionFail    = "fail"
+)
 
 func parseLoopDecisionConfig(config string) loopDecisionConfig {
 	var cfg loopDecisionConfig
@@ -4872,7 +4931,38 @@ func parseLoopDecisionConfig(config string) loopDecisionConfig {
 	if cfg.MaxReask <= 0 {
 		cfg.MaxReask = 3
 	}
+	// An ABSENT key means the general re-ask path, and so does any value outside the
+	// vocabulary. The policy is ADDITIVE: a workflow written before it existed — and one
+	// whose author mistyped the policy — behaves exactly as it did, rather than falling
+	// into a third, invented state. Normalising here (not at the dispatch site) means the
+	// struct always carries a policy the engine actually implements.
+	if cfg.OnMissingDecision != MissingDecisionReask &&
+		cfg.OnMissingDecision != MissingDecisionSuccess &&
+		cfg.OnMissingDecision != MissingDecisionFail {
+		cfg.OnMissingDecision = MissingDecisionReask
+	}
 	return cfg
+}
+
+// loopDecisionAccept records a loop_decision step run as SUCCEEDED — the "proceed
+// forward" action — and emits its step_succeeded event. It has two callers, which
+// differ only in WHY they accepted: an explicit success verdict from an upstream, and
+// the on_missing_decision=success policy (no verdict to read).
+func (r *WorkflowReconciler) loopDecisionAccept(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow, step workflow.StepWire, runs map[string]db.WorkflowStepRunRow, now time.Time, reason string) error {
+	updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+		Status:    strPtr(domain.StepRunSucceeded),
+		StartedAt: &now,
+		EndedAt:   &now,
+	})
+	if err != nil {
+		return fmt.Errorf("mark loop_decision step succeeded: %w", err)
+	}
+	runs[step.ID] = updated
+	if err := r.enqueueStepEvent(ctx, tx, domain.WorkflowEventStepSucceeded, run, updated); err != nil {
+		return fmt.Errorf("enqueue loop_decision step_succeeded: %w", err)
+	}
+	r.log.Info("loop_decision: accepted", "run", run.ID, "step", step.ID, "reason", reason)
+	return nil
 }
 
 // currentLoopIteration returns the current iteration count for a step

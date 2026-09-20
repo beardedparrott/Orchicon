@@ -7,6 +7,8 @@ package tui
 // asserts parity between this set and the slash registry.
 
 import (
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 )
 
@@ -17,6 +19,10 @@ type NavEntry struct {
 	Tab      TabID
 	Source   string // screenkit source name ("" = tab-level only)
 	ArgsHint string // " <id>" when the command takes an arg jump
+	// Action is set for entries that are a VERB rather than a source focus
+	// (the Ask tab's "New"/"Conversations": Ask's list lives in the right
+	// rail, not a source pane). Nil for ordinary source entries.
+	Action func(m *App) tea.Cmd
 }
 
 // buildNavEntries constructs each area screen (constructors are pure
@@ -49,6 +55,19 @@ func buildNavEntries(m *App) []NavEntry {
 		}
 	}
 	for _, tab := range Tabs {
+		if tab.ID == TabAsk {
+			// Ask is the one tab whose dropdown is verbs rather than sources:
+			// its list (conversations) is the right rail, not a source pane.
+			//   New           — the launch page, exactly what orch shows on start
+			//   Conversations — the transcript view + the conversations rail
+			out = append(out,
+				NavEntry{Cmd: "new", Label: "New", Tab: TabAsk,
+					Action: func(m *App) tea.Cmd { m.newChat(); return nil }},
+				NavEntry{Cmd: "conversations", Label: "Conversations", Tab: TabAsk,
+					Action: func(m *App) tea.Cmd { m.showAskConversations(); return nil }},
+			)
+			continue
+		}
 		s := m.screenForNav(tab.ID)
 		if s != nil {
 			add(tab.ID, s)
@@ -64,11 +83,10 @@ func (m *App) screenForNav(tab TabID) Screen {
 	if s, ok := m.screens[tab]; ok && s != nil {
 		return s
 	}
-	f, ok := m.factories[tab]
-	if !ok {
+	s := m.newScreen(tab)
+	if s == nil {
 		return nil
 	}
-	s := f()
 	m.screens[tab] = s // cache like a normal visit
 	return s
 }

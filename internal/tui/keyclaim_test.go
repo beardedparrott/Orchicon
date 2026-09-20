@@ -65,10 +65,19 @@ func TestScreenKeyClaimBypassesShellRoutes(t *testing.T) {
 		t.Fatalf("claimed keys must reach the screen, got %v", cs.keys)
 	}
 
-	// With the claim released the shell routes own their keys again.
+	// With the claim released the shell routes own their keys again — asserted with CTRL+C, which is the
+	// quit binding. `q` deliberately does NOT appear here: it was removed as a quit entirely (the operator:
+	// "if you hit it outside of the composer then it still quits. We should remove that completely."), so a
+	// test that reached for it would be asserting a binding that no longer exists.
+	//
+	// The composer is also why this needs a precondition rather than just a key: it holds the focus by
+	// default and is a TEXT INPUT, so while it has focus a printable key belongs to the operator's message.
+	// ctrl+c sidesteps the whole question — it is never text, and it is documented as the hard escape that
+	// "always works, even mid-composition".
+	m.setFocus(focusContent)
 	cs.claim = false
-	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if !nm.(*App).quitting {
-		t.Fatal("with no claim, q must quit")
+		t.Fatal("with no claim and the composer unfocused, ctrl+c must quit")
 	}
 }

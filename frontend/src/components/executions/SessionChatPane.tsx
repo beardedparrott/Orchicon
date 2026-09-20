@@ -306,7 +306,9 @@ function UserBubble({ text, source }: { text: string; source: string }) {
           </span>
         </div>
         <div className="break-words [overflow-wrap:anywhere]">
-          <Markdown>{text}</Markdown>
+          {/* preserveBreaks, the same as the chat UserBubble: this is the operator's own goal text, and the
+              format they typed it in is the format to show. */}
+          <Markdown preserveBreaks>{text}</Markdown>
         </div>
       </div>
     </div>

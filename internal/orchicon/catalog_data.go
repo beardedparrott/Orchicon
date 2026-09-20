@@ -61,11 +61,16 @@ func loadCatalog() {
 	})
 }
 
-// catalogRefKey normalizes a model_ref (provider/id) or bare id + provider.
+// catalogRefKey builds the catalog's "provider/id" key from a provider and a
+// bare model id. The catalog is keyed provider/id — this is the catalog's own
+// key format, NOT the 3-segment model_ref grammar (adapter/provider/model,
+// ADR-0003).
 func catalogRefKey(provider, id string) string { return provider + "/" + id }
 
-// GetModel is the single catalog lookup by provider/id ref. The
-// context-management task consumes it for compaction triggers.
+// GetModel looks a model up by its "provider/id" CATALOG KEY. The catalog is
+// keyed provider/id, so a canonical 3-segment model_ref
+// (adapter/provider/model, ADR-0003) will NOT match — strip the adapter segment
+// first (see adapter.SplitForServe).
 func GetModel(ref string) (ModelInfo, bool) {
 	loadCatalog()
 	m, ok := catalogModels[ref]

@@ -102,6 +102,10 @@ message GetUsageRequest {
   google.protobuf.Timestamp end = 8;
   string page_token = 9;
   int32 page_size = 10;
+  // session_id scopes the query to ONE Ask Orchicon conversation's usage —
+  // the read-back path for a chat client's own token/cache/cost totals
+  // (see UsageRecord.session_id). Empty = unscoped.
+  string session_id = 11;
 }
 message GetUsageResponse {
   repeated UsageRecord records = 1;

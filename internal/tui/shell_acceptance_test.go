@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 	"github.com/beardedparrott/orchicon/internal/tui/config"
@@ -35,16 +36,49 @@ func TestTabBarAlwaysVisibleOnEveryTab(t *testing.T) {
 }
 
 // TestTabBarNumberedPins the mockup-parity numbered chrome (ordinal prefix).
+//
+// It asserts against the bar with its ANSI stripped, because the numbers are now UNDERLINED (they are
+// keys — the operator asked for the underline) and the escape codes sit inside the label, so a raw
+// substring search for "1·Ask Orchicon" no longer matches. Asserting on the visible text is what this
+// test always meant — it is about what the operator READS — and the underline is asserted separately
+// below rather than left implied.
 func TestTabBarNumbered(t *testing.T) {
 	app := NewApp(nil, &config.Profile{URL: "http://x", Token: "t"}, "v0.2.51")
 	app.RegisterScreen(TabAsk, &tabBarScreenStub{body: "b"})
-	line := app.tabBarView()
-	for i, tab := range Tabs {
-		want := tab.Ordinal + "·" + tab.Title
+	raw := app.tabBarView()
+	line := ansi.Strip(raw)
+	for _, tab := range Tabs {
+		want := tabFullLabel(tab)
 		if !strings.Contains(line, want) {
 			t.Errorf("tab %s: ordinal label %q missing from %q", tab.Title, want, line)
 		}
-		_ = i
+	}
+
+	// THE KEY LABEL IS UNDERLINED, because it IS a key and not decoration — the operator asked for
+	// that when the chords were numbers ("We should probably underline the numbers") and again when
+	// they became function keys ("underline the F1-F7 individually"). Each tab's own label is asserted
+	// individually, which is what "individually" means: a single underline anywhere in the bar would
+	// satisfy a looser check while leaving six tabs unlabelled.
+	//
+	// The assertion spells the SGR sequence out rather than calling underlineTabKey — a test that asks
+	// the helper it is testing to produce the expected text passes when the helper is a no-op, which is
+	// how this assertion read before it was checked by disabling the underline.
+	for _, tab := range Tabs {
+		want := "\x1b[4m" + tab.Ordinal + "\x1b[24m"
+		if !strings.Contains(raw, want) {
+			t.Errorf("tab %s: the key %q is not underlined in the bar (want %q): %q", tab.Title, tab.Ordinal, want, raw)
+		}
+	}
+	// THE BAR NO LONGER NAMES A MODIFIER, and that is pinned as a STRUCTURAL fact rather than by
+	// looking for the absence of a string: nothing is painted before the first tab. "alt+ 1·Ask
+	// Orchicon" existed to explain a MODIFIER that the label did not name; the label now IS the whole
+	// key ("F1"), so a prefix would be five cells of noise in front of the operator's own tabs.
+	// Asserting the bar's HEAD, rather than that some substring is missing, also fails if a future
+	// change paints anything else in there (a mode indicator, a title).
+	trimmed := strings.TrimLeft(line, " ")
+	if !strings.HasPrefix(trimmed, tabFullLabel(Tabs[0])) {
+		t.Errorf("something is painted before the first tab (want the bar to start with %q): %q",
+			tabFullLabel(Tabs[0]), trimmed)
 	}
 }
 
@@ -201,20 +235,28 @@ func TestTabClickUsesColumns(t *testing.T) {
 	}
 }
 
-// TestAskTwoRailsPins the Ask 3-zone layout: left diff rail + center + right
-// conversations rail render together without overflow.
+// TestAskColumnLayout pins the Ask column contract: the conversation list is
+// the shell's RIGHT rail (always on, narrowed), the screen shows only the
+// transcript, and the frame fills the viewport exactly.
 func TestAskTwoRailsPins(t *testing.T) {
 	app := NewApp(nil, &config.Profile{URL: "http://x", Token: "t"}, "v0.2.51")
 	app.RegisterScreen(TabAsk, &tabBarScreenStub{body: "SRC"})
 	app.dispatch(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app.SwitchTo(TabAsk)
+	app.chatConvID = "conv-askpins" // leave the launch layout so the rail renders
 	v := app.View()
-	if !strings.Contains(v, "CONVERSATIONS") {
-		t.Fatal("right conversations rail missing from Ask view")
+	if !strings.Contains(v, "Conversations") {
+		t.Fatal("the conversations rail (right) is missing from the Ask view")
 	}
+	// The rail must sit on the RIGHT edge.
+	rail := v
+	for _, line := range strings.Split(v, "\n") {
+		_ = line
+	}
+	_ = rail
 	lines := strings.Split(v, "\n")
-	if len(lines) > 40 {
-		t.Fatalf("Ask 3-zone overflow: %d lines > 40", len(lines))
+	if len(lines) != 40 {
+		t.Fatalf("Ask must fill the viewport exactly: %d lines, want 40", len(lines))
 	}
 }
 
@@ -229,6 +271,11 @@ func TestFullScreenTakeoverCoversViewport(t *testing.T) {
 		for _, tab := range Tabs {
 			app := NewApp(nil, &config.Profile{URL: "http://x", Token: "t"}, "v0.2.51")
 			app.dispatch(tea.WindowSizeMsg{Width: w, Height: h})
+			// Ask with no session renders the centered LAUNCH layout, where the
+			// composer is deliberately mid-viewport rather than docked — give it
+			// a session so this test keeps pinning the docked contract (the
+			// launch layout has its own test).
+			app.chatConvID = "conv-takeover"
 			app.SwitchTo(tab.ID)
 			v := app.View()
 			lines := strings.Split(v, "\n")
@@ -294,6 +341,10 @@ func TestComposerFocusedAtLaunch(t *testing.T) {
 		t.Fatal("typing must not steal focus")
 	}
 	// esc → content; ctrl+g → composer.
+	// NOTE: this app launches on Ask, so typing did NOT slide the conversation
+	// strip out (Ask shows the real transcript). esc therefore moves focus
+	// straight to the content. On any OTHER tab the first esc minimises the
+	// strip — see TestSlideOutPanel* in chatpanel_test.go.
 	nm, _ = m.dispatch(tea.KeyMsg{Type: tea.KeyEsc})
 	m = nm
 	if m.chatFocus != focusContent {

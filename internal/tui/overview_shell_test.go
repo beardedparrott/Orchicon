@@ -1,7 +1,7 @@
 package tui
 
 import (
-	"strconv"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -26,8 +26,8 @@ func (s *navStub) EnsureSubscriptions()             { s.ensured++ }
 func (s *navStub) SelectSource(name string) bool    { s.selected = name; return true }
 
 // TestOverviewIsSecondDomain pins the domain's slot: Overview is the tab
-// directly after Ask Orchicon (the GUI's nav order), so its ordinal is 2
-// and every later ordinal shifts by one (the numbered tab chrome).
+// directly after Ask Orchicon (the GUI's nav order), so its key label is F2
+// and every later one shifts by one (the key-labelled tab chrome).
 func TestOverviewIsSecondDomain(t *testing.T) {
 	if len(Tabs) != 7 {
 		t.Fatalf("tabs = %d, want 7 (Ask + 6 GUI nav groups)", len(Tabs))
@@ -35,12 +35,15 @@ func TestOverviewIsSecondDomain(t *testing.T) {
 	if Tabs[0].ID != TabAsk {
 		t.Fatalf("tab[0] = %q, want ask", Tabs[0].ID)
 	}
-	if Tabs[1].ID != TabOverview || Tabs[1].Title != "Overview" || Tabs[1].Chord != "ctrl+v" {
-		t.Fatalf("tab[1] = %+v, want the Overview domain (ctrl+v)", Tabs[1])
+	if Tabs[1].ID != TabOverview || Tabs[1].Title != "Overview" || Tabs[1].Chord != tabChord(TabOverview) {
+		t.Fatalf("tab[1] = %+v, want the Overview domain (%s)", Tabs[1], tabChord(TabOverview))
 	}
-	for i, tab := range Tabs {
-		if want := strconv.Itoa(i + 1); tab.Ordinal != want {
-			t.Errorf("tab %s ordinal = %q, want %q (numbered chrome)", tab.ID, tab.Ordinal, want)
+	// The printed label is the CHORD'S OWN KEY ("F2" for "f2"), derived from the chord so the key and
+	// the label cannot drift. It used to be a bare number 1…7 — decoration that did not name the key
+	// that switches to the tab; the label is now the key itself, and each one is underlined.
+	for _, tab := range Tabs {
+		if want := strings.ToUpper(tab.Chord); tab.Ordinal != want {
+			t.Errorf("tab %s key label = %q, want %q (its chord is %q)", tab.ID, tab.Ordinal, want, tab.Chord)
 		}
 	}
 }
@@ -124,19 +127,19 @@ func TestOverviewSlashNavigation(t *testing.T) {
 	}
 }
 
-// TestOverviewChordSwitches pins the ctrl+v chord (structural: it bypasses
-// the composer, like every other tab chord).
+// TestOverviewChordSwitches pins the Overview tab's chord (structural: it bypasses the composer, like
+// every other tab chord). The chord is READ from Tabs, so this test follows the binding.
 func TestOverviewChordSwitches(t *testing.T) {
 	m := newTestApp()
 	stub := &navStub{tab: TabOverview}
 	m.RegisterScreen(TabOverview, stub)
-	nm, _ := m.Update(keyFor("ctrl+v"))
+	nm, _ := m.Update(keyFor(tabChord(TabOverview)))
 	m2 := nm.(*App)
 	if m2.ActiveTab() != TabOverview {
-		t.Fatalf("ctrl+v: active tab = %q, want overview", m2.ActiveTab())
+		t.Fatalf("%s: active tab = %q, want overview", tabChord(TabOverview), m2.ActiveTab())
 	}
 	if stub.ensured == 0 {
-		t.Fatal("ctrl+v must arm the Overview screen's subscriptions")
+		t.Fatalf("%s must arm the Overview screen's subscriptions", tabChord(TabOverview))
 	}
 }
 

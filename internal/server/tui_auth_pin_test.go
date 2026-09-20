@@ -23,9 +23,9 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	assets "github.com/beardedparrott/orchicon"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
-	assets "github.com/beardedparrott/orchicon"
 	"github.com/beardedparrott/orchicon/internal/api"
 	authpkg "github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/config"

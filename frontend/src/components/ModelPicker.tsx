@@ -27,6 +27,17 @@ interface ModelPickerProps {
   // chat (ChatTurnClient) is flagged for review with an amber banner
   // (ADR-0004 D1) — the Ask-capability guard surfaces at selection time.
   askMode?: boolean;
+  // inline renders the tiers in NORMAL FLOW inside the caller's container
+  // instead of as an absolutely-positioned dropdown below the input, and keeps
+  // them ALWAYS visible (the host owns dismissal).
+  //
+  // This exists because an `absolute` dropdown is removed from layout: it
+  // contributes no height to its parent and paints outside the parent's box.
+  // A host that anchors a panel at the viewport edge (the Ask composer's model
+  // chip, which opens ABOVE the chat bar) therefore cannot contain it — the
+  // tiers would render detached from the panel. Default false = the original
+  // dropdown behaviour, unchanged for every existing caller.
+  inline?: boolean;
 }
 
 // Three-tier control (ADR-0004): adapter bubble list (registered kinds) →
@@ -34,7 +45,7 @@ interface ModelPickerProps {
 // list (provider-scoped). The stored model_ref seeds the selection
 // (legacy 2-segment refs infer adapter `opencode`); saving writes a
 // normalized 3-segment `adapter/provider/model` ref.
-export function ModelPicker({ value, onChange, askMode = false }: ModelPickerProps) {
+export function ModelPicker({ value, onChange, askMode = false, inline = false }: ModelPickerProps) {
   const parsed = useMemo(() => parseModelRef(value), [value]);
 
   const { data: adapterKindsData, error: kindsError } = useListAdapterKinds();
@@ -66,6 +77,11 @@ export function ModelPicker({ value, onChange, askMode = false }: ModelPickerPro
   }, [value]);
   const [search, setSearch] = useState("");
   const [showDropdown, setShowDropdown] = useState(false);
+  // tiersOpen is whether the three tiers are rendered. An INLINE host keeps them
+  // up permanently (the host, not the input's focus, decides when the panel is
+  // open) — without this, an inline picker would render just the search input
+  // and look broken.
+  const tiersOpen = inline || showDropdown;
   const [focusedIdx, setFocusedIdx] = useState(0);
   const [infoModel, setInfoModel] = useState<OpenCodeModel | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -321,7 +337,7 @@ export function ModelPicker({ value, onChange, askMode = false }: ModelPickerPro
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
-    if (!showDropdown) {
+    if (!tiersOpen) {
       if (e.key === "ArrowDown" || e.key === "Enter") {
         setShowDropdown(true);
         e.preventDefault();
@@ -399,7 +415,7 @@ export function ModelPicker({ value, onChange, askMode = false }: ModelPickerPro
           closed state: always enabled, clicking/focusing opens the panel —
           no dead end (the QA round 3 orchicon trap is covered by the input
           being clickable, not by forcing the panel open). */}
-      {selectedModel && !showDropdown ? (
+      {!inline && selectedModel && !showDropdown ? (
         <div
           className="flex w-full cursor-pointer flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5 hover:bg-muted/50"
           onClick={() => setShowDropdown(true)}
@@ -433,12 +449,17 @@ export function ModelPicker({ value, onChange, askMode = false }: ModelPickerPro
             }}
             onFocus={() => setShowDropdown(true)}
             onKeyDown={handleKeyDown}
+            autoFocus={inline}
           />
-          {showDropdown && (
+          {tiersOpen && (
             <div
-              className="absolute z-[100] mt-1 w-full rounded-xl glass-menu shadow-xl"
+              className={
+                inline
+                  ? "mt-3 flex flex-col"
+                  : "absolute z-[100] mt-1 w-full rounded-xl glass-menu shadow-xl"
+              }
               style={{
-                maxHeight: "420px",
+                maxHeight: inline ? undefined : "420px",
                 overflow: "hidden",
                 display: "flex",
                 flexDirection: "column",

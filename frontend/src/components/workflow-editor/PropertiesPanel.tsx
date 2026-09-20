@@ -7,12 +7,10 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-import { useListPolicies } from "@/api/policies";
 import { useListProjects } from "@/api/projects";
 import { useListWorkItems } from "@/api/workItems";
 import { useListWorkers } from "@/api/workers";
 import { WorkerStatus } from "@/api/gen/orchicon/api/v1/worker_pb";
-import { PolicyStatus } from "@/api/gen/orchicon/api/v1/policy_pb";
 import { WorkItemKind } from "@/api/gen/orchicon/api/v1/work_item_pb";
 
 import {
@@ -38,7 +36,6 @@ export function PropertiesPanel({
   const { data: workItems } = useListWorkItems(projectId || "", {});
   const { data: workerItems } = useListWorkers();
   const workers = (workerItems ?? []).map((it) => it.worker!);
-  const { data: policies } = useListPolicies({ status: PolicyStatus.PUBLISHED });
 
   // Seed default config values for newly-created steps. Must be before
   // the early return to keep hook order stable across renders.
@@ -215,35 +212,6 @@ export function PropertiesPanel({
           </>
         )}
 
-        {d.kind === STEP_KIND.POLICY && (
-          <Field label="Policy" hint="The Rego policy evaluated as a gate for this step.">
-            <select
-              className="h-9 w-full rounded-xl glass-input px-2 text-sm"
-              value={d.gatePolicyRef}
-              disabled={readOnly}
-              onChange={(e) => {
-                const pid = e.target.value;
-                const policy = policies?.find((p) => p.id === pid);
-                if (policy) {
-                  const next = { ...cfg, policy_title: policy.name };
-                  onChange({
-                    name: policy.name,
-                    gatePolicyRef: pid,
-                    config: JSON.stringify(next),
-                  });
-                }
-              }}
-            >
-              <option value="">-- Select a policy --</option>
-              {(policies ?? []).map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </Field>
-        )}
-
         {d.kind === STEP_KIND.APPROVAL && (
           <>
           <Field label="Reviewer" hint="Who evaluates this approval gate. Human blocks for an API call; Worker dispatches to an AI approver.">
@@ -357,10 +325,54 @@ export function PropertiesPanel({
                 : "Connect the success outlet (right handle) to the next step."}
             </p>
           </Field>
+          <Field
+            label="On missing decision"
+            hint="What to do when NO upstream supplies a verdict to route on (config.decision_field, default _decision). reask re-dispatches the reviewer and asks for a verdict — and when that budget runs out the loop node FAILS, wedging the run. Set success for a gate whose upstream has no verdict to give (a terminal DevOps loop, where the re-ask would just re-run the same step the loop already targets)."
+          >
+            <select
+              className="h-9 w-full rounded-xl glass-input px-2 text-sm"
+              value={typeof cfg.on_missing_decision === "string" ? cfg.on_missing_decision : "reask"}
+              disabled={readOnly}
+              onChange={(e) => {
+                const next = { ...cfg, on_missing_decision: e.target.value };
+                onChange({ config: JSON.stringify(next) });
+              }}
+            >
+              <option value="reask">reask — re-ask the reviewer (engine default)</option>
+              <option value="success">success — proceed forward without one</option>
+              <option value="fail">fail — a verdict is mandatory; refuse immediately</option>
+            </select>
+          </Field>
+          <Field
+            label="Max re-asks"
+            hint="How many times to re-ask the reviewer for a verdict before the loop node FAILS (the run then needs a force-progress). Engine default 3. This is a different budget from max_iterations above: that bounds loops after an explicit failure, this bounds re-asks when no verdict arrived at all."
+          >
+            <input
+              type="number"
+              min={1}
+              max={100}
+              className="h-9 w-full rounded-xl glass-input px-2 text-sm"
+              value={typeof cfg.max_reask === "number" ? cfg.max_reask : 3}
+              disabled={readOnly}
+              onChange={(e) => {
+                const maxReask = Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 3));
+                const next = { ...cfg, max_reask: maxReask };
+                onChange({ config: JSON.stringify(next) });
+              }}
+            />
+          </Field>
+          {/* decision_field / success_value / failure_value are intentionally NOT
+              exposed. The verdict vocabulary is PLATFORM CONTRACT, not preference:
+              every seeded worker prompt instructs the literal `ORCHICON WORKER
+              SUMMARY: success` / `failure`, and extractSummaryDecision normalizes
+              those two words (passing any other word through verbatim). Pointing a
+              gate at a different word without also rewriting every worker prompt
+              makes no verdict ever match, so the gate falls through to the
+              missing-decision path on every run. */}
           </>
         )}
 
-        {d.gatePolicyRef && d.kind !== STEP_KIND.POLICY && (
+        {d.gatePolicyRef && (
           <div className="rounded-md border bg-muted/40 p-2">
             <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
               Gate policy

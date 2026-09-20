@@ -396,6 +396,15 @@ export class GetUsageRequest extends Message<GetUsageRequest> {
    */
   pageSize = 0;
 
+  /**
+   * session_id scopes the query to ONE Ask Orchicon conversation's usage —
+   * the read-back path for a chat client's own token/cache/cost totals
+   * (see UsageRecord.session_id). Empty = unscoped.
+   *
+   * @generated from field: string session_id = 11;
+   */
+  sessionId = "";
+
   constructor(data?: PartialMessage<GetUsageRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -414,6 +423,7 @@ export class GetUsageRequest extends Message<GetUsageRequest> {
     { no: 8, name: "end", kind: "message", T: Timestamp },
     { no: 9, name: "page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 10, name: "page_size", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 11, name: "session_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetUsageRequest {

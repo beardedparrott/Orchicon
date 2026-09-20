@@ -322,7 +322,7 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		AutoStartWorkflow:  autoStart,
 		ContextFiles:       contextFiles,
 		RecurringSchedule:  recurringSchedule,
-		SecretIDs:        secretIDsJSON,
+		SecretIDs:          secretIDsJSON,
 		NextRunAt:          nextRunAt,
 	}
 	// Stamp automation provenance (feature 4.1, AC2): when this create runs

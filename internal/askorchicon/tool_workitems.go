@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
@@ -28,6 +29,34 @@ var toolLogger *slog.Logger
 
 var numberRefRe = regexp.MustCompile(`(?i)(?:number|item|#)\s*(\d+)`)
 
+// validateEphemeralPlacement rejects the one ephemeral shape the "hidden from
+// every human view" guarantee cannot honour: a CHILD.
+//
+// The hierarchy has no foreign key on parent_id — it is enforced in the
+// service layer — so an ephemeral child would be RENDERED inside its real
+// parent's tree (ListDirectChildren does not filter ephemeral: the sequence
+// engine needs every child) while being absent from every list that does
+// filter it. It would then be hard-deleted out of a tree still displaying it.
+//
+// Pure (no pool, no transaction), so both directions are testable and the
+// check runs before the transaction is opened rather than inside it.
+func validateEphemeralPlacement(ephemeral bool, parentID string) error {
+	if ephemeral && strings.TrimSpace(parentID) != "" {
+		return fmt.Errorf("an ephemeral work item cannot have a parent: ephemeral items are hidden from every view, so a child would be invisible in the list but visible inside its parent's tree, and hard-deleting it would rip a row out of a live tree. Create it top-level")
+	}
+	return nil
+}
+
+// ephemeralScopeFor maps the include_ephemeral flag to the ListWorkItems
+// ephemeral scope. Shared so the opt-in spelling cannot drift between tools
+// that list work items.
+func ephemeralScopeFor(include bool) string {
+	if include {
+		return "include"
+	}
+	return "exclude"
+}
+
 func toolListWorkItems(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ProjectID string `json:"project_id"`
@@ -35,6 +64,11 @@ func toolListWorkItems(ctx context.Context, pool *db.Pool, args json.RawMessage)
 		Kind      string `json:"kind"`
 		Search    string `json:"search"`
 		PageToken string `json:"page_token"`
+		// IncludeEphemeral opts the caller into machine-managed transient
+		// items (Quick Work). The default is FALSE: a list is a human-facing
+		// read even when an agent issues it — its rows land in the
+		// transcript the operator is reading.
+		IncludeEphemeral bool `json:"include_ephemeral"`
 	}
 	if len(args) > 0 && string(args) != "null" {
 		json.Unmarshal(args, &params)
@@ -52,6 +86,8 @@ func toolListWorkItems(ctx context.Context, pool *db.Pool, args json.RawMessage)
 		Kind:      params.Kind,
 		Search:    params.Search,
 		AfterID:   params.PageToken,
+		// Ephemeral transients stay hidden unless asked for by name.
+		EphemeralScope: ephemeralScopeFor(params.IncludeEphemeral),
 		// Fetch one extra row so truncation is detected without ever loading
 		// the whole backlog's fat columns (description, acceptance criteria,
 		// budgets, context files…) — the "list is HUGE" bloat.
@@ -135,6 +171,11 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		// create issued from inside a recurring fire's run carries it so the
 		// created item is stamped with automation provenance.
 		RunContext string `json:"run_context"`
+		// Ephemeral marks this item as machine-managed and transient (Ask
+		// Orchicon Quick Work): hidden from every human work-item view, and
+		// meant to be HARD-DELETED via hard_delete_work_item when the job
+		// ends. Top-level only — see the guard below.
+		Ephemeral bool `json:"ephemeral"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -179,6 +220,11 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 			return nil, err
 		}
 		kind = normalized
+	}
+	// Ephemeral (Quick Work) items are TOP-LEVEL ONLY. Checked here, before
+	// the transaction, because it is pure input validation.
+	if err := validateEphemeralPlacement(params.Ephemeral, params.ParentID); err != nil {
+		return nil, err
 	}
 	tenantID := tenant.FromContext(ctx)
 	ttx, err := pool.BeginTenantTx(ctx, tenantID)
@@ -248,6 +294,7 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		AutoStartWorkflow:  autoStart,
 		RuntimeImage:       runtimeImage,
 		ContextFiles:       contextFiles,
+		Ephemeral:          params.Ephemeral,
 	}
 	if workflowID == "" {
 		row.WorkflowID = nil
@@ -1291,4 +1338,81 @@ func copyAttachmentsByReference(ctx context.Context, pool *db.Pool, tenantID, wo
 		}
 	}
 	return ttx.Commit(ctx)
+}
+
+// toolHardDeleteWorkItem permanently removes a work item, matching the
+// HardDeleteWorkItem RPC (internal/workitem/service.go:1412).
+//
+// THE OPERATOR'S REASON FOR IT: "We can create a flag. That is fine, but I think the work item should be hard
+// deleted once the work is complete. I don't want a ton of invisible records out there. I think currently
+// there is no MCP tool to do this only cancelling (soft delete) so we will need to add that."
+//
+// They were exactly right: the RPC, the cascade and the audit already existed, and the MCP surface offered
+// only `delete_work_item`, which is a SOFT delete (status → cancelled). An agent asked to clean up its own
+// ephemeral work therefore could not do it, and the rows piled up invisibly — the outcome the operator was
+// trying to avoid.
+//
+// TWO GUARDS, and the first is stricter than the RPC on purpose:
+//
+//	AN IDEA IS NEVER HARD-DELETED. It is dismissed instead, because destroying an idea takes its provenance
+//	with it and provenance is the entire record of where an idea came from. The RPC refuses this too.
+//
+//	AN ITEM WITH CHILDREN IS REFUSED. `work_items.parent_id` has NO foreign key (the hierarchy is enforced in
+//	the service layer), so deleting a parent does not fail — it ORPHANS its children, leaving rows that point
+//	at a parent which no longer exists. A silent corruption of the hierarchy is worse than a refused delete,
+//	so this refuses and says what to do. The RPC does not check, and the asymmetry is deliberate: the raw RPC
+//	is a capability, while this is an agent's interface to a destructive, irreversible act, and the agent has
+//	no way to see the children it would orphan.
+func toolHardDeleteWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, fmt.Errorf("invalid args: %w", err)
+	}
+	if params.ID == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	tenantID := tenant.FromContext(ctx)
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer ttx.Rollback(ctx)
+	current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, params.ID)
+	if err != nil {
+		return nil, err
+	}
+	if workitem.IsIdeaStatus(current.Status) {
+		return nil, workitem.ErrWorkItemIsIdea()
+	}
+	children, err := db.ListDirectChildren(ctx, ttx.Tx, tenantID, current.ID)
+	if err != nil {
+		return nil, err
+	}
+	if len(children) > 0 {
+		return nil, fmt.Errorf("cannot permanently delete a work item that has %d child work item(s); "+
+			"delete the children first — parent_id has no foreign key, so removing this row would leave them "+
+			"pointing at a parent that no longer exists", len(children))
+	}
+	// THE AUDIT IS RECORDED FOR A DELETE, unlike the other MCP tools, which do not audit at all. A hard
+	// delete is irreversible and destroys the row that would otherwise be the evidence, so the audit entry
+	// is the only remaining record of what was removed. The snapshot carries the fields that identify it.
+	before := audit.Snapshot(map[string]any{
+		"id":         current.ID,
+		"title":      current.Title,
+		"kind":       current.Kind,
+		"status":     current.Status,
+		"project_id": current.ProjectID,
+	})
+	if err := db.HardDeleteWorkItem(ctx, ttx.Tx, tenantID, current.ID); err != nil {
+		return nil, err
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.hard_deleted", "work_item", current.ID, before, nil); err != nil {
+		return nil, err
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{"id": current.ID, "hard_deleted": true})
 }

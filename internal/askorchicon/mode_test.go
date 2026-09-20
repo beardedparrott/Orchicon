@@ -138,7 +138,7 @@ func TestModePersistsAcrossTurns(t *testing.T) {
 	s := newChatService(t, pool, client)
 	ctx := tenant.WithID(context.Background(), "tnt_dev")
 	convID := createConversation(t, pool, "")
-	ack1, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	ack1, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
 	if err != nil {
 		t.Fatalf("first turn: %v", err)
 	}

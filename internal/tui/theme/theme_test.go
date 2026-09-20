@@ -64,3 +64,38 @@ func TestProfileDegradation(t *testing.T) {
 		})
 	}
 }
+
+// THE LAUNCH DEFAULT RESOLVES, AND IS A DARK PALETTE.
+//
+// The operator: "I want the default theme for orch to be the Ember dark theme." Two ways that can go
+// wrong silently, and neither reports an error at launch:
+//
+//  1. the name does not exist — Lookup returns nil and the client falls back to the base palette, so
+//     the operator sees the OLD default and concludes the change did not ship;
+//  2. the name resolves to a LIGHT palette — `ember-light` sits directly beside `ember`, and picking
+//     the wrong one is a one-word mistake that would look like a deliberate choice.
+//
+// Both are asserted here rather than trusted, because the failure is invisible: nothing errors, the
+// theme is simply not the one that was asked for.
+func TestTheLaunchDefaultIsForestAndDark(t *testing.T) {
+	th := Lookup(DefaultName)
+	if th == nil {
+		t.Fatalf("the launch default %q does not resolve — orch would silently fall back to the base "+
+			"palette at startup, so the requested default would never appear", DefaultName)
+	}
+	if DefaultName != "forest" {
+		t.Errorf("the launch default is %q, want \"forest\" (the operator's request). If this was changed "+
+			"deliberately, update the comment on DefaultName too.", DefaultName)
+	}
+	// Dark means the background is darker than the text — the same test cursor_caret_test.go uses.
+	if relLuminance(string(th.Bg)) >= relLuminance(string(th.Text)) {
+		t.Errorf("the launch default %q is a LIGHT palette (bg %s, text %s) — the request was for the "+
+			"DARK one; \"forest-light\" is the light sibling and is easy to select by mistake",
+			DefaultName, th.Bg, th.Text)
+	}
+	// And it must be active on a fresh process, since `active` is what every render reads before any
+	// preference is applied.
+	if Active() == nil || Active().Name == "" {
+		t.Fatal("no palette is active at init")
+	}
+}

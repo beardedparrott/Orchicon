@@ -32,6 +32,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
+	"github.com/beardedparrott/orchicon/internal/ephemeral"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/fileedit"
 	"github.com/beardedparrott/orchicon/internal/logging"
@@ -126,10 +127,15 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		log.Warn("seed dev tenant failed (continuing)", "error", err)
 	}
 
-	// Seed canned workers for the dev tenant so they're available for
+	// Seed canned workers for the deployment tenant so they're available for
 	// workflow templates and manual dispatch. Idempotent — workers that
 	// already exist are skipped or updated with current data.
-	if err := db.SeedDevWorkers(context.Background(), pool); err != nil {
+	//
+	// The tenant is PASSED IN. This call used to rely on SeedDevWorkers hardcoding "tnt_dev", which
+	// meant a deployment configured with any other tenant (ORCHICON_DEPLOYMENT_TENANT_ID) seeded its
+	// canned workers into tnt_dev — where they were invisible to the very deployment that needed
+	// them, while polluting a tenant it does not own.
+	if err := db.SeedDevWorkers(context.Background(), pool, cfg.DeploymentTenantID); err != nil {
 		log.Warn("seed dev workers failed (continuing)", "error", err)
 	}
 
@@ -830,59 +836,50 @@ func (s *Server) Run(ctx context.Context) error {
 	// process is gone (plane restart / lost runtime container) so
 	// recovery re-dispatches instead of leaving the workflow stuck.
 	if s.runtime != nil {
-		go func() {
-			sweep := time.NewTicker(30 * time.Second)
-			defer sweep.Stop()
-			var once bool
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				default:
-				}
-				if !once {
-					select {
-					case <-ctx.Done():
-						return
-					case <-time.After(1 * time.Second):
-					}
-					once = true
-				}
-				if err := s.runtime.Adopt(ctx); err != nil {
-					s.log.Warn("workflow runtime adopt failed", "error", err)
-				}
-				if s.reaper != nil {
-					if err := s.reaper.Reap(ctx); err != nil {
-						s.log.Warn("execution liveness reap failed", "error", err)
-					}
-				}
-				select {
-				case <-ctx.Done():
-					return
-				case <-sweep.C:
+		go runOnStartupThenEvery(ctx, 1*time.Second, 30*time.Second, func() {
+			if err := s.runtime.Adopt(ctx); err != nil {
+				s.log.Warn("workflow runtime adopt failed", "error", err)
+			}
+			if s.reaper != nil {
+				if err := s.reaper.Reap(ctx); err != nil {
+					s.log.Warn("execution liveness reap failed", "error", err)
 				}
 			}
-		}()
+		})
 	} else if s.reaper != nil {
-		go func() {
-			sweep := time.NewTicker(30 * time.Second)
-			defer sweep.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(1 * time.Second):
-					if err := s.reaper.Reap(ctx); err != nil {
-						s.log.Warn("execution liveness reap failed", "error", err)
-					}
-				case <-sweep.C:
-					if err := s.reaper.Reap(ctx); err != nil {
-						s.log.Warn("execution liveness reap failed", "error", err)
-					}
-				}
+		go runOnStartupThenEvery(ctx, 1*time.Second, 30*time.Second, func() {
+			if err := s.reaper.Reap(ctx); err != nil {
+				s.log.Warn("execution liveness reap failed", "error", err)
 			}
-		}()
+		})
 	}
+
+	// EPHEMERAL ABANDONMENT SWEEP (Ask Orchicon Quick Work). Quick Work
+	// creates a worker, a workflow and a work item per job, hides them from
+	// every human view, and hard-deletes them when the job ends. The deletion
+	// is done by the AGENT, so it is the one step that cannot be guaranteed:
+	// a killed process or a crashed plane leaves the records behind —
+	// invisible, and still there. That is the exact state the hard-delete
+	// rule exists to prevent, so the sweep is the backstop for that one
+	// failure mode. Tenants are enumerated, and each tenant's deletes run in
+	// its own RLS transaction.
+	//
+	// First pass after a minute (a plane that just restarted may have inherited
+	// a crashed run's transients), then every 10 minutes. A plane with no
+	// transients pays an index probe on an empty partial index.
+	//
+	// The warm-up-then-ticker shape is runOnStartupThenEvery's, for the reason
+	// documented there: written inline as a `time.After` case beside the
+	// ticker's case, the ticker becomes unreachable and the sweep runs at the
+	// WARM-UP cadence instead of the interval.
+	go func() {
+		sweeper := ephemeral.NewSweeper(s.pool, s.log)
+		runOnStartupThenEvery(ctx, 1*time.Minute, ephemeral.SweepInterval, func() {
+			if _, err := sweeper.Sweep(ctx); err != nil {
+				s.log.Warn("ephemeral sweep failed", "error", err)
+			}
+		})
+	}()
 
 	// MCP stdio stale-child sweep (ADR-0008): MCP server subprocesses
 	// spawned for sessions carry ORCHICON_MCP_STDIO=1. PDEATHSIG reaps
@@ -890,20 +887,9 @@ func (s *Server) Run(ctx context.Context) error {
 	// OOM) reparents live children to PID 1. Sweep at boot (1s) and every
 	// 30s: any marked child whose parent is PID 1 has no controlling
 	// execution and is killed (process group).
-	go func() {
-		sweep := time.NewTicker(30 * time.Second)
-		defer sweep.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(1 * time.Second):
-				mcpclient.SweepStaleChildren(ctx, s.log)
-			case <-sweep.C:
-				mcpclient.SweepStaleChildren(ctx, s.log)
-			}
-		}
-	}()
+	go runOnStartupThenEvery(ctx, 1*time.Second, 30*time.Second, func() {
+		mcpclient.SweepStaleChildren(ctx, s.log)
+	})
 
 	// Phase 9: webhook dispatcher (NATS consumer → HTTP POST + retries +
 	// dead-letter — docs/07 §3.11). Degrades gracefully when NATS is

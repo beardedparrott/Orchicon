@@ -101,9 +101,14 @@ func TestShiftEnterCSIU(t *testing.T) {
 
 func TestLinesGrowsAndCaps(t *testing.T) {
 	m := New()
-	// Composer 2.0: box border (2) + MinInputRows + the affordance row.
-	if want := 2 + MinInputRows + 1; m.Lines() != want {
-		t.Fatalf("lines = %d, want %d", m.Lines(), want)
+	// THE ASSERTION IS THE GROWTH, not an absolute row count. It used to spell out
+	// `2 + MinInputRows + 1` — the 1 being the affordance row — which made the test fail
+	// the moment that row wrapped to two lines, even though the input-row behaviour it
+	// exists to check was unchanged. A hint gains and loses segments over time; the box
+	// growing with the INPUT is what must not break.
+	base := m.Lines()
+	if want := 2 + MinInputRows + m.HintRows(); base != want {
+		t.Fatalf("lines = %d, want %d (border + min input rows + the affordance row(s))", base, want)
 	}
 	m.Focus()
 	var sb strings.Builder
@@ -111,8 +116,9 @@ func TestLinesGrowsAndCaps(t *testing.T) {
 		sb.WriteString("line\n")
 	}
 	m.Update(paste(sb.String()))
-	if want := 2 + MaxInputRows + 1; m.Lines() != want {
-		t.Fatalf("lines = %d, want %d", m.Lines(), want)
+	// The cap still holds, and the growth is exactly the input rows' share.
+	if want := 2 + MaxInputRows + m.HintRows(); m.Lines() != want {
+		t.Fatalf("lines = %d, want %d (the input rows cap at %d)", m.Lines(), want, MaxInputRows)
 	}
 }
 
@@ -289,5 +295,197 @@ func TestMultiLineSendPreservesNewlines(t *testing.T) {
 	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if got := m.SendRequest(); got != "a\nb" {
 		t.Fatalf("multi-line send = %q, want %q", got, "a\nb")
+	}
+}
+
+// The operator: "the main tooltip in the composer is going off the screen as
+// well. We need a similar wrap there."
+//
+// The affordance row WRAPS instead of truncating, and the box's row count grows
+// with it — but only up to maxHintRows, because the composer's height comes out
+// of the screen's budget. The reserved rows and the drawn rows must agree.
+func TestComposerHintWrapsAndStaysWithinItsCap(t *testing.T) {
+	m := New()
+	m.Width = 60
+	// Enough rows that the real per-screen hint fits at a normal width without
+	// an ellipsis (three is what the composer can afford out of the screen's
+	// budget), but a hard cap so a runaway hint can never eat the content region.
+	m.SetContext("x: one · y: two · z: three · a: four · b: five · c: six · d: seven · e: eight · f: nine · g: ten · h: eleven · i: twelve · j: thirteen · k: fourteen · l: fifteen")
+
+	rows := m.Lines()
+	if rows != len(strings.Split(m.View(), "\n")) {
+		t.Fatalf("Lines()=%d but the box renders %d rows", rows, len(strings.Split(m.View(), "\n")))
+	}
+	// The hint must have wrapped (it cannot fit on one 60-cell line)...
+	if m.HintRows() < 2 {
+		t.Fatalf("a long hint must wrap, HintRows=%d", m.HintRows())
+	}
+	// ...but never beyond the cap that keeps the layout stable.
+	if m.HintRows() > maxHintRows {
+		t.Fatalf("the hint must be capped at %d rows, got %d", maxHintRows, m.HintRows())
+	}
+	// And it must say it was cut rather than silently dropping shortcuts.
+	if !strings.Contains(m.View(), "…") {
+		t.Fatalf("a capped hint must be marked with an ellipsis:\n%s", m.View())
+	}
+}
+
+// A short hint stays on one row (the cap must not add rows gratuitously).
+func TestComposerHintShortStaysSingleRow(t *testing.T) {
+	m := New()
+	m.Width = 200
+	m.SetContext("n: new")
+	if got := m.HintRows(); got != 1 {
+		t.Fatalf("a short hint must occupy one row, got %d", got)
+	}
+}
+
+// The caret must ANIMATE while the composer holds focus, so the operator can see
+// where their keystrokes will land: "the cursor should blink when in the composer
+// and focus is active so people know they truly have focus there."
+//
+// bubbles animates the caret from a command returned by the cursor's own Focus(),
+// which the dock used to DISCARD (`_ = m.ta.Focus()`). With the loop never started
+// no tick could arrive, so the caret sat solid — the fix is to capture that command
+// on focus and dispatch it.
+//
+// NOTE on what is NOT tested here: the tick that CONTINUES the loop is a
+// cursor.BlinkMsg that bubbles matches against the private id/blinkTag its own
+// cursor emitted ("we're choosy about whether to accept blinkMsgs"). A fabricated
+// tick is therefore always rejected, so a unit test cannot represent it; the dock
+// forwards every non-key message to the textarea, which is what makes the real
+// loop work.
+func TestComposerStartsWithTheCaretBlink(t *testing.T) {
+	m := New()
+	m.Focus()
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if cmd == nil {
+		t.Fatal("the caret blink loop was never started — the cursor cannot animate")
+	}
+}
+
+// The composer's own hint documents the key contract as
+// "enter send · alt+enter newline". These pin it, because a SILENT newline is
+// indistinguishable from a dead Enter key — which is how a terminal reporting its
+// Enter as a modified key made "I type a message and hit enter and nothing happens"
+// (with the text still sitting in the box) survive several rounds.
+func TestPlainEnterSends(t *testing.T) {
+	m := New()
+	m.Focus()
+	m.SetValue("hello")
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := m.SendRequest(); got != "hello" {
+		t.Fatalf("plain enter produced send %q, want the text", got)
+	}
+}
+
+// ANY Enter variant that is not an explicitly configured newline chord must SEND.
+//
+// A terminal can report a plain Enter as shift+enter (CSI-u / kitty /
+// modifyOtherKeys), and the old code honoured that as "insert a newline" — which
+// is not part of the documented contract and made Enter unable to send at all on
+// such a terminal. The only newline paths left are the two the operator configures
+// (alt+enter, and a trailing backslash + enter), so every other Enter sends by
+// construction.
+func TestEveryOtherEnterVariantSends(t *testing.T) {
+	cases := []struct {
+		name string
+		k    tea.KeyMsg
+	}{
+		{"plain enter", tea.KeyMsg{Type: tea.KeyEnter}},
+		{"ctrl+enter", tea.KeyMsg{Type: tea.KeyEnter, Alt: false}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := New()
+			m.Focus()
+			m.SetValue("hello")
+			_, _ = m.Update(c.k)
+			if got := m.SendRequest(); got != "hello" {
+				t.Fatalf("%s produced send %q, want the text — an Enter variant that is not the configured newline chord must send", c.name, got)
+			}
+		})
+	}
+}
+
+// The configured newline chord STILL inserts a newline — and says so, so the
+// gesture is never invisible.
+func TestAltEnterInsertsANewlineAndReportsIt(t *testing.T) {
+	m := New()
+	m.Focus()
+	m.SetValue("line one")
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+	if got := m.SendRequest(); got != "" {
+		t.Fatalf("alt+enter sent %q — it is the configured NEWLINE chord", got)
+	}
+	if !strings.Contains(m.Value(), "\n") {
+		t.Fatalf("alt+enter did not insert a newline: %q", m.Value())
+	}
+	if m.Notice == "" {
+		t.Fatal("inserting a newline must report the chord — a silent newline is indistinguishable from a dead key")
+	}
+	if !strings.Contains(m.Notice, "alt+enter") {
+		t.Errorf("notice = %q, want it to name the chord that fired", m.Notice)
+	}
+}
+
+// Enter must send whichever byte the terminal sends for it.
+//
+// bubbletea has TWO spellings for this key: CR (0x0D) → KeyEnter, and LF (0x0A)
+// → KeyCtrlJ (keyLF), a DIFFERENT KeyType. Most terminals send CR, but some
+// terminals and PTY configurations send LF — and with only the KeyEnter branch
+// such a terminal pressed Enter and got NOTHING at all: no send, no newline, no
+// reaction, because ctrl+j matched no branch here and no textarea keymap. That is
+// the operator's "enter is not doing anything at all".
+func TestLFEnterSends(t *testing.T) {
+	if tea.KeyEnter == tea.KeyCtrlJ {
+		t.Fatal("fixture: KeyEnter and KeyCtrlJ are the same KeyType — this test would be vacuous")
+	}
+	m := New()
+	m.Focus()
+	m.SetValue("hello")
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlJ}) // LF, how some terminals spell Enter
+	if got := m.SendRequest(); got != "hello" {
+		t.Fatalf("LF-Enter produced send %q, want the text — an LF-sending terminal must still be able to send", got)
+	}
+}
+
+// Alt+Enter must insert a newline in EITHER spelling too, so the configured chord
+// behaves the same on both kinds of terminal.
+func TestLFAltEnterInsertsANewline(t *testing.T) {
+	m := New()
+	m.Focus()
+	m.SetValue("line one")
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlJ, Alt: true})
+	if got := m.SendRequest(); got != "" {
+		t.Fatalf("LF alt+enter sent %q — it is the configured NEWLINE chord", got)
+	}
+	if !strings.Contains(m.Value(), "\n") {
+		t.Fatalf("LF alt+enter did not insert a newline: %q", m.Value())
+	}
+}
+
+// THE COMPOSER HINT NAMES ctrl+d.
+//
+// The operator: "the shortcut advice in the composer is missing for ctrl+d to open/close the diff box".
+// ctrl+d is the ONLY keyboard route to the diff sidebar, so an operator who cannot see it has no way to
+// discover the pane exists.
+//
+// The second half of this test is the constraint that makes the addition non-trivial: the affordance row
+// is ONE LINE by contract, so the hint must still fit an 80-column terminal, where boxInner is 74. The
+// full wording with ctrl+d added measured 79 and wrapped — pushing the affordance row out of the box at
+// 80x24 — so "text box" was shortened to "text".
+func TestComposerHintNamesTheDiffChord(t *testing.T) {
+	m := New()
+	if !strings.Contains(m.Hint(), "ctrl+d") {
+		t.Fatalf("the affordance row does not name ctrl+d, so the diff pane is undiscoverable: %q", m.Hint())
+	}
+	for _, w := range []int{80, 120, 190} {
+		m := New()
+		m.Width = w
+		if rows := m.HintRows(); rows != 1 {
+			t.Errorf("at width %d the affordance row wraps to %d rows (%q) — it is one line by "+
+				"contract, and a wrapped hint pushes the row out of the composer box", w, rows, m.Hint())
+		}
 	}
 }

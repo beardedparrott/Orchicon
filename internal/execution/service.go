@@ -186,10 +186,34 @@ func (s *Service) ListExecutions(ctx context.Context, req *connect.Request[apiv1
 		return nil, mapDBError(err)
 	}
 	resp := &apiv1.ListExecutionsResponse{}
+	// ENRICH THE PAGE IN ONE QUERY, NOT ONE PER ROW.
+	//
+	// Usage totals are summed for the WHOLE page in a single grouped query (db.SumUsageForExecutions).
+	// It used to be one query per row, which was survivable at one page of 100 and is not now that
+	// every list fetches itself whole: the executions list pulls ~3k rows, so the per-row form issued
+	// ~5,900 queries for a single screen load. The operator: "The initial execution page load is
+	// pretty slow."
+	ids := make([]string, 0, len(execs))
+	for _, e := range execs {
+		ids = append(ids, e.ID)
+	}
+	totals, terr := db.SumUsageForExecutions(ctx, ttx.Tx, tenantID, ids)
+	if terr != nil {
+		// Best-effort, like every enrichment here: the list still renders from the row's own
+		// (write-never) columns rather than failing the whole page over a totals read.
+		s.log.Warn("list executions: usage totals", "error", terr)
+	}
 	for _, e := range execs {
 		p := rowToProto(e)
-		s.enrichSystemPrompt(ctx, ttx.Tx, tenantID, p, e)
-		s.enrichUsageTotals(ctx, ttx.Tx, tenantID, p, e.ID)
+		if t, ok := totals[e.ID]; ok {
+			p.TokenUsage = t.Tokens
+			p.CostUsd = t.CostUSD
+		}
+		// enrichSystemPrompt is DELIBERATELY NOT CALLED HERE. It loads the step run's `_prompt` —
+		// tens of kilobytes of JSON — and it is a DETAIL-ONLY field: the TUI never reads it, and no
+		// list consumer in the GUI does either (only the execution detail route and the worker detail
+		// use it, and both call GetExecution). Paying for it once per row, on a list nobody reads it
+		// from, was most of the load time. GetExecution still enriches it, so the detail is unchanged.
 		resp.Executions = append(resp.Executions, p)
 	}
 	if len(execs) > 0 {

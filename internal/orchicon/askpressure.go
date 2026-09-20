@@ -62,6 +62,34 @@ func askPressureThreshold() float64 {
 	return v
 }
 
+// promptOccupancy is the FULL input side of one provider round: the fresh,
+// cache-read and cache-write buckets summed.
+//
+// This is the numerator of the proactive context-pressure gate, and the buckets are
+// DISJOINT by construction — every protocol mapping normalizes InputTokens down to
+// the UNCACHED portion (openaicompat.go/responses.go "Normalize InputTokens to the
+// FRESH bucket", legacycc.go "normalizes to noCache = total − cacheRead −
+// cacheWrite", anthropic's input_tokens excludes cache reads), so summing them
+// recovers the true prompt size without double-counting. legacycc's own arithmetic
+// is the proof: it SUBTRACTS both cache buckets from a cache-inclusive total, so
+// adding them back is exactly the inverse.
+//
+// Measuring InputTokens alone (the previous behaviour here) made the gate blind: a
+// real Ask conversation is overwhelmingly cache READS — observed 168 fresh against
+// 976,384 cached — so the gate computed 0.016% against a 0.95 threshold and could
+// never fire, while the composer strip (summing the same three buckets) correctly
+// showed the context at 93% of the window. The worker compaction ladder has always
+// summed input+cache-read for its occupancy (compaction.go: "the input+cache-read
+// tokens of the request just sent"); this brings the Ask gate in line with it.
+//
+// Cache WRITES are included on top of that precedent. They are genuinely part of the
+// prompt on the turn that stores them, and the gate's failure mode is asymmetric:
+// under-counting misses the trigger and can overflow the window, while
+// over-counting only compacts slightly early.
+func promptOccupancy(u Usage) int64 {
+	return u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens
+}
+
 // recordAskPromptTokens stores the newest MEASURED prompt size for a session.
 // Called from the per-round usage sink, so the value always reflects a real
 // provider report. Guarded by mu.

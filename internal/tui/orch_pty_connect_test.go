@@ -183,7 +183,7 @@ func TestPTYConnectOverlayInPlaceReconnect(t *testing.T) {
 
 	// Toggle the auth method (ctrl+a): the credential prompt becomes
 	// "Password > " and the username field appears.
-	_, _ = s.tty.WriteString("\x01") // ctrl+a
+	_, _ = s.tty.WriteString("\x01") // ctrl+a — the CONNECT FORM's own auth-method toggle, not a tab chord
 	toggled := s.readFor(2 * time.Second)
 	if !strings.Contains(toggled, "username + password") {
 		t.Fatalf("auth-method toggle failed — 'username + password' never painted: %s", tailOf(toggled, 2000))

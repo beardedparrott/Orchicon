@@ -14,6 +14,7 @@ import (
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/aigateway"
+	"github.com/beardedparrott/orchicon/internal/askmode"
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/blobstore"
@@ -391,7 +392,7 @@ func (s *Service) ListConversations(ctx context.Context, req *connect.Request[ap
 	resp := &apiv1.ListConversationsResponse{}
 	for _, r := range rows {
 		preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, r.ID)
-		resp.Conversations = append(resp.Conversations, conversationRowToProto(r, 0, preview, s.turnStatus(r.ID, stallWindow)))
+		resp.Conversations = append(resp.Conversations, conversationRowToProto(r, r.MessageCount, preview, s.turnStatus(r.ID, stallWindow)))
 	}
 	if len(rows) > 0 {
 		resp.NextPageToken = rows[len(rows)-1].ID
@@ -465,10 +466,25 @@ func (s *Service) CreateConversation(ctx context.Context, req *connect.Request[a
 	defer ttx.Rollback(ctx)
 
 	convRow := db.ConversationRow{
-		ID:       db.NewID(),
-		TenantID: tenantID,
-		ModelRef: req.Msg.ModelRef,
-		Mode:     mode,
+		ID:        db.NewID(),
+		TenantID:  tenantID,
+		ModelRef:  req.Msg.ModelRef,
+		Mode:      mode,
+		ProjectID: strings.TrimSpace(req.Msg.ProjectId),
+	}
+	// THE PROJECT MUST EXIST — the "active or otherwise" rule the operator set. GetProject filters on tenant and
+	// id ONLY (no status predicate), so an ARCHIVED project is a valid home for a conversation and only an
+	// unknown id is refused. A create that named a project nobody could resolve would land the conversation in a
+	// folder the rail could never render, which is worse than refusing it here with a message that names the
+	// problem.
+	if convRow.ProjectID != "" {
+		if _, err := db.GetProject(ctx, ttx.Tx, tenantID, convRow.ProjectID); err != nil {
+			if errors.Is(err, db.ErrNotFound) {
+				return nil, connect.NewError(connect.CodeNotFound,
+					fmt.Errorf("project %q not found — create it first, or leave project_id empty", convRow.ProjectID))
+			}
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
 	}
 	row, err := db.CreateConversation(ctx, ttx.Tx, convRow)
 	if err != nil {
@@ -496,7 +512,7 @@ func (s *Service) CreateConversation(ctx context.Context, req *connect.Request[a
 	}
 
 	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.created", "conversation", row.ID,
-		nil, audit.Snapshot(map[string]any{"mode": mode, "model_ref": req.Msg.ModelRef})); err != nil {
+		nil, audit.Snapshot(map[string]any{"mode": mode, "model_ref": req.Msg.ModelRef, "project_id": convRow.ProjectID})); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.created: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {
@@ -630,7 +646,7 @@ func (s *Service) UpdateConversationTitle(ctx context.Context, req *connect.Requ
 	}), nil
 }
 
-// SetConversationMode switches a conversation's persona (brainstorm <-> orchicon).
+// SetConversationMode switches a conversation's persona (see BuildSystemPrompt for the three modes).
 // The new mode is persisted on the conversation and takes effect
 // on the NEXT message: the turn reads it at dispatch time and applies it as
 // the opencode per-turn system prompt — no session change or serve restart
@@ -671,6 +687,61 @@ func (s *Service) SetConversationMode(ctx context.Context, req *connect.Request[
 	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
 	st := s.turnStatus(row.ID, stallWindow)
 	return connect.NewResponse(&apiv1.SetConversationModeResponse{
+		Conversation: conversationRowToProto(row, count, preview, st),
+	}), nil
+}
+
+// SetConversationModel retargets a conversation's model_ref. The ref is
+// validated against the pinned grammar (and the Ask-capability guard) before
+// the write, so a conversation can never hold a ref that cannot serve Ask. An
+// empty ref is legal: it CLEARS the per-conversation override so the tenant
+// default applies.
+func (s *Service) SetConversationModel(ctx context.Context, req *connect.Request[apiv1.SetConversationModelRequest]) (*connect.Response[apiv1.SetConversationModelResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	ref := strings.TrimSpace(req.Msg.ModelRef)
+	// Empty clears the override; anything else must be a ref Ask can serve.
+	// validateModelRef applies both the pinned grammar AND the Ask-capability
+	// guard, and deliberately leaves an UNKNOWN adapter to dispatch-time
+	// resolution (which surfaces the actionable "register an adapter" error).
+	if err := s.validateModelRef(ref); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	row, err := db.UpdateConversationModel(ctx, ttx.Tx, tenantID, req.Msg.Id, ref)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("conversation not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	// The adapter kind is what the dispatcher resolves on, so it belongs in the
+	// audit row: a model change can silently move a conversation between
+	// adapters, and that is exactly the kind of change an operator needs to be
+	// able to reconstruct later.
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.model_changed", "conversation", row.ID,
+		nil, audit.Snapshot(map[string]any{
+			"model_ref": ref,
+			"adapter":   adapter.AdapterKind(ref),
+		})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.model_changed: %w", err))
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	count, _ := db.CountConversationMessages(ctx, ttx.Tx, tenantID, row.ID)
+	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
+	st := s.turnStatus(row.ID, s.chatStallWindow(ctx, ttx.Tx, tenantID))
+	return connect.NewResponse(&apiv1.SetConversationModelResponse{
 		Conversation: conversationRowToProto(row, count, preview, st),
 	}), nil
 }
@@ -840,6 +911,7 @@ func conversationRowToProto(r db.ConversationRow, messageCount int, lastPreview 
 		ModelRef:                  r.ModelRef,
 		SessionId:                 r.SessionID,
 		Mode:                      conversationModeToProto(r.Mode),
+		ProjectId:                 r.ProjectID,
 		MessageCount:              int32(messageCount),
 		LastMessagePreview:        lastPreview,
 		TurnInFlight:              s.inFlight,
@@ -850,6 +922,64 @@ func conversationRowToProto(r db.ConversationRow, messageCount int, lastPreview 
 		UpdatedAt:                 timestamppb.New(r.UpdatedAt),
 	}
 	return p
+}
+
+// SetConversationProject places a conversation in a project, or clears the association when project_id is
+// empty. It is the server half of the second level of organization over conversations: the GUI's project
+// folder drop target, its per-project "new conversation" button, and the TUI's /project all resolve here.
+//
+// TWO RULES, both deliberate:
+//
+//   - A NON-EMPTY id must name a project THIS TENANT can see, and GetProject applies no status predicate — an
+//     archived project is a valid home, which is the operator's "active or otherwise".
+//   - An EMPTY id UNASSIGNS the conversation rather than failing. A conversation must always be able to leave a
+//     project (a project can be archived out from under it), and "unassigned" is a state both clients render.
+//
+// The project is read inside the SAME tenant transaction as the write, so a project deleted between the check
+// and the update cannot leave a conversation pointing at it.
+func (s *Service) SetConversationProject(ctx context.Context, req *connect.Request[apiv1.SetConversationProjectRequest]) (*connect.Response[apiv1.SetConversationProjectResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	projectID := strings.TrimSpace(req.Msg.ProjectId)
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	if projectID != "" {
+		if _, err := db.GetProject(ctx, ttx.Tx, tenantID, projectID); err != nil {
+			if errors.Is(err, db.ErrNotFound) {
+				return nil, connect.NewError(connect.CodeNotFound,
+					fmt.Errorf("project %q not found", projectID))
+			}
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+	}
+	row, err := db.SetConversationProject(ctx, ttx.Tx, tenantID, req.Msg.Id, projectID)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("conversation not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.project_changed", "conversation", row.ID,
+		nil, audit.Snapshot(map[string]any{"project_id": projectID})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.project_changed: %w", err))
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	count, _ := db.CountConversationMessages(ctx, ttx.Tx, tenantID, row.ID)
+	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
+	stallWindow := s.chatStallWindow(ctx, ttx.Tx, tenantID)
+	return connect.NewResponse(&apiv1.SetConversationProjectResponse{
+		Conversation: conversationRowToProto(row, count, preview, s.turnStatus(row.ID, stallWindow)),
+	}), nil
 }
 
 // turnStatusInfo is the server-confirmed snapshot of a conversation's running
@@ -907,9 +1037,22 @@ func (s *Service) chatStallWindow(ctx context.Context, tx pgx.Tx, tenantID strin
 }
 
 // conversationMode constants mirror the DB column's text values ('brainstorm'
-// default). Orchicon mode removed 2026-08-26 — only brainstorm remains.
+// default). Every mode is stored as a plain text value — the column has no
+// CHECK constraint, so adding one needs no migration, which is why the three
+// modes below could land as a pure code change.
+//
+// The Orchicon mode was REMOVED 2026-08-26 (its governed persona was folded
+// into the identity every mode shares). What replaced it is a set of modes
+// that differ in DISPOSITION TOWARD ACTION rather than in knowledge: they
+// share one identity, one project awareness and one tool surface, and differ
+// in what they DO with a request.
 const (
-	modeBrainstorm = "brainstorm"
+	// ALIASED TO internal/askmode, not restated. The policy table is keyed by these strings, so a mode spelled
+	// one way here and another way there would be a mode the boundary silently does not apply to — and "both are
+	// "brainstorm"" is not a property a test can be relied on to notice. One definition, two names.
+	modeBrainstorm = askmode.Brainstorm
+	modeIteration  = askmode.Iteration
+	modeQuickWork  = askmode.QuickWork
 )
 
 // conversationModeFromProto validates + normalizes a proto ConversationMode
@@ -921,6 +1064,10 @@ func conversationModeFromProto(m apiv1.ConversationMode) (string, error) {
 	case apiv1.ConversationMode_CONVERSATION_MODE_UNSPECIFIED,
 		apiv1.ConversationMode_CONVERSATION_MODE_BRAINSTORM:
 		return modeBrainstorm, nil
+	case apiv1.ConversationMode_CONVERSATION_MODE_ITERATION:
+		return modeIteration, nil
+	case apiv1.ConversationMode_CONVERSATION_MODE_QUICK_WORK:
+		return modeQuickWork, nil
 	default:
 		return "", connect.NewError(connect.CodeInvalidArgument,
 			fmt.Errorf("unknown conversation mode value %d", int32(m)))
@@ -934,6 +1081,10 @@ func conversationModeToProto(mode string) apiv1.ConversationMode {
 	switch mode {
 	case modeBrainstorm:
 		return apiv1.ConversationMode_CONVERSATION_MODE_BRAINSTORM
+	case modeIteration:
+		return apiv1.ConversationMode_CONVERSATION_MODE_ITERATION
+	case modeQuickWork:
+		return apiv1.ConversationMode_CONVERSATION_MODE_QUICK_WORK
 	default:
 		return apiv1.ConversationMode_CONVERSATION_MODE_UNSPECIFIED
 	}

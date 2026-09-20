@@ -25,6 +25,7 @@ import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 	"github.com/beardedparrott/orchicon/internal/tui/subs"
 )
@@ -34,6 +35,10 @@ import (
 type fakePlane struct {
 	apiv1connect.UnimplementedWorkItemServiceHandler
 	apiv1connect.UnimplementedProjectServiceHandler
+	// The MCP service is embedded so the fake satisfies the handler interface while
+	// implementing only the three calls the project forms make (list, get-selection,
+	// set-selection).
+	apiv1connect.UnimplementedMCPServiceHandler
 	apiv1connect.UnimplementedRuntimeImageServiceHandler
 	apiv1connect.UnimplementedWorkflowServiceHandler
 
@@ -42,9 +47,11 @@ type fakePlane struct {
 	order     []string
 	projects  map[string]*apiv1.Project
 	projOrder []string
-	images    map[string]*apiv1.RuntimeImage
-	imgOrder  []string
-	nextID    int
+	// projectMCP is each project's MCP selection, as GetProjectMCPServers would report it.
+	projectMCP map[string][]string
+	images     map[string]*apiv1.RuntimeImage
+	imgOrder   []string
+	nextID     int
 
 	created     []*apiv1.CreateWorkItemRequest
 	updated     []*apiv1.UpdateWorkItemRequest
@@ -56,6 +63,14 @@ type fakePlane struct {
 	unassigned  []string
 	projCreated []*apiv1.CreateProjectRequest
 	projUpdated []*apiv1.UpdateProjectRequest
+	// projActivated records the ids ActivateProject was called with, in order.
+	projActivated []string
+	projDeleted   []string
+	projMCPSet    []*apiv1.ProjectMCPServersSetRequest
+	// mcpServers is what ListMCPServers returns; mcpError, when set, makes it fail —
+	// which is how a test exercises the "the MCP data did not load" path.
+	mcpServers  []*apiv1.MCPServer
+	mcpError    error
 	dirProbes   []string
 	imgCreated  []*apiv1.CreateRuntimeImageRequest
 	imgUpdated  []*apiv1.UpdateRuntimeImageRequest
@@ -66,9 +81,10 @@ type fakePlane struct {
 
 func newPlane() *fakePlane {
 	return &fakePlane{
-		items:    map[string]*apiv1.WorkItem{},
-		projects: map[string]*apiv1.Project{},
-		images:   map[string]*apiv1.RuntimeImage{},
+		items:      map[string]*apiv1.WorkItem{},
+		projects:   map[string]*apiv1.Project{},
+		projectMCP: map[string][]string{},
+		images:     map[string]*apiv1.RuntimeImage{},
 	}
 }
 
@@ -315,6 +331,81 @@ func (p *fakePlane) ListProjects(_ context.Context, _ *connect.Request[apiv1.Lis
 	return connect.NewResponse(&apiv1.ListProjectsResponse{Projects: out}), nil
 }
 
+// DeleteProject mirrors the server's not-found for an unknown id, so a test cannot pass
+// by deleting a project that does not exist.
+func (p *fakePlane) DeleteProject(_ context.Context, req *connect.Request[apiv1.DeleteProjectRequest]) (*connect.Response[apiv1.DeleteProjectResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, ok := p.projects[req.Msg.GetId()]; !ok {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("project not found"))
+	}
+	delete(p.projects, req.Msg.GetId())
+	for i, id := range p.projOrder {
+		if id == req.Msg.GetId() {
+			p.projOrder = append(p.projOrder[:i], p.projOrder[i+1:]...)
+			break
+		}
+	}
+	p.projDeleted = append(p.projDeleted, req.Msg.GetId())
+	return connect.NewResponse(&apiv1.DeleteProjectResponse{}), nil
+}
+
+// ListMCPServers returns the seeded entries, or the seeded error. The ERROR path is the
+// point: it is how a test proves that a failed MCP load leaves the form without the field
+// rather than with an empty one.
+func (p *fakePlane) ListMCPServers(_ context.Context, _ *connect.Request[apiv1.MCPServerListRequest]) (*connect.Response[apiv1.MCPServerListResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.mcpError != nil {
+		return nil, p.mcpError
+	}
+	return connect.NewResponse(&apiv1.MCPServerListResponse{Servers: p.mcpServers}), nil
+}
+
+func (p *fakePlane) GetProjectMCPServers(_ context.Context, req *connect.Request[apiv1.ProjectMCPServersGetRequest]) (*connect.Response[apiv1.ProjectMCPServersGetResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return connect.NewResponse(&apiv1.ProjectMCPServersGetResponse{McpServerIds: p.projectMCP[req.Msg.GetProjectId()]}), nil
+}
+
+// SetProjectMCPServers records the write AND updates the stored selection, so a read-back
+// sees what a save produced. It does not validate the ids: the server treats them as
+// references, and this fake's job is to record what the TUI sent.
+func (p *fakePlane) SetProjectMCPServers(_ context.Context, req *connect.Request[apiv1.ProjectMCPServersSetRequest]) (*connect.Response[apiv1.ProjectMCPServersSetResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.projMCPSet = append(p.projMCPSet, req.Msg)
+	if p.projectMCP == nil {
+		p.projectMCP = map[string][]string{}
+	}
+	p.projectMCP[req.Msg.GetProjectId()] = req.Msg.GetMcpServerIds()
+	return connect.NewResponse(&apiv1.ProjectMCPServersSetResponse{McpServerIds: req.Msg.GetMcpServerIds()}), nil
+}
+
+// ActivateProject mirrors the SERVER'S PRECONDITION rather than accepting anything:
+// the real UPDATE carries `AND status = 'drafting'`, so activating a non-drafting
+// project fails there. A fake that always succeeded would let a test prove the action
+// is wired while hiding that it is offered in states where it cannot work.
+//
+// SEEDED PROJECTS ARE ACTIVE (seedProject), so a test that wants the drafting path
+// must set the status itself — which is the honest fixture, because the real server
+// creates projects drafting and this fake does not model CreateProject's status.
+func (p *fakePlane) ActivateProject(_ context.Context, req *connect.Request[apiv1.ActivateProjectRequest]) (*connect.Response[apiv1.ActivateProjectResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	pr, ok := p.projects[req.Msg.GetId()]
+	if !ok {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("project not found"))
+	}
+	if pr.GetStatus() != apiv1.ProjectStatus_PROJECT_STATUS_DRAFTING {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("project is %q, must be drafting", strings.ToLower(pr.GetStatus().String())))
+	}
+	pr.Status = apiv1.ProjectStatus_PROJECT_STATUS_ACTIVE
+	p.projActivated = append(p.projActivated, pr.GetId())
+	return connect.NewResponse(&apiv1.ActivateProjectResponse{Project: pr}), nil
+}
+
 func (p *fakePlane) UpdateProject(_ context.Context, req *connect.Request[apiv1.UpdateProjectRequest]) (*connect.Response[apiv1.UpdateProjectResponse], error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -490,6 +581,7 @@ func newModel(t *testing.T, p *fakePlane) *Model {
 	mux := http.NewServeMux()
 	mux.Handle(apiv1connect.NewWorkItemServiceHandler(p))
 	mux.Handle(apiv1connect.NewProjectServiceHandler(p))
+	mux.Handle(apiv1connect.NewMCPServiceHandler(p))
 	mux.Handle(apiv1connect.NewRuntimeImageServiceHandler(p))
 	mux.Handle(apiv1connect.NewWorkflowServiceHandler(p))
 	srv := httptest.NewServer(mux)
@@ -513,6 +605,15 @@ func kmsg(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyDown}
 	case "space":
 		return tea.KeyMsg{Type: tea.KeySpace, Runes: []rune(" ")}
+	case "ctrl+x":
+		// A REAL control key, not the literal runes "ctrl+x". The terminal sends one
+		// control byte (CAN, 0x18) and bubbletea reports KeyCtrlX; KeyMsg.String() then
+		// returns "ctrl+x", which is what the router matches on. The literal-runes form
+		// would ALSO match — String() just returns the runes — so this is about fidelity
+		// rather than necessity: the test should drive the key the terminal actually
+		// sends, since a helper that quietly accepts a shape the real input never takes
+		// can pass while the binding is broken.
+		return tea.KeyMsg{Type: tea.KeyCtrlX}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }
@@ -535,7 +636,7 @@ func submit(t *testing.T, m *Model, lastField string) tea.Cmd {
 	if !f.FocusName(lastField) {
 		t.Fatalf("form has no field %q", lastField)
 	}
-	return press(t, m, "enter")
+	return press(t, m, "ctrl+s")
 }
 
 // run executes a cmd and feeds its message back into the screen.
@@ -667,10 +768,19 @@ func TestWorkItemCreateFromForm(t *testing.T) {
 		req.GetBudgets() != `{"tokens":100000}` || !req.GetAutoStartWorkflow() {
 		t.Fatalf("create request lost mutable fields: %+v", req)
 	}
-	// The new item reconciles into the tree (nested one level under its parent).
+	// The new item reconciles into the tree, nested one level under its parent.
+	// The nesting is the row's DEPTH now (the pane draws the indent), not
+	// whitespace baked into the title.
 	load(t, m, srcWorkItems)
-	if !hasTitle(itemsOf(m, srcWorkItems), "  [subtask] Retry the sweeper") {
-		t.Fatalf("created item must render nested under its parent: %v", titles(itemsOf(m, srcWorkItems)))
+	rows := itemsOf(m, srcWorkItems)
+	depth := -1
+	for _, r := range rows {
+		if strings.HasSuffix(r.Title, "Retry the sweeper") {
+			depth = r.Depth
+		}
+	}
+	if depth != 1 {
+		t.Fatalf("created item must nest one level under its parent: depth=%d rows=%v", depth, titles(rows))
 	}
 }
 
@@ -776,14 +886,36 @@ func TestTreeViewRendersRealHierarchy(t *testing.T) {
 	load(t, m, srcWorkItems)
 
 	got := titles(itemsOf(m, srcWorkItems))
+	// The titles are FLUSH (no baked-in indent): the hierarchy now travels on
+	// the row itself, and the list pane draws the indent so it cannot be
+	// applied twice.
 	want := []string{
 		"[epic] Epic E",
-		"  [feature] Feature F",
-		"    [task] Task T",
-		"      [subtask] Subtask S",
+		"[feature] Feature F",
+		"[task] Task T",
+		"[subtask] Subtask S",
 	}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("tree rows = %v\nwant %v", got, want)
+	}
+	// The REAL hierarchy is the row's Depth (epic → feature → task → subtask).
+	rows := itemsOf(m, srcWorkItems)
+	wantDepths := []int{0, 1, 2, 3}
+	if len(rows) != len(wantDepths) {
+		t.Fatalf("tree rows = %d, want %d", len(rows), len(wantDepths))
+	}
+	for i, r := range rows {
+		if r.Depth != wantDepths[i] {
+			t.Fatalf("row %d (%q) depth = %d, want %d", i, r.Title, r.Depth, wantDepths[i])
+		}
+	}
+	// Only parents carry a collapse toggle; the epic is a root parent and the
+	// subtask is the leaf.
+	if rows[0].Parent != "" || !rows[0].HasChildren {
+		t.Fatalf("the epic must be a root parent: %+v", rows[0])
+	}
+	if rows[3].HasChildren {
+		t.Fatalf("the subtask is a leaf and must not draw a toggle: %+v", rows[3])
 	}
 	// Kind badges + state pills come from the real fields.
 	if meta := metaOf(itemsOf(m, srcWorkItems), "wi-task"); !strings.HasPrefix(meta, "running") {
@@ -797,34 +929,43 @@ func TestTreeViewRendersRealHierarchy(t *testing.T) {
 	}
 }
 
-func TestBoardViewGroupsByStatus(t *testing.T) {
+// The Board view was REMOVED: a status-grouped Kanban does not read as a list
+// in a single-column terminal pane. The cycle is now tree -> archive, and the
+// retired 'B' chord must do nothing at all.
+func TestBoardViewIsGone(t *testing.T) {
 	p := newPlane()
 	seedHierarchy(p)
 	m := newModel(t, p)
 	m.SelectSource(srcWorkItems)
-
-	load(t, m, srcWorkItems) // tree
-	press(t, m, "B")         // board — a display grouping, no write
 	load(t, m, srcWorkItems)
 
+	if m.ViewMode() != viewTree {
+		t.Fatalf("the view opens as tree, got %q", m.ViewMode())
+	}
+	// 'B' is retired: no view change, and the tree still renders.
+	press(t, m, "B")
+	if m.ViewMode() != viewTree {
+		t.Fatalf("'B' must no longer switch views, got %q", m.ViewMode())
+	}
 	rows := itemsOf(m, srcWorkItems)
-	if !hasTitle(rows, "── pending (2)") {
-		t.Fatalf("board must group by status: %v", titles(rows))
+	if hasTitle(rows, "── pending (2)") {
+		t.Fatalf("a status column must not render: %v", titles(rows))
 	}
-	if !hasTitle(rows, "── running (1)") || !hasTitle(rows, "── succeeded (1)") {
-		t.Fatalf("board columns missing: %v", titles(rows))
+	if !hasTitle(rows, "[epic] Epic E") {
+		t.Fatalf("the tree must still render: %v", titles(rows))
 	}
-	// Every item sits under its own status column.
-	var seen []string
-	for _, r := range rows {
-		if strings.HasPrefix(r.Title, "── ") {
-			seen = append(seen, r.Title)
-		}
+
+	// 'v' cycles tree -> archive -> tree.
+	press(t, m, "v")
+	if m.ViewMode() != viewArchive {
+		t.Fatalf("v must cycle to archive, got %q", m.ViewMode())
 	}
-	if len(seen) < 3 || !strings.HasPrefix(seen[0], "── pending") {
-		t.Fatalf("board column order = %v", seen)
+	press(t, m, "v")
+	if m.ViewMode() != viewTree {
+		t.Fatalf("v must cycle back to tree, got %q", m.ViewMode())
 	}
-	// The display grouping NEVER mutates the sequence.
+
+	// Display switch never mutates or writes.
 	if len(p.reorders) != 0 {
 		t.Fatalf("switching views must not call ReorderWorkItems: %+v", p.reorders)
 	}
@@ -890,8 +1031,8 @@ func TestReorderChildrenPersists(t *testing.T) {
 	m.SelectSource(srcWorkItems)
 	load(t, m, srcWorkItems)
 
-	press(t, m, "down") // select wi-a (first child)
-	run(t, m, press(t, m, "J"))
+	press(t, m, "down")         // select wi-a (the first step)
+	run(t, m, press(t, m, "-")) // move it DOWN one step
 
 	if len(p.reorders) != 1 {
 		t.Fatalf("ReorderWorkItems calls = %d, want 1", len(p.reorders))
@@ -903,12 +1044,22 @@ func TestReorderChildrenPersists(t *testing.T) {
 	if strings.Join(req.GetChildIds(), ",") != "wi-b,wi-a,wi-c" {
 		t.Fatalf("reorder child_ids = %v, want wi-b,wi-a,wi-c", req.GetChildIds())
 	}
-	// The new sequence persisted: the tree now renders it.
+	// The new sequence persisted: the tree now renders it IN THE NEW ORDER, and
+	// each step is NUMBERED by its position in the stored sequence. Titles are
+	// flush and the nesting is the row's Depth, so every child of the epic sits
+	// at depth 1. The epic itself is unnumbered because it is an only child at
+	// the top level (a group of one has no order to show).
 	load(t, m, srcWorkItems)
-	got := titles(itemsOf(m, srcWorkItems))
-	want := []string{"[epic] Epic", "  [task] B", "  [task] A", "  [task] C"}
+	rows := itemsOf(m, srcWorkItems)
+	got := titles(rows)
+	want := []string{"[epic] Epic", "1. [task] B", "2. [task] A", "3. [task] C"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("tree after reorder = %v\nwant %v", got, want)
+	}
+	for i := 1; i < len(rows); i++ {
+		if rows[i].Depth != 1 {
+			t.Fatalf("row %d (%q) must nest one level under the epic: depth=%d", i, rows[i].Title, rows[i].Depth)
+		}
 	}
 	if _, ok := p.items["wi-c"]; !ok {
 		t.Fatal("reorder must touch only the listed siblings")
@@ -925,7 +1076,9 @@ func TestDeleteRequiresConfirmThenReconciles(t *testing.T) {
 	m.SelectSource(srcWorkItems)
 	load(t, m, srcWorkItems)
 
-	press(t, m, "x")
+	// THE SHARED DELETE CHORD, read from the constant rather than spelled out: `ctrl+x` is
+	// what the client's other panes answer and what the operator asked for across the board.
+	press(t, m, kit2.DeleteChord)
 	if !m.DialogOpen() {
 		t.Fatal("delete must open a Confirm dialog")
 	}
@@ -995,31 +1148,6 @@ func TestArchiveRestoreFromArchiveView(t *testing.T) {
 	}
 }
 
-func TestAssignAndUnassignWorker(t *testing.T) {
-	p := newPlane()
-	p.seedProject("proj-1", "Orchicon")
-	p.addItem(&apiv1.WorkItem{Id: "wi-1", Title: "Item", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_TASK, ProjectId: "proj-1", Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING})
-	m := newModel(t, p)
-	m.SelectSource(srcWorkItems)
-	load(t, m, srcWorkItems)
-
-	run(t, m, press(t, m, "w"))
-	f := m.ActiveForm()
-	if f == nil {
-		t.Fatal("w must open the assign form")
-	}
-	f.Set("worker_ref", `{"worker_id":"wrk_1","version":1}`)
-	run(t, m, submit(t, m, "worker_ref"))
-	if len(p.assigned) != 1 || p.assigned[0].GetWorkerRef() != `{"worker_id":"wrk_1","version":1}` {
-		t.Fatalf("assign = %+v", p.assigned)
-	}
-
-	run(t, m, press(t, m, "W"))
-	if len(p.unassigned) != 1 || p.unassigned[0] != "wi-1" {
-		t.Fatalf("unassign = %v", p.unassigned)
-	}
-}
-
 func TestScheduleWorkItem(t *testing.T) {
 	p := newPlane()
 	p.seedProject("proj-1", "Orchicon")
@@ -1028,15 +1156,31 @@ func TestScheduleWorkItem(t *testing.T) {
 	m.SelectSource(srcWorkItems)
 	load(t, m, srcWorkItems)
 
-	run(t, m, press(t, m, "t"))
+	// Scheduling lives in the DETAILS pane now: 't' is gone and 'e' is the one
+	// way in, carrying the Scheduled-start picker with it.
+	m2 := newModel(t, p)
+	m2.SelectSource(srcWorkItems)
+	load(t, m2, srcWorkItems)
+	press(t, m2, "t")
+	if m2.form != nil || m2.Base.EditingDetail() {
+		t.Fatal("'t' must no longer open a schedule form")
+	}
+
+	run(t, m, press(t, m, "e"))
 	f := m.ActiveForm()
 	if f == nil {
-		t.Fatal("t must open the schedule form")
+		t.Fatal("e must open the details editor")
+	}
+	if !f.FocusName("scheduled_start") {
+		t.Fatal("the editor must carry a scheduled-start field")
 	}
 	f.Set("scheduled_start", "2026-09-01T09:00:00Z")
 	f.Set("auto_start", "true")
-	run(t, m, submit(t, m, "auto_start"))
+	run(t, m, press(t, m, "ctrl+s"))
 
+	if len(p.updated) == 0 {
+		t.Fatal("saving the editor must send an update")
+	}
 	req := p.updated[len(p.updated)-1]
 	if req.GetScheduledStartAt() == nil || !req.GetAutoStartWorkflow() {
 		t.Fatalf("schedule request = %+v", req)
@@ -1054,7 +1198,10 @@ func TestProjectCreateEditAndDirectory(t *testing.T) {
 	m.SelectSource(srcProjects)
 
 	// create
-	press(t, m, "n")
+	// The create form is opened through the PREP now (the MCP options are a round trip),
+	// so the returned command must be driven before the form exists — same as every other
+	// async form in this suite.
+	run(t, m, press(t, m, "n"))
 	f := m.ActiveForm()
 	if f == nil {
 		t.Fatal("n on Projects must open the create form")
@@ -1179,7 +1326,7 @@ func TestRuntimeImageCreateEditDelete(t *testing.T) {
 	}
 
 	// delete (Confirm-gated)
-	press(t, m, "x")
+	press(t, m, kit2.DeleteChord)
 	if !m.DialogOpen() {
 		t.Fatal("image delete must be confirmed")
 	}
@@ -1328,7 +1475,7 @@ func TestCreateFormValidationBlocksSubmit(t *testing.T) {
 		t.Fatal("an invalid form must not submit")
 	}
 	if m.ActiveForm() == nil || len(f.Errors) == 0 {
-		t.Fatal("the form must stay open and name the failure")
+		t.Fatalf("the form must stay open and name the failure (errors=%v submitErr=%q)", f.Errors, f.SubmitErr)
 	}
 	if len(p.created) != 0 {
 		t.Fatal("no RPC may be sent for an invalid form")
@@ -1340,14 +1487,22 @@ func TestCreateFormValidationBlocksSubmit(t *testing.T) {
 }
 
 func TestEmptyStates(t *testing.T) {
+	// Two panes render at a time (focused source + detail), so each source's
+	// empty state is asserted by focusing it.
 	m := newModel(t, newPlane())
 	for _, src := range []string{srcProjects, srcWorkItems, srcImages} {
 		load(t, m, src)
 	}
-	view := m.View()
-	for _, want := range []string{"no projects yet", "no work items in this view", "no runtime images yet"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("empty pane missing its empty state: %q", want)
+	for _, tc := range []struct{ src, want string }{
+		{srcProjects, "no projects yet"},
+		{srcWorkItems, "no work items in this view"},
+		{srcImages, "no runtime images yet"},
+	} {
+		if !m.SelectSource(tc.src) {
+			t.Fatalf("source %q not selectable", tc.src)
+		}
+		if view := m.View(); !strings.Contains(view, tc.want) {
+			t.Errorf("focused pane %q missing its empty state: %q", tc.src, tc.want)
 		}
 	}
 }

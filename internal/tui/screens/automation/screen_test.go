@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
@@ -17,6 +18,7 @@ import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 	"github.com/beardedparrott/orchicon/internal/tui/subs"
 )
@@ -56,10 +58,13 @@ func (p *fakePlane) add(w *apiv1.WorkItem) *apiv1.WorkItem {
 
 func (p *fakePlane) seedRecurring(id, title string, enabled bool) *apiv1.WorkItem {
 	return p.add(&apiv1.WorkItem{
-		Id:                id,
-		Title:             title,
-		Status:            apiv1.WorkItemStatus_WORK_ITEM_STATUS_RECURRING,
-		ProjectId:         "proj-1",
+		Id:        id,
+		Title:     title,
+		Status:    apiv1.WorkItemStatus_WORK_ITEM_STATUS_RECURRING,
+		ProjectId: "proj-1",
+		// A LEGACY schedule: written before the timezone field existed, so it carries NONE — which the
+		// server reads as UTC so the fire time is unchanged. That is the case the form has to label rather
+		// than silently re-zone, so it is the case worth seeding by default.
 		RecurringEnabled:  enabled,
 		RecurringSchedule: &apiv1.RecurringSchedule{Frequency: "daily", Interval: 1, StartDate: "2026-08-01", StartTime: "09:00", OutputsMode: "standard"},
 		NextRunAt:         timestamppb.Now(),
@@ -377,7 +382,7 @@ func submit(t *testing.T, m *Model, lastField string) tea.Cmd {
 	if !f.FocusName(lastField) {
 		t.Fatalf("form has no field %q", lastField)
 	}
-	return press(t, m, "enter")
+	return press(t, m, "ctrl+s")
 }
 
 // run executes a cmd and feeds its message back into the screen (the
@@ -461,7 +466,7 @@ func TestRecurringItemsCreateFromForm(t *testing.T) {
 	p := newPlane()
 	p.seedRecurring("rec-1", "Nightly sweep", true)
 	m := newModel(t, p)
-	m.SelectSource("schedules")
+	m.SelectSource("recurring-items")
 
 	// 'n' prepares the form: projects + workflows load first.
 	if cmd := press(t, m, "n"); cmd == nil {
@@ -495,8 +500,11 @@ func TestRecurringItemsCreateFromForm(t *testing.T) {
 	f.Set("frequency", "weekly")
 	f.Set("interval", "2")
 	f.Set("days", "Mon,Wed")
-	f.Set("start_date", "2026-09-01")
-	f.Set("start_time", "07:30")
+	// The start is now ONE combined date+time field holding an instant. Seeded the way the FORM seeds it
+	// — a wall clock read in the form's zone — so the assertion does not depend on which zone the test
+	// machine is in. A fixed offset here would be a lie on any machine but one, and the derived pair
+	// would legitimately come back different.
+	f.Set("start_date", scheduleSeedInitial(m.formZone, time.Date(2026, time.September, 1, 12, 0, 0, 0, time.UTC), "07:30"))
 	f.Set("outputs", "idea")
 
 	run(t, m, submit(t, m, "outputs"))
@@ -520,9 +528,9 @@ func TestRecurringItemsCreateFromForm(t *testing.T) {
 		t.Fatalf("recurring_schedule = %+v", s)
 	}
 	// The created item is a recurring work item → the Recurring Items pane.
-	load(t, m, "schedules")
-	if !hasTitle(itemsOf(m, "schedules"), "Nightly triage sweep") {
-		t.Fatalf("created item missing from Recurring Items: %v", titles(itemsOf(m, "schedules")))
+	load(t, m, "recurring-items")
+	if !hasTitle(itemsOf(m, "recurring-items"), "Nightly triage sweep") {
+		t.Fatalf("created item missing from Recurring Items: %v", titles(itemsOf(m, "recurring-items")))
 	}
 }
 
@@ -530,8 +538,8 @@ func TestRecurringItemsEdit(t *testing.T) {
 	p := newPlane()
 	p.seedRecurring("rec-1", "Nightly sweep", true)
 	m := newModel(t, p)
-	m.SelectSource("schedules")
-	load(t, m, "schedules")
+	m.SelectSource("recurring-items")
+	load(t, m, "recurring-items")
 
 	run(t, m, press(t, m, "e"))
 	f := m.ActiveForm()
@@ -544,7 +552,9 @@ func TestRecurringItemsEdit(t *testing.T) {
 	f.Set("title", "Weekly sweep")
 	f.Set("frequency", "weekly")
 	f.Set("interval", "3")
-	f.Set("start_time", "06:00")
+	// One combined field, as above, seeded in the form's own zone so the derived pair is the wall clock
+	// this test means regardless of the machine.
+	f.Set("start_date", scheduleSeedInitial(m.formZone, time.Date(2026, time.August, 1, 12, 0, 0, 0, time.UTC), "06:00"))
 	run(t, m, submit(t, m, "enabled"))
 
 	req := p.lastUpdated(t)
@@ -555,9 +565,9 @@ func TestRecurringItemsEdit(t *testing.T) {
 	if s == nil || s.GetFrequency() != "weekly" || s.GetInterval() != 3 || s.GetStartTime() != "06:00" {
 		t.Fatalf("update recurring_schedule = %+v", s)
 	}
-	load(t, m, "schedules")
-	if !hasTitle(itemsOf(m, "schedules"), "Weekly sweep") {
-		t.Fatalf("edited title must render in the list: %v", titles(itemsOf(m, "schedules")))
+	load(t, m, "recurring-items")
+	if !hasTitle(itemsOf(m, "recurring-items"), "Weekly sweep") {
+		t.Fatalf("edited title must render in the list: %v", titles(itemsOf(m, "recurring-items")))
 	}
 }
 
@@ -565,8 +575,8 @@ func TestRecurringItemsPauseResume(t *testing.T) {
 	p := newPlane()
 	p.seedRecurring("rec-1", "Nightly sweep", true)
 	m := newModel(t, p)
-	m.SelectSource("schedules")
-	load(t, m, "schedules")
+	m.SelectSource("recurring-items")
+	load(t, m, "recurring-items")
 
 	run(t, m, press(t, m, "p"))
 	first := p.lastUpdated(t)
@@ -582,9 +592,9 @@ func TestRecurringItemsPauseResume(t *testing.T) {
 	if second.RecurringEnabled == nil || !second.GetRecurringEnabled() {
 		t.Fatalf("second p must resume: %+v", second)
 	}
-	load(t, m, "schedules")
+	load(t, m, "recurring-items")
 	var meta string
-	for _, it := range itemsOf(m, "schedules") {
+	for _, it := range itemsOf(m, "recurring-items") {
 		if it.ID == "rec-1" {
 			meta = it.Meta
 		}
@@ -598,8 +608,8 @@ func TestRecurringItemsDeleteIsConfirmed(t *testing.T) {
 	p := newPlane()
 	p.seedRecurring("rec-1", "Nightly sweep", true)
 	m := newModel(t, p)
-	m.SelectSource("schedules")
-	load(t, m, "schedules")
+	m.SelectSource("recurring-items")
+	load(t, m, "recurring-items")
 
 	press(t, m, "x")
 	if !m.DialogOpen() {
@@ -624,8 +634,8 @@ func TestRecurringItemsDeleteIsConfirmed(t *testing.T) {
 	if st := p.itemStatus("rec-1"); st != apiv1.WorkItemStatus_WORK_ITEM_STATUS_CANCELLED {
 		t.Fatalf("soft delete must cancel the item, got %v", st)
 	}
-	load(t, m, "schedules")
-	if hasTitle(itemsOf(m, "schedules"), "Nightly sweep") {
+	load(t, m, "recurring-items")
+	if hasTitle(itemsOf(m, "recurring-items"), "Nightly sweep") {
 		t.Fatal("a deleted recurring item must leave the Recurring Items pane")
 	}
 }
@@ -658,10 +668,10 @@ func TestRecurringRunHistoryRenders(t *testing.T) {
 	// A wide region: the ledger lines are long, and the detail viewport
 	// clips (never wraps) at the pane width.
 	m.SetSize(400, 40)
-	m.SelectSource("schedules")
-	load(t, m, "schedules")
+	m.SelectSource("recurring-items")
+	load(t, m, "recurring-items")
 
-	cmd := m.RequestDetail("schedules", "rec-1")
+	cmd := m.RequestDetail("recurring-items", "rec-1")
 	if cmd == nil {
 		t.Fatal("RequestDetail must produce a cmd")
 	}
@@ -720,11 +730,15 @@ func TestIdeaCloudShowsProvenanceAndRejectedSection(t *testing.T) {
 		}
 	}
 
-	view := m.View()
-	for _, want := range []string{"Idea Cloud", "Rejected Ideas"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("automation view missing the %q section", want)
-		}
+	// Two panes render at a time now, so assert each section's PANEL TITLE by
+	// focusing it (the operator's left/right move between sources).
+	m.SelectSource("ideas")
+	if view := m.View(); !strings.Contains(view, "Idea Cloud") {
+		t.Errorf("focused ideas pane missing its title")
+	}
+	m.SelectSource("rejected")
+	if view := m.View(); !strings.Contains(view, "Rejected Ideas") {
+		t.Errorf("focused rejected pane missing its title")
 	}
 
 	// Detail carries the full provenance (spawner + spawner title + run).
@@ -802,27 +816,38 @@ func TestDismissIdeaLeavesActiveViews(t *testing.T) {
 // ---------- empty states + validation ----------
 
 func TestAutomationEmptyStates(t *testing.T) {
+	// The screen renders TWO panes (the focused source + detail), so each
+	// source's empty state is asserted by focusing it — the same way an
+	// operator reaches it (left/right).
+	//
+	// Workflows are NOT here any more: they moved to the Execution tab, which
+	// owns the Execution domain (executions, runs, workflows, workers).
 	m := newModelWith(t, newPlane(), nil)
-	for _, src := range []string{"workflows", "schedules", "ideas", "rejected"} {
+	for _, src := range []string{"recurring-items", "ideas", "rejected"} {
 		load(t, m, src)
 	}
-	view := m.View()
-	for _, want := range []string{
-		"no workflows yet",
-		"no recurring items yet",
-		"no ideas awaiting triage",
-		"no dismissed ideas",
+	for _, tc := range []struct{ src, want string }{
+		{"recurring-items", "no recurring items yet"},
+		{"ideas", "no ideas awaiting triage"},
+		{"rejected", "no dismissed ideas"},
 	} {
-		if !strings.Contains(view, want) {
-			t.Errorf("empty pane missing its empty state: %q", want)
+		if !m.SelectSource(tc.src) {
+			t.Fatalf("source %q not selectable", tc.src)
 		}
+		if view := m.View(); !strings.Contains(view, tc.want) {
+			t.Errorf("focused pane %q missing its empty state: %q", tc.src, tc.want)
+		}
+	}
+	// Workflows must NOT be an Automation source any more.
+	if m.SelectSource("workflows") {
+		t.Fatal("workflows must not be an Automation source (it moved to Execution)")
 	}
 }
 
 func TestCreateFormValidationBlocksSubmit(t *testing.T) {
 	p := newPlane()
 	m := newModel(t, p)
-	m.SelectSource("schedules")
+	m.SelectSource("recurring-items")
 	run(t, m, press(t, m, "n"))
 	f := m.ActiveForm()
 	if f == nil {
@@ -850,5 +875,425 @@ func TestCreateFormValidationBlocksSubmit(t *testing.T) {
 	press(t, m, "esc")
 	if m.ActiveForm() != nil || len(p.created) != 0 {
 		t.Fatal("esc must cancel the form with no side effects")
+	}
+}
+
+// ---------- the calendar modal (KDate) ----------
+
+// A date field opens the CALENDAR, and the chosen date is written back into the
+// field. Typing "YYYY-MM-DD" was the old gesture; the GUI has a date control
+// (`type="date"`) and this is its TUI equivalent.
+func TestRecurringStartDateOpensTheCalendar(t *testing.T) {
+	p := newPlane()
+	m := newModel(t, p)
+	m.SelectSource("recurring-items")
+	if cmd := press(t, m, "n"); cmd == nil {
+		t.Fatal("n must load the create form")
+	} else {
+		run(t, m, cmd)
+	}
+	f := m.ActiveForm()
+	if f == nil {
+		return
+	}
+	if s := f.Spec("start_date"); s == nil || s.Kind != kit2.KDateTime {
+		t.Fatalf("fixture: start_date is not the combined date+time field")
+	}
+	if !f.FocusName("start_date") {
+		t.Fatal("fixture: no start_date field")
+	}
+	before := f.Values["start_date"]
+
+	// Enter on the field opens the calendar rather than editing text.
+	if cmd := press(t, m, "enter"); cmd != nil {
+		run(t, m, cmd)
+	}
+	if m.dtPicker == nil {
+		t.Fatal("enter on start_date must open the combined calendar + clock")
+	}
+	if !m.ClaimsKeys() {
+		t.Fatal("an open calendar must claim the keys")
+	}
+	if !m.FormOpen() {
+		t.Fatal("an open calendar must count as a form being open, so Tab reaches it")
+	}
+
+	// Step a day and choose it: the field takes the chosen instant, split back into the date+time pair.
+	dp := m.dtPicker
+	want := dp.Value()
+	press(t, m, "right")
+	if dp.Value() == want {
+		t.Fatal("right must move the calendar cursor")
+	}
+	press(t, m, "enter")
+	if m.dtPicker != nil {
+		t.Fatal("enter must close the modal")
+	}
+	// The field holds the instant; the WIRE pair is derived from it, so what matters is that the chosen
+	// day reached both.
+	chosen := dp.Time()
+	if got := m.ActiveForm().Values["start_date"]; got == before {
+		t.Fatal("the field did not change — the choice was not written back")
+	}
+	sched := scheduleFromValues(m.ActiveForm().Values, nil, m.formZone)
+	if sched.GetStartDate() != chosen.Format("2006-01-02") {
+		t.Errorf("start_date on the wire = %q, want the chosen day %q",
+			sched.GetStartDate(), chosen.Format("2006-01-02"))
+	}
+	if sched.GetStartTime() == "" {
+		t.Error("the wire carries no start_time: the pair was not derived from the combined field")
+	}
+}
+
+// Esc backs out WITHOUT touching the field.
+func TestRecurringCalendarEscLeavesTheFieldAlone(t *testing.T) {
+	m := newModel(t, newPlane())
+	m.SelectSource("recurring-items")
+	if cmd := press(t, m, "n"); cmd == nil {
+		t.Fatal("n must load the create form")
+	} else {
+		run(t, m, cmd)
+	}
+	f := m.ActiveForm()
+	if f == nil {
+		return
+	}
+	if s := f.Spec("start_date"); s == nil || s.Kind != kit2.KDateTime {
+		t.Fatalf("fixture: start_date is not the combined date+time field")
+	}
+	f.FocusName("start_date")
+	before := f.Values["start_date"]
+	if cmd := press(t, m, "enter"); cmd != nil {
+		run(t, m, cmd)
+	}
+	if m.dtPicker == nil {
+		t.Fatal("fixture: the calendar did not open")
+	}
+	press(t, m, "right") // move, then abandon
+	press(t, m, "esc")
+	if m.dtPicker != nil {
+		t.Fatal("esc must close the calendar")
+	}
+	if got := m.ActiveForm().Values["start_date"]; got != before {
+		t.Fatalf("start_date = %q, want it untouched (%q)", got, before)
+	}
+}
+
+// THE START IS ONE FIELD, CHOSEN FROM ONE MODAL.
+//
+// The operator: "I wonder if we should combine start date and time in the same type of calendar picker
+// you made for work item schedules. That would be nice."
+//
+// Previously the form made the operator visit a calendar for the date and a bare text box for the time —
+// two controls describing one moment, and the text box was the one that demanded HH:MM exactly. The
+// assertions below pin BOTH halves of the replacement, because either alone would look right and be
+// useless: a single field that no modal opens is a dead field, and a modal whose value never reaches the
+// wire leaves the schedule unscheduled.
+func TestRecurringStartIsOneCombinedField(t *testing.T) {
+	m := newModel(t, newPlane())
+	m.SelectSource("recurring-items")
+	if cmd := press(t, m, "n"); cmd == nil {
+		t.Fatal("n must load the create form")
+	} else {
+		run(t, m, cmd)
+	}
+	f := m.ActiveForm()
+	if f == nil {
+		return
+	}
+
+	s := f.Spec("start_date")
+	if s == nil {
+		t.Fatal("the create form must carry a start field")
+	}
+	if s.Kind != kit2.KDateTime {
+		t.Errorf("start_date is kind %q, want the combined date+time kind — the date calendar plus a "+
+			"separate time box is exactly the two-controls-for-one-moment shape the operator asked to "+
+			"collapse", s.Kind)
+	}
+	// The separate time box is GONE. It is the half that forced HH:MM typing, and a field left behind
+	// would keep demanding it alongside the modal.
+	if gone := f.Spec("start_time"); gone != nil {
+		t.Errorf("the form still carries a standalone start_time field (%q): the combined control replaced "+
+			"it", gone.Kind)
+	}
+	// Its value is the instant the schedule's wall clock denotes, so it must parse — the modal's format
+	// and the wire's are the same RFC3339.
+	if _, err := time.Parse(time.RFC3339, f.Values["start_date"]); err != nil {
+		t.Errorf("the seeded start %q is not RFC3339: %v", f.Values["start_date"], err)
+	}
+	// And entering on it opens the modal rather than editing text.
+	if !f.FocusName("start_date") {
+		t.Fatal("fixture: the start field is not focusable")
+	}
+	if cmd := press(t, m, "enter"); cmd != nil {
+		run(t, m, cmd)
+	}
+	if m.dtPicker == nil {
+		t.Fatal("enter on the start field must open the combined calendar + clock")
+	}
+	// The modal edits in the SCHEDULE's zone, which is what keeps a legacy UTC schedule's wall clock
+	// meaning 09:00 UTC rather than being re-zoned by merely opening it.
+	if got := m.dtPicker.Zone().String(); got != scheduleZoneLocation(m.formZone).String() {
+		t.Errorf("the modal edits in %q, want the schedule's zone %q — otherwise opening and closing it "+
+			"would shift the stored time by the operator's offset", got, scheduleZoneLocation(m.formZone))
+	}
+}
+
+// THE MODAL'S CHOICE REACHES THE WIRE AS THE DATE+TIME PAIR THE SCHEDULE STORES.
+//
+// This is the half that fails silently: the schedule's wire shape is two strings (start_date "YYYY-MM-DD",
+// start_time "HH:MM") while the form holds one instant, so the split is what makes a combined control
+// usable at all. Deriving it in scheduleFromValues rather than only in the modal's write-back is
+// deliberate — the common path submits WITHOUT opening the modal, and that path never fires a write-back.
+func TestRecurringStartPairIsDerivedFromTheCombinedField(t *testing.T) {
+	m := newModel(t, newPlane())
+	m.SelectSource("recurring-items")
+	if cmd := press(t, m, "n"); cmd == nil {
+		t.Fatal("n must load the create form")
+	} else {
+		run(t, m, cmd)
+	}
+	f := m.ActiveForm()
+	if f == nil {
+		return
+	}
+	// A wall clock seeded in the form's zone, so the expectation holds wherever the test runs.
+	f.Set("start_date", scheduleSeedInitial(m.formZone, time.Date(2026, time.March, 9, 12, 0, 0, 0, time.UTC), "14:45"))
+
+	sched := scheduleFromValues(f.Values, nil, m.formZone)
+	if sched.GetStartDate() != "2026-03-09" {
+		t.Errorf("start_date = %q, want the chosen day", sched.GetStartDate())
+	}
+	if sched.GetStartTime() != "14:45" {
+		t.Errorf("start_time = %q, want the chosen wall clock 14:45 — the field holds an instant and the "+
+			"pair has to be derived from it", sched.GetStartTime())
+	}
+	if sched.GetTimezone() != m.formZone {
+		t.Errorf("timezone = %q, want the form's zone %q", sched.GetTimezone(), m.formZone)
+	}
+}
+
+// The weekday field is a MULTI-SELECT: each day toggles independently, and the
+// chosen set reaches the schedule in calendar order.
+func TestRecurringDaysTogglesIndependently(t *testing.T) {
+	m := newModel(t, newPlane())
+	m.SelectSource("recurring-items")
+	if cmd := press(t, m, "n"); cmd == nil {
+		t.Fatal("n must load the create form")
+	} else {
+		run(t, m, cmd)
+	}
+	f := m.ActiveForm()
+	if !f.FocusName("days") {
+		t.Fatal("fixture: no days field")
+	}
+
+	// Toggle Mon (the cursor starts there), then walk to Wed and toggle that.
+	press(t, m, "space")
+	f = m.ActiveForm()
+	if got := f.MultiValues("days"); len(got) != 1 || got[0] != "Mon" {
+		t.Fatalf("days after one toggle = %v, want [Mon]", got)
+	}
+	press(t, m, "right") // Mon → Tue
+	press(t, m, "right") // Tue → Wed
+	press(t, m, "space")
+	f = m.ActiveForm()
+	got := f.MultiValues("days")
+	if len(got) != 2 || got[0] != "Mon" || got[1] != "Wed" {
+		t.Fatalf("days = %v, want [Mon Wed] in calendar order — each option must toggle independently", got)
+	}
+	// Toggling Mon off leaves Wed alone.
+	press(t, m, "left")
+	press(t, m, "left")
+	press(t, m, "space")
+	f = m.ActiveForm()
+	if got := f.MultiValues("days"); len(got) != 1 || got[0] != "Wed" {
+		t.Fatalf("days = %v, want [Wed] — toggling one day must not clear another", got)
+	}
+}
+
+// The edit form shows the STORED days as selected. Without seeding, an edit form
+// opened with nothing ticked and saving silently cleared the schedule.
+func TestRecurringEditPrefillsSelectedDays(t *testing.T) {
+	p := newPlane()
+	// The shared fixture seeds a DAILY schedule with NO weekday selection, which is
+	// legitimate (empty days = every day) and therefore proves nothing about
+	// pre-fill. Give this one explicit days so the assertion is about the seeding.
+	w := p.seedRecurring("rec-1", "Nightly sweep", true)
+	w.RecurringSchedule.Days = []string{"Mon", "Wed"}
+	m := newModel(t, p)
+	m.SelectSource("recurring-items")
+	load(t, m, "recurring-items")
+	if len(itemsOf(m, "recurring-items")) == 0 {
+		t.Fatal("fixture: no recurring item listed")
+	}
+	if cmd := press(t, m, "e"); cmd == nil {
+		t.Fatal("e must load the edit form")
+	} else {
+		run(t, m, cmd)
+	}
+	f := m.ActiveForm()
+	if f == nil {
+		t.Fatal("e must open the edit form")
+	}
+	if got := f.MultiValues("days"); len(got) == 0 {
+		t.Fatalf("days = %v, want the stored selection pre-filled — otherwise saving clears it", got)
+	}
+}
+
+// ---------- bulk idea triage ----------
+
+// 'A' accepts EVERY idea the list is showing. Triage is the reason the cloud
+// exists, and a run that spawned eight ideas should not ask for eight keystrokes
+// and eight confirmations.
+func TestAcceptAllIdeasPromotesEveryListed(t *testing.T) {
+	p := newPlane()
+	p.seedRecurring("rec-1", "Nightly sweep", true)
+	p.seedIdea("idea-1", "Add retry to sweeper", apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA, "rec-1", "run-a")
+	p.seedIdea("idea-2", "Document the sweeper", apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA, "rec-1", "run-b")
+	p.seedIdea("idea-3", "Add sweeper metrics", apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA, "rec-1", "run-c")
+	m := newModel(t, p)
+	m.SelectSource("ideas")
+	load(t, m, "ideas")
+	if got := len(itemsOf(m, "ideas")); got != 3 {
+		t.Fatalf("fixture: %d ideas listed, want 3", got)
+	}
+
+	// Accept takes no confirmation: promoting is reversible (a promoted item is a
+	// normal pending work item, editable like any other).
+	run(t, m, press(t, m, "A"))
+
+	if len(p.promoted) != 3 {
+		t.Fatalf("PromoteIdea calls = %v, want all three listed ideas", p.promoted)
+	}
+	for _, id := range []string{"idea-1", "idea-2", "idea-3"} {
+		if st := p.itemStatus(id); st != apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING {
+			t.Errorf("%s status = %v, want pending after accept", id, st)
+		}
+	}
+	if !strings.Contains(m.notice, "accepted 3") {
+		t.Fatalf("notice = %q, want it to report all three accepted", m.notice)
+	}
+	// The cloud is empty afterwards.
+	load(t, m, "ideas")
+	if len(itemsOf(m, "ideas")) != 0 {
+		t.Fatalf("ideas still listed after accept-all: %d", len(itemsOf(m, "ideas")))
+	}
+}
+
+// 'R' rejects every listed idea, but it is CONFIRMED: a dismissal is durable
+// rejection history that the automation's dedupe gate reads, so it is not done by
+// accident.
+func TestRejectAllIdeasIsConfirmed(t *testing.T) {
+	p := newPlane()
+	p.seedRecurring("rec-1", "Nightly sweep", true)
+	p.seedIdea("idea-1", "Add retry to sweeper", apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA, "rec-1", "run-a")
+	p.seedIdea("idea-2", "Document the sweeper", apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA, "rec-1", "run-b")
+	m := newModel(t, p)
+	m.SelectSource("ideas")
+	load(t, m, "ideas")
+
+	press(t, m, "R")
+	if !m.DialogOpen() {
+		t.Fatal("reject-all must be confirmed — a dismissal is durable rejection history")
+	}
+	if m.Open == nil || !m.Open.Danger {
+		t.Error("reject-all is a destructive action and must present as danger")
+	}
+	// Nothing has happened yet.
+	if len(p.dismissd) != 0 {
+		t.Fatalf("DismissIdea ran before confirmation: %v", p.dismissd)
+	}
+
+	run(t, m, press(t, m, "enter"))
+	if len(p.dismissd) != 2 {
+		t.Fatalf("DismissIdea calls = %v, want both listed ideas", p.dismissd)
+	}
+	for _, id := range []string{"idea-1", "idea-2"} {
+		if st := p.itemStatus(id); st != apiv1.WorkItemStatus_WORK_ITEM_STATUS_CANCELLED {
+			t.Errorf("%s status = %v, want cancelled after reject", id, st)
+		}
+	}
+	// Both land in the REJECTED section (what the dedupe gate reads).
+	load(t, m, "rejected")
+	if got := len(itemsOf(m, "rejected")); got != 2 {
+		t.Fatalf("rejected history has %d entries, want 2", got)
+	}
+}
+
+// Cancelling the confirmation leaves every idea ALONE — the rows must come back,
+// because the removal was optimistic.
+func TestRejectAllIdeasCancelledChangesNothing(t *testing.T) {
+	p := newPlane()
+	p.seedRecurring("rec-1", "Nightly sweep", true)
+	p.seedIdea("idea-1", "Add retry to sweeper", apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA, "rec-1", "run-a")
+	m := newModel(t, p)
+	m.SelectSource("ideas")
+	load(t, m, "ideas")
+
+	press(t, m, "R")
+	if !m.DialogOpen() {
+		t.Fatal("fixture: no confirmation")
+	}
+	press(t, m, "esc")
+	if len(p.dismissd) != 0 {
+		t.Fatalf("a cancelled reject-all still dismissed: %v", p.dismissd)
+	}
+	if st := p.itemStatus("idea-1"); st != apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA {
+		t.Fatalf("idea status = %v, want it untouched (IDEA)", st)
+	}
+	load(t, m, "ideas")
+	if len(itemsOf(m, "ideas")) != 1 {
+		t.Fatal("the idea must still be listed after cancelling")
+	}
+}
+
+// A PARTIAL failure is reported per-idea. This is the case a single batched RPC
+// would hide, and the one that matters: the operator has to know WHICH ideas are
+// still awaiting a decision.
+func TestBulkAcceptReportsPerIdeaFailure(t *testing.T) {
+	p := newPlane()
+	p.seedRecurring("rec-1", "Nightly sweep", true)
+	p.seedIdea("idea-1", "Add retry to sweeper", apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA, "rec-1", "run-a")
+	p.seedIdea("idea-2", "Document the sweeper", apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA, "rec-1", "run-b")
+	m := newModel(t, p)
+	m.SelectSource("ideas")
+	load(t, m, "ideas")
+
+	// Make ONE of them fail, the way a server-side refusal would. The others go
+	// through the PLANE, so the test exercises a real partial success rather than a
+	// no-op that silently leaves every idea where it was.
+	m.rpcPromote = func(ctx context.Context, id string) error {
+		if id == "idea-2" {
+			return errors.New("refused")
+		}
+		_, err := p.PromoteIdea(ctx, connect.NewRequest(&apiv1.PromoteIdeaRequest{Id: id}))
+		return err
+	}
+	run(t, m, press(t, m, "A"))
+
+	if !strings.Contains(m.notice, "1 of 2") || !strings.Contains(m.notice, "still listed") {
+		t.Fatalf("notice = %q, want it to report 1 of 2 with the failure still listed", m.notice)
+	}
+	// The reload puts the FAILED row back: the optimistic removal is only safe
+	// because the durable truth is the server's list.
+	load(t, m, "ideas")
+	if got := itemsOf(m, "ideas"); len(got) != 1 || got[0].ID != "idea-2" {
+		t.Fatalf("ideas after a partial failure = %+v, want only idea-2 back", got)
+	}
+}
+
+// With nothing awaiting triage, the bulk keys SAY so rather than no-op.
+func TestBulkIdeaDecisionOnAnEmptyCloudRefuses(t *testing.T) {
+	m := newModel(t, newPlane())
+	m.SelectSource("ideas")
+	load(t, m, "ideas")
+	if len(itemsOf(m, "ideas")) != 0 {
+		t.Fatal("fixture: expected an empty Idea Cloud")
+	}
+	press(t, m, "A")
+	if !strings.Contains(m.notice, "no ideas") {
+		t.Fatalf("notice = %q, want it to say there is nothing to triage", m.notice)
 	}
 }

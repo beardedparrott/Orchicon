@@ -18,6 +18,17 @@ import (
 func TestRunWorktreeBaseResolvesRunWorktree(t *testing.T) {
 	ctx := context.Background()
 	base := t.TempDir()
+	// The "non-repo" half below needs a directory that is genuinely outside any
+	// git repository. t.TempDir() does NOT guarantee that: it follows GOTMPDIR,
+	// and the documented dev setup exports GOTMPDIR=$PWD/.gotmp — INSIDE this
+	// repo. Git would then discover the enclosing repo from the fixture, the
+	// project would correctly resolve to a worktree path, and the assertion would
+	// fail for a reason unrelated to the behavior under test.
+	//
+	// GIT_CEILING_DIRECTORIES stops git's upward repository search at the
+	// fixture, so the non-repo premise holds wherever the temp dir lives (the
+	// git calls are subprocesses and inherit this env).
+	t.Setenv("GIT_CEILING_DIRECTORIES", base)
 
 	// Non-repo project: run proceeds in place at the project dir.
 	plain := filepath.Join(base, "plain")

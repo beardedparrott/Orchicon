@@ -141,6 +141,8 @@ func TestWorkItemContextFilesWithinProjectDirDB(t *testing.T) {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatalf("commit project: %v", err)
 	}
+	// Self-cleaning: see db.CleanupProject.
+	db.CleanupProject(t, pool, validateParentTestTenant, proj.ID)
 
 	// Inside the project dir → accepted.
 	inside := []string{projDir + "/src", projDir + "/README.md"}

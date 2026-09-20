@@ -63,8 +63,10 @@ func runCmd(t *testing.T, cmd tea.Cmd) mutateResult {
 // read-only gap, /adapters and /admin included).
 func TestControlRegistersEverySource(t *testing.T) {
 	m := New(nil, nil)
+	// No "categories": groupings are managed IN PLACE, matching the GUI (a create in each pane's assign
+	// gesture; rename/delete on the folder row). See control_populate_test.go for the full reasoning.
 	want := map[string]bool{
-		"workers": false, "images": false, "secrets": false, "mcp": false,
+		"secrets": false, "mcp": false, "themes": false,
 		"providers": false, "webhooks": false, "adapters": false,
 		"settings": false, "admin": false,
 	}
@@ -117,13 +119,16 @@ func TestSettingsEditSaveValidatesModelRefs(t *testing.T) {
 		t.Fatal("an open form must claim keys")
 	}
 
-	// Invalid model ref → rejected inline, no RPC.
-	m.form.Set("default_worker_model", "notamodel")
-	if _, err := m.form.Submit(); err == nil {
-		t.Fatal("invalid model ref must be rejected before submit")
+	// A MALFORMED model ref (an empty segment) → rejected inline, no RPC.
+	// The ref must be genuinely malformed: a BARE model id like "llama3" is
+	// legal under the pinned grammar (the adapter segment defaults), which the
+	// old hand-rolled splitter wrongly rejected.
+	m.activeForm().Set("default_worker_model", "/llama3")
+	if _, err := m.activeForm().Submit(); err == nil {
+		t.Fatal("a malformed model ref must be rejected before submit")
 	}
-	if m.form.Errors["default_worker_model"] == "" {
-		t.Fatal("the invalid model ref must carry an inline field error")
+	if m.activeForm().Errors["default_worker_model"] == "" {
+		t.Fatal("the malformed model ref must carry an inline field error")
 	}
 	if !strings.Contains(m.View(), "✗") {
 		t.Fatal("the inline error is not rendered")
@@ -132,15 +137,30 @@ func TestSettingsEditSaveValidatesModelRefs(t *testing.T) {
 		t.Fatal("the RPC fired despite the validation error")
 	}
 
+	// A BARE model id is legal (the grammar's 1-segment form) and must NOT be
+	// rejected — the old splitter did, which is the bug this change fixes.
+	m.activeForm().Set("default_worker_model", "llama3")
+	bareCmd, bareErr := m.activeForm().Submit()
+	if bareErr != nil {
+		t.Fatalf("a bare model id must be accepted by the pinned grammar: %v", bareErr)
+	}
+	if res := runCmd(t, bareCmd); res.Err != nil {
+		t.Fatalf("bare-model save failed: %v", res.Err)
+	}
+	if got == nil || got.GetDefaultWorkerModel() != "llama3" {
+		t.Fatal("a bare model id must reach UpdateSettings")
+	}
+	got = nil
+
 	// Valid values → the RPC fires with the edited fields.
-	m.form.Set("default_worker_model", "ollama/llama3")
-	m.form.Set("default_ask_model", "anthropic/claude-3")
-	m.form.Set("stall_nudge_max", "4")
-	m.form.Set("stall_no_progress_window_seconds", "120")
-	m.form.Set("backup_schedule", "0 3 * * *")
-	cmd, err := m.form.Submit()
+	m.activeForm().Set("default_worker_model", "ollama/llama3")
+	m.activeForm().Set("default_ask_model", "anthropic/claude-3")
+	m.activeForm().Set("stall_nudge_max", "4")
+	m.activeForm().Set("stall_no_progress_window_seconds", "120")
+	m.activeForm().Set("backup_schedule", "0 3 * * *")
+	cmd, err := m.activeForm().Submit()
 	if err != nil {
-		t.Fatalf("submit: %v (%v)", err, m.form.Errors)
+		t.Fatalf("submit: %v (%v)", err, m.activeForm().Errors)
 	}
 	res := runCmd(t, cmd)
 	if res.Err != nil {
@@ -164,18 +184,30 @@ func TestSettingsEditSaveValidatesModelRefs(t *testing.T) {
 	}
 }
 
-// A malformed model ref (no provider prefix) is rejected too, while an empty
-// value (leave unchanged) is accepted.
+// validModelRef delegates to the PINNED grammar (adapter.ParseModelRef), so the
+// TUI accepts exactly what the plane accepts. The legal shapes below are the
+// ones the old hand-rolled SplitN("/", 2) splitter got WRONG: it rejected a
+// bare model id (legal) and accepted malformed multi-segment junk.
 func TestModelRefValidation(t *testing.T) {
-	if err := validModelRef("ollama/llama3"); err != nil {
-		t.Fatalf("valid ref rejected: %v", err)
+	for _, ok := range []string{
+		// 1 segment: a bare model id (the adapter segment defaults).
+		"llama3",
+		// 2 segments: the legacy provider/model form.
+		"ollama/llama3",
+		// 3 segments: canonical adapter/provider/model.
+		"opencode/anthropic/claude-sonnet-4",
+		// 4 segments: the model segment is the VERBATIM remainder (ADR-0003).
+		"orchicon/commandcode/deepseek/deepseek-v4-flash",
+		// Empty means "leave unchanged".
+		"",
+	} {
+		if err := validModelRef(ok); err != nil {
+			t.Fatalf("legal ref %q rejected: %v", ok, err)
+		}
 	}
-	if err := validModelRef(""); err != nil {
-		t.Fatalf("empty ref (unchanged) rejected: %v", err)
-	}
-	for _, bad := range []string{"llama3", "ollama/", "/llama3", "ollama llama3"} {
+	for _, bad := range []string{"ollama/", "/llama3", "ollama//llama3/x", "ollama llama3"} {
 		if err := validModelRef(bad); err == nil {
-			t.Fatalf("bad ref %q accepted", bad)
+			t.Fatalf("malformed ref %q accepted", bad)
 		}
 	}
 }
@@ -210,15 +242,15 @@ func TestWebhookCreateEditDeleteAndDeliveries(t *testing.T) {
 	if !m.formOpen() {
 		t.Fatal("n did not open the create form")
 	}
-	m.form.Set("name", "ci-events")
-	m.form.Set("target_url", "https://example.test/hook")
-	m.form.Set("event_filter", "execution.completed")
-	m.form.Set("scope", "tenant")
-	m.form.Set("secret", "shhh")
-	m.form.Set("max_retries", "5")
-	cmd, err := m.form.Submit()
+	m.activeForm().Set("name", "ci-events")
+	m.activeForm().Set("target_url", "https://example.test/hook")
+	m.activeForm().Set("event_filter", "execution.completed")
+	m.activeForm().Set("scope", "tenant")
+	m.activeForm().Set("secret", "shhh")
+	m.activeForm().Set("max_retries", "5")
+	cmd, err := m.activeForm().Submit()
 	if err != nil {
-		t.Fatalf("create submit: %v (%v)", err, m.form.Errors)
+		t.Fatalf("create submit: %v (%v)", err, m.activeForm().Errors)
 	}
 	if res := runCmd(t, cmd); res.Err != nil {
 		t.Fatalf("create failed: %v", res.Err)
@@ -231,7 +263,7 @@ func TestWebhookCreateEditDeleteAndDeliveries(t *testing.T) {
 		t.Fatal("the signing secret was rendered")
 	}
 
-	m.form = nil // the screen clears the form on submit (mirrored here)
+	m.clearForm() // the screen clears the form on submit (mirrored here)
 
 	// --- edit (prefilled from the cached subscription) ---
 	m.LoadItems("webhooks", []kit2.Item{{ID: "w1", Title: "deploy", Meta: "active"}}, "")
@@ -243,16 +275,16 @@ func TestWebhookCreateEditDeleteAndDeliveries(t *testing.T) {
 	if !m.formOpen() {
 		t.Fatal("e did not open the edit form")
 	}
-	if m.form.Values["target_url"] != "https://old.test/hook" {
-		t.Fatalf("edit form not prefilled: %q", m.form.Values["target_url"])
+	if m.activeForm().Values["target_url"] != "https://old.test/hook" {
+		t.Fatalf("edit form not prefilled: %q", m.activeForm().Values["target_url"])
 	}
-	m.form.Set("target_url", "https://new.test/hook")
-	m.form.Set("event_filter", "project.*")
-	m.form.Set("status", "paused")
-	m.form.Set("max_retries", "7")
-	cmd, err = m.form.Submit()
+	m.activeForm().Set("target_url", "https://new.test/hook")
+	m.activeForm().Set("event_filter", "project.*")
+	m.activeForm().Set("status", "paused")
+	m.activeForm().Set("max_retries", "7")
+	cmd, err = m.activeForm().Submit()
 	if err != nil {
-		t.Fatalf("edit submit: %v (%v)", err, m.form.Errors)
+		t.Fatalf("edit submit: %v (%v)", err, m.activeForm().Errors)
 	}
 	if res := runCmd(t, cmd); res.Err != nil {
 		t.Fatalf("edit failed: %v", res.Err)
@@ -399,14 +431,14 @@ func TestMCPCRUDToggleSecretInstallAndDelete(t *testing.T) {
 	if !m.formOpen() {
 		t.Fatal("n did not open the MCP create form")
 	}
-	m.form.Set("name", "github-mcp")
-	m.form.Set("transport", "stdio")
-	m.form.Set("command", "npx")
-	m.form.Set("args", "-y @mcp/server")
-	m.form.Set("enabled", "true")
-	cmd, err := m.form.Submit()
+	m.activeForm().Set("name", "github-mcp")
+	m.activeForm().Set("transport", "stdio")
+	m.activeForm().Set("command", "npx")
+	m.activeForm().Set("args", "-y @mcp/server")
+	m.activeForm().Set("enabled", "true")
+	cmd, err := m.activeForm().Submit()
 	if err != nil {
-		t.Fatalf("mcp create submit: %v (%v)", err, m.form.Errors)
+		t.Fatalf("mcp create submit: %v (%v)", err, m.activeForm().Errors)
 	}
 	if res := runCmd(t, cmd); res.Err != nil {
 		t.Fatalf("mcp create failed: %v", res.Err)
@@ -419,7 +451,7 @@ func TestMCPCRUDToggleSecretInstallAndDelete(t *testing.T) {
 		t.Fatalf("mcp args not split: %+v", created.GetArgs())
 	}
 
-	m.form = nil // the screen clears the form on submit
+	m.clearForm() // the screen clears the form on submit
 
 	// seed the pane with a cached server
 	m.LoadItems("mcp", []kit2.Item{{ID: "m1", Title: "github", Meta: "enabled"}}, "")
@@ -435,11 +467,11 @@ func TestMCPCRUDToggleSecretInstallAndDelete(t *testing.T) {
 	if !m.formOpen() {
 		t.Fatal("e did not open the MCP edit form")
 	}
-	m.form.Set("command", "uvx")
-	m.form.Set("enabled", "false")
-	cmd, err = m.form.Submit()
+	m.activeForm().Set("command", "uvx")
+	m.activeForm().Set("enabled", "false")
+	cmd, err = m.activeForm().Submit()
 	if err != nil {
-		t.Fatalf("mcp edit submit: %v (%v)", err, m.form.Errors)
+		t.Fatalf("mcp edit submit: %v (%v)", err, m.activeForm().Errors)
 	}
 	if res := runCmd(t, cmd); res.Err != nil {
 		t.Fatalf("mcp edit failed: %v", res.Err)
@@ -448,7 +480,7 @@ func TestMCPCRUDToggleSecretInstallAndDelete(t *testing.T) {
 		t.Fatalf("mcp edit payload wrong: %+v", updated)
 	}
 
-	m.form = nil // the screen clears the form on submit
+	m.clearForm() // the screen clears the form on submit
 
 	// toggle enabled (currently enabled → disable)
 	updated = nil
@@ -557,13 +589,13 @@ func TestProvidersCRUDToggleTokenAndDelete(t *testing.T) {
 	if !m.formOpen() {
 		t.Fatal("n did not open the provider create form")
 	}
-	m.form.Set("display_name", "Local Ollama")
-	m.form.Set("ref_id", "local-ollama")
-	m.form.Set("base_url", "http://127.0.0.1:11434")
-	m.form.Set("auth_mode", "none")
-	cmd, err := m.form.Submit()
+	m.activeForm().Set("display_name", "Local Ollama")
+	m.activeForm().Set("ref_id", "local-ollama")
+	m.activeForm().Set("base_url", "http://127.0.0.1:11434")
+	m.activeForm().Set("auth_mode", "none")
+	cmd, err := m.activeForm().Submit()
 	if err != nil {
-		t.Fatalf("provider create submit: %v (%v)", err, m.form.Errors)
+		t.Fatalf("provider create submit: %v (%v)", err, m.activeForm().Errors)
 	}
 	if res := runCmd(t, cmd); res.Err != nil {
 		t.Fatalf("provider create failed: %v", res.Err)
@@ -572,7 +604,7 @@ func TestProvidersCRUDToggleTokenAndDelete(t *testing.T) {
 		t.Fatalf("provider create payload wrong: %+v", created)
 	}
 
-	m.form = nil // the screen clears the form on submit
+	m.clearForm() // the screen clears the form on submit
 
 	// seed a cached custom provider with a stored token
 	m.LoadItems("providers", []kit2.Item{{ID: "p1", Title: "Ollama", Meta: "ollama enabled · custom · token"}}, "")
@@ -599,12 +631,12 @@ func TestProvidersCRUDToggleTokenAndDelete(t *testing.T) {
 	if !m.formOpen() {
 		t.Fatal("e did not open the provider edit form")
 	}
-	m.form.Set("enabled", "true")
-	m.form.Set("base_url_override", "http://127.0.0.1:9999")
-	m.form.Set("display_name", "Ollama Local")
-	cmd, err = m.form.Submit()
+	m.activeForm().Set("enabled", "true")
+	m.activeForm().Set("base_url_override", "http://127.0.0.1:9999")
+	m.activeForm().Set("display_name", "Ollama Local")
+	cmd, err = m.activeForm().Submit()
 	if err != nil {
-		t.Fatalf("provider edit submit: %v (%v)", err, m.form.Errors)
+		t.Fatalf("provider edit submit: %v (%v)", err, m.activeForm().Errors)
 	}
 	if cmd == nil {
 		t.Fatal("provider edit produced no cmd")
@@ -630,23 +662,33 @@ func TestProvidersCRUDToggleTokenAndDelete(t *testing.T) {
 		t.Fatalf("custom provider update payload wrong: %+v", customUpdated)
 	}
 
-	m.form = nil // the screen clears the form on submit
+	m.clearForm() // the screen clears the form on submit
 
-	// store a token (masked)
-	f := m.secretFormForSource()
-	if f == nil {
-		t.Fatal("no provider token form")
+	// THE TOKEN IS A FIELD ON THE PROVIDER FORM, not a separate `s` form. The operator: "We should get
+	// rid of the 's' to set a token on providers and have that as just another inline field in the
+	// edit/new." So there is no provider entry in secretFormForSource any more — and the assertion is
+	// on THAT, because a leftover form would be a knob nothing reaches.
+	if m.secretFormForSource() != nil {
+		t.Fatal("providers must not offer a separate token form — the token is a field on the provider form")
 	}
-	f.Set("token", "sk-secret-token")
-	cmd, err = f.Submit()
+	// And the field is really there, on the EDIT form, carried through to the RPC.
+	tokenID, tokenVal = "", ""
+	edit := m.editFormForSource()
+	if edit == nil {
+		t.Fatal("no provider edit form")
+	}
+	edit.Set("token", "sk-secret-token")
+	cmd, err = edit.Submit()
 	if err != nil {
-		t.Fatalf("token submit: %v (%v)", err, f.Errors)
+		t.Fatalf("edit submit: %v (%v)", err, edit.Errors)
 	}
-	if res := runCmd(t, cmd); res.Err != nil {
-		t.Fatalf("set token failed: %v", res.Err)
+	for _, c := range batchCmds(t, cmd) {
+		if res, ok := c().(mutateResult); ok {
+			m.HandleMutation(res)
+		}
 	}
 	if tokenID != "p1" || tokenVal != "sk-secret-token" {
-		t.Fatalf("set token payload wrong: %q %q", tokenID, tokenVal)
+		t.Fatalf("the token typed into the provider form did not reach SetProviderToken: %q %q", tokenID, tokenVal)
 	}
 	if strings.Contains(m.View(), "sk-secret-token") {
 		t.Fatal("the token was rendered")
@@ -720,12 +762,12 @@ func TestSecretsNamesOnlyCreateUpdateDelete(t *testing.T) {
 	if !m.formOpen() {
 		t.Fatal("n did not open the secret create form")
 	}
-	m.form.Set("name", "NEW_TOKEN")
-	m.form.Set("value", "top-secret")
-	m.form.Set("description", "ci")
-	cmd, err := m.form.Submit()
+	m.activeForm().Set("name", "NEW_TOKEN")
+	m.activeForm().Set("value", "top-secret")
+	m.activeForm().Set("description", "ci")
+	cmd, err := m.activeForm().Submit()
 	if err != nil {
-		t.Fatalf("secret create submit: %v (%v)", err, m.form.Errors)
+		t.Fatalf("secret create submit: %v (%v)", err, m.activeForm().Errors)
 	}
 	if res := runCmd(t, cmd); res.Err != nil {
 		t.Fatalf("secret create failed: %v", res.Err)
@@ -737,18 +779,18 @@ func TestSecretsNamesOnlyCreateUpdateDelete(t *testing.T) {
 		t.Fatal("the secret value was rendered")
 	}
 
-	m.form = nil // the screen clears the form on submit
+	m.clearForm() // the screen clears the form on submit
 
 	// update (rotate blind)
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
 	if !m.formOpen() {
 		t.Fatal("e did not open the rotate form")
 	}
-	m.form.Set("value", "rotated")
-	m.form.Set("description", "ci v2")
-	cmd, err = m.form.Submit()
+	m.activeForm().Set("value", "rotated")
+	m.activeForm().Set("description", "ci v2")
+	cmd, err = m.activeForm().Submit()
 	if err != nil {
-		t.Fatalf("secret update submit: %v (%v)", err, m.form.Errors)
+		t.Fatalf("secret update submit: %v (%v)", err, m.activeForm().Errors)
 	}
 	if res := runCmd(t, cmd); res.Err != nil {
 		t.Fatalf("secret update failed: %v", res.Err)
@@ -836,10 +878,10 @@ func TestAdminExplicitPermissionState(t *testing.T) {
 // claimed while a Confirm dialog is open.
 func TestControlKeyChordsAndModality(t *testing.T) {
 	m, _ := newWriteModel(t)
-	m.SelectSource("workers")
+	m.SelectSource("admin")
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	if m.formOpen() {
-		t.Fatal("workers has no create surface")
+		t.Fatal("admin has no create surface")
 	}
 	m.SelectSource("settings")
 	if m.newFormForSource() != nil {
@@ -865,4 +907,22 @@ func hasField(fields []kit2.Field, key, want string) bool {
 		}
 	}
 	return false
+}
+
+// batchCmds flattens a mutation cmd into its individual commands, so a test can run each and feed its
+// result back (the edit form now emits SEVERAL mutations — settings, custom update, and the token).
+func batchCmds(t *testing.T, cmd tea.Cmd) []tea.Cmd {
+	t.Helper()
+	if cmd == nil {
+		return nil
+	}
+	msg := cmd()
+	if msg == nil {
+		return nil
+	}
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		return batch
+	}
+	// A single command: wrap it, since its message is consumed by the caller.
+	return []tea.Cmd{func() tea.Msg { return msg }}
 }

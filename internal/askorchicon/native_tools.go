@@ -3,6 +3,7 @@ package askorchicon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -55,6 +56,39 @@ func isHostSuiteTool(name string) bool {
 		}
 	}
 	return false
+}
+
+// askToolNamePrefix is the MCP-style prefix the ASK SYSTEM PROMPT teaches the
+// model to use. BuildSystemPrompt says the product tools are "named
+// `orchicon_<tool>`" and renders every enumerated bullet as `orchicon_%s`
+// (agent.go, chat.go) — matching the stdio MCP server's naming on the opencode
+// path, where the prefix IS the real name.
+//
+// The NATIVE path does not work that way: this registry is keyed by BARE name
+// ("list_projects", "create_work_item", …; verified 0 of 81 entries carry the
+// prefix) and the wire definitions AskToolDefs sends are bare too. Nothing
+// normalised between the two, so a model that followed the prompt could not call
+// a single product tool:
+//
+//	ask tool "orchicon_list_projects" is not registered
+//
+// It presented as intermittent because the conversation HISTORY carried past
+// successful calls as in-context examples that overrode the prompt's wording.
+// When compaction collapsed that history the examples were gone, leaving only
+// the prompt's prefixed form — which the dispatcher rejected outright. So the
+// trigger was compaction, but the defect is this naming divergence.
+const askToolNamePrefix = "orchicon_"
+
+// normalizeAskToolName maps a model-emitted tool name onto its registry key,
+// tolerating the MCP-style prefix the prompt advertises.
+//
+// Normalising HERE rather than in the prompt is deliberate: the prefix is the
+// documented MCP naming and is the REAL name on the opencode host, so rewriting
+// the prompt would misdescribe that path. Accepting both forms also rescues any
+// conversation whose history already contains prefixed calls — and makes the
+// tool surface immune to prompt/registry drift in either direction.
+func normalizeAskToolName(name string) string {
+	return strings.TrimPrefix(name, askToolNamePrefix)
 }
 
 // NativeAskTools exposes this service's product tool registry PLUS the
@@ -147,7 +181,18 @@ func askHostToolsForRoot(root string) *orchicon.HostTools {
 // The suite requires a resolvable root; without one the defs still include
 // every product tool, and ExecuteAskTool fails LOUD on file/shell calls
 // naming the fix (never a silent, empty tool surface).
-func (a *nativeAskTools) AskToolDefs() []orchicon.ToolDef {
+//
+// THE MODE'S BOUNDARY IS APPLIED TO THE LIST AS WELL AS TO THE CALL.
+//
+// Refusing a call is the part that makes "no matter what the user says" true, and it is not enough on its own: a
+// model that is OFFERED write in Brainstorm will try it, be refused, and can be talked into trying again, and
+// every attempt is a wrong turn in the transcript. Filtering the defs means the model never sees the tool, so the
+// tool LIST states the boundary before any call is made — and a mode that cannot do the work no longer advertises
+// that it can.
+//
+// The filter is the SAME table the refusal uses (modeAllowsTool), so the offered surface and the enforced surface
+// cannot drift: there is no second list of "tools this mode hides".
+func (a *nativeAskTools) AskToolDefs(ctx context.Context) []orchicon.ToolDef {
 	if a.service == nil {
 		return nil
 	}
@@ -186,7 +231,17 @@ func (a *nativeAskTools) AskToolDefs() []orchicon.ToolDef {
 		have[d.Name] = true
 		defs = append(defs, d)
 	}
-	return defs
+
+	// DROP WHAT THIS MODE MAY NOT RUN — see the doc comment. Built as a new slice rather than filtered in place,
+	// because `defs` is returned to a caller that keeps it for the turn and mutating it would be a surprise.
+	mode := askModeFromContext(ctx)
+	offered := make([]orchicon.ToolDef, 0, len(defs))
+	for _, d := range defs {
+		if ok, _ := modeAllowsTool(mode, d.Name); ok {
+			offered = append(offered, d)
+		}
+	}
+	return offered
 }
 
 // ExecuteAskTool runs one tool call. Product tools route through the
@@ -196,6 +251,24 @@ func (a *nativeAskTools) AskToolDefs() []orchicon.ToolDef {
 func (a *nativeAskTools) ExecuteAskTool(ctx context.Context, name, argsJSON string) (string, error) {
 	if a.service == nil {
 		return "", fmt.Errorf("ask tools unavailable")
+	}
+	// Tolerate the MCP-style prefix the system prompt advertises BEFORE any name
+	// comparison below (see askToolNamePrefix): the model is told
+	// `orchicon_list_projects` while the registry is keyed `list_projects`, so
+	// without this every product-tool call fails as "not registered".
+	name = normalizeAskToolName(name)
+	// THE MODE BOUNDARY, AND IT RUNS BEFORE EVERY OTHER BRANCH.
+	//
+	// Ahead of the boundary probe and the host-suite dispatch on purpose: this is the single choke point every
+	// Ask tool call passes through (chatturn.go), so a check here cannot be bypassed by which internal branch a
+	// tool happens to take. The operator's requirement is that a mode NEVER does the work it is not supposed to
+	// do "no matter what the user says" — and no amount of asking is a substitute for the call being refused.
+	//
+	// THE ERROR IS THE MESSAGE. The bridge turns a tool error into the call's RESULT (chatturn.go: the text
+	// becomes the content, flagged as an error), so the model is handed the refusal verbatim and can relay it
+	// to the user — including the part that names the mode to switch to and says it cannot do that itself.
+	if ok, refusal := modeAllowsTool(askModeFromContext(ctx), name); !ok {
+		return "", errors.New(refusal)
 	}
 	// The boundary probe: names the project_dir the suite is scoped to.
 	if name == askFileRootToolName {

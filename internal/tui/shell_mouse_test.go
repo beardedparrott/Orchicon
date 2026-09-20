@@ -24,19 +24,20 @@ func TestMouseFooterChip(t *testing.T) {
 	}
 }
 
-// TestMouseRailTogglePins clicking the Ask rail header collapses it.
+// The conversations rail is always on for MVP1, so a click on its header must
+// NOT hide it (the header is no longer a collapse affordance).
 func TestMouseRailToggle(t *testing.T) {
 	app := NewApp(nil, &config.Profile{URL: "http://x", Token: "t"}, "v0.2.51")
 	app.RegisterScreen(TabAsk, &tabBarScreenStub{body: "b"})
 	app.dispatch(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app.SwitchTo(TabAsk)
+	app.chatConvID = "conv-mouse" // leave the launch layout so the rail renders
 	if !app.railVisible() {
-		t.Fatal("rail should be open by default")
+		t.Fatal("the conversations rail must be on for Ask (MVP1)")
 	}
-	// Click the rail header (absolute row 2, right columns).
 	nm, _ := app.dispatch(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: 120 - ConversationsRailWidth + 5, Y: railTopRow})
-	if nm.railVisible() {
-		t.Fatal("click on rail header must collapse the rail")
+	if !nm.railVisible() {
+		t.Fatal("clicking the rail header must not hide the always-on rail")
 	}
 }
 
@@ -71,21 +72,6 @@ func TestMouseTabClick(t *testing.T) {
 	}
 }
 
-// TestCtrlRTogglesRailPins the documented ctrl+r rail toggle.
-func TestCtrlRTogglesRail(t *testing.T) {
-	app := NewApp(nil, &config.Profile{URL: "http://x", Token: "t"}, "v0.2.51")
-	app.RegisterScreen(TabAsk, &tabBarScreenStub{body: "b"})
-	app.dispatch(tea.WindowSizeMsg{Width: 120, Height: 40})
-	app.SwitchTo(TabAsk)
-	if !app.railVisible() {
-		t.Fatal("rail should be open by default")
-	}
-	app.dispatch(tea.KeyMsg{Type: tea.KeyCtrlR})
-	if app.railVisible() {
-		t.Fatal("ctrl+r must collapse the rail")
-	}
-	app.dispatch(tea.KeyMsg{Type: tea.KeyCtrlR})
-	if !app.railVisible() {
-		t.Fatal("ctrl+r must re-open the rail")
-	}
-}
+// TestCtrlRTogglesRail is retired: the conversations rail is disabled, so
+// ctrl+r is deliberately inert. See TestRailToggleIsInertWhileRailsAreDisabled
+// in rails_layout_test.go for the pinned contract.

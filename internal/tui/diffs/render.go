@@ -15,10 +15,11 @@ import (
 // pane is crowded out) it collapses to a single unified column — mirroring
 // the GUI's DiffView `unified` collapse below MOBILE_BREAKPOINT.
 //
-// This must be <= the shell's DiffPaneWidth (48) so the pane actually shows
-// side-by-side at its default width — otherwise the primary layout the
+// This must be <= the shell's DiffRailMinWidth (48) so the pane actually shows
+// side-by-side at its narrowest — otherwise the primary layout the
 // acceptance criteria pin (side-by-side with paired line numbers) is
-// unreachable and the pane always collapses to unified.
+// unreachable and the pane always collapses to unified. The pane is now SIZED
+// proportionally (App.diffPaneWidth), so it is always at or above this floor.
 const MinSideBySideWidth = 48
 
 // sideSep separates the old and new columns.

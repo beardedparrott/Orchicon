@@ -53,7 +53,7 @@ func assertFrameExact(t *testing.T, m *App, w, h int) {
 func TestComposerBoxedAtBothSizes(t *testing.T) {
 	for _, size := range composer2Sizes() {
 		w, h := size[0], size[1]
-		m := phase3App(w, h)
+		m := dockedAskApp(w, h)
 		m.setFocus(focusComposer)
 
 		if got := m.dock.InputRows(); got < dock.MinInputRows {
@@ -103,19 +103,37 @@ func TestComposerBoxedAtBothSizes(t *testing.T) {
 	}
 }
 
-// TestComposerBoxGrowsAndFrameStaysExact: a full buffer grows the box to
-// dock.MaxInputRows (>= 8) and the frame still measures exactly h×w.
+// TestComposerBoxGrowsAndFrameStaysExact: a full buffer grows the box to the space the
+// VIEWPORT can spare — no longer to the fixed MaxInputRows — and the frame still measures
+// exactly h×w.
+//
+// The operator asked for the cap to go: "Remove the cap." It cannot literally, because the
+// composer shares the screen with the transcript, so the fixed eight is replaced by a
+// viewport-derived ceiling. That makes growth PAST eight the whole point of this test:
+// asserting eight would now assert the thing that was removed.
 func TestComposerBoxGrowsAndFrameStaysExact(t *testing.T) {
 	for _, size := range composer2Sizes() {
 		w, h := size[0], size[1]
-		m := phase3App(w, h)
+		m := dockedAskApp(w, h)
 		m.setFocus(focusComposer)
-		m.dock.SetValue("one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven")
-		if got := m.dock.InputRows(); got != dock.MaxInputRows {
-			t.Fatalf("%dx%d: grown input rows = %d, want %d", w, h, got, dock.MaxInputRows)
+		// Far more lines than any ceiling, so the box is pinned at its maximum.
+		m.dock.SetValue(strings.Repeat("line\n", 60))
+
+		got := m.dock.InputRows()
+		if got <= dock.MaxInputRows {
+			t.Fatalf("%dx%d: grown input rows = %d, want MORE than the fixed cap %d — a long prompt must use the "+
+				"space the viewport can spare, which is what removing the cap means", w, h, got, dock.MaxInputRows)
 		}
-		if dock.MaxInputRows < 8 {
-			t.Fatalf("the box must grow to at least 8 input rows, max = %d", dock.MaxInputRows)
+		if got > h {
+			t.Fatalf("%dx%d: input rows = %d, more than the whole viewport", w, h, got)
+		}
+		// AND IT STILL LEAVES THE SCREEN SOMETHING TO SHOW. An unbounded composer would
+		// push the transcript off the top, which is the failure the cap was protecting
+		// against — the bound is now "the space going spare" rather than a number chosen
+		// for one terminal size.
+		if c := m.contentHeight(); c < 6 {
+			t.Fatalf("%dx%d: the composer left the content region %d rows (want >= 6) — growth must come out of "+
+				"the space going spare, not out of the transcript", w, h, c)
 		}
 		assertFrameExact(t, m, w, h)
 
@@ -132,7 +150,7 @@ func TestComposerBoxGrowsAndFrameStaysExact(t *testing.T) {
 func TestComposerBoxShowsHintAndChip(t *testing.T) {
 	for _, size := range composer2Sizes() {
 		w, h := size[0], size[1]
-		m := phase3App(w, h)
+		m := dockedAskApp(w, h)
 		m.dock.Chip = "Executions: exec-123 (running)"
 		box := lipglossStrip(m.dock.View())
 		if !strings.Contains(box, "[Executions: exec-123 (running)]") {
@@ -158,7 +176,7 @@ func TestComposerBoxShowsHintAndChip(t *testing.T) {
 func TestPaletteOpensAboveComposerBox(t *testing.T) {
 	for _, size := range composer2Sizes() {
 		w, h := size[0], size[1]
-		m := phase3App(w, h)
+		m := dockedAskApp(w, h)
 		m.setFocus(focusComposer)
 		for _, r := range "/pro" {
 			nm, _ := m.dispatch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
@@ -352,15 +370,31 @@ func TestComposerDraftSurvivesScreenSwitchAndFailedSend(t *testing.T) {
 	if m.dock.Value() != "half-written thought" {
 		t.Fatalf("precondition: %q", m.dock.Value())
 	}
-	// Screen switch (ctrl+w is a structural chord: it switches tabs while
-	// composing) must not touch the draft.
-	nm, _ = m.dispatch(tea.KeyMsg{Type: tea.KeyCtrlW})
+	// Screen switch (a tab chord is STRUCTURAL: it switches tabs while composing) must not touch the
+	// draft. Driven by the tab's OWN chord so this test follows the bindings rather than restating them.
+	nm, _ = m.dispatch(keyFor(tabChord(TabWork)))
 	m = nm
 	if m.ActiveTab() != TabWork {
-		t.Fatalf("precondition: ctrl+w must switch tabs, got %q", m.ActiveTab())
+		t.Fatalf("precondition: %s must switch tabs, got %q", tabChord(TabWork), m.ActiveTab())
 	}
 	if got := m.dock.Value(); got != "half-written thought" {
 		t.Fatalf("the draft must survive a screen switch, got %q", got)
+	}
+	// THE CHORD DROPS THE SUBMENU, so the draft's Enter belongs to the MENU now — Enter operates what
+	// is on screen rather than sending a message while a dropdown is visibly open. That is the
+	// operator's own ask ("automatically drops the submenu down and gains focus to that"), so this is
+	// asserted rather than worked around, and the way back to typing is the documented one: ctrl+g,
+	// which also dismisses the menu it is leaving.
+	if m.MenuOpenID() != TabWork {
+		t.Fatalf("the chord must drop the Work submenu, got menuOpen=%q", m.MenuOpenID())
+	}
+	nm, _ = m.dispatch(tea.KeyMsg{Type: tea.KeyCtrlG})
+	m = nm
+	if m.MenuOpenID() != "" {
+		t.Fatalf("ctrl+g must dismiss the dropdown it is leaving, got %q", m.MenuOpenID())
+	}
+	if m.chatFocus != focusComposer {
+		t.Fatal("ctrl+g must return the keyboard to the composer")
 	}
 
 	// Send, then fail: the draft comes back into the box.
@@ -385,4 +419,45 @@ func TestComposerDraftSurvivesScreenSwitchAndFailedSend(t *testing.T) {
 		t.Fatal("the restored draft must be sendable")
 	}
 	assertFrameExact(t, m, 120, 40)
+}
+
+// Regression: typing must render VISIBLE text in the box. The repair that
+// re-asserts the box background after inner resets used to derive its
+// re-assert sequence from theme.ComposerBox itself — a BORDERED style, whose
+// render is a whole box. That injected border glyphs and spaces into every
+// row after a reset, garbling the textarea so the operator could not see the
+// cursor or their own text, and painting a stray band under the box. The
+// repair now takes the background-only style and rejects any style whose
+// render spans lines.
+func TestComposerTypingRendersVisibleText(t *testing.T) {
+	for _, size := range composer2Sizes() {
+		w, h := size[0], size[1]
+		m := dockedAskApp(w, h)
+		m.setFocus(focusComposer)
+		for _, r := range "hello" {
+			m.dispatch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		}
+		plain := lipglossStrip(m.View())
+		if !strings.Contains(plain, "hello") {
+			t.Fatalf("%dx%d: typed text is not visible in the composer\n%s", w, h, plain)
+		}
+		// The box's own border glyphs must appear only as the frame, not
+		// scattered through the dock rows: count the top border characters in
+		// the dock region and require exactly one contiguous run.
+		dockRows := strings.Split(plain, "\n")
+		start := len(dockRows) - 1 - m.dock.Lines()
+		if start < 0 {
+			start = 0
+		}
+		inBox := 0
+		for _, l := range dockRows[start:] {
+			if strings.Contains(l, "╭") {
+				inBox++
+			}
+		}
+		if inBox != 1 {
+			t.Fatalf("%dx%d: composer box has %d top-border rows, want exactly 1 (injected glyphs?)", w, h, inBox)
+		}
+		assertFrameExact(t, m, w, h)
+	}
 }

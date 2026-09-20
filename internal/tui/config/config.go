@@ -25,28 +25,36 @@ const (
 const (
 	EnvURL   = "ORCHICON_URL"
 	EnvToken = "ORCHICON_TOKEN"
+	// EnvTheme is an explicit palette override. It wins over the config file so
+	// the theme can be pinned in an environment where the config is not
+	// writable or not persisted (a launcher with an ephemeral HOME, a container,
+	// CI). When it is set, orch reports it rather than silently saving.
+	EnvTheme = "ORCHICON_THEME"
 )
 
 // Profile is one instance connection.
 type Profile struct {
-	Name               string     `toml:"-"`
-	URL                string     // base URL, e.g. https://orch.example.com
-	AuthMethod         AuthMethod // apikey | password
-	Token              string     // API key (oc_…) or access token from local-login
-	Username           string     // password mode only; the password is never stored
+	Name       string     `toml:"-"`
+	URL        string     // base URL, e.g. https://orch.example.com
+	AuthMethod AuthMethod // apikey | password
+	Token      string     // API key (oc_…) or access token from local-login
+	Username   string     // password mode only; the password is never stored
 	// RefreshToken is password mode's refresh token from the HttpOnly
 	// orchicon_refresh Set-Cookie on local-login (24h TTL). Enables the
 	// client's auto-refresh of the 900s access token.
 	RefreshToken       string
-	InsecureSkipVerify bool       // TLS skip-verify for self-signed dev instances
+	InsecureSkipVerify bool // TLS skip-verify for self-signed dev instances
 	// Newline is the chat dock's newline-insertion chord: alt+enter
 	// (default) | backslash-enter | both. bubbletea v1.3.10 has no kitty
 	// keyboard protocol support, so Shift+Enter cannot be enabled
 	// programmatically; CSI-u shift+enter is accepted when the terminal
 	// emits it anyway.
 	Newline string
-	// Theme selects the TUI palette: "dark" (default) | "light". The
-	// GUI's HSL design tokens are the source of truth (internal/tui/theme).
+	// Theme selects the TUI palette. The TUI owns its palette set (see
+	// internal/tui/theme): dark (default), light, gruvbox-dark, gruvbox-light.
+	// These are chosen and validated for TERMINAL contrast — not copied from
+	// the GUI's CSS tokens, whose borders are hairlines that vanish on a
+	// terminal. /theme lists the installed set.
 	Theme string
 }
 
@@ -54,16 +62,52 @@ type Profile struct {
 type Config struct {
 	Active   string              // name of the profile used at launch
 	Profiles map[string]*Profile // keyed by profile name
+	// Theme is the TUI palette preference, stored at the TOP LEVEL so it
+	// survives independently of any profile. It used to live only inside
+	// [profiles.<name>], which meant a theme never persisted when the session
+	// was env-driven (ORCHICON_URL/TOKEN resolve to a synthetic "env" profile
+	// that is deliberately never written), or on a first run with no config
+	// file yet — the operator's "themes are not saving when you exit orch and
+	// re-enter". A display preference is not a credential, so it no longer
+	// depends on one being saved.
+	Theme string
+	// CollapsedGroups is the set of COLLAPSED category folders across the TUI's
+	// grouped lists, keyed "<page>:<category-id>" (e.g. "conversations:cat-1").
+	//
+	// TOP LEVEL, for the same reason Theme is: it is a DISPLAY preference, not a
+	// credential, and it has to survive a session that was launched from
+	// ORCHICON_URL/TOKEN — where the profile is a synthetic "env" that is
+	// deliberately never written. The operator: "Conversation categories don't stay
+	// collapsed when you leave orch and come back in."
+	//
+	// IT STORES WHAT IS *CLOSED*, not what is open. That is the cheaper rule to keep
+	// correct: a grouping created later is absent from the set and therefore
+	// EXPANDED, which is what a new folder should be. Storing the open set would
+	// make every new grouping silently collapsed until the operator opened it.
+	CollapsedGroups []string
 }
 
 // FileName / DirName are the fixed locations under the user's home dir.
 const (
 	DirName  = ".orchicon"
 	FileName = "config"
+	// EnvConfigDir overrides the config DIRECTORY. It exists because the
+	// default is derived from $HOME, and a $HOME that is not writable (a
+	// root-owned home, a read-only mount, a launcher with an ephemeral HOME)
+	// makes EVERY save fail — profile, token, theme, newline mode. The TUI
+	// reports that failure, but reporting is not fixing: the operator needs a
+	// way to say where the config may live. Set it to a directory this user
+	// owns and it survives rebuilds and container restarts ($HOME/.orchicon
+	// may not exist at all, and /tmp is a tmpfs that a restart wipes).
+	EnvConfigDir = "ORCHICON_CONFIG_DIR"
 )
 
-// DefaultPath returns ~/.orchicon/config.
+// DefaultPath returns $ORCHICON_CONFIG_DIR/config when that variable is set,
+// otherwise ~/.orchicon/config.
 func DefaultPath() (string, error) {
+	if dir := strings.TrimSpace(os.Getenv(EnvConfigDir)); dir != "" {
+		return filepath.Join(dir, FileName), nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home dir: %w", err)
@@ -138,6 +182,17 @@ func render(cfg *Config) string {
 	var b strings.Builder
 	b.WriteString("# orch — Orchicon remote client config (0600; holds credentials)\n")
 	fmt.Fprintf(&b, "active = %q\n", cfg.Active)
+	if cfg.Theme != "" {
+		fmt.Fprintf(&b, "theme = %q\n", cfg.Theme)
+	}
+	// The collapsed folders, SORTED so a rewrite of unchanged state is byte-identical. Without that, the
+	// map's iteration order would churn the file on every toggle and the diff would look like a change
+	// even when nothing did.
+	if len(cfg.CollapsedGroups) > 0 {
+		keys := append([]string(nil), cfg.CollapsedGroups...)
+		sortStrings(keys)
+		fmt.Fprintf(&b, "collapsed_groups = [%s]\n", quoteList(keys))
+	}
 	names := make([]string, 0, len(cfg.Profiles))
 	for name := range cfg.Profiles {
 		names = append(names, name)
@@ -218,8 +273,16 @@ func parse(data string) (*Config, error) {
 				cur.InsecureSkipVerify = b
 			}
 		case "theme":
+			// Top-level (outside any [profiles.*] section) is the TUI palette
+			// preference; inside a profile it is the legacy per-profile value.
 			if cur != nil {
 				cur.Theme = unquote(value)
+			} else {
+				cfg.Theme = unquote(value)
+			}
+		case "collapsed_groups":
+			if cur == nil {
+				cfg.CollapsedGroups = parseList(value)
 			}
 		case "newline":
 			if cur != nil {
@@ -249,4 +312,47 @@ func sortStrings(s []string) {
 			s[j], s[j-1] = s[j-1], s[j]
 		}
 	}
+}
+
+// quoteList renders strings as a TOML array element list: "a", "b".
+func quoteList(ss []string) string {
+	parts := make([]string, 0, len(ss))
+	for _, s := range ss {
+		parts = append(parts, strconv.Quote(s))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// parseList reads back a TOML array element list written by quoteList. It is deliberately tolerant:
+// a malformed entry is DROPPED rather than failing the whole config load, because a display preference
+// must never be able to stop the operator connecting.
+func parseList(v string) []string {
+	v = strings.TrimSpace(v)
+	v = strings.TrimSuffix(strings.TrimPrefix(v, "["), "]")
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	var out []string
+	var cur strings.Builder
+	inQuote := false
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case c == '"':
+			inQuote = !inQuote
+			if !inQuote {
+				out = append(out, cur.String())
+				cur.Reset()
+			}
+		case inQuote:
+			// An escaped quote inside the string (\") stays part of it.
+			if c == '\\' && i+1 < len(v) {
+				i++
+				cur.WriteByte(v[i])
+				continue
+			}
+			cur.WriteByte(c)
+		}
+	}
+	return out
 }

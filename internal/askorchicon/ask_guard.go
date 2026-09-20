@@ -108,4 +108,3 @@ func CloseAskGuard() {
 	askGuardState.err = nil
 	askGuardState.init = false
 }
-

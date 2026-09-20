@@ -1345,6 +1345,60 @@ func (s *Service) RetryFailedWorkflowRun(ctx context.Context, req *connect.Reque
 	}), nil
 }
 
+// DeleteWorkflowRun hard-deletes one workflow run.
+//
+// WHY IT DID NOT EXIST, AND WHY THE OBVIOUS SUBSTITUTE IS WRONG. DeleteWorkflow cascades from a WORKFLOW
+// to its ENTIRE run history. So the only way to remove one finished run was to delete the workflow that
+// produced it — an act that takes every other run with it. The operator, mid-live-test: "Executions and
+// Workflow Runs do not have a delete operation (single and bulk)." Executions had DeleteExecution and
+// BatchDeleteExecutions all along; runs had nothing at any layer.
+//
+// A RUNNING RUN IS STOPPED FIRST, and that is the part worth being careful about. Removing a live run
+// would leave the WorkflowReconciler advancing a DAG whose run row no longer exists — it would either
+// error against a missing run on every pass or, worse, re-create state for it. So a non-terminal run is
+// aborted through AbortRunInTx (the SAME path the AbortWorkflow RPC uses: status → aborted, ended_at,
+// in-flight step runs closed, linked worker executions terminated) BEFORE the row is removed. That
+// gives a delete exactly one meaning — "this run is gone" — whether or not it was still going, and it
+// reuses the abort semantics already tested rather than inventing a second way to stop a run.
+//
+// It is irreversible; the audit entry carries the run's status so the trail says what was removed.
+func (s *Service) DeleteWorkflowRun(ctx context.Context, req *connect.Request[apiv1.DeleteWorkflowRunRequest]) (*connect.Response[apiv1.DeleteWorkflowRunResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.RunId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("run_id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+
+	current, err := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, req.Msg.RunId)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	// Stop it if it is still going. AbortRunInTx is a no-op on an already-terminal run (it returns nil
+	// rather than an error), so there is no branch needed here for that case.
+	if _, err := AbortRunInTx(ctx, ttx.Tx, tenantID, req.Msg.RunId, domain.WorkItemCancelled); err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := db.DeleteWorkflowRun(ctx, ttx.Tx, tenantID, req.Msg.RunId); err != nil {
+		return nil, mapDBError(err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "workflow_run.deleted", "workflow_run", current.ID,
+		audit.SnapshotStatus(current.Status), nil); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit workflow_run.deleted: %w", err))
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+	}
+	s.log.Info("workflow run deleted", "run", req.Msg.RunId, "was", current.Status)
+	return connect.NewResponse(&apiv1.DeleteWorkflowRunResponse{}), nil
+}
+
 // StreamWorkflowEvents is the server-stream RPC that fans out workflow
 // run events from NATS to connected clients (docs/07 §4, docs/10 §4.1).
 func (s *Service) StreamWorkflowEvents(ctx context.Context, req *connect.Request[apiv1.StreamWorkflowEventsRequest], stream *connect.ServerStream[apiv1.StreamWorkflowEventsResponse]) error {

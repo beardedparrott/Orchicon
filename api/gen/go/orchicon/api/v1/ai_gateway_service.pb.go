@@ -390,17 +390,21 @@ func (x *ListProvidersResponse) GetProviders() []*AIProvider {
 }
 
 type GetUsageRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`          // injected from request context
-	ProjectId     string                 `protobuf:"bytes,2,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`       // optional scope
-	TaskId        string                 `protobuf:"bytes,3,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`                // optional scope
-	ExecutionId   string                 `protobuf:"bytes,4,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"` // optional scope
-	Provider      string                 `protobuf:"bytes,5,opt,name=provider,proto3" json:"provider,omitempty"`                          // optional scope
-	Model         string                 `protobuf:"bytes,6,opt,name=model,proto3" json:"model,omitempty"`                                // optional scope
-	Start         *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=start,proto3" json:"start,omitempty"`
-	End           *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=end,proto3" json:"end,omitempty"`
-	PageToken     string                 `protobuf:"bytes,9,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
-	PageSize      int32                  `protobuf:"varint,10,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	TenantId    string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`          // injected from request context
+	ProjectId   string                 `protobuf:"bytes,2,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`       // optional scope
+	TaskId      string                 `protobuf:"bytes,3,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`                // optional scope
+	ExecutionId string                 `protobuf:"bytes,4,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"` // optional scope
+	Provider    string                 `protobuf:"bytes,5,opt,name=provider,proto3" json:"provider,omitempty"`                          // optional scope
+	Model       string                 `protobuf:"bytes,6,opt,name=model,proto3" json:"model,omitempty"`                                // optional scope
+	Start       *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=start,proto3" json:"start,omitempty"`
+	End         *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=end,proto3" json:"end,omitempty"`
+	PageToken   string                 `protobuf:"bytes,9,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
+	PageSize    int32                  `protobuf:"varint,10,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
+	// session_id scopes the query to ONE Ask Orchicon conversation's usage —
+	// the read-back path for a chat client's own token/cache/cost totals
+	// (see UsageRecord.session_id). Empty = unscoped.
+	SessionId     string `protobuf:"bytes,11,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -503,6 +507,13 @@ func (x *GetUsageRequest) GetPageSize() int32 {
 		return x.PageSize
 	}
 	return 0
+}
+
+func (x *GetUsageRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
 }
 
 type GetUsageResponse struct {
@@ -1363,7 +1374,7 @@ const file_orchicon_api_v1_ai_gateway_service_proto_rawDesc = "" +
 	"\n" +
 	"\b_adapter\"R\n" +
 	"\x15ListProvidersResponse\x129\n" +
-	"\tproviders\x18\x01 \x03(\v2\x1b.orchicon.api.v1.AIProviderR\tproviders\"\xd7\x02\n" +
+	"\tproviders\x18\x01 \x03(\v2\x1b.orchicon.api.v1.AIProviderR\tproviders\"\xf6\x02\n" +
 	"\x0fGetUsageRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1d\n" +
 	"\n" +
@@ -1377,7 +1388,9 @@ const file_orchicon_api_v1_ai_gateway_service_proto_rawDesc = "" +
 	"\n" +
 	"page_token\x18\t \x01(\tR\tpageToken\x12\x1b\n" +
 	"\tpage_size\x18\n" +
-	" \x01(\x05R\bpageSize\"r\n" +
+	" \x01(\x05R\bpageSize\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\v \x01(\tR\tsessionId\"r\n" +
 	"\x10GetUsageResponse\x126\n" +
 	"\arecords\x18\x01 \x03(\v2\x1c.orchicon.api.v1.UsageRecordR\arecords\x12&\n" +
 	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\x9e\x02\n" +

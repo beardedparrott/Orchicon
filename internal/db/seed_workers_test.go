@@ -21,6 +21,14 @@ import (
 // They guard the draft-preservation contract: a user draft on a canned
 // worker must never be force-published by a boot re-seed.
 
+// seedTenant is the tenant these seed tests exercise.
+//
+// It used to be implicit: SeedDevWorkers hardcoded "tnt_dev" internally, so these tests could not
+// choose a tenant even in principle. Passing it means the fixture states which tenant it is testing —
+// and, because the seed writes ONLY to what it is given, a test can no longer write canned workers
+// into the operator's real tenant by accident.
+const seedTenant = "tnt_dev"
+
 func seedTestPool(t *testing.T) *db.Pool {
 	t.Helper()
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
@@ -36,7 +44,7 @@ func seedTestPool(t *testing.T) *db.Pool {
 	if err := migrate.Run(ctx, pool, assets.MigrationsFS, assets.MigrationsDir); err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
-	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+	if err := db.SeedDevWorkers(ctx, pool, seedTenant); err != nil {
 		t.Fatalf("seed dev workers: %v", err)
 	}
 	return pool
@@ -135,7 +143,7 @@ func resetWorker(t *testing.T, pool *db.Pool, workerID string) {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
-	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+	if err := db.SeedDevWorkers(ctx, pool, seedTenant); err != nil {
 		t.Fatalf("re-seed: %v", err)
 	}
 }
@@ -150,7 +158,7 @@ func TestSeedLeavesUserDraftUntouched(t *testing.T) {
 
 	insertDraftVersion(t, pool, workerID, 2)
 
-	if err := db.SeedDevWorkers(context.Background(), pool); err != nil {
+	if err := db.SeedDevWorkers(context.Background(), pool, seedTenant); err != nil {
 		t.Fatalf("re-seed: %v", err)
 	}
 	if got := workerVersionStatus(t, pool, workerID, 1); got != "published" {
@@ -188,7 +196,7 @@ func TestSeedPublishesLatestDraftWhenNoPublishedVersion(t *testing.T) {
 	insertDraftVersion(t, pool, workerID, 2)
 	insertDraftVersion(t, pool, workerID, 3)
 
-	if err := db.SeedDevWorkers(context.Background(), pool); err != nil {
+	if err := db.SeedDevWorkers(context.Background(), pool, seedTenant); err != nil {
 		t.Fatalf("re-seed: %v", err)
 	}
 	if got := workerVersionStatus(t, pool, workerID, 3); got != "published" {
@@ -236,7 +244,7 @@ func replaceCannedWorkerWithUserShell(t *testing.T, pool *db.Pool, cannedID, slu
 		if err := ttx.Commit(ctx); err != nil {
 			t.Fatalf("cleanup commit: %v", err)
 		}
-		if err := db.SeedDevWorkers(ctx, pool); err != nil {
+		if err := db.SeedDevWorkers(ctx, pool, seedTenant); err != nil {
 			t.Fatalf("cleanup re-seed: %v", err)
 		}
 	})
@@ -290,7 +298,7 @@ func TestSeedAdoptsEmptySlugOwner(t *testing.T) {
 	const cannedID = "w_se_qa_engineer"
 	userID := replaceCannedWorkerWithUserShell(t, pool, cannedID, "qa-engineer", false)
 
-	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+	if err := db.SeedDevWorkers(ctx, pool, seedTenant); err != nil {
 		t.Fatalf("re-seed: %v", err)
 	}
 
@@ -321,7 +329,7 @@ func TestSeedSkipsCustomizedSlugOwner(t *testing.T) {
 	const cannedID = "w_se_qa_engineer"
 	userID := replaceCannedWorkerWithUserShell(t, pool, cannedID, "qa-engineer", true)
 
-	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+	if err := db.SeedDevWorkers(ctx, pool, seedTenant); err != nil {
 		t.Fatalf("re-seed: %v", err)
 	}
 	var role string
@@ -345,7 +353,7 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 	const cannedID = "w_se_qa_engineer"
 	userID := replaceCannedWorkerWithUserShell(t, pool, cannedID, "qa-engineer", false)
 
-	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+	if err := db.SeedDevWorkers(ctx, pool, seedTenant); err != nil {
 		t.Fatalf("seed (adopt): %v", err)
 	}
 	// Simulate the adopted worker having been created under an OLDER seed: its
@@ -364,7 +372,7 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 		t.Fatalf("commit: %v", err)
 	}
 
-	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+	if err := db.SeedDevWorkers(ctx, pool, seedTenant); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	// Content tests read version 1 — reset the worker so the seed's own v1
@@ -391,7 +399,7 @@ func TestSeedVisionWorkersAreRetired(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
 
-	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+	if err := db.SeedDevWorkers(ctx, pool, seedTenant); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	for _, id := range []string{"w_se_sse_vision", "w_se_architect_vision", "w_se_qa_vision"} {
@@ -493,7 +501,7 @@ func TestSeedCannedWorkersCarrySandboxPlaneGuard(t *testing.T) {
 	ctx := context.Background()
 	const cannedID = "w_se_senior_software_engineer"
 
-	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+	if err := db.SeedDevWorkers(ctx, pool, seedTenant); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	// Content tests read version 1 — reset so the seed's own v1 is what's
@@ -527,7 +535,7 @@ func TestSeedSDLCWorkersAreTimeBoxedWorkhorses(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
 
-	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+	if err := db.SeedDevWorkers(ctx, pool, seedTenant); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	want := map[string]struct {
@@ -593,7 +601,7 @@ func TestSeedPreExistingFailureRemedyContract(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
 
-	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+	if err := db.SeedDevWorkers(ctx, pool, seedTenant); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	for _, id := range []string{
@@ -656,7 +664,7 @@ func TestSeedDesignApproverCarriesDesignReviewContract(t *testing.T) {
 	ctx := context.Background()
 	const cannedID = "w_se_design_approver"
 
-	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+	if err := db.SeedDevWorkers(ctx, pool, seedTenant); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	var agents string
@@ -696,7 +704,7 @@ func TestSeedCodeApproverCarriesCodeReviewContract(t *testing.T) {
 	ctx := context.Background()
 	const cannedID = "w_se_code_approver"
 
-	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+	if err := db.SeedDevWorkers(ctx, pool, seedTenant); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	// Content tests read version 1 — reset so the seed's own v1 is what's
@@ -740,7 +748,7 @@ func TestSeedDevOpsCarriesMergeConflictResolutionContract(t *testing.T) {
 	ctx := context.Background()
 	const cannedID = "w_se_devops_engineer"
 
-	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+	if err := db.SeedDevWorkers(ctx, pool, seedTenant); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	var agents string
@@ -784,7 +792,7 @@ func TestSeedFreshCannedWorkersHaveBlankModelRef(t *testing.T) {
 	}
 	// Re-seed again: the blank model_ref must be stable across boots (no
 	// force-align back to a seed default).
-	if err := db.SeedDevWorkers(context.Background(), pool); err != nil {
+	if err := db.SeedDevWorkers(context.Background(), pool, seedTenant); err != nil {
 		t.Fatalf("re-seed: %v", err)
 	}
 	if model := workerVersionModel(t, pool, workerID, 1); model != "" {
@@ -801,7 +809,7 @@ func TestSeedUserModelEditSurvivesReseed(t *testing.T) {
 
 	setWorkerVersionModel(t, pool, workerID, 1, "anthropic/claude-sonnet-4")
 
-	if err := db.SeedDevWorkers(context.Background(), pool); err != nil {
+	if err := db.SeedDevWorkers(context.Background(), pool, seedTenant); err != nil {
 		t.Fatalf("re-seed: %v", err)
 	}
 	if model := workerVersionModel(t, pool, workerID, 1); model != "anthropic/claude-sonnet-4" {
@@ -860,7 +868,7 @@ func TestSeedRollForwardPreservesModelRef(t *testing.T) {
 
 	// v2 carries a stale marker -> the seeder rolls a new published version
 	// forward that must preserve v2's model_ref.
-	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+	if err := db.SeedDevWorkers(ctx, pool, seedTenant); err != nil {
 		t.Fatalf("re-seed: %v", err)
 	}
 	var curVer int
@@ -886,7 +894,7 @@ func TestSeedRollForwardPreservesModelRef(t *testing.T) {
 func TestSeedAutomationResearchTrioSeededWithRoleAndGenericPurposes(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
-	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+	if err := db.SeedDevWorkers(ctx, pool, seedTenant); err != nil {
 		t.Fatalf("seed dev workers: %v", err)
 	}
 

@@ -77,12 +77,15 @@ const (
 	RecoveryStrategyHumanEscalation  = "human_escalation"  // PR C — L3 block
 	RecoveryStrategyRetryN           = "retry_n"           // PR C
 
-	// Default retry budget: max 5 recovery attempts for the same task
-	// chain, with 10s delay between retries. These can be overridden via
-	// env vars ORCHICON_RECOVERY_MAX_RETRIES and
-	// ORCHICON_RECOVERY_RETRY_DELAY_SECONDS.
-	defaultMaxRetries        = 5
-	defaultRetryDelaySeconds = 10
+	// Default retry budget: max 5 recovery attempts for the same task chain.
+	//
+	// There are NO env overrides for these. An earlier revision of this comment
+	// claimed ORCHICON_RECOVERY_MAX_RETRIES and ORCHICON_RECOVERY_RETRY_DELAY_SECONDS;
+	// neither name is read anywhere in the tree, so they were documented but never
+	// implemented.
+	//
+	// The delay is gone entirely (see the note on retry_delay_seconds below).
+	defaultMaxRetries = 5
 )
 
 // strategyForWorkItem maps a work item's kind to the recovery strategy
@@ -430,6 +433,14 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, st
 
 	recoveryID := db.NewID()
 	now := time.Now().UTC()
+	// NOTE: there is no retry_delay_seconds here, deliberately. The COLUMN exists on
+	// recovery_executions (NOT NULL DEFAULT 10, from 20260721000000_recovery_retry_config.sql)
+	// and this row used to set it from a constant — but nothing ever READ it. There is no
+	// deferral mechanism for execution dispatch at all, so every retry went out
+	// immediately and the value described a wait that never happened. The knob was
+	// removed rather than left advertising behaviour the system does not have. The column
+	// is retained only because migrations are additive-only (no destructive DDL);
+	// 20260925000000_retire_recovery_retry_delay.sql corrects its stale comment.
 	row := db.RecoveryExecutionRow{
 		ID:                 recoveryID,
 		TenantID:           tenantID,
@@ -444,7 +455,6 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, st
 		BudgetTokensLimit:  budgetTokensLimit,
 		BudgetCostLimitUSD: budgetCostLimit,
 		MaxRetries:         defaultMaxRetries,
-		RetryDelaySeconds:  defaultRetryDelaySeconds,
 		TriggeredAt:        now,
 	}
 	created, err := db.CreateRecoveryExecution(ctx, ttx.Tx, row)

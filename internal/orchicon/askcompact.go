@@ -77,6 +77,7 @@ Rules:
 - Be specific and concrete. Preserve identifiers verbatim (paths, ids, names, numbers).
 - Do NOT invent anything that is not in the transcript.
 - Do NOT add pleasantries or meta-commentary about summarizing.
+- Do NOT record which MODE the assistant was in, and do NOT record anything it declined to do because of its mode ("the assistant said it could not edit files"). Modes are applied FRESH to every message from the conversation's current mode setting, so a mode written here goes stale the moment the user switches — and this summary is REPLAYED on every later turn, which would make one old refusal permanent.
 - Image content and tool output were dropped BEFORE you saw this transcript. If something important is clearly missing, note it under open questions rather than guessing.
 
 Write the summary now.`
@@ -129,13 +130,45 @@ func (b *NativeBridge) CompactConversationSession(ctx context.Context, opts sche
 		return scheduler.ChatCompaction{}, errors.New("orchicon bridge: the model returned an empty summary — history left untouched")
 	}
 
-	tail := history
-	if len(tail) > askCompactTailMessages {
-		tail = tail[len(tail)-askCompactTailMessages:]
+	// The kept tail must be a valid history PREFIX — it can never begin on a
+	// bare tool result, because nothing before it declares the call that result
+	// answers, and providers reject the whole request:
+	//
+	//	Messages with role 'tool' must be a response to a preceding message
+	//	with 'tool_calls'
+	//
+	// A blind slice at len-tail lands exactly there whenever the cut falls
+	// inside a tool round. Observed LIVE on Ask conversation
+	// 01M2C8VXFQY5ZE26PYBSNKA2CA: the last six messages were
+	// [tool, assistant, tool, assistant, tool, assistant], so the leading tool
+	// result's declaring assistant sat ONE index outside the kept window, the
+	// compacted history led with an orphan, and every subsequent send 400'd. It
+	// could not self-heal either — the native transport re-sends this history
+	// in full on every turn, so the poison was replayed (and re-persisted)
+	// forever.
+	//
+	// Walk the cut back over the leading tool results to the message that
+	// declares them, keeping the round whole rather than splitting it — the
+	// same "never orphan a use or a result" discipline the worker path's middle
+	// eviction already follows (planMiddleEviction, compaction.go).
+	cut := len(history) - askCompactTailMessages
+	if cut < 0 {
+		cut = 0
 	}
+	for cut > 0 && history[cut].Role == RoleTool {
+		cut--
+	}
+	tail := history[cut:]
 	next := make([]Message, 0, len(tail)+1)
 	next = append(next, Message{Role: RoleAssistant, Content: []Content{{Text: compactedHistoryMarker(summary)}}})
 	next = append(next, tail...)
+	// Composition is itself a replay boundary: the summary is a NEW assistant
+	// message and the tail is a slice of the old history. Assert the pairing
+	// invariant on what was BUILT rather than trusting the boundary above (or any
+	// future trim policy) to have preserved it — when the cut was a blind slice,
+	// the orphan did not exist in the source history at all, so the pre-trim
+	// sanitize pass had nothing to catch.
+	next = sanitizeChatHistory(next)
 
 	b.mu.Lock()
 	// Archive the pre-collapse history beside the live file: the summary is

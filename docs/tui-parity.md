@@ -22,7 +22,7 @@ whole areas to "use the web GUI".
 
 | GUI route | Screen | TUI state | TUI tab | Notes / mutations |
 |---|---|---|---|---|
-| `/ask-orchicon`, `/conversations` | Ask Orchicon (chat + conversations) | **exists** | Ask | New chat (`/new`, lazy create on first send), composer, live transcript via the kit2 `Stream` widget (append preserves scroll offset; tail followed only at the bottom), rename (`/rename`), delete (`/delete`) with rail reconcile, ask-model picker (`/model` → `model_ref` at create), mode (`/mode` → `SetConversationMode`), attachments explicitly refused (`/attach`). |
+| `/ask-orchicon`, `/conversations` | Ask Orchicon (chat + conversations) | **exists** | Ask | New chat (`/new`, lazy create on first send), composer, live transcript via the kit2 `Stream` widget (append preserves scroll offset; tail followed only at the bottom), rename (`/rename`), delete (`/delete`) with rail reconcile, mode (`/mode` → `SetConversationMode`; a bare `/mode` reports the current persona), attachments explicitly refused (`/attach`). **Compact** — the composer's `Compact` button runs `/compact` (the same single implementation the typed command calls, so the guards cannot drift); disabled, with the reason on the control, when there is no conversation or a turn is in flight. **Model:** `/models` opens the three-tier picker and sets the OPEN conversation's `model_ref` (`SetConversationModel` — see **Model picker** below); `/model <ref>` still sets the ref a NEW conversation is created with. **Stat strip:** the composer's bottom-right row reports the ask model, context occupancy, token total, cache-hit ratio and session cost (see **Session stat strip** below). **Workspace scope:** the GUI sidebar's project dropdown (`ProjectScopeSelect`) ↔ the TUI's **`/project`** — the selected project scopes the conversations rail, a new chat is created IN it, and the rail's title names it (a bare `/project` opens the picker; `/project <text>` filters it; `/project-move` moves the open chat). **THE NAMES ARE DELIBERATELY SINGULAR/PLURAL AND MUST NOT BE SWAPPED:** `/project` scopes the Ask tab, `/projects` opens the Work tab's Projects pane below. They collided once — a picker registered as `/projects` shadowed the generated navigation command, because the registry's `add` overwrites by name and explicit commands are registered AFTER generated ones. |
 
 ## Overview
 
@@ -36,7 +36,7 @@ whole areas to "use the web GUI".
 
 | GUI route | Screen | TUI state | TUI tab | Notes / mutations |
 |---|---|---|---|---|
-| `/projects` | Projects | **exists** (read-write) | Work | `Projects` source + detail. **Read-write:** `n` create (`CreateProject` with name/slug/goals/default runtime image) · `e` edit title/goals/project_dir (`UpdateProject`) · `d` set + create the project directory (`UpdateProject` + the `ListProjectFiles` probe that materializes/validates it). |
+| `/projects` | Projects | **exists** (read-write) | Work | `Projects` source + detail. **Read-write:** `n` create (`CreateProject` with name/slug/goals/default runtime image) · `e` edit title/goals/project_dir (`UpdateProject`) · `d` set + create the project directory (`UpdateProject` + the `ListProjectFiles` probe that materializes/validates it). **Reached by `/projects` (the PLURAL).** `/project` (singular) is the Ask tab's workspace scope, not this pane. |
 | `/projects/$id` | Project detail | **exists** | Work | Detail fields + goals + project dir + default image. |
 | `/projects/new` | Create project | **exists** | Work | The `n` chord on Projects: the validated create form → `CreateProject`. |
 | `/work-items` | Work Items | **exists** (read-write) | Work | `Work Items` source rendered through three DISPLAY groupings — **Tree** (real Epic→Feature→Task→Subtask DAG from `parent_id`), **Board** (grouped by real status, empty columns kept), **Archive** (`include_archived` — archived items + the status they restore to). `v` cycles; `T`/`B`/`Z` select. Kind badges + state pills render from real fields. **Read-write:** `n` create (`CreateWorkItem` with title/kind/parent/description/acceptance/priority/budgets JSON/context window/workflow/runtime image/context files/auto-start), `e` edit every mutable field (`UpdateWorkItem`), `s` status+priority, `t` schedule (`scheduled_start_at` + auto-start), `w`/`W` assign/unassign worker, `J`/`K` reorder children (`ReorderWorkItems` — the ONLY sequence mutation; display groupings never renumber), `a` archive / `R` restore / `x` delete → cancelled, each Confirm-gated. |
@@ -50,9 +50,9 @@ whole areas to "use the web GUI".
 
 | GUI route | Screen | TUI state | TUI tab | Notes / mutations |
 |---|---|---|---|---|
-| `/workers` | Workers | **exists** | Control | Control list + detail. |
-| `/workers/$id` | Worker detail | **exists** | Control | Detail fields + version list (`ListWorkerVersions`). **Mutations (child):** edit header (`UpdateWorker`), edit version draft (`UpdateWorkerVersion`), publish/deprecate (`PublishWorkerVersion`/`DeprecateWorker`), set active (`SetActiveWorkerVersion`). |
-| `/workers/new` | Register worker | **missing** | — | **Child:** worker registration form (mutation). |
+| `/workers` | Workers | **exists** (read-write) | Execution | `Workers` source + detail (`ListWorkers` / `GetWorker`). **Mutations:** `m` sets the selected worker's model through the three-tier picker (`BulkUpdateWorkerModel`) — see **Model picker** below. |
+| `/workers/$id` | Worker detail | **exists** | Execution | Detail fields + version list (`ListWorkerVersions`), each version carrying its `model_ref`. **Mutations:** edit (`e`) opens ONE form — the header plus every version field — and saves with `UpdateWorkerVersion{republish:true}`, so the version is edited IN PLACE (number unchanged) and the worker ends PUBLISHED; the model is a field on that form (the standalone `m` chord is gone). **Children:** new version (`V`, `CreateWorkerVersion{publish:true}` — created and published in one call, nothing written until save), publish (`PublishWorkerVersion`, for a worker that already carries a draft), deprecate (`DeprecateWorker`), set active (`SetActiveWorkerVersion`). A cancel writes nothing at all: no form creates a draft on open, so a cancelled edit cannot strand a worker in draft. |
+| `/workers/new` | Register worker | **exists** | Execution | `n` opens the create form in the details pane (no modal), carrying the same writable field set the GUI's create page carries — name, slug, purpose, description, plane role, model, role/skills/behavior/AGENTS.md, version note, context sources, permissions, gated tools, budget overrides, concurrency limit. It LOADS the tenant's roles first so the plane-role picker can offer them, and writes nothing until ctrl+s. |
 | `/workflows` | Workflows | **exists** | Automation | List + detail. |
 | `/workflows/$id` | Workflow detail | **exists** | Automation | Detail + version trail. **Mutations (child):** `CreateWorkflow`, edit steps (`UpdateWorkflowVersion`), `PublishWorkflow`, `DeprecateWorkflow`, `CreateWorkflowVersion`. |
 | `/workflows/new` | Create workflow | **missing** | — | **Child:** workflow DSL/definition form (mutation). |
@@ -87,7 +87,7 @@ whole areas to "use the web GUI".
 |---|---|---|---|---|
 | `/webhooks` | Webhooks | **exists** (read-write) | Control | `Webhooks` source + detail (`ListSubscriptions`). Create/edit/delete subscription through the form + Confirm-gated actions (`CreateSubscription` / `UpdateSubscription` / `DeleteSubscription`), `TestSubscription`, and the deliveries log (`ListDeliveries`) rendered in the detail body. |
 | `/adapters` | Adapters | **exists** (read + local toggle) | Control | `Adapters` source + detail (`ListAdapters` + the capability manifest). Enable/disable is a client-side dispatch filter: the public `RuntimeAdapterService` is read-only (adapters self-register over the sidecar gRPC contract), so there is no adapter write RPC to call. |
-| `/settings` | Settings | **exists** (read-write) | Control | `Settings` source + detail (every field: models, stall knobs, reaper, budgets, backup/log, session TTLs). `e` opens the typed form and saves through `UpdateSettings`; model refs are validated inline (provider/model) before submit. |
+| `/settings` | Settings | **exists** (read-write) | Control | `Settings` source + detail (every field: models, stall knobs, reaper, budgets, backup/log, session TTLs). `e` opens the typed form and saves through `UpdateSettings`; the two model fields open the three-tier picker (see **Model picker** below) and are validated against the pinned grammar before submit. |
 | `/admin` | Admin | **exists** (admin-gated) | Control | `Admin` source: the admin surface inventory plus an EXPLICIT live permission state (probed via an admin-gated read) — a credential without the admin scope sees "permission required", never a silent empty pane. |
 | `/usage` | Usage | **exists** | Overview (Usage Records) | Raw usage-records table + per-record detail (`AIGatewayService.GetUsage`). |
 
@@ -99,13 +99,13 @@ replaced by real TUI surfaces on the Control screen:
 - **Providers** → `Providers` source + detail (`ProviderService.ListProviders`).
 - **Webhooks** → `Webhooks` source + detail (`WebhookService.ListSubscriptions`).
 - **Settings** → `Settings` source + detail (`SettingsService.GetSettings`).
-- **Runtime Images / Secrets / MCP / Workers** — already real Control sources.
+- **Runtime Images / Secrets / MCP** — already real Control sources. (Workers live on the Execution tab, matching the GUI nav-config group placement.)
 
 ## Control write parity (this run)
 
 The Control screen is now read-WRITE for every surface the GUI mutates:
 
-- **Settings** — view all + edit/save (`UpdateSettings`), model refs validated inline.
+- **Settings** — view all + edit/save (`UpdateSettings`); the two model refs are CHOSEN from the three-tier picker and validated against the pinned grammar.
 - **Webhooks** — create/edit/delete subscription + test + deliveries view.
 - **Adapters** — `RuntimeAdapterService` client wired, source + detail + enable/disable.
 - **MCP servers** — create/edit/delete, enabled toggle, credential store/clear via the secret
@@ -145,6 +145,143 @@ The Work tab is now read-WRITE for every Work surface the GUI mutates:
 
 Budgets / context-window / apt-packages / toolchains / env are JSON — the `Form`'s `json` field
 type validates them before submit.
+
+## Model picker (this run)
+
+A `model_ref` is a reference no operator can be expected to type, so every model
+field CHOOSES one from a three-tier control (adapter → provider → searchable
+model) in its own modal. It is no longer a text field anywhere.
+
+One shared widget (`kit2.ModelPicker`, a screen-owned modal that claims the
+keyboard and the mouse while open) plus one shared data cascade
+(`internal/tui/modelpick`) serve every screen, so all three surfaces behave
+identically:
+
+- **Adapter tier** — the Dispatcher's registered kinds (`AIGatewayService.ListAdapterKinds`).
+  The native `orchicon` kind is listed FIRST and seeds a fresh selection (ADR-0005 D5).
+- **Provider tier** — under the native kind, the merged Providers view
+  (`ProviderService.ListProviders`: ENABLED only, tenant customs badged) — exactly what
+  Settings → Adapters edits. Under every other kind, its adapter-scoped gateway set
+  (`AIGatewayService.ListProviders`).
+- **Model tier** — under the native kind, the providers SOURCING view
+  (`ProviderService.ListProviderModels`: vendored catalog ⊕ probe ⊕ manual). Under every
+  other kind, opencode-CLI discovery (`AIGatewayService.ListOpenCodeModels`). Hidden models
+  are dropped; a model missing a context hint stays SELECTABLE and is ANNOTATED (ADR-0006 D8).
+
+Switching adapter RESETS the provider and model tiers — a selection is never
+carried across adapters (ADR-0004 stale-selection guard). The committed value is
+the canonical 3-segment ref (`adapter/provider/model`, ADR-0003), written
+verbatim with the model segment's internal slashes preserved, and the field then
+DISPLAYS that ref. Keyboard (tab / arrows / enter / space / esc) and mouse (wheel
+scroll + click on a chip or a model row) are both first-class.
+
+Landed surfaces:
+
+- **Tenant Settings** — `default_worker_model` and `default_ask_orchicon_model` (`e` on the
+  Settings pane). These replaced plain-text fields, and their validator now delegates to the
+  pinned grammar (`adapter.ParseModelRef`) instead of a hand-rolled `SplitN("/", 2)` splitter
+  that accepted malformed 4-segment junk AND rejected a legal 1-segment bare model id.
+- **Workers** — `m` on the Workers pane sets the selected worker's model via
+  `BulkUpdateWorkerModel` (sets `model_ref` and republishes the affected version IN PLACE;
+  the version number does not advance). The picker seeds from
+  `WorkerListItem.active_model_ref`, so opening it costs no extra round trip, and a per-worker
+  skip (deprecated / retired / no published version / not found) is reported as a FAILURE
+  rather than swallowed.
+- **Ask Orchicon** — `/models` sets the OPEN conversation's `model_ref` through the new
+  `SetConversationModel` RPC (an empty ref CLEARS the per-conversation override, so the chat
+  falls back to the tenant default). With no conversation open the choice is recorded for the
+  NEXT one, so the command is never a dead end. The composer is the shell rather than a screen,
+  so the App hosts this copy of the picker and owns its keys and mouse while it is open.
+  The GUI matches: the model segment of the composer's stat strip is a CHIP
+  (`components/AskModelChip.tsx`) that opens the same picker, anchored ABOVE the composer.
+  It is PORTALED to `document.body` and positioned with `bottom: innerHeight - rect.top`,
+  and both details are load-bearing: the composer's `glass-input`/`glass-panel` classes use
+  `backdrop-filter`, which makes them a CONTAINING BLOCK for `position: fixed` descendants —
+  so a non-portaled overlay is positioned relative to the composer box and clipped by its
+  `overflow-hidden`, rendering inside the chat bar where it cannot be seen. This mirrors
+  `components/ui/mode-toggle.tsx`, which solves the identical problem for the mode menu in
+  the same toolbar. It works on the hero ("Ask Orchicon Anything...") too: with no
+  conversation yet the choice is held in `pendingModel` and passed to `createConversation`,
+  since there is no conversation row to write it to; it is cleared once the conversation is
+  created, so a later new chat starts from the tenant default rather than inheriting a one-off.
+
+## Session stat strip (this run)
+
+The Ask composer's bottom-right row reports the live session, in both clients:
+
+    <ask model> · ctx 124K/200K · 1.2M tok · cache 78% (940K) · $1.2345   [brainstorm]
+
+- **Ask model** — the open conversation's `model_ref`, else the tenant default/fallback.
+- **Context** — occupancy against the model's window. Occupancy is the LATEST usage record's
+  input side (prompt + cache reads + cache writes): the SUM across turns is not the context
+  size. The window comes from the same per-adapter source the picker annotates, and is
+  omitted (never fabricated) when unknown.
+- **Tokens** — the session total.
+- **Cache** — the hit RATIO with the cached token count. The ratio is
+  `cache_read / (cache_read + uncached input)` — the two halves the recorder stores
+  separately — and is omitted rather than shown as a meaningless 0% when there is no input.
+- **Cost** — the session's recorded cost.
+- **Mode** — the persona pill sits immediately to the right of the stats (the GUI's dropdown
+  is in the same place, which is why the stats precede it).
+
+Where the numbers come from: the Ask turn path ALREADY recorded per-session usage
+(`chat.go` passes the conversation id as `SessionID`), but nothing could read it back.
+`usage_records.session_id` was written and not selected, `UsageRecord` had no session field,
+and `GetUsageRequest` had no session filter. This run closes that loop (see the usage commit),
+and both clients read `GetUsage{session_id}` — no client recomputes pricing or token counts
+from messages; the recorded row is the authority.
+
+Live update: the TUI re-reads on conversation open/switch, on a model change, and on every
+`StreamDoneMsg` (a finished turn is when new usage lands); the GUI refetches on the same
+turn-completion edge and on conversation switch. A read for a conversation the operator has
+left is dropped, and a FAILED read keeps the last good numbers rather than blanking the strip.
+
+The mode pill is display + `/mode` rather than a clickable dropdown because only ONE persona
+exists today (`brainstorm`); a single-option popup would be a control that cannot change
+anything. Adding a second mode should add the popup with it.
+
+Two things this deliberately does NOT do:
+
+- It does not reintroduce a worker-level `runtime_ref`. That field is RETIRED (ADR-0005
+  amendment 2026-09-04) precisely because two independently-settable sources of adapter truth
+  caused live misroutes (a stale `runtime_ref` won over the picked ref) and black holes (a
+  runtime IMAGE TAG stored where dispatch read an ADAPTER KIND). The ref's adapter segment is
+  the single source of truth for the whole dispatch path.
+- It never assigns a model to a WORK ITEM. `WorkItem` has no model field at all
+  (`proto/orchicon/api/v1/work_item.proto`): a work item's model comes from the worker it is
+  assigned to (`assigned_worker_ref`).
+
+## Slash commands in the GUI (deliberate difference)
+
+The GUI has **no slash palette**, and that is a decision rather than a gap. The TUI is
+keyboard-first and carries ~15 commands, so a palette earns its keystrokes there. The GUI is
+mouse-first and already has a NATIVE control for every per-conversation command:
+
+| TUI command | GUI control |
+|---|---|
+| `/new` | the sidebar `+` "New Chat" |
+| `/rename`, `/delete` | the sidebar row actions |
+| `/mode` | the mode dropdown (`ModeToggle`) |
+| `/models`, `/model` | the composer's model chip |
+| `/attach` | the paperclip |
+| `/diff` | the diff-sidebar toggle |
+| `/connect`, `/theme` | Settings |
+| `/compact` | the composer's `Compact` button |
+| `/help`, `/quit`, `/reconnect` | n/a — browser / UI semantics |
+
+So a palette would mean re-implementing controls that already exist, for one command that did
+not have one. `Compact` was that command, and it now has a button.
+
+What IS built is the PARSER (`lib/composer-command.ts`), kept deliberately because it mirrors
+`internal/tui/slash.go` `ParseSlash` — the two frontdoors must agree on what a command IS.
+Typed `/compact` therefore still works, and shares ONE implementation with the button so the
+guards cannot drift (the same discipline as the TUI's single command path). An unrecognized
+`/word` falls through to CHAT rather than being swallowed: the server is the authority on what
+a message is, and silently eating the operator's text would lose it.
+
+One genuine parity gap remains, recorded rather than hidden: **`/context`** (viewing and
+pinning the injected context preamble) has no GUI surface at all. That is a missing feature,
+not a missing control.
 
 ## Recomputed child work items
 

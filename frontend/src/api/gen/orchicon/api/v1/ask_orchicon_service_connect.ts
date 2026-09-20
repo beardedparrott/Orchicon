@@ -11,7 +11,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CompactConversationRequest, CompactConversationResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, InterjectConversationTurnRequest, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, SetConversationModeRequest, SetConversationModeResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse, WatchTurnStreamRequest } from "./ask_orchicon_service_pb.js";
+import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CompactConversationRequest, CompactConversationResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, InterjectConversationTurnRequest, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, SetConversationModelRequest, SetConversationModelResponse, SetConversationModeRequest, SetConversationModeResponse, SetConversationProjectRequest, SetConversationProjectResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse, WatchTurnStreamRequest } from "./ask_orchicon_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -81,9 +81,9 @@ export const AskOrchiconService = {
     },
     /**
      * SetConversationMode switches the active persona for a conversation
-     * (brainstorm <-> orchicon). The change applies from the NEXT message on:
-     * the same opencode session persists and the per-turn system prompt swaps
-     * with no session change or serve restart.
+     * (Brainstorm | Iteration | Quick Work — see BuildSystemPrompt). The change
+     * applies from the NEXT message on: the same opencode session persists and
+     * the per-turn system prompt swaps with no session change or serve restart.
      *
      * @generated from rpc orchicon.api.v1.AskOrchiconService.SetConversationMode
      */
@@ -91,6 +91,46 @@ export const AskOrchiconService = {
       name: "SetConversationMode",
       I: SetConversationModeRequest,
       O: SetConversationModeResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * SetConversationModel retargets a conversation's model_ref. The change
+     * applies from the NEXT message on; when it changes the ADAPTER segment the
+     * bridge is re-resolved for subsequent turns (the serve session is
+     * re-established against the new adapter). An EMPTY ref clears the override,
+     * so the conversation falls back to the tenant default
+     * (default_ask_orchicon_model). This is what lets an operator retarget an
+     * already-open chat instead of starting a new one.
+     *
+     * @generated from rpc orchicon.api.v1.AskOrchiconService.SetConversationModel
+     */
+    setConversationModel: {
+      name: "SetConversationModel",
+      I: SetConversationModelRequest,
+      O: SetConversationModelResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * SetConversationProject places a conversation in a PROJECT (or clears it),
+     * which is the second, higher level of organization over conversations: the
+     * rail and the GUI sidebar list projects as the parent group, every project
+     * gets a folder whether or not it has conversations yet, and this rpc is what
+     * a drag-into-a-folder or a TUI /project resolves to.
+     *
+     * A project is the workspace the chat's work happens in — its project_dir is
+     * the directory the Ask file/shell suite is scoped to — so setting it also
+     * tells the agent WHICH project folder the chat belongs to, and that is what
+     * makes all three modes context-aware (see BuildSystemPrompt). An EMPTY
+     * project_id unassigns the conversation. An unknown id is rejected: a
+     * conversation can be unassigned, but it can never point at a project that
+     * does not exist.
+     *
+     * @generated from rpc orchicon.api.v1.AskOrchiconService.SetConversationProject
+     */
+    setConversationProject: {
+      name: "SetConversationProject",
+      I: SetConversationProjectRequest,
+      O: SetConversationProjectResponse,
       kind: MethodKind.Unary,
     },
     /**

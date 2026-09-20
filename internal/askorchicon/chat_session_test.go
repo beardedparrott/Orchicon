@@ -516,17 +516,26 @@ func TestRunOpenCodeTurnIgnoresIdleBeforeSend(t *testing.T) {
 	// accepted. The idle must be ignored (sent == false). The stale text is
 	// legitimate telemetry and is relayed; the STALE IDLE must not end the
 	// turn.
+	//
+	// ⚠️ A MARKER TEXT IS FED AFTER THE STALE IDLE, and that marker is the whole reason this test is
+	// deterministic. Waiting for the stale TEXT alone does NOT prove the idle was consumed — the text is
+	// relayed from inside the drain loop's `case "part"` branch, so it can be observed while the loop has
+	// not yet performed its next select, leaving the idle queued. Releasing the send gate at that moment lets
+	// the select take sendCh FIRST (sent = true) and then consume that stale idle as if it were ours, ending
+	// the turn with only the stale text — which is exactly the failure that surfaced as
+	// `collected text = [stale text]` on a loaded machine while passing on an idle one.
+	//
+	// The events channel is FIFO and the drain loop consumes one event per iteration, so when the MARKER is
+	// relayed the idle before it has definitely been consumed — with sent == false, i.e. correctly ignored.
+	// That is the fact this test needs, and it is now established rather than assumed.
 	fsub.feed(busText("ses_1", "stale text"))
 	fsub.feed(busIdle("ses_1"))
-	// Wait until the stale events have been consumed by the drain loop
-	// (stale text processed ⇒ the idle that follows it in the channel was
-	// also consumed while sent == false). Only then release the send gate,
-	// so the stale idle cannot race a later sent == true.
-	for len(col.texts()) < 1 {
+	fsub.feed(busText("ses_1", "stale marker"))
+	for len(col.texts()) < 2 {
 		select {
 		case <-time.After(10 * time.Millisecond):
 		case <-deadline:
-			t.Fatal("stale text was never processed before deadline")
+			t.Fatal("the stale idle was never consumed before deadline")
 		}
 	}
 	// Release the send; then the real turn produces text + the real idle.
@@ -534,6 +543,11 @@ func TestRunOpenCodeTurnIgnoresIdleBeforeSend(t *testing.T) {
 	// the first fresh idle before it processes the sendCh result (sent still
 	// false → correctly ignored); the second idle is consumed after sent has
 	// flipped, so the turn terminates deterministically.
+	//
+	// The gap is a margin rather than a guarantee, and it is the one remaining
+	// timing assumption here — but it is microseconds of work (the send
+	// goroutine has already returned) against 100ms, so it is orders of
+	// magnitude wider than the window that used to be lost.
 	close(client.sendGate)
 	fsub.feed(busText("ses_1", "fresh reply"))
 	fsub.feed(busIdle("ses_1"))
@@ -558,10 +572,13 @@ func TestRunOpenCodeTurnIgnoresIdleBeforeSend(t *testing.T) {
 	// text. Telemetry text is relayed as it arrives (it is the conversation's
 	// own output), but the turn must continue to the post-accept idle and
 	// collect the FRESH reply — if the stale idle had completed the turn we
-	// would only see the stale text.
+	// would see no FRESH REPLY at all, which is the assertion that carries
+	// the test. (Both stale texts are asserted so a change that dropped the
+	// marker cannot make this pass silently.)
 	got := col.texts()
-	if len(got) != 2 || got[0] != "stale text" || got[1] != "fresh reply" {
-		t.Errorf("collected text = %v, want [stale text fresh reply]", got)
+	if len(got) != 3 || got[0] != "stale text" || got[1] != "stale marker" || got[2] != "fresh reply" {
+		t.Errorf("collected text = %v, want [stale text stale marker fresh reply] — the fresh reply missing "+
+			"means the STALE idle ended the turn", got)
 	}
 }
 

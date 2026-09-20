@@ -18,7 +18,7 @@ type RecoveryExecutionRow struct {
 	ProjectID          string
 	TaskID             string
 	FailedExecutionID  string
-	RecoveryWorkflowID  string
+	RecoveryWorkflowID string
 	TriggerReason      string
 	Level              int32
 	Status             string
@@ -28,24 +28,23 @@ type RecoveryExecutionRow struct {
 	// human_escalation, retry_n. Empty string falls back to
 	// summarize_restart for backward compat with rows written before
 	// the column existed.
-	Strategy           string
-	ResumptionPath     string
-	BudgetTokensLimit  int64
-	BudgetTokensUsed   int64
-	BudgetCostLimitUSD float64
-	BudgetCostUsedUSD  float64
+	Strategy            string
+	ResumptionPath      string
+	BudgetTokensLimit   int64
+	BudgetTokensUsed    int64
+	BudgetCostLimitUSD  float64
+	BudgetCostUsedUSD   float64
 	BudgetRelaxFraction float64
-	NeedsHumanApproval bool
+	NeedsHumanApproval  bool
 	ContinuationPlanID  string
 	ReviewerWorkerID    string
-	MaxRetries         int
-	RetryDelaySeconds  int
-	Summary            string
-	Version            int
-	TriggeredAt        time.Time
-	EndedAt            *time.Time
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	MaxRetries          int
+	Summary             string
+	Version             int
+	TriggeredAt         time.Time
+	EndedAt             *time.Time
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 // RecoveryStepRunRow is the data-access shape of a recovery_step_runs
@@ -60,7 +59,7 @@ type RecoveryStepRunRow struct {
 	Status            string
 	Attempt           int
 	Result            []byte // jsonb
-	WorkerExecutionID  string
+	WorkerExecutionID string
 	TriggerReason     string
 	AffectedRef       string
 	AdapterRef        string
@@ -75,21 +74,21 @@ type RecoveryStepRunRow struct {
 // ContinuationPlanRow is the data-access shape of a continuation_plans
 // table row (docs/06 §8).
 type ContinuationPlanRow struct {
-	ID              string
-	TenantID        string
-	RecoveryID      string
-	Version         int
-	Completed       []byte // jsonb
-	InProgress      []byte // jsonb
-	Remaining       []byte // jsonb
-	Corrections     []byte // jsonb
-	ContextSummary  string
-	CheckpointRef   string
-	Assumptions     []byte // jsonb
-	Status          string
-	ApprovedBy      string
-	CreatedAt       time.Time
-	DecidedAt       *time.Time
+	ID             string
+	TenantID       string
+	RecoveryID     string
+	Version        int
+	Completed      []byte // jsonb
+	InProgress     []byte // jsonb
+	Remaining      []byte // jsonb
+	Corrections    []byte // jsonb
+	ContextSummary string
+	CheckpointRef  string
+	Assumptions    []byte // jsonb
+	Status         string
+	ApprovedBy     string
+	CreatedAt      time.Time
+	DecidedAt      *time.Time
 }
 
 // CreateRecoveryExecution inserts a new recovery execution row.
@@ -112,18 +111,15 @@ func CreateRecoveryExecution(ctx context.Context, tx pgx.Tx, r RecoveryExecution
 	if r.MaxRetries <= 0 {
 		r.MaxRetries = 5
 	}
-	if r.RetryDelaySeconds <= 0 {
-		r.RetryDelaySeconds = 10
-	}
 	q := `INSERT INTO recovery_executions
 		(id, tenant_id, project_id, task_id, failed_execution_id,
 		 recovery_workflow_id, trigger_reason, level, status, current_step,
 		 resumption_path, budget_tokens_limit, budget_tokens_used,
 		 budget_cost_limit_usd, budget_cost_used_usd, budget_relax_fraction,
 		 needs_human_approval, continuation_plan_id, reviewer_worker_id,
-		 max_retries, retry_delay_seconds, summary, triggered_at)
+		 max_retries, summary, triggered_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-		 $15, $16, $17, $18, $19, $20, $21, $22, $23)
+		 $15, $16, $17, $18, $19, $20, $21, $22)
 		RETURNING ` + recoveryExecutionCols
 	row := r
 	if row.TriggeredAt.IsZero() {
@@ -136,7 +132,7 @@ func CreateRecoveryExecution(ctx context.Context, tx pgx.Tx, r RecoveryExecution
 		row.BudgetTokensUsed, row.BudgetCostLimitUSD, row.BudgetCostUsedUSD,
 		row.BudgetRelaxFraction, row.NeedsHumanApproval,
 		row.ContinuationPlanID, row.ReviewerWorkerID,
-		row.MaxRetries, row.RetryDelaySeconds, row.Summary, row.TriggeredAt,
+		row.MaxRetries, row.Summary, row.TriggeredAt,
 	)); err != nil {
 		return RecoveryExecutionRow{}, fmt.Errorf("db: create recovery execution: %w", err)
 	}
@@ -150,7 +146,7 @@ const recoveryExecutionCols = `id, tenant_id, project_id, task_id, failed_execut
 	resumption_path, budget_tokens_limit, budget_tokens_used,
 	budget_cost_limit_usd, budget_cost_used_usd, budget_relax_fraction,
 	needs_human_approval, continuation_plan_id, reviewer_worker_id,
-	max_retries, retry_delay_seconds, summary, version,
+	max_retries, summary, version,
 	triggered_at, ended_at, created_at, updated_at`
 
 // scanRecoveryExecution scans a single row into a RecoveryExecutionRow.
@@ -162,7 +158,7 @@ func scanRecoveryExecution(r *RecoveryExecutionRow, s pgx.Row) error {
 		&r.BudgetTokensUsed, &r.BudgetCostLimitUSD, &r.BudgetCostUsedUSD,
 		&r.BudgetRelaxFraction, &r.NeedsHumanApproval,
 		&r.ContinuationPlanID, &r.ReviewerWorkerID,
-		&r.MaxRetries, &r.RetryDelaySeconds, &r.Summary,
+		&r.MaxRetries, &r.Summary,
 		&r.Version, &r.TriggeredAt, &r.EndedAt, &r.CreatedAt, &r.UpdatedAt,
 	)
 }
@@ -351,25 +347,24 @@ func GetLatestRecoveryForTask(ctx context.Context, tx pgx.Tx, tenantID, taskID s
 // UpdateRecoveryExecutionFields is a partial update applied with
 // optimistic concurrency (docs/09 §5).
 type UpdateRecoveryExecutionFields struct {
-	Status               *string
-	CurrentStep          *string
-	ResumptionPath       *string
-	BudgetTokensUsed     *int64
-	BudgetCostUsedUSD    *float64
-	BudgetRelaxFraction  *float64
-	BudgetTokensLimit    *int64
-	BudgetCostLimitUSD   *float64
-	NeedsHumanApproval   *bool
-	ContinuationPlanID   *string
-	ReviewerWorkerID     *string
-	Summary              *string
-	Level                *int32
+	Status              *string
+	CurrentStep         *string
+	ResumptionPath      *string
+	BudgetTokensUsed    *int64
+	BudgetCostUsedUSD   *float64
+	BudgetRelaxFraction *float64
+	BudgetTokensLimit   *int64
+	BudgetCostLimitUSD  *float64
+	NeedsHumanApproval  *bool
+	ContinuationPlanID  *string
+	ReviewerWorkerID    *string
+	Summary             *string
+	Level               *int32
 	// Strategy is the recovery strategy routed on by the engine. PR C
 	// routes per row; left nil on updates that don't change strategy.
-	Strategy             *string
-	MaxRetries           *int
-	RetryDelaySeconds    *int
-	EndedAt              *time.Time
+	Strategy   *string
+	MaxRetries *int
+	EndedAt    *time.Time
 }
 
 // UpdateRecoveryExecution applies a partial update with optimistic
@@ -451,11 +446,6 @@ func UpdateRecoveryExecution(ctx context.Context, tx pgx.Tx, tenantID, id string
 	if f.MaxRetries != nil {
 		q += fmt.Sprintf(`, max_retries = $%d`, setIdx)
 		args = append(args, *f.MaxRetries)
-		setIdx++
-	}
-	if f.RetryDelaySeconds != nil {
-		q += fmt.Sprintf(`, retry_delay_seconds = $%d`, setIdx)
-		args = append(args, *f.RetryDelaySeconds)
 		setIdx++
 	}
 	if f.EndedAt != nil {

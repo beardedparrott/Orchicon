@@ -159,16 +159,11 @@ func (s *Service) PublishWorkerVersion(ctx context.Context, req *connect.Request
 	if latest.Status != domain.WorkerVersionDraft {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("latest version (v%d) is not draft (status=%s)", latest.Version, latest.Status))
 	}
-	published, err := db.PublishWorkerVersion(ctx, ttx.Tx, tenantID, req.Msg.WorkerId, latest.Version)
+	// Publish the latest draft version, then make it current — one shared
+	// sequence with every other publishing path (see publishVersionInTx).
+	published, updated, err := publishVersionInTx(ctx, ttx.Tx, tenantID, req.Msg.WorkerId, latest.Version)
 	if err != nil {
 		return nil, mapDBError(err)
-	}
-	updated, err := db.UpdateWorkerCurrentVersion(ctx, ttx.Tx, tenantID, req.Msg.WorkerId, current.Version, latest.Version)
-	if err != nil {
-		return nil, mapDBError(err)
-	}
-	if err := enqueueWorkerEvent(ctx, ttx.Tx, "worker.published", updated, published); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	if err := recordAudit(ctx, ttx.Tx, tenantID, "worker.published", "worker", updated.ID,
 		audit.SnapshotStatus(current.Status), audit.Snapshot(workerVersionAuditSnapshot(published))); err != nil {
@@ -321,15 +316,23 @@ func (s *Service) UpdateWorker(ctx context.Context, req *connect.Request[apiv1.U
 		}
 		fields.Purpose = &purpose
 	}
-	// The role binding is the only header field editable on a published
-	// worker: it lives on the header (not the version) and is what gates
-	// plane access. name/description/purpose stay draft-only.
+	// Header text is writable on any status except RETIRED, and it may ride in
+	// the SAME request as the role binding. It was draft-only until now, which
+	// — because workers.status never returns to draft — made a worker's name,
+	// purpose and description permanent at first publish (104 workers on the dev
+	// tenant). See db.UpdateWorker for the full reasoning.
+	//
+	// This check exists so a retired worker gets a CLEAR error. Without it the
+	// request would reach the DB gate, match no row, and surface as
+	// "worker not found" — telling the operator the worker does not exist.
+	if current.Status == domain.WorkerRetired && (msg.Name != "" || msg.Description != "" || msg.Purpose != "") {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			errors.New("a retired worker's name, purpose and description cannot be changed"))
+	}
+	// The role binding gates plane access; it is editable on every status, so it
+	// is validated on its own rather than being nested behind a status check.
 	if msg.RoleRef != nil {
 		roleRef := msg.GetRoleRef()
-		if current.Status != domain.WorkerDraft && (msg.Name != "" || msg.Description != "" || msg.Purpose != "") {
-			return nil, connect.NewError(connect.CodeInvalidArgument,
-				errors.New("only the role binding can be changed on a published worker"))
-		}
 		if roleRef != "" {
 			if _, err := db.GetRole(ctx, ttx.Tx, tenantID, roleRef); err != nil {
 				if errors.Is(err, db.ErrNotFound) {
@@ -813,6 +816,12 @@ func (s *Service) ListWorkers(ctx context.Context, req *connect.Request[apiv1.Li
 		SortBy:    req.Msg.SortBy,
 		SortOrder: req.Msg.SortOrder,
 	}
+	// THE PAGE SIZE IS RESOLVED HERE so the token below can tell a FULL page from a last one. The DB
+	// layer applies the same default, so both agree on what "full" means.
+	pageSize := f.PageSize
+	if pageSize <= 0 || pageSize > db.MaxListPageSize {
+		pageSize = db.DefaultListPageSize
+	}
 	if req.Msg.Status != nil {
 		f.Status = workerStatusFromProto(*req.Msg.Status)
 	}
@@ -837,7 +846,12 @@ func (s *Service) ListWorkers(ctx context.Context, req *connect.Request[apiv1.Li
 		// Keep deprecated workers populated for wire-compat during rollout.
 		resp.Workers = append(resp.Workers, item.Worker)
 	}
-	if len(rows) > 0 {
+	// A TOKEN ONLY WHEN THE PAGE WAS FULL — i.e. when there might be more. This used to be "whenever any
+	// row came back", which handed the client a token on the LAST page too: every list load paid an extra
+	// round trip to be told there was nothing left, and any client that trusted the token without
+	// checking emptiness would walk for ever. It was not the cause of the duplicated rows (a mismatched
+	// cursor was), but it is the same mistake in miniature: a signal that does not mean what it says.
+	if len(rows) == pageSize {
 		resp.NextPageToken = rows[len(rows)-1].ID
 	}
 	// Enrich with worker categories (each response only carries its own target_type set).
@@ -919,14 +933,28 @@ func (s *Service) UpdateWorkerVersion(ctx context.Context, req *connect.Request[
 	}
 	defer ttx.Rollback(ctx)
 
-	// Fetch the existing version to confirm it exists and is draft.
+	// Fetch the existing version to confirm it exists and is editable.
 	current, err := db.GetWorkerVersionByID(ctx, ttx.Tx, tenantID, msg.WorkerId, msg.VersionId)
 	if err != nil {
 		return nil, mapDBError(err)
 	}
+	// A draft is edited in place. republish EXTENDS the editable set to a
+	// PUBLISHED version, which is what makes "edit this worker and save"
+	// one operation instead of the manual revert → save → publish chain.
+	// The revert happens inside THIS transaction, so the intermediate draft
+	// is never observable by another connection and any failure after it
+	// rolls back to published — a cancelled or failed edit cannot strand the
+	// worker in draft. A deprecated version is not revertible and stays
+	// rejected, with the original message so the draft-only contract is
+	// unchanged for callers that did not ask for republish.
 	if current.Status != domain.WorkerVersionDraft {
-		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			fmt.Errorf("version %s status is %q, must be 'draft' to update", msg.VersionId, current.Status))
+		if !msg.Republish || current.Status != domain.WorkerVersionPublished {
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				fmt.Errorf("version %s status is %q, must be 'draft' to update", msg.VersionId, current.Status))
+		}
+		if err := db.RevertWorkerVersionToDraft(ctx, ttx.Tx, tenantID, msg.VersionId); err != nil {
+			return nil, mapDBError(err)
+		}
 	}
 
 	// Build merged row: apply only non-nil proto fields over current.
@@ -1033,16 +1061,30 @@ func (s *Service) UpdateWorkerVersion(ctx context.Context, req *connect.Request[
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	if err := recordAudit(ctx, ttx.Tx, tenantID, "worker.version_updated", "worker", msg.WorkerId,
+	// Audit the action that actually happened: the republish path IS a
+	// publish, and the trail must not describe it as a plain draft edit.
+	action := "worker.version_updated"
+	if msg.Republish {
+		action = "worker.version_republished"
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, action, "worker", msg.WorkerId,
 		audit.Snapshot(workerVersionAuditSnapshot(current)), audit.Snapshot(workerVersionAuditSnapshot(updated))); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit worker.version_updated: %w", err))
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit %s: %w", action, err))
+	}
+	final := updated
+	if msg.Republish {
+		published, _, err := publishVersionInTx(ctx, ttx.Tx, tenantID, msg.WorkerId, updated.Version)
+		if err != nil {
+			return nil, mapDBError(err)
+		}
+		final = published
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
-	s.log.Info("worker version updated", "worker_id", msg.WorkerId, "version_id", msg.VersionId, "version", updated.Version)
+	s.log.Info("worker version updated", "worker_id", msg.WorkerId, "version_id", msg.VersionId, "version", updated.Version, "republish", msg.Republish)
 	return connect.NewResponse(&apiv1.UpdateWorkerVersionResponse{
-		Version: versionRowToProto(updated),
+		Version: versionRowToProto(final),
 	}), nil
 }
 
@@ -1194,13 +1236,66 @@ func (s *Service) CreateWorkerVersion(ctx context.Context, req *connect.Request[
 		nil, audit.Snapshot(workerVersionAuditSnapshot(created))); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit worker.version_created: %w", err))
 	}
+	// publish makes the new version live in the SAME transaction. Without it
+	// a caller that wanted a live version had to follow with
+	// PublishWorkerVersion, and a failure between the two calls left an
+	// unpublished draft behind — the exact state a plain "new version" save
+	// must not create. The version number advances as usual and
+	// current_version follows the newly published version.
+	final := created
+	if msg.Publish {
+		published, _, err := publishVersionInTx(ctx, ttx.Tx, tenantID, msg.WorkerId, created.Version)
+		if err != nil {
+			return nil, mapDBError(err)
+		}
+		if err := recordAudit(ctx, ttx.Tx, tenantID, "worker.published", "worker", msg.WorkerId,
+			audit.SnapshotStatus(domain.WorkerVersionDraft), audit.Snapshot(workerVersionAuditSnapshot(published))); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit worker.published: %w", err))
+		}
+		final = published
+	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
-	s.log.Info("worker version created", "worker_id", msg.WorkerId, "version", nextVer)
+	s.log.Info("worker version created", "worker_id", msg.WorkerId, "version", nextVer, "publish", msg.Publish)
 	return connect.NewResponse(&apiv1.CreateWorkerVersionResponse{
-		Version: versionRowToProto(created),
+		Version: versionRowToProto(final),
 	}), nil
+}
+
+// publishVersionInTx publishes a draft version and makes it the worker's
+// current version, inside the CALLER's transaction: the same three writes
+// PublishWorkerVersion performs (publish the row, advance current_version, emit
+// the worker.published event), so every path that publishes emits one identical
+// event and advances current_version the same way. Sharing it is what keeps the
+// republish/publish saves from becoming a fourth hand-rolled copy of this
+// sequence — the copies are how the paths drift apart.
+//
+// It returns both rows because the callers need different halves: the published
+// VERSION for the response and audit snapshot, the updated WORKER for the
+// worker.published payload and the header projection. Reading the header first
+// is required either way — UpdateWorkerCurrentVersion is optimistic on its
+// `version` CAS field, exactly as PublishWorkerVersion does it.
+//
+// Errors are returned raw so each caller maps them in its own vocabulary
+// (mapDBError for the RPC paths).
+func publishVersionInTx(ctx context.Context, tx pgx.Tx, tenantID, workerID string, version int) (db.WorkerVersionRow, db.WorkerRow, error) {
+	worker, err := db.GetWorker(ctx, tx, tenantID, workerID)
+	if err != nil {
+		return db.WorkerVersionRow{}, db.WorkerRow{}, err
+	}
+	published, err := db.PublishWorkerVersion(ctx, tx, tenantID, workerID, version)
+	if err != nil {
+		return db.WorkerVersionRow{}, db.WorkerRow{}, err
+	}
+	updatedWorker, err := db.UpdateWorkerCurrentVersion(ctx, tx, tenantID, workerID, worker.Version, version)
+	if err != nil {
+		return db.WorkerVersionRow{}, db.WorkerRow{}, err
+	}
+	if err := enqueueWorkerEvent(ctx, tx, "worker.published", updatedWorker, published); err != nil {
+		return db.WorkerVersionRow{}, db.WorkerRow{}, err
+	}
+	return published, updatedWorker, nil
 }
 
 // AcquireEditLock acquires an exclusive edit lock on a Worker for the

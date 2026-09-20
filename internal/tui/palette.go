@@ -64,6 +64,11 @@ func (m *App) closePalette() {
 
 // refreshPalette recomputes the filtered candidate list from the live
 // slash registry (primary names only, no-dup).
+//
+// ALIASES MATCH THE FILTER but do not get their own ROW: an alias is the same command, so a
+// second row would be a phantom entry with identical behaviour — but a typed alias must FIND
+// it, or the palette denies a command that runs perfectly well. The row then DISPLAYS the
+// alias (c.AliasLabel), which is how the spelling becomes discoverable at all.
 func (m *App) refreshPalette() {
 	var out []*SlashCommand
 	seen := map[string]bool{}
@@ -75,7 +80,7 @@ func (m *App) refreshPalette() {
 		if seen[c.Name] {
 			continue
 		}
-		if strings.Contains(c.Name, m.palette.query) {
+		if c.MatchesQuery(m.palette.query) {
 			out = append(out, c)
 		}
 		seen[c.Name] = true
@@ -244,8 +249,13 @@ func (m *App) paletteView() string {
 			if usage == "" {
 				usage = c.Name
 			}
-			line := "  " + usage
-			pad := 26 - len(usage)
+			// The row carries its ALIASES, in the same shared form /help uses, so the two
+			// surfaces cannot disagree about what is a valid command.
+			alias := c.AliasLabel()
+			line := "  " + usage + alias
+			// Pad the DESCRIPTION to a fixed column, counting the alias too — otherwise a
+			// row with an alias pushes its description out of line with every other row.
+			pad := 26 - len(usage) - len(alias)
 			if pad < 1 {
 				pad = 1
 			}
@@ -312,10 +322,38 @@ var _ = lipgloss.NewStyle
 // showing (never quits the process — first-run stays in main.go).
 func (m *App) ConnectOverlayOpen() bool { return m.palette.connectOpen }
 
+// rebuildScreens drops every screen and reconstructs the ACTIVE one through its
+// factory. Used after /connect replaces the client set: the screens captured the
+// old clients, so they must be rebuilt.
+//
+// The previous version deleted the active screen and relied on refreshLayout to
+// reconstruct it — but refreshLayout reads m.screens[active], which was now nil,
+// so nothing was rebuilt and the tab rendered BLANK: the operator's "it
+// connected and then all items were blank as if I was no longer connected". The
+// `loaded` flag is cleared too, otherwise the rebuilt screen would never run its
+// first load (ensureLoaded guards on it).
+func (m *App) rebuildScreens() {
+	for id, s := range m.screens {
+		if s != nil {
+			s.Close()
+		}
+		delete(m.screens, id)
+	}
+	m.loaded = map[TabID]bool{}
+	if s := m.newScreen(m.active); s != nil {
+		m.screens[m.active] = s
+	}
+	if m.width > 0 {
+		m.refreshLayout()
+	}
+	m.ensureLoaded(m.active)
+	m.EnsureSubscriptions(m.active)
+}
+
 // openConnectOverlay opens the in-place re-auth overlay hosting the FULL
-// connection form (the first-run screen: URL + auth-method toggle +
-// credential field). Pre-filled with the active profile. Never exits the
-// process or prints "exit and re-run orch" (operator finding #6).
+// connection form (the first-run screen: URL + auth-method toggle + credential
+// field). Pre-filled with the active profile. Never exits the process or prints
+// "exit and re-run orch" (operator finding #6).
 func (m *App) openConnectOverlay() {
 	if m.palette.connectOpen {
 		return
@@ -475,15 +513,9 @@ func (m *App) applyConnectResult() tea.Cmd {
 	m.diffPane = diffs.NewModel(cl, m.reg)
 	m.chat = chat.NewController(cl)
 	m.chat.Bind(&appEventStore{m: m}, m.chatCmds)
-	// Screens hold the old client set: drop the active screen so it
-	// reconstructs lazily through its factory (fresh client set).
-	if s, ok := m.screens[m.active]; ok && s != nil {
-		s.Close()
-	}
-	delete(m.screens, m.active)
-	if m.width > 0 {
-		m.refreshLayout()
-	}
+	// Screens hold the old client set, so every one of them is DROPPED and the
+	// ACTIVE one rebuilt through the factory (which reads m.clients).
+	m.rebuildScreens()
 	m.reconnectRequested = false
 	m.closeConnectOverlay()
 	m.reconnectStreams()

@@ -58,11 +58,25 @@ type Registry struct {
 	subs   []subHandle
 	chans  map[string]chan string
 	events map[string]chan struct{}
+	// latest is the MOST RECENT status per subscription name. It exists so a
+	// status can never be lost: the channels below are wake-ups and drop on
+	// overflow, and a delivery can be routed to a different screen than the one
+	// that armed it — either way the previous status could freeze forever (the
+	// footer stuck on "connecting"). Readers take the VALUE from here.
+	latest map[string]string
+	// latestErr is the most recent dial/stream ERROR per subscription name, so
+	// the shell can say WHY a stream is not up (see LatestError).
+	latestErr map[string]string
 }
 
 // NewRegistry builds an empty registry.
 func NewRegistry() *Registry {
-	return &Registry{chans: map[string]chan string{}, events: map[string]chan struct{}{}}
+	return &Registry{
+		chans:     map[string]chan string{},
+		events:    map[string]chan struct{}{},
+		latest:    map[string]string{},
+		latestErr: map[string]string{},
+	}
 }
 
 // subHandle is the minimum every registry member implements.
@@ -125,6 +139,7 @@ func (r *Registry) StatusChan(name string) <-chan string {
 func (r *Registry) notify(name string) func(stream.Status) {
 	return func(st stream.Status) {
 		r.mu.Lock()
+		r.latest[name] = string(st)
 		ch := r.chans[name]
 		r.mu.Unlock()
 		if ch == nil {
@@ -134,6 +149,98 @@ func (r *Registry) notify(name string) func(stream.Status) {
 		case ch <- string(st):
 		default:
 		}
+	}
+}
+
+// LatestError is the most recent error reported for a subscription name (""
+// when it has none). The shell surfaces it so a failing stream explains itself
+// instead of showing a bare "connecting…".
+func (r *Registry) LatestError(name string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.latestErr[name]
+}
+
+// ReportStatusForTest records a status for a name as if its subscription had reported it, so a test can
+// put the registry into a state only a live plane could otherwise produce (a dead connection, a
+// reconnecting stream). It goes through the same store `notify` writes, so the reading under test is the
+// real one.
+func (r *Registry) ReportStatusForTest(name, status string) {
+	r.mu.Lock()
+	r.latest[name] = status
+	r.mu.Unlock()
+}
+
+// notifyErr records a stream's last error (see Registry.latestErr).
+func (r *Registry) notifyErr(name string) func(error) {
+	return func(err error) {
+		if err == nil {
+			return
+		}
+		r.mu.Lock()
+		r.latestErr[name] = err.Error()
+		r.mu.Unlock()
+	}
+}
+
+// LatestStatus is the most recent status reported for a subscription name
+// ("" when the name has never reported). This is the authoritative value — the
+// footer reads it rather than trusting the last message a screen happened to
+// receive, which could be stale if a delivery was routed elsewhere.
+func (r *Registry) LatestStatus(name string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.latest[name]
+}
+
+// WorstStatus returns the most SEVERE status any live subscription has reported, and the name of the one
+// that reported it. ("", "") when nothing has reported yet.
+//
+// WHY THE FOOTER NEEDS THIS RATHER THAN THE ACTIVE SCREEN'S OWN STREAMS. The shell used to aggregate only
+// over the statuses the ACTIVE screen declares, and a screen that declares none — the Ask tab, whose
+// conversation list is the shell's rail and which subscribes to no stream of its own — therefore reported
+// "open", i.e. CONNECTED, for the whole session. So an operator sitting on Ask while the plane died saw a
+// green footer: the operator's "if a connection dies, the GUI tells you, but the TUI conversation does
+// not."
+//
+// The connection is not a property of the tab the operator happens to be looking at. Every subscription in
+// the registry is talking to the SAME plane over the SAME credentials, so the worst status among them is
+// the honest answer to "am I connected?" — and it is answerable from any tab.
+func (r *Registry) WorstStatus() (stream.Status, string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	worst := stream.Status("")
+	worstName := ""
+	for name, st := range r.latest {
+		s := stream.Status(st)
+		if statusSeverity(s) > statusSeverity(worst) {
+			worst, worstName = s, name
+		}
+	}
+	return worst, worstName
+}
+
+// statusSeverity ranks stream statuses by how much they should worry the operator. It mirrors the shell's
+// own ranking (statusRank in the tui package) and lives here because the registry is what now decides the
+// worst; keeping ONE ordering stops the two from disagreeing about "worse".
+//
+// An empty status ranks lowest, so a subscription that has never reported cannot masquerade as healthy.
+func statusSeverity(s stream.Status) int {
+	switch s {
+	case stream.StatusIdle:
+		return 0
+	case stream.StatusOpen:
+		return 1
+	case stream.StatusConnecting:
+		return 2
+	case stream.StatusClosed:
+		return 3
+	case stream.StatusError:
+		return 4
+	case stream.StatusReconnecting:
+		return 5
+	default:
+		return 0
 	}
 }
 
@@ -166,12 +273,26 @@ func (r *Registry) EventPokeChan(name string) <-chan struct{} {
 	return ch
 }
 
+// guard reports a missing API client for a stream. A nil service client would
+// otherwise PANIC inside the subscription goroutine (dialing dereferences it),
+// which takes the whole TUI down — a misconfigured or partially-built client set
+// must degrade to a reported stream error and a reconnect, never a crash.
+func guard(ok bool, what string) error {
+	if !ok {
+		return fmt.Errorf("tui: no API client for %s", what)
+	}
+	return nil
+}
+
 // ProjectEvents subscribes to StreamProjectEvents for the tenant.
 func (r *Registry) ProjectEvents(cl *client.Clients, tenantID string) *stream.Sub[*apiv1.StreamProjectEventsResponse] {
 	name := "project-events"
 	cfg := stream.Config[*apiv1.StreamProjectEventsResponse]{
 		Name: name,
 		Open: func(ctx context.Context, fromSequence int64) (func() (*apiv1.StreamProjectEventsResponse, error), error) {
+			if err := guard(cl != nil && cl.Projects != nil, "project events"); err != nil {
+				return nil, err
+			}
 			req := &apiv1.StreamProjectEventsRequest{TenantId: tenantID}
 			if fromSequence > 0 {
 				req.FromSequence = &fromSequence
@@ -186,8 +307,8 @@ func (r *Registry) ProjectEvents(cl *client.Clients, tenantID string) *stream.Su
 		GetSequence: func(m *apiv1.StreamProjectEventsResponse) int64 {
 			return m.GetSequence()
 		},
-		OnStatus: r.notify(name),
-		OnEvent:  func(*apiv1.StreamProjectEventsResponse) {},
+		OnStatus: r.notify(name), OnError: r.notifyErr(name),
+		OnEvent: func(*apiv1.StreamProjectEventsResponse) {},
 	}
 	sub := stream.New(cfg)
 	r.add(sub)
@@ -200,6 +321,9 @@ func (r *Registry) ExecutionEvents(cl *client.Clients, tenantID string) *stream.
 	cfg := stream.Config[*apiv1.StreamExecutionEventsResponse]{
 		Name: name,
 		Open: func(ctx context.Context, fromSequence int64) (func() (*apiv1.StreamExecutionEventsResponse, error), error) {
+			if err := guard(cl != nil && cl.Executions != nil, "execution events"); err != nil {
+				return nil, err
+			}
 			req := &apiv1.StreamExecutionEventsRequest{TenantId: tenantID}
 			if fromSequence > 0 {
 				req.FromSequence = &fromSequence
@@ -212,7 +336,7 @@ func (r *Registry) ExecutionEvents(cl *client.Clients, tenantID string) *stream.
 		},
 		GetEventID:  func(m *apiv1.StreamExecutionEventsResponse) string { return m.GetEvent().GetEventId() },
 		GetSequence: func(m *apiv1.StreamExecutionEventsResponse) int64 { return m.GetSequence() },
-		OnStatus:    r.notify(name),
+		OnStatus:    r.notify(name), OnError: r.notifyErr(name),
 		OnEvent: func(*apiv1.StreamExecutionEventsResponse) {
 			r.pokeEvent(name)(nil)
 		},
@@ -228,6 +352,9 @@ func (r *Registry) WorkflowEvents(cl *client.Clients, tenantID string) *stream.S
 	cfg := stream.Config[*apiv1.StreamWorkflowEventsResponse]{
 		Name: name,
 		Open: func(ctx context.Context, fromSequence int64) (func() (*apiv1.StreamWorkflowEventsResponse, error), error) {
+			if err := guard(cl != nil && cl.Workflows != nil, "workflow events"); err != nil {
+				return nil, err
+			}
 			req := &apiv1.StreamWorkflowEventsRequest{TenantId: tenantID}
 			if fromSequence > 0 {
 				req.FromSequence = &fromSequence
@@ -240,8 +367,8 @@ func (r *Registry) WorkflowEvents(cl *client.Clients, tenantID string) *stream.S
 		},
 		GetEventID:  func(m *apiv1.StreamWorkflowEventsResponse) string { return m.GetEvent().GetEventId() },
 		GetSequence: func(m *apiv1.StreamWorkflowEventsResponse) int64 { return m.GetSequence() },
-		OnStatus:    r.notify(name),
-		OnEvent:     func(*apiv1.StreamWorkflowEventsResponse) {},
+		OnStatus:    r.notify(name), OnError: r.notifyErr(name),
+		OnEvent: func(*apiv1.StreamWorkflowEventsResponse) {},
 	}
 	sub := stream.New(cfg)
 	r.add(sub)
@@ -254,6 +381,9 @@ func (r *Registry) RecoveryEvents(cl *client.Clients, tenantID string) *stream.S
 	cfg := stream.Config[*apiv1.StreamRecoveryEventsResponse]{
 		Name: name,
 		Open: func(ctx context.Context, fromSequence int64) (func() (*apiv1.StreamRecoveryEventsResponse, error), error) {
+			if err := guard(cl != nil && cl.Recovery != nil, "recovery events"); err != nil {
+				return nil, err
+			}
 			req := &apiv1.StreamRecoveryEventsRequest{TenantId: tenantID}
 			if fromSequence > 0 {
 				req.FromSequence = &fromSequence
@@ -266,8 +396,8 @@ func (r *Registry) RecoveryEvents(cl *client.Clients, tenantID string) *stream.S
 		},
 		GetEventID:  func(m *apiv1.StreamRecoveryEventsResponse) string { return m.GetEvent().GetEventId() },
 		GetSequence: func(m *apiv1.StreamRecoveryEventsResponse) int64 { return m.GetSequence() },
-		OnStatus:    r.notify(name),
-		OnEvent:     func(*apiv1.StreamRecoveryEventsResponse) {},
+		OnStatus:    r.notify(name), OnError: r.notifyErr(name),
+		OnEvent: func(*apiv1.StreamRecoveryEventsResponse) {},
 	}
 	sub := stream.New(cfg)
 	r.add(sub)
@@ -282,6 +412,9 @@ func (r *Registry) Telemetry(cl *client.Clients, tenantID string) *stream.Sub[*a
 	cfg := stream.Config[*apiv1.StreamTelemetryResponse]{
 		Name: name,
 		Open: func(ctx context.Context, fromSequence int64) (func() (*apiv1.StreamTelemetryResponse, error), error) {
+			if err := guard(cl != nil && cl.Telemetry != nil, "telemetry"); err != nil {
+				return nil, err
+			}
 			req := &apiv1.StreamTelemetryRequest{TenantId: tenantID}
 			if fromSequence > 0 {
 				req.FromSequence = &fromSequence
@@ -296,8 +429,8 @@ func (r *Registry) Telemetry(cl *client.Clients, tenantID string) *stream.Sub[*a
 			return fmt.Sprintf("telemetry:%d", m.Sequence)
 		},
 		GetSequence: func(m *apiv1.StreamTelemetryResponse) int64 { return m.GetSequence() },
-		OnStatus:    r.notify(name),
-		OnEvent:     func(*apiv1.StreamTelemetryResponse) { r.pokeEvent(name)(nil) },
+		OnStatus:    r.notify(name), OnError: r.notifyErr(name),
+		OnEvent: func(*apiv1.StreamTelemetryResponse) { r.pokeEvent(name)(nil) },
 	}
 	sub := stream.New(cfg)
 	r.add(sub)
@@ -317,6 +450,9 @@ func (r *Registry) FileEdits(cl *client.Clients, tenantID, ownerKind, ownerID st
 	cfg := stream.Config[*apiv1.StreamFileEditsResponse]{
 		Name: name,
 		Open: func(ctx context.Context, fromSequence int64) (func() (*apiv1.StreamFileEditsResponse, error), error) {
+			if err := guard(cl != nil && cl.FileEdits != nil, "file edits"); err != nil {
+				return nil, err
+			}
 			req := &apiv1.StreamFileEditsRequest{TenantId: tenantID, OwnerKind: ownerKind, OwnerId: ownerID}
 			if fromSequence > 0 {
 				req.FromSequence = &fromSequence
@@ -329,8 +465,8 @@ func (r *Registry) FileEdits(cl *client.Clients, tenantID, ownerKind, ownerID st
 		},
 		GetEventID:  func(m *apiv1.StreamFileEditsResponse) string { return m.GetEventId() },
 		GetSequence: func(m *apiv1.StreamFileEditsResponse) int64 { return m.GetSequence() },
-		OnStatus:    r.notify(name),
-		OnEvent:     func(*apiv1.StreamFileEditsResponse) { r.pokeEvent(name)(nil) },
+		OnStatus:    r.notify(name), OnError: r.notifyErr(name),
+		OnEvent: func(*apiv1.StreamFileEditsResponse) { r.pokeEvent(name)(nil) },
 	}
 	sub := stream.New(cfg)
 	r.add(sub)
@@ -347,6 +483,13 @@ func (r *Registry) WaitStatus(name string) tea.Cmd {
 		if !ok {
 			return nil
 		}
-		return StatusMsg{Name: name, Status: stream.Status(v)}
+		// Read the CURRENT value rather than the woken-up one: the wake-up queue
+		// drops on overflow, so an older status could arrive after a newer one was
+		// reported. The registry's latest is the truth.
+		st := stream.Status(r.LatestStatus(name))
+		if st == "" {
+			st = stream.Status(v)
+		}
+		return StatusMsg{Name: name, Status: st}
 	}
 }

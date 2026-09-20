@@ -91,6 +91,15 @@ type WorkItemRow struct {
 	// archived. RestoreWorkItem returns the item to this status (not
 	// pending). NULL = never archived.
 	ArchivedFromStatus *string
+	// Ephemeral marks a machine-managed transient item (Ask Orchicon
+	// Quick Work): created to carry one job, hidden from every human
+	// work-item view, and HARD-DELETED when the job ends. It is the second
+	// visibility axis and is deliberately NOT a peer of archived_at —
+	// archived_at partitions a HUMAN view into active/archived, while
+	// ephemeral removes the item from human view entirely, including the
+	// archive view. See ListWorkItemsFilter.EphemeralScope for the gate and
+	// ephemeralPredicate for why the default is exclude-everywhere.
+	Ephemeral bool
 	// SpawnedByWorkItemID is the recurring item id that produced this
 	// work item (empty = not an automation spawn). Server-stamped from
 	// the recurring fire's run_context; never client-supplied (feature 4.1).
@@ -98,7 +107,7 @@ type WorkItemRow struct {
 	// SpawnedByRunID is the workflow run id of the recurring fire's run
 	// that produced this work item (empty = not an automation spawn).
 	SpawnedByRunID *string
-	SecretIDs   []byte // jsonb array of secret IDs to inject at dispatch (max 10)
+	SecretIDs      []byte // jsonb array of secret IDs to inject at dispatch (max 10)
 	// SequenceAttempts is the start-failure count for this item as a leaf child (P1 backoff+cap).
 	SequenceAttempts int
 	// SequenceLastAttemptAt is the last start attempt wall time (for backoff gating).
@@ -150,8 +159,9 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 		 workflow_run_id, workflow_step_id,
 		 priority, budgets, context_window, results, prompt_context,
 		 scheduled_start_at, auto_start_workflow, runtime_image, context_files,
-		 recurring_schedule, next_run_at, recurring_enabled, spawned_by_work_item_id, spawned_by_run_id, secret_ids)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
+		 recurring_schedule, next_run_at, recurring_enabled, spawned_by_work_item_id, spawned_by_run_id, secret_ids,
+		 ephemeral)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
 		RETURNING ` + WorkItemSelectCols
 	row := w
 	err := tx.QueryRow(ctx, q,
@@ -162,6 +172,7 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 		w.ScheduledStartAt, w.AutoStartWorkflow, w.RuntimeImage, w.ContextFiles,
 		w.RecurringSchedule, w.NextRunAt, w.RecurringEnabled,
 		w.SpawnedByWorkItemID, w.SpawnedByRunID, w.SecretIDs,
+		w.Ephemeral,
 	).Scan(WorkItemScanPtrs(&row)...)
 	if err != nil {
 		return WorkItemRow{}, fmt.Errorf("db: create work item: %w", err)
@@ -179,7 +190,7 @@ const WorkItemSelectCols = `id, tenant_id, project_id, parent_id, kind, title, d
 	priority, budgets, context_window, sort_order, results, prompt_context,
 	scheduled_start_at, auto_start_workflow, runtime_image, context_files,
 	recurring_schedule, next_run_at, recurring_enabled,
-	archived_at, archived_from_status,
+	archived_at, archived_from_status, ephemeral,
 	sequence_attempts, sequence_last_attempt_at, sequence_consecutive_scan_errors, sequence_last_progress_at,
 	spawned_by_work_item_id, spawned_by_run_id, secret_ids,
 	version, created_at, updated_at`
@@ -196,7 +207,7 @@ func WorkItemScanPtrs(w *WorkItemRow) []any {
 		&w.PromptContext,
 		&w.ScheduledStartAt, &w.AutoStartWorkflow, &w.RuntimeImage, &w.ContextFiles,
 		&w.RecurringSchedule, &w.NextRunAt, &w.RecurringEnabled,
-		&w.ArchivedAt, &w.ArchivedFromStatus,
+		&w.ArchivedAt, &w.ArchivedFromStatus, &w.Ephemeral,
 		&w.SequenceAttempts, &w.SequenceLastAttemptAt, &w.SequenceConsecutiveScanErrors, &w.SequenceLastProgressAt,
 		&w.SpawnedByWorkItemID, &w.SpawnedByRunID, &w.SecretIDs,
 		&w.Version, &w.CreatedAt, &w.UpdatedAt,
@@ -280,6 +291,16 @@ type ListWorkItemsFilter struct {
 	// "exclude" = only non-recurring (recurring_schedule IS NULL),
 	// "only" = only recurring (recurring_schedule IS NOT NULL).
 	RecurringFilter string
+	// EphemeralScope scopes the ephemeral split (Ask Orchicon Quick
+	// Work): ""/"exclude" (the default) = ONLY non-ephemeral items —
+	// every human-facing view (board/tree/list/sequence/workflows/
+	// dependency graph/counts) rides on this query and must not show
+	// machine-managed transients; "only" = only ephemeral items;
+	// "include" = both, for the Quick Work agent managing the items it
+	// created.
+	//
+	// The zero value is the SAFE value on purpose — see ephemeralPredicate.
+	EphemeralScope string
 }
 
 // ListWorkItems returns a page of work items for a project, ordered by
@@ -300,6 +321,7 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 	} else {
 		q += ` AND archived_at IS NULL`
 	}
+	q += ephemeralPredicate(f.EphemeralScope)
 	switch f.RecurringFilter {
 	case "only":
 		q += ` AND recurring_schedule IS NOT NULL`
@@ -360,20 +382,63 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 	if strings.ToLower(f.SortOrder) == "desc" {
 		orderDir = "DESC"
 	}
-	// Default ordering (no explicit sort_by) follows the sequence chain:
-	// sort_order NULLS LAST, created_at — the tree/board show sibling order
-	// by default. sort_order is never a display-sort option (the filter-bar
-	// dropdown only offers title/priority/created_at), so no UI control
-	// claims to write it. Cursor pagination (AfterID set) keeps the stable
-	// id order — the chain-order default only applies to full-page reads.
-	if f.SortBy == "" && f.AfterID == "" {
-		if orderDir == "ASC" {
-			q += ` ORDER BY sort_order NULLS LAST, created_at ASC, id ASC`
-		} else {
-			q += ` ORDER BY sort_order DESC NULLS LAST, created_at DESC, id DESC`
+	// ORDERING, and the cursor must agree with it.
+	//
+	// The default (no explicit sort_by) follows the SEQUENCE CHAIN — sort_order NULLS LAST, created_at,
+	// id — because the tree and board show sibling order by default, and sort_order is never a
+	// display-sort option (the filter bar offers title/priority/created_at, so no control claims to
+	// write it).
+	//
+	// THE CURSOR USED TO CONTRADICT IT, and that is a data-visibility defect, not a paging nicety.
+	// Page 1 was chain-ordered while every page after it was ordered by ID ALONE against a bare
+	// `id > $n` — two different orders. Measured on the live dev tenant (327 matching items, 200/page),
+	// the two pages OVERLAPPED by 9 rows and MISSED 122: the Work Items list was showing 205 of 327.
+	// The duplicates are what an operator notices; the missing rows are the worse half.
+	//
+	// The fix is the same keyset pattern ListExecutions already uses ("This replaces the old bare
+	// `id > $n` cursor, which contradicted the default created_at DESC ordering and re-returned page 1
+	// on page 2"): the cursor compares against the SAME (ordering key, id) TUPLE the ORDER BY uses, so
+	// page N+1 continues exactly where page N stopped — no overlap, no gap, whatever the direction.
+	//
+	// A caller-supplied sort_by still wins, and its cursor follows it, because the tuple is built from
+	// the effective ordering rather than a hardcoded one.
+	switch {
+	case f.SortBy == "":
+		// Chain order. NULLs last in ASC is what `sort_order NULLS LAST` means, and in DESC the same
+		// expression puts them last too — so the tuple comparison needs the SAME null placement, which
+		// PostgreSQL's row comparison does not give for NULLs. The cursor therefore keys on
+		// (sort_order, created_at, id) only when a sort_order value exists; a NULL-tail cursor is
+		// handled by the coalesced form below.
+		if f.AfterID != "" {
+			cmp := ">"
+			if orderDir == "DESC" {
+				cmp = "<"
+			}
+			q += fmt.Sprintf(` AND (COALESCE(sort_order, 9223372036854775807), created_at, id) %s (
+				SELECT COALESCE(w2.sort_order, 9223372036854775807), w2.created_at, w2.id
+				FROM work_items w2 WHERE w2.tenant_id = $1 AND w2.id = $%d)`, cmp, len(args)+1)
+			args = append(args, f.AfterID)
 		}
-	} else {
-		q += ` ORDER BY ` + orderCol + ` ` + orderDir
+		if orderDir == "DESC" {
+			q += ` ORDER BY sort_order DESC NULLS LAST, created_at DESC, id DESC`
+		} else {
+			q += ` ORDER BY sort_order ASC NULLS LAST, created_at ASC, id ASC`
+		}
+	default:
+		// An explicit display sort. The cursor tuple follows the SAME column, so paging stays exact
+		// under title/priority/created_at too (the old form used the bare id and was wrong whenever the
+		// sort column was not id).
+		if f.AfterID != "" {
+			cmp := ">"
+			if orderDir == "DESC" {
+				cmp = "<"
+			}
+			q += fmt.Sprintf(` AND (%s, id) %s (
+				SELECT w2.%s, w2.id FROM work_items w2
+				WHERE w2.tenant_id = $1 AND w2.id = $%d)`, orderCol, cmp, orderCol, len(args)+1)
+			args = append(args, f.AfterID)
+		}
+		q += ` ORDER BY ` + orderCol + ` ` + orderDir + `, id ` + orderDir
 	}
 	q += ` LIMIT $` + fmt.Sprint(len(args)+1)
 	args = append(args, f.PageSize)
@@ -455,18 +520,26 @@ func ListSequenceActiveParents(ctx context.Context, tx pgx.Tx, tenantID string) 
 // created_at — the ReorderWorkItems read (architecture-notes/
 // sequential-multi-workflow-runs.md §1).
 func ListSiblingsForReorder(ctx context.Context, tx pgx.Tx, tenantID, projectID, parentID string) ([]WorkItemRow, error) {
+	// Ephemeral items are excluded from BOTH branches, and the top-level
+	// branch is why: ReorderWorkItems requires child_ids to be an exact
+	// permutation of this result, so an invisible ephemeral sibling would
+	// make every top-level reorder fail with "not a permutation" and there
+	// would be nothing on screen to explain why. The filter that hides them
+	// from the board and the filter that builds the permutation must agree.
 	var q string
 	var args []any
 	if parentID == "" {
 		q = `SELECT ` + WorkItemSelectCols + `
 		FROM work_items
 		WHERE tenant_id = $1 AND project_id = $2 AND parent_id IS NULL AND archived_at IS NULL
+		  AND NOT ephemeral
 		ORDER BY sort_order NULLS LAST, created_at, id`
 		args = []any{tenantID, projectID}
 	} else {
 		q = `SELECT ` + WorkItemSelectCols + `
 		FROM work_items
 		WHERE tenant_id = $1 AND project_id = $2 AND parent_id = $3 AND archived_at IS NULL
+		  AND NOT ephemeral
 		ORDER BY sort_order NULLS LAST, created_at, id`
 		args = []any{tenantID, projectID, parentID}
 	}
@@ -569,7 +642,7 @@ type UpdateWorkItemFields struct {
 	// update (nil = unchanged).
 	SpawnedByWorkItemID *string
 	SpawnedByRunID      *string
-	SecretIDs         *[]byte
+	SecretIDs           *[]byte
 }
 
 // UpdateWorkItem applies a partial update with optimistic concurrency.

@@ -12,31 +12,30 @@ package work
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 )
 
-// viewMode selects the work-items pane's display grouping.
+// The Work Items views are TREE and ARCHIVE. A Board was removed: a
+// status-grouped Kanban does not read as a list in a single-column terminal
+// pane (every "column" became a header row), so it was a second, worse copy of
+// the same data. Only ReorderWorkItems mutates sequence order.
 type viewMode string
 
 const (
 	viewTree    viewMode = "tree"
-	viewBoard   viewMode = "board"
 	viewArchive viewMode = "archive"
 )
 
-// next cycles tree → board → archive → tree.
+// next cycles tree → archive → tree.
 func (v viewMode) next() viewMode {
-	switch v {
-	case viewTree:
-		return viewBoard
-	case viewBoard:
+	if v == viewTree {
 		return viewArchive
-	default:
-		return viewTree
 	}
+	return viewTree
 }
 
 // kindBadge is the row's kind badge, rendered from the item's real kind
@@ -73,16 +72,62 @@ func workItemMeta(w *apiv1.WorkItem) string {
 	return meta
 }
 
-// rowTitle renders a tree row's cell: indentation from the item's DEPTH in
-// the real parent-child DAG, its kind badge, and its title.
-func rowTitle(w *apiv1.WorkItem, depth int) string {
-	return strings.Repeat("  ", depth) + "[" + kindBadge(w.GetKind()) + "] " + w.GetTitle()
+// rowTitle is a tree row's cell text: its kind badge and its title. The INDENT
+// is deliberately not baked in here — the row now carries its Depth and the
+// list pane draws the indent (and the +/- toggle), so padding the title as
+// well would double it.
+func rowTitle(w *apiv1.WorkItem) string {
+	return "[" + kindBadge(w.GetKind()) + "] " + w.GetTitle()
 }
 
 // treeRows walks the real parent links (WorkItem.parent_id) depth-first from
 // the roots, preserving sibling order (sort_order, then title). Orphans
 // (parent not in the page) are rendered as roots so no item is ever dropped.
-func treeRows(items []*apiv1.WorkItem) []kit2.Item {
+// stepNumber prefixes a row with its RUN position within its sibling sequence,
+// so an execution order is visible in the list itself.
+//
+// Only a sibling GROUP of two or more is numbered, and only when the row is a
+// CHILD (depth > 0): a top-level item is nobody's step, so numbering the roots
+// implied a run order across epics that does not exist — and the operator
+// rightly called that dangerous ("we can't sequentially kick off epics can
+// we?"). The number is always the STORED sequence (the order the reconciler
+// arms), never the display order.
+func stepNumber(seqIndex map[string]int, groupSize, depth int, id string) string {
+	if depth == 0 || groupSize < 2 {
+		return ""
+	}
+	n, ok := seqIndex[id]
+	if !ok {
+		return ""
+	}
+	return strconv.Itoa(n+1) + ". "
+}
+
+// treeRows builds the tree rows from the fetched set.
+//
+// IT IS DUPLICATE-PROOF, which is a property of the data rather than tidiness: the server's list paged
+// with a cursor that disagreed with its own page-1 ordering, so the SAME work item could arrive twice
+// in one response and this function (which appends per byParent slot) rendered it as two rows. The
+// operator reported exactly that — "There are two of them showing up in the TUI but only one in the
+// GUI" — even though the database holds ONE row (verified: project 01KYQXQ95C2BFGDT1AFXFX5875, id
+// 01M0NAYG0PKJ7EB7ZKNAQSMF9T, a single cancelled task).
+//
+// The fetch no longer walks that cursor, so this should never see a repeat. It is guarded anyway,
+// because the failure mode is silent and a duplicated row is indistinguishable from a duplicated
+// work item — the operator had no way to tell whether the DATA was wrong or the view was.
+func treeRows(items []*apiv1.WorkItem, mode sortMode) []kit2.Item {
+	// Dedupe by id, first occurrence wins, keeping the server's order for the survivors.
+	deduped := make([]*apiv1.WorkItem, 0, len(items))
+	seenID := map[string]bool{}
+	for _, w := range items {
+		if w.GetId() == "" || seenID[w.GetId()] {
+			continue
+		}
+		seenID[w.GetId()] = true
+		deduped = append(deduped, w)
+	}
+	items = deduped
+
 	byParent := map[string][]*apiv1.WorkItem{}
 	known := map[string]bool{}
 	for _, w := range items {
@@ -99,9 +144,28 @@ func treeRows(items []*apiv1.WorkItem) []kit2.Item {
 	var walk func(parent string, depth int)
 	walk = func(parent string, depth int) {
 		kids := byParent[parent]
-		sortSiblings(kids)
+		// The STEP NUMBER comes from the stored sequence; the row ORDER comes
+		// from the selected display mode. Computing both here keeps them
+		// independent (and keeps the number honest under any sort).
+		seq := append([]*apiv1.WorkItem{}, kids...)
+		sortSiblings(seq, sortSequence)
+		seqIndex := make(map[string]int, len(seq))
+		for i, w := range seq {
+			seqIndex[w.GetId()] = i
+		}
+		sortSiblings(kids, mode)
 		for _, w := range kids {
-			out = append(out, kit2.Item{ID: w.GetId(), Title: rowTitle(w, depth), Meta: workItemMeta(w)})
+			// The tree metadata is what makes the pane a REAL tree: Depth
+			// indents the row, Parent lets a collapse hide the subtree, and
+			// HasChildren decides whether the row draws a +/- toggle.
+			out = append(out, kit2.Item{
+				ID:          w.GetId(),
+				Title:       stepNumber(seqIndex, len(kids), depth, w.GetId()) + rowTitle(w),
+				Meta:        workItemMeta(w),
+				Depth:       depth,
+				Parent:      parent,
+				HasChildren: len(byParent[w.GetId()]) > 0,
+			})
 			walk(w.GetId(), depth+1)
 		}
 	}
@@ -109,15 +173,77 @@ func treeRows(items []*apiv1.WorkItem) []kit2.Item {
 	return out
 }
 
-// sortSiblings orders siblings by the sequence chain (sort_order, NULLs
-// last), then title — a stable DISPLAY order only.
-func sortSiblings(items []*apiv1.WorkItem) {
+// sortMode is the DISPLAY ordering of sibling work items — the control the
+// operator asked for next to the search box ("What does reorder actually do on
+// work items? I couldn't figure out what it was sorting by. Maybe we should
+// have some actual sort controls at the top near the search box?").
+type sortMode string
+
+const (
+	// sortSequence is the item's real sequence chain (sort_order, NULLs last,
+	// then title). This is the ONLY mode that reflects the stored order, which
+	// is what J/K (ReorderWorkItems) edits.
+	sortSequence sortMode = "sequence"
+	sortTitle    sortMode = "title"
+	sortStatus   sortMode = "status"
+	sortPriority sortMode = "priority"
+)
+
+// next cycles the sort control.
+func (s sortMode) next() sortMode {
+	switch s {
+	case sortSequence:
+		return sortTitle
+	case sortTitle:
+		return sortStatus
+	case sortStatus:
+		return sortPriority
+	default:
+		return sortSequence
+	}
+}
+
+// labels the sort control shows.
+func (s sortMode) label() string {
+	return "sort: " + string(s)
+}
+
+// sortSiblings orders siblings for DISPLAY by the selected mode. Only
+// sortSequence reflects the stored sequence; the others are views over the same
+// rows and never renumber anything (the sequence is only ever mutated by
+// ReorderWorkItems — see the invariant at the top of this file).
+func sortSiblings(items []*apiv1.WorkItem, mode sortMode) {
+	byTitle := func(a, b *apiv1.WorkItem) bool { return a.GetTitle() < b.GetTitle() }
+	switch mode {
+	case sortTitle:
+		sort.SliceStable(items, func(i, j int) bool { return byTitle(items[i], items[j]) })
+		return
+	case sortStatus:
+		sort.SliceStable(items, func(i, j int) bool {
+			a, b := items[i], items[j]
+			if statusPill(a.GetStatus()) != statusPill(b.GetStatus()) {
+				return statusPill(a.GetStatus()) < statusPill(b.GetStatus())
+			}
+			return byTitle(a, b)
+		})
+		return
+	case sortPriority:
+		sort.SliceStable(items, func(i, j int) bool {
+			a, b := items[i], items[j]
+			if a.GetPriority() != b.GetPriority() {
+				return a.GetPriority() > b.GetPriority() // higher priority first
+			}
+			return byTitle(a, b)
+		})
+		return
+	}
+	// sortSequence: the stored chain.
 	sort.SliceStable(items, func(i, j int) bool {
 		a, b := items[i], items[j]
 		an, bn := a.SortOrder == 0, b.SortOrder == 0
 		switch {
 		case an && bn:
-			return a.GetTitle() < b.GetTitle()
+			return byTitle(a, b)
 		case an:
 			return false
 		case bn:
@@ -128,62 +254,11 @@ func sortSiblings(items []*apiv1.WorkItem) {
 	})
 }
 
-// boardOrder is the Kanban column order (the lifecycle, then the
-// system-managed states).
-var boardOrder = []apiv1.WorkItemStatus{
-	apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING,
-	apiv1.WorkItemStatus_WORK_ITEM_STATUS_READY,
-	apiv1.WorkItemStatus_WORK_ITEM_STATUS_SCHEDULED,
-	apiv1.WorkItemStatus_WORK_ITEM_STATUS_ASSIGNED,
-	apiv1.WorkItemStatus_WORK_ITEM_STATUS_RUNNING,
-	apiv1.WorkItemStatus_WORK_ITEM_STATUS_BLOCKED,
-	apiv1.WorkItemStatus_WORK_ITEM_STATUS_SUCCEEDED,
-	apiv1.WorkItemStatus_WORK_ITEM_STATUS_FAILED,
-	apiv1.WorkItemStatus_WORK_ITEM_STATUS_CANCELLED,
-	apiv1.WorkItemStatus_WORK_ITEM_STATUS_SKIPPED,
-}
-
-// boardRows groups the items by their real status field. Every column is
-// emitted with its count (an empty column still shows, so the board is a
-// stable map of the lifecycle rather than a shrinking list).
-func boardRows(items []*apiv1.WorkItem) []kit2.Item {
-	byStatus := map[apiv1.WorkItemStatus][]*apiv1.WorkItem{}
-	for _, w := range items {
-		byStatus[w.GetStatus()] = append(byStatus[w.GetStatus()], w)
-	}
-	seen := map[apiv1.WorkItemStatus]bool{}
-	var out []kit2.Item
-	emit := func(st apiv1.WorkItemStatus) {
-		seen[st] = true
-		group := byStatus[st]
-		sortSiblings(group)
-		out = append(out, kit2.Item{ID: "col:" + statusPill(st), Title: "── " + statusPill(st) + fmt.Sprintf(" (%d)", len(group))})
-		for _, w := range group {
-			out = append(out, kit2.Item{ID: w.GetId(), Title: "[" + kindBadge(w.GetKind()) + "] " + w.GetTitle(), Meta: workItemMeta(w)})
-		}
-	}
-	for _, st := range boardOrder {
-		emit(st)
-	}
-	// Any status outside the canonical column order still gets a column.
-	var extra []apiv1.WorkItemStatus
-	for st := range byStatus {
-		if !seen[st] {
-			extra = append(extra, st)
-		}
-	}
-	sort.Slice(extra, func(i, j int) bool { return extra[i].String() < extra[j].String() })
-	for _, st := range extra {
-		emit(st)
-	}
-	return out
-}
-
 // archiveRows lists archived items with the status they will be restored to
 // (archived_from_status) — the archive view's whole point.
-func archiveRows(items []*apiv1.WorkItem) []kit2.Item {
+func archiveRows(items []*apiv1.WorkItem, mode sortMode) []kit2.Item {
 	sorted := append([]*apiv1.WorkItem{}, items...)
-	sortSiblings(sorted)
+	sortSiblings(sorted, mode)
 	out := make([]kit2.Item, 0, len(sorted))
 	for _, w := range sorted {
 		from := w.GetArchivedFromStatus()
@@ -200,15 +275,11 @@ func archiveRows(items []*apiv1.WorkItem) []kit2.Item {
 }
 
 // rowsFor maps a page of work items into the rows of the selected view.
-func rowsFor(view viewMode, items []*apiv1.WorkItem) []kit2.Item {
-	switch view {
-	case viewBoard:
-		return boardRows(items)
-	case viewArchive:
-		return archiveRows(items)
-	default:
-		return treeRows(items)
+func rowsFor(view viewMode, items []*apiv1.WorkItem, mode sortMode) []kit2.Item {
+	if view == viewArchive {
+		return archiveRows(items, mode)
 	}
+	return treeRows(items, mode)
 }
 
 // descendants returns the ids of every transitive child of id.

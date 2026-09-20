@@ -44,6 +44,23 @@ This file is injected into every Orchicon worker session. Your role, task, accep
 ## Platform changes: keep Ask Orchicon in sync
 
 - If you add/change/remove a first-class entity, RPC, or user-facing capability, update the Ask Orchicon tool registry to match (`internal/askorchicon/tools.go` + the tool files) so the Orchicon MCP/Ask Orchicon surface never drifts from what the platform actually does.
+- If you add or change an Ask Orchicon **mode**, or add an **adapter**, the tool boundary is the platform's rather than the prompt's: the policy table is `internal/askmode`, and an adapter enforces it by implementing `scheduler.ChatToolRestrictor` — without that capability the turn is **prose-only** and the dispatch logs it. Do not restate the policy in a persona or duplicate it per adapter.
+
+## Platform changes: they land in BOTH clients (GUI and TUI)
+
+- Orchicon has **two first-class clients over the same API**: the **GUI** (`frontend/src/**`, React + Connect-ES) and the **TUI** (`internal/tui/**`, `cmd/orch`). Any work in Orchicon must consider BOTH on changes that need made.
+- Concretely: if you add, change, or remove a field, entity, action, setting, or capability, check EITHER client's exposure of it — and then either implement it in both or say plainly in your summary why one is deliberately excluded.
+- A capability that lands in one client and not the other is **incomplete work, not a follow-up**. Parity gaps are the entire reason this rule exists: they are cheap to close while the context is loaded and expensive to reconstruct later.
+- An asymmetry is legitimate only when it is DELIBERATE and written down — in the code (`// ... is deliberately not offered here because ...`) and in your summary. Never leave one silent.
+- Both clients also have a shared surface with Ask Orchicon: a capability the platform can perform should be reachable from Ask's tool registry too (see the previous section).
+
+## Platform-owned contracts (do not make them configurable)
+
+- Some values are produced by the PLATFORM and consumed by the platform — they are not the user's to choose. The clearest case is the **task verdict**: every worker ends its output with `ORCHICON WORKER SUMMARY: success` / `failure`, the scheduler NORMALIZES exactly those two words (`extractSummaryDecision` → `firstWordAsDecision` in `internal/scheduler/reconciler.go`), and that word ROUTES the workflow.
+- **Never add a config field, form input, or setting that repoints a platform-owned contract at a different word.** If a gate routes on a vocabulary the platform generates, changing it on one side silently breaks the other, and NOTHING validates the two against each other — so it fails at run time, on every run, with no warning at edit time.
+- **Never ship a knob nothing honours.** A config key, form field, or DB column with no READER is not a feature; it is a lie in the UI that costs the next person hours. Either implement the behaviour it advertises, or remove the knob.
+  - Precedent: `retry_delay_seconds` was written into the task-step seeds AND into step configs and read by nothing — execution dispatch has no deferral mechanism, so no retry ever waited. It was removed rather than left standing.
+  - Related trap: a knob can be *parsed and stored* yet still dead. Verify a field has a real consumer by finding the code that ACTS on it, not the code that reads it into a struct.
 
 ## Environment baseline (established facts — do not re-verify)
 

@@ -157,20 +157,48 @@ func run(fl *flags) error {
 	}
 
 	if profile == nil || profile.Token == "" {
-		p, err := runConnection(path, profile)
+		p, err := runConnection(path, profile, "")
 		if err != nil {
 			return err
 		}
 		profile = p
 	}
+	// Apply the stored palette preference to the FINAL profile, AFTER the
+	// connection branch.
+	//
+	// It used to be applied BEFORE that branch, to the pre-connection profile —
+	// which the branch then REPLACED with the profile the connection screen built.
+	// Any launch that passed through that screen (first run, or an env-driven
+	// launch with no token in the env: notably the orch-dev/orch-prod launchers,
+	// which preset ORCHICON_URL) therefore lost its saved theme for the entire
+	// session even though the config still held it. Applying it here cannot be
+	// undone by anything downstream.
+	//
+	// The preference lives at the config's TOP LEVEL so it survives without a
+	// saved profile (env-driven sessions and first runs never write one).
+	// ORCHICON_THEME wins over the file, so a palette can be pinned where the
+	// config is not persisted.
+	applyStoredTheme(profile, cfg)
+	// The launch prompt asks about the directory the operator is sitting in, computed
+	// ONCE here: the app takes it as an option, and a later shell in this session is
+	// passed "" so a reconnect never re-asks. os.Getwd can fail (a deleted cwd); that
+	// is not worth failing a launch over — no directory simply means no question.
+	launchDir, _ := os.Getwd()
+	firstShell := true
 	for {
-		reconnect, err := runShell(profile)
+		dir := ""
+		if firstShell {
+			dir = launchDir
+		}
+		firstShell = false
+		reconnect, err := runShell(profile, dir)
 		if !reconnect {
 			return err
 		}
-		// /connect: the shell exited for re-auth — reopen the connection
-		// screen (pre-filled with the current profile), then loop.
-		p, cerr := runConnection(path, profile)
+		// The shell exited for re-auth (/connect) — or the launch-time credential
+		// check rejected a stored session. Reopen the connection screen,
+		// pre-filled with the current profile and SAYING WHY, then loop.
+		p, cerr := runConnection(path, profile, reauthReason)
 		if cerr != nil {
 			return cerr
 		}
@@ -197,8 +225,15 @@ func applyFlags(p *config.Profile, fl *flags) {
 
 // runConnection shows the first-run screen; on success it persists the
 // profile (unless env-driven) and returns it.
-func runConnection(path string, existing *config.Profile) (*config.Profile, error) {
+// reauthReason is the WHY shown on the connection screen when the shell
+// bounces the operator back here: a stored session that cannot authenticate is
+// not a first run, and being asked for credentials with no explanation reads
+// as the tool having lost them for no reason.
+const reauthReason = "the saved session could not be authenticated — sign in again"
+
+func runConnection(path string, existing *config.Profile, reason string) (*config.Profile, error) {
 	m := connection.New(existing, connection.DefaultProbes())
+	m.SetReason(reason)
 	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	final, err := prog.Run()
 	if err != nil {
@@ -224,11 +259,35 @@ func runConnection(path string, existing *config.Profile) (*config.Profile, erro
 	return res.Profile, nil
 }
 
+// applyStoredTheme resolves the TUI palette preference onto the profile that will
+// actually be used: the config's top-level theme, overridden by ORCHICON_THEME.
+// It is applied to the FINAL profile (after any connection-screen rebuild), because
+// the connection screen returns a freshly built profile and anything set before it
+// is discarded.
+func applyStoredTheme(p *config.Profile, cfg *config.Config) {
+	if p == nil {
+		return
+	}
+	if cfg != nil && cfg.Theme != "" {
+		p.Theme = cfg.Theme
+	}
+	if envTheme := strings.TrimSpace(os.Getenv(config.EnvTheme)); envTheme != "" {
+		p.Theme = envTheme
+	}
+}
+
 // runShell probes /versionz, builds the client set, and runs the app
 // shell until the user quits. Returns (reconnect=true, nil) when the
 // shell exited for re-auth (/connect) — main's loop then re-runs the
 // connection screen with the updated profile.
-func runShell(profile *config.Profile) (bool, error) {
+func runShell(profile *config.Profile, launchDir string) (bool, error) {
+	// The launch-time project prompt is armed ONLY on the FIRST shell of a launch.
+	//
+	// A /connect round trip (or a rejected stored session) re-enters this function,
+	// and that is a CONTINUATION of the session rather than a new launch: asking the
+	// same question again there would be exactly the nagging the feature is built to
+	// avoid, and the operator has already given an answer this session.
+	launchOption := tui.WithLaunchDir(launchDir)
 	vr, err := client.Ping(context.Background(), profile.URL, profile.InsecureSkipVerify)
 	if err != nil {
 		// Non-blocking per the plan: stale config still opens the shell;
@@ -249,8 +308,25 @@ func runShell(profile *config.Profile) (bool, error) {
 		// the refresh interceptor is inert.
 		RefreshToken: profile.RefreshToken,
 	})
-	app := tui.NewApp(cl, profile, serverVersion)
-	if identity := probeIdentity(cl); identity != "" {
+	// Launch-time credential check.
+	//
+	// The operator's rule: user+password against the built-in IdP is the NORMAL
+	// way to use orch, so a session that has lost its credentials must ASK for
+	// them at launch rather than entering a shell that 401s silently on every
+	// send. This probe runs THROUGH the client's refresh interceptor (an expired
+	// access token with a working refresh token refreshes and retries here), so
+	// it only fires when the session genuinely cannot authenticate.
+	//
+	// Only Unauthenticated counts as a credential failure. PermissionDenied means
+	// the credential IS valid and the entitlement is not; bouncing that back to
+	// the connection screen would ask for credentials that are already correct
+	// and loop forever.
+	identity, probeErr := probeIdentity(cl)
+	if probeErr != nil && connect.CodeOf(probeErr) == connect.CodeUnauthenticated {
+		return true, nil // main reopens the connection screen, with a reason
+	}
+	app := tui.NewApp(cl, profile, serverVersion, launchOption)
+	if identity != "" {
 		app.SetIdentity(identity)
 	}
 	// Open on Ask (the GUI nav's first entry) instead of an empty shell;
@@ -271,10 +347,18 @@ func runShell(profile *config.Profile) (bool, error) {
 
 // probeIdentity resolves the footer identity display name (best effort:
 // admin-gated RPC — an empty string just hides the identity chip).
-func probeIdentity(cl *client.Clients) string {
+// probeIdentity makes one cheap AUTHENTICATED call and returns the caller's
+// display name. The error is returned rather than swallowed so the caller can
+// tell "this credential is dead" from "this instance is unreachable": the
+// first must ASK for credentials before entering the shell, the second must
+// still open the shell degraded (a stale config is non-blocking by design).
+func probeIdentity(cl *client.Clients) (string, error) {
 	resp, err := cl.Auth.ListIdentities(context.Background(), connect.NewRequest(&apiv1.ListIdentitiesRequest{PageSize: 1}))
-	if err != nil || resp == nil || len(resp.Msg.GetIdentities()) == 0 {
-		return ""
+	if err != nil {
+		return "", err
 	}
-	return resp.Msg.GetIdentities()[0].GetDisplayName()
+	if resp == nil || len(resp.Msg.GetIdentities()) == 0 {
+		return "", nil
+	}
+	return resp.Msg.GetIdentities()[0].GetDisplayName(), nil
 }

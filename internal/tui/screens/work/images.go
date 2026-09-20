@@ -44,6 +44,7 @@ func (m *Model) prepEditImage() tea.Cmd {
 	if !ok {
 		return nil
 	}
+	m.formLoading = true
 	id := it.ID
 	cl := m.cl
 	return func() tea.Msg {
@@ -67,7 +68,7 @@ func (m *Model) newImageCreateForm() *kit2.Form {
 		kit2.FieldSpec{Name: "apt_packages", Label: "Apt packages", Kind: kit2.KJSON, Placeholder: `["libgl1","git-lfs"]`, Validate: validateJSON},
 		kit2.FieldSpec{Name: "toolchains", Label: "Toolchains", Kind: kit2.KJSON, Placeholder: `["mise install go@1.23"]`, Validate: validateJSON},
 		kit2.FieldSpec{Name: "env", Label: "Env", Kind: kit2.KJSON, Placeholder: `{"GOFLAGS":"-mod=mod"}`, Validate: validateJSON},
-		kit2.FieldSpec{Name: "dockerfile_override", Label: "Dockerfile override", Kind: kit2.KTextArea, Placeholder: "empty = generate from the fields above"},
+		kit2.FieldSpec{Name: "dockerfile_override", Label: "Dockerfile override", Kind: kit2.KTextArea, Placeholder: "empty = generate from the fields above", NoPreview: true},
 		kit2.FieldSpec{Name: "tag", Label: "Tag", Kind: kit2.KText, Placeholder: "empty = <slug>:latest"},
 	)
 	m.wireImageForm(f, formCreateImage, nil)
@@ -83,7 +84,7 @@ func (m *Model) newImageEditForm(img *apiv1.RuntimeImage) *kit2.Form {
 		kit2.FieldSpec{Name: "apt_packages", Label: "Apt packages", Kind: kit2.KJSON, Initial: img.GetAptPackages(), Validate: validateJSON},
 		kit2.FieldSpec{Name: "toolchains", Label: "Toolchains", Kind: kit2.KJSON, Initial: img.GetToolchains(), Validate: validateJSON},
 		kit2.FieldSpec{Name: "env", Label: "Env", Kind: kit2.KJSON, Initial: img.GetEnv(), Validate: validateJSON},
-		kit2.FieldSpec{Name: "dockerfile_override", Label: "Dockerfile override", Kind: kit2.KTextArea, Initial: img.GetDockerfileOverride()},
+		kit2.FieldSpec{Name: "dockerfile_override", Label: "Dockerfile override", Kind: kit2.KTextArea, Initial: img.GetDockerfileOverride(), NoPreview: true},
 		kit2.FieldSpec{Name: "tag", Label: "Tag", Kind: kit2.KText, Initial: img.GetTag()},
 	)
 	m.wireImageForm(f, formEditImage, img)
@@ -171,6 +172,7 @@ func (m *Model) startBuild() tea.Cmd {
 	if !ok {
 		return nil
 	}
+	m.formLoading = true
 	id := it.ID
 	cl := m.cl
 	return func() tea.Msg {
@@ -218,7 +220,7 @@ func (m *Model) imageActions() []kit2.Action {
 	}
 	id, title := it.ID, it.Title
 	return []kit2.Action{{
-		Label: "delete", Key: "x", Danger: true, Source: srcImages,
+		Label: "delete", Key: kit2.DeleteChord, Danger: true, Source: srcImages,
 		Confirm:  "Delete " + title + "?\nThe spec row AND the local docker image are removed (best-effort, refused while a run references the tag).",
 		Apply:    func() { m.RemoveRow(srcImages, id) },
 		Rollback: func() { m.Refresh(srcImages) },

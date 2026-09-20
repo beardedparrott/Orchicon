@@ -45,20 +45,16 @@ func TestTabBarCentered(t *testing.T) {
 		if !strings.Contains(row, "Ask Orchicon") || !strings.Contains(row, "Control") {
 			t.Fatalf("%d: centered row lost tab labels: %q", w, row)
 		}
-		// Assert on the plain (ANSI-stripped) row so the style bytes can
-		// never shift the measurement. The bar render carries TWO painted
-		// pad columns on each edge (the TabBar container pad + the first
-		// tab's own pad), so the blank gutter before the first glyph is
-		// (w-barW)/2 + 2 — symmetric with the trailing side.
-		leading := len(row) - len(strings.TrimLeft(row, " "))
-		trailing := len(row) - len(strings.TrimRight(row, " "))
-		wantLeading := (w-barW)/2 + 2
-		if leading != wantLeading {
-			t.Errorf("%d: leading gutter %d, want %d (centered, bar %d)", w, leading, wantLeading, barW)
-		}
-		wantTrailing := w - barW - (w-barW)/2 + 2
-		if trailing != wantTrailing {
-			t.Errorf("%d: trailing gutter %d, want %d (centered, bar %d)", w, trailing, wantTrailing, barW)
+		// CENTERING, ASSERTED EXACTLY: the row is the pad, then the bar, then the remainder. The old
+		// form hardcoded two pad columns before the first glyph ("the TabBar container pad + the first
+		// tab's own pad"), which stopped describing anything the moment the bar's HEAD changed: it
+		// carried a modifier label ("alt+") for a while, and now starts at the first tab again with its
+		// "F1" key label. Comparing the row against the bar itself cannot drift that way, and it pins
+		// the centering more tightly than a gutter count did.
+		pad := (w - barW) / 2
+		wantRow := strings.Repeat(" ", pad) + ansi.Strip(bar) + strings.Repeat(" ", w-barW-pad)
+		if row != wantRow {
+			t.Errorf("%d: centered row is not pad+bar+remainder\n got %q\nwant %q", w, row, wantRow)
 		}
 	}
 }

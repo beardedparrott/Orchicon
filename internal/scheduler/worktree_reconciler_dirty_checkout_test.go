@@ -162,6 +162,9 @@ func TestSkippedRefusedWhenDirty(t *testing.T) {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
+	// Self-cleaning: see db.CleanupProject — the fixture tears its project down
+	// through the same cascade the product uses, so it cannot leave residue behind.
+	db.CleanupProject(t, env.pool, approvalTestTenant, proj.ID)
 	// Reconcile should provision (git-backed) and not be refused — dirty in main
 	// repo does not block provisioning of an isolated worktree (only in-place skipped
 	// runs are refused). So this should succeed and leave the main repo dirty (worktree

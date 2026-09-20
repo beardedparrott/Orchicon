@@ -51,7 +51,7 @@ func TestLiveAskNativeToolParityProof(t *testing.T) {
 		t.Fatalf("ask_file_root envelope = %q", root)
 	}
 	// The suite's toolset is visible: product + file/shell tools together.
-	defs := p.AskToolDefs()
+	defs := p.AskToolDefs(context.Background())
 	names := map[string]bool{}
 	for _, d := range defs {
 		names[d.Name] = true

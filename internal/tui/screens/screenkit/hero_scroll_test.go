@@ -55,25 +55,53 @@ func TestNoAutoDetailKeepsHero(t *testing.T) {
 	}
 }
 
-// Scrolling the detail must survive content updates: a live chunk appends
-// to the body on every repaint, and the operator's scroll offset must not
-// be yanked back to the top (mouse/arrow scrolling in a live conversation
-// was effectively dead).
+// Scrolling the detail must survive content updates: a live chunk appends to the
+// body on every repaint, and the operator's scroll offset must not be yanked back
+// to the top.
+//
+// The offset is established by scrolling DOWN into the body. It used to be
+// established by scrolling UP, which only worked because a fresh paint left the
+// viewport at the BOTTOM (an empty viewport is trivially "at bottom") — and that
+// is exactly what made a long STATIC detail open at its end, which is why a
+// workflow's FLOW looked like it started at step 3 with an approval on top. A new
+// item now opens at the top; see TestNewItemOpensAtTheTop.
 func TestDetailScrollSurvivesContentUpdate(t *testing.T) {
 	d := &Detail{Width: 60, Height: 10}
 	body := strings.Repeat("line\n", 200)
 	d.SetContent("t", nil, body)
 	_ = d.View() // first paint loads the viewport
 
-	d.Wheel(-30) // scroll up into history
+	d.Wheel(30) // scroll down into the body
 	before := d.vp.YOffset
 	if before == 0 {
-		t.Fatal("wheel up did not move the viewport offset")
+		t.Fatal("wheel down did not move the viewport offset")
 	}
 	// A live chunk arrives (body grows) — the offset must be preserved.
 	d.SetContent("t", nil, body+"new chunk\n")
 	_ = d.View()
 	if got := d.vp.YOffset; got != before {
 		t.Fatalf("scroll offset moved on content update: %d → %d", before, got)
+	}
+}
+
+// A DIFFERENT item opens at the TOP, even if the previous one was scrolled to its
+// end. The pane keeps the operator's offset while the SAME item updates (a live
+// transcript), but carrying it across a selection switch landed the new item
+// wherever the old one happened to be — which is how a workflow's FLOW came to
+// appear mid-way, with its first steps above the fold.
+func TestNewItemOpensAtTheTop(t *testing.T) {
+	d := &Detail{Width: 60, Height: 10}
+	body := strings.Repeat("line\n", 200)
+	d.SetContent("Workflow: A", nil, body)
+	_ = d.View()
+	d.Wheel(150) // scroll deep into A
+	if d.vp.YOffset == 0 {
+		t.Fatal("fixture: A must be scrolled away from the top")
+	}
+
+	d.SetContent("Workflow: B", nil, body) // a DIFFERENT item
+	_ = d.View()
+	if got := d.vp.YOffset; got != 0 {
+		t.Fatalf("a new item opened at offset %d, want the top", got)
 	}
 }

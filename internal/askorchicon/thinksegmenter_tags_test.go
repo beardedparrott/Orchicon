@@ -136,7 +136,7 @@ func TestTurnNativeReasoningPlusFoldedBodyCoexist(t *testing.T) {
 	s := newChatService(t, pool, client)
 	ctx := tenant.WithID(context.Background(), "tnt_dev")
 	convID := createConversation(t, pool, "")
-	ack, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	ack, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
 	if err != nil {
 		t.Fatalf("start turn: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestTurnPlainThinkDeltasToReasoning(t *testing.T) {
 	s := newChatService(t, pool, client)
 	ctx := tenant.WithID(context.Background(), "tnt_dev")
 	convID := createConversation(t, pool, "")
-	ack, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	ack, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
 	if err != nil {
 		t.Fatalf("start turn: %v", err)
 	}

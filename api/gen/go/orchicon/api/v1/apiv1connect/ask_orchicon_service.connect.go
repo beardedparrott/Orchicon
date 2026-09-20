@@ -59,6 +59,12 @@ const (
 	// AskOrchiconServiceSetConversationModeProcedure is the fully-qualified name of the
 	// AskOrchiconService's SetConversationMode RPC.
 	AskOrchiconServiceSetConversationModeProcedure = "/orchicon.api.v1.AskOrchiconService/SetConversationMode"
+	// AskOrchiconServiceSetConversationModelProcedure is the fully-qualified name of the
+	// AskOrchiconService's SetConversationModel RPC.
+	AskOrchiconServiceSetConversationModelProcedure = "/orchicon.api.v1.AskOrchiconService/SetConversationModel"
+	// AskOrchiconServiceSetConversationProjectProcedure is the fully-qualified name of the
+	// AskOrchiconService's SetConversationProject RPC.
+	AskOrchiconServiceSetConversationProjectProcedure = "/orchicon.api.v1.AskOrchiconService/SetConversationProject"
 	// AskOrchiconServiceListMessagesProcedure is the fully-qualified name of the AskOrchiconService's
 	// ListMessages RPC.
 	AskOrchiconServiceListMessagesProcedure = "/orchicon.api.v1.AskOrchiconService/ListMessages"
@@ -106,10 +112,32 @@ type AskOrchiconServiceClient interface {
 	// UpdateConversationTitle updates the title of a conversation.
 	UpdateConversationTitle(context.Context, *connect.Request[v1.UpdateConversationTitleRequest]) (*connect.Response[v1.UpdateConversationTitleResponse], error)
 	// SetConversationMode switches the active persona for a conversation
-	// (brainstorm <-> orchicon). The change applies from the NEXT message on:
-	// the same opencode session persists and the per-turn system prompt swaps
-	// with no session change or serve restart.
+	// (Brainstorm | Iteration | Quick Work — see BuildSystemPrompt). The change
+	// applies from the NEXT message on: the same opencode session persists and
+	// the per-turn system prompt swaps with no session change or serve restart.
 	SetConversationMode(context.Context, *connect.Request[v1.SetConversationModeRequest]) (*connect.Response[v1.SetConversationModeResponse], error)
+	// SetConversationModel retargets a conversation's model_ref. The change
+	// applies from the NEXT message on; when it changes the ADAPTER segment the
+	// bridge is re-resolved for subsequent turns (the serve session is
+	// re-established against the new adapter). An EMPTY ref clears the override,
+	// so the conversation falls back to the tenant default
+	// (default_ask_orchicon_model). This is what lets an operator retarget an
+	// already-open chat instead of starting a new one.
+	SetConversationModel(context.Context, *connect.Request[v1.SetConversationModelRequest]) (*connect.Response[v1.SetConversationModelResponse], error)
+	// SetConversationProject places a conversation in a PROJECT (or clears it),
+	// which is the second, higher level of organization over conversations: the
+	// rail and the GUI sidebar list projects as the parent group, every project
+	// gets a folder whether or not it has conversations yet, and this rpc is what
+	// a drag-into-a-folder or a TUI /project resolves to.
+	//
+	// A project is the workspace the chat's work happens in — its project_dir is
+	// the directory the Ask file/shell suite is scoped to — so setting it also
+	// tells the agent WHICH project folder the chat belongs to, and that is what
+	// makes all three modes context-aware (see BuildSystemPrompt). An EMPTY
+	// project_id unassigns the conversation. An unknown id is rejected: a
+	// conversation can be unassigned, but it can never point at a project that
+	// does not exist.
+	SetConversationProject(context.Context, *connect.Request[v1.SetConversationProjectRequest]) (*connect.Response[v1.SetConversationProjectResponse], error)
 	// ListMessages returns messages for a conversation, ordered by
 	// created_at ascending (oldest first).
 	ListMessages(context.Context, *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error)
@@ -236,6 +264,18 @@ func NewAskOrchiconServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationMode")),
 			connect.WithClientOptions(opts...),
 		),
+		setConversationModel: connect.NewClient[v1.SetConversationModelRequest, v1.SetConversationModelResponse](
+			httpClient,
+			baseURL+AskOrchiconServiceSetConversationModelProcedure,
+			connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationModel")),
+			connect.WithClientOptions(opts...),
+		),
+		setConversationProject: connect.NewClient[v1.SetConversationProjectRequest, v1.SetConversationProjectResponse](
+			httpClient,
+			baseURL+AskOrchiconServiceSetConversationProjectProcedure,
+			connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationProject")),
+			connect.WithClientOptions(opts...),
+		),
 		listMessages: connect.NewClient[v1.ListMessagesRequest, v1.ListMessagesResponse](
 			httpClient,
 			baseURL+AskOrchiconServiceListMessagesProcedure,
@@ -307,6 +347,8 @@ type askOrchiconServiceClient struct {
 	deleteConversation        *connect.Client[v1.DeleteConversationRequest, v1.DeleteConversationResponse]
 	updateConversationTitle   *connect.Client[v1.UpdateConversationTitleRequest, v1.UpdateConversationTitleResponse]
 	setConversationMode       *connect.Client[v1.SetConversationModeRequest, v1.SetConversationModeResponse]
+	setConversationModel      *connect.Client[v1.SetConversationModelRequest, v1.SetConversationModelResponse]
+	setConversationProject    *connect.Client[v1.SetConversationProjectRequest, v1.SetConversationProjectResponse]
 	listMessages              *connect.Client[v1.ListMessagesRequest, v1.ListMessagesResponse]
 	chatStream                *connect.Client[v1.ChatStreamRequest, v1.ChatStreamResponse]
 	abortConversationTurn     *connect.Client[v1.AbortConversationTurnRequest, v1.AbortConversationTurnResponse]
@@ -347,6 +389,16 @@ func (c *askOrchiconServiceClient) UpdateConversationTitle(ctx context.Context, 
 // SetConversationMode calls orchicon.api.v1.AskOrchiconService.SetConversationMode.
 func (c *askOrchiconServiceClient) SetConversationMode(ctx context.Context, req *connect.Request[v1.SetConversationModeRequest]) (*connect.Response[v1.SetConversationModeResponse], error) {
 	return c.setConversationMode.CallUnary(ctx, req)
+}
+
+// SetConversationModel calls orchicon.api.v1.AskOrchiconService.SetConversationModel.
+func (c *askOrchiconServiceClient) SetConversationModel(ctx context.Context, req *connect.Request[v1.SetConversationModelRequest]) (*connect.Response[v1.SetConversationModelResponse], error) {
+	return c.setConversationModel.CallUnary(ctx, req)
+}
+
+// SetConversationProject calls orchicon.api.v1.AskOrchiconService.SetConversationProject.
+func (c *askOrchiconServiceClient) SetConversationProject(ctx context.Context, req *connect.Request[v1.SetConversationProjectRequest]) (*connect.Response[v1.SetConversationProjectResponse], error) {
+	return c.setConversationProject.CallUnary(ctx, req)
 }
 
 // ListMessages calls orchicon.api.v1.AskOrchiconService.ListMessages.
@@ -414,10 +466,32 @@ type AskOrchiconServiceHandler interface {
 	// UpdateConversationTitle updates the title of a conversation.
 	UpdateConversationTitle(context.Context, *connect.Request[v1.UpdateConversationTitleRequest]) (*connect.Response[v1.UpdateConversationTitleResponse], error)
 	// SetConversationMode switches the active persona for a conversation
-	// (brainstorm <-> orchicon). The change applies from the NEXT message on:
-	// the same opencode session persists and the per-turn system prompt swaps
-	// with no session change or serve restart.
+	// (Brainstorm | Iteration | Quick Work — see BuildSystemPrompt). The change
+	// applies from the NEXT message on: the same opencode session persists and
+	// the per-turn system prompt swaps with no session change or serve restart.
 	SetConversationMode(context.Context, *connect.Request[v1.SetConversationModeRequest]) (*connect.Response[v1.SetConversationModeResponse], error)
+	// SetConversationModel retargets a conversation's model_ref. The change
+	// applies from the NEXT message on; when it changes the ADAPTER segment the
+	// bridge is re-resolved for subsequent turns (the serve session is
+	// re-established against the new adapter). An EMPTY ref clears the override,
+	// so the conversation falls back to the tenant default
+	// (default_ask_orchicon_model). This is what lets an operator retarget an
+	// already-open chat instead of starting a new one.
+	SetConversationModel(context.Context, *connect.Request[v1.SetConversationModelRequest]) (*connect.Response[v1.SetConversationModelResponse], error)
+	// SetConversationProject places a conversation in a PROJECT (or clears it),
+	// which is the second, higher level of organization over conversations: the
+	// rail and the GUI sidebar list projects as the parent group, every project
+	// gets a folder whether or not it has conversations yet, and this rpc is what
+	// a drag-into-a-folder or a TUI /project resolves to.
+	//
+	// A project is the workspace the chat's work happens in — its project_dir is
+	// the directory the Ask file/shell suite is scoped to — so setting it also
+	// tells the agent WHICH project folder the chat belongs to, and that is what
+	// makes all three modes context-aware (see BuildSystemPrompt). An EMPTY
+	// project_id unassigns the conversation. An unknown id is rejected: a
+	// conversation can be unassigned, but it can never point at a project that
+	// does not exist.
+	SetConversationProject(context.Context, *connect.Request[v1.SetConversationProjectRequest]) (*connect.Response[v1.SetConversationProjectResponse], error)
 	// ListMessages returns messages for a conversation, ordered by
 	// created_at ascending (oldest first).
 	ListMessages(context.Context, *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error)
@@ -540,6 +614,18 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 		connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationMode")),
 		connect.WithHandlerOptions(opts...),
 	)
+	askOrchiconServiceSetConversationModelHandler := connect.NewUnaryHandler(
+		AskOrchiconServiceSetConversationModelProcedure,
+		svc.SetConversationModel,
+		connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationModel")),
+		connect.WithHandlerOptions(opts...),
+	)
+	askOrchiconServiceSetConversationProjectHandler := connect.NewUnaryHandler(
+		AskOrchiconServiceSetConversationProjectProcedure,
+		svc.SetConversationProject,
+		connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationProject")),
+		connect.WithHandlerOptions(opts...),
+	)
 	askOrchiconServiceListMessagesHandler := connect.NewUnaryHandler(
 		AskOrchiconServiceListMessagesProcedure,
 		svc.ListMessages,
@@ -614,6 +700,10 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 			askOrchiconServiceUpdateConversationTitleHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceSetConversationModeProcedure:
 			askOrchiconServiceSetConversationModeHandler.ServeHTTP(w, r)
+		case AskOrchiconServiceSetConversationModelProcedure:
+			askOrchiconServiceSetConversationModelHandler.ServeHTTP(w, r)
+		case AskOrchiconServiceSetConversationProjectProcedure:
+			askOrchiconServiceSetConversationProjectHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceListMessagesProcedure:
 			askOrchiconServiceListMessagesHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceChatStreamProcedure:
@@ -665,6 +755,14 @@ func (UnimplementedAskOrchiconServiceHandler) UpdateConversationTitle(context.Co
 
 func (UnimplementedAskOrchiconServiceHandler) SetConversationMode(context.Context, *connect.Request[v1.SetConversationModeRequest]) (*connect.Response[v1.SetConversationModeResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.SetConversationMode is not implemented"))
+}
+
+func (UnimplementedAskOrchiconServiceHandler) SetConversationModel(context.Context, *connect.Request[v1.SetConversationModelRequest]) (*connect.Response[v1.SetConversationModelResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.SetConversationModel is not implemented"))
+}
+
+func (UnimplementedAskOrchiconServiceHandler) SetConversationProject(context.Context, *connect.Request[v1.SetConversationProjectRequest]) (*connect.Response[v1.SetConversationProjectResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.SetConversationProject is not implemented"))
 }
 
 func (UnimplementedAskOrchiconServiceHandler) ListMessages(context.Context, *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error) {

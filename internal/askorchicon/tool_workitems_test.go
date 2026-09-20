@@ -47,7 +47,7 @@ func workItemKindTestPool(t *testing.T) *db.Pool {
 	if err := migrate.Run(ctx, pool, assets.MigrationsFS, assets.MigrationsDir); err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
-	if err := db.SeedDevWorkers(ctx, pool); err != nil {
+	if err := db.SeedDevWorkers(ctx, pool, "tnt_dev"); err != nil {
 		t.Fatalf("seed dev workers: %v", err)
 	}
 	// Tools called directly (not via NewToolRegistry) need the package
@@ -734,8 +734,8 @@ func TestUpdateWorkItemWorkflowRunIDDB(t *testing.T) {
 	}
 
 	updated, err := callToolUpdate(t, ctx, pool, map[string]any{
-		"id":               item.ID,
-		"workflow_run_id":  "run_test_1",
+		"id":              item.ID,
+		"workflow_run_id": "run_test_1",
 	})
 	if err != nil {
 		t.Fatalf("update workflow_run_id: %v", err)

@@ -143,10 +143,10 @@ func TestLatestTodosMalformedParts(t *testing.T) {
 			item("Only valid one", "completed", "low"),
 		})),
 		sessionParts(db.SessionPartToolUse, 7, toolPart("todowrite", "completed", map[string]any{"status": "completed", "input": map[string]any{"todos": "oops"}})), // todos not an array
-		sessionParts(db.SessionPartToolUse, 6, toolPart("todowrite", "completed", map[string]any{"status": "completed", "input": map[string]any{}})),            // no todos
-		sessionParts(db.SessionPartToolUse, 5, toolPart("todowrite", "completed", map[string]any{"status": "completed"})),                                       // no input
-		sessionParts(db.SessionPartToolUse, 4, toolPart("todowrite", "completed", map[string]any{})),                                                             // empty state
-		sessionParts(db.SessionPartToolUse, 3, []byte(`{"part":{"tool":"todowrite"}}`)), // no state
+		sessionParts(db.SessionPartToolUse, 6, toolPart("todowrite", "completed", map[string]any{"status": "completed", "input": map[string]any{}})),                // no todos
+		sessionParts(db.SessionPartToolUse, 5, toolPart("todowrite", "completed", map[string]any{"status": "completed"})),                                           // no input
+		sessionParts(db.SessionPartToolUse, 4, toolPart("todowrite", "completed", map[string]any{})),                                                                // empty state
+		sessionParts(db.SessionPartToolUse, 3, []byte(`{"part":{"tool":"todowrite"}}`)),                                                                             // no state
 		sessionParts(db.SessionPartToolUse, 2, []byte(`{"part":123}`)),
 		sessionParts(db.SessionPartToolUse, 1, []byte("not json")),
 	}

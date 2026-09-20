@@ -36,11 +36,39 @@ export enum ConversationMode {
    * @generated from enum value: CONVERSATION_MODE_BRAINSTORM = 1;
    */
   BRAINSTORM = 1,
+
+  /**
+   * ITERATION is the standard agent: it works on the project directly with
+   * the operator, cutting a local branch and iterating. It deliberately NEVER
+   * suggests creating work items and NEVER suggests firing workflows or
+   * schedules — those are the other two modes' jobs. It commits early and
+   * often and runs the project's full available test suite.
+   *
+   * @generated from enum value: CONVERSATION_MODE_ITERATION = 2;
+   */
+  ITERATION = 2,
+
+  /**
+   * QUICK_WORK reaches the same outcome as Iteration by a different route: it
+   * does not do the work itself, it dispatches it. It creates an EPHEMERAL
+   * worker, workflow and work item (none of which appear in the console),
+   * fires them, and monitors the run — so a workflow does the work while the
+   * conversation stays the place the operator talks.
+   *
+   * Ephemeral means: created for one job, hard-deleted when it finishes, and
+   * hidden from every list while it runs. A failed run is reported in the
+   * conversation, which offers to diagnose and re-run.
+   *
+   * @generated from enum value: CONVERSATION_MODE_QUICK_WORK = 3;
+   */
+  QUICK_WORK = 3,
 }
 // Retrieve enum metadata with: proto3.getEnumType(ConversationMode)
 proto3.util.setEnumType(ConversationMode, "orchicon.api.v1.ConversationMode", [
   { no: 0, name: "CONVERSATION_MODE_UNSPECIFIED" },
   { no: 1, name: "CONVERSATION_MODE_BRAINSTORM" },
+  { no: 2, name: "CONVERSATION_MODE_ITERATION" },
+  { no: 3, name: "CONVERSATION_MODE_QUICK_WORK" },
 ]);
 
 /**
@@ -152,6 +180,17 @@ export class Conversation extends Message<Conversation> {
    */
   turnLastActivityAt?: Timestamp;
 
+  /**
+   * project_id is the project this conversation belongs to, or "" when it is
+   * unassigned. It is the second, higher level of organization over
+   * conversations (categories being the first), and it is also the CONTEXT the
+   * agent is told about: the project's project_dir is the folder the chat's work
+   * happens in, so a client shows it and the prompt carries it.
+   *
+   * @generated from field: string project_id = 15;
+   */
+  projectId = "";
+
   constructor(data?: PartialMessage<Conversation>) {
     super();
     proto3.util.initPartial(data, this);
@@ -174,6 +213,7 @@ export class Conversation extends Message<Conversation> {
     { no: 12, name: "pending_assistant_message_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 13, name: "turn_progressing", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
     { no: 14, name: "turn_last_activity_at", kind: "message", T: Timestamp },
+    { no: 15, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Conversation {

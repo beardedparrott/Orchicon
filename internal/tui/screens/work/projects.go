@@ -7,13 +7,23 @@ package work
 // RPC (its 10 RPCs are Create/Get/List/Update/Archive/Delete/Pause/
 // Activate/StreamProjectEvents/ListProjectFiles). The TUI therefore sets
 // project_dir through UpdateProject and then PROBES the directory with
-// ListProjectFiles — the server materializes the directory when the files
-// endpoint resolves it, and a bad path surfaces immediately as an error
-// instead of failing later at worker dispatch.
+// ListProjectFiles — a bad path surfaces immediately as an error instead of
+// failing later at worker dispatch.
+//
+// CORRECTION (this comment used to claim the probe MATERIALIZED the directory —
+// "the server materializes the directory when the files endpoint resolves it" —
+// and it does not): the read path is os.Stat + os.ReadDir only
+// (internal/project/listDirectory), so the probe is a genuine existence check and
+// creates nothing. That matters beyond pedantry, because the same call is what
+// launch.go uses to ask whether the PLANE can see a directory: a probe that
+// created what it was probing for would answer its own question with a yes.
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,6 +48,84 @@ type projectFormMsg struct {
 	project *apiv1.Project
 	dirInfo string
 	err     error
+	// data is everything the form needs beyond the project row: the runtime-image options and
+	// the MCP selection. One struct rather than a growing parameter list, because every piece of
+	// it is ASYNC (each needs its own round trip) and they all arrive together.
+	data projectFormData
+}
+
+// projectFormData is what the project form cannot get from the project row itself.
+//
+// THE RUNTIME-IMAGE OPTIONS ARE HERE because the field is a PICKER: the operator chooses an
+// image from a list rather than typing a tag, as they do on a work item. That list is a round
+// trip, so the form cannot be built before it lands — the same reason the MCP selection is here.
+//
+// THE MCP SELECTION IS HERE because it is not carried on the Project message at all (ListProjects
+// and GetProject omit it), so it needs GetProjectMCPServers.
+type projectFormData struct {
+	images      []kit2.Option
+	mcpServers  []*apiv1.MCPServer
+	mcpSelected []string
+	mcpLoaded   bool
+}
+
+// prepProjectForm fetches what the form needs and opens it.
+//
+// IT LOADS THE OPTION LISTS TOO: the runtime-image field is a picker and the MCP selection is not
+// on the Project message, so neither can be prefilled from GetProject alone. One command keeps a
+// single async step rather than a state machine per field.
+//
+// id is empty for a CREATE, which needs the option lists but has no existing selection.
+//
+// A FAILED OPTION LOAD DOES NOT BLOCK THE FORM, and the lists are independent: the image field
+// falls back to free text (a tag can always be typed) and the MCP field is absent. Failing the
+// whole edit because one service is unhappy would make the project's name, directory and goals
+// uneditable for no reason.
+//
+// NOTHING IS WRITTEN TO m HERE. This runs off the UI goroutine, so the image options are carried
+// in the message and cached by the handler instead (see the projectFormMsg case in Update).
+func (m *Model) prepProjectForm(mode, id string) tea.Cmd {
+	m.formLoading = true
+	cl := m.cl
+	cached := m.images
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		msg := projectFormMsg{mode: mode}
+		if id != "" {
+			resp, err := cl.Projects.GetProject(ctx, connect.NewRequest(&apiv1.GetProjectRequest{Id: id}))
+			if err != nil {
+				return projectFormMsg{mode: mode, err: err}
+			}
+			msg.project = resp.Msg.GetProject()
+		}
+		msg.data.images = cached
+		if msg.data.images == nil && cl.Images != nil {
+			if lr, err := cl.Images.ListRuntimeImages(ctx, connect.NewRequest(&apiv1.ListRuntimeImagesRequest{PageSize: 100})); err == nil {
+				for _, img := range lr.Msg.GetRuntimeImages() {
+					msg.data.images = append(msg.data.images, kit2.Option{Value: img.GetTag(), Label: img.GetName() + " (" + img.GetTag() + ")"})
+				}
+			}
+		}
+		if cl.MCP != nil {
+			list, err := cl.MCP.ListMCPServers(ctx, connect.NewRequest(&apiv1.MCPServerListRequest{}))
+			if err == nil {
+				msg.data.mcpServers = list.Msg.GetServers()
+				msg.data.mcpLoaded = true
+				if id != "" {
+					if sel, serr := cl.MCP.GetProjectMCPServers(ctx, connect.NewRequest(&apiv1.ProjectMCPServersGetRequest{ProjectId: id})); serr == nil {
+						msg.data.mcpSelected = sel.Msg.GetMcpServerIds()
+					} else {
+						// The list loaded but THIS project's selection did not, so we do not know what
+						// it is. Treating that as "nothing selected" would let a save clear a selection
+						// the operator never saw.
+						msg.data.mcpLoaded = false
+					}
+				}
+			}
+		}
+		return msg
+	}
 }
 
 // prepEditProject fetches the selected project so the edit form is
@@ -47,42 +135,358 @@ func (m *Model) prepEditProject(mode string) tea.Cmd {
 	if !ok {
 		return nil
 	}
-	id := it.ID
-	cl := m.cl
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		defer cancel()
-		resp, err := cl.Projects.GetProject(ctx, connect.NewRequest(&apiv1.GetProjectRequest{Id: id}))
-		if err != nil {
-			return projectFormMsg{mode: mode, err: err}
+	return m.prepProjectForm(mode, it.ID)
+}
+
+// ProjectFormFields is the project form's field list — ONE definition, shared by
+// create, edit and (with a directory appended) orch's launch prompt, so the three
+// cannot drift apart in what they offer.
+//
+// p is nil for a CREATE (defaults apply) and the project being edited otherwise.
+// CreateProject accepts only a subset of these (name/slug/goals/git_strategy/
+// default_runtime_image/execution_mode), so the create path applies the rest —
+// max_concurrent_runs and context_files — with a FOLLOWING UpdateProject. That is
+// the same two-call shape the GUI uses, forced by the proto rather than chosen.
+//
+// THERE IS NO project_dir FIELD HERE. CreateProject has no directory, so the hosts
+// that need one (edit, and the launch prompt) append it themselves; see
+// newProjectEditForm.
+func ProjectFormFields(p *apiv1.Project, images []kit2.Option) []kit2.FieldSpec {
+	initial := func(fn func() string) string {
+		if p == nil {
+			return ""
 		}
-		return projectFormMsg{mode: mode, project: resp.Msg.GetProject()}
+		return fn()
+	}
+	current := initial(p.GetDefaultRuntimeImage)
+	return []kit2.FieldSpec{
+		{Name: "name", Label: "Name", Kind: kit2.KText, Required: true, Placeholder: "Orchicon", Initial: initial(p.GetName)},
+		{Name: "slug", Label: "Slug", Kind: kit2.KText, Placeholder: "orchicon", Initial: initial(p.GetSlug)},
+		{Name: "goals", Label: "Goals", Kind: kit2.KText, Placeholder: "key=value, key2=value2", Initial: initial(func() string { return goalsText(p.GetGoals()) })},
+		runtimeImageField(current, images),
+		{
+			Name: "git_strategy", Label: "Git strategy", Kind: kit2.KSelect,
+			Options: gitStrategyOptions(), Initial: gitStrategyField(p),
+		},
+		{
+			Name: "execution_mode", Label: "Execution mode", Kind: kit2.KSelect,
+			Options: executionModeOptions(), Initial: executionModeField(p),
+		},
+		{
+			Name: "max_concurrent_runs", Label: "Max concurrent runs", Kind: kit2.KNumber,
+			Placeholder: "0 = no additional restriction", Initial: maxConcurrentField(p),
+		},
+		{
+			Name: "context_files", Label: contextFilesLabel, Kind: kit2.KTextArea,
+			Placeholder: contextFilesPlaceholder, Initial: initial(func() string { return contextFilesText(p.GetContextFiles()) }),
+		},
 	}
 }
 
-// newProjectCreateForm builds the create form (name / slug / goals /
-// default runtime image).
+// contextFilesLabel and contextFilesPlaceholder carry the guidance for the one field whose meaning
+// is not obvious from its name.
+//
+// THE RULE IS IN THE LABEL because the label is the only part of a field row that is ALWAYS drawn:
+// it stays visible while the operator types, whereas the placeholder is replaced by the caret the
+// moment the field takes the cursor. The expensive mistake here is a path the server rejects after
+// a save — context_files must be inside the project directory (the only directory guaranteed to be
+// mounted where workers run), and a path outside it is recorded happily and then invisible to the
+// worker, which is the worst of both.
+//
+// BOTH STRINGS ARE SIZED TO THE MODAL. The launch form renders inside a panel whose interior is 70 cells
+// at the standard width; a row is `  ` + label + `: ` + value, so the pair must fit in 66. The first
+// version of this guidance did not — "Context files (abs paths inside the project dir)" beside "(one path
+// per line · a directory is read in full)" overflowed, and the operator saw it cut mid-word with an
+// ellipsis, which is the guidance defeated. Looking at their own screenshot, they reported the labels as
+// being "off the screen". The two facts worth the space are WHERE the paths may point and the INPUT
+// SHAPE, so both live in the label and stay visible.
+//
+// The wording states the RULES without restating the validator, and enforces nothing: validation is the
+// server's (contextfiles.Validate / ValidateWithin), and a second client-side copy would eventually
+// disagree with it.
+const (
+	contextFilesLabel = "Context files (in project dir, one per line)"
+	// A DIRECTORY IS ALLOWED and is the more useful choice for most projects, which is worth saying —
+	// the field's name reads like it wants files only.
+	contextFilesPlaceholder = "(dirs read in full)"
+)
+
+// runtimeImageField is the project's default runtime image.
+//
+// A PICKER WHEN THE LIST LOADED, a plain text field otherwise — the same shape the work item's
+// runtime-image field has (workitems.go:401), and the same shape this form gives MCP. The fallback
+// matters: the operator can always type a tag, so a failed ListRuntimeImages must not cost them
+// the ability to set one, and it must not silently omit the field either.
+//
+// EMPTY MEANS INHERIT, so the picker offers that explicitly rather than relying on "no option is
+// selected": the request carries an empty string for it (see wireProjectForm) and the server reads
+// that as "fall back to the tenant default".
+func runtimeImageField(current string, images []kit2.Option) kit2.FieldSpec {
+	if len(images) == 0 {
+		return kit2.FieldSpec{
+			Name: "default_runtime_image", Label: "Default runtime image", Kind: kit2.KText,
+			Placeholder: "empty = inherit tenant/base", Initial: current,
+		}
+	}
+	opts := append([]kit2.Option{{Value: "", Label: "— inherit tenant/base —"}}, images...)
+	return kit2.FieldSpec{
+		Name: "default_runtime_image", Label: "Default runtime image", Kind: kit2.KPicker,
+		Options: pickerOptsWithCurrent(opts, current, "image "),
+		Initial: current,
+	}
+}
+
+// ProjectMCPField is the MCP server selection as a form field, or nil when there is
+// nothing to choose from.
+//
+// A SEPARATE ADAPTER rather than a member of ProjectFormFields, because its options are
+// ASYNC — the field list is built synchronously by three hosts, while this needs the
+// tenant's server list to have been fetched first. Same shape as project_dir, which is
+// appended by the hosts that can supply it.
+//
+// NIL WHEN THERE ARE NO SERVERS: an empty multi-select would be a control that cannot do
+// anything, and the project's MCP behaviour in that state (fall through to the tenant
+// default) is not something the operator can change from here anyway.
+//
+// Initial is the COMMA-JOINED selection, which is how kit2.Form seeds a multi-select
+// (and why it can never open empty for a project that has servers selected).
+func ProjectMCPField(servers []*apiv1.MCPServer, selected []string) *kit2.FieldSpec {
+	if len(servers) == 0 {
+		return nil
+	}
+	opts := make([]kit2.Option, 0, len(servers))
+	for _, s := range servers {
+		label := s.GetName()
+		if !s.GetEnabled() {
+			// Disabled servers are still selectable — a project may reference one that is
+			// currently off — but the row says so, so the operator is not surprised when
+			// nothing happens at run time.
+			label += " (disabled)"
+		}
+		opts = append(opts, kit2.Option{Value: s.GetId(), Label: label})
+	}
+	return &kit2.FieldSpec{
+		Name: "mcp_servers", Label: "MCP servers (space toggles)", Kind: kit2.KMultiSelect,
+		Options: opts, Initial: strings.Join(selected, ","),
+	}
+}
+
+// withMCP appends the MCP field when it exists.
+func withMCP(specs []kit2.FieldSpec, servers []*apiv1.MCPServer, selected []string) []kit2.FieldSpec {
+	if f := ProjectMCPField(servers, selected); f != nil {
+		specs = append(specs, *f)
+	}
+	return specs
+}
+
+// setProjectMCPServers writes a project's MCP selection. It is a no-op when mcpLoaded is
+// false, which is the important case: the field was not shown, so an empty list here
+// means "we do not know", not "clear it". Writing on a failed load would wipe a
+// selection the operator never saw.
+//
+// AN EMPTY LIST IS OTHERWISE SENT DELIBERATELY, and the server reads it as "no project
+// selection" — the project then falls through to the tenant default. That is what makes
+// the selection removable from the TUI; sending only non-empty lists would leave a
+// selection that could never be undone.
+func (m *Model) setProjectMCPServers(ctx context.Context, projectID string, ids []string, loaded bool) error {
+	if !loaded || m.cl == nil || m.cl.MCP == nil || projectID == "" {
+		return nil
+	}
+	_, err := m.cl.MCP.SetProjectMCPServers(ctx, connect.NewRequest(&apiv1.ProjectMCPServersSetRequest{
+		ProjectId:    projectID,
+		McpServerIds: ids,
+	}))
+	return err
+}
+
+// newProjectCreateForm builds the create form from the shared field list.
 func (m *Model) newProjectCreateForm() *kit2.Form {
-	f := kit2.NewForm("New project",
-		kit2.FieldSpec{Name: "name", Label: "Name", Kind: kit2.KText, Required: true, Placeholder: "Orchicon"},
-		kit2.FieldSpec{Name: "slug", Label: "Slug", Kind: kit2.KText, Placeholder: "orchicon"},
-		kit2.FieldSpec{Name: "goals", Label: "Goals", Kind: kit2.KText, Placeholder: "key=value, key2=value2"},
-		kit2.FieldSpec{Name: "default_runtime_image", Label: "Default runtime image", Kind: kit2.KText, Placeholder: "empty = inherit tenant/base"},
-	)
+	return m.newProjectCreateFormWith(projectFormData{})
+}
+
+// newProjectCreateFormWith adds the option lists that need a round trip: the runtime-image picker
+// and the MCP selection.
+func (m *Model) newProjectCreateFormWith(d projectFormData) *kit2.Form {
+	specs := withMCP(ProjectFormFields(nil, d.images), d.mcpServers, d.mcpSelected)
+	f := kit2.NewForm("New project", specs...)
 	m.wireProjectForm(f, formCreateProject, "")
 	return f
 }
 
-// newProjectEditForm builds the edit form: title, goals, project_dir.
+// newProjectEditForm builds the edit form: the shared fields PREFILLED, plus the
+// directory (which CreateProject cannot carry and this path therefore owns).
 func (m *Model) newProjectEditForm(p *apiv1.Project) *kit2.Form {
-	f := kit2.NewForm("Edit project",
-		kit2.FieldSpec{Name: "name", Label: "Name", Kind: kit2.KText, Required: true, Initial: p.GetName()},
-		kit2.FieldSpec{Name: "goals", Label: "Goals", Kind: kit2.KText, Initial: goalsText(p.GetGoals()), Placeholder: "key=value, key2=value2"},
-		kit2.FieldSpec{Name: "project_dir", Label: "Project dir", Kind: kit2.KText, Initial: p.GetProjectDir(), Placeholder: "/home/me/projects/orchicon"},
-		kit2.FieldSpec{Name: "default_runtime_image", Label: "Default runtime image", Kind: kit2.KText, Initial: p.GetDefaultRuntimeImage()},
-	)
+	return m.newProjectEditFormWith(p, projectFormData{})
+}
+
+// newProjectEditFormWith adds the option lists that need a round trip.
+func (m *Model) newProjectEditFormWith(p *apiv1.Project, d projectFormData) *kit2.Form {
+	specs := append(ProjectFormFields(p, d.images), kit2.FieldSpec{
+		Name: "project_dir", Label: "Project dir", Kind: kit2.KText,
+		Initial: p.GetProjectDir(), Placeholder: "/home/me/projects/orchicon",
+	})
+	specs = withMCP(specs, d.mcpServers, d.mcpSelected)
+	f := kit2.NewForm("Edit project", specs...)
 	m.wireProjectForm(f, formEditProject, p.GetId())
 	return f
+}
+
+// gitStrategyOptions are the selectable values, in the order the GUI offers them.
+func gitStrategyOptions() []kit2.Option {
+	return []kit2.Option{
+		{Value: "local", Label: "local — commit on a local branch"},
+		{Value: "pr", Label: "pr — open a pull request"},
+		{Value: "none", Label: "none — do not commit"},
+	}
+}
+
+// executionModeOptions mirror the GUI's select.
+func executionModeOptions() []kit2.Option {
+	return []kit2.Option{
+		{Value: "runtime", Label: "runtime — per-run container (isolated)"},
+		{Value: "local", Label: "local — in the control plane"},
+	}
+}
+
+// gitStrategyField reads a project's git strategy as the field's string value.
+//
+// IT FALLS BACK TO THE HIDDEN GOAL, which is not belt-and-braces: projects created
+// before the typed field existed carry their strategy in a `__git_strategy` goal,
+// and the GUI reads it exactly this way (it reaches into the goals JSON when the
+// typed field is unset). Without the fallback, editing an older project would show
+// "local" — the default — and SAVING WOULD SILENTLY CHANGE ITS STRATEGY.
+func gitStrategyField(p *apiv1.Project) string {
+	if p == nil {
+		return "local"
+	}
+	if s := gitStrategyString(p.GetGitStrategy()); s != "" {
+		return s
+	}
+	if s := goalValue(p.GetGoals(), "__git_strategy"); s != "" {
+		return s
+	}
+	return "local"
+}
+
+// executionModeField reads a project's execution mode, defaulting to runtime (the
+// proto's and the server's default).
+func executionModeField(p *apiv1.Project) string {
+	if p == nil {
+		return "runtime"
+	}
+	if s := executionModeString(p.GetExecutionMode()); s != "" {
+		return s
+	}
+	return "runtime"
+}
+
+// maxConcurrentField renders the override as the field's text. 0 is the proto's
+// "no additional restriction", so it is what an unset override means.
+func maxConcurrentField(p *apiv1.Project) string {
+	if p == nil {
+		return "0"
+	}
+	return strconv.Itoa(int(p.GetMaxConcurrentRuns()))
+}
+
+func gitStrategyString(e apiv1.GitStrategy) string {
+	switch e {
+	case apiv1.GitStrategy_GIT_STRATEGY_LOCAL:
+		return "local"
+	case apiv1.GitStrategy_GIT_STRATEGY_PR:
+		return "pr"
+	case apiv1.GitStrategy_GIT_STRATEGY_NONE:
+		return "none"
+	}
+	return "" // UNSPECIFIED — let the caller decide the default
+}
+
+func gitStrategyEnum(s string) apiv1.GitStrategy {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "local":
+		return apiv1.GitStrategy_GIT_STRATEGY_LOCAL
+	case "pr":
+		return apiv1.GitStrategy_GIT_STRATEGY_PR
+	case "none":
+		return apiv1.GitStrategy_GIT_STRATEGY_NONE
+	}
+	return apiv1.GitStrategy_GIT_STRATEGY_UNSPECIFIED
+}
+
+func executionModeString(e apiv1.ExecutionMode) string {
+	switch e {
+	case apiv1.ExecutionMode_EXECUTION_MODE_RUNTIME:
+		return "runtime"
+	case apiv1.ExecutionMode_EXECUTION_MODE_LOCAL:
+		return "local"
+	}
+	return ""
+}
+
+func executionModeEnum(s string) apiv1.ExecutionMode {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "runtime":
+		return apiv1.ExecutionMode_EXECUTION_MODE_RUNTIME
+	case "local":
+		return apiv1.ExecutionMode_EXECUTION_MODE_LOCAL
+	}
+	return apiv1.ExecutionMode_EXECUTION_MODE_UNSPECIFIED
+}
+
+// contextFilesText renders a project's context files as the field's text — one path
+// per line, which is also the shape the server stores (a list of paths).
+func contextFilesText(files []string) string {
+	out := make([]string, 0, len(files))
+	for _, f := range files {
+		if f = strings.TrimSpace(f); f != "" {
+			out = append(out, f)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// ParseContextFiles reads the field's text as a list of paths: one per line, with
+// commas also accepted because a single-line paste of "a, b" is the natural mistake
+// and silently treating it as one absurd path would fail validation for a reason the
+// operator cannot see. Blanks are dropped so a trailing newline is harmless.
+//
+// Validation (absolute, no traversal, inside the project dir) is the SERVER'S —
+// contextfiles.Validate / ValidateWithin. Re-implementing it here would give the TUI a
+// second, subtly different rule to disagree with.
+func ParseContextFiles(s string) []string {
+	var out []string
+	for _, line := range strings.Split(s, "\n") {
+		for _, part := range strings.Split(line, ",") {
+			if p := strings.TrimSpace(part); p != "" {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
+// goalValue reads one key out of a project's goals JSON document. The document is a
+// flat object (project.convertGoalsToJSON), which is also how the GUI reads it.
+func goalValue(raw, key string) string {
+	m := goalsMap(raw)
+	return m[key]
+}
+
+// goalsMap decodes a goals document, tolerating anything unexpected by returning an
+// empty map: a malformed document must not block the form from opening.
+func goalsMap(raw string) map[string]string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var any map[string]any
+	if err := json.Unmarshal([]byte(raw), &any); err != nil {
+		return nil
+	}
+	out := make(map[string]string, len(any))
+	for k, v := range any {
+		out[k] = fmt.Sprint(v)
+	}
+	return out
 }
 
 // newProjectDirForm sets/creates the project directory.
@@ -94,13 +498,62 @@ func (m *Model) newProjectDirForm(p *apiv1.Project) *kit2.Form {
 	return f
 }
 
+// parseMaxConcurrentRuns reads the override field. Anything unparseable or negative
+// becomes 0 — the proto's "no additional restriction" — rather than failing the save
+// over a typo the operator can simply correct, and never a negative limit the server
+// would have to reject.
+func parseMaxConcurrentRuns(s string) int32 {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return int32(n)
+}
+
+// projectUpdater is the slice of the project client applyProjectPostCreate needs, so
+// the two-call create is testable without a full client.
+type projectUpdater interface {
+	UpdateProject(context.Context, *connect.Request[apiv1.UpdateProjectRequest]) (*connect.Response[apiv1.UpdateProjectResponse], error)
+}
+
+// applyProjectPostCreate attaches what CreateProject cannot carry: the concurrency
+// override and the context files.
+//
+// BOTH ARE CONDITIONALLY SENT, which is right for a CREATE and the opposite of the edit
+// path: there is nothing to clear on a project that was just made, so an empty list
+// would be a no-op write and max_concurrent_runs=0 would write the value the server
+// already defaulted to. An update with nothing to say is SKIPPED ENTIRELY, so a plain
+// create does not depend on a second call succeeding — otherwise a failed follow-up
+// would report failure for a project that exists and is perfectly usable.
+func applyProjectPostCreate(ctx context.Context, cl projectUpdater, id string, maxRuns int32, contextFiles []string) error {
+	if id == "" || (maxRuns == 0 && len(contextFiles) == 0) {
+		return nil
+	}
+	req := &apiv1.UpdateProjectRequest{Id: id}
+	if maxRuns > 0 {
+		req.MaxConcurrentRuns = &maxRuns
+	}
+	if len(contextFiles) > 0 {
+		req.ContextFiles = &apiv1.ContextFiles{Files: contextFiles}
+	}
+	_, err := cl.UpdateProject(ctx, connect.NewRequest(req))
+	return err
+}
+
 // wireProjectForm installs the submit handler.
 func (m *Model) wireProjectForm(f *kit2.Form, mode, id string) {
 	f.Focused = true
 	f.Width = 70
-	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
+	f.OnSubmit = func(v map[string]string, multi map[string][]string) (tea.Cmd, error) {
 		name := strings.TrimSpace(v["name"])
-		goals := parseGoals(v["goals"])
+		goals := ParseGoals(v["goals"])
+		contextFiles := ParseContextFiles(v["context_files"])
+		maxRuns := parseMaxConcurrentRuns(v["max_concurrent_runs"])
+		// A MULTI-SELECT THAT WAS NOT SHOWN has no entry in `multi`, so mcpChosen is nil
+		// and mcpLoaded is false — and mcpLoaded is what decides whether the selection is
+		// written at all. An absent field must never clear a project's servers.
+		mcpChosen, present := multi["mcp_servers"]
+		mcpLoaded := present && m.formMCPLoaded
 		switch mode {
 		case formCreateProject:
 			req := &apiv1.CreateProjectRequest{
@@ -108,13 +561,26 @@ func (m *Model) wireProjectForm(f *kit2.Form, mode, id string) {
 				Slug:                strings.TrimSpace(v["slug"]),
 				Goals:               goals,
 				DefaultRuntimeImage: strings.TrimSpace(v["default_runtime_image"]),
+				GitStrategy:         gitStrategyEnum(v["git_strategy"]),
+				ExecutionMode:       executionModeEnum(v["execution_mode"]),
 			}
+			cl := m.cl
 			return m.Mutate(mutate.Request{
 				Name: "create project " + strings.TrimSpace(name), Source: srcProjects,
 				Rollback: func() { m.Refresh(srcProjects) },
 				Do: func(ctx context.Context) error {
-					_, err := m.cl.Projects.CreateProject(ctx, connect.NewRequest(req))
-					return err
+					created, err := cl.Projects.CreateProject(ctx, connect.NewRequest(req))
+					if err != nil {
+						return err
+					}
+					// THE SECOND CALL IS FORCED BY THE PROTO, not chosen: CreateProject
+					// accepts no max_concurrent_runs and no context_files, so a create form
+					// offering them has to apply them afterwards. Same two-call shape the GUI
+					// uses for maxConcurrentRuns.
+					if err := applyProjectPostCreate(ctx, cl.Projects, created.Msg.GetProject().GetId(), maxRuns, contextFiles); err != nil {
+						return err
+					}
+					return m.setProjectMCPServers(ctx, created.Msg.GetProject().GetId(), mcpChosen, mcpLoaded)
 				},
 			}), nil
 
@@ -122,16 +588,27 @@ func (m *Model) wireProjectForm(f *kit2.Form, mode, id string) {
 			req := &apiv1.UpdateProjectRequest{
 				Id:                  id,
 				Name:                strPtr(name),
+				Slug:                strPtr(strings.TrimSpace(v["slug"])),
 				Goals:               &apiv1.GoalFields{Fields: goals},
 				ProjectDir:          strPtr(strings.TrimSpace(v["project_dir"])),
 				DefaultRuntimeImage: strPtr(strings.TrimSpace(v["default_runtime_image"])),
+				GitStrategy:         gitStrategyEnum(v["git_strategy"]).Enum(),
+				ExecutionMode:       executionModeEnum(v["execution_mode"]).Enum(),
+				MaxConcurrentRuns:   &maxRuns,
+				// ALWAYS SENT, so an emptied field CLEARS the selection: the proto reads an
+				// empty list as "clear" ("empty files list clears the selection"), and an
+				// operator emptying a prefilled list means exactly that. Sending it only when
+				// non-empty would make a selection impossible to remove from the TUI.
+				ContextFiles: &apiv1.ContextFiles{Files: contextFiles},
 			}
 			return m.Mutate(mutate.Request{
 				Name: "save project " + name, Source: srcProjects,
 				Rollback: func() { m.Refresh(srcProjects) },
 				Do: func(ctx context.Context) error {
-					_, err := m.cl.Projects.UpdateProject(ctx, connect.NewRequest(req))
-					return err
+					if _, err := m.cl.Projects.UpdateProject(ctx, connect.NewRequest(req)); err != nil {
+						return err
+					}
+					return m.setProjectMCPServers(ctx, id, mcpChosen, mcpLoaded)
 				},
 			}), nil
 
@@ -163,6 +640,26 @@ func (m *Model) wireProjectForm(f *kit2.Form, mode, id string) {
 }
 
 // projectActions is the Projects pane's entity-bound action set.
+//
+// This function MUST NOT set m.formLoading. It used to, and that single line broke
+// the whole tab bar on this pane: actionsForSelection() calls it to build the footer
+// hints and the key bindings, so formLoading latched TRUE the moment a project was
+// selected and NOTHING ever cleared it (the three legitimate setters are the prep*
+// helpers, whose returned cmd delivers the *_formMsg that clears it).
+//
+// ClaimsKeys() includes formLoading, so the shell then handed EVERY key to this screen
+// before any of its own routes ran:
+//
+//   - the Work submenu's up/down never reached menuHandleKey (the menu looked dead);
+//   - Enter selected nothing, because it fell to the pane's own "load detail";
+//   - shift+tab was swallowed outright — it is a global route, which sits even later
+//     in the chain.
+//
+// That is the operator's "can't go into reverse tab once I hit the Work/Projects
+// screen ... can't hit enter on any submenu under Work nor up/down on the Work menu" —
+// and it is why the oddity was specific to Projects: itemActions() and imageActions()
+// never set the flag. The two locals below are captured by the closures and have
+// nothing to do with form preparation.
 func (m *Model) projectActions() []kit2.Action {
 	it, ok := m.ActiveItem()
 	if !ok {
@@ -170,7 +667,7 @@ func (m *Model) projectActions() []kit2.Action {
 	}
 	id := it.ID
 	cl := m.cl
-	return []kit2.Action{{
+	acts := []kit2.Action{{
 		Label: "create project dir", Key: "d", Source: srcProjects,
 		Do: func(ctx context.Context) error {
 			// Resolve the project's configured directory and list it, which
@@ -186,18 +683,167 @@ func (m *Model) projectActions() []kit2.Action {
 			return err
 		},
 	}}
+	// ACTIVATE — the only way out of `drafting`, and its absence made a newly created
+	// project a DEAD END in the TUI.
+	//
+	// CreateProject always lands a project in `drafting` (deliberately: it is the gate
+	// that lets a project be configured before it accepts work), and db.RequireProjectActive
+	// refuses work items for anything not `active`. The GUI answers this with an Activate
+	// button on the project page; the TUI had no such action at all, so a project created
+	// here — including by the launch prompt — could never host a single work item and
+	// nothing said why. The operator hit exactly that: "it created the project in draft
+	// mode".
+	//
+	// OFFERED ONLY WHEN IT CAN SUCCEED: ActivateProject's UPDATE carries
+	// `AND status = 'drafting'`, so offering it on an active project would be an action
+	// that reports a failure for doing the right thing twice. The status is read from the
+	// row's Meta — see projectNeedsActivation for that coupling.
+	if projectNeedsActivation(it.Meta) {
+		acts = append(acts, kit2.Action{
+			Label: "activate", Key: "a", Source: srcProjects,
+			Do: func(ctx context.Context) error {
+				_, err := cl.Projects.ActivateProject(ctx, connect.NewRequest(&apiv1.ActivateProjectRequest{Id: id}))
+				return err
+			},
+		})
+	}
+	// DELETE — the operator's report: "There is no ctrl+x delete for single or bulk on
+	// projects." The RPC existed and the TUI never offered it.
+	//
+	// DeleteProject permanently removes the row, so this is Danger and CONFIRMED, and the
+	// confirmation says so. Its cascade is the SERVER'S business (db.DeleteProject) and is
+	// not re-described here: a dialog that enumerates a cascade can drift from the
+	// implementation, which turns a confirm into a lie.
+	//
+	// The row is removed locally only after the write lands (no optimistic Apply), the same
+	// discipline the bulk actions use — there is no rollback that can restore server state,
+	// and a row that vanishes before the server agreed implies an undo that does not exist.
+	acts = append(acts, kit2.Action{
+		Label: "delete", Key: kit2.DeleteChord, Danger: true, Source: srcProjects,
+		Confirm: "Delete " + it.Title + "?\n\nThis permanently removes the project. It cannot be undone.",
+		Do: func(ctx context.Context) error {
+			_, err := cl.Projects.DeleteProject(ctx, connect.NewRequest(&apiv1.DeleteProjectRequest{Id: id}))
+			return err
+		},
+	})
+	return acts
 }
 
-// goalsText renders a project's goals JSON as "key=value" pairs (the form's
-// editable shape). Unknown JSON shapes render empty rather than dumping raw
-// JSON into the field.
+// bulkProjectActions are the operations that make sense on a whole projects selection.
+//
+// IT EXISTS BECAUSE THE BULK PATH WAS SOURCE-BLIND: actionsForSelection handed a projects
+// selection to bulkItemActions, which calls ArchiveWorkItem / DeleteWorkItem — with
+// PROJECT ids. The ids do not collide (both are ULIDs), so nothing was destroyed; every
+// call simply failed with not-found and the operator got "deleted 0 of 2 — 2 failed" for
+// an operation aimed at the wrong resource entirely.
+//
+// The shape follows bulkItemActions: one action, one confirm, the confirm NAMES THE
+// COUNT, the removals are sequential, and the count of failures is reported — a partial
+// bulk operation must say what it did rather than claim a clean sweep.
+func (m *Model) bulkProjectActions(ids []string) []kit2.Action {
+	n := len(ids)
+	count := fmt.Sprintf("%d", n)
+	label := func(verb string) string { return verb + " " + count + " selected" }
+	if m.cl == nil || m.cl.Projects == nil {
+		return []kit2.Action{{
+			Label: "no project client", Source: srcProjects,
+			Do: func(context.Context) error { return fmt.Errorf("no project client") },
+		}}
+	}
+	cl := m.cl.Projects
+	return []kit2.Action{
+		{
+			Label: label("delete"), Key: kit2.DeleteChord, Danger: true, Source: srcProjects,
+			Confirm: "Delete " + count + " projects?\n\nThis permanently removes each one. It cannot be undone.",
+			Do: func(ctx context.Context) error {
+				failed := 0
+				for _, id := range ids {
+					if _, err := cl.DeleteProject(ctx, connect.NewRequest(&apiv1.DeleteProjectRequest{Id: id})); err != nil {
+						failed++
+					}
+				}
+				if failed > 0 {
+					return fmt.Errorf("deleted %d of %d — %d failed", n-failed, n, failed)
+				}
+				return nil
+			},
+		},
+		{
+			Label: "clear selection", Key: "esc", Source: srcProjects,
+			Do: func(context.Context) error { return nil },
+			Apply: func() {
+				m.Base.ClearMarks()
+				m.notice = "selection cleared"
+			},
+		},
+	}
+}
+
+// projectNeedsActivation reports whether a projects row is in `drafting` — i.e.
+// whether ActivateProject can succeed on it.
+//
+// IT READS THE ROW'S Meta, and the coupling is stated rather than hidden:
+// fetchProjects (screen.go) builds a project's Meta as "<status> · <project_dir>", so
+// the status is the first token BY CONSTRUCTION. Reading a presentation string for
+// state is not ideal, and the honest alternative is carrying the status as its own
+// field on kit2.Item — not done here because that touches the shared item type for one
+// action. IF A SECOND CALLER EVER NEEDS PROJECT STATE, PROMOTE IT TO A FIELD rather
+// than re-parsing this.
+//
+// THE STATUS IS MATCHED AS A WHOLE TOKEN, not as a prefix. A bare HasPrefix("drafting")
+// also accepts "drafting-notes", and the second half of Meta is an OPERATOR-SUPPLIED
+// DIRECTORY PATH — arbitrary text that must never be read as state. That misreading was
+// in an earlier version of this function, whose comment confidently claimed it "cannot
+// false-positive on a directory"; the test beside it disproved the claim. The status is
+// therefore either the entire string or followed by the separator fetchProjects writes
+// (" · ").
+func projectNeedsActivation(meta string) bool {
+	return meta == "drafting" || strings.HasPrefix(meta, "drafting · ")
+}
+
+// goalsText renders a project's goals JSON document as the form's editable
+// "key=value, key2=value2" text. The document is a flat object
+// (project.convertGoalsToJSON), which is how the GUI reads it back too
+// (Object.entries(JSON.parse(...))).
+//
+// THIS USED TO RETURN THE RAW JSON, and that was a silent data-corruption bug: the
+// edit form prefilled `{"key":"value"}`, ParseGoals then split it on "," and "=",
+// found no "=", and turned the whole document into goals whose KEY was the JSON — so
+// saving an untouched edit destroyed the project's goals. Values are rendered with
+// fmt.Sprint so a non-string value round-trips as its text rather than being dropped.
+//
+// __git_strategy IS DELIBERATELY OMITTED: it is a legacy hiding place for the git
+// strategy from before that became a typed field, and it has a field of its own now
+// (git_strategy, which reads this same key as a fallback). Showing it as a goal would
+// put an internal marker in front of the operator and offer it for editing twice.
 func goalsText(raw string) string {
-	return raw
+	m := goalsMap(raw)
+	if len(m) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		if k == "__git_strategy" {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+m[k])
+	}
+	return strings.Join(parts, ", ")
 }
 
-// parseGoals converts "key=value, key2=value2" into GoalFields. An empty
-// input clears the goals (the proto's empty-fields semantics).
-func parseGoals(v string) []*apiv1.GoalField {
+// ParseGoals parses the goals field's "key=value, key2=value2" text into the
+// wire shape. An empty input clears the goals (the proto's empty-fields
+// semantics).
+//
+// EXPORTED so a second host runs the SAME parsing — a goal list is part of the
+// create request's meaning, and two parsers would eventually disagree about an
+// edge (a bare key, a value containing '=').
+func ParseGoals(v string) []*apiv1.GoalField {
 	var out []*apiv1.GoalField
 	for _, part := range strings.Split(v, ",") {
 		part = strings.TrimSpace(part)

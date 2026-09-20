@@ -144,7 +144,7 @@ func TestStartConversationTurnStallAborts(t *testing.T) {
 
 	convID := createConversation(t, pool, "")
 	ctx := context.Background()
-	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	ackID, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
 	if err != nil {
 		t.Fatalf("startConversationTurn: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestStartConversationTurnRepetitionStallAborts(t *testing.T) {
 
 	convID := createConversation(t, pool, "")
 	ctx := context.Background()
-	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	ackID, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
 	if err != nil {
 		t.Fatalf("startConversationTurn: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestInterjectConversationTurnSupersedes(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Start a turn; feed a bit of partial content but never idle.
-	ack1, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "first", nil)
+	ack1, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "first", nil)
 	if err != nil {
 		t.Fatalf("first send: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestInterjectConversationTurnSupersedes(t *testing.T) {
 	time.Sleep(100 * time.Millisecond) // let the old collector process the text before the cancel races it
 
 	// 2. Interject (supersede) with a second message.
-	ack2, _, err := s.startConversationTurnOpts(ctx, "tnt_dev", convID, "stop and focus on X", nil, turnDispatchOpts{supersede: true})
+	ack2, _, _, err := s.startConversationTurnOpts(ctx, "tnt_dev", convID, "stop and focus on X", nil, turnDispatchOpts{supersede: true})
 	if err != nil {
 		t.Fatalf("interject: %v", err)
 	}
@@ -362,7 +362,7 @@ func TestStartConversationTurnReturnsAckAndPersistsReplyAfterReturn(t *testing.T
 
 	// The RPC returns the ack before any reply exists.
 	ctx := context.Background()
-	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	ackID, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
 	if err != nil {
 		t.Fatalf("startConversationTurn: %v", err)
 	}
@@ -426,12 +426,12 @@ func TestStartConversationTurnRejectsSecondSend(t *testing.T) {
 
 	// A first send starts a turn (the collector registers it).
 	ctx := context.Background()
-	firstAck, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "first", nil)
+	firstAck, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "first", nil)
 	if err != nil {
 		t.Fatalf("first send: %v", err)
 	}
 	// The collector is live; a second send must be rejected.
-	_, _, err = s.startConversationTurn(ctx, "tnt_dev", convID, "second", nil)
+	_, _, _, err = s.startConversationTurn(ctx, "tnt_dev", convID, "second", nil)
 	var cerr *connect.Error
 	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeFailedPrecondition {
 		t.Fatalf("second send error = %v, want FailedPrecondition", err)
@@ -461,7 +461,7 @@ func TestPartialReplyMirroredWhileTurnRuns(t *testing.T) {
 
 	convID := createConversation(t, pool, "")
 	ctx := context.Background()
-	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	ackID, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
 	if err != nil {
 		t.Fatalf("startConversationTurn: %v", err)
 	}
@@ -538,7 +538,7 @@ func TestPartialReplyMirrorsTokenDeltas(t *testing.T) {
 
 	convID := createConversation(t, pool, "")
 	ctx := context.Background()
-	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	ackID, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
 	if err != nil {
 		t.Fatalf("startConversationTurn: %v", err)
 	}
@@ -623,7 +623,7 @@ func TestPartialReplyTrailingFlush(t *testing.T) {
 
 	convID := createConversation(t, pool, "")
 	ctx := context.Background()
-	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	ackID, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
 	if err != nil {
 		t.Fatalf("startConversationTurn: %v", err)
 	}
@@ -809,7 +809,7 @@ func TestStartConversationTurnTimeoutPersistsError(t *testing.T) {
 
 	convID := createConversation(t, pool, "")
 	ctx := context.Background()
-	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	ackID, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
 	if err != nil {
 		t.Fatalf("startConversationTurn: %v", err)
 	}
@@ -852,7 +852,7 @@ func TestStartConversationTurnServeLossFreshSessionFallback(t *testing.T) {
 	convID := createConversation(t, pool, "")
 	setConversationSessionID(t, pool, convID, "ses_orig")
 	ctx := context.Background()
-	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	ackID, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
 	if err != nil {
 		t.Fatalf("startConversationTurn: %v", err)
 	}
@@ -907,7 +907,7 @@ func TestPersistFoldedThinkSegmentsSeparateEntries(t *testing.T) {
 
 	convID := createConversation(t, pool, "")
 	ctx := context.Background()
-	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	ackID, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
 	if err != nil {
 		t.Fatalf("startConversationTurn: %v", err)
 	}
@@ -954,7 +954,7 @@ func TestPersistMidThinkSupersedeCleanPartial(t *testing.T) {
 
 	convID := createConversation(t, pool, "")
 	ctx := context.Background()
-	ackID, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	ackID, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
 	if err != nil {
 		t.Fatalf("startConversationTurn: %v", err)
 	}

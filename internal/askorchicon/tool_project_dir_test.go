@@ -43,6 +43,8 @@ func createProjectDirForTest(t *testing.T, ctx context.Context, pool *db.Pool, n
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatalf("commit project: %v", err)
 	}
+	// Self-cleaning: see db.CleanupProject.
+	db.CleanupProject(t, pool, workItemKindTestTenant, proj.ID)
 	return proj.ID
 }
 

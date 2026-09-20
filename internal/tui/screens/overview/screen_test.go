@@ -2,14 +2,17 @@ package overview
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
@@ -57,8 +60,20 @@ func (f *fakeImages) ListRuntimeImages(context.Context, *connect.Request[apiv1.L
 
 type fakeTelemetry struct {
 	apiv1connect.UnimplementedTelemetryServiceHandler
-	traces []*apiv1.Trace
-	live   bool
+	traces  []*apiv1.Trace
+	metrics []*apiv1.MetricSeries
+	logs    []*apiv1.LogRecord
+	live    bool
+}
+
+// QueryMetrics stands in for the VictoriaMetrics projection.
+func (f *fakeTelemetry) QueryMetrics(context.Context, *connect.Request[apiv1.QueryMetricsRequest]) (*connect.Response[apiv1.QueryMetricsResponse], error) {
+	return connect.NewResponse(&apiv1.QueryMetricsResponse{Series: f.metrics}), nil
+}
+
+// QueryLogs stands in for the Loki projection.
+func (f *fakeTelemetry) QueryLogs(context.Context, *connect.Request[apiv1.QueryLogsRequest]) (*connect.Response[apiv1.QueryLogsResponse], error) {
+	return connect.NewResponse(&apiv1.QueryLogsResponse{Logs: f.logs}), nil
 }
 
 func (f *fakeTelemetry) QueryTraces(_ context.Context, req *connect.Request[apiv1.QueryTracesRequest]) (*connect.Response[apiv1.QueryTracesResponse], error) {
@@ -92,6 +107,102 @@ type fakeGateway struct {
 
 func (f *fakeGateway) GetUsage(context.Context, *connect.Request[apiv1.GetUsageRequest]) (*connect.Response[apiv1.GetUsageResponse], error) {
 	return connect.NewResponse(&apiv1.GetUsageResponse{Records: f.records}), nil
+}
+
+// GetCost stands in for the backend's server-side roll-up: the grand total plus
+// one summary per group at the requested level, derived from the same records.
+func (f *fakeGateway) GetCost(_ context.Context, req *connect.Request[apiv1.GetCostRequest]) (*connect.Response[apiv1.GetCostResponse], error) {
+	total := costTotal(f.records)
+	var sums []*apiv1.CostSummary
+	switch req.Msg.GetRollup() {
+	case apiv1.UsageRollup_USAGE_ROLLUP_MODEL:
+		sums = costGroups(f.records, "model")
+	case apiv1.UsageRollup_USAGE_ROLLUP_PROJECT:
+		sums = costGroups(f.records, "project")
+	case apiv1.UsageRollup_USAGE_ROLLUP_TASK:
+		sums = costGroups(f.records, "task")
+	}
+	return connect.NewResponse(&apiv1.GetCostResponse{Summaries: sums, Total: total}), nil
+}
+
+// GetWorkflowCosts returns one aggregate per worker (a stand-in for the
+// per-workflow view; the screen only renders the numbers it is given).
+func (f *fakeGateway) GetWorkflowCosts(context.Context, *connect.Request[apiv1.GetWorkflowCostsRequest]) (*connect.Response[apiv1.GetWorkflowCostsResponse], error) {
+	byName := map[string]*apiv1.WorkflowCostAggregate{}
+	var order []string
+	for _, r := range f.records {
+		w, ok := byName[r.GetWorkerName()]
+		if !ok {
+			w = &apiv1.WorkflowCostAggregate{WorkflowId: "wf-" + r.GetWorkerName(), WorkflowName: r.GetWorkerName()}
+			byName[r.GetWorkerName()] = w
+			order = append(order, r.GetWorkerName())
+		}
+		w.TotalCostUsd += r.GetCostUsd()
+		w.TotalTokens += r.GetTotalTokens()
+		w.RunCount++
+	}
+	out := make([]*apiv1.WorkflowCostAggregate, 0, len(order))
+	for _, n := range order {
+		out = append(out, byName[n])
+	}
+	return connect.NewResponse(&apiv1.GetWorkflowCostsResponse{Workflows: out}), nil
+}
+
+// costTotal sums the window's usage into one summary.
+func costTotal(records []*apiv1.UsageRecord) *apiv1.CostSummary {
+	s := &apiv1.CostSummary{GroupBy: "tenant", GroupKey: "tenant"}
+	for _, r := range records {
+		s.TotalTokens += r.GetTotalTokens()
+		s.PromptTokens += r.GetPromptTokens()
+		s.CompletionTokens += r.GetCompletionTokens()
+		s.CacheReadTokens += r.GetCacheReadTokens()
+		s.CacheWriteTokens += r.GetCacheWriteTokens()
+		s.CostUsd += r.GetCostUsd()
+		s.RecordCount++
+		s.ExecutionCount++
+	}
+	return s
+}
+
+// costGroups rolls the records up by model or project.
+func costGroups(records []*apiv1.UsageRecord, level string) []*apiv1.CostSummary {
+	key := func(r *apiv1.UsageRecord) string {
+		switch level {
+		case "model":
+			return r.GetModel()
+		case "task":
+			if r.GetTaskId() == "" {
+				return "(unassigned)"
+			}
+			return r.GetTaskId()
+		}
+		if r.GetProjectId() == "" {
+			return "(unassigned)"
+		}
+		return r.GetProjectId()
+	}
+	seen := map[string]int{}
+	var out []*apiv1.CostSummary
+	for _, r := range records {
+		k := key(r)
+		i, ok := seen[k]
+		if !ok {
+			out = append(out, &apiv1.CostSummary{GroupBy: level, GroupKey: k, DisplayName: k})
+			i = len(out) - 1
+			seen[k] = i
+		}
+		s := out[i]
+		s.TotalTokens += r.GetTotalTokens()
+		s.PromptTokens += r.GetPromptTokens()
+		s.CompletionTokens += r.GetCompletionTokens()
+		s.CacheReadTokens += r.GetCacheReadTokens()
+		s.CacheWriteTokens += r.GetCacheWriteTokens()
+		s.CostUsd += r.GetCostUsd()
+		s.RecordCount++
+		s.ExecutionCount++
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].GetCostUsd() > out[j].GetCostUsd() })
+	return out
 }
 
 // plane is the disposable mocked Orchicon plane the Overview screen reads.
@@ -188,10 +299,27 @@ func populatedPlane() plane {
 				{SpanId: "s1", Name: "gateway.anthropic.request", Service: "gateway", DurationUs: 1200},
 				{SpanId: "s2", Name: "db.query", Service: "api", DurationUs: 200, StatusCode: 2, StatusMessage: "boom"},
 			},
+		}}, metrics: []*apiv1.MetricSeries{{
+			MetricName: "orchicon_tokens_consumed",
+			Labels:     map[string]string{"tenant": "tnt_dev"},
+			Points: []*apiv1.MetricPoint{
+				{Timestamp: timestamppb.New(time.Unix(1700000000, 0)), Value: 12},
+				{Timestamp: timestamppb.New(time.Unix(1700000600, 0)), Value: 30},
+			},
+		}}, logs: []*apiv1.LogRecord{{
+			TraceId:   "tr-1",
+			SpanId:    "s2",
+			Timestamp: timestamppb.New(time.Unix(1700000600, 0)),
+			Severity:  "ERROR",
+			Body:      "db.query failed: context deadline exceeded",
+			Service:   "api",
+			Attributes: map[string]string{
+				"tenant_id": "tnt_dev",
+			},
 		}}},
 		gw: &fakeGateway{records: []*apiv1.UsageRecord{
-			{Id: "r1", Provider: "anthropic", Model: "claude-sonnet-4", PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150, CostUsd: 1.5, WorkerName: "impl"},
-			{Id: "r2", Provider: "openai", Model: "gpt-x", PromptTokens: 20, CompletionTokens: 10, TotalTokens: 30, CostUsd: 0.5, TaskTitle: "fix bug"},
+			{Id: "r1", ProjectId: "proj-a", Provider: "anthropic", Model: "claude-sonnet-4", PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150, CostUsd: 1.5, WorkerName: "impl"},
+			{Id: "r2", ProjectId: "proj-b", Provider: "openai", Model: "gpt-x", PromptTokens: 20, CompletionTokens: 10, TotalTokens: 30, CostUsd: 0.5, TaskTitle: "fix bug"},
 		}},
 	}
 }
@@ -283,19 +411,32 @@ func TestTelemetryLiveStreamDeliversEvents(t *testing.T) {
 
 // ---- Cost Explorer + Usage -------------------------------------------
 
+// The Cost Explorer reads the SERVER-SIDE roll-up (GetCost) at the GUI's
+// drill-down levels: a grand total, per-model and per-project groups, and the
+// per-workflow view. It used to aggregate the first page of raw usage records
+// client-side, which is why its breakdowns did not match the GUI.
 func TestCostExplorerBreakdownAndTotal(t *testing.T) {
 	m := load(t, newModel(t, populatedPlane()))
 	m.SelectSource("cost-explorer")
 	assertContains(t, m.View(),
-		"Total", "$2.00",
-		"By provider · anthropic", "By provider · openai",
-		"By model · claude-sonnet-4", "By model · gpt-x")
+		"TOTAL", "$2.00",
+		"claude-sonnet-4", "gpt-x", // by model
+		"proj-a", "proj-b") // by project
 
+	// The total's detail carries the full breakdown numbers.
 	m = drive(t, m, m.RequestDetail("cost-explorer", "total"))
-	assertContains(t, m.View(), "by provider", "by model", "claude-sonnet-4", "gpt-x", "$2.00")
+	assertContains(t, m.View(),
+		"Cost — total", "cost", "$2.00", "total tokens", "180",
+		"prompt tokens", "120", "completion tokens", "60",
+		"cache read", "cache write", "executions", "records", "window")
 
-	m = drive(t, m, m.RequestDetail("cost-explorer", "provider:anthropic"))
-	assertContains(t, m.View(), "Cost — provider anthropic", "claude-sonnet-4")
+	// A model group's detail names the group and shows its own numbers.
+	m = drive(t, m, m.RequestDetail("cost-explorer", "model:claude-sonnet-4"))
+	assertContains(t, m.View(), "Cost — model claude-sonnet-4", "$1.50", "150")
+
+	// A project group's detail likewise.
+	m = drive(t, m, m.RequestDetail("cost-explorer", "project:proj-b"))
+	assertContains(t, m.View(), "Cost — project proj-b", "$0.50", "30")
 }
 
 func TestUsageRecordsTableAndDetail(t *testing.T) {
@@ -311,13 +452,151 @@ func TestUsageRecordsTableAndDetail(t *testing.T) {
 
 func TestEmptyStatesNameWhyEachPaneIsEmpty(t *testing.T) {
 	m := load(t, newModel(t, emptyPlane()))
-	v := m.View()
-	if strings.Contains(v, "nothing here") {
-		t.Fatalf("bare \"nothing here\" empty state leaked into the Overview view:\n%s", v)
+	// Two panes render at a time, so each source's empty state is checked by
+	// focusing it.
+	for _, tc := range []struct{ src, want string }{
+		{"dashboard", "no plane data to aggregate"},
+		{"telemetry", "no traces in the window"},
+		{"usage", "no usage records"},
+	} {
+		if !m.SelectSource(tc.src) {
+			t.Fatalf("source %q not selectable", tc.src)
+		}
+		v := m.View()
+		if strings.Contains(v, "nothing here") {
+			t.Fatalf("bare \"nothing here\" empty state leaked into %s:\n%s", tc.src, v)
+		}
+		assertContains(t, v, tc.want)
 	}
-	assertContains(t, v,
-		"no plane data to aggregate",
-		"no traces in the window",
-		"no usage records",
-	)
+}
+
+// The operator's read of Telemetry was "just a bunch of traces". The pane now
+// opens on an at-a-glance SUMMARY row (traces, spans, errored spans, slowest)
+// and each trace row flags its own errored span count.
+func TestTelemetrySummaryAndErrorFlagging(t *testing.T) {
+	m := load(t, newModel(t, populatedPlane()))
+	m.SelectSource("telemetry")
+	assertContains(t, m.View(),
+		"SUMMARY", // the aggregate row, first
+		"1 traces · 2 spans",
+		"1 errored",
+		"gateway.anthropic.request", // the trace row
+		"1 err")                     // …flagged because it carries an error span
+
+	// The summary's detail reports the numbers, not a trace.
+	m = drive(t, m, m.RequestDetail("telemetry", "summary"))
+	assertContains(t, m.View(),
+		"Telemetry — summary", "traces", "spans", "errored spans", "slowest trace")
+}
+
+// An empty window must NOT show a 0/0 summary row: the pane's empty state names
+// WHY it is empty, and a summary would suppress that explanation.
+func TestTelemetryEmptyWindowKeepsItsExplanation(t *testing.T) {
+	m := load(t, newModel(t, emptyPlane()))
+	m.SelectSource("telemetry")
+	v := m.View()
+	if strings.Contains(v, "SUMMARY") {
+		t.Fatalf("an empty window must not render a summary row:\n%s", v)
+	}
+	assertContains(t, v, "no traces in the window")
+}
+
+// ---- Telemetry's three signals ---------------------------------------
+
+// The operator's ask: the pane must show traces, METRICS and LOGS as sections
+// (it was "just a bunch of traces"), and selecting a row must open that item's
+// details in the right-hand pane.
+func TestTelemetryShowsAllThreeSignalSections(t *testing.T) {
+	m := load(t, newModel(t, populatedPlane()))
+	m.SelectSource("telemetry")
+	assertContains(t, m.View(),
+		"SUMMARY",
+		"TRACES", "gateway.anthropic.request",
+		"METRICS", "orchicon_tokens_consumed",
+		"LOGS")
+
+	// A metric row opens the series detail (identity, window, points).
+	m = drive(t, m, m.RequestDetail("telemetry", "metric:orchicon_tokens_consumed"))
+	assertContains(t, m.View(),
+		"Metric orchicon_tokens_consumed", "points", "window", "POINTS")
+
+	// A log row opens the record detail (severity, service, body).
+	m = drive(t, m, m.RequestDetail("telemetry", "log:0"))
+	assertContains(t, m.View(), "severity", "service", "trace")
+}
+
+// Each signal is capped at the TEN most recent, newest first.
+func TestTelemetryCapsEachSignalAtTenNewest(t *testing.T) {
+	p := populatedPlane()
+	p.tl.traces = nil
+	for i := 0; i < 15; i++ {
+		p.tl.traces = append(p.tl.traces, &apiv1.Trace{
+			TraceId:      fmt.Sprintf("tr-%02d", i),
+			RootSpanName: fmt.Sprintf("span-%02d", i),
+			SpanCount:    1,
+			StartTime:    timestamppb.New(time.Unix(int64(1700000000+i*60), 0)),
+		})
+	}
+
+	m := load(t, newModel(t, p))
+	m.SelectSource("telemetry")
+	v := m.View()
+	// The ten newest are present…
+	for i := 14; i >= 5; i-- {
+		if !strings.Contains(v, fmt.Sprintf("span-%02d", i)) {
+			t.Errorf("newest trace span-%02d missing from the capped section", i)
+		}
+	}
+	// …and the five oldest are not.
+	for i := 0; i < 5; i++ {
+		if strings.Contains(v, fmt.Sprintf("span-%02d", i)) {
+			t.Errorf("trace span-%02d is older than the top ten but was rendered", i)
+		}
+	}
+	// The section header reports the TRUE total, not the capped count.
+	if !strings.Contains(v, "TRACES") {
+		t.Fatal("traces section header missing")
+	}
+}
+
+// ---- Cost Explorer's per-group sections -------------------------------
+
+// The operator's ask: top ten per group (project, task, workflow, model), and
+// clicking one opens its detail.
+func TestCostExplorerShowsTopTenPerGroup(t *testing.T) {
+	p := populatedPlane()
+	// 15 models with distinct, decreasing costs, plus a task id so the TASK
+	// rollup has a group to report.
+	for i := 0; i < 15; i++ {
+		p.gw.records = append(p.gw.records, &apiv1.UsageRecord{
+			Id:          fmt.Sprintf("m-%02d", i),
+			ProjectId:   "proj-a",
+			TaskId:      "task-ship-tui",
+			Provider:    "anthropic",
+			Model:       fmt.Sprintf("model-%02d", i),
+			TotalTokens: 10,
+			CostUsd:     float64(100 - i),
+		})
+	}
+
+	m := load(t, newModel(t, p))
+	m.SelectSource("cost-explorer")
+	v := m.View()
+	assertContains(t, v, "TOTAL", "MODELS", "PROJECTS", "TASKS", "WORKFLOWS")
+	// The ten costliest models are present…
+	for i := 0; i < 10; i++ {
+		if !strings.Contains(v, fmt.Sprintf("model-%02d", i)) {
+			t.Errorf("model-%02d is in the top ten by cost but was not rendered", i)
+		}
+	}
+	// …and the five cheapest are not.
+	for i := 10; i < 15; i++ {
+		if strings.Contains(v, fmt.Sprintf("model-%02d", i)) {
+			t.Errorf("model-%02d is outside the top ten but was rendered", i)
+		}
+	}
+
+	// A task row's detail resolves (the third drill-down level).
+	m = drive(t, m, m.RequestDetail("cost-explorer", "task:task-ship-tui"))
+	assertContains(t, m.View(), "Cost — task task-ship-tui")
 }

@@ -1,10 +1,20 @@
 // Orchicon WorkerService.
 //
 // Worker CRUD + versioning lifecycle (publish/deprecate/retire) + edit
-// locks for the visual Worker editor (docs/07_API_Specification.md §3.3).
-// All mutations write through the transactional outbox
-// (docs/09_Database_Schema.md §6). A published Worker is immutable;
-// changes create a new version (docs/05_Worker_Specification.md §4).
+// locks for the visual Worker editor.
+// All mutations write through the transactional outbox.
+// MUTABILITY, as the code enforces it today:
+//   - HEADER text (name/description/purpose) is writable on any worker that is not
+//     retired, and the RBAC role binding is writable on every status. Neither is
+//     versioned content, and nothing resolves a worker by name (steps reference it
+//     by id; the slug is immutable after create). UpdateWorker in internal/db is
+//     the gate.
+//   - A PUBLISHED version has its fields edited IN PLACE without advancing the
+//     version number: UpdateWorkerVersion{republish} reverts, updates and
+//     republishes in one transaction, and BulkUpdateWorkerModel does the same for
+//     model_ref.
+//   - CreateWorkerVersion{publish} creates the next version and publishes it in
+//     one transaction, so a failure cannot strand an unpublished draft.
 syntax = "proto3";
 
 package orchicon.api.v1;
@@ -31,9 +41,10 @@ service WorkerService {
   // dispatches; in-flight executions run to completion (docs/05 §4).
   rpc RetireWorker(RetireWorkerRequest) returns (RetireWorkerResponse);
 
-  // UpdateWorker updates the mutable header fields of a Worker (name,
-  // description, purpose). The worker must be in draft status to be
-  // updated; published workers must create a new version instead.
+  // UpdateWorker updates a Worker's header fields (name, description,
+  // purpose) and/or its RBAC role binding, in one request. Header text is
+  // accepted on any worker that is not retired; the role binding is accepted
+  // on every status. Neither needs a new version.
   rpc UpdateWorker(UpdateWorkerRequest) returns (UpdateWorkerResponse);
 
   // DeleteWorker hard-deletes a Worker and all its versions.
@@ -100,6 +111,8 @@ message CreateWorkerRequest {
   string purpose = 5;
   // First-version snapshot fields (docs/05 §3):
   reserved 6; // former runtime_ref (worker-level adapter kind), retired — model_ref's adapter segment is the single source of truth (ADR-0003)
+  // model_ref is the canonical adapter/provider/model ref (ADR-0003); a
+  // legacy 1/2-segment ref is accepted and infers adapter "opencode".
   string model_ref = 7;
   string system_prompt = 8; // Markdown + template variables (docs/05 §11)
   string context_sources = 9; // JSON
@@ -134,12 +147,15 @@ message CreateWorkerResponse {
 
 message UpdateWorkerRequest {
   string id = 1;
+  // name/description/purpose are plain strings, so EMPTY MEANS UNCHANGED —
+  // absence and "" are indistinguishable to the server. Clearing one is
+  // therefore not expressible through this message today; expressing it needs
+  // `optional` (presence) on these fields.
   string name = 2;
   string description = 3; // Markdown
   string purpose = 4;
   // Role binding with presence: set to a role id to bind, "" to clear.
-  // Unlike name/description/purpose (draft-only), the role binding is
-  // editable on published workers (it lives on the header, not the version).
+  // Editable on every status, and may ride in the same request as header text.
   optional string role_ref = 5;
 }
 
@@ -227,9 +243,10 @@ message ListWorkersRequest {
 message WorkerListItem {
   Worker worker = 1;
   // active_model_ref is the model_ref of the active version
-  // (worker_versions.model_ref) — matches the ModelPicker provider/id
-  // format verbatim (e.g. "anthropic/claude-sonnet-4"). Empty when the
-  // worker has no versions yet.
+  // (worker_versions.model_ref) — canonical adapter/provider/model
+  // (ADR-0003), e.g. "orchicon/anthropic/claude-sonnet-4", reported
+  // VERBATIM as stored (a legacy ref keeps its legacy form until it is
+  // re-saved). Empty when the worker has no versions yet.
   string active_model_ref = 2;
   WorkerVersionStatus active_version_status = 3;
   // active_adapter is the parsed adapter segment of active_model_ref
@@ -267,6 +284,8 @@ message UpdateWorkerVersionRequest {
   string version_id = 2;
   // Fields to update (only draft versions):
   reserved 6; // former runtime_ref (worker-level adapter kind), retired — model_ref's adapter segment is the single source of truth (ADR-0003)
+  // model_ref is the canonical adapter/provider/model ref (ADR-0003); a
+  // legacy 1/2-segment ref is accepted and infers adapter "opencode".
   optional string model_ref = 7;
   optional string system_prompt = 8;
   optional string context_sources = 9;
@@ -290,6 +309,29 @@ message UpdateWorkerVersionRequest {
   // adapter/provider pair must be valid (provider known for the new
   // kind) or the update is rejected InvalidArgument.
   optional string adapter = 22;
+  // republish SAVES the edit and leaves the worker PUBLISHED in ONE
+  // server-side transaction, collapsing the manual three-gesture flow
+  // (revert to draft → save → publish) into a single call:
+  //   - a version that is already a draft is updated in place, then
+  //     published;
+  //   - a PUBLISHED version is reverted to draft, updated, and republished.
+  // In BOTH branches the version NUMBER does not advance and the worker's
+  // current_version follows the version just published — the same semantics
+  // BulkUpdateWorkerModel already implements for model_ref, generalised here
+  // to every mutable field.
+  //
+  // The revert happens inside THIS call's transaction. The intermediate
+  // draft state is therefore never observable by another connection, and a
+  // save that fails anywhere below rolls back to the version's original
+  // published state — so a cancelled or failed edit can never strand a
+  // worker in draft, which is the failure mode the per-gesture client flow
+  // has.
+  //
+  // false (default) keeps UpdateWorkerVersion's original draft-only
+  // contract. A DEPRECATED version is rejected FailedPrecondition in both
+  // modes: it cannot be reverted to draft, and this API offers no
+  // unpublished edit of it.
+  bool republish = 23;
 }
 
 message UpdateWorkerVersionResponse {
@@ -300,6 +342,8 @@ message CreateWorkerVersionRequest {
   string worker_id = 1;
   // Optional fields to override from the source version.
   reserved 6; // former runtime_ref (worker-level adapter kind), retired — model_ref's adapter segment is the single source of truth (ADR-0003)
+  // model_ref is the canonical adapter/provider/model ref (ADR-0003); a
+  // legacy 1/2-segment ref is accepted and infers adapter "opencode".
   optional string model_ref = 7;
   optional string system_prompt = 8;
   optional string context_sources = 9;
@@ -320,6 +364,13 @@ message CreateWorkerVersionRequest {
   // Optional explicit adapter selection (ADR-0005 D2/D4) — same contract
   // as UpdateWorkerVersion.
   optional string adapter = 22;
+  // publish CREATES the new version and publishes it in the SAME
+  // transaction, so the version is live immediately. Without it the caller
+  // must follow with PublishWorkerVersion, and a failure between the two
+  // calls leaves an unpublished draft behind. The version number advances
+  // as usual and current_version follows the newly published version.
+  // false (default) creates a draft, exactly as before.
+  bool publish = 23;
 }
 
 message CreateWorkerVersionResponse {
@@ -361,7 +412,7 @@ message GetEditLockResponse {
 // batch.
 message BulkUpdateWorkerModelRequest {
   repeated string worker_ids = 1; // max 100
-  string model_ref = 2; // provider/id, e.g. "anthropic/claude-sonnet-4"
+  string model_ref = 2; // canonical adapter/provider/model, e.g. "orchicon/anthropic/claude-sonnet-4" (a legacy 1/2-segment ref is accepted and infers adapter "opencode")
 }
 
 message BulkUpdateWorkerModelResponse {

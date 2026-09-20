@@ -37,7 +37,7 @@ func TestNativeAskToolDefsCarryJSONSchema(t *testing.T) {
 		Required:    []string{"target"},
 	})
 	p := (&Service{toolRegistry: r}).NativeAskTools()
-	defs := p.AskToolDefs()
+	defs := p.AskToolDefs(context.Background())
 	var found bool
 	for _, d := range defs {
 		if d.Name != "ping" {
@@ -78,7 +78,7 @@ func TestNativeAskDefsExposeHostSuite(t *testing.T) {
 	r := testToolRegistry()
 	p := (&Service{toolRegistry: r}).NativeAskTools()
 	got := map[string]string{}
-	for _, d := range p.AskToolDefs() {
+	for _, d := range p.AskToolDefs(context.Background()) {
 		got[d.Name] = d.ParamsJSON
 	}
 	for _, name := range hostSuiteToolNames {

@@ -109,6 +109,9 @@ func TestRecurringFireFiresLeafAndAdvancesNextRunAt(t *testing.T) {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// Self-cleaning: see db.CleanupProject — the fixture tears its project down
+	// through the same cascade the product uses, so it cannot leave residue behind.
+	db.CleanupProject(t, pool, approvalTestTenant, proj.ID)
 
 	wfID := seedPublishedWorkflow(t, pool, proj.ID)
 	schedule := &apiv1.RecurringSchedule{
@@ -167,6 +170,9 @@ func TestRecurringFireFiresSequenceParent(t *testing.T) {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// Self-cleaning: see db.CleanupProject — the fixture tears its project down
+	// through the same cascade the product uses, so it cannot leave residue behind.
+	db.CleanupProject(t, pool, approvalTestTenant, proj.ID)
 
 	wfID := seedPublishedWorkflow(t, pool, proj.ID)
 	schedule := &apiv1.RecurringSchedule{
@@ -224,6 +230,9 @@ func TestRecurringFireSkipsNonDueItems(t *testing.T) {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// Self-cleaning: see db.CleanupProject — the fixture tears its project down
+	// through the same cascade the product uses, so it cannot leave residue behind.
+	db.CleanupProject(t, pool, approvalTestTenant, proj.ID)
 
 	wfID := seedPublishedWorkflow(t, pool, proj.ID)
 
@@ -308,6 +317,9 @@ func TestRecurringFireIdempotency(t *testing.T) {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// Self-cleaning: see db.CleanupProject — the fixture tears its project down
+	// through the same cascade the product uses, so it cannot leave residue behind.
+	db.CleanupProject(t, pool, approvalTestTenant, proj.ID)
 
 	wfID := seedPublishedWorkflow(t, pool, proj.ID)
 	schedule := &apiv1.RecurringSchedule{
@@ -359,6 +371,9 @@ func TestRecurringFireSkipsNoWorkflow(t *testing.T) {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// Self-cleaning: see db.CleanupProject — the fixture tears its project down
+	// through the same cascade the product uses, so it cannot leave residue behind.
+	db.CleanupProject(t, pool, approvalTestTenant, proj.ID)
 
 	schedule := &apiv1.RecurringSchedule{
 		Frequency: "daily",
@@ -403,6 +418,9 @@ func TestRecurringAdvanceNextRunAt(t *testing.T) {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// Self-cleaning: see db.CleanupProject — the fixture tears its project down
+	// through the same cascade the product uses, so it cannot leave residue behind.
+	db.CleanupProject(t, pool, approvalTestTenant, proj.ID)
 
 	schedule := &apiv1.RecurringSchedule{
 		Frequency: "hourly",
@@ -471,6 +489,9 @@ func TestRecurringFireBothLeafAndSequenceParent(t *testing.T) {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// Self-cleaning: see db.CleanupProject — the fixture tears its project down
+	// through the same cascade the product uses, so it cannot leave residue behind.
+	db.CleanupProject(t, pool, approvalTestTenant, proj.ID)
 
 	wfID := seedPublishedWorkflow(t, pool, proj.ID)
 	schedule := &apiv1.RecurringSchedule{
@@ -536,6 +557,9 @@ func TestRecurringFireLifecycle_CompletionReturnsToRecurring(t *testing.T) {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// Self-cleaning: see db.CleanupProject — the fixture tears its project down
+	// through the same cascade the product uses, so it cannot leave residue behind.
+	db.CleanupProject(t, pool, approvalTestTenant, proj.ID)
 
 	// Seed a workflow with a REAL task step (not the empty step DAG that
 	// seedPublishedWorkflow publishes) so reconcileRun can actually
@@ -668,6 +692,9 @@ func TestRecurringRunFailureKeepsItemRecurring(t *testing.T) {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// Self-cleaning: see db.CleanupProject — the fixture tears its project down
+	// through the same cascade the product uses, so it cannot leave residue behind.
+	db.CleanupProject(t, pool, approvalTestTenant, proj.ID)
 	steps := []workflow.StepWire{
 		{ID: "step-1", Name: "Do work", Kind: domain.StepKindTask, DependsOn: []string{}},
 	}
@@ -812,6 +839,9 @@ func TestRecurringRunFailureAtStartKeepsItemRecurring(t *testing.T) {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// Self-cleaning: see db.CleanupProject — the fixture tears its project down
+	// through the same cascade the product uses, so it cannot leave residue behind.
+	db.CleanupProject(t, pool, approvalTestTenant, proj.ID)
 	steps := []workflow.StepWire{
 		{ID: "step-1", Name: "Do work", Kind: domain.StepKindTask, DependsOn: []string{}},
 	}
@@ -932,6 +962,9 @@ func TestRecurringFireRecordsLedgerOnFire(t *testing.T) {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// Self-cleaning: see db.CleanupProject — the fixture tears its project down
+	// through the same cascade the product uses, so it cannot leave residue behind.
+	db.CleanupProject(t, pool, approvalTestTenant, proj.ID)
 	wfID := seedPublishedWorkflow(t, pool, proj.ID)
 	schedule := &apiv1.RecurringSchedule{Frequency: "daily", Interval: 1, StartDate: "2026-08-12", StartTime: "09:00"}
 	item := createRecurringItem(t, pool, proj.ID, domain.WorkItemKindTask, "Ledger Item", nil, &wfID, schedule)
@@ -986,6 +1019,9 @@ func TestRecurringFireFailedFireRecordsLedgerAndAdvances(t *testing.T) {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// Self-cleaning: see db.CleanupProject — the fixture tears its project down
+	// through the same cascade the product uses, so it cannot leave residue behind.
+	db.CleanupProject(t, pool, approvalTestTenant, proj.ID)
 	wfID := seedPublishedWorkflow(t, pool, proj.ID)
 	schedule := &apiv1.RecurringSchedule{Frequency: "daily", Interval: 1, StartDate: "2026-08-12", StartTime: "09:00"}
 	item := createRecurringItem(t, pool, proj.ID, domain.WorkItemKindTask, "Fail-Fire Item", nil, &wfID, schedule)
@@ -1040,6 +1076,9 @@ func TestRecurringFireSkipsPausedItem(t *testing.T) {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// Self-cleaning: see db.CleanupProject — the fixture tears its project down
+	// through the same cascade the product uses, so it cannot leave residue behind.
+	db.CleanupProject(t, pool, approvalTestTenant, proj.ID)
 	wfID := seedPublishedWorkflow(t, pool, proj.ID)
 	schedule := &apiv1.RecurringSchedule{Frequency: "daily", Interval: 1, StartDate: "2026-08-12", StartTime: "09:00"}
 	item := createRecurringItem(t, pool, proj.ID, domain.WorkItemKindTask, "Paused Item", nil, &wfID, schedule)
@@ -1076,4 +1115,3 @@ func TestRecurringFireSkipsPausedItem(t *testing.T) {
 		t.Errorf("ledger entries = %d, want 0 (paused item records no fire)", len(entries))
 	}
 }
-

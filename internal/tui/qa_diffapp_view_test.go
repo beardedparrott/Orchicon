@@ -63,14 +63,35 @@ func qaApp(t *testing.T) (*App, *httptest.Server) {
 
 // openPaneViaD presses D and consumes the fetch cmd (bubbletea runs Cmds
 // off-loop), returning the updated App.
+//
+// A cmd may be a tea.Batch (the shell batches any staged command with the
+// dispatch's own — e.g. the composer's caret-blink starter), and bubbletea
+// expands a BatchMsg into its members before delivering them. The helper
+// mirrors that: it runs each member and feeds each resulting message back in.
 func openPaneViaD(m *App) *App {
-	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
+	// The diff pane is CTRL+D now; `d`/`D` are plain letters again (see the
+	// "toggle diff sidebar" route).
+	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
 	m = nm.(*App)
-	if cmd != nil {
-		if msg := cmd(); msg != nil {
-			nm2, _ := m.Update(msg)
-			m = nm2.(*App)
+	if cmd == nil {
+		return m
+	}
+	switch msg := cmd().(type) {
+	case tea.BatchMsg:
+		for _, c := range msg {
+			if c == nil {
+				continue
+			}
+			if sub := runCmdBounded(c, runCtxCmdBudget); sub != nil {
+				nm2, _ := m.Update(sub)
+				m = nm2.(*App)
+			}
 		}
+	case nil:
+		// nothing to deliver
+	default:
+		nm2, _ := m.Update(msg)
+		m = nm2.(*App)
 	}
 	return m
 }
@@ -105,9 +126,10 @@ func TestQADiffPaneMouseCloseEndToEnd(t *testing.T) {
 	if !m.diffOpen || !m.diffPane.HasOwner() {
 		t.Fatal("pane not open with owner before mouse-close")
 	}
-	// Click the ✕ close button (glyphX content-relative + 1 border, row 2).
+	// Click the ✕ close button (glyphX content-relative + 1 border, pane tab-bar
+	// row = terminal row 3).
 	gx := m.diffPane.GlyphX()
-	nm, _ := m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: gx + 1, Y: 2})
+	nm, _ := m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: gx + 1, Y: 3})
 	m = nm.(*App)
 	if m.diffOpen {
 		t.Fatalf("mouse click on ✕ did not close the pane")

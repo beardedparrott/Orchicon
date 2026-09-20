@@ -15,6 +15,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 	"github.com/beardedparrott/orchicon/internal/tui/config"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/ask"
 )
 
 // ask_parity_test.go — assertions for the Ask Orchicon read-write parity
@@ -42,6 +43,43 @@ type stubAskParity struct {
 	compactedID     string
 	compactedReason string
 	compactResp     *apiv1.CompactConversationResponse
+
+	// abortedID records the conversation a Stop was issued for (the GUI's Stop
+	// button calls the same RPC).
+	abortedID string
+
+	// projectMoveFor records the conversation whose project was changed, and the target — the pair a test needs
+	// to tell "the write happened" from "the rail merely reloaded".
+	//
+	// THIS RPC HAD NO STUB AT ALL, and that is why the move shipped broken: with no implementation, the embedded
+	// Unimplemented handler answers every call, so NO test could move a conversation and the reload path could
+	// not be exercised end to end. The missing fixture was the missing coverage.
+	projectMoveFor  string
+	projectMoveDest string
+}
+
+func (s *stubAskParity) SetConversationProject(_ context.Context, req *connect.Request[apiv1.SetConversationProjectRequest]) (*connect.Response[apiv1.SetConversationProjectResponse], error) {
+	s.projectMoveFor = req.Msg.GetId()
+	s.projectMoveDest = req.Msg.GetProjectId()
+	// THE STUB PERSISTS THE MOVE, because ListConversations reads this same slice. A stub that only recorded the
+	// call would reload the OLD project ids and every "did it leave the rail?" assertion would fail for a reason
+	// that has nothing to do with the shell.
+	for _, c := range s.convs {
+		if c.GetId() == req.Msg.GetId() {
+			c.ProjectId = req.Msg.GetProjectId()
+			break
+		}
+	}
+	return connect.NewResponse(&apiv1.SetConversationProjectResponse{
+		Conversation: &apiv1.Conversation{Id: req.Msg.GetId(), ProjectId: req.Msg.GetProjectId()},
+	}), nil
+}
+
+// AbortConversationTurn is the Stop path. The server treats it as idempotent, so
+// recording the id (rather than erroring on a repeat) matches real behaviour.
+func (s *stubAskParity) AbortConversationTurn(_ context.Context, req *connect.Request[apiv1.AbortConversationTurnRequest]) (*connect.Response[apiv1.AbortConversationTurnResponse], error) {
+	s.abortedID = req.Msg.GetConversationId()
+	return connect.NewResponse(&apiv1.AbortConversationTurnResponse{}), nil
 }
 
 func (s *stubAskParity) CompactConversation(_ context.Context, req *connect.Request[apiv1.CompactConversationRequest]) (*connect.Response[apiv1.CompactConversationResponse], error) {
@@ -380,5 +418,85 @@ func TestScrollActiveDetailScrollsTranscript(t *testing.T) {
 	m.scrollActiveDetail(-3)
 	if str.AtBottom() {
 		t.Fatal("scroll keys must move the transcript viewport")
+	}
+}
+
+// A USER MESSAGE APPEARS THE MOMENT IT IS SENT — driven through the REAL path.
+//
+// The operator: "User messages don't appear until AFTER the model responds."
+//
+// THE CAUSE was a click-vs-keyboard asymmetry, the same shape as the Enter bug on this rail. The rail's
+// CLICK path calls RequestDetail, which writes the screen's detail id as a side effect; the KEYBOARD
+// path (OpenAskConversation) did not. The shell's chat repaint is guarded on that id, so with it empty
+// the repaint was a NO-OP — the transcript stream was never even created, and the operator's text stayed
+// invisible until something incidental painted the pane.
+//
+// This test drives OpenAskConversation and then the composer's send, and asserts the transcript exists
+// and carries the operator's text. It deliberately does NOT call syncTranscript directly: the two
+// existing tests in this file do, which is why neither could see a bug in the guard that decides whether
+// to call it at all.
+func TestUserMessageIsVisibleImmediatelyOnOpenConversation(t *testing.T) {
+	m, _ := newAskApp(t)
+	// The REAL Ask screen: the repaint needs RenderTranscript, and the guard needs DetailID.
+	m.RegisterScreen(TabAsk, ask.New(m.clients, m.reg))
+	m.SwitchTo(TabAsk)
+	m.askMode = askConversations
+	m.convRailOpen = true
+	m.rightRailOpen = true
+
+	m.OpenAskConversation("c1")
+
+	if dr, ok := m.screens[TabAsk].(interface{ DetailID() string }); ok {
+		if dr.DetailID() != "c1" {
+			t.Fatalf("opening a conversation must declare the pane's content: DetailID = %q, want c1 — "+
+				"the shell's chat repaint is guarded on it, so an empty id means NO repaint at all",
+				dr.DetailID())
+		}
+	} else {
+		t.Fatal("the Ask screen must expose DetailID")
+	}
+
+	m.sendFromComposer("hello there")
+
+	str := m.TranscriptStream("c1")
+	if str == nil {
+		t.Fatal("the transcript stream was never created — the send produced no repaint, so the " +
+			"operator's own message cannot render until something else paints the pane")
+	}
+	if joined := strings.Join(str.Lines, "\n"); !strings.Contains(joined, "hello there") {
+		t.Errorf("the operator's message is not in the transcript: %q", joined)
+	}
+	// And nothing has replied yet, so the GUI's thinking indicator should be showing.
+	if str.Notice != "Orchicon is thinking…" {
+		t.Errorf("transcript notice = %q, want %q — the GUI shows it until the first content arrives",
+			str.Notice, "Orchicon is thinking…")
+	}
+}
+
+// THE THINKING INDICATOR CLEARS when the model's prose arrives, and does not appear when there is
+// nothing to wait for. The decision is a pure function so both halves are testable without driving the
+// controller's stream.
+func TestAwaitingReplyTracksTheModelFirstContent(t *testing.T) {
+	user := chat.ChatItem{Kind: chat.KindUser, Text: "hi", Key: "draft-1"}
+	reply := chat.ChatItem{Kind: chat.KindText, Text: "hello"}
+	tool := chat.ChatItem{Kind: chat.KindTool, Text: "read_file"}
+
+	if awaitingReply(nil) {
+		t.Error("nothing was sent, so there is no reply to wait for")
+	}
+	if !awaitingReply([]chat.ChatItem{user}) {
+		t.Error("a sent message with no content yet IS a pending reply")
+	}
+	if waiting := awaitingReply([]chat.ChatItem{user, tool}); !waiting {
+		t.Error("a tool row is not the model's answer — the indicator must stay up")
+	}
+	if awaitingReply([]chat.ChatItem{user, reply}) {
+		t.Error("the model has spoken, so the indicator must clear")
+	}
+	// A FOLLOW-UP in a long conversation still waits: the question is the LAST user item, not the
+	// first, so an earlier reply must not suppress the indicator.
+	followUp := chat.ChatItem{Kind: chat.KindUser, Text: "and again", Key: "draft-2"}
+	if !awaitingReply([]chat.ChatItem{user, reply, followUp}) {
+		t.Error("a follow-up after an earlier reply IS a pending reply")
 	}
 }

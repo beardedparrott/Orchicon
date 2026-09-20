@@ -8,6 +8,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -33,6 +34,39 @@ type SlashCommand struct {
 // NoticeOnly marks commands that only surface a notice (GUI-mirror
 // panes with no TUI surface).
 func (c SlashCommand) NoticeOnly() bool { return c.Usage == "" }
+
+// MatchesQuery reports whether a typed slash word (WITHOUT the leading slash) names this
+// command — by its primary spelling OR any ALIAS.
+//
+// Aliases are not decoration: "/exit" resolves and RUNS, so a palette that cannot find it is
+// telling the operator a working command does not exist. That was the reported inconsistency
+// — "/exit works but doesn't get displayed in the slash command list as a valid slash
+// command" — and it happened because the filter matched `c.Name` alone.
+func (c SlashCommand) MatchesQuery(q string) bool {
+	if strings.Contains(c.Name, q) {
+		return true
+	}
+	for _, a := range c.Aliases {
+		if strings.Contains(a, q) {
+			return true
+		}
+	}
+	return false
+}
+
+// AliasLabel renders the aliases for display, in one shared form so /help and the palette
+// cannot drift apart — the exact drift that produced this report (helpLines showed the alias,
+// the palette row did not).
+func (c SlashCommand) AliasLabel() string {
+	if len(c.Aliases) == 0 {
+		return ""
+	}
+	alias := ""
+	for _, a := range c.Aliases {
+		alias += " " + a
+	}
+	return aliasSuffix(alias)
+}
 
 // slashRegistry is the ordered command set (built once per App).
 type slashRegistry struct {
@@ -98,6 +132,13 @@ func buildSlashRegistry(m *App) *slashRegistry {
 			Usage: "/" + e.Cmd + e.ArgsHint,
 			Desc:  "open " + e.Label,
 			Run: func(m *App, args []string) tea.Cmd {
+				// A VERB row (Ask's New / Conversations) runs its action instead of
+				// focusing a source — otherwise /conversations would switch tabs
+				// and focus a source the Ask screen never renders (its list is the
+				// right rail).
+				if eCopy.Action != nil {
+					return eCopy.Action(m)
+				}
 				m.SwitchTo(eCopy.Tab)
 				m.EnsureSubscriptions(eCopy.Tab)
 				if eCopy.Source != "" {
@@ -221,18 +262,37 @@ func buildSlashRegistry(m *App) *slashRegistry {
 			return nil
 		},
 	})
+	// /rename OPENS A PREFILLED FORM with no arguments, and writes directly with one.
+	//
+	// The direct form was the only way in, which is the operator's report — "We can't rename
+	// conversations in the TUI" — because a command you must know, that cannot show you the current
+	// title, is not a rename UI. With no arguments it now opens the same modal `ctrl+n` opens, so the
+	// palette (the documented command surface) is a real route to it, and the current title is there
+	// to edit rather than retype.
 	add(SlashCommand{
-		Name: "/rename", Usage: "/rename <title>",
-		Desc:    "rename the open conversation (UpdateConversationTitle)",
-		MinArgs: 1,
+		Name: "/rename", Usage: "/rename [title]",
+		Desc: "rename the open conversation — with no title, opens a prefilled box (UpdateConversationTitle)",
 		Run: func(m *App, args []string) tea.Cmd {
-			if m.chatConvID == "" {
+			id := m.chatConvID
+			if id == "" {
+				// The open conversation is the target by default, but if the operator has only the
+				// RAIL loaded (a conversation selected, none "open"), that selection is what they are
+				// looking at — use it rather than refusing.
+				if m.railVisible() && m.active == TabAsk && m.convSel >= 0 && m.convSel < len(m.railRows()) {
+					id = m.conversations[m.railConvIndexAt(m.convSel)].ID
+				}
+			}
+			if id == "" {
 				m.dock.SetError("no conversation open — /new or pick one from the rail")
+				return nil
+			}
+			if len(args) == 0 {
+				m.openRenameConversation(id, m.conversationTitle(id))
 				return nil
 			}
 			title := strings.Join(args, " ")
 			m.dock.SetNotice("renaming to " + title)
-			return m.chat.RenameConversation(m.chatConvID, title)
+			return m.chat.RenameConversation(id, title)
 		},
 	})
 	add(SlashCommand{
@@ -246,6 +306,49 @@ func buildSlashRegistry(m *App) *slashRegistry {
 			id := m.chatConvID
 			m.dock.SetNotice("conversation deleted")
 			return m.chat.DeleteConversation(id)
+		},
+	})
+	add(SlashCommand{
+		// THE NAME IS THE SINGULAR, AND THAT IS A DELIBERATE LINE: /project SWITCHES the workspace,
+		// /projects NAVIGATES to the Projects pane.
+		//
+		// The operator drew it: "make /project be the command to switch projects and /projects is the slash command
+		// to go to the projects screen."
+		//
+		// IT ALSO FIXES A SHADOWING BUG THIS COMMAND CAUSED. The Work screen declares a "projects" source
+		// (screens/work/screen.go: AddSource(srcProjects, "Projects", …)), so the slash registry GENERATES a
+		// /projects that switches to the Work area and focuses that pane. buildSlashRegistry adds its generated
+		// commands FIRST and its explicit ones after, and `add` overwrites by name — so a picker named /projects
+		// took the name for good, and the Projects pane became unreachable by command. The plural now belongs to
+		// the pane it was always meant for.
+		Name: "/project", Usage: "/project [<filter>]",
+		Desc:    "switch the PROJECT WORKSPACE the conversations rail shows (type text to filter the list)",
+		MinArgs: 0,
+		Run: func(m *App, args []string) tea.Cmd {
+			// BARE, OR WITH A FILTER, IT OPENS THE LIST. The operator: "When you type /project it should
+			// automatically show you the list of projects to choose from (i.e. If I type '/project Orch', it
+			// would show me the project Orchicon."
+			//
+			// So the argument is a FILTER, not a selection: it narrows the list and the operator still picks
+			// from it. Narrowing rather than auto-selecting also keeps a prefix from being a commitment — "Orch"
+			// matching two projects shows both rather than guessing.
+			return m.openProjectPickerFiltered("", strings.TrimSpace(strings.Join(args, " ")))
+		},
+	})
+	add(SlashCommand{
+		Name: "/project-move", Usage: "/project-move",
+		Desc:    "move the OPEN conversation into another project workspace",
+		MinArgs: 0,
+		Run: func(m *App, args []string) tea.Cmd {
+			// A SEPARATE NAME RATHER THAN AN ARGUMENT ON /project. Both open the same list and the picker's
+			// title says which question it is asking, but the two acts are different — a VIEW versus a WRITE —
+			// and overloading one name made "/project Orch" ambiguous between "filter to Orch" and "move this
+			// chat to Orch".
+			if m.chatConvID == "" {
+				m.dock.SetError("no conversation is open — /project chooses the workspace")
+				return nil
+			}
+			return m.openProjectPickerFiltered(m.chatConvID, "")
 		},
 	})
 	add(SlashCommand{
@@ -264,21 +367,51 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		},
 	})
 	add(SlashCommand{
-		Name: "/mode", Usage: "/mode <brainstorm>",
-		Desc:    "set the conversation mode/persona (SetConversationMode)",
-		MinArgs: 1,
+		Name: "/models", Usage: "/models",
+		Desc: "choose the Ask model (adapter → provider → model); sets it on the open conversation",
+		Run: func(m *App, _ []string) tea.Cmd {
+			return m.openModelsPicker()
+		},
+	})
+	add(SlashCommand{
+		Name: "/mode", Usage: "/mode [" + strings.Join(chat.ModeNames(), "|") + "]",
+		Desc:    "set the conversation mode/persona (SetConversationMode); no argument reports the current one and lists what is available",
+		MinArgs: 0,
 		Run: func(m *App, args []string) tea.Cmd {
-			mode, ok := chat.ParseMode(args[0])
+			if len(args) == 0 {
+				// BARE /mode REPORTS AND LISTS. The composer's stat row carries the
+				// mode pill (the TUI's counterpart to the GUI's dropdown), and the
+				// list is what makes the command self-teaching: an operator who does
+				// not already know the mode names cannot guess them.
+				m.dock.SetNotice("mode: " + m.currentModeLabel() + "  (available: " +
+					strings.Join(chat.ModeNames(), ", ") + " — /mode <name> to switch)")
+				return nil
+			}
+			// THE MODE NAME MAY CONTAIN A SPACE, so the arguments are JOINED rather
+			// than taken one at a time: the slash layer splits on whitespace, which
+			// would hand "quick work" to the parser as "quick" and reject it — a mode
+			// the UI itself lists as untypeable. Joining is a no-op for a single-word
+			// mode, so /mode brainstorm and /mode quick_work keep working unchanged.
+			mode, ok := chat.ParseMode(strings.Join(args, " "))
 			if !ok {
-				m.dock.SetError("unknown mode " + args[0] + " — known: brainstorm")
+				m.dock.SetError("unknown mode " + args[0] + " — available: " + strings.Join(chat.ModeNames(), ", "))
 				return nil
 			}
-			m.chat.SetPendingMode(mode)
+			// THE PENDING MODE IS ONLY SET WHEN THERE IS NOTHING OPEN TO SET IT ON.
+			//
+			// It used to be set unconditionally, so switching the mode of the conversation you were in ALSO
+			// changed what the NEXT new conversation would be created with — the mode leaked forward. The
+			// operator: "When someone creates a new conversation, it should always default back to brainstorm
+			// unless they do /mode again." Pending is for the pre-conversation choice (the launch page's mode
+			// selector, which is legitimate and kept); changing an OPEN conversation is about that conversation.
 			if m.chatConvID == "" {
-				m.dock.SetNotice("mode " + strings.ToLower(args[0]) + " applies to the next new conversation")
+				m.chat.SetPendingMode(mode)
+				m.dock.SetNotice("mode " + m.currentModeLabel() + " applies to the next new conversation")
 				return nil
 			}
-			m.dock.SetNotice("mode → " + strings.ToLower(args[0]))
+			// The name the operator TYPED, not the raw arg: "quick work" should be
+			// confirmed as a mode, not echoed back as a guess.
+			m.dock.SetNotice("mode → " + m.modeSwitchLabel(mode))
 			return m.chat.SetConversationMode(m.chatConvID, mode)
 		},
 	})
@@ -339,11 +472,7 @@ func (r *slashRegistry) helpLines() []string {
 		if usage == "" {
 			usage = c.Name
 		}
-		alias := ""
-		for _, a := range c.Aliases {
-			alias += " " + a
-		}
-		lines = append(lines, fmt.Sprintf("  %-28s %s%s", usage, c.Desc, aliasSuffix(alias)))
+		lines = append(lines, fmt.Sprintf("  %-28s %s%s", usage, c.Desc, c.AliasLabel()))
 	}
 	return lines
 }
@@ -415,6 +544,10 @@ func runContextCmd(m *App, args []string) tea.Cmd {
 // runThemeCmd switches the TUI theme ("/theme" lists, "/theme <name>"
 // switches + persists to the profile). Persisting keeps the selection
 // across launches; the profile is saved best-effort at the config path.
+// runThemeCmd switches the TUI theme. The palette set is TUI-OWNED (see
+// internal/tui/theme) and validated for terminal contrast: dark (default),
+// light, gruvbox-dark, gruvbox-light. "/theme" lists them; "/theme <name>"
+// switches and persists the choice to the profile.
 func runThemeCmd(m *App, args []string) tea.Cmd {
 	if len(args) == 0 {
 		names := make([]string, 0, len(m.themes))
@@ -425,28 +558,65 @@ func runThemeCmd(m *App, args []string) tea.Cmd {
 			}
 			names = append(names, marker+" "+n)
 		}
-		m.dock.SetNotice("themes: " + strings.Join(names, " · ") + "  (/theme <name> switches)")
+		where := ""
+		if path, err := config.DefaultPath(); err == nil {
+			where = "  ·  saved in " + path
+		}
+		if os.Getenv(config.EnvTheme) != "" {
+			where += "  ·  pinned by " + config.EnvTheme + "=" + os.Getenv(config.EnvTheme)
+		}
+		m.dock.SetNotice("themes (TUI palettes): " + strings.Join(names, " · ") + "  (/theme <name> switches)" + where)
 		return nil
 	}
 	name := args[0]
-	if !theme.Use(name) {
+	if !m.SetTheme(name) {
 		known := strings.Join(m.themes, ", ")
 		m.dock.SetError(fmt.Sprintf("unknown theme %q — available: %s", name, known))
 		return nil
 	}
-	if m.profile != nil {
-		m.profile.Theme = name
-		if path, err := config.DefaultPath(); err == nil {
-			if cfg, err := config.Load(path); err == nil {
-				if p := cfg.Profiles[cfg.Active]; p != nil {
-					p.Theme = name
-					_ = config.Save(path, cfg)
-				} else if cfg.Profiles != nil {
-					_ = cfg
-				}
-			}
-		}
-	}
 	m.dock.SetNotice("theme: " + name)
 	return nil
+}
+
+// SetTheme applies a TUI palette, re-pins the styles captured at construction,
+// and persists the choice to the profile. Reports false for an unknown name
+// (nothing changes). This is the ONE path for switching themes, shared by the
+// /theme command and the Control screen's Themes pane.
+func (m *App) SetTheme(name string) bool {
+	if !m.applyThemeAndRefresh(name) {
+		return false
+	}
+	if m.profile != nil {
+		m.profile.Theme = name
+	}
+	// Report WHERE the choice is persisted so a non-persisting environment is
+	// visible instead of mysterious: the operator's "themes are not saving" is
+	// unsolvable without knowing the config path (a launcher with an ephemeral
+	// HOME writes somewhere that does not survive the run).
+	path, pathErr := config.DefaultPath()
+	if pathErr != nil {
+		m.dock.SetNotice("theme: " + name + " (this run only — no config path: " + pathErr.Error() + ")")
+		return true
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		m.dock.SetNotice("theme: " + name + " (this run only — cannot read " + path + ")")
+		return true
+	}
+	cfg.Theme = name
+	if p := cfg.Profiles[cfg.Active]; p != nil {
+		p.Theme = name
+	}
+	if err := config.Save(path, cfg); err != nil {
+		m.dock.SetNotice("theme: " + name + " (this run only — cannot write " + path + ": " + err.Error() + ")")
+		return true
+	}
+	m.dock.SetNotice("theme: " + name + " (saved to " + path + ")")
+	// Reconcile any open Themes pane so its active marker moves.
+	if s := m.screens[TabControl]; s != nil {
+		if r, ok := s.(interface{ Refresh(string) tea.Cmd }); ok {
+			m.pendingScreenCmd = tea.Batch(m.pendingScreenCmd, r.Refresh("themes"))
+		}
+	}
+	return true
 }

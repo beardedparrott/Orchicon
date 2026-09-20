@@ -49,6 +49,16 @@ type ChatItem struct {
 	Key       string
 	Live      bool
 	Phase     string
+
+	// Attachments are the markers for the files this message carried, in the operator's vocabulary
+	// ("[image]", "[file: notes.md]"). They are a DISPLAY field: the bytes belong to the request that sent
+	// them, and the transcript only needs to say the turn was not text alone.
+	//
+	// It is separate from Text rather than prefixed onto it because the two have different owners — Text is
+	// the operator's own words, which the durable transcript also carries and the dedupe matches on, while
+	// these markers exist only for this client's rendering. Folding them into Text would put a synthetic
+	// token into the message the server stores and the dedupe compares.
+	Attachments []string
 }
 
 // itemAt mirrors itemAt(): tool items timestamp through their tool.
@@ -217,8 +227,20 @@ func MergeSessionItems(history, live []ChatItem) []ChatItem {
 		}
 	}
 	merged := append(append([]ChatItem{}, history...), fresh...)
-	sort.SliceStable(merged, func(a, b int) bool {
-		return itemAt(merged[a]) < itemAt(merged[b])
-	})
+	SortChronologically(merged)
 	return GroupByPhase(merged)
+}
+
+// SortChronologically orders items oldest-first by their effective timestamp
+// (a tool item timestamps through its tool). The sort is STABLE, so rows that
+// share a timestamp keep their input order.
+//
+// Callers MERGE two streams that each arrive in order — durable history and a
+// live buffer — and concatenating them puts every live row at the END, which
+// renders a just-sent user message BELOW the model's reply. Sorting the
+// combined list restores true chronological order whatever the source.
+func SortChronologically(items []ChatItem) {
+	sort.SliceStable(items, func(a, b int) bool {
+		return itemAt(items[a]) < itemAt(items[b])
+	})
 }

@@ -84,13 +84,42 @@ func TestBaseKeysAndMouseAgreeOnRegion(t *testing.T) {
 	b := &Base{}
 	b.AddSource("workers", "Workers", nil)
 	b.SetSize(80, 24)
-	b.updateKey(t, "tab")
-	if b.FocusedRegion() != "detail" {
-		t.Fatalf("tab: region %q, want detail", b.FocusedRegion())
+
+	// TAB must NOT toggle the pane: it used to share the enter/space case, which
+	// made it a list↔detail focus toggle that the SCREEN consumed — so the shell's
+	// tab-bar ring never saw the key. On the Work tab the operator's report was
+	// "the tabbing between the left and right pane breaks the tab path in the top
+	// of the tab menu and grabs focus". Tab is now left alone for the global ring.
+	if handled, _ := b.updateKeyHandled(t, "tab"); handled {
+		t.Fatal("tab must fall through to the shell's focus ring, not be consumed by the pane")
 	}
-	b.updateKey(t, "shift+tab")
+
+	// SHIFT+TAB must ALSO fall through. It used to cycle this screen's region ring
+	// in reverse, which consumed it on every kit2 screen — so the tab bar could not
+	// be walked backwards from any pane ("Projects screen is stealing shift+tab").
+	if handled, _ := b.updateKeyHandled(t, "shift+tab"); handled {
+		t.Fatal("shift+tab must fall through to the shell's reverse focus ring")
+	}
+
+	// LEFT/RIGHT move focus BETWEEN THE TWO PANES — not the tab bar, and no longer
+	// source cycling (that is h/l now).
+	b.updateKey(t, "right")
+	if b.FocusedRegion() != "detail" {
+		t.Fatalf("right: region %q, want detail — arrows move between the panes", b.FocusedRegion())
+	}
+	b.updateKey(t, "left")
 	if b.FocusedRegion() != "workers" {
-		t.Fatalf("shift+tab: region %q, want workers", b.FocusedRegion())
+		t.Fatalf("left: region %q, want workers — arrows move between the panes", b.FocusedRegion())
+	}
+
+	// ENTER still toggles list↔detail (activation is the pane's job).
+	b.updateKey(t, "enter")
+	if b.FocusedRegion() != "detail" {
+		t.Fatalf("enter: region %q, want detail", b.FocusedRegion())
+	}
+	b.updateKey(t, "enter")
+	if b.FocusedRegion() != "workers" {
+		t.Fatalf("enter back: region %q, want workers", b.FocusedRegion())
 	}
 	// Mouse into the detail column focuses detail (same identity).
 	b.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: 79, Y: 5})
@@ -109,6 +138,21 @@ func (b *Base) updateKey(t *testing.T, key string) {
 		k = tea.KeyMsg{Type: tea.KeyShiftTab}
 	}
 	b.Update(k)
+}
+
+// updateKeyHandled feeds one key and reports whether the Base CONSUMED it.
+func (b *Base) updateKeyHandled(t *testing.T, key string) (bool, tea.Cmd) {
+	t.Helper()
+	k := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
+	switch key {
+	case "tab":
+		k = tea.KeyMsg{Type: tea.KeyTab}
+	case "enter":
+		k = tea.KeyMsg{Type: tea.KeyEnter}
+	case "shift+tab":
+		k = tea.KeyMsg{Type: tea.KeyShiftTab}
+	}
+	return b.Update(k)
 }
 
 // --- Dialog: overlay never breaks the h×w viewport contract -------------
@@ -375,5 +419,195 @@ func TestAllWidgetsRenderAtFloorSizes(t *testing.T) {
 
 		d := Confirm("t", "b", "ok")
 		dims(t, "dialog", d.Box(min(w, 60), 10), min(w, 60), 10)
+	}
+}
+
+// Regression: with HideSources the detail pane fills the region, so a click in
+// the LEFT half must not select a row in the (invisible) source table.
+//
+// View() renders the detail only, but mouseRegion kept a two-pane split, so any
+// left-half click resolved to "the focused source pane", ran table.Click(row)
+// against a table nobody can see, and called loadDetail. On the Ask tab that
+// table is the conversations list — so clicking the launch page silently OPENED
+// an arbitrary old conversation instead of doing nothing.
+func TestHiddenSourcesClickDoesNotSelectAnInvisibleRow(t *testing.T) {
+	b := &Base{}
+	b.AddSource("conversations", "Conversations", nil)
+	b.SetSize(120, 40)
+	b.LoadItems("conversations", []Item{
+		{ID: "conv-1", Title: "hello"},
+		{ID: "conv-2", Title: "second"},
+	}, "")
+	b.HideSources = true
+
+	// The precise contract: every column belongs to the detail.
+	for _, x := range []int{0, 10, 40} {
+		if idx, isDetail := b.mouseRegion(x); idx != -1 || !isDetail {
+			t.Fatalf("x=%d resolved to (idx=%d, detail=%v); with sources hidden it must be the detail",
+				x, idx, isDetail)
+		}
+	}
+
+	// And behaviourally, at a Y that REALLY maps onto a row (the earlier version
+	// of this test clicked a row index outside the table, so it passed even with
+	// the bug present).
+	before := b.ActiveTable().SelectedID()
+	clickY := b.tableTopRow() // the first data row
+	if clickY >= b.height {
+		t.Fatalf("fixture: click row %d is off-screen (height %d)", clickY, b.height)
+	}
+	b.Update(tea.MouseMsg{
+		Action: tea.MouseActionPress, Button: tea.MouseButtonLeft,
+		X: 10, Y: clickY,
+	})
+	if got := b.ActiveTable().SelectedID(); got != before {
+		t.Fatalf("a click on the launch page selected %q in an INVISIBLE table (was %q)", got, before)
+	}
+}
+
+// DetailWidth must agree with the pane the detail is actually drawn in, the
+// moment the layout is applied — not one render later.
+//
+// HideSources renders the detail at the FULL width, while SetSize used to store
+// the SPLIT width and leave the correction to the next render. Callers use
+// DetailWidth() as their WRAP width, so until that render ran the content was
+// laid out for a different pane than it was drawn in: a wrap width wider than
+// the pane gets truncated at the right edge (cutting a right-aligned line — an
+// operator's own chat message — down to its leading whitespace), and a narrower
+// one wastes the pane.
+func TestDetailWidthMatchesTheRenderedPaneWhenSourcesAreHidden(t *testing.T) {
+	b := &Base{HideSources: true}
+	b.width, b.height = 80, 20
+	b.AddSource("conversations", "Conversations", func(ctx context.Context, page string) ([]Item, string, error) {
+		return nil, "", nil
+	})
+	b.SetSize(80, 20)
+	if got := b.DetailWidth(); got != 78 {
+		t.Fatalf("DetailWidth = %d, want 78 (the full-width pane's inner width); a split width here is what truncated right-aligned content", got)
+	}
+	// And the rendered pane agrees.
+	p := NewPanel("Detail", b.width, b.height)
+	p.SetContent("x")
+	if got, want := p.innerW(), b.DetailWidth(); got != want {
+		t.Fatalf("panel innerW = %d but DetailWidth = %d — the wrap width and the pane disagree", got, want)
+	}
+}
+
+// ctrl+e expands the focused free-text field so its value WRAPS instead of being
+// edited one horizontally-windowed line at a time.
+//
+// The operator: "we need a way to expand out fields like description, Behavior,
+// etc. so we can see more of it when we are typing in our changes." A windowed
+// line shows a slice; expanded shows what they are writing.
+func TestExpandedFieldWrapsItsWholeValue(t *testing.T) {
+	long := strings.Repeat("word ", 40) // far wider than the form
+	f := &Form{
+		Specs: []FieldSpec{
+			{Name: "title", Label: "Title", Kind: KText},
+			{Name: "behavior", Label: "Behavior", Kind: KTextArea, Initial: long},
+		},
+		Values:  map[string]string{"title": "t", "behavior": long},
+		Focused: true,
+		Width:   60,
+		pos:     map[string]int{},
+	}
+	// Focus the textarea and expand it.
+	f.Cursor = 1
+	if cmd, _ := f.HandleKey(tea.KeyMsg{Type: tea.KeyCtrlE}); cmd != nil {
+		t.Fatal("expanding needs no command")
+	}
+	if f.Expanded() != "behavior" {
+		t.Fatalf("Expanded() = %q, want the focused field", f.Expanded())
+	}
+
+	collapsed := f.View()
+	rows := 0
+	for _, l := range strings.Split(collapsed, "\n") {
+		if strings.Contains(l, "word") {
+			rows++
+		}
+	}
+	if rows < 2 {
+		t.Fatalf("expanded field rendered %d value rows, want it wrapped across several:\n%s", rows, collapsed)
+	}
+	// The hint names the way back, so the mode is never a trap.
+	if !strings.Contains(collapsed, "ctrl+e to collapse") {
+		t.Fatalf("expanded view must name the collapse gesture:\n%s", collapsed)
+	}
+
+	// ctrl+e again collapses it.
+	f.HandleKey(tea.KeyMsg{Type: tea.KeyCtrlE})
+	if f.Expanded() != "" {
+		t.Fatalf("Expanded() = %q, want collapsed", f.Expanded())
+	}
+
+	// A one-line kind is not expandable (extra rows would be useless).
+	f.Cursor = 0
+	f.HandleKey(tea.KeyMsg{Type: tea.KeyCtrlE})
+	if f.Expanded() != "" {
+		t.Fatalf("a KText field must not expand, got %q", f.Expanded())
+	}
+}
+
+// Expanding must not disturb any other field's value.
+func TestExpandingAFieldDoesNotDisturbOthers(t *testing.T) {
+	f := &Form{
+		Specs: []FieldSpec{
+			{Name: "a", Label: "A", Kind: KTextArea, Initial: "alpha"},
+			{Name: "b", Label: "B", Kind: KTextArea, Initial: "beta"},
+		},
+		Values:  map[string]string{"a": "alpha", "b": "beta"},
+		Focused: true,
+		Width:   60,
+		pos:     map[string]int{},
+	}
+	f.Cursor = 0
+	f.HandleKey(tea.KeyMsg{Type: tea.KeyCtrlE})
+	if v := f.Values["b"]; v != "beta" {
+		t.Fatalf("b = %q, want it untouched", v)
+	}
+	if v := f.Values["a"]; v != "alpha" {
+		t.Fatalf("a = %q, want it untouched", v)
+	}
+}
+
+// The cursor must step over EVERY visible row, including a second row that
+// shares the first one's id.
+//
+// Every cursor operation used to route through the row's ID (cursorVis →
+// setCursorToID), and that round trip is not injective: visIndexOf returns the
+// FIRST match and setCursorToID seats the cursor on the FIRST match. So a step
+// ONTO a duplicated id landed back on its twin and the cursor FROZE — the
+// operator's "if you move the arrow key down to one of them, it highlights both
+// work items and then will not let you continue to hit the down key to move past
+// them". Distinct work items legitimately share a TITLE (3 items titled "test"
+// in the live tenant), and the fetch layer can emit rows that collide by id, so
+// movement must not depend on ID uniqueness.
+func TestCursorStepsPastDuplicatedRowIDs(t *testing.T) {
+	tb := &Table{Width: 40, Height: 20}
+	tb.SetItems([]Item{
+		{ID: "a", Title: "first"},
+		{ID: "b", Title: "dup"},
+		{ID: "b", Title: "dup"}, // the twin
+		{ID: "c", Title: "after"},
+	}, "")
+
+	var visited []string
+	for i := 0; i < 3; i++ {
+		tb.Move(1)
+		visited = append(visited, tb.Selected().Cells[0])
+	}
+	if tb.Cursor != 3 {
+		t.Fatalf("cursor = %d after three steps, want 3 (the row after the twins); visited %v", tb.Cursor, visited)
+	}
+	if got := tb.Selected().Cells[0]; got != "after" {
+		t.Fatalf("selected = %q, want the row past the duplicates", got)
+	}
+	// And the cursor can come back without getting stuck on the twins either.
+	for i := 0; i < 3; i++ {
+		tb.Move(-1)
+	}
+	if tb.Cursor != 0 {
+		t.Fatalf("cursor = %d after stepping back, want 0", tb.Cursor)
 	}
 }

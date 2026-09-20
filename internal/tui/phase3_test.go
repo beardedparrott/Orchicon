@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/beardedparrott/orchicon/internal/tui/chat"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 	"github.com/beardedparrott/orchicon/internal/tui/config"
 )
@@ -87,40 +88,106 @@ func TestSubmenuOpensByKeyAndSelects(t *testing.T) {
 	if m.MenuOpenID() != m.active {
 		t.Fatalf("enter must open the active tab's submenu (menuOpen=%q)", m.MenuOpenID())
 	}
-	tm := m.TabMenu()
-	want := tm.Entries[1]
-	nm, _ = m.dispatch(tea.KeyMsg{Type: tea.KeyDown})
-	m = nm
-	if m.TabMenu().Sel != 1 {
-		t.Fatalf("down must move the dropdown selection (sel=%d)", m.TabMenu().Sel)
-	}
-	nm, _ = m.dispatch(tea.KeyMsg{Type: tea.KeyEnter})
-	m = nm
-	if m.MenuOpenID() != "" {
-		t.Fatalf("enter must select + close the dropdown (menuOpen=%q)", m.MenuOpenID())
-	}
-	if s := m.screens[m.active]; s != nil {
-		if ar, ok := s.(interface{ ActiveSourceName() string }); ok && ar.ActiveSourceName() != want.Source {
-			t.Fatalf("selected entry must navigate: active source %q, want %q", ar.ActiveSourceName(), want.Source)
-		}
-	}
-	// Space also opens it (second activation key), then esc closes.
-	nm, _ = m.dispatch(tea.KeyMsg{Type: tea.KeySpace})
-	m = nm
-	if m.MenuOpenID() != m.active {
-		t.Fatalf("space must open the active tab's submenu (menuOpen=%q)", m.MenuOpenID())
-	}
+	// Esc closes it, and Space re-opens it (the second activation key).
+	//
+	// Space runs HERE, on the LAUNCH page, where no conversations rail is up.
+	// On Ask with the rail VISIBLE, Space/Enter are the rail's SELECT gesture
+	// instead — the operator's "I should be able to move up/down with arrow
+	// keys and space or enter selects". That override owns the key only while
+	// the rail is drawn, and is pinned separately by
+	// TestAskRailEnterSpaceSelectsConversation.
 	nm, _ = m.dispatch(tea.KeyMsg{Type: tea.KeyEsc})
 	m = nm
 	if m.MenuOpenID() != "" {
 		t.Fatal("esc must close the dropdown")
 	}
+	nm, _ = m.dispatch(tea.KeyMsg{Type: tea.KeySpace})
+	m = nm
+	if m.MenuOpenID() != m.active {
+		t.Fatalf("space must open the active tab's submenu (menuOpen=%q)", m.MenuOpenID())
+	}
+	// Arrows move the selection; Enter selects + closes.
+	nm, _ = m.dispatch(tea.KeyMsg{Type: tea.KeyDown})
+	m = nm
+	if m.TabMenu().Sel != 1 {
+		t.Fatalf("down must move the dropdown selection (sel=%d)", m.TabMenu().Sel)
+	}
+	want := m.TabMenu().Entries[1]
+	nm, _ = m.dispatch(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm
+	if m.MenuOpenID() != "" {
+		t.Fatalf("enter must select + close the dropdown (menuOpen=%q)", m.MenuOpenID())
+	}
+	// A VERB row (Ask's New/Conversations) runs its action; a source row focuses
+	// its source. Assert whichever contract applies to the row we picked.
+	if want.Action != nil {
+		if m.active == TabAsk && want.Cmd == "conversations" && !m.railVisible() {
+			t.Fatal("selecting Conversations must switch Ask to its conversation view (rail visible)")
+		}
+	} else if s := m.screens[m.active]; s != nil {
+		if ar, ok := s.(interface{ ActiveSourceName() string }); ok && ar.ActiveSourceName() != want.Source {
+			t.Fatalf("selected entry must navigate: active source %q, want %q", ar.ActiveSourceName(), want.Source)
+		}
+	}
+	// (Space/esc coverage lives above, on the launch page, so the rail's
+	// select gesture cannot shadow the submenu activation.)
 	// A non-empty composer keeps Enter as send (no surprise menu).
 	m.dock.SetValue("hello")
 	nm, _ = m.dispatch(tea.KeyMsg{Type: tea.KeyEnter})
 	m = nm
 	if m.MenuOpenID() != "" {
 		t.Fatal("enter with a non-empty composer must send, not open the submenu")
+	}
+}
+
+// TestAskRailEnterSpaceSelectsConversation pins the Ask rail's key contract:
+// while the conversations rail is UP and the composer is empty, Enter/Space
+// open the HIGHLIGHTED conversation — the operator's "I should be able to move
+// up/down with arrow keys and space or enter selects". This deliberately
+// overrides the tab-submenu activation on Ask, so it is asserted separately
+// from TestSubmenuOpensByKeyAndSelects (which covers the launch page).
+func TestAskRailEnterSpaceSelectsConversation(t *testing.T) {
+	newRails := func() *App {
+		m := newRailsApp(120, 40)
+		m.conversations = []chat.Conversation{
+			{ID: "c1", Title: "Alpha"},
+			{ID: "c2", Title: "Beta"},
+		}
+		m.convSel, m.convScroll, m.convLoaded = 1, 0, true
+		return m
+	}
+
+	m := newRails()
+	if !m.railVisible() {
+		t.Fatal("the conversations rail must be visible for this contract")
+	}
+	nm, _ := m.dispatch(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm
+	if m.MenuOpenID() != "" {
+		t.Fatalf("enter on Ask with the rail up must select, not open the submenu (menuOpen=%q)", m.MenuOpenID())
+	}
+	if m.chatConvID != "c2" {
+		t.Fatalf("enter must open the HIGHLIGHTED conversation: chatConvID=%q, want c2", m.chatConvID)
+	}
+
+	// SPACE NO LONGER OPENS — it MARKS, which is what "selects" means on every other list in this
+	// client and what the operator asked for when they requested bulk operations ("Spacebar selects,
+	// then we should be able to bulk delete or bulk assign"). ENTER remains the open gesture, so the
+	// earlier "space or enter selects" wording is satisfied by the pair rather than by both keys.
+	//
+	// The whole point of asserting it HERE is that the two must stay distinguishable: a space that
+	// still opened, or an enter that stopped opening, would both be regressions.
+	m2 := newRails()
+	nm2, _ := m2.dispatch(tea.KeyMsg{Type: tea.KeySpace})
+	m2 = nm2
+	if m2.MenuOpenID() != "" {
+		t.Fatalf("space on Ask with the rail up must MARK, not open the submenu (menuOpen=%q)", m2.MenuOpenID())
+	}
+	if m2.chatConvID == "c2" {
+		t.Fatal("space must not OPEN the highlighted conversation any more — enter is the open gesture")
+	}
+	if ids := m2.convMarkedIDs(); len(ids) != 1 || ids[0] != "c2" {
+		t.Fatalf("space must MARK the highlighted conversation, got %v", ids)
 	}
 }
 
@@ -261,10 +328,22 @@ func TestScreensFillContentRegion(t *testing.T) {
 }
 
 // TestAuthBannerRendersOnce pins finding 6: the re-auth banner is rendered
-// ONCE — when the pane/rail already carries the inline retry state, the
-// global dock banner is suppressed.
+// ONCE — where a surface already carries the inline retry state, the global
+// dock banner is suppressed rather than duplicated.
+//
+// The dedupe is only valid while that surface is ON SCREEN. The fixture must
+// therefore put the conversations rail UP: this test used to set convErr and
+// assert suppression while sitting on the launch page, where the rail is not
+// rendered at all (rightrail.go — railVisible is false in welcome mode). It was
+// pinning the defect. TestLaunchPageAuthFailureIsVisible covers that half.
 func TestAuthBannerRendersOnce(t *testing.T) {
 	m := phase3App(120, 40)
+	// The state the dedupe was written for: the rail is on screen, so its own
+	// retry row IS the banner.
+	m.askMode = askConversations
+	if !m.railVisible() {
+		t.Fatal("fixture: the conversations rail must be visible for the dedupe to apply")
+	}
 	m.convErr = "unauthenticated: bad token"
 	m.setChatError("send", &stubAuthErr{})
 	if m.dock.Err != "" {
@@ -282,4 +361,41 @@ func TestAuthBannerRendersOnce(t *testing.T) {
 	if got := strings.Count(lipglossStrip(m.View()), "needs re-authentication"); got > 1 {
 		t.Fatalf("re-auth copy rendered %d times in one frame, want at most 1", got)
 	}
+}
+
+// TestLaunchPageAuthFailureIsVisible pins the launch-page half of the same
+// finding: in welcome mode the conversations rail is NOT rendered, so its
+// convErr is not an inline retry state and must not suppress the banner. Before
+// this, a 401 on the first send from the launch page was reported NOWHERE — the
+// composer showed a stuck "sending …" ack, the draft reappeared in the box, and
+// no surface said why. That combination was read as "Enter does nothing".
+func TestLaunchPageAuthFailureIsVisible(t *testing.T) {
+	m := phase3App(120, 40)
+	if !m.welcomeMode() {
+		t.Fatal("fixture: expected the Ask launch page")
+	}
+	if m.railVisible() {
+		t.Fatal("fixture: the launch page must not draw the conversations rail")
+	}
+	// The rail's own startup load failed with the same 401 — the state that
+	// used to silence the banner on its own.
+	m.convErr = "unauthenticated: bad token"
+	m.dock.SetNotice("sending …") // the ack the composer writes when Enter fires
+	m.setChatError("send", &stubAuthErr{})
+
+	if !strings.Contains(m.dock.Err, "/connect") {
+		t.Fatalf("a 401 on the launch page must be visible: dock.Err = %q", m.dock.Err)
+	}
+	if strings.Contains(m.dock.Notice, "sending") {
+		t.Fatalf("the send ack must settle on failure: dock.Notice = %q", m.dock.Notice)
+	}
+}
+
+// dockedAskApp builds an app on Ask with a session already open, so the shell
+// renders the DOCKED layout (composer pinned at the bottom). Tests that assert
+// the dock's geometry use this; the centered launch layout has its own test.
+func dockedAskApp(w, h int) *App {
+	m := phase3App(w, h)
+	m.chatConvID = "conv-docked" // leaves welcome mode
+	return m
 }

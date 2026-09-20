@@ -352,6 +352,12 @@ table "workers" {
     null = false
     default = "draft"
   }
+  column "ephemeral" {
+    type    = boolean
+    null    = false
+    default = false
+    comment = "Machine-managed transient worker (Ask Orchicon Quick Work): hidden from the Workers view and hard-deleted when its job ends. See ListWorkersFilter.EphemeralScope."
+  }
   column "current_version" {
     type = integer
     null = false
@@ -388,6 +394,11 @@ table "workers" {
   }
   index "workers_tenant_status_idx" {
     columns = [column.tenant_id, column.status]
+  }
+  index "idx_workers_ephemeral_created" {
+    columns = [column.created_at]
+    type    = "btree"
+    where   = "ephemeral"
   }
 }
 
@@ -583,6 +594,12 @@ table "work_items" {
     null = true
     comment = "The terminal status the item had when archived; RestoreWorkItem returns the item to this status. NULL = never archived."
   }
+  column "ephemeral" {
+    type    = boolean
+    null    = false
+    default = false
+    comment = "Machine-managed transient item (Ask Orchicon Quick Work): TRUE hides it from every human work-item view and it is hard-deleted when its job ends. Never a parent, never recurring. See ListWorkItemsFilter.EphemeralScope."
+  }
   column "sort_order" {
     type = double
     null = true
@@ -699,6 +716,11 @@ table "work_items" {
   }
   index "idx_work_items_archived_at" {
     columns = [column.archived_at]
+  }
+  index "idx_work_items_ephemeral_created" {
+    columns = [column.created_at]
+    type    = "btree"
+    where   = "ephemeral"
   }
 }
 
@@ -1085,6 +1107,12 @@ table "workflows" {
     null = false
     default = "draft"
   }
+  column "ephemeral" {
+    type    = boolean
+    null    = false
+    default = false
+    comment = "Machine-managed transient workflow (Ask Orchicon Quick Work): hidden from the Workflows view and hard-deleted when its job ends. See ListWorkflowsFilter.EphemeralScope."
+  }
   column "version" {
     type = integer
     null = false
@@ -1115,6 +1143,11 @@ table "workflows" {
   }
   index "workflows_tenant_status_idx" {
     columns = [column.tenant_id, column.status]
+  }
+  index "idx_workflows_ephemeral_created" {
+    columns = [column.created_at]
+    type    = "btree"
+    where   = "ephemeral"
   }
 }
 

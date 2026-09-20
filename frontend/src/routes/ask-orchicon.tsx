@@ -5,6 +5,8 @@ import {
   Trash2,
   Paperclip,
   Mic,
+  Minimize2,
+  Loader2,
   Square,
   RefreshCw,
   Brain,
@@ -25,9 +27,20 @@ import { Link } from "@tanstack/react-router";
 import { Route as rootRoute } from "@/routes/__root";
 
 import { useQueryClient } from "@tanstack/react-query";
+import { AskModelChip } from "@/components/AskModelChip";
 import { Button } from "@/components/ui/button";
+import { LiveDuration } from "@/components/ui/live-duration";
 import { ModeToggle } from "@/components/ui/mode-toggle";
+import { useAskMetricsLive } from "@/lib/ask-metrics";
 import { cn } from "@/lib/utils";
+import { ProjectScopeSelect } from "@/components/conversations/ProjectScopeSelect";
+import {
+  ALL_PROJECTS,
+  categoriesForScope,
+  filterConversationsByScope,
+  scopeLabel,
+  scopeOptions,
+} from "@/lib/conversationProjects";
 import {
   useListConversations,
   useCreateConversation,
@@ -37,6 +50,8 @@ import {
   useGetConversation,
   useAbortConversationTurn,
   useSetConversationMode,
+  useSetConversationModel,
+  useSetConversationProject,
   useCompactConversation,
   askKeys,
 } from "@/api/askOrchicon";
@@ -77,6 +92,7 @@ import {
   type DragOverEvent,
 } from "@dnd-kit/core";
 import { useDroppable } from "@dnd-kit/core";
+import { useListProjects } from "@/api/projects";
 import { useDraggable } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 
@@ -183,6 +199,14 @@ function AskOrchiconPage() {
   const [localMode, setLocalMode] = useState<ConversationMode>(
     ConversationMode.BRAINSTORM,
   );
+
+  // The model a NOT-YET-CREATED conversation will be created with. The chat box
+  // shows an "Ask Orchicon Anything..." hero before any conversation exists, and
+  // the operator must be able to choose the model THERE too — so with no
+  // conversation open the choice is held here and handed to createConversation,
+  // rather than being lost (there is no conversation row to write it to yet).
+  // Once a conversation exists it is retargeted directly and this is unused.
+  const [pendingModel, setPendingModel] = useState("");
 
   // Live streaming state keyed by conversation id.
   const [streams, setStreams] = useState<Record<string, ConvStream>>({});
@@ -371,13 +395,27 @@ function AskOrchiconPage() {
   );
   useEffect(() => {
     const serverRunning = conversations?.some((c) => c.turnInFlight) ?? false;
-    setListPollMs(anyStreaming || serverRunning ? 3000 : false);
+    // AND IT KEEPS POLLING WHEN EVERYTHING IS SETTLED, slowly.
+    //
+    // It used to stop entirely (`: false`), which meant a change made in the OTHER client never arrived: the
+    // operator — "if someone sets the mode in the GUI or TUI, it should not matter. It should change for both."
+    // There is no conversation-changes stream to subscribe to (the Ask service has List/Get and the per-turn
+    // streams, and nothing that broadcasts a mode change), so a slow poll is what makes the two clients agree.
+    //
+    // 5s at rest is the same cadence the TUI's rolling window already uses for its own list re-read, and it is
+    // the bound on how long the mode control can disagree with the boundary the SERVER will enforce — which is
+    // the case that matters, because a stale control turns a correct refusal into an inexplicable one.
+    setListPollMs(anyStreaming || serverRunning ? 3000 : 5000);
   }, [conversations, anyStreaming]);
   const createConv = useCreateConversation();
+  // The tenant's projects, for the scope dropdown. Every project is listed, including ones with no
+  // conversations: the count then reads 0, which is how you know a scope is empty before clicking it.
+  const { data: projects } = useListProjects();
   const deleteConv = useDeleteConversation();
   const updateTitle = useUpdateConversationTitle();
   const abortTurn = useAbortConversationTurn();
   const setMode = useSetConversationMode();
+  const setConvModel = useSetConversationModel();
   const compactConv = useCompactConversation();
   const qc = useQueryClient();
 
@@ -394,6 +432,35 @@ function AskOrchiconPage() {
   );
   const isUsingFallbackModel =
     !activeConv?.modelRef && !settings?.defaultAskOrchiconModel;
+
+  // The model the composer's chip reports: the open conversation's effective
+  // model, or — on the hero — the pending choice for the conversation about to
+  // be created.
+  const askModel = activeConvId ? effectiveModel : pendingModel || effectiveModel;
+
+  // Choosing a model in the composer's picker. With a conversation OPEN it
+  // retargets THAT conversation (SetConversationModel — applies from the next
+  // message). On the hero there is no conversation row yet, so the choice is
+  // held for the create.
+  const handleAskModelChange = useCallback(
+    (ref: string) => {
+      if (!ref) return;
+      if (!activeConvId) {
+        setPendingModel(ref);
+        toast.success("Model set for the new conversation", { title: "Ask model" });
+        return;
+      }
+      setConvModel.mutate(
+        { id: activeConvId, modelRef: ref },
+        {
+          onSuccess: () =>
+            toast.success("Model set for this conversation", { title: "Ask model" }),
+          onError: () => toast.error("Failed to change the model", { title: "Error" }),
+        },
+      );
+    },
+    [activeConvId, setConvModel, toast],
+  );
 
   // Sync local mode from active conversation when it loads.
   useEffect(() => {
@@ -524,6 +591,13 @@ function AskOrchiconPage() {
 
   const handleNewChat = useCallback(() => {
     setActiveConvId(null);
+    // A NEW CONVERSATION STARTS AT THE DEFAULT MODE, the same rule the TUI applies.
+    //
+    // The operator: "When someone creates a new conversation, it should always default back to brainstorm unless
+    // they do /mode again." Without this the mode LEAKED FORWARD: the sync effect only writes localMode when
+    // there IS an active conversation, so after New Chat the previous conversation's mode stayed in state and
+    // was handed to the next conversation at creation. A mode belongs to the conversation that was set on.
+    setLocalMode(ConversationMode.BRAINSTORM);
   }, []);
 
   const handleDeleteConv = useCallback(
@@ -903,10 +977,11 @@ function AskOrchiconPage() {
   );
 
   // handleCompactConversation runs the /compact composer command. The server owns
-  // the policy (it may decline with a reason), so the outcome text is returned
-  // verbatim for the toast rather than being invented here.
+  // the policy (it may decline with a reason), so the outcome is passed back
+  // STRUCTURED rather than flattened to a string: `compacted` lets the caller
+  // render a decline as information instead of a success.
   const handleCompactConversation = useCallback(
-    async (conversationId: string): Promise<string> => {
+    async (conversationId: string): Promise<{ detail: string; compacted: boolean }> => {
       const res = await compactConv.mutateAsync(conversationId);
       // The server never estimates: a non-zero size is a real measurement, so a
       // zero is omitted rather than shown as "0 tokens".
@@ -914,7 +989,7 @@ function AskOrchiconPage() {
       const after = Number(res.contextTokensAfter ?? 0);
       const size = before > 0 ? ` (${before} → ${after} tokens)` : "";
       const verdict = res.detail || (res.compacted ? "conversation compacted" : "nothing to compact");
-      return `${verdict}${size}`;
+      return { detail: `${verdict}${size}`, compacted: res.compacted };
     },
     [compactConv],
   );
@@ -1039,7 +1114,8 @@ function AskOrchiconPage() {
       if (!over) return;
       const convId = String(active.id);
       const targetId = String(over.id);
-      // Drop on "uncategorized" = remove assignment
+      // Drop on "uncategorized" = remove the category assignment (the project is untouched: a project is the
+      // WORKSPACE and a category is a label, so this drag changes one and not the other).
       if (targetId === "__uncategorized__") {
         convPrefs.assignItem(convId, "");
       } else {
@@ -1062,11 +1138,75 @@ function AskOrchiconPage() {
     setOverFolderId(null);
   }, [armClickSuppressionBackstop]);
 
-  // Build categorized conversation groups
+  // THE PROJECT SCOPE. A project is a WORKSPACE: the sidebar shows one at a time, and the categories reappear
+  // inside it holding only that scope's conversations. Defaults to All projects so nothing that predates the
+  // project column — which defaults to empty — is hidden on first load.
+  const [projectScope, setProjectScope] = useState<string>(ALL_PROJECTS);
+  const projectScopeOptions = useMemo(() => scopeOptions(projects, conversations), [projects, conversations]);
+  const scopedConversations = useMemo(
+    () => filterConversationsByScope(conversations, projectScope),
+    [conversations, projectScope],
+  );
+  // The selected project when the scope names a REAL project, so a new conversation can be created in it. An
+  // unscoped view (All projects) or the No-project scope creates unassigned, which is what it always did.
+  const scopeProjectId = useMemo(() => {
+    if (projectScope === ALL_PROJECTS || projectScope === "") return "";
+    return projects?.some((p) => p.id === projectScope) ? projectScope : "";
+  }, [projectScope, projects]);
+
+  // setConvProject moves a conversation into a project — the row's "move to project" action. The sidebar is
+  // SCOPED by project rather than showing one folder per project, so this is an explicit per-conversation
+  // action rather than a drop target.
+  const setConvProject = useSetConversationProject();
+
+  // renderMoveControl builds a conversation row's "move to project" control. A render prop rather than a plain
+  // callback, because the control is a popover with its own open state — and constructing it here is what lets
+  // the row reuse the SAME control as the sidebar header, so one place decides the option list, the archived
+  // marker and the unknown-project fallback. "All projects" is filtered out: it is a way to LOOK at the list,
+  // not a place to put a conversation.
+  //
+  // This is the sidebar's answer to the drag-to-project gesture the first attempt had. With projects as a
+  // SCOPE there is no project folder to drop onto, and moving a chat between workspaces still has to be
+  // possible from the row itself.
+  const renderMoveControl = useCallback(
+    (convId: string, currentProjectId: string) => (
+      <ProjectScopeSelect
+        compact
+        label="Move to project"
+        options={projectScopeOptions.filter((o) => o.value !== ALL_PROJECTS)}
+        value={currentProjectId}
+        onChange={(next) => {
+          setConvProject.mutate(
+            { id: convId, projectId: next },
+            { onError: () => toast.error("Failed to move conversation", { title: "Error" }) },
+          );
+        }}
+      />
+    ),
+    [projectScopeOptions, setConvProject, toast],
+  );
+
+  // Build categorized conversation groups — WITHIN THE PROJECT SCOPE.
   const categorizedConversations = useMemo(() => {
     if (!conversations) return { categorized: new Map<string, string[]>(), uncategorized: [] as string[] };
-    return getItemsForCategory(convPrefs.state, conversations.map((c) => c.id));
-  }, [conversations, convPrefs.state]);
+    return getItemsForCategory(convPrefs.state, scopedConversations.map((c) => c.id));
+  }, [scopedConversations, convPrefs.state]);
+
+  // THE FOLDERS THIS SCOPE ACTUALLY USES.
+  //
+  // The operator: "In the GUI, folders are visible no matter what project you are on. This is wrong. You should
+  // only see the categories/folders of the currently selected project." The sidebar rendered every category the
+  // tenant has, so five folders showed on a screen scoped to "No project" — none of them empty, all of them
+  // holding conversations that live in a different project.
+  //
+  // The RULE lives in lib/conversationProjects as a pure function, because this route component cannot be
+  // rendered by the test setup — logic left inline here is logic nothing can assert. This is only the wiring:
+  // the SCOPED grouping in, the folders to draw out. ALL_PROJECTS deliberately keeps every folder, so one you
+  // just created is visible to drag into (creating a folder assigns no conversations).
+  const visibleCategories = useMemo(
+    () => categoriesForScope(convPrefs.state.categories, categorizedConversations.categorized, projectScope),
+    [convPrefs.state.categories, categorizedConversations, projectScope],
+  );
 
   // Seed existing conversations into "Software Development" once on first load
   useEffect(() => {
@@ -1155,8 +1295,19 @@ function AskOrchiconPage() {
                   try {
                     const conv = await createConv.mutateAsync({
                       mode: localMode,
+                      // The model chosen on the hero, if any — this is what makes
+                      // the chip work before a conversation exists.
+                      modelRef: pendingModel,
+                      // The project the scope has selected, when it names a real one — so a new conversation
+                      // started while scoped to a project is created IN that workspace. An unscoped view (All
+                      // projects) or the No-project scope creates unassigned, exactly as before.
+                      projectId: scopeProjectId,
                     });
                     if (conv?.id) {
+                      // Consumed by THIS conversation; a later new chat starts
+                      // from the tenant default again rather than silently
+                      // inheriting a one-off choice.
+                      setPendingModel("");
                       setActiveConvId(conv.id);
                       const ok = await sendStreaming(conv.id, text, attachments);
                       if (!ok) {
@@ -1176,6 +1327,9 @@ function AskOrchiconPage() {
                 placeholder="Ask Orchicon Anything..."
                 mode={localMode}
                 onModeChange={handleModeChange}
+                convId={activeConvId}
+                modelRef={askModel}
+                onModelChange={handleAskModelChange}
               />
             </div>
             </div>
@@ -1392,8 +1546,11 @@ function AskOrchiconPage() {
                 mode={localMode}
                 onModeChange={handleModeChange}
                 convId={activeConvId}
+                modelRef={askModel}
+                onModelChange={handleAskModelChange}
                 restoreDraft={restoreDraft}
                 onCompact={handleCompactConversation}
+                compacting={compactConv.isPending}
               />
             </div>
           </div>
@@ -1403,41 +1560,63 @@ function AskOrchiconPage() {
       {/* Right sidebar — conversations panel (w-72 glass-panel, route-local per ADR-0.1) */}
       {!panelCollapsed ? (
         <aside id="conversation-history-panel" data-testid="conversation-history-panel" className="hidden lg:flex w-72 glass-panel rounded-2xl flex-col overflow-hidden border border-black/10 dark:border-white/10 shadow-2xl relative z-20 shrink-0 h-full max-h-full">
-          <div className="p-3.5 border-b border-black/10 dark:border-white/10 flex items-center justify-between shrink-0">
-            <div className="flex items-center space-x-2 text-muted-foreground">
-              <MessageSquare aria-hidden="true" className="w-4 h-4 text-cyan-700 dark:text-cyan-400" />
-              <span className="text-xs font-semibold uppercase tracking-wider">Conversations</span>
+          {/* THE HEADER IS TWO ROWS, and that is a FIX rather than a style choice.
+              The panel is w-72 (288px) with 14px of padding, so it has 260px of content — and this row was
+              carrying a title, a scope dropdown AND three 44px buttons, which needs roughly 410. `justify-between`
+              then pushed the last control past the panel's `overflow-hidden` edge. The operator: "the new folder
+              icon is cut off."
+              Two things make the room. The buttons are 32px rather than 44px targets, which is safe because THIS
+              ASIDE IS `hidden lg:flex` — it only exists at desktop widths, and the mobile sheet has its own
+              header that keeps its 44px targets for touch. And the scope dropdown gets a row of its own, which is
+              what it deserves: it is the workspace picker, and a project name is worth far more legible than
+              truncated into whatever sliver the title left. */}
+          <div className="p-3.5 border-b border-black/10 dark:border-white/10 shrink-0 flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <div className="flex min-w-0 flex-1 items-center space-x-2 text-muted-foreground">
+                <MessageSquare aria-hidden="true" className="w-4 h-4 shrink-0 text-cyan-700 dark:text-cyan-400" />
+                <span className="truncate text-xs font-semibold uppercase tracking-wider">Conversations</span>
+              </div>
+              <div className="flex shrink-0 items-center gap-0.5">
+                <button
+                  onClick={() => setFolderDialogOpen(true)}
+                  className="flex h-8 w-8 items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition"
+                  title="New folder"
+                  aria-label="New folder"
+                >
+                  <FolderPlus aria-hidden="true" className="w-4 h-4" />
+                </button>
+                <Link
+                  to="/ask-orchicon"
+                  search={{ conversationId: undefined } as never}
+                  onClick={(e: React.MouseEvent) => { e.preventDefault(); handleNewChat(); }}
+                  className="flex h-8 w-8 items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition"
+                  title="New Chat"
+                  aria-label="New conversation"
+                >
+                  <Plus aria-hidden="true" className="w-4 h-4" />
+                </Link>
+                <button
+                  onClick={togglePanel}
+                  aria-expanded={!panelCollapsed}
+                  aria-controls="conversation-history-panel"
+                  aria-label={panelCollapsed ? "Expand conversation history" : "Collapse conversation history"}
+                  className="flex h-8 w-8 items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30"
+                  title="Collapse Panel"
+                >
+                  <PanelRightClose aria-hidden="true" className="w-4 h-4" />
+                </button>
+              </div>
             </div>
-            <div className="flex items-center space-x-1">
-              <button
-                onClick={() => setFolderDialogOpen(true)}
-                className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition"
-                title="New folder"
-                aria-label="New folder"
-              >
-                <FolderPlus aria-hidden="true" className="w-4 h-4" />
-              </button>
-              <Link
-                to="/ask-orchicon"
-                search={{ conversationId: undefined } as never}
-                onClick={(e: React.MouseEvent) => { e.preventDefault(); handleNewChat(); }}
-                className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition"
-                title="New Chat"
-                aria-label="New conversation"
-              >
-                <Plus aria-hidden="true" className="w-4 h-4" />
-              </Link>
-              <button
-                onClick={togglePanel}
-                aria-expanded={!panelCollapsed}
-                aria-controls="conversation-history-panel"
-                aria-label={panelCollapsed ? "Expand conversation history" : "Collapse conversation history"}
-                className="p-1 text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30"
-                title="Collapse Panel"
-              >
-                <PanelRightClose aria-hidden="true" className="w-4 h-4" />
-              </button>
-            </div>
+            {/* THE PROJECT SCOPE DROPDOWN. The operator: "a dropdown at the top of the conversation bar that
+                allows you to pick a project, and then under that project you would only see THAT PROJECT'S
+                Conversations and Categories. Projects are WORKSPACES essentially." Full width, on its own row,
+                so the project name is readable. */}
+            <ProjectScopeSelect
+              fullWidth
+              options={projectScopeOptions}
+              value={projectScope}
+              onChange={setProjectScope}
+            />
           </div>
           <div className="flex-1 overflow-y-auto p-2 space-y-1">
           {convsLoading && (
@@ -1445,9 +1624,11 @@ function AskOrchiconPage() {
               Loading...
             </p>
           )}
-          {!convsLoading && (!conversations || conversations.length === 0) && (
+          {!convsLoading && scopedConversations.length === 0 && (
             <p className="text-xs text-center text-muted-foreground py-4">
-              No conversations yet
+              {projectScope === ALL_PROJECTS
+                ? "No conversations yet"
+                : `No conversations in ${scopeLabel(projectScope, projectScopeOptions)}`}
             </p>
           )}
 
@@ -1460,11 +1641,16 @@ function AskOrchiconPage() {
             onDragCancel={handleDragCancel}
           >
             <SortableContext
-              items={conversations?.map((c) => c.id) ?? []}
+              items={scopedConversations.map((c) => c.id)}
               strategy={verticalListSortingStrategy}
             >
-              {/* Folders */}
-              {convPrefs.state.categories.map((category) => {
+              {/* THE CATEGORY FOLDERS, WITHIN THE SELECTED PROJECT. The operator: "a conversation would belong
+                  to a project and inside the project it would still have the normal categories we had before."
+                  These folders are the SAME machinery as before — the only thing that changed is that they now
+                  receive the SCOPED set of conversations, so each holds only this project's chats.
+                  AND THE LIST IS SCOPE-FILTERED, not the full category set: a folder holding nothing in this
+                  workspace is not part of it. See visibleCategories. */}
+              {visibleCategories.map((category) => {
                 const folderConvIds = categorizedConversations.categorized.get(category.id) ?? [];
                 const isCollapsed = convPrefs.collapsed.has(category.id);
                 const isOver = overFolderId === category.id;
@@ -1500,6 +1686,7 @@ function AskOrchiconPage() {
                     onDeleteConv={handleDeleteConv}
                     onStopConv={handleStopConversation}
                     activeDragId={activeDragId}
+                    renderMoveControl={renderMoveControl}
                   />
                 );
               })}
@@ -1522,7 +1709,8 @@ function AskOrchiconPage() {
                 onStopConv={handleStopConversation}
                 activeDragId={activeDragId}
                 isOver={overFolderId === "__uncategorized__"}
-                hasFolders={convPrefs.state.categories.length > 0}
+                hasFolders={visibleCategories.length > 0}
+                renderMoveControl={renderMoveControl}
               />
             </SortableContext>
             <DragOverlay dropAnimation={null}>
@@ -1568,6 +1756,16 @@ function AskOrchiconPage() {
                 <span className="text-xs font-semibold uppercase tracking-wider">Conversations</span>
               </div>
               <div className="flex items-center space-x-1">
+                {/* The mobile sheet is the SAME surface as the desktop panel, so it gets the same scope
+                    control — otherwise a phone user would see every project's conversations at once and no way
+                    to narrow them. "All projects" is dropped here: the sheet is narrow, and its purpose is to
+                    put you in ONE project, so the unassigned scope stands in for it. */}
+                <ProjectScopeSelect
+                  options={projectScopeOptions.filter((o) => o.value !== ALL_PROJECTS)}
+                  value={projectScope === ALL_PROJECTS ? "" : projectScope}
+                  onChange={setProjectScope}
+                  label="Project workspace"
+                />
                 <button onClick={() => setFolderDialogOpen(true)} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition" title="New folder" aria-label="New folder"><FolderPlus aria-hidden="true" className="w-4 h-4" /></button>
                 <button onClick={() => { setMobileSheetOpen(false); handleNewChat(); }} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition" title="New Chat" aria-label="New conversation"><Plus aria-hidden="true" className="w-4 h-4" /></button>
                 <button onClick={closeMobileSheet} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition" title="Close" aria-label="Close conversations"><PanelRightClose aria-hidden="true" className="w-4 h-4" /></button>
@@ -1575,19 +1773,19 @@ function AskOrchiconPage() {
             </div>
             <div className="flex-1 overflow-y-auto p-2 space-y-1">
               {convsLoading && <p className="text-xs text-center text-muted-foreground py-4">Loading...</p>}
-              {!convsLoading && (!conversations || conversations.length === 0) && <p className="text-xs text-center text-muted-foreground py-4">No conversations yet</p>}
+              {!convsLoading && scopedConversations.length === 0 && <p className="text-xs text-center text-muted-foreground py-4">{projectScope === ALL_PROJECTS ? "No conversations yet" : `No conversations in ${scopeLabel(projectScope, projectScopeOptions)}`}</p>}
               <DndContext sensors={dndSensors} collisionDetection={pointerWithin} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd} onDragCancel={handleDragCancel}>
-                <SortableContext items={conversations?.map((c) => c.id) ?? []} strategy={verticalListSortingStrategy}>
-                  {convPrefs.state.categories.map((category) => {
+                <SortableContext items={scopedConversations.map((c) => c.id)} strategy={verticalListSortingStrategy}>
+                  {visibleCategories.map((category) => {
                     const folderConvIds = categorizedConversations.categorized.get(category.id) ?? [];
                     const isCollapsed = convPrefs.collapsed.has(category.id);
                     const isOver = overFolderId === category.id;
                     const isRenaming = renamingFolderId === category.id;
                     return (
-                      <FolderItem key={category.id} id={category.id} name={category.name} isCollapsed={isCollapsed} isOver={isOver} isRenaming={isRenaming} renameValue={folderRenameValue} renameInputRef={folderRenameInputRef} onToggle={() => convPrefs.toggleCollapsed(category.id)} onStartRename={() => startRenameFolder(category.id, category.name)} onSaveRename={() => saveRenameFolder(category.id)} onCancelRename={cancelRenameFolder} onRenameChange={setFolderRenameValue} onDelete={() => convPrefs.deleteCategory(category.id)} convIds={folderConvIds} convById={convById} activeConvId={activeConvId} renamingConvId={renamingConvId} convRenameValue={renameValue} convRenameInputRef={renameInputRef} onSelectConv={(id) => { setMobileSheetOpen(false); setActiveConvId(id); }} onStartRenameConv={startRenameConv} onSaveRenameConv={saveRenameConv} onCancelRenameConv={cancelRenameConv} onRenameConvChange={setRenameValue} onDeleteConv={handleDeleteConv} onStopConv={handleStopConversation} activeDragId={activeDragId} />
+                      <FolderItem key={category.id} id={category.id} name={category.name} isCollapsed={isCollapsed} isOver={isOver} isRenaming={isRenaming} renameValue={folderRenameValue} renameInputRef={folderRenameInputRef} onToggle={() => convPrefs.toggleCollapsed(category.id)} onStartRename={() => startRenameFolder(category.id, category.name)} onSaveRename={() => saveRenameFolder(category.id)} onCancelRename={cancelRenameFolder} onRenameChange={setFolderRenameValue} onDelete={() => convPrefs.deleteCategory(category.id)} convIds={folderConvIds} convById={convById} activeConvId={activeConvId} renamingConvId={renamingConvId} convRenameValue={renameValue} convRenameInputRef={renameInputRef} onSelectConv={(id) => { setMobileSheetOpen(false); setActiveConvId(id); }} onStartRenameConv={startRenameConv} onSaveRenameConv={saveRenameConv} onCancelRenameConv={cancelRenameConv} onRenameConvChange={setRenameValue} onDeleteConv={handleDeleteConv} onStopConv={handleStopConversation} activeDragId={activeDragId} renderMoveControl={renderMoveControl} />
                     );
                   })}
-                  <UncategorizedDropZone id="__uncategorized__" convIds={categorizedConversations.uncategorized} convById={convById} activeConvId={activeConvId} renamingConvId={renamingConvId} renameValue={renameValue} renameInputRef={renameInputRef} onSelectConv={(id) => { setMobileSheetOpen(false); setActiveConvId(id); }} onStartRenameConv={startRenameConv} onSaveRenameConv={saveRenameConv} onCancelRenameConv={cancelRenameConv} onRenameConvChange={setRenameValue} onDeleteConv={handleDeleteConv} onStopConv={handleStopConversation} activeDragId={activeDragId} isOver={overFolderId === "__uncategorized__"} hasFolders={convPrefs.state.categories.length > 0} />
+                  <UncategorizedDropZone id="__uncategorized__" convIds={categorizedConversations.uncategorized} convById={convById} activeConvId={activeConvId} renamingConvId={renamingConvId} renameValue={renameValue} renameInputRef={renameInputRef} onSelectConv={(id) => { setMobileSheetOpen(false); setActiveConvId(id); }} onStartRenameConv={startRenameConv} onSaveRenameConv={saveRenameConv} onCancelRenameConv={cancelRenameConv} onRenameConvChange={setRenameValue} onDeleteConv={handleDeleteConv} onStopConv={handleStopConversation} activeDragId={activeDragId} isOver={overFolderId === "__uncategorized__"} hasFolders={visibleCategories.length > 0} renderMoveControl={renderMoveControl} />
                 </SortableContext>
                 <DragOverlay dropAnimation={null}>
                   {activeDragId ? <div className="rounded-md bg-background border shadow-md px-3 py-2 text-sm text-foreground max-w-[200px] truncate">{convById.get(activeDragId)?.title || "New conversation"}</div> : null}
@@ -1698,8 +1896,11 @@ function ChatInputField({
   mode = ConversationMode.BRAINSTORM,
   onModeChange,
   convId,
+  modelRef = "",
+  onModelChange,
   restoreDraft,
   onCompact,
+  compacting = false,
 }: {
   onSend: (text: string, attachments?: AttachmentInput[]) => Promise<boolean>;
   onStop: () => void;
@@ -1708,14 +1909,27 @@ function ChatInputField({
   mode?: ConversationMode;
   onModeChange?: (mode: ConversationMode) => void;
   convId?: string | null;
+  // modelRef is the model answering this conversation. The session stat strip
+  // reports it alongside the context / tokens / cache / cost numbers.
+  modelRef?: string;
+  // onModelChange retargets the model. The PARENT decides the meaning: with a
+  // conversation open it writes that conversation, and on the hero (no
+  // conversation yet) it holds the choice for the create.
+  onModelChange?: (ref: string) => void;
   // When the parent detects a reply failure (a turn that was acked but whose
   // reply errored), it signals this with the sent text so the composer puts
   // it back in the box. Null/absent = nothing to restore.
   restoreDraft?: { convId: string; text: string; token: number } | null;
   // onCompact runs the /compact command (free context by compacting this
-  // conversation's history). It resolves to a human-readable outcome that the
-  // composer reports; the server owns the policy (it may decline).
-  onCompact?: (convId: string) => Promise<string>;
+  // conversation's history). It resolves to the OUTCOME: `compacted`
+  // distinguishes a real compaction from a server-side DECLINE (whose reason
+  // arrives in `detail`), so a decline is not dressed up as a success.
+  onCompact?: (convId: string) => Promise<{ detail: string; compacted: boolean }>;
+  // compacting reports that a compaction is IN FLIGHT, so the control can show
+  // progress during the wait instead of sitting mute and greyed. The parent
+  // derives it from the mutation's OWN lifecycle (isPending), which settles
+  // with the request, rather than a flag this component must remember to clear.
+  compacting?: boolean;
 }) {
   // The input stays ENABLED while streaming: sending mid-reply is the
   // interject path (interrupt + redirect), not a rejected "already
@@ -1725,6 +1939,11 @@ function ChatInputField({
   const [sending, setSending] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // The session stat strip (ask model · context · tokens · cache · cost). It
+  // re-reads when a turn COMPLETES — a finished turn is exactly when new usage
+  // lands — and when the conversation changes.
+  const { line: metricsLine, stats: statsLine } = useAskMetricsLive(convId, modelRef, isStreaming);
 
   // On a reply failure the parent signals the text to put back in the box.
   // No sessionStorage draft persistence — the box is cleared on send and the
@@ -1767,6 +1986,81 @@ function ChatInputField({
 
   const [pendingReads, setPendingReads] = useState(0);
 
+  // When the running compaction started (ms since epoch). The RPC is UNARY and
+  // server-side it runs a summarize MODEL CALL, so it can take tens of seconds
+  // and reports no intermediate progress at all. The control therefore shows an
+  // ELAPSED timer, not a percentage: elapsed time is the one progress fact the
+  // client actually has, and a fabricated progress bar would imply a
+  // measurement the server never sends.
+  const [compactStartedAt, setCompactStartedAt] = useState<number | null>(null);
+
+  // runCompact frees this conversation's context (the /compact action). ONE
+  // implementation, shared by the typed command and the toolbar button, so the
+  // two can never drift on the guards — the same reason the TUI keeps a single
+  // command path.
+  //
+  // It deliberately does NOT touch the composer text: the typed path clears the
+  // box itself (the command text was consumed), while the button must never wipe
+  // a draft the operator is in the middle of writing.
+  const runCompact = useCallback(async () => {
+    if (!convId) {
+      useToastStore.getState().push({ kind: "error", message: "No conversation open — send a message first." });
+      return;
+    }
+    // Refuse mid-turn: compaction rewrites the history the running turn is
+    // generating from, so doing it underneath a live answer would corrupt it.
+    // (The TUI refuses identically — CanCompact.)
+    if (isStreaming) {
+      useToastStore.getState().push({
+        kind: "error",
+        message: "A turn is in flight — stop it before /compact (compaction rewrites the history the turn is using).",
+      });
+      return;
+    }
+    if (!onCompact) return;
+    setSending(true);
+    setCompactStartedAt(Date.now());
+    try {
+      const res = await onCompact(convId);
+      // A DECLINE is not an achievement: the server reports compacted=false with
+      // its reason ("only N messages so far"), and rendering that as a green
+      // success toast reads as if something happened when nothing did.
+      useToastStore.getState().push({
+        kind: res.compacted ? "success" : "info",
+        message: res.detail || (res.compacted ? "conversation compacted" : "nothing to compact"),
+      });
+    } catch (err) {
+      useToastStore.getState().push({
+        kind: "error",
+        message: `/compact failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    } finally {
+      setSending(false);
+      setCompactStartedAt(null);
+    }
+  }, [convId, isStreaming, onCompact]);
+
+  // Why compaction is unavailable right now ("" = available). Surfacing the
+  // reason on the control BEFORE the click beats a toast AFTER it — these are
+  // the same two conditions runCompact refuses on.
+  // A RUNNING compaction is deliberately NOT one of the refusal reasons. It used
+  // to report "Working…" here, which rendered as a dead greyed button: nothing
+  // moved, so the operator could not tell work from a hang until the completion
+  // toast appeared. While compacting, the control reports its own progress (see
+  // the button) instead of a refusal — the disabled state stays (a second fire
+  // would race the rewrite), but it is no longer mute.
+  const compactBlocked = !convId
+    ? "Open a conversation first"
+    : isStreaming
+      ? "A turn is in flight — stop it before compacting"
+      : !compacting && sending
+        ? "Working…"
+        : "";
+
+  // Disabled while compacting as well as when refused, so the in-flight state
+  // cannot double-fire — but it is the PROGRESS rendering that fills the wait.
+  const compactDisabled = compacting || compactBlocked !== "";
+
   const handleSubmit = useCallback(async () => {
     // The sending lock only guards a double-click on a FRESH send. While a
     // turn is streaming, `sending` stays true for the whole turn (onSend
@@ -1791,33 +2085,7 @@ function ChatInputField({
     if (cmd && cmd.name === COMPACT_COMMAND) {
       setText("");
       if (inputRef.current) inputRef.current.style.height = "auto";
-      if (!convId) {
-        useToastStore.getState().push({ kind: "error", message: "No conversation open — send a message first." });
-        return;
-      }
-      // Refuse mid-turn: compaction rewrites the history the running turn is
-      // generating from, so doing it underneath a live answer would corrupt it.
-      // (The TUI refuses identically — CanCompact.)
-      if (isStreaming) {
-        useToastStore.getState().push({
-          kind: "error",
-          message: "A turn is in flight — stop it before /compact (compaction rewrites the history the turn is using).",
-        });
-        return;
-      }
-      if (!onCompact) return;
-      setSending(true);
-      try {
-        const detail = await onCompact(convId);
-        useToastStore.getState().push({ kind: "success", message: detail || "/compact complete" });
-      } catch (err) {
-        useToastStore.getState().push({
-          kind: "error",
-          message: `/compact failed: ${err instanceof Error ? err.message : String(err)}`,
-        });
-      } finally {
-        setSending(false);
-      }
+      await runCompact();
       return;
     }
 
@@ -1841,7 +2109,7 @@ function ChatInputField({
         setSending(false);
       }
     }
-  }, [sending, text, attachments, onSend, pendingReads, isStreaming, convId, onCompact]);
+  }, [sending, text, attachments, onSend, pendingReads, isStreaming, convId, onCompact, runCompact]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -2270,8 +2538,80 @@ function ChatInputField({
                 Send
               </Button>
             )}
+            {/* Compact belongs with the ACTIONS (left), not the conversation
+                state (right): the right group already carries the model, the
+                session stats and the mode. Disabled — with the reason on the
+                control — when there is nothing to compact or a turn is live,
+                which is exactly when the typed command would refuse.
+                While it RUNS the control must read as alive, not dead: the
+                shared disabled style dims to 50% opacity, which is exactly what
+                made a long compaction look like a broken button, so the busy
+                state restores full opacity and tints the label. cn is
+                tailwind-merge, so disabled:opacity-100 supersedes the base
+                disabled:opacity-50 rather than stacking with it. */}
+            {onCompact && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void runCompact()}
+                disabled={compactDisabled}
+                title={
+                  compacting
+                    ? "Compacting… the server is summarizing this conversation (it runs a model call, so this can take a while)"
+                    : compactBlocked ||
+                      "Compact this conversation — frees context; the server decides if it can"
+                }
+                aria-label="Compact conversation"
+                aria-busy={compacting}
+                data-testid="ask-compact"
+                data-compacting={compacting ? "true" : "false"}
+                className={
+                  compacting
+                    ? "disabled:opacity-100 text-cyan-600 dark:text-cyan-400"
+                    : undefined
+                }
+              >
+                {compacting ? (
+                  <>
+                    <Loader2
+                      aria-hidden="true"
+                      className="h-3.5 w-3.5 mr-1 animate-spin"
+                    />
+                    Compacting
+                    {compactStartedAt !== null && (
+                      <LiveDuration
+                        startedAt={compactStartedAt}
+                        className="ml-1 font-mono text-xs text-muted-foreground"
+                      />
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <Minimize2 aria-hidden="true" className="h-3.5 w-3.5 mr-1" />
+                    Compact
+                  </>
+                )}
+              </Button>
+            )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            {/* The session stat strip: the ask model as a CLICKABLE chip (it
+                opens the model picker), then the numeric stats. Right-aligned
+                and immediately BEFORE the mode dropdown (the operator's
+                placement ask). The numbers hide first on a narrow box — the chip
+                is the CONTROL and must survive. */}
+            {modelRef && (
+              <AskModelChip model={modelRef} onModelChange={onModelChange} />
+            )}
+            {statsLine && (
+              <span
+                className="hidden truncate font-mono text-[11px] text-muted-foreground sm:inline"
+                title={metricsLine}
+              >
+                {statsLine}
+              </span>
+            )}
             {onModeChange && (
               <ModeToggle
                 mode={mode}
@@ -2300,6 +2640,15 @@ function ChatInputField({
 interface ConversationItemProps {
   convId: string;
   title: string;
+  /** The conversation's project, for the row's move control. */
+  projectId?: string;
+  /**
+   * Builds the row's "move to project" control. A render prop rather than a callback, because the control is a
+   * popover with its own open state — constructing it per row is what lets it reuse the SAME component the
+   * sidebar header uses, so one place decides the option list, the archived marker and the unknown-project
+   * fallback.
+   */
+  renderMoveControl?: (convId: string, projectId: string) => React.ReactNode;
   lastMessagePreview?: string;
   isActive: boolean;
   isRenaming: boolean;
@@ -2323,6 +2672,7 @@ interface ConversationItemProps {
 function ConversationItem({
   convId,
   title,
+  projectId,
   lastMessagePreview,
   isActive,
   isRenaming,
@@ -2337,6 +2687,7 @@ function ConversationItem({
   onRenameChange,
   onDelete,
   isDragging,
+  renderMoveControl,
 }: ConversationItemProps) {
   const { attributes, listeners, setNodeRef, isDragging: isDndDragging } =
     useDraggable({ id: convId });
@@ -2426,21 +2777,31 @@ function ConversationItem({
             )}
           </div>
           {!isRenaming && (
-            <span className="shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
-              <button
-                onClick={onStartRename}
-                className="text-muted-foreground hover:text-foreground"
-                title="Rename"
-              >
-                <Pencil aria-hidden="true" className="h-3 w-3" />
-              </button>
-              <button
-                onClick={onDelete}
-                className="text-muted-foreground hover:text-destructive"
-                title="Delete"
-              >
-                <Trash2 aria-hidden="true" className="h-3 w-3" />
-              </button>
+            <span className="shrink-0 flex items-center gap-0.5">
+              {/* MOVE TO PROJECT — ALWAYS VISIBLE, where rename and delete stay hover-revealed.
+                  The sidebar is a SCOPED view rather than one folder per project, so there is no project folder
+                  to drag a conversation onto; this control is the only way a chat changes project. The operator,
+                  on the version where it was hover-gated: "I also don't think there is currently a gui way to
+                  move a conversation to a different project like in the tui." They were right — it existed but
+                  only appeared under the pointer, so the affordance was indistinguishable from absent. An action
+                  with no other route cannot be hidden behind a hover. */}
+              {renderMoveControl?.(convId, projectId ?? "")}
+              <span className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100">
+                <button
+                  onClick={onStartRename}
+                  className="text-muted-foreground hover:text-foreground"
+                  title="Rename"
+                >
+                  <Pencil aria-hidden="true" className="h-3 w-3" />
+                </button>
+                <button
+                  onClick={onDelete}
+                  className="text-muted-foreground hover:text-destructive"
+                  title="Delete"
+                >
+                  <Trash2 aria-hidden="true" className="h-3 w-3" />
+                </button>
+              </span>
             </span>
           )}
         </div>
@@ -2477,6 +2838,8 @@ interface FolderItemProps {
   onDeleteConv: (id: string, e: React.MouseEvent) => void;
   onStopConv: (id: string) => void;
   activeDragId: string | null;
+  /** Builds each member row's "move to project" control — see ConversationItemProps.renderMoveControl. */
+  renderMoveControl?: (convId: string, projectId: string) => React.ReactNode;
 }
 
 function FolderItem({
@@ -2507,6 +2870,7 @@ function FolderItem({
   onDeleteConv,
   onStopConv,
   activeDragId,
+  renderMoveControl,
 }: FolderItemProps) {
   const { setNodeRef } = useDroppable({ id });
 
@@ -2577,6 +2941,8 @@ function FolderItem({
                 key={convId}
                 convId={convId}
                 title={conv.title}
+                projectId={conv.projectId ?? ""}
+                renderMoveControl={renderMoveControl}
                 lastMessagePreview={conv.lastMessagePreview}
                 isRunning={conv.turnInFlight ?? false}
                 onStop={() => onStopConv(convId)}
@@ -2618,6 +2984,8 @@ interface UncategorizedDropZoneProps {
   activeDragId: string | null;
   isOver: boolean;
   hasFolders: boolean;
+  /** Builds each row's "move to project" control — see ConversationItemProps.renderMoveControl. */
+  renderMoveControl?: (convId: string, projectId: string) => React.ReactNode;
 }
 
 function UncategorizedDropZone({
@@ -2638,6 +3006,7 @@ function UncategorizedDropZone({
   activeDragId,
   isOver,
   hasFolders,
+  renderMoveControl,
 }: UncategorizedDropZoneProps) {
   const { setNodeRef } = useDroppable({ id });
 
@@ -2665,6 +3034,8 @@ function UncategorizedDropZone({
             key={convId}
             convId={convId}
             title={conv.title}
+            projectId={conv.projectId ?? ""}
+            renderMoveControl={renderMoveControl}
             lastMessagePreview={conv.lastMessagePreview}
             isRunning={conv.turnInFlight ?? false}
             onStop={() => onStopConv(convId)}
@@ -2685,5 +3056,6 @@ function UncategorizedDropZone({
     </div>
   );
 }
+
 
 export default AskOrchiconPage;

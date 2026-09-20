@@ -250,7 +250,7 @@ export class WorkerVersion extends Message<WorkerVersion> {
   status = WorkerVersionStatus.UNSPECIFIED;
 
   /**
-   * exact provider + model id; its adapter segment selects the dispatch adapter; no failover (docs/05 §11)
+   * canonical adapter/provider/model (ADR-0003): segment 1 = the dispatch adapter, segment 2 = the provider, and the remainder is the model id VERBATIM (internal slashes preserved). A legacy 1/2-segment ref is still readable and infers adapter "opencode". No failover (docs/05 §11).
    *
    * @generated from field: string model_ref = 7;
    */
