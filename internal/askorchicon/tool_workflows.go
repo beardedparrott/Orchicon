@@ -8,6 +8,7 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 	"github.com/beardedparrott/orchicon/internal/workflow"
 )
@@ -250,4 +251,89 @@ func toolDeleteWorkflow(ctx context.Context, pool *db.Pool, args json.RawMessage
 		return nil, err
 	}
 	return json.Marshal(map[string]any{"id": current.ID, "deleted": true, "ephemeral": current.Ephemeral})
+}
+
+// toolPublishWorkflowVersion publishes a workflow's draft version so the workflow becomes RUNNABLE, mirroring
+// Service.PublishWorkflow (internal/workflow/service.go).
+//
+// THE GAP IT CLOSES, and why Quick Work could not work without it. create_workflow seeds a DRAFT version
+// (internal/workflow/create.go sets Status=draft and CurrentVersion=0), the scheduler only dispatches published
+// work, and a work item binds "a published workflow to run". Workers had publish_worker_version; WORKFLOWS HAD
+// NOTHING — db.PublishWorkflowVersion was reachable only from tests. So the ephemeral protocol's "create the
+// workflow" step built something that could never be started, and the failure was passive: the bound item sat
+// pending with no error anywhere to explain why. An agent assembling a throwaway workflow for one job must be
+// able to make it runnable in the same session, and an agent that cannot is one that ships inert runs.
+//
+// The version argument is OPTIONAL: omitted, it publishes the latest draft, which is what the
+// create-then-publish flow always wants. Given, it must NAME a draft — publishing a version that is already
+// published is a failed precondition rather than a silent no-op, so a stale call is visible instead of looking
+// like success.
+func toolPublishWorkflowVersion(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		WorkflowID string `json:"workflow_id"`
+		Version    int    `json:"version"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, fmt.Errorf("invalid args: %w", err)
+	}
+	if params.WorkflowID == "" {
+		return nil, fmt.Errorf("workflow_id is required")
+	}
+	tenantID := tenant.FromContext(ctx)
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer ttx.Rollback(ctx)
+
+	current, err := db.GetWorkflow(ctx, ttx.Tx, tenantID, params.WorkflowID)
+	if err != nil {
+		return nil, err
+	}
+	target := params.Version
+	if target <= 0 {
+		latest, err := db.GetLatestWorkflowVersion(ctx, ttx.Tx, tenantID, params.WorkflowID, false)
+		if err != nil {
+			return nil, err
+		}
+		target = latest.Version
+	}
+	version, err := db.GetWorkflowVersion(ctx, ttx.Tx, tenantID, params.WorkflowID, target)
+	if err != nil {
+		return nil, err
+	}
+	if version.Status != domain.WorkflowVersionDraft {
+		return nil, fmt.Errorf("workflow version v%d is not a draft (status=%s) — only a draft can be published, and "+
+			"a published version is already runnable", version.Version, version.Status)
+	}
+	published, err := db.PublishWorkflowVersion(ctx, ttx.Tx, tenantID, params.WorkflowID, version.Version)
+	if err != nil {
+		return nil, err
+	}
+	// Deprecate the previously-current published version so exactly one version is active, matching the RPC
+	// (a workflow with two 'published' versions would leave the run path's choice arbitrary).
+	if current.CurrentVersion > 0 {
+		if _, err := ttx.Tx.Exec(ctx,
+			`UPDATE workflow_versions SET status = 'deprecated'
+			 WHERE tenant_id = $1 AND workflow_id = $2 AND version = $3 AND status = 'published'`,
+			tenantID, params.WorkflowID, current.CurrentVersion); err != nil {
+			return nil, fmt.Errorf("deprecate previous published version: %w", err)
+		}
+	}
+	updated, err := db.UpdateWorkflowCurrentVersion(ctx, ttx.Tx, tenantID, params.WorkflowID, current.Version, version.Version)
+	if err != nil {
+		return nil, err
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "workflow.published", "workflow", updated.ID,
+		audit.Snapshot(map[string]any{"id": current.ID, "status": current.Status, "current_version": current.CurrentVersion}),
+		audit.Snapshot(map[string]any{"id": updated.ID, "status": updated.Status, "current_version": updated.CurrentVersion})); err != nil {
+		return nil, fmt.Errorf("audit workflow.published: %w", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return rowWithExtra(updated, map[string]any{
+		"version":    published.Version,
+		"version_id": published.ID,
+	})
 }

@@ -33,6 +33,34 @@ func askModeFromContext(ctx context.Context) string {
 	return askmode.ModeFromContext(ctx)
 }
 
+// --- the turn's conversation ----------------------------------------------------------------
+
+// ctxKeyConversation is the unexported context key for the turn's conversation id.
+//
+// WHY IT IS ON THE CONTEXT rather than passed as a parameter. A tool that reports facts about THIS session —
+// which conversation it is in, which mode it runs under, which model_ref it resolves to — cannot ask the caller
+// for them: the model would be guessing at its own identity, and "which model am I on" is exactly the fact a
+// Quick Work dispatch has to state out loud before it pins one into a worker. The id is stamped in the SAME
+// place the mode is (chat.go's startConversationTurnOpts) and rides the same path to the tool boundary, so both
+// halves of a turn's self-knowledge come from one read of one row.
+type ctxKeyConversation struct{}
+
+// withAskConversation stamps a turn's context with its conversation id.
+func withAskConversation(ctx context.Context, convID string) context.Context {
+	return context.WithValue(ctx, ctxKeyConversation{}, convID)
+}
+
+// askConversationFromContext reads the conversation id stamped on a turn. "" when there is none — a test driving
+// a tool directly, or a caller that never stamped one. A tool that REQUIRES the id must fail loud on "" rather
+// than substituting a guess, because a confidently wrong answer about this session is worse than an error.
+func askConversationFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	v, _ := ctx.Value(ctxKeyConversation{}).(string)
+	return v
+}
+
 // applyAskToolPolicy hands the turn's policy to the adapter, and — the important half — reports when the adapter
 // cannot enforce it.
 //
