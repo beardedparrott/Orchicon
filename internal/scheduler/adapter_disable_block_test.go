@@ -13,17 +13,14 @@ package scheduler
 // status it writes for a standalone task.
 
 import (
-	"errors"
 	"fmt"
 	"testing"
 )
 
-// permanentDispatchFailure is the classification the reconciler's dispatch
-// path applies: only these two sentinels mean "retrying cannot help".
-func permanentDispatchFailure(err error) bool {
-	return errors.Is(err, ErrAdapterDisabled) || errors.Is(err, ErrAdapterKindUnregistered)
-}
-
+// permanentDispatchFailure (reconciler.go) is the classification the
+// reconciler's dispatch path actually applies — this test drives the
+// PRODUCTION predicate directly, never a copy of it, so it cannot pass
+// against a stale re-implementation.
 func TestPermanentDispatchFailureClassification(t *testing.T) {
 	d := NewDispatcher()
 	d.Register("orchicon", &fakeBridge{name: "orchicon"})

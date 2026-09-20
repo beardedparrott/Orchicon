@@ -495,6 +495,26 @@ func CreateWorkerVersion(ctx context.Context, tx pgx.Tx, v WorkerVersionRow) (Wo
 			context_sources, permissions,
 			gated_tools, budget_overrides, execution_policy_ref, concurrency_limit,
 			recovery_workflow_ref, labels, published_at, created_at`
+	// Every jsonb column on worker_versions is NOT NULL with a schema default.
+	// The INSERT names them explicitly, so a caller that leaves a field at its
+	// zero value sends an explicit NULL — which OVERRIDES the column default
+	// and violates NOT NULL. Normalize each to the column's own default so an
+	// omitted field means exactly what the schema intends.
+	if len(v.ContextSources) == 0 {
+		v.ContextSources = []byte("[]")
+	}
+	if len(v.Permissions) == 0 {
+		v.Permissions = []byte("{}")
+	}
+	if len(v.GatedTools) == 0 {
+		v.GatedTools = []byte("[]")
+	}
+	if len(v.BudgetOverrides) == 0 {
+		v.BudgetOverrides = []byte("{}")
+	}
+	if len(v.Labels) == 0 {
+		v.Labels = []byte("{}")
+	}
 	row := v
 	err := tx.QueryRow(ctx, q,
 		v.ID, v.TenantID, v.WorkerID, v.Version, v.VersionNote, v.Status,

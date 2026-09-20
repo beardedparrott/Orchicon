@@ -201,9 +201,7 @@ func (h *HostServe) EnsureStarted(ctx context.Context) error {
 		return err
 	}
 	if err := h.Start(ctx); err != nil {
-		h.mu.Lock()
-		h.startErr = err
-		h.mu.Unlock()
+		h.markStartFailed(err)
 		h.log.Warn("host opencode serve lazy start failed", "error", err)
 		return err
 	}
@@ -223,6 +221,26 @@ func (h *HostServe) StartError() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.startErr
+}
+
+// markStartFailed records a failed lazy start AND clears any PARTIAL start
+// state. A failed Start can leave startOnce having already armed `started`
+// and `client` for a process it then killed (a readiness timeout, or a
+// first-demand ctx cancelled during the readiness wait); if that survived,
+// ready() would report a DEAD serve as up, so the next demand would skip the
+// start entirely and no supervision would ever be armed. Resetting forces the
+// next demand to retry, and releases the execution guard the failed attempt
+// installed.
+func (h *HostServe) markStartFailed(err error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.guard != nil {
+		h.guard.Close()
+		h.guard = nil
+	}
+	h.started = false
+	h.client = nil
+	h.startErr = err
 }
 
 // ready reports whether a live serve + client are in place (h.mu-guarded).

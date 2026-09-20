@@ -6,6 +6,7 @@ package opencode
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -75,5 +76,33 @@ func TestStopCancelsSupervisionAndClearsState(t *testing.T) {
 	}
 	if h.Client() != nil {
 		t.Error("Stop left a session client behind")
+	}
+}
+
+// TestMarkStartFailedClearsPartialState: a FAILED lazy start must not leave
+// the serve marked ready. startOnce can have armed started + client for a
+// process it then killed (readiness timeout, or a first-demand ctx cancelled
+// during the readiness wait); if that state survived, ready() would report a
+// DEAD serve as up, the next demand would skip the start, and no supervision
+// would ever be armed — the plane would silently never have a serve again.
+func TestMarkStartFailedClearsPartialState(t *testing.T) {
+	h := NewHostServe(lazyServeLogger(), t.TempDir(), t.TempDir())
+	// Simulate a readiness timeout: the process was armed, then killed.
+	h.mu.Lock()
+	h.started = true
+	h.client = NewSessionClient("http://127.0.0.1:1", "pw", "")
+	h.mu.Unlock()
+
+	boom := errors.New("host serve did not become ready within 90s")
+	h.markStartFailed(boom)
+
+	if h.ready() {
+		t.Error("markStartFailed left the serve marked ready — the next demand would skip the start")
+	}
+	if h.Client() != nil {
+		t.Error("markStartFailed left a session client behind")
+	}
+	if got := h.StartError(); got == nil || !strings.Contains(got.Error(), "90s") {
+		t.Errorf("StartError() = %v, want the recorded start failure", got)
 	}
 }

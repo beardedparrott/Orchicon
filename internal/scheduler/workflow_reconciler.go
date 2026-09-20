@@ -160,6 +160,19 @@ func (r *WorkflowReconciler) runNeedsServe(ctx context.Context, tx pgx.Tx, tenan
 	if !r.runtimeEnabled() {
 		return false
 	}
+	// Callers on the reconcile path pass the pass transaction. A caller with
+	// NO tx (the gate tests probe the predicate directly) reads through a
+	// short tenant tx of its own instead of nil-dereferencing pgx. On a
+	// begin failure the gate answers CONSERVATIVELY (serve demand assumed),
+	// the same rule the unresolvable-worker case uses.
+	if tx == nil && r.pool != nil {
+		ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+		if err != nil {
+			return true
+		}
+		defer ttx.Rollback(ctx)
+		tx = ttx.Tx
+	}
 	var refs []string
 	for _, s := range steps {
 		switch s.Kind {

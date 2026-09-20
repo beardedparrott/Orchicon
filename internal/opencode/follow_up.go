@@ -28,7 +28,13 @@ type ContinueSessionOpts = scheduler.ContinueSessionOpts
 // when the client disconnects mid-turn. No new execution/work item is ever
 // created.
 func (a *Adapter) ContinueSession(ctx context.Context, opts ContinueSessionOpts) (string, error) {
-	client, sessionID, reuse := a.followUpSession(ctx, opts)
+	client, sessionID, reuse, err := a.followUpSession(ctx, opts)
+	if err != nil {
+		// Fail-fast and LOUD (AC 4): the serve could not be started (operator
+		// kill-switch, missing binary, never ready) — surface the reason
+		// verbatim rather than degrading or waiting.
+		return "", err
+	}
 	if client == nil {
 		return "", fmt.Errorf("no opencode serve available for the follow-up")
 	}
@@ -114,24 +120,32 @@ func (a *Adapter) ContinueSession(ctx context.Context, opts ContinueSessionOpts)
 
 // followUpSession resolves the client + session for a follow-up: the
 // original serve/session when still reachable (real continuity), else a
-// fresh session on the host serve. Returns (client, sessionID, reused).
-func (a *Adapter) followUpSession(ctx context.Context, opts ContinueSessionOpts) (*SessionClient, string, bool) {
+// fresh session on the host serve. Returns (client, sessionID, reused, err).
+func (a *Adapter) followUpSession(ctx context.Context, opts ContinueSessionOpts) (*SessionClient, string, bool, error) {
 	if opts.ServeURL != "" && opts.SessionID != "" {
 		orig := NewSessionClient(opts.ServeURL, opts.ServePassword, opts.ProjectDir)
 		if orig.Healthy(ctx) {
-			return orig, opts.SessionID, true
+			return orig, opts.SessionID, true, nil
 		}
 	}
 	if a.host != nil {
+		// Lazy host serve (AC 2): a follow-up continuation that cannot reuse
+		// the original serve IS opencode demand, so the host serve starts
+		// HERE on first demand rather than at plane boot. EnsureStarted's
+		// error is the loud reason (kill-switch / missing binary / never
+		// ready) and is returned verbatim — no silent degradation (AC 4).
+		if err := a.host.EnsureStarted(ctx); err != nil {
+			return nil, "", false, fmt.Errorf("host opencode serve unavailable for the follow-up: %w", err)
+		}
 		if client := a.host.Client(); client != nil {
 			sid, err := client.CreateSession(ctx, opts.ExecutionID+"-followup")
 			if err == nil && sid != "" {
-				return client, sid, false
+				return client, sid, false, nil
 			}
 			a.log.Warn("follow-up session create failed", "execution", opts.ExecutionID, "error", err)
 		}
 	}
-	return nil, "", false
+	return nil, "", false, nil
 }
 
 // followUpReplyWindow bounds how long a follow-up waits for the model's

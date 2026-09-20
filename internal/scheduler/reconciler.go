@@ -1276,7 +1276,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		// spin the item through ready→failed forever (AC 3). Block the
 		// work item with the reason instead: the operator then sees the
 		// failure ON the item rather than an item that keeps returning.
-		if errors.Is(err, ErrAdapterDisabled) || errors.Is(err, ErrAdapterKindUnregistered) {
+		if permanentDispatchFailure(err) {
 			r.markFailedToStartPermanent(context.Background(), exec, err.Error())
 			return
 		}
@@ -1396,6 +1396,20 @@ func (r *TaskReconciler) markFailedToStart(ctx context.Context, exec db.Executio
 	if err := ttx.Commit(ctx); err != nil {
 		r.log.Error("commit failed_to_start", "execution", exec.ID, "error", err)
 	}
+}
+
+// permanentDispatchFailure reports whether a dispatcher Resolve error is a
+// PERMANENT routing failure — one no retry can fix: the adapter kind is
+// administratively disabled, or it is a declared-but-unregistered kind (e.g.
+// "claude", declared in internal/adapter/providers.go with no bridge
+// registered). Callers BLOCK the work item with the reason instead of
+// requeueing it into a silent ready→failed→ready loop (AC 3). A TRANSIENT
+// failure (adapter unreachable mid-dispatch) is not permanent and keeps the
+// requeue-with-backoff path. It is a named function rather than an inline
+// expression so the classification lives in ONE place and is directly
+// testable (the test must not re-implement the predicate).
+func permanentDispatchFailure(err error) bool {
+	return errors.Is(err, ErrAdapterDisabled) || errors.Is(err, ErrAdapterKindUnregistered)
 }
 
 // markFailedToStartPermanent is markFailedToStart for a PERMANENT dispatch

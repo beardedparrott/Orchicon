@@ -91,6 +91,19 @@ func TestReconcileRunProgressesLoopDecisionActiveIteration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Pre-admit the run the way the product does: runtime_ready=true (headless
+	// tests are always serve-ready) and worktree_status='ready'. Without the
+	// worktree admission the dispatch section holds EVERY step of a pending
+	// non-branch run until the WorktreeReconciler admits it, which this fixture
+	// never runs — so the loop iteration would never dispatch. Assign the
+	// reloaded row so the local version is not stale.
+	run, err = db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, run.ID, run.Version, db.UpdateWorkflowRunFields{
+		RuntimeReady:   boolPtr(true),
+		WorktreeStatus: strPtr(domain.WorktreeReady),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	started := time.Now().UTC().Add(-time.Minute)
 	// The exact same timestamp for the superseded and active loop iterations
