@@ -220,6 +220,9 @@ rls-check: ## CI gate: every tenant_id table must have the RLS policy (docs/09 Â
 synth-data: ## CI gate: no synthesized data planes in non-test source (ADR-0010)
 	scripts/check_no_synth_data.sh
 
+adapter-bake-guard: ## CI gate: adapter CLIs are MOUNTED, never baked into image layers (ADR-0003/0005)
+	go test ./internal/runtime/ -run 'TestAdapterCLINeverBaked' -count=1 -v
+
 # --- Frontend --------------------------------------------------------------
 .PHONY: fe-install fe-dev fe-build fe-lint fe-test
 fe-install: ## Install frontend dependencies
@@ -402,7 +405,7 @@ install-uninstall: ## Uninstall Orchicon via the install script
 # only the two protoc plugin packages); fe-lint/fe-test are the frontend
 # gate and run in the fe CI job. `ci` is the local convenience union.
 .PHONY: ci ci-go
-ci-go: lint gen-check vet test synth-data rls-check ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
+ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
 ci: ci-go fe-lint fe-test ## Run the full CI gate locally (Go + frontend)
 
 .PHONY: tui-pty-gate
