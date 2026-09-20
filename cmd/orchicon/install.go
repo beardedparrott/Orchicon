@@ -42,13 +42,21 @@ func runInstall(args []string, log *slog.Logger) error {
 		return fmt.Errorf("docker is required (start Docker first): %v: %s", err, strings.TrimSpace(string(out)))
 	}
 
-	// 1.5. The runtime adapter CLI (opencode) must be installed on the
-	// HOST — Orchicon never ships adapter CLIs in its images (licensing;
-	// Claude Code, for example, prohibits bundling). It is bind-mounted
-	// into the containers at runtime, so fail loudly here rather than
-	// letting every worker execution fail later with "binary not found".
-	if err := requireAdapterCLI("opencode"); err != nil {
-		return err
+	// 1.5. An external adapter CLI is OPTIONAL. Orchicon ships its own runtime
+	// engine, so this install is complete without one and nothing below needs
+	// opencode on the host. Report it when present, so the operator knows it will
+	// be used, and say nothing when it is absent — there is nothing to fix.
+	//
+	// THIS USED TO FAIL THE INSTALL. It called requireAdapterCLI("opencode") and
+	// returned the error, so `orchicon install` refused to proceed on any host
+	// without an external adapter — a hard prerequisite that stopped being true
+	// once the plane gained its own engine. The binary is still mounted from the
+	// host when present (below), which is what keeps the images redistributable,
+	// but that is a capability rather than a requirement.
+	if adapterCLIPresent("opencode") {
+		fmt.Println("orchicon: opencode found on this host — optional, and it will be used as a runtime when a model ref asks for it")
+	} else {
+		fmt.Println("orchicon: no external adapter CLI found — the built-in engine will run sessions (nothing to install)")
 	}
 
 	// 2. Ensure the published images are present (skip the pull when the
@@ -177,21 +185,25 @@ func installOrchLauncherFrom(exe, installDir string) {
 	fmt.Printf("orch launcher installed: %s → %s\n", link, sibling)
 }
 
-// requireAdapterCLI verifies an adapter CLI is installed on the host
-// (on PATH or at ~/.<name>/bin/<name>). Orchicon never ships adapter CLIs
-// in its images — the operator installs them and they are bind-mounted
-// into the containers at runtime.
-func requireAdapterCLI(name string) error {
+// adapterCLIPresent reports whether an adapter CLI is installed on the host
+// (on PATH or at ~/.<name>/bin/<name>).
+//
+// IT IS A PRESENCE CHECK, NOT A REQUIREMENT. It was requireAdapterCLI and returned
+// an error, which made `orchicon install` refuse to run on a host with no external
+// adapter — true when opencode was the only way to run anything, and false since the
+// plane gained its own engine. When the binary IS present it is still bind-mounted
+// into the containers (see the mount list above), so its absence costs the operator
+// only that capability, never the install.
+func adapterCLIPresent(name string) bool {
 	if _, err := exec.LookPath(name); err == nil {
-		return nil
+		return true
 	}
-	if home, herr := os.UserHomeDir(); herr == nil {
-		cand := filepath.Join(home, "."+name, "bin", name)
-		if st, err := os.Stat(cand); err == nil && !st.IsDir() {
-			return nil
-		}
+	home, herr := os.UserHomeDir()
+	if herr != nil {
+		return false
 	}
-	return fmt.Errorf("%s is required but not installed on this host — Orchicon does not ship adapter CLIs in its images (install it first, e.g. for opencode: curl -fsSL https://opencode.ai/install | bash)", name)
+	st, err := os.Stat(filepath.Join(home, "."+name, "bin", name))
+	return err == nil && !st.IsDir()
 }
 
 // ensureInstallDaemon starts the runtime daemon if its socket is not
