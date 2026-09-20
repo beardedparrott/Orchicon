@@ -1245,6 +1245,17 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		if a, ok := m.actionByKey(msg.String()); ok {
 			return m.openAction(a), true
 		}
+		// keyBulkSet IS THE ONE CHORD IN THIS GROUP THAT IS NOT ALWAYS OFFERED, so it is the one that could
+		// fall through in silence. It exists only for a BULK selection (2+ marked): below that,
+		// actionsForSelection offers the single-row actions instead, actionByKey finds nothing, and the key
+		// did NOTHING AT ALL — indistinguishable from a dead key, which is how a chord stays undiscoverable
+		// however loudly the hint names it. Refused out loud, with the two routes to the thing they meant
+		// (the same shape as the Workers pane's bulk set-model refusal).
+		if msg.String() == keyBulkSet {
+			m.notice = keyBulkSet + " sets a workflow + runtime image for SEVERAL items at once — " +
+				"space to mark 2 or more first, or e to set one item's fields"
+			return nil, true
+		}
 	case kit2.DeleteChord, kit2.DeleteChordAlias:
 		// ONE delete gesture, TWO keys. `ctrl+x` is the client's canonical delete chord
 		// (kit2.DeleteChord — the operator asked for it "across the board", and the
@@ -1350,7 +1361,21 @@ func (m *Model) HintLine() string {
 	case srcImages:
 		return theme.HintText.Render("n: new image · e: edit spec · b: build (live logs) · x: delete · enter: detail")
 	default:
-		return theme.HintText.Render("n: new · /: search · e: edit · s: status · y: auto-start · +/-: move step · a: archive · x: delete · v/T/Z: view · o/O: collapse · enter: detail")
+		// THE BULK SET IS NAMED HERE, AND IT WAS NAMED NOWHERE. Its chord (keyBulkSet) existed, and the action
+		// bar offered it once a selection existed — but a chord that is only ever discoverable by already
+		// having done the thing it needs is not discoverable. The operator: "We recently added bulk workflow
+		// and runtime image setting but the workers didn't add a shortcut helper in the composer to tell
+		// people that they can and how to do it. We need one for W." So the chord, what it DOES, and HOW to
+		// get there (mark two or more) are all stated — one line when there is no selection, and the
+		// selection's own line once there is, which is the shape the Workers pane's bulk set-model already
+		// uses (see execution.markHint).
+		if n := m.Base.MarkCount(); n > 1 {
+			return theme.HintText.Render(fmt.Sprintf("%d marked", n) + " · " +
+				keyBulkSet + ": set workflow & image · esc: clear · ↑↓: move · enter: detail")
+		}
+		return theme.HintText.Render("n: new · /: search · e: edit · s: status · y: auto-start · +/-: move step · " +
+			"a: archive · x: delete · " + keyBulkSet + ": set workflow & image (space marks 2+) · " +
+			"v/T/Z: view · o/O: collapse · enter: detail")
 	}
 }
 
