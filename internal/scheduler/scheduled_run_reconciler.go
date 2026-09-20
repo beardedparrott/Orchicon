@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"github.com/beardedparrott/orchicon/internal/db"
@@ -136,9 +137,15 @@ func (r *ScheduledRunReconciler) scanAndFire(ctx context.Context) reconciler.Res
 			}
 			continue
 		}
-		if ref.workflowID == nil {
-			r.log.Warn("scheduled_run: scheduled leaf with no workflow skipped",
+		if ref.workflowID == nil || *ref.workflowID == "" {
+			// Standalone dispatch is retired: a scheduled workflow-less leaf
+			// can never run. Fail it LOUDLY — the item status plus an
+			// actionable reason surfaced on the item — instead of logging a
+			// warning and leaving a zombie "scheduled" row behind.
+			reason := fmt.Sprintf("Cannot start scheduled item %q: no workflow is set, so there is nothing to run. Bind a workflow to run this item.", ref.id)
+			r.log.Error("scheduled_run: scheduled leaf with no workflow — failing loudly",
 				"work_item", ref.id)
+			failNoWorkflowItemTx(ctx, r.pool, r.log, ref.tenantID, ref.id, reason)
 			continue
 		}
 		if err := r.start(ctx, ref.tenantID, *ref.workflowID, ref.projectID, ref.id); err != nil {

@@ -649,6 +649,25 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 			return nil, err
 		}
 	}
+	// Workflow-first enforcement (standalone dispatch is retired) — the
+	// mirror of the Connect Update handler so the two surfaces cannot drift: a
+	// STATUS TRANSITION into a runnable status (ready / assigned / scheduled /
+	// running) is rejected when the resulting item has no workflow binding,
+	// because nothing would execute it. Non-status edits and status no-ops are
+	// never gated; a sequence parent with children is exempt.
+	if update.Status != nil && *update.Status != current.Status {
+		effWorkflowPtr := (*string)(nil)
+		if effWorkflow != "" {
+			effWorkflowPtr = &effWorkflow
+		}
+		children, err := db.ListDirectChildren(ctx, ttx.Tx, tenantID, current.ID)
+		if err != nil {
+			return nil, err
+		}
+		if err := workitem.ValidateWorkflowFirstTransition(current.Title, *update.Status, effWorkflowPtr, len(children) > 0); err != nil {
+			return nil, err
+		}
+	}
 	updated, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, params.ID, current.Version, update)
 	if err != nil {
 		return nil, err

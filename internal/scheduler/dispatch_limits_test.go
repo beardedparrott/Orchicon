@@ -48,6 +48,9 @@ func (s stubDispatchLimiter) InPlaceLimit(ctx context.Context, tx pgx.Tx, tenant
 func seedReadyTask(t *testing.T, pool *db.Pool, projectID string) db.WorkItemRow {
 	t.Helper()
 	ctx := context.Background()
+	// Workflow-first: a dispatchable item must be workflow-bound (standalone
+	// dispatch is retired), so seed a published workflow for the project.
+	wfID := seedPublishedWorkflow(t, pool, projectID)
 	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
 		t.Fatal(err)
@@ -58,6 +61,7 @@ func seedReadyTask(t *testing.T, pool *db.Pool, projectID string) db.WorkItemRow
 		Kind: domain.WorkItemKindTask, Title: "Dispatch Limit Task " + db.NewID()[:6],
 		Status:            domain.WorkItemReady,
 		AssignedWorkerRef: []byte(`{"worker_id":"w_se_devops_engineer","version":1}`),
+		WorkflowID:        &wfID,
 	})
 	if err != nil {
 		t.Fatal(err)

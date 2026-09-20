@@ -25,26 +25,40 @@ import (
 // TestBuildSequenceValidationError verifies the schedule-time rejection
 // message matches the design contract exactly.
 func TestBuildSequenceValidationError(t *testing.T) {
-	err := BuildSequenceValidationError("Parent Title", []string{"Feature A", "Task C"}, nil, nil)
+	err := BuildSequenceValidationError("Parent Title", []string{"Feature A", "Task C"}, nil)
 	want := `Cannot schedule "Parent Title": 2 children have no workflow set — "Feature A", "Task C". Bind workflows or remove them from the sequence.`
 	if err == nil || err.Error() != want {
 		t.Fatalf("message mismatch:\n got: %v\nwant: %s", err, want)
 	}
 }
 
-func TestBuildSequenceValidationErrorOneShot(t *testing.T) {
-	err := BuildSequenceValidationError("Parent", nil, []string{"Worker Task"}, nil)
-	if err == nil {
-		t.Fatal("expected error")
+func TestValidateWorkflowFirstTransition(t *testing.T) {
+	bound := "wf-1"
+	runnable := []string{domain.WorkItemReady, domain.WorkItemAssigned, domain.WorkItemScheduled, domain.WorkItemRunning}
+	for _, st := range runnable {
+		if err := ValidateWorkflowFirstTransition("Loose Leaf", st, nil, false); err == nil {
+			t.Errorf("status %q with no workflow must be rejected", st)
+		} else if !strings.Contains(err.Error(), "no workflow is set") {
+			t.Errorf("status %q rejection must be actionable, got %v", st, err)
+		}
+		if err := ValidateWorkflowFirstTransition("Loose Leaf", st, &bound, false); err != nil {
+			t.Errorf("status %q with a bound workflow must pass, got %v", st, err)
+		}
+		// A sequence parent with children never executes itself → exempt.
+		if err := ValidateWorkflowFirstTransition("Sequence Parent", st, nil, true); err != nil {
+			t.Errorf("status %q on a parent with children must pass, got %v", st, err)
+		}
 	}
-	if !strings.Contains(err.Error(), "Cannot schedule \"Parent\"") ||
-		!strings.Contains(err.Error(), "worker-assigned (one-shot)") {
-		t.Fatalf("one-shot message missing markers: %v", err)
+	// Non-runnable statuses are never gated.
+	for _, st := range []string{domain.WorkItemPending, domain.WorkItemFailed, domain.WorkItemSucceeded, domain.WorkItemCancelled} {
+		if err := ValidateWorkflowFirstTransition("Loose Leaf", st, nil, false); err != nil {
+			t.Errorf("status %q must not be gated, got %v", st, err)
+		}
 	}
 }
 
 // TestValidateSequenceSubtreeDB walks a real subtree and reports
-// workflow-less leaves, one-shot children, and unrunnable workflows.
+// workflow-less leaves and unrunnable workflows.
 func TestValidateSequenceSubtreeDB(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -62,30 +76,23 @@ func TestValidateSequenceSubtreeDB(t *testing.T) {
 	// Container child (has its own child) → exempt; its leaf is validated.
 	feature := createSequenceItem(t, pool, projID, domain.WorkItemKindFeature, "Feature", &parent.ID, nil, nil)
 	_ = createSequenceItem(t, pool, projID, domain.WorkItemKindTask, "Task under Feature", &feature.ID, &draftWF, nil)
-	// One-shot leaf anywhere in the subtree → offender.
-	leafOneShot := createSequenceItem(t, pool, projID, domain.WorkItemKindTask, "One-Shot Task", &parent.ID, &publishedWF, []byte(`{"worker_id":"w1"}`))
-
 	ttx, err := pool.BeginTenantTx(ctx, validateParentTestTenant)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ttx.Rollback(ctx)
-	noWorkflow, oneShot, badWorkflow, err := ValidateSequenceSubtree(ctx, ttx.Tx, validateParentTestTenant, mustGetSequenceItem(t, pool, parent.ID))
+	noWorkflow, badWorkflow, err := ValidateSequenceSubtree(ctx, ttx.Tx, validateParentTestTenant, mustGetSequenceItem(t, pool, parent.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(noWorkflow) != 1 || noWorkflow[0] != "No Workflow Task" {
 		t.Errorf("noWorkflow = %v, want [\"No Workflow Task\"]", noWorkflow)
 	}
-	if len(oneShot) != 1 || oneShot[0] != "One-Shot Task" {
-		t.Errorf("oneShot = %v, want [\"One-Shot Task\"]", oneShot)
-	}
 	if len(badWorkflow) != 1 || badWorkflow[0] != "Task under Feature" {
 		t.Errorf("badWorkflow = %v, want [\"Task under Feature\"]", badWorkflow)
 	}
 	_ = leafNoWF
 	_ = leafOK
-	_ = leafOneShot
 }
 
 // TestValidateSequenceScheduleDB drives the shared validation entry point:
@@ -283,12 +290,12 @@ func TestValidateSequenceRejectsEmptyStepDag(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ttx.Rollback(ctx)
-	noWorkflow, oneShot, badWorkflow, err := ValidateSequenceSubtree(ctx, ttx.Tx, validateParentTestTenant, mustGetSequenceItem(t, pool, parent.ID))
+	noWorkflow, badWorkflow, err := ValidateSequenceSubtree(ctx, ttx.Tx, validateParentTestTenant, mustGetSequenceItem(t, pool, parent.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(noWorkflow) != 0 || len(oneShot) != 0 {
-		t.Errorf("unexpected offenders: noWorkflow=%v oneShot=%v", noWorkflow, oneShot)
+	if len(noWorkflow) != 0 {
+		t.Errorf("unexpected offenders: noWorkflow=%v", noWorkflow)
 	}
 	if len(badWorkflow) != 1 || badWorkflow[0] != "Empty Bound" {
 		t.Errorf("badWorkflow = %v, want [\"Empty Bound\"] (empty step DAG must be rejected)", badWorkflow)
@@ -349,43 +356,60 @@ func sequenceChildren(t *testing.T, pool *db.Pool, parentID string) []db.WorkIte
 
 // --- ControlSequence handler ------------------------------------------------
 
-// TestControlSequenceRejectsNonSequenceParent: ControlSequence must reject
-// a work item that is not a sequence parent — a leaf (no children) or a
-// bound-run ticket — before any action runs.
-func TestControlSequenceRejectsNonSequenceParent(t *testing.T) {
+// TestControlSequenceRejectsWorkflowlessLeaf: ControlSequence must reject
+// START on a leaf that has no workflow bound (InvalidArgument) — there is
+// nothing to fire.
+//
+// The retired "not a sequence parent" rejection (a leaf, or a ticket
+// carrying a workflow_run_id) is gone by design: bdcde9d3 ("Fix work-item
+// Start/Resume/Stop: cascade stop, per-kind controls on all items") replaced
+// it with `isParent := len(children) > 0`, so START/RESUME/STOP work on ALL
+// items — a bare leaf fires its own bound workflow, a parent cascades. The
+// stale sibling case that still asserted the retired rejection could not pass
+// against that contract; it is replaced below by the delivered behaviour.
+func TestControlSequenceRejectsWorkflowlessLeaf(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
 	projID := validateParentProject(t, ctx, pool)
 	svc := New(pool, slog.New(slog.NewTextHandler(os.Stderr, nil)))
 
-	t.Run("leaf has no children", func(t *testing.T) {
+	t.Run("leaf with no workflow bound", func(t *testing.T) {
 		leaf := createSequenceItem(t, pool, projID, domain.WorkItemKindTask, "Leaf", nil, nil, nil)
 		_, err := svc.ControlSequence(ctx, connect.NewRequest(&apiv1.ControlSequenceRequest{
 			Id:     leaf.ID,
 			Action: apiv1.SequenceAction_SEQUENCE_ACTION_START,
 		}))
 		if err == nil || connect.CodeOf(err) != connect.CodeInvalidArgument {
-			t.Fatalf("want InvalidArgument for a leaf, got %v", err)
+			t.Fatalf("want InvalidArgument for a workflow-less leaf, got %v", err)
 		}
 	})
 
-	t.Run("bound-run ticket is not a sequence parent", func(t *testing.T) {
+	t.Run("parent carrying a bound run is still controllable", func(t *testing.T) {
 		wf := seedPublishedWorkflowForTest(t, pool, projID, true)
 		parent := createSequenceItem(t, pool, projID, domain.WorkItemKindEpic, "Bound Parent", nil, nil, nil)
 		_ = createSequenceItem(t, pool, projID, domain.WorkItemKindTask, "C", &parent.ID, &wf, nil)
-		// Stamp a bound run on the parent — it becomes a run ticket, not a
-		// sequence container (the engine's reconcileParent guard treats a
-		// non-empty workflow_run_id the same way).
+		// Stamp a bound run on the parent. Since bdcde9d3 an item is a
+		// sequence parent purely by having children, so a ticket carrying a
+		// workflow_run_id is no longer rejected as "not a sequence parent" —
+		// STOP is accepted and dispatched to the wired stopper (this is the
+		// per-kind-controls contract that replaced the old rejection).
 		setSequenceWorkItemField(t, pool, parent.ID, func(f *db.UpdateWorkItemFields) {
 			rid := "run-" + db.NewID()
 			f.WorkflowRunID = &rid
 		})
-		_, err := svc.ControlSequence(ctx, connect.NewRequest(&apiv1.ControlSequenceRequest{
+		var stopped []string
+		svc.SetStopSequenceStarter(func(_ context.Context, _, parentID string) error {
+			stopped = append(stopped, parentID)
+			return nil
+		})
+		if _, err := svc.ControlSequence(ctx, connect.NewRequest(&apiv1.ControlSequenceRequest{
 			Id:     parent.ID,
 			Action: apiv1.SequenceAction_SEQUENCE_ACTION_STOP,
-		}))
-		if err == nil || connect.CodeOf(err) != connect.CodeInvalidArgument {
-			t.Fatalf("want InvalidArgument for a bound-run ticket, got %v", err)
+		})); err != nil {
+			t.Fatalf("STOP on a bound-run parent must be accepted, got %v", err)
+		}
+		if len(stopped) != 1 || stopped[0] != parent.ID {
+			t.Fatalf("stop starter received %v, want [%s]", stopped, parent.ID)
 		}
 	})
 }
