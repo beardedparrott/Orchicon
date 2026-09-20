@@ -493,7 +493,7 @@ func toastRow(label string, width int) string {
 	}
 	pad := (width - ansi.StringWidth(label)) / 2
 	right := width - pad - ansi.StringWidth(label)
-	return theme.ScreenBg.Render(strings.Repeat(" ", pad) + label + strings.Repeat(" ", right))
+	return theme.PanelBgStyle.Render(strings.Repeat(" ", pad) + label + strings.Repeat(" ", right))
 }
 
 // --- the shell-facing API ----------------------------------------------------------------------

@@ -414,6 +414,19 @@ var (
 	// transparent themes." It is a token of its own so the dock never has to know whether the active theme
 	// is transparent — it asks for the composer's fill and gets the right answer either way.
 	ComposerFill lipgloss.TerminalColor
+	// PanelBg is the background every PANEL paints — a screen's pane, a rail, a dialog, a picker. It is the
+	// palette's own Bg colour and it is ALWAYS PAINTED, transparent theme or not.
+	//
+	// THIS IS THE DISTINCTION A TRANSPARENT THEME TURNS ON, and getting it wrong is what made the light
+	// variants unreadable: the panes were painting through theme.Bg, so "transparent app background" silently
+	// became "transparent panes" too — and a light palette's dark text landed on the OPERATOR'S dark terminal
+	// with nothing behind it. Measured on lumen-transparent against a dark terminal: a screen of black text on
+	// black. The operator: "the light transparent themes are almost impossible to see/read."
+	//
+	// So the rule is: the APP BACKGROUND (the frame fill, the gaps between panes, the tab bar strip, the footer
+	// strip, the composer) may be left to the terminal; a PANEL always carries its tint, because a panel is a
+	// surface with text on it and it has to be legible regardless of what the terminal looks like.
+	PanelBg      lipgloss.TerminalColor
 	SurfaceAlt   lipgloss.TerminalColor
 	Border       lipgloss.TerminalColor
 	BorderFaint  lipgloss.TerminalColor
@@ -452,6 +465,10 @@ var (
 	// transparent theme, where the composer is unpainted and the panels are not — so the composer's own
 	// repair must ask for this one, and never for SurfaceBg.
 	ComposerBg = lipgloss.NewStyle()
+
+	// PanelBgStyle is the BACKGROUND-ONLY form of PanelBg: the tint a panel's rows, padding and reset repairs
+	// are painted with. Always painted, on every theme — see PanelBg.
+	PanelBgStyle = lipgloss.NewStyle()
 
 	// Tab bar: inactive tabs are dim glass, the active tab carries the
 	// GUI nav's cyan→indigo active gradient (approximated with the filled
@@ -566,6 +583,8 @@ func buildStyles(t Theme) {
 	}
 	Bg = bg
 	ComposerFill = composerFill
+	// THE PANEL TINT DOES NOT FOLLOW THE TRANSPARENCY — see PanelBg. It is the palette's Bg, painted.
+	PanelBg = t.Bg
 	Surface = t.Surface
 	SurfaceAlt = t.SurfaceAlt
 	Border = t.Border
@@ -586,6 +605,13 @@ func buildStyles(t Theme) {
 
 	ScreenBg = lipgloss.NewStyle().Background(bg)
 	SurfaceBg = lipgloss.NewStyle().Background(t.Surface)
+	// PanelBgStyle is the BACKGROUND-ONLY panel tint, derived FROM PanelBg rather than recomputed.
+	//
+	// IT WAS RECOMPUTED FROM t.Bg, which is the same value TODAY and a second source of truth forever: a test
+	// that disabled PanelBg (to prove the pane-tint behaviour was what made a transparent theme readable)
+	// left the STYLE still painting, so the assertion stayed green and the proof was vacuous. Deriving one from
+	// the other makes the drift impossible and the proof real.
+	PanelBgStyle = lipgloss.NewStyle().Background(PanelBg)
 	// ComposerBg is the BACKGROUND-ONLY composer fill, for the resets the composer's own rows repair —
 	// the same shape as SurfaceBg, and unpainted on a transparent theme so the repair has nothing to
 	// re-assert there (the operator's "Composer should also be transparent as well on transparent themes").
@@ -760,6 +786,26 @@ func Opaque(s string, w int) string {
 		s += strings.Repeat(" ", pad)
 	}
 	return repairResets(ScreenBg.Render(s))
+}
+
+// OpaquePanel is Opaque for a PANEL: the padding and the reset repair use the PANEL's tint rather than the app
+// background's.
+//
+// IT EXISTS BECAUSE THE TWO DIVERGED, and the divergence is the whole point of a transparent theme. On a solid
+// theme they are the same colour, so one function did for both; on a transparent theme the app background is
+// UNPAINTED, and a panel padded or repaired through it would punch an invisible — or worse, a
+// terminal-coloured — hole through the panel it is drawing.
+func OpaquePanel(s string, w int) string {
+	if w < 1 {
+		return s
+	}
+	if lipgloss.Width(s) > w {
+		s = ansi.Truncate(s, w, "")
+	}
+	if pad := w - lipgloss.Width(s); pad > 0 {
+		s += strings.Repeat(" ", pad)
+	}
+	return RepairAfterResets(PanelBgStyle.Render(s), PanelBgStyle)
 }
 
 // RepairAfterResets re-asserts a BACKGROUND-ONLY style's background after

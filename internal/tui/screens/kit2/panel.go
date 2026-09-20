@@ -107,11 +107,11 @@ func (p *Panel) View() string {
 	if w < 3 || h < 2 {
 		return FitLines(strings.Join(p.body, "\n"), w, h)
 	}
-	border := lipgloss.NewStyle().Foreground(theme.Border).Background(theme.Bg)
-	titleStyle := theme.ListTitle.Background(theme.Bg)
+	border := lipgloss.NewStyle().Foreground(theme.Border).Background(theme.PanelBg)
+	titleStyle := theme.ListTitle.Background(theme.PanelBg)
 	if p.Focused {
-		border = lipgloss.NewStyle().Foreground(theme.AccentCyan).Background(theme.Bg)
-		titleStyle = lipgloss.NewStyle().Foreground(theme.AccentCyan).Bold(true).Background(theme.Bg)
+		border = lipgloss.NewStyle().Foreground(theme.AccentCyan).Background(theme.PanelBg)
+		titleStyle = lipgloss.NewStyle().Foreground(theme.AccentCyan).Bold(true).Background(theme.PanelBg)
 	}
 
 	innerW, innerH := w-2, h-2
@@ -145,7 +145,7 @@ func (p *Panel) View() string {
 		if idx >= 0 && idx < len(p.body) {
 			line = p.body[idx]
 		}
-		rows = append(rows, border.Render("│")+theme.ScreenBg.Render(Pad(line, innerW))+border.Render("│"))
+		rows = append(rows, border.Render("│")+theme.PanelBgStyle.Render(Pad(line, innerW))+border.Render("│"))
 	}
 	d := w - 2
 	if d < 0 {
@@ -232,12 +232,14 @@ func FitLines(content string, w, h int) string {
 		lines = lines[:h]
 	}
 	for i, l := range lines {
-		// theme.Opaque (not ScreenBg.Render) so an inner style's reset cannot
-		// leave the tail of the row painted on the terminal's background.
-		lines[i] = theme.Opaque(l, w)
+		// theme.OpaquePanel (not Opaque) so an inner style's reset cannot
+		// leave a cell on the TERMINAL's background. Opaque repairs with the APP
+		// background, which on a transparent theme is unpainted and would punch a
+		// hole through the panel it is drawing — see theme.OpaquePanel.
+		lines[i] = theme.OpaquePanel(l, w)
 	}
 	for len(lines) < h {
-		lines = append(lines, theme.Opaque("", w))
+		lines = append(lines, theme.OpaquePanel("", w))
 	}
 	return strings.Join(lines, "\n")
 }
