@@ -45,10 +45,14 @@ type ChatItem struct {
 	Content   string // artifact
 	SessionID string // session
 	ServeURL  string // session
-	At        int64  // ms since epoch
-	Key       string
-	Live      bool
-	Phase     string
+	// AdapterKind is the transport identity from the session_info part
+	// (adapter.KindOpencode / adapter.KindOrchicon); empty on a legacy part
+	// written before the field existed.
+	AdapterKind string // session
+	At          int64  // ms since epoch
+	Key         string
+	Live        bool
+	Phase       string
 
 	// Attachments are the markers for the files this message carried, in the operator's vocabulary
 	// ("[image]", "[file: notes.md]"). They are a DISPLAY field: the bytes belong to the request that sent

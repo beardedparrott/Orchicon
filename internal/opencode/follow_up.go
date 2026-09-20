@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
@@ -67,7 +68,11 @@ func (a *Adapter) ContinueSession(ctx context.Context, opts ContinueSessionOpts)
 				TenantID:    opts.TenantID,
 				Seq:         seq,
 				Kind:        db.SessionPartSessionInfo,
-				Payload:     db.MarshalPartPayload(map[string]any{"session_id": sessionID, "serve_url": client.BaseURL()}),
+				Payload: db.MarshalPartPayload(map[string]any{
+					"session_id":   sessionID,
+					"serve_url":    client.BaseURL(),
+					"adapter_kind": adapter.KindOpencode,
+				}),
 			})
 			seq++
 		}
@@ -112,26 +117,67 @@ func (a *Adapter) ContinueSession(ctx context.Context, opts ContinueSessionOpts)
 	return "", nil
 }
 
-// followUpSession resolves the client + session for a follow-up: the
-// original serve/session when still reachable (real continuity), else a
-// fresh session on the host serve. Returns (client, sessionID, reused).
+// followUpSession resolves the client + session for a follow-up. The
+// transport is the OPENCODE ADAPTER'S OWN persistent host transport — a
+// follow-up belongs to the execution's ADAPTER, never to a per-execution
+// "execution serve". Returns (client, sessionID, reused).
+//
+// opts.AdapterKind is the identity recorded in the transcript's session_info
+// part and decides whether the recorded session is THIS adapter's to
+// re-attach:
+//
+//   - KindOpencode — the session ran here. Re-attach ONLY when the
+//     adapter's persistent transport still holds it (probed by session
+//     existence); otherwise seed a fresh session from the durable
+//     transcript. The recorded per-execution serve URL is display /
+//     diagnostic only: the host serve's port is dynamic per boot while its
+//     session store persists, so URL equality is not a usable proxy for
+//     "the session is still there".
+//   - "" — a legacy transcript written before the identity field existed
+//     (opencode-shaped fields only). Keep the historical best-effort
+//     continuity against the recorded serve URL, else seed fresh.
+//   - anything else — the execution ran on ANOTHER adapter: its recorded
+//     session identity means nothing here, so never re-attach; seed fresh.
+//
+// The fresh seed always lands on the adapter's persistent transport.
 func (a *Adapter) followUpSession(ctx context.Context, opts ContinueSessionOpts) (*SessionClient, string, bool) {
-	if opts.ServeURL != "" && opts.SessionID != "" {
-		orig := NewSessionClient(opts.ServeURL, opts.ServePassword, opts.ProjectDir)
-		if orig.Healthy(ctx) {
-			return orig, opts.SessionID, true
-		}
-	}
-	if a.host != nil {
-		if client := a.host.Client(); client != nil {
-			sid, err := client.CreateSession(ctx, opts.ExecutionID+"-followup")
-			if err == nil && sid != "" {
-				return client, sid, false
+	switch opts.AdapterKind {
+	case adapter.KindOpencode:
+		if opts.SessionID != "" {
+			if client := a.hostClient(); client != nil && client.SessionExists(ctx, opts.SessionID) {
+				return client, opts.SessionID, true
 			}
-			a.log.Warn("follow-up session create failed", "execution", opts.ExecutionID, "error", err)
+		}
+	case "":
+		// Legacy transcript: best-effort continuity on the recorded serve
+		// URL (the pre-adapter-identity behaviour), which keeps old rows
+		// resolving without pretending the URL identifies the transport.
+		if opts.ServeURL != "" && opts.SessionID != "" {
+			orig := NewSessionClient(opts.ServeURL, opts.ServePassword, opts.ProjectDir)
+			if orig.Healthy(ctx) {
+				return orig, opts.SessionID, true
+			}
 		}
 	}
+	client := a.hostClient()
+	if client == nil {
+		return nil, "", false
+	}
+	sid, err := client.CreateSession(ctx, opts.ExecutionID+"-followup")
+	if err == nil && sid != "" {
+		return client, sid, false
+	}
+	a.log.Warn("follow-up session create failed", "execution", opts.ExecutionID, "error", err)
 	return nil, "", false
+}
+
+// hostClient returns the session client for the adapter's PERSISTENT host
+// transport (nil when no host serve is wired, or it has not started).
+func (a *Adapter) hostClient() *SessionClient {
+	if a.host == nil {
+		return nil
+	}
+	return a.host.Client()
 }
 
 // followUpReplyWindow bounds how long a follow-up waits for the model's

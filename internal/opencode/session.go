@@ -165,6 +165,29 @@ func (c *SessionClient) Healthy(ctx context.Context) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
+// SessionExists reports whether THIS serve still holds a session id — the
+// re-attach probe for a follow-up. The transport's own store is the only
+// authority: its URL changes across plane restarts while its sessions
+// persist, so URL equality is not a usable proxy for continuity.
+//
+// Fail-closed: a blank id, an unreachable serve, a 404 (ErrSessionNotFound)
+// or any other error all report false, so a follow-up seeds a FRESH session
+// from the durable transcript rather than assuming a session it cannot see.
+func (c *SessionClient) SessionExists(ctx context.Context, sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/session/"+url.PathEscape(sessionID), nil, &out); err != nil {
+		return false
+	}
+	return true
+}
+
 // probeServe exercises the serve's full readiness surface: it must answer
 // /global/health AND accept a real session-create round-trip. A cold-starting
 // serve answers health before its session machinery is up, so health alone is

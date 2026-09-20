@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { groupByPhase, groupPhaseGroups, mergeSessionItems, type ChatItem } from "./sessionItems";
+import { groupByPhase, groupPhaseGroups, mergeSessionItems, sessionMeta, type ChatItem } from "./sessionItems";
 
 const text = (key: string, t: string, at: number, live?: boolean, phase?: string): ChatItem => ({
   kind: "text",
@@ -221,5 +221,25 @@ describe("mergeSessionItems", () => {
     const again = groupByPhase(items);
     expect(again).toHaveLength(1);
     expect((again[0] as { text: string }).text).toBe("think deeper");
+  });
+});
+
+describe("sessionMeta", () => {
+  it("shows the adapter and the serve for an opencode session", () => {
+    expect(sessionMeta({ sessionId: "ses_1", serveUrl: "http://127.0.0.1:9", adapterKind: "opencode" })).toBe(
+      "opencode · http://127.0.0.1:9",
+    );
+  });
+
+  it("names the transport for a native (in-process) session instead of a blank URL", () => {
+    expect(sessionMeta({ sessionId: "exec_1", serveUrl: "", adapterKind: "orchicon" })).toBe("native · in-process");
+  });
+
+  it("treats a legacy part (no adapter kind) as opencode", () => {
+    expect(sessionMeta({ sessionId: "ses_old", serveUrl: "http://x" })).toBe("opencode · http://x");
+  });
+
+  it("falls back to the adapter alone when there is no serve URL", () => {
+    expect(sessionMeta({ sessionId: "ses_2", serveUrl: "", adapterKind: "opencode" })).toBe("opencode");
   });
 });

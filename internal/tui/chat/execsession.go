@@ -118,8 +118,13 @@ func HistoryItems(parts []*apiv1.ExecutionSessionPart) []ChatItem {
 				}
 			}
 		case "session_info":
-			if sid := strOf(pl, "session_id"); sid != "" {
-				out = append(out, ChatItem{Kind: KindSession, SessionID: sid, ServeURL: strOf(pl, "serve_url"), At: at, Key: key})
+			// The part is rendered as a session identity row when it carries
+			// EITHER a session id or an adapter kind: a native execution has no
+			// serve/session id to point at, only the adapter it ran on.
+			sid := strOf(pl, "session_id")
+			adapterKind := strOf(pl, "adapter_kind")
+			if sid != "" || adapterKind != "" {
+				out = append(out, ChatItem{Kind: KindSession, SessionID: sid, ServeURL: strOf(pl, "serve_url"), AdapterKind: adapterKind, At: at, Key: key})
 			}
 		case "error":
 			msg := "opencode session error"

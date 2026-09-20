@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,8 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/db"
 )
+
+// freshSessionID is what the fake serve's POST /session returns — the id of
+// the session a follow-up FRESH-SEEDS on the adapter's transport.
+const freshSessionID = "ses_fresh"
 
 // fakeServe emulates the opencode serve HTTP+SSE surface used by a
 // follow-up: /global/health (attach check), /event (SSE bus), and
@@ -26,6 +32,14 @@ func fakeServe(t *testing.T, sessionID string) *httptest.Server {
 		case r.URL.Path == "/global/health":
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprint(w, `{"ok":true}`)
+		case r.URL.Path == "/session/"+sessionID:
+			// Re-attach probe: THIS transport still holds the session.
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"id":%q}`, sessionID)
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			// Fresh-seed creation on the adapter's persistent transport.
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"id":%q}`, freshSessionID)
 		case strings.HasSuffix(r.URL.Path, "/prompt_async"):
 			w.WriteHeader(http.StatusNoContent)
 		case r.URL.Path == "/event":
@@ -155,5 +169,139 @@ func TestContinueSessionNoServeIsSynchronousError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no opencode serve available") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// hostAdapter builds an Adapter whose ONLY transport is the given serve — the
+// adapter's PERSISTENT host transport, which is what a follow-up must resolve
+// to (a follow-up belongs to the execution's adapter, never to a per-execution
+// "execution serve").
+func hostAdapter(srv *httptest.Server, mu *sync.Mutex, stored *[]db.SessionPart) *Adapter {
+	return &Adapter{
+		log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		host: &HostServe{client: NewSessionClient(srv.URL, "", "/tmp")},
+		sessionStore: func(_ context.Context, _, _ string, parts []db.SessionPart) error {
+			mu.Lock()
+			defer mu.Unlock()
+			*stored = append(*stored, parts...)
+			return nil
+		},
+	}
+}
+
+func storedParts(mu *sync.Mutex, stored *[]db.SessionPart) []db.SessionPart {
+	mu.Lock()
+	defer mu.Unlock()
+	return append([]db.SessionPart(nil), *stored...)
+}
+
+// TestContinueSessionOpencodeReattachesOnHostTransport pins AC 2's continuity
+// half: an opencode-tagged transcript re-attaches the recorded session when the
+// OPENCODE ADAPTER'S OWN persistent transport still holds it — no fresh session
+// is created (so nothing but the question is recorded synchronously).
+func TestContinueSessionOpencodeReattachesOnHostTransport(t *testing.T) {
+	const sessionID = "ses_reattach"
+	srv := fakeServe(t, sessionID)
+	var mu sync.Mutex
+	var stored []db.SessionPart
+	a := hostAdapter(srv, &mu, &stored)
+
+	if _, err := a.ContinueSession(context.Background(), ContinueSessionOpts{
+		ExecutionID: "exec_reattach",
+		TenantID:    "tnt_dev",
+		Message:     "are you done?",
+		StartSeq:    5,
+		SessionID:   sessionID,
+		AdapterKind: adapter.KindOpencode,
+		ProjectDir:  "/tmp",
+	}); err != nil {
+		t.Fatalf("ContinueSession error: %v", err)
+	}
+
+	parts := storedParts(&mu, &stored)
+	if len(parts) != 1 || parts[0].Kind != db.SessionPartUserMessage || parts[0].Seq != 5 {
+		t.Fatalf("synchronous parts = %+v, want ONLY the user_message at seq 5 (re-attached session)", parts)
+	}
+}
+
+// TestContinueSessionOpencodeSeedsFreshWhenTransportLostSession pins AC 2's
+// fallback half: when the recorded session is no longer in the adapter's store
+// (a 404 on the re-attach probe — the container/run that hosted it is gone) the
+// follow-up seeds a FRESH session on that same persistent transport and records
+// its identity with the adapter kind.
+func TestContinueSessionOpencodeSeedsFreshWhenTransportLostSession(t *testing.T) {
+	// The fake serve holds a DIFFERENT session: the recorded id probes 404.
+	srv := fakeServe(t, "ses_somewhere_else")
+	var mu sync.Mutex
+	var stored []db.SessionPart
+	a := hostAdapter(srv, &mu, &stored)
+
+	if _, err := a.ContinueSession(context.Background(), ContinueSessionOpts{
+		ExecutionID: "exec_seed",
+		TenantID:    "tnt_dev",
+		Message:     "are you done?",
+		StartSeq:    4,
+		SessionID:   "ses_gone",
+		ServeURL:    srv.URL,
+		AdapterKind: adapter.KindOpencode,
+		ProjectDir:  "/tmp",
+	}); err != nil {
+		t.Fatalf("ContinueSession error: %v", err)
+	}
+
+	parts := storedParts(&mu, &stored)
+	if len(parts) != 2 {
+		t.Fatalf("synchronous parts = %+v, want user_message + fresh session_info", parts)
+	}
+	if parts[1].Kind != db.SessionPartSessionInfo {
+		t.Fatalf("part 2 = %+v, want the fresh session_info part", parts[1])
+	}
+	var pl map[string]any
+	if err := json.Unmarshal(parts[1].Payload, &pl); err != nil {
+		t.Fatalf("session_info payload: %v", err)
+	}
+	if pl["session_id"] != freshSessionID {
+		t.Errorf("fresh session_id = %v, want %q", pl["session_id"], freshSessionID)
+	}
+	if pl["adapter_kind"] != adapter.KindOpencode {
+		t.Errorf("fresh session adapter_kind = %v, want %q", pl["adapter_kind"], adapter.KindOpencode)
+	}
+}
+
+// TestContinueSessionForeignAdapterNeverReattaches pins the adapter isolation
+// rule: a transcript recorded by ANOTHER adapter (native "orchicon") must never
+// re-attach its session here — even when the recorded serve is healthy AND holds
+// that session id. The follow-up seeds a fresh session on this adapter's own
+// transport instead (recording the opencode kind).
+func TestContinueSessionForeignAdapterNeverReattaches(t *testing.T) {
+	const sessionID = "ses_native"
+	srv := fakeServe(t, sessionID) // healthy, and DOES hold sessionID
+	var mu sync.Mutex
+	var stored []db.SessionPart
+	a := hostAdapter(srv, &mu, &stored)
+
+	if _, err := a.ContinueSession(context.Background(), ContinueSessionOpts{
+		ExecutionID: "exec_foreign",
+		TenantID:    "tnt_dev",
+		Message:     "are you done?",
+		StartSeq:    3,
+		SessionID:   sessionID,
+		ServeURL:    srv.URL,
+		AdapterKind: adapter.KindOrchicon,
+		ProjectDir:  "/tmp",
+	}); err != nil {
+		t.Fatalf("ContinueSession error: %v", err)
+	}
+
+	parts := storedParts(&mu, &stored)
+	if len(parts) != 2 {
+		t.Fatalf("synchronous parts = %+v, want a FRESH seed (user_message + session_info)", parts)
+	}
+	var pl map[string]any
+	if err := json.Unmarshal(parts[1].Payload, &pl); err != nil {
+		t.Fatalf("session_info payload: %v", err)
+	}
+	if pl["session_id"] != freshSessionID {
+		t.Errorf("session_id = %v, want a fresh %q (never the other adapter's session)", pl["session_id"], freshSessionID)
 	}
 }

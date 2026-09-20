@@ -473,7 +473,15 @@ func (b *NativeBridge) ContinueSession(ctx context.Context, opts scheduler.Conti
 	// fallback (warn, proceed). Conflicting worker/tenant → refuse. This
 	// stays FIRST so isolation refusals surface even when no provider is
 	// configured.
-	if opts.SessionID != "" {
+	// A follow-up whose prior transcript was written by ANOTHER adapter has
+	// nothing to verify here — its recorded session id belongs to that
+	// adapter, not to the native in-process engine. Skip the identity lookup
+	// and continue from the durable context: a native follow-up never touches
+	// another adapter's session.
+	if opts.AdapterKind != "" && opts.AdapterKind != adapter.KindOrchicon {
+		b.log.Warn("orchicon: prior session belonged to another adapter — continuing from durable context",
+			"execution", opts.ExecutionID, "adapter_kind", opts.AdapterKind)
+	} else if opts.SessionID != "" {
 		pd := b.projectDir
 		if opts.ProjectDir != "" {
 			pd = opts.ProjectDir
@@ -904,8 +912,13 @@ func (r *sessionPartsRecorder) observe(seq int64, typ string, data []byte) {
 		if jsonUnmarshal(data, &d) != nil {
 			return
 		}
+		// adapter_kind records that this execution's transport is the native
+		// in-process engine; there is deliberately NO serve_url key — a native
+		// session runs on the control plane and has nothing to point at
+		// (absent, never an empty string).
 		r.push(r.part(seq<<8, db.SessionPartSessionInfo, map[string]any{
-			"session_id": d.Identity.ExecutionID,
+			"session_id":   d.Identity.ExecutionID,
+			"adapter_kind": adapter.KindOrchicon,
 		}))
 	case TransUserMessage:
 		var d struct {

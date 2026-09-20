@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -143,7 +144,7 @@ func TestSkippedRefusedWhenDirty(t *testing.T) {
 	}
 	proj, err := db.CreateProject(ctx, ttx.Tx, db.ProjectRow{
 		ID: db.NewID(), TenantID: approvalTestTenant,
-		Name: "Dirty Gate Project", Slug: "dirty-gate-" + stray[:4],
+		Name: "Dirty Gate Project", Slug: "dirty-gate-" + strings.ToLower(db.NewID()),
 		Status: "active", Goals: []byte("[]"),
 		ProjectDir: plain,
 	})

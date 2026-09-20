@@ -1283,7 +1283,7 @@ func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Req
 			executionMode = db.ExecutionModeLocal
 		}
 	}
-	context, sessionID, serveURL, servePassword := renderSessionContext(parts)
+	context, sessionID, serveURL, servePassword, recordedAdapterKind := renderSessionContext(parts)
 	systemPrompt := composeFollowUpPrompt(version, runtimeImage, executionMode)
 	startSeq := int64(0)
 	for _, p := range parts {
@@ -1309,6 +1309,7 @@ func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Req
 		SessionID:          sessionID,
 		ServeURL:           serveURL,
 		ServePassword:      servePassword,
+		AdapterKind:        recordedAdapterKind,
 		WorkerID:           exec.WorkerID,
 		StartSeq:           startSeq,
 		WorktreePath:       worktreePath,
@@ -1399,14 +1400,20 @@ func composeFollowUpPrompt(v db.WorkerVersionRow, runtimeImage, executionMode st
 
 // renderSessionContext renders the durable transcript into a readable
 // chronological context for a follow-up seed and extracts the original
-// session identity (session_info part). The context is bounded so a long
-// session doesn't blow the model window. The per-part rendering is shared
-// with the scheduler's recovery seed via the leaf transcript package.
-func renderSessionContext(parts []db.SessionPart) (context, sessionID, serveURL, servePassword string) {
+// session identity (session_info part): the recorded session id, serve URL,
+// and — for transcripts written since the adapter identity landed — the
+// adapter kind the session belonged to. The adapter kind is what lets the
+// follow-up resolve the transport from the execution's adapter instead of
+// from a per-execution serve; it is empty for legacy rows. The context is
+// bounded so a long session doesn't blow the model window. The per-part
+// rendering is shared with the scheduler's recovery seed via the leaf
+// transcript package.
+func renderSessionContext(parts []db.SessionPart) (context, sessionID, serveURL, servePassword, adapterKind string) {
 	for _, p := range parts {
 		var pl struct {
-			SID  string `json:"session_id"`
-			SURL string `json:"serve_url"`
+			SID   string `json:"session_id"`
+			SURL  string `json:"serve_url"`
+			AKind string `json:"adapter_kind"`
 		}
 		_ = json.Unmarshal(p.Payload, &pl)
 		if pl.SID != "" {
@@ -1415,8 +1422,11 @@ func renderSessionContext(parts []db.SessionPart) (context, sessionID, serveURL,
 		if pl.SURL != "" {
 			serveURL = pl.SURL
 		}
+		if pl.AKind != "" {
+			adapterKind = pl.AKind
+		}
 	}
-	return transcript.RenderParts(parts, 60000, 2000, "\n…(conversation truncated)\n"), sessionID, serveURL, servePassword
+	return transcript.RenderParts(parts, 60000, 2000, "\n…(conversation truncated)\n"), sessionID, serveURL, servePassword, adapterKind
 }
 
 func strPtr(s string) *string { return &s }

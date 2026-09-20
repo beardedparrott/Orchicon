@@ -12,6 +12,18 @@ import (
 // dispatching exactly as they did before the adapter namespace landed.
 const DefaultAdapterKind = "opencode"
 
+// The adapter kinds wired into the dispatcher. KindOpencode is the
+// serve-backed session adapter; KindOrchicon is the native in-process
+// engine that runs sessions inside the control plane. These are the values
+// recorded under `adapter_kind` in an execution transcript's session_info
+// part, so a follow-up can tell whether the recorded session identity
+// (session_id/serve_url) belongs to the adapter resolving it — another
+// adapter's session is never re-attached.
+const (
+	KindOpencode = "opencode"
+	KindOrchicon = "orchicon"
+)
+
 // ModelRef is the parsed form of a worker model_ref under the pinned
 // left-greedy grammar (ADR-0003):
 //
