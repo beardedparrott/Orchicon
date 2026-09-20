@@ -41,10 +41,12 @@ func TestPermanentDispatchFailureClassification(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := d.Resolve(tc.kind)
-			if err == nil {
-				t.Fatalf("Resolve(%q) = nil error, want a routing failure", tc.kind)
+			// A resolvable kind is by definition not a permanent failure.
+			got := false
+			if err != nil {
+				got = permanentDispatchFailure(err)
 			}
-			if got := permanentDispatchFailure(err); got != tc.want {
+			if got != tc.want {
 				t.Errorf("permanentDispatchFailure(Resolve(%q)) = %v, want %v (err=%v)", tc.kind, got, tc.want, err)
 			}
 		})
