@@ -51,10 +51,14 @@ type Profile struct {
 	// emits it anyway.
 	Newline string
 	// Theme selects the TUI palette. The TUI owns its palette set (see
-	// internal/tui/theme): dark (default), light, gruvbox-dark, gruvbox-light.
-	// These are chosen and validated for TERMINAL contrast — not copied from
+	// internal/tui/theme): the generated families, the hand-written community ports, and the transparent
+	// variants of both. These are chosen and validated for TERMINAL contrast — not copied from
 	// the GUI's CSS tokens, whose borders are hairlines that vanish on a
 	// terminal. /theme lists the installed set.
+	//
+	// The value is stored VERBATIM and never validated here: the palette set grows (it is 41 palettes as of
+	// the community ports), so a ring-fenced list in the config would turn every new theme into a migration,
+	// and a name this build does not know is resolved at Use() time where the fallback is the launch default.
 	Theme string
 }
 
