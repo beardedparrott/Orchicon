@@ -185,6 +185,22 @@ func TestWorkflowLessItemCannotFireScheduled(t *testing.T) {
 	if !strings.Contains(string(got.Results), noWorkflowReasonFragment) {
 		t.Fatalf("results must surface the actionable reason, got %s", got.Results)
 	}
+
+	// The NULL-workflow scheduled LEAF is the shape the retired standalone
+	// dispatch used to run, and the shape the scan previously EXCLUDED via
+	// `workflow_id IS NOT NULL` — it sat in 'scheduled' forever: due, never
+	// run, never surfaced. It must now be admitted and failed loudly.
+	nullItem := createScheduledItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "No-Workflow Scheduled (NULL)", nil, nil)
+	if res := r.Reconcile(ctx, ""); res.Error != nil {
+		t.Fatalf("scanAndFire: %v", res.Error)
+	}
+	gotNULL := mustGet(t, env.pool, nullItem.ID)
+	if gotNULL.Status != domain.WorkItemFailed {
+		t.Fatalf("NULL-workflow scheduled leaf status = %q, want failed", gotNULL.Status)
+	}
+	if !strings.Contains(string(gotNULL.Results), noWorkflowReasonFragment) {
+		t.Fatalf("results must surface the actionable reason, got %s", gotNULL.Results)
+	}
 }
 
 // TestWorkflowLessItemCannotJoinSequence (AC 1 + AC 6): a workflow-less item

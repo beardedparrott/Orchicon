@@ -942,3 +942,26 @@ func TestArchiveWorkItemToolRejectsNonTerminal(t *testing.T) {
 		t.Fatalf("archive error %q does not mention terminal state", err.Error())
 	}
 }
+
+// TestCreateWorkItemToolRejectsScheduledWithoutWorkflowDB — the Ask Orchicon
+// surface mirrors the Connect Create gate (AGENTS.md: the two surfaces cannot
+// drift): a scheduled create with no workflow binding has nothing to run, so
+// it is rejected loudly instead of landing a zombie 'scheduled' row.
+func TestCreateWorkItemToolRejectsScheduledWithoutWorkflowDB(t *testing.T) {
+	pool := workItemKindTestPool(t)
+	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
+	projectID := createProjectForTest(t, ctx, pool)
+	_, err := callToolCreate(t, ctx, pool, map[string]any{
+		"project_id":         projectID,
+		"title":              "Scheduled unbound",
+		"kind":               "task",
+		"parent_id":          createParentEpicForTest(t, ctx, pool, projectID),
+		"scheduled_start_at": "2030-01-01T10:00:00Z",
+	})
+	if err == nil {
+		t.Fatal("scheduled create with no workflow must be rejected")
+	}
+	if !strings.Contains(err.Error(), "no workflow is set") {
+		t.Fatalf("rejection must be actionable, got %v", err)
+	}
+}

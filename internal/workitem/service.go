@@ -352,12 +352,19 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	// No schedule-time validation at create: a freshly created item has no
-	// children (so the sequence case can't apply), and auto_start_workflow
-	// on a workflow-less item is a stored preference — nothing fires until
-	// a workflow is bound (the auto-start fire path below no-ops for a
-	// workflow-less leaf). Scheduling/run-immediately on an UPDATE validates
-	// and rejects a workflow-less leaf there.
+	// Workflow-first enforcement at CREATE: a SCHEDULED item with no workflow
+	// binding is a zombie — its start time comes due and nothing can run it
+	// (standalone dispatch is retired). The delivered schedule-time gate
+	// rejects that shape on the UPDATE path; run it here too so create and
+	// update cannot drift. A freshly created item has no children, so this is
+	// the leaf case: bind a workflow or drop the schedule. auto_start_workflow
+	// on a workflow-less item stays a stored preference (nothing fires until a
+	// workflow is bound).
+	if scheduledStartAt != nil {
+		if err := ValidateSequenceSchedule(ctx, ttx.Tx, tenantID, created); err != nil {
+			return nil, err
+		}
+	}
 	if err := enqueueWorkItemEvent(ctx, ttx.Tx, "work_item.created", created); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}

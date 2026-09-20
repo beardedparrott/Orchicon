@@ -13,6 +13,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/tenant"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Sequence validation + reorder tests (architecture-notes/
@@ -714,5 +715,56 @@ func TestUpdateRejectsRunnableStatusWithoutWorkflowDB(t *testing.T) {
 		Id: parent.ID, Status: &running,
 	})); err != nil {
 		t.Fatalf("a sequence parent with children must be exempt from the guard, got %v", err)
+	}
+}
+
+// TestCreateScheduledWithoutWorkflowRejectedDB (AC 1 + AC 6, the CREATE half):
+// creating a work item that lands directly in 'scheduled' with no workflow
+// binding is exactly the zombie the retired standalone dispatch left behind —
+// the start time comes due and nothing can ever run it, and (before the scan
+// admitted workflow-less rows) nothing surfaced it either. The CREATE path
+// must apply the same schedule-time gate the UPDATE path already applies, so
+// the two cannot drift.
+func TestCreateScheduledWithoutWorkflowRejectedDB(t *testing.T) {
+	pool := validateParentTestPool(t)
+	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
+	projID := validateParentProject(t, ctx, pool)
+	svc := New(pool, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	start := timestamppb.New(time.Now().Add(time.Hour))
+
+	// No workflow + a schedule → loud rejection (nothing is created).
+	if _, err := svc.CreateWorkItem(ctx, connect.NewRequest(&apiv1.CreateWorkItemRequest{
+		ProjectId: projID, Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC,
+		Title: "Scheduled unbound", ScheduledStartAt: start,
+	})); err == nil {
+		t.Fatal("scheduled create with no workflow must be rejected")
+	} else if !strings.Contains(err.Error(), "no workflow is set") {
+		t.Fatalf("rejection must be actionable, got %v", err)
+	}
+
+	// The same create WITHOUT a schedule still lands pending (the gate is a
+	// schedule gate, not a create gate).
+	pending, err := svc.CreateWorkItem(ctx, connect.NewRequest(&apiv1.CreateWorkItemRequest{
+		ProjectId: projID, Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC,
+		Title: "Pending unbound",
+	}))
+	if err != nil {
+		t.Fatalf("pending create with no workflow must still be allowed: %v", err)
+	}
+	if got := pending.Msg.WorkItem.Status; got != apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING {
+		t.Fatalf("status = %v, want pending", got)
+	}
+
+	// A bound workflow + a schedule is the normal bound run — accepted.
+	wf := seedPublishedWorkflowForTest(t, pool, projID, true)
+	bound, err := svc.CreateWorkItem(ctx, connect.NewRequest(&apiv1.CreateWorkItemRequest{
+		ProjectId: projID, Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC,
+		Title: "Scheduled bound", WorkflowId: wf, ScheduledStartAt: start,
+	}))
+	if err != nil {
+		t.Fatalf("scheduled create with a bound workflow rejected: %v", err)
+	}
+	if got := bound.Msg.WorkItem.Status; got != apiv1.WorkItemStatus_WORK_ITEM_STATUS_SCHEDULED {
+		t.Fatalf("status = %v, want scheduled", got)
 	}
 }
