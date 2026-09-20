@@ -69,8 +69,18 @@ type fakePlane struct {
 	projMCPSet    []*apiv1.ProjectMCPServersSetRequest
 	// mcpServers is what ListMCPServers returns; mcpError, when set, makes it fail —
 	// which is how a test exercises the "the MCP data did not load" path.
-	mcpServers  []*apiv1.MCPServer
-	mcpError    error
+	mcpServers []*apiv1.MCPServer
+	mcpError   error
+	// updateErr, when set, makes UpdateWorkItem fail the way a SERVER-SIDE
+	// rejection does (Task A's workflow-first gate is the reason it exists): the
+	// write never lands, so nothing is recorded and nothing is mutated.
+	updateErr error
+	// listCalls counts the LIST RPCs a detail render could reach for if it resolved
+	// names by fetching. Resolving a work item's detail must add NONE of them.
+	listCalls int
+	// wfListCalls counts the workflow-name fetches on their own, so a test can pin that the
+	// name index is loaded ONCE (TTL-cached) rather than once per rendered row.
+	wfListCalls int
 	dirProbes   []string
 	imgCreated  []*apiv1.CreateRuntimeImageRequest
 	imgUpdated  []*apiv1.UpdateRuntimeImageRequest
@@ -97,6 +107,30 @@ func (p *fakePlane) addItem(w *apiv1.WorkItem) *apiv1.WorkItem {
 	p.items[w.GetId()] = w
 	p.order = append(p.order, w.GetId())
 	return w
+}
+
+// setUpdateErr makes every later UpdateWorkItem fail the way a server-side rejection does. It takes
+// the same mutex the handler reads under, so the test and the request handler are properly ordered.
+func (p *fakePlane) setUpdateErr(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.updateErr = err
+}
+
+// listCallCount reports how many LIST RPCs the plane has served, so a test can pin that resolving a
+// detail asked for none of them.
+func (p *fakePlane) listCallCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.listCalls
+}
+
+// wfListCallCount reports how many ListWorkflows calls the plane has served — the name index must
+// cost at most one per TTL, not one per row.
+func (p *fakePlane) wfListCallCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.wfListCalls
 }
 
 // ---------- WorkItemService ----------
@@ -140,6 +174,7 @@ func (p *fakePlane) GetWorkItem(_ context.Context, req *connect.Request[apiv1.Ge
 func (p *fakePlane) ListWorkItems(_ context.Context, req *connect.Request[apiv1.ListWorkItemsRequest]) (*connect.Response[apiv1.ListWorkItemsResponse], error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.listCalls++
 	var out []*apiv1.WorkItem
 	for _, id := range p.order {
 		w := p.items[id]
@@ -160,6 +195,13 @@ func (p *fakePlane) ListWorkItems(_ context.Context, req *connect.Request[apiv1.
 func (p *fakePlane) UpdateWorkItem(_ context.Context, req *connect.Request[apiv1.UpdateWorkItemRequest]) (*connect.Response[apiv1.UpdateWorkItemResponse], error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	// A server-side rejection lands BEFORE anything is recorded or mutated, the same shape
+	// ActivateProject's drafting precondition has: a fake that recorded and applied the write
+	// anyway would let a test prove the dock is wired while hiding that the write never
+	// happened.
+	if p.updateErr != nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, p.updateErr)
+	}
 	w, ok := p.items[req.Msg.GetId()]
 	if !ok {
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("work item not found"))
@@ -329,6 +371,7 @@ func (p *fakePlane) GetProject(_ context.Context, req *connect.Request[apiv1.Get
 func (p *fakePlane) ListProjects(_ context.Context, _ *connect.Request[apiv1.ListProjectsRequest]) (*connect.Response[apiv1.ListProjectsResponse], error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.listCalls++
 	var out []*apiv1.Project
 	for _, id := range p.projOrder {
 		out = append(out, p.projects[id])
@@ -464,6 +507,8 @@ func (p *fakePlane) ListProjectFiles(_ context.Context, req *connect.Request[api
 
 func (p *fakePlane) ListWorkflows(context.Context, *connect.Request[apiv1.ListWorkflowsRequest]) (*connect.Response[apiv1.ListWorkflowsResponse], error) {
 	p.mu.Lock()
+	p.listCalls++
+	p.wfListCalls++
 	defer p.mu.Unlock()
 	// The default fixture is the one the pre-existing tests expect; a test that seeds
 	// `workflows` gets its own list (so a runnable/stepless/deprecated mix can be exercised).
@@ -779,6 +824,9 @@ func TestWorkItemCreateFromForm(t *testing.T) {
 	f.Set("priority", "3")
 	f.Set("budgets", `{"tokens":100000}`)
 	f.Set("context_window", "16000")
+	// Auto-start requires a BOUND workflow (autoStartRefusal): the form refuses the combination,
+	// so a test that wants the round trip must bind one — which is the point of the rule.
+	f.Set("workflow", "wf-1")
 	f.Set("auto_start", "true")
 
 	run(t, m, submit(t, m, "auto_start"))
@@ -794,7 +842,7 @@ func TestWorkItemCreateFromForm(t *testing.T) {
 		t.Fatalf("create request = %+v", req)
 	}
 	if req.GetProjectId() != "proj-1" || req.GetPriority() != 3 || req.GetContextWindow() != 16000 ||
-		req.GetBudgets() != `{"tokens":100000}` || !req.GetAutoStartWorkflow() {
+		req.GetBudgets() != `{"tokens":100000}` || !req.GetAutoStartWorkflow() || req.GetWorkflowId() != "wf-1" {
 		t.Fatalf("create request lost mutable fields: %+v", req)
 	}
 	// The new item reconciles into the tree, nested one level under its parent.
@@ -843,6 +891,8 @@ func TestWorkItemEditEveryMutableField(t *testing.T) {
 	f.Set("runtime_image", "orchicon-runtime-go:latest")
 	f.Set("context_files", "/tmp/a.go,/tmp/b")
 	f.Set("scheduled_start", "2026-09-01T09:00:00Z")
+	// Auto-start requires a BOUND workflow (autoStartRefusal).
+	f.Set("workflow", "wf-1")
 	f.Set("auto_start", "true")
 
 	run(t, m, submit(t, m, "auto_start"))
@@ -1204,6 +1254,8 @@ func TestScheduleWorkItem(t *testing.T) {
 		t.Fatal("the editor must carry a scheduled-start field")
 	}
 	f.Set("scheduled_start", "2026-09-01T09:00:00Z")
+	// Auto-start requires a BOUND workflow (autoStartRefusal).
+	f.Set("workflow", "wf-1")
 	f.Set("auto_start", "true")
 	run(t, m, press(t, m, "ctrl+s"))
 

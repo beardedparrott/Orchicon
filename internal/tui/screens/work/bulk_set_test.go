@@ -376,11 +376,11 @@ func TestBulkSetPickerSurvivesAMissingImageClient(t *testing.T) {
 
 	f := openBulkSet(t, m, 2) // panics here without the guard
 
-	if got := optionValues(f.Spec("workflow").Options); !containsStr(got, "wf-1") {
+	if got := optionValuesOf(f.Spec("workflow").Options); !containsStr(got, "wf-1") {
 		t.Errorf("workflow options = %v, want the runnable wf-1 offered", got)
 	}
 	// The image picker still carries its two sentinels: a workflow-only set is still possible.
-	got := optionValues(f.Spec("runtime_image").Options)
+	got := optionValuesOf(f.Spec("runtime_image").Options)
 	for _, want := range []string{bulkSetSkip, bulkSetClear} {
 		if !containsStr(got, want) {
 			t.Errorf("image options = %v, want the %q sentinel", got, want)
@@ -388,7 +388,7 @@ func TestBulkSetPickerSurvivesAMissingImageClient(t *testing.T) {
 	}
 }
 
-func optionValues(opts []kit2.Option) []string {
+func optionValuesOf(opts []kit2.Option) []string {
 	values := make([]string, 0, len(opts))
 	for _, o := range opts {
 		values = append(values, o.Value)

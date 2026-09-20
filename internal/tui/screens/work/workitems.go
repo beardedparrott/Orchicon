@@ -373,6 +373,44 @@ func loadParentOptions(ctx context.Context, cl *client.Clients) ([]kit2.Option, 
 	return opts, kinds, projects
 }
 
+// autoStartUnboundMsg is the refusal the work-item forms share. It names the FIX, not the field: an
+// operator who ticked Auto-start workflow and left Workflow empty needs to be told which of the two
+// to change, not that "validation failed".
+const autoStartUnboundMsg = "auto-start needs a workflow — pick one in the Workflow field, or untick Auto-start workflow"
+
+// autoStartRefusal reports the one combination these forms must not be able to express: a work item
+// with AUTO-START TICKED and NO WORKFLOW BOUND. Task A makes that item permanently unrunnable —
+// every transition to ready/assigned/scheduled/running is rejected — so the client must not offer
+// it, and the refusal has to be visible where the operator is looking.
+//
+// The rule is "auto_start requires a bound workflow" rather than "workflow is required for a leaf"
+// because "leaf" is not statically knowable in a form (the kind is operator-chosen and auto-corrected
+// by the parent rule below) and because a Required workflow would forbid creating an EPIC — the only
+// legal top-level kind — purely for a planning container that is never schedulable.
+//
+// It reads the FORM's value, which is exactly what the submit sends (WorkflowId: v["workflow"]),
+// so "the form cannot express it" and "the request cannot carry it" are the same statement. The
+// status form carries neither field and is therefore inert here.
+func autoStartRefusal(v map[string]string) error {
+	if v["auto_start"] != "true" || strings.TrimSpace(v["workflow"]) != "" {
+		return nil
+	}
+	return fmt.Errorf("%s", autoStartUnboundMsg)
+}
+
+// clearAutoStartWhenUnbound is the coupling half of the rule: an item with no bound workflow cannot
+// HOLD auto-start on. Ticking it and then emptying the workflow (or picking "— none —") clears it,
+// so the value cannot survive in the form and be submitted from a state the operator cannot see.
+//
+// It writes Values DIRECTLY rather than through Form.Set, for the reason the project re-scope above
+// does: Set re-enters OnChange, and a correction that recurses through its own handler is how a
+// derived-field rule turns into a loop. Checkbox values are the strings "true"/"false".
+func clearAutoStartWhenUnbound(f *kit2.Form) {
+	if strings.TrimSpace(f.Values["workflow"]) == "" {
+		f.Values["auto_start"] = "false"
+	}
+}
+
 // newItemCreateForm builds the typed create form.
 func (m *Model) newItemCreateForm() *kit2.Form {
 	projOpts := make([]kit2.Option, 0, len(m.projects))
@@ -406,7 +444,7 @@ func (m *Model) newItemCreateForm() *kit2.Form {
 		kit2.FieldSpec{Name: "context_files", Label: "Context files", Kind: kit2.KText, Placeholder: "/abs/path/a.go,/abs/dir"},
 		kit2.FieldSpec{Name: "auto_start", Label: "Auto-start workflow", Kind: kit2.KCheckbox, Initial: "false"},
 	)
-	// Two derived-field rules keep the form on legal ground:
+	// Derived-field rules keep the form on legal ground:
 	//
 	//  1. Changing the PROJECT re-scopes the parent picker to that project and
 	//     drops a parent that no longer belongs (the server requires the same
@@ -415,6 +453,9 @@ func (m *Model) newItemCreateForm() *kit2.Form {
 	//     Any strictly deeper kind is legal, so a deliberate choice survives —
 	//     an epic may parent a feature, a task or a subtask; a FEATURE may
 	//     parent a task or a subtask; a TASK may parent a subtask.
+	//  3. Emptying the WORKFLOW clears auto-start: the two fields are one
+	//     decision, and the combination with no workflow is one the server
+	//     refuses outright (see autoStartRefusal).
 	f.OnChange = func(name, value string) {
 		switch name {
 		case "project":
@@ -437,6 +478,11 @@ func (m *Model) newItemCreateForm() *kit2.Form {
 			if k := kindForParent(m.parentKind[value]); k != "" {
 				f.Values["kind"] = k
 			}
+		case "workflow":
+			// Emptying the workflow clears auto-start: the two fields are ONE decision,
+			// and without a workflow the server refuses the combination outright
+			// (see autoStartRefusal).
+			clearAutoStartWhenUnbound(f)
 		}
 	}
 	m.wireItemForm(f, formCreateItem, "")
@@ -500,6 +546,14 @@ func (m *Model) editFormFor(w *apiv1.WorkItem, projOpts []kit2.Option) *kit2.For
 			Validate: validateOptionalRFC3339},
 		kit2.FieldSpec{Name: "auto_start", Label: "Auto-start workflow", Kind: kit2.KCheckbox, Initial: boolStr(w.GetAutoStartWorkflow())},
 	)
+	// The same auto-start coupling the create form carries, installed HERE rather than only in the
+	// RPC handler so the value cannot be HELD in the form: emptying the workflow clears auto-start
+	// (see clearAutoStartWhenUnbound).
+	f.OnChange = func(name, _ string) {
+		if name == "workflow" {
+			clearAutoStartWhenUnbound(f)
+		}
+	}
 	m.wireItemForm(f, formEditItem, w.GetId())
 	return f
 }
@@ -560,6 +614,14 @@ func (m *Model) wireItemForm(f *kit2.Form, mode, id string) {
 	f.OnOpenDateTimePicker = m.openDateTimePicker
 	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
 		title := strings.TrimSpace(v["title"])
+		// Concern 1: a combination the PLANE will reject is refused here, before a request
+		// exists. Returning the error makes Form.Submit store it in SubmitErr (drawn as "✗ …"
+		// INSIDE the form, which stays open), and the sink puts the same sentence on the
+		// composer's dock — the transport that FitLines never truncates.
+		if err := autoStartRefusal(v); err != nil {
+			workSink{m}.Fail(err.Error())
+			return nil, err
+		}
 		switch mode {
 		case formCreateItem:
 			project := v["project"]

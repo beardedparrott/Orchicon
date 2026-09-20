@@ -38,7 +38,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { KindPill, PositionBadge, RecurringBadge } from "@/components/work-items/work-item-badges";
 import { WorkItemParentSelect } from "@/components/work-items/work-item-parent-select";
 import { computeSequencePositions } from "@/components/work-items/sequence-utils";
-import { kindLabel, kindMeta, statusMeta, isTerminal, showRecurringBadge, MANUALLY_UNMOVABLE_STATUSES } from "@/components/work-items/work-item-meta";
+import { kindLabel, kindMeta, statusMeta, isTerminal, showRecurringBadge, MANUALLY_UNMOVABLE_STATUSES, autoStartBlocked, AUTO_START_NEEDS_WORKFLOW } from "@/components/work-items/work-item-meta";
 import { cn } from "@/lib/utils";
 import { Timestamp } from "@bufbuild/protobuf";
 import { RecurringSchedule, WorkItemKind, WorkItemStatus } from "@/api/gen/orchicon/api/v1/work_item_pb";
@@ -338,6 +338,10 @@ function WorkItemDetailPage() {
                     );
                     return;
                   }
+                  if (autoStartBlocked(editAutoStartWorkflow, editWorkflowId)) {
+                    toast.error(AUTO_START_NEEDS_WORKFLOW);
+                    return;
+                  }
                   if (kindChanging) {
                     const moving = directChildren.filter(
                       (c) => depthForKind(c.kind) <= depthForKind(editKind),
@@ -621,11 +625,18 @@ function WorkItemDetailPage() {
                 type="checkbox"
                 id="autoStart"
                 checked={editAutoStartWorkflow}
+                disabled={!editWorkflowId}
                 onChange={(e) => { setEditAutoStartWorkflow(e.target.checked); if (e.target.checked) setEditScheduledStartAt(""); }}
                 className="h-4 w-4 rounded border-input"
               />
               <Label htmlFor="autoStart">Start immediately on save</Label>
             </div>
+            {!editWorkflowId && (
+              <p className="text-xs text-muted-foreground">
+                Auto-start needs a workflow — pick one in Workflow template to start this item
+                immediately on save.
+              </p>
+            )}
           </CardContent>
         </Card>
       )}
@@ -830,7 +841,13 @@ function WorkItemDetailPage() {
               {editing ? (
                 <select
                   value={editWorkflowId}
-                  onChange={(e) => setEditWorkflowId(e.target.value)}
+                  onChange={(e) => {
+                    setEditWorkflowId(e.target.value);
+                    // Same coupling as the TUI forms: an item with no workflow cannot HOLD
+                    // auto-start, so clearing the binding clears it too (see
+                    // autoStartBlocked).
+                    if (!e.target.value) setEditAutoStartWorkflow(false);
+                  }}
                   className="w-full rounded-xl glass-input px-3 py-1.5 text-sm"
                 >
                   <option value="">-- No workflow --</option>
