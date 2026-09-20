@@ -77,6 +77,7 @@ Rules:
 - Be specific and concrete. Preserve identifiers verbatim (paths, ids, names, numbers).
 - Do NOT invent anything that is not in the transcript.
 - Do NOT add pleasantries or meta-commentary about summarizing.
+- Do NOT record which MODE the assistant was in, and do NOT record anything it declined to do because of its mode ("the assistant said it could not edit files"). Modes are applied FRESH to every message from the conversation's current mode setting, so a mode written here goes stale the moment the user switches — and this summary is REPLAYED on every later turn, which would make one old refusal permanent.
 - Image content and tool output were dropped BEFORE you saw this transcript. If something important is clearly missing, note it under open questions rather than guessing.
 
 Write the summary now.`

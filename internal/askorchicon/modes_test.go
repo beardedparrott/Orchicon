@@ -189,7 +189,7 @@ func TestBrainstormAlwaysAsksWhatToDoNext(t *testing.T) {
 	for _, want := range []string{
 		"AFTER YOU HAVE ANSWERED, ALWAYS CLOSE THE LOOP ON WHAT TO DO WITH IT",
 		"**Create work items**",
-		"**Work directly with me**",
+		"**Switch modes and I'll do it**",
 		"**Hand it to a workflow**",
 		`"this check should always be reinforced"`,
 	} {
@@ -267,4 +267,55 @@ func TestPersonasDifferByMode(t *testing.T) {
 		seen[p] = mode
 	}
 	_ = db.AgentConfigRow{}
+}
+
+// NO MODE IS GRANTED THE WORK IT CANNOT DO, AND THE PERMISSIONS THAT MADE THAT UNENFORCEABLE ARE GONE.
+//
+// This is the test that keeps them gone. The boundary could not hold while the prompt granted the permission —
+// Brainstorm was told "you may take direct action when the user explicitly asks for it", and its own next-step
+// fork offered "Work directly with me". A prompt cannot be argued out of a permission it was explicitly granted,
+// which is why every one of these strings had to go before the tool gate could mean anything.
+func TestNoModeIsGrantedTheWorkItCannotDo(t *testing.T) {
+	banned := []string{
+		"you CAN take direct action",
+		"You may take direct action when the user explicitly asks for it",
+		"Work directly with me",
+		"capability rather than preference decides",
+		"only implement directly when the user explicitly declines",
+		"or working through it directly",
+	}
+	for _, mode := range everyMode {
+		p := BuildSystemPrompt(mode, testAgentConfig(), testToolRegistry())
+		for _, b := range banned {
+			if strings.Contains(p, b) {
+				t.Errorf("%s still carries the permission %q — while that is in the prompt the tool boundary is "+
+					"asking the model to decline something the prompt told it it may do", mode, b)
+			}
+		}
+	}
+}
+
+// AND EVERY MODE STATES THE SUPERSESSION RULE, because that is what makes a mode SWITCH take effect.
+//
+// The model's own earlier messages are the anchor that fights a mode change: after switching it can see itself
+// saying, a few messages ago, what it does or does not do. The rule is re-sent with every turn, so unlike the
+// transcript it cannot go stale. Its absence in any one mode is a mode that would carry the old person forward.
+func TestEveryModeSupersedesItsEarlierProse(t *testing.T) {
+	for _, mode := range everyMode {
+		p := BuildSystemPrompt(mode, testAgentConfig(), testToolRegistry())
+		for _, want := range []string{
+			"### A mode change SUPERSEDES everything said before it",
+			"applied FRESH to every message",
+			"is SUPERSEDED",
+			// The three anchors it must explicitly refuse to carry, because each is a real one.
+			"not from your own previous answers",
+			"not from a refusal you gave while in another mode",
+			"not from a summary of earlier conversation",
+		} {
+			if !strings.Contains(p, want) {
+				t.Errorf("%s is missing the supersession rule %q — an earlier mode's disposition would survive a "+
+					"switch and fight the new persona", mode, want)
+			}
+		}
+	}
 }

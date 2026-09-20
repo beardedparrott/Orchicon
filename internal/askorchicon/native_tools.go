@@ -3,6 +3,7 @@ package askorchicon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -235,6 +236,19 @@ func (a *nativeAskTools) ExecuteAskTool(ctx context.Context, name, argsJSON stri
 	// `orchicon_list_projects` while the registry is keyed `list_projects`, so
 	// without this every product-tool call fails as "not registered".
 	name = normalizeAskToolName(name)
+	// THE MODE BOUNDARY, AND IT RUNS BEFORE EVERY OTHER BRANCH.
+	//
+	// Ahead of the boundary probe and the host-suite dispatch on purpose: this is the single choke point every
+	// Ask tool call passes through (chatturn.go), so a check here cannot be bypassed by which internal branch a
+	// tool happens to take. The operator's requirement is that a mode NEVER does the work it is not supposed to
+	// do "no matter what the user says" — and no amount of asking is a substitute for the call being refused.
+	//
+	// THE ERROR IS THE MESSAGE. The bridge turns a tool error into the call's RESULT (chatturn.go: the text
+	// becomes the content, flagged as an error), so the model is handed the refusal verbatim and can relay it
+	// to the user — including the part that names the mode to switch to and says it cannot do that itself.
+	if ok, refusal := modeAllowsTool(askModeFromContext(ctx), name); !ok {
+		return "", errors.New(refusal)
+	}
 	// The boundary probe: names the project_dir the suite is scoped to.
 	if name == askFileRootToolName {
 		root, err := askFileRootResolve(ctx, a.service.pool)

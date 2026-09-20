@@ -607,6 +607,17 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 		return "", nil, nil, connect.NewError(connect.CodeInternal, err)
 	}
 
+	// THE MODE RIDES THE TURN'S CONTEXT, from here to the tool boundary.
+	//
+	// This is the ONE place a turn learns its mode, and it is deliberately the same read the persona uses
+	// (`buildSystemPrompt(conv.Mode, …)` below): the prompt and the ENFORCEMENT are stamped from the same value,
+	// in the same turn, so the model can never be told it is one mode while the gate believes another. A
+	// mid-conversation switch therefore takes effect on the next message in BOTH halves at once.
+	//
+	// Stamped BEFORE `detached := context.WithoutCancel(ctx)` below, which preserves values and drops only
+	// cancellation — so the mode survives the detach that carries the rest of the turn.
+	ctx = withAskMode(ctx, conv.Mode)
+
 	// sessionIDOverride is the session the new turn dispatches on. Normally
 	// the conversation's persisted session; set to "" below (forcing a fresh
 	// seeded session) when the interject supersedes a WEDGED turn (D4) so the
