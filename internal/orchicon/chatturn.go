@@ -39,8 +39,9 @@ const (
 // owns the product tools; the server injects it via SetAskTools) so the
 // provider substrate never imports the product layer.
 type AskToolProvider interface {
-	// AskToolDefs returns the tool definitions offered to the model.
-	AskToolDefs() []ToolDef
+	// AskToolDefs returns the tool definitions offered to the model. It takes the TURN's context because the
+	// mode boundary is part of the surface: a mode that may not do the work is not offered the tools that would.
+	AskToolDefs(ctx context.Context) []ToolDef
 	// ExecuteAskTool runs one tool call and returns its result text.
 	ExecuteAskTool(ctx context.Context, name, argsJSON string) (string, error)
 }
@@ -179,11 +180,11 @@ func (b *NativeBridge) loadAskHistoryLocked(sessionID string) []Message {
 
 // askToolsLocked returns the injected tool definitions (nil when no
 // provider is set). Callers must hold b.mu.
-func (b *NativeBridge) askToolsLocked() []ToolDef {
+func (b *NativeBridge) askToolsLocked(ctx context.Context) []ToolDef {
 	if b.askTools == nil {
 		return nil
 	}
-	return b.askTools.AskToolDefs()
+	return b.askTools.AskToolDefs(ctx)
 }
 
 // CreateConversationSession implements scheduler.ChatTurnClient. The native
@@ -403,7 +404,7 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 	// context — with them it can query, read, and act like the host-serve
 	// path.
 	b.mu.Lock()
-	tools := b.askToolsLocked()
+	tools := b.askToolsLocked(ctx)
 	b.mu.Unlock()
 	req := TurnRequest{
 		Model: model,

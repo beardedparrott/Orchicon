@@ -160,3 +160,59 @@ func TestTheRealToolSurfaceRefusesTheWork(t *testing.T) {
 		t.Errorf("iteration's refusal does not name the mode that DOES this: %v", err)
 	}
 }
+
+// AND THE MODEL IS NEVER OFFERED WHAT IT MAY NOT RUN.
+//
+// The refusal makes "no matter what the user says" true; this is the other half. A model that is OFFERED write in
+// Brainstorm will try it, be refused, and can be talked into trying again — every attempt a wrong turn in the
+// transcript. Hiding it means the tool LIST states the boundary before any call exists to refuse, so a mode that
+// cannot do the work no longer advertises that it can.
+//
+// It also pins the two lists to ONE table: if the offered surface and the enforced surface were ever computed
+// separately, this test is where the drift shows up.
+func TestTheToolSurfaceHidesWhatTheModeRefuses(t *testing.T) {
+	svc := &Service{toolRegistry: testToolRegistry()}
+	p := svc.NativeAskTools()
+
+	names := func(ctx context.Context) map[string]bool {
+		out := map[string]bool{}
+		for _, d := range p.AskToolDefs(ctx) {
+			out[d.Name] = true
+		}
+		return out
+	}
+
+	brainstorm := names(withAskMode(context.Background(), modeBrainstorm))
+	for _, hidden := range []string{"write", "edit", "batch_write", "bash"} {
+		if brainstorm[hidden] {
+			t.Errorf("brainstorm is OFFERED %q — a tool the gate refuses must not be advertised either", hidden)
+		}
+	}
+	for _, kept := range []string{"read", "grep", "glob", "list_projects", "create_work_item"} {
+		if !brainstorm[kept] {
+			t.Errorf("brainstorm is not offered %q — the read-only suite and the platform tools are exactly what "+
+				"this mode is for", kept)
+		}
+	}
+
+	// ITERATION IS THE MIRROR IMAGE: it keeps the work tools and loses the plan tools.
+	iteration := names(withAskMode(context.Background(), modeIteration))
+	if iteration["create_work_item"] {
+		t.Error("iteration is OFFERED create_work_item — the hard block the operator asked for is not in force")
+	}
+	for _, kept := range []string{"write", "edit", "bash", "read"} {
+		if !iteration[kept] {
+			t.Errorf("iteration is not offered %q — that is this mode's whole job", kept)
+		}
+	}
+
+	// AND AN UNSTAMPED CONTEXT IS THE FULL SURFACE, exactly as it was before any of this existed. That is the
+	// invariant that keeps the change from breaking a caller that does not stamp a mode.
+	full := names(context.Background())
+	for _, want := range []string{"write", "edit", "batch_write", "bash", "create_work_item", "read"} {
+		if !full[want] {
+			t.Errorf("an unstamped context lost %q — with no mode there is no boundary, and the surface must be "+
+				"what it always was", want)
+		}
+	}
+}

@@ -457,7 +457,7 @@ type fakeAskTools struct {
 	calls   []string
 }
 
-func (f *fakeAskTools) AskToolDefs() []ToolDef { return f.defs }
+func (f *fakeAskTools) AskToolDefs(context.Context) []ToolDef { return f.defs }
 
 func (f *fakeAskTools) ExecuteAskTool(_ context.Context, name, _ string) (string, error) {
 	f.mu.Lock()

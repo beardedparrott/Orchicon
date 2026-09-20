@@ -181,7 +181,18 @@ func askHostToolsForRoot(root string) *orchicon.HostTools {
 // The suite requires a resolvable root; without one the defs still include
 // every product tool, and ExecuteAskTool fails LOUD on file/shell calls
 // naming the fix (never a silent, empty tool surface).
-func (a *nativeAskTools) AskToolDefs() []orchicon.ToolDef {
+//
+// THE MODE'S BOUNDARY IS APPLIED TO THE LIST AS WELL AS TO THE CALL.
+//
+// Refusing a call is the part that makes "no matter what the user says" true, and it is not enough on its own: a
+// model that is OFFERED write in Brainstorm will try it, be refused, and can be talked into trying again, and
+// every attempt is a wrong turn in the transcript. Filtering the defs means the model never sees the tool, so the
+// tool LIST states the boundary before any call is made — and a mode that cannot do the work no longer advertises
+// that it can.
+//
+// The filter is the SAME table the refusal uses (modeAllowsTool), so the offered surface and the enforced surface
+// cannot drift: there is no second list of "tools this mode hides".
+func (a *nativeAskTools) AskToolDefs(ctx context.Context) []orchicon.ToolDef {
 	if a.service == nil {
 		return nil
 	}
@@ -220,7 +231,17 @@ func (a *nativeAskTools) AskToolDefs() []orchicon.ToolDef {
 		have[d.Name] = true
 		defs = append(defs, d)
 	}
-	return defs
+
+	// DROP WHAT THIS MODE MAY NOT RUN — see the doc comment. Built as a new slice rather than filtered in place,
+	// because `defs` is returned to a caller that keeps it for the turn and mutating it would be a surprise.
+	mode := askModeFromContext(ctx)
+	offered := make([]orchicon.ToolDef, 0, len(defs))
+	for _, d := range defs {
+		if ok, _ := modeAllowsTool(mode, d.Name); ok {
+			offered = append(offered, d)
+		}
+	}
+	return offered
 }
 
 // ExecuteAskTool runs one tool call. Product tools route through the
