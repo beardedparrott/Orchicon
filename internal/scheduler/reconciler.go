@@ -1269,6 +1269,17 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		r.log.Error("adapter dispatch failed", "execution", exec.ID, "kind", kind, "error", err)
 		// The Resolve error names the missing kind and the registered
 		// kinds — surface it verbatim so the operator can act on it.
+		//
+		// A PERMANENT routing failure — the kind is administratively
+		// disabled, or it is a declared-but-unregistered kind (e.g.
+		// "claude") — can never be fixed by retrying, so requeueing would
+		// spin the item through ready→failed forever (AC 3). Block the
+		// work item with the reason instead: the operator then sees the
+		// failure ON the item rather than an item that keeps returning.
+		if errors.Is(err, ErrAdapterDisabled) || errors.Is(err, ErrAdapterKindUnregistered) {
+			r.markFailedToStartPermanent(context.Background(), exec, err.Error())
+			return
+		}
 		r.markFailedToStart(context.Background(), exec, err.Error())
 		return
 	}
@@ -1384,6 +1395,47 @@ func (r *TaskReconciler) markFailedToStart(ctx context.Context, exec db.Executio
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		r.log.Error("commit failed_to_start", "execution", exec.ID, "error", err)
+	}
+}
+
+// markFailedToStartPermanent is markFailedToStart for a PERMANENT dispatch
+// failure: the execution's adapter kind can never resolve on this plane
+// (administratively disabled, or a declared kind with no registered bridge
+// such as "claude"). The execution transition is identical — failed_to_start
+// with the reason verbatim — but a standalone task is BLOCKED instead of
+// requeued. Requeueing a permanent routing failure is exactly the silent
+// loop AC 3 forbids: the item would go ready → fail → ready forever, with
+// no visible reason attached to the item itself. Blocking keeps the reason
+// on the work item (blocked items are surfaced in the UI), so an operator
+// can re-enable the kind or repoint the worker's model_ref. Workflow-bound
+// tickets behave as before (the run owns their status).
+func (r *TaskReconciler) markFailedToStartPermanent(ctx context.Context, exec db.ExecutionRow, errorMessage string) {
+	ttx, err := r.pool.BeginTenantTx(ctx, exec.TenantID)
+	if err != nil {
+		r.log.Error("begin tx for permanent failed_to_start", "execution", exec.ID, "error", err)
+		return
+	}
+	defer ttx.Rollback(ctx)
+	now := time.Now().UTC()
+	_, err = db.UpdateExecution(ctx, ttx.Tx, exec.TenantID, exec.ID, exec.Version, db.UpdateExecutionFields{
+		Status:       strPtr(domain.ExecutionFailedToStart),
+		EndedAt:      &now,
+		ErrorMessage: &errorMessage,
+	})
+	if err != nil {
+		r.log.Error("mark permanent failed_to_start", "execution", exec.ID, "error", err)
+		return
+	}
+	if exec.WorkflowRunID == "" {
+		if _, err := db.UpdateWorkItem(ctx, ttx.Tx, exec.TenantID, exec.TaskID, 0, db.UpdateWorkItemFields{
+			Status: strPtr(domain.WorkItemBlocked),
+		}); err != nil {
+			r.log.Error("block task after permanent failed_to_start", "task", exec.TaskID, "error", err)
+			return
+		}
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		r.log.Error("commit permanent failed_to_start", "execution", exec.ID, "error", err)
 	}
 }
 

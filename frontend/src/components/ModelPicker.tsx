@@ -139,7 +139,25 @@ export function ModelPicker({ value, onChange, askMode = false, inline = false }
   const modelsLoading = useNativeSourcing ? nativeModelsQ.isLoading : legacyModelsQ.isLoading;
   const modelsError = useNativeSourcing ? nativeModelsQ.error : legacyModelsQ.error;
 
-  const adapterList = adapterKinds && adapterKinds.length > 0 ? adapterKinds : [DEFAULT_ADAPTER_KIND];
+  // Tier 1 order (AC 5): the ORCHICON adapter leads the rendered list AND is
+  // the fresh-selection default (the seeding effect below). Both halves are
+  // required — a picker that leads with opencode pushes operators toward the
+  // one choice that wakes the host serve this feature exists to leave asleep,
+  // which is exactly what keeps an opencode-free plane the shipped default
+  // rather than a configuration achievement.
+  //
+  // The hoist mirrors the TUI's kit2.ModelPicker.PreferredAdapter rule: put
+  // ORCHICON_ADAPTER_KIND first ONLY when it is actually among the fetched
+  // kinds (a plane that does not register it must never be offered a default
+  // that cannot dispatch — the same rule the seeding effect follows), keep
+  // the remaining kinds in their existing server order, and leave the
+  // [DEFAULT_ADAPTER_KIND] fallback intact for when the kinds fetch failed.
+  // A declared-but-not-dispatchable kind (claude) is never hoisted.
+  const adapterList = useMemo(() => {
+    if (!adapterKinds || adapterKinds.length === 0) return [DEFAULT_ADAPTER_KIND];
+    if (!adapterKinds.includes(ORCHICON_ADAPTER_KIND)) return adapterKinds;
+    return [ORCHICON_ADAPTER_KIND, ...adapterKinds.filter((k) => k !== ORCHICON_ADAPTER_KIND)];
+  }, [adapterKinds]);
   // Catalog match is by PARSED SEGMENTS (catalogModelMatches), never by raw
   // value: OpenCodeModel.modelRef is the legacy 2-segment "providerId/id"
   // (internal/aigateway), so a raw comparison against a 3-segment ref would
