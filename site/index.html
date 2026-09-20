@@ -55,11 +55,14 @@
             <a href="#options">options</a> below.
           </p>
           <p class="install-note">
-            <strong>You install the runtime CLI; we never ship it.</strong>
-            Orchicon does not bundle opencode (or future adapters like Claude
-            Code / Codex) in its images — it mounts the operator's own install.
-            Install opencode first:
-            <code>curl -fsSL https://opencode.ai/install | bash</code>.
+            <strong>Nothing else to install — the runtimes are built in.</strong>
+            Orchicon ships its own runtime engine and runs sessions inside the
+            control plane, so a fresh install is complete on its own: no adapter
+            CLI, no binary probe, no separate serve. Want to run work on OpenCode
+            (or a future adapter such as Claude Code / Codex) instead? Install it
+            on the host and Orchicon mounts it into the containers — it is never
+            bundled, which keeps Orchicon redistributable whatever an adapter's
+            licence says.
           </p>
         </div>
       </div>
@@ -99,10 +102,11 @@
       <div class="container">
         <h2>What Orchicon is</h2>
         <p class="lede">
-          An orchestration platform for autonomous AI work. It
-          coordinates the moving parts — projects, workers, scheduling,
-          policies, telemetry, recovery, governance — and talks to
-          pluggable runtimes (OpenCode first) over gRPC.
+          An orchestration platform for autonomous AI work. It owns the parts that
+          make AI work dependable — projects, workers, scheduling, policy,
+          telemetry, recovery, governance — and runs the work on a runtime you
+          choose: a built-in native engine that needs nothing installed, plus
+          pluggable external adapters over gRPC.
         </p>
 
         <div class="grid">
@@ -133,7 +137,41 @@
           <div class="card">
             <h3>Single container + per-workflow runtime containers</h3>
             <p>The whole stack — Postgres, NATS, telemetry, control plane — runs in one container with <code>orchicon container</code> (PID-1 supervisor). Dev + prod as two containers, your data preserved.</p>
-            <p>Worker executions run in an isolated container per workflow run, drawn from a warm pool (<code>orchicon runtime-daemon</code> on the host) so dispatch never cold-starts — and reset to pristine after each run so no state crosses boundaries. Running as your user — no root, fully ephemeral, torn down at completion. The runtime adapter CLI (opencode) is never baked in: it's mounted from your own host install.</p>
+            <p>Worker executions run in an isolated container per workflow run, drawn from a warm pool (<code>orchicon runtime-daemon</code> on the host) so dispatch never cold-starts — and reset to pristine after each run so no state crosses boundaries. Running as your user — no root, fully ephemeral, torn down at completion. A run mounts only the adapter it actually needs: a plane using the built-in engine mounts nothing at all, and the host's own adapter install is mounted when a run asks for one — never baked into an image.</p>
+          </div>
+        </div>
+
+        <h2>What you get, in practice</h2>
+        <p class="lede">
+          The orchestration is the foundation. These are the surfaces you actually
+          work in, and the behaviours that make autonomous work safe to leave
+          running.
+        </p>
+
+        <div class="grid">
+          <div class="card">
+            <h3>A complete terminal client</h3>
+            <p><code>orch</code> is not a companion viewer — it is the whole product in a terminal, with read <em>and</em> write parity across every domain. Create, edit, publish, approve, cancel, retry, run bulk operations and watch live streams without leaving the keyboard. Boxed multi-line composer with slash commands and a command palette, a slide-out diff sidebar, click-to-copy on your own messages, and <strong>43 themes</strong> — including true transparency, where your terminal shows through and the text adapts to it so it stays readable.</p>
+          </div>
+          <div class="card">
+            <h3>Ask Orchicon — three modes that are actually enforced</h3>
+            <p>Brainstorm designs with you, Iteration works alongside you, Quick Work hands a defined job to a worker. The boundary is enforced by the <strong>platform rather than requested in a prompt</strong>: a mode's disallowed tools are withheld from it and refused at the point of execution, so "Brainstorm will not edit your files" is not something a model can be talked out of. The policy is adapter-agnostic, so a new runtime inherits it automatically.</p>
+          </div>
+          <div class="card">
+            <h3>Automation that proposes work, and a place to judge it</h3>
+            <p>Put Orchicon on a schedule and a research crew surveys the world on its own — planning, verifying against external evidence, and synthesizing what it finds into feature proposals. Proposals land in the <strong>Idea Cloud</strong>, a triage board separate from real work, each carrying its evidence and the run that produced it. Promote one to turn it into work items, or dismiss it and it is remembered as rejected so it never comes back.</p>
+          </div>
+          <div class="card">
+            <h3>Cost is a constraint, not a report</h3>
+            <p>Every execution runs under configurable ceilings — tokens, dollars, wall-clock, tool calls — with defaults calibrated from real usage. When a session gets expensive, Orchicon trims its own context and keeps working instead of re-sending an ever-growing history, and genuinely hard limits stop a runaway worker outright. Cache re-sends no longer count as work, so a long task cannot trip its budget by re-reading what it already knows.</p>
+          </div>
+          <div class="card">
+            <h3>Work that cannot be silently stranded</h3>
+            <p>Work items form a DAG (Epic → Feature → Task → Subtask) with cycle-detected dependencies, and every run is a workflow — so an item with no workflow bound cannot be scheduled, and the platform says so when you create it rather than failing later. When you do need to unblock a backlog, binding a workflow and a runtime image across a whole selection is one gesture, not a form per item.</p>
+          </div>
+          <div class="card">
+            <h3>Recovery, policy and telemetry around every run</h3>
+            <p>Failures are recoverable by default: the recovery flow captures, summarises, preserves, reviews, plans and resumes, with bounded auto-relax and escalation. Policy is evaluated in Rego at the dispatch decision point, with a full trace per decision. Telemetry streams over OpenTelemetry into the Grafana stack, and cost rolls up Tenant → Project → Task → Execution.</p>
           </div>
         </div>
       </div>
@@ -145,10 +183,12 @@
           <p>Orchicon orchestrates. Runtimes execute.</p>
         </blockquote>
         <p class="muted small">
-          The control plane is a single Go binary. The runtime is a
-          sidecar. Adapters never touch Postgres or NATS directly — they
-          stream telemetry over gRPC. Swap OpenCode for something else
-          by implementing <a href="https://github.com/beardedparrott/Orchicon/blob/main/DOCUMENTATION.md" rel="noopener"><code>orchicon.adapter.v1</code></a>.
+          The control plane is a single Go binary. A runtime is a sidecar or the
+          engine inside the plane itself, and neither ever touches Postgres or
+          NATS directly — everything streams over gRPC. Point work at a different
+          runtime by implementing
+          <a href="https://github.com/beardedparrott/Orchicon/blob/main/DOCUMENTATION.md" rel="noopener"><code>orchicon.adapter.v1</code></a>
+          — the built-in engine is one implementation of it, not a special case.
         </p>
       </div>
     </section>
@@ -162,7 +202,7 @@
     -v orchicon-data:/var/lib/orchicon ghcr.io/beardedparrott/orchicon</code></pre>
 
         <h3>macOS / Linux</h3>
-        <pre class="cmd"><code><span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash -s -- --version v0.2.0
+        <pre class="cmd"><code><span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash -s -- --version v0.3.0
 <span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash -s -- --install-dir /usr/local/bin
 <span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash -s -- --no-setup
 <span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash -s -- --uninstall
@@ -170,7 +210,7 @@
 <span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash -s -- --force-clean</code></pre>
 
         <h3>Windows (WSL2)</h3>
-        <pre class="cmd"><code><span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Version v0.2.0
+        <pre class="cmd"><code><span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Version v0.3.0
 <span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -InstallDir "/usr/local/bin"
 <span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -NoSetup
 <span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Uninstall
@@ -181,7 +221,7 @@
         <table class="flags">
           <thead><tr><th>Flag</th><th>Description</th></tr></thead>
           <tbody>
-            <tr><td><code>--version &lt;tag&gt;</code></td><td>Install a specific version (e.g. <code>v0.2.0</code>). Default: latest.</td></tr>
+            <tr><td><code>--version &lt;tag&gt;</code></td><td>Install a specific version (e.g. <code>v0.3.0</code>). Default: latest.</td></tr>
             <tr><td><code>--install-dir &lt;dir&gt;</code></td><td>WSL directory to install the binary into (default: <code>~/.local/bin</code>).</td></tr>
             <tr><td><code>--no-setup</code></td><td>Install the binary only — skip pulling images / starting the daemon / launching the container.</td></tr>
             <tr><td><code>--uninstall</code></td><td>Stop the container instances, remove the WSL-installed binary. The WSL distro is left intact.</td></tr>
@@ -211,7 +251,7 @@
     <section class="build">
       <div class="container">
         <h2>Build from source</h2>
-        <p>Pre-built binaries ship from <a href="https://github.com/beardedparrott/Orchicon/releases" rel="noopener">GitHub Releases</a>. Until the first release is cut, build from source:</p>
+        <p>Pre-built binaries ship from <a href="https://github.com/beardedparrott/Orchicon/releases" rel="noopener">GitHub Releases</a> — or build from source if you are working on Orchicon itself:</p>
         <pre class="cmd"><code><span class="prompt">$</span> git clone https://github.com/beardedparrott/Orchicon.git
 <span class="prompt">$</span> cd Orchicon
 <span class="prompt">$</span> make build         <span class="cmt"># → bin/orchicon</span>
@@ -232,14 +272,14 @@
 
     <section class="version-bar">
       <div class="container">
-        <p class="muted small">Latest release: <strong>v0.2.0</strong> — <a href="https://github.com/beardedparrott/Orchicon/releases" rel="noopener">release notes</a></p>
+        <p class="muted small">Latest release: <strong>v0.3.0</strong> — <a href="https://github.com/beardedparrott/Orchicon/releases" rel="noopener">release notes</a></p>
       </div>
     </section>
   </main>
 
   <footer class="foot">
     <div class="container foot-inner">
-      <span class="muted small">v0.2.0 · <a href="https://github.com/beardedparrott/Orchicon?tab=License-1-ov-file" rel="noopener">License</a> · built by <a href="https://github.com/beardedparrott" rel="noopener">@beardedparrott</a></span>
+      <span class="muted small">v0.3.0 · <a href="https://github.com/beardedparrott/Orchicon?tab=License-1-ov-file" rel="noopener">License</a> · built by <a href="https://github.com/beardedparrott" rel="noopener">@beardedparrott</a></span>
       <span class="muted small">
         <a href="https://github.com/beardedparrott/Orchicon" rel="noopener">Source</a>
         ·
