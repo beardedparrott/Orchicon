@@ -98,7 +98,7 @@ Project directories are entered in the UI as their **WSL path** — a Windows pr
 
 | Flag | Description |
 |---|---|
-| `--version <tag>` | Install a specific version (e.g. `v0.3.0`). Default: latest. |
+| `--version <tag>` | Install a specific version (e.g. `v0.3.1`). Default: latest. |
 | `--install-dir <dir>` | Installation directory (default: `~/.local/bin`). On Windows this is a **WSL path** (the binary installs inside the distro). |
 | `--no-setup` | Install the binary only — do not pull images / start the runtime daemon / launch the container. |
 | `--uninstall` | Remove Orchicon from the install directory. |
@@ -108,7 +108,7 @@ Project directories are entered in the UI as their **WSL path** — a Windows pr
 
 ```bash
 # Install a specific version
-curl -fsSL https://orchicon.dev/install | bash -s -- --version v0.3.0
+curl -fsSL https://orchicon.dev/install | bash -s -- --version v0.3.1
 
 # Uninstall
 curl -fsSL https://orchicon.dev/install | bash -s -- --uninstall
