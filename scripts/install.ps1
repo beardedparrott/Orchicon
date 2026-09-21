@@ -87,6 +87,14 @@ function Write-Warn { param([string]$msg) Write-Host "! $msg" -ForegroundColor Y
 function Write-Err  { param([string]$msg) Write-Host "✗ $msg" -ForegroundColor Red }
 function Die        { param([string]$msg) Write-Err $msg; exit 1 }
 
+# wsl.exe writes UTF-16LE when captured; on non-Unicode codepages it decodes
+# with NUL bytes between characters ("U`0b`0u`0n`0t`0u"), which look fine when
+# printed but break the next `wsl -d <name>`. Strip them at every capture point.
+function Clear-WslNul {
+    param($Lines)
+    @($Lines | ForEach-Object { [string]$_ -replace "`0", '' })
+}
+
 # --- WSL helpers ------------------------------------------------------------
 
 # Run a bash script inside the target WSL distro. The script's output is the
@@ -98,11 +106,16 @@ function Invoke-WslBash {
     # which the script-level "Stop" preference would treat as terminating.
     # Scope "Continue" locally so wsl's chatter/errors never abort us here.
     $ErrorActionPreference = "Continue"
+    # `-e` is required: without it wsl re-parses the command through the
+    # distro's default shell, which expands $ARCHIVE/$TMP/$# as empty before
+    # the target bash sees them (tar got an empty path). `-e` execs with argv
+    # preserved.
     if ($script:Distro) {
-        & wsl -d $script:Distro -- bash -lc $Script 2>&1
+        $out = & wsl -d $script:Distro -e bash -lc $Script 2>&1
     } else {
-        & wsl -- bash -lc $Script 2>&1
+        $out = & wsl -e bash -lc $Script 2>&1
     }
+    return (Clear-WslNul $out)
 }
 
 # Translate a Windows path (C:\...) to the /mnt/... path WSL sees it at.
@@ -153,7 +166,7 @@ function Ensure-Wsl {
 
     # List distros. The quiet listing may include a header on older WSL
     # versions; filter those out.
-    $names = @(& wsl --list --quiet 2>$null) |
+    $names = (Clear-WslNul @(& wsl --list --quiet 2>$null)) |
         Where-Object { $_ -and $_ -notmatch "no installed distributions" -and $_ -notmatch "Windows Subsystem" }
     if ($names.Count -eq 0) {
         if ($Soft) { return $false }
@@ -167,7 +180,7 @@ function Ensure-Wsl {
     }
 
     # Prefer the default distro (marked with `*` in `wsl --list --verbose`).
-    $verbose = @(& wsl --list --verbose 2>$null)
+    $verbose = Clear-WslNul @(& wsl --list --verbose 2>$null)
     $defaultLine = $verbose | Where-Object { $_ -match '^\s*\*' } | Select-Object -First 1
     if ($defaultLine -and $defaultLine -match '^\s*\*\s*(\S+)\s+\S+\s+(\d+)') {
         $script:Distro = $Matches[1]
