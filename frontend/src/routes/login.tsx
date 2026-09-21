@@ -7,6 +7,7 @@ import {
 } from "@tanstack/react-router";
 
 import { startLocalLogin, startOIDCLogin } from "@/auth/auth";
+import { OrchiconMark } from "@/components/OrchiconLogo";
 import { fetchAuthConfig, type AuthConfig } from "@/auth/session";
 import { Button } from "@/components/ui/button";
 import {
@@ -128,6 +129,11 @@ function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-mesh p-6">
       <Card className="w-full max-w-md">
         <CardHeader>
+          {/* The mark stands alone here, so it carries the accessible name — there is no adjacent word to
+              announce the brand, and a screen reader would otherwise read "Sign in to Orchicon" with no
+              identity above it. (In the app header the reverse is true: the mark sits beside the word
+              "Orchicon", so it is left decorative there to avoid announcing the brand twice.) */}
+          <OrchiconMark className="mb-3 h-10 w-10 text-foreground" title="Orchicon" />
           <CardTitle>Sign in to Orchicon</CardTitle>
           <CardDescription>
             Authenticate to access the control plane.

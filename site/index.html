@@ -1,311 +1,869 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="Orchicon is an AI orchestration and operations platform. It separates orchestration from execution: it manages projects, workers, scheduling, policies, telemetry, recovery, and governance, while pluggable runtimes do the work." />
-  <meta name="theme-color" content="#0b0d12" />
-  <title>Orchicon — AI orchestration for autonomous work</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2300d4aa'/%3E%3Cpath d='M9 22V10h3v5l4-5h3.5l-4.5 5.5L20 22h-3.6L13 17.5l-1 1.2V22z' fill='%230b0d12'/%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="style.css" />
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Orchicon — agents chat, Workers ship</title>
+<meta name="description" content="Orchicon turns AI into a team of accountable Workers: a backlog of work items, multi-role workflows with review loops and human approvals, budgets, policy, recovery, and full telemetry. Web app and terminal client, self-hosted in one container.">
+<meta name="theme-color" content="#0F1F1A">
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+<link rel="apple-touch-icon" href="assets/orchicon-app-icon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Schibsted+Grotesk:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#E7ECE9; --paper-2:#DCE3DF; --ink:#0F1F1A; --ink-2:#3C4D47; --ink-3:#66766F;
+  --rule:#C3CEC8; --console:#11231C; --console-2:#0B1914; --console-rule:#23392F;
+  --on-console:#DCE8E2; --on-console-2:#93A89E;
+  --signal:#33CC99; --cobalt:#2F6BFF; --cobalt-ink:#fff; --warn:#E0A43A;
+  --radius-s:6px; --radius-m:12px;
+  --sans:"Schibsted Grotesk", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono:"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#0E1916; --paper-2:#13211C; --ink:#E4ECE8; --ink-2:#B3C2BB; --ink-3:#83958D;
+    --rule:#253A31; --console:#0A1511; --console-2:#07100D; --console-rule:#1E3229;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0E1916; --paper-2:#13211C; --ink:#E4ECE8; --ink-2:#B3C2BB; --ink-3:#83958D;
+  --rule:#253A31; --console:#0A1511; --console-2:#07100D; --console-rule:#1E3229;
+}
+*,*::before,*::after{box-sizing:inherit}
+html{scroll-behavior:smooth; scroll-padding-top:calc(72px + env(safe-area-inset-top,0px))}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto} *{transition:none!important;animation:none!important}}
+body{margin:0; background:var(--paper); color:var(--ink); font-family:var(--sans); font-size:17px; line-height:1.55; -webkit-font-smoothing:antialiased}
+img{max-width:100%; display:block}
+a{color:inherit}
+:focus-visible{outline:2px solid var(--cobalt); outline-offset:3px; border-radius:4px}
+code,kbd,pre{font-family:var(--mono)}
+code{font-size:.86em; background:var(--paper-2); padding:.1em .35em; border-radius:4px}
+.wrap{width:min(1200px, 100% - 48px); margin-inline:auto}
+.narrow{max-width:68ch}
+
+/* nav */
+.nav{position:sticky; top:env(safe-area-inset-top,0px); z-index:20; background:color-mix(in srgb, var(--paper) 88%, transparent); backdrop-filter:blur(10px); border-bottom:1px solid var(--rule)}
+.nav .wrap{display:flex; align-items:center; gap:28px; height:64px}
+.brand{display:flex; align-items:center; gap:10px; font-weight:800; font-size:19px; text-decoration:none; letter-spacing:-.01em}
+.brand svg{width:34px; height:34px}
+.mark path{fill:currentColor}
+.mark path.last{fill:var(--signal)}
+.nav nav{display:flex; gap:22px; margin-left:auto}
+.nav nav a{text-decoration:none; color:var(--ink-2); font-size:15px; font-weight:500}
+.nav nav a:hover{color:var(--ink)}
+.btn{display:inline-flex; align-items:center; gap:8px; font:600 15px/1 var(--sans); padding:11px 16px; border-radius:var(--radius-s); text-decoration:none; border:1px solid transparent; cursor:pointer}
+.btn-primary{background:var(--cobalt); color:var(--cobalt-ink)}
+.btn-primary:hover{background:#1f58e6}
+.btn-quiet{border-color:var(--rule); color:var(--ink); background:transparent}
+.btn-quiet:hover{background:var(--paper-2)}
+@media (max-width:860px){.nav nav{display:none}}
+
+/* hero */
+.hero{padding:88px 0 56px}
+.hero-grid>*,.two>*,.spot>*{min-width:0}
+.hero-grid{display:grid; grid-template-columns:1.1fr .9fr; column-gap:64px; row-gap:0; align-items:start}
+.hero-grid h1{grid-column:1; max-width:16ch; align-self:end}
+.hero-mark{grid-column:2; grid-row:1; align-self:end; justify-self:center; margin:0 0 26px; color:var(--ink)}
+.hero-mark svg{width:clamp(150px,15vw,208px); height:auto; display:block}
+.harness{margin:22px 0 0; padding-left:14px; border-left:2px solid var(--signal); color:var(--ink-2); font-size:16px; max-width:44ch}
+.harness b{color:var(--ink)}
+h1{font-size:clamp(40px, 6.2vw, 78px); line-height:.98; letter-spacing:-.035em; font-weight:800; margin:0 0 26px}
+.lede{font-size:clamp(18px,2vw,21px); color:var(--ink-2); margin:0; max-width:40ch}
+.hero-side p{margin:0 0 18px; color:var(--ink-2); font-size:clamp(17px,1.8vw,19px)}
+.hero-side .meta{font-size:14px; color:var(--ink-3); margin:18px 0 0}
+.install{display:flex; align-items:center; gap:10px; background:var(--console); color:var(--on-console); border-radius:var(--radius-s); padding:14px 14px 14px 16px; font:500 14px/1.4 var(--mono); min-width:0}
+.install .prompt{color:var(--signal); user-select:none}
+.install code{background:none; padding:0; font-size:inherit; white-space:nowrap; flex:1; min-width:0; overflow-x:auto}
+.copy{flex:none; font:600 13px var(--sans); color:var(--on-console); background:transparent; border:1px solid var(--console-rule); border-radius:5px; padding:6px 10px; cursor:pointer}
+.copy:hover{border-color:var(--on-console-2)}
+.hero-actions{display:flex; gap:12px; margin-top:18px; flex-wrap:wrap}
+.meta{margin-top:18px; font-size:14px; color:var(--ink-3)}
+@media (max-width:900px){.hero{padding-top:56px}.hero-grid{grid-template-columns:minmax(0,1fr); gap:32px}.hero-mark{grid-column:1; grid-row:auto; order:-1; margin:0; justify-self:start}.hero-mark svg{width:96px}.hero-grid h1{grid-column:1; margin-bottom:0}}
+
+
+
+/* sections */
+section.block{padding:104px 0; border-bottom:1px solid var(--rule)}
+h2.title{font-size:clamp(30px,4vw,48px); line-height:1.04; letter-spacing:-.028em; font-weight:800; margin:0 0 18px; max-width:22ch}
+.intro{font-size:19px; color:var(--ink-2); margin:0 0 48px; max-width:62ch}
+.two{display:grid; grid-template-columns:1fr 1fr; gap:56px}
+@media (max-width:900px){.two{grid-template-columns:minmax(0,1fr); gap:32px} section.block{padding:72px 0}}
+
+/* tables */
+.table-scroll{overflow-x:auto; border-top:2px solid var(--ink)}
+table{width:100%; border-collapse:collapse; font-size:16px}
+th,td{text-align:left; vertical-align:top; padding:16px 18px 16px 0; border-bottom:1px solid var(--rule)}
+thead th{font-size:14px; font-weight:600; color:var(--ink-3); padding-top:12px; padding-bottom:12px}
+tbody th{font-weight:700; width:18%; min-width:150px}
+td{color:var(--ink-2)}
+td.alone{color:var(--ink-3)}
+td.with{color:var(--ink)}
+.compare td{width:41%}
+.compare thead th:last-child{color:var(--ink)}
+.compare thead th:last-child::before{content:""; display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--signal); margin-right:8px; transform:translateY(-1px)}
+
+/* flow */
+.steps{list-style:none; margin:0; padding:0; display:grid; grid-template-columns:repeat(3,1fr); gap:0; border-top:2px solid var(--ink)}
+.steps li{padding:22px 24px 26px 0; border-bottom:1px solid var(--rule)}
+.steps .n{font:500 14px var(--mono); color:var(--ink-3); display:flex; align-items:center; gap:10px}
+.stepmark{width:36px; height:36px}
+.stepmark .off{fill:var(--rule)}
+.stepmark .on{fill:var(--ink-3)}
+.stepmark .on.cur{fill:var(--ink)}
+.stepmark .on.last{fill:var(--signal)}
+.steps h3{margin:6px 0 8px; font-size:20px; letter-spacing:-.01em}
+.steps p{margin:0; color:var(--ink-2); font-size:16px}
+@media (max-width:900px){.steps{grid-template-columns:1fr}}
+
+.chain-wrap{margin-top:56px; background:var(--console); color:var(--on-console); border-radius:var(--radius-m); padding:28px; overflow-x:auto}
+.chain-top{display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px 24px; margin-bottom:22px}
+.chain-top b{font-size:17px}
+.chain-top span{color:var(--on-console-2); font-size:14px}
+.chain{display:flex; align-items:stretch; gap:0; min-width:980px}
+.node{flex:1; position:relative; padding:12px 12px 14px; border:1px solid var(--console-rule); border-radius:8px; background:var(--console-2); font-size:14px}
+.node small{display:block; color:var(--on-console-2); font-size:12px; margin-bottom:3px}
+.node b{display:block; font-weight:600; line-height:1.25}
+.node.gate{border-color:#6A5220; background:#1B1A10}
+.node.gate small{color:var(--warn)}
+.node.end{flex:.55; border-color:#1F5A45}
+.node.end small{color:var(--signal)}
+.link{flex:none; width:26px; align-self:center; height:1px; background:#3B5A4D; position:relative}
+.link::after{content:""; position:absolute; right:0; top:-3px; border:3.5px solid transparent; border-left-color:#3B5A4D}
+.loop{display:block; margin-top:8px; font-size:12px; color:#7FB7FF}
+.chain-foot{margin-top:18px; font-size:14px; color:var(--on-console-2)}
+
+/* modes */
+.modes tbody th{font-size:18px}
+
+/* spotlight */
+.spot{display:grid; grid-template-columns:1fr 1.35fr; gap:56px; align-items:center}
+.spot figure{margin:0; border-radius:var(--radius-m); overflow:hidden; border:1px solid var(--rule); cursor:zoom-in; background:var(--console)}
+.facts{list-style:none; padding:0; margin:24px 0 0; border-top:1px solid var(--rule)}
+.facts li{padding:12px 0; border-bottom:1px solid var(--rule); color:var(--ink-2)}
+.facts li b{color:var(--ink)}
+@media (max-width:900px){.spot{grid-template-columns:minmax(0,1fr)}}
+
+
+.idea-head .intro{margin-bottom:40px}
+.idea-flow{list-style:none; margin:0 0 56px; padding:0; display:grid; grid-template-columns:repeat(4,1fr); border-top:2px solid var(--ink)}
+.idea-flow li{padding:18px 22px 22px 0; border-bottom:1px solid var(--rule); position:relative}
+.idea-flow .n{display:block; font:500 14px var(--mono); color:var(--ink-3)}
+.idea-flow b{display:block; font-size:19px; margin:6px 0 6px; letter-spacing:-.01em}
+.idea-flow span:last-child{color:var(--ink-2); font-size:15px}
+.idea-spot{grid-template-columns:1.5fr 1fr}
+.spot-sub{font-size:24px; letter-spacing:-.015em; margin:0}
+.spot-note{margin:18px 0 0; font-size:14px; color:var(--ink-3)}
+@media (max-width:900px){.idea-flow{grid-template-columns:1fr 1fr} .idea-spot{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:520px){.idea-flow{grid-template-columns:1fr}}
+
+
+/* nav active */
+.nav nav a[aria-current="true"]{color:var(--ink); box-shadow:inset 0 -2px 0 var(--cobalt)}
+.nav nav a{padding:6px 0}
+@media (max-width:1180px){.nav nav{gap:16px}.nav nav a{font-size:14px}}
+@media (max-width:1040px){.nav nav a:nth-child(3),.nav nav a:nth-child(7){display:none}}
+.hero-side .hero-tui{margin:22px 0 0; padding-top:18px; border-top:1px solid var(--rule); font-size:16px; color:var(--ink-2)}
+.hero-tui a{color:var(--cobalt); font-weight:600; text-decoration:none}
+.hero-tui a:hover{text-decoration:underline}
+
+/* terminal */
+
+.term-head .intro{margin-bottom:36px}
+kbd{font:500 12px/1 var(--mono); display:inline-block; padding:4px 6px; border:1px solid var(--rule); border-bottom-width:2px; border-radius:4px; background:var(--paper); color:var(--ink); margin-right:4px}
+.tframe{background:#0A0F0D; border-radius:var(--radius-m); padding:0 0 4px; border:1px solid #1E2A25; box-shadow:0 40px 90px -40px rgba(0,0,0,.6); overflow:hidden}
+.fkeys{display:flex; gap:2px; padding:10px 10px 0; overflow-x:auto; border-bottom:1px solid #1E2A25; background:#0E1512}
+.fkeys button{flex:none; font:500 14px var(--mono); color:#8FA39A; background:none; border:0; padding:10px 14px; border-radius:6px 6px 0 0; cursor:pointer; white-space:nowrap}
+.fkeys button kbd{background:transparent; color:inherit; border-color:#2C3B35; margin-right:8px}
+.fkeys button[aria-selected="true"]{background:#1D3A6E; color:#fff}
+.fkeys button[aria-selected="true"] kbd{border-color:#5B7FC4}
+.tshot{position:relative; aspect-ratio:1800/1024}
+.tshot img{position:absolute; inset:0; width:100%; height:100%; object-fit:contain; object-position:top; opacity:0; transition:opacity .25s ease; cursor:zoom-in}
+.tshot img.on{opacity:1}
+.tcap{margin:0; padding:12px 16px 10px; color:#A9BCB3; font-size:15px; border-top:1px solid #1E2A25}
+.term-grid{display:grid; grid-template-columns:1.2fr 1fr; gap:56px; margin-top:64px}
+.term-grid>*{min-width:0}
+table.fk tbody th{width:auto; min-width:0; white-space:nowrap; padding-right:24px}
+.keys{margin:16px 0 0; border-top:2px solid var(--ink)}
+.keys div{display:grid; grid-template-columns:130px 1fr; gap:12px; padding:12px 0; border-bottom:1px solid var(--rule); align-items:baseline}
+.keys dt{margin:0}
+.keys dd{margin:0; color:var(--ink-2); font-size:15px}
+.term-facts{display:grid; grid-template-columns:repeat(3,1fr); gap:0 32px; margin-top:56px; border-top:0}
+.term-facts li{border-top:1px solid var(--rule); border-bottom:0}
+@media (max-width:900px){.term-grid{grid-template-columns:minmax(0,1fr); gap:40px}.term-facts{grid-template-columns:1fr}}
+
+/* workflow pair */
+.pair{display:grid; grid-template-columns:1fr 1fr; gap:28px; margin-top:40px}
+.pair>*{min-width:0}
+.pair figure{margin:0; cursor:zoom-in}
+.pair img{border-radius:var(--radius-m); border:1px solid var(--rule)}
+.pair figcaption{margin-top:12px; font-size:15px; color:var(--ink-2)}
+@media (max-width:760px){.pair{grid-template-columns:minmax(0,1fr)}}
+
+
+/* web app */
+.bframe{background:var(--paper); border:1px solid var(--rule); border-radius:var(--radius-m); overflow:hidden; box-shadow:0 40px 90px -45px rgba(15,31,26,.45)}
+.bbar{display:flex; align-items:center; gap:14px; padding:10px 14px; background:var(--paper-2); border-bottom:1px solid var(--rule)}
+.bbar .dots{display:flex; gap:6px}
+.bbar .dots i{width:11px; height:11px; border-radius:50%; background:var(--rule)}
+.bbar .addr{flex:1; max-width:520px; margin:0 auto; text-align:center; font:500 13px var(--sans); color:var(--ink-2); background:var(--paper); border-radius:6px; padding:5px 12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.btabs{display:flex; gap:4px; padding:10px 12px; overflow-x:auto; background:var(--paper)}
+.btabs button{flex:none; font:600 14px var(--sans); color:var(--ink-2); background:none; border:1px solid transparent; padding:8px 14px; border-radius:999px; cursor:pointer; white-space:nowrap}
+.btabs button:hover{background:var(--paper-2)}
+.btabs button[aria-selected="true"]{background:var(--cobalt); color:#fff}
+.wshot{position:relative; aspect-ratio:1800/1162; background:#11231C}
+.wshot img{position:absolute; inset:0; width:100%; height:100%; object-fit:contain; object-position:top; opacity:0; transition:opacity .25s ease; cursor:zoom-in}
+.wshot img.on{opacity:1}
+.bcap{margin:0; padding:12px 16px 12px; color:var(--ink-2); font-size:15px; border-top:1px solid var(--rule)}
+.sub-note{margin:8px 0 0; color:var(--ink-2); font-size:15px}
+table.fk tbody th{vertical-align:top}
+
+
+/* showcase with descriptions */
+.showcase{display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:36px; align-items:start}
+.showcase>*{min-width:0}
+.explain h3{font-size:24px; line-height:1.15; margin:4px 0 10px; letter-spacing:-.015em}
+.explain p{color:var(--ink-2); margin:0 0 16px; font-size:16px}
+.explain ul{list-style:none; margin:0; padding:0; border-top:1px solid var(--rule)}
+.explain li{padding:11px 0; border-bottom:1px solid var(--rule); font-size:15px; color:var(--ink-2)}
+.explain li b{color:var(--ink); font-weight:600}
+.explain .why{margin:18px 0 0; padding:12px 14px; border-left:2px solid var(--signal); background:var(--paper-2); border-radius:0 6px 6px 0; font-size:15px; color:var(--ink-2)}
+.explain .why b{color:var(--ink)}
+@media (max-width:980px){.showcase{grid-template-columns:minmax(0,1fr); gap:28px}}
+
+/* budgets */
+.limits{display:grid; grid-template-columns:repeat(4,1fr); border-top:2px solid var(--ink); margin-top:8px}
+.limits div{padding:20px 20px 22px 0; border-bottom:1px solid var(--rule)}
+.limits b{display:block; font-size:22px; letter-spacing:-.01em}
+.limits span{color:var(--ink-2); font-size:15px}
+@media (max-width:760px){.limits{grid-template-columns:1fr 1fr}}
+
+/* architecture */
+.slogan{font-size:clamp(28px,4vw,44px); font-weight:800; letter-spacing:-.03em; line-height:1.05; margin:0 0 20px}
+.stack{border:1px solid var(--rule); border-radius:var(--radius-m); overflow:hidden}
+.layer{padding:18px 20px; border-bottom:1px solid var(--rule)}
+.layer:last-child{border-bottom:0}
+.layer b{display:block; margin-bottom:4px}
+.layer span{color:var(--ink-2); font-size:15px}
+.layer.core{background:var(--console); color:var(--on-console)}
+.layer.core span{color:var(--on-console-2)}
+.layer .chips{display:flex; flex-wrap:wrap; gap:6px; margin-top:10px}
+.chip{font-size:13px; padding:4px 9px; border-radius:20px; border:1px solid var(--rule); color:var(--ink-2)}
+.layer.core .chip{border-color:var(--console-rule); color:var(--on-console)}
+
+/* install */
+.tabs{display:flex; gap:4px; border-bottom:1px solid var(--rule); margin-bottom:0}
+.tabs button{font:600 15px var(--sans); background:none; border:0; border-bottom:2px solid transparent; padding:12px 14px; color:var(--ink-3); cursor:pointer; margin-bottom:-1px}
+.tabs button[aria-selected="true"]{color:var(--ink); border-bottom-color:var(--cobalt)}
+.panel{background:var(--console); color:var(--on-console); border-radius:0 0 var(--radius-s) var(--radius-s); padding:18px 18px; position:relative}
+.panel pre{margin:0; font-size:14px; line-height:1.7; overflow-x:auto; padding-right:70px}
+.panel .copy{position:absolute; top:14px; right:14px}
+.panel .c{color:var(--on-console-2)}
+.panel .p{color:var(--signal); user-select:none}
+.panel-note{font-size:15px; color:var(--ink-2); margin:14px 0 0}
+.qs{list-style:none; margin:0; padding:0; border-top:2px solid var(--ink)}
+.qs li{display:grid; grid-template-columns:36px 1fr; padding:18px 0; border-bottom:1px solid var(--rule)}
+.qs .n{font:500 14px var(--mono); color:var(--ink-3); padding-top:3px}
+.qs b{display:block; margin-bottom:4px}
+.qs span{color:var(--ink-2); font-size:16px}
+
+/* cta + footer */
+.cta{padding:110px 0; text-align:left}
+.cta .slogan{max-width:18ch}
+.cta-mark{width:72px; height:72px; color:var(--ink); margin-bottom:28px}
+footer{border-top:1px solid var(--rule); padding:36px 0 48px; font-size:14px; color:var(--ink-3)}
+footer .wrap{display:flex; flex-wrap:wrap; gap:14px 28px; justify-content:space-between}
+footer nav{display:flex; gap:20px; flex-wrap:wrap}
+footer a{text-decoration:none; color:var(--ink-2)}
+footer a:hover{color:var(--ink)}
+.foot-brand{display:inline-flex; align-items:center; gap:10px}
+.foot-mark{width:20px; height:20px; color:var(--ink)}
+
+/* lightbox */
+dialog.lb{border:0; padding:0; background:transparent; max-width:96vw; max-height:94vh}
+dialog.lb::backdrop{background:rgba(4,10,8,.88)}
+dialog.lb img{max-width:96vw; max-height:88vh; width:auto; height:auto; border-radius:8px}
+dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); color:#fff; background:transparent; border:1px solid rgba(255,255,255,.3); padding:8px 14px; border-radius:6px; cursor:pointer}
+</style>
 </head>
 <body>
-  <header class="topbar">
-    <div class="container topbar-inner">
-      <a class="brand" href="/">
-        <span class="logo">O</span>
-        <span class="brand-name">orchicon</span>
-      </a>
-      <nav class="nav">
-        <a href="#install">Install</a>
-        <a href="#what">What it is</a>
-        <a href="https://github.com/beardedparrott/Orchicon" rel="noopener">GitHub</a>
-      </nav>
+
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="#top" aria-label="Orchicon home">
+      <svg viewBox="0 0 100 100" aria-hidden="true" class="mark"><path d="M52.56 8.08A42 42 0 0 1 79.44 20.04L81.19 18.26L79.19 30.68L67.87 31.81L69.63 30.03A28 28 0 0 0 51.71 22.05Z"/><path d="M87.59 31.26A42 42 0 0 1 90.66 60.52L93.08 61.14L81.32 65.62L74.69 56.38L77.11 57.01A28 28 0 0 0 75.06 37.51Z"/><path d="M85.02 73.18A42 42 0 0 1 61.22 90.47L61.89 92.88L52.14 84.93L56.81 74.57L57.48 76.98A28 28 0 0 0 73.35 65.45Z"/><path d="M47.44 91.92A42 42 0 0 1 20.56 79.96L18.81 81.74L20.81 69.32L32.13 68.19L30.37 69.97A28 28 0 0 0 48.29 77.95Z"/><path d="M12.41 68.74A42 42 0 0 1 9.34 39.48L6.92 38.86L18.68 34.38L25.31 43.62L22.89 42.99A28 28 0 0 0 24.94 62.49Z"/><path d="M14.98 26.82A42 42 0 0 1 38.78 9.53L38.11 7.12L47.86 15.07L43.19 25.43L42.52 23.02A28 28 0 0 0 26.65 34.55Z" class="last"/></svg>
+      Orchicon
+    </a>
+    <nav aria-label="Primary" id="primary-nav">
+      <a href="#web">Web app</a>
+      <a href="#terminal">Terminal</a>
+      <a href="#why">Why Workers</a>
+      <a href="#workflows">Workflows</a>
+      <a href="#ask">Ask Orchicon</a>
+      <a href="#automation">Idea Cloud</a>
+      <a href="#capabilities">Capabilities</a>
+      <a href="#install">Install</a>
+    </nav>
+    <a class="btn btn-quiet" href="https://github.com/beardedparrott/Orchicon">
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38v-1.33c-2.23.48-2.7-1.07-2.7-1.07-.36-.92-.89-1.17-.89-1.17-.73-.5.06-.49.06-.49.8.06 1.23.83 1.23.83.71 1.22 1.87.87 2.33.66.07-.52.28-.87.5-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 014 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      GitHub
+    </a>
+  </div>
+</header>
+
+<main id="top">
+
+<!-- HERO -->
+<section class="hero">
+  <div class="wrap hero-grid">
+    <h1>Agents chat. Workers ship.</h1>
+    <div class="hero-mark"><svg viewBox="0 0 100 100" class="mark" role="img" aria-label="Orchicon logo"><path d="M52.56 8.08A42 42 0 0 1 79.44 20.04L81.19 18.26L79.19 30.68L67.87 31.81L69.63 30.03A28 28 0 0 0 51.71 22.05Z"/><path d="M87.59 31.26A42 42 0 0 1 90.66 60.52L93.08 61.14L81.32 65.62L74.69 56.38L77.11 57.01A28 28 0 0 0 75.06 37.51Z"/><path d="M85.02 73.18A42 42 0 0 1 61.22 90.47L61.89 92.88L52.14 84.93L56.81 74.57L57.48 76.98A28 28 0 0 0 73.35 65.45Z"/><path d="M47.44 91.92A42 42 0 0 1 20.56 79.96L18.81 81.74L20.81 69.32L32.13 68.19L30.37 69.97A28 28 0 0 0 48.29 77.95Z"/><path d="M12.41 68.74A42 42 0 0 1 9.34 39.48L6.92 38.86L18.68 34.38L25.31 43.62L22.89 42.99A28 28 0 0 0 24.94 62.49Z"/><path d="M14.98 26.82A42 42 0 0 1 38.78 9.53L38.11 7.12L47.86 15.07L43.19 25.43L42.52 23.02A28 28 0 0 0 26.65 34.55Z" class="last"/></svg></div>
+    <div>
+      <p class="lede">Orchicon is a self-hosted control plane for autonomous AI work. It keeps the backlog, assigns each task to a team of AI Workers, runs them through review loops and human approvals, holds them to a budget, and picks up where they left off when something breaks.</p>
+      <p class="harness"><b>Prefer a classic harness?</b> Orchicon works like any other one too. Open Ask Orchicon in Iteration mode and pair with it directly in your repo, from the browser or the terminal. Add workflows, budgets and schedules only when you need them.</p>
     </div>
-  </header>
-
-  <main>
-    <section class="hero">
-      <div class="container">
-        <p class="kicker">AI orchestration &amp; operations</p>
-        <h1>Coordinate autonomous AI work<br /><span class="muted">like a control plane should.</span></h1>
-        <p class="lede">
-          Orchicon orchestrates. Runtimes execute. One binary, one
-          command, and your local stack — Postgres, NATS, the Grafana
-          telemetry plane, the SPA — is up. Or run the whole thing in a
-          single container.
-        </p>
-
-        <div class="install" id="install">
-          <div class="install-tabs" role="tablist">
-            <button class="tab active" data-tab="mac" role="tab" aria-selected="true">macOS / Linux</button>
-            <button class="tab" data-tab="win" role="tab" aria-selected="false">Windows (WSL2)</button>
-          </div>
-          <div class="install-body">
-            <pre class="install-cmd active" data-tab="mac"><code><span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash</code></pre>
-            <pre class="install-cmd" data-tab="win"><code><span class="prompt">PS&gt;</span> irm https://orchicon.dev/install.ps1 | iex</code></pre>
-          </div>
-          <p class="install-note">
-            One command, full setup: downloads the <code>orchicon</code> binary,
-            pulls the published images, starts the runtime daemon, launches the
-            single-container instance, and prints how to connect / start / stop.
-            Re-running updates to the latest release. On Windows the whole stack
-            runs inside <strong>WSL2</strong> — the installer provisions it and
-            installs the Linux binary into the distro. See
-            <a href="#options">options</a> below.
-          </p>
-          <p class="install-note">
-            <strong>Nothing else to install — the runtimes are built in.</strong>
-            Orchicon ships its own runtime engine and runs sessions inside the
-            control plane, so a fresh install is complete on its own: no adapter
-            CLI, no binary probe, no separate serve. Want to run work on OpenCode
-            (or a future adapter such as Claude Code / Codex) instead? Install it
-            on the host and Orchicon mounts it into the containers — it is never
-            bundled, which keeps Orchicon redistributable whatever an adapter's
-            licence says.
-          </p>
-        </div>
+    <div class="hero-side">
+      <p>One command installs the whole stack: control plane, web app, terminal client, Postgres, NATS and a Grafana telemetry plane.</p>
+      <div class="install" role="group" aria-label="Install command">
+        <span class="prompt">$</span>
+        <code id="cmd-hero">curl -fsSL https://orchicon.dev/install | bash</code>
+        <button class="copy" data-copy="cmd-hero">Copy</button>
       </div>
-    </section>
-
-    <section class="quick">
-      <div class="container">
-        <h2>Quick start</h2>
-        <ol class="steps">
-          <li>
-            <span class="step-num">1</span>
-            <div>
-              <h3>Install</h3>
-              <p>Run the one-liner above. Requires <code>curl</code> and <code>tar</code> (or PowerShell on Windows — the Windows path runs the stack inside <strong>WSL2</strong>).</p>
-            </div>
-          </li>
-          <li>
-            <span class="step-num">2</span>
-            <div>
-              <h3>Start the stack</h3>
-              <pre class="cmd"><code><span class="prompt">$</span> scripts/container.sh up dev</code></pre>
-              <p>Boots Postgres, NATS, Grafana (Tempo + Loki + VictoriaMetrics), the OTel collector, runs migrations, and serves the control plane + embedded UI on <a href="http://localhost:8080" rel="noopener">localhost:8080</a>. Requires Docker.</p>
-            </div>
-          </li>
-          <li>
-            <span class="step-num">3</span>
-            <div>
-              <h3>Log in &amp; build</h3>
-              <p>Open the URL, sign in with the built-in dev IdP, create a project, define a Worker, and dispatch a Task. The whole <a href="https://github.com/beardedparrott/Orchicon/blob/main/DOCUMENTATION.md">end-to-end flow</a> is verifiable locally.</p>
-            </div>
-          </li>
-        </ol>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="#install">Install Orchicon</a>
+        <a class="btn btn-quiet" href="https://github.com/beardedparrott/Orchicon/blob/main/DOCUMENTATION.md">Read the docs</a>
       </div>
-    </section>
-
-    <section class="what" id="what">
-      <div class="container">
-        <h2>What Orchicon is</h2>
-        <p class="lede">
-          An orchestration platform for autonomous AI work. It owns the parts that
-          make AI work dependable — projects, workers, scheduling, policy,
-          telemetry, recovery, governance — and runs the work on a runtime you
-          choose: a built-in native engine that needs nothing installed, plus
-          pluggable external adapters over gRPC.
-        </p>
-
-        <div class="grid">
-          <div class="card">
-            <h3>Projects &amp; work</h3>
-            <p>Tenants, projects, work items as a DAG (Epic → Feature → Task → Subtask), with cycle-detected dependencies.</p>
-          </div>
-          <div class="card">
-            <h3>Workers &amp; dispatch</h3>
-            <p>Versioned Worker definitions (system prompt, permissions, gated tools, budgets). Reconciler-driven dispatch to healthy adapters.</p>
-          </div>
-          <div class="card">
-            <h3>Workflows</h3>
-            <p>Step-DAG workflows: task, decision, approval, parallel, recover. Visual React Flow editor. Real-time step transitions.</p>
-          </div>
-          <div class="card">
-            <h3>Recovery engine</h3>
-            <p>Default 6-step recovery workflow (capture → summarize → preserve → review → plan → resume) with checkpoint replay and bounded auto-relax.</p>
-          </div>
-          <div class="card">
-            <h3>Rego policy</h3>
-            <p>OPA v1 at the dispatch decision point. Narrowest-scope-first evaluation, full Rego trace per decision for explainability.</p>
-          </div>
-          <div class="card">
-            <h3>Telemetry &amp; cost</h3>
-            <p>OTel → Grafana stack (Tempo + Loki + VictoriaMetrics). Per-tenant cost roll-up (Tenant → Project → Task → Execution) with streamed usage events.</p>
-          </div>
-          <div class="card">
-            <h3>Single container + per-workflow runtime containers</h3>
-            <p>The whole stack — Postgres, NATS, telemetry, control plane — runs in one container with <code>orchicon container</code> (PID-1 supervisor). Dev + prod as two containers, your data preserved.</p>
-            <p>Worker executions run in an isolated container per workflow run, drawn from a warm pool (<code>orchicon runtime-daemon</code> on the host) so dispatch never cold-starts — and reset to pristine after each run so no state crosses boundaries. Running as your user — no root, fully ephemeral, torn down at completion. A run mounts only the adapter it actually needs: a plane using the built-in engine mounts nothing at all, and the host's own adapter install is mounted when a run asks for one — never baked into an image.</p>
-          </div>
-        </div>
-
-        <h2>What you get, in practice</h2>
-        <p class="lede">
-          The orchestration is the foundation. These are the surfaces you actually
-          work in, and the behaviours that make autonomous work safe to leave
-          running.
-        </p>
-
-        <div class="grid">
-          <div class="card">
-            <h3>A complete terminal client</h3>
-            <p><code>orch</code> is not a companion viewer — it is the whole product in a terminal, with read <em>and</em> write parity across every domain. Create, edit, publish, approve, cancel, retry, run bulk operations and watch live streams without leaving the keyboard. Boxed multi-line composer with slash commands and a command palette, a slide-out diff sidebar, click-to-copy on your own messages, and <strong>43 themes</strong> — including true transparency, where your terminal shows through and the text adapts to it so it stays readable.</p>
-          </div>
-          <div class="card">
-            <h3>Ask Orchicon — three modes that are actually enforced</h3>
-            <p>Brainstorm designs with you, Iteration works alongside you, Quick Work hands a defined job to a worker. The boundary is enforced by the <strong>platform rather than requested in a prompt</strong>: a mode's disallowed tools are withheld from it and refused at the point of execution, so "Brainstorm will not edit your files" is not something a model can be talked out of. The policy is adapter-agnostic, so a new runtime inherits it automatically.</p>
-          </div>
-          <div class="card">
-            <h3>Automation that proposes work, and a place to judge it</h3>
-            <p>Put Orchicon on a schedule and a research crew surveys the world on its own — planning, verifying against external evidence, and synthesizing what it finds into feature proposals. Proposals land in the <strong>Idea Cloud</strong>, a triage board separate from real work, each carrying its evidence and the run that produced it. Promote one to turn it into work items, or dismiss it and it is remembered as rejected so it never comes back.</p>
-          </div>
-          <div class="card">
-            <h3>Cost is a constraint, not a report</h3>
-            <p>Every execution runs under configurable ceilings — tokens, dollars, wall-clock, tool calls — with defaults calibrated from real usage. When a session gets expensive, Orchicon trims its own context and keeps working instead of re-sending an ever-growing history, and genuinely hard limits stop a runaway worker outright. Cache re-sends no longer count as work, so a long task cannot trip its budget by re-reading what it already knows.</p>
-          </div>
-          <div class="card">
-            <h3>Work that cannot be silently stranded</h3>
-            <p>Work items form a DAG (Epic → Feature → Task → Subtask) with cycle-detected dependencies, and every run is a workflow — so an item with no workflow bound cannot be scheduled, and the platform says so when you create it rather than failing later. When you do need to unblock a backlog, binding a workflow and a runtime image across a whole selection is one gesture, not a form per item.</p>
-          </div>
-          <div class="card">
-            <h3>Recovery, policy and telemetry around every run</h3>
-            <p>Failures are recoverable by default: the recovery flow captures, summarises, preserves, reviews, plans and resumes, with bounded auto-relax and escalation. Policy is evaluated in Rego at the dispatch decision point, with a full trace per decision. Telemetry streams over OpenTelemetry into the Grafana stack, and cost rolls up Tenant → Project → Task → Execution.</p>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="principle">
-      <div class="container">
-        <blockquote>
-          <p>Orchicon orchestrates. Runtimes execute.</p>
-        </blockquote>
-        <p class="muted small">
-          The control plane is a single Go binary. A runtime is a sidecar or the
-          engine inside the plane itself, and neither ever touches Postgres or
-          NATS directly — everything streams over gRPC. Point work at a different
-          runtime by implementing
-          <a href="https://github.com/beardedparrott/Orchicon/blob/main/DOCUMENTATION.md" rel="noopener"><code>orchicon.adapter.v1</code></a>
-          — the built-in engine is one implementation of it, not a special case.
-        </p>
-      </div>
-    </section>
-
-    <section class="options" id="options">
-      <div class="container">
-        <h2>Installer options</h2>
-
-        <h3>Single container (Docker)</h3>
-        <pre class="cmd"><code><span class="prompt">$</span> docker run --rm -p 8080:8080 -p 3002:3000 \
-    -v orchicon-data:/var/lib/orchicon ghcr.io/beardedparrott/orchicon</code></pre>
-
-        <h3>macOS / Linux</h3>
-        <pre class="cmd"><code><span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash -s -- --version v0.3.0
-<span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash -s -- --install-dir /usr/local/bin
-<span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash -s -- --no-setup
-<span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash -s -- --uninstall
-<span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash -s -- --clean
-<span class="prompt">$</span> curl -fsSL https://orchicon.dev/install | bash -s -- --force-clean</code></pre>
-
-        <h3>Windows (WSL2)</h3>
-        <pre class="cmd"><code><span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Version v0.3.0
-<span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -InstallDir "/usr/local/bin"
-<span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -NoSetup
-<span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Uninstall
-<span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Clean
-<span class="prompt">PS&gt;</span> &amp; ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -ForceClean</code></pre>
-        <p>On Windows the whole stack runs inside <strong>WSL2</strong>: the installer provisions/detects WSL2, installs the <strong>Linux</strong> binary inside the distro, and runs the one-command setup there. Requires Windows 10 21H2+ / Windows 11 and Docker Desktop with WSL integration.</p>
-
-        <table class="flags">
-          <thead><tr><th>Flag</th><th>Description</th></tr></thead>
-          <tbody>
-            <tr><td><code>--version &lt;tag&gt;</code></td><td>Install a specific version (e.g. <code>v0.3.0</code>). Default: latest.</td></tr>
-            <tr><td><code>--install-dir &lt;dir&gt;</code></td><td>WSL directory to install the binary into (default: <code>~/.local/bin</code>).</td></tr>
-            <tr><td><code>--no-setup</code></td><td>Install the binary only — skip pulling images / starting the daemon / launching the container.</td></tr>
-            <tr><td><code>--uninstall</code></td><td>Stop the container instances, remove the WSL-installed binary. The WSL distro is left intact.</td></tr>
-            <tr><td><code>--dry-run</code></td><td>Print what would happen without making changes.</td></tr>
-            <tr><td><code>--clean</code> / <code>-Clean</code></td><td>Stop dev containers, remove old binary, then install latest. All user data preserved.</td></tr>
-            <tr><td><code>--force-clean</code> / <code>-ForceClean</code></td><td>Nuke Docker volumes, remove local data, then install latest. All data lost.</td></tr>
-          </tbody>
-        </table>
-
-        <h3>What gets installed</h3>
-        <table class="flags">
-          <thead><tr><th>Path</th><th>Contents</th></tr></thead>
-          <tbody>
-            <tr><td><code>&lt;install-dir&gt;/orchicon</code></td><td>The <code>orchicon</code> binary (control plane + embedded frontend)</td></tr>
-            <tr><td><code>~/.local/share/orchicon/</code></td><td>Runtime state, PID files, logs, blob store</td></tr>
-          </tbody>
-        </table>
-
-        <h3>Quick start</h3>
-        <pre class="cmd"><code><span class="prompt">$</span> scripts/container.sh up dev   <span class="cmt"># start the dev container instance</span>
-<span class="prompt">$</span> curl http://localhost:8080/healthz  <span class="cmt"># {"status":"ok"}</span>
-<span class="prompt">$</span> scripts/container.sh down dev  <span class="cmt"># stop the instance</span>
-<span class="prompt">$</span> orchicon version        <span class="cmt"># print installed version</span></code></pre>
-      </div>
-    </section>
-
-    <section class="build">
-      <div class="container">
-        <h2>Build from source</h2>
-        <p>Pre-built binaries ship from <a href="https://github.com/beardedparrott/Orchicon/releases" rel="noopener">GitHub Releases</a> — or build from source if you are working on Orchicon itself:</p>
-        <pre class="cmd"><code><span class="prompt">$</span> git clone https://github.com/beardedparrott/Orchicon.git
-<span class="prompt">$</span> cd Orchicon
-<span class="prompt">$</span> make build         <span class="cmt"># → bin/orchicon</span>
-<span class="prompt">$</span> make dev-start     <span class="cmt"># full dev environment</span></code></pre>
-        <p>Prereqs: Go 1.26+, Node 22+, Docker. The Makefile installs <a href="https://buf.build" rel="noopener">buf</a> and <a href="https://atlasgo.io" rel="noopener">atlas</a> via <code>make tools</code>.</p>
-      </div>
-    </section>
-
-    <section class="cta">
-      <div class="container cta-inner">
-        <div>
-          <h2>Read the documentation</h2>
-          <p>Comprehensive architecture, development, and user guide.</p>
-        </div>
-        <a class="btn primary" href="https://github.com/beardedparrott/Orchicon/blob/main/DOCUMENTATION.md" rel="noopener">Open the docs →</a>
-      </div>
-    </section>
-
-    <section class="version-bar">
-      <div class="container">
-        <p class="muted small">Latest release: <strong>v0.3.0</strong> — <a href="https://github.com/beardedparrott/Orchicon/releases" rel="noopener">release notes</a></p>
-      </div>
-    </section>
-  </main>
-
-  <footer class="foot">
-    <div class="container foot-inner">
-      <span class="muted small">v0.3.0 · <a href="https://github.com/beardedparrott/Orchicon?tab=License-1-ov-file" rel="noopener">License</a> · built by <a href="https://github.com/beardedparrott" rel="noopener">@beardedparrott</a></span>
-      <span class="muted small">
-        <a href="https://github.com/beardedparrott/Orchicon" rel="noopener">Source</a>
-        ·
-        <a href="https://github.com/beardedparrott/Orchicon/issues" rel="noopener">Issues</a>
-        ·
-        <a href="https://github.com/beardedparrott/Orchicon/releases" rel="noopener">Releases</a>
-      </span>
+      <p class="meta">macOS, Linux and Windows (WSL2). Or one <code>docker run</code>.</p>
+      <p class="hero-tui">Two full clients, one product: work in the <a href="#web">web app</a> or run <code>orch</code> in <a href="#terminal">your terminal</a>.</p>
     </div>
-  </footer>
+  </div>
+</section>
 
-  <script>
-    (function () {
-      var tabs = document.querySelectorAll('.install-tabs .tab');
-      var panels = document.querySelectorAll('.install-cmd');
-      tabs.forEach(function (t) {
-        t.addEventListener('click', function () {
-          tabs.forEach(function (x) { x.classList.remove('active'); x.setAttribute('aria-selected', 'false'); });
-          panels.forEach(function (p) { p.classList.remove('active'); });
-          t.classList.add('active');
-          t.setAttribute('aria-selected', 'true');
-          var name = t.getAttribute('data-tab');
-          var panel = document.querySelector('.install-cmd[data-tab="' + name + '"]');
-          if (panel) panel.classList.add('active');
-        });
+<!-- WEB APP -->
+<section class="block web" id="web">
+  <div class="wrap">
+    <div class="term-head">
+      <h2 class="title">The whole product, in your browser</h2>
+      <p class="intro">The web app ships inside the control plane binary, so there is nothing extra to host. Plan with Ask Orchicon, shape the backlog, draw workflows, and watch every run land, with the same data and the same permissions as the terminal client.</p>
+    </div>
+
+    <div class="showcase">
+    <div class="bframe">
+      <div class="bbar">
+        <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span class="addr" id="baddr">localhost:8080 · Ask Orchicon</span>
+      </div>
+      <div class="btabs" role="tablist" aria-label="Web app screens">
+        <button role="tab" aria-selected="true" data-web="ask">Ask Orchicon</button>
+        <button role="tab" aria-selected="false" data-web="work" tabindex="-1">Work items</button>
+        <button role="tab" aria-selected="false" data-web="flows" tabindex="-1">Workflows</button>
+        <button role="tab" aria-selected="false" data-web="sched" tabindex="-1">Schedules</button>
+        <button role="tab" aria-selected="false" data-web="ideas" tabindex="-1">Idea Cloud</button>
+      </div>
+      <div class="wshot" id="wshot">
+        <img data-web-img="ask" src="assets/web-ask.webp" alt="Ask Orchicon in the web app: a Brainstorm conversation showing tables of modes and platform pillars, with conversation folders on the right." class="on">
+        <img data-web-img="work" src="assets/web-work.webp" alt="Work items tree: epics, features and tasks with sequential order, branch names, merged pull requests and status." loading="lazy">
+        <img data-web-img="flows" src="assets/web-workflows.webp" alt="Visual workflow editor for the SDLC Non-human workflow, with versions and runs listed below." loading="lazy">
+        <img data-web-img="sched" src="assets/web-schedules.webp" alt="Schedules history: 367 past runs with durations, workflow and run identifiers." loading="lazy">
+        <img data-web-img="ideas" src="assets/web-ideacloud.webp" alt="Idea Cloud: feature ideas from a research run, each with cited sources and Approve and Dismiss buttons." loading="lazy">
+      </div>
+      <p class="bcap" id="bcap" aria-live="polite"></p>
+    </div>
+      <div class="explain" aria-live="polite">
+        <h3 id="wx-title"></h3>
+        <p id="wx-body"></p>
+        <ul id="wx-list"></ul>
+      </div>
+    </div>
+
+    <div class="term-grid">
+      <div>
+        <h3 class="spot-sub">Seven menus, same seven workspaces</h3>
+        <p class="sub-note">The top bar mirrors the terminal's function keys, so moving between the two costs nothing.</p>
+        <div class="table-scroll" style="margin-top:16px">
+          <table class="fk">
+            <tbody>
+              <tr><th scope="row">Ask Orchicon</th><td>Conversations in folders, with attachments, voice input and one-click compaction.</td></tr>
+              <tr><th scope="row">Work</th><td>Tree, board and archive views, drag-to-reorder, filters and bulk start.</td></tr>
+              <tr><th scope="row">Execution</th><td>Workflow editor, runs, executions and schedules with live step transitions.</td></tr>
+              <tr><th scope="row">Automation</th><td>Recurring items and the Idea Cloud triage board.</td></tr>
+              <tr><th scope="row">Overview, Enforcement, Control</th><td>Status at a glance, policies and approvals, settings and secrets.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <h3 class="spot-sub">What the browser is best at</h3>
+        <ul class="facts" style="margin-top:16px">
+          <li><b>Drawing workflows.</b> Drag steps from a palette, connect them edge to edge, undo, and publish a locked version.</li>
+          <li><b>Seeing the whole backlog.</b> Hundreds of items with branches, merged PRs and sequence order in one scroll.</li>
+          <li><b>Reading long answers.</b> Rendered tables and code, collapsible replies, raw-text copy and jump to latest.</li>
+          <li><b>Staying live.</b> Live clocks, notifications and status that update as Workers move.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- TERMINAL -->
+<section class="block term" id="terminal">
+  <div class="wrap">
+    <div class="term-head">
+      <h2 class="title">The whole product, in your terminal</h2>
+      <p class="intro"><code>orch</code> is not a companion viewer. It is a full client with read and write parity: create, edit, publish, approve, cancel, retry and watch Workers stream live without reaching for the mouse. Run it on your laptop, over SSH, or in a tmux pane beside your editor.</p>
+    </div>
+
+    <div class="showcase">
+    <div class="tframe">
+      <div class="fkeys" role="tablist" aria-label="Terminal workspaces">
+        <button role="tab" aria-selected="true" data-tui="ask"><kbd>F1</kbd>Ask Orchicon</button>
+        <button role="tab" aria-selected="false" data-tui="work" tabindex="-1"><kbd>F3</kbd>Work</button>
+        <button role="tab" aria-selected="false" data-tui="flows" tabindex="-1"><kbd>F4</kbd>Execution</button>
+        <button role="tab" aria-selected="false" data-tui="auto" tabindex="-1"><kbd>F5</kbd>Automation</button>
+      </div>
+      <div class="tshot" id="tshot">
+        <img data-tui-img="ask" src="assets/tui-ask.webp" alt="orch F1 Ask Orchicon: a Brainstorm conversation with visible reasoning and a conversation list." class="on">
+        <img data-tui-img="work" src="assets/tui-work.webp" alt="orch F3 Work: the work item tree with a detail pane and acceptance review." loading="lazy">
+        <img data-tui-img="flows" src="assets/tui-workflows.webp" alt="orch F4 Execution: workflows list and the SDLC Human workflow as a step list." loading="lazy">
+        <img data-tui-img="auto" src="assets/tui-automation.webp" alt="orch F5 Automation: editing a recurring item with a calendar date picker." loading="lazy">
+      </div>
+      <p class="tcap" id="tcap" aria-live="polite"></p>
+    </div>
+      <div class="explain" aria-live="polite">
+        <h3 id="tx-title"></h3>
+        <p id="tx-body"></p>
+        <ul id="tx-list"></ul>
+        <p class="why" id="tx-why"></p>
+      </div>
+    </div>
+
+    <div class="term-grid">
+      <div>
+        <h3 class="spot-sub">Seven workspaces, one key each</h3>
+        <div class="table-scroll" style="margin-top:16px">
+          <table class="fk">
+            <tbody>
+              <tr><th scope="row"><kbd>F1</kbd> Ask Orchicon</th><td>Conversations in all three modes, with reasoning, diffs and live cost.</td></tr>
+              <tr><th scope="row"><kbd>F2</kbd> Overview</th><td>Projects, runs and Workers at a glance.</td></tr>
+              <tr><th scope="row"><kbd>F3</kbd> Work</th><td>The work item tree: create, sequence, set status, bulk-bind workflows.</td></tr>
+              <tr><th scope="row"><kbd>F4</kbd> Execution</th><td>Workflows, runs and executions, with a flow view of every step.</td></tr>
+              <tr><th scope="row"><kbd>F5</kbd> Automation</th><td>Recurring items, schedules and the Idea Cloud.</td></tr>
+              <tr><th scope="row"><kbd>F6</kbd> Enforcement</th><td>Policies, approvals and budgets.</td></tr>
+              <tr><th scope="row"><kbd>F7</kbd> Control</th><td>Settings, secrets and platform administration.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <h3 class="spot-sub">Keys you will use all day</h3>
+        <dl class="keys">
+          <div><dt><kbd>/</kbd></dt><dd>Slash commands and the command palette</dd></div>
+          <div><dt><kbd>ctrl</kbd><kbd>d</kbd></dt><dd>Slide out the file diff sidebar</dd></div>
+          <div><dt><kbd>ctrl</kbd><kbd>g</kbd></dt><dd>Jump between the composer and the content</dd></div>
+          <div><dt><kbd>space</kbd></dt><dd>Mark items for a bulk action</dd></div>
+          <div><dt><kbd>W</kbd></dt><dd>Set workflow and runtime image on every marked item</dd></div>
+          <div><dt><kbd>enter</kbd></dt><dd>Open details, or the flow view of a workflow</dd></div>
+          <div><dt><kbd>ctrl</kbd><kbd>y</kbd></dt><dd>Stop a reply mid-stream</dd></div>
+          <div><dt><kbd>alt</kbd><kbd>enter</kbd></dt><dd>New line in the multi-line composer</dd></div>
+        </dl>
+      </div>
+    </div>
+
+    <ul class="facts term-facts">
+      <li><b>43 themes,</b> including true transparency where your terminal shows through and text adapts to stay readable.</li>
+      <li><b>Mouse when you want it.</b> Click to select, scroll, and click your own message to copy it.</li>
+      <li><b>Always honest about cost.</b> Context, tokens, cache hit rate and dollars sit under the composer as you type.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- WHY -->
+<section class="block" id="why">
+  <div class="wrap">
+    <h2 class="title">An agent waits for a prompt. A Worker shows up with a job.</h2>
+    <p class="intro">Agents are good at a single task in a single session, as long as someone is there to steer. A Worker has a role, a scope, tools it is allowed to use, a budget, and a process it answers to. The hard part is everything around the task: deciding what to build, checking the result, keeping costs sane, and not losing a day of work when a run falls over. That is the part Orchicon does.</p>
+
+    <div class="table-scroll">
+      <table class="compare">
+        <thead><tr><th scope="col"></th><th scope="col">An agent on its own</th><th scope="col">Workers under Orchicon</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">Where work comes from</th><td class="alone">Whatever you type into the prompt today.</td><td class="with">A backlog of epics, features, tasks and subtasks with dependencies, run order and recurring schedules.</td></tr>
+          <tr><th scope="row">How it gets done</th><td class="alone">One model, one pass, one opinion.</td><td class="with">A workflow of specialised Workers (architect, engineer, reviewer, QA, DevOps) with review loops and human approval gates.</td></tr>
+          <tr><th scope="row">Quality control</th><td class="alone">You read the diff and hope.</td><td class="with">Reviewers can send work back, capped at a set number of loops. Every item gets an acceptance review recorded against the run.</td></tr>
+          <tr><th scope="row">When it fails</th><td class="alone">You notice, then start over.</td><td class="with">Recovery captures, summarises, preserves, reviews, plans and resumes, escalating from L1 to L3 if it has to.</td></tr>
+          <tr><th scope="row">Cost</th><td class="alone">You find out on the invoice.</td><td class="with">Hard ceilings on tokens, dollars, wall-clock time and tool calls, rolled up by tenant, project, task and execution.</td></tr>
+          <tr><th scope="row">Safety</th><td class="alone">The prompt asks it nicely not to.</td><td class="with">Disallowed tools are withheld and refused at execution. Every dispatch passes a Rego policy with a full decision trace.</td></tr>
+          <tr><th scope="row">Isolation</th><td class="alone">Runs in your working copy.</td><td class="with">Each run gets its own container and git worktree, reset to pristine afterwards. Nothing leaks between runs.</td></tr>
+          <tr><th scope="row">Visibility</th><td class="alone">Terminal scrollback.</td><td class="with">Traces, logs and metrics in Grafana, an audit trail of every action, and a searchable history of every run.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- HOW -->
+<section class="block" id="how">
+  <div class="wrap">
+    <h2 class="title">From an idea to a merged pull request</h2>
+    <p class="intro">This is the loop Orchicon was built around, and the one it uses to build itself. It is also the logo: six steps, and the last one lands. The work items and schedules in these screenshots are Orchicon's own backlog.</p>
+
+    <ol class="steps">
+      <li><span class="n"><svg viewBox="0 0 100 100" class="stepmark" aria-hidden="true"><path d="M52.56 8.08A42 42 0 0 1 79.44 20.04L81.19 18.26L79.19 30.68L67.87 31.81L69.63 30.03A28 28 0 0 0 51.71 22.05Z" class="on cur"/><path d="M87.59 31.26A42 42 0 0 1 90.66 60.52L93.08 61.14L81.32 65.62L74.69 56.38L77.11 57.01A28 28 0 0 0 75.06 37.51Z" class="off"/><path d="M85.02 73.18A42 42 0 0 1 61.22 90.47L61.89 92.88L52.14 84.93L56.81 74.57L57.48 76.98A28 28 0 0 0 73.35 65.45Z" class="off"/><path d="M47.44 91.92A42 42 0 0 1 20.56 79.96L18.81 81.74L20.81 69.32L32.13 68.19L30.37 69.97A28 28 0 0 0 48.29 77.95Z" class="off"/><path d="M12.41 68.74A42 42 0 0 1 9.34 39.48L6.92 38.86L18.68 34.38L25.31 43.62L22.89 42.99A28 28 0 0 0 24.94 62.49Z" class="off"/><path d="M14.98 26.82A42 42 0 0 1 38.78 9.53L38.11 7.12L47.86 15.07L43.19 25.43L42.52 23.02A28 28 0 0 0 26.65 34.55Z" class="off"/></svg>1</span><h3>Talk it through</h3><p>Brainstorm with Ask Orchicon. It reads your actual repository, so the plan is grounded in real files and line numbers.</p></li>
+      <li><span class="n"><svg viewBox="0 0 100 100" class="stepmark" aria-hidden="true"><path d="M52.56 8.08A42 42 0 0 1 79.44 20.04L81.19 18.26L79.19 30.68L67.87 31.81L69.63 30.03A28 28 0 0 0 51.71 22.05Z" class="on"/><path d="M87.59 31.26A42 42 0 0 1 90.66 60.52L93.08 61.14L81.32 65.62L74.69 56.38L77.11 57.01A28 28 0 0 0 75.06 37.51Z" class="on cur"/><path d="M85.02 73.18A42 42 0 0 1 61.22 90.47L61.89 92.88L52.14 84.93L56.81 74.57L57.48 76.98A28 28 0 0 0 73.35 65.45Z" class="off"/><path d="M47.44 91.92A42 42 0 0 1 20.56 79.96L18.81 81.74L20.81 69.32L32.13 68.19L30.37 69.97A28 28 0 0 0 48.29 77.95Z" class="off"/><path d="M12.41 68.74A42 42 0 0 1 9.34 39.48L6.92 38.86L18.68 34.38L25.31 43.62L22.89 42.99A28 28 0 0 0 24.94 62.49Z" class="off"/><path d="M14.98 26.82A42 42 0 0 1 38.78 9.53L38.11 7.12L47.86 15.07L43.19 25.43L42.52 23.02A28 28 0 0 0 26.65 34.55Z" class="off"/></svg>2</span><h3>Turn it into work</h3><p>When a decision lands, it becomes a work item with scope and acceptance criteria detailed enough for a Worker to finish without coming back with questions.</p></li>
+      <li><span class="n"><svg viewBox="0 0 100 100" class="stepmark" aria-hidden="true"><path d="M52.56 8.08A42 42 0 0 1 79.44 20.04L81.19 18.26L79.19 30.68L67.87 31.81L69.63 30.03A28 28 0 0 0 51.71 22.05Z" class="on"/><path d="M87.59 31.26A42 42 0 0 1 90.66 60.52L93.08 61.14L81.32 65.62L74.69 56.38L77.11 57.01A28 28 0 0 0 75.06 37.51Z" class="on"/><path d="M85.02 73.18A42 42 0 0 1 61.22 90.47L61.89 92.88L52.14 84.93L56.81 74.57L57.48 76.98A28 28 0 0 0 73.35 65.45Z" class="on cur"/><path d="M47.44 91.92A42 42 0 0 1 20.56 79.96L18.81 81.74L20.81 69.32L32.13 68.19L30.37 69.97A28 28 0 0 0 48.29 77.95Z" class="off"/><path d="M12.41 68.74A42 42 0 0 1 9.34 39.48L6.92 38.86L18.68 34.38L25.31 43.62L22.89 42.99A28 28 0 0 0 24.94 62.49Z" class="off"/><path d="M14.98 26.82A42 42 0 0 1 38.78 9.53L38.11 7.12L47.86 15.07L43.19 25.43L42.52 23.02A28 28 0 0 0 26.65 34.55Z" class="off"/></svg>3</span><h3>Bind a workflow</h3><p>Choose how it gets built: a full SDLC team with or without human gates, a local-models-only team, or a single quick job. Bind a whole selection in one gesture.</p></li>
+      <li><span class="n"><svg viewBox="0 0 100 100" class="stepmark" aria-hidden="true"><path d="M52.56 8.08A42 42 0 0 1 79.44 20.04L81.19 18.26L79.19 30.68L67.87 31.81L69.63 30.03A28 28 0 0 0 51.71 22.05Z" class="on"/><path d="M87.59 31.26A42 42 0 0 1 90.66 60.52L93.08 61.14L81.32 65.62L74.69 56.38L77.11 57.01A28 28 0 0 0 75.06 37.51Z" class="on"/><path d="M85.02 73.18A42 42 0 0 1 61.22 90.47L61.89 92.88L52.14 84.93L56.81 74.57L57.48 76.98A28 28 0 0 0 73.35 65.45Z" class="on"/><path d="M47.44 91.92A42 42 0 0 1 20.56 79.96L18.81 81.74L20.81 69.32L32.13 68.19L30.37 69.97A28 28 0 0 0 48.29 77.95Z" class="on cur"/><path d="M12.41 68.74A42 42 0 0 1 9.34 39.48L6.92 38.86L18.68 34.38L25.31 43.62L22.89 42.99A28 28 0 0 0 24.94 62.49Z" class="off"/><path d="M14.98 26.82A42 42 0 0 1 38.78 9.53L38.11 7.12L47.86 15.07L43.19 25.43L42.52 23.02A28 28 0 0 0 26.65 34.55Z" class="off"/></svg>4</span><h3>Dispatch safely</h3><p>Reconcilers check policy and budgets, pull a warm container, check out a worktree and start the first Worker. No cold starts.</p></li>
+      <li><span class="n"><svg viewBox="0 0 100 100" class="stepmark" aria-hidden="true"><path d="M52.56 8.08A42 42 0 0 1 79.44 20.04L81.19 18.26L79.19 30.68L67.87 31.81L69.63 30.03A28 28 0 0 0 51.71 22.05Z" class="on"/><path d="M87.59 31.26A42 42 0 0 1 90.66 60.52L93.08 61.14L81.32 65.62L74.69 56.38L77.11 57.01A28 28 0 0 0 75.06 37.51Z" class="on"/><path d="M85.02 73.18A42 42 0 0 1 61.22 90.47L61.89 92.88L52.14 84.93L56.81 74.57L57.48 76.98A28 28 0 0 0 73.35 65.45Z" class="on"/><path d="M47.44 91.92A42 42 0 0 1 20.56 79.96L18.81 81.74L20.81 69.32L32.13 68.19L30.37 69.97A28 28 0 0 0 48.29 77.95Z" class="on"/><path d="M12.41 68.74A42 42 0 0 1 9.34 39.48L6.92 38.86L18.68 34.38L25.31 43.62L22.89 42.99A28 28 0 0 0 24.94 62.49Z" class="on cur"/><path d="M14.98 26.82A42 42 0 0 1 38.78 9.53L38.11 7.12L47.86 15.07L43.19 25.43L42.52 23.02A28 28 0 0 0 26.65 34.55Z" class="off"/></svg>5</span><h3>Review, loop, approve</h3><p>Reviewers and QA send work back until it passes. You approve at the gates you chose. Every step transition streams live.</p></li>
+      <li><span class="n"><svg viewBox="0 0 100 100" class="stepmark" aria-hidden="true"><path d="M52.56 8.08A42 42 0 0 1 79.44 20.04L81.19 18.26L79.19 30.68L67.87 31.81L69.63 30.03A28 28 0 0 0 51.71 22.05Z" class="on"/><path d="M87.59 31.26A42 42 0 0 1 90.66 60.52L93.08 61.14L81.32 65.62L74.69 56.38L77.11 57.01A28 28 0 0 0 75.06 37.51Z" class="on"/><path d="M85.02 73.18A42 42 0 0 1 61.22 90.47L61.89 92.88L52.14 84.93L56.81 74.57L57.48 76.98A28 28 0 0 0 73.35 65.45Z" class="on"/><path d="M47.44 91.92A42 42 0 0 1 20.56 79.96L18.81 81.74L20.81 69.32L32.13 68.19L30.37 69.97A28 28 0 0 0 48.29 77.95Z" class="on"/><path d="M12.41 68.74A42 42 0 0 1 9.34 39.48L6.92 38.86L18.68 34.38L25.31 43.62L22.89 42.99A28 28 0 0 0 24.94 62.49Z" class="on"/><path d="M14.98 26.82A42 42 0 0 1 38.78 9.53L38.11 7.12L47.86 15.07L43.19 25.43L42.52 23.02A28 28 0 0 0 26.65 34.55Z" class="on last"/></svg>6</span><h3>Land it</h3><p>The branch is pushed, the PR is merged, and the acceptance review is saved on the work item. The next item in sequence starts on its own.</p></li>
+    </ol>
+
+  </div>
+</section>
+
+<!-- WORKFLOWS -->
+<section class="block" id="workflows">
+  <div class="wrap">
+    <h2 class="title">Workflows: design the team that builds each task</h2>
+    <p class="intro">A workflow is a graph of Workers, approval gates and loop decisions. Reviewers can send work back a set number of times, humans step in only where you ask them to, and every published version is locked so a run always knows exactly which process it followed.</p>
+    <div class="chain-wrap" style="margin-top:0" role="img" aria-label="The SDLC Human workflow: Principal Software Architect, human approval, Senior Software Engineer, PR Reviewer with loop back, QA Engineer with loop back, human approval, DevOps Engineer with loop back, then End.">
+      <div class="chain-top"><b>The SDLC (Human) workflow, as shipped</b><span>11 steps, 3 loop decisions, 2 human gates</span></div>
+      <div class="chain">
+        <div class="node"><small>Worker</small><b>Principal Software Architect</b></div><span class="link"></span>
+        <div class="node gate"><small>Human approval</small><b>Approve the plan</b><span class="loop">Sends back to architect, max 3</span></div><span class="link"></span>
+        <div class="node"><small>Worker</small><b>Senior Software Engineer</b></div><span class="link"></span>
+        <div class="node"><small>Worker</small><b>PR Reviewer</b><span class="loop">Loops to engineer, max 3</span></div><span class="link"></span>
+        <div class="node"><small>Worker</small><b>QA Engineer</b><span class="loop">Loops to engineer, max 3</span></div><span class="link"></span>
+        <div class="node gate"><small>Human approval</small><b>Approve the build</b><span class="loop">Sends back to engineer, max 3</span></div><span class="link"></span>
+        <div class="node"><small>Worker</small><b>DevOps Engineer</b><span class="loop">Retries itself, max 6</span></div><span class="link"></span>
+        <div class="node end"><small>End</small><b>Merged</b></div>
+      </div>
+      <p class="chain-foot">Prefer no humans in the loop? The SDLC (Non-human) variant drops both gates. Workflows are versioned, and a published version is immutable.</p>
+    </div>
+  
+    <div class="pair">
+      <figure data-zoom="assets/web-workflows.webp"><img src="assets/web-workflows.webp" alt="Visual workflow editor with the SDLC Non-human workflow, a palette of steps and a properties panel." loading="lazy"><figcaption>Drag it together in the browser, with undo, versions and a list of runs.</figcaption></figure>
+      <figure data-zoom="assets/tui-workflows.webp"><img src="assets/tui-workflows.webp" alt="The SDLC Human workflow as an eleven-step list in the orch terminal client." loading="lazy"><figcaption>Read, edit and publish the same graph as a step list in <code>orch</code>.</figcaption></figure>
+    </div>
+  </div>
+</section>
+
+<!-- MODES -->
+<section class="block" id="ask">
+  <div class="wrap two">
+    <div>
+      <h2 class="title">Ask Orchicon: three modes, enforced by the platform</h2>
+      <p class="intro" style="margin-bottom:0">Ask Orchicon is the colleague who holds the whole system in their head. Its modes are not prompt suggestions. A mode's disallowed tools are withheld from the model and refused at execution, so Brainstorm cannot be talked into editing your files. The rule is adapter-agnostic, so every new runtime inherits it.</p>
+      <p class="harness" style="max-width:none">Iteration is also how you use Orchicon like a regular harness: one Worker, your repo, you in the loop, with nothing else to set up.</p>
+    </div>
+    <div class="table-scroll">
+      <table class="modes">
+        <thead><tr><th scope="col">Mode</th><th scope="col">What it does</th><th scope="col">What you get back</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">Brainstorm</th><td>Architecture, trade-offs, research and planning, grounded in your codebase. Read-only.</td><td>Scoped work items with acceptance criteria</td></tr>
+          <tr><th scope="row">Iteration</th><td>Branches, edits, runs tests and commits with you in the loop.</td><td>Working commits and a pull request</td></tr>
+          <tr><th scope="row">Quick Work</th><td>Spins up a temporary Worker and workflow, fires one run, cleans up after itself.</td><td>The finished job, with nothing left behind</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- AUTOMATION SPOTLIGHT -->
+<section class="block" id="automation">
+  <div class="wrap">
+    <div class="idea-head">
+      <h2 class="title">Autonomous market research from a scheduled Worker</h2>
+      <p class="intro">A recurring Worker scans the market on a schedule, checks what it finds against real sources, and files evidence-backed feature ideas into the Idea Cloud. You spend five minutes triaging instead of an afternoon researching.</p>
+    </div>
+
+    <ol class="idea-flow" aria-label="How the Idea Cloud fills up">
+      <li><span class="n">1</span><b>Schedule it</b><span>A recurring item with <em>Outputs: ideas</em> fires on your interval, inside your work window.</span></li>
+      <li><span class="n">2</span><b>Research it</b><span>A research Worker surveys competitors, articles and releases, then verifies each claim.</span></li>
+      <li><span class="n">3</span><b>File it</b><span>Each idea lands with its sources, its reasoning and the run that produced it.</span></li>
+      <li><span class="n">4</span><b>Triage it</b><span>Approve turns it into a real work item. Dismiss sends it to Rejected, kept as history so it never resurfaces.</span></li>
+    </ol>
+
+    <div class="spot idea-spot">
+      <figure data-zoom="assets/web-ideacloud.webp"><img src="assets/web-ideacloud.webp" alt="The Idea Cloud: three feature ideas from one research run, including tenant-level spend governance, external secrets-manager integration and sub-agent delegation, each with cited sources and Approve and Dismiss buttons." loading="lazy"></figure>
+      <div>
+        <h3 class="spot-sub">Ideas you can check, not vibes</h3>
+        <ul class="facts">
+          <li><b>Cited.</b> Every idea quotes its outside evidence with dates and links, so you can verify it in a click.</li>
+          <li><b>Traceable.</b> Each one names the recurring item and run that spawned it.</li>
+          <li><b>Kept apart.</b> Ideas live on their own board until you approve them, so your backlog stays yours.</li>
+          <li><b>Remembered.</b> Rejected ideas stay readable and are never proposed again.</li>
+        </ul>
+        <p class="spot-note">The three ideas in the screenshot came from a single run of Orchicon researching its own market.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- COST -->
+<section class="block" id="cost">
+  <div class="wrap">
+    <h2 class="title">Budgets: cost is a constraint, not a report</h2>
+    <p class="intro">Every execution runs under ceilings with defaults calibrated from real usage. When a session gets expensive, Orchicon trims its own context and keeps working instead of re-sending an ever-growing history. Cache re-reads do not count as work, so a long task cannot trip its budget by re-reading what it already knows.</p>
+    <div class="limits">
+      <div><b>Tokens</b><span>Per execution, per task, per project</span></div>
+      <div><b>Dollars</b><span>Rolled up to the tenant, streamed live</span></div>
+      <div><b>Wall-clock</b><span>Runaway Workers stop outright</span></div>
+      <div><b>Tool calls</b><span>Hang and loop guards on top</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- CAPABILITIES -->
+<section class="block" id="capabilities">
+  <div class="wrap">
+    <h2 class="title">Everything a crew of Workers needs</h2>
+    <p class="intro">Orchicon owns the parts that make autonomous work dependable and leaves the actual execution to a runtime you choose.</p>
+
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th scope="col">Area</th><th scope="col">What you get</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">Work items</th><td>Epic, Feature, Task and Subtask form a dependency graph with cycle detection. Sequences, reordering, bulk actions, board and tree views, archive, and recurring fires.</td></tr>
+          <tr><th scope="row">Workers</th><td>Versioned definitions with system prompt, permissions, gated tools and budgets. Lifecycle runs draft, published, deprecated, retired. The model is pinned by a human, with no silent failover.</td></tr>
+          <tr><th scope="row">Workflows</th><td>Step graphs with task, approval, decision, parallel, loop and recover steps. Visual editor, edit locks, immutable versions, retry-in-place and force-progress.</td></tr>
+          <tr><th scope="row">Projects &amp; context</th><td><code>project_dir</code> scopes every Worker to a repo. <code>context_files</code> injects files or whole directories into the prompt. Git strategy per project, worktrees always isolated.</td></tr>
+          <tr><th scope="row">Execution</th><td>Reconcilers create executions and dispatch them to runtime adapters, in-process or in a per-run container from a warm pool.</td></tr>
+          <tr><th scope="row">Runtimes</th><td>A built-in engine that needs nothing installed, plus pluggable adapters over gRPC such as OpenCode. Buildable images from apt packages and toolchains, chosen per work item.</td></tr>
+          <tr><th scope="row">Recovery</th><td>Failures are recoverable by default: capture, summarise, preserve, review, plan, resume. Checkpoint replay, bounded auto-relax and L1 to L3 escalation.</td></tr>
+          <tr><th scope="row">Governance</th><td>OPA/Rego policy at the dispatch decision, approvals, budgets, a full audit trail, AES-256-GCM secrets and Postgres row-level security per tenant.</td></tr>
+          <tr><th scope="row">Reliability</th><td>Stall detection, liveness probes and nudges, repetition and text-loop guards, tool-hang redirects and an execution reaper.</td></tr>
+          <tr><th scope="row">Observability</th><td>OpenTelemetry into Tempo traces, Loki logs and VictoriaMetrics metrics. Cost rolls up from execution to tenant, streamed live.</td></tr>
+          <tr><th scope="row">Integrations</th><td>A curated MCP catalog (filesystem, GitHub, Postgres, Playwright, Sentry, Slack and more) with one-click install and <code>${SECRET}</code> references.</td></tr>
+          <tr><th scope="row">Automation</th><td>Recurring items on interval schedules with day toggles and work windows. A research Worker proposes evidence-backed features into the Idea Cloud for you to approve or dismiss.</td></tr>
+          <tr><th scope="row">Deployment</th><td>The whole stack in one container, or dev and prod as two containers with your data preserved. <code>orchicon install</code> brings it up.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ARCHITECTURE -->
+<section class="block" id="architecture">
+  <div class="wrap two">
+    <div>
+      <p class="slogan">Orchicon orchestrates. Runtimes execute.</p>
+      <p class="intro" style="margin-bottom:24px">The control plane is a single Go binary. Reconcilers keep the world converged on what you declared, the way Kubernetes does for containers. Runtimes never touch Postgres or NATS directly; everything streams over gRPC.</p>
+      <p style="color:var(--ink-2)">To run work somewhere new, implement <code>orchicon.adapter.v1</code>. The built-in engine is one implementation of it, not a special case. External adapters are mounted from your host and never bundled, which keeps Orchicon redistributable whatever an adapter's licence says.</p>
+    </div>
+    <div class="stack" aria-label="Orchicon architecture layers">
+      <div class="layer"><b>You</b><span>Web app, <code>orch</code> terminal client, CLI and API (Protobuf + Connect: gRPC, REST, streaming)</span></div>
+      <div class="layer core"><b>Control plane</b><span>One Go binary with the embedded web app</span>
+        <div class="chips"><span class="chip">Reconcilers</span><span class="chip">Scheduler</span><span class="chip">Rego policy</span><span class="chip">Budgets</span><span class="chip">Recovery</span><span class="chip">Audit</span></div></div>
+      <div class="layer"><b>State and signals</b><span>Postgres with row-level security, NATS, and an OpenTelemetry collector feeding Tempo, Loki and VictoriaMetrics</span></div>
+      <div class="layer"><b>Runtimes</b><span>Built-in engine or adapters over <code>orchicon.adapter.v1</code>, each run in its own warm-pool container, run as your user, torn down at completion</span>
+        <div class="chips"><span class="chip">Built-in engine</span><span class="chip">OpenCode</span><span class="chip">Your adapter</span></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- INSTALL -->
+<section class="block" id="install">
+  <div class="wrap two">
+    <div>
+      <h2 class="title">Install in one command</h2>
+      <p class="intro" style="margin-bottom:28px">The installer downloads the <code>orchicon</code> binary, pulls the images, starts the runtime daemon and launches a single-container instance. Re-run it to update.</p>
+      <div class="tabs" role="tablist" aria-label="Install method">
+        <button role="tab" aria-selected="true" aria-controls="p-unix" id="t-unix">macOS / Linux</button>
+        <button role="tab" aria-selected="false" aria-controls="p-win" id="t-win" tabindex="-1">Windows</button>
+        <button role="tab" aria-selected="false" aria-controls="p-docker" id="t-docker" tabindex="-1">Docker</button>
+      </div>
+      <div class="panel" role="tabpanel" id="p-unix" aria-labelledby="t-unix">
+        <pre><span class="p">$ </span><span id="c-unix">curl -fsSL https://orchicon.dev/install | bash</span></pre>
+        <button class="copy" data-copy="c-unix">Copy</button>
+      </div>
+      <div class="panel" role="tabpanel" id="p-win" aria-labelledby="t-win" hidden>
+        <pre><span class="p">PS&gt; </span><span id="c-win">irm https://orchicon.dev/install.ps1 | iex</span></pre>
+        <button class="copy" data-copy="c-win">Copy</button>
+      </div>
+      <div class="panel" role="tabpanel" id="p-docker" aria-labelledby="t-docker" hidden>
+        <pre><span class="p">$ </span><span id="c-docker">docker run --rm -p 8080:8080 -p 3002:3000 \
+    -v orchicon-data:/var/lib/orchicon ghcr.io/beardedparrott/orchicon</span></pre>
+        <button class="copy" data-copy="c-docker">Copy</button>
+      </div>
+      <p class="panel-note" id="install-note">Requires <code>curl</code>, <code>tar</code> and Docker.</p>
+    </div>
+    <div>
+      <ol class="qs">
+        <li><span class="n">1</span><div><b>Install</b><span>Run the command for your platform. Flags like <code>--version</code>, <code>--no-setup</code> and <code>--uninstall</code> are in the <a href="https://github.com/beardedparrott/Orchicon">README</a>.</span></div></li>
+        <li><span class="n">2</span><div><b>Open the app</b><span>The control plane and web app come up on <code>localhost:8080</code>. Sign in with the built-in dev identity provider.</span></div></li>
+        <li><span class="n">3</span><div><b>Create a project</b><span>Point it at a repository. Every Worker is scoped to that directory.</span></div></li>
+        <li><span class="n">4</span><div><b>Ask, then dispatch</b><span>Brainstorm in Ask Orchicon, turn the result into a work item, bind a workflow and start it. Watch it in the browser or in <code>orch</code>.</span></div></li>
+      </ol>
+      <p class="panel-note">Building Orchicon itself? <code>git clone</code>, then <code>make build</code> and <code>make dev-start</code>. Needs Go 1.26+, Node 22+ and Docker.</p>
+    </div>
+  </div>
+</section>
+
+<section class="cta">
+  <div class="wrap">
+    <svg viewBox="0 0 100 100" aria-hidden="true" class="mark cta-mark"><path d="M52.56 8.08A42 42 0 0 1 79.44 20.04L81.19 18.26L79.19 30.68L67.87 31.81L69.63 30.03A28 28 0 0 0 51.71 22.05Z"/><path d="M87.59 31.26A42 42 0 0 1 90.66 60.52L93.08 61.14L81.32 65.62L74.69 56.38L77.11 57.01A28 28 0 0 0 75.06 37.51Z"/><path d="M85.02 73.18A42 42 0 0 1 61.22 90.47L61.89 92.88L52.14 84.93L56.81 74.57L57.48 76.98A28 28 0 0 0 73.35 65.45Z"/><path d="M47.44 91.92A42 42 0 0 1 20.56 79.96L18.81 81.74L20.81 69.32L32.13 68.19L30.37 69.97A28 28 0 0 0 48.29 77.95Z"/><path d="M12.41 68.74A42 42 0 0 1 9.34 39.48L6.92 38.86L18.68 34.38L25.31 43.62L22.89 42.99A28 28 0 0 0 24.94 62.49Z"/><path d="M14.98 26.82A42 42 0 0 1 38.78 9.53L38.11 7.12L47.86 15.07L43.19 25.43L42.52 23.02A28 28 0 0 0 26.65 34.55Z" class="last"/></svg>
+    <p class="slogan">Leave the agents at the prompt. Put Workers on the payroll.</p>
+    <p class="intro" style="margin:-4px 0 28px">Give them a backlog, a process and a budget, and let them ship.</p>
+    <div class="hero-actions">
+      <a class="btn btn-primary" href="#install">Install Orchicon</a>
+      <a class="btn btn-quiet" href="https://github.com/beardedparrott/Orchicon">Star on GitHub</a>
+      <a class="btn btn-quiet" href="https://github.com/beardedparrott/Orchicon/blob/main/DOCUMENTATION.md">Read the docs</a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span class="foot-brand"><svg viewBox="0 0 100 100" aria-hidden="true" class="mark foot-mark"><path d="M52.56 8.08A42 42 0 0 1 79.44 20.04L81.19 18.26L79.19 30.68L67.87 31.81L69.63 30.03A28 28 0 0 0 51.71 22.05Z"/><path d="M87.59 31.26A42 42 0 0 1 90.66 60.52L93.08 61.14L81.32 65.62L74.69 56.38L77.11 57.01A28 28 0 0 0 75.06 37.51Z"/><path d="M85.02 73.18A42 42 0 0 1 61.22 90.47L61.89 92.88L52.14 84.93L56.81 74.57L57.48 76.98A28 28 0 0 0 73.35 65.45Z"/><path d="M47.44 91.92A42 42 0 0 1 20.56 79.96L18.81 81.74L20.81 69.32L32.13 68.19L30.37 69.97A28 28 0 0 0 48.29 77.95Z"/><path d="M12.41 68.74A42 42 0 0 1 9.34 39.48L6.92 38.86L18.68 34.38L25.31 43.62L22.89 42.99A28 28 0 0 0 24.94 62.49Z"/><path d="M14.98 26.82A42 42 0 0 1 38.78 9.53L38.11 7.12L47.86 15.07L43.19 25.43L42.52 23.02A28 28 0 0 0 26.65 34.55Z" class="last"/></svg>Orchicon v0.3.0. Built by <a href="https://github.com/beardedparrott">@beardedparrott</a>.</span>
+    <nav aria-label="Footer">
+      <a href="https://github.com/beardedparrott/Orchicon">Source</a>
+      <a href="https://github.com/beardedparrott/Orchicon/blob/main/DOCUMENTATION.md">Documentation</a>
+      <a href="https://github.com/beardedparrott/Orchicon/releases">Releases</a>
+      <a href="https://github.com/beardedparrott/Orchicon/issues">Issues</a>
+      <a href="https://github.com/beardedparrott/Orchicon?tab=License-1-ov-file">License</a>
+    </nav>
+  </div>
+</footer>
+
+<dialog class="lb" id="lb" aria-label="Screenshot">
+  <img id="lb-img" alt="">
+  <button class="close" id="lb-close">Close</button>
+</dialog>
+
+<script>
+(function(){
+  // lightbox
+  var lb = document.getElementById('lb'), lbImg = document.getElementById('lb-img');
+  function openLb(src, alt){ lbImg.src = src; lbImg.alt = alt || ""; if (lb.showModal) lb.showModal(); }
+  document.querySelectorAll('figure[data-zoom]').forEach(function(f){
+    f.addEventListener('click', function(){ var i=f.querySelector('img'); openLb(i.src, i.alt); });
+  });
+  document.getElementById('lb-close').addEventListener('click', function(){ lb.close(); });
+  lb.addEventListener('click', function(e){ if (e.target === lb) lb.close(); });
+
+
+
+
+  // rich descriptions
+  var WX = {
+    ask:["Plan with a colleague who has read the code","Ask Orchicon is where work starts. It reads your repository, reasons through trade-offs and turns decisions into tracked work.",["<b>Three enforced modes:</b> Brainstorm, Iteration and Quick Work.","<b>Grounded answers</b> that cite real files and line numbers.","<b>Live cost meter:</b> context, tokens, cache hit rate and dollars per conversation."]],
+    work:["A backlog Workers can actually execute","Epics, features, tasks and subtasks, run in order. Each finished task shows its branch, merged PR and acceptance review.",["<b>Sequential order</b> so the next task starts when the last one lands.","<b>Bulk actions:</b> bind a workflow and runtime image to many items at once.","<b>Tree, board and archive</b> views with filters and search."]],
+    flows:["Design the team that builds each task","Workflows are graphs of Workers, approvals and loop decisions. Draw them on a canvas and publish a locked version.",["<b>Loop decisions</b> send work back to an engineer, up to a set limit.","<b>Human gates</b> wherever you want a say, or none at all.","<b>Immutable versions</b> with restore, clone and a history of runs."]],
+    sched:["Every run, on the record","Scheduled and recurring work lands in one timeline, upcoming, running and past.",["<b>History</b> of every run with duration, workflow and run ID.","<b>Filters</b> by project, kind and last run.","<b>Proof it works:</b> 367 runs of Orchicon building itself."]],
+    ideas:["Ideas you can check before you commit","A research Worker files feature ideas on its own board, separate from your real backlog.",["<b>Cited:</b> each idea links its outside evidence.","<b>Traceable:</b> each names the recurring item and run that spawned it.","<b>One click:</b> approve into a work item, or dismiss for good."]]
+  };
+  var TX = {
+    ask:["Plan with a colleague who has read the code","The same Ask Orchicon, one keystroke away. Watch its reasoning stream in, then turn the decision into a work item.",["<b>Visible reasoning</b> streams in as the model thinks.","<b>Conversation folders</b> with message counts, a keypress from any screen.","<b>Live cost line:</b> context, tokens, cache and dollars under the composer."],"It sits in a pane beside your editor, so you can ask about the file you are in without switching windows."],
+    work:["A backlog Workers can actually execute","The full work item tree, with a detail pane for the spec a Worker got and the acceptance review it came back with.",["<b>Sequential order</b> so the next task starts when the last one lands.","<b>Mark and bulk-set</b> workflow and runtime image with <kbd>space</kbd> and <kbd>W</kbd>.","<b>Acceptance reviews</b> record what each reviewer found, blockers included."],"Triage is faster from the keyboard: mark a dozen items and bind them all without a single click."],
+    flows:["Design the team that builds each task","Every workflow as a readable step list, with each gate and loop spelled out in order.",["<b>Loop decisions</b> with their limits, like max 3 or max 6.","<b>Human gates</b> marked where they wait for you.","<b>Edit, publish, deprecate</b> without leaving the keyboard."],"Review and publish a workflow over SSH on the machine it runs on, with no browser or port forwarding."],
+    auto:["Work that keeps happening while you sleep","Recurring items fire on a schedule inside a work window, and can file ideas instead of tasks.",["<b>Interval schedules</b> with day toggles and time windows.","<b>Calendar picker</b> for the start date and time.","<b>Pause and resume</b> with a single flag."],"Set up or pause an automation from the same tmux session you already work in, then get back to your code."]
+  };
+  function describe(pre, c){
+    document.getElementById(pre+'-title').textContent = c[0];
+    document.getElementById(pre+'-body').textContent = c[1];
+    document.getElementById(pre+'-list').innerHTML = c[2].map(function(t){return '<li>'+t+'</li>';}).join('');
+    var w = document.getElementById(pre+'-why');
+    if (w) w.innerHTML = c[3] ? '<b>Why the terminal:</b> ' + c[3] : '';
+  }
+
+  // web tabs
+  var wcaps = {
+    ask:["Ask Orchicon","A Brainstorm conversation answering with rendered tables, conversation folders on the right, and model, context, cache and cost under the composer."],
+    work:["Work › Work Items","The backlog as a tree. Each finished task shows its sequence order, branch, merged PR and status, with Start and Resume on every row."],
+    flows:["Execution › Workflows","The visual editor: a palette of Workers, approvals, parallel steps and loop decisions, with every version and run listed below."],
+    sched:["Execution › Schedules","367 past runs of Orchicon building itself, each with its duration, workflow and run ID."],
+    ideas:["Automation › Idea Cloud","Feature ideas filed by a research Worker, each citing its sources, ready to approve or dismiss."]
+  };
+  var wtabs = document.querySelectorAll('[data-web]');
+  function wsel(t){
+    wtabs.forEach(function(x){ var on=x===t; x.setAttribute('aria-selected',on); x.tabIndex=on?0:-1; });
+    document.querySelectorAll('[data-web-img]').forEach(function(i){ i.classList.toggle('on', i.dataset.webImg===t.dataset.web); });
+    var c = wcaps[t.dataset.web];
+    document.getElementById('baddr').textContent = 'localhost:8080 · ' + c[0];
+    document.getElementById('bcap').textContent = c[1];
+    describe('wx', WX[t.dataset.web]);
+  }
+  wtabs.forEach(function(t,i){
+    t.addEventListener('click', function(){ wsel(t); });
+    t.addEventListener('keydown', function(e){
+      if(e.key==='ArrowRight'||e.key==='ArrowLeft'){ var n=wtabs[(i+(e.key==='ArrowRight'?1:wtabs.length-1))%wtabs.length]; wsel(n); n.focus(); }
+    });
+  });
+  wsel(wtabs[0]);
+  document.getElementById('wshot').addEventListener('click', function(){ var on=document.querySelector('#wshot img.on'); openLb(on.src,on.alt); });
+
+  // terminal tabs
+  var tcaps = {
+    ask:"F1 Ask Orchicon: a Brainstorm conversation with the model's reasoning shown inline, folders of past conversations, and token, cache and cost counters.",
+    work:"F3 Work: the full work item tree. The detail pane shows the spec a Worker was given and the acceptance review it came back with.",
+    flows:"F4 Execution: every workflow, and the SDLC (Human) graph drawn as eleven steps with its approval gates and loop limits.",
+    auto:"F5 Automation: editing a recurring item, with an interval, a work window and a calendar picker for the start date."
+  };
+  var ttabs = document.querySelectorAll('[data-tui]');
+  function tsel(t){
+    ttabs.forEach(function(x){ var on=x===t; x.setAttribute('aria-selected',on); x.tabIndex=on?0:-1; });
+    document.querySelectorAll('[data-tui-img]').forEach(function(i){ i.classList.toggle('on', i.dataset.tuiImg===t.dataset.tui); });
+    document.getElementById('tcap').textContent = tcaps[t.dataset.tui];
+    describe('tx', TX[t.dataset.tui]);
+  }
+  ttabs.forEach(function(t,i){
+    t.addEventListener('click', function(){ tsel(t); });
+    t.addEventListener('keydown', function(e){
+      if(e.key==='ArrowRight'||e.key==='ArrowLeft'){ var n=ttabs[(i+(e.key==='ArrowRight'?1:ttabs.length-1))%ttabs.length]; tsel(n); n.focus(); }
+    });
+  });
+  tsel(ttabs[0]);
+  document.getElementById('tshot').addEventListener('click', function(){ var on=document.querySelector('#tshot img.on'); openLb(on.src,on.alt); });
+
+  // nav highlight
+  var links = document.querySelectorAll('#primary-nav a');
+  var map = {}; links.forEach(function(a){ map[a.getAttribute('href').slice(1)] = a; });
+  if ('IntersectionObserver' in window){
+    var io = new IntersectionObserver(function(es){
+      es.forEach(function(e){
+        if (e.isIntersecting){ links.forEach(function(a){ a.removeAttribute('aria-current'); }); var a=map[e.target.id]; if(a) a.setAttribute('aria-current','true'); }
       });
-    })();
-  </script>
+    }, {rootMargin:"-45% 0px -50% 0px"});
+    Object.keys(map).forEach(function(id){ var el=document.getElementById(id); if(el) io.observe(el); });
+  }
+
+  // copy buttons
+  document.querySelectorAll('[data-copy]').forEach(function(b){
+    b.addEventListener('click', function(){
+      var t = document.getElementById(b.dataset.copy).textContent;
+      var done = function(){ b.textContent = "Copied"; setTimeout(function(){ b.textContent = "Copy"; }, 1600); };
+      if (navigator.clipboard) navigator.clipboard.writeText(t).then(done, done); else done();
+    });
+  });
+
+  // install tabs
+  var notes = {
+    "t-unix":"Requires <code>curl</code>, <code>tar</code> and Docker.",
+    "t-win":"Runs the whole stack inside WSL2. Needs Windows 10 21H2+ or Windows 11 and Docker Desktop with WSL integration.",
+    "t-docker":"Web app on port 8080, Grafana on 3002. Your data lives in the <code>orchicon-data</code> volume."
+  };
+  var tabs = document.querySelectorAll('[role="tab"]');
+  function select(t){
+    tabs.forEach(function(x){
+      var on = x === t;
+      x.setAttribute('aria-selected', on); x.tabIndex = on ? 0 : -1;
+      document.getElementById(x.getAttribute('aria-controls')).hidden = !on;
+    });
+    document.getElementById('install-note').innerHTML = notes[t.id];
+  }
+  tabs.forEach(function(t, i){
+    t.addEventListener('click', function(){ select(t); });
+    t.addEventListener('keydown', function(e){
+      if (e.key === 'ArrowRight' || e.key === 'ArrowLeft'){
+        var n = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length]; select(n); n.focus();
+      }
+    });
+  });
+})();
+</script>
 </body>
 </html>

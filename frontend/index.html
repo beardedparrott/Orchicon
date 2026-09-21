@@ -6,7 +6,12 @@
 <html lang="en" class="dark" data-theme="orchicon-dark-forest">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <!-- The favicon is the brand mark: adaptive (dark ink on a light browser chrome, light on a dark one) via
+         a prefers-color-scheme block INSIDE the SVG, so one file serves both. It replaces a reference to
+         `/vite.svg` — which was Vite's scaffold default AND never existed on disk (there is no public/ dir in
+         this project), so the app had no favicon at all: every page load asked for a 404. -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Orchicon</title>
   </head>
