@@ -4,10 +4,15 @@
 #
 # Copies the canonical install scripts from scripts/ into the static
 # site bundle (site/) so the deploy includes:
-#   - site/index.html          (landing page)
-#   - site/style.css           (landing page styles)
+#   - site/index.html          (landing page — self-contained: inline CSS, inline SVG)
+#   - site/assets/             (screenshots + marks referenced by index.html)
 #   - site/install             (copy of scripts/install.sh)
 #   - site/install.ps1         (copy of scripts/install.ps1)
+#
+# index.html and assets/ are COMMITTED; the two install scripts are
+# GENERATED here (and gitignored) because the site must always serve the
+# same installer the repo ships — a copy that drifted would tell operators
+# to run a different install than the one under test.
 #
 # This is the only step between the source repo and the CloudFlare
 # Pages deploy. Run by CF Pages on every push; safe to re-run locally:
