@@ -15,6 +15,18 @@
 > tells the tooling which version these highlights describe; update it
 > when you cut.
 
+## v0.3.1
+
+### New: orchicon.dev, rebuilt around the product instead of around the pitch
+The landing page no longer describes the platform in the abstract — it shows it. Side-by-side tours of the web app and the terminal client, each with real screenshots rather than mockups, the six steps that take an idea to a merged pull request, the three Ask modes the platform actually enforces, scheduled market research and the Idea Cloud, and budgets as a constraint rather than a report. It is also self-contained: one HTML file with inline styles and the marks inline as SVG, so it loads fast and has no build step beyond copying the installers in.
+
+### New: A real brand in the app — the mark, and a favicon that actually exists
+The app's logo was a placeholder: a rounded square with a gradient and a generic icon, which reads as unfinished rather than as Orchicon. Its favicon was worse — it pointed at a file that has never existed on disk, so every page load requested a 404 and no browser ever showed an icon in a tab, bookmark, or history entry. Both are now the Orchicon mark, drawn from the same source the website uses. It follows the theme rather than being a fixed colour: the five leading segments inherit the surrounding text, so the mark renders as ink on a light theme and as light on a dark one, with the closing segment keeping the brand signal green.
+
+### Also in this release
+
+- **The terminal client's panes stop showing coloured whitespace.** A detail pane pads short lines through a viewport, which writes one spelling of a "reset" escape, while the repair that re-asserts the pane's background only knew the other — so the padding was left unpainted and rendered in the *terminal's* colour instead of the pane's. Every markdown line shorter than the pane showed it: a heading, a bullet's last wrap, a paragraph's tail. It was never specific to one theme, which is why it looked wrong on all of them.
+
 ## v0.3.0
 
 ### New: OpenCode is optional — Orchicon runs on its own engine
