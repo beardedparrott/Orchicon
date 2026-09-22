@@ -87,12 +87,49 @@ function Write-Warn { param([string]$msg) Write-Host "! $msg" -ForegroundColor Y
 function Write-Err  { param([string]$msg) Write-Host "✗ $msg" -ForegroundColor Red }
 function Die        { param([string]$msg) Write-Err $msg; exit 1 }
 
-# wsl.exe writes UTF-16LE when captured; on non-Unicode codepages it decodes
-# with NUL bytes between characters ("U`0b`0u`0n`0t`0u"), which look fine when
-# printed but break the next `wsl -d <name>`. Strip them at every capture point.
+# wsl.exe writes UTF-16LE when its output is redirected. Decoded on a non-Unicode
+# console codepage that produces garbage: a localized wsl message renders as glyph
+# soup, and a distro name arrives with NUL bytes between its characters
+# ("U`0b`0u`0n`0t`0u"). The NULs are invisible when printed, but the name then
+# truncates at the first NUL when it is handed back to `wsl -d <name>`, so every
+# later call fails with "no distribution with the supplied name".
+#
+# Stripping the NULs recovers an ASCII name, but it cannot recover non-ASCII text:
+# by the time PowerShell hands us the string the bytes are already gone. So the
+# capture is made deterministic instead — WSL_UTF8=1 makes wsl.exe emit UTF-8
+# rather than UTF-16LE (supported since WSL 0.64.0, 2022: the same release that
+# added --exec), and the distro's own output is UTF-8 as well, so decoding the
+# capture as UTF-8 is correct for BOTH streams. Clear-WslNul stays as the fallback
+# for WSL older than 0.64, and for anything that still writes UTF-16.
 function Clear-WslNul {
     param($Lines)
     @($Lines | ForEach-Object { [string]$_ -replace "`0", '' })
+}
+
+# Run wsl.exe and return its output with a known encoding. $LASTEXITCODE is left
+# holding wsl's exit code: only a native command sets it, and neither the console
+# properties nor Clear-WslNul below are native commands.
+function Invoke-WslCapture {
+    param([string[]]$WslArgs, [switch]$Quiet)
+    $prevEncoding = [Console]::OutputEncoding
+    $prevUtf8 = $env:WSL_UTF8
+    # On Windows PowerShell 5.1, `2>&1` turns native stderr into ErrorRecords
+    # which the script-level "Stop" preference would treat as terminating.
+    # Scope "Continue" locally so wsl's chatter/errors never abort us here.
+    $ErrorActionPreference = "Continue"
+    $env:WSL_UTF8 = "1"
+    try {
+        # Best-effort: a host that refuses the console-encoding change still gets
+        # the NUL fix from WSL_UTF8 alone.
+        try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+        $out = if ($Quiet) { & wsl @WslArgs 2>$null } else { & wsl @WslArgs 2>&1 }
+    } finally {
+        # Restore both: this script runs via `irm | iex` and must not leave the
+        # operator's session on a different console encoding than it found it.
+        try { [Console]::OutputEncoding = $prevEncoding } catch { }
+        $env:WSL_UTF8 = $prevUtf8
+    }
+    return (Clear-WslNul $out)
 }
 
 # --- WSL helpers ------------------------------------------------------------
@@ -102,20 +139,14 @@ function Clear-WslNul {
 # automatically after the native `wsl` call, so callers read it afterwards).
 function Invoke-WslBash {
     param([string]$Script)
-    # On Windows PowerShell 5.1, `2>&1` turns native stderr into ErrorRecords
-    # which the script-level "Stop" preference would treat as terminating.
-    # Scope "Continue" locally so wsl's chatter/errors never abort us here.
-    $ErrorActionPreference = "Continue"
     # `-e` is required: without it wsl re-parses the command through the
     # distro's default shell, which expands $ARCHIVE/$TMP/$# as empty before
     # the target bash sees them (tar got an empty path). `-e` execs with argv
     # preserved.
     if ($script:Distro) {
-        $out = & wsl -d $script:Distro -e bash -lc $Script 2>&1
-    } else {
-        $out = & wsl -e bash -lc $Script 2>&1
+        return (Invoke-WslCapture -WslArgs @("-d", $script:Distro, "-e", "bash", "-lc", $Script))
     }
-    return (Clear-WslNul $out)
+    return (Invoke-WslCapture -WslArgs @("-e", "bash", "-lc", $Script))
 }
 
 # Translate a Windows path (C:\...) to the /mnt/... path WSL sees it at.
@@ -166,8 +197,11 @@ function Ensure-Wsl {
 
     # List distros. The quiet listing may include a header on older WSL
     # versions; filter those out.
-    $names = (Clear-WslNul @(& wsl --list --quiet 2>$null)) |
-        Where-Object { $_ -and $_ -notmatch "no installed distributions" -and $_ -notmatch "Windows Subsystem" }
+    # `@(...)` wraps the WHOLE pipeline, not just the capture: with one distro
+    # installed this leaves a bare string, and `$names[0]` on a string is its first
+    # CHARACTER — the fallback below would then pick "U" out of "Ubuntu".
+    $names = @(Invoke-WslCapture -WslArgs @("--list", "--quiet") -Quiet |
+        Where-Object { $_ -and $_ -notmatch "no installed distributions" -and $_ -notmatch "Windows Subsystem" })
     if ($names.Count -eq 0) {
         if ($Soft) { return $false }
         Write-Err "WSL is installed but has no Linux distribution."
@@ -180,7 +214,7 @@ function Ensure-Wsl {
     }
 
     # Prefer the default distro (marked with `*` in `wsl --list --verbose`).
-    $verbose = Clear-WslNul @(& wsl --list --verbose 2>$null)
+    $verbose = Invoke-WslCapture -WslArgs @("--list", "--verbose") -Quiet
     $defaultLine = $verbose | Where-Object { $_ -match '^\s*\*' } | Select-Object -First 1
     if ($defaultLine -and $defaultLine -match '^\s*\*\s*(\S+)\s+\S+\s+(\d+)') {
         $script:Distro = $Matches[1]
@@ -265,8 +299,8 @@ true
     $uninstallScript = $uninstallScript.Replace('__INSTALL_DIR__', $InstallDir)
     if ($DryRun) {
         Write-Info "would run inside WSL:"
-        Write-Host "  wsl -d $script:Distro -- bash -lc 'docker stop orchicon-cnt-dev orchicon-cnt-prod'"
-        Write-Host "  wsl -d $script:Distro -- bash -lc 'rm -f $bin'"
+        Write-Host "  wsl -d $script:Distro -e bash -lc 'docker stop orchicon-cnt-dev orchicon-cnt-prod'"
+        Write-Host "  wsl -d $script:Distro -e bash -lc 'rm -f $bin'"
     } else {
         Invoke-WslBash $uninstallScript
         Write-Ok "Orchicon uninstalled — the WSL distro is left intact"
