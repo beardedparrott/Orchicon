@@ -20,6 +20,11 @@
 # Row format (one row per PR, appended newest-first at the top):
 #   | # | Type | Phase | Summary |
 #   Type ∈ Feature | Bug fix | Chore | Docs | Refactor | Test
+#   Summary is ONE short paragraph: what changed, and why it matters to
+#   whoever reads this log later. These rows are the internal track record,
+#   not a design document and not a test log — the reasoning, the narration
+#   and the "proven by disabling" detail belong in the PR body, and a row
+#   that reproduces a whole working session stops reading as a log.
 #
 # Modes:
 #   scripts/gen-release-notes.sh [VERSION] [PREV_TAG]
