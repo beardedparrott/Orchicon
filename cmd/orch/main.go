@@ -24,8 +24,6 @@ import (
 
 	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 
@@ -50,17 +48,16 @@ func main() {
 	// viewport and paints every cell itself. Two terminal-level settings
 	// complete that ownership:
 	//
-	//   1. 24-bit color when the terminal advertises it (COLORTERM), so the
-	//      theme's hex values render exactly instead of being rounded to
-	//      the 256-color cube.
+	//   1. The colour profile the TERMINAL advertises, resolved by termenv and pinned before anything is
+	//      drawn — so the theme's hex values render exactly instead of being rounded to the 256-color cube.
+	//      This used to be a hand-rolled COLORTERM equality check, which was a wrong subset of termenv's
+	//      detection; see colorprofile.go for the three cases it got wrong and the contract that replaced it.
 	//   2. Auto-wrap OFF for the app's lifetime (restored on exit): writing
 	//      the last cell of the last row otherwise leaves the terminal in
 	//      wrap-pending state, and the renderer's next line feed scrolls
 	//      the whole frame up by one row — leaving an unpainted hairline
 	//      along the bottom (the operator's persistent "sliver").
-	if os.Getenv("COLORTERM") == "truecolor" || os.Getenv("COLORTERM") == "24bit" {
-		lipgloss.SetColorProfile(termenv.TrueColor)
-	}
+	applyTerminalColorProfile()
 	restoreWrap := disableAutoWrap()
 	defer restoreWrap()
 	if fl.showVer {
