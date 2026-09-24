@@ -51,8 +51,15 @@ code{font-size:.86em; background:var(--paper-2); padding:.1em .35em; border-radi
 .brand{display:flex; align-items:center; gap:10px; font-weight:800; font-size:19px; text-decoration:none; letter-spacing:-.01em}
 .brand svg{width:34px; height:34px}
 /* (ORCA · CON) — the wordmark's companion. Small, mono, muted: it should read as a
-   maker's mark rather than compete with the name. --ink-3 so it recedes in both themes. */
-.byline{font:500 11px/1 var(--mono); letter-spacing:.09em; color:var(--ink-3); white-space:nowrap; margin-left:7px}
+   maker's mark rather than compete with the name. --ink-3 so it recedes in both themes.
+
+   WORD-SPACING IS NEGATIVE DELIBERATELY, and it is not a preference. letter-spacing adds to the
+   advance of EVERY glyph, the space characters included — so the gap either side of the dot is
+   `space + letter-spacing either side of it` and reads wider than the tracking on its own suggests.
+   word-spacing pulls the three parts back together WITHOUT touching the letter tracking, which the
+   operator asked to keep. (It also leaves the underlying text as ordinary spaces, so a copy of it
+   pastes as "(ORCA · CON)" rather than with invisible thin-space characters.) */
+.byline{font:500 11px/1 var(--mono); letter-spacing:.09em; word-spacing:-.15em; color:var(--ink-3); white-space:nowrap; margin-left:7px}
 .nav nav{display:flex; gap:22px; margin-left:auto}
 .nav nav a{text-decoration:none; color:var(--ink-2); font-size:15px; font-weight:500}
 .nav nav a:hover{color:var(--ink)}
