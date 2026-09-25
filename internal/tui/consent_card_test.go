@@ -153,6 +153,48 @@ func TestConsentSessionGrantSuppressesTheNextCardForTheDirectory(t *testing.T) {
 	}
 }
 
+// TestConsentQuestionCardSendsTheChoiceThroughTheComposerFunnel pins the
+// clarifying-question criterion AGAINST THE REAL SHELL: choosing an option
+// sends the choice as the next user message — the operator must not have to
+// retype prose. The screen-level test proves the decision reaches the host;
+// this one proves the host turns it into a user message on the send path the
+// composer itself uses (SendUserMessage -> the optimistic echo in the store).
+func TestConsentQuestionCardSendsTheChoiceThroughTheComposerFunnel(t *testing.T) {
+	m, _ := newAskApp(t)
+	as := ask.New(m.clients, m.reg)
+	m.RegisterScreen(TabAsk, as)
+	m.SwitchTo(TabAsk)
+	m.chatConvID = "c1"
+	m.ShowConsentAsk(chat.PermissionAsk{
+		ID: "q1", Kind: chat.AskQuestion, Tool: "ask",
+		Question: "Which file did you mean?",
+		Options:  []string{"main.go", "util.go"}, AllowOther: true,
+	})
+	as.RenderTranscript(m.chatStore.snapshot("c1"), chat.Conversation{}, false)
+	if !as.ClaimsKeys() {
+		t.Fatal("precondition: a pending question must claim the keys")
+	}
+
+	// options: main.go(0) -> down -> util.go(1) -> enter.
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = nm.(*App)
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = nm.(*App)
+
+	sent := false
+	for _, it := range m.chatStore.snapshot("c1") {
+		if it.Kind == chat.KindUser && it.Text == "util.go" {
+			sent = true
+		}
+	}
+	if !sent {
+		t.Fatal("choosing an option must send it as the next user message")
+	}
+	if as.ClaimsKeys() {
+		t.Fatal("the claim must be released once the question is answered")
+	}
+}
+
 func fieldValueContains(fields []screenkit.Field, key, want string) bool {
 	for _, f := range fields {
 		if f.Key == key && strings.Contains(f.Value, want) {
