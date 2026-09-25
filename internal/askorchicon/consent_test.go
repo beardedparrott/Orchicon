@@ -101,6 +101,24 @@ func fileAskEvent(permID, tool, target string) scheduler.SessionEvent {
 	})
 }
 
+// mcpAskEvent builds the MCP / host-suite ask shape — `permission` = the tool
+// KEY, `patterns` = ["*"], `metadata` = {} — that the Ask turn's `orchicon_*`
+// tools raise (verified against opencode 1.18.32; see
+// internal/opencode/testdata/permission_asked_mcp_golden.json), with the args
+// of the tool call the adapter correlated attached as Detail["toolInput"].
+func mcpAskEvent(permID, tool string, input map[string]any) scheduler.SessionEvent {
+	d := map[string]any{
+		"permission": tool,
+		"patterns":   []any{"*"},
+		"metadata":   map[string]any{},
+		"tool":       map[string]any{"messageID": "msg_1", "callID": "call_1"},
+	}
+	if input != nil {
+		d["toolInput"] = input
+	}
+	return permissionEvent(permID, d)
+}
+
 func bashAskEvent(permID, command string) scheduler.SessionEvent {
 	return permissionEvent(permID, map[string]any{
 		"permission": "bash",
@@ -175,6 +193,57 @@ func TestResolveAskKey(t *testing.T) {
 	}
 }
 
+func TestExtractAskActionDropsWildcardPatterns(t *testing.T) {
+	if !isWildcardPattern("*") || !isWildcardPattern("**") || !isWildcardPattern("*/*") || !isWildcardPattern("/**") {
+		t.Fatal("opencode's `everything` rules must be recognised as wildcards")
+	}
+	if isWildcardPattern("../sibling-project/notes.md") || isWildcardPattern("/p/../x.md") || isWildcardPattern("**/*.go") {
+		t.Fatal("a real path (or a path-shaped glob) must not be dismissed as a wildcard")
+	}
+	a := extractAskAction(mcpAskEvent("per_1", "orchicon_write", nil))
+	if len(a.Targets) != 0 {
+		t.Fatalf("Targets = %#v — patterns [\"*\"] is the permission RULE, not a path", a.Targets)
+	}
+	if a.Tool != "orchicon_write" {
+		t.Fatalf("Tool = %q", a.Tool)
+	}
+	if askActionResolved(a) {
+		t.Fatal("an ask with no target and no command must not count as resolved")
+	}
+}
+
+func TestExtractAskActionMCPWriteResolvesTargetFromToolCallArgs(t *testing.T) {
+	a := extractAskAction(mcpAskEvent("per_1", "orchicon_write", map[string]any{
+		"filePath": "/p/sibling/notes.md",
+		"content":  "hi",
+	}))
+	if len(a.Targets) != 1 || a.Targets[0] != "/p/sibling/notes.md" {
+		t.Fatalf("Targets = %#v, want the tool call's filePath", a.Targets)
+	}
+	if !askActionResolved(a) {
+		t.Fatal("a resolved tool-call target must count as resolved")
+	}
+	if s := askSummary(a); !strings.Contains(s, "orchicon_write") || !strings.Contains(s, "/p/sibling/notes.md") {
+		t.Fatalf("Summary = %q — the card must name the tool AND the target", s)
+	}
+	// batch_write keeps its targets in writes[].path.
+	b := extractAskAction(mcpAskEvent("per_2", "orchicon_batch_write", map[string]any{
+		"writes": []any{
+			map[string]any{"path": "/p/sibling/a.md", "mode": "create"},
+			map[string]any{"path": "/p/sibling/b.md", "mode": "edit"},
+		},
+	}))
+	if len(b.Targets) != 2 || b.Targets[0] != "/p/sibling/a.md" {
+		t.Fatalf("batch_write Targets = %#v", b.Targets)
+	}
+	// An unrecognised arg vocabulary still reaches the card by name + args
+	// (never a bare opaque id).
+	c := extractAskAction(mcpAskEvent("per_3", "orchicon_other", map[string]any{"work_item_id": "wi_1"}))
+	if s := askSummary(c); !strings.Contains(s, "orchicon_other") || !strings.Contains(s, "work_item_id") {
+		t.Fatalf("Summary = %q — the call's args must be shown when nothing is recognised", s)
+	}
+}
+
 // --- the decision path ---------------------------------------------------
 
 func TestDecideProjectNeverAsksSiblingDoes(t *testing.T) {
@@ -196,6 +265,93 @@ func TestDecideProjectNeverAsksSiblingDoes(t *testing.T) {
 	}
 	if ask.Key != "/p/sibling" {
 		t.Fatalf("ask key = %q, want the target directory", ask.Key)
+	}
+}
+
+// THE regression QA found: a write to a sibling path through an `orchicon_*`
+// (MCP / host-suite) tool raised NO ask — the ask carries patterns ["*"] and
+// metadata {}, so it keyed on the scope directory and rode the project default
+// to a silent approval. The target now comes from the tool call's args.
+func TestDecideMCPWriteSiblingAsksInsideProjectProceeds(t *testing.T) {
+	isolatedPolicy(t, "")
+	svc := testConsentService()
+	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
+
+	resp, ask, refusal := ct.decide(context.Background(), "ses_1", mcpAskEvent("per_1", "orchicon_write",
+		map[string]any{"filePath": "/p/sibling/notes.md", "content": "hi"}))
+	if resp != "" || ask == nil || refusal != "" {
+		t.Fatalf("MCP write to a sibling: resp=%q ask=%v refusal=%q — must ask", resp, ask, refusal)
+	}
+	if ask.Key != "/p/sibling" {
+		t.Fatalf("ask key = %q, want the target's directory", ask.Key)
+	}
+	if ask.InsideProject {
+		t.Fatal("a sibling path must not be reported as inside the project")
+	}
+	if !strings.Contains(ask.Summary, "/p/sibling/notes.md") {
+		t.Fatalf("Summary = %q — never just an opaque id", ask.Summary)
+	}
+	// The same tool writing INSIDE the conversation's project stays silent.
+	resp, ask, refusal = ct.decide(context.Background(), "ses_1", mcpAskEvent("per_2", "orchicon_write",
+		map[string]any{"filePath": "/p/proj/inside.md"}))
+	if resp != "once" || ask != nil || refusal != "" {
+		t.Fatalf("MCP write inside the project: resp=%q ask=%v refusal=%q", resp, ask, refusal)
+	}
+}
+
+// FAIL CLOSED: an ask whose detail resolves neither a target nor a command is
+// raised as a card — never silently approved on the scope directory's
+// pre-approval, not even with a session grant for it.
+func TestDecideFailsClosedWhenNoDetailResolves(t *testing.T) {
+	isolatedPolicy(t, "")
+	svc := testConsentService()
+	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
+	svc.grants.Grant("conv-1", "/p/proj")
+
+	resp, ask, refusal := ct.decide(context.Background(), "ses_1", mcpAskEvent("per_1", "orchicon_unknown_tool", nil))
+	if resp != "" || ask == nil || refusal != "" {
+		t.Fatalf("unresolvable ask: resp=%q ask=%v refusal=%q — must fail closed to a card", resp, ask, refusal)
+	}
+	if ask.Tool != "orchicon_unknown_tool" || !strings.Contains(ask.Summary, "orchicon_unknown_tool") {
+		t.Fatalf("ask = %+v, want the tool name on the card", ask)
+	}
+
+	// The DENY list still outranks the fail-closed ask: a policy deny on the
+	// scope directory refuses without prompting.
+	isolatedPolicy(t, "deny:\n  - \"/p/**\"\n")
+	svc2 := testConsentService()
+	ct2 := newTestConsentTurn(svc2, "/p/proj", true, nil)
+	resp, ask, refusal = ct2.decide(context.Background(), "ses_1", mcpAskEvent("per_2", "orchicon_write", nil))
+	if resp != "reject" || ask != nil || !strings.Contains(refusal, "/p/**") {
+		t.Fatalf("denied unresolvable ask: resp=%q ask=%v refusal=%q", resp, ask, refusal)
+	}
+}
+
+func TestDecideMCPBashUsesToolCallCommandAndKeepsTheNeverAllowClass(t *testing.T) {
+	isolatedPolicy(t, "")
+	svc := testConsentService()
+	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
+
+	// The command comes from the correlated args — not from the wildcard
+	// patterns — and a shell command is not a path.
+	a := extractAskAction(mcpAskEvent("per_0", "orchicon_bash", map[string]any{"command": "go test ./..."}))
+	if !isBashAsk(a.Tool) || a.Command != "go test ./..." || len(a.Targets) != 0 {
+		t.Fatalf("action = %+v, want the command and no targets", a)
+	}
+	// The never-allow binary class is enforced on the MCP path too, ABOVE the
+	// project default (a bash ask keys on the cwd, which IS inside the project).
+	resp, ask, refusal := ct.decide(context.Background(), "ses_1", mcpAskEvent("per_1", "orchicon_bash",
+		map[string]any{"command": "sudo rm -rf /var/lib/orchicon"}))
+	if resp != "reject" || ask != nil || refusal == "" {
+		t.Fatalf("never-allow MCP bash: resp=%q ask=%v refusal=%q", resp, ask, refusal)
+	}
+	// An ordinary command in the project's cwd proceeds silently (C4: a
+	// session grant for that directory is the blanket escape for commands run
+	// there — the command is shown, not path-scoped).
+	resp, ask, refusal = ct.decide(context.Background(), "ses_1", mcpAskEvent("per_2", "orchicon_bash",
+		map[string]any{"command": "ls -la"}))
+	if resp != "once" || ask != nil || refusal != "" {
+		t.Fatalf("ordinary MCP bash in the project cwd: resp=%q ask=%v refusal=%q", resp, ask, refusal)
 	}
 }
 

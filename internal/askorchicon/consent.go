@@ -26,9 +26,11 @@ package askorchicon
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 
@@ -60,6 +62,127 @@ type askAction struct {
 	// by resolveAskKey (the extraction is scope-blind; the scope is not known
 	// until the decision).
 	Key string
+	// Input is the correlated tool-call ARGS of the call this ask gates (the
+	// adapter attaches them as Detail["toolInput"], see
+	// internal/opencode toolCallIndex). They are the ONLY detail an MCP /
+	// host-suite ask has: opencode gates such a call by its tool key and emits
+	// `patterns: ["*"], metadata: {}`. Nil when the call was not observed.
+	Input map[string]any
+}
+
+// askActionResolved reports whether the ask carries something to KEY a
+// decision on: real target path(s) or a command. An ask that resolves to
+// neither is kept deliberately distinct from one that resolves to the scope
+// directory — treating the two the same is what let a sibling-path write
+// through an `orchicon_*` tool be approved silently (see decide's fail-closed
+// arm).
+func askActionResolved(a askAction) bool {
+	return len(realTargets(a.Targets)) > 0 || strings.TrimSpace(a.Command) != ""
+}
+
+// isWildcardPattern reports whether a permission pattern is opencode's
+// "everything" rule rather than a path — `*`, `**`, `*/*`, `/**`. Such an entry
+// is the permission RULE an MCP-tool ask carries, never a target: keying it as
+// one resolves to <scope>/*, which looks like the scope directory and therefore
+// like "inside the project".
+func isWildcardPattern(s string) bool {
+	star := false
+	for _, r := range s {
+		switch r {
+		case '*':
+			star = true
+		case '/', '\\', ' ', '\t', '.':
+			// path separators, spaces and a bare '.' are neutral
+		default:
+			return false
+		}
+	}
+	return star
+}
+
+// realTargets drops wildcard-only entries from an ask's target list.
+func realTargets(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, t := range in {
+		t = strings.TrimSpace(t)
+		if t == "" || t == "." || isWildcardPattern(t) {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+// anyList normalises a decoded JSON array (either []any or a typed slice) to
+// []any for iteration.
+func anyList(v any) []any {
+	switch t := v.(type) {
+	case []any:
+		return t
+	case []map[string]any:
+		out := make([]any, 0, len(t))
+		for _, m := range t {
+			out = append(out, m)
+		}
+		return out
+	}
+	return nil
+}
+
+// toolInputTargets pulls the paths out of a correlated tool call's args. The
+// host suite's mutating tools spell them `filePath` (write/edit) and `path`
+// (batch_write's per-write entries, `paths` for a list); other MCP tools use
+// their own vocabulary, so the candidates stay defensive — the same shape the
+// built-in ask's `metadata.filepath` uses.
+func toolInputTargets(in map[string]any) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	if t := realTargets(detailStrings(in, "filePath", "filepath", "file_path", "path", "target", "file")); len(t) > 0 {
+		return t
+	}
+	if t := realTargets(detailStrings(in, "paths", "targets", "files")); len(t) > 0 {
+		return t
+	}
+	// batch_write: {"writes": [{"path": ..., "mode": ...}, ...]}
+	var out []string
+	for _, e := range anyList(in["writes"]) {
+		if m, ok := e.(map[string]any); ok {
+			out = append(out, realTargets(detailStrings(m, "path", "filePath", "filepath"))...)
+		}
+	}
+	return out
+}
+
+// toolInputCommand pulls a shell command line out of a correlated tool call's
+// args (`bash` spells it `command`).
+func toolInputCommand(in map[string]any) string {
+	return detailString(in, "command", "cmd", "script", "shellCommand")
+}
+
+// compactArgs renders a correlated call's args for a card when NO target or
+// command could be recognised, so the user sees what the tool will do rather
+// than only its name. Values are bounded (a write's `content` can be huge).
+func compactArgs(in map[string]any) string {
+	keys := make([]string, 0, len(in))
+	for k := range in {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(k)
+		b.WriteString("=")
+		s := fmt.Sprintf("%v", in[k])
+		if len(s) > 80 {
+			s = s[:80] + "…"
+		}
+		b.WriteString(s)
+	}
+	return b.String()
 }
 
 // isBashAsk reports whether a tool name is a shell-command ask. A shell command
@@ -137,15 +260,29 @@ func extractAskAction(evt scheduler.SessionEvent) askAction {
 			a.CallID = detailString(tl, "callID", "callId", "call_id")
 		}
 	}
-	a.Targets = detailStrings(d, "patterns", "pattern")
+	a.Targets = realTargets(detailStrings(d, "patterns", "pattern"))
 	meta, _ := d["metadata"].(map[string]any)
 	if meta != nil {
 		if len(a.Targets) == 0 {
 			if p := detailString(meta, "filePath", "filepath", "path", "file"); p != "" {
-				a.Targets = []string{p}
+				a.Targets = realTargets([]string{p})
 			}
 		}
 		a.Command = detailString(meta, "command")
+	}
+	// The correlated tool-call args (see internal/opencode toolCallIndex) are
+	// the ONLY detail an MCP / host-suite ask has: such an ask ships
+	// `patterns: ["*"]` and `metadata: {}`, so without this the action has no
+	// target and no command — the shape that used to be judged "inside the
+	// project" and silently approved.
+	if in, ok := d["toolInput"].(map[string]any); ok && len(in) > 0 {
+		a.Input = in
+		if len(a.Targets) == 0 {
+			a.Targets = toolInputTargets(in)
+		}
+		if a.Command == "" {
+			a.Command = toolInputCommand(in)
+		}
 	}
 	if isBashAsk(a.Tool) {
 		if a.Command == "" && len(a.Targets) > 0 {
@@ -249,6 +386,10 @@ func askSummary(a askAction) string {
 		return a.Tool + " " + strings.Join(a.Targets, ", ")
 	case a.Command != "":
 		return a.Tool + " " + a.Command
+	case a.Tool != "" && len(a.Input) > 0:
+		// No recognised target or command, but the call's args are known:
+		// show them rather than a bare tool name.
+		return a.Tool + " " + compactArgs(a.Input)
 	case a.Tool != "":
 		return a.Tool
 	default:
@@ -596,6 +737,17 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 	a.Key = resolveAskKey(a, scope.Dir)
 	abs := absAskTarget(a, scope.Dir)
 
+	// FAIL CLOSED. An ask whose detail resolves to no target and no command
+	// (an MCP/host-suite ask shipped with `patterns: ["*"]` and `metadata: {}`
+	// — from a serve whose tool-part correlation is unavailable, or a shape we
+	// do not recognise) must NOT ride the project/accept/grant verdicts on the
+	// scope directory: absAskTarget degrades to the scope dir, which is
+	// pre-approved, so "proceed" would approve a write whose path we never saw
+	// (the QA finding: a sibling-path write through an `orchicon_*` tool raised
+	// no ask). It is raised as a card instead, and the deny list still outranks
+	// it below.
+	resolved := askActionResolved(a)
+
 	pol := askPermissionPolicy()
 	d, err := pol.Decide(abs, permpolicy.Inputs{
 		SessionGranted: ct.svc.grants.Has(ct.convID, a.Key),
@@ -611,13 +763,22 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 		ref := pol.Refusal(abs, d.Entry).Error()
 		ct.record(a, "deny", ref)
 		return "reject", nil, ref
-	case d.Verdict.Proceed():
+	case d.Verdict.Proceed() && resolved:
 		// grant | accept | project — proceed silently.
 		ct.record(a, d.Verdict.String(), "")
 		return "once", nil, ""
 	}
+	if !resolved {
+		ct.log().Warn("ask orchicon consent: the ask carries no target path or command — asking rather than proceeding",
+			"conversation", ct.convID, "ask", evt.PermissionID, "tool", a.Tool)
+	}
 
-	// VerdictAsk: record, emit the card, await the human.
+	// VerdictAsk (or an unresolved action): record, emit the card, await the
+	// human.
+	summary := askSummary(a)
+	if !resolved {
+		summary += " (no path or command in the ask detail — asking rather than proceeding)"
+	}
 	ask = &pendingAsk{
 		AskID:          evt.PermissionID,
 		ConversationID: ct.convID,
@@ -628,15 +789,17 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 		Command:        a.Command,
 		Targets:        a.Targets,
 		Directory:      a.Key,
-		InsideProject:  scope.PreApprovedPath(abs),
-		Summary:        askSummary(a),
-		reply:          ct.replies,
+		// An unresolved action has no known target, so it cannot claim to be
+		// inside the project (the card says why it is being asked instead).
+		InsideProject: resolved && scope.PreApprovedPath(abs),
+		Summary:       summary,
+		reply:         ct.replies,
 	}
 	ct.svc.pending.put(ct.convID, ask)
 	if ct.monitor != nil {
 		ct.monitor.setAwaitingConsent(true)
 	}
-	ct.record(a, "ask", ask.Summary)
+	ct.record(a, "ask", summary)
 	return "", ask, ""
 }
 
