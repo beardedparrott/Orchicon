@@ -1366,6 +1366,10 @@ type turnCollectOpts struct {
 	// terminally. Nil-safe (methods tolerate a nil receiver); the collector
 	// lazy-inits it when the dispatch path did not provide one (unit tests).
 	ledger *toolLedger
+	// consent is the per-turn consent handle (the decision path + the
+	// pending-ask registry + the client wake-up channel), shared across the
+	// turn's re-attach attempts. Created by the collector.
+	consent *consentTurn
 }
 
 // turnAttemptKind is the outcome of a single subscribe+send+drain attempt.
@@ -1424,6 +1428,17 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 	if c.ledger == nil {
 		c.ledger = newToolLedger()
 	}
+	// The consent handle is ONE per turn (not per attempt): its grant lookups,
+	// pending asks and wake-up channel must survive a serve re-attach. Its
+	// monitor is re-pointed at each attempt's fresh monitor in runOneTurnAttempt.
+	if c.consent == nil {
+		c.consent = newConsentTurn(s, c.convID, c.tenantID, nil, c.ledger)
+	}
+	defer func() {
+		// Turn end (C8): apply a decision that landed, expire every still-open ask
+		// (reject) so the serve holds no phantom permission, and clear the gate.
+		c.consent.finalize(context.WithoutCancel(ctx), c.client)
+	}()
 	// reconnects counts the bounded session recycles performed on an MCP
 	// wedge. Bounded by ORCHICON_ASK_MCP_RECONNECT_ATTEMPTS (D2) so a wedged
 	// session is healed once (or a small bound) instead of looping.
@@ -1751,6 +1766,15 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 	stallTicker := time.NewTicker(stallTick)
 	defer stallTicker.Stop()
 
+	// The consent layer's wake-up channel: a client decision on one of this
+	// turn's asks nudges the select below. nil when the turn has no consent
+	// handle (a bare attempt test) — a nil channel simply never fires.
+	var consentReplies <-chan struct{}
+	if c.consent != nil {
+		c.consent.monitor = monitor
+		consentReplies = c.consent.Reply()
+	}
+
 	for {
 		select {
 		case <-subCtx.Done():
@@ -1814,6 +1838,11 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 				return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("conversation session send: %w", res)}
 			}
 			sent = true
+		case <-consentReplies:
+			// A client decision landed for one of this turn's asks: answer the
+			// serve and resume. The turn was never blocked by us — opencode held
+			// the call; we only awaited this.
+			c.consent.applyClientReplies(context.WithoutCancel(subCtx), c.client)
 		case evt, ok := <-sub.Events():
 			if !ok {
 				// Bus closed — the serve died mid-reply. Re-attach (bounded
@@ -1835,11 +1864,31 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 					return turnAttemptResult{kind: turnCollected, text: strings.TrimSpace(reply.String()), reasoning: reasoning}
 				}
 			case "permission":
-				// Auto-approve (the --auto equivalent). The interactive Ask
-				// profile is what makes these asks real; the consent layer
-				// answers from evt.Detail (scheduler.SessionEvent.Detail).
+				// The consent path: extract the typed action, run the precedence
+				// chain (never-allow binary class -> permpolicy.Decide), answer the
+				// serve once/reject, or raise a card and await the human. We NEVER
+				// blind auto-approve: the interactive Ask profile is what makes
+				// these asks real.
 				if pid := evt.PermissionID; pid != "" {
-					go func() { _ = c.client.ReplyPermission(subCtx, sid, pid) }()
+					if ct := c.consent; ct != nil {
+						resp, ask, refusal := ct.decide(subCtx, sid, evt)
+						if ask != nil {
+							emitPermissionAsk(c.onStreamEvent, ask)
+							ct.logAsk(ask)
+						}
+						if refusal != "" {
+							s.log.Warn("ask orchicon consent: refused a tool call",
+								"conversation", c.convID, "reason", refusal)
+						}
+						if resp != "" {
+							rc, rsid, rpid := c.client, sid, pid
+							go func() { _ = rc.ReplyPermissionDecision(context.WithoutCancel(subCtx), rsid, rpid, resp) }()
+						}
+					} else {
+						// No consent handle (a bare attempt test): keep the historical
+						// auto-approve so the turn cannot wedge.
+						go func() { _ = c.client.ReplyPermission(subCtx, sid, pid) }()
+					}
 				}
 			case "error":
 				// The turn failed at the model/API level: record it and end
@@ -2300,6 +2349,12 @@ func (s *Service) runOpenCodeTurn(ctx context.Context, client scheduler.ChatTurn
 	timeout := time.NewTimer(askTimeout())
 	defer timeout.Stop()
 
+	// The consent handle for this legacy path (no client stream to carry the
+	// card, no stall monitor): the decision chain still runs and the reply RPC
+	// still finds the ask in the shared registry.
+	legacyConsent := newConsentTurn(s, convID, tenantID, nil, nil)
+	defer legacyConsent.finalize(context.WithoutCancel(ctx), client)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -2319,6 +2374,8 @@ func (s *Service) runOpenCodeTurn(ctx context.Context, client scheduler.ChatTurn
 				return msgID, sid, time.Since(start), fmt.Errorf("conversation session send: %w", res.err)
 			}
 			sent = true
+		case <-legacyConsent.Reply():
+			legacyConsent.applyClientReplies(context.WithoutCancel(ctx), client)
 		case evt, ok := <-sub.Events():
 			if !ok {
 				return msgID, sid, time.Since(start), fmt.Errorf("opencode session stream ended")
@@ -2335,11 +2392,23 @@ func (s *Service) runOpenCodeTurn(ctx context.Context, client scheduler.ChatTurn
 					return msgID, sid, time.Since(start), nil
 				}
 			case "permission":
-				// Auto-approve (the --auto equivalent). The interactive Ask
-				// profile is what makes these asks real; the consent layer
-				// answers from evt.Detail (scheduler.SessionEvent.Detail).
+				// Same consent decision path as the primary drain loop. This legacy
+				// non-streaming path has no client stream to carry the card, so an ask
+				// here is recorded and awaited (the reply RPC finds it in the shared
+				// registry); it is never blind auto-approved.
 				if pid := evt.PermissionID; pid != "" {
-					go func() { _ = client.ReplyPermission(context.WithoutCancel(ctx), sid, pid) }()
+					resp, ask, refusal := legacyConsent.decide(ctx, sid, evt)
+					if ask != nil {
+						legacyConsent.logAsk(ask)
+					}
+					if refusal != "" {
+						s.log.Warn("ask orchicon consent: refused a tool call",
+							"conversation", convID, "reason", refusal)
+					}
+					if resp != "" {
+						rc := client
+						go func() { _ = rc.ReplyPermissionDecision(context.WithoutCancel(ctx), sid, pid, resp) }()
+					}
 				}
 			case "error":
 				// The turn failed at the model/API level: record it and end

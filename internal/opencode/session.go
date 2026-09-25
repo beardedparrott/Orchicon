@@ -373,12 +373,24 @@ func (c *SessionClient) Compact(ctx context.Context, sessionID, providerID, mode
 
 // ReplyPermission answers a permission.asked event with "once" — the
 // server-side equivalent of `opencode run --auto`, so tool calls never
-// block an unattended execution.
+// block an unattended execution. It is the auto-approve shorthand; the
+// consent layer answers through ReplyPermissionDecision.
 func (c *SessionClient) ReplyPermission(ctx context.Context, sessionID, permissionID string) error {
+	return c.ReplyPermissionDecision(ctx, sessionID, permissionID, "once")
+}
+
+// ReplyPermissionDecision answers a permission.asked event with an explicit
+// serve response value ("once" | "reject").
+//
+// The consent core ALWAYS sends "once" or "reject": the SESSION decision
+// ("allow for this directory") is kept in OUR grant store, not delegated to a
+// serve-side session-scoped response value, so the grant state has exactly one
+// authoritative home and works across serve builds.
+func (c *SessionClient) ReplyPermissionDecision(ctx context.Context, sessionID, permissionID, decision string) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if err := c.do(ctx, http.MethodPost, "/session/"+sessionID+"/permissions/"+permissionID,
-		map[string]any{"response": "once"}); err != nil {
+		map[string]any{"response": decision}); err != nil {
 		return fmt.Errorf("opencode session permission reply: %w", err)
 	}
 	return nil

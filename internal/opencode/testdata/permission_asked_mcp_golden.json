@@ -1,0 +1,14 @@
+{
+  "_comment": "The raw properties object of the `permission.asked` bus event opencode 1.18.32 raises for an MCP (host-suite) tool call — the shape an Ask turn's `orchicon_*` tools go through, verified against the real 1.18.32 binary by QA on this work item. Unlike the built-in edit/write/bash ask it carries NO detail of its own: `permission` is the MCP tool KEY, `patterns` is the wildcard RULE, `metadata` is empty. Nothing here can be keyed or shown to a user, which is exactly why the consent core must take the target/command from the tool call's ARGS (internal/opencode toolCallIndex attaches them to Detail as `toolInput` after correlating `tool.callID`), and why an ask that resolves no target and no command FAILS CLOSED to a card instead of proceeding.",
+  "_captured": "schema read from opencode 1.18.32 (npm opencode-linux-x64@1.18.32) — NOT a live serve capture.",
+  "id": "per_01J9Z0MCPASK",
+  "sessionID": "ses_01J9Z0SESSION",
+  "permission": "orchicon_write",
+  "patterns": ["*"],
+  "metadata": {},
+  "always": ["*"],
+  "tool": {
+    "messageID": "msg_01J9Z0MCPMESSAGE",
+    "callID": "call_01J9Z0MCPCALL"
+  }
+}

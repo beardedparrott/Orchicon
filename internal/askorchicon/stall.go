@@ -164,6 +164,22 @@ type chatStallMonitor struct {
 
 	// fired latches a trip so the stall is reported once.
 	fired bool
+
+	// awaitingConsent gates the tool-wedge signal while a consent ask is
+	// outstanding: the tool call behind the ask is HELD BY THE HUMAN, not
+	// wedged, so reclaiming it (toolWedge) would kill the very call the user
+	// is deciding on. Cleared when the ask is answered or the turn ends.
+	awaitingConsent bool
+}
+
+// setAwaitingConsent arms/disarms the consent gate on the tool-wedge signal.
+func (m *chatStallMonitor) setAwaitingConsent(v bool) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.awaitingConsent = v
 }
 
 // newChatStallMonitor builds a stall monitor for one chat turn.
@@ -275,6 +291,10 @@ func (m *chatStallMonitor) toolWedge() (string, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.fired || m.openToolTime.IsZero() {
+		return "", false
+	}
+	if m.awaitingConsent {
+		// The open tool is a consent ask awaiting the human — not a wedge.
 		return "", false
 	}
 	if m.now().Sub(m.openToolTime) > m.toolWedgeWindow {

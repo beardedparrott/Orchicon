@@ -121,6 +121,14 @@ service AskOrchiconService {
   // deliberate.
   rpc WatchTurnStream(WatchTurnStreamRequest) returns (stream ChatStreamResponse);
 
+  // ReplyPermissionAsk answers a PermissionAsk the turn is waiting on. The
+  // decision applies to OUR grant store: PERMISSION_CHOICE_ALLOW_ONCE proceeds for this single
+  // call, PERMISSION_CHOICE_ALLOW_SESSION records an in-memory, directory-keyed grant for this
+  // conversation, DENY refuses the call (the refusal reaches the model as the
+  // tool result). The value sent to the serve is always `once` or `reject` —
+  // never a session-scoped serve value.
+  rpc ReplyPermissionAsk(ReplyPermissionAskRequest) returns (ReplyPermissionAskResponse);
+
   // CompactConversation compacts a conversation's accumulated context so a
   // long-running session can keep going instead of failing on the model's
   // context limit. Adapter-scoped: a session-FUL adapter summarizes its own
@@ -276,6 +284,12 @@ message ChatStreamResponse {
     TurnStarted turn_started = 6;
     ReasoningChunk reasoning = 7;
     Heartbeat heartbeat = 8;
+    // PermissionAsk carries a permission.asked the turn is waiting on: the
+    // tool, the target path(s) or command, the directory a session grant
+    // would cover, and a one-line summary. It reaches both the live dispatch
+    // stream and every re-attached WatchTurnStream watcher. The answer comes
+    // back on ReplyPermissionAsk.
+    PermissionAsk permission_ask = 9;
   }
 }
 
@@ -380,4 +394,58 @@ message GetModelCapabilitiesRequest {
 
 message GetModelCapabilitiesResponse {
   ModelCapabilities capabilities = 1;
+}
+
+// --- Consent ---
+
+// PermissionAsk is one tool call the turn is blocked on, awaiting the
+// operator's decision. It always names the action: the tool plus either the
+// target path(s) or the shell command — never just an opaque id.
+message PermissionAsk {
+  string ask_id = 1;
+  string conversation_id = 2;
+  string session_id = 3;
+  // tool is the opencode permission name ("write" | "edit" | "batch_write" |
+  // "bash").
+  string tool = 4;
+  // command is the shell command line, for a bash ask (empty otherwise).
+  string command = 5;
+  // targets are the paths a write/edit touches (empty for bash).
+  repeated string targets = 6;
+  // directory is the grant/deny key: the target's directory for a write/edit,
+  // the cwd for bash. "Allow for this directory" covers exactly this key.
+  string directory = 7;
+  // inside_project reports whether the action already falls inside the
+  // conversation's own project directory (the default, pre-approved scope).
+  bool inside_project = 8;
+  // summary is the one-line card text: tool plus target or command.
+  string summary = 9;
+}
+
+// PermissionChoice is the operator's answer to one ask.
+enum PermissionChoice {
+  PERMISSION_CHOICE_UNSPECIFIED = 0;
+  // PERMISSION_CHOICE_ALLOW_ONCE proceeds for this single call; the same call asks again.
+  PERMISSION_CHOICE_ALLOW_ONCE = 1;
+  // PERMISSION_CHOICE_ALLOW_SESSION records an in-memory directory grant for the conversation.
+  PERMISSION_CHOICE_ALLOW_SESSION = 2;
+  // PERMISSION_CHOICE_DENY refuses the call; the refusal reaches the model as the tool result.
+  PERMISSION_CHOICE_DENY = 3;
+}
+
+message ReplyPermissionAskRequest {
+  string conversation_id = 1;
+  string ask_id = 2;
+  PermissionChoice choice = 3;
+}
+
+// ReplyPermissionAskResponse reports whether the decision was applied.
+message ReplyPermissionAskResponse {
+  // applied is true when the decision was routed to the waiting turn.
+  bool applied = 1;
+  // expired is true when the ask is no longer open (the turn ended, was
+  // superseded, or another reply won) — never a silent success.
+  bool expired = 2;
+  // detail explains the outcome in one line.
+  string detail = 3;
 }
