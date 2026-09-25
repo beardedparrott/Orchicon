@@ -1151,6 +1151,19 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 		if text, ok := m.transcriptUserMessageAtFrameRow(mo.Y); ok && m.clip != nil {
 			return m, m.clip.copyCmd(text)
 		}
+		// AN OPTION ON A CLARIFYING-QUESTION CARD IS A CHOICE, SO A CLICK ON IT SENDS THAT CHOICE.
+		//
+		// This is the TUI half of `ask_user`: the tool recorded the question and the turn completed, so
+		// answering is an ordinary send of the option's label — the same path the composer takes, with the
+		// same optimistic echo and the same transcript row. It is a CLICK rather than a digit key because
+		// digits are text the operator is entitled to type into the composer; a key that stole `1` would
+		// break ordinary messages to serve this one.
+		//
+		// Checked after the copy rules (a card carries no code and is not the operator's message, so neither
+		// can match it) and only while the card is unanswered — see transcriptAskOptionAtFrameRow.
+		if label, ok := m.transcriptAskOptionAtFrameRow(mo.Y); ok && m.chat != nil {
+			return m, m.chat.AnswerQuestion(m.chatConvID, label)
+		}
 	}
 	if (mo.Button == tea.MouseButtonWheelUp || mo.Button == tea.MouseButtonWheelDown) && m.active == TabAsk && m.chatConvID != "" {
 		delta := -3

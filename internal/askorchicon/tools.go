@@ -186,6 +186,26 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Properties:  map[string]PropertySchema{},
 		},
 		{
+			// ask_user — the interactive clarifying question the clients render as a card. It RECORDS the
+			// question and returns immediately (see tool_ask_user.go): the turn then ends normally and the user
+			// answers in their NEXT message, so it can never trip the stall guard's tool wedge. One registration
+			// here reaches BOTH transports (native via toolRegistry.List(); opencode via the orchicon mcp sidecar).
+			Name: "ask_user",
+			Description: "Ask the user a clarifying question and END YOUR TURN. Use this instead of writing a numbered " +
+				"list of choices in prose. Provide `question` and 2+ choice-shaped `options` (each {label, description?} " +
+				"or a plain string); set allow_other=true only to also accept a free-text answer, or to ask a " +
+				"free-text-only question (no options, allow_other=true). It RECORDS the question and returns immediately: " +
+				"the user answers in their NEXT message, so ask it and stop — never guess the answer or keep working.",
+			Mutating: false,
+			Fn:       toolAskUser,
+			Properties: map[string]PropertySchema{
+				"question":    {Type: "string", Description: "The clarifying question to put to the user, in one or two sentences."},
+				"options":     {Type: "array", Description: "Two or more choice options. Each is either an object {label, description?} or a plain string label. Omit only for a free-text-only question (then set allow_other=true)."},
+				"allow_other": {Type: "boolean", Description: "Also accept a free-text answer in addition to (or instead of) the options. Required true when options is empty."},
+			},
+			Required: []string{"question"},
+		},
+		{
 			Name:        "list_project_branches",
 			Description: "Report a project's git identity: whether project_dir is a git work tree, its current branch, its default branch, and the local + origin branch names. Read-only and safe (fixed argv, no shell, cwd pinned to the project dir). Use it to OFFER real branches when confirming which branch a run should clone off and which branch its PR should merge into.",
 			Mutating:    false,

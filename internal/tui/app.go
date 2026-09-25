@@ -3582,6 +3582,67 @@ func (m *App) transcriptCodeBlockAtFrameRow(frameRow int) (string, bool) {
 	return "", false
 }
 
+// transcriptAskOptionAtFrameRow resolves a click at a FRAME row to the LABEL of the clarifying-question
+// option under it, when the click landed on an option of an UNANSWERED card.
+//
+// THE INTERACTIVE HALF OF THE ask_user CARD. The tool RECORDED the question and the turn ended; the operator's
+// answer is the next user message, so a click on an option sends that option's label through the ordinary send
+// path (Controller.AnswerQuestion → Send) — no rendezvous, no second reply channel, no blocking model. The
+// card is a record whose turn is already COMPLETE, so this must never grow a wait.
+//
+// Same three coordinate spaces as the copy rules (frame row → body row → body line → item), and the same
+// derived body-top row — the geometry comes from the render that drew the card (ItemSpan.Options), so a click
+// cannot resolve against a layout the screen is not showing.
+//
+// AN ANSWERED CARD IS SETTLED, and the rule is the web client's: a later USER message exists, so the question
+// has been answered and its options are shown but no longer clickable. Without it, a click on a stale card
+// would re-send a choice the operator already made.
+func (m *App) transcriptAskOptionAtFrameRow(frameRow int) (string, bool) {
+	str := m.TranscriptStream(m.chatConvID)
+	if str == nil {
+		return "", false
+	}
+	line := str.LineAtRow(frameRow - m.transcriptBodyTopRow())
+	if line < 0 {
+		return "", false
+	}
+	for _, sp := range m.transcriptSpans[m.chatConvID] {
+		if sp.Kind != chat.KindAsk || !sp.Contains(line) {
+			continue
+		}
+		label, ok := sp.OptionAt(line)
+		if !ok {
+			return "", false // the question text or the card's header: not a choice
+		}
+		if m.askCardSettled(sp.Key) {
+			return "", false
+		}
+		return label, true
+	}
+	return "", false
+}
+
+// askCardSettled reports whether the operator has sent anything AFTER the item carrying this key — i.e. the
+// recorded clarifying question has been answered and its card is no longer a choice.
+func (m *App) askCardSettled(key string) bool {
+	if m.chatStore == nil || key == "" {
+		return false
+	}
+	seen := false
+	for _, it := range m.chatStore.snapshot(m.chatConvID) {
+		if !seen {
+			if it.Key == key {
+				seen = true
+			}
+			continue
+		}
+		if it.Kind == chat.KindUser {
+			return true
+		}
+	}
+	return false
+}
+
 // transcriptBodyTopRow is the frame row at which the transcript's FIRST body line is drawn.
 func (m *App) transcriptBodyTopRow() int {
 	fieldRows := 0
