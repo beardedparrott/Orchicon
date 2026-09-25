@@ -85,11 +85,22 @@ func TestBackslashEnterNewline(t *testing.T) {
 	}
 }
 
-func TestShiftEnterCSIU(t *testing.T) {
+// A plain Enter on an EMPTY buffer must not send. This is the other half of
+// TestEveryOtherEnterVariantSends: that test pins that every non-newline Enter
+// variant SENDS when there is text, and this one pins that it does not send when
+// the box is empty (an empty send is a no-op the operator cannot see, which reads
+// as a dead key).
+//
+// IT WAS CALLED TestShiftEnterCSIU AND ITS COMMENT CLAIMED bubbletea renders CSI-u
+// shift+enter as "shift+enter". Neither was true: the assertion below is on a PLAIN
+// enter, and bubbletea v1.3.10 defines no KeyShiftEnter to render it into — see the
+// package comment for why shift+enter cannot be expressed at all. A test whose name
+// and comment describe a case it does not exercise is worse than no test, because it
+// reads as coverage of the very thing that is impossible.
+func TestPlainEnterOnEmptyBufferDoesNotSend(t *testing.T) {
 	m := New()
 	m.Focus()
 	k := tea.KeyMsg{Type: tea.KeyEnter}
-	// bubbletea renders CSI-u shift+enter as "shift+enter"
 	if got := k.String(); got != "enter" {
 		t.Fatalf("sanity: enter = %q", got)
 	}
