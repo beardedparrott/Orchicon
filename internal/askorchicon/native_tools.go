@@ -283,14 +283,15 @@ func AskFileRoot(ctx context.Context, pool *db.Pool) (string, error) {
 
 // askHostToolsForRoot builds the file/shell suite for an Ask turn: the suite is
 // UNCONFINED (the interactive boundary — any absolute path the operator can
-// reach), while root stays its relative-path anchor and bash cwd, so
+// reach), while scope.Dir stays its relative-path anchor and bash cwd, so
 // project-relative work is unchanged. bash runs in-process WITH the execution
-// guard's destructive-command shim first on PATH (AskGuardEnviron —
-// worker-path parity); the suite is fresh per execution (no shared state
-// across calls).
-func askHostToolsForRoot(root string) *orchicon.HostTools {
-	h := orchicon.NewHostToolsUnrestricted(root)
-	h.SetBashEnviron(AskGuardEnviron)
+// guard's destructive-command shim first on PATH, in its GRANT-AWARE interactive
+// profile (svc.askGuardEnviron: the conversation's project, its session grants
+// and the approved once-targets, read per invocation); the suite is fresh per
+// execution (no shared state across calls).
+func askHostToolsForRoot(svc *Service, scope AskFileScope, convID string) *orchicon.HostTools {
+	h := orchicon.NewHostToolsUnrestricted(scope.Dir)
+	h.SetBashEnviron(svc.askGuardEnviron(scope, convID))
 	// The operator's DURABLE permission policy, consulted through the ONE
 	// shared accessor (permpolicy.Store) before any call in the suite is
 	// dispatched. It is the consent core's read of the same file the guard
@@ -358,7 +359,7 @@ func (a *nativeAskTools) AskToolDefs(ctx context.Context) []orchicon.ToolDef {
 	}
 	// Host suite defs: the SAME definitions the worker path serves
 	// (orchicon.HostTools.Defs(), arg shapes and all — one grammar).
-	for _, d := range askHostToolsForRoot("").Defs() {
+	for _, d := range askHostToolsForRoot(a.service, AskFileScope{}, askConversationFromContext(ctx)).Defs() {
 		if have[d.Name] {
 			continue
 		}
@@ -449,7 +450,7 @@ func (a *nativeAskTools) ExecuteAskTool(ctx context.Context, name, argsJSON stri
 		if argsJSON == "" {
 			argsJSON = "{}"
 		}
-		return askHostToolsForRoot(scope.Dir).Execute(ctx, name, argsJSON)
+		return askHostToolsForRoot(a.service, scope, askConversationFromContext(ctx)).Execute(ctx, name, argsJSON)
 	}
 	// Product tools through the registry.
 	if a.service.toolRegistry == nil {
