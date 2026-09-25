@@ -76,21 +76,57 @@ func validateKindDepth(childKind, parentKind string) error {
 
 // ValidateParent enforces the work-item hierarchy rules for a parent
 // assignment. It is shared by the Create/Update Connect handlers and the
-// Ask Orchicon update_work_item tool so the two paths cannot drift
-// (AGENTS.md). parentID "" means "no parent" (top-level), which is only
-// valid for epics. The parent is loaded inside the tenant transaction, so
-// a cross-tenant parent is a NotFound, not a leak. The parent must belong
-// to the given (effective) project.
+// Ask Orchicon create/update_work_item tools so the paths cannot drift
+// (AGENTS.md). parentID "" means "no parent" (top-level), which is valid
+// for epics — and for the two kinds of record exempted below. The parent is
+// loaded inside the tenant transaction, so a cross-tenant parent is a
+// NotFound, not a leak. The parent must belong to the given (effective)
+// project.
+//
+// The trailing optional booleans are the TOP-LEVEL EXEMPTIONS. A caller that
+// knows its item is one of the two record kinds which legitimately sit at the
+// top of NO tree passes the matching flag and the "only epics are top-level"
+// rule is skipped for it. They are positional, in this order:
+//
+//	0 — recurring: a flat-recurring item is a top-level task. Its flat shape
+//	    (kind=task, no parent) is enforced separately by
+//	    ValidateRecurringFlatness (D1).
+//	1 — ephemeral: a machine-managed transient (Quick Work). Its top-level
+//	    ONLY shape (never a child) is enforced separately at the tool
+//	    boundary by askorchicon.validateEphemeralPlacement.
+//
+// Neither flag relaxes anything else: the parentless case is the ONLY case
+// they touch, and an item WITH a parent takes the ordinary depth check
+// unchanged.
 //
 // Errors: db.ErrNotFound when the parent id does not exist in the tenant;
 // any other error is a plain hierarchy violation (CodeInvalidArgument).
-func ValidateParent(ctx context.Context, tx pgx.Tx, tenantID, parentID, childKind, projectID string, recurringOpt ...bool) error {
+func ValidateParent(ctx context.Context, tx pgx.Tx, tenantID, parentID, childKind, projectID string, topLevelExemptions ...bool) error {
 	if parentID == "" {
 		// Flat-recurring items are top-level tasks (kind=task, no parent).
 		// They are exempt from the "only epics are top-level" rule; the flat
 		// shape (task kind, no parent) is enforced separately by
 		// ValidateRecurringFlatness (D1).
-		if len(recurringOpt) > 0 && recurringOpt[0] {
+		if len(topLevelExemptions) > 0 && topLevelExemptions[0] {
+			return nil
+		}
+		// An EPHEMERAL item is exempt for the same shape of reason. The
+		// "only epics are top-level" rule exists to keep the PLANNING
+		// hierarchy coherent: a top-level task would be an orphan in a tree
+		// people navigate, plan, sequence and hang children off. An ephemeral
+		// item is in no tree at all — it is a transient, machine-managed
+		// record created for one job, never planned, never sequenced, never
+		// given children, and hard-deleted when the job ends. The invariant
+		// this rule protects was never applicable to it.
+		//
+		// Without the exemption the two rules collide: ephemeral items are
+		// top-level ONLY (a child would be invisible in the list yet rendered
+		// inside its real parent's tree — see
+		// askorchicon.validateEphemeralPlacement), so EVERY ephemeral item
+		// would have to be created as an epic. A Quick Work dispatch is a
+		// transient unit of work, not a planning container; mislabelling it
+		// was the contradiction this exemption removes.
+		if len(topLevelExemptions) > 1 && topLevelExemptions[1] {
 			return nil
 		}
 		return validateTopLevelKind(childKind)
