@@ -10,6 +10,7 @@ import (
 
 	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
@@ -46,6 +47,11 @@ type Model struct {
 	metaMu     sync.Mutex
 	metaTitle  string
 	metaFields []screenkit.Field
+
+	// w/h are the region the shell sized this screen to. Base.View() ALREADY
+	// FILLS IT, so an overlay must be SPLICED over the pane rather than appended
+	// under it (see View).
+	w, h int
 }
 
 // The centered empty state (GUI parity): Ask lands on a fresh
@@ -83,7 +89,7 @@ func (m *Model) Name() string { return "ask" }
 // Close unsubscribes (no live subs in v1).
 func (m *Model) Close() { m.reg.CloseAll() }
 
-func (m *Model) SetSize(w, h int) { m.Base.SetSize(w, h) }
+func (m *Model) SetSize(w, h int) { m.w, m.h = w, h; m.Base.SetSize(w, h) }
 
 func (m *Model) Init() tea.Cmd { return m.Load() }
 
@@ -184,11 +190,47 @@ func (m *Model) View() string {
 	// be a modifier chord or a slash command. These name both, and name where a session grant is
 	// visible — silent escalation is exactly what a permission system must not do.
 	b.WriteString(theme.HintText.Render("/grants: the directories allowed for this session (revocable) · /permissions: the persistent allow/deny list"))
-	if ov := m.overlayView(); ov != "" {
-		b.WriteString("\n")
-		b.WriteString(ov)
+	body := b.String()
+	if m.w > 0 && m.h > 0 {
+		// THE OVERLAY IS SPLICED OVER THE PANE, NOT APPENDED UNDER IT.
+		//
+		// Base.View() ALREADY FILLS the whole region the shell sized this screen to,
+		// and the shell normalizes the screen render to exactly that many rows
+		// (app.go baseView -> normalizeBlock(...)). Anything APPENDED after the pane
+		// therefore lands PAST THE LAST ROW and is dropped: /permissions and /grants
+		// opened a list that never reached the screen at all — a list surface the
+		// operator cannot see is not a list.
+		//
+		// This is the same shape the execution screen uses for its modals (fit the
+		// pane, then kit2.Center the box over it), and the block is made OPAQUE first so
+		// the pane cannot show through the gaps between the overlay ragged rows (the
+		// reason the shell wraps the /connect form in a solid panel).
+		body = kit2.FitLines(body, m.w, m.h)
+		if ov := m.overlayView(); ov != "" {
+			body = kit2.Center(body, modalRows(ov, m.w), m.w, m.h)
+		}
 	}
-	return m.Base.Frame(b.String())
+	return m.Base.Frame(body)
+}
+
+// modalRows normalizes an overlay into ONE OPAQUE BLOCK whose rows share a
+// width, so splicing it over the pane can neither leave a hole nor break the
+// splice with a ragged row.
+func modalRows(content string, maxW int) string {
+	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
+	w := 0
+	for _, l := range lines {
+		if lw := lipgloss.Width(l); lw > w {
+			w = lw
+		}
+	}
+	if maxW > 4 && w > maxW-2 {
+		w = maxW - 2
+	}
+	for i, l := range lines {
+		lines[i] = theme.OpaquePanel(l, w)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // SelectSource focuses the named source (slash nav command support).

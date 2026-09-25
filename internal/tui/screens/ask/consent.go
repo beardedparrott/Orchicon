@@ -77,6 +77,20 @@ func (m *Model) ClaimsKeys() bool { return m.consent != nil || m.ov != nil }
 // add-rule form is a form.
 func (m *Model) FormOpen() bool { return m.ov != nil && m.ov.kind == ovPolicyAdd }
 
+// OwnsTab reports that TAB belongs to THIS screen while it claims the keyboard.
+//
+// IT IS A SEPARATE HOOK FROM FormOpen, AND IT IS LOAD-BEARING. The shell's tab
+// chord is handled ABOVE the ClaimsKeys gate (router.go, the focus-chord switch),
+// so a claim alone does NOT take Tab: without this the chord ran tabRingNext —
+// the first press moved the keyboard onto the tab bar and the second rotated the
+// active screen OUT FROM UNDER a still-pending card. The operator had pressed the
+// card's OWN movement key (handleConsentKey and kit2.Card.HandleKey both bind
+// tab/shift+tab to row movement) and got a screen change instead, and because the
+// ClaimsKeys gate reads m.screens[m.active] the card then lost the keyboard
+// entirely. This hook is exactly the one the shell already offers for "a screen
+// needs Tab inside its own pane" (see execution.Model.OwnsTab).
+func (m *Model) OwnsTab() bool { return m.ClaimsKeys() }
+
 // DropKeyClaim is the focus chord's release (ctrl+g).
 //
 // WHILE A CARD IS PENDING IT IS A DENY, NOT A DISMISSAL. The claim is a latch

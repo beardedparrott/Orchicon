@@ -90,38 +90,129 @@ func CardLines(spec CardSpec, width int) []string {
 
 	if spec.Body != "" {
 		for _, l := range strings.Split(spec.Body, "\n") {
-			emit(Pad(" "+l, innerW))
+			for _, wl := range wrapCells(l, innerW, " ", " ") {
+				emit(Pad(wl, innerW))
+			}
 		}
 	}
 	if spec.Notice != "" {
 		// The notice is the DENY-BY-FILE line: it must read as a warning, and it
 		// lives inside the card so it cannot be scrolled away from the decision.
-		emit(theme.ErrorText.Render(ansi.Truncate("⚠ "+spec.Notice, innerW, "")))
+		//
+		// IT WRAPS, IT IS NOT CUT. `ansi.Truncate(…, "")` cut the sentence
+		// mid-word at the widths this transcript actually gets ("…a session grant
+		// cannot ove") — and a warning the operator cannot finish reading is the
+		// same as no warning, on the one line that explains why the session row is
+		// disabled. So it takes as many rows as it needs.
+		for _, wl := range wrapCells("⚠ "+spec.Notice, innerW, " ", " ") {
+			emit(theme.ErrorText.Render(wl))
+		}
 	}
 	for _, l := range spec.Lines {
 		switch {
 		case l.Disabled:
-			text := "  " + l.Text
+			text := l.Text
 			if l.Detail != "" {
 				text += " — " + l.Detail
 			}
-			emit(theme.HintText.Render(ansi.Truncate(text, innerW, "")))
+			for _, wl := range wrapCells(text, innerW, "  ", "  ") {
+				emit(theme.HintText.Render(wl))
+			}
 		case l.Selected:
-			// The highlight spans the WHOLE row, which is what makes the cursor
-			// unmistakable in a box that also holds prose.
-			emit(theme.ListItemSelected.Render(Pad(" ▸ "+l.Text, innerW)))
+			// The highlight spans the WHOLE row — and EVERY row a wrapped label
+			// runs onto — which is what makes the cursor unmistakable in a box that
+			// also holds prose.
+			for _, wl := range wrapCells(l.Text, innerW, " ▸ ", "   ") {
+				emit(theme.ListItemSelected.Render(Pad(wl, innerW)))
+			}
 		default:
-			emit(Pad("   "+l.Text, innerW))
+			for _, wl := range wrapCells(l.Text, innerW, "   ", "   ") {
+				emit(Pad(wl, innerW))
+			}
 		}
 	}
 	if spec.ShowInput {
-		emit(theme.ListItemSelected.Render(Pad("> "+spec.Input, innerW)))
+		for _, wl := range wrapCells(spec.Input, innerW, "> ", "  ") {
+			emit(theme.ListItemSelected.Render(Pad(wl, innerW)))
+		}
 	}
 	if spec.Footer != "" {
-		emit(theme.HintText.Render(ansi.Truncate(" "+spec.Footer, innerW, "")))
+		for _, wl := range wrapCells(spec.Footer, innerW, " ", " ") {
+			emit(theme.HintText.Render(wl))
+		}
 	}
 	out = append(out, border.Render("└"+strings.Repeat("─", w-2)+"┘"))
 	return out
+}
+
+// wrapCells breaks text into rows of at most `width` DISPLAY CELLS: greedy on
+// spaces, and a single token wider than a whole row is HARD-SPLIT rather than
+// dropped. The first row carries `first`, every continuation `cont`, so a
+// wrapped row keeps its cursor arrow, its indent and its disabled marker
+// aligned.
+//
+// IT EXISTS SO A CARD ROW IS NEVER SILENTLY TRUNCATED. The card IS the decision:
+// the operator cannot consent to a target they were not shown, and cannot weigh
+// a warning that was cut in half. A path longer than the pane, the deny-by-file
+// sentence and a long option label all used to be clipped with no ellipsis and
+// no second row (every emit below is clamped by OpaquePanel), so the loss was
+// invisible.
+func wrapCells(text string, width int, first, cont string) []string {
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return []string{first}
+	}
+	var out []string
+	prefix, cur := first, ""
+	flush := func() {
+		out = append(out, prefix+cur)
+		prefix, cur = cont, ""
+	}
+	for _, w := range words {
+		room := func() int {
+			if r := width - lipgloss.Width(prefix); r > 1 {
+				return r
+			}
+			return 1
+		}
+		for lipgloss.Width(w) > room() {
+			if cur != "" {
+				flush()
+			}
+			head := ansi.Truncate(w, room(), "")
+			out = append(out, prefix+head)
+			w = dropCells(w, lipgloss.Width(head))
+			prefix = cont
+		}
+		switch {
+		case cur == "":
+			cur = w
+		case lipgloss.Width(prefix)+lipgloss.Width(cur)+1+lipgloss.Width(w) <= width:
+			cur += " " + w
+		default:
+			flush()
+			cur = w
+		}
+	}
+	if cur != "" || len(out) == 0 {
+		out = append(out, prefix+cur)
+	}
+	return out
+}
+
+// dropCells removes the first n DISPLAY CELLS from s.
+func dropCells(s string, n int) string {
+	if n <= 0 {
+		return s
+	}
+	used := 0
+	for i, r := range s {
+		if used >= n {
+			return s[i:]
+		}
+		used += lipgloss.Width(string(r))
+	}
+	return ""
 }
 
 // CardFooter is the card's own key hint. It NAMES Esc's outcome, because the

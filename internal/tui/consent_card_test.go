@@ -203,3 +203,31 @@ func fieldValueContains(fields []screenkit.Field, key, want string) bool {
 	}
 	return false
 }
+
+// TestConsentCardOwnsTabWhilePending is the SHELL-level half of the
+// key-ownership criterion: with a card pending, tab must reach the card and must
+// NOT be consumed by the shell's tab chord. Asserted against the real router,
+// because the defect it pins lived in the shell (the chord runs above the
+// ClaimsKeys gate), not in the card.
+func TestConsentCardOwnsTabWhilePending(t *testing.T) {
+	m, as, items := pendingCard(t)
+	before := items[0].Consent.Sel
+	for i := 0; i < 2; i++ {
+		nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+		m = nm.(*App)
+		if m.active != TabAsk {
+			t.Fatalf("tab press %d rotated the tab ring out of a pending card (active=%v)", i+1, m.active)
+		}
+	}
+	if items[0].Consent.Sel == before {
+		t.Fatalf("tab must move the card's selection, sel stayed %d", before)
+	}
+	if !as.ClaimsKeys() {
+		t.Fatal("the card must still own the keys after tab")
+	}
+	// Resolve, then tab is the shell's again — the claim is not sticky.
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if as.OwnsTab() {
+		t.Fatal("tab must return to the shell once the card resolves")
+	}
+}

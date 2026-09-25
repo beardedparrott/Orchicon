@@ -203,3 +203,25 @@ func TestConsentDeniedByIsStatedOnTheCard(t *testing.T) {
 		t.Fatalf("the session row must carry its disabled reason:\n%s", out)
 	}
 }
+
+// TestConsentEscOnAQuestionIsRecordedWithoutADanglingSeparator pins the record a
+// dismissed question leaves: esc picks nothing, so the row must say THAT rather
+// than rendering "answer · " with nothing after the separator.
+func TestConsentEscOnAQuestionIsRecordedWithoutADanglingSeparator(t *testing.T) {
+	it := ConsentItem(PermissionAsk{ID: "q9", Kind: AskQuestion, Question: "Which file?", Options: []string{"a.go"}, AllowOther: true})
+	it.Consent.Decision = DecisionAnswer
+	out := ConsentCardText(it, 72)
+	if strings.Contains(out, "answer · ") || strings.HasSuffix(strings.TrimSpace(out), "·") {
+		t.Fatalf("a dismissed question must not render a dangling separator: %q", out)
+	}
+	if !strings.Contains(out, "dismissed") {
+		t.Fatalf("the record must say the question was dismissed: %q", out)
+	}
+	// And a real answer still renders as an answer.
+	it2 := ConsentItem(PermissionAsk{ID: "q10", Kind: AskQuestion, Question: "Which file?", Options: []string{"a.go"}})
+	it2.Consent.Decision = DecisionAnswer
+	it2.Consent.Choice = "seed.sql"
+	if out2 := ConsentCardText(it2, 72); !strings.Contains(out2, "answer · seed.sql") {
+		t.Fatalf("a real answer must still be recorded: %q", out2)
+	}
+}

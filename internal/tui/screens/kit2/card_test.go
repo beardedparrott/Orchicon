@@ -119,3 +119,52 @@ func TestCardFooterNamesEscsOutcome(t *testing.T) {
 		t.Fatalf("the question card must say esc dismisses, got %q", CardFooter(true))
 	}
 }
+
+// TestCardWrapsRatherThanCuttingLongContent pins the no-silent-cut rule on every
+// row kind that used to be clamped: the body (a target path), the deny-by-file
+// notice, a long option label, the disabled row's reason and the footer.
+//
+// WHY IT IS AN ACCEPTANCE-CRITERION TEST, not polish: the card IS the decision.
+// At the widths this transcript actually gets, `ansi.Truncate(…, "")` cut the
+// deny-by-file sentence to "…a session grant cannot ove" — the statement that
+// criterion 4 requires the card to make, rendered unreadable — and would cut a
+// long target path the same way, so the operator could neither read the warning
+// nor see what they were consenting to.
+func TestCardWrapsRatherThanCuttingLongContent(t *testing.T) {
+	const (
+		path   = "/home/ops/a/rather/long/workspace/path/that/no/pane/can/hold/main.go"
+		notice = "denied by the permission list (/home/ops/**) — a session grant cannot override it"
+	)
+	spec := CardSpec{
+		Title:  "Permission",
+		Body:   "write " + path,
+		Notice: notice,
+		Lines: []CardLine{
+			{Text: "Allow once", Selected: true},
+			{Text: "Allow for this session", Disabled: true, Detail: "denied by /home/ops/**"},
+			{Text: "Deny"},
+		},
+		Footer: CardFooter(false),
+	}
+	strip := strings.NewReplacer("│", "", "┌", "", "┐", "", "└", "", "┘", "", "─", "", "▸", "")
+	for _, w := range []int{40, 56, 72} {
+		lines := CardLines(spec, w)
+		painted := strip.Replace(strings.Join(lines, "\n"))
+		// `words` collapses the row breaks back to single spaces (the notice wraps
+		// on word boundaries, so its wording survives); `glued` removes whitespace
+		// too, because a token LONGER than a row is hard-split mid-word and the row
+		// break lands inside it.
+		words := strings.Join(strings.Fields(painted), " ")
+		glued := strings.Join(strings.Fields(painted), "")
+		for _, want := range []string{path, notice} {
+			if !strings.Contains(words, want) && !strings.Contains(glued, strings.Join(strings.Fields(want), "")) {
+				t.Fatalf("width %d: the card lost %q:\n%s", w, want, strings.Join(lines, "\n"))
+			}
+		}
+		for i, l := range lines {
+			if got := lipgloss.Width(l); got != w {
+				t.Fatalf("width %d: line %d is %d cells, want %d: %q", w, i, got, w, l)
+			}
+		}
+	}
+}

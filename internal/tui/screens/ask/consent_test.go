@@ -301,3 +301,105 @@ func TestPermissionsSaysUnavailableWithoutAStore(t *testing.T) {
 		t.Fatalf("no store must read as unavailable, got %q", m.ov.err)
 	}
 }
+
+// TestConsentScreenOwnsTabWhileClaiming pins the OTHER half of the key-ownership
+// hook, against the shell's real tab chord.
+//
+// THE CLAIM ALONE DOES NOT TAKE TAB: the shell handles the tab chord ABOVE the
+// ClaimsKeys gate (router.go, the focus-chord switch), so `ClaimsKeys() == true`
+// left tab falling through to tabRingNext — press one moved the keyboard to the
+// tab bar, press two rotated the active screen out from under a still-pending
+// card (and, because the gate reads m.screens[m.active], the card then lost the
+// keyboard entirely). Tab IS a card key: handleConsentKey binds tab/shift+tab to
+// row movement. OwnsTab is the shell's own hook for exactly this (see
+// execution.Model.OwnsTab).
+func TestConsentScreenOwnsTabWhileClaiming(t *testing.T) {
+	m, _ := newTestModel(t)
+	if m.OwnsTab() {
+		t.Fatal("with nothing claimed, tab belongs to the shell")
+	}
+	items := []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{
+		ID: "a9", Kind: chat.AskTool, Tool: "write", Target: "/p/x.go", Directory: "/p"})}
+	m.RenderTranscript(items, chat.Conversation{}, false)
+	if !m.OwnsTab() {
+		t.Fatal("a pending card must own tab — the card binds it as row movement")
+	}
+	// The list overlays claim the keyboard too, so tab must not rotate the ring
+	// out of a modal the operator is reading.
+	m.openPermissions()
+	if !m.OwnsTab() {
+		t.Fatal("an open overlay must own tab")
+	}
+	m.ov = nil
+	// Tab now MOVES THE CARD (the behaviour the hook exists to protect).
+	m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if items[0].Consent.Sel != 1 {
+		t.Fatalf("tab must move the card's selection, sel=%d", items[0].Consent.Sel)
+	}
+	// Once resolved, tab is the shell's again.
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.OwnsTab() {
+		t.Fatal("tab must return to the shell once the card resolves")
+	}
+}
+
+// TestAskOverlaysAreVisibleInTheViewsRealFrame is the SURFACE half of criteria 4
+// and 5, and it is the assertion the overlay tests were missing: the list
+// surfaces must actually REACH THE SCREEN.
+//
+// They did not. Base.View() already fills the region the shell sizes the screen
+// to (app.go baseView normalizes the screen's render to exactly that many rows),
+// so the overlay APPENDED after the pane landed past the last row and was dropped
+// — `/grants` and `/permissions` opened a list that rendered NOTHING. Asserting
+// the overlay's own View (what the other tests do) could not catch that; this
+// asserts the screen's real frame, which is what the operator sees.
+func TestAskOverlaysAreVisibleInTheViewsRealFrame(t *testing.T) {
+	m, h := newTestModel(t)
+	h.grantAvail = true
+	h.grants = []chat.SessionGrant{{Directory: "/home/ops/project", Tool: "write", Count: 3}, {Directory: "/srv", Tool: "bash", Count: 1}}
+	h.store = &stubStore{rules: []chat.PolicyRule{{Effect: "deny", Tool: "write", Pattern: "/etc/**"}}}
+	h.storeOK = true
+
+	m.openGrants()
+	v := m.View()
+	for _, want := range []string{"Session grants", "/home/ops/project", "enter revokes"} {
+		if !strings.Contains(v, want) {
+			t.Fatalf("/grants must render %q in the screen's frame, got:\n%s", want, v)
+		}
+	}
+	if got := strings.Count(strings.TrimRight(v, "\n"), "\n") + 1; got != m.h {
+		t.Fatalf("the frame must stay %d rows, got %d", m.h, got)
+	}
+
+	m.ov = nil
+	m.openPermissions()
+	v = m.View()
+	for _, want := range []string{"Permissions", "deny", "/etc/**", "the file is the source of truth"} {
+		if !strings.Contains(v, want) {
+			t.Fatalf("/permissions must render %q in the screen's frame, got:\n%s", want, v)
+		}
+	}
+	if got := strings.Count(strings.TrimRight(v, "\n"), "\n") + 1; got != m.h {
+		t.Fatalf("the frame must stay %d rows, got %d", m.h, got)
+	}
+}
+
+// TestAskListOverlayShowsEveryRowNotOne pins the row budget: kit2.Table windows
+// its body to Height-3 with a floor of ONE row, and the overlays never set Height,
+// so `/permissions` and `/grants` drew a single row no matter how much room the
+// pane had ("1-1/2" beside one of two rules).
+func TestAskListOverlayShowsEveryRowNotOne(t *testing.T) {
+	m, h := newTestModel(t)
+	h.grantAvail = true
+	h.grants = []chat.SessionGrant{{Directory: "/home/ops/project", Tool: "write", Count: 3}, {Directory: "/srv", Tool: "bash", Count: 1}}
+	m.openGrants()
+	v := m.View()
+	for _, want := range []string{"/home/ops/project", "/srv"} {
+		if !strings.Contains(v, want) {
+			t.Fatalf("every grant must be on screen, %q missing:\n%s", want, v)
+		}
+	}
+	if strings.Contains(v, "1-1/2") {
+		t.Fatalf("the list must not be windowed to one row:\n%s", v)
+	}
+}

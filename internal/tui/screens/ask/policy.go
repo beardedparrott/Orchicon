@@ -43,6 +43,22 @@ type askOverlay struct {
 	hint string
 }
 
+// overlayTableHeight is the row budget a LIST overlay gives its table: the pane
+// region minus the block's own furniture (the table's title and header rows, its
+// cursor line and the hint under it), so the centered block still fits the frame.
+//
+// IT MUST BE SET, and leaving it at the zero value was a real defect: kit2.Table
+// windows its body to Height-3 with a floor of ONE row, so `/permissions` and
+// `/grants` drew a single row however much room the pane had — a two-rule list
+// showed "1-1/2" and one rule, which is not a list the operator can read.
+func (m *Model) overlayTableHeight() int {
+	h := m.h - 4
+	if h < 8 {
+		h = 8
+	}
+	return h
+}
+
 // openGrants builds the session-grant roll-up.
 func (m *Model) openGrants() tea.Cmd {
 	ov := &askOverlay{kind: ovGrants, tbl: kit2.NewTable("Session grants",
@@ -50,6 +66,7 @@ func (m *Model) openGrants() tea.Cmd {
 		hint: "enter revokes · esc closes · grants are per session"}
 	ov.tbl.Focused = true
 	ov.tbl.Width = m.DetailWidth()
+	ov.tbl.Height = m.overlayTableHeight()
 	ov.tbl.Empty = "no session grants — every write and execution is asked once per directory"
 	m.ov = ov
 	m.reloadGrants()
@@ -63,6 +80,7 @@ func (m *Model) openPermissions() tea.Cmd {
 		hint: "a adds · enter removes · esc closes · the file is the source of truth — the GUI and a hand-edit see the same list"}
 	ov.tbl.Focused = true
 	ov.tbl.Width = m.DetailWidth()
+	ov.tbl.Height = m.overlayTableHeight()
 	ov.tbl.Empty = "no permission rules — every write and execution is asked"
 	m.ov = ov
 	m.reloadRules()
@@ -134,6 +152,7 @@ func (m *Model) openPolicyAdd() {
 	f.Height = 24
 	f.Focused = true
 	m.ov = &askOverlay{kind: ovPolicyAdd, form: f, tbl: kit2.NewTable("Permissions"),
+
 		hint: "ctrl+s saves · esc cancels · the file is the source of truth"}
 	m.reloadRules()
 }

@@ -46,6 +46,11 @@ func consentRecord(st *ConsentState) string {
 	case DecisionDeny:
 		return "consent " + ConsentDeny + " · " + subject
 	case DecisionAnswer:
+		if strings.TrimSpace(st.Choice) == "" {
+			// Esc on a question card picks nothing: record THAT, rather than the
+			// dangling "answer · " a bare separator left behind.
+			return "question dismissed — no answer sent"
+		}
 		return "answer · " + st.Choice
 	default:
 		return "consent " + ConsentAllowOnce + " · " + subject
