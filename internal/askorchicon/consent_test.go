@@ -399,6 +399,33 @@ func TestReplyPermissionAskAppliesAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestLateAllowSessionReplyReportsExpiredAndRecordsNoGrant(t *testing.T) {
+	isolatedPolicy(t, "")
+	svc := testConsentService()
+	client := &consentFakeClient{}
+	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
+	_, ask, _ := ct.decide(context.Background(), "ses_1", fileAskEvent("per_1", "write", "/p/sibling/x.md"))
+	if ask == nil {
+		t.Fatal("expected an ask")
+	}
+	// The turn ends before the human answers.
+	ct.finalize(context.Background(), client)
+	// A late ALLOW_SESSION must be reported expired AND must not leave a grant
+	// behind: a decision reported as not-applied must not partially apply.
+	resp, err := svc.ReplyPermissionAsk(tenantCtx(), connectReq(&apiv1.ReplyPermissionAskRequest{
+		ConversationId: "conv-1", AskId: "per_1", Choice: apiv1.PermissionChoice_ALLOW_SESSION,
+	}))
+	if err != nil {
+		t.Fatalf("ReplyPermissionAsk: %v", err)
+	}
+	if resp.Msg.Applied || !resp.Msg.Expired {
+		t.Fatalf("late reply: applied=%v expired=%v — want expired", resp.Msg.Applied, resp.Msg.Expired)
+	}
+	if svc.grants.Len("conv-1") != 0 {
+		t.Fatalf("grants = %d, want 0 — an ask reported expired must not record a session grant", svc.grants.Len("conv-1"))
+	}
+}
+
 // --- stores --------------------------------------------------------------
 
 func TestGrantStoreIsInMemoryAndConversationScoped(t *testing.T) {

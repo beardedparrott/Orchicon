@@ -55,18 +55,22 @@ func (s *Service) ReplyPermissionAsk(ctx context.Context, req *connect.Request[a
 			Detail:  "this ask is no longer open — the turn ended or was superseded",
 		}), nil
 	}
-	// ALLOW_SESSION records the directory grant BEFORE the ask is resolved, so
-	// a redirect that immediately re-runs the same directory does not ask
-	// again. The grant is in-memory and conversation-scoped.
-	if req.Msg.Choice == apiv1.PermissionChoice_ALLOW_SESSION {
-		s.grants.Grant(convID, ask.Key)
-	}
+	// The transitions are ordered so that nothing is applied unless the reply
+	// actually WINS the ask. ALLOW_SESSION records the directory grant only
+	// after clientReply accepts the decision: granting first would leave an
+	// in-memory session grant behind for an already-answered or expired ask we
+	// are about to report as `expired`/`applied: false` — a decision that
+	// reports itself as NOT applied must not partially apply itself. The grant
+	// is in-memory and conversation-scoped.
 	if !ask.clientReply(req.Msg.Choice) {
 		return connect.NewResponse(&apiv1.ReplyPermissionAskResponse{
 			Applied: false,
 			Expired: true,
 			Detail:  "this ask was already answered or expired — the decision was not applied",
 		}), nil
+	}
+	if req.Msg.Choice == apiv1.PermissionChoice_ALLOW_SESSION {
+		s.grants.Grant(convID, ask.Key)
 	}
 	return connect.NewResponse(&apiv1.ReplyPermissionAskResponse{
 		Applied: true,
