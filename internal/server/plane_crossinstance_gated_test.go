@@ -111,7 +111,12 @@ func TestCrossInstancePlaneCredentialIsRejected(t *testing.T) {
 		Name:       "xinstance-guard-key",
 		KeyPrefix:  prefix,
 		KeyHash:    hash,
-		Scopes:     []string{"work_item:read"},
+		// The REAL entitlement string is "workitem:read" (no underscore —
+		// see internal/db/seed_workers.go). A scope the plane does not
+		// recognise makes the MINTING plane reject the key with
+		// permission_denied, so both directions would look "rejected" and the
+		// cross-instance assertion would become a vacuous pass.
+		Scopes: []string{"workitem:read"},
 	}); err != nil {
 		_ = ttx.Rollback(ctx)
 		t.Fatalf("create api key: %v", err)
