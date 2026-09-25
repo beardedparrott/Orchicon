@@ -54,10 +54,20 @@ func TestPermissionAskedGoldenClassifies(t *testing.T) {
 	if !ok {
 		t.Fatalf("Detail[metadata] = %#v, want an object", se.Detail["metadata"])
 	}
-	if meta["filePath"] != "/home/beardedparrott/projects/sibling-project/notes.md" {
-		t.Fatalf("Detail[metadata][filePath] = %v", meta["filePath"])
+	// metadata.filepath is the AUTHORITATIVE absolute path in the real schema
+	// (opencode 1.18.32 PermissionRequest); the camelCase spelling does not occur.
+	if meta["filepath"] != "/home/beardedparrott/projects/sibling-project/notes.md" {
+		t.Fatalf("Detail[metadata][filepath] = %v", meta["filepath"])
 	}
-	if se.Detail["callID"] != "call_01J9Z0TOOLCALL" {
-		t.Fatalf("Detail[callID] = %v", se.Detail["callID"])
+	// callID is NOT a top-level property: it is nested under tool.
+	if _, ok := se.Detail["callID"]; ok {
+		t.Fatalf("callID must not be a top-level property, got %v", se.Detail["callID"])
+	}
+	tool, ok := se.Detail["tool"].(map[string]any)
+	if !ok {
+		t.Fatalf("Detail[tool] = %#v, want the {messageID, callID} object", se.Detail["tool"])
+	}
+	if tool["callID"] != "call_01J9Z0TOOLCALL" {
+		t.Fatalf("Detail[tool][callID] = %v", tool["callID"])
 	}
 }

@@ -129,6 +129,14 @@ func extractAskAction(evt scheduler.SessionEvent) askAction {
 		Tool:   detailString(d, "permission", "tool", "title"),
 		CallID: detailString(d, "callID", "callId", "call_id"),
 	}
+	// The REAL schema nests the tool call under `tool` ({messageID, callID}) and
+	// has no top-level callID, so the flat candidates above never match a live
+	// payload. Kept for older/other shapes; the nested read is the real one.
+	if a.CallID == "" {
+		if tl, ok := d["tool"].(map[string]any); ok {
+			a.CallID = detailString(tl, "callID", "callId", "call_id")
+		}
+	}
 	a.Targets = detailStrings(d, "patterns", "pattern")
 	meta, _ := d["metadata"].(map[string]any)
 	if meta != nil {

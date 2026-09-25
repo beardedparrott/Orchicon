@@ -124,7 +124,9 @@ func TestExtractAskActionCarriesToolAndTarget(t *testing.T) {
 	if a.Tool != "edit" {
 		t.Fatalf("Tool = %q, want edit", a.Tool)
 	}
-	if len(a.Targets) != 1 || a.Targets[0] != "/home/beardedparrott/projects/sibling-project/notes.md" {
+	// opencode 1.18.32 emits patterns worktree-RELATIVE ("../sibling-project/notes.md");
+	// resolveAskKey anchors them against the scope dir.
+	if len(a.Targets) != 1 || a.Targets[0] != "../sibling-project/notes.md" {
 		t.Fatalf("Targets = %#v", a.Targets)
 	}
 	if a.CallID != "call_01J9Z0TOOLCALL" {

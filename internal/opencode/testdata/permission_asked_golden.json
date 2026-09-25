@@ -1,16 +1,21 @@
 {
-  "_comment": "The raw properties object of an opencode serve `permission.asked` bus event, captured from a live interactive Ask serve (plan step 2 of the consent-core work item). This is the AUTHORITY for the consent layer's detail extraction: if a live payload disagrees with internal/askorchicon/consent.go's candidate keys, THIS file wins and extractAskAction is corrected.",
-  "_captured": "2026-09-25, opencode serve under the interactive Ask permission profile (edit/write {\"*\":\"ask\"}, bash never-allow denies).",
+  "_comment": "The raw properties object of an opencode serve `permission.asked` bus event. PROVENANCE, corrected by QA: this was NOT captured from a live interactive Ask serve (no opencode binary in the run container). The SHAPE below is the authoritative `PermissionRequest` schema read out of the real opencode 1.18.32 linux-x64 binary: { id, sessionID, permission, patterns[], metadata{}, always[], tool?{messageID, callID} } — the built-in edit/write tool asks with permission=\"edit\", patterns = worktree-RELATIVE paths, metadata.filepath = the absolute path, metadata.diff = the patch. NOTE the MCP-tool ask shape is DIFFERENT and carries no detail at all (permission=<mcp tool key>, patterns=[\"*\"], metadata={}), which the consent core cannot key from — see the QA finding on this work item. If a live payload disagrees with internal/askorchicon/consent.go's candidate keys, the live payload wins and extractAskAction is corrected.",
+  "_captured": "schema read from opencode 1.18.32 (npm opencode-linux-x64@1.18.32) — NOT a live serve capture.",
   "id": "per_01J9Z0PERMISSIONASK",
   "sessionID": "ses_01J9Z0SESSION",
   "permission": "edit",
   "patterns": [
-    "/home/beardedparrott/projects/sibling-project/notes.md"
+    "../sibling-project/notes.md"
   ],
   "metadata": {
-    "filePath": "/home/beardedparrott/projects/sibling-project/notes.md",
-    "command": ""
+    "filepath": "/home/beardedparrott/projects/sibling-project/notes.md",
+    "diff": "--- a/notes.md\n+++ b/notes.md\n"
   },
-  "callID": "call_01J9Z0TOOLCALL",
-  "title": "write /home/beardedparrott/projects/sibling-project/notes.md"
+  "always": [
+    "*"
+  ],
+  "tool": {
+    "messageID": "msg_01J9Z0MESSAGE",
+    "callID": "call_01J9Z0TOOLCALL"
+  }
 }
