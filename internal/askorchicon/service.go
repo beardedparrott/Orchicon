@@ -65,6 +65,19 @@ type Service struct {
 	// turns is the in-flight turn registry (one turn per conversation):
 	// the one-turn gate + the Stop path's deterministic collector cancel.
 	turns *turnRegistry
+	// grants is the in-memory, directory-keyed, per-conversation session
+	// grant store ("allow for this directory" answers). In memory by design:
+	// a plane restart clears it and a new conversation asks again.
+	grants *grantStore
+	// once records the absolute targets the operator answered ALLOW_ONCE for,
+	// per conversation: the execution guard's shim cannot ask, so the command
+	// the operator just approved must be armed for it (while a sibling path a
+	// subprocess inside it targets stays refused).
+	once *onceStore
+	// pending is the registry of asks awaiting a human decision, keyed
+	// (conversation, ask id). The turn is not blocked by us — opencode holds
+	// the tool call; we record and await a reply on the turn's stream.
+	pending *pendingAskRegistry
 	// hubs is the live-turn broadcast registry (one hub per conversation
 	// with a running turn): every response drained to the dispatch stream
 	// is also published here so WatchTurnStream can re-attach a dropped
@@ -106,6 +119,9 @@ func New(pool *db.Pool, log *slog.Logger, blobStore blobstore.Store, modelDisc *
 		toolRegistry: NewToolRegistry(pool, log, secretsKEK),
 		turns:        newTurnRegistry(),
 		hubs:         newTurnHubRegistry(),
+		grants:       newGrantStore(),
+		once:         newOnceStore(),
+		pending:      newPendingAskRegistry(),
 	}
 	s.registerSessionTools()
 	s.startSweeper()
@@ -607,6 +623,12 @@ func (s *Service) DeleteConversation(ctx context.Context, req *connect.Request[a
 	if token, ok := s.turns.cancel(req.Msg.Id, errUserStop); ok {
 		s.turns.remove(req.Msg.Id, token)
 	}
+	// Conversation end clears the conversation's consent state (C9): its
+	// in-memory directory grants (a new conversation must ask again) and any
+	// ask still awaiting a decision (a late reply then reports expired).
+	s.grants.ClearConversation(req.Msg.Id)
+	s.once.ClearConversation(req.Msg.Id)
+	s.pending.removeConversation(req.Msg.Id)
 	return connect.NewResponse(&apiv1.DeleteConversationResponse{}), nil
 }
 

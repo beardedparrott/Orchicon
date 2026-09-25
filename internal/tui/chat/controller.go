@@ -695,6 +695,17 @@ func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 				Key:  "m-" + m.GetId() + "-r" + itoa(int64(j)),
 			})
 		}
+		// A recorded ask_user call renders as a clarifying-question card. Keyed by
+		// message id + "-ask" so a fold/refresh keeps a stable key (same reason as
+		// the reasoning keys above).
+		if ask := parseAskUserCall(m.GetToolCalls()); ask != nil {
+			items = append(items, ChatItem{
+				Kind: KindAsk,
+				Ask:  ask,
+				At:   at,
+				Key:  "m-" + m.GetId() + "-ask",
+			})
+		}
 		items = append(items, ChatItem{
 			Kind: kind,
 			Text: m.GetContent(),
@@ -703,6 +714,16 @@ func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 		})
 	}
 	return items
+}
+
+// AnswerQuestion answers a recorded clarifying question by sending the chosen
+// option's LABEL as a normal user message — the SAME path every other message
+// takes (Send). There is deliberately no rendezvous and no separate reply
+// channel: the tool RECORDED the question and the turn already completed, so the
+// answer is simply the next message. (A CONSENT ask is different: it is
+// genuinely blocking on the transport and must not be answered this way.)
+func (c *Controller) AnswerQuestion(convID, label string) tea.Cmd {
+	return c.Send(convID, label, "")
 }
 
 // Send dispatches a turn: InterjectConversationTurn when the

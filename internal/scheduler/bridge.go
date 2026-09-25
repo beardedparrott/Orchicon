@@ -241,6 +241,12 @@ type ChatTurnClient interface {
 	AbortConversationSession(ctx context.Context, sessionID string) error
 	// ReplyPermission auto-approves a permission.asked signal.
 	ReplyPermission(ctx context.Context, sessionID, permissionID string) error
+	// ReplyPermissionDecision answers a permission.asked signal with an
+	// explicit serve response value ("once" | "reject"). The consent core
+	// uses it: "once" proceeds for the single call, "reject" turns the ask
+	// into a tool error the model sees. The SESSION decision lives in the
+	// caller's grant store, never in a serve-side response value.
+	ReplyPermissionDecision(ctx context.Context, sessionID, permissionID, decision string) error
 }
 
 // SessionOwner is the OPTIONAL capability for an adapter that can identify
@@ -405,6 +411,15 @@ type SessionEvent struct {
 	Text         string
 	IsReasoning  bool
 	PermissionID string
+	// Detail carries the raw transport properties of a "permission" event
+	// (opencode emits id, sessionID, permission/title, patterns, metadata and
+	// callID), so the consent layer can answer the ask with the action's
+	// detail intact rather than only its id. An adapter that correlates the
+	// tool call an ask belongs to adds the call's ARGS under "toolInput" —
+	// an MCP-tool ask carries no path/command of its own (patterns ["*"],
+	// metadata {}), so without them such an ask has nothing to key or show.
+	// Nil for every other kind.
+	Detail map[string]any
 	// Part is the legacy part map for a completed "part" (a "tool_use" part
 	// carries tool + args for the stall monitor's repetition signature; the
 	// monitor path consumes it). Nil for other kinds.

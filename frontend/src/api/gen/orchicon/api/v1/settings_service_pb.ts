@@ -8,6 +8,308 @@ import { Message, proto3, protoInt64 } from "@bufbuild/protobuf";
 import { TenantSettings } from "./settings_pb.js";
 
 /**
+ * PermissionPolicyEntry is one rule, with the fact a UI needs to phrase it.
+ *
+ * @generated from message orchicon.api.v1.PermissionPolicyEntry
+ */
+export class PermissionPolicyEntry extends Message<PermissionPolicyEntry> {
+  /**
+   * The entry exactly as the operator wrote it (a leading ~ stays a ~), so
+   * it can be removed by the same string.
+   *
+   * @generated from field: string pattern = 1;
+   */
+  pattern = "";
+
+  /**
+   * "deny" or "accept".
+   *
+   * @generated from field: string list = 2;
+   */
+  list = "";
+
+  /**
+   * overridable is FALSE for deny entries: a session grant cannot override
+   * them, so a client must say so instead of offering a grant that the
+   * refusal will ignore. Accept entries are true.
+   *
+   * @generated from field: bool overridable = 3;
+   */
+  overridable = false;
+
+  constructor(data?: PartialMessage<PermissionPolicyEntry>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.PermissionPolicyEntry";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "pattern", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "list", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "overridable", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): PermissionPolicyEntry {
+    return new PermissionPolicyEntry().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): PermissionPolicyEntry {
+    return new PermissionPolicyEntry().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): PermissionPolicyEntry {
+    return new PermissionPolicyEntry().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: PermissionPolicyEntry | PlainMessage<PermissionPolicyEntry> | undefined, b: PermissionPolicyEntry | PlainMessage<PermissionPolicyEntry> | undefined): boolean {
+    return proto3.util.equals(PermissionPolicyEntry, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.GetPermissionPolicyRequest
+ */
+export class GetPermissionPolicyRequest extends Message<GetPermissionPolicyRequest> {
+  constructor(data?: PartialMessage<GetPermissionPolicyRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.GetPermissionPolicyRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetPermissionPolicyRequest {
+    return new GetPermissionPolicyRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetPermissionPolicyRequest {
+    return new GetPermissionPolicyRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetPermissionPolicyRequest {
+    return new GetPermissionPolicyRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetPermissionPolicyRequest | PlainMessage<GetPermissionPolicyRequest> | undefined, b: GetPermissionPolicyRequest | PlainMessage<GetPermissionPolicyRequest> | undefined): boolean {
+    return proto3.util.equals(GetPermissionPolicyRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.GetPermissionPolicyResponse
+ */
+export class GetPermissionPolicyResponse extends Message<GetPermissionPolicyResponse> {
+  /**
+   * The resolved policy file path (for "edit this file by hand" hints).
+   *
+   * @generated from field: string path = 1;
+   */
+  path = "";
+
+  /**
+   * Deny entries first, then accept entries — the precedence order.
+   *
+   * @generated from field: repeated orchicon.api.v1.PermissionPolicyEntry entries = 2;
+   */
+  entries: PermissionPolicyEntry[] = [];
+
+  constructor(data?: PartialMessage<GetPermissionPolicyResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.GetPermissionPolicyResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "path", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "entries", kind: "message", T: PermissionPolicyEntry, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetPermissionPolicyResponse {
+    return new GetPermissionPolicyResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetPermissionPolicyResponse {
+    return new GetPermissionPolicyResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetPermissionPolicyResponse {
+    return new GetPermissionPolicyResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetPermissionPolicyResponse | PlainMessage<GetPermissionPolicyResponse> | undefined, b: GetPermissionPolicyResponse | PlainMessage<GetPermissionPolicyResponse> | undefined): boolean {
+    return proto3.util.equals(GetPermissionPolicyResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.AddPermissionPolicyEntryRequest
+ */
+export class AddPermissionPolicyEntryRequest extends Message<AddPermissionPolicyEntryRequest> {
+  /**
+   * @generated from field: string pattern = 1;
+   */
+  pattern = "";
+
+  /**
+   * "deny" or "accept" (required; an empty list name is an error).
+   *
+   * @generated from field: string list = 2;
+   */
+  list = "";
+
+  constructor(data?: PartialMessage<AddPermissionPolicyEntryRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.AddPermissionPolicyEntryRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "pattern", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "list", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): AddPermissionPolicyEntryRequest {
+    return new AddPermissionPolicyEntryRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): AddPermissionPolicyEntryRequest {
+    return new AddPermissionPolicyEntryRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): AddPermissionPolicyEntryRequest {
+    return new AddPermissionPolicyEntryRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: AddPermissionPolicyEntryRequest | PlainMessage<AddPermissionPolicyEntryRequest> | undefined, b: AddPermissionPolicyEntryRequest | PlainMessage<AddPermissionPolicyEntryRequest> | undefined): boolean {
+    return proto3.util.equals(AddPermissionPolicyEntryRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.AddPermissionPolicyEntryResponse
+ */
+export class AddPermissionPolicyEntryResponse extends Message<AddPermissionPolicyEntryResponse> {
+  /**
+   * The refreshed policy: the client never patches its own copy.
+   *
+   * @generated from field: orchicon.api.v1.GetPermissionPolicyResponse policy = 1;
+   */
+  policy?: GetPermissionPolicyResponse;
+
+  constructor(data?: PartialMessage<AddPermissionPolicyEntryResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.AddPermissionPolicyEntryResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "policy", kind: "message", T: GetPermissionPolicyResponse },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): AddPermissionPolicyEntryResponse {
+    return new AddPermissionPolicyEntryResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): AddPermissionPolicyEntryResponse {
+    return new AddPermissionPolicyEntryResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): AddPermissionPolicyEntryResponse {
+    return new AddPermissionPolicyEntryResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: AddPermissionPolicyEntryResponse | PlainMessage<AddPermissionPolicyEntryResponse> | undefined, b: AddPermissionPolicyEntryResponse | PlainMessage<AddPermissionPolicyEntryResponse> | undefined): boolean {
+    return proto3.util.equals(AddPermissionPolicyEntryResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.RemovePermissionPolicyEntryRequest
+ */
+export class RemovePermissionPolicyEntryRequest extends Message<RemovePermissionPolicyEntryRequest> {
+  /**
+   * @generated from field: string pattern = 1;
+   */
+  pattern = "";
+
+  /**
+   * @generated from field: string list = 2;
+   */
+  list = "";
+
+  constructor(data?: PartialMessage<RemovePermissionPolicyEntryRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.RemovePermissionPolicyEntryRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "pattern", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "list", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RemovePermissionPolicyEntryRequest {
+    return new RemovePermissionPolicyEntryRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RemovePermissionPolicyEntryRequest {
+    return new RemovePermissionPolicyEntryRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RemovePermissionPolicyEntryRequest {
+    return new RemovePermissionPolicyEntryRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RemovePermissionPolicyEntryRequest | PlainMessage<RemovePermissionPolicyEntryRequest> | undefined, b: RemovePermissionPolicyEntryRequest | PlainMessage<RemovePermissionPolicyEntryRequest> | undefined): boolean {
+    return proto3.util.equals(RemovePermissionPolicyEntryRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.RemovePermissionPolicyEntryResponse
+ */
+export class RemovePermissionPolicyEntryResponse extends Message<RemovePermissionPolicyEntryResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.GetPermissionPolicyResponse policy = 1;
+   */
+  policy?: GetPermissionPolicyResponse;
+
+  constructor(data?: PartialMessage<RemovePermissionPolicyEntryResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.RemovePermissionPolicyEntryResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "policy", kind: "message", T: GetPermissionPolicyResponse },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RemovePermissionPolicyEntryResponse {
+    return new RemovePermissionPolicyEntryResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RemovePermissionPolicyEntryResponse {
+    return new RemovePermissionPolicyEntryResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RemovePermissionPolicyEntryResponse {
+    return new RemovePermissionPolicyEntryResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RemovePermissionPolicyEntryResponse | PlainMessage<RemovePermissionPolicyEntryResponse> | undefined, b: RemovePermissionPolicyEntryResponse | PlainMessage<RemovePermissionPolicyEntryResponse> | undefined): boolean {
+    return proto3.util.equals(RemovePermissionPolicyEntryResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.GetSettingsRequest
  */
 export class GetSettingsRequest extends Message<GetSettingsRequest> {

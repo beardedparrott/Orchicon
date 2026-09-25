@@ -624,6 +624,14 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// detach below — so it survives into every tool call of the turn, exactly as the mode does.
 	ctx = withAskConversation(ctx, convID)
 
+	// AND THE CONVERSATION'S PROJECT RIDES WITH THEM, by the same rule and for a stronger reason: the file/shell
+	// suite's containment boundary is resolved from it (AskFileScopeFor in native_tools.go), and the prompt's
+	// "## This conversation's project" block is built from the SAME row — so carrying it here is what makes "where
+	// the prompt says my project is" and "where my relative writes land" one answer instead of two that can
+	// silently disagree. Re-reading the conversation inside the tool layer would be a second DB round trip for a
+	// fact this row already carries.
+	ctx = withAskConversationProject(ctx, conv.ProjectID)
+
 	// sessionIDOverride is the session the new turn dispatches on. Normally
 	// the conversation's persisted session; set to "" below (forcing a fresh
 	// seeded session) when the interject supersedes a WEDGED turn (D4) so the
@@ -1164,9 +1172,13 @@ func buildSystemPrompt(mode string, cfg db.AgentConfigRow, registry *ToolRegistr
 		b.WriteString("\n")
 	} else {
 		b.WriteString("This conversation is not assigned to a project, so it has no project directory of its own. " +
-			"The file/shell suite still operates on the tenant's first active project_dir — call ask_file_root to see " +
-			"which. Assign one with SetConversationProject (the TUI's /project, or a project folder in the GUI) to " +
-			"give this chat a workspace of its own.\n")
+			"NOTHING is pre-approved for it: a write or a command is outside this chat's scope and asks the user " +
+			"first, wherever it falls. Reading is different — reads never ask, anywhere on the operator's machine. " +
+			"The file/shell suite still has a directory to work in — call ask_file_root to see which — but it is only " +
+			"the tenant's default anchor: because this chat has no project, that anchor is used SOLELY to resolve " +
+			"relative paths, NOT as this chat's own workspace and not as anything pre-approved. Assign a project with " +
+			"SetConversationProject (the TUI's /project, or a project folder in the GUI) to give this chat a workspace " +
+			"of its own.\n")
 	}
 	b.WriteString("\n")
 
@@ -1180,7 +1192,7 @@ func buildSystemPrompt(mode string, cfg db.AgentConfigRow, registry *ToolRegistr
 	b.WriteString("\n")
 
 	b.WriteString("## Available tools\n")
-	b.WriteString("Orchicon's tools are exposed to you as MCP tools named `orchicon_<tool>` — call them directly through your tool mechanism and the system executes them against Orchicon, returning real results. Mutating tools run only after user confirmation. The native file/shell suite (batch_read, batch_grep, batch_write, read, grep, write, edit, list, glob, bash, ask_file_root) is also on your session as native tools — it operates on the tenant's first active project_dir (ask_file_root reports it).\n\n")
+	b.WriteString("Orchicon's tools are exposed to you as MCP tools named `orchicon_<tool>` — call them directly through your tool mechanism and the system executes them against Orchicon, returning real results. Mutating tools run only after user confirmation. The native file/shell suite (batch_read, batch_grep, batch_write, read, grep, write, edit, list, glob, bash, ask_file_root) is also on your session as native tools — its reach, its pre-approved directory and when it asks are stated in \"## Reach and scope\" above.\n\n")
 	for _, td := range registry.List() {
 		mutability := "read-only"
 		if td.Mutating {
@@ -1354,6 +1366,10 @@ type turnCollectOpts struct {
 	// terminally. Nil-safe (methods tolerate a nil receiver); the collector
 	// lazy-inits it when the dispatch path did not provide one (unit tests).
 	ledger *toolLedger
+	// consent is the per-turn consent handle (the decision path + the
+	// pending-ask registry + the client wake-up channel), shared across the
+	// turn's re-attach attempts. Created by the collector.
+	consent *consentTurn
 }
 
 // turnAttemptKind is the outcome of a single subscribe+send+drain attempt.
@@ -1412,6 +1428,17 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 	if c.ledger == nil {
 		c.ledger = newToolLedger()
 	}
+	// The consent handle is ONE per turn (not per attempt): its grant lookups,
+	// pending asks and wake-up channel must survive a serve re-attach. Its
+	// monitor is re-pointed at each attempt's fresh monitor in runOneTurnAttempt.
+	if c.consent == nil {
+		c.consent = newConsentTurn(s, c.convID, c.tenantID, nil, c.ledger)
+	}
+	defer func() {
+		// Turn end (C8): apply a decision that landed, expire every still-open ask
+		// (reject) so the serve holds no phantom permission, and clear the gate.
+		c.consent.finalize(context.WithoutCancel(ctx), c.client)
+	}()
 	// reconnects counts the bounded session recycles performed on an MCP
 	// wedge. Bounded by ORCHICON_ASK_MCP_RECONNECT_ATTEMPTS (D2) so a wedged
 	// session is healed once (or a small bound) instead of looping.
@@ -1739,6 +1766,15 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 	stallTicker := time.NewTicker(stallTick)
 	defer stallTicker.Stop()
 
+	// The consent layer's wake-up channel: a client decision on one of this
+	// turn's asks nudges the select below. nil when the turn has no consent
+	// handle (a bare attempt test) — a nil channel simply never fires.
+	var consentReplies <-chan struct{}
+	if c.consent != nil {
+		c.consent.monitor = monitor
+		consentReplies = c.consent.Reply()
+	}
+
 	for {
 		select {
 		case <-subCtx.Done():
@@ -1802,6 +1838,11 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 				return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("conversation session send: %w", res)}
 			}
 			sent = true
+		case <-consentReplies:
+			// A client decision landed for one of this turn's asks: answer the
+			// serve and resume. The turn was never blocked by us — opencode held
+			// the call; we only awaited this.
+			c.consent.applyClientReplies(context.WithoutCancel(subCtx), c.client)
 		case evt, ok := <-sub.Events():
 			if !ok {
 				// Bus closed — the serve died mid-reply. Re-attach (bounded
@@ -1823,10 +1864,31 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 					return turnAttemptResult{kind: turnCollected, text: strings.TrimSpace(reply.String()), reasoning: reasoning}
 				}
 			case "permission":
-				// Auto-approve (the --auto equivalent). Session-level deny
-				// rules mean this should rarely fire — defensive only.
+				// The consent path: extract the typed action, run the precedence
+				// chain (never-allow binary class -> permpolicy.Decide), answer the
+				// serve once/reject, or raise a card and await the human. We NEVER
+				// blind auto-approve: the interactive Ask profile is what makes
+				// these asks real.
 				if pid := evt.PermissionID; pid != "" {
-					go func() { _ = c.client.ReplyPermission(subCtx, sid, pid) }()
+					if ct := c.consent; ct != nil {
+						resp, ask, refusal := ct.decide(subCtx, sid, evt)
+						if ask != nil {
+							emitPermissionAsk(c.onStreamEvent, ask)
+							ct.logAsk(ask)
+						}
+						if refusal != "" {
+							s.log.Warn("ask orchicon consent: refused a tool call",
+								"conversation", c.convID, "reason", refusal)
+						}
+						if resp != "" {
+							rc, rsid, rpid := c.client, sid, pid
+							go func() { _ = rc.ReplyPermissionDecision(context.WithoutCancel(subCtx), rsid, rpid, resp) }()
+						}
+					} else {
+						// No consent handle (a bare attempt test): keep the historical
+						// auto-approve so the turn cannot wedge.
+						go func() { _ = c.client.ReplyPermission(subCtx, sid, pid) }()
+					}
 				}
 			case "error":
 				// The turn failed at the model/API level: record it and end
@@ -2287,6 +2349,12 @@ func (s *Service) runOpenCodeTurn(ctx context.Context, client scheduler.ChatTurn
 	timeout := time.NewTimer(askTimeout())
 	defer timeout.Stop()
 
+	// The consent handle for this legacy path (no client stream to carry the
+	// card, no stall monitor): the decision chain still runs and the reply RPC
+	// still finds the ask in the shared registry.
+	legacyConsent := newConsentTurn(s, convID, tenantID, nil, nil)
+	defer legacyConsent.finalize(context.WithoutCancel(ctx), client)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -2306,6 +2374,8 @@ func (s *Service) runOpenCodeTurn(ctx context.Context, client scheduler.ChatTurn
 				return msgID, sid, time.Since(start), fmt.Errorf("conversation session send: %w", res.err)
 			}
 			sent = true
+		case <-legacyConsent.Reply():
+			legacyConsent.applyClientReplies(context.WithoutCancel(ctx), client)
 		case evt, ok := <-sub.Events():
 			if !ok {
 				return msgID, sid, time.Since(start), fmt.Errorf("opencode session stream ended")
@@ -2322,10 +2392,23 @@ func (s *Service) runOpenCodeTurn(ctx context.Context, client scheduler.ChatTurn
 					return msgID, sid, time.Since(start), nil
 				}
 			case "permission":
-				// Auto-approve (the --auto equivalent). Session-level deny
-				// rules mean this should rarely fire — defensive only.
+				// Same consent decision path as the primary drain loop. This legacy
+				// non-streaming path has no client stream to carry the card, so an ask
+				// here is recorded and awaited (the reply RPC finds it in the shared
+				// registry); it is never blind auto-approved.
 				if pid := evt.PermissionID; pid != "" {
-					go func() { _ = client.ReplyPermission(context.WithoutCancel(ctx), sid, pid) }()
+					resp, ask, refusal := legacyConsent.decide(ctx, sid, evt)
+					if ask != nil {
+						legacyConsent.logAsk(ask)
+					}
+					if refusal != "" {
+						s.log.Warn("ask orchicon consent: refused a tool call",
+							"conversation", convID, "reason", refusal)
+					}
+					if resp != "" {
+						rc := client
+						go func() { _ = rc.ReplyPermissionDecision(context.WithoutCancel(ctx), sid, pid, resp) }()
+					}
 				}
 			case "error":
 				// The turn failed at the model/API level: record it and end
@@ -2427,12 +2510,9 @@ func (s *Service) conversationProjectContext(ctx context.Context, tenantID strin
 	if conv.ProjectID == "" {
 		return ""
 	}
-	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		return ""
-	}
-	defer ttx.Rollback(ctx)
-	p, err := db.GetProject(ctx, ttx.Tx, tenantID, conv.ProjectID)
+	// The SAME load the tool layer's scope resolver uses (conversationProjectRow), so the directory named here and
+	// the directory the file/shell suite binds to are one read of one row — they cannot drift.
+	p, err := conversationProjectRow(ctx, s.pool, tenantID, conv.ProjectID)
 	if err != nil {
 		// A project deleted out from under the conversation (archived, or hard-deleted with its tenant). The turn
 		// proceeds unassigned rather than failing; the rail and the GUI both render the same stale id as an
@@ -2449,6 +2529,11 @@ func (s *Service) conversationProjectContext(ctx context.Context, tenantID strin
 		b.WriteString(fmt.Sprintf("That directory is the folder this conversation's work happens in — treat paths "+
 			"in this chat as relative to `%s` unless a message says otherwise, and create or edit files there rather "+
 			"than in some other project's tree.\n", p.ProjectDir))
+		b.WriteString(fmt.Sprintf("It is also this conversation's DEFAULT SCOPE and its PRE-APPROVED directory: a write "+
+			"or an execution inside `%s` proceeds without asking, and that is what the association buys. The suite can "+
+			"still reach the rest of the host — reads never ask anywhere — but work outside this directory, a sibling "+
+			"project's tree included, is out of scope and asks the user first, so say what you intend to touch there "+
+			"rather than assuming it is approved.\n", p.ProjectDir))
 	}
 	if p.Status != "" && p.Status != "active" {
 		b.WriteString(fmt.Sprintf("NOTE: this project is `%s`, not active — say so if a request depends on it running.\n", p.Status))

@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/beardedparrott/orchicon/internal/guard"
+	"github.com/beardedparrott/orchicon/internal/permpolicy"
 )
 
 // ask_guard.go: the Ask path's destructive-command backstop.
@@ -77,13 +78,15 @@ func askGuardForExec() (*guard.Guard, error) {
 	return g, err
 }
 
-// AskGuardEnviron returns the bash environment for Ask-path HostTools
-// execution: the guard shim dir FIRST on PATH (mirroring
-// internal/runtime/agent.go's prependGuard), then os.Environ(). The guard
-// is the worker path's OS-level destructive-command backstop
-// (internal/guard): without it, an Ask conversation could `rm -rf`
-// outside the project while a worker would be refused.
-func AskGuardEnviron() []string {
+// AskGuardEnvironFor returns the bash environment for an Ask-path execution:
+// the guard shim dir FIRST on PATH (mirroring internal/runtime/agent.go's
+// prependGuard), then os.Environ(), then the INTERACTIVE profile's
+// ORCHICON_GUARD_* key/values (guard.InteractiveEnviron). The shim reads its
+// policy PER INVOCATION through that env, so a grant withdrawn or a policy
+// edited between two commands takes effect on the next one.
+//
+// An empty policyPath emits no guard vars — the worker profile, byte-for-byte.
+func AskGuardEnvironFor(policyPath, projectDir string, grants, once []string) []string {
 	env := os.Environ()
 	g, err := askGuardForExec()
 	if err != nil || g == nil {
@@ -92,7 +95,28 @@ func AskGuardEnviron() []string {
 		// supervisor's behavior (warn + continue, never block).
 		return env
 	}
-	return g.Apply(env)
+	return append(g.Apply(env), guard.InteractiveEnviron(policyPath, projectDir, grants, once)...)
+}
+
+// AskGuardEnviron is the conversation-less form (kept for callers that want the
+// shim on PATH without a conversation's project, grants or once-targets).
+func AskGuardEnviron() []string {
+	return AskGuardEnvironFor(permpolicy.DefaultPath(), "", nil, nil)
+}
+
+// askGuardEnviron is the PER-CONVERSATION environment factory handed to the host
+// tool suite (orchicon.HostTools.SetBashEnviron): the shim, plus the
+// conversation's project dir, its session-granted directories and the operator's
+// approved once-targets. Nil-safe — a Service-less caller (tool definitions)
+// gets the bare shim.
+func (s *Service) askGuardEnviron(scope AskFileScope, convID string) func() []string {
+	return func() []string {
+		var grants, once []string
+		if s != nil {
+			grants, once = s.grants.Roots(convID), s.once.Targets(convID)
+		}
+		return AskGuardEnvironFor(permpolicy.DefaultPath(), scope.Dir, grants, once)
+	}
 }
 
 // CloseAskGuard removes the shim dir at daemon shutdown. Safe on nil /

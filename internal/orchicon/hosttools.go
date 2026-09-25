@@ -59,6 +59,23 @@ type HostTools struct {
 	// (worker-path parity: runtime/agent.go's prependGuard). Nil →
 	// inherited env (pre-change behavior, worker path untouched).
 	envForBash func() []string
+	// pathPolicy, when set, is consulted with every path-like argument of
+	// every call BEFORE the call is dispatched, and its error aborts the
+	// call verbatim. Wired by the consent layer to the ONE shared policy
+	// accessor (permpolicy.Store.HostSuiteGuard) so the file suite and the
+	// consent core cannot disagree about what is denied. Nil → no policy
+	// hook (the worker path is unchanged; the policy file is the operator's
+	// interactive-plane rule).
+	//
+	// This suite is the ONE place reads/writes/edits land, which is why the
+	// hook lives here rather than in every tool.
+	pathPolicy func(paths []string) error
+}
+
+// SetPathPolicy installs the persistent-permission-policy hook (see the
+// field doc). A nil fn removes it.
+func (h *HostTools) SetPathPolicy(fn func(paths []string) error) {
+	h.pathPolicy = fn
 }
 
 // NewHostTools builds the host tool suite scoped to the execution's
@@ -66,11 +83,39 @@ type HostTools struct {
 // project root is passed READ-only when a worktree is provisioned so
 // reads can reach run-state files outside the worktree (mirroring the
 // opencode sidecar's boundary); writes never reach it.
+//
+// This constructor is deliberately CONFINED and is the one every worker run
+// uses. The interactive (Ask) widening is NewHostToolsUnrestricted and is not
+// reachable from here — a worker suite must never inherit it.
 func NewHostTools(workingDir, projectRoot string) *HostTools {
 	return &HostTools{base: worktree.Base{
 		Worktree:    workingDir,
 		ProjectRoot: projectRoot,
 		ScratchDir:  worktree.DefaultScratchDir,
+	}}
+}
+
+// NewHostToolsUnrestricted builds the host tool suite for the INTERACTIVE (Ask)
+// path: the same suite, the same relative-path anchor and bash cwd
+// (workingDir), but the allowed set is the whole filesystem — an absolute path
+// is permitted wherever the process can reach it.
+//
+// WHY A SEPARATE CONSTRUCTOR AND NOT A SETTER OR A PACKAGE DEFAULT. A worker
+// session's suite must be incapable of inheriting the widening, and with a
+// constructor the only way to get an unconfined suite is to name this function
+// in the call. A setter or a shared default would leave the worker path one
+// call away from it. TestWorkerConstructorCannotInheritUnrestricted fails the
+// moment the two ever converge.
+//
+// This is not a security boundary on a host plane: the process runs as the
+// operator's uid, so filesystem modes are the real constraint and the consent
+// layer governs action. Worktree stays the relative-path anchor and the bash
+// cwd default, so project-relative work is unchanged.
+func NewHostToolsUnrestricted(workingDir string) *HostTools {
+	return &HostTools{base: worktree.Base{
+		Worktree:     workingDir,
+		ScratchDir:   worktree.DefaultScratchDir,
+		AllowAnyPath: true,
 	}}
 }
 
@@ -170,6 +215,16 @@ func (h *HostTools) Defs() []ToolDef {
 // resolves inside the execution's working dir + the sanctioned scratch
 // dir; escapes are refused by the engine's containment boundary.
 func (h *HostTools) Execute(ctx context.Context, name, argsJSON string) (string, error) {
+	// THE POLICY CHOKE POINT, and it runs before EVERY branch.
+	//
+	// Deliberately first: this is the one function every host-suite call
+	// passes through, so a check here cannot be bypassed by which internal
+	// branch a tool happens to take. A returned error is the tool's result
+	// verbatim, so a refusal that names the denied policy entry reaches the
+	// model and the operator unaltered.
+	if err := h.checkPolicy(name, argsJSON); err != nil {
+		return "", err
+	}
 	switch name {
 	case "batch_read":
 		var a worktree.ReadArgs
@@ -219,6 +274,125 @@ func (h *HostTools) Execute(ctx context.Context, name, argsJSON string) (string,
 	default:
 		return "", fmt.Errorf("hosttools: unknown tool %q", name)
 	}
+}
+
+// policyTargetCandidates extracts the path-like targets a call names, each
+// in BOTH spellings the operator might have written a policy entry for: as
+// the model wrote it (`~/.ssh/id_rsa`, or a project-relative path) and, when
+// the suite has a working dir, resolved against it.
+//
+// Keys are a WHITELIST (path/paths/filePath), never "every string in the
+// args": content, oldString and newString are file CONTENT, and a policy
+// entry that matched the text of a file being written would be a rule that
+// mis-fires on the thing it is meant to protect.
+func (h *HostTools) policyTargetCandidates(name, argsJSON string) []string {
+	var root any
+	if err := json.Unmarshal([]byte(argsJSON), &root); err != nil {
+		// Not JSON: fall back to the shell reading, which is what a
+		// malformed/mis-typed call looks like.
+		root = nil
+	}
+	raw := make([]string, 0, 8)
+	collectPolicyPaths(root, &raw)
+	if name == "bash" {
+		var a struct {
+			Command string `json:"command"`
+		}
+		if err := json.Unmarshal([]byte(argsJSON), &a); err == nil {
+			raw = append(raw, shellPolicyTokens(a.Command)...)
+		}
+	}
+	out := make([]string, 0, len(raw)*2)
+	seen := make(map[string]bool, len(raw)*2)
+	add := func(t string) {
+		t = strings.TrimSpace(t)
+		if t == "" || seen[t] {
+			return
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	for _, t := range raw {
+		add(t)
+		// A path written RELATIVE lands inside the suite's working dir;
+		// pass the resolved form too so a policy entry written either way
+		// matches. An absolute path is already its own resolution.
+		if !filepath.IsAbs(t) && !strings.HasPrefix(t, "~") && h.base.Worktree != "" {
+			add(filepath.Join(h.base.Worktree, t))
+		}
+	}
+	return out
+}
+
+// collectPolicyPaths walks a decoded JSON value and appends every string
+// under a path-naming key (path/paths/filePath/filePaths), descending into
+// objects and arrays so `writes: [{path: …}]` is covered.
+func collectPolicyPaths(v any, out *[]string) {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, val := range t {
+			switch k {
+			case "path", "paths", "filePath", "filePaths":
+				switch s := val.(type) {
+				case string:
+					*out = append(*out, s)
+				case []any:
+					for _, e := range s {
+						if str, ok := e.(string); ok {
+							*out = append(*out, str)
+						}
+					}
+				}
+			default:
+				collectPolicyPaths(val, out)
+			}
+		}
+	case []any:
+		for _, e := range t {
+			collectPolicyPaths(e, out)
+		}
+	}
+}
+
+// shellPolicyTokens splits a bash command into whitespace-separated tokens
+// and keeps the ones that could name a file: any token containing a path
+// separator, and every token that survives a leading assignment or quote
+// strip. Deliberately over-inclusive — the hook only refuses on a DENY
+// match, so an extra candidate can only make the denial MORE certain, never
+// turn a permitted command into a refused one.
+func shellPolicyTokens(command string) []string {
+	if strings.TrimSpace(command) == "" {
+		return nil
+	}
+	fields := strings.Fields(command)
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		tok := strings.Trim(f, `'"`)
+		if i := strings.Index(tok, "="); i > 0 && !strings.Contains(tok[:i], "/") {
+			tok = tok[i+1:] // VAR=path → path
+			tok = strings.Trim(tok, `'"`)
+		}
+		if tok == "" {
+			continue
+		}
+		if strings.Contains(tok, "/") || strings.HasPrefix(tok, "~") {
+			out = append(out, tok)
+		}
+	}
+	return out
+}
+
+// checkPolicy runs the installed policy hook over the call's targets. A nil
+// hook (the worker path) is a no-op.
+func (h *HostTools) checkPolicy(name, argsJSON string) error {
+	if h.pathPolicy == nil {
+		return nil
+	}
+	targets := h.policyTargetCandidates(name, argsJSON)
+	if len(targets) == 0 {
+		return nil
+	}
+	return h.pathPolicy(targets)
 }
 
 // --- thin wrappers over the composite engine -------------------------------
@@ -473,21 +647,13 @@ func (h *HostTools) execBash(ctx context.Context, argsJSON string) (string, erro
 	return string(out), nil
 }
 
-// resolveDir resolves a project-relative directory to an absolute path
-// inside the containment boundary (worktree root, project root READ-only,
-// or scratch). Returns an error on escape.
+// resolveDir resolves a path for the directory-listing tools (list/glob)
+// through the SAME resolver the composite tools use (worktree.ResolvePath), so
+// the allowed set is defined in exactly ONE place — the worktree engine —
+// instead of being re-listed here. An absolute path is refused unless the base
+// is unrestricted (the interactive Ask suite).
 func (h *HostTools) resolveDir(p string) (string, error) {
-	clean := filepath.Clean(p)
-	if filepath.IsAbs(clean) {
-		for _, root := range []string{h.base.Worktree, h.base.ProjectRoot, h.base.ScratchDir} {
-			if root != "" && (clean == root || strings.HasPrefix(clean, root+string(filepath.Separator))) {
-				return clean, nil
-			}
-		}
-		return "", fmt.Errorf("path %q escapes the working dir", p)
-	}
-	// Relative paths resolve against the worktree root only.
-	return filepath.Join(h.base.Worktree, clean), nil
+	return worktree.ResolvePath(h.base, p, false)
 }
 
 // pathsOrDot normalizes a single optional path into the slice form the
