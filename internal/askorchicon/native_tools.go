@@ -25,13 +25,18 @@ import (
 // semantics, one grammar. This restores the host-serve tool parity
 // promised in internal/orchicon/chatturn.go for Ask sessions.
 //
-// AskFileRoot defines the containment boundary: the tenant's FIRST active
-// project that has a project_dir configured. Ask turns have no run
-// worktree (no dispatch, no manifest), so the project dir IS the
-// read+write root — in-place, mirroring HostTools' in-place semantics
-// (Worktree := ProjectDir, ProjectRoot := ""). The execution guard's
-// destructive-command blocklist rides bash's PATH exactly as it does for
-// workers (see AskGuardEnviron).
+// AskFileRoot resolves the SESSION ANCHOR for the file/shell suite: the
+// tenant's FIRST active project that has a project_dir configured. Ask turns
+// have no run worktree (no dispatch, no manifest), so the project dir is the
+// relative-path anchor and the bash cwd default (Worktree := ProjectDir,
+// ProjectRoot := ""), exactly like HostTools' in-place semantics.
+//
+// The suite is UNCONFINED (orchicon.NewHostToolsUnrestricted): an absolute
+// path is permitted wherever the operator can reach it — the interactive
+// boundary. The anchor is NOT a containment boundary: it decides where a
+// relative path lands and where bash starts, nothing more. The execution
+// guard's destructive-command blocklist still rides bash's PATH exactly as it
+// does for workers (see AskGuardEnviron).
 
 // hostSuiteToolNames is the set of host-suite tool names the Ask surface
 // exposes (mirrors orchicon.HostTools' suite exactly — parity by
@@ -164,14 +169,15 @@ func AskFileRoot(ctx context.Context, pool *db.Pool) (string, error) {
 	return "", fmt.Errorf("ask file root: no active project with a project_dir configured — create one with create_project / create_project_directory first")
 }
 
-// askHostToolsForRoot builds the file/shell suite scoped to root (the
-// enabled project's project_dir, read+write; no separate read-only project
-// root — in-place semantics). bash runs in-process WITH the execution
+// askHostToolsForRoot builds the file/shell suite for an Ask turn: the suite is
+// UNCONFINED (the interactive boundary — any absolute path the operator can
+// reach), while root stays its relative-path anchor and bash cwd, so
+// project-relative work is unchanged. bash runs in-process WITH the execution
 // guard's destructive-command shim first on PATH (AskGuardEnviron —
 // worker-path parity); the suite is fresh per execution (no shared state
 // across calls).
 func askHostToolsForRoot(root string) *orchicon.HostTools {
-	h := orchicon.NewHostTools(root, "")
+	h := orchicon.NewHostToolsUnrestricted(root)
 	h.SetBashEnviron(AskGuardEnviron)
 	return h
 }

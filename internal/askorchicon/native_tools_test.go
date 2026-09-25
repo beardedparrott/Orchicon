@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/beardedparrott/orchicon/internal/askmode"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
@@ -167,22 +168,147 @@ func TestNativeAskExecuteFileSuiteRoundTrip(t *testing.T) {
 	}
 }
 
-// TestNativeAskFileSuiteEscapeRefused proves containment: a write that
-// escapes the project root is refused by the engine (never lands outside).
-func TestNativeAskFileSuiteEscapeRefused(t *testing.T) {
+// TestNativeAskFileSuiteReachesTheRealFilesystem is the INTERACTIVE boundary:
+// the Ask suite's allowed set is the whole filesystem. It supersedes the old
+// TestNativeAskFileSuiteEscapeRefused, which asserted the confined behaviour
+// this change deliberately removes from the Ask path (the confinement now
+// lives ONLY on the worker path — see hosttools_unrestricted_test.go).
+func TestNativeAskFileSuiteReachesTheRealFilesystem(t *testing.T) {
 	r := testToolRegistry()
 	p := (&Service{toolRegistry: r}).NativeAskTools()
-	tmp := t.TempDir()
-	restore := stubAskFileRoot(tmp)
+	ctx := context.Background()
+	root := t.TempDir()
+	restore := stubAskFileRoot(root)
 	defer restore()
-	outside := filepath.Join(t.TempDir(), "outside.txt")
 
-	if _, err := p.ExecuteAskTool(context.Background(), "write",
-		`{"filePath":"`+filepath.Join("..", filepath.Base(filepath.Dir(outside)))+"/"+filepath.Base(outside)+`","content":"x"}`); err == nil {
-		t.Fatal("write outside the project root succeeded — containment broken")
+	// A file the operator can read, OUTSIDE the suite root/anchor.
+	outsideDir := t.TempDir()
+	outside := filepath.Join(outsideDir, "secret.txt")
+	if err := os.WriteFile(outside, []byte("real filesystem reach"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(outside); err == nil {
-		t.Fatal("escaped file landed outside the project root")
+
+	// read: an absolute path outside the anchor now succeeds with no escape error.
+	out, err := p.ExecuteAskTool(ctx, "read", `{"path":`+jsonString(outside)+`}`)
+	if err != nil {
+		t.Fatalf("read outside the suite root failed (interactive boundary too narrow): %v", err)
+	}
+	if !strings.Contains(out, "real filesystem reach") {
+		t.Fatalf("read returned %q, want the outside file's content", out)
+	}
+
+	// batch_read: the composite tool reaches it too.
+	out, err = p.ExecuteAskTool(ctx, "batch_read", `{"paths":[`+jsonString(outside)+`]}`)
+	if err != nil || !strings.Contains(out, "real filesystem reach") {
+		t.Fatalf("batch_read outside the suite root: err=%v out=%q", err, out)
+	}
+
+	// A plain relative path STILL resolves against the conversation's project.
+	if _, err := p.ExecuteAskTool(ctx, "write", `{"filePath":"inside.txt","content":"anchored"}`); err != nil {
+		t.Fatalf("relative write: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "inside.txt")); err != nil || string(data) != "anchored" {
+		t.Fatalf("relative path did not anchor at the suite root: data=%q err=%v", data, err)
+	}
+}
+
+// TestNativeAskBashCwdIsTheSuiteRoot: bash starts in the conversation's project
+// (the suite anchor) and can operate elsewhere after a `cd`.
+func TestNativeAskBashCwdIsTheSuiteRoot(t *testing.T) {
+	r := testToolRegistry()
+	p := (&Service{toolRegistry: r}).NativeAskTools()
+	ctx := context.Background()
+	root := t.TempDir()
+	restore := stubAskFileRoot(root)
+	defer restore()
+
+	out, err := p.ExecuteAskTool(ctx, "bash", `{"command":"pwd"}`)
+	if err != nil {
+		t.Fatalf("bash pwd: %v", err)
+	}
+	if !strings.Contains(out, root) {
+		t.Fatalf("bash default cwd = %q, want the suite root %q", out, root)
+	}
+
+	elsewhere := t.TempDir()
+	out, err = p.ExecuteAskTool(ctx, "bash", `{"command":"cd `+elsewhere+` && pwd"}`)
+	if err != nil {
+		t.Fatalf("bash cd elsewhere: %v", err)
+	}
+	if !strings.Contains(out, elsewhere) {
+		t.Fatalf("bash cd elsewhere printed %q, want %q", out, elsewhere)
+	}
+}
+
+// jsonString renders s as a JSON string literal for embedding in an args blob.
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+// TestHostSuiteSplitAgreesWithAskmode pins acceptance criterion 6: the
+// read-set and the gate-set come from ONE definition (askmode) and the host
+// suite's partition agrees with it exactly — a name added to the suite that
+// askmode denies, or a gate name missing from the suite, fails here.
+func TestHostSuiteSplitAgreesWithAskmode(t *testing.T) {
+	// The gate-set, derived from askmode (never re-listed as an independent
+	// source of truth beyond this pin).
+	gateNames := askmode.DeniedNames(askmode.Brainstorm)
+	gate := map[string]bool{}
+	for _, n := range gateNames {
+		gate[n] = true
+	}
+	wantGate := map[string]bool{"bash": true, "batch_write": true, "edit": true, "write": true}
+	if len(gate) != len(wantGate) {
+		t.Fatalf("askmode gate-set = %v, want %v", gateNames, wantGate)
+	}
+	for n := range wantGate {
+		if !gate[n] {
+			t.Fatalf("askmode no longer denies %q — the host suite gate-set drifted", n)
+		}
+	}
+
+	suite := map[string]bool{}
+	for _, n := range hostSuiteToolNames {
+		suite[n] = true
+	}
+	// Every gate name must be present in the suite (the enforced surface).
+	for _, n := range gateNames {
+		if !suite[n] {
+			t.Fatalf("askmode denies %q but it is not in hostSuiteToolNames", n)
+		}
+	}
+	// Brainstorm and Quick Work deny the same set: the suite partition must
+	// match askmode's decision for every host-suite name, both directions.
+	for _, mode := range []string{askmode.Brainstorm, askmode.QuickWork} {
+		for _, n := range hostSuiteToolNames {
+			if got, want := askmode.Allows(mode, n), !gate[n]; got != want {
+				t.Errorf("askmode.Allows(%s, %q) = %v, want %v — the read-set/gate-set disagree", mode, n, got, want)
+			}
+		}
+	}
+	// Iteration denies the plan tools, which are disjoint from the host suite.
+	for _, n := range hostSuiteToolNames {
+		if !askmode.Allows(askmode.Iteration, n) {
+			t.Errorf("Iteration mode denies host-suite tool %q — the gate-set and read-set must stay disjoint", n)
+		}
+	}
+
+	// Drift guard on the suite list itself: the defs the suite advertises and
+	// the dispatch list cannot diverge.
+	defs := map[string]bool{}
+	for _, d := range askHostToolsForRoot("").Defs() {
+		defs[d.Name] = true
+	}
+	for _, n := range hostSuiteToolNames {
+		if !defs[n] {
+			t.Errorf("hostSuiteToolNames lists %q but Defs() does not advertise it", n)
+		}
+	}
+	for n := range defs {
+		if !suite[n] {
+			t.Errorf("Defs() advertises %q but hostSuiteToolNames does not list it", n)
+		}
 	}
 }
 
