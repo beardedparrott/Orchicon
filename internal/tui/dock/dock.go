@@ -4,10 +4,22 @@
 // notice/error strip, and a persistent affordance row (what Enter does,
 // the newline chord, how to open the command palette) are rendered. The
 // dock also owns bracketed-paste handling, the configurable newline keys
-// (alt+enter default, leading-backslash+enter alternative — bubbletea
-// v1.3.10 has no kitty keyboard protocol, so Shift+Enter cannot be enabled
-// programmatically; CSI-u shift+enter is accepted when a terminal emits it
-// anyway), and the draft buffer (restored after a failed send).
+// (alt+enter default, leading-backslash+enter alternative), and the draft
+// buffer (restored after a failed send).
+//
+// SHIFT+ENTER CANNOT BE A NEWLINE HERE, and that is a protocol fact rather than a
+// choice. A legacy terminal encodes the Ctrl and Alt modifiers on Enter as an ESC
+// PREFIX (which is why alt+enter arrives as KeyEnter{Alt:true} and can be handled),
+// but encodes SHIFT not at all: Shift+Enter and Enter both send CR, so there is
+// nothing to tell apart. The protocol that fixes that — kitty keyboard / CSI-u —
+// must be REQUESTED by the program at startup, and the pinned bubbletea (v1.3.10)
+// cannot: it contains no kitty support and defines no KeyShiftEnter at all (its
+// shift keys are the arrow / home / end / tab family only). A terminal that emits
+// CSI-u shift+enter regardless therefore produces bytes this package has no value
+// to parse them into. (An earlier version of this comment claimed the sequence was
+// "accepted when a terminal emits it anyway" — the library makes that impossible,
+// so the claim is removed rather than left to mislead.) Making shift+enter insert a
+// newline is a bubbletea v2 upgrade (keyboard enhancements), not a dock change.
 package dock
 
 import (
