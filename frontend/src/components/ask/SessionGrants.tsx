@@ -1,11 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { KeyRound } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   useListPermissionGrants,
   useRevokePermissionGrant,
 } from "@/api/askOrchicon";
-import { relativeGrantAge } from "@/lib/ask-consent";
+import { popoverNudge, relativeGrantAge } from "@/lib/ask-consent";
 import { useToast } from "@/components/ui/toast";
 
 // SessionGrants — this conversation's ACTIVE session grants, with revoke.
@@ -28,6 +28,11 @@ export interface SessionGrantsProps {
 
 export function SessionGrants({ conversationId, className }: SessionGrantsProps) {
   const [open, setOpen] = useState(false);
+  // nudge keeps the 320px panel on screen when the trigger is too close to the
+  // viewport's left edge for it (see popoverNudge). 0 = the normal anchored case.
+  const [nudge, setNudge] = useState(0);
+  const anchorRef = useRef<HTMLDivElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
   const toast = useToast();
   const { data: grants = [], isLoading } = useListPermissionGrants(conversationId, {
     // Poll while the panel is open so a grant given in another tab (or by a
@@ -54,10 +59,32 @@ export function SessionGrants({ conversationId, className }: SessionGrantsProps)
     setOpen(false);
   }, [conversationId]);
 
+  // Re-measure the nudge whenever the panel opens (and on resize): the anchor
+  // moves with the header layout, so this is read from real geometry rather
+  // than assumed. offsetWidth is a layout value, so applying the nudge never
+  // feeds back into the measurement. See popoverNudge for why it is needed.
+  useEffect(() => {
+    if (!open) {
+      setNudge(0);
+      return;
+    }
+    const measure = () => {
+      const anchor = anchorRef.current;
+      const panel = panelRef.current;
+      if (!anchor || !panel) return;
+      setNudge(
+        popoverNudge(anchor.getBoundingClientRect().right, panel.offsetWidth),
+      );
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [open, conversationId]);
+
   const count = grants.length;
 
   return (
-    <div className={cn("relative shrink-0", className)}>
+    <div ref={anchorRef} className={cn("relative shrink-0", className)}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -71,9 +98,14 @@ export function SessionGrants({ conversationId, className }: SessionGrantsProps)
       </button>
 
       {open && (
+        // `right` is overridden inline by the measured nudge, so a panel that
+        // would start off-screen is pushed back into view instead of clipping
+        // the directory it lists.
         <div
+          ref={panelRef}
           data-testid="session-grants-panel"
-          className="absolute right-0 top-full z-40 mt-2 w-80 rounded-xl border border-border bg-popover p-3 text-sm shadow-lg"
+          style={nudge ? { right: -nudge } : undefined}
+          className="absolute right-0 top-full z-40 mt-2 w-80 max-w-[calc(100vw-1rem)] rounded-xl border border-border bg-popover p-3 text-sm shadow-lg"
         >
           <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
             Session grants for this conversation

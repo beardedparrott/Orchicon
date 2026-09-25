@@ -116,6 +116,27 @@ export function outcomeLabel(ask: PermissionAsk, outcome: AskOutcome): string {
 }
 
 /**
+ * popoverNudge is how far a disclosure panel must be pushed RIGHT so its left
+ * edge does not run off the screen, given the anchor's right edge and the
+ * panel's width.
+ *
+ * The session-grants panel is a fixed-width (320px) popover anchored `right-0`
+ * to a trigger that sits MID-header, with the header's right-side chrome
+ * between it and the viewport edge. On a narrow viewport (375px) a 320px panel
+ * therefore starts ~30px OFF the left edge and clips the granted DIRECTORY —
+ * the one thing that list exists to show. 0 when it already fits (the desktop
+ * case), so the anchored layout is untouched where there is room.
+ */
+export function popoverNudge(
+  anchorRight: number,
+  panelWidth: number,
+  inset = 8,
+): number {
+  const left = anchorRight - panelWidth;
+  return left < inset ? Math.round(inset - left) : 0;
+}
+
+/**
  * relativeGrantAge renders "just now" / "3m ago" / "2h ago" from a Unix-seconds
  * grant time. 0 (unknown) renders an empty string rather than "1970".
  */

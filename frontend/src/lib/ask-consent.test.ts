@@ -6,6 +6,7 @@ import {
   outcomeFromChoice,
   outcomeLabel,
   pendingFor,
+  popoverNudge,
   relativeGrantAge,
   resolveAsk,
   type AskItem,
@@ -117,5 +118,26 @@ describe("relativeGrantAge", () => {
     expect(relativeGrantAge(now / 1000 - 180, now)).toBe("3m ago");
     expect(relativeGrantAge(now / 1000 - 7200, now)).toBe("2h ago");
     expect(relativeGrantAge(now / 1000 - 172800, now)).toBe("2d ago");
+  });
+});
+
+// The session-grants popover is a 320px panel anchored to a trigger that sits
+// MID-header on a narrow screen, so its left edge can land off the screen and
+// clip the granted directory (the one thing that list exists to show).
+describe("popoverNudge", () => {
+  it("pushes a would-be-clipped panel just back on screen", () => {
+    // 375px viewport, trigger's right edge ~290 (header chrome to its right):
+    // a 320px panel starts at -30, so it is pushed right by 38 (= 8 - (-30)).
+    expect(popoverNudge(290, 320)).toBe(38);
+  });
+
+  it("leaves a panel that already fits exactly where it is", () => {
+    expect(popoverNudge(328, 320)).toBe(0); // left edge exactly at the inset
+    expect(popoverNudge(955, 320)).toBe(0); // desktop
+    expect(popoverNudge(400, 320)).toBe(0);
+  });
+
+  it("handles a panel wider than the space to its left", () => {
+    expect(popoverNudge(100, 320)).toBe(228);
   });
 });

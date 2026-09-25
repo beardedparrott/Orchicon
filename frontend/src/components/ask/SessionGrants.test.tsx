@@ -46,6 +46,18 @@ describe("SessionGrants", () => {
     expect(src).toContain('e.key === "Escape"');
   });
 
+  // The panel is a 320px disclosure anchored `right-0` to a trigger that sits
+  // mid-header. On a 375px viewport its left edge lands OFF screen and clips the
+  // granted directory — the one thing the list exists to show — so it is pushed
+  // back into view by a measured amount (popoverNudge, unit-tested in
+  // lib/ask-consent.test.ts).
+  it("applies the nudge to the panel's right edge, measured from real geometry", () => {
+    expect(src).toContain("popoverNudge(anchor.getBoundingClientRect().right, panel.offsetWidth)");
+    expect(src).toContain("style={nudge ? { right: -nudge } : undefined}");
+    // The width is also viewport-capped, so a very narrow screen cannot clip.
+    expect(src).toContain("max-w-[calc(100vw-1rem)]");
+  });
+
   it("is mounted in the conversation header, keyed to the active conversation", () => {
     const route = fs.readFileSync(
       path.join(__dirname, "../../routes/ask-orchicon.tsx"),
