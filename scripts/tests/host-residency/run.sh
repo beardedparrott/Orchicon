@@ -17,6 +17,11 @@
 #      literal: it is bridge_bind_env's output (the resolved docker bridge +
 #      THIS instance's port), so the bridge is pinned below to keep the
 #      assertion deterministic and docker-free.
+#   4. A COLLIDING BIND SET. The host plane's two listeners must be DISTINCT
+#      concrete addresses: a wildcard primary (`:8080`) already owns the
+#      bridge address on every interface, so the extra bind could never bind
+#      and the plane retried a doomed net.Listen every 30s on every boot. The
+#      bind set (primary + extra) is asserted to contain no wildcard.
 #
 # It also pins the security boundary: every host-residency service publish is
 # bound to 127.0.0.1. The supervisor adds pg_hba `trust` rules for the published
@@ -141,10 +146,27 @@ check_contains "host dev plane DSN uses the published loopback port" \
   "plane_env:ORCHICON_POSTGRES_DSN=postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable" "$HOST_DEV"
 check_contains "host dev plane NATS URL uses the published loopback port" \
   "plane_env:ORCHICON_NATS_URL=nats://localhost:4222" "$HOST_DEV"
-check_contains "host dev plane binds its own HTTP port" \
-  "plane_env:ORCHICON_HTTP_ADDR=:8080" "$HOST_DEV"
+# THE PRIMARY BIND IS LOOPBACK, NOT A WILDCARD. `:8080` already owns
+# 172.17.0.1:8080 on EVERY interface, so the extra bind below could never bind
+# — the host plane logged "bridge listener bind failed … address already in
+# use" and retried it every 30s on every boot. These two lines are the pair
+# that used to contradict each other at runtime.
+check_contains "host dev plane binds its own HTTP port on loopback" \
+  "plane_env:ORCHICON_HTTP_ADDR=127.0.0.1:8080" "$HOST_DEV"
 check_contains "host dev plane ALSO binds the docker bridge at its own port" \
   "plane_env:ORCHICON_HTTP_EXTRA_BIND=172.17.0.1:8080" "$HOST_DEV"
+# …and the two cannot collide: the BIND SET (primary + extra — exactly the
+# addresses listenerAddrs hands the kernel) contains no wildcard address.
+DEV_BIND_SET="$(field "$HOST_DEV" plane_env:ORCHICON_HTTP_ADDR) $(field "$HOST_DEV" plane_env:ORCHICON_HTTP_EXTRA_BIND)"
+check "host dev bind set is loopback + bridge" "127.0.0.1:8080 172.17.0.1:8080" "$DEV_BIND_SET"
+check_lacks "host dev primary bind is not a bare-port wildcard" \
+  "plane_env:ORCHICON_HTTP_ADDR=:" "$HOST_DEV"
+for bind in $DEV_BIND_SET; do
+  case "$bind" in
+    :*|0.0.0.0:*|'[::]':*) check "host dev bind $bind names a concrete address" "concrete" "WILDCARD" ;;
+    *) check "host dev bind $bind names a concrete address" "concrete" "concrete" ;;
+  esac
+done
 check_contains "host dev plane advertises that same address to its run containers" \
   "plane_env:ORCHICON_PLANE_PUBLIC_URL=http://172.17.0.1:8080" "$HOST_DEV"
 check_contains "host dev plane state dir is a HOST path" \
@@ -176,6 +198,11 @@ check_contains "host prod plane DSN uses prod's postgres port" \
   "ORCHICON_POSTGRES_DSN=postgres://orchicon:orchicon@localhost:5433/orchicon?sslmode=disable" "$HOST_PROD"
 check_contains "host prod plane binds the docker bridge at PROD's port" \
   "plane_env:ORCHICON_HTTP_EXTRA_BIND=172.17.0.1:8091" "$HOST_PROD"
+check_contains "host prod plane binds PROD's own port on loopback" \
+  "plane_env:ORCHICON_HTTP_ADDR=127.0.0.1:8091" "$HOST_PROD"
+check "host prod bind set is loopback + bridge" \
+  "127.0.0.1:8091 172.17.0.1:8091" \
+  "$(field "$HOST_PROD" plane_env:ORCHICON_HTTP_ADDR) $(field "$HOST_PROD" plane_env:ORCHICON_HTTP_EXTRA_BIND)"
 check_lacks "host prod plane does NOT bind the bridge at dev's port" \
   "ORCHICON_HTTP_EXTRA_BIND=172.17.0.1:8080" "$HOST_PROD"
 
