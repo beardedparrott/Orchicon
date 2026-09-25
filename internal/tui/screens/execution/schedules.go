@@ -275,15 +275,25 @@ func (m *Model) fetchRunningSchedules(ctx context.Context) ([]screenkit.Item, st
 // MEMBERSHIP matches the GUI's History exactly (a run with a real started_at — isHistoryRun,
 // frontend/src/lib/schedules-model.ts:104-106). This read is tenant-wide, which IS the GUI's
 // History when its project filter is empty (schedules.tsx:1057 "projectId: projectId || undefined"),
-// so there is no scope divergence. ORDER is the one known divergence: the GUI passes
-// sortBy: "started_at" (schedules.tsx:1058) while this read takes the server default id DESC
-// (internal/db/workflow.go:732-735). Both are newest-first for ULID ids, so the visible order is
-// near-identical — the difference is deliberately NOT changed here (verify, do not change on a
-// guess; and finished membership must stay put). Recorded as a follow-up.
+// so there is no scope divergence.
+//
+// ORDER matches too, and it did not before. The GUI passes sortBy: "started_at"
+// (schedules.tsx:1058) while this read took the server default `id DESC` — and both are
+// newest-first for ULID ids, so the order was NEAR-identical rather than identical. "Near" is the
+// problem: a run whose started_at order disagrees with its id order (a long run that began before a
+// short one that was created later, or a run whose row was re-created out of id order by a
+// recovery) sorts differently in the two clients, and the operator sees the transcript of a
+// finished run in one order here and another order in the GUI. The server already supports the
+// same sort with keyset pagination on (started_at, id) (internal/db/workflow.go, ListWorkflowRuns),
+// so this is closed rather than documented as a follow-up.
 func (m *Model) fetchFinishedSchedules(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {
 	resp, err := m.cl.Workflows.ListWorkflowRuns(ctx, connect.NewRequest(&apiv1.ListWorkflowRunsRequest{
 		PageSize:  100,
 		PageToken: pageToken,
+		// The GUI's own sort, so the two clients cannot disagree about the order of history.
+		// sort_order is left to the server default ("desc" = newest first), which is also the
+		// GUI History view's default.
+		SortBy: "started_at",
 	}))
 	if err != nil {
 		return nil, "", err
