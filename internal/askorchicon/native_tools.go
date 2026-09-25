@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/beardedparrott/orchicon/internal/db"
@@ -154,6 +155,41 @@ const (
 	askScopeTenantAnchor = "tenant_fallback"
 )
 
+// PreApprovedPath reports whether target is inside this scope's PRE-APPROVED
+// directory — the operator's "inside it, writes and executions proceed without
+// asking".
+//
+// It is the ONE read the consent core makes when it decides ask vs proceed, which
+// is why it lives beside the scope value rather than in the consent layer: the
+// prompt's project statement, the ask_file_root envelope and the consent
+// decision must all read the SAME predicate or they drift.
+//
+// TRUE requires BOTH halves, and each is load-bearing:
+//   - FromConversation — the directory is the CONVERSATION's own project. A
+//     tenant-wide fallback anchor is not this conversation's tree, so NOTHING is
+//     approved in it: an unassigned conversation asks for every write, even
+//     though a directory exists to anchor relative paths. That is the whole
+//     difference between "a directory" and "a project of my own".
+//   - target resolving to Dir itself or a descendant of it. The comparison is on
+//     cleaned paths and requires Dir + separator, so a sibling whose name merely
+//     shares the prefix (…/Orchicon-v2 beside …/Orchicon) is NOT inside and asks.
+//
+// A relative target is resolved against Dir, matching where a relative path lands
+// for the suite (the anchor is Dir). An unusable scope (no FromConversation, no
+// Dir, no target) is false, never a panic and never an accidental allow: failing
+// closed here means an unapproved directory asks.
+func (s AskFileScope) PreApprovedPath(target string) bool {
+	if !s.FromConversation || strings.TrimSpace(s.Dir) == "" || strings.TrimSpace(target) == "" {
+		return false
+	}
+	dir := filepath.Clean(s.Dir)
+	t := filepath.Clean(target)
+	if !filepath.IsAbs(t) {
+		t = filepath.Join(dir, t)
+	}
+	return t == dir || strings.HasPrefix(t, dir+string(filepath.Separator))
+}
+
 // conversationProjectRow loads the project row the prompt half
 // (conversationProjectContext) and the tool half (AskFileScopeFor) both describe,
 // so the two cannot drift: ONE read, ONE shape. A missing project is an error. The
@@ -299,7 +335,7 @@ func (a *nativeAskTools) AskToolDefs(ctx context.Context) []orchicon.ToolDef {
 		have[askFileRootToolName] = true
 		defs = append(defs, orchicon.ToolDef{
 			Name:        askFileRootToolName,
-			Description: "Report the project_dir the Ask file/shell suite (batch_read/read/grep/write/edit/bash/…) is scoped to, and whether that directory is THIS conversation's own project (scope: conversation) or only the tenant-wide fallback anchor for a conversation with no project (scope: tenant_fallback). Call it first if a file/shell tool errors so you know which directory it operates in and whether working there is in this conversation's scope.",
+			Description: "Report the directory the Ask file/shell suite (batch_read/read/grep/write/edit/bash/…) uses for THIS conversation, and whether it is the conversation's own project (scope: conversation — its default scope, PRE-APPROVED, so writes and executions inside it proceed without asking) or only the tenant-wide fallback anchor for a conversation with no project (scope: tenant_fallback — NOT approved, so every write there asks the user first). Reads never ask anywhere. Call it first if a file/shell tool errors so you know which directory it uses and whether writing there needs consent.",
 			ParamsJSON:  `{"type":"object"}`,
 		})
 	}
@@ -363,10 +399,10 @@ func (a *nativeAskTools) ExecuteAskTool(ctx context.Context, name, argsJSON stri
 		if scope.FromConversation {
 			env["scope"] = askScopeConversation
 			env["project_id"] = scope.ProjectID
-			env["note"] = "This directory IS this conversation's project; file/shell work inside it is in scope."
+			env["note"] = "This directory IS this conversation's project: it is the conversation's default scope and PRE-APPROVED, so file/shell work inside it proceeds without asking. Reads never ask anywhere; a write or a command OUTSIDE this directory asks the user first."
 		} else {
 			env["scope"] = askScopeTenantAnchor
-			env["note"] = "This conversation has NO project. This directory is only the tenant-wide relative-path anchor, NOT this conversation's own project — work here is outside this conversation's scope and needs the user's consent."
+			env["note"] = "This conversation has NO project and NOTHING is pre-approved for it. This directory is only the tenant-wide relative-path anchor, NOT this conversation's own project — every write here is outside this conversation's scope and needs the user's consent. Reads never ask anywhere."
 		}
 		b, merr := json.Marshal(env)
 		if merr != nil {
