@@ -321,10 +321,17 @@ container-ps: ## List orchicon container instances
 # there is no separate `make migrate` needed here — running it against the
 # instance's Postgres would conflict with the container-owned DB.
 .PHONY: full-rebuild rebuild-dev rebuild-prod
-# residency propagates to container-rebuild through the make chain (rebuild-dev
-# passes residency=host explicitly; the default is container), so a DEV-only
-# rebuild never alters PROD's shape: prod keeps its plane in its container
-# until the operator runs `make rebuild-prod residency=host`.
+# residency propagates to container-rebuild through the make chain: BOTH
+# rebuild-dev and rebuild-prod pass residency=host explicitly, so each rebuild
+# migrates its OWN instance to a host-resident plane and neither can alter the
+# other's shape (the launcher's own default stays `container` — see
+# residency_for in scripts/container.sh; nothing here is ever exported
+# globally).
+#
+# `residency=container` on the command line OVERRIDES the target default (a
+# command-line variable beats a target-specific one), which is the documented
+# rollback: `make rebuild-prod residency=container` puts prod's plane back
+# inside its container.
 full-rebuild: ## One command: binary build + all checks/tests + migrate-hash + image build + instance restart (usage: make full-rebuild instance=dev|prod)
 	@test -n "$(instance)" || { echo "usage: make full-rebuild instance=dev|prod"; exit 1; }
 	$(MAKE) build
@@ -337,8 +344,8 @@ rebuild-dev: ## One command: full checks/tests + rebuild + restart the DEV insta
 	$(MAKE) full-rebuild instance=dev residency=$(residency)
 	$(MAKE) orch-launcher-dev
 
-rebuild-prod: residency = container
-rebuild-prod: ## One command: full checks/tests + rebuild + restart the PROD instance (plane stays in its container until residency=host is passed)
+rebuild-prod: residency = host
+rebuild-prod: ## One command: full checks/tests + rebuild + restart the PROD instance (plane residency: host; pass residency=container to keep it in its container)
 	$(MAKE) full-rebuild instance=prod residency=$(residency)
 	$(MAKE) orch-launcher-prod
 
