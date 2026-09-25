@@ -79,6 +79,7 @@ import {
   ChatScrollContainer,
 } from "@/components/chat";
 import { useCategoryPreferences, getItemsForCategory } from "@/lib/category-store";
+import { AskCard, isAskUserToolCall, parseAskUserArgs } from "@/components/ask/AskCard";
 import { CreateCategoryDialog } from "@/components/CreateCategoryDialog";
 import { DiffSidebar, type DiffTab } from "@/components/diffs/DiffSidebar";
 import { usePersistentState } from "@/lib/diff/usePersistentState";
@@ -1237,6 +1238,12 @@ function AskOrchiconPage() {
     return [...(messages ?? []), ...groupedStream] as ChatMessage[];
   }, [messages, isStreaming, groupedStream]);
 
+  // The last message in the transcript. A clarifying-question card is
+  // interactive only while nothing follows the assistant message that asked it;
+  // once a later message exists, the question is settled (options shown, not
+  // clickable).
+  const lastMessageId = displayMessages[displayMessages.length - 1]?.id;
+
   return (
     <div className="flex flex-1 min-h-0 h-full gap-0 min-w-0 overflow-hidden">
       {/* Left diff rail — slide-out file-edit + diff side-by-side view.
@@ -1445,6 +1452,8 @@ function AskOrchiconPage() {
                     key={msg.id}
                     message={msg}
                     onRetry={handleRetry}
+                    onSelectOption={handleSendMessage}
+                    answered={msg.id !== lastMessageId}
                   />
                 ))}
 
@@ -1832,9 +1841,17 @@ function AskOrchiconPage() {
 function MessageBubble({
   message,
   onRetry,
+  onSelectOption,
+  answered,
 }: {
   message: ChatMessage;
   onRetry?: () => void;
+  // onSelectOption sends a clicked clarifying-question option as a NORMAL user
+  // message through the conversation's existing send path (handleSendMessage).
+  onSelectOption?: (label: string) => void;
+  // answered=true settles the card: a later message exists, so the question is
+  // no longer answerable by click (options shown, not interactive).
+  answered?: boolean;
 }) {
   const isUser = message.role === "user";
   const isError = !!message.metadata?.error;
@@ -1876,8 +1893,26 @@ function MessageBubble({
   const reasoning = ("reasoning" in message ? (message as { reasoning?: string[] }).reasoning : undefined) as string[] | undefined;
   const hasReasoning = Array.isArray(reasoning) && reasoning.length > 0;
 
+  // A recorded ask_user call renders as the clarifying-question card. It is
+  // interactive only while nothing follows this message (answered === false);
+  // selecting an option sends its label as a normal user message.
+  const askCall = (message.toolCalls ?? []).find((c) =>
+    isAskUserToolCall(c.functionName),
+  );
+  const askParsed = askCall ? parseAskUserArgs(askCall.arguments) : null;
+
   return (
     <>
+      {askCall && (
+        <AskCard
+          question={askParsed?.question ?? ""}
+          options={askParsed?.options ?? []}
+          allowOther={askParsed?.allowOther}
+          answered={answered}
+          error={askParsed ? undefined : "the recorded arguments are not valid JSON"}
+          onSelect={onSelectOption}
+        />
+      )}
       {hasReasoning && (
         <ReasoningBubble text={reasoning!.join("\n")} />
       )}
