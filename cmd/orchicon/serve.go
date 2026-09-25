@@ -26,9 +26,21 @@ import (
 	"github.com/beardedparrott/orchicon/internal/version"
 )
 
-// killOrphans kills any leftover opencode and orchicon mcp processes from
-// a prior crash. These can accumulate when the server is killed before the
-// ChatStream subprocess exits (e.g. during a forced binary replacement).
+// killOrphans kills the leftover opencode and orchicon mcp processes found by
+// every plane boot's sweep. These accumulate when the server is killed before
+// the ChatStream subprocess exits (e.g. during a forced binary replacement).
+//
+// WHAT COUNTS AS AN ORPHAN: a process that matches AND has been reparented to
+// init (PID 1) — the signature of one whose parent, the plane that spawned it,
+// died. A process with a LIVE parent belongs to somebody and is not ours to
+// kill.
+//
+// WHY THE PARENTAGE GUARD EXISTS: inside a container the pgrep could only ever
+// see the plane's own children, so an unconditional SIGTERM sweep was harmless
+// there. On a HOST-resident plane the same pgrep sees the WHOLE USER SESSION,
+// and the harm is asymmetric — a sibling instance's plane is restarted by its
+// serve watchdog, but the operator's own `opencode` (a legitimate, unrelated
+// process) simply dies. The sweep therefore bounds itself to genuine orphans.
 //
 // Skipped in the runtime-container sandbox plane (ORCHICON_SANDBOX_PLANE=1):
 // there the opencode serve is a LIVE child of the runtime supervisor, not
@@ -44,25 +56,74 @@ func killOrphans() {
 		return
 	}
 	for _, name := range []string{"opencode", "orchicon mcp"} {
-		// Split so the argument becomes "-f" (pattern match) + the name.
-		args := []string{"-x"}
-		if strings.Contains(name, " ") {
-			args = []string{"-f"} // use -f for multi-word patterns
-		}
-		out, err := exec.Command(pgrep, append(args, name)...).Output()
-		if err != nil {
-			continue
-		}
-		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-			pid, err := strconv.Atoi(strings.TrimSpace(line))
-			if err != nil || pid == os.Getpid() {
-				continue
-			}
-			if proc, err := os.FindProcess(pid); err == nil {
-				proc.Signal(syscall.SIGTERM)
-			}
+		sweepOrphans(orphanCandidates(pgrep, name))
+	}
+}
+
+// orphanCandidates returns the PIDs pgrep matches for name. `-x` matches the
+// process NAME exactly; a multi-word pattern such as "orchicon mcp" cannot be
+// a process name, so it is matched against the whole command line (`-f`) —
+// both patterns get the identical parentage treatment. A pgrep that finds
+// nothing (or is unusable) yields no candidates.
+func orphanCandidates(pgrep, name string) []int {
+	args := []string{"-x"}
+	if strings.Contains(name, " ") {
+		args = []string{"-f"} // use -f for multi-word patterns
+	}
+	out, err := exec.Command(pgrep, append(args, name)...).Output()
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if pid, err := strconv.Atoi(strings.TrimSpace(line)); err == nil {
+			pids = append(pids, pid)
 		}
 	}
+	return pids
+}
+
+// sweepOrphans SIGTERMs the candidates that are genuine orphans (initParented)
+// and returns how many it signalled.
+func sweepOrphans(pids []int) int {
+	signalled := 0
+	for _, pid := range pids {
+		// PID 1 is init itself, and this process is the plane running the
+		// sweep; neither is ever an orphan to reap.
+		if pid <= 1 || pid == os.Getpid() || !initParented(pid) {
+			continue
+		}
+		if proc, err := os.FindProcess(pid); err == nil {
+			proc.Signal(syscall.SIGTERM)
+			signalled++
+		}
+	}
+	return signalled
+}
+
+// initParented reports whether pid's parent is init (PID 1) — the signature of
+// a process a crashed plane left behind.
+//
+// WHY /proc RATHER THAN `pgrep -P 1`: the parentage test is the whole safety
+// property of this sweep, so it lives in Go where it is explicit and covered by
+// a test that needs no reparented process (and where it applies identically to
+// both patterns, whatever pgrep is installed). An unreadable /proc entry
+// (another user's process, a non-Linux host) reports false: a missed orphan is
+// a leak, a wrong SIGTERM is the operator's opencode dying — so the guard fails
+// in the direction that keeps processes alive.
+func initParented(pid int) bool {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "PPid:") {
+			continue
+		}
+		ppid, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(line, "PPid:")))
+		return err == nil && ppid == 1
+	}
+	return false
 }
 
 // runServe loads configuration from the environment, applies pending
