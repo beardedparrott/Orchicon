@@ -61,9 +61,10 @@
 #
 # PLANE_HTTP_PORT IS that "plane HTTP" column, and it is the SAME port the
 # instance publishes — so dev and prod can never disagree about which plane a
-# worker should dial. A HOST-RESIDENT plane binds it on the docker bridge
-# (bridge_bind_env) and advertises it to its run containers; a CONTAINER-
-# RESIDENT plane keeps its plane inside its container and takes no extra bind.
+# worker should dial. A HOST-RESIDENT plane binds it on LOOPBACK (its primary
+# bind — host clients) and on the docker bridge (bridge_bind_env), and
+# advertises the bridge address to its run containers; a CONTAINER-RESIDENT
+# plane keeps its plane inside its container and takes no extra bind.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -174,7 +175,17 @@ plane_env() {
   local inst="${1:-dev}"
   instance_info "$inst"
   echo "ORCHICON_INSTANCE=$inst"
-  echo "ORCHICON_HTTP_ADDR=:$PLANE_HTTP_PORT"
+  # THE PRIMARY BIND IS LOOPBACK, NOT A WILDCARD — and that is load-bearing,
+  # not cosmetic: `:<port>` (the plane's own default) already owns
+  # <bridge ip>:<port> on EVERY interface, so the extra bind below could never
+  # bind ("address already in use") and the plane retried a doomed net.Listen
+  # every 30s on every single boot: "bridge listener bind failed —
+  # runtime-container workers cannot reach the plane". Loopback keeps host
+  # clients working (orch, the GUI) and leaves the bridge address free for the
+  # listener that exists to serve runtime containers. A CONTAINER-resident
+  # plane is untouched: it keeps `:8080` (cmd/orchicon/container.go's
+  # containerChildEnv) and takes no extra bind to collide with.
+  echo "ORCHICON_HTTP_ADDR=127.0.0.1:$PLANE_HTTP_PORT"
   # HOST-RESIDENT LISTENERS, PER INSTANCE: the plane must answer on the
   # loopback address above (host clients: orch, the GUI) AND on the docker
   # bridge at THIS instance's port, and it must hand its run containers THAT

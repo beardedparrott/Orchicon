@@ -20,6 +20,14 @@ var extraBindRetryInterval = 30 * time.Second
 // address plus the optional bridge bind (when configured). Pure, so the boot
 // log and the tests read the same list — the "the bind set contains no
 // wildcard address" assertion rides on this.
+//
+// WHY NO WILDCARD: the two binds must be DISTINCT, and a wildcard primary is
+// not — `:8080` already owns <bridge ip>:8080 on every interface, so the
+// extra bind can never bind (see bindSetCollides). The HOST shape therefore
+// binds loopback + the docker bridge (scripts/container.sh's plane_env and
+// bridge_bind_env); the CONTAINER shape keeps its one wildcard `:8080` and
+// configures no extra bind, so nothing can collide there
+// (cmd/orchicon/container.go's containerChildEnv).
 func listenerAddrs(cfg config.Config) []string {
 	addrs := []string{cfg.HTTPAddr}
 	if cfg.ExtraBind != "" {
@@ -50,10 +58,52 @@ func (s *Server) startListeners(ctx context.Context) (net.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.log.Info("listener bind set", "addrs", listenerAddrs(s.cfg))
 	if s.cfg.ExtraBind != "" {
-		go s.serveExtra(ctx, s.cfg.ExtraBind)
+		if bindSetCollides(s.cfg.HTTPAddr, s.cfg.ExtraBind) {
+			// A wildcard primary already owns the extra bind's address, so
+			// serveExtra's net.Listen can NEVER succeed — it would only retry a
+			// doomed bind every extraBindRetryInterval for the life of the
+			// process (the observed host-plane boot: "bridge listener bind
+			// failed … address already in use" every 30s, forever). Say what is
+			// wrong ONCE, name the fix, and do not start the goroutine: the
+			// wildcard already answers on that address, so nothing is lost, and
+			// the plane must not be a wildcard bind anyway.
+			s.log.Error("bridge listener skipped: the primary bind is a wildcard and already owns the bridge address — ORCHICON_HTTP_ADDR must name a concrete interface address (e.g. 127.0.0.1:<port>) so the two binds cannot collide",
+				"http_addr", s.cfg.HTTPAddr, "extra_bind", s.cfg.ExtraBind, "env", "ORCHICON_HTTP_ADDR")
+		} else {
+			go s.serveExtra(ctx, s.cfg.ExtraBind)
+		}
 	}
 	return primary, nil
+}
+
+// bindSetCollides reports whether binding primary makes extra unbindable: a
+// wildcard primary (empty host, or an unspecified IP such as 0.0.0.0 / ::)
+// owns EVERY interface at its port, so a second listener for the same port
+// cannot bind. The ports must match — a wildcard primary on a different port
+// does not own the extra bind's port. Malformed addresses report false and let
+// the ordinary bind paths speak.
+func bindSetCollides(primary, extra string) bool {
+	if primary == "" || extra == "" {
+		return false
+	}
+	primaryHost, primaryPort, err := net.SplitHostPort(primary)
+	if err != nil {
+		return false
+	}
+	_, extraPort, err := net.SplitHostPort(extra)
+	if err != nil {
+		return false
+	}
+	if primaryPort == "" || primaryPort != extraPort {
+		return false
+	}
+	if primaryHost == "" {
+		return true
+	}
+	ip := net.ParseIP(primaryHost)
+	return ip != nil && ip.IsUnspecified()
 }
 
 // serveExtra binds cfg.ExtraBind and serves it from the shared s.httpSrv,
