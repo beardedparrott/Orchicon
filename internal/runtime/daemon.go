@@ -482,6 +482,14 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 	args := []string{"run", "-d", "--name", name,
 		"--label", "orchicon.workflow=" + workflowLabel,
 		"--label", "orchicon.instance=" + instanceID(req.InstanceID),
+		// Stable name for the HOST from inside every runtime container,
+		// independent of the docker bridge subnet. A host-resident plane
+		// advertises host.docker.internal (lifecycle.go planePublicURL) so a
+		// worker's orchicon-plane MCP channel can dial it; without this
+		// mapping that name only resolves under Docker Desktop, and the old
+		// hardcoded 172.17.0.1 breaks whenever the bridge subnet changes.
+		// host-gateway is docker's own "the host, whatever its bridge IP is".
+		"--add-host", "host.docker.internal:host-gateway",
 		"--user", fmt.Sprintf("%d:%d", d.UserID, d.GroupID),
 		"--cpus", d.CPUs,
 		"--memory", d.Memory,

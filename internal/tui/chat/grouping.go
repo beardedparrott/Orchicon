@@ -8,7 +8,13 @@
 // first-appearance order.
 package chat
 
-import "sort"
+import (
+	"encoding/json"
+	"sort"
+	"strings"
+
+	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+)
 
 // ItemKind discriminates ChatItem (mirrors the TS union: user | text |
 // tool | reasoning | error | artifact | session).
@@ -22,6 +28,7 @@ const (
 	KindError     ItemKind = "error"
 	KindArtifact  ItemKind = "artifact"
 	KindSession   ItemKind = "session"
+	KindAsk       ItemKind = "ask"
 )
 
 // ParsedTool mirrors the TS ParsedTool interface.
@@ -33,6 +40,65 @@ type ParsedTool struct {
 	At       int64 // ms since epoch (matches the TS Date.now() usage)
 }
 
+// AskOption is one choice on a clarifying-question card.
+type AskOption struct {
+	Label       string
+	Description string
+}
+
+// ParsedAsk is a recorded ask_user clarifying question the TUI renders as a card.
+//
+// IT IS A RECORD, NOT A PROMPT. The tool RECORDED the question and the turn
+// ENDED; the operator's answer is sent as the NEXT user message
+// (Controller.AnswerQuestion delegates to Send) — there is no blocking rendezvous
+// here, and this shape must not grow one. The CONSENT ask is genuinely BLOCKING
+// on the transport and must not reuse this non-blocking model, even though it
+// shares the card rendering.
+type ParsedAsk struct {
+	Question   string
+	Options    []AskOption
+	AllowOther bool
+}
+
+// isAskUserCall reports whether a recorded tool call is the clarifying question
+// this client renders (tolerating the orchicon_ MCP-style prefix the model may
+// emit — the native registry is keyed bare, the opencode path prefixed).
+func isAskUserCall(functionName string) bool {
+	return functionName == "ask_user" || functionName == "orchicon_ask_user"
+}
+
+// parseAskUserCall parses the FIRST recorded ask_user call on a message into a
+// ParsedAsk. It NEVER panics or errors outward: a malformed arguments payload
+// yields a card carrying the question-less error text the operator can see,
+// rather than dropping the call or crashing the pane.
+func parseAskUserCall(calls []*apiv1.ToolCall) *ParsedAsk {
+	for _, c := range calls {
+		if c == nil || !isAskUserCall(c.GetFunctionName()) {
+			continue
+		}
+		var in struct {
+			Question string `json:"question"`
+			Options  []struct {
+				Label       string `json:"label"`
+				Description string `json:"description"`
+			} `json:"options"`
+			AllowOther bool `json:"allow_other"`
+		}
+		if err := json.Unmarshal([]byte(c.GetArguments()), &in); err != nil {
+			return &ParsedAsk{Question: "(this clarifying question's arguments could not be read)"}
+		}
+		ask := &ParsedAsk{Question: strings.TrimSpace(in.Question), AllowOther: in.AllowOther}
+		for _, o := range in.Options {
+			if strings.TrimSpace(o.Label) == "" {
+				continue
+			}
+			ask.Options = append(ask.Options, AskOption{Label: o.Label, Description: o.Description})
+		}
+		return ask
+	}
+	return nil
+}
+
 // ChatItem mirrors the TS ChatItem union as one struct: exactly the
 // fields each variant carries; Kind selects the shape.
 type ChatItem struct {
@@ -40,6 +106,7 @@ type ChatItem struct {
 	Text      string // user | text | reasoning | error
 	Source    string // user only ("goal" | "chat" | ...)
 	Tool      *ParsedTool
+	Ask       *ParsedAsk // ask — a recorded clarifying question (client card)
 	Name      string // artifact
 	Type      string // artifact
 	Content   string // artifact

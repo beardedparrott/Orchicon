@@ -7,6 +7,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"regexp"
 	"strconv"
@@ -76,7 +77,15 @@ type BlobStoreConfig struct {
 
 // Config holds all control-plane runtime configuration.
 type Config struct {
-	HTTPAddr     string
+	HTTPAddr string
+	// ExtraBind is an optional SECOND HTTP bind
+	// (ORCHICON_HTTP_EXTRA_BIND): a concrete docker-bridge "host:port".
+	// Empty means the plane is reachable on HTTPAddr only. It exists so a
+	// host-resident plane is reachable from runtime containers across the
+	// docker bridge while host clients (orch, the GUI) keep using the
+	// loopback HTTPAddr. Never a wildcard: the plane must not be reachable
+	// from another machine (Validate rejects one).
+	ExtraBind    string
 	GRPCAddr     string
 	PostgresDSN  string
 	NATSURL      string
@@ -180,6 +189,7 @@ type Config struct {
 func Default() Config {
 	return Config{
 		HTTPAddr:           env("ORCHICON_HTTP_ADDR", ":8080"),
+		ExtraBind:          env("ORCHICON_HTTP_EXTRA_BIND", ""),
 		GRPCAddr:           env("ORCHICON_GRPC_ADDR", ":9090"),
 		PostgresDSN:        env("ORCHICON_POSTGRES_DSN", "postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable"),
 		NATSURL:            env("ORCHICON_NATS_URL", "nats://localhost:4222"),
@@ -196,16 +206,16 @@ func Default() Config {
 		Instance:           env("ORCHICON_INSTANCE", "dev"),
 		Mode:               DeploymentMode(env("ORCHICON_MODE", "local")),
 		Auth: AuthConfig{
-			Issuer:          env("ORCHICON_OIDC_ISSUER", "local"),
-			ClientID:        env("ORCHICON_OIDC_CLIENT_ID", "orchicon"),
-			ClientSecret:    env("ORCHICON_OIDC_CLIENT_SECRET", ""),
-			RedirectURL:     env("ORCHICON_OIDC_REDIRECT_URL", "http://localhost:5173/auth/callback"),
-			SigningKey:      env("ORCHICON_AUTH_SIGNING_KEY", "orchicon-dev-signing-key-change-in-production"),
-			AccessTTL:       15 * time.Minute,
-			RefreshTTL:      24 * time.Hour,
-			EmbeddedOP:      envBool("ORCHICON_OP_ENABLED", true),
-			OPRedirectURIs:  env("ORCHICON_OP_REDIRECT_URIS", ""),
-			OPIssuer:        env("ORCHICON_OP_ISSUER", ""),
+			Issuer:         env("ORCHICON_OIDC_ISSUER", "local"),
+			ClientID:       env("ORCHICON_OIDC_CLIENT_ID", "orchicon"),
+			ClientSecret:   env("ORCHICON_OIDC_CLIENT_SECRET", ""),
+			RedirectURL:    env("ORCHICON_OIDC_REDIRECT_URL", "http://localhost:5173/auth/callback"),
+			SigningKey:     env("ORCHICON_AUTH_SIGNING_KEY", "orchicon-dev-signing-key-change-in-production"),
+			AccessTTL:      15 * time.Minute,
+			RefreshTTL:     24 * time.Hour,
+			EmbeddedOP:     envBool("ORCHICON_OP_ENABLED", true),
+			OPRedirectURIs: env("ORCHICON_OP_REDIRECT_URIS", ""),
+			OPIssuer:       env("ORCHICON_OP_ISSUER", ""),
 		},
 		BlobStore: BlobStoreConfig{
 			Kind:       env("ORCHICON_BLOB_STORE", "local"),
@@ -221,8 +231,8 @@ func Default() Config {
 		OutboxPruneBatch:    envInt("ORCHICON_OUTBOX_PRUNE_BATCH", 10000),
 		OutboxPruneInterval: envDuration("ORCHICON_OUTBOX_PRUNE_INTERVAL", time.Hour),
 		DispatchConcurrency: envInt("ORCHICON_DISPATCH_CONCURRENCY", 4),
-		SecretsKEK:       env("ORCHICON_SECRETS_KEK", ""),
-		DataDir:          env("ORCHICON_DATA_DIR", "/var/lib/orchicon"),
+		SecretsKEK:          env("ORCHICON_SECRETS_KEK", ""),
+		DataDir:             env("ORCHICON_DATA_DIR", "/var/lib/orchicon"),
 	}
 }
 
@@ -260,6 +270,38 @@ func envBool(key string, fallback bool) bool {
 	return fallback
 }
 
+// validateExtraBind checks the optional second HTTP bind
+// (ORCHICON_HTTP_EXTRA_BIND). It must be a concrete "host:port" whose host
+// is a literal, specified IP: a hostname cannot be bound, and a wildcard
+// (0.0.0.0 / ::) is exactly the LAN exposure the plane must not allow.
+// A bad value fails closed at boot instead of silently degrading to
+// loopback-only (which would surface later as "workers cannot reach the
+// plane" from the far side of a docker bridge).
+func validateExtraBind(addr string) error {
+	if addr == "" {
+		return nil
+	}
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("config: ORCHICON_HTTP_EXTRA_BIND %q must be host:port (e.g. 172.17.0.1:8091)", addr)
+	}
+	if host == "" {
+		return fmt.Errorf("config: ORCHICON_HTTP_EXTRA_BIND %q has no host part; the bridge bind must name a concrete interface address", addr)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf("config: ORCHICON_HTTP_EXTRA_BIND %q host %q is not an IP literal (hostnames cannot be bound)", addr, host)
+	}
+	if ip.IsUnspecified() {
+		return fmt.Errorf("config: ORCHICON_HTTP_EXTRA_BIND %q is a wildcard bind — the plane must not be reachable from another machine; bind the docker bridge address instead", addr)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("config: ORCHICON_HTTP_EXTRA_BIND %q port must be 1..65535", addr)
+	}
+	return nil
+}
+
 // Validate reports configuration errors before the process starts serving.
 // Every mode requires a real IdP (the embedded OP or an external issuer);
 // production additionally requires a real external issuer and signing key
@@ -267,6 +309,9 @@ func envBool(key string, fallback bool) bool {
 func (c Config) Validate() error {
 	if c.HTTPAddr == "" {
 		return fmt.Errorf("config: HTTPAddr must be set")
+	}
+	if err := validateExtraBind(c.ExtraBind); err != nil {
+		return err
 	}
 	if c.DeploymentTenantID == "" {
 		return fmt.Errorf("config: DeploymentTenantID must be set (ORCHICON_DEPLOYMENT_TENANT_ID)")
