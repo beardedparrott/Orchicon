@@ -979,6 +979,13 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	// top-level" parent rule (flat-recurring items are top-level tasks); the
 	// flat shape is enforced separately by ValidateRecurringFlatness.
 	itemIsRecurring := current.RecurringSchedule != nil
+	// An EPHEMERAL item carries the same exemption for the same shape of
+	// reason: it is a machine-managed transient that lives in no tree (see
+	// ValidateParent). Derived from the ROW, not the request — the Connect
+	// update request has no ephemeral field; the flag is set at creation (by
+	// the Ask Orchicon create tool) and never changes. Reading it here keeps
+	// create and update from disagreeing about an existing ephemeral item.
+	itemIsEphemeral := current.Ephemeral
 	// Binding a workflow switches the item from one-shot (assigned worker,
 	// standalone dispatch) to template-bound: a stale worker assignment from
 	// the standalone path would flag the item as a worker-assigned one-shot
@@ -1085,7 +1092,7 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		if fields.ProjectID != nil && *fields.ProjectID != "" {
 			effectiveProject = *fields.ProjectID
 		}
-		if err := ValidateParent(ctx, ttx.Tx, tenantID, *msg.ParentId, current.Kind, effectiveProject, itemIsRecurring); err != nil {
+		if err := ValidateParent(ctx, ttx.Tx, tenantID, *msg.ParentId, current.Kind, effectiveProject, itemIsRecurring, itemIsEphemeral); err != nil {
 			return nil, mapParentError(err)
 		}
 	} else if msg.ParentId == nil && fields.ProjectID != nil && *fields.ProjectID != "" && *fields.ProjectID != current.ProjectID && current.ParentID != nil {
@@ -1095,7 +1102,7 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		// project (e.g. the parent was moved first). Otherwise the
 		// request must reparent explicitly — reject rather than leave
 		// the hierarchy cross-project (AGENTS.md: fix the whole class).
-		if err := ValidateParent(ctx, ttx.Tx, tenantID, *current.ParentID, current.Kind, *fields.ProjectID, itemIsRecurring); err != nil {
+		if err := ValidateParent(ctx, ttx.Tx, tenantID, *current.ParentID, current.Kind, *fields.ProjectID, itemIsRecurring, itemIsEphemeral); err != nil {
 			return nil, mapParentError(err)
 		}
 	}
