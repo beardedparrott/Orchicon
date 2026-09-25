@@ -27,6 +27,10 @@ type Service struct {
 	log  *slog.Logger
 	dsn  string // Postgres DSN for backup/restore
 
+	// policyPath is the operator's persistent permission policy file
+	// (permission_policy.go). Empty falls back to permpolicy.DefaultPath().
+	policyPath string
+
 	// validationRegistry is the model-ref validation catalog (ADR-0003).
 	// nil = the static builtin catalog. The server injects a CLI-aware
 	// registry so the validator agrees with the picker: CLI-discovered

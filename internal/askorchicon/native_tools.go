@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/orchicon"
+	"github.com/beardedparrott/orchicon/internal/permpolicy"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
@@ -25,13 +27,21 @@ import (
 // semantics, one grammar. This restores the host-serve tool parity
 // promised in internal/orchicon/chatturn.go for Ask sessions.
 //
-// AskFileRoot defines the containment boundary: the tenant's FIRST active
-// project that has a project_dir configured. Ask turns have no run
-// worktree (no dispatch, no manifest), so the project dir IS the
-// read+write root — in-place, mirroring HostTools' in-place semantics
-// (Worktree := ProjectDir, ProjectRoot := ""). The execution guard's
-// destructive-command blocklist rides bash's PATH exactly as it does for
-// workers (see AskGuardEnviron).
+// AskFileScopeFor resolves the file/shell suite's SESSION ANCHOR FROM THE
+// CONVERSATION: its own project_dir (the project its prompt names). A
+// conversation with no project falls back to the tenant's first project that
+// is active and has a project_dir, but ONLY as the relative-path anchor — that
+// fallback is not the conversation's own tree (see AskFileScope.FromConversation).
+// Ask turns have no run worktree (no dispatch, no manifest), so the project dir
+// is the relative-path anchor and the bash cwd default (Worktree := ProjectDir,
+// ProjectRoot := ""), exactly like HostTools' in-place semantics.
+//
+// The anchor is NOT a containment boundary. The suite is UNCONFINED
+// (orchicon.NewHostToolsUnrestricted): an absolute path is permitted wherever
+// the operator can reach it — the interactive boundary. The anchor decides
+// where a relative path lands and where bash starts, nothing more. The
+// execution guard's destructive-command blocklist still rides bash's PATH
+// exactly as it does for workers (see AskGuardEnviron).
 
 // hostSuiteToolNames is the set of host-suite tool names the Ask surface
 // exposes (mirrors orchicon.HostTools' suite exactly — parity by
@@ -118,35 +128,135 @@ const askFileRootToolName = "ask_file_root"
 
 // askFileRootResolve is the pluggable boundary resolver behind both the
 // ask_file_root tool and every host-suite execution. Production resolves
-// via AskFileRoot (DB); tests stub it via askFileRootStub.
-var askFileRootResolve = AskFileRoot
+// via AskFileScopeFor (DB); tests stub it via askFileRootStub.
+var askFileRootResolve = AskFileScopeFor
 
 // askFileRootStub installs fn as the boundary resolver for the duration of
 // a test and returns its restore func (test-only seam).
-func askFileRootStub(fn func(ctx context.Context, pool *db.Pool) (string, error)) func() {
+func askFileRootStub(fn func(ctx context.Context, pool *db.Pool) (AskFileScope, error)) func() {
 	old := askFileRootResolve
 	askFileRootResolve = fn
 	return func() { askFileRootResolve = old }
 }
 
-// AskFileRoot resolves the file/shell suite's root: the FIRST active
-// project with a project_dir configured (read-only tenant tx). An Ask
-// conversation has no project binding, so the suite binds to the tenant's
-// first active project — the same project the system prompt's
-// "Enabled projects" context names (fetchProjectContext), which keeps the
-// prompt and the tool boundary in agreement. An error names the fix
-// (create/set a project dir) so the model can guide the operator.
-func AskFileRoot(ctx context.Context, pool *db.Pool) (string, error) {
-	if pool == nil {
-		return "", fmt.Errorf("ask file root: no database pool (Ask service not wired)")
+// AskFileScope is the resolved boundary for the file/shell suite: the directory
+// plus the fact the consent model needs — whether that directory is the
+// CONVERSATION's own project (inside ⇒ pre-approved) or only the tenant-wide
+// relative-path anchor for a conversation with no project (outside ⇒ ask).
+type AskFileScope struct {
+	Dir              string // the directory the suite is scoped to
+	ProjectID        string // the conversation's project id ("" on the fallback)
+	FromConversation bool   // true ⇒ Dir came from the conversation's project
+}
+
+// askScope* are the ask_file_root envelope's "scope" values: the model and the
+// consent layer both branch on this rather than re-deriving "is this mine?".
+const (
+	askScopeConversation = "conversation"
+	askScopeTenantAnchor = "tenant_fallback"
+)
+
+// PreApprovedPath reports whether target is inside this scope's PRE-APPROVED
+// directory — the operator's "inside it, writes and executions proceed without
+// asking".
+//
+// It is the ONE read the consent core makes when it decides ask vs proceed, which
+// is why it lives beside the scope value rather than in the consent layer: the
+// prompt's project statement, the ask_file_root envelope and the consent
+// decision must all read the SAME predicate or they drift.
+//
+// TRUE requires BOTH halves, and each is load-bearing:
+//   - FromConversation — the directory is the CONVERSATION's own project. A
+//     tenant-wide fallback anchor is not this conversation's tree, so NOTHING is
+//     approved in it: an unassigned conversation asks for every write, even
+//     though a directory exists to anchor relative paths. That is the whole
+//     difference between "a directory" and "a project of my own".
+//   - target resolving to Dir itself or a descendant of it. The comparison is on
+//     cleaned paths and requires Dir + separator, so a sibling whose name merely
+//     shares the prefix (…/Orchicon-v2 beside …/Orchicon) is NOT inside and asks.
+//
+// A relative target is resolved against Dir, matching where a relative path lands
+// for the suite (the anchor is Dir). An unusable scope (no FromConversation, no
+// Dir, no target) is false, never a panic and never an accidental allow: failing
+// closed here means an unapproved directory asks.
+func (s AskFileScope) PreApprovedPath(target string) bool {
+	if !s.FromConversation || strings.TrimSpace(s.Dir) == "" || strings.TrimSpace(target) == "" {
+		return false
 	}
-	tenantID := tenant.FromContext(ctx)
-	if tenantID == "" {
-		return "", fmt.Errorf("ask file root: no tenant in context")
+	dir := filepath.Clean(s.Dir)
+	t := filepath.Clean(target)
+	if !filepath.IsAbs(t) {
+		t = filepath.Join(dir, t)
+	}
+	return t == dir || strings.HasPrefix(t, dir+string(filepath.Separator))
+}
+
+// conversationProjectRow loads the project row the prompt half
+// (conversationProjectContext) and the tool half (AskFileScopeFor) both describe,
+// so the two cannot drift: ONE read, ONE shape. A missing project is an error. The
+// CALLER decides whether that failure is fatal — the tool layer fails loud (it must
+// not hand the model a directory that is not real), while the prompt layer degrades
+// to "unassigned" so a deleted project never fails the turn.
+func conversationProjectRow(ctx context.Context, pool *db.Pool, tenantID, projectID string) (*db.ProjectRow, error) {
+	if pool == nil {
+		return nil, fmt.Errorf("conversation project: no database pool")
 	}
 	ttx, err := pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
-		return "", fmt.Errorf("ask file root: %w", err)
+		return nil, err
+	}
+	defer ttx.Rollback(ctx)
+	p, err := db.GetProject(ctx, ttx.Tx, tenantID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// AskFileScopeFor resolves the file/shell suite's boundary FROM THE CONVERSATION.
+//
+// The turn carries the conversation's project id on its context (chat.go stamps it
+// with withAskConversationProject beside the mode and the conversation id), so the
+// suite binds to the SAME project the system prompt's "## This conversation's
+// project" block names — the two halves agree by construction, from one read of one
+// row (conversationProjectRow).
+//
+// An UNASSIGNED conversation (no project id) falls back to the tenant's first project
+// that is active and has a project_dir, but ONLY as the relative-path anchor:
+// FromConversation stays false, so the probe envelope and the consent layer that
+// follows can tell the anchor from the conversation's own tree.
+//
+// Status is not filtered on the conversation's own project: an archived project's dir
+// still scopes the suite, because the prompt names it too — a filter here would
+// silently re-open the very divergence this closes.
+//
+// Resolution runs once per call and is never cached across turns: the conversation's
+// project can change between turns, and a stale root is the defect this closes.
+func AskFileScopeFor(ctx context.Context, pool *db.Pool) (AskFileScope, error) {
+	if pool == nil {
+		return AskFileScope{}, fmt.Errorf("ask file root: no database pool (Ask service not wired)")
+	}
+	tenantID := tenant.FromContext(ctx)
+	if tenantID == "" {
+		return AskFileScope{}, fmt.Errorf("ask file root: no tenant in context")
+	}
+	if projectID := askConversationProjectFromContext(ctx); projectID != "" {
+		p, err := conversationProjectRow(ctx, pool, tenantID, projectID)
+		if err != nil {
+			return AskFileScope{}, fmt.Errorf("ask file root: this conversation's project %q: %w", projectID, err)
+		}
+		dir := strings.TrimSpace(p.ProjectDir)
+		if dir == "" {
+			return AskFileScope{}, fmt.Errorf("ask file root: this conversation's project %q has no project directory configured — set one with create_project_directory before using the file/shell suite", projectID)
+		}
+		return AskFileScope{Dir: dir, ProjectID: projectID, FromConversation: true}, nil
+	}
+	// Unassigned: the tenant's first project that is active and carries a dir is
+	// only the relative-path anchor. It is NOT this conversation's project, so
+	// FromConversation stays false.
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return AskFileScope{}, fmt.Errorf("ask file root: %w", err)
 	}
 	defer ttx.Rollback(ctx)
 	rows, err := db.ListProjects(ctx, ttx.Tx, db.ListProjectsFilter{
@@ -154,26 +264,50 @@ func AskFileRoot(ctx context.Context, pool *db.Pool) (string, error) {
 		Status:   domain.ProjectActive,
 	})
 	if err != nil {
-		return "", fmt.Errorf("ask file root: list projects: %w", err)
+		return AskFileScope{}, fmt.Errorf("ask file root: list projects: %w", err)
 	}
 	for _, p := range rows {
 		if dir := strings.TrimSpace(p.ProjectDir); dir != "" {
-			return dir, nil
+			return AskFileScope{Dir: dir}, nil
 		}
 	}
-	return "", fmt.Errorf("ask file root: no active project with a project_dir configured — create one with create_project / create_project_directory first")
+	return AskFileScope{}, fmt.Errorf("ask file root: this conversation has no project and the tenant has no active project with a project_dir configured — create one with create_project / create_project_directory first")
 }
 
-// askHostToolsForRoot builds the file/shell suite scoped to root (the
-// enabled project's project_dir, read+write; no separate read-only project
-// root — in-place semantics). bash runs in-process WITH the execution
+// AskFileRoot reports just the boundary directory (kept for callers that only
+// need the path).
+func AskFileRoot(ctx context.Context, pool *db.Pool) (string, error) {
+	s, err := AskFileScopeFor(ctx, pool)
+	return s.Dir, err
+}
+
+// askHostToolsForRoot builds the file/shell suite for an Ask turn: the suite is
+// UNCONFINED (the interactive boundary — any absolute path the operator can
+// reach), while root stays its relative-path anchor and bash cwd, so
+// project-relative work is unchanged. bash runs in-process WITH the execution
 // guard's destructive-command shim first on PATH (AskGuardEnviron —
 // worker-path parity); the suite is fresh per execution (no shared state
 // across calls).
 func askHostToolsForRoot(root string) *orchicon.HostTools {
-	h := orchicon.NewHostTools(root, "")
+	h := orchicon.NewHostToolsUnrestricted(root)
 	h.SetBashEnviron(AskGuardEnviron)
+	// The operator's DURABLE permission policy, consulted through the ONE
+	// shared accessor (permpolicy.Store) before any call in the suite is
+	// dispatched. It is the consent core's read of the same file the guard
+	// shim and the plane API read, so enforcement and prompting cannot
+	// drift: a denied path is refused HERE by the shared accessor, and the
+	// refusal names the entry that denied it.
+	h.SetPathPolicy(askPermissionPolicy().HostSuiteGuard())
 	return h
+}
+
+// askPermissionPolicy is the consent core's handle on the persistent
+// permission policy. A fresh Store per call, holding only the path: the
+// reload semantics are "read on each consult", so there is nothing to
+// memoise and nothing to invalidate (a hand-edit and a UI write are both
+// live on the next gated decision).
+func askPermissionPolicy() *permpolicy.Store {
+	return permpolicy.NewStore(permpolicy.DefaultPath())
 }
 
 // AskToolDefs returns the combined tool surface: product tools first, then
@@ -218,7 +352,7 @@ func (a *nativeAskTools) AskToolDefs(ctx context.Context) []orchicon.ToolDef {
 		have[askFileRootToolName] = true
 		defs = append(defs, orchicon.ToolDef{
 			Name:        askFileRootToolName,
-			Description: "Report the project_dir the Ask file/shell suite (batch_read/read/grep/write/edit/bash/…) is scoped to. Call it first if a file/shell tool errors so you know which directory it operates in.",
+			Description: "Report the directory the Ask file/shell suite (batch_read/read/grep/write/edit/bash/…) uses for THIS conversation, and whether it is the conversation's own project (scope: conversation — its default scope, PRE-APPROVED, so writes and executions inside it proceed without asking) or only the tenant-wide fallback anchor for a conversation with no project (scope: tenant_fallback — NOT approved, so every write there asks the user first). Reads never ask anywhere. Call it first if a file/shell tool errors so you know which directory it uses and whether writing there needs consent.",
 			ParamsJSON:  `{"type":"object"}`,
 		})
 	}
@@ -270,13 +404,36 @@ func (a *nativeAskTools) ExecuteAskTool(ctx context.Context, name, argsJSON stri
 	if ok, refusal := modeAllowsTool(askModeFromContext(ctx), name); !ok {
 		return "", errors.New(refusal)
 	}
-	// The boundary probe: names the project_dir the suite is scoped to.
+	// The boundary probe: names the project_dir the suite is scoped to AND whether that directory is this
+	// conversation's own project or only the tenant-wide anchor — the scope the consent layer keys on. The
+	// envelope must not present a fallback anchor as the conversation's own tree.
 	if name == askFileRootToolName {
-		root, err := askFileRootResolve(ctx, a.service.pool)
+		scope, err := askFileRootResolve(ctx, a.service.pool)
 		if err != nil {
 			return "", err
 		}
-		b, merr := json.Marshal(map[string]string{"project_dir": root})
+		env := map[string]string{"project_dir": scope.Dir}
+		// A DENIED directory is stated as denied, and the statement names the
+		// entry: the probe is what the model calls first, so "this directory
+		// is refused by policy" belongs here rather than only at the first
+		// failed call.
+		deniedEntry := ""
+		if d, derr := askPermissionPolicy().Decide(scope.Dir, permpolicy.Inputs{}); derr == nil && d.Verdict == permpolicy.VerdictDeny {
+			deniedEntry = d.Entry
+			env["denied"] = "true"
+			env["denied_entry"] = d.Entry
+		}
+		if deniedEntry != "" {
+			env["note"] = fmt.Sprintf("This directory is REFUSED by the operator's permission policy (entry %q). A session grant cannot override it: the deny list outranks a grant. Work in a different directory, or ask the operator to remove the entry from the permission policy file.", deniedEntry)
+		} else if scope.FromConversation {
+			env["scope"] = askScopeConversation
+			env["project_id"] = scope.ProjectID
+			env["note"] = "This directory IS this conversation's project: it is the conversation's default scope and PRE-APPROVED, so file/shell work inside it proceeds without asking. Reads never ask anywhere; a write or a command OUTSIDE this directory asks the user first."
+		} else {
+			env["scope"] = askScopeTenantAnchor
+			env["note"] = "This conversation has NO project and NOTHING is pre-approved for it. This directory is only the tenant-wide relative-path anchor, NOT this conversation's own project — every write here is outside this conversation's scope and needs the user's consent. Reads never ask anywhere."
+		}
+		b, merr := json.Marshal(env)
 		if merr != nil {
 			return "", merr
 		}
@@ -285,14 +442,14 @@ func (a *nativeAskTools) ExecuteAskTool(ctx context.Context, name, argsJSON stri
 	// Host suite: the file/shell tools. The root resolves per execution
 	// (fresh project state, never a stale cache) — one DB read, cheap.
 	if isHostSuiteTool(name) {
-		root, err := askFileRootResolve(ctx, a.service.pool)
+		scope, err := askFileRootResolve(ctx, a.service.pool)
 		if err != nil {
 			return "", fmt.Errorf("%s: %w", name, err)
 		}
 		if argsJSON == "" {
 			argsJSON = "{}"
 		}
-		return askHostToolsForRoot(root).Execute(ctx, name, argsJSON)
+		return askHostToolsForRoot(scope.Dir).Execute(ctx, name, argsJSON)
 	}
 	// Product tools through the registry.
 	if a.service.toolRegistry == nil {

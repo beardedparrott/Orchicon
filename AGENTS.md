@@ -49,6 +49,12 @@ capability that lands in one client and not the other is incomplete work, not
 a follow-up. The full rule and its rationale are in `worker.md` (for workers)
 and `developer.md` (for the human developer and Ask Orchicon).
 
+The persistent **permission policy** (the durable deny/accept list the agent's
+file and shell tools consult) is one of those both-clients capabilities: the
+GUI manages it under Settings → Permissions and the TUI under Control →
+Permissions, both over the same three plane RPCs and the same YAML file. See
+`docs/permission-policy.md` for the precedence chain and the reload semantics.
+
 Two related rules that bite hardest, both recorded in the same two files:
 
 - **Platform-owned contracts are not configuration.** The task verdict

@@ -1,11 +1,22 @@
 #!/usr/bin/env bash
 # scripts/container.sh — manage the single-container Orchicon instances.
 #
-# The whole Orchicon stack (Postgres, NATS, Tempo/Loki/VictoriaMetrics/
-# Grafana, control plane) runs inside ONE container via `orchicon
-# container` (the binary is the PID-1 supervisor). This script manages
-# two isolated instances — dev and prod — as two containers
-# on offset published ports with separate data volumes.
+# Two residency shapes are supported (they migrate independently):
+#
+#   container residency — the WHOLE stack (Postgres, NATS, telemetry, control
+#     plane) runs inside ONE container via `orchicon container`, which is the
+#     PID-1 supervisor. The plane listens on :8080 inside the container and
+#     runtime containers reach it directly on the bridge at the plane
+#     container's own IP (ORCHICON_CONTAINER_MODE=1). This is what `up`
+#     manages today and it is unchanged.
+#
+#   host residency — the support services stay in the container while the
+#     PLANE runs on the host. It must then answer on the loopback address
+#     (host clients: orch, the GUI) AND on the docker bridge at THIS
+#     instance's port, so runtime containers can dial the orchicon-plane MCP
+#     channel. `bridge_bind_env <inst>` emits exactly those two values
+#     (ORCHICON_HTTP_EXTRA_BIND + ORCHICON_PLANE_PUBLIC_URL) and is the ONLY
+#     place either is computed — per instance, never a shared shell export.
 #
 # Usage:
 #   scripts/container.sh build                    # build the image
@@ -13,11 +24,46 @@
 #   scripts/container.sh down [dev|prod]          # stop + remove an instance
 #   scripts/container.sh status [dev|prod]        # show instance state
 #   scripts/container.sh logs [dev|prod]          # tail an instance's supervisor log
+#   scripts/container.sh plane-bind [dev|prod]    # host-plane bind + URL env for an instance
 #   scripts/container.sh ps                       # list orchicon containers
+#   scripts/container.sh shape [dev|prod]         # print an instance's launch shape (no side effects)
+#   scripts/container.sh verify [dev|prod]        # what the instance ACTUALLY runs (shape + ports + plane)
+#   scripts/container.sh plane-start [dev|prod]   # start the HOST plane for a host-resident instance
+#   scripts/container.sh plane-stop [dev|prod]    # stop the HOST plane (services container keeps running)
+#   scripts/container.sh plane-status [dev|prod]  # host plane PID + health
+#
+# TWO SHAPES (residency, per instance, OPT-IN):
+#   container (default): everything — postgres, nats, telemetry, the control
+#                        plane — runs inside the instance's container. Today's
+#                        behaviour, unchanged.
+#   host:                the container runs the SERVICES ONLY (it is started
+#                        with ORCHICON_CONTAINER_SERVICES_ONLY=1) and the
+#                        control plane runs on the HOST as a separate
+#                        `orchicon serve` process, reaching the services over
+#                        loopback ports. Opt in per instance with
+#                        ORCHICON_PLANE_RESIDENCY=host (or `make rebuild-dev`).
 #
 # Instance layout:
 #   dev:  orchicon-cnt-dev   ports 8080:8080, 3002:3000   (plane + Grafana)
 #   prod: orchicon-cnt-prod  ports 8091:8080, 3003:3000
+#
+# Host-residency port table (loopback-bound publishes, disjoint per instance):
+#   service            dev   prod
+#   postgres           5432  5433
+#   nats / monitoring  4222  4223  /  8222 8223
+#   OTLP gRPC / HTTP   4317  4319  /  4318 4320
+#   tempo / loki       3200  3201  /  3100 3101
+#   victoriametrics    8428  8429
+#   grafana            3002  3003  (→ container 3000)
+#   plane HTTP         8080  8091
+# No value here may be GLOBAL: a shared port or URL would silently point one
+# instance's workers/plane at the other.
+#
+# PLANE_HTTP_PORT IS that "plane HTTP" column, and it is the SAME port the
+# instance publishes — so dev and prod can never disagree about which plane a
+# worker should dial. A HOST-RESIDENT plane binds it on the docker bridge
+# (bridge_bind_env) and advertises it to its run containers; a CONTAINER-
+# RESIDENT plane keeps its plane inside its container and takes no extra bind.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,6 +92,23 @@ instance_info() {
       COMPOSE_STACK_SCRIPT="dev.sh"
       PORTS="-p 8080:8080 -p 3002:3000"
       GRAFANA_URL="http://localhost:8080/grafana"
+      PLANE_HTTP_PORT=8080
+      # NO PLANE_PUBLIC_URL literal here: the host plane's URL is DERIVED per
+      # instance from the resolved docker bridge + PLANE_HTTP_PORT
+      # (bridge_bind_env — the one place either the bind or the URL is
+      # computed). A literal is how one instance's workers end up dialing the
+      # other's plane, and a hardcoded 172.17.0.1 breaks whenever the bridge
+      # subnet changes (retired by the host-gateway mapping in #3).
+      PG_PORT=5432
+      NATS_PORT=4222
+      NATS_MON_PORT=8222
+      OTLP_GRPC_PORT=4317
+      OTLP_HTTP_PORT=4318
+      TEMPO_PORT=3200
+      LOKI_PORT=3100
+      VM_PORT=8428
+      GRAFANA_HOST_PORT=3002
+      HOST_DATA_DIR="$HOME/.local/share/orchicon-dev"
       ;;
     prod)
       NAME="orchicon-cnt-prod"
@@ -55,12 +118,351 @@ instance_info() {
       COMPOSE_STACK_SCRIPT="dev-prod.sh"
       PORTS="-p 8091:8080 -p 3003:3000"
       GRAFANA_URL="http://localhost:8091/grafana"
+      PLANE_HTTP_PORT=8091
+      # See dev: the URL is derived per instance (bridge_bind_env), never a
+      # literal — and prod's port (8091) is what keeps it apart from dev's.
+      PG_PORT=5433
+      NATS_PORT=4223
+      NATS_MON_PORT=8223
+      OTLP_GRPC_PORT=4319
+      OTLP_HTTP_PORT=4320
+      TEMPO_PORT=3201
+      LOKI_PORT=3101
+      VM_PORT=8429
+      GRAFANA_HOST_PORT=3003
+      HOST_DATA_DIR="$HOME/.local/share/orchicon-prod"
       ;;
     *)
       echo "Unknown instance: $inst (use dev|prod)" >&2
       return 1
       ;;
   esac
+
+  # Host-residency publishes (services-only mode). EVERY port is bound to
+  # 127.0.0.1 EXPLICITLY: postgres and nats are a database and an internal
+  # event bus, and must never be reachable from the LAN. This loopback publish
+  # is the security boundary for the pg_hba trust rules the supervisor adds.
+  SERVICE_PORTS="-p 127.0.0.1:$PG_PORT:5432"
+  SERVICE_PORTS="$SERVICE_PORTS -p 127.0.0.1:$NATS_PORT:4222 -p 127.0.0.1:$NATS_MON_PORT:8222"
+  SERVICE_PORTS="$SERVICE_PORTS -p 127.0.0.1:$OTLP_GRPC_PORT:4317 -p 127.0.0.1:$OTLP_HTTP_PORT:4318"
+  SERVICE_PORTS="$SERVICE_PORTS -p 127.0.0.1:$TEMPO_PORT:3200 -p 127.0.0.1:$LOKI_PORT:3100"
+  SERVICE_PORTS="$SERVICE_PORTS -p 127.0.0.1:$VM_PORT:8428 -p 127.0.0.1:$GRAFANA_HOST_PORT:3000"
+}
+
+# residency_for prints the plane residency for THIS invocation: host or
+# container. Default is container — the opt-in default is what makes the
+# migration safe: with no new setting, an instance behaves exactly as today.
+residency_for() {
+  local value="${ORCHICON_PLANE_RESIDENCY:-container}"
+  case "$value" in
+    host|container)
+      echo "$value"
+      ;;
+    *)
+      log_err "ORCHICON_PLANE_RESIDENCY must be 'host' or 'container' (got '$value')"
+      return 1
+      ;;
+  esac
+}
+
+# plane_env prints the HOST plane's environment profile for an instance, one
+# KEY=VALUE per line. EVERY value is sourced from instance_info, so no value
+# can be global: a shared HTTP port or plane URL would silently point one
+# instance's workers at the other. Values the operator already set in the
+# environment (identity/keys) are inherited rather than invented.
+plane_env() {
+  local inst="${1:-dev}"
+  instance_info "$inst"
+  echo "ORCHICON_INSTANCE=$inst"
+  echo "ORCHICON_HTTP_ADDR=:$PLANE_HTTP_PORT"
+  # HOST-RESIDENT LISTENERS, PER INSTANCE: the plane must answer on the
+  # loopback address above (host clients: orch, the GUI) AND on the docker
+  # bridge at THIS instance's port, and it must hand its run containers THAT
+  # address. Both values come from the one place that computes them
+  # (bridge_bind_env), so the bind the plane listens on and the URL it
+  # advertises can never disagree.
+  #
+  # An unresolvable bridge is LOUD here but not fatal: this function is also
+  # how plane_stop/plane_status build their env, and those must keep working.
+  # plane_start — the only path where a missing bind means "every plane-channel
+  # MCP call in every dispatched run times out" — refuses to start without it.
+  local bind_env=""
+  if bind_env=$(bridge_bind_env "$inst"); then
+    printf '%s\n' "$bind_env"
+  else
+    log_err "$inst: cannot resolve the docker bridge — the host plane would bind its loopback address ONLY,"
+    log_err "  and its run containers could not reach it. Pin the address and retry:"
+    log_err "  ORCHICON_DOCKER_BRIDGE_IP=<bridge gateway ip> $0 plane-start $inst"
+  fi
+  echo "ORCHICON_POSTGRES_DSN=postgres://orchicon:orchicon@localhost:$PG_PORT/orchicon?sslmode=disable"
+  echo "ORCHICON_NATS_URL=nats://localhost:$NATS_PORT"
+  echo "ORCHICON_OTEL_ENDPOINT=localhost:$OTLP_GRPC_PORT"
+  echo "ORCHICON_GRAFANA_URL=http://localhost:$GRAFANA_HOST_PORT"
+  echo "ORCHICON_TEMPO_URL=http://localhost:$TEMPO_PORT"
+  echo "ORCHICON_LOKI_URL=http://localhost:$LOKI_PORT"
+  echo "ORCHICON_VM_URL=http://localhost:$VM_PORT"
+  # State dir: the KEK and ask-history live here. The host VALUE moves; the
+  # expectation (`<DataDir>/secrets/kek`) does not — migrate_host_data_dir
+  # copies the container volume so existing tenant secrets still decrypt.
+  echo "ORCHICON_DATA_DIR=$HOST_DATA_DIR"
+  echo "ORCHICON_BLOB_DIR=$HOST_DATA_DIR/blobs"
+  echo "ORCHICON_RUNTIME_SOCKET=${RUNTIME_SOCKET:-${ORCHICON_RUNTIME_SOCKET_DIR:-/tmp/orchicon-runtime}/runtime.sock}"
+  # Per-instance PID/log file for `serve --detach`/`--stop`: two host planes
+  # must never share one.
+  echo "ORCHICON_SERVE_STATE_DIR=$HOST_DATA_DIR/serve"
+  local inherit
+  for inherit in ORCHICON_DEPLOYMENT_TENANT_ID ORCHICON_AUTH_SIGNING_KEY ORCHICON_SECRETS_KEK; do
+    if [ -n "${!inherit:-}" ]; then
+      echo "$inherit=${!inherit}"
+    fi
+  done
+}
+
+# print_shape dumps ONE instance's resolved launch shape. Echo only — no
+# docker, no side effects — so the shape can be asserted without starting
+# anything. This is what makes the dev/prod coexistence rule checkable: each
+# instance's shape is derived per invocation from instance_info, and a rebuild
+# of one instance cannot alter the other's.
+#
+# The ONE external read is the docker bridge address, needed to report the
+# DERIVED per-instance plane URL for the host shape (bridge_bind_env). Pin it
+# with ORCHICON_DOCKER_BRIDGE_IP to assert the shape without docker, exactly as
+# scripts/tests/host-residency/run.sh does.
+print_shape() {
+  local inst="${1:-dev}"
+  instance_info "$inst"
+  local residency
+  residency=$(residency_for) || return 1
+  echo "instance=$inst"
+  echo "container=$NAME"
+  echo "volume=$VOLUME"
+  echo "residency=$residency"
+  echo "plane_http_port=$PLANE_HTTP_PORT"
+  # The URL run containers are handed, DERIVED per instance (the docker bridge
+  # + THIS instance's port) — never a 172.17.0.1:8080 literal. Container
+  # residency is reported as what it is: the plane container resolves its OWN
+  # bridge IP at run time (planePublicURL's ORCHICON_CONTAINER_MODE branch) and
+  # nothing is handed over from here.
+  if [ "$residency" = "host" ]; then
+    echo "plane_public_url=$(bridge_bind_env "$inst" | sed -n 's/^ORCHICON_PLANE_PUBLIC_URL=//p')"
+  else
+    echo "plane_public_url=(resolved at run time: the plane container's own bridge IP)"
+  fi
+  echo "grafana_url=$GRAFANA_URL"
+  echo "host_data_dir=$HOST_DATA_DIR"
+  echo "service_ports=$SERVICE_PORTS"
+  if [ "$residency" = "host" ]; then
+    echo "publish_ports=$SERVICE_PORTS"
+    echo "container_env=ORCHICON_CONTAINER_SERVICES_ONLY=1"
+    local line
+    while IFS= read -r line; do
+      echo "plane_env:$line"
+    done < <(plane_env "$inst")
+  else
+    echo "publish_ports=$PORTS"
+    echo "container_env="
+  fi
+}
+
+# migrate_host_data_dir performs the ONE-TIME switch-over from a containerized
+# plane's data volume to the host path. The KEK lives at
+# <data-dir>/secrets/kek: switching ORCHICON_DATA_DIR without carrying it over
+# would orphan every tenant secret. An existing host KEK is never overwritten.
+migrate_host_data_dir() {
+  local inst="${1:-dev}"
+  instance_info "$inst"
+  if [ -f "$HOST_DATA_DIR/secrets/kek" ]; then
+    log_dim "host data dir already carries a KEK ($HOST_DATA_DIR) — leaving it untouched"
+    return 0
+  fi
+  if ! docker volume inspect "$VOLUME" >/dev/null 2>&1; then
+    log_dim "no existing data volume ($VOLUME) — starting with a fresh host data dir"
+    return 0
+  fi
+  local contents
+  contents=$(docker run --rm -v "$VOLUME:/data" alpine ls -A /data 2>/dev/null || true)
+  if [ -z "$contents" ]; then
+    log_dim "data volume $VOLUME is empty — nothing to migrate"
+    return 0
+  fi
+  log_warn "first host switch-over for $inst: copying volume $VOLUME to $HOST_DATA_DIR"
+  log_dim "  the KEK (secrets/kek) and ask-history live there; the data-dir VALUE moves, its derivation does not"
+  mkdir -p "$HOST_DATA_DIR"
+  if ! docker run --rm -v "$VOLUME:/data" alpine tar cf - -C /data . | tar xf - -C "$HOST_DATA_DIR"; then
+    log_err "could not copy $VOLUME to $HOST_DATA_DIR"
+    return 1
+  fi
+  if [ -f "$HOST_DATA_DIR/secrets/kek" ]; then
+    log_ok "copied the instance data; KEK preserved, tenant secrets keep decrypting"
+  else
+    log_warn "copied, but the volume has no secrets/kek — a NEW KEK will be created"
+  fi
+}
+
+# host_plane_bin resolves the binary the HOST plane runs. Defaults to the repo
+# binary the same rebuild just built, so the resident plane matches the image.
+host_plane_bin() {
+  echo "${ORCHICON_HOST_BIN:-$PROJECT_ROOT/bin/orchicon}"
+}
+
+# plane_start launches the HOST plane for an instance, detached, and waits for
+# its /healthz. Idempotent: an already-healthy plane is left alone.
+plane_start() {
+  local inst="${1:-dev}"
+  instance_info "$inst"
+  local bin
+  bin=$(host_plane_bin)
+  if [ ! -x "$bin" ]; then
+    log_err "host plane binary missing or not executable: $bin"
+    log_err "  build it first (make build) or set ORCHICON_HOST_BIN"
+    return 1
+  fi
+  if curl -fs "http://localhost:$PLANE_HTTP_PORT/healthz" >/dev/null 2>&1; then
+    log_ok "$inst host plane already serving http://localhost:$PLANE_HTTP_PORT"
+    return 0
+  fi
+  # A host plane its own workers cannot reach is worse than one that refuses
+  # to start: every orchicon-plane MCP call in every dispatched run would time
+  # out. So the bridge bind is REQUIRED here. There is no loopback-only
+  # fallback and no 0.0.0.0 fallback (the operator rejected LAN exposure).
+  if ! bridge_bind_env "$inst" >/dev/null; then
+    log_err "$inst: refusing to start the host plane — the docker bridge address is unresolved,"
+    log_err "  so its run containers could not reach it (the bind would be loopback only)."
+    log_err "  pin it: ORCHICON_DOCKER_BRIDGE_IP=<bridge gateway ip> $0 plane-start $inst"
+    return 1
+  fi
+  local envargs=()
+  local kv
+  while IFS= read -r kv; do
+    [ -n "$kv" ] && envargs+=("$kv")
+  done < <(plane_env "$inst")
+  log_dim "starting the host plane for $inst ($bin)"
+  # env -u ORCHICON_CONTAINER_MODE: a stray export in a shell profile must
+  # never flip the HOST plane into container semantics — it would then rewrite
+  # custom provider URLs (which are already correct on the host).
+  if ! env -u ORCHICON_CONTAINER_MODE ${envargs[@]+"${envargs[@]}"} "$bin" serve --detach; then
+    log_err "could not start the host plane for $inst"
+    return 1
+  fi
+  local i
+  for i in $(seq 1 60); do
+    if curl -fs "http://localhost:$PLANE_HTTP_PORT/healthz" >/dev/null 2>&1; then
+      log_ok "$inst host plane ready: http://localhost:$PLANE_HTTP_PORT"
+      return 0
+    fi
+    sleep 1
+  done
+  log_err "$inst host plane did not answer http://localhost:$PLANE_HTTP_PORT/healthz within 60s"
+  log_dim "  logs: $HOST_DATA_DIR/serve/logs/orchicon.log"
+  return 1
+}
+
+# plane_stop stops ONLY this instance's host plane. ORCHICON_SERVE_STATE_DIR
+# isolates the PID file per instance, so it can never kill the sibling plane.
+# The services container is untouched — that is the whole point of the split.
+plane_stop() {
+  local inst="${1:-dev}"
+  instance_info "$inst"
+  local bin
+  bin=$(host_plane_bin)
+  if [ ! -x "$bin" ]; then
+    log_dim "host plane binary missing ($bin) — nothing to stop"
+    return 0
+  fi
+  local envargs=()
+  local kv
+  while IFS= read -r kv; do
+    [ -n "$kv" ] && envargs+=("$kv")
+  done < <(plane_env "$inst")
+  env -u ORCHICON_CONTAINER_MODE ${envargs[@]+"${envargs[@]}"} "$bin" serve --stop \
+    || log_dim "no detached host plane running for $inst"
+}
+
+# plane_status prints the host plane's PID/log state and probes its /healthz.
+plane_status() {
+  local inst="${1:-dev}"
+  instance_info "$inst"
+  local bin
+  bin=$(host_plane_bin)
+  if [ ! -x "$bin" ]; then
+    log_dim "host plane binary missing ($bin) — no host plane can be running"
+    return 1
+  fi
+  local envargs=()
+  local kv
+  while IFS= read -r kv; do
+    [ -n "$kv" ] && envargs+=("$kv")
+  done < <(plane_env "$inst")
+  env -u ORCHICON_CONTAINER_MODE ${envargs[@]+"${envargs[@]}"} "$bin" serve --status || true
+  if curl -fs "http://localhost:$PLANE_HTTP_PORT/healthz" >/dev/null 2>&1; then
+    log_ok "$inst host plane healthy at http://localhost:$PLANE_HTTP_PORT"
+    return 0
+  fi
+  log_warn "$inst host plane is not answering http://localhost:$PLANE_HTTP_PORT/healthz"
+  return 1
+}
+
+# wait_services_ready blocks until the container accepts postgres and nats
+# connections, so the HOST plane never boots its migrations against a
+# half-started backend.
+wait_services_ready() {
+  local inst="${1:-dev}"
+  local i
+  for i in $(seq 1 60); do
+    if docker exec "$NAME" pg_isready -h localhost -p 5432 -U orchicon >/dev/null 2>&1 \
+      && docker exec "$NAME" curl -fs http://localhost:8222/healthz >/dev/null 2>&1; then
+      log_ok "$NAME services ready (postgres 5432, nats monitor 8222)"
+      return 0
+    fi
+    sleep 1
+  done
+  log_warn "$NAME services were not confirmed ready within 60s — continuing"
+  return 0
+}
+
+# container_env_dump prints a container's environment, one KEY=VALUE per line:
+# CREATE-time state, which `docker start` cannot rewrite.
+container_env_dump() {
+  docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$1" 2>/dev/null || true
+}
+
+# container_residency_from_env reads a container env dump and prints the plane
+# residency it was created for: `host` when the services-only flag is set, else
+# `container`. PURE — no docker — so the launcher's shape guard is checkable
+# offline (scripts/tests/host-residency/run.sh).
+container_residency_from_env() {
+  case "$(printf '%s\n' "$1" | sed -n 's/^ORCHICON_CONTAINER_SERVICES_ONLY=//p' | head -1)" in
+    1) echo host ;;
+    *) echo container ;;
+  esac
+}
+
+# verify_instance answers "what does this instance ACTUALLY run?" — the shape,
+# the published ports and the services-only env straight from docker, plus the
+# host plane's state. This is the dev/prod coexistence assertion.
+verify_instance() {
+  local inst="${1:-dev}"
+  instance_info "$inst"
+  local residency
+  residency=$(residency_for) || return 1
+  echo -e "${C_BOLD}Instance shape: $inst${C_RESET}"
+  print_shape "$inst"
+  echo
+  status_instances "$inst"
+  if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
+    local ports svc_env gate
+    ports=$(docker inspect --format '{{range $p, $v := .NetworkSettings.Ports}}{{$p}}={{range $v}}{{.HostIp}}:{{.HostPort}} {{end}}{{end}}' "$NAME" 2>/dev/null || true)
+    echo -e "  ${C_DIM}published ports: $ports${C_RESET}"
+    svc_env=$(container_env_dump "$NAME" | grep '^ORCHICON_CONTAINER_SERVICES_ONLY=' || true)
+    echo -e "  ${C_DIM}services-only env: ${svc_env:-(unset — the plane runs in this container)}${C_RESET}"
+    if [ "$residency" = "host" ]; then
+      gate=$(docker logs "$NAME" 2>&1 | grep -m1 'services-only mode' || true)
+      echo -e "  ${C_DIM}supervisor log: ${gate:-(services-only line not found yet)}${C_RESET}"
+    fi
+  fi
+  if [ "$residency" = "host" ]; then
+    plane_status "$inst" || true
+  fi
 }
 
 C_RESET='\033[0m'; C_BOLD='\033[1m'; C_GREEN='\033[32m'; C_DIM='\033[2m'; C_YELLOW='\033[33m'; C_RED='\033[31m'
@@ -68,6 +470,69 @@ log_ok()   { echo -e "${C_GREEN}✓${C_RESET} $*"; }
 log_dim()  { echo -e "${C_DIM}$*${C_RESET}"; }
 log_warn() { echo -e "${C_YELLOW}!${C_RESET} $*"; }
 log_err()  { echo -e "${C_RED}✗${C_RESET} $*" >&2; }
+
+# bridge_ip prints the host's docker bridge address — the address a runtime
+# container on the default bridge uses to reach the HOST. A HOST-RESIDENT
+# plane binds it so runtime containers can dial the plane directly on the
+# bridge; a published host port cannot be used instead (docker hairpin NAT
+# drops gateway→published-port traffic from bridge containers, which is
+# exactly the plane-channel MCP timeout this bind removes).
+#
+# Resolution order: ORCHICON_DOCKER_BRIDGE_IP (tests / hand-pinning) →
+# docker's own IPAM config → the docker0 interface address.
+#
+# An unresolvable bridge is a HARD error (non-zero, no output). There is
+# deliberately no 0.0.0.0 fallback — that is the LAN exposure the operator
+# rejected — and no guessed address, because a wrong bind shows up much
+# later as "workers cannot reach the plane".
+bridge_ip() {
+  if [ -n "${ORCHICON_DOCKER_BRIDGE_IP:-}" ]; then
+    printf '%s\n' "$ORCHICON_DOCKER_BRIDGE_IP"
+    return 0
+  fi
+  local ip=""
+  if command -v docker >/dev/null 2>&1; then
+    ip=$(docker network inspect bridge \
+      --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)
+    # The Go template prints "<no value>" for a nil gateway.
+    case "$ip" in "<no value>"|"null") ip="" ;; esac
+  fi
+  if [ -z "$ip" ]; then
+    ip=$(ip -4 -o addr show docker0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 || true)
+  fi
+  if [ -z "$ip" ]; then
+    log_err "cannot resolve the docker bridge address (docker network inspect bridge / docker0)"
+    log_err "pin it explicitly with ORCHICON_DOCKER_BRIDGE_IP=<bridge gateway ip>; refusing to guess or bind 0.0.0.0"
+    return 1
+  fi
+  printf '%s\n' "$ip"
+}
+
+# bridge_bind_env <inst> prints the HOST-RESIDENT plane env for THIS
+# instance, one KEY=VALUE per line and nothing else:
+#
+#   ORCHICON_HTTP_EXTRA_BIND=<bridge ip>:<this instance's plane port>
+#   ORCHICON_PLANE_PUBLIC_URL=http://<bridge ip>:<this instance's plane port>
+#
+# This is the ONE place either value is computed, so the bind the plane
+# listens on and the URL it advertises to run containers can never disagree.
+# The port is ALWAYS this instance's own PLANE_HTTP_PORT (dev 8080 / prod
+# 8091): dev and prod are separate instances that migrate independently, and
+# a shared 8080 would make prod's workers dial dev's plane (or the reverse) —
+# a rejected dial, since the minted credential is instance-bound, but a
+# broken run either way.
+#
+# These lines belong in THAT instance's plane environment only. Never export
+# ORCHICON_PLANE_PUBLIC_URL from a shared shell profile: a globally-set value
+# points one instance's workers at the other's plane.
+bridge_bind_env() {
+  local inst="${1:-dev}"
+  instance_info "$inst" || return 1
+  local ip
+  ip=$(bridge_ip) || return 1
+  printf 'ORCHICON_HTTP_EXTRA_BIND=%s:%s\n' "$ip" "$PLANE_HTTP_PORT"
+  printf 'ORCHICON_PLANE_PUBLIC_URL=http://%s:%s\n' "$ip" "$PLANE_HTTP_PORT"
+}
 
 # sha12 prints the first 12 hex chars of a file's SHA-256 — the "did the
 # build inputs change?" signal used to version-gate the stock runtime
@@ -553,6 +1018,25 @@ up_instance() {
   local inst="${1:-dev}"
   instance_info "$inst"
 
+  # Residency is read PER INVOCATION from the environment (the Makefile passes
+  # the target's value down), so rebuilding one instance can never change the
+  # other's shape.
+  local RESIDENCY
+  RESIDENCY=$(residency_for) || return 1
+
+  # Plane listeners, per shape — one place per shape, never mixed:
+  #   CONTAINER residency (this path): the plane resolves its OWN container IP
+  #     for its run containers (planePublicURL's ORCHICON_CONTAINER_MODE
+  #     branch). No extra bind is involved here, and adding one would be wrong:
+  #     the host's bridge address does not exist inside the container's network
+  #     namespace.
+  #   HOST residency (plane_start / plane_env): the plane binds its loopback
+  #     address PLUS the docker bridge at THIS instance's port, and advertises
+  #     that same address to its run containers. Both values come from
+  #     `bridge_bind_env "$inst"` in that instance's OWN environment — never a
+  #     shared shell export (that would point one instance's workers at the
+  #     other's plane).
+
   # Data-safety guard: the default Postgres volume is shared with the
   # compose stack. Two postgres processes on one data dir corrupt it, so
   # refuse to start while the compose postgres for this instance is up.
@@ -566,7 +1050,34 @@ up_instance() {
     fi
   fi
 
-  log_dim "Starting $inst instance ($NAME)…"
+  log_dim "Starting $inst instance ($NAME)… (plane residency: $RESIDENCY)"
+
+  # HOST RESIDENCY: the container keeps the SERVICES and publishes them on
+  # loopback ports; the plane is a HOST process (plane_start below). The
+  # container-residency path further down is untouched — same mounts, same
+  # create flags — because the two shapes must not diverge in anything else.
+  local SERVICES_ONLY=0
+  [ "$RESIDENCY" = "host" ] && SERVICES_ONLY=1
+  local PUBLISH_PORTS="$PORTS"
+  local EXTRA_RUN_ARGS=()
+  local HEALTH_ARGS=()
+  if [ "$SERVICES_ONLY" = "1" ]; then
+    PUBLISH_PORTS="$SERVICE_PORTS"
+    EXTRA_RUN_ARGS+=(-e ORCHICON_CONTAINER_SERVICES_ONLY=1)
+    # ONE-TIME SWITCH-OVER, and it must happen BEFORE anything boots against
+    # the host path: the KEK (secrets/kek) and the ask-history live in the
+    # container's data volume, while the host profile points ORCHICON_DATA_DIR
+    # at a HOST path. Booting a host plane against an empty dir mints a NEW
+    # KEK and every tenant secret the containerized plane wrote stops
+    # decrypting. Never overwrites an existing host KEK; fatal on failure,
+    # because continuing would silently orphan those secrets.
+    migrate_host_data_dir "$inst" || return 1
+    # The image's HEALTHCHECK probes the plane's :8080/healthz, which does not
+    # exist here — without this override a perfectly healthy services-only
+    # container would report unhealthy forever.
+    HEALTH_ARGS+=(--health-cmd "pg_isready -h localhost -p 5432 -U orchicon && curl -fs http://localhost:8222/healthz"
+      --health-interval 10s --health-timeout 5s --health-start-period 30s --health-retries 20)
+  fi
 
   # Scoped mounts — deliberately narrow, ARMED OVER THE ROOTS ABOVE:
   #   1. opencode config (read-only) + data/auth (rw) so workers can use
@@ -678,13 +1189,26 @@ up_instance() {
   # rewrite /etc/resolv.conf, so a container created on a network with a dead
   # resolver keeps that dead resolver forever unless it is recreated.
   if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
+    # SHAPE GUARD: changing residency is also a change of CONTAINER. The
+    # services-only flag and the published port set are CREATE-time properties
+    # and `docker start` cannot rewrite them, so starting a container built for
+    # the other shape silently gives the instance NO plane at all
+    # (host → container: the container keeps skipping its plane and nothing
+    # starts the host one) or a plane in the wrong place (container → host: the
+    # in-container plane answers the host port probe and the migration looks
+    # done when it never happened). Recreate instead of start.
+    local existing_residency
+    existing_residency=$(container_residency_from_env "$(container_env_dump "$NAME")")
     local missing=""
     for pm in $project_paths; do
       if ! path_is_mounted "$NAME" "$pm"; then
         missing="$missing $pm"
       fi
     done
-    if [ -n "$missing" ]; then
+    if [ "$existing_residency" != "$RESIDENCY" ]; then
+      log_warn "$NAME was created for plane residency '$existing_residency' but this invocation wants '$RESIDENCY' — recreating"
+      docker rm -f "$NAME" >/dev/null
+    elif [ -n "$missing" ]; then
       log_warn "mounts changed ($missing) — recreating $NAME"
       docker rm -f "$NAME" >/dev/null
     elif ! dns_args_match "$NAME" "$dns_servers"; then
@@ -693,6 +1217,13 @@ up_instance() {
     else
       docker start "$NAME" >/dev/null
       log_ok "$inst instance started"
+      if [ "$SERVICES_ONLY" = "1" ]; then
+        # The container was already up: make sure its backend is serving and
+        # that this instance's HOST plane is running against it.
+        wait_services_ready "$inst"
+        plane_start "$inst"
+        echo -e "  Control plane (host): ${C_DIM}http://localhost:${PLANE_HTTP_PORT}${C_RESET}"
+      fi
       return 0
     fi
   fi
@@ -732,21 +1263,34 @@ up_instance() {
     --log-opt max-size=100m \
     --log-opt max-file=7 \
     $DNS_ARGS \
-    ${PORTS} \
+    ${PUBLISH_PORTS} \
+    ${HEALTH_ARGS[@]+"${HEALTH_ARGS[@]}"} \
     -e ORCHICON_GRAFANA_PUBLIC_URL="$GRAFANA_URL" \
     -e "ORCHICON_HOST_UID=$(id -u)" \
     -e "ORCHICON_HOST_GID=$(id -g)" \
     -e "ORCHICON_HOST_HOME=$HOME" \
     -e "ORCHICON_INSTANCE=$inst" \
+    ${EXTRA_RUN_ARGS[@]+"${EXTRA_RUN_ARGS[@]}"} \
     ${GH_TOKEN_ENV:-} \
     "${MOUNTS[@]}" \
     "$IMAGE" >/dev/null
   log_ok "$inst instance started:"
-  echo -e "  Control plane:  ${C_DIM}http://localhost:$(echo "$PORTS" | grep -oP '\d+(?=:8080)')${C_RESET}"
+  if [ "$SERVICES_ONLY" = "1" ]; then
+    wait_services_ready "$inst"
+    plane_start "$inst"
+  fi
+  echo -e "  Control plane:  ${C_DIM}http://localhost:${PLANE_HTTP_PORT}${C_RESET}"
   echo -e "  Grafana:        ${C_DIM}${GRAFANA_URL}${C_RESET}"
   echo -e "  Postgres data:  ${C_DIM}$PG_VOLUME${C_RESET}"
+  if [ "$SERVICES_ONLY" = "1" ]; then
+    echo ""
+    echo -e "  Plane residency: ${C_BOLD}host${C_RESET} ${C_DIM}(the services run in the container; the plane runs on this host)" 
+    echo -e "  Services (loopback only): ${C_DIM}$SERVICE_PORTS${C_RESET}"
+    echo -e "  Host data dir:  ${C_DIM}$HOST_DATA_DIR${C_RESET}"
+    echo -e "  Plane controls: ${C_DIM}scripts/container.sh plane-stop $inst${C_RESET}"
+  fi
   echo ""
-  echo -e "  Wait for health: ${C_DIM}curl http://localhost:$(echo "$PORTS" | grep -oP '\d+(?=:8080)')/healthz${C_RESET}"
+  echo -e "  Wait for health: ${C_DIM}curl http://localhost:${PLANE_HTTP_PORT}/healthz${C_RESET}"
   echo -e "  Logs:           ${C_DIM}scripts/container.sh logs $inst${C_RESET}"
   echo -e "  Stop:           ${C_DIM}scripts/container.sh down $inst${C_RESET}"
 }
@@ -754,6 +1298,15 @@ up_instance() {
 down_instance() {
   local inst="${1:-dev}"
   instance_info "$inst"
+  # Host residency: the plane is a HOST process, not a container child, so
+  # stopping the instance must stop it explicitly. The PID-file test also
+  # covers switching an instance BACK to container residency — a leftover host
+  # plane would hold the plane port and block the container's publish. (The
+  # inverse is a feature: `plane-stop` leaves the services container running.)
+  if [ "$(residency_for 2>/dev/null || echo container)" = "host" ] \
+    || [ -f "$HOST_DATA_DIR/serve/pids/orchicon.pid" ]; then
+    plane_stop "$inst"
+  fi
   if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
     docker rm -f "$NAME" >/dev/null
     log_ok "$inst instance stopped and removed (data volume $VOLUME preserved)"
@@ -774,14 +1327,20 @@ status_instances() {
   fi
   for i in $instances; do
     instance_info "$i"
+    local residency_i
+    residency_i=$(residency_for 2>/dev/null || echo container)
     if docker ps --format '{{.Names}}' | grep -qx "$NAME"; then
       local state
       state=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' "$NAME" 2>/dev/null || echo "running")
-      echo -e "  $i: ${C_GREEN}running ($state)${C_RESET} ${C_DIM}$NAME${C_RESET}"
+      echo -e "  $i: ${C_GREEN}running ($state)${C_RESET} ${C_DIM}$NAME · plane:$residency_i${C_RESET}"
     elif docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
-      echo -e "  $i: ${C_YELLOW}stopped${C_RESET} ${C_DIM}$NAME${C_RESET}"
+      echo -e "  $i: ${C_YELLOW}stopped${C_RESET} ${C_DIM}$NAME · plane:$residency_i${C_RESET}"
     else
-      echo -e "  $i: ${C_RED}not created${C_RESET}"
+      echo -e "  $i: ${C_RED}not created${C_RESET} ${C_DIM}plane:$residency_i${C_RESET}"
+    fi
+    if [ "$residency_i" = "host" ]; then
+      # The plane is a host process: its state is NOT the container's state.
+      plane_status "$i" || true
     fi
   done
 }
@@ -798,8 +1357,17 @@ case "${1:-}" in
   sync-mounts) sync_mounts "${2:-dev}" ;;
   up) up_instance "${2:-dev}" ;;
   down) down_instance "${2:-dev}" ;;
+  # Host-resident plane env for an instance (see bridge_bind_env):
+  #   eval "$(scripts/container.sh plane-bind prod)" before starting that
+  # instance's host plane, or add the two lines to its own env file.
+  plane-bind) bridge_bind_env "${2:-dev}" ;;
   status) status_instances "${2:-}" ;;
   logs) logs_instance "${2:-dev}" ;;
+  shape) print_shape "${2:-dev}" ;;
+  verify) verify_instance "${2:-dev}" ;;
+  plane-start) plane_start "${2:-dev}" ;;
+  plane-stop) plane_stop "${2:-dev}" ;;
+  plane-status) plane_status "${2:-dev}" ;;
   runtime-daemon) start_runtime_daemon ;;
   runtime-stop)
     # Stop the runtime daemon (and any runtime containers) for an instance.
@@ -825,7 +1393,9 @@ case "${1:-}" in
     docker ps -a --filter label=orchicon.workflow --format 'table {{.Names}}\t{{.Status}}'
     ;;
   *)
-    echo "Usage: $0 {build|rebuild [dev|prod]|sync-mounts [dev|prod]|up [dev|prod]|down [dev|prod]|status [dev|prod]|logs [dev|prod]|ps|runtime-daemon|runtime-stop}"
+    echo "Usage: $0 {build|rebuild [dev|prod]|sync-mounts [dev|prod]|up [dev|prod]|down [dev|prod]|status [dev|prod]|logs [dev|prod]|plane-bind [dev|prod]|shape [dev|prod]|verify [dev|prod]|plane-start|plane-stop|plane-status [dev|prod]|ps|runtime-daemon|runtime-stop}"
+    echo "  ORCHICON_PLANE_RESIDENCY=host|container  (default container) picks the shape per invocation."
+    echo "  plane-bind prints the host plane's PER-INSTANCE bind + URL (ORCHICON_HTTP_EXTRA_BIND, ORCHICON_PLANE_PUBLIC_URL)."
     exit 1
     ;;
 esac

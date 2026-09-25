@@ -624,6 +624,14 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// detach below — so it survives into every tool call of the turn, exactly as the mode does.
 	ctx = withAskConversation(ctx, convID)
 
+	// AND THE CONVERSATION'S PROJECT RIDES WITH THEM, by the same rule and for a stronger reason: the file/shell
+	// suite's containment boundary is resolved from it (AskFileScopeFor in native_tools.go), and the prompt's
+	// "## This conversation's project" block is built from the SAME row — so carrying it here is what makes "where
+	// the prompt says my project is" and "where my relative writes land" one answer instead of two that can
+	// silently disagree. Re-reading the conversation inside the tool layer would be a second DB round trip for a
+	// fact this row already carries.
+	ctx = withAskConversationProject(ctx, conv.ProjectID)
+
 	// sessionIDOverride is the session the new turn dispatches on. Normally
 	// the conversation's persisted session; set to "" below (forcing a fresh
 	// seeded session) when the interject supersedes a WEDGED turn (D4) so the
@@ -1164,9 +1172,13 @@ func buildSystemPrompt(mode string, cfg db.AgentConfigRow, registry *ToolRegistr
 		b.WriteString("\n")
 	} else {
 		b.WriteString("This conversation is not assigned to a project, so it has no project directory of its own. " +
-			"The file/shell suite still operates on the tenant's first active project_dir — call ask_file_root to see " +
-			"which. Assign one with SetConversationProject (the TUI's /project, or a project folder in the GUI) to " +
-			"give this chat a workspace of its own.\n")
+			"NOTHING is pre-approved for it: a write or a command is outside this chat's scope and asks the user " +
+			"first, wherever it falls. Reading is different — reads never ask, anywhere on the operator's machine. " +
+			"The file/shell suite still has a directory to work in — call ask_file_root to see which — but it is only " +
+			"the tenant's default anchor: because this chat has no project, that anchor is used SOLELY to resolve " +
+			"relative paths, NOT as this chat's own workspace and not as anything pre-approved. Assign a project with " +
+			"SetConversationProject (the TUI's /project, or a project folder in the GUI) to give this chat a workspace " +
+			"of its own.\n")
 	}
 	b.WriteString("\n")
 
@@ -1180,7 +1192,7 @@ func buildSystemPrompt(mode string, cfg db.AgentConfigRow, registry *ToolRegistr
 	b.WriteString("\n")
 
 	b.WriteString("## Available tools\n")
-	b.WriteString("Orchicon's tools are exposed to you as MCP tools named `orchicon_<tool>` — call them directly through your tool mechanism and the system executes them against Orchicon, returning real results. Mutating tools run only after user confirmation. The native file/shell suite (batch_read, batch_grep, batch_write, read, grep, write, edit, list, glob, bash, ask_file_root) is also on your session as native tools — it operates on the tenant's first active project_dir (ask_file_root reports it).\n\n")
+	b.WriteString("Orchicon's tools are exposed to you as MCP tools named `orchicon_<tool>` — call them directly through your tool mechanism and the system executes them against Orchicon, returning real results. Mutating tools run only after user confirmation. The native file/shell suite (batch_read, batch_grep, batch_write, read, grep, write, edit, list, glob, bash, ask_file_root) is also on your session as native tools — its reach, its pre-approved directory and when it asks are stated in \"## Reach and scope\" above.\n\n")
 	for _, td := range registry.List() {
 		mutability := "read-only"
 		if td.Mutating {
@@ -2429,12 +2441,9 @@ func (s *Service) conversationProjectContext(ctx context.Context, tenantID strin
 	if conv.ProjectID == "" {
 		return ""
 	}
-	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		return ""
-	}
-	defer ttx.Rollback(ctx)
-	p, err := db.GetProject(ctx, ttx.Tx, tenantID, conv.ProjectID)
+	// The SAME load the tool layer's scope resolver uses (conversationProjectRow), so the directory named here and
+	// the directory the file/shell suite binds to are one read of one row — they cannot drift.
+	p, err := conversationProjectRow(ctx, s.pool, tenantID, conv.ProjectID)
 	if err != nil {
 		// A project deleted out from under the conversation (archived, or hard-deleted with its tenant). The turn
 		// proceeds unassigned rather than failing; the rail and the GUI both render the same stale id as an
@@ -2451,6 +2460,11 @@ func (s *Service) conversationProjectContext(ctx context.Context, tenantID strin
 		b.WriteString(fmt.Sprintf("That directory is the folder this conversation's work happens in — treat paths "+
 			"in this chat as relative to `%s` unless a message says otherwise, and create or edit files there rather "+
 			"than in some other project's tree.\n", p.ProjectDir))
+		b.WriteString(fmt.Sprintf("It is also this conversation's DEFAULT SCOPE and its PRE-APPROVED directory: a write "+
+			"or an execution inside `%s` proceeds without asking, and that is what the association buys. The suite can "+
+			"still reach the rest of the host — reads never ask anywhere — but work outside this directory, a sibling "+
+			"project's tree included, is out of scope and asks the user first, so say what you intend to touch there "+
+			"rather than assuming it is approved.\n", p.ProjectDir))
 	}
 	if p.Status != "" && p.Status != "active" {
 		b.WriteString(fmt.Sprintf("NOTE: this project is `%s`, not active — say so if a request depends on it running.\n", p.Status))

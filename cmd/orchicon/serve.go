@@ -20,6 +20,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/logging"
 	"github.com/beardedparrott/orchicon/internal/migrate"
+	"github.com/beardedparrott/orchicon/internal/permpolicy"
 	"github.com/beardedparrott/orchicon/internal/server"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/version"
@@ -160,6 +161,20 @@ func serveForeground() int {
 		log.Error("invalid configuration", "error", err)
 		return 1
 	}
+
+	// THE PERSISTENT PERMISSION POLICY, CHECKED BEFORE ANYTHING SERVES.
+	//
+	// Boot installs the shipped preset when that is the rule (no explicit
+	// ORCHICON_PERMISSION_POLICY and no file yet) and then strict-loads the
+	// file. A MALFORMED policy stops the boot here, naming the path and the
+	// parse error: a policy file that silently parses to nothing is worse
+	// than no file at all, because the operator believes the exclusions are
+	// in force. Failing loud is the only safe reading.
+	if err := permpolicy.Boot(cfg.PermissionPolicyPath); err != nil {
+		log.Error("invalid permission policy", "path", cfg.PermissionPolicyPath, "error", err)
+		return 1
+	}
+	log.Info("permission policy loaded", "path", cfg.PermissionPolicyPath)
 
 	// Run embedded migrations before the server starts, using the same
 	// tracking table (_orchicon_migrations) that devStartParent uses.

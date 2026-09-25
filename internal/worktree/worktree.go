@@ -115,6 +115,13 @@ type Base struct {
 	// area (guard.ScratchDir / opencode.ScratchDir, /tmp/orchicon). Replaces
 	// the previously-broad os.TempDir() allow.
 	ScratchDir string
+	// AllowAnyPath, when true, removes the allowed-root check entirely: an
+	// absolute path is accepted wherever the process can reach it, a relative
+	// path still anchors at Worktree, and `..` is just a path component. Set
+	// ONLY by the interactive (Ask) suite — orchicon.NewHostToolsUnrestricted.
+	// The worker constructors never set it: a worker session's suite must
+	// remain unable to read outside its worktree/project root.
+	AllowAnyPath bool
 }
 
 // DefaultScratchDir is the sanctioned scratch area the composite tools may
@@ -149,6 +156,17 @@ func safeResolve(b Base, rel string, writable bool) (string, error) {
 	}
 	if b.Worktree == "" {
 		return "", fmt.Errorf("empty worktree base")
+	}
+	if b.AllowAnyPath {
+		// The interactive (Ask) boundary: the allowed set is the whole
+		// filesystem, so there is nothing to check. A relative path still
+		// anchors at Worktree (the conversation's project) and `..` is just
+		// another path component — project-relative work is unchanged.
+		clean := filepath.Clean(rel)
+		if filepath.IsAbs(clean) {
+			return clean, nil
+		}
+		return filepath.Join(b.Worktree, clean), nil
 	}
 	roots := []string{filepath.Clean(b.Worktree)}
 	if b.ScratchDir != "" {
@@ -191,6 +209,13 @@ func safeResolve(b Base, rel string, writable bool) (string, error) {
 		return "", fmt.Errorf("path escapes the workspace")
 	}
 	return p, nil
+}
+
+// ResolvePath is safeResolve for callers outside this package (the host tool
+// suite's list/glob wrappers), so the allowed-root list lives in ONE place:
+// the worktree engine. writable selects the read vs write root set.
+func ResolvePath(b Base, rel string, writable bool) (string, error) {
+	return safeResolve(b, rel, writable)
 }
 
 // pruneDirName reports whether a directory should be pruned from a

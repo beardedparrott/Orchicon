@@ -64,6 +64,11 @@ type ItemSpan struct {
 	Text  string // the item's copyable text ("" when there is nothing worth copying)
 	Line  int    // 0-based first line of this item in the body
 	Lines int    // how many body lines it occupies
+	// Options is where an ask card's OPTION ROWS landed, in lines RELATIVE to Line, each with the label a
+	// click on it sends back as the next user message. It is the click geometry for the clarifying-question
+	// card, exactly as Code is for a block — the two exist for the same reason: the alternative (parsing the
+	// rendered text back out of the transcript) would be a second thing to keep in step with the render.
+	Options []AskOptionSpan
 	// Code is where this item's CODE BLOCKS landed, in lines RELATIVE to Line, each with the fence's source.
 	//
 	// It exists because copying a block by SELECTING it cannot be made clean. The operator: "You can't copy just
@@ -73,6 +78,17 @@ type ItemSpan struct {
 	// SOURCE instead, which has no indent, no pane border and no fill padding to strip, because it never went
 	// through the renderer at all.
 	Code []CodeSpan
+}
+
+// AskOptionSpan is one option row of a clarifying-question card within its item, and its label.
+//
+// THE LABEL IS WHAT A CLICK SENDS. Answering a recorded question is not a new channel: the label goes out as
+// an ordinary user message (Controller.AnswerQuestion → Send), which is what makes the answer land in the
+// transcript like anything else the operator types.
+type AskOptionSpan struct {
+	Line  int // 0-based line of the option's first row, relative to the item
+	Lines int // how many rows the option occupies (its label, plus its description when it has one)
+	Label string
 }
 
 // CodeSpan is one code block's place within an item, and the code itself.
@@ -86,6 +102,22 @@ type CodeSpan struct {
 // Contains reports whether a body line belongs to this item.
 func (s ItemSpan) Contains(line int) bool {
 	return line >= s.Line && line < s.Line+s.Lines
+}
+
+// OptionAt returns the LABEL of the ask card's option at a body line, when one is there.
+//
+// An option's DESCRIPTION row belongs to the option, not to the space around it: a dead row inside a choice
+// reads as a broken affordance (the same reason a code block's language label resolves to its block). What it
+// is STRICT about is everything else — clicking the question text or the card's header is not a choice, because
+// a click that sent something the operator did not point at would be worse than a click that does nothing.
+func (s ItemSpan) OptionAt(line int) (string, bool) {
+	rel := line - s.Line
+	for _, o := range s.Options {
+		if rel >= o.Line && rel < o.Line+o.Lines {
+			return o.Label, true
+		}
+	}
+	return "", false
 }
 
 // CodeAt returns the SOURCE of the code block containing a body line, when one does.
@@ -163,6 +195,8 @@ func renderItems(items []ChatItem, maxWidth int, folded func(key string) bool, c
 		// code is this item's block geometry, when its kind renders markdown with a surface. The zero value is
 		// "no blocks", which is what every other kind contributes.
 		var code []CodeSpan
+		// askOpts is the same idea for an ask card's option rows: the zero value is "an item with no options".
+		var askOpts []AskOptionSpan
 		switch it.Kind {
 		case KindUser:
 			// THE AFFORDANCE RIDES THE BAND LABEL. The operator's own message is the one the operator can
@@ -206,6 +240,10 @@ func renderItems(items []ChatItem, maxWidth int, folded func(key string) bool, c
 			b.WriteString(renderBubble("error", it.Text, theme.ErrorText, maxWidth))
 		case KindTool:
 			b.WriteString(renderToolRow(it.Tool, maxWidth))
+		case KindAsk:
+			card, opts := renderAskCardSpans(it.Ask, maxWidth)
+			b.WriteString(card)
+			askOpts = opts
 		case KindArtifact:
 			b.WriteString(renderArtifactRow(it, maxWidth))
 		case KindSession:
@@ -217,7 +255,8 @@ func renderItems(items []ChatItem, maxWidth int, folded func(key string) bool, c
 		// whole body per item.
 		lines := strings.Count(b.String()[before:], "\n")
 		spans = append(spans, ItemSpan{
-			Kind: it.Kind, Key: it.Key, Text: copyTextFor(it), Line: lineIdx, Lines: lines, Code: code,
+			Kind: it.Kind, Key: it.Key, Text: copyTextFor(it), Line: lineIdx, Lines: lines,
+			Options: askOpts, Code: code,
 		})
 		lineIdx += lines
 	}
@@ -632,6 +671,47 @@ func renderToolRow(t *ParsedTool, maxWidth int) string {
 	}
 	b.WriteString("\n")
 	return truncateLine(b.String(), maxWidth)
+}
+
+// renderAskCard paints a recorded clarifying question as the terminal card: the
+// question and its numbered options. The operator answers it by sending the
+// option's label as the next message (Controller.AnswerQuestion), so the card is
+// a RECORD the turn already completed — never a live prompt the turn is waiting on.
+func renderAskCard(a *ParsedAsk, maxWidth int) string {
+	body, _ := renderAskCardSpans(a, maxWidth)
+	return body
+}
+
+// renderAskCardSpans is renderAskCard plus WHERE EACH OPTION ROW LANDED, so a click on the card can resolve
+// to the option under it.
+//
+// THE OFFSETS ARE MEASURED FROM THE BUILDER rather than counted by hand, using the same trick renderItems uses
+// for its own spans: the number of newlines already written IS the 0-based index of the line about to be
+// written. A hand-maintained counter here would drift the moment the card gains a row — and the failure mode
+// of that drift is a click that sends an option the operator did not choose.
+func renderAskCardSpans(a *ParsedAsk, maxWidth int) (string, []AskOptionSpan) {
+	if a == nil {
+		return "", nil
+	}
+	var b strings.Builder
+	var opts []AskOptionSpan
+	b.WriteString(theme.ListTitle.Render("? Orchicon asks") + "\n")
+	b.WriteString(theme.BubbleModel.Render(wrapText(a.Question, maxWidth)) + "\n")
+	for i, o := range a.Options {
+		rows := 1
+		if o.Description != "" {
+			rows = 2
+		}
+		opts = append(opts, AskOptionSpan{Line: strings.Count(b.String(), "\n"), Lines: rows, Label: o.Label})
+		b.WriteString(theme.ListMeta.Render("  "+itoa(int64(i+1))+". ") + o.Label + "\n")
+		if o.Description != "" {
+			b.WriteString(theme.HintText.Render("     "+o.Description) + "\n")
+		}
+	}
+	if a.AllowOther {
+		b.WriteString(theme.HintText.Render("  (or answer in your own words)") + "\n")
+	}
+	return truncateLine(b.String(), maxWidth), opts
 }
 
 func renderArtifactRow(it ChatItem, maxWidth int) string {
