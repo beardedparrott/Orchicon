@@ -47,7 +47,7 @@ code{font-size:.86em; background:var(--paper-2); padding:.1em .35em; border-radi
 
 /* nav */
 .nav{position:sticky; top:env(safe-area-inset-top,0px); z-index:20; background:color-mix(in srgb, var(--paper) 88%, transparent); backdrop-filter:blur(10px); border-bottom:1px solid var(--rule)}
-.nav .wrap{display:flex; align-items:center; gap:28px; height:64px}
+.nav .wrap{display:flex; align-items:center; gap:20px; min-height:64px}
 .brand{display:flex; align-items:center; gap:10px; font-weight:800; font-size:19px; text-decoration:none; letter-spacing:-.01em}
 .brand svg{width:34px; height:34px}
 /* (ORCA · CON) — the wordmark's companion. Small, mono, muted: it should read as a
@@ -60,8 +60,33 @@ code{font-size:.86em; background:var(--paper-2); padding:.1em .35em; border-radi
    operator asked to keep. (It also leaves the underlying text as ordinary spaces, so a copy of it
    pastes as "(ORCA · CON)" rather than with invisible thin-space characters.) */
 .byline{font:500 11px/1 var(--mono); letter-spacing:.09em; word-spacing:-.15em; color:var(--ink-3); white-space:nowrap; margin-left:7px}
-.nav nav{display:flex; gap:22px; margin-left:auto}
-.nav nav a{text-decoration:none; color:var(--ink-2); font-size:15px; font-weight:500}
+/* Nav row: nine links, never squeezed, and WRAPS rather than breaks.
+
+   WHY IT BROKE. The row is a flex row, so when its contents exceed the container the
+   ITEMS shrink; with no `white-space:nowrap` the label then broke mid-phrase
+   ("Web"/"app", "Terminal"/"Workers") and reflowed inside the 64px bar. Adding Pricing
+   as a ninth link is what pushed it over.
+
+   WHY THE PREVIOUS FIX WAS NOT ENOUGH. Hiding links at narrow widths cannot fix a row
+   that is too wide at its WIDEST, and this header has exactly that shape: the container
+   is `.wrap{width:min(1200px, 100% - 48px)}`, so for every viewport from ~1248px up the
+   nav's available width is CONSTANT — it stops growing. Nine links at the old 22px gap
+   needed more than that constant, so the row overflowed on a normal desktop and no
+   breakpoint below 1160px could reach it. The budget had to change, not only the tiers.
+
+   THE FIX, in two parts, so neither depends on guessing font metrics:
+     1. `gap` 22px -> 12px here and 28px -> 20px on the row (a 154px swing), which is
+        what actually makes nine links fit the capped container. `nowrap` + `flex:none`
+        on each link keeps a label whole and un-shrunk.
+     2. `flex-wrap:wrap` + `justify-content:flex-end` as a BACKSTOP: if a wider platform
+        font still overflows, the links wrap onto a second line (the row grows, because
+        .nav .wrap is `min-height`, not `height`) instead of breaking a label or spilling
+        past the container. A graceful second line beats a mid-phrase break, and it means
+        the exact thresholds below are a preference rather than the thing holding it up.
+
+   Order matters: later rules win, so the narrower tiers build on the wider ones. */
+.nav nav{display:flex; gap:12px; margin-left:auto; flex-wrap:wrap; row-gap:2px; justify-content:flex-end}
+.nav nav a{text-decoration:none; color:var(--ink-2); font-size:15px; font-weight:500; white-space:nowrap; flex:none}
 .nav nav a:hover{color:var(--ink)}
 .btn{display:inline-flex; align-items:center; gap:8px; font:600 15px/1 var(--sans); padding:11px 16px; border-radius:var(--radius-s); text-decoration:none; border:1px solid transparent; cursor:pointer}
 .btn-primary{background:var(--cobalt); color:var(--cobalt-ink)}
@@ -172,8 +197,14 @@ td.with{color:var(--ink)}
 /* nav active */
 .nav nav a[aria-current="true"]{color:var(--ink); box-shadow:inset 0 -2px 0 var(--cobalt)}
 .nav nav a{padding:6px 0}
-@media (max-width:1180px){.nav nav{gap:16px}.nav nav a{font-size:14px}}
-@media (max-width:1040px){.nav nav a:nth-child(3),.nav nav a:nth-child(7){display:none}}
+/* Tiers. Because the container caps at 1200px, anything above ~1248px has the SAME
+   available width — so these only matter for the narrow end, and the wide end is handled
+   by the base budget above. Each drops the least-load-bearing link to buy room, in order,
+   and the wrap backstop covers the seams between them. */
+@media (max-width:1240px){.nav nav{gap:10px}}
+@media (max-width:1180px){.nav nav a:nth-child(6){display:none}} /* Idea Cloud */
+@media (max-width:1080px){.nav nav a:nth-child(3){display:none}} /* Why Workers */
+@media (max-width:980px){.nav nav a:nth-child(7){display:none}}  /* Capabilities */
 .hero-side .hero-tui{margin:22px 0 0; padding-top:18px; border-top:1px solid var(--rule); font-size:16px; color:var(--ink-2)}
 .hero-tui a{color:var(--cobalt); font-weight:600; text-decoration:none}
 .hero-tui a:hover{text-decoration:underline}
