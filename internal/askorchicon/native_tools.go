@@ -11,6 +11,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/orchicon"
+	"github.com/beardedparrott/orchicon/internal/permpolicy"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
@@ -290,7 +291,23 @@ func AskFileRoot(ctx context.Context, pool *db.Pool) (string, error) {
 func askHostToolsForRoot(root string) *orchicon.HostTools {
 	h := orchicon.NewHostToolsUnrestricted(root)
 	h.SetBashEnviron(AskGuardEnviron)
+	// The operator's DURABLE permission policy, consulted through the ONE
+	// shared accessor (permpolicy.Store) before any call in the suite is
+	// dispatched. It is the consent core's read of the same file the guard
+	// shim and the plane API read, so enforcement and prompting cannot
+	// drift: a denied path is refused HERE by the shared accessor, and the
+	// refusal names the entry that denied it.
+	h.SetPathPolicy(askPermissionPolicy().HostSuiteGuard())
 	return h
+}
+
+// askPermissionPolicy is the consent core's handle on the persistent
+// permission policy. A fresh Store per call, holding only the path: the
+// reload semantics are "read on each consult", so there is nothing to
+// memoise and nothing to invalidate (a hand-edit and a UI write are both
+// live on the next gated decision).
+func askPermissionPolicy() *permpolicy.Store {
+	return permpolicy.NewStore(permpolicy.DefaultPath())
 }
 
 // AskToolDefs returns the combined tool surface: product tools first, then
@@ -396,7 +413,19 @@ func (a *nativeAskTools) ExecuteAskTool(ctx context.Context, name, argsJSON stri
 			return "", err
 		}
 		env := map[string]string{"project_dir": scope.Dir}
-		if scope.FromConversation {
+		// A DENIED directory is stated as denied, and the statement names the
+		// entry: the probe is what the model calls first, so "this directory
+		// is refused by policy" belongs here rather than only at the first
+		// failed call.
+		deniedEntry := ""
+		if d, derr := askPermissionPolicy().Decide(scope.Dir, permpolicy.Inputs{}); derr == nil && d.Verdict == permpolicy.VerdictDeny {
+			deniedEntry = d.Entry
+			env["denied"] = "true"
+			env["denied_entry"] = d.Entry
+		}
+		if deniedEntry != "" {
+			env["note"] = fmt.Sprintf("This directory is REFUSED by the operator's permission policy (entry %q). A session grant cannot override it: the deny list outranks a grant. Work in a different directory, or ask the operator to remove the entry from the permission policy file.", deniedEntry)
+		} else if scope.FromConversation {
 			env["scope"] = askScopeConversation
 			env["project_id"] = scope.ProjectID
 			env["note"] = "This directory IS this conversation's project: it is the conversation's default scope and PRE-APPROVED, so file/shell work inside it proceeds without asking. Reads never ask anywhere; a write or a command OUTSIDE this directory asks the user first."

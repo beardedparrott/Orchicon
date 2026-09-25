@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"time"
@@ -182,11 +183,23 @@ type Config struct {
 	// default /var/lib/orchicon). When no ORCHICON_SECRETS_KEK override is
 	// set, the per-instance KEK is load-or-created under it on first boot.
 	DataDir string
+
+	// PermissionPolicyPath is the operator's persistent permission policy
+	// file (ORCHICON_PERMISSION_POLICY, default
+	// <DataDir>/permission-policy.yaml). It holds the durable deny/accept
+	// list the consent core and the guard consult on every gated decision;
+	// both halves are computed from one DataDir value in Default() so the
+	// derived default can never drift from DataDir.
+	PermissionPolicyPath string
 }
 
 // Default returns a Config populated with local-dev defaults that match
 // the docker-compose stack in deploy/compose.
 func Default() Config {
+	// One value drives both the state dir and the policy default: the policy
+	// lives IN the state dir unless the operator points it elsewhere, and a
+	// second env read could silently disagree.
+	dataDir := env("ORCHICON_DATA_DIR", "/var/lib/orchicon")
 	return Config{
 		HTTPAddr:           env("ORCHICON_HTTP_ADDR", ":8080"),
 		ExtraBind:          env("ORCHICON_HTTP_EXTRA_BIND", ""),
@@ -232,7 +245,9 @@ func Default() Config {
 		OutboxPruneInterval: envDuration("ORCHICON_OUTBOX_PRUNE_INTERVAL", time.Hour),
 		DispatchConcurrency: envInt("ORCHICON_DISPATCH_CONCURRENCY", 4),
 		SecretsKEK:          env("ORCHICON_SECRETS_KEK", ""),
-		DataDir:             env("ORCHICON_DATA_DIR", "/var/lib/orchicon"),
+		DataDir:             dataDir,
+		PermissionPolicyPath: env("ORCHICON_PERMISSION_POLICY",
+			filepath.Join(dataDir, "permission-policy.yaml")),
 	}
 }
 
@@ -318,6 +333,9 @@ func (c Config) Validate() error {
 	}
 	if len(c.DeploymentTenantID) > maxTenantIDLen || !tenantIDRE.MatchString(c.DeploymentTenantID) {
 		return fmt.Errorf("config: DeploymentTenantID %q invalid: must be %d chars max, lowercase alphanumerics plus '-'/'_' (ORCHICON_DEPLOYMENT_TENANT_ID)", c.DeploymentTenantID, maxTenantIDLen)
+	}
+	if c.PermissionPolicyPath == "" {
+		return fmt.Errorf("config: PermissionPolicyPath must be set (ORCHICON_PERMISSION_POLICY)")
 	}
 	if c.PostgresDSN == "" {
 		return fmt.Errorf("config: PostgresDSN must be set")

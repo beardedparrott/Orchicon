@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"text/template"
+
+	"github.com/beardedparrott/orchicon/internal/permpolicy"
 )
 
 // The execution guard is the OS-level backstop for worker safety.
@@ -92,6 +94,10 @@ var guardedBinaries = []guardedBinary{
 type Guard struct {
 	dir  string
 	real map[string]string
+	// policyPath is the operator's persistent permission policy file, read
+	// PER INVOCATION by the shim's denied_target() (no cache, no watcher —
+	// an edit takes effect on the next command). Empty disables the check.
+	policyPath string
 }
 
 // MakeGuard creates a guard shim inside targetDir (which must already
@@ -105,7 +111,7 @@ func MakeGuard(targetDir, projectDir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	g, err := buildGuardIn(dir, projectDir)
+	g, err := buildGuardIn(dir, projectDir, permpolicy.DefaultPath())
 	if err != nil {
 		os.RemoveAll(dir)
 		return "", err
@@ -117,11 +123,18 @@ func MakeGuard(targetDir, projectDir string) (string, error) {
 // worker's working directory (may be empty — absolute targets are still
 // blocked). The returned guard must be closed (removes the shim dir).
 func NewExecutionGuard(projectDir string) (*Guard, error) {
+	return NewExecutionGuardWithPolicy(projectDir, permpolicy.DefaultPath())
+}
+
+// NewExecutionGuardWithPolicy is NewExecutionGuard with an explicit policy
+// file (tests, and any caller that resolves the path itself). An empty
+// policyPath renders a shim without the deny check.
+func NewExecutionGuardWithPolicy(projectDir, policyPath string) (*Guard, error) {
 	dir, err := os.MkdirTemp("", "orchicon-guard-*")
 	if err != nil {
 		return nil, err
 	}
-	g, err := buildGuardIn(dir, projectDir)
+	g, err := buildGuardIn(dir, projectDir, policyPath)
 	if err != nil {
 		os.RemoveAll(dir)
 		return nil, err
@@ -131,14 +144,14 @@ func NewExecutionGuard(projectDir string) (*Guard, error) {
 
 // buildGuardIn renders the guard script + symlinks into dir (created by
 // the caller). projectDir is the worker's working directory.
-func buildGuardIn(dir, projectDir string) (*Guard, error) {
+func buildGuardIn(dir, projectDir, policyPath string) (*Guard, error) {
 	if projectDir != "" {
 		if abs, err := filepath.Abs(projectDir); err == nil {
 			projectDir = abs
 		}
 	}
 
-	g := &Guard{dir: dir, real: make(map[string]string)}
+	g := &Guard{dir: dir, real: make(map[string]string), policyPath: policyPath}
 
 	// Resolve the real binary paths for scoped binaries. They are always
 	// present on a working Linux/macOS host; a missing one means the
@@ -153,7 +166,8 @@ func buildGuardIn(dir, projectDir string) (*Guard, error) {
 		ProjectDir string
 		Real       map[string]string
 		ScratchDir string
-	}{projectDir, g.real, ScratchDir}
+		PolicyFile string
+	}{projectDir, g.real, ScratchDir, policyPath}
 
 	tmpl, err := template.New("guard").Parse(guardScriptTemplate)
 	if err != nil {
@@ -289,10 +303,89 @@ var guardScriptTemplate = `#!/bin/bash
 # worker execution; see internal/opencode/guard.go.
 PROJECT_DIR='{{.ProjectDir}}'
 SCRATCH_DIR='{{.ScratchDir}}'
+POLICY_FILE='{{.PolicyFile}}'
 
 blocked() {
   echo "ORCHICON GUARD: command '${0##*/}' blocked (destructive, or targets a path outside the project directory)." >&2
   exit 1
+}
+
+# policy_blocked names the DENIED POLICY ENTRY, not just the rejection: a
+# refusal the operator (or the model) cannot trace back to a rule is
+# unfixable.
+policy_blocked() {
+  echo "ORCHICON GUARD: command '${0##*/}' blocked — '$DENIED_TARGET' is denied by entry '$DENIED_ENTRY' in the permission policy ($POLICY_FILE). A session grant cannot override it." >&2
+  exit 1
+}
+
+# denied_target returns 0 (block) when any argument matches an entry in the
+# operator's DURABLE permission policy deny list.
+#
+# The file is read PER INVOCATION on purpose: the policy is a few hundred
+# bytes, a path-scoped command is rare, and a fresh read means a hand-edit
+# or a UI change takes effect on the very next command — no watcher, no
+# cache, no staleness window. Only the deny: block is consulted here: an
+# accept entry means "never ASK", and the shim does not ask.
+#
+# This sits BELOW the never-allow binary class above it (that case block is
+# absolute and cannot be reached past) and BELOW nothing else: the deny list
+# is the operator's exclusion, so it outranks any session grant the consent
+# layer holds.
+denied_target() {
+  DENIED_TARGET=""
+  DENIED_ENTRY=""
+  [ -n "$POLICY_FILE" ] || return 1
+  [ -f "$POLICY_FILE" ] || return 1
+  local a line section pat entry
+  for a in "$@"; do
+    case "$a" in
+      -*) continue ;;
+      --) continue ;;
+    esac
+    section=""
+    while IFS= read -r line || [ -n "$line" ]; do
+      line="${line%"${line##*[![:space:]]}"}"
+      line="${line#"${line%%[![:space:]]*}"}"
+      case "$line" in
+        ""|'#'*) continue ;;
+        "deny:") section="deny"; continue ;;
+        "accept:") section="accept"; continue ;;
+        "- "*)
+          [ "$section" = "deny" ] || continue
+          pat="${line#- }"
+          pat="${pat%%#*}"
+          pat="${pat%"${pat##*[![:space:]]}"}"
+          pat="${pat%\"}"
+          pat="${pat#\"}"
+          pat="${pat%\'}"
+          pat="${pat#\'}"
+          [ -n "$pat" ] || continue
+          # The entry is reported EXACTLY AS THE OPERATOR WROTE IT (a leading
+          # ~ stays a ~), because the operator's next move is to grep their
+          # policy file for the entry the refusal names. The expanded form is
+          # for MATCHING only.
+          entry="$pat"
+          case "$pat" in
+            '~') pat="$HOME" ;;
+            '~/'*) pat="$HOME/${pat#\~/}" ;;
+          esac
+          case "$a" in
+            "$pat") DENIED_TARGET="$a"; DENIED_ENTRY="$entry"; return 0 ;;
+          esac
+          case "$pat" in
+            *[\*\?\[]*)
+              # Unquoted expansion: this is the GLOB match, on purpose.
+              # shellcheck disable=SC2254
+              case "$a" in
+                $pat) DENIED_TARGET="$a"; DENIED_ENTRY="$entry"; return 0 ;;
+              esac
+              ;;
+          esac
+          ;;
+      esac
+    done < "$POLICY_FILE"
+  done
+  return 1
 }
 
 # blocked_path returns 0 (block) if any path argument escapes PROJECT_DIR.
@@ -338,12 +431,12 @@ case "${0##*/}" in
   sudo|dd|mkfs|mkfs.*|mkswap|fdisk|parted|shred|wipefs|pvcreate|pvremove|vgcreate|vgremove|lvcreate|lvremove)
     blocked
     ;;
-  rm)    blocked_path "$@" && blocked; exec '{{index .Real "rm"}}' "$@" ;;
-  chmod) blocked_path "$@" && blocked; exec '{{index .Real "chmod"}}' "$@" ;;
-  chown) blocked_path "$@" && blocked; exec '{{index .Real "chown"}}' "$@" ;;
-  mv)    blocked_path "$@" && blocked; exec '{{index .Real "mv"}}' "$@" ;;
-  cp)    blocked_path "$@" && blocked; exec '{{index .Real "cp"}}' "$@" ;;
-  ln)    blocked_path "$@" && blocked; exec '{{index .Real "ln"}}' "$@" ;;
+  rm)    blocked_path "$@" && blocked; denied_target "$@" && policy_blocked; exec '{{index .Real "rm"}}' "$@" ;;
+  chmod) blocked_path "$@" && blocked; denied_target "$@" && policy_blocked; exec '{{index .Real "chmod"}}' "$@" ;;
+  chown) blocked_path "$@" && blocked; denied_target "$@" && policy_blocked; exec '{{index .Real "chown"}}' "$@" ;;
+  mv)    blocked_path "$@" && blocked; denied_target "$@" && policy_blocked; exec '{{index .Real "mv"}}' "$@" ;;
+  cp)    blocked_path "$@" && blocked; denied_target "$@" && policy_blocked; exec '{{index .Real "cp"}}' "$@" ;;
+  ln)    blocked_path "$@" && blocked; denied_target "$@" && policy_blocked; exec '{{index .Real "ln"}}' "$@" ;;
   *)
     echo "ORCHICON GUARD: unexpected invocation '${0##*/}'." >&2
     exit 1

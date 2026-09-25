@@ -25,6 +25,10 @@ func baseConfig() Config {
 			EmbeddedOP:  true,
 		},
 		BlobStore: BlobStoreConfig{Kind: "local"},
+		// Validate() refuses an empty policy path (a plane with no policy file
+		// name cannot check the policy at boot), so the valid baseline carries
+		// one, exactly like Default() does.
+		PermissionPolicyPath: "/var/lib/orchicon/permission-policy.yaml",
 	}
 }
 

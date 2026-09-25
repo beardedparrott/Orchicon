@@ -511,7 +511,11 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		Dispatcher:        dispatcher,
 		BlobStore:         blobs,
 		PostgresDSN:       cfg.PostgresDSN,
-		RuntimeClient:     rtClient,
+		// The permission policy file the settings service reads and writes
+		// (and that Boot already checked) — one path, resolved once from
+		// config, so the API and the enforcement seams cannot disagree.
+		PermissionPolicyPath: cfg.PermissionPolicyPath,
+		RuntimeClient:        rtClient,
 		// adapterKind resolves the execution's adapter kind for mid-run RPCs
 		// (dispatching adapter_id preferred, worker model_ref fallback) via
 		// the shared resolver and dispatcher.
