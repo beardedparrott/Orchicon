@@ -313,13 +313,75 @@ func (s *supervisor) initPostgres() error {
 // only. A connection arriving through a PUBLISHED port is forwarded from the
 // host by docker-proxy, so postgres sees the docker bridge gateway (e.g.
 // 172.17.0.1) as the peer — never loopback — and refuses it even after
-// listen_addresses is widened. The rules are kept deliberately generic
-// because docker bridge subnets vary per host (172.17/172.18/…): the port
-// publish (127.0.0.1:<host>:5432, scripts/container.sh) is the security
-// boundary, and widening the publish is what would break it.
-var pgHBATrustRules = []string{
-	"host all all 0.0.0.0/0 trust",
-	"host all all ::/0 trust",
+// listen_addresses is widened.
+//
+// SCOPE: the rule names that gateway ALONE (/32). Every other container on
+// the host shares that bridge, so a wildcard rule would hand it password-less
+// superuser access to this instance's database; the loopback publish
+// (127.0.0.1:<host>:5432, scripts/container.sh) is the security boundary and
+// must stay the only way in. Only when the gateway cannot be detected (an
+// isolated or unusual network) do we fall back to the wide rules, where that
+// publish is still the boundary.
+func pgHBATrustRules() []string {
+	if gw := bridgeGatewayIP(); gw != "" {
+		return []string{fmt.Sprintf("host all all %s/32 trust", gw)}
+	}
+	return []string{
+		"host all all 0.0.0.0/0 trust",
+		"host all all ::/0 trust",
+	}
+}
+
+// bridgeGatewayIP is the address postgres sees as the peer of a connection
+// forwarded from the host through a published port: the host end of this
+// container's default-bridge link. Read from the container's own routing
+// table so it is exact for any bridge subnet; the conventional base+1 bridge
+// address is only the fallback. "" when the container has no default route.
+func bridgeGatewayIP() string {
+	if gw := defaultRouteGateway(procNetRoutePath); gw != "" {
+		return gw
+	}
+	conn, err := net.Dial("udp", "8.8.8.8:53")
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+	la, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok || la.IP == nil {
+		return ""
+	}
+	base := la.IP.Mask(la.IP.DefaultMask())
+	if base == nil || base.To4() == nil {
+		return ""
+	}
+	gw := make(net.IP, len(base))
+	copy(gw, base)
+	gw[len(gw)-1] = 1 // network address + 1 = the conventional bridge gateway
+	return gw.String()
+}
+
+// procNetRoutePath is a constant so the parser below is testable on a fixture.
+const procNetRoutePath = "/proc/net/route"
+
+// defaultRouteGateway parses a /proc/net/route body for the IPv4 default
+// route's gateway (Destination 00000000; the gateway is little-endian hex).
+func defaultRouteGateway(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[1] != "00000000" {
+			continue
+		}
+		gw, err := strconv.ParseUint(fields[2], 16, 32)
+		if err != nil || gw == 0 {
+			continue
+		}
+		return net.IPv4(byte(gw), byte(gw>>8), byte(gw>>16), byte(gw>>24)).String()
+	}
+	return ""
 }
 
 // ensurePostgresHBATrust idempotently appends pgHBATrustRules to
@@ -339,7 +401,7 @@ func (s *supervisor) ensurePostgresHBATrust() error {
 		body += "\n"
 	}
 	added := 0
-	for _, rule := range pgHBATrustRules {
+	for _, rule := range pgHBATrustRules() {
 		if hbaHasRule(body, rule) {
 			continue
 		}

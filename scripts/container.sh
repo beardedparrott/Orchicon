@@ -905,6 +905,14 @@ up_instance() {
   if [ "$SERVICES_ONLY" = "1" ]; then
     PUBLISH_PORTS="$SERVICE_PORTS"
     EXTRA_RUN_ARGS+=(-e ORCHICON_CONTAINER_SERVICES_ONLY=1)
+    # ONE-TIME SWITCH-OVER, and it must happen BEFORE anything boots against
+    # the host path: the KEK (secrets/kek) and the ask-history live in the
+    # container's data volume, while the host profile points ORCHICON_DATA_DIR
+    # at a HOST path. Booting a host plane against an empty dir mints a NEW
+    # KEK and every tenant secret the containerized plane wrote stops
+    # decrypting. Never overwrites an existing host KEK; fatal on failure,
+    # because continuing would silently orphan those secrets.
+    migrate_host_data_dir "$inst" || return 1
     # The image's HEALTHCHECK probes the plane's :8080/healthz, which does not
     # exist here — without this override a perfectly healthy services-only
     # container would report unhealthy forever.

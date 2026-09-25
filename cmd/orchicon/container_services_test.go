@@ -87,7 +87,7 @@ func TestEnsurePostgresHBATrust(t *testing.T) {
 		t.Fatalf("first run: %v", err)
 	}
 	first := readFile(t, path)
-	for _, rule := range pgHBATrustRules {
+	for _, rule := range pgHBATrustRules() {
 		if n := strings.Count(first, rule); n != 1 {
 			t.Errorf("want exactly one %q, got %d in:\n%s", rule, n, first)
 		}
@@ -139,5 +139,55 @@ func TestServicesOnlyGateSkipsPlaneChildAndLogsIt(t *testing.T) {
 	}
 	if !strings.Contains(src, "servicesOnly: servicesOnly") {
 		t.Error("the parsed services-only setting is not carried into the supervisor")
+	}
+}
+
+// The trust rule must name the bridge gateway and NOTHING ELSE when the
+// gateway is detectable: every other container on the host shares that bridge,
+// and a wildcard rule would hand it password-less superuser access to this
+// instance's database. The loopback publish is the security boundary.
+func TestPostgresHBATrustRulesAreGatewayScoped(t *testing.T) {
+	rules := pgHBATrustRules()
+	gw := bridgeGatewayIP()
+	if gw == "" {
+		// No detectable gateway: the wide fallback is deliberate (the host
+		// plane must still reach postgres), so assert it exists and is
+		// auditable rather than silently empty.
+		if len(rules) == 0 {
+			t.Fatal("no detectable gateway and no fallback rule: the host plane could never connect")
+		}
+		return
+	}
+	want := "host all all " + gw + "/32 trust"
+	if len(rules) != 1 || rules[0] != want {
+		t.Fatalf("gateway %s detected: rules = %v, want exactly [%s] (a wildcard rule trusts every container on the host)", gw, rules, want)
+	}
+}
+
+func TestDefaultRouteGatewayParsing(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "route")
+	body := "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n" +
+		"lo\t00000000\t00000000\t0001\t0\t0\t0\t00000000\t0\t0\t0\n" +
+		"eth0\t00000000\t010011AC\t0003\t0\t0\t0\t00000000\t0\t0\t0\n" +
+		"eth0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := defaultRouteGateway(path); got != "172.17.0.1" {
+		t.Errorf("got %q, want 172.17.0.1 (gateway 010011AC is little-endian)", got)
+	}
+
+	// A routing table with no default route (and a missing file) must not
+	// invent a gateway: the caller falls back, it never guesses a peer.
+	noDefault := filepath.Join(dir, "no-default")
+	if err := os.WriteFile(noDefault, []byte("Iface\tDestination\tGateway\neth0\t000011AC\t00000000\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := defaultRouteGateway(noDefault); got != "" {
+		t.Errorf("no default route: got %q, want empty", got)
+	}
+	if got := defaultRouteGateway(filepath.Join(dir, "absent")); got != "" {
+		t.Errorf("missing file: got %q, want empty", got)
 	}
 }

@@ -203,6 +203,17 @@ else
   printf '  \033[31mFAIL\033[0m  %-52s %s\n' "services-only flag reaches the container" "MISSING"
   FAILED=$((FAILED + 1))
 fi
+# The host data dir (KEK, ask-history) is a DIFFERENT path from the container's
+# data volume, so the switch-over must actually copy it. A defined-but-never-
+# called migrate_host_data_dir silently mints a new KEK and every tenant secret
+# written by the containerized plane stops decrypting.
+if grep -qF 'migrate_host_data_dir "$inst" || return 1' "$CONTAINER_SH"; then
+  printf '  \033[32mPASS\033[0m  %-52s %s\n' "host switch-over migrates the data dir (KEK)" "wired"
+  PASSED=$((PASSED + 1))
+else
+  printf '  \033[31mFAIL\033[0m  %-52s %s\n' "host switch-over migrates the data dir (KEK)" "MISSING"
+  FAILED=$((FAILED + 1))
+fi
 
 echo
 echo "  host-residency harness: ${PASSED} passed, ${FAILED} failed"
