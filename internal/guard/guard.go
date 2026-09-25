@@ -40,6 +40,16 @@ import (
 // determined worker could still call /bin/rm by absolute path or write
 // its own binary. That residual risk is what the containerized execution
 // option (internal/opencode/README) closes. See also AGENTS.md.
+//
+// THE INTERACTIVE (Ask) PROFILE. The same shim serves the Ask path, switched
+// into a GRANT-AWARE, FAIL-CLOSED profile by ORCHICON_GUARD_POLICY (see
+// InteractiveEnviron). There the path-scoped check consults the SAME policy
+// accessor the consent core reads (internal/permpolicy), plus the
+// conversation's project dir, its session grants and the operator-approved
+// once-targets — and it REFUSES the command when the policy cannot be read or
+// parsed, because a guard that silently stops guarding is the failure this
+// component was built after. The always-block class is unchanged: sudo/dd/
+// mkfs-level capability is not up for consent.
 
 // ScratchDir is the one writable scratch area outside the project directory
 // (kept in sync with opencode.ScratchDir). Scoped binaries (rm/mv/cp/…)
@@ -48,6 +58,44 @@ import (
 // burns worker tokens on "blocked" retries for no safety gain. Everything
 // else outside the project stays blocked.
 const ScratchDir = "/tmp/orchicon"
+
+// The INTERACTIVE profile's environment contract. Only the Ask path
+// (internal/askorchicon) sets these; the worker path sets none of them and is
+// byte-for-byte unchanged. They ride the bash environment the Ask path already
+// REPLACES per invocation (orchicon.HostTools.SetBashEnviron) — the same
+// channel the shim's PATH entry uses, so no new constructor and no global.
+const (
+	// PolicyEnvVar non-empty switches the shim into the INTERACTIVE profile:
+	// grant-aware, and FAIL-CLOSED (an unreadable or unparsable policy REFUSES
+	// the path-scoped command rather than allowing it).
+	PolicyEnvVar = "ORCHICON_GUARD_POLICY"
+	// ProjectEnvVar is the conversation's project directory — the default
+	// scope, where writes proceed without an ask.
+	ProjectEnvVar = "ORCHICON_GUARD_PROJECT"
+	// GrantsEnvVar lists the conversation's session-granted directories,
+	// newline-separated (NOT ':'-separated: a path may contain a colon).
+	GrantsEnvVar = "ORCHICON_GUARD_GRANTS"
+	// OnceEnvVar lists the absolute targets the operator approved `once`,
+	// newline-separated, so the approved command runs while a sibling path a
+	// subprocess inside it targets is still refused.
+	OnceEnvVar = "ORCHICON_GUARD_ONCE"
+)
+
+// InteractiveEnviron returns the ORCHICON_GUARD_* key/values that switch the
+// shim into the interactive profile. An empty policyPath returns nil — that IS
+// the worker profile, which is the frozen half of "no path-scoped check
+// changes for a worker".
+func InteractiveEnviron(policyPath, projectDir string, grants, once []string) []string {
+	if strings.TrimSpace(policyPath) == "" {
+		return nil
+	}
+	return []string{
+		PolicyEnvVar + "=" + policyPath,
+		ProjectEnvVar + "=" + projectDir,
+		GrantsEnvVar + "=" + strings.Join(grants, "\n"),
+		OnceEnvVar + "=" + strings.Join(once, "\n"),
+	}
+}
 
 // guardedBinary names one binary the guard shims on PATH.
 type guardedBinary struct {
@@ -89,8 +137,10 @@ type Guard struct {
 	dir  string
 	real map[string]string
 	// policyPath is the operator's persistent permission policy file, read
-	// PER INVOCATION by the shim's denied_target() (no cache, no watcher —
+	// PER INVOCATION by the shim's policy_lookup() (no cache, no watcher —
 	// an edit takes effect on the next command). Empty disables the check.
+	// The interactive profile may point the shim at a different file per
+	// invocation through PolicyEnvVar, which overrides this baked default.
 	policyPath string
 }
 
@@ -301,9 +351,65 @@ PROJECT_DIR='{{.ProjectDir}}'
 SCRATCH_DIR='{{.ScratchDir}}'
 POLICY_FILE='{{.PolicyFile}}'
 
-blocked() {
-  echo "ORCHICON GUARD: command '${0##*/}' blocked (destructive, or targets a path outside the project directory)." >&2
+# --- interactive profile ---------------------------------------------------
+# ORCHICON_GUARD_POLICY switches on the interactive (Ask) profile; only the Ask
+# path (internal/askorchicon) sets it. In that profile the shim is GRANT-AWARE
+# (it honours the conversation's project, its session grants, the
+# operator-approved once-targets and the policy accept list) and FAIL-CLOSED:
+# a policy it cannot read or parse REFUSES the path-scoped command. A guard that
+# silently stops guarding is the exact failure this component was built after,
+# so the safe default is refusal. The worker path sets none of these and keeps
+# its historical behaviour byte-for-byte.
+INTERACTIVE=""
+if [ -n "${ORCHICON_GUARD_POLICY:-}" ]; then
+  INTERACTIVE=1
+  POLICY_FILE="$ORCHICON_GUARD_POLICY"
+fi
+GUARD_PROJECT="${ORCHICON_GUARD_PROJECT:-}"
+GUARD_GRANTS="${ORCHICON_GUARD_GRANTS:-}"
+GUARD_ONCE="${ORCHICON_GUARD_ONCE:-}"
+TAB=$(printf '\t')
+
+# failed_closed refuses the path-scoped command because the policy could not be
+# read. Only reachable in the interactive profile — the worker profile keeps the
+# "absent policy = no policy" rule.
+failed_closed() {
+  echo "ORCHICON GUARD (fail-closed): the permission policy '$1' cannot be read ($2) — refusing the path-scoped command '${0##*/}' rather than running it unguarded." >&2
   exit 1
+}
+
+blocked() {
+  echo "ORCHICON GUARD: command '${0##*/}' is PERMANENTLY BLOCKED — destructive or privileged tooling in the never-allow class (sudo / dd / mkfs* / fdisk / parted / shred / wipefs / LVM / mkswap). That class can never be approved: not by a session grant, not by the operator, not by a policy accept entry. There is no prompt to answer." >&2
+  exit 1
+}
+
+# interactive_blocked refuses an absolute target the interactive profile does not
+# cover, NAMING the path and the reason, so the model can course-correct from the
+# tool's RESULT.
+interactive_blocked() {
+  echo "ORCHICON GUARD: command '${0##*/}' blocked — '$1' is outside the conversation's project (${GUARD_PROJECT:-none}), the granted directories (${GUARD_GRANTS:-none}) and the accept list; it is not an approved once-target either. Grant its directory in the chat, or add it to the permission policy ($POLICY_FILE)." >&2
+  exit 1
+}
+
+# inside_dir returns 0 when $2 equals $1 or sits below it. An empty $1 is never a
+# match (the empty-project rule in blocked_path relies on that).
+inside_dir() {
+  [ -n "$1" ] || return 1
+  case "$2" in
+    "$1"|"$1"/*) return 0 ;;
+  esac
+  return 1
+}
+
+# inside_list returns 0 when $2 is inside any newline-separated root in $1.
+inside_list() {
+  local root
+  [ -n "$1" ] || return 1
+  while IFS= read -r root; do
+    [ -n "$root" ] || continue
+    inside_dir "$root" "$2" && return 0
+  done < <(printf '%s\n' "$1")
+  return 1
 }
 
 # policy_blocked names the DENIED POLICY ENTRY, not just the rejection: a
@@ -314,79 +420,130 @@ policy_blocked() {
   exit 1
 }
 
-# denied_target returns 0 (block) when any argument matches an entry in the
-# operator's DURABLE permission policy deny list.
+# policy_lookup STRICTLY parses the policy file and records what it says about
+# ONE target: POLICY_VERDICT is "deny", "accept" or "" (nothing matched), and
+# POLICY_ENTRY is the entry's literal text — reported EXACTLY AS THE OPERATOR
+# WROTE IT (a leading ~ stays a ~), because the operator's next move is to grep
+# their policy file for the name the refusal gave.
 #
-# The file is read PER INVOCATION on purpose: the policy is a few hundred
-# bytes, a path-scoped command is rare, and a fresh read means a hand-edit
-# or a UI change takes effect on the very next command — no watcher, no
-# cache, no staleness window. Only the deny: block is consulted here: an
-# accept entry means "never ASK", and the shim does not ask.
+# FAIL CLOSED (interactive profile only). A MISSING, unreadable or MALFORMED
+# policy REFUSES via failed_closed: a policy file that silently parses to
+# nothing is worse than no file at all, because the operator believes their
+# exclusions are in force. The worker profile (no ORCHICON_GUARD_POLICY) keeps
+# the historical lenient read, where an absent file means "no policy".
 #
-# This sits BELOW the never-allow binary class above it (that case block is
-# absolute and cannot be reached past) and BELOW nothing else: the deny list
-# is the operator's exclusion, so it outranks any session grant the consent
-# layer holds.
+# The file is read PER INVOCATION on purpose: the policy is a few hundred bytes,
+# a path-scoped command is rare, and a fresh read means a hand-edit or a UI
+# change takes effect on the very next command — no watcher, no cache, no
+# staleness window.
+policy_lookup() {
+  local target="$1" line section pat entry
+  POLICY_VERDICT=""
+  POLICY_ENTRY=""
+  [ -n "$POLICY_FILE" ] || return 0
+  if [ ! -f "$POLICY_FILE" ] || [ ! -r "$POLICY_FILE" ]; then
+    if [ -n "$INTERACTIVE" ]; then
+      failed_closed "$POLICY_FILE" "missing, unreadable, or not a regular file"
+    fi
+    return 0
+  fi
+  section=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      *"$TAB"*)
+        # YAML forbids a tab in indentation; a tab means these are not the
+        # bytes permpolicy writes, so the file cannot be vouched for.
+        if [ -n "$INTERACTIVE" ]; then failed_closed "$POLICY_FILE" "malformed (tab in indentation)"; fi
+        return 0
+        ;;
+    esac
+    line="${line%"${line##*[![:space:]]}"}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    case "$line" in
+      ""|'#'*) continue ;;
+      "deny:") section="deny"; continue ;;
+      "accept:") section="accept"; continue ;;
+      "deny: []"|"accept: []") section=""; continue ;;
+      "deny:"*|"accept:"*)
+        if [ -n "$INTERACTIVE" ]; then failed_closed "$POLICY_FILE" "malformed (bad list header)"; fi
+        return 0
+        ;;
+      "- "*)
+        if [ -z "$section" ]; then
+          if [ -n "$INTERACTIVE" ]; then failed_closed "$POLICY_FILE" "malformed (entry outside a list)"; fi
+          continue
+        fi
+        pat="${line#- }"
+        pat="${pat%%#*}"
+        pat="${pat%"${pat##*[![:space:]]}"}"
+        pat="${pat%\"}"
+        pat="${pat#\"}"
+        pat="${pat%\'}"
+        pat="${pat#\'}"
+        [ -n "$pat" ] || continue
+        entry="$pat"
+        case "$pat" in
+          '~') pat="$HOME" ;;
+          '~/'*) pat="$HOME/${pat#\~/}" ;;
+        esac
+        case "$target" in
+          "$pat") POLICY_VERDICT="$section"; POLICY_ENTRY="$entry"; return 0 ;;
+        esac
+        case "$pat" in
+          *[\*\?\[]*)
+            # Unquoted expansion: this is the GLOB match, on purpose.
+            # shellcheck disable=SC2254
+            case "$target" in
+              $pat) POLICY_VERDICT="$section"; POLICY_ENTRY="$entry"; return 0 ;;
+            esac
+            ;;
+        esac
+        ;;
+      *)
+        if [ -n "$INTERACTIVE" ]; then failed_closed "$POLICY_FILE" "malformed (unrecognised line)"; fi
+        continue
+        ;;
+    esac
+  done < "$POLICY_FILE"
+  return 0
+}
+
+# denied_target returns 0 (deny) when any argument matches an entry in the
+# operator's DURABLE permission policy deny list. The deny list sits ABOVE the
+# session grant and above the project scope: it is the operator's exclusion, and
+# a grant suppresses prompts but cannot open a path the operator excluded.
+#
+# This sits BELOW the never-allow binary class (that case block above is
+# absolute and cannot be reached past).
 denied_target() {
-  DENIED_TARGET=""
-  DENIED_ENTRY=""
-  [ -n "$POLICY_FILE" ] || return 1
-  [ -f "$POLICY_FILE" ] || return 1
-  local a line section pat entry
+  local a
   for a in "$@"; do
     case "$a" in
       -*) continue ;;
       --) continue ;;
     esac
-    section=""
-    while IFS= read -r line || [ -n "$line" ]; do
-      line="${line%"${line##*[![:space:]]}"}"
-      line="${line#"${line%%[![:space:]]*}"}"
-      case "$line" in
-        ""|'#'*) continue ;;
-        "deny:") section="deny"; continue ;;
-        "accept:") section="accept"; continue ;;
-        "- "*)
-          [ "$section" = "deny" ] || continue
-          pat="${line#- }"
-          pat="${pat%%#*}"
-          pat="${pat%"${pat##*[![:space:]]}"}"
-          pat="${pat%\"}"
-          pat="${pat#\"}"
-          pat="${pat%\'}"
-          pat="${pat#\'}"
-          [ -n "$pat" ] || continue
-          # The entry is reported EXACTLY AS THE OPERATOR WROTE IT (a leading
-          # ~ stays a ~), because the operator's next move is to grep their
-          # policy file for the entry the refusal names. The expanded form is
-          # for MATCHING only.
-          entry="$pat"
-          case "$pat" in
-            '~') pat="$HOME" ;;
-            '~/'*) pat="$HOME/${pat#\~/}" ;;
-          esac
-          case "$a" in
-            "$pat") DENIED_TARGET="$a"; DENIED_ENTRY="$entry"; return 0 ;;
-          esac
-          case "$pat" in
-            *[\*\?\[]*)
-              # Unquoted expansion: this is the GLOB match, on purpose.
-              # shellcheck disable=SC2254
-              case "$a" in
-                $pat) DENIED_TARGET="$a"; DENIED_ENTRY="$entry"; return 0 ;;
-              esac
-              ;;
-          esac
-          ;;
-      esac
-    done < "$POLICY_FILE"
+    policy_lookup "$a"
+    if [ "$POLICY_VERDICT" = "deny" ]; then
+      DENIED_TARGET="$a"
+      DENIED_ENTRY="$POLICY_ENTRY"
+      return 0
+    fi
   done
   return 1
 }
 
-# blocked_path returns 0 (block) if any path argument escapes PROJECT_DIR.
-# A target under SCRATCH_DIR (Orchicon-owned ephemeral scratch) is allowed.
+# blocked_path returns 0 (block) when a path argument escapes the sanctioned
+# set. The precedence, per non-flag argument — the consent layer's order, minus
+# the ask rung a shim cannot have:
+#   1. a DENY entry  (above a session grant, on purpose)
+#   2. inside PROJECT_DIR (baked at build time; worker AND interactive)
+#   3. inside SCRATCH_DIR (Orchicon-owned ephemeral scratch)
+#   4. interactive only: inside the conversation's project, a session-granted
+#      directory, an operator-approved once-target, or an ACCEPT entry
+#   5. anything else is refused (relative / ~ / $HOME / .. keep the historical
+#      block rule)
 blocked_path() {
+  denied_target "$@" && policy_blocked
   local a
   for a in "$@"; do
     case "$a" in
@@ -395,27 +552,28 @@ blocked_path() {
     esac
     case "$a" in
       /*)
-        if [ -n "$PROJECT_DIR" ]; then
-          case "$a" in
-            "$PROJECT_DIR"|"$PROJECT_DIR"/*) continue ;;
-          esac
-        else
-          # Empty PROJECT_DIR = the shared host-serve mode: no single
-          # project root, so every absolute target is outside scope and
-          # blocked (closes the rm / leak that an empty dir would otherwise
-          # allow through the "$PROJECT_DIR"/* glob).
-          return 0
-        fi
+        inside_dir "$PROJECT_DIR" "$a" && continue
         # Scratch carve-out: Orchicon-owned scratch is writable even though
         # it lives outside the project (the worker is told to use it).
-        if [ -n "$SCRATCH_DIR" ]; then
-          case "$a" in
-            "$SCRATCH_DIR"|"$SCRATCH_DIR"/*) continue ;;
-          esac
+        inside_dir "$SCRATCH_DIR" "$a" && continue
+        if [ -n "$INTERACTIVE" ]; then
+          inside_dir "$GUARD_PROJECT" "$a" && continue
+          inside_list "$GUARD_GRANTS" "$a" && continue
+          inside_list "$GUARD_ONCE" "$a" && continue
+          policy_lookup "$a"
+          [ "$POLICY_VERDICT" = "accept" ] && continue
+          interactive_blocked "$a"
         fi
+        # Empty PROJECT_DIR = the shared host-serve mode: no single project
+        # root, so every absolute target is outside scope and blocked (closes
+        # the rm / leak that an empty dir would otherwise allow through the
+        # "$PROJECT_DIR"/* glob).
         return 0
         ;;
       '~'|'~'/*|'$HOME'|'$HOME'/*|'${HOME}'|'${HOME}'/*|*".."*)
+        if [ -n "$INTERACTIVE" ]; then
+          interactive_blocked "$a"
+        fi
         return 0
         ;;
     esac
@@ -427,12 +585,14 @@ case "${0##*/}" in
   {{.NeverAllowCase}})
     blocked
     ;;
-  rm)    blocked_path "$@" && blocked; denied_target "$@" && policy_blocked; exec '{{index .Real "rm"}}' "$@" ;;
-  chmod) blocked_path "$@" && blocked; denied_target "$@" && policy_blocked; exec '{{index .Real "chmod"}}' "$@" ;;
-  chown) blocked_path "$@" && blocked; denied_target "$@" && policy_blocked; exec '{{index .Real "chown"}}' "$@" ;;
-  mv)    blocked_path "$@" && blocked; denied_target "$@" && policy_blocked; exec '{{index .Real "mv"}}' "$@" ;;
-  cp)    blocked_path "$@" && blocked; denied_target "$@" && policy_blocked; exec '{{index .Real "cp"}}' "$@" ;;
-  ln)    blocked_path "$@" && blocked; denied_target "$@" && policy_blocked; exec '{{index .Real "ln"}}' "$@" ;;
+  # blocked_path applies the deny check FIRST, then the project/scratch/grant/
+  # accept/once allow-set, then the refusal — see its doc comment.
+  rm)    blocked_path "$@" && blocked; exec '{{index .Real "rm"}}' "$@" ;;
+  chmod) blocked_path "$@" && blocked; exec '{{index .Real "chmod"}}' "$@" ;;
+  chown) blocked_path "$@" && blocked; exec '{{index .Real "chown"}}' "$@" ;;
+  mv)    blocked_path "$@" && blocked; exec '{{index .Real "mv"}}' "$@" ;;
+  cp)    blocked_path "$@" && blocked; exec '{{index .Real "cp"}}' "$@" ;;
+  ln)    blocked_path "$@" && blocked; exec '{{index .Real "ln"}}' "$@" ;;
   *)
     echo "ORCHICON GUARD: unexpected invocation '${0##*/}'." >&2
     exit 1

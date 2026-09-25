@@ -69,6 +69,11 @@ type Service struct {
 	// grant store ("allow for this directory" answers). In memory by design:
 	// a plane restart clears it and a new conversation asks again.
 	grants *grantStore
+	// once records the absolute targets the operator answered ALLOW_ONCE for,
+	// per conversation: the execution guard's shim cannot ask, so the command
+	// the operator just approved must be armed for it (while a sibling path a
+	// subprocess inside it targets stays refused).
+	once *onceStore
 	// pending is the registry of asks awaiting a human decision, keyed
 	// (conversation, ask id). The turn is not blocked by us — opencode holds
 	// the tool call; we record and await a reply on the turn's stream.
@@ -115,6 +120,7 @@ func New(pool *db.Pool, log *slog.Logger, blobStore blobstore.Store, modelDisc *
 		turns:        newTurnRegistry(),
 		hubs:         newTurnHubRegistry(),
 		grants:       newGrantStore(),
+		once:         newOnceStore(),
 		pending:      newPendingAskRegistry(),
 	}
 	s.registerSessionTools()
@@ -621,6 +627,7 @@ func (s *Service) DeleteConversation(ctx context.Context, req *connect.Request[a
 	// in-memory directory grants (a new conversation must ask again) and any
 	// ask still awaiting a decision (a late reply then reports expired).
 	s.grants.ClearConversation(req.Msg.Id)
+	s.once.ClearConversation(req.Msg.Id)
 	s.pending.removeConversation(req.Msg.Id)
 	return connect.NewResponse(&apiv1.DeleteConversationResponse{}), nil
 }

@@ -504,6 +504,97 @@ func (g *grantStore) Len(convID string) int {
 	return len(g.byConv[convID])
 }
 
+// Roots returns the conversation's session-granted directories, cleaned and
+// sorted. It is the guard shim's read of "the directories this conversation may
+// write to": the interactive profile honours these in addition to the
+// conversation's project. Nil when the conversation holds nothing.
+func (g *grantStore) Roots(convID string) []string {
+	if g == nil || convID == "" {
+		return nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	set := g.byConv[convID]
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for dir := range set {
+		out = append(out, dir)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ---------------------------------------------------------------------------
+// The once-target store (in-memory, per conversation)
+// ---------------------------------------------------------------------------
+
+// onceStore records the ABSOLUTE targets the operator answered ALLOW_ONCE for,
+// per conversation. It exists because the shim cannot ask: when the consent core
+// answers an ask with `once`, the very command the operator just approved must
+// not then be refused by the guard shim — while a SIBLING path a subprocess
+// inside it targets still is. In memory like grantStore (a restart clears it; a
+// new conversation asks again).
+type onceStore struct {
+	mu     sync.Mutex
+	byConv map[string]map[string]bool
+}
+
+func newOnceStore() *onceStore {
+	return &onceStore{byConv: make(map[string]map[string]bool)}
+}
+
+// Record arms the approved absolute targets for convID. Nil-safe.
+func (o *onceStore) Record(convID string, abs ...string) {
+	if o == nil || convID == "" {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	set := o.byConv[convID]
+	if set == nil {
+		set = make(map[string]bool)
+		o.byConv[convID] = set
+	}
+	for _, t := range abs {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		set[filepath.Clean(t)] = true
+	}
+}
+
+// Targets returns the conversation's approved once-targets, sorted. Nil-safe.
+func (o *onceStore) Targets(convID string) []string {
+	if o == nil || convID == "" {
+		return nil
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	set := o.byConv[convID]
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for t := range set {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ClearConversation drops a conversation's once-targets (conversation end).
+func (o *onceStore) ClearConversation(convID string) {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	delete(o.byConv, convID)
+}
+
 // ---------------------------------------------------------------------------
 // The pending-ask registry
 // ---------------------------------------------------------------------------
@@ -537,6 +628,10 @@ type pendingAsk struct {
 	Directory     string
 	InsideProject bool
 	Summary       string
+	// AbsTargets are the ABSOLUTE paths this ask's decision covered
+	// (decisionTargets), recorded so an ALLOW_ONCE reply can arm exactly those
+	// paths in the execution guard's shim (the shim cannot ask).
+	AbsTargets []string
 	// reply wakes the drain loop's select when a decision lands.
 	reply chan struct{}
 
@@ -800,7 +895,12 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 	proceed := resolved
 	allInside := resolved
 	verdict := permpolicy.VerdictAsk
-	for i, t := range decisionTargets(a, scope.Dir) {
+	targets := decisionTargets(a, scope.Dir)
+	absTargets := make([]string, 0, len(targets))
+	for _, t := range targets {
+		absTargets = append(absTargets, t.abstarget)
+	}
+	for i, t := range targets {
 		d, err := pol.Decide(t.abstarget, permpolicy.Inputs{
 			SessionGranted: ct.svc.grants.Has(ct.convID, t.key),
 			ProjectDefault: scope.PreApprovedPath(t.abstarget),
@@ -858,6 +958,7 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 		// says why it is being asked instead).
 		InsideProject: allInside,
 		Summary:       summary,
+		AbsTargets:    absTargets,
 		reply:         ct.replies,
 	}
 	ct.svc.pending.put(ct.convID, ask)
@@ -885,6 +986,12 @@ func (ct *consentTurn) applyClientReplies(ctx context.Context, client scheduler.
 				"conversation", ct.convID, "ask", a.AskID, "response", resp, "error", err)
 		}
 		ct.record(a.Action, "user_"+choice.String(), "")
+		if choice == apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_ONCE {
+			// Arm the approved absolute paths for the execution guard's shim:
+			// the command the operator just approved must run, while a sibling
+			// path a subprocess inside it targets is still refused.
+			ct.svc.once.Record(ct.convID, a.AbsTargets...)
+		}
 		ct.svc.pending.remove(ct.convID, a.AskID)
 	}
 	ct.settleMonitor()

@@ -72,6 +72,13 @@ func (s *Service) ReplyPermissionAsk(ctx context.Context, req *connect.Request[a
 	if req.Msg.Choice == apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_SESSION {
 		s.grants.Grant(convID, ask.Key)
 	}
+	// ALLOW_ONCE arms the exact absolute paths the decision covered for the
+	// execution guard's shim (which cannot ask): without this, the command the
+	// operator just approved would be refused by the shim. A sibling path is not
+	// armed and stays refused.
+	if req.Msg.Choice == apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_ONCE {
+		s.once.Record(convID, ask.AbsTargets...)
+	}
 	return connect.NewResponse(&apiv1.ReplyPermissionAskResponse{
 		Applied: true,
 		Detail:  "decision recorded for ask " + askID,

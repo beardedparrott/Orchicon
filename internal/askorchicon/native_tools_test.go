@@ -93,7 +93,7 @@ func TestNativeAskDefsExposeHostSuite(t *testing.T) {
 	// One-grammar check: bash's ParamsJSON must match the worker path's
 	// definition verbatim (same definition source).
 	var workerDefs string
-	for _, d := range askHostToolsForRoot("").Defs() {
+	for _, d := range askHostToolsForRoot(nil, AskFileScope{}, "").Defs() {
 		if d.Name == "bash" {
 			workerDefs = d.ParamsJSON
 		}
@@ -297,7 +297,7 @@ func TestHostSuiteSplitAgreesWithAskmode(t *testing.T) {
 	// Drift guard on the suite list itself: the defs the suite advertises and
 	// the dispatch list cannot diverge.
 	defs := map[string]bool{}
-	for _, d := range askHostToolsForRoot("").Defs() {
+	for _, d := range askHostToolsForRoot(nil, AskFileScope{}, "").Defs() {
 		defs[d.Name] = true
 	}
 	for _, n := range hostSuiteToolNames {
