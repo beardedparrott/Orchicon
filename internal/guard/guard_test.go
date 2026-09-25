@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/beardedparrott/orchicon/internal/permpolicy"
 )
 
 // runGuard runs the guard shim for a given binary with the given args and
@@ -364,5 +366,49 @@ func TestPolicyTildeEntryExpandsToHome(t *testing.T) {
 	}
 	if _, err := os.Stat(key); err != nil {
 		t.Fatalf("denied credential store was deleted: %v", err)
+	}
+}
+
+// TestShippedPolicyFileFormatIsReadableByTheShim pins the seam between the two
+// halves of the persistent permission policy: the shim's denied_target() parses
+// the file BY HAND, so the exact bytes permpolicy.WriteFile emits (the
+// documented header block plus yaml.v3's rendering of the two lists) must be
+// readable by it. The other guard tests use a hand-written fixture, which
+// cannot catch a writer change the reader cannot follow — a preset that the
+// shim silently parses to nothing is precisely the failure the feature's
+// "malformed input fails loudly" rule exists to prevent.
+func TestShippedPolicyFileFormatIsReadableByTheShim(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(t.TempDir(), "permission-policy.yaml")
+	if err := permpolicy.WriteFile(path, permpolicy.MustParsePreset()); err != nil {
+		t.Fatalf("write the shipped preset: %v", err)
+	}
+
+	// home IS the project dir here, so blocked_path ALLOWS the target (it is
+	// in-project) and only a parsed policy entry can refuse it — which is what
+	// makes this a test of the parser, not of containment.
+	g, err := NewExecutionGuardWithPolicy(home, path)
+	if err != nil {
+		t.Fatalf("NewExecutionGuardWithPolicy: %v", err)
+	}
+	defer g.Close()
+
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(home, ".ssh", "id_rsa")
+	if err := os.WriteFile(key, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	exit, out := runGuard(t, g, "rm", "-f", key)
+	if exit == 0 {
+		t.Fatalf("the shipped preset did not refuse %s — the shim cannot read what permpolicy.WriteFile writes: %s", key, out)
+	}
+	if !strings.Contains(out, "denied by entry") || !strings.Contains(out, "~/.ssh/**") {
+		t.Fatalf("the refusal must name the preset entry: %s", out)
+	}
+	if _, err := os.Stat(key); err != nil {
+		t.Fatalf("the denied credential store was deleted: %v", err)
 	}
 }
