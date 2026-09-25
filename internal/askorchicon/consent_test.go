@@ -355,6 +355,67 @@ func TestDecideMCPBashUsesToolCallCommandAndKeepsTheNeverAllowClass(t *testing.T
 	}
 }
 
+// A multi-target batch_write is judged on EVERY target, not just the one that
+// names the grant KEY: a batch whose FIRST path is inside the conversation's
+// project and whose SECOND is a sibling path must still ask (C4: "a second
+// directory in the batch asks again"). Before this, the sibling path rode the
+// first path's project verdict to a silent approval.
+func TestDecideBatchWriteJudgesEveryTarget(t *testing.T) {
+	isolatedPolicy(t, "")
+	batch := func(id string, paths ...string) scheduler.SessionEvent {
+		writes := make([]any, 0, len(paths))
+		for _, p := range paths {
+			writes = append(writes, map[string]any{"path": p, "mode": "create"})
+		}
+		return mcpAskEvent(id, "orchicon_batch_write", map[string]any{"writes": writes})
+	}
+
+	svc := testConsentService()
+	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
+	// Sibling SECOND target: ask, and the card names it.
+	resp, ask, refusal := ct.decide(context.Background(), "ses_1",
+		batch("per_1", "/p/proj/a.md", "/p/sibling/b.md"))
+	if resp != "" || ask == nil || refusal != "" {
+		t.Fatalf("batch with a sibling target: resp=%q ask=%v refusal=%q — must ask", resp, ask, refusal)
+	}
+	if !strings.Contains(ask.Summary, "/p/sibling/b.md") {
+		t.Fatalf("Summary = %q — the card must name the sibling target", ask.Summary)
+	}
+	if ask.InsideProject {
+		t.Fatal("a batch reaching outside the project must not claim inside_project")
+	}
+	// Every target inside the project: silent.
+	resp, ask, refusal = ct.decide(context.Background(), "ses_1",
+		batch("per_2", "/p/proj/a.md", "/p/proj/b.md"))
+	if resp != "once" || ask != nil || refusal != "" {
+		t.Fatalf("batch inside the project: resp=%q ask=%v refusal=%q", resp, ask, refusal)
+	}
+
+	// A DENY entry on the SECOND target refuses without asking (C5: deny names
+	// files), even though the first target is inside the project.
+	isolatedPolicy(t, "deny:\n  - \"/p/sibling/**\"\n")
+	svc2 := testConsentService()
+	ct2 := newTestConsentTurn(svc2, "/p/proj", true, nil)
+	resp, ask, refusal = ct2.decide(context.Background(), "ses_1",
+		batch("per_3", "/p/proj/a.md", "/p/sibling/b.md"))
+	if resp != "reject" || ask != nil || !strings.Contains(refusal, "/p/sibling/**") {
+		t.Fatalf("denied second target: resp=%q ask=%v refusal=%q", resp, ask, refusal)
+	}
+
+	// A session grant for the SIBLING directory covers that target (C4: the
+	// grant is the blanket escape for its own directory), so the batch is
+	// silent — a grant for the FIRST directory alone would not be enough.
+	isolatedPolicy(t, "")
+	svc3 := testConsentService()
+	ct3 := newTestConsentTurn(svc3, "/p/proj", true, nil)
+	svc3.grants.Grant("conv-1", "/p/sibling")
+	resp, ask, refusal = ct3.decide(context.Background(), "ses_1",
+		batch("per_4", "/p/proj/a.md", "/p/sibling/b.md"))
+	if resp != "once" || ask != nil || refusal != "" {
+		t.Fatalf("batch covered by a sibling-dir grant: resp=%q ask=%v refusal=%q", resp, ask, refusal)
+	}
+}
+
 func TestDecideAcceptNeverAsksAndDenyRefusesOverGrant(t *testing.T) {
 	isolatedPolicy(t, "deny:\n  - \"/p/denied/**\"\naccept:\n  - \"/p/accepted/**\"\n")
 	svc := testConsentService()

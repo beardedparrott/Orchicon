@@ -362,9 +362,10 @@ func resolveAskKey(a askAction, dir string) string {
 	return filepath.Dir(abs)
 }
 
-// absAskTarget returns the absolute path the policy is consulted on: the first
-// target for a file action (resolved against the scope dir when relative), or
-// the scope directory itself for a bash action.
+// absAskTarget returns the absolute path the policy is consulted on for the
+// action's KEY target: the first target for a file action (resolved against
+// the scope dir when relative), or the scope directory itself for a bash
+// action. See decisionTargets for the paths the DECISION covers.
 func absAskTarget(a askAction, dir string) string {
 	if len(a.Targets) == 0 || isBashAsk(a.Tool) {
 		return filepath.Clean(dir)
@@ -374,6 +375,43 @@ func absAskTarget(a askAction, dir string) string {
 		t = filepath.Join(filepath.Clean(dir), t)
 	}
 	return t
+}
+
+// decisionTarget is one path the consent DECISION covers: the absolute path the
+// policy is consulted on, plus the directory its grant/project inputs are read
+// from.
+type decisionTarget struct {
+	abstarget string
+	key       string
+}
+
+// decisionTargets returns EVERY path a file action touches, so the decision
+// covers a batch write's second (and later) targets instead of only the first.
+// Judging only the first is the silent approval the MCP-ask fix closed, one
+// path over: a batch_write whose first path is inside the conversation's
+// project and whose second is a sibling path would ride the first path's
+// verdict. This is C4's own rationale — "a second directory in the batch asks
+// again". The grant KEY stays the first target's directory (C4); each target is
+// judged on its own absolute path (C5: deny names files) with its own
+// directory's grant read.
+//
+// A bash action is not path-scopable (C4), so it yields the single scope-dir
+// entry, as does an action that resolved no target at all (the fail-closed
+// card case).
+func decisionTargets(a askAction, dir string) []decisionTarget {
+	if isBashAsk(a.Tool) || len(a.Targets) == 0 {
+		d := filepath.Clean(dir)
+		return []decisionTarget{{abstarget: d, key: d}}
+	}
+	out := make([]decisionTarget, 0, len(a.Targets))
+	for _, t := range a.Targets {
+		t = filepath.Clean(t)
+		if !filepath.IsAbs(t) {
+			t = filepath.Join(filepath.Clean(dir), t)
+		}
+		out = append(out, decisionTarget{abstarget: t, key: filepath.Dir(t)})
+	}
+	return out
 }
 
 // askSummary is the one-line card text: the tool plus its target (or command),
@@ -735,7 +773,6 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 	}
 	scope := ct.scopeFor(ctx)
 	a.Key = resolveAskKey(a, scope.Dir)
-	abs := absAskTarget(a, scope.Dir)
 
 	// FAIL CLOSED. An ask whose detail resolves to no target and no command
 	// (an MCP/host-suite ask shipped with `patterns: ["*"]` and `metadata: {}`
@@ -748,24 +785,43 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 	// it below.
 	resolved := askActionResolved(a)
 
+	// EVERY target the action touches is judged — not just the one that names
+	// the KEY (see decisionTargets). The KEY is unchanged (C4), so grants and
+	// the card do not move.
 	pol := askPermissionPolicy()
-	d, err := pol.Decide(abs, permpolicy.Inputs{
-		SessionGranted: ct.svc.grants.Has(ct.convID, a.Key),
-		ProjectDefault: scope.PreApprovedPath(abs),
-	})
-	if err != nil {
-		// Fail closed: a malformed policy file must never silently proceed.
-		ct.record(a, "policy_error", err.Error())
-		return "reject", nil, err.Error()
+	proceed := resolved
+	allInside := resolved
+	verdict := permpolicy.VerdictAsk
+	for i, t := range decisionTargets(a, scope.Dir) {
+		d, err := pol.Decide(t.abstarget, permpolicy.Inputs{
+			SessionGranted: ct.svc.grants.Has(ct.convID, t.key),
+			ProjectDefault: scope.PreApprovedPath(t.abstarget),
+		})
+		if err != nil {
+			// Fail closed: a malformed policy file must never silently proceed.
+			ct.record(a, "policy_error", err.Error())
+			return "reject", nil, err.Error()
+		}
+		if d.Verdict == permpolicy.VerdictDeny {
+			ref := pol.Refusal(t.abstarget, d.Entry).Error()
+			ct.record(a, "deny", ref)
+			return "reject", nil, ref
+		}
+		if i == 0 {
+			// The transcript records the KEY target's verdict — the directory a
+			// grant would cover.
+			verdict = d.Verdict
+		}
+		if !d.Verdict.Proceed() {
+			proceed = false
+		}
+		if !scope.PreApprovedPath(t.abstarget) {
+			allInside = false
+		}
 	}
-	switch {
-	case d.Verdict == permpolicy.VerdictDeny:
-		ref := pol.Refusal(abs, d.Entry).Error()
-		ct.record(a, "deny", ref)
-		return "reject", nil, ref
-	case d.Verdict.Proceed() && resolved:
-		// grant | accept | project — proceed silently.
-		ct.record(a, d.Verdict.String(), "")
+	if proceed {
+		// grant | accept | project covers every target — proceed silently.
+		ct.record(a, verdict.String(), "")
 		return "once", nil, ""
 	}
 	if !resolved {
@@ -789,9 +845,10 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 		Command:        a.Command,
 		Targets:        a.Targets,
 		Directory:      a.Key,
-		// An unresolved action has no known target, so it cannot claim to be
-		// inside the project (the card says why it is being asked instead).
-		InsideProject: resolved && scope.PreApprovedPath(abs),
+		// The card claims "inside the project" only when EVERY target is; an
+		// unresolved action has no known target at all, so it cannot (the card
+		// says why it is being asked instead).
+		InsideProject: allInside,
 		Summary:       summary,
 		reply:         ct.replies,
 	}
