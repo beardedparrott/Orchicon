@@ -20,8 +20,8 @@ func askFileRootTestCtx() context.Context {
 // stubAskFileRoot pins the suite boundary to dir for the duration of a
 // test (no DB needed) and returns the restore func.
 func stubAskFileRoot(dir string) func() {
-	return askFileRootStub(func(_ context.Context, _ *db.Pool) (string, error) {
-		return dir, nil
+	return askFileRootStub(func(_ context.Context, _ *db.Pool) (AskFileScope, error) {
+		return AskFileScope{Dir: dir, FromConversation: true}, nil
 	})
 }
 

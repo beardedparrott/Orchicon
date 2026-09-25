@@ -61,6 +61,39 @@ func askConversationFromContext(ctx context.Context) string {
 	return v
 }
 
+// --- the conversation's PROJECT -------------------------------------------------------------------
+
+// ctxKeyConversationProject is the unexported context key for the PROJECT the turn's conversation belongs to.
+//
+// WHY IT IS ON THE CONTEXT rather than re-read in the tool layer. The turn already loads the conversation row
+// (chat.go's startConversationTurnOpts) and stamps its mode and its id from that ONE read — the same row names
+// the project. A tool that must decide WHERE its file/shell work lands (AskFileScopeFor) needs the same value the
+// system prompt's "## This conversation's project" block is built from; carrying it here is what makes the prompt
+// and the tool boundary agree BY CONSTRUCTION instead of by two DB reads that can drift. Re-reading the
+// conversation inside the resolver would add a round trip for a fact already in hand.
+//
+// "" means "no project" — an unassigned conversation, or a caller (a test) that never stamped one. The two are
+// deliberately the same value: a sentinel for "never stamped" would buy nothing and need a second code path (see
+// AskFileScope).
+type ctxKeyConversationProject struct{}
+
+// withAskConversationProject stamps a turn's context with its conversation's project id. An empty id clears it to
+// the unassigned view, which is exactly what an unassigned conversation wants.
+func withAskConversationProject(ctx context.Context, projectID string) context.Context {
+	return context.WithValue(ctx, ctxKeyConversationProject{}, projectID)
+}
+
+// askConversationProjectFromContext reads the conversation's project id stamped on a turn. "" when the
+// conversation has no project, or the caller never stamped one — both mean "this conversation has no project",
+// which is what the file/shell suite's scope resolver falls back from.
+func askConversationProjectFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	v, _ := ctx.Value(ctxKeyConversationProject{}).(string)
+	return v
+}
+
 // applyAskToolPolicy hands the turn's policy to the adapter, and — the important half — reports when the adapter
 // cannot enforce it.
 //
