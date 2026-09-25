@@ -368,6 +368,11 @@ fi
 GUARD_PROJECT="${ORCHICON_GUARD_PROJECT:-}"
 GUARD_GRANTS="${ORCHICON_GUARD_GRANTS:-}"
 GUARD_ONCE="${ORCHICON_GUARD_ONCE:-}"
+# extglob: the shim spells "* but not across a slash" as '*([!/])' in
+# policy_entry_match, so a policy glob cannot match a path permpolicy.Decide
+# would not. It must be enabled BEFORE any function below is defined, because a
+# function body is parsed when its definition executes.
+shopt -s extglob
 TAB=$(printf '\t')
 
 # failed_closed refuses the path-scoped command because the policy could not be
@@ -420,11 +425,63 @@ policy_blocked() {
   exit 1
 }
 
+# policy_entry_match ENTRY TARGET — permpolicy.matchPattern's semantics, in
+# bash. It is the ONE place the shim's pattern matching is defined, and it is
+# written out because bash's own '*' CROSSES '/', while doublestar's does not: a
+# plain 'case "$target" in $entry' would let the shim deny — and, worse, ACCEPT
+# — a path permpolicy.Decide never matches, and the shim disagreeing with the
+# accessor it is supposed to read is exactly the drift this profile exists to
+# prevent.
+#
+#   '~'    a leading tilde is expanded (the operator writes ~/.ssh/**, not the
+#          absolute home)
+#   '*'    one path segment — it does not cross '/'
+#   '?'    one character, never '/'
+#   '**'   anything, crossing '/' freely AND able to match ZERO segments
+#          ('a/**/x' covers 'a/x'), which is why the pattern is also retried
+#          with each '/**/' run collapsed
+#   '/**'  at the end also covers the directory itself ('~/.ssh/**' covers
+#          '~/.ssh')
+policy_entry_match() {
+  local entry="$1" target="$2" pat translated
+  case "$entry" in
+    '~') pat="$HOME" ;;
+    '~/'*) pat="$HOME/${entry#\~/}" ;;
+    *) pat="$entry" ;;
+  esac
+  case "$pat" in
+    */'**') [ "${pat%/\*\*}" = "$target" ] && return 0 ;;
+  esac
+  while :; do
+    translated="${pat//'**'/$(printf '\1')}"
+    translated="${translated//'*'/'*([!/])'}"
+    translated="${translated//'?'/'[!/]'}"
+    translated="${translated//$(printf '\1')/'*'}"
+    case "$target" in
+      $translated) return 0 ;;
+    esac
+    case "$pat" in
+      *'**/'*)
+        # '**' matches zero path segments too: retry with one run collapsed.
+        pat="${pat%%'**/'*}${pat#*'**/'}"
+        ;;
+      *) return 1 ;;
+    esac
+  done
+}
+
 # policy_lookup STRICTLY parses the policy file and records what it says about
 # ONE target: POLICY_VERDICT is "deny", "accept" or "" (nothing matched), and
 # POLICY_ENTRY is the entry's literal text — reported EXACTLY AS THE OPERATOR
 # WROTE IT (a leading ~ stays a ~), because the operator's next move is to grep
 # their policy file for the name the refusal gave.
+#
+# PRECEDENCE: the ACCESSOR's, not a first-match-in-file-order read. The whole
+# file is parsed — both halves — and then the DENY list is consulted IN FULL
+# before any accept entry, whatever order the two sections appear in. permpolicy
+# .Decide evaluates its deny list before either half is read; a first-match read
+# would let an accept section written above the deny section approve a path the
+# operator denied, which is the shim silently disagreeing with the accessor.
 #
 # FAIL CLOSED (interactive profile only). A MISSING, unreadable or MALFORMED
 # policy REFUSES via failed_closed: a policy file that silently parses to
@@ -437,7 +494,7 @@ policy_blocked() {
 # change takes effect on the very next command — no watcher, no cache, no
 # staleness window.
 policy_lookup() {
-  local target="$1" line section pat entry
+  local target="$1" line section entry pat i
   POLICY_VERDICT=""
   POLICY_ENTRY=""
   [ -n "$POLICY_FILE" ] || return 0
@@ -447,6 +504,7 @@ policy_lookup() {
     fi
     return 0
   fi
+  local -a deny_entries=() accept_entries=()
   section=""
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
@@ -482,22 +540,11 @@ policy_lookup() {
         pat="${pat#\'}"
         [ -n "$pat" ] || continue
         entry="$pat"
-        case "$pat" in
-          '~') pat="$HOME" ;;
-          '~/'*) pat="$HOME/${pat#\~/}" ;;
-        esac
-        case "$target" in
-          "$pat") POLICY_VERDICT="$section"; POLICY_ENTRY="$entry"; return 0 ;;
-        esac
-        case "$pat" in
-          *[\*\?\[]*)
-            # Unquoted expansion: this is the GLOB match, on purpose.
-            # shellcheck disable=SC2254
-            case "$target" in
-              $pat) POLICY_VERDICT="$section"; POLICY_ENTRY="$entry"; return 0 ;;
-            esac
-            ;;
-        esac
+        if [ "$section" = "deny" ]; then
+          deny_entries+=("$entry")
+        else
+          accept_entries+=("$entry")
+        fi
         ;;
       *)
         if [ -n "$INTERACTIVE" ]; then failed_closed "$POLICY_FILE" "malformed (unrecognised line)"; fi
@@ -505,6 +552,22 @@ policy_lookup() {
         ;;
     esac
   done < "$POLICY_FILE"
+
+  # The accessor's precedence: the deny list in full, then the accept list.
+  for ((i = 0; i < ${#deny_entries[@]}; i++)); do
+    if policy_entry_match "${deny_entries[i]}" "$target"; then
+      POLICY_VERDICT="deny"
+      POLICY_ENTRY="${deny_entries[i]}"
+      return 0
+    fi
+  done
+  for ((i = 0; i < ${#accept_entries[@]}; i++)); do
+    if policy_entry_match "${accept_entries[i]}" "$target"; then
+      POLICY_VERDICT="accept"
+      POLICY_ENTRY="${accept_entries[i]}"
+      return 0
+    fi
+  done
   return 0
 }
 
