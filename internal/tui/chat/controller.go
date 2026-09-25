@@ -67,6 +67,14 @@ type convState struct {
 	// returns it).
 	optimisticUser string
 	sentText       string
+	// attempt is the turn the slot's CURRENT stream attempt was opened for.
+	//
+	// IT EXISTS FOR ONE FAILURE: the server refusing the attempt because a reply is already running on
+	// this conversation (its one-turn gate, see dropStream). That refusal is curable — the remedy is the
+	// supersede RPC — and curing it needs the very message the attempt carried, which is otherwise gone
+	// by the time the refusal arrives. retried caps the remedy at one re-issue, so a failure the
+	// supersede path cannot fix is reported rather than retried forever.
+	attempt streamAttempt
 	// lastActivity is the UnixMilli of the most recent event from the stream — a text chunk, a
 	// reasoning chunk, a tool event or a HEARTBEAT. The liveness watchdog reads it (see
 	// runLivenessWatch); without it, a stream whose socket died silently is indistinguishable
@@ -759,6 +767,10 @@ func (c *Controller) SendWithAttachments(convID, text, contextPreamble string, f
 	st.reconnecting = false
 	st.sentText = text
 	st.optimisticUser = text
+	// THE TURN IS REMEMBERED FOR THE ONE RETRY THAT IS POSSIBLE (see dropStream): a stream the server
+	// refuses because a reply is already running is re-issued on the supersede path, and that needs the
+	// request verbatim. A fresh attempt always clears the retried flag, so each send gets its own retry.
+	st.attempt = streamAttempt{full: full, files: files}
 	if interject {
 		// Superseding turn: clear the old slot's reply pointer (the new
 		// turn acks a fresh assistant_message_id).
@@ -828,6 +840,12 @@ func (c *Controller) startStream(convID, full, call string, files []*apiv1.Attac
 				Attachments:    files,
 			}))
 		}
+		// A REFUSAL OF THIS SEND IS NOT HANDLED HERE — DELIBERATELY. This is a server-STREAMING RPC, so
+		// the server's one-turn refusal ('a reply is still in progress for this conversation') does NOT
+		// come back as a call error: the call returns a healthy stream and the error arrives ON the
+		// stream, in consume → dropStream. That is where the send is re-issued on the supersede path (see
+		// dropStream) — and the same refusal seen HERE would be the very same fact only for a transport
+		// that reports it up front, which this client's connect stack does not.
 		if err != nil {
 			c.failStream(convID, err)
 			return ErrMsg{Where: call, Err: err}
@@ -1126,6 +1144,24 @@ func (c *Controller) appendChunk(convID string, item ChatItem) {
 	}
 }
 
+// streamAttempt is the turn a slot's current stream attempt carries.
+type streamAttempt struct {
+	full    string // the message exactly as it goes on the wire (context preamble included)
+	files   []*apiv1.AttachmentInput
+	retried bool
+}
+
+// isTurnGateRefusal reports whether err is the server's ONE-TURN-PER-CONVERSATION refusal.
+//
+// The service answers a second ChatStream for a conversation whose reply is still running with
+// CodeFailedPrecondition ('a reply is still in progress for this conversation — wait for it to
+// complete or stop it first': internal/askorchicon/chat.go, turnRegistry.register). The SAME code is
+// also how an unresolvable adapter is reported (chat.go, resolveChatClient), which is why the remedy in
+// dropStream is capped at ONE re-issue and a second failure is reported to the operator instead.
+func isTurnGateRefusal(err error) bool {
+	return err != nil && connect.CodeOf(err) == connect.CodeFailedPrecondition
+}
+
 // failStream handles a pre-ack send/interject failure: when the turn was
 // acked the slot goes reconnecting (the server-side collector still
 // runs), otherwise it tears down and the caller's ErrMsg surfaces.
@@ -1165,24 +1201,83 @@ func (c *Controller) dropStream(convID string, gen uint64, err error) {
 		c.mu.Unlock()
 		return // a superseded stream's failure is not this slot's business
 	}
-	watch := ""
+	var (
+		watch  string
+		retry  tea.Cmd
+		report tea.Cmd
+	)
 	if st.streaming {
-		if st.pendingReplyID != "" {
+		switch {
+		case st.pendingReplyID != "":
 			// acked turn: the server-side collector keeps running — slot
 			// stays streaming, goes reconnecting, watch re-dials the hub.
 			st.reconnecting = true
 			watch = st.pendingReplyID
-		} else {
+		case isTurnGateRefusal(err) && st.attempt.full != "" && !st.attempt.retried:
+			// THE SERVER'S ONE-TURN GATE REFUSED THE OPERATOR'S SEND — SO IT IS DELIVERED ON THE SUPERSEDE
+			// PATH INSTEAD OF BOUNCED.
+			//
+			// The service allows ONE turn per conversation and answers a second ChatStream with
+			// FailedPrecondition ("a reply is still in progress for this conversation — wait for it to
+			// complete or stop it first"), naming the remedy in the same breath: the client interjects
+			// (supersedes) instead. That is already the rule this client documents — "sending while a reply
+			// streams interjects (supersedes the turn) instead" (help.go) — and it is the whole point of the
+			// `interject` decision in SendWithAttachments.
+			//
+			// THAT DECISION IS GUESSED FROM THIS CLIENT'S OWN SLOT, AND THE SLOT GOES STALE — WHICH IS WHY
+			// THE OPERATOR HIT THIS AT ALL: "if I leave a conversation in the TUI and come back, it doesn't
+			// actually send my message and I have to send it twice." Leaving and returning is exactly when
+			// the slot and the server disagree: a stream that died before its ack tears the slot down while
+			// the server's DETACHED turn keeps running (chat.go registers the turn under
+			// context.WithoutCancel, "alive across a stream disconnect / tab close"), and the only re-sync is
+			// reattachRunningTurn — which reads the RAIL row, so a row that predates the turn leaves the
+			// client saying "idle" while the server says "busy". The send then went out as a plain
+			// ChatStream, was refused, and the operator's message never left the machine.
+			//
+			// THE SERVER'S GATE IS THE AUTHORITY, so honour it rather than retry the same guess: re-issue the
+			// very same turn on the supersede path, whose whole contract is that it cancels the running turn
+			// and dispatches this message. The slot is NOT torn down — the retry owns it — and the generation
+			// advances so the stream that just failed cannot touch it.
+			st.attempt.retried = true
+			st.gen++
+			st.reconnecting = false
+			st.lastActivity = now()
+			gen = st.gen
+			retry = c.startStream(convID, st.attempt.full, "interject", st.attempt.files, gen)
+		default:
 			// pre-ack failure: tear down (GUI fail() with no reply id).
+			//
+			// AND IF THAT LOST TURN WAS THE OPERATOR'S OWN SEND, THEY ARE TOLD. This path used to leave the
+			// message nowhere — the composer empty, no turn on the wire, and only the controller's sticky
+			// error (which nothing reads) — and a send that fails silently is the same defect class as the
+			// send that never went out. ErrMsg is the shell's existing failed-send path: the dock's error
+			// strip, and the draft back in the composer (see App.setChatError / dock.RestoreDraft).
+			if st.attempt.full != "" {
+				report = func() tea.Msg { return ErrMsg{Where: "send", Err: err} }
+			}
 			st.streaming = false
 			st.optimisticUser = ""
 			st.sentText = ""
+			st.attempt = streamAttempt{}
 		}
 	}
 	c.err = err.Error()
 	c.mu.Unlock()
+	if retry != nil {
+		// A NEW ATTEMPT OWNS THE SLOT: the shell runs this exactly like the send's own command.
+		if c.cmds != nil {
+			c.cmds <- retry
+		}
+		return
+	}
 	if watch != "" && c.cmds != nil {
 		c.cmds <- c.Watch(convID, watch)
+		return
+	}
+	if report != nil && c.cmds != nil {
+		// LAST, and only ever one of these: the shell dispatches it like any other chat message, which is
+		// how a failed send reaches the dock.
+		c.cmds <- report
 	}
 }
 
