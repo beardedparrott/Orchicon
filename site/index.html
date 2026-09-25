@@ -61,7 +61,7 @@ code{font-size:.86em; background:var(--paper-2); padding:.1em .35em; border-radi
    pastes as "(ORCA · CON)" rather than with invisible thin-space characters.) */
 .byline{font:500 11px/1 var(--mono); letter-spacing:.09em; word-spacing:-.15em; color:var(--ink-3); white-space:nowrap; margin-left:7px}
 .nav nav{display:flex; gap:22px; margin-left:auto}
-.nav nav a{text-decoration:none; color:var(--ink-2); font-size:15px; font-weight:500}
+.nav nav a{text-decoration:none; color:var(--ink-2); font-size:15px; font-weight:500; white-space:nowrap; flex:none}
 .nav nav a:hover{color:var(--ink)}
 .btn{display:inline-flex; align-items:center; gap:8px; font:600 15px/1 var(--sans); padding:11px 16px; border-radius:var(--radius-s); text-decoration:none; border:1px solid transparent; cursor:pointer}
 .btn-primary{background:var(--cobalt); color:var(--cobalt-ink)}
@@ -172,8 +172,26 @@ td.with{color:var(--ink)}
 /* nav active */
 .nav nav a[aria-current="true"]{color:var(--ink); box-shadow:inset 0 -2px 0 var(--cobalt)}
 .nav nav a{padding:6px 0}
-@media (max-width:1180px){.nav nav{gap:16px}.nav nav a{font-size:14px}}
-@media (max-width:1040px){.nav nav a:nth-child(3),.nav nav a:nth-child(7){display:none}}
+/* NINE primary links, and the row must never SQUEEZE a label.
+
+   Squeezing is what produced the broken header this replaces. `.nav nav` is a flex row,
+   so when its contents exceed the container the ITEMS shrink; with no `white-space:nowrap`
+   the text then breaks mid-phrase ("Web"/"app", "Terminal"/"Workers") and reflows to two
+   lines inside a 64px-tall bar. The links are therefore `nowrap` (a label is never split) and
+   `flex:none` (a label is never shrunk below its text) — so the row is sized by its content
+   and the only remaining lever is HOW MANY links are shown.
+
+   That lever already existed: the original rule dropped #3 and #7 at 1040px. Adding Pricing
+   as a ninth link pushed the row wider than the width at which that rule fired, so the squeeze
+   happened ABOVE 1040 — which is why the break appeared on a normal-width screen rather than
+   on a small one. The thresholds below are retuned for nine links, and each is set with real
+   margin rather than at the exact width the row stops fitting (the container is capped at
+   1200px, and the row's natural width is dominated by text metrics that differ per platform),
+   so a slightly wider font cannot re-break it. Order matters: later rules win, so the narrower
+   tiers build on the wider ones. */
+@media (max-width:1240px){.nav nav{gap:16px}.nav nav a{font-size:14px}}
+@media (max-width:1160px){.nav nav a:nth-child(3),.nav nav a:nth-child(7){display:none}} /* Why Workers, Capabilities */
+@media (max-width:1000px){.nav nav{gap:12px}.nav nav a:nth-child(6){display:none}} /* Idea Cloud */
 .hero-side .hero-tui{margin:22px 0 0; padding-top:18px; border-top:1px solid var(--rule); font-size:16px; color:var(--ink-2)}
 .hero-tui a{color:var(--cobalt); font-weight:600; text-decoration:none}
 .hero-tui a:hover{text-decoration:underline}
