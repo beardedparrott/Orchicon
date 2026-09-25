@@ -385,16 +385,28 @@ path_is_mounted() {
   return 1
 }
 
+# Host resolv.conf whose nameservers compute_dns_servers reads. Overridable ONLY
+# so the offline harness (scripts/tests/container-dns/) can drive every network
+# shape without touching /etc; production always reads /etc/resolv.conf.
+RESOLV_CONF="${ORCHICON_RESOLV_CONF:-/etc/resolv.conf}"
+
+# dns_probe_available reports whether any tool exists to interrogate a resolver.
+# The distinction between "no tool" and "the resolver does not answer" is the
+# entire point of this predicate: a missing dig/nslookup must never be read as a
+# dead resolver (see compute_dns_servers, case 4).
+dns_probe_available() {
+  command -v dig >/dev/null 2>&1 || command -v nslookup >/dev/null 2>&1
+}
+
 # resolvers_answer reports success when at least one of the given nameservers
 # actually resolves a probe hostname. Probing (rather than assuming) is what lets
 # `up` tell "host DNS is authoritative here" from "host DNS is the dead gateway
 # of a captive portal".
 #
-# Uses dig when present; falls back to nslookup. If neither exists we cannot
-# probe, so we report "does not answer" — which makes compute_dns_servers choose
-# public resolvers. That is the safe default: public resolvers work almost
-# everywhere, and an operator on a network with authoritative internal DNS can
-# set ORCHICON_CONTAINER_DNS explicitly.
+# Uses dig when present; falls back to nslookup. When neither exists this returns
+# failure — but that failure means "unknown", NOT "dead". Callers must therefore
+# consult dns_probe_available first; see compute_dns_servers for why conflating
+# the two would silently repoint every host without bind-utils at public DNS.
 resolvers_answer() {
   local probe="${1:-example.com}"; shift
   local s
@@ -421,11 +433,24 @@ resolvers_answer() {
 
 # compute_dns_servers decides which resolvers to pin into the container.
 #   1. ORCHICON_CONTAINER_DNS, if set, wins verbatim (explicit operator intent).
-#   2. otherwise the host's own nameservers, if any of them answer AND are not
-#      loopback — this preserves corporate/VPN networks where internal DNS is
-#      authoritative.
-#   3. otherwise public resolvers — the captive-portal case, where the host's
-#      nameserver is a gateway that refuses UDP/53.
+#   2. Loopback/stub/link-local host nameservers are dropped outright and are
+#      handled as case 3: they are dead inside a container by construction, so
+#      public resolvers are the right answer for them with or without a probe.
+#   3. If routable host nameservers remain AND a probe tool exists, keep them
+#      when one answers — this preserves corporate/VPN networks where internal
+#      DNS is authoritative — and fall back to public resolvers when none does
+#      (the captive-portal case, where the host's nameserver is a gateway that
+#      refuses UDP/53).
+#   4. If routable nameservers remain but there is NO probe tool, keep them
+#      UNPROBED. Without dig/nslookup we cannot tell a dead gateway from a
+#      healthy-but-unverifiable resolver, and guessing "dead" would silently
+#      repoint every host lacking bind-utils at public DNS — breaking the
+#      split-horizon internal names that resolve there today. Keeping what Docker
+#      would have copied is the fail-safe direction; an operator on a captive
+#      portal sets ORCHICON_CONTAINER_DNS explicitly.
+#
+# PRINTF ONLY: the result is consumed as $(compute_dns_servers), and the log_*
+# helpers write to stdout, so logging in here would be captured as a resolver.
 #
 # The loopback filter is essential, not cosmetic. Docker copies the host's
 # resolv.conf at create time, and on a systemd-resolved host that file is the
@@ -441,12 +466,30 @@ compute_dns_servers() {
   fi
 
   local host_dns routable
-  host_dns=$(awk '/^nameserver[[:space:]]/{printf "%s ", $2}' /etc/resolv.conf 2>/dev/null)
+  host_dns=$(awk '/^nameserver[[:space:]]/{printf "%s ", $2}' "$RESOLV_CONF" 2>/dev/null)
 
   # drop loopback / resolved-stub / link-local addresses
   routable=$(printf '%s\n' $host_dns | grep -vE '^(127\.|::1$|fe80:|0\.0\.0\.0$)' | tr '\n' ' ')
 
-  if [ -n "$routable" ] && resolvers_answer example.com $routable; then
+  # Only a stub resolver is statically known to be dead in-container, so public
+  # resolvers are the right answer there even with nothing to probe with (2/3).
+  # The //-substitution rather than a bare -z test because the pipeline above
+  # leaves a WHITESPACE-ONLY string when resolv.conf lists no usable nameserver,
+  # and whitespace-only means "no usable resolvers", not "some".
+  if [ -z "${routable// /}" ]; then
+    printf '1.1.1.1 8.8.8.8'
+    return 0
+  fi
+
+  # No probe tool: cannot distinguish dead from unverifiable — do not guess.
+  # The host's own resolvers are what Docker would have copied anyway, so this
+  # is unchanged behaviour rather than a silent repoint (4).
+  if ! dns_probe_available; then
+    printf '%s' "$routable"
+    return 0
+  fi
+
+  if resolvers_answer example.com $routable; then
     printf '%s' "$routable"
     return 0
   fi
@@ -539,6 +582,7 @@ up_instance() {
   # for why the host's resolv.conf is not a safe default on guest networks.
   local dns_servers
   dns_servers=$(compute_dns_servers)
+  log_dim "  container DNS: $dns_servers${ORCHICON_CONTAINER_DNS:+ (ORCHICON_CONTAINER_DNS)}"
   # PROJECT ROOTS — WHERE ORCHICON MAY LOOK, DECLARED ONCE.
   #
   # THE PROBLEM THIS SOLVES: a bind mount cannot be added to a running container,
@@ -643,7 +687,7 @@ up_instance() {
     if [ -n "$missing" ]; then
       log_warn "mounts changed ($missing) — recreating $NAME"
       docker rm -f "$NAME" >/dev/null
-    elif ! dns_args_match "$NAME"; then
+    elif ! dns_args_match "$NAME" "$dns_servers"; then
       log_warn "container DNS differs from desired ($dns_servers) — recreating $NAME"
       docker rm -f "$NAME" >/dev/null
     else
