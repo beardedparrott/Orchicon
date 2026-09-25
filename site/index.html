@@ -249,6 +249,22 @@ table.fk tbody th{vertical-align:top}
 .limits span{color:var(--ink-2); font-size:15px}
 @media (max-width:760px){.limits{grid-template-columns:1fr 1fr}}
 
+/* pricing */
+/* Three columns, sized to the content rather than the viewport. The plans are the
+   same software, so the grid must not imply feature scarcity: the middle column
+   carries no emphasis and no plan is visually "recommended". */
+.plans{display:grid; grid-template-columns:repeat(3,1fr); gap:20px; margin-top:8px}
+.plan{border:1px solid var(--rule); border-radius:var(--radius-m); padding:26px 24px 24px; display:flex; flex-direction:column}
+.plan h3{font-size:20px; font-weight:800; letter-spacing:-.01em; margin:0 0 8px}
+.plan .price{font-size:clamp(26px,3.2vw,34px); font-weight:800; letter-spacing:-.03em; line-height:1.05; margin:0 0 6px}
+.plan .plan-note{color:var(--ink-2); font-size:15px; margin:0 0 18px}
+.plan ul{list-style:none; padding:0; margin:0 0 24px; color:var(--ink-2); font-size:15px}
+.plan ul li{position:relative; padding:8px 0 8px 20px; border-bottom:1px solid var(--rule)}
+.plan ul li:last-child{border-bottom:0}
+.plan ul li::before{content:""; position:absolute; left:2px; top:16px; width:7px; height:7px; border-radius:50%; background:var(--signal)}
+.plan .btn{margin-top:auto; justify-content:center; overflow-wrap:anywhere}
+@media (max-width:900px){.plans{grid-template-columns:minmax(0,1fr); gap:16px}}
+
 /* architecture */
 .slogan{font-size:clamp(28px,4vw,44px); font-weight:800; letter-spacing:-.03em; line-height:1.05; margin:0 0 20px}
 .stack{border:1px solid var(--rule); border-radius:var(--radius-m); overflow:hidden}
@@ -313,6 +329,7 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
       <a href="#ask">Ask Orchicon</a>
       <a href="#automation">Idea Cloud</a>
       <a href="#capabilities">Capabilities</a>
+      <a href="#pricing">Pricing</a>
       <a href="#install">Install</a>
     </nav>
     <a class="btn btn-quiet" href="https://github.com/beardedparrott/Orchicon">
@@ -667,6 +684,54 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
       <div class="layer"><b>State and signals</b><span>Postgres with row-level security, NATS, and an OpenTelemetry collector feeding Tempo, Loki and VictoriaMetrics</span></div>
       <div class="layer"><b>Runtimes</b><span>Built-in engine or adapters over <code>orchicon.adapter.v1</code>, each run in its own warm-pool container, run as your user, torn down at completion</span>
         <div class="chips"><span class="chip">Built-in engine</span><span class="chip">OpenCode</span><span class="chip">Your adapter</span></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- PRICING -->
+<section class="block" id="pricing">
+  <div class="wrap">
+    <h2 class="title">Pricing</h2>
+    <p class="intro">It is the same software in every column. What changes is the licence to use it commercially, and who you can ask for help.</p>
+    <div class="plans">
+
+      <div class="plan">
+        <h3>Personal</h3>
+        <p class="price">Free</p>
+        <p class="plan-note">For personal, non-commercial use.</p>
+        <ul>
+          <li>The whole product: web app and terminal client</li>
+          <li>Workers, Workflows, Work Items, Recovery and the Idea Cloud</li>
+          <li>Runs entirely on your own hardware, under your own models and keys</li>
+          <li>No limits imposed by us on projects, runs or Workers</li>
+        </ul>
+        <a class="btn btn-quiet" href="#install">Install Orchicon</a>
+      </div>
+
+      <div class="plan">
+        <h3>Small &amp; medium business</h3>
+        <p class="price">Get in touch</p>
+        <p class="plan-note">For commercial use in a small or medium sized business.</p>
+        <ul>
+          <li>Everything in Personal, licensed for commercial use</li>
+          <li>Support when you need a hand</li>
+          <li>Email us and we will get you set up</li>
+        </ul>
+        <a class="btn btn-primary" href="mailto:support@orchicon.dev?subject=Orchicon%20pricing%20-%20Small%20%26%20medium%20business">support@orchicon.dev</a>
+      </div>
+
+      <div class="plan">
+        <h3>Enterprise</h3>
+        <p class="price">Get in touch</p>
+        <p class="plan-note">For larger organisations.</p>
+        <ul>
+          <li>Everything in Small &amp; medium business</li>
+          <li>We will talk through how you want to run it</li>
+          <li>Email us to start that conversation</li>
+        </ul>
+        <a class="btn btn-primary" href="mailto:support@orchicon.dev?subject=Orchicon%20pricing%20-%20Enterprise">support@orchicon.dev</a>
+      </div>
+
     </div>
   </div>
 </section>
