@@ -66,11 +66,39 @@ type HostTools struct {
 // project root is passed READ-only when a worktree is provisioned so
 // reads can reach run-state files outside the worktree (mirroring the
 // opencode sidecar's boundary); writes never reach it.
+//
+// This constructor is deliberately CONFINED and is the one every worker run
+// uses. The interactive (Ask) widening is NewHostToolsUnrestricted and is not
+// reachable from here — a worker suite must never inherit it.
 func NewHostTools(workingDir, projectRoot string) *HostTools {
 	return &HostTools{base: worktree.Base{
 		Worktree:    workingDir,
 		ProjectRoot: projectRoot,
 		ScratchDir:  worktree.DefaultScratchDir,
+	}}
+}
+
+// NewHostToolsUnrestricted builds the host tool suite for the INTERACTIVE (Ask)
+// path: the same suite, the same relative-path anchor and bash cwd
+// (workingDir), but the allowed set is the whole filesystem — an absolute path
+// is permitted wherever the process can reach it.
+//
+// WHY A SEPARATE CONSTRUCTOR AND NOT A SETTER OR A PACKAGE DEFAULT. A worker
+// session's suite must be incapable of inheriting the widening, and with a
+// constructor the only way to get an unconfined suite is to name this function
+// in the call. A setter or a shared default would leave the worker path one
+// call away from it. TestWorkerConstructorCannotInheritUnrestricted fails the
+// moment the two ever converge.
+//
+// This is not a security boundary on a host plane: the process runs as the
+// operator's uid, so filesystem modes are the real constraint and the consent
+// layer governs action. Worktree stays the relative-path anchor and the bash
+// cwd default, so project-relative work is unchanged.
+func NewHostToolsUnrestricted(workingDir string) *HostTools {
+	return &HostTools{base: worktree.Base{
+		Worktree:     workingDir,
+		ScratchDir:   worktree.DefaultScratchDir,
+		AllowAnyPath: true,
 	}}
 }
 
@@ -473,21 +501,13 @@ func (h *HostTools) execBash(ctx context.Context, argsJSON string) (string, erro
 	return string(out), nil
 }
 
-// resolveDir resolves a project-relative directory to an absolute path
-// inside the containment boundary (worktree root, project root READ-only,
-// or scratch). Returns an error on escape.
+// resolveDir resolves a path for the directory-listing tools (list/glob)
+// through the SAME resolver the composite tools use (worktree.ResolvePath), so
+// the allowed set is defined in exactly ONE place — the worktree engine —
+// instead of being re-listed here. An absolute path is refused unless the base
+// is unrestricted (the interactive Ask suite).
 func (h *HostTools) resolveDir(p string) (string, error) {
-	clean := filepath.Clean(p)
-	if filepath.IsAbs(clean) {
-		for _, root := range []string{h.base.Worktree, h.base.ProjectRoot, h.base.ScratchDir} {
-			if root != "" && (clean == root || strings.HasPrefix(clean, root+string(filepath.Separator))) {
-				return clean, nil
-			}
-		}
-		return "", fmt.Errorf("path %q escapes the working dir", p)
-	}
-	// Relative paths resolve against the worktree root only.
-	return filepath.Join(h.base.Worktree, clean), nil
+	return worktree.ResolvePath(h.base, p, false)
 }
 
 // pathsOrDot normalizes a single optional path into the slice form the
