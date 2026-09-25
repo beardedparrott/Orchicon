@@ -18,10 +18,26 @@ import (
 	assets "github.com/beardedparrott/orchicon"
 )
 
+// serveStateDirEnv makes the detached `serve --detach` state PER INSTANCE.
+// Two host-resident planes (dev + prod) launched from the same working
+// directory would otherwise share one PID file, and `serve --stop` for one
+// would kill the other. The launcher sets it per instance
+// (scripts/container.sh passes $ORCHICON_DATA_DIR/serve). Default `.dev`
+// reproduces the previous hardcoded paths byte-for-byte.
+const serveStateDirEnv = "ORCHICON_SERVE_STATE_DIR"
+
+// serveStateDir returns the detached serve's state root.
+func serveStateDir() string {
+	if d := os.Getenv(serveStateDirEnv); d != "" {
+		return d
+	}
+	return ".dev"
+}
+
 // servePIDFile / serveLogFile locate the detached `serve --detach` state.
-const (
-	servePIDFile = ".dev/pids/orchicon.pid"
-	serveLogFile = ".dev/logs/orchicon.log"
+var (
+	servePIDFile = serveStateDir() + "/pids/orchicon.pid"
+	serveLogFile = serveStateDir() + "/logs/orchicon.log"
 )
 
 // procRunning reports whether the process named in pidFile is alive.

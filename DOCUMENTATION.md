@@ -1236,6 +1236,7 @@ Orchicon can run two isolated single-container instances side by side: a **dev**
 The entire Orchicon stack — Postgres, NATS, the Grafana telemetry plane (Tempo, Loki, VictoriaMetrics, OTel collector, Grafana), and the control plane — can run in **one container**. The `orchicon` binary is the PID-1 supervisor (`orchicon container`, `cmd/orchicon/container.go`):
 
 - spawns children in dependency order (postgres → nats → telemetry → control plane), gating on readiness probes
+- runs the **services only** when `ORCHICON_CONTAINER_SERVICES_ONLY=1` (the plane then runs on the HOST — §Host residency below), logging the decision explicitly
 - prefixes each child's stdout/stderr with its component name
 - restarts crashed children with exponential backoff; forwards SIGTERM/SIGINT and waits for graceful exit
 - writes the embedded Tempo/Loki/collector/Grafana configs into the data dir (`@DATA_DIR@` substituted)
@@ -1303,9 +1304,57 @@ When a `project_dir` sits outside every root the control plane cannot see it, an
 | `ORCHICON_GRAFANA_PUBLIC_URL` | `http://localhost:8080/grafana` | Grafana's public root_url (change when publishing on other ports) |
 | `ORCHICON_*` | — | Any control-plane env var (DSNs, ports) overrides the container defaults |
 
+#### Host residency: the plane on the host, the services containerized
+
+The control plane can run as a **host process** while the same instance's Postgres, NATS and telemetry plane keep running inside the container. Residency is a **per-instance, opt-in launch setting** read by `scripts/container.sh`, so dev can migrate first while prod stays exactly as it is:
+
+| Setting | Where | Default | Effect |
+|---|---|---|---|
+| `ORCHICON_PLANE_RESIDENCY` | launcher env (`up`/`down`/`rebuild`) | `container` | `host` starts the container in **services-only mode** and the plane as a host process |
+| `ORCHICON_CONTAINER_SERVICES_ONLY` | set by the launcher *into the container* | unset | `1` ⇒ `cmd/orchicon/container.go` skips the plane child |
+| `ORCHICON_SERVE_STATE_DIR` | host plane env | `.dev` | per-instance PID/log root for `serve --detach`/`--stop`, so two host planes never share one PID file |
+
+With **no new setting, nothing changes**: an instance still runs its plane inside its container. `make rebuild-dev` opts DEV in (`residency=host`); `make rebuild-prod` stays containerized until you run `make rebuild-prod residency=host`; `make rebuild-dev residency=container` reverts dev.
+
+**What is published in host mode** — every service bound to **`127.0.0.1` only** (a database and an internal event bus must never be on the LAN), on ports that are disjoint per instance:
+
+| Service | dev | prod |
+|---|---|---|
+| Postgres | 5432 | 5433 |
+| NATS / monitoring | 4222 / 8222 | 4223 / 8223 |
+| OTLP gRPC / HTTP | 4317 / 4318 | 4319 / 4320 |
+| Tempo | 3200 | 3201 |
+| Loki | 3100 | 3101 |
+| VictoriaMetrics | 8428 | 8429 |
+| Grafana | 3002 → 3000 | 3003 → 3000 |
+| Plane HTTP | 8080 | 8091 |
+
+In services-only mode `postgres` is started with `listen_addresses=0.0.0.0` (default mode keeps `localhost`), and the supervisor idempotently appends a `host all all <gateway>/32 trust` rule to `<data-dir>/postgres/pg_hba.conf` on every boot, where `<gateway>` is the container's default-route gateway: the connection arrives through the published port, so postgres sees that gateway as its peer, never loopback. The rule names that single address on purpose — every other container on the same bridge shares it, and a wildcard rule would hand them password-less superuser access to this instance's database. Only when no gateway can be detected does it fall back to the wide `0.0.0.0/0` + `::/0` rules. Exposure stays bounded by the loopback-only publish, which is the security boundary.
+
+**The host plane's profile** is printable with `scripts/container.sh shape <inst>`, and every value comes from the instance table (never a shell profile or a shared env file):
+
+- `ORCHICON_HTTP_ADDR=:<PLANE_HTTP_PORT>` and `ORCHICON_PLANE_PUBLIC_URL=http://172.17.0.1:<PLANE_HTTP_PORT>` — the advertised URL is what the plane hands each run container it creates (`ORCHICON_PLANE_URL`), so an instance can only ever hand out its own address;
+- `ORCHICON_POSTGRES_DSN` / `ORCHICON_NATS_URL` / `ORCHICON_OTEL_ENDPOINT` (+ Tempo/Loki/VictoriaMetrics/Grafana URLs) point at the published loopback ports;
+- `ORCHICON_DATA_DIR=$HOME/.local/share/orchicon-<inst>` and `ORCHICON_BLOB_DIR=<data-dir>/blobs` — the KEK (`<data-dir>/secrets/kek`) and ask-history move with it. The **first** switch-over copies the existing container volume (including `secrets/kek`) into the host dir, so existing tenant secrets keep decrypting; an existing host KEK is never overwritten;
+- `ORCHICON_RUNTIME_SOCKET` points at the host runtime daemon's real socket;
+- `ORCHICON_CONTAINER_MODE` is explicitly **unset** for the host plane — a stray export must not flip it into container semantics (custom providers stored as `http://localhost:…` must keep that URL on a host plane, §Providers).
+
+`orchicon container` logs the services-only decision plainly at boot (`services-only mode: postgres, nats and telemetry run in this container; the control plane runs on the HOST`), because a container silently running without a plane looks like a failed boot. The image's plane `/healthz` healthcheck is replaced with a services probe in that mode.
+
+**Steady-state commands:**
+
+```bash
+scripts/container.sh shape dev        # what the launcher WOULD do (no side effects)
+scripts/container.sh verify dev       # what the instance ACTUALLY runs (ports, env, supervisor log)
+scripts/container.sh plane-stop dev   # stop the HOST plane; the services container keeps running
+scripts/container.sh plane-start dev  # start it again — no container restart
+```
+
+**Migration rule:** dev and prod migrate independently and coexist in different shapes; a rebuild of one instance must never alter the other's. `scripts/container.sh verify <inst>` is the check.
+
 **Measured footprint** (single container, this stack): full telemetry ≈ **384 MiB** resident; `ORCHICON_TELEMETRY=none` ≈ **96 MiB** — vs ~2.7 GB for the ClickHouse-era compose stack.
 
-Dual-instance (dev + prod) is two containers with offset published ports (`-p 8080:8080 -p 3002:3000` and `-p 8091:8080 -p 3003:3000`), separate data volumes.
+Dual-instance (dev + prod) is two containers with offset published ports (`-p 8080:8080 -p 3002:3000` and `-p 8091:8080 -p 3003:3000`), separate data volumes. An instance may instead be **host-resident** (its container runs the services only, its plane runs on the host) — see §Host residency above; the two instances may be in different shapes at the same time.
 
 ### Workflow Runtime Containers
 
