@@ -29,6 +29,70 @@ service SettingsService {
 
   // DeleteBackup removes the named snapshot from the backup directory.
   rpc DeleteBackup(DeleteBackupRequest) returns (DeleteBackupResponse);
+
+  // --- persistent permission policy -------------------------------------
+  //
+  // The operator's DURABLE deny/accept list, stored in a YAML file
+  // (ORCHICON_PERMISSION_POLICY, default <data dir>/permission-policy.yaml).
+  //
+  // The FILE is the single source of truth and this service is its single
+  // writer: both clients manage entries through these RPCs and never keep
+  // their own copy, so a hand-edit and a UI change cannot diverge. Every
+  // call reads the file fresh — an edit takes effect on the next gated
+  // decision with no restart and no staleness window.
+  //
+  // Precedence (deny outranks a session grant ON PURPOSE: a grant
+  // suppresses prompts, it does not open a path the operator excluded):
+  // never-allow binaries > deny > session grant > accept > project dir > ask.
+
+  // GetPermissionPolicy returns the policy file path and every entry.
+  rpc GetPermissionPolicy(GetPermissionPolicyRequest) returns (GetPermissionPolicyResponse);
+
+  // AddPermissionPolicyEntry adds one entry to the deny or accept list.
+  rpc AddPermissionPolicyEntry(AddPermissionPolicyEntryRequest) returns (AddPermissionPolicyEntryResponse);
+
+  // RemovePermissionPolicyEntry removes one entry from the deny or accept list.
+  rpc RemovePermissionPolicyEntry(RemovePermissionPolicyEntryRequest) returns (RemovePermissionPolicyEntryResponse);
+}
+
+// PermissionPolicyEntry is one rule, with the fact a UI needs to phrase it.
+message PermissionPolicyEntry {
+  // The entry exactly as the operator wrote it (a leading ~ stays a ~), so
+  // it can be removed by the same string.
+  string pattern = 1;
+  // "deny" or "accept".
+  string list = 2;
+  // overridable is FALSE for deny entries: a session grant cannot override
+  // them, so a client must say so instead of offering a grant that the
+  // refusal will ignore. Accept entries are true.
+  bool overridable = 3;
+}
+
+message GetPermissionPolicyRequest {}
+
+message GetPermissionPolicyResponse {
+  // The resolved policy file path (for "edit this file by hand" hints).
+  string path = 1;
+  // Deny entries first, then accept entries — the precedence order.
+  repeated PermissionPolicyEntry entries = 2;
+}
+
+message AddPermissionPolicyEntryRequest {
+  string pattern = 1;
+  // "deny" or "accept" (required; an empty list name is an error).
+  string list = 2;
+}
+message AddPermissionPolicyEntryResponse {
+  // The refreshed policy: the client never patches its own copy.
+  GetPermissionPolicyResponse policy = 1;
+}
+
+message RemovePermissionPolicyEntryRequest {
+  string pattern = 1;
+  string list = 2;
+}
+message RemovePermissionPolicyEntryResponse {
+  GetPermissionPolicyResponse policy = 1;
 }
 
 message GetSettingsRequest {}

@@ -59,6 +59,23 @@ type HostTools struct {
 	// (worker-path parity: runtime/agent.go's prependGuard). Nil →
 	// inherited env (pre-change behavior, worker path untouched).
 	envForBash func() []string
+	// pathPolicy, when set, is consulted with every path-like argument of
+	// every call BEFORE the call is dispatched, and its error aborts the
+	// call verbatim. Wired by the consent layer to the ONE shared policy
+	// accessor (permpolicy.Store.HostSuiteGuard) so the file suite and the
+	// consent core cannot disagree about what is denied. Nil → no policy
+	// hook (the worker path is unchanged; the policy file is the operator's
+	// interactive-plane rule).
+	//
+	// This suite is the ONE place reads/writes/edits land, which is why the
+	// hook lives here rather than in every tool.
+	pathPolicy func(paths []string) error
+}
+
+// SetPathPolicy installs the persistent-permission-policy hook (see the
+// field doc). A nil fn removes it.
+func (h *HostTools) SetPathPolicy(fn func(paths []string) error) {
+	h.pathPolicy = fn
 }
 
 // NewHostTools builds the host tool suite scoped to the execution's
@@ -198,6 +215,16 @@ func (h *HostTools) Defs() []ToolDef {
 // resolves inside the execution's working dir + the sanctioned scratch
 // dir; escapes are refused by the engine's containment boundary.
 func (h *HostTools) Execute(ctx context.Context, name, argsJSON string) (string, error) {
+	// THE POLICY CHOKE POINT, and it runs before EVERY branch.
+	//
+	// Deliberately first: this is the one function every host-suite call
+	// passes through, so a check here cannot be bypassed by which internal
+	// branch a tool happens to take. A returned error is the tool's result
+	// verbatim, so a refusal that names the denied policy entry reaches the
+	// model and the operator unaltered.
+	if err := h.checkPolicy(name, argsJSON); err != nil {
+		return "", err
+	}
 	switch name {
 	case "batch_read":
 		var a worktree.ReadArgs
@@ -247,6 +274,125 @@ func (h *HostTools) Execute(ctx context.Context, name, argsJSON string) (string,
 	default:
 		return "", fmt.Errorf("hosttools: unknown tool %q", name)
 	}
+}
+
+// policyTargetCandidates extracts the path-like targets a call names, each
+// in BOTH spellings the operator might have written a policy entry for: as
+// the model wrote it (`~/.ssh/id_rsa`, or a project-relative path) and, when
+// the suite has a working dir, resolved against it.
+//
+// Keys are a WHITELIST (path/paths/filePath), never "every string in the
+// args": content, oldString and newString are file CONTENT, and a policy
+// entry that matched the text of a file being written would be a rule that
+// mis-fires on the thing it is meant to protect.
+func (h *HostTools) policyTargetCandidates(name, argsJSON string) []string {
+	var root any
+	if err := json.Unmarshal([]byte(argsJSON), &root); err != nil {
+		// Not JSON: fall back to the shell reading, which is what a
+		// malformed/mis-typed call looks like.
+		root = nil
+	}
+	raw := make([]string, 0, 8)
+	collectPolicyPaths(root, &raw)
+	if name == "bash" {
+		var a struct {
+			Command string `json:"command"`
+		}
+		if err := json.Unmarshal([]byte(argsJSON), &a); err == nil {
+			raw = append(raw, shellPolicyTokens(a.Command)...)
+		}
+	}
+	out := make([]string, 0, len(raw)*2)
+	seen := make(map[string]bool, len(raw)*2)
+	add := func(t string) {
+		t = strings.TrimSpace(t)
+		if t == "" || seen[t] {
+			return
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	for _, t := range raw {
+		add(t)
+		// A path written RELATIVE lands inside the suite's working dir;
+		// pass the resolved form too so a policy entry written either way
+		// matches. An absolute path is already its own resolution.
+		if !filepath.IsAbs(t) && !strings.HasPrefix(t, "~") && h.base.Worktree != "" {
+			add(filepath.Join(h.base.Worktree, t))
+		}
+	}
+	return out
+}
+
+// collectPolicyPaths walks a decoded JSON value and appends every string
+// under a path-naming key (path/paths/filePath/filePaths), descending into
+// objects and arrays so `writes: [{path: …}]` is covered.
+func collectPolicyPaths(v any, out *[]string) {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, val := range t {
+			switch k {
+			case "path", "paths", "filePath", "filePaths":
+				switch s := val.(type) {
+				case string:
+					*out = append(*out, s)
+				case []any:
+					for _, e := range s {
+						if str, ok := e.(string); ok {
+							*out = append(*out, str)
+						}
+					}
+				}
+			default:
+				collectPolicyPaths(val, out)
+			}
+		}
+	case []any:
+		for _, e := range t {
+			collectPolicyPaths(e, out)
+		}
+	}
+}
+
+// shellPolicyTokens splits a bash command into whitespace-separated tokens
+// and keeps the ones that could name a file: any token containing a path
+// separator, and every token that survives a leading assignment or quote
+// strip. Deliberately over-inclusive — the hook only refuses on a DENY
+// match, so an extra candidate can only make the denial MORE certain, never
+// turn a permitted command into a refused one.
+func shellPolicyTokens(command string) []string {
+	if strings.TrimSpace(command) == "" {
+		return nil
+	}
+	fields := strings.Fields(command)
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		tok := strings.Trim(f, `'"`)
+		if i := strings.Index(tok, "="); i > 0 && !strings.Contains(tok[:i], "/") {
+			tok = tok[i+1:] // VAR=path → path
+			tok = strings.Trim(tok, `'"`)
+		}
+		if tok == "" {
+			continue
+		}
+		if strings.Contains(tok, "/") || strings.HasPrefix(tok, "~") {
+			out = append(out, tok)
+		}
+	}
+	return out
+}
+
+// checkPolicy runs the installed policy hook over the call's targets. A nil
+// hook (the worker path) is a no-op.
+func (h *HostTools) checkPolicy(name, argsJSON string) error {
+	if h.pathPolicy == nil {
+		return nil
+	}
+	targets := h.policyTargetCandidates(name, argsJSON)
+	if len(targets) == 0 {
+		return nil
+	}
+	return h.pathPolicy(targets)
 }
 
 // --- thin wrappers over the composite engine -------------------------------
