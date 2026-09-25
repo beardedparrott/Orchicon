@@ -37,6 +37,9 @@ func TestEmitPermissionAskCarriesToolAndTargetOnTheWire(t *testing.T) {
 		Directory:      "/p/sibling",
 		InsideProject:  false,
 		Summary:        "write /p/sibling/notes.md",
+		// A deny entry BELOW the directory the grant would cover: the card
+		// must carry it, because a session grant never overrides it.
+		DenyBelow: []string{"/p/sibling/private/**"},
 	}
 	var got []*apiv1.ChatStreamResponse
 	emitPermissionAsk(func(r *apiv1.ChatStreamResponse) { got = append(got, r) }, fileAsk)
@@ -59,6 +62,12 @@ func TestEmitPermissionAskCarriesToolAndTargetOnTheWire(t *testing.T) {
 	if pa.GetSummary() == "" {
 		t.Fatal("card summary is empty — an opaque id is not a card")
 	}
+	// The precedence note the card needs: a deny entry under the granted
+	// directory still wins, so the card says so rather than offering a grant
+	// that will be refused for those paths.
+	if got := pa.GetDenyEntriesBelow(); len(got) != 1 || got[0] != "/p/sibling/private/**" {
+		t.Fatalf("deny_entries_below = %v, want the deny entry below the directory", got)
+	}
 
 	// It survives the transport: encode/decode exactly as a client would.
 	wire, err := proto.Marshal(got[0])
@@ -71,6 +80,9 @@ func TestEmitPermissionAskCarriesToolAndTargetOnTheWire(t *testing.T) {
 	}
 	if b := back.GetPermissionAsk(); b == nil || b.GetTool() != "write" || b.GetTargets()[0] != "/p/sibling/notes.md" {
 		t.Fatalf("decoded card = %+v — the ask did not survive the wire", b)
+	}
+	if b := back.GetPermissionAsk(); len(b.GetDenyEntriesBelow()) != 1 {
+		t.Fatalf("decoded deny_entries_below = %v — the precedence note did not survive the wire", b.GetDenyEntriesBelow())
 	}
 
 	// A shell ask carries the COMMAND, and no target path (a command is not

@@ -3,6 +3,7 @@ import { askOrchiconClient } from "@/api/clients";
 import type { Conversation } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 import type { ChatMessage } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 import type { AgentConfig } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
+import type { SessionPermissionGrant } from "@/api/gen/orchicon/api/v1/ask_orchicon_service_pb";
 import { ConversationMode } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 
 export const askKeys = {
@@ -10,6 +11,9 @@ export const askKeys = {
   conversation: (id: string) => ["ask", "conversation", id] as const,
   messages: (id: string) => ["ask", "messages", id] as const,
   config: ["ask", "config"] as const,
+  // grants are the conversation's ACTIVE session grants (in-memory on the
+  // plane, revoked from here).
+  grants: (id: string) => ["ask", "grants", id] as const,
 };
 
 export function useListConversations(opts?: { refetchInterval?: number | false }) {
@@ -208,6 +212,45 @@ export function useSetConversationModel() {
       // strip reads it back off that row — so both keys must refresh.
       qc.invalidateQueries({ queryKey: askKeys.conversations });
       qc.invalidateQueries({ queryKey: askKeys.conversation(variables.id) });
+    },
+  });
+}
+
+// --- session grants -------------------------------------------------------
+//
+// The plane's grant store is the single source of truth: these hooks read it and
+// mutate it, and NEVER patch a local copy. A revoke takes effect on the next
+// tool call (the execution guard reads the same store), which is why the
+// response's refreshed list is written straight into the cache.
+
+export function useListPermissionGrants(
+  conversationId: string,
+  opts?: { refetchInterval?: number | false },
+) {
+  return useQuery({
+    queryKey: askKeys.grants(conversationId),
+    queryFn: async () => {
+      const res = await askOrchiconClient.listPermissionGrants({ conversationId });
+      return (res.grants ?? []) as SessionPermissionGrant[];
+    },
+    enabled: !!conversationId,
+    // Polled only while the grants panel is open: the list is small and
+    // changes only when the operator decides something.
+    refetchInterval: opts?.refetchInterval ?? false,
+  });
+}
+
+export function useRevokePermissionGrant(conversationId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (directory: string) =>
+      await askOrchiconClient.revokePermissionGrant({ conversationId, directory }),
+    onSuccess: (res) => {
+      qc.setQueryData(
+        askKeys.grants(conversationId),
+        (res.grants ?? []) as SessionPermissionGrant[],
+      );
+      qc.invalidateQueries({ queryKey: askKeys.grants(conversationId) });
     },
   });
 }

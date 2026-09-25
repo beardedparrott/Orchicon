@@ -66,6 +66,10 @@ import {
   type StreamItem,
 } from "@/lib/ask-stream-group";
 import { ConversationMode } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
+import {
+  PermissionChoice,
+  type PermissionAsk,
+} from "@/api/gen/orchicon/api/v1/ask_orchicon_service_pb";
 import type {
   ChatMessage,
   Conversation,
@@ -80,6 +84,15 @@ import {
 } from "@/components/chat";
 import { useCategoryPreferences, getItemsForCategory } from "@/lib/category-store";
 import { AskCard, isAskUserToolCall, parseAskUserArgs } from "@/components/ask/AskCard";
+import { ConsentAskCard } from "@/components/ask/AskCard";
+import { SessionGrants } from "@/components/ask/SessionGrants";
+import {
+  applyAskChunk,
+  outcomeFromChoice,
+  pendingFor,
+  resolveAsk,
+  type AskItem,
+} from "@/lib/ask-consent";
 import { CreateCategoryDialog } from "@/components/CreateCategoryDialog";
 import { DiffSidebar, type DiffTab } from "@/components/diffs/DiffSidebar";
 import { usePersistentState } from "@/lib/diff/usePersistentState";
@@ -142,6 +155,13 @@ interface ConvStream {
   // not a persisted draft, so it never resurrects into the composer.
   sentText: string | null;
   items: StreamItem[];
+  // asks are the consent cards this conversation has seen, PENDING OR SETTLED.
+  // They live OUTSIDE `items` on purpose: `items` is emptied by every
+  // turn-lifecycle updater, and the outcome of an ask must stay in the
+  // transcript (an operator scrolling back must see that a grant was given and
+  // what it covered). Nothing in this file clears `asks` except switching
+  // conversation, which is per-slot anyway.
+  asks: AskItem[];
 }
 const EMPTY_STREAM: ConvStream = {
   isStreaming: false,
@@ -152,6 +172,7 @@ const EMPTY_STREAM: ConvStream = {
   pendingReplyId: null,
   sentText: null,
   items: [],
+  asks: [],
 };
 
 // The server's last-resort fallback when no Ask Orchicon model is configured
@@ -219,6 +240,10 @@ function AskOrchiconPage() {
   // interject turn that replaced it — the classic stale-closure hazard once
   // two streams can overlap for a conversation.
   const dispatchGenRef = useRef<Record<string, number>>({});
+  // restoredWatchRef marks a conversation whose slot was RESTORED by the
+  // re-attach effect (rather than dispatched locally), so the watch re-dial
+  // runs for exactly that case and never double-dials a turn we dispatched.
+  const restoredWatchRef = useRef<Record<string, boolean>>({});
 
   // Per-conversation monotonic chunk sequence. Live TextChunk/Reasoning
   // chunks are keyed `st-<seq>` / `sr-<seq>` (never Math.random()) so
@@ -340,6 +365,16 @@ function AskOrchiconPage() {
     [],
   );
 
+  // applyAsk folds a streamed PermissionAsk into its conversation's transcript.
+  // Deduped by ask id (the live socket and the re-dialled watch socket can both
+  // deliver it), and never resurrected once settled.
+  const applyAsk = useCallback(
+    (convId: string, ask: PermissionAsk) => {
+      setStream(convId, (prev) => ({ ...prev, asks: applyAskChunk(prev.asks, ask) }));
+    },
+    [setStream],
+  );
+
   // The ACTIVE conversation's derived streaming state.
   const activeStream = activeConvId ? streams[activeConvId] : undefined;
   const isStreaming = activeStream?.isStreaming ?? false;
@@ -420,6 +455,64 @@ function AskOrchiconPage() {
   const setConvModel = useSetConversationModel();
   const compactConv = useCompactConversation();
   const qc = useQueryClient();
+
+  // askInFlight disables a card's actions while its reply is in the air, so one
+  // decision cannot be sent twice (the server would report the second as
+  // expired, which would mislabel an allow as an expiry).
+  const [askInFlight, setAskInFlight] = useState<Record<string, boolean>>({});
+
+  // handleAskDecision answers one pending consent ask. The outcome lands in the
+  // TRANSCRIPT (the card settles in place) rather than only in the effect, and a
+  // reply that did not apply is reported as expired with the server's reason —
+  // never a silent nothing. On a transport error the card stays pending so the
+  // operator can retry.
+  const handleAskDecision = useCallback(
+    async (convId: string, askId: string, choice: PermissionChoice): Promise<void> => {
+      if (askInFlight[askId]) return;
+      setAskInFlight((prev) => ({ ...prev, [askId]: true }));
+      try {
+        const res = await askOrchiconClient.replyPermissionAsk({
+          conversationId: convId,
+          askId,
+          choice,
+        });
+        if (res.applied) {
+          setStream(convId, (prev) => ({
+            ...prev,
+            asks: resolveAsk(prev.asks, askId, outcomeFromChoice(choice)),
+          }));
+          if (choice === PermissionChoice.ALLOW_SESSION) {
+            // A session grant is now live: refresh the grants list (the
+            // header's Grants disclosure) so it is visible without a reload.
+            qc.invalidateQueries({ queryKey: askKeys.grants(convId) });
+          }
+        } else {
+          setStream(convId, (prev) => ({
+            ...prev,
+            asks: resolveAsk(prev.asks, askId, {
+              kind: "expired",
+              detail: res.detail || undefined,
+            }),
+          }));
+          toast.error(res.detail || "This ask is no longer open.", {
+            title: "Permission",
+          });
+        }
+      } catch (err: unknown) {
+        // Leaves the ask PENDING: a failed reply is not a decision.
+        toast.error(String(err instanceof Error ? err.message : err), {
+          title: "Permission",
+        });
+      } finally {
+        setAskInFlight((prev) => {
+          const next = { ...prev };
+          delete next[askId];
+          return next;
+        });
+      }
+    },
+    [askInFlight, setStream, qc, toast],
+  );
 
   // The effective model answering this conversation: the conversation's own
   // model_ref wins, then the tenant default, then the server's free fallback.
@@ -573,6 +666,13 @@ function AskOrchiconPage() {
         items: [],
       };
     });
+    // Mark the slot as RESTORED (we did not dispatch this turn). The watch
+    // re-dial lives in its own effect below, because this one cannot reference
+    // runWatch (a later const — naming it here would be a TDZ error). Without
+    // the re-dial a PENDING CONSENT ASK never arrives on a restored turn:
+    // WatchTurnStream replays open asks to a LATE subscriber, and a re-attached
+    // tab is exactly that.
+    restoredWatchRef.current[activeConvId] = true;
   }, [activeConvId, activeConv, conversations, streams, setStream]);
 
   // Keep the slot's turnProgressing fresh while a server turn is re-attached:
@@ -590,6 +690,30 @@ function AskOrchiconPage() {
       return { ...prev, turnProgressing: sp };
     });
   }, [activeConvId, conversations, activeConv, setStream]);
+
+  // ESCAPE MEANS DENY while a consent ask is pending — never a silent dismissal,
+  // which would leave the turn waiting with no way back. The card's own handler
+  // runs first (the listener is on the card) and calls preventDefault when it
+  // consumed the key (collapsing the question card's free-text row), so this
+  // document-level listener skips an already-handled Escape and one press never
+  // denies twice.
+  const oldestPendingAsk = activeConvId
+    ? pendingFor(streams[activeConvId]?.asks)[0]
+    : undefined;
+  useEffect(() => {
+    if (!activeConvId || !oldestPendingAsk) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      void handleAskDecision(
+        activeConvId,
+        oldestPendingAsk.ask.askId,
+        PermissionChoice.DENY,
+      );
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [activeConvId, oldestPendingAsk, handleAskDecision]);
 
   const handleNewChat = useCallback(() => {
     setActiveConvId(null);
@@ -777,6 +901,10 @@ function AskOrchiconPage() {
             setStream(convId, (prev) =>
               prev.reconnecting ? { ...prev, reconnecting: false } : prev,
             );
+          } else if (chunk.event.case === "permissionAsk") {
+            // The ask arm the GUI never read: a pending consent ask arrives on
+            // the SAME turn stream (never a second polling loop).
+            applyAsk(convId, chunk.event.value);
           } else if (chunk.event.case === "error") {
             return; // poll resolves the failure rendering
           }
@@ -788,8 +916,25 @@ function AskOrchiconPage() {
         liveStreamRef.current[convId] = false;
       }
     },
-    [setStream],
+    [setStream, applyAsk],
   );
+
+  // Re-dial the watch for a slot we RESTORED rather than dispatched (see the
+  // re-attach effect above). It lives here, after runWatch, because the
+  // re-attach effect cannot reference runWatch at all. The generation is pinned
+  // BEFORE dialling: on a fresh page load the map is empty, and the watch's own
+  // `dispatchGenRef !== gen` guard would otherwise reject every chunk it
+  // delivered — including a replayed consent ask.
+  useEffect(() => {
+    if (!activeConvId) return;
+    if (!restoredWatchRef.current[activeConvId]) return;
+    const slot = streams[activeConvId];
+    if (!slot?.reconnecting || !slot.pendingReplyId) return;
+    restoredWatchRef.current[activeConvId] = false;
+    const gen = dispatchGenRef.current[activeConvId] ?? 0;
+    dispatchGenRef.current[activeConvId] = gen;
+    void runWatch(activeConvId, slot.pendingReplyId, gen);
+  }, [activeConvId, streams, runWatch]);
 
   // Streaming helper — takes convId as a parameter so it is never stale.
   // Mutates the given conversation's OWN stream slot via functional
@@ -916,6 +1061,8 @@ function AskOrchiconPage() {
             setStream(convId, (prev) =>
               prev.reconnecting ? { ...prev, reconnecting: false } : prev,
             );
+          } else if (chunk.event.case === "permissionAsk") {
+            applyAsk(convId, chunk.event.value);
           } else if (chunk.event.case === "error") {
             toast.error(chunk.event.value.message);
             fail();
@@ -932,7 +1079,7 @@ function AskOrchiconPage() {
       }
       return acked;
     },
-    [toast, setStream, runWatch],
+    [toast, setStream, runWatch, applyAsk],
   );
 
   // A normal send: starts a fresh turn on the conversation.
@@ -1406,9 +1553,15 @@ function AskOrchiconPage() {
                   {effectiveModel}
                 </span>
               </div>
-              <Button variant="ghost" size="sm" onClick={handleNewChat}>
-                <Plus aria-hidden="true" className="h-4 w-4" />
-              </Button>
+              <div className="flex items-center gap-2 shrink-0">
+                {/* This conversation's active session grants, with revoke.
+                    Small and discoverable rather than prominent: it is a short
+                    list, and most of the time it is empty. */}
+                <SessionGrants conversationId={activeConvId ?? ""} />
+                <Button variant="ghost" size="sm" onClick={handleNewChat}>
+                  <Plus aria-hidden="true" className="h-4 w-4" />
+                </Button>
+              </div>
             </div>
 
             {/* Fallback-model warning: no Ask Orchicon model is configured,
@@ -1468,6 +1621,28 @@ function AskOrchiconPage() {
                       source="you"
                     />
                   )}
+
+                {/* CONSENT ASKS — rendered OUTSIDE the isStreaming guard so a
+                    settled card stays in the transcript after the turn ends
+                    (the outcome is part of the record, not just an effect). */}
+                {activeStream?.asks.map((item) => (
+                  <ConsentAskCard
+                    key={item.key}
+                    ask={item.ask}
+                    outcome={item.outcome}
+                    busy={!!askInFlight[item.ask.askId]}
+                    onDecide={(choice) =>
+                      void handleAskDecision(activeConvId!, item.ask.askId, choice)
+                    }
+                    onEscape={() =>
+                      void handleAskDecision(
+                        activeConvId!,
+                        item.ask.askId,
+                        PermissionChoice.DENY,
+                      )
+                    }
+                  />
+                ))}
 
                 {/* Live streaming items (text + reasoning chunks) */}
                 {isStreaming &&

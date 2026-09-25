@@ -129,6 +129,18 @@ service AskOrchiconService {
   // never a session-scoped serve value.
   rpc ReplyPermissionAsk(ReplyPermissionAskRequest) returns (ReplyPermissionAskResponse);
 
+  // ListPermissionGrants lists the conversation's ACTIVE session grants: the
+  // directories an ALLOW_SESSION decision recorded for this conversation, with
+  // the time each was granted. The client renders them so an operator can see
+  // and revoke what was granted; the store itself is the source of truth.
+  rpc ListPermissionGrants(ListPermissionGrantsRequest) returns (ListPermissionGrantsResponse);
+
+  // RevokePermissionGrant drops one session grant (by directory) for the
+  // conversation. The next tool call for that directory asks again: the guard
+  // shim reads the same store (internal/askorchicon/ask_guard.go). An unknown
+  // directory is reported as removed=false, never a silent success.
+  rpc RevokePermissionGrant(RevokePermissionGrantRequest) returns (RevokePermissionGrantResponse);
+
   // CompactConversation compacts a conversation's accumulated context so a
   // long-running session can keep going instead of failing on the model's
   // context limit. Adapter-scoped: a session-FUL adapter summarizes its own
@@ -420,6 +432,43 @@ message PermissionAsk {
   bool inside_project = 8;
   // summary is the one-line card text: tool plus target or command.
   string summary = 9;
+  // deny_entries_below lists the operator's persistent DENY entries that live
+  // at or BELOW the directory this ask would grant. A session grant can never
+  // override them (permpolicy.Decide evaluates the deny list first), so the
+  // card says so instead of offering a grant that will be refused for those
+  // paths. Empty when no deny entry sits inside the directory.
+  repeated string deny_entries_below = 10;
+}
+
+// SessionPermissionGrant is one ACTIVE session grant: a directory the operator
+// allowed for the session, and when.
+message SessionPermissionGrant {
+  // directory is the granted directory (the ask's grant key).
+  string directory = 1;
+  // granted_at_unix is the Unix seconds the grant was recorded; 0 when unknown.
+  int64 granted_at_unix = 2;
+}
+
+message ListPermissionGrantsRequest {
+  string conversation_id = 1;
+}
+
+// ListPermissionGrantsResponse carries the conversation's active grants.
+message ListPermissionGrantsResponse {
+  repeated SessionPermissionGrant grants = 1;
+}
+
+message RevokePermissionGrantRequest {
+  string conversation_id = 1;
+  // directory is the granted directory to drop (the ask's grant key).
+  string directory = 2;
+}
+
+// RevokePermissionGrantResponse reports the revoke and returns the refreshed
+// list, so the client never keeps its own copy of the store.
+message RevokePermissionGrantResponse {
+  bool removed = 1;
+  repeated SessionPermissionGrant grants = 2;
 }
 
 // PermissionChoice is the operator's answer to one ask.
