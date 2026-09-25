@@ -1333,7 +1333,8 @@ In services-only mode `postgres` is started with `listen_addresses=0.0.0.0` (def
 
 **The host plane's profile** is printable with `scripts/container.sh shape <inst>`, and every value comes from the instance table (never a shell profile or a shared env file):
 
-- `ORCHICON_HTTP_ADDR=:<PLANE_HTTP_PORT>` and `ORCHICON_PLANE_PUBLIC_URL=http://172.17.0.1:<PLANE_HTTP_PORT>` — the advertised URL is what the plane hands each run container it creates (`ORCHICON_PLANE_URL`), so an instance can only ever hand out its own address;
+- `ORCHICON_HTTP_ADDR=:<PLANE_HTTP_PORT>` and `ORCHICON_HTTP_EXTRA_BIND=<docker-bridge-ip>:<PLANE_HTTP_PORT>` — the plane binds **both**: its loopback address (host clients: `orch`, the GUI) and the docker bridge at **this instance's** port, so the run containers on that bridge can dial it. The bridge address is resolved from the host (docker's own IPAM config, else `docker0`; pin it with `ORCHICON_DOCKER_BRIDGE_IP`), never hardcoded to `172.17.0.1` and never a wildcard — the plane must not be reachable from another machine. `scripts/container.sh plane-bind <inst>` prints the same two values;
+- `ORCHICON_PLANE_PUBLIC_URL=http://<docker-bridge-ip>:<PLANE_HTTP_PORT>` — DERIVED per instance from that bind (`bridge_bind_env` is the one place either value is computed) and it is what the plane hands each run container it creates (`ORCHICON_PLANE_URL`), so an instance can only ever hand out its own address: dev and prod listen on different ports, and a shared `8080` literal would make one instance's workers dial the other's plane. Setting `ORCHICON_PLANE_PUBLIC_URL` per instance overrides the derivation; **never** export it from a shared shell profile. Every runtime container is created with `--add-host=host.docker.internal:host-gateway`, so a manually started host plane (no bind at all) is still reachable by that name;
 - `ORCHICON_POSTGRES_DSN` / `ORCHICON_NATS_URL` / `ORCHICON_OTEL_ENDPOINT` (+ Tempo/Loki/VictoriaMetrics/Grafana URLs) point at the published loopback ports;
 - `ORCHICON_DATA_DIR=$HOME/.local/share/orchicon-<inst>` and `ORCHICON_BLOB_DIR=<data-dir>/blobs` — the KEK (`<data-dir>/secrets/kek`) and ask-history move with it. The **first** switch-over copies the existing container volume (including `secrets/kek`) into the host dir, so existing tenant secrets keep decrypting; an existing host KEK is never overwritten;
 - `ORCHICON_RUNTIME_SOCKET` points at the host runtime daemon's real socket;
@@ -1598,6 +1599,7 @@ See [`CLOUDFLARE_SETUP.md`](./CLOUDFLARE_SETUP.md) for the one-time setup guide.
 | Variable | Default | Purpose |
 |---|---|---|
 | `ORCHICON_HTTP_ADDR` | `:8080` | HTTP listen address (frontend + API) |
+| `ORCHICON_HTTP_EXTRA_BIND` | *(empty)* | Second HTTP bind: a concrete docker-bridge `host:port` (e.g. `172.17.0.1:8091`), so runtime containers reach a host-resident plane across the bridge. Loopback-only when empty. Never a wildcard — the plane must not be reachable from another machine. Set per instance by `scripts/container.sh plane-bind <dev\|prod>`. |
 | `ORCHICON_GRPC_ADDR` | `:9090` | gRPC listen address |
 | `ORCHICON_POSTGRES_DSN` | `postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable` | PostgreSQL connection string |
 | `ORCHICON_NATS_URL` | `nats://localhost:4222` | NATS server URL |

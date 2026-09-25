@@ -280,6 +280,16 @@ container-rebuild: ## Stop an instance, rebuild the image, start it (usage: make
 	ORCHICON_PLANE_RESIDENCY="$(residency)" scripts/container.sh down $(instance)
 	$(MAKE) container-build force-fe=1
 	ORCHICON_PLANE_RESIDENCY="$(residency)" scripts/container.sh up $(instance)
+# Host-resident plane listeners: the plane binds its loopback address
+# (ORCHICON_HTTP_ADDR → host clients: orch, the GUI) plus the docker bridge
+# address at THIS instance's port, so its run containers can dial it. Both the
+# bind (ORCHICON_HTTP_EXTRA_BIND) and the URL those containers are handed
+# (ORCHICON_PLANE_PUBLIC_URL) come from the ONE place that computes them
+# (`scripts/container.sh plane-bind <dev|prod>`, bridge_bind_env) and
+# `plane-start` picks them up through container.sh's plane_env. Both are PER
+# INSTANCE: never put a globally-shared ORCHICON_PLANE_PUBLIC_URL in a shell
+# profile — a globally-set value points one instance's workers at the other's
+# plane.
 container-up: ## Start the dev single-container instance (ORCHICON_PLANE_RESIDENCY=host opt-in: plane on the host)
 	scripts/container.sh up dev
 container-down: ## Stop the dev single-container instance

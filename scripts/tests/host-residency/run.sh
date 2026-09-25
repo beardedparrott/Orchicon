@@ -13,6 +13,10 @@
 #      dev and prod points one instance's workers at the other's services and
 #      database. Every per-instance value is therefore asserted to differ AND
 #      to come from the instance table.
+#   3. A DERIVED-BUT-WRONG plane URL. The host plane's URL is no longer a
+#      literal: it is bridge_bind_env's output (the resolved docker bridge +
+#      THIS instance's port), so the bridge is pinned below to keep the
+#      assertion deterministic and docker-free.
 #
 # It also pins the security boundary: every host-residency service publish is
 # bound to 127.0.0.1. The supervisor adds pg_hba `trust` rules for the published
@@ -78,7 +82,7 @@ extract_fn() {
 echo "container.sh under test: ${CONTAINER_SH}"
 echo
 
-for fn in instance_info residency_for plane_env print_shape container_residency_from_env; do
+for fn in instance_info residency_for plane_env print_shape container_residency_from_env bridge_ip bridge_bind_env; do
   body="$(extract_fn "$fn")"
   if [ -z "$body" ]; then
     echo "run.sh: could not extract ${fn}() from ${CONTAINER_SH}" >&2
@@ -106,6 +110,10 @@ shape() {
     fi
     export ORCHICON_PLANE_RESIDENCY="${ORCHICON_PLANE_RESIDENCY-}"
     [ -n "$residency" ] || unset ORCHICON_PLANE_RESIDENCY
+    # The host plane's bind and URL are DERIVED from the docker bridge
+    # (bridge_bind_env), never literal. Pin the bridge so this harness stays
+    # docker-free and deterministic — the same seam `plane-bind` documents.
+    export ORCHICON_DOCKER_BRIDGE_IP="${ORCHICON_DOCKER_BRIDGE_IP:-172.17.0.1}"
     print_shape "$inst"
   ) 2>&1
 }
@@ -135,6 +143,10 @@ check_contains "host dev plane NATS URL uses the published loopback port" \
   "plane_env:ORCHICON_NATS_URL=nats://localhost:4222" "$HOST_DEV"
 check_contains "host dev plane binds its own HTTP port" \
   "plane_env:ORCHICON_HTTP_ADDR=:8080" "$HOST_DEV"
+check_contains "host dev plane ALSO binds the docker bridge at its own port" \
+  "plane_env:ORCHICON_HTTP_EXTRA_BIND=172.17.0.1:8080" "$HOST_DEV"
+check_contains "host dev plane advertises that same address to its run containers" \
+  "plane_env:ORCHICON_PLANE_PUBLIC_URL=http://172.17.0.1:8080" "$HOST_DEV"
 check_contains "host dev plane state dir is a HOST path" \
   "plane_env:ORCHICON_DATA_DIR=$HOME/.local/share/orchicon-dev" "$HOST_DEV"
 check_contains "host dev blob dir is a HOST path" \
@@ -162,6 +174,10 @@ check_contains "host prod publishes prod NATS port" "127.0.0.1:4223:" "$(field "
 check_lacks "host prod does NOT publish dev's postgres port" "127.0.0.1:5432:" "$(field "$HOST_PROD" service_ports)"
 check_contains "host prod plane DSN uses prod's postgres port" \
   "ORCHICON_POSTGRES_DSN=postgres://orchicon:orchicon@localhost:5433/orchicon?sslmode=disable" "$HOST_PROD"
+check_contains "host prod plane binds the docker bridge at PROD's port" \
+  "plane_env:ORCHICON_HTTP_EXTRA_BIND=172.17.0.1:8091" "$HOST_PROD"
+check_lacks "host prod plane does NOT bind the bridge at dev's port" \
+  "ORCHICON_HTTP_EXTRA_BIND=172.17.0.1:8080" "$HOST_PROD"
 
 # No per-instance value may be shared: the two host shapes must differ in the
 # plane URL, the plane port and the full service publish set.

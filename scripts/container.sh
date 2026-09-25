@@ -1,11 +1,22 @@
 #!/usr/bin/env bash
 # scripts/container.sh — manage the single-container Orchicon instances.
 #
-# The whole Orchicon stack (Postgres, NATS, Tempo/Loki/VictoriaMetrics/
-# Grafana, control plane) runs inside ONE container via `orchicon
-# container` (the binary is the PID-1 supervisor). This script manages
-# two isolated instances — dev and prod — as two containers
-# on offset published ports with separate data volumes.
+# Two residency shapes are supported (they migrate independently):
+#
+#   container residency — the WHOLE stack (Postgres, NATS, telemetry, control
+#     plane) runs inside ONE container via `orchicon container`, which is the
+#     PID-1 supervisor. The plane listens on :8080 inside the container and
+#     runtime containers reach it directly on the bridge at the plane
+#     container's own IP (ORCHICON_CONTAINER_MODE=1). This is what `up`
+#     manages today and it is unchanged.
+#
+#   host residency — the support services stay in the container while the
+#     PLANE runs on the host. It must then answer on the loopback address
+#     (host clients: orch, the GUI) AND on the docker bridge at THIS
+#     instance's port, so runtime containers can dial the orchicon-plane MCP
+#     channel. `bridge_bind_env <inst>` emits exactly those two values
+#     (ORCHICON_HTTP_EXTRA_BIND + ORCHICON_PLANE_PUBLIC_URL) and is the ONLY
+#     place either is computed — per instance, never a shared shell export.
 #
 # Usage:
 #   scripts/container.sh build                    # build the image
@@ -13,6 +24,7 @@
 #   scripts/container.sh down [dev|prod]          # stop + remove an instance
 #   scripts/container.sh status [dev|prod]        # show instance state
 #   scripts/container.sh logs [dev|prod]          # tail an instance's supervisor log
+#   scripts/container.sh plane-bind [dev|prod]    # host-plane bind + URL env for an instance
 #   scripts/container.sh ps                       # list orchicon containers
 #   scripts/container.sh shape [dev|prod]         # print an instance's launch shape (no side effects)
 #   scripts/container.sh verify [dev|prod]        # what the instance ACTUALLY runs (shape + ports + plane)
@@ -46,6 +58,12 @@
 #   plane HTTP         8080  8091
 # No value here may be GLOBAL: a shared port or URL would silently point one
 # instance's workers/plane at the other.
+#
+# PLANE_HTTP_PORT IS that "plane HTTP" column, and it is the SAME port the
+# instance publishes — so dev and prod can never disagree about which plane a
+# worker should dial. A HOST-RESIDENT plane binds it on the docker bridge
+# (bridge_bind_env) and advertises it to its run containers; a CONTAINER-
+# RESIDENT plane keeps its plane inside its container and takes no extra bind.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -75,7 +93,12 @@ instance_info() {
       PORTS="-p 8080:8080 -p 3002:3000"
       GRAFANA_URL="http://localhost:8080/grafana"
       PLANE_HTTP_PORT=8080
-      PLANE_PUBLIC_URL="http://172.17.0.1:8080"
+      # NO PLANE_PUBLIC_URL literal here: the host plane's URL is DERIVED per
+      # instance from the resolved docker bridge + PLANE_HTTP_PORT
+      # (bridge_bind_env — the one place either the bind or the URL is
+      # computed). A literal is how one instance's workers end up dialing the
+      # other's plane, and a hardcoded 172.17.0.1 breaks whenever the bridge
+      # subnet changes (retired by the host-gateway mapping in #3).
       PG_PORT=5432
       NATS_PORT=4222
       NATS_MON_PORT=8222
@@ -96,7 +119,8 @@ instance_info() {
       PORTS="-p 8091:8080 -p 3003:3000"
       GRAFANA_URL="http://localhost:8091/grafana"
       PLANE_HTTP_PORT=8091
-      PLANE_PUBLIC_URL="http://172.17.0.1:8091"
+      # See dev: the URL is derived per instance (bridge_bind_env), never a
+      # literal — and prod's port (8091) is what keeps it apart from dev's.
       PG_PORT=5433
       NATS_PORT=4223
       NATS_MON_PORT=8223
@@ -151,7 +175,25 @@ plane_env() {
   instance_info "$inst"
   echo "ORCHICON_INSTANCE=$inst"
   echo "ORCHICON_HTTP_ADDR=:$PLANE_HTTP_PORT"
-  echo "ORCHICON_PLANE_PUBLIC_URL=$PLANE_PUBLIC_URL"
+  # HOST-RESIDENT LISTENERS, PER INSTANCE: the plane must answer on the
+  # loopback address above (host clients: orch, the GUI) AND on the docker
+  # bridge at THIS instance's port, and it must hand its run containers THAT
+  # address. Both values come from the one place that computes them
+  # (bridge_bind_env), so the bind the plane listens on and the URL it
+  # advertises can never disagree.
+  #
+  # An unresolvable bridge is LOUD here but not fatal: this function is also
+  # how plane_stop/plane_status build their env, and those must keep working.
+  # plane_start — the only path where a missing bind means "every plane-channel
+  # MCP call in every dispatched run times out" — refuses to start without it.
+  local bind_env=""
+  if bind_env=$(bridge_bind_env "$inst"); then
+    printf '%s\n' "$bind_env"
+  else
+    log_err "$inst: cannot resolve the docker bridge — the host plane would bind its loopback address ONLY,"
+    log_err "  and its run containers could not reach it. Pin the address and retry:"
+    log_err "  ORCHICON_DOCKER_BRIDGE_IP=<bridge gateway ip> $0 plane-start $inst"
+  fi
   echo "ORCHICON_POSTGRES_DSN=postgres://orchicon:orchicon@localhost:$PG_PORT/orchicon?sslmode=disable"
   echo "ORCHICON_NATS_URL=nats://localhost:$NATS_PORT"
   echo "ORCHICON_OTEL_ENDPOINT=localhost:$OTLP_GRPC_PORT"
@@ -181,6 +223,11 @@ plane_env() {
 # anything. This is what makes the dev/prod coexistence rule checkable: each
 # instance's shape is derived per invocation from instance_info, and a rebuild
 # of one instance cannot alter the other's.
+#
+# The ONE external read is the docker bridge address, needed to report the
+# DERIVED per-instance plane URL for the host shape (bridge_bind_env). Pin it
+# with ORCHICON_DOCKER_BRIDGE_IP to assert the shape without docker, exactly as
+# scripts/tests/host-residency/run.sh does.
 print_shape() {
   local inst="${1:-dev}"
   instance_info "$inst"
@@ -191,7 +238,16 @@ print_shape() {
   echo "volume=$VOLUME"
   echo "residency=$residency"
   echo "plane_http_port=$PLANE_HTTP_PORT"
-  echo "plane_public_url=$PLANE_PUBLIC_URL"
+  # The URL run containers are handed, DERIVED per instance (the docker bridge
+  # + THIS instance's port) — never a 172.17.0.1:8080 literal. Container
+  # residency is reported as what it is: the plane container resolves its OWN
+  # bridge IP at run time (planePublicURL's ORCHICON_CONTAINER_MODE branch) and
+  # nothing is handed over from here.
+  if [ "$residency" = "host" ]; then
+    echo "plane_public_url=$(bridge_bind_env "$inst" | sed -n 's/^ORCHICON_PLANE_PUBLIC_URL=//p')"
+  else
+    echo "plane_public_url=(resolved at run time: the plane container's own bridge IP)"
+  fi
   echo "grafana_url=$GRAFANA_URL"
   echo "host_data_dir=$HOST_DATA_DIR"
   echo "service_ports=$SERVICE_PORTS"
@@ -264,6 +320,16 @@ plane_start() {
   if curl -fs "http://localhost:$PLANE_HTTP_PORT/healthz" >/dev/null 2>&1; then
     log_ok "$inst host plane already serving http://localhost:$PLANE_HTTP_PORT"
     return 0
+  fi
+  # A host plane its own workers cannot reach is worse than one that refuses
+  # to start: every orchicon-plane MCP call in every dispatched run would time
+  # out. So the bridge bind is REQUIRED here. There is no loopback-only
+  # fallback and no 0.0.0.0 fallback (the operator rejected LAN exposure).
+  if ! bridge_bind_env "$inst" >/dev/null; then
+    log_err "$inst: refusing to start the host plane — the docker bridge address is unresolved,"
+    log_err "  so its run containers could not reach it (the bind would be loopback only)."
+    log_err "  pin it: ORCHICON_DOCKER_BRIDGE_IP=<bridge gateway ip> $0 plane-start $inst"
+    return 1
   fi
   local envargs=()
   local kv
@@ -404,6 +470,69 @@ log_ok()   { echo -e "${C_GREEN}✓${C_RESET} $*"; }
 log_dim()  { echo -e "${C_DIM}$*${C_RESET}"; }
 log_warn() { echo -e "${C_YELLOW}!${C_RESET} $*"; }
 log_err()  { echo -e "${C_RED}✗${C_RESET} $*" >&2; }
+
+# bridge_ip prints the host's docker bridge address — the address a runtime
+# container on the default bridge uses to reach the HOST. A HOST-RESIDENT
+# plane binds it so runtime containers can dial the plane directly on the
+# bridge; a published host port cannot be used instead (docker hairpin NAT
+# drops gateway→published-port traffic from bridge containers, which is
+# exactly the plane-channel MCP timeout this bind removes).
+#
+# Resolution order: ORCHICON_DOCKER_BRIDGE_IP (tests / hand-pinning) →
+# docker's own IPAM config → the docker0 interface address.
+#
+# An unresolvable bridge is a HARD error (non-zero, no output). There is
+# deliberately no 0.0.0.0 fallback — that is the LAN exposure the operator
+# rejected — and no guessed address, because a wrong bind shows up much
+# later as "workers cannot reach the plane".
+bridge_ip() {
+  if [ -n "${ORCHICON_DOCKER_BRIDGE_IP:-}" ]; then
+    printf '%s\n' "$ORCHICON_DOCKER_BRIDGE_IP"
+    return 0
+  fi
+  local ip=""
+  if command -v docker >/dev/null 2>&1; then
+    ip=$(docker network inspect bridge \
+      --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)
+    # The Go template prints "<no value>" for a nil gateway.
+    case "$ip" in "<no value>"|"null") ip="" ;; esac
+  fi
+  if [ -z "$ip" ]; then
+    ip=$(ip -4 -o addr show docker0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 || true)
+  fi
+  if [ -z "$ip" ]; then
+    log_err "cannot resolve the docker bridge address (docker network inspect bridge / docker0)"
+    log_err "pin it explicitly with ORCHICON_DOCKER_BRIDGE_IP=<bridge gateway ip>; refusing to guess or bind 0.0.0.0"
+    return 1
+  fi
+  printf '%s\n' "$ip"
+}
+
+# bridge_bind_env <inst> prints the HOST-RESIDENT plane env for THIS
+# instance, one KEY=VALUE per line and nothing else:
+#
+#   ORCHICON_HTTP_EXTRA_BIND=<bridge ip>:<this instance's plane port>
+#   ORCHICON_PLANE_PUBLIC_URL=http://<bridge ip>:<this instance's plane port>
+#
+# This is the ONE place either value is computed, so the bind the plane
+# listens on and the URL it advertises to run containers can never disagree.
+# The port is ALWAYS this instance's own PLANE_HTTP_PORT (dev 8080 / prod
+# 8091): dev and prod are separate instances that migrate independently, and
+# a shared 8080 would make prod's workers dial dev's plane (or the reverse) —
+# a rejected dial, since the minted credential is instance-bound, but a
+# broken run either way.
+#
+# These lines belong in THAT instance's plane environment only. Never export
+# ORCHICON_PLANE_PUBLIC_URL from a shared shell profile: a globally-set value
+# points one instance's workers at the other's plane.
+bridge_bind_env() {
+  local inst="${1:-dev}"
+  instance_info "$inst" || return 1
+  local ip
+  ip=$(bridge_ip) || return 1
+  printf 'ORCHICON_HTTP_EXTRA_BIND=%s:%s\n' "$ip" "$PLANE_HTTP_PORT"
+  printf 'ORCHICON_PLANE_PUBLIC_URL=http://%s:%s\n' "$ip" "$PLANE_HTTP_PORT"
+}
 
 # sha12 prints the first 12 hex chars of a file's SHA-256 — the "did the
 # build inputs change?" signal used to version-gate the stock runtime
@@ -895,6 +1024,19 @@ up_instance() {
   local RESIDENCY
   RESIDENCY=$(residency_for) || return 1
 
+  # Plane listeners, per shape — one place per shape, never mixed:
+  #   CONTAINER residency (this path): the plane resolves its OWN container IP
+  #     for its run containers (planePublicURL's ORCHICON_CONTAINER_MODE
+  #     branch). No extra bind is involved here, and adding one would be wrong:
+  #     the host's bridge address does not exist inside the container's network
+  #     namespace.
+  #   HOST residency (plane_start / plane_env): the plane binds its loopback
+  #     address PLUS the docker bridge at THIS instance's port, and advertises
+  #     that same address to its run containers. Both values come from
+  #     `bridge_bind_env "$inst"` in that instance's OWN environment — never a
+  #     shared shell export (that would point one instance's workers at the
+  #     other's plane).
+
   # Data-safety guard: the default Postgres volume is shared with the
   # compose stack. Two postgres processes on one data dir corrupt it, so
   # refuse to start while the compose postgres for this instance is up.
@@ -1215,6 +1357,10 @@ case "${1:-}" in
   sync-mounts) sync_mounts "${2:-dev}" ;;
   up) up_instance "${2:-dev}" ;;
   down) down_instance "${2:-dev}" ;;
+  # Host-resident plane env for an instance (see bridge_bind_env):
+  #   eval "$(scripts/container.sh plane-bind prod)" before starting that
+  # instance's host plane, or add the two lines to its own env file.
+  plane-bind) bridge_bind_env "${2:-dev}" ;;
   status) status_instances "${2:-}" ;;
   logs) logs_instance "${2:-dev}" ;;
   shape) print_shape "${2:-dev}" ;;
@@ -1247,8 +1393,9 @@ case "${1:-}" in
     docker ps -a --filter label=orchicon.workflow --format 'table {{.Names}}\t{{.Status}}'
     ;;
   *)
-    echo "Usage: $0 {build|rebuild [dev|prod]|sync-mounts [dev|prod]|up [dev|prod]|down [dev|prod]|status [dev|prod]|logs [dev|prod]|shape [dev|prod]|verify [dev|prod]|plane-start|plane-stop|plane-status [dev|prod]|ps|runtime-daemon|runtime-stop}"
+    echo "Usage: $0 {build|rebuild [dev|prod]|sync-mounts [dev|prod]|up [dev|prod]|down [dev|prod]|status [dev|prod]|logs [dev|prod]|plane-bind [dev|prod]|shape [dev|prod]|verify [dev|prod]|plane-start|plane-stop|plane-status [dev|prod]|ps|runtime-daemon|runtime-stop}"
     echo "  ORCHICON_PLANE_RESIDENCY=host|container  (default container) picks the shape per invocation."
+    echo "  plane-bind prints the host plane's PER-INSTANCE bind + URL (ORCHICON_HTTP_EXTRA_BIND, ORCHICON_PLANE_PUBLIC_URL)."
     exit 1
     ;;
 esac
