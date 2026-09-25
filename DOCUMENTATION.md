@@ -1549,6 +1549,7 @@ See [`CLOUDFLARE_SETUP.md`](./CLOUDFLARE_SETUP.md) for the one-time setup guide.
 | Variable | Default | Purpose |
 |---|---|---|
 | `ORCHICON_HTTP_ADDR` | `:8080` | HTTP listen address (frontend + API) |
+| `ORCHICON_HTTP_EXTRA_BIND` | *(empty)* | Second HTTP bind: a concrete docker-bridge `host:port` (e.g. `172.17.0.1:8091`), so runtime containers reach a host-resident plane across the bridge. Loopback-only when empty. Never a wildcard — the plane must not be reachable from another machine. Set per instance by `scripts/container.sh plane-bind <dev\|prod>`. |
 | `ORCHICON_GRPC_ADDR` | `:9090` | gRPC listen address |
 | `ORCHICON_POSTGRES_DSN` | `postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable` | PostgreSQL connection string |
 | `ORCHICON_NATS_URL` | `nats://localhost:4222` | NATS server URL |

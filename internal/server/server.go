@@ -691,6 +691,9 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	handler = telemetry.Middleware(handler)
 
 	httpSrv := &http.Server{
+		// Addr is informational only: Run serves explicit listeners
+		// (bindPrimary + the optional bridge bind in listen.go), so this
+		// value never itself decides the bind set.
 		Addr:              cfg.HTTPAddr,
 		Handler:           handler,
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
@@ -855,7 +858,8 @@ func (s *Server) SetHandler(h http.Handler) {
 // ShutdownTimeout.
 func (s *Server) Run(ctx context.Context) error {
 	s.log.Info("starting orchicon control plane",
-		"version", version.Current().String(), "http", s.cfg.HTTPAddr)
+		"version", version.Current().String(), "http", s.cfg.HTTPAddr,
+		"extra_bind", s.cfg.ExtraBind)
 
 	// The demand-keyed host opencode serve lives as long as the plane once
 	// it has been started; stop it (and its supervision) on shutdown. Nil
@@ -874,8 +878,20 @@ func (s *Server) Run(ctx context.Context) error {
 		s.log.Warn("startup: clear edit locks", "error", err)
 	}
 
+	// Two listeners, not one (listen.go): the primary bind is FATAL if it
+	// fails — host clients (orch, the GUI) reach the plane nowhere else —
+	// while the optional bridge bind is best-effort and never lands on
+	// errCh, because Run returns from the whole plane on any errCh value.
+	primary, err := s.startListeners(ctx)
+	if err != nil {
+		s.authH.CloseEmbeddedOP()
+		s.pool.Close()
+		s.shutdownOTel()
+		return err
+	}
 	errCh := make(chan error, 4)
-	go func() { errCh <- s.httpSrv.ListenAndServe() }()
+	go func() { errCh <- s.httpSrv.Serve(primary) }()
+	s.log.Info("http listener serving", "addr", primary.Addr().String())
 
 	if s.relay != nil {
 		go func() { errCh <- s.relay.Run(ctx) }()
