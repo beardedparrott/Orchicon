@@ -78,7 +78,7 @@ extract_fn() {
 echo "container.sh under test: ${CONTAINER_SH}"
 echo
 
-for fn in instance_info residency_for plane_env print_shape; do
+for fn in instance_info residency_for plane_env print_shape container_residency_from_env; do
   body="$(extract_fn "$fn")"
   if [ -z "$body" ]; then
     echo "run.sh: could not extract ${fn}() from ${CONTAINER_SH}" >&2
@@ -203,6 +203,34 @@ else
   printf '  \033[31mFAIL\033[0m  %-52s %s\n' "services-only flag reaches the container" "MISSING"
   FAILED=$((FAILED + 1))
 fi
+# --- shape guard: an existing container built for the OTHER residency -------
+# `docker start` cannot rewrite create-time properties (the services-only flag,
+# the published ports). Starting a container built for the other shape silently
+# gives the instance NO plane (host -> container) or leaves the plane in the
+# wrong place (container -> host), so `up` must compare the shape it finds with
+# the one it wants and RECREATE on a mismatch.
+check "container created services-only is host" "host" \
+  "$(container_residency_from_env 'PATH=/usr/bin
+ORCHICON_CONTAINER_SERVICES_ONLY=1
+ORCHICON_INSTANCE=dev')"
+check "container without the flag is container" "container" \
+  "$(container_residency_from_env 'PATH=/usr/bin
+ORCHICON_CONTAINER_MODE=1
+ORCHICON_INSTANCE=dev')"
+check "no container env at all is container" "container" "$(container_residency_from_env '')"
+check "an explicit SERVICES_ONLY=0 is container" "container" \
+  "$(container_residency_from_env 'ORCHICON_CONTAINER_SERVICES_ONLY=0')"
+check "ORCHICON_CONTAINER_MODE cannot be mistaken for it" "container" \
+  "$(container_residency_from_env 'ORCHICON_CONTAINER_MODE=1')"
+if grep -qF 'if [ "$existing_residency" != "$RESIDENCY" ]; then' "$CONTAINER_SH" \
+  && grep -qF 'existing_residency=$(container_residency_from_env "$(container_env_dump "$NAME")")' "$CONTAINER_SH"; then
+  printf '  \033[32mPASS\033[0m  %-52s %s\n' "up_instance recreates a container of the other shape" "wired"
+  PASSED=$((PASSED + 1))
+else
+  printf '  \033[31mFAIL\033[0m  %-52s %s\n' "up_instance recreates a container of the other shape" "MISSING"
+  FAILED=$((FAILED + 1))
+fi
+
 # The host data dir (KEK, ask-history) is a DIFFERENT path from the container's
 # data volume, so the switch-over must actually copy it. A defined-but-never-
 # called migrate_host_data_dir silently mints a new KEK and every tenant secret

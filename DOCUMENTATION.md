@@ -1329,7 +1329,7 @@ With **no new setting, nothing changes**: an instance still runs its plane insid
 | Grafana | 3002 → 3000 | 3003 → 3000 |
 | Plane HTTP | 8080 | 8091 |
 
-In services-only mode `postgres` is started with `listen_addresses=0.0.0.0` (default mode keeps `localhost`), and the supervisor idempotently appends `host all all 0.0.0.0/0 trust` to `<data-dir>/postgres/pg_hba.conf` on every boot: the connection arrives through the published port, so postgres sees the docker bridge gateway as its peer, not loopback. Exposure stays bounded by the loopback-only publish.
+In services-only mode `postgres` is started with `listen_addresses=0.0.0.0` (default mode keeps `localhost`), and the supervisor idempotently appends a `host all all <gateway>/32 trust` rule to `<data-dir>/postgres/pg_hba.conf` on every boot, where `<gateway>` is the container's default-route gateway: the connection arrives through the published port, so postgres sees that gateway as its peer, never loopback. The rule names that single address on purpose — every other container on the same bridge shares it, and a wildcard rule would hand them password-less superuser access to this instance's database. Only when no gateway can be detected does it fall back to the wide `0.0.0.0/0` + `::/0` rules. Exposure stays bounded by the loopback-only publish, which is the security boundary.
 
 **The host plane's profile** is printable with `scripts/container.sh shape <inst>`, and every value comes from the instance table (never a shell profile or a shared env file):
 

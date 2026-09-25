@@ -354,6 +354,23 @@ wait_services_ready() {
   return 0
 }
 
+# container_env_dump prints a container's environment, one KEY=VALUE per line:
+# CREATE-time state, which `docker start` cannot rewrite.
+container_env_dump() {
+  docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$1" 2>/dev/null || true
+}
+
+# container_residency_from_env reads a container env dump and prints the plane
+# residency it was created for: `host` when the services-only flag is set, else
+# `container`. PURE — no docker — so the launcher's shape guard is checkable
+# offline (scripts/tests/host-residency/run.sh).
+container_residency_from_env() {
+  case "$(printf '%s\n' "$1" | sed -n 's/^ORCHICON_CONTAINER_SERVICES_ONLY=//p' | head -1)" in
+    1) echo host ;;
+    *) echo container ;;
+  esac
+}
+
 # verify_instance answers "what does this instance ACTUALLY run?" — the shape,
 # the published ports and the services-only env straight from docker, plus the
 # host plane's state. This is the dev/prod coexistence assertion.
@@ -370,7 +387,7 @@ verify_instance() {
     local ports svc_env gate
     ports=$(docker inspect --format '{{range $p, $v := .NetworkSettings.Ports}}{{$p}}={{range $v}}{{.HostIp}}:{{.HostPort}} {{end}}{{end}}' "$NAME" 2>/dev/null || true)
     echo -e "  ${C_DIM}published ports: $ports${C_RESET}"
-    svc_env=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$NAME" 2>/dev/null | grep '^ORCHICON_CONTAINER_SERVICES_ONLY=' || true)
+    svc_env=$(container_env_dump "$NAME" | grep '^ORCHICON_CONTAINER_SERVICES_ONLY=' || true)
     echo -e "  ${C_DIM}services-only env: ${svc_env:-(unset — the plane runs in this container)}${C_RESET}"
     if [ "$residency" = "host" ]; then
       gate=$(docker logs "$NAME" 2>&1 | grep -m1 'services-only mode' || true)
@@ -1030,13 +1047,26 @@ up_instance() {
   # rewrite /etc/resolv.conf, so a container created on a network with a dead
   # resolver keeps that dead resolver forever unless it is recreated.
   if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
+    # SHAPE GUARD: changing residency is also a change of CONTAINER. The
+    # services-only flag and the published port set are CREATE-time properties
+    # and `docker start` cannot rewrite them, so starting a container built for
+    # the other shape silently gives the instance NO plane at all
+    # (host → container: the container keeps skipping its plane and nothing
+    # starts the host one) or a plane in the wrong place (container → host: the
+    # in-container plane answers the host port probe and the migration looks
+    # done when it never happened). Recreate instead of start.
+    local existing_residency
+    existing_residency=$(container_residency_from_env "$(container_env_dump "$NAME")")
     local missing=""
     for pm in $project_paths; do
       if ! path_is_mounted "$NAME" "$pm"; then
         missing="$missing $pm"
       fi
     done
-    if [ -n "$missing" ]; then
+    if [ "$existing_residency" != "$RESIDENCY" ]; then
+      log_warn "$NAME was created for plane residency '$existing_residency' but this invocation wants '$RESIDENCY' — recreating"
+      docker rm -f "$NAME" >/dev/null
+    elif [ -n "$missing" ]; then
       log_warn "mounts changed ($missing) — recreating $NAME"
       docker rm -f "$NAME" >/dev/null
     elif ! dns_args_match "$NAME" "$dns_servers"; then
