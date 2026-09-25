@@ -142,16 +142,57 @@ func TestExtractAskActionCarriesToolAndTarget(t *testing.T) {
 	if a.Tool != "edit" {
 		t.Fatalf("Tool = %q, want edit", a.Tool)
 	}
-	// opencode 1.18.32 emits patterns worktree-RELATIVE ("../sibling-project/notes.md");
-	// resolveAskKey anchors them against the scope dir.
-	if len(a.Targets) != 1 || a.Targets[0] != "../sibling-project/notes.md" {
-		t.Fatalf("Targets = %#v", a.Targets)
+	// opencode 1.18.32 emits the target twice: `patterns` worktree-RELATIVE
+	// ("../sibling-project/notes.md") and `metadata.filepath` ABSOLUTE. The
+	// ABSOLUTE one is used — a relative pattern is only a guess at the base
+	// (the Ask serve has no --directory, so its base is the plane's cwd).
+	if len(a.Targets) != 1 || a.Targets[0] != "/home/beardedparrott/projects/sibling-project/notes.md" {
+		t.Fatalf("Targets = %#v, want the absolute metadata.filepath", a.Targets)
 	}
 	if a.CallID != "call_01J9Z0TOOLCALL" {
 		t.Fatalf("CallID = %q", a.CallID)
 	}
 	if s := askSummary(a); !strings.Contains(s, "edit") || !strings.Contains(s, "notes.md") {
 		t.Fatalf("Summary = %q — the card must name the tool AND the target", s)
+	}
+}
+
+// The absolute target in `metadata` wins even when the worktree-RELATIVE
+// `patterns` entry would resolve INSIDE the conversation's project. The two
+// disagree whenever opencode's worktree base is not the conversation's own
+// project dir (the Ask serve starts with no --directory, so its base is the
+// plane's cwd), and a relative join must NEVER approve a path opencode placed
+// outside the project. Before this, the relative pattern was preferred and the
+// sibling write was silently approved.
+func TestDecideUsesTheAbsoluteAskTargetOverADisagreeingRelativePattern(t *testing.T) {
+	isolatedPolicy(t, "")
+	svc := testConsentService()
+	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
+	evt := permissionEvent("per_1", map[string]any{
+		"permission": "write",
+		// Worktree-relative per opencode's schema: joined to /p/proj it would
+		// look INSIDE the conversation's project.
+		"patterns": []any{"notes.md"},
+		// The absolute truth: outside the conversation's project.
+		"metadata": map[string]any{"filepath": "/p/sibling/notes.md"},
+	})
+	if a := extractAskAction(evt); len(a.Targets) != 1 || a.Targets[0] != "/p/sibling/notes.md" {
+		t.Fatalf("Targets = %#v, want the absolute metadata.filepath", a.Targets)
+	}
+	resp, ask, refusal := ct.decide(context.Background(), "ses_1", evt)
+	if resp != "" || ask == nil || refusal != "" {
+		t.Fatalf("resp=%q ask=%v refusal=%q — the absolute target is outside the project, so it must ask", resp, ask, refusal)
+	}
+	if ask.Key != "/p/sibling" || ask.InsideProject {
+		t.Fatalf("ask key=%q inside_project=%v — want the absolute target's directory, outside", ask.Key, ask.InsideProject)
+	}
+	// The relative pattern is still the fallback when metadata carries no path.
+	only := permissionEvent("per_2", map[string]any{
+		"permission": "write",
+		"patterns":   []any{"notes/x.md"},
+	})
+	if a := extractAskAction(only); len(a.Targets) != 1 || a.Targets[0] != "notes/x.md" {
+		t.Fatalf("Targets = %#v, want the relative pattern as the fallback", a.Targets)
 	}
 }
 

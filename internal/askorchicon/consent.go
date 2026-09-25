@@ -260,15 +260,23 @@ func extractAskAction(evt scheduler.SessionEvent) askAction {
 			a.CallID = detailString(tl, "callID", "callId", "call_id")
 		}
 	}
-	a.Targets = realTargets(detailStrings(d, "patterns", "pattern"))
+	// The ask's own target(s). opencode's built-in write/edit ask carries them
+	// TWICE: `patterns` is worktree-RELATIVE and `metadata.filepath` is
+	// ABSOLUTE. The ABSOLUTE one wins — the Ask serve runs with NO
+	// `--directory` (servehost.go), so its worktree base is the plane's cwd,
+	// NOT the conversation's project dir; a relative pattern joined to the
+	// project dir can therefore resolve INSIDE the project for a file opencode
+	// itself placed outside, and be approved silently (AC1). `patterns` stays
+	// the fallback for an ask that carries no path in its metadata.
 	meta, _ := d["metadata"].(map[string]any)
 	if meta != nil {
-		if len(a.Targets) == 0 {
-			if p := detailString(meta, "filePath", "filepath", "path", "file"); p != "" {
-				a.Targets = realTargets([]string{p})
-			}
+		if p := detailString(meta, "filePath", "filepath", "path", "file"); p != "" {
+			a.Targets = realTargets([]string{p})
 		}
 		a.Command = detailString(meta, "command")
+	}
+	if len(a.Targets) == 0 {
+		a.Targets = realTargets(detailStrings(d, "patterns", "pattern"))
 	}
 	// The correlated tool-call args (see internal/opencode toolCallIndex) are
 	// the ONLY detail an MCP / host-suite ask has: such an ask ships
