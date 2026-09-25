@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"text/template"
+
+	"github.com/beardedparrott/orchicon/internal/neverallow"
 )
 
 // The execution guard is the OS-level backstop for worker safety.
@@ -52,36 +54,29 @@ type guardedBinary struct {
 	scoped bool // true: allow when targets stay in the project; false: always block
 }
 
-var guardedBinaries = []guardedBinary{
-	// Always-block: destructive / system-modifying, never needed in-project.
-	{name: "sudo"},
-	{name: "dd"},
-	{name: "mkfs"},
-	{name: "mkfs.ext2"},
-	{name: "mkfs.ext3"},
-	{name: "mkfs.ext4"},
-	{name: "mkfs.xfs"},
-	{name: "mkfs.btrfs"},
-	{name: "mkfs.fat"},
-	{name: "mkfs.vfat"},
-	{name: "mkswap"},
-	{name: "fdisk"},
-	{name: "parted"},
-	{name: "shred"},
-	{name: "wipefs"},
-	{name: "pvcreate"},
-	{name: "pvremove"},
-	{name: "vgcreate"},
-	{name: "vgremove"},
-	{name: "lvcreate"},
-	{name: "lvremove"},
-	// Path-scoped: fine when all targets stay inside the project dir.
-	{name: "rm", scoped: true},
-	{name: "chmod", scoped: true},
-	{name: "chown", scoped: true},
-	{name: "mv", scoped: true},
-	{name: "cp", scoped: true},
-	{name: "ln", scoped: true},
+// buildGuardedBinaries is the shim set for one guard: the never-allow class
+// (always-block, from the SHARED declaration in internal/neverallow so the guard
+// and the opencode permission config cannot drift apart) followed by the
+// path-scoped binaries, which are allowed when every target stays inside the
+// project directory.
+//
+// It is computed per guard rather than cached in a package variable: the shared
+// declaration is the single source of truth, so a guard must read it when it is
+// built rather than inherit whatever it held at package init.
+func buildGuardedBinaries() []guardedBinary {
+	scoped := []guardedBinary{
+		{name: "rm", scoped: true},
+		{name: "chmod", scoped: true},
+		{name: "chown", scoped: true},
+		{name: "mv", scoped: true},
+		{name: "cp", scoped: true},
+		{name: "ln", scoped: true},
+	}
+	out := make([]guardedBinary, 0, len(neverallow.Shimmed())+len(scoped))
+	for _, name := range neverallow.Shimmed() {
+		out = append(out, guardedBinary{name: name})
+	}
+	return append(out, scoped...)
 }
 
 // Guard is a generated shim directory prepended to a worker's
@@ -139,21 +134,23 @@ func buildGuardIn(dir, projectDir string) (*Guard, error) {
 	}
 
 	g := &Guard{dir: dir, real: make(map[string]string)}
+	binaries := buildGuardedBinaries()
 
 	// Resolve the real binary paths for scoped binaries. They are always
 	// present on a working Linux/macOS host; a missing one means the
 	// binary doesn't exist and nothing needs shimming.
-	for _, b := range guardedBinaries {
+	for _, b := range binaries {
 		if b.scoped {
 			g.real[b.name] = resolveRealBin(b.name)
 		}
 	}
 
 	data := struct {
-		ProjectDir string
-		Real       map[string]string
-		ScratchDir string
-	}{projectDir, g.real, ScratchDir}
+		ProjectDir     string
+		Real           map[string]string
+		ScratchDir     string
+		NeverAllowCase string
+	}{projectDir, g.real, ScratchDir, neverallow.CasePattern()}
 
 	tmpl, err := template.New("guard").Parse(guardScriptTemplate)
 	if err != nil {
@@ -175,7 +172,7 @@ func buildGuardIn(dir, projectDir string) (*Guard, error) {
 
 	// Symlink each guarded name to the script. Names whose binary is
 	// absent on the host are skipped (nothing to intercept).
-	for _, b := range guardedBinaries {
+	for _, b := range binaries {
 		if b.scoped && g.real[b.name] == "" {
 			continue
 		}
@@ -335,7 +332,7 @@ blocked_path() {
 }
 
 case "${0##*/}" in
-  sudo|dd|mkfs|mkfs.*|mkswap|fdisk|parted|shred|wipefs|pvcreate|pvremove|vgcreate|vgremove|lvcreate|lvremove)
+  {{.NeverAllowCase}})
     blocked
     ;;
   rm)    blocked_path "$@" && blocked; exec '{{index .Real "rm"}}' "$@" ;;

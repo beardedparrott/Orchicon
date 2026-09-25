@@ -405,6 +405,11 @@ type SessionEvent struct {
 	Text         string
 	IsReasoning  bool
 	PermissionID string
+	// Detail carries the raw transport properties of a "permission" event
+	// (opencode emits id, sessionID, permission/title, patterns, metadata and
+	// callID), so the consent layer can answer the ask with the action's
+	// detail intact rather than only its id. Nil for every other kind.
+	Detail map[string]any
 	// Part is the legacy part map for a completed "part" (a "tool_use" part
 	// carries tool + args for the stall monitor's repetition signature; the
 	// monitor path consumes it). Nil for other kinds.

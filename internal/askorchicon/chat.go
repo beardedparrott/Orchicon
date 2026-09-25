@@ -1823,8 +1823,9 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 					return turnAttemptResult{kind: turnCollected, text: strings.TrimSpace(reply.String()), reasoning: reasoning}
 				}
 			case "permission":
-				// Auto-approve (the --auto equivalent). Session-level deny
-				// rules mean this should rarely fire — defensive only.
+				// Auto-approve (the --auto equivalent). The interactive Ask
+				// profile is what makes these asks real; the consent layer
+				// answers from evt.Detail (scheduler.SessionEvent.Detail).
 				if pid := evt.PermissionID; pid != "" {
 					go func() { _ = c.client.ReplyPermission(subCtx, sid, pid) }()
 				}
@@ -2322,8 +2323,9 @@ func (s *Service) runOpenCodeTurn(ctx context.Context, client scheduler.ChatTurn
 					return msgID, sid, time.Since(start), nil
 				}
 			case "permission":
-				// Auto-approve (the --auto equivalent). Session-level deny
-				// rules mean this should rarely fire — defensive only.
+				// Auto-approve (the --auto equivalent). The interactive Ask
+				// profile is what makes these asks real; the consent layer
+				// answers from evt.Detail (scheduler.SessionEvent.Detail).
 				if pid := evt.PermissionID; pid != "" {
 					go func() { _ = client.ReplyPermission(context.WithoutCancel(ctx), sid, pid) }()
 				}

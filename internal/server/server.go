@@ -83,6 +83,10 @@ type Server struct {
 	// supervision goroutine; nil when the session transport is disabled by
 	// the operator kill-switch or no data dir is available.
 	hostServe *opencode.HostServe
+	// askHostServe is the Ask Orchicon serve (interactive permission profile).
+	// Same lazy supervision as hostServe; held separately so plane shutdown
+	// stops both.
+	askHostServe *opencode.HostServe
 }
 
 // New constructs a Server from configuration. It opens the DB pool,
@@ -325,6 +329,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// failure at first demand means those executions fail fast
 	// (failed_to_start) rather than degrading to a second transport.
 	var hostServe *opencode.HostServe
+	var askServe *opencode.HostServe
 	if os.Getenv("ORCHICON_OPCODE_SESSION_TRANSPORT") != "0" {
 		dataDir := ""
 		if home, herr := os.UserHomeDir(); herr == nil {
@@ -333,6 +338,14 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		if dataDir != "" {
 			hostServe = opencode.NewHostServe(log, dataDir, "")
 			adapterBridge.SetHostServe(hostServe)
+			// Ask Orchicon gets its OWN serve: opencode's permission config is
+			// per-process, so the interactive profile cannot ride the worker
+			// serve without leaking into dispatched executions. Its data dir
+			// is separate (sharing a sqlite dir between two serve processes is
+			// unsafe); it is demand-keyed on the first Ask turn exactly like
+			// the worker serve, and stopped with the plane.
+			askServe = opencode.NewAskHostServe(log, dataDir+"-ask", "")
+			adapterBridge.SetAskHostServe(askServe)
 		} else {
 			log.Warn("host opencode serve data dir unavailable — sessions disabled")
 		}
@@ -560,7 +573,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			}
 			return aborter.AbortExecution(ctx, execID, reason)
 		},
-		HostServe:  hostServe,
+		HostServe:  askServe,
 		SecretsKEK: secretsKEK,
 		// UsageRecorder wires the shared AI Gateway recorder into Ask
 		// Orchicon so Ask sessions capture live usage per adapter.
@@ -698,7 +711,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 
 	s := &Server{cfg: cfg, log: log, pool: pool, httpSrv: httpSrv, otel: otelShutdown,
 		blobs: blobs, authH: authHandler, webhookD: webhookDisp, logWriter: logWriter,
-		hostServe: hostServe}
+		hostServe: hostServe, askHostServe: askServe}
 	if pub != nil {
 		// Outbox retention: published rows older than the configured window
 		// are pruned on a schedule in bounded batches. Retention <= 0 disables
@@ -864,6 +877,9 @@ func (s *Server) Run(ctx context.Context) error {
 	defer func() {
 		if s.hostServe != nil {
 			s.hostServe.Stop()
+		}
+		if s.askHostServe != nil {
+			s.askHostServe.Stop()
 		}
 	}()
 

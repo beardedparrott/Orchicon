@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/beardedparrott/orchicon/internal/neverallow"
 )
 
 // opencodeConfigPath returns the path to the opencode config file
@@ -305,8 +307,94 @@ const (
 // There is intentionally no catch-all "*" rule here: unmatched commands fall
 // back to opencode's default (ask, which --auto approves) instead of letting a
 // broad allow rule win by ordering.
-func permissionRules(compositeTools bool) map[string]any {
-	bashDeny := []string{
+//
+// The always-block class (sudo, dd, the disk/partition/LVM/wipe tooling, and
+// the shell-construct variants that smuggle them past a prefix match) is
+// deliberately NOT restated here: it is the shared declaration in
+// internal/neverallow, so this config and the OS-level execution guard consume
+// the SAME list and cannot drift apart.
+
+// PermissionProfile selects which permission rule set the injected opencode
+// config carries. It is a per-PROCESS choice (opencode's permission config
+// rides the serve's OPENCODE_CONFIG_CONTENT), not a per-session one, so a serve
+// is built with one profile and serves only that profile's work.
+type PermissionProfile string
+
+const (
+	// ProfileWorker is the sandboxed worker profile: the project boundary
+	// (external_directory denied with the scratch + run-metadata carve-outs),
+	// the full bash deny list, and — with composite tools — the built-in
+	// read/grep deny that forces workers onto batch_read/batch_grep. It is what
+	// the zero value means, so every pre-existing caller is unchanged.
+	ProfileWorker PermissionProfile = "worker"
+	// ProfileInteractive is the Ask Orchicon profile. An interactive session
+	// reaches the OPERATOR's own filesystem, so the tool-layer boundary (a
+	// sibling concern) and the consent layer decide scope and action rather
+	// than a blanket deny: external_directory is allowed, writes and executions
+	// raise opencode's OWN ask (which is what makes the permission.asked events
+	// we relay real asks instead of an artifact of deny-by-default), and the
+	// never-allow class stays hard-denied. The worker-only composite read/grep
+	// deny is NOT applied — an interactive session may use whichever read tool
+	// it reaches for.
+	ProfileInteractive PermissionProfile = "interactive"
+)
+
+// normalized maps every unrecognised value — including the zero value "" —
+// onto ProfileWorker, so a caller that never set a profile gets today's
+// behaviour rather than an accidental widening.
+func (p PermissionProfile) normalized() PermissionProfile {
+	if p == ProfileInteractive {
+		return ProfileInteractive
+	}
+	return ProfileWorker
+}
+
+// permissionRules dispatches on the profile. The interactive profile ignores
+// compositeTools: its read/grep tools are never denied.
+func permissionRules(profile PermissionProfile, compositeTools bool) map[string]any {
+	if profile.normalized() == ProfileInteractive {
+		return interactivePermissionRules()
+	}
+	return workerPermissionRules(compositeTools)
+}
+
+// PermissionRulesForProfile returns a profile's permission subtree with the
+// composite-tool carve-out OFF. It is the seam a test uses to assert that both
+// profiles consume the SAME never-allow declaration as the execution guard.
+func PermissionRulesForProfile(p PermissionProfile) map[string]any {
+	return permissionRules(p, false)
+}
+
+// interactivePermissionRules builds the Ask Orchicon profile (see
+// ProfileInteractive).
+//
+// Deliberately NO "*" catch-all in `bash`: a catch-all deny would be the worker
+// sandbox again, and a catch-all allow would be dead weight — opencode's rules
+// are a map, so a catch-all could not be ordered ahead of the never-allow
+// denies (encoding/json sorts the keys). Without one, an unmatched command
+// keeps opencode's own default — `ask` — which is exactly what makes the
+// consent asks meaningful.
+func interactivePermissionRules() map[string]any {
+	rules := make(map[string]any, len(neverallow.CommandPatterns))
+	for _, p := range neverallow.DenyRules() {
+		rules[p] = "deny"
+	}
+	return map[string]any{
+		"external_directory": map[string]any{"*": "allow"},
+		"edit":               map[string]any{"*": "ask"},
+		"write":              map[string]any{"*": "ask"},
+		"bash":               rules,
+		// Deny the subagent tool (see taskToolDeny) in every profile.
+		"task": map[string]any{"*": "deny"},
+	}
+}
+
+// workerPermissionRules builds the sandboxed worker profile (see
+// ProfileWorker): today's rules, byte-identical. The never-allow class is
+// APPENDED from the shared declaration; the patterns that stay inline below are
+// the worker's own project-boundary deny list, which is not part of that class.
+func workerPermissionRules(compositeTools bool) map[string]any {
+	bashDeny := append(neverallow.DenyRules(), []string{
 		// rm family — target-scoped. In-project cleanup (`rm -rf build/`,
 		// `node_modules`, `.next`) is legitimate and no longer denied (the
 		// denial burned worker tokens on `find -delete`/python workarounds);
@@ -324,20 +412,9 @@ func permissionRules(compositeTools bool) map[string]any {
 		"rm --no-preserve-root *", "rm -rf --no-preserve-root *",
 		"/bin/rm *", "/usr/bin/rm *", "/bin/rm -rf *", "/usr/bin/rm -rf *",
 		"rm -rf . /", "rm -rf . ..",
-		// sudo — escalate to a root shell is never needed in-project.
-		"sudo", "sudo *", "sudo su *", "sudo -i *", "sudo -s *", "sudo bash *",
-		"sudo sh *", "sudo rm *", "sudo * rm *", "sudo -u * rm *",
-		// shell-construct smuggling variants.
-		"(*rm*", "{*rm*", "(* sudo *", "{* sudo *",
+		// shell-construct smuggling variants that hide rm.
+		"(*rm*", "{*rm*",
 		"* & rm *", "* && rm *", "* ; rm *", "* || rm *", "* | rm *",
-		"* & sudo *", "* && sudo *", "* ; sudo *", "* | sudo *",
-		"* & dd *", "* && dd *", "* ; dd *",
-		// disk / partition / LVM / wipe tools.
-		"mkfs*", "mkfs.*", "fdisk*", "parted *", "shred *", "wipefs*",
-		"mkswap *", "swapoff *", "swapon *",
-		"pvcreate *", "pvremove *", "vgcreate *", "vgremove *", "vgextend *",
-		"lvcreate *", "lvremove *", "lvreduce *", "lvextend *",
-		"dd if=* of=/dev/*", "dd * of=/dev/*", "dd of=/dev/*",
 		"* > /dev/sd*", "* >> /dev/sd*", ": > /dev/sd*",
 		"echo * > /dev/sd*", "echo * >> /dev/sd*",
 		"cat * > /dev/sd*", "cat * >> /dev/sd*", "cp * /dev/sd*",
@@ -348,7 +425,7 @@ func permissionRules(compositeTools bool) map[string]any {
 		// download-and-execute (arbitrary remote code).
 		"curl * | sh", "curl * | bash", "curl * | sh -", "curl * | bash -",
 		"curl * | zsh", "wget * | sh", "wget * | bash", "wget * | zsh",
-	}
+	}...)
 	rules := make(map[string]any, len(bashDeny))
 	for _, p := range bashDeny {
 		rules[p] = "deny"
@@ -453,6 +530,11 @@ type ConfigOptions struct {
 	// the run worktree. Injected as the sidecar's ORCHICON_MCP_PROJECT_DIR env
 	// var. Writes never reach it (batch_write stays in the worktree).
 	ProjectDir string
+	// PermissionProfile selects the injected permission rule set (see
+	// PermissionProfile). "" — the zero value — means ProfileWorker, so every
+	// caller that predates the profile split keeps the worker sandbox
+	// byte-identically; only the Ask serve opts into ProfileInteractive.
+	PermissionProfile PermissionProfile
 }
 
 // BuildConfigContent builds the JSON string for the OPENCODE_CONFIG_CONTENT
@@ -537,7 +619,7 @@ func BuildConfigContent(o ConfigOptions) string {
 	// batch_read/batch_grep. The WorktreeDir guard guarantees the deny is
 	// only applied alongside a registered worktree MCP — so a worker never
 	// loses file access with no batch tool to fall back on.
-	cfg["permission"] = permissionRules(o.CompositeTools && o.WorktreeDir != "")
+	cfg["permission"] = permissionRules(o.PermissionProfile, o.CompositeTools && o.WorktreeDir != "")
 
 	// Enable context compaction pruning for every worker session. `prune`
 	// trims OLD tool outputs (accumulating command/file-read results) from
@@ -598,7 +680,7 @@ func BuildConfigContent(o ConfigOptions) string {
 		if len(mcp) > 0 {
 			fallback["mcp"] = mcp
 		}
-		fallback["permission"] = permissionRules(o.CompositeTools && o.WorktreeDir != "")
+		fallback["permission"] = permissionRules(o.PermissionProfile, o.CompositeTools && o.WorktreeDir != "")
 		b, _ = json.Marshal(fallback)
 	}
 	return string(b)

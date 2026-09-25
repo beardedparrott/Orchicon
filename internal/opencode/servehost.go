@@ -51,6 +51,11 @@ type HostServe struct {
 	dataDir  string
 	home     string
 	started  bool
+	// profile is the permission profile this serve is built with. The zero
+	// value ("") normalizes to ProfileWorker, so a serve built by
+	// NewHostServe carries the worker sandbox; NewAskHostServe opts into
+	// ProfileInteractive.
+	profile PermissionProfile
 
 	// startMu serializes LAZY start (EnsureStarted): without it two
 	// concurrent first-demands would each spawn a serve. It is held only
@@ -71,6 +76,25 @@ type HostServe struct {
 // opencode data dir whose auth.json is seeded (empty = os.UserHomeDir).
 func NewHostServe(log *slog.Logger, dataDir, home string) *HostServe {
 	return &HostServe{log: log, dataDir: dataDir, home: home}
+}
+
+// NewAskHostServe constructs the Ask Orchicon host serve: the same demand-keyed
+// serve manager, but built with the INTERACTIVE permission profile.
+//
+// It is a SEPARATE process because opencode's permission config is per-process
+// (it rides OPENCODE_CONFIG_CONTENT on the serve's environment), so one serve
+// cannot carry the worker sandbox for executions and the interactive profile
+// for Ask at the same time. Callers must give it its OWN data dir: sharing a
+// sqlite data dir between two serve processes is unsafe, and Ask keeps no
+// session continuity across the split anyway (a stale session id takes the
+// existing ErrSessionNotFound recreate-and-re-seed path).
+func NewAskHostServe(log *slog.Logger, dataDir, home string) *HostServe {
+	return &HostServe{log: log, dataDir: dataDir, home: home, profile: ProfileInteractive}
+}
+
+// PermissionProfile reports the profile this serve was built with.
+func (h *HostServe) PermissionProfile() PermissionProfile {
+	return h.profile
 }
 
 // Enabled reports whether the host serve is configured for this plane.
@@ -295,12 +319,13 @@ func (h *HostServe) kill() {
 // field (opencode applies it per turn).
 func (h *HostServe) serveConfig() string {
 	cfg := BuildConfigContent(ConfigOptions{
-		AgentName:    workerAgent,
-		AgentPrompt:  sessionToolShell,
-		DefaultAgent: workerAgent,
-		ModelRef:     "",
-		TenantID:     serveTenantID(),
-		OrchiconMCP:  true,
+		AgentName:         workerAgent,
+		AgentPrompt:       sessionToolShell,
+		DefaultAgent:      workerAgent,
+		ModelRef:          "",
+		TenantID:          serveTenantID(),
+		OrchiconMCP:       true,
+		PermissionProfile: h.profile,
 	})
 	return cfg
 }

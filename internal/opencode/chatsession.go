@@ -18,10 +18,24 @@ import (
 // serve transport is unavailable. It never STARTS the serve — callers that
 // may need the serve started go through ensureHostServeClient.
 func (a *Adapter) hostServeClient() *SessionClient {
-	if a.host == nil {
+	h := chatHost(a.askHost, a.host)
+	if h == nil {
 		return nil
 	}
-	return a.host.Client()
+	return h.Client()
+}
+
+// chatHost selects the serve an Ask conversation turn runs on. Ask has its own
+// serve (see NewAskHostServe) because opencode's permission config is
+// per-PROCESS: the worker serve carries the worker sandbox, the Ask serve
+// carries the interactive profile. This pure selector is the ONE place the Ask
+// surface resolves a serve — the worker paths (sessionClientFor, follow-ups)
+// keep a.host.
+func chatHost(ask, exec *HostServe) *HostServe {
+	if ask != nil {
+		return ask
+	}
+	return exec
 }
 
 // ensureHostServeClient returns the host serve's session client, starting
@@ -34,13 +48,14 @@ func (a *Adapter) hostServeClient() *SessionClient {
 // binary, serve never ready): the Ask turn fails LOUDLY with the reason
 // instead of silently degrading (AC 4).
 func (a *Adapter) ensureHostServeClient(ctx context.Context) (*SessionClient, error) {
-	if a.host == nil {
+	h := chatHost(a.askHost, a.host)
+	if h == nil {
 		return nil, errors.New("host opencode serve unavailable — Ask chat transport is disabled")
 	}
-	if err := a.host.EnsureStarted(ctx); err != nil {
+	if err := h.EnsureStarted(ctx); err != nil {
 		return nil, fmt.Errorf("host opencode serve unavailable — Ask chat transport is disabled: %w", err)
 	}
-	c := a.host.Client()
+	c := h.Client()
 	if c == nil {
 		return nil, errors.New("host opencode serve unavailable — Ask chat transport is disabled")
 	}
@@ -319,6 +334,12 @@ func classifyBusEvent(evt BusEvent) *scheduler.SessionEvent {
 		pid, _ := evt.Properties["id"].(string)
 		e := base("permission", "")
 		e.PermissionID = pid
+		// Carry the raw ask through verbatim (opencode emits `permission`/
+		// `title`, `patterns`/`pattern`, `metadata` and `callID` alongside
+		// `id`). The consent layer answers the ask from THIS detail, so
+		// dropping it here would turn a real ask back into a blind
+		// auto-approve.
+		e.Detail = evt.Properties
 		return e
 	case "session.error":
 		msg := "opencode session error"
