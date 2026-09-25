@@ -22,6 +22,9 @@ const (
 	KindError     ItemKind = "error"
 	KindArtifact  ItemKind = "artifact"
 	KindSession   ItemKind = "session"
+	// KindConsent is a permission ask or clarifying question rendered in the
+	// transcript: a CARD while it is pending, a one-line record once decided.
+	KindConsent ItemKind = "consent"
 )
 
 // ParsedTool mirrors the TS ParsedTool interface.
@@ -63,6 +66,16 @@ type ChatItem struct {
 	// these markers exist only for this client's rendering. Folding them into Text would put a synthetic
 	// token into the message the server stores and the dedupe compares.
 	Attachments []string
+
+	// AskID identifies a KindConsent item's ask, so a resolve/decision event can
+	// find the row it settles rather than appending a second one.
+	AskID string
+
+	// Consent is a KindConsent item's live state (pending vs resolved, the
+	// highlight, any free text). It is a POINTER so the screen that handles the
+	// card's keys and the renderer that draws it share ONE object; it is mutated
+	// only on the tea update loop.
+	Consent *ConsentState
 }
 
 // itemAt mirrors itemAt(): tool items timestamp through their tool.
