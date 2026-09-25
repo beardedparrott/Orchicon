@@ -143,6 +143,13 @@ func copyTextFor(it ChatItem) string {
 	switch it.Kind {
 	case KindUser, KindText, KindReasoning, KindError:
 		return it.Text
+	case KindConsent:
+		// A SETTLED ask is worth copying (it is the record of a decision); a
+		// PENDING one is not — copying a question that has not been answered
+		// would paste the card's own furniture back into a message.
+		if it.Consent != nil && !it.Consent.Pending() {
+			return consentRecord(it.Consent)
+		}
 	}
 	return ""
 }
@@ -249,6 +256,11 @@ func renderItems(items []ChatItem, maxWidth int, folded func(key string) bool, c
 		case KindSession:
 			meta := SessionIdentity(it)
 			b.WriteString(theme.HintText.Render(truncateRow(meta, maxWidth)) + "\n")
+		case KindConsent:
+			// THE CARD RIDES THE TRANSCRIPT: a pending ask draws its box here, and
+			// the settled ask leaves a one-line record. See consent_render.go — the
+			// box itself is a kit2 widget, so padding/border/selection are shared.
+			b.WriteString(consentLines(it, maxWidth))
 		}
 		// Attribute the lines this item wrote. `before` is a byte offset into the builder, and the slice
 		// shares its backing array, so this costs a scan of the item's own text rather than a copy of the
