@@ -295,6 +295,51 @@ func TestUpcomingMembershipMatchesTheGuiModel(t *testing.T) {
 	}
 }
 
+// 9. A QUEUED CHILD THAT STILL CARRIES AN OLD RUN ID IS STILL QUEUED — and `g` must STILL refuse.
+//
+// resetSubtree (internal/scheduler/sequence_reconciler.go) resets a non-terminal descendant to
+// PENDING with a STATUS-ONLY update, so a re-run sequence's previously-failed child keeps its old
+// workflow_run_id. The predicate is the child's STATUS, so that child is queued like any other — and
+// the row must not promise a run it has not got. Binding the stale id would make `g` jump to a
+// FINISHED run of an earlier attempt while the row says "waits for the current step".
+func TestSchedulesUpcomingQueuedChildWithAStaleRunIDStillRefusesToJump(t *testing.T) {
+	p := &fakePlane{
+		items: []*apiv1.WorkItem{
+			{Id: "wi-seq", Title: "Epic chain", Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_RUNNING},
+			// The armed child, as in the reproduction.
+			{Id: "wi-seq-armed", Title: "Armed", ParentId: "wi-seq",
+				Status:        apiv1.WorkItemStatus_WORK_ITEM_STATUS_RUNNING,
+				WorkflowRunId: "run-live", SortOrder: 1},
+			// Queued, but left over from a FAILED attempt: pending with its old run id intact.
+			{Id: "wi-seq-stale", Title: "Queued again", ParentId: "wi-seq",
+				Status:        apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING,
+				WorkflowRunId: "run-old", SortOrder: 2},
+		},
+		// The stale run EXISTS: a wrongly-bound row would jump instead of refusing, so this
+		// fixture fails loudly on the old behaviour rather than passing by accident.
+		runs: []*apiv1.WorkflowRun{{Id: "run-old", WorkItemId: "wi-seq-stale"}},
+	}
+	m := newModel(t, p)
+	items := upcomingItems(t, m)
+	if !hasID(idsOf(items), "wi-seq-stale") {
+		t.Fatalf("upcoming = %v, want the queued child that still carries a stale run id", idsOf(items))
+	}
+	m.Base.LoadItems(srcSchedules, items, "")
+	if !m.Base.SelectItem(srcSchedules, "wi-seq-stale") {
+		t.Fatal("fixture: could not select the queued row")
+	}
+
+	m.goToScheduleRun()
+	if !strings.Contains(m.notice, "has not fired") {
+		t.Errorf("notice = %q — a queued row must refuse `g` even when its item carries an old run id",
+			m.notice)
+	}
+	if m.Base.ActiveSourceName() != srcSchedules {
+		t.Errorf("source = %q — a refused jump must not move the pane (it jumped to a stale run)",
+			m.Base.ActiveSourceName())
+	}
+}
+
 func itemIDs(items []*apiv1.WorkItem) []string {
 	out := make([]string, 0, len(items))
 	for _, it := range items {

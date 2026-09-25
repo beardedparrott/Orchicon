@@ -174,10 +174,16 @@ func (m *Model) fetchUpcomingSchedules(ctx context.Context, pageToken string) ([
 		// (schedules.tsx:520), and in CHAIN order (queuedSequenceChildren sorts them).
 		for _, w := range queuedSequenceChildren(all) {
 			seen[w.GetId()] = true
-			// "" by construction: a queued child has not fired. `g` therefore refuses with
-			// "this schedule has not fired yet", and `x` cancels the child — no new row type and
-			// no second jump/cancel path.
-			m.sched.remember(w.GetId(), w.GetWorkflowRunId())
+			// ALWAYS "" — deliberately NOT w.GetWorkflowRunId(). A queued child has not fired, so
+			// registering "" is what makes `g` refuse with "this schedule has not fired yet" and
+			// `x` cancel the child, with no new row type and no second jump/cancel path.
+			//
+			// The item's own run id is NOT empty in every case, so passing it through would be a
+			// real bug: resetSubtree (internal/scheduler/sequence_reconciler.go) resets a
+			// non-terminal descendant to PENDING with a STATUS-ONLY update, so a re-run sequence's
+			// previously-failed child keeps its OLD workflow_run_id. `g` on that row would jump to
+			// a finished run of an earlier attempt while the row says "waits for the current step".
+			m.sched.remember(w.GetId(), "")
 			items = append(items, screenkit.Item{
 				ID:    w.GetId(),
 				Title: w.GetTitle(),
