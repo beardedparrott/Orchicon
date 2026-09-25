@@ -10,6 +10,7 @@ package askorchicon
 // consent layer's Refusal would name.
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -108,5 +109,79 @@ func TestGuardShimAndConsentCoreReadTheSamePolicy(t *testing.T) {
 	}
 	if _, err := os.Stat(deniedTarget); err != nil {
 		t.Fatalf("the denied target was deleted: %v", err)
+	}
+}
+
+// TestAskBashInteractiveProfileThroughTheRealPlumbing pins the interactive
+// profile at the WIDEST layer: the environment the real Service hands to Ask
+// bash decides whether a path-scoped command runs or is refused, and the refusal
+// comes back as the tool's RESULT (not a transport error) so the model can
+// course-correct. AC-1 (allow in scope / refuse out of scope), AC-4 (fail closed
+// when the policy cannot be read) and AC-5 (refusal = tool result).
+//
+// The existing TestNativeAskBashGuardBlocksDestructive cannot assert this: it
+// runs with no policy file at permpolicy.DefaultPath(), so the shim fails CLOSED
+// (AC-4, correct) and its `rm /etc/passwd` case would pass without the scope
+// check ever firing. This test pins the policy file first, so the scope rule is
+// the thing under test — and then removes it again to pin the failing-closed
+// behaviour on the same plumbing.
+func TestAskBashInteractiveProfileThroughTheRealPlumbing(t *testing.T) {
+	project := t.TempDir()
+	policy := filepath.Join(t.TempDir(), "permission-policy.yaml")
+	if err := os.WriteFile(policy, []byte("deny: []\naccept: []\n"), 0o600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+	t.Setenv("ORCHICON_PERMISSION_POLICY", policy)
+
+	restore := stubAskFileRoot(project)
+	defer restore()
+	p := (&Service{toolRegistry: testToolRegistry()}).NativeAskTools()
+
+	// Readable policy + in-project target: the shim's project default allows it.
+	victim := filepath.Join(project, "gone.txt")
+	if err := os.WriteFile(victim, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := p.ExecuteAskTool(context.Background(), "bash", `{"command":"rm -f `+victim+`"}`)
+	if err != nil {
+		t.Fatalf("in-project rm returned a transport error: %v", err)
+	}
+	if strings.Contains(out, "ORCHICON GUARD") {
+		t.Fatalf("an in-project rm must run under a readable policy, got: %s", out)
+	}
+	if _, err := os.Stat(victim); !os.IsNotExist(err) {
+		t.Fatalf("the in-project target was not deleted: %v", err)
+	}
+
+	// Readable policy + out-of-project target: refused, naming the path, and the
+	// refusal is the scope rule — not the fail-closed message.
+	out, err = p.ExecuteAskTool(context.Background(), "bash", `{"command":"rm /etc/passwd"}`)
+	if err != nil {
+		t.Fatalf("out-of-project rm returned a transport error (want refusal as result): %v", err)
+	}
+	if !strings.Contains(out, "ORCHICON GUARD") || !strings.Contains(out, "/etc/passwd") {
+		t.Fatalf("the out-of-project refusal must name the path: %s", out)
+	}
+	if strings.Contains(out, "fail-closed") {
+		t.Fatalf("the scope check must be what refused, not the fail-closed policy read: %s", out)
+	}
+
+	// Unreadable policy: the shim REFUSES even an in-project target rather than
+	// running it unguarded (a guard that silently stops guarding is the failure
+	// this component exists to prevent).
+	t.Setenv("ORCHICON_PERMISSION_POLICY", filepath.Join(t.TempDir(), "absent.yaml"))
+	survivor := filepath.Join(project, "survivor.txt")
+	if err := os.WriteFile(survivor, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err = p.ExecuteAskTool(context.Background(), "bash", `{"command":"rm -f `+survivor+`"}`)
+	if err != nil {
+		t.Fatalf("fail-closed probe returned a transport error: %v", err)
+	}
+	if !strings.Contains(out, "fail-closed") {
+		t.Fatalf("an unreadable policy must refuse via the fail-closed message: %s", out)
+	}
+	if _, err := os.Stat(survivor); err != nil {
+		t.Fatalf("the command ran despite the unreadable policy: %v", err)
 	}
 }
