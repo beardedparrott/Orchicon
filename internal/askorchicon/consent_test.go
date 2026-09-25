@@ -521,7 +521,7 @@ func TestAllowOnceProceedsOnceThenAsksAgain(t *testing.T) {
 	if ask == nil {
 		t.Fatal("expected an ask")
 	}
-	if !ask.clientReply(apiv1.PermissionChoice_ALLOW_ONCE) {
+	if !ask.clientReply(apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_ONCE) {
 		t.Fatal("client reply was not recorded")
 	}
 	ct.applyClientReplies(context.Background(), client)
@@ -549,7 +549,7 @@ func TestAllowSessionGrantsDirectoryAndStillRepliesOnce(t *testing.T) {
 		t.Fatal("expected an ask")
 	}
 	svc.grants.Grant("conv-1", ask.Key) // the RPC's ALLOW_SESSION half
-	if !ask.clientReply(apiv1.PermissionChoice_ALLOW_SESSION) {
+	if !ask.clientReply(apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_SESSION) {
 		t.Fatal("client reply was not recorded")
 	}
 	ct.applyClientReplies(context.Background(), client)
@@ -578,7 +578,7 @@ func TestDenyReachesTheServeAsReject(t *testing.T) {
 	if ask == nil {
 		t.Fatal("expected an ask")
 	}
-	if !ask.clientReply(apiv1.PermissionChoice_DENY) {
+	if !ask.clientReply(apiv1.PermissionChoice_PERMISSION_CHOICE_DENY) {
 		t.Fatal("client reply was not recorded")
 	}
 	ct.applyClientReplies(context.Background(), client)
@@ -607,7 +607,7 @@ func TestFinalizeExpiresOpenAskAndLateReplyReportsExpired(t *testing.T) {
 	}
 	// A late reply is reported expired — never silently dropped.
 	resp, err := svc.ReplyPermissionAsk(tenantCtx(), connectReq(&apiv1.ReplyPermissionAskRequest{
-		ConversationId: "conv-1", AskId: "per_1", Choice: apiv1.PermissionChoice_ALLOW_ONCE,
+		ConversationId: "conv-1", AskId: "per_1", Choice: apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_ONCE,
 	}))
 	if err != nil {
 		t.Fatalf("ReplyPermissionAsk: %v", err)
@@ -623,7 +623,7 @@ func TestFinalizeExpiresOpenAskAndLateReplyReportsExpired(t *testing.T) {
 	if ask2 == nil {
 		t.Fatal("expected an ask")
 	}
-	if !ask2.clientReply(apiv1.PermissionChoice_ALLOW_ONCE) {
+	if !ask2.clientReply(apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_ONCE) {
 		t.Fatal("client reply was not recorded")
 	}
 	ct2.finalize(context.Background(), client2)
@@ -642,7 +642,7 @@ func TestReplyPermissionAskAppliesAndIsIdempotent(t *testing.T) {
 	}
 	ctx := tenantCtx()
 	r1, err := svc.ReplyPermissionAsk(ctx, connectReq(&apiv1.ReplyPermissionAskRequest{
-		ConversationId: "conv-1", AskId: "per_1", Choice: apiv1.PermissionChoice_ALLOW_SESSION,
+		ConversationId: "conv-1", AskId: "per_1", Choice: apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_SESSION,
 	}))
 	if err != nil || !r1.Msg.Applied || r1.Msg.Expired {
 		t.Fatalf("first reply: %+v err=%v — want applied", r1.Msg, err)
@@ -652,7 +652,7 @@ func TestReplyPermissionAskAppliesAndIsIdempotent(t *testing.T) {
 	}
 	// A second answer to the same ask is reported expired, never re-applied.
 	r2, err := svc.ReplyPermissionAsk(ctx, connectReq(&apiv1.ReplyPermissionAskRequest{
-		ConversationId: "conv-1", AskId: "per_1", Choice: apiv1.PermissionChoice_DENY,
+		ConversationId: "conv-1", AskId: "per_1", Choice: apiv1.PermissionChoice_PERMISSION_CHOICE_DENY,
 	}))
 	if err != nil || r2.Msg.Applied || !r2.Msg.Expired {
 		t.Fatalf("second reply: %+v err=%v — want expired", r2.Msg, err)
@@ -673,7 +673,7 @@ func TestLateAllowSessionReplyReportsExpiredAndRecordsNoGrant(t *testing.T) {
 	// A late ALLOW_SESSION must be reported expired AND must not leave a grant
 	// behind: a decision reported as not-applied must not partially apply.
 	resp, err := svc.ReplyPermissionAsk(tenantCtx(), connectReq(&apiv1.ReplyPermissionAskRequest{
-		ConversationId: "conv-1", AskId: "per_1", Choice: apiv1.PermissionChoice_ALLOW_SESSION,
+		ConversationId: "conv-1", AskId: "per_1", Choice: apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_SESSION,
 	}))
 	if err != nil {
 		t.Fatalf("ReplyPermissionAsk: %v", err)

@@ -573,7 +573,7 @@ func (a *pendingAsk) clientChoice() (apiv1.PermissionChoice, bool) {
 	if a.state == askClientReplied {
 		return a.choice, true
 	}
-	return apiv1.PermissionChoice_CHOICE_UNSPECIFIED, false
+	return apiv1.PermissionChoice_PERMISSION_CHOICE_UNSPECIFIED, false
 }
 
 // resolveForFinalize is the turn-end read of an ask: it returns the client's
@@ -587,9 +587,9 @@ func (a *pendingAsk) resolveForFinalize() (choice apiv1.PermissionChoice, applyC
 		return a.choice, true, false
 	case askOpen:
 		a.state = askFinalized
-		return apiv1.PermissionChoice_CHOICE_UNSPECIFIED, false, true
+		return apiv1.PermissionChoice_PERMISSION_CHOICE_UNSPECIFIED, false, true
 	default:
-		return apiv1.PermissionChoice_CHOICE_UNSPECIFIED, false, false
+		return apiv1.PermissionChoice_PERMISSION_CHOICE_UNSPECIFIED, false, false
 	}
 }
 
@@ -683,9 +683,9 @@ func (r *pendingAskRegistry) list(convID string) []*pendingAsk {
 // "fix" this into a second source of truth).
 func consentResponse(c apiv1.PermissionChoice) (string, bool) {
 	switch c {
-	case apiv1.PermissionChoice_ALLOW_ONCE, apiv1.PermissionChoice_ALLOW_SESSION:
+	case apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_ONCE, apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_SESSION:
 		return "once", true
-	case apiv1.PermissionChoice_DENY:
+	case apiv1.PermissionChoice_PERMISSION_CHOICE_DENY:
 		return "reject", true
 	default:
 		return "", false

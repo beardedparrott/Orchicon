@@ -33,7 +33,7 @@ func (s *Service) ReplyPermissionAsk(ctx context.Context, req *connect.Request[a
 			errors.New("conversation_id and ask_id must not be empty"))
 	}
 	switch req.Msg.Choice {
-	case apiv1.PermissionChoice_ALLOW_ONCE, apiv1.PermissionChoice_ALLOW_SESSION, apiv1.PermissionChoice_DENY:
+	case apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_ONCE, apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_SESSION, apiv1.PermissionChoice_PERMISSION_CHOICE_DENY:
 	default:
 		return nil, connect.NewError(connect.CodeInvalidArgument,
 			errors.New("choice must be ALLOW_ONCE, ALLOW_SESSION or DENY"))
@@ -69,7 +69,7 @@ func (s *Service) ReplyPermissionAsk(ctx context.Context, req *connect.Request[a
 			Detail:  "this ask was already answered or expired — the decision was not applied",
 		}), nil
 	}
-	if req.Msg.Choice == apiv1.PermissionChoice_ALLOW_SESSION {
+	if req.Msg.Choice == apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_SESSION {
 		s.grants.Grant(convID, ask.Key)
 	}
 	return connect.NewResponse(&apiv1.ReplyPermissionAskResponse{

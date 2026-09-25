@@ -192,8 +192,8 @@ type AskOrchiconServiceClient interface {
 	// deliberate.
 	WatchTurnStream(context.Context, *connect.Request[v1.WatchTurnStreamRequest]) (*connect.ServerStreamForClient[v1.ChatStreamResponse], error)
 	// ReplyPermissionAsk answers a PermissionAsk the turn is waiting on. The
-	// decision applies to OUR grant store: ALLOW_ONCE proceeds for this single
-	// call, ALLOW_SESSION records an in-memory, directory-keyed grant for this
+	// decision applies to OUR grant store: PERMISSION_CHOICE_ALLOW_ONCE proceeds for this single
+	// call, PERMISSION_CHOICE_ALLOW_SESSION records an in-memory, directory-keyed grant for this
 	// conversation, DENY refuses the call (the refusal reaches the model as the
 	// tool result). The value sent to the serve is always `once` or `reject` —
 	// never a session-scoped serve value.
@@ -565,8 +565,8 @@ type AskOrchiconServiceHandler interface {
 	// deliberate.
 	WatchTurnStream(context.Context, *connect.Request[v1.WatchTurnStreamRequest], *connect.ServerStream[v1.ChatStreamResponse]) error
 	// ReplyPermissionAsk answers a PermissionAsk the turn is waiting on. The
-	// decision applies to OUR grant store: ALLOW_ONCE proceeds for this single
-	// call, ALLOW_SESSION records an in-memory, directory-keyed grant for this
+	// decision applies to OUR grant store: PERMISSION_CHOICE_ALLOW_ONCE proceeds for this single
+	// call, PERMISSION_CHOICE_ALLOW_SESSION records an in-memory, directory-keyed grant for this
 	// conversation, DENY refuses the call (the refusal reaches the model as the
 	// tool result). The value sent to the serve is always `once` or `reject` —
 	// never a session-scoped serve value.

@@ -151,9 +151,9 @@ func TestReplyPermissionAskDrivesATurnEndToEnd(t *testing.T) {
 		wantGrants  int
 		wantExpired bool
 	}{
-		{"allow_once", apiv1.PermissionChoice_ALLOW_ONCE, "once", 0, false},
-		{"allow_session", apiv1.PermissionChoice_ALLOW_SESSION, "once", 1, false},
-		{"deny", apiv1.PermissionChoice_DENY, "reject", 0, false},
+		{"allow_once", apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_ONCE, "once", 0, false},
+		{"allow_session", apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_SESSION, "once", 1, false},
+		{"deny", apiv1.PermissionChoice_PERMISSION_CHOICE_DENY, "reject", 0, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -248,7 +248,7 @@ func TestAnsweringASessionAskKeepsTheAbsoluteTargetOffTheConversationProject(t *
 				t.Errorf("ask key = %q, want the target's directory", ask.Key)
 			}
 			if _, err := s.ReplyPermissionAsk(tenantCtx(), connectReq(&apiv1.ReplyPermissionAskRequest{
-				ConversationId: "conv_1", AskId: "perm_1", Choice: apiv1.PermissionChoice_ALLOW_SESSION,
+				ConversationId: "conv_1", AskId: "perm_1", Choice: apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_SESSION,
 			})); err != nil {
 				t.Errorf("reply: %v", err)
 			}

@@ -33,28 +33,28 @@ const (
 type PermissionChoice int32
 
 const (
-	PermissionChoice_CHOICE_UNSPECIFIED PermissionChoice = 0
-	// ALLOW_ONCE proceeds for this single call; the same call asks again.
-	PermissionChoice_ALLOW_ONCE PermissionChoice = 1
-	// ALLOW_SESSION records an in-memory directory grant for the conversation.
-	PermissionChoice_ALLOW_SESSION PermissionChoice = 2
-	// DENY refuses the call; the refusal reaches the model as the tool result.
-	PermissionChoice_DENY PermissionChoice = 3
+	PermissionChoice_PERMISSION_CHOICE_UNSPECIFIED PermissionChoice = 0
+	// PERMISSION_CHOICE_ALLOW_ONCE proceeds for this single call; the same call asks again.
+	PermissionChoice_PERMISSION_CHOICE_ALLOW_ONCE PermissionChoice = 1
+	// PERMISSION_CHOICE_ALLOW_SESSION records an in-memory directory grant for the conversation.
+	PermissionChoice_PERMISSION_CHOICE_ALLOW_SESSION PermissionChoice = 2
+	// PERMISSION_CHOICE_DENY refuses the call; the refusal reaches the model as the tool result.
+	PermissionChoice_PERMISSION_CHOICE_DENY PermissionChoice = 3
 )
 
 // Enum value maps for PermissionChoice.
 var (
 	PermissionChoice_name = map[int32]string{
-		0: "CHOICE_UNSPECIFIED",
-		1: "ALLOW_ONCE",
-		2: "ALLOW_SESSION",
-		3: "DENY",
+		0: "PERMISSION_CHOICE_UNSPECIFIED",
+		1: "PERMISSION_CHOICE_ALLOW_ONCE",
+		2: "PERMISSION_CHOICE_ALLOW_SESSION",
+		3: "PERMISSION_CHOICE_DENY",
 	}
 	PermissionChoice_value = map[string]int32{
-		"CHOICE_UNSPECIFIED": 0,
-		"ALLOW_ONCE":         1,
-		"ALLOW_SESSION":      2,
-		"DENY":               3,
+		"PERMISSION_CHOICE_UNSPECIFIED":   0,
+		"PERMISSION_CHOICE_ALLOW_ONCE":    1,
+		"PERMISSION_CHOICE_ALLOW_SESSION": 2,
+		"PERMISSION_CHOICE_DENY":          3,
 	}
 )
 
@@ -2196,7 +2196,7 @@ func (x *ReplyPermissionAskRequest) GetChoice() PermissionChoice {
 	if x != nil {
 		return x.Choice
 	}
-	return PermissionChoice_CHOICE_UNSPECIFIED
+	return PermissionChoice_PERMISSION_CHOICE_UNSPECIFIED
 }
 
 // ReplyPermissionAskResponse reports whether the decision was applied.
@@ -2398,13 +2398,12 @@ const file_orchicon_api_v1_ask_orchicon_service_proto_rawDesc = "" +
 	"\x1aReplyPermissionAskResponse\x12\x18\n" +
 	"\aapplied\x18\x01 \x01(\bR\aapplied\x12\x18\n" +
 	"\aexpired\x18\x02 \x01(\bR\aexpired\x12\x16\n" +
-	"\x06detail\x18\x03 \x01(\tR\x06detail*W\n" +
-	"\x10PermissionChoice\x12\x16\n" +
-	"\x12CHOICE_UNSPECIFIED\x10\x00\x12\x0e\n" +
-	"\n" +
-	"ALLOW_ONCE\x10\x01\x12\x11\n" +
-	"\rALLOW_SESSION\x10\x02\x12\b\n" +
-	"\x04DENY\x10\x032\xba\x10\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail*\x98\x01\n" +
+	"\x10PermissionChoice\x12!\n" +
+	"\x1dPERMISSION_CHOICE_UNSPECIFIED\x10\x00\x12 \n" +
+	"\x1cPERMISSION_CHOICE_ALLOW_ONCE\x10\x01\x12#\n" +
+	"\x1fPERMISSION_CHOICE_ALLOW_SESSION\x10\x02\x12\x1a\n" +
+	"\x16PERMISSION_CHOICE_DENY\x10\x032\xba\x10\n" +
 	"\x12AskOrchiconService\x12j\n" +
 	"\x11ListConversations\x12).orchicon.api.v1.ListConversationsRequest\x1a*.orchicon.api.v1.ListConversationsResponse\x12d\n" +
 	"\x0fGetConversation\x12'.orchicon.api.v1.GetConversationRequest\x1a(.orchicon.api.v1.GetConversationResponse\x12m\n" +

@@ -24,37 +24,37 @@ import { ModelCapabilities } from "./ai_gateway_pb.js";
  */
 export enum PermissionChoice {
   /**
-   * @generated from enum value: CHOICE_UNSPECIFIED = 0;
+   * @generated from enum value: PERMISSION_CHOICE_UNSPECIFIED = 0;
    */
-  CHOICE_UNSPECIFIED = 0,
+  UNSPECIFIED = 0,
 
   /**
-   * ALLOW_ONCE proceeds for this single call; the same call asks again.
+   * PERMISSION_CHOICE_ALLOW_ONCE proceeds for this single call; the same call asks again.
    *
-   * @generated from enum value: ALLOW_ONCE = 1;
+   * @generated from enum value: PERMISSION_CHOICE_ALLOW_ONCE = 1;
    */
   ALLOW_ONCE = 1,
 
   /**
-   * ALLOW_SESSION records an in-memory directory grant for the conversation.
+   * PERMISSION_CHOICE_ALLOW_SESSION records an in-memory directory grant for the conversation.
    *
-   * @generated from enum value: ALLOW_SESSION = 2;
+   * @generated from enum value: PERMISSION_CHOICE_ALLOW_SESSION = 2;
    */
   ALLOW_SESSION = 2,
 
   /**
-   * DENY refuses the call; the refusal reaches the model as the tool result.
+   * PERMISSION_CHOICE_DENY refuses the call; the refusal reaches the model as the tool result.
    *
-   * @generated from enum value: DENY = 3;
+   * @generated from enum value: PERMISSION_CHOICE_DENY = 3;
    */
   DENY = 3,
 }
 // Retrieve enum metadata with: proto3.getEnumType(PermissionChoice)
 proto3.util.setEnumType(PermissionChoice, "orchicon.api.v1.PermissionChoice", [
-  { no: 0, name: "CHOICE_UNSPECIFIED" },
-  { no: 1, name: "ALLOW_ONCE" },
-  { no: 2, name: "ALLOW_SESSION" },
-  { no: 3, name: "DENY" },
+  { no: 0, name: "PERMISSION_CHOICE_UNSPECIFIED" },
+  { no: 1, name: "PERMISSION_CHOICE_ALLOW_ONCE" },
+  { no: 2, name: "PERMISSION_CHOICE_ALLOW_SESSION" },
+  { no: 3, name: "PERMISSION_CHOICE_DENY" },
 ]);
 
 /**
@@ -1745,7 +1745,7 @@ export class ReplyPermissionAskRequest extends Message<ReplyPermissionAskRequest
   /**
    * @generated from field: orchicon.api.v1.PermissionChoice choice = 3;
    */
-  choice = PermissionChoice.CHOICE_UNSPECIFIED;
+  choice = PermissionChoice.UNSPECIFIED;
 
   constructor(data?: PartialMessage<ReplyPermissionAskRequest>) {
     super();
