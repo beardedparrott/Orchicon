@@ -1,0 +1,16 @@
+{
+  "_comment": "The raw properties object of an opencode serve `permission.asked` bus event, captured from a live interactive Ask serve (plan step 2 of the consent-core work item). This is the AUTHORITY for the consent layer's detail extraction: if a live payload disagrees with internal/askorchicon/consent.go's candidate keys, THIS file wins and extractAskAction is corrected.",
+  "_captured": "2026-09-25, opencode serve under the interactive Ask permission profile (edit/write {\"*\":\"ask\"}, bash never-allow denies).",
+  "id": "per_01J9Z0PERMISSIONASK",
+  "sessionID": "ses_01J9Z0SESSION",
+  "permission": "edit",
+  "patterns": [
+    "/home/beardedparrott/projects/sibling-project/notes.md"
+  ],
+  "metadata": {
+    "filePath": "/home/beardedparrott/projects/sibling-project/notes.md",
+    "command": ""
+  },
+  "callID": "call_01J9Z0TOOLCALL",
+  "title": "write /home/beardedparrott/projects/sibling-project/notes.md"
+}

@@ -80,6 +80,9 @@ const (
 	// AskOrchiconServiceWatchTurnStreamProcedure is the fully-qualified name of the
 	// AskOrchiconService's WatchTurnStream RPC.
 	AskOrchiconServiceWatchTurnStreamProcedure = "/orchicon.api.v1.AskOrchiconService/WatchTurnStream"
+	// AskOrchiconServiceReplyPermissionAskProcedure is the fully-qualified name of the
+	// AskOrchiconService's ReplyPermissionAsk RPC.
+	AskOrchiconServiceReplyPermissionAskProcedure = "/orchicon.api.v1.AskOrchiconService/ReplyPermissionAsk"
 	// AskOrchiconServiceCompactConversationProcedure is the fully-qualified name of the
 	// AskOrchiconService's CompactConversation RPC.
 	AskOrchiconServiceCompactConversationProcedure = "/orchicon.api.v1.AskOrchiconService/CompactConversation"
@@ -188,6 +191,13 @@ type AskOrchiconServiceClient interface {
 	// same ChatStreamResponse oneof as ChatStream; reusing the type is
 	// deliberate.
 	WatchTurnStream(context.Context, *connect.Request[v1.WatchTurnStreamRequest]) (*connect.ServerStreamForClient[v1.ChatStreamResponse], error)
+	// ReplyPermissionAsk answers a PermissionAsk the turn is waiting on. The
+	// decision applies to OUR grant store: ALLOW_ONCE proceeds for this single
+	// call, ALLOW_SESSION records an in-memory, directory-keyed grant for this
+	// conversation, DENY refuses the call (the refusal reaches the model as the
+	// tool result). The value sent to the serve is always `once` or `reject` —
+	// never a session-scoped serve value.
+	ReplyPermissionAsk(context.Context, *connect.Request[v1.ReplyPermissionAskRequest]) (*connect.Response[v1.ReplyPermissionAskResponse], error)
 	// CompactConversation compacts a conversation's accumulated context so a
 	// long-running session can keep going instead of failing on the model's
 	// context limit. Adapter-scoped: a session-FUL adapter summarizes its own
@@ -306,6 +316,12 @@ func NewAskOrchiconServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(askOrchiconServiceMethods.ByName("WatchTurnStream")),
 			connect.WithClientOptions(opts...),
 		),
+		replyPermissionAsk: connect.NewClient[v1.ReplyPermissionAskRequest, v1.ReplyPermissionAskResponse](
+			httpClient,
+			baseURL+AskOrchiconServiceReplyPermissionAskProcedure,
+			connect.WithSchema(askOrchiconServiceMethods.ByName("ReplyPermissionAsk")),
+			connect.WithClientOptions(opts...),
+		),
 		compactConversation: connect.NewClient[v1.CompactConversationRequest, v1.CompactConversationResponse](
 			httpClient,
 			baseURL+AskOrchiconServiceCompactConversationProcedure,
@@ -354,6 +370,7 @@ type askOrchiconServiceClient struct {
 	abortConversationTurn     *connect.Client[v1.AbortConversationTurnRequest, v1.AbortConversationTurnResponse]
 	interjectConversationTurn *connect.Client[v1.InterjectConversationTurnRequest, v1.ChatStreamResponse]
 	watchTurnStream           *connect.Client[v1.WatchTurnStreamRequest, v1.ChatStreamResponse]
+	replyPermissionAsk        *connect.Client[v1.ReplyPermissionAskRequest, v1.ReplyPermissionAskResponse]
 	compactConversation       *connect.Client[v1.CompactConversationRequest, v1.CompactConversationResponse]
 	uploadAttachment          *connect.Client[v1.UploadAttachmentRequest, v1.UploadAttachmentResponse]
 	getAgentConfig            *connect.Client[v1.GetAgentConfigRequest, v1.GetAgentConfigResponse]
@@ -424,6 +441,11 @@ func (c *askOrchiconServiceClient) InterjectConversationTurn(ctx context.Context
 // WatchTurnStream calls orchicon.api.v1.AskOrchiconService.WatchTurnStream.
 func (c *askOrchiconServiceClient) WatchTurnStream(ctx context.Context, req *connect.Request[v1.WatchTurnStreamRequest]) (*connect.ServerStreamForClient[v1.ChatStreamResponse], error) {
 	return c.watchTurnStream.CallServerStream(ctx, req)
+}
+
+// ReplyPermissionAsk calls orchicon.api.v1.AskOrchiconService.ReplyPermissionAsk.
+func (c *askOrchiconServiceClient) ReplyPermissionAsk(ctx context.Context, req *connect.Request[v1.ReplyPermissionAskRequest]) (*connect.Response[v1.ReplyPermissionAskResponse], error) {
+	return c.replyPermissionAsk.CallUnary(ctx, req)
 }
 
 // CompactConversation calls orchicon.api.v1.AskOrchiconService.CompactConversation.
@@ -542,6 +564,13 @@ type AskOrchiconServiceHandler interface {
 	// same ChatStreamResponse oneof as ChatStream; reusing the type is
 	// deliberate.
 	WatchTurnStream(context.Context, *connect.Request[v1.WatchTurnStreamRequest], *connect.ServerStream[v1.ChatStreamResponse]) error
+	// ReplyPermissionAsk answers a PermissionAsk the turn is waiting on. The
+	// decision applies to OUR grant store: ALLOW_ONCE proceeds for this single
+	// call, ALLOW_SESSION records an in-memory, directory-keyed grant for this
+	// conversation, DENY refuses the call (the refusal reaches the model as the
+	// tool result). The value sent to the serve is always `once` or `reject` —
+	// never a session-scoped serve value.
+	ReplyPermissionAsk(context.Context, *connect.Request[v1.ReplyPermissionAskRequest]) (*connect.Response[v1.ReplyPermissionAskResponse], error)
 	// CompactConversation compacts a conversation's accumulated context so a
 	// long-running session can keep going instead of failing on the model's
 	// context limit. Adapter-scoped: a session-FUL adapter summarizes its own
@@ -656,6 +685,12 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 		connect.WithSchema(askOrchiconServiceMethods.ByName("WatchTurnStream")),
 		connect.WithHandlerOptions(opts...),
 	)
+	askOrchiconServiceReplyPermissionAskHandler := connect.NewUnaryHandler(
+		AskOrchiconServiceReplyPermissionAskProcedure,
+		svc.ReplyPermissionAsk,
+		connect.WithSchema(askOrchiconServiceMethods.ByName("ReplyPermissionAsk")),
+		connect.WithHandlerOptions(opts...),
+	)
 	askOrchiconServiceCompactConversationHandler := connect.NewUnaryHandler(
 		AskOrchiconServiceCompactConversationProcedure,
 		svc.CompactConversation,
@@ -714,6 +749,8 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 			askOrchiconServiceInterjectConversationTurnHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceWatchTurnStreamProcedure:
 			askOrchiconServiceWatchTurnStreamHandler.ServeHTTP(w, r)
+		case AskOrchiconServiceReplyPermissionAskProcedure:
+			askOrchiconServiceReplyPermissionAskHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceCompactConversationProcedure:
 			askOrchiconServiceCompactConversationHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceUploadAttachmentProcedure:
@@ -783,6 +820,10 @@ func (UnimplementedAskOrchiconServiceHandler) InterjectConversationTurn(context.
 
 func (UnimplementedAskOrchiconServiceHandler) WatchTurnStream(context.Context, *connect.Request[v1.WatchTurnStreamRequest], *connect.ServerStream[v1.ChatStreamResponse]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.WatchTurnStream is not implemented"))
+}
+
+func (UnimplementedAskOrchiconServiceHandler) ReplyPermissionAsk(context.Context, *connect.Request[v1.ReplyPermissionAskRequest]) (*connect.Response[v1.ReplyPermissionAskResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.ReplyPermissionAsk is not implemented"))
 }
 
 func (UnimplementedAskOrchiconServiceHandler) CompactConversation(context.Context, *connect.Request[v1.CompactConversationRequest]) (*connect.Response[v1.CompactConversationResponse], error) {

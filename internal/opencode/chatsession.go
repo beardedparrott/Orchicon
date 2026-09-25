@@ -141,6 +141,16 @@ func (a *Adapter) ReplyPermission(ctx context.Context, sessionID, permissionID s
 	return c.ReplyPermission(ctx, sessionID, permissionID)
 }
 
+// ReplyPermissionDecision implements scheduler.ChatTurnClient with an explicit
+// serve response value.
+func (a *Adapter) ReplyPermissionDecision(ctx context.Context, sessionID, permissionID, decision string) error {
+	c, err := a.ensureHostServeClient(ctx)
+	if err != nil {
+		return err
+	}
+	return c.ReplyPermissionDecision(ctx, sessionID, permissionID, decision)
+}
+
 // Subscribe implements scheduler.ChatTurnClient. It opens the host serve's
 // /event SSE stream (multiplexing ALL sessions) and adapts each raw BusEvent
 // onto the scheduler-neutral SessionEvent surface, applying the mid-generation
@@ -243,6 +253,10 @@ func (a *ClientSessionAdapter) AbortConversationSession(ctx context.Context, ses
 
 func (a *ClientSessionAdapter) ReplyPermission(ctx context.Context, sessionID, permissionID string) error {
 	return a.sc.ReplyPermission(ctx, sessionID, permissionID)
+}
+
+func (a *ClientSessionAdapter) ReplyPermissionDecision(ctx context.Context, sessionID, permissionID, decision string) error {
+	return a.sc.ReplyPermissionDecision(ctx, sessionID, permissionID, decision)
 }
 
 func (a *ClientSessionAdapter) Subscribe(ctx context.Context, conversationID string) (scheduler.SessionBus, error) {

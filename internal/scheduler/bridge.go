@@ -241,6 +241,12 @@ type ChatTurnClient interface {
 	AbortConversationSession(ctx context.Context, sessionID string) error
 	// ReplyPermission auto-approves a permission.asked signal.
 	ReplyPermission(ctx context.Context, sessionID, permissionID string) error
+	// ReplyPermissionDecision answers a permission.asked signal with an
+	// explicit serve response value ("once" | "reject"). The consent core
+	// uses it: "once" proceeds for the single call, "reject" turns the ask
+	// into a tool error the model sees. The SESSION decision lives in the
+	// caller's grant store, never in a serve-side response value.
+	ReplyPermissionDecision(ctx context.Context, sessionID, permissionID, decision string) error
 }
 
 // SessionOwner is the OPTIONAL capability for an adapter that can identify

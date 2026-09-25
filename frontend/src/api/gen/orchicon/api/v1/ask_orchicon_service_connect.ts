@@ -11,7 +11,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CompactConversationRequest, CompactConversationResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, InterjectConversationTurnRequest, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, SetConversationModelRequest, SetConversationModelResponse, SetConversationModeRequest, SetConversationModeResponse, SetConversationProjectRequest, SetConversationProjectResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse, WatchTurnStreamRequest } from "./ask_orchicon_service_pb.js";
+import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CompactConversationRequest, CompactConversationResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, InterjectConversationTurnRequest, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, ReplyPermissionAskRequest, ReplyPermissionAskResponse, SetConversationModelRequest, SetConversationModelResponse, SetConversationModeRequest, SetConversationModeResponse, SetConversationProjectRequest, SetConversationProjectResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse, WatchTurnStreamRequest } from "./ask_orchicon_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -227,6 +227,22 @@ export const AskOrchiconService = {
       I: WatchTurnStreamRequest,
       O: ChatStreamResponse,
       kind: MethodKind.ServerStreaming,
+    },
+    /**
+     * ReplyPermissionAsk answers a PermissionAsk the turn is waiting on. The
+     * decision applies to OUR grant store: ALLOW_ONCE proceeds for this single
+     * call, ALLOW_SESSION records an in-memory, directory-keyed grant for this
+     * conversation, DENY refuses the call (the refusal reaches the model as the
+     * tool result). The value sent to the serve is always `once` or `reject` —
+     * never a session-scoped serve value.
+     *
+     * @generated from rpc orchicon.api.v1.AskOrchiconService.ReplyPermissionAsk
+     */
+    replyPermissionAsk: {
+      name: "ReplyPermissionAsk",
+      I: ReplyPermissionAskRequest,
+      O: ReplyPermissionAskResponse,
+      kind: MethodKind.Unary,
     },
     /**
      * CompactConversation compacts a conversation's accumulated context so a

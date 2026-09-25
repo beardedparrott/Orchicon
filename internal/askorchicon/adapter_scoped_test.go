@@ -31,6 +31,9 @@ func (c *ownerKindClient) AbortConversationSession(ctx context.Context, sessionI
 func (c *ownerKindClient) ReplyPermission(ctx context.Context, sessionID, permissionID string) error {
 	return nil
 }
+func (c *ownerKindClient) ReplyPermissionDecision(ctx context.Context, sessionID, permissionID, decision string) error {
+	return nil
+}
 func (c *ownerKindClient) SessionOwnerKind() string { return c.kind }
 
 // noOwnerClient implements scheduler.ChatTurnClient but NOT
@@ -50,6 +53,9 @@ func (c *noOwnerClient) AbortConversationSession(ctx context.Context, sessionID 
 	return nil
 }
 func (c *noOwnerClient) ReplyPermission(ctx context.Context, sessionID, permissionID string) error {
+	return nil
+}
+func (c *noOwnerClient) ReplyPermissionDecision(ctx context.Context, sessionID, permissionID, decision string) error {
 	return nil
 }
 
