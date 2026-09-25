@@ -368,10 +368,10 @@ fi
 GUARD_PROJECT="${ORCHICON_GUARD_PROJECT:-}"
 GUARD_GRANTS="${ORCHICON_GUARD_GRANTS:-}"
 GUARD_ONCE="${ORCHICON_GUARD_ONCE:-}"
-# extglob: the shim spells "* but not across a slash" as '*([!/])' in
-# policy_entry_match, so a policy glob cannot match a path permpolicy.Decide
-# would not. It must be enabled BEFORE any function below is defined, because a
-# function body is parsed when its definition executes.
+# extglob: the shim spells "one path segment" as '*([!/])' in pem_translate,
+# so a policy glob cannot match a path permpolicy.Decide would not. It must be
+# enabled BEFORE any function below is defined, because a function body is
+# parsed when its definition executes.
 shopt -s extglob
 TAB=$(printf '\t')
 
@@ -425,49 +425,149 @@ policy_blocked() {
   exit 1
 }
 
-# policy_entry_match ENTRY TARGET — permpolicy.matchPattern's semantics, in
-# bash. It is the ONE place the shim's pattern matching is defined, and it is
-# written out because bash's own '*' CROSSES '/', while doublestar's does not: a
-# plain 'case "$target" in $entry' would let the shim deny — and, worse, ACCEPT
-# — a path permpolicy.Decide never matches, and the shim disagreeing with the
-# accessor it is supposed to read is exactly the drift this profile exists to
-# prevent.
+# --- doublestar matching, in bash ------------------------------------------
+# The shim must reach the SAME verdict permpolicy.Decide reaches for the same
+# (entry, target). The accessor is the ONE implementation of the rules; a shim
+# that disagrees either runs a command the operator DENIED (fail-open — the
+# failure this component exists to prevent) or refuses one they approved (drift:
+# a command that prompts and is then refused anyway). So these functions
+# reproduce permpolicy's matcher exactly instead of leaning on bash's own
+# globbing, whose '*' CROSSES '/' while doublestar's does not.
 #
-#   '~'    a leading tilde is expanded (the operator writes ~/.ssh/**, not the
-#          absolute home)
-#   '*'    one path segment — it does not cross '/'
-#   '?'    one character, never '/'
-#   '**'   anything, crossing '/' freely AND able to match ZERO segments
-#          ('a/**/x' covers 'a/x'), which is why the pattern is also retried
-#          with each '/**/' run collapsed
-#   '/**'  at the end also covers the directory itself ('~/.ssh/**' covers
-#          '~/.ssh')
-policy_entry_match() {
-  local entry="$1" target="$2" pat translated
-  case "$entry" in
-    '~') pat="$HOME" ;;
-    '~/'*) pat="$HOME/${entry#\~/}" ;;
-    *) pat="$entry" ;;
+#    '~' / '$HOME'  a leading home reference is expanded (the operator writes
+#                   ~/.ssh/**, not the absolute home) — on BOTH sides, because
+#                   permpolicy.matchAny tries either spelling of the target
+#    '*'            one path segment — it never crosses '/'
+#    '?'            one character, never '/'
+#    '[...]'        a character class, as the accessor's matcher reads it
+#    '{a,b}'        alternation (one level; see pem_brace_to_extglob)
+#    '**'           anything, crossing '/' freely AND able to match ZERO
+#                   segments ('a/**/x' covers 'a/x')
+#    '/**' at the end also covers the directory itself ('~/.ssh/**' covers
+#                   '~/.ssh')
+
+# pem_expand_home PATH — permpolicy.expandHome.
+pem_expand_home() {
+  local p="$1"
+  case "$p" in
+    '~') printf '%s' "$HOME" ;;
+    '~/'*) printf '%s' "$HOME/${p#\~/}" ;;
+    '$HOME'|'${HOME}') printf '%s' "$HOME" ;;
+    '$HOME/'*) printf '%s' "$HOME/${p#\$HOME/}" ;;
+    '${HOME}/'*) printf '%s' "$HOME/${p#\${HOME}/}" ;;
+    *) printf '%s' "$p" ;;
   esac
-  case "$pat" in
-    */'**') [ "${pat%/\*\*}" = "$target" ] && return 0 ;;
-  esac
+}
+
+# pem_brace_to_extglob PAT — print PAT with each one-level {a,b} group turned
+# into the extglob alternation @(a|b), so a pattern the accessor's matcher
+# accepts matches here too. Returns 1 for a brace group this translation cannot
+# express (nested or unbalanced); the caller decides what that means — the
+# interactive profile FAILS CLOSED, the worker profile drops the entry, which is
+# what a bare bash 'case' would have done with it anyway.
+pem_brace_to_extglob() {
+  local trans="$1" head tail body rest
   while :; do
-    translated="${pat//'**'/$(printf '\1')}"
-    translated="${translated//'*'/'*([!/])'}"
-    translated="${translated//'?'/'[!/]'}"
-    translated="${translated//$(printf '\1')/'*'}"
-    case "$target" in
-      $translated) return 0 ;;
+    case "$trans" in
+      *'{'*) ;;
+      *) break ;;
     esac
-    case "$pat" in
-      *'**/'*)
-        # '**' matches zero path segments too: retry with one run collapsed.
-        pat="${pat%%'**/'*}${pat#*'**/'}"
-        ;;
+    head="${trans%%\{*}"
+    tail="${trans#*\{}"
+    case "$tail" in
+      *'}'*) body="${tail%%\}*}"; rest="${tail#*\}}" ;;
       *) return 1 ;;
     esac
+    case "$body" in
+      *'{'*|*'}'*) return 1 ;;
+    esac
+    trans="${head}@(${body//,/|})${rest}"
   done
+  case "$trans" in
+    *'}'*) return 1 ;;
+  esac
+  printf '%s' "$trans"
+}
+
+# pem_translate PAT — the bash case pattern equivalent to the doublestar pattern
+# PAT, or return 1 when PAT cannot be vouched for. A backslash escape or an
+# unbalanced '[' is in that last class: the accessor's parser REJECTS such a file
+# outright, so guessing here would be the shim deciding a policy the operator was
+# never told about.
+pem_translate() {
+  local pat trans sent=$'\1' open close
+  pat=$(pem_brace_to_extglob "$1") || return 1
+  case "$pat" in
+    *'\'*) return 1 ;;
+  esac
+  # Balanced '[' / ']' — counted in bash (no external tr/wc per entry).
+  open="${pat//\[/}"
+  close="${pat//\]/}"
+  [ "$(( ${#pat} - ${#open} ))" = "$(( ${#pat} - ${#close} ))" ] || return 1
+  trans="${pat//'**'/$sent}"
+  trans="${trans//'*'/'*([!/])'}"
+  trans="${trans//'?'/'[!/]'}"
+  trans="${trans//$sent/'*'}"
+  printf '%s' "$trans"
+}
+
+# pem_variants PAT — print every spelling of PAT in which any subset of its
+# '/**/' runs is collapsed. '**' matches ZERO path segments too ('a/**/x' covers
+# 'a/x'), and with '/'-separated components that is only expressible as several
+# case patterns: collapsing one run at a time stops at the monotone chain, so
+# 'a/**/b/**/c' would never match 'a/x/b/c'. A pattern ending in '/**' also
+# covers the directory itself, so the bare prefix is a variant too. The count is
+# 2^(number of '/**/' runs) — a handful, and only for path-scoped policy entries.
+pem_variants() {
+  local pre rest sub
+  case "$1" in
+    */'**') printf '%s\n' "${1%'/**'}" ;;
+  esac
+  case "$1" in
+    *'**/'*)
+      pre="${1%%'**/'*}"
+      rest="${1#*'**/'}"
+      pem_variants "${pre}${rest}"
+      while IFS= read -r sub; do
+        printf '%s\n' "${pre}**/${sub}"
+      done < <(pem_variants "$rest")
+      ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+# pem_entry_patterns ENTRY — the newline-separated case patterns ENTRY covers,
+# or return 1 when ENTRY cannot be translated faithfully.
+pem_entry_patterns() {
+  local pats="" v trans
+  while IFS= read -r v; do
+    trans=$(pem_translate "$v") || return 1
+    pats="${pats}${trans}"$'\n'
+  done < <(pem_variants "$(pem_expand_home "$1")")
+  printf '%s' "$pats"
+}
+
+# pem_match PATTERNS TARGET — 0 when TARGET matches one of the case patterns.
+pem_match() {
+  local p
+  [ -n "$1" ] || return 1
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    case "$2" in $p) return 0 ;; esac
+  done < <(printf '%s\n' "$1")
+  return 1
+}
+
+# pem_match_either PATTERNS TARGET — match the target as written or
+# home-expanded, mirroring permpolicy.matchAny's candidate set.
+pem_match_either() {
+  local alt
+  pem_match "$1" "$2" && return 0
+  alt=$(pem_expand_home "$2")
+  if [ "$alt" != "$2" ]; then
+    pem_match "$1" "$alt" && return 0
+  fi
+  return 1
 }
 
 # policy_lookup STRICTLY parses the policy file and records what it says about
@@ -494,7 +594,7 @@ policy_entry_match() {
 # change takes effect on the very next command — no watcher, no cache, no
 # staleness window.
 policy_lookup() {
-  local target="$1" line section entry pat i
+  local target="$1" line section entry pat pats i
   POLICY_VERDICT=""
   POLICY_ENTRY=""
   [ -n "$POLICY_FILE" ] || return 0
@@ -505,6 +605,8 @@ policy_lookup() {
     return 0
   fi
   local -a deny_entries=() accept_entries=()
+  # The entries' translated case patterns, in the same order (see pem_*).
+  local -a deny_patterns=() accept_patterns=()
   section=""
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
@@ -540,10 +642,23 @@ policy_lookup() {
         pat="${pat#\'}"
         [ -n "$pat" ] || continue
         entry="$pat"
+        if ! pats=$(pem_entry_patterns "$entry"); then
+          # An entry this translation cannot vouch for. The interactive profile
+          # REFUSES (a policy that cannot be evaluated faithfully is worse than
+          # no policy, because the operator believes it is in force); the worker
+          # profile keeps its historical lenient read of such an entry — a bare
+          # bash 'case' never matched it either.
+          if [ -n "$INTERACTIVE" ]; then
+            failed_closed "$POLICY_FILE" "entry '$entry' is not a pattern the guard can evaluate"
+          fi
+          continue
+        fi
         if [ "$section" = "deny" ]; then
           deny_entries+=("$entry")
+          deny_patterns+=("$pats")
         else
           accept_entries+=("$entry")
+          accept_patterns+=("$pats")
         fi
         ;;
       *)
@@ -555,14 +670,14 @@ policy_lookup() {
 
   # The accessor's precedence: the deny list in full, then the accept list.
   for ((i = 0; i < ${#deny_entries[@]}; i++)); do
-    if policy_entry_match "${deny_entries[i]}" "$target"; then
+    if pem_match_either "${deny_patterns[i]}" "$target"; then
       POLICY_VERDICT="deny"
       POLICY_ENTRY="${deny_entries[i]}"
       return 0
     fi
   done
   for ((i = 0; i < ${#accept_entries[@]}; i++)); do
-    if policy_entry_match "${accept_entries[i]}" "$target"; then
+    if pem_match_either "${accept_patterns[i]}" "$target"; then
       POLICY_VERDICT="accept"
       POLICY_ENTRY="${accept_entries[i]}"
       return 0
