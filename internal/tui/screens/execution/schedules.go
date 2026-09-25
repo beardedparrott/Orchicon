@@ -12,27 +12,38 @@ package execution
 // deliberately not three submenu entries (three entries would suggest three independent
 // surfaces rather than three lenses on one).
 //
-//   upcoming  work items with status SCHEDULED (recurring items live on Automation → Recurring
-//             Items in the GUI, and are EXCLUDED here for the same reason)
+//   upcoming  work items with status SCHEDULED, PLUS the PENDING children of an active sequence
+//             parent — derived, because only the parent carries a scheduled_start_at, so the
+//             children never match the SCHEDULED query (frontend/src/routes/schedules.tsx:443-452
+//             QueuedSection). Recurring items live on Automation → Recurring Items in the GUI and
+//             are EXCLUDED here for the same reason the GUI excludes them.
 //   running   work items whose bound workflow run is in flight (RUNNING / CHECKPOINTING /
 //             RECOVERING), plus the sequence parents that drive a chain
 //   finished  workflow runs that have actually RUN (a started_at), which is the GUI's history
 //             view
 //
 // MEMBERSHIP IS THE GUI'S, on purpose — the same predicates, so the two clients cannot disagree
-// about what is scheduled. See frontend/src/lib/schedules-model.ts: ACTIVE_RUNNING_STATUSES is
-// the same three statuses, and the sequence-parent extension is the same rule.
+// about what is scheduled. All THREE membership sources live in frontend/src/lib/schedules-model.ts:
+//
+//   upcoming = SCHEDULED ∪ the queued sequence children (queuedSequenceChildren, :80-93)
+//   running  = ACTIVE_RUNNING_STATUSES (:48) plus the sequence-parent extension
+//              (activeSequenceParentIds, :58-71)
+//   finished = a run with a real started_at (isHistoryRun, :104-106)
+//
+// Upcoming is the one that used to be short a source — the queued half above is its fix.
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
 
 	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/mutate"
@@ -72,13 +83,14 @@ func (v schedView) label() string {
 	return "upcoming"
 }
 
-// schedListCap bounds the tenant-wide read the RUNNING view needs.
+// schedListCap bounds the tenant-wide BROAD read the two client-derived lenses share: the RUNNING
+// view and upcoming's queued half.
 //
-// That view is derived client-side (the API takes one status filter, and the sequence-parent
-// rule needs the parent/child relations), so it reads a page of items rather than asking for
-// the exact set. Upcoming and finished are server-filtered and paginated, so this cap only ever
-// applies to running — and the pane SAYS it when the cap is reached rather than silently
-// truncating.
+// Both are derived client-side (the API takes one status filter, and the sequence rules need the
+// parent/child relations), so they read one page of items rather than asking for the exact set.
+// Upcoming's SCHEDULED half and the finished view stay server-filtered and paginated, so the cap
+// applies to those two derivations only — and the pane SAYS it when the cap is reached, naming the
+// lens, rather than silently truncating.
 const schedListCap = 500
 
 // activeRunStatuses are the run-bound statuses that mean "in flight" — the same set as the
@@ -118,7 +130,17 @@ func (m *Model) fetchSchedules(ctx context.Context, pageToken string) ([]screenk
 	}
 }
 
-// fetchUpcomingSchedules lists the SCHEDULED work items, server-filtered and paginated.
+// fetchUpcomingSchedules lists the SCHEDULED work items, server-filtered and paginated, PLUS the
+// queued sequence children derived from the broad read — the TWO membership sources the GUI's
+// Upcoming view unions (frontend/src/routes/schedules.tsx:430-452).
+//
+// The second source is not optional: a sequence parent is the only item that carries a
+// scheduled_start_at (the engine resets its children to PENDING and arms one at a time), so the
+// children NEVER match the SCHEDULED query. Without this read the pane showed "nothing scheduled
+// here" for a tenant whose GUI Upcoming was full of queued children.
+//
+// The derivation runs on the FIRST page only: the queue is a client-derived block with no cursor of
+// its own, so repeating it on every page would duplicate it N times.
 func (m *Model) fetchUpcomingSchedules(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {
 	status := apiv1.WorkItemStatus_WORK_ITEM_STATUS_SCHEDULED
 	resp, err := m.cl.WorkItems.ListWorkItems(ctx, connect.NewRequest(&apiv1.ListWorkItemsRequest{
@@ -132,8 +154,49 @@ func (m *Model) fetchUpcomingSchedules(ctx context.Context, pageToken string) ([
 	if err != nil {
 		return nil, "", err
 	}
+
 	items := make([]screenkit.Item, 0, len(resp.Msg.GetWorkItems()))
+	seen := map[string]bool{}
+	capRead := len(resp.Msg.GetWorkItems())
+	if pageToken == "" {
+		// THE SECOND MEMBERSHIP SOURCE (see the file header). The same broad, capped read the
+		// RUNNING lens performs — one status-less page of the tenant's items, filtered with the
+		// same RECURRING/IDEA scopes so the two lenses cannot disagree about one tenant.
+		// DECISION (revisitable): the GUI's allItems read passes NEITHER filter and IS
+		// project-scoped (schedules.tsx:433-436); this pane has no project filter, and the
+		// filtered variant is the safe default — a sequence parent is neither recurring nor idea.
+		all, err := m.allWorkItems(ctx)
+		if err != nil {
+			return nil, "", err
+		}
+		capRead = len(all)
+		// Queued children come FIRST, mirroring the GUI's QueuedSection above the agenda
+		// (schedules.tsx:520), and in CHAIN order (queuedSequenceChildren sorts them).
+		for _, w := range queuedSequenceChildren(all) {
+			seen[w.GetId()] = true
+			// ALWAYS "" — deliberately NOT w.GetWorkflowRunId(). A queued child has not fired, so
+			// registering "" is what makes `g` refuse with "this schedule has not fired yet" and
+			// `x` cancel the child, with no new row type and no second jump/cancel path.
+			//
+			// The item's own run id is NOT empty in every case, so passing it through would be a
+			// real bug: resetSubtree (internal/scheduler/sequence_reconciler.go) resets a
+			// non-terminal descendant to PENDING with a STATUS-ONLY update, so a re-run sequence's
+			// previously-failed child keeps its OLD workflow_run_id. `g` on that row would jump to
+			// a finished run of an earlier attempt while the row says "waits for the current step".
+			m.sched.remember(w.GetId(), "")
+			items = append(items, screenkit.Item{
+				ID:    w.GetId(),
+				Title: w.GetTitle(),
+				// The GUI QueuedCard's own sentence (schedules.tsx:658), lowercased like every
+				// other meta on this pane.
+				Meta: "queued — waits for the current step",
+			})
+		}
+	}
 	for _, w := range resp.Msg.GetWorkItems() {
+		if seen[w.GetId()] {
+			continue // union by id, not concatenation: a row must never appear twice
+		}
 		m.sched.remember(w.GetId(), w.GetWorkflowRunId())
 		items = append(items, screenkit.Item{
 			ID:    w.GetId(),
@@ -141,8 +204,26 @@ func (m *Model) fetchUpcomingSchedules(ctx context.Context, pageToken string) ([
 			Meta:  "scheduled " + screenkit.FmtTime(w.GetScheduledStartAt()),
 		})
 	}
-	items = append(items, m.schedCapNote(len(items))...)
+	items = append(items, m.schedCapNote(capRead)...)
 	return items, resp.Msg.GetNextPageToken(), nil
+}
+
+// allWorkItems is the broad, capped read the two client-derived lenses SHARE (running, and
+// upcoming's queued half). One definition, never two.
+//
+// The API takes one status filter and the sequence rules need the parent/child relations, so this
+// trades exactness for one page — and the pane SAYS so when the cap is reached (schedCapNote)
+// rather than presenting a truncated list as complete.
+func (m *Model) allWorkItems(ctx context.Context) ([]*apiv1.WorkItem, error) {
+	resp, err := m.cl.WorkItems.ListWorkItems(ctx, connect.NewRequest(&apiv1.ListWorkItemsRequest{
+		RecurringFilter: apiv1.RecurringFilter_RECURRING_FILTER_EXCLUDE_RECURRING,
+		IdeaScope:       apiv1.IdeaScope_IDEA_SCOPE_EXCLUDE_IDEA,
+		PageSize:        schedListCap,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetWorkItems(), nil
 }
 
 // fetchRunningSchedules derives the in-flight set from one capped read.
@@ -151,15 +232,10 @@ func (m *Model) fetchUpcomingSchedules(ctx context.Context, pageToken string) ([
 // it is an active SEQUENCE PARENT (no bound run of its own — the chain resets its children to
 // pending and arms one at a time, so only the parent carries the active status).
 func (m *Model) fetchRunningSchedules(ctx context.Context) ([]screenkit.Item, string, error) {
-	resp, err := m.cl.WorkItems.ListWorkItems(ctx, connect.NewRequest(&apiv1.ListWorkItemsRequest{
-		RecurringFilter: apiv1.RecurringFilter_RECURRING_FILTER_EXCLUDE_RECURRING,
-		IdeaScope:       apiv1.IdeaScope_IDEA_SCOPE_EXCLUDE_IDEA,
-		PageSize:        schedListCap,
-	}))
+	all, err := m.allWorkItems(ctx)
 	if err != nil {
 		return nil, "", err
 	}
-	all := resp.Msg.GetWorkItems()
 	parents := sequenceParentIDs(all)
 
 	var running []*apiv1.WorkItem
@@ -195,6 +271,15 @@ func (m *Model) fetchRunningSchedules(ctx context.Context) ([]screenkit.Item, st
 //
 // A run with no started_at has not run yet, so it is not "finished"; the plain Runs pane is
 // where every run lives, including the ones that never started.
+//
+// MEMBERSHIP matches the GUI's History exactly (a run with a real started_at — isHistoryRun,
+// frontend/src/lib/schedules-model.ts:104-106). This read is tenant-wide, which IS the GUI's
+// History when its project filter is empty (schedules.tsx:1057 "projectId: projectId || undefined"),
+// so there is no scope divergence. ORDER is the one known divergence: the GUI passes
+// sortBy: "started_at" (schedules.tsx:1058) while this read takes the server default id DESC
+// (internal/db/workflow.go:732-735). Both are newest-first for ULID ids, so the visible order is
+// near-identical — the difference is deliberately NOT changed here (verify, do not change on a
+// guess; and finished membership must stay put). Recorded as a follow-up.
 func (m *Model) fetchFinishedSchedules(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {
 	resp, err := m.cl.Workflows.ListWorkflowRuns(ctx, connect.NewRequest(&apiv1.ListWorkflowRunsRequest{
 		PageSize:  100,
@@ -222,15 +307,16 @@ func (m *Model) fetchFinishedSchedules(ctx context.Context, pageToken string) ([
 	return items, resp.Msg.GetNextPageToken(), nil
 }
 
-// schedCapNote renders the truncation marker when the running view hit its cap, so a long list
-// says it was cut instead of looking complete.
+// schedCapNote renders the truncation marker when the current view's broad read hit its cap, so a
+// long list says it was cut instead of looking complete. The message names the LENS it truncated,
+// because both client-derived lenses share the cap.
 func (m *Model) schedCapNote(read int) []screenkit.Item {
 	if read < schedListCap {
 		return nil
 	}
 	return []screenkit.Item{{
 		ID:    "sched:cap",
-		Title: fmt.Sprintf("(first %d items read — the running view is derived client-side)", schedListCap),
+		Title: fmt.Sprintf("(first %d items read — the %s view is derived client-side)", schedListCap, m.sched.view().label()),
 		Meta:  "truncated",
 	}}
 }
@@ -566,4 +652,68 @@ func sequenceParentIDs(items []*apiv1.WorkItem) map[string]bool {
 		}
 	}
 	return parents
+}
+
+// queuedChildStatus is the CHILD's own status in a sequence: PENDING. It is deliberately NOT a
+// member of activeRunStatuses — that set is the PARENT's, i.e. the statuses that mean "in flight".
+const queuedChildStatus = apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING
+
+// activeSequenceParentIDs mirrors activeSequenceParentIds (frontend/src/lib/schedules-model.ts:58-71):
+// an in-flight item with NO bound run of its own that is some item's parent — the chain container
+// the engine drives one child at a time.
+func activeSequenceParentIDs(items []*apiv1.WorkItem) map[string]bool {
+	parents := sequenceParentIDs(items)
+	active := map[string]bool{}
+	for _, it := range items {
+		if it.GetWorkflowRunId() == "" && activeRunStatuses[it.GetStatus()] && parents[it.GetId()] {
+			active[it.GetId()] = true
+		}
+	}
+	return active
+}
+
+// queuedSequenceChildren mirrors queuedSequenceChildren (frontend/src/lib/schedules-model.ts:80-93):
+// the PENDING children of an active sequence parent, in CHAIN order. A sequence parent carries the
+// only scheduled_start_at, so its children never match a SCHEDULED query — they are recovered from
+// the broad read, exactly as the GUI's Upcoming view recovers them (schedules.tsx:443-452).
+func queuedSequenceChildren(items []*apiv1.WorkItem) []*apiv1.WorkItem {
+	active := activeSequenceParentIDs(items)
+	var queued []*apiv1.WorkItem
+	for _, it := range items {
+		if it.GetParentId() == "" || !active[it.GetParentId()] {
+			continue // not a child of an active sequence parent
+		}
+		if it.GetStatus() != queuedChildStatus {
+			continue // an armed or finished child is not queued
+		}
+		queued = append(queued, it)
+	}
+	sort.SliceStable(queued, func(i, j int) bool { return chainOrderLess(queued[i], queued[j]) })
+	return queued
+}
+
+// chainOrderLess mirrors byChainOrder (frontend/src/components/work-items/sequence-utils.ts:26-31,
+// the GUI's single definition of chain order): sort_order rank (1-based; 0 = unset → LAST, matching
+// the backend's `ORDER BY sort_order NULLS LAST`), then created_at.
+func chainOrderLess(a, b *apiv1.WorkItem) bool {
+	ao, bo := a.GetSortOrder(), b.GetSortOrder()
+	if ao == 0 {
+		ao = math.MaxFloat64
+	}
+	if bo == 0 {
+		bo = math.MaxFloat64
+	}
+	if ao != bo {
+		return ao < bo
+	}
+	return tsMs(a.GetCreatedAt()) < tsMs(b.GetCreatedAt())
+}
+
+// tsMs is the Go twin of sequence-utils.ts tsToMs: a proto Timestamp in ms, 0 when absent (sorts
+// first, as tsToMs does).
+func tsMs(ts *timestamppb.Timestamp) int64 {
+	if ts == nil {
+		return 0
+	}
+	return ts.GetSeconds() * 1000
 }

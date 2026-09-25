@@ -1,0 +1,14 @@
+{
+  "items": [
+    { "id": "wi-seq", "title": "Epic chain", "status": "WORK_ITEM_STATUS_RUNNING", "sortOrder": 1 },
+    { "id": "wi-seq-3", "title": "Child three", "parentId": "wi-seq", "status": "WORK_ITEM_STATUS_PENDING", "sortOrder": 3, "createdAt": "2026-01-01T00:03:00Z" },
+    { "id": "wi-seq-1", "title": "Child one", "parentId": "wi-seq", "status": "WORK_ITEM_STATUS_RUNNING", "workflowRunId": "run-1", "sortOrder": 1, "createdAt": "2026-01-01T00:01:00Z" },
+    { "id": "wi-seq-2", "title": "Child two", "parentId": "wi-seq", "status": "WORK_ITEM_STATUS_PENDING", "sortOrder": 2, "createdAt": "2026-01-01T00:02:00Z" },
+    { "id": "wi-sched", "title": "Nightly", "status": "WORK_ITEM_STATUS_SCHEDULED", "scheduledStartAt": "2026-01-02T09:00:00Z", "sortOrder": 1 },
+    { "id": "wi-done-parent", "title": "Finished chain", "status": "WORK_ITEM_STATUS_SUCCEEDED", "sortOrder": 2 },
+    { "id": "wi-done-child", "title": "Never queued", "parentId": "wi-done-parent", "status": "WORK_ITEM_STATUS_PENDING", "sortOrder": 1 },
+    { "id": "wi-loose-pending", "title": "Loose", "status": "WORK_ITEM_STATUS_PENDING", "sortOrder": 3 }
+  ],
+  "wantQueued": ["wi-seq-2", "wi-seq-3"],
+  "wantUpcoming": ["wi-seq-2", "wi-seq-3", "wi-sched"]
+}
