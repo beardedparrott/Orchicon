@@ -329,6 +329,41 @@ func (s *Store) Read() (Policy, error) { return Load(s.Path) }
 // half-written policy.
 func (s *Store) Write(p Policy) error { return WriteFile(s.Path, p) }
 
+// DenyBelow returns the operator's DENY entries that this directory would NOT
+// override: the entries equal to dir or living BELOW it. Decide evaluates the
+// deny list BEFORE the session grant, so each returned entry still refuses its
+// own paths even after the directory is granted for the session.
+//
+// It answers the only precedence question a consent card can answer without
+// walking the disk: "if I grant this directory, which of your deny entries
+// keep refusing part of it?". Matching is a literal-path prefix test over the
+// ~-expanded entries (not a doublestar match): a glob entry like `**/.env`
+// relates to no directory and is not reported, while `~/.ssh/**` lives under
+// ~/.ssh and is. Entries are returned in the operator's own spelling, so a
+// card can name them.
+func (s *Store) DenyBelow(dir string) ([]string, error) {
+	d := filepath.Clean(expandHome(strings.TrimSpace(dir)))
+	if d == "" || d == "." {
+		return nil, nil
+	}
+	prefix := d
+	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
+		prefix += string(filepath.Separator)
+	}
+	p, err := s.Read()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range p.Deny {
+		pat := filepath.Clean(expandHome(e))
+		if pat == d || strings.HasPrefix(pat, prefix) {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
 // Consult is the READ-side query used for UI listings: does any entry
 // cover target? Deny wins over accept.
 func (s *Store) Consult(target string) (Decision, error) {

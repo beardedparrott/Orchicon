@@ -426,6 +426,23 @@ func (s *Service) WatchTurnStream(ctx context.Context, req *connect.Request[apiv
 	s.log.Info("ask orchicon watch re-attached to running turn", "conversation", req.Msg.ConversationId, "assistant_message", req.Msg.AssistantMessageId)
 	subID, ch := h.subscribe()
 	defer h.unsubscribe(subID)
+	// RE-ATTACH RECOVERY: this stream does not replay the turn's earlier events
+	// (the client fills those from ListMessages), but a consent ask is a PENDING
+	// question — dropping it on a refresh would leave a card in the transcript
+	// with no way to answer it, or a turn quietly waiting. So every still-open ask
+	// for the conversation is re-emitted to the LATE subscriber; the client
+	// dedupes by ask id, and a decided/finalized ask is not replayed (its outcome
+	// already landed).
+	for _, a := range s.pending.list(req.Msg.ConversationId) {
+		if !a.isOpen() {
+			continue
+		}
+		if err := stream.Send(permissionAskEvent(a)); err != nil {
+			s.log.Warn("ask orchicon watch: replaying a pending consent ask failed",
+				"conversation", req.Msg.ConversationId, "ask", a.AskID, "error", err)
+			return nil
+		}
+	}
 	for {
 		select {
 		case <-ctx.Done():

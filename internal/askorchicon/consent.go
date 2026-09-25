@@ -33,6 +33,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/neverallow"
@@ -449,14 +450,16 @@ func askSummary(a askAction) string {
 
 // grantStore records session grants: "allow for this directory" answers. It is
 // deliberately IN MEMORY with no persistence (C9): a plane restart clears it,
-// and a new conversation asks again. Keyed conversation id -> cleaned directory.
+// and a new conversation asks again. Keyed conversation id -> cleaned directory,
+// valued with the time the grant was recorded (the client lists grants and says
+// when each was given).
 type grantStore struct {
 	mu     sync.Mutex
-	byConv map[string]map[string]bool
+	byConv map[string]map[string]time.Time
 }
 
 func newGrantStore() *grantStore {
-	return &grantStore{byConv: make(map[string]map[string]bool)}
+	return &grantStore{byConv: make(map[string]map[string]time.Time)}
 }
 
 // Grant records a session grant for dir under convID.
@@ -468,10 +471,10 @@ func (g *grantStore) Grant(convID, dir string) {
 	defer g.mu.Unlock()
 	set := g.byConv[convID]
 	if set == nil {
-		set = make(map[string]bool)
+		set = make(map[string]time.Time)
 		g.byConv[convID] = set
 	}
-	set[filepath.Clean(dir)] = true
+	set[filepath.Clean(dir)] = time.Now()
 }
 
 // Has reports whether convID holds a grant for dir.
@@ -481,7 +484,8 @@ func (g *grantStore) Has(convID, dir string) bool {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.byConv[convID][filepath.Clean(dir)]
+	_, ok := g.byConv[convID][filepath.Clean(dir)]
+	return ok
 }
 
 // ClearConversation drops every grant for a conversation (conversation end).
@@ -523,6 +527,57 @@ func (g *grantStore) Roots(convID string) []string {
 		out = append(out, dir)
 	}
 	sort.Strings(out)
+	return out
+}
+
+// sessionGrant is one active session grant as the wire presents it: the granted
+// directory and when it was granted.
+type sessionGrant struct {
+	Directory string
+	GrantedAt time.Time
+}
+
+// Revoke drops one session grant for a conversation. It reports whether a grant
+// was actually removed, so an unknown directory is never a silent success. The
+// next tool call for that directory asks again: the guard shim reads Roots on
+// every decision (ask_guard.go), so there is no cache to invalidate.
+func (g *grantStore) Revoke(convID, dir string) bool {
+	if g == nil || convID == "" || strings.TrimSpace(dir) == "" {
+		return false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	set := g.byConv[convID]
+	if set == nil {
+		return false
+	}
+	if _, ok := set[filepath.Clean(dir)]; !ok {
+		return false
+	}
+	delete(set, filepath.Clean(dir))
+	if len(set) == 0 {
+		delete(g.byConv, convID)
+	}
+	return true
+}
+
+// List returns the conversation's active grants sorted by directory (stable
+// order for the client's list). Nil when the conversation holds nothing.
+func (g *grantStore) List(convID string) []sessionGrant {
+	if g == nil || convID == "" {
+		return nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	set := g.byConv[convID]
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]sessionGrant, 0, len(set))
+	for dir, at := range set {
+		out = append(out, sessionGrant{Directory: dir, GrantedAt: at})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Directory < out[j].Directory })
 	return out
 }
 
@@ -627,7 +682,12 @@ type pendingAsk struct {
 	Targets       []string
 	Directory     string
 	InsideProject bool
-	Summary       string
+	// Summary is the one-line card text (never just an opaque id).
+	Summary string
+	// DenyBelow are the operator's persistent DENY entries at or below
+	// Directory: a session grant cannot override them, so the card says so
+	// instead of implying the grant covers everything under the directory.
+	DenyBelow []string
 	// AbsTargets are the ABSOLUTE paths this ask's decision covered
 	// (decisionTargets), recorded so an ALLOW_ONCE reply can arm exactly those
 	// paths in the execution guard's shim (the shim cannot ask).
@@ -669,6 +729,15 @@ func (a *pendingAsk) clientChoice() (apiv1.PermissionChoice, bool) {
 		return a.choice, true
 	}
 	return apiv1.PermissionChoice_PERMISSION_CHOICE_UNSPECIFIED, false
+}
+
+// isOpen reports whether the ask is still awaiting a human decision. The
+// re-attach recovery path replays only these; a decided or finalized ask stays
+// settled (its outcome is already in the transcript).
+func (a *pendingAsk) isOpen() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.state == askOpen
 }
 
 // resolveForFinalize is the turn-end read of an ask: it returns the client's
@@ -958,6 +1027,7 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 		// says why it is being asked instead).
 		InsideProject: allInside,
 		Summary:       summary,
+		DenyBelow:     ct.denyBelowForGrant(pol, a.Key),
 		AbsTargets:    absTargets,
 		reply:         ct.replies,
 	}
@@ -967,6 +1037,24 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 	}
 	ct.record(a, "ask", summary)
 	return "", ask, ""
+}
+
+// denyBelowForGrant lists the operator's DENY entries that key's directory would
+// NOT override (permpolicy.Store.DenyBelow) — the entries a session grant still
+// loses to, which the card names. A malformed policy must never fail the ask
+// (the decision path already fails closed above): the error is logged and the
+// list reported empty, so the card simply omits the precedence note.
+func (ct *consentTurn) denyBelowForGrant(pol *permpolicy.Store, key string) []string {
+	if pol == nil || strings.TrimSpace(key) == "" {
+		return nil
+	}
+	entries, err := pol.DenyBelow(key)
+	if err != nil {
+		ct.log().Warn("ask orchicon consent: could not list deny entries below the grant directory",
+			"conversation", ct.convID, "directory", key, "error", err)
+		return nil
+	}
+	return entries
 }
 
 // applyClientReplies answers the serve for every ask whose client decision has
@@ -1052,21 +1140,31 @@ func emitPermissionAsk(emit func(*apiv1.ChatStreamResponse), a *pendingAsk) {
 	if emit == nil || a == nil {
 		return
 	}
-	emit(&apiv1.ChatStreamResponse{
+	emit(permissionAskEvent(a))
+}
+
+// permissionAskEvent builds the one stream message that carries an ask, so the
+// live emit path and the re-attach replay path send the identical shape.
+func permissionAskEvent(a *pendingAsk) *apiv1.ChatStreamResponse {
+	if a == nil {
+		return nil
+	}
+	return &apiv1.ChatStreamResponse{
 		Event: &apiv1.ChatStreamResponse_PermissionAsk{
 			PermissionAsk: &apiv1.PermissionAsk{
-				AskId:          a.AskID,
-				ConversationId: a.ConversationID,
-				SessionId:      a.SessionID,
-				Tool:           a.Tool,
-				Command:        a.Command,
-				Targets:        a.Targets,
-				Directory:      a.Directory,
-				InsideProject:  a.InsideProject,
-				Summary:        a.Summary,
+				AskId:            a.AskID,
+				ConversationId:   a.ConversationID,
+				SessionId:        a.SessionID,
+				Tool:             a.Tool,
+				Command:          a.Command,
+				Targets:          a.Targets,
+				Directory:        a.Directory,
+				InsideProject:    a.InsideProject,
+				Summary:          a.Summary,
+				DenyEntriesBelow: a.DenyBelow,
 			},
 		},
-	})
+	}
 }
 
 // logAsk is a small diagnostic used by the drain loops when a card is emitted.

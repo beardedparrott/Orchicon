@@ -1692,6 +1692,17 @@ export class PermissionAsk extends Message<PermissionAsk> {
    */
   summary = "";
 
+  /**
+   * deny_entries_below lists the operator's persistent DENY entries that live
+   * at or BELOW the directory this ask would grant. A session grant can never
+   * override them (permpolicy.Decide evaluates the deny list first), so the
+   * card says so instead of offering a grant that will be refused for those
+   * paths. Empty when no deny entry sits inside the directory.
+   *
+   * @generated from field: repeated string deny_entries_below = 10;
+   */
+  denyEntriesBelow: string[] = [];
+
   constructor(data?: PartialMessage<PermissionAsk>) {
     super();
     proto3.util.initPartial(data, this);
@@ -1709,6 +1720,7 @@ export class PermissionAsk extends Message<PermissionAsk> {
     { no: 7, name: "directory", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 8, name: "inside_project", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
     { no: 9, name: "summary", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 10, name: "deny_entries_below", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): PermissionAsk {
@@ -1725,6 +1737,223 @@ export class PermissionAsk extends Message<PermissionAsk> {
 
   static equals(a: PermissionAsk | PlainMessage<PermissionAsk> | undefined, b: PermissionAsk | PlainMessage<PermissionAsk> | undefined): boolean {
     return proto3.util.equals(PermissionAsk, a, b);
+  }
+}
+
+/**
+ * SessionPermissionGrant is one ACTIVE session grant: a directory the operator
+ * allowed for the session, and when.
+ *
+ * @generated from message orchicon.api.v1.SessionPermissionGrant
+ */
+export class SessionPermissionGrant extends Message<SessionPermissionGrant> {
+  /**
+   * directory is the granted directory (the ask's grant key).
+   *
+   * @generated from field: string directory = 1;
+   */
+  directory = "";
+
+  /**
+   * granted_at_unix is the Unix seconds the grant was recorded; 0 when unknown.
+   *
+   * @generated from field: int64 granted_at_unix = 2;
+   */
+  grantedAtUnix = protoInt64.zero;
+
+  constructor(data?: PartialMessage<SessionPermissionGrant>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.SessionPermissionGrant";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "directory", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "granted_at_unix", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SessionPermissionGrant {
+    return new SessionPermissionGrant().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SessionPermissionGrant {
+    return new SessionPermissionGrant().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SessionPermissionGrant {
+    return new SessionPermissionGrant().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SessionPermissionGrant | PlainMessage<SessionPermissionGrant> | undefined, b: SessionPermissionGrant | PlainMessage<SessionPermissionGrant> | undefined): boolean {
+    return proto3.util.equals(SessionPermissionGrant, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ListPermissionGrantsRequest
+ */
+export class ListPermissionGrantsRequest extends Message<ListPermissionGrantsRequest> {
+  /**
+   * @generated from field: string conversation_id = 1;
+   */
+  conversationId = "";
+
+  constructor(data?: PartialMessage<ListPermissionGrantsRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ListPermissionGrantsRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListPermissionGrantsRequest {
+    return new ListPermissionGrantsRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListPermissionGrantsRequest {
+    return new ListPermissionGrantsRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListPermissionGrantsRequest {
+    return new ListPermissionGrantsRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListPermissionGrantsRequest | PlainMessage<ListPermissionGrantsRequest> | undefined, b: ListPermissionGrantsRequest | PlainMessage<ListPermissionGrantsRequest> | undefined): boolean {
+    return proto3.util.equals(ListPermissionGrantsRequest, a, b);
+  }
+}
+
+/**
+ * ListPermissionGrantsResponse carries the conversation's active grants.
+ *
+ * @generated from message orchicon.api.v1.ListPermissionGrantsResponse
+ */
+export class ListPermissionGrantsResponse extends Message<ListPermissionGrantsResponse> {
+  /**
+   * @generated from field: repeated orchicon.api.v1.SessionPermissionGrant grants = 1;
+   */
+  grants: SessionPermissionGrant[] = [];
+
+  constructor(data?: PartialMessage<ListPermissionGrantsResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ListPermissionGrantsResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "grants", kind: "message", T: SessionPermissionGrant, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListPermissionGrantsResponse {
+    return new ListPermissionGrantsResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListPermissionGrantsResponse {
+    return new ListPermissionGrantsResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListPermissionGrantsResponse {
+    return new ListPermissionGrantsResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListPermissionGrantsResponse | PlainMessage<ListPermissionGrantsResponse> | undefined, b: ListPermissionGrantsResponse | PlainMessage<ListPermissionGrantsResponse> | undefined): boolean {
+    return proto3.util.equals(ListPermissionGrantsResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.RevokePermissionGrantRequest
+ */
+export class RevokePermissionGrantRequest extends Message<RevokePermissionGrantRequest> {
+  /**
+   * @generated from field: string conversation_id = 1;
+   */
+  conversationId = "";
+
+  /**
+   * directory is the granted directory to drop (the ask's grant key).
+   *
+   * @generated from field: string directory = 2;
+   */
+  directory = "";
+
+  constructor(data?: PartialMessage<RevokePermissionGrantRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.RevokePermissionGrantRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "directory", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RevokePermissionGrantRequest {
+    return new RevokePermissionGrantRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RevokePermissionGrantRequest {
+    return new RevokePermissionGrantRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RevokePermissionGrantRequest {
+    return new RevokePermissionGrantRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RevokePermissionGrantRequest | PlainMessage<RevokePermissionGrantRequest> | undefined, b: RevokePermissionGrantRequest | PlainMessage<RevokePermissionGrantRequest> | undefined): boolean {
+    return proto3.util.equals(RevokePermissionGrantRequest, a, b);
+  }
+}
+
+/**
+ * RevokePermissionGrantResponse reports the revoke and returns the refreshed
+ * list, so the client never keeps its own copy of the store.
+ *
+ * @generated from message orchicon.api.v1.RevokePermissionGrantResponse
+ */
+export class RevokePermissionGrantResponse extends Message<RevokePermissionGrantResponse> {
+  /**
+   * @generated from field: bool removed = 1;
+   */
+  removed = false;
+
+  /**
+   * @generated from field: repeated orchicon.api.v1.SessionPermissionGrant grants = 2;
+   */
+  grants: SessionPermissionGrant[] = [];
+
+  constructor(data?: PartialMessage<RevokePermissionGrantResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.RevokePermissionGrantResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "removed", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 2, name: "grants", kind: "message", T: SessionPermissionGrant, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RevokePermissionGrantResponse {
+    return new RevokePermissionGrantResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RevokePermissionGrantResponse {
+    return new RevokePermissionGrantResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RevokePermissionGrantResponse {
+    return new RevokePermissionGrantResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RevokePermissionGrantResponse | PlainMessage<RevokePermissionGrantResponse> | undefined, b: RevokePermissionGrantResponse | PlainMessage<RevokePermissionGrantResponse> | undefined): boolean {
+    return proto3.util.equals(RevokePermissionGrantResponse, a, b);
   }
 }
 

@@ -11,7 +11,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CompactConversationRequest, CompactConversationResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, InterjectConversationTurnRequest, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, ReplyPermissionAskRequest, ReplyPermissionAskResponse, SetConversationModelRequest, SetConversationModelResponse, SetConversationModeRequest, SetConversationModeResponse, SetConversationProjectRequest, SetConversationProjectResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse, WatchTurnStreamRequest } from "./ask_orchicon_service_pb.js";
+import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CompactConversationRequest, CompactConversationResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, InterjectConversationTurnRequest, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, ListPermissionGrantsRequest, ListPermissionGrantsResponse, ReplyPermissionAskRequest, ReplyPermissionAskResponse, RevokePermissionGrantRequest, RevokePermissionGrantResponse, SetConversationModelRequest, SetConversationModelResponse, SetConversationModeRequest, SetConversationModeResponse, SetConversationProjectRequest, SetConversationProjectResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse, WatchTurnStreamRequest } from "./ask_orchicon_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -242,6 +242,34 @@ export const AskOrchiconService = {
       name: "ReplyPermissionAsk",
       I: ReplyPermissionAskRequest,
       O: ReplyPermissionAskResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ListPermissionGrants lists the conversation's ACTIVE session grants: the
+     * directories an ALLOW_SESSION decision recorded for this conversation, with
+     * the time each was granted. The client renders them so an operator can see
+     * and revoke what was granted; the store itself is the source of truth.
+     *
+     * @generated from rpc orchicon.api.v1.AskOrchiconService.ListPermissionGrants
+     */
+    listPermissionGrants: {
+      name: "ListPermissionGrants",
+      I: ListPermissionGrantsRequest,
+      O: ListPermissionGrantsResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * RevokePermissionGrant drops one session grant (by directory) for the
+     * conversation. The next tool call for that directory asks again: the guard
+     * shim reads the same store (internal/askorchicon/ask_guard.go). An unknown
+     * directory is reported as removed=false, never a silent success.
+     *
+     * @generated from rpc orchicon.api.v1.AskOrchiconService.RevokePermissionGrant
+     */
+    revokePermissionGrant: {
+      name: "RevokePermissionGrant",
+      I: RevokePermissionGrantRequest,
+      O: RevokePermissionGrantResponse,
       kind: MethodKind.Unary,
     },
     /**
