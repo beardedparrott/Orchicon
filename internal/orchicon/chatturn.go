@@ -939,3 +939,11 @@ func (b *NativeBridge) AbortConversationSession(ctx context.Context, sessionID s
 func (b *NativeBridge) ReplyPermission(ctx context.Context, sessionID, permissionID string) error {
 	return errors.New("orchicon native Ask turns are text-only — permission approval is not supported")
 }
+
+// ReplyPermissionDecision implements scheduler.ChatTurnClient. Same as
+// ReplyPermission: a native Ask turn has no permission channel, so there is
+// never an ask to answer. It is a documented no-op (returning nil) rather than
+// an error so a consent decision routed here for any reason cannot fail a turn.
+func (b *NativeBridge) ReplyPermissionDecision(ctx context.Context, sessionID, permissionID, decision string) error {
+	return nil
+}

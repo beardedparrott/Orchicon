@@ -124,6 +124,29 @@ func buildSlashRegistry(m *App) *slashRegistry {
 
 	// 2. Entity commands generated from the screens' Sources() — every
 	// TUI list pane gets one, so the set cannot drift from real screens.
+	//
+	// The consent surfaces are SLASH COMMANDS, not bare letters: the conversations rail's keys are
+	// composer-driven (UPDATES rows 296/300/303), so a bare letter there is TYPED. /grants is the
+	// session roll-up (revocable); /permissions is the persistent allow/deny list, deliberately NOT
+	// /policy — the GUI's /policies route is the Rego policy ENGINE, a different concept.
+	add(SlashCommand{
+		Name:  "/grants",
+		Usage: "/grants",
+		Desc:  "the directories allowed for this session, and revoke them",
+		Run: func(m *App, _ []string) tea.Cmd {
+			return m.runAskOverlay("grants")
+		},
+	})
+	add(SlashCommand{
+		Name:    "/permissions",
+		Usage:   "/permissions",
+		Aliases: []string{"/perm"},
+		Desc:    "the persistent allow/deny list (the file is the source of truth)",
+		Run: func(m *App, _ []string) tea.Cmd {
+			return m.runAskOverlay("permissions")
+		},
+	})
+
 	nav := buildNavEntries(m)
 	for _, e := range nav {
 		eCopy := e

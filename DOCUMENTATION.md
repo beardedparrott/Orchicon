@@ -231,7 +231,7 @@ sequenceDiagram
 7. **Adapter Bridge Pattern** — Runtimes are pluggable gRPC sidecars. The built-in adapter drives the OpenCode CLI — locally as a subprocess (headless `orchicon serve`) or, for workflow-run executions, inside the per-workflow runtime container via `orchicon runtime-daemon` — parsing its JSON telemetry output. Future runtimes implement the `orchicon.adapter.v1` gRPC contract.
 
 8. **Worker Sandboxing (layered defense)** — Every worker execution is contained by three layers, all applied to **every** worker automatically and enforced even under `--auto`:
-    - **opencode permission deny rules** (`permissionRules()` in `internal/opencode/config.go`) injected via `OPENCODE_CONFIG_CONTENT`. `external_directory` is `deny` by default with a **single precise carve-out**: `/tmp/orchicon/**` is `allow`, so workers can use `/tmp/orchicon` as a scratch directory (screenshots, logs, downloaded artifacts) but every other path outside the project's `--dir` is blocked — the carve-out deliberately does not match the supervisor socket, the execution-guard shims, or the `/tmp/opencode-data-*` dirs that hold the seeded model auth.json copies. An extensive `bash` deny list blocks `rm`/`sudo`/`dd`/`mkfs*`/`fdisk`/`parted`/`shred`/`wipefs`/LVM tools, root-wide `chmod -R`/`chown -R`, `/dev/sd*` redirection, shell-construct smuggling variants (`(rm -rf /) &`, `{ rm -rf /; }`, chained `;`/`&&`/`&`/`|`), and download-and-execute. No catch-all `*` allow rule is emitted.
+    - **opencode permission deny rules** (`permissionRules()` in `internal/opencode/config.go`) injected via `OPENCODE_CONFIG_CONTENT`. `external_directory` is `deny` by default with a **single precise carve-out**: `/tmp/orchicon/**` is `allow`, so workers can use `/tmp/orchicon` as a scratch directory (screenshots, logs, downloaded artifacts) but every other path outside the project's `--dir` is blocked — the carve-out deliberately does not match the supervisor socket, the execution-guard shims, or the `/tmp/opencode-data-*` dirs that hold the seeded model auth.json copies. An extensive `bash` deny list blocks `rm`/`sudo`/`dd`/`mkfs*`/`fdisk`/`parted`/`shred`/`wipefs`/LVM tools, root-wide `chmod -R`/`chown -R`, `/dev/sd*` redirection, shell-construct smuggling variants (`(rm -rf /) &`, `{ rm -rf /; }`, chained `;`/`&&`/`&`/`|`), and download-and-execute. No catch-all `*` allow rule is emitted. There are now **two permission profiles**, selected by `ConfigOptions.PermissionProfile` (the zero value `""` means **worker**): the **worker** profile above, carried byte-identically by every dispatched execution and by the shared worker serve, and an **interactive** profile carried by the Ask Orchicon serve (`NewAskHostServe` — its own `opencode serve`, because the permission config is per-process) — `external_directory` **allowed** (an interactive session reaches the operator's own filesystem; the tool-layer boundary and the consent layer decide scope and action), writes and commands raising opencode's own `ask` (which is what makes the `permission.asked` events we relay real asks rather than an artifact of deny-by-default; the ask's detail now rides `scheduler.SessionEvent.Detail` to the consent layer), and the never-allow class still hard-denied. The interactive profile deliberately does **not** inherit the composite-tools `read`/`grep` deny — that exists to force workers onto `batch_read`/`batch_grep` and is worker-only. The never-allow class itself is declared once in `internal/neverallow` and consumed by BOTH the config builder and the OS-level execution guard (`internal/guard`, which renders its shim set and its `case` arm from it), so the two layers cannot drift apart.
     - **OS-level execution guard** (`internal/guard/guard.go`) — shims dangerous binaries (`rm`, `sudo`, `dd`, `mkfs*`, `fdisk`, `parted`, `shred`, `wipefs`, LVM, `chmod`, `chown`, `mv`, `cp`, `ln`) ahead of the worker's PATH. Any process the worker spawns — including a python TUI, `os.system`, or `subprocess.run` issuing `rm -rf /` — resolves the command through the shim and is refused when it targets `/`, `~`, `$HOME`, `/home`, or any path outside the project directory. This closes the subprocess hole that opencode's rules cannot see (a destructive command issued inside a python TUI only ever looks like `python tui.py` to opencode). This is defense-in-depth, not a container: a worker that resolves the real binary by absolute path or writes its own tool still escapes. The containment layer for those cases is the workflow runtime container (§Workflow Runtime Containers) — every execution runs inside a short-lived, root-free container, so even a fully compromised worker cannot touch the host.
     - **Worker prompt context** — every canned worker's AGENTS.md carries a "Safety rules" block (see `internal/db/seed_workers.go`) forbidding destructive commands, destructive "security testing", and scope creep. Review/QA workers additionally run the **safety lint** — Semgrep (a cross-platform Python CLI, works on Linux/macOS/Windows) with Orchicon's destructive-command ruleset — by running `semgrep scan --config .orchicon/semgrep_orchicon.yml --error .` from the project root. The ruleset and a `.semgrepignore` are written into every project by the control plane (`internal/opencode/lint.go`).
 
@@ -1236,6 +1236,7 @@ Orchicon can run two isolated single-container instances side by side: a **dev**
 The entire Orchicon stack — Postgres, NATS, the Grafana telemetry plane (Tempo, Loki, VictoriaMetrics, OTel collector, Grafana), and the control plane — can run in **one container**. The `orchicon` binary is the PID-1 supervisor (`orchicon container`, `cmd/orchicon/container.go`):
 
 - spawns children in dependency order (postgres → nats → telemetry → control plane), gating on readiness probes
+- runs the **services only** when `ORCHICON_CONTAINER_SERVICES_ONLY=1` (the plane then runs on the HOST — §Host residency below), logging the decision explicitly
 - prefixes each child's stdout/stderr with its component name
 - restarts crashed children with exponential backoff; forwards SIGTERM/SIGINT and waits for graceful exit
 - writes the embedded Tempo/Loki/collector/Grafana configs into the data dir (`@DATA_DIR@` substituted)
@@ -1303,9 +1304,58 @@ When a `project_dir` sits outside every root the control plane cannot see it, an
 | `ORCHICON_GRAFANA_PUBLIC_URL` | `http://localhost:8080/grafana` | Grafana's public root_url (change when publishing on other ports) |
 | `ORCHICON_*` | — | Any control-plane env var (DSNs, ports) overrides the container defaults |
 
+#### Host residency: the plane on the host, the services containerized
+
+The control plane can run as a **host process** while the same instance's Postgres, NATS and telemetry plane keep running inside the container. Residency is a **per-instance, opt-in launch setting** read by `scripts/container.sh`, so dev can migrate first while prod stays exactly as it is:
+
+| Setting | Where | Default | Effect |
+|---|---|---|---|
+| `ORCHICON_PLANE_RESIDENCY` | launcher env (`up`/`down`/`rebuild`) | `container` | `host` starts the container in **services-only mode** and the plane as a host process |
+| `ORCHICON_CONTAINER_SERVICES_ONLY` | set by the launcher *into the container* | unset | `1` ⇒ `cmd/orchicon/container.go` skips the plane child |
+| `ORCHICON_SERVE_STATE_DIR` | host plane env | `.dev` | per-instance PID/log root for `serve --detach`/`--stop`, so two host planes never share one PID file |
+
+With **no new setting, nothing changes**: an instance still runs its plane inside its container. `make rebuild-dev` opts DEV in (`residency=host`); `make rebuild-prod` stays containerized until you run `make rebuild-prod residency=host`; `make rebuild-dev residency=container` reverts dev.
+
+**What is published in host mode** — every service bound to **`127.0.0.1` only** (a database and an internal event bus must never be on the LAN), on ports that are disjoint per instance:
+
+| Service | dev | prod |
+|---|---|---|
+| Postgres | 5432 | 5433 |
+| NATS / monitoring | 4222 / 8222 | 4223 / 8223 |
+| OTLP gRPC / HTTP | 4317 / 4318 | 4319 / 4320 |
+| Tempo | 3200 | 3201 |
+| Loki | 3100 | 3101 |
+| VictoriaMetrics | 8428 | 8429 |
+| Grafana | 3002 → 3000 | 3003 → 3000 |
+| Plane HTTP | 8080 | 8091 |
+
+In services-only mode `postgres` is started with `listen_addresses=0.0.0.0` (default mode keeps `localhost`), and the supervisor idempotently appends a `host all all <gateway>/32 trust` rule to `<data-dir>/postgres/pg_hba.conf` on every boot, where `<gateway>` is the container's default-route gateway: the connection arrives through the published port, so postgres sees that gateway as its peer, never loopback. The rule names that single address on purpose — every other container on the same bridge shares it, and a wildcard rule would hand them password-less superuser access to this instance's database. Only when no gateway can be detected does it fall back to the wide `0.0.0.0/0` + `::/0` rules. Exposure stays bounded by the loopback-only publish, which is the security boundary.
+
+**The host plane's profile** is printable with `scripts/container.sh shape <inst>`, and every value comes from the instance table (never a shell profile or a shared env file):
+
+- `ORCHICON_HTTP_ADDR=:<PLANE_HTTP_PORT>` and `ORCHICON_HTTP_EXTRA_BIND=<docker-bridge-ip>:<PLANE_HTTP_PORT>` — the plane binds **both**: its loopback address (host clients: `orch`, the GUI) and the docker bridge at **this instance's** port, so the run containers on that bridge can dial it. The bridge address is resolved from the host (docker's own IPAM config, else `docker0`; pin it with `ORCHICON_DOCKER_BRIDGE_IP`), never hardcoded to `172.17.0.1` and never a wildcard — the plane must not be reachable from another machine. `scripts/container.sh plane-bind <inst>` prints the same two values;
+- `ORCHICON_PLANE_PUBLIC_URL=http://<docker-bridge-ip>:<PLANE_HTTP_PORT>` — DERIVED per instance from that bind (`bridge_bind_env` is the one place either value is computed) and it is what the plane hands each run container it creates (`ORCHICON_PLANE_URL`), so an instance can only ever hand out its own address: dev and prod listen on different ports, and a shared `8080` literal would make one instance's workers dial the other's plane. Setting `ORCHICON_PLANE_PUBLIC_URL` per instance overrides the derivation; **never** export it from a shared shell profile. Every runtime container is created with `--add-host=host.docker.internal:host-gateway`, so a manually started host plane (no bind at all) is still reachable by that name;
+- `ORCHICON_POSTGRES_DSN` / `ORCHICON_NATS_URL` / `ORCHICON_OTEL_ENDPOINT` (+ Tempo/Loki/VictoriaMetrics/Grafana URLs) point at the published loopback ports;
+- `ORCHICON_DATA_DIR=$HOME/.local/share/orchicon-<inst>` and `ORCHICON_BLOB_DIR=<data-dir>/blobs` — the KEK (`<data-dir>/secrets/kek`) and ask-history move with it. The **first** switch-over copies the existing container volume (including `secrets/kek`) into the host dir, so existing tenant secrets keep decrypting; an existing host KEK is never overwritten;
+- `ORCHICON_RUNTIME_SOCKET` points at the host runtime daemon's real socket;
+- `ORCHICON_CONTAINER_MODE` is explicitly **unset** for the host plane — a stray export must not flip it into container semantics (custom providers stored as `http://localhost:…` must keep that URL on a host plane, §Providers).
+
+`orchicon container` logs the services-only decision plainly at boot (`services-only mode: postgres, nats and telemetry run in this container; the control plane runs on the HOST`), because a container silently running without a plane looks like a failed boot. The image's plane `/healthz` healthcheck is replaced with a services probe in that mode.
+
+**Steady-state commands:**
+
+```bash
+scripts/container.sh shape dev        # what the launcher WOULD do (no side effects)
+scripts/container.sh verify dev       # what the instance ACTUALLY runs (ports, env, supervisor log)
+scripts/container.sh plane-stop dev   # stop the HOST plane; the services container keeps running
+scripts/container.sh plane-start dev  # start it again — no container restart
+```
+
+**Migration rule:** dev and prod migrate independently and coexist in different shapes; a rebuild of one instance must never alter the other's. `scripts/container.sh verify <inst>` is the check.
+
 **Measured footprint** (single container, this stack): full telemetry ≈ **384 MiB** resident; `ORCHICON_TELEMETRY=none` ≈ **96 MiB** — vs ~2.7 GB for the ClickHouse-era compose stack.
 
-Dual-instance (dev + prod) is two containers with offset published ports (`-p 8080:8080 -p 3002:3000` and `-p 8091:8080 -p 3003:3000`), separate data volumes.
+Dual-instance (dev + prod) is two containers with offset published ports (`-p 8080:8080 -p 3002:3000` and `-p 8091:8080 -p 3003:3000`), separate data volumes. An instance may instead be **host-resident** (its container runs the services only, its plane runs on the host) — see §Host residency above; the two instances may be in different shapes at the same time.
 
 ### Workflow Runtime Containers
 
@@ -1549,6 +1599,7 @@ See [`CLOUDFLARE_SETUP.md`](./CLOUDFLARE_SETUP.md) for the one-time setup guide.
 | Variable | Default | Purpose |
 |---|---|---|
 | `ORCHICON_HTTP_ADDR` | `:8080` | HTTP listen address (frontend + API) |
+| `ORCHICON_HTTP_EXTRA_BIND` | *(empty)* | Second HTTP bind: a concrete docker-bridge `host:port` (e.g. `172.17.0.1:8091`), so runtime containers reach a host-resident plane across the bridge. Loopback-only when empty. Never a wildcard — the plane must not be reachable from another machine. Set per instance by `scripts/container.sh plane-bind <dev\|prod>`. |
 | `ORCHICON_GRPC_ADDR` | `:9090` | gRPC listen address |
 | `ORCHICON_POSTGRES_DSN` | `postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable` | PostgreSQL connection string |
 | `ORCHICON_NATS_URL` | `nats://localhost:4222` | NATS server URL |

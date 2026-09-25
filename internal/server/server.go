@@ -83,6 +83,10 @@ type Server struct {
 	// supervision goroutine; nil when the session transport is disabled by
 	// the operator kill-switch or no data dir is available.
 	hostServe *opencode.HostServe
+	// askHostServe is the Ask Orchicon serve (interactive permission profile).
+	// Same lazy supervision as hostServe; held separately so plane shutdown
+	// stops both.
+	askHostServe *opencode.HostServe
 }
 
 // New constructs a Server from configuration. It opens the DB pool,
@@ -325,6 +329,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// failure at first demand means those executions fail fast
 	// (failed_to_start) rather than degrading to a second transport.
 	var hostServe *opencode.HostServe
+	var askServe *opencode.HostServe
 	if os.Getenv("ORCHICON_OPCODE_SESSION_TRANSPORT") != "0" {
 		dataDir := ""
 		if home, herr := os.UserHomeDir(); herr == nil {
@@ -333,6 +338,14 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		if dataDir != "" {
 			hostServe = opencode.NewHostServe(log, dataDir, "")
 			adapterBridge.SetHostServe(hostServe)
+			// Ask Orchicon gets its OWN serve: opencode's permission config is
+			// per-process, so the interactive profile cannot ride the worker
+			// serve without leaking into dispatched executions. Its data dir
+			// is separate (sharing a sqlite dir between two serve processes is
+			// unsafe); it is demand-keyed on the first Ask turn exactly like
+			// the worker serve, and stopped with the plane.
+			askServe = opencode.NewAskHostServe(log, dataDir+"-ask", "")
+			adapterBridge.SetAskHostServe(askServe)
 		} else {
 			log.Warn("host opencode serve data dir unavailable — sessions disabled")
 		}
@@ -511,7 +524,11 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		Dispatcher:        dispatcher,
 		BlobStore:         blobs,
 		PostgresDSN:       cfg.PostgresDSN,
-		RuntimeClient:     rtClient,
+		// The permission policy file the settings service reads and writes
+		// (and that Boot already checked) — one path, resolved once from
+		// config, so the API and the enforcement seams cannot disagree.
+		PermissionPolicyPath: cfg.PermissionPolicyPath,
+		RuntimeClient:        rtClient,
 		// adapterKind resolves the execution's adapter kind for mid-run RPCs
 		// (dispatching adapter_id preferred, worker model_ref fallback) via
 		// the shared resolver and dispatcher.
@@ -560,7 +577,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			}
 			return aborter.AbortExecution(ctx, execID, reason)
 		},
-		HostServe:  hostServe,
+		HostServe:  askServe,
 		SecretsKEK: secretsKEK,
 		// UsageRecorder wires the shared AI Gateway recorder into Ask
 		// Orchicon so Ask sessions capture live usage per adapter.
@@ -691,6 +708,9 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	handler = telemetry.Middleware(handler)
 
 	httpSrv := &http.Server{
+		// Addr is informational only: Run serves explicit listeners
+		// (bindPrimary + the optional bridge bind in listen.go), so this
+		// value never itself decides the bind set.
 		Addr:              cfg.HTTPAddr,
 		Handler:           handler,
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
@@ -698,7 +718,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 
 	s := &Server{cfg: cfg, log: log, pool: pool, httpSrv: httpSrv, otel: otelShutdown,
 		blobs: blobs, authH: authHandler, webhookD: webhookDisp, logWriter: logWriter,
-		hostServe: hostServe}
+		hostServe: hostServe, askHostServe: askServe}
 	if pub != nil {
 		// Outbox retention: published rows older than the configured window
 		// are pruned on a schedule in bounded batches. Retention <= 0 disables
@@ -855,7 +875,8 @@ func (s *Server) SetHandler(h http.Handler) {
 // ShutdownTimeout.
 func (s *Server) Run(ctx context.Context) error {
 	s.log.Info("starting orchicon control plane",
-		"version", version.Current().String(), "http", s.cfg.HTTPAddr)
+		"version", version.Current().String(), "http", s.cfg.HTTPAddr,
+		"extra_bind", s.cfg.ExtraBind)
 
 	// The demand-keyed host opencode serve lives as long as the plane once
 	// it has been started; stop it (and its supervision) on shutdown. Nil
@@ -864,6 +885,9 @@ func (s *Server) Run(ctx context.Context) error {
 	defer func() {
 		if s.hostServe != nil {
 			s.hostServe.Stop()
+		}
+		if s.askHostServe != nil {
+			s.askHostServe.Stop()
 		}
 	}()
 
@@ -874,8 +898,20 @@ func (s *Server) Run(ctx context.Context) error {
 		s.log.Warn("startup: clear edit locks", "error", err)
 	}
 
+	// Two listeners, not one (listen.go): the primary bind is FATAL if it
+	// fails — host clients (orch, the GUI) reach the plane nowhere else —
+	// while the optional bridge bind is best-effort and never lands on
+	// errCh, because Run returns from the whole plane on any errCh value.
+	primary, err := s.startListeners(ctx)
+	if err != nil {
+		s.authH.CloseEmbeddedOP()
+		s.pool.Close()
+		s.shutdownOTel()
+		return err
+	}
 	errCh := make(chan error, 4)
-	go func() { errCh <- s.httpSrv.ListenAndServe() }()
+	go func() { errCh <- s.httpSrv.Serve(primary) }()
+	s.log.Info("http listener serving", "addr", primary.Addr().String())
 
 	if s.relay != nil {
 		go func() { errCh <- s.relay.Run(ctx) }()

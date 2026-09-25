@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -178,6 +179,17 @@ type App struct {
 	chatCmds     chan tea.Cmd  // goroutine follow-ups (watch re-dial, poll)
 	chatFocus    focusMode
 	mouseEnabled bool // tea.WithMouseCellMotion is on; footer shows "Mouse Enabled"
+
+	// sessionGrants is the TUI-side mirror of "ask once per directory per session": the directories
+	// this conversation has been granted. The PLANE is the real enforcer (that is where the tool
+	// runs), and this mirror is what lets the shell suppress a second card AND show the operator what
+	// they have allowed — a permission system that escalates silently is the failure the roll-up exists
+	// to prevent.
+	sessionGrants *sessionGrantStore
+	// permStore is the PERSISTENT allow/deny list (the FILE is the source of truth; storage is the
+	// sibling policy task's). nil means the plane cannot answer, and every surface says so rather than
+	// fabricating a list.
+	permStore chat.PermissionStore
 
 	// clip is the frame the renderer last painted plus the drag-select in progress over it.
 	// A POINTER because App is copied on every Update/View (clipboard.go).
@@ -474,6 +486,7 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string, o
 		clip:            &clipState{},
 		screens:         map[TabID]Screen{},
 		chatStore:       &chatStore{items: map[string][]chat.ChatItem{}},
+		sessionGrants:   newSessionGrantStore(),
 		execSessions:    map[string][]chat.ChatItem{},
 		loaded:          map[TabID]bool{},
 		chatStreams:     map[string]*kit2.Stream{},
@@ -2896,6 +2909,33 @@ func (s *chatStore) append(convID string, item chat.ChatItem) {
 	s.mu.Unlock()
 }
 
+// consentState finds a pending ask's live state by id. The pointer is the SAME
+// object the transcript item holds, so a mutation here is what the next repaint
+// draws.
+func (s *chatStore) consentState(convID, askID string) *chat.ConsentState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.items[convID] {
+		it := &s.items[convID][i]
+		if it.Kind == chat.KindConsent && it.AskID == askID {
+			return it.Consent
+		}
+	}
+	return nil
+}
+
+// hasPendingConsent reports whether the conversation carries an unresolved ask.
+func (s *chatStore) hasPendingConsent(convID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, it := range s.items[convID] {
+		if it.Kind == chat.KindConsent && it.Consent != nil && it.Consent.Pending() {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *chatStore) isReconnecting(convID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -3582,6 +3622,67 @@ func (m *App) transcriptCodeBlockAtFrameRow(frameRow int) (string, bool) {
 	return "", false
 }
 
+// transcriptAskOptionAtFrameRow resolves a click at a FRAME row to the LABEL of the clarifying-question
+// option under it, when the click landed on an option of an UNANSWERED card.
+//
+// THE INTERACTIVE HALF OF THE ask_user CARD. The tool RECORDED the question and the turn ended; the operator's
+// answer is the next user message, so a click on an option sends that option's label through the ordinary send
+// path (Controller.AnswerQuestion → Send) — no rendezvous, no second reply channel, no blocking model. The
+// card is a record whose turn is already COMPLETE, so this must never grow a wait.
+//
+// Same three coordinate spaces as the copy rules (frame row → body row → body line → item), and the same
+// derived body-top row — the geometry comes from the render that drew the card (ItemSpan.Options), so a click
+// cannot resolve against a layout the screen is not showing.
+//
+// AN ANSWERED CARD IS SETTLED, and the rule is the web client's: a later USER message exists, so the question
+// has been answered and its options are shown but no longer clickable. Without it, a click on a stale card
+// would re-send a choice the operator already made.
+func (m *App) transcriptAskOptionAtFrameRow(frameRow int) (string, bool) {
+	str := m.TranscriptStream(m.chatConvID)
+	if str == nil {
+		return "", false
+	}
+	line := str.LineAtRow(frameRow - m.transcriptBodyTopRow())
+	if line < 0 {
+		return "", false
+	}
+	for _, sp := range m.transcriptSpans[m.chatConvID] {
+		if sp.Kind != chat.KindAsk || !sp.Contains(line) {
+			continue
+		}
+		label, ok := sp.OptionAt(line)
+		if !ok {
+			return "", false // the question text or the card's header: not a choice
+		}
+		if m.askCardSettled(sp.Key) {
+			return "", false
+		}
+		return label, true
+	}
+	return "", false
+}
+
+// askCardSettled reports whether the operator has sent anything AFTER the item carrying this key — i.e. the
+// recorded clarifying question has been answered and its card is no longer a choice.
+func (m *App) askCardSettled(key string) bool {
+	if m.chatStore == nil || key == "" {
+		return false
+	}
+	seen := false
+	for _, it := range m.chatStore.snapshot(m.chatConvID) {
+		if !seen {
+			if it.Key == key {
+				seen = true
+			}
+			continue
+		}
+		if it.Kind == chat.KindUser {
+			return true
+		}
+	}
+	return false
+}
+
 // transcriptBodyTopRow is the frame row at which the transcript's FIRST body line is drawn.
 func (m *App) transcriptBodyTopRow() int {
 	fieldRows := 0
@@ -4057,4 +4158,177 @@ func (m *App) sendFromComposer(text string) tea.Cmd {
 	// first token lands.
 	m.refreshComposerHint()
 	return tea.Batch(m.sendChat(m.chatConvID, text, preamble), m.onChatWake())
+}
+
+// ---------------------------------------------------------------------------
+// consent card: the shell's half (see internal/tui/screens/ask/consent.go)
+// ---------------------------------------------------------------------------
+
+// sessionGrantStore mirrors the session's directory grants for one conversation.
+type sessionGrantStore struct {
+	mu     sync.Mutex
+	grants map[string]map[string]chat.SessionGrant
+}
+
+func newSessionGrantStore() *sessionGrantStore {
+	return &sessionGrantStore{grants: map[string]map[string]chat.SessionGrant{}}
+}
+
+func (s *sessionGrantStore) grant(convID, dir, tool string) {
+	if dir == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	byDir, ok := s.grants[convID]
+	if !ok {
+		byDir = map[string]chat.SessionGrant{}
+		s.grants[convID] = byDir
+	}
+	g := byDir[dir]
+	g.Directory = dir
+	if g.Tool == "" {
+		g.Tool = tool
+	}
+	g.Count++
+	byDir[dir] = g
+}
+
+func (s *sessionGrantStore) list(convID string) []chat.SessionGrant {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	byDir := s.grants[convID]
+	out := make([]chat.SessionGrant, 0, len(byDir))
+	for _, g := range byDir {
+		out = append(out, g)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Directory < out[j].Directory })
+	return out
+}
+
+func (s *sessionGrantStore) revoke(convID, dir string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.grants[convID], dir)
+}
+
+func (s *sessionGrantStore) granted(convID, dir string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.grants[convID][dir]
+	return ok
+}
+
+// SetPermissionStore wires the persistent allow/deny list. Called by the host
+// once the plane's policy store exists; absent, the TUI says "unavailable".
+func (m *App) SetPermissionStore(s chat.PermissionStore) { m.permStore = s }
+
+// ConsentStore exposes the persistent store to the Ask screen's overlays.
+func (m *App) ConsentStore() (chat.PermissionStore, bool) {
+	if m.permStore == nil {
+		return nil, false
+	}
+	return m.permStore, true
+}
+
+// ConsentGrants lists the session grants for a conversation.
+func (m *App) ConsentGrants(convID string) ([]chat.SessionGrant, bool) {
+	return m.sessionGrants.list(convID), true
+}
+
+// ConsentRevoke drops a session grant.
+func (m *App) ConsentRevoke(convID, directory string) error {
+	m.sessionGrants.revoke(convID, directory)
+	return nil
+}
+
+// ConsentSend sends text as the next user message (the clarifying-question
+// card's answer).
+func (m *App) ConsentSend(text string) tea.Cmd { return m.SendUserMessage(text) }
+
+// SendUserMessage sends text as the next user message through the COMPOSER'S
+// OWN FUNNEL — the same optimistic echo, the same context preamble, the same
+// stream, the same wake. ONE send path, because a second one would drift from
+// the first in exactly the ways that matter (preamble, attachments, dedupe).
+func (m *App) SendUserMessage(text string) tea.Cmd {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	preamble := m.contextPreamble()
+	if id, ok := m.runningExecutionID(); ok {
+		return m.interjectExecution(id, text)
+	}
+	if m.chatConvID == "" {
+		return m.createConversationAndSend(text, preamble)
+	}
+	m.chatStore.append(m.chatConvID, chat.ChatItem{
+		Kind: chat.KindUser, Text: text, At: time.Now().UnixMilli(),
+		Key: fmt.Sprintf("draft-%d", time.Now().UnixNano()), Live: true,
+	})
+	m.refreshComposerHint()
+	return tea.Batch(m.sendChat(m.chatConvID, text, preamble), m.onChatWake())
+}
+
+// ShowConsentAsk surfaces a pending ask as a transcript CARD. This is the hook
+// the ask event on the turn stream calls once the sibling lands the wire arm
+// (proto ChatStreamResponse oneof) — the TUI models the ask itself
+// (chat.PermissionAsk), so only the adapter that calls this changes.
+//
+// ASK ONCE PER DIRECTORY PER SESSION: a directory already granted for this
+// conversation does not ask again.
+func (m *App) ShowConsentAsk(ask chat.PermissionAsk) tea.Cmd {
+	if m.chatConvID == "" {
+		return nil
+	}
+	if ask.ID == "" {
+		ask.ID = fmt.Sprintf("ask-%d", time.Now().UnixNano())
+	}
+	if ask.Kind == chat.AskTool && ask.Directory != "" && m.sessionGrants.granted(m.chatConvID, ask.Directory) {
+		return nil
+	}
+	m.chatStore.append(m.chatConvID, chat.ConsentItem(ask))
+	return m.onChatWake()
+}
+
+// ConsentResolve settles a card: it records a session grant, sends a
+// clarifying answer, notices a denial, and repaints. The screen has already
+// marked the item resolved on the shared state (see ask/consent.go).
+func (m *App) ConsentResolve(askID string, dec chat.ConsentDecision, choice string) tea.Cmd {
+	cmds := []tea.Cmd{}
+	st := m.chatStore.consentState(m.chatConvID, askID)
+	if st != nil {
+		ask := st.Ask
+		switch dec {
+		case chat.DecisionAllowSession:
+			dir := ask.Directory
+			if dir == "" {
+				dir = ask.Target
+			}
+			m.sessionGrants.grant(m.chatConvID, dir, ask.Tool)
+			st.Note = "session · " + dir
+			m.dock.SetNotice("allowed for this session · " + dir)
+		case chat.DecisionDeny:
+			m.dock.SetNotice("denied · " + strings.TrimSpace(ask.Tool+" "+ask.Target))
+		case chat.DecisionAnswer:
+			if strings.TrimSpace(choice) != "" {
+				cmds = append(cmds, m.SendUserMessage(choice))
+			}
+		}
+	}
+	cmds = append(cmds, m.onChatWake())
+	return tea.Batch(cmds...)
+}
+
+// runAskOverlay runs one of the Ask screen's list surfaces.
+func (m *App) runAskOverlay(kind string) tea.Cmd {
+	s := m.screens[TabAsk]
+	if s == nil {
+		return nil
+	}
+	op, ok := s.(interface{ OpenAskOverlay(kind string) tea.Cmd })
+	if !ok {
+		return nil
+	}
+	m.SwitchTo(TabAsk)
+	return op.OpenAskOverlay(kind)
 }

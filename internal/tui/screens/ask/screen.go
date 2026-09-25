@@ -10,6 +10,7 @@ import (
 
 	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
@@ -26,6 +27,15 @@ type Model struct {
 	cl  *client.Clients
 	reg *subs.Registry
 
+	// consent is the adopted card state — the SAME *chat.ConsentState the
+	// transcript item holds (see consent.go). consentID is its ask id.
+	consent   *chat.ConsentState
+	consentID string
+
+	// ov is the open list overlay (/grants, /permissions, add-rule). The screen
+	// owns its keys while it is up (ClaimsKeys).
+	ov *askOverlay
+
 	// metaTitle/metaFields are the conversation header this screen fetched
 	// (GetConversation). The SHELL owns the transcript body — it is the one
 	// renderer that sees live chunks and preserves the operator's scroll — so the
@@ -37,6 +47,11 @@ type Model struct {
 	metaMu     sync.Mutex
 	metaTitle  string
 	metaFields []screenkit.Field
+
+	// w/h are the region the shell sized this screen to. Base.View() ALREADY
+	// FILLS IT, so an overlay must be SPLICED over the pane rather than appended
+	// under it (see View).
+	w, h int
 }
 
 // The centered empty state (GUI parity): Ask lands on a fresh
@@ -74,7 +89,7 @@ func (m *Model) Name() string { return "ask" }
 // Close unsubscribes (no live subs in v1).
 func (m *Model) Close() { m.reg.CloseAll() }
 
-func (m *Model) SetSize(w, h int) { m.Base.SetSize(w, h) }
+func (m *Model) SetSize(w, h int) { m.w, m.h = w, h; m.Base.SetSize(w, h) }
 
 func (m *Model) Init() tea.Cmd { return m.Load() }
 
@@ -141,6 +156,16 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.SetSize(msg.Width, msg.Height)
 		return m, nil
+	case tea.KeyMsg:
+		// THE CARD OWNS THE KEYS WHILE IT IS PENDING — routed AHEAD of Base so a
+		// decision key can never be read as a screen action. The shell's
+		// input-modal gate (router.go) already handed the key here verbatim.
+		if cmd, handled := m.handleConsentKey(msg); handled {
+			return m, cmd
+		}
+		if cmd, handled := m.handleOverlayKey(msg); handled {
+			return m, cmd
+		}
 	}
 	if handled, cmd := m.Base.Update(msg); handled {
 		return m, cmd
@@ -159,11 +184,70 @@ func (m *Model) View() string {
 	b.WriteString(theme.HintText.Render("←/→: select the rail or the conversation · ↑/↓, PgUp/PgDn: move the rail's selection, or scroll the conversation — whichever is selected"))
 	b.WriteString("\n")
 	b.WriteString(theme.HintText.Render("r: refresh · ctrl+g: chat composer — send from any screen; replies stream into the open conversation · ctrl+o: fold the newest reasoning block"))
-	return m.Base.Frame(b.String())
+	b.WriteString("\n")
+	// THE SURFACES ARE SLASH COMMANDS, NOT BARE LETTERS. The conversations rail's keys are
+	// composer-driven (UPDATES rows 296/300/303): a bare letter there is TYPED, so anything new had to
+	// be a modifier chord or a slash command. These name both, and name where a session grant is
+	// visible — silent escalation is exactly what a permission system must not do.
+	b.WriteString(theme.HintText.Render("/grants: the directories allowed for this session (revocable) · /permissions: the persistent allow/deny list"))
+	body := b.String()
+	if m.w > 0 && m.h > 0 {
+		// THE OVERLAY IS SPLICED OVER THE PANE, NOT APPENDED UNDER IT.
+		//
+		// Base.View() ALREADY FILLS the whole region the shell sized this screen to,
+		// and the shell normalizes the screen render to exactly that many rows
+		// (app.go baseView -> normalizeBlock(...)). Anything APPENDED after the pane
+		// therefore lands PAST THE LAST ROW and is dropped: /permissions and /grants
+		// opened a list that never reached the screen at all — a list surface the
+		// operator cannot see is not a list.
+		//
+		// This is the same shape the execution screen uses for its modals (fit the
+		// pane, then kit2.Center the box over it), and the block is made OPAQUE first so
+		// the pane cannot show through the gaps between the overlay ragged rows (the
+		// reason the shell wraps the /connect form in a solid panel).
+		body = kit2.FitLines(body, m.w, m.h)
+		if ov := m.overlayView(); ov != "" {
+			body = kit2.Center(body, modalRows(ov, m.w), m.w, m.h)
+		}
+	}
+	return m.Base.Frame(body)
+}
+
+// modalRows normalizes an overlay into ONE OPAQUE BLOCK whose rows share a
+// width, so splicing it over the pane can neither leave a hole nor break the
+// splice with a ragged row.
+func modalRows(content string, maxW int) string {
+	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
+	w := 0
+	for _, l := range lines {
+		if lw := lipgloss.Width(l); lw > w {
+			w = lw
+		}
+	}
+	if maxW > 4 && w > maxW-2 {
+		w = maxW - 2
+	}
+	for i, l := range lines {
+		lines[i] = theme.OpaquePanel(l, w)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // SelectSource focuses the named source (slash nav command support).
 func (m *Model) SelectSource(name string) bool { return m.Base.SelectSource(name) }
+
+// OpenAskOverlay opens one of the Ask screen's list surfaces for a slash
+// command: "grants" (the session roll-up) or "permissions" (the persistent
+// allow/deny list).
+func (m *Model) OpenAskOverlay(kind string) tea.Cmd {
+	switch kind {
+	case "grants":
+		return m.openGrants()
+	case "permissions":
+		return m.openPermissions()
+	}
+	return nil
+}
 
 // SelectItem selects the item by ID in the named source (slash arg
 // jumps); detail loads via RequestDetail when the item is not paged in.
@@ -269,6 +353,10 @@ func (m *Model) onDetail(src, id string) tea.Cmd {
 // overlaid on top of it, because that cached fetch can predate the conversation's
 // title and its first message (see the staleness comment in the body).
 func (m *Model) RenderTranscript(items []chat.ChatItem, live chat.Conversation, liveOK bool) (string, []screenkit.Field) {
+	// RECONCILE FIRST, ALWAYS. This is the one hook the shell calls on every wake, so a card whose
+	// ask has left the transcript (turn done, superseded, aborted) releases its key claim here and
+	// nowhere else — see consent.go.
+	m.SyncTranscriptConsent(items)
 	m.metaMu.Lock()
 	title, fields := m.metaTitle, append([]screenkit.Field{}, m.metaFields...)
 	m.metaMu.Unlock()
@@ -299,7 +387,29 @@ func (m *Model) RenderTranscript(items []chat.ChatItem, live chat.Conversation, 
 		fields = setFieldValue(fields, "title", live.Title)
 	}
 	fields = setFieldValue(fields, "messages", screenkit.FmtInt(int(live.MessageN)))
+	// THE SESSION-GRANT ROLL-UP. "Ask once per directory per session" means the card stops
+	// appearing once a grant is given, so the grants must be visible SOMEWHERE or the operator has
+	// no way to see what they have allowed. The field is the always-visible half; /grants is the
+	// revocable list. Where the plane cannot answer, say so rather than printing a fabricated 0.
+	fields = setFieldValue(fields, "grants", m.grantsFieldValue())
 	return title, fields
+}
+
+// grantsFieldValue is the `grants:` header row: how many directories this conversation has
+// allowed for the session, and where to see them.
+func (m *Model) grantsFieldValue() string {
+	h, ok := m.consentHost()
+	if !ok {
+		return "(unavailable on this plane)"
+	}
+	grants, available := h.ConsentGrants(m.Base.DetailID())
+	if !available {
+		return "(unavailable on this plane)"
+	}
+	if len(grants) == 0 {
+		return "none — /grants"
+	}
+	return screenkit.FmtInt(len(grants)) + " dir(s) — /grants"
 }
 
 // setFieldValue replaces an existing field's value, appending when the key is

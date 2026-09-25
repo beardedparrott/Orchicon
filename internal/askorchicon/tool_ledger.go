@@ -37,6 +37,34 @@ type toolResultEntry struct {
 
 func newToolLedger() *toolLedger { return &toolLedger{} }
 
+// recordPermission appends one consent decision as a synthetic tool call +
+// result pair, so the decision lands in the persisted transcript alongside the
+// real tool calls (AC: the transcript records the decision). Nil-safe.
+func (l *toolLedger) recordPermission(tool, target, verdict, detail string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.nextID++
+	id := fmt.Sprintf("perm-%d", l.nextID)
+	out := "permission " + verdict
+	if detail != "" {
+		out += ": " + detail
+	}
+	l.calls = append(l.calls, toolCallEntry{
+		ID:           id,
+		Type:         "function",
+		FunctionName: "permission." + verdict,
+		Arguments:    truncateLedgerString(target, 4000),
+	})
+	l.results = append(l.results, toolResultEntry{
+		ToolCallID: id,
+		Output:     truncateLedgerString(out, 8000),
+		IsError:    verdict == "deny" || verdict == "never_allow" || verdict == "policy_error",
+	})
+}
+
 // recordStart logs a tool call ISSUED but not yet resolved (the tool_part
 // signal: Text carries only the tool name). The arguments are filled in when
 // the resolution arrives (recordResolve matches the last unresolved call for
