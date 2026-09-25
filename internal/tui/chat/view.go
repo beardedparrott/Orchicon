@@ -206,6 +206,8 @@ func renderItems(items []ChatItem, maxWidth int, folded func(key string) bool, c
 			b.WriteString(renderBubble("error", it.Text, theme.ErrorText, maxWidth))
 		case KindTool:
 			b.WriteString(renderToolRow(it.Tool, maxWidth))
+		case KindAsk:
+			b.WriteString(renderAskCard(it.Ask, maxWidth))
 		case KindArtifact:
 			b.WriteString(renderArtifactRow(it, maxWidth))
 		case KindSession:
@@ -631,6 +633,29 @@ func renderToolRow(t *ParsedTool, maxWidth int) string {
 		b.WriteString(theme.ToolMeta.Render(" → " + firstLine(t.Output)))
 	}
 	b.WriteString("\n")
+	return truncateLine(b.String(), maxWidth)
+}
+
+// renderAskCard paints a recorded clarifying question as the terminal card: the
+// question and its numbered options. The operator answers it by sending the
+// option's label as the next message (Controller.AnswerQuestion), so the card is
+// a RECORD the turn already completed — never a live prompt the turn is waiting on.
+func renderAskCard(a *ParsedAsk, maxWidth int) string {
+	if a == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(theme.ListTitle.Render("? Orchicon asks") + "\n")
+	b.WriteString(theme.BubbleModel.Render(wrapText(a.Question, maxWidth)) + "\n")
+	for i, o := range a.Options {
+		b.WriteString(theme.ListMeta.Render("  "+itoa(int64(i+1))+". ") + o.Label + "\n")
+		if o.Description != "" {
+			b.WriteString(theme.HintText.Render("     "+o.Description) + "\n")
+		}
+	}
+	if a.AllowOther {
+		b.WriteString(theme.HintText.Render("  (or answer in your own words)") + "\n")
+	}
 	return truncateLine(b.String(), maxWidth)
 }
 
