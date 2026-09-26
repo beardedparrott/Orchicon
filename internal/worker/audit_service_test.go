@@ -103,8 +103,8 @@ func TestAuditServiceWorkerMutations(t *testing.T) {
 
 	// CreateWorker → exactly one worker.created row.
 	resp, err := s.CreateWorker(ctx, connect.NewRequest(&apiv1.CreateWorkerRequest{
-		Name:       "Audit Worker " + strings.ToLower(db.NewID()),
-		ModelRef:   "opencode/deepseek-v4-flash-free",
+		Name:     "Audit Worker " + strings.ToLower(db.NewID()),
+		ModelRef: "opencode/deepseek-v4-flash-free",
 	}))
 	if err != nil {
 		t.Fatalf("CreateWorker: %v", err)

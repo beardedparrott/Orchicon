@@ -357,19 +357,19 @@ func listDirectory(rootDir string, relPath string) (string, string, []*apiv1.Fil
 // Timestamps are converted to timestamppb.
 func rowToProto(p db.ProjectRow) *apiv1.Project {
 	proj := &apiv1.Project{
-		Id:                p.ID,
-		TenantId:          p.TenantID,
-		Name:              p.Name,
-		Slug:              p.Slug,
-		Status:            apiv1.ProjectStatus(statusToProto(p.Status)),
-		Goals:             string(p.Goals),
-		Version:           int32(p.Version),
-		CreatedAt:         timestamppb.New(p.CreatedAt),
-		UpdatedAt:         timestamppb.New(p.UpdatedAt),
-		ProjectDir:        p.ProjectDir,
-		ContextFiles:      contextFilesFromJSONOrEmpty(p.ContextFiles),
-		MaxConcurrentRuns: int32(p.MaxConcurrentRuns),
-		RepoSlug:          stringOrEmpty(p.RepoSlug),
+		Id:                  p.ID,
+		TenantId:            p.TenantID,
+		Name:                p.Name,
+		Slug:                p.Slug,
+		Status:              apiv1.ProjectStatus(statusToProto(p.Status)),
+		Goals:               string(p.Goals),
+		Version:             int32(p.Version),
+		CreatedAt:           timestamppb.New(p.CreatedAt),
+		UpdatedAt:           timestamppb.New(p.UpdatedAt),
+		ProjectDir:          p.ProjectDir,
+		ContextFiles:        contextFilesFromJSONOrEmpty(p.ContextFiles),
+		MaxConcurrentRuns:   int32(p.MaxConcurrentRuns),
+		RepoSlug:            stringOrEmpty(p.RepoSlug),
 		DefaultRuntimeImage: stringOrEmpty(p.DefaultRuntimeImage),
 		ExecutionMode: func() apiv1.ExecutionMode {
 			if p.ExecutionMode == db.ExecutionModeLocal {
@@ -396,7 +396,6 @@ func rowToProto(p db.ProjectRow) *apiv1.Project {
 	}
 	return proj
 }
-
 
 // stringOrEmpty dereferences a nullable string, returning "" for nil.
 func stringOrEmpty(s *string) string {

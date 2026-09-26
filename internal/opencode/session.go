@@ -298,8 +298,8 @@ func (c *SessionClient) SendMessageWithAttachments(ctx context.Context, sessionI
 			continue
 		}
 		// FilePartInput: {type:"file", mime, url, filename?}. The url
-			// carries the data: URL (images for vision, text files
-			// inline); filename is set when known.
+		// carries the data: URL (images for vision, text files
+		// inline); filename is set when known.
 		dataURL := "data:" + a.MimeType + ";base64," + base64.StdEncoding.EncodeToString(a.Data)
 		part := map[string]any{"type": "file", "mime": a.MimeType, "url": dataURL}
 		if a.Name != "" {
@@ -741,7 +741,7 @@ func (c *SessionClient) do(ctx context.Context, method, path string, body any) e
 			return ErrSessionNotFound
 		}
 		// Surface the serve's validation message (truncated): a bare
-			// "http 400" hides which part key the serve rejected.
+		// "http 400" hides which part key the serve rejected.
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return fmt.Errorf("opencode serve %s %s: http %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(b)))
 	}

@@ -178,4 +178,3 @@ func (s *RPCService) StreamFileEdits(ctx context.Context, req *connect.Request[a
 		}
 	}
 }
-

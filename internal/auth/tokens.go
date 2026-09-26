@@ -36,16 +36,16 @@ func readRand(b []byte) (int, error) { return io.ReadFull(rand.Reader, b) }
 // the canonical identity + tenant + entitlement context the middleware
 // resolves per request (docs/07 §6.3).
 type AccessClaims struct {
-	Subject      string   `json:"sub"`        // identity id (ULID)
-	TenantID     string   `json:"tid"`        // tenant id
-	Entitlements []string `json:"ent"`        // granted entitlements
+	Subject      string   `json:"sub"` // identity id (ULID)
+	TenantID     string   `json:"tid"` // tenant id
+	Entitlements []string `json:"ent"` // granted entitlements
 	IsAdmin      bool     `json:"adm,omitempty"`
-	TokenType    string   `json:"typ"`        // "access"
+	TokenType    string   `json:"typ"` // "access"
 	Issuer       string   `json:"iss"`
 	Audience     string   `json:"aud"`
 	IssuedAt     int64    `json:"iat"`
 	ExpiresAt    int64    `json:"exp"`
-	JTI          string   `json:"jti"`        // token id (for revocation tracking)
+	JTI          string   `json:"jti"` // token id (for revocation tracking)
 }
 
 // RefreshClaims are the claims in an Orchicon refresh token. Refresh
@@ -90,7 +90,7 @@ func NewTokenIssuer(signingKey, issuer, audience string, accessTTL, refreshTTL t
 		issuer:     issuer,
 		audience:   audience,
 		accessTTL:  accessTTL,
-		refreshTTL:  refreshTTL,
+		refreshTTL: refreshTTL,
 	}
 }
 

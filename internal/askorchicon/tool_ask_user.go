@@ -121,7 +121,7 @@ func parseAskUserArgs(raw []byte) (question string, options []askUserOption, all
 			"free-text-only question.")
 	}
 	if len(opts) == 1 {
-		return "", nil, false, fmt.Errorf("ask_user: provide at least two options, or set allow_other=true for a " +
+		return "", nil, false, fmt.Errorf("ask_user: provide at least two options, or set allow_other=true for a "+
 			"free-text-only question (got 1 option: %q) — a single choice is not a choice.", opts[0].Label)
 	}
 	return question, opts, in.AllowOther, nil

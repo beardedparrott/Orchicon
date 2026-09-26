@@ -40,9 +40,9 @@ type Subscriber interface {
 
 // EventMsg is a NATS message projected to the streaming RPC layer.
 type EventMsg struct {
-	Subject  string
-	Seq      uint64
-	Data     []byte
+	Subject string
+	Seq     uint64
+	Data    []byte
 }
 
 // SubjectFor returns the NATS subject for an event. Events are
@@ -78,13 +78,13 @@ func NewNATSPublisher(ctx context.Context, url string) (*NATSPublisher, error) {
 		return nil, fmt.Errorf("eventbus: new jetstream: %w", err)
 	}
 	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:        "ORCHICON_EVENTS",
-		Subjects:    []string{"orchicon.events.>"},
-		Storage:     jetstream.FileStorage,
-		Retention:   jetstream.LimitsPolicy,
-		Discard:     jetstream.DiscardOld,
-		MaxAge:      72 * time.Hour,
-		Duplicates:  5 * time.Minute,
+		Name:       "ORCHICON_EVENTS",
+		Subjects:   []string{"orchicon.events.>"},
+		Storage:    jetstream.FileStorage,
+		Retention:  jetstream.LimitsPolicy,
+		Discard:    jetstream.DiscardOld,
+		MaxAge:     72 * time.Hour,
+		Duplicates: 5 * time.Minute,
 	}); err != nil {
 		return nil, fmt.Errorf("eventbus: create stream: %w", err)
 	}

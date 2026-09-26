@@ -122,7 +122,9 @@ func (d *Dispatcher) dispatch(ctx context.Context, msg eventbus.EventMsg) {
 		}
 		// Scope check: project-scoped subs only deliver their project's events.
 		if sub.Scope == "project" && sub.ScopeRef != "" {
-			var envProject struct{ ProjectID string `json:"project_id"` }
+			var envProject struct {
+				ProjectID string `json:"project_id"`
+			}
 			_ = json.Unmarshal(msg.Data, &envProject)
 			if envProject.ProjectID != sub.ScopeRef {
 				continue

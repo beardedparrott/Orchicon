@@ -14,6 +14,7 @@ import (
 )
 
 var nameRE = regexp.MustCompile(`^[A-Z][A-Z0-9_]+$`)
+
 const maxSecretsPerItem = 10
 
 type Service struct {
