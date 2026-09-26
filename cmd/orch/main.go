@@ -31,6 +31,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 	"github.com/beardedparrott/orchicon/internal/tui/config"
 	"github.com/beardedparrott/orchicon/internal/tui/connection"
+	"github.com/beardedparrott/orchicon/internal/tui/input"
 	"github.com/beardedparrott/orchicon/internal/version"
 )
 
@@ -330,7 +331,11 @@ func runShell(profile *config.Profile, launchDir string) (bool, error) {
 	// its streams start on the first WindowSizeMsg.
 	app.SwitchTo(tui.TabAsk)
 	prog := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion(),
-		tea.WithReportFocus())
+		tea.WithReportFocus(),
+		// Shift+Enter arrives as the legacy keypad-Enter sequence, which bubbletea
+		// decodes as alt+O then M (the composer then types "OM"). Rewrite it to the
+		// newline chord the composer already understands. See internal/tui/input.
+		tea.WithInput(input.ShiftEnterToNewline(os.Stdin)))
 	_, err = prog.Run()
 	if err != nil {
 		return false, err
