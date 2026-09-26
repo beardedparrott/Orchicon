@@ -60,10 +60,10 @@ func int32Ptr(v int32) *int32 { return &v }
 // and boundary conditions enforced by validateSessionTTLs.
 func TestValidateSessionTTLs(t *testing.T) {
 	cases := []struct {
-		name      string
-		accessTTL int64
+		name       string
+		accessTTL  int64
 		refreshTTL int64
-		wantErr   bool
+		wantErr    bool
 	}{
 		{"both zero — leave unchanged", 0, 0, false},
 		{"access zero, refresh set", 0, 86400, false},
@@ -116,7 +116,7 @@ func TestValidateModelRef_CLIRegistry(t *testing.T) {
 	cliRegistry := adapter.NewBuiltinProviderCatalog().Clone()
 	cliRegistry.AddAdapterKind(adapter.DefaultAdapterKind, "deepseek")
 
-	builtin := New(nil, nil, "")          // no registry injected → static catalog
+	builtin := New(nil, nil, "") // no registry injected → static catalog
 	cliAware := New(nil, nil, "")
 	cliAware.SetValidationRegistry(cliRegistry)
 
@@ -152,6 +152,7 @@ func TestValidateModelRef_CLIRegistry(t *testing.T) {
 		})
 	}
 }
+
 // TEST-MERGE-OURS-END
 
 // --- validateModelRef (ADR-0003) ---

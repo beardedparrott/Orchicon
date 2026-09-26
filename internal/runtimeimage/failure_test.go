@@ -80,7 +80,6 @@ func TestNeverBareExitStatus(t *testing.T) {
 	}
 }
 
-
 func TestClassifyDockerfile(t *testing.T) {
 	log := "dockerfile: syntax error near unexpected token"
 	f := ClassifyBuildLog(log, 1, "exit status 1")

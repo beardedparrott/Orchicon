@@ -107,6 +107,13 @@ func (s *Service) UpdateSettings(ctx context.Context, req *connect.Request[apiv1
 	// (Local named `ts`, not `s`: `s` shadows the *Service receiver, which
 	// made the validateModelRef call resolve against the proto message.)
 	if ts := req.Msg.Settings; ts != nil {
+		// Validate the stall thresholds before touching the DB. Blank (absent) is
+		// valid and means "use the built-in default"; 0 is valid and means
+		// "disabled"; a negative has no meaning under either convention and would
+		// store a window that no consumer can honour.
+		if err := validateStallSettings(ts); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
 		if err := validateSessionTTLs(ts.SessionAccessTokenTtlSeconds, ts.SessionRefreshTokenTtlSeconds); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
@@ -403,6 +410,49 @@ func containsPathSeparator(s string) bool {
 		}
 	}
 	return false
+}
+
+// validateStallSettings rejects a NEGATIVE stall threshold. Blank (absent) and
+// zero are both legitimate — blank is "use the built-in default", zero is
+// "disabled" — so the only invalid input is a negative, which under the previous
+// convention silently meant "disabled" and under this one means nothing at all.
+// Rejecting it is a deliberate break from that old spelling: an operator who
+// types -1 gets told what the two real options are rather than a stored value
+// that no window resolver can honour.
+func validateStallSettings(ts *apiv1.TenantSettings) error {
+	if ts == nil {
+		return nil
+	}
+	seconds := []struct {
+		name string
+		v    *int64
+	}{
+		{"stall_no_progress_window_seconds", ts.StallNoProgressWindowSeconds},
+		{"stall_no_file_diff_window_seconds", ts.StallNoFileDiffWindowSeconds},
+		{"stall_text_loop_window_seconds", ts.StallTextLoopWindowSeconds},
+		{"stall_repetition_window_seconds", ts.StallRepetitionWindowSeconds},
+		{"stall_nudge_reply_window_seconds", ts.StallNudgeReplyWindowSeconds},
+		{"stall_nudge_cooldown_seconds", ts.StallNudgeCooldownSeconds},
+		{"stall_tool_hang_seconds", ts.StallToolHangSeconds},
+	}
+	for _, f := range seconds {
+		if f.v != nil && *f.v < 0 {
+			return fmt.Errorf("%s: must be blank (built-in default) or >= 0 (0 disables), got %d", f.name, *f.v)
+		}
+	}
+	counts := []struct {
+		name string
+		v    *int32
+	}{
+		{"stall_repetition_count", ts.StallRepetitionCount},
+		{"stall_nudge_max", ts.StallNudgeMax},
+	}
+	for _, f := range counts {
+		if f.v != nil && *f.v < 0 {
+			return fmt.Errorf("%s: must be blank (built-in default) or >= 0 (0 disables), got %d", f.name, *f.v)
+		}
+	}
+	return nil
 }
 
 // Session TTL validation constants.

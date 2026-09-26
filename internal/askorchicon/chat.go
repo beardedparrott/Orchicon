@@ -1368,7 +1368,7 @@ type turnCollectOpts struct {
 	// stallNoProgressSeconds is the tenant's stall_no_progress_window_seconds
 	// read at dispatch time (0 when unset). The turn's stall monitor resolves
 	// its effective no-progress window from it, matching executions.
-	stallNoProgressSeconds int64
+	stallNoProgressSeconds *int64
 	// onPartial mirrors the running turn's collected text/reasoning into the
 	// acked assistant message row (throttled by the caller) so a client that
 	// lost the live stream — refresh, another tab, another device — can watch

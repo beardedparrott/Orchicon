@@ -33,8 +33,8 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/db"
-	"github.com/beardedparrott/orchicon/internal/fileedit"
 	"github.com/beardedparrott/orchicon/internal/domain"
+	"github.com/beardedparrott/orchicon/internal/fileedit"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
@@ -1854,4 +1854,3 @@ func projectMount(projectDir string) []runtime.MountSpec {
 	}
 	return []runtime.MountSpec{{Source: projectDir, Dest: projectDir}}
 }
-

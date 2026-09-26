@@ -281,12 +281,12 @@ func (h *Handler) localLogin(w http.ResponseWriter, r *http.Request) {
 	// issued so the gate can call the change RPC.
 	cred := h.localCredential(r.Context(), tenantID, identityID)
 	resp := tokenResponse{
-		AccessToken: pair.AccessToken,
-		TokenType:   "Bearer",
-		ExpiresIn:   pair.ExpiresIn,
-		IdentityID:  identityID,
-		TenantID:    tenantID,
-		IsAdmin:     isAdmin,
+		AccessToken:         pair.AccessToken,
+		TokenType:           "Bearer",
+		ExpiresIn:           pair.ExpiresIn,
+		IdentityID:          identityID,
+		TenantID:            tenantID,
+		IsAdmin:             isAdmin,
 		ForcePasswordChange: cred != nil && cred.ForcePasswordChange,
 	}
 	// Complete a pending embedded-OP authorize request (the login bridge

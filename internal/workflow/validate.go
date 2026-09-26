@@ -30,12 +30,12 @@ import (
 // Input size bounds (AGENTS.md security standards: size bounds on all
 // inputs to prevent memory-exhaustion abuse).
 const (
-	maxNameLen            = 500
-	maxVersionNoteLen     = 1 << 14
-	maxReasonLen          = 1000
-	maxActorLen           = 200
-	maxStepsLen           = 1 << 20 // 1 MiB — steps JSON (array of Step messages)
-	maxJSONFieldLen       = 1 << 20 // 1 MiB for inputs/outputs/run_context
+	maxNameLen        = 500
+	maxVersionNoteLen = 1 << 14
+	maxReasonLen      = 1000
+	maxActorLen       = 200
+	maxStepsLen       = 1 << 20 // 1 MiB — steps JSON (array of Step messages)
+	maxJSONFieldLen   = 1 << 20 // 1 MiB for inputs/outputs/run_context
 )
 
 // validateName trims and bounds-checks a workflow name.

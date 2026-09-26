@@ -71,9 +71,12 @@ func askStallNoProgressWindow() time.Duration {
 // stallWindowsFromManifest, so a chat turn and a worker execution on the same
 // tenant agree on what "no progress" means). 0/unset falls back to the env
 // override, then the 120s default.
-func resolveChatStallNoProgressWindow(settingsSeconds int64) time.Duration {
-	if settingsSeconds > 0 && os.Getenv("ORCHICON_ASK_STALL_NO_PROGRESS_WINDOW") == "" {
-		return time.Duration(settingsSeconds) * time.Second
+// settingsSeconds is a POINTER: nil = the tenant left this blank, so the
+// env/code default applies; non-nil = an explicit value, and 0 means DISABLED
+// (a zero window, which the monitor reads as off).
+func resolveChatStallNoProgressWindow(settingsSeconds *int64) time.Duration {
+	if settingsSeconds != nil && os.Getenv("ORCHICON_ASK_STALL_NO_PROGRESS_WINDOW") == "" {
+		return time.Duration(*settingsSeconds) * time.Second
 	}
 	return askStallNoProgressWindow()
 }
@@ -187,7 +190,7 @@ func (m *chatStallMonitor) setAwaitingConsent(v bool) {
 // (0 when unset/unknown); the effective window is resolved by
 // resolveChatStallNoProgressWindow so a chat turn honors the same tenant
 // setting executions do.
-func newChatStallMonitor(modelRef string, settingsNoProgressSeconds int64) *chatStallMonitor {
+func newChatStallMonitor(modelRef string, settingsNoProgressSeconds *int64) *chatStallMonitor {
 	return &chatStallMonitor{
 		modelRef:         modelRef,
 		noProgressWindow: resolveChatStallNoProgressWindow(settingsNoProgressSeconds),
@@ -315,7 +318,10 @@ func (m *chatStallMonitor) stallReason() string {
 		return ""
 	}
 	now := m.now()
-	if now.Sub(m.lastActivity) > m.noProgressWindow {
+	// Gated on > 0: an explicit 0 in Settings means the operator DISABLED this
+	// check, and without the guard `now.Sub(...) > 0` holds on every tick — a
+	// disabled check would fire instantly on the first tick.
+	if m.noProgressWindow > 0 && now.Sub(m.lastActivity) > m.noProgressWindow {
 		m.fired = true
 		return fmt.Sprintf("stalled:no_progress (%s with no activity from model %s)", m.noProgressWindow, m.modelRef)
 	}

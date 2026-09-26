@@ -84,7 +84,7 @@ func TestAnthropicThinkSplitAcrossDeltas(t *testing.T) {
 }
 
 func TestLegacyThinkInlineRoutesToReasoning(t *testing.T) {
-	body := sse(`{"type":"text-delta","delta":"answer before`+tOpen+`thinking hard`+tClose+`after"}`)
+	body := sse(`{"type":"text-delta","delta":"answer before` + tOpen + `thinking hard` + tClose + `after"}`)
 	ts := &legacyStream{r: newSSEReader(strings.NewReader(body)), think: newThinkSplitter()}
 	got, finish := flattenWire(t, ts)
 	if want := "T:answer before|R:thinking hard|T:after"; got != want {

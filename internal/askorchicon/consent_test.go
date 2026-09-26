@@ -723,7 +723,7 @@ func TestPendingRegistryRemovesConversation(t *testing.T) {
 }
 
 func TestStallMonitorGatesToolWedgeOnAConsentAsk(t *testing.T) {
-	m := newChatStallMonitor("m", 0)
+	m := newChatStallMonitor("m", nil)
 	m.mu.Lock()
 	m.openToolTime = time.Now().Add(-2 * time.Hour)
 	m.openToolName = "bash"

@@ -16,13 +16,13 @@ import "time"
 // persisted and published. The envelope shape is fixed by
 // docs/08_Event_Bus_and_Telemetry_Model.md §3.
 type Event struct {
-	EventType      string
-	AggregateType  string
-	AggregateID    string
-	AggregateVer   int
-	TenantID       string
-	OccurredAt     time.Time
-	TraceID        string
-	CorrelationID  string
-	Payload        []byte // protobuf-encoded, per docs/08 §9
+	EventType     string
+	AggregateType string
+	AggregateID   string
+	AggregateVer  int
+	TenantID      string
+	OccurredAt    time.Time
+	TraceID       string
+	CorrelationID string
+	Payload       []byte // protobuf-encoded, per docs/08 §9
 }

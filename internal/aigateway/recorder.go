@@ -58,15 +58,15 @@ func (u *UsageRecorder) SetPricingResolver(fn PricingResolver) { u.pricing = fn 
 // deliberately excluded — providers that report it separately bill it as
 // output, so adding it would double-count.
 type UsageInput struct {
-	TenantID         string
-	ProjectID        string
-	TaskID           string
-	ExecutionID      string
-	WorkerID         string
+	TenantID    string
+	ProjectID   string
+	TaskID      string
+	ExecutionID string
+	WorkerID    string
 	// AdapterKind tags the OTel/adapter parity attribute and is persisted to
 	// usage_records so Ask/worker usage is attributable to the adapter that
 	// drove the model call. Empty for legacy paths that predate the column.
-	AdapterKind      string
+	AdapterKind string
 	// SessionID carries the Ask Orchicon conversation id for Ask session
 	// attribution (there is no execution/task/project for a chat turn).
 	// Empty for worker executions, which attribute via ExecutionID/TaskID.

@@ -1101,13 +1101,15 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 			{Key: "default worker model", Value: s.GetDefaultWorkerModel()},
 			{Key: "default ask model", Value: s.GetDefaultAskOrchiconModel()},
 			{Key: "max concurrent runs", Value: screenkit.FmtInt(int(s.GetMaxConcurrentRuns()))},
-			{Key: "stall no-progress window", Value: screenkit.FmtInt64(s.GetStallNoProgressWindowSeconds()) + "s"},
-			{Key: "stall no-diff window", Value: screenkit.FmtInt64(s.GetStallNoFileDiffWindowSeconds()) + "s"},
-			{Key: "stall text-loop window", Value: screenkit.FmtInt64(s.GetStallTextLoopWindowSeconds()) + "s"},
-			{Key: "stall repetition count", Value: screenkit.FmtInt(int(s.GetStallRepetitionCount()))},
-			{Key: "stall repetition window", Value: screenkit.FmtInt64(s.GetStallRepetitionWindowSeconds()) + "s"},
-			{Key: "stall nudge max", Value: screenkit.FmtInt(int(s.GetStallNudgeMax()))},
-			{Key: "stall tool-hang", Value: screenkit.FmtInt64(s.GetStallToolHangSeconds()) + "s"},
+			// Stall thresholds: blank = built-in default, 0 = disabled. The
+			// parentheses carry the default so "blank" is not a mystery.
+			{Key: "stall no-progress window", Value: fmtStallDim(s.StallNoProgressWindowSeconds, 300)},
+			{Key: "stall no-diff window", Value: fmtStallDim(s.StallNoFileDiffWindowSeconds, 900)},
+			{Key: "stall text-loop window", Value: fmtStallDim(s.StallTextLoopWindowSeconds, 600)},
+			{Key: "stall repetition count", Value: fmtStallCount(s.StallRepetitionCount, 5)},
+			{Key: "stall repetition window", Value: fmtStallDim(s.StallRepetitionWindowSeconds, 300)},
+			{Key: "stall nudge max", Value: fmtStallCount(s.StallNudgeMax, 2)},
+			{Key: "stall tool-hang", Value: fmtStallDim(s.StallToolHangSeconds, 180)},
 			{Key: "exec reap grace", Value: screenkit.FmtInt64(s.GetExecutionReapGraceSeconds()) + "s"},
 			{Key: "exec reap failures", Value: screenkit.FmtInt(int(s.GetExecutionReapConsecutiveFailures()))},
 			{Key: "default budget overrides", Value: s.GetDefaultBudgetOverrides()},
@@ -1625,13 +1627,13 @@ func (m *Model) settingsForm() *kit2.Form {
 		kit2.FieldSpec{Name: "default_worker_model", Label: "Default worker model", Kind: kit2.KModel, Initial: s.GetDefaultWorkerModel(), Validate: validModelRef, Placeholder: "— none — (enter to choose a model)"},
 		kit2.FieldSpec{Name: "default_ask_model", Label: "Default ask model", Kind: kit2.KModel, Initial: s.GetDefaultAskOrchiconModel(), Validate: validModelRef, Placeholder: "— none — (enter to choose a model)"},
 		kit2.FieldSpec{Name: "max_concurrent_runs", Label: "Max concurrent runs", Kind: kit2.KNumber, Initial: i32(s.GetMaxConcurrentRuns())},
-		kit2.FieldSpec{Name: "stall_no_progress_window_seconds", Label: "Stall no-progress window (s)", Kind: kit2.KNumber, Initial: num(s.GetStallNoProgressWindowSeconds())},
-		kit2.FieldSpec{Name: "stall_no_file_diff_window_seconds", Label: "Stall no-diff window (s)", Kind: kit2.KNumber, Initial: num(s.GetStallNoFileDiffWindowSeconds())},
-		kit2.FieldSpec{Name: "stall_text_loop_window_seconds", Label: "Stall text-loop window (s)", Kind: kit2.KNumber, Initial: num(s.GetStallTextLoopWindowSeconds())},
-		kit2.FieldSpec{Name: "stall_repetition_count", Label: "Stall repetition count", Kind: kit2.KNumber, Initial: i32(s.GetStallRepetitionCount())},
-		kit2.FieldSpec{Name: "stall_repetition_window_seconds", Label: "Stall repetition window (s)", Kind: kit2.KNumber, Initial: num(s.GetStallRepetitionWindowSeconds())},
-		kit2.FieldSpec{Name: "stall_nudge_max", Label: "Stall nudge max", Kind: kit2.KNumber, Initial: i32(s.GetStallNudgeMax())},
-		kit2.FieldSpec{Name: "stall_tool_hang_seconds", Label: "Stall tool-hang window (s)", Kind: kit2.KNumber, Initial: num(s.GetStallToolHangSeconds())},
+		kit2.FieldSpec{Name: "stall_no_progress_window_seconds", Label: "Stall no-progress window (s; blank=def 0=off)", Kind: kit2.KNumber, Initial: stallDimInitial(s.StallNoProgressWindowSeconds)},
+		kit2.FieldSpec{Name: "stall_no_file_diff_window_seconds", Label: "Stall no-diff window (s; blank=def 0=off)", Kind: kit2.KNumber, Initial: stallDimInitial(s.StallNoFileDiffWindowSeconds)},
+		kit2.FieldSpec{Name: "stall_text_loop_window_seconds", Label: "Stall text-loop window (s; blank=def 0=off)", Kind: kit2.KNumber, Initial: stallDimInitial(s.StallTextLoopWindowSeconds)},
+		kit2.FieldSpec{Name: "stall_repetition_count", Label: "Stall repetition count (blank=def 0=off)", Kind: kit2.KNumber, Initial: stallCountInitial(s.StallRepetitionCount)},
+		kit2.FieldSpec{Name: "stall_repetition_window_seconds", Label: "Stall repetition window (s; blank=def 0=off)", Kind: kit2.KNumber, Initial: stallDimInitial(s.StallRepetitionWindowSeconds)},
+		kit2.FieldSpec{Name: "stall_nudge_max", Label: "Stall nudge max (blank=def 0=off)", Kind: kit2.KNumber, Initial: stallCountInitial(s.StallNudgeMax)},
+		kit2.FieldSpec{Name: "stall_tool_hang_seconds", Label: "Stall tool-hang window (s; blank=def 0=off)", Kind: kit2.KNumber, Initial: stallDimInitial(s.StallToolHangSeconds)},
 		kit2.FieldSpec{Name: "execution_reap_grace_seconds", Label: "Exec reap grace (s)", Kind: kit2.KNumber, Initial: num(s.GetExecutionReapGraceSeconds())},
 		kit2.FieldSpec{Name: "execution_reap_consecutive_failures", Label: "Exec reap consecutive failures", Kind: kit2.KNumber, Initial: i32(s.GetExecutionReapConsecutiveFailures())},
 		// --- Execution budget gates ---
@@ -1715,13 +1717,13 @@ func (m *Model) settingsForm() *kit2.Form {
 			n32 := int32(n)
 			out.MaxConcurrentRuns = &n32
 		}
-		out.StallNoProgressWindowSeconds = i64Of0(v["stall_no_progress_window_seconds"])
-		out.StallNoFileDiffWindowSeconds = i64Of0(v["stall_no_file_diff_window_seconds"])
-		out.StallTextLoopWindowSeconds = i64Of0(v["stall_text_loop_window_seconds"])
-		out.StallRepetitionCount = int32(i64Of0(v["stall_repetition_count"]))
-		out.StallRepetitionWindowSeconds = i64Of0(v["stall_repetition_window_seconds"])
-		out.StallNudgeMax = int32(i64Of0(v["stall_nudge_max"]))
-		out.StallToolHangSeconds = i64Of0(v["stall_tool_hang_seconds"])
+		out.StallNoProgressWindowSeconds = optI64(v["stall_no_progress_window_seconds"])
+		out.StallNoFileDiffWindowSeconds = optI64(v["stall_no_file_diff_window_seconds"])
+		out.StallTextLoopWindowSeconds = optI64(v["stall_text_loop_window_seconds"])
+		out.StallRepetitionCount = optI32(v["stall_repetition_count"])
+		out.StallRepetitionWindowSeconds = optI64(v["stall_repetition_window_seconds"])
+		out.StallNudgeMax = optI32(v["stall_nudge_max"])
+		out.StallToolHangSeconds = optI64(v["stall_tool_hang_seconds"])
 		out.ExecutionReapGraceSeconds = i64Of0(v["execution_reap_grace_seconds"])
 		out.ExecutionReapConsecutiveFailures = int32(i64Of0(v["execution_reap_consecutive_failures"]))
 		// The individual fields are composed back into the transport JSON the server
@@ -2656,6 +2658,78 @@ func i64Of(s string) (int64, bool) {
 func i64Of0(s string) int64 {
 	n, _ := i64Of(s)
 	return n
+}
+
+// optI64 maps a Settings form field to an OPTIONAL proto value.
+//
+// A BLANK field means "use the built-in default" and must travel as ABSENT
+// (nil), never as 0 — for the stall thresholds 0 is a real, different
+// instruction: DISABLED. i64Of0's collapse-to-zero is therefore wrong for these
+// fields, and i64Of is what tells the two apart.
+func optI64(s string) *int64 {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	n, ok := i64Of(s)
+	if !ok {
+		return nil
+	}
+	return &n
+}
+
+// optI32 is optI64 for the count-shaped stall knobs (repetition count, nudge
+// budget): blank = built-in default, 0 = disabled.
+func optI32(s string) *int32 {
+	if v := optI64(s); v != nil {
+		n := int32(*v)
+		return &n
+	}
+	return nil
+}
+
+// stallDimInitial renders a stall window into its form field: BLANK for "the
+// tenant left this unset" (which the server stores as NULL and the adapters
+// read as the built-in default), "0" for an explicit disable, else the value.
+func stallDimInitial(v *int64) string {
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d", *v)
+}
+
+// stallCountInitial is stallDimInitial for the count-shaped knobs.
+func stallCountInitial(v *int32) string {
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d", *v)
+}
+
+// fmtStallDim renders a stall threshold for the read-only Settings list. A
+// BLANK field is shown WITH the built-in default it resolves to, because
+// "blank" is only meaningful if the operator can see what it falls back to; an
+// explicit 0 is shown as Disabled so the two states are never confused.
+func fmtStallDim(v *int64, defaultSecs int64) string {
+	switch {
+	case v == nil:
+		return fmt.Sprintf("Default (%ds)", defaultSecs)
+	case *v == 0:
+		return "Disabled"
+	default:
+		return fmt.Sprintf("%ds", *v)
+	}
+}
+
+// fmtStallCount is fmtStallDim for the count-shaped knobs.
+func fmtStallCount(v *int32, def int32) string {
+	switch {
+	case v == nil:
+		return fmt.Sprintf("Default (%d)", def)
+	case *v == 0:
+		return "Disabled"
+	default:
+		return fmt.Sprintf("%d", *v)
+	}
 }
 
 func min(a, b int) int {

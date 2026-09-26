@@ -25,7 +25,7 @@ import (
 )
 
 func newToolHangManifest(secs int64) scheduler.ExecutionManifest {
-	return scheduler.ExecutionManifest{StallToolHangSeconds: secs}
+	return scheduler.ExecutionManifest{StallToolHangSeconds: &secs}
 }
 
 func toolHangTestWindows() stallWindows {
@@ -178,21 +178,32 @@ func TestToolHangEscalationNeutral(t *testing.T) {
 func TestToolHangManifestBranch(t *testing.T) {
 	t.Setenv("ORCHICON_STALL_TOOL_HANG_WINDOW", "")
 	t.Setenv("ORCHICON_TOOL_HANG_WINDOW", "")
-	w := stallWindowsFromManifest(newToolHangManifest(90))
-	if w.toolHang != 90*time.Second {
+
+	// BLANK (nil) — the tenant left it unset, so the built-in default applies.
+	// This is what a never-configured tenant has.
+	if w := stallWindowsFromManifest(scheduler.ExecutionManifest{}); w.toolHang != 180*time.Second {
+		t.Fatalf("blank -> %v, want 180s default", w.toolHang)
+	}
+	// An explicit positive value overrides the default.
+	if w := stallWindowsFromManifest(newToolHangManifest(90)); w.toolHang != 90*time.Second {
 		t.Fatalf("manifest 90 -> %v, want 90s", w.toolHang)
 	}
-	w = stallWindowsFromManifest(newToolHangManifest(0))
-	if w.toolHang != 180*time.Second {
-		t.Fatalf("manifest 0 -> %v, want 180s default", w.toolHang)
+	// An explicit 0 DISABLES the watchdog. This is the changed behaviour: 0 used
+	// to mean "unset" and therefore resolved to the 180s default, leaving only a
+	// NEGATIVE able to switch the check off. Now blank means "unset" and 0 means
+	// off, so the two states are finally independent.
+	if w := stallWindowsFromManifest(newToolHangManifest(0)); w.toolHang > 0 {
+		t.Fatalf("manifest 0 -> %v, want disabled (<=0)", w.toolHang)
 	}
-	w = stallWindowsFromManifest(newToolHangManifest(-5))
-	if w.toolHang > 0 {
+	// A negative cannot reach here (the Settings API rejects it), but if a
+	// legacy row ever leaked one through, the adapter must still degrade to
+	// "off" rather than to an absurdly short window.
+	if w := stallWindowsFromManifest(newToolHangManifest(-5)); w.toolHang > 0 {
 		t.Fatalf("manifest -5 -> %v, want disabled (<=0)", w.toolHang)
 	}
+	// The env override still wins, for dev/debugging.
 	t.Setenv("ORCHICON_STALL_TOOL_HANG_WINDOW", "7s")
-	w = stallWindowsFromManifest(newToolHangManifest(90))
-	if w.toolHang != 7*time.Second {
+	if w := stallWindowsFromManifest(newToolHangManifest(90)); w.toolHang != 7*time.Second {
 		t.Fatalf("env 7s + manifest 90 -> %v, want env wins (7s)", w.toolHang)
 	}
 }

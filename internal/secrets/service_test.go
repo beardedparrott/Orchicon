@@ -6,20 +6,43 @@ import (
 )
 
 func TestValidateName(t *testing.T) {
-	if err:= ValidateName("TAVILY_API_KEY"); err!=nil { t.Error(err) }
-	if err:= ValidateName("AB"); err!=nil { t.Error(err) }
-	if err:= ValidateName("tavily"); err==nil { t.Fatal("lowercase should fail") }
-	if err:= ValidateName("TAVILY-KEY"); err==nil { t.Fatal("dash should fail") }
-	if err:= ValidateName(""); err==nil { t.Fatal("empty should fail") }
-	long := strings.Repeat("A",65)
-	if err:= ValidateName(long); err==nil { t.Fatal("too long should fail") }
+	if err := ValidateName("TAVILY_API_KEY"); err != nil {
+		t.Error(err)
+	}
+	if err := ValidateName("AB"); err != nil {
+		t.Error(err)
+	}
+	if err := ValidateName("tavily"); err == nil {
+		t.Fatal("lowercase should fail")
+	}
+	if err := ValidateName("TAVILY-KEY"); err == nil {
+		t.Fatal("dash should fail")
+	}
+	if err := ValidateName(""); err == nil {
+		t.Fatal("empty should fail")
+	}
+	long := strings.Repeat("A", 65)
+	if err := ValidateName(long); err == nil {
+		t.Fatal("too long should fail")
+	}
 }
 func TestValidateSecretIDs(t *testing.T) {
-	if err:= ValidateSecretIDs([]string{"a","b"}); err!=nil { t.Error(err) }
-	if err:= ValidateSecretIDs([]string{"","b"}); err==nil { t.Fatal("empty id should fail") }
-	if err:= ValidateSecretIDs([]string{"a","a"}); err==nil { t.Fatal("duplicate should fail") }
-	many:= make([]string,11); for i:=range many{ many[i]=string(rune('a'+i)) }
-	if err:= ValidateSecretIDs(many); err==nil { t.Fatal("max 10 should fail") }
+	if err := ValidateSecretIDs([]string{"a", "b"}); err != nil {
+		t.Error(err)
+	}
+	if err := ValidateSecretIDs([]string{"", "b"}); err == nil {
+		t.Fatal("empty id should fail")
+	}
+	if err := ValidateSecretIDs([]string{"a", "a"}); err == nil {
+		t.Fatal("duplicate should fail")
+	}
+	many := make([]string, 11)
+	for i := range many {
+		many[i] = string(rune('a' + i))
+	}
+	if err := ValidateSecretIDs(many); err == nil {
+		t.Fatal("max 10 should fail")
+	}
 }
 func TestAuditSnapshotNeverLeaksValue(t *testing.T) {
 	// Simulate that service never puts value into audit snapshot: the snapshot keys are only name/description.

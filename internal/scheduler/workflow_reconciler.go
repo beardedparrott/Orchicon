@@ -3923,14 +3923,31 @@ func readConfigProjectID(config string) string {
 type stepRecoveryConfig struct {
 	Strategy    string `json:"strategy"`
 	MaxAttempts int    `json:"max_attempts"`
+
+	// strategySet records whether the config carried an EXPLICIT, non-empty
+	// strategy. resolveStepRecoveryConfig needs the difference between "this
+	// step asks for retry" and "this step asks for nothing, so retry is just
+	// the generic fallback": only the latter may be upgraded for an ephemeral
+	// run. Unexported, so it never round-trips through the JSON above.
+	strategySet bool
 }
+
+// Step-level recovery strategy names, as written in a step's
+// config.recovery.strategy. Local constants rather than imports from
+// internal/recovery: this file only matches on the strings the seeded step
+// templates declare, and the recovery SERVICE is injected as r.recovery —
+// importing its package for two literals would couple the layers for nothing.
+const (
+	strategyRetry            = "retry"
+	strategySummarizeRestart = "summarize_restart"
+)
 
 // readStepRecoveryConfig reads the "recovery" block from the step's
 // config JSON. Returns defaults (strategy="retry", max_attempts=3) for
 // any missing field.
 func readStepRecoveryConfig(config string) stepRecoveryConfig {
 	cfg := stepRecoveryConfig{
-		Strategy:    "retry",
+		Strategy:    strategyRetry,
 		MaxAttempts: 3,
 	}
 	if config == "" {
@@ -3944,11 +3961,39 @@ func readStepRecoveryConfig(config string) stepRecoveryConfig {
 	}
 	if outer.Recovery.Strategy != "" {
 		cfg.Strategy = outer.Recovery.Strategy
+		cfg.strategySet = true
 	}
 	if outer.Recovery.MaxAttempts > 0 {
 		cfg.MaxAttempts = outer.Recovery.MaxAttempts
 	}
 	return cfg
+}
+
+// resolveStepRecoveryConfig returns the recovery config the reconciler should
+// ACT on for a step, applying the EPHEMERAL DEFAULT.
+//
+// An ephemeral (Ask Orchicon Quick Work) work item exists to carry exactly one
+// machine-managed job, with no human watching the step between attempts. For
+// such a run the generic "retry" fallback is the wrong default, because retry
+// is NOT the recovery flow: it clones the step's ticket and re-dispatches it
+// blind, it NEVER creates a RecoveryExecution, and when its attempts run out
+// the step fails with RecoveryID null — no capture, no summary, nothing to
+// resume from, and no recovery record to review. (Observed: a Quick Work
+// dispatch whose step carried no config retried twice and died exactly that
+// way.)
+//
+// So when the step names no strategy of its own, an ephemeral run defaults to
+// summarize_restart — the strategy the seeded SDLC and Quick Work step
+// templates already declare explicitly. An EXPLICIT strategy always wins,
+// INCLUDING an explicit "retry": an operator who wrote that down is not
+// second-guessed. Non-ephemeral runs are untouched and keep the retry default.
+func resolveStepRecoveryConfig(config string, ephemeral bool) stepRecoveryConfig {
+	rc := readStepRecoveryConfig(config)
+	if !ephemeral || rc.strategySet {
+		return rc
+	}
+	rc.Strategy = strategySummarizeRestart
+	return rc
 }
 
 // resolveRuntimeImage determines the runtime container image for a run
@@ -4213,7 +4258,7 @@ var recoveryResultKeys = []string{
 // matching readStepRecoveryConfig).
 func recoveringStepResult(ctx context.Context, tx pgx.Tx, tenantID, workItemID, failedExecID, strategy string, prevResult []byte) []byte {
 	if strategy == "" {
-		strategy = "retry"
+		strategy = strategyRetry
 	}
 	res := map[string]any{
 		"_work_item_id":        workItemID,
@@ -4687,7 +4732,14 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 	}
 
 	{
-		rc := readStepRecoveryConfig(stepConfig)
+		// ephemeralDefaultStepRecovery: a machine-managed ephemeral run whose
+		// step names no strategy of its own gets the recovery engine rather
+		// than a blind retry (see resolveStepRecoveryConfig). The worker-backed
+		// APPROVAL step is excluded — its "retry" branch re-dispatches the same
+		// approval ticket in place, which is the right behaviour for an
+		// approval and is not what the recovery engine's resume flow models.
+		ephemeralDefaultStepRecovery := wi.Ephemeral && sr.StepKind != domain.StepKindApproval
+		rc := resolveStepRecoveryConfig(stepConfig, ephemeralDefaultStepRecovery)
 
 		if sr.Attempt >= rc.MaxAttempts-1 {
 			return true, true, nil
@@ -4700,7 +4752,7 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 			"strategy", rc.Strategy)
 
 		switch rc.Strategy {
-		case "retry", "":
+		case strategyRetry, "":
 			if sr.StepKind == domain.StepKindApproval {
 				// Worker-backed approval: the step run IS the approval
 				// record — never clone the shared ticket into a fresh
@@ -4740,6 +4792,25 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 				WorkflowStepID:     wi.WorkflowStepID,
 				Results:            []byte("{}"),
 				PromptContext:      wi.PromptContext,
+				// A retry is the SAME job, so the replacement ticket must carry
+				// the input material the original was dispatched with. These
+				// were silently dropped here:
+				//
+				//   - Ephemeral: the clone came back as a NORMAL work item, so a
+				//     retry of an ephemeral run produced exactly the visible
+				//     record the ephemeral flag exists to prevent — a machine
+				//     dispatch leaking into every human work-item view.
+				//   - RuntimeImage: resolveRuntimeImage reads the bound item, so a
+				//     clone without it fell back to the PROJECT DEFAULT image —
+				//     the retry could run somewhere other than where the original
+				//     ran (and where its toolchain was proven).
+				//   - ContextFiles/SecretIDs: the retry lost the context and
+				//     credentials the brief was built around, so it re-attempted
+				//     the same fault with strictly less information.
+				Ephemeral:    wi.Ephemeral,
+				RuntimeImage: wi.RuntimeImage,
+				ContextFiles: wi.ContextFiles,
+				SecretIDs:    wi.SecretIDs,
 			}
 			if _, err := db.CreateWorkItem(ctx, tx, fresh); err != nil {
 				return false, false, fmt.Errorf("create retry work item: %w", err)
@@ -4756,7 +4827,7 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 			runByID[sr.StepID] = updated
 			return false, false, nil
 
-		case "summarize_restart":
+		case strategySummarizeRestart:
 			if r.recovery != nil && recoveryTriggers != nil {
 				// Defer the trigger to post-commit (see reconcileRun):
 				// TriggerOnFailure opens its own transaction, and this pass

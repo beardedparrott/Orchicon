@@ -48,14 +48,14 @@ func (s *Service) QueryTraces(ctx context.Context, req *connect.Request[apiv1.Qu
 	out := &apiv1.QueryTracesResponse{Degraded: res.Degraded}
 	for _, t := range res.Traces {
 		out.Traces = append(out.Traces, &apiv1.Trace{
-			TraceId:       t.TraceID,
+			TraceId:      t.TraceID,
 			RootSpanName: t.RootSpanName,
-			StartTime:     timestamppb.New(t.StartTime),
-			DurationUs:    t.DurationUS,
-			SpanCount:     int32(t.SpanCount),
+			StartTime:    timestamppb.New(t.StartTime),
+			DurationUs:   t.DurationUS,
+			SpanCount:    int32(t.SpanCount),
 			RootAttributes: map[string]string{
-				"tenant_id":     t.TenantID,
-				"project_id":    t.ProjectID,
+				"tenant_id":      t.TenantID,
+				"project_id":     t.ProjectID,
 				"correlation_id": t.CorrelationID,
 			},
 		})
@@ -165,7 +165,7 @@ func (s *Service) StreamTelemetry(ctx context.Context, req *connect.Request[apiv
 				continue
 			}
 			if err := stream.Send(&apiv1.StreamTelemetryResponse{
-				Update: &apiv1.StreamTelemetryResponse_Usage{Usage: evt},
+				Update:   &apiv1.StreamTelemetryResponse_Usage{Usage: evt},
 				Sequence: int64(msg.Seq),
 			}); err != nil {
 				return err
@@ -207,11 +207,11 @@ func (s *Service) GetDashboard(ctx context.Context, req *connect.Request[apiv1.G
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	summary := &apiv1.DashboardSummary{
-		TotalTokens:  total.TotalTokens,
-		TotalCostUsd: total.CostUSD,
+		TotalTokens:     total.TotalTokens,
+		TotalCostUsd:    total.CostUSD,
 		TotalExecutions: total.ExecutionCount,
-		WindowStart:  timestamppb.New(start),
-		WindowEnd:    timestamppb.New(end),
+		WindowStart:     timestamppb.New(start),
+		WindowEnd:       timestamppb.New(end),
 	}
 	out := &apiv1.GetDashboardResponse{Summary: summary}
 	endTs := timestamppb.New(end)

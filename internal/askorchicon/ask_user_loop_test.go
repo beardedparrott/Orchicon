@@ -55,7 +55,7 @@ func busAskCompleted(sessionID, tool string, input map[string]any, output string
 func TestAskUserDoesNotWedgeTheStallMonitor(t *testing.T) {
 	base := time.Now()
 
-	m := newChatStallMonitor("opencode/deepseek-v4-flash-free", 0)
+	m := newChatStallMonitor("opencode/deepseek-v4-flash-free", nil)
 	m.toolWedgeWindow = time.Minute
 	m.now = func() time.Time { return base }
 	// The model issues ask_user...
@@ -74,7 +74,7 @@ func TestAskUserDoesNotWedgeTheStallMonitor(t *testing.T) {
 
 	// CONTROL: the same clock advance on an UNRESOLVED tool must wedge, or the
 	// assertion above would be vacuous.
-	ctl := newChatStallMonitor("opencode/deepseek-v4-flash-free", 0)
+	ctl := newChatStallMonitor("opencode/deepseek-v4-flash-free", nil)
 	ctl.toolWedgeWindow = time.Minute
 	ctl.now = func() time.Time { return base }
 	ctl.observeToolStart("bash")

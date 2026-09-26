@@ -106,7 +106,7 @@ func TestSettingsEditSaveValidatesModelRefs(t *testing.T) {
 		got = s
 		return nil
 	}
-	m.settings = &apiv1.TenantSettings{DefaultWorkerModel: "ollama/llama3", StallNudgeMax: 2}
+	m.settings = &apiv1.TenantSettings{DefaultWorkerModel: "ollama/llama3", StallNudgeMax: i32Ptr(2)}
 
 	if !m.SelectSource("settings") {
 		t.Fatal("no settings source")
@@ -175,7 +175,7 @@ func TestSettingsEditSaveValidatesModelRefs(t *testing.T) {
 	if got.GetDefaultWorkerModel() != "ollama/llama3" || got.GetDefaultAskOrchiconModel() != "anthropic/claude-3" {
 		t.Fatalf("model refs not sent: %+v", got)
 	}
-	if got.GetStallNudgeMax() != 4 || got.GetStallNoProgressWindowSeconds() != 120 {
+	if got.StallNudgeMax == nil || *got.StallNudgeMax != 4 || got.StallNoProgressWindowSeconds == nil || *got.StallNoProgressWindowSeconds != 120 {
 		t.Fatalf("stall parameters not sent: %+v", got)
 	}
 	if got.GetBackupSchedule() != "0 3 * * *" {
@@ -929,3 +929,6 @@ func batchCmds(t *testing.T, cmd tea.Cmd) []tea.Cmd {
 	// A single command: wrap it, since its message is consumed by the caller.
 	return []tea.Cmd{func() tea.Msg { return msg }}
 }
+
+// i32Ptr is the minimal constructor for the now-optional stall fields.
+func i32Ptr(v int32) *int32 { return &v }

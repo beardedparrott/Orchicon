@@ -477,8 +477,8 @@ func TestStallWindowsFromManifestUnsetAppliesDefault(t *testing.T) {
 // positive value overrides the built-in default.
 func TestStallWindowsFromManifestPositiveOverrides(t *testing.T) {
 	w := stallWindowsFromManifest(scheduler.ExecutionManifest{
-		StallNoFileDiffWindowSeconds: 120,
-		StallTextLoopWindowSeconds:   90,
+		StallNoFileDiffWindowSeconds: i64Ptr(120),
+		StallTextLoopWindowSeconds:   i64Ptr(90),
 	})
 	if w.noFileDiff != 120*time.Second {
 		t.Fatalf("noFileDiff = %v, want 120s", w.noFileDiff)
@@ -488,17 +488,20 @@ func TestStallWindowsFromManifestPositiveOverrides(t *testing.T) {
 	}
 }
 
-// TestStallWindowsFromManifestNegativeDisables verifies the fix: a negative
-// value (unambiguous, unlike 0 which doubles as "unset") actually disables
-// the check, closing the gap where Settings claimed "0 = disabled" but nothing
-// enforced it (0 and unset were indistinguishable, so the built-in default
-// always applied regardless of what the operator typed). newProgressMonitor
-// + a full stall check confirms it end-to-end: no trip even when the window
-// has obviously elapsed and no file diff / meaningful action occurred.
-func TestStallWindowsFromManifestNegativeDisables(t *testing.T) {
+// TestStallWindowsFromManifestZeroDisables verifies that an explicit 0 disables
+// the check — the semantics Settings now documents and stores.
+//
+// This replaces the previous negative-disables convention, which only worked
+// because 0 was taken: 0 was the "unset" sentinel, so a negative was the ONLY
+// way to say "off", and a never-configured tenant was indistinguishable from one
+// that had chosen 0. Now blank (a nil pointer) means the built-in default and 0
+// means disabled, so the two can never be confused. newProgressMonitor + a full
+// stall check confirms it end-to-end: no trip even when the window has obviously
+// elapsed and no file diff / meaningful action occurred.
+func TestStallWindowsFromManifestZeroDisables(t *testing.T) {
 	w := stallWindowsFromManifest(scheduler.ExecutionManifest{
-		StallNoFileDiffWindowSeconds: -1,
-		StallTextLoopWindowSeconds:   -1,
+		StallNoFileDiffWindowSeconds: i64Ptr(0),
+		StallTextLoopWindowSeconds:   i64Ptr(0),
 	})
 	if w.noFileDiff > 0 {
 		t.Fatalf("noFileDiff = %v, want <= 0 (disabled)", w.noFileDiff)
@@ -524,3 +527,31 @@ func TestStallWindowsFromManifestNegativeDisables(t *testing.T) {
 		t.Fatalf("expected no stall with noFileDiff/textLoop disabled, got %q", reason)
 	}
 }
+
+// TestStallWindowsFromManifestZeroDisablesNoProgress pins the guard that makes an
+// explicit 0 SAFE on the fatal no-progress window. no_progress is the one check
+// whose trip test is a bare `now.Sub(last) > window`: at a window of 0 that holds
+// on EVERY tick, so without the `> 0` gate a disabled check would fire instantly
+// and kill every run.
+func TestStallWindowsFromManifestZeroDisablesNoProgress(t *testing.T) {
+	w := stallWindowsFromManifest(scheduler.ExecutionManifest{
+		StallNoProgressWindowSeconds: i64Ptr(0),
+		StallNoFileDiffWindowSeconds: i64Ptr(0),
+		StallTextLoopWindowSeconds:   i64Ptr(0),
+		StallRepetitionCount:         i32Ptr(0),
+		StallToolHangSeconds:         i64Ptr(0),
+	})
+	if w.noProgress > 0 {
+		t.Fatalf("noProgress = %v, want <= 0 (disabled)", w.noProgress)
+	}
+	if w.toolHang > 0 {
+		t.Fatalf("toolHang = %v, want <= 0 (disabled)", w.toolHang)
+	}
+	if w.repetitionN > 0 {
+		t.Fatalf("repetitionN = %d, want <= 0 (disabled)", w.repetitionN)
+	}
+}
+
+// i64Ptr/i32Ptr are the minimal constructors for the now-optional stall fields.
+func i64Ptr(v int64) *int64 { return &v }
+func i32Ptr(v int32) *int32 { return &v }

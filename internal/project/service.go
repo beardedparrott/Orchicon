@@ -63,12 +63,12 @@ func (s *Service) CreateProject(ctx context.Context, req *connect.Request[apiv1.
 	}
 
 	row := db.ProjectRow{
-		ID:          db.NewID(),
-		TenantID:    tenantID,
-		Name:        name,
-		Slug:        slug,
-		Status:      domain.ProjectDrafting,
-		Goals:       goals,
+		ID:       db.NewID(),
+		TenantID: tenantID,
+		Name:     name,
+		Slug:     slug,
+		Status:   domain.ProjectDrafting,
+		Goals:    goals,
 		GitStrategy: func() string {
 			if fd := msg.ProtoReflect().Descriptor().Fields().ByName("git_strategy"); fd != nil && msg.ProtoReflect().Has(fd) {
 				switch msg.ProtoReflect().Get(fd).Enum() {
@@ -109,7 +109,6 @@ func (s *Service) CreateProject(ctx context.Context, req *connect.Request[apiv1.
 			}
 		}(),
 	}
-
 
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -247,7 +246,7 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 		}
 		fields.ContextFiles = &filesJSON
 	}
-		if msg.MaxConcurrentRuns != nil {
+	if msg.MaxConcurrentRuns != nil {
 		limit := int(*msg.MaxConcurrentRuns)
 		if limit < 0 {
 			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("max_concurrent_runs must be >= 0"))
@@ -306,7 +305,6 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 	if fields.Name == nil && fields.Slug == nil && fields.Goals == nil && fields.ProjectDir == nil && fields.ContextFiles == nil && fields.MaxConcurrentRuns == nil && fields.GitStrategy == nil && fields.DefaultRuntimeImage == nil && fields.ExecutionMode == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("at least one field must be set"))
 	}
-
 
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {

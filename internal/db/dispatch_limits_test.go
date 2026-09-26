@@ -60,13 +60,13 @@ func TestUpdateTenantSettingsNilBudgetOverrides(t *testing.T) {
 
 	// Nil budget overrides (the former bug) + a stall change.
 	row, err := db.UpdateTenantSettings(ctx, ttx.Tx, tenant, db.TenantSettingsRow{
-		StallNoProgressWindowSeconds: 600,
+		StallNoProgressWindowSeconds: i64Ptr(600),
 	})
 	if err != nil {
 		t.Fatalf("update with nil budget overrides failed: %v", err)
 	}
-	if row.StallNoProgressWindowSeconds != 600 {
-		t.Fatalf("stall_no_progress = %d, want 600", row.StallNoProgressWindowSeconds)
+	if row.StallNoProgressWindowSeconds == nil || *row.StallNoProgressWindowSeconds != 600 {
+		t.Fatalf("stall_no_progress = %v, want 600", row.StallNoProgressWindowSeconds)
 	}
 	// The budget column must still hold valid JSON ('{}') — never NULL.
 	if len(row.DefaultBudgetOverrides) == 0 {
@@ -77,13 +77,15 @@ func TestUpdateTenantSettingsNilBudgetOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get tenant settings: %v", err)
 	}
-	if got.StallNoProgressWindowSeconds != 600 {
-		t.Fatalf("reloaded stall_no_progress = %d, want 600", got.StallNoProgressWindowSeconds)
+	if got.StallNoProgressWindowSeconds == nil || *got.StallNoProgressWindowSeconds != 600 {
+		t.Fatalf("reloaded stall_no_progress = %v, want 600", got.StallNoProgressWindowSeconds)
 	}
-	// Reset the field so the shared tnt_dev row stays clean.
-	if _, err := db.UpdateTenantSettings(ctx, ttx.Tx, tenant, db.TenantSettingsRow{
-		StallNoProgressWindowSeconds: 0,
-	}); err != nil {
+	// Reset the field so the shared tnt_dev row stays clean. An EMPTY ROW, not
+	// `StallNoProgressWindowSeconds: 0`: 0 now means "disabled", so writing it
+	// here would leave the shared tenant with no-progress detection switched OFF
+	// for the rest of the run. An empty row is all-blank = all built-in defaults,
+	// which is the clean state this test wants.
+	if _, err := db.UpdateTenantSettings(ctx, ttx.Tx, tenant, db.TenantSettingsRow{}); err != nil {
 		t.Fatalf("reset tenant settings: %v", err)
 	}
 }
@@ -373,7 +375,7 @@ func TestCompactionMemoryPolicyDBRoundTrip(t *testing.T) {
 	// A partial update (only a stall field) must NOT clobber the stored
 	// policy (the policyIsSet guard overlays the current row).
 	part, err := db.UpdateTenantSettings(ctx, ttx.Tx, tenant, db.TenantSettingsRow{
-		StallNoProgressWindowSeconds: 300,
+		StallNoProgressWindowSeconds: i64Ptr(300),
 	})
 	if err != nil {
 		t.Fatalf("partial update: %v", err)
@@ -396,3 +398,6 @@ func TestCompactionMemoryPolicyDBRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// i64Ptr is the minimal constructor for the now-optional stall thresholds.
+func i64Ptr(v int64) *int64 { return &v }

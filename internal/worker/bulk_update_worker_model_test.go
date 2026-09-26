@@ -148,8 +148,8 @@ func ensureTestTenant(t *testing.T, pool *db.Pool, tenantID string) {
 func createDraftWorker(t *testing.T, ctx context.Context, s *Service, name string) string {
 	t.Helper()
 	resp, err := s.CreateWorker(ctx, connect.NewRequest(&apiv1.CreateWorkerRequest{
-		Name:       name,
-		ModelRef:   "opencode/deepseek-v4-flash",
+		Name:     name,
+		ModelRef: "opencode/deepseek-v4-flash",
 	}))
 	if err != nil {
 		t.Fatalf("CreateWorker %s: %v", name, err)

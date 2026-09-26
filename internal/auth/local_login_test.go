@@ -16,8 +16,8 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
-	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	assets "github.com/beardedparrott/orchicon"
+	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/migrate"
@@ -250,9 +250,9 @@ func TestLocalLoginGeneric401(t *testing.T) {
 func TestLocalLoginValidation(t *testing.T) {
 	srv, _, _ := testLocalLoginEnv(t)
 	cases := []string{
-		`{"username":"","password":"x"}`,    // empty username
-		`{"username":"u","password":""}`,     // empty password
-		`not-json`,                            // malformed body
+		`{"username":"","password":"x"}`, // empty username
+		`{"username":"u","password":""}`, // empty password
+		`not-json`,                       // malformed body
 	}
 	for _, body := range cases {
 		resp, err := http.Post(srv.URL+"/auth/local-login", "application/json", strings.NewReader(body))
@@ -562,9 +562,9 @@ func localS256(verifier string) string {
 
 func TestOpAuthRequestID(t *testing.T) {
 	good := map[string]string{
-		"/auth/op/login?id=abc123":         "abc123",
-		"/authorize/callback?id=xyz":       "xyz",
-		"/auth/op/login?id=a%20b":          "a b",
+		"/auth/op/login?id=abc123":   "abc123",
+		"/authorize/callback?id=xyz": "xyz",
+		"/auth/op/login?id=a%20b":    "a b",
 	}
 	for in, want := range good {
 		got, ok := opAuthRequestID(in)

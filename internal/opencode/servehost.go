@@ -378,6 +378,9 @@ func (h *HostServe) startOnce(ctx context.Context) error {
 	)
 	env = g.Apply(env)
 	env = setEnvKV(env, "XDG_DATA_HOME", h.dataDir)
+	// Stamp the plane spawn marker: it is how the boot sweep tells a process
+	// this plane started (and left behind) from the operator's own opencode.
+	env = setEnvKV(env, PlaneSpawnEnv, "1")
 
 	cmd := exec.CommandContext(ctx, binary,
 		"serve", "--hostname", "127.0.0.1", "--port", fmt.Sprintf("%d", port))
