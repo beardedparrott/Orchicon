@@ -20,6 +20,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/logging"
 	"github.com/beardedparrott/orchicon/internal/migrate"
+	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/permpolicy"
 	"github.com/beardedparrott/orchicon/internal/server"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
@@ -30,10 +31,21 @@ import (
 // every plane boot's sweep. These accumulate when the server is killed before
 // the ChatStream subprocess exits (e.g. during a forced binary replacement).
 //
-// WHAT COUNTS AS AN ORPHAN: a process that matches AND has been reparented to
-// one of this session's REAP POINTS (reapPoints) — the signature of one whose
-// parent, the plane that spawned it, died. A process with a LIVE parent belongs
-// to somebody and is not ours to kill.
+// WHAT COUNTS AS AN ORPHAN: a process that matches pgrep AND carries the
+// PLANE SPAWN MARKER (carriesPlaneMarker) AND has been reparented away from the
+// process that started it (reparentedAway). BOTH halves are required.
+//
+// The marker is the half that keeps the sweep honest. The point of this guard
+// has always been to leave the operator's OWN opencode alone, and parentage
+// alone cannot express that: on a host, an `opencode` started from a terminal
+// that has since closed and a plane-spawned `opencode` left behind by a crash
+// are reparented to the SAME place. Only the marker says which is which, so
+// only a marked process is ever a candidate.
+//
+// The parentage half is what makes it an ORPHAN: a marked process whose parent
+// is still alive is one we are still supervising (the `orchicon mcp` sidecars
+// are children of a live opencode), and killing it would be a self-inflicted
+// outage.
 //
 // The reap point is NOT always PID 1. Reparenting climbs to the nearest
 // ancestor that set PR_SET_CHILD_SUBREAPER and stops there, falling back to
@@ -102,7 +114,7 @@ func orphanCandidates(pgrep, name string) []int {
 func sweepOrphans(pids []int, reap map[int]bool) int {
 	signalled := 0
 	for _, pid := range pids {
-		if !reparentedAway(pid, reap) {
+		if !carriesPlaneMarker(pid) || !reparentedAway(pid, reap) {
 			continue
 		}
 		if proc, err := os.FindProcess(pid); err == nil {
@@ -111,6 +123,33 @@ func sweepOrphans(pids []int, reap map[int]bool) int {
 		}
 	}
 	return signalled
+}
+
+// planeSpawnMarker is the variable the plane stamps on every process it starts
+// (opencode.PlaneSpawnEnv). It is read from the package that SETS it, so the
+// sweeper and the spawner cannot drift apart.
+const planeSpawnMarker = opencode.PlaneSpawnEnv
+
+// carriesPlaneMarker reports whether pid's environment shows the plane spawn
+// marker — i.e. whether an Orchicon plane started it, directly or through the
+// opencode that inherited the marker and passed it on.
+//
+// /proc/<pid>/environ is readable only for processes of the same user, which is
+// exactly the set this sweep may ever touch. An unreadable environ reports
+// false, and false means the process is LEFT ALONE: a missed orphan is a leak,
+// while a wrong SIGTERM kills the operator's own opencode. The guard fails in
+// the direction that keeps processes alive, as it always has.
+func carriesPlaneMarker(pid int) bool {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid))
+	if err != nil {
+		return false
+	}
+	for _, kv := range strings.Split(string(data), "\x00") {
+		if strings.HasPrefix(kv, planeSpawnMarker+"=") {
+			return true
+		}
+	}
+	return false
 }
 
 // reapProbeTimeout bounds the orphan probe below. Reparenting is immediate

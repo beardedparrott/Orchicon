@@ -49,9 +49,12 @@ func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''
 
 // startLiveParentedSleep starts a sleep that is THIS process's child: its
 // parent is alive, so it is not an orphan.
-func startLiveParentedSleep(t *testing.T) *exec.Cmd {
+func startLiveParentedSleep(t *testing.T, marked bool) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command("/bin/sleep", "300")
+	if marked {
+		cmd.Env = append(os.Environ(), planeSpawnMarker+"=1")
+	}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +74,7 @@ func startLiveParentedSleep(t *testing.T) *exec.Cmd {
 // the shell that spawned it — and adapts to whichever pid that turns out to be.
 // Hardcoding PID 1 here is what made this suite pass in a container and fail on
 // a host, which is backwards: the host is where the plane now runs.
-func startOrphanedSleep(t *testing.T) int {
+func startOrphanedSleep(t *testing.T, marked bool) int {
 	t.Helper()
 	// The backgrounded sleep must not inherit the shell's stdout: with the
 	// inherited pipe still open, Command.Output() would block on EOF until the
@@ -80,7 +83,14 @@ func startOrphanedSleep(t *testing.T) int {
 	// $$ is the shell's own pid. The sleeper STARTS as that shell's child, so
 	// "its parent is no longer the shell" is the reparenting event itself, and
 	// needs no assumption about where it reparents TO.
-	out, err := exec.Command("/bin/sh", "-c", "/bin/sleep 300 >/dev/null 2>&1 & echo $!; echo $$").Output()
+	cmd := exec.Command("/bin/sh", "-c", "/bin/sleep 300 >/dev/null 2>&1 & echo $!; echo $$")
+	if marked {
+		// The shell exports it, so the backgrounded sleeper inherits it — the
+		// same way the plane's marker reaches the `orchicon mcp` sidecars that
+		// opencode (not the plane) starts.
+		cmd.Env = append(os.Environ(), planeSpawnMarker+"=1")
+	}
+	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("spawn a reparented sleep: %v", err)
 	}
@@ -170,15 +180,46 @@ func waitNotRunning(t *testing.T, pid int, within time.Duration) {
 	t.Fatalf("pid %d is still running after %s (the sweep did not reap it)", pid, within)
 }
 
+// waitForPlaneMarker polls until pid's environ shows the plane spawn marker —
+// i.e. until the child has completed execve.
+//
+// Reading /proc/<pid>/environ in the window between fork and execve returns the
+// PARENT's environment, because cmd.Env is applied BY execve. An immediate read
+// after Start therefore misses the marker completely (measured: false
+// immediately, true ~150ms later, every time).
+//
+// The sweep never races this way — it inspects processes that have been running
+// long enough to be left behind — but a test that asserts on a child it started
+// microseconds ago must, or it asserts on the fork rather than the exec.
+func waitForPlaneMarker(t *testing.T, pid int, within time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		if carriesPlaneMarker(pid) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // A live-parented process survives the sweep; a genuine orphan is reaped. Both
 // are asserted with real processes and real signals, and the discovery step is
 // asserted to still use the documented pgrep forms for BOTH patterns.
 func TestKillOrphansReapsReparentedAndSparesLiveParent(t *testing.T) {
 	marker := fakePgrep(t)
-	live := startLiveParentedSleep(t)
-	orphan := startOrphanedSleep(t)
+	live := startLiveParentedSleep(t, true)
+	orphan := startOrphanedSleep(t, true)
 	t.Setenv("FIXTURE_PIDS", fmt.Sprintf("%d\n%d", live.Process.Pid, orphan))
 	t.Setenv("ORCHICON_SANDBOX_PLANE", "")
+
+	// Wait for the marked child to finish execve, so its survival is evidence
+	// about the PARENTAGE check and not about a marker read that raced exec.
+	if !waitForPlaneMarker(t, live.Process.Pid, 3*time.Second) {
+		t.Fatalf("pid %d never showed the plane marker; this test cannot isolate the parentage check", live.Process.Pid)
+	}
 
 	killOrphans()
 
@@ -204,13 +245,13 @@ func TestKillOrphansReapsReparentedAndSparesLiveParent(t *testing.T) {
 func TestKillOrphansSuppressedBySandboxPlane(t *testing.T) {
 	marker := fakePgrep(t)
 
-	control := startOrphanedSleep(t)
+	control := startOrphanedSleep(t, true)
 	t.Setenv("FIXTURE_PIDS", strconv.Itoa(control))
 	t.Setenv("ORCHICON_SANDBOX_PLANE", "")
 	killOrphans()
 	waitNotRunning(t, control, 5*time.Second)
 
-	orphan := startOrphanedSleep(t)
+	orphan := startOrphanedSleep(t, true)
 	t.Setenv("FIXTURE_PIDS", strconv.Itoa(orphan))
 	if err := os.Remove(marker); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
@@ -237,11 +278,11 @@ func TestKillOrphansSuppressedBySandboxPlane(t *testing.T) {
 // than a restatement of the container's.
 func TestReparentedAway(t *testing.T) {
 	reap := reapPoints()
-	live := startLiveParentedSleep(t)
+	live := startLiveParentedSleep(t, true)
 	if reparentedAway(live.Process.Pid, reap) {
 		t.Errorf("pid %d is this test's own child (parent %d), but reparentedAway called it an orphan", live.Process.Pid, os.Getpid())
 	}
-	orphan := startOrphanedSleep(t)
+	orphan := startOrphanedSleep(t, true)
 	if !reparentedAway(orphan, reap) {
 		t.Errorf("pid %d was reparented away from the shell that spawned it, but reparentedAway called it not an orphan — the reap points resolved as %v, which is where this environment hands orphans", orphan, reap)
 	}
@@ -250,6 +291,55 @@ func TestReparentedAway(t *testing.T) {
 	}
 	if reparentedAway(1<<30, reap) {
 		t.Error("a nonexistent pid reported as an orphan")
+	}
+}
+
+// TestKillOrphansSparesAnUnmarkedOrphan is the regression guard for the POINT
+// of this whole sweep: an `opencode` the operator started is not ours to kill,
+// however orphaned it becomes.
+//
+// This is the case parentage alone gets wrong. Start opencode in a terminal,
+// close the terminal, and it reparents to exactly where a crashed plane's
+// leftovers reparent to — the same reaper, the same ppid. Nothing about its
+// parentage marks it as the operator's. Only the absence of the plane spawn
+// marker does, and without that check the sweep would kill it at the next boot.
+func TestKillOrphansSparesAnUnmarkedOrphan(t *testing.T) {
+	fakePgrep(t)
+
+	// Control FIRST: the identical shape, but MARKED, is reaped — so the
+	// assertion below cannot pass merely because the sweep did nothing.
+	marked := startOrphanedSleep(t, true)
+	t.Setenv("FIXTURE_PIDS", strconv.Itoa(marked))
+	t.Setenv("ORCHICON_SANDBOX_PLANE", "")
+	if !waitForPlaneMarker(t, marked, 3*time.Second) {
+		t.Fatalf("pid %d never showed the plane marker; the control run cannot prove the sweep was armed", marked)
+	}
+	killOrphans()
+	waitNotRunning(t, marked, 5*time.Second)
+
+	unmarked := startOrphanedSleep(t, false)
+	t.Setenv("FIXTURE_PIDS", strconv.Itoa(unmarked))
+	killOrphans()
+	time.Sleep(300 * time.Millisecond)
+
+	if !running(t, unmarked) {
+		t.Errorf("pid %d is a genuine orphan but carries no plane marker — on a host that is the operator's own opencode, and the sweep killed it", unmarked)
+	}
+}
+
+// carriesPlaneMarker is what makes the sweep safe to run on a host, so it is
+// asserted directly against real processes rather than trusted.
+func TestCarriesPlaneMarker(t *testing.T) {
+	marked := startLiveParentedSleep(t, true)
+	if !waitForPlaneMarker(t, marked.Process.Pid, 3*time.Second) {
+		t.Errorf("pid %d was started with %s=1 but carriesPlaneMarker never reported it", marked.Process.Pid, planeSpawnMarker)
+	}
+	unmarked := startLiveParentedSleep(t, false)
+	if carriesPlaneMarker(unmarked.Process.Pid) {
+		t.Errorf("pid %d carries no marker but carriesPlaneMarker said yes", unmarked.Process.Pid)
+	}
+	if carriesPlaneMarker(1 << 30) {
+		t.Error("a nonexistent pid reported as carrying the plane marker")
 	}
 }
 

@@ -55,6 +55,20 @@ const defaultServeUsername = "opencode"
 // sets to protect its HTTP API with basic auth.
 const ServePasswordEnv = "OPENCODE_SERVER_PASSWORD"
 
+// PlaneSpawnEnv marks a process the PLANE itself started, and is inherited by
+// anything that process goes on to spawn (the `orchicon mcp` sidecars are
+// declared in the opencode config, so opencode starts them, not the plane —
+// they carry the marker only by inheritance).
+//
+// It exists so that "is this process ours?" can be answered EXACTLY. Inferring
+// it from parentage cannot: on a host, an `opencode` the operator started from
+// their own terminal and a plane-spawned `opencode` left behind by a crash both
+// end up reparented, to the same place, once their spawner exits. The marker is
+// what distinguishes them, and it is deliberately NOT one of opencode's own
+// variables: an operator running their own `opencode serve` may well set
+// OPENCODE_SERVER_PASSWORD, so it cannot serve as proof that WE started it.
+const PlaneSpawnEnv = "ORCHICON_PLANE_SPAWN"
+
 // defaultMCPProbeTimeout bounds a single MCP-usability probe so a slow (but
 // alive) serve is not treated as wedged by the watchdog and restarted in a
 // churn. Env override ORCHICON_ASK_MCP_PROBE_TIMEOUT is a dev/test knob.
