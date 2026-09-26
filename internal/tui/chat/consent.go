@@ -205,11 +205,25 @@ func (c *ConsentState) MoveSel(delta int) {
 func (c ConsentState) SelectedDisabled() bool { return c.Ask.RowDisabled(c.Sel) }
 
 // ConsentItem builds the transcript item for a pending ask.
-func ConsentItem(a PermissionAsk) ChatItem {
+//
+// at IS REQUIRED, NOT OPTIONAL, and that is the point of the parameter. A
+// consent card used to be built with NO timestamp (At left at its zero value),
+// and every merge or replace re-sorts the transcript oldest-first — so the card
+// was thrown to the very TOP of the conversation the moment any poll landed,
+// out of the operator's view at the bottom. Their report: "the card comes up for
+// a fraction of a second and then disappears and then the composer is locked and
+// you can't type anything." All three symptoms have that one cause: the item was
+// still there (so the screen kept claiming the keyboard) but had been sorted out
+// of sight.
+//
+// A card belongs where a NEW occurrence belongs: at the end, moving up as the
+// conversation grows, exactly like any other block.
+func ConsentItem(a PermissionAsk, at int64) ChatItem {
 	return ChatItem{
 		Kind:    KindConsent,
 		AskID:   a.ID,
 		Key:     "consent-" + a.ID,
+		At:      at,
 		Consent: &ConsentState{Ask: a},
 	}
 }

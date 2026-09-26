@@ -4303,7 +4303,9 @@ func (m *App) ShowConsentAsk(ask chat.PermissionAsk) tea.Cmd {
 	if ask.Kind == chat.AskTool && ask.Directory != "" && m.sessionGrants.granted(m.chatConvID, ask.Directory) {
 		return nil
 	}
-	m.chatStore.append(m.chatConvID, chat.ConsentItem(ask))
+	// Stamped NOW, so the card sorts to the END of the transcript and stays there.
+	// Without a timestamp it sorted to the top on the next poll — see ConsentItem.
+	m.chatStore.append(m.chatConvID, chat.ConsentItem(ask, time.Now().UnixMilli()))
 	return m.onChatWake()
 }
 

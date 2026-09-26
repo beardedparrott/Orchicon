@@ -74,7 +74,7 @@ func newTestModel(t *testing.T) (*Model, *stubHost) {
 func TestConsentCardIsAdoptedAndClaimsKeys(t *testing.T) {
 	m, _ := newTestModel(t)
 	items := []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{
-		ID: "a1", Kind: chat.AskTool, Tool: "write", Target: "/p/x.go", Directory: "/p"})}
+		ID: "a1", Kind: chat.AskTool, Tool: "write", Target: "/p/x.go", Directory: "/p"}, 1000)}
 	m.RenderTranscript(items, chat.Conversation{}, false)
 	if !m.ClaimsKeys() {
 		t.Fatal("a pending card must claim the keys")
@@ -93,7 +93,7 @@ func TestConsentCardIsAdoptedAndClaimsKeys(t *testing.T) {
 func TestConsentEscapeDeniesAndReleasesTheClaim(t *testing.T) {
 	m, h := newTestModel(t)
 	items := []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{
-		ID: "a2", Kind: chat.AskTool, Tool: "bash", Target: "make ci", Directory: "/p"})}
+		ID: "a2", Kind: chat.AskTool, Tool: "bash", Target: "make ci", Directory: "/p"}, 1000)}
 	m.RenderTranscript(items, chat.Conversation{}, false)
 	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if h.resolved != 1 || h.dec != chat.DecisionDeny {
@@ -112,7 +112,7 @@ func TestConsentEscapeDeniesAndReleasesTheClaim(t *testing.T) {
 func TestConsentEnterCommitsTheHighlightedAction(t *testing.T) {
 	m, h := newTestModel(t)
 	items := []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{
-		ID: "a3", Kind: chat.AskTool, Tool: "write", Target: "/p/x.go", Directory: "/p"})}
+		ID: "a3", Kind: chat.AskTool, Tool: "write", Target: "/p/x.go", Directory: "/p"}, 1000)}
 	m.RenderTranscript(items, chat.Conversation{}, false)
 	// Row 0 is Allow once.
 	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -122,7 +122,7 @@ func TestConsentEnterCommitsTheHighlightedAction(t *testing.T) {
 
 	m2, h2 := newTestModel(t)
 	it2 := []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{
-		ID: "a4", Kind: chat.AskTool, Tool: "write", Target: "/p/x.go", Directory: "/p"})}
+		ID: "a4", Kind: chat.AskTool, Tool: "write", Target: "/p/x.go", Directory: "/p"}, 1000)}
 	m2.RenderTranscript(it2, chat.Conversation{}, false)
 	m2.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m2.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -136,7 +136,7 @@ func TestConsentEnterCommitsTheHighlightedAction(t *testing.T) {
 func TestConsentDisabledSessionRowCannotBeChosen(t *testing.T) {
 	m, h := newTestModel(t)
 	items := []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{
-		ID: "a5", Kind: chat.AskTool, Tool: "write", Target: "/etc/hosts", Directory: "/etc", DeniedBy: "/etc/**"})}
+		ID: "a5", Kind: chat.AskTool, Tool: "write", Target: "/etc/hosts", Directory: "/etc", DeniedBy: "/etc/**"}, 1000)}
 	m.RenderTranscript(items, chat.Conversation{}, false)
 	m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	if items[0].Consent.Sel != 2 {
@@ -154,7 +154,7 @@ func TestConsentDisabledSessionRowCannotBeChosen(t *testing.T) {
 func TestConsentCtrlGDeniesRatherThanSilentlyReleasing(t *testing.T) {
 	m, h := newTestModel(t)
 	items := []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{
-		ID: "a6", Kind: chat.AskTool, Tool: "write", Target: "/p/x.go", Directory: "/p"})}
+		ID: "a6", Kind: chat.AskTool, Tool: "write", Target: "/p/x.go", Directory: "/p"}, 1000)}
 	m.RenderTranscript(items, chat.Conversation{}, false)
 	m.DropKeyClaim()
 	if h.dec != chat.DecisionDeny || h.resolved != 1 {
@@ -170,7 +170,7 @@ func TestConsentCtrlGDeniesRatherThanSilentlyReleasing(t *testing.T) {
 // card and its claim, so the composer becomes typable again.
 func TestConsentReconcileReleasesAStaleCard(t *testing.T) {
 	m, _ := newTestModel(t)
-	m.RenderTranscript([]chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{ID: "a7", Kind: chat.AskTool, Tool: "write", Target: "/p/x.go"})}, chat.Conversation{}, false)
+	m.RenderTranscript([]chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{ID: "a7", Kind: chat.AskTool, Tool: "write", Target: "/p/x.go"}, 1000)}, chat.Conversation{}, false)
 	if !m.ClaimsKeys() {
 		t.Fatal("precondition: the card must be pending")
 	}
@@ -186,7 +186,7 @@ func TestQuestionCardOtherSendsTheTypedText(t *testing.T) {
 	m, h := newTestModel(t)
 	items := []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{
 		ID: "q1", Kind: chat.AskQuestion, Question: "Which file?",
-		Options: []string{"main.go", "util.go"}, AllowOther: true})}
+		Options: []string{"main.go", "util.go"}, AllowOther: true}, 1000)}
 	m.RenderTranscript(items, chat.Conversation{}, false)
 	// options: main.go(0), util.go(1), Other(2)
 	m.Update(tea.KeyMsg{Type: tea.KeyDown})
@@ -210,7 +210,7 @@ func TestQuestionCardOptionSendsTheChoice(t *testing.T) {
 	m, h := newTestModel(t)
 	items := []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{
 		ID: "q2", Kind: chat.AskQuestion, Question: "Which file?",
-		Options: []string{"main.go", "util.go"}, AllowOther: true})}
+		Options: []string{"main.go", "util.go"}, AllowOther: true}, 1000)}
 	m.RenderTranscript(items, chat.Conversation{}, false)
 	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if h.dec != chat.DecisionAnswer || h.choice != "main.go" {
@@ -319,7 +319,7 @@ func TestConsentScreenOwnsTabWhileClaiming(t *testing.T) {
 		t.Fatal("with nothing claimed, tab belongs to the shell")
 	}
 	items := []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{
-		ID: "a9", Kind: chat.AskTool, Tool: "write", Target: "/p/x.go", Directory: "/p"})}
+		ID: "a9", Kind: chat.AskTool, Tool: "write", Target: "/p/x.go", Directory: "/p"}, 1000)}
 	m.RenderTranscript(items, chat.Conversation{}, false)
 	if !m.OwnsTab() {
 		t.Fatal("a pending card must own tab — the card binds it as row movement")

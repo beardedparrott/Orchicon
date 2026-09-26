@@ -20,7 +20,65 @@ func pendingConsentItem(id string) chat.ChatItem {
 		Target:    "/tmp/x.txt",
 		Directory: "/tmp",
 		Kind:      chat.AskTool,
+	}, 1000)
+}
+
+// TestConsentCardSortsToTheBottomAndStaysThere is the operator's symptom as a
+// test: "the card comes up for a fraction of a second and then disappears and
+// then the composer is locked and you can't type anything."
+//
+// One cause. The card was built with NO timestamp, and mergeHistory/replace both
+// re-sort the transcript oldest-first — so the next poll threw it to the very TOP
+// of the conversation, out of view at the bottom, while the screen went on
+// claiming the keyboard because the item was still there.
+func TestConsentCardSortsToTheBottomAndStaysThere(t *testing.T) {
+	s := newTestChatStore()
+
+	// A conversation already under way, then the card arrives.
+	s.replace("c1", []chat.ChatItem{
+		{Kind: chat.KindUser, Text: "earlier", At: 100, Key: "m-1"},
+		{Kind: chat.KindText, Text: "older reply", At: 200, Key: "m-2"},
 	})
+	s.append("c1", pendingConsentItem("ask-late"))
+
+	// A poll lands (the completion poll, or a liveness refresh).
+	s.replace("c1", []chat.ChatItem{
+		{Kind: chat.KindUser, Text: "earlier", At: 100, Key: "m-1"},
+		{Kind: chat.KindText, Text: "older reply", At: 200, Key: "m-2"},
+		{Kind: chat.KindText, Text: "newer reply", At: 300, Key: "m-3"},
+	})
+
+	snap := s.snapshot("c1")
+	last := snap[len(snap)-1]
+	if last.Kind != chat.KindConsent {
+		t.Fatalf("the card is not the LAST item after a poll — it is at %d of %d: %+v",
+			len(snap)-1, len(snap), dumpKinds(snap))
+	}
+}
+
+// TestConsentCardSortsBelowTheReplyItInterrupted: the same rule against the
+// CHRONOLOGY it actually shares with the turn — the card must sit after the text
+// that preceded it, not above it.
+func TestConsentCardSortsBelowTheReplyItInterrupted(t *testing.T) {
+	items := []chat.ChatItem{
+		{Kind: chat.KindUser, Text: "do the thing", At: 100, Key: "m-1"},
+		pendingConsentItem("ask-mid"),
+		{Kind: chat.KindText, Text: "working on it", At: 200, Key: "m-2"},
+	}
+	chat.SortChronologically(items)
+	// The test item is stamped 1000, so it is the newest thing here.
+	if items[len(items)-1].Kind != chat.KindConsent {
+		t.Fatalf("the card did not sort last: %+v", dumpKinds(items))
+	}
+}
+
+// dumpKinds renders a compact view of an item list for a failure message.
+func dumpKinds(items []chat.ChatItem) []string {
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		out = append(out, string(it.Kind))
+	}
+	return out
 }
 
 // TestReplaceKeepsAPendingConsentCard is THE bug: the permission card was drawn

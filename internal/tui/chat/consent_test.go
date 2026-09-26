@@ -14,7 +14,7 @@ func TestConsentCardNamesTheToolAndTheTarget(t *testing.T) {
 	it := ConsentItem(PermissionAsk{
 		ID: "a1", Kind: AskTool, Tool: "write",
 		Target: "/home/ops/project/main.go", Directory: "/home/ops/project",
-	})
+	}, 1000)
 	out := ConsentCardText(it, 64)
 	for _, want := range []string{"write", "/home/ops/project/main.go", ConsentAllowOnce, ConsentAllowSession, ConsentDeny} {
 		if !strings.Contains(out, want) {
@@ -96,7 +96,7 @@ func repoRoot(t *testing.T) string {
 // TestConsentResolvedItemIsAOneLineRecord pins that a decided ask stops being a
 // card and becomes the transcript's record of the decision.
 func TestConsentResolvedItemIsAOneLineRecord(t *testing.T) {
-	it := ConsentItem(PermissionAsk{ID: "a2", Kind: AskTool, Tool: "bash", Target: "make ci"})
+	it := ConsentItem(PermissionAsk{ID: "a2", Kind: AskTool, Tool: "bash", Target: "make ci"}, 1000)
 	it.Consent.Decision = DecisionDeny
 	out := ConsentCardText(it, 72)
 	if strings.Contains(out, "┌") {
@@ -110,7 +110,7 @@ func TestConsentResolvedItemIsAOneLineRecord(t *testing.T) {
 // TestConsentAllowSessionRecordNamesTheDirectory pins that the session record
 // says WHICH directory was granted ("ask once per directory").
 func TestConsentAllowSessionRecordNamesTheDirectory(t *testing.T) {
-	it := ConsentItem(PermissionAsk{ID: "a3", Kind: AskTool, Tool: "write", Target: "/p/x.go", Directory: "/p"})
+	it := ConsentItem(PermissionAsk{ID: "a3", Kind: AskTool, Tool: "write", Target: "/p/x.go", Directory: "/p"}, 1000)
 	it.Consent.Decision = DecisionAllowSession
 	out := ConsentCardText(it, 72)
 	if !strings.Contains(out, "/p") || !strings.Contains(out, "session") {
@@ -160,7 +160,7 @@ func TestConsentOptionLabelsForAQuestionCard(t *testing.T) {
 // question card.
 func TestConsentQuestionCardRendersOptionsAndOther(t *testing.T) {
 	it := ConsentItem(PermissionAsk{ID: "q1", Kind: AskQuestion, Question: "Which file did you mean?",
-		Options: []string{"main.go", "util.go"}, AllowOther: true})
+		Options: []string{"main.go", "util.go"}, AllowOther: true}, 1000)
 	out := ConsentCardText(it, 64)
 	for _, want := range []string{"Which file did you mean?", "main.go", "util.go", ConsentOther} {
 		if !strings.Contains(out, want) {
@@ -191,7 +191,7 @@ func TestDenyingRuleMatchesPaths(t *testing.T) {
 // says the session grant cannot override the file, rather than offering one.
 func TestConsentDeniedByIsStatedOnTheCard(t *testing.T) {
 	it := ConsentItem(PermissionAsk{ID: "a5", Kind: AskTool, Tool: "write",
-		Target: "/etc/hosts", Directory: "/etc", DeniedBy: "/etc/**"})
+		Target: "/etc/hosts", Directory: "/etc", DeniedBy: "/etc/**"}, 1000)
 	out := ConsentCardText(it, 78)
 	if !strings.Contains(out, "/etc/**") {
 		t.Fatalf("the card must name the denying pattern:\n%s", out)
@@ -208,7 +208,7 @@ func TestConsentDeniedByIsStatedOnTheCard(t *testing.T) {
 // dismissed question leaves: esc picks nothing, so the row must say THAT rather
 // than rendering "answer · " with nothing after the separator.
 func TestConsentEscOnAQuestionIsRecordedWithoutADanglingSeparator(t *testing.T) {
-	it := ConsentItem(PermissionAsk{ID: "q9", Kind: AskQuestion, Question: "Which file?", Options: []string{"a.go"}, AllowOther: true})
+	it := ConsentItem(PermissionAsk{ID: "q9", Kind: AskQuestion, Question: "Which file?", Options: []string{"a.go"}, AllowOther: true}, 1000)
 	it.Consent.Decision = DecisionAnswer
 	out := ConsentCardText(it, 72)
 	if strings.Contains(out, "answer · ") || strings.HasSuffix(strings.TrimSpace(out), "·") {
@@ -218,7 +218,7 @@ func TestConsentEscOnAQuestionIsRecordedWithoutADanglingSeparator(t *testing.T) 
 		t.Fatalf("the record must say the question was dismissed: %q", out)
 	}
 	// And a real answer still renders as an answer.
-	it2 := ConsentItem(PermissionAsk{ID: "q10", Kind: AskQuestion, Question: "Which file?", Options: []string{"a.go"}})
+	it2 := ConsentItem(PermissionAsk{ID: "q10", Kind: AskQuestion, Question: "Which file?", Options: []string{"a.go"}}, 1000)
 	it2.Consent.Decision = DecisionAnswer
 	it2.Consent.Choice = "seed.sql"
 	if out2 := ConsentCardText(it2, 72); !strings.Contains(out2, "answer · seed.sql") {
