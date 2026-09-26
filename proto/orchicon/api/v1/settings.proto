@@ -25,29 +25,41 @@ message TenantSettings {
   // --- Stall detection defaults ---
   // These are read by the progress monitor at execution dispatch time.
   // Each field has an env-var counterpart that overrides the DB value
-  // for dev/debugging (ORCHICON_STALL_*). An empty/zero value means
-  // "use the env var or code default".
+  // for dev/debugging (ORCHICON_STALL_*).
+  //
+  // THREE STATES, deliberately distinct:
+  //   * ABSENT (blank in Settings) — "use the built-in default" below. This is
+  //     what a never-configured tenant has, and it is a real, storable state.
+  //   * 0 — "disabled": the check is switched off.
+  //   * a positive number — the explicit value.
+  // A NEGATIVE is rejected with InvalidArgument. The columns are nullable
+  // (db/migrations/20260928000000_stall_blank_means_default.sql) so that blank
+  // cannot be confused with a deliberate 0 — which is exactly the confusion
+  // that made "disabled" unreachable before.
 
   // No step_finish or new tokens within this window triggers stalled.
-  // Seconds. Default 300 (5 min).
-  int64 stall_no_progress_window_seconds = 10;
+  // Seconds. Blank = default 300 (5 min); 0 disables.
+  optional int64 stall_no_progress_window_seconds = 10;
 
-  // No file modifications within this window triggers stalled.
-  // Seconds. Default 900 (15 min). Zero disables.
-  int64 stall_no_file_diff_window_seconds = 11;
+  // No file modifications within this window raises an ADVISORY stalled
+  // notice (it never kills the worker; a reviewer that legitimately writes no
+  // files must not be reaped mid-flight).
+  // Seconds. Blank = default 900 (15 min); 0 disables.
+  optional int64 stall_no_file_diff_window_seconds = 11;
 
   // No meaningful action (tool call, file diff, step finish) within this
-  // window triggers text-loop stall. Seconds. Default 600 (10 min).
-  // Zero disables.
-  int64 stall_text_loop_window_seconds = 12;
+  // window triggers text-loop stall.
+  // Seconds. Blank = default 600 (10 min); 0 disables.
+  optional int64 stall_text_loop_window_seconds = 12;
 
   // Same tool-call signature repeated this many times within the
-  // repetition window triggers repeated-call stall. Default 5.
-  // Zero disables.
-  int32 stall_repetition_count = 13;
+  // repetition window triggers repeated-call stall.
+  // Blank = default 5; 0 disables.
+  optional int32 stall_repetition_count = 13;
 
-  // Window for repetition detection. Seconds. Default 300 (5 min).
-  int64 stall_repetition_window_seconds = 14;
+  // Window for repetition detection. Seconds. Blank = default 300 (5 min);
+  // 0 disables. Only meaningful alongside stall_repetition_count.
+  optional int64 stall_repetition_window_seconds = 14;
 
   // --- Nudge knobs (advisory-stall escalation) ---
   // These tune the nudge-first routing: an advisory stall (text_loop /
@@ -57,15 +69,15 @@ message TenantSettings {
   // means "use the env var or code default".
 
   // Max nudges sent to a live session before an advisory stall escalates to
-  // a fatal kill + recovery. Default 2.
-  int32 stall_nudge_max = 31;
+  // a fatal kill + recovery. Blank = default 2; 0 disables.
+  optional int32 stall_nudge_max = 31;
 
   // How long a nudge waits for the worker to break the pattern before the
-  // next trip escalates. Seconds. Default 300 (5 min).
-  int64 stall_nudge_reply_window_seconds = 32;
+  // next trip escalates. Seconds. Blank = default 300 (5 min); 0 disables.
+  optional int64 stall_nudge_reply_window_seconds = 32;
 
-  // Minimum gap between nudges. Seconds. Default 60.
-  int64 stall_nudge_cooldown_seconds = 33;
+  // Minimum gap between nudges. Seconds. Blank = default 60; 0 disables.
+  optional int64 stall_nudge_cooldown_seconds = 33;
 
   // --- In-flight tool-hang watchdog ---
   // A tool call with no events for longer than this window is interrupted
@@ -73,9 +85,10 @@ message TenantSettings {
   // window` tool result is synthesized, and a course-correcting redirect is
   // injected as the next user turn (session and cache prefix fully
   // preserved). Latched once per session; an unheeded hang escalates to the
-  // stall/liveness layer (probe → fatal). Zero = unset (env/code default
-  // 180s); negative = disabled.
-  int64 stall_tool_hang_seconds = 34;
+  // stall/liveness layer (probe → fatal).
+  // Blank = default 180s; 0 disables. Negative is the OLD spelling of
+  // "disabled" and is now rejected — see the section comment above.
+  optional int64 stall_tool_hang_seconds = 34;
 
   // --- Execution liveness reaper ---
   // The liveness reaper fails executions whose runtime process is gone

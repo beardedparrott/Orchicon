@@ -10,18 +10,26 @@ import (
 
 // TenantSettingsRow is the in-memory representation of a tenant_settings row.
 type TenantSettingsRow struct {
-	TenantID                         string
-	DefaultWorkerModel               string
-	DefaultAskOrchiconModel          string
-	StallNoProgressWindowSeconds     int64
-	StallNoFileDiffWindowSeconds     int64
-	StallTextLoopWindowSeconds       int64
-	StallRepetitionCount             int32
-	StallRepetitionWindowSeconds     int64
-	StallNudgeMax                    int32
-	StallNudgeReplyWindowSeconds     int64
-	StallNudgeCooldownSeconds        int64
-	StallToolHangSeconds             int64
+	TenantID                string
+	DefaultWorkerModel      string
+	DefaultAskOrchiconModel string
+	// Stall thresholds. BLANK (NULL in the column) means "use the built-in
+	// default"; 0 means "disabled"; a negative is rejected at the API boundary.
+	// Pointers because blank is a real, distinct state — the same convention the
+	// budget ladder's gates already use (a nil *float64 is the built-in default,
+	// an explicit 0 disables). See db/migrations/
+	// 20260928000000_stall_blank_means_default.sql for why 0 stopped meaning
+	// "unset": it made "disabled" unreachable and made a never-configured tenant
+	// indistinguishable from one that chose 0.
+	StallNoProgressWindowSeconds     *int64
+	StallNoFileDiffWindowSeconds     *int64
+	StallTextLoopWindowSeconds       *int64
+	StallRepetitionCount             *int32
+	StallRepetitionWindowSeconds     *int64
+	StallNudgeMax                    *int32
+	StallNudgeReplyWindowSeconds     *int64
+	StallNudgeCooldownSeconds        *int64
+	StallToolHangSeconds             *int64
 	DefaultBudgetOverrides           []byte       // jsonb: default budget JSON transport (see BudgetLadder for the typed source of truth); a worker's budget_overrides overrides these
 	Budget                           BudgetLadder // typed budget ladder + gates (authoritative; the jsonb BudgetLadder... is the wire transport)
 	ExecutionReapGraceSeconds        int64        // liveness reaper: min age before an execution is reaping-eligible
@@ -138,6 +146,11 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 // UpdateTenantSettings upserts the tenant settings row with the provided
 // values. Empty/zero fields are NOT updated (only non-zero, non-empty values set).
 // Returns the full row after update.
+//
+// EXCEPTION — the stall thresholds are written verbatim, blank included: NULL
+// means "built-in default" and 0 means "disabled", so an absent value is a real
+// instruction ("go back to the default") rather than "leave it alone". Every
+// other column keeps the CASE-guarded preserve-on-zero behaviour.
 func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in TenantSettingsRow) (TenantSettingsRow, error) {
 	// The INSERT branch supplies a value for default_budget_overrides, which
 	// is jsonb NOT NULL. A caller that leaves the field unset (nil/empty)
@@ -173,6 +186,12 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 			in.MemoryDigestEntries = cur.MemoryDigestEntries
 		}
 	}
+	// The nine stall threshold columns are ASSIGNED in the SET clause below, not
+	// CASE-guarded like every other column: blank (NULL) means "use the built-in
+	// default", so a client that omits a field is explicitly asking for the
+	// default and must not have a stale value preserved behind its back. 0
+	// arrives meaning "disabled" and is stored as 0. A negative never reaches
+	// this layer — settings.Service.validateStallSettings rejects it.
 	const q = `INSERT INTO tenant_settings (
 		tenant_id, default_worker_model, default_ask_orchicon_model,
 		stall_no_progress_window_seconds, stall_no_file_diff_window_seconds,
@@ -204,14 +223,14 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 	ON CONFLICT (tenant_id) DO UPDATE SET
 		default_worker_model = CASE WHEN $2 <> '' THEN $2 ELSE tenant_settings.default_worker_model END,
 		default_ask_orchicon_model = CASE WHEN $3 <> '' THEN $3 ELSE tenant_settings.default_ask_orchicon_model END,
-		stall_no_progress_window_seconds = CASE WHEN $4 <> 0 THEN $4 ELSE tenant_settings.stall_no_progress_window_seconds END,
-		stall_no_file_diff_window_seconds = CASE WHEN $5 <> 0 THEN $5 ELSE tenant_settings.stall_no_file_diff_window_seconds END,
-		stall_text_loop_window_seconds = CASE WHEN $6 <> 0 THEN $6 ELSE tenant_settings.stall_text_loop_window_seconds END,
-		stall_repetition_count = CASE WHEN $7 <> 0 THEN $7 ELSE tenant_settings.stall_repetition_count END,
-		stall_repetition_window_seconds = CASE WHEN $8 <> 0 THEN $8 ELSE tenant_settings.stall_repetition_window_seconds END,
-		stall_nudge_max = CASE WHEN $9 <> 0 THEN $9 ELSE tenant_settings.stall_nudge_max END,
-		stall_nudge_reply_window_seconds = CASE WHEN $10 <> 0 THEN $10 ELSE tenant_settings.stall_nudge_reply_window_seconds END,
-		stall_nudge_cooldown_seconds = CASE WHEN $11 <> 0 THEN $11 ELSE tenant_settings.stall_nudge_cooldown_seconds END,
+		stall_no_progress_window_seconds = $4::bigint,
+		stall_no_file_diff_window_seconds = $5::bigint,
+		stall_text_loop_window_seconds = $6::bigint,
+		stall_repetition_count = $7::integer,
+		stall_repetition_window_seconds = $8::bigint,
+		stall_nudge_max = $9::integer,
+		stall_nudge_reply_window_seconds = $10::bigint,
+		stall_nudge_cooldown_seconds = $11::bigint,
 		default_budget_overrides = CASE WHEN $12 <> '{}'::jsonb THEN $12 ELSE tenant_settings.default_budget_overrides END,
 		execution_reap_grace_seconds = CASE WHEN $13 <> 0 THEN $13 ELSE tenant_settings.execution_reap_grace_seconds END,
 		execution_reap_consecutive_failures = CASE WHEN $14 <> 0 THEN $14 ELSE tenant_settings.execution_reap_consecutive_failures END,
@@ -258,7 +277,7 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		budget_compact_warn_tier = $56,
 		budget_compact_escalate_tier = $57,
 		budget_compact_final_tier = $58,
-		stall_tool_hang_seconds = CASE WHEN $59 <> 0 THEN $59 ELSE tenant_settings.stall_tool_hang_seconds END,
+		stall_tool_hang_seconds = $59::bigint,
 		context_compaction_enabled = $60,
 		context_compaction_pressure_frac = $61,
 		context_recent_turns = $62,

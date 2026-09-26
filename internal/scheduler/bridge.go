@@ -62,25 +62,32 @@ type ExecutionManifest struct {
 	// Create a container) when this is "local", even with a reachable
 	// daemon. Defaults to "runtime" when empty (legacy/standalone rows).
 	ExecutionMode string
-	// Stall detection thresholds from tenant settings. Zero means "use
-	// env-var or built-in default".
-	StallNoProgressWindowSeconds int64
-	StallNoFileDiffWindowSeconds int64
-	StallTextLoopWindowSeconds   int64
-	StallRepetitionCount         int32
-	StallRepetitionWindowSeconds int64
-	// Nudge knobs (advisory-stall escalation) from tenant settings. Zero
-	// means "use env-var or built-in default".
-	StallNudgeMax                int32
-	StallNudgeReplyWindowSeconds int64
-	StallNudgeCooldownSeconds    int64
+	// Stall detection thresholds from tenant settings. Each is a POINTER, and
+	// the two states are different instructions to the adapter:
+	//
+	//   - nil — the tenant left this dimension BLANK in Settings. The tenant has
+	//     no opinion, so the adapter's env-var / built-in default stands.
+	//   - non-nil — an explicit value; 0 means DISABLED.
+	//
+	// Resolving either state into a concrete int before dispatch would destroy
+	// the distinction, so the pointers travel intact.
+	StallNoProgressWindowSeconds *int64
+	StallNoFileDiffWindowSeconds *int64
+	StallTextLoopWindowSeconds   *int64
+	StallRepetitionCount         *int32
+	StallRepetitionWindowSeconds *int64
+	// Nudge knobs (advisory-stall escalation) from tenant settings. Same
+	// convention: nil = blank (adapter default), non-nil = explicit, 0 = disabled.
+	StallNudgeMax                *int32
+	StallNudgeReplyWindowSeconds *int64
+	StallNudgeCooldownSeconds    *int64
 
 	// StallToolHangSeconds is the in-flight tool-hang watchdog window (D6):
 	// a tool call with no events for longer than this is cancelled natively
 	// (synthesized `cancelled:` tool result + course-correcting redirect
-	// injected as the next user turn). Zero = unset (env/code default 180s);
-	// negative = disabled.
-	StallToolHangSeconds int64
+	// injected as the next user turn). nil = unset (env/code default 180s);
+	// an explicit 0 DISABLES the watchdog.
+	StallToolHangSeconds *int64
 
 	// SequenceContinue (opt-in, DEFAULT OFF) marks this execution as part
 	// of a sequence chain: consecutive same-worker tasks may resume the
