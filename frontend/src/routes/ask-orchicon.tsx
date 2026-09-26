@@ -399,6 +399,15 @@ function AskOrchiconPage() {
   const pendingReplyId = activeStream?.pendingReplyId ?? null;
   const streamItems = activeStream?.items ?? [];
 
+  // MESSAGES IS DECLARED BEFORE ITS CONSUMERS. `transcriptBlocks` below reads it,
+  // and a `const` used above its declaration is a TDZ error the production build
+  // (`tsc -b`) rejects even though a loose `--noEmit` pass did not — which is how
+  // it reached a release build.
+  const { data: messages, isLoading: msgsLoading } = useListMessages(
+    activeConvId ?? "",
+    { refetchInterval: isStreaming ? 2000 : false },
+  );
+
   // transcriptBlocks is the message flow the cards are interleaved into. The
   // optimistic echo is only included while the durable view has not caught up
   // with it (the same rule the old inline render used), so it cannot double.
@@ -427,10 +436,6 @@ function AskOrchiconPage() {
       // polling once everything settles — no idle network churn.
       refetchInterval: listPollMs,
     });
-  const { data: messages, isLoading: msgsLoading } = useListMessages(
-    activeConvId ?? "",
-    { refetchInterval: isStreaming ? 2000 : false },
-  );
   const { data: activeConv } = useGetConversation(activeConvId ?? "");
   const { data: settings } = useGetSettings();
 

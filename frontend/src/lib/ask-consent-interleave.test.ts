@@ -14,7 +14,7 @@ const ask = (askId: string): PermissionAsk =>
     insideProject: false,
     summary: "write /p/sibling/notes.md",
     denyEntriesBelow: [],
-  }) as PermissionAsk;
+  }) as unknown as PermissionAsk;
 
 type Msg = { at: number; id: string };
 const msg = (id: string, at: number): Msg => ({ at, id });
