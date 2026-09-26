@@ -32,6 +32,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -162,9 +163,18 @@ func toolInputCommand(in map[string]any) string {
 	return detailString(in, "command", "cmd", "script", "shellCommand")
 }
 
-// compactArgs renders a correlated call's args for a card when NO target or
-// command could be recognised, so the user sees what the tool will do rather
-// than only its name. Values are bounded (a write's `content` can be huge).
+// compactArgs renders a call's arguments for the card: SCALARS ONLY, and a
+// shape (a count) for anything nested. It is the fallback for a card when NO
+// target or command could be recognised, so the operator sees what the tool
+// will do rather than only its name.
+//
+// It deliberately does NOT fall back to fmt's %v for a value it does not
+// understand. That is exactly what put a Go struct literal on an operator's
+// card — "writes=[map[mode:edit new:type chatBus struct {…]", truncated
+// mid-struct at 80 chars — because a []map[string]any rendered through %v is
+// Go's own debug formatting. An unrecognised shape is reported as an ellipsis:
+// the card's job is to say what will happen, and a dump of internal structure
+// says nothing while making the card unreadable.
 func compactArgs(in map[string]any) string {
 	keys := make([]string, 0, len(in))
 	for k := range in {
@@ -178,13 +188,50 @@ func compactArgs(in map[string]any) string {
 		}
 		b.WriteString(k)
 		b.WriteString("=")
-		s := fmt.Sprintf("%v", in[k])
-		if len(s) > 80 {
-			s = s[:80] + "…"
-		}
-		b.WriteString(s)
+		b.WriteString(scalarArg(in[k]))
 	}
 	return b.String()
+}
+
+// scalarArg renders one argument value. Scalars are shown as themselves,
+// containers are summarised by SIZE, and anything else is an ellipsis — never a
+// formatted dump of the value (see compactArgs).
+func scalarArg(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return "null"
+	case string:
+		return truncateArg(t)
+	case bool:
+		return strconv.FormatBool(t)
+	case float64, float32, int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64, json.Number:
+		return fmt.Sprintf("%v", t)
+	case []any:
+		return countLabel(len(t), "item")
+	case map[string]any:
+		return countLabel(len(t), "field")
+	default:
+		return "…"
+	}
+}
+
+// countLabel renders a container's size: "[2 items]", "[1 field]".
+func countLabel(n int, noun string) string {
+	if n == 1 {
+		return "[1 " + noun + "]"
+	}
+	return fmt.Sprintf("[%d %ss]", n, noun)
+}
+
+// truncateArg shortens a scalar so a long value cannot push the card's actions
+// off the screen.
+func truncateArg(s string) string {
+	const max = 80
+	if len(s) > max {
+		return s[:max] + "…"
+	}
+	return s
 }
 
 // isBashAsk reports whether a tool name is a shell-command ask. A shell command
@@ -457,25 +504,67 @@ func decisionTargets(a askAction, dir string) []decisionTarget {
 	return out
 }
 
-// askSummary is the one-line card text: the tool plus its target (or command),
-// never just an opaque id.
+// askSummary states WHAT THE CALL WILL DO and to WHAT, in the operator's terms:
+// "modify /p/a.go", "run a shell command: go test ./...". It is the whole
+// content of the decision — "approve" is meaningless without it — so it must
+// never leak a raw argument dump. An earlier version concatenated the parsed
+// args with fmt's %v, which put a Go struct literal on an operator's card
+// ("batch_write writes=[map[mode:edit new:type chatBus struct {…]") for any
+// tool whose args are nested. See scalarArg.
 func askSummary(a askAction) string {
+	verb := toolIntentVerb(a.Tool)
+	var out string
 	switch {
 	case isBashAsk(a.Tool) && a.Command != "":
-		return "run shell command: " + a.Command
+		// Returned early: the verb already names the tool class for a shell ask
+		// ("run a shell command"), so the tool suffix below would add nothing.
+		return verb + ": " + truncateArg(a.Command)
 	case len(a.Targets) > 0:
-		return a.Tool + " " + strings.Join(a.Targets, ", ")
+		out = verb + " " + strings.Join(a.Targets, ", ")
 	case a.Command != "":
-		return a.Tool + " " + a.Command
+		out = verb + ": " + truncateArg(a.Command)
 	case a.Tool != "" && len(a.Input) > 0:
-		// No recognised target or command, but the call's args are known:
-		// show them rather than a bare tool name.
-		return a.Tool + " " + compactArgs(a.Input)
-	case a.Tool != "":
-		return a.Tool
+		// The args are known but no target could be read out of them: show the
+		// intent and a SAFE summary of the args (compactArgs never dumps).
+		out = verb + " " + compactArgs(a.Input)
 	default:
-		return "a tool permission request"
+		out = verb
 	}
+	// THE TOOL NAME STAYS ON THE CARD, beside the intent. The verb says what
+	// will happen; the tool says who does it, and an operator diagnosing an
+	// unexpected ask wants both ("modify /p/a.go (batch_write)" reads as one
+	// action, where either half alone is ambiguous about the other). Skipped
+	// when the text already contains it.
+	if a.Tool != "" && !strings.Contains(out, a.Tool) {
+		out += " (" + a.Tool + ")"
+	}
+	return out
+}
+
+// toolIntentVerb maps a tool name onto what the call will DO, in plain terms.
+// The ask is answered by a human, so the verb is the point: "batch_write" says
+// nothing to an operator, "modify" does. Matching is on the tool name because
+// the vocabulary is open (opencode, MCP, and the native suite all name their
+// tools differently), so the classes are deliberately broad.
+func toolIntentVerb(tool string) string {
+	t := strings.ToLower(strings.TrimSpace(tool))
+	switch {
+	case isBashAsk(t):
+		return "run a shell command"
+	case strings.Contains(t, "write"), strings.Contains(t, "edit"),
+		strings.Contains(t, "patch"), strings.Contains(t, "create"):
+		return "modify"
+	case strings.Contains(t, "delete"), strings.Contains(t, "remove"), t == "rm":
+		return "delete"
+	case strings.Contains(t, "read"), strings.Contains(t, "view"),
+		strings.Contains(t, "list"), strings.Contains(t, "glob"),
+		strings.Contains(t, "grep"), strings.Contains(t, "search"),
+		strings.Contains(t, "fetch"):
+		return "read"
+	case strings.Contains(t, "mcp"):
+		return "run a tool"
+	}
+	return "use the tool"
 }
 
 // ---------------------------------------------------------------------------
@@ -1041,10 +1130,11 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 
 	// VerdictAsk (or an unresolved action): record, emit the card, await the
 	// human.
+	// The summary states the INTENT (askSummary). An unresolved action — no
+	// path or command could be extracted — is still described by its verb, so
+	// the card never explains itself in developer terms; the diagnostic for that
+	// case belongs in the Warn above, not in copy an operator reads.
 	summary := askSummary(a)
-	if !resolved {
-		summary += " (no path or command in the ask detail — asking rather than proceeding)"
-	}
 	ask = &pendingAsk{
 		AskID:          evt.PermissionID,
 		ConversationID: ct.convID,
@@ -1056,8 +1146,7 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 		Targets:        a.Targets,
 		Directory:      a.Key,
 		// The card claims "inside the project" only when EVERY target is; an
-		// unresolved action has no known target at all, so it cannot (the card
-		// says why it is being asked instead).
+		// unresolved action has no known target at all, so it cannot.
 		InsideProject: allInside,
 		Summary:       summary,
 		DenyBelow:     ct.denyBelowForGrant(pol, a.Key),

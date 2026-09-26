@@ -371,18 +371,25 @@ export function ConsentAskCard({
 }: ConsentAskCardProps) {
   const settled = outcome !== null;
   const denyBelow = ask.denyEntriesBelow ?? [];
+  // A SETTLED ask is a ONE-LINE RECORD, not a card. The card is for a decision
+  // still to be made; once made it is history, and a full tinted block per past
+  // grant buries the live turn under its own audit trail. This is what the TUI
+  // already does (internal/tui/chat/consent_render.go: card while pending, a
+  // one-line record once decided); the GUI had not adopted that split. The
+  // outcome TEXT is unchanged, so scrolling back still shows that a grant was
+  // given and exactly what it covered.
   if (settled) {
     return (
-      <AskCardShell
-        header="Permission (decided)"
-        tone="consent"
-        answered
-        className={className}
+      <p
+        className={cn(
+          "text-xs text-muted-foreground [overflow-wrap:anywhere]",
+          className,
+        )}
+        data-testid="consent-ask-outcome"
+        data-answered="true"
       >
-        <p className="text-sm [overflow-wrap:anywhere]" data-testid="consent-ask-outcome">
-          {outcomeLabel(ask, outcome)}
-        </p>
-      </AskCardShell>
+        {outcomeLabel(ask, outcome)}
+      </p>
     );
   }
   return (
