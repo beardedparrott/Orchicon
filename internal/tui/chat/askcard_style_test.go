@@ -26,6 +26,46 @@ func askCardFor(t *testing.T, width int, args string) (string, []ItemSpan) {
 	return out, spans
 }
 
+// TestAskCardRendersBelowTheReplyText: the operator's report — "I see the Orchicon
+// asks box but … it is ON TOP of a bunch of other text you sent. That is not
+// intuitive. It should be at the bottom (newest/recent)."
+//
+// The card is the thing to ACT ON, so it is the last line of the turn, not a
+// record buried above the prose that followed the call.
+func TestAskCardRendersBelowTheReplyText(t *testing.T) {
+	items := conversationItems([]*apiv1.ChatMessage{{
+		Id:      "m1",
+		Role:    "assistant",
+		Content: "I need to know which branch before I carry on.",
+		ToolCalls: []*apiv1.ToolCall{{
+			Id: "tc-1", Type: "function", FunctionName: "ask_user",
+			Arguments: `{"question":"Which branch?","options":[{"label":"develop"},{"label":"main"}]}`,
+		}},
+	}})
+
+	textIdx, askIdx := -1, -1
+	for i, it := range items {
+		if it.Kind == KindAsk {
+			askIdx = i
+		}
+		if it.Kind == KindText && strings.Contains(it.Text, "which branch") {
+			textIdx = i
+		}
+	}
+	if textIdx < 0 {
+		t.Fatalf("the reply text item is missing: %+v", items)
+	}
+	if askIdx < 0 {
+		t.Fatalf("the ask card item is missing: %+v", items)
+	}
+	if askIdx < textIdx {
+		t.Fatalf("the card is emitted at %d, above the reply text at %d — it must be the LAST item", askIdx, textIdx)
+	}
+	if askIdx != len(items)-1 {
+		t.Errorf("the card is at %d of %d items; it must be the bottom line of the turn", askIdx, len(items))
+	}
+}
+
 // TestAskCardLooksLikeACard is the operator's report as a test: the clarifying
 // question "didn't really do a good job at making it seem like it was a clickable
 // card … it just looked like a regular normal list".

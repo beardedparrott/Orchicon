@@ -706,6 +706,25 @@ func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 		// A recorded ask_user call renders as a clarifying-question card. Keyed by
 		// message id + "-ask" so a fold/refresh keeps a stable key (same reason as
 		// the reasoning keys above).
+		//
+		// IT IS EMITTED LAST — after the message's own text — because the card is
+		// the thing the operator ACTS ON, not a transcript record of something that
+		// already happened. The operator: "I see the Orchicon asks box but … it is ON
+		// TOP of a bunch of other text you sent. That is not intuitive. It should be
+		// at the bottom (newest/recent)." Chronologically the tool call precedes the
+		// prose that follows it, so the card used to sit above the reply; the reading
+		// order the operator needs is the opposite, because the question is the last
+		// thing in the turn from their point of view.
+		//
+		// (With the turn PAUSED on the question — see the tool's own docs — there is
+		// normally no prose after it at all, and this ordering makes the card the
+		// bottom line either way.)
+		items = append(items, ChatItem{
+			Kind: kind,
+			Text: m.GetContent(),
+			At:   at,
+			Key:  "m-" + m.GetId(),
+		})
 		if ask := parseAskUserCall(m.GetToolCalls()); ask != nil {
 			items = append(items, ChatItem{
 				Kind: KindAsk,
@@ -714,12 +733,6 @@ func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 				Key:  "m-" + m.GetId() + "-ask",
 			})
 		}
-		items = append(items, ChatItem{
-			Kind: kind,
-			Text: m.GetContent(),
-			At:   at,
-			Key:  "m-" + m.GetId(),
-		})
 	}
 	return items
 }
