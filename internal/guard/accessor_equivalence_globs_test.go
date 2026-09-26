@@ -60,7 +60,7 @@ func TestShimMatchesDecideOnPatternShapes(t *testing.T) {
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
 				policy := writePolicyLists(t, []string{tc.entry}, nil)
-				want, err := permpolicy.NewStore(policy).Decide(tc.target, permpolicy.Inputs{ProjectDefault: true})
+				want, err := permpolicy.NewStore(policy).Decide(tc.target, permpolicy.Inputs{})
 				if err != nil {
 					t.Fatalf("Decide: %v", err)
 				}

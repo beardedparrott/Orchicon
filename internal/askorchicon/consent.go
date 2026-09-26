@@ -1006,7 +1006,6 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 	for i, t := range targets {
 		d, err := pol.Decide(t.abstarget, permpolicy.Inputs{
 			SessionGranted: ct.svc.grants.Has(ct.convID, t.key),
-			ProjectDefault: scope.PreApprovedPath(t.abstarget),
 		})
 		if err != nil {
 			// Fail closed: a malformed policy file must never silently proceed.

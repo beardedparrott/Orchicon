@@ -970,7 +970,12 @@ func sanitizeChatHistory(messages []Message) []Message {
 // approval. It is BOUNDED rather than indefinite so a session nobody is watching
 // cannot hold a turn, its runtime container and its locks forever — which from
 // the outside is indistinguishable from a wedged turn.
-const nativeConsentWaitDefault = 10 * time.Minute
+//
+// TWO MINUTES, down from ten. With the card now visible and the project exemption
+// gone, a turn asks far more often, and ten minutes spent waiting on a card
+// nobody saw is ten minutes of a held turn. Two is long enough to read a card and
+// decide, short enough that a missed one costs little.
+const nativeConsentWaitDefault = 2 * time.Minute
 
 // nativeConsentWait resolves the wait, with an env override for testing and for
 // an operator who wants a shorter leash.

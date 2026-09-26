@@ -287,14 +287,21 @@ func TestExtractAskActionMCPWriteResolvesTargetFromToolCallArgs(t *testing.T) {
 
 // --- the decision path ---------------------------------------------------
 
-func TestDecideProjectNeverAsksSiblingDoes(t *testing.T) {
+// THE PROJECT IS NO LONGER SPECIAL. It used to be a pre-approved default scope, so
+// an in-project write proceeded silently; the operator removed that ("any directory
+// should ask before allowing on write/execute, project or otherwise"). Both writes
+// now ask — and the sibling one still names ITS target, not the project.
+func TestDecideProjectAsksTooAndSiblingStillNamesItsTarget(t *testing.T) {
 	isolatedPolicy(t, "")
 	svc := testConsentService()
 	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
 
 	resp, ask, refusal := ct.decide(context.Background(), "ses_1", fileAskEvent("per_1", "write", "/p/proj/inside.md"))
-	if resp != "once" || ask != nil || refusal != "" {
-		t.Fatalf("inside-project write: resp=%q ask=%v refusal=%q — want a silent proceed", resp, ask, refusal)
+	if resp != "" || ask == nil || refusal != "" {
+		t.Fatalf("inside-project write: resp=%q ask=%v refusal=%q — the project must ASK, like any other directory", resp, ask, refusal)
+	}
+	if ask.Key != "/p/proj" {
+		t.Fatalf("in-project ask key = %q, want the project directory (what a grant would cover)", ask.Key)
 	}
 
 	resp, ask, refusal = ct.decide(context.Background(), "ses_1", fileAskEvent("per_2", "write", "/p/sibling/outside.md"))
@@ -313,7 +320,7 @@ func TestDecideProjectNeverAsksSiblingDoes(t *testing.T) {
 // (MCP / host-suite) tool raised NO ask — the ask carries patterns ["*"] and
 // metadata {}, so it keyed on the scope directory and rode the project default
 // to a silent approval. The target now comes from the tool call's args.
-func TestDecideMCPWriteSiblingAsksInsideProjectProceeds(t *testing.T) {
+func TestDecideMCPWriteSiblingAsksInsideProjectAsksToo(t *testing.T) {
 	isolatedPolicy(t, "")
 	svc := testConsentService()
 	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
@@ -332,11 +339,12 @@ func TestDecideMCPWriteSiblingAsksInsideProjectProceeds(t *testing.T) {
 	if !strings.Contains(ask.Summary, "/p/sibling/notes.md") {
 		t.Fatalf("Summary = %q — never just an opaque id", ask.Summary)
 	}
-	// The same tool writing INSIDE the conversation's project stays silent.
+	// The same tool writing INSIDE the conversation's project ALSO asks now: the
+	// project is no longer a pre-approved scope.
 	resp, ask, refusal = ct.decide(context.Background(), "ses_1", mcpAskEvent("per_2", "orchicon_write",
 		map[string]any{"filePath": "/p/proj/inside.md"}))
-	if resp != "once" || ask != nil || refusal != "" {
-		t.Fatalf("MCP write inside the project: resp=%q ask=%v refusal=%q", resp, ask, refusal)
+	if resp != "" || ask == nil || refusal != "" {
+		t.Fatalf("MCP write inside the project: resp=%q ask=%v refusal=%q — must ASK", resp, ask, refusal)
 	}
 }
 
@@ -386,13 +394,18 @@ func TestDecideMCPBashUsesToolCallCommandAndKeepsTheNeverAllowClass(t *testing.T
 	if resp != "reject" || ask != nil || refusal == "" {
 		t.Fatalf("never-allow MCP bash: resp=%q ask=%v refusal=%q", resp, ask, refusal)
 	}
-	// An ordinary command in the project's cwd proceeds silently (C4: a
-	// session grant for that directory is the blanket escape for commands run
-	// there — the command is shown, not path-scoped).
+	// An ordinary command in the project's cwd ASKS too. THIS IS THE CASE THAT
+	// MATTERED MOST: a bash ask keys on the cwd (decisionTargets), so the project
+	// rung silently approved EVERY shell command a turn ran — including ones that
+	// write outside the project. A session grant for the directory is now how an
+	// operator says "commands here are fine"; the command is still shown.
 	resp, ask, refusal = ct.decide(context.Background(), "ses_1", mcpAskEvent("per_2", "orchicon_bash",
 		map[string]any{"command": "ls -la"}))
-	if resp != "once" || ask != nil || refusal != "" {
-		t.Fatalf("ordinary MCP bash in the project cwd: resp=%q ask=%v refusal=%q", resp, ask, refusal)
+	if resp != "" || ask == nil || refusal != "" {
+		t.Fatalf("ordinary MCP bash in the project cwd: resp=%q ask=%v refusal=%q — must ASK", resp, ask, refusal)
+	}
+	if ask.Key != "/p/proj" {
+		t.Fatalf("bash ask key = %q, want the cwd (what a grant covers)", ask.Key)
 	}
 }
 
@@ -425,11 +438,15 @@ func TestDecideBatchWriteJudgesEveryTarget(t *testing.T) {
 	if ask.InsideProject {
 		t.Fatal("a batch reaching outside the project must not claim inside_project")
 	}
-	// Every target inside the project: silent.
+	// Every target inside the project: it still ASKS (the project is no longer
+	// pre-approved), and the card is honest that it is in-project.
 	resp, ask, refusal = ct.decide(context.Background(), "ses_1",
 		batch("per_2", "/p/proj/a.md", "/p/proj/b.md"))
-	if resp != "once" || ask != nil || refusal != "" {
-		t.Fatalf("batch inside the project: resp=%q ask=%v refusal=%q", resp, ask, refusal)
+	if resp != "" || ask == nil || refusal != "" {
+		t.Fatalf("batch inside the project: resp=%q ask=%v refusal=%q — must ASK", resp, ask, refusal)
+	}
+	if !ask.InsideProject {
+		t.Fatal("an all-in-project batch must still SAY so on the card, even though it asks")
 	}
 
 	// A DENY entry on the SECOND target refuses without asking (C5: deny names
@@ -443,17 +460,25 @@ func TestDecideBatchWriteJudgesEveryTarget(t *testing.T) {
 		t.Fatalf("denied second target: resp=%q ask=%v refusal=%q", resp, ask, refusal)
 	}
 
-	// A session grant for the SIBLING directory covers that target (C4: the
-	// grant is the blanket escape for its own directory), so the batch is
-	// silent — a grant for the FIRST directory alone would not be enough.
+	// A session grant covers ITS OWN directory's targets (C4). It must now cover
+	// BOTH directories, because the project is no longer a free rung — a grant for
+	// the sibling alone leaves the in-project target asking.
 	isolatedPolicy(t, "")
 	svc3 := testConsentService()
 	ct3 := newTestConsentTurn(svc3, "/p/proj", true, nil)
 	svc3.grants.Grant("conv-1", "/p/sibling")
+	// Only the sibling granted: the in-project target still asks.
 	resp, ask, refusal = ct3.decide(context.Background(), "ses_1",
 		batch("per_4", "/p/proj/a.md", "/p/sibling/b.md"))
+	if resp != "" || ask == nil || refusal != "" {
+		t.Fatalf("batch with only the sibling granted: resp=%q ask=%v refusal=%q — the in-project target must still ASK", resp, ask, refusal)
+	}
+	// Both directories granted: the batch is silent.
+	svc3.grants.Grant("conv-1", "/p/proj")
+	resp, ask, refusal = ct3.decide(context.Background(), "ses_1",
+		batch("per_5", "/p/proj/a.md", "/p/sibling/b.md"))
 	if resp != "once" || ask != nil || refusal != "" {
-		t.Fatalf("batch covered by a sibling-dir grant: resp=%q ask=%v refusal=%q", resp, ask, refusal)
+		t.Fatalf("batch covered by grants for BOTH directories: resp=%q ask=%v refusal=%q", resp, ask, refusal)
 	}
 }
 

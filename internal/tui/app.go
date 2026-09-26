@@ -3109,6 +3109,23 @@ func (s *chatStore) replace(convID string, items []chat.ChatItem) {
 		if it.Kind == chat.KindUser && strings.HasPrefix(it.Key, "draft-") && !matchesAny(durableUser, it.Text) {
 			out = append(out, it) // the durable view has not caught up yet
 		}
+		// A PENDING consent card is LIVE-ONLY, so the durable view can never
+		// carry it and this loop is its only chance to survive.
+		//
+		// An in-flight decision has NO durable row by design: the transcript
+		// records the OUTCOME (permission.allow / .deny / .expired), never the open
+		// ask. So a replace dropped the card the moment any poll landed — and a
+		// poll lands on every completion and every liveness ticking. That is why
+		// the permission card flashed and vanished, and why the operator reported
+		// that no card ever appeared: it was drawn, then wiped, before it could be
+		// clicked.
+		//
+		// Kept only while PENDING: a SETTLED card is either already recorded
+		// durably (its consent record) or about to be, so keeping it here would
+		// render it twice.
+		if it.Kind == chat.KindConsent && it.Consent != nil && it.Consent.Pending() {
+			out = append(out, it)
+		}
 	}
 	if len(out) != len(items) {
 		chat.SortChronologically(out)

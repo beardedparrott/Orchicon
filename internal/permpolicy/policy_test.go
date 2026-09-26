@@ -35,7 +35,7 @@ func TestPresetDenyOutranksSessionGrantAndNamesTheEntry(t *testing.T) {
 
 	// The same decision with EVERY louder input set: a grant and the
 	// conversation's own project. Deny is still the answer.
-	d2, err := s.Decide("~/.ssh/id_rsa", Inputs{SessionGranted: true, ProjectDefault: true})
+	d2, err := s.Decide("~/.ssh/id_rsa", Inputs{SessionGranted: true})
 	if err != nil {
 		t.Fatalf("decide: %v", err)
 	}
@@ -109,31 +109,39 @@ func TestAcceptEntryNeverAsks(t *testing.T) {
 	}
 }
 
-// AC: precedence is asserted by test — deny > session grant > accept >
-// project default > ask, in that order.
+// AC: precedence is asserted by test — deny > session grant > accept > ask, in
+// that order.
+//
+// THERE IS NO PROJECT RUNG ANY MORE. The conversation's own project used to sit
+// between accept and ask as a pre-approved default scope; the operator removed it
+// ("any directory should ask before allowing on write/execute, project or
+// otherwise"). What matters for the chain is that accepting the project as a
+// scope no longer short-circuits anything: a bare path with no grant and no accept
+// entry ASKS, project or not.
 func TestPrecedenceOrder(t *testing.T) {
-	// deny wins over grant AND accept AND project.
+	// deny wins over grant AND accept.
 	s := writePolicy(t, "deny:\n  - /srv/secret/**\naccept:\n  - /srv/secret/**\n")
-	if d, _ := s.Decide("/srv/secret/key.pem", Inputs{SessionGranted: true, ProjectDefault: true}); d.Verdict != VerdictDeny {
-		t.Fatalf("deny must outrank grant/accept/project, got %v", d.Verdict)
+	if d, _ := s.Decide("/srv/secret/key.pem", Inputs{SessionGranted: true}); d.Verdict != VerdictDeny {
+		t.Fatalf("deny must outrank grant/accept, got %v", d.Verdict)
 	}
 
-	// grant wins over accept and project (both silently proceed, but the
-	// grant is the reason — pinned so the order cannot be shuffled).
+	// grant wins over accept (both silently proceed, but the grant is the reason
+	// — pinned so the order cannot be shuffled).
 	s2 := writePolicy(t, "deny: []\naccept:\n  - /srv/**\n")
-	if d, _ := s2.Decide("/srv/x", Inputs{SessionGranted: true, ProjectDefault: true}); d.Verdict != VerdictGrant {
-		t.Fatalf("grant must outrank accept/project, got %v", d.Verdict)
+	if d, _ := s2.Decide("/srv/x", Inputs{SessionGranted: true}); d.Verdict != VerdictGrant {
+		t.Fatalf("grant must outrank accept, got %v", d.Verdict)
 	}
 
-	// accept wins over project default.
-	if d, _ := s2.Decide("/srv/x", Inputs{ProjectDefault: true}); d.Verdict != VerdictAccept {
-		t.Fatalf("accept must outrank project default, got %v", d.Verdict)
+	// accept wins over ask.
+	if d, _ := s2.Decide("/srv/x", Inputs{}); d.Verdict != VerdictAccept {
+		t.Fatalf("accept must outrank ask, got %v", d.Verdict)
 	}
 
-	// project default wins over ask.
+	// NOTHING CATCHES A PATH THAT IS ONLY "IN THE PROJECT": it asks, exactly as
+	// any other unconfigured path does.
 	s3 := writePolicy(t, "deny: []\naccept: []\n")
-	if d, _ := s3.Decide("/proj/a.go", Inputs{ProjectDefault: true}); d.Verdict != VerdictProject {
-		t.Fatalf("project default must outrank ask, got %v", d.Verdict)
+	if d, _ := s3.Decide("/proj/a.go", Inputs{}); d.Verdict != VerdictAsk {
+		t.Fatalf("an in-project path with no grant and no accept entry must ASK, got %v", d.Verdict)
 	}
 	// and nothing at all ⇒ ask.
 	if d, _ := s3.Decide("/elsewhere/a.go", Inputs{}); d.Verdict != VerdictAsk {

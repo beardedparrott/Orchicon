@@ -155,9 +155,6 @@ type Decision struct {
 type Inputs struct {
 	// SessionGranted: this conversation's in-memory grant covers the path.
 	SessionGranted bool
-	// ProjectDefault: the path is inside the conversation's own project
-	// (AskFileScope.PreApprovedPath).
-	ProjectDefault bool
 }
 
 // DefaultPath resolves the policy file: ORCHICON_PERMISSION_POLICY when
@@ -400,11 +397,18 @@ func (s *Store) Decide(target string, in Inputs) (Decision, error) {
 	if entry, ok := matchAny(p.Accept, target); ok {
 		return Decision{Verdict: VerdictAccept, Entry: entry, List: ListAccept}, nil
 	}
-	// 4. The conversation's own project is the default scope.
-	if in.ProjectDefault {
-		return Decision{Verdict: VerdictProject}, nil
-	}
-	// 5. Otherwise ask.
+	// 4. Otherwise ask.
+	//
+	// THERE IS NO PROJECT RUNG. The conversation's own project used to be a
+	// pre-approved default scope here, and the operator removed it: "any directory
+	// should ask before allowing on write/execute, project or otherwise … I don't
+	// think people will mind, that is fairly standard in all harnesses."
+	//
+	// A project rung is also the one that quietly matters most, because a shell
+	// command's consent target is its CWD (see decisionTargets) — so exempting the
+	// project silently approved EVERY shell command the turn ran, including ones
+	// that write outside it. Asking is the honest default; a session grant (rung 2)
+	// or an accept entry (rung 3) is how an operator says "not this one again".
 	return Decision{Verdict: VerdictAsk}, nil
 }
 
