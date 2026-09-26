@@ -1,6 +1,10 @@
 package chat
 
-import "strings"
+import (
+	"strings"
+
+	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+)
 
 // consent.go is the TUI's OWN model of a pending permission ask (the consent
 // card) and of a clarifying question, plus the three action LABELS the card
@@ -58,6 +62,63 @@ type PermissionAsk struct {
 	// offering a grant the policy will refuse — silent escalation is exactly
 	// what a permission system must not do.
 	DeniedBy string
+}
+
+// ConsentAskMsg carries a pending permission ask from the turn stream to the
+// shell, which renders it as a transcript card (App.ShowConsentAsk).
+//
+// WHY IT IS A MESSAGE AND NOT A STORE CALL. The controller reaches the UI only
+// through EventStore and this command channel, so a card that arrives mid-turn
+// has to travel the same way every other stream signal does. The shell is the
+// only place that knows the conversation's session grants, and it must consult
+// them before drawing a card — a directory already granted for this session must
+// not ask again.
+//
+// ConvID rides the message because the card is appended to the conversation's
+// slot, not to whatever conversation happens to be on screen when the ask
+// lands.
+type ConsentAskMsg struct {
+	ConvID string
+	Ask    PermissionAsk
+}
+
+// PermissionAskFromProto maps the wire ask onto the TUI's own model.
+//
+// THIS IS THE ONE ADAPTER the package comment promises: the wire shape can change
+// without touching any surface that draws a card. It is deliberately pure so the
+// mapping is testable without a stream, a store or a terminal.
+//
+// Target is the COMMAND for an execution and the PATH for a file write — the card
+// has to name whichever it is, because "allow" means different things for each.
+// The wire puts them in different fields (command; repeated targets), so the
+// choice is made here rather than left to the renderer.
+//
+// DeniedBy takes the first deny entry at or below the ask's directory: the card
+// STATES the rule and disables the session-grant row rather than offering a grant
+// the policy will refuse. Offering a choice that cannot take effect is the silent
+// escalation a permission system must never perform.
+func PermissionAskFromProto(p *apiv1.PermissionAsk) PermissionAsk {
+	if p == nil {
+		return PermissionAsk{}
+	}
+	target := strings.TrimSpace(p.GetCommand())
+	if target == "" {
+		if targets := p.GetTargets(); len(targets) > 0 {
+			target = targets[0]
+		}
+	}
+	deniedBy := ""
+	if below := p.GetDenyEntriesBelow(); len(below) > 0 {
+		deniedBy = below[0]
+	}
+	return PermissionAsk{
+		ID:        p.GetAskId(),
+		Tool:      p.GetTool(),
+		Target:    target,
+		Directory: p.GetDirectory(),
+		Kind:      AskTool,
+		DeniedBy:  deniedBy,
+	}
 }
 
 // ConsentDecision is what the operator chose.

@@ -1125,6 +1125,27 @@ func (c *Controller) handleEvent(convID string, ev *apiv1.ChatStreamResponse) {
 			Output:   e.ToolCallResult.GetOutput(),
 			At:       now(),
 		}, Key: "tcr-" + id})
+	case *apiv1.ChatStreamResponse_PermissionAsk:
+		// THE PERMISSION CARD'S WIRE ARM.
+		//
+		// This was the missing link: the server builds the ask
+		// (askorchicon.permissionAskEvent), the proto carries it
+		// (ChatStreamResponse.PermissionAsk), and the shell has a hook for it
+		// (App.ShowConsentAsk, whose own comment says it fires "once the sibling
+		// lands the wire arm") — but nothing on the client ever read the field, so
+		// the card was complete and permanently starved. No adapter's ask could
+		// reach the TUI, this one's or opencode's.
+		//
+		// Best-effort like the other live signals: a dropped ask is re-sent on
+		// re-attach (the server's replay path emits the identical shape), so it
+		// cannot be lost permanently.
+		ask := PermissionAskFromProto(e.PermissionAsk)
+		if c.cmds != nil {
+			select {
+			case c.cmds <- func() tea.Msg { return ConsentAskMsg{ConvID: convID, Ask: ask} }:
+			default:
+			}
+		}
 	case *apiv1.ChatStreamResponse_Done:
 		// poll finalizes; nothing to append
 	}

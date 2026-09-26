@@ -1358,6 +1358,11 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		return m.waitChat()
 	case chat.StreamDoneMsg:
 		return tea.Batch(m.onStreamDone(msg), m.waitChat())
+	case chat.ConsentAskMsg:
+		// A permission ask landed mid-turn: draw its card. ShowConsentAsk consults
+		// the conversation's session grants first, so a directory already allowed
+		// for this session does not ask twice.
+		return tea.Batch(m.ShowConsentAsk(msg.Ask), m.waitChat())
 	case askDefaultSettingsMsg:
 		// Store the tenant default; if a conversation is already open its strip may
 		// now be able to resolve a model (and therefore a context window) that it
