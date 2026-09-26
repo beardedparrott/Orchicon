@@ -7,19 +7,27 @@
 // (alt+enter default, leading-backslash+enter alternative), and the draft
 // buffer (restored after a failed send).
 //
-// SHIFT+ENTER CANNOT BE A NEWLINE HERE, and that is a protocol fact rather than a
-// choice. A legacy terminal encodes the Ctrl and Alt modifiers on Enter as an ESC
-// PREFIX (which is why alt+enter arrives as KeyEnter{Alt:true} and can be handled),
-// but encodes SHIFT not at all: Shift+Enter and Enter both send CR, so there is
-// nothing to tell apart. The protocol that fixes that — kitty keyboard / CSI-u —
-// must be REQUESTED by the program at startup, and the pinned bubbletea (v1.3.10)
-// cannot: it contains no kitty support and defines no KeyShiftEnter at all (its
-// shift keys are the arrow / home / end / tab family only). A terminal that emits
-// CSI-u shift+enter regardless therefore produces bytes this package has no value
-// to parse them into. (An earlier version of this comment claimed the sequence was
-// "accepted when a terminal emits it anyway" — the library makes that impossible,
-// so the claim is removed rather than left to mislead.) Making shift+enter insert a
-// newline is a bubbletea v2 upgrade (keyboard enhancements), not a dock change.
+// SHIFT+ENTER IS NOT HANDLED HERE, because it never arrives here as a key. Its
+// handling lives one layer down, in internal/tui/input: the sequence a terminal
+// sends for it is rewritten to the alt+enter chord as input is read, so the
+// branch below is what actually runs.
+//
+// THE PREMISE OF AN EARLIER COMMENT HERE WAS WRONG. It claimed Shift+Enter cannot
+// be told apart from Enter at all, because a legacy terminal encodes the Ctrl and
+// Alt modifiers on Enter as an ESC prefix but encodes SHIFT not at all. The first
+// half is true — that is why alt+enter arrives as KeyEnter{Alt:true} — but the
+// second half is not, and it is worth recording so this is not "re-fixed" the same
+// wrong way. Konsole 26.08 sends ESC O M (the legacy keypad-Enter encoding) for
+// Shift+Enter, so the bytes DO carry the distinction. What was missing was not a
+// protocol but DECODING: bubbletea v1.3.10 knows no ESC O M sequence, so it splits
+// those three bytes into alt+O and M, and the composer inserts the literal text
+// "OM".
+//
+// So this is fixed without the bubbletea v2 upgrade that comment prescribed, and
+// without a dock change: rewrite the sequence to a chord the dock already handles.
+// The kitty / CSI-u caveat still stands for terminals that use that protocol — a
+// program must REQUEST it at startup and this bubbletea cannot — but it was never
+// the whole story, and it is not the encoding Konsole uses.
 package dock
 
 import (
@@ -900,7 +908,10 @@ func (m *Model) Update(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 			//
 			// Three real cases made Enter appear dead, and two are fixed:
 			//  1. a "shift+enter inserts a newline" convenience the hint never
-			//     documented (removed);
+			//     documented (removed here). It is BACK, but not as a branch in this
+			//     switch: the terminal's Shift+Enter sequence is rewritten to the
+			//     alt+enter chord as input is read (internal/tui/input), so it
+			//     arrives as the branch above;
 			//  2. Enter arriving as LF rather than CR — a different KeyType that
 			//     matched no branch here and no textarea keymap (handled by
 			//     enterKey).
