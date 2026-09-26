@@ -56,8 +56,24 @@ type chatBus struct {
 	once   sync.Once
 }
 
+// chatBusCapacity is the per-turn event buffer.
+//
+// It was 32, which is too small for the volume a real turn produces now that a
+// tool call emits BOTH a start (tool_part) and a resolution (tool_result) on top
+// of the deltas and parts: a twelve-round tool turn reaches ~34 events, i.e.
+// straight past the old bound, and whether the terminal idle survived came down
+// to how fast the consumer happened to drain (TestChatTurnClientManyToolRounds-
+// Unbounded failed in isolation and passed under load, purely on that race).
+//
+// Sized with real headroom rather than at the observed edge: a turn that touches
+// many files or runs many tools must not be able to fill this. An oversized
+// buffer costs a few KB per in-flight turn; a too-small one costs a wedged turn.
+// emit still protects the terminal events independently (see emit), so this is
+// the first line of defence and not the only one.
+const chatBusCapacity = 256
+
 func newChatBus() *chatBus {
-	return &chatBus{events: make(chan scheduler.SessionEvent, 32), done: make(chan struct{})}
+	return &chatBus{events: make(chan scheduler.SessionEvent, chatBusCapacity), done: make(chan struct{})}
 }
 
 func (b *chatBus) Events() <-chan scheduler.SessionEvent { return b.events }
@@ -69,13 +85,43 @@ func (b *chatBus) Close() {
 	})
 }
 
-// emit pushes one event onto the bus, dropping it if the bus is already
-// closed (the drain goroutine ended). Never blocks.
+// emit pushes one event onto the bus. Never blocks for an ordinary signal; a
+// TERMINAL signal waits for room instead of being dropped.
+//
+// WHY THE DISTINCTION EXISTS. The buffer is small (32) and the collector drains
+// it concurrently, so the best-effort drop is fine for the high-volume,
+// reconstructible signals (a delta, a part, a tool_result) — losing one costs a
+// repaint, not a turn. It is NOT fine for the signal that ENDS the turn: an
+// `idle` dropped because the buffer happened to be full leaves the collector
+// waiting forever, and the turn wedges with no error anywhere. That was
+// reachable only under a burst before; emitting a tool_result per tool call made
+// it reachable in an ordinary multi-tool turn, and
+// TestChatTurnClientManyToolRoundsUnbounded caught it ("no idle at turn end").
+//
+// Waiting is safe: the collector is actively draining, so a full buffer empties
+// promptly. The done channel bounds the wait so a consumer that has gone away
+// cannot hang this goroutine.
 func (b *chatBus) emit(evt scheduler.SessionEvent) {
 	select {
 	case b.events <- evt:
+		return
 	default:
 	}
+	if !terminalEventKind(evt.Kind) {
+		// Best-effort by design: dropped when the buffer is full.
+		return
+	}
+	select {
+	case b.events <- evt:
+	case <-b.done:
+	}
+}
+
+// terminalEventKind reports whether losing this event would leave the collector
+// unable to finish the turn. `idle` ends a turn; `error` fails it. Everything
+// else is progress reporting that a client can reconstruct or do without.
+func terminalEventKind(kind string) bool {
+	return kind == "idle" || kind == "error"
 }
 
 // SetAskTools injects the Ask-time tool surface for native turns (the
@@ -554,7 +600,7 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 		// turn TTL sweeper (askTurnMaxAge(), default 31m,
 		// ORCHICON_ASK_TURN_MAX_AGE — internal/askorchicon/chat.go), and the
 		// stall monitor (tenant stall settings).
-		b.executeToolCalls(ctx, &working, calls)
+		b.executeToolCalls(ctx, bus, &working, calls)
 		req.Messages = append([]Message(nil), working...)
 		next, err := prov.StreamTurn(ctx, req)
 		if err != nil {
@@ -659,7 +705,7 @@ func (b *NativeBridge) askUsageSink(tenantID, conversationID, sessionID, modelRe
 // misconfiguration as an error so the model can explain instead of
 // hanging. A tool execution failure is recorded as an error result (the
 // model sees it and can recover), never as a turn failure.
-func (b *NativeBridge) executeToolCalls(ctx context.Context, working *[]Message, calls []ToolCall) {
+func (b *NativeBridge) executeToolCalls(ctx context.Context, bus *chatBus, working *[]Message, calls []ToolCall) {
 	b.mu.Lock()
 	tools := b.askTools
 	b.mu.Unlock()
@@ -695,6 +741,21 @@ func (b *NativeBridge) executeToolCalls(ctx context.Context, working *[]Message,
 		*working = append(*working, Message{Role: RoleTool, Content: []Content{{
 			ToolResult: &ContentToolResult{ToolCallID: c.ToolCallID, Content: content, IsError: isErr},
 		}}})
+		// Emit the RESOLUTION as an adapter-neutral typed event. Without this the
+		// bus carried only the start (tool_part, name alone), so a consumer could
+		// never learn the call's arguments or its outcome: the Ask tool ledger
+		// kept the "{}" placeholder forever and every call read back as
+		// "aborted", which is why an ask_user card had no question or options to
+		// draw. Both facts are in hand exactly here.
+		bus.emit(scheduler.SessionEvent{
+			Kind:       "tool_result",
+			Type:       "tool",
+			ToolCallID: c.ToolCallID,
+			ToolName:   c.Name,
+			ArgsJSON:   args,
+			Output:     content,
+			IsError:    isErr,
+		})
 	}
 }
 

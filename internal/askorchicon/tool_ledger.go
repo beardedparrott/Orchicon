@@ -3,6 +3,7 @@ package askorchicon
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -128,6 +129,65 @@ func (l *toolLedger) recordResolve(part map[string]any) {
 		ToolCallID: callID,
 		Output:     output,
 		IsError:    status == "error",
+	})
+}
+
+// recordToolResolution backfills a resolved call's arguments and appends its
+// result, from the TYPED adapter-neutral fields of a SessionEvent (Kind
+// "tool_result"). It is the typed counterpart of recordResolve, which reads an
+// opencode-shaped Part map.
+//
+// An adapter that does not speak opencode's dialect must not have to imitate it
+// to get its tool calls recorded. This is the entry point such an adapter uses;
+// both land in the same ledger, so a client renders one transcript regardless of
+// which adapter produced it.
+func (l *toolLedger) recordToolResolution(tool, argsJSON, output string, isErr bool) {
+	if l == nil || tool == "" {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	callID := ""
+	// Match the OLDEST unresolved call for the same tool.
+	//
+	// Direction matters, and this is not cosmetic. The native Ask path executes a
+	// round's tool calls SEQUENTIALLY in the order the model issued them, so the
+	// Nth resolution belongs to the Nth unresolved call of that name — scanning
+	// forward is what keeps each call paired with its own arguments and result.
+	// An earlier version of this scanned BACKWARD (copying recordResolve, where
+	// parallel execution makes the order inherently arbitrary) and swapped the
+	// arguments of two same-name calls: the transcript then showed call #1 with
+	// call #2's command. Caught by TestToolResolutionResolvesOnlyOneCallPerEvent.
+	//
+	// The ledger mints its own ids at recordStart, so the transport's call id
+	// cannot correlate; the tool name plus issue order is what the two sides
+	// share.
+	for i := 0; i < len(l.calls); i++ {
+		if l.calls[i].FunctionName == tool && !l.calls[i].resolved {
+			l.calls[i].resolved = true
+			// Only replace the "{}" placeholder when real arguments arrived.
+			if args := strings.TrimSpace(argsJSON); args != "" && args != "{}" {
+				l.calls[i].Arguments = truncateLedgerString(argsJSON, 4000)
+			}
+			callID = l.calls[i].ID
+			break
+		}
+	}
+	if callID == "" {
+		// Resolution without an observed start (re-attached mid-tool, or a start
+		// event missed): synthesize the call so the result is kept — the same
+		// rule recordResolve applies.
+		l.nextID++
+		callID = fmt.Sprintf("tc-%d", l.nextID)
+		l.calls = append(l.calls, toolCallEntry{
+			ID: callID, Type: "function", FunctionName: tool,
+			Arguments: truncateLedgerString(argsJSON, 4000), resolved: true,
+		})
+	}
+	l.results = append(l.results, toolResultEntry{
+		ToolCallID: callID,
+		Output:     truncateLedgerString(output, 8000),
+		IsError:    isErr,
 	})
 }
 

@@ -406,6 +406,9 @@ type SessionEvent struct {
 	//                  name); feeds the stall monitor's wedge signal
 	//   "delta"      — mid-generation token delta (Text); liveness + live mirror
 	//   "part"       — a completed text/reasoning/tool_use/step_finish part
+	//   "tool_result"— a tool call RESOLVED: its arguments and output. Typed
+	//                  fields (ToolName/ToolCallID/ArgsJSON/Output/IsError),
+	//                  not a transport-shaped Part map — see ToolName.
 	Kind string
 	// Type refines Kind for "delta" ("text"|"reasoning") and "part"
 	// ("text"|"reasoning"|"tool_use"|"step_finish") — the stall-monitor and
@@ -431,6 +434,25 @@ type SessionEvent struct {
 	// carries tool + args for the stall monitor's repetition signature; the
 	// monitor path consumes it). Nil for other kinds.
 	Part map[string]any
+	// --- Typed tool-resolution fields (Kind "tool_result") ---
+	//
+	// These exist so an adapter never has to shape its own tool lifecycle into
+	// ANOTHER adapter's private event encoding. "tool_result" used to be
+	// expressible only by hand-building the Part map that the opencode adapter
+	// happens to emit (part["tool"], part["state"]["input"], …), which made
+	// opencode the reference dialect every future adapter had to imitate.
+	//
+	// ToolCallID is the transport's own correlation id (empty when the adapter
+	// has none). ToolName is the tool that ran. ArgsJSON is the EXACT argument
+	// JSON the call carried, and Output its result text — together these are
+	// what a client needs to render a resolved call (an ask_user card reads its
+	// question and options straight out of ArgsJSON). IsError marks a failed
+	// call so its result is not shown as a success.
+	ToolCallID string
+	ToolName   string
+	ArgsJSON   string
+	Output     string
+	IsError    bool
 	// SessionID is the session the event belongs to. Adapters whose
 	// transport multiplexes sessions (e.g. a shared serve bus) set it so the
 	// drain loop can filter by the turn's current session id (which can

@@ -1984,6 +1984,18 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 					snapText, snapRsn := mirrorSnapshot()
 					c.onPartial(snapText, snapRsn)
 				}
+			case "tool_result":
+				// A tool call RESOLVED, carrying its arguments and output as TYPED
+				// fields (adapter-neutral — no Part map to imitate). Feed the ledger
+				// so the recorded call keeps its real arguments and its real result.
+				// This is what lets a client render a resolved call: an ask_user
+				// card reads its question and options out of ArgsJSON, and without
+				// this the call kept the "{}" placeholder and every result read back
+				// as "aborted".
+				if !sent {
+					continue
+				}
+				c.ledger.recordToolResolution(evt.ToolName, evt.ArgsJSON, evt.Output, evt.IsError)
 			case "part":
 				// Completed telemetry part (the same LegacyEventFromBus
 				// mapping executions use — the adapter classified it). Events
