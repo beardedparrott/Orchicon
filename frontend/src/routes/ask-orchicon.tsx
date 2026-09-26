@@ -85,14 +85,15 @@ import {
 import { useCategoryPreferences, getItemsForCategory } from "@/lib/category-store";
 import { AskCard, isAskUserToolCall, parseAskUserArgs } from "@/components/ask/AskCard";
 import { ConsentAskCard } from "@/components/ask/AskCard";
-import { SessionGrants } from "@/components/ask/SessionGrants";
 import {
   applyAskChunk,
+  interleave,
   outcomeFromChoice,
   pendingFor,
   resolveAsk,
   type AskItem,
 } from "@/lib/ask-consent";
+import { SessionGrants } from "@/components/ask/SessionGrants";
 import { CreateCategoryDialog } from "@/components/CreateCategoryDialog";
 import { DiffSidebar, type DiffTab } from "@/components/diffs/DiffSidebar";
 import { usePersistentState } from "@/lib/diff/usePersistentState";
@@ -163,6 +164,19 @@ interface ConvStream {
   // conversation, which is per-slot anyway.
   asks: AskItem[];
 }
+
+/**
+ * One block of the transcript flow a consent card is interleaved into.
+ *
+ * A message carries the server's createdAt; the optimistic echo carries the
+ * moment it was sent. Both are epoch ms, which is the unit the interleave sorts
+ * by — and the unit an AskItem now carries too, so a card, a message and an echo
+ * are ordered by the same clock rather than by where they happened to be
+ * rendered.
+ */
+type TranscriptBlock =
+  | { kind: "message"; at: number; message: ChatMessage }
+  | { kind: "optimistic"; at: number; text: string };
 const EMPTY_STREAM: ConvStream = {
   isStreaming: false,
   isThinking: false,
@@ -384,6 +398,26 @@ function AskOrchiconPage() {
   const optimisticUserMsg = activeStream?.optimisticUserMsg ?? null;
   const pendingReplyId = activeStream?.pendingReplyId ?? null;
   const streamItems = activeStream?.items ?? [];
+
+  // transcriptBlocks is the message flow the cards are interleaved into. The
+  // optimistic echo is only included while the durable view has not caught up
+  // with it (the same rule the old inline render used), so it cannot double.
+  const showOptimistic =
+    !!optimisticUserMsg &&
+    !messages?.some((m) => m.content === optimisticUserMsg && m.role === "user");
+  const transcriptBlocks: TranscriptBlock[] = [];
+  for (const msg of messages ?? []) {
+    transcriptBlocks.push({
+      kind: "message",
+      at: Number(msg.createdAt?.seconds ?? 0) * 1000,
+      message: msg,
+    });
+  }
+  if (showOptimistic) {
+    // Stamped LAST so the echo lands at the end of what has arrived, which is
+    // where a just-sent message belongs.
+    transcriptBlocks.push({ kind: "optimistic", at: Date.now(), text: optimisticUserMsg! });
+  }
 
   const { data: conversations, isLoading: convsLoading } =
     useListConversations({
@@ -1599,50 +1633,56 @@ function AskOrchiconPage() {
                     </div>
                   )}
 
-                {/* Persisted messages from the server */}
-                {messages?.map((msg) => (
-                  <MessageBubble
-                    key={msg.id}
-                    message={msg}
-                    onRetry={handleRetry}
-                    onSelectOption={handleSendMessage}
-                    answered={msg.id !== lastMessageId}
-                  />
-                ))}
+                {/* THE TRANSCRIPT, WITH THE CONSENT CARDS IN IT.
+                    A card used to be a separate list rendered AFTER every
+                    message, so a settled card sat pinned to the bottom of the
+                    conversation forever. The operator: "the permission blocks in
+                    the GUI are still remaining at the bottom at the end of a
+                    turn which makes no sense. They should be in the conversation
+                    and move up just like any other conversation block."
 
-                {/* Optimistic user message — before streaming bubbles */}
-                {optimisticUserMsg &&
-                  !messages?.some(
-                    (m) =>
-                      m.content === optimisticUserMsg && m.role === "user",
-                  ) && (
-                    <UserBubble
-                      text={optimisticUserMsg}
-                      source="you"
+                    So the messages and the asks are merged into ONE time-ordered
+                    sequence and rendered together: a card sits between the
+                    messages it happened between, and moves up as the conversation
+                    grows, exactly like anything else. */}
+                {interleave(transcriptBlocks, activeStream?.asks).map((slot) => {
+                  if (slot.isAsk) {
+                    const item = slot.block as AskItem;
+                    return (
+                      <ConsentAskCard
+                        key={item.key}
+                        ask={item.ask}
+                        outcome={item.outcome}
+                        busy={!!askInFlight[item.ask.askId]}
+                        onDecide={(choice) =>
+                          void handleAskDecision(activeConvId!, item.ask.askId, choice)
+                        }
+                        onEscape={() =>
+                          void handleAskDecision(
+                            activeConvId!,
+                            item.ask.askId,
+                            PermissionChoice.DENY,
+                          )
+                        }
+                      />
+                    );
+                  }
+                  const block = slot.block as TranscriptBlock;
+                  if (block.kind === "optimistic") {
+                    return (
+                      <UserBubble key="optimistic" text={block.text} source="you" />
+                    );
+                  }
+                  return (
+                    <MessageBubble
+                      key={block.message.id}
+                      message={block.message}
+                      onRetry={handleRetry}
+                      onSelectOption={handleSendMessage}
+                      answered={block.message.id !== lastMessageId}
                     />
-                  )}
-
-                {/* CONSENT ASKS — rendered OUTSIDE the isStreaming guard so a
-                    settled card stays in the transcript after the turn ends
-                    (the outcome is part of the record, not just an effect). */}
-                {activeStream?.asks.map((item) => (
-                  <ConsentAskCard
-                    key={item.key}
-                    ask={item.ask}
-                    outcome={item.outcome}
-                    busy={!!askInFlight[item.ask.askId]}
-                    onDecide={(choice) =>
-                      void handleAskDecision(activeConvId!, item.ask.askId, choice)
-                    }
-                    onEscape={() =>
-                      void handleAskDecision(
-                        activeConvId!,
-                        item.ask.askId,
-                        PermissionChoice.DENY,
-                      )
-                    }
-                  />
-                ))}
+                  );
+                })}
 
                 {/* Live streaming items (text + reasoning chunks) */}
                 {isStreaming &&

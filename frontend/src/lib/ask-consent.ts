@@ -28,6 +28,21 @@ export interface AskItem {
   /** outcome is null while the ask is still awaiting an answer. */
   outcome: AskOutcome | null;
   resolvedAt: number | null;
+  /**
+   * at is when the ask ARRIVED, in epoch ms. It is what places the card in the
+   * transcript: a consent card is a block in the conversation, not an appendix,
+   * so it is interleaved with the messages by time and moves up as the
+   * conversation grows.
+   *
+   * Required, and NOT optional with a default, because the bug this fixes was
+   * precisely a missing timestamp: the cards were rendered as a separate list
+   * AFTER every message, so a settled card sat pinned at the bottom of the
+   * transcript forever (the operator: "the permission blocks in the GUI are still
+   * remaining at the bottom at the end of a turn which makes no sense. They
+   * should be in the conversation and move up just like any other conversation
+   * block").
+   */
+  at: number;
 }
 
 /**
@@ -36,11 +51,15 @@ export interface AskItem {
  * re-dials after a refresh), so a repeat is a no-op rather than a second card.
  * An ask that is already resolved is never resurrected.
  */
-export function applyAskChunk(items: AskItem[], ask: PermissionAsk): AskItem[] {
+export function applyAskChunk(
+  items: AskItem[],
+  ask: PermissionAsk,
+  at: number = Date.now(),
+): AskItem[] {
   const key = ask.askId;
   if (!key) return items;
   if (items.some((i) => i.key === key)) return items;
-  return [...items, { key, ask, outcome: null, resolvedAt: null }];
+  return [...items, { key, ask, outcome: null, resolvedAt: null, at }];
 }
 
 /**
@@ -66,6 +85,44 @@ export function resolveAsk(
 export function pendingFor(items: AskItem[] | undefined): AskItem[] {
   if (!items) return [];
   return items.filter((i) => i.outcome === null);
+}
+
+/**
+ * blockAt is the epoch-ms a transcript BLOCK sorts by: a streamed message, an
+ * optimistic echo, a live chunk, or a consent card.
+ *
+ * `at` is the ask's arrival time for AskItem and a message's createdAt
+ * otherwise. Ordering is what places a consent card BETWEEN the messages it
+ * happened between, rather than after all of them.
+ */
+export function blockAt(block: { kind: "ask" } | { at: number }): number {
+  return "kind" in block && block.kind === "ask"
+    ? (block as unknown as AskItem).at
+    : (block as { at: number }).at;
+}
+
+/**
+ * interleave merges the durable/renderable transcript with the conversation's
+ * consent cards, ordered by time.
+ *
+ * A card whose arrival time is unknown (0 — a shape from an older client) sorts
+ * FIRST, which is the same wrong end the missing timestamp produced. That is
+ * deliberate: it makes the failure visible in a test rather than silently pinning
+ * the card to the bottom.
+ */
+export function interleave<T extends { at: number }>(
+  blocks: T[],
+  asks: AskItem[] | undefined,
+): Array<{ seq: number; at: number; block: T | AskItem; isAsk: boolean }> {
+  const out: Array<{ seq: number; at: number; block: T | AskItem; isAsk: boolean }> = [];
+  blocks.forEach((b, seq) => out.push({ seq, at: b.at, block: b, isAsk: false }));
+  (asks ?? []).forEach((a, seq) =>
+    out.push({ seq, at: a.at, block: a, isAsk: true }),
+  );
+  // Stable by construction: the seq tiebreak keeps same-instant blocks in their
+  // source order, so a message and a card at the same ms do not swap on a poll.
+  out.sort((x, y) => x.at - y.at || (x.isAsk === y.isAsk ? x.seq - y.seq : x.isAsk ? 1 : -1));
+  return out;
 }
 
 /** outcomeFromChoice maps a decision the operator made to its outcome. */
