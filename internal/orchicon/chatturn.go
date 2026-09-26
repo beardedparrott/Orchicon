@@ -55,6 +55,28 @@ type chatBus struct {
 	events chan scheduler.SessionEvent
 	done   chan struct{}
 	once   sync.Once
+
+	// mu makes Close race-free against emit. Close closes done FIRST (which stops
+	// any NEW emit from starting a send) and only then takes the write lock —
+	// which waits out every in-flight emit — before closing events. Without this
+	// ordering a send can land on a channel that was just closed, which is a
+	// PANIC, not an error: it took the whole serve process down. Observed: an
+	// interjection superseded a turn, the superseded turn's deferred Close ran
+	// while a tool call from the other turn was still emitting, and the process
+	// died with "panic: send on closed channel" in executeToolCalls.
+	//
+	// Closing done first is what keeps this cheap: the blocking terminal send
+	// below can never hold RLock indefinitely, so Lock cannot deadlock against a
+	// consumer that has gone away.
+	mu sync.RWMutex
+
+	// users counts the turns currently using this bus. A bus is SHARED by
+	// consecutive turns of a conversation: an interjection adopts the bus of the
+	// turn it supersedes (chatBuses is keyed per conversation). Closing it when
+	// any one turn finished therefore closed it out from under a still-running
+	// turn, which panicked the process and ended the live turn's stream. The bus
+	// now closes when the LAST user leaves. Guarded by mu.
+	users int
 }
 
 // chatBusCapacity is the per-turn event buffer.
@@ -81,9 +103,38 @@ func (b *chatBus) Events() <-chan scheduler.SessionEvent { return b.events }
 func (b *chatBus) Done() <-chan struct{}                 { return b.done }
 func (b *chatBus) Close() {
 	b.once.Do(func() {
-		close(b.done)
-		close(b.events)
+		close(b.done)   // 1. no NEW emit may begin a send
+		b.mu.Lock()     // 2. wait out every in-flight emit
+		close(b.events) // 3. now no sender can be inside emit
+		b.mu.Unlock()
 	})
+}
+
+// adopt registers one more turn using this bus. Paired with release: every
+// adopting turn must release exactly once.
+func (b *chatBus) adopt() {
+	b.mu.Lock()
+	b.users++
+	b.mu.Unlock()
+}
+
+// release gives up one turn's use of this bus, closing it only when no user
+// remains.
+//
+// It exists because the bus is shared per conversation: an interjection's turn
+// can adopt the same bus as the turn it supersedes. Closing on the first turn
+// to finish is what killed the process (a live turn's emit landed on the closed
+// channel) and ended the live turn's stream. Refcounting is the ownership
+// signal that "close only if I am still the registered bus" cannot provide:
+// when turns share ONE bus, every one of them is the registered bus.
+func (b *chatBus) release() {
+	b.mu.Lock()
+	b.users--
+	last := b.users <= 0
+	b.mu.Unlock()
+	if last {
+		b.Close()
+	}
 }
 
 // emit pushes one event onto the bus. Never blocks for an ordinary signal; a
@@ -103,6 +154,26 @@ func (b *chatBus) Close() {
 // promptly. The done channel bounds the wait so a consumer that has gone away
 // cannot hang this goroutine.
 func (b *chatBus) emit(evt scheduler.SessionEvent) {
+	// A closed bus means this turn was superseded: its events have no consumer,
+	// and sending on the closed channel would panic the whole process.
+	//
+	// Liveness is re-checked under the lock Close takes, so this cannot race the
+	// close: either we hold RLock across the send (and Close waits for us), or
+	// Close has finished and the check sees it. The cheap unsynchronised check
+	// first keeps the common path lock-light.
+	select {
+	case <-b.done:
+		return
+	default:
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	select {
+	case <-b.done:
+		return
+	default:
+	}
+
 	select {
 	case b.events <- evt:
 		return
@@ -496,7 +567,12 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 	bus := b.chatBuses[conversationID]
 	if bus == nil {
 		bus = newChatBus()
+		b.chatBuses[conversationID] = bus
 	}
+	// This turn ADOPTS the bus, so it is not closed until every adopting turn is
+	// done — an interjection shares the bus of the turn it supersedes. Paired
+	// with the drain's release().
+	bus.adopt()
 	b.mu.Unlock()
 
 	go b.drainChatTurn(turnCtx, prov, bus, stream, req, sessionID, history, b.askUsageSink(tenantID, conversationID, sessionID, modelRef, providerID, model))
@@ -516,7 +592,7 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 // results — not just the final text) replaces the session's history so a
 // follow-up re-sends the complete context.
 func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *chatBus, stream TurnStream, req TurnRequest, sessionID string, history []Message, usageSink func(context.Context, Usage)) {
-	defer bus.Close()
+	defer bus.release()
 	defer func() {
 		b.mu.Lock()
 		delete(b.chatTurns, sessionID)
