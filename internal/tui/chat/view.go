@@ -10,6 +10,7 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/tui/md"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
@@ -694,36 +695,71 @@ func renderAskCard(a *ParsedAsk, maxWidth int) string {
 	return body
 }
 
-// renderAskCardSpans is renderAskCard plus WHERE EACH OPTION ROW LANDED, so a click on the card can resolve
-// to the option under it.
+// renderAskCardSpans draws a recorded clarifying question as an INTERACTIVE CARD,
+// and reports where each option row landed so a click resolves to the option
+// under it.
 //
-// THE OFFSETS ARE MEASURED FROM THE BUILDER rather than counted by hand, using the same trick renderItems uses
-// for its own spans: the number of newlines already written IS the 0-based index of the line about to be
-// written. A hand-maintained counter here would drift the moment the card gains a row — and the failure mode
-// of that drift is a click that sends an option the operator did not choose.
+// IT IS A kit2 CARD, NOT A LIST OF LINES, and that is the whole point of this
+// function's shape. It used to hand-build plain text — a "? Orchicon asks" line
+// and numbered rows — which rendered as an ordinary list: no border, no accent,
+// nothing to say "this is a question you answer" rather than "this is prose you
+// read". The operator's report: "it didn't really do a good job at making it seem
+// like it was a clickable card … it just looked like a regular normal list."
+//
+// The card now comes from the SAME widget the permission card uses
+// (kit2.CardLinesSpans), so it inherits the rounded border, the accent colour, the
+// panel tint and the padding the rest of the app uses — and the two cards in this
+// transcript look like the same KIND of thing, because they are.
+//
+// THE OFFSETS COME FROM THE WIDGET, not from a counter here. The card's own
+// layout decides how many lines the title, the body and each wrapped option take,
+// so the only place that can measure them is the code that drew them; a counter
+// maintained in this function would drift the first time the card gained a row,
+// and a drifted offset means a click answers with the option the operator did
+// not choose.
 func renderAskCardSpans(a *ParsedAsk, maxWidth int) (string, []AskOptionSpan) {
 	if a == nil {
 		return "", nil
 	}
-	var b strings.Builder
-	var opts []AskOptionSpan
-	b.WriteString(theme.ListTitle.Render("? Orchicon asks") + "\n")
-	b.WriteString(theme.BubbleModel.Render(wrapText(a.Question, maxWidth)) + "\n")
-	for i, o := range a.Options {
-		rows := 1
-		if o.Description != "" {
-			rows = 2
-		}
-		opts = append(opts, AskOptionSpan{Line: strings.Count(b.String(), "\n"), Lines: rows, Label: o.Label})
-		b.WriteString(theme.ListMeta.Render("  "+itoa(int64(i+1))+". ") + o.Label + "\n")
-		if o.Description != "" {
-			b.WriteString(theme.HintText.Render("     "+o.Description) + "\n")
-		}
-	}
+	// THE FOOTER PROMISES ONLY WHAT WORKS. The clarifying question is answerable
+	// by CLICK (transcriptAskOptionFrameRow → AnswerQuestion → Send); it has no
+	// keyboard cursor, unlike the permission card, whose footer advertises
+	// up/down + enter. Telling the operator to press keys that do nothing is
+	// worse than saying nothing.
+	footer := "click an option to answer"
 	if a.AllowOther {
-		b.WriteString(theme.HintText.Render("  (or answer in your own words)") + "\n")
+		footer = "click an option · or reply in your own words"
 	}
-	return truncateLine(b.String(), maxWidth), opts
+	spec := kit2.CardSpec{
+		Title:  "Orchicon asks",
+		Body:   a.Question,
+		Footer: footer,
+	}
+	for i, o := range a.Options {
+		text := itoa(int64(i+1)) + ". " + o.Label
+		if o.Description != "" {
+			// One row per option rather than a stray indented sentence: the
+			// description belongs to the option and must move, wrap and highlight
+			// WITH it, not sit beside it as unrelated prose.
+			text += " — " + o.Description
+		}
+		spec.Lines = append(spec.Lines, kit2.CardLine{Text: text})
+	}
+
+	lines, rows := kit2.CardLinesSpans(spec, maxWidth)
+	var b strings.Builder
+	for _, l := range lines {
+		b.WriteString(l)
+		b.WriteString("\n")
+	}
+	opts := make([]AskOptionSpan, 0, len(rows))
+	for i, r := range rows {
+		if i >= len(a.Options) {
+			break
+		}
+		opts = append(opts, AskOptionSpan{Line: r.Line, Lines: r.Lines, Label: a.Options[i].Label})
+	}
+	return b.String(), opts
 }
 
 func renderArtifactRow(it ChatItem, maxWidth int) string {
