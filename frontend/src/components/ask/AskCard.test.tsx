@@ -84,7 +84,10 @@ describe("AskCard wiring (clarifying-question card)", () => {
   it("selecting an option sends it as a normal user message via handleSendMessage", () => {
     expect(route).toContain("onSelectOption={handleSendMessage}");
     // Interactivity is gated on nothing following the assistant message.
-    expect(route).toContain("answered={msg.id !== lastMessageId}");
+    // The block is the interleaved transcript slot, so the message hangs off it
+    // (`block.message`) — the render was refactored to interleave consent cards
+    // with the messages by time, and this assertion was left behind by it.
+    expect(route).toContain("answered={block.message.id !== lastMessageId}");
   });
 });
 
@@ -192,8 +195,13 @@ describe("card keyboard model and wiring", () => {
     expect(routeSrc).toContain('chunk.event.case === "permissionAsk"');
     expect(routeSrc).toContain("askOrchiconClient.replyPermissionAsk(");
     expect(routeSrc).toContain("asks: resolveAsk(prev.asks, askId");
-    // Rendered outside the isStreaming guard so a settled card stays put.
-    expect(routeSrc).toContain("activeStream?.asks.map(");
+    // THE CARD IS A BLOCK IN THE CONVERSATION, NOT AN APPENDIX. The ask list is
+    // interleaved with the messages by arrival time, so it is rendered through
+    // `interleave(transcriptBlocks, …)` rather than as its own trailing
+    // `activeStream?.asks.map(...)` list pinned to the bottom — the operator's
+    // "the permission blocks in the GUI are still remaining at the bottom at the
+    // end of a turn which makes no sense."
+    expect(routeSrc).toContain("interleave(transcriptBlocks, activeStream?.asks)");
     // Escape denies, through the same handler as the Deny action.
     expect(routeSrc).toContain("PermissionChoice.DENY");
     expect(routeSrc).toContain("e.defaultPrevented");

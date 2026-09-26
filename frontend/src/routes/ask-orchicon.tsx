@@ -1106,6 +1106,17 @@ function AskOrchiconPage() {
         if (!acked) {
           fail();
         }
+        // ONE FINAL DURABLE FETCH, after the turn ends.
+        //
+        // The turn's tool calls land on the message row at FINALIZE — after the
+        // last chunk — and this stream's poll stops the moment streaming ends
+        // (`refetchInterval: isStreaming ? 2000 : false`). So without this the
+        // newest durable content is NEVER fetched, and a recorded ask_user call
+        // does not appear in the GUI at all. The operator: "it never popped up in
+        // the GUI but was in the TUI" — the TUI happened to re-read, the GUI had
+        // no reason to. The same race hid the tool calls of a just-finished reply
+        // until the page was reloaded.
+        qc.invalidateQueries({ queryKey: askKeys.messages(convId) });
       } catch (err: unknown) {
         fail(err);
       } finally {
@@ -2118,16 +2129,6 @@ function MessageBubble({
 
   return (
     <>
-      {askCall && (
-        <AskCard
-          question={askParsed?.question ?? ""}
-          options={askParsed?.options ?? []}
-          allowOther={askParsed?.allowOther}
-          answered={answered}
-          error={askParsed ? undefined : "the recorded arguments are not valid JSON"}
-          onSelect={onSelectOption}
-        />
-      )}
       {hasReasoning && (
         <ReasoningBubble text={reasoning!.join("\n")} />
       )}
@@ -2137,6 +2138,24 @@ function MessageBubble({
         <AssistantBubble
           text={message.content}
           label="Orchicon"
+        />
+      )}
+      {/* THE QUESTION CARD IS THE LAST THING IN THE MESSAGE.
+
+          It is the thing the operator ACTS ON, not a transcript note buried
+          above the prose that followed the call. The tool call is chronologically
+          first, but reading order is not chronology — the operator: "it is ON TOP
+          of a bunch of other text you sent. That is not intuitive. It should be at
+          the bottom (newest/recent)." The TUI emits its card last for the same
+          reason (chat.conversationItems), so the two clients read the same way. */}
+      {askCall && (
+        <AskCard
+          question={askParsed?.question ?? ""}
+          options={askParsed?.options ?? []}
+          allowOther={askParsed?.allowOther}
+          answered={answered}
+          error={askParsed ? undefined : "the recorded arguments are not valid JSON"}
+          onSelect={onSelectOption}
         />
       )}
     </>
