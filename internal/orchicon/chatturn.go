@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
@@ -729,6 +730,18 @@ func (b *NativeBridge) executeToolCalls(ctx context.Context, bus *chatBus, worki
 		var toolErr error
 		if tools == nil {
 			toolErr = errors.New("orchicon bridge: no Ask tool provider injected — cannot execute tool " + c.Name)
+		} else if consentGatedTool(c.Name) {
+			// ASK BEFORE ACTING. The collector owns the decision — the
+			// precedence chain, the deny list, the session grants — so this only
+			// raises the ask and waits, exactly as the opencode adapter's serve
+			// blocks for the same collector. A "once" proceeds; anything else
+			// (a denial, a refusal, or silence past the wait) means the call does
+			// NOT run and the model is told why.
+			if d := b.awaitConsentPermission(ctx, bus, c, args); d != "once" {
+				toolErr = fmt.Errorf("permission denied for %s — this call was not approved, so it did not run", c.Name)
+			} else {
+				out, toolErr = tools.ExecuteAskTool(ctx, c.Name, args)
+			}
 		} else {
 			out, toolErr = tools.ExecuteAskTool(ctx, c.Name, args)
 		}
@@ -947,6 +960,111 @@ func sanitizeChatHistory(messages []Message) []Message {
 	return out
 }
 
+// --- consent: the native half of the permission card ---
+
+// nativeConsentWaitDefault bounds how long an Ask turn waits for a permission
+// decision before treating silence as a DENIAL.
+//
+// DENY, NOT PROCEED. The operator chose fail-closed, and the distinction is the
+// whole point of a consent gate: an unanswered ask must never become an
+// approval. It is BOUNDED rather than indefinite so a session nobody is watching
+// cannot hold a turn, its runtime container and its locks forever — which from
+// the outside is indistinguishable from a wedged turn.
+const nativeConsentWaitDefault = 10 * time.Minute
+
+// nativeConsentWait resolves the wait, with an env override for testing and for
+// an operator who wants a shorter leash.
+func nativeConsentWait() time.Duration {
+	if v := os.Getenv("ORCHICON_ASK_CONSENT_WAIT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return nativeConsentWaitDefault
+}
+
+// permWait is one in-flight consent wait: the channel the decision arrives on.
+// Buffered(1) so the replier never blocks on a waiter that has already given up.
+type permWait struct{ decision chan string }
+
+// nextPermID mints an ask id. Unique per bridge, which is all the correlation
+// needs: the collector keys its registry by conversation and ask id.
+func (b *NativeBridge) nextPermID() string {
+	b.permMu.Lock()
+	defer b.permMu.Unlock()
+	b.permSeq++
+	return fmt.Sprintf("native-ask-%d", b.permSeq)
+}
+
+// consentGatedTool reports whether a native Ask tool call must be APPROVED
+// before it runs: writes and executions, and nothing else.
+//
+// READS NEVER ASK — the settled rule. A read cannot change anything, and
+// prompting for one would train the operator to approve without looking, which
+// is the failure mode the whole gate exists to avoid.
+func consentGatedTool(name string) bool {
+	switch name {
+	case "write", "edit", "batch_write", "bash":
+		return true
+	}
+	return false
+}
+
+// awaitConsentPermission raises a permission ask for one tool call and blocks
+// until the collector decides it.
+//
+// THE SHAPE MIRRORS THE opencode ADAPTER, deliberately. There the serve blocks
+// and our collector decides; here the ADAPTER blocks and the SAME collector
+// decides, over the same SessionEvent vocabulary and the same
+// ReplyPermissionDecision reply. So the consent core — the precedence chain, the
+// card, the session grants, the deny list, the never-allow class, the expiry — is
+// shared rather than reimplemented, and neither adapter is the reference dialect.
+//
+// It makes NO policy decision here: it carries the action (tool + argument JSON,
+// from which the collector derives the target and the command the same way it
+// does for an MCP-style ask) and waits. "once" means proceed; anything else means
+// the call does not run.
+func (b *NativeBridge) awaitConsentPermission(ctx context.Context, bus *chatBus, c ToolCall, args string) string {
+	askID := b.nextPermID()
+	w := &permWait{decision: make(chan string, 1)}
+
+	b.permMu.Lock()
+	if b.permWaits == nil {
+		b.permWaits = map[string]*permWait{}
+	}
+	b.permWaits[askID] = w
+	b.permMu.Unlock()
+	defer func() {
+		b.permMu.Lock()
+		delete(b.permWaits, askID)
+		b.permMu.Unlock()
+	}()
+
+	if bus != nil {
+		bus.emit(scheduler.SessionEvent{
+			Kind:         "permission",
+			PermissionID: askID,
+			Tool:         c.Name,
+			InputJSON:    args,
+		})
+	}
+
+	timer := time.NewTimer(nativeConsentWait())
+	defer timer.Stop()
+	select {
+	case d := <-w.decision:
+		return d
+	case <-timer.C:
+		// Silence is a DENIAL (fail closed), and the model is told so it can
+		// explain rather than retry blindly.
+		return "reject"
+	case <-ctx.Done():
+		// The turn was cancelled (Stop / supersede / TTL): give up the wait
+		// immediately rather than holding the goroutine for the full window.
+		return "reject"
+	}
+}
+
 // commitChatHistory replaces the session's in-memory history with the
 // turn's full working history (user message, assistant texts, tool uses
 // and tool results) so a follow-up re-sends the complete context.
@@ -998,13 +1116,37 @@ func (b *NativeBridge) AbortConversationSession(ctx context.Context, sessionID s
 // practice; it returns an actionable error rather than silently swallowing an
 // approval (D6).
 func (b *NativeBridge) ReplyPermission(ctx context.Context, sessionID, permissionID string) error {
-	return errors.New("orchicon native Ask turns are text-only — permission approval is not supported")
+	// The collector's NO-CONSENT-HANDLE fallback. It is reached only when the
+	// turn has no consent core at all (a bare attempt), which is the one case
+	// the old auto-approve existed for — so it approves, as its name says, and
+	// never silently: the ordinary path answers through ReplyPermissionDecision.
+	return b.ReplyPermissionDecision(ctx, sessionID, permissionID, "once")
 }
 
-// ReplyPermissionDecision implements scheduler.ChatTurnClient. Same as
-// ReplyPermission: a native Ask turn has no permission channel, so there is
-// never an ask to answer. It is a documented no-op (returning nil) rather than
-// an error so a consent decision routed here for any reason cannot fail a turn.
+// ReplyPermissionDecision implements scheduler.ChatTurnClient: it delivers the
+// collector's decision to the adapter call that is BLOCKED on it.
+//
+// THIS IS THE NATIVE HALF OF THE PERMISSION CARD. It used to be a documented
+// no-op, and the reason given was that "a native Ask turn has no permission
+// channel". That was true when the native path executed no tools; it executes
+// bash and writes constantly now, so the comment had outlived the fact. The
+// channel is the wait a call parks on in awaitConsentPermission.
+//
+// A decision for an ask nobody is waiting on (the wait timed out, or the turn
+// already finalised) is NOT an error: it is simply moot, and the caller can do
+// nothing about it. Reporting one would poison a turn that is otherwise fine.
 func (b *NativeBridge) ReplyPermissionDecision(ctx context.Context, sessionID, permissionID, decision string) error {
+	b.permMu.Lock()
+	w := b.permWaits[permissionID]
+	b.permMu.Unlock()
+	if w == nil {
+		return nil
+	}
+	select {
+	case w.decision <- decision:
+	default:
+		// Buffered(1) and single-writer: a second decision for the same ask is
+		// dropped rather than blocking this caller on a full channel.
+	}
 	return nil
 }

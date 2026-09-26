@@ -91,6 +91,13 @@ type NativeBridge struct {
 	// drains into (set by Subscribe, fed by SendTurnMessage's drain
 	// goroutine). Guarded by mu.
 	chatBuses map[string]*chatBus
+	// permWaits holds the tool calls an Ask turn has PARKED on a consent
+	// decision, keyed by the ask id the collector answers with. Guarded by
+	// permMu. Empty for a worker execution: the consent wait lives in
+	// executeToolCalls, which only the Ask drain path calls.
+	permMu    sync.Mutex
+	permWaits map[string]*permWait
+	permSeq   int
 	// askTools is the injected Ask-time tool surface (askorchicon product
 	// tools, wired by the server via SetAskTools). Nil → the model answers
 	// from the system prompt's project context with no tool calls (the
@@ -137,6 +144,7 @@ func NewBridge(resolver ProviderResolver, projectDir string, log *slog.Logger) *
 		chatHistory: map[string][]Message{},
 		chatTurns:   map[string]context.CancelFunc{},
 		chatBuses:   map[string]*chatBus{},
+		permWaits:   map[string]*permWait{},
 	}
 }
 

@@ -273,14 +273,42 @@ func (s *blockingStream) Next(ctx context.Context) (Event, bool, error) {
 }
 func (s *blockingStream) Close() error { return nil }
 
-func TestChatTurnClientReplyPermissionErrors(t *testing.T) {
-	b := newChatBridge(t, &chatTestProvider{})
-	err := b.ReplyPermission(context.Background(), "s", "p")
-	if err == nil {
-		t.Fatal("ReplyPermission succeeded; want actionable text-only error")
+// TestChatTurnClientReplyPermissionReleasesAParkedCall replaces the assertion that
+// this used to make — that a native Ask turn is "text-only" and permission
+// approval is unsupported. That was true when the native path executed no tools;
+// it runs bash and writes constantly now, so the old test asserted that a
+// FEATURE WAS ABSENT, and it had to change with the feature rather than after it.
+//
+// What matters now is the contract: a decision releases the call that is parked
+// on it, and a decision for an ask nobody is waiting on is inert rather than an
+// error.
+func TestChatTurnClientReplyPermissionReleasesAParkedCall(t *testing.T) {
+	t.Setenv("ORCHICON_ASK_CONSENT_WAIT", "10m")
+	b, bus, cancel := newConsentTestBridge(t)
+	defer cancel()
+
+	done := make(chan string, 1)
+	go func() {
+		done <- b.awaitConsentPermission(context.Background(), bus,
+			ToolCall{ToolCallID: "tc-1", Name: "bash", ArgsJSON: `{"command":"ls"}`}, `{"command":"ls"}`)
+	}()
+	id := waitForAsk(t, b)
+
+	if err := b.ReplyPermission(context.Background(), "s", id); err != nil {
+		t.Fatalf("ReplyPermission returned %v; it must release the parked call", err)
 	}
-	if !strings.Contains(err.Error(), "text-only") {
-		t.Fatalf("ReplyPermission error %q does not explain the text-only limitation", err)
+	select {
+	case d := <-done:
+		if d != "once" {
+			t.Fatalf("decision = %q, want \"once\"", d)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("ReplyPermission did not release the parked call")
+	}
+
+	// A decision for an ask nobody is waiting on: inert, not an error.
+	if err := b.ReplyPermission(context.Background(), "s", "native-ask-nonexistent"); err != nil {
+		t.Fatalf("ReplyPermission for an unknown ask returned %v, want nil", err)
 	}
 }
 
