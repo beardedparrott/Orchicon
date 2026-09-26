@@ -453,6 +453,25 @@ type SessionEvent struct {
 	ArgsJSON   string
 	Output     string
 	IsError    bool
+	// --- Typed consent fields (Kind "permission") ---
+	//
+	// An adapter that can name the action it is asking about supplies it HERE,
+	// rather than shaping it into the property vocabulary the opencode adapter
+	// happens to emit (Detail: permission/title, metadata.filepath, patterns,
+	// toolInput). Same rule as the tool-result fields above: the shared contract
+	// describes the action, and no adapter has to speak another's dialect.
+	//
+	// Tool is the tool being gated; Command its shell line for an execution;
+	// Targets the paths a write/edit touches; InputJSON the call's argument JSON
+	// (the only detail an MCP-style ask has). Directory, when set, is the
+	// grant/deny key the ask means — it is otherwise derived from the targets.
+	// extractAskAction prefers these fields when Tool is set and falls back to
+	// the Detail map, so both transports stay supported.
+	Tool      string
+	Command   string
+	Targets   []string
+	InputJSON string
+	Directory string
 	// SessionID is the session the event belongs to. Adapters whose
 	// transport multiplexes sessions (e.g. a shared serve bus) set it so the
 	// drain loop can filter by the turn's current session id (which can

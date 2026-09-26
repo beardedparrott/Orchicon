@@ -26,6 +26,7 @@ package askorchicon
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -245,6 +246,39 @@ func detailStrings(m map[string]any, keys ...string) []string {
 //
 // Pure: no ctx, no db.
 func extractAskAction(evt scheduler.SessionEvent) askAction {
+	// TYPED CONSENT FIELDS FIRST (adapter-neutral).
+	//
+	// An adapter that can name the action directly — the native bridge knows the
+	// tool, its command and its argument JSON at the moment it is about to run it
+	// — must not have to shape them into opencode's property vocabulary. This is
+	// the same rule the typed tool_result fields follow, and it is what lets a
+	// second adapter raise a real ask without imitating the first.
+	//
+	// The Detail path below stays authoritative for opencode, which is the only
+	// adapter that emits it.
+	if evt.Tool != "" {
+		a := askAction{
+			Tool:    evt.Tool,
+			Command: evt.Command,
+			Targets: realTargets(evt.Targets),
+		}
+		if strings.TrimSpace(evt.InputJSON) != "" {
+			var in map[string]any
+			if err := json.Unmarshal([]byte(evt.InputJSON), &in); err == nil {
+				a.Input = in
+				// The arguments carry the target/command for a call whose own ask
+				// named neither (an MCP/host-suite tool), so they are the fallback
+				// rather than the override.
+				if len(a.Targets) == 0 {
+					a.Targets = toolInputTargets(in)
+				}
+				if a.Command == "" {
+					a.Command = toolInputCommand(in)
+				}
+			}
+		}
+		return a
+	}
 	d := evt.Detail
 	if d == nil {
 		return askAction{Key: ""}
