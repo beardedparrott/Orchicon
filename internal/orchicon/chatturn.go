@@ -614,14 +614,35 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 	var roundReply strings.Builder
 	var reasoning strings.Builder
 
-	// finishTurn emits the consolidated reply as ONE completed text part,
-	// then idle, and commits the working history. The collector builds the
-	// persisted reply ONLY from part/text events, so this single part is
-	// what lands in the DB.
-	finishTurn := func() {
+	// emitTurnParts publishes what the turn accumulated as COMPLETED parts. It is split out
+	// so the ABORT path can publish the same thing: an aborted turn has no idle (it did not
+	// complete) but its work is just as real, and discarding it was the other half of the
+	// data-loss bug — the collector's stall path aborts the session, this path returned
+	// without emitting anything, and the whole turn's text and reasoning went with it.
+	emitTurnParts := func() {
+		if r := strings.TrimSpace(reasoning.String()); r != "" {
+			bus.emit(scheduler.SessionEvent{Kind: "part", Type: "reasoning", Text: r})
+		}
 		if t := strings.TrimSpace(reply.String()); t != "" {
 			bus.emit(scheduler.SessionEvent{Kind: "part", Type: "text", Text: t})
 		}
+	}
+	// finishTurn emits the accumulated REASONING and then the consolidated reply, each as
+	// ONE completed part, then idle, and commits the working history. The collector builds
+	// the persisted record ONLY from part events, so these parts are what land in the DB.
+	//
+	// REASONING IS EMITTED AS A COMPLETED PART, exactly like text, and that symmetry is
+	// the fix rather than a style choice. It used to be streamed as DELTAS ONLY and never
+	// finalized, so it had no durable form at all: the collector's reasoning slice is built
+	// from parts, its live reasoning tail is RESET by every completed text part, and an
+	// aborted or stalled turn emits no part at all. The operator's report was exactly that
+	// — "anything you were currently typing (mostly in thought) goes away" — because the
+	// thinking existed only as deltas and deltas are not durable.
+	//
+	// REASONING FIRST: thinking precedes the answer, and the collector appends both to
+	// ordered slices, so the transcript reads in the order the model produced them.
+	finishTurn := func() {
+		emitTurnParts()
 		bus.emit(scheduler.SessionEvent{Kind: "idle"})
 		b.commitChatHistory(sessionID, history, working)
 	}
@@ -637,9 +658,27 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 		}
 		_ = stream.Close()
 		if aborted {
-			// Abort (D7): the turn was cancelled — finalize without
-			// committing. The collector's Stop path already cancelled its
-			// own context, so the turn finalizes cleanly.
+			// Abort (D7): the turn was cancelled — finalize without COMMITTING.
+			//
+			// WITHOUT COMMITTING, NOT WITHOUT PUBLISHING. This used to `return` bare, on the
+			// reasoning that the collector's own Stop path had already cancelled its context
+			// so nobody was listening. That is true for a user Stop and FALSE for the case
+			// that actually hurt: the STALL monitor aborts the session while the collector is
+			// still live, and the turn then finalized with empty text and empty reasoning
+			// while the operator had been watching both stream. Everything the round produced
+			// is still in hand here, so it is published as completed parts (no idle — this
+			// turn did not complete).
+			//
+			// Folding roundReply in first: drainOneRound accumulates the CURRENT round into
+			// it and the merge into reply happens below this check, so on abort the round's
+			// text exists only there.
+			if rt := roundReply.String(); rt != "" {
+				if reply.Len() > 0 {
+					reply.WriteString("\n\n")
+				}
+				reply.WriteString(rt)
+			}
+			emitTurnParts()
 			return
 		}
 		roundText := roundReply.String()

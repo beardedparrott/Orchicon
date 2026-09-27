@@ -797,3 +797,145 @@ func TestChatTurnClientNoWorkerBudgetImport(t *testing.T) {
 		}
 	}
 }
+
+// TestChatTurnClientEmitsReasoningAsACompletedPart is the adapter's half of the
+// reasoning-durability fix, and the operator's own diagnosis as a test: "You had found
+// an issue where reasoning was not reporting back like other message types."
+//
+// THE COLLECTOR PERSISTS PARTS, NOT DELTAS. Its durable reasoning slice is appended only by
+// a completed reasoning part, and its live reasoning tail is RESET by every completed text
+// part — so a reasoning channel that is only ever streamed as deltas has NO durable form at
+// all. It existed solely in the live mirror, which is why a turn that died mid-thought left
+// nothing behind: "anything you were currently typing (mostly in thought) goes away".
+//
+// This asserts the symmetry directly: the same accumulated reasoning the turn streamed as
+// deltas is also published as a COMPLETED part, and it arrives BEFORE the text part because
+// thinking precedes the answer and the collector appends both to ordered slices.
+func TestChatTurnClientEmitsReasoningAsACompletedPart(t *testing.T) {
+	prov := &chatTestProvider{events: []Event{
+		ReasoningDelta{Text: "weighing "},
+		ReasoningDelta{Text: "the options"},
+		TextDelta{Text: "Here is the answer."},
+		Finish{StopReason: StopStop},
+	}}
+	b := newChatBridge(t, prov)
+	ctx := tenant.WithID(context.Background(), "tnt_test")
+	sid, _ := b.CreateConversationSession(ctx, "conv-r1", "ask-orchicon:conv-r1")
+
+	bus, _ := b.Subscribe(ctx, "conv-r1")
+	if err := b.SendTurnMessage(ctx, "conv-r1", sid, "system", "orchicon/ollama-cloud/deepseek-v4-flash:0731", "hi"); err != nil {
+		t.Fatalf("SendTurnMessage: %v", err)
+	}
+	evts := drainBus(t, bus)
+
+	var reasoningPart, textPart string
+	var reasoningAt, textAt int
+	for i, e := range evts {
+		if e.Kind != "part" {
+			continue
+		}
+		switch e.Type {
+		case "reasoning":
+			reasoningPart, reasoningAt = e.Text, i
+		case "text":
+			textPart, textAt = e.Text, i
+		}
+	}
+	if reasoningPart == "" {
+		t.Fatalf("no completed reasoning part was emitted — reasoning has no durable form "+
+			"(events: %s)", describeEvents(evts))
+	}
+	if reasoningPart != "weighing the options" {
+		t.Errorf("reasoning part = %q, want the whole streamed reasoning", reasoningPart)
+	}
+	// Reasoning before text, because the collector appends both to ordered slices.
+	if textPart == "" {
+		t.Fatalf("no completed text part was emitted (events: %s)", describeEvents(evts))
+	}
+	if reasoningAt > textAt {
+		t.Errorf("the reasoning part arrived AFTER the text part (reasoning@%d, text@%d) — the "+
+			"transcript would read as if the answer preceded the thinking", reasoningAt, textAt)
+	}
+}
+
+// TestChatTurnClientAbortStillPublishesTheWork is the other half of the data-loss bug.
+//
+// The collector's STALL path aborts the serve session while the collector is still live, and
+// this path used to `return` bare on abort — publishing nothing. So a stalled turn finalized
+// with empty text and empty reasoning while the operator had watched both stream, and the
+// work was gone. An aborted turn must still hand over what it produced; it just must not
+// claim to have COMPLETED, which is what the idle event means.
+func TestChatTurnClientAbortStillPublishesTheWork(t *testing.T) {
+	// A stream that yields its events and then blocks until cancelled — the shape of a real
+	// turn interrupted mid-generation.
+	prov := &chatTestProvider{stream: &blockingAfterStream{events: []Event{
+		ReasoningDelta{Text: "half a thought"},
+		TextDelta{Text: "partial answer"},
+	}}}
+	b := newChatBridge(t, prov)
+	ctx := tenant.WithID(context.Background(), "tnt_test")
+	sid, _ := b.CreateConversationSession(ctx, "conv-r2", "ask-orchicon:conv-r2")
+
+	bus, _ := b.Subscribe(ctx, "conv-r2")
+	if err := b.SendTurnMessage(ctx, "conv-r2", sid, "system", "orchicon/ollama-cloud/deepseek-v4-flash:0731", "hi"); err != nil {
+		t.Fatalf("SendTurnMessage: %v", err)
+	}
+	// Let the deltas land, then abort mid-turn.
+	time.Sleep(150 * time.Millisecond)
+	if err := b.AbortConversationSession(ctx, sid); err != nil {
+		t.Fatalf("AbortConversationSession: %v", err)
+	}
+	evts := drainBus(t, bus)
+
+	var reasoningPart, textPart string
+	for _, e := range evts {
+		if e.Kind == "idle" {
+			t.Fatal("an aborted turn must not emit idle — it did not complete")
+		}
+		if e.Kind != "part" {
+			continue
+		}
+		switch e.Type {
+		case "reasoning":
+			reasoningPart = e.Text
+		case "text":
+			textPart = e.Text
+		}
+	}
+	if textPart == "" {
+		t.Errorf("an aborted turn published no text part — the answer the operator watched "+
+			"stream was discarded (events: %s)", describeEvents(evts))
+	}
+	if reasoningPart == "" {
+		t.Errorf("an aborted turn published no reasoning part — the thinking the operator "+
+			"watched stream was discarded (events: %s)", describeEvents(evts))
+	}
+}
+
+// blockingAfterStream yields a scripted sequence, then blocks until the context is
+// cancelled — a turn cut off mid-generation rather than one that ended.
+type blockingAfterStream struct {
+	events []Event
+	i      int
+}
+
+func (s *blockingAfterStream) Next(ctx context.Context) (Event, bool, error) {
+	if s.i < len(s.events) {
+		e := s.events[s.i]
+		s.i++
+		return e, true, nil
+	}
+	<-ctx.Done()
+	return nil, false, ctx.Err()
+}
+func (s *blockingAfterStream) Close() error { return nil }
+
+// describeEvents renders the event stream for a failure message, so a broken assertion
+// shows what actually arrived instead of only what was missing.
+func describeEvents(evts []scheduler.SessionEvent) string {
+	parts := make([]string, 0, len(evts))
+	for _, e := range evts {
+		parts = append(parts, e.Kind+"/"+e.Type)
+	}
+	return strings.Join(parts, ", ")
+}
