@@ -211,7 +211,19 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	// The guard in kit2 could not see it: it refuses while `editForm` is open (the INLINE form editor),
 	// and the workflow edit mode is this screen's own `flowEditing` flag. So the screen answers for
 	// itself, which is the only place that knows.
-	m.Base.SetDetailPaintOwner(func() bool { return m.flowEditing })
+	// THE CONDITION IS "IS THE FLOW WHAT THIS PANE IS SHOWING?", not "is the operator editing?".
+	//
+	// My first attempt asked `flowEditing`, and it was too narrow — which is why the flashing survived
+	// a rebuild. Remembering a workflow points the step editor at it and paints the flow (see
+	// onDetailWorkflow → enterStepEditor), and that happens WITHOUT the edit mode being entered, so
+	// the guard never fired. The edit mode is a separate flag for "these keys now edit steps".
+	//
+	// SCOPED TO THE WORKFLOWS SOURCE, because stepWorkflowID is never cleared: on its own it would
+	// disable the rolling refresh for the rest of the session the moment any workflow had been
+	// viewed, including on the Workers and Executions panes.
+	m.Base.SetDetailPaintOwner(func() bool {
+		return m.stepWorkflowID != "" && m.Base.ActiveSourceName() == "workflows"
+	})
 	m.Base.SetSourceEmpty("workflows", "no workflows yet — define one to run, or to bind a recurring item to")
 	m.bar = kit2.NewActionBar()
 	m.workerModel = map[string]string{}

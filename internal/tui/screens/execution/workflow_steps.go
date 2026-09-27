@@ -1009,6 +1009,22 @@ func validateStepGraph(steps []flowStep) error {
 // enterStepEditor points the editor at the draft the pane is already showing and
 // seeds the cursor on the first step.
 func (m *Model) enterStepEditor(workflowID, name string, v *apiv1.WorkflowVersion) tea.Cmd {
+	// ALREADY POINTED AT THIS EXACT WORKFLOW AND VERSION: do nothing.
+	//
+	// IT IS CALLED FROM THE DETAIL-LANDING CHAIN (onDetailWorkflow → workflowEditorMsg), which runs
+	// whenever a workflow's detail loads — including on every background refresh. Without this it
+	// re-seeded the cursor on EVERY tick, so the operator's selected step was jerked back to the first
+	// one every five seconds, and the pane was repainted each time as well.
+	//
+	// The version id is part of the comparison because a published version is immutable while a DRAFT
+	// is not: a changed draft is a changed version id, and that DOES need the new steps.
+	versionID := ""
+	if v != nil {
+		versionID = v.GetId()
+	}
+	if m.stepWorkflowID == workflowID && m.stepVersionID == versionID && versionID != "" {
+		return nil
+	}
 	m.stepWorkflowID, m.stepWorkflowName = workflowID, name
 	m.stepVersionID, m.stepSteps = "", ""
 	if v != nil {
