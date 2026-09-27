@@ -133,10 +133,13 @@ type Base struct {
 
 	width, height int
 	detailFn      DetailFn
-	onDetail      func(src, id string) tea.Cmd
-	detailID      string
-	shell         any
-	statuses      []StatusMsg
+	// detailPaintOwner answers "is the screen painting its own detail?" — see
+	// SetDetailPaintOwner. nil means nobody does.
+	detailPaintOwner func() bool
+	onDetail         func(src, id string) tea.Cmd
+	detailID         string
+	shell            any
+	statuses         []StatusMsg
 
 	// noAutoDetail suppresses the post-fetch auto-detail (the Ask screen's
 	// hero stays until the operator picks an item or sends the first
@@ -411,7 +414,20 @@ func (b *Base) Refresh(source string) tea.Cmd {
 // The cursor survives by construction — Table.SetItems re-seats it BY ID — so when nothing has
 // changed the reload is invisible, which is what makes a 5s window tolerable to read against.
 func (b *Base) RefreshView() tea.Cmd {
-	if b.editingDetail() || b.Open != nil {
+	// A SCREEN THAT PAINTS ITS OWN DETAIL OWNS THE REFRESH. This default re-requests the READ-ONLY
+	// detail for the selected row — and a screen with its own detail renderer (the workflow FLOW
+	// editor) would have that renderer OVERWRITTEN by it, then repaint itself over the top: two
+	// different bodies alternating, which the operator sees as the pane flipping between two screens
+	// every few seconds ("It seems to be going back and forth between two screens very quickly").
+	//
+	// The ownership question is the SCREEN's to answer, because only it knows whether what it is
+	// painting came from a fetch this hook would clobber. kit2 cannot tell: `editingDetail()` covers
+	// the INLINE FORM editor, and the workflow edit mode is the execution screen's own flag.
+	//
+	// THE ENTIRE REFRESH IS SKIPPED, not just the detail half: re-loading the source underneath would
+	// re-seat the list and the cursor while the operator is editing steps, which is the same
+	// mid-edit interference the editor guard below already refuses.
+	if b.ownsDetailPaint() || b.editingDetail() || b.Open != nil {
 		return nil
 	}
 	cmds := []tea.Cmd{}
@@ -429,6 +445,21 @@ func (b *Base) RefreshView() tea.Cmd {
 // editingDetail reports whether the inline detail editor is open. (EditingDetail is the exported
 // form; this is the internal read the refresh guard needs.)
 func (b *Base) editingDetail() bool { return b.editForm != nil }
+
+// SetDetailPaintOwner installs the predicate that answers "is the screen painting its own detail?".
+//
+// A PREDICATE RATHER THAN A BACK-REFERENCE TO THE SCREEN, because Base must not know what a screen
+// is: the whole kit2 design is that screens compose Base, and a Base holding a pointer back into its
+// owner would make the two mutually referential for one boolean. The screen installs its own
+// question and Base only asks it.
+//
+// nil means "nobody owns the paint", which is the behaviour every screen had before this existed.
+func (b *Base) SetDetailPaintOwner(fn func() bool) { b.detailPaintOwner = fn }
+
+// ownsDetailPaint reports whether the screen is currently painting its own detail pane.
+func (b *Base) ownsDetailPaint() bool {
+	return b.detailPaintOwner != nil && b.detailPaintOwner()
+}
 
 // loadSource loads a source from the top, fetching the WHOLE set.
 //

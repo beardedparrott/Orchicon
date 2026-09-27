@@ -142,3 +142,57 @@ func TestABackgroundRefreshDoesNotChangeThePanesHeight(t *testing.T) {
 		t.Errorf("the refresh LANDING changed the render (\n%s\n)", after)
 	}
 }
+
+// TestAScreenPaintingItsOwnDetailIsNotRefreshedOver — the operator's "it seems to be going back and
+// forth between two screens very quickly", as a test.
+//
+// The rolling window runs every five seconds (refresh.go) and kit2's default RefreshView re-requests
+// the READ-ONLY detail for the selected row. A screen with its OWN detail renderer — the workflow
+// FLOW editor — was therefore overwritten by that fetch and then repainted itself over the top: two
+// bodies alternating, once per tick, for ever. The operator captured both forms.
+//
+// THE GUARD COULD NOT SEE IT. It refuses while `editForm` is open, which covers the INLINE form
+// editor; the workflow edit mode is the SCREEN's own flag, and kit2 has no way to know it exists. So
+// the screen answers the question instead, and this pins both halves: the default still refreshes,
+// and an owning screen is left alone.
+func TestAScreenPaintingItsOwnDetailIsNotRefreshedOver(t *testing.T) {
+	b := &Base{}
+	b.SetSize(120, 40)
+	b.AddSource("workflows", "Workflows", func(ctx context.Context, pageToken string) ([]Item, string, error) {
+		return []Item{{ID: "wf-1", Title: "SDLC (Non-human)"}}, "", nil
+	})
+	b.SetDetail(func(ctx context.Context, src, id string) (string, []Field, string, error) {
+		return "Workflow: SDLC (Non-human)", nil, "FLOW\nVERSIONS", nil
+	})
+	// Land the rows, then settle the auto-detail the landing asks for — a real screen does the same,
+	// and it keeps the fixture from holding a pending command.
+	if handled, cmd := b.Update(b.loadSource(0, "")()); !handled {
+		t.Fatal("fixture: the rows did not land")
+	} else if cmd != nil {
+		b.Update(cmd())
+	}
+	if !strings.Contains(b.View(), "SDLC (Non-human)") {
+		t.Fatalf("fixture: the row is not on screen:\n%s", b.View())
+	}
+
+	// WITH NO OWNER (every other screen) the refresh still runs — the fix must not disable it.
+	if cmd := b.RefreshView(); cmd == nil {
+		t.Fatal("a screen with no detail owner must still refresh")
+	}
+
+	// WITH AN OWNER, the whole refresh is refused: re-loading the source would also re-seat the list
+	// and the cursor underneath an operator who is editing steps.
+	owned := true
+	b.SetDetailPaintOwner(func() bool { return owned })
+	if cmd := b.RefreshView(); cmd != nil {
+		t.Fatal("a screen painting its own detail must not be refreshed over — the pane would " +
+			"alternate between the two bodies on every tick")
+	}
+
+	// And it resumes the moment the screen stops owning the paint (the editor closed), so the
+	// refusal is a mode and not a permanent mute.
+	owned = false
+	if cmd := b.RefreshView(); cmd == nil {
+		t.Fatal("the refresh must resume once the screen stops painting its own detail")
+	}
+}
