@@ -402,15 +402,16 @@ func transparentCopy(base *Theme, name string) *Theme {
 // the fallback, so changing it changes how orch looks out of the box and nothing at all for an
 // operator who has already chosen a palette.
 //
-// SLATE, at the operator's request: "I think Slate is pretty sleek and professional. Let's make that the
-// default theme over ember." It is the `slate` palette from theme_palettes.go — the low-saturation grey-blue
-// family — and NOT "slate-light" beside it, which is the same family in light mode. Lookup matches the name
-// exactly, so a typo here would fall back to the base dark palette without an error; theme_test.go asserts
-// this name resolves, and that it is a DARK palette.
+// TEAL, at the operator's request: "I would also like to make teal the default theme in the TUI now."
+// It is the `teal` palette from theme_palettes.go and NOT "teal-light" beside it, which is the same family
+// in light mode. Lookup matches the name exactly, so a typo here would fall back to the base dark palette
+// without an error; theme_test.go asserts this name resolves, and that it is a DARK palette.
 //
-// (It previously named `forest`, also at the operator's request; this supersedes that choice. `forest` is
-// unchanged and still selectable — only the out-of-the-box default moved.)
-const DefaultName = "slate"
+// (It previously named `slate`, and before that `forest`, both at the operator's request. Neither is
+// changed and both remain selectable — only the out-of-the-box default moved. This one is also chosen to
+// MATCH THE GUI, whose default dark slot now names the teal family too, so a fresh TUI and a fresh GUI
+// open in the same colours rather than two different ones.)
+const DefaultName = "teal"
 
 // Resolved active colors, re-pointed by Use. Render paths read these via
 // the styles; direct color reads stay possible for layout math.
