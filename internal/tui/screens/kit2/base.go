@@ -1560,6 +1560,23 @@ func (b *Base) loadDetail() tea.Cmd {
 	if id == "" {
 		return nil
 	}
+	// A CATEGORY ROW IS NOT AN ITEM, so there is nothing to load for it. Its id is a SYNTHETIC
+	// sentinel that starts with a NUL byte (screenkit.groupRowIDPrefix), which is exactly why it
+	// can never collide with a real ULID — and exactly why it must never be sent to the server.
+	//
+	// Without this guard, landing the cursor on a folder asked the server about the sentinel. For
+	// most sources the detail function ignores an unknown id; for WORKFLOWS it reached Postgres,
+	// which rejects a NUL in a parameter outright:
+	//
+	//	db: get workflow: ERROR: invalid byte sequence for encoding "UTF8": 0x00 (SQLSTATE 22021)
+	//
+	// so the Workflows pane rendered "couldn't load this item" the moment it opened, on the first
+	// row, before the operator had selected anything. The guard belongs HERE rather than in the
+	// workflow detail function, because a synthesised row is a property of the LIST and every
+	// grouped source has the same folder rows.
+	if screenkit.IsGroupRow(id) {
+		return nil
+	}
 	src := s.name
 	// An explicit load ends any jump's claim on this pane: the operator (or the UI on their
 	// behalf — a create focusing its new row) is choosing what to look at, and that choice wins
