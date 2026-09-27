@@ -1009,31 +1009,40 @@ func validateStepGraph(steps []flowStep) error {
 // enterStepEditor points the editor at the draft the pane is already showing and
 // seeds the cursor on the first step.
 func (m *Model) enterStepEditor(workflowID, name string, v *apiv1.WorkflowVersion) tea.Cmd {
-	// ALREADY POINTED AT THIS EXACT WORKFLOW AND VERSION: do nothing.
+	// IT REMEMBERS, AND PAINTS ONLY WHEN THE OPERATOR IS EDITING.
 	//
-	// IT IS CALLED FROM THE DETAIL-LANDING CHAIN (onDetailWorkflow → workflowEditorMsg), which runs
-	// whenever a workflow's detail loads — including on every background refresh. Without this it
-	// re-seeded the cursor on EVERY tick, so the operator's selected step was jerked back to the first
-	// one every five seconds, and the pane was repainted each time as well.
+	// It is called from the DETAIL-LANDING chain (onDetailWorkflow → workflowEditorMsg), which runs
+	// whenever a workflow's detail loads: on every selection, and on every background refresh. Painting
+	// the flow unconditionally meant the pane's content was written TWICE per landing by two renderers,
+	// so the operator saw whichever landed last — their "sometimes it shows the screen with no versions
+	// and sometimes it shows the screens with versions".
 	//
-	// The version id is part of the comparison because a published version is immutable while a DRAFT
-	// is not: a changed draft is a changed version id, and that DOES need the new steps.
+	// NOT EDITING: this is bookkeeping. The read-only detail (FLOW + VERSIONS) is what the pane shows,
+	// and it stays there — which is what keeps the version list visible underneath the flow.
+	// EDITING: the flow IS the surface, so the repaint is required.
+	//
+	// AND THE CURSOR IS SEEDED ONLY WHEN THE WORKFLOW CHANGES, so walking down the list does not reset
+	// a chosen step — the same class of defect as the per-tick reset, one level down.
 	versionID := ""
 	if v != nil {
 		versionID = v.GetId()
 	}
-	if m.stepWorkflowID == workflowID && m.stepVersionID == versionID && versionID != "" {
-		return nil
-	}
+	changed := m.stepWorkflowID != workflowID || m.stepVersionID != versionID
+
 	m.stepWorkflowID, m.stepWorkflowName = workflowID, name
 	m.stepVersionID, m.stepSteps = "", ""
 	if v != nil {
 		m.stepVersionID, m.stepSteps = v.GetId(), v.GetSteps()
 	}
-	steps := m.flowStepsOf()
-	m.stepSel = ""
-	if len(steps) > 0 {
-		m.stepSel = steps[0].ID
+	if changed {
+		steps := m.flowStepsOf()
+		m.stepSel = ""
+		if len(steps) > 0 {
+			m.stepSel = steps[0].ID
+		}
+	}
+	if !m.flowEditing {
+		return nil
 	}
 	return m.paintFlow()
 }

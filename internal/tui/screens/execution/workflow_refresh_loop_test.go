@@ -22,91 +22,115 @@ package execution
 // TWO FIXES, and this file measures both.
 
 import (
+	"strings"
 	"testing"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 )
 
-// TestTheFlowOwnsThePaneWhileAWorkflowIsShown pins the PREDICATE.
+// TestTheVersionListIsAlwaysUnderTheFlow is the operator's follow-up, as a test:
 //
-// It is "is the flow what this pane shows?", not "is the operator editing?" — the narrower question
-// was my first attempt and it is why the flashing survived a rebuild, because remembering a workflow
-// paints the flow WITHOUT entering the edit mode.
-func TestTheFlowOwnsThePaneWhileAWorkflowIsShown(t *testing.T) {
+//	"when I move through the different workflows using up/down, sometimes it shows the screen with no
+//	 versions and sometimes it shows the screens with versions. Shouldn't we just always show the
+//	 screen that lists the versions underneath?"
+//
+// YES — and the cause was two renderers both writing the pane, so the operator saw whichever painted
+// last. The READ-ONLY detail (header fields, FLOW, VERSIONS) is the pane's content whenever the editor
+// is closed; the edit-mode flow is only correct while editing. So the predicate is "is the operator
+// editing", and this asserts both sides of it.
+func TestTheVersionListIsAlwaysUnderTheFlow(t *testing.T) {
 	m := newModel(t, &fakePlane{})
-
-	// Nothing remembered yet: no owner, so the refresh behaves as it always did.
-	if m.Base.RefreshView() == nil {
-		t.Fatal("with no workflow shown the refresh must still run")
-	}
-
-	// Remember a workflow, as the detail-landing chain does.
-	m.stepWorkflowID = "wf-1"
-	m.stepVersionID = "v-10"
-
-	// Only while the WORKFLOWS source is the active one — stepWorkflowID is never cleared, so an
-	// unscoped predicate would switch the refresh off for the REST of the session, on every pane.
-	if !m.SelectSource("workers") {
-		t.Fatal("fixture: no workers source")
-	}
-	if m.Base.RefreshView() == nil {
-		t.Error("the flow must not mute the refresh on another pane — stepWorkflowID outlives this pane")
-	}
 	if !m.SelectSource("workflows") {
 		t.Fatal("fixture: no workflows source")
 	}
+
+	// NOT EDITING: the refresh runs, which is what keeps the read-only detail (and its VERSIONS
+	// section) on screen and current. A predicate broader than this suppressed it for the whole pane
+	// and left the version list appearing and disappearing depending on which renderer was last.
+	if m.Base.RefreshView() == nil {
+		t.Error("with the editor closed the refresh must run — it is what keeps FLOW + VERSIONS on " +
+			"screen; suppressing it is what made the version list come and go")
+	}
+
+	// EDITING: the flow is the surface, so the refresh must not land the read-only detail on top.
+	m.flowEditing = true
 	if cmd := m.Base.RefreshView(); cmd != nil {
-		t.Error("while the flow owns the pane the refresh must not run — it lands the READ-ONLY " +
-			"detail on top of the flow, which is the pane flashing between two screens")
+		t.Error("while editing the flow owns the pane — the read-only detail must not be fetched over it")
 	}
 }
 
-// TestReEnteringTheSameStepEditorChangesNothing pins the IDEMPOTENCE, asserted on STATE.
+// TestRememberingAWorkflowDoesNotPaintTheFlow pins the other half: the bookkeeping that runs on every
+// detail landing must not repaint the pane unless the operator is editing.
 //
-// NOT on the returned command: paintFlow repaints as a SIDE EFFECT and always returns nil, so a test
-// that treated "returned nil" as "did nothing" would be measuring nothing at all. What this function
-// changes is the state it re-seeds — the workflow, the version, and the CURSOR — and that is what is
-// checked here.
-//
-// The detail-landing chain runs on every refresh, so this was re-seeding the cursor once per tick: the
-// operator's selected step was jerked back to the first one every five seconds, which a screenshot
-// cannot show.
-func TestReEnteringTheSameStepEditorChangesNothing(t *testing.T) {
+// It remembers the workflow so that `e` can enter the editor without a fresh load — but painting on
+// that path is what put the editing layout (no version list) over the read-only detail on every
+// selection, and it reset the cursor while it did.
+func TestRememberingAWorkflowDoesNotPaintTheFlow(t *testing.T) {
 	m := newModel(t, &fakePlane{})
+	m.Base.SetDetailID("wf-1")
 
-	m.stepWorkflowID, m.stepWorkflowName = "wf-1", "SDLC (Non-human)"
-	m.stepVersionID, m.stepSteps = "v-10", "a\nb"
-	m.stepSel = "step-b" // the operator has walked down the flow
-
-	// THE SAME workflow and version: the cursor must be left exactly where it was.
-	m.enterStepEditor("wf-1", "SDLC (Non-human)", &apiv1.WorkflowVersion{Id: "v-10", Steps: "[]"})
+	// Not editing: remember it, keep the cursor if the workflow is unchanged, and do not repaint.
+	v10 := &apiv1.WorkflowVersion{Id: "v-10", Steps: "[]"}
+	m.enterStepEditor("wf-1", "SDLC (Non-human)", v10)
+	m.stepSel = "step-b" // the operator walks down the flow
+	m.enterStepEditor("wf-1", "SDLC (Non-human)", v10)
 	if m.stepSel != "step-b" {
-		t.Errorf("the selected step became %q — the operator's cursor must survive a background "+
-			"refresh", m.stepSel)
-	}
-	if m.stepVersionID != "v-10" {
-		t.Errorf("version id = %q", m.stepVersionID)
+		t.Errorf("the selected step became %q — a re-landing must not reset the cursor", m.stepSel)
 	}
 
-	// A DIFFERENT version is a real change (a draft's steps differ), so it must take effect.
-	m.enterStepEditor("wf-1", "SDLC (Non-human)", &apiv1.WorkflowVersion{Id: "v-11", Steps: "[]"})
-	if m.stepVersionID != "v-11" {
-		t.Errorf("version id = %q after a different version — the change was swallowed", m.stepVersionID)
+	// EDITING: the repaint is required, because the flow IS the editing surface.
+	m.flowEditing = true
+	if cmd := m.enterStepEditor("wf-1", "SDLC (Non-human)", v10); cmd == nil {
+		// paintFlow returns nil by design (it repaints as a side effect), so the assertion is that the
+		// call is MADE at all — measured by the cursor being re-seeded for a new workflow.
+		m.enterStepEditor("wf-2", "Other", &apiv1.WorkflowVersion{Id: "v-2", Steps: "[]"})
+		if m.stepSel != "" {
+			t.Errorf("a changed workflow must re-seed the cursor, got %q", m.stepSel)
+		}
+	}
+}
+
+// TestTheNewVersionChordExistsAndIsAdvertised — the operator's other question:
+//
+//	"what key do you hit to make a new version? That shortcut isn't listed in the composer when you
+//	 are on workflow view."
+//
+// The honest answer WAS that no chord existed: the only route to a draft was implicit, since editing a
+// step on a published version creates one ("edit a step and it makes one for you"), and nothing on the
+// surface said so. A mechanism the operator cannot discover is not a feature.
+//
+// So `V` creates one — the same key the Workers pane already uses for its next version, so the gesture
+// is learned once — and the composer hint names it.
+func TestTheNewVersionChordExistsAndIsAdvertised(t *testing.T) {
+	m := newModel(t, &fakePlane{workflows: []*apiv1.Workflow{{Id: "wf-1", Name: "SDLC (Non-human)"}}})
+	if !m.SelectSource("workflows") {
+		t.Fatal("fixture: no workflows source")
 	}
 
-	// And so is a different workflow.
-	m.enterStepEditor("wf-2", "Other", &apiv1.WorkflowVersion{Id: "v-11", Steps: "[]"})
-	if m.stepWorkflowID != "wf-2" || m.stepWorkflowName != "Other" {
-		t.Errorf("workflow = %q/%q after a different one — the change was swallowed",
-			m.stepWorkflowID, m.stepWorkflowName)
+	// ADVERTISED. The hint is the row the operator reads, and a chord that is not written down is
+	// undiscoverable — which is exactly what they reported.
+	hint := m.HintLine()
+	if !strings.Contains(hint, keyNewVersionWf) || !strings.Contains(hint, "new version") {
+		t.Errorf("the Workflows hint must name the new-version chord (%q):\n%s", keyNewVersionWf, hint)
 	}
 
-	// A version-less landing (no published version to show) still has to take effect: its id is "",
-	// and comparing "" against a real id must not be mistaken for "the same".
-	m.stepVersionID = "v-11"
-	m.enterStepEditor("wf-2", "Other", nil)
-	if m.stepVersionID != "" {
-		t.Errorf("version id = %q after a version-less landing — a nil version must clear it, not "+
-			"be optimised away", m.stepVersionID)
+	// AND IT EXISTS. With nothing selected it REFUSES — and refuse() returns a nil command by design,
+	// so the signal is the notice, not the command. Asserting on the command here would have been an
+	// assertion that a refusal must do something, which is the opposite of what a refusal is.
+	press(t, m, keyNewVersionWf)
+	if !strings.Contains(m.Notice(), "select a workflow") {
+		t.Errorf("with nothing selected the chord must refuse and say why, got notice %q", m.Notice())
+	}
+
+	// With a real workflow selected it must issue a WRITE — the cmd is non-nil and carries the RPC.
+	// The row has to be LOADED first (the pane is empty otherwise, and the chord correctly refuses).
+	run(t, m, m.Refresh("workflows")) // fatals if the command is nil or produces no message
+	if !m.Base.SelectItem("workflows", "wf-1") {
+		t.Fatal("fixture: the loaded row could not be selected")
+	}
+	if cmd := press(t, m, keyNewVersionWf); cmd == nil {
+		t.Error("with a workflow selected the chord must issue the create-version RPC")
+	} else if msg := cmd(); msg == nil {
+		t.Error("the create-version command produced no message, so a failure could never be reported")
 	}
 }

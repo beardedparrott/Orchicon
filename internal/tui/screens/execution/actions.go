@@ -114,6 +114,16 @@ const (
 	keyNewWorkflow  = "n"
 	keyEditWorkflow = "E"
 	keyPublishWf    = "p"
+	// keyNewVersionWf creates the workflow's NEXT version — a DRAFT seeded from the newest, which is
+	// what editing a step would create anyway once the target stopped being a draft.
+	//
+	// THE OPERATOR ASKED FOR THIS CHORD: "what key do you hit to make a new version? That shortcut
+	// isn't listed in the composer when you are on workflow view." The honest answer was that there
+	// was no chord at all — the only route was implicit (`rpcUpdateSteps` creates a draft when the
+	// target is published, so "edit a step and it makes one for you"), which is a mechanism nobody can
+	// discover from the surface. `V` is the same key the Workers pane already uses for exactly this
+	// (keyEditVersion), so the gesture is learned once.
+	keyNewVersionWf = "V"
 	keyDeprecateWf  = "u"
 	// Delete is keyDelete — ONE chord for both panes (see its declaration).
 	// WORKFLOW EDIT MODE. `e` opens it from the Workflows pane; inside it the step
@@ -564,8 +574,7 @@ func (m *Model) handleFlowKeys(kstr string) (tea.Cmd, bool) {
 		}
 		return m.beginWorkflowOp(it.ID, opEditHeader), true
 	case keyFlowExit:
-		m.endFlowEdit()
-		return nil, true
+		return m.endFlowEdit(), true
 	}
 	return nil, false
 }
@@ -588,14 +597,48 @@ func (m *Model) beginFlowEdit() tea.Cmd {
 	return m.paintFlow()
 }
 
+// createWorkflowVersion creates the workflow's next VERSION as a draft, then re-reads the detail so
+// its steps and the VERSIONS trail reflect it.
+//
+// THE CHORD THE OPERATOR ASKED FOR: "what key do you hit to make a new version? That shortcut isn't
+// listed in the composer when you are on workflow view." There was no chord — the only way to get a
+// draft was implicit (`rpcUpdateSteps` creates one when the target is published, i.e. "edit a step and
+// it makes one for you"), which is a mechanism nothing on the surface could tell them about.
+//
+// A DRAFT IS ADDITIVE AND REVERSIBLE, which is why this does not confirm: published versions are
+// immutable and a draft is discarded or superseded, so there is nothing here to gate. The notice says
+// what happened, and the reloaded pane shows the new version in the trail.
+func (m *Model) createWorkflowVersion(id string) tea.Cmd {
+	create := m.rpcCreateWorkflowVersion
+	if create == nil {
+		return m.refuse("no workflow client")
+	}
+	m.notice = "creating a new version of " + id + "…"
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if err := create(ctx, id); err != nil {
+			return mutate.Result{Name: "new workflow version", Source: srcWorkflows, Err: err}
+		}
+		return mutate.Result{Name: "new workflow version", Source: srcWorkflows}
+	}
+}
+
 // endFlowEdit leaves the mode and reports it.
-func (m *Model) endFlowEdit() {
+func (m *Model) endFlowEdit() tea.Cmd {
 	if !m.flowEditing {
-		return
+		return nil
 	}
 	m.flowEditing = false
 	m.notice = "finished editing " + m.stepWorkflowName
-	m.paintFlow()
+	// THE PANE GOES BACK TO THE READ-ONLY DETAIL, not to the editor's own render. Repainting the flow
+	// here left the pane showing the editing layout with NO VERSION LIST — the state the operator kept
+	// landing in — because nothing else would paint over it until the next selection. Re-requesting the
+	// detail restores FLOW + VERSIONS, and it also picks up the steps just saved.
+	if id := m.Base.DetailID(); id != "" {
+		return m.Base.RequestDetail(srcWorkflows, id)
+	}
+	return nil
 }
 
 // confirmRemoveStep gates a step removal behind the confirm dialog (it rewires the
@@ -736,6 +779,24 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 				op = opPublish
 			}
 			return m.beginWorkflowOp(it.ID, op), true
+		case keyNewVersionWf:
+			// A CATEGORY ROW IS NOT A WORKFLOW, and there is nothing to version.
+			it, ok := m.ActiveItem()
+			if !ok {
+				return m.refuse("select a workflow first"), true
+			}
+			if screenkit.IsGroupRow(it.ID) {
+				return m.refuse("that is a category row — pick a workflow inside"), true
+			}
+			// NO FORM AND NO OP-CODES: creating a version is ONE RPC that produces a DRAFT seeded
+			// from the newest, which is a reversible, additive act — so it neither needs the
+			// load-then-open machinery the header/publish forms use, nor a confirm step.
+			//
+			// It is NOT routed through opNewVersion, which is a WORKER op meaning "create the next
+			// version AND PUBLISH it". Reusing it here would have looked wired and done nothing:
+			// openWorkflowOpForm switches on opEditHeader and opPublish only, so the message would
+			// have fallen through the switch and returned nil.
+			return m.createWorkflowVersion(it.ID), true
 		case keyFlowEdit:
 			// `e` on the Workflows pane is the WORKFLOW EDIT MODE, not a step chord:
 			// "when someone hits 'e' to edit a workflow, they are going to think they are
@@ -1148,6 +1209,7 @@ func (m *Model) HintLine() string {
 				" esc: clear " + theme.DetailKey.Render("·") + " ↑↓: move · r: refresh")
 		}
 		return theme.HintText.Render("e: edit workflow (steps) " + theme.DetailKey.Render("·") +
+			" V: new version " + theme.DetailKey.Render("·") +
 			" n: new workflow " + theme.DetailKey.Render("·") +
 			" E: rename " + theme.DetailKey.Render("·") +
 			" p: publish " + theme.DetailKey.Render("·") + " u: deprecate " + theme.DetailKey.Render("·") +

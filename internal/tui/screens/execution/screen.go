@@ -211,19 +211,27 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	// The guard in kit2 could not see it: it refuses while `editForm` is open (the INLINE form editor),
 	// and the workflow edit mode is this screen's own `flowEditing` flag. So the screen answers for
 	// itself, which is the only place that knows.
-	// THE CONDITION IS "IS THE FLOW WHAT THIS PANE IS SHOWING?", not "is the operator editing?".
+	// THE FLOW OWNS THE PANE ONLY WHILE THE OPERATOR IS IN THE EDITOR.
 	//
-	// My first attempt asked `flowEditing`, and it was too narrow — which is why the flashing survived
-	// a rebuild. Remembering a workflow points the step editor at it and paints the flow (see
-	// onDetailWorkflow → enterStepEditor), and that happens WITHOUT the edit mode being entered, so
-	// the guard never fired. The edit mode is a separate flag for "these keys now edit steps".
+	// The pane has TWO renderers for a workflow and only one may be showing: the read-only detail
+	// (header fields, "FLOW v10 published · 9 steps", VERSIONS) and the edit-mode flow
+	// (workflow / steps / "editing …"). Which one is correct depends entirely on whether the operator
+	// is EDITING, and saying so is all this predicate has to do.
 	//
-	// SCOPED TO THE WORKFLOWS SOURCE, because stepWorkflowID is never cleared: on its own it would
-	// disable the rolling refresh for the rest of the session the moment any workflow had been
-	// viewed, including on the Workers and Executions panes.
-	m.Base.SetDetailPaintOwner(func() bool {
-		return m.stepWorkflowID != "" && m.Base.ActiveSourceName() == "workflows"
-	})
+	// MY LAST TWO ATTEMPTS BOTH GOT THIS WRONG, in opposite directions, and the operator's follow-up
+	// named the result: "sometimes it shows the screen with no versions and sometimes it shows the
+	// screens with versions. Shouldn't we just always show the screen that lists the versions
+	// underneath?" — yes. They were seeing whichever renderer painted LAST:
+	//
+	//   - `flowEditing` alone was right, and appeared not to work because the rebuilt binary was never
+	//     loaded by the running TUI (a restart is required, not just a rebuild);
+	//   - "a workflow is remembered" then suppressed the refresh for the WHOLE pane — so the list
+	//     stopped refreshing at all, and the flow still painted on every selection, which is why the
+	//     versions view came and went.
+	//
+	// The read-only detail stays the pane's content whenever the editor is closed, which is what makes
+	// the version list always visible underneath the flow.
+	m.Base.SetDetailPaintOwner(func() bool { return m.flowEditing })
 	m.Base.SetSourceEmpty("workflows", "no workflows yet — define one to run, or to bind a recurring item to")
 	m.bar = kit2.NewActionBar()
 	m.workerModel = map[string]string{}
