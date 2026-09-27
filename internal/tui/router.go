@@ -636,6 +636,18 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			// "type".
 			m.closeTabMenu()
 			m.setFocus(focusComposer)
+			// A DEFERRED PERMISSION CARD IS STILL OPEN, AND SAYING SO IS THE DIFFERENCE BETWEEN A
+			// DEFERRAL AND A LOSS.
+			//
+			// ctrl+g no longer decides the card (it used to deny — see the ask screen's
+			// DropKeyClaim), so it hands the keyboard to the composer and LEAVES THE CARD PENDING.
+			// That is what the operator asked for — they pressed it to type, including to reach
+			// /fullsend while a card was up — but a card they cannot see the state of is a card
+			// they have effectively lost. The notice names both facts: the card is still open,
+			// and a click decides it.
+			if m.chatStore != nil && m.chatConvID != "" && m.chatStore.hasPendingConsent(m.chatConvID) {
+				m.dock.SetNotice("permission card still open — click it to decide, or /fullsend to approve it and stop asking")
+			}
 			m.refreshStreamStatus()
 			return m, nil
 		}
