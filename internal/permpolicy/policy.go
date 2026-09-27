@@ -381,7 +381,12 @@ func (s *Store) Consult(target string) (Decision, error) {
 func (s *Store) Decide(target string, in Inputs) (Decision, error) {
 	p, err := s.Read()
 	if err != nil {
-		return Decision{}, err
+		// A LOAD failure is NOT a decision, and the distinction is made HERE so every
+		// caller gets it — not only the guard that happened to wrap it. A malformed
+		// file used to reach callers as a bare error, indistinguishable from a deny,
+		// which is how it came to be reported to the model as "the operator denied you"
+		// and how it locked the operator out of reading the file that was broken.
+		return Decision{}, &PolicyLoadError{Path: s.Path, Err: err}
 	}
 	// 1. DENY FIRST. The grant is not consulted above this line, which is
 	// what makes "a session grant cannot override a deny entry" true by
@@ -419,6 +424,44 @@ func (s *Store) Refusal(target, entry string) error {
 	return fmt.Errorf("permission policy: %s is denied by entry %q in %s — a session grant cannot override it", target, entry, s.Path)
 }
 
+// PolicyLoadError marks a policy file that could not be READ OR PARSED, as
+// opposed to a decision the policy successfully made.
+//
+// THE DISTINCTION MATTERS AND WAS MISSING. Both arrived as a bare error, so a
+// caller could not tell "this file is denied" (a decision — respect it) from "the
+// policy is broken" (no decision was made at all). That conflation is what made a
+// malformed file refuse EVERY action including reads, and what made the native
+// adapter report a parse failure to the model as "the operator denied you — do not
+// retry", which is both untrue and exactly the wrong advice after a config fix.
+//
+// PolicyLoadFailure is a method rather than a bare type so a caller can recognise it
+// through an interface without importing this package — internal/orchicon sits below
+// this one and must not be coupled to it.
+type PolicyLoadError struct {
+	Path string
+	Err  error
+}
+
+func (e *PolicyLoadError) Error() string {
+	if e == nil {
+		return "permission policy could not be loaded"
+	}
+	return fmt.Sprintf("permission policy %s: %v", e.Path, e.Err)
+}
+
+func (e *PolicyLoadError) Unwrap() error { return e.Err }
+
+// PolicyLoadFailure reports that no decision was reached because the file could not
+// be read. See PolicyLoadError.
+func (e *PolicyLoadError) PolicyLoadFailure() bool { return true }
+
+// IsPolicyLoadFailure reports whether err is a policy LOAD failure rather than a
+// decision. It reads the interface, so a caller in a lower layer needs no import.
+func IsPolicyLoadFailure(err error) bool {
+	var lf interface{ PolicyLoadFailure() bool }
+	return errors.As(err, &lf) && lf.PolicyLoadFailure()
+}
+
 // HostSuiteGuard is the shared accessor handed to the host tool suite
 // (the file/shell choke point). It consults the SAME store, so the suite
 // and the consent layer cannot disagree: a denied path is refused HERE, and
@@ -435,6 +478,8 @@ func (s *Store) HostSuiteGuard() func(paths []string) error {
 			}
 			d, err := s.Decide(target, Inputs{})
 			if err != nil {
+				// Already a PolicyLoadError from Decide; returned verbatim so the suite can
+				// recognise a load failure and let a READ through (see checkPolicy).
 				return err
 			}
 			if d.Verdict == VerdictDeny {

@@ -54,11 +54,12 @@ func TestConsentReadOnlyToolsNeverAsk(t *testing.T) {
 			t.Errorf("%q must NOT be gated — reads never ask", name)
 		}
 	}
-	// todowrite is a WRITE (to session state, not the filesystem) and is classified
-	// as mutating for completeness; it must therefore ask like any other mutating
-	// host tool rather than riding the product-tool exemption.
-	if !consentGatedTool("todowrite") {
-		t.Error("todowrite is classified mutating, so it must ask")
+	// todowrite writes SESSION state, not the filesystem, so it must NOT ask: a card for
+	// a change that cannot leave the session is how a gate becomes something to click
+	// through. (It was briefly classed as mutating "for completeness"; using the feature
+	// showed that was wrong.)
+	if consentGatedTool("todowrite") {
+		t.Error("todowrite must not ask — it cannot change anything outside the session")
 	}
 }
 

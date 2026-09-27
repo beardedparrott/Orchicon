@@ -1100,9 +1100,13 @@ func (b *NativeBridge) nextPermID() string {
 	return fmt.Sprintf("native-ask-%d", b.permSeq)
 }
 
-// ConsentReadOnlyTools are the host-suite tools that never ask: a read cannot
-// change anything, and prompting for one would train the operator to approve
-// without looking.
+// ConsentReadOnlyTools are the host-suite tools that NEVER ASK.
+//
+// The name is about consequence, not about reading: a read cannot change anything,
+// and todowrite writes SESSION STATE rather than the filesystem. Both cannot touch
+// anything a policy protects, so a card for either is a card for nothing in
+// particular — and a gate that asks for nothing in particular is one people learn to
+// click through without reading.
 //
 // EXPORTED, AND PAIRED WITH ConsentMutatingTools, so the split can be checked
 // against askorchicon's hostSuiteToolNames from a test. A new host-suite tool must
@@ -1110,12 +1114,18 @@ func (b *NativeBridge) nextPermID() string {
 // fail-closed across a package boundary instead of relying on whoever adds the
 // tool remembering.
 var ConsentReadOnlyTools = []string{
-	"read", "batch_read", "grep", "batch_grep", "list", "glob", "todoread",
+	"read", "batch_read", "grep", "batch_grep", "list", "glob", "todoread", "todowrite",
 }
 
 // ConsentMutatingTools are the host-suite tools that DO ask before they run.
+//
+// todowrite is NOT here, and that is a correction rather than an omission: it was
+// classified mutating "for completeness", and the first time the policy broke, every
+// todo update asked for approval. It writes SESSION STATE, not the filesystem — it
+// cannot touch anything a policy protects — so gating it adds a card for an action
+// that changes nothing outside the turn. Reads are free for the same reason.
 var ConsentMutatingTools = []string{
-	"write", "edit", "batch_write", "bash", "todowrite",
+	"write", "edit", "batch_write", "bash",
 }
 
 // consentGatedTool reports whether a native Ask tool call must be APPROVED before
