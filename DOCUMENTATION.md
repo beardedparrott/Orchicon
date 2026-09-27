@@ -1025,7 +1025,7 @@ MCP work item mutations honor the transactional outbox pattern (invariant #3): `
   hash** is stored — argon2id (RFC 9106 m=64 MiB/t=3/p=4) PHC strings by
   default, bcrypt (`$2a$`/`$2b$`/`$2y$`) accepted on verify via prefix
   dispatch; plaintext is never persisted, logged, or returned. This is a
-  deliberate, narrow amendment to the AGENTS.md "passwords are never stored
+  deliberate, narrow amendment to the project's "passwords are never stored
   by the control plane" standard: human passwords live **only inside the
   identity-provider boundary** (`internal/auth` + `internal/auth/op`), never
   in control-plane business logic — no service, RPC, or Ask Orchicon tool
@@ -1188,6 +1188,22 @@ A conversation is per-project, carries its own model, and is reachable from eith
 state is server-side, so a decision made in one client settles the card in the other — including a
 second tab, another device, or the same page after a reload (see *Card lifecycle* below).
 
+**The composer's hint line is the live key reference**: the TUI advertises the ACTIVE pane's chords on
+the row above the input (it changes as you move between panes), so it is the surface to trust for what
+a key does where you are. The chords below are the ones readers ask about, and the workflow lifecycle
+is listed in full because its keys are otherwise only discoverable from that line:
+
+| Where | Keys |
+|---|---|
+| **Anywhere** | `ctrl+g` focus the composer · `ctrl+d` diff rail · `enter` send · `alt+enter` newline · `/` command palette |
+| **Workflows pane** | `e` edit the flow (steps) · **`V` create the next version** (a draft) · `n` new workflow · `E` rename · `p` publish · `u` deprecate · `C` categorize · `ctrl+x` delete · `space` mark for bulk · `enter` flow view · `r` refresh |
+| **In the flow editor** | `↑`/`↓` move between steps · `enter` edit the selected step · `a` add a step · `x` remove a step · `E` rename the workflow · `esc` done |
+
+A version is created as a **draft**, which is additive and reversible — so `V` does not confirm, and
+neither does editing a step (editing one on a published version creates the draft for you, since
+published versions are immutable). `V` exists because that implicit route was the *only* one, and a
+mechanism nothing on the surface mentions is not a feature.
+
 ### The three modes
 
 `brainstorm`, `iteration`, and `quick work` are **enforced by the platform**, not suggested in a
@@ -1319,6 +1335,17 @@ its own. The extraction is deliberately modest, and honest about it:
 A path the command *computes* (`$(cat cfg)`, a variable, a script's own logic) is invisible to this,
 and the OS-level guard is what stands behind it.
 
+**A KNOWN GAP, stated rather than glossed: a `$HOME`-spelled path is not extracted.** Only a literal
+absolute path and a `~/…` path are recognised, so a command that names the same location with the
+`$HOME` (or `${HOME}`) spelling is **not judged at all** — measured rather than assumed:
+`echo x > ~/.config/app/conf` yields the absolute path, while the same command written with `$HOME`
+yields nothing. Expansions are skipped deliberately, because a `$` token is usually a shell variable
+or `$1` and reading one as a path is how invented targets came out of awk programs; that rule is what
+costs this spelling. The practical consequence is narrow but real: the shimmed binaries are still
+caught, and the `~/` spelling a person actually writes (as in a redirect to a credential file) is
+refused, but the same target spelled with `$HOME` in a redirect is judged by neither layer — a
+redirect is a shell operation, and the binary on the left of it is not one the guard shims.
+
 ### Enforcement, not just prompting
 
 The prompt is one layer; the same rules are enforced beneath it, so approving a card is not the only
@@ -1328,8 +1355,11 @@ thing standing between the model and the machine:
   Ask bash path, reads the same policy file, and honours the conversation's project, session grants,
   once-targets, and fullsend. It **fails closed**: a policy it cannot read refuses the command rather
   than running it unguarded.
-- **The deny list is checked first in both layers**, and both are spelling-agnostic about home
-  (`~/.ssh`, `$HOME/.ssh`, and the absolute path are the same target).
+- **The deny list is checked first in both layers**, and its MATCHER is spelling-agnostic about home:
+  once a path reaches it, `~/.ssh`, `$HOME/.ssh` and the absolute path are the same target. What is
+  NOT spelling-agnostic is the extraction that feeds it — see the `$HOME` gap under *What a shell
+  command's consent covers* above. That is why this sentence names the matcher rather than claiming
+  the coverage: read together they are accurate, and read apart the second one overstates.
 - The **never-allow class** is a separate case arm in the shim, so no environment value can reach it.
 
 ### Turn durability
