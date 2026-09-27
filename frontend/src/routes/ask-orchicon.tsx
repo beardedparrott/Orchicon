@@ -506,7 +506,13 @@ function AskOrchiconPage() {
   // never a silent nothing. On a transport error the card stays pending so the
   // operator can retry.
   const handleAskDecision = useCallback(
-    async (convId: string, askId: string, choice: PermissionChoice): Promise<void> => {
+    async (
+      convId: string,
+      askId: string,
+      choice: PermissionChoice,
+      /** answer is the operator's words for a QUESTION ask; empty for a permission. */
+      answer = "",
+    ): Promise<void> => {
       if (askInFlight[askId]) return;
       setAskInFlight((prev) => ({ ...prev, [askId]: true }));
       try {
@@ -514,6 +520,7 @@ function AskOrchiconPage() {
           conversationId: convId,
           askId,
           choice,
+          answer,
         });
         if (res.applied) {
           setStream(convId, (prev) => ({
@@ -1672,6 +1679,17 @@ function AskOrchiconPage() {
                         busy={!!askInFlight[item.ask.askId]}
                         onDecide={(choice) =>
                           void handleAskDecision(activeConvId!, item.ask.askId, choice)
+                        }
+                        // A QUESTION's answer is CONTENT (see ConsentAskCard): it becomes
+                        // the ask_user tool result and resumes the PAUSED turn, so it goes
+                        // as `answer` with no permission choice.
+                        onAnswer={(text) =>
+                          void handleAskDecision(
+                            activeConvId!,
+                            item.ask.askId,
+                            PermissionChoice.UNSPECIFIED,
+                            text,
+                          )
                         }
                         onEscape={() =>
                           void handleAskDecision(

@@ -349,6 +349,12 @@ export interface ConsentAskCardProps {
   /** busy disables the actions while the reply is in flight. */
   busy?: boolean;
   onDecide: (choice: PermissionChoice) => void;
+  /**
+   * onAnswer answers a CLARIFYING QUESTION ask (ask.question non-empty). The turn is
+   * PAUSED on it, so the answer becomes the ask_user tool result and the same turn
+   * resumes — it is not a new user message.
+   */
+  onAnswer?: (answer: string) => void;
   /** onEscape is wired by the caller to Deny — never to a dismissal. */
   onEscape?: () => void;
   className?: string;
@@ -366,11 +372,30 @@ export function ConsentAskCard({
   outcome = null,
   busy = false,
   onDecide,
+  onAnswer,
   onEscape,
   className,
 }: ConsentAskCardProps) {
   const settled = outcome !== null;
   const denyBelow = ask.denyEntriesBelow ?? [];
+
+  // A QUESTION IS NOT A CONSENT DECISION. With ask_user made BLOCKING, a clarifying
+  // question now arrives on the same wire message as a permission ask — it is what the
+  // clients render one card type from — so this component must tell them apart or it
+  // would put "Allow once / Allow for this session / Deny" in front of an operator who
+  // was asked WHICH BRANCH to clone. A non-empty question is the discriminator, and it
+  // reuses the transcript's tested question card rather than growing a second one.
+  if (!settled && (ask.question ?? "").trim() !== "") {
+    return (
+      <AskCard
+        className={className}
+        question={ask.question}
+        options={(ask.options ?? []).map((label) => ({ label }))}
+        allowOther={ask.allowOther}
+        onSelect={(label) => onAnswer?.(label)}
+      />
+    );
+  }
   // A SETTLED ask is a ONE-LINE RECORD, not a card. The card is for a decision
   // still to be made; once made it is history, and a full tinted block per past
   // grant buries the live turn under its own audit trail. This is what the TUI
