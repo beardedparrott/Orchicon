@@ -545,6 +545,11 @@ func commandPaths(cmd string) []string {
 		if t.quoted && !looksLikePath(tok) {
 			continue
 		}
+		// Rule 4: a token that is not a file to be guarded is not a consent target.
+		// See harmlessDevicePath / procIntrospectionPath for why the lists are explicit.
+		if harmlessDevicePath(tok) || procIntrospectionPath(tok) {
+			continue
+		}
 		if isHome {
 			home, err := os.UserHomeDir()
 			if err != nil {
@@ -621,6 +626,78 @@ func commandTokens(cmd string) []cmdToken {
 // execution guard, while an INVENTED one produces an ask nothing can answer.
 func hasShellMetachar(tok string) bool {
 	return strings.ContainsAny(tok, "^+!*,?$[]{}()|\\")
+}
+
+// harmlessDevicePath reports whether tok names one of the STANDARD device nodes — the
+// ones a shell uses as a sink or a stream rather than as a file it is acting on:
+// /dev/null above all, which appears in ordinary work constantly (`2>/dev/null`,
+// `> /dev/null`, `curl -o /dev/null`).
+//
+// THEY ARE SKIPPED BECAUSE A CONSENT DECISION ABOUT THEM IS MEANINGLESS. "May this command
+// touch /dev/null?" has one answer, and asking it is pure friction — the operator was
+// granting the project directory and being asked about /dev for a command that only threw
+// its stderr away.
+//
+// THE LIST IS EXPLICIT AND MUST STAY THAT WAY. A blanket "skip /dev" would wave through
+// `rm -rf /dev/sda` and `dd of=/dev/nvme0n1`, which are exactly the catastrophic writes
+// this gate exists to stop — so only the members that hold no state and cannot be damaged
+// are named here. `mkfs`/`dd` are separately refused outright by the never-allow class.
+func harmlessDevicePath(tok string) bool {
+	switch filepath.Clean(tok) {
+	case "/dev/null", "/dev/zero", "/dev/full",
+		"/dev/random", "/dev/urandom",
+		"/dev/stdin", "/dev/stdout", "/dev/stderr",
+		"/dev/tty", "/dev/console":
+		return true
+	}
+	return false
+}
+
+// procIntrospectionPath reports whether tok reads KERNEL METADATA about a process —
+// `/proc/self/status`, `/proc/1234/exe`, `/proc/1234/maps` — rather than naming a file the
+// command could act on. Reading a process's executable, its maps or its command line is
+// introspection, and asking the operator for consent to LOOK is noise.
+//
+// DELIBERATELY NARROW, and the exclusions matter more than the inclusions:
+//
+//   - `/proc/sys/**` is WRITABLE kernel configuration and is never skipped.
+//   - `/proc/<pid>/mem` is a direct write into another process's address space and is never
+//     skipped.
+//   - `/proc/<pid>/fd/**` is never skipped either, because a redirect THROUGH an fd
+//     (`echo x > /proc/1234/fd/5`) writes into whatever that descriptor points at — and
+//     commandPaths cannot tell a read from a write, so it must assume the dangerous case.
+//
+// The remaining members are read-only metadata: there is no write-through and no unlink.
+func procIntrospectionPath(tok string) bool {
+	clean := filepath.Clean(tok)
+	rest, ok := strings.CutPrefix(clean, "/proc/")
+	if !ok {
+		return false
+	}
+	// `/proc/self/...` and `/proc/thread-self/...`, or `/proc/<digits>/...`.
+	pid, leaf, found := strings.Cut(rest, "/")
+	if !found || leaf == "" {
+		return false
+	}
+	if pid != "self" && pid != "thread-self" {
+		if pid == "" {
+			return false
+		}
+		for _, r := range pid {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	switch leaf {
+	case "exe", "cwd", "root", "comm",
+		"cmdline", "environ", "status", "stat", "statm", "maps", "smaps",
+		"io", "limits", "mountinfo", "mounts":
+		return true
+	}
+	// A deeper path under one of those leaves (e.g. /proc/self/status/... does not exist,
+	// but /proc/1234/maps is already covered). Anything else is not introspection.
+	return false
 }
 
 // looksLikePath reports whether a QUOTED token is plausibly a filesystem path. A quoted

@@ -362,3 +362,94 @@ func TestAHeredocWriteIsJudgedByItsTargetNotItsContent(t *testing.T) {
 		t.Fatalf("a heredoc's CONTENT raised an ask (card named %q) — content is not an argument", ask.Directory)
 	}
 }
+
+// TestCommandPathsSkipsNodesThatAreNotTheOperatorsBusiness — the second round of the same
+// bug, found in the LIVE plane's log rather than by reasoning.
+//
+// After the regex fix, two spurious asks remained, both from ordinary work:
+//
+//	ask native-ask-2  directory=/dev            <- curl -o /dev/null
+//	ask native-ask-5  directory=/proc/1372221   <- strings /proc/<pid>/exe
+//
+// /dev/null is ubiquitous (`2>/dev/null`, `> /dev/null`, `curl -o /dev/null`) and reading a
+// process's executable is introspection. Neither is a file the operator is being asked to
+// protect, so both were pure friction: the operator granted the project directory and was
+// then asked about /dev by a command that only discarded its stderr.
+func TestCommandPathsSkipsNodesThatAreNotTheOperatorsBusiness(t *testing.T) {
+	for _, cmd := range []string{
+		`cd /p/proj && curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/healthz`,
+		`cd /p/proj && go test ./... > /dev/null 2>&1`,
+		`cd /p/proj && strings /proc/1372221/exe | grep -q strip`,
+		`cd /p/proj && cat /proc/self/status | head -3`,
+		`cd /p/proj && readlink /proc/1234/cwd`,
+		`cd /p/proj && echo hi > /dev/stdout`,
+	} {
+		got := commandPaths(cmd)
+		if len(got) != 1 || got[0] != "/p/proj" {
+			t.Errorf("commandPaths = %v, want only the cwd\n  cmd: %s", got, cmd)
+		}
+	}
+}
+
+// TestCommandPathsStillJudgesDANGEROUSNodes is the other side, and the reason the skip lists
+// are EXPLICIT rather than prefixes. A blanket "skip /dev" would wave through the
+// catastrophic writes this gate exists to stop, and a blanket /proc skip would wave through
+// written kernel configuration and a direct write into another process's memory.
+//
+// Every case here must remain a consent target.
+func TestCommandPathsStillJudgesDANGEROUSNodes(t *testing.T) {
+	cases := []struct {
+		cmd  string
+		want string
+	}{
+		{`rm -rf /dev/sda`, "/dev/sda"},
+		{`dd if=/dev/zero of=/dev/nvme0n1`, "/dev/nvme0n1"},
+		{`echo x > /proc/sys/kernel/panic`, "/proc/sys/kernel/panic"},
+		{`echo x > /proc/1234/mem`, "/proc/1234/mem"},
+		// A redirect THROUGH an fd writes into whatever the descriptor points at, and
+		// commandPaths cannot tell a read from a write — so it assumes the dangerous case.
+		{`echo x > /proc/1234/fd/5`, "/proc/1234/fd/5"},
+		// The `..` escape is unchanged: an explicit traversal is always judged.
+		{`ls /p/proj/../sibling`, "/p/sibling"},
+	}
+	for _, tc := range cases {
+		got := commandPaths(tc.cmd)
+		found := false
+		for _, g := range got {
+			if g == tc.want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("commandPaths(%q) = %v — %q must remain a consent target", tc.cmd, got, tc.want)
+		}
+	}
+}
+
+// TestTheSkipPredicatesAtTheirBoundaries pins the two predicates directly, so a loosening
+// edit fails a test rather than silently opening /dev or /proc writing.
+func TestTheSkipPredicatesAtTheirBoundaries(t *testing.T) {
+	for _, tok := range []string{"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/zero", "/dev/tty"} {
+		if !harmlessDevicePath(tok) {
+			t.Errorf("harmlessDevicePath(%q) = false — an ordinary sink", tok)
+		}
+	}
+	for _, tok := range []string{"/dev/sda", "/dev/nvme0n1", "/dev/mapper/vg-root", "/dev", "/dev/disk/by-id/x"} {
+		if harmlessDevicePath(tok) {
+			t.Errorf("harmlessDevicePath(%q) = true — a DEVICE with state must be judged", tok)
+		}
+	}
+	for _, tok := range []string{"/proc/self/status", "/proc/thread-self/cmdline", "/proc/1234/exe", "/proc/1234/maps", "/proc/1/environ"} {
+		if !procIntrospectionPath(tok) {
+			t.Errorf("procIntrospectionPath(%q) = false — read-only process metadata", tok)
+		}
+	}
+	for _, tok := range []string{
+		"/proc/sys/kernel/panic", "/proc/1234/mem", "/proc/1234/fd/5",
+		"/proc", "/proc/", "/proc/notanumber/exe", "/proc/1234/", "/sys/kernel/x",
+	} {
+		if procIntrospectionPath(tok) {
+			t.Errorf("procIntrospectionPath(%q) = true — writable or not introspection", tok)
+		}
+	}
+}
