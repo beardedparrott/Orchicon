@@ -322,7 +322,6 @@ Orchicon/
 ├── assets.go                    # go:embed: container configs, migrations, frontend
 ├── buf.gen.yaml                 # Buf codegen config (Go + TypeScript)
 ├── buf.yaml                     # Buf lint config
-├── CLOUDFLARE_SETUP.md          # Cloudflare Pages one-time setup guide
 ├── DOCUMENTATION.md             # ← This file: comprehensive docs
 ├── LICENSE                      # Custom license (non-commercial)
 ├── Makefile                     # All targets: build, test, gen, container-*, ci
@@ -1577,7 +1576,10 @@ The static landing page at `orchicon.dev` is deployed via Cloudflare Pages:
 - Build output directory: `site`
 - Root directory: (blank = repo root)
 
-See [`CLOUDFLARE_SETUP.md`](./CLOUDFLARE_SETUP.md) for the one-time setup guide.
+The Cloudflare Pages project (`orchicon-site`), its `wrangler.toml` and the one-time
+setup notes are deployment configuration rather than part of this repository, and are
+therefore kept out of it.
+
 
 ### GitHub Releases (Binary Distribution)
 
