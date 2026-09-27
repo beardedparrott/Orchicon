@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -452,6 +453,17 @@ func resolveAskKey(a askAction, dir string) string {
 	return filepath.Dir(abs)
 }
 
+// decisionTarget is one path the consent DECISION covers: the absolute path the
+// policy is consulted on, plus the directory its grant/project inputs are read
+// from.
+type decisionTarget struct {
+	abstarget string
+	key       string
+}
+
+// (commandPaths lives below decisionTargets — see its own comment for what it does
+// and does not extract.)
+
 // absAskTarget returns the absolute path the policy is consulted on for the
 // action's KEY target: the first target for a file action (resolved against
 // the scope dir when relative), or the scope directory itself for a bash
@@ -467,12 +479,57 @@ func absAskTarget(a askAction, dir string) string {
 	return t
 }
 
-// decisionTarget is one path the consent DECISION covers: the absolute path the
-// policy is consulted on, plus the directory its grant/project inputs are read
-// from.
-type decisionTarget struct {
-	abstarget string
-	key       string
+// commandPaths extracts the filesystem paths a shell command NAMES.
+//
+// DELIBERATELY MODEST, AND HONEST ABOUT IT. It finds LITERAL absolute paths — `/etc/x`,
+// `--flag=/etc/x`, `~/x` — and nothing more. A path built at runtime (`$(cat cfg)`, a
+// variable, a script's own logic) is invisible to it, so this RAISES the bar rather
+// than guaranteeing containment, and the operator was told exactly that when they
+// chose it. It is worth having because the case that prompted it (`cp ~/a /etc/b`) is a
+// literal path in the text.
+//
+// Relative paths are intentionally NOT extracted: they resolve against the cwd, which
+// is already the first judged target, so listing them would judge the same directory
+// twice.
+func commandPaths(cmd string) []string {
+	if strings.TrimSpace(cmd) == "" {
+		return nil
+	}
+	var out []string
+	for _, tok := range strings.Fields(cmd) {
+		// Strip the shell punctuation that glues a path to its neighbours:
+		// quotes, redirects, separators, grouping.
+		tok = strings.Trim(tok, `"'`+",;|&()<>")
+		// `--flag=/path` and `VAR=/path`: keep the value half.
+		if i := strings.IndexByte(tok, '='); i >= 0 {
+			tok = tok[i+1:]
+		}
+		if tok == "" {
+			continue
+		}
+		isHome := strings.HasPrefix(tok, "~/")
+		if !isHome && !strings.HasPrefix(tok, "/") {
+			continue
+		}
+		// A URL is not a path (`https://host/x` starts with 'h', but
+		// `//host/x` and `--url=//host/x` would look absolute).
+		if strings.Contains(tok, "://") || strings.HasPrefix(tok, "//") {
+			continue
+		}
+		if isHome {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				continue
+			}
+			tok = filepath.Join(home, strings.TrimPrefix(tok, "~/"))
+		}
+		// An absolute path that is only the root is not a target worth judging on
+		// its own — the cwd entry already covers "this command runs somewhere".
+		if cleaned := filepath.Clean(tok); cleaned != "/" {
+			out = append(out, cleaned)
+		}
+	}
+	return out
 }
 
 // decisionTargets returns EVERY path a file action touches, so the decision
@@ -489,7 +546,31 @@ type decisionTarget struct {
 // entry, as does an action that resolved no target at all (the fail-closed
 // card case).
 func decisionTargets(a askAction, dir string) []decisionTarget {
-	if isBashAsk(a.Tool) || len(a.Targets) == 0 {
+	if isBashAsk(a.Tool) {
+		cwd := filepath.Clean(dir)
+		out := []decisionTarget{{abstarget: cwd, key: cwd}}
+		// ALSO JUDGE THE PATHS THE COMMAND NAMES.
+		//
+		// A shell command's consent KEY is its cwd, so one "allow for this session"
+		// on the project directory would otherwise cover every command run there —
+		// including `cp ~/secret /etc/x`, which touches nothing inside the project.
+		// The operator's decision: "also judge the paths a command mentions."
+		//
+		// The cwd stays FIRST because it is the grant KEY (C4): a grant is still
+		// given for the directory the command runs in. Each mentioned path is then
+		// judged on its own absolute value, so a path outside every granted
+		// directory raises an ask of its own.
+		seen := map[string]bool{cwd: true}
+		for _, p := range commandPaths(a.Command) {
+			if seen[p] {
+				continue
+			}
+			seen[p] = true
+			out = append(out, decisionTarget{abstarget: p, key: filepath.Dir(p)})
+		}
+		return out
+	}
+	if len(a.Targets) == 0 {
 		d := filepath.Clean(dir)
 		return []decisionTarget{{abstarget: d, key: d}}
 	}
