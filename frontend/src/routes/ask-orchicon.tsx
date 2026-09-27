@@ -1442,11 +1442,12 @@ function AskOrchiconPage() {
     return [...(messages ?? []), ...groupedStream] as ChatMessage[];
   }, [messages, isStreaming, groupedStream]);
 
-  // The last message in the transcript. A clarifying-question card is
-  // interactive only while nothing follows the assistant message that asked it;
-  // once a later message exists, the question is settled (options shown, not
-  // clickable).
-  const lastMessageId = displayMessages[displayMessages.length - 1]?.id;
+  // (There was a `lastMessageId` here, used to decide whether a clarifying-question
+  // card was still interactive by asking "does a later message exist?". That was right
+  // while answering SENT the choice as the next user message, and became permanently
+  // false once ask_user was made BLOCKING — the answer arrives as the tool RESULT and
+  // nothing follows. The card now reads its own result instead, so the variable is
+  // gone rather than left as a second, wrong source of truth.)
 
   return (
     <div className="flex flex-1 min-h-0 h-full gap-0 min-w-0 overflow-hidden">
@@ -1713,7 +1714,6 @@ function AskOrchiconPage() {
                       message={block.message}
                       onRetry={handleRetry}
                       onSelectOption={handleSendMessage}
-                      answered={block.message.id !== lastMessageId}
                     />
                   );
                 })}
@@ -2091,16 +2091,12 @@ function MessageBubble({
   message,
   onRetry,
   onSelectOption,
-  answered,
 }: {
   message: ChatMessage;
   onRetry?: () => void;
-  // onSelectOption sends a clicked clarifying-question option as a NORMAL user
-  // message through the conversation's existing send path (handleSendMessage).
+  // onSelectOption sends a clicked clarifying-question option as the answer to the
+  // PAUSED turn (it goes over the reply RPC as the ask_user tool result).
   onSelectOption?: (label: string) => void;
-  // answered=true settles the card: a later message exists, so the question is
-  // no longer answerable by click (options shown, not interactive).
-  answered?: boolean;
 }) {
   const isUser = message.role === "user";
   const isError = !!message.metadata?.error;
@@ -2143,12 +2139,26 @@ function MessageBubble({
   const hasReasoning = Array.isArray(reasoning) && reasoning.length > 0;
 
   // A recorded ask_user call renders as the clarifying-question card. It is
-  // interactive only while nothing follows this message (answered === false);
-  // selecting an option sends its label as a normal user message.
+  // interactive only while NOT answered; selecting an option sends its label as the
+  // answer to the PAUSED turn.
   const askCall = (message.toolCalls ?? []).find((c) =>
     isAskUserToolCall(c.functionName),
   );
   const askParsed = askCall ? parseAskUserArgs(askCall.arguments) : null;
+  // ANSWERED IS READ FROM THE ASK'S OWN RESULT, not from a later message.
+  //
+  // It used to be `answered={message.id !== lastMessageId}` — "a later message
+  // exists" — which was right while answering SENT the choice as the next user
+  // message. With ask_user made BLOCKING the answer arrives as the TOOL RESULT and
+  // nothing follows the message, so that test stayed false forever and the card never
+  // settled. The operator: "the Orchicon asks card does not go away in the TUI or the
+  // GUI when you select something."
+  //
+  // The result is the ask's own outcome — server truth — rather than an inference from
+  // what happened afterwards.
+  const askAnswered =
+    !!askCall &&
+    (message.toolResults ?? []).some((r) => r.toolCallId === askCall.id);
 
   return (
     <>
@@ -2176,7 +2186,7 @@ function MessageBubble({
           question={askParsed?.question ?? ""}
           options={askParsed?.options ?? []}
           allowOther={askParsed?.allowOther}
-          answered={answered}
+          answered={askAnswered}
           error={askParsed ? undefined : "the recorded arguments are not valid JSON"}
           onSelect={onSelectOption}
         />

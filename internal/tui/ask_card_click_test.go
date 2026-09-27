@@ -117,12 +117,21 @@ func TestAClickOnAnOptionIsWiredToTheSend(t *testing.T) {
 	}
 }
 
-// AN ANSWERED CARD IS SETTLED. Once a later user message exists the question has been answered, and its
-// options are shown but no longer clickable — otherwise a click on a stale card re-sends a choice the operator
-// already made. (The same rule the web card applies with its `answered` prop.)
+// AN ANSWERED CARD IS SETTLED — and it is the ask's OWN RESULT that says so, not a
+// later message. It used to be "a later user message exists", which was right while
+// answering SENT the choice as the next message; with ask_user blocking, the answer
+// arrives as the tool result and nothing follows, so that test never went true and
+// the card stayed clickable forever — the operator's "the Orchicon asks card does not
+// go away when you select something".
 func TestAnAnsweredCardIsNoLongerClickable(t *testing.T) {
 	m := askCardPlane(t)
-	m.chatStore.append("c1", chat.ChatItem{Kind: chat.KindUser, Text: "develop", Key: "u2", At: 3})
+	for i := range m.chatStore.items["c1"] {
+		it := &m.chatStore.items["c1"][i]
+		if it.Kind == chat.KindAsk && it.Ask != nil {
+			it.Ask.Answered = true
+			it.Ask.AnswerText = "develop"
+		}
+	}
 	m.onChatWake()
 
 	row := askRowAt(t, m, "develop")

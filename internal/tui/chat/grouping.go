@@ -63,6 +63,19 @@ type ParsedAsk struct {
 	Question   string
 	Options    []AskOption
 	AllowOther bool
+	// Answered reports that this ask_user call HAS A RESULT — the operator answered
+	// it and the answer came back as the tool result.
+	//
+	// IT REPLACES A HEURISTIC THAT THE PAUSE BROKE. The card's interactivity used
+	// to be decided by "a later user message exists", because answering used to
+	// SEND the choice as the next message. With ask_user made blocking the answer
+	// arrives as the TOOL RESULT and nothing follows it — so the old test never went
+	// true and the card stayed clickable forever. The result is the ask's own
+	// outcome, which is server truth rather than an inference from what came after.
+	Answered bool
+	// AnswerText is what the operator answered, read from that result, so a settled
+	// card can say what was decided instead of silently going inert.
+	AnswerText string
 }
 
 // isAskUserCall reports whether a recorded tool call is the clarifying question
@@ -76,7 +89,13 @@ func isAskUserCall(functionName string) bool {
 // ParsedAsk. It NEVER panics or errors outward: a malformed arguments payload
 // yields a card carrying the question-less error text the operator can see,
 // rather than dropping the call or crashing the pane.
-func parseAskUserCall(calls []*apiv1.ToolCall) *ParsedAsk {
+// parseAskUserCall parses the FIRST recorded ask_user call on a message into a
+// card's content, and reports whether it has been ANSWERED.
+//
+// results is the message's tool results: a call that has one has been answered, and
+// its output IS the operator's answer. See ParsedAsk.Answered for why the card's
+// settled state is read from the result rather than inferred from a later message.
+func parseAskUserCall(calls []*apiv1.ToolCall, results []*apiv1.ToolResult) *ParsedAsk {
 	for _, c := range calls {
 		if c == nil || !isAskUserCall(c.GetFunctionName()) {
 			continue
@@ -98,6 +117,15 @@ func parseAskUserCall(calls []*apiv1.ToolCall) *ParsedAsk {
 				continue
 			}
 			ask.Options = append(ask.Options, AskOption{Label: o.Label, Description: o.Description})
+		}
+		// The result, when there is one: the answer IS the tool result.
+		for _, r := range results {
+			if r == nil || r.GetToolCallId() != c.GetId() {
+				continue
+			}
+			ask.Answered = true
+			ask.AnswerText = strings.TrimSpace(r.GetOutput())
+			break
 		}
 		return ask
 	}

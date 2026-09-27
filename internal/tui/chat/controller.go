@@ -773,7 +773,7 @@ func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 			At:   at,
 			Key:  "m-" + m.GetId(),
 		})
-		if ask := parseAskUserCall(m.GetToolCalls()); ask != nil {
+		if ask := parseAskUserCall(m.GetToolCalls(), m.GetToolResults()); ask != nil {
 			items = append(items, ChatItem{
 				Kind: KindAsk,
 				Ask:  ask,

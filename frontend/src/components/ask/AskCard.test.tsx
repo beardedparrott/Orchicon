@@ -81,13 +81,16 @@ describe("AskCard wiring (clarifying-question card)", () => {
     expect(route).toContain("<AskCard");
   });
 
-  it("selecting an option sends it as a normal user message via handleSendMessage", () => {
+  it("selecting an option answers the PAUSED turn through the reply RPC", () => {
     expect(route).toContain("onSelectOption={handleSendMessage}");
-    // Interactivity is gated on nothing following the assistant message.
-    // The block is the interleaved transcript slot, so the message hangs off it
-    // (`block.message`) — the render was refactored to interleave consent cards
-    // with the messages by time, and this assertion was left behind by it.
-    expect(route).toContain("answered={block.message.id !== lastMessageId}");
+    // THE CARD'S SETTLED STATE COMES FROM THE ASK'S OWN RESULT, not from "a later
+    // message exists". The old test asserted exactly that heuristic
+    // (`answered={block.message.id !== lastMessageId}`), which the pause made
+    // permanently false: the answer now arrives as the ask_user TOOL RESULT and
+    // nothing follows the message, so the card never settled — the operator's "the
+    // Orchicon asks card does not go away when you select something".
+    expect(route).toContain("const askAnswered =");
+    expect(route).toContain("answered={askAnswered}");
   });
 });
 

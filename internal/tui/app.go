@@ -3786,23 +3786,23 @@ func (m *App) transcriptAskOptionAtFrameRow(frameRow int) (string, bool) {
 	return "", false
 }
 
-// askCardSettled reports whether the operator has sent anything AFTER the item carrying this key — i.e. the
-// recorded clarifying question has been answered and its card is no longer a choice.
+// askCardSettled reports whether a clarifying-question card has been ANSWERED.
+//
+// IT ASKS THE ASK'S OWN RESULT. It used to ask "has a later USER message appeared?",
+// which was right while answering SENT the choice as the next message — and became
+// permanently false the moment ask_user was made blocking, because the answer now
+// arrives as the tool RESULT and nothing follows the message. The card therefore
+// stayed clickable forever, which the operator reported as "the Orchicon asks card
+// does not go away when you select something".
 func (m *App) askCardSettled(key string) bool {
 	if m.chatStore == nil || key == "" {
 		return false
 	}
-	seen := false
 	for _, it := range m.chatStore.snapshot(m.chatConvID) {
-		if !seen {
-			if it.Key == key {
-				seen = true
-			}
+		if it.Key != key {
 			continue
 		}
-		if it.Kind == chat.KindUser {
-			return true
-		}
+		return it.Ask != nil && it.Ask.Answered
 	}
 	return false
 }
@@ -4424,6 +4424,19 @@ func (m *App) ConsentResolve(askID string, dec chat.ConsentDecision, choice stri
 	st := m.chatStore.consentState(m.chatConvID, askID)
 	if st != nil {
 		ask := st.Ask
+		// SETTLE THE CARD HERE, at the ONE place every decision passes through.
+		//
+		// The screen's key handler used to be the only caller that marked the item
+		// decided, so a decision made any other way left the card Pending() forever:
+		// it never stopped claiming the keyboard and never turned into a record. The
+		// operator hit both halves — "clicking does not actually commit unless you hit
+		// enter", and "the card does not go away when you select something". Settling
+		// in ConsentResolve means the keyboard, a click and any future caller cannot
+		// disagree about what a decided card looks like.
+		st.Decision = dec
+		st.Choice = choice
+		st.Note = ""
+		st.OtherMode = false
 		switch dec {
 		case chat.DecisionAllowSession:
 			dir := ask.Directory

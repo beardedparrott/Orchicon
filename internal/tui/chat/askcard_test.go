@@ -68,7 +68,7 @@ func TestParseAskUserCallToleratesMalformedArguments(t *testing.T) {
 	got := parseAskUserCall([]*apiv1.ToolCall{{
 		FunctionName: "ask_user",
 		Arguments:    "{not json",
-	}})
+	}}, nil)
 	if got == nil {
 		t.Fatal("a recorded ask_user call must still produce a card")
 	}
@@ -76,7 +76,7 @@ func TestParseAskUserCallToleratesMalformedArguments(t *testing.T) {
 		t.Errorf("question = %q, want the malformed-arguments notice", got.Question)
 	}
 	// A non-ask tool call is ignored entirely.
-	if parseAskUserCall([]*apiv1.ToolCall{{FunctionName: "list_projects"}}) != nil {
+	if parseAskUserCall([]*apiv1.ToolCall{{FunctionName: "list_projects"}}, nil) != nil {
 		t.Error("a non-ask tool call must not produce a card")
 	}
 }

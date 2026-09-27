@@ -726,6 +726,18 @@ func renderAskCardSpans(a *ParsedAsk, maxWidth int) (string, []AskOptionSpan) {
 	if a == nil {
 		return "", nil
 	}
+	// AN ANSWERED QUESTION IS A RECORD, NOT A CARD — the same split the permission
+	// card makes. Once answered there is nothing to click, so drawing the options
+	// again would offer a choice that has already been made (and, before this, the
+	// card simply sat there forever: the operator's "the Orchicon asks card does not go
+	// away when you select something").
+	if a.Answered {
+		answered := a.AnswerText
+		if answered == "" {
+			answered = "(no answer)"
+		}
+		return theme.ListMeta.Render(truncateRow("answered · "+answered, maxWidth)) + "\n", nil
+	}
 	// THE FOOTER PROMISES ONLY WHAT WORKS. The clarifying question is answerable
 	// by CLICK (transcriptAskOptionFrameRow → AnswerQuestion → Send); it has no
 	// keyboard cursor, unlike the permission card, whose footer advertises
