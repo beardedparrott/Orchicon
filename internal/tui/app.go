@@ -3639,6 +3639,98 @@ func (m *App) transcriptCodeBlockAtFrameRow(frameRow int) (string, bool) {
 	return "", false
 }
 
+// transcriptCardOptionAtFrameRow resolves a click at a FRAME row to the option under it, for EITHER
+// interactive card — the clarifying question AND the permission ask.
+//
+// THE PERMISSION CARD USED TO BE KEYBOARD-ONLY. The question card answered a click here; the
+// permission card could only be driven by clicking into it and then arrowing, which the operator hit
+// immediately: "I couldn't click on it in the TUI. I had to click into the card then use the keyboard
+// to select it." Two cards for the same kind of decision behaved differently, so which gesture works
+// was a coin flip. Both are clickable now, and both still take the keyboard (the consent card's key
+// handler is unchanged).
+//
+// It returns the item KIND as well as the label, because the two cards DO different things with the
+// answer: a question's label is sent as the next user message, a permission's label is a DECISION.
+//
+// Same three coordinate spaces as the copy rules (frame row → body row → body line → item), and the
+// same derived body-top row — the geometry comes from the render that drew the card (ItemSpan.Options),
+// so a click cannot resolve against a layout the screen is not showing.
+func (m *App) transcriptCardOptionAtFrameRow(frameRow int) (chat.ItemKind, string, bool) {
+	str := m.TranscriptStream(m.chatConvID)
+	if str == nil {
+		return "", "", false
+	}
+	line := str.LineAtRow(frameRow - m.transcriptBodyTopRow())
+	if line < 0 {
+		return "", "", false
+	}
+	for _, sp := range m.transcriptSpans[m.chatConvID] {
+		if sp.Kind != chat.KindAsk && sp.Kind != chat.KindConsent {
+			continue
+		}
+		if !sp.Contains(line) {
+			continue
+		}
+		label, ok := sp.OptionAt(line)
+		if !ok {
+			return "", "", false // the card's body or header: not a choice
+		}
+		// A SETTLED card is no longer a choice. For the question that is "a later user message
+		// exists"; for the permission it is "no longer pending". Without this a click on a stale
+		// card would re-send, or re-decide, something already answered.
+		if sp.Kind == chat.KindAsk && m.askCardSettled(sp.Key) {
+			return "", "", false
+		}
+		if sp.Kind == chat.KindConsent {
+			if _, st, ok := m.pendingConsentItem(); !ok || !st.Pending() {
+				return "", "", false
+			}
+		}
+		return sp.Kind, label, true
+	}
+	return "", "", false
+}
+
+// pendingConsentItem finds the open permission/question card in the transcript, with the id and the
+// live state a decision needs. Exactly one can be pending at a time (the screen claims the keyboard
+// for it), so the first is the one.
+func (m *App) pendingConsentItem() (string, *chat.ConsentState, bool) {
+	if m.chatStore == nil || m.chatConvID == "" {
+		return "", nil, false
+	}
+	for _, it := range m.chatStore.snapshot(m.chatConvID) {
+		if it.Kind == chat.KindConsent && it.Consent != nil && it.Consent.Pending() {
+			return it.AskID, it.Consent, true
+		}
+	}
+	return "", nil, false
+}
+
+// consentDecideFromRow applies a CLICK on a card row: a question's label goes through the ordinary send
+// path, a permission's label becomes the decision. Both are the same outcomes the keyboard produces, so
+// the two gestures cannot diverge.
+func (m *App) consentDecideFromRow(label string) tea.Cmd {
+	askID, st, ok := m.pendingConsentItem()
+	if !ok {
+		return nil
+	}
+	// A QUESTION card rides the same KindConsent item, and a click on it ANSWERS rather than decides.
+	if st.Ask.Kind == chat.AskQuestion {
+		if m.chat == nil {
+			return nil
+		}
+		return m.chat.AnswerQuestion(m.chatConvID, label)
+	}
+	dec := chat.DecisionAllowOnce
+	switch label {
+	case chat.ConsentAllowSession:
+		dec = chat.DecisionAllowSession
+	case chat.ConsentDeny:
+		dec = chat.DecisionDeny
+	}
+	return m.ConsentResolve(askID, dec, label)
+}
+
 // transcriptAskOptionAtFrameRow resolves a click at a FRAME row to the LABEL of the clarifying-question
 // option under it, when the click landed on an option of an UNANSWERED card.
 //

@@ -261,7 +261,12 @@ func renderItems(items []ChatItem, maxWidth int, folded func(key string) bool, c
 			// THE CARD RIDES THE TRANSCRIPT: a pending ask draws its box here, and
 			// the settled ask leaves a one-line record. See consent_render.go — the
 			// box itself is a kit2 widget, so padding/border/selection are shared.
-			b.WriteString(consentLines(it, maxWidth))
+			//
+			// Its OPTION ROWS are reported too, so the card is CLICKABLE like the
+			// clarifying-question card rather than keyboard-only.
+			card, opts := consentLineSpans(it, maxWidth)
+			b.WriteString(card)
+			askOpts = opts
 		}
 		// Attribute the lines this item wrote. `before` is a byte offset into the builder, and the slice
 		// shares its backing array, so this costs a scan of the item's own text rather than a copy of the

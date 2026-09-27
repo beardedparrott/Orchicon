@@ -1161,7 +1161,10 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 		//
 		// Checked after the copy rules (a card carries no code and is not the operator's message, so neither
 		// can match it) and only while the card is unanswered — see transcriptAskOptionAtFrameRow.
-		if label, ok := m.transcriptAskOptionAtFrameRow(mo.Y); ok && m.chat != nil {
+		if kind, label, ok := m.transcriptCardOptionAtFrameRow(mo.Y); ok && m.chat != nil {
+			if kind == chat.KindConsent {
+				return m, m.consentDecideFromRow(label)
+			}
 			return m, m.chat.AnswerQuestion(m.chatConvID, label)
 		}
 	}

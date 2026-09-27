@@ -16,19 +16,46 @@ import (
 
 // consentLines renders one consent item at the given pane width.
 func consentLines(it ChatItem, width int) string {
+	text, _ := consentLineSpans(it, width)
+	return text
+}
+
+// consentLineSpans is consentLines plus WHERE EACH OPTION ROW LANDED, so a CLICK on
+// the card resolves to the row under it — the same contract the clarifying-question
+// card has had.
+//
+// The operator: "I saw the card and actually selected accept but I also noticed I
+// couldn't click on it in the TUI. I had to click into the card then use the
+// keyboard to select it." Two cards for the same kind of decision, one clickable
+// and one keyboard-only, is a coin-flip for the operator rather than a design.
+//
+// The offsets come from the widget that DREW the card (kit2.CardLinesSpans), never
+// from a counter here: a drifted offset means a click answers with the row the
+// operator did not choose.
+func consentLineSpans(it ChatItem, width int) (string, []AskOptionSpan) {
 	st := it.Consent
 	if st == nil {
-		return ""
+		return "", nil
 	}
 	if !st.Pending() {
-		return theme.ListMeta.Render(truncateRow(consentRecord(st), width)) + "\n"
+		return theme.ListMeta.Render(truncateRow(consentRecord(st), width)) + "\n", nil
 	}
+	spec := consentSpec(st)
+	lines, rows := kit2.CardLinesSpans(spec, width)
 	var b strings.Builder
-	for _, l := range kit2.CardLines(consentSpec(st), width) {
+	for _, l := range lines {
 		b.WriteString(l)
 		b.WriteString("\n")
 	}
-	return b.String()
+	labels := st.Ask.OptionLabels()
+	opts := make([]AskOptionSpan, 0, len(rows))
+	for i, r := range rows {
+		if i >= len(labels) {
+			break
+		}
+		opts = append(opts, AskOptionSpan{Line: r.Line, Lines: r.Lines, Label: labels[i]})
+	}
+	return b.String(), opts
 }
 
 // consentRecord is the settled form: what was decided, about what.
