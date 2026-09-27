@@ -43,11 +43,32 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const browser = await chromium.launch({ args: ["--no-sandbox"], headless: false });
 const page = await browser.newPage({ viewport: VIEWPORT });
 
-console.log(`opening ${base} — log in, then leave the browser alone.`);
+// TWO WAYS IN, and the difference is who handles the credential.
+//
+//   ORCHICON_USER / ORCHICON_PASS set  -> non-interactive: the script fills the form itself. This is
+//   for a capture run the operator has ASKED for, on a plane whose credential they supplied. The
+//   values are read from the environment and never written anywhere.
+//
+//   unset                              -> interactive: a window opens and the OPERATOR logs in. This is
+//   the default, so nobody has to put a password in an environment variable just to refresh a shot.
+const user = process.env.ORCHICON_USER;
+const pass = process.env.ORCHICON_PASS;
+
+console.log(`opening ${base} — ${user ? "logging in" : "log in, then leave the browser alone"}.`);
 await page.goto(base, { waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => {});
 
+if (user && pass) {
+  await page.waitForSelector("#username", { timeout: 60000 }).catch(() => {});
+  await page.fill("#username", user).catch(() => {});
+  await page.fill("#password", pass).catch(() => {});
+  await Promise.all([
+    page.waitForNavigation({ timeout: 60000 }).catch(() => {}),
+    page.click('button[type="submit"], button:has-text("Sign in")').catch(() => {}),
+  ]);
+}
+
 // Wait for a logged-in session: the login form is replaced once the app shell mounts. A generous
-// window, because the operator is typing a password into it.
+// window, because in interactive mode the operator is typing a password into it.
 let ready = false;
 for (let i = 0; i < 180; i++) {
   await sleep(1000);
@@ -78,6 +99,11 @@ for (const shot of SHOTS) {
     // The app fills in asynchronously; a screenshot taken on networkidle alone can catch skeletons.
     await sleep(2500);
     await page.screenshot({ path: png });
+    // WHAT IS ON SCREEN, in the log. A screenshot cannot be read back by a script, so this is how a
+    // run shows that it captured real content rather than a skeleton — and how a name nobody wants
+    // on a public page becomes visible before the file is committed instead of after.
+    const seen = (await page.locator("body").innerText()).replace(/\s+/g, " ").trim();
+    console.log(`      on screen: ${seen.slice(0, 150)}…`);
     // ImageMagick writes the WebP the same way the committed assets were made: 1800px wide, q82.
     execFileSync("magick", [png, "-quality", "82", webp]);
     fs.unlinkSync(png);
