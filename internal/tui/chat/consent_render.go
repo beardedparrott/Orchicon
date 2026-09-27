@@ -68,7 +68,7 @@ func consentRecord(st *ConsentState) string {
 		if scope == "" {
 			scope = a.Target
 		}
-		out := ConsentAllowSession + " · " + scope + " (session)"
+		out := ConsentSessionRecord + " · " + scope + " (this session)"
 		return "consent " + out
 	case DecisionDeny:
 		return "consent " + ConsentDeny + " · " + subject

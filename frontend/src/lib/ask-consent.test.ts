@@ -4,8 +4,12 @@ import { PermissionChoice } from "@/api/gen/orchicon/api/v1/ask_orchicon_service
 import {
   applyAskChunk,
   outcomeFromChoice,
+  CONSENT_SESSION_NO_DIR,
+  CONSENT_SESSION_PREFIX,
+  CONSENT_SESSION_SUFFIX,
   outcomeFromWire,
   outcomeLabel,
+  sessionLabel,
   pendingFor,
   popoverNudge,
   relativeGrantAge,
@@ -75,7 +79,7 @@ describe("outcomeLabel", () => {
       "Allowed once — write /p/sibling/notes.md",
     );
     expect(outcomeLabel(ask("per_1"), { kind: "allow_session" })).toBe(
-      "Allowed for this session — write /p/sibling/notes.md (covers /p/sibling)",
+      "Never asking again in /p/sibling this session — write /p/sibling/notes.md",
     );
     expect(outcomeLabel(ask("per_1"), { kind: "deny" })).toBe(
       "Denied — write /p/sibling/notes.md",
@@ -175,6 +179,29 @@ describe("settling another client's card", () => {
     const out = resolveAsk(items(), "perm_gone", outcomeFromWire("deny"), 42);
     expect(out).toHaveLength(2);
     expect(out.every((i) => i.outcome === null)).toBe(true);
+  });
+});
+
+// The session row must SAY what it covers. The operator, re-asked for the same
+// directory with no way to tell how far a "session" grant reached, asked for "an
+// option that says something along the lines of 'Never ask again for this directory
+// for this session'".
+describe("sessionLabel", () => {
+  it("names the directory the grant would cover", () => {
+    expect(sessionLabel({ directory: "/p/sibling" })).toBe(
+      "Never ask again in /p/sibling this session",
+    );
+    expect(sessionLabel({ directory: "/p/sibling" })).toBe(
+      `${CONSENT_SESSION_PREFIX}/p/sibling${CONSENT_SESSION_SUFFIX}`,
+    );
+  });
+
+  // Target is a FILE for a write ask, so a label built from it would name a file as
+  // the directory a grant covers — a misstatement of the scope, which is the one
+  // thing this row exists to state.
+  it("names the scope by its lifetime when no directory is known", () => {
+    expect(sessionLabel({})).toBe(CONSENT_SESSION_NO_DIR);
+    expect(sessionLabel({ directory: "   " })).toBe(CONSENT_SESSION_NO_DIR);
   });
 });
 

@@ -16,18 +16,43 @@ import (
 // internal/tui/chat's stream switch, not a change in every surface that shows a
 // card.
 
-// The three action labels. THEY ARE THE GUI'S WORDS, VERBATIM — the repo's
+// The card's action labels. THEY ARE THE GUI'S WORDS, VERBATIM — the repo's
 // parity rule: the two clients must describe the same decision identically, so
 // the operator recognises the choice whichever client they are in.
 const (
-	ConsentAllowOnce    = "Allow once"
-	ConsentAllowSession = "Allow for this session"
-	ConsentDeny         = "Deny"
+	ConsentAllowOnce = "Allow once"
+	ConsentDeny      = "Deny"
 
 	// ConsentOther is the free-text escape hatch's row label on a clarifying
 	// question card. The operator picking it types their own answer rather than
 	// being forced into a canned option.
 	ConsentOther = "Other"
+
+	// The SESSION row is not a fixed string, because what it does depends on WHICH
+	// directory it covers and the operator is entitled to see that before they
+	// choose it. Its label is built by SessionLabel from these two pieces, so the
+	// TUI and the GUI cannot describe the scope differently.
+	//
+	// WHY IT NAMES THE SCOPE. The row used to read "Allow for this session", and
+	// the operator — asked for the same directory over and over, having no idea how
+	// far a session grant reached — asked for "an option that says something along
+	// the lines of 'Never ask again for this directory for this session'". The
+	// option ALREADY existed and already worked that way (a grant covers the
+	// directory and everything under it, for the conversation); what it did not do
+	// was SAY so. A consent row whose reach the operator has to guess is a row they
+	// will not use.
+	ConsentSessionPrefix = "Never ask again in "
+	ConsentSessionSuffix = " this session"
+	// ConsentSessionNoDir is the label when the ask names no directory (a detail
+	// that never resolved). It says "this directory" rather than borrowing Target,
+	// because Target is a FILE for a write ask and naming a file as the directory a
+	// grant covers would be a lie about the scope.
+	ConsentSessionNoDir = "Never ask again in this directory this session"
+
+	// ConsentSessionRecord is the settled RECORD's name for the session decision.
+	// The record is history rather than a choice, so it is short and it carries the
+	// scope separately.
+	ConsentSessionRecord = "never ask again"
 )
 
 // AskKind is what the card is asking for.
@@ -172,7 +197,48 @@ func (a PermissionAsk) OptionLabels() []string {
 		}
 		return out
 	}
-	return []string{ConsentAllowOnce, ConsentAllowSession, ConsentDeny}
+	return []string{ConsentAllowOnce, a.SessionLabel(), ConsentDeny}
+}
+
+// SessionLabel is the session row's text, naming the DIRECTORY the grant would
+// cover. See consentSessionPrefix for why the row names its scope at all.
+func (a PermissionAsk) SessionLabel() string {
+	dir := strings.TrimSpace(a.Directory)
+	if dir == "" {
+		return ConsentSessionNoDir
+	}
+	return ConsentSessionPrefix + dir + ConsentSessionSuffix
+}
+
+// DecisionForRow maps a card ROW index onto the decision that row means.
+//
+// THE ROW INDEX IS THE DECISION, NOT THE LABEL TEXT. This is the fix for a
+// landmine the scope-naming label would otherwise have armed: the click path used
+// to resolve a row by matching its LABEL STRING against a known constant, with
+// "allow once" as the fall-through. A session label that names a directory can
+// never equal a fixed constant, so EVERY click on it would have silently become
+// "allow once" — approving one call where the operator asked for the session, and
+// reporting no error. The index is the only stable key: it is what OptionLabels'
+// ORDER defines, and it is what the click geometry already resolves to.
+//
+// False for a row that is not a permission choice: a question card's options (which
+// are CONTENT, answered as the operator's words through the reply RPC) and the
+// session row when the deny list disables it (a disabled row must not be
+// selectable through ANY gesture — RowDisabled already hides it from the arrows).
+func (a PermissionAsk) DecisionForRow(i int) (ConsentDecision, bool) {
+	if a.Kind != AskTool || a.RowDisabled(i) {
+		return "", false
+	}
+	switch i {
+	case 0:
+		return DecisionAllowOnce, true
+	case 1:
+		return DecisionAllowSession, true
+	case 2:
+		return DecisionDeny, true
+	default:
+		return "", false
+	}
 }
 
 // RowDisabled reports whether a row cannot be selected. The session grant is

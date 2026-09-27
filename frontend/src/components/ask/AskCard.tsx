@@ -6,7 +6,7 @@ import {
   PermissionChoice,
   type PermissionAsk,
 } from "@/api/gen/orchicon/api/v1/ask_orchicon_service_pb";
-import { askTargetLabel, outcomeLabel, type AskOutcome } from "@/lib/ask-consent";
+import { askTargetLabel, outcomeLabel, sessionLabel, type AskOutcome } from "@/lib/ask-consent";
 
 // AskCard — the shared card primitive for the two things a turn can ask.
 //
@@ -461,12 +461,16 @@ export function ConsentAskCard({
           disabled={busy}
           hint={
             ask.directory
-              ? `Covers everything under ${ask.directory} this session`
-              : "Covers this for the rest of the conversation"
+              ? "This directory and everything under it, until this conversation ends"
+              : "This, until this conversation ends"
           }
           onSelect={() => onDecide(PermissionChoice.ALLOW_SESSION)}
         >
-          Allow for this session
+          {/* THE LABEL NAMES THE SCOPE rather than leaving it to the hint. The directory
+              is the whole content of this decision — "this session" does not say HOW FAR,
+              and the operator could not tell whether it meant this file, this folder or the
+              tool. See CONSENT_SESSION_PREFIX for why the row carries it. */}
+          {sessionLabel(ask)}
         </AskCardAction>
         <AskCardAction
           testId="consent-ask-deny"

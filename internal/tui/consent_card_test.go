@@ -53,7 +53,7 @@ func TestConsentCardRendersTheToolAndTargetInTheTranscript(t *testing.T) {
 	m, _, items := pendingCard(t)
 	out := chat.RenderItems(items, 90)
 	for _, want := range []string{"write", "/home/ops/project/main.go",
-		chat.ConsentAllowOnce, chat.ConsentAllowSession, chat.ConsentDeny} {
+		chat.ConsentAllowOnce, chat.ConsentSessionPrefix, chat.ConsentDeny} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("the transcript must show %q:\n%s", want, out)
 		}

@@ -14,10 +14,11 @@ import (
 // clarifying-question card does — so a click can resolve to the row under it
 // instead of the card being keyboard-only.
 func TestConsentCardReportsItsOptionRowsForClicking(t *testing.T) {
-	it := ConsentItem(PermissionAsk{
+	ask := PermissionAsk{
 		ID: "a1", Kind: AskTool, Tool: "write",
 		Target: "/tmp/x.txt", Directory: "/tmp",
-	}, 1000)
+	}
+	it := ConsentItem(ask, 1000)
 
 	text, opts := consentLineSpans(it, 70)
 	if len(opts) != 3 {
@@ -33,9 +34,10 @@ func TestConsentCardReportsItsOptionRowsForClicking(t *testing.T) {
 				o.Label, o.Line, lines[o.Line], text)
 		}
 	}
-	// The three rows must be the DECISIONS, in the card's own order — a click maps
-	// label to decision, so a wrong label here approves the wrong thing.
-	for i, want := range []string{ConsentAllowOnce, ConsentAllowSession, ConsentDeny} {
+	// The three rows must be the DECISIONS, in the card's own order — a click resolves
+	// the row by GEOMETRY and the row's INDEX decides what it means (DecisionForRow), so a
+	// row in the wrong slot approves the wrong thing.
+	for i, want := range []string{ConsentAllowOnce, ask.SessionLabel(), ConsentDeny} {
 		if opts[i].Label != want {
 			t.Errorf("row %d = %q, want %q", i, opts[i].Label, want)
 		}

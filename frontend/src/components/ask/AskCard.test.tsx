@@ -127,7 +127,11 @@ describe("ConsentAskCard", () => {
     expect(html).toContain('data-testid="consent-ask-target"');
     expect(html).toContain("write /p/sibling/notes.md");
     expect(html).toContain("Allow once");
-    expect(html).toContain("Allow for this session");
+    // THE ROW NAMES THE DIRECTORY IT COVERS. The operator asked for "an option that says
+    // something along the lines of 'Never ask again for this directory for this session'"
+    // after being re-asked for the same directory with no way to tell how far a "session"
+    // grant reached.
+    expect(html).toContain("Never ask again in /p/sibling this session");
     expect(html).toContain("Deny");
     // The three actions are reachable by keyboard (data-ask-action) and the
     // directory a session grant would cover is named on the card.
@@ -143,13 +147,17 @@ describe("ConsentAskCard", () => {
     expect(html).toContain("never overrides your deny list");
     // The action is still OFFERED (the grant does cover the rest) — hiding it
     // would be wrong.
-    expect(html).toContain("Allow for this session");
+    // THE ROW NAMES THE DIRECTORY IT COVERS. The operator asked for "an option that says
+    // something along the lines of 'Never ask again for this directory for this session'"
+    // after being re-asked for the same directory with no way to tell how far a "session"
+    // grant reached.
+    expect(html).toContain("Never ask again in /p/sibling this session");
   });
 
   it("renders the outcome in the transcript when settled, with no actions left", () => {
     const html = cardHtml(consentAsk(), { kind: "allow_session" });
     expect(html).toContain('data-testid="consent-ask-outcome"');
-    expect(html).toContain("Allowed for this session — write /p/sibling/notes.md (covers /p/sibling)");
+    expect(html).toContain("Never asking again in /p/sibling this session — write /p/sibling/notes.md");
     expect(html).toContain('data-answered="true"');
     expect(html).not.toContain("data-ask-action");
   });

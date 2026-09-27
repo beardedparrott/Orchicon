@@ -138,6 +138,45 @@ export function outcomeFromChoice(choice: PermissionChoice): AskOutcome {
 }
 
 /**
+ * The SESSION row's label template. The row is NOT a fixed string, because what it
+does depends on WHICH directory it covers and the operator is entitled to see that
+before they choose it.
+ *
+ * WHY IT NAMES THE SCOPE. The row used to read "Allow for this session", and the
+operator — asked for the same directory over and over, having no idea how far a
+session grant reached — asked for "an option that says something along the lines of
+'Never ask again for this directory for this session'". The option ALREADY existed and
+already worked that way (a grant covers the directory and everything under it, for the
+conversation); what it did not do was SAY so. A consent row whose reach the operator
+has to guess is a row they will not use.
+ *
+ * NEITHER PIECE IS DECORATION: the TUI carries the same three literals verbatim (the
+repo's parity rule — TestConsentWordingMatchesTheGUISource scans this tree for them),
+so the two clients describe the same decision identically.
+ */
+export const CONSENT_SESSION_PREFIX = "Never ask again in ";
+export const CONSENT_SESSION_SUFFIX = " this session";
+/**
+ * CONSENT_SESSION_NO_DIR is the label when the ask names no directory (a detail that
+never resolved). It says "this directory" rather than borrowing the target, because the
+target is a FILE for a write ask and naming a file as the directory a grant covers
+would be a lie about the scope.
+ */
+export const CONSENT_SESSION_NO_DIR = "Never ask again in this directory this session";
+
+/**
+ * sessionLabel is the session row's text, naming the directory the grant would cover.
+ * It and the TUI's PermissionAsk.SessionLabel must produce the same string for the same
+ * ask.
+ */
+export function sessionLabel(ask: { directory?: string }): string {
+  const dir = (ask.directory ?? "").trim();
+  return dir
+    ? `${CONSENT_SESSION_PREFIX}${dir}${CONSENT_SESSION_SUFFIX}`
+    : CONSENT_SESSION_NO_DIR;
+}
+
+/**
  * outcomeFromWire maps the server's PermissionAskResolved.outcome onto the local
  * AskOutcome. It exists because a decision can be made in ANOTHER client: an ask reaches
  * every watcher of a turn while only the answering client cleared its own copy, so the
@@ -189,9 +228,11 @@ export function outcomeLabel(ask: PermissionAsk, outcome: AskOutcome): string {
     case "allow_once":
       return `Allowed once — ${target}`;
     case "allow_session":
+      // The RECORD uses the row's vocabulary, so scrolling back reads as the choice that
+      // was actually made rather than as a second, differently-named outcome.
       return ask.directory
-        ? `Allowed for this session — ${target} (covers ${ask.directory})`
-        : `Allowed for this session — ${target}`;
+        ? `Never asking again in ${ask.directory} this session — ${target}`
+        : `Never asking again this session — ${target}`;
     case "deny":
       return `Denied — ${target}`;
     default:

@@ -3806,12 +3806,24 @@ func (m *App) consentDecideFromRow(label string) tea.Cmd {
 	if !ok {
 		return nil
 	}
+	// THE ROW IS RESOLVED BY ITS INDEX, AND THE DECISION COMES FROM THE INDEX TOO.
+	//
+	// The label is used only to FIND the row the click landed on. Turning that row into a
+	// decision is DecisionForRow's job, and it keys on the index — never on the label text.
+	// Matching the TEXT was the old shape, with "allow once" as the fall-through; once the
+	// session row names a directory its label can equal no fixed constant, so every click on
+	// it would have become "allow once" with no error anywhere.
+	row := -1
 	for i, l := range st.Ask.OptionLabels() {
 		if l == label {
-			st.Sel = i
+			row = i
 			break
 		}
 	}
+	if row < 0 {
+		return nil
+	}
+	st.Sel = row
 	// A QUESTION card rides the same KindConsent item, and a click on it ANSWERS rather than decides.
 	//
 	// It goes through ConsentResolve like every other card row, NOT through the old
@@ -3822,12 +3834,11 @@ func (m *App) consentDecideFromRow(label string) tea.Cmd {
 	if st.Ask.Kind == chat.AskQuestion {
 		return m.ConsentResolve(askID, chat.DecisionAnswer, label)
 	}
-	dec := chat.DecisionAllowOnce
-	switch label {
-	case chat.ConsentAllowSession:
-		dec = chat.DecisionAllowSession
-	case chat.ConsentDeny:
-		dec = chat.DecisionDeny
+	dec, ok := st.Ask.DecisionForRow(row)
+	if !ok {
+		// A non-choice row (a disabled session row): the click is a no-op rather than a
+		// decision nobody made.
+		return nil
 	}
 	return m.ConsentResolve(askID, dec, label)
 }

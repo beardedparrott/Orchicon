@@ -766,3 +766,51 @@ func TestStallMonitorGatesToolWedgeOnAConsentAsk(t *testing.T) {
 		t.Fatal("an ask awaiting the human must not be reclaimed as a wedge")
 	}
 }
+
+// TestBashSessionGrantCoversTheDirectoryAndItsSubtree is the EXECUTION half of the
+// session grant, which only the WRITE half was covered for.
+//
+// It is the operator's complaint as a test: "you were asking for permissions earlier
+// to run commands on the same directory over and over." A bash ask's grant key is the
+// conversation's scope directory (not the command's cwd), so ONE "never ask again in
+// <dir> this session" covers every later command in that directory — and in anything
+// under it, because the grant store matches by subtree.
+func TestBashSessionGrantCoversTheDirectoryAndItsSubtree(t *testing.T) {
+	isolatedPolicy(t, "")
+	svc := testConsentService()
+	client := &consentFakeClient{}
+	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
+
+	_, ask, _ := ct.decide(context.Background(), "ses_1", bashAskEvent("per_1", "go test ./..."))
+	if ask == nil {
+		t.Fatal("expected an ask for the first command")
+	}
+	if ask.Key != "/p/proj" {
+		t.Fatalf("a bash ask's grant key = %q, want the scope directory", ask.Key)
+	}
+	// The operator's choice: the session row the card now labels "Never ask again in
+	// /p/proj this session".
+	svc.grants.Grant("conv-1", ask.Key)
+	if !ask.clientReply(apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_SESSION) {
+		t.Fatal("the reply was not recorded")
+	}
+	ct.applyClientReplies(context.Background(), client)
+
+	// A DIFFERENT command in the same directory must not ask again. This is the repeat
+	// the operator actually hit.
+	resp, ask2, _ := ct.decide(context.Background(), "ses_1", bashAskEvent("per_2", "go build ./..."))
+	if ask2 != nil {
+		t.Fatalf("asked AGAIN for the same directory after a session grant: key=%q", ask2.Key)
+	}
+	if resp != "once" {
+		t.Fatalf("resp = %q, want a silent proceed", resp)
+	}
+	// And a command naming a path UNDER the granted directory is covered too.
+	resp, ask3, refusal := ct.decide(context.Background(), "ses_1", bashAskEvent("per_3", "cat /p/proj/sub/f.txt"))
+	if ask3 != nil {
+		t.Fatalf("asked again for a path inside the granted directory: key=%q", ask3.Key)
+	}
+	if resp != "once" || refusal != "" {
+		t.Fatalf("resp=%q refusal=%q — want a silent proceed", resp, refusal)
+	}
+}

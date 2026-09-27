@@ -188,14 +188,19 @@ func (m *Model) confirmConsent() tea.Cmd {
 		st.Choice = choice
 		return m.resolveConsent(chat.DecisionAnswer)
 	}
-	switch st.Sel {
-	case 0:
-		return m.resolveConsent(chat.DecisionAllowOnce)
-	case 1:
-		return m.resolveConsent(chat.DecisionAllowSession)
-	default:
-		return m.resolveConsent(chat.DecisionDeny)
+	// THE ROW INDEX IS THE DECISION, and it comes from the shared mapping so the
+	// KEYBOARD and the CLICK cannot disagree about what row 1 means. This used to
+	// hard-code the same three indices locally, which is exactly how two paths drift
+	// apart the moment a label changes — and the session row's label now depends on
+	// the ask (it names the directory the grant covers).
+	dec, ok := st.Ask.DecisionForRow(st.Sel)
+	if !ok {
+		// A row that is not a permission choice — the session row when the deny list
+		// disables it. Enter is a no-op, matching the arrows' refusal to land on it and
+		// the click path's refusal to act on it.
+		return nil
 	}
+	return m.resolveConsent(dec)
 }
 
 // resolveConsent settles the card and releases the claim.
