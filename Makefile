@@ -257,11 +257,17 @@ fe-test: ## Run frontend unit/component tests (vitest; Playwright specs live und
 # The single container is the only full-stack deployment (dev + prod as two
 # instances on offset ports). See scripts/container.sh.
 .PHONY: container-build container-rebuild container-up container-down container-status container-logs container-ps runtime-build runtime-daemon runtime-stop
-# Plane residency per rebuild: `container` (default — the plane runs inside the
-# instance's container, exactly as today) or `host` (the container runs the
-# SERVICES only and the plane runs on the HOST). This is the opt-in switch for
-# the host-residency migration; it is deliberately per instance and defaults to
-# today's behaviour.
+# Plane residency per rebuild: `host` (the container runs the SERVICES only and
+# the plane runs on the HOST — now the product's default shape; see
+# residency_for in scripts/container.sh, which resolves ${...:-host}) or
+# `container` (the plane runs inside the instance's container, as it did before
+# the host-residency migration).
+#
+# THIS VARIABLE IS NO LONGER THE PRODUCT'S DEFAULT, only this target's. It used
+# to be described as "the launcher's own default stays container", and that
+# stopped being true when the launcher's default moved to host — so
+# `make container-rebuild` is now the one entry point that still produces the
+# OLD shape. rebuild-dev/rebuild-prod override this per target (below).
 residency = container
 container-build: ## Build bin/orchicon + the container image
 	$(MAKE) build
