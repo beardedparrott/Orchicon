@@ -33,7 +33,9 @@ package dock
 import (
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -273,6 +275,25 @@ func (m *Model) styledTa() textarea.Model {
 	// is the ordinary line style: the character must not vanish when the blink is off.
 	ta.Cursor.Style = theme.ComposerCursor
 	ta.Cursor.TextStyle = base
+
+	// THE DOCK OWNS THE CARET'S BLINK LOOP. See dockBlinkTick for why: the library
+	// starts a NEW blink timer every time the cursor MOVES (every keystroke, backspace and
+	// arrow key), cancelling the previous one — whose command then returns immediately, so
+	// each of those keys produced a second, pointless message and a second full-screen
+	// repaint. Putting the cursor in CursorStatic is what stops the library from minting:
+	// its move handler only re-arms when the mode IS CursorBlink.
+	//
+	// THE CARET STILL RENDERS AND STILL BLINKS. cursor.View() does not consult the mode at
+	// all — it paints the reversed block whenever Blink is false — so the mode here decides
+	// only who owns the TIMER, not whether a caret is drawn.
+	//
+	// That is verified by READING the library rather than by a test, and the reason is worth
+	// recording: textarea.View has a VALUE receiver, so its m.Cursor.SetChar(...) mutates its
+	// own copy — the caret's character is unobservable from the model after a render. And with
+	// the colour profile stripped (as in tests) the caret is byte-identical to the text it
+	// sits on. A test asserting "the caret is drawn" would therefore have to assert something
+	// it cannot see.
+	ta.Cursor.SetMode(cursor.CursorStatic)
 
 	// Re-resolve the active style pointer against what we just assigned.
 	if m.Focused {
@@ -824,9 +845,13 @@ func (m *Model) statLine(inner int) string {
 // Focus / Blur move keyboard focus into/out of the composer.
 func (m *Model) Focus() {
 	m.Focused = true
-	// Capture — do not discard — the command that starts the caret's blink
-	// loop. Update hands it to the runtime with the next message.
-	m.blinkStart = m.ta.Focus()
+	// Capture — do not discard — the commands that start the caret's loop and its own
+	// tick. Update hands them to the runtime with the next message.
+	//
+	// TWO COMMANDS, because the dock owns the blink now (see dockBlinkTick): the
+	// textarea's Focus() still sets the cursor's visible state, and dockBlinkTick starts
+	// the single timer that keeps toggling it.
+	m.blinkStart = tea.Batch(m.ta.Focus(), dockBlinkTick())
 }
 
 // TakeBlinkStart hands out (once) the command that starts the caret's blink loop,
@@ -908,7 +933,16 @@ func (m *Model) Update(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 	}
 
 	switch k := msg.(type) {
+	case dockBlinkMsg:
+		// Our own tick: toggle the caret and re-arm. ONE loop, and nothing an edit does
+		// can cancel it (see dockBlinkTick).
+		m.ta.Cursor.Blink = !m.ta.Cursor.Blink
+		return true, dockBlinkTick()
 	case tea.KeyMsg:
+		// ANY key makes the caret SOLID, which is what bubbles did on a cursor move
+		// (Blink=false) and what keeps it from blinking out mid-word — a caret that
+		// disappears while the operator is typing reads as lost focus.
+		m.ta.Cursor.Blink = false
 		// THE ALL-SELECTED STATE GETS FIRST REFUSAL. While the whole composer is selected, the keys that
 		// would normally edit it REPLACE it — which is what "selected" means, and what makes the gesture
 		// useful (the operator asked to "easily copy or delete it all").
@@ -1309,3 +1343,46 @@ func fitAll(rows []string, w int) []string {
 
 // PlaceholderText is exported for tests/docs.
 func PlaceholderText() string { return fmt.Sprintf("ask orchicon…") }
+
+// --- the dock's own caret blink ------------------------------------------
+//
+// THE DOCK OWNS THE CARET'S BLINK LOOP, and that is a performance fix with a
+// correctness-adjacent reason for existing.
+//
+// What bubbles does on its own: every time the CURSOR MOVES it re-arms the blink —
+//
+//	if (newRow != oldRow || newCol != oldCol) && m.Cursor.Mode() == cursor.CursorBlink {
+//	    m.Cursor.Blink = false
+//	    cmd = m.Cursor.BlinkCmd()
+//	}
+//
+// — and BlinkCmd CANCELS the previous timer before starting a new one. A cancelled
+// blink command's goroutine unblocks immediately and returns `blinkCanceled`, which the
+// runtime still DELIVERS as a message. So every keystroke, backspace and arrow key (all of
+// which move the cursor) produced a SECOND message and therefore a SECOND full-screen
+// repaint, for nothing: the wasted frame's only job was to be rejected by the cursor's
+// tag check.
+//
+// Measured, before this: 20 keystrokes scheduled 20 blink timers, and a frame costs
+// ~0.6ms at 120x40 rising to ~1.5ms at 320x100 (the frame paints every cell with the
+// theme background, so its cost scales with the terminal's AREA). Typing therefore paid
+// roughly double the frames it needed — the operator's "when typing into the composer,
+// moving the cursor with the arrow keys, backspacing, etc. it seems a little laggy".
+//
+// So the loop is ours now: ONE timer, started on focus, re-armed by its own tick, and
+// never cancelled by an edit. The library cannot mint a rival because its move handler
+// requires the cursor mode to be CursorBlink (see New, which sets CursorStatic); the
+// caret itself is unaffected, since cursor.View() renders from Blink alone.
+const dockBlinkSpeed = 530 * time.Millisecond // bubbles' cursor.BlinkSpeed default
+
+// dockBlinkMsg is our blink tick. It is a dock-local type rather than a cursor.BlinkMsg
+// for the same reason the library is "choosy" about its own: a fabricated tick carrying
+// bubbles' private id/blinkTag is always rejected, so this is the only shape that can
+// drive our loop.
+type dockBlinkMsg struct{}
+
+// dockBlinkTick returns the one command that keeps the caret blinking: it fires after the
+// blink interval, and delivering dockBlinkMsg re-arms the next one.
+func dockBlinkTick() tea.Cmd {
+	return tea.Tick(dockBlinkSpeed, func(time.Time) tea.Msg { return dockBlinkMsg{} })
+}
