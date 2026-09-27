@@ -100,6 +100,15 @@ func parseAskUserCall(calls []*apiv1.ToolCall, results []*apiv1.ToolResult) *Par
 		if c == nil || !isAskUserCall(c.GetFunctionName()) {
 			continue
 		}
+		// THE RESULT IS LOOKED UP FIRST, because whether one EXISTS decides what an unreadable
+		// argument list means. See the unmarshal failure below.
+		var result *apiv1.ToolResult
+		for _, r := range results {
+			if r != nil && r.GetToolCallId() == c.GetId() {
+				result = r
+				break
+			}
+		}
 		var in struct {
 			Question string `json:"question"`
 			Options  []struct {
@@ -109,7 +118,28 @@ func parseAskUserCall(calls []*apiv1.ToolCall, results []*apiv1.ToolResult) *Par
 			AllowOther bool `json:"allow_other"`
 		}
 		if err := json.Unmarshal([]byte(c.GetArguments()), &in); err != nil {
-			return &ParsedAsk{Question: "(this clarifying question's arguments could not be read)"}
+			// AN OPEN CALL IS A PLACEHOLDER, NOT A CORRUPT ONE. The transcript records a tool call
+			// the moment it is ISSUED, with `{}` for its arguments — the real ones are backfilled
+			// only when it COMPLETES. For ask_user the call does not complete while the question is
+			// open (it BLOCKS; that is the pause), so for as long as the operator is looking at a
+			// pending question the transcript holds an ask_user call with no arguments.
+			//
+			// Drawing a card for it produced TWO cards for ONE question — a "could not be read"
+			// box beside the real one — for the whole time the operator was deciding. The live
+			// card is already drawing the question, so this draws nothing.
+			//
+			// A call that HAS resolved and is still unreadable really is corrupt, and that IS
+			// worth showing: it is the only remaining evidence that a question was asked.
+			if result == nil {
+				return nil
+			}
+			// ANSWERED, because the call HAS resolved: the card must not render as an interactive
+			// question inviting an answer to something already finished — nothing is waiting on it.
+			return &ParsedAsk{
+				Question:   "(this clarifying question's arguments could not be read)",
+				Answered:   true,
+				AnswerText: strings.TrimSpace(result.GetOutput()),
+			}
 		}
 		ask := &ParsedAsk{Question: strings.TrimSpace(in.Question), AllowOther: in.AllowOther}
 		for _, o := range in.Options {
@@ -118,14 +148,10 @@ func parseAskUserCall(calls []*apiv1.ToolCall, results []*apiv1.ToolResult) *Par
 			}
 			ask.Options = append(ask.Options, AskOption{Label: o.Label, Description: o.Description})
 		}
-		// The result, when there is one: the answer IS the tool result.
-		for _, r := range results {
-			if r == nil || r.GetToolCallId() != c.GetId() {
-				continue
-			}
+		// The answer IS the tool result, when there is one.
+		if result != nil {
 			ask.Answered = true
-			ask.AnswerText = strings.TrimSpace(r.GetOutput())
-			break
+			ask.AnswerText = strings.TrimSpace(result.GetOutput())
 		}
 		return ask
 	}

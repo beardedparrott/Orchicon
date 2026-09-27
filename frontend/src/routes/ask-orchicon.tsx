@@ -89,6 +89,7 @@ import { AskCard, isAskUserToolCall, parseAskUserArgs } from "@/components/ask/A
 import { ConsentAskCard } from "@/components/ask/AskCard";
 import {
   applyAskChunk,
+  askCardPlan,
   interleave,
   settleFromLedger,
   outcomeFromChoice,
@@ -2240,6 +2241,12 @@ function MessageBubble({
     ? (message.toolResults ?? []).find((r) => r.toolCallId === askCall.id)
     : undefined;
   const askAnswered = !!askResult;
+  // WHETHER TO DRAW AT ALL, and whether to draw as an error. The distinction is the reported bug: a
+  // call recorded but NOT YET RESOLVED carries a placeholder `{}` for its arguments, and for
+  // `ask_user` that state lasts as long as the question is open (the call BLOCKS) — so the
+  // transcript held an unparseable card for the whole time the operator was looking at the real
+  // one. See askCardPlan.
+  const askPlan = askCardPlan(!!askCall, !!askParsed, !!askResult);
   // The answer ITSELF, so the settled record can state it. It is the ask's own tool result —
   // server truth, present in the persisted transcript — rather than a guess from a later
   // message, which is the same rule that fixed "answered" in the first place.
@@ -2266,14 +2273,14 @@ function MessageBubble({
           of a bunch of other text you sent. That is not intuitive. It should be at
           the bottom (newest/recent)." The TUI emits its card last for the same
           reason (chat.conversationItems), so the two clients read the same way. */}
-      {askCall && (
+      {askCall && askPlan.render && (
         <AskCard
           question={askParsed?.question ?? ""}
           options={askParsed?.options ?? []}
           allowOther={askParsed?.allowOther}
           answered={askAnswered}
           answer={askAnswer}
-          error={askParsed ? undefined : "the recorded arguments are not valid JSON"}
+          error={askPlan.error}
           onSelect={onSelectOption}
         />
       )}

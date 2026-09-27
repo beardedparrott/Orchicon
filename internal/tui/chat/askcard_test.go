@@ -62,18 +62,38 @@ func TestConversationItemsEmitsAskCard(t *testing.T) {
 	}
 }
 
-// TestParseAskUserCallToleratesMalformedArguments: a malformed recorded payload
-// must not drop the card or panic — it renders a visible error row instead.
+// TestParseAskUserCallToleratesMalformedArguments: an unreadable payload must never panic, and
+// what it SHOULD produce depends on whether the call has resolved.
+//
+// THIS TEST USED TO ASSERT THE BUG. It required a card for malformed arguments with NO result —
+// which is the PLACEHOLDER state, not a corrupt one: the transcript records a tool call when it is
+// ISSUED with `{}` for its arguments, and `ask_user` does not complete while the question is open
+// (it BLOCKS; that is the pause). So the placeholder was drawn as a "could not be read" card beside
+// the live question — TWO cards for ONE question, for as long as the operator was deciding. The
+// operator hit exactly that in the GUI, in those words.
 func TestParseAskUserCallToleratesMalformedArguments(t *testing.T) {
-	got := parseAskUserCall([]*apiv1.ToolCall{{
-		FunctionName: "ask_user",
-		Arguments:    "{not json",
-	}}, nil)
+	call := &apiv1.ToolCall{Id: "tc-1", FunctionName: "ask_user", Arguments: "{not json"}
+
+	// OPEN (no result): the placeholder. A live card is already drawing the question, so this must
+	// draw NOTHING rather than an error about arguments that have not been written yet.
+	if got := parseAskUserCall([]*apiv1.ToolCall{call}, nil); got != nil {
+		t.Fatalf("an OPEN unreadable call produced a card (%q) — that is the placeholder, and it "+
+			"draws alongside the live question as a duplicate", got.Question)
+	}
+
+	// RESOLVED and still unreadable: genuinely corrupt. The notice IS worth showing here — it is the
+	// only remaining evidence that a question was asked.
+	got := parseAskUserCall([]*apiv1.ToolCall{call}, []*apiv1.ToolResult{{
+		ToolCallId: "tc-1", Output: "yes",
+	}})
 	if got == nil {
-		t.Fatal("a recorded ask_user call must still produce a card")
+		t.Fatal("a RESOLVED ask_user call with corrupt arguments must still produce a card")
 	}
 	if !strings.Contains(got.Question, "could not be read") {
 		t.Errorf("question = %q, want the malformed-arguments notice", got.Question)
+	}
+	if !got.Answered {
+		t.Error("the resolved call must report itself answered")
 	}
 	// A non-ask tool call is ignored entirely.
 	if parseAskUserCall([]*apiv1.ToolCall{{FunctionName: "list_projects"}}, nil) != nil {

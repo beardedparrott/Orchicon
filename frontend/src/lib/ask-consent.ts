@@ -376,3 +376,40 @@ export function settleFromLedger(
   });
   return changed ? next : items;
 }
+
+/**
+ * askCardPlan decides whether a recorded `ask_user` call should draw a clarifying-question card,
+ * and whether it should draw as an ERROR card.
+ *
+ * WHY THIS IS A DECISION AND NOT A `parse() ?? error()` AT THE CALL SITE. The transcript records a
+ * tool call the moment it is ISSUED, with a placeholder `{}` for its arguments, and the real
+ * arguments are backfilled only when the call COMPLETES. For `ask_user` the call does not complete
+ * while the question is open — it BLOCKS, which is the whole point of the pause — so for exactly as
+ * long as the operator is looking at a pending question, the transcript holds an `ask_user` call
+ * whose arguments are `{}`.
+ *
+ * That is the reported bug: the GUI drew TWO cards for ONE question, one of them
+ *
+ *	Could not read this clarifying question (the recorded arguments are not valid JSON)
+ *
+ * because an unparseable call was treated as a corrupt one. The distinction the call site was
+ * missing:
+ *
+ *	no result	the call is still OPEN — the placeholder, with a live card already drawing the
+ *			real question elsewhere. Draw NOTHING; a second card for the same question is noise,
+ *			and an error about arguments that have not been written yet is a lie.
+ *
+ *	has result	the call is DONE and its arguments are still unreadable, so they really are
+ *			corrupt. Draw the error: the record is damaged and silently hiding it would lose the
+ *			only evidence that a question was asked.
+ */
+export function askCardPlan(
+  hasCall: boolean,
+  parsed: boolean,
+  hasResult: boolean,
+): { render: boolean; error?: string } {
+  if (!hasCall) return { render: false };
+  if (parsed) return { render: true };
+  if (!hasResult) return { render: false };
+  return { render: true, error: "the recorded arguments are not valid JSON" };
+}

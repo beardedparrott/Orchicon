@@ -3,6 +3,7 @@ import type { PermissionAsk } from "@/api/gen/orchicon/api/v1/ask_orchicon_servi
 import { PermissionChoice } from "@/api/gen/orchicon/api/v1/ask_orchicon_service_pb";
 import {
   applyAskChunk,
+  askCardPlan,
   outcomeFromChoice,
   CONSENT_SESSION_NO_DIR,
   CONSENT_SESSION_PREFIX,
@@ -352,5 +353,45 @@ describe("settleFromLedger", () => {
   it("ignores messages and calls that say nothing about a card", () => {
     const items = asks();
     expect(settleFromLedger(items, [{ toolCalls: [] }, { toolCalls: [{ id: "ask_1", functionName: "write" }] }])).toBe(items);
+  });
+});
+
+
+// THE TWO-CARDS-FOR-ONE-QUESTION BUG.
+//
+// The transcript records a tool call when it is ISSUED, with a placeholder `{}` for its arguments;
+// the real ones are backfilled only when the call COMPLETES. For `ask_user` the call does not
+// complete while the question is open — it BLOCKS, which is the point of the pause — so for exactly
+// as long as the operator is looking at a pending question, the transcript holds an ask_user call
+// whose arguments are `{}`. The GUI drew a card for it, next to the live one:
+//
+//	Could not read this clarifying question (the recorded arguments are not valid JSON)
+//
+// Three states, and the middle one is the fix.
+describe("askCardPlan", () => {
+  it("draws a readable call, live or settled", () => {
+    expect(askCardPlan(true, true, false)).toEqual({ render: true });
+    expect(askCardPlan(true, true, true)).toEqual({ render: true });
+  });
+
+  // THE FIX: unresolved + unreadable is the PLACEHOLDER, not corruption. The live card is drawing
+  // the real question, so anything drawn here is a duplicate — and an error about arguments that
+  // have not been written yet is a lie.
+  it("draws NOTHING for an open call whose arguments are still the placeholder", () => {
+    expect(askCardPlan(true, false, false)).toEqual({ render: false });
+  });
+
+  // Resolved + unreadable means the arguments really are corrupt. Drawing the error keeps the one
+  // piece of evidence that a question was asked; hiding it would lose that silently.
+  it("draws an ERROR for a finished call with corrupt arguments", () => {
+    expect(askCardPlan(true, false, true)).toEqual({
+      render: true,
+      error: "the recorded arguments are not valid JSON",
+    });
+  });
+
+  it("draws nothing when there is no ask call at all", () => {
+    expect(askCardPlan(false, false, false)).toEqual({ render: false });
+    expect(askCardPlan(false, true, false)).toEqual({ render: false });
   });
 });
