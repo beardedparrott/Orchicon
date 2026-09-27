@@ -814,7 +814,7 @@ func (b *NativeBridge) executeToolCalls(ctx context.Context, bus *chatBus, worki
 			// (a denial, a refusal, or silence past the wait) means the call does
 			// NOT run and the model is told why.
 			if d := b.awaitConsentPermission(ctx, bus, c, args); d != "once" {
-				toolErr = fmt.Errorf("permission denied for %s — this call was not approved, so it did not run", c.Name)
+				toolErr = consentDenialError(c.Name, d)
 			} else {
 				out, toolErr = tools.ExecuteAskTool(ctx, c.Name, args)
 			}
@@ -1143,7 +1143,13 @@ func consentGatedTool(name string) bool {
 // It makes NO policy decision here: it carries the action (tool + argument JSON,
 // from which the collector derives the target and the command the same way it
 // does for an MCP-style ask) and waits. "once" means proceed; anything else means
-// the call does not run.
+// the call does not run, and the value says WHICH of the three situations it was —
+// see the outcome constants.
+//
+// A TIMEOUT IS NOT A REFUSAL, AND NOTHING IS PERMANENT. It writes no grant, no deny
+// entry and no once-target; the only sticky state in this system is the operator's
+// policy file and an explicit ALLOW_SESSION grant. So a retried call is a NEW call,
+// which asks again and can be approved — the denial is per-call, by construction.
 func (b *NativeBridge) awaitConsentPermission(ctx context.Context, bus *chatBus, c ToolCall, args string) string {
 	askID := b.nextPermID()
 	w := &permWait{decision: make(chan string, 1)}
@@ -1175,13 +1181,46 @@ func (b *NativeBridge) awaitConsentPermission(ctx context.Context, bus *chatBus,
 	case d := <-w.decision:
 		return d
 	case <-timer.C:
-		// Silence is a DENIAL (fail closed), and the model is told so it can
-		// explain rather than retry blindly.
-		return "reject"
+		// Silence is a DENIAL for this call (fail closed) — never an approval.
+		//
+		// "expired" rather than "reject" so the caller can say something USEFUL: the
+		// operator did not refuse, nobody answered, and the same call WILL be asked
+		// again if it is retried (a retry is a new call, hence a new ask and a new
+		// card — a timeout writes no permanent state). The two used to be
+		// indistinguishable, so the model was told "not approved" either way and had
+		// no reason to ask again.
+		return consentExpired
 	case <-ctx.Done():
 		// The turn was cancelled (Stop / supersede / TTL): give up the wait
 		// immediately rather than holding the goroutine for the full window.
-		return "reject"
+		return consentCancelled
+	}
+}
+
+// The outcomes awaitConsentPermission reports. "once" proceeds; every other value
+// means the call did NOT run, and they are distinct because the OPERATOR's
+// situation differs and the model is told about it.
+const (
+	// consentExpired — the wait ran out with no answer. Not a refusal: the same
+	// call will be asked again if it is retried.
+	consentExpired = "expired"
+	// consentCancelled — the turn ended while the ask was outstanding.
+	consentCancelled = "cancelled"
+)
+
+// consentDenialError words what happened to a call that was not approved, in the
+// terms the MODEL needs to decide whether to try again. The medium is a tool error,
+// so it is read by the model rather than the operator — and "not approved" for
+// every case (an explicit refusal, an unanswered ask, a cancelled turn) is what
+// stops a model retrying when retrying is exactly what the operator wants.
+func consentDenialError(tool, decision string) error {
+	switch decision {
+	case consentExpired:
+		return fmt.Errorf("approval for %s expired unanswered — nothing was approved, so this call did not run. Nothing is permanently denied: retry the call if it is still needed, and it will ask again", tool)
+	case consentCancelled:
+		return fmt.Errorf("the turn was cancelled while awaiting approval for %s — this call did not run", tool)
+	default:
+		return fmt.Errorf("the operator denied %s — this call did not run. Do not retry it; ask them what they would prefer instead", tool)
 	}
 }
 

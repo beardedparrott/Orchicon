@@ -2,17 +2,48 @@ package orchicon
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// TestConsentGatedToolGatesWritesAndExecutionsOnly pins the settled rule: a write
-// or an execution is approved before it runs, a READ never is. Prompting for a
-// read would train the operator to approve without looking, which is the failure
-// the gate exists to prevent.
-func TestConsentGatedToolGatesWritesAndExecutionsOnly(t *testing.T) {
+// TestConsentDenialErrorDistinguishesTheThreeOutcomes is the operator's question as
+// a test: "if I let a permission ask time out and then I asked for the prompt again,
+// would it now be accepted, or is it deny forever at that point?"
+//
+// It is NOT deny-forever — a timeout writes no grant, no deny entry and no
+// once-target, so a retried call is a new call which asks again. But the model has
+// to be TOLD that, and it used to receive identical text for "the operator refused
+// you" and "nobody answered", so it had no reason to ask again. These messages are
+// read by the model, and they must not be interchangeable.
+func TestConsentDenialErrorDistinguishesTheThreeOutcomes(t *testing.T) {
+	expired := consentDenialError("write", consentExpired).Error()
+	cancelled := consentDenialError("write", consentCancelled).Error()
+	denied := consentDenialError("write", "reject").Error()
+
+	// A timeout must INVITE a retry, because that is the whole point: nothing is
+	// permanently denied and the same call will ask again.
+	if !strings.Contains(expired, "retry") || !strings.Contains(expired, "ask again") {
+		t.Errorf("the expired message must tell the model a retry will ask again, got %q", expired)
+	}
+	// A refusal must NOT.
+	if strings.Contains(denied, "retry the call") {
+		t.Errorf("the denied message must not invite a retry, got %q", denied)
+	}
+	if !strings.Contains(denied, "denied") {
+		t.Errorf("the denied message must say the operator refused, got %q", denied)
+	}
+	// And the three must not be interchangeable.
+	if expired == denied || expired == cancelled || denied == cancelled {
+		t.Fatalf("the outcomes are not distinguishable:\n  expired=%q\n  denied=%q\n  cancelled=%q", expired, denied, cancelled)
+	}
+}
+
+// TestConsentReadOnlyToolsNeverAsk is the rule at the heart of the gate: a read
+// cannot change anything, so it never asks.
+func TestConsentReadOnlyToolsNeverAsk(t *testing.T) {
 	for _, name := range []string{"write", "edit", "batch_write", "bash"} {
 		if !consentGatedTool(name) {
 			t.Errorf("%q must be gated — it changes the world", name)
@@ -22,6 +53,12 @@ func TestConsentGatedToolGatesWritesAndExecutionsOnly(t *testing.T) {
 		if consentGatedTool(name) {
 			t.Errorf("%q must NOT be gated — reads never ask", name)
 		}
+	}
+	// todowrite is a WRITE (to session state, not the filesystem) and is classified
+	// as mutating for completeness; it must therefore ask like any other mutating
+	// host tool rather than riding the product-tool exemption.
+	if !consentGatedTool("todowrite") {
+		t.Error("todowrite is classified mutating, so it must ask")
 	}
 }
 
@@ -85,8 +122,13 @@ func TestAwaitConsentPermissionDeniesOnSilence(t *testing.T) {
 	start := time.Now()
 	d := b.awaitConsentPermission(context.Background(), bus,
 		ToolCall{ToolCallID: "tc-1", Name: "write", ArgsJSON: `{"filePath":"/tmp/x"}`}, `{"filePath":"/tmp/x"}`)
-	if d != "reject" {
-		t.Fatalf("decision = %q, want \"reject\" — silence must never be approval", d)
+	// "expired", not "reject": the operator did not refuse, and the model is told
+	// that a retry will ask again. What must NEVER happen is "once".
+	if d == "once" {
+		t.Fatalf("silence resolved to %q — silence must never be approval", d)
+	}
+	if d != consentExpired {
+		t.Fatalf("decision = %q, want %q", d, consentExpired)
 	}
 	if elapsed := time.Since(start); elapsed > 3*time.Second {
 		t.Fatalf("the wait took %s; it must honour the configured bound", elapsed)
@@ -115,8 +157,11 @@ func TestAwaitConsentPermissionDeniesOnCancelledTurn(t *testing.T) {
 
 	select {
 	case d := <-done:
-		if d != "reject" {
-			t.Fatalf("decision = %q, want \"reject\" for a cancelled turn", d)
+		if d == "once" {
+			t.Fatalf("a cancelled turn resolved to %q — it must never be an approval", d)
+		}
+		if d != consentCancelled {
+			t.Fatalf("decision = %q, want %q for a cancelled turn", d, consentCancelled)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("a cancelled turn did not release the consent wait")
