@@ -1859,7 +1859,15 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 			// A client decision landed for one of this turn's asks: answer the
 			// serve and resume. The turn was never blocked by us — opencode held
 			// the call; we only awaited this.
-			c.consent.applyClientReplies(context.WithoutCancel(subCtx), c.client)
+			//
+			// AND PUBLISH WHAT WAS APPLIED, so every OTHER watcher of this turn
+			// settles its copy of the card. Without it a decision made in one
+			// client left the other showing a live-looking, inert card — and the
+			// clients cannot infer it, because a permission ask has no durable
+			// per-ask row to reconcile against.
+			for _, r := range c.consent.applyClientReplies(context.WithoutCancel(subCtx), c.client) {
+				emitAskResolution(c.onStreamEvent, c.convID, r)
+			}
 		case evt, ok := <-sub.Events():
 			if !ok {
 				// Bus closed — the serve died mid-reply. Re-attach (bounded

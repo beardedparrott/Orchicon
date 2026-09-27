@@ -4,6 +4,7 @@ import { PermissionChoice } from "@/api/gen/orchicon/api/v1/ask_orchicon_service
 import {
   applyAskChunk,
   outcomeFromChoice,
+  outcomeFromWire,
   outcomeLabel,
   pendingFor,
   popoverNudge,
@@ -107,6 +108,73 @@ describe("outcomeFromChoice", () => {
     expect(outcomeFromChoice(PermissionChoice.ALLOW_SESSION)).toEqual({ kind: "allow_session" });
     expect(outcomeFromChoice(PermissionChoice.DENY)).toEqual({ kind: "deny" });
     expect(outcomeFromChoice(PermissionChoice.UNSPECIFIED)).toEqual({ kind: "allow_once" });
+  });
+});
+
+// A decision can be made in ANOTHER client. An ask reaches every watcher of a
+// turn while only the answering client clears its own copy, so the collector
+// publishes the outcome and every watcher settles from it. These pin the client
+// half of that contract.
+describe("outcomeFromWire", () => {
+  it("maps every outcome the server can publish", () => {
+    expect(outcomeFromWire("allow_once")).toEqual({ kind: "allow_once" });
+    expect(outcomeFromWire("allow_session")).toEqual({ kind: "allow_session" });
+    expect(outcomeFromWire("deny")).toEqual({ kind: "deny" });
+    expect(outcomeFromWire("expired")).toEqual({ kind: "expired" });
+  });
+
+  it("settles a question's answer without calling it a permission", () => {
+    expect(outcomeFromWire("answered")).toEqual({ kind: "allow_once" });
+  });
+
+  // The one failure a consent surface must not have: an outcome we did not
+  // understand must NEVER read as a grant. It fails closed to `expired`, and it
+  // says which value it did not recognise.
+  it("never reads an unrecognised outcome as a grant", () => {
+    for (const unknown of ["", "ALLOW", "granted", "allow", "allow_always"]) {
+      const got = outcomeFromWire(unknown);
+      expect(got).not.toEqual({ kind: "allow_once" });
+      expect(got).not.toEqual({ kind: "allow_session" });
+      expect(got.kind).toBe("expired");
+    }
+    expect(outcomeFromWire("allow_always")).toEqual({
+      kind: "expired",
+      detail: 'unrecognised outcome "allow_always"',
+    });
+  });
+});
+
+// The two halves the GUI actually composes: a resolution arriving for a card
+// this client did not answer.
+describe("settling another client's card", () => {
+  const items = (): AskItem[] => [
+    { key: "perm_1", ask: ask("perm_1"), outcome: null, resolvedAt: null, at: 1 },
+    { key: "perm_2", ask: ask("perm_2"), outcome: null, resolvedAt: null, at: 2 },
+  ];
+
+  it("settles only the named ask", () => {
+    const out = resolveAsk(items(), "perm_1", outcomeFromWire("deny"), 42);
+    expect(out.find((i) => i.key === "perm_1")?.outcome).toEqual({ kind: "deny" });
+    expect(out.find((i) => i.key === "perm_1")?.resolvedAt).toBe(42);
+    expect(out.find((i) => i.key === "perm_2")?.outcome).toBeNull();
+  });
+
+  // A relaying stream is a normal condition, not an error: the ask is delivered
+  // to every watcher, so the resolution is too. Settling an already-settled card
+  // must not overwrite the decision the operator made here.
+  it("is idempotent — a repeat resolution does not rewrite the decision", () => {
+    const once = resolveAsk(items(), "perm_1", outcomeFromWire("allow_session"), 42);
+    const twice = resolveAsk(once, "perm_1", outcomeFromWire("expired"), 99);
+    expect(twice.find((i) => i.key === "perm_1")?.outcome).toEqual({ kind: "allow_session" });
+    expect(twice.find((i) => i.key === "perm_1")?.resolvedAt).toBe(42);
+  });
+
+  // A watcher that attached AFTER the decision never received the ask, so there
+  // is no card to settle — and the resolution must not invent one.
+  it("is a no-op for an ask this client never saw", () => {
+    const out = resolveAsk(items(), "perm_gone", outcomeFromWire("deny"), 42);
+    expect(out).toHaveLength(2);
+    expect(out.every((i) => i.outcome === null)).toBe(true);
   });
 });
 

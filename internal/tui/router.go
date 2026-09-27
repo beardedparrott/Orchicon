@@ -1366,6 +1366,15 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		// the conversation's session grants first, so a directory already allowed
 		// for this session does not ask twice.
 		return tea.Batch(m.ShowConsentAsk(msg.Ask), m.waitChat())
+	case chat.ConsentResolvedMsg:
+		// THE OTHER CLIENT DECIDED, so settle this client's copy of the card.
+		//
+		// The operator: "the choice box is still there for permissions" — in the GUI
+		// after answering in the TUI. Only the answering client cleared its own copy,
+		// and a permission ask has no durable row to reconcile against, so the
+		// collector publishes the outcome and every watcher settles from it.
+		m.chatStore.settleAsk(msg.ConvID, msg.AskID, msg.Outcome, msg.Answer)
+		return tea.Batch(m.onChatWake(), m.waitChat())
 	case chat.ConsentRepliedMsg:
 		// The SERVER's verdict on a decision we sent. A decision that did not apply
 		// (the ask expired, the turn ended) must SAY so — otherwise the operator

@@ -79,8 +79,15 @@ func consentRecord(st *ConsentState) string {
 			return "question dismissed — no answer sent"
 		}
 		return "answer · " + st.Choice
+	case DecisionSettled:
+		// NOT "expired unanswered" and NOT a denial: this client simply stopped being
+		// able to see the card. The outcome was decided somewhere it cannot observe.
+		return "no longer pending · " + subject
 	default:
-		return "consent " + ConsentAllowOnce + " · " + subject
+		// An UNRECOGNISED decision must not silently claim "allow once" — that was the
+		// previous default, which would report a permission as granted on the strength
+		// of a value it did not understand.
+		return "consent resolved (" + string(st.Decision) + ") · " + subject
 	}
 }
 

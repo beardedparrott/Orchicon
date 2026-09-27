@@ -3134,6 +3134,92 @@ func (s *chatStore) replace(convID string, items []chat.ChatItem) {
 	s.mu.Unlock()
 }
 
+// settleAsk records a decision that was made SOMEWHERE ELSE, so this client's copy of
+// the card stops being a choice. Nil-safe and idempotent: an ask that is not in this
+// conversation, or is already settled, is left alone.
+//
+// The OUTCOME names what actually happened, which is why it is carried rather than
+// assumed: "allow_once" / "allow_session" / "deny" is what the operator chose, and
+// "answered" / "expired" are the outcomes no client can infer from its own state.
+func (s *chatStore) settleAsk(convID, askID, outcome, answer string) {
+	if s == nil || askID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.items[convID] {
+		it := &s.items[convID][i]
+		if it.Kind != chat.KindConsent || it.AskID != askID || it.Consent == nil {
+			continue
+		}
+		it.Consent.Decision = consentDecisionFromOutcome(outcome)
+		it.Consent.Choice = answer
+		it.Consent.Note = ""
+		it.Consent.OtherMode = false
+		return
+	}
+}
+
+// consentDecisionFromOutcome maps the wire's outcome name onto the local decision the
+// renderer records. An UNRECOGNISED outcome settles the card WITHOUT claiming a
+// decision, using DecisionSettled — the same value the turn-end sweep uses for "this
+// client no longer knows what happened". Reporting an unknown outcome as "allow once"
+// would claim a permission was granted on the strength of a value we did not understand.
+func consentDecisionFromOutcome(outcome string) chat.ConsentDecision {
+	switch outcome {
+	case "allow_once":
+		return chat.DecisionAllowOnce
+	case "allow_session":
+		return chat.DecisionAllowSession
+	case "deny":
+		return chat.DecisionDeny
+	case "answered":
+		return chat.DecisionAnswer
+	case "expired":
+		return chat.DecisionDeny
+	default:
+		return chat.DecisionSettled
+	}
+}
+
+// settleStaleConsent resolves every PENDING consent card for a conversation whose
+// turn has ENDED.
+//
+// IT IS AN INVARIANT, NOT A HEURISTIC. A permission ask BLOCKS the turn — the adapter
+// holds the tool call on the decision, and the collector answers `reject` for anything
+// still open when the turn finalizes — so once a turn is over there CANNOT be a pending
+// ask. A card still marked pending at that point is this client's stale copy of one that
+// was answered by the OTHER client or expired there.
+//
+// Without this the copy stayed pending forever and the operator hit it exactly: "the
+// choice box is still there for permissions" in the GUI after answering in the TUI. Each
+// client only ever cleared a card IT had answered (the TUI in ConsentResolve, the GUI in
+// handleAskDecision), so a decision made anywhere else left the other one showing a live
+// card that could not be acted on.
+//
+// SETTLED, NOT REMOVED: the card is the record that a permission was asked for and what
+// it covered, which someone scrolling back is entitled to see. It just stops being a
+// choice.
+//
+// KNOWN LIMIT, stated rather than hidden: this fires at TURN END, so with two clients
+// open on one conversation the other client's card stays visible (and inert) until then.
+// Closing that window needs the server to PUBLISH the resolution to the live turn — the
+// same channel that carried the ask — which is a wire change rather than a client sweep.
+func (s *chatStore) settleStaleConsent(convID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	items := s.items[convID]
+	for i := range items {
+		it := &items[i]
+		if it.Kind != chat.KindConsent || it.Consent == nil || !it.Consent.Pending() {
+			continue
+		}
+		it.Consent.Decision = chat.DecisionSettled
+		it.Consent.Note = ""
+		it.Consent.OtherMode = false
+	}
+}
+
 func (s *chatStore) snapshot(convID string) []chat.ChatItem {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -3885,7 +3971,15 @@ func (m *App) onStreamDone(msg chat.StreamDoneMsg) tea.Cmd {
 	// THE GENERATION IS PASSED THROUGH, and it is what keeps an interjection from ending its own turn: the
 	// superseded stream closes too, and its close must not clear the slot belonging to the turn that replaced
 	// it. See convState.gen.
-	m.chat.EndStream(msg.ConvID, msg.Gen)
+	ended := m.chat.EndStream(msg.ConvID, msg.Gen)
+	if ended {
+		// THE TURN IS OVER, SO NO CARD CAN STILL BE PENDING. A permission ask blocks its
+		// turn and the collector expires anything still open at finalize, so a pending
+		// card here was answered in the OTHER client (or expired there) — see
+		// settleStaleConsent. Guarded by `ended` because a SUPERSEDED stream closes too,
+		// and settling on that close would kill a card belonging to the live turn.
+		m.chatStore.settleStaleConsent(msg.ConvID)
+	}
 	// A finished turn is when new usage lands, so this is the LIVE update: the
 	// stat strip re-reads the session's tokens / cache / cost and refreshes.
 	//

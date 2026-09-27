@@ -283,3 +283,172 @@ func TestAnsweringASessionAskKeepsTheAbsoluteTargetOffTheConversationProject(t *
 		t.Fatal("allow_session must grant the target's directory")
 	}
 }
+
+// --- the RESOLUTION path (cross-client settling) -------------------------
+//
+// An ask reaches EVERY watcher of a turn, but only the client that ANSWERED it
+// cleared its own copy — so a decision made in the TUI left the GUI showing a
+// live-looking, inert card, and the clients cannot infer the outcome because a
+// permission ask has no durable per-ask row to reconcile against (the
+// transcript records the outcome, not the open ask).
+//
+// The collector therefore PUBLISHES what it applied. These tests pin both
+// halves: that applying a decision REPORTS what it applied, and that the report
+// is a wire message naming the ask and the outcome on the same fan-out the ask
+// itself rode.
+
+// TestApplyClientRepliesReportsWhatItApplied is the load-bearing half: the
+// caller cannot publish a resolution it was never told about, so an empty
+// return here is the bug re-appearing as silence.
+func TestApplyClientRepliesReportsWhatItApplied(t *testing.T) {
+	isolatedPolicy(t, "")
+	svc := testConsentService()
+	client := &consentFakeClient{}
+	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
+
+	_, ask, _ := ct.decide(context.Background(), "ses_1", fileAskEvent("per_1", "write", "/p/sibling/x.md"))
+	if ask == nil {
+		t.Fatal("expected an ask")
+	}
+	if !ask.clientReply(apiv1.PermissionChoice_PERMISSION_CHOICE_DENY) {
+		t.Fatal("client reply was not recorded")
+	}
+	got := ct.applyClientReplies(context.Background(), client)
+	if len(got) != 1 {
+		t.Fatalf("applyClientReplies reported %d resolutions, want 1 — the other client cannot be told what was applied in silence", len(got))
+	}
+	if got[0].AskID != "per_1" || got[0].Outcome != "deny" {
+		t.Fatalf("resolution = %+v, want ask per_1 with outcome deny", got[0])
+	}
+	if got[0].Answer != "" {
+		t.Fatalf("a permission resolution carries answer=%q, want empty — only a question has an answer", got[0].Answer)
+	}
+}
+
+// TestApplyClientRepliesPublishesNothingWhenNothingWasApplied is the other
+// direction, and the reason the return value is a REPORT rather than a scan:
+// an ask the operator has not answered must not be published as settled, or the
+// card would vanish from a watching client while the turn is still waiting on it.
+func TestApplyClientRepliesPublishesNothingWhenNothingWasApplied(t *testing.T) {
+	isolatedPolicy(t, "")
+	svc := testConsentService()
+	client := &consentFakeClient{}
+	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
+
+	if _, ask, _ := ct.decide(context.Background(), "ses_1", fileAskEvent("per_1", "write", "/p/sibling/x.md")); ask == nil {
+		t.Fatal("expected an ask")
+	}
+	if got := ct.applyClientReplies(context.Background(), client); len(got) != 0 {
+		t.Fatalf("an UNANSWERED ask produced %d resolutions — a watching client would drop a card the turn is still waiting on: %+v", len(got), got)
+	}
+	// And it is still open, which is what makes the assertion above meaningful.
+	if _, ok := svc.pending.get("conv-1", "per_1"); !ok {
+		t.Fatal("the unanswered ask must still be pending")
+	}
+}
+
+// TestApplyClientRepliesReportsAQuestionAnswer pins that a QUESTION settles the
+// card too, and carries the operator's words — the watching client shows what
+// was answered rather than only that something was.
+func TestApplyClientRepliesReportsAQuestionAnswer(t *testing.T) {
+	isolatedPolicy(t, "")
+	svc := testConsentService()
+	client := &consentFakeClient{}
+	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
+
+	qask := &pendingAsk{
+		AskID:          "q_1",
+		ConversationID: "conv-1",
+		SessionID:      "ses_1",
+		Question:       "which branch?",
+	}
+	svc.pending.put("conv-1", qask)
+	if !qask.recordClientAnswer("the release branch") {
+		t.Fatal("the question answer was not recorded")
+	}
+	got := ct.applyClientReplies(context.Background(), client)
+	if len(got) != 1 {
+		t.Fatalf("applyClientReplies reported %d resolutions, want 1", len(got))
+	}
+	if got[0].AskID != "q_1" || got[0].Outcome != "answered" || got[0].Answer != "the release branch" {
+		t.Fatalf("resolution = %+v, want q_1/answered carrying the operator's words", got[0])
+	}
+}
+
+// TestEmitAskResolutionSurvivesTheTransport asserts the message the clients
+// actually read, after a proto round trip — a field the client cannot decode is
+// not "published to the client".
+func TestEmitAskResolutionSurvivesTheTransport(t *testing.T) {
+	var got []*apiv1.ChatStreamResponse
+	emitAskResolution(func(r *apiv1.ChatStreamResponse) { got = append(got, r) }, "conv_1",
+		askResolution{AskID: "per_1", Outcome: "allow_session"})
+	if len(got) != 1 {
+		t.Fatalf("emitAskResolution emitted %d responses, want 1", len(got))
+	}
+	wire, err := proto.Marshal(got[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back apiv1.ChatStreamResponse
+	if err := proto.Unmarshal(wire, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	r := back.GetPermissionAskResolved()
+	if r == nil {
+		t.Fatal("no PermissionAskResolved after a round trip — the oneof arm is missing")
+	}
+	if r.GetAskId() != "per_1" || r.GetOutcome() != "allow_session" || r.GetConversationId() != "conv_1" {
+		t.Fatalf("resolution = %+v — the ask id, the conversation and the outcome must all be carried", r)
+	}
+	// A resolution must never present as a FRESH ask: a client keying on
+	// PermissionAsk would re-raise a card for a decision already made.
+	if back.GetPermissionAsk() != nil {
+		t.Fatal("a resolution also presented as a fresh PermissionAsk")
+	}
+	// The ask it settles must be identifiable without the ask itself.
+	if back.GetPermissionAskResolved().GetAskId() == "" {
+		t.Fatal("a resolution with no ask id cannot settle anything")
+	}
+}
+
+// TestEmitAskResolutionIgnoresNilEmit keeps the shared helper safe on the
+// legacy drain path, where there is no client stream to publish to.
+func TestEmitAskResolutionIgnoresNilEmit(t *testing.T) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			t.Fatalf("emitAskResolution panicked on a nil emit: %v", rec)
+		}
+	}()
+	emitAskResolution(nil, "conv_1", askResolution{AskID: "per_1", Outcome: "deny"})
+}
+
+// TestResolutionOutcomeNamesEveryChoiceDistinctly pins the wire vocabulary. Two
+// choices collapsing onto one name would tell a watching client that a DENIED
+// write was granted — the one failure a consent surface must not have.
+func TestResolutionOutcomeNamesEveryChoiceDistinctly(t *testing.T) {
+	cases := []struct {
+		in   apiv1.PermissionChoice
+		want string
+	}{
+		{apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_ONCE, "allow_once"},
+		{apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_SESSION, "allow_session"},
+		{apiv1.PermissionChoice_PERMISSION_CHOICE_DENY, "deny"},
+	}
+	seen := map[string]apiv1.PermissionChoice{}
+	for _, tc := range cases {
+		got := resolutionOutcome(tc.in)
+		if got != tc.want {
+			t.Fatalf("resolutionOutcome(%v) = %q, want %q", tc.in, got, tc.want)
+		}
+		if prev, dup := seen[got]; dup {
+			t.Fatalf("choices %v and %v both report as %q — a watcher cannot tell them apart", prev, tc.in, got)
+		}
+		seen[got] = tc.in
+	}
+	// An UNSPECIFIED choice never reaches here (consentResponse rejects it), so
+	// the default arm is only ever ALLOW_ONCE — assert the assumption holds, so a
+	// future choice cannot silently inherit an "allow".
+	if _, ok := consentResponse(apiv1.PermissionChoice_PERMISSION_CHOICE_UNSPECIFIED); ok {
+		t.Fatal("consentResponse accepted UNSPECIFIED — resolutionOutcome's default could then report an allow for a choice nobody made")
+	}
+}

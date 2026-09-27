@@ -636,6 +636,19 @@ type ConsentRepliedMsg struct {
 	Err     string
 }
 
+// ConsentResolvedMsg reports that an ask was SETTLED BY SOMEONE ELSE — the other
+// client, or the collector expiring it.
+//
+// It exists because an ask reaches every watcher of a turn while only the client that
+// answered it cleared its own copy. See the PermissionAskResolved wire arm in
+// handleEvent.
+type ConsentResolvedMsg struct {
+	ConvID  string
+	AskID   string
+	Outcome string
+	Answer  string
+}
+
 // ReplyPermissionAsk answers a pending permission ask ON THE SERVER.
 //
 // THE TUI NEVER DID THIS, WHICH IS WHY APPROVING A CARD DID NOTHING. ConsentResolve
@@ -1044,14 +1057,22 @@ func (c *Controller) Poll(convID string) tea.Cmd { return c.pollTranscript(convI
 // stream also closes cleanly, and without the check that close would clear the slot belonging to the
 // turn that replaced it — killing the thinking indicator, the watchdog and the pending-reply id the
 // moment the operator interjected.
-func (c *Controller) EndStream(convID string, gen uint64) {
+func (c *Controller) EndStream(convID string, gen uint64) bool {
+	ended := false
 	c.mu.Lock()
 	if st := c.state[convID]; st != nil && st.gen == gen {
 		st.streaming = false
 		st.reconnecting = false
 		st.pendingReplyID = ""
+		ended = true
 	}
 	c.mu.Unlock()
+	// IT REPORTS WHETHER IT ENDED THE SLOT so a caller can act on "this turn is over"
+	// without re-deriving it. The generation guard is the whole reason to ask: a
+	// SUPERSEDED stream closes too, and its close must not clear state belonging to
+	// the turn that replaced it — including the stale-consent sweep, which would
+	// otherwise settle a live card on a still-running turn.
+	return ended
 }
 
 // AbortTurn stops the in-flight turn on a conversation: the TUI's Stop control (the composer's ctrl+y),
@@ -1186,6 +1207,34 @@ func (c *Controller) handleEvent(convID string, ev *apiv1.ChatStreamResponse) {
 			Output:   e.ToolCallResult.GetOutput(),
 			At:       now(),
 		}, Key: "tcr-" + id})
+	case *apiv1.ChatStreamResponse_PermissionAskResolved:
+		// THE OTHER CLIENT DECIDED.
+		//
+		// An ask is delivered to EVERY watcher of a turn, but only the client that
+		// ANSWERED it cleared its own copy — so a decision made in the TUI left the
+		// GUI showing a live-looking, inert card, and vice versa. Clients cannot infer
+		// it: a permission ask has no durable per-ask row to reconcile against (the
+		// transcript records the outcome, not the open ask). The collector publishes
+		// this the moment it APPLIES a decision, so every watcher can settle.
+		//
+		// Without this the TUI's card stayed pending until the turn ended (see
+		// settleStaleConsent, which is the convergence path for a client that missed
+		// the message — a decision made before it attached).
+		if r := e.PermissionAskResolved; r != nil && r.GetAskId() != "" {
+			if c.cmds != nil {
+				select {
+				case c.cmds <- func() tea.Msg {
+					return ConsentResolvedMsg{
+						ConvID:  convID,
+						AskID:   r.GetAskId(),
+						Outcome: r.GetOutcome(),
+						Answer:  r.GetAnswer(),
+					}
+				}:
+				default:
+				}
+			}
+		}
 	case *apiv1.ChatStreamResponse_PermissionAsk:
 		// THE PERMISSION CARD'S WIRE ARM.
 		//

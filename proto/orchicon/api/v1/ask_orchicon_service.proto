@@ -302,7 +302,38 @@ message ChatStreamResponse {
     // stream and every re-attached WatchTurnStream watcher. The answer comes
     // back on ReplyPermissionAsk.
     PermissionAsk permission_ask = 9;
+    // PermissionAskResolved carries the OUTCOME of an ask already sent on this
+    // stream, published the moment the collector applies a decision.
+    //
+    // IT EXISTS SO A DECISION MADE IN ONE CLIENT SETTLES THE CARD IN THE OTHER.
+    // An ask is delivered to every watcher of a turn, but only the client that
+    // ANSWERED it ever cleared its own copy (the TUI in ConsentResolve, the GUI in
+    // handleAskDecision). So answering in the TUI left a live-looking, inert card in
+    // the GUI — the operator: "the choice box is still there for permissions" — and
+    // vice versa. Clients cannot infer it either: a permission ask has no durable
+    // per-ask row to reconcile against (the transcript records the OUTCOME, not the
+    // open ask).
+    //
+    // It is published by the collector that owns the turn, so it reaches every
+    // watcher, including one that re-attached mid-turn.
+    PermissionAskResolved permission_ask_resolved = 10;
   }
+}
+
+// PermissionAskResolved is the settled form of a PermissionAsk: which ask, and what
+// became of it.
+message PermissionAskResolved {
+  string ask_id = 1;
+  string conversation_id = 2;
+  // outcome is one of:
+  //   "allow_once" | "allow_session" | "deny" — the operator decided;
+  //   "answered"                              — a question was answered (answer is set);
+  //   "expired"                               — nobody answered in the window.
+  string outcome = 3;
+  // answer is the operator's words for a QUESTION ask, empty otherwise. It is what
+  // the ask_user tool returned, and it is carried here so a watching client can show
+  // what was answered rather than only that something was.
+  string answer = 4;
 }
 
 // TurnStarted is the immediate ack for a ChatStream send: the message was

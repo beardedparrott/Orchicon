@@ -138,6 +138,35 @@ export function outcomeFromChoice(choice: PermissionChoice): AskOutcome {
 }
 
 /**
+ * outcomeFromWire maps the server's PermissionAskResolved.outcome onto the local
+ * AskOutcome. It exists because a decision can be made in ANOTHER client: an ask reaches
+ * every watcher of a turn while only the answering client cleared its own copy, so the
+ * collector publishes the outcome and every watcher settles from it.
+ *
+ * An UNRECOGNISED outcome becomes `expired` with the raw value in the detail rather than
+ * silently claiming `allow_once` — reporting a permission as granted on the strength of a
+ * value we did not understand is the one failure a consent UI must not have.
+ */
+export function outcomeFromWire(outcome: string): AskOutcome {
+  switch (outcome) {
+    case "allow_once":
+      return { kind: "allow_once" };
+    case "allow_session":
+      return { kind: "allow_session" };
+    case "deny":
+      return { kind: "deny" };
+    case "answered":
+      // A question's answer is content, not a permission outcome. It settles the card
+      // the same way; the card itself shows the answer.
+      return { kind: "allow_once" };
+    case "expired":
+      return { kind: "expired" };
+    default:
+      return { kind: "expired", detail: `unrecognised outcome "${outcome}"` };
+  }
+}
+
+/**
  * askTargetLabel is the target the card names: the command for a bash ask, the
  * paths for a write/edit — never an opaque id. The server's `summary` already
  * carries it; this is the fallback for a card whose summary is missing.

@@ -154,6 +154,13 @@ const (
 	// DecisionAnswer is a clarifying-question choice; the chosen text rides in
 	// ConsentState.Choice and is sent as the next user message.
 	DecisionAnswer ConsentDecision = "answer"
+	// DecisionSettled is NOT a decision the operator made — it is this client
+	// admitting it no longer knows the outcome. See chatStore.settleStaleConsent:
+	// a permission ask BLOCKS its turn, and the collector expires anything still
+	// open when the turn finalizes, so a card still pending at turn end was answered
+	// in the OTHER client or expired there. This client cannot tell which, so it
+	// records only what it knows rather than inventing an allow or a denial.
+	DecisionSettled ConsentDecision = "settled"
 )
 
 // OptionLabels are the card's selectable rows, in order.

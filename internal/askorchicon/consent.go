@@ -1391,7 +1391,27 @@ func (ct *consentTurn) raiseQuestion(sid string, evt scheduler.SessionEvent) (*p
 
 // applyClientReplies answers the serve for every ask whose client decision has
 // landed. Called from the drain loop's reply arm.
-func (ct *consentTurn) applyClientReplies(ctx context.Context, client scheduler.ChatTurnClient) {
+// askResolution is one decision this collector APPLIED, ready to be published on the
+// turn's stream so every watcher settles its copy of the card. See
+// apiv1.PermissionAskResolved.
+type askResolution struct {
+	AskID   string
+	Outcome string
+	Answer  string
+}
+
+// applyClientReplies answers the serve for every ask whose client decision has
+// landed, and returns what it APPLIED so the caller can publish each resolution on
+// the turn's stream.
+//
+// THE RETURN VALUE IS THE POINT: an ask reaches EVERY watcher of a turn, but only
+// the client that answered it cleared its own copy — so answering in the TUI left the
+// GUI showing a live-looking, inert card (the operator: "the choice box is still there
+// for permissions"), and the clients cannot infer it, because a permission ask has no
+// durable per-ask row to reconcile against. Publishing the outcome is the only way a
+// watching client learns that someone else decided.
+func (ct *consentTurn) applyClientReplies(ctx context.Context, client scheduler.ChatTurnClient) []askResolution {
+	var out []askResolution
 	for _, a := range ct.svc.pending.list(ct.convID) {
 		// A QUESTION's reply is CONTENT, not a choice. It goes to the adapter as the
 		// decision string, which the adapter returns as the ask_user tool result —
@@ -1403,6 +1423,7 @@ func (ct *consentTurn) applyClientReplies(ctx context.Context, client scheduler.
 			}
 			ct.record(a.Action, "answered", ans)
 			ct.svc.pending.remove(ct.convID, a.AskID)
+			out = append(out, askResolution{AskID: a.AskID, Outcome: "answered", Answer: ans})
 			continue
 		}
 		choice, ok := a.clientChoice()
@@ -1425,8 +1446,41 @@ func (ct *consentTurn) applyClientReplies(ctx context.Context, client scheduler.
 			ct.svc.once.Record(ct.convID, a.AbsTargets...)
 		}
 		ct.svc.pending.remove(ct.convID, a.AskID)
+		out = append(out, askResolution{AskID: a.AskID, Outcome: resolutionOutcome(choice)})
 	}
 	ct.settleMonitor()
+	return out
+}
+
+// resolutionOutcome names a permission choice for the wire. It mirrors the value
+// outcomeFromChoice derives on the clients, so the two sides describe a decision the
+// same way.
+func resolutionOutcome(c apiv1.PermissionChoice) string {
+	switch c {
+	case apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_SESSION:
+		return "allow_session"
+	case apiv1.PermissionChoice_PERMISSION_CHOICE_DENY:
+		return "deny"
+	default:
+		return "allow_once"
+	}
+}
+
+// emitAskResolution publishes one applied decision on the turn's stream.
+func emitAskResolution(emit func(*apiv1.ChatStreamResponse), convID string, r askResolution) {
+	if emit == nil {
+		return
+	}
+	emit(&apiv1.ChatStreamResponse{
+		Event: &apiv1.ChatStreamResponse_PermissionAskResolved{
+			PermissionAskResolved: &apiv1.PermissionAskResolved{
+				AskId:          r.AskID,
+				ConversationId: convID,
+				Outcome:        r.Outcome,
+				Answer:         r.Answer,
+			},
+		},
+	})
 }
 
 // finalize ends the turn's consent state (C8): a client decision that landed

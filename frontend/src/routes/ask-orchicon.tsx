@@ -89,6 +89,7 @@ import {
   applyAskChunk,
   interleave,
   outcomeFromChoice,
+  outcomeFromWire,
   pendingFor,
   resolveAsk,
   type AskItem,
@@ -951,6 +952,15 @@ function AskOrchiconPage() {
             // The ask arm the GUI never read: a pending consent ask arrives on
             // the SAME turn stream (never a second polling loop).
             applyAsk(convId, chunk.event.value);
+          } else if (chunk.event.case === "permissionAskResolved") {
+            // SOMEONE ELSE DECIDED — on the WATCH socket too, not just the dispatch
+            // socket: a watcher that re-attached mid-turn is exactly the client most
+            // likely to be holding a card it did not answer. See the dispatch arm.
+            const r = chunk.event.value;
+            setStream(convId, (prev) => ({
+              ...prev,
+              asks: resolveAsk(prev.asks, r.askId, outcomeFromWire(r.outcome)),
+            }));
           } else if (chunk.event.case === "error") {
             return; // poll resolves the failure rendering
           }
@@ -1109,6 +1119,17 @@ function AskOrchiconPage() {
             );
           } else if (chunk.event.case === "permissionAsk") {
             applyAsk(convId, chunk.event.value);
+          } else if (chunk.event.case === "permissionAskResolved") {
+            // SOMEONE ELSE DECIDED. The ask reaches every watcher of the turn, but only
+            // the answering client cleared its own copy — so a decision made in the TUI
+            // left this client showing a live-looking, inert card, and it cannot be
+            // inferred: a permission ask has no durable per-ask row to reconcile
+            // against. The collector publishes the outcome precisely so this can settle.
+            const r = chunk.event.value;
+            setStream(convId, (prev) => ({
+              ...prev,
+              asks: resolveAsk(prev.asks, r.askId, outcomeFromWire(r.outcome)),
+            }));
           } else if (chunk.event.case === "error") {
             toast.error(chunk.event.value.message);
             fail();
