@@ -325,6 +325,11 @@ export function outcomeFromRecord(functionName: string): AskOutcome | null {
     // way, exactly as outcomeFromWire treats it.
     case "permission.answered":
       return { kind: "allow_once" };
+    // A CARD FULLSEND CLEARED. Recorded under its own verdict so the transcript does not claim
+    // the operator clicked something they never saw — but the call DID proceed, so the card
+    // settles exactly as an approval.
+    case "permission.fullsend_approved":
+      return { kind: "allow_once" };
     default:
       return null;
   }

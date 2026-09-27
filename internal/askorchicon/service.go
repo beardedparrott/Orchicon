@@ -815,6 +815,26 @@ func (s *Service) SetConversationFullsend(ctx context.Context, req *connect.Requ
 	// SET AFTER THE COMMIT: the audit row and the mode must not be able to disagree. A
 	// flag set before a failed commit would be a bypass with no record of who armed it.
 	s.fullsend.Set(row.ID, req.Msg.Enabled)
+
+	// ENABLING FULLSEND ALSO CLEARS A CARD ALREADY ON SCREEN.
+	//
+	// The operator's decision: "Clear it too — fullsend means stop asking." And it is the
+	// consistent behaviour rather than a convenience: a card exists ONLY because fullsend was
+	// OFF when the call was raised — with it on, that same call would never have produced one
+	// — so approving it is exactly what fullsend would have decided a moment earlier. Leaving
+	// it would also leave the TURN blocked on an answer, waiting out the consent window, for a
+	// decision the operator has just told us to stop making.
+	//
+	// A QUESTION IS NOT A PERMISSION, and fullsend cannot clear one: a question's reply is the
+	// operator's own WORDS, which the mode has no way to supply. It stays theirs to answer.
+	//
+	// ALLOW_ONCE, never a session grant: fullsend already covers every later call, so granting
+	// the DIRECTORY here would widen the operator's grants beyond anything they chose, and it
+	// would outlive the mode. The approval is also MARKED as fullsend's (autoApproveOnce), so
+	// the recorded verdict does not claim the operator clicked something they never saw.
+	if req.Msg.Enabled {
+		s.approvePendingForFullsend(row.ID)
+	}
 	count, _ := db.CountConversationMessages(ctx, ttx.Tx, tenantID, row.ID)
 	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
 	st := s.turnStatus(row.ID, s.chatStallWindow(ctx, ttx.Tx, tenantID))
@@ -824,6 +844,33 @@ func (s *Service) SetConversationFullsend(ctx context.Context, req *connect.Requ
 		// conversationRowToProto, so this is the authoritative value.
 		Conversation: s.conversationRowToProto(row, count, preview, st),
 	}), nil
+}
+
+// approvePendingForFullsend clears the permission cards a conversation already has on screen,
+// and returns how many it cleared.
+//
+// Split out from the RPC so it can be tested without a database: the behaviour worth pinning is
+// WHICH asks it approves and which it leaves, and that has nothing to do with the transaction
+// that verifies the conversation.
+func (s *Service) approvePendingForFullsend(convID string) int {
+	if s == nil || convID == "" {
+		return 0
+	}
+	cleared := 0
+	for _, a := range s.pending.list(convID) {
+		// A QUESTION IS NOT A PERMISSION, and fullsend cannot clear one: a question's reply is
+		// the operator's own WORDS, which the mode has no way to supply. It stays theirs.
+		// An ask that is no longer open is already decided — never overwritten.
+		if a.isQuestion() || !a.isOpen() {
+			continue
+		}
+		if a.autoApproveOnce() {
+			cleared++
+			s.log.Info("fullsend cleared a pending permission card",
+				"conversation", convID, "ask", a.AskID, "tool", a.Tool)
+		}
+	}
+	return cleared
 }
 
 // --- Messages ---

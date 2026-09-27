@@ -19,7 +19,10 @@ package askorchicon
 
 import (
 	"context"
+	"strings"
 	"testing"
+
+	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 )
 
 // TestFullsendStoreIsPerConversationAndFailsClosed pins the store's contract, including
@@ -151,5 +154,108 @@ func TestFullsendCannotReachTheNeverAllowClass(t *testing.T) {
 	resp, ask, refusal := ct.decide(context.Background(), "ses_1", bashAskEvent("per_1", "sudo rm -rf /"))
 	if resp != "reject" || ask != nil || refusal == "" {
 		t.Fatalf("FULLSEND REACHED THE NEVER-ALLOW CLASS: resp=%q ask=%v refusal=%q", resp, ask, refusal)
+	}
+}
+
+// TestEnablingFullsendClearsTheCardsAlreadyOnScreen — the operator's decision:
+//
+//	"Clear it too — fullsend means stop asking."
+//
+// It is also the CONSISTENT behaviour rather than a convenience: a card exists ONLY because
+// fullsend was off when the call was raised, so with it on that same call would never have
+// produced one. Approving it is what fullsend would have decided a moment earlier, and leaving
+// it would keep the TURN blocked on an answer the operator has just said to stop giving.
+//
+// THE QUESTION CASE IS THE ONE THAT MATTERS MOST. A question's reply is the operator's own
+// WORDS, which the mode has no way to supply, so fullsend must not touch it — and a mode that
+// silently "approved" a question would be recording an answer nobody gave.
+func TestEnablingFullsendClearsTheCardsAlreadyOnScreen(t *testing.T) {
+	isolatedPolicy(t, "")
+	svc := testConsentService()
+	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
+
+	// A permission card and a QUESTION, both open.
+	_, permAsk, _ := ct.decide(context.Background(), "ses_1", fileAskEvent("per_perm", "write", "/p/sibling/x.md"))
+	if permAsk == nil {
+		t.Fatal("expected a permission ask")
+	}
+	qAsk := &pendingAsk{
+		AskID: "q_1", ConversationID: "conv-1", SessionID: "ses_1",
+		Question: "which branch?", reply: ct.replies,
+	}
+	svc.pending.put("conv-1", qAsk)
+
+	cleared := svc.approvePendingForFullsend("conv-1")
+	if cleared != 1 {
+		t.Fatalf("cleared %d, want exactly 1 (the permission, not the question)", cleared)
+	}
+	// The permission is now decided as ALLOW_ONCE and MARKED as fullsend's decision, so the
+	// recorded verdict does not claim the operator clicked it.
+	if choice, ok := permAsk.clientChoice(); !ok || choice != apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_ONCE {
+		t.Fatalf("the permission ask was not approved: choice=%v ok=%v", choice, ok)
+	}
+	if !permAsk.wasAutoApproved() {
+		t.Fatal("the approval is not marked as fullsend's — the record would read as a click the operator never made")
+	}
+	// The QUESTION is untouched: still open, still waiting for words.
+	if !qAsk.isOpen() {
+		t.Fatal("fullsend settled a QUESTION — its reply is the operator's words, which the mode cannot supply")
+	}
+	if _, ok := qAsk.clientAnswerValue(); ok {
+		t.Fatal("fullsend invented an answer to a question")
+	}
+	// And it is idempotent-safe: a second call clears nothing more.
+	if again := svc.approvePendingForFullsend("conv-1"); again != 0 {
+		t.Fatalf("a second call cleared %d more", again)
+	}
+}
+
+// TestFullsendApprovalIsRecordedAsFullsend is the honesty half. The verdict must name the
+// DECIDER, because a transcript that says `user_PERMISSION_CHOICE_ALLOW_ONCE` claims the
+// operator clicked something they never saw — the same misattribution class as reporting a
+// policy refusal as "the operator denied you".
+func TestFullsendApprovalIsRecordedAsFullsend(t *testing.T) {
+	isolatedPolicy(t, "")
+	svc := testConsentService()
+	client := &consentFakeClient{}
+	ledger := newToolLedger()
+	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
+	ct.ledger = ledger
+
+	_, ask, _ := ct.decide(context.Background(), "ses_1", fileAskEvent("per_1", "write", "/p/sibling/x.md"))
+	if ask == nil {
+		t.Fatal("expected an ask")
+	}
+	if !ask.autoApproveOnce() {
+		t.Fatal("autoApproveOnce did not take")
+	}
+	ct.applyClientReplies(context.Background(), client)
+
+	callsJSON, _ := ledger.snapshot()
+	if !strings.Contains(string(callsJSON), "permission.fullsend_approved") {
+		t.Fatalf("the record does not name fullsend as the decider: %s", callsJSON)
+	}
+	if strings.Contains(string(callsJSON), "user_PERMISSION_CHOICE_ALLOW_ONCE") {
+		t.Fatalf("the record claims the operator made the decision: %s", callsJSON)
+	}
+	// The CALL still proceeded — it is an approval, and the serve must be told `once`.
+	if got := client.got(); len(got) != 1 || got[0] != "once" {
+		t.Fatalf("decisions sent to the serve = %#v, want [once]", got)
+	}
+}
+
+// TestApprovePendingForFullsendIsSafeOnAnEmptyOrNilService — it runs inside an RPC after a
+// commit, so it must not be able to panic the caller.
+func TestApprovePendingForFullsendIsSafeOnAnEmptyOrNilService(t *testing.T) {
+	var nilSvc *Service
+	if n := nilSvc.approvePendingForFullsend("c1"); n != 0 {
+		t.Fatalf("a nil Service cleared %d", n)
+	}
+	svc := testConsentService()
+	if n := svc.approvePendingForFullsend(""); n != 0 {
+		t.Fatalf("an empty conversation cleared %d", n)
+	}
+	if n := svc.approvePendingForFullsend("nobody"); n != 0 {
+		t.Fatalf("an unknown conversation cleared %d", n)
 	}
 }

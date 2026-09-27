@@ -1253,6 +1253,32 @@ type pendingAsk struct {
 	// choice: a permission's outcome is a grant decision, a question's is content
 	// the model reads, and conflating them would let one masquerade as the other.
 	answer string
+	// autoApproved marks a decision made by FULLSEND rather than by the operator, so the
+	// recorded verdict can say so. The decision is genuinely the same (ALLOW_ONCE), but a
+	// transcript that reports it as `user_PERMISSION_CHOICE_ALLOW_ONCE` claims the operator
+	// clicked something they never saw — and this codebase's rule is that a decision record
+	// must not misattribute who decided.
+	autoApproved bool
+}
+
+// autoApproveOnce records an ALLOW_ONCE that the OPERATOR did not make: fullsend cleared a
+// card that was already on screen. False when the ask was no longer open (someone answered
+// it first, or it settled), so the caller cannot report an approval that did not happen.
+func (a *pendingAsk) autoApproveOnce() bool {
+	if !a.clientReply(apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_ONCE) {
+		return false
+	}
+	a.mu.Lock()
+	a.autoApproved = true
+	a.mu.Unlock()
+	return true
+}
+
+// wasAutoApproved reports whether fullsend made this decision rather than the operator.
+func (a *pendingAsk) wasAutoApproved() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.autoApproved
 }
 
 // isQuestion reports whether this ask is a clarifying question rather than a
@@ -1807,7 +1833,13 @@ func (ct *consentTurn) applyClientReplies(ctx context.Context, client scheduler.
 			ct.log().Warn("ask orchicon consent: reply to serve failed",
 				"conversation", ct.convID, "ask", a.AskID, "response", resp, "error", err)
 		}
-		ct.record(a.Action, "user_"+choice.String(), "")
+		// NAME THE DECIDER. A card fullsend cleared is recorded as fullsend's decision, not
+		// as a click the operator never made.
+		verdict := "user_" + choice.String()
+		if a.wasAutoApproved() {
+			verdict = "fullsend_approved"
+		}
+		ct.record(a.Action, verdict, "")
 		if choice == apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_ONCE {
 			// Arm the approved absolute paths for the execution guard's shim:
 			// the command the operator just approved must run, while a sibling

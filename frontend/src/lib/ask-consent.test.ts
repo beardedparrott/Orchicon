@@ -260,6 +260,13 @@ describe("outcomeFromRecord", () => {
     expect(outcomeFromRecord("permission.answered")?.kind).toBe("allow_once");
   });
 
+  // A card FULLSEND cleared. It is recorded under its own verdict so the transcript does not
+  // claim the operator clicked something they never saw — but the call DID proceed, so the
+  // card must settle as an approval rather than linger.
+  it("settles a fullsend-cleared card as an approval", () => {
+    expect(outcomeFromRecord("permission.fullsend_approved")).toEqual({ kind: "allow_once" });
+  });
+
   // A refused call did not run, so a card raised for it must settle as refused rather than
   // stay live. A broken policy is NOT a decision: the card settles as expired, never as a
   // denial the operator never made.
@@ -279,6 +286,7 @@ describe("outcomeFromRecord", () => {
       "permission.accept",
       "permission.project",
       "permission.fullsend",
+      "permission.fullsend_approved_typo",
       "write",
       "",
     ]) {

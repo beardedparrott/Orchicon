@@ -215,12 +215,17 @@ func TestFullsendIsToggleableWhileATurnIsBlockedOnACard(t *testing.T) {
 		t.Fatalf("sent (%q, %v), want (c1, true)", stub.fullsendID, stub.fullsendSet)
 	}
 
-	// AND THE OPERATOR IS TOLD THE CARD IS STILL THEIRS. A mode that appears to do nothing
-	// reads as broken, and auto-answering a card they have already been shown would be a
-	// consent decision the toggle did not make — the silent escalation this codebase refuses
-	// everywhere else. One tap clears the card; every ask after it is skipped.
-	if !strings.Contains(m.dock.View(), "still yours to answer") {
-		t.Fatalf("the notice must say the pending card is still open:\n%s", m.dock.View())
+	// AND THE OPERATOR IS TOLD WHAT HAPPENS TO THE CARD. The mode CLEARS it (the operator's
+	// decision: "Clear it too — fullsend means stop asking"), and the notice must ALSO say that a
+	// QUESTION is not cleared — its reply is the operator's own words, which the mode cannot
+	// supply. A mode that appears to do something it did not is worse than one that explains
+	// itself.
+	notice := m.dock.View()
+	if !strings.Contains(notice, "approved") {
+		t.Fatalf("the notice must say the open permission card is approved:\n%s", notice)
+	}
+	if !strings.Contains(notice, "question still needs your answer") {
+		t.Fatalf("the notice must say a question is NOT cleared:\n%s", notice)
 	}
 }
 
@@ -239,8 +244,8 @@ func TestFullsendOnNoticeWithNothingPending(t *testing.T) {
 	if !strings.Contains(notice, "FULLSEND ON") {
 		t.Fatalf("the ON notice is missing:\n%s", notice)
 	}
-	if strings.Contains(notice, "still yours to answer") {
-		t.Fatalf("with no card pending there is nothing to answer:\n%s", notice)
+	if strings.Contains(notice, "cards are approved") {
+		t.Fatalf("with no card pending there is nothing to clear:\n%s", notice)
 	}
 	if !strings.Contains(notice, "deny") || !strings.Contains(notice, "sudo") {
 		t.Fatalf("the notice must state what still refuses:\n%s", notice)

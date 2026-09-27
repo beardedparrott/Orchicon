@@ -67,7 +67,11 @@ export function FullsendToggle({
         setAnnouncement(`Fullsend is already ${next ? "on" : "off"}`);
         return;
       }
-      setAnnouncement(next ? "Fullsend on. Orchicon will stop asking for permission." : "Fullsend off. Orchicon will ask for permission again.");
+      setAnnouncement(
+        next
+          ? "Fullsend on. Orchicon will stop asking for permission, and any permission card already on screen is approved."
+          : "Fullsend off. Orchicon will ask for permission again.",
+      );
       onChange(next);
     },
     [disabled, on, onChange],
@@ -123,7 +127,7 @@ export function FullsendToggle({
       value: true,
       label: "On — stop asking",
       blurb:
-        "Proceed without asking for permission in this conversation. Your deny list and the never-allow class (sudo / dd / mkfs*) still refuse.",
+        "Proceed without asking for permission in this conversation, and approve a permission card already on screen. Your deny list and the never-allow class (sudo / dd / mkfs*) still refuse.",
     },
   ];
 
@@ -137,7 +141,7 @@ export function FullsendToggle({
         aria-haspopup="listbox"
         title={
           on
-            ? "FULLSEND is ON: Orchicon is not asking for permission in this conversation. Your deny list and the never-allow class (sudo / dd / mkfs*) still refuse — this waives the PROMPT, not your policy."
+            ? "FULLSEND is ON: Orchicon is not asking for permission in this conversation. Your deny list and the never-allow class (sudo / dd / mkfs*) still refuse — this waives the PROMPT, not your policy. A question still waits for your answer."
             : "Fullsend is off: Orchicon asks before a write or an execution"
         }
         disabled={disabled}
