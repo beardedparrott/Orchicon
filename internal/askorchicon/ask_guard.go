@@ -86,7 +86,7 @@ func askGuardForExec() (*guard.Guard, error) {
 // edited between two commands takes effect on the next one.
 //
 // An empty policyPath emits no guard vars — the worker profile, byte-for-byte.
-func AskGuardEnvironFor(policyPath, projectDir string, grants, once []string) []string {
+func AskGuardEnvironFor(policyPath, projectDir string, grants, once []string, fullsend bool) []string {
 	env := os.Environ()
 	g, err := askGuardForExec()
 	if err != nil || g == nil {
@@ -95,27 +95,35 @@ func AskGuardEnvironFor(policyPath, projectDir string, grants, once []string) []
 		// supervisor's behavior (warn + continue, never block).
 		return env
 	}
-	return append(g.Apply(env), guard.InteractiveEnviron(policyPath, projectDir, grants, once)...)
+	return append(g.Apply(env), guard.InteractiveEnviron(policyPath, projectDir, grants, once, fullsend)...)
 }
 
 // AskGuardEnviron is the conversation-less form (kept for callers that want the
 // shim on PATH without a conversation's project, grants or once-targets).
 func AskGuardEnviron() []string {
-	return AskGuardEnvironFor(permpolicy.DefaultPath(), "", nil, nil)
+	return AskGuardEnvironFor(permpolicy.DefaultPath(), "", nil, nil, false)
 }
 
 // askGuardEnviron is the PER-CONVERSATION environment factory handed to the host
 // tool suite (orchicon.HostTools.SetBashEnviron): the shim, plus the
-// conversation's project dir, its session-granted directories and the operator's
-// approved once-targets. Nil-safe — a Service-less caller (tool definitions)
-// gets the bare shim.
+// conversation's project dir, its session-granted directories, the operator's
+// approved once-targets, and whether the conversation is in FULLSEND. Nil-safe — a
+// Service-less caller (tool definitions) gets the bare shim.
+//
+// THE FACTORY IS A CLOSURE, so it is re-read per invocation and a `/fullsend` toggle
+// takes effect on the very NEXT command — no restart, no cache to invalidate. That is
+// the same contract the grants already rest on ("a grant withdrawn or a policy edited
+// between two commands takes effect on the next one"), and for a permission bypass it
+// matters more, not less: turning it OFF must be immediate.
 func (s *Service) askGuardEnviron(scope AskFileScope, convID string) func() []string {
 	return func() []string {
 		var grants, once []string
+		fullsend := false
 		if s != nil {
 			grants, once = s.grants.Roots(convID), s.once.Targets(convID)
+			fullsend = s.fullsend.Enabled(convID)
 		}
-		return AskGuardEnvironFor(permpolicy.DefaultPath(), scope.Dir, grants, once)
+		return AskGuardEnvironFor(permpolicy.DefaultPath(), scope.Dir, grants, once, fullsend)
 	}
 }
 

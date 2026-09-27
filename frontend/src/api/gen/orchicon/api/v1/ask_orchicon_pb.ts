@@ -191,6 +191,31 @@ export class Conversation extends Message<Conversation> {
    */
   projectId = "";
 
+  /**
+   * fullsend reports whether this conversation is in FULLSEND mode: the operator
+   * has waived the permission PROMPT for it, so a write or an execution that would
+   * raise a consent card proceeds instead.
+   *
+   * WHAT IT DOES NOT DO, because conflating these is the one way a bypass becomes a
+   * lie to the operator:
+   *   - it does not override a DENY entry. A deny is a policy DECISION, not a
+   *     permission request — no card is raised for it — so there is nothing here to
+   *     waive. The preset denials (ssh / gnupg / aws / gh / git-credentials / netrc /
+   *     docker config) and any the operator writes keep refusing.
+   *   - it cannot resurrect the never-allow binary class (sudo / dd / mkfs* / ...),
+   *     which is refused before any permission decision is reached at all.
+   * It reaches both enforcement points — the consent decision AND the host-suite
+   * guard shim a bash subprocess runs under — so "everything is allowed" is true of
+   * what actually runs, not only of what the model was told.
+   *
+   * Computed at READ time from the plane's in-memory store and never persisted: a
+   * permission bypass that survives a restart is one the operator has forgotten is
+   * on. Off is always the state a new conversation and a new plane start in.
+   *
+   * @generated from field: bool fullsend = 16;
+   */
+  fullsend = false;
+
   constructor(data?: PartialMessage<Conversation>) {
     super();
     proto3.util.initPartial(data, this);
@@ -214,6 +239,7 @@ export class Conversation extends Message<Conversation> {
     { no: 13, name: "turn_progressing", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
     { no: 14, name: "turn_last_activity_at", kind: "message", T: Timestamp },
     { no: 15, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 16, name: "fullsend", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Conversation {

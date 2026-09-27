@@ -64,7 +64,7 @@ func TestShimVerdictEqualsPermpolicyDecide(t *testing.T) {
 			}
 			defer g.Close()
 
-			exit, out := runGuardEnv(t, g, InteractiveEnviron(tc.policy, "", nil, nil), "rm", "-f", tc.target)
+			exit, out := runGuardEnv(t, g, InteractiveEnviron(tc.policy, "", nil, nil, false), "rm", "-f", tc.target)
 
 			// The shim refuses exactly when Decide says "do not proceed"
 			// (deny / ask / none); it runs the command when Decide proceeds
@@ -100,7 +100,7 @@ func TestShimVerdictEqualsPermpolicyDecide(t *testing.T) {
 			t.Fatalf("NewExecutionGuardWithPolicy: %v", err)
 		}
 		defer g.Close()
-		exit, out := runGuardEnv(t, g, InteractiveEnviron(bad, "", nil, nil), "rm", "-f", sshKey)
+		exit, out := runGuardEnv(t, g, InteractiveEnviron(bad, "", nil, nil, false), "rm", "-f", sshKey)
 		if exit == 0 || !strings.Contains(out, "fail-closed") {
 			t.Fatalf("the shim must fail closed on a malformed policy: exit=%d %s", exit, out)
 		}
@@ -187,7 +187,7 @@ func TestShimMatchesDecideWhereAFirstMatchReadWouldDiverge(t *testing.T) {
 			}
 			defer g.Close()
 
-			exit, out := runGuardEnv(t, g, InteractiveEnviron(policy, "", []string{tc.grant}, nil), "rm", "-f", tc.target)
+			exit, out := runGuardEnv(t, g, InteractiveEnviron(policy, "", []string{tc.grant}, nil, false), "rm", "-f", tc.target)
 			wantRefuse := !want.Verdict.Proceed()
 			if gotRefuse := exit != 0; gotRefuse != wantRefuse {
 				t.Fatalf("verdict mismatch: shim refuses=%v (exit %d: %s); Decide=%s (proceed=%v)",

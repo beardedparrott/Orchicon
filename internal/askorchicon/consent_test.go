@@ -61,9 +61,10 @@ func (f *consentFakeClient) got() []string {
 
 func testConsentService() *Service {
 	return &Service{
-		log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
-		grants:  newGrantStore(),
-		pending: newPendingAskRegistry(),
+		log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		grants:   newGrantStore(),
+		fullsend: newFullsendStore(),
+		pending:  newPendingAskRegistry(),
 	}
 }
 

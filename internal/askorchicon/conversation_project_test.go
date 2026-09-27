@@ -67,14 +67,40 @@ func TestAnUnassignedChatIsToldItHasNoProject(t *testing.T) {
 // THE ASSOCIATION SURVIVES THE PROTO BOUNDARY. Without this the UI would group by a field that is always
 // empty, which is the failure mode that looks like "the feature was never wired".
 func TestConversationRowReportsItsProjectOverTheAPI(t *testing.T) {
+	s := &Service{}
 	r := db.ConversationRow{ID: "c1", TenantID: "t1", Title: "x", Mode: modeBrainstorm, ProjectID: "p-42"}
-	got := conversationRowToProto(r, 0, "", turnStatusInfo{})
+	got := s.conversationRowToProto(r, 0, "", turnStatusInfo{})
 	if got.ProjectId != "p-42" {
 		t.Errorf("Conversation.project_id = %q, want \"p-42\" — the client groups by this field", got.ProjectId)
 	}
 	// AND UNASSIGNED STAYS EMPTY rather than becoming a sentinel the clients would have to know about.
-	empty := conversationRowToProto(db.ConversationRow{ID: "c2"}, 0, "", turnStatusInfo{})
+	empty := s.conversationRowToProto(db.ConversationRow{ID: "c2"}, 0, "", turnStatusInfo{})
 	if empty.ProjectId != "" {
 		t.Errorf("an unassigned conversation reported project_id %q, want empty", empty.ProjectId)
+	}
+}
+
+// FULLSEND CROSSES THE PROTO BOUNDARY TOO, and the failure mode if it did not is worse
+// than an empty grouping: a client that cannot read the flag renders a conversation as
+// asking permission when the gate is actually open, so the operator loses the only signal
+// that the mode is on. The indicator IS the safety feature for a bypass.
+func TestConversationRowReportsFullsendOverTheAPI(t *testing.T) {
+	s := &Service{fullsend: newFullsendStore()}
+	r := db.ConversationRow{ID: "c1", TenantID: "t1"}
+	if got := s.conversationRowToProto(r, 0, "", turnStatusInfo{}); got.Fullsend {
+		t.Error("a fresh conversation reported fullsend ON — fullsend must never be the default")
+	}
+	s.fullsend.Set("c1", true)
+	if got := s.conversationRowToProto(r, 0, "", turnStatusInfo{}); !got.Fullsend {
+		t.Error("fullsend is on but the conversation reported it off — the indicator would read OFF while the gate is open")
+	}
+	// PER CONVERSATION, not per plane: arming one chat must not arm the next.
+	if other := s.conversationRowToProto(db.ConversationRow{ID: "c2"}, 0, "", turnStatusInfo{}); other.Fullsend {
+		t.Error("fullsend leaked to a different conversation")
+	}
+	// A SERVICE WITH NO STORE REPORTS OFF rather than panicking — the fail-closed
+	// direction, so a store that was never initialised cannot silently approve everything.
+	if bare := (&Service{}).conversationRowToProto(r, 0, "", turnStatusInfo{}); bare.Fullsend {
+		t.Error("a Service with no fullsend store reported the mode as ON")
 	}
 }

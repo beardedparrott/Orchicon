@@ -1291,6 +1291,22 @@ const (
 	consentExpired = "expired"
 	// consentCancelled — the turn ended while the ask was outstanding.
 	consentCancelled = "cancelled"
+	// ConsentRefusedPrefix marks a decision that REFUSED the call and carried the REASON
+	// with it — a policy DENY, the never-allow binary class, or a policy that could not be
+	// read. It is a distinct shape because it is a distinct situation: the OPERATOR never
+	// saw this call, so reporting it as their refusal is a false statement about them —
+	// and the exact one this repo has been corrected on before (the malformed-policy
+	// incident, where the model was told "the operator denied you" about a config error).
+	//
+	// The consent layer already computes the reason precisely (it names the deny entry,
+	// or the class that refuses); before this, the collector sent a bare "reject" to the
+	// bridge and LOGGED the reason, so the one party who needed it — the model, deciding
+	// whether to try again — was the one party who never got it.
+	//
+	// IT MATTERS MOST UNDER FULLSEND: with the permission PROMPT waived, a policy denial
+	// and the never-allow class are the ONLY refusals left, so every refusal a fullsend
+	// turn meets would otherwise be attributed to an operator who was never asked.
+	ConsentRefusedPrefix = "refused: "
 )
 
 // consentDenialError words what happened to a call that was not approved, in the
@@ -1299,6 +1315,12 @@ const (
 // every case (an explicit refusal, an unanswered ask, a cancelled turn) is what
 // stops a model retrying when retrying is exactly what the operator wants.
 func consentDenialError(tool, decision string) error {
+	// A LAYER REFUSAL, not an operator decision — and the distinction is the whole point
+	// of spelling it out. The reason names the rule that refused the call, so the model can
+	// work around it rather than asking the operator to lift a denial they never made.
+	if reason, ok := strings.CutPrefix(decision, ConsentRefusedPrefix); ok {
+		return fmt.Errorf("%s — this call did not run. The OPERATOR did not refuse it and was never asked: an Orchicon permission rule refused it. Do not retry it unchanged; choose a different approach, or ask the operator to change that rule if you believe it is wrong", reason)
+	}
 	switch decision {
 	case consentExpired:
 		return fmt.Errorf("approval for %s expired unanswered — nothing was approved, so this call did not run. Nothing is permanently denied: retry the call if it is still needed, and it will ask again", tool)

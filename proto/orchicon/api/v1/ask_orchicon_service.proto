@@ -48,6 +48,17 @@ service AskOrchiconService {
   // already-open chat instead of starting a new one.
   rpc SetConversationModel(SetConversationModelRequest) returns (SetConversationModelResponse);
 
+  // SetConversationFullsend turns FULLSEND on or off for one conversation. It is the
+  // write side of Conversation.fullsend; the response carries the conversation back so
+  // the caller renders the state the SERVER holds rather than the one it hoped for.
+  //
+  // It is per CONVERSATION and in-memory (it dies with the plane), which is the same
+  // scope and lifetime as a session grant — and it is deliberately NOT a pending value
+  // for a conversation that does not exist yet. A bypass that applies to a conversation
+  // the operator has not looked at is one they did not knowingly arm; the mode field had
+  // exactly this leak, and it was fixed by scoping the write to the open conversation.
+  rpc SetConversationFullsend(SetConversationFullsendRequest) returns (SetConversationFullsendResponse);
+
   // SetConversationProject places a conversation in a PROJECT (or clears it),
   // which is the second, higher level of organization over conversations: the
   // rail and the GUI sidebar list projects as the parent group, every project
@@ -235,6 +246,18 @@ message SetConversationModelRequest {
 }
 
 message SetConversationModelResponse {
+  Conversation conversation = 1;
+}
+
+message SetConversationFullsendRequest {
+  string id = 1;
+  // enabled true turns FULLSEND on for this conversation, false turns it off. It is
+  // an explicit boolean rather than a toggle so a caller retrying after a dropped
+  // response cannot flip the mode by accident.
+  bool enabled = 2;
+}
+
+message SetConversationFullsendResponse {
   Conversation conversation = 1;
 }
 

@@ -492,6 +492,90 @@ export class SetConversationModelResponse extends Message<SetConversationModelRe
 }
 
 /**
+ * @generated from message orchicon.api.v1.SetConversationFullsendRequest
+ */
+export class SetConversationFullsendRequest extends Message<SetConversationFullsendRequest> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * enabled true turns FULLSEND on for this conversation, false turns it off. It is
+   * an explicit boolean rather than a toggle so a caller retrying after a dropped
+   * response cannot flip the mode by accident.
+   *
+   * @generated from field: bool enabled = 2;
+   */
+  enabled = false;
+
+  constructor(data?: PartialMessage<SetConversationFullsendRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.SetConversationFullsendRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "enabled", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetConversationFullsendRequest {
+    return new SetConversationFullsendRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetConversationFullsendRequest {
+    return new SetConversationFullsendRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetConversationFullsendRequest {
+    return new SetConversationFullsendRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SetConversationFullsendRequest | PlainMessage<SetConversationFullsendRequest> | undefined, b: SetConversationFullsendRequest | PlainMessage<SetConversationFullsendRequest> | undefined): boolean {
+    return proto3.util.equals(SetConversationFullsendRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.SetConversationFullsendResponse
+ */
+export class SetConversationFullsendResponse extends Message<SetConversationFullsendResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.Conversation conversation = 1;
+   */
+  conversation?: Conversation;
+
+  constructor(data?: PartialMessage<SetConversationFullsendResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.SetConversationFullsendResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "conversation", kind: "message", T: Conversation },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetConversationFullsendResponse {
+    return new SetConversationFullsendResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetConversationFullsendResponse {
+    return new SetConversationFullsendResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetConversationFullsendResponse {
+    return new SetConversationFullsendResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SetConversationFullsendResponse | PlainMessage<SetConversationFullsendResponse> | undefined, b: SetConversationFullsendResponse | PlainMessage<SetConversationFullsendResponse> | undefined): boolean {
+    return proto3.util.equals(SetConversationFullsendResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.SetConversationProjectRequest
  */
 export class SetConversationProjectRequest extends Message<SetConversationProjectRequest> {

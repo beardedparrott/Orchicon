@@ -1276,6 +1276,32 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 		ct.record(a, verdict.String(), "")
 		return "once", nil, ""
 	}
+	// FULLSEND: the operator has waived the PROMPT for this conversation, so an action
+	// that would have raised a card proceeds instead.
+	//
+	// WHERE THIS SITS IS THE WHOLE DESIGN, so it is worth being precise about what has
+	// already happened by the time control reaches here:
+	//
+	//   - binaryClassRefusal ran FIRST (the top of this function), so sudo / dd / mkfs*
+	//     are already refused and fullsend cannot reach them. That class is not a
+	//     permission, so there is no permission to waive.
+	//   - the policy has been consulted for EVERY target and a DENY verdict has already
+	//     returned `reject` above. A deny is a decision the policy MADE — no card is
+	//     raised for it — so again there is nothing here to waive. Fullsend does not
+	//     open ~/.ssh, and a mode that did would be one whose name promises more than it
+	//     does in the direction that matters.
+	//   - a malformed policy has already failed closed.
+	//
+	// So what is left to waive is exactly the ASK. It covers an UNRESOLVED action too,
+	// deliberately: an ask we could not describe is still an ask, and fullsend is the
+	// operator saying "stop asking me" — not "ask me only when you can name the target".
+	//
+	// The transcript records `fullsend`, so scrolling back shows WHY no card appeared
+	// rather than a silently missing decision.
+	if ct.svc.fullsend.Enabled(ct.convID) {
+		ct.record(a, "fullsend", "")
+		return "once", nil, ""
+	}
 	if !resolved {
 		ct.log().Warn("ask orchicon consent: the ask carries no target path or command — asking rather than proceeding",
 			"conversation", ct.convID, "ask", evt.PermissionID, "tool", a.Tool)

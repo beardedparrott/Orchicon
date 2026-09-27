@@ -73,7 +73,7 @@ func TestShimMatchesDecideOnPatternShapes(t *testing.T) {
 				}
 				defer g.Close()
 
-				exit, out := runGuardEnv(t, g, InteractiveEnviron(policy, home, nil, nil), "rm", "-f", tc.target)
+				exit, out := runGuardEnv(t, g, InteractiveEnviron(policy, home, nil, nil, false), "rm", "-f", tc.target)
 				if exit == 0 {
 					t.Fatalf("FAIL-OPEN: the shim ran 'rm -f %s' — permpolicy.Decide denies it by entry %q", tc.target, want.Entry)
 				}
@@ -117,7 +117,7 @@ func TestShimMatchesDecideOnPatternShapes(t *testing.T) {
 				if err := os.WriteFile(victim, []byte("x"), 0o644); err != nil {
 					t.Fatal(err)
 				}
-				exit, out := runGuardEnv(t, g, InteractiveEnviron(policy, "", nil, nil), "rm", "-f", victim)
+				exit, out := runGuardEnv(t, g, InteractiveEnviron(policy, "", nil, nil, false), "rm", "-f", victim)
 				if exit != 0 {
 					t.Fatalf("DRIFT: Decide accepts %s by entry %q but the shim refused: %s", victim, want.Entry, out)
 				}
@@ -150,7 +150,7 @@ func TestShimMatchesDecideOnPatternShapes(t *testing.T) {
 		}
 		defer g.Close()
 
-		exit, out := runGuardEnv(t, g, InteractiveEnviron(policy, home, nil, nil), "rm", "-f", "~/.ssh/id_rsa")
+		exit, out := runGuardEnv(t, g, InteractiveEnviron(policy, home, nil, nil, false), "rm", "-f", "~/.ssh/id_rsa")
 		if exit == 0 {
 			t.Fatalf("FAIL-OPEN: the shim ran rm on a denied path")
 		}
@@ -171,7 +171,7 @@ func TestShimMatchesDecideOnPatternShapes(t *testing.T) {
 		}
 		defer g.Close()
 
-		exit, out := runGuardEnv(t, g, InteractiveEnviron(policy, home, nil, nil), "rm", "-f", target)
+		exit, out := runGuardEnv(t, g, InteractiveEnviron(policy, home, nil, nil, false), "rm", "-f", target)
 		if exit == 0 || !strings.Contains(out, "fail-closed") {
 			t.Fatalf("the shim must fail closed on an entry it cannot evaluate: exit=%d %s", exit, out)
 		}

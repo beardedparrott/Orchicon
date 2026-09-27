@@ -21,6 +21,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/opencode"
+	"github.com/beardedparrott/orchicon/internal/orchicon"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
@@ -1928,7 +1929,19 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 						}
 						if resp != "" {
 							rc, rsid, rpid := c.client, sid, pid
-							go func() { _ = rc.ReplyPermissionDecision(context.WithoutCancel(subCtx), rsid, rpid, resp) }()
+							// CARRY THE REASON WHEN THE LAYER REFUSED THE CALL.
+							//
+							// `refusal != ""` with no ask means nobody was shown a card: the policy
+							// denied the target, or the action was in the never-allow class. Sending the
+							// bare "reject" we answer the serve with would have the bridge report it to
+							// the model as "the operator denied ..." — a false statement about the
+							// operator, since they were never asked, and one that hides the rule that
+							// actually refused it. The reason is the model's only route to a workaround.
+							decision := resp
+							if ask == nil && refusal != "" {
+								decision = orchicon.ConsentRefusedPrefix + refusal
+							}
+							go func() { _ = rc.ReplyPermissionDecision(context.WithoutCancel(subCtx), rsid, rpid, decision) }()
 						}
 					} else {
 						// No consent handle (a bare attempt test): keep the historical

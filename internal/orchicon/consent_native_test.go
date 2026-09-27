@@ -252,3 +252,47 @@ func waitForBusEvent(t *testing.T, bus *chatBus, kind string) scheduler.SessionE
 		}
 	}
 }
+
+// TestConsentDenialErrorDoesNotBlameTheOperatorForARule is the OTHER half of the
+// distinction above, and the one that was missing.
+//
+// The consent layer refuses a call for reasons that are not operator decisions at all: a
+// DENY entry (a decision the POLICY made), the never-allow binary class, or a policy that
+// could not be read. In every one of those cases the operator never saw the call — no card
+// was raised — and the layer already computed a precise reason naming the rule. But the
+// collector sent the bridge a bare "reject" and logged the reason, so the model was told
+// "the operator denied ... do not retry it; ask them what they would prefer instead" about
+// a refusal the operator had nothing to do with.
+//
+// That is the exact failure this repo has been corrected on before (a malformed policy was
+// reported as an operator denial), and a model that believes the operator refused something
+// they never saw will ask them to lift a rule they did not know existed.
+func TestConsentDenialErrorDoesNotBlameTheOperatorForARule(t *testing.T) {
+	reason := "denied by the permission list (deny entry \"~/.secrets/**\")"
+	got := consentDenialError("read_file", ConsentRefusedPrefix+reason).Error()
+
+	if !strings.Contains(got, reason) {
+		t.Errorf("the refusal must CARRY the reason the layer computed, got %q", got)
+	}
+	if !strings.Contains(got, "did not refuse") || !strings.Contains(got, "never asked") {
+		t.Errorf("the message must say the operator was not involved, got %q", got)
+	}
+	// And it must not send the model to the operator for permission: there is no
+	// permission to give. The route out is a different approach or fixing the rule.
+	if strings.Contains(got, "ask them what they would prefer") {
+		t.Errorf("a rule refusal must not be attributed to the operator, got %q", got)
+	}
+	// A GENUINE operator decision keeps the old wording — including the instruction not
+	// to retry, because the operator saying no is an answer rather than an accident.
+	if denied := consentDenialError("read_file", "reject").Error(); !strings.Contains(denied, "the operator denied") {
+		t.Errorf("a real operator denial must still say so, got %q", denied)
+	}
+	// THE PREFIX MUST NOT MATCH BY ACCIDENT. Only a prefix-carrying decision may claim the
+	// operator was not involved; every other value is either an operator decision or a
+	// non-refusal, and neither may borrow that wording.
+	for _, plain := range []string{"reject", consentExpired, consentCancelled, "once"} {
+		if strings.Contains(consentDenialError("t", plain).Error(), "did not refuse") {
+			t.Errorf("decision %q claimed the operator was not involved", plain)
+		}
+	}
+}
