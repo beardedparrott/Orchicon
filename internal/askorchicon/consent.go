@@ -834,12 +834,65 @@ type pendingAsk struct {
 	// (decisionTargets), recorded so an ALLOW_ONCE reply can arm exactly those
 	// paths in the execution guard's shim (the shim cannot ask).
 	AbsTargets []string
+
+	// --- A QUESTION ask (ask_user, blocking) ---
+	//
+	// Question non-empty marks this ask as a clarifying question rather than a
+	// permission decision: there is no grant, no allow/deny and no precedence chain,
+	// so it is not run through decide() at all. It rides the same registry, the same
+	// card and the same reply RPC because those are what make it answerable — adding
+	// a second path would have meant a second place for a reply to go missing.
+	Question   string
+	Options    []string
+	AllowOther bool
+	// Answer is a question ask's reply: the chosen label, or the operator's own
+	// words. It becomes the ask_user TOOL RESULT, so the model continues the turn
+	// holding the answer rather than being told the question was recorded.
+	Answer string
+
 	// reply wakes the drain loop's select when a decision lands.
 	reply chan struct{}
 
 	mu     sync.Mutex
 	state  askState
 	choice apiv1.PermissionChoice
+	// answer holds a QUESTION ask's reply (see recordClientAnswer). Separate from
+	// choice: a permission's outcome is a grant decision, a question's is content
+	// the model reads, and conflating them would let one masquerade as the other.
+	answer string
+}
+
+// isQuestion reports whether this ask is a clarifying question rather than a
+// permission decision.
+func (a *pendingAsk) isQuestion() bool { return strings.TrimSpace(a.Question) != "" }
+
+// recordClientAnswer records a QUESTION's answer. Same open-check as clientReply:
+// false when the ask is no longer open, so a late answer reports expired rather
+// than pretending to have been delivered.
+func (a *pendingAsk) recordClientAnswer(text string) bool {
+	a.mu.Lock()
+	if a.state != askOpen {
+		a.mu.Unlock()
+		return false
+	}
+	a.state = askClientReplied
+	a.answer = text
+	a.mu.Unlock()
+	select {
+	case a.reply <- struct{}{}:
+	default:
+	}
+	return true
+}
+
+// clientAnswerValue reports the recorded answer, if one landed.
+func (a *pendingAsk) clientAnswerValue() (string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.state == askClientReplied && a.answer != "" {
+		return a.answer, true
+	}
+	return "", false
 }
 
 // clientReply records a client decision. False when the ask is no longer open
@@ -1198,10 +1251,79 @@ func (ct *consentTurn) denyBelowForGrant(pol *permpolicy.Store, key string) []st
 	return entries
 }
 
+// raiseQuestion records a clarifying question the model asked and the turn is
+// PAUSED on, and returns it for the client to render.
+//
+// NO POLICY RUNS. A question is not a permission: there is no target to judge, no
+// grant to record and no never-allow class to consult. Routing it through decide()
+// would have asked the operator for PERMISSION TO ASK A QUESTION — which is why it
+// gets its own path rather than a special case inside the precedence chain.
+//
+// The question's own arguments ride evt.InputJSON when the adapter has not parsed
+// them, so the SAME validator the tool uses decides what is askable: a prompt that
+// is not a question (no text, or a single option with no free-text row) is refused
+// here with the tool's own error rather than parked as an unanswerable card.
+func (ct *consentTurn) raiseQuestion(sid string, evt scheduler.SessionEvent) (*pendingAsk, string) {
+	if strings.TrimSpace(evt.PermissionID) == "" {
+		// Without an id the answer could never be correlated, so this must fail
+		// loudly rather than park a card nobody can answer.
+		return nil, "ask_user: the adapter raised a question with no ask id"
+	}
+	question := strings.TrimSpace(evt.Question)
+	options := append([]string(nil), evt.Options...)
+	allowOther := evt.AllowOther
+	if question == "" && strings.TrimSpace(evt.InputJSON) != "" {
+		q, opts, ao, err := parseAskUserArgs([]byte(evt.InputJSON))
+		if err != nil {
+			return nil, err.Error()
+		}
+		question = q
+		allowOther = ao
+		if len(options) == 0 {
+			for _, o := range opts {
+				options = append(options, o.Label)
+			}
+		}
+	}
+	if question == "" {
+		return nil, "ask_user: the question carries no text"
+	}
+	a := &pendingAsk{
+		AskID:          evt.PermissionID,
+		ConversationID: ct.convID,
+		SessionID:      sid,
+		Tool:           "ask_user",
+		Question:       question,
+		Options:        options,
+		AllowOther:     allowOther,
+		Summary:        "asking: " + truncateArg(question),
+		reply:          ct.replies,
+	}
+	ct.svc.pending.put(ct.convID, a)
+	if ct.monitor != nil {
+		// A human reading the card is not a wedged tool.
+		ct.monitor.setAwaitingConsent(true)
+	}
+	ct.record(a.Action, "question", question)
+	return a, ""
+}
+
 // applyClientReplies answers the serve for every ask whose client decision has
 // landed. Called from the drain loop's reply arm.
 func (ct *consentTurn) applyClientReplies(ctx context.Context, client scheduler.ChatTurnClient) {
 	for _, a := range ct.svc.pending.list(ct.convID) {
+		// A QUESTION's reply is CONTENT, not a choice. It goes to the adapter as the
+		// decision string, which the adapter returns as the ask_user tool result —
+		// so the model resumes the turn holding the answer.
+		if ans, ok := a.clientAnswerValue(); ok {
+			if err := client.ReplyPermissionDecision(ctx, a.SessionID, a.AskID, ans); err != nil {
+				ct.log().Warn("ask orchicon consent: question reply failed",
+					"conversation", ct.convID, "ask", a.AskID, "error", err)
+			}
+			ct.record(a.Action, "answered", ans)
+			ct.svc.pending.remove(ct.convID, a.AskID)
+			continue
+		}
 		choice, ok := a.clientChoice()
 		if !ok {
 			continue
@@ -1303,6 +1425,12 @@ func permissionAskEvent(a *pendingAsk) *apiv1.ChatStreamResponse {
 				InsideProject:    a.InsideProject,
 				Summary:          a.Summary,
 				DenyEntriesBelow: a.DenyBelow,
+				// The question fields: set for a question ask, empty otherwise. The
+				// clients key on a non-empty Question to render the question card and
+				// to answer with CONTENT rather than a permission choice.
+				Question:   a.Question,
+				Options:    a.Options,
+				AllowOther: a.AllowOther,
 			},
 		},
 	}

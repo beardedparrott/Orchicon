@@ -57,6 +57,15 @@ type PermissionAsk struct {
 	Options    []string // AskQuestion — the selectable answers
 	AllowOther bool     // AskQuestion — offer the free-text row
 
+	// Summary is the server's one-line description of the action (the wire's
+	// `summary`), which names EVERY target rather than only the first. It is the card's
+	// body when present.
+	//
+	// WHY IT IS CARRIED AT ALL: Target above is a single path, so a batch_write
+	// modifying two files showed only the first — the operator: "the GUI showed what
+	// file/directory batch_write was modifying but the TUI did not." The GUI renders the
+	// summary; the TUI now does too, so the two describe the same action.
+	Summary string
 	// DeniedBy names the persistent rule that denies this target ("" when
 	// none). The card states it and DISABLES the session row instead of
 	// offering a grant the policy will refuse — silent escalation is exactly
@@ -101,6 +110,19 @@ func PermissionAskFromProto(p *apiv1.PermissionAsk) PermissionAsk {
 	if p == nil {
 		return PermissionAsk{}
 	}
+	// A NON-EMPTY QUESTION MAKES THIS A QUESTION ASK, not a permission: no allow/deny,
+	// no grant, and the answer is CONTENT the model reads. It is the same wire message
+	// because the clients render ONE card type from it — two messages would have meant
+	// two card paths and two reply paths, and two places for a decision to go missing.
+	if q := strings.TrimSpace(p.GetQuestion()); q != "" {
+		return PermissionAsk{
+			ID:         p.GetAskId(),
+			Kind:       AskQuestion,
+			Question:   q,
+			Options:    p.GetOptions(),
+			AllowOther: p.GetAllowOther(),
+		}
+	}
 	target := strings.TrimSpace(p.GetCommand())
 	if target == "" {
 		if targets := p.GetTargets(); len(targets) > 0 {
@@ -117,6 +139,7 @@ func PermissionAskFromProto(p *apiv1.PermissionAsk) PermissionAsk {
 		Target:    target,
 		Directory: p.GetDirectory(),
 		Kind:      AskTool,
+		Summary:   strings.TrimSpace(p.GetSummary()),
 		DeniedBy:  deniedBy,
 	}
 }

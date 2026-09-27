@@ -3709,17 +3709,32 @@ func (m *App) pendingConsentItem() (string, *chat.ConsentState, bool) {
 // consentDecideFromRow applies a CLICK on a card row: a question's label goes through the ordinary send
 // path, a permission's label becomes the decision. Both are the same outcomes the keyboard produces, so
 // the two gestures cannot diverge.
+//
+// THE HIGHLIGHT FOLLOWS THE CLICK. The operator: "when I clicked on the permission to select 'approve all
+// session', it accepted my click but the bar didn't move down to that option to give a visual indication
+// that it was selected." Moving Sel onto the clicked row first means the frame that renders while the
+// reply is in flight shows WHICH row was hit — otherwise a click and a keyboard arrow produced visibly
+// different feedback for the same outcome.
 func (m *App) consentDecideFromRow(label string) tea.Cmd {
 	askID, st, ok := m.pendingConsentItem()
 	if !ok {
 		return nil
 	}
-	// A QUESTION card rides the same KindConsent item, and a click on it ANSWERS rather than decides.
-	if st.Ask.Kind == chat.AskQuestion {
-		if m.chat == nil {
-			return nil
+	for i, l := range st.Ask.OptionLabels() {
+		if l == label {
+			st.Sel = i
+			break
 		}
-		return m.chat.AnswerQuestion(m.chatConvID, label)
+	}
+	// A QUESTION card rides the same KindConsent item, and a click on it ANSWERS rather than decides.
+	//
+	// It goes through ConsentResolve like every other card row, NOT through the old
+	// AnswerQuestion-as-next-message path: a blocking question is answered by the reply
+	// RPC, which delivers the operator's words as the ask_user tool result and resumes
+	// the PAUSED turn. Sending it as a new user message would leave the blocked call
+	// blocked and start a second turn on top of it.
+	if st.Ask.Kind == chat.AskQuestion {
+		return m.ConsentResolve(askID, chat.DecisionAnswer, label)
 	}
 	dec := chat.DecisionAllowOnce
 	switch label {
@@ -4420,10 +4435,35 @@ func (m *App) ConsentResolve(askID string, dec chat.ConsentDecision, choice stri
 			m.dock.SetNotice("allowed for this session · " + dir)
 		case chat.DecisionDeny:
 			m.dock.SetNotice("denied · " + strings.TrimSpace(ask.Tool+" "+ask.Target))
-		case chat.DecisionAnswer:
-			if strings.TrimSpace(choice) != "" {
-				cmds = append(cmds, m.SendUserMessage(choice))
+		}
+
+		// TELL THE SERVER. This is the step whose ABSENCE made approving a card do
+		// nothing: the TUI recorded the decision in ITS OWN grant overlay and dock
+		// notice, but never sent it, so the turn's blocked call stayed blocked until
+		// the consent window expired and the transcript recorded an expiry — which
+		// the operator read as "it says I denied it". The GUI, which reads the
+		// server's registry, saw no decision either, so an approval in the TUI was
+		// invisible there.
+		//
+		// A permission is answered with a CHOICE; a question with the operator's
+		// WORDS (which become the ask_user tool result).
+		if m.chat != nil && m.chatConvID != "" {
+			var pc apiv1.PermissionChoice
+			answer := ""
+			switch dec {
+			case chat.DecisionAllowOnce:
+				pc = apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_ONCE
+			case chat.DecisionAllowSession:
+				pc = apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_SESSION
+			case chat.DecisionDeny:
+				pc = apiv1.PermissionChoice_PERMISSION_CHOICE_DENY
+			case chat.DecisionAnswer:
+				// UNSPECIFIED: a question has no permission choice. The server branches
+				// on the ask being a question and reads `answer`.
+				pc = apiv1.PermissionChoice_PERMISSION_CHOICE_UNSPECIFIED
+				answer = choice
 			}
+			cmds = append(cmds, m.chat.ReplyPermissionAsk(m.chatConvID, askID, pc, answer))
 		}
 	}
 	cmds = append(cmds, m.onChatWake())

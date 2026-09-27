@@ -86,6 +86,52 @@ func TestPermissionAskFromProtoDoesNotLeakAWhitespaceCommand(t *testing.T) {
 	}
 }
 
+// TestPermissionAskFromProtoMapsAQuestionAsk: a NON-EMPTY QUESTION makes the wire
+// ask a QUESTION, not a permission. It carries no allow/deny and no directory — a
+// question grants nothing — so mapping it as a permission would put an allow/deny card
+// in front of the operator for a question, and route the answer down the grant path.
+func TestPermissionAskFromProtoMapsAQuestionAsk(t *testing.T) {
+	got := PermissionAskFromProto(&apiv1.PermissionAsk{
+		AskId:      "q-1",
+		Question:   "Which branch should the run clone off?",
+		Options:    []string{"develop", "main"},
+		AllowOther: true,
+		// Deliberately present on the wire even for a question: the mapping must not
+		// let them turn it into a permission.
+		Tool:      "ask_user",
+		Directory: "/tmp",
+	})
+	if got.Kind != AskQuestion {
+		t.Fatalf("Kind = %q, want %q — a question is not a permission", got.Kind, AskQuestion)
+	}
+	if got.Question != "Which branch should the run clone off?" {
+		t.Errorf("Question = %q", got.Question)
+	}
+	if len(got.Options) != 2 || got.Options[0] != "develop" || !got.AllowOther {
+		t.Errorf("options/allow_other lost: %+v", got)
+	}
+	// The question card's rows are its ANSWERS; the permission labels must not leak in.
+	labels := got.OptionLabels()
+	if len(labels) != 3 || labels[0] != "develop" || labels[2] != ConsentOther {
+		t.Fatalf("question rows = %v, want the answers plus the free-text row", labels)
+	}
+}
+
+// TestPermissionAskFromProtoWithoutAQuestionIsAPermission is the CONTROL: the same
+// mapping must still produce a permission card when no question is present, or the
+// question branch has swallowed the whole feature.
+func TestPermissionAskFromProtoWithoutAQuestionIsAPermission(t *testing.T) {
+	got := PermissionAskFromProto(&apiv1.PermissionAsk{
+		AskId: "p-1", Tool: "bash", Command: "ls", Directory: "/tmp",
+	})
+	if got.Kind != AskTool {
+		t.Fatalf("Kind = %q, want %q", got.Kind, AskTool)
+	}
+	if len(got.OptionLabels()) != 3 || got.OptionLabels()[0] != ConsentAllowOnce {
+		t.Fatalf("a permission's rows must be allow-once/allow-session/deny, got %v", got.OptionLabels())
+	}
+}
+
 // --- the wire arm (through the real stream handler) ------------------------
 
 // TestHandleEventEmitsConsentAsk is the regression guard for the missing wire

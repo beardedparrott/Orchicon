@@ -806,6 +806,22 @@ func (b *NativeBridge) executeToolCalls(ctx context.Context, bus *chatBus, worki
 		var toolErr error
 		if tools == nil {
 			toolErr = errors.New("orchicon bridge: no Ask tool provider injected — cannot execute tool " + c.Name)
+		} else if isAskUserTool(c.Name) {
+			// THE PAUSE. ask_user no longer records-and-returns: it BLOCKS here, the
+			// collector raises the question as a card, and the operator's ANSWER
+			// becomes this call's result. So the model resumes the turn holding what
+			// the operator actually said, instead of being told the question was
+			// "recorded" and ending the turn.
+			//
+			// That is the whole difference the operator asked for: "no other
+			// chatting should be going on if a question is asked. You should pause
+			// to resume until the user has answered."
+			ans := b.awaitUserAnswer(ctx, bus, c, args)
+			if ans == "" {
+				toolErr = errors.New("ask_user was not answered — the question expired unanswered, so it did not run. Ask it again if it is still needed")
+			} else {
+				out = ans
+			}
 		} else if consentGatedTool(c.Name) {
 			// ASK BEFORE ACTING. The collector owns the decision — the
 			// precedence chain, the deny list, the session grants — so this only
@@ -1194,6 +1210,65 @@ func (b *NativeBridge) awaitConsentPermission(ctx context.Context, bus *chatBus,
 		// The turn was cancelled (Stop / supersede / TTL): give up the wait
 		// immediately rather than holding the goroutine for the full window.
 		return consentCancelled
+	}
+}
+
+// isAskUserTool reports whether a tool is the clarifying-question tool. The name
+// is bare on the native transport (see askorchicon.hostSuiteToolNames' sibling
+// comment: the product registry is keyed by bare name), and prefixed on the MCP
+// side — so both spellings match.
+func isAskUserTool(name string) bool {
+	return name == "ask_user" || name == "orchicon_ask_user"
+}
+
+// awaitUserAnswer raises a clarifying question and blocks until the operator
+// answers it. The ANSWER is returned, and the caller returns it as the tool result.
+//
+// SAME MECHANICS AS awaitConsentPermission, deliberately: the bus carries the
+// question to the collector, the collector's registry holds it, the reply RPC
+// delivers the answer, and ReplyPermissionDecision wakes this wait. The two differ
+// only in what flows back — a permission decision string, or the operator's words.
+//
+// An empty return means NO ANSWER (the window expired, or the turn was cancelled);
+// the caller turns that into a tool error so the model is not left believing a
+// question was answered when it was not.
+func (b *NativeBridge) awaitUserAnswer(ctx context.Context, bus *chatBus, c ToolCall, args string) string {
+	askID := b.nextPermID()
+	w := &permWait{decision: make(chan string, 1)}
+
+	b.permMu.Lock()
+	if b.permWaits == nil {
+		b.permWaits = map[string]*permWait{}
+	}
+	b.permWaits[askID] = w
+	b.permMu.Unlock()
+	defer func() {
+		b.permMu.Lock()
+		delete(b.permWaits, askID)
+		b.permMu.Unlock()
+	}()
+
+	if bus != nil {
+		// The ARGUMENTS ride along: the collector parses them with the SAME
+		// validator the tool uses, so a malformed question is refused with the
+		// tool's own error rather than parked as an unanswerable card.
+		bus.emit(scheduler.SessionEvent{
+			Kind:         "question",
+			PermissionID: askID,
+			Tool:         c.Name,
+			InputJSON:    args,
+		})
+	}
+
+	timer := time.NewTimer(nativeConsentWait())
+	defer timer.Stop()
+	select {
+	case ans := <-w.decision:
+		return ans
+	case <-timer.C:
+		return ""
+	case <-ctx.Done():
+		return ""
 	}
 }
 

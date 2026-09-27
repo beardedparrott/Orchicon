@@ -96,7 +96,16 @@ func consentSpec(st *ConsentState) kit2.CardSpec {
 		spec.Title = "Permission"
 		// THE BODY NAMES THE TOOL AND THE TARGET, which is the whole content of
 		// the decision: "approve" is meaningless without what is being approved.
-		spec.Body = strings.TrimSpace(a.Tool + " " + a.Target)
+		//
+		// The SERVER's summary is preferred when present because it names EVERY
+		// target — Target is a single path, so a batch_write touching two files
+		// showed only the first. The operator: "the GUI showed what file/directory
+		// batch_write was modifying but the TUI did not." The GUI renders the
+		// summary, so the TUI does too and the two describe the same action.
+		spec.Body = a.Summary
+		if spec.Body == "" {
+			spec.Body = strings.TrimSpace(a.Tool + " " + a.Target)
+		}
 		if a.DeniedBy != "" {
 			spec.Notice = "denied by the permission list (" + a.DeniedBy + ") — a session grant cannot override it"
 		}

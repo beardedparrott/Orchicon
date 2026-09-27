@@ -409,6 +409,10 @@ type SessionEvent struct {
 	//   "tool_result"— a tool call RESOLVED: its arguments and output. Typed
 	//                  fields (ToolName/ToolCallID/ArgsJSON/Output/IsError),
 	//                  not a transport-shaped Part map — see ToolName.
+	//   "question"   — the model asked a clarifying question and is WAITING for the
+	//                  answer (ask_user, blocking). Typed fields (Question/
+	//                  Options/AllowOther/InputJSON); the reply is an answer string,
+	//                  not a permission decision.
 	Kind string
 	// Type refines Kind for "delta" ("text"|"reasoning") and "part"
 	// ("text"|"reasoning"|"tool_use"|"step_finish") — the stall-monitor and
@@ -472,6 +476,20 @@ type SessionEvent struct {
 	Targets   []string
 	InputJSON string
 	Directory string
+	// --- Typed question fields (Kind "question") ---
+	//
+	// A clarifying question the model asked and the turn is PAUSED on (ask_user,
+	// made blocking). It carries no permission semantics — there is no grant and no
+	// allow/deny — so it rides its own kind rather than being special-cased inside
+	// the permission path, where the precedence chain would have to be taught to
+	// skip it.
+	//
+	// The answer comes back over the SAME reply RPC (ReplyPermissionAsk.answer) and
+	// becomes the ask_user TOOL RESULT, so the model continues the turn with the
+	// answer in hand instead of being told the question was recorded.
+	Question   string
+	Options    []string
+	AllowOther bool
 	// SessionID is the session the event belongs to. Adapters whose
 	// transport multiplexes sessions (e.g. a shared serve bus) set it so the
 	// drain loop can filter by the turn's current session id (which can

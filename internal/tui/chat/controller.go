@@ -622,6 +622,54 @@ func (c *Controller) LoadConversations() tea.Cmd {
 	}
 }
 
+// ConsentRepliedMsg reports the SERVER's answer to a permission decision.
+//
+// It exists so a decision that did NOT apply is visible. A reply can legitimately
+// lose — the ask expired, the turn ended, another reply won — and the server says so
+// (`applied: false`, `expired: true`) rather than reporting a silent success. Without
+// this the operator's click looked like an approval while the call was denied.
+type ConsentRepliedMsg struct {
+	ConvID  string
+	Applied bool
+	Expired bool
+	Detail  string
+	Err     string
+}
+
+// ReplyPermissionAsk answers a pending permission ask ON THE SERVER.
+//
+// THE TUI NEVER DID THIS, WHICH IS WHY APPROVING A CARD DID NOTHING. ConsentResolve
+// recorded a LOCAL session grant and showed a notice, then repainted — while the
+// server's ask stayed open until its wait expired, so the call was denied and the
+// transcript recorded a denial the operator never made. The operator: "it accepted my
+// click … also for some reason the history says I denied it."
+//
+// The GUI has always called this RPC (`askOrchiconClient.replyPermissionAsk`); the TUI
+// had no equivalent, so a permission could be decided in the browser and never from
+// the terminal. The local grant is still recorded (it is what silences the NEXT card
+// for that directory without a round trip) but it is no longer the whole story.
+func (c *Controller) ReplyPermissionAsk(convID, askID string, choice apiv1.PermissionChoice, answer string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		resp, err := c.cl.Ask.ReplyPermissionAsk(ctx, connect.NewRequest(&apiv1.ReplyPermissionAskRequest{
+			ConversationId: convID,
+			AskId:          askID,
+			Choice:         choice,
+			Answer:         answer,
+		}))
+		if err != nil {
+			return ConsentRepliedMsg{ConvID: convID, Err: err.Error()}
+		}
+		return ConsentRepliedMsg{
+			ConvID:  convID,
+			Applied: resp.Msg.GetApplied(),
+			Expired: resp.Msg.GetExpired(),
+			Detail:  resp.Msg.GetDetail(),
+		}
+	}
+}
+
 // OpenConversation loads the durable transcript (ListMessages, reversed
 // into ascending order like the GUI hook) and phase-groups it.
 func (c *Controller) OpenConversation(id string) tea.Cmd {

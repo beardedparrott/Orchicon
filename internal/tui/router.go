@@ -1366,6 +1366,19 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		// the conversation's session grants first, so a directory already allowed
 		// for this session does not ask twice.
 		return tea.Batch(m.ShowConsentAsk(msg.Ask), m.waitChat())
+	case chat.ConsentRepliedMsg:
+		// The SERVER's verdict on a decision we sent. A decision that did not apply
+		// (the ask expired, the turn ended) must SAY so — otherwise the operator
+		// reads their click as an approval while the call was refused.
+		switch {
+		case msg.Err != "":
+			m.dock.SetNotice("permission reply failed: " + msg.Err)
+		case msg.Expired || !msg.Applied:
+			m.dock.SetNotice("that permission ask is no longer open — nothing was applied")
+		default:
+			m.dock.SetNotice("permission decision applied")
+		}
+		return m.waitChat()
 	case askDefaultSettingsMsg:
 		// Store the tenant default; if a conversation is already open its strip may
 		// now be able to resolve a model (and therefore a context window) that it

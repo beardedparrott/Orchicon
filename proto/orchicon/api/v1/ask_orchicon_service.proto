@@ -438,6 +438,24 @@ message PermissionAsk {
   // card says so instead of offering a grant that will be refused for those
   // paths. Empty when no deny entry sits inside the directory.
   repeated string deny_entries_below = 10;
+
+  // --- Clarifying-question asks (ask_user, made blocking) ---
+  //
+  // A question rides THIS message rather than getting its own: the clients already
+  // render one card type from it (the TUI models both as chat.PermissionAsk with a
+  // Kind), and the operator answers both from the transcript. Adding a second
+  // message and a second RPC would have meant two card paths, two reply paths and
+  // two places for a decision to go missing.
+  //
+  // When question is non-empty this is a QUESTION, not a permission: there is no
+  // allow/deny and no grant. The turn is PAUSED on it (the adapter blocks the
+  // ask_user call), so the card is the end of the turn until it is answered —
+  // which is why answering it RESUMES the turn rather than starting a new one.
+  string question = 11;
+  repeated string options = 12;
+  // allow_other offers the free-text row: the operator can answer in their own
+  // words instead of choosing a canned option.
+  bool allow_other = 13;
 }
 
 // SessionPermissionGrant is one ACTIVE session grant: a directory the operator
@@ -486,6 +504,15 @@ message ReplyPermissionAskRequest {
   string conversation_id = 1;
   string ask_id = 2;
   PermissionChoice choice = 3;
+  // answer is the operator's reply to a QUESTION ask (question non-empty): the
+  // chosen option's label, or their own words when allow_other offered the
+  // free-text row. It BECOMES THE ask_user TOOL RESULT, so the model continues the
+  // turn with the answer in hand rather than being told the question was recorded.
+  //
+  // Empty for a permission ask — a permission is answered by `choice`, and the two
+  // are deliberately not conflated: a permission's outcome is a grant decision, a
+  // question's is content the model reads.
+  string answer = 4;
 }
 
 // ReplyPermissionAskResponse reports whether the decision was applied.

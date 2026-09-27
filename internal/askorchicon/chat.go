@@ -1880,6 +1880,27 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 					flushThinkDrain()
 					return turnAttemptResult{kind: turnCollected, text: strings.TrimSpace(reply.String()), reasoning: reasoning}
 				}
+			case "question":
+				// THE PAUSE. The model asked a clarifying question and the adapter is
+				// BLOCKED on the call; the operator's answer becomes the tool result
+				// and the turn resumes. No policy runs — see raiseQuestion.
+				if pid := evt.PermissionID; pid != "" {
+					if qt := c.consent; qt != nil {
+						ask, refusal := qt.raiseQuestion(sid, evt)
+						if ask != nil {
+							emitPermissionAsk(c.onStreamEvent, ask)
+							qt.logAsk(ask)
+						}
+						if refusal != "" {
+							s.log.Warn("ask orchicon: refused to raise a question",
+								"conversation", c.convID, "reason", refusal)
+							// The adapter is waiting: give it the error as the tool result
+							// rather than leaving the turn parked with no card.
+							_ = c.client.ReplyPermissionDecision(context.WithoutCancel(subCtx), sid, pid,
+								"ask_user could not be asked: "+refusal)
+						}
+					}
+				}
 			case "permission":
 				// The consent path: extract the typed action, run the precedence
 				// chain (never-allow binary class -> permpolicy.Decide), answer the
@@ -2419,6 +2440,20 @@ func (s *Service) runOpenCodeTurn(ctx context.Context, client scheduler.ChatTurn
 				// must never complete a new turn.
 				if sent {
 					return msgID, sid, time.Since(start), nil
+				}
+			case "question":
+				// THE PAUSE, on the legacy non-streaming path. This loop has NO client
+				// stream to carry a card, so the question cannot be answered here — and
+				// the adapter is BLOCKED on the call, so it must be RELEASED with an
+				// error rather than parked until the consent window expires.
+				if pid := evt.PermissionID; pid != "" {
+					if qt := legacyConsent; qt != nil {
+						if _, refusal := qt.raiseQuestion(sid, evt); refusal != "" {
+							s.log.Warn("ask orchicon: refused to raise a question", "conversation", convID, "reason", refusal)
+						}
+						_ = client.ReplyPermissionDecision(context.WithoutCancel(ctx), sid, pid,
+							"ask_user cannot be answered on this transport — ask it again in the Ask UI")
+					}
 				}
 			case "permission":
 				// Same consent decision path as the primary drain loop. This legacy

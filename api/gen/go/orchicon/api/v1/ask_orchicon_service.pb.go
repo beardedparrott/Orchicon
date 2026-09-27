@@ -2048,8 +2048,25 @@ type PermissionAsk struct {
 	// card says so instead of offering a grant that will be refused for those
 	// paths. Empty when no deny entry sits inside the directory.
 	DenyEntriesBelow []string `protobuf:"bytes,10,rep,name=deny_entries_below,json=denyEntriesBelow,proto3" json:"deny_entries_below,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// --- Clarifying-question asks (ask_user, made blocking) ---
+	//
+	// A question rides THIS message rather than getting its own: the clients already
+	// render one card type from it (the TUI models both as chat.PermissionAsk with a
+	// Kind), and the operator answers both from the transcript. Adding a second
+	// message and a second RPC would have meant two card paths, two reply paths and
+	// two places for a decision to go missing.
+	//
+	// When question is non-empty this is a QUESTION, not a permission: there is no
+	// allow/deny and no grant. The turn is PAUSED on it (the adapter blocks the
+	// ask_user call), so the card is the end of the turn until it is answered —
+	// which is why answering it RESUMES the turn rather than starting a new one.
+	Question string   `protobuf:"bytes,11,opt,name=question,proto3" json:"question,omitempty"`
+	Options  []string `protobuf:"bytes,12,rep,name=options,proto3" json:"options,omitempty"`
+	// allow_other offers the free-text row: the operator can answer in their own
+	// words instead of choosing a canned option.
+	AllowOther    bool `protobuf:"varint,13,opt,name=allow_other,json=allowOther,proto3" json:"allow_other,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PermissionAsk) Reset() {
@@ -2150,6 +2167,27 @@ func (x *PermissionAsk) GetDenyEntriesBelow() []string {
 		return x.DenyEntriesBelow
 	}
 	return nil
+}
+
+func (x *PermissionAsk) GetQuestion() string {
+	if x != nil {
+		return x.Question
+	}
+	return ""
+}
+
+func (x *PermissionAsk) GetOptions() []string {
+	if x != nil {
+		return x.Options
+	}
+	return nil
+}
+
+func (x *PermissionAsk) GetAllowOther() bool {
+	if x != nil {
+		return x.AllowOther
+	}
+	return false
 }
 
 // SessionPermissionGrant is one ACTIVE session grant: a directory the operator
@@ -2409,8 +2447,17 @@ type ReplyPermissionAskRequest struct {
 	ConversationId string                 `protobuf:"bytes,1,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
 	AskId          string                 `protobuf:"bytes,2,opt,name=ask_id,json=askId,proto3" json:"ask_id,omitempty"`
 	Choice         PermissionChoice       `protobuf:"varint,3,opt,name=choice,proto3,enum=orchicon.api.v1.PermissionChoice" json:"choice,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// answer is the operator's reply to a QUESTION ask (question non-empty): the
+	// chosen option's label, or their own words when allow_other offered the
+	// free-text row. It BECOMES THE ask_user TOOL RESULT, so the model continues the
+	// turn with the answer in hand rather than being told the question was recorded.
+	//
+	// Empty for a permission ask — a permission is answered by `choice`, and the two
+	// are deliberately not conflated: a permission's outcome is a grant decision, a
+	// question's is content the model reads.
+	Answer        string `protobuf:"bytes,4,opt,name=answer,proto3" json:"answer,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ReplyPermissionAskRequest) Reset() {
@@ -2462,6 +2509,13 @@ func (x *ReplyPermissionAskRequest) GetChoice() PermissionChoice {
 		return x.Choice
 	}
 	return PermissionChoice_PERMISSION_CHOICE_UNSPECIFIED
+}
+
+func (x *ReplyPermissionAskRequest) GetAnswer() string {
+	if x != nil {
+		return x.Answer
+	}
+	return ""
 }
 
 // ReplyPermissionAskResponse reports whether the decision was applied.
@@ -2644,7 +2698,7 @@ const file_orchicon_api_v1_ask_orchicon_service_proto_rawDesc = "" +
 	"\x1bGetModelCapabilitiesRequest\x12\x1b\n" +
 	"\tmodel_ref\x18\x01 \x01(\tR\bmodelRef\"f\n" +
 	"\x1cGetModelCapabilitiesResponse\x12F\n" +
-	"\fcapabilities\x18\x01 \x01(\v2\".orchicon.api.v1.ModelCapabilitiesR\fcapabilities\"\xc3\x02\n" +
+	"\fcapabilities\x18\x01 \x01(\v2\".orchicon.api.v1.ModelCapabilitiesR\fcapabilities\"\x9a\x03\n" +
 	"\rPermissionAsk\x12\x15\n" +
 	"\x06ask_id\x18\x01 \x01(\tR\x05askId\x12'\n" +
 	"\x0fconversation_id\x18\x02 \x01(\tR\x0econversationId\x12\x1d\n" +
@@ -2657,7 +2711,11 @@ const file_orchicon_api_v1_ask_orchicon_service_proto_rawDesc = "" +
 	"\x0einside_project\x18\b \x01(\bR\rinsideProject\x12\x18\n" +
 	"\asummary\x18\t \x01(\tR\asummary\x12,\n" +
 	"\x12deny_entries_below\x18\n" +
-	" \x03(\tR\x10denyEntriesBelow\"^\n" +
+	" \x03(\tR\x10denyEntriesBelow\x12\x1a\n" +
+	"\bquestion\x18\v \x01(\tR\bquestion\x12\x18\n" +
+	"\aoptions\x18\f \x03(\tR\aoptions\x12\x1f\n" +
+	"\vallow_other\x18\r \x01(\bR\n" +
+	"allowOther\"^\n" +
 	"\x16SessionPermissionGrant\x12\x1c\n" +
 	"\tdirectory\x18\x01 \x01(\tR\tdirectory\x12&\n" +
 	"\x0fgranted_at_unix\x18\x02 \x01(\x03R\rgrantedAtUnix\"F\n" +
@@ -2670,11 +2728,12 @@ const file_orchicon_api_v1_ask_orchicon_service_proto_rawDesc = "" +
 	"\tdirectory\x18\x02 \x01(\tR\tdirectory\"z\n" +
 	"\x1dRevokePermissionGrantResponse\x12\x18\n" +
 	"\aremoved\x18\x01 \x01(\bR\aremoved\x12?\n" +
-	"\x06grants\x18\x02 \x03(\v2'.orchicon.api.v1.SessionPermissionGrantR\x06grants\"\x96\x01\n" +
+	"\x06grants\x18\x02 \x03(\v2'.orchicon.api.v1.SessionPermissionGrantR\x06grants\"\xae\x01\n" +
 	"\x19ReplyPermissionAskRequest\x12'\n" +
 	"\x0fconversation_id\x18\x01 \x01(\tR\x0econversationId\x12\x15\n" +
 	"\x06ask_id\x18\x02 \x01(\tR\x05askId\x129\n" +
-	"\x06choice\x18\x03 \x01(\x0e2!.orchicon.api.v1.PermissionChoiceR\x06choice\"h\n" +
+	"\x06choice\x18\x03 \x01(\x0e2!.orchicon.api.v1.PermissionChoiceR\x06choice\x12\x16\n" +
+	"\x06answer\x18\x04 \x01(\tR\x06answer\"h\n" +
 	"\x1aReplyPermissionAskResponse\x12\x18\n" +
 	"\aapplied\x18\x01 \x01(\bR\aapplied\x12\x18\n" +
 	"\aexpired\x18\x02 \x01(\bR\aexpired\x12\x16\n" +

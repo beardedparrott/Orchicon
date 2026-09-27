@@ -1703,6 +1703,37 @@ export class PermissionAsk extends Message<PermissionAsk> {
    */
   denyEntriesBelow: string[] = [];
 
+  /**
+   * --- Clarifying-question asks (ask_user, made blocking) ---
+   *
+   * A question rides THIS message rather than getting its own: the clients already
+   * render one card type from it (the TUI models both as chat.PermissionAsk with a
+   * Kind), and the operator answers both from the transcript. Adding a second
+   * message and a second RPC would have meant two card paths, two reply paths and
+   * two places for a decision to go missing.
+   *
+   * When question is non-empty this is a QUESTION, not a permission: there is no
+   * allow/deny and no grant. The turn is PAUSED on it (the adapter blocks the
+   * ask_user call), so the card is the end of the turn until it is answered —
+   * which is why answering it RESUMES the turn rather than starting a new one.
+   *
+   * @generated from field: string question = 11;
+   */
+  question = "";
+
+  /**
+   * @generated from field: repeated string options = 12;
+   */
+  options: string[] = [];
+
+  /**
+   * allow_other offers the free-text row: the operator can answer in their own
+   * words instead of choosing a canned option.
+   *
+   * @generated from field: bool allow_other = 13;
+   */
+  allowOther = false;
+
   constructor(data?: PartialMessage<PermissionAsk>) {
     super();
     proto3.util.initPartial(data, this);
@@ -1721,6 +1752,9 @@ export class PermissionAsk extends Message<PermissionAsk> {
     { no: 8, name: "inside_project", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
     { no: 9, name: "summary", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 10, name: "deny_entries_below", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 11, name: "question", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 12, name: "options", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 13, name: "allow_other", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): PermissionAsk {
@@ -1976,6 +2010,20 @@ export class ReplyPermissionAskRequest extends Message<ReplyPermissionAskRequest
    */
   choice = PermissionChoice.UNSPECIFIED;
 
+  /**
+   * answer is the operator's reply to a QUESTION ask (question non-empty): the
+   * chosen option's label, or their own words when allow_other offered the
+   * free-text row. It BECOMES THE ask_user TOOL RESULT, so the model continues the
+   * turn with the answer in hand rather than being told the question was recorded.
+   *
+   * Empty for a permission ask — a permission is answered by `choice`, and the two
+   * are deliberately not conflated: a permission's outcome is a grant decision, a
+   * question's is content the model reads.
+   *
+   * @generated from field: string answer = 4;
+   */
+  answer = "";
+
   constructor(data?: PartialMessage<ReplyPermissionAskRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -1987,6 +2035,7 @@ export class ReplyPermissionAskRequest extends Message<ReplyPermissionAskRequest
     { no: 1, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "ask_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "choice", kind: "enum", T: proto3.getEnumType(PermissionChoice) },
+    { no: 4, name: "answer", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ReplyPermissionAskRequest {
