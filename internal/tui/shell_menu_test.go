@@ -159,8 +159,11 @@ func TestThemeRegistryAndConfig(t *testing.T) {
 	// THE DEFAULT IS ASSERTED HERE AS WELL AS IN THE THEME PACKAGE, which is not redundant: this test reads it
 	// through the SHELL (the /theme listing and the config the shell writes), so a default that changed in one
 	// place and not the other would show up as a disagreement between what launches and what is offered.
-	if theme.DefaultName != "slate" {
-		t.Fatalf("default theme = %q, want slate (the operator's request)", theme.DefaultName)
+	if theme.DefaultName != "teal" {
+		t.Fatalf("default theme = %q, want teal (the operator's request: \"I would also like to make "+
+			"teal the default theme in the TUI now\"). The value is asserted THROUGH THE SHELL here, so "+
+			"changing theme.DefaultName without this line fails on purpose — and note the GUI's default "+
+			"dark slot is meant to track it (frontend/src/lib/theme-store.ts).", theme.DefaultName)
 	}
 	if !theme.Use("light") {
 		t.Fatal("theme.Use(light) must switch")
