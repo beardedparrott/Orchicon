@@ -1057,7 +1057,12 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 			{Key: "entry", Value: pattern},
 			{Key: "list", Value: list},
 			{Key: "grant", Value: override},
-			{Key: "precedence", Value: "never-allow binaries > deny > session grant > accept > project dir > ask"},
+			// THE PROJECT RUNG IS NOT IN THIS CHAIN, and it used to be printed here. The
+			// conversation's own project WAS a pre-approved default scope, and the operator removed it:
+			// "any directory should ask before allowing on write/execute, project or otherwise". The
+			// string kept advertising a rung that no longer exists — worse, one that reads as "your
+			// project is already approved", which is the opposite of what they asked for.
+			{Key: "precedence", Value: "never-allow binaries > deny > session grant > accept > ask"},
 			{Key: "policy file", Value: permissionPolicyPath(m.permissionPolicy)},
 			{Key: "actions", Value: action},
 		}, "An edit takes effect on the next gated decision: the policy file is read on every consult, so there is no restart and no staleness window. A hand-edit and a change here are the same change.", nil
