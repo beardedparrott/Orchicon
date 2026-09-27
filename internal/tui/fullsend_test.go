@@ -176,3 +176,73 @@ func TestFullsendIsInTheCommandSurface(t *testing.T) {
 		t.Fatal("/help does not list /fullsend")
 	}
 }
+
+// TestFullsendIsToggleableWhileATurnIsBlockedOnACard — the operator's own report:
+//
+//	"I noticed when mid turn, it is greyed out in the GUI. Is that by design? Can it be
+//	 enabled mid turn as well for TUI and GUI?"
+//
+// A PENDING CARD *IS* A TURN IN FLIGHT — the turn is blocked on the operator's answer — so
+// this is the mid-turn case, and it is the case that matters: nobody decides to turn fullsend
+// on before they start. You reach for it when you are already mid-task and being asked too
+// often, which is precisely when the GUI's `disabled={isStreaming}` refused it.
+//
+// The backend has no objection (the consent layer reads the flag at EACH DECISION and the bash
+// guard re-reads it per invocation, so a change lands on the next ask with no restart), and the
+// TUI never had a guard — the disabled attribute was mine, copied by reflex from the MODEL
+// picker beside it, which really cannot change mid-turn because the running session belongs to
+// the model that opened it.
+func TestFullsendIsToggleableWhileATurnIsBlockedOnACard(t *testing.T) {
+	m, stub := newAskApp(t)
+	m.chatConvID = "c1"
+	m.conversations = []chat.Conversation{{ID: "c1"}}
+	m.ShowConsentAsk(chat.PermissionAsk{
+		ID: "ask-1", Kind: chat.AskTool, Tool: "bash",
+		Target: "make ci", Directory: "/p/proj",
+	})
+	if !m.chatStore.hasPendingConsent("c1") {
+		t.Fatal("precondition: the card must be pending")
+	}
+
+	handled, cmd := m.dispatchSlash("/fullsend")
+	if !handled || cmd == nil {
+		t.Fatal("/fullsend must dispatch while a turn is blocked on a card")
+	}
+	if mm, ok := cmd().(chat.ConversationMutatedMsg); !ok || mm.Err != "" {
+		t.Fatalf("fullsend result = %#v", cmd())
+	}
+	if stub.fullsendID != "c1" || !stub.fullsendSet {
+		t.Fatalf("sent (%q, %v), want (c1, true)", stub.fullsendID, stub.fullsendSet)
+	}
+
+	// AND THE OPERATOR IS TOLD THE CARD IS STILL THEIRS. A mode that appears to do nothing
+	// reads as broken, and auto-answering a card they have already been shown would be a
+	// consent decision the toggle did not make — the silent escalation this codebase refuses
+	// everywhere else. One tap clears the card; every ask after it is skipped.
+	if !strings.Contains(m.dock.View(), "still yours to answer") {
+		t.Fatalf("the notice must say the pending card is still open:\n%s", m.dock.View())
+	}
+}
+
+// TestFullsendOnNoticeWithNothingPending is the other branch: the plain ON notice, which must
+// still name what the mode does NOT cover (the deny list and the never-allow class).
+func TestFullsendOnNoticeWithNothingPending(t *testing.T) {
+	m, _ := newAskApp(t)
+	m.chatConvID = "c1"
+	m.conversations = []chat.Conversation{{ID: "c1"}}
+
+	handled, cmd := m.dispatchSlash("/fullsend")
+	if !handled || cmd == nil {
+		t.Fatal("/fullsend must dispatch")
+	}
+	notice := m.dock.View()
+	if !strings.Contains(notice, "FULLSEND ON") {
+		t.Fatalf("the ON notice is missing:\n%s", notice)
+	}
+	if strings.Contains(notice, "still yours to answer") {
+		t.Fatalf("with no card pending there is nothing to answer:\n%s", notice)
+	}
+	if !strings.Contains(notice, "deny") || !strings.Contains(notice, "sudo") {
+		t.Fatalf("the notice must state what still refuses:\n%s", notice)
+	}
+}

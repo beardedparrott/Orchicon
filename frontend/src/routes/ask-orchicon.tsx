@@ -3020,10 +3020,22 @@ function ChatInputField({
               </span>
             )}
             {onFullsendChange && (
+              // FULLSEND IS TOGGLEABLE MID-TURN, deliberately, and the `disabled={isStreaming}`
+              // that used to be here was a mistake I introduced by reflex: I copied the
+              // constraint from the MODEL picker beside it, which really cannot change mid-turn
+              // (the running session belongs to the model that opened it). Fullsend has no such
+              // constraint — it is a plain flag the consent layer reads at EACH DECISION
+              // (internal/askorchicon/consent.go) and the bash guard re-reads per invocation, so a
+              // change lands on the very next ask with no session or turn restart.
+              //
+              // AND MID-TURN IS ITS PRIMARY USE CASE. Nobody thinks "I should turn fullsend on
+              // before I start" — you reach for it when you are already mid-task and being asked
+              // too often, which is precisely when the operator found it greyed out. The mode
+              // dropdown on the same row was never disabled, so the two siblings disagreed about
+              // what a running turn allows.
               <FullsendToggle
                 on={!!fullsend}
                 onChange={onFullsendChange}
-                disabled={isStreaming}
               />
             )}
             {onModeChange && (

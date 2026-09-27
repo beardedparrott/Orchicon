@@ -455,10 +455,23 @@ func buildSlashRegistry(m *App) *slashRegistry {
 			// from the shell's list (the server's answer), so two /fullsend taps cannot flip
 			// it back and forth against a stale local belief.
 			on := !m.fullsendOn()
-			if on {
-				m.dock.SetNotice("⚠ FULLSEND ON — Orchicon stops asking for permission in this conversation. Your deny list and sudo-class binaries still refuse. /fullsend again turns it off.")
-			} else {
+			switch {
+			case !on:
 				m.dock.SetNotice("FULLSEND off — this conversation asks for permission again")
+			case m.chatStore.hasPendingConsent(m.chatConvID):
+				// A CARD ALREADY ON SCREEN IS NOT AUTO-APPROVED, and SAYING SO is what separates the
+				// mode taking effect from the mode looking broken. The card is a specific decision
+				// about a specific target that the operator has already been shown; answering it on
+				// their behalf would be a consent decision the toggle did not make, and "silent
+				// escalation is exactly what a permission system must not do" is the rule this
+				// codebase holds itself to everywhere else.
+				//
+				// MID-TURN IS THE POINT of the toggle being available at all: you reach for it when
+				// you are already being asked too often. One tap clears the card; every ask after it
+				// is skipped.
+				m.dock.SetNotice("⚠ FULLSEND ON — asks from here on are skipped. The card already on screen is still yours to answer. Your deny list and sudo-class binaries still refuse.")
+			default:
+				m.dock.SetNotice("⚠ FULLSEND ON — Orchicon stops asking for permission in this conversation. Your deny list and sudo-class binaries still refuse. /fullsend again turns it off.")
 			}
 			return m.chat.SetConversationFullsend(m.chatConvID, on)
 		},

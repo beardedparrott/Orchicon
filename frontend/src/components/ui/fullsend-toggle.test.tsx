@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import fs from "node:fs";
+import path from "node:path";
 import { FullsendToggle } from "./fullsend-toggle";
 
 // FullsendToggle is the GUI's FULLSEND control, rendered immediately LEFT of the conversation
@@ -58,5 +60,48 @@ describe("FullsendToggle", () => {
       createElement(FullsendToggle, { on: true, onChange: () => {}, disabled: true }),
     );
     expect(disabled).toContain("disabled");
+  });
+});
+
+
+// THE COMPONENT CANNOT BE DISABLED MID-TURN BY THE PAGE, and this guard is a SOURCE SCAN
+// because the fact being protected is a choice made at the CALL SITE, not a behaviour of the
+// component — a rendering test can only see the props it was handed, and the bug was the props
+// the page handed it.
+//
+// A `disabled={isStreaming}` sat on this usage. It was mine, copied by reflex from the MODEL
+// picker beside it, which genuinely cannot change mid-turn (the running session belongs to the
+// model that opened it). Fullsend has no such constraint — the consent layer reads the flag at
+// EACH DECISION and the bash guard re-reads it per invocation — and mid-turn is its PRIMARY use
+// case: you reach for it when you are already being asked too often, which is exactly when the
+// operator found it greyed out.
+//
+// The repo already reads its own sources from tests for exactly this class of fact
+// (AskCard.test.tsx reads the route; internal/tui/chat's parity test reads frontend/src).
+describe("FullsendToggle — wiring", () => {
+  const routeSrc = fs.readFileSync(
+    path.join(__dirname, "../../routes/ask-orchicon.tsx"),
+    "utf8",
+  );
+  const usage = (() => {
+    const start = routeSrc.indexOf("<FullsendToggle");
+    expect(start).toBeGreaterThan(-1);
+    return routeSrc.slice(start, routeSrc.indexOf("/>", start));
+  })();
+
+  it("is NOT disabled while a turn is streaming", () => {
+    expect(usage).not.toMatch(/disabled=/);
+    expect(usage).not.toMatch(/isStreaming/);
+  });
+
+  // The operator's placement ask — "a drop down to the left of the ask mode drop down" — and
+  // the order also mirrors the TUI's composer row (stats · FULLSEND · mode), so the two clients
+  // read the same way.
+  it("renders to the LEFT of the mode dropdown", () => {
+    const fullsendAt = routeSrc.indexOf("<FullsendToggle");
+    const modeAt = routeSrc.indexOf("<ModeToggle");
+    expect(fullsendAt).toBeGreaterThan(-1);
+    expect(modeAt).toBeGreaterThan(-1);
+    expect(fullsendAt).toBeLessThan(modeAt);
   });
 });
