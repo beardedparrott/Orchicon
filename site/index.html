@@ -96,8 +96,18 @@ code{font-size:.86em; background:var(--paper-2); padding:.1em .35em; border-radi
 .navgroup>button:hover, .navgroup[data-open="true"]>button, .navgroup:focus-within>button{color:var(--ink)}
 .navgroup>button::after{content:""; width:.42em; height:.42em; margin-top:-.22em; border-right:1.5px solid currentColor; border-bottom:1.5px solid currentColor; transform:rotate(45deg); opacity:.6}
 .navgroup[data-open="true"]>button::after{transform:rotate(-135deg); margin-top:.22em}
-.navmenu{position:absolute; top:calc(100% + 10px); left:-12px; display:none; flex-direction:column; gap:2px; min-width:206px; padding:8px; border-radius:14px; background:var(--paper); border:1px solid var(--rule); box-shadow:0 14px 40px rgba(0,0,0,.12); z-index:30}
-.navgroup[data-open="true"] .navmenu{display:flex}
+/* THE MENU MUST START AT THE BUTTON'S EDGE, not 10px below it. It used to sit at
+   top:calc(100% + 10px), which left a DEAD GAP between the trigger and the panel: moving the
+   pointer down towards the menu crossed that gap, where it is over neither the group nor any
+   descendant, so mouseleave fired and the menu vanished before a link could be clicked. The
+   operator's report exactly: "The dropdown doesn't stick. It goes away and doesn't allow me to
+   actually click on any submenu."
+   The offset is now the menu's own PADDING-TOP, so the box is contiguous with the button and
+   that strip is part of the hoverable area by construction. The visible panel is the inner
+   .navpanel, so the padding does not get painted. */
+.navmenu{position:absolute; top:100%; left:-12px; display:none; padding-top:10px; z-index:30}
+.navpanel{display:flex; flex-direction:column; gap:2px; min-width:206px; padding:8px; border-radius:14px; background:var(--paper); border:1px solid var(--rule); box-shadow:0 14px 40px rgba(0,0,0,.12)}
+.navgroup[data-open="true"] .navmenu{display:block}
 .navmenu a{padding:8px 10px; border-radius:9px}
 .navmenu a:hover{background:var(--paper-2)}
 .nav .navmenu a[aria-current="true"]{box-shadow:none; background:var(--paper-2)}
@@ -374,20 +384,25 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
            cause instead of trimming the symptom, and keeps every section one click away. -->
       <div class="navgroup">
         <button type="button" aria-expanded="false" aria-haspopup="true">Product</button>
-        <div class="navmenu">
+        <div class="navmenu"><div class="navpanel">
           <a href="#web">Web app</a>
           <a href="#terminal">Terminal</a>
-          <a href="#capabilities">Capabilities</a>
-        </div>
+        </div></div>
       </div>
       <div class="navgroup">
         <button type="button" aria-expanded="false" aria-haspopup="true">How it works</button>
-        <div class="navmenu">
+        <div class="navmenu"><div class="navpanel">
           <a href="#why">Why Workers</a>
           <a href="#workflows">Workflows</a>
+        </div></div>
+      </div>
+      <div class="navgroup">
+        <button type="button" aria-expanded="false" aria-haspopup="true">Features</button>
+        <div class="navmenu"><div class="navpanel">
           <a href="#ask">Ask Orchicon</a>
           <a href="#automation">Idea Cloud</a>
-        </div>
+          <a href="#capabilities">Capabilities</a>
+        </div></div>
       </div>
       <a href="#pricing">Pricing</a>
       <a href="#install">Install</a>
