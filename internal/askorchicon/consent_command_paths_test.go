@@ -131,3 +131,234 @@ func TestDecideAsksForACommandTouchingOutsideEvenWhenTheCwdIsGranted(t *testing.
 		t.Errorf("the card must name the outside path it is asking about, got %q", ask.Summary)
 	}
 }
+
+func TestCommandPathsDoesNotInventPaths(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  string
+		want []string
+	}{
+		{
+			name: "an awk regex is not a path",
+			cmd:  `cd /p/proj && awk 'NR>=1400 && NR<=1505 && /^func /{print NR": "$0}' internal/x.go`,
+			want: []string{"/p/proj"},
+		},
+		{
+			name: "an awk regex with no metacharacter but one segment is not a path",
+			cmd:  `cd /p/proj && awk 'NR>=1618 && /return turnAttemptResult/{print}' internal/x.go`,
+			want: []string{"/p/proj"},
+		},
+		{
+			name: "a slash-delimited grep pattern is not a path",
+			cmd:  `cd /p/proj && grep -n '/func /' internal/x.go`,
+			want: []string{"/p/proj"},
+		},
+		{
+			name: "a bracketed sed program is not a path",
+			cmd:  `cd /p/proj && sed -e '/^[a-z]/,/end/p' internal/x.go`,
+			want: []string{"/p/proj"},
+		},
+		{
+			name: "a redirect to the null device is not a path",
+			cmd:  `cd /p/proj && go test ./... 2>/dev/null`,
+			want: []string{"/p/proj"},
+		},
+		{
+			name: "a URL is not a path",
+			cmd:  `cd /p/proj && curl https://host/x && echo ok`,
+			want: []string{"/p/proj"},
+		},
+		{
+			name: "the case this extraction exists for",
+			cmd:  `cp ~/a /etc/b`,
+			want: []string{"/home/beardedparrott/a", "/etc/b"},
+		},
+		{
+			name: "a flag-carried path",
+			cmd:  `tool --out=/etc/passwd`,
+			want: []string{"/etc/passwd"},
+		},
+		{
+			name: "a redirect target OUTSIDE the project is a path",
+			cmd:  `cd /p/proj && go build ./... > /tmp/out.log 2>&1`,
+			want: []string{"/p/proj", "/tmp/out.log"},
+		},
+		{
+			name: "a quoted path with a space survives",
+			cmd:  `cd /p/proj && cp a "/tmp/my file.log"`,
+			want: []string{"/p/proj", "/tmp/my file.log"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := commandPaths(tc.cmd)
+			if len(got) != len(tc.want) {
+				t.Fatalf("commandPaths = %v, want %v\n  cmd: %s", got, tc.want, tc.cmd)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Fatalf("commandPaths = %v, want %v\n  cmd: %s", got, tc.want, tc.cmd)
+				}
+			}
+		})
+	}
+}
+
+// TestCommandPathsIgnoresHeredocBodies — a heredoc body is a FILE'S CONTENT, not arguments.
+//
+// Judging it meant that writing a test file which mentioned /tmp raised a consent ask about
+// /tmp: the content was read as though the command were touching those paths.
+
+func TestCommandPathsIgnoresHeredocBodies(t *testing.T) {
+	cmd := "cd /p/proj && cat > internal/zz_test.go <<'GOEOF'\n" +
+		"package x\n\n" +
+		"var a = \"/tmp/dev\"\n" +
+		"var b = `cp ~/a /etc/b`\n" +
+		"// see /etc/passwd for details\n" +
+		"GOEOF\n" +
+		"echo done"
+	got := commandPaths(cmd)
+	if len(got) != 1 || got[0] != "/p/proj" {
+		t.Fatalf("commandPaths = %v, want just the cwd — a heredoc body is file CONTENT, not an argument", got)
+	}
+
+	// BUT THE HEREDOC'S REDIRECT TARGET IS STILL JUDGED: writing the file is the action.
+	cmd2 := "cat > /tmp/escape.txt <<'EOF'\nhello\nEOF\necho done"
+	got2 := commandPaths(cmd2)
+	if len(got2) != 1 || got2[0] != "/tmp/escape.txt" {
+		t.Fatalf("commandPaths = %v, want the heredoc's redirect target", got2)
+	}
+}
+
+// TestShellMetacharAndPathShape pins the two predicates the extraction leans on, at their
+// boundaries, so a loosening edit is a failing test rather than a silent return of the
+// treadmill.
+
+func TestShellMetacharAndPathShape(t *testing.T) {
+	for _, tok := range []string{"/^func", "/a*b", "/a?b", "/a[b]", "/a{b}", "/a(b)", "/a|b", `/a\b`, "/a$b", "/a+b", "/a!b", "/a,b"} {
+		if !hasShellMetachar(tok) {
+			t.Errorf("hasShellMetachar(%q) = false — a pattern must not be read as a path", tok)
+		}
+	}
+	for _, tok := range []string{"/etc/b", "/tmp/out.log", "/a-b_c.d", "/a b/c"} {
+		if hasShellMetachar(tok) {
+			t.Errorf("hasShellMetachar(%q) = true — an ordinary path", tok)
+		}
+	}
+	// A QUOTED token must look like a path: two segments, no trailing slash.
+	for _, tok := range []string{"/return", "/func", "/func /", "/", "return"} {
+		if looksLikePath(tok) {
+			t.Errorf("looksLikePath(%q) = true — a quoted span that is not a path", tok)
+		}
+	}
+	for _, tok := range []string{"/etc/b", "~/a", "/tmp/orchicon-develop", "/a/b/c"} {
+		if !looksLikePath(tok) {
+			t.Errorf("looksLikePath(%q) = false — an ordinary quoted path", tok)
+		}
+	}
+}
+
+// TestASessionGrantSilencesTheOperatorsRealCommands is the reported bug as a test.
+//
+// Every command here is one from the session whose ledger showed ask→grant→ask repeated.
+// With the project directory granted, EVERY ONE must be silent, and before the fix every
+// one of them asked.
+
+func TestASessionGrantSilencesTheOperatorsRealCommands(t *testing.T) {
+	isolatedPolicy(t, "")
+	svc := testConsentService()
+	const proj = "/home/beardedparrott/projects/Orchicon"
+	ct := newTestConsentTurn(svc, proj, true, nil)
+	svc.grants.Grant("conv-1", proj)
+
+	for i, cmd := range []string{
+		`cd /home/beardedparrott/projects/Orchicon && awk 'NR>=1400 && NR<=1505 && /^func /{print NR": "$0}' internal/askorchicon/chat.go && echo hi`,
+		`cd /home/beardedparrott/projects/Orchicon && awk 'NR>=1618 && NR<=2230 && /return turnAttemptResult/{print NR": "$0}' internal/x.go`,
+		`cd /home/beardedparrott/projects/Orchicon && sed -n '3480,3530p' internal/tui/app.go && echo "=== who calls this? ===" && awk 'N' internal/y.go`,
+		`cd /home/beardedparrott/projects/Orchicon && grep -n '/func /' internal/x.go`,
+		`cd /home/beardedparrott/projects/Orchicon && go test ./... 2>&1 | tail -5`,
+		`cd /home/beardedparrott/projects/Orchicon && git status --short | head -5`,
+	} {
+		_, ask, _ := ct.decide(context.Background(), "ses_1", bashAskEvent("per_"+string(rune('a'+i)), cmd))
+		if ask != nil {
+			t.Errorf("ASKED AGAIN (card named %q) with the directory granted:\n  %s", ask.Directory, cmd)
+		}
+	}
+}
+
+// TestTheCardNamesTheDirectoryThatWouldSilenceIt is the OTHER half, and the one that makes
+// "never ask again" true rather than a promise the card cannot keep.
+//
+// When a command's cwd is granted but a path it NAMES is not, the ask must offer the grant
+// for THAT directory — not for the one the operator already gave. Otherwise the operator
+// clears the card by granting the named directory and is asked again by the next identical
+// command, with no way to see why.
+
+func TestTheCardNamesTheDirectoryThatWouldSilenceIt(t *testing.T) {
+	isolatedPolicy(t, "")
+	svc := testConsentService()
+	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
+	svc.grants.Grant("conv-1", "/p/proj")
+
+	cmd := `cd /p/proj && git worktree remove --force /tmp/dev 2>/dev/null`
+
+	_, ask, _ := ct.decide(context.Background(), "ses_1", bashAskEvent("per_1", cmd))
+	if ask == nil {
+		t.Fatal("expected an ask: /tmp is outside the granted project")
+	}
+	if ask.Directory != "/tmp" || ask.Key != "/tmp" {
+		t.Fatalf("card names dir=%q key=%q, want /tmp — the grant it offers must be the one that works",
+			ask.Directory, ask.Key)
+	}
+	if !strings.Contains(ask.Summary, "/tmp/dev") {
+		t.Errorf("the card's summary must still name the ACTION (%q)", ask.Summary)
+	}
+
+	// Taking the offer silences the command — the property the operator was missing.
+	svc.grants.Grant("conv-1", ask.Key)
+	if _, again, _ := ct.decide(context.Background(), "ses_2", bashAskEvent("per_2", cmd)); again != nil {
+		t.Fatalf("asked AGAIN (dir=%q) after granting the directory the card named", again.Directory)
+	}
+}
+
+// A plain in-project ask is unchanged: nothing blocks, so the card names the scope dir, and
+// one grant covers the whole directory — not just this command.
+
+func TestAnOrdinaryInProjectAskStillNamesTheScopeDirectory(t *testing.T) {
+	isolatedPolicy(t, "")
+	svc := testConsentService()
+	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
+
+	_, ask, _ := ct.decide(context.Background(), "ses_1", bashAskEvent("per_1", `cd /p/proj && go test ./...`))
+	if ask == nil {
+		t.Fatal("expected an ask with nothing granted")
+	}
+	if ask.Directory != "/p/proj" {
+		t.Fatalf("card names %q, want the scope directory", ask.Directory)
+	}
+	svc.grants.Grant("conv-1", ask.Key)
+	// The grant covers the DIRECTORY, so a different command in it is silent too.
+	if _, again, _ := ct.decide(context.Background(), "ses_2", bashAskEvent("per_2", `cd /p/proj && go build ./...`)); again != nil {
+		t.Fatal("a grant for the directory must cover another command in it")
+	}
+}
+
+// A heredoc write that MENTIONS paths in its content must not ask — the file's content is
+// not an argument. This is the shape of nearly every test file written in this repo.
+
+func TestAHeredocWriteIsJudgedByItsTargetNotItsContent(t *testing.T) {
+	isolatedPolicy(t, "")
+	svc := testConsentService()
+	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
+	svc.grants.Grant("conv-1", "/p/proj")
+
+	cmd := "cd /p/proj && cat > internal/zz_test.go <<'GOEOF'\n" +
+		"package x\n\n" +
+		"var a = \"/tmp/dev\"\n" +
+		"var b = `cp ~/a /etc/b`\n" +
+		"GOEOF\n" +
+		"echo done"
+	if _, ask, _ := ct.decide(context.Background(), "ses_1", bashAskEvent("per_1", cmd)); ask != nil {
+		t.Fatalf("a heredoc's CONTENT raised an ask (card named %q) — content is not an argument", ask.Directory)
+	}
+}

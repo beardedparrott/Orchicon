@@ -479,27 +479,48 @@ func absAskTarget(a askAction, dir string) string {
 	return t
 }
 
-// commandPaths extracts the filesystem paths a shell command NAMES.
+// commandPaths extracts the filesystem paths a shell command NAMES as arguments.
 //
 // DELIBERATELY MODEST, AND HONEST ABOUT IT. It finds LITERAL absolute paths — `/etc/x`,
 // `--flag=/etc/x`, `~/x` — and nothing more. A path built at runtime (`$(cat cfg)`, a
-// variable, a script's own logic) is invisible to it, so this RAISES the bar rather
-// than guaranteeing containment, and the operator was told exactly that when they
-// chose it. It is worth having because the case that prompted it (`cp ~/a /etc/b`) is a
-// literal path in the text.
+// variable, a script's own logic) is invisible to it, so this RAISES the bar rather than
+// guaranteeing containment, and the operator was told exactly that when they chose it. It
+// is worth having because the case that prompted it (`cp ~/a /etc/b`) is a literal path in
+// the text.
 //
-// Relative paths are intentionally NOT extracted: they resolve against the cwd, which
-// is already the first judged target, so listing them would judge the same directory
-// twice.
+// WHAT IT MUST NOT DO IS INVENT PATHS, because an invented path is an ask no session grant
+// can answer — and that is exactly what it did. The operator granted the project directory
+// again and again and was asked again every time, because an awk program's REGEX was read
+// as a path: `/^func` became a consent target whose grant key is
+// filepath.Dir("/^func") = "/", which no grant can cover, so the ask repeated forever. The
+// ledger of that session shows every `awk`/`sed` command asking, each answered with "never
+// ask again", each asking again. Three rules keep invention out:
+//
+//  1. QUOTED TOKENS ARE DATA AND MUST LOOK LIKE PATHS. A quoted span is a program, a regex
+//     or a literal, not an argument, so `'/^func /'` and `'/return x/'` are rejected on
+//     SHAPE — two path segments or a home prefix, no metacharacter. Unquoted tokens keep
+//     the original permissive rule: they are arguments, and `cp ~/a /etc/b` is the case this
+//     function exists for.
+//  2. A REGEX/GLOB METACHARACTER DISQUALIFIES A TOKEN outright, quoted or not. A token
+//     containing any of `^ + ! * , ? [ ] { } ( ) |` or a backslash is a pattern, not a
+//     target we could judge.
+//  3. HEREDOC BODIES ARE FILE CONTENT, NOT ARGUMENTS. Everything between `<<'EOF'` and its
+//     terminator is text about to be WRITTEN, so a path in it is not a path this command
+//     touches — and reading them meant that writing a test file whose content mentioned
+//     /tmp raised an ask about /tmp. The heredoc operator, delimiter and the rest of the
+//     opening line are KEPT, so the redirect target itself is still judged.
+//
+// Relative paths are intentionally NOT extracted: they resolve against the cwd, which is
+// already the first judged target, so listing them would judge the same directory twice.
 func commandPaths(cmd string) []string {
 	if strings.TrimSpace(cmd) == "" {
 		return nil
 	}
 	var out []string
-	for _, tok := range strings.Fields(cmd) {
-		// Strip the shell punctuation that glues a path to its neighbours:
-		// quotes, redirects, separators, grouping.
-		tok = strings.Trim(tok, `"'`+",;|&()<>")
+	for _, t := range commandTokens(stripHeredocBodies(cmd)) {
+		// Strip the shell punctuation that glues a path to its neighbours: quotes,
+		// redirects, separators, grouping.
+		tok := strings.Trim(t.tok, `"'`+",;|&()<>")
 		// `--flag=/path` and `VAR=/path`: keep the value half.
 		if i := strings.IndexByte(tok, '='); i >= 0 {
 			tok = tok[i+1:]
@@ -516,6 +537,14 @@ func commandPaths(cmd string) []string {
 		if strings.Contains(tok, "://") || strings.HasPrefix(tok, "//") {
 			continue
 		}
+		// Rule 2: a pattern is not a path, however it was written.
+		if hasShellMetachar(tok) {
+			continue
+		}
+		// Rule 1: a QUOTED token has to look like a path to be treated as one.
+		if t.quoted && !looksLikePath(tok) {
+			continue
+		}
 		if isHome {
 			home, err := os.UserHomeDir()
 			if err != nil {
@@ -530,6 +559,198 @@ func commandPaths(cmd string) []string {
 		}
 	}
 	return out
+}
+
+// cmdToken is one word of a shell command, with whether it came from a QUOTED span. The
+// distinction is why this is a scanner rather than strings.Fields: a quoted word is DATA
+// (a program, a regex, a literal), and treating it as an argument is how an awk program's
+// regex became a consent target.
+type cmdToken struct {
+	tok    string
+	quoted bool
+}
+
+// commandTokens splits a command into words the way a shell would for the purposes of THIS
+// scan: whitespace separates words, a quoted span is ONE word with its quotes removed (so a
+// quoted path containing a space survives), and an escaped character does not end a word.
+func commandTokens(cmd string) []cmdToken {
+	var out []cmdToken
+	var b strings.Builder
+	var quote rune
+	quoted, started, escaped := false, false, false
+	flush := func() {
+		if started {
+			out = append(out, cmdToken{tok: b.String(), quoted: quoted})
+		}
+		b.Reset()
+		quoted, started = false, false
+	}
+	for _, r := range cmd {
+		switch {
+		case escaped:
+			b.WriteRune(r)
+			escaped = false
+		case quote != 0:
+			if r == quote {
+				quote = 0
+				continue
+			}
+			b.WriteRune(r)
+		case r == '\\':
+			started = true
+			escaped = true
+		case r == '\'' || r == '"':
+			started, quoted, quote = true, true, r
+		case r == ' ' || r == '\t' || r == '\n':
+			flush()
+		default:
+			started = true
+			b.WriteRune(r)
+		}
+	}
+	flush()
+	return out
+}
+
+// hasShellMetachar reports whether a token contains a character that makes it a PATTERN
+// rather than a path we could judge — a regex or glob operator, or a shell expansion.
+// `$` is in the set for the expansion reason: the consent layer sees the command TEXT, so
+// `/a$b` is not the path the shell would pass, and judging the literal would invent a
+// target. A real path may legally contain most of these, but the two mistakes do not cost
+// the same: a MISSED mention is still covered by the policy's deny list and by the
+// execution guard, while an INVENTED one produces an ask nothing can answer.
+func hasShellMetachar(tok string) bool {
+	return strings.ContainsAny(tok, "^+!*,?$[]{}()|\\")
+}
+
+// looksLikePath reports whether a QUOTED token is plausibly a filesystem path. A quoted
+// span is data, so the bar is higher than for an unquoted argument: it must be
+// home-relative or carry at least two path segments, and it may not END in a slash —
+// because that is how a regex is delimited. `/func /` (a grep pattern) has two slashes and
+// would otherwise pass; `/etc/b` is a path; `/return` is neither.
+func looksLikePath(tok string) bool {
+	if strings.HasSuffix(tok, "/") {
+		return false
+	}
+	if strings.HasPrefix(tok, "~/") {
+		return true
+	}
+	return strings.Count(tok, "/") >= 2
+}
+
+// stripHeredocBodies removes every heredoc BODY from a command, keeping the `<<DELIM`
+// operator, the delimiter and the rest of the opening line — so the redirect target is
+// still visible to commandPaths.
+//
+// A heredoc body is text about to be WRITTEN TO A FILE, so a path in it is not a path this
+// command touches. Judging them meant that writing a test file whose CONTENT mentioned a
+// /tmp path raised a consent ask about /tmp: the file's content was being read as though it
+// were an argument, which is both wrong and a source of asks the operator cannot satisfy by
+// granting the directory they are actually working in.
+//
+// LIMITS, stated rather than hidden: `<<-` (tab-stripped terminators) is not special-cased,
+// and an operator after an unbalanced quote is not found. Both leave the body in the text,
+// which is the CONSERVATIVE direction — those paths come back and may raise an ask, rather
+// than a body being dropped that held a real argument.
+func stripHeredocBodies(cmd string) string {
+	var out strings.Builder
+	rest := cmd
+	for {
+		i := indexHeredocOp(rest)
+		if i < 0 {
+			out.WriteString(rest)
+			return out.String()
+		}
+		delim, headerLen, ok := parseHeredocDelim(rest[i:])
+		if !ok {
+			out.WriteString(rest)
+			return out.String()
+		}
+		// Through the delimiter word, then to the end of that LINE: the body starts on
+		// the next line, and the opening line may still carry a redirect.
+		headerEnd := i + headerLen
+		nl := strings.IndexByte(rest[headerEnd:], '\n')
+		if nl < 0 {
+			out.WriteString(rest) // nothing follows the operator, so there is no body
+			return out.String()
+		}
+		out.WriteString(rest[:headerEnd+nl+1])
+		rest = cutHeredocBody(rest[headerEnd+nl+1:], delim)
+	}
+}
+
+// indexHeredocOp returns the index of the first `<<` that is not inside quotes, or -1.
+func indexHeredocOp(s string) int {
+	var quote rune
+	for i, r := range s {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			}
+		case r == '\'' || r == '"':
+			quote = r
+		case r == '<':
+			if i+1 < len(s) && s[i+1] == '<' {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// parseHeredocDelim reads a heredoc operator at the head of s (`<<EOF`, `<<'EOF'`) and
+// returns the delimiter plus the byte length of the operator itself.
+func parseHeredocDelim(s string) (string, int, bool) {
+	if !strings.HasPrefix(s, "<<") {
+		return "", 0, false
+	}
+	j := 2
+	// `<<-` strips leading tabs from the body and its terminator.
+	if j < len(s) && s[j] == '-' {
+		j++
+	}
+	for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
+		j++
+	}
+	if j >= len(s) || s[j] == '\n' {
+		return "", 0, false
+	}
+	if s[j] == '\'' || s[j] == '"' {
+		quote := s[j]
+		j++
+		start := j
+		for j < len(s) && s[j] != quote {
+			j++
+		}
+		if j >= len(s) || j == start {
+			return "", 0, false
+		}
+		return s[start:j], j + 1, true
+	}
+	start := j
+	for j < len(s) && s[j] != ' ' && s[j] != '\t' && s[j] != '\n' {
+		j++
+	}
+	if j == start {
+		return "", 0, false
+	}
+	return s[start:j], j, true
+}
+
+// cutHeredocBody returns what follows the first line equal to delim. An unterminated
+// heredoc consumes the rest of the command, which is also what a shell would do.
+func cutHeredocBody(s, delim string) string {
+	for {
+		nl := strings.IndexByte(s, '\n')
+		if nl < 0 {
+			return ""
+		}
+		if strings.TrimSuffix(s[:nl], "\r") == delim {
+			return s[nl+1:]
+		}
+		s = s[nl+1:]
+	}
 }
 
 // decisionTargets returns EVERY path a file action touches, so the decision
@@ -1245,6 +1466,10 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 	for _, t := range targets {
 		absTargets = append(absTargets, t.abstarget)
 	}
+	// blocking is the FIRST target that is not covered — the path whose consent is
+	// actually missing, and therefore the directory a grant has to name to silence this
+	// ask. See the card's key below for why it, and not the cwd, is what the card states.
+	var blocking *decisionTarget
 	for i, t := range targets {
 		d, err := pol.Decide(t.abstarget, permpolicy.Inputs{
 			SessionGranted: ct.svc.grants.Has(ct.convID, t.key),
@@ -1266,6 +1491,10 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 		}
 		if !d.Verdict.Proceed() {
 			proceed = false
+			if blocking == nil {
+				bt := t
+				blocking = &bt
+			}
 		}
 		if !scope.PreApprovedPath(t.abstarget) {
 			allInside = false
@@ -1314,21 +1543,40 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 	// the card never explains itself in developer terms; the diagnostic for that
 	// case belongs in the Warn above, not in copy an operator reads.
 	summary := askSummary(a)
+	// THE CARD NAMES THE DIRECTORY WHOSE CONSENT IS ACTUALLY MISSING, which is not always
+	// the cwd, and the difference is the difference between an answerable card and a
+	// treadmill.
+	//
+	// A shell command's KEY is its cwd (C4), so the card used to say "never ask again in
+	// <the project>" for a command that the project grant could never silence — because
+	// what forced the ask was a MENTIONED path outside it (a redirect to a log file, a
+	// temp dir). The operator granted the named directory, was asked again by the next
+	// command, and had no way to see why: the card kept naming a directory that was
+	// already granted. Naming the BLOCKING target instead makes the offered grant the one
+	// that works, and it is also the honest description of the ask — this is the path
+	// Orchicon does not have consent for.
+	//
+	// When nothing blocks (the fail-closed unresolved case, where the target IS the scope
+	// dir) this is the scope dir and the card is unchanged.
+	grantDir := a.Key
+	if blocking != nil && blocking.key != "" {
+		grantDir = blocking.key
+	}
 	ask = &pendingAsk{
 		AskID:          evt.PermissionID,
 		ConversationID: ct.convID,
 		SessionID:      sid,
 		Action:         a,
-		Key:            a.Key,
+		Key:            grantDir,
 		Tool:           a.Tool,
 		Command:        a.Command,
 		Targets:        a.Targets,
-		Directory:      a.Key,
+		Directory:      grantDir,
 		// The card claims "inside the project" only when EVERY target is; an
 		// unresolved action has no known target at all, so it cannot.
 		InsideProject: allInside,
 		Summary:       summary,
-		DenyBelow:     ct.denyBelowForGrant(pol, a.Key),
+		DenyBelow:     ct.denyBelowForGrant(pol, grantDir),
 		AbsTargets:    absTargets,
 		reply:         ct.replies,
 	}
@@ -1513,11 +1761,33 @@ func emitAskResolution(emit func(*apiv1.ChatStreamResponse), convID string, r as
 // but was not yet applied IS applied; every still-open ask is answered
 // `reject` so the serve's session is not left holding a phantom permission;
 // a late client reply then reports expired (never silence).
-func (ct *consentTurn) finalize(ctx context.Context, client scheduler.ChatTurnClient) {
+// finalize ends the turn's consent state (C8): a client decision that landed but was not yet
+// applied IS applied; every still-open ask is answered `reject` so the serve's session is not
+// left holding a phantom permission; a late client reply then reports expired (never
+// silence).
+//
+// IT PUBLISHES WHAT IT SETTLES, which is what stops a card outliving its ask. Every client
+// watching the turn holds its own copy of the card, and only the client that ANSWERED one
+// clears it — so a card settled HERE (a decision that arrived as the turn ended, or an ask
+// that ran out of time) used to stay on screen in every other client as a live-looking
+// choice, clickable and inert. That is the operator's "the GUI and TUI are still not in
+// sync": the resolution was published when a decision was APPLIED mid-turn
+// (applyClientReplies) and never when an ask was settled at the end.
+//
+// emit may be nil (the legacy path has no client stream), in which case nothing is
+// published and behaviour is unchanged.
+func (ct *consentTurn) finalize(ctx context.Context, client scheduler.ChatTurnClient, emit func(*apiv1.ChatStreamResponse)) {
 	for _, a := range ct.svc.pending.removeConversation(ct.convID) {
 		choice, applyClient, wasOpen := a.resolveForFinalize()
 		switch {
 		case applyClient:
+			// A QUESTION's late reply is the operator's WORDS, not a permission choice, and
+			// it settles the card the same way — so it is published with its answer too.
+			if ans, ok := a.clientAnswerValue(); ok {
+				ct.record(a.Action, "answered", ans)
+				emitAskResolution(emit, ct.convID, askResolution{AskID: a.AskID, Outcome: "answered", Answer: ans})
+				continue
+			}
 			resp, ok := consentResponse(choice)
 			if !ok {
 				continue
@@ -1527,12 +1797,16 @@ func (ct *consentTurn) finalize(ctx context.Context, client scheduler.ChatTurnCl
 					"conversation", ct.convID, "ask", a.AskID, "error", err)
 			}
 			ct.record(a.Action, "user_"+choice.String(), "")
+			emitAskResolution(emit, ct.convID, askResolution{AskID: a.AskID, Outcome: resolutionOutcome(choice)})
 		case wasOpen:
 			if err := client.ReplyPermissionDecision(ctx, a.SessionID, a.AskID, "reject"); err != nil {
 				ct.log().Warn("ask orchicon consent: expiring unanswered ask failed",
 					"conversation", ct.convID, "ask", a.AskID, "error", err)
 			}
 			ct.record(a.Action, "expired", "unanswered at turn end")
+			// "expired" is the outcome the wire documents for an ask nobody answered, and it
+			// is what makes a watching client's card read as expired rather than pending.
+			emitAskResolution(emit, ct.convID, askResolution{AskID: a.AskID, Outcome: "expired"})
 		}
 	}
 	ct.settleMonitor()

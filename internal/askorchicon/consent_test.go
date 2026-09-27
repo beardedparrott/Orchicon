@@ -626,7 +626,7 @@ func TestFinalizeExpiresOpenAskAndLateReplyReportsExpired(t *testing.T) {
 	if ask == nil {
 		t.Fatal("expected an ask")
 	}
-	ct.finalize(context.Background(), client)
+	ct.finalize(context.Background(), client, nil)
 	// The unanswered ask is rejected (the serve holds no phantom permission).
 	if got := client.got(); len(got) != 1 || got[0] != "reject" {
 		t.Fatalf("finalize decisions = %#v, want [reject]", got)
@@ -652,7 +652,7 @@ func TestFinalizeExpiresOpenAskAndLateReplyReportsExpired(t *testing.T) {
 	if !ask2.clientReply(apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_ONCE) {
 		t.Fatal("client reply was not recorded")
 	}
-	ct2.finalize(context.Background(), client2)
+	ct2.finalize(context.Background(), client2, nil)
 	if got := client2.got(); len(got) != 1 || got[0] != "once" {
 		t.Fatalf("post-turn reply decisions = %#v, want [once]", got)
 	}
@@ -695,7 +695,7 @@ func TestLateAllowSessionReplyReportsExpiredAndRecordsNoGrant(t *testing.T) {
 		t.Fatal("expected an ask")
 	}
 	// The turn ends before the human answers.
-	ct.finalize(context.Background(), client)
+	ct.finalize(context.Background(), client, nil)
 	// A late ALLOW_SESSION must be reported expired AND must not leave a grant
 	// behind: a decision reported as not-applied must not partially apply.
 	resp, err := svc.ReplyPermissionAsk(tenantCtx(), connectReq(&apiv1.ReplyPermissionAskRequest{

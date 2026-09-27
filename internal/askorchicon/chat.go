@@ -1464,7 +1464,7 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 	defer func() {
 		// Turn end (C8): apply a decision that landed, expire every still-open ask
 		// (reject) so the serve holds no phantom permission, and clear the gate.
-		c.consent.finalize(context.WithoutCancel(ctx), c.client)
+		c.consent.finalize(context.WithoutCancel(ctx), c.client, c.onStreamEvent)
 	}()
 	// reconnects counts the bounded session recycles performed on an MCP
 	// wedge. Bounded by ORCHICON_ASK_MCP_RECONNECT_ATTEMPTS (D2) so a wedged
@@ -2479,7 +2479,7 @@ func (s *Service) runOpenCodeTurn(ctx context.Context, client scheduler.ChatTurn
 	// card, no stall monitor): the decision chain still runs and the reply RPC
 	// still finds the ask in the shared registry.
 	legacyConsent := newConsentTurn(s, convID, tenantID, nil, nil)
-	defer legacyConsent.finalize(context.WithoutCancel(ctx), client)
+	defer legacyConsent.finalize(context.WithoutCancel(ctx), client, nil)
 
 	for {
 		select {

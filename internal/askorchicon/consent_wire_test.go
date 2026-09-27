@@ -452,3 +452,79 @@ func TestResolutionOutcomeNamesEveryChoiceDistinctly(t *testing.T) {
 		t.Fatal("consentResponse accepted UNSPECIFIED — resolutionOutcome's default could then report an allow for a choice nobody made")
 	}
 }
+
+// TestFinalizePublishesTheResolutionForEveryAskItSettles is the OTHER half of the
+// cross-client settling, and the half the operator was still seeing.
+//
+// A decision applied mid-turn is published by applyClientReplies, so the client that did NOT
+// answer settles. A decision that lands AS THE TURN ENDS, and an ask that simply runs out of
+// time, are both settled by finalize instead — and finalize published NOTHING, so every other
+// client kept a live-looking, clickable, inert card. That is the reported "the GUI and TUI
+// are still not in sync": it depended on WHERE the decision happened to land, which is why it
+// looked intermittent.
+func TestFinalizePublishesTheResolutionForEveryAskItSettles(t *testing.T) {
+	isolatedPolicy(t, "")
+	svc := testConsentService()
+	client := &consentFakeClient{}
+
+	// Two asks: one the operator answered, one nobody answered.
+	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
+	_, answered, _ := ct.decide(context.Background(), "ses_1", fileAskEvent("per_answered", "write", "/p/sibling/x.md"))
+	_, ignored, _ := ct.decide(context.Background(), "ses_1", fileAskEvent("per_ignored", "write", "/p/sibling/y.md"))
+	if answered == nil || ignored == nil {
+		t.Fatal("expected two asks")
+	}
+	if !answered.clientReply(apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_SESSION) {
+		t.Fatal("the reply was not recorded")
+	}
+	svc.grants.Grant("conv-1", answered.Key)
+
+	var published []*apiv1.ChatStreamResponse
+	ct.finalize(context.Background(), client, func(r *apiv1.ChatStreamResponse) { published = append(published, r) })
+
+	if len(published) != 2 {
+		t.Fatalf("finalize published %d resolutions for 2 settled asks — a watching client keeps "+
+			"the card it was not told about", len(published))
+	}
+	got := map[string]string{}
+	for _, r := range published {
+		res := r.GetPermissionAskResolved()
+		if res == nil {
+			t.Fatalf("finalize published a non-resolution: %v", r.GetEvent())
+		}
+		got[res.GetAskId()] = res.GetOutcome()
+	}
+	// The answered one carries the DECISION the operator made, not a generic "settled".
+	if got["per_answered"] != "allow_session" {
+		t.Errorf("the answered ask resolved as %q, want allow_session", got["per_answered"])
+	}
+	// The unanswered one resolves as EXPIRED — which is what the wire documents for an ask
+	// nobody answered, so a watching card reads as expired rather than as still-pending.
+	if got["per_ignored"] != "expired" {
+		t.Errorf("the unanswered ask resolved as %q, want expired", got["per_ignored"])
+	}
+	// Both questions must be off the registry: a resolution for an ask that is somehow still
+	// open would let a watching client settle a card the collector can still act on.
+	for _, id := range []string{"per_answered", "per_ignored"} {
+		if _, open := svc.pending.get("conv-1", id); open {
+			t.Errorf("ask %s is still in the pending registry after finalize", id)
+		}
+	}
+}
+
+// TestFinalizeWithNoStreamIsSilent keeps the legacy path safe: it has no client stream, and a
+// nil emit must publish nothing rather than panic inside a deferred finalize.
+func TestFinalizeWithNoStreamIsSilent(t *testing.T) {
+	isolatedPolicy(t, "")
+	svc := testConsentService()
+	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
+	if _, ask, _ := ct.decide(context.Background(), "ses_1", fileAskEvent("per_1", "write", "/p/sibling/x.md")); ask == nil {
+		t.Fatal("expected an ask")
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			t.Fatalf("finalize panicked with a nil emit: %v", rec)
+		}
+	}()
+	ct.finalize(context.Background(), &consentFakeClient{}, nil)
+}
