@@ -127,6 +127,14 @@ type Model struct {
 	// (the stats sit BEFORE it). Both are set by the shell.
 	Stats string
 	Mode  string
+	// Fullsend is the FULLSEND indicator, rendered immediately to the LEFT of the mode pill
+	// (mirroring the GUI, which places its fullsend dropdown left of its mode dropdown).
+	//
+	// IT IS EMPTY WHEN OFF, and that is the design rather than an optimisation: FULLSEND is the
+	// ABSENCE of asking, so there is nothing to draw while the gate is doing its job. A
+	// permanently-present "FULLSEND OFF" token would compete for attention on every frame, and
+	// the whole point is that the ON state is unmissable.
+	Fullsend string
 	// Model is the ask model ref, rendered LEFT-aligned on the same stat row.
 	// It is deliberately NOT part of Stats: prefixing the ref to the right-aligned
 	// numbers made the row longer than the pane, so the tail (cost, and part of
@@ -712,7 +720,7 @@ func (m *Model) Lines() int {
 // StatsRows is 1 when there is a stat strip / mode pill to draw, else 0. The
 // shell reserves exactly this many rows, so the box can never overflow.
 func (m *Model) StatsRows() int {
-	if m.Stats == "" && m.Mode == "" && m.Model == "" {
+	if m.Stats == "" && m.Mode == "" && m.Model == "" && m.Fullsend == "" {
 		return 0
 	}
 	return 1
@@ -727,26 +735,49 @@ func (m *Model) statLine(inner int) string {
 	if m.Mode != "" {
 		mode = "[" + m.Mode + "]"
 	}
-	right := m.Stats
+	// THE LAYOUT MATHS RUNS ON PLAIN STRINGS, and the styled form is assembled at the very
+	// end from the same pieces. Styling mid-calculation is how a width ends up measured on
+	// escape sequences rather than on cells — the bug that made an earlier pill's closing
+	// bracket disappear.
+	//
+	// ORDER: stats, then FULLSEND, then the mode pill — the same left-to-right order as the
+	// GUI's two dropdowns, so the operator reads the same two controls in the same places in
+	// either client.
+	keep := ""
+	if m.Fullsend != "" {
+		keep = m.Fullsend
+	}
 	if mode != "" {
+		if keep != "" {
+			keep += "  "
+		}
+		keep += mode
+	}
+	right := m.Stats
+	if keep != "" {
 		if right != "" {
 			right += "  "
 		}
-		right += mode
+		right += keep
 	}
 	if right == "" && m.Model == "" {
 		return ""
 	}
-	// Keep the right-hand group whole where the pane allows: trim the STATS first,
-	// never the pill.
+	// Keep the right-hand group whole where the pane allows: trim the STATS first, never the
+	// pill or the FULLSEND badge. Both of those are state the operator has to be able to read
+	// — one tells them what persona they are in, the other that Orchicon has stopped asking —
+	// while the numbers are what they watch. The controls survive; the readout gives way.
 	if lipgloss.Width(right) > inner {
-		avail := inner - lipgloss.Width(mode) - 2
+		avail := inner - lipgloss.Width(keep) - 2
 		if avail < 4 {
 			avail = 4
 		}
 		right = ansi.Truncate(m.Stats, avail, "…")
-		if mode != "" {
-			right += "  " + mode
+		if keep != "" {
+			if right != "" {
+				right += "  "
+			}
+			right += keep
 		}
 	}
 	// Then the model ref: truncate it, and drop it entirely if even that will not
@@ -772,7 +803,22 @@ func (m *Model) statLine(inner int) string {
 	if pad < 0 {
 		pad = 0
 	}
-	return theme.ListMeta.Render(left + strings.Repeat(" ", pad) + right)
+	// THE ASSEMBLY. The FULLSEND badge and the mode pill are painted as their own segments so
+	// the badge can be a filled block; the rest of the row keeps the ordinary meta style. The
+	// badge is matched by value rather than by position because the stats ahead of it may have
+	// been truncated, and a badge the operator cannot see is worse than a tight row.
+	if m.Fullsend == "" {
+		return theme.ListMeta.Render(left + strings.Repeat(" ", pad) + right)
+	}
+	headed := left + strings.Repeat(" ", pad)
+	if m.Stats != "" {
+		headed += m.Stats + "  "
+	}
+	line := theme.ListMeta.Render(headed) + theme.FullsendBadge.Render(m.Fullsend)
+	if mode != "" {
+		line += theme.ListMeta.Render("  " + mode)
+	}
+	return line
 }
 
 // Focus / Blur move keyboard focus into/out of the composer.

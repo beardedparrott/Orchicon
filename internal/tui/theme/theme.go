@@ -532,6 +532,13 @@ var (
 
 	StatusBusy = lipgloss.NewStyle()
 
+	// FullsendBadge is the composer's FULLSEND indicator. It is a FILLED, reversed block rather than a
+	// tint, because of everything the composer shows this is the one whose absence is a safety problem:
+	// the status strip's other fields (model, tokens, cost) are information, while this one tells the
+	// operator that Orchicon has stopped asking. A mode the operator cannot tell they are in is worse than
+	// no mode, and that is doubly true of a permission bypass.
+	FullsendBadge = lipgloss.NewStyle()
+
 	HelpOverlay = lipgloss.NewStyle()
 	ErrorText   = lipgloss.NewStyle()
 	HintText    = lipgloss.NewStyle()
@@ -707,6 +714,12 @@ func buildStyles(t Theme) {
 	StatusWarn = lipgloss.NewStyle().Foreground(t.Warn)
 	StatusErr = lipgloss.NewStyle().Foreground(t.Err)
 	StatusBusy = lipgloss.NewStyle().Foreground(t.Busy)
+	// The badge paints the WARN fill and the composer's own fill as its text, so the glyphs read as a
+	// knockout block rather than as coloured text. composerFill is deliberately used instead of t.Bg: on a
+	// TRANSPARENT theme t.Bg is empty (nothing is painted) and the knockout would then depend on whatever
+	// the terminal's default background happens to be. Bold, so it survives a colour-blind terminal and a
+	// palette an operator has customised.
+	FullsendBadge = lipgloss.NewStyle().Bold(true).Background(t.Warn).Foreground(composerFill)
 	// ToolName paints a TOOL ROW's name, ToolMeta its arguments and result.
 	//
 	// ToolName is its OWN token (Theme.Tool) rather than a borrow of StatusBusy, which is what it was: a

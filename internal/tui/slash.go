@@ -439,6 +439,31 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		},
 	})
 	add(SlashCommand{
+		Name: "/fullsend", Usage: "/fullsend",
+		Desc: "toggle FULLSEND for this conversation: stop asking for permission (a deny entry and the never-allow class still refuse)",
+		Run: func(m *App, _ []string) tea.Cmd {
+			// NO PENDING FORM, deliberately. The conversation MODE had a pending value for a
+			// chat that did not exist yet, and that leak — changing an open conversation also
+			// changed what the NEXT one would be created with — is exactly the bug this
+			// refuses to repeat. A permission bypass armed for a conversation the operator has
+			// not looked at is one they did not knowingly turn on.
+			if m.chatConvID == "" {
+				m.dock.SetError("no conversation open — /fullsend applies to one conversation, and there is no pending form: a bypass must not be armed for a chat you have not opened")
+				return nil
+			}
+			// THE OPERATOR'S INTENT IS A TOGGLE; THE WIRE CARRIES A VALUE. The state is read
+			// from the shell's list (the server's answer), so two /fullsend taps cannot flip
+			// it back and forth against a stale local belief.
+			on := !m.fullsendOn()
+			if on {
+				m.dock.SetNotice("⚠ FULLSEND ON — Orchicon stops asking for permission in this conversation. Your deny list and sudo-class binaries still refuse. /fullsend again turns it off.")
+			} else {
+				m.dock.SetNotice("FULLSEND off — this conversation asks for permission again")
+			}
+			return m.chat.SetConversationFullsend(m.chatConvID, on)
+		},
+	})
+	add(SlashCommand{
 		Name: "/compact", Usage: "/compact",
 		Desc: "summarize this conversation's history to free context (compact the model's context window)",
 		Run: func(m *App, _ []string) tea.Cmd {

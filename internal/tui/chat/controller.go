@@ -164,6 +164,11 @@ type Conversation struct {
 	MessageN  int32
 	ModelRef  string
 	Mode      apiv1.ConversationMode
+	// Fullsend is whether this conversation is in FULLSEND: the operator has waived the
+	// permission PROMPT for it. Read from the conversation row the server computes at read
+	// time, so the composer indicator tracks the SERVER's state — including a toggle made in
+	// the GUI — on the same conversation-list reload the mode pill already follows.
+	Fullsend bool
 	// ProjectID is the project this conversation belongs to, or "" when unassigned (the API's empty string, kept
 	// as-is rather than normalized into a sentinel so the rail and the GUI agree on what "unassigned" looks like).
 	//
@@ -594,6 +599,28 @@ func (c *Controller) SetConversationModel(id, modelRef string) tea.Cmd {
 	}
 }
 
+// SetConversationFullsend turns FULLSEND on or off for one conversation — the TUI's
+// `/fullsend` write path.
+//
+// IT IS AN EXPLICIT BOOLEAN, never a toggle request: the caller decides from the state it
+// can currently SEE and sends the value it wants, so a retry after a dropped response
+// cannot flip the mode by accident. The OPERATOR's intent is the toggle; the WIRE carries
+// a value.
+func (c *Controller) SetConversationFullsend(id string, enabled bool) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		_, err := c.cl.Ask.SetConversationFullsend(ctx, connect.NewRequest(&apiv1.SetConversationFullsendRequest{
+			Id:      id,
+			Enabled: enabled,
+		}))
+		if err != nil {
+			return ConversationMutatedMsg{Op: "fullsend", ID: id, Err: err.Error()}
+		}
+		return ConversationMutatedMsg{Op: "fullsend", ID: id}
+	}
+}
+
 // LoadConversations fetches the conversation rail.
 func (c *Controller) LoadConversations() tea.Cmd {
 	return func() tea.Msg {
@@ -612,6 +639,7 @@ func (c *Controller) LoadConversations() tea.Cmd {
 				MessageN:  cv.GetMessageCount(),
 				ModelRef:  cv.GetModelRef(),
 				Mode:      cv.GetMode(),
+				Fullsend:  cv.GetFullsend(),
 				ProjectID: cv.GetProjectId(),
 				// Read at list time, so a conversation the server reports as mid-turn is recognisable as such the
 				// moment the rail loads — which is what the re-attach on open needs.
