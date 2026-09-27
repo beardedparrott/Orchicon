@@ -1921,6 +1921,24 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 			for _, r := range c.consent.applyClientReplies(context.WithoutCancel(subCtx), c.client) {
 				emitAskResolution(c.onStreamEvent, c.convID, r)
 			}
+			// AND PUSH THE LEDGER TO DISK NOW, because the ledger is the record every OTHER
+			// client reconciles against and it is only persisted when the partial mirror
+			// flushes. That flush is driven by onPartial — i.e. by model OUTPUT — and a turn
+			// that decides something and then goes quiet (the common case: the operator
+			// answers and the model takes a while to resume) would leave the resolution
+			// in memory until the turn ended. A client that missed the live event would
+			// therefore keep its card for as long as that took, which is the "I shouldn't
+			// have to refresh" complaint in a slower form.
+			//
+			// On a REFRESH the client has no card at all (asks are stream-only), so this is
+			// not for the reloading client — it is for the one that is open, watching, and
+			// did not receive the event (a re-dial, a dropped socket, a second tab that
+			// attached late). Its poll of the transcript is what settles it, and this makes
+			// that poll useful immediately.
+			if c.onPartial != nil {
+				snapText, snapRsn := mirrorSnapshot()
+				c.onPartial(snapText, snapRsn)
+			}
 		case evt, ok := <-sub.Events():
 			if !ok {
 				// Bus closed — the serve died mid-reply. Re-attach (bounded
