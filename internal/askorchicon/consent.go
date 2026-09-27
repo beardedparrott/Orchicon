@@ -61,6 +61,20 @@ type askAction struct {
 	// CallID is the tool call the ask belongs to (opencode emits it alongside
 	// the ask id); advisory, used for transcript correlation.
 	CallID string
+	// AskID is the ADAPTER's id for the consent ask this action gated (the
+	// `permission.asked` id, or the native bridge's permission id).
+	//
+	// IT IS PERSISTED, and that is the whole reason it is here. The decision the
+	// operator makes is written into the turn's ledger as a synthetic
+	// `permission.<verdict>` record, which becomes part of the assistant message in
+	// the database — so it is DURABLE, where the live stream event is not. Carrying
+	// the id on that record is what lets ANY client reconcile its copy of a card
+	// against server truth: a second tab, a device, or the same page after a
+	// reload, none of which ever see the live event that settled it. Without the id
+	// the record is a decision nobody can attach to the ask it decided, which is
+	// exactly why this stayed broken through several attempts to fix it in the
+	// stream.
+	AskID string
 	// Key is the grant/deny KEY (C4): a cleaned directory. For a file action it
 	// is the target's directory; for bash it is the cwd's directory. It is set
 	// by resolveAskKey (the extraction is scope-blind; the scope is not known
@@ -1501,7 +1515,7 @@ func (ct *consentTurn) record(a askAction, verdict, detail string) {
 	if target == "" && len(a.Targets) > 0 {
 		target = strings.Join(a.Targets, ", ")
 	}
-	ct.ledger.recordPermission(a.Tool, target, verdict, detail)
+	ct.ledger.recordPermission(a.Tool, target, verdict, detail, a.AskID)
 }
 
 // decide is THE decision path (the whole precedence chain, in order):
@@ -1513,6 +1527,10 @@ func (ct *consentTurn) record(a askAction, verdict, detail string) {
 // this value". An empty response with a non-nil ask means "await the human".
 func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.SessionEvent) (response string, ask *pendingAsk, refusal string) {
 	a := extractAskAction(evt)
+	// STAMP THE ASK ID FIRST, so every record this decision writes carries it — including
+	// the `never_allow` and `policy_error` refusals below, which are decided before any card
+	// is raised and are still decisions about THIS ask.
+	a.AskID = evt.PermissionID
 	if r := binaryClassRefusal(a); r != "" {
 		ct.record(a, "never_allow", r)
 		return "reject", nil, r

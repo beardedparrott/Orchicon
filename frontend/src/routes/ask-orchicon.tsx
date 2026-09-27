@@ -90,6 +90,7 @@ import { ConsentAskCard } from "@/components/ask/AskCard";
 import {
   applyAskChunk,
   interleave,
+  settleFromLedger,
   outcomeFromChoice,
   outcomeFromWire,
   pendingFor,
@@ -410,6 +411,27 @@ function AskOrchiconPage() {
     activeConvId ?? "",
     { refetchInterval: isStreaming ? 2000 : false },
   );
+
+  // THE SERVER'S TRUTH SETTLES THE CARD, not only the live stream event.
+  //
+  // A `PermissionAskResolved` event reaches only a client watching the turn at that moment, so
+  // answering in the TUI left a card up in the GUI, in a second tab, and after a reload — which
+  // is why fixing it in the stream kept "working" and kept coming back. The operator's rule is
+  // the right one: "the truth should be set server side and update all clients when a response
+  // is seen whether it's TUI, GUI, separate tabs/browsers."
+  //
+  // The server writes every consent decision into the turn's ledger as a `permission.<verdict>`
+  // record whose ID is the ASK ID, and the ledger is persisted with the assistant message. So
+  // the transcript IS the truth, it survives a restart, and every client already fetches it. Any
+  // card whose ask appears there resolved is settled here — on load, on every poll, in every tab.
+  useEffect(() => {
+    if (!activeConvId || !messages || messages.length === 0) return;
+    const current = streams[activeConvId]?.asks;
+    if (!current || current.length === 0) return;
+    // untouched when there is nothing to settle, so this never churns state or re-renders.
+    if (settleFromLedger(current, messages) === current) return;
+    setStream(activeConvId, (prev) => ({ ...prev, asks: settleFromLedger(prev.asks, messages) }));
+  }, [activeConvId, messages, streams, setStream]);
 
   // transcriptBlocks is the message flow the cards are interleaved into. The
   // optimistic echo is only included while the durable view has not caught up
@@ -2214,9 +2236,14 @@ function MessageBubble({
   //
   // The result is the ask's own outcome — server truth — rather than an inference from
   // what happened afterwards.
-  const askAnswered =
-    !!askCall &&
-    (message.toolResults ?? []).some((r) => r.toolCallId === askCall.id);
+  const askResult = askCall
+    ? (message.toolResults ?? []).find((r) => r.toolCallId === askCall.id)
+    : undefined;
+  const askAnswered = !!askResult;
+  // The answer ITSELF, so the settled record can state it. It is the ask's own tool result —
+  // server truth, present in the persisted transcript — rather than a guess from a later
+  // message, which is the same rule that fixed "answered" in the first place.
+  const askAnswer = askResult?.output ?? "";
 
   return (
     <>
@@ -2245,6 +2272,7 @@ function MessageBubble({
           options={askParsed?.options ?? []}
           allowOther={askParsed?.allowOther}
           answered={askAnswered}
+          answer={askAnswer}
           error={askParsed ? undefined : "the recorded arguments are not valid JSON"}
           onSelect={onSelectOption}
         />

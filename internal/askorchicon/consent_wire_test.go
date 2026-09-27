@@ -14,6 +14,7 @@ package askorchicon
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"testing"
 	"time"
@@ -527,4 +528,105 @@ func TestFinalizeWithNoStreamIsSilent(t *testing.T) {
 		}
 	}()
 	ct.finalize(context.Background(), &consentFakeClient{}, nil)
+}
+
+// TestTheDecisionsRecordCarriesTheAskID is the DURABLE half of cross-client settling.
+//
+// The live stream event settles a card in a client that is watching the turn, and that was
+// the whole of the previous fix — which is why the operator kept seeing it come back: a
+// second tab, another device, or the same page after a reload never saw that event, and the
+// persisted transcript could not help because the decision record's id was a sequential
+// `perm-1`, `perm-2`, … that no client could attach to an ask.
+//
+// The record now carries the ADAPTER's ask id, so a client holding a card can look up what
+// became of it in the transcript — which is the server's own truth, survives a restart, and
+// is readable by every client. This asserts the id and the verdict vocabulary a client has
+// to map from.
+func TestTheDecisionsRecordCarriesTheAskID(t *testing.T) {
+	isolatedPolicy(t, "")
+	svc := testConsentService()
+	client := &consentFakeClient{}
+	ledger := newToolLedger()
+	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
+	ct.ledger = ledger
+
+	_, ask, _ := ct.decide(context.Background(), "ses_1", fileAskEvent("per_1", "write", "/p/sibling/x.md"))
+	if ask == nil {
+		t.Fatal("expected an ask")
+	}
+	if !ask.clientReply(apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_SESSION) {
+		t.Fatal("the reply was not recorded")
+	}
+	ct.applyClientReplies(context.Background(), client)
+
+	callsJSON, resultsJSON := ledger.snapshot()
+	var calls []struct {
+		ID           string `json:"id"`
+		FunctionName string `json:"function_name"`
+	}
+	var results []struct {
+		ToolCallID string `json:"tool_call_id"`
+	}
+	if err := json.Unmarshal(callsJSON, &calls); err != nil {
+		t.Fatalf("unmarshal calls: %v", err)
+	}
+	if err := json.Unmarshal(resultsJSON, &results); err != nil {
+		t.Fatalf("unmarshal results: %v", err)
+	}
+
+	// BOTH records carry the ask id: the `ask` that raised the card, and the decision. A
+	// client needs the decision's id to settle, and matching on ANY record with this id is
+	// what the client-side lookup does.
+	for _, want := range []string{"permission.ask", "permission.user_PERMISSION_CHOICE_ALLOW_SESSION"} {
+		found := false
+		for _, c := range calls {
+			if c.FunctionName == want {
+				found = true
+				if c.ID != "per_1" {
+					t.Errorf("%s record id = %q, want the ASK id %q — a sequential id cannot be "+
+						"reconciled against an ask by any client", want, c.ID, "per_1")
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("no %s record in the ledger: %s", want, callsJSON)
+		}
+	}
+	// And every call has a matching result, so the record renders as a resolved call rather
+	// than a dangling one.
+	for _, c := range calls {
+		matched := false
+		for _, r := range results {
+			if r.ToolCallID == c.ID {
+				matched = true
+			}
+		}
+		if !matched {
+			t.Errorf("record %s (%s) has no result — a client would see a dangling call", c.ID, c.FunctionName)
+		}
+	}
+}
+
+// TestTheRecordFallsBackToASequentialIDWithoutAnAsk guards the degenerate caller: a record
+// with no ask id is still recorded (a transcript note), it just cannot be reconciled.
+func TestTheRecordFallsBackToASequentialIDWithoutAnAsk(t *testing.T) {
+	ledger := newToolLedger()
+	ledger.recordPermission("bash", "make ci", "deny", "nope", "")
+	callsJSON, _ := ledger.snapshot()
+	var calls []struct {
+		ID           string `json:"id"`
+		FunctionName string `json:"function_name"`
+	}
+	if err := json.Unmarshal(callsJSON, &calls); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("want one record, got %d", len(calls))
+	}
+	if calls[0].ID == "" || calls[0].ID == " " {
+		t.Fatalf("a record with no ask id must still get an id, got %q", calls[0].ID)
+	}
+	if calls[0].FunctionName != "permission.deny" {
+		t.Errorf("function_name = %q, want permission.deny", calls[0].FunctionName)
+	}
 }

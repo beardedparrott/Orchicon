@@ -7,8 +7,10 @@ import {
   CONSENT_SESSION_NO_DIR,
   CONSENT_SESSION_PREFIX,
   CONSENT_SESSION_SUFFIX,
+  outcomeFromRecord,
   outcomeFromWire,
   outcomeLabel,
+  settleFromLedger,
   sessionLabel,
   pendingFor,
   popoverNudge,
@@ -234,5 +236,113 @@ describe("popoverNudge", () => {
 
   it("handles a panel wider than the space to its left", () => {
     expect(popoverNudge(100, 320)).toBe(228);
+  });
+});
+
+
+// THE DURABLE HALF OF CROSS-CLIENT SETTLING.
+//
+// The live PermissionAskResolved event reaches only a client watching the turn at that
+// moment: a second tab, another device, or the same page after a reload never sees it. The
+// server therefore writes every consent decision into the turn's ledger as a
+// `permission.<verdict>` record whose ID is the ASK ID, persisted with the assistant message
+// — and these functions read that, which is what makes a card settle for EVERY client without
+// anyone being asked to refresh.
+describe("outcomeFromRecord", () => {
+  it("maps the decision the operator made", () => {
+    expect(outcomeFromRecord("permission.user_PERMISSION_CHOICE_ALLOW_ONCE")).toEqual({ kind: "allow_once" });
+    expect(outcomeFromRecord("permission.user_PERMISSION_CHOICE_ALLOW_SESSION")).toEqual({ kind: "allow_session" });
+    expect(outcomeFromRecord("permission.user_PERMISSION_CHOICE_DENY")).toEqual({ kind: "deny" });
+  });
+
+  it("maps the outcomes no client could infer", () => {
+    expect(outcomeFromRecord("permission.expired")?.kind).toBe("expired");
+    expect(outcomeFromRecord("permission.answered")?.kind).toBe("allow_once");
+  });
+
+  // A refused call did not run, so a card raised for it must settle as refused rather than
+  // stay live. A broken policy is NOT a decision: the card settles as expired, never as a
+  // denial the operator never made.
+  it("settles a refused call as refused, and a broken policy as undecided", () => {
+    expect(outcomeFromRecord("permission.deny")).toEqual({ kind: "deny" });
+    expect(outcomeFromRecord("permission.never_allow")).toEqual({ kind: "deny" });
+    expect(outcomeFromRecord("permission.policy_error")?.kind).toBe("expired");
+  });
+
+  // THE NULLS ARE THE IMPORTANT PART. `permission.ask` is the card ITSELF — settling on it
+  // would clear a card the instant it was raised — and the others describe a call that
+  // proceeded WITHOUT a card, so there is nothing on screen to settle.
+  it("is null for records that are not a resolution", () => {
+    for (const name of [
+      "permission.ask",
+      "permission.session_grant",
+      "permission.accept",
+      "permission.project",
+      "permission.fullsend",
+      "write",
+      "",
+    ]) {
+      expect(outcomeFromRecord(name)).toBeNull();
+    }
+  });
+});
+
+describe("settleFromLedger", () => {
+  const asks = (): AskItem[] => [
+    { key: "ask_1", ask: ask("ask_1"), outcome: null, resolvedAt: null, at: 1 },
+    { key: "ask_2", ask: ask("ask_2"), outcome: null, resolvedAt: null, at: 2 },
+  ];
+  const ledger = (calls: Array<{ id: string; functionName: string }>) => [{ toolCalls: calls }];
+
+  it("settles a card whose ask the transcript resolved", () => {
+    const out = settleFromLedger(
+      asks(),
+      ledger([{ id: "ask_1", functionName: "permission.user_PERMISSION_CHOICE_DENY" }]),
+    );
+    expect(out.find((i) => i.key === "ask_1")?.outcome).toEqual({ kind: "deny" });
+    expect(out.find((i) => i.key === "ask_2")?.outcome).toBeNull();
+  });
+
+  // The card is raised and decided in the same turn's ledger. Settling on the ASK record
+  // would clear every card the moment it appeared.
+  it("does NOT settle on the ask record itself", () => {
+    const items = asks();
+    const out = settleFromLedger(items, ledger([{ id: "ask_1", functionName: "permission.ask" }]));
+    expect(out).toBe(items);
+  });
+
+  // It runs from an effect on every transcript poll, so returning a new array when nothing
+  // changed would schedule an update forever.
+  it("returns the SAME reference when there is nothing to settle", () => {
+    const items = asks();
+    expect(settleFromLedger(items, ledger([{ id: "ask_9", functionName: "permission.expired" }]))).toBe(items);
+    expect(settleFromLedger(items, undefined)).toBe(items);
+    expect(settleFromLedger(items, [])).toBe(items);
+    expect(settleFromLedger([], ledger([{ id: "ask_1", functionName: "permission.expired" }]))).toEqual([]);
+  });
+
+  it("never overwrites a decision already made here", () => {
+    const items = asks();
+    items[0].outcome = { kind: "allow_session" };
+    const out = settleFromLedger(items, ledger([{ id: "ask_1", functionName: "permission.expired" }]));
+    expect(out.find((i) => i.key === "ask_1")?.outcome).toEqual({ kind: "allow_session" });
+    expect(out).toBe(items);
+  });
+
+  it("the FIRST resolution wins when a record is repeated", () => {
+    const out = settleFromLedger(
+      asks(),
+      ledger([
+        { id: "ask_1", functionName: "permission.user_PERMISSION_CHOICE_ALLOW_SESSION" },
+        { id: "ask_1", functionName: "permission.expired" },
+      ]),
+    );
+    expect(out.find((i) => i.key === "ask_1")?.outcome).toEqual({ kind: "allow_session" });
+  });
+
+  // A message with no tool calls, and a non-permission tool call, are both inert.
+  it("ignores messages and calls that say nothing about a card", () => {
+    const items = asks();
+    expect(settleFromLedger(items, [{ toolCalls: [] }, { toolCalls: [{ id: "ask_1", functionName: "write" }] }])).toBe(items);
   });
 });

@@ -3,7 +3,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import fs from "node:fs";
 import path from "node:path";
-import { ConsentAskCard, isAskUserToolCall, parseAskUserArgs } from "./AskCard";
+import { AskCard, ConsentAskCard, isAskUserToolCall, parseAskUserArgs } from "./AskCard";
 
 describe("parseAskUserArgs", () => {
   it("accepts object options with descriptions", () => {
@@ -218,5 +218,66 @@ describe("card keyboard model and wiring", () => {
     expect(routeSrc).toContain("e.defaultPrevented");
     // The watch is re-dialled on re-attach so a pending ask is recoverable.
     expect(routeSrc).toContain("void runWatch(activeConvId, slot.pendingReplyId, gen)");
+  });
+});
+
+
+// AN ANSWERED QUESTION IS A RECORD, NOT A CARD.
+//
+// The operator, with a screenshot of a full tinted box headed "QUESTION (ANSWERED)": "it shows
+// a full card still that says 'Answered' and doesn't even show what the answer was. I think it
+// should show up inline as text just like the permissions answers do."
+//
+// The failure was two-fold: a settled ask still drew every option as a button (which LOOKS
+// selectable, and was the "still showing up selectable" complaint), and it never said what was
+// answered. A card in the transcript is a question still to be answered; once answered it is
+// history, and history reads as one line.
+describe("AskCard — settled", () => {
+  const html = (over: Record<string, unknown> = {}) =>
+    renderToStaticMarkup(
+      createElement(AskCard, {
+        question: "Which branch?",
+        options: [{ label: "develop" }, { label: "main" }],
+        answered: true,
+        answer: "develop",
+        ...over,
+      } as never),
+    );
+
+  it("states the question AND the answer inline", () => {
+    const out = html();
+    expect(out).toContain("Which branch?");
+    expect(out).toContain("develop");
+    expect(out).toContain('data-testid="ask-card-outcome"');
+  });
+
+  // THE OPTIONS MUST BE GONE, not merely disabled: buttons that cannot be pressed still read
+  // as a live choice, which is exactly what was reported.
+  it("draws NO options and no card chrome once answered", () => {
+    const out = html();
+    expect(out).not.toContain('data-testid="ask-card-option"');
+    expect(out).not.toContain('data-testid="ask-card-other-open"');
+    expect(out).not.toContain("QUESTION (ANSWERED)");
+  });
+
+  // A question dismissed without an answer must SAY so rather than printing an empty arrow.
+  it("says a dismissed question was dismissed", () => {
+    const out = html({ answer: "" });
+    expect(out).toContain("dismissed");
+    expect(out).toContain("Which branch?");
+  });
+
+  // An UNANSWERED question is still a live card with its options — this change must not
+  // settle a question nobody has answered.
+  it("still renders a live card while unanswered", () => {
+    const out = renderToStaticMarkup(
+      createElement(AskCard, {
+        question: "Which branch?",
+        options: [{ label: "develop" }, { label: "main" }],
+        onSelect: () => {},
+      } as never),
+    );
+    expect(out).toContain('data-testid="ask-card-option"');
+    expect(out).not.toContain('data-testid="ask-card-outcome"');
   });
 });

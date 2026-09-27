@@ -277,3 +277,97 @@ export function relativeGrantAge(grantedAtUnix: number, now: number = Date.now()
   if (hours < 24) return `${hours}h ago`;
   return `${Math.floor(hours / 24)}d ago`;
 }
+
+/**
+ * outcomeFromRecord maps a PERSISTED `permission.*` record onto the outcome it represents, or
+ * null when the record is not a resolution of a card.
+ *
+ * THIS IS THE DURABLE HALF OF CROSS-CLIENT SETTLING, and it exists because the live stream
+ * event is not enough — which is why the operator kept seeing the same bug come back after
+ * being fixed "in the stream" repeatedly. A `PermissionAskResolved` event reaches only a
+ * client watching the turn RIGHT THEN: a second tab, another device, or the same page after a
+ * reload never sees it, and asking the operator to refresh is not a fix.
+ *
+ * The server writes every consent decision into the turn's ledger as a synthetic
+ * `permission.<verdict>` record, and that record ID is the ADAPTER'S ASK ID (see
+ * toolLedger.recordPermission). The ledger is part of the assistant message in the database,
+ * so it IS server truth: readable by any client, at any time, across a reload. A client
+ * holding a card looks its ask up here and settles.
+ *
+ * The vocabulary is the verdict names Verdict.String() emits, plus the `user_<CHOICE>` form
+ * the answer path records. Records that are NOT a resolution return null and settle nothing:
+ * `permission.ask` is the card itself (settling on it would clear a card the instant it was
+ * raised), and `session_grant`/`accept`/`project`/`fullsend` describe a call that proceeded
+ * WITHOUT a card, so there is nothing on screen to settle.
+ */
+export function outcomeFromRecord(functionName: string): AskOutcome | null {
+  switch (functionName) {
+    case "permission.user_PERMISSION_CHOICE_ALLOW_ONCE":
+      return { kind: "allow_once" };
+    case "permission.user_PERMISSION_CHOICE_ALLOW_SESSION":
+      return { kind: "allow_session" };
+    case "permission.user_PERMISSION_CHOICE_DENY":
+      return { kind: "deny" };
+    case "permission.expired":
+      return { kind: "expired", detail: "unanswered at turn end" };
+    // A refused call: the operator never saw a card for these, but a card CAN have been
+    // raised first (an ask that was then denied at the layer), and the call did not run —
+    // so the honest settlement is a denial rather than leaving the card live.
+    case "permission.deny":
+    case "permission.never_allow":
+      return { kind: "deny" };
+    // A policy that could not be read is NOT a decision: nothing was approved and nothing
+    // was refused, so the card is settled as expired rather than as a denial the operator
+    // never made.
+    case "permission.policy_error":
+      return { kind: "expired", detail: "the permission policy could not be read" };
+    // A question's answer is CONTENT, not a permission outcome; it settles the card the same
+    // way, exactly as outcomeFromWire treats it.
+    case "permission.answered":
+      return { kind: "allow_once" };
+    default:
+      return null;
+  }
+}
+
+/** One message as the reconciliation reads it: just the tool calls and their results. */
+export interface LedgerMessage {
+  toolCalls?: ReadonlyArray<{ id: string; functionName: string }> | null;
+}
+
+/**
+ * settleFromLedger settles any card whose ask the transcript already RESOLVED, and is the
+ * backstop that makes a card's state survive a reload, a second tab, or another device.
+ *
+ * IT RETURNS THE SAME REFERENCE WHEN NOTHING CHANGED. That is not a micro-optimisation: this
+ * runs from a render effect on every transcript poll, and `resolveAsk` always returns a new
+ * array (it is a `map`), so returning that unconditionally would schedule a state update on
+ * every poll forever. Comparing first is what keeps the effect silent when there is nothing
+ * to do.
+ */
+export function settleFromLedger(
+  items: AskItem[],
+  messages: ReadonlyArray<LedgerMessage> | undefined,
+): AskItem[] {
+  if (items.length === 0 || !messages || messages.length === 0) return items;
+  const resolved = new Map<string, AskOutcome>();
+  for (const m of messages) {
+    for (const c of m.toolCalls ?? []) {
+      if (!c.functionName.startsWith("permission.")) continue;
+      const outcome = outcomeFromRecord(c.functionName);
+      // First resolution wins, mirroring resolveAsk: a later record for the same ask must not
+      // overwrite what actually happened to it.
+      if (outcome && !resolved.has(c.id)) resolved.set(c.id, outcome);
+    }
+  }
+  if (resolved.size === 0) return items;
+  let changed = false;
+  const next = items.map((i) => {
+    if (i.outcome !== null) return i;
+    const outcome = resolved.get(i.key);
+    if (!outcome) return i;
+    changed = true;
+    return { ...i, outcome, resolvedAt: i.resolvedAt ?? Date.now() };
+  });
+  return changed ? next : items;
+}

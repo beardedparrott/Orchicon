@@ -41,14 +41,29 @@ func newToolLedger() *toolLedger { return &toolLedger{} }
 // recordPermission appends one consent decision as a synthetic tool call +
 // result pair, so the decision lands in the persisted transcript alongside the
 // real tool calls (AC: the transcript records the decision). Nil-safe.
-func (l *toolLedger) recordPermission(tool, target, verdict, detail string) {
+//
+// askID is the ADAPTER's id for the ask that was decided, and it becomes the
+// record's ID when present. THAT IS THE POINT OF THE PARAMETER: this record is
+// durable — it is persisted with the assistant message — so it is the server's own
+// answer to "what happened to ask X", available to a client that never saw the live
+// stream event (a second tab, another device, or the same page after a reload). It
+// used to be a sequential `perm-N`, which no client could attach to an ask, so every
+// client had to infer the outcome from the live stream alone and a reload lost it.
+//
+// The sequential fallback is kept for a decision with no ask id (a worker-path
+// record, or a defensive caller): those are transcript notes, not reconcilable
+// resolutions, and they must still be recorded.
+func (l *toolLedger) recordPermission(tool, target, verdict, detail, askID string) {
 	if l == nil {
 		return
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.nextID++
-	id := fmt.Sprintf("perm-%d", l.nextID)
+	id := strings.TrimSpace(askID)
+	if id == "" {
+		l.nextID++
+		id = fmt.Sprintf("perm-%d", l.nextID)
+	}
 	out := "permission " + verdict
 	if detail != "" {
 		out += ": " + detail

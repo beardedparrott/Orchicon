@@ -39,6 +39,12 @@ export interface AskCardProps {
   allowOther?: boolean;
   /** answered=true renders a settled, non-clickable card (a later message exists). */
   answered?: boolean;
+  /**
+   * answer is what the operator actually replied, when the ask was answered. It is the
+   * ask's own TOOL RESULT (server truth), so it is available from the persisted transcript
+   * and survives a reload.
+   */
+  answer?: string;
   /** error renders the compact "unparseable call" state instead of options. */
   error?: string;
   /** onSelect fires with the chosen option's label; the caller sends it as a user message. */
@@ -253,6 +259,7 @@ export function AskCard({
   options,
   allowOther = false,
   answered = false,
+  answer,
   error,
   onSelect,
   className,
@@ -260,6 +267,37 @@ export function AskCard({
   const [otherOpen, setOtherOpen] = useState(false);
   const [otherText, setOtherText] = useState("");
   const interactive = !answered && !!onSelect;
+
+  // AN ANSWERED QUESTION IS A RECORD, NOT A CARD — the same split the permission ask makes,
+  // and the same one the TUI makes (internal/tui/chat/consent_render.go: a card while
+  // pending, one line once settled).
+  //
+  // The operator's report: "it shows a full card still that says 'Answered' and doesn't even
+  // show what the answer was. I think it should show up inline as text just like the
+  // permissions answers do." They were reading a full tinted box with every option drawn as a
+  // button — which LOOKS selectable even though it is disabled — and no sign of what was
+  // chosen. A card in the transcript is a question still to be answered; once answered it is
+  // history, and history states the QUESTION and the ANSWER in one line.
+  if (answered) {
+    const said = (answer ?? "").trim();
+    return (
+      <p
+        className={cn(
+          "text-xs text-muted-foreground [overflow-wrap:anywhere]",
+          className,
+        )}
+        data-testid="ask-card-outcome"
+        data-answered="true"
+      >
+        {/* The question is kept because a settled record with no subject is unreadable when
+            you scroll back to it — it would say only what you answered, not what you were
+            asked. */}
+        {said
+          ? `You answered "${question}" — ${said}`
+          : `Question "${question}" was dismissed — no answer sent`}
+      </p>
+    );
+  }
 
   return (
     <AskCardShell
