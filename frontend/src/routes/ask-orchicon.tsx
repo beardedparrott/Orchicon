@@ -31,6 +31,7 @@ import { Button } from "@/components/ui/button";
 import { LiveDuration } from "@/components/ui/live-duration";
 import { ModeIcon } from "@/components/ui/ModeIcon";
 import { ModeToggle } from "@/components/ui/mode-toggle";
+import { FullsendToggle } from "@/components/ui/fullsend-toggle";
 import { useAskMetricsLive } from "@/lib/ask-metrics";
 import { cn } from "@/lib/utils";
 import { ProjectScopeSelect } from "@/components/conversations/ProjectScopeSelect";
@@ -52,6 +53,7 @@ import {
   useAbortConversationTurn,
   useSetConversationMode,
   useSetConversationModel,
+  useSetConversationFullsend,
   useSetConversationProject,
   useCompactConversation,
   askKeys,
@@ -493,6 +495,7 @@ function AskOrchiconPage() {
   const abortTurn = useAbortConversationTurn();
   const setMode = useSetConversationMode();
   const setConvModel = useSetConversationModel();
+  const setFullsend = useSetConversationFullsend();
   const compactConv = useCompactConversation();
   const qc = useQueryClient();
 
@@ -1278,6 +1281,38 @@ function AskOrchiconPage() {
     [localMode, activeConvId, setMode, toast],
   );
 
+  // The FULLSEND toggle. NO OPTIMISTIC FLIP HERE, unlike the mode above.
+  //
+  // The mode can flip locally and roll back because a wrong mode is merely a wrong persona for
+  // one turn. This is the permission gate: rendering it "on" before the server has confirmed
+  // would tell the operator the gate is down while it is still up, and they would proceed on
+  // that. So the control re-renders from Conversation.fullsend (which the mutation's
+  // invalidation refreshes) and this handler only reports failure.
+  const handleFullsendChange = useCallback(
+    (next: boolean) => {
+      if (!activeConvId) {
+        // There is deliberately no pending form: a bypass armed for a conversation the operator
+        // has not opened is one they did not knowingly turn on (the leak the conversation mode
+        // had, and had fixed the same way). The control is not rendered without a conversation,
+        // so this is a guard against a future caller rather than a reachable path.
+        toast.error("Open a conversation first — fullsend applies to one conversation", {
+          title: "Fullsend",
+        });
+        return;
+      }
+      setFullsend.mutate(
+        { id: activeConvId, enabled: next },
+        {
+          onError: () =>
+            toast.error("Failed to change fullsend — permissions are unchanged", {
+              title: "Error",
+            }),
+        },
+      );
+    },
+    [activeConvId, setFullsend, toast],
+  );
+
   // DnD sensors
   const dndSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -1835,6 +1870,8 @@ function AskOrchiconPage() {
                 placeholder="Ask Orchicon Anything..."
                 mode={localMode}
                 onModeChange={handleModeChange}
+                fullsend={!!activeConv?.fullsend}
+                onFullsendChange={handleFullsendChange}
                 convId={activeConvId}
                 modelRef={askModel}
                 onModelChange={handleAskModelChange}
@@ -2229,6 +2266,8 @@ function ChatInputField({
   placeholder = "Ask Orchicon anything...",
   mode = ConversationMode.BRAINSTORM,
   onModeChange,
+  fullsend = false,
+  onFullsendChange,
   convId,
   modelRef = "",
   onModelChange,
@@ -2242,6 +2281,12 @@ function ChatInputField({
   placeholder?: string;
   mode?: ConversationMode;
   onModeChange?: (mode: ConversationMode) => void;
+  // fullsend is the conversation's FULLSEND state AS THE SERVER REPORTS IT, and
+  // onFullsendChange writes it. Both are SUPPLIED ONLY WHEN A CONVERSATION IS OPEN: there is no
+  // pending form (see handleFullsendChange), so the control is absent on the hero rather than
+  // present and inert.
+  fullsend?: boolean;
+  onFullsendChange?: (on: boolean) => void;
   convId?: string | null;
   // modelRef is the model answering this conversation. The session stat strip
   // reports it alongside the context / tokens / cache / cost numbers.
@@ -2945,6 +2990,13 @@ function ChatInputField({
               >
                 {statsLine}
               </span>
+            )}
+            {onFullsendChange && (
+              <FullsendToggle
+                on={!!fullsend}
+                onChange={onFullsendChange}
+                disabled={isStreaming}
+              />
             )}
             {onModeChange && (
               <ModeToggle
