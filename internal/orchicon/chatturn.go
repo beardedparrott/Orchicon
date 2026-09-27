@@ -1041,17 +1041,24 @@ func sanitizeChatHistory(messages []Message) []Message {
 // nativeConsentWaitDefault bounds how long an Ask turn waits for a permission
 // decision before treating silence as a DENIAL.
 //
-// DENY, NOT PROCEED. The operator chose fail-closed, and the distinction is the
-// whole point of a consent gate: an unanswered ask must never become an
-// approval. It is BOUNDED rather than indefinite so a session nobody is watching
-// cannot hold a turn, its runtime container and its locks forever — which from
-// the outside is indistinguishable from a wedged turn.
+// DENY, NOT PROCEED: the operator chose fail-closed, and an unanswered ask must
+// never become an approval.
 //
-// TWO MINUTES, down from ten. With the card now visible and the project exemption
-// gone, a turn asks far more often, and ten minutes spent waiting on a card
-// nobody saw is ten minutes of a held turn. Two is long enough to read a card and
-// decide, short enough that a missed one costs little.
-const nativeConsentWaitDefault = 2 * time.Minute
+// FIFTEEN MINUTES, and the number is a lesson rather than a guess. It was ten, and
+// this adapter's first version cut it to TWO on the reasoning that "a missed card
+// should cost little". That was wrong in a way that made the feature unusable: a
+// human has to NOTICE the card, click into it, arrow to a row and press Enter, and
+// every one of those steps is slower than two minutes — so accepts arrived after
+// the wait had already given up and were silently dropped, while the server's own
+// registry still held the ask and answered the click `applied: true`. The operator
+// saw "accepted" and the call stayed denied.
+//
+// The cliff is a workaround for "nobody is watching", and the PAUSE (ask_user
+// blocking, so the card is the end of the turn rather than a side channel) is the
+// real answer: a turn that waits for a human is waiting legitimately. Until then
+// this stays generous, because a long wait costs nothing while the turn is open
+// and a short one costs the whole feature.
+const nativeConsentWaitDefault = 15 * time.Minute
 
 // nativeConsentWait resolves the wait, with an env override for testing and for
 // an operator who wants a shorter leash.
@@ -1077,17 +1084,49 @@ func (b *NativeBridge) nextPermID() string {
 	return fmt.Sprintf("native-ask-%d", b.permSeq)
 }
 
-// consentGatedTool reports whether a native Ask tool call must be APPROVED
-// before it runs: writes and executions, and nothing else.
+// ConsentReadOnlyTools are the host-suite tools that never ask: a read cannot
+// change anything, and prompting for one would train the operator to approve
+// without looking.
 //
-// READS NEVER ASK — the settled rule. A read cannot change anything, and
-// prompting for one would train the operator to approve without looking, which
-// is the failure mode the whole gate exists to avoid.
+// EXPORTED, AND PAIRED WITH ConsentMutatingTools, so the split can be checked
+// against askorchicon's hostSuiteToolNames from a test. A new host-suite tool must
+// be classified HERE, deliberately, or that test fails — which is what makes this
+// fail-closed across a package boundary instead of relying on whoever adds the
+// tool remembering.
+var ConsentReadOnlyTools = []string{
+	"read", "batch_read", "grep", "batch_grep", "list", "glob", "todoread",
+}
+
+// ConsentMutatingTools are the host-suite tools that DO ask before they run.
+var ConsentMutatingTools = []string{
+	"write", "edit", "batch_write", "bash", "todowrite",
+}
+
+// consentGatedTool reports whether a native Ask tool call must be APPROVED before
+// it runs.
+//
+// FAIL-CLOSED FOR THE HOST SUITE. It used to name only write/edit/batch_write/bash
+// — a denylist, so any mutating host tool added later would have run with NO
+// consent at all, silently. It is now derived from the classification above,
+// inverted: a host-suite tool asks unless it is one of the known read-only ones.
+//
+// PRODUCT tools (ask_user, list_projects, …) are NOT gated: they work on Orchicon's
+// own data rather than the filesystem, and gating ask_user would mean asking
+// permission to ask a question. The classification above covers the host suite,
+// and the cross-package test keeps that boundary honest as the suite grows.
 func consentGatedTool(name string) bool {
-	switch name {
-	case "write", "edit", "batch_write", "bash":
-		return true
+	for _, n := range ConsentReadOnlyTools {
+		if n == name {
+			return false
+		}
 	}
+	for _, n := range ConsentMutatingTools {
+		if n == name {
+			return true
+		}
+	}
+	// Neither list: a product tool. It does not touch the filesystem, so the
+	// file/shell gate does not apply.
 	return false
 }
 

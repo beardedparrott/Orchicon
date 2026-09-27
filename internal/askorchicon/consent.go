@@ -600,15 +600,34 @@ func (g *grantStore) Grant(convID, dir string) {
 	set[filepath.Clean(dir)] = time.Now()
 }
 
-// Has reports whether convID holds a grant for dir.
+// Has reports whether convID holds a grant covering dir.
+//
+// A GRANT COVERS ITS SUBTREE. "Allow for this session" on a directory means that
+// directory AND everything under it — a grant was matched by EXACT string before,
+// so granting a project root did not cover its packages and the operator got a
+// card per directory. That is precisely the per-command friction that pushes
+// people to approve without reading, which is the failure the gate exists to
+// prevent.
+//
+// The separator matters: a prefix test alone would make /foo cover /foobar. The
+// grant must be the target itself or a proper ancestor of it.
 func (g *grantStore) Has(convID, dir string) bool {
 	if g == nil || convID == "" || strings.TrimSpace(dir) == "" {
 		return false
 	}
+	target := filepath.Clean(dir)
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	_, ok := g.byConv[convID][filepath.Clean(dir)]
-	return ok
+	set := g.byConv[convID]
+	if len(set) == 0 {
+		return false
+	}
+	for granted := range set {
+		if target == granted || strings.HasPrefix(target, granted+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // ClearConversation drops every grant for a conversation (conversation end).
