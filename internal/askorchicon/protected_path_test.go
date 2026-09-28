@@ -72,7 +72,6 @@ func TestWorkingInsideTheProjectIsStillAllowed(t *testing.T) {
 	}
 }
 
-
 // THE FALSE POSITIVE THE FIRST VERSION HAD, and it is the awk-regex class of bug again: this layer
 // judges what a command TEXT MENTIONS, so a command that merely NAMED a protected path was refused as
 // though it were deleting it. Setting `HOME=/home/me` for a child process was read as a target that
@@ -87,9 +86,9 @@ func TestMentioningAProtectedPathIsNotDestroyingIt(t *testing.T) {
 	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
 
 	for _, cmd := range []string{
-		`cd /p/proj && HOME=/p/other some-tool --flag`,   // an assignment mentioning an ancestor
-		`cd /p/proj && cat /p/proj/../README.md`,          // a read that traverses upward
-		`cd /p/proj && echo "see /p for details"`,         // a mention inside a string
+		`cd /p/proj && HOME=/p/other some-tool --flag`, // an assignment mentioning an ancestor
+		`cd /p/proj && cat /p/proj/../README.md`,       // a read that traverses upward
+		`cd /p/proj && echo "see /p for details"`,      // a mention inside a string
 	} {
 		resp, ask, refusal := ct.decide(context.Background(), "ses_1", bashAskEvent("per_1", cmd))
 		if refusal != "" {

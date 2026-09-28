@@ -8,7 +8,7 @@
     "../sibling-project/notes.md"
   ],
   "metadata": {
-    "filepath": "/home/beardedparrott/projects/sibling-project/notes.md",
+    "filepath": "/p/sibling/notes.md",
     "diff": "--- a/notes.md\n+++ b/notes.md\n"
   },
   "always": [

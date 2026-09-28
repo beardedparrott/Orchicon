@@ -52,7 +52,7 @@ func TestPermissionAskCorrelatesMCPToolCallArgs(t *testing.T) {
 	// update MERGES into the args already seen (the serve streams a tool
 	// part's input progressively).
 	calls.observe(toolPart(nil))
-	calls.observe(toolPart(map[string]any{"filePath": "/home/beardedparrott/projects/sibling-project/notes.md"}))
+	calls.observe(toolPart(map[string]any{"filePath": "/p/sibling/notes.md"}))
 	calls.observe(toolPart(map[string]any{"mode": "create"}))
 
 	se := classifyBusEventIndexed(BusEvent{Type: "permission.asked", Properties: props}, calls)
@@ -63,7 +63,7 @@ func TestPermissionAskCorrelatesMCPToolCallArgs(t *testing.T) {
 	if !ok {
 		t.Fatalf("Detail[toolInput] = %#v — the ask has no key-able detail without it", se.Detail["toolInput"])
 	}
-	if in["filePath"] != "/home/beardedparrott/projects/sibling-project/notes.md" {
+	if in["filePath"] != "/p/sibling/notes.md" {
 		t.Fatalf("toolInput[filePath] = %v", in["filePath"])
 	}
 	if in["mode"] != "create" {
@@ -141,7 +141,7 @@ func TestPermissionAskedGoldenClassifies(t *testing.T) {
 	}
 	// metadata.filepath is the AUTHORITATIVE absolute path in the real schema
 	// (opencode 1.18.32 PermissionRequest); the camelCase spelling does not occur.
-	if meta["filepath"] != "/home/beardedparrott/projects/sibling-project/notes.md" {
+	if meta["filepath"] != "/p/sibling/notes.md" {
 		t.Fatalf("Detail[metadata][filepath] = %v", meta["filepath"])
 	}
 	// callID is NOT a top-level property: it is nested under tool.
