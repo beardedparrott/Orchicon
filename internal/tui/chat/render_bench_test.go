@@ -77,3 +77,66 @@ func BenchmarkRenderItems50(b *testing.B) {
 		_ = RenderItems(items, 100)
 	}
 }
+
+// benchmarkFrame is ONE REPAINT of a surface that draws a conversation: group,
+// render, split into rows. RenderItems alone is not the unit the operator feels
+// — the strip repaints on every frame of every tab while it is open, and the
+// Ask transcript repaints on every wake — so the frame is what has to get cheap,
+// and grouping is part of it whether the rendered lines changed or not.
+//
+// The cache is the caller's, as it is in the app (one per shell), and the scope is
+// the conversation: a frame is rendered through exactly the path the strip uses.
+func benchmarkFrame(cache *RenderCache, items []ChatItem) {
+	grouped := GroupByPhase(items)
+	body, _ := cache.Render("bench", grouped, 100, "", nil)
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	if len(lines) == 0 {
+		panic("benchmarkFrame rendered nothing")
+	}
+}
+
+// BenchmarkStripFrameIdle250 is a frame of the strip when NOTHING has changed: the
+// conversation is 250 messages and the operator is reading another tab. Nothing a
+// frame draws can differ from the previous frame, and it should be priced as such.
+func BenchmarkStripFrameIdle250(b *testing.B) {
+	items := benchmarkConversation(250)
+	cache := NewRenderCache()
+	benchmarkFrame(cache, items) // warm: the first frame of a conversation does render it all
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchmarkFrame(cache, items)
+	}
+}
+
+// BenchmarkStripFrameStreaming250 is a frame of the strip WHILE THE LAST MESSAGE
+// GROWS — the case the operator was in when the TUI stopped responding. One delta
+// arrives per frame and changes exactly one item; every other item's rendered form
+// is identical to the previous frame's.
+func BenchmarkStripFrameStreaming250(b *testing.B) {
+	items := benchmarkConversation(250)
+	delta := "and here is one more sentence of the model's reply, arriving as one more streaming delta. "
+	cache := NewRenderCache()
+	benchmarkFrame(cache, items)
+	items[len(items)-1].Live = true
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		items[len(items)-1].Text += delta
+		benchmarkFrame(cache, items)
+	}
+}
+
+// BenchmarkGroupByPhase250 prices the half of a frame the cache does NOT cover.
+//
+// It is here to keep the remaining bound honest: grouping walks every item and
+// concatenates each phase's text, so it is still O(all items) per frame. Whether
+// that is worth fixing is a question for its number, not for an opinion.
+func BenchmarkGroupByPhase250(b *testing.B) {
+	items := benchmarkConversation(250)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = GroupByPhase(items)
+	}
+}

@@ -166,7 +166,7 @@ func RenderItemsSpans(items []ChatItem, maxWidth int, collapse ...func(key strin
 	if len(collapse) > 0 && collapse[0] != nil {
 		folded = collapse[0]
 	}
-	return renderItems(items, maxWidth, folded, "")
+	return renderItems(items, maxWidth, folded, "", nil, "")
 }
 
 // CopyGlyph marks what the operator can CLICK TO COPY in the transcript.
@@ -188,97 +188,132 @@ const CopyGlyph = "⧉"
 // same conversation but a click there does nothing, and marking it copyable would be a lie. Passing the glyph
 // is what keeps the affordance where the gesture is.
 func RenderItemsSpansWithCopy(items []ChatItem, maxWidth int, copyGlyph string, collapse func(key string) bool) (string, []ItemSpan) {
-	return renderItems(items, maxWidth, collapse, copyGlyph)
+	return renderItems(items, maxWidth, collapse, copyGlyph, nil, "")
 }
 
 // renderItems is the shared body: the two entry points differ only in whether a copy affordance is drawn.
-func renderItems(items []ChatItem, maxWidth int, folded func(key string) bool, copyGlyph string) (string, []ItemSpan) {
+func renderItems(items []ChatItem, maxWidth int, folded func(key string) bool, copyGlyph string, cache *RenderCache, scope string) (string, []ItemSpan) {
 	var b strings.Builder
 	spans := make([]ItemSpan, 0, len(items))
 	lineIdx := 0
 	for _, it := range items {
-		// Where this item's text starts, so the lines it produced can be attributed to it afterwards
-		// WITHOUT duplicating the switch below, which would drift from it.
-		before := b.Len()
-		// code is this item's block geometry, when its kind renders markdown with a surface. The zero value is
-		// "no blocks", which is what every other kind contributes.
-		var code []CodeSpan
-		// askOpts is the same idea for an ask card's option rows: the zero value is "an item with no options".
-		var askOpts []AskOptionSpan
-		switch it.Kind {
-		case KindUser:
-			// THE AFFORDANCE RIDES THE BAND LABEL. The operator's own message is the one the operator can
-			// click to get back, so the marker belongs beside the label that already says whose it is.
-			label := userBandLabel
-			if copyGlyph != "" {
-				// THE GLYPH IS BOLD, the same weight change the code block's affordance got. The operator: "that
-				// little symbol ... is too tiny". Bold is the only weight a terminal has, and this pair is the
-				// whole of what marks the band as clickable. (The WORD lives on the code block's label row rather
-				// than here: a band label is on every single message, and "You ⧉ copyable" on all of them would be
-				// noise — the composer's hint row already says "click your message to copy".)
-				label = label + " \x1b[1m" + copyGlyph + "\x1b[22m"
-			}
-			body, cs := renderUserChatMessageSpans(userTextWithMarkers(it), theme.BubbleUser, maxWidth, true, label, copyGlyph)
-			b.WriteString(body)
-			code = cs
-		case KindText:
-			body, cs := renderChatMessageSpans(it.Text, theme.BubbleModel, maxWidth, false, "", copyGlyph)
-			b.WriteString(body)
-			code = cs
-		case KindReasoning:
-			// A REASONING BLOCK, not a dim paragraph — the GUI's own shape, and COLLAPSIBLE.
-			//
-			// The GUI renders reasoning as a card whose header reads "reasoning · thinking…" while the
-			// model is still reasoning and "reasoning · 60,909 chars" once it has stopped, with an arrow
-			// that hides the body. The TUI drew the same content as
-			// `renderMarkdownBubble("thinking", …, theme.HintText, …)` — one dim word, in the same style as
-			// every hint line in the app — so a 60,909-character stream was indistinguishable from a
-			// footnote, and the operator's report was exactly that: "No reasoning block."
-			//
-			// THE ARROW IS THE OPERATOR'S OWN ASK: "reasoning should look similar but have a arrow on the
-			// left to expand and collapse". The transcript KEEPS ITS BUBBLES — the user and model bands and
-			// this block are all the bubble shape they have always been — rather than adopting the
-			// execution pane's card layout.
-			//
-			// collapse is a PARAMETER rather than package state because this is a pure function of its
-			// input and two panes render the same items at different widths; a package-level map would make
-			// one pane's folds apply to the other.
-			b.WriteString(renderReasoningBlock(it, maxWidth, folded(it.Key)))
-		case KindError:
-			b.WriteString(renderBubble("error", it.Text, theme.ErrorText, maxWidth))
-		case KindTool:
-			b.WriteString(renderToolRow(it.Tool, maxWidth))
-		case KindAsk:
-			card, opts := renderAskCardSpans(it.Ask, maxWidth)
-			b.WriteString(card)
-			askOpts = opts
-		case KindArtifact:
-			b.WriteString(renderArtifactRow(it, maxWidth))
-		case KindSession:
-			meta := SessionIdentity(it)
-			b.WriteString(theme.HintText.Render(truncateRow(meta, maxWidth)) + "\n")
-		case KindConsent:
-			// THE CARD RIDES THE TRANSCRIPT: a pending ask draws its box here, and
-			// the settled ask leaves a one-line record. See consent_render.go — the
-			// box itself is a kit2 widget, so padding/border/selection are shared.
-			//
-			// Its OPTION ROWS are reported too, so the card is CLICKABLE like the
-			// clarifying-question card rather than keyboard-only.
-			card, opts := consentLineSpans(it, maxWidth)
-			b.WriteString(card)
-			askOpts = opts
-		}
-		// Attribute the lines this item wrote. `before` is a byte offset into the builder, and the slice
-		// shares its backing array, so this costs a scan of the item's own text rather than a copy of the
-		// whole body per item.
-		lines := strings.Count(b.String()[before:], "\n")
+		// ONE ITEM AT A TIME, so a frame that changes one message costs one message. See renderOne.
+		seg, code, askOpts := renderOne(it, maxWidth, folded, copyGlyph, cache, scope)
+		// THE ITEM'S OWN LINES. This used to be `strings.Count(b.String()[before:], "\n")` — a scan to
+		// the END of the accumulated body, once per item, i.e. O(n^2) over a conversation. Counting the
+		// segment this item just produced is the same number in O(1), and it is what lets the segment be
+		// remembered: a body-relative scan could not be memoized, because it was a function of everything
+		// that came before the item as well as the item itself.
+		lines := strings.Count(seg, "\n")
 		spans = append(spans, ItemSpan{
 			Kind: it.Kind, Key: it.Key, Text: copyTextFor(it), Line: lineIdx, Lines: lines,
 			Options: askOpts, Code: code,
 		})
 		lineIdx += lines
+		b.WriteString(seg)
 	}
 	return b.String(), spans
+}
+
+// renderOne renders ONE item's segment, through the cache when there is one.
+//
+// THE SEGMENT IS A PURE FUNCTION OF (item, width, copy glyph, fold), which is exactly what makes it
+// rememberable — see RenderCache. Everything that varies per pass is a parameter here, so two surfaces
+// rendering the same conversation at different widths cannot share an entry by accident (the width and
+// the glyph are part of the key) and neither can it draw a stale form of an item that has changed (the
+// fingerprint is too).
+func renderOne(it ChatItem, maxWidth int, folded func(key string) bool, copyGlyph string, cache *RenderCache, scope string) (string, []CodeSpan, []AskOptionSpan) {
+	fold := false
+	if folded != nil {
+		fold = folded(it.Key)
+	}
+	if cache == nil {
+		return renderItem(it, maxWidth, fold, copyGlyph)
+	}
+	sig := renderSig(it)
+	if seg, code, askOpts, ok := cache.get(scope, it.Key, maxWidth, copyGlyph, fold, sig); ok {
+		return seg, code, askOpts
+	}
+	seg, code, askOpts := renderItem(it, maxWidth, fold, copyGlyph)
+	cache.put(scope, it.Key, maxWidth, copyGlyph, fold, sig, seg, code, askOpts)
+	return seg, code, askOpts
+}
+
+// renderItem renders ONE item to its own segment, plus the line geometry that segment carries: the code
+// blocks and the ask card's option rows, in lines RELATIVE to this item.
+//
+// IT IS THE SAME SWITCH THAT USED TO LIVE INSIDE renderItems, moved out whole rather than rewritten.
+// Keeping the geometry and the drawing in one place is the invariant this file already rests on (see
+// ItemSpan.Options): a second implementation that measured what the first one drew would drift, and the
+// failure mode of that drift is a click that answers with the wrong option.
+func renderItem(it ChatItem, maxWidth int, fold bool, copyGlyph string) (string, []CodeSpan, []AskOptionSpan) {
+	var b strings.Builder
+	var code []CodeSpan
+	var askOpts []AskOptionSpan
+	switch it.Kind {
+	case KindUser:
+		// THE AFFORDANCE RIDES THE BAND LABEL. The operator's own message is the one the operator can
+		// click to get back, so the marker belongs beside the label that already says whose it is.
+		label := userBandLabel
+		if copyGlyph != "" {
+			// THE GLYPH IS BOLD, the same weight change the code block's affordance got. The operator: "that
+			// little symbol ... is too tiny". Bold is the only weight a terminal has, and this pair is the
+			// whole of what marks the band as clickable. (The WORD lives on the code block's label row rather
+			// than here: a band label is on every single message, and "You ⧉ copyable" on all of them would be
+			// noise — the composer's hint row already says "click your message to copy".)
+			label = label + " \x1b[1m" + copyGlyph + "\x1b[22m"
+		}
+		body, cs := renderUserChatMessageSpans(userTextWithMarkers(it), theme.BubbleUser, maxWidth, true, label, copyGlyph)
+		b.WriteString(body)
+		code = cs
+	case KindText:
+		body, cs := renderChatMessageSpans(it.Text, theme.BubbleModel, maxWidth, false, "", copyGlyph)
+		b.WriteString(body)
+		code = cs
+	case KindReasoning:
+		// A REASONING BLOCK, not a dim paragraph — the GUI's own shape, and COLLAPSIBLE.
+		//
+		// The GUI renders reasoning as a card whose header reads "reasoning · thinking…" while the
+		// model is still reasoning and "reasoning · 60,909 chars" once it has stopped, with an arrow
+		// that hides the body. The TUI drew the same content as
+		// `renderMarkdownBubble("thinking", …, theme.HintText, …)` — one dim word, in the same style as
+		// every hint line in the app — so a 60,909-character stream was indistinguishable from a
+		// footnote, and the operator's report was exactly that: "No reasoning block."
+		//
+		// THE ARROW IS THE OPERATOR'S OWN ASK: "reasoning should look similar but have a arrow on the
+		// left to expand and collapse". The transcript KEEPS ITS BUBBLES — the user and model bands and
+		// this block are all the bubble shape they have always been — rather than adopting the
+		// execution pane's card layout.
+		//
+		// collapse is a PARAMETER rather than package state because this is a pure function of its
+		// input and two panes render the same items at different widths; a package-level map would make
+		// one pane's folds apply to the other.
+		b.WriteString(renderReasoningBlock(it, maxWidth, fold))
+	case KindError:
+		b.WriteString(renderBubble("error", it.Text, theme.ErrorText, maxWidth))
+	case KindTool:
+		b.WriteString(renderToolRow(it.Tool, maxWidth))
+	case KindAsk:
+		card, opts := renderAskCardSpans(it.Ask, maxWidth)
+		b.WriteString(card)
+		askOpts = opts
+	case KindArtifact:
+		b.WriteString(renderArtifactRow(it, maxWidth))
+	case KindSession:
+		meta := SessionIdentity(it)
+		b.WriteString(theme.HintText.Render(truncateRow(meta, maxWidth)) + "\n")
+	case KindConsent:
+		// THE CARD RIDES THE TRANSCRIPT: a pending ask draws its box here, and
+		// the settled ask leaves a one-line record. See consent_render.go — the
+		// box itself is a kit2 widget, so padding/border/selection are shared.
+		//
+		// Its OPTION ROWS are reported too, so the card is CLICKABLE like the
+		// clarifying-question card rather than keyboard-only.
+		card, opts := consentLineSpans(it, maxWidth)
+		b.WriteString(card)
+		askOpts = opts
+	}
+	return b.String(), code, askOpts
 }
 
 // RenderItems renders the transcript. See RenderItemsSpans for the same render with its line geometry.

@@ -172,9 +172,19 @@ type App struct {
 	refreshGen uint64
 
 	// Chat dock state (feature: context-aware Ask Orchicon + slash).
-	dock         dock.Model
-	chat         *chat.Controller
-	chatStore    *chatStore    // guarded chatItems (stream goroutine writes)
+	dock      dock.Model
+	chat      *chat.Controller
+	chatStore *chatStore // guarded chatItems (stream goroutine writes)
+	// renderCache remembers each transcript item's rendered segment, so a repaint
+	// pays for the items that CHANGED rather than for every item in the conversation.
+	//
+	// IT IS ONE CACHE FOR BOTH SURFACES — the Ask transcript and the slide-out strip —
+	// because the two draw the same conversation and the entries cannot collide: an
+	// entry is keyed by the conversation, the item, the pane WIDTH and the copy glyph,
+	// so the strip's 40-column, glyph-less render of an item and the pane's 120-column
+	// one are separate entries of the same item. See internal/tui/chat/render_cache.go
+	// for what makes a remembered segment safe to reuse.
+	renderCache  *chat.RenderCache
 	chatWake     chan struct{} // live-chunk repaint poke (cap 1)
 	chatCmds     chan tea.Cmd  // goroutine follow-ups (watch re-dial, poll)
 	chatFocus    focusMode
@@ -486,6 +496,7 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string, o
 		clip:            &clipState{},
 		screens:         map[TabID]Screen{},
 		chatStore:       &chatStore{items: map[string][]chat.ChatItem{}},
+		renderCache:     chat.NewRenderCache(),
 		sessionGrants:   newSessionGrantStore(),
 		execSessions:    map[string][]chat.ChatItem{},
 		loaded:          map[TabID]bool{},
@@ -3514,7 +3525,7 @@ func (m *App) syncTranscript(convID string, str *kit2.Stream, items []chat.ChatI
 	// The spans are the CLICK GEOMETRY, and they come from the same render that produced the lines being
 	// drawn — so a click cannot resolve against a layout the screen is not showing. Stored per conversation,
 	// beside transcriptLines.
-	body, spans := chat.RenderItemsSpansWithCopy(chat.GroupByPhase(items), w, chat.CopyGlyph, m.foldedReasoning)
+	body, spans := m.renderCache.Render(convID, chat.GroupByPhase(items), w, chat.CopyGlyph, m.foldedReasoning)
 	if m.transcriptSpans == nil {
 		m.transcriptSpans = map[string][]chat.ItemSpan{}
 	}
