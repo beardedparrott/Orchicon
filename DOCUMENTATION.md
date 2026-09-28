@@ -1351,10 +1351,17 @@ redirect is a shell operation, and the binary on the left of it is not one the g
 The prompt is one layer; the same rules are enforced beneath it, so approving a card is not the only
 thing standing between the model and the machine:
 
-- **OS-level execution guard** (`internal/guard`) — shims the dangerous binaries on `PATH` for the
-  Ask bash path, reads the same policy file, and honours the conversation's project, session grants,
-  once-targets, and fullsend. It **fails closed**: a policy it cannot read refuses the command rather
-  than running it unguarded.
+- **OS-level execution guard** (`internal/guard`) — replaces the dangerous binaries on `PATH` with a
+  shim, for **both** profiles: the one a worker execution runs under (constructed by
+  `internal/runtime/agent.go` and `internal/opencode`) and the interactive Ask one. It reads the same
+  policy file in both, and honours the conversation's project, session grants, once-targets and
+  fullsend in the interactive profile only.
+  **The deny list therefore applies to WORKER executions too** — a worker's `rm`/`cp`/`mv`/`chmod`/
+  `chown`/`ln` on a path the operator denied is refused, which is the point of an exclusion the
+  operator wrote. The never-allow class (`sudo`/`dd`/`mkfs*`) has always applied to both.
+  **Fail-closed is the interactive profile only**: a policy file it cannot read refuses the command
+  rather than running it unguarded, while a worker keeps the historical "absent policy = no policy"
+  rule — so a malformed policy can never break dispatches, only the interactive surface.
 - **The deny list is checked first in both layers**, and its MATCHER is spelling-agnostic about home:
   once a path reaches it, `~/.ssh`, `$HOME/.ssh` and the absolute path are the same target. What is
   NOT spelling-agnostic is the extraction that feeds it — see the `$HOME` gap under *What a shell

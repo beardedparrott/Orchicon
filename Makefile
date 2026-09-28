@@ -224,7 +224,7 @@ adapter-bake-guard: ## CI gate: adapter CLIs are MOUNTED, never baked into image
 	go test ./internal/runtime/ -run 'TestAdapterCLINeverBaked' -count=1 -v
 
 # --- Frontend --------------------------------------------------------------
-.PHONY: fe-install fe-dev fe-build fe-lint fe-test
+.PHONY: fe-install fe-dev fe-build fe-lint fe-test docs-check
 fe-install: ## Install frontend dependencies
 	cd frontend && npm install
 
@@ -252,6 +252,21 @@ fe-lint: ## Lint the frontend
 
 fe-test: ## Run frontend unit/component tests (vitest; Playwright specs live under test:snapshots/test:a11y/test:scope)
 	cd frontend && npm test
+
+docs-check: ## Validate every Mermaid diagram in DOCUMENTATION.md with a real parser
+	@# The prefix is REUSED once installed, so a repeat run is instant rather than re-resolving the
+	@# tree every time; CI passes ORCHICON_MERMAID_PREFIX from its own $RUNNER_TEMP install.
+	@if [ -n "$$ORCHICON_MERMAID_PREFIX" ]; then \
+		node scripts/check-mermaid.mjs; \
+	elif [ -d "$(CURDIR)/frontend/node_modules/mermaid" ]; then \
+		node scripts/check-mermaid.mjs; \
+	else \
+		if [ ! -d "$(CURDIR)/.mermaid-check/node_modules/mermaid" ]; then \
+			echo "==> installing the Mermaid parser into .mermaid-check (gitignored)"; \
+			npm install --silent --no-audit --no-fund --prefix "$(CURDIR)/.mermaid-check" mermaid@10.9.8 jsdom; \
+		fi; \
+		ORCHICON_MERMAID_PREFIX="$(CURDIR)/.mermaid-check/node_modules" node scripts/check-mermaid.mjs; \
+	fi
 
 # --- Single container (deployment) -----------------------------------------
 # The single container is the only full-stack deployment (dev + prod as two
