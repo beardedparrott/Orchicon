@@ -29,7 +29,27 @@ Asking a clarifying question used to be record-and-continue — the model wrote 
 ### New: The plane runs on your host, with the services containerized
 Host residency is the default shape: the control plane runs as a host process while Postgres, NATS and the Grafana telemetry stack stay in one container reached over loopback. It is the same install and the same binary — what changes is that the plane's runtime, file access and process tree are the host's rather than a container's. The rollback is one word, and each instance (`dev`, `prod`) chooses its shape independently, so one can migrate while the other does not.
 
+### New: Orchicon will not destroy the directory it is working in
+
+A command that would delete the project it is running in — or the directory holding it — is now **refused outright, and no approval can override it**. `rm -rf /home` from a project, `rm -rf ~`, `rm -rf /`, and a `rm -rf` of anything that *contains* the project (or a directory you granted) are all refused, on top of your deny list rather than instead of it.
+
+THIS IS A DELIBERATE BEHAVIOUR CHANGE, and it is the one thing in this release that can refuse a
+command you did not explicitly forbid. It exists because the alternative was worse: with FULLSEND on,
+the sandbox's usual checks are waived *by design* — that is what the mode is for — and an ancestor of
+the project was covered by none of them, so the gate that stops you approving card after card also
+stood aside for the one command that takes everything with it.
+
+Working *on* the project is untouched: deleting a build directory, clearing `dist`, a recursive
+`chmod` on the project root all still work, because acting on the thing you opened is ordinary work.
+What is refused is destroying the thing that *holds* it. Pressing FULLSEND does not lift this, and
+neither does a session grant — see *Enforcement, not just prompting* in the documentation for the
+rule and the two lists it uses.
+
 ### Also in this release
+
+- **The one-command installer no longer deletes YOUR directories.** `--force-clean` (and `--nuke`) removed `data`, `.dev` and `bin` as **relative names**, and the installer never changed directory — so they resolved against wherever you happened to be standing. Anyone who ran the documented command from inside a project lost *that project's* `bin/` and `data/`. It is anchored to Orchicon's own state directory now.
+- **A run that executes in your working tree no longer discards your uncommitted work.** Tidying a shared checkout after a run ran `git reset --hard` and `git clean -fd`, and its only signal was "the checkout is dirty" — which is exactly what your own unsaved edits look like. Your work is stashed first and recoverable from `git stash list`, and if it cannot be stashed the tidying is skipped rather than the work being lost.
+- **`make clean-docker` only touches Orchicon's containers.** It used to prune stopped containers and unused volumes across the whole Docker host, removing other projects' containers and data on any machine with more than Orchicon on it.
 
 - **A card settles for every client, and survives a reload.** Answering in the terminal settles the same question in the browser, in a second tab, and after a page reload — the resolution is written into the turn's durable record rather than only broadcast to whoever happened to be watching at that moment.
 - **Refusals say what actually happened.** A timeout is *expired* rather than an operator denial; an unreadable policy file is reported as a policy problem; a rule that refuses a call is attributed to the rule, not to an operator who was never asked. It matters because the model reads the reason and decides what to do next from it.

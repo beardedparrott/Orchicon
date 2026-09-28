@@ -71,3 +71,61 @@ func TestWorkingInsideTheProjectIsStillAllowed(t *testing.T) {
 		}
 	}
 }
+
+
+// THE FALSE POSITIVE THE FIRST VERSION HAD, and it is the awk-regex class of bug again: this layer
+// judges what a command TEXT MENTIONS, so a command that merely NAMED a protected path was refused as
+// though it were deleting it. Setting `HOME=/home/me` for a child process was read as a target that
+// contains the home directory, and the whole command was rejected.
+//
+// The shim would never look at that command — it intercepts rm/mv/cp/ln/chmod/chown and nothing else —
+// so the consent layer was refusing something the enforcement layer would have allowed, and stating
+// something false about what the rule prohibits.
+func TestMentioningAProtectedPathIsNotDestroyingIt(t *testing.T) {
+	isolatedPolicy(t, "")
+	svc := testConsentService()
+	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
+
+	for _, cmd := range []string{
+		`cd /p/proj && HOME=/p/other some-tool --flag`,   // an assignment mentioning an ancestor
+		`cd /p/proj && cat /p/proj/../README.md`,          // a read that traverses upward
+		`cd /p/proj && echo "see /p for details"`,         // a mention inside a string
+	} {
+		resp, ask, refusal := ct.decide(context.Background(), "ses_1", bashAskEvent("per_1", cmd))
+		if refusal != "" {
+			t.Errorf("%q was REFUSED (%s) — it does not invoke a command the shim judges at all, so "+
+				"this is over-refusal and a false statement about the rule", cmd, refusal)
+		}
+		// It may still ASK (that is the ordinary path for an outside-scope command); what it must not
+		// do is claim the protected-path rule refused it.
+		_ = resp
+		_ = ask
+	}
+}
+
+// And the rule still fires where the shim WOULD judge the target — the gate narrows the rule to the
+// operations it is about, rather than weakening it.
+func TestTheRuleStillFiresForAnInvocationTheShimJudges(t *testing.T) {
+	isolatedPolicy(t, "")
+	svc := testConsentService()
+	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
+
+	// Each of these INVOKES a judged binary with a target that CONTAINS the project, so the rule
+	// applies. The last one matters because a bare `mv` is easy to forget: moving something UP into
+	// the project's parent takes the same directory with it as deleting it would.
+	//
+	// NOT INCLUDED, deliberately: `mv /p/proj /p/elsewhere` moves the scope root ITSELF, which is
+	// equality rather than containment — that is left to the ordinary consent chain (it raises a card,
+	// because the destination is outside the scope), which is the split the rule is built on.
+	for _, cmd := range []string{
+		`cd /p/proj && rm -rf /p`,
+		`cd /p/proj && /bin/rm -rf /p`,
+		`cd /p/proj && mv /p/proj/build /p`,
+		`cd /p/proj && cp /p/proj/x /p/`,
+	} {
+		resp, _, refusal := ct.decide(context.Background(), "ses_1", bashAskEvent("per_2", cmd))
+		if resp != "reject" || refusal == "" {
+			t.Errorf("%q must be refused with a reason: resp=%q refusal=%q", cmd, resp, refusal)
+		}
+	}
+}

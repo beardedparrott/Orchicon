@@ -1368,6 +1368,73 @@ thing standing between the model and the machine:
   command's consent covers* above. That is why this sentence names the matcher rather than claiming
   the coverage: read together they are accurate, and read apart the second one overstates.
 - The **never-allow class** is a separate case arm in the shim, so no environment value can reach it.
+- **A path that would DESTROY the scope is refused, not asked about** — and no approval can override
+  it. `rm -rf /home` from a project, `rm -rf ~`, `rm -rf /`, and a `rm -rf` of any directory that
+  *contains* the project (or a granted directory) are refused at both layers, ABOVE fullsend and above
+  every allow-set, in the same position as the never-allow class and for the same reason: it is a
+  decision, not a permission request. Without this the shim ran all of them once fullsend was on,
+  because fullsend waives the sanctioned set by design and an ancestor of the scope is in no set to
+  begin with.
+  The rule is one sentence — a target is refused when it EQUALS a protected root or CONTAINS one —
+  with **two lists**, because the two need different rules. **Machine roots** (`/`, the home
+  directory, the plane's own state under `~/.local/share/orchicon` and `~/.orchicon`) refuse equality
+  as well: there is no legitimate reason to delete `/` or to re-permission a home directory from
+  inside a session. The **work scope** (the project, and each session grant) refuses *containment
+  only*, because acting ON the scope root is ordinary work — `chmod -R 755 <project>` and
+  `rm -rf <project>/dist` both name it — while destroying the directory that HOLDS the scope takes it
+  with it and no amount of consent makes that the intent.
+  The declaration lives in `internal/protectedpath` and **both layers read it**, so a consent card and
+  the shim cannot disagree about what is protected.
+  **Why this is not a deny entry.** A deny list matches PATTERNS against the target, so protecting the
+  scope's ancestors that way would mean writing them down by hand — `/home`, `/home/<user>`,
+  `/home/<user>/projects`, … — and they differ per machine and change with every project opened. It
+  cannot be a pattern even in principle: `rm -rf ~/projects` is catastrophic when the project is
+  `~/projects/Orchicon` and perfectly reasonable when it is `~/projects/tmp`, so the danger is a
+  property of the *relationship* between the path and the scope, not of the path. That is computable;
+  a glob is not.
+
+### What Orchicon never does to the operator's machine
+
+Every destructive operation the platform and its tooling perform is anchored to something we own, and
+this is a recorded rule rather than an aspiration — each bullet below is a defect that shipped and was
+found by auditing for the shape:
+
+**The shape is: a destructive operation whose TARGET is not anchored to what the program owns, and
+whose safety check is answered by the very thing being destroyed.** All four had it:
+
+- **The installer removes only its own state.** `--force-clean` used to `rm -rf data .dev bin` — BARE
+  RELATIVE NAMES, and `install.sh` contains no `cd` at all, so they resolved against whatever directory
+  the operator ran the install from. From a project root that deleted *that project's* `bin/` and
+  `data/`. The Windows installer had the same list (reaching `~/bin`). Both are anchored to
+  `${XDG_DATA_HOME:-$HOME/.local/share}/orchicon` now, and `bin` is gone from the list entirely — the
+  binary is removed by absolute path instead.
+- **The post-run restore preserves the working tree before it resets one.** Restoring a project's
+  shared checkout ran `git reset --hard && git clean -fd`, and the only signal it had was "the
+  checkout is dirty" — which is exactly what the operator's own uncommitted work looks like. A run
+  that executes in place could therefore destroy their edits. It now `git stash push -u` FIRST, so
+  everything is recoverable from `git stash list`, and **if the stash cannot be made the restore does
+  not run** — tidying a checkout is never worth discarding work.
+- **`make clean-docker` prunes only Orchicon's containers.** It ran host-wide
+  `docker container prune` and `docker volume prune`, which on a machine with any other Docker work
+  removed *theirs* — and Orchicon's own data is a bind mount, so it owned none of what it deleted.
+  Containers are now filtered by our `orchicon-instance` label, and the volume prune is gone: there is
+  no filter that makes an anonymous volume ours, so an operator who wants that runs it themselves.
+- **Tests never name a real path or device as an operand.** A test that EXECUTES a real binary through
+  the real shim does not "fail an assertion" when the shim allows it — it runs the binary. That makes
+  such a test FAIL-OPEN whenever its safety depends on the verdict of the very mechanism it is
+  checking: correct for exactly as long as the shim agrees with the assertion, and destructive the
+  moment it does not, for any reason and in any environment. The suite therefore names only targets it
+  owns — `t.TempDir()` for every absolute case, `cmd.Dir` for the relative ones (`..`, `../../escape`,
+  which still exercise the traversal the shim must refuse), and the never-allow operands too, since the
+  class arm refuses on the BINARY NAME regardless of what the arguments say. The rule for anything
+  added here: a target a real binary could damage if the guard failed is a target that does not belong
+  in a test.
+
+**The build does not depend on the operator's shell profile either** — `atlas` and `buf` each resolve
+through a prefer-own-copy-then-PATH rule, so a rebuild works in a bare shell. That was the same class
+of fragility from the other direction: the tool was present at `.dev/tools/bin/atlas` and unreachable
+because the profile that put it on PATH had been emptied.
+
 
 ### Turn durability
 
