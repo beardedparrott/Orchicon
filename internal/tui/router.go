@@ -1406,11 +1406,23 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		case msg.Err != "":
 			m.dock.SetNotice("permission reply failed: " + msg.Err)
 		case msg.Expired || !msg.Applied:
+			// AND THE CARD STOPS CLAIMING A SCOPE IT NEVER GOT. A refused ALLOW_SESSION used to leave the card
+			// reading "session · /dir" — a scope the server never granted, and one this client used to silence
+			// every later ask for that directory (see ShowConsentAsk).
+			m.settleConsentScope(msg.ConvID, msg.AskID, "")
 			m.dock.SetNotice("that permission ask is no longer open — nothing was applied")
 		default:
-			m.dock.SetNotice("permission decision applied")
+			// THE GRANT IS RECORDED HERE, on the verdict that says the server actually applied it. This is the
+			// only place a session grant may be written locally: see ConsentResolve for what recording it on the
+			// click cost (a client that believed in a grant the server had REFUSED, and went permanently deaf to
+			// a directory the GUI still asked about).
+			if dir := m.settleConsentScope(msg.ConvID, msg.AskID, "session · "); dir != "" {
+				m.dock.SetNotice("allowed for this session · " + dir)
+			} else {
+				m.dock.SetNotice("permission decision applied")
+			}
 		}
-		return m.waitChat()
+		return tea.Batch(m.onChatWake(), m.waitChat())
 	case askDefaultSettingsMsg:
 		// Store the tenant default; if a conversation is already open its strip may
 		// now be able to resolve a model (and therefore a context window) that it

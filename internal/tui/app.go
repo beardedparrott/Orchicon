@@ -2967,6 +2967,24 @@ func (s *chatStore) hasPendingConsent(convID string) bool {
 	return false
 }
 
+// hasConsent reports whether this conversation already holds a card for the ask.
+//
+// It is what keeps "draw every card the server raises" idempotent: a re-attach replays every still-open ask on
+// WatchTurnStream (chat.go), so without this the card the operator already has would be drawn twice.
+func (s *chatStore) hasConsent(convID, askID string) bool {
+	if askID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, it := range s.items[convID] {
+		if it.Kind == chat.KindConsent && it.AskID == askID {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *chatStore) isReconnecting(convID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -4594,7 +4612,15 @@ func (m *App) sendFromComposer(text string) tea.Cmd {
 // consent card: the shell's half (see internal/tui/screens/ask/consent.go)
 // ---------------------------------------------------------------------------
 
-// sessionGrantStore mirrors the session's directory grants for one conversation.
+// sessionGrantStore holds the session grants THIS CLIENT has seen the server apply, for one conversation.
+//
+// IT IS NO LONGER CONSULTED BEFORE DRAWING A CARD, and that is deliberate: it used to suppress a card whose
+// directory it believed was granted, which made it a second, unreliable authority beside the server's own
+// grant store — the server's is in memory and is dropped by every plane restart, it matches a whole SUBTREE
+// while this matched the directory EXACTLY, and this one was fed by the CLICK rather than by the verdict (so
+// a decision the server refused was believed anyway). Any one of those left the TUI silently deaf to a
+// directory the GUI still asked about. It is now a record of what the server confirmed, and nothing decides
+// from it: see ShowConsentAsk and settleConsentScope.
 type sessionGrantStore struct {
 	mu     sync.Mutex
 	grants map[string]map[string]chat.SessionGrant
@@ -4640,13 +4666,6 @@ func (s *sessionGrantStore) revoke(convID, dir string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.grants[convID], dir)
-}
-
-func (s *sessionGrantStore) granted(convID, dir string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, ok := s.grants[convID][dir]
-	return ok
 }
 
 // SetPermissionStore wires the persistent allow/deny list. Called by the host
@@ -4729,7 +4748,31 @@ func (m *App) ShowConsentAsk(ask chat.PermissionAsk) tea.Cmd {
 	if ask.ID == "" {
 		ask.ID = fmt.Sprintf("ask-%d", time.Now().UnixNano())
 	}
-	if ask.Kind == chat.AskTool && ask.Directory != "" && m.sessionGrants.granted(convID, ask.Directory) {
+	// A CARD THE SERVER RAISED IS ALWAYS DRAWN.
+	//
+	// This used to be suppressed by the shell's own grant mirror, and the suppression could only ever swallow a
+	// decision the operator needed to make:
+	//
+	//   * the server consults its grant store BEFORE it raises an ask (permpolicy's SessionGranted input), so an
+	//     ask that arrives is one the server genuinely has no consent for. A client that mutes it therefore does
+	//     not remove a question — it removes the ANSWER, and the turn parks on the server with nothing on screen
+	//     to act on. The operator, watching both clients: "the permission ask card pops up in the GUI but it
+	//     doesn't pop up in the TUI. It just sits at 'orchicon is thinking'."
+	//   * the mirror's inputs are all unreliable. The server's grants are IN MEMORY and are dropped by every plane
+	//     restart (the prod plane restarted 14 times in the two days this was measured); a decision this client
+	//     sent may have been REFUSED (Applied=false, Expired=true) while the card was still settled locally; and
+	//     the server matches a grant over its whole SUBTREE while the mirror matched the directory EXACTLY. Each
+	//     of those leaves the TUI silently deaf to a directory the GUI still asks about, for the life of the
+	//     process — which is exactly the "it's not consistent in the TUI" shape of the report.
+	//
+	// A duplicate card is a minor annoyance the operator can answer; a missing one is a turn that hangs and then
+	// fails. Where the mirror used to silence a repeat, the SERVER does it correctly: it will not raise the ask
+	// again once the grant is applied.
+	//
+	// Idempotence is kept for the SAME ask, which is not hypothetical: a dropped socket re-dials through
+	// WatchTurnStream, whose replay re-emits every pending ask (chat.go) — so the card the operator already has
+	// would otherwise be drawn a second time.
+	if m.chatStore.hasConsent(convID, ask.ID) {
 		return nil
 	}
 	// Stamped NOW, so the card sorts to the END of the transcript and stays there.
@@ -4765,9 +4808,14 @@ func (m *App) ConsentResolve(askID string, dec chat.ConsentDecision, choice stri
 			if dir == "" {
 				dir = ask.Target
 			}
-			m.sessionGrants.grant(m.chatConvID, dir, ask.Tool)
-			st.Note = "session · " + dir
-			m.dock.SetNotice("allowed for this session · " + dir)
+			// THE GRANT IS NOT RECORDED HERE ANY MORE. A session grant is the SERVER's fact — it is what silences
+			// the NEXT ask, and every client reads it (the server's grantStore is what permpolicy consults before
+			// raising one). Recording it on the CLICK meant this client believed a directory was granted even when
+			// the server REFUSED the decision (Applied=false, Expired=true: the ask had already expired, the turn
+			// had ended, another client had answered) — and the mirror then suppressed every later card for that
+			// directory, for the life of the process, while the GUI kept asking. It is recorded on the APPLIED
+			// verdict instead (see ConsentRepliedMsg's handler), where the server has actually granted it.
+			st.Note = "session · " + dir + " (pending)"
 		case chat.DecisionDeny:
 			m.dock.SetNotice("denied · " + strings.TrimSpace(ask.Tool+" "+ask.Target))
 		}
@@ -4803,6 +4851,40 @@ func (m *App) ConsentResolve(askID string, dec chat.ConsentDecision, choice stri
 	}
 	cmds = append(cmds, m.onChatWake())
 	return tea.Batch(cmds...)
+}
+
+// settleConsentScope reconciles a decided card with the SERVER's verdict on it.
+//
+// THE ORDER MATTERS AND IT IS THE WHOLE POINT: a session grant is the server's fact, and this client may only
+// record it once the server has APPLIED the decision. The card's scope note follows the same rule, so a
+// refused ALLOW_SESSION ("the ask is no longer open — nothing was applied") stops reading "session · /dir" —
+// a scope the server never granted, and one this client used to let silence every later ask for that
+// directory (see ShowConsentAsk).
+//
+// appliedPrefix is the note's prefix when the decision WAS applied ("session · "), or "" when the server
+// refused it. Returns the directory a confirmed grant covers, or "" when there is no confirmed grant.
+func (m *App) settleConsentScope(convID, askID, appliedPrefix string) string {
+	if convID == "" || askID == "" {
+		return ""
+	}
+	st := m.chatStore.consentState(convID, askID)
+	if st == nil {
+		return ""
+	}
+	ask := st.Ask
+	dir := ask.Directory
+	if dir == "" {
+		dir = ask.Target
+	}
+	if appliedPrefix == "" || st.Decision != chat.DecisionAllowSession || dir == "" {
+		if st.Decision == chat.DecisionAllowSession {
+			st.Note = "session · not applied"
+		}
+		return ""
+	}
+	m.sessionGrants.grant(convID, dir, ask.Tool)
+	st.Note = appliedPrefix + dir
+	return dir
 }
 
 // reArmConsentClaim hands the keyboard back to a card that is still pending, after a MOUSE action

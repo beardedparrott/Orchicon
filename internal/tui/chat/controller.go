@@ -657,7 +657,11 @@ func (c *Controller) LoadConversations() tea.Cmd {
 // (`applied: false`, `expired: true`) rather than reporting a silent success. Without
 // this the operator's click looked like an approval while the call was denied.
 type ConsentRepliedMsg struct {
-	ConvID  string
+	ConvID string
+	// AskID names the ask the verdict is about, so the shell can settle the ONE card that asked it. It is
+	// what makes a decision the server REFUSED stop being recorded as a session grant locally: the grant may
+	// only be written on the APPLIED verdict, and the verdict has to name its ask to find it.
+	AskID   string
 	Applied bool
 	Expired bool
 	Detail  string
@@ -700,10 +704,11 @@ func (c *Controller) ReplyPermissionAsk(convID, askID string, choice apiv1.Permi
 			Answer:         answer,
 		}))
 		if err != nil {
-			return ConsentRepliedMsg{ConvID: convID, Err: err.Error()}
+			return ConsentRepliedMsg{ConvID: convID, AskID: askID, Err: err.Error()}
 		}
 		return ConsentRepliedMsg{
 			ConvID:  convID,
+			AskID:   askID,
 			Applied: resp.Msg.GetApplied(),
 			Expired: resp.Msg.GetExpired(),
 			Detail:  resp.Msg.GetDetail(),
