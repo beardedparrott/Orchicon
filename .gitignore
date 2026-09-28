@@ -45,6 +45,10 @@ developer.md
 worker.md
 CLOUDFLARE_SETUP.md
 
+# The scratch prefix `make docs-check` installs the Mermaid parser into, so a docs check needs no
+# dependency in the product or the frontend toolchain (CI uses $RUNNER_TEMP instead).
+.mermaid-check/
+
 # OS
 .DS_Store
 Thumbs.db
