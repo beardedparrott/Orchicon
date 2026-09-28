@@ -30,18 +30,21 @@ deployment, troubleshooting, and every subsystem.
 
 ## Last Release Changes
 
-- **OpenCode is optional**: Orchicon no longer requires an external runtime CLI: its own native engine runs sessions inside the control plane, and the OpenCode serve is started **only when something actually needs it**.
-- **A complete terminal client**: `orch` is no longer a launcher alongside the GUI: it is a full client, with read *and* write parity across **all seven domains**.
-- **Work is workflow-first**: Every run is now a workflow: standalone dispatch is retired, so a work item with no bound workflow cannot be scheduled, and the platform tells you when you create it rather than failing later at run time.
-- **Ask Orchicon**: Its three modes are now enforced by the **platform**, not requested in prose: the tools a mode may not use are withheld from it and refused at the point of execution, so "Brainstorm will not write your files" is a refusal a model cannot talk its way past — and the boundary is adapter-agnostic, so a new runtime inherits it.
-- **Runs execute in containers, and the plane heals itself**: Worker executions run in an isolated container per workflow run, drawn from a warm pool so dispatch never cold-starts, and reset between runs so no state crosses a boundary.
-- **Quick Work hands off end to end**: The dispatch mode whose whole purpose is to hand work over now actually does it: it asks the model question, confirms git, and publishes the workflow and work item so a run fires — with the DevOps step opening and merging the pull request.
-- OpenCode is now **optional everywhere**: the installer no longer warns that a runtime CLI is missing, and the docs describe adapters as pluggable rather than required.
-- **Scheduler and dispatch**: cancel and abort genuinely stop the model session; recovery survives DAG pass limits; PR-merge loops and orphaned branch references fixed; tool-wedge recovery no longer kills a live turn; a tool-hang is redirected instead of orphaning the worker.
-- **Ask Orchicon sessions**: follow-ups resolve against the *execution's* adapter rather than the host; tool-call replay no longer 400s after a model switch; attachments deliver; the phantom "budget" workers reported in Ask is gone.
-- **Terminal client**: a key that produced a send could be silently swallowed; clicking now places the caret on wrapped and scrolled text; a stale shell reference stopped every notice (and half of every theme switch) from landing; lazy screen loads, scroll preservation and tab focus corrected.
-- **Diff pipeline and telemetry**: the file-edit ledger no longer reports empty on live runs; diffs are server-computed; per-event invalidations are coalesced; the outbox is throttled with retention so a chatty run cannot flood the database.
-- **Runtime images**: build from the terminal with live logs, and set them across a selection in bulk.
+- **Ask Orchicon can do the work**: Ask Orchicon was a conversation you could read your project *with*; it now runs the same file and shell suite the workers use, against your real filesystem, scoped to the conversation's project.
+- **FULLSEND**: A gate that cannot be opened on purpose gets bypassed by accident: mid-task, approving card after card, you stop reading them.
+- **A question pauses the turn instead of talking to itself**: Asking a clarifying question used to be record-and-continue — the model wrote the question down, kept going, and your answer arrived as an unrelated message.
+- **The plane runs on your host, with the services containerized**: Host residency is the default shape: the control plane runs as a host process while Postgres, NATS and the Grafana telemetry stack stay in one container reached over loopback.
+- **Orchicon will not destroy the directory it is working in**: A command that would delete the project it is running in — or the directory holding it — is now **refused outright, and no approval can override it**.
+- **The one-command installer no longer deletes YOUR directories.** `--force-clean` (and `--nuke`) removed `data`, `.dev` and `bin` as **relative names**, and the installer never changed directory — so they resolved against wherever you happened to be standing. Anyone who ran the documented command from inside a project lost *that project's* `bin/` and `data/`. It is anchored to Orchicon's own state directory now.
+- **A run that executes in your working tree no longer discards your uncommitted work.** Tidying a shared checkout after a run ran `git reset --hard` and `git clean -fd`, and its only signal was "the checkout is dirty" — which is exactly what your own unsaved edits look like. Your work is stashed first and recoverable from `git stash list`, and if it cannot be stashed the tidying is skipped rather than the work being lost.
+- **`make clean-docker` only touches Orchicon's containers.** It used to prune stopped containers and unused volumes across the whole Docker host, removing other projects' containers and data on any machine with more than Orchicon on it.
+- **A card settles for every client, and survives a reload.** Answering in the terminal settles the same question in the browser, in a second tab, and after a page reload — the resolution is written into the turn's durable record rather than only broadcast to whoever happened to be watching at that moment.
+- **Refusals say what actually happened.** A timeout is *expired* rather than an operator denial; an unreadable policy file is reported as a policy problem; a rule that refuses a call is attributed to the rule, not to an operator who was never asked. It matters because the model reads the reason and decides what to do next from it.
+- **A turn that dies mid-work keeps its work.** Streaming reasoning was never finalized, so an interrupted turn lost the thinking entirely — and a completed answer discarded it even on a clean turn. Both now survive in the record.
+- **Ephemeral runs recover.** A run whose git strategy is `none` creates no branch to resume onto, and was retried blindly; recovery now recognises that shape instead of failing it.
+- **Settings: blank means the built-in default, and `0` means disabled.** They were the same value, so leaving a field blank could silently switch a control off.
+- **Installer:** a WSL distro name containing a NUL byte no longer corrupts the generated config, and an empty variable expands safely.
+- **Terminal client:** the Schedules lenses order history the way the browser does and derive queued sequence children; a send the server refuses because a turn is already running is delivered rather than bounced; the detail pane's paint and the terminal's colour profile are resolved rather than assumed.
 
 Full details: [release notes on GitHub](https://github.com/beardedparrott/Orchicon/releases).
 
@@ -98,7 +101,7 @@ Project directories are entered in the UI as their **WSL path** — a Windows pr
 
 | Flag | Description |
 |---|---|
-| `--version <tag>` | Install a specific version (e.g. `v0.3.1`). Default: latest. |
+| `--version <tag>` | Install a specific version (e.g. `v0.4.0`). Default: latest. |
 | `--install-dir <dir>` | Installation directory (default: `~/.local/bin`). On Windows this is a **WSL path** (the binary installs inside the distro). |
 | `--no-setup` | Install the binary only — do not pull images / start the runtime daemon / launch the container. |
 | `--uninstall` | Remove Orchicon from the install directory. |
@@ -108,7 +111,7 @@ Project directories are entered in the UI as their **WSL path** — a Windows pr
 
 ```bash
 # Install a specific version
-curl -fsSL https://orchicon.dev/install | bash -s -- --version v0.3.1
+curl -fsSL https://orchicon.dev/install | bash -s -- --version v0.4.0
 
 # Uninstall
 curl -fsSL https://orchicon.dev/install | bash -s -- --uninstall

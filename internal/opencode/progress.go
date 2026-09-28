@@ -97,51 +97,45 @@ func toolHangDefaultWindow() time.Duration {
 // the manifest fall through to env vars, which fall through to code
 // defaults.
 //
-// noFileDiff/textLoop are the two advisory windows Settings documents as
-// "0 = disabled" — but 0 is also the manifest's unset value (a fresh/
-// never-configured tenant_settings row), so a plain `> 0` guard cannot
-// tell "never configured" from "explicitly disabled" and previously just
-// treated both as unset (the built-in default always applied — "0 =
-// disabled" was aspirational, nothing could ever actually disable these).
-// A negative value is unambiguous and needs no schema change: 0/unset →
-// default (safe — a never-configured tenant keeps real stall detection),
-// positive → explicit override, negative → the resulting duration is
-// itself <= 0, which every consumer below (the checker in this file)
-// already gates on `> 0`, so it naturally reads as disabled with no
-// change needed anywhere else.
+// stallWindowsFromManifest builds stallWindows from ExecutionManifest settings,
+// with env-var fallback for dev overrides.
+//
+// EVERY field is a POINTER, and the two states are different instructions:
+//
+//   - nil — the tenant left this dimension BLANK in Settings, so it has no
+//     opinion and the env/code default below stands. A never-configured tenant
+//     therefore keeps REAL stall detection rather than silently losing it.
+//   - non-nil — an explicit value. A resolved duration <= 0 DISABLES that check,
+//     which is what an explicit 0 means; every consumer below gates on `> 0`, so
+//     0 needs no special case here. (A negative cannot arrive — the Settings API
+//     rejects it — but would also read as disabled.)
+//
+// This replaces the old overloaded zero, under which 0 meant BOTH "unset" and,
+// on most dimensions, nothing at all — while a negative was the only way to say
+// "off". That made "disabled" unreachable without a counter-intuitive value and
+// made a never-configured tenant indistinguishable from one that chose 0.
 func stallWindowsFromManifest(m scheduler.ExecutionManifest) stallWindows {
 	w := defaultStallWindows()
-	if m.StallNoProgressWindowSeconds > 0 {
-		if v := time.Duration(m.StallNoProgressWindowSeconds) * time.Second; os.Getenv("ORCHICON_STALL_NO_PROGRESS_WINDOW") == "" {
-			w.noProgress = v
-		}
+	if m.StallNoProgressWindowSeconds != nil && os.Getenv("ORCHICON_STALL_NO_PROGRESS_WINDOW") == "" {
+		w.noProgress = time.Duration(*m.StallNoProgressWindowSeconds) * time.Second
 	}
-	if m.StallNoFileDiffWindowSeconds != 0 {
-		if v := time.Duration(m.StallNoFileDiffWindowSeconds) * time.Second; os.Getenv("ORCHICON_STALL_NO_FILE_DIFF_WINDOW") == "" {
-			w.noFileDiff = v
-		}
+	if m.StallNoFileDiffWindowSeconds != nil && os.Getenv("ORCHICON_STALL_NO_FILE_DIFF_WINDOW") == "" {
+		w.noFileDiff = time.Duration(*m.StallNoFileDiffWindowSeconds) * time.Second
 	}
-	if m.StallTextLoopWindowSeconds != 0 {
-		if v := time.Duration(m.StallTextLoopWindowSeconds) * time.Second; os.Getenv("ORCHICON_STALL_TEXT_LOOP_WINDOW") == "" {
-			w.textLoop = v
-		}
+	if m.StallTextLoopWindowSeconds != nil && os.Getenv("ORCHICON_STALL_TEXT_LOOP_WINDOW") == "" {
+		w.textLoop = time.Duration(*m.StallTextLoopWindowSeconds) * time.Second
 	}
-	if m.StallRepetitionCount > 0 {
-		if os.Getenv("ORCHICON_STALL_REPETITION_COUNT") == "" {
-			w.repetitionN = int(m.StallRepetitionCount)
-		}
+	if m.StallRepetitionCount != nil && os.Getenv("ORCHICON_STALL_REPETITION_COUNT") == "" {
+		w.repetitionN = int(*m.StallRepetitionCount)
 	}
-	if m.StallRepetitionWindowSeconds > 0 {
-		if v := time.Duration(m.StallRepetitionWindowSeconds) * time.Second; os.Getenv("ORCHICON_STALL_REPETITION_WINDOW") == "" {
-			w.repetitionW = v
-		}
+	if m.StallRepetitionWindowSeconds != nil && os.Getenv("ORCHICON_STALL_REPETITION_WINDOW") == "" {
+		w.repetitionW = time.Duration(*m.StallRepetitionWindowSeconds) * time.Second
 	}
-	// Tier A (tool-hang) mirrors the textLoop pattern: 0/unset keeps the
-	// env/code default, positive overrides, negative disables (the
-	// resulting duration is <= 0, which every consumer gates on `> 0`).
-	// Env wins over manifest for dev/debugging overrides.
-	if m.StallToolHangSeconds != 0 && os.Getenv("ORCHICON_STALL_TOOL_HANG_WINDOW") == "" && os.Getenv("ORCHICON_TOOL_HANG_WINDOW") == "" {
-		w.toolHang = time.Duration(m.StallToolHangSeconds) * time.Second
+	// Tool-hang keeps its two env names (the deprecated one is still honoured
+	// for one release). An explicit 0 resolves to a zero duration, which
+	// checkToolHangLocked gates on — disabled.
+	if m.StallToolHangSeconds != nil && os.Getenv("ORCHICON_STALL_TOOL_HANG_WINDOW") == "" && os.Getenv("ORCHICON_TOOL_HANG_WINDOW") == "" {
+		w.toolHang = time.Duration(*m.StallToolHangSeconds) * time.Second
 	}
 	return w
 }
@@ -484,8 +478,14 @@ func scrubCommand(cmd string) string {
 // advisory stall (no_file_progress) keeps monitoring so the execution can
 // revive to healthy via onRecovered when the missing file progress resumes.
 func (m *progressMonitor) run(ctx context.Context, onStall func(execID, reason string), onRecovered func(execID, recovered string)) {
-	poll := m.w.noProgress
-	if m.w.noFileDiff < poll && m.w.noFileDiff > 0 {
+	// The tick interval is the SHORTEST ENABLED window, so a short window is
+	// never checked late. Disabled windows (<= 0) are skipped rather than being
+	// treated as "check every tick" — a poll of 0 would spin the checker.
+	poll := 30 * time.Second
+	if m.w.noProgress > 0 && m.w.noProgress < poll {
+		poll = m.w.noProgress
+	}
+	if m.w.noFileDiff > 0 && m.w.noFileDiff < poll {
 		poll = m.w.noFileDiff
 	}
 	if m.w.textLoop > 0 && m.w.textLoop < poll {
@@ -544,7 +544,10 @@ func (m *progressMonitor) check() string {
 		return "stalled:tool_hang:" + tool
 	}
 	// no_progress: no step_finish (no token progress) within the window.
-	if now.Sub(m.lastStepFinish) > m.w.noProgress {
+	// Gated on `> 0`: an explicit 0 means the operator DISABLED this check, and
+	// without the guard `now.Sub(...) > 0` holds on every tick — a disabled
+	// check would fire instantly and kill every run.
+	if m.w.noProgress > 0 && now.Sub(m.lastStepFinish) > m.w.noProgress {
 		m.fired = true
 		return "stalled:no_progress"
 	}

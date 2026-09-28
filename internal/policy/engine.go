@@ -253,19 +253,19 @@ func RecordDecision(ctx context.Context, tx pgx.Tx, d db.PolicyDecisionRow) erro
 // (docs/08 §4.4).
 func EnqueuePolicyEvent(ctx context.Context, tx pgx.Tx, eventType string, d db.PolicyDecisionRow) error {
 	evt := map[string]any{
-		"event_type":      eventType,
-		"tenant_id":       d.TenantID,
-		"decision_id":     d.ID,
-		"policy_id":       d.PolicyID,
-		"policy_version":  d.PolicyVersion,
-		"decision_point":  d.DecisionPoint,
-		"effect":          d.Effect,
-		"target_type":     d.TargetType,
-		"target_id":       d.TargetID,
-		"actor_type":      d.ActorType,
-		"actor_id":        d.ActorID,
-		"trace_id":        d.TraceID,
-		"occurred_at":     d.OccurredAt.Format(time.RFC3339Nano),
+		"event_type":     eventType,
+		"tenant_id":      d.TenantID,
+		"decision_id":    d.ID,
+		"policy_id":      d.PolicyID,
+		"policy_version": d.PolicyVersion,
+		"decision_point": d.DecisionPoint,
+		"effect":         d.Effect,
+		"target_type":    d.TargetType,
+		"target_id":      d.TargetID,
+		"actor_type":     d.ActorType,
+		"actor_id":       d.ActorID,
+		"trace_id":       d.TraceID,
+		"occurred_at":    d.OccurredAt.Format(time.RFC3339Nano),
 	}
 	payload, err := json.Marshal(evt)
 	if err != nil {

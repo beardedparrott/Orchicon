@@ -1,4 +1,4 @@
-h1:APkHREwNf34JbDQo8p0wOceDguL3Kg7OYJg10ia6Veo=
+h1:olkb6sCw1CqheaFmN6nD+8KQPEbU7fiOIsBowvs4K5E=
 20260712192105_initial_schema.sql h1:Nmt8ON+bI6fpWFAB1ofgseoxZ2Yr19rlBSuSpWYESJU=
 20260712192105_initial_schema_down.sql h1:RDSZVdJtR8DJx9HvT6WrBdEOEoJpM/46JutUdlPs5wU=
 20260712223028_add_outbox.sql h1:+idZYfVIjOHjGIluT5JM5M0dMF6L1+VmeHeGy66DLEI=
@@ -173,3 +173,5 @@ h1:APkHREwNf34JbDQo8p0wOceDguL3Kg7OYJg10ia6Veo=
 20260926000000_ephemeral_records_down.sql h1:DKRXgqDsWfuPmei7QsY3H8PIbXM1hIiG3zAugqlDRtg=
 20260927000000_conversation_project.sql h1:dFK4A4ZTa9jC7kSlhUfR3gtdELC+3lwKbZODto3R/ao=
 20260927000000_conversation_project_down.sql h1:fANP+SJoRzNIs0VquMbwqUfbCGAj+gBnecnHO28VrRk=
+20260928000000_stall_blank_means_default.sql h1:hahVraQ18D/H8atF/m0AsHjfW8odDIzOJ6OClreztCw=
+20260928000000_stall_blank_means_default_down.sql h1:nLKrvD5MYedlYxO2wQ4qEWwqQBR38UPUNjqeZKZtfTY=

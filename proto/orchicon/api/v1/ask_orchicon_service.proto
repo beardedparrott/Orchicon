@@ -48,6 +48,17 @@ service AskOrchiconService {
   // already-open chat instead of starting a new one.
   rpc SetConversationModel(SetConversationModelRequest) returns (SetConversationModelResponse);
 
+  // SetConversationFullsend turns FULLSEND on or off for one conversation. It is the
+  // write side of Conversation.fullsend; the response carries the conversation back so
+  // the caller renders the state the SERVER holds rather than the one it hoped for.
+  //
+  // It is per CONVERSATION and in-memory (it dies with the plane), which is the same
+  // scope and lifetime as a session grant — and it is deliberately NOT a pending value
+  // for a conversation that does not exist yet. A bypass that applies to a conversation
+  // the operator has not looked at is one they did not knowingly arm; the mode field had
+  // exactly this leak, and it was fixed by scoping the write to the open conversation.
+  rpc SetConversationFullsend(SetConversationFullsendRequest) returns (SetConversationFullsendResponse);
+
   // SetConversationProject places a conversation in a PROJECT (or clears it),
   // which is the second, higher level of organization over conversations: the
   // rail and the GUI sidebar list projects as the parent group, every project
@@ -120,6 +131,26 @@ service AskOrchiconService {
   // same ChatStreamResponse oneof as ChatStream; reusing the type is
   // deliberate.
   rpc WatchTurnStream(WatchTurnStreamRequest) returns (stream ChatStreamResponse);
+
+  // ReplyPermissionAsk answers a PermissionAsk the turn is waiting on. The
+  // decision applies to OUR grant store: PERMISSION_CHOICE_ALLOW_ONCE proceeds for this single
+  // call, PERMISSION_CHOICE_ALLOW_SESSION records an in-memory, directory-keyed grant for this
+  // conversation, DENY refuses the call (the refusal reaches the model as the
+  // tool result). The value sent to the serve is always `once` or `reject` —
+  // never a session-scoped serve value.
+  rpc ReplyPermissionAsk(ReplyPermissionAskRequest) returns (ReplyPermissionAskResponse);
+
+  // ListPermissionGrants lists the conversation's ACTIVE session grants: the
+  // directories an ALLOW_SESSION decision recorded for this conversation, with
+  // the time each was granted. The client renders them so an operator can see
+  // and revoke what was granted; the store itself is the source of truth.
+  rpc ListPermissionGrants(ListPermissionGrantsRequest) returns (ListPermissionGrantsResponse);
+
+  // RevokePermissionGrant drops one session grant (by directory) for the
+  // conversation. The next tool call for that directory asks again: the guard
+  // shim reads the same store (internal/askorchicon/ask_guard.go). An unknown
+  // directory is reported as removed=false, never a silent success.
+  rpc RevokePermissionGrant(RevokePermissionGrantRequest) returns (RevokePermissionGrantResponse);
 
   // CompactConversation compacts a conversation's accumulated context so a
   // long-running session can keep going instead of failing on the model's
@@ -218,6 +249,18 @@ message SetConversationModelResponse {
   Conversation conversation = 1;
 }
 
+message SetConversationFullsendRequest {
+  string id = 1;
+  // enabled true turns FULLSEND on for this conversation, false turns it off. It is
+  // an explicit boolean rather than a toggle so a caller retrying after a dropped
+  // response cannot flip the mode by accident.
+  bool enabled = 2;
+}
+
+message SetConversationFullsendResponse {
+  Conversation conversation = 1;
+}
+
 message SetConversationProjectRequest {
   string id = 1;
   // project_id is the project to place the conversation in. Empty UNASSIGNS it
@@ -276,7 +319,44 @@ message ChatStreamResponse {
     TurnStarted turn_started = 6;
     ReasoningChunk reasoning = 7;
     Heartbeat heartbeat = 8;
+    // PermissionAsk carries a permission.asked the turn is waiting on: the
+    // tool, the target path(s) or command, the directory a session grant
+    // would cover, and a one-line summary. It reaches both the live dispatch
+    // stream and every re-attached WatchTurnStream watcher. The answer comes
+    // back on ReplyPermissionAsk.
+    PermissionAsk permission_ask = 9;
+    // PermissionAskResolved carries the OUTCOME of an ask already sent on this
+    // stream, published the moment the collector applies a decision.
+    //
+    // IT EXISTS SO A DECISION MADE IN ONE CLIENT SETTLES THE CARD IN THE OTHER.
+    // An ask is delivered to every watcher of a turn, but only the client that
+    // ANSWERED it ever cleared its own copy (the TUI in ConsentResolve, the GUI in
+    // handleAskDecision). So answering in the TUI left a live-looking, inert card in
+    // the GUI — the operator: "the choice box is still there for permissions" — and
+    // vice versa. Clients cannot infer it either: a permission ask has no durable
+    // per-ask row to reconcile against (the transcript records the OUTCOME, not the
+    // open ask).
+    //
+    // It is published by the collector that owns the turn, so it reaches every
+    // watcher, including one that re-attached mid-turn.
+    PermissionAskResolved permission_ask_resolved = 10;
   }
+}
+
+// PermissionAskResolved is the settled form of a PermissionAsk: which ask, and what
+// became of it.
+message PermissionAskResolved {
+  string ask_id = 1;
+  string conversation_id = 2;
+  // outcome is one of:
+  //   "allow_once" | "allow_session" | "deny" — the operator decided;
+  //   "answered"                              — a question was answered (answer is set);
+  //   "expired"                               — nobody answered in the window.
+  string outcome = 3;
+  // answer is the operator's words for a QUESTION ask, empty otherwise. It is what
+  // the ask_user tool returned, and it is carried here so a watching client can show
+  // what was answered rather than only that something was.
+  string answer = 4;
 }
 
 // TurnStarted is the immediate ack for a ChatStream send: the message was
@@ -380,4 +460,122 @@ message GetModelCapabilitiesRequest {
 
 message GetModelCapabilitiesResponse {
   ModelCapabilities capabilities = 1;
+}
+
+// --- Consent ---
+
+// PermissionAsk is one tool call the turn is blocked on, awaiting the
+// operator's decision. It always names the action: the tool plus either the
+// target path(s) or the shell command — never just an opaque id.
+message PermissionAsk {
+  string ask_id = 1;
+  string conversation_id = 2;
+  string session_id = 3;
+  // tool is the opencode permission name ("write" | "edit" | "batch_write" |
+  // "bash").
+  string tool = 4;
+  // command is the shell command line, for a bash ask (empty otherwise).
+  string command = 5;
+  // targets are the paths a write/edit touches (empty for bash).
+  repeated string targets = 6;
+  // directory is the grant/deny key: the target's directory for a write/edit,
+  // the cwd for bash. "Allow for this directory" covers exactly this key.
+  string directory = 7;
+  // inside_project reports whether the action already falls inside the
+  // conversation's own project directory (the default, pre-approved scope).
+  bool inside_project = 8;
+  // summary is the one-line card text: tool plus target or command.
+  string summary = 9;
+  // deny_entries_below lists the operator's persistent DENY entries that live
+  // at or BELOW the directory this ask would grant. A session grant can never
+  // override them (permpolicy.Decide evaluates the deny list first), so the
+  // card says so instead of offering a grant that will be refused for those
+  // paths. Empty when no deny entry sits inside the directory.
+  repeated string deny_entries_below = 10;
+
+  // --- Clarifying-question asks (ask_user, made blocking) ---
+  //
+  // A question rides THIS message rather than getting its own: the clients already
+  // render one card type from it (the TUI models both as chat.PermissionAsk with a
+  // Kind), and the operator answers both from the transcript. Adding a second
+  // message and a second RPC would have meant two card paths, two reply paths and
+  // two places for a decision to go missing.
+  //
+  // When question is non-empty this is a QUESTION, not a permission: there is no
+  // allow/deny and no grant. The turn is PAUSED on it (the adapter blocks the
+  // ask_user call), so the card is the end of the turn until it is answered —
+  // which is why answering it RESUMES the turn rather than starting a new one.
+  string question = 11;
+  repeated string options = 12;
+  // allow_other offers the free-text row: the operator can answer in their own
+  // words instead of choosing a canned option.
+  bool allow_other = 13;
+}
+
+// SessionPermissionGrant is one ACTIVE session grant: a directory the operator
+// allowed for the session, and when.
+message SessionPermissionGrant {
+  // directory is the granted directory (the ask's grant key).
+  string directory = 1;
+  // granted_at_unix is the Unix seconds the grant was recorded; 0 when unknown.
+  int64 granted_at_unix = 2;
+}
+
+message ListPermissionGrantsRequest {
+  string conversation_id = 1;
+}
+
+// ListPermissionGrantsResponse carries the conversation's active grants.
+message ListPermissionGrantsResponse {
+  repeated SessionPermissionGrant grants = 1;
+}
+
+message RevokePermissionGrantRequest {
+  string conversation_id = 1;
+  // directory is the granted directory to drop (the ask's grant key).
+  string directory = 2;
+}
+
+// RevokePermissionGrantResponse reports the revoke and returns the refreshed
+// list, so the client never keeps its own copy of the store.
+message RevokePermissionGrantResponse {
+  bool removed = 1;
+  repeated SessionPermissionGrant grants = 2;
+}
+
+// PermissionChoice is the operator's answer to one ask.
+enum PermissionChoice {
+  PERMISSION_CHOICE_UNSPECIFIED = 0;
+  // PERMISSION_CHOICE_ALLOW_ONCE proceeds for this single call; the same call asks again.
+  PERMISSION_CHOICE_ALLOW_ONCE = 1;
+  // PERMISSION_CHOICE_ALLOW_SESSION records an in-memory directory grant for the conversation.
+  PERMISSION_CHOICE_ALLOW_SESSION = 2;
+  // PERMISSION_CHOICE_DENY refuses the call; the refusal reaches the model as the tool result.
+  PERMISSION_CHOICE_DENY = 3;
+}
+
+message ReplyPermissionAskRequest {
+  string conversation_id = 1;
+  string ask_id = 2;
+  PermissionChoice choice = 3;
+  // answer is the operator's reply to a QUESTION ask (question non-empty): the
+  // chosen option's label, or their own words when allow_other offered the
+  // free-text row. It BECOMES THE ask_user TOOL RESULT, so the model continues the
+  // turn with the answer in hand rather than being told the question was recorded.
+  //
+  // Empty for a permission ask — a permission is answered by `choice`, and the two
+  // are deliberately not conflated: a permission's outcome is a grant decision, a
+  // question's is content the model reads.
+  string answer = 4;
+}
+
+// ReplyPermissionAskResponse reports whether the decision was applied.
+message ReplyPermissionAskResponse {
+  // applied is true when the decision was routed to the waiting turn.
+  bool applied = 1;
+  // expired is true when the ask is no longer open (the turn ended, was
+  // superseded, or another reply won) — never a silent success.
+  bool expired = 2;
+  // detail explains the outcome in one line.
+  string detail = 3;
 }

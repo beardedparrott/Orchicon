@@ -38,6 +38,110 @@ func TestValidateTopLevelKind(t *testing.T) {
 	}
 }
 
+// TestValidateParentTopLevelExemptions pins the two documented exemptions
+// from the "only epics are top-level" rule. They are predicates the caller
+// passes INTO the shared validator — never a second, parallel code path —
+// and every other top-level shape stays refused with the unchanged message.
+//
+// PURE, and that is the point: the rule is a predicate. ValidateParent
+// returns before it touches the database when the item is parentless, so
+// this needs no pool and no migrations — a nil tx is passed deliberately to
+// prove the parentless path never reaches the database. (The DB half of the
+// helper — the parent is loaded in-tenant and depth-checked — is covered by
+// TestValidateParentDB below.)
+func TestValidateParentTopLevelExemptions(t *testing.T) {
+	ctx := context.Background()
+	const tenantID, projectID = "tnt_predicate", "prj_predicate"
+
+	// Positional flags, in the order documented on ValidateParent.
+	recurring := false
+	ephemeral := true
+
+	cases := []struct {
+		name       string
+		kind       string
+		exemptions []bool
+		wantErr    bool
+		why        string
+	}{
+		{
+			name:       "ephemeral task is a valid top-level item",
+			kind:       domain.WorkItemKindTask,
+			exemptions: []bool{recurring, ephemeral},
+			why: "this is the acceptance case: a Quick Work dispatch is a transient unit of work, " +
+				"not a planning container. Before the exemption it was refused with 'a task must have " +
+				"a parent; only epics can be top-level', which forced every ephemeral item to be an epic",
+		},
+		{
+			name:       "ephemeral feature is a valid top-level item",
+			kind:       domain.WorkItemKindFeature,
+			exemptions: []bool{recurring, ephemeral},
+			why:        "kind is orthogonal to ephemerality — an ephemeral item lives in no tree whatever its kind",
+		},
+		{
+			name:       "ephemeral subtask is a valid top-level item",
+			kind:       domain.WorkItemKindSubtask,
+			exemptions: []bool{recurring, ephemeral},
+		},
+		{
+			name:       "flat-recurring task is a valid top-level item",
+			kind:       domain.WorkItemKindTask,
+			exemptions: []bool{true, false},
+			why:        "the pre-existing exemption (D1), unchanged",
+		},
+		{
+			name:       "recurring and ephemeral together",
+			kind:       domain.WorkItemKindTask,
+			exemptions: []bool{true, true},
+		},
+		{
+			name:    "non-ephemeral task stays refused",
+			kind:    domain.WorkItemKindTask,
+			wantErr: true,
+			why: "the exemption is scoped to ephemeral items; an ordinary orphan task is exactly " +
+				"the shape the planning invariant forbids",
+		},
+		{
+			name:    "non-ephemeral feature stays refused",
+			kind:    domain.WorkItemKindFeature,
+			wantErr: true,
+			why:     "unchanged",
+		},
+		{
+			name:    "non-ephemeral subtask stays refused",
+			kind:    domain.WorkItemKindSubtask,
+			wantErr: true,
+			why:     "unchanged",
+		},
+		{
+			name:       "both flags explicitly false stays refused",
+			kind:       domain.WorkItemKindTask,
+			exemptions: []bool{false, false},
+			wantErr:    true,
+			why:        "a caller that names both flags and clears them must get the ordinary rule",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// A nil tx is deliberate: the parentless path must never reach the DB.
+			err := ValidateParent(ctx, nil, tenantID, "", tc.kind, projectID, tc.exemptions...)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("ValidateParent accepted a top-level %s with exemptions %v: %s", tc.kind, tc.exemptions, tc.why)
+				}
+				want := "a " + tc.kind + " must have a parent; only epics can be top-level"
+				if err.Error() != want {
+					t.Fatalf("refusal = %q, want the unchanged message %q (clients surface it verbatim)", err.Error(), want)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ValidateParent refused a top-level %s with exemptions %v: %v: %s", tc.kind, tc.exemptions, err, tc.why)
+			}
+		})
+	}
+}
+
 // TestValidateKindDepth verifies the depth rule that a child must be
 // strictly deeper than its parent (Epic > Feature > Task > Subtask).
 func TestValidateKindDepth(t *testing.T) {
@@ -241,6 +345,16 @@ func TestValidateParentDB(t *testing.T) {
 		t.Errorf("cross-project error = %q, want 'same project'", msg)
 	}
 
+	// The ephemeral exemption relaxes ONLY the parentless case: with a parent
+	// present the ordinary depth rule applies in full, so the flag can never
+	// buy an item a deeper placement.
+	if err := ValidateParent(ctx, ttx.Tx, validateParentTestTenant, task.ID, domain.WorkItemKindFeature, projectA, false, true); err == nil {
+		t.Error("a feature under a task must stay rejected even when the item is ephemeral")
+	}
+	if err := ValidateParent(ctx, ttx.Tx, validateParentTestTenant, epic.ID, domain.WorkItemKindTask, projectA, false, true); err != nil {
+		t.Errorf("an ephemeral task under an epic is an ordinary valid placement, got %v", err)
+	}
+
 	// Clearing: only epics may go top-level.
 	if err := ValidateParent(ctx, ttx.Tx, validateParentTestTenant, "", domain.WorkItemKindTask, projectA); err == nil {
 		t.Error("clearing a task's parent should be rejected")
@@ -346,6 +460,67 @@ func TestUpdateWorkItemReparent(t *testing.T) {
 	err = update(feature, func(m *apiv1.UpdateWorkItemRequest) { m.ParentId = strPtr("does-not-exist") })
 	if err == nil || connect.CodeOf(err) != connect.CodeNotFound {
 		t.Fatalf("reparent to unknown parent should be NotFound, got %v", err)
+	}
+}
+
+// TestUpdateWorkItemEphemeralTopLevelTask verifies the UPDATE path carries
+// the SAME exemption as the create path. An ephemeral item is top-level only,
+// so clearing its (absent) parent is the ordinary edit for it; without the
+// exemption the shared validator refuses it with a create-path message and
+// the two paths disagree about the same row. The flag is derived from the
+// ROW here, because the Connect update request has no ephemeral field.
+func TestUpdateWorkItemEphemeralTopLevelTask(t *testing.T) {
+	pool := validateParentTestPool(t)
+	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
+	s := New(pool, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+
+	projectA := validateParentProject(t, ctx, pool)
+	newTopLevel := func(ephemeral bool) db.WorkItemRow {
+		t.Helper()
+		ttx, err := pool.BeginTenantTx(ctx, validateParentTestTenant)
+		if err != nil {
+			t.Fatalf("begin tx: %v", err)
+		}
+		defer ttx.Rollback(ctx)
+		item, err := db.CreateWorkItem(ctx, ttx.Tx, db.WorkItemRow{
+			ID: db.NewID(), TenantID: validateParentTestTenant, ProjectID: projectA,
+			Kind:   domain.WorkItemKindTask,
+			Title:  "Top-level task " + strings.ToLower(db.NewID()),
+			Status: domain.WorkItemPending, Ephemeral: ephemeral,
+		})
+		if err != nil {
+			t.Fatalf("create top-level task (ephemeral=%v): %v", ephemeral, err)
+		}
+		if err := ttx.Commit(ctx); err != nil {
+			t.Fatalf("commit item: %v", err)
+		}
+		return item
+	}
+
+	clearParent := func(item db.WorkItemRow) error {
+		t.Helper()
+		req := connect.NewRequest(&apiv1.UpdateWorkItemRequest{Id: item.ID})
+		req.Msg.ParentId = strPtr("")
+		_, err := s.UpdateWorkItem(ctx, req)
+		return err
+	}
+
+	// Accepts: an ephemeral task is top-level by definition.
+	if err := clearParent(newTopLevel(true)); err != nil {
+		t.Fatalf("updating a top-level EPHEMERAL task was refused: %v\n"+
+			"create and update must agree about the same row — the exemption lives in the "+
+			"shared validator, so the update path derives it from current.Ephemeral.", err)
+	}
+
+	// Still refused: the same edit on an ORDINARY top-level task. This is the
+	// scoping assertion — the exemption did not become a general "non-epics
+	// may be top-level on update".
+	err := clearParent(newTopLevel(false))
+	if err == nil || connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("clearing an ordinary top-level task's parent must stay refused, got %v", err)
+	}
+	if want := "a task must have a parent; only epics can be top-level"; !strings.Contains(err.Error(), want) {
+		t.Fatalf("ordinary refusal = %q, want the unchanged message %q (the Connect error carries its code as a prefix)", err.Error(), want)
 	}
 }
 

@@ -67,6 +67,13 @@ type sessionRun struct {
 	nudgeReplyWindowVal time.Duration
 	nudgeCooldownVal    time.Duration
 
+	// tuningInit records that the three fields above hold RESOLVED values
+	// (initNudgeTuning ran). It exists so the accessors can return an explicit
+	// 0 — which now means "disabled" — instead of mistaking it for "never
+	// initialised" and substituting the package default, which is exactly what
+	// made "0 = disabled" impossible to express before.
+	tuningInit bool
+
 	// In-flight tool-hang watchdog (Tier A): a tool call with no events for
 	// longer than toolHangWindowVal is aborted-and-redirected — only the
 	// in-flight turn is cancelled (session + history preserved) and a
@@ -224,20 +231,25 @@ func (r *sessionRun) initNudgeTuning() {
 	r.nudgeReplyWindowVal = nudgeReplyWindow()
 	r.nudgeCooldownVal = nudgeCooldown()
 	r.toolHangWindowVal = toolHangWindow()
-	if r.manifest.StallNudgeMax > 0 && os.Getenv("ORCHICON_STALL_NUDGE_MAX") == "" {
-		r.nudgeMaxVal = int(r.manifest.StallNudgeMax)
+	// From here the fields above hold RESOLVED values, so the accessors can tell
+	// an explicit 0 (DISABLED) from "never initialised".
+	r.tuningInit = true
+	// Manifest fields are POINTERS: nil = the tenant left it BLANK, so the
+	// env/code default above stands; non-nil = an explicit value, and 0 means
+	// DISABLED. The accessors return it verbatim; every consumer gates on > 0.
+	if m := r.manifest.StallNudgeMax; m != nil && os.Getenv("ORCHICON_STALL_NUDGE_MAX") == "" {
+		r.nudgeMaxVal = int(*m)
 	}
-	if r.manifest.StallNudgeReplyWindowSeconds > 0 && os.Getenv("ORCHICON_STALL_NUDGE_REPLY_WINDOW") == "" {
-		r.nudgeReplyWindowVal = time.Duration(r.manifest.StallNudgeReplyWindowSeconds) * time.Second
+	if m := r.manifest.StallNudgeReplyWindowSeconds; m != nil && os.Getenv("ORCHICON_STALL_NUDGE_REPLY_WINDOW") == "" {
+		r.nudgeReplyWindowVal = time.Duration(*m) * time.Second
 	}
-	if r.manifest.StallNudgeCooldownSeconds > 0 && os.Getenv("ORCHICON_STALL_NUDGE_COOLDOWN") == "" {
-		r.nudgeCooldownVal = time.Duration(r.manifest.StallNudgeCooldownSeconds) * time.Second
+	if m := r.manifest.StallNudgeCooldownSeconds; m != nil && os.Getenv("ORCHICON_STALL_NUDGE_COOLDOWN") == "" {
+		r.nudgeCooldownVal = time.Duration(*m) * time.Second
 	}
-	// Tool-hang watchdog: manifest (tenant settings) value first — 0 means
-	// unset (keep the env/code default 180s), negative means disabled
-	// (any duration <= 0 disables). Env overrides both for dev/debugging.
-	if r.manifest.StallToolHangSeconds != 0 && os.Getenv("ORCHICON_STALL_TOOL_HANG_WINDOW") == "" && os.Getenv("ORCHICON_TOOL_HANG_WINDOW") == "" {
-		r.toolHangWindowVal = time.Duration(r.manifest.StallToolHangSeconds) * time.Second
+	// Tool-hang watchdog: nil keeps the env/code default (180s); an explicit 0
+	// resolves to a zero duration, which the watchdog gates on — disabled.
+	if m := r.manifest.StallToolHangSeconds; m != nil && os.Getenv("ORCHICON_STALL_TOOL_HANG_WINDOW") == "" && os.Getenv("ORCHICON_TOOL_HANG_WINDOW") == "" {
+		r.toolHangWindowVal = time.Duration(*m) * time.Second
 	}
 }
 
@@ -429,11 +441,13 @@ func toolHangRedirectMessage(tool string, window time.Duration) string {
 		"background-and-poll, or a bounded retry — then move on. Do not repeat the identical hung call."
 }
 
-// nudgeMax returns the session's resolved nudge budget (manifest value
-// first, env fallback). Falls back to the package default if the session
-// was constructed without initNudgeTuning (e.g. tests).
+// nudgeMax returns the session's resolved nudge budget (manifest value first,
+// env fallback). Falls back to the package default only when the session was
+// constructed without initNudgeTuning (e.g. tests): a RESOLVED 0 is returned as
+// 0, because 0 means "disabled" — escalate on the first advisory stall instead
+// of nudging — and must not be replaced by the default.
 func (r *sessionRun) nudgeMax() int {
-	if r.nudgeMaxVal > 0 {
+	if r.tuningInit {
 		return r.nudgeMaxVal
 	}
 	return nudgeMax()
@@ -441,7 +455,7 @@ func (r *sessionRun) nudgeMax() int {
 
 // nudgeReplyWindow returns the session's resolved nudge reply window.
 func (r *sessionRun) nudgeReplyWindow() time.Duration {
-	if r.nudgeReplyWindowVal > 0 {
+	if r.tuningInit {
 		return r.nudgeReplyWindowVal
 	}
 	return nudgeReplyWindow()
@@ -449,7 +463,7 @@ func (r *sessionRun) nudgeReplyWindow() time.Duration {
 
 // nudgeCooldown returns the session's resolved nudge cooldown.
 func (r *sessionRun) nudgeCooldown() time.Duration {
-	if r.nudgeCooldownVal > 0 {
+	if r.tuningInit {
 		return r.nudgeCooldownVal
 	}
 	return nudgeCooldown()

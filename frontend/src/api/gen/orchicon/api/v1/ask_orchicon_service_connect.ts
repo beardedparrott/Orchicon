@@ -11,7 +11,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CompactConversationRequest, CompactConversationResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, InterjectConversationTurnRequest, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, SetConversationModelRequest, SetConversationModelResponse, SetConversationModeRequest, SetConversationModeResponse, SetConversationProjectRequest, SetConversationProjectResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse, WatchTurnStreamRequest } from "./ask_orchicon_service_pb.js";
+import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CompactConversationRequest, CompactConversationResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, InterjectConversationTurnRequest, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, ListPermissionGrantsRequest, ListPermissionGrantsResponse, ReplyPermissionAskRequest, ReplyPermissionAskResponse, RevokePermissionGrantRequest, RevokePermissionGrantResponse, SetConversationFullsendRequest, SetConversationFullsendResponse, SetConversationModelRequest, SetConversationModelResponse, SetConversationModeRequest, SetConversationModeResponse, SetConversationProjectRequest, SetConversationProjectResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse, WatchTurnStreamRequest } from "./ask_orchicon_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -108,6 +108,25 @@ export const AskOrchiconService = {
       name: "SetConversationModel",
       I: SetConversationModelRequest,
       O: SetConversationModelResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * SetConversationFullsend turns FULLSEND on or off for one conversation. It is the
+     * write side of Conversation.fullsend; the response carries the conversation back so
+     * the caller renders the state the SERVER holds rather than the one it hoped for.
+     *
+     * It is per CONVERSATION and in-memory (it dies with the plane), which is the same
+     * scope and lifetime as a session grant — and it is deliberately NOT a pending value
+     * for a conversation that does not exist yet. A bypass that applies to a conversation
+     * the operator has not looked at is one they did not knowingly arm; the mode field had
+     * exactly this leak, and it was fixed by scoping the write to the open conversation.
+     *
+     * @generated from rpc orchicon.api.v1.AskOrchiconService.SetConversationFullsend
+     */
+    setConversationFullsend: {
+      name: "SetConversationFullsend",
+      I: SetConversationFullsendRequest,
+      O: SetConversationFullsendResponse,
       kind: MethodKind.Unary,
     },
     /**
@@ -227,6 +246,50 @@ export const AskOrchiconService = {
       I: WatchTurnStreamRequest,
       O: ChatStreamResponse,
       kind: MethodKind.ServerStreaming,
+    },
+    /**
+     * ReplyPermissionAsk answers a PermissionAsk the turn is waiting on. The
+     * decision applies to OUR grant store: PERMISSION_CHOICE_ALLOW_ONCE proceeds for this single
+     * call, PERMISSION_CHOICE_ALLOW_SESSION records an in-memory, directory-keyed grant for this
+     * conversation, DENY refuses the call (the refusal reaches the model as the
+     * tool result). The value sent to the serve is always `once` or `reject` —
+     * never a session-scoped serve value.
+     *
+     * @generated from rpc orchicon.api.v1.AskOrchiconService.ReplyPermissionAsk
+     */
+    replyPermissionAsk: {
+      name: "ReplyPermissionAsk",
+      I: ReplyPermissionAskRequest,
+      O: ReplyPermissionAskResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ListPermissionGrants lists the conversation's ACTIVE session grants: the
+     * directories an ALLOW_SESSION decision recorded for this conversation, with
+     * the time each was granted. The client renders them so an operator can see
+     * and revoke what was granted; the store itself is the source of truth.
+     *
+     * @generated from rpc orchicon.api.v1.AskOrchiconService.ListPermissionGrants
+     */
+    listPermissionGrants: {
+      name: "ListPermissionGrants",
+      I: ListPermissionGrantsRequest,
+      O: ListPermissionGrantsResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * RevokePermissionGrant drops one session grant (by directory) for the
+     * conversation. The next tool call for that directory asks again: the guard
+     * shim reads the same store (internal/askorchicon/ask_guard.go). An unknown
+     * directory is reported as removed=false, never a silent success.
+     *
+     * @generated from rpc orchicon.api.v1.AskOrchiconService.RevokePermissionGrant
+     */
+    revokePermissionGrant: {
+      name: "RevokePermissionGrant",
+      I: RevokePermissionGrantRequest,
+      O: RevokePermissionGrantResponse,
+      kind: MethodKind.Unary,
     },
     /**
      * CompactConversation compacts a conversation's accumulated context so a

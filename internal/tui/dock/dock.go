@@ -4,16 +4,38 @@
 // notice/error strip, and a persistent affordance row (what Enter does,
 // the newline chord, how to open the command palette) are rendered. The
 // dock also owns bracketed-paste handling, the configurable newline keys
-// (alt+enter default, leading-backslash+enter alternative — bubbletea
-// v1.3.10 has no kitty keyboard protocol, so Shift+Enter cannot be enabled
-// programmatically; CSI-u shift+enter is accepted when a terminal emits it
-// anyway), and the draft buffer (restored after a failed send).
+// (alt+enter default, leading-backslash+enter alternative), and the draft
+// buffer (restored after a failed send).
+//
+// SHIFT+ENTER IS NOT HANDLED HERE, because it never arrives here as a key. Its
+// handling lives one layer down, in internal/tui/input: the sequence a terminal
+// sends for it is rewritten to the alt+enter chord as input is read, so the
+// branch below is what actually runs.
+//
+// THE PREMISE OF AN EARLIER COMMENT HERE WAS WRONG. It claimed Shift+Enter cannot
+// be told apart from Enter at all, because a legacy terminal encodes the Ctrl and
+// Alt modifiers on Enter as an ESC prefix but encodes SHIFT not at all. The first
+// half is true — that is why alt+enter arrives as KeyEnter{Alt:true} — but the
+// second half is not, and it is worth recording so this is not "re-fixed" the same
+// wrong way. Konsole 26.08 sends ESC O M (the legacy keypad-Enter encoding) for
+// Shift+Enter, so the bytes DO carry the distinction. What was missing was not a
+// protocol but DECODING: bubbletea v1.3.10 knows no ESC O M sequence, so it splits
+// those three bytes into alt+O and M, and the composer inserts the literal text
+// "OM".
+//
+// So this is fixed without the bubbletea v2 upgrade that comment prescribed, and
+// without a dock change: rewrite the sequence to a chord the dock already handles.
+// The kitty / CSI-u caveat still stands for terminals that use that protocol — a
+// program must REQUEST it at startup and this bubbletea cannot — but it was never
+// the whole story, and it is not the encoding Konsole uses.
 package dock
 
 import (
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -107,6 +129,14 @@ type Model struct {
 	// (the stats sit BEFORE it). Both are set by the shell.
 	Stats string
 	Mode  string
+	// Fullsend is the FULLSEND indicator, rendered immediately to the LEFT of the mode pill
+	// (mirroring the GUI, which places its fullsend dropdown left of its mode dropdown).
+	//
+	// IT IS EMPTY WHEN OFF, and that is the design rather than an optimisation: FULLSEND is the
+	// ABSENCE of asking, so there is nothing to draw while the gate is doing its job. A
+	// permanently-present "FULLSEND OFF" token would compete for attention on every frame, and
+	// the whole point is that the ON state is unmissable.
+	Fullsend string
 	// Model is the ask model ref, rendered LEFT-aligned on the same stat row.
 	// It is deliberately NOT part of Stats: prefixing the ref to the right-aligned
 	// numbers made the row longer than the pane, so the tail (cost, and part of
@@ -245,6 +275,25 @@ func (m *Model) styledTa() textarea.Model {
 	// is the ordinary line style: the character must not vanish when the blink is off.
 	ta.Cursor.Style = theme.ComposerCursor
 	ta.Cursor.TextStyle = base
+
+	// THE DOCK OWNS THE CARET'S BLINK LOOP. See dockBlinkTick for why: the library
+	// starts a NEW blink timer every time the cursor MOVES (every keystroke, backspace and
+	// arrow key), cancelling the previous one — whose command then returns immediately, so
+	// each of those keys produced a second, pointless message and a second full-screen
+	// repaint. Putting the cursor in CursorStatic is what stops the library from minting:
+	// its move handler only re-arms when the mode IS CursorBlink.
+	//
+	// THE CARET STILL RENDERS AND STILL BLINKS. cursor.View() does not consult the mode at
+	// all — it paints the reversed block whenever Blink is false — so the mode here decides
+	// only who owns the TIMER, not whether a caret is drawn.
+	//
+	// That is verified by READING the library rather than by a test, and the reason is worth
+	// recording: textarea.View has a VALUE receiver, so its m.Cursor.SetChar(...) mutates its
+	// own copy — the caret's character is unobservable from the model after a render. And with
+	// the colour profile stripped (as in tests) the caret is byte-identical to the text it
+	// sits on. A test asserting "the caret is drawn" would therefore have to assert something
+	// it cannot see.
+	ta.Cursor.SetMode(cursor.CursorStatic)
 
 	// Re-resolve the active style pointer against what we just assigned.
 	if m.Focused {
@@ -692,7 +741,7 @@ func (m *Model) Lines() int {
 // StatsRows is 1 when there is a stat strip / mode pill to draw, else 0. The
 // shell reserves exactly this many rows, so the box can never overflow.
 func (m *Model) StatsRows() int {
-	if m.Stats == "" && m.Mode == "" && m.Model == "" {
+	if m.Stats == "" && m.Mode == "" && m.Model == "" && m.Fullsend == "" {
 		return 0
 	}
 	return 1
@@ -707,26 +756,49 @@ func (m *Model) statLine(inner int) string {
 	if m.Mode != "" {
 		mode = "[" + m.Mode + "]"
 	}
-	right := m.Stats
+	// THE LAYOUT MATHS RUNS ON PLAIN STRINGS, and the styled form is assembled at the very
+	// end from the same pieces. Styling mid-calculation is how a width ends up measured on
+	// escape sequences rather than on cells — the bug that made an earlier pill's closing
+	// bracket disappear.
+	//
+	// ORDER: stats, then FULLSEND, then the mode pill — the same left-to-right order as the
+	// GUI's two dropdowns, so the operator reads the same two controls in the same places in
+	// either client.
+	keep := ""
+	if m.Fullsend != "" {
+		keep = m.Fullsend
+	}
 	if mode != "" {
+		if keep != "" {
+			keep += "  "
+		}
+		keep += mode
+	}
+	right := m.Stats
+	if keep != "" {
 		if right != "" {
 			right += "  "
 		}
-		right += mode
+		right += keep
 	}
 	if right == "" && m.Model == "" {
 		return ""
 	}
-	// Keep the right-hand group whole where the pane allows: trim the STATS first,
-	// never the pill.
+	// Keep the right-hand group whole where the pane allows: trim the STATS first, never the
+	// pill or the FULLSEND badge. Both of those are state the operator has to be able to read
+	// — one tells them what persona they are in, the other that Orchicon has stopped asking —
+	// while the numbers are what they watch. The controls survive; the readout gives way.
 	if lipgloss.Width(right) > inner {
-		avail := inner - lipgloss.Width(mode) - 2
+		avail := inner - lipgloss.Width(keep) - 2
 		if avail < 4 {
 			avail = 4
 		}
 		right = ansi.Truncate(m.Stats, avail, "…")
-		if mode != "" {
-			right += "  " + mode
+		if keep != "" {
+			if right != "" {
+				right += "  "
+			}
+			right += keep
 		}
 	}
 	// Then the model ref: truncate it, and drop it entirely if even that will not
@@ -752,15 +824,34 @@ func (m *Model) statLine(inner int) string {
 	if pad < 0 {
 		pad = 0
 	}
-	return theme.ListMeta.Render(left + strings.Repeat(" ", pad) + right)
+	// THE ASSEMBLY. The FULLSEND badge and the mode pill are painted as their own segments so
+	// the badge can be a filled block; the rest of the row keeps the ordinary meta style. The
+	// badge is matched by value rather than by position because the stats ahead of it may have
+	// been truncated, and a badge the operator cannot see is worse than a tight row.
+	if m.Fullsend == "" {
+		return theme.ListMeta.Render(left + strings.Repeat(" ", pad) + right)
+	}
+	headed := left + strings.Repeat(" ", pad)
+	if m.Stats != "" {
+		headed += m.Stats + "  "
+	}
+	line := theme.ListMeta.Render(headed) + theme.FullsendBadge.Render(m.Fullsend)
+	if mode != "" {
+		line += theme.ListMeta.Render("  " + mode)
+	}
+	return line
 }
 
 // Focus / Blur move keyboard focus into/out of the composer.
 func (m *Model) Focus() {
 	m.Focused = true
-	// Capture — do not discard — the command that starts the caret's blink
-	// loop. Update hands it to the runtime with the next message.
-	m.blinkStart = m.ta.Focus()
+	// Capture — do not discard — the commands that start the caret's loop and its own
+	// tick. Update hands them to the runtime with the next message.
+	//
+	// TWO COMMANDS, because the dock owns the blink now (see dockBlinkTick): the
+	// textarea's Focus() still sets the cursor's visible state, and dockBlinkTick starts
+	// the single timer that keeps toggling it.
+	m.blinkStart = tea.Batch(m.ta.Focus(), dockBlinkTick())
 }
 
 // TakeBlinkStart hands out (once) the command that starts the caret's blink loop,
@@ -842,7 +933,16 @@ func (m *Model) Update(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 	}
 
 	switch k := msg.(type) {
+	case dockBlinkMsg:
+		// Our own tick: toggle the caret and re-arm. ONE loop, and nothing an edit does
+		// can cancel it (see dockBlinkTick).
+		m.ta.Cursor.Blink = !m.ta.Cursor.Blink
+		return true, dockBlinkTick()
 	case tea.KeyMsg:
+		// ANY key makes the caret SOLID, which is what bubbles did on a cursor move
+		// (Blink=false) and what keeps it from blinking out mid-word — a caret that
+		// disappears while the operator is typing reads as lost focus.
+		m.ta.Cursor.Blink = false
 		// THE ALL-SELECTED STATE GETS FIRST REFUSAL. While the whole composer is selected, the keys that
 		// would normally edit it REPLACE it — which is what "selected" means, and what makes the gesture
 		// useful (the operator asked to "easily copy or delete it all").
@@ -888,7 +988,10 @@ func (m *Model) Update(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 			//
 			// Three real cases made Enter appear dead, and two are fixed:
 			//  1. a "shift+enter inserts a newline" convenience the hint never
-			//     documented (removed);
+			//     documented (removed here). It is BACK, but not as a branch in this
+			//     switch: the terminal's Shift+Enter sequence is rewritten to the
+			//     alt+enter chord as input is read (internal/tui/input), so it
+			//     arrives as the branch above;
 			//  2. Enter arriving as LF rather than CR — a different KeyType that
 			//     matched no branch here and no textarea keymap (handled by
 			//     enterKey).
@@ -1240,3 +1343,46 @@ func fitAll(rows []string, w int) []string {
 
 // PlaceholderText is exported for tests/docs.
 func PlaceholderText() string { return fmt.Sprintf("ask orchicon…") }
+
+// --- the dock's own caret blink ------------------------------------------
+//
+// THE DOCK OWNS THE CARET'S BLINK LOOP, and that is a performance fix with a
+// correctness-adjacent reason for existing.
+//
+// What bubbles does on its own: every time the CURSOR MOVES it re-arms the blink —
+//
+//	if (newRow != oldRow || newCol != oldCol) && m.Cursor.Mode() == cursor.CursorBlink {
+//	    m.Cursor.Blink = false
+//	    cmd = m.Cursor.BlinkCmd()
+//	}
+//
+// — and BlinkCmd CANCELS the previous timer before starting a new one. A cancelled
+// blink command's goroutine unblocks immediately and returns `blinkCanceled`, which the
+// runtime still DELIVERS as a message. So every keystroke, backspace and arrow key (all of
+// which move the cursor) produced a SECOND message and therefore a SECOND full-screen
+// repaint, for nothing: the wasted frame's only job was to be rejected by the cursor's
+// tag check.
+//
+// Measured, before this: 20 keystrokes scheduled 20 blink timers, and a frame costs
+// ~0.6ms at 120x40 rising to ~1.5ms at 320x100 (the frame paints every cell with the
+// theme background, so its cost scales with the terminal's AREA). Typing therefore paid
+// roughly double the frames it needed — the operator's "when typing into the composer,
+// moving the cursor with the arrow keys, backspacing, etc. it seems a little laggy".
+//
+// So the loop is ours now: ONE timer, started on focus, re-armed by its own tick, and
+// never cancelled by an edit. The library cannot mint a rival because its move handler
+// requires the cursor mode to be CursorBlink (see New, which sets CursorStatic); the
+// caret itself is unaffected, since cursor.View() renders from Blink alone.
+const dockBlinkSpeed = 530 * time.Millisecond // bubbles' cursor.BlinkSpeed default
+
+// dockBlinkMsg is our blink tick. It is a dock-local type rather than a cursor.BlinkMsg
+// for the same reason the library is "choosy" about its own: a fabricated tick carrying
+// bubbles' private id/blinkTag is always rejected, so this is the only shape that can
+// drive our loop.
+type dockBlinkMsg struct{}
+
+// dockBlinkTick returns the one command that keeps the caret blinking: it fires after the
+// blink interval, and delivering dockBlinkMsg re-arms the next one.
+func dockBlinkTick() tea.Cmd {
+	return tea.Tick(dockBlinkSpeed, func(time.Time) tea.Msg { return dockBlinkMsg{} })
+}

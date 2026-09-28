@@ -3,6 +3,7 @@ import { askOrchiconClient } from "@/api/clients";
 import type { Conversation } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 import type { ChatMessage } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 import type { AgentConfig } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
+import type { SessionPermissionGrant } from "@/api/gen/orchicon/api/v1/ask_orchicon_service_pb";
 import { ConversationMode } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 
 export const askKeys = {
@@ -10,6 +11,9 @@ export const askKeys = {
   conversation: (id: string) => ["ask", "conversation", id] as const,
   messages: (id: string) => ["ask", "messages", id] as const,
   config: ["ask", "config"] as const,
+  // grants are the conversation's ACTIVE session grants (in-memory on the
+  // plane, revoked from here).
+  grants: (id: string) => ["ask", "grants", id] as const,
 };
 
 export function useListConversations(opts?: { refetchInterval?: number | false }) {
@@ -191,6 +195,34 @@ export function useSetConversationMode() {
   });
 }
 
+// useSetConversationFullsend turns FULLSEND on or off for one conversation.
+//
+// THE STATE IS NOT HELD HERE. The mutation's job is to tell the server; the control renders
+// from Conversation.fullsend, which the invalidation below refreshes. A local optimistic flag
+// would show "on" for a write that failed, and this is the one control where that lie matters:
+// the operator would proceed believing the gate is down while it is still up.
+//
+// It sends a VALUE rather than a toggle, for the same reason the TUI does — a retry after a
+// dropped response must not invert the mode.
+export function useSetConversationFullsend() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (opts: { id: string; enabled: boolean }) => {
+      const res = await askOrchiconClient.setConversationFullsend({
+        id: opts.id,
+        enabled: opts.enabled,
+      });
+      return res.conversation as Conversation | undefined;
+    },
+    onSuccess: (_data, variables) => {
+      // Both keys: the composer reads the control's state off the conversation row, and the
+      // sidebar/rail list carries the same field.
+      qc.invalidateQueries({ queryKey: askKeys.conversations });
+      qc.invalidateQueries({ queryKey: askKeys.conversation(variables.id) });
+    },
+  });
+}
+
 // useSetConversationModel retargets an OPEN conversation's model (ADR-0004
 // picker → SetConversationModel). The change applies from the NEXT message.
 export function useSetConversationModel() {
@@ -208,6 +240,45 @@ export function useSetConversationModel() {
       // strip reads it back off that row — so both keys must refresh.
       qc.invalidateQueries({ queryKey: askKeys.conversations });
       qc.invalidateQueries({ queryKey: askKeys.conversation(variables.id) });
+    },
+  });
+}
+
+// --- session grants -------------------------------------------------------
+//
+// The plane's grant store is the single source of truth: these hooks read it and
+// mutate it, and NEVER patch a local copy. A revoke takes effect on the next
+// tool call (the execution guard reads the same store), which is why the
+// response's refreshed list is written straight into the cache.
+
+export function useListPermissionGrants(
+  conversationId: string,
+  opts?: { refetchInterval?: number | false },
+) {
+  return useQuery({
+    queryKey: askKeys.grants(conversationId),
+    queryFn: async () => {
+      const res = await askOrchiconClient.listPermissionGrants({ conversationId });
+      return (res.grants ?? []) as SessionPermissionGrant[];
+    },
+    enabled: !!conversationId,
+    // Polled only while the grants panel is open: the list is small and
+    // changes only when the operator decides something.
+    refetchInterval: opts?.refetchInterval ?? false,
+  });
+}
+
+export function useRevokePermissionGrant(conversationId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (directory: string) =>
+      await askOrchiconClient.revokePermissionGrant({ conversationId, directory }),
+    onSuccess: (res) => {
+      qc.setQueryData(
+        askKeys.grants(conversationId),
+        (res.grants ?? []) as SessionPermissionGrant[],
+      );
+      qc.invalidateQueries({ queryKey: askKeys.grants(conversationId) });
     },
   });
 }

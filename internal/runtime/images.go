@@ -306,8 +306,9 @@ func (d *Daemon) handleBuild(w http.ResponseWriter, r *http.Request, req BuildRe
 // through FROM like the base label).
 
 // handleBuildCancel implements cancel/probe for in-flight builds:
-//   DELETE /v1/images/build?tag=<tag> -> cancel (kills docker build)
-//   GET    /v1/images/build?tag=<tag> -> probe (building/not-building)
+//
+//	DELETE /v1/images/build?tag=<tag> -> cancel (kills docker build)
+//	GET    /v1/images/build?tag=<tag> -> probe (building/not-building)
 func (d *Daemon) handleBuildCancel(w http.ResponseWriter, r *http.Request) {
 	tag := r.URL.Query().Get("tag")
 	if tag == "" {

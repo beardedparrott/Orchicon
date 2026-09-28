@@ -52,6 +52,9 @@ func TestControlSourcesPopulateFromFetchedMsg(t *testing.T) {
 		"secrets": false, "mcp": false, "themes": false,
 		"providers": false, "webhooks": false, "adapters": false,
 		"settings": false, "admin": false,
+		// The durable permission policy: a full CRUD surface (list/add/remove
+		// over the same plane RPCs the GUI's Permissions tab uses).
+		"permissions": false,
 	}
 	for _, s := range m.Base.SourcesForTest() {
 		if _, ok := want[s.Name]; !ok {

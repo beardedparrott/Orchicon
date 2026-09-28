@@ -53,6 +53,13 @@ type fakePlane struct {
 	workflowListCalls int
 	itemListCalls     int
 
+	// runListReqs records every ListWorkflowRuns request, so a test can assert the SORT the
+	// Schedules finished lens asked for. The fake serves whatever `runs` it was given, so the
+	// ORDERING itself is the server's (internal/db/workflow.go, keyset on (started_at, id)); what
+	// THIS client controls — and therefore what is worth asserting here — is that it asks for the
+	// same sort the GUI asks for, so the two clients cannot render history in different orders.
+	runListReqs []*apiv1.ListWorkflowRunsRequest
+
 	// --- work-item writes (the Schedules pane's cancel / remove-schedule) ---
 	//
 	// Recorded rather than faked at the HTTP level so a test can assert WHICH write went out —
@@ -135,6 +142,7 @@ func (p *fakePlane) ListWorkflows(context.Context, *connect.Request[apiv1.ListWo
 func (p *fakePlane) ListWorkflowRuns(_ context.Context, req *connect.Request[apiv1.ListWorkflowRunsRequest]) (*connect.Response[apiv1.ListWorkflowRunsResponse], error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.runListReqs = append(p.runListReqs, req.Msg)
 	return connect.NewResponse(&apiv1.ListWorkflowRunsResponse{Runs: p.runs}), nil
 }
 

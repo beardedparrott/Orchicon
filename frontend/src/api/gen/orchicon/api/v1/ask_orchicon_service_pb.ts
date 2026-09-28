@@ -18,6 +18,46 @@ import { Category, CategoryAssignment } from "./category_pb.js";
 import { ModelCapabilities } from "./ai_gateway_pb.js";
 
 /**
+ * PermissionChoice is the operator's answer to one ask.
+ *
+ * @generated from enum orchicon.api.v1.PermissionChoice
+ */
+export enum PermissionChoice {
+  /**
+   * @generated from enum value: PERMISSION_CHOICE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * PERMISSION_CHOICE_ALLOW_ONCE proceeds for this single call; the same call asks again.
+   *
+   * @generated from enum value: PERMISSION_CHOICE_ALLOW_ONCE = 1;
+   */
+  ALLOW_ONCE = 1,
+
+  /**
+   * PERMISSION_CHOICE_ALLOW_SESSION records an in-memory directory grant for the conversation.
+   *
+   * @generated from enum value: PERMISSION_CHOICE_ALLOW_SESSION = 2;
+   */
+  ALLOW_SESSION = 2,
+
+  /**
+   * PERMISSION_CHOICE_DENY refuses the call; the refusal reaches the model as the tool result.
+   *
+   * @generated from enum value: PERMISSION_CHOICE_DENY = 3;
+   */
+  DENY = 3,
+}
+// Retrieve enum metadata with: proto3.getEnumType(PermissionChoice)
+proto3.util.setEnumType(PermissionChoice, "orchicon.api.v1.PermissionChoice", [
+  { no: 0, name: "PERMISSION_CHOICE_UNSPECIFIED" },
+  { no: 1, name: "PERMISSION_CHOICE_ALLOW_ONCE" },
+  { no: 2, name: "PERMISSION_CHOICE_ALLOW_SESSION" },
+  { no: 3, name: "PERMISSION_CHOICE_DENY" },
+]);
+
+/**
  * @generated from message orchicon.api.v1.ListConversationsRequest
  */
 export class ListConversationsRequest extends Message<ListConversationsRequest> {
@@ -452,6 +492,90 @@ export class SetConversationModelResponse extends Message<SetConversationModelRe
 }
 
 /**
+ * @generated from message orchicon.api.v1.SetConversationFullsendRequest
+ */
+export class SetConversationFullsendRequest extends Message<SetConversationFullsendRequest> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * enabled true turns FULLSEND on for this conversation, false turns it off. It is
+   * an explicit boolean rather than a toggle so a caller retrying after a dropped
+   * response cannot flip the mode by accident.
+   *
+   * @generated from field: bool enabled = 2;
+   */
+  enabled = false;
+
+  constructor(data?: PartialMessage<SetConversationFullsendRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.SetConversationFullsendRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "enabled", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetConversationFullsendRequest {
+    return new SetConversationFullsendRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetConversationFullsendRequest {
+    return new SetConversationFullsendRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetConversationFullsendRequest {
+    return new SetConversationFullsendRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SetConversationFullsendRequest | PlainMessage<SetConversationFullsendRequest> | undefined, b: SetConversationFullsendRequest | PlainMessage<SetConversationFullsendRequest> | undefined): boolean {
+    return proto3.util.equals(SetConversationFullsendRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.SetConversationFullsendResponse
+ */
+export class SetConversationFullsendResponse extends Message<SetConversationFullsendResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.Conversation conversation = 1;
+   */
+  conversation?: Conversation;
+
+  constructor(data?: PartialMessage<SetConversationFullsendResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.SetConversationFullsendResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "conversation", kind: "message", T: Conversation },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetConversationFullsendResponse {
+    return new SetConversationFullsendResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetConversationFullsendResponse {
+    return new SetConversationFullsendResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetConversationFullsendResponse {
+    return new SetConversationFullsendResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SetConversationFullsendResponse | PlainMessage<SetConversationFullsendResponse> | undefined, b: SetConversationFullsendResponse | PlainMessage<SetConversationFullsendResponse> | undefined): boolean {
+    return proto3.util.equals(SetConversationFullsendResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.SetConversationProjectRequest
  */
 export class SetConversationProjectRequest extends Message<SetConversationProjectRequest> {
@@ -879,6 +1003,39 @@ export class ChatStreamResponse extends Message<ChatStreamResponse> {
      */
     value: Heartbeat;
     case: "heartbeat";
+  } | {
+    /**
+     * PermissionAsk carries a permission.asked the turn is waiting on: the
+     * tool, the target path(s) or command, the directory a session grant
+     * would cover, and a one-line summary. It reaches both the live dispatch
+     * stream and every re-attached WatchTurnStream watcher. The answer comes
+     * back on ReplyPermissionAsk.
+     *
+     * @generated from field: orchicon.api.v1.PermissionAsk permission_ask = 9;
+     */
+    value: PermissionAsk;
+    case: "permissionAsk";
+  } | {
+    /**
+     * PermissionAskResolved carries the OUTCOME of an ask already sent on this
+     * stream, published the moment the collector applies a decision.
+     *
+     * IT EXISTS SO A DECISION MADE IN ONE CLIENT SETTLES THE CARD IN THE OTHER.
+     * An ask is delivered to every watcher of a turn, but only the client that
+     * ANSWERED it ever cleared its own copy (the TUI in ConsentResolve, the GUI in
+     * handleAskDecision). So answering in the TUI left a live-looking, inert card in
+     * the GUI — the operator: "the choice box is still there for permissions" — and
+     * vice versa. Clients cannot infer it either: a permission ask has no durable
+     * per-ask row to reconcile against (the transcript records the OUTCOME, not the
+     * open ask).
+     *
+     * It is published by the collector that owns the turn, so it reaches every
+     * watcher, including one that re-attached mid-turn.
+     *
+     * @generated from field: orchicon.api.v1.PermissionAskResolved permission_ask_resolved = 10;
+     */
+    value: PermissionAskResolved;
+    case: "permissionAskResolved";
   } | { case: undefined; value?: undefined } = { case: undefined };
 
   constructor(data?: PartialMessage<ChatStreamResponse>) {
@@ -897,6 +1054,8 @@ export class ChatStreamResponse extends Message<ChatStreamResponse> {
     { no: 6, name: "turn_started", kind: "message", T: TurnStarted, oneof: "event" },
     { no: 7, name: "reasoning", kind: "message", T: ReasoningChunk, oneof: "event" },
     { no: 8, name: "heartbeat", kind: "message", T: Heartbeat, oneof: "event" },
+    { no: 9, name: "permission_ask", kind: "message", T: PermissionAsk, oneof: "event" },
+    { no: 10, name: "permission_ask_resolved", kind: "message", T: PermissionAskResolved, oneof: "event" },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ChatStreamResponse {
@@ -913,6 +1072,73 @@ export class ChatStreamResponse extends Message<ChatStreamResponse> {
 
   static equals(a: ChatStreamResponse | PlainMessage<ChatStreamResponse> | undefined, b: ChatStreamResponse | PlainMessage<ChatStreamResponse> | undefined): boolean {
     return proto3.util.equals(ChatStreamResponse, a, b);
+  }
+}
+
+/**
+ * PermissionAskResolved is the settled form of a PermissionAsk: which ask, and what
+ * became of it.
+ *
+ * @generated from message orchicon.api.v1.PermissionAskResolved
+ */
+export class PermissionAskResolved extends Message<PermissionAskResolved> {
+  /**
+   * @generated from field: string ask_id = 1;
+   */
+  askId = "";
+
+  /**
+   * @generated from field: string conversation_id = 2;
+   */
+  conversationId = "";
+
+  /**
+   * outcome is one of:
+   *   "allow_once" | "allow_session" | "deny" — the operator decided;
+   *   "answered"                              — a question was answered (answer is set);
+   *   "expired"                               — nobody answered in the window.
+   *
+   * @generated from field: string outcome = 3;
+   */
+  outcome = "";
+
+  /**
+   * answer is the operator's words for a QUESTION ask, empty otherwise. It is what
+   * the ask_user tool returned, and it is carried here so a watching client can show
+   * what was answered rather than only that something was.
+   *
+   * @generated from field: string answer = 4;
+   */
+  answer = "";
+
+  constructor(data?: PartialMessage<PermissionAskResolved>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.PermissionAskResolved";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "ask_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "outcome", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "answer", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): PermissionAskResolved {
+    return new PermissionAskResolved().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): PermissionAskResolved {
+    return new PermissionAskResolved().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): PermissionAskResolved {
+    return new PermissionAskResolved().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: PermissionAskResolved | PlainMessage<PermissionAskResolved> | undefined, b: PermissionAskResolved | PlainMessage<PermissionAskResolved> | undefined): boolean {
+    return proto3.util.equals(PermissionAskResolved, a, b);
   }
 }
 
@@ -1568,6 +1794,495 @@ export class GetModelCapabilitiesResponse extends Message<GetModelCapabilitiesRe
 
   static equals(a: GetModelCapabilitiesResponse | PlainMessage<GetModelCapabilitiesResponse> | undefined, b: GetModelCapabilitiesResponse | PlainMessage<GetModelCapabilitiesResponse> | undefined): boolean {
     return proto3.util.equals(GetModelCapabilitiesResponse, a, b);
+  }
+}
+
+/**
+ * PermissionAsk is one tool call the turn is blocked on, awaiting the
+ * operator's decision. It always names the action: the tool plus either the
+ * target path(s) or the shell command — never just an opaque id.
+ *
+ * @generated from message orchicon.api.v1.PermissionAsk
+ */
+export class PermissionAsk extends Message<PermissionAsk> {
+  /**
+   * @generated from field: string ask_id = 1;
+   */
+  askId = "";
+
+  /**
+   * @generated from field: string conversation_id = 2;
+   */
+  conversationId = "";
+
+  /**
+   * @generated from field: string session_id = 3;
+   */
+  sessionId = "";
+
+  /**
+   * tool is the opencode permission name ("write" | "edit" | "batch_write" |
+   * "bash").
+   *
+   * @generated from field: string tool = 4;
+   */
+  tool = "";
+
+  /**
+   * command is the shell command line, for a bash ask (empty otherwise).
+   *
+   * @generated from field: string command = 5;
+   */
+  command = "";
+
+  /**
+   * targets are the paths a write/edit touches (empty for bash).
+   *
+   * @generated from field: repeated string targets = 6;
+   */
+  targets: string[] = [];
+
+  /**
+   * directory is the grant/deny key: the target's directory for a write/edit,
+   * the cwd for bash. "Allow for this directory" covers exactly this key.
+   *
+   * @generated from field: string directory = 7;
+   */
+  directory = "";
+
+  /**
+   * inside_project reports whether the action already falls inside the
+   * conversation's own project directory (the default, pre-approved scope).
+   *
+   * @generated from field: bool inside_project = 8;
+   */
+  insideProject = false;
+
+  /**
+   * summary is the one-line card text: tool plus target or command.
+   *
+   * @generated from field: string summary = 9;
+   */
+  summary = "";
+
+  /**
+   * deny_entries_below lists the operator's persistent DENY entries that live
+   * at or BELOW the directory this ask would grant. A session grant can never
+   * override them (permpolicy.Decide evaluates the deny list first), so the
+   * card says so instead of offering a grant that will be refused for those
+   * paths. Empty when no deny entry sits inside the directory.
+   *
+   * @generated from field: repeated string deny_entries_below = 10;
+   */
+  denyEntriesBelow: string[] = [];
+
+  /**
+   * --- Clarifying-question asks (ask_user, made blocking) ---
+   *
+   * A question rides THIS message rather than getting its own: the clients already
+   * render one card type from it (the TUI models both as chat.PermissionAsk with a
+   * Kind), and the operator answers both from the transcript. Adding a second
+   * message and a second RPC would have meant two card paths, two reply paths and
+   * two places for a decision to go missing.
+   *
+   * When question is non-empty this is a QUESTION, not a permission: there is no
+   * allow/deny and no grant. The turn is PAUSED on it (the adapter blocks the
+   * ask_user call), so the card is the end of the turn until it is answered —
+   * which is why answering it RESUMES the turn rather than starting a new one.
+   *
+   * @generated from field: string question = 11;
+   */
+  question = "";
+
+  /**
+   * @generated from field: repeated string options = 12;
+   */
+  options: string[] = [];
+
+  /**
+   * allow_other offers the free-text row: the operator can answer in their own
+   * words instead of choosing a canned option.
+   *
+   * @generated from field: bool allow_other = 13;
+   */
+  allowOther = false;
+
+  constructor(data?: PartialMessage<PermissionAsk>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.PermissionAsk";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "ask_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "session_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "tool", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "command", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 6, name: "targets", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 7, name: "directory", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 8, name: "inside_project", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 9, name: "summary", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 10, name: "deny_entries_below", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 11, name: "question", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 12, name: "options", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 13, name: "allow_other", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): PermissionAsk {
+    return new PermissionAsk().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): PermissionAsk {
+    return new PermissionAsk().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): PermissionAsk {
+    return new PermissionAsk().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: PermissionAsk | PlainMessage<PermissionAsk> | undefined, b: PermissionAsk | PlainMessage<PermissionAsk> | undefined): boolean {
+    return proto3.util.equals(PermissionAsk, a, b);
+  }
+}
+
+/**
+ * SessionPermissionGrant is one ACTIVE session grant: a directory the operator
+ * allowed for the session, and when.
+ *
+ * @generated from message orchicon.api.v1.SessionPermissionGrant
+ */
+export class SessionPermissionGrant extends Message<SessionPermissionGrant> {
+  /**
+   * directory is the granted directory (the ask's grant key).
+   *
+   * @generated from field: string directory = 1;
+   */
+  directory = "";
+
+  /**
+   * granted_at_unix is the Unix seconds the grant was recorded; 0 when unknown.
+   *
+   * @generated from field: int64 granted_at_unix = 2;
+   */
+  grantedAtUnix = protoInt64.zero;
+
+  constructor(data?: PartialMessage<SessionPermissionGrant>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.SessionPermissionGrant";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "directory", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "granted_at_unix", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SessionPermissionGrant {
+    return new SessionPermissionGrant().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SessionPermissionGrant {
+    return new SessionPermissionGrant().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SessionPermissionGrant {
+    return new SessionPermissionGrant().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SessionPermissionGrant | PlainMessage<SessionPermissionGrant> | undefined, b: SessionPermissionGrant | PlainMessage<SessionPermissionGrant> | undefined): boolean {
+    return proto3.util.equals(SessionPermissionGrant, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ListPermissionGrantsRequest
+ */
+export class ListPermissionGrantsRequest extends Message<ListPermissionGrantsRequest> {
+  /**
+   * @generated from field: string conversation_id = 1;
+   */
+  conversationId = "";
+
+  constructor(data?: PartialMessage<ListPermissionGrantsRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ListPermissionGrantsRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListPermissionGrantsRequest {
+    return new ListPermissionGrantsRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListPermissionGrantsRequest {
+    return new ListPermissionGrantsRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListPermissionGrantsRequest {
+    return new ListPermissionGrantsRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListPermissionGrantsRequest | PlainMessage<ListPermissionGrantsRequest> | undefined, b: ListPermissionGrantsRequest | PlainMessage<ListPermissionGrantsRequest> | undefined): boolean {
+    return proto3.util.equals(ListPermissionGrantsRequest, a, b);
+  }
+}
+
+/**
+ * ListPermissionGrantsResponse carries the conversation's active grants.
+ *
+ * @generated from message orchicon.api.v1.ListPermissionGrantsResponse
+ */
+export class ListPermissionGrantsResponse extends Message<ListPermissionGrantsResponse> {
+  /**
+   * @generated from field: repeated orchicon.api.v1.SessionPermissionGrant grants = 1;
+   */
+  grants: SessionPermissionGrant[] = [];
+
+  constructor(data?: PartialMessage<ListPermissionGrantsResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ListPermissionGrantsResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "grants", kind: "message", T: SessionPermissionGrant, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListPermissionGrantsResponse {
+    return new ListPermissionGrantsResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListPermissionGrantsResponse {
+    return new ListPermissionGrantsResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListPermissionGrantsResponse {
+    return new ListPermissionGrantsResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListPermissionGrantsResponse | PlainMessage<ListPermissionGrantsResponse> | undefined, b: ListPermissionGrantsResponse | PlainMessage<ListPermissionGrantsResponse> | undefined): boolean {
+    return proto3.util.equals(ListPermissionGrantsResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.RevokePermissionGrantRequest
+ */
+export class RevokePermissionGrantRequest extends Message<RevokePermissionGrantRequest> {
+  /**
+   * @generated from field: string conversation_id = 1;
+   */
+  conversationId = "";
+
+  /**
+   * directory is the granted directory to drop (the ask's grant key).
+   *
+   * @generated from field: string directory = 2;
+   */
+  directory = "";
+
+  constructor(data?: PartialMessage<RevokePermissionGrantRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.RevokePermissionGrantRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "directory", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RevokePermissionGrantRequest {
+    return new RevokePermissionGrantRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RevokePermissionGrantRequest {
+    return new RevokePermissionGrantRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RevokePermissionGrantRequest {
+    return new RevokePermissionGrantRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RevokePermissionGrantRequest | PlainMessage<RevokePermissionGrantRequest> | undefined, b: RevokePermissionGrantRequest | PlainMessage<RevokePermissionGrantRequest> | undefined): boolean {
+    return proto3.util.equals(RevokePermissionGrantRequest, a, b);
+  }
+}
+
+/**
+ * RevokePermissionGrantResponse reports the revoke and returns the refreshed
+ * list, so the client never keeps its own copy of the store.
+ *
+ * @generated from message orchicon.api.v1.RevokePermissionGrantResponse
+ */
+export class RevokePermissionGrantResponse extends Message<RevokePermissionGrantResponse> {
+  /**
+   * @generated from field: bool removed = 1;
+   */
+  removed = false;
+
+  /**
+   * @generated from field: repeated orchicon.api.v1.SessionPermissionGrant grants = 2;
+   */
+  grants: SessionPermissionGrant[] = [];
+
+  constructor(data?: PartialMessage<RevokePermissionGrantResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.RevokePermissionGrantResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "removed", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 2, name: "grants", kind: "message", T: SessionPermissionGrant, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RevokePermissionGrantResponse {
+    return new RevokePermissionGrantResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RevokePermissionGrantResponse {
+    return new RevokePermissionGrantResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RevokePermissionGrantResponse {
+    return new RevokePermissionGrantResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RevokePermissionGrantResponse | PlainMessage<RevokePermissionGrantResponse> | undefined, b: RevokePermissionGrantResponse | PlainMessage<RevokePermissionGrantResponse> | undefined): boolean {
+    return proto3.util.equals(RevokePermissionGrantResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ReplyPermissionAskRequest
+ */
+export class ReplyPermissionAskRequest extends Message<ReplyPermissionAskRequest> {
+  /**
+   * @generated from field: string conversation_id = 1;
+   */
+  conversationId = "";
+
+  /**
+   * @generated from field: string ask_id = 2;
+   */
+  askId = "";
+
+  /**
+   * @generated from field: orchicon.api.v1.PermissionChoice choice = 3;
+   */
+  choice = PermissionChoice.UNSPECIFIED;
+
+  /**
+   * answer is the operator's reply to a QUESTION ask (question non-empty): the
+   * chosen option's label, or their own words when allow_other offered the
+   * free-text row. It BECOMES THE ask_user TOOL RESULT, so the model continues the
+   * turn with the answer in hand rather than being told the question was recorded.
+   *
+   * Empty for a permission ask — a permission is answered by `choice`, and the two
+   * are deliberately not conflated: a permission's outcome is a grant decision, a
+   * question's is content the model reads.
+   *
+   * @generated from field: string answer = 4;
+   */
+  answer = "";
+
+  constructor(data?: PartialMessage<ReplyPermissionAskRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ReplyPermissionAskRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "ask_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "choice", kind: "enum", T: proto3.getEnumType(PermissionChoice) },
+    { no: 4, name: "answer", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ReplyPermissionAskRequest {
+    return new ReplyPermissionAskRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ReplyPermissionAskRequest {
+    return new ReplyPermissionAskRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ReplyPermissionAskRequest {
+    return new ReplyPermissionAskRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ReplyPermissionAskRequest | PlainMessage<ReplyPermissionAskRequest> | undefined, b: ReplyPermissionAskRequest | PlainMessage<ReplyPermissionAskRequest> | undefined): boolean {
+    return proto3.util.equals(ReplyPermissionAskRequest, a, b);
+  }
+}
+
+/**
+ * ReplyPermissionAskResponse reports whether the decision was applied.
+ *
+ * @generated from message orchicon.api.v1.ReplyPermissionAskResponse
+ */
+export class ReplyPermissionAskResponse extends Message<ReplyPermissionAskResponse> {
+  /**
+   * applied is true when the decision was routed to the waiting turn.
+   *
+   * @generated from field: bool applied = 1;
+   */
+  applied = false;
+
+  /**
+   * expired is true when the ask is no longer open (the turn ended, was
+   * superseded, or another reply won) — never a silent success.
+   *
+   * @generated from field: bool expired = 2;
+   */
+  expired = false;
+
+  /**
+   * detail explains the outcome in one line.
+   *
+   * @generated from field: string detail = 3;
+   */
+  detail = "";
+
+  constructor(data?: PartialMessage<ReplyPermissionAskResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ReplyPermissionAskResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "applied", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 2, name: "expired", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 3, name: "detail", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ReplyPermissionAskResponse {
+    return new ReplyPermissionAskResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ReplyPermissionAskResponse {
+    return new ReplyPermissionAskResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ReplyPermissionAskResponse {
+    return new ReplyPermissionAskResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ReplyPermissionAskResponse | PlainMessage<ReplyPermissionAskResponse> | undefined, b: ReplyPermissionAskResponse | PlainMessage<ReplyPermissionAskResponse> | undefined): boolean {
+    return proto3.util.equals(ReplyPermissionAskResponse, a, b);
   }
 }
 

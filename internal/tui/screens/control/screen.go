@@ -105,6 +105,10 @@ type Model struct {
 	// one thing a masked field cannot tell the operator.
 	secretNames map[string]bool
 	settings    *apiv1.TenantSettings
+	// permissionPolicy is the operator's durable deny/accept policy as last
+	// read (the pane renders each row's "can a session grant override this?"
+	// from the entry itself, never from a guess).
+	permissionPolicy *apiv1.GetPermissionPolicyResponse
 
 	// adapterDisabled is the LOCAL dispatch toggle for a registered adapter.
 	// The public RuntimeAdapterService is read-only (ListAdapters +
@@ -115,30 +119,32 @@ type Model struct {
 
 	// rpc* are the write/read thunks. They are fields so tests can assert the
 	// exact RPC payload without a live plane.
-	rpcAdminProbe         func(ctx context.Context) error
-	rpcListAdapters       func(ctx context.Context, kind string) ([]*apiv1.RuntimeAdapter, error)
-	rpcListDeliveries     func(ctx context.Context, subscriptionID string) ([]*apiv1.WebhookDelivery, error)
-	rpcTestWebhook        func(ctx context.Context, id string) error
-	rpcCreateWebhook      func(ctx context.Context, r *apiv1.CreateSubscriptionRequest) error
-	rpcUpdateWebhook      func(ctx context.Context, r *apiv1.UpdateSubscriptionRequest) error
-	rpcDeleteWebhook      func(ctx context.Context, id string) error
-	rpcUpdateSettings     func(ctx context.Context, s *apiv1.TenantSettings) error
-	rpcCreateMCP          func(ctx context.Context, r *apiv1.MCPServerCreateRequest) error
-	rpcUpdateMCP          func(ctx context.Context, r *apiv1.MCPServerUpdateRequest) error
-	rpcDeleteMCP          func(ctx context.Context, id string) error
-	rpcInstallMCP         func(ctx context.Context, id string) error
-	rpcSetMCPSecret       func(ctx context.Context, id, name, value string) error
-	rpcClearMCPSecret     func(ctx context.Context, id, name string) error
-	rpcCreateProvider     func(ctx context.Context, r *apiv1.ProviderCreateCustomRequest) error
-	rpcUpdateProvider     func(ctx context.Context, r *apiv1.ProviderUpdateCustomRequest) error
-	rpcDeleteProvider     func(ctx context.Context, id string) error
-	rpcSetProviderToken   func(ctx context.Context, id, token string) error
-	rpcClearProviderToken func(ctx context.Context, id string) error
-	rpcProviderEnabled    func(ctx context.Context, id string, enabled bool) error
-	rpcProviderSettings   func(ctx context.Context, id string, enabled bool, baseURLOverride string) error
-	rpcCreateSecret       func(ctx context.Context, r *apiv1.CreateSecretRequest) error
-	rpcUpdateSecret       func(ctx context.Context, r *apiv1.UpdateSecretRequest) error
-	rpcDeleteSecret       func(ctx context.Context, id string) error
+	rpcAdminProbe                  func(ctx context.Context) error
+	rpcListAdapters                func(ctx context.Context, kind string) ([]*apiv1.RuntimeAdapter, error)
+	rpcListDeliveries              func(ctx context.Context, subscriptionID string) ([]*apiv1.WebhookDelivery, error)
+	rpcTestWebhook                 func(ctx context.Context, id string) error
+	rpcCreateWebhook               func(ctx context.Context, r *apiv1.CreateSubscriptionRequest) error
+	rpcUpdateWebhook               func(ctx context.Context, r *apiv1.UpdateSubscriptionRequest) error
+	rpcDeleteWebhook               func(ctx context.Context, id string) error
+	rpcUpdateSettings              func(ctx context.Context, s *apiv1.TenantSettings) error
+	rpcAddPermissionPolicyEntry    func(ctx context.Context, r *apiv1.AddPermissionPolicyEntryRequest) error
+	rpcRemovePermissionPolicyEntry func(ctx context.Context, r *apiv1.RemovePermissionPolicyEntryRequest) error
+	rpcCreateMCP                   func(ctx context.Context, r *apiv1.MCPServerCreateRequest) error
+	rpcUpdateMCP                   func(ctx context.Context, r *apiv1.MCPServerUpdateRequest) error
+	rpcDeleteMCP                   func(ctx context.Context, id string) error
+	rpcInstallMCP                  func(ctx context.Context, id string) error
+	rpcSetMCPSecret                func(ctx context.Context, id, name, value string) error
+	rpcClearMCPSecret              func(ctx context.Context, id, name string) error
+	rpcCreateProvider              func(ctx context.Context, r *apiv1.ProviderCreateCustomRequest) error
+	rpcUpdateProvider              func(ctx context.Context, r *apiv1.ProviderUpdateCustomRequest) error
+	rpcDeleteProvider              func(ctx context.Context, id string) error
+	rpcSetProviderToken            func(ctx context.Context, id, token string) error
+	rpcClearProviderToken          func(ctx context.Context, id string) error
+	rpcProviderEnabled             func(ctx context.Context, id string, enabled bool) error
+	rpcProviderSettings            func(ctx context.Context, id string, enabled bool, baseURLOverride string) error
+	rpcCreateSecret                func(ctx context.Context, r *apiv1.CreateSecretRequest) error
+	rpcUpdateSecret                func(ctx context.Context, r *apiv1.UpdateSecretRequest) error
+	rpcDeleteSecret                func(ctx context.Context, id string) error
 
 	// Model-picker loads (model_picker.go). Thunks for the same reason as the
 	// rest: a test asserts the per-adapter branch and the payload without a live
@@ -170,6 +176,13 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 	m.AddSource("webhooks", "Webhooks", m.fetchWebhooks)
 	m.AddSource("adapters", "Adapters", m.fetchAdapters)
 	m.AddSource("settings", "Settings", m.fetchSettings)
+	// Permissions is the DURABLE operator policy (the deny/accept YAML on the
+	// control plane), NOT a session grant: it is instance state the operator
+	// writes once, so it belongs beside Settings. It is a full CRUD surface —
+	// the same entries the GUI's Settings → Permissions tab manages, through
+	// the same plane API, so a change in either client is a change in the one
+	// file both clients read.
+	m.AddSource("permissions", "Permissions", m.fetchPermissions)
 	// Themes is a Control surface (Settings → Themes in the GUI sense): the TUI
 	// owns its palette set, and this is where the operator picks one. Selecting
 	// a row and pressing the action key applies + persists it.
@@ -285,6 +298,20 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 			return errNoClient("settings")
 		}
 		_, err := m.cl.Settings.UpdateSettings(ctx, connect.NewRequest(&apiv1.UpdateSettingsRequest{Settings: s}))
+		return err
+	}
+	m.rpcAddPermissionPolicyEntry = func(ctx context.Context, r *apiv1.AddPermissionPolicyEntryRequest) error {
+		if m.cl == nil || m.cl.Settings == nil {
+			return errNoClient("settings")
+		}
+		_, err := m.cl.Settings.AddPermissionPolicyEntry(ctx, connect.NewRequest(r))
+		return err
+	}
+	m.rpcRemovePermissionPolicyEntry = func(ctx context.Context, r *apiv1.RemovePermissionPolicyEntryRequest) error {
+		if m.cl == nil || m.cl.Settings == nil {
+			return errNoClient("settings")
+		}
+		_, err := m.cl.Settings.RemovePermissionPolicyEntry(ctx, connect.NewRequest(r))
 		return err
 	}
 	m.rpcCreateMCP = func(ctx context.Context, r *apiv1.MCPServerCreateRequest) error {
@@ -725,6 +752,67 @@ func (m *Model) fetchSettings(ctx context.Context, pageToken string) ([]kit2.Ite
 	return []kit2.Item{{ID: "tenant-settings", Title: "Tenant Settings", Meta: "e: edit & save"}}, "", nil
 }
 
+// fetchPermissions lists the operator's persistent permission policy: one row
+// per entry, the deny list first (precedence order). The row's Meta states the
+// one thing that decides what the operator may do about it — a DENY entry
+// cannot be overridden by a session grant, an accept entry never asks — so the
+// pane never offers a grant the refusal would ignore.
+//
+// Read through the SAME API the GUI uses; the server reads the file per call,
+// so a hand-edit shows up on the next refresh and an entry added here is
+// immediately visible in the browser (and vice versa).
+func (m *Model) fetchPermissions(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
+	resp, err := m.cl.Settings.GetPermissionPolicy(ctx, connect.NewRequest(&apiv1.GetPermissionPolicyRequest{}))
+	if err != nil {
+		return nil, "", err
+	}
+	m.permissionPolicy = resp.Msg
+	entries := resp.Msg.GetEntries()
+	items := make([]kit2.Item, 0, len(entries))
+	for _, e := range entries {
+		meta := "deny · a session grant CANNOT override this"
+		if e.GetList() != "deny" {
+			meta = "accept · never asks"
+		}
+		items = append(items, kit2.Item{
+			ID:    permissionItemID(e.GetList(), e.GetPattern()),
+			Title: e.GetPattern(),
+			Meta:  meta,
+		})
+	}
+	return items, "", nil
+}
+
+// permissionItemID encodes (list, pattern) into one row id; the pattern itself
+// may contain any character, so the list is a fixed prefix and the pattern is
+// everything after it.
+func permissionItemID(list, pattern string) string {
+	if list == "" {
+		list = "deny"
+	}
+	return list + ":" + pattern
+}
+
+// permissionPolicyPath names the file the entries live in (the one thing a
+// "where do I edit this by hand?" question needs).
+func permissionPolicyPath(p *apiv1.GetPermissionPolicyResponse) string {
+	if p == nil || p.GetPath() == "" {
+		return "(unknown)"
+	}
+	return p.GetPath()
+}
+
+// permissionEntryParts decodes a row id back into (list, pattern).
+func permissionEntryParts(id string) (string, string) {
+	if rest, ok := strings.CutPrefix(id, "deny:"); ok {
+		return "deny", rest
+	}
+	if rest, ok := strings.CutPrefix(id, "accept:"); ok {
+		return "accept", rest
+	}
+	return "", ""
+}
+
 // fetchAdmin probes an admin-gated read and reports the resulting permission
 // state as the pane's FIRST row. A refusal is rendered EXPLICITLY (never a
 // silent empty pane); the pane itself carries no error state.
@@ -951,6 +1039,34 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 			{Key: "actions", Value: "t: enable/disable (local dispatch filter)"},
 		}, body, nil
 
+	case "permissions":
+		list, pattern := permissionEntryParts(id)
+		if pattern == "" {
+			return "Permissions", []screenkit.Field{
+				{Key: "policy", Value: permissionPolicyPath(m.permissionPolicy)},
+				{Key: "add", Value: "n: add an entry (deny or accept)"},
+			}, "The deny list is the operator's exclusion: it is refused even when the conversation holds a session grant for the path. The accept list never prompts.", nil
+		}
+		override := "a session grant CANNOT override this entry"
+		action := "x: remove the entry (confirmed)"
+		if list == "accept" {
+			override = "never asks — a session grant is not needed"
+			action = "x: remove the entry (confirmed)"
+		}
+		return "Permission entry (" + list + ")", []screenkit.Field{
+			{Key: "entry", Value: pattern},
+			{Key: "list", Value: list},
+			{Key: "grant", Value: override},
+			// THE PROJECT RUNG IS NOT IN THIS CHAIN, and it used to be printed here. The
+			// conversation's own project WAS a pre-approved default scope, and the operator removed it:
+			// "any directory should ask before allowing on write/execute, project or otherwise". The
+			// string kept advertising a rung that no longer exists — worse, one that reads as "your
+			// project is already approved", which is the opposite of what they asked for.
+			{Key: "precedence", Value: "never-allow binaries > deny > session grant > accept > ask"},
+			{Key: "policy file", Value: permissionPolicyPath(m.permissionPolicy)},
+			{Key: "actions", Value: action},
+		}, "An edit takes effect on the next gated decision: the policy file is read on every consult, so there is no restart and no staleness window. A hand-edit and a change here are the same change.", nil
+
 	case "themes":
 		// Themes is a TUI-owned surface: no RPC, the palette set lives in
 		// internal/tui/theme. A section heading has no detail of its own.
@@ -990,13 +1106,15 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 			{Key: "default worker model", Value: s.GetDefaultWorkerModel()},
 			{Key: "default ask model", Value: s.GetDefaultAskOrchiconModel()},
 			{Key: "max concurrent runs", Value: screenkit.FmtInt(int(s.GetMaxConcurrentRuns()))},
-			{Key: "stall no-progress window", Value: screenkit.FmtInt64(s.GetStallNoProgressWindowSeconds()) + "s"},
-			{Key: "stall no-diff window", Value: screenkit.FmtInt64(s.GetStallNoFileDiffWindowSeconds()) + "s"},
-			{Key: "stall text-loop window", Value: screenkit.FmtInt64(s.GetStallTextLoopWindowSeconds()) + "s"},
-			{Key: "stall repetition count", Value: screenkit.FmtInt(int(s.GetStallRepetitionCount()))},
-			{Key: "stall repetition window", Value: screenkit.FmtInt64(s.GetStallRepetitionWindowSeconds()) + "s"},
-			{Key: "stall nudge max", Value: screenkit.FmtInt(int(s.GetStallNudgeMax()))},
-			{Key: "stall tool-hang", Value: screenkit.FmtInt64(s.GetStallToolHangSeconds()) + "s"},
+			// Stall thresholds: blank = built-in default, 0 = disabled. The
+			// parentheses carry the default so "blank" is not a mystery.
+			{Key: "stall no-progress window", Value: fmtStallDim(s.StallNoProgressWindowSeconds, 300)},
+			{Key: "stall no-diff window", Value: fmtStallDim(s.StallNoFileDiffWindowSeconds, 900)},
+			{Key: "stall text-loop window", Value: fmtStallDim(s.StallTextLoopWindowSeconds, 600)},
+			{Key: "stall repetition count", Value: fmtStallCount(s.StallRepetitionCount, 5)},
+			{Key: "stall repetition window", Value: fmtStallDim(s.StallRepetitionWindowSeconds, 300)},
+			{Key: "stall nudge max", Value: fmtStallCount(s.StallNudgeMax, 2)},
+			{Key: "stall tool-hang", Value: fmtStallDim(s.StallToolHangSeconds, 180)},
 			{Key: "exec reap grace", Value: screenkit.FmtInt64(s.GetExecutionReapGraceSeconds()) + "s"},
 			{Key: "exec reap failures", Value: screenkit.FmtInt(int(s.GetExecutionReapConsecutiveFailures()))},
 			{Key: "default budget overrides", Value: s.GetDefaultBudgetOverrides()},
@@ -1059,6 +1177,29 @@ func (m *Model) actionsForSelection() []kit2.Action {
 		return nil
 	}
 	switch m.ActiveSourceName() {
+	case "permissions":
+		list, pattern := permissionEntryParts(item.ID)
+		if pattern == "" {
+			return nil
+		}
+		// Removal is CONFIRMED and never optimistic-then-silent: dropping a
+		// deny entry re-opens a path the operator excluded, which is exactly
+		// the change that must be deliberate. The apply/rollback pair keeps
+		// the row gone on success and puts it back on failure.
+		return []kit2.Action{{
+			Label: "remove", Key: "x", Danger: true, Source: "permissions",
+			Confirm: "Remove the " + list + " entry " + pattern + "?\n" +
+				"A denied path becomes askable again (a session grant can then cover it).",
+			Apply:    func() { m.RemoveRow("permissions", item.ID) },
+			Rollback: func() { m.Refresh("permissions") },
+			Do: func(ctx context.Context) error {
+				return m.rpcRemovePermissionPolicyEntry(ctx, &apiv1.RemovePermissionPolicyEntryRequest{
+					Pattern: pattern,
+					List:    list,
+				})
+			},
+		}}
+
 	case "themes":
 		id := item.ID
 		if id == theme.Active().Name {
@@ -1333,6 +1474,8 @@ func (m *Model) newFormForSource() *kit2.Form {
 		return m.newProviderForm()
 	case "secrets":
 		return m.newSecretForm()
+	case "permissions":
+		return m.newPermissionForm()
 	}
 	return nil
 }
@@ -1489,13 +1632,13 @@ func (m *Model) settingsForm() *kit2.Form {
 		kit2.FieldSpec{Name: "default_worker_model", Label: "Default worker model", Kind: kit2.KModel, Initial: s.GetDefaultWorkerModel(), Validate: validModelRef, Placeholder: "— none — (enter to choose a model)"},
 		kit2.FieldSpec{Name: "default_ask_model", Label: "Default ask model", Kind: kit2.KModel, Initial: s.GetDefaultAskOrchiconModel(), Validate: validModelRef, Placeholder: "— none — (enter to choose a model)"},
 		kit2.FieldSpec{Name: "max_concurrent_runs", Label: "Max concurrent runs", Kind: kit2.KNumber, Initial: i32(s.GetMaxConcurrentRuns())},
-		kit2.FieldSpec{Name: "stall_no_progress_window_seconds", Label: "Stall no-progress window (s)", Kind: kit2.KNumber, Initial: num(s.GetStallNoProgressWindowSeconds())},
-		kit2.FieldSpec{Name: "stall_no_file_diff_window_seconds", Label: "Stall no-diff window (s)", Kind: kit2.KNumber, Initial: num(s.GetStallNoFileDiffWindowSeconds())},
-		kit2.FieldSpec{Name: "stall_text_loop_window_seconds", Label: "Stall text-loop window (s)", Kind: kit2.KNumber, Initial: num(s.GetStallTextLoopWindowSeconds())},
-		kit2.FieldSpec{Name: "stall_repetition_count", Label: "Stall repetition count", Kind: kit2.KNumber, Initial: i32(s.GetStallRepetitionCount())},
-		kit2.FieldSpec{Name: "stall_repetition_window_seconds", Label: "Stall repetition window (s)", Kind: kit2.KNumber, Initial: num(s.GetStallRepetitionWindowSeconds())},
-		kit2.FieldSpec{Name: "stall_nudge_max", Label: "Stall nudge max", Kind: kit2.KNumber, Initial: i32(s.GetStallNudgeMax())},
-		kit2.FieldSpec{Name: "stall_tool_hang_seconds", Label: "Stall tool-hang window (s)", Kind: kit2.KNumber, Initial: num(s.GetStallToolHangSeconds())},
+		kit2.FieldSpec{Name: "stall_no_progress_window_seconds", Label: "Stall no-progress window (s; blank=def 0=off)", Kind: kit2.KNumber, Initial: stallDimInitial(s.StallNoProgressWindowSeconds)},
+		kit2.FieldSpec{Name: "stall_no_file_diff_window_seconds", Label: "Stall no-diff window (s; blank=def 0=off)", Kind: kit2.KNumber, Initial: stallDimInitial(s.StallNoFileDiffWindowSeconds)},
+		kit2.FieldSpec{Name: "stall_text_loop_window_seconds", Label: "Stall text-loop window (s; blank=def 0=off)", Kind: kit2.KNumber, Initial: stallDimInitial(s.StallTextLoopWindowSeconds)},
+		kit2.FieldSpec{Name: "stall_repetition_count", Label: "Stall repetition count (blank=def 0=off)", Kind: kit2.KNumber, Initial: stallCountInitial(s.StallRepetitionCount)},
+		kit2.FieldSpec{Name: "stall_repetition_window_seconds", Label: "Stall repetition window (s; blank=def 0=off)", Kind: kit2.KNumber, Initial: stallDimInitial(s.StallRepetitionWindowSeconds)},
+		kit2.FieldSpec{Name: "stall_nudge_max", Label: "Stall nudge max (blank=def 0=off)", Kind: kit2.KNumber, Initial: stallCountInitial(s.StallNudgeMax)},
+		kit2.FieldSpec{Name: "stall_tool_hang_seconds", Label: "Stall tool-hang window (s; blank=def 0=off)", Kind: kit2.KNumber, Initial: stallDimInitial(s.StallToolHangSeconds)},
 		kit2.FieldSpec{Name: "execution_reap_grace_seconds", Label: "Exec reap grace (s)", Kind: kit2.KNumber, Initial: num(s.GetExecutionReapGraceSeconds())},
 		kit2.FieldSpec{Name: "execution_reap_consecutive_failures", Label: "Exec reap consecutive failures", Kind: kit2.KNumber, Initial: i32(s.GetExecutionReapConsecutiveFailures())},
 		// --- Execution budget gates ---
@@ -1579,13 +1722,13 @@ func (m *Model) settingsForm() *kit2.Form {
 			n32 := int32(n)
 			out.MaxConcurrentRuns = &n32
 		}
-		out.StallNoProgressWindowSeconds = i64Of0(v["stall_no_progress_window_seconds"])
-		out.StallNoFileDiffWindowSeconds = i64Of0(v["stall_no_file_diff_window_seconds"])
-		out.StallTextLoopWindowSeconds = i64Of0(v["stall_text_loop_window_seconds"])
-		out.StallRepetitionCount = int32(i64Of0(v["stall_repetition_count"]))
-		out.StallRepetitionWindowSeconds = i64Of0(v["stall_repetition_window_seconds"])
-		out.StallNudgeMax = int32(i64Of0(v["stall_nudge_max"]))
-		out.StallToolHangSeconds = i64Of0(v["stall_tool_hang_seconds"])
+		out.StallNoProgressWindowSeconds = optI64(v["stall_no_progress_window_seconds"])
+		out.StallNoFileDiffWindowSeconds = optI64(v["stall_no_file_diff_window_seconds"])
+		out.StallTextLoopWindowSeconds = optI64(v["stall_text_loop_window_seconds"])
+		out.StallRepetitionCount = optI32(v["stall_repetition_count"])
+		out.StallRepetitionWindowSeconds = optI64(v["stall_repetition_window_seconds"])
+		out.StallNudgeMax = optI32(v["stall_nudge_max"])
+		out.StallToolHangSeconds = optI64(v["stall_tool_hang_seconds"])
 		out.ExecutionReapGraceSeconds = i64Of0(v["execution_reap_grace_seconds"])
 		out.ExecutionReapConsecutiveFailures = int32(i64Of0(v["execution_reap_consecutive_failures"]))
 		// The individual fields are composed back into the transport JSON the server
@@ -1875,6 +2018,54 @@ func (m *Model) newSecretForm() *kit2.Form {
 		}), nil
 	}
 	return f
+}
+
+// newPermissionForm adds one entry to the operator's persistent permission
+// policy. A CREATE form (no selected row needed): an entry is a new rule, and
+// the list it belongs to is part of the entry.
+func (m *Model) newPermissionForm() *kit2.Form {
+	f := kit2.NewForm("Add permission policy entry",
+		kit2.FieldSpec{Name: "pattern", Label: "Entry", Kind: kit2.KText, Required: true,
+			Placeholder: "~/.ssh/** (doublestar glob; a leading ~ is your home)"},
+		kit2.FieldSpec{Name: "list", Label: "List: deny | accept", Kind: kit2.KText,
+			Initial: "deny", Validate: validPolicyList, Required: true,
+			Placeholder: "deny = always refused (a session grant cannot override it)"},
+	)
+	f.Focused = true
+	f.Width = 70
+	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
+		pattern := strings.TrimSpace(v["pattern"])
+		if pattern == "" {
+			return nil, errors.New("an entry is required — an empty rule matches nothing")
+		}
+		list := strings.ToLower(strings.TrimSpace(v["list"]))
+		if list == "" {
+			list = "deny"
+		}
+		return m.Mutate(mutate.Request{
+			Name: "add " + list + " entry " + pattern, Source: "permissions",
+			// No optimistic row: the server returns the refreshed policy and
+			// the pane reconciles from it, so a form-added entry can never be
+			// shown as present when the write failed.
+			Do: func(ctx context.Context) error {
+				return m.rpcAddPermissionPolicyEntry(ctx, &apiv1.AddPermissionPolicyEntryRequest{
+					Pattern: pattern,
+					List:    list,
+				})
+			},
+		}), nil
+	}
+	return f
+}
+
+// validPolicyList keeps the entry's list name honest: a typo must not silently
+// become (or fail to become) a deny rule.
+func validPolicyList(s string) error {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "deny", "accept":
+		return nil
+	}
+	return errors.New("must be deny or accept")
 }
 
 // editSecretForm rotates a secret's value (write-only) or edits its
@@ -2472,6 +2663,78 @@ func i64Of(s string) (int64, bool) {
 func i64Of0(s string) int64 {
 	n, _ := i64Of(s)
 	return n
+}
+
+// optI64 maps a Settings form field to an OPTIONAL proto value.
+//
+// A BLANK field means "use the built-in default" and must travel as ABSENT
+// (nil), never as 0 — for the stall thresholds 0 is a real, different
+// instruction: DISABLED. i64Of0's collapse-to-zero is therefore wrong for these
+// fields, and i64Of is what tells the two apart.
+func optI64(s string) *int64 {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	n, ok := i64Of(s)
+	if !ok {
+		return nil
+	}
+	return &n
+}
+
+// optI32 is optI64 for the count-shaped stall knobs (repetition count, nudge
+// budget): blank = built-in default, 0 = disabled.
+func optI32(s string) *int32 {
+	if v := optI64(s); v != nil {
+		n := int32(*v)
+		return &n
+	}
+	return nil
+}
+
+// stallDimInitial renders a stall window into its form field: BLANK for "the
+// tenant left this unset" (which the server stores as NULL and the adapters
+// read as the built-in default), "0" for an explicit disable, else the value.
+func stallDimInitial(v *int64) string {
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d", *v)
+}
+
+// stallCountInitial is stallDimInitial for the count-shaped knobs.
+func stallCountInitial(v *int32) string {
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d", *v)
+}
+
+// fmtStallDim renders a stall threshold for the read-only Settings list. A
+// BLANK field is shown WITH the built-in default it resolves to, because
+// "blank" is only meaningful if the operator can see what it falls back to; an
+// explicit 0 is shown as Disabled so the two states are never confused.
+func fmtStallDim(v *int64, defaultSecs int64) string {
+	switch {
+	case v == nil:
+		return fmt.Sprintf("Default (%ds)", defaultSecs)
+	case *v == 0:
+		return "Disabled"
+	default:
+		return fmt.Sprintf("%ds", *v)
+	}
+}
+
+// fmtStallCount is fmtStallDim for the count-shaped knobs.
+func fmtStallCount(v *int32, def int32) string {
+	switch {
+	case v == nil:
+		return fmt.Sprintf("Default (%d)", def)
+	case *v == 0:
+		return "Disabled"
+	default:
+		return fmt.Sprintf("%d", *v)
+	}
 }
 
 func min(a, b int) int {

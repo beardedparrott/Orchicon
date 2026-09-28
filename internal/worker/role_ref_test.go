@@ -63,9 +63,9 @@ func TestCreateWorkerRoleRefRoundTrip(t *testing.T) {
 	roleID := createTestRole(t, pool, tenantID)
 
 	resp, err := s.CreateWorker(ctx, connect.NewRequest(&apiv1.CreateWorkerRequest{
-		Name:       "role-bound",
-		ModelRef:   "opencode/deepseek-v4-flash",
-		RoleRef:    roleID,
+		Name:     "role-bound",
+		ModelRef: "opencode/deepseek-v4-flash",
+		RoleRef:  roleID,
 	}))
 	if err != nil {
 		t.Fatalf("CreateWorker: %v", err)
@@ -92,9 +92,9 @@ func TestCreateWorkerRoleRefRoundTrip(t *testing.T) {
 func TestCreateWorkerUnknownRoleRejected(t *testing.T) {
 	_, s, ctx, _ := bulkEnv(t)
 	_, err := s.CreateWorker(ctx, connect.NewRequest(&apiv1.CreateWorkerRequest{
-		Name:       "bad-role",
-		ModelRef:   "opencode/deepseek-v4-flash",
-		RoleRef:    "r_does_not_exist",
+		Name:     "bad-role",
+		ModelRef: "opencode/deepseek-v4-flash",
+		RoleRef:  "r_does_not_exist",
 	}))
 	if err == nil {
 		t.Fatal("CreateWorker with unknown role_ref: want error")

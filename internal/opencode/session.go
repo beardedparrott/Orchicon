@@ -55,6 +55,20 @@ const defaultServeUsername = "opencode"
 // sets to protect its HTTP API with basic auth.
 const ServePasswordEnv = "OPENCODE_SERVER_PASSWORD"
 
+// PlaneSpawnEnv marks a process the PLANE itself started, and is inherited by
+// anything that process goes on to spawn (the `orchicon mcp` sidecars are
+// declared in the opencode config, so opencode starts them, not the plane —
+// they carry the marker only by inheritance).
+//
+// It exists so that "is this process ours?" can be answered EXACTLY. Inferring
+// it from parentage cannot: on a host, an `opencode` the operator started from
+// their own terminal and a plane-spawned `opencode` left behind by a crash both
+// end up reparented, to the same place, once their spawner exits. The marker is
+// what distinguishes them, and it is deliberately NOT one of opencode's own
+// variables: an operator running their own `opencode serve` may well set
+// OPENCODE_SERVER_PASSWORD, so it cannot serve as proof that WE started it.
+const PlaneSpawnEnv = "ORCHICON_PLANE_SPAWN"
+
 // defaultMCPProbeTimeout bounds a single MCP-usability probe so a slow (but
 // alive) serve is not treated as wedged by the watchdog and restarted in a
 // churn. Env override ORCHICON_ASK_MCP_PROBE_TIMEOUT is a dev/test knob.
@@ -298,8 +312,8 @@ func (c *SessionClient) SendMessageWithAttachments(ctx context.Context, sessionI
 			continue
 		}
 		// FilePartInput: {type:"file", mime, url, filename?}. The url
-			// carries the data: URL (images for vision, text files
-			// inline); filename is set when known.
+		// carries the data: URL (images for vision, text files
+		// inline); filename is set when known.
 		dataURL := "data:" + a.MimeType + ";base64," + base64.StdEncoding.EncodeToString(a.Data)
 		part := map[string]any{"type": "file", "mime": a.MimeType, "url": dataURL}
 		if a.Name != "" {
@@ -373,12 +387,24 @@ func (c *SessionClient) Compact(ctx context.Context, sessionID, providerID, mode
 
 // ReplyPermission answers a permission.asked event with "once" — the
 // server-side equivalent of `opencode run --auto`, so tool calls never
-// block an unattended execution.
+// block an unattended execution. It is the auto-approve shorthand; the
+// consent layer answers through ReplyPermissionDecision.
 func (c *SessionClient) ReplyPermission(ctx context.Context, sessionID, permissionID string) error {
+	return c.ReplyPermissionDecision(ctx, sessionID, permissionID, "once")
+}
+
+// ReplyPermissionDecision answers a permission.asked event with an explicit
+// serve response value ("once" | "reject").
+//
+// The consent core ALWAYS sends "once" or "reject": the SESSION decision
+// ("allow for this directory") is kept in OUR grant store, not delegated to a
+// serve-side session-scoped response value, so the grant state has exactly one
+// authoritative home and works across serve builds.
+func (c *SessionClient) ReplyPermissionDecision(ctx context.Context, sessionID, permissionID, decision string) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if err := c.do(ctx, http.MethodPost, "/session/"+sessionID+"/permissions/"+permissionID,
-		map[string]any{"response": "once"}); err != nil {
+		map[string]any{"response": decision}); err != nil {
 		return fmt.Errorf("opencode session permission reply: %w", err)
 	}
 	return nil
@@ -729,7 +755,7 @@ func (c *SessionClient) do(ctx context.Context, method, path string, body any) e
 			return ErrSessionNotFound
 		}
 		// Surface the serve's validation message (truncated): a bare
-			// "http 400" hides which part key the serve rejected.
+		// "http 400" hides which part key the serve rejected.
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return fmt.Errorf("opencode serve %s %s: http %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(b)))
 	}

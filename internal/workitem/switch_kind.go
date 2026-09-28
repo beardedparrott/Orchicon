@@ -151,6 +151,19 @@ func ResolveKindSwitch(ctx context.Context, tx pgx.Tx, tenantID string, current 
 			}
 		}
 		if resolvedParent == nil {
+			// DELIBERATELY NOT exempted for an ephemeral item (unlike the
+			// create/update paths' top-level exemption in ValidateParent). A
+			// kind switch IS reachable for an ephemeral item — update_work_item
+			// takes `kind` and nothing gates ephemeral rows on the update path —
+			// so a top-level ephemeral task switched to a non-epic kind is
+			// refused here. That is left as-is because a kind switch is not part
+			// of the ephemeral lifecycle: an ephemeral item is created for
+			// exactly one job with one workflow binding and hard-deleted when
+			// the job ends — it is never re-typed. Exempting it here would also
+			// make a nil resolution legitimate, which the child-reparenting step
+			// below is explicitly documented NOT to produce (see
+			// KindSwitchPlan.NewParentID) — a real restructure of the planner
+			// for no lifecycle gain.
 			return nil, fmt.Errorf("a %s must have a parent; choose one explicitly", kind)
 		}
 	}

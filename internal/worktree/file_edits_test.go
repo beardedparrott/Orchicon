@@ -194,4 +194,3 @@ func TestSingleWriteSingleEditEmitFileEdits(t *testing.T) {
 		t.Fatalf("edit diff wrong: %q", env[0].UnifiedDiff)
 	}
 }
-

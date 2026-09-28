@@ -82,27 +82,32 @@ func toolHangDefaultWindow() time.Duration {
 // stallWindowsFromManifest builds stallWindows from ExecutionManifest
 // settings (tenant settings), with env-var fallback and built-in defaults.
 // Zero (unset) manifest values fall through to env, then defaults.
-// noFileDiff/textLoop follow the opencode 0/negative convention: 0/unset →
-// default, positive → override, negative → disabled (consumers gate on >0).
-func stallWindowsFromManifest(noProgressSec, noFileDiffSec, textLoopSec int64, repCount int32, repWindowSec int64, toolHangSec int64) stallWindows {
+// stallWindowsFromManifest builds stallWindows from the manifest's tenant
+// settings, with env-var fallback for dev overrides (opencode parity).
+//
+// EVERY field is a POINTER, and the two states are different instructions:
+// nil = the tenant left this dimension BLANK, so the env/code default below
+// stands; non-nil = an explicit value, and a resolved duration <= 0 means
+// DISABLED (every consumer here gates on > 0).
+func stallWindowsFromManifest(noProgressSec, noFileDiffSec, textLoopSec *int64, repCount *int32, repWindowSec *int64, toolHangSec *int64) stallWindows {
 	w := defaultStallWindows()
-	if noProgressSec > 0 && os.Getenv("ORCHICON_STALL_NO_PROGRESS_WINDOW") == "" {
-		w.noProgress = time.Duration(noProgressSec) * time.Second
+	if noProgressSec != nil && os.Getenv("ORCHICON_STALL_NO_PROGRESS_WINDOW") == "" {
+		w.noProgress = time.Duration(*noProgressSec) * time.Second
 	}
-	if noFileDiffSec != 0 && os.Getenv("ORCHICON_STALL_NO_FILE_DIFF_WINDOW") == "" {
-		w.noFileDiff = time.Duration(noFileDiffSec) * time.Second
+	if noFileDiffSec != nil && os.Getenv("ORCHICON_STALL_NO_FILE_DIFF_WINDOW") == "" {
+		w.noFileDiff = time.Duration(*noFileDiffSec) * time.Second
 	}
-	if textLoopSec != 0 && os.Getenv("ORCHICON_STALL_TEXT_LOOP_WINDOW") == "" {
-		w.textLoop = time.Duration(textLoopSec) * time.Second
+	if textLoopSec != nil && os.Getenv("ORCHICON_STALL_TEXT_LOOP_WINDOW") == "" {
+		w.textLoop = time.Duration(*textLoopSec) * time.Second
 	}
-	if repCount > 0 && os.Getenv("ORCHICON_STALL_REPETITION_COUNT") == "" {
-		w.repetitionN = int(repCount)
+	if repCount != nil && os.Getenv("ORCHICON_STALL_REPETITION_COUNT") == "" {
+		w.repetitionN = int(*repCount)
 	}
-	if repWindowSec > 0 && os.Getenv("ORCHICON_STALL_REPETITION_WINDOW") == "" {
-		w.repetitionW = time.Duration(repWindowSec) * time.Second
+	if repWindowSec != nil && os.Getenv("ORCHICON_STALL_REPETITION_WINDOW") == "" {
+		w.repetitionW = time.Duration(*repWindowSec) * time.Second
 	}
-	if toolHangSec != 0 && os.Getenv("ORCHICON_STALL_TOOL_HANG_WINDOW") == "" && os.Getenv("ORCHICON_TOOL_HANG_WINDOW") == "" {
-		w.toolHang = time.Duration(toolHangSec) * time.Second
+	if toolHangSec != nil && os.Getenv("ORCHICON_STALL_TOOL_HANG_WINDOW") == "" && os.Getenv("ORCHICON_TOOL_HANG_WINDOW") == "" {
+		w.toolHang = time.Duration(*toolHangSec) * time.Second
 	}
 	return w
 }
@@ -232,8 +237,13 @@ func (m *progressMonitor) observeFileDiff() {
 // stalls end monitoring; advisory stalls keep ticking so the session can
 // revive (onRecovered) when the missing progress resumes.
 func (m *progressMonitor) run(onStall func(execID, reason string), onRecovered func(execID, recovered string)) {
-	poll := m.w.noProgress
-	if m.w.noFileDiff < poll && m.w.noFileDiff > 0 {
+	// Shortest ENABLED window; disabled ones (<= 0) are skipped so a disabled
+	// check can never become "check every tick".
+	poll := 30 * time.Second
+	if m.w.noProgress > 0 && m.w.noProgress < poll {
+		poll = m.w.noProgress
+	}
+	if m.w.noFileDiff > 0 && m.w.noFileDiff < poll {
 		poll = m.w.noFileDiff
 	}
 	if m.w.textLoop > 0 && m.w.textLoop < poll {
@@ -289,7 +299,7 @@ func (m *progressMonitor) check() string {
 		return "stalled:tool_hang:" + name
 	}
 	// no_progress: no token progress within the window. FATAL.
-	if now.Sub(m.lastStepFinish) > m.w.noProgress {
+	if m.w.noProgress > 0 && now.Sub(m.lastStepFinish) > m.w.noProgress {
 		m.fired = true
 		return "stalled:no_progress"
 	}
@@ -501,23 +511,33 @@ const (
 	defaultNudgeCooldown    = 60 * time.Second
 )
 
-func nudgeMaxFromManifest(manifestMax int32) int {
-	if manifestMax > 0 && os.Getenv("ORCHICON_STALL_NUDGE_MAX") == "" {
-		return int(manifestMax)
+// nudgeMaxFromManifest resolves the nudge budget. manifestMax is a POINTER:
+// nil = the tenant left it BLANK, so the env var / code default applies;
+// non-nil = an explicit value, and an explicit 0 is returned as 0 — meaning
+// DISABLED, which the caller reads as "the budget is already spent" and
+// escalates on the first advisory stall instead of nudging.
+func nudgeMaxFromManifest(manifestMax *int32) int {
+	if manifestMax != nil && os.Getenv("ORCHICON_STALL_NUDGE_MAX") == "" {
+		return int(*manifestMax)
 	}
 	return envInt("ORCHICON_STALL_NUDGE_MAX", defaultMaxNudges)
 }
 
-func nudgeReplyWindowFromManifest(manifestSec int64) time.Duration {
-	if manifestSec > 0 && os.Getenv("ORCHICON_STALL_NUDGE_REPLY_WINDOW") == "" {
-		return time.Duration(manifestSec) * time.Second
+// nudgeReplyWindowFromManifest resolves the nudge reply window. nil = blank
+// (env/code default); non-nil = explicit, and 0 means DISABLED (the caller
+// gates on <= 0).
+func nudgeReplyWindowFromManifest(manifestSec *int64) time.Duration {
+	if manifestSec != nil && os.Getenv("ORCHICON_STALL_NUDGE_REPLY_WINDOW") == "" {
+		return time.Duration(*manifestSec) * time.Second
 	}
 	return envDuration("ORCHICON_STALL_NUDGE_REPLY_WINDOW", defaultNudgeReplyWindow)
 }
 
-func nudgeCooldownFromManifest(manifestSec int64) time.Duration {
-	if manifestSec > 0 && os.Getenv("ORCHICON_STALL_NUDGE_COOLDOWN") == "" {
-		return time.Duration(manifestSec) * time.Second
+// nudgeCooldownFromManifest resolves the nudge cooldown. nil = blank
+// (env/code default); non-nil = explicit, and 0 means DISABLED (no cooldown).
+func nudgeCooldownFromManifest(manifestSec *int64) time.Duration {
+	if manifestSec != nil && os.Getenv("ORCHICON_STALL_NUDGE_COOLDOWN") == "" {
+		return time.Duration(*manifestSec) * time.Second
 	}
 	return envDuration("ORCHICON_STALL_NUDGE_COOLDOWN", defaultNudgeCooldown)
 }

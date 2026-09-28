@@ -51,6 +51,15 @@ const (
 	// SettingsServiceDeleteBackupProcedure is the fully-qualified name of the SettingsService's
 	// DeleteBackup RPC.
 	SettingsServiceDeleteBackupProcedure = "/orchicon.api.v1.SettingsService/DeleteBackup"
+	// SettingsServiceGetPermissionPolicyProcedure is the fully-qualified name of the SettingsService's
+	// GetPermissionPolicy RPC.
+	SettingsServiceGetPermissionPolicyProcedure = "/orchicon.api.v1.SettingsService/GetPermissionPolicy"
+	// SettingsServiceAddPermissionPolicyEntryProcedure is the fully-qualified name of the
+	// SettingsService's AddPermissionPolicyEntry RPC.
+	SettingsServiceAddPermissionPolicyEntryProcedure = "/orchicon.api.v1.SettingsService/AddPermissionPolicyEntry"
+	// SettingsServiceRemovePermissionPolicyEntryProcedure is the fully-qualified name of the
+	// SettingsService's RemovePermissionPolicyEntry RPC.
+	SettingsServiceRemovePermissionPolicyEntryProcedure = "/orchicon.api.v1.SettingsService/RemovePermissionPolicyEntry"
 )
 
 // SettingsServiceClient is a client for the orchicon.api.v1.SettingsService service.
@@ -70,6 +79,12 @@ type SettingsServiceClient interface {
 	RestoreBackup(context.Context, *connect.Request[v1.RestoreBackupRequest]) (*connect.Response[v1.RestoreBackupResponse], error)
 	// DeleteBackup removes the named snapshot from the backup directory.
 	DeleteBackup(context.Context, *connect.Request[v1.DeleteBackupRequest]) (*connect.Response[v1.DeleteBackupResponse], error)
+	// GetPermissionPolicy returns the policy file path and every entry.
+	GetPermissionPolicy(context.Context, *connect.Request[v1.GetPermissionPolicyRequest]) (*connect.Response[v1.GetPermissionPolicyResponse], error)
+	// AddPermissionPolicyEntry adds one entry to the deny or accept list.
+	AddPermissionPolicyEntry(context.Context, *connect.Request[v1.AddPermissionPolicyEntryRequest]) (*connect.Response[v1.AddPermissionPolicyEntryResponse], error)
+	// RemovePermissionPolicyEntry removes one entry from the deny or accept list.
+	RemovePermissionPolicyEntry(context.Context, *connect.Request[v1.RemovePermissionPolicyEntryRequest]) (*connect.Response[v1.RemovePermissionPolicyEntryResponse], error)
 }
 
 // NewSettingsServiceClient constructs a client for the orchicon.api.v1.SettingsService service. By
@@ -119,17 +134,38 @@ func NewSettingsServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(settingsServiceMethods.ByName("DeleteBackup")),
 			connect.WithClientOptions(opts...),
 		),
+		getPermissionPolicy: connect.NewClient[v1.GetPermissionPolicyRequest, v1.GetPermissionPolicyResponse](
+			httpClient,
+			baseURL+SettingsServiceGetPermissionPolicyProcedure,
+			connect.WithSchema(settingsServiceMethods.ByName("GetPermissionPolicy")),
+			connect.WithClientOptions(opts...),
+		),
+		addPermissionPolicyEntry: connect.NewClient[v1.AddPermissionPolicyEntryRequest, v1.AddPermissionPolicyEntryResponse](
+			httpClient,
+			baseURL+SettingsServiceAddPermissionPolicyEntryProcedure,
+			connect.WithSchema(settingsServiceMethods.ByName("AddPermissionPolicyEntry")),
+			connect.WithClientOptions(opts...),
+		),
+		removePermissionPolicyEntry: connect.NewClient[v1.RemovePermissionPolicyEntryRequest, v1.RemovePermissionPolicyEntryResponse](
+			httpClient,
+			baseURL+SettingsServiceRemovePermissionPolicyEntryProcedure,
+			connect.WithSchema(settingsServiceMethods.ByName("RemovePermissionPolicyEntry")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // settingsServiceClient implements SettingsServiceClient.
 type settingsServiceClient struct {
-	getSettings    *connect.Client[v1.GetSettingsRequest, v1.GetSettingsResponse]
-	updateSettings *connect.Client[v1.UpdateSettingsRequest, v1.UpdateSettingsResponse]
-	createBackup   *connect.Client[v1.CreateBackupRequest, v1.CreateBackupResponse]
-	listBackups    *connect.Client[v1.ListBackupsRequest, v1.ListBackupsResponse]
-	restoreBackup  *connect.Client[v1.RestoreBackupRequest, v1.RestoreBackupResponse]
-	deleteBackup   *connect.Client[v1.DeleteBackupRequest, v1.DeleteBackupResponse]
+	getSettings                 *connect.Client[v1.GetSettingsRequest, v1.GetSettingsResponse]
+	updateSettings              *connect.Client[v1.UpdateSettingsRequest, v1.UpdateSettingsResponse]
+	createBackup                *connect.Client[v1.CreateBackupRequest, v1.CreateBackupResponse]
+	listBackups                 *connect.Client[v1.ListBackupsRequest, v1.ListBackupsResponse]
+	restoreBackup               *connect.Client[v1.RestoreBackupRequest, v1.RestoreBackupResponse]
+	deleteBackup                *connect.Client[v1.DeleteBackupRequest, v1.DeleteBackupResponse]
+	getPermissionPolicy         *connect.Client[v1.GetPermissionPolicyRequest, v1.GetPermissionPolicyResponse]
+	addPermissionPolicyEntry    *connect.Client[v1.AddPermissionPolicyEntryRequest, v1.AddPermissionPolicyEntryResponse]
+	removePermissionPolicyEntry *connect.Client[v1.RemovePermissionPolicyEntryRequest, v1.RemovePermissionPolicyEntryResponse]
 }
 
 // GetSettings calls orchicon.api.v1.SettingsService.GetSettings.
@@ -162,6 +198,21 @@ func (c *settingsServiceClient) DeleteBackup(ctx context.Context, req *connect.R
 	return c.deleteBackup.CallUnary(ctx, req)
 }
 
+// GetPermissionPolicy calls orchicon.api.v1.SettingsService.GetPermissionPolicy.
+func (c *settingsServiceClient) GetPermissionPolicy(ctx context.Context, req *connect.Request[v1.GetPermissionPolicyRequest]) (*connect.Response[v1.GetPermissionPolicyResponse], error) {
+	return c.getPermissionPolicy.CallUnary(ctx, req)
+}
+
+// AddPermissionPolicyEntry calls orchicon.api.v1.SettingsService.AddPermissionPolicyEntry.
+func (c *settingsServiceClient) AddPermissionPolicyEntry(ctx context.Context, req *connect.Request[v1.AddPermissionPolicyEntryRequest]) (*connect.Response[v1.AddPermissionPolicyEntryResponse], error) {
+	return c.addPermissionPolicyEntry.CallUnary(ctx, req)
+}
+
+// RemovePermissionPolicyEntry calls orchicon.api.v1.SettingsService.RemovePermissionPolicyEntry.
+func (c *settingsServiceClient) RemovePermissionPolicyEntry(ctx context.Context, req *connect.Request[v1.RemovePermissionPolicyEntryRequest]) (*connect.Response[v1.RemovePermissionPolicyEntryResponse], error) {
+	return c.removePermissionPolicyEntry.CallUnary(ctx, req)
+}
+
 // SettingsServiceHandler is an implementation of the orchicon.api.v1.SettingsService service.
 type SettingsServiceHandler interface {
 	// GetSettings returns the current settings for the calling tenant.
@@ -179,6 +230,12 @@ type SettingsServiceHandler interface {
 	RestoreBackup(context.Context, *connect.Request[v1.RestoreBackupRequest]) (*connect.Response[v1.RestoreBackupResponse], error)
 	// DeleteBackup removes the named snapshot from the backup directory.
 	DeleteBackup(context.Context, *connect.Request[v1.DeleteBackupRequest]) (*connect.Response[v1.DeleteBackupResponse], error)
+	// GetPermissionPolicy returns the policy file path and every entry.
+	GetPermissionPolicy(context.Context, *connect.Request[v1.GetPermissionPolicyRequest]) (*connect.Response[v1.GetPermissionPolicyResponse], error)
+	// AddPermissionPolicyEntry adds one entry to the deny or accept list.
+	AddPermissionPolicyEntry(context.Context, *connect.Request[v1.AddPermissionPolicyEntryRequest]) (*connect.Response[v1.AddPermissionPolicyEntryResponse], error)
+	// RemovePermissionPolicyEntry removes one entry from the deny or accept list.
+	RemovePermissionPolicyEntry(context.Context, *connect.Request[v1.RemovePermissionPolicyEntryRequest]) (*connect.Response[v1.RemovePermissionPolicyEntryResponse], error)
 }
 
 // NewSettingsServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -224,6 +281,24 @@ func NewSettingsServiceHandler(svc SettingsServiceHandler, opts ...connect.Handl
 		connect.WithSchema(settingsServiceMethods.ByName("DeleteBackup")),
 		connect.WithHandlerOptions(opts...),
 	)
+	settingsServiceGetPermissionPolicyHandler := connect.NewUnaryHandler(
+		SettingsServiceGetPermissionPolicyProcedure,
+		svc.GetPermissionPolicy,
+		connect.WithSchema(settingsServiceMethods.ByName("GetPermissionPolicy")),
+		connect.WithHandlerOptions(opts...),
+	)
+	settingsServiceAddPermissionPolicyEntryHandler := connect.NewUnaryHandler(
+		SettingsServiceAddPermissionPolicyEntryProcedure,
+		svc.AddPermissionPolicyEntry,
+		connect.WithSchema(settingsServiceMethods.ByName("AddPermissionPolicyEntry")),
+		connect.WithHandlerOptions(opts...),
+	)
+	settingsServiceRemovePermissionPolicyEntryHandler := connect.NewUnaryHandler(
+		SettingsServiceRemovePermissionPolicyEntryProcedure,
+		svc.RemovePermissionPolicyEntry,
+		connect.WithSchema(settingsServiceMethods.ByName("RemovePermissionPolicyEntry")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/orchicon.api.v1.SettingsService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case SettingsServiceGetSettingsProcedure:
@@ -238,6 +313,12 @@ func NewSettingsServiceHandler(svc SettingsServiceHandler, opts ...connect.Handl
 			settingsServiceRestoreBackupHandler.ServeHTTP(w, r)
 		case SettingsServiceDeleteBackupProcedure:
 			settingsServiceDeleteBackupHandler.ServeHTTP(w, r)
+		case SettingsServiceGetPermissionPolicyProcedure:
+			settingsServiceGetPermissionPolicyHandler.ServeHTTP(w, r)
+		case SettingsServiceAddPermissionPolicyEntryProcedure:
+			settingsServiceAddPermissionPolicyEntryHandler.ServeHTTP(w, r)
+		case SettingsServiceRemovePermissionPolicyEntryProcedure:
+			settingsServiceRemovePermissionPolicyEntryHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -269,4 +350,16 @@ func (UnimplementedSettingsServiceHandler) RestoreBackup(context.Context, *conne
 
 func (UnimplementedSettingsServiceHandler) DeleteBackup(context.Context, *connect.Request[v1.DeleteBackupRequest]) (*connect.Response[v1.DeleteBackupResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.SettingsService.DeleteBackup is not implemented"))
+}
+
+func (UnimplementedSettingsServiceHandler) GetPermissionPolicy(context.Context, *connect.Request[v1.GetPermissionPolicyRequest]) (*connect.Response[v1.GetPermissionPolicyResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.SettingsService.GetPermissionPolicy is not implemented"))
+}
+
+func (UnimplementedSettingsServiceHandler) AddPermissionPolicyEntry(context.Context, *connect.Request[v1.AddPermissionPolicyEntryRequest]) (*connect.Response[v1.AddPermissionPolicyEntryResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.SettingsService.AddPermissionPolicyEntry is not implemented"))
+}
+
+func (UnimplementedSettingsServiceHandler) RemovePermissionPolicyEntry(context.Context, *connect.Request[v1.RemovePermissionPolicyEntryRequest]) (*connect.Response[v1.RemovePermissionPolicyEntryResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.SettingsService.RemovePermissionPolicyEntry is not implemented"))
 }

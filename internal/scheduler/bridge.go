@@ -62,25 +62,32 @@ type ExecutionManifest struct {
 	// Create a container) when this is "local", even with a reachable
 	// daemon. Defaults to "runtime" when empty (legacy/standalone rows).
 	ExecutionMode string
-	// Stall detection thresholds from tenant settings. Zero means "use
-	// env-var or built-in default".
-	StallNoProgressWindowSeconds int64
-	StallNoFileDiffWindowSeconds int64
-	StallTextLoopWindowSeconds   int64
-	StallRepetitionCount         int32
-	StallRepetitionWindowSeconds int64
-	// Nudge knobs (advisory-stall escalation) from tenant settings. Zero
-	// means "use env-var or built-in default".
-	StallNudgeMax                int32
-	StallNudgeReplyWindowSeconds int64
-	StallNudgeCooldownSeconds    int64
+	// Stall detection thresholds from tenant settings. Each is a POINTER, and
+	// the two states are different instructions to the adapter:
+	//
+	//   - nil — the tenant left this dimension BLANK in Settings. The tenant has
+	//     no opinion, so the adapter's env-var / built-in default stands.
+	//   - non-nil — an explicit value; 0 means DISABLED.
+	//
+	// Resolving either state into a concrete int before dispatch would destroy
+	// the distinction, so the pointers travel intact.
+	StallNoProgressWindowSeconds *int64
+	StallNoFileDiffWindowSeconds *int64
+	StallTextLoopWindowSeconds   *int64
+	StallRepetitionCount         *int32
+	StallRepetitionWindowSeconds *int64
+	// Nudge knobs (advisory-stall escalation) from tenant settings. Same
+	// convention: nil = blank (adapter default), non-nil = explicit, 0 = disabled.
+	StallNudgeMax                *int32
+	StallNudgeReplyWindowSeconds *int64
+	StallNudgeCooldownSeconds    *int64
 
 	// StallToolHangSeconds is the in-flight tool-hang watchdog window (D6):
 	// a tool call with no events for longer than this is cancelled natively
 	// (synthesized `cancelled:` tool result + course-correcting redirect
-	// injected as the next user turn). Zero = unset (env/code default 180s);
-	// negative = disabled.
-	StallToolHangSeconds int64
+	// injected as the next user turn). nil = unset (env/code default 180s);
+	// an explicit 0 DISABLES the watchdog.
+	StallToolHangSeconds *int64
 
 	// SequenceContinue (opt-in, DEFAULT OFF) marks this execution as part
 	// of a sequence chain: consecutive same-worker tasks may resume the
@@ -241,6 +248,12 @@ type ChatTurnClient interface {
 	AbortConversationSession(ctx context.Context, sessionID string) error
 	// ReplyPermission auto-approves a permission.asked signal.
 	ReplyPermission(ctx context.Context, sessionID, permissionID string) error
+	// ReplyPermissionDecision answers a permission.asked signal with an
+	// explicit serve response value ("once" | "reject"). The consent core
+	// uses it: "once" proceeds for the single call, "reject" turns the ask
+	// into a tool error the model sees. The SESSION decision lives in the
+	// caller's grant store, never in a serve-side response value.
+	ReplyPermissionDecision(ctx context.Context, sessionID, permissionID, decision string) error
 }
 
 // SessionOwner is the OPTIONAL capability for an adapter that can identify
@@ -393,6 +406,13 @@ type SessionEvent struct {
 	//                  name); feeds the stall monitor's wedge signal
 	//   "delta"      — mid-generation token delta (Text); liveness + live mirror
 	//   "part"       — a completed text/reasoning/tool_use/step_finish part
+	//   "tool_result"— a tool call RESOLVED: its arguments and output. Typed
+	//                  fields (ToolName/ToolCallID/ArgsJSON/Output/IsError),
+	//                  not a transport-shaped Part map — see ToolName.
+	//   "question"   — the model asked a clarifying question and is WAITING for the
+	//                  answer (ask_user, blocking). Typed fields (Question/
+	//                  Options/AllowOther/InputJSON); the reply is an answer string,
+	//                  not a permission decision.
 	Kind string
 	// Type refines Kind for "delta" ("text"|"reasoning") and "part"
 	// ("text"|"reasoning"|"tool_use"|"step_finish") — the stall-monitor and
@@ -405,10 +425,71 @@ type SessionEvent struct {
 	Text         string
 	IsReasoning  bool
 	PermissionID string
+	// Detail carries the raw transport properties of a "permission" event
+	// (opencode emits id, sessionID, permission/title, patterns, metadata and
+	// callID), so the consent layer can answer the ask with the action's
+	// detail intact rather than only its id. An adapter that correlates the
+	// tool call an ask belongs to adds the call's ARGS under "toolInput" —
+	// an MCP-tool ask carries no path/command of its own (patterns ["*"],
+	// metadata {}), so without them such an ask has nothing to key or show.
+	// Nil for every other kind.
+	Detail map[string]any
 	// Part is the legacy part map for a completed "part" (a "tool_use" part
 	// carries tool + args for the stall monitor's repetition signature; the
 	// monitor path consumes it). Nil for other kinds.
 	Part map[string]any
+	// --- Typed tool-resolution fields (Kind "tool_result") ---
+	//
+	// These exist so an adapter never has to shape its own tool lifecycle into
+	// ANOTHER adapter's private event encoding. "tool_result" used to be
+	// expressible only by hand-building the Part map that the opencode adapter
+	// happens to emit (part["tool"], part["state"]["input"], …), which made
+	// opencode the reference dialect every future adapter had to imitate.
+	//
+	// ToolCallID is the transport's own correlation id (empty when the adapter
+	// has none). ToolName is the tool that ran. ArgsJSON is the EXACT argument
+	// JSON the call carried, and Output its result text — together these are
+	// what a client needs to render a resolved call (an ask_user card reads its
+	// question and options straight out of ArgsJSON). IsError marks a failed
+	// call so its result is not shown as a success.
+	ToolCallID string
+	ToolName   string
+	ArgsJSON   string
+	Output     string
+	IsError    bool
+	// --- Typed consent fields (Kind "permission") ---
+	//
+	// An adapter that can name the action it is asking about supplies it HERE,
+	// rather than shaping it into the property vocabulary the opencode adapter
+	// happens to emit (Detail: permission/title, metadata.filepath, patterns,
+	// toolInput). Same rule as the tool-result fields above: the shared contract
+	// describes the action, and no adapter has to speak another's dialect.
+	//
+	// Tool is the tool being gated; Command its shell line for an execution;
+	// Targets the paths a write/edit touches; InputJSON the call's argument JSON
+	// (the only detail an MCP-style ask has). Directory, when set, is the
+	// grant/deny key the ask means — it is otherwise derived from the targets.
+	// extractAskAction prefers these fields when Tool is set and falls back to
+	// the Detail map, so both transports stay supported.
+	Tool      string
+	Command   string
+	Targets   []string
+	InputJSON string
+	Directory string
+	// --- Typed question fields (Kind "question") ---
+	//
+	// A clarifying question the model asked and the turn is PAUSED on (ask_user,
+	// made blocking). It carries no permission semantics — there is no grant and no
+	// allow/deny — so it rides its own kind rather than being special-cased inside
+	// the permission path, where the precedence chain would have to be taught to
+	// skip it.
+	//
+	// The answer comes back over the SAME reply RPC (ReplyPermissionAsk.answer) and
+	// becomes the ask_user TOOL RESULT, so the model continues the turn with the
+	// answer in hand instead of being told the question was recorded.
+	Question   string
+	Options    []string
+	AllowOther bool
 	// SessionID is the session the event belongs to. Adapters whose
 	// transport multiplexes sessions (e.g. a shared serve bus) set it so the
 	// drain loop can filter by the turn's current session id (which can

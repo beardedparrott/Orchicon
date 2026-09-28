@@ -1009,15 +1009,40 @@ func validateStepGraph(steps []flowStep) error {
 // enterStepEditor points the editor at the draft the pane is already showing and
 // seeds the cursor on the first step.
 func (m *Model) enterStepEditor(workflowID, name string, v *apiv1.WorkflowVersion) tea.Cmd {
+	// IT REMEMBERS, AND PAINTS ONLY WHEN THE OPERATOR IS EDITING.
+	//
+	// It is called from the DETAIL-LANDING chain (onDetailWorkflow → workflowEditorMsg), which runs
+	// whenever a workflow's detail loads: on every selection, and on every background refresh. Painting
+	// the flow unconditionally meant the pane's content was written TWICE per landing by two renderers,
+	// so the operator saw whichever landed last — their "sometimes it shows the screen with no versions
+	// and sometimes it shows the screens with versions".
+	//
+	// NOT EDITING: this is bookkeeping. The read-only detail (FLOW + VERSIONS) is what the pane shows,
+	// and it stays there — which is what keeps the version list visible underneath the flow.
+	// EDITING: the flow IS the surface, so the repaint is required.
+	//
+	// AND THE CURSOR IS SEEDED ONLY WHEN THE WORKFLOW CHANGES, so walking down the list does not reset
+	// a chosen step — the same class of defect as the per-tick reset, one level down.
+	versionID := ""
+	if v != nil {
+		versionID = v.GetId()
+	}
+	changed := m.stepWorkflowID != workflowID || m.stepVersionID != versionID
+
 	m.stepWorkflowID, m.stepWorkflowName = workflowID, name
 	m.stepVersionID, m.stepSteps = "", ""
 	if v != nil {
 		m.stepVersionID, m.stepSteps = v.GetId(), v.GetSteps()
 	}
-	steps := m.flowStepsOf()
-	m.stepSel = ""
-	if len(steps) > 0 {
-		m.stepSel = steps[0].ID
+	if changed {
+		steps := m.flowStepsOf()
+		m.stepSel = ""
+		if len(steps) > 0 {
+			m.stepSel = steps[0].ID
+		}
+	}
+	if !m.flowEditing {
+		return nil
 	}
 	return m.paintFlow()
 }

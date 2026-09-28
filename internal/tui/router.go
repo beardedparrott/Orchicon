@@ -636,6 +636,18 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			// "type".
 			m.closeTabMenu()
 			m.setFocus(focusComposer)
+			// A DEFERRED PERMISSION CARD IS STILL OPEN, AND SAYING SO IS THE DIFFERENCE BETWEEN A
+			// DEFERRAL AND A LOSS.
+			//
+			// ctrl+g no longer decides the card (it used to deny — see the ask screen's
+			// DropKeyClaim), so it hands the keyboard to the composer and LEAVES THE CARD PENDING.
+			// That is what the operator asked for — they pressed it to type, including to reach
+			// /fullsend while a card was up — but a card they cannot see the state of is a card
+			// they have effectively lost. The notice names both facts: the card is still open,
+			// and a click decides it.
+			if m.chatStore != nil && m.chatConvID != "" && m.chatStore.hasPendingConsent(m.chatConvID) {
+				m.dock.SetNotice("permission card still open — click it to decide, or /fullsend to approve it and stop asking")
+			}
 			m.refreshStreamStatus()
 			return m, nil
 		}
@@ -1151,6 +1163,22 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 		if text, ok := m.transcriptUserMessageAtFrameRow(mo.Y); ok && m.clip != nil {
 			return m, m.clip.copyCmd(text)
 		}
+		// AN OPTION ON A CLARIFYING-QUESTION CARD IS A CHOICE, SO A CLICK ON IT SENDS THAT CHOICE.
+		//
+		// This is the TUI half of `ask_user`: the tool recorded the question and the turn completed, so
+		// answering is an ordinary send of the option's label — the same path the composer takes, with the
+		// same optimistic echo and the same transcript row. It is a CLICK rather than a digit key because
+		// digits are text the operator is entitled to type into the composer; a key that stole `1` would
+		// break ordinary messages to serve this one.
+		//
+		// Checked after the copy rules (a card carries no code and is not the operator's message, so neither
+		// can match it) and only while the card is unanswered — see transcriptAskOptionAtFrameRow.
+		if kind, label, ok := m.transcriptCardOptionAtFrameRow(mo.Y); ok && m.chat != nil {
+			if kind == chat.KindConsent {
+				return m, m.consentDecideFromRow(label)
+			}
+			return m, m.chat.AnswerQuestion(m.chatConvID, label)
+		}
 	}
 	if (mo.Button == tea.MouseButtonWheelUp || mo.Button == tea.MouseButtonWheelDown) && m.active == TabAsk && m.chatConvID != "" {
 		delta := -3
@@ -1345,6 +1373,33 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		return m.waitChat()
 	case chat.StreamDoneMsg:
 		return tea.Batch(m.onStreamDone(msg), m.waitChat())
+	case chat.ConsentAskMsg:
+		// A permission ask landed mid-turn: draw its card. ShowConsentAsk consults
+		// the conversation's session grants first, so a directory already allowed
+		// for this session does not ask twice.
+		return tea.Batch(m.ShowConsentAsk(msg.Ask), m.waitChat())
+	case chat.ConsentResolvedMsg:
+		// THE OTHER CLIENT DECIDED, so settle this client's copy of the card.
+		//
+		// The operator: "the choice box is still there for permissions" — in the GUI
+		// after answering in the TUI. Only the answering client cleared its own copy,
+		// and a permission ask has no durable row to reconcile against, so the
+		// collector publishes the outcome and every watcher settles from it.
+		m.chatStore.settleAsk(msg.ConvID, msg.AskID, msg.Outcome, msg.Answer)
+		return tea.Batch(m.onChatWake(), m.waitChat())
+	case chat.ConsentRepliedMsg:
+		// The SERVER's verdict on a decision we sent. A decision that did not apply
+		// (the ask expired, the turn ended) must SAY so — otherwise the operator
+		// reads their click as an approval while the call was refused.
+		switch {
+		case msg.Err != "":
+			m.dock.SetNotice("permission reply failed: " + msg.Err)
+		case msg.Expired || !msg.Applied:
+			m.dock.SetNotice("that permission ask is no longer open — nothing was applied")
+		default:
+			m.dock.SetNotice("permission decision applied")
+		}
+		return m.waitChat()
 	case askDefaultSettingsMsg:
 		// Store the tenant default; if a conversation is already open its strip may
 		// now be able to resolve a model (and therefore a context window) that it

@@ -320,7 +320,7 @@ func TestNativeWallClockDeadline(t *testing.T) {
 // AC (manifest stall windows flow through): the monitor is constructed
 // from the ExecutionManifest's tenant-settings fields.
 func TestStallWindowsFromManifest(t *testing.T) {
-	w := stallWindowsFromManifest(120, 600, 300, 7, 90, -1)
+	w := stallWindowsFromManifest(i64Ptr(120), i64Ptr(600), i64Ptr(300), i32Ptr(7), i64Ptr(90), i64Ptr(0))
 	if w.noProgress != 120*time.Second {
 		t.Errorf("noProgress = %v, want 120s", w.noProgress)
 	}
@@ -336,8 +336,11 @@ func TestStallWindowsFromManifest(t *testing.T) {
 	if w.repetitionW != 90*time.Second {
 		t.Errorf("repetitionW = %v, want 90s", w.repetitionW)
 	}
-	if w.toolHang >= 0 {
-		t.Errorf("toolHang = %v, want negative (disabled)", w.toolHang)
+	// 0 is the new spelling of "disabled" (it replaced negative, which the
+	// Settings API now rejects). The consumer gates on > 0, so a zero window
+	// reads as off.
+	if w.toolHang > 0 {
+		t.Errorf("toolHang = %v, want <= 0 (disabled)", w.toolHang)
 	}
 }
 
@@ -498,3 +501,7 @@ func TestLoopNudgeReplyClearsProbe(t *testing.T) {
 		t.Fatalf("results = %+v, want none (the reply cleared the probe)", results)
 	}
 }
+
+// i64Ptr/i32Ptr are the minimal constructors for the now-optional stall fields.
+func i64Ptr(v int64) *int64 { return &v }
+func i32Ptr(v int32) *int32 { return &v }

@@ -28,6 +28,27 @@ frontend/dist/*
 *.swo
 *~
 
+# --- The operator's own working notes (NOT part of the product) ---
+# These are the personal files used to build Orchicon: the working inventory, the
+# conventions to follow, and the role/developer notes. They are deliberately kept OUT of
+# the repository — a reader of this project should see the product, not the notebook its
+# author kept while writing it. They remain on the author's disk and are simply untracked.
+#
+# NOTE for anyone editing here: nothing in the build, the tests or the runtime READS these
+# files from disk. References to "AGENTS.md" elsewhere in the tree are either comments about
+# the conventions that used to live here, or the unrelated per-worker `agents_md` PROMPT
+# FIELD (see internal/worker/service.go), which is stored in the database and is not this
+# file. So removing them changes no behaviour.
+AGENTS.md
+UPDATES.md
+developer.md
+worker.md
+CLOUDFLARE_SETUP.md
+
+# The scratch prefix `make docs-check` installs the Mermaid parser into, so a docs check needs no
+# dependency in the product or the frontend toolchain (CI uses $RUNNER_TEMP instead).
+.mermaid-check/
+
 # OS
 .DS_Store
 Thumbs.db
@@ -81,3 +102,4 @@ deploy/runtime/orch
 
 # Orchicon: ignore nested step worktrees (parallel-branch children)
 01*/
+.restore-from-snapshot.sh

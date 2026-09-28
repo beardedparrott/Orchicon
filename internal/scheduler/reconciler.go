@@ -1144,14 +1144,19 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	// system message, not the user message, so the worker
 	// instruction to end with ORCHICON WORKER SUMMARY is consistent
 	// across the first turn and every subsequent turn.
-	// Fetch tenant settings for default model and stall thresholds.
+	// Fetch tenant settings for default model and stall thresholds. The
+	// thresholds travel as POINTERS into the manifest: nil means "the tenant
+	// left this blank, so the adapter applies its own default", while a
+	// non-nil value — including 0, which means DISABLED — is an explicit
+	// instruction. Collapsing either into a concrete int here would throw away
+	// the distinction the Settings page now relies on.
 	var defaultModelRef string
-	var stallNoProgress, stallNoFileDiff, stallTextLoop int64
-	var stallRepCount int32
-	var stallRepWindow int64
-	var stallNudgeMax int32
-	var stallNudgeReplyWindow, stallNudgeCooldown int64
-	var stallToolHang int64
+	var stallNoProgress, stallNoFileDiff, stallTextLoop *int64
+	var stallRepCount *int32
+	var stallRepWindow *int64
+	var stallNudgeMax *int32
+	var stallNudgeReplyWindow, stallNudgeCooldown *int64
+	var stallToolHang *int64
 	var defaultBudgetOverrides []byte
 	{
 		settingsCtx := context.Background()

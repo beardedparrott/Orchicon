@@ -23,11 +23,11 @@ type Manager struct {
 }
 
 type job struct {
-	rec       Reconciler
-	queue     *workQueue
-	leader    *leaderElection
-	backoff   time.Duration
-	maxRetry  int
+	rec      Reconciler
+	queue    *workQueue
+	leader   *leaderElection
+	backoff  time.Duration
+	maxRetry int
 }
 
 // NewManager creates a reconciler manager. Call Register to add
@@ -192,10 +192,10 @@ type workQueue struct {
 }
 
 type queueEntry struct {
-	key       string
+	key        string
 	enqueuedAt time.Time
-	readyAt   time.Time
-	failures  int
+	readyAt    time.Time
+	failures   int
 }
 
 func newWorkQueue(kind string) *workQueue {
@@ -288,8 +288,8 @@ func (q *workQueue) requeueAfter(key string, after time.Duration) {
 		q.ordered = append(q.ordered, key)
 	} else {
 		q.pending[key] = &queueEntry{
-			key:      key,
-			readyAt:  time.Now().Add(after),
+			key:        key,
+			readyAt:    time.Now().Add(after),
 			enqueuedAt: time.Now(),
 		}
 		q.ordered = append(q.ordered, key)

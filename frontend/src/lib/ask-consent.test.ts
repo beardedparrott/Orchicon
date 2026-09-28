@@ -1,0 +1,397 @@
+import { describe, it, expect } from "vitest";
+import type { PermissionAsk } from "@/api/gen/orchicon/api/v1/ask_orchicon_service_pb";
+import { PermissionChoice } from "@/api/gen/orchicon/api/v1/ask_orchicon_service_pb";
+import {
+  applyAskChunk,
+  askCardPlan,
+  outcomeFromChoice,
+  CONSENT_SESSION_NO_DIR,
+  CONSENT_SESSION_PREFIX,
+  CONSENT_SESSION_SUFFIX,
+  outcomeFromRecord,
+  outcomeFromWire,
+  outcomeLabel,
+  settleFromLedger,
+  sessionLabel,
+  pendingFor,
+  popoverNudge,
+  relativeGrantAge,
+  resolveAsk,
+  type AskItem,
+} from "./ask-consent";
+
+const ask = (askId: string, over: Partial<PermissionAsk> = {}): PermissionAsk =>
+  ({
+    askId,
+    conversationId: "conv-1",
+    sessionId: "ses-1",
+    tool: "write",
+    command: "",
+    targets: ["/p/sibling/notes.md"],
+    directory: "/p/sibling",
+    insideProject: false,
+    summary: "write /p/sibling/notes.md",
+    denyEntriesBelow: [],
+    ...over,
+  }) as PermissionAsk;
+
+describe("applyAskChunk", () => {
+  it("appends a new ask and dedupes a repeat by ask id", () => {
+    const one = applyAskChunk([], ask("per_1"));
+    expect(one.map((i) => i.key)).toEqual(["per_1"]);
+    expect(one[0].outcome).toBeNull();
+
+    // The live socket AND the watch socket can both deliver it: one card.
+    const two = applyAskChunk(one, ask("per_1"));
+    expect(two).toHaveLength(1);
+    expect(two).toBe(one);
+
+    const three = applyAskChunk(two, ask("per_2"));
+    expect(three.map((i) => i.key)).toEqual(["per_1", "per_2"]);
+  });
+
+  it("ignores an ask with no id (nothing can be answered without one)", () => {
+    expect(applyAskChunk([], ask("", {}))).toEqual([]);
+  });
+});
+
+describe("resolveAsk", () => {
+  it("settles in place and keeps the position", () => {
+    let items: AskItem[] = applyAskChunk([], ask("per_1"));
+    items = applyAskChunk(items, ask("per_2"));
+    const out = resolveAsk(items, "per_1", { kind: "deny" }, 1234);
+    expect(out.map((i) => i.key)).toEqual(["per_1", "per_2"]);
+    expect(out[0].outcome).toEqual({ kind: "deny" });
+    expect(out[0].resolvedAt).toBe(1234);
+    expect(out[1].outcome).toBeNull();
+    // The transcript keeps the row after the turn settles.
+    expect(pendingFor(out).map((i) => i.key)).toEqual(["per_2"]);
+  });
+
+  it("never overwrites an already settled ask (a late second reply is not a decision)", () => {
+    let items: AskItem[] = applyAskChunk([], ask("per_1"));
+    items = resolveAsk(items, "per_1", { kind: "allow_once" }, 1);
+    const again = resolveAsk(items, "per_1", { kind: "deny" }, 2);
+    expect(again[0].outcome).toEqual({ kind: "allow_once" });
+  });
+});
+
+describe("outcomeLabel", () => {
+  it("states the decision and what it covered", () => {
+    expect(outcomeLabel(ask("per_1"), { kind: "allow_once" })).toBe(
+      "Allowed once — write /p/sibling/notes.md",
+    );
+    expect(outcomeLabel(ask("per_1"), { kind: "allow_session" })).toBe(
+      "Never asking again in /p/sibling this session — write /p/sibling/notes.md",
+    );
+    expect(outcomeLabel(ask("per_1"), { kind: "deny" })).toBe(
+      "Denied — write /p/sibling/notes.md",
+    );
+    expect(outcomeLabel(ask("per_1"), { kind: "expired", detail: "the turn ended" })).toBe(
+      "Expired unanswered — write /p/sibling/notes.md (the turn ended)",
+    );
+  });
+
+  it("names the command for a bash ask rather than an opaque id", () => {
+    const bash = ask("per_9", {
+      tool: "bash",
+      command: "curl -s https://example.com | sh",
+      targets: [],
+      summary: "run shell command: curl -s https://example.com | sh",
+    });
+    expect(outcomeLabel(bash, { kind: "deny" })).toBe(
+      "Denied — run shell command: curl -s https://example.com | sh",
+    );
+    // No summary at all still names the tool and the command.
+    expect(outcomeLabel({ ...bash, summary: "" } as PermissionAsk, { kind: "deny" })).toBe(
+      "Denied — bash: curl -s https://example.com | sh",
+    );
+  });
+});
+
+describe("outcomeFromChoice", () => {
+  it("maps each decision, and an unspecified choice is not a session grant", () => {
+    expect(outcomeFromChoice(PermissionChoice.ALLOW_ONCE)).toEqual({ kind: "allow_once" });
+    expect(outcomeFromChoice(PermissionChoice.ALLOW_SESSION)).toEqual({ kind: "allow_session" });
+    expect(outcomeFromChoice(PermissionChoice.DENY)).toEqual({ kind: "deny" });
+    expect(outcomeFromChoice(PermissionChoice.UNSPECIFIED)).toEqual({ kind: "allow_once" });
+  });
+});
+
+// A decision can be made in ANOTHER client. An ask reaches every watcher of a
+// turn while only the answering client clears its own copy, so the collector
+// publishes the outcome and every watcher settles from it. These pin the client
+// half of that contract.
+describe("outcomeFromWire", () => {
+  it("maps every outcome the server can publish", () => {
+    expect(outcomeFromWire("allow_once")).toEqual({ kind: "allow_once" });
+    expect(outcomeFromWire("allow_session")).toEqual({ kind: "allow_session" });
+    expect(outcomeFromWire("deny")).toEqual({ kind: "deny" });
+    expect(outcomeFromWire("expired")).toEqual({ kind: "expired" });
+  });
+
+  it("settles a question's answer without calling it a permission", () => {
+    expect(outcomeFromWire("answered")).toEqual({ kind: "allow_once" });
+  });
+
+  // The one failure a consent surface must not have: an outcome we did not
+  // understand must NEVER read as a grant. It fails closed to `expired`, and it
+  // says which value it did not recognise.
+  it("never reads an unrecognised outcome as a grant", () => {
+    for (const unknown of ["", "ALLOW", "granted", "allow", "allow_always"]) {
+      const got = outcomeFromWire(unknown);
+      expect(got).not.toEqual({ kind: "allow_once" });
+      expect(got).not.toEqual({ kind: "allow_session" });
+      expect(got.kind).toBe("expired");
+    }
+    expect(outcomeFromWire("allow_always")).toEqual({
+      kind: "expired",
+      detail: 'unrecognised outcome "allow_always"',
+    });
+  });
+});
+
+// The two halves the GUI actually composes: a resolution arriving for a card
+// this client did not answer.
+describe("settling another client's card", () => {
+  const items = (): AskItem[] => [
+    { key: "perm_1", ask: ask("perm_1"), outcome: null, resolvedAt: null, at: 1 },
+    { key: "perm_2", ask: ask("perm_2"), outcome: null, resolvedAt: null, at: 2 },
+  ];
+
+  it("settles only the named ask", () => {
+    const out = resolveAsk(items(), "perm_1", outcomeFromWire("deny"), 42);
+    expect(out.find((i) => i.key === "perm_1")?.outcome).toEqual({ kind: "deny" });
+    expect(out.find((i) => i.key === "perm_1")?.resolvedAt).toBe(42);
+    expect(out.find((i) => i.key === "perm_2")?.outcome).toBeNull();
+  });
+
+  // A relaying stream is a normal condition, not an error: the ask is delivered
+  // to every watcher, so the resolution is too. Settling an already-settled card
+  // must not overwrite the decision the operator made here.
+  it("is idempotent — a repeat resolution does not rewrite the decision", () => {
+    const once = resolveAsk(items(), "perm_1", outcomeFromWire("allow_session"), 42);
+    const twice = resolveAsk(once, "perm_1", outcomeFromWire("expired"), 99);
+    expect(twice.find((i) => i.key === "perm_1")?.outcome).toEqual({ kind: "allow_session" });
+    expect(twice.find((i) => i.key === "perm_1")?.resolvedAt).toBe(42);
+  });
+
+  // A watcher that attached AFTER the decision never received the ask, so there
+  // is no card to settle — and the resolution must not invent one.
+  it("is a no-op for an ask this client never saw", () => {
+    const out = resolveAsk(items(), "perm_gone", outcomeFromWire("deny"), 42);
+    expect(out).toHaveLength(2);
+    expect(out.every((i) => i.outcome === null)).toBe(true);
+  });
+});
+
+// The session row must SAY what it covers. The operator, re-asked for the same
+// directory with no way to tell how far a "session" grant reached, asked for "an
+// option that says something along the lines of 'Never ask again for this directory
+// for this session'".
+describe("sessionLabel", () => {
+  it("names the directory the grant would cover", () => {
+    expect(sessionLabel({ directory: "/p/sibling" })).toBe(
+      "Never ask again in /p/sibling this session",
+    );
+    expect(sessionLabel({ directory: "/p/sibling" })).toBe(
+      `${CONSENT_SESSION_PREFIX}/p/sibling${CONSENT_SESSION_SUFFIX}`,
+    );
+  });
+
+  // Target is a FILE for a write ask, so a label built from it would name a file as
+  // the directory a grant covers — a misstatement of the scope, which is the one
+  // thing this row exists to state.
+  it("names the scope by its lifetime when no directory is known", () => {
+    expect(sessionLabel({})).toBe(CONSENT_SESSION_NO_DIR);
+    expect(sessionLabel({ directory: "   " })).toBe(CONSENT_SESSION_NO_DIR);
+  });
+});
+
+describe("relativeGrantAge", () => {
+  it("reads as a time since granting, and says nothing when unknown", () => {
+    const now = 1_700_000_000_000;
+    expect(relativeGrantAge(0, now)).toBe("");
+    expect(relativeGrantAge(now / 1000 - 5, now)).toBe("just now");
+    expect(relativeGrantAge(now / 1000 - 180, now)).toBe("3m ago");
+    expect(relativeGrantAge(now / 1000 - 7200, now)).toBe("2h ago");
+    expect(relativeGrantAge(now / 1000 - 172800, now)).toBe("2d ago");
+  });
+});
+
+// The session-grants popover is a 320px panel anchored to a trigger that sits
+// MID-header on a narrow screen, so its left edge can land off the screen and
+// clip the granted directory (the one thing that list exists to show).
+describe("popoverNudge", () => {
+  it("pushes a would-be-clipped panel just back on screen", () => {
+    // 375px viewport, trigger's right edge ~290 (header chrome to its right):
+    // a 320px panel starts at -30, so it is pushed right by 38 (= 8 - (-30)).
+    expect(popoverNudge(290, 320)).toBe(38);
+  });
+
+  it("leaves a panel that already fits exactly where it is", () => {
+    expect(popoverNudge(328, 320)).toBe(0); // left edge exactly at the inset
+    expect(popoverNudge(955, 320)).toBe(0); // desktop
+    expect(popoverNudge(400, 320)).toBe(0);
+  });
+
+  it("handles a panel wider than the space to its left", () => {
+    expect(popoverNudge(100, 320)).toBe(228);
+  });
+});
+
+
+// THE DURABLE HALF OF CROSS-CLIENT SETTLING.
+//
+// The live PermissionAskResolved event reaches only a client watching the turn at that
+// moment: a second tab, another device, or the same page after a reload never sees it. The
+// server therefore writes every consent decision into the turn's ledger as a
+// `permission.<verdict>` record whose ID is the ASK ID, persisted with the assistant message
+// — and these functions read that, which is what makes a card settle for EVERY client without
+// anyone being asked to refresh.
+describe("outcomeFromRecord", () => {
+  it("maps the decision the operator made", () => {
+    expect(outcomeFromRecord("permission.user_PERMISSION_CHOICE_ALLOW_ONCE")).toEqual({ kind: "allow_once" });
+    expect(outcomeFromRecord("permission.user_PERMISSION_CHOICE_ALLOW_SESSION")).toEqual({ kind: "allow_session" });
+    expect(outcomeFromRecord("permission.user_PERMISSION_CHOICE_DENY")).toEqual({ kind: "deny" });
+  });
+
+  it("maps the outcomes no client could infer", () => {
+    expect(outcomeFromRecord("permission.expired")?.kind).toBe("expired");
+    expect(outcomeFromRecord("permission.answered")?.kind).toBe("allow_once");
+  });
+
+  // A card FULLSEND cleared. It is recorded under its own verdict so the transcript does not
+  // claim the operator clicked something they never saw — but the call DID proceed, so the
+  // card must settle as an approval rather than linger.
+  it("settles a fullsend-cleared card as an approval", () => {
+    expect(outcomeFromRecord("permission.fullsend_approved")).toEqual({ kind: "allow_once" });
+  });
+
+  // A refused call did not run, so a card raised for it must settle as refused rather than
+  // stay live. A broken policy is NOT a decision: the card settles as expired, never as a
+  // denial the operator never made.
+  it("settles a refused call as refused, and a broken policy as undecided", () => {
+    expect(outcomeFromRecord("permission.deny")).toEqual({ kind: "deny" });
+    expect(outcomeFromRecord("permission.never_allow")).toEqual({ kind: "deny" });
+    expect(outcomeFromRecord("permission.policy_error")?.kind).toBe("expired");
+  });
+
+  // THE NULLS ARE THE IMPORTANT PART. `permission.ask` is the card ITSELF — settling on it
+  // would clear a card the instant it was raised — and the others describe a call that
+  // proceeded WITHOUT a card, so there is nothing on screen to settle.
+  it("is null for records that are not a resolution", () => {
+    for (const name of [
+      "permission.ask",
+      "permission.session_grant",
+      "permission.accept",
+      "permission.project",
+      "permission.fullsend",
+      "permission.fullsend_approved_typo",
+      "write",
+      "",
+    ]) {
+      expect(outcomeFromRecord(name)).toBeNull();
+    }
+  });
+});
+
+describe("settleFromLedger", () => {
+  const asks = (): AskItem[] => [
+    { key: "ask_1", ask: ask("ask_1"), outcome: null, resolvedAt: null, at: 1 },
+    { key: "ask_2", ask: ask("ask_2"), outcome: null, resolvedAt: null, at: 2 },
+  ];
+  const ledger = (calls: Array<{ id: string; functionName: string }>) => [{ toolCalls: calls }];
+
+  it("settles a card whose ask the transcript resolved", () => {
+    const out = settleFromLedger(
+      asks(),
+      ledger([{ id: "ask_1", functionName: "permission.user_PERMISSION_CHOICE_DENY" }]),
+    );
+    expect(out.find((i) => i.key === "ask_1")?.outcome).toEqual({ kind: "deny" });
+    expect(out.find((i) => i.key === "ask_2")?.outcome).toBeNull();
+  });
+
+  // The card is raised and decided in the same turn's ledger. Settling on the ASK record
+  // would clear every card the moment it appeared.
+  it("does NOT settle on the ask record itself", () => {
+    const items = asks();
+    const out = settleFromLedger(items, ledger([{ id: "ask_1", functionName: "permission.ask" }]));
+    expect(out).toBe(items);
+  });
+
+  // It runs from an effect on every transcript poll, so returning a new array when nothing
+  // changed would schedule an update forever.
+  it("returns the SAME reference when there is nothing to settle", () => {
+    const items = asks();
+    expect(settleFromLedger(items, ledger([{ id: "ask_9", functionName: "permission.expired" }]))).toBe(items);
+    expect(settleFromLedger(items, undefined)).toBe(items);
+    expect(settleFromLedger(items, [])).toBe(items);
+    expect(settleFromLedger([], ledger([{ id: "ask_1", functionName: "permission.expired" }]))).toEqual([]);
+  });
+
+  it("never overwrites a decision already made here", () => {
+    const items = asks();
+    items[0].outcome = { kind: "allow_session" };
+    const out = settleFromLedger(items, ledger([{ id: "ask_1", functionName: "permission.expired" }]));
+    expect(out.find((i) => i.key === "ask_1")?.outcome).toEqual({ kind: "allow_session" });
+    expect(out).toBe(items);
+  });
+
+  it("the FIRST resolution wins when a record is repeated", () => {
+    const out = settleFromLedger(
+      asks(),
+      ledger([
+        { id: "ask_1", functionName: "permission.user_PERMISSION_CHOICE_ALLOW_SESSION" },
+        { id: "ask_1", functionName: "permission.expired" },
+      ]),
+    );
+    expect(out.find((i) => i.key === "ask_1")?.outcome).toEqual({ kind: "allow_session" });
+  });
+
+  // A message with no tool calls, and a non-permission tool call, are both inert.
+  it("ignores messages and calls that say nothing about a card", () => {
+    const items = asks();
+    expect(settleFromLedger(items, [{ toolCalls: [] }, { toolCalls: [{ id: "ask_1", functionName: "write" }] }])).toBe(items);
+  });
+});
+
+
+// THE TWO-CARDS-FOR-ONE-QUESTION BUG.
+//
+// The transcript records a tool call when it is ISSUED, with a placeholder `{}` for its arguments;
+// the real ones are backfilled only when the call COMPLETES. For `ask_user` the call does not
+// complete while the question is open — it BLOCKS, which is the point of the pause — so for exactly
+// as long as the operator is looking at a pending question, the transcript holds an ask_user call
+// whose arguments are `{}`. The GUI drew a card for it, next to the live one:
+//
+//	Could not read this clarifying question (the recorded arguments are not valid JSON)
+//
+// Three states, and the middle one is the fix.
+describe("askCardPlan", () => {
+  it("draws a readable call, live or settled", () => {
+    expect(askCardPlan(true, true, false)).toEqual({ render: true });
+    expect(askCardPlan(true, true, true)).toEqual({ render: true });
+  });
+
+  // THE FIX: unresolved + unreadable is the PLACEHOLDER, not corruption. The live card is drawing
+  // the real question, so anything drawn here is a duplicate — and an error about arguments that
+  // have not been written yet is a lie.
+  it("draws NOTHING for an open call whose arguments are still the placeholder", () => {
+    expect(askCardPlan(true, false, false)).toEqual({ render: false });
+  });
+
+  // Resolved + unreadable means the arguments really are corrupt. Drawing the error keeps the one
+  // piece of evidence that a question was asked; hiding it would lose that silently.
+  it("draws an ERROR for a finished call with corrupt arguments", () => {
+    expect(askCardPlan(true, false, true)).toEqual({
+      render: true,
+      error: "the recorded arguments are not valid JSON",
+    });
+  });
+
+  it("draws nothing when there is no ask call at all", () => {
+    expect(askCardPlan(false, false, false)).toEqual({ render: false });
+    expect(askCardPlan(false, true, false)).toEqual({ render: false });
+  });
+});

@@ -193,11 +193,25 @@ do_force_clean() {
     warn "docker not found — skipping container cleanup"
   fi
 
-  # 3. Clean up local state.
-  local state_dirs=("data" ".dev" "bin")
-  for d in "${state_dirs[@]}"; do
+  # 3. Clean up local state — ANCHORED TO THE STATE DIRECTORY, never the caller's cwd.
+  #
+  # THESE WERE BARE RELATIVE NAMES and that was a data-loss bug for anyone who ran the
+  # installer from a project directory. `rm -rf "data" ".dev" "bin"` resolves against the
+  # CURRENT WORKING DIRECTORY, and `bin/` and `data/` are names ordinary projects have —
+  # so `--force-clean` from a project root deleted that project's `bin/` and `data/`, and
+  # any `.dev/` it had. On Windows the same list ran after `cd "$HOME"`, which bounded it to
+  # `$HOME/bin`, `$HOME/data`, `$HOME/.dev` — still directories Orchicon does not own.
+  #
+  # The state this step exists to clear lives UNDER the Orchicon state dir; the README
+  # documents the layout as "Runtime state, PID files, logs (.dev/), blob store (data/)" at
+  # ~/.local/share/orchicon/. So it is named absolutely now, and XDG_DATA_HOME is honoured.
+  #
+  # `bin` IS DELIBERATELY NOT IN THE LIST. The binary is `$INSTALL_DIR/orchicon` and step 4
+  # removes it by ABSOLUTE path; nothing of ours has ever lived in a cwd-relative `bin`.
+  local state_dir="${XDG_DATA_HOME:-${HOME}/.local/share}/orchicon"
+  for d in "$state_dir/data" "$state_dir/.dev"; do
     if [ -d "$d" ]; then
-      info "removing ${d}/"
+      info "removing ${d}"
       $DRY_RUN || rm -rf "$d"
       ok "$d removed"
     fi

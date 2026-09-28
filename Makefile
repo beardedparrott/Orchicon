@@ -37,9 +37,9 @@ GOTMPDIR    ?= $(DEV_TOOLS)/gotmp
 export GOTMPDIR
 # PATH as well: a couple of recipes call a bare `go` (the standing PTY gate), and
 # they must resolve the SAME toolchain rather than whatever the shell happens to
-# have. Deliberately NOT adding .dev/tools/bin — `buf`/`atlas` resolve through
-# BUF_BIN's own prefer-bin-then-PATH rule, and shadowing them here would change
-# which codegen toolchain runs.
+# have. Deliberately NOT adding .dev/tools/bin — `buf` and `atlas` each resolve
+# through their own prefer-bin-then-PATH rule (BUF_BIN / ATLAS_BIN, right below),
+# and shadowing them here would change which codegen toolchain runs.
 PATH        := $(DEV_TOOLS)/go/bin:$(PATH)
 export PATH
 endif
@@ -78,6 +78,20 @@ help: ## Show available targets
 BUF_VERSION := 1.72.0
 BUF_SHA256  := a9c6186cf6fcf062b247345e1b7b12c26f580c1b2a4bbf4d3fe080abf85ceee8
 BUF_BIN     = $(if $(wildcard $(BIN_DIR)/buf),$(BIN_DIR)/buf,buf)
+# ATLAS GETS THE SAME RULE, and its absence is what broke `make rebuild-dev`:
+#
+#     cd db && atlas migrate hash --dir "file://migrations"
+#     bash: line 1: atlas: command not found
+#
+# The comment above the PATH block has always CLAIMED atlas resolved this way — "buf/atlas resolve
+# through BUF_BIN's own prefer-bin-then-PATH rule" — but the rule was only ever written for buf, and
+# `ATLAS := atlas` was a bare name that resolved through PATH alone. So the build depended on the
+# operator's shell having atlas on PATH, which is exactly the fragility that bit: atlas lives in
+# .dev/tools/bin, and the PATH entries that reached it were lost with the rest of the home directory.
+#
+# A BUILD MUST NOT DEPEND ON THE OPERATOR'S SHELL PROFILE — the profile is a file like any other, and
+# this one was on the same filesystem an `rm` emptied. Prefer our own copies, then PATH.
+ATLAS_BIN   = $(if $(wildcard $(BIN_DIR)/atlas),$(BIN_DIR)/atlas,$(if $(wildcard $(DEV_TOOLS)/bin/atlas),$(DEV_TOOLS)/bin/atlas,atlas))
 
 .PHONY: toolchain
 toolchain: ## Show the Go toolchain + env this Makefile will build with
@@ -188,31 +202,44 @@ cache-check: ## Show the Go build cache size
 	@echo "GOCACHE: $(shell $(GO) env GOCACHE)"
 	@du -sh "$$($(GO) env GOCACHE)" 2>/dev/null | cut -f1 || echo "0B"
 
-# clean-docker reclaims disk from Docker build leftovers WITHOUT touching
-# the running stateful instance containers (dev/prod), their data volumes,
-# or the Postgres volumes that preserve instance data. Safe to run
-# regularly during dev: dangling (untagged) images, stopped containers, and
-# volumes not referenced by any container. Note this WILL remove orphaned
-# anonymous volumes from old compose-era/test runs — it does NOT remove
-# tagged images you might still want (e.g. the rocm/vllm images).
+# clean-docker reclaims disk from ORCHICON's own Docker build leftovers, and nothing else.
+#
+# EVERY PRUNE HERE IS SCOPED TO WHAT THIS PROJECT OWNS, which the first version of this target was
+# not. It ran `docker container prune -f` and `docker volume prune -f` — both HOST-WIDE. On a machine
+# where the operator has any other Docker work, that removed THEIR stopped containers and THEIR
+# unused volumes: `docker volume prune` deletes every unreferenced volume on the host, and Orchicon's
+# own data is a BIND MOUNT (not a named volume), so it owned none of what it was deleting. A sweep for
+# "anything that could damage another machine" found it: a destructive operation whose target was not
+# anchored to what the program owns, which is the same defect class as the installer step that deleted
+# the caller's own `bin/` and the guard test that deleted a home directory.
+#
+#   containers  SCOPED to our label. Every Orchicon container carries `orchicon-instance`, so the
+#               filter removes ours and cannot reach anyone else's.
+#   images      DANGLING only. A dangling image has no tag and no container referencing it, so it is
+#               unreferenced by definition rather than by our guess. THIS IS STILL HOST-WIDE and is
+#               the one clause that is not scoped — stated rather than glossed: the alternative is to
+#               leave them, and an untagged image rebuilds for free.
+#   volumes     GONE, deliberately. There is no filter that makes this ours: we create no labelled
+#               volumes, so any predicate would be a guess about someone else's data. An operator who
+#               wants a host-wide volume prune can run it themselves, knowing what it does.
 .PHONY: clean-docker
-clean-docker: ## Prune dangling Docker images, stopped containers, and unused volumes
+clean-docker: ## Prune Orchicon's dangling images and stopped containers (never volumes)
 	@docker image prune -f --filter "dangling=true"
-	@docker container prune -f
-	@docker volume prune -f
+	@docker container prune -f --filter "label=orchicon-instance"
 
 # --- Database --------------------------------------------------------------
 .PHONY: migrate migrate-diff migrate-hash rls-check synth-data
 migrate: ## Apply pending Atlas migrations to $$DB_URL
-	@command -v $(ATLAS) >/dev/null 2>&1 || curl -sSfL https://atlasgo.sh | sh
-	cd db && $(ATLAS) migrate apply --env local --url "$(DB_URL)"
+	@command -v $(ATLAS_BIN) >/dev/null 2>&1 || curl -sSfL https://atlasgo.sh | sh
+	cd db && $(ATLAS_BIN) migrate apply --env local --url "$(DB_URL)"
 
 migrate-diff: ## Generate a new migration from db/schema.hcl (usage: make migrate-diff name=foo)
 	@test -n "$(name)" || { echo "usage: make migrate-diff name=<migration_name>"; exit 1; }
-	cd db && $(ATLAS) migrate diff $(name) --env local --to "file://schema.hcl" --dir "file://migrations"
+	cd db && $(ATLAS_BIN) migrate diff $(name) --env local --to "file://schema.hcl" --dir "file://migrations"
 
 migrate-hash: ## Recompute the Atlas migration directory hash (after hand-edits)
-	cd db && $(ATLAS) migrate hash --dir "file://migrations"
+	@command -v $(ATLAS_BIN) >/dev/null 2>&1 || curl -sSfL https://atlasgo.sh | sh
+	cd db && $(ATLAS_BIN) migrate hash --dir "file://migrations"
 
 rls-check: ## CI gate: every tenant_id table must have the RLS policy (docs/09 §8.5)
 	scripts/check-rls.sh "$(DB_URL)"
@@ -224,7 +251,7 @@ adapter-bake-guard: ## CI gate: adapter CLIs are MOUNTED, never baked into image
 	go test ./internal/runtime/ -run 'TestAdapterCLINeverBaked' -count=1 -v
 
 # --- Frontend --------------------------------------------------------------
-.PHONY: fe-install fe-dev fe-build fe-lint fe-test
+.PHONY: fe-install fe-dev fe-build fe-lint fe-test docs-check
 fe-install: ## Install frontend dependencies
 	cd frontend && npm install
 
@@ -253,10 +280,37 @@ fe-lint: ## Lint the frontend
 fe-test: ## Run frontend unit/component tests (vitest; Playwright specs live under test:snapshots/test:a11y/test:scope)
 	cd frontend && npm test
 
+docs-check: ## Validate every Mermaid diagram in DOCUMENTATION.md with a real parser
+	@# The prefix is REUSED once installed, so a repeat run is instant rather than re-resolving the
+	@# tree every time; CI passes ORCHICON_MERMAID_PREFIX from its own $RUNNER_TEMP install.
+	@if [ -n "$$ORCHICON_MERMAID_PREFIX" ]; then \
+		node scripts/check-mermaid.mjs; \
+	elif [ -d "$(CURDIR)/frontend/node_modules/mermaid" ]; then \
+		node scripts/check-mermaid.mjs; \
+	else \
+		if [ ! -d "$(CURDIR)/.mermaid-check/node_modules/mermaid" ]; then \
+			echo "==> installing the Mermaid parser into .mermaid-check (gitignored)"; \
+			npm install --silent --no-audit --no-fund --prefix "$(CURDIR)/.mermaid-check" mermaid@10.9.8 jsdom; \
+		fi; \
+		ORCHICON_MERMAID_PREFIX="$(CURDIR)/.mermaid-check/node_modules" node scripts/check-mermaid.mjs; \
+	fi
+
 # --- Single container (deployment) -----------------------------------------
 # The single container is the only full-stack deployment (dev + prod as two
 # instances on offset ports). See scripts/container.sh.
 .PHONY: container-build container-rebuild container-up container-down container-status container-logs container-ps runtime-build runtime-daemon runtime-stop
+# Plane residency per rebuild: `host` (the container runs the SERVICES only and
+# the plane runs on the HOST — now the product's default shape; see
+# residency_for in scripts/container.sh, which resolves ${...:-host}) or
+# `container` (the plane runs inside the instance's container, as it did before
+# the host-residency migration).
+#
+# THIS VARIABLE IS NO LONGER THE PRODUCT'S DEFAULT, only this target's. It used
+# to be described as "the launcher's own default stays container", and that
+# stopped being true when the launcher's default moved to host — so
+# `make container-rebuild` is now the one entry point that still produces the
+# OLD shape. rebuild-dev/rebuild-prod override this per target (below).
+residency = container
 container-build: ## Build bin/orchicon + the container image
 	$(MAKE) build
 	scripts/container.sh build
@@ -267,12 +321,24 @@ runtime-daemon: ## Start the host-side workflow runtime daemon
 	scripts/container.sh runtime-daemon
 runtime-stop: ## Stop the host-side workflow runtime daemon
 	scripts/container.sh runtime-stop
-container-rebuild: ## Stop an instance, rebuild the image, start it (usage: make container-rebuild dev|prod)
+container-rebuild: ## Stop an instance, rebuild the image, start it (usage: make container-rebuild dev|prod [residency=host|container])
 	@test -n "$(instance)" || { echo "usage: make container-rebuild instance=dev|prod"; exit 1; }
-	scripts/container.sh down $(instance)
+	# residency is passed down as ENV (per invocation) — never exported globally,
+	# so rebuilding one instance cannot change the other's shape.
+	ORCHICON_PLANE_RESIDENCY="$(residency)" scripts/container.sh down $(instance)
 	$(MAKE) container-build force-fe=1
-	scripts/container.sh up $(instance)
-container-up: ## Start the dev single-container instance
+	ORCHICON_PLANE_RESIDENCY="$(residency)" scripts/container.sh up $(instance)
+# Host-resident plane listeners: the plane binds its loopback address
+# (ORCHICON_HTTP_ADDR → host clients: orch, the GUI) plus the docker bridge
+# address at THIS instance's port, so its run containers can dial it. Both the
+# bind (ORCHICON_HTTP_EXTRA_BIND) and the URL those containers are handed
+# (ORCHICON_PLANE_PUBLIC_URL) come from the ONE place that computes them
+# (`scripts/container.sh plane-bind <dev|prod>`, bridge_bind_env) and
+# `plane-start` picks them up through container.sh's plane_env. Both are PER
+# INSTANCE: never put a globally-shared ORCHICON_PLANE_PUBLIC_URL in a shell
+# profile — a globally-set value points one instance's workers at the other's
+# plane.
+container-up: ## Start the dev single-container instance (ORCHICON_PLANE_RESIDENCY=host opt-in: plane on the host)
 	scripts/container.sh up dev
 container-down: ## Stop the dev single-container instance
 	scripts/container.sh down dev
@@ -303,6 +369,17 @@ container-ps: ## List orchicon container instances
 # there is no separate `make migrate` needed here — running it against the
 # instance's Postgres would conflict with the container-owned DB.
 .PHONY: full-rebuild rebuild-dev rebuild-prod
+# residency propagates to container-rebuild through the make chain: BOTH
+# rebuild-dev and rebuild-prod pass residency=host explicitly, so each rebuild
+# migrates its OWN instance to a host-resident plane and neither can alter the
+# other's shape (the launcher's own default stays `container` — see
+# residency_for in scripts/container.sh; nothing here is ever exported
+# globally).
+#
+# `residency=container` on the command line OVERRIDES the target default (a
+# command-line variable beats a target-specific one), which is the documented
+# rollback: `make rebuild-prod residency=container` puts prod's plane back
+# inside its container.
 full-rebuild: ## One command: binary build + all checks/tests + migrate-hash + image build + instance restart (usage: make full-rebuild instance=dev|prod)
 	@test -n "$(instance)" || { echo "usage: make full-rebuild instance=dev|prod"; exit 1; }
 	$(MAKE) build
@@ -310,12 +387,14 @@ full-rebuild: ## One command: binary build + all checks/tests + migrate-hash + i
 	$(MAKE) migrate-hash
 	$(MAKE) container-rebuild instance=$(instance)
 
-rebuild-dev: ## One command: full checks/tests + rebuild + restart the DEV instance
-	$(MAKE) full-rebuild instance=dev
+rebuild-dev: residency = host
+rebuild-dev: ## One command: full checks/tests + rebuild + restart the DEV instance (plane residency: host)
+	$(MAKE) full-rebuild instance=dev residency=$(residency)
 	$(MAKE) orch-launcher-dev
 
-rebuild-prod: ## One command: full checks/tests + rebuild + restart the PROD instance
-	$(MAKE) full-rebuild instance=prod
+rebuild-prod: residency = host
+rebuild-prod: ## One command: full checks/tests + rebuild + restart the PROD instance (plane residency: host; pass residency=container to keep it in its container)
+	$(MAKE) full-rebuild instance=prod residency=$(residency)
 	$(MAKE) orch-launcher-prod
 
 # --- Dual orch launchers ----------------------------------------------------

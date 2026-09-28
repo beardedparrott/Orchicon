@@ -136,15 +136,15 @@ func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage
 	var params struct {
 		DefaultWorkerModel               string  `json:"default_worker_model"`
 		DefaultAskOrchiconModel          string  `json:"default_ask_orchicon_model"`
-		StallNoProgressWindowSeconds     int64   `json:"stall_no_progress_window_seconds"`
-		StallNoFileDiffWindowSeconds     int64   `json:"stall_no_file_diff_window_seconds"`
-		StallTextLoopWindowSeconds       int64   `json:"stall_text_loop_window_seconds"`
-		StallRepetitionCount             int32   `json:"stall_repetition_count"`
-		StallRepetitionWindowSeconds     int64   `json:"stall_repetition_window_seconds"`
-		StallNudgeMax                    int32   `json:"stall_nudge_max"`
-		StallNudgeReplyWindowSeconds     int64   `json:"stall_nudge_reply_window_seconds"`
-		StallNudgeCooldownSeconds        int64   `json:"stall_nudge_cooldown_seconds"`
-		StallToolHangSeconds             int64   `json:"stall_tool_hang_seconds"`
+		StallNoProgressWindowSeconds     *int64  `json:"stall_no_progress_window_seconds"`
+		StallNoFileDiffWindowSeconds     *int64  `json:"stall_no_file_diff_window_seconds"`
+		StallTextLoopWindowSeconds       *int64  `json:"stall_text_loop_window_seconds"`
+		StallRepetitionCount             *int32  `json:"stall_repetition_count"`
+		StallRepetitionWindowSeconds     *int64  `json:"stall_repetition_window_seconds"`
+		StallNudgeMax                    *int32  `json:"stall_nudge_max"`
+		StallNudgeReplyWindowSeconds     *int64  `json:"stall_nudge_reply_window_seconds"`
+		StallNudgeCooldownSeconds        *int64  `json:"stall_nudge_cooldown_seconds"`
+		StallToolHangSeconds             *int64  `json:"stall_tool_hang_seconds"`
 		DefaultBudgetOverrides           *string `json:"default_budget_overrides"`
 		ExecutionReapGraceSeconds        int64   `json:"execution_reap_grace_seconds"`
 		ExecutionReapConsecutiveFailures int32   `json:"execution_reap_consecutive_failures"`
@@ -210,6 +210,44 @@ func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage
 	inRow.ContextRecentTurns = cur.ContextRecentTurns
 	inRow.MemoryEnabled = cur.MemoryEnabled
 	inRow.MemoryDigestEntries = cur.MemoryDigestEntries
+	// STALL THRESHOLDS ARE DIFFERENT, and this is the one place the difference
+	// can bite. db.UpdateTenantSettings writes them VERBATIM — a blank value
+	// means "use the built-in default" — which is correct for the Settings form
+	// (a full-form save: what you see is what you send) but WRONG for this tool,
+	// which is partial by nature. An agent call that sets only a model ref would
+	// otherwise blank every stall dimension it did not mention and silently reset
+	// detection to the defaults behind the operator's back.
+	//
+	// So guard them exactly as the budget and policy columns above are guarded:
+	// an OMITTED key preserves the stored value, and an explicit one — including
+	// 0, which means DISABLED — is applied.
+	if params.StallNoProgressWindowSeconds == nil {
+		inRow.StallNoProgressWindowSeconds = cur.StallNoProgressWindowSeconds
+	}
+	if params.StallNoFileDiffWindowSeconds == nil {
+		inRow.StallNoFileDiffWindowSeconds = cur.StallNoFileDiffWindowSeconds
+	}
+	if params.StallTextLoopWindowSeconds == nil {
+		inRow.StallTextLoopWindowSeconds = cur.StallTextLoopWindowSeconds
+	}
+	if params.StallRepetitionCount == nil {
+		inRow.StallRepetitionCount = cur.StallRepetitionCount
+	}
+	if params.StallRepetitionWindowSeconds == nil {
+		inRow.StallRepetitionWindowSeconds = cur.StallRepetitionWindowSeconds
+	}
+	if params.StallNudgeMax == nil {
+		inRow.StallNudgeMax = cur.StallNudgeMax
+	}
+	if params.StallNudgeReplyWindowSeconds == nil {
+		inRow.StallNudgeReplyWindowSeconds = cur.StallNudgeReplyWindowSeconds
+	}
+	if params.StallNudgeCooldownSeconds == nil {
+		inRow.StallNudgeCooldownSeconds = cur.StallNudgeCooldownSeconds
+	}
+	if params.StallToolHangSeconds == nil {
+		inRow.StallToolHangSeconds = cur.StallToolHangSeconds
+	}
 	if err := inRow.ApplyBudgetJSON(budget); err != nil {
 		return nil, fmt.Errorf("invalid default_budget_overrides: %w", err)
 	}

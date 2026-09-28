@@ -67,6 +67,14 @@ type convState struct {
 	// returns it).
 	optimisticUser string
 	sentText       string
+	// attempt is the turn the slot's CURRENT stream attempt was opened for.
+	//
+	// IT EXISTS FOR ONE FAILURE: the server refusing the attempt because a reply is already running on
+	// this conversation (its one-turn gate, see dropStream). That refusal is curable — the remedy is the
+	// supersede RPC — and curing it needs the very message the attempt carried, which is otherwise gone
+	// by the time the refusal arrives. retried caps the remedy at one re-issue, so a failure the
+	// supersede path cannot fix is reported rather than retried forever.
+	attempt streamAttempt
 	// lastActivity is the UnixMilli of the most recent event from the stream — a text chunk, a
 	// reasoning chunk, a tool event or a HEARTBEAT. The liveness watchdog reads it (see
 	// runLivenessWatch); without it, a stream whose socket died silently is indistinguishable
@@ -156,6 +164,11 @@ type Conversation struct {
 	MessageN  int32
 	ModelRef  string
 	Mode      apiv1.ConversationMode
+	// Fullsend is whether this conversation is in FULLSEND: the operator has waived the
+	// permission PROMPT for it. Read from the conversation row the server computes at read
+	// time, so the composer indicator tracks the SERVER's state — including a toggle made in
+	// the GUI — on the same conversation-list reload the mode pill already follows.
+	Fullsend bool
 	// ProjectID is the project this conversation belongs to, or "" when unassigned (the API's empty string, kept
 	// as-is rather than normalized into a sentinel so the rail and the GUI agree on what "unassigned" looks like).
 	//
@@ -586,6 +599,28 @@ func (c *Controller) SetConversationModel(id, modelRef string) tea.Cmd {
 	}
 }
 
+// SetConversationFullsend turns FULLSEND on or off for one conversation — the TUI's
+// `/fullsend` write path.
+//
+// IT IS AN EXPLICIT BOOLEAN, never a toggle request: the caller decides from the state it
+// can currently SEE and sends the value it wants, so a retry after a dropped response
+// cannot flip the mode by accident. The OPERATOR's intent is the toggle; the WIRE carries
+// a value.
+func (c *Controller) SetConversationFullsend(id string, enabled bool) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		_, err := c.cl.Ask.SetConversationFullsend(ctx, connect.NewRequest(&apiv1.SetConversationFullsendRequest{
+			Id:      id,
+			Enabled: enabled,
+		}))
+		if err != nil {
+			return ConversationMutatedMsg{Op: "fullsend", ID: id, Err: err.Error()}
+		}
+		return ConversationMutatedMsg{Op: "fullsend", ID: id}
+	}
+}
+
 // LoadConversations fetches the conversation rail.
 func (c *Controller) LoadConversations() tea.Cmd {
 	return func() tea.Msg {
@@ -604,6 +639,7 @@ func (c *Controller) LoadConversations() tea.Cmd {
 				MessageN:  cv.GetMessageCount(),
 				ModelRef:  cv.GetModelRef(),
 				Mode:      cv.GetMode(),
+				Fullsend:  cv.GetFullsend(),
 				ProjectID: cv.GetProjectId(),
 				// Read at list time, so a conversation the server reports as mid-turn is recognisable as such the
 				// moment the rail loads — which is what the re-attach on open needs.
@@ -611,6 +647,67 @@ func (c *Controller) LoadConversations() tea.Cmd {
 			})
 		}
 		return ConversationsMsg{Convs: convs, Categories: resp.Msg.GetCategories(), Assignments: resp.Msg.GetAssignments()}
+	}
+}
+
+// ConsentRepliedMsg reports the SERVER's answer to a permission decision.
+//
+// It exists so a decision that did NOT apply is visible. A reply can legitimately
+// lose — the ask expired, the turn ended, another reply won — and the server says so
+// (`applied: false`, `expired: true`) rather than reporting a silent success. Without
+// this the operator's click looked like an approval while the call was denied.
+type ConsentRepliedMsg struct {
+	ConvID  string
+	Applied bool
+	Expired bool
+	Detail  string
+	Err     string
+}
+
+// ConsentResolvedMsg reports that an ask was SETTLED BY SOMEONE ELSE — the other
+// client, or the collector expiring it.
+//
+// It exists because an ask reaches every watcher of a turn while only the client that
+// answered it cleared its own copy. See the PermissionAskResolved wire arm in
+// handleEvent.
+type ConsentResolvedMsg struct {
+	ConvID  string
+	AskID   string
+	Outcome string
+	Answer  string
+}
+
+// ReplyPermissionAsk answers a pending permission ask ON THE SERVER.
+//
+// THE TUI NEVER DID THIS, WHICH IS WHY APPROVING A CARD DID NOTHING. ConsentResolve
+// recorded a LOCAL session grant and showed a notice, then repainted — while the
+// server's ask stayed open until its wait expired, so the call was denied and the
+// transcript recorded a denial the operator never made. The operator: "it accepted my
+// click … also for some reason the history says I denied it."
+//
+// The GUI has always called this RPC (`askOrchiconClient.replyPermissionAsk`); the TUI
+// had no equivalent, so a permission could be decided in the browser and never from
+// the terminal. The local grant is still recorded (it is what silences the NEXT card
+// for that directory without a round trip) but it is no longer the whole story.
+func (c *Controller) ReplyPermissionAsk(convID, askID string, choice apiv1.PermissionChoice, answer string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		resp, err := c.cl.Ask.ReplyPermissionAsk(ctx, connect.NewRequest(&apiv1.ReplyPermissionAskRequest{
+			ConversationId: convID,
+			AskId:          askID,
+			Choice:         choice,
+			Answer:         answer,
+		}))
+		if err != nil {
+			return ConsentRepliedMsg{ConvID: convID, Err: err.Error()}
+		}
+		return ConsentRepliedMsg{
+			ConvID:  convID,
+			Applied: resp.Msg.GetApplied(),
+			Expired: resp.Msg.GetExpired(),
+			Detail:  resp.Msg.GetDetail(),
+		}
 	}
 }
 
@@ -695,14 +792,48 @@ func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 				Key:  "m-" + m.GetId() + "-r" + itoa(int64(j)),
 			})
 		}
+		// A recorded ask_user call renders as a clarifying-question card. Keyed by
+		// message id + "-ask" so a fold/refresh keeps a stable key (same reason as
+		// the reasoning keys above).
+		//
+		// IT IS EMITTED LAST — after the message's own text — because the card is
+		// the thing the operator ACTS ON, not a transcript record of something that
+		// already happened. The operator: "I see the Orchicon asks box but … it is ON
+		// TOP of a bunch of other text you sent. That is not intuitive. It should be
+		// at the bottom (newest/recent)." Chronologically the tool call precedes the
+		// prose that follows it, so the card used to sit above the reply; the reading
+		// order the operator needs is the opposite, because the question is the last
+		// thing in the turn from their point of view.
+		//
+		// (With the turn PAUSED on the question — see the tool's own docs — there is
+		// normally no prose after it at all, and this ordering makes the card the
+		// bottom line either way.)
 		items = append(items, ChatItem{
 			Kind: kind,
 			Text: m.GetContent(),
 			At:   at,
 			Key:  "m-" + m.GetId(),
 		})
+		if ask := parseAskUserCall(m.GetToolCalls(), m.GetToolResults()); ask != nil {
+			items = append(items, ChatItem{
+				Kind: KindAsk,
+				Ask:  ask,
+				At:   at,
+				Key:  "m-" + m.GetId() + "-ask",
+			})
+		}
 	}
 	return items
+}
+
+// AnswerQuestion answers a recorded clarifying question by sending the chosen
+// option's LABEL as a normal user message — the SAME path every other message
+// takes (Send). There is deliberately no rendezvous and no separate reply
+// channel: the tool RECORDED the question and the turn already completed, so the
+// answer is simply the next message. (A CONSENT ask is different: it is
+// genuinely blocking on the transport and must not be answered this way.)
+func (c *Controller) AnswerQuestion(convID, label string) tea.Cmd {
+	return c.Send(convID, label, "")
 }
 
 // Send dispatches a turn: InterjectConversationTurn when the
@@ -738,6 +869,10 @@ func (c *Controller) SendWithAttachments(convID, text, contextPreamble string, f
 	st.reconnecting = false
 	st.sentText = text
 	st.optimisticUser = text
+	// THE TURN IS REMEMBERED FOR THE ONE RETRY THAT IS POSSIBLE (see dropStream): a stream the server
+	// refuses because a reply is already running is re-issued on the supersede path, and that needs the
+	// request verbatim. A fresh attempt always clears the retried flag, so each send gets its own retry.
+	st.attempt = streamAttempt{full: full, files: files}
 	if interject {
 		// Superseding turn: clear the old slot's reply pointer (the new
 		// turn acks a fresh assistant_message_id).
@@ -807,6 +942,12 @@ func (c *Controller) startStream(convID, full, call string, files []*apiv1.Attac
 				Attachments:    files,
 			}))
 		}
+		// A REFUSAL OF THIS SEND IS NOT HANDLED HERE — DELIBERATELY. This is a server-STREAMING RPC, so
+		// the server's one-turn refusal ('a reply is still in progress for this conversation') does NOT
+		// come back as a call error: the call returns a healthy stream and the error arrives ON the
+		// stream, in consume → dropStream. That is where the send is re-issued on the supersede path (see
+		// dropStream) — and the same refusal seen HERE would be the very same fact only for a transport
+		// that reports it up front, which this client's connect stack does not.
 		if err != nil {
 			c.failStream(convID, err)
 			return ErrMsg{Where: call, Err: err}
@@ -944,14 +1085,22 @@ func (c *Controller) Poll(convID string) tea.Cmd { return c.pollTranscript(convI
 // stream also closes cleanly, and without the check that close would clear the slot belonging to the
 // turn that replaced it — killing the thinking indicator, the watchdog and the pending-reply id the
 // moment the operator interjected.
-func (c *Controller) EndStream(convID string, gen uint64) {
+func (c *Controller) EndStream(convID string, gen uint64) bool {
+	ended := false
 	c.mu.Lock()
 	if st := c.state[convID]; st != nil && st.gen == gen {
 		st.streaming = false
 		st.reconnecting = false
 		st.pendingReplyID = ""
+		ended = true
 	}
 	c.mu.Unlock()
+	// IT REPORTS WHETHER IT ENDED THE SLOT so a caller can act on "this turn is over"
+	// without re-deriving it. The generation guard is the whole reason to ask: a
+	// SUPERSEDED stream closes too, and its close must not clear state belonging to
+	// the turn that replaced it — including the stale-consent sweep, which would
+	// otherwise settle a live card on a still-running turn.
+	return ended
 }
 
 // AbortTurn stops the in-flight turn on a conversation: the TUI's Stop control (the composer's ctrl+y),
@@ -1086,6 +1235,55 @@ func (c *Controller) handleEvent(convID string, ev *apiv1.ChatStreamResponse) {
 			Output:   e.ToolCallResult.GetOutput(),
 			At:       now(),
 		}, Key: "tcr-" + id})
+	case *apiv1.ChatStreamResponse_PermissionAskResolved:
+		// THE OTHER CLIENT DECIDED.
+		//
+		// An ask is delivered to EVERY watcher of a turn, but only the client that
+		// ANSWERED it cleared its own copy — so a decision made in the TUI left the
+		// GUI showing a live-looking, inert card, and vice versa. Clients cannot infer
+		// it: a permission ask has no durable per-ask row to reconcile against (the
+		// transcript records the outcome, not the open ask). The collector publishes
+		// this the moment it APPLIES a decision, so every watcher can settle.
+		//
+		// Without this the TUI's card stayed pending until the turn ended (see
+		// settleStaleConsent, which is the convergence path for a client that missed
+		// the message — a decision made before it attached).
+		if r := e.PermissionAskResolved; r != nil && r.GetAskId() != "" {
+			if c.cmds != nil {
+				select {
+				case c.cmds <- func() tea.Msg {
+					return ConsentResolvedMsg{
+						ConvID:  convID,
+						AskID:   r.GetAskId(),
+						Outcome: r.GetOutcome(),
+						Answer:  r.GetAnswer(),
+					}
+				}:
+				default:
+				}
+			}
+		}
+	case *apiv1.ChatStreamResponse_PermissionAsk:
+		// THE PERMISSION CARD'S WIRE ARM.
+		//
+		// This was the missing link: the server builds the ask
+		// (askorchicon.permissionAskEvent), the proto carries it
+		// (ChatStreamResponse.PermissionAsk), and the shell has a hook for it
+		// (App.ShowConsentAsk, whose own comment says it fires "once the sibling
+		// lands the wire arm") — but nothing on the client ever read the field, so
+		// the card was complete and permanently starved. No adapter's ask could
+		// reach the TUI, this one's or opencode's.
+		//
+		// Best-effort like the other live signals: a dropped ask is re-sent on
+		// re-attach (the server's replay path emits the identical shape), so it
+		// cannot be lost permanently.
+		ask := PermissionAskFromProto(e.PermissionAsk)
+		if c.cmds != nil {
+			select {
+			case c.cmds <- func() tea.Msg { return ConsentAskMsg{ConvID: convID, Ask: ask} }:
+			default:
+			}
+		}
 	case *apiv1.ChatStreamResponse_Done:
 		// poll finalizes; nothing to append
 	}
@@ -1103,6 +1301,24 @@ func (c *Controller) appendChunk(convID string, item ChatItem) {
 	if c.store != nil {
 		c.store.AppendLiveItem(convID, item)
 	}
+}
+
+// streamAttempt is the turn a slot's current stream attempt carries.
+type streamAttempt struct {
+	full    string // the message exactly as it goes on the wire (context preamble included)
+	files   []*apiv1.AttachmentInput
+	retried bool
+}
+
+// isTurnGateRefusal reports whether err is the server's ONE-TURN-PER-CONVERSATION refusal.
+//
+// The service answers a second ChatStream for a conversation whose reply is still running with
+// CodeFailedPrecondition ('a reply is still in progress for this conversation — wait for it to
+// complete or stop it first': internal/askorchicon/chat.go, turnRegistry.register). The SAME code is
+// also how an unresolvable adapter is reported (chat.go, resolveChatClient), which is why the remedy in
+// dropStream is capped at ONE re-issue and a second failure is reported to the operator instead.
+func isTurnGateRefusal(err error) bool {
+	return err != nil && connect.CodeOf(err) == connect.CodeFailedPrecondition
 }
 
 // failStream handles a pre-ack send/interject failure: when the turn was
@@ -1144,24 +1360,83 @@ func (c *Controller) dropStream(convID string, gen uint64, err error) {
 		c.mu.Unlock()
 		return // a superseded stream's failure is not this slot's business
 	}
-	watch := ""
+	var (
+		watch  string
+		retry  tea.Cmd
+		report tea.Cmd
+	)
 	if st.streaming {
-		if st.pendingReplyID != "" {
+		switch {
+		case st.pendingReplyID != "":
 			// acked turn: the server-side collector keeps running — slot
 			// stays streaming, goes reconnecting, watch re-dials the hub.
 			st.reconnecting = true
 			watch = st.pendingReplyID
-		} else {
+		case isTurnGateRefusal(err) && st.attempt.full != "" && !st.attempt.retried:
+			// THE SERVER'S ONE-TURN GATE REFUSED THE OPERATOR'S SEND — SO IT IS DELIVERED ON THE SUPERSEDE
+			// PATH INSTEAD OF BOUNCED.
+			//
+			// The service allows ONE turn per conversation and answers a second ChatStream with
+			// FailedPrecondition ("a reply is still in progress for this conversation — wait for it to
+			// complete or stop it first"), naming the remedy in the same breath: the client interjects
+			// (supersedes) instead. That is already the rule this client documents — "sending while a reply
+			// streams interjects (supersedes the turn) instead" (help.go) — and it is the whole point of the
+			// `interject` decision in SendWithAttachments.
+			//
+			// THAT DECISION IS GUESSED FROM THIS CLIENT'S OWN SLOT, AND THE SLOT GOES STALE — WHICH IS WHY
+			// THE OPERATOR HIT THIS AT ALL: "if I leave a conversation in the TUI and come back, it doesn't
+			// actually send my message and I have to send it twice." Leaving and returning is exactly when
+			// the slot and the server disagree: a stream that died before its ack tears the slot down while
+			// the server's DETACHED turn keeps running (chat.go registers the turn under
+			// context.WithoutCancel, "alive across a stream disconnect / tab close"), and the only re-sync is
+			// reattachRunningTurn — which reads the RAIL row, so a row that predates the turn leaves the
+			// client saying "idle" while the server says "busy". The send then went out as a plain
+			// ChatStream, was refused, and the operator's message never left the machine.
+			//
+			// THE SERVER'S GATE IS THE AUTHORITY, so honour it rather than retry the same guess: re-issue the
+			// very same turn on the supersede path, whose whole contract is that it cancels the running turn
+			// and dispatches this message. The slot is NOT torn down — the retry owns it — and the generation
+			// advances so the stream that just failed cannot touch it.
+			st.attempt.retried = true
+			st.gen++
+			st.reconnecting = false
+			st.lastActivity = now()
+			gen = st.gen
+			retry = c.startStream(convID, st.attempt.full, "interject", st.attempt.files, gen)
+		default:
 			// pre-ack failure: tear down (GUI fail() with no reply id).
+			//
+			// AND IF THAT LOST TURN WAS THE OPERATOR'S OWN SEND, THEY ARE TOLD. This path used to leave the
+			// message nowhere — the composer empty, no turn on the wire, and only the controller's sticky
+			// error (which nothing reads) — and a send that fails silently is the same defect class as the
+			// send that never went out. ErrMsg is the shell's existing failed-send path: the dock's error
+			// strip, and the draft back in the composer (see App.setChatError / dock.RestoreDraft).
+			if st.attempt.full != "" {
+				report = func() tea.Msg { return ErrMsg{Where: "send", Err: err} }
+			}
 			st.streaming = false
 			st.optimisticUser = ""
 			st.sentText = ""
+			st.attempt = streamAttempt{}
 		}
 	}
 	c.err = err.Error()
 	c.mu.Unlock()
+	if retry != nil {
+		// A NEW ATTEMPT OWNS THE SLOT: the shell runs this exactly like the send's own command.
+		if c.cmds != nil {
+			c.cmds <- retry
+		}
+		return
+	}
 	if watch != "" && c.cmds != nil {
 		c.cmds <- c.Watch(convID, watch)
+		return
+	}
+	if report != nil && c.cmds != nil {
+		// LAST, and only ever one of these: the shell dispatches it like any other chat message, which is
+		// how a failed send reaches the dock.
+		c.cmds <- report
 	}
 }
 

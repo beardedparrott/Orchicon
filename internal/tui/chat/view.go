@@ -10,6 +10,7 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/tui/md"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
@@ -64,6 +65,11 @@ type ItemSpan struct {
 	Text  string // the item's copyable text ("" when there is nothing worth copying)
 	Line  int    // 0-based first line of this item in the body
 	Lines int    // how many body lines it occupies
+	// Options is where an ask card's OPTION ROWS landed, in lines RELATIVE to Line, each with the label a
+	// click on it sends back as the next user message. It is the click geometry for the clarifying-question
+	// card, exactly as Code is for a block — the two exist for the same reason: the alternative (parsing the
+	// rendered text back out of the transcript) would be a second thing to keep in step with the render.
+	Options []AskOptionSpan
 	// Code is where this item's CODE BLOCKS landed, in lines RELATIVE to Line, each with the fence's source.
 	//
 	// It exists because copying a block by SELECTING it cannot be made clean. The operator: "You can't copy just
@@ -73,6 +79,17 @@ type ItemSpan struct {
 	// SOURCE instead, which has no indent, no pane border and no fill padding to strip, because it never went
 	// through the renderer at all.
 	Code []CodeSpan
+}
+
+// AskOptionSpan is one option row of a clarifying-question card within its item, and its label.
+//
+// THE LABEL IS WHAT A CLICK SENDS. Answering a recorded question is not a new channel: the label goes out as
+// an ordinary user message (Controller.AnswerQuestion → Send), which is what makes the answer land in the
+// transcript like anything else the operator types.
+type AskOptionSpan struct {
+	Line  int // 0-based line of the option's first row, relative to the item
+	Lines int // how many rows the option occupies (its label, plus its description when it has one)
+	Label string
 }
 
 // CodeSpan is one code block's place within an item, and the code itself.
@@ -86,6 +103,22 @@ type CodeSpan struct {
 // Contains reports whether a body line belongs to this item.
 func (s ItemSpan) Contains(line int) bool {
 	return line >= s.Line && line < s.Line+s.Lines
+}
+
+// OptionAt returns the LABEL of the ask card's option at a body line, when one is there.
+//
+// An option's DESCRIPTION row belongs to the option, not to the space around it: a dead row inside a choice
+// reads as a broken affordance (the same reason a code block's language label resolves to its block). What it
+// is STRICT about is everything else — clicking the question text or the card's header is not a choice, because
+// a click that sent something the operator did not point at would be worse than a click that does nothing.
+func (s ItemSpan) OptionAt(line int) (string, bool) {
+	rel := line - s.Line
+	for _, o := range s.Options {
+		if rel >= o.Line && rel < o.Line+o.Lines {
+			return o.Label, true
+		}
+	}
+	return "", false
 }
 
 // CodeAt returns the SOURCE of the code block containing a body line, when one does.
@@ -111,6 +144,13 @@ func copyTextFor(it ChatItem) string {
 	switch it.Kind {
 	case KindUser, KindText, KindReasoning, KindError:
 		return it.Text
+	case KindConsent:
+		// A SETTLED ask is worth copying (it is the record of a decision); a
+		// PENDING one is not — copying a question that has not been answered
+		// would paste the card's own furniture back into a message.
+		if it.Consent != nil && !it.Consent.Pending() {
+			return consentRecord(it.Consent)
+		}
 	}
 	return ""
 }
@@ -163,6 +203,8 @@ func renderItems(items []ChatItem, maxWidth int, folded func(key string) bool, c
 		// code is this item's block geometry, when its kind renders markdown with a surface. The zero value is
 		// "no blocks", which is what every other kind contributes.
 		var code []CodeSpan
+		// askOpts is the same idea for an ask card's option rows: the zero value is "an item with no options".
+		var askOpts []AskOptionSpan
 		switch it.Kind {
 		case KindUser:
 			// THE AFFORDANCE RIDES THE BAND LABEL. The operator's own message is the one the operator can
@@ -206,18 +248,33 @@ func renderItems(items []ChatItem, maxWidth int, folded func(key string) bool, c
 			b.WriteString(renderBubble("error", it.Text, theme.ErrorText, maxWidth))
 		case KindTool:
 			b.WriteString(renderToolRow(it.Tool, maxWidth))
+		case KindAsk:
+			card, opts := renderAskCardSpans(it.Ask, maxWidth)
+			b.WriteString(card)
+			askOpts = opts
 		case KindArtifact:
 			b.WriteString(renderArtifactRow(it, maxWidth))
 		case KindSession:
 			meta := SessionIdentity(it)
 			b.WriteString(theme.HintText.Render(truncateRow(meta, maxWidth)) + "\n")
+		case KindConsent:
+			// THE CARD RIDES THE TRANSCRIPT: a pending ask draws its box here, and
+			// the settled ask leaves a one-line record. See consent_render.go — the
+			// box itself is a kit2 widget, so padding/border/selection are shared.
+			//
+			// Its OPTION ROWS are reported too, so the card is CLICKABLE like the
+			// clarifying-question card rather than keyboard-only.
+			card, opts := consentLineSpans(it, maxWidth)
+			b.WriteString(card)
+			askOpts = opts
 		}
 		// Attribute the lines this item wrote. `before` is a byte offset into the builder, and the slice
 		// shares its backing array, so this costs a scan of the item's own text rather than a copy of the
 		// whole body per item.
 		lines := strings.Count(b.String()[before:], "\n")
 		spans = append(spans, ItemSpan{
-			Kind: it.Kind, Key: it.Key, Text: copyTextFor(it), Line: lineIdx, Lines: lines, Code: code,
+			Kind: it.Kind, Key: it.Key, Text: copyTextFor(it), Line: lineIdx, Lines: lines,
+			Options: askOpts, Code: code,
 		})
 		lineIdx += lines
 	}
@@ -632,6 +689,94 @@ func renderToolRow(t *ParsedTool, maxWidth int) string {
 	}
 	b.WriteString("\n")
 	return truncateLine(b.String(), maxWidth)
+}
+
+// renderAskCard paints a recorded clarifying question as the terminal card: the
+// question and its numbered options. The operator answers it by sending the
+// option's label as the next message (Controller.AnswerQuestion), so the card is
+// a RECORD the turn already completed — never a live prompt the turn is waiting on.
+func renderAskCard(a *ParsedAsk, maxWidth int) string {
+	body, _ := renderAskCardSpans(a, maxWidth)
+	return body
+}
+
+// renderAskCardSpans draws a recorded clarifying question as an INTERACTIVE CARD,
+// and reports where each option row landed so a click resolves to the option
+// under it.
+//
+// IT IS A kit2 CARD, NOT A LIST OF LINES, and that is the whole point of this
+// function's shape. It used to hand-build plain text — a "? Orchicon asks" line
+// and numbered rows — which rendered as an ordinary list: no border, no accent,
+// nothing to say "this is a question you answer" rather than "this is prose you
+// read". The operator's report: "it didn't really do a good job at making it seem
+// like it was a clickable card … it just looked like a regular normal list."
+//
+// The card now comes from the SAME widget the permission card uses
+// (kit2.CardLinesSpans), so it inherits the rounded border, the accent colour, the
+// panel tint and the padding the rest of the app uses — and the two cards in this
+// transcript look like the same KIND of thing, because they are.
+//
+// THE OFFSETS COME FROM THE WIDGET, not from a counter here. The card's own
+// layout decides how many lines the title, the body and each wrapped option take,
+// so the only place that can measure them is the code that drew them; a counter
+// maintained in this function would drift the first time the card gained a row,
+// and a drifted offset means a click answers with the option the operator did
+// not choose.
+func renderAskCardSpans(a *ParsedAsk, maxWidth int) (string, []AskOptionSpan) {
+	if a == nil {
+		return "", nil
+	}
+	// AN ANSWERED QUESTION IS A RECORD, NOT A CARD — the same split the permission
+	// card makes. Once answered there is nothing to click, so drawing the options
+	// again would offer a choice that has already been made (and, before this, the
+	// card simply sat there forever: the operator's "the Orchicon asks card does not go
+	// away when you select something").
+	if a.Answered {
+		answered := a.AnswerText
+		if answered == "" {
+			answered = "(no answer)"
+		}
+		return theme.ListMeta.Render(truncateRow("answered · "+answered, maxWidth)) + "\n", nil
+	}
+	// THE FOOTER PROMISES ONLY WHAT WORKS. The clarifying question is answerable
+	// by CLICK (transcriptAskOptionFrameRow → AnswerQuestion → Send); it has no
+	// keyboard cursor, unlike the permission card, whose footer advertises
+	// up/down + enter. Telling the operator to press keys that do nothing is
+	// worse than saying nothing.
+	footer := "click an option to answer"
+	if a.AllowOther {
+		footer = "click an option · or reply in your own words"
+	}
+	spec := kit2.CardSpec{
+		Title:  "Orchicon asks",
+		Body:   a.Question,
+		Footer: footer,
+	}
+	for i, o := range a.Options {
+		text := itoa(int64(i+1)) + ". " + o.Label
+		if o.Description != "" {
+			// One row per option rather than a stray indented sentence: the
+			// description belongs to the option and must move, wrap and highlight
+			// WITH it, not sit beside it as unrelated prose.
+			text += " — " + o.Description
+		}
+		spec.Lines = append(spec.Lines, kit2.CardLine{Text: text})
+	}
+
+	lines, rows := kit2.CardLinesSpans(spec, maxWidth)
+	var b strings.Builder
+	for _, l := range lines {
+		b.WriteString(l)
+		b.WriteString("\n")
+	}
+	opts := make([]AskOptionSpan, 0, len(rows))
+	for i, r := range rows {
+		if i >= len(a.Options) {
+			break
+		}
+		opts = append(opts, AskOptionSpan{Line: r.Line, Lines: r.Lines, Label: a.Options[i].Label})
+	}
+	return b.String(), opts
 }
 
 func renderArtifactRow(it ChatItem, maxWidth int) string {

@@ -112,10 +112,10 @@ type MetricFilter struct {
 }
 
 type LogFilter struct {
-	ProjectID string
-	Severity  string
+	ProjectID  string
+	Severity   string
 	Start, End time.Time
-	Limit     int
+	Limit      int
 }
 
 // ----- QueryTraces (Tempo /api/search) -----

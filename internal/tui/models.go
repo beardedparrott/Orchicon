@@ -136,6 +136,35 @@ func (m *App) currentAskModel() string {
 	return m.askDefaultModel
 }
 
+// fullsendOn reports whether the OPEN conversation is in FULLSEND.
+//
+// IT READS THE SHELL'S OWN LIST (m.conversations), the same way currentModeLabel does and
+// for the same reason: the list is what the shell loads and reloads, so a toggle made in
+// the GUI shows up here on the next reload instead of the client believing whatever it
+// last set itself. For a permission bypass that is not a nicety — a stale OFF would tell
+// the operator the gate is up while it is open.
+func (m *App) fullsendOn() bool {
+	if m.chatConvID == "" {
+		return false
+	}
+	for _, c := range m.conversations {
+		if c.ID == m.chatConvID {
+			return c.Fullsend
+		}
+	}
+	return false
+}
+
+// fullsendBadge is the composer indicator's text — EMPTY when the mode is off, because the
+// mode is the absence of asking and there is nothing to show while the gate is doing its
+// job. See dock.Model.Fullsend.
+func (m *App) fullsendBadge() string {
+	if !m.fullsendOn() {
+		return ""
+	}
+	return "FULLSEND"
+}
+
 // currentModeLabel is the mode's display name for the composer's pill and the
 // `/mode` report.
 //
@@ -365,6 +394,10 @@ func (m *App) syncComposerStats() {
 	m.dock.Model = m.metricsModel()
 	m.dock.Stats = m.metricsStats()
 	m.dock.Mode = m.currentModeLabel()
+	// The FULLSEND badge, pushed from the SAME list the mode pill reads (the comment above
+	// applies to it too: any site that reloads the conversation list must re-push the strip,
+	// or the composer keeps claiming a state the server has already moved past).
+	m.dock.Fullsend = m.fullsendBadge()
 }
 
 // composerModelDiverged reports whether the open conversation's rail row now

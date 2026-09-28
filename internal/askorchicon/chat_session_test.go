@@ -205,6 +205,13 @@ func (f *fakeSessionClient) ReplyPermission(ctx context.Context, sessionID, perm
 	return nil
 }
 
+func (f *fakeSessionClient) ReplyPermissionDecision(ctx context.Context, sessionID, permissionID, decision string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.replies = append(f.replies, decision)
+	return nil
+}
+
 // busText builds a completed text-part bus event for a session.
 func busText(sessionID, text string) opencode.BusEvent {
 	return opencode.BusEvent{
@@ -706,9 +713,11 @@ func TestRunOpenCodeTurnCreateFailureReturnsError(t *testing.T) {
 
 // --- Relay of permission.asked and tool_use ---------------------------------
 
-// TestRunOpenCodeTurnRelaysPermissionAndTool verifies permission.asked is
-// auto-approved (--auto equivalent) and tool_use events are relayed to the
-// callback (never re-executed).
+// TestRunOpenCodeTurnRelaysPermissionAndTool verifies that a permission.asked
+// goes through the CONSENT path (never a blind auto-approve) and that tool_use
+// events are still relayed to the callback (never re-executed). The ask is
+// raised, awaited, and — because the turn ends with no human answer — EXPIRED
+// with `reject`, which is what the serve receives instead of an auto-`once`.
 func TestRunOpenCodeTurnRelaysPermissionAndTool(t *testing.T) {
 	client := &fakeSessionClient{}
 	feed := func(sub *fakeBusSub) {
@@ -718,7 +727,7 @@ func TestRunOpenCodeTurnRelaysPermissionAndTool(t *testing.T) {
 		sub.feed(busIdle("ses_live"))
 	}
 	col := &collectEvents{}
-	s := &Service{log: slog.Default()}
+	s := &Service{log: slog.Default(), grants: newGrantStore(), pending: newPendingAskRegistry()}
 	t.Setenv("ORCHICON_ASK_TIMEOUT", "2s")
 	done := make(chan struct{})
 	var resErr error
@@ -742,31 +751,14 @@ func TestRunOpenCodeTurnRelaysPermissionAndTool(t *testing.T) {
 	if resErr != nil {
 		t.Fatalf("turn error: %v", resErr)
 	}
-	// The permission reply is issued on a goroutine (the --auto equivalent),
-	// so poll briefly for it rather than racing the feed.
-	client.mu.Lock()
-	n := len(client.replies)
-	client.mu.Unlock()
-	if n == 0 {
-		deadline := time.After(2 * time.Second)
-		for {
-			client.mu.Lock()
-			n = len(client.replies)
-			client.mu.Unlock()
-			if n > 0 {
-				break
-			}
-			select {
-			case <-time.After(10 * time.Millisecond):
-			case <-deadline:
-				t.Fatal("permission reply was never issued")
-			}
-		}
-	}
+	// The consent path replaced the blind auto-approve: while the ask is open
+	// the serve is NOT answered, and at turn end the unanswered ask is expired
+	// with `reject` — reported, never silently dropped, and the turn was never
+	// wedged on it (this loop returned).
 	client.mu.Lock()
 	defer client.mu.Unlock()
-	if len(client.replies) != 1 || client.replies[0] != "perm_1" {
-		t.Errorf("replies = %v, want [perm_1]", client.replies)
+	if len(client.replies) != 1 || client.replies[0] != "reject" {
+		t.Errorf("decisions sent to the serve = %v, want [reject] (the unanswered ask expires at turn end)", client.replies)
 	}
 	if col.toolCount() != 1 {
 		t.Errorf("tool relays = %d, want 1", col.toolCount())

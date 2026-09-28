@@ -222,8 +222,8 @@ func compactPlaneWorkItems(items []*apiv1.WorkItem) (json.RawMessage, error) {
 	for _, it := range items {
 		rows = append(rows, map[string]any{
 			"id": it.Id, "title": it.Title,
-			"kind":   workItemKindLabel(it.Kind),
-			"status": workItemStatusLabel(it.Status),
+			"kind":     workItemKindLabel(it.Kind),
+			"status":   workItemStatusLabel(it.Status),
 			"priority": it.Priority,
 		})
 	}
@@ -461,7 +461,7 @@ func compactIdeaEnvelopeError(wi *apiv1.WorkItem) (json.RawMessage, error) {
 			" with spawned_by=" + wi.GetSpawnedBy() + ", spawned_run=" + wi.GetSpawnedByRunId() +
 			". This is a platform bug (server-side stamp did not apply): record it as a FACTS LEARNED line " +
 			"and use orchicon_plane_get_work_item to inspect the landed item.",
-		"idea_state": false,
+		"idea_state":    false,
 		"landed_status": workItemStatusLabel(wi.GetStatus()),
 	})
 }
