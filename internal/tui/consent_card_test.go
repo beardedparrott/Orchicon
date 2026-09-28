@@ -147,13 +147,16 @@ func TestConsentSessionGrantIsRecordedOnTheServerVerdict(t *testing.T) {
 		t.Fatalf("a grant was recorded before the server applied the decision: %+v", grants)
 	}
 
-	// The verdict arrives: applied. NOW it is a fact, and it is what the grants roll-up shows.
+	// The verdict arrives: applied. NOW it is a fact — and the fact belongs to the SERVER, so the shell
+	// re-fetches the list rather than inventing it (ConsentGrants reads the server's answer; see the RPC).
 	if dir := m.settleConsentScope("c1", "ask-1", "session · "); dir != "/home/ops/project" {
 		t.Fatalf("the applied verdict did not confirm the grant, got %q", dir)
 	}
-	grants, ok := m.ConsentGrants("c1")
-	if !ok || len(grants) != 1 || grants[0].Directory != "/home/ops/project" {
-		t.Fatalf("the grant must be recorded for the directory, got %+v (ok=%v)", grants, ok)
+	// THIS CLIENT DOES NOT ACCRUE THE GRANT. What the shell can be asked is the SERVER's list, which here is the
+	// fixture's (a shell with no plane): the point is that nothing local was fabricated from the click, and that
+	// the applied verdict is what the header and /grants are told about.
+	if grants := m.permGrants["c1"]; len(grants) != 0 {
+		t.Fatalf("the shell invented a grant the server did not report: %+v", grants)
 	}
 	if _, v := as.RenderTranscript(m.chatStore.snapshot("c1"), chat.Conversation{}, true); !fieldValueContains(v, "grants", "/grants") {
 		t.Fatalf("the grants roll-up must be visible in the header, got %+v", v)

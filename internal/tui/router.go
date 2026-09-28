@@ -1389,6 +1389,10 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 	// shell's shared command channel, where a non-blocking send could drop a card with no error and no
 	// retry — leaving the pane at "orchicon is thinking" while the turn parked on the server. The wake
 	// poke the store follows each write with is what brings the loop back here to repaint.
+	case chat.PermissionGrantsMsg:
+		// The SERVER's answer to a list or a revoke (see App.ConsentGrants / ConsentRevoke). It carries the
+		// refreshed list in BOTH cases, so this client never keeps its own copy to drift.
+		return tea.Batch(m.applyConsentGrants(msg), m.waitChat())
 	case chat.ConsentRepliedMsg:
 		// The SERVER's verdict on a decision we sent. A decision that did not apply
 		// (the ask expired, the turn ended) must SAY so — otherwise the operator
@@ -1409,9 +1413,12 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 			// a directory the GUI still asked about).
 			if dir := m.settleConsentScope(msg.ConvID, msg.AskID, "session · "); dir != "" {
 				m.dock.SetNotice("allowed for this session · " + dir)
-			} else {
-				m.dock.SetNotice("permission decision applied")
+				// THE SERVER'S LIST JUST CHANGED, and this shell shows it (the grants header and /grants read
+				// the server's answer), so it re-fetches rather than guessing that the grant it just watched
+				// being applied is the only one there is.
+				return tea.Batch(m.loadConsentGrants(msg.ConvID), m.onChatWake(), m.waitChat())
 			}
+			m.dock.SetNotice("permission decision applied")
 		}
 		return tea.Batch(m.onChatWake(), m.waitChat())
 	case askDefaultSettingsMsg:

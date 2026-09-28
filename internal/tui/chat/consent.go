@@ -335,11 +335,19 @@ func ConsentItem(a PermissionAsk, at int64) ChatItem {
 	}
 }
 
-// SessionGrant is one directory the operator allowed for the current session.
+// SessionGrant is one directory the operator allowed for the current session, AS THE SERVER HOLDS IT.
+//
+// THE CLIENT DOES NOT KEEP ITS OWN COPIES, and this type is shaped by that: the wire carries the granted
+// directory and when it was granted, and nothing else, because nothing else is the server's fact. It used to
+// ALSO carry a Tool and a Count invented locally from the cards this client happened to answer — a second
+// record of the same grants that could disagree with the server (grants are in memory and are dropped by every
+// plane restart; a decision this client sent may have been refused; and the server matches a grant over a whole
+// subtree while a local map matched one exact directory). Those columns are gone with the copy — see
+// App.ConsentGrants.
 type SessionGrant struct {
 	Directory string
-	Tool      string
-	Count     int
+	// GrantedAt is Unix SECONDS (0 when the server does not know), the wire's own precision.
+	GrantedAt int64
 }
 
 // PermissionStore is the TUI's view of the PERSISTENT allow/deny list. The
@@ -350,10 +358,6 @@ type PermissionStore interface {
 	Rules() ([]PolicyRule, error)
 	UpsertRule(r PolicyRule) error
 	DeleteRule(effect, tool, pattern string) error
-	// SessionGrants lists the directory grants the plane holds for a
-	// conversation; RevokeGrant drops one.
-	SessionGrants(convID string) ([]SessionGrant, error)
-	RevokeGrant(convID, directory string) error
 }
 
 // PolicyRule is one persistent allow/deny entry.

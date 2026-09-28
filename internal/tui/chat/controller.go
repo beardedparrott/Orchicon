@@ -668,6 +668,84 @@ type ConsentRepliedMsg struct {
 	Err     string
 }
 
+// PermissionGrantsMsg carries the conversation's ACTIVE session grants, as the server holds them.
+//
+// Grants are the SERVER's fact — its store is what decides whether the next tool call asks, and it is in
+// memory, so it changes without this client doing anything (a plane restart drops it; the GUI granting one
+// adds to it). The client therefore never keeps a copy: every list is fetched, and every revoke returns the
+// refreshed list (see RevokePermissionGrant). Notice carries a one-line outcome for the dock when the fetch
+// was triggered by a write.
+type PermissionGrantsMsg struct {
+	ConvID string
+	Grants []SessionGrant
+	Err    string
+	Notice string
+}
+
+// LoadPermissionGrants fetches the conversation's active session grants.
+func (c *Controller) LoadPermissionGrants(convID string) tea.Cmd {
+	if convID == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		resp, err := c.cl.Ask.ListPermissionGrants(ctx, connect.NewRequest(&apiv1.ListPermissionGrantsRequest{
+			ConversationId: convID,
+		}))
+		if err != nil {
+			return PermissionGrantsMsg{ConvID: convID, Err: err.Error()}
+		}
+		return PermissionGrantsMsg{ConvID: convID, Grants: sessionGrantsFromProto(resp.Msg.GetGrants())}
+	}
+}
+
+// RevokePermissionGrant drops one session grant ON THE SERVER and returns the refreshed list.
+//
+// THE TUI ONLY EVER DROPPED IT LOCALLY, which is why revoking did nothing: the server's store still held the
+// grant, so the very next tool call for that directory proceeded without asking — while the client's own list
+// showed the grant gone. Revoking is the operator withdrawing a permission, so it has to reach the thing that
+// enforces it.
+func (c *Controller) RevokePermissionGrant(convID, directory string) tea.Cmd {
+	if convID == "" || directory == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		resp, err := c.cl.Ask.RevokePermissionGrant(ctx, connect.NewRequest(&apiv1.RevokePermissionGrantRequest{
+			ConversationId: convID,
+			Directory:      directory,
+		}))
+		if err != nil {
+			return PermissionGrantsMsg{ConvID: convID, Err: err.Error()}
+		}
+		notice := "revoked · " + directory
+		if !resp.Msg.GetRemoved() {
+			// NEVER A SILENT SUCCESS: the directory was not granted (already revoked, or never was), which is a
+			// different fact from "revoked" and the operator is entitled to it.
+			notice = "no session grant for " + directory + " — nothing was revoked"
+		}
+		return PermissionGrantsMsg{
+			ConvID: convID,
+			Grants: sessionGrantsFromProto(resp.Msg.GetGrants()),
+			Notice: notice,
+		}
+	}
+}
+
+// sessionGrantsFromProto maps the wire's grant list onto the TUI's view type.
+func sessionGrantsFromProto(gs []*apiv1.SessionPermissionGrant) []SessionGrant {
+	out := make([]SessionGrant, 0, len(gs))
+	for _, g := range gs {
+		if g == nil || g.GetDirectory() == "" {
+			continue
+		}
+		out = append(out, SessionGrant{Directory: g.GetDirectory(), GrantedAt: g.GetGrantedAtUnix()})
+	}
+	return out
+}
+
 // ReplyPermissionAsk answers a pending permission ask ON THE SERVER.
 //
 // THE TUI NEVER DID THIS, WHICH IS WHY APPROVING A CARD DID NOTHING. ConsentResolve

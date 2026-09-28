@@ -2,6 +2,7 @@ package ask
 
 import (
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -61,9 +62,12 @@ func (m *Model) overlayTableHeight() int {
 
 // openGrants builds the session-grant roll-up.
 func (m *Model) openGrants() tea.Cmd {
+	// THE COLUMNS ARE THE SERVER's FIELDS, because the rows now ARE the server's answer. It used to show a
+	// "tool" and a "count" per directory, both accrued locally from the cards this client happened to answer —
+	// a second record of grants the server owns, and the reason a revoke from here revoked nothing.
 	ov := &askOverlay{kind: ovGrants, tbl: kit2.NewTable("Session grants",
-		kit2.Column{Title: "directory"}, kit2.Column{Title: "tool"}, kit2.Column{Title: "count", Right: true}),
-		hint: "enter revokes · esc closes · grants are per session"}
+		kit2.Column{Title: "directory"}, kit2.Column{Title: "granted", Right: true}),
+		hint: "enter revokes on the server · esc closes · grants are per session, in memory, and lost on a plane restart"}
 	ov.tbl.Focused = true
 	ov.tbl.Width = m.DetailWidth()
 	ov.tbl.Height = m.overlayTableHeight()
@@ -71,6 +75,33 @@ func (m *Model) openGrants() tea.Cmd {
 	m.ov = ov
 	m.reloadGrants()
 	return nil
+}
+
+// RefreshGrants re-reads the session-grant rows into the OPEN grants overlay.
+//
+// The shell calls it when a fetch or a revoke lands: the rows came from its cache of the server's answer, so
+// without this the overlay would show the list as it was when it was opened (and a revoked row would appear to
+// survive the revoke).
+func (m *Model) RefreshGrants() {
+	m.reloadGrants()
+	m.repaint()
+}
+
+// grantedAgo renders a grant's age from the wire's Unix seconds. An unknown time renders as "-" rather than as
+// "just now" — a permission whose age is unknown must not claim to be fresh.
+func grantedAgo(unix int64) string {
+	if unix <= 0 {
+		return "-"
+	}
+	d := time.Since(time.Unix(unix, 0))
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return itoa(int(d/time.Minute)) + "m ago"
+	default:
+		return itoa(int(d/time.Hour)) + "h ago"
+	}
 }
 
 // openPermissions builds the persistent allow/deny list.
@@ -105,7 +136,7 @@ func (m *Model) reloadGrants() {
 	ov.err = ""
 	rows := make([]kit2.Row, 0, len(grants))
 	for _, g := range grants {
-		rows = append(rows, kit2.Row{ID: g.Directory, Cells: []string{g.Directory, g.Tool, itoa(g.Count)}})
+		rows = append(rows, kit2.Row{ID: g.Directory, Cells: []string{g.Directory, grantedAgo(g.GrantedAt)}})
 	}
 	ov.tbl.SetRows(rows)
 }

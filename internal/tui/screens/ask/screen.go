@@ -425,6 +425,10 @@ func (m *Model) grantsFieldValue() string {
 	if !ok {
 		return "(unavailable on this plane)"
 	}
+	if !h.ConsentGrantsLoaded(m.Base.DetailID()) {
+		// NOT YET ASKED: "none" here would be a claim about the operator's permissions that nothing supports.
+		return "(checking…) — /grants"
+	}
 	grants, available := h.ConsentGrants(m.Base.DetailID())
 	if !available {
 		return "(unavailable on this plane)"

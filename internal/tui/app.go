@@ -8,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -190,12 +189,20 @@ type App struct {
 	chatFocus    focusMode
 	mouseEnabled bool // tea.WithMouseCellMotion is on; footer shows "Mouse Enabled"
 
-	// sessionGrants is the TUI-side mirror of "ask once per directory per session": the directories
-	// this conversation has been granted. The PLANE is the real enforcer (that is where the tool
-	// runs), and this mirror is what lets the shell suppress a second card AND show the operator what
-	// they have allowed — a permission system that escalates silently is the failure the roll-up exists
-	// to prevent.
-	sessionGrants *sessionGrantStore
+	// permGrants is the conversation's active session grants AS LAST REPORTED BY THE SERVER, keyed by
+	// conversation. It is a CACHE OF THE SERVER'S ANSWER, never a record of this client's own decisions: the
+	// plane is the enforcer (that is where the tool runs), grants live in its memory, and the client FETCHES
+	// them (LoadPermissionGrants) instead of accumulating a second copy that can disagree — see App.ConsentGrants.
+	//
+	// permGrantsLoaded/permGrantsErr keep "not asked yet" and "the plane could not answer" distinct from "this
+	// conversation holds no grants", so no surface reports an empty list as a fact.
+	permGrants       map[string][]chat.SessionGrant
+	permGrantsLoaded map[string]bool
+	permGrantsErr    map[string]string
+	// pendingConsentRevoke carries the revoke command the Ask screen's SYNCHRONOUS host call cannot return
+	// (ConsentRevoke must answer "did that work" with an error, and the RPC is asynchronous). Drained by the
+	// shell's staged-command funnel, exactly like pendingScreenCmd and friends.
+	pendingConsentRevoke tea.Cmd
 	// permStore is the PERSISTENT allow/deny list (the FILE is the source of truth; storage is the
 	// sibling policy task's). nil means the plane cannot answer, and every surface says so rather than
 	// fabricating a list.
@@ -493,16 +500,18 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string, o
 		// View and Update each receive a COPY — only a shared pointer lets the frame the
 		// renderer painted be read back by the mouse handler that arrives after it
 		// (clipboard.go).
-		clip:            &clipState{},
-		screens:         map[TabID]Screen{},
-		chatStore:       &chatStore{items: map[string][]chat.ChatItem{}},
-		renderCache:     chat.NewRenderCache(),
-		sessionGrants:   newSessionGrantStore(),
-		execSessions:    map[string][]chat.ChatItem{},
-		loaded:          map[TabID]bool{},
-		chatStreams:     map[string]*kit2.Stream{},
-		transcriptLines: map[string][]string{},
-		reasoningFolded: map[string]bool{},
+		clip:             &clipState{},
+		screens:          map[TabID]Screen{},
+		chatStore:        &chatStore{items: map[string][]chat.ChatItem{}},
+		renderCache:      chat.NewRenderCache(),
+		permGrants:       map[string][]chat.SessionGrant{},
+		permGrantsLoaded: map[string]bool{},
+		permGrantsErr:    map[string]string{},
+		execSessions:     map[string][]chat.ChatItem{},
+		loaded:           map[TabID]bool{},
+		chatStreams:      map[string]*kit2.Stream{},
+		transcriptLines:  map[string][]string{},
+		reasoningFolded:  map[string]bool{},
 		footer: footerModel{
 			URL:           profile.URL,
 			ServerVersion: serverVersion,
@@ -776,6 +785,10 @@ func (m *App) drainStaged() tea.Cmd {
 	if m.pendingCatCmd != nil {
 		cmds = append(cmds, m.pendingCatCmd)
 		m.pendingCatCmd = nil
+	}
+	if m.pendingConsentRevoke != nil {
+		cmds = append(cmds, m.pendingConsentRevoke)
+		m.pendingConsentRevoke = nil
 	}
 	if len(cmds) == 0 {
 		return nil
@@ -3511,6 +3524,16 @@ func (m *App) onTranscript(msg chat.TranscriptMsg) tea.Cmd {
 	} else {
 		m.chatStore.replace(msg.ConvID, msg.Items)
 	}
+	// ASK THE SERVER WHAT THIS CONVERSATION IS ALLOWED, once, when its transcript lands — the grants header
+	// makes a claim about exactly that, and the list is the server's to state. Not on every poll: this is a
+	// fetch, not a subscription (a grant can only change from a decision in a client, and every decision
+	// funnels through a card this shell draws or is told about).
+	// ONE FETCH PER CONVERSATION (permGrantsLoaded latches on success AND on failure, so a failing plane is not
+	// polled once a second). A failure is shown as "unavailable" rather than as an empty list, and reopening
+	// /grants is the retry.
+	if !m.permGrantsLoaded[msg.ConvID] {
+		return tea.Batch(m.onChatWake(), m.loadConsentGrants(msg.ConvID))
+	}
 	return m.onChatWake()
 }
 
@@ -4687,62 +4710,6 @@ func (m *App) sendFromComposer(text string) tea.Cmd {
 // consent card: the shell's half (see internal/tui/screens/ask/consent.go)
 // ---------------------------------------------------------------------------
 
-// sessionGrantStore holds the session grants THIS CLIENT has seen the server apply, for one conversation.
-//
-// IT IS NO LONGER CONSULTED BEFORE DRAWING A CARD, and that is deliberate: it used to suppress a card whose
-// directory it believed was granted, which made it a second, unreliable authority beside the server's own
-// grant store — the server's is in memory and is dropped by every plane restart, it matches a whole SUBTREE
-// while this matched the directory EXACTLY, and this one was fed by the CLICK rather than by the verdict (so
-// a decision the server refused was believed anyway). Any one of those left the TUI silently deaf to a
-// directory the GUI still asked about. It is now a record of what the server confirmed, and nothing decides
-// from it: see ShowConsentAsk and settleConsentScope.
-type sessionGrantStore struct {
-	mu     sync.Mutex
-	grants map[string]map[string]chat.SessionGrant
-}
-
-func newSessionGrantStore() *sessionGrantStore {
-	return &sessionGrantStore{grants: map[string]map[string]chat.SessionGrant{}}
-}
-
-func (s *sessionGrantStore) grant(convID, dir, tool string) {
-	if dir == "" {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	byDir, ok := s.grants[convID]
-	if !ok {
-		byDir = map[string]chat.SessionGrant{}
-		s.grants[convID] = byDir
-	}
-	g := byDir[dir]
-	g.Directory = dir
-	if g.Tool == "" {
-		g.Tool = tool
-	}
-	g.Count++
-	byDir[dir] = g
-}
-
-func (s *sessionGrantStore) list(convID string) []chat.SessionGrant {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	byDir := s.grants[convID]
-	out := make([]chat.SessionGrant, 0, len(byDir))
-	for _, g := range byDir {
-		out = append(out, g)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Directory < out[j].Directory })
-	return out
-}
-
-func (s *sessionGrantStore) revoke(convID, dir string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.grants[convID], dir)
-}
-
 // SetPermissionStore wires the persistent allow/deny list. Called by the host
 // once the plane's policy store exists; absent, the TUI says "unavailable".
 func (m *App) SetPermissionStore(s chat.PermissionStore) { m.permStore = s }
@@ -4755,15 +4722,82 @@ func (m *App) ConsentStore() (chat.PermissionStore, bool) {
 	return m.permStore, true
 }
 
-// ConsentGrants lists the session grants for a conversation.
+// ConsentGrants lists the session grants for a conversation, AS THE SERVER HOLDS THEM.
+//
+// The second answer is deliberately three-valued, because "no grants", "not asked yet" and "the plane could not
+// answer" are three different facts, and a surface that shows them as one is lying to the operator about what
+// they have allowed:
+//
+//	available=false  the last fetch FAILED — say so; do not show an empty list as the truth
+//	available=true   the list IS the server's (empty because nothing has been granted yet)
 func (m *App) ConsentGrants(convID string) ([]chat.SessionGrant, bool) {
-	return m.sessionGrants.list(convID), true
+	if convID == "" || !m.permGrantsLoaded[convID] {
+		return nil, true // never fetched: an empty list, reported as a real one
+	}
+	if m.permGrantsErr[convID] != "" {
+		return nil, false
+	}
+	return m.permGrants[convID], true
 }
 
-// ConsentRevoke drops a session grant.
+// ConsentGrantsLoaded reports whether the conversation's grants have been fetched yet (see ConsentGrants).
+func (m *App) ConsentGrantsLoaded(convID string) bool { return m.permGrantsLoaded[convID] }
+
+// ConsentRevoke withdraws a session grant ON THE SERVER (see Controller.RevokePermissionGrant); the refreshed
+// list arrives as a chat.PermissionGrantsMsg.
+//
+// It used to drop the grant from a LOCAL map only, so the row vanished from the operator's list while the server
+// went on honouring the grant: a revoke that revoked nothing, on the surface whose whole job is showing what is
+// allowed.
 func (m *App) ConsentRevoke(convID, directory string) error {
-	m.sessionGrants.revoke(convID, directory)
+	if m.chat == nil || convID == "" || directory == "" {
+		return nil
+	}
+	m.pendingConsentRevoke = m.chat.RevokePermissionGrant(convID, directory)
 	return nil
+}
+
+// loadConsentGrants fetches the conversation's grants from the server.
+func (m *App) loadConsentGrants(convID string) tea.Cmd {
+	if m.chat == nil || convID == "" {
+		return nil
+	}
+	return m.chat.LoadPermissionGrants(convID)
+}
+
+// applyConsentGrants ingests a fetched (or revoked) grant list, keeps a FAILURE visible instead of presenting an
+// empty list as the truth, and re-reads any open grants overlay.
+func (m *App) applyConsentGrants(msg chat.PermissionGrantsMsg) tea.Cmd {
+	if msg.ConvID == "" {
+		return nil
+	}
+	if msg.Err != "" {
+		m.permGrantsErr[msg.ConvID] = msg.Err
+	} else {
+		m.permGrantsErr[msg.ConvID] = ""
+		m.permGrants[msg.ConvID] = msg.Grants
+	}
+	m.permGrantsLoaded[msg.ConvID] = true
+	if msg.Notice != "" {
+		m.dock.SetNotice(msg.Notice)
+	}
+	// The overlay's rows came from the cache this replaced, so they are re-read here rather than waiting for the
+	// operator to reopen it.
+	m.refreshGrantsOverlay()
+	return m.onChatWake()
+}
+
+// refreshGrantsOverlay asks the Ask screen to re-read its session-grant rows, through the same narrow type
+// assertion the shell's other screen hooks use — so the shell keeps no second reference to a screen it does not
+// own.
+func (m *App) refreshGrantsOverlay() {
+	s := m.screens[TabAsk]
+	if s == nil {
+		return
+	}
+	if g, ok := s.(interface{ RefreshGrants() }); ok {
+		g.RefreshGrants()
+	}
 }
 
 // ConsentSend sends text as the next user message (the clarifying-question
@@ -4921,7 +4955,10 @@ func (m *App) settleConsentScope(convID, askID, appliedPrefix string) string {
 		}
 		return ""
 	}
-	m.sessionGrants.grant(convID, dir, ask.Tool)
+	// NO LOCAL GRANT IS RECORDED — not even on the applied verdict. The server just granted it, and the list the
+	// operator sees is FETCHED from the server (see ConsentGrants): a local copy is the second authority that
+	// made the TUI mute cards the GUI was still asking about. What is kept here is the CARD's own record, which
+	// is this client's business.
 	st.Note = appliedPrefix + dir
 	return dir
 }
@@ -4959,5 +4996,12 @@ func (m *App) runAskOverlay(kind string) tea.Cmd {
 		return nil
 	}
 	m.SwitchTo(TabAsk)
-	return op.OpenAskOverlay(kind)
+	cmd := op.OpenAskOverlay(kind)
+	if kind == "grants" {
+		// ALWAYS FETCH ON OPEN. A grant can be created by the GUI, or dropped by a plane restart, without this
+		// client hearing about it (the store is in memory on the plane), so the list the operator opens must be
+		// the server's current answer rather than whatever this shell last happened to see.
+		return tea.Batch(cmd, m.loadConsentGrants(m.chatConvID))
+	}
+	return cmd
 }
