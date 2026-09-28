@@ -1,6 +1,7 @@
 package db
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -284,7 +285,59 @@ func DeleteConversation(ctx context.Context, tx pgx.Tx, tenantID, id string) err
 
 // --- Messages ---
 
+// nulEscape and nulByte are the two shapes a NUL takes on its way to this table.
+//
+// A JSON-encoded argument reaches PostgreSQL with the byte escaped as the six characters `\u0000` (Go's
+// encoding/json never emits a raw NUL), and jsonb REJECTS it: "unsupported Unicode escape sequence
+// (SQLSTATE 22P05)". A TEXT argument carries the raw byte and is rejected too. Either way ONE NUL — from
+// `cat`ing a binary, a grep over one, a tool output with a stray 0x00 — killed the entire write.
+var (
+	nulEscape = []byte(`\u0000`)
+	nulByte   = "\x00"
+)
+
+// sanitizeMessage makes a message row storable, replacing every NUL with U+FFFD.
+//
+// THIS IS NOT COSMETIC. It was killing whole turns, in two directions at once, and the failure was SILENT to
+// every client:
+//
+//   - the LIVE MIRROR (the 250ms partial upsert) failed on every flush, so a client that lost the live
+//     stream — which is every client's recoverable path, and the TUI's PRIMARY render path (runTurnPoll) —
+//     saw NOTHING for the whole turn. "It just sits at 'orchicon is thinking'."
+//   - the TERMINAL write failed too, so the reply never landed durably and the NEXT turn replayed a history
+//     missing everything the model had just done: the operator's "The model is constantly losing its brain.
+//     It doesn't know it's already done things and then tries to do them again", and the reason they were
+//     re-pasting the model's last message by hand ("Please continue. You timed out. This was your last
+//     message: ...").
+//
+// Measured on the prod plane: 1554 failed "upsert partial message" flushes and 3 failed
+// "persist conversation reply" writes across 3 conversations, every one with SQLSTATE 22P05.
+//
+// The replacement character is used rather than a silent drop so the reader can see that something was
+// removed, and it is applied to the VALUES, not the query, so no write path can forget it.
+func sanitizeMessage(m MessageRow) MessageRow {
+	m.Content = strings.ReplaceAll(m.Content, nulByte, "\uFFFD")
+	m.ToolCalls = jsonSafe(m.ToolCalls)
+	m.ToolResults = jsonSafe(m.ToolResults)
+	m.Attachments = jsonSafe(m.Attachments)
+	m.Metadata = jsonSafe(m.Metadata)
+	for i, r := range m.Reasoning {
+		m.Reasoning[i] = strings.ReplaceAll(r, nulByte, "\uFFFD")
+	}
+	return m
+}
+
+// jsonSafe strips the `\u0000` escape from already-marshaled JSON. Nil-safe; returns the input unchanged when
+// there is nothing to strip (the common case, so the hot path allocates nothing).
+func jsonSafe(b []byte) []byte {
+	if len(b) == 0 || !bytes.Contains(b, nulEscape) {
+		return b
+	}
+	return bytes.ReplaceAll(b, nulEscape, []byte(`\uFFFD`))
+}
+
 func CreateMessage(ctx context.Context, tx pgx.Tx, m MessageRow) (MessageRow, error) {
+	m = sanitizeMessage(m)
 	// The reasoning jsonb column is NOT NULL DEFAULT '[]': a nil slice is
 	// marshaled as an empty array so inserts never violate the constraint.
 	reasoningJSON := []byte("[]")
@@ -317,6 +370,7 @@ func CreateMessage(ctx context.Context, tx pgx.Tx, m MessageRow) (MessageRow, er
 // ever visible while the turn is in flight (its terminal state is written by
 // the finalize).
 func UpsertMessage(ctx context.Context, tx pgx.Tx, m MessageRow) (MessageRow, error) {
+	m = sanitizeMessage(m)
 	reasoningJSON := []byte("[]")
 	if m.Reasoning != nil {
 		reasoningJSON, _ = json.Marshal(m.Reasoning)
