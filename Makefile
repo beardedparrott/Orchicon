@@ -484,7 +484,33 @@ install-uninstall: ## Uninstall Orchicon via the install script
 # only the two protoc plugin packages); fe-lint/fe-test are the frontend
 # gate and run in the fe CI job. `ci` is the local convenience union.
 .PHONY: ci ci-go
-ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
+# CROSS-PLATFORM COMPILE GATE. The platforms and flags are EXACTLY the release matrix's
+# (release.yml: linux/darwin/windows on amd64+arm64, CGO_ENABLED=0, the two shipped binaries), because
+# a gate that compiles a different set from the one shipped is a gate that can pass while the release
+# fails — which is precisely what happened.
+#
+# WHY IT EXISTS. v0.4.0 was tagged and then produced NO release: release.yml died with
+# `cmd/orchicon/serve.go:215:29: undefined: syscall.Kill` on both Windows targets. `syscall.Kill` is
+# Unix-only and was called from a file with no build constraint, so windows/amd64 and windows/arm64
+# could not compile — and nothing in CI noticed, because every gate ran on linux/amd64, where the
+# symbol exists. `go build`, `go vet` and `go test` all pass on Linux for code that cannot build for
+# Windows, so no amount of running them would have caught it. Compiling for the shipped platforms is
+# the only check that does.
+#
+# Output goes to a temp directory: this is a COMPILE check, not a build, and dropping six pairs of
+# binaries into the repo root would leave them behind.
+CROSS_PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
+.PHONY: cross-compile
+cross-compile: ## Compile the shipped binaries for every release platform (catches platform-specific breaks)
+	@set -e; tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
+	for t in $(CROSS_PLATFORMS); do \
+	  os="$${t%%/*}"; arch="$${t##*/}"; \
+	  echo "==> $$os/$$arch"; \
+	  GOOS="$$os" GOARCH="$$arch" CGO_ENABLED=0 $(GO) build -o "$$tmp/" ./cmd/orchicon ./cmd/orch; \
+	done; \
+	echo "==> all $(words $(CROSS_PLATFORMS)) release platforms compile"
+
+ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
 ci: ci-go fe-lint fe-test ## Run the full CI gate locally (Go + frontend)
 
 .PHONY: tui-pty-gate
