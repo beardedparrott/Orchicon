@@ -406,6 +406,95 @@ failed_closed() {
   exit 1
 }
 
+# protected_target returns 0 (refuse) when an argument EQUALS or CONTAINS a protected root — a path
+# this session works in or depends on. The TRANSPOSE of inside_list: inside_dir "$a" "$r" asks whether
+# $r is $a or below it, i.e. whether $a would TAKE $r with it.
+#
+# NON-WAIVABLE, AND THAT IS THE WHOLE REASON IT EXISTS. It is called from blocked_path ABOVE the
+# fullsend skip, in the same position as the deny list, because it is the same category of rule: a
+# decision no permission request can turn into an approval. Measured before this existed: with
+# FULLSEND on, 'rm -rf /home' from a project RAN — the sanctioned-set tests are skipped by design, and
+# an ancestor of the project is in no set to begin with, so nothing refused it.
+#
+# The roots are computed here from what the shim ALREADY has, so protection needs no new wiring and
+# holds for the worker profile too (which never sets ORCHICON_GUARD_*). TWO LISTS, because the two
+# need different rules, and the split is what stops it breaking ordinary work:
+#
+#   MACHINE (refused on EQUALS or CONTAINS)
+#     /                       the filesystem root
+#     $HOME                   which is what makes 'rm -rf /home' and 'rm -rf ~' refused
+#     $HOME/.local/share/orchicon, $HOME/.orchicon   the plane's own state
+#
+#   WORK SCOPE (refused on CONTAINS only — a PROPER ancestor)
+#     $PROJECT_DIR            the worker's project (baked)
+#     $GUARD_PROJECT, $GUARD_GRANTS   the conversation's scope and its session grants
+#
+# ACTING ON the scope root is ordinary work — 'chmod -R 755 <project>', 'rm -rf <project>/dist' — so
+# equality is NOT refused there; the catastrophe is destroying the directory that HOLDS the scope.
+# internal/protectedpath carries the same two lists for the consent layer, which is Go and cannot
+# read this; the guard tests assert the shim's behaviour directly.
+protected_hit=""
+protected_target() {
+  local a r machine scope
+  # MACHINE-LEVEL roots: refused on EQUALS or CONTAINS. There is no legitimate reason to delete '/' or
+  # to re-permission the user's home from inside an agent session, so equality is included here.
+  machine="/"
+  if [ -n "${HOME:-}" ]; then
+    machine="$machine
+${HOME}
+${HOME}/.local/share/orchicon
+${HOME}/.orchicon"
+  fi
+  # WORK SCOPE: refused on CONTAINS only (a PROPER ancestor). Acting ON the scope root is ordinary
+  # work — 'chmod -R 755 <project>', 'rm -rf <project>/dist' — so equality is left to the consent
+  # chain, while destroying the directory that HOLDS the scope is the catastrophe this rule exists for.
+  scope=""
+  [ -n "${PROJECT_DIR:-}" ] && scope="$scope
+${PROJECT_DIR}"
+  [ -n "${GUARD_PROJECT:-}" ] && scope="$scope
+${GUARD_PROJECT}"
+  for r in $GUARD_GRANTS; do
+    [ -n "$r" ] && scope="$scope
+$r"
+  done
+  for a in "$@"; do
+    case "$a" in
+      -*) continue ;;
+      --) continue ;;
+    esac
+    # The shim receives LITERAL ~ and $HOME (no shell expands them here), so expand the way
+    # pem_expand_home does before comparing — otherwise 'rm -rf ~' names no root at all.
+    a=$(pem_expand_home "$a")
+    [ -n "$a" ] || continue
+    while IFS= read -r r; do
+      [ -n "$r" ] || continue
+      if inside_dir "$a" "$r"; then
+        protected_hit="$a|$r"
+        return 0
+      fi
+    done < <(printf '%s\n' "$machine")
+    while IFS= read -r r; do
+      [ -n "$r" ] || continue
+      # CONTAINS ONLY: skip the equality case by requiring the argument to be strictly shorter.
+      if [ "$a" != "$r" ] && inside_dir "$a" "$r"; then
+        protected_hit="$a|$r"
+        return 0
+      fi
+    done < <(printf '%s\n' "$scope")
+  done
+  return 1
+}
+
+# protected_blocked names BOTH paths. The operator's next move after reading a refusal is to decide
+# whether the rule is right, and a message that says only "blocked" cannot be checked.
+protected_blocked() {
+  local a r
+  a="${protected_hit%%|*}"
+  r="${protected_hit#*|}"
+  echo "ORCHICON GUARD: refusing — '$a' contains '$r', which this session works in or depends on. Deleting it would take that with it, so this is NEVER ALLOWED: not by a session grant, not by an accept entry, and not by FULLSEND. Choose a target inside the project instead." >&2
+  exit 1
+}
+
 blocked() {
   echo "ORCHICON GUARD: command '${0##*/}' is PERMANENTLY BLOCKED — destructive or privileged tooling in the never-allow class (sudo / dd / mkfs* / fdisk / parted / shred / wipefs / LVM / mkswap). That class can never be approved: not by a session grant, not by the operator, not by a policy accept entry. There is no prompt to answer." >&2
   exit 1
@@ -744,7 +833,14 @@ denied_target() {
 #   5. anything else is refused (relative / ~ / $HOME / .. keep the historical
 #      block rule)
 blocked_path() {
+  # THE DENY LIST FIRST, because it is the operator's OWN explicit statement and naming their entry is
+  # the most useful refusal — it tells them which line of their policy file to look at.
   denied_target "$@" && policy_blocked
+  # THEN THE PROTECTED-ROOT RULE, above every allow-set test below it (including the fullsend skip).
+  # A target that would DELETE the scope is not a permission request, so nothing below may widen it.
+  # ORDER MATTERS ONLY FOR THE MESSAGE: both refuse, and this one is the backstop for what a deny
+  # PATTERN cannot express (see internal/protectedpath).
+  protected_target "$@" && protected_blocked
   local a
   for a in "$@"; do
     case "$a" in
