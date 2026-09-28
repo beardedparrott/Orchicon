@@ -2888,7 +2888,7 @@ func (m *App) onConversations(msg chat.ConversationsMsg) tea.Cmd {
 		// The composer strip is pushed from the list it derives from (AC 9): the
 		// mode pill reads currentModeLabel(), which reads THIS list.
 		m.syncComposerStats()
-		return tea.Batch(m.onChatWake(), m.loadRailProjects(), m.waitChat())
+		return tea.Batch(m.onChatWake(), m.loadRailProjects(), m.waitChat(), m.reattachFromRail())
 	}
 	m.conversations = msg.Convs
 	if m.convSel >= len(m.railRows()) {
@@ -2913,15 +2913,48 @@ func (m *App) onConversations(msg chat.ConversationsMsg) tea.Cmd {
 	// refresh has to repaint the open pane or the new values sit unrendered
 	// until the next unrelated wake.
 	wake := m.onChatWake()
+	// AND ATTACH TO A TURN THAT STARTED WHILE WE WERE LOOKING — see reattachFromRail. This list is POLLED (the
+	// rolling refresh window, every 5s), so it is the one signal that tells this client a turn is running on the
+	// conversation it is already showing.
+	re := m.reattachFromRail()
 	// The MODEL + STATS fields derive from m.metrics, which a rail reload does NOT
 	// refresh: when the open conversation's row now names a different model (a
 	// `/model` set in the other client), re-read the metrics so those fields follow
 	// it too. Only on divergence — a refresh on every reload would put a metrics
 	// RPC on every list poll.
 	if m.composerModelDiverged() {
-		return tea.Batch(wake, m.refreshMetrics())
+		return tea.Batch(wake, m.refreshMetrics(), re)
 	}
-	return wake
+	return tea.Batch(wake, re)
+}
+
+// reattachFromRail attaches this client to a turn the rail reports as running on the OPEN conversation, when no
+// live local stream owns it. Nil when there is nothing to attach to.
+//
+// THE GAP IT CLOSES, reported twice by the operator and structural rather than a flake:
+//
+//	"the permission ask card pops up in the GUI but it doesn't pop up in the TUI. It just sits at
+//	 'orchicon is thinking'. ... It's not consistent in the TUI."
+//
+// A turn's asks ride THAT TURN'S stream, and asks are STREAM-ONLY — the transcript records an ask's OUTCOME,
+// never the open ask, so "a permission ask has no durable per-ask row to reconcile against" (see
+// chat/controller.go). This client opened a stream in exactly two situations: when the TUI ITSELF sent a
+// message, and when a conversation was OPENED whose rail row said the turn was in flight. So a turn started
+// anywhere else — from the GUI, or by an interjection made in the other client — while the TUI sat on that very
+// conversation had NO stream here, and therefore no way to receive its cards. The GUI showed the card; this
+// client showed nothing and could not poll its way back, because there is nothing durable to poll.
+//
+// WHY THE RAIL IS THE RIGHT TRIGGER. It is the freshest server-side view the shell holds, it carries
+// turn_in_flight and the pending assistant id, and it is ALREADY reloaded every 5s by the rolling refresh
+// window — so this needs no new poll, no new RPC and no new subscription. The server half is already built:
+// WatchTurnStream re-emits every still-OPEN ask to a late subscriber (chat.go), which is what makes attaching
+// late sufficient, and the controller dedupes by ask id so a replay cannot draw a second card.
+//
+// IT IS SAFE TO CALL ON EVERY RELOAD. Reattach refuses when a live local stream already owns the slot, so a
+// turn started in THIS client keeps its own stream and only a gap is ever filled; and a row with no turn in
+// flight (or no pending id) returns nil.
+func (m *App) reattachFromRail() tea.Cmd {
+	return m.reattachRunningTurn(m.chatConvID)
 }
 
 // reloadConversations re-fetches the conversations rail from the live API
