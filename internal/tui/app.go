@@ -3832,6 +3832,30 @@ func (m *App) consentDecideFromRow(label string) tea.Cmd {
 	// the PAUSED turn. Sending it as a new user message would leave the blocked call
 	// blocked and start a second turn on top of it.
 	if st.Ask.Kind == chat.AskQuestion {
+		// THE FREE-TEXT ROW IS A PROMPT FOR AN ANSWER, NOT AN ANSWER.
+		//
+		// The operator: "In the GUI, it lets you type in your own response. In the TUI clicking on
+		// it does nothing. You should be able to click on other and type in a response there."
+		// The row's LABEL was being taken as the choice, so a click settled the ask with the
+		// literal text "Other" — the operator's own words replaced by the name of the button they
+		// pressed, and the input row they were promised never drawn.
+		//
+		// BOTH OTHER PATHS ALREADY DO IT CORRECTLY, which is what makes this a divergence rather
+		// than a design question: the GUI's card opens an inline input on click and sends what was
+		// typed (frontend AskCard.tsx, "Other…" → onSelect(typed text)), and THIS card's keyboard
+		// path does exactly the same (ask/consent.go confirmConsent sets OtherMode, and the input
+		// row it grows owns every key until Enter submits). The click rides that mechanism rather
+		// than growing a third one, so a click and Enter on the row cannot disagree about what
+		// "Other" means — the same reason the permission rows resolve through DecisionForRow.
+		if label == chat.ConsentOther {
+			st.OtherMode = true
+			st.OtherInput = ""
+			// THE CLICK IS AN ACT ON THE CARD, so the card takes the keyboard back: a card
+			// whose claim was released by ctrl+g would otherwise draw an input row that
+			// collects nothing while the typing it asks for landed in the composer behind it.
+			m.reArmConsentClaim()
+			return m.onChatWake()
+		}
 		return m.ConsentResolve(askID, chat.DecisionAnswer, label)
 	}
 	dec, ok := st.Ask.DecisionForRow(row)
@@ -4602,6 +4626,28 @@ func (m *App) ConsentResolve(askID string, dec chat.ConsentDecision, choice stri
 	}
 	cmds = append(cmds, m.onChatWake())
 	return tea.Batch(cmds...)
+}
+
+// reArmConsentClaim hands the keyboard back to a card that is still pending, after a MOUSE action
+// on it.
+//
+// A card's key claim can be RELEASED without deciding anything — ctrl+g does exactly that, so the
+// operator can reach the composer while a question is up (see ask.Model.DropKeyClaim). A click on
+// the card's own Other row is the operator acting ON the card, so the card claims the keys again:
+// otherwise the free-text row would be drawn on the card while the typing it asks for went into the
+// composer behind it.
+//
+// It reaches the screen through the same narrow type assertion as the shell's other screen hooks
+// (see runAskOverlay), rather than through a field on the App, so the shell keeps no second
+// reference to a screen it does not own.
+func (m *App) reArmConsentClaim() {
+	s := m.screens[TabAsk]
+	if s == nil {
+		return
+	}
+	if c, ok := s.(interface{ ReArmConsentClaim() }); ok {
+		c.ReArmConsentClaim()
+	}
 }
 
 // runAskOverlay runs one of the Ask screen's list surfaces.
