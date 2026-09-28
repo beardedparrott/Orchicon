@@ -102,3 +102,31 @@ jobs:
 
       - name: Test frontend (vitest)
         run: make fe-test
+
+  docs-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # MERMAID IS INSTALLED INTO A SCRATCH PREFIX, not added to the product or the frontend
+      # toolchain — the same pattern go-ci uses for the TS protoc plugins. Nothing here is imported
+      # by the app; a docs validator has no business in package.json.
+      #
+      # The version is the one GitHub renders with (~10.x). The GRAMMAR is what is being checked, and
+      # a parser that accepts more than GitHub's would pass a diagram a reader cannot see, so it is
+      # pinned rather than floating — and to the same value as scripts/check-mermaid.mjs, which is
+      # where the reason is written down.
+      - name: Install the Mermaid parser (scratch prefix)
+        run: |
+          npm install --prefix "$RUNNER_TEMP/mermaid-check" mermaid@10.9.8 jsdom
+          echo "ORCHICON_MERMAID_PREFIX=$RUNNER_TEMP/mermaid-check/node_modules" >> "$GITHUB_ENV"
+
+      # A diagram that does not render is a documentation defect with no other detector: prose,
+      # links and anchors are checkable by eye, and a Mermaid block that fails grammar renders as a
+      # red parse error on GitHub while looking perfectly fine in the source.
+      - name: Validate the Mermaid diagrams
+        run: node scripts/check-mermaid.mjs
