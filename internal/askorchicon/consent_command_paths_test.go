@@ -177,8 +177,9 @@ func TestCommandPathsDoesNotInventPaths(t *testing.T) {
 			cmd:  `cp ~/a /etc/b`,
 			// DERIVED, NOT WRITTEN DOWN. `~/` expands to the RUNNING USER's home, so a literal
 			// expectation passes on the author's machine and fails everywhere else — which is
-			// exactly what go-ci caught: "commandPaths = [/home/runner/a /etc/b], want
-			// [/home/beardedparrott/a /etc/b]". The test above already used filepath.Join(home, …)
+			// exactly what go-ci caught: the expectation named the AUTHOR's home while the runner
+			// had its own ("commandPaths = [/home/runner/a /etc/b], want [/home/<author>/a /etc/b]").
+			// The test above already used filepath.Join(home, …)
 			// for the same reason; this case did not follow it.
 			want: []string{filepath.Join(home, "a"), "/etc/b"},
 		},
@@ -276,17 +277,17 @@ func TestShellMetacharAndPathShape(t *testing.T) {
 func TestASessionGrantSilencesTheOperatorsRealCommands(t *testing.T) {
 	isolatedPolicy(t, "")
 	svc := testConsentService()
-	const proj = "/home/beardedparrott/projects/Orchicon"
+	const proj = "/p/proj"
 	ct := newTestConsentTurn(svc, proj, true, nil)
 	svc.grants.Grant("conv-1", proj)
 
 	for i, cmd := range []string{
-		`cd /home/beardedparrott/projects/Orchicon && awk 'NR>=1400 && NR<=1505 && /^func /{print NR": "$0}' internal/askorchicon/chat.go && echo hi`,
-		`cd /home/beardedparrott/projects/Orchicon && awk 'NR>=1618 && NR<=2230 && /return turnAttemptResult/{print NR": "$0}' internal/x.go`,
-		`cd /home/beardedparrott/projects/Orchicon && sed -n '3480,3530p' internal/tui/app.go && echo "=== who calls this? ===" && awk 'N' internal/y.go`,
-		`cd /home/beardedparrott/projects/Orchicon && grep -n '/func /' internal/x.go`,
-		`cd /home/beardedparrott/projects/Orchicon && go test ./... 2>&1 | tail -5`,
-		`cd /home/beardedparrott/projects/Orchicon && git status --short | head -5`,
+		`cd /p/proj && awk 'NR>=1400 && NR<=1505 && /^func /{print NR": "$0}' internal/askorchicon/chat.go && echo hi`,
+		`cd /p/proj && awk 'NR>=1618 && NR<=2230 && /return turnAttemptResult/{print NR": "$0}' internal/x.go`,
+		`cd /p/proj && sed -n '3480,3530p' internal/tui/app.go && echo "=== who calls this? ===" && awk 'N' internal/y.go`,
+		`cd /p/proj && grep -n '/func /' internal/x.go`,
+		`cd /p/proj && go test ./... 2>&1 | tail -5`,
+		`cd /p/proj && git status --short | head -5`,
 	} {
 		_, ask, _ := ct.decide(context.Background(), "ses_1", bashAskEvent("per_"+string(rune('a'+i)), cmd))
 		if ask != nil {

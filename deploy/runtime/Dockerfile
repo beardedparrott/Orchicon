@@ -83,20 +83,24 @@ RUN useradd -m -u 1000 -s /bin/bash orchicon \
  && rm -rf /home/orchicon/.profile /home/orchicon/.bashrc \
  && mkdir -p /home/orchicon && chown 1000:1000 /home/orchicon
 
-# Host-home skeleton (same paths the supervisor container uses, so the
-# daemon's bind mounts overlay existing dirs). Docker creates missing
-# bind-mount parents as ROOT — pre-creating and chowning these to the
-# runtime uid means workers can still write into $HOME even though no
-# root process exists. `.local/share/opencode` and `.config/opencode`
-# are overlaid by the daemon's mounts; the rest stay ephemeral.
-RUN mkdir -p \
-      /home/beardedparrott/.local/share \
-      /home/beardedparrott/.local/state \
-      /home/beardedparrott/.config \
-      /home/beardedparrott/.cache \
-      /home/beardedparrott/.npm \
-      /home/beardedparrott/projects \
- && chown -R 1000:1000 /home/beardedparrott
+# Host-home skeleton. Docker creates a missing bind-mount parent as ROOT, which the runtime uid could
+# not then write, and `.local/share/opencode` / `.config/opencode` are overlaid by the daemon's mounts
+# while the rest stay ephemeral — so these directories must exist, writable, for whatever home the
+# container is given.
+#
+# NOTE: $HOME SUBDIRECTORIES ARE CREATED AT RUNTIME, NOT HERE.
+#
+# This image used to `mkdir -p /home/<the author's username>/...` and chown it. The container's HOME
+# is set to the HOST user's home (`-e HOME=$HostHome`), because the daemon bind-mounts host paths at
+# their own absolute paths — so those directories must exist for whatever home the CONTAINER is given.
+# Baking one username in meant that on any other machine the directories were created at a path
+# nobody uses, while the operator's ACTUAL home was left without them: the runtime uid could then
+# fail to write `$HOME/.config`, `$HOME/.local/share` and the rest, which is the opposite of the
+# intent. `orchicon runtime-supervisor` now creates them from $HOME at start (see ensureHomeDirs),
+# which is correct for every user and needs nothing baked in.
+#
+# The image's own user (`orchicon`, uid 1000) keeps its home at /home/orchicon from useradd above;
+# that is the standard account home and is unrelated to the runtime HOME the daemon sets.
 
 # pip on Debian 12 enforces PEP 668 (externally managed env); the runtime
 # user must be able to pip-install freely into the chowned rootfs.

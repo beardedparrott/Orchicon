@@ -178,51 +178,6 @@ func parentPID(pid int) (int, bool) {
 	return 0, false
 }
 
-// discoverReapPoint finds where THIS environment hands orphans, by making one:
-// a short-lived shell spawns a sleeper and exits, and we observe where the
-// sleeper lands. Returns 0 when it cannot be established.
-//
-// WHY A PROBE RATHER THAN REASONING ABOUT THE PROCESS TREE. The reap point is
-// the nearest ancestor carrying PR_SET_CHILD_SUBREAPER, and that attribute is
-// not readable from outside the process that holds it. An earlier version of
-// this walked our own ancestry and took the outermost non-init ancestor, on the
-// theory that a login session's manager sits there. That theory is WRONG
-// whenever anything sits ABOVE the real reaper — a container entrypoint, a
-// nested subreaper — and it fails SILENTLY, because the walk still returns a
-// plausible-looking pid; the sweep then matches nothing and reports success.
-// (Demonstrated by planting a subreaper beneath an outer ancestor: the orphan
-// landed on the planted reaper while the walk returned the outer process.)
-// Making one real orphan and observing it is exact in any topology, and costs
-// one subprocess per sweep.
-func discoverReapPoint() int {
-	out, err := exec.Command("/bin/sh", "-c", "/bin/sleep 30 >/dev/null 2>&1 & echo $!; echo $$").Output()
-	if err != nil {
-		return 0
-	}
-	fields := strings.Fields(string(out))
-	if len(fields) != 2 {
-		return 0
-	}
-	pid, err := strconv.Atoi(fields[0])
-	if err != nil || pid <= 1 {
-		return 0
-	}
-	spawner, err := strconv.Atoi(fields[1])
-	if err != nil {
-		return 0
-	}
-	// The probe's own sleeper is ours to clean up, whatever we learn.
-	defer func() { _ = syscall.Kill(pid, syscall.SIGKILL) }()
-	deadline := time.Now().Add(reapProbeTimeout)
-	for time.Now().Before(deadline) {
-		if pp, ok := parentPID(pid); ok && pp != spawner {
-			return pp
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	return 0
-}
-
 // reapPoints returns the parent PIDs that mean "whatever spawned this process is
 // gone, and it has been handed to the reaper": PID 1, plus whatever
 // discoverReapPoint observed.
