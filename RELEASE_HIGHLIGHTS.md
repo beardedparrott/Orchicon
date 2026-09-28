@@ -15,6 +15,28 @@
 > tells the tooling which version these highlights describe; update it
 > when you cut.
 
+## v0.4.5
+
+### New: The control plane cannot be taken down by one bad tool call
+Ask Orchicon's `update_work_item` tool dereferenced a workflow id that a scheduled sequence parent holds as NULL **by construction** — a shape the API routes to the sequence chain, but which this path skipped. The panic then ran on a background goroutine that the HTTP server's per-connection recovery does not cover, so a single malformed tool call took down the **whole control plane** instead of failing that one call. Three of them are in this instance's own log. It is fixed — and so is the reason it was nearly impossible to find from the outside: the plane runs on the host, so the panic is written to the instance's own serve log (`$ORCHICON_SERVE_STATE_DIR/logs/orchicon.log`) and never appears in `docker logs`.
+
+### New: A long conversation no longer makes the terminal unresponsive
+Reading a 250-message conversation re-laid out **every** message on **every** frame of **every** pane — markdown, styling and box drawing for each — in order to draw the handful of rows that actually fit on screen. Measured, on the frame the client redraws while doing nothing else: 7.52 ms and 132,779 allocations, down to **266 µs and 652 allocations** (28× faster, 200× fewer allocations); 20× while streaming. Each message's rendering is now remembered until something it reads genuinely changes, and an accidental quadratic — counting an item's lines by scanning to the end of the accumulated transcript, once per item — went with it.
+
+### New: A timeout measures silence, not age — and a question says what it is waiting for
+Two separate limits measured how **long** a turn had been running, so the more honest work a turn was doing, the more likely it was to be killed at thirty minutes and the failure blamed on the model — naming a model that was perfectly fine. Both are inactivity bounds now: a turn that is still working is never killed for its age, and a turn that has genuinely gone quiet still ends, with the same honest message. A turn parked on a question of **yours** is now reported as exactly that, and the question is recorded as *unanswered* rather than as a refusal — so coming back and answering it resumes the conversation, instead of the question having to be asked again.
+
+### New: A compacted conversation says so, and keeps what the work depends on
+A long conversation is periodically summarized so it fits the model's window, and until now that happened **silently**: the only record was a line in the server log, where one conversation collapsed 2,343 messages into a single summary with nothing in the transcript to explain why the assistant no longer remembered what had been said. The collapse is now recorded in the conversation itself, in both clients. Two things that made it lossier than it looked are addressed too. The identifiers the work depends on — entity ids, file paths, commit names, the tools used — are extracted **before** the collapse and carried through verbatim, because the part of the transcript they lived in (tool arguments and tool output) is dropped before the summarizer ever sees it. And a history too large to save is compressed rather than silently not saved at all, which is what used to leave a long conversation reverting to a stale copy of itself after a restart.
+
+### Also in this release
+
+- **The terminal client's ask card offers "Other", the way the browser's does.** The recorded "Orchicon asks" card had no free-text row at all — only a footer pointing at the composer — and clicking the row sent the literal word `Other` as the answer. The row is on the card now, and what you type is sent as your next message.
+- **A path that would destroy the scope can never be approved.** On top of the deny list and the never-allow class: a request whose target is a directory that contains the project you are working in is refused outright, by nobody's approval.
+- **The Windows builds compile, so a release can actually be published.** The 0.4.0 cut could not produce its release assets; the build matrix is green across every platform it ships to.
+- **The build no longer depends on your shell profile.** The makefile resolves its own copy of the schema tooling instead of trusting whatever `PATH` happens to contain at the moment you build.
+- **Docs CI validates Mermaid diagrams**, so a diagram no other check can see cannot silently break in the published documentation.
+
 ## v0.4.0
 
 ### New: Ask Orchicon can do the work — and asks before it does
