@@ -3,6 +3,8 @@ package claude
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -194,6 +196,12 @@ func (c *captureCallbacks) stallCount() int {
 	return len(c.stalls)
 }
 
+func (c *captureCallbacks) toolCallCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.toolCalls)
+}
+
 func (c *captureCallbacks) stallsSnapshot() []capturedStall {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -361,14 +369,76 @@ func TestNormalizeTodoItemsIsDefensive(t *testing.T) {
 	}
 }
 
-func TestOpencodeLedgerInputUsesTheHooksKey(t *testing.T) {
-	got := opencodeLedgerInput(map[string]any{"file_path": "/w/a.go"})
-	if got["filePath"] != "/w/a.go" {
-		t.Errorf("ledger input = %+v, want filePath=/w/a.go", got)
+func TestMapperLedgerInputUsesTheHooksKeyAndIsExecDirRelative(t *testing.T) {
+	dir := t.TempDir()
+	m, _ := newTestMapper(t, scheduler.ExecutionManifest{ProjectDir: dir})
+
+	cases := []struct {
+		desc string
+		in   map[string]any
+		want string
+	}{
+		{"absolute inside the execution dir → relative", map[string]any{"file_path": filepath.Join(dir, "a.md")}, "a.md"},
+		{"notebook_path key", map[string]any{"notebook_path": filepath.Join(dir, "n.ipynb")}, "n.ipynb"},
+		{"nested absolute inside the execution dir", map[string]any{"file_path": filepath.Join(dir, "sub", "b.go")}, "sub/b.go"},
+		{"already relative passes through", map[string]any{"file_path": "pkg/c.go"}, "pkg/c.go"},
+		// Outside the execution dir: left ALONE so the ledger observer's own
+		// containment check (not this helper) is what drops the row.
+		{"absolute outside the execution dir", map[string]any{"file_path": "/w/a.go"}, "/w/a.go"},
+		{"no path", map[string]any{}, ""},
 	}
-	got = opencodeLedgerInput(map[string]any{"notebook_path": "/w/n.ipynb"})
-	if got["filePath"] != "/w/n.ipynb" {
-		t.Errorf("notebook ledger input = %+v", got)
+	for _, c := range cases {
+		if got := m.ledgerInput(c.in); got["filePath"] != c.want {
+			t.Errorf("%s: ledgerInput(%v) filePath = %q, want %q", c.desc, c.in, got["filePath"], c.want)
+		}
+	}
+}
+
+// TestMapperFileEditLedgerFiresOnlyAfterTheWriteLands pins the TIMING the
+// diff pipeline depends on: the ledger hook reads the file's on-disk state, so
+// it must NOT fire at tool_use time (the CLI has not written the file yet —
+// the observer then diffs the file against itself and silently drops the row,
+// leaving the execution's file-diff pane empty) but at the tool_result, once
+// the file is written. A failed call must never ledger.
+func TestMapperFileEditLedgerFiresOnlyAfterTheWriteLands(t *testing.T) {
+	dir := t.TempDir()
+	var calls []string
+	m := NewMapper("exec-ledger", &recordingCallbacks{}, MapperDeps{
+		TenantID: "t1",
+		ExecDir:  dir,
+		Log:      quietLogger(),
+		FileEdits: func(_ context.Context, _, _, execDir, toolName string, input map[string]any, _ string) {
+			p, _ := input["filePath"].(string)
+			body, _ := os.ReadFile(filepath.Join(execDir, filepath.FromSlash(p)))
+			calls = append(calls, toolName+"|"+p+"|"+string(body))
+		},
+	})
+
+	abs := filepath.Join(dir, "a.md")
+	feed(t, m, `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"w-1","name":"Write","input":{"file_path":"`+abs+`","content":"# hi"}}]}}`)
+	if len(calls) != 0 {
+		t.Fatalf("the ledger fired at tool_use time, before the CLI wrote the file: %v", calls)
+	}
+
+	// The CLI performs the write; only then does the tool_result arrive.
+	if err := os.WriteFile(abs, []byte("# hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	feed(t, m, `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"w-1","content":"File created","is_error":false}]}}`)
+	if len(calls) != 1 {
+		t.Fatalf("ledger calls = %v, want exactly one, at completion", calls)
+	}
+	if calls[0] != "write|a.md|# hi" {
+		t.Errorf("ledger call = %q, want canonical name + exec-dir-relative path + the WRITTEN body", calls[0])
+	}
+
+	// A FAILED edit must never create a phantom row.
+	feed(t, m,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"e-1","name":"Edit","input":{"file_path":"`+filepath.Join(dir, "b.md")+`","old_string":"x","new_string":"y"}}]}}`,
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"e-1","content":"String to replace not found","is_error":true}]}}`,
+	)
+	if len(calls) != 1 {
+		t.Errorf("ledger calls = %v, want the failed edit skipped", calls)
 	}
 }
 
@@ -418,11 +488,20 @@ func TestMapperTextStreamsAndCoalescesOnePart(t *testing.T) {
 
 func TestMapperWriteToolFansOutToFilesLedgerAndArtifact(t *testing.T) {
 	m, rec := newTestMapper(t, scheduler.ExecutionManifest{})
-	feed(t, m, `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu-1","name":"Write","input":{"file_path":"/w/notes.md","content":"# hi"}}]}}`)
+	feed(t, m,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu-1","name":"Write","input":{"file_path":"/w/notes.md","content":"# hi"}}]}}`,
+		// the ledger rides the COMPLETION (see the timing test above).
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu-1","content":"File created","is_error":false}]}}`,
+	)
 
 	tools := rec.toolCalls
-	if len(tools) != 1 || tools[0].name != "write" {
-		t.Fatalf("OnToolCall = %+v, want one canonical write", tools)
+	// TWO events, like opencode's tool_use + its resolution: the call itself
+	// (input, no output) and the resolved call (output, no input).
+	if len(tools) != 2 || tools[0].name != "write" || tools[1].name != "write" {
+		t.Fatalf("OnToolCall = %+v, want the canonical write + its resolution", tools)
+	}
+	if tools[1].output != "File created" {
+		t.Errorf("resolved call = %+v", tools[1])
 	}
 	if files := rec.filesFlat(); len(files) != 1 || files[0] != "/w/notes.md" {
 		t.Errorf("OnWrittenFiles = %v", files)
@@ -433,21 +512,29 @@ func TestMapperWriteToolFansOutToFilesLedgerAndArtifact(t *testing.T) {
 	if len(rec.artifacts) != 1 || rec.artifacts[0].name != "/w/notes.md" || rec.artifacts[0].typ != "markdown" || rec.artifacts[0].content != "# hi" {
 		t.Errorf("OnArtifact = %+v", rec.artifacts)
 	}
-	// durable part: canonical name, running status, input preserved.
+	// durable parts: the tool_use carries the canonical name + running status
+	// and the tool_result resolves it to completed.
 	parts := rec.partsOfKind(db.SessionPartToolUse)
-	if len(parts) != 1 {
-		t.Fatalf("tool_use parts = %+v", parts)
+	if len(parts) != 2 {
+		t.Fatalf("tool_use parts = %+v, want the call + its completion", parts)
 	}
 	body, _ := json.Marshal(parts[0].payload)
 	if !strings.Contains(string(body), `"tool":"write"`) || !strings.Contains(string(body), `"status":"running"`) {
 		t.Errorf("durable part = %s", body)
+	}
+	resolved, _ := json.Marshal(parts[1].payload)
+	if !strings.Contains(string(resolved), `"status":"completed"`) {
+		t.Errorf("resolved part = %s", resolved)
 	}
 }
 
 func TestMapperEditFamilyAllReachWrittenFiles(t *testing.T) {
 	for _, name := range []string{"Edit", "MultiEdit", "NotebookEdit", "ApplyPatch"} {
 		m, rec := newTestMapper(t, scheduler.ExecutionManifest{})
-		feed(t, m, `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu-1","name":"`+name+`","input":{"file_path":"/w/a.go","old_string":"a","new_string":"b"}}]}}`)
+		feed(t, m,
+			`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu-1","name":"`+name+`","input":{"file_path":"/w/a.go","old_string":"a","new_string":"b"}}]}}`,
+			`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu-1","content":"ok","is_error":false}]}}`,
+		)
 		files := rec.filesFlat()
 		if len(files) != 1 || files[0] != "/w/a.go" {
 			t.Errorf("%s: OnWrittenFiles = %v", name, files)

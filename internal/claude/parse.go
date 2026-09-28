@@ -3,6 +3,7 @@ package claude
 import (
 	"context"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -63,12 +64,22 @@ type Mapper struct {
 
 	mu        sync.Mutex
 	sessionID string
-	toolNames map[string]string // tool_use id → canonical tool name
+	tools     map[string]toolCall // tool_use id → what that call was
 	fileSet   map[string]bool
 	out       strings.Builder // accumulated text for OnResult's output
 	textBuf   strings.Builder // per-turn text, coalesced into ONE part
 
 	stall *stallMonitor
+}
+
+// toolCall remembers what one in-flight `tool_use` block called, so the
+// matching `tool_result` can drive the side effects that need POST-execution
+// ground truth. The file-edit ledger is the one that matters: its observer
+// diffs the file's on-disk state, so it can only run once the CLI has
+// actually performed the write.
+type toolCall struct {
+	canonical string
+	input     map[string]any
 }
 
 // NewMapper builds a Mapper for one execution.
@@ -77,12 +88,12 @@ func NewMapper(execID string, cbs scheduler.ExecutionCallbacks, deps MapperDeps)
 		deps.Log = slog.Default()
 	}
 	return &Mapper{
-		execID:    execID,
-		cbs:       cbs,
-		deps:      deps,
-		toolNames: make(map[string]string),
-		fileSet:   make(map[string]bool),
-		stall:     newStallMonitor(deps.Manifest, time.Now()),
+		execID:  execID,
+		cbs:     cbs,
+		deps:    deps,
+		tools:   make(map[string]toolCall),
+		fileSet: make(map[string]bool),
+		stall:   newStallMonitor(deps.Manifest, time.Now()),
 	}
 }
 
@@ -191,7 +202,33 @@ func (m *Mapper) callFileEditHook(ctx context.Context, canonical string, input m
 	if m.deps.FileEdits == nil {
 		return
 	}
-	m.deps.FileEdits(ctx, m.execID, m.deps.TenantID, m.deps.ExecDir, canonical, input, "")
+	m.deps.FileEdits(ctx, m.execID, m.deps.TenantID, m.deps.ExecDir, canonical, m.ledgerInput(input), "")
+}
+
+// ledgerInput reshapes a claude tool input into the key the shared file-edit
+// ledger hook reads (`filePath`, then `path`) with the path made
+// execution-dir-relative.
+func (m *Mapper) ledgerInput(input map[string]any) map[string]any {
+	return map[string]any{"filePath": m.ledgerPath(toolInputPath(input))}
+}
+
+// ledgerPath makes claude's file path execution-dir-relative. Claude Code
+// reports ABSOLUTE paths; the ledger's observer JOINS the path onto the
+// execution dir, so an absolute path is looked up at execDir+"/<abs>", the
+// read fails, and ObserveAfter returns an empty Entry — the row is silently
+// dropped and the diff pane stays empty. Relative paths pass through
+// untouched, and a path OUTSIDE the execution dir is left alone so the
+// observer's own containment check (not this helper) decides to drop it.
+func (m *Mapper) ledgerPath(p string) string {
+	if p == "" || m.deps.ExecDir == "" || !filepath.IsAbs(p) {
+		return p
+	}
+	base := filepath.Clean(m.deps.ExecDir)
+	rel, err := filepath.Rel(base, filepath.Clean(p))
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return p
+	}
+	return filepath.ToSlash(rel)
 }
 
 // recordUsage forwards the terminal result message's token + cost telemetry.
@@ -277,9 +314,11 @@ func (m *Mapper) handleSystem(ctx context.Context, sid string) {
 // OnWrittenFiles, the ledger, the artifact channel and the todo snapshot.
 func (m *Mapper) handleToolUse(ctx context.Context, tu ToolUse) {
 	canon := canonicalToolName(tu.Name)
-	m.mu.Lock()
-	m.toolNames[tu.ID] = canon
-	m.mu.Unlock()
+	if tu.ID != "" {
+		m.mu.Lock()
+		m.tools[tu.ID] = toolCall{canonical: canon, input: tu.Input}
+		m.mu.Unlock()
+	}
 	m.stall.sawOutput(time.Now())
 
 	input := tu.Input
@@ -301,7 +340,13 @@ func (m *Mapper) handleToolUse(ctx context.Context, tu ToolUse) {
 		return
 	}
 	m.addFiles(ctx, paths)
-	m.callFileEditHook(ctx, canon, opencodeLedgerInput(tu.Input))
+	// NOTE: the file-edit ledger is deliberately NOT driven from here. At
+	// tool_use time the CLI has not performed the write yet, so the ledger's
+	// observer would diff the file against itself and DROP the row (a live
+	// claude run then produces an empty file_edit_ledger and the diff pane
+	// stays blank). It fires from handleToolResult, where the file is on disk
+	// — the same point opencode fires it (its tool_use part is already
+	// `completed`).
 	// A `write` is also an inline artifact (mirrors opencode/adapter.go's
 	// built-in write → artifact routing).
 	if canon == "write" {
@@ -318,8 +363,10 @@ func (m *Mapper) handleToolUse(ctx context.Context, tu ToolUse) {
 // exact shape opencode writes.
 func (m *Mapper) handleToolResult(ctx context.Context, tr ToolResult) {
 	m.mu.Lock()
-	name := m.toolNames[tr.ToolUseID]
+	call := m.tools[tr.ToolUseID]
+	delete(m.tools, tr.ToolUseID)
 	m.mu.Unlock()
+	name := call.canonical
 	m.stall.sawOutput(time.Now())
 
 	m.cbs.OnToolCall(ctx, m.execID, name, nil, []byte(tr.Content))
@@ -330,7 +377,20 @@ func (m *Mapper) handleToolResult(ctx context.Context, tr ToolResult) {
 		errMsg = tr.Content
 	}
 	m.recordToolUse(ctx, name, nil, status, tr.Content, errMsg)
+
+	// The diff pipeline's ledger runs HERE, at completion: the hook's
+	// observer diffs the file's fresh on-disk state, so it must run after the
+	// CLI has performed the write. Only a COMPLETED call ledgers — a failed
+	// edit carries no ground truth and must never create a phantom row
+	// (mirrors opencode/adapter.go's `toolStatus == "completed"` gate).
+	if !tr.IsError && ledgersFileEdit(name) && toolInputPath(call.input) != "" {
+		m.callFileEditHook(ctx, name, call.input)
+	}
 }
+
+// ledgersFileEdit reports whether a canonical tool name is one of the
+// file-writing built-ins whose edit the shared diff pipeline must ledger.
+func ledgersFileEdit(canonical string) bool { return canonical == "write" || canonical == "edit" }
 
 // Tick evaluates the stall monitor and raises OnStall. It returns the reason
 // of a FATAL stall (the caller hard-kills the child and fails the execution),
@@ -424,12 +484,6 @@ func toolInputPath(input map[string]any) string {
 		return p
 	}
 	return strField(input, "notebook_path")
-}
-
-// opencodeLedgerInput reshapes a claude tool input into the key the shared
-// file-edit ledger hook reads (`filePath`, then `path`).
-func opencodeLedgerInput(input map[string]any) map[string]any {
-	return map[string]any{"filePath": toolInputPath(input)}
 }
 
 // artifactTypeFromPath tags an artifact by its extension (mirrors
