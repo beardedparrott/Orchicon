@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/beardedparrott/orchicon/internal/neverallow"
+	"github.com/beardedparrott/orchicon/internal/workerrestrict"
 )
 
 // opencodeConfigPath returns the path to the opencode config file
@@ -241,7 +242,7 @@ func normalizeMCPEntries(entries map[string]any) map[string]any {
 // (/tmp/opencode-data-*, which hold the seeded model auth.json copies) stay
 // behind the deny. Workers are told to use it in the composite prompt's
 // runtime-environment block.
-const ScratchDir = "/tmp/orchicon"
+const ScratchDir = workerrestrict.ScratchDir
 
 // OrchiconRunDirGlob is the external_directory carve-out for Orchicon's
 // own run metadata (`.orchicon/<run>/` under the project root, and any
@@ -253,7 +254,7 @@ const ScratchDir = "/tmp/orchicon"
 // carve-out is tight: only the `.orchicon/` subtree (Orchicon-owned,
 // aliased run metadata, gitignored), never the supervisor socket or the
 // auth/data dirs elsewhere on disk.
-const orchidsRunDirPattern = "**/.orchicon/**"
+const orchidsRunDirPattern = workerrestrict.RunDirPattern
 
 // taskToolDeny denies opencode's built-in `task` (subagent) tool for every
 // worker execution. Orchicon already splits work into focused per-worker
@@ -262,7 +263,7 @@ const orchidsRunDirPattern = "**/.orchicon/**"
 // turn. This rule removes the surface entirely (permission layers gate the
 // built-in `task` tool the same way they gate `bash`/`edit`). Denied via a
 // "*" catch-all so no subagent plan can be approved.
-const taskToolDeny = "task"
+const taskToolDeny = workerrestrict.TaskToolDeny
 
 // readGrepDeny doubles as the composite-tool carve-out: when orchicon's
 // worktree batch tools are enabled (ConfigOptions.CompositeTools), the
@@ -394,38 +395,11 @@ func interactivePermissionRules() map[string]any {
 // APPENDED from the shared declaration; the patterns that stay inline below are
 // the worker's own project-boundary deny list, which is not part of that class.
 func workerPermissionRules(compositeTools bool) map[string]any {
-	bashDeny := append(neverallow.DenyRules(), []string{
-		// rm family — target-scoped. In-project cleanup (`rm -rf build/`,
-		// `node_modules`, `.next`) is legitimate and no longer denied (the
-		// denial burned worker tokens on `find -delete`/python workarounds);
-		// the OS-level execution guard is the precise backstop (it allows rm
-		// only when every path stays inside the project + scratch). What stays
-		// denied is the destructive class: absolute system paths, /, ~, $HOME,
-		// --no-preserve-root, and the current-dir-wipe variants — the
-		// commands that escape the project no matter how they're written.
-		"rm -rf /", "rm -r /", "rm -R /", "rm -f /", "rm -fr /", "rm -Rf /",
-		"rm -rf /*", "rm -fr /*", "rm -r /*", "rm -R /*", "rm -f /*",
-		"rm -rf /home/*", "rm -rf /root/*", "rm -rf /etc/*", "rm -rf /usr/*",
-		"rm -rf /var/*", "rm -rf /bin/*", "rm -rf /boot/*",
-		"rm -rf ~", "rm -rf ~/*", "rm -rf $HOME", "rm -rf $HOME/*",
-		"rm -rf ${HOME}/*", "rm -rf ${HOME}*",
-		"rm --no-preserve-root *", "rm -rf --no-preserve-root *",
-		"/bin/rm *", "/usr/bin/rm *", "/bin/rm -rf *", "/usr/bin/rm -rf *",
-		"rm -rf . /", "rm -rf . ..",
-		// shell-construct smuggling variants that hide rm.
-		"(*rm*", "{*rm*",
-		"* & rm *", "* && rm *", "* ; rm *", "* || rm *", "* | rm *",
-		"* > /dev/sd*", "* >> /dev/sd*", ": > /dev/sd*",
-		"echo * > /dev/sd*", "echo * >> /dev/sd*",
-		"cat * > /dev/sd*", "cat * >> /dev/sd*", "cp * /dev/sd*",
-		"mv * /dev/null", "cp -r * /dev/null", "cp -a * /dev/null",
-		// root-wide permission changes.
-		"chmod -R 777 /*", "chmod -R 777 /", "chmod -R 000 /*", "chmod -R 000 /",
-		"chown -R * /*", "chown -R * /", "chmod -R 777 * /",
-		// download-and-execute (arbitrary remote code).
-		"curl * | sh", "curl * | bash", "curl * | sh -", "curl * | bash -",
-		"curl * | zsh", "wget * | sh", "wget * | bash", "wget * | zsh",
-	}...)
+	// The worker bash deny list — the shared never-allow binary class PLUS the
+	// project-boundary rules — in ONE copy, in internal/workerrestrict. The
+	// claude adapter's PreToolUse hook matches the SAME list, which is what
+	// makes "a destructive command is refused identically" true by construction.
+	bashDeny := workerrestrict.WorkerDenyPatterns()
 	rules := make(map[string]any, len(bashDeny))
 	for _, p := range bashDeny {
 		rules[p] = "deny"

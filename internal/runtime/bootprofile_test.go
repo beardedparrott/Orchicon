@@ -233,3 +233,139 @@ func TestAdapterKindsWireDistinction(t *testing.T) {
 		t.Errorf("a round-tripped native-only profile must survive verbatim, got %v", got)
 	}
 }
+
+// claudeMountHome builds a fake host home laid out exactly as the claude
+// NATIVE installer leaves it: a writable config home (~/.claude/), the
+// rewritten ~/.claude.json, a launcher SYMLINK at ~/.local/bin/claude, and the
+// install root (~/.local/share/claude/versions/<ver>) the symlink resolves
+// into. Used by the mount and symlink-resolution tests.
+func claudeMountHome(t *testing.T) (home, launcher, versionedBinary string) {
+	t.Helper()
+	home = t.TempDir()
+	mkdir := func(parts ...string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(append([]string{home}, parts...)...), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mkfile := func(parts ...string) string {
+		t.Helper()
+		p := filepath.Join(append([]string{home}, parts...)...)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	mkdir(".claude")
+	mkfile(".claude", ".credentials.json") // the claude.ai OAuth credential (0600 on a real host)
+	mkfile(".claude.json")
+	mkdir(".local", "bin")
+	versionedBinary = mkfile(".local", "share", "claude", "versions", "9.9.9")
+	launcher = filepath.Join(home, ".local", "bin", "claude")
+	if err := os.Symlink(versionedBinary, launcher); err != nil {
+		t.Fatal(err)
+	}
+	return home, launcher, versionedBinary
+}
+
+// TestAdapterHostMountsClaudeRW asserts the EXACT -v arg strings for claude:
+// the config home and ~/.claude.json are READ-WRITE (a session writes its
+// transcript tree), while the CLI launcher and the install root stay
+// READ-ONLY. It also pins the regression direction: the rw concept must never
+// leak to another adapter kind.
+func TestAdapterHostMountsClaudeRW(t *testing.T) {
+	home, _, _ := claudeMountHome(t)
+	want := []string{
+		"-v", filepath.Join(home, ".claude") + ":" + filepath.Join(home, ".claude") + ":rw",
+		"-v", filepath.Join(home, ".claude.json") + ":" + filepath.Join(home, ".claude.json") + ":rw",
+		"-v", filepath.Join(home, ".local", "bin", "claude") + ":" + filepath.Join(home, ".local", "bin", "claude") + ":ro",
+		"-v", filepath.Join(home, ".local", "share", "claude") + ":" + filepath.Join(home, ".local", "share", "claude") + ":ro",
+	}
+	if got := adapterHostMounts(home, "claude"); !reflect.DeepEqual(got, want) {
+		t.Errorf("claude mounts =\n%v\nwant\n%v", got, want)
+	}
+	// Exactly two RW mounts — nothing else is writable.
+	rw := 0
+	for _, a := range adapterHostMounts(home, "claude") {
+		if strings.HasSuffix(a, ":rw") {
+			rw++
+		}
+	}
+	if rw != 2 {
+		t.Errorf("expected exactly 2 read-write claude mounts, got %d", rw)
+	}
+
+	// Regression: an opencode install is still mounted read-only everywhere.
+	homeOC := t.TempDir()
+	for _, d := range [][]string{{".config", "opencode"}, {".local", "share", "opencode"}} {
+		if err := os.MkdirAll(filepath.Join(append([]string{homeOC}, d...)...), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ocBin := filepath.Join(homeOC, ".opencode", "bin")
+	if err := os.MkdirAll(ocBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ocBin, "opencode"), []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ocMounts := adapterHostMounts(homeOC, "opencode")
+	if len(ocMounts) == 0 {
+		t.Fatal("expected opencode mounts on a populated opencode home")
+	}
+	for _, a := range ocMounts {
+		if strings.HasSuffix(a, ":rw") {
+			t.Errorf("the read-write concept must never leak to opencode: %q", a)
+		}
+	}
+}
+
+// TestClaudeLauncherSymlinkTargetMounted is the "the launcher cannot dangle
+// in-container" assertion: the launcher is a SYMLINK into the install root, so
+// the symlink's resolved target must live under one of the dirs the daemon
+// actually mounts (both are mounted at identical absolute host paths).
+func TestClaudeLauncherSymlinkTargetMounted(t *testing.T) {
+	home, launcher, versioned := claudeMountHome(t)
+	if got, err := os.Readlink(launcher); err != nil || got != versioned {
+		t.Fatalf("launcher must be a symlink to the install root, readlink=%q err=%v", got, err)
+	}
+	resolved, err := filepath.EvalSymlinks(launcher)
+	if err != nil {
+		t.Fatalf("the launcher does not resolve: %v", err)
+	}
+	// Extract the mounted src dir of every `-v src:src:mode` pair.
+	args := adapterHostMounts(home, "claude")
+	var srcs []string
+	for i := 0; i+1 < len(args); i += 2 {
+		spec := args[i+1]
+		if j := strings.Index(spec, ":"); j > 0 {
+			srcs = append(srcs, spec[:j])
+		}
+	}
+	mounted := false
+	for _, s := range srcs {
+		if resolved == s || strings.HasPrefix(resolved, s+string(os.PathSeparator)) {
+			mounted = true
+			break
+		}
+	}
+	if !mounted {
+		t.Fatalf("the launcher symlink target %s is under NONE of the mounted dirs %v — it would DANGLE inside the container", resolved, srcs)
+	}
+	// The install root must be mounted as its own declaration (the design
+	// mounts at identical absolute paths, so the link resolves only if the
+	// root rides along).
+	root := filepath.Join(home, ".local", "share", "claude")
+	found := false
+	for _, s := range srcs {
+		if s == root {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the claude install root %s is not among the mounted dirs %v", root, srcs)
+	}
+}
