@@ -147,13 +147,14 @@ func TestServeStateMultiplexedPerAdapterKind(t *testing.T) {
 	if got := servePortFor(""); got != defaultServePort {
 		t.Errorf("servePortFor(\"\") = %d, want %d", got, defaultServePort)
 	}
-	// A kind with no bring-up path yet must not collide with opencode's id
+	// A kind with no HTTP serve (claude uses the streaming stdio
+	// transport, AgentRequest.Cmd "stdio") must not collide with opencode's id
 	// or port — the caller fails the handshake instead of binding 4096 twice.
 	if got := serveExecIDFor("claude"); got == serveExecID {
 		t.Error("a second kind must not reuse the opencode reserved exec id")
 	}
 	if got := servePortFor("claude"); got != 0 {
-		t.Errorf("servePortFor(claude) = %d, want 0 (no bring-up path yet)", got)
+		t.Errorf("servePortFor(claude) = %d, want 0 (claude has no HTTP serve — it uses the streaming stdio transport)", got)
 	}
 
 	h := newChildRegistry(tLogger(t))

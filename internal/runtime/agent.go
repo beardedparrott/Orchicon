@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -28,12 +29,26 @@ import (
 // supervisor. It travels as one JSON document over the supervisor's unix
 // socket (written by `orchicon runtime-client`, which the daemon reaches
 // via `docker exec`). Commands: "ping" (readiness), "serve" (the
-// container's opencode serve handshake), and "exec" (one-shot shell
-// command for always-container native sessions — argv is fixed to
-// bash/sh -c by the allowlist below).
+// container's opencode serve handshake), "exec" (one-shot shell command
+// for always-container native sessions — argv is fixed to bash/sh -c by
+// the allowlist below), "stdio" (the long-lived duplex streaming child the
+// claude adapter drives across many turns), and "signal" (deliver a signal
+// to a live stdio child by exec id).
+//
+// The "stdio"/"signal" cmds are ADDITIVE: an older supervisor answers them
+// through the default branch with a loud "unknown cmd" rather than
+// mis-handling them.
 type AgentRequest struct {
-	Cmd  string   `json:"cmd"` // "ping" | "serve" | "exec"
+	Cmd  string   `json:"cmd"` // "ping" | "serve" | "exec" | "stdio" | "signal"
 	Argv []string `json:"argv,omitempty"`
+	// ExecID names the tracked child for the "stdio"/"signal" cmds (the
+	// long-lived streaming stdio transport). Empty for a "stdio" start is
+	// rejected loudly.
+	ExecID string `json:"exec_id,omitempty"`
+	// Data is one stdin frame payload ("stdio" connection, cmd "stdin").
+	Data string `json:"data,omitempty"`
+	// Signal is the signal name for cmd "signal" ("INT"|"TERM"|"KILL").
+	Signal string `json:"signal,omitempty"`
 	// AdapterKind is the adapter kind whose serve this request brings up
 	// (the "serve" cmd only). The supervisor keys its per-adapter serve
 	// state on it, so one container can multiplex a serve per demanded kind
@@ -55,6 +70,7 @@ type AgentEvent struct {
 	ExitCode int    `json:"exit_code,omitempty"`
 	Error    string `json:"error,omitempty"`
 	Pong     bool   `json:"pong,omitempty"`
+	PID      int    `json:"pid,omitempty"`      // stdio cmd: the streaming child's pid
 	Port     int    `json:"port,omitempty"`     // serve cmd: the container-internal serve port
 	Password string `json:"password,omitempty"` // serve cmd: the container's serve password
 	// PlaneEnabled reports (serve handshake) whether this image boots the
@@ -131,12 +147,13 @@ func IsDevImageTag(tag string) bool {
 
 // runtimeBinAllowlist is the set of binaries the runtime supervisor may
 // exec (argv[0] basenames). It mirrors the adapter CLIs Orchicon drives:
-// opencode today, with Claude Code (`claude`) and Codex (`codex`) to be
-// added here when those adapters land. Orchicon never ships any of these
+// opencode and Claude Code (`claude`) today, with Codex (`codex`) to be
+// added here when that adapter lands. Orchicon never ships any of these
 // in the image — the daemon mounts the operator's host installs into the
 // container at runtime (see daemon.go standard mounts).
 var runtimeBinAllowlist = map[string]bool{
 	"opencode": true,
+	"claude":   true,
 	"orchicon": true,
 	"bash":     true,
 	"sh":       true,
@@ -318,6 +335,10 @@ func (h *childRegistry) serve(conn net.Conn) {
 		h.runServe(enc, req)
 	case "exec":
 		h.runExec(enc, req)
+	case "stdio":
+		h.runStdio(dec, enc, req)
+	case "signal":
+		h.runSignal(enc, req)
 	default:
 		_ = enc.Encode(AgentEvent{Event: "error", Error: "unknown cmd: " + req.Cmd})
 	}
@@ -582,6 +603,202 @@ func (h *childRegistry) runExec(enc *json.Encoder, req AgentRequest) {
 		}
 	}
 	write(AgentEvent{Event: "exit", ExitCode: code, Error: emsg})
+}
+
+// runStdio runs one long-lived duplex streaming child — the transport the
+// claude adapter drives across many turns on a SINGLE subprocess. Unlike
+// runExec (one shot, collected), it keeps the child's stdin open and reads
+// follow-up frames ("stdin" | "signal" | "close") from the SAME decoder
+// while its stdout/stderr stream back as {stream,data} events. argv[0] is
+// allowlisted (runtimeBinAllowlist) and the execution-guard shim applies,
+// exactly like runExec. Exactly ONE child may be live per exec id.
+func (h *childRegistry) runStdio(dec *json.Decoder, enc *json.Encoder, req AgentRequest) {
+	if req.ExecID == "" {
+		_ = enc.Encode(AgentEvent{Event: "error", Error: "stdio requires exec_id"})
+		return
+	}
+	if len(req.Argv) == 0 {
+		_ = enc.Encode(AgentEvent{Event: "error", Error: "stdio requires argv"})
+		return
+	}
+	base := filepath.Base(req.Argv[0])
+	if !runtimeBinAllowlist[base] {
+		_ = enc.Encode(AgentEvent{Event: "error", Error: "stdio argv[0] not allowlisted: " + base})
+		return
+	}
+	// ONE active child per exec id: a second start is refused loudly (never
+	// two writers to the same session's pipe/transcript).
+	h.mu.Lock()
+	if ex, ok := h.cmd[req.ExecID]; ok && ex != nil && !ex.hasExited() {
+		h.mu.Unlock()
+		_ = enc.Encode(AgentEvent{Event: "error", Error: "stdio child already live for exec id " + req.ExecID})
+		return
+	}
+	h.mu.Unlock()
+
+	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
+	if req.Cwd != "" {
+		cmd.Dir = req.Cwd
+	}
+	env := agentEnv(req)
+	guardDir, guardErr := guard.MakeGuard("/tmp", req.ProjectDir)
+	if guardErr != nil {
+		h.log.Warn("supervisor: guard not applied to stdio", "error", guardErr)
+	} else {
+		env = prependGuard(env, guardDir)
+	}
+	cmd.Env = env
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		if guardDir != "" {
+			os.RemoveAll(guardDir)
+		}
+		_ = enc.Encode(AgentEvent{Event: "error", Error: err.Error()})
+		return
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		if guardDir != "" {
+			os.RemoveAll(guardDir)
+		}
+		_ = enc.Encode(AgentEvent{Event: "error", Error: err.Error()})
+		return
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		if guardDir != "" {
+			os.RemoveAll(guardDir)
+		}
+		_ = enc.Encode(AgentEvent{Event: "error", Error: err.Error()})
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		if guardDir != "" {
+			os.RemoveAll(guardDir)
+		}
+		_ = enc.Encode(AgentEvent{Event: "error", Error: err.Error()})
+		return
+	}
+	s := newExecSession(req.ExecID)
+	s.cmd = cmd
+	s.guardDir = guardDir
+	h.mu.Lock()
+	h.cmd[req.ExecID] = s
+	h.mu.Unlock()
+	go h.watchExec(s)
+
+	// json.Encoder is not safe for concurrent use: serialize the pumps.
+	var wmu sync.Mutex
+	write := func(ev AgentEvent) {
+		wmu.Lock()
+		defer wmu.Unlock()
+		_ = enc.Encode(ev)
+	}
+	write(AgentEvent{Event: "started", PID: cmd.Process.Pid})
+
+	// Line-framed pumps: each output line is one event, so the plane can
+	// reassemble JSONL without a length prefix.
+	var wg sync.WaitGroup
+	pump := func(stream string, r io.Reader) {
+		defer wg.Done()
+		sc := bufio.NewScanner(r)
+		sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+		for sc.Scan() {
+			write(AgentEvent{Stream: stream, Data: string(sc.Bytes()) + "\n"})
+		}
+	}
+	wg.Add(2)
+	go pump("stdout", stdout)
+	go pump("stderr", stderr)
+
+	// Control loop: read follow-up frames off the SAME connection until the
+	// plane closes its request body (dec.Err on EOF) or sends "close".
+	for {
+		var f AgentRequest
+		if err := dec.Decode(&f); err != nil {
+			break
+		}
+		switch f.Cmd {
+		case "stdin":
+			if _, err := stdin.Write([]byte(f.Data + "\n")); err != nil {
+				goto drain
+			}
+		case "signal":
+			if cmd.Process != nil {
+				_ = agentSignal(cmd.Process, f.Signal)
+			}
+		case "close":
+			goto drain
+		}
+	}
+drain:
+	_ = stdin.Close()
+	// The child should now see EOF and exit. Bound the wait so a stubborn
+	// child cannot wedge the connection forever.
+	pumped := make(chan struct{})
+	go func() { wg.Wait(); close(pumped) }()
+	select {
+	case <-pumped:
+	case <-time.After(15 * time.Second):
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		<-pumped
+	}
+	select {
+	case <-s.done:
+	case <-time.After(2 * time.Second):
+	}
+	write(AgentEvent{Event: "exit", ExitCode: s.exitCodeValue()})
+}
+
+// runSignal delivers a signal to a live stdio child by exec id. An unknown
+// or finished execution is a SILENT no-op (the Aborter contract): a cancel
+// of an already-dead session is not an error.
+func (h *childRegistry) runSignal(enc *json.Encoder, req AgentRequest) {
+	h.mu.Lock()
+	s := h.cmd[req.ExecID]
+	h.mu.Unlock()
+	if s == nil || s.hasExited() || s.cmd == nil || s.cmd.Process == nil {
+		_ = enc.Encode(AgentEvent{Pong: true})
+		return
+	}
+	if err := agentSignal(s.cmd.Process, req.Signal); err != nil {
+		h.log.Warn("supervisor: stdio signal failed", "exec", req.ExecID, "signal", req.Signal, "error", err)
+	}
+	_ = enc.Encode(AgentEvent{Pong: true})
+}
+
+// agentSignal maps a signal name onto an OS signal. Unknown names are a
+// no-op.
+func agentSignal(proc *os.Process, name string) error {
+	var sig syscall.Signal
+	switch name {
+	case "INT":
+		sig = syscall.SIGINT
+	case "TERM":
+		sig = syscall.SIGTERM
+	case "KILL":
+		sig = syscall.SIGKILL
+	default:
+		return nil
+	}
+	return proc.Signal(sig)
+}
+
+// hasExited reports whether the tracked child has finished. Guarded by the
+// session's own mutex (never the registry's).
+func (s *execSession) hasExited() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.exited
+}
+
+// exitCodeValue returns the recorded exit code (0 before the child exits).
+func (s *execSession) exitCodeValue() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.exitCode
 }
 
 // pidOrZero returns the child's process id (0 when not started).
@@ -1177,13 +1394,28 @@ func agentEnv(req AgentRequest) []string {
 		}
 		out = append(kept, kv)
 	}
-	// Ensure the mounted adapter CLI bin (~/.opencode/bin) is on the
-	// child's PATH — belt-and-suspenders to the daemon's container-level
-	// PATH so workers and their subprocesses can also resolve opencode.
+	// Ensure every MOUNTED adapter CLI bin is on the child's PATH —
+	// belt-and-suspenders to the daemon's container-level PATH. Only the
+	// kinds the daemon actually mounted (ORCHICON_ADAPTER_KINDS) are
+	// considered, and only dirs that exist in THIS container (i.e. were
+	// actually mounted) are prepended, so a legacy request without the env
+	// var behaves exactly as before.
 	if home := os.Getenv("HOME"); home != "" {
-		bin := filepath.Join(home, ".opencode", "bin")
-		if st, err := os.Stat(bin); err == nil && st.IsDir() {
-			out = setEnv(out, "PATH", bin+string(os.PathListSeparator)+envPath(out))
+		kinds := splitKinds(os.Getenv("ORCHICON_ADAPTER_KINDS"))
+		if dirs := adapterPathPrefix(home, kinds...); len(dirs) > 0 {
+			out = setEnv(out, "PATH", strings.Join(dirs, string(os.PathListSeparator))+string(os.PathListSeparator)+envPath(out))
+		}
+	}
+	return out
+}
+
+// splitKinds parses a comma-separated kind list, dropping empty entries so
+// strings.Split("") ([""]) is treated as no kinds.
+func splitKinds(s string) []string {
+	var out []string
+	for _, k := range strings.Split(s, ",") {
+		if k = strings.TrimSpace(k); k != "" {
+			out = append(out, k)
 		}
 	}
 	return out
