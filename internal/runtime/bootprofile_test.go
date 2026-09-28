@@ -273,7 +273,7 @@ func claudeMountHome(t *testing.T) (home, launcher, versionedBinary string) {
 
 // TestAdapterHostMountsClaudeRW asserts the EXACT -v arg strings for claude:
 // the config home and ~/.claude.json are READ-WRITE (a session writes its
-// transcript tree), while the CLI launcher dir and the install root stay
+// transcript tree), while the CLI launcher and the install root stay
 // READ-ONLY. It also pins the regression direction: the rw concept must never
 // leak to another adapter kind.
 func TestAdapterHostMountsClaudeRW(t *testing.T) {
@@ -281,7 +281,7 @@ func TestAdapterHostMountsClaudeRW(t *testing.T) {
 	want := []string{
 		"-v", filepath.Join(home, ".claude") + ":" + filepath.Join(home, ".claude") + ":rw",
 		"-v", filepath.Join(home, ".claude.json") + ":" + filepath.Join(home, ".claude.json") + ":rw",
-		"-v", filepath.Join(home, ".local", "bin") + ":" + filepath.Join(home, ".local", "bin") + ":ro",
+		"-v", filepath.Join(home, ".local", "bin", "claude") + ":" + filepath.Join(home, ".local", "bin", "claude") + ":ro",
 		"-v", filepath.Join(home, ".local", "share", "claude") + ":" + filepath.Join(home, ".local", "share", "claude") + ":ro",
 	}
 	if got := adapterHostMounts(home, "claude"); !reflect.DeepEqual(got, want) {

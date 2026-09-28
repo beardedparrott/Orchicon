@@ -109,9 +109,7 @@ func serveKindsFor(kinds []string) []string {
 }
 
 // adapterInstall is one host adapter install the daemon mounts into a
-// container when the run's boot profile demands the kind. Every install is
-// READ-ONLY except the operator's claude config home, which a session must
-// be able to WRITE (its transcript tree lives under ~/.claude/projects/).
+// container when the run's boot profile demands the kind.
 type adapterInstall struct {
 	// probe is the host path whose existence gates the mount.
 	probe string
@@ -122,11 +120,16 @@ type adapterInstall struct {
 	// NOT be a directory. This mirrors the daemon's original os.Stat gate
 	// for the opencode install byte for byte.
 	dir bool
-	// rw mounts the install READ-WRITE. Only the claude config home (which
-	// a session writes into) sets this; every other install stays read-only
-	// so a compromised container can never mutate the operator's host
-	// adapter installs.
+	// rw mounts this install READ-WRITE. Only claude's config/transcript
+	// home (~/.claude + ~/.claude.json) is rw: the CLI writes its JSONL
+	// transcript into ~/.claude/projects/<encoded-cwd>/ at run time, so a
+	// read-only mount would break the session outright.
 	rw bool
+	// fingerprint lists the sub-trees of this install whose change must
+	// invalidate a WARM pooled container. Empty = not fingerprinted
+	// (config/transcript homes change every session and must never churn
+	// the pool). Derived by adapterFingerprintRoots (hostfp.go).
+	fingerprint []string
 }
 
 // adapterInstalls returns the host installs a kind contributes to a demanding
@@ -146,21 +149,29 @@ func adapterInstalls(home, kind string) ([]adapterInstall, bool) {
 		return []adapterInstall{
 			{probe: join(".config", "opencode"), dir: true},
 			{probe: join(".local", "share", "opencode"), dir: true},
-			{probe: join(".opencode", "bin", "opencode"), mount: join(".opencode")},
+			{probe: join(".opencode", "bin", "opencode"), mount: join(".opencode"),
+				fingerprint: []string{join(".opencode", "bin"), join(".opencode", "node_modules")}},
 		}, true
-	case "claude": // declared in the builtin catalog; not dispatcher-registered yet
-		// The operator's claude.ai config home is mounted READ-WRITE: a
-		// session writes its transcript tree (~/.claude/projects/) and the
-		// CLI rewrites ~/.claude.json. The launcher (~/.local/bin/claude) is
-		// a SYMLINK into the native install root (~/.local/share/claude), so
-		// BOTH are declared: the daemon mounts at identical absolute host
-		// paths, and the link dangles in-container if the target root is not
-		// mounted alongside it. Both CLI installs stay read-only.
+	case adapter.KindClaude:
 		return []adapterInstall{
+			// The config/transcript home: the CLI writes
+			// ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl at run time,
+			// so these two MUST be read-write. NOT fingerprinted (they change
+			// every session and would churn the warm pool).
 			{probe: join(".claude"), dir: true, rw: true},
 			{probe: join(".claude.json"), rw: true},
-			{probe: join(".local", "bin", "claude"), mount: join(".local", "bin")},
-			{probe: join(".local", "share", "claude"), dir: true},
+			// The launcher is a SYMLINK into the install root below, mounted
+			// at its IDENTICAL absolute host path so the link resolves. Mount
+			// it WITHOUT the install root and the link dangles in-container.
+			// NEVER probe a version string (versions/2.1.261): its basename
+			// survives the bake guard's <3-char filter and becomes a
+			// forbidden-bake needle. Probing .local/bin/claude and
+			// .local/share/claude yields only the benign needles claude and
+			// claude — never a version.
+			{probe: join(".local", "bin", "claude"),
+				fingerprint: []string{join(".local", "bin", "claude")}},
+			{probe: join(".local", "share", "claude"), dir: true,
+				fingerprint: []string{join(".local", "share", "claude")}},
 		}, true
 	case nativeAdapterKind:
 		// The orchicon binary is the PRODUCT binary: the daemon bind-mounts
@@ -218,9 +229,6 @@ func adapterHostMounts(home string, kinds ...string) []string {
 			if !in.dir && st.IsDir() {
 				continue
 			}
-			// Explicit mode: the RW/RO split is load-bearing (only the
-			// claude config home is writable) and asserted verbatim by the
-			// mount tests, so never rely on Docker's default.
 			mode := ":ro"
 			if in.rw {
 				mode = ":rw"
@@ -231,62 +239,42 @@ func adapterHostMounts(home string, kinds ...string) []string {
 	return args
 }
 
-// adapterCLIPathDirs returns the host bin dirs holding kind's adapter CLI
-// launcher. opencode installs its launcher under ~/.opencode/bin; the claude
-// native installer symlinks ~/.local/bin/claude.
-func adapterCLIPathDirs(home, kind string) []string {
+// adapterBinDirs returns the container PATH dirs a demanded kind's mounted
+// CLI needs. Derived from the same install table the mounts come from, so a
+// mounted launcher is always reachable by name.
+func adapterBinDirs(home, kind string) []string {
 	switch normalizedKind(kind) {
-	case adapter.DefaultAdapterKind: // opencode
+	case adapter.DefaultAdapterKind:
 		return []string{filepath.Join(home, ".opencode", "bin")}
-	case "claude":
+	case adapter.KindClaude:
 		return []string{filepath.Join(home, ".local", "bin")}
 	}
 	return nil
 }
 
-// adapterCLILauncherNames returns the launcher FILE NAME expected in the
-// corresponding adapterCLIPathDirs entry (same index). The names are explicit
-// and per-kind: deriving them from filepath.Base(dir) would yield "bin" for
-// ~/.opencode/bin.
-func adapterCLILauncherNames(kind string) []string {
-	switch normalizedKind(kind) {
-	case adapter.DefaultAdapterKind: // opencode
-		return []string{"opencode"}
-	case "claude":
-		return []string{"claude"}
-	}
-	return nil
-}
-
-// adapterCLIPathPrefix returns the host bin dirs to prepend to PATH for the
-// given demanded kinds (deduped, kind order). A dir is included ONLY when the
-// kind's launcher file actually exists there, so PATH never points at an
-// absent host dir. It is the ONE shared computation behind BOTH PATH sites —
-// the daemon's container-level PATH (daemon.go) and the supervisor's child
-// agentEnv (agent.go) — so the two can never drift.
-func adapterCLIPathPrefix(home string, kinds ...string) []string {
+// adapterPathPrefix returns the EXISTING bin dirs of the demanded kinds,
+// sorted and deduped. Stat-filtered so a prefix never points at an absent
+// host dir (the invariant daemon.go's standardHostMountArgs doc states).
+// Empty kinds yield nil.
+func adapterPathPrefix(home string, kinds ...string) []string {
 	if home == "" {
 		return nil
 	}
-	var out []string
 	seen := make(map[string]struct{})
+	var out []string
 	for _, kind := range kinds {
-		dirs := adapterCLIPathDirs(home, kind)
-		names := adapterCLILauncherNames(kind)
-		for i, dir := range dirs {
-			if i >= len(names) {
-				break
-			}
-			if _, dup := seen[dir]; dup {
+		for _, dir := range adapterBinDirs(home, kind) {
+			if _, ok := seen[dir]; ok {
 				continue
 			}
-			st, err := os.Stat(filepath.Join(dir, names[i]))
-			if err != nil || st.IsDir() {
+			st, err := os.Stat(dir)
+			if err != nil || !st.IsDir() {
 				continue
 			}
 			seen[dir] = struct{}{}
 			out = append(out, dir)
 		}
 	}
+	sort.Strings(out)
 	return out
 }

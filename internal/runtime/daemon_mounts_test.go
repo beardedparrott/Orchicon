@@ -194,7 +194,7 @@ func claudeAdapterMounts(home string) []string {
 	return []string{
 		p(".claude") + ":" + p(".claude") + ":rw",
 		p(".claude.json") + ":" + p(".claude.json") + ":rw",
-		p(".local", "bin") + ":" + p(".local", "bin") + ":ro",
+		p(".local", "bin", "claude") + ":" + p(".local", "bin", "claude") + ":ro",
 		p(".local", "share", "claude") + ":" + p(".local", "share", "claude") + ":ro",
 	}
 }

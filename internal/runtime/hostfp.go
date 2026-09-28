@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+
+	"github.com/beardedparrott/orchicon/internal/adapter"
 )
 
 // Host-input fingerprinting for the warm pool.
@@ -66,20 +68,14 @@ func ghTokenFingerprint(tok string) string {
 // pathological tree (a huge node_modules) cannot balloon per-checkout cost.
 const maxAdapterFingerprintEntries = 50000
 
-// adapterInstallFingerprint fingerprints the mounted adapter CLI installs —
-// opencode (~/.opencode/bin + ~/.opencode/node_modules) AND claude
-// (~/.local/share/claude native install root + the ~/.local/bin/claude
-// launcher symlink) — with STAT-ONLY metadata: sorted (relpath, size,
-// mtime-ns, mode-type) tuples hashed. No file content is read — the
-// opencode binary and provider packages can be large; metadata changes on any
-// upgrade, install, or reinstall. Returns "" when NO root exists.
+// adapterInstallFingerprint fingerprints every mounted adapter CLI install
+// declared in the install table (opencode + claude) with STAT-ONLY metadata:
+// sorted (relpath, size, mtime-ns, mode-type) tuples hashed. No file content
+// is read — the adapter binaries and provider packages can be large;
+// metadata changes on any upgrade, install, or reinstall. Returns "" when no
+// fingerprinted root exists.
 func adapterInstallFingerprint(home string) string {
-	roots := []string{
-		filepath.Join(home, ".opencode", "bin"),
-		filepath.Join(home, ".opencode", "node_modules"),
-		filepath.Join(home, ".local", "share", "claude"),
-		filepath.Join(home, ".local", "bin", "claude"),
-	}
+	roots := adapterFingerprintRoots(home)
 	var entries []string
 	for _, root := range roots {
 		_ = filepath.WalkDir(root, func(path string, de fs.DirEntry, err error) error {
@@ -110,6 +106,36 @@ func adapterInstallFingerprint(home string) string {
 		_, _ = io.WriteString(h, e+"\n")
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// adapterFingerprintRoots walks the declared install table (the SAME
+// declaration the daemon mounts from) and returns every tree marked
+// fingerprint. Config/transcript homes (~/.claude*) are deliberately NOT
+// marked: they change every session and must never churn a warm container.
+// A kind that declares no fingerprint roots (native) contributes none.
+func adapterFingerprintRoots(home string) []string {
+	if home == "" {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var out []string
+	for _, kind := range []string{adapter.DefaultAdapterKind, adapter.KindClaude} {
+		installs, declared := adapterInstalls(home, kind)
+		if !declared {
+			continue
+		}
+		for _, in := range installs {
+			for _, root := range in.fingerprint {
+				if _, ok := seen[root]; ok {
+					continue
+				}
+				seen[root] = struct{}{}
+				out = append(out, root)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // hostInputsFingerprint builds the combined fingerprint of the read-once host
@@ -149,16 +175,12 @@ func hostInputsFingerprint(home, ghFp string) string {
 		add("auth", hashFileContent(auth))
 	}
 
-	// 3. adapter installs — stat-only fingerprint of BOTH kind trees. The
-	// serve/host CLI execs the binary and loads provider packages at start; a
-	// CLI upgrade, reinstall, or a version-dir swap in EITHER tree is
-	// invisible to a warm container, so it must force a fresh checkout. The
-	// gate is the fingerprint's own emptiness test (each tree is itself
-	// existence-gated inside adapterInstallFingerprint), so a home with
-	// neither install contributes nothing — identical to the old behavior.
-	// Credentials are deliberately NOT fingerprinted: ~/.claude is mounted
-	// read-write and read LIVE, so a rotated host login reaches a warm
-	// container without a reset.
+	// 3. adapter install — stat-only fingerprint of the declared adapter CLI
+	// install trees (~/.opencode + ~/.local/share/claude). The serve execs
+	// the opencode binary and the claude bridge execs the claude binary; an
+	// upgrade or a newly installed provider package is invisible to warm
+	// containers. A home with nothing installed yields "" (today's
+	// behavior).
 	if fp := adapterInstallFingerprint(home); fp != "" {
 		add("adapter", fp)
 	}
