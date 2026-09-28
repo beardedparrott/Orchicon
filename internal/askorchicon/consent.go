@@ -2007,9 +2007,32 @@ func (ct *consentTurn) finalize(ctx context.Context, client scheduler.ChatTurnCl
 			ct.record(a.Action, "user_"+choice.String(), "")
 			emitAskResolution(emit, ct.convID, askResolution{AskID: a.AskID, Outcome: resolutionOutcome(choice)})
 		case wasOpen:
+			// THE SERVE IS ANSWERED `reject` FOR A QUESTION TOO: opencode is holding the tool
+			// call, and leaving it open would leave the session holding a phantom permission
+			// (see the doc comment above). What the operator's CLIENTS are told is a separate
+			// question, and for a question it must not be "expired" — see below.
 			if err := client.ReplyPermissionDecision(ctx, a.SessionID, a.AskID, "reject"); err != nil {
 				ct.log().Warn("ask orchicon consent: expiring unanswered ask failed",
 					"conversation", ct.convID, "ask", a.AskID, "error", err)
+			}
+			if a.isQuestion() {
+				// A QUESTION NOBODY ANSWERED WAS NOT REFUSED, AND IT DID NOT EXPIRE.
+				//
+				// The operator: "timeouts are losing context in the conversation" — after
+				// leaving the terminal with a question on screen. The turn's reply window
+				// fired while the turn was parked on THIS ask (a parked ask raises no
+				// activity, so the silence budget sees an absent operator as a dead model —
+				// see turnReplyWindow), and the question was then published as `expired`,
+				// which every client folds into a REFUSAL: the TUI records DecisionDeny and
+				// prints "Deny · <subject>", the GUI prints "Expired unanswered". So a
+				// question the operator was absent for was recorded as a decision against
+				// it, and the answer they gave on returning was refused as late.
+				//
+				// `unanswered` says the only true thing — nobody answered it — and it is
+				// what lets a client keep the question answerable instead of closing it.
+				ct.record(a.Action, "unanswered", "the turn ended while it was waiting on the operator")
+				emitAskResolution(emit, ct.convID, askResolution{AskID: a.AskID, Outcome: "unanswered"})
+				continue
 			}
 			ct.record(a.Action, "expired", "unanswered at turn end")
 			// "expired" is the outcome the wire documents for an ask nobody answered, and it
@@ -2037,6 +2060,43 @@ func (ct *consentTurn) settleMonitor() {
 		}
 	}
 	ct.monitor.setAwaitingConsent(open)
+}
+
+// waitingOnOperator names the ask this turn is parked on, when there is one: the question
+// the operator is being asked, or the permission being waited for.
+//
+// IT EXISTS SO A TURN THAT DIES PARKED CAN SAY WHY. The reply window is a SILENCE budget,
+// and a turn parked on a card is silent BY DEFINITION — the operator may simply be away
+// from the terminal. When that is why the window fires, the turn used to be persisted as
+// "reply timed out after 30m0s on model X — the model may be overloaded or unavailable.
+// Check the Ask Orchicon model in Settings → Default models", which sends the operator to
+// fix a model that is fine and leaves the real cause — a question waiting on THEM — out
+// of the message entirely. That is the operator's "timeouts are losing context in the
+// conversation": the question they were asked is the context, and the failure did not
+// mention it.
+//
+// THE BOUND IS NOT WEAKENED. A parked turn is still bounded and still ends; only the
+// report changes, and the operator can still answer by replying in their own words
+// (which is carried into the conversation as their next message).
+func (ct *consentTurn) waitingOnOperator() (string, bool) {
+	for _, a := range ct.svc.pending.list(ct.convID) {
+		a.mu.Lock()
+		open := a.state == askOpen
+		question := strings.TrimSpace(a.Question)
+		subject := strings.TrimSpace(a.Summary)
+		if subject == "" {
+			subject = strings.TrimSpace(a.Tool + " " + strings.Join(a.Targets, " "))
+		}
+		a.mu.Unlock()
+		if !open {
+			continue
+		}
+		if question != "" {
+			return question, true
+		}
+		return subject, true
+	}
+	return "", false
 }
 
 // emitPermissionAsk carries the ask to the client on the turn's stream. Because

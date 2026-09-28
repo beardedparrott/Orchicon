@@ -3186,6 +3186,11 @@ func consentDecisionFromOutcome(outcome string) chat.ConsentDecision {
 		return chat.DecisionDeny
 	case "answered":
 		return chat.DecisionAnswer
+	case "unanswered":
+		// A QUESTION NOBODY ANSWERED is not a decision against it. See
+		// chat.DecisionUnanswered — this case is the whole point of the server
+		// publishing `unanswered` separately from `expired`.
+		return chat.DecisionUnanswered
 	case "expired":
 		return chat.DecisionDeny
 	default:

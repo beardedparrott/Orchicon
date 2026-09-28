@@ -63,6 +63,21 @@ func askReplyWindow() time.Duration {
 	return defaultReplyWindow
 }
 
+// oneLine flattens a model-authored string to ONE readable row and clamps it, because the message it
+// lands in is a transcript row. Rune-wise rather than byte-wise: a question can be written in any
+// language, and a cut through the middle of a rune renders as garbage.
+func oneLine(s string, max int) string {
+	s = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(s, "\r", " "), "\n", " "))
+	if max < 1 {
+		max = 1
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max-1]) + "…"
+}
+
 // turnReplyWindow is the reply window as an INACTIVITY deadline: it fires only
 // after the turn has been quiet for the full window, and every sign of progress
 // (a delta, a tool call, a completed part) RESTARTS it.
@@ -1930,6 +1945,22 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *turnReplyWindow
 			return turnAttemptResult{kind: turnFailed, text: finalText, reasoning: finalReasoning, err: context.Cause(subCtx)}
 		case <-window.C():
 			finalText, finalReasoning := settleAttempt()
+			// A TURN PARKED ON A CARD WAS NOT WAITING ON THE MODEL. This window measures
+			// SILENCE, and a turn whose operator has stepped away is silent by definition
+			// (see turnReplyWindow) — so the one cause the old message could not describe is
+			// the one that brought the operator here: "reply timed out after 30m0s … the model
+			// may be overloaded or unavailable. Check the Ask Orchicon model in Settings →
+			// Default models, then retry", which names a model that is fine and omits the
+			// question that was actually being waited on. That omission is the operator's
+			// "timeouts are losing context in the conversation".
+			//
+			// THE BOUND IS UNCHANGED: a parked turn still ends, deliberately, and the
+			// question stays answerable afterwards (the answer goes out as the next message).
+			if c.consent != nil {
+				if asking, ok := c.consent.waitingOnOperator(); ok {
+					return turnAttemptResult{kind: turnFailed, text: finalText, reasoning: finalReasoning, err: fmt.Errorf("this turn was waiting on YOUR answer for %s and has ended — the model was not the problem. Nothing was answered for you: reply in your own words and it will be sent as your next message. (Waiting on: %s)", askReplyWindow(), oneLine(asking, 120))}
+				}
+			}
 			return turnAttemptResult{kind: turnFailed, text: finalText, reasoning: finalReasoning, err: fmt.Errorf("reply timed out after %s on model %s — the model may be overloaded or unavailable. Check the Ask Orchicon model in Settings → Default models, then retry.", askReplyWindow(), c.modelRef)}
 		case <-handshake.C:
 			if !sent {
