@@ -1173,9 +1173,20 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 		//
 		// Checked after the copy rules (a card carries no code and is not the operator's message, so neither
 		// can match it) and only while the card is unanswered — see transcriptAskOptionAtFrameRow.
-		if kind, label, ok := m.transcriptCardOptionAtFrameRow(mo.Y); ok && m.chat != nil {
+		if kind, key, label, ok := m.transcriptCardOptionAtFrameRow(mo.Y); ok && m.chat != nil {
 			if kind == chat.KindConsent {
 				return m, m.consentDecideFromRow(label)
+			}
+			// THE RECORDED CARD'S FREE-TEXT ROW OPENS AN INPUT ON THE CARD, rather than sending the
+			// row's own label as the answer. Sending "Other" would be the same bug this card's
+			// consent twin had before it was fixed: the operator's words replaced by the name of the
+			// button they pressed. See ask/askdraft.go for who owns the keys while the row is open.
+			if label == chat.ConsentOther {
+				if m.chatStore.beginAskDraft(m.chatConvID, key) {
+					m.reArmAskDraftClaim()
+					return m, m.onChatWake()
+				}
+				return m, nil
 			}
 			return m, m.chat.AnswerQuestion(m.chatConvID, label)
 		}

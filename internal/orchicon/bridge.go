@@ -118,6 +118,11 @@ type NativeBridge struct {
 	// (sessionID → tokens, 0 = resolved-but-unknown). Resolved once from the
 	// bound provider's ListModels, mirroring the execution path. Guarded by mu.
 	askWindowTokens map[string]int64
+	// askCompactNotice, when wired, records a completed compaction so the
+	// conversation's transcript can carry a durable marker for it. Nil (tests, or
+	// a plane with no Ask service) leaves the log line as the only record — the
+	// pre-existing behaviour. Guarded by mu.
+	askCompactNotice scheduler.AskCompactNoticeFunc
 }
 
 // liveSession is the bridge's handle on one running session.

@@ -777,6 +777,11 @@ func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 			kind = KindUser
 		case "error":
 			kind = KindError
+		case "system":
+			// A NOTICE, not the model's words. Without this case the row fell
+			// through to KindText — the assistant's own band — so a compaction
+			// record read as though Orchicon had said it.
+			kind = KindNotice
 		}
 		at := m.GetCreatedAt().AsTime().UnixMilli()
 		for j, part := range m.GetReasoning() {
@@ -1278,6 +1283,13 @@ func (c *Controller) handleEvent(convID string, ev *apiv1.ChatStreamResponse) {
 		// re-attach (the server's replay path emits the identical shape), so it
 		// cannot be lost permanently.
 		ask := PermissionAskFromProto(e.PermissionAsk)
+		// The ask names its OWN conversation, so the shell appends the card to the
+		// conversation that asked rather than to whichever one is on screen (see
+		// ShowConsentAsk). The wire carries it; this is the fallback for a producer that
+		// omitted it, where the turn's own id is the only correct answer.
+		if ask.ConvID == "" {
+			ask.ConvID = convID
+		}
 		if c.cmds != nil {
 			select {
 			case c.cmds <- func() tea.Msg { return ConsentAskMsg{ConvID: convID, Ask: ask} }:

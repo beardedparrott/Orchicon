@@ -73,6 +73,12 @@ func (m *Model) ClaimsKeys() bool {
 	if m.ov != nil {
 		return true
 	}
+	// A RECORDED CARD'S FREE-TEXT ROW CLAIMS TOO: the shell hands a claiming screen every key
+	// verbatim (router.go), and an input row with nothing typing into it is not an input. Released
+	// for THIS item only by ctrl+g, exactly as a consent card is — see draftDeferred.
+	if m.draft != nil && m.draft.Drafting && m.draftKey != m.draftDeferred {
+		return true
+	}
 	if m.consent == nil {
 		return false
 	}
@@ -143,10 +149,34 @@ func (m *Model) DropKeyClaim() {
 	if m.consent != nil && m.consent.Pending() {
 		m.consentDeferred = m.consent.Ask.ID
 	}
+	// AN OPEN FREE-TEXT ROW ON A RECORDED CARD YIELDS THE SAME WAY, and for the same reason: the
+	// chord is the advertised way to reach the composer and must never be blocked by a card — and
+	// it must not discard what the operator has typed either. The row stays open and keeps its
+	// text; a click on its Other row claims the keys back (ReArmAskDraftClaim).
+	if m.draft != nil && m.draft.Drafting {
+		m.draftDeferred = m.draftKey
+	}
 	// The overlay is a genuine dismissal: it is a local picker, and leaving it open on an
 	// unfocused screen is what the release exists to prevent.
 	m.ov = nil
 	m.Base.DropKeyClaim()
+}
+
+// ReArmConsentClaim takes the keyboard back for a card that is still pending.
+//
+// IT IS THE MIRROR OF DropKeyClaim, and it exists for the one gesture that reaches the card without
+// a keypress: a CLICK on its Other row (App.consentDecideFromRow) opens the free-text row, and that
+// row is typed into only while the card owns the keys. A card deferred by ctrl+g would otherwise
+// show an input row that collects nothing while the operator's typing went into the composer behind
+// it — which is the GUI's own behaviour (its input is auto-focused on open) and the only reading
+// that makes the click mean anything.
+//
+// It re-arms by the ask's ID, exactly as the claim is held: clearing consentDeferred restores the
+// claim for the card that is up, and a NEW ask claims the keys by construction.
+func (m *Model) ReArmConsentClaim() {
+	if m.consent != nil && m.consent.Pending() {
+		m.consentDeferred = ""
+	}
 }
 
 // handleConsentKey routes one key to the pending card. It returns handled=false

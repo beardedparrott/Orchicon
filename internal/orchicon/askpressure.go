@@ -205,5 +205,10 @@ func (b *NativeBridge) maybeCompactForPressure(ctx context.Context, prov Provide
 		// next turn cannot re-trigger on a stale number; a fresh measurement
 		// arrives from that turn's own usage report.
 		b.recordAskPromptTokens(sessionID, 0)
+		// AND TELL THE TRANSCRIPT. A collapse this consequential must not exist
+		// only as a WARN in a log the operator has no reason to read: this is the
+		// same event the card in the UI is about, so it is recorded where the work
+		// is.
+		b.reportAskCompaction(ctx, conversationID, sessionID, "pressure", res)
 	}
 }

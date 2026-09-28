@@ -72,7 +72,19 @@ const (
 // different things for the two and the operator cannot consent to a target
 // they were not shown.
 type PermissionAsk struct {
-	ID        string
+	ID string
+	// ConvID is the conversation the ask was raised ON, which is NOT necessarily the
+	// conversation the operator is looking at when it arrives.
+	//
+	// THE WIRE HAS ALWAYS CARRIED IT and this adapter used to DROP it, which is what
+	// produced the bleed-through the operator reported: "I noticed a bleed through of
+	// an ask card from a separate conversation in the TUI." A turn's ask rides that
+	// turn's own stream, so with conversation A running and B on screen the card was
+	// appended to B's slot — a question about A's work appearing under B's transcript,
+	// and claiming the keyboard there (the Ask screen adopts any pending card from the
+	// items it is handed). Empty on a locally built ask; App.ShowConsentAsk then falls
+	// back to the open conversation.
+	ConvID    string
 	Tool      string
 	Target    string
 	Directory string // the scope a session grant is given for
@@ -142,6 +154,7 @@ func PermissionAskFromProto(p *apiv1.PermissionAsk) PermissionAsk {
 	if q := strings.TrimSpace(p.GetQuestion()); q != "" {
 		return PermissionAsk{
 			ID:         p.GetAskId(),
+			ConvID:     p.GetConversationId(),
 			Kind:       AskQuestion,
 			Question:   q,
 			Options:    p.GetOptions(),
@@ -160,6 +173,7 @@ func PermissionAskFromProto(p *apiv1.PermissionAsk) PermissionAsk {
 	}
 	return PermissionAsk{
 		ID:        p.GetAskId(),
+		ConvID:    p.GetConversationId(),
 		Tool:      p.GetTool(),
 		Target:    target,
 		Directory: p.GetDirectory(),
@@ -186,6 +200,21 @@ const (
 	// in the OTHER client or expired there. This client cannot tell which, so it
 	// records only what it knows rather than inventing an allow or a denial.
 	DecisionSettled ConsentDecision = "settled"
+	// DecisionUnanswered is a QUESTION the turn ended while it was still waiting on.
+	//
+	// IT IS NOT A REFUSAL AND NOT AN EXPIRY, which is what it used to be recorded as.
+	// The operator: "timeouts are losing context in the conversation", after leaving
+	// the terminal with a question on screen — the turn's reply window fired, the ask
+	// was published as `expired`, and this client folded `expired` into DENY, so the
+	// transcript claimed the operator had decided against a question they were never
+	// there to read, under the tool-and-target of a permission they were never asked
+	// about. A question has no allow/deny to decide: the only true record is that
+	// nobody answered it, and the operator's own words were never spoken.
+	//
+	// It also carries the CONTEXT forward rather than ending it: the record tells the
+	// operator the question still stands and that replying in their own words sends it
+	// as their next message, which is what makes a retry resume instead of losing it.
+	DecisionUnanswered ConsentDecision = "unanswered"
 )
 
 // OptionLabels are the card's selectable rows, in order.

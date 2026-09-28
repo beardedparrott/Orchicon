@@ -213,7 +213,12 @@ func (m *App) panelTranscript(w, n int) []string {
 		return lines[:n]
 	}
 	items := m.chatStore.snapshot(m.chatConvID)
-	rendered := chat.RenderItems(chat.GroupByPhase(items), w, m.foldedReasoning)
+	// THROUGH THE CACHE, because this runs on EVERY FRAME of every tab while the strip is open
+	// (baseView -> chatPanelView). Without it, a 250-message conversation re-laid-out all 250
+	// items — markdown, lipgloss and box drawing for each — nine times a second, to draw the
+	// nine rows the strip can show; that is the operator's "the entire TUI unresponsive".
+	// The strip passes no copy glyph: a click here does not copy.
+	rendered, _ := m.renderCache.Render(m.chatConvID, chat.GroupByPhase(items), w, "", m.foldedReasoning)
 	lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
 	if len(lines) == 1 && lines[0] == "" {
 		lines = nil

@@ -83,6 +83,15 @@ func consentRecord(st *ConsentState) string {
 		// NOT "expired unanswered" and NOT a denial: this client simply stopped being
 		// able to see the card. The outcome was decided somewhere it cannot observe.
 		return "no longer pending · " + subject
+	case DecisionUnanswered:
+		// A QUESTION THE TURN DIED WAITING ON. It names the question, because the
+		// question is the CONTEXT that must survive: a record saying only "unanswered"
+		// would leave the operator scrolling back to find what they were asked, and the
+		// point of this state is that they can still answer it.
+		if q := strings.TrimSpace(a.Question); q != "" {
+			return "unanswered · " + q + " — the turn ended while it was waiting on you; reply in your own words and it will be sent as your next message"
+		}
+		return "unanswered · the turn ended while it was waiting on you"
 	default:
 		// An UNRECOGNISED decision must not silently claim "allow once" — that was the
 		// previous default, which would report a permission as granted on the strength
