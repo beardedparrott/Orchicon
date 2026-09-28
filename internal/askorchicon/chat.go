@@ -2104,10 +2104,22 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *turnReplyWindow
 						if refusal != "" {
 							s.log.Warn("ask orchicon: refused to raise a question",
 								"conversation", c.convID, "reason", refusal)
-							// The adapter is waiting: give it the error as the tool result
-							// rather than leaving the turn parked with no card.
+							// THE REFUSAL CARRIES THE PREFIX, AND THAT IS THE WHOLE FIX. The adapter is waiting, so
+							// something has to go back — but a bare sentence came back as the ask_user RESULT, i.e. as
+							// the operator's ANSWER, and a REFUSED question therefore became a SUCCESSFUL tool call whose
+							// "answer" was an internal error message. Three rows on the operator's plane read exactly
+							// that (`is_error: false`, output "ask_user could not be asked: …"), and the transcript drew
+							// them as `answered · …` — claiming a decision they never made about a question they were
+							// never shown.
+							//
+							// The PERMISSION path already had this exactly right (below: `decision =
+							// orchicon.ConsentRefusedPrefix + refusal`), and its own doc says why the distinction is
+							// load-bearing: "the OPERATOR never saw this call, so reporting it as their refusal is a false
+							// statement about them". A question deserves the same honesty as a permission — so this uses
+							// the SAME marker rather than inventing a second convention, and the bridge turns it into a
+							// tool ERROR (see the ask_user branch in chatturn.go).
 							_ = c.client.ReplyPermissionDecision(context.WithoutCancel(subCtx), sid, pid,
-								"ask_user could not be asked: "+refusal)
+								orchicon.ConsentRefusedPrefix+refusal)
 						}
 					}
 				}

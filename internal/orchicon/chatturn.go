@@ -1086,9 +1086,20 @@ func (b *NativeBridge) executeToolCalls(ctx context.Context, bus *chatBus, worki
 			// chatting should be going on if a question is asked. You should pause
 			// to resume until the user has answered."
 			ans := b.awaitUserAnswer(ctx, bus, c, args)
-			if ans == "" {
+			switch {
+			case ans == "":
 				toolErr = errors.New("ask_user was not answered — the question expired unanswered, so it did not run. Ask it again if it is still needed")
-			} else {
+			case strings.HasPrefix(ans, ConsentRefusedPrefix):
+				// A LAYER REFUSAL, NOT AN ANSWER — the question half of consentDenialError.
+				//
+				// WITHOUT THIS the refusal arrived as `out`, i.e. as a SUCCESSFUL tool result carrying an
+				// internal error sentence, which told the model the operator had said that sentence and told
+				// every client the operator had ANSWERED. Nothing was shown and nobody was asked: the reason
+				// (a malformed call, refused by the tool's own validator before a card existed) is the only thing
+				// the model needs, and it has to arrive as an ERROR or the model treats it as content.
+				reason := strings.TrimPrefix(ans, ConsentRefusedPrefix)
+				toolErr = fmt.Errorf("%s — this question was NOT asked and the operator did NOT answer it, so this result is not their words. Correct the call (the reason above says what was wrong) and ask again", reason)
+			default:
 				out = ans
 			}
 		} else if consentGatedTool(c.Name) {

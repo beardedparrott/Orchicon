@@ -87,6 +87,19 @@ type ParsedAsk struct {
 	// card can say what was decided instead of silently going inert.
 	AnswerText string
 
+	// Refused reports that a result EXISTS BUT IS AN ERROR: the call resolved without the operator ever being
+	// shown a question, so nothing was asked and nothing was answered.
+	//
+	// IT IS NOT A FLAVOUR OF Answered, and conflating the two is the defect this exists to undo. A refused
+	// question came back as a SUCCESSFUL tool result whose payload was an internal error sentence, so the card
+	// rendered `answered · ask_user could not be asked: …` — recording a decision the operator never made, about
+	// a question they never saw. A settled-but-unanswered card is not an answer either; see the renderer, which
+	// words all three states separately.
+	Refused bool
+	// RefusalText is WHY it was refused (the tool's own validator message), so the record says what was wrong
+	// rather than only that something was.
+	RefusalText string
+
 	// Drafting and Draft are the FREE-TEXT ROW's live state: the recorded-card twin of
 	// ConsentState.OtherMode/OtherInput. Drafting opens an input row on the card and gives that
 	// row the keyboard; Draft is what has been typed into it so far.
@@ -156,6 +169,17 @@ func parseAskUserCall(calls []*apiv1.ToolCall, results []*apiv1.ToolResult) *Par
 			}
 			// ANSWERED, because the call HAS resolved: the card must not render as an interactive
 			// question inviting an answer to something already finished — nothing is waiting on it.
+			//
+			// UNLESS IT RESOLVED AS AN ERROR, which is the refused case (a call the layer turned away before any
+			// card existed). The arguments are unreadable and it was never asked, so "answered" would be the same
+			// false statement the readable path avoids.
+			if result.GetIsError() {
+				return &ParsedAsk{
+					Question:    "(this clarifying question's arguments could not be read)",
+					Refused:     true,
+					RefusalText: strings.TrimSpace(result.GetOutput()),
+				}
+			}
 			return &ParsedAsk{
 				Question:   "(this clarifying question's arguments could not be read)",
 				Answered:   true,
@@ -171,8 +195,17 @@ func parseAskUserCall(calls []*apiv1.ToolCall, results []*apiv1.ToolResult) *Par
 		}
 		// The answer IS the tool result, when there is one.
 		if result != nil {
-			ask.Answered = true
-			ask.AnswerText = strings.TrimSpace(result.GetOutput())
+			// AN ERROR RESULT IS NOT AN ANSWER. A question the consent layer refused arrives as a tool ERROR
+			// (it never reached a card, so the operator never saw it and never said anything); rendering that as
+			// "answered · <internal error>" records a decision they did not make. `is_error` is the fact that
+			// separates the two, and it is the only one reliable here — the message text is prose.
+			if result.GetIsError() {
+				ask.Refused = true
+				ask.RefusalText = strings.TrimSpace(result.GetOutput())
+			} else {
+				ask.Answered = true
+				ask.AnswerText = strings.TrimSpace(result.GetOutput())
+			}
 		}
 		return ask
 	}
