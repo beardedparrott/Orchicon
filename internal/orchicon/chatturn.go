@@ -1,11 +1,14 @@
 package orchicon
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -219,7 +222,9 @@ const askHistoryVersion = 1
 
 // askHistoryMaxBytes caps one persisted session file (image attachments
 // are base64 data URLs — a long image-heavy conversation could otherwise
-// grow the file without bound). Oversize histories stay memory-only.
+// grow the file without bound). It is a cap on what is WRITTEN, never a reason
+// to write nothing: see marshalAskHistoryForStorage for what a history that
+// exceeds it is reduced to, and why writing nothing was the worse answer.
 const askHistoryMaxBytes = 16 * 1024 * 1024
 
 // askHistoryFilename sanitizes a session id into a safe file stem.
@@ -241,21 +246,27 @@ func askHistoryFilename(sessionID string) string {
 // persistAskHistoryLocked writes the session's history to disk (atomic
 // tmp + rename). Callers must hold b.mu. Best-effort: every failure is a
 // warn + return, never a turn failure.
+//
+// IT NEVER SILENTLY STOPS SAVING, which is what the oversize case used to do.
+// The old shape returned early — writing nothing — the moment the serialized
+// history passed askHistoryMaxBytes. That is a CLIFF, not a cap: the file on disk
+// froze at the last snapshot that fit, so every turn after it was persisted
+// nowhere at all, and the next restart reloaded a stale transcript. On a history
+// that never fit in the first place there was no file, so a restart reached the
+// model with only the system prompt's short history digest — a long conversation
+// losing its context at the precise point it had the most to lose. The history is
+// now always written: plain JSON while it fits, compressed when it does not, and
+// with its image payloads replaced by explicit markers only if even the
+// compressed form is over the cap. Every reduction is logged, so a persisted file
+// is never a reduced one by silence.
 func (b *NativeBridge) persistAskHistoryLocked(sessionID string) {
 	dir := b.askHistoryDir
 	if dir == "" {
 		return
 	}
-	history := b.chatHistory[sessionID]
-	env := map[string]any{"version": askHistoryVersion, "messages": history}
-	raw, err := json.Marshal(env)
-	if err != nil {
-		b.log.Warn("orchicon: ask history marshal failed", "session", sessionID, "error", err)
-		return
-	}
-	if len(raw) > askHistoryMaxBytes {
-		b.log.Warn("orchicon: ask history oversize — staying memory-only", "session", sessionID, "bytes", len(raw))
-		return
+	raw := b.marshalAskHistoryForStorage(sessionID, b.chatHistory[sessionID])
+	if raw == nil {
+		return // nothing writable — marshalAskHistoryForStorage has already logged why
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		b.log.Warn("orchicon: ask history dir create failed", "dir", dir, "error", err)
@@ -273,9 +284,133 @@ func (b *NativeBridge) persistAskHistoryLocked(sessionID string) {
 	}
 }
 
+// marshalAskHistoryForStorage serializes a session history for persistence and
+// returns the bytes to write, or nil when nothing can be written (already
+// logged).
+//
+// THREE SHAPES, IN ORDER OF FIDELITY, because the only wrong answer is writing
+// nothing:
+//
+//  1. PLAIN JSON while it fits under the cap. This is the format every earlier
+//     release wrote and can still read, so an ordinary conversation's file is
+//     unchanged and a rollback to an older binary keeps its history.
+//  2. GZIP when plain JSON would exceed the cap. The envelope is the same — only
+//     the framing differs, which is why loadAskHistoryLocked detects it by magic
+//     bytes rather than by the version field. gzip is very effective on this
+//     content (long JSON, repetitive tool payloads, base64 image data), so a
+//     history that would not fit uncompressed fits whole, and NOTHING is lost.
+//     An older binary cannot read this shape — but an older binary would have
+//     written nothing at this size anyway, so a rollback is no worse off.
+//  3. GZIP WITH IMAGE PAYLOADS DROPPED, as the last resort. Images were 46% of
+//     the bytes on the over-limit conversation that motivated the pressure gate,
+//     so dropping them is what brings a genuinely enormous history back under the
+//     cap — and every affected image is replaced by an explicit marker rather
+//     than vanishing, so the surviving transcript still says one was there.
+func (b *NativeBridge) marshalAskHistoryForStorage(sessionID string, history []Message) []byte {
+	raw, err := marshalAskHistory(history)
+	if err != nil {
+		b.log.Warn("orchicon: ask history marshal failed", "session", sessionID, "error", err)
+		return nil
+	}
+	if len(raw) <= askHistoryMaxBytes {
+		return raw
+	}
+	if gz, err := gzipAskHistory(raw); err == nil && len(gz) <= askHistoryMaxBytes {
+		b.log.Info("orchicon: ask history compressed to fit the persistence cap",
+			"session", sessionID, "json_bytes", len(raw), "gz_bytes", len(gz), "cap", askHistoryMaxBytes)
+		return gz
+	}
+	reduced, images := trimAskHistoryImages(history)
+	raw, err = marshalAskHistory(reduced)
+	if err != nil {
+		b.log.Warn("orchicon: ask history marshal failed after dropping image payloads", "session", sessionID, "error", err)
+		return nil
+	}
+	gz, err := gzipAskHistory(raw)
+	if err != nil {
+		b.log.Warn("orchicon: ask history compress failed after dropping image payloads", "session", sessionID, "error", err)
+		return nil
+	}
+	if len(gz) > askHistoryMaxBytes {
+		b.log.Warn("orchicon: ask history oversize even after dropping image payloads — staying memory-only",
+			"session", sessionID, "gz_bytes", len(gz), "cap", askHistoryMaxBytes, "images_dropped", images)
+		return nil
+	}
+	b.log.Warn("orchicon: ask history persisted with image payloads dropped to stay within the persistence cap — text and tool context are preserved, the images are not",
+		"session", sessionID, "gz_bytes", len(gz), "images_dropped", images)
+	return gz
+}
+
+// askHistoryImageDroppedMarker replaces an image payload in a persisted history
+// that had to be reduced. A marker rather than a silent removal: the transcript a
+// restart reloads still records that an image was part of the turn.
+const askHistoryImageDroppedMarker = "[an image was shared here — its data was dropped when this history was persisted, to keep the file within its storage cap]"
+
+// marshalAskHistory marshals the versioned on-disk envelope.
+func marshalAskHistory(history []Message) ([]byte, error) {
+	return json.Marshal(map[string]any{"version": askHistoryVersion, "messages": history})
+}
+
+// gzipAskHistory compresses a marshalled envelope.
+func gzipAskHistory(raw []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write(raw); err != nil {
+		return nil, err
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// gunzipAskHistory reverses gzipAskHistory.
+func gunzipAskHistory(raw []byte) ([]byte, error) {
+	zr, err := gzip.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = zr.Close() }()
+	return io.ReadAll(zr)
+}
+
+// trimAskHistoryImages returns a copy of the history with every image data URL
+// replaced by askHistoryImageDroppedMarker, plus the number of images replaced.
+// The copy shares no mutable content with the input, so the LIVE in-memory
+// history keeps its images — only what is written to disk is reduced.
+func trimAskHistoryImages(history []Message) ([]Message, int) {
+	out := make([]Message, len(history))
+	dropped := 0
+	for i, m := range history {
+		out[i] = m
+		if len(m.Content) == 0 {
+			continue
+		}
+		content := make([]Content, len(m.Content))
+		copy(content, m.Content)
+		for j := range content {
+			if content[j].Image == nil {
+				continue
+			}
+			marker := askHistoryImageDroppedMarker
+			content[j].Image = nil
+			content[j].Text = &marker
+			dropped++
+		}
+		out[i].Content = content
+	}
+	return out, dropped
+}
+
 // loadAskHistoryLocked reads a persisted session history from disk (nil on
 // a miss or any failure — a new conversation looks exactly like a lost
 // file, and both correctly start empty). Callers must hold b.mu.
+//
+// It reads BOTH persisted shapes: plain JSON (what every release before the
+// storage-cap fix wrote, and what still gets written while a history fits) and
+// gzip (what an oversize history is compressed into). The framing is detected by
+// the gzip magic bytes rather than by the envelope's version, so neither shape
+// needs a version bump and a file written by either release loads.
 func (b *NativeBridge) loadAskHistoryLocked(sessionID string) []Message {
 	dir := b.askHistoryDir
 	if dir == "" {
@@ -284,6 +419,14 @@ func (b *NativeBridge) loadAskHistoryLocked(sessionID string) []Message {
 	raw, err := os.ReadFile(filepath.Join(dir, askHistoryFilename(sessionID)+".json"))
 	if err != nil {
 		return nil
+	}
+	if len(raw) >= 2 && raw[0] == 0x1f && raw[1] == 0x8b {
+		plain, derr := gunzipAskHistory(raw)
+		if derr != nil {
+			b.log.Warn("orchicon: ask history decompress failed — starting empty", "session", sessionID, "error", derr)
+			return nil
+		}
+		raw = plain
 	}
 	var env struct {
 		Version  int       `json:"version"`
