@@ -71,15 +71,15 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 	}
 
 	d := &runtime.Daemon{
-		SocketPath:   socketPath,
-		DockerBin:    "docker",
-		Image:        env("ORCHICON_RUNTIME_IMAGE", "ghcr.io/beardedparrott/orchicon-runtime:latest"),
-		Images:       runtimeImagesAllowlist(env("ORCHICON_RUNTIME_IMAGES", "")),
-		UserID:       hostUID,
-		GroupID:      hostGID,
-		HostHome:     hostHome,
+		SocketPath:    socketPath,
+		DockerBin:     "docker",
+		Image:         env("ORCHICON_RUNTIME_IMAGE", "ghcr.io/beardedparrott/orchicon-runtime:latest"),
+		Images:        runtimeImagesAllowlist(env("ORCHICON_RUNTIME_IMAGES", "")),
+		UserID:        hostUID,
+		GroupID:       hostGID,
+		HostHome:      hostHome,
 		AllowedRoots:  allowedRoots,
-		ExePath:      exePath,
+		ExePath:       exePath,
 		CPUs:          env("ORCHICON_RUNTIME_CPUS", "4"),
 		Memory:        env("ORCHICON_RUNTIME_MEMORY", "4g"),
 		TmpfsSize:     env("ORCHICON_RUNTIME_TMPFS", "2g"),
@@ -131,7 +131,43 @@ func runRuntimeSupervisor(args []string, log *slog.Logger) error {
 	if len(args) > 0 {
 		socketPath = args[0]
 	}
+	ensureHomeDirs(log)
 	return runtime.RunSupervisor(socketPath, log)
+}
+
+// ensureHomeDirs creates the standard $HOME subdirectories the runtime and the tooling it runs write
+// into: `.local/share`, `.local/state`, `.config`, `.cache`, `.npm` and `projects`.
+//
+// IT LIVES HERE, IN THE CONTAINER AND AT START, RATHER THAN IN THE IMAGE AT BUILD TIME — which is
+// where it used to be, and why it only ever worked for one person. The image baked in
+// `mkdir -p /home/<the author's username>/...` because the container's HOME is the HOST user's home
+// (the daemon passes `HOME=$HostHome` so the host-path mounts line up). Baked at build time, that
+// path is fixed while HOME is not, so on every other machine the directories were created where
+// nothing looks for them and the operator's real home was left without any — the runtime uid could
+// then fail to write `$HOME/.config` and the rest, the exact opposite of the intent.
+//
+// Reading $HOME here is correct by construction: it is whatever the daemon set, so the directories
+// land where the mounts and the tooling expect them, for every user.
+//
+// BEST-EFFORT ON PURPOSE. A mount may cover one of these read-only, or the home may not be writable:
+// the runtime must still start, so a failure is reported and skipped rather than fatal.
+func ensureHomeDirs(log *slog.Logger) {
+	home := strings.TrimSpace(os.Getenv("HOME"))
+	if home == "" {
+		if h, err := os.UserHomeDir(); err == nil {
+			home = h
+		}
+	}
+	if home == "" {
+		return
+	}
+	for _, sub := range []string{".local/share", ".local/state", ".config", ".cache", ".npm", "projects"} {
+		p := filepath.Join(home, sub)
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			log.Warn("runtime supervisor: could not create a home directory — the runtime will start "+
+				"without it, and tooling writing there may fail", "path", p, "error", err)
+		}
+	}
 }
 
 // runRuntimeClient forwards one request (from stdin) to the supervisor

@@ -1,4 +1,17 @@
+//go:build !windows
+
 package main
+
+// killorphans_test.go — the orphan sweep's tests, which are Unix-shaped BY NATURE rather than by
+// accident: the fixture makes a REAL orphan by spawning `/bin/sh` and cleans it up with SIGKILL, and
+// `parentPID` (which the sweep's safety property rests on) reads `/proc/<pid>/status`. `syscall.Kill`
+// is absent from the Windows syscall package, so an untagged file does not merely skip on Windows — it
+// fails to COMPILE, which is how the same mistake broke the release build for windows/amd64 and
+// windows/arm64 (see serve_reap_unix.go for the production half and the note about that history).
+//
+// The sweep itself is consequently inert on Windows — serve_reap_windows.go explains what that costs
+// and why the direction it fails in is the safe one — so there is nothing here to assert on that
+// platform.
 
 import (
 	"fmt"
