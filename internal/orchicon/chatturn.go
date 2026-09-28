@@ -1611,36 +1611,64 @@ func consentDenialError(tool, decision string) error {
 	}
 }
 
-// commitChatHistory replaces the session's in-memory history with the
-// turn's full working history (user message, assistant texts, tool uses
-// and tool results) so a follow-up re-sends the complete context.
-// Best-effort: when the turn produced no new messages the stored history
-// is left untouched; when the stored entry was reset mid-turn (session
-// recreated) the turn's own snapshot seeds it.
+// commitChatHistory APPENDS the turn's own messages to the session's in-memory history (user message,
+// assistant texts, tool uses and tool results), so a follow-up re-sends the complete context.
+// Best-effort: when the turn produced no new messages the stored history is left untouched; when the stored
+// entry was reset mid-turn (session recreated) the turn's snapshot seeds it.
+//
+// IT APPENDS, AND IT MUST NOT REPLACE. It used to assign `cur = working`, i.e. overwrite the session with
+// THIS turn's snapshot-plus-output — and that silently DESTROYED the work of any other turn that had written
+// to the session since this one dispatched. Supersede is exactly that shape, and supersede is how this
+// operator steers a running turn:
+//
+//	step                                        session history
+//	A dispatched, running                       H + [userA]
+//	operator interjects ⇒ B dispatched          H + [userA] + [userB]      (B's snapshot)
+//	A cancelled ⇒ A commits its own working     H + [userA] + replyA        ← [userB] destroyed
+//	B completes ⇒ B commits its own working     H + [userA] + [userB] + replyB   ← replyA destroyed
+//
+// Last writer wins and the loser's messages are gone. The operator's own conversation shows the
+// fingerprint: their four superseded turns left FIVE CONSECUTIVE user messages in the session history with
+// no reply between them, because a user message rides the NEXT turn's snapshot (so it survives) while a
+// reply exists only in the turn that produced it (so it does not). Every one of those turns was in the
+// transcript, on screen, and in the database — and invisible to the model, which is the whole of their
+// "Orchicon is not usable if you can't have a session that remembers what it's doing".
+//
+// The fix is not a merge heuristic: a turn's contribution is exactly the tail it produced past its own
+// snapshot (drainChatTurn seeds `working` from `history` and only ever appends to it), so appending that tail
+// to whatever the session holds NOW preserves both turns' messages whatever order they commit in.
 func (b *NativeBridge) commitChatHistory(sessionID string, history, working []Message) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if len(working) == 0 {
 		return
 	}
+	// THIS TURN'S OWN MESSAGES — everything it produced past the snapshot it dispatched from.
+	tail := turnContribution(history, working)
 	cur := b.chatHistory[sessionID]
 	if len(cur) == 0 && len(history) > 0 {
-		// The entry was reset mid-turn — seed from the turn snapshot so
-		// the user message is not lost, then prefer the working tail.
-		if len(working) >= len(history) {
-			cur = append([]Message(nil), working...)
-		} else {
-			cur = append([]Message(nil), history...)
-			cur = append(cur, working...)
-		}
-	} else {
-		cur = append([]Message(nil), working...)
+		// The entry was reset mid-turn; seed from the turn snapshot so the user message is not lost
+		// before appending what the turn produced.
+		cur = append([]Message(nil), history...)
 	}
-	// Never persist a dangling tool call: a turn that ended between a call and
-	// its result must not poison the session for the next provider.
+	cur = append(cur, tail...)
+	// Never persist a dangling tool call: a turn that ended between a call and its result must not poison
+	// the session for the next provider.
 	cur = sanitizeChatHistory(cur)
 	b.chatHistory[sessionID] = cur
 	b.persistAskHistoryLocked(sessionID)
+}
+
+// turnContribution returns the messages a turn ADDED to the snapshot it dispatched from.
+//
+// `working` is `history` plus what the turn produced (drainChatTurn seeds it that way and only appends), so
+// the contribution is the tail. A `working` that is somehow SHORTER than its snapshot is treated as wholly
+// new rather than indexed past its end — that can only ever add messages to the session, never drop one.
+func turnContribution(history, working []Message) []Message {
+	if len(history) == 0 || len(working) < len(history) {
+		return working
+	}
+	return working[len(history):]
 }
 
 // AbortConversationSession implements scheduler.ChatTurnClient: it cancels

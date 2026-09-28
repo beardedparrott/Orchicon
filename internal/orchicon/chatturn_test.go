@@ -1001,3 +1001,141 @@ func requestText(req TurnRequest) string {
 	}
 	return b.String()
 }
+
+// --- the concurrent-commit data loss ---------------------------------------------------------
+
+// textMsg builds a one-part message for the interleaving tests.
+func textMsg(role Role, s string) Message {
+	t := s
+	return Message{Role: role, Content: []Content{{Text: &t}}}
+}
+
+// historyText flattens a session history into one string.
+func historyText(msgs []Message) string {
+	var b strings.Builder
+	for _, m := range msgs {
+		for _, c := range m.Content {
+			if c.Text != nil {
+				b.WriteString(*c.Text)
+				b.WriteString("\n")
+			}
+		}
+	}
+	return b.String()
+}
+
+// TestConcurrentTurnCommitsDoNotEraseEachOther is the reported "Orchicon is not usable if you can't have a
+// session that remembers what it's doing", reduced to its mechanism.
+//
+// commitChatHistory used to REPLACE the session history with the committing turn's own snapshot-plus-output.
+// Two turns overlap whenever the operator interjects (which supersedes the running turn), so the last one to
+// commit erased the other's messages. The signature in the operator's own conversation was five consecutive
+// USER messages with no reply between them: a user message rides the NEXT turn's snapshot so it survives,
+// while a reply exists only in the turn that produced it, so it does not.
+//
+// This drives the two commits in the order the production log shows them (the superseded turn commits first,
+// the superseding turn second) and requires every message from both to survive.
+func TestConcurrentTurnCommitsDoNotEraseEachOther(t *testing.T) {
+	b := newChatBridge(t, &chatTestProvider{})
+	const sid = "orchicon-ask:conv-interleave"
+	prior := []Message{textMsg(RoleUser, "hello")}
+
+	// Turn A dispatches: the map becomes prior + [userA], and A holds that snapshot.
+	historyA := append(append([]Message(nil), prior...), textMsg(RoleUser, "question A"))
+	b.chatHistory[sid] = append([]Message(nil), historyA...)
+
+	// THE OPERATOR INTERJECTS. Turn B dispatches, snapshotting what the map holds NOW — which already
+	// carries [userA] but not replyA (A has not produced it yet).
+	historyB := append(append([]Message(nil), historyA...), textMsg(RoleUser, "question B"))
+	b.chatHistory[sid] = append([]Message(nil), historyB...)
+
+	// A is cancelled (supersede) and commits what it managed to produce.
+	workingA := append(append([]Message(nil), historyA...), textMsg(RoleAssistant, "reply A"))
+	b.commitChatHistory(sid, historyA, workingA)
+
+	// B completes and commits.
+	workingB := append(append([]Message(nil), historyB...), textMsg(RoleAssistant, "reply B"))
+	b.commitChatHistory(sid, historyB, workingB)
+
+	got := historyText(b.chatHistory[sid])
+	for _, want := range []string{"hello", "question A", "reply A", "question B", "reply B"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("the session history lost %q — a concurrent turn's commit erased it, so the model "+
+				"cannot see work that is on the operator's screen.\nsession history:\n%s", want, got)
+		}
+	}
+	// And nothing was duplicated by the append.
+	if n := strings.Count(got, "question A"); n != 1 {
+		t.Fatalf("question A appears %d times, want exactly 1:\n%s", n, got)
+	}
+	if n := strings.Count(got, "hello"); n != 1 {
+		t.Fatalf("the prior history appears %d times, want exactly 1:\n%s", n, got)
+	}
+}
+
+// The same guarantee when the order is reversed: whichever turn commits LAST must not erase the other. This
+// is the half a "make the abort path commit too" fix cannot give, because both orders are reachable —
+// commit order depends on how fast each provider stream drains, not on which turn started first.
+func TestConcurrentCommitOrderDoesNotMatter(t *testing.T) {
+	b := newChatBridge(t, &chatTestProvider{})
+	const sid = "orchicon-ask:conv-interleave-2"
+	prior := []Message{textMsg(RoleUser, "hello")}
+
+	historyA := append(append([]Message(nil), prior...), textMsg(RoleUser, "question A"))
+	b.chatHistory[sid] = append([]Message(nil), historyA...)
+	historyB := append(append([]Message(nil), historyA...), textMsg(RoleUser, "question B"))
+	b.chatHistory[sid] = append([]Message(nil), historyB...)
+
+	workingA := append(append([]Message(nil), historyA...), textMsg(RoleAssistant, "reply A"))
+	workingB := append(append([]Message(nil), historyB...), textMsg(RoleAssistant, "reply B"))
+	// B FIRST this time.
+	b.commitChatHistory(sid, historyB, workingB)
+	b.commitChatHistory(sid, historyA, workingA)
+
+	got := historyText(b.chatHistory[sid])
+	for _, want := range []string{"question A", "reply A", "question B", "reply B"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("commit order decided which turn survived; %q was lost:\n%s", want, got)
+		}
+	}
+}
+
+// A single ordinary turn still accumulates exactly as before: the prior history plus this turn's own
+// messages, with nothing duplicated and nothing dropped.
+func TestCommitAppendsTheTurnsOwnMessagesToTheSession(t *testing.T) {
+	b := newChatBridge(t, &chatTestProvider{})
+	const sid = "orchicon-ask:conv-normal"
+	prior := []Message{textMsg(RoleUser, "first"), textMsg(RoleAssistant, "first reply")}
+	b.chatHistory[sid] = append([]Message(nil), prior...)
+
+	history := append(append([]Message(nil), prior...), textMsg(RoleUser, "second"))
+	// THE DISPATCH WRITES THE USER MESSAGE INTO THE SESSION before the turn runs (SendTurnMessage), so the
+	// map already holds `history` by the time the turn commits — mirrored here, or the commit appends a tail
+	// onto a map that never had this turn's own user message.
+	b.chatHistory[sid] = append([]Message(nil), history...)
+	// A WELL-FORMED tool round: the call and its result. A result with no matching call is the ORPHANED
+	// shape sanitizeChatHistory deliberately drops (it is the mirror of a dangling call, and providers
+	// reject it), so a fixture that paired them wrongly would fail for the wrong reason.
+	working := append(append([]Message(nil), history...),
+		Message{Role: RoleAssistant, Content: []Content{
+			{Text: strptr("second reply")},
+			{ToolUse: &ContentToolUse{ToolCallID: "c1", Name: "bash", ArgsJSON: "{}"}},
+		}},
+		Message{Role: RoleTool, Content: []Content{{ToolResult: &ContentToolResult{ToolCallID: "c1", Content: "ok"}}}},
+	)
+	b.commitChatHistory(sid, history, working)
+
+	got := historyText(b.chatHistory[sid])
+	for _, want := range []string{"first", "first reply", "second", "second reply"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("%q missing after a normal commit:\n%s", want, got)
+		}
+	}
+	if n := strings.Count(got, "first reply"); n != 1 {
+		t.Fatalf("the prior history was duplicated (%d copies):\n%s", n, got)
+	}
+	// prior + the turn's user message + its assistant round + its tool result.
+	if len(b.chatHistory[sid]) != len(prior)+3 {
+		t.Fatalf("history length = %d, want %d", len(b.chatHistory[sid]), len(prior)+3)
+	}
+}
