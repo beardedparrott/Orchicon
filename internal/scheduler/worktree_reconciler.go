@@ -2700,6 +2700,33 @@ func (r *WorktreeReconciler) isDirtyWorkTree(ctx context.Context, projectDir str
 // Returns an error if verification after restore still shows dirt outside
 // the live-worktree residue.
 func (r *WorktreeReconciler) restoreWorkTree(ctx context.Context, projectDir string) error {
+	// PRESERVE BEFORE DESTROYING, OR REFUSE.
+	//
+	// THE DIRT THIS FUNCTION REMOVES IS NOT CATEGORICALLY OURS. It resets the project's SHARED
+	// CHECKOUT — the operator's own working copy — and the only signal the caller has is "`git status
+	// --porcelain` printed something" (isDirtyWorkTree). That is exactly what a developer's own
+	// uncommitted work looks like, and the caller cannot tell the two apart, because nothing records
+	// which files a run touched. So `reset --hard` plus `clean -fd` could discard the operator's
+	// modified files and delete their untracked ones, with no way back: this is the same defect class
+	// as the guard test that deleted a home directory, and as the installer that removed the caller's
+	// own `bin/` — a destructive operation whose TARGET is not anchored to what the program owns,
+	// where the safety check is answered by the very thing being destroyed.
+	//
+	// STASHING MAKES IT RECOVERABLE. `git stash push -u` (u = untracked too, or `clean -fd` would
+	// delete files the stash had not taken) moves everything into a named stash entry that survives
+	// the reset and is listed by `git stash list`. The command still converges the checkout — which
+	// is what the sweep is for — but nothing is unrecoverable any more.
+	//
+	// AND IT FAILS CLOSED: if the stash cannot be made (a lock file, a full disk, a repo state git
+	// refuses), the restore does NOT proceed. Discarding work to tidy a checkout is never the more
+	// important goal.
+	if out, err := runGit(ctx, projectDir, "stash", "push", "-u", "-m", stashMessage); err != nil {
+		return fmt.Errorf("refusing to reset %s: could not preserve the working tree first "+
+			"(git stash push -u): %w — %s", projectDir, err, strings.TrimSpace(out))
+	} else {
+		r.log.Info("worktree: preserved the working tree in a stash before restoring the checkout",
+			"dir", projectDir, "stash", strings.TrimSpace(out))
+	}
 	if _, err := runGit(ctx, projectDir, "reset", "--hard", "HEAD"); err != nil {
 		return fmt.Errorf("git reset --hard HEAD: %w", err)
 	}
@@ -2715,6 +2742,12 @@ func (r *WorktreeReconciler) restoreWorkTree(ctx context.Context, projectDir str
 	}
 	return nil
 }
+
+// stashMessage names the stash entry restoreWorkTree creates before it resets a checkout. The name
+// is how the work is found again after the fact, so it says who made it, why, and that it is safe to
+// reapply — an operator who sees it with `git stash list` should not have to guess whether it is
+// theirs.
+const stashMessage = "orchicon: working tree preserved before the post-run checkout restore (safe to `git stash pop`)"
 
 // stripLiveWorktreeResidue removes the `?? .orchicon-worktrees/` status line
 // when (and only when) the directory still holds at least one live git

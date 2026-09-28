@@ -39,8 +39,10 @@ import (
 	"time"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/guard"
 	"github.com/beardedparrott/orchicon/internal/neverallow"
 	"github.com/beardedparrott/orchicon/internal/permpolicy"
+	"github.com/beardedparrott/orchicon/internal/protectedpath"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
@@ -844,6 +846,46 @@ func cutHeredocBody(s, delim string) string {
 	}
 }
 
+// commandInvokesScopedBinary reports whether a shell command invokes one of the binaries the
+// execution guard intercepts, which is the set whose TARGETS the shim judges.
+//
+// IT IS DELIBERATELY A TOKEN SCAN RATHER THAN A PARSE, and it is not the enforcement: the shim
+// intercepts by PATH lookup, so it sees an invocation however it was built (`$(echo rm) -rf x` still
+// resolves through the shimmed PATH). This only decides whether the consent layer should apply the
+// protected-path rule EARLY, and a scan that errs toward "yes" is the safe direction for that — the
+// cost of a false positive is a refusal of something the shim would refuse anyway.
+//
+// An assignment (`HOME=/home/me`) and a bare mention (`cat /home/me/file`) are NOT invocations of a
+// scoped binary, which is exactly the distinction the ungated version was missing.
+func commandInvokesScopedBinary(cmd string) bool {
+	scoped := guard.ScopedBinaryNames()
+	if len(scoped) == 0 || strings.TrimSpace(cmd) == "" {
+		return false
+	}
+	for _, tok := range strings.Fields(cmd) {
+		// Strip the shell punctuation that glues a token to its neighbours, and any PATH prefix, so
+		// `/bin/rm`, `"rm` and `rm;` all read as the binary `rm`.
+		tok = strings.Trim(tok, `"'`+"`"+`,;|&()<>{}[]$`)
+		if tok == "" || strings.Contains(tok, "=") && !strings.HasPrefix(tok, "/") {
+			// An assignment is not a command. (A quoted path may contain '='; the prefix test keeps
+			// an absolute path from being discarded here.)
+			if !strings.Contains(tok, "/") {
+				continue
+			}
+		}
+		base := tok
+		if i := strings.LastIndexByte(base, '/'); i >= 0 {
+			base = base[i+1:]
+		}
+		for _, n := range scoped {
+			if base == n {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // decisionTargets returns EVERY path a file action touches, so the decision
 // covers a batch write's second (and later) targets instead of only the first.
 // Judging only the first is the silent approval the MCP-ask fix closed, one
@@ -1586,6 +1628,45 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 	absTargets := make([]string, 0, len(targets))
 	for _, t := range targets {
 		absTargets = append(absTargets, t.abstarget)
+	}
+	// A TARGET THAT WOULD DESTROY THE SCOPE IS REFUSED, NOT ASKED ABOUT — and this is the layer where
+	// "asked about" would be the worst outcome, because a card offers the operator a button that
+	// cannot be taken back.
+	//
+	// WHERE IT SITS: above the policy loop and above FULLSEND, in the same position as the never-allow
+	// class and for the same reason — it is a decision, not a permission request. A DENY entry is
+	// consulted first: an operator's own exclusion is their decision to state, and it should be the
+	// reason they are given.
+	//
+	// WHAT IT CATCHES: `rm -rf /home` from a project, `rm -rf ~`, `rm -rf /`, and `rm -rf` of any
+	// directory that CONTAINS the project — every one of which would take the work scope with it. It
+	// does NOT refuse acting on the scope root itself (`chmod -R 755 <project>`, `rm -rf <project>/dist`),
+	// which is ordinary work; see protectedpath's two lists.
+	//
+	// IT IS THE CONSENT HALF OF THE SAME RULE the guard shim enforces, from ONE declaration
+	// (internal/protectedpath), so the two cannot disagree about what is protected.
+	protRoots := protectedpath.Roots("")
+	protScope := protectedpath.ScopeRoots(scope.Dir, ct.svc.grants.Roots(ct.convID))
+	//
+	// GATED ON THE COMMAND ACTUALLY INVOKING A BINARY THE SHIM JUDGES, because this layer judges
+	// MENTIONS and the shim judges OPERATIONS. For a bash command the targets include every literal
+	// path the TEXT names — that is the point of the extraction, and it is what catches
+	// `cp ~/a /etc/b` — so a command that merely mentions a protected path was refused as though it
+	// were deleting it: `HOME=/home/me somecmd` reads as a target that contains the home directory.
+	// The shim would never look at that command (it intercepts rm/mv/cp/... and nothing else), so
+	// refusing it here was over-refusal and a false statement about the rule.
+	//
+	// The SHIM REMAINS THE ENFORCEMENT: it intercepts an invocation by PATH LOOKUP, so it covers
+	// forms the text does not literally contain. This layer's job is to refuse EARLY rather than offer
+	// a card for something no approval could permit.
+	if !isBashAsk(a.Tool) || commandInvokesScopedBinary(a.Command) {
+		for _, t := range targets {
+			if root := protectedpath.DestroyedBy(t.abstarget, protRoots, protScope); root != "" {
+				ref := protectedpath.Refusal(t.abstarget, root)
+				ct.record(a, "protected_path", ref)
+				return "reject", nil, ref
+			}
+		}
 	}
 	// blocking is the FIRST target that is not covered — the path whose consent is
 	// actually missing, and therefore the directory a grant has to name to silence this

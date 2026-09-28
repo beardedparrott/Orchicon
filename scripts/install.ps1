@@ -350,8 +350,12 @@ if [ -x "$BIN" ]; then "$BIN" serve --stop >/dev/null 2>&1; fi
 pkill -9 -x orchicon 2>/dev/null
 docker rm -f orchicon-cnt-dev orchicon-cnt-prod >/dev/null 2>&1
 docker volume rm orchicon-cnt-dev-data orchicon-cnt-prod-data >/dev/null 2>&1
-cd "$HOME" || true
-rm -rf data .dev bin .local/share/orchicon
+# ANCHORED TO THE STATE DIRECTORY, NEVER A RELATIVE NAME. This read
+# `cd "$HOME"; rm -rf data .dev bin .local/share/orchicon`, which deleted
+# `$HOME/bin`, `$HOME/data` and `$HOME/.dev` — directories Orchicon does not own,
+# and `~/bin` in particular is where people keep their own binaries. The `.local`
+# entry was ALSO relative, so it never touched the real state dir at $HOME/.local.
+rm -rf "$HOME/.local/share/orchicon"
 rm -f "$BIN"
 true
 '@

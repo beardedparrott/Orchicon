@@ -121,6 +121,37 @@ type guardedBinary struct {
 	scoped bool // true: allow when targets stay in the project; false: always block
 }
 
+// scopedBinaryNames is the PATH-SCOPED set: the binaries the shim intercepts and then judges by
+// their TARGET, as opposed to the never-allow class, which is refused on the binary name alone.
+//
+// EXPORTED BECAUSE A CALLER NEEDS TO KNOW WHAT THE SHIM WILL LOOK AT. The consent layer refuses a
+// target that would destroy the work scope, and it was refusing BASH commands that merely MENTION
+// such a path — `HOME=/home/me somecmd` was read as a target that contains the home directory. The
+// shim would never judge that command (it intercepts `rm`/`mv`/... and nothing else), so the consent
+// layer was refusing something the enforcement layer would have let run, which is over-refusal and a
+// false statement about what the rule prohibits.
+//
+// The two layers now agree on scope as well as on meaning: this list is what the shim judges, and
+// the consent layer applies the same protected-path rule to a bash command only when it invokes one
+// of these. The SHIM remains the enforcement — it intercepts any invocation by PATH lookup, even one
+// the text does not literally contain — and the consent layer's job is to refuse EARLY rather than
+// offer a card for something that cannot be approved.
+var scopedBinaryNames = []string{"rm", "chmod", "chown", "mv", "cp", "ln"}
+
+func scopedBinaries() []guardedBinary {
+	out := make([]guardedBinary, 0, len(scopedBinaryNames))
+	for _, n := range scopedBinaryNames {
+		out = append(out, guardedBinary{name: n, scoped: true})
+	}
+	return out
+}
+
+// ScopedBinaryNames returns the PATH-SCOPED binary names the shim intercepts. Read-only: callers use
+// it to decide whether a command is one the shim will judge at all.
+func ScopedBinaryNames() []string {
+	return append([]string(nil), scopedBinaryNames...)
+}
+
 // buildGuardedBinaries is the shim set for one guard: the never-allow class
 // (always-block, from the SHARED declaration in internal/neverallow so the guard
 // and the opencode permission config cannot drift apart) followed by the
@@ -131,14 +162,7 @@ type guardedBinary struct {
 // declaration is the single source of truth, so a guard must read it when it is
 // built rather than inherit whatever it held at package init.
 func buildGuardedBinaries() []guardedBinary {
-	scoped := []guardedBinary{
-		{name: "rm", scoped: true},
-		{name: "chmod", scoped: true},
-		{name: "chown", scoped: true},
-		{name: "mv", scoped: true},
-		{name: "cp", scoped: true},
-		{name: "ln", scoped: true},
-	}
+	scoped := scopedBinaries()
 	out := make([]guardedBinary, 0, len(neverallow.Shimmed())+len(scoped))
 	for _, name := range neverallow.Shimmed() {
 		out = append(out, guardedBinary{name: name})
@@ -403,6 +427,95 @@ TAB=$(printf '\t')
 # "absent policy = no policy" rule.
 failed_closed() {
   echo "ORCHICON GUARD (fail-closed): the permission policy '$1' cannot be read ($2) — refusing the path-scoped command '${0##*/}' rather than running it unguarded." >&2
+  exit 1
+}
+
+# protected_target returns 0 (refuse) when an argument EQUALS or CONTAINS a protected root — a path
+# this session works in or depends on. The TRANSPOSE of inside_list: inside_dir "$a" "$r" asks whether
+# $r is $a or below it, i.e. whether $a would TAKE $r with it.
+#
+# NON-WAIVABLE, AND THAT IS THE WHOLE REASON IT EXISTS. It is called from blocked_path ABOVE the
+# fullsend skip, in the same position as the deny list, because it is the same category of rule: a
+# decision no permission request can turn into an approval. Measured before this existed: with
+# FULLSEND on, 'rm -rf /home' from a project RAN — the sanctioned-set tests are skipped by design, and
+# an ancestor of the project is in no set to begin with, so nothing refused it.
+#
+# The roots are computed here from what the shim ALREADY has, so protection needs no new wiring and
+# holds for the worker profile too (which never sets ORCHICON_GUARD_*). TWO LISTS, because the two
+# need different rules, and the split is what stops it breaking ordinary work:
+#
+#   MACHINE (refused on EQUALS or CONTAINS)
+#     /                       the filesystem root
+#     $HOME                   which is what makes 'rm -rf /home' and 'rm -rf ~' refused
+#     $HOME/.local/share/orchicon, $HOME/.orchicon   the plane's own state
+#
+#   WORK SCOPE (refused on CONTAINS only — a PROPER ancestor)
+#     $PROJECT_DIR            the worker's project (baked)
+#     $GUARD_PROJECT, $GUARD_GRANTS   the conversation's scope and its session grants
+#
+# ACTING ON the scope root is ordinary work — 'chmod -R 755 <project>', 'rm -rf <project>/dist' — so
+# equality is NOT refused there; the catastrophe is destroying the directory that HOLDS the scope.
+# internal/protectedpath carries the same two lists for the consent layer, which is Go and cannot
+# read this; the guard tests assert the shim's behaviour directly.
+protected_hit=""
+protected_target() {
+  local a r machine scope
+  # MACHINE-LEVEL roots: refused on EQUALS or CONTAINS. There is no legitimate reason to delete '/' or
+  # to re-permission the user's home from inside an agent session, so equality is included here.
+  machine="/"
+  if [ -n "${HOME:-}" ]; then
+    machine="$machine
+${HOME}
+${HOME}/.local/share/orchicon
+${HOME}/.orchicon"
+  fi
+  # WORK SCOPE: refused on CONTAINS only (a PROPER ancestor). Acting ON the scope root is ordinary
+  # work — 'chmod -R 755 <project>', 'rm -rf <project>/dist' — so equality is left to the consent
+  # chain, while destroying the directory that HOLDS the scope is the catastrophe this rule exists for.
+  scope=""
+  [ -n "${PROJECT_DIR:-}" ] && scope="$scope
+${PROJECT_DIR}"
+  [ -n "${GUARD_PROJECT:-}" ] && scope="$scope
+${GUARD_PROJECT}"
+  for r in $GUARD_GRANTS; do
+    [ -n "$r" ] && scope="$scope
+$r"
+  done
+  for a in "$@"; do
+    case "$a" in
+      -*) continue ;;
+      --) continue ;;
+    esac
+    # The shim receives LITERAL ~ and $HOME (no shell expands them here), so expand the way
+    # pem_expand_home does before comparing — otherwise 'rm -rf ~' names no root at all.
+    a=$(pem_expand_home "$a")
+    [ -n "$a" ] || continue
+    while IFS= read -r r; do
+      [ -n "$r" ] || continue
+      if inside_dir "$a" "$r"; then
+        protected_hit="$a|$r"
+        return 0
+      fi
+    done < <(printf '%s\n' "$machine")
+    while IFS= read -r r; do
+      [ -n "$r" ] || continue
+      # CONTAINS ONLY: skip the equality case by requiring the argument to be strictly shorter.
+      if [ "$a" != "$r" ] && inside_dir "$a" "$r"; then
+        protected_hit="$a|$r"
+        return 0
+      fi
+    done < <(printf '%s\n' "$scope")
+  done
+  return 1
+}
+
+# protected_blocked names BOTH paths. The operator's next move after reading a refusal is to decide
+# whether the rule is right, and a message that says only "blocked" cannot be checked.
+protected_blocked() {
+  local a r
+  a="${protected_hit%%|*}"
+  r="${protected_hit#*|}"
+  echo "ORCHICON GUARD: refusing — '$a' contains '$r', which this session works in or depends on. Deleting it would take that with it, so this is NEVER ALLOWED: not by a session grant, not by an accept entry, and not by FULLSEND. Choose a target inside the project instead." >&2
   exit 1
 }
 
@@ -744,7 +857,14 @@ denied_target() {
 #   5. anything else is refused (relative / ~ / $HOME / .. keep the historical
 #      block rule)
 blocked_path() {
+  # THE DENY LIST FIRST, because it is the operator's OWN explicit statement and naming their entry is
+  # the most useful refusal — it tells them which line of their policy file to look at.
   denied_target "$@" && policy_blocked
+  # THEN THE PROTECTED-ROOT RULE, above every allow-set test below it (including the fullsend skip).
+  # A target that would DELETE the scope is not a permission request, so nothing below may widen it.
+  # ORDER MATTERS ONLY FOR THE MESSAGE: both refuse, and this one is the backstop for what a deny
+  # PATTERN cannot express (see internal/protectedpath).
+  protected_target "$@" && protected_blocked
   local a
   for a in "$@"; do
     case "$a" in
