@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -286,7 +287,15 @@ func TestSessionSetTranscriptObserverBeforeRun(t *testing.T) {
 		case db.SessionPartText:
 			var pl map[string]any
 			_ = json.Unmarshal(p.Payload, &pl)
-			if inner, _ := pl["part"].(map[string]any); inner["text"] == "hello" {
+			inner, _ := pl["part"].(map[string]any)
+			text, _ := inner["text"].(string)
+			// Containment, not equality: consecutive deltas now coalesce into
+			// one growing part, and the mock harness emits the worker sign-off
+			// as a further delta in the same turn (observed: the part reads
+			// "hello\nORCHICON WORKER SUMMARY: …"). What this test owns is that
+			// the FIRST text delta reached the DB — i.e. OpenTranscript applied
+			// the observer before the first event appended.
+			if strings.Contains(text, "hello") {
 				foundText = true
 			}
 		}

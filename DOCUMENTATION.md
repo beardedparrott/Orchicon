@@ -1779,9 +1779,11 @@ For source-level iteration on the control plane itself, rebuild the image and re
 | **Hygiene** | |
 | `clean` | Clear the Go build cache (`go clean -cache -testcache -modcache`) + `bin/` |
 | `cache-check` | Report the current Go build cache size |
-| `clean-docker` | Prune dangling Docker images + stopped containers + unused volumes (keeps live instances + data volumes) |
+| `clean-docker` | Prune Orchicon's dangling images + its own stopped containers (`--filter label=orchicon-instance`). **Never volumes**: it used to run `docker volume prune -f` host-wide, which removes other projects' data on any machine with more than Orchicon on it |
 | **CI** | |
-| `ci` | Full CI gate: lint → gen → vet → test → rls-check |
+| `cross-compile` | Compile both shipped binaries for every release platform (linux/darwin/windows × amd64/arm64, `CGO_ENABLED=0`). Catches platform-specific breaks — see *Continuous integration* below |
+| `ci-go` | The Go control-plane gate: lint → gen-check → vet → test → synth-data → rls-check → adapter-bake-guard → **cross-compile**. This is exactly what the `go-ci` workflow job runs |
+| `ci` | `ci-go` + `fe-lint` + `fe-test` — the full gate |
 
 ### Code Generation
 
@@ -1821,6 +1823,33 @@ make ci
 # RLS policy check (must pass before merge)
 make rls-check
 ```
+
+### Continuous integration
+
+The workflows live in `.github/workflows/`. `ci.yml` runs three jobs — `go-ci` (which is
+`make ci-go`), `fe-lint` and `docs-check` — and the two things worth knowing are **when it runs** and
+**what the Go job actually compiles**.
+
+**It runs for pull requests into `develop` AND `main`.** The `main` entry is not decorative: a release
+is cut by merging `develop` → `main`, so that is the PR whose merge produces the shipped artefacts, and
+for a while it was the one PR CI never tested. The consequence was concrete — v0.4.0 was tagged and then
+produced **no release at all**, because `release.yml` failed on both Windows targets with
+`undefined: syscall.Kill` (a Unix-only symbol called from a file with no build constraint). Every gate
+was green; the artefact could not be built. `auto-release.yml` had already created the tag by then, so
+the failure arrived *after* the version existed.
+
+**`go-ci` COMPILES EVERY PLATFORM THE RELEASE SHIPS TO, which is what catches that class of bug.**
+`go build`, `go vet` and `go test` all pass on linux/amd64 for code that cannot build for Windows, so no
+amount of running them on one platform would have found it. `make cross-compile` compiles the exact
+release matrix — linux/darwin/windows on amd64 and arm64, `CGO_ENABLED=0`, both binaries — and it is
+part of `make ci-go`, so the gate and the release cannot disagree about which platforms must build.
+
+**`release.yml` guards itself: only tags reachable from `main` are released.** A develop version-bump
+tag is skipped with a warning, so the per-merge tagging in `develop-bump.yml` can never publish a
+release by accident. The release matrix additionally verifies what it is about to publish — if any leg
+fails, **no GitHub Release is created**, which is the correct failure but silent at the time: the tag
+exists and nothing is downloadable. If a version has a tag and no release, check `release.yml`'s run for
+that tag before anything else.
 
 ### Verification Checklist
 

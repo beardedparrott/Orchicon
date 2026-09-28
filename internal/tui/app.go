@@ -172,9 +172,19 @@ type App struct {
 	refreshGen uint64
 
 	// Chat dock state (feature: context-aware Ask Orchicon + slash).
-	dock         dock.Model
-	chat         *chat.Controller
-	chatStore    *chatStore    // guarded chatItems (stream goroutine writes)
+	dock      dock.Model
+	chat      *chat.Controller
+	chatStore *chatStore // guarded chatItems (stream goroutine writes)
+	// renderCache remembers each transcript item's rendered segment, so a repaint
+	// pays for the items that CHANGED rather than for every item in the conversation.
+	//
+	// IT IS ONE CACHE FOR BOTH SURFACES — the Ask transcript and the slide-out strip —
+	// because the two draw the same conversation and the entries cannot collide: an
+	// entry is keyed by the conversation, the item, the pane WIDTH and the copy glyph,
+	// so the strip's 40-column, glyph-less render of an item and the pane's 120-column
+	// one are separate entries of the same item. See internal/tui/chat/render_cache.go
+	// for what makes a remembered segment safe to reuse.
+	renderCache  *chat.RenderCache
 	chatWake     chan struct{} // live-chunk repaint poke (cap 1)
 	chatCmds     chan tea.Cmd  // goroutine follow-ups (watch re-dial, poll)
 	chatFocus    focusMode
@@ -486,6 +496,7 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string, o
 		clip:            &clipState{},
 		screens:         map[TabID]Screen{},
 		chatStore:       &chatStore{items: map[string][]chat.ChatItem{}},
+		renderCache:     chat.NewRenderCache(),
 		sessionGrants:   newSessionGrantStore(),
 		execSessions:    map[string][]chat.ChatItem{},
 		loaded:          map[TabID]bool{},
@@ -3175,11 +3186,65 @@ func consentDecisionFromOutcome(outcome string) chat.ConsentDecision {
 		return chat.DecisionDeny
 	case "answered":
 		return chat.DecisionAnswer
+	case "unanswered":
+		// A QUESTION NOBODY ANSWERED is not a decision against it. See
+		// chat.DecisionUnanswered — this case is the whole point of the server
+		// publishing `unanswered` separately from `expired`.
+		return chat.DecisionUnanswered
 	case "expired":
 		return chat.DecisionDeny
 	default:
 		return chat.DecisionSettled
 	}
+}
+
+// reArmAskDraftClaim hands the keyboard back to a RECORDED card's open free-text row, after a click
+// on that row.
+//
+// THE MIRROR OF reArmConsentClaim, for the same gesture and the same reason: the row is an input,
+// ctrl+g can hand the keyboard to the composer, and a click on the row is the operator acting ON the
+// card — so the card takes the keys back. Without it the input row would be drawn while the typing
+// it asks for landed in the composer behind it.
+func (m *App) reArmAskDraftClaim() {
+	s := m.screens[TabAsk]
+	if s == nil {
+		return
+	}
+	if c, ok := s.(interface{ ReArmAskDraftClaim() }); ok {
+		c.ReArmAskDraftClaim()
+	}
+}
+
+// beginAskDraft opens the free-text row on a RECORDED ask card, by the key of the item under the
+// click.
+//
+// THE CARD'S INPUT ROW IS PART OF ITS RENDER, so "open" means "the item says Drafting" — the same
+// shape the consent card uses (ConsentState.OtherMode), and the reason this needs no repaint channel
+// of its own: the item IS the state, and the render reads it.
+//
+// BY KEY, NOT BY "the newest card": a transcript can hold more than one unanswered question, and
+// opening the input on the wrong one would put the operator's answer on a question they did not
+// click. False when the item is gone, already answered, or never offered free text — so a click
+// resolved against a stale layout opens nothing rather than something wrong.
+func (s *chatStore) beginAskDraft(convID, key string) bool {
+	if s == nil || key == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.items[convID] {
+		it := &s.items[convID][i]
+		if it.Kind != chat.KindAsk || it.Key != key || it.Ask == nil {
+			continue
+		}
+		if it.Ask.Answered || !it.Ask.AllowOther {
+			return false
+		}
+		it.Ask.Drafting = true
+		it.Ask.Draft = ""
+		return true
+	}
+	return false
 }
 
 // settleStaleConsent resolves every PENDING consent card for a conversation whose
@@ -3514,7 +3579,7 @@ func (m *App) syncTranscript(convID string, str *kit2.Stream, items []chat.ChatI
 	// The spans are the CLICK GEOMETRY, and they come from the same render that produced the lines being
 	// drawn — so a click cannot resolve against a layout the screen is not showing. Stored per conversation,
 	// beside transcriptLines.
-	body, spans := chat.RenderItemsSpansWithCopy(chat.GroupByPhase(items), w, chat.CopyGlyph, m.foldedReasoning)
+	body, spans := m.renderCache.Render(convID, chat.GroupByPhase(items), w, chat.CopyGlyph, m.foldedReasoning)
 	if m.transcriptSpans == nil {
 		m.transcriptSpans = map[string][]chat.ItemSpan{}
 	}
@@ -3735,20 +3800,22 @@ func (m *App) transcriptCodeBlockAtFrameRow(frameRow int) (string, bool) {
 // was a coin flip. Both are clickable now, and both still take the keyboard (the consent card's key
 // handler is unchanged).
 //
-// It returns the item KIND as well as the label, because the two cards DO different things with the
-// answer: a question's label is sent as the next user message, a permission's label is a DECISION.
+// It returns the item KIND, the item KEY and the label, because the three cards DO different things
+// with the answer: a question's label is sent as the next user message, a permission's label is a
+// DECISION, and a free-text row needs to name the CARD it was clicked on so the input opens on that
+// card rather than on whichever one happens to be newest.
 //
 // Same three coordinate spaces as the copy rules (frame row → body row → body line → item), and the
 // same derived body-top row — the geometry comes from the render that drew the card (ItemSpan.Options),
 // so a click cannot resolve against a layout the screen is not showing.
-func (m *App) transcriptCardOptionAtFrameRow(frameRow int) (chat.ItemKind, string, bool) {
+func (m *App) transcriptCardOptionAtFrameRow(frameRow int) (chat.ItemKind, string, string, bool) {
 	str := m.TranscriptStream(m.chatConvID)
 	if str == nil {
-		return "", "", false
+		return "", "", "", false
 	}
 	line := str.LineAtRow(frameRow - m.transcriptBodyTopRow())
 	if line < 0 {
-		return "", "", false
+		return "", "", "", false
 	}
 	for _, sp := range m.transcriptSpans[m.chatConvID] {
 		if sp.Kind != chat.KindAsk && sp.Kind != chat.KindConsent {
@@ -3759,22 +3826,22 @@ func (m *App) transcriptCardOptionAtFrameRow(frameRow int) (chat.ItemKind, strin
 		}
 		label, ok := sp.OptionAt(line)
 		if !ok {
-			return "", "", false // the card's body or header: not a choice
+			return "", "", "", false // the card's body or header: not a choice
 		}
 		// A SETTLED card is no longer a choice. For the question that is "a later user message
 		// exists"; for the permission it is "no longer pending". Without this a click on a stale
 		// card would re-send, or re-decide, something already answered.
 		if sp.Kind == chat.KindAsk && m.askCardSettled(sp.Key) {
-			return "", "", false
+			return "", "", "", false
 		}
 		if sp.Kind == chat.KindConsent {
 			if _, st, ok := m.pendingConsentItem(); !ok || !st.Pending() {
-				return "", "", false
+				return "", "", "", false
 			}
 		}
-		return sp.Kind, label, true
+		return sp.Kind, sp.Key, label, true
 	}
-	return "", "", false
+	return "", "", "", false
 }
 
 // pendingConsentItem finds the open permission/question card in the transcript, with the id and the
@@ -3832,6 +3899,30 @@ func (m *App) consentDecideFromRow(label string) tea.Cmd {
 	// the PAUSED turn. Sending it as a new user message would leave the blocked call
 	// blocked and start a second turn on top of it.
 	if st.Ask.Kind == chat.AskQuestion {
+		// THE FREE-TEXT ROW IS A PROMPT FOR AN ANSWER, NOT AN ANSWER.
+		//
+		// The operator: "In the GUI, it lets you type in your own response. In the TUI clicking on
+		// it does nothing. You should be able to click on other and type in a response there."
+		// The row's LABEL was being taken as the choice, so a click settled the ask with the
+		// literal text "Other" — the operator's own words replaced by the name of the button they
+		// pressed, and the input row they were promised never drawn.
+		//
+		// BOTH OTHER PATHS ALREADY DO IT CORRECTLY, which is what makes this a divergence rather
+		// than a design question: the GUI's card opens an inline input on click and sends what was
+		// typed (frontend AskCard.tsx, "Other…" → onSelect(typed text)), and THIS card's keyboard
+		// path does exactly the same (ask/consent.go confirmConsent sets OtherMode, and the input
+		// row it grows owns every key until Enter submits). The click rides that mechanism rather
+		// than growing a third one, so a click and Enter on the row cannot disagree about what
+		// "Other" means — the same reason the permission rows resolve through DecisionForRow.
+		if label == chat.ConsentOther {
+			st.OtherMode = true
+			st.OtherInput = ""
+			// THE CLICK IS AN ACT ON THE CARD, so the card takes the keyboard back: a card
+			// whose claim was released by ctrl+g would otherwise draw an input row that
+			// collects nothing while the typing it asks for landed in the composer behind it.
+			m.reArmConsentClaim()
+			return m.onChatWake()
+		}
 		return m.ConsentResolve(askID, chat.DecisionAnswer, label)
 	}
 	dec, ok := st.Ask.DecisionForRow(row)
@@ -4506,18 +4597,34 @@ func (m *App) SendUserMessage(text string) tea.Cmd {
 // ASK ONCE PER DIRECTORY PER SESSION: a directory already granted for this
 // conversation does not ask again.
 func (m *App) ShowConsentAsk(ask chat.PermissionAsk) tea.Cmd {
-	if m.chatConvID == "" {
+	// THE CARD BELONGS TO THE CONVERSATION THAT ASKED, not to whichever conversation
+	// happens to be on screen when the ask lands.
+	//
+	// The operator: "I noticed a bleed through of an ask card from a separate
+	// conversation in the TUI." A turn's ask rides the turn's own stream, so with
+	// conversation A running and B on screen the card was appended to B's slot — a
+	// question about A's work drawn under B's transcript, and claiming the keyboard
+	// there, because the Ask screen adopts any pending card from the items it is
+	// handed. The wire has always carried the ask's conversation_id; the TUI's
+	// adapter dropped it (see PermissionAsk.ConvID), so the target was whatever
+	// m.chatConvID happened to be at that instant. Fall back to the OPEN conversation
+	// only when the ask genuinely names none (a locally built ask).
+	convID := ask.ConvID
+	if convID == "" {
+		convID = m.chatConvID
+	}
+	if convID == "" {
 		return nil
 	}
 	if ask.ID == "" {
 		ask.ID = fmt.Sprintf("ask-%d", time.Now().UnixNano())
 	}
-	if ask.Kind == chat.AskTool && ask.Directory != "" && m.sessionGrants.granted(m.chatConvID, ask.Directory) {
+	if ask.Kind == chat.AskTool && ask.Directory != "" && m.sessionGrants.granted(convID, ask.Directory) {
 		return nil
 	}
 	// Stamped NOW, so the card sorts to the END of the transcript and stays there.
 	// Without a timestamp it sorted to the top on the next poll — see ConsentItem.
-	m.chatStore.append(m.chatConvID, chat.ConsentItem(ask, time.Now().UnixMilli()))
+	m.chatStore.append(convID, chat.ConsentItem(ask, time.Now().UnixMilli()))
 	return m.onChatWake()
 }
 
@@ -4586,6 +4693,28 @@ func (m *App) ConsentResolve(askID string, dec chat.ConsentDecision, choice stri
 	}
 	cmds = append(cmds, m.onChatWake())
 	return tea.Batch(cmds...)
+}
+
+// reArmConsentClaim hands the keyboard back to a card that is still pending, after a MOUSE action
+// on it.
+//
+// A card's key claim can be RELEASED without deciding anything — ctrl+g does exactly that, so the
+// operator can reach the composer while a question is up (see ask.Model.DropKeyClaim). A click on
+// the card's own Other row is the operator acting ON the card, so the card claims the keys again:
+// otherwise the free-text row would be drawn on the card while the typing it asks for went into the
+// composer behind it.
+//
+// It reaches the screen through the same narrow type assertion as the shell's other screen hooks
+// (see runAskOverlay), rather than through a field on the App, so the shell keeps no second
+// reference to a screen it does not own.
+func (m *App) reArmConsentClaim() {
+	s := m.screens[TabAsk]
+	if s == nil {
+		return
+	}
+	if c, ok := s.(interface{ ReArmConsentClaim() }); ok {
+		c.ReArmConsentClaim()
+	}
 }
 
 // runAskOverlay runs one of the Ask screen's list surfaces.

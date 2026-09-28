@@ -1391,6 +1391,11 @@ func TestTurnRegistrySweep(t *testing.T) {
 	r.mu.Lock()
 	old := r.turns["conv_old"]
 	old.started = now.Add(-10 * time.Minute)
+	// BOTH stamps: the sweep measures lastActivity now (see
+	// TestTurnRegistrySweepKeepsAWorkingTurn for the long-but-productive turn
+	// that must survive it). A genuinely wedged collector has been quiet for as
+	// long as it has been running.
+	old.lastActivity = now.Add(-10 * time.Minute)
 	r.turns["conv_old"] = old
 	r.mu.Unlock()
 
@@ -1407,6 +1412,37 @@ func TestTurnRegistrySweep(t *testing.T) {
 	}
 	// The expired cancel fired with errTurnExpired (captured above via
 	// context.Cause on the cancelled context).
+}
+
+// TestTurnRegistrySweepKeepsAWorkingTurn is the second half of the operator's
+// "sessions seem to be timing out on me". The sweeper reaped on the turn's AGE
+// (entry.started), so a turn that had been working for an hour — deltas,
+// tool calls, completed parts, all of it advancing lastActivity — was evicted as
+// if it were wedged, and its collector was cancelled out from under it.
+//
+// The entry here is deliberately extreme in both directions: an hour old, and a
+// second since its last activity. Age alone must not condemn it.
+func TestTurnRegistrySweepKeepsAWorkingTurn(t *testing.T) {
+	r := newTurnRegistry()
+	_, cancel := context.WithCancelCause(context.Background())
+	if _, ok := r.register("conv_long", "tnt_dev", "msg_long", cancel); !ok {
+		t.Fatal("register conv_long")
+	}
+	now := time.Now()
+	r.mu.Lock()
+	long := r.turns["conv_long"]
+	long.started = now.Add(-time.Hour)
+	long.lastActivity = now.Add(-time.Second)
+	r.turns["conv_long"] = long
+	r.mu.Unlock()
+
+	evicted := r.sweep(now, 5*time.Minute)
+	if len(evicted) != 0 {
+		t.Fatalf("a turn still producing output was swept: %+v", evicted)
+	}
+	if _, ok := r.turns["conv_long"]; !ok {
+		t.Fatal("a still-productive turn must survive the sweep")
+	}
 }
 
 // --- Folded think-segment demux (GLM/DeepSeek) -------------------------------

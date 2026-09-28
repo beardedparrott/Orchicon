@@ -661,6 +661,12 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// service above and stored it back on deps.
 	if deps.AskService != nil {
 		nativeBridge.SetAskTools(deps.AskService.NativeAskTools())
+		// Durable compaction notices: the proactive pressure gate collapses a
+		// conversation's context INSIDE the bridge, which has no database handle —
+		// so without this a collapse that replaced 2,343 messages with a summary
+		// left no trace in the transcript the operator was reading. The service
+		// owns that transcript, so it writes the marker.
+		nativeBridge.SetAskCompactNotice(deps.AskService.RecordCompactionNotice)
 		// The Ask file/shell suite's in-process bash carries the execution
 		// guard's destructive-command shim (worker-path parity). Wire the
 		// instance logger for its warnings; the shim dir is closed at

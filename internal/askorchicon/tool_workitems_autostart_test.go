@@ -77,6 +77,7 @@ func seedToolPublishedWorkflow(t *testing.T, pool *db.Pool, projID string) strin
 // the optional auto-start warning sibling field) the tests assert on.
 type toolResult struct {
 	ID      string `json:"ID"`
+	Title   string `json:"Title"`
 	Status  string `json:"Status"`
 	Warning string `json:"warning"`
 }
@@ -185,6 +186,129 @@ func TestToolUpdateAutoStartGoodPathDB(t *testing.T) {
 	}
 	if n := toolRunsForItem(t, pool, item.ID); n != 1 {
 		t.Fatalf("%d runs created for good path, want 1", n)
+	}
+}
+
+// TestToolUpdateAutoStartStaleFlagUnboundStartableDB is the UNBOUND LEAF
+// case: a startable row carrying the stored auto_start_workflow flag with NO
+// workflow bound and NO children, edited by a plain (non-auto-start) update.
+//
+// The sequence validation that rejects an unbound leaf runs only when the
+// REQUEST asks to start, so this edit skipped it and reached the post-commit
+// auto-start with a nil binding — `*updated.WorkflowID` dereferenced nil and
+// the panic killed the whole process. The RPC handler has always guarded this
+// (updated.WorkflowID != nil && *updated.WorkflowID != "",
+// internal/workitem/service.go); this pins the tool path to the same
+// behaviour: no panic, the edit saved, nothing started.
+//
+// This is NOT the shape that crashed production — that row was a sequence
+// PARENT (see TestToolUpdateAutoStartSequenceParentFiresChainDB). It is the
+// same nil deref reached from the other side of the branch, and it is the
+// guard's own regression pin.
+func TestToolUpdateAutoStartStaleFlagUnboundStartableDB(t *testing.T) {
+	pool := workItemKindTestPool(t)
+	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
+	proj := createProjectForTest(t, ctx, pool)
+	item := createWorkItemForTest(t, ctx, pool, proj, "Tool Unbound Stale")
+	// Startable status + legacy flag, and workflow_id stays NULL
+	// (createWorkItemForTest never binds one).
+	forceToolState(t, pool, item.ID, domain.WorkItemPending, true)
+
+	res, err := toolUpdateWorkItem(ctx, pool,
+		json.RawMessage(fmt.Sprintf(`{"id":%q,"title":"Renamed Unbound Stale"}`, item.ID)))
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	var out toolResult
+	if err := json.Unmarshal(res, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Title != "Renamed Unbound Stale" {
+		t.Fatalf("title = %q, want the edit saved", out.Title)
+	}
+	if out.Status != domain.WorkItemPending {
+		t.Fatalf("status = %q, want pending", out.Status)
+	}
+	if n := toolRunsForItem(t, pool, item.ID); n != 0 {
+		t.Fatalf("%d runs created for an unbound item, want 0", n)
+	}
+}
+
+// TestToolUpdateAutoStartExplicitUnboundRejectsDB pins the OTHER entry to the
+// same unbound branch: an explicit auto_start_workflow=true on an unbound
+// leaf is rejected by schedule-time validation (nothing to run) BEFORE the
+// post-commit start. It must be an error, never a panic.
+func TestToolUpdateAutoStartExplicitUnboundRejectsDB(t *testing.T) {
+	pool := workItemKindTestPool(t)
+	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
+	proj := createProjectForTest(t, ctx, pool)
+	item := createWorkItemForTest(t, ctx, pool, proj, "Tool Unbound Explicit")
+
+	_, err := toolUpdateWorkItem(ctx, pool,
+		json.RawMessage(fmt.Sprintf(`{"id":%q,"auto_start_workflow":true}`, item.ID)))
+	if err == nil {
+		t.Fatal("expected a rejection for auto-starting an unbound leaf, got nil error")
+	}
+	if !strings.Contains(err.Error(), "no workflow is set") {
+		t.Fatalf("error = %v, want the no-workflow rejection", err)
+	}
+}
+
+// TestToolUpdateAutoStartSequenceParentFiresChainDB pins the FIRE PATH for the
+// shape that actually crashed production on 2026-09-28: an armed SEQUENCE
+// PARENT, not an unbound leaf.
+//
+// The row that killed the host plane was feature 01KYQXRABZC7JAX65FF5GWG7S1 —
+// status pending, auto_start_workflow true, workflow_id NULL, SIX children —
+// edited by a plain (non-auto-start) update during a bulk "update them, then
+// schedule them" request. Its UpdatedAt (08:23:10.717584) is 2.7 ms before the
+// panic at tool_workitems.go:755, and its scheduled_start_at is still NULL
+// because the plane died before it could schedule.
+//
+// A parent's NULL binding is that mode's NORMAL state, not a legacy flag:
+// StartSequence clears the parent's own workflow_id ("a parent with children
+// IS a sequence container, its own workflow_id is ignored") and the children
+// each run their own. The Connect handler routes exactly this shape to the
+// chain (itemHasChildren → maybeStartSequence); the tool path lacked the
+// branch and fell through to the leaf deref, so it panicked the whole plane
+// instead of firing. This pins parity: no panic, the edit saved, the chain
+// actually fires. Declining silently here would be the same divergence in the
+// other direction.
+func TestToolUpdateAutoStartSequenceParentFiresChainDB(t *testing.T) {
+	pool := workItemKindTestPool(t)
+	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
+	proj := createProjectForTest(t, ctx, pool)
+	wfID := seedToolPublishedWorkflow(t, pool, proj)
+
+	parent := createWorkItemForTest(t, ctx, pool, proj, "Tool Armed Sequence Parent")
+	child := createChildWorkItemForTest(t, ctx, pool, proj, parent.ID, "Tool Armed Sequence Child")
+	bindToolWorkflow(t, pool, child.ID, wfID)
+	// The armed shape: startable, stored flag on, and no binding of its own.
+	forceToolState(t, pool, parent.ID, domain.WorkItemPending, true)
+
+	res, err := toolUpdateWorkItem(ctx, pool,
+		json.RawMessage(fmt.Sprintf(`{"id":%q,"title":"Renamed Armed Chain"}`, parent.ID)))
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	var out toolResult
+	if err := json.Unmarshal(res, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Title != "Renamed Armed Chain" {
+		t.Fatalf("title = %q, want the edit saved", out.Title)
+	}
+	// StartSequence stamps the parent running and arms the first child, which
+	// starts the child's own bound run.
+	var parentStatus string
+	if err := pool.QueryRow(ctx, `SELECT status FROM work_items WHERE id = $1`, parent.ID).Scan(&parentStatus); err != nil {
+		t.Fatal(err)
+	}
+	if parentStatus != domain.WorkItemRunning {
+		t.Fatalf("parent status = %q, want %q — the chain must FIRE, not decline", parentStatus, domain.WorkItemRunning)
+	}
+	if n := toolRunsForItem(t, pool, child.ID); n != 1 {
+		t.Fatalf("%d runs on the armed child, want 1 — the chain must actually start the child", n)
 	}
 }
 
