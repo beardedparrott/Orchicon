@@ -259,7 +259,9 @@ func TestStartLongLivedSession(t *testing.T) {
 		}
 		return -1
 	}
-	tool := idx("tool:Write")
+	// The mapper canonicalizes claude's tool vocabulary onto opencode's
+	// (`Write` → `write`), so the execution view renders identically.
+	tool := idx("tool:write")
 	files := idx("files:/w/a.go")
 	text := idx("text:hello ")
 	if tool < 0 || files < 0 || text < 0 {

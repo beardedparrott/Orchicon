@@ -35,20 +35,19 @@ type session struct {
 	manifest scheduler.ExecutionManifest
 	cbs      scheduler.ExecutionCallbacks
 
-	model     string
-	resumeID  string
-	proc      ProcSession
-	sessionID string
+	model    string
+	resumeID string
+	proc     ProcSession
 
-	mu        sync.Mutex
-	finished  bool
-	aborted   bool
-	queued    int
-	seq       int64
-	out       strings.Builder
-	files     []string
-	fileSet   map[string]bool
-	toolNames map[string]string
+	// mapper owns the whole stream-event → ExecutionCallbacks fan-out plus
+	// the durable transcript / ledger / todo side effects (parse.go).
+	mapper *Mapper
+
+	mu       sync.Mutex
+	finished bool
+	aborted  bool
+	queued   int
+	seq      int64
 }
 
 func newSession(b *Bridge, execID, tenantID string, manifest scheduler.ExecutionManifest, cbs scheduler.ExecutionCallbacks) *session {
@@ -56,17 +55,27 @@ func newSession(b *Bridge, execID, tenantID string, manifest scheduler.Execution
 	if strings.TrimSpace(m) == "" {
 		m = manifest.DefaultModelRef
 	}
-	return &session{
-		b:         b,
-		execID:    execID,
-		tenantID:  tenantID,
-		manifest:  manifest,
-		cbs:       cbs,
-		model:     modelForRef(m),
-		resumeID:  manifest.ContinueFromSessionID,
-		fileSet:   make(map[string]bool),
-		toolNames: make(map[string]string),
+	s := &session{
+		b:        b,
+		execID:   execID,
+		tenantID: tenantID,
+		manifest: manifest,
+		cbs:      cbs,
+		model:    modelForRef(m),
+		resumeID: manifest.ContinueFromSessionID,
 	}
+	s.mapper = NewMapper(execID, cbs, MapperDeps{
+		TenantID:      tenantID,
+		Model:         s.model,
+		ExecDir:       executionDir(manifest),
+		Manifest:      manifest,
+		FileEdits:     b.fileEdits,
+		UsageRecorder: b.usageRecorder,
+		BindSession:   s.bindSession,
+		Record:        s.recordPart,
+		Log:           b.log,
+	})
+	return s
 }
 
 // run spawns the single subprocess and drives it to a terminal turn.
@@ -99,11 +108,23 @@ func (s *session) run(ctx context.Context) error {
 	}
 
 	lines := p.Lines()
+	// The stall watchdog ticks independently of stdout: total silence past
+	// the no-progress window is fatal (the child is hard-killed and the
+	// execution fails), while activity with no file write is advisory.
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			s.finish(ctx, false, "execution cancelled", ctx.Err())
 			return ctx.Err()
+		case <-tick.C:
+			if reason := s.mapper.Tick(ctx, time.Now()); reason != "" {
+				s.abort()
+				msg := fmt.Sprintf("claude session stalled: %s", reason)
+				s.finish(ctx, false, msg, fmt.Errorf("%s", msg))
+				return fmt.Errorf("%s", msg)
+			}
 		case line, ok := <-lines:
 			if !ok {
 				// stdout closed → the child exited. If the turn already
@@ -139,82 +160,48 @@ func (s *session) run(ctx context.Context) error {
 	}
 }
 
-// handleLine decodes one stream-json line and fans it out to the callbacks.
+// handleLine decodes one stream-json line and hands it to the mapper, then
+// applies the turn-boundary logic (a queued injected turn keeps the session
+// alive past the `result` message).
 func (s *session) handleLine(ctx context.Context, line []byte) error {
 	ev, err := ParseLine(line)
 	if err != nil {
 		return nil // tolerate a malformed line; the next one still parses
 	}
-	switch {
-	case ev.Type == "system" && ev.SessionID != "":
-		s.captureSessionID(ctx, ev.SessionID)
-	case ev.Type == "text_delta":
-		if ev.Text != "" {
-			s.appendText(ev.Text)
-			s.cbs.OnText(ctx, s.execID, ev.Text)
-		}
-	case ev.Type == "assistant":
-		if ev.Text != "" {
-			s.appendText(ev.Text)
-			s.cbs.OnText(ctx, s.execID, ev.Text)
-		}
-		for _, tu := range ev.ToolUses {
-			s.mu.Lock()
-			s.toolNames[tu.ID] = tu.Name
-			s.mu.Unlock()
-			s.cbs.OnToolCall(ctx, s.execID, tu.Name, marshalAny(tu.Input), nil)
-			if paths := writtenFilesFromTool(tu.Name, tu.Input); len(paths) > 0 {
-				s.addFiles(ctx, paths)
-				s.callFileEditHook(ctx, tu.Name, tu.Input)
-			}
-		}
-	case ev.Type == "user":
-		for _, tr := range ev.ToolResults {
-			s.mu.Lock()
-			name := s.toolNames[tr.ToolUseID]
-			s.mu.Unlock()
-			s.cbs.OnToolCall(ctx, s.execID, name, nil, []byte(tr.Content))
-		}
-	case ev.IsTerminalResult():
-		s.recordUsage(ctx, ev)
-		s.mu.Lock()
-		queued := s.queued
-		if queued > 0 {
-			s.queued--
-		}
-		s.mu.Unlock()
-		if queued > 0 {
-			return nil // a mid-run injected turn is waiting; keep the session alive
-		}
-		ok := ev.TurnSucceeded()
-		errMsg := ""
-		if !ok {
-			errMsg = fmt.Sprintf("claude turn ended with %s", ev.Subtype)
-		}
-		s.finish(ctx, ok, errMsg, nil)
+	if s.mapper.Handle(ctx, ev) {
+		s.onTerminal(ctx, ev)
 	}
 	return nil
 }
 
-// captureSessionID records the claude session id, persists the identity part
-// so a retry can resume, and enforces the one-active-subprocess-per-session
-// invariant.
-func (s *session) captureSessionID(ctx context.Context, sid string) {
+// onTerminal applies the turn boundary: a mid-run injected turn is still
+// outstanding, so the session stays alive; otherwise the execution finishes.
+func (s *session) onTerminal(ctx context.Context, ev StreamEvent) {
 	s.mu.Lock()
-	first := s.sessionID != sid
-	s.sessionID = sid
-	s.mu.Unlock()
-	if !first {
-		return
+	queued := s.queued
+	if queued > 0 {
+		s.queued--
 	}
+	s.mu.Unlock()
+	if queued > 0 {
+		return // a mid-run injected turn is waiting; keep the session alive
+	}
+	ok := ev.TurnSucceeded()
+	errMsg := ""
+	if !ok {
+		errMsg = fmt.Sprintf("claude turn ended with %s", ev.Subtype)
+	}
+	s.finish(ctx, ok, errMsg, nil)
+}
+
+// bindSession claims the claude session id for this execution, enforcing the
+// one-active-subprocess-per-session invariant. The durable session_info part
+// is written by the mapper (the single owner of the transcript fan-out).
+func (s *session) bindSession(_ context.Context, sid string) {
 	if !s.b.bindSessionID(sid, s.execID) {
 		s.b.log.Warn("claude: a live subprocess already owns this session id — refusing the second writer",
 			"session", sid, "execution", s.execID)
 	}
-	s.recordPart(ctx, db.SessionPartSessionInfo, map[string]any{
-		"session_id":   sid,
-		"adapter_kind": "claude",
-	})
 }
 
 // SendTurn writes a follow-up user turn onto the live stdin and queues it so
@@ -274,7 +261,7 @@ func (s *session) finish(ctx context.Context, ok bool, errMsg string, retErr err
 		return
 	}
 	s.finished = true
-	out := s.out.String()
+	out := s.mapper.Output()
 	s.mu.Unlock()
 	if retErr != nil && errMsg == "" {
 		errMsg = retErr.Error()
@@ -288,29 +275,6 @@ func (s *session) isFinished() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.finished
-}
-
-func (s *session) appendText(t string) {
-	s.mu.Lock()
-	s.out.WriteString(t)
-	s.mu.Unlock()
-}
-
-func (s *session) addFiles(ctx context.Context, paths []string) {
-	s.mu.Lock()
-	var fresh []string
-	for _, p := range paths {
-		if p == "" || s.fileSet[p] {
-			continue
-		}
-		s.fileSet[p] = true
-		s.files = append(s.files, p)
-		fresh = append(fresh, p)
-	}
-	s.mu.Unlock()
-	if len(fresh) > 0 {
-		s.cbs.OnWrittenFiles(ctx, s.execID, fresh)
-	}
 }
 
 func (s *session) stderrTail() string {
@@ -451,31 +415,6 @@ func (s *session) initialTurnPayload() []byte {
 	return userTurnPayload(composeInitialPrompt(s.manifest))
 }
 
-// recordUsage forwards the result message's token + cost telemetry.
-func (s *session) recordUsage(ctx context.Context, ev StreamEvent) {
-	if s.b.usageRecorder == nil {
-		return
-	}
-	in := scheduler.UsageRecord{
-		TenantID:         s.tenantID,
-		ProjectID:        s.manifest.ProjectID,
-		TaskID:           s.manifest.TaskID,
-		ExecutionID:      s.execID,
-		WorkerID:         s.manifest.WorkerID,
-		Model:            s.model,
-		PromptTokens:     ev.Usage.InputTokens,
-		CacheReadTokens:  ev.Usage.CacheReadTokens,
-		CacheWriteTokens: ev.Usage.CacheCreationTokens,
-		CompletionTokens: ev.Usage.OutputTokens,
-		CostUSD:          ev.TotalCostUSD,
-		AdapterKind:      "claude",
-		WorkflowRunID:    s.manifest.RuntimeWorkflowID,
-	}
-	if err := s.b.usageRecorder(ctx, in); err != nil {
-		s.b.log.Warn("claude: record usage failed", "execution", s.execID, "error", err)
-	}
-}
-
 func (s *session) recordPart(ctx context.Context, kind string, payload map[string]any) {
 	if s.b.sessionStore == nil {
 		return
@@ -496,13 +435,6 @@ func (s *session) recordPart(ctx context.Context, kind string, payload map[strin
 	if err := s.b.sessionStore(ctx, s.execID, s.tenantID, []db.SessionPart{part}); err != nil {
 		s.b.log.Warn("claude: record session part failed", "execution", s.execID, "kind", kind, "error", err)
 	}
-}
-
-func (s *session) callFileEditHook(ctx context.Context, tool string, input map[string]any) {
-	if s.b.fileEdits == nil {
-		return
-	}
-	s.b.fileEdits(ctx, s.execID, s.tenantID, executionDir(s.manifest), tool, input, "")
 }
 
 // executionDir resolves the worker's working directory: the run's worktree
