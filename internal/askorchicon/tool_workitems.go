@@ -247,8 +247,14 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 			}
 		}
 	}
-	// Enforce hierarchy depth, shared with the Create path.
-	if err := workitem.ValidateParent(ctx, ttx.Tx, tenantID, params.ParentID, kind, params.ProjectID); err != nil {
+	// Enforce hierarchy depth, shared with the Create path. The ephemeral
+	// flag is threaded in as the second top-level exemption: an ephemeral
+	// item lives in no tree, so it may legitimately be a top-level task
+	// instead of an epic (see workitem.ValidateParent for the reasoning).
+	// Its top-level ONLY shape is enforced just above, before the
+	// transaction opens, by validateEphemeralPlacement. The tool's create
+	// takes no recurring_schedule, so no recurring exemption is claimed.
+	if err := workitem.ValidateParent(ctx, ttx.Tx, tenantID, params.ParentID, kind, params.ProjectID, false, params.Ephemeral); err != nil {
 		return nil, err
 	}
 	var parentID *string
@@ -566,14 +572,18 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	// this block is skipped (the old kind's rules no longer apply).
 	// Flat-recurring exemption (D1 parity with the Connect Update path): a
 	// recurring item is a flat top-level task, so hierarchy validation for
-	// the top-level (empty parent) case is skipped.
+	// the top-level (empty parent) case is skipped. An EPHEMERAL item is
+	// exempt for the same reason (it lives in no tree — see
+	// workitem.ValidateParent). Both flags are derived from the ROW, so this
+	// tool and the Connect handler cannot disagree about an existing item.
 	itemIsRecurring := current.RecurringSchedule != nil
+	itemIsEphemeral := current.Ephemeral
 	if params.ParentID != nil && kindSwitchPlan == nil {
 		effectiveProject := current.ProjectID
 		if update.ProjectID != nil && *update.ProjectID != "" {
 			effectiveProject = *update.ProjectID
 		}
-		if err := workitem.ValidateParent(ctx, ttx.Tx, tenantID, *params.ParentID, current.Kind, effectiveProject, itemIsRecurring); err != nil {
+		if err := workitem.ValidateParent(ctx, ttx.Tx, tenantID, *params.ParentID, current.Kind, effectiveProject, itemIsRecurring, itemIsEphemeral); err != nil {
 			return nil, err
 		}
 	} else if params.ParentID == nil && update.ProjectID != nil && *update.ProjectID != "" && *update.ProjectID != current.ProjectID && current.ParentID != nil {
@@ -583,7 +593,7 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		// project (e.g. the parent was moved first). Otherwise the
 		// request must reparent explicitly — reject rather than leave
 		// the hierarchy cross-project (AGENTS.md: fix the whole class).
-		if err := workitem.ValidateParent(ctx, ttx.Tx, tenantID, *current.ParentID, current.Kind, *update.ProjectID, itemIsRecurring); err != nil {
+		if err := workitem.ValidateParent(ctx, ttx.Tx, tenantID, *current.ParentID, current.Kind, *update.ProjectID, itemIsRecurring, itemIsEphemeral); err != nil {
 			return nil, err
 		}
 	}

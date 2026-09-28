@@ -62,6 +62,9 @@ const (
 	// AskOrchiconServiceSetConversationModelProcedure is the fully-qualified name of the
 	// AskOrchiconService's SetConversationModel RPC.
 	AskOrchiconServiceSetConversationModelProcedure = "/orchicon.api.v1.AskOrchiconService/SetConversationModel"
+	// AskOrchiconServiceSetConversationFullsendProcedure is the fully-qualified name of the
+	// AskOrchiconService's SetConversationFullsend RPC.
+	AskOrchiconServiceSetConversationFullsendProcedure = "/orchicon.api.v1.AskOrchiconService/SetConversationFullsend"
 	// AskOrchiconServiceSetConversationProjectProcedure is the fully-qualified name of the
 	// AskOrchiconService's SetConversationProject RPC.
 	AskOrchiconServiceSetConversationProjectProcedure = "/orchicon.api.v1.AskOrchiconService/SetConversationProject"
@@ -80,6 +83,15 @@ const (
 	// AskOrchiconServiceWatchTurnStreamProcedure is the fully-qualified name of the
 	// AskOrchiconService's WatchTurnStream RPC.
 	AskOrchiconServiceWatchTurnStreamProcedure = "/orchicon.api.v1.AskOrchiconService/WatchTurnStream"
+	// AskOrchiconServiceReplyPermissionAskProcedure is the fully-qualified name of the
+	// AskOrchiconService's ReplyPermissionAsk RPC.
+	AskOrchiconServiceReplyPermissionAskProcedure = "/orchicon.api.v1.AskOrchiconService/ReplyPermissionAsk"
+	// AskOrchiconServiceListPermissionGrantsProcedure is the fully-qualified name of the
+	// AskOrchiconService's ListPermissionGrants RPC.
+	AskOrchiconServiceListPermissionGrantsProcedure = "/orchicon.api.v1.AskOrchiconService/ListPermissionGrants"
+	// AskOrchiconServiceRevokePermissionGrantProcedure is the fully-qualified name of the
+	// AskOrchiconService's RevokePermissionGrant RPC.
+	AskOrchiconServiceRevokePermissionGrantProcedure = "/orchicon.api.v1.AskOrchiconService/RevokePermissionGrant"
 	// AskOrchiconServiceCompactConversationProcedure is the fully-qualified name of the
 	// AskOrchiconService's CompactConversation RPC.
 	AskOrchiconServiceCompactConversationProcedure = "/orchicon.api.v1.AskOrchiconService/CompactConversation"
@@ -124,6 +136,16 @@ type AskOrchiconServiceClient interface {
 	// (default_ask_orchicon_model). This is what lets an operator retarget an
 	// already-open chat instead of starting a new one.
 	SetConversationModel(context.Context, *connect.Request[v1.SetConversationModelRequest]) (*connect.Response[v1.SetConversationModelResponse], error)
+	// SetConversationFullsend turns FULLSEND on or off for one conversation. It is the
+	// write side of Conversation.fullsend; the response carries the conversation back so
+	// the caller renders the state the SERVER holds rather than the one it hoped for.
+	//
+	// It is per CONVERSATION and in-memory (it dies with the plane), which is the same
+	// scope and lifetime as a session grant — and it is deliberately NOT a pending value
+	// for a conversation that does not exist yet. A bypass that applies to a conversation
+	// the operator has not looked at is one they did not knowingly arm; the mode field had
+	// exactly this leak, and it was fixed by scoping the write to the open conversation.
+	SetConversationFullsend(context.Context, *connect.Request[v1.SetConversationFullsendRequest]) (*connect.Response[v1.SetConversationFullsendResponse], error)
 	// SetConversationProject places a conversation in a PROJECT (or clears it),
 	// which is the second, higher level of organization over conversations: the
 	// rail and the GUI sidebar list projects as the parent group, every project
@@ -188,6 +210,23 @@ type AskOrchiconServiceClient interface {
 	// same ChatStreamResponse oneof as ChatStream; reusing the type is
 	// deliberate.
 	WatchTurnStream(context.Context, *connect.Request[v1.WatchTurnStreamRequest]) (*connect.ServerStreamForClient[v1.ChatStreamResponse], error)
+	// ReplyPermissionAsk answers a PermissionAsk the turn is waiting on. The
+	// decision applies to OUR grant store: PERMISSION_CHOICE_ALLOW_ONCE proceeds for this single
+	// call, PERMISSION_CHOICE_ALLOW_SESSION records an in-memory, directory-keyed grant for this
+	// conversation, DENY refuses the call (the refusal reaches the model as the
+	// tool result). The value sent to the serve is always `once` or `reject` —
+	// never a session-scoped serve value.
+	ReplyPermissionAsk(context.Context, *connect.Request[v1.ReplyPermissionAskRequest]) (*connect.Response[v1.ReplyPermissionAskResponse], error)
+	// ListPermissionGrants lists the conversation's ACTIVE session grants: the
+	// directories an ALLOW_SESSION decision recorded for this conversation, with
+	// the time each was granted. The client renders them so an operator can see
+	// and revoke what was granted; the store itself is the source of truth.
+	ListPermissionGrants(context.Context, *connect.Request[v1.ListPermissionGrantsRequest]) (*connect.Response[v1.ListPermissionGrantsResponse], error)
+	// RevokePermissionGrant drops one session grant (by directory) for the
+	// conversation. The next tool call for that directory asks again: the guard
+	// shim reads the same store (internal/askorchicon/ask_guard.go). An unknown
+	// directory is reported as removed=false, never a silent success.
+	RevokePermissionGrant(context.Context, *connect.Request[v1.RevokePermissionGrantRequest]) (*connect.Response[v1.RevokePermissionGrantResponse], error)
 	// CompactConversation compacts a conversation's accumulated context so a
 	// long-running session can keep going instead of failing on the model's
 	// context limit. Adapter-scoped: a session-FUL adapter summarizes its own
@@ -270,6 +309,12 @@ func NewAskOrchiconServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationModel")),
 			connect.WithClientOptions(opts...),
 		),
+		setConversationFullsend: connect.NewClient[v1.SetConversationFullsendRequest, v1.SetConversationFullsendResponse](
+			httpClient,
+			baseURL+AskOrchiconServiceSetConversationFullsendProcedure,
+			connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationFullsend")),
+			connect.WithClientOptions(opts...),
+		),
 		setConversationProject: connect.NewClient[v1.SetConversationProjectRequest, v1.SetConversationProjectResponse](
 			httpClient,
 			baseURL+AskOrchiconServiceSetConversationProjectProcedure,
@@ -304,6 +349,24 @@ func NewAskOrchiconServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			httpClient,
 			baseURL+AskOrchiconServiceWatchTurnStreamProcedure,
 			connect.WithSchema(askOrchiconServiceMethods.ByName("WatchTurnStream")),
+			connect.WithClientOptions(opts...),
+		),
+		replyPermissionAsk: connect.NewClient[v1.ReplyPermissionAskRequest, v1.ReplyPermissionAskResponse](
+			httpClient,
+			baseURL+AskOrchiconServiceReplyPermissionAskProcedure,
+			connect.WithSchema(askOrchiconServiceMethods.ByName("ReplyPermissionAsk")),
+			connect.WithClientOptions(opts...),
+		),
+		listPermissionGrants: connect.NewClient[v1.ListPermissionGrantsRequest, v1.ListPermissionGrantsResponse](
+			httpClient,
+			baseURL+AskOrchiconServiceListPermissionGrantsProcedure,
+			connect.WithSchema(askOrchiconServiceMethods.ByName("ListPermissionGrants")),
+			connect.WithClientOptions(opts...),
+		),
+		revokePermissionGrant: connect.NewClient[v1.RevokePermissionGrantRequest, v1.RevokePermissionGrantResponse](
+			httpClient,
+			baseURL+AskOrchiconServiceRevokePermissionGrantProcedure,
+			connect.WithSchema(askOrchiconServiceMethods.ByName("RevokePermissionGrant")),
 			connect.WithClientOptions(opts...),
 		),
 		compactConversation: connect.NewClient[v1.CompactConversationRequest, v1.CompactConversationResponse](
@@ -348,12 +411,16 @@ type askOrchiconServiceClient struct {
 	updateConversationTitle   *connect.Client[v1.UpdateConversationTitleRequest, v1.UpdateConversationTitleResponse]
 	setConversationMode       *connect.Client[v1.SetConversationModeRequest, v1.SetConversationModeResponse]
 	setConversationModel      *connect.Client[v1.SetConversationModelRequest, v1.SetConversationModelResponse]
+	setConversationFullsend   *connect.Client[v1.SetConversationFullsendRequest, v1.SetConversationFullsendResponse]
 	setConversationProject    *connect.Client[v1.SetConversationProjectRequest, v1.SetConversationProjectResponse]
 	listMessages              *connect.Client[v1.ListMessagesRequest, v1.ListMessagesResponse]
 	chatStream                *connect.Client[v1.ChatStreamRequest, v1.ChatStreamResponse]
 	abortConversationTurn     *connect.Client[v1.AbortConversationTurnRequest, v1.AbortConversationTurnResponse]
 	interjectConversationTurn *connect.Client[v1.InterjectConversationTurnRequest, v1.ChatStreamResponse]
 	watchTurnStream           *connect.Client[v1.WatchTurnStreamRequest, v1.ChatStreamResponse]
+	replyPermissionAsk        *connect.Client[v1.ReplyPermissionAskRequest, v1.ReplyPermissionAskResponse]
+	listPermissionGrants      *connect.Client[v1.ListPermissionGrantsRequest, v1.ListPermissionGrantsResponse]
+	revokePermissionGrant     *connect.Client[v1.RevokePermissionGrantRequest, v1.RevokePermissionGrantResponse]
 	compactConversation       *connect.Client[v1.CompactConversationRequest, v1.CompactConversationResponse]
 	uploadAttachment          *connect.Client[v1.UploadAttachmentRequest, v1.UploadAttachmentResponse]
 	getAgentConfig            *connect.Client[v1.GetAgentConfigRequest, v1.GetAgentConfigResponse]
@@ -396,6 +463,11 @@ func (c *askOrchiconServiceClient) SetConversationModel(ctx context.Context, req
 	return c.setConversationModel.CallUnary(ctx, req)
 }
 
+// SetConversationFullsend calls orchicon.api.v1.AskOrchiconService.SetConversationFullsend.
+func (c *askOrchiconServiceClient) SetConversationFullsend(ctx context.Context, req *connect.Request[v1.SetConversationFullsendRequest]) (*connect.Response[v1.SetConversationFullsendResponse], error) {
+	return c.setConversationFullsend.CallUnary(ctx, req)
+}
+
 // SetConversationProject calls orchicon.api.v1.AskOrchiconService.SetConversationProject.
 func (c *askOrchiconServiceClient) SetConversationProject(ctx context.Context, req *connect.Request[v1.SetConversationProjectRequest]) (*connect.Response[v1.SetConversationProjectResponse], error) {
 	return c.setConversationProject.CallUnary(ctx, req)
@@ -424,6 +496,21 @@ func (c *askOrchiconServiceClient) InterjectConversationTurn(ctx context.Context
 // WatchTurnStream calls orchicon.api.v1.AskOrchiconService.WatchTurnStream.
 func (c *askOrchiconServiceClient) WatchTurnStream(ctx context.Context, req *connect.Request[v1.WatchTurnStreamRequest]) (*connect.ServerStreamForClient[v1.ChatStreamResponse], error) {
 	return c.watchTurnStream.CallServerStream(ctx, req)
+}
+
+// ReplyPermissionAsk calls orchicon.api.v1.AskOrchiconService.ReplyPermissionAsk.
+func (c *askOrchiconServiceClient) ReplyPermissionAsk(ctx context.Context, req *connect.Request[v1.ReplyPermissionAskRequest]) (*connect.Response[v1.ReplyPermissionAskResponse], error) {
+	return c.replyPermissionAsk.CallUnary(ctx, req)
+}
+
+// ListPermissionGrants calls orchicon.api.v1.AskOrchiconService.ListPermissionGrants.
+func (c *askOrchiconServiceClient) ListPermissionGrants(ctx context.Context, req *connect.Request[v1.ListPermissionGrantsRequest]) (*connect.Response[v1.ListPermissionGrantsResponse], error) {
+	return c.listPermissionGrants.CallUnary(ctx, req)
+}
+
+// RevokePermissionGrant calls orchicon.api.v1.AskOrchiconService.RevokePermissionGrant.
+func (c *askOrchiconServiceClient) RevokePermissionGrant(ctx context.Context, req *connect.Request[v1.RevokePermissionGrantRequest]) (*connect.Response[v1.RevokePermissionGrantResponse], error) {
+	return c.revokePermissionGrant.CallUnary(ctx, req)
 }
 
 // CompactConversation calls orchicon.api.v1.AskOrchiconService.CompactConversation.
@@ -478,6 +565,16 @@ type AskOrchiconServiceHandler interface {
 	// (default_ask_orchicon_model). This is what lets an operator retarget an
 	// already-open chat instead of starting a new one.
 	SetConversationModel(context.Context, *connect.Request[v1.SetConversationModelRequest]) (*connect.Response[v1.SetConversationModelResponse], error)
+	// SetConversationFullsend turns FULLSEND on or off for one conversation. It is the
+	// write side of Conversation.fullsend; the response carries the conversation back so
+	// the caller renders the state the SERVER holds rather than the one it hoped for.
+	//
+	// It is per CONVERSATION and in-memory (it dies with the plane), which is the same
+	// scope and lifetime as a session grant — and it is deliberately NOT a pending value
+	// for a conversation that does not exist yet. A bypass that applies to a conversation
+	// the operator has not looked at is one they did not knowingly arm; the mode field had
+	// exactly this leak, and it was fixed by scoping the write to the open conversation.
+	SetConversationFullsend(context.Context, *connect.Request[v1.SetConversationFullsendRequest]) (*connect.Response[v1.SetConversationFullsendResponse], error)
 	// SetConversationProject places a conversation in a PROJECT (or clears it),
 	// which is the second, higher level of organization over conversations: the
 	// rail and the GUI sidebar list projects as the parent group, every project
@@ -542,6 +639,23 @@ type AskOrchiconServiceHandler interface {
 	// same ChatStreamResponse oneof as ChatStream; reusing the type is
 	// deliberate.
 	WatchTurnStream(context.Context, *connect.Request[v1.WatchTurnStreamRequest], *connect.ServerStream[v1.ChatStreamResponse]) error
+	// ReplyPermissionAsk answers a PermissionAsk the turn is waiting on. The
+	// decision applies to OUR grant store: PERMISSION_CHOICE_ALLOW_ONCE proceeds for this single
+	// call, PERMISSION_CHOICE_ALLOW_SESSION records an in-memory, directory-keyed grant for this
+	// conversation, DENY refuses the call (the refusal reaches the model as the
+	// tool result). The value sent to the serve is always `once` or `reject` —
+	// never a session-scoped serve value.
+	ReplyPermissionAsk(context.Context, *connect.Request[v1.ReplyPermissionAskRequest]) (*connect.Response[v1.ReplyPermissionAskResponse], error)
+	// ListPermissionGrants lists the conversation's ACTIVE session grants: the
+	// directories an ALLOW_SESSION decision recorded for this conversation, with
+	// the time each was granted. The client renders them so an operator can see
+	// and revoke what was granted; the store itself is the source of truth.
+	ListPermissionGrants(context.Context, *connect.Request[v1.ListPermissionGrantsRequest]) (*connect.Response[v1.ListPermissionGrantsResponse], error)
+	// RevokePermissionGrant drops one session grant (by directory) for the
+	// conversation. The next tool call for that directory asks again: the guard
+	// shim reads the same store (internal/askorchicon/ask_guard.go). An unknown
+	// directory is reported as removed=false, never a silent success.
+	RevokePermissionGrant(context.Context, *connect.Request[v1.RevokePermissionGrantRequest]) (*connect.Response[v1.RevokePermissionGrantResponse], error)
 	// CompactConversation compacts a conversation's accumulated context so a
 	// long-running session can keep going instead of failing on the model's
 	// context limit. Adapter-scoped: a session-FUL adapter summarizes its own
@@ -620,6 +734,12 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 		connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationModel")),
 		connect.WithHandlerOptions(opts...),
 	)
+	askOrchiconServiceSetConversationFullsendHandler := connect.NewUnaryHandler(
+		AskOrchiconServiceSetConversationFullsendProcedure,
+		svc.SetConversationFullsend,
+		connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationFullsend")),
+		connect.WithHandlerOptions(opts...),
+	)
 	askOrchiconServiceSetConversationProjectHandler := connect.NewUnaryHandler(
 		AskOrchiconServiceSetConversationProjectProcedure,
 		svc.SetConversationProject,
@@ -654,6 +774,24 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 		AskOrchiconServiceWatchTurnStreamProcedure,
 		svc.WatchTurnStream,
 		connect.WithSchema(askOrchiconServiceMethods.ByName("WatchTurnStream")),
+		connect.WithHandlerOptions(opts...),
+	)
+	askOrchiconServiceReplyPermissionAskHandler := connect.NewUnaryHandler(
+		AskOrchiconServiceReplyPermissionAskProcedure,
+		svc.ReplyPermissionAsk,
+		connect.WithSchema(askOrchiconServiceMethods.ByName("ReplyPermissionAsk")),
+		connect.WithHandlerOptions(opts...),
+	)
+	askOrchiconServiceListPermissionGrantsHandler := connect.NewUnaryHandler(
+		AskOrchiconServiceListPermissionGrantsProcedure,
+		svc.ListPermissionGrants,
+		connect.WithSchema(askOrchiconServiceMethods.ByName("ListPermissionGrants")),
+		connect.WithHandlerOptions(opts...),
+	)
+	askOrchiconServiceRevokePermissionGrantHandler := connect.NewUnaryHandler(
+		AskOrchiconServiceRevokePermissionGrantProcedure,
+		svc.RevokePermissionGrant,
+		connect.WithSchema(askOrchiconServiceMethods.ByName("RevokePermissionGrant")),
 		connect.WithHandlerOptions(opts...),
 	)
 	askOrchiconServiceCompactConversationHandler := connect.NewUnaryHandler(
@@ -702,6 +840,8 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 			askOrchiconServiceSetConversationModeHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceSetConversationModelProcedure:
 			askOrchiconServiceSetConversationModelHandler.ServeHTTP(w, r)
+		case AskOrchiconServiceSetConversationFullsendProcedure:
+			askOrchiconServiceSetConversationFullsendHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceSetConversationProjectProcedure:
 			askOrchiconServiceSetConversationProjectHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceListMessagesProcedure:
@@ -714,6 +854,12 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 			askOrchiconServiceInterjectConversationTurnHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceWatchTurnStreamProcedure:
 			askOrchiconServiceWatchTurnStreamHandler.ServeHTTP(w, r)
+		case AskOrchiconServiceReplyPermissionAskProcedure:
+			askOrchiconServiceReplyPermissionAskHandler.ServeHTTP(w, r)
+		case AskOrchiconServiceListPermissionGrantsProcedure:
+			askOrchiconServiceListPermissionGrantsHandler.ServeHTTP(w, r)
+		case AskOrchiconServiceRevokePermissionGrantProcedure:
+			askOrchiconServiceRevokePermissionGrantHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceCompactConversationProcedure:
 			askOrchiconServiceCompactConversationHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceUploadAttachmentProcedure:
@@ -761,6 +907,10 @@ func (UnimplementedAskOrchiconServiceHandler) SetConversationModel(context.Conte
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.SetConversationModel is not implemented"))
 }
 
+func (UnimplementedAskOrchiconServiceHandler) SetConversationFullsend(context.Context, *connect.Request[v1.SetConversationFullsendRequest]) (*connect.Response[v1.SetConversationFullsendResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.SetConversationFullsend is not implemented"))
+}
+
 func (UnimplementedAskOrchiconServiceHandler) SetConversationProject(context.Context, *connect.Request[v1.SetConversationProjectRequest]) (*connect.Response[v1.SetConversationProjectResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.SetConversationProject is not implemented"))
 }
@@ -783,6 +933,18 @@ func (UnimplementedAskOrchiconServiceHandler) InterjectConversationTurn(context.
 
 func (UnimplementedAskOrchiconServiceHandler) WatchTurnStream(context.Context, *connect.Request[v1.WatchTurnStreamRequest], *connect.ServerStream[v1.ChatStreamResponse]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.WatchTurnStream is not implemented"))
+}
+
+func (UnimplementedAskOrchiconServiceHandler) ReplyPermissionAsk(context.Context, *connect.Request[v1.ReplyPermissionAskRequest]) (*connect.Response[v1.ReplyPermissionAskResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.ReplyPermissionAsk is not implemented"))
+}
+
+func (UnimplementedAskOrchiconServiceHandler) ListPermissionGrants(context.Context, *connect.Request[v1.ListPermissionGrantsRequest]) (*connect.Response[v1.ListPermissionGrantsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.ListPermissionGrants is not implemented"))
+}
+
+func (UnimplementedAskOrchiconServiceHandler) RevokePermissionGrant(context.Context, *connect.Request[v1.RevokePermissionGrantRequest]) (*connect.Response[v1.RevokePermissionGrantResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.RevokePermissionGrant is not implemented"))
 }
 
 func (UnimplementedAskOrchiconServiceHandler) CompactConversation(context.Context, *connect.Request[v1.CompactConversationRequest]) (*connect.Response[v1.CompactConversationResponse], error) {

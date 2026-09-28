@@ -15,6 +15,13 @@
 // signal; published ports are the control plane (:8080) and Grafana
 // (:3000 → host :3002 by default in docker run).
 //
+// SERVICES-ONLY MODE: with ORCHICON_CONTAINER_SERVICES_ONLY=1 the supervisor
+// starts postgres, nats and the telemetry plane and SKIPS the control-plane
+// child — the plane then runs on the HOST (its own `orchicon serve` process)
+// against these services through their published loopback ports. The
+// decision is logged explicitly, because a container silently running
+// without a plane looks like a failed boot.
+//
 // Data lives under ORCHICON_DATA_DIR (default /var/lib/orchicon). Config
 // files are written there from the embedded ContainerFS, with @DATA_DIR@
 // substituted for the data dir, so Tempo/Loki/Grafana/collector find their
@@ -31,10 +38,10 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"strconv"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -48,8 +55,13 @@ const (
 	containerModeEnv = "ORCHICON_CONTAINER_MODE"
 	dataDirEnv       = "ORCHICON_DATA_DIR"
 	telemetryEnv     = "ORCHICON_TELEMETRY" // none | embedded | remote (default embedded)
-	configDirName    = "config"
-	shutdownTimeout  = 20 * time.Second
+	// servicesOnlyEnv makes the control plane OPTIONAL: set by the launcher
+	// (scripts/container.sh) for a host-resident plane. ORCHICON_CONTAINER_MODE
+	// keeps meaning exactly what it means to the plane process, so it must not
+	// be reused for this decision — a host plane is NOT in container mode.
+	servicesOnlyEnv = "ORCHICON_CONTAINER_SERVICES_ONLY"
+	configDirName   = "config"
+	shutdownTimeout = 20 * time.Second
 )
 
 // runContainer is the `orchicon container` entrypoint. It runs until
@@ -63,14 +75,16 @@ func runContainer(args []string) int {
 
 	dataDir := env(dataDirEnv, "/var/lib/orchicon")
 	telemetryMode := env(telemetryEnv, "embedded")
+	servicesOnly := servicesOnlyFromEnv()
 
 	sup := &supervisor{
-		log:       log,
-		dataDir:   dataDir,
-		hostUID:   envInt("ORCHICON_HOST_UID", 0),
-		hostGID:   envInt("ORCHICON_HOST_GID", 0),
-		hostHome:  env("ORCHICON_HOST_HOME", "/root"),
-		children:  make(map[string]*procState),
+		log:          log,
+		dataDir:      dataDir,
+		servicesOnly: servicesOnly,
+		hostUID:      envInt("ORCHICON_HOST_UID", 0),
+		hostGID:      envInt("ORCHICON_HOST_GID", 0),
+		hostHome:     env("ORCHICON_HOST_HOME", "/root"),
+		children:     make(map[string]*procState),
 	}
 	if err := sup.prepare(ctx); err != nil {
 		log.Error("container prepare failed", "error", err)
@@ -101,7 +115,13 @@ func runContainer(args []string) int {
 		log.Warn("unknown ORCHICON_TELEMETRY value (use none|embedded|remote)", "value", telemetryMode)
 	}
 
-	if err := sup.startAndWait(ctx, sup.planeProc(), 120*time.Second); err != nil {
+	if servicesOnly {
+		// Loud on purpose: a container running without a plane is a supported
+		// shape here (the plane is a HOST process), and nothing else in the
+		// log would say so.
+		log.Info("services-only mode: postgres, nats and telemetry run in this container; the control plane runs on the HOST",
+			"residency", "host", "env", servicesOnlyEnv+"=1")
+	} else if err := sup.startAndWait(ctx, sup.planeProc(), 120*time.Second); err != nil {
 		log.Error("control plane did not become ready", "error", err)
 	}
 
@@ -120,6 +140,10 @@ type supervisor struct {
 	log       *slog.Logger
 	dataDir   string
 	configDir string
+
+	// servicesOnly skips the control-plane child (it runs on the host) and
+	// opens postgres up to the launcher's loopback port publish.
+	servicesOnly bool
 
 	// hostUID/hostGID/hostHome identify the HOST user (set by
 	// scripts/container.sh via ORCHICON_HOST_*). The control plane and its
@@ -224,6 +248,11 @@ func (s *supervisor) prepare(ctx context.Context) error {
 	if err := s.initPostgres(); err != nil {
 		return err
 	}
+	if s.servicesOnly {
+		// Every boot, not just the first: a migrated volume already carries a
+		// pg_hba.conf and initdb (its author) never runs again.
+		return s.ensurePostgresHBATrust()
+	}
 	return nil
 }
 
@@ -276,6 +305,146 @@ func (s *supervisor) initPostgres() error {
 		return fmt.Errorf("initdb: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// pgHBATrustRules are the pg_hba.conf rules services-only mode needs.
+//
+// WHY: initdb --auth=trust writes host rules for 127.0.0.1/32 and ::1/128
+// only. A connection arriving through a PUBLISHED port is forwarded from the
+// host by docker-proxy, so postgres sees the docker bridge gateway (e.g.
+// 172.17.0.1) as the peer — never loopback — and refuses it even after
+// listen_addresses is widened.
+//
+// SCOPE: the rule names that gateway ALONE (/32). Every other container on
+// the host shares that bridge, so a wildcard rule would hand it password-less
+// superuser access to this instance's database; the loopback publish
+// (127.0.0.1:<host>:5432, scripts/container.sh) is the security boundary and
+// must stay the only way in. Only when the gateway cannot be detected (an
+// isolated or unusual network) do we fall back to the wide rules, where that
+// publish is still the boundary.
+func pgHBATrustRules() []string {
+	if gw := bridgeGatewayIP(); gw != "" {
+		return []string{fmt.Sprintf("host all all %s/32 trust", gw)}
+	}
+	return []string{
+		"host all all 0.0.0.0/0 trust",
+		"host all all ::/0 trust",
+	}
+}
+
+// bridgeGatewayIP is the address postgres sees as the peer of a connection
+// forwarded from the host through a published port: the host end of this
+// container's default-bridge link. Read from the container's own routing
+// table so it is exact for any bridge subnet; the conventional base+1 bridge
+// address is only the fallback. "" when the container has no default route.
+func bridgeGatewayIP() string {
+	if gw := defaultRouteGateway(procNetRoutePath); gw != "" {
+		return gw
+	}
+	conn, err := net.Dial("udp", "8.8.8.8:53")
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+	la, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok || la.IP == nil {
+		return ""
+	}
+	base := la.IP.Mask(la.IP.DefaultMask())
+	if base == nil || base.To4() == nil {
+		return ""
+	}
+	gw := make(net.IP, len(base))
+	copy(gw, base)
+	gw[len(gw)-1] = 1 // network address + 1 = the conventional bridge gateway
+	return gw.String()
+}
+
+// procNetRoutePath is a constant so the parser below is testable on a fixture.
+const procNetRoutePath = "/proc/net/route"
+
+// defaultRouteGateway parses a /proc/net/route body for the IPv4 default
+// route's gateway (Destination 00000000; the gateway is little-endian hex).
+func defaultRouteGateway(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[1] != "00000000" {
+			continue
+		}
+		gw, err := strconv.ParseUint(fields[2], 16, 32)
+		if err != nil || gw == 0 {
+			continue
+		}
+		return net.IPv4(byte(gw), byte(gw>>8), byte(gw>>16), byte(gw>>24)).String()
+	}
+	return ""
+}
+
+// ensurePostgresHBATrust idempotently appends pgHBATrustRules to
+// <dataDir>/postgres/pg_hba.conf. A second run is a no-op (nothing is
+// written), and a missing file is not an error — initPostgres owns creation.
+func (s *supervisor) ensurePostgresHBATrust() error {
+	path := filepath.Join(s.dataDir, "postgres", "pg_hba.conf")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read pg_hba.conf: %w", err)
+	}
+	body := string(data)
+	if body != "" && !strings.HasSuffix(body, "\n") {
+		body += "\n"
+	}
+	added := 0
+	for _, rule := range pgHBATrustRules() {
+		if hbaHasRule(body, rule) {
+			continue
+		}
+		body += rule + "\n"
+		added++
+	}
+	if added == 0 {
+		return nil
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		return fmt.Errorf("write pg_hba.conf: %w", err)
+	}
+	s.log.Info("services-only mode: pg_hba.conf widened for the published loopback port",
+		"path", path, "rules_added", added)
+	return nil
+}
+
+// hbaHasRule reports whether a pg_hba body already carries rule, tolerating
+// extra whitespace (a hand-edited file) — so the append above stays
+// idempotent instead of piling up near-duplicate lines every boot.
+func hbaHasRule(hba, rule string) bool {
+	for _, line := range strings.Split(hba, "\n") {
+		if strings.Join(strings.Fields(line), " ") == rule {
+			return true
+		}
+	}
+	return false
+}
+
+// servicesOnlyFromEnv reports whether the control-plane child is optional.
+func servicesOnlyFromEnv() bool {
+	return env(servicesOnlyEnv, "") == "1"
+}
+
+// postgresListenAddr is the single decision point for postgres'
+// listen_addresses: the published loopback port forwards to the container IP,
+// so services-only mode must listen beyond loopback. Default (containerized
+// plane) keeps today's value untouched.
+func (s *supervisor) postgresListenAddr() string {
+	if s.servicesOnly {
+		return "0.0.0.0"
+	}
+	return "localhost"
 }
 
 // postgresUIDGID returns the uid/gid the postgres child should run as.
@@ -551,7 +720,7 @@ func (s *supervisor) postgresProc() *managedProc {
 		name:    "postgres",
 		command: "setpriv",
 		args: []string{fmt.Sprintf("--reuid=%d", uid), fmt.Sprintf("--regid=%d", gid), "--clear-groups",
-			"postgres", "-D", dataDir, "-p", "5432", "-c", "listen_addresses=localhost"},
+			"postgres", "-D", dataDir, "-p", "5432", "-c", "listen_addresses=" + s.postgresListenAddr()},
 		ready: func(ctx context.Context) bool { return tcpReady(ctx, "localhost:5432") },
 		postReady: func(ctx context.Context) error {
 			// Create the orchicon database on first boot (idempotent).
@@ -697,15 +866,15 @@ func (s *supervisor) planeProc() *managedProc {
 // plane child, skipping any variable the user already set explicitly.
 func containerChildEnv() []string {
 	defaults := map[string]string{
-		containerModeEnv:       "1",
-		"ORCHICON_HTTP_ADDR":   ":8080",
-		"ORCHICON_POSTGRES_DSN": "postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable",
-		"ORCHICON_NATS_URL":    "nats://localhost:4222",
+		containerModeEnv:         "1",
+		"ORCHICON_HTTP_ADDR":     ":8080",
+		"ORCHICON_POSTGRES_DSN":  "postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable",
+		"ORCHICON_NATS_URL":      "nats://localhost:4222",
 		"ORCHICON_OTEL_ENDPOINT": "localhost:4317",
-		"ORCHICON_GRAFANA_URL": "http://localhost:3000",
-		"ORCHICON_TEMPO_URL":   "http://localhost:3200",
-		"ORCHICON_LOKI_URL":    "http://localhost:3100",
-		"ORCHICON_VM_URL":      "http://localhost:8428",
+		"ORCHICON_GRAFANA_URL":   "http://localhost:3000",
+		"ORCHICON_TEMPO_URL":     "http://localhost:3200",
+		"ORCHICON_LOKI_URL":      "http://localhost:3100",
+		"ORCHICON_VM_URL":        "http://localhost:8428",
 	}
 	var out []string
 	for k, v := range defaults {

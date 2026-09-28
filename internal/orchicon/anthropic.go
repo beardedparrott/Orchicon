@@ -552,20 +552,20 @@ func (s *anthropicStream) Next(ctx context.Context) (Event, bool, error) {
 			if err := json.Unmarshal(payload.Delta, &d); err != nil {
 				return s.fail(fmt.Errorf("anthropic: bad delta: %w", err))
 			}
-		switch d.Type {
-		case "text_delta":
-			// Inline-reasoning routing (thinksplit.go): a "think" tag pair
-			// inside the delta becomes ReasoningDelta (native thinking
-			// blocks still arrive as thinking_delta below and are
-			// untouched). A fully-held split-tag prefix yields no event
-			// yet — keep decoding.
-			s.think.feed(d.Text, &s.pending)
-			if len(s.pending) > 0 {
-				ev := s.pending[0]
-				s.pending = s.pending[1:]
-				return ev, true, nil
-			}
-			continue
+			switch d.Type {
+			case "text_delta":
+				// Inline-reasoning routing (thinksplit.go): a "think" tag pair
+				// inside the delta becomes ReasoningDelta (native thinking
+				// blocks still arrive as thinking_delta below and are
+				// untouched). A fully-held split-tag prefix yields no event
+				// yet — keep decoding.
+				s.think.feed(d.Text, &s.pending)
+				if len(s.pending) > 0 {
+					ev := s.pending[0]
+					s.pending = s.pending[1:]
+					return ev, true, nil
+				}
+				continue
 			case "thinking_delta":
 				return ReasoningDelta{Text: d.Thinking}, true, nil
 			case "input_json_delta":

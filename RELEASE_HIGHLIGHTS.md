@@ -15,6 +15,30 @@
 > tells the tooling which version these highlights describe; update it
 > when you cut.
 
+## v0.4.0
+
+### New: Ask Orchicon can do the work — and asks before it does
+Ask Orchicon was a conversation you could read your project *with*; it now runs the same file and shell suite the workers use, against your real filesystem, scoped to the conversation's project. Nothing that writes or executes happens without your say-so: each one opens a card in whichever client you are in, naming the tool and the exact target. A **session grant** covers a directory and everything beneath it for that conversation, and the row says so — naming the directory it would cover rather than leaving you to guess its reach. A persistent **deny list** (your SSH keys, cloud credentials, `gh` config, `.netrc`, Docker config) is absolute, and the destructive class — `sudo`, `dd`, `mkfs*`, partition and LVM tooling — can never be approved by anyone, including you. Reads never ask. The prompt describes that boundary as it really is, including what it does not cover.
+
+### New: FULLSEND — stop the prompts deliberately, rather than by accident
+A gate that cannot be opened on purpose gets bypassed by accident: mid-task, approving card after card, you stop reading them. FULLSEND is the honest version of that — one explicit, revocable mode per conversation, shown as a badge in the terminal composer and a dropdown in the browser. It waives the *prompt* and nothing else: an entry on your deny list still refuses, and the never-allow class is still unreachable. It lives in memory, so a fresh plane starts with it off and a bypass cannot outlive the session you enabled it in; it is recorded in the audit trail; it can be toggled mid-turn; and turning it on approves a permission card already on screen rather than leaving the turn waiting on it.
+
+### New: A question pauses the turn instead of talking to itself
+Asking a clarifying question used to be record-and-continue — the model wrote the question down, kept going, and your answer arrived as an unrelated message. The call **blocks** now: the question appears as a card, the turn waits exactly where it was, and what you answer becomes the tool's result, so the model resumes holding your words rather than guessing what they referred to.
+
+### New: The plane runs on your host, with the services containerized
+Host residency is the default shape: the control plane runs as a host process while Postgres, NATS and the Grafana telemetry stack stay in one container reached over loopback. It is the same install and the same binary — what changes is that the plane's runtime, file access and process tree are the host's rather than a container's. The rollback is one word, and each instance (`dev`, `prod`) chooses its shape independently, so one can migrate while the other does not.
+
+### Also in this release
+
+- **A card settles for every client, and survives a reload.** Answering in the terminal settles the same question in the browser, in a second tab, and after a page reload — the resolution is written into the turn's durable record rather than only broadcast to whoever happened to be watching at that moment.
+- **Refusals say what actually happened.** A timeout is *expired* rather than an operator denial; an unreadable policy file is reported as a policy problem; a rule that refuses a call is attributed to the rule, not to an operator who was never asked. It matters because the model reads the reason and decides what to do next from it.
+- **A turn that dies mid-work keeps its work.** Streaming reasoning was never finalized, so an interrupted turn lost the thinking entirely — and a completed answer discarded it even on a clean turn. Both now survive in the record.
+- **Ephemeral runs recover.** A run whose git strategy is `none` creates no branch to resume onto, and was retried blindly; recovery now recognises that shape instead of failing it.
+- **Settings: blank means the built-in default, and `0` means disabled.** They were the same value, so leaving a field blank could silently switch a control off.
+- **Installer:** a WSL distro name containing a NUL byte no longer corrupts the generated config, and an empty variable expands safely.
+- **Terminal client:** the Schedules lenses order history the way the browser does and derive queued sequence children; a send the server refuses because a turn is already running is delivered rather than bounced; the detail pane's paint and the terminal's colour profile are resolved rather than assumed.
+
 ## v0.3.1
 
 ### New: orchicon.dev, rebuilt around the product instead of around the pitch

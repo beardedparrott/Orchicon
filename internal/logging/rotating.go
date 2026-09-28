@@ -66,15 +66,15 @@ const stampFormat = "20060102-150405.000"
 // RotatingWriter is a concurrency-safe io.Writer that appends to a single
 // file and rotates it by size and/or time, pruning old generations.
 type RotatingWriter struct {
-	mu      sync.Mutex
-	cfg     Config
-	f       *os.File
-	size    int64
-	opened  time.Time
-	stop    chan struct{}
-	done    chan struct{}
+	mu       sync.Mutex
+	cfg      Config
+	f        *os.File
+	size     int64
+	opened   time.Time
+	stop     chan struct{}
+	done     chan struct{}
 	onRotate func() // invoked (outside the lock) after each rotation
-	closed  bool
+	closed   bool
 }
 
 // New opens (creating if needed) the active log file and starts the

@@ -49,9 +49,10 @@ func (c *chatBridge) Subscribe(_ context.Context, conversationID string) (Sessio
 func (c *chatBridge) CreateConversationSession(_ context.Context, _, _ string) (string, error) {
 	return "", nil
 }
-func (c *chatBridge) SendTurnMessage(_ context.Context, _, _, _, _, _ string) error { return nil }
-func (c *chatBridge) AbortConversationSession(_ context.Context, _ string) error    { return nil }
-func (c *chatBridge) ReplyPermission(_ context.Context, _, _ string) error          { return nil }
+func (c *chatBridge) SendTurnMessage(_ context.Context, _, _, _, _, _ string) error   { return nil }
+func (c *chatBridge) AbortConversationSession(_ context.Context, _ string) error      { return nil }
+func (c *chatBridge) ReplyPermission(_ context.Context, _, _ string) error            { return nil }
+func (c *chatBridge) ReplyPermissionDecision(_ context.Context, _, _, _ string) error { return nil }
 
 func TestDispatcherResolveChatCapability(t *testing.T) {
 	d := NewDispatcher()

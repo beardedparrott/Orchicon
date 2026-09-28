@@ -40,38 +40,42 @@ type TenantSettings struct {
 	// future conversational assistant).
 	DefaultAskOrchiconModel string `protobuf:"bytes,2,opt,name=default_ask_orchicon_model,json=defaultAskOrchiconModel,proto3" json:"default_ask_orchicon_model,omitempty"`
 	// No step_finish or new tokens within this window triggers stalled.
-	// Seconds. Default 300 (5 min).
-	StallNoProgressWindowSeconds int64 `protobuf:"varint,10,opt,name=stall_no_progress_window_seconds,json=stallNoProgressWindowSeconds,proto3" json:"stall_no_progress_window_seconds,omitempty"`
-	// No file modifications within this window triggers stalled.
-	// Seconds. Default 900 (15 min). Zero disables.
-	StallNoFileDiffWindowSeconds int64 `protobuf:"varint,11,opt,name=stall_no_file_diff_window_seconds,json=stallNoFileDiffWindowSeconds,proto3" json:"stall_no_file_diff_window_seconds,omitempty"`
+	// Seconds. Blank = default 300 (5 min); 0 disables.
+	StallNoProgressWindowSeconds *int64 `protobuf:"varint,10,opt,name=stall_no_progress_window_seconds,json=stallNoProgressWindowSeconds,proto3,oneof" json:"stall_no_progress_window_seconds,omitempty"`
+	// No file modifications within this window raises an ADVISORY stalled
+	// notice (it never kills the worker; a reviewer that legitimately writes no
+	// files must not be reaped mid-flight).
+	// Seconds. Blank = default 900 (15 min); 0 disables.
+	StallNoFileDiffWindowSeconds *int64 `protobuf:"varint,11,opt,name=stall_no_file_diff_window_seconds,json=stallNoFileDiffWindowSeconds,proto3,oneof" json:"stall_no_file_diff_window_seconds,omitempty"`
 	// No meaningful action (tool call, file diff, step finish) within this
-	// window triggers text-loop stall. Seconds. Default 600 (10 min).
-	// Zero disables.
-	StallTextLoopWindowSeconds int64 `protobuf:"varint,12,opt,name=stall_text_loop_window_seconds,json=stallTextLoopWindowSeconds,proto3" json:"stall_text_loop_window_seconds,omitempty"`
+	// window triggers text-loop stall.
+	// Seconds. Blank = default 600 (10 min); 0 disables.
+	StallTextLoopWindowSeconds *int64 `protobuf:"varint,12,opt,name=stall_text_loop_window_seconds,json=stallTextLoopWindowSeconds,proto3,oneof" json:"stall_text_loop_window_seconds,omitempty"`
 	// Same tool-call signature repeated this many times within the
-	// repetition window triggers repeated-call stall. Default 5.
-	// Zero disables.
-	StallRepetitionCount int32 `protobuf:"varint,13,opt,name=stall_repetition_count,json=stallRepetitionCount,proto3" json:"stall_repetition_count,omitempty"`
-	// Window for repetition detection. Seconds. Default 300 (5 min).
-	StallRepetitionWindowSeconds int64 `protobuf:"varint,14,opt,name=stall_repetition_window_seconds,json=stallRepetitionWindowSeconds,proto3" json:"stall_repetition_window_seconds,omitempty"`
+	// repetition window triggers repeated-call stall.
+	// Blank = default 5; 0 disables.
+	StallRepetitionCount *int32 `protobuf:"varint,13,opt,name=stall_repetition_count,json=stallRepetitionCount,proto3,oneof" json:"stall_repetition_count,omitempty"`
+	// Window for repetition detection. Seconds. Blank = default 300 (5 min);
+	// 0 disables. Only meaningful alongside stall_repetition_count.
+	StallRepetitionWindowSeconds *int64 `protobuf:"varint,14,opt,name=stall_repetition_window_seconds,json=stallRepetitionWindowSeconds,proto3,oneof" json:"stall_repetition_window_seconds,omitempty"`
 	// Max nudges sent to a live session before an advisory stall escalates to
-	// a fatal kill + recovery. Default 2.
-	StallNudgeMax int32 `protobuf:"varint,31,opt,name=stall_nudge_max,json=stallNudgeMax,proto3" json:"stall_nudge_max,omitempty"`
+	// a fatal kill + recovery. Blank = default 2; 0 disables.
+	StallNudgeMax *int32 `protobuf:"varint,31,opt,name=stall_nudge_max,json=stallNudgeMax,proto3,oneof" json:"stall_nudge_max,omitempty"`
 	// How long a nudge waits for the worker to break the pattern before the
-	// next trip escalates. Seconds. Default 300 (5 min).
-	StallNudgeReplyWindowSeconds int64 `protobuf:"varint,32,opt,name=stall_nudge_reply_window_seconds,json=stallNudgeReplyWindowSeconds,proto3" json:"stall_nudge_reply_window_seconds,omitempty"`
-	// Minimum gap between nudges. Seconds. Default 60.
-	StallNudgeCooldownSeconds int64 `protobuf:"varint,33,opt,name=stall_nudge_cooldown_seconds,json=stallNudgeCooldownSeconds,proto3" json:"stall_nudge_cooldown_seconds,omitempty"`
+	// next trip escalates. Seconds. Blank = default 300 (5 min); 0 disables.
+	StallNudgeReplyWindowSeconds *int64 `protobuf:"varint,32,opt,name=stall_nudge_reply_window_seconds,json=stallNudgeReplyWindowSeconds,proto3,oneof" json:"stall_nudge_reply_window_seconds,omitempty"`
+	// Minimum gap between nudges. Seconds. Blank = default 60; 0 disables.
+	StallNudgeCooldownSeconds *int64 `protobuf:"varint,33,opt,name=stall_nudge_cooldown_seconds,json=stallNudgeCooldownSeconds,proto3,oneof" json:"stall_nudge_cooldown_seconds,omitempty"`
 	// --- In-flight tool-hang watchdog ---
 	// A tool call with no events for longer than this window is interrupted
 	// NATIVELY: the call is cancelled, a `cancelled: tool exceeded tool-hang
 	// window` tool result is synthesized, and a course-correcting redirect is
 	// injected as the next user turn (session and cache prefix fully
 	// preserved). Latched once per session; an unheeded hang escalates to the
-	// stall/liveness layer (probe → fatal). Zero = unset (env/code default
-	// 180s); negative = disabled.
-	StallToolHangSeconds int64 `protobuf:"varint,34,opt,name=stall_tool_hang_seconds,json=stallToolHangSeconds,proto3" json:"stall_tool_hang_seconds,omitempty"`
+	// stall/liveness layer (probe → fatal).
+	// Blank = default 180s; 0 disables. Negative is the OLD spelling of
+	// "disabled" and is now rejected — see the section comment above.
+	StallToolHangSeconds *int64 `protobuf:"varint,34,opt,name=stall_tool_hang_seconds,json=stallToolHangSeconds,proto3,oneof" json:"stall_tool_hang_seconds,omitempty"`
 	// How long an execution must have been running before it becomes
 	// eligible for reaping (skips the fresh-dispatch race). Seconds.
 	// Default 60.
@@ -196,64 +200,64 @@ func (x *TenantSettings) GetDefaultAskOrchiconModel() string {
 }
 
 func (x *TenantSettings) GetStallNoProgressWindowSeconds() int64 {
-	if x != nil {
-		return x.StallNoProgressWindowSeconds
+	if x != nil && x.StallNoProgressWindowSeconds != nil {
+		return *x.StallNoProgressWindowSeconds
 	}
 	return 0
 }
 
 func (x *TenantSettings) GetStallNoFileDiffWindowSeconds() int64 {
-	if x != nil {
-		return x.StallNoFileDiffWindowSeconds
+	if x != nil && x.StallNoFileDiffWindowSeconds != nil {
+		return *x.StallNoFileDiffWindowSeconds
 	}
 	return 0
 }
 
 func (x *TenantSettings) GetStallTextLoopWindowSeconds() int64 {
-	if x != nil {
-		return x.StallTextLoopWindowSeconds
+	if x != nil && x.StallTextLoopWindowSeconds != nil {
+		return *x.StallTextLoopWindowSeconds
 	}
 	return 0
 }
 
 func (x *TenantSettings) GetStallRepetitionCount() int32 {
-	if x != nil {
-		return x.StallRepetitionCount
+	if x != nil && x.StallRepetitionCount != nil {
+		return *x.StallRepetitionCount
 	}
 	return 0
 }
 
 func (x *TenantSettings) GetStallRepetitionWindowSeconds() int64 {
-	if x != nil {
-		return x.StallRepetitionWindowSeconds
+	if x != nil && x.StallRepetitionWindowSeconds != nil {
+		return *x.StallRepetitionWindowSeconds
 	}
 	return 0
 }
 
 func (x *TenantSettings) GetStallNudgeMax() int32 {
-	if x != nil {
-		return x.StallNudgeMax
+	if x != nil && x.StallNudgeMax != nil {
+		return *x.StallNudgeMax
 	}
 	return 0
 }
 
 func (x *TenantSettings) GetStallNudgeReplyWindowSeconds() int64 {
-	if x != nil {
-		return x.StallNudgeReplyWindowSeconds
+	if x != nil && x.StallNudgeReplyWindowSeconds != nil {
+		return *x.StallNudgeReplyWindowSeconds
 	}
 	return 0
 }
 
 func (x *TenantSettings) GetStallNudgeCooldownSeconds() int64 {
-	if x != nil {
-		return x.StallNudgeCooldownSeconds
+	if x != nil && x.StallNudgeCooldownSeconds != nil {
+		return *x.StallNudgeCooldownSeconds
 	}
 	return 0
 }
 
 func (x *TenantSettings) GetStallToolHangSeconds() int64 {
-	if x != nil {
-		return x.StallToolHangSeconds
+	if x != nil && x.StallToolHangSeconds != nil {
+		return *x.StallToolHangSeconds
 	}
 	return 0
 }
@@ -374,20 +378,20 @@ var File_orchicon_api_v1_settings_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_settings_proto_rawDesc = "" +
 	"\n" +
-	"\x1eorchicon/api/v1/settings.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb5\f\n" +
+	"\x1eorchicon/api/v1/settings.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x85\x0f\n" +
 	"\x0eTenantSettings\x120\n" +
 	"\x14default_worker_model\x18\x01 \x01(\tR\x12defaultWorkerModel\x12;\n" +
-	"\x1adefault_ask_orchicon_model\x18\x02 \x01(\tR\x17defaultAskOrchiconModel\x12F\n" +
+	"\x1adefault_ask_orchicon_model\x18\x02 \x01(\tR\x17defaultAskOrchiconModel\x12K\n" +
 	" stall_no_progress_window_seconds\x18\n" +
-	" \x01(\x03R\x1cstallNoProgressWindowSeconds\x12G\n" +
-	"!stall_no_file_diff_window_seconds\x18\v \x01(\x03R\x1cstallNoFileDiffWindowSeconds\x12B\n" +
-	"\x1estall_text_loop_window_seconds\x18\f \x01(\x03R\x1astallTextLoopWindowSeconds\x124\n" +
-	"\x16stall_repetition_count\x18\r \x01(\x05R\x14stallRepetitionCount\x12E\n" +
-	"\x1fstall_repetition_window_seconds\x18\x0e \x01(\x03R\x1cstallRepetitionWindowSeconds\x12&\n" +
-	"\x0fstall_nudge_max\x18\x1f \x01(\x05R\rstallNudgeMax\x12F\n" +
-	" stall_nudge_reply_window_seconds\x18  \x01(\x03R\x1cstallNudgeReplyWindowSeconds\x12?\n" +
-	"\x1cstall_nudge_cooldown_seconds\x18! \x01(\x03R\x19stallNudgeCooldownSeconds\x125\n" +
-	"\x17stall_tool_hang_seconds\x18\" \x01(\x03R\x14stallToolHangSeconds\x12?\n" +
+	" \x01(\x03H\x00R\x1cstallNoProgressWindowSeconds\x88\x01\x01\x12L\n" +
+	"!stall_no_file_diff_window_seconds\x18\v \x01(\x03H\x01R\x1cstallNoFileDiffWindowSeconds\x88\x01\x01\x12G\n" +
+	"\x1estall_text_loop_window_seconds\x18\f \x01(\x03H\x02R\x1astallTextLoopWindowSeconds\x88\x01\x01\x129\n" +
+	"\x16stall_repetition_count\x18\r \x01(\x05H\x03R\x14stallRepetitionCount\x88\x01\x01\x12J\n" +
+	"\x1fstall_repetition_window_seconds\x18\x0e \x01(\x03H\x04R\x1cstallRepetitionWindowSeconds\x88\x01\x01\x12+\n" +
+	"\x0fstall_nudge_max\x18\x1f \x01(\x05H\x05R\rstallNudgeMax\x88\x01\x01\x12K\n" +
+	" stall_nudge_reply_window_seconds\x18  \x01(\x03H\x06R\x1cstallNudgeReplyWindowSeconds\x88\x01\x01\x12D\n" +
+	"\x1cstall_nudge_cooldown_seconds\x18! \x01(\x03H\aR\x19stallNudgeCooldownSeconds\x88\x01\x01\x12:\n" +
+	"\x17stall_tool_hang_seconds\x18\" \x01(\x03H\bR\x14stallToolHangSeconds\x88\x01\x01\x12?\n" +
 	"\x1cexecution_reap_grace_seconds\x18\x0f \x01(\x03R\x19executionReapGraceSeconds\x12M\n" +
 	"#execution_reap_consecutive_failures\x18\x10 \x01(\x05R executionReapConsecutiveFailures\x128\n" +
 	"\x18default_budget_overrides\x18\x13 \x01(\tR\x16defaultBudgetOverrides\x12'\n" +
@@ -399,13 +403,22 @@ const file_orchicon_api_v1_settings_proto_rawDesc = "" +
 	"\x17log_roll_interval_hours\x18\x19 \x01(\x03R\x14logRollIntervalHours\x12,\n" +
 	"\x12log_retention_days\x18\x1a \x01(\x05R\x10logRetentionDays\x12\"\n" +
 	"\rlog_max_files\x18\x1b \x01(\x05R\vlogMaxFiles\x123\n" +
-	"\x13max_concurrent_runs\x18\x1c \x01(\x05H\x00R\x11maxConcurrentRuns\x88\x01\x01\x12F\n" +
+	"\x13max_concurrent_runs\x18\x1c \x01(\x05H\tR\x11maxConcurrentRuns\x88\x01\x01\x12F\n" +
 	" session_access_token_ttl_seconds\x18\x1d \x01(\x03R\x1csessionAccessTokenTtlSeconds\x12H\n" +
 	"!session_refresh_token_ttl_seconds\x18\x1e \x01(\x03R\x1dsessionRefreshTokenTtlSeconds\x129\n" +
 	"\n" +
 	"created_at\x18d \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18e \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAtB\x16\n" +
+	"updated_at\x18e \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAtB#\n" +
+	"!_stall_no_progress_window_secondsB$\n" +
+	"\"_stall_no_file_diff_window_secondsB!\n" +
+	"\x1f_stall_text_loop_window_secondsB\x19\n" +
+	"\x17_stall_repetition_countB\"\n" +
+	" _stall_repetition_window_secondsB\x12\n" +
+	"\x10_stall_nudge_maxB#\n" +
+	"!_stall_nudge_reply_window_secondsB\x1f\n" +
+	"\x1d_stall_nudge_cooldown_secondsB\x1a\n" +
+	"\x18_stall_tool_hang_secondsB\x16\n" +
 	"\x14_max_concurrent_runsB\xc7\x01\n" +
 	"\x13com.orchicon.api.v1B\rSettingsProtoP\x01ZCgithub.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1;apiv1\xa2\x02\x03OAX\xaa\x02\x0fOrchicon.Api.V1\xca\x02\x0fOrchicon\\Api\\V1\xe2\x02\x1bOrchicon\\Api\\V1\\GPBMetadata\xea\x02\x11Orchicon::Api::V1b\x06proto3"
 

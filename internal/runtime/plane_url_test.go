@@ -42,16 +42,13 @@ func TestPlanePublicURLResolution(t *testing.T) {
 	}
 
 	// 3. Container mode but IP unresolvable (no /etc/hosts entry): fall back
-	// to the gateway default rather than emitting an empty URL.
+	// rather than emitting an empty URL. The per-instance port derivation, the
+	// host-resident branches and the dev/prod crossover guard live in
+	// plane_reachability_test.go; this file keeps the container branch and
+	// parseHostsIP.
 	os.Setenv("ORCHICON_CONTAINER_MODE", "1")
 	if got := planePublicURL(); got == "" {
 		t.Fatal("container mode with unresolvable IP must not return an empty URL")
-	}
-
-	// 4. Host mode (no container-mode flag): gateway default.
-	os.Unsetenv("ORCHICON_CONTAINER_MODE")
-	if got := planePublicURL(); got != "http://172.17.0.1:8080" {
-		t.Fatalf("host mode = %q, want http://172.17.0.1:8080", got)
 	}
 }
 

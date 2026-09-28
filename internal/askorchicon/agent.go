@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/beardedparrott/orchicon/internal/askmode"
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
@@ -164,9 +165,62 @@ This is a LIVE CONVERSATION, not a budgeted worker execution.
 `)
 }
 
+// writeSuiteReachBlock is the ONE statement of what the native file/shell suite
+// can REACH and when it ASKS — the filesystem half of the session contract, and
+// the block that keeps the prompt honest about the operator's own machine.
+//
+// It replaces a claim that was quietly false. The prompt used to describe the
+// suite as scoped to a project directory, which reads as "you are confined to
+// that tree": on a host process that is simply untrue, and an agent that believes
+// it will either decline a path it was allowed to read or burn turns discovering
+// the boundary by probing it. The repo already has the precedent — the
+// runtime-environment block (internal/db/prompt.go) is truthful or the agent
+// probes; a true statement costs three lines and a false one costs turns.
+//
+// THREE THINGS IT MUST SAY, in every mode, because it is emitted from
+// writePlatformPrimer, which every mode's persona calls:
+//   - the reach — the suite IS a host process, so it reaches the operator's whole
+//     filesystem, not just a project tree;
+//   - reads never ask; writes and executions ask UNLESS they are inside the
+//     conversation's pre-approved project directory (the one the prompt's
+//     "## This conversation's project" section names, and ask_file_root reports);
+//   - the relative-path anchor, and the honest limits (runs as the operator's
+//     user, so no root — say so rather than retrying).
+//
+// THE MODE HALF IS DERIVED, NEVER HAND-WRITTEN. Whether this mode has the write
+// tools is computed from the SAME table the enforcement uses (askmode.Allows,
+// behind modeAllowsTool, the def filter and the refusal), so the statement cannot
+// promise a tool the platform refuses. Brainstorm and Quick Work cannot write in
+// ANY directory, so telling them "writes ask" would be the second false claim in
+// the fix for the first: they are told the platform refuses the tools outright,
+// and the ask-versus-proceed rule is still stated because it is the platform's
+// rule, not theirs.
+func writeSuiteReachBlock(b *strings.Builder, mode string) {
+	b.WriteString("\n## Reach and scope\n")
+	b.WriteString("The native file/shell suite runs on the operator's OWN host machine, as the operator's user: it is a HOST PROCESS, not a sandbox, so it reaches the operator's whole filesystem — any path that user can read, you can read, whether or not it sits inside a project. The suite is not confined to a project directory.")
+	b.WriteString("\n\n")
+	b.WriteString("- **Reads never ask.** Reading any file, anywhere, needs no confirmation and no path is off-limits to READ: look before you ask.\n")
+	b.WriteString("- **Writes and executions ask**, with one exception: this conversation's own project directory — the one named by the \"## This conversation's project\" section — is this conversation's DEFAULT SCOPE and is PRE-APPROVED, so a write or a command INSIDE it proceeds without asking. Anywhere else, a sibling project's tree included, asks the user first. If that section says this conversation has NO project, then NOTHING is pre-approved and every write asks.\n")
+	if askmode.Allows(mode, "write") {
+		b.WriteString(fmt.Sprintf("- **This mode has the hands.** write, edit, batch_write and bash are available in %s mode, and the ask-outside-the-project rule above is the whole boundary: work inside the pre-approved directory, and say what you intend to touch before reaching outside it.\n", modeLabel(mode)))
+	} else {
+		// Both non-write modes hand the work to the doer, but derive it rather
+		// than assume it: the mode table is the authority on where to send them.
+		switchTo := askmode.Iteration
+		if p, ok := askmode.PolicyFor(mode); ok && p.SwitchTo != "" {
+			switchTo = p.SwitchTo
+		}
+		b.WriteString(fmt.Sprintf("- **This mode cannot write anywhere, inside the project or outside it.** The platform REFUSES write, edit, batch_write and bash in %s mode: they are not offered to you and a call is refused, so no consent can unlock them and reaching for one is a wasted turn. If the user wants the change MADE, that is %s mode.\n", modeLabel(mode), modeLabel(switchTo)))
+	}
+	b.WriteString("- **The conversation's project is where the work BELONGS**, and it is the anchor relative paths resolve against: `foo.go` means `<project directory>/foo.go`, and bash starts there — even though every other path is readable too.\n")
+	b.WriteString("- **The honest limits, so you do not discover them by probing.** Because the suite is a host process running as the operator's user, host services and root-owned paths may be unreachable to it, and there is no root: sudo fails and escalating is impossible. A service that needs rights this user does not have cannot be started by retrying — say plainly that it needs the operator, and exactly what it needs, rather than looping.\n\n")
+}
+
 // writePlatformPrimer is the platform reference, identical in every mode: the
-// modes differ in disposition, never in what they know about Orchicon.
-func writePlatformPrimer(b *strings.Builder) {
+// modes differ in disposition, never in what they know about Orchicon. mode is
+// threaded through ONLY so the reach block it emits can state the truth about
+// this mode's write tools (see writeSuiteReachBlock).
+func writePlatformPrimer(b *strings.Builder, mode string) {
 	b.WriteString(`
 ## About Orchicon
 Orchicon is an AI orchestration platform. It separates orchestration from execution: Orchicon orchestrates, runtimes execute.
@@ -177,15 +231,17 @@ Orchicon is an AI orchestration platform. It separates orchestration from execut
 - **Recovery**: execution failures are recoverable by default (opt-out). The recovery flow captures → summarizes → preserves → reviews → plans → resumes, with bounded auto-relax and L1→L2→L3 escalation.
 - **Telemetry**: OpenTelemetry → Grafana stack (Tempo traces, Loki logs, VictoriaMetrics metrics).
 - **Deployment**: the whole stack runs in one container (Postgres, NATS, Grafana plane, control plane) via the orchicon container subcommand; orchicon install brings it up with one command.
-- **Projects**: a project's project_dir is where workers operate; context_files are injected into prompts (a context path may be a file or a directory — directories are listed and read in full by the worker). Work items can also carry their own context_files, rendered into the worker's prompt exactly like the project's. Workers must operate within their assigned project directory. Your session also carries the native file/shell suite (batch_read, batch_grep, batch_write, read, grep, write, edit, list, glob, bash) scoped to the tenant's first active project_dir — use ask_file_root to see which directory it is, and the file tools to inspect and edit real source code, run builds/tests, and drive git.
+- **Projects**: a project's project_dir is where workers operate; context_files are injected into prompts (a context path may be a file or a directory — directories are listed and read in full by the worker). Work items can also carry their own context_files, rendered into the worker's prompt exactly like the project's. Workers must operate within their assigned project directory. YOUR OWN session is NOT that kind of worker: it also carries the native file/shell suite (batch_read, batch_grep, batch_write, read, grep, write, edit, list, glob, bash, ask_file_root), which is NOT confined to a project tree — what it can reach and when it asks are stated in "## Reach and scope" just below. Use ask_file_root to see which directory is this conversation's own, and the file tools to inspect real source code, run builds/tests, and drive git.
 `)
+
+	writeSuiteReachBlock(b, mode)
 }
 
 // writeToolList is the auto-generated tool surface, identical in every mode (the
 // operator: the modes share the tool surface; only the disposition differs).
-func writeToolList(b *strings.Builder, toolRegistry *ToolRegistry) {
+func writeToolList(b *strings.Builder, toolRegistry *ToolRegistry, mode string) {
 	b.WriteString("\n## Available Tools\n")
-	b.WriteString("Orchicon's tools are available to you as MCP tools named `orchicon_<tool>` — call them directly through your tool mechanism and the system executes them against Orchicon, returning real results. Mutating tools run only after user confirmation. The native file/shell suite (batch_read, batch_grep, batch_write, read, grep, write, edit, list, glob, bash, ask_file_root) is also on your session as native tools — it operates on the tenant's first active project_dir (ask_file_root reports it).\n\n")
+	b.WriteString("Orchicon's tools are available to you as MCP tools named `orchicon_<tool>` — call them directly through your tool mechanism and the system executes them against Orchicon, returning real results. Mutating tools run only after user confirmation. The native file/shell suite (batch_read, batch_grep, batch_write, read, grep, write, edit, list, glob, bash, ask_file_root) is also on your session as native tools — its reach, its pre-approved directory and when it asks are stated in \"## Reach and scope\" above.\n\n")
 	for _, td := range toolRegistry.List() {
 		mutability := "read-only"
 		if td.Mutating {
@@ -194,6 +250,7 @@ func writeToolList(b *strings.Builder, toolRegistry *ToolRegistry) {
 		b.WriteString(fmt.Sprintf("- `orchicon_%s`: %s (%s)\n", td.Name, td.Description, mutability))
 	}
 	b.WriteString("\n")
+	b.WriteString("When a choice or a missing fact blocks you, ASK WITH `orchicon_ask_user` — one call, with the question and 2+ options. Do NOT write a numbered list of choices in your prose: a question written as prose is not answered as a choice, and the user's reply cannot be sent as an option. The tool RECORDS the question and ENDS YOUR TURN — the user answers in their next message. Ask, then STOP: never ask a question and continue on a guess.\n")
 }
 
 // writeAdditionalInstructions appends the tenant's DB-stored prompt, in every
@@ -222,7 +279,7 @@ You help the user create and build — software, designs, architectures, workflo
 
 ## Working Principles
 1. Think from first principles about the system at hand before jumping to code — sketch the shape of the solution, its failure modes, and its trade-offs.
-2. ALWAYS ask clarifying questions before drafting work items — and whenever a request is ambiguous or before any action that creates, updates, or deletes data. Never assume the user's intent. A work item drafted on guesses instead of answers ships thin and breaks in the run; questions are cheaper than rework.
+2. ALWAYS ask clarifying questions before drafting work items — and whenever a request is ambiguous or before any action that creates, updates, or deletes data. Never assume the user's intent. A work item drafted on guesses instead of answers ships thin and breaks in the run; questions are cheaper than rework. Put the question to the user with orchicon_ask_user (options when the answer is a choice) — never as a numbered list in prose.
 3. Explain your plan before executing multi-step operations.
 4. Be concrete: prefer working examples, code, and architectures over abstract talk.
 5. Be planner first, implementer second. When the request is or could become platform work (a feature, bug fix, improvement, or change to Orchicon or any project), ALWAYS propose creating a work item via the orchicon_create_work_item tool FIRST — concrete shape, scope, and acceptance criteria — and it does not implement it. This mode does not do the work and the tool boundary REFUSES the tools that would (write/edit/batch_write/bash), so attempting it fails rather than helping; when the user wants it DONE, that is Iteration mode and they must switch. General discussion stays in brainstorm/planner mode with work items as the actionable outcome. Ground EVERY work item in actual source-code truth of the project: use list_project_dir and read_project_file to verify files, line numbers, function names, and behavior before writing a single word — never invent APIs, paths, or semantics. Description and acceptance criteria are NEVER light: every work item MUST be as detailed as possible, with references to concrete code files/lines, explanations of why the change is needed and what it does mechanically, and step-level scope a worker can execute with confidence. Before proposing, ask yourself: could a true workflow run execute these instructions end-to-end with no further questions and land a correct result? If not, keep digging and keep asking. Context is our friend — thin items with missing coverage ship broken runs.
@@ -250,8 +307,8 @@ Confirm-before-mutate discipline is retained unchanged: you confirm before runni
 `)
 
 	writeSessionContract(&b)
-	writePlatformPrimer(&b)
-	writeToolList(&b, toolRegistry)
+	writePlatformPrimer(&b, modeBrainstorm)
+	writeToolList(&b, toolRegistry, modeBrainstorm)
 	writeWorkItemDraftingRules(&b)
 	writeAdditionalInstructions(&b, cfg)
 
@@ -323,7 +380,12 @@ func writeQuickWorkDispatchRules(b *strings.Builder) {
 	b.WriteString("3. Publish before you bind. A workflow you created is a DRAFT: publish_workflow_version it and publish_worker_version the worker first, or the run cannot start.\n")
 	b.WriteString("4. Runtime image: default to the project's default runtime image and SAY which one you are using; ask if the user wants a different one.\n")
 	b.WriteString("5. Placement: none. An ephemeral item is TOP-LEVEL ONLY. Do not search for a parent, do not propose one, and do not pass parent_id.\n")
-	b.WriteString("6. Never let an ephemeral record into a human view. Do not assign an ephemeral worker to a real work item, do not bind an ephemeral workflow to a real item, and do not reference an ephemeral record from anything that outlives the job.\n\n")
+	b.WriteString("6. Never let an ephemeral record into a human view. Do not assign an ephemeral worker to a real work item, do not bind an ephemeral workflow to a real item, and do not reference an ephemeral record from anything that outlives the job.\n")
+	b.WriteString("7. Every brief must ORDER THE WORK so nothing can cost it: implement → gofmt → commit → push → verify. A verification step that hangs, or a session that dies, must not be able to take the work with it — committed and pushed work is the only work that survives a dead session, and a run whose work was never committed has nothing left to hand over.\n")
+	b.WriteString("8. Every brief must put an EXPLICIT timeout_seconds (up to 600) on its shell calls instead of leaning on the tool default. A cold-cache build in a fresh worktree is normal and emits nothing while it runs, and that silent, minutes-long call is the most likely thing to trip a tool-hang guard.\n")
+	b.WriteString("9. Every brief must NARROW the build and test scope to the packages the worker actually touches — never `go build ./...` or `go test ./...` as a first action. This repo is large and internal/server pulls in nearly everything, so a whole-tree build is slow and buries the worker in output it does not need.\n")
+	b.WriteString("10. Every brief must require NON-INTERACTIVE `gh` only: pass every argument explicitly (`--title` and `--body` on a create, `--merge` on a merge) rather than letting `gh` open an editor or wait on a prompt, because a `gh` call waiting on input hangs the session.\n")
+	b.WriteString("11. Every task step you create MUST carry an explicit recovery block: `\"config\": \"{\\\"recovery\\\":{\\\"strategy\\\":\\\"summarize_restart\\\",\\\"max_attempts\\\":6}}\"`. Copy the step SHAPE from the seeded Quick Work workflow (`internal/db/seed_workflows.go`) INCLUDING this block. Omitting it does not mean \"default recovery\": the engine falls back to the blind `retry` strategy, which CLONES the ticket and re-dispatches it with no RecoveryExecution at all, then fails the step terminally after 3 attempts with nothing to resume from and no recovery record to review. That silently downgrades the whole dispatch.\n\n")
 	b.WriteString("Always use these tools to perform actions on Orchicon data. Do not simulate actions — call the appropriate tool.")
 }
 
@@ -366,8 +428,8 @@ Your architect, developer, designer, researcher, and colleague. You work on the 
 
 	writeCapabilityBlock(&b, modeIteration)
 	writeSessionContract(&b)
-	writePlatformPrimer(&b)
-	writeToolList(&b, toolRegistry)
+	writePlatformPrimer(&b, modeIteration)
+	writeToolList(&b, toolRegistry, modeIteration)
 	writeAdditionalInstructions(&b, cfg)
 
 	return b.String()
@@ -403,7 +465,7 @@ You get things DONE without doing them yourself. For a task that is understood a
 3. EVERYTHING YOU CREATE IS EPHEMERAL. See the protocol below. Nothing you create belongs in the console, and nothing survives the job. This is a FLAG, not a convention: every worker, workflow and work item you create carries ephemeral true, and the only records you may touch in this mode are the ones you created for this job.
 4. ASK WHICH MODEL ON EVERY NEW DISPATCH. Read this conversation's actual model_ref, NAME IT IN FULL (adapter/provider/model — all three segments), and ask whether to use it or another — see "The model question" below. EVERY new dispatch, including a re-run after a failure, because a re-run is new work rather than a continuation of the dead run. You do NOT ask again while merely reporting on or monitoring a run already in flight: a live run keeps the model it was created with.
 5. ASK WHICH BRANCHES ON EVERY NEW DISPATCH, AND CONFIRM THE GIT STRATEGY. Read the project's git strategy, say it out loud, and confirm both branches before anything is created — see "Git, branches and the PR" below. Never assume either.
-6. MONITOR THE RUN, then report. Fire it, watch the status, and tell the user what happened in their terms: what it did, what it produced, whether it passed.
+6. MONITOR THE RUN, then report — and know what a LIVE run looks like, because a wedged one and a busy one show the same counters. Fire it, watch the status, and tell the user what happened in their terms: what it did, what it produced, whether it passed. **HealthState is the authoritative liveness signal** — healthy means working, stalled means stopped. **A large TokenUsage is NOT evidence of progress — a count that is not MOVING is a dead run, not a busy one**, so repeated polls that read the same frozen number are polls of a corpse, not of work in progress. DECLARE STALENESS YOURSELF: if repeated polls show neither token movement nor a change in the run's own files or worktree (the execution record carries WorktreeStatus, WorktreePath and WorktreeBranch), say the run looks stalled and STOP reporting it as working — do not wait for the platform's detector to label it first. Report ErrorMessage the MOMENT it is non-empty, quoted verbatim: the FIRST error is usually the more diagnostic one, because a cancelled tool call and a dead session record differently, so report each as you see it rather than saving the error for the end. And read the run's OWN words, not only its counters — the execution's Output and its error are where the worker says what it was doing when it stopped.
 7. ON FAILURE: DIAGNOSE, REPORT, OFFER A RE-RUN. The operator's rule: "delete it and then have the Quick Work agent report that it failed and ask if they would like to re-run the workflow and then it just creates the work item again and try again after diagnosing why it failed." So: clean up, explain WHY it failed using the run's own error and logs, and offer to re-run — a re-run is a fresh ephemeral dispatch, not a retry of the dead one.
 8. BE A COLLEAGUE. Direct about problems, honest about uncertainty, honest about what the run actually achieved. Never present a run's output as verified work without reading it.
 9. If the user would rather think it through, that is Brainstorm. If they would rather do it with you here, that is Iteration. Offer the switch.
@@ -455,6 +517,7 @@ Every unit of work you dispatch follows this shape, and the order matters:
 - The item, worker and workflow are created with the ephemeral flag set, so they do NOT appear in any console list, board, tree or count while they run.
 - They are HARD-deleted when the job ends — success, failure, and abandonment alike. A cancelled run is not left behind.
 - The deletion is YOUR job and it is unconditional. The platform also sweeps abandoned ephemeral records on a long timer, but that is a BACKSTOP for a session that died mid-job, not a substitute for cleaning up after yourself — its window is far longer than your job.
+- **A dead session can take uncommitted work with it.** The same long-timer sweep reaps an abandoned ephemeral record AND its worktree, and a reaped worktree takes any uncommitted work with it — so committed and pushed work is the ONLY work that survives a session that dies mid-job. That is why every brief you write orders commit and push BEFORE verification (see "The dispatch brief"). This is not hypothetical: it has happened.
 - Nothing ephemeral is a template, and nothing ephemeral is reused. If the user wants to keep a workflow they liked, that is a deliberate act: tell them it worked and offer to create a real one.
 
 ### Use the seeded Quick Work pair as a SHAPE, never as the machinery
@@ -466,8 +529,8 @@ Do NOT bind them for a job and do NOT assign them to an ephemeral item. They are
 
 	writeCapabilityBlock(&b, modeQuickWork)
 	writeSessionContract(&b)
-	writePlatformPrimer(&b)
-	writeToolList(&b, toolRegistry)
+	writePlatformPrimer(&b, modeQuickWork)
+	writeToolList(&b, toolRegistry, modeQuickWork)
 	writeQuickWorkDispatchRules(&b)
 	writeAdditionalInstructions(&b, cfg)
 

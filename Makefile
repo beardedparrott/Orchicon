@@ -257,6 +257,18 @@ fe-test: ## Run frontend unit/component tests (vitest; Playwright specs live und
 # The single container is the only full-stack deployment (dev + prod as two
 # instances on offset ports). See scripts/container.sh.
 .PHONY: container-build container-rebuild container-up container-down container-status container-logs container-ps runtime-build runtime-daemon runtime-stop
+# Plane residency per rebuild: `host` (the container runs the SERVICES only and
+# the plane runs on the HOST — now the product's default shape; see
+# residency_for in scripts/container.sh, which resolves ${...:-host}) or
+# `container` (the plane runs inside the instance's container, as it did before
+# the host-residency migration).
+#
+# THIS VARIABLE IS NO LONGER THE PRODUCT'S DEFAULT, only this target's. It used
+# to be described as "the launcher's own default stays container", and that
+# stopped being true when the launcher's default moved to host — so
+# `make container-rebuild` is now the one entry point that still produces the
+# OLD shape. rebuild-dev/rebuild-prod override this per target (below).
+residency = container
 container-build: ## Build bin/orchicon + the container image
 	$(MAKE) build
 	scripts/container.sh build
@@ -267,12 +279,24 @@ runtime-daemon: ## Start the host-side workflow runtime daemon
 	scripts/container.sh runtime-daemon
 runtime-stop: ## Stop the host-side workflow runtime daemon
 	scripts/container.sh runtime-stop
-container-rebuild: ## Stop an instance, rebuild the image, start it (usage: make container-rebuild dev|prod)
+container-rebuild: ## Stop an instance, rebuild the image, start it (usage: make container-rebuild dev|prod [residency=host|container])
 	@test -n "$(instance)" || { echo "usage: make container-rebuild instance=dev|prod"; exit 1; }
-	scripts/container.sh down $(instance)
+	# residency is passed down as ENV (per invocation) — never exported globally,
+	# so rebuilding one instance cannot change the other's shape.
+	ORCHICON_PLANE_RESIDENCY="$(residency)" scripts/container.sh down $(instance)
 	$(MAKE) container-build force-fe=1
-	scripts/container.sh up $(instance)
-container-up: ## Start the dev single-container instance
+	ORCHICON_PLANE_RESIDENCY="$(residency)" scripts/container.sh up $(instance)
+# Host-resident plane listeners: the plane binds its loopback address
+# (ORCHICON_HTTP_ADDR → host clients: orch, the GUI) plus the docker bridge
+# address at THIS instance's port, so its run containers can dial it. Both the
+# bind (ORCHICON_HTTP_EXTRA_BIND) and the URL those containers are handed
+# (ORCHICON_PLANE_PUBLIC_URL) come from the ONE place that computes them
+# (`scripts/container.sh plane-bind <dev|prod>`, bridge_bind_env) and
+# `plane-start` picks them up through container.sh's plane_env. Both are PER
+# INSTANCE: never put a globally-shared ORCHICON_PLANE_PUBLIC_URL in a shell
+# profile — a globally-set value points one instance's workers at the other's
+# plane.
+container-up: ## Start the dev single-container instance (ORCHICON_PLANE_RESIDENCY=host opt-in: plane on the host)
 	scripts/container.sh up dev
 container-down: ## Stop the dev single-container instance
 	scripts/container.sh down dev
@@ -303,6 +327,17 @@ container-ps: ## List orchicon container instances
 # there is no separate `make migrate` needed here — running it against the
 # instance's Postgres would conflict with the container-owned DB.
 .PHONY: full-rebuild rebuild-dev rebuild-prod
+# residency propagates to container-rebuild through the make chain: BOTH
+# rebuild-dev and rebuild-prod pass residency=host explicitly, so each rebuild
+# migrates its OWN instance to a host-resident plane and neither can alter the
+# other's shape (the launcher's own default stays `container` — see
+# residency_for in scripts/container.sh; nothing here is ever exported
+# globally).
+#
+# `residency=container` on the command line OVERRIDES the target default (a
+# command-line variable beats a target-specific one), which is the documented
+# rollback: `make rebuild-prod residency=container` puts prod's plane back
+# inside its container.
 full-rebuild: ## One command: binary build + all checks/tests + migrate-hash + image build + instance restart (usage: make full-rebuild instance=dev|prod)
 	@test -n "$(instance)" || { echo "usage: make full-rebuild instance=dev|prod"; exit 1; }
 	$(MAKE) build
@@ -310,12 +345,14 @@ full-rebuild: ## One command: binary build + all checks/tests + migrate-hash + i
 	$(MAKE) migrate-hash
 	$(MAKE) container-rebuild instance=$(instance)
 
-rebuild-dev: ## One command: full checks/tests + rebuild + restart the DEV instance
-	$(MAKE) full-rebuild instance=dev
+rebuild-dev: residency = host
+rebuild-dev: ## One command: full checks/tests + rebuild + restart the DEV instance (plane residency: host)
+	$(MAKE) full-rebuild instance=dev residency=$(residency)
 	$(MAKE) orch-launcher-dev
 
-rebuild-prod: ## One command: full checks/tests + rebuild + restart the PROD instance
-	$(MAKE) full-rebuild instance=prod
+rebuild-prod: residency = host
+rebuild-prod: ## One command: full checks/tests + rebuild + restart the PROD instance (plane residency: host; pass residency=container to keep it in its container)
+	$(MAKE) full-rebuild instance=prod residency=$(residency)
 	$(MAKE) orch-launcher-prod
 
 # --- Dual orch launchers ----------------------------------------------------

@@ -3,7 +3,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { CreateBackupRequest, CreateBackupResponse, DeleteBackupRequest, DeleteBackupResponse, GetSettingsRequest, GetSettingsResponse, ListBackupsRequest, ListBackupsResponse, RestoreBackupRequest, RestoreBackupResponse, UpdateSettingsRequest, UpdateSettingsResponse } from "./settings_service_pb.js";
+import { AddPermissionPolicyEntryRequest, AddPermissionPolicyEntryResponse, CreateBackupRequest, CreateBackupResponse, DeleteBackupRequest, DeleteBackupResponse, GetPermissionPolicyRequest, GetPermissionPolicyResponse, GetSettingsRequest, GetSettingsResponse, ListBackupsRequest, ListBackupsResponse, RemovePermissionPolicyEntryRequest, RemovePermissionPolicyEntryResponse, RestoreBackupRequest, RestoreBackupResponse, UpdateSettingsRequest, UpdateSettingsResponse } from "./settings_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -84,6 +84,39 @@ export const SettingsService = {
       name: "DeleteBackup",
       I: DeleteBackupRequest,
       O: DeleteBackupResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * GetPermissionPolicy returns the policy file path and every entry.
+     *
+     * @generated from rpc orchicon.api.v1.SettingsService.GetPermissionPolicy
+     */
+    getPermissionPolicy: {
+      name: "GetPermissionPolicy",
+      I: GetPermissionPolicyRequest,
+      O: GetPermissionPolicyResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * AddPermissionPolicyEntry adds one entry to the deny or accept list.
+     *
+     * @generated from rpc orchicon.api.v1.SettingsService.AddPermissionPolicyEntry
+     */
+    addPermissionPolicyEntry: {
+      name: "AddPermissionPolicyEntry",
+      I: AddPermissionPolicyEntryRequest,
+      O: AddPermissionPolicyEntryResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * RemovePermissionPolicyEntry removes one entry from the deny or accept list.
+     *
+     * @generated from rpc orchicon.api.v1.SettingsService.RemovePermissionPolicyEntry
+     */
+    removePermissionPolicyEntry: {
+      name: "RemovePermissionPolicyEntry",
+      I: RemovePermissionPolicyEntryRequest,
+      O: RemovePermissionPolicyEntryResponse,
       kind: MethodKind.Unary,
     },
   }

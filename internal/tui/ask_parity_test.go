@@ -40,6 +40,11 @@ type stubAskParity struct {
 	modeID  string
 	modeSet apiv1.ConversationMode
 
+	// fullsendID + fullsendSet record the toggle: the pair a test needs to tell "the write
+	// happened and carried the value the operator meant" from "the dock notice changed".
+	fullsendID  string
+	fullsendSet bool
+
 	compactedID     string
 	compactedReason string
 	compactResp     *apiv1.CompactConversationResponse
@@ -120,6 +125,16 @@ func (s *stubAskParity) SetConversationMode(_ context.Context, req *connect.Requ
 	s.modeID, s.modeSet = req.Msg.GetId(), req.Msg.GetMode()
 	return connect.NewResponse(&apiv1.SetConversationModeResponse{
 		Conversation: &apiv1.Conversation{Id: req.Msg.GetId()},
+	}), nil
+}
+
+func (s *stubAskParity) SetConversationFullsend(_ context.Context, req *connect.Request[apiv1.SetConversationFullsendRequest]) (*connect.Response[apiv1.SetConversationFullsendResponse], error) {
+	s.fullsendID, s.fullsendSet = req.Msg.GetId(), req.Msg.GetEnabled()
+	// The stub ECHOES the value back on the conversation, because that is what the real
+	// service does (Conversation.fullsend is computed from the store the write just set) and
+	// the shell reads the indicator from the reloaded row.
+	return connect.NewResponse(&apiv1.SetConversationFullsendResponse{
+		Conversation: &apiv1.Conversation{Id: req.Msg.GetId(), Fullsend: req.Msg.GetEnabled()},
 	}), nil
 }
 

@@ -21,6 +21,357 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// PermissionPolicyEntry is one rule, with the fact a UI needs to phrase it.
+type PermissionPolicyEntry struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The entry exactly as the operator wrote it (a leading ~ stays a ~), so
+	// it can be removed by the same string.
+	Pattern string `protobuf:"bytes,1,opt,name=pattern,proto3" json:"pattern,omitempty"`
+	// "deny" or "accept".
+	List string `protobuf:"bytes,2,opt,name=list,proto3" json:"list,omitempty"`
+	// overridable is FALSE for deny entries: a session grant cannot override
+	// them, so a client must say so instead of offering a grant that the
+	// refusal will ignore. Accept entries are true.
+	Overridable   bool `protobuf:"varint,3,opt,name=overridable,proto3" json:"overridable,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PermissionPolicyEntry) Reset() {
+	*x = PermissionPolicyEntry{}
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PermissionPolicyEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PermissionPolicyEntry) ProtoMessage() {}
+
+func (x *PermissionPolicyEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PermissionPolicyEntry.ProtoReflect.Descriptor instead.
+func (*PermissionPolicyEntry) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *PermissionPolicyEntry) GetPattern() string {
+	if x != nil {
+		return x.Pattern
+	}
+	return ""
+}
+
+func (x *PermissionPolicyEntry) GetList() string {
+	if x != nil {
+		return x.List
+	}
+	return ""
+}
+
+func (x *PermissionPolicyEntry) GetOverridable() bool {
+	if x != nil {
+		return x.Overridable
+	}
+	return false
+}
+
+type GetPermissionPolicyRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetPermissionPolicyRequest) Reset() {
+	*x = GetPermissionPolicyRequest{}
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetPermissionPolicyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetPermissionPolicyRequest) ProtoMessage() {}
+
+func (x *GetPermissionPolicyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetPermissionPolicyRequest.ProtoReflect.Descriptor instead.
+func (*GetPermissionPolicyRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{1}
+}
+
+type GetPermissionPolicyResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The resolved policy file path (for "edit this file by hand" hints).
+	Path string `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
+	// Deny entries first, then accept entries — the precedence order.
+	Entries       []*PermissionPolicyEntry `protobuf:"bytes,2,rep,name=entries,proto3" json:"entries,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetPermissionPolicyResponse) Reset() {
+	*x = GetPermissionPolicyResponse{}
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetPermissionPolicyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetPermissionPolicyResponse) ProtoMessage() {}
+
+func (x *GetPermissionPolicyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetPermissionPolicyResponse.ProtoReflect.Descriptor instead.
+func (*GetPermissionPolicyResponse) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *GetPermissionPolicyResponse) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *GetPermissionPolicyResponse) GetEntries() []*PermissionPolicyEntry {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
+type AddPermissionPolicyEntryRequest struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Pattern string                 `protobuf:"bytes,1,opt,name=pattern,proto3" json:"pattern,omitempty"`
+	// "deny" or "accept" (required; an empty list name is an error).
+	List          string `protobuf:"bytes,2,opt,name=list,proto3" json:"list,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddPermissionPolicyEntryRequest) Reset() {
+	*x = AddPermissionPolicyEntryRequest{}
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddPermissionPolicyEntryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddPermissionPolicyEntryRequest) ProtoMessage() {}
+
+func (x *AddPermissionPolicyEntryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddPermissionPolicyEntryRequest.ProtoReflect.Descriptor instead.
+func (*AddPermissionPolicyEntryRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *AddPermissionPolicyEntryRequest) GetPattern() string {
+	if x != nil {
+		return x.Pattern
+	}
+	return ""
+}
+
+func (x *AddPermissionPolicyEntryRequest) GetList() string {
+	if x != nil {
+		return x.List
+	}
+	return ""
+}
+
+type AddPermissionPolicyEntryResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The refreshed policy: the client never patches its own copy.
+	Policy        *GetPermissionPolicyResponse `protobuf:"bytes,1,opt,name=policy,proto3" json:"policy,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddPermissionPolicyEntryResponse) Reset() {
+	*x = AddPermissionPolicyEntryResponse{}
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddPermissionPolicyEntryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddPermissionPolicyEntryResponse) ProtoMessage() {}
+
+func (x *AddPermissionPolicyEntryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddPermissionPolicyEntryResponse.ProtoReflect.Descriptor instead.
+func (*AddPermissionPolicyEntryResponse) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *AddPermissionPolicyEntryResponse) GetPolicy() *GetPermissionPolicyResponse {
+	if x != nil {
+		return x.Policy
+	}
+	return nil
+}
+
+type RemovePermissionPolicyEntryRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Pattern       string                 `protobuf:"bytes,1,opt,name=pattern,proto3" json:"pattern,omitempty"`
+	List          string                 `protobuf:"bytes,2,opt,name=list,proto3" json:"list,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemovePermissionPolicyEntryRequest) Reset() {
+	*x = RemovePermissionPolicyEntryRequest{}
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemovePermissionPolicyEntryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemovePermissionPolicyEntryRequest) ProtoMessage() {}
+
+func (x *RemovePermissionPolicyEntryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemovePermissionPolicyEntryRequest.ProtoReflect.Descriptor instead.
+func (*RemovePermissionPolicyEntryRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *RemovePermissionPolicyEntryRequest) GetPattern() string {
+	if x != nil {
+		return x.Pattern
+	}
+	return ""
+}
+
+func (x *RemovePermissionPolicyEntryRequest) GetList() string {
+	if x != nil {
+		return x.List
+	}
+	return ""
+}
+
+type RemovePermissionPolicyEntryResponse struct {
+	state         protoimpl.MessageState       `protogen:"open.v1"`
+	Policy        *GetPermissionPolicyResponse `protobuf:"bytes,1,opt,name=policy,proto3" json:"policy,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemovePermissionPolicyEntryResponse) Reset() {
+	*x = RemovePermissionPolicyEntryResponse{}
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemovePermissionPolicyEntryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemovePermissionPolicyEntryResponse) ProtoMessage() {}
+
+func (x *RemovePermissionPolicyEntryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemovePermissionPolicyEntryResponse.ProtoReflect.Descriptor instead.
+func (*RemovePermissionPolicyEntryResponse) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *RemovePermissionPolicyEntryResponse) GetPolicy() *GetPermissionPolicyResponse {
+	if x != nil {
+		return x.Policy
+	}
+	return nil
+}
+
 type GetSettingsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -29,7 +380,7 @@ type GetSettingsRequest struct {
 
 func (x *GetSettingsRequest) Reset() {
 	*x = GetSettingsRequest{}
-	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[0]
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -41,7 +392,7 @@ func (x *GetSettingsRequest) String() string {
 func (*GetSettingsRequest) ProtoMessage() {}
 
 func (x *GetSettingsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[0]
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -54,7 +405,7 @@ func (x *GetSettingsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSettingsRequest.ProtoReflect.Descriptor instead.
 func (*GetSettingsRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{0}
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{7}
 }
 
 type GetSettingsResponse struct {
@@ -66,7 +417,7 @@ type GetSettingsResponse struct {
 
 func (x *GetSettingsResponse) Reset() {
 	*x = GetSettingsResponse{}
-	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[1]
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -78,7 +429,7 @@ func (x *GetSettingsResponse) String() string {
 func (*GetSettingsResponse) ProtoMessage() {}
 
 func (x *GetSettingsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[1]
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -91,7 +442,7 @@ func (x *GetSettingsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSettingsResponse.ProtoReflect.Descriptor instead.
 func (*GetSettingsResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{1}
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *GetSettingsResponse) GetSettings() *TenantSettings {
@@ -110,7 +461,7 @@ type UpdateSettingsRequest struct {
 
 func (x *UpdateSettingsRequest) Reset() {
 	*x = UpdateSettingsRequest{}
-	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[2]
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -122,7 +473,7 @@ func (x *UpdateSettingsRequest) String() string {
 func (*UpdateSettingsRequest) ProtoMessage() {}
 
 func (x *UpdateSettingsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[2]
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -135,7 +486,7 @@ func (x *UpdateSettingsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateSettingsRequest.ProtoReflect.Descriptor instead.
 func (*UpdateSettingsRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{2}
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *UpdateSettingsRequest) GetSettings() *TenantSettings {
@@ -154,7 +505,7 @@ type UpdateSettingsResponse struct {
 
 func (x *UpdateSettingsResponse) Reset() {
 	*x = UpdateSettingsResponse{}
-	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[3]
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -166,7 +517,7 @@ func (x *UpdateSettingsResponse) String() string {
 func (*UpdateSettingsResponse) ProtoMessage() {}
 
 func (x *UpdateSettingsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[3]
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -179,7 +530,7 @@ func (x *UpdateSettingsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateSettingsResponse.ProtoReflect.Descriptor instead.
 func (*UpdateSettingsResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{3}
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *UpdateSettingsResponse) GetSettings() *TenantSettings {
@@ -199,7 +550,7 @@ type CreateBackupRequest struct {
 
 func (x *CreateBackupRequest) Reset() {
 	*x = CreateBackupRequest{}
-	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[4]
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -211,7 +562,7 @@ func (x *CreateBackupRequest) String() string {
 func (*CreateBackupRequest) ProtoMessage() {}
 
 func (x *CreateBackupRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[4]
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -224,7 +575,7 @@ func (x *CreateBackupRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateBackupRequest.ProtoReflect.Descriptor instead.
 func (*CreateBackupRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{4}
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *CreateBackupRequest) GetDirectory() string {
@@ -245,7 +596,7 @@ type CreateBackupResponse struct {
 
 func (x *CreateBackupResponse) Reset() {
 	*x = CreateBackupResponse{}
-	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[5]
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -257,7 +608,7 @@ func (x *CreateBackupResponse) String() string {
 func (*CreateBackupResponse) ProtoMessage() {}
 
 func (x *CreateBackupResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[5]
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -270,7 +621,7 @@ func (x *CreateBackupResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateBackupResponse.ProtoReflect.Descriptor instead.
 func (*CreateBackupResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{5}
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *CreateBackupResponse) GetName() string {
@@ -304,7 +655,7 @@ type ListBackupsRequest struct {
 
 func (x *ListBackupsRequest) Reset() {
 	*x = ListBackupsRequest{}
-	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[6]
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -316,7 +667,7 @@ func (x *ListBackupsRequest) String() string {
 func (*ListBackupsRequest) ProtoMessage() {}
 
 func (x *ListBackupsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[6]
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -329,7 +680,7 @@ func (x *ListBackupsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBackupsRequest.ProtoReflect.Descriptor instead.
 func (*ListBackupsRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{6}
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ListBackupsRequest) GetDirectory() string {
@@ -348,7 +699,7 @@ type ListBackupsResponse struct {
 
 func (x *ListBackupsResponse) Reset() {
 	*x = ListBackupsResponse{}
-	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[7]
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -360,7 +711,7 @@ func (x *ListBackupsResponse) String() string {
 func (*ListBackupsResponse) ProtoMessage() {}
 
 func (x *ListBackupsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[7]
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -373,7 +724,7 @@ func (x *ListBackupsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBackupsResponse.ProtoReflect.Descriptor instead.
 func (*ListBackupsResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{7}
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ListBackupsResponse) GetBackups() []*BackupEntry {
@@ -394,7 +745,7 @@ type BackupEntry struct {
 
 func (x *BackupEntry) Reset() {
 	*x = BackupEntry{}
-	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[8]
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -406,7 +757,7 @@ func (x *BackupEntry) String() string {
 func (*BackupEntry) ProtoMessage() {}
 
 func (x *BackupEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[8]
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -419,7 +770,7 @@ func (x *BackupEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupEntry.ProtoReflect.Descriptor instead.
 func (*BackupEntry) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{8}
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *BackupEntry) GetName() string {
@@ -454,7 +805,7 @@ type RestoreBackupRequest struct {
 
 func (x *RestoreBackupRequest) Reset() {
 	*x = RestoreBackupRequest{}
-	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[9]
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -466,7 +817,7 @@ func (x *RestoreBackupRequest) String() string {
 func (*RestoreBackupRequest) ProtoMessage() {}
 
 func (x *RestoreBackupRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[9]
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -479,7 +830,7 @@ func (x *RestoreBackupRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestoreBackupRequest.ProtoReflect.Descriptor instead.
 func (*RestoreBackupRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{9}
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *RestoreBackupRequest) GetName() string {
@@ -504,7 +855,7 @@ type RestoreBackupResponse struct {
 
 func (x *RestoreBackupResponse) Reset() {
 	*x = RestoreBackupResponse{}
-	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[10]
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -516,7 +867,7 @@ func (x *RestoreBackupResponse) String() string {
 func (*RestoreBackupResponse) ProtoMessage() {}
 
 func (x *RestoreBackupResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[10]
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -529,7 +880,7 @@ func (x *RestoreBackupResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestoreBackupResponse.ProtoReflect.Descriptor instead.
 func (*RestoreBackupResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{10}
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{17}
 }
 
 type DeleteBackupRequest struct {
@@ -543,7 +894,7 @@ type DeleteBackupRequest struct {
 
 func (x *DeleteBackupRequest) Reset() {
 	*x = DeleteBackupRequest{}
-	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[11]
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -555,7 +906,7 @@ func (x *DeleteBackupRequest) String() string {
 func (*DeleteBackupRequest) ProtoMessage() {}
 
 func (x *DeleteBackupRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[11]
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -568,7 +919,7 @@ func (x *DeleteBackupRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteBackupRequest.ProtoReflect.Descriptor instead.
 func (*DeleteBackupRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{11}
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *DeleteBackupRequest) GetName() string {
@@ -593,7 +944,7 @@ type DeleteBackupResponse struct {
 
 func (x *DeleteBackupResponse) Reset() {
 	*x = DeleteBackupResponse{}
-	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[12]
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -605,7 +956,7 @@ func (x *DeleteBackupResponse) String() string {
 func (*DeleteBackupResponse) ProtoMessage() {}
 
 func (x *DeleteBackupResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[12]
+	mi := &file_orchicon_api_v1_settings_service_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -618,14 +969,32 @@ func (x *DeleteBackupResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteBackupResponse.ProtoReflect.Descriptor instead.
 func (*DeleteBackupResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{12}
+	return file_orchicon_api_v1_settings_service_proto_rawDescGZIP(), []int{19}
 }
 
 var File_orchicon_api_v1_settings_service_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_settings_service_proto_rawDesc = "" +
 	"\n" +
-	"&orchicon/api/v1/settings_service.proto\x12\x0forchicon.api.v1\x1a\x1eorchicon/api/v1/settings.proto\"\x14\n" +
+	"&orchicon/api/v1/settings_service.proto\x12\x0forchicon.api.v1\x1a\x1eorchicon/api/v1/settings.proto\"g\n" +
+	"\x15PermissionPolicyEntry\x12\x18\n" +
+	"\apattern\x18\x01 \x01(\tR\apattern\x12\x12\n" +
+	"\x04list\x18\x02 \x01(\tR\x04list\x12 \n" +
+	"\voverridable\x18\x03 \x01(\bR\voverridable\"\x1c\n" +
+	"\x1aGetPermissionPolicyRequest\"s\n" +
+	"\x1bGetPermissionPolicyResponse\x12\x12\n" +
+	"\x04path\x18\x01 \x01(\tR\x04path\x12@\n" +
+	"\aentries\x18\x02 \x03(\v2&.orchicon.api.v1.PermissionPolicyEntryR\aentries\"O\n" +
+	"\x1fAddPermissionPolicyEntryRequest\x12\x18\n" +
+	"\apattern\x18\x01 \x01(\tR\apattern\x12\x12\n" +
+	"\x04list\x18\x02 \x01(\tR\x04list\"h\n" +
+	" AddPermissionPolicyEntryResponse\x12D\n" +
+	"\x06policy\x18\x01 \x01(\v2,.orchicon.api.v1.GetPermissionPolicyResponseR\x06policy\"R\n" +
+	"\"RemovePermissionPolicyEntryRequest\x12\x18\n" +
+	"\apattern\x18\x01 \x01(\tR\apattern\x12\x12\n" +
+	"\x04list\x18\x02 \x01(\tR\x04list\"k\n" +
+	"#RemovePermissionPolicyEntryResponse\x12D\n" +
+	"\x06policy\x18\x01 \x01(\v2,.orchicon.api.v1.GetPermissionPolicyResponseR\x06policy\"\x14\n" +
 	"\x12GetSettingsRequest\"R\n" +
 	"\x13GetSettingsResponse\x12;\n" +
 	"\bsettings\x18\x01 \x01(\v2\x1f.orchicon.api.v1.TenantSettingsR\bsettings\"T\n" +
@@ -658,14 +1027,17 @@ const file_orchicon_api_v1_settings_service_proto_rawDesc = "" +
 	"\x13DeleteBackupRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1c\n" +
 	"\tdirectory\x18\x02 \x01(\tR\tdirectory\"\x16\n" +
-	"\x14DeleteBackupResponse2\xc2\x04\n" +
+	"\x14DeleteBackupResponse2\xc0\a\n" +
 	"\x0fSettingsService\x12X\n" +
 	"\vGetSettings\x12#.orchicon.api.v1.GetSettingsRequest\x1a$.orchicon.api.v1.GetSettingsResponse\x12a\n" +
 	"\x0eUpdateSettings\x12&.orchicon.api.v1.UpdateSettingsRequest\x1a'.orchicon.api.v1.UpdateSettingsResponse\x12[\n" +
 	"\fCreateBackup\x12$.orchicon.api.v1.CreateBackupRequest\x1a%.orchicon.api.v1.CreateBackupResponse\x12X\n" +
 	"\vListBackups\x12#.orchicon.api.v1.ListBackupsRequest\x1a$.orchicon.api.v1.ListBackupsResponse\x12^\n" +
 	"\rRestoreBackup\x12%.orchicon.api.v1.RestoreBackupRequest\x1a&.orchicon.api.v1.RestoreBackupResponse\x12[\n" +
-	"\fDeleteBackup\x12$.orchicon.api.v1.DeleteBackupRequest\x1a%.orchicon.api.v1.DeleteBackupResponseB\xce\x01\n" +
+	"\fDeleteBackup\x12$.orchicon.api.v1.DeleteBackupRequest\x1a%.orchicon.api.v1.DeleteBackupResponse\x12p\n" +
+	"\x13GetPermissionPolicy\x12+.orchicon.api.v1.GetPermissionPolicyRequest\x1a,.orchicon.api.v1.GetPermissionPolicyResponse\x12\x7f\n" +
+	"\x18AddPermissionPolicyEntry\x120.orchicon.api.v1.AddPermissionPolicyEntryRequest\x1a1.orchicon.api.v1.AddPermissionPolicyEntryResponse\x12\x88\x01\n" +
+	"\x1bRemovePermissionPolicyEntry\x123.orchicon.api.v1.RemovePermissionPolicyEntryRequest\x1a4.orchicon.api.v1.RemovePermissionPolicyEntryResponseB\xce\x01\n" +
 	"\x13com.orchicon.api.v1B\x14SettingsServiceProtoP\x01ZCgithub.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1;apiv1\xa2\x02\x03OAX\xaa\x02\x0fOrchicon.Api.V1\xca\x02\x0fOrchicon\\Api\\V1\xe2\x02\x1bOrchicon\\Api\\V1\\GPBMetadata\xea\x02\x11Orchicon::Api::V1b\x06proto3"
 
 var (
@@ -680,45 +1052,61 @@ func file_orchicon_api_v1_settings_service_proto_rawDescGZIP() []byte {
 	return file_orchicon_api_v1_settings_service_proto_rawDescData
 }
 
-var file_orchicon_api_v1_settings_service_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_orchicon_api_v1_settings_service_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_orchicon_api_v1_settings_service_proto_goTypes = []any{
-	(*GetSettingsRequest)(nil),     // 0: orchicon.api.v1.GetSettingsRequest
-	(*GetSettingsResponse)(nil),    // 1: orchicon.api.v1.GetSettingsResponse
-	(*UpdateSettingsRequest)(nil),  // 2: orchicon.api.v1.UpdateSettingsRequest
-	(*UpdateSettingsResponse)(nil), // 3: orchicon.api.v1.UpdateSettingsResponse
-	(*CreateBackupRequest)(nil),    // 4: orchicon.api.v1.CreateBackupRequest
-	(*CreateBackupResponse)(nil),   // 5: orchicon.api.v1.CreateBackupResponse
-	(*ListBackupsRequest)(nil),     // 6: orchicon.api.v1.ListBackupsRequest
-	(*ListBackupsResponse)(nil),    // 7: orchicon.api.v1.ListBackupsResponse
-	(*BackupEntry)(nil),            // 8: orchicon.api.v1.BackupEntry
-	(*RestoreBackupRequest)(nil),   // 9: orchicon.api.v1.RestoreBackupRequest
-	(*RestoreBackupResponse)(nil),  // 10: orchicon.api.v1.RestoreBackupResponse
-	(*DeleteBackupRequest)(nil),    // 11: orchicon.api.v1.DeleteBackupRequest
-	(*DeleteBackupResponse)(nil),   // 12: orchicon.api.v1.DeleteBackupResponse
-	(*TenantSettings)(nil),         // 13: orchicon.api.v1.TenantSettings
+	(*PermissionPolicyEntry)(nil),               // 0: orchicon.api.v1.PermissionPolicyEntry
+	(*GetPermissionPolicyRequest)(nil),          // 1: orchicon.api.v1.GetPermissionPolicyRequest
+	(*GetPermissionPolicyResponse)(nil),         // 2: orchicon.api.v1.GetPermissionPolicyResponse
+	(*AddPermissionPolicyEntryRequest)(nil),     // 3: orchicon.api.v1.AddPermissionPolicyEntryRequest
+	(*AddPermissionPolicyEntryResponse)(nil),    // 4: orchicon.api.v1.AddPermissionPolicyEntryResponse
+	(*RemovePermissionPolicyEntryRequest)(nil),  // 5: orchicon.api.v1.RemovePermissionPolicyEntryRequest
+	(*RemovePermissionPolicyEntryResponse)(nil), // 6: orchicon.api.v1.RemovePermissionPolicyEntryResponse
+	(*GetSettingsRequest)(nil),                  // 7: orchicon.api.v1.GetSettingsRequest
+	(*GetSettingsResponse)(nil),                 // 8: orchicon.api.v1.GetSettingsResponse
+	(*UpdateSettingsRequest)(nil),               // 9: orchicon.api.v1.UpdateSettingsRequest
+	(*UpdateSettingsResponse)(nil),              // 10: orchicon.api.v1.UpdateSettingsResponse
+	(*CreateBackupRequest)(nil),                 // 11: orchicon.api.v1.CreateBackupRequest
+	(*CreateBackupResponse)(nil),                // 12: orchicon.api.v1.CreateBackupResponse
+	(*ListBackupsRequest)(nil),                  // 13: orchicon.api.v1.ListBackupsRequest
+	(*ListBackupsResponse)(nil),                 // 14: orchicon.api.v1.ListBackupsResponse
+	(*BackupEntry)(nil),                         // 15: orchicon.api.v1.BackupEntry
+	(*RestoreBackupRequest)(nil),                // 16: orchicon.api.v1.RestoreBackupRequest
+	(*RestoreBackupResponse)(nil),               // 17: orchicon.api.v1.RestoreBackupResponse
+	(*DeleteBackupRequest)(nil),                 // 18: orchicon.api.v1.DeleteBackupRequest
+	(*DeleteBackupResponse)(nil),                // 19: orchicon.api.v1.DeleteBackupResponse
+	(*TenantSettings)(nil),                      // 20: orchicon.api.v1.TenantSettings
 }
 var file_orchicon_api_v1_settings_service_proto_depIdxs = []int32{
-	13, // 0: orchicon.api.v1.GetSettingsResponse.settings:type_name -> orchicon.api.v1.TenantSettings
-	13, // 1: orchicon.api.v1.UpdateSettingsRequest.settings:type_name -> orchicon.api.v1.TenantSettings
-	13, // 2: orchicon.api.v1.UpdateSettingsResponse.settings:type_name -> orchicon.api.v1.TenantSettings
-	8,  // 3: orchicon.api.v1.ListBackupsResponse.backups:type_name -> orchicon.api.v1.BackupEntry
-	0,  // 4: orchicon.api.v1.SettingsService.GetSettings:input_type -> orchicon.api.v1.GetSettingsRequest
-	2,  // 5: orchicon.api.v1.SettingsService.UpdateSettings:input_type -> orchicon.api.v1.UpdateSettingsRequest
-	4,  // 6: orchicon.api.v1.SettingsService.CreateBackup:input_type -> orchicon.api.v1.CreateBackupRequest
-	6,  // 7: orchicon.api.v1.SettingsService.ListBackups:input_type -> orchicon.api.v1.ListBackupsRequest
-	9,  // 8: orchicon.api.v1.SettingsService.RestoreBackup:input_type -> orchicon.api.v1.RestoreBackupRequest
-	11, // 9: orchicon.api.v1.SettingsService.DeleteBackup:input_type -> orchicon.api.v1.DeleteBackupRequest
-	1,  // 10: orchicon.api.v1.SettingsService.GetSettings:output_type -> orchicon.api.v1.GetSettingsResponse
-	3,  // 11: orchicon.api.v1.SettingsService.UpdateSettings:output_type -> orchicon.api.v1.UpdateSettingsResponse
-	5,  // 12: orchicon.api.v1.SettingsService.CreateBackup:output_type -> orchicon.api.v1.CreateBackupResponse
-	7,  // 13: orchicon.api.v1.SettingsService.ListBackups:output_type -> orchicon.api.v1.ListBackupsResponse
-	10, // 14: orchicon.api.v1.SettingsService.RestoreBackup:output_type -> orchicon.api.v1.RestoreBackupResponse
-	12, // 15: orchicon.api.v1.SettingsService.DeleteBackup:output_type -> orchicon.api.v1.DeleteBackupResponse
-	10, // [10:16] is the sub-list for method output_type
-	4,  // [4:10] is the sub-list for method input_type
-	4,  // [4:4] is the sub-list for extension type_name
-	4,  // [4:4] is the sub-list for extension extendee
-	0,  // [0:4] is the sub-list for field type_name
+	0,  // 0: orchicon.api.v1.GetPermissionPolicyResponse.entries:type_name -> orchicon.api.v1.PermissionPolicyEntry
+	2,  // 1: orchicon.api.v1.AddPermissionPolicyEntryResponse.policy:type_name -> orchicon.api.v1.GetPermissionPolicyResponse
+	2,  // 2: orchicon.api.v1.RemovePermissionPolicyEntryResponse.policy:type_name -> orchicon.api.v1.GetPermissionPolicyResponse
+	20, // 3: orchicon.api.v1.GetSettingsResponse.settings:type_name -> orchicon.api.v1.TenantSettings
+	20, // 4: orchicon.api.v1.UpdateSettingsRequest.settings:type_name -> orchicon.api.v1.TenantSettings
+	20, // 5: orchicon.api.v1.UpdateSettingsResponse.settings:type_name -> orchicon.api.v1.TenantSettings
+	15, // 6: orchicon.api.v1.ListBackupsResponse.backups:type_name -> orchicon.api.v1.BackupEntry
+	7,  // 7: orchicon.api.v1.SettingsService.GetSettings:input_type -> orchicon.api.v1.GetSettingsRequest
+	9,  // 8: orchicon.api.v1.SettingsService.UpdateSettings:input_type -> orchicon.api.v1.UpdateSettingsRequest
+	11, // 9: orchicon.api.v1.SettingsService.CreateBackup:input_type -> orchicon.api.v1.CreateBackupRequest
+	13, // 10: orchicon.api.v1.SettingsService.ListBackups:input_type -> orchicon.api.v1.ListBackupsRequest
+	16, // 11: orchicon.api.v1.SettingsService.RestoreBackup:input_type -> orchicon.api.v1.RestoreBackupRequest
+	18, // 12: orchicon.api.v1.SettingsService.DeleteBackup:input_type -> orchicon.api.v1.DeleteBackupRequest
+	1,  // 13: orchicon.api.v1.SettingsService.GetPermissionPolicy:input_type -> orchicon.api.v1.GetPermissionPolicyRequest
+	3,  // 14: orchicon.api.v1.SettingsService.AddPermissionPolicyEntry:input_type -> orchicon.api.v1.AddPermissionPolicyEntryRequest
+	5,  // 15: orchicon.api.v1.SettingsService.RemovePermissionPolicyEntry:input_type -> orchicon.api.v1.RemovePermissionPolicyEntryRequest
+	8,  // 16: orchicon.api.v1.SettingsService.GetSettings:output_type -> orchicon.api.v1.GetSettingsResponse
+	10, // 17: orchicon.api.v1.SettingsService.UpdateSettings:output_type -> orchicon.api.v1.UpdateSettingsResponse
+	12, // 18: orchicon.api.v1.SettingsService.CreateBackup:output_type -> orchicon.api.v1.CreateBackupResponse
+	14, // 19: orchicon.api.v1.SettingsService.ListBackups:output_type -> orchicon.api.v1.ListBackupsResponse
+	17, // 20: orchicon.api.v1.SettingsService.RestoreBackup:output_type -> orchicon.api.v1.RestoreBackupResponse
+	19, // 21: orchicon.api.v1.SettingsService.DeleteBackup:output_type -> orchicon.api.v1.DeleteBackupResponse
+	2,  // 22: orchicon.api.v1.SettingsService.GetPermissionPolicy:output_type -> orchicon.api.v1.GetPermissionPolicyResponse
+	4,  // 23: orchicon.api.v1.SettingsService.AddPermissionPolicyEntry:output_type -> orchicon.api.v1.AddPermissionPolicyEntryResponse
+	6,  // 24: orchicon.api.v1.SettingsService.RemovePermissionPolicyEntry:output_type -> orchicon.api.v1.RemovePermissionPolicyEntryResponse
+	16, // [16:25] is the sub-list for method output_type
+	7,  // [7:16] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_settings_service_proto_init() }
@@ -733,7 +1121,7 @@ func file_orchicon_api_v1_settings_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_settings_service_proto_rawDesc), len(file_orchicon_api_v1_settings_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   13,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

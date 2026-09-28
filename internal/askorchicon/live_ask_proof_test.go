@@ -29,7 +29,9 @@ func TestLiveAskNativeToolParityProof(t *testing.T) {
 	}
 	r := testToolRegistry()
 	p := (&Service{toolRegistry: r}).NativeAskTools()
-	restore := askFileRootStub(func(_ context.Context, _ *db.Pool) (string, error) { return dir, nil })
+	restore := askFileRootStub(func(_ context.Context, _ *db.Pool) (AskFileScope, error) {
+		return AskFileScope{Dir: dir, FromConversation: true}, nil
+	})
 	defer restore()
 	ctx := context.Background()
 

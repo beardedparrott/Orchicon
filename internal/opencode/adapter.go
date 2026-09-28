@@ -33,8 +33,8 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/db"
-	"github.com/beardedparrott/orchicon/internal/fileedit"
 	"github.com/beardedparrott/orchicon/internal/domain"
+	"github.com/beardedparrott/orchicon/internal/fileedit"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
@@ -61,6 +61,13 @@ type Adapter struct {
 	// host is the always-on host opencode serve for the in-process
 	// (local) execution population. Session-transport only.
 	host *HostServe
+
+	// askHost is the Ask Orchicon serve, built with the INTERACTIVE permission
+	// profile (see NewAskHostServe). Ask's turn surface resolves its serve
+	// through chatHost(a.askHost, a.host); every worker path keeps a.host. Nil
+	// falls back to the worker serve — the pre-split behaviour, which is what
+	// tests and an unconfigured plane get.
+	askHost *HostServe
 
 	// rt is the workflow runtime daemon client. When non-nil AND an
 	// execution carries a RuntimeWorkflowID, the adapter reaches that
@@ -135,6 +142,11 @@ func (a *Adapter) SetRuntimeClient(rt *runtime.Client) { a.rt = rt }
 // executions fail fast (the one-shot subprocess path was removed). It is
 // the opencode implementation of scheduler.ConfigurableBridge.
 func (a *Adapter) SetHostServe(hs *HostServe) { a.host = hs }
+
+// SetAskHostServe injects the dedicated Ask Orchicon serve (the interactive
+// permission profile). Nil leaves Ask on the worker serve, so an unconfigured
+// plane behaves exactly as it did before the profile split.
+func (a *Adapter) SetAskHostServe(hs *HostServe) { a.askHost = hs }
 
 // SendExecutionMessage routes a mid-run human message into a live session
 // execution. It does NOT create a new execution, work item, or workflow
@@ -1842,4 +1854,3 @@ func projectMount(projectDir string) []runtime.MountSpec {
 	}
 	return []runtime.MountSpec{{Source: projectDir, Dest: projectDir}}
 }
-

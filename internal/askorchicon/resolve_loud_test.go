@@ -44,6 +44,10 @@ func (loudStubBridge) AbortConversationSession(context.Context, string) error { 
 
 func (loudStubBridge) ReplyPermission(context.Context, string, string) error { return nil }
 
+func (loudStubBridge) ReplyPermissionDecision(context.Context, string, string, string) error {
+	return nil
+}
+
 // `claude` is a LIVE case, not a hypothetical: it is DECLARED in the builtin
 // provider catalog (internal/adapter/providers.go AddAdapterKind("claude", …)),
 // so a `claude/anthropic/…` ref parses as a known adapter — but no bridge

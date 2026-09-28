@@ -121,6 +121,11 @@ type Dependencies struct {
 	ProvidersService *providers.Service
 	// PostgresDSN is the Postgres connection string for backup/restore.
 	PostgresDSN string
+
+	// PermissionPolicyPath is the operator's persistent permission policy
+	// file (ORCHICON_PERMISSION_POLICY). Empty falls back to
+	// permpolicy.DefaultPath() inside the settings service.
+	PermissionPolicyPath string
 	// RuntimeClient talks to the host-side runtime daemon over its unix
 	// socket (build/remove runtime images). Nil when the daemon is not
 	// configured (headless serve).
@@ -368,6 +373,7 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 
 	// SettingsService — tenant-level configuration defaults.
 	settingsSvc := settings.New(deps.Pool, deps.Log, deps.PostgresDSN)
+	settingsSvc.SetPermissionPolicyPath(deps.PermissionPolicyPath)
 	// The settings validator shares the CLI-aware registry (composed above):
 	// the validator must agree with the picker or every CLI-namespace ref
 	// the picker offered fails at save with "provider not found".

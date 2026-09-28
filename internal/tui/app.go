@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -178,6 +179,17 @@ type App struct {
 	chatCmds     chan tea.Cmd  // goroutine follow-ups (watch re-dial, poll)
 	chatFocus    focusMode
 	mouseEnabled bool // tea.WithMouseCellMotion is on; footer shows "Mouse Enabled"
+
+	// sessionGrants is the TUI-side mirror of "ask once per directory per session": the directories
+	// this conversation has been granted. The PLANE is the real enforcer (that is where the tool
+	// runs), and this mirror is what lets the shell suppress a second card AND show the operator what
+	// they have allowed — a permission system that escalates silently is the failure the roll-up exists
+	// to prevent.
+	sessionGrants *sessionGrantStore
+	// permStore is the PERSISTENT allow/deny list (the FILE is the source of truth; storage is the
+	// sibling policy task's). nil means the plane cannot answer, and every surface says so rather than
+	// fabricating a list.
+	permStore chat.PermissionStore
 
 	// clip is the frame the renderer last painted plus the drag-select in progress over it.
 	// A POINTER because App is copied on every Update/View (clipboard.go).
@@ -474,6 +486,7 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string, o
 		clip:            &clipState{},
 		screens:         map[TabID]Screen{},
 		chatStore:       &chatStore{items: map[string][]chat.ChatItem{}},
+		sessionGrants:   newSessionGrantStore(),
 		execSessions:    map[string][]chat.ChatItem{},
 		loaded:          map[TabID]bool{},
 		chatStreams:     map[string]*kit2.Stream{},
@@ -2896,6 +2909,33 @@ func (s *chatStore) append(convID string, item chat.ChatItem) {
 	s.mu.Unlock()
 }
 
+// consentState finds a pending ask's live state by id. The pointer is the SAME
+// object the transcript item holds, so a mutation here is what the next repaint
+// draws.
+func (s *chatStore) consentState(convID, askID string) *chat.ConsentState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.items[convID] {
+		it := &s.items[convID][i]
+		if it.Kind == chat.KindConsent && it.AskID == askID {
+			return it.Consent
+		}
+	}
+	return nil
+}
+
+// hasPendingConsent reports whether the conversation carries an unresolved ask.
+func (s *chatStore) hasPendingConsent(convID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, it := range s.items[convID] {
+		if it.Kind == chat.KindConsent && it.Consent != nil && it.Consent.Pending() {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *chatStore) isReconnecting(convID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -3069,12 +3109,115 @@ func (s *chatStore) replace(convID string, items []chat.ChatItem) {
 		if it.Kind == chat.KindUser && strings.HasPrefix(it.Key, "draft-") && !matchesAny(durableUser, it.Text) {
 			out = append(out, it) // the durable view has not caught up yet
 		}
+		// A PENDING consent card is LIVE-ONLY, so the durable view can never
+		// carry it and this loop is its only chance to survive.
+		//
+		// An in-flight decision has NO durable row by design: the transcript
+		// records the OUTCOME (permission.allow / .deny / .expired), never the open
+		// ask. So a replace dropped the card the moment any poll landed — and a
+		// poll lands on every completion and every liveness ticking. That is why
+		// the permission card flashed and vanished, and why the operator reported
+		// that no card ever appeared: it was drawn, then wiped, before it could be
+		// clicked.
+		//
+		// Kept only while PENDING: a SETTLED card is either already recorded
+		// durably (its consent record) or about to be, so keeping it here would
+		// render it twice.
+		if it.Kind == chat.KindConsent && it.Consent != nil && it.Consent.Pending() {
+			out = append(out, it)
+		}
 	}
 	if len(out) != len(items) {
 		chat.SortChronologically(out)
 	}
 	s.items[convID] = out
 	s.mu.Unlock()
+}
+
+// settleAsk records a decision that was made SOMEWHERE ELSE, so this client's copy of
+// the card stops being a choice. Nil-safe and idempotent: an ask that is not in this
+// conversation, or is already settled, is left alone.
+//
+// The OUTCOME names what actually happened, which is why it is carried rather than
+// assumed: "allow_once" / "allow_session" / "deny" is what the operator chose, and
+// "answered" / "expired" are the outcomes no client can infer from its own state.
+func (s *chatStore) settleAsk(convID, askID, outcome, answer string) {
+	if s == nil || askID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.items[convID] {
+		it := &s.items[convID][i]
+		if it.Kind != chat.KindConsent || it.AskID != askID || it.Consent == nil {
+			continue
+		}
+		it.Consent.Decision = consentDecisionFromOutcome(outcome)
+		it.Consent.Choice = answer
+		it.Consent.Note = ""
+		it.Consent.OtherMode = false
+		return
+	}
+}
+
+// consentDecisionFromOutcome maps the wire's outcome name onto the local decision the
+// renderer records. An UNRECOGNISED outcome settles the card WITHOUT claiming a
+// decision, using DecisionSettled — the same value the turn-end sweep uses for "this
+// client no longer knows what happened". Reporting an unknown outcome as "allow once"
+// would claim a permission was granted on the strength of a value we did not understand.
+func consentDecisionFromOutcome(outcome string) chat.ConsentDecision {
+	switch outcome {
+	case "allow_once":
+		return chat.DecisionAllowOnce
+	case "allow_session":
+		return chat.DecisionAllowSession
+	case "deny":
+		return chat.DecisionDeny
+	case "answered":
+		return chat.DecisionAnswer
+	case "expired":
+		return chat.DecisionDeny
+	default:
+		return chat.DecisionSettled
+	}
+}
+
+// settleStaleConsent resolves every PENDING consent card for a conversation whose
+// turn has ENDED.
+//
+// IT IS AN INVARIANT, NOT A HEURISTIC. A permission ask BLOCKS the turn — the adapter
+// holds the tool call on the decision, and the collector answers `reject` for anything
+// still open when the turn finalizes — so once a turn is over there CANNOT be a pending
+// ask. A card still marked pending at that point is this client's stale copy of one that
+// was answered by the OTHER client or expired there.
+//
+// Without this the copy stayed pending forever and the operator hit it exactly: "the
+// choice box is still there for permissions" in the GUI after answering in the TUI. Each
+// client only ever cleared a card IT had answered (the TUI in ConsentResolve, the GUI in
+// handleAskDecision), so a decision made anywhere else left the other one showing a live
+// card that could not be acted on.
+//
+// SETTLED, NOT REMOVED: the card is the record that a permission was asked for and what
+// it covered, which someone scrolling back is entitled to see. It just stops being a
+// choice.
+//
+// KNOWN LIMIT, stated rather than hidden: this fires at TURN END, so with two clients
+// open on one conversation the other client's card stays visible (and inert) until then.
+// Closing that window needs the server to PUBLISH the resolution to the live turn — the
+// same channel that carried the ask — which is a wire change rather than a client sweep.
+func (s *chatStore) settleStaleConsent(convID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	items := s.items[convID]
+	for i := range items {
+		it := &items[i]
+		if it.Kind != chat.KindConsent || it.Consent == nil || !it.Consent.Pending() {
+			continue
+		}
+		it.Consent.Decision = chat.DecisionSettled
+		it.Consent.Note = ""
+		it.Consent.OtherMode = false
+	}
 }
 
 func (s *chatStore) snapshot(convID string) []chat.ChatItem {
@@ -3582,6 +3725,185 @@ func (m *App) transcriptCodeBlockAtFrameRow(frameRow int) (string, bool) {
 	return "", false
 }
 
+// transcriptCardOptionAtFrameRow resolves a click at a FRAME row to the option under it, for EITHER
+// interactive card — the clarifying question AND the permission ask.
+//
+// THE PERMISSION CARD USED TO BE KEYBOARD-ONLY. The question card answered a click here; the
+// permission card could only be driven by clicking into it and then arrowing, which the operator hit
+// immediately: "I couldn't click on it in the TUI. I had to click into the card then use the keyboard
+// to select it." Two cards for the same kind of decision behaved differently, so which gesture works
+// was a coin flip. Both are clickable now, and both still take the keyboard (the consent card's key
+// handler is unchanged).
+//
+// It returns the item KIND as well as the label, because the two cards DO different things with the
+// answer: a question's label is sent as the next user message, a permission's label is a DECISION.
+//
+// Same three coordinate spaces as the copy rules (frame row → body row → body line → item), and the
+// same derived body-top row — the geometry comes from the render that drew the card (ItemSpan.Options),
+// so a click cannot resolve against a layout the screen is not showing.
+func (m *App) transcriptCardOptionAtFrameRow(frameRow int) (chat.ItemKind, string, bool) {
+	str := m.TranscriptStream(m.chatConvID)
+	if str == nil {
+		return "", "", false
+	}
+	line := str.LineAtRow(frameRow - m.transcriptBodyTopRow())
+	if line < 0 {
+		return "", "", false
+	}
+	for _, sp := range m.transcriptSpans[m.chatConvID] {
+		if sp.Kind != chat.KindAsk && sp.Kind != chat.KindConsent {
+			continue
+		}
+		if !sp.Contains(line) {
+			continue
+		}
+		label, ok := sp.OptionAt(line)
+		if !ok {
+			return "", "", false // the card's body or header: not a choice
+		}
+		// A SETTLED card is no longer a choice. For the question that is "a later user message
+		// exists"; for the permission it is "no longer pending". Without this a click on a stale
+		// card would re-send, or re-decide, something already answered.
+		if sp.Kind == chat.KindAsk && m.askCardSettled(sp.Key) {
+			return "", "", false
+		}
+		if sp.Kind == chat.KindConsent {
+			if _, st, ok := m.pendingConsentItem(); !ok || !st.Pending() {
+				return "", "", false
+			}
+		}
+		return sp.Kind, label, true
+	}
+	return "", "", false
+}
+
+// pendingConsentItem finds the open permission/question card in the transcript, with the id and the
+// live state a decision needs. Exactly one can be pending at a time (the screen claims the keyboard
+// for it), so the first is the one.
+func (m *App) pendingConsentItem() (string, *chat.ConsentState, bool) {
+	if m.chatStore == nil || m.chatConvID == "" {
+		return "", nil, false
+	}
+	for _, it := range m.chatStore.snapshot(m.chatConvID) {
+		if it.Kind == chat.KindConsent && it.Consent != nil && it.Consent.Pending() {
+			return it.AskID, it.Consent, true
+		}
+	}
+	return "", nil, false
+}
+
+// consentDecideFromRow applies a CLICK on a card row: a question's label goes through the ordinary send
+// path, a permission's label becomes the decision. Both are the same outcomes the keyboard produces, so
+// the two gestures cannot diverge.
+//
+// THE HIGHLIGHT FOLLOWS THE CLICK. The operator: "when I clicked on the permission to select 'approve all
+// session', it accepted my click but the bar didn't move down to that option to give a visual indication
+// that it was selected." Moving Sel onto the clicked row first means the frame that renders while the
+// reply is in flight shows WHICH row was hit — otherwise a click and a keyboard arrow produced visibly
+// different feedback for the same outcome.
+func (m *App) consentDecideFromRow(label string) tea.Cmd {
+	askID, st, ok := m.pendingConsentItem()
+	if !ok {
+		return nil
+	}
+	// THE ROW IS RESOLVED BY ITS INDEX, AND THE DECISION COMES FROM THE INDEX TOO.
+	//
+	// The label is used only to FIND the row the click landed on. Turning that row into a
+	// decision is DecisionForRow's job, and it keys on the index — never on the label text.
+	// Matching the TEXT was the old shape, with "allow once" as the fall-through; once the
+	// session row names a directory its label can equal no fixed constant, so every click on
+	// it would have become "allow once" with no error anywhere.
+	row := -1
+	for i, l := range st.Ask.OptionLabels() {
+		if l == label {
+			row = i
+			break
+		}
+	}
+	if row < 0 {
+		return nil
+	}
+	st.Sel = row
+	// A QUESTION card rides the same KindConsent item, and a click on it ANSWERS rather than decides.
+	//
+	// It goes through ConsentResolve like every other card row, NOT through the old
+	// AnswerQuestion-as-next-message path: a blocking question is answered by the reply
+	// RPC, which delivers the operator's words as the ask_user tool result and resumes
+	// the PAUSED turn. Sending it as a new user message would leave the blocked call
+	// blocked and start a second turn on top of it.
+	if st.Ask.Kind == chat.AskQuestion {
+		return m.ConsentResolve(askID, chat.DecisionAnswer, label)
+	}
+	dec, ok := st.Ask.DecisionForRow(row)
+	if !ok {
+		// A non-choice row (a disabled session row): the click is a no-op rather than a
+		// decision nobody made.
+		return nil
+	}
+	return m.ConsentResolve(askID, dec, label)
+}
+
+// transcriptAskOptionAtFrameRow resolves a click at a FRAME row to the LABEL of the clarifying-question
+// option under it, when the click landed on an option of an UNANSWERED card.
+//
+// THE INTERACTIVE HALF OF THE ask_user CARD. The tool RECORDED the question and the turn ended; the operator's
+// answer is the next user message, so a click on an option sends that option's label through the ordinary send
+// path (Controller.AnswerQuestion → Send) — no rendezvous, no second reply channel, no blocking model. The
+// card is a record whose turn is already COMPLETE, so this must never grow a wait.
+//
+// Same three coordinate spaces as the copy rules (frame row → body row → body line → item), and the same
+// derived body-top row — the geometry comes from the render that drew the card (ItemSpan.Options), so a click
+// cannot resolve against a layout the screen is not showing.
+//
+// AN ANSWERED CARD IS SETTLED, and the rule is the web client's: a later USER message exists, so the question
+// has been answered and its options are shown but no longer clickable. Without it, a click on a stale card
+// would re-send a choice the operator already made.
+func (m *App) transcriptAskOptionAtFrameRow(frameRow int) (string, bool) {
+	str := m.TranscriptStream(m.chatConvID)
+	if str == nil {
+		return "", false
+	}
+	line := str.LineAtRow(frameRow - m.transcriptBodyTopRow())
+	if line < 0 {
+		return "", false
+	}
+	for _, sp := range m.transcriptSpans[m.chatConvID] {
+		if sp.Kind != chat.KindAsk || !sp.Contains(line) {
+			continue
+		}
+		label, ok := sp.OptionAt(line)
+		if !ok {
+			return "", false // the question text or the card's header: not a choice
+		}
+		if m.askCardSettled(sp.Key) {
+			return "", false
+		}
+		return label, true
+	}
+	return "", false
+}
+
+// askCardSettled reports whether a clarifying-question card has been ANSWERED.
+//
+// IT ASKS THE ASK'S OWN RESULT. It used to ask "has a later USER message appeared?",
+// which was right while answering SENT the choice as the next message — and became
+// permanently false the moment ask_user was made blocking, because the answer now
+// arrives as the tool RESULT and nothing follows the message. The card therefore
+// stayed clickable forever, which the operator reported as "the Orchicon asks card
+// does not go away when you select something".
+func (m *App) askCardSettled(key string) bool {
+	if m.chatStore == nil || key == "" {
+		return false
+	}
+	for _, it := range m.chatStore.snapshot(m.chatConvID) {
+		if it.Key != key {
+			continue
+		}
+		return it.Ask != nil && it.Ask.Answered
+	}
+	return false
+}
+
 // transcriptBodyTopRow is the frame row at which the transcript's FIRST body line is drawn.
 func (m *App) transcriptBodyTopRow() int {
 	fieldRows := 0
@@ -3660,7 +3982,15 @@ func (m *App) onStreamDone(msg chat.StreamDoneMsg) tea.Cmd {
 	// THE GENERATION IS PASSED THROUGH, and it is what keeps an interjection from ending its own turn: the
 	// superseded stream closes too, and its close must not clear the slot belonging to the turn that replaced
 	// it. See convState.gen.
-	m.chat.EndStream(msg.ConvID, msg.Gen)
+	ended := m.chat.EndStream(msg.ConvID, msg.Gen)
+	if ended {
+		// THE TURN IS OVER, SO NO CARD CAN STILL BE PENDING. A permission ask blocks its
+		// turn and the collector expires anything still open at finalize, so a pending
+		// card here was answered in the OTHER client (or expired there) — see
+		// settleStaleConsent. Guarded by `ended` because a SUPERSEDED stream closes too,
+		// and settling on that close would kill a card belonging to the live turn.
+		m.chatStore.settleStaleConsent(msg.ConvID)
+	}
 	// A finished turn is when new usage lands, so this is the LIVE update: the
 	// stat strip re-reads the session's tokens / cache / cost and refreshes.
 	//
@@ -4057,4 +4387,217 @@ func (m *App) sendFromComposer(text string) tea.Cmd {
 	// first token lands.
 	m.refreshComposerHint()
 	return tea.Batch(m.sendChat(m.chatConvID, text, preamble), m.onChatWake())
+}
+
+// ---------------------------------------------------------------------------
+// consent card: the shell's half (see internal/tui/screens/ask/consent.go)
+// ---------------------------------------------------------------------------
+
+// sessionGrantStore mirrors the session's directory grants for one conversation.
+type sessionGrantStore struct {
+	mu     sync.Mutex
+	grants map[string]map[string]chat.SessionGrant
+}
+
+func newSessionGrantStore() *sessionGrantStore {
+	return &sessionGrantStore{grants: map[string]map[string]chat.SessionGrant{}}
+}
+
+func (s *sessionGrantStore) grant(convID, dir, tool string) {
+	if dir == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	byDir, ok := s.grants[convID]
+	if !ok {
+		byDir = map[string]chat.SessionGrant{}
+		s.grants[convID] = byDir
+	}
+	g := byDir[dir]
+	g.Directory = dir
+	if g.Tool == "" {
+		g.Tool = tool
+	}
+	g.Count++
+	byDir[dir] = g
+}
+
+func (s *sessionGrantStore) list(convID string) []chat.SessionGrant {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	byDir := s.grants[convID]
+	out := make([]chat.SessionGrant, 0, len(byDir))
+	for _, g := range byDir {
+		out = append(out, g)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Directory < out[j].Directory })
+	return out
+}
+
+func (s *sessionGrantStore) revoke(convID, dir string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.grants[convID], dir)
+}
+
+func (s *sessionGrantStore) granted(convID, dir string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.grants[convID][dir]
+	return ok
+}
+
+// SetPermissionStore wires the persistent allow/deny list. Called by the host
+// once the plane's policy store exists; absent, the TUI says "unavailable".
+func (m *App) SetPermissionStore(s chat.PermissionStore) { m.permStore = s }
+
+// ConsentStore exposes the persistent store to the Ask screen's overlays.
+func (m *App) ConsentStore() (chat.PermissionStore, bool) {
+	if m.permStore == nil {
+		return nil, false
+	}
+	return m.permStore, true
+}
+
+// ConsentGrants lists the session grants for a conversation.
+func (m *App) ConsentGrants(convID string) ([]chat.SessionGrant, bool) {
+	return m.sessionGrants.list(convID), true
+}
+
+// ConsentRevoke drops a session grant.
+func (m *App) ConsentRevoke(convID, directory string) error {
+	m.sessionGrants.revoke(convID, directory)
+	return nil
+}
+
+// ConsentSend sends text as the next user message (the clarifying-question
+// card's answer).
+func (m *App) ConsentSend(text string) tea.Cmd { return m.SendUserMessage(text) }
+
+// SendUserMessage sends text as the next user message through the COMPOSER'S
+// OWN FUNNEL — the same optimistic echo, the same context preamble, the same
+// stream, the same wake. ONE send path, because a second one would drift from
+// the first in exactly the ways that matter (preamble, attachments, dedupe).
+func (m *App) SendUserMessage(text string) tea.Cmd {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	preamble := m.contextPreamble()
+	if id, ok := m.runningExecutionID(); ok {
+		return m.interjectExecution(id, text)
+	}
+	if m.chatConvID == "" {
+		return m.createConversationAndSend(text, preamble)
+	}
+	m.chatStore.append(m.chatConvID, chat.ChatItem{
+		Kind: chat.KindUser, Text: text, At: time.Now().UnixMilli(),
+		Key: fmt.Sprintf("draft-%d", time.Now().UnixNano()), Live: true,
+	})
+	m.refreshComposerHint()
+	return tea.Batch(m.sendChat(m.chatConvID, text, preamble), m.onChatWake())
+}
+
+// ShowConsentAsk surfaces a pending ask as a transcript CARD. This is the hook
+// the ask event on the turn stream calls once the sibling lands the wire arm
+// (proto ChatStreamResponse oneof) — the TUI models the ask itself
+// (chat.PermissionAsk), so only the adapter that calls this changes.
+//
+// ASK ONCE PER DIRECTORY PER SESSION: a directory already granted for this
+// conversation does not ask again.
+func (m *App) ShowConsentAsk(ask chat.PermissionAsk) tea.Cmd {
+	if m.chatConvID == "" {
+		return nil
+	}
+	if ask.ID == "" {
+		ask.ID = fmt.Sprintf("ask-%d", time.Now().UnixNano())
+	}
+	if ask.Kind == chat.AskTool && ask.Directory != "" && m.sessionGrants.granted(m.chatConvID, ask.Directory) {
+		return nil
+	}
+	// Stamped NOW, so the card sorts to the END of the transcript and stays there.
+	// Without a timestamp it sorted to the top on the next poll — see ConsentItem.
+	m.chatStore.append(m.chatConvID, chat.ConsentItem(ask, time.Now().UnixMilli()))
+	return m.onChatWake()
+}
+
+// ConsentResolve settles a card: it records a session grant, sends a
+// clarifying answer, notices a denial, and repaints. The screen has already
+// marked the item resolved on the shared state (see ask/consent.go).
+func (m *App) ConsentResolve(askID string, dec chat.ConsentDecision, choice string) tea.Cmd {
+	cmds := []tea.Cmd{}
+	st := m.chatStore.consentState(m.chatConvID, askID)
+	if st != nil {
+		ask := st.Ask
+		// SETTLE THE CARD HERE, at the ONE place every decision passes through.
+		//
+		// The screen's key handler used to be the only caller that marked the item
+		// decided, so a decision made any other way left the card Pending() forever:
+		// it never stopped claiming the keyboard and never turned into a record. The
+		// operator hit both halves — "clicking does not actually commit unless you hit
+		// enter", and "the card does not go away when you select something". Settling
+		// in ConsentResolve means the keyboard, a click and any future caller cannot
+		// disagree about what a decided card looks like.
+		st.Decision = dec
+		st.Choice = choice
+		st.Note = ""
+		st.OtherMode = false
+		switch dec {
+		case chat.DecisionAllowSession:
+			dir := ask.Directory
+			if dir == "" {
+				dir = ask.Target
+			}
+			m.sessionGrants.grant(m.chatConvID, dir, ask.Tool)
+			st.Note = "session · " + dir
+			m.dock.SetNotice("allowed for this session · " + dir)
+		case chat.DecisionDeny:
+			m.dock.SetNotice("denied · " + strings.TrimSpace(ask.Tool+" "+ask.Target))
+		}
+
+		// TELL THE SERVER. This is the step whose ABSENCE made approving a card do
+		// nothing: the TUI recorded the decision in ITS OWN grant overlay and dock
+		// notice, but never sent it, so the turn's blocked call stayed blocked until
+		// the consent window expired and the transcript recorded an expiry — which
+		// the operator read as "it says I denied it". The GUI, which reads the
+		// server's registry, saw no decision either, so an approval in the TUI was
+		// invisible there.
+		//
+		// A permission is answered with a CHOICE; a question with the operator's
+		// WORDS (which become the ask_user tool result).
+		if m.chat != nil && m.chatConvID != "" {
+			var pc apiv1.PermissionChoice
+			answer := ""
+			switch dec {
+			case chat.DecisionAllowOnce:
+				pc = apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_ONCE
+			case chat.DecisionAllowSession:
+				pc = apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_SESSION
+			case chat.DecisionDeny:
+				pc = apiv1.PermissionChoice_PERMISSION_CHOICE_DENY
+			case chat.DecisionAnswer:
+				// UNSPECIFIED: a question has no permission choice. The server branches
+				// on the ask being a question and reads `answer`.
+				pc = apiv1.PermissionChoice_PERMISSION_CHOICE_UNSPECIFIED
+				answer = choice
+			}
+			cmds = append(cmds, m.chat.ReplyPermissionAsk(m.chatConvID, askID, pc, answer))
+		}
+	}
+	cmds = append(cmds, m.onChatWake())
+	return tea.Batch(cmds...)
+}
+
+// runAskOverlay runs one of the Ask screen's list surfaces.
+func (m *App) runAskOverlay(kind string) tea.Cmd {
+	s := m.screens[TabAsk]
+	if s == nil {
+		return nil
+	}
+	op, ok := s.(interface{ OpenAskOverlay(kind string) tea.Cmd })
+	if !ok {
+		return nil
+	}
+	m.SwitchTo(TabAsk)
+	return op.OpenAskOverlay(kind)
 }

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -85,11 +86,22 @@ func TestBackslashEnterNewline(t *testing.T) {
 	}
 }
 
-func TestShiftEnterCSIU(t *testing.T) {
+// A plain Enter on an EMPTY buffer must not send. This is the other half of
+// TestEveryOtherEnterVariantSends: that test pins that every non-newline Enter
+// variant SENDS when there is text, and this one pins that it does not send when
+// the box is empty (an empty send is a no-op the operator cannot see, which reads
+// as a dead key).
+//
+// IT WAS CALLED TestShiftEnterCSIU AND ITS COMMENT CLAIMED bubbletea renders CSI-u
+// shift+enter as "shift+enter". Neither was true: the assertion below is on a PLAIN
+// enter, and bubbletea v1.3.10 defines no KeyShiftEnter to render it into — see the
+// package comment for why shift+enter cannot be expressed at all. A test whose name
+// and comment describe a case it does not exercise is worse than no test, because it
+// reads as coverage of the very thing that is impossible.
+func TestPlainEnterOnEmptyBufferDoesNotSend(t *testing.T) {
 	m := New()
 	m.Focus()
 	k := tea.KeyMsg{Type: tea.KeyEnter}
-	// bubbletea renders CSI-u shift+enter as "shift+enter"
 	if got := k.String(); got != "enter" {
 		t.Fatalf("sanity: enter = %q", got)
 	}
@@ -344,24 +356,92 @@ func TestComposerHintShortStaysSingleRow(t *testing.T) {
 // where their keystrokes will land: "the cursor should blink when in the composer
 // and focus is active so people know they truly have focus there."
 //
-// bubbles animates the caret from a command returned by the cursor's own Focus(),
-// which the dock used to DISCARD (`_ = m.ta.Focus()`). With the loop never started
-// no tick could arrive, so the caret sat solid — the fix is to capture that command
-// on focus and dispatch it.
-//
-// NOTE on what is NOT tested here: the tick that CONTINUES the loop is a
-// cursor.BlinkMsg that bubbles matches against the private id/blinkTag its own
-// cursor emitted ("we're choosy about whether to accept blinkMsgs"). A fabricated
-// tick is therefore always rejected, so a unit test cannot represent it; the dock
-// forwards every non-key message to the textarea, which is what makes the real
-// loop work.
+// THE LOOP IS STARTED ON FOCUS, BY A COMMAND Focus HANDS OUT — and that is now asserted
+// where it belongs. This test used to assert the opposite arrangement: it checked that a
+// KEYSTROKE returned a command, because bubbles only ever started the caret blinking when
+// the cursor moved, so a keystroke was the only observable proxy for "the loop exists". That
+// proxy was the performance bug — see TestTypingDoesNotMintACaretTimer below — and pinning it
+// here is what kept it in place.
 func TestComposerStartsWithTheCaretBlink(t *testing.T) {
 	m := New()
 	m.Focus()
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
-	if cmd == nil {
-		t.Fatal("the caret blink loop was never started — the cursor cannot animate")
+	if m.TakeBlinkStart() == nil {
+		t.Fatal("focus produced no command — the caret can never animate")
 	}
+	// AND THE LOOP RE-ARMS: delivering a tick must both toggle the caret and hand back the
+	// next one, or it dies after a single toggle. The command is checked for EXISTENCE rather
+	// than executed, because executing it waits out the blink interval.
+	before := m.ta.Cursor.Blink
+	_, cmd := m.Update(dockBlinkMsg{})
+	if m.ta.Cursor.Blink == before {
+		t.Fatal("a blink tick did not toggle the caret")
+	}
+	if cmd == nil {
+		t.Fatal("a blink tick did not re-arm the loop — the caret would blink exactly once")
+	}
+	// A key makes the caret SOLID again (so it does not blink out mid-word), which is the
+	// behaviour the library had on a cursor move.
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if m.ta.Cursor.Blink {
+		t.Fatal("typing left the caret mid-blink; it must be solid while the operator types")
+	}
+}
+
+// THE REGRESSION GUARD for the reported lag, and the reason the dock owns the blink.
+//
+// bubbles re-arms its own blink on every CURSOR MOVE, cancelling the previous timer —
+// whose command then unblocks immediately and is delivered as a message anyway. So every
+// keystroke, backspace and arrow key used to cost a second message and a second full-screen
+// repaint (~0.6ms at 120x40, ~1.5ms at 320x100, since the frame paints every cell). Typing
+// paid roughly double the frames it needed.
+//
+// With the cursor in CursorStatic the library cannot re-arm, so an EDITING key must return
+// no caret timer at all. The blink loop is unaffected: it is started on focus and re-armed
+// by its own tick.
+func TestTypingDoesNotMintACaretTimer(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  tea.KeyMsg
+	}{
+		{"typing a character", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")}},
+		{"backspace", tea.KeyMsg{Type: tea.KeyBackspace}},
+		{"left arrow", tea.KeyMsg{Type: tea.KeyLeft}},
+		{"right arrow", tea.KeyMsg{Type: tea.KeyRight}},
+		{"up arrow", tea.KeyMsg{Type: tea.KeyUp}},
+		{"down arrow", tea.KeyMsg{Type: tea.KeyDown}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := New()
+			m.Focus()
+			_ = m.TakeBlinkStart() // the shell drains the focus command; do the same
+			m.SetValue("some draft text")
+			_, cmd := m.Update(tc.key)
+			if n := countCaretTimers(cmd, 0); n != 0 {
+				t.Fatalf("%s minted %d caret timer(s) — each one costs a full-screen repaint "+
+					"for nothing (the dock owns the blink; the library must not re-arm it)", tc.name, n)
+			}
+		})
+	}
+}
+
+// countCaretTimers counts caret ticks in a command tree. A dockBlinkMsg is the dock's own
+// single loop (which an edit must never restart); a cursor.BlinkMsg is the library's, which
+// an edit must never mint.
+func countCaretTimers(cmd tea.Cmd, depth int) int {
+	if cmd == nil || depth > 8 {
+		return 0
+	}
+	switch msg := cmd().(type) {
+	case tea.BatchMsg:
+		n := 0
+		for _, c := range msg {
+			n += countCaretTimers(c, depth+1)
+		}
+		return n
+	case dockBlinkMsg, cursor.BlinkMsg:
+		return 1
+	}
+	return 0
 }
 
 // The composer's own hint documents the key contract as

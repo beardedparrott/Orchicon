@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	assets "github.com/beardedparrott/orchicon"
+	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/migrate"
@@ -135,12 +135,12 @@ func forceSeedRun(t *testing.T, ctx context.Context, pool *db.Pool) (string, map
 	}
 
 	ids := map[string]string{
-		"review":     newStep("review", "PR Reviewer", "task", domain.StepRunSucceeded, db.NewID(), []byte(`{"_decision":"success"}`), 0, ""),
-		"loop":       newStep("loop", "Loop Decision", "loop_decision", domain.StepRunPending, "", []byte("{}"), 1, ""),
-		"qa":         newStep("qa", "QA", "task", domain.StepRunPending, "", []byte("{}"), 0, ""),
-		"approve":    newStep("approve", "Approve", "approval", domain.StepRunPending, "", []byte("{}"), 0, ""),
-		"merge":      newStep("merge", "Merge", "task", domain.StepRunPending, "", []byte("{}"), 0, ""),
-		"arch":       newStep("arch", "Architect", "task", domain.StepRunRunning, db.NewID(), []byte("{}"), 0, ""),
+		"review":  newStep("review", "PR Reviewer", "task", domain.StepRunSucceeded, db.NewID(), []byte(`{"_decision":"success"}`), 0, ""),
+		"loop":    newStep("loop", "Loop Decision", "loop_decision", domain.StepRunPending, "", []byte("{}"), 1, ""),
+		"qa":      newStep("qa", "QA", "task", domain.StepRunPending, "", []byte("{}"), 0, ""),
+		"approve": newStep("approve", "Approve", "approval", domain.StepRunPending, "", []byte("{}"), 0, ""),
+		"merge":   newStep("merge", "Merge", "task", domain.StepRunPending, "", []byte("{}"), 0, ""),
+		"arch":    newStep("arch", "Architect", "task", domain.StepRunRunning, db.NewID(), []byte("{}"), 0, ""),
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatalf("commit seed: %v", err)

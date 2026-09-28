@@ -26,8 +26,8 @@ func TestValidateAttachments(t *testing.T) {
 		{name: "path traversal rejected", in: []*apiv1.ApprovalAttachment{att("../../etc/passwd", "text/plain", 10)}, wantErr: true},
 		{name: "slash rejected", in: []*apiv1.ApprovalAttachment{att("a/b.txt", "text/plain", 10)}, wantErr: true},
 		{name: "empty data rejected", in: []*apiv1.ApprovalAttachment{att("a.txt", "text/plain", 0)}, wantErr: true},
-		{name: "oversized plain rejected", in: []*apiv1.ApprovalAttachment{att("a.txt", "text/plain", maxAttachmentBytes + 1)}, wantErr: true},
-		{name: "large image ok", in: []*apiv1.ApprovalAttachment{att("a.png", "image/png", maxAttachmentBytes + 1000)}, wantErr: false},
+		{name: "oversized plain rejected", in: []*apiv1.ApprovalAttachment{att("a.txt", "text/plain", maxAttachmentBytes+1)}, wantErr: true},
+		{name: "large image ok", in: []*apiv1.ApprovalAttachment{att("a.png", "image/png", maxAttachmentBytes+1000)}, wantErr: false},
 		{name: "too many attachments", in: []*apiv1.ApprovalAttachment{
 			att("a.txt", "text/plain", 1), att("b.txt", "text/plain", 1),
 			att("c.txt", "text/plain", 1), att("d.txt", "text/plain", 1),

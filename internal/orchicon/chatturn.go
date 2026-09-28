@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
@@ -54,28 +55,145 @@ type chatBus struct {
 	events chan scheduler.SessionEvent
 	done   chan struct{}
 	once   sync.Once
+
+	// mu makes Close race-free against emit. Close closes done FIRST (which stops
+	// any NEW emit from starting a send) and only then takes the write lock —
+	// which waits out every in-flight emit — before closing events. Without this
+	// ordering a send can land on a channel that was just closed, which is a
+	// PANIC, not an error: it took the whole serve process down. Observed: an
+	// interjection superseded a turn, the superseded turn's deferred Close ran
+	// while a tool call from the other turn was still emitting, and the process
+	// died with "panic: send on closed channel" in executeToolCalls.
+	//
+	// Closing done first is what keeps this cheap: the blocking terminal send
+	// below can never hold RLock indefinitely, so Lock cannot deadlock against a
+	// consumer that has gone away.
+	mu sync.RWMutex
+
+	// users counts the turns currently using this bus. A bus is SHARED by
+	// consecutive turns of a conversation: an interjection adopts the bus of the
+	// turn it supersedes (chatBuses is keyed per conversation). Closing it when
+	// any one turn finished therefore closed it out from under a still-running
+	// turn, which panicked the process and ended the live turn's stream. The bus
+	// now closes when the LAST user leaves. Guarded by mu.
+	users int
 }
 
+// chatBusCapacity is the per-turn event buffer.
+//
+// It was 32, which is too small for the volume a real turn produces now that a
+// tool call emits BOTH a start (tool_part) and a resolution (tool_result) on top
+// of the deltas and parts: a twelve-round tool turn reaches ~34 events, i.e.
+// straight past the old bound, and whether the terminal idle survived came down
+// to how fast the consumer happened to drain (TestChatTurnClientManyToolRounds-
+// Unbounded failed in isolation and passed under load, purely on that race).
+//
+// Sized with real headroom rather than at the observed edge: a turn that touches
+// many files or runs many tools must not be able to fill this. An oversized
+// buffer costs a few KB per in-flight turn; a too-small one costs a wedged turn.
+// emit still protects the terminal events independently (see emit), so this is
+// the first line of defence and not the only one.
+const chatBusCapacity = 256
+
 func newChatBus() *chatBus {
-	return &chatBus{events: make(chan scheduler.SessionEvent, 32), done: make(chan struct{})}
+	return &chatBus{events: make(chan scheduler.SessionEvent, chatBusCapacity), done: make(chan struct{})}
 }
 
 func (b *chatBus) Events() <-chan scheduler.SessionEvent { return b.events }
 func (b *chatBus) Done() <-chan struct{}                 { return b.done }
 func (b *chatBus) Close() {
 	b.once.Do(func() {
-		close(b.done)
-		close(b.events)
+		close(b.done)   // 1. no NEW emit may begin a send
+		b.mu.Lock()     // 2. wait out every in-flight emit
+		close(b.events) // 3. now no sender can be inside emit
+		b.mu.Unlock()
 	})
 }
 
-// emit pushes one event onto the bus, dropping it if the bus is already
-// closed (the drain goroutine ended). Never blocks.
+// adopt registers one more turn using this bus. Paired with release: every
+// adopting turn must release exactly once.
+func (b *chatBus) adopt() {
+	b.mu.Lock()
+	b.users++
+	b.mu.Unlock()
+}
+
+// release gives up one turn's use of this bus, closing it only when no user
+// remains.
+//
+// It exists because the bus is shared per conversation: an interjection's turn
+// can adopt the same bus as the turn it supersedes. Closing on the first turn
+// to finish is what killed the process (a live turn's emit landed on the closed
+// channel) and ended the live turn's stream. Refcounting is the ownership
+// signal that "close only if I am still the registered bus" cannot provide:
+// when turns share ONE bus, every one of them is the registered bus.
+func (b *chatBus) release() {
+	b.mu.Lock()
+	b.users--
+	last := b.users <= 0
+	b.mu.Unlock()
+	if last {
+		b.Close()
+	}
+}
+
+// emit pushes one event onto the bus. Never blocks for an ordinary signal; a
+// TERMINAL signal waits for room instead of being dropped.
+//
+// WHY THE DISTINCTION EXISTS. The buffer is small (32) and the collector drains
+// it concurrently, so the best-effort drop is fine for the high-volume,
+// reconstructible signals (a delta, a part, a tool_result) — losing one costs a
+// repaint, not a turn. It is NOT fine for the signal that ENDS the turn: an
+// `idle` dropped because the buffer happened to be full leaves the collector
+// waiting forever, and the turn wedges with no error anywhere. That was
+// reachable only under a burst before; emitting a tool_result per tool call made
+// it reachable in an ordinary multi-tool turn, and
+// TestChatTurnClientManyToolRoundsUnbounded caught it ("no idle at turn end").
+//
+// Waiting is safe: the collector is actively draining, so a full buffer empties
+// promptly. The done channel bounds the wait so a consumer that has gone away
+// cannot hang this goroutine.
 func (b *chatBus) emit(evt scheduler.SessionEvent) {
+	// A closed bus means this turn was superseded: its events have no consumer,
+	// and sending on the closed channel would panic the whole process.
+	//
+	// Liveness is re-checked under the lock Close takes, so this cannot race the
+	// close: either we hold RLock across the send (and Close waits for us), or
+	// Close has finished and the check sees it. The cheap unsynchronised check
+	// first keeps the common path lock-light.
 	select {
-	case b.events <- evt:
+	case <-b.done:
+		return
 	default:
 	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	select {
+	case <-b.done:
+		return
+	default:
+	}
+
+	select {
+	case b.events <- evt:
+		return
+	default:
+	}
+	if !terminalEventKind(evt.Kind) {
+		// Best-effort by design: dropped when the buffer is full.
+		return
+	}
+	select {
+	case b.events <- evt:
+	case <-b.done:
+	}
+}
+
+// terminalEventKind reports whether losing this event would leave the collector
+// unable to finish the turn. `idle` ends a turn; `error` fails it. Everything
+// else is progress reporting that a client can reconstruct or do without.
+func terminalEventKind(kind string) bool {
+	return kind == "idle" || kind == "error"
 }
 
 // SetAskTools injects the Ask-time tool surface for native turns (the
@@ -449,7 +567,12 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 	bus := b.chatBuses[conversationID]
 	if bus == nil {
 		bus = newChatBus()
+		b.chatBuses[conversationID] = bus
 	}
+	// This turn ADOPTS the bus, so it is not closed until every adopting turn is
+	// done — an interjection shares the bus of the turn it supersedes. Paired
+	// with the drain's release().
+	bus.adopt()
 	b.mu.Unlock()
 
 	go b.drainChatTurn(turnCtx, prov, bus, stream, req, sessionID, history, b.askUsageSink(tenantID, conversationID, sessionID, modelRef, providerID, model))
@@ -469,7 +592,7 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 // results — not just the final text) replaces the session's history so a
 // follow-up re-sends the complete context.
 func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *chatBus, stream TurnStream, req TurnRequest, sessionID string, history []Message, usageSink func(context.Context, Usage)) {
-	defer bus.Close()
+	defer bus.release()
 	defer func() {
 		b.mu.Lock()
 		delete(b.chatTurns, sessionID)
@@ -491,14 +614,35 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 	var roundReply strings.Builder
 	var reasoning strings.Builder
 
-	// finishTurn emits the consolidated reply as ONE completed text part,
-	// then idle, and commits the working history. The collector builds the
-	// persisted reply ONLY from part/text events, so this single part is
-	// what lands in the DB.
-	finishTurn := func() {
+	// emitTurnParts publishes what the turn accumulated as COMPLETED parts. It is split out
+	// so the ABORT path can publish the same thing: an aborted turn has no idle (it did not
+	// complete) but its work is just as real, and discarding it was the other half of the
+	// data-loss bug — the collector's stall path aborts the session, this path returned
+	// without emitting anything, and the whole turn's text and reasoning went with it.
+	emitTurnParts := func() {
+		if r := strings.TrimSpace(reasoning.String()); r != "" {
+			bus.emit(scheduler.SessionEvent{Kind: "part", Type: "reasoning", Text: r})
+		}
 		if t := strings.TrimSpace(reply.String()); t != "" {
 			bus.emit(scheduler.SessionEvent{Kind: "part", Type: "text", Text: t})
 		}
+	}
+	// finishTurn emits the accumulated REASONING and then the consolidated reply, each as
+	// ONE completed part, then idle, and commits the working history. The collector builds
+	// the persisted record ONLY from part events, so these parts are what land in the DB.
+	//
+	// REASONING IS EMITTED AS A COMPLETED PART, exactly like text, and that symmetry is
+	// the fix rather than a style choice. It used to be streamed as DELTAS ONLY and never
+	// finalized, so it had no durable form at all: the collector's reasoning slice is built
+	// from parts, its live reasoning tail is RESET by every completed text part, and an
+	// aborted or stalled turn emits no part at all. The operator's report was exactly that
+	// — "anything you were currently typing (mostly in thought) goes away" — because the
+	// thinking existed only as deltas and deltas are not durable.
+	//
+	// REASONING FIRST: thinking precedes the answer, and the collector appends both to
+	// ordered slices, so the transcript reads in the order the model produced them.
+	finishTurn := func() {
+		emitTurnParts()
 		bus.emit(scheduler.SessionEvent{Kind: "idle"})
 		b.commitChatHistory(sessionID, history, working)
 	}
@@ -514,9 +658,27 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 		}
 		_ = stream.Close()
 		if aborted {
-			// Abort (D7): the turn was cancelled — finalize without
-			// committing. The collector's Stop path already cancelled its
-			// own context, so the turn finalizes cleanly.
+			// Abort (D7): the turn was cancelled — finalize without COMMITTING.
+			//
+			// WITHOUT COMMITTING, NOT WITHOUT PUBLISHING. This used to `return` bare, on the
+			// reasoning that the collector's own Stop path had already cancelled its context
+			// so nobody was listening. That is true for a user Stop and FALSE for the case
+			// that actually hurt: the STALL monitor aborts the session while the collector is
+			// still live, and the turn then finalized with empty text and empty reasoning
+			// while the operator had been watching both stream. Everything the round produced
+			// is still in hand here, so it is published as completed parts (no idle — this
+			// turn did not complete).
+			//
+			// Folding roundReply in first: drainOneRound accumulates the CURRENT round into
+			// it and the merge into reply happens below this check, so on abort the round's
+			// text exists only there.
+			if rt := roundReply.String(); rt != "" {
+				if reply.Len() > 0 {
+					reply.WriteString("\n\n")
+				}
+				reply.WriteString(rt)
+			}
+			emitTurnParts()
 			return
 		}
 		roundText := roundReply.String()
@@ -554,7 +716,7 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 		// turn TTL sweeper (askTurnMaxAge(), default 31m,
 		// ORCHICON_ASK_TURN_MAX_AGE — internal/askorchicon/chat.go), and the
 		// stall monitor (tenant stall settings).
-		b.executeToolCalls(ctx, &working, calls)
+		b.executeToolCalls(ctx, bus, &working, calls)
 		req.Messages = append([]Message(nil), working...)
 		next, err := prov.StreamTurn(ctx, req)
 		if err != nil {
@@ -659,7 +821,7 @@ func (b *NativeBridge) askUsageSink(tenantID, conversationID, sessionID, modelRe
 // misconfiguration as an error so the model can explain instead of
 // hanging. A tool execution failure is recorded as an error result (the
 // model sees it and can recover), never as a turn failure.
-func (b *NativeBridge) executeToolCalls(ctx context.Context, working *[]Message, calls []ToolCall) {
+func (b *NativeBridge) executeToolCalls(ctx context.Context, bus *chatBus, working *[]Message, calls []ToolCall) {
 	b.mu.Lock()
 	tools := b.askTools
 	b.mu.Unlock()
@@ -683,6 +845,34 @@ func (b *NativeBridge) executeToolCalls(ctx context.Context, working *[]Message,
 		var toolErr error
 		if tools == nil {
 			toolErr = errors.New("orchicon bridge: no Ask tool provider injected — cannot execute tool " + c.Name)
+		} else if isAskUserTool(c.Name) {
+			// THE PAUSE. ask_user no longer records-and-returns: it BLOCKS here, the
+			// collector raises the question as a card, and the operator's ANSWER
+			// becomes this call's result. So the model resumes the turn holding what
+			// the operator actually said, instead of being told the question was
+			// "recorded" and ending the turn.
+			//
+			// That is the whole difference the operator asked for: "no other
+			// chatting should be going on if a question is asked. You should pause
+			// to resume until the user has answered."
+			ans := b.awaitUserAnswer(ctx, bus, c, args)
+			if ans == "" {
+				toolErr = errors.New("ask_user was not answered — the question expired unanswered, so it did not run. Ask it again if it is still needed")
+			} else {
+				out = ans
+			}
+		} else if consentGatedTool(c.Name) {
+			// ASK BEFORE ACTING. The collector owns the decision — the
+			// precedence chain, the deny list, the session grants — so this only
+			// raises the ask and waits, exactly as the opencode adapter's serve
+			// blocks for the same collector. A "once" proceeds; anything else
+			// (a denial, a refusal, or silence past the wait) means the call does
+			// NOT run and the model is told why.
+			if d := b.awaitConsentPermission(ctx, bus, c, args); d != "once" {
+				toolErr = consentDenialError(c.Name, d)
+			} else {
+				out, toolErr = tools.ExecuteAskTool(ctx, c.Name, args)
+			}
 		} else {
 			out, toolErr = tools.ExecuteAskTool(ctx, c.Name, args)
 		}
@@ -695,6 +885,21 @@ func (b *NativeBridge) executeToolCalls(ctx context.Context, working *[]Message,
 		*working = append(*working, Message{Role: RoleTool, Content: []Content{{
 			ToolResult: &ContentToolResult{ToolCallID: c.ToolCallID, Content: content, IsError: isErr},
 		}}})
+		// Emit the RESOLUTION as an adapter-neutral typed event. Without this the
+		// bus carried only the start (tool_part, name alone), so a consumer could
+		// never learn the call's arguments or its outcome: the Ask tool ledger
+		// kept the "{}" placeholder forever and every call read back as
+		// "aborted", which is why an ask_user card had no question or options to
+		// draw. Both facts are in hand exactly here.
+		bus.emit(scheduler.SessionEvent{
+			Kind:       "tool_result",
+			Type:       "tool",
+			ToolCallID: c.ToolCallID,
+			ToolName:   c.Name,
+			ArgsJSON:   args,
+			Output:     content,
+			IsError:    isErr,
+		})
 	}
 }
 
@@ -886,6 +1091,285 @@ func sanitizeChatHistory(messages []Message) []Message {
 	return out
 }
 
+// --- consent: the native half of the permission card ---
+
+// nativeConsentWaitDefault bounds how long an Ask turn waits for a permission
+// decision before treating silence as a DENIAL.
+//
+// DENY, NOT PROCEED: the operator chose fail-closed, and an unanswered ask must
+// never become an approval.
+//
+// FIFTEEN MINUTES, and the number is a lesson rather than a guess. It was ten, and
+// this adapter's first version cut it to TWO on the reasoning that "a missed card
+// should cost little". That was wrong in a way that made the feature unusable: a
+// human has to NOTICE the card, click into it, arrow to a row and press Enter, and
+// every one of those steps is slower than two minutes — so accepts arrived after
+// the wait had already given up and were silently dropped, while the server's own
+// registry still held the ask and answered the click `applied: true`. The operator
+// saw "accepted" and the call stayed denied.
+//
+// The cliff is a workaround for "nobody is watching", and the PAUSE (ask_user
+// blocking, so the card is the end of the turn rather than a side channel) is the
+// real answer: a turn that waits for a human is waiting legitimately. Until then
+// this stays generous, because a long wait costs nothing while the turn is open
+// and a short one costs the whole feature.
+const nativeConsentWaitDefault = 15 * time.Minute
+
+// nativeConsentWait resolves the wait, with an env override for testing and for
+// an operator who wants a shorter leash.
+func nativeConsentWait() time.Duration {
+	if v := os.Getenv("ORCHICON_ASK_CONSENT_WAIT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return nativeConsentWaitDefault
+}
+
+// permWait is one in-flight consent wait: the channel the decision arrives on.
+// Buffered(1) so the replier never blocks on a waiter that has already given up.
+type permWait struct{ decision chan string }
+
+// nextPermID mints an ask id. Unique per bridge, which is all the correlation
+// needs: the collector keys its registry by conversation and ask id.
+func (b *NativeBridge) nextPermID() string {
+	b.permMu.Lock()
+	defer b.permMu.Unlock()
+	b.permSeq++
+	return fmt.Sprintf("native-ask-%d", b.permSeq)
+}
+
+// ConsentReadOnlyTools are the host-suite tools that NEVER ASK.
+//
+// The name is about consequence, not about reading: a read cannot change anything,
+// and todowrite writes SESSION STATE rather than the filesystem. Both cannot touch
+// anything a policy protects, so a card for either is a card for nothing in
+// particular — and a gate that asks for nothing in particular is one people learn to
+// click through without reading.
+//
+// EXPORTED, AND PAIRED WITH ConsentMutatingTools, so the split can be checked
+// against askorchicon's hostSuiteToolNames from a test. A new host-suite tool must
+// be classified HERE, deliberately, or that test fails — which is what makes this
+// fail-closed across a package boundary instead of relying on whoever adds the
+// tool remembering.
+var ConsentReadOnlyTools = []string{
+	"read", "batch_read", "grep", "batch_grep", "list", "glob", "todoread", "todowrite",
+}
+
+// ConsentMutatingTools are the host-suite tools that DO ask before they run.
+//
+// todowrite is NOT here, and that is a correction rather than an omission: it was
+// classified mutating "for completeness", and the first time the policy broke, every
+// todo update asked for approval. It writes SESSION STATE, not the filesystem — it
+// cannot touch anything a policy protects — so gating it adds a card for an action
+// that changes nothing outside the turn. Reads are free for the same reason.
+var ConsentMutatingTools = []string{
+	"write", "edit", "batch_write", "bash",
+}
+
+// consentGatedTool reports whether a native Ask tool call must be APPROVED before
+// it runs.
+//
+// FAIL-CLOSED FOR THE HOST SUITE. It used to name only write/edit/batch_write/bash
+// — a denylist, so any mutating host tool added later would have run with NO
+// consent at all, silently. It is now derived from the classification above,
+// inverted: a host-suite tool asks unless it is one of the known read-only ones.
+//
+// PRODUCT tools (ask_user, list_projects, …) are NOT gated: they work on Orchicon's
+// own data rather than the filesystem, and gating ask_user would mean asking
+// permission to ask a question. The classification above covers the host suite,
+// and the cross-package test keeps that boundary honest as the suite grows.
+func consentGatedTool(name string) bool {
+	for _, n := range ConsentReadOnlyTools {
+		if n == name {
+			return false
+		}
+	}
+	for _, n := range ConsentMutatingTools {
+		if n == name {
+			return true
+		}
+	}
+	// Neither list: a product tool. It does not touch the filesystem, so the
+	// file/shell gate does not apply.
+	return false
+}
+
+// awaitConsentPermission raises a permission ask for one tool call and blocks
+// until the collector decides it.
+//
+// THE SHAPE MIRRORS THE opencode ADAPTER, deliberately. There the serve blocks
+// and our collector decides; here the ADAPTER blocks and the SAME collector
+// decides, over the same SessionEvent vocabulary and the same
+// ReplyPermissionDecision reply. So the consent core — the precedence chain, the
+// card, the session grants, the deny list, the never-allow class, the expiry — is
+// shared rather than reimplemented, and neither adapter is the reference dialect.
+//
+// It makes NO policy decision here: it carries the action (tool + argument JSON,
+// from which the collector derives the target and the command the same way it
+// does for an MCP-style ask) and waits. "once" means proceed; anything else means
+// the call does not run, and the value says WHICH of the three situations it was —
+// see the outcome constants.
+//
+// A TIMEOUT IS NOT A REFUSAL, AND NOTHING IS PERMANENT. It writes no grant, no deny
+// entry and no once-target; the only sticky state in this system is the operator's
+// policy file and an explicit ALLOW_SESSION grant. So a retried call is a NEW call,
+// which asks again and can be approved — the denial is per-call, by construction.
+func (b *NativeBridge) awaitConsentPermission(ctx context.Context, bus *chatBus, c ToolCall, args string) string {
+	askID := b.nextPermID()
+	w := &permWait{decision: make(chan string, 1)}
+
+	b.permMu.Lock()
+	if b.permWaits == nil {
+		b.permWaits = map[string]*permWait{}
+	}
+	b.permWaits[askID] = w
+	b.permMu.Unlock()
+	defer func() {
+		b.permMu.Lock()
+		delete(b.permWaits, askID)
+		b.permMu.Unlock()
+	}()
+
+	if bus != nil {
+		bus.emit(scheduler.SessionEvent{
+			Kind:         "permission",
+			PermissionID: askID,
+			Tool:         c.Name,
+			InputJSON:    args,
+		})
+	}
+
+	timer := time.NewTimer(nativeConsentWait())
+	defer timer.Stop()
+	select {
+	case d := <-w.decision:
+		return d
+	case <-timer.C:
+		// Silence is a DENIAL for this call (fail closed) — never an approval.
+		//
+		// "expired" rather than "reject" so the caller can say something USEFUL: the
+		// operator did not refuse, nobody answered, and the same call WILL be asked
+		// again if it is retried (a retry is a new call, hence a new ask and a new
+		// card — a timeout writes no permanent state). The two used to be
+		// indistinguishable, so the model was told "not approved" either way and had
+		// no reason to ask again.
+		return consentExpired
+	case <-ctx.Done():
+		// The turn was cancelled (Stop / supersede / TTL): give up the wait
+		// immediately rather than holding the goroutine for the full window.
+		return consentCancelled
+	}
+}
+
+// isAskUserTool reports whether a tool is the clarifying-question tool. The name
+// is bare on the native transport (see askorchicon.hostSuiteToolNames' sibling
+// comment: the product registry is keyed by bare name), and prefixed on the MCP
+// side — so both spellings match.
+func isAskUserTool(name string) bool {
+	return name == "ask_user" || name == "orchicon_ask_user"
+}
+
+// awaitUserAnswer raises a clarifying question and blocks until the operator
+// answers it. The ANSWER is returned, and the caller returns it as the tool result.
+//
+// SAME MECHANICS AS awaitConsentPermission, deliberately: the bus carries the
+// question to the collector, the collector's registry holds it, the reply RPC
+// delivers the answer, and ReplyPermissionDecision wakes this wait. The two differ
+// only in what flows back — a permission decision string, or the operator's words.
+//
+// An empty return means NO ANSWER (the window expired, or the turn was cancelled);
+// the caller turns that into a tool error so the model is not left believing a
+// question was answered when it was not.
+func (b *NativeBridge) awaitUserAnswer(ctx context.Context, bus *chatBus, c ToolCall, args string) string {
+	askID := b.nextPermID()
+	w := &permWait{decision: make(chan string, 1)}
+
+	b.permMu.Lock()
+	if b.permWaits == nil {
+		b.permWaits = map[string]*permWait{}
+	}
+	b.permWaits[askID] = w
+	b.permMu.Unlock()
+	defer func() {
+		b.permMu.Lock()
+		delete(b.permWaits, askID)
+		b.permMu.Unlock()
+	}()
+
+	if bus != nil {
+		// The ARGUMENTS ride along: the collector parses them with the SAME
+		// validator the tool uses, so a malformed question is refused with the
+		// tool's own error rather than parked as an unanswerable card.
+		bus.emit(scheduler.SessionEvent{
+			Kind:         "question",
+			PermissionID: askID,
+			Tool:         c.Name,
+			InputJSON:    args,
+		})
+	}
+
+	timer := time.NewTimer(nativeConsentWait())
+	defer timer.Stop()
+	select {
+	case ans := <-w.decision:
+		return ans
+	case <-timer.C:
+		return ""
+	case <-ctx.Done():
+		return ""
+	}
+}
+
+// The outcomes awaitConsentPermission reports. "once" proceeds; every other value
+// means the call did NOT run, and they are distinct because the OPERATOR's
+// situation differs and the model is told about it.
+const (
+	// consentExpired — the wait ran out with no answer. Not a refusal: the same
+	// call will be asked again if it is retried.
+	consentExpired = "expired"
+	// consentCancelled — the turn ended while the ask was outstanding.
+	consentCancelled = "cancelled"
+	// ConsentRefusedPrefix marks a decision that REFUSED the call and carried the REASON
+	// with it — a policy DENY, the never-allow binary class, or a policy that could not be
+	// read. It is a distinct shape because it is a distinct situation: the OPERATOR never
+	// saw this call, so reporting it as their refusal is a false statement about them —
+	// and the exact one this repo has been corrected on before (the malformed-policy
+	// incident, where the model was told "the operator denied you" about a config error).
+	//
+	// The consent layer already computes the reason precisely (it names the deny entry,
+	// or the class that refuses); before this, the collector sent a bare "reject" to the
+	// bridge and LOGGED the reason, so the one party who needed it — the model, deciding
+	// whether to try again — was the one party who never got it.
+	//
+	// IT MATTERS MOST UNDER FULLSEND: with the permission PROMPT waived, a policy denial
+	// and the never-allow class are the ONLY refusals left, so every refusal a fullsend
+	// turn meets would otherwise be attributed to an operator who was never asked.
+	ConsentRefusedPrefix = "refused: "
+)
+
+// consentDenialError words what happened to a call that was not approved, in the
+// terms the MODEL needs to decide whether to try again. The medium is a tool error,
+// so it is read by the model rather than the operator — and "not approved" for
+// every case (an explicit refusal, an unanswered ask, a cancelled turn) is what
+// stops a model retrying when retrying is exactly what the operator wants.
+func consentDenialError(tool, decision string) error {
+	// A LAYER REFUSAL, not an operator decision — and the distinction is the whole point
+	// of spelling it out. The reason names the rule that refused the call, so the model can
+	// work around it rather than asking the operator to lift a denial they never made.
+	if reason, ok := strings.CutPrefix(decision, ConsentRefusedPrefix); ok {
+		return fmt.Errorf("%s — this call did not run. The OPERATOR did not refuse it and was never asked: an Orchicon permission rule refused it. Do not retry it unchanged; choose a different approach, or ask the operator to change that rule if you believe it is wrong", reason)
+	}
+	switch decision {
+	case consentExpired:
+		return fmt.Errorf("approval for %s expired unanswered — nothing was approved, so this call did not run. Nothing is permanently denied: retry the call if it is still needed, and it will ask again", tool)
+	case consentCancelled:
+		return fmt.Errorf("the turn was cancelled while awaiting approval for %s — this call did not run", tool)
+	default:
+		return fmt.Errorf("the operator denied %s — this call did not run. Do not retry it; ask them what they would prefer instead", tool)
+	}
+}
+
 // commitChatHistory replaces the session's in-memory history with the
 // turn's full working history (user message, assistant texts, tool uses
 // and tool results) so a follow-up re-sends the complete context.
@@ -937,5 +1421,37 @@ func (b *NativeBridge) AbortConversationSession(ctx context.Context, sessionID s
 // practice; it returns an actionable error rather than silently swallowing an
 // approval (D6).
 func (b *NativeBridge) ReplyPermission(ctx context.Context, sessionID, permissionID string) error {
-	return errors.New("orchicon native Ask turns are text-only — permission approval is not supported")
+	// The collector's NO-CONSENT-HANDLE fallback. It is reached only when the
+	// turn has no consent core at all (a bare attempt), which is the one case
+	// the old auto-approve existed for — so it approves, as its name says, and
+	// never silently: the ordinary path answers through ReplyPermissionDecision.
+	return b.ReplyPermissionDecision(ctx, sessionID, permissionID, "once")
+}
+
+// ReplyPermissionDecision implements scheduler.ChatTurnClient: it delivers the
+// collector's decision to the adapter call that is BLOCKED on it.
+//
+// THIS IS THE NATIVE HALF OF THE PERMISSION CARD. It used to be a documented
+// no-op, and the reason given was that "a native Ask turn has no permission
+// channel". That was true when the native path executed no tools; it executes
+// bash and writes constantly now, so the comment had outlived the fact. The
+// channel is the wait a call parks on in awaitConsentPermission.
+//
+// A decision for an ask nobody is waiting on (the wait timed out, or the turn
+// already finalised) is NOT an error: it is simply moot, and the caller can do
+// nothing about it. Reporting one would poison a turn that is otherwise fine.
+func (b *NativeBridge) ReplyPermissionDecision(ctx context.Context, sessionID, permissionID, decision string) error {
+	b.permMu.Lock()
+	w := b.permWaits[permissionID]
+	b.permMu.Unlock()
+	if w == nil {
+		return nil
+	}
+	select {
+	case w.decision <- decision:
+	default:
+		// Buffered(1) and single-writer: a second decision for the same ask is
+		// dropped rather than blocking this caller on a full channel.
+	}
+	return nil
 }

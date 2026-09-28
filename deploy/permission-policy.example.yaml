@@ -1,0 +1,28 @@
+# Orchicon permission policy — read on every gated decision; edits take effect immediately.
+#
+# deny  : always refused. A session grant CANNOT override an entry here.
+# accept: never prompts. Precedence: never-allow binaries > deny > session grant > accept > project dir > ask.
+#
+# Patterns are doublestar globs (`**` crosses directories); a leading ~ is the
+# operator's home.
+#
+# Location: ORCHICON_PERMISSION_POLICY, default <ORCHICON_DATA_DIR>/permission-policy.yaml.
+#
+# This is the preset the plane installs on a fresh instance when
+# ORCHICON_PERMISSION_POLICY is unset and no file exists yet. Copy it there, or
+# manage the same file from the GUI (Settings → Permissions) / the TUI
+# (Control → Permissions); both clients read and write THIS file.
+#
+# Credential stores are the reason for the deny list: READS never ask, so
+# without these the agent could read a private key or a stored token without
+# the operator ever seeing a prompt. Nothing is pre-accepted beyond project
+# directories, which are already the default scope.
+deny:
+  - ~/.ssh/**
+  - ~/.gnupg/**
+  - ~/.aws/**
+  - ~/.config/gh/**
+  - ~/.git-credentials
+  - ~/.netrc
+  - ~/.docker/config.json
+accept: []

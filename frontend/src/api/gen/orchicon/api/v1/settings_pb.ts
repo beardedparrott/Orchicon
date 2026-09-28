@@ -38,67 +38,70 @@ export class TenantSettings extends Message<TenantSettings> {
 
   /**
    * No step_finish or new tokens within this window triggers stalled.
-   * Seconds. Default 300 (5 min).
+   * Seconds. Blank = default 300 (5 min); 0 disables.
    *
-   * @generated from field: int64 stall_no_progress_window_seconds = 10;
+   * @generated from field: optional int64 stall_no_progress_window_seconds = 10;
    */
-  stallNoProgressWindowSeconds = protoInt64.zero;
+  stallNoProgressWindowSeconds?: bigint;
 
   /**
-   * No file modifications within this window triggers stalled.
-   * Seconds. Default 900 (15 min). Zero disables.
+   * No file modifications within this window raises an ADVISORY stalled
+   * notice (it never kills the worker; a reviewer that legitimately writes no
+   * files must not be reaped mid-flight).
+   * Seconds. Blank = default 900 (15 min); 0 disables.
    *
-   * @generated from field: int64 stall_no_file_diff_window_seconds = 11;
+   * @generated from field: optional int64 stall_no_file_diff_window_seconds = 11;
    */
-  stallNoFileDiffWindowSeconds = protoInt64.zero;
+  stallNoFileDiffWindowSeconds?: bigint;
 
   /**
    * No meaningful action (tool call, file diff, step finish) within this
-   * window triggers text-loop stall. Seconds. Default 600 (10 min).
-   * Zero disables.
+   * window triggers text-loop stall.
+   * Seconds. Blank = default 600 (10 min); 0 disables.
    *
-   * @generated from field: int64 stall_text_loop_window_seconds = 12;
+   * @generated from field: optional int64 stall_text_loop_window_seconds = 12;
    */
-  stallTextLoopWindowSeconds = protoInt64.zero;
+  stallTextLoopWindowSeconds?: bigint;
 
   /**
    * Same tool-call signature repeated this many times within the
-   * repetition window triggers repeated-call stall. Default 5.
-   * Zero disables.
+   * repetition window triggers repeated-call stall.
+   * Blank = default 5; 0 disables.
    *
-   * @generated from field: int32 stall_repetition_count = 13;
+   * @generated from field: optional int32 stall_repetition_count = 13;
    */
-  stallRepetitionCount = 0;
+  stallRepetitionCount?: number;
 
   /**
-   * Window for repetition detection. Seconds. Default 300 (5 min).
+   * Window for repetition detection. Seconds. Blank = default 300 (5 min);
+   * 0 disables. Only meaningful alongside stall_repetition_count.
    *
-   * @generated from field: int64 stall_repetition_window_seconds = 14;
+   * @generated from field: optional int64 stall_repetition_window_seconds = 14;
    */
-  stallRepetitionWindowSeconds = protoInt64.zero;
+  stallRepetitionWindowSeconds?: bigint;
 
   /**
    * Max nudges sent to a live session before an advisory stall escalates to
-   * a fatal kill + recovery. Default 2.
+   * a fatal kill + recovery. Blank = default 2; 0 disables.
    *
-   * @generated from field: int32 stall_nudge_max = 31;
+   * @generated from field: optional int32 stall_nudge_max = 31;
    */
-  stallNudgeMax = 0;
+  stallNudgeMax?: number;
 
   /**
    * How long a nudge waits for the worker to break the pattern before the
-   * next trip escalates. Seconds. Default 300 (5 min).
+   * next trip escalates. Seconds. Blank = default 300 (5 min); 0 disables.
    *
-   * @generated from field: int64 stall_nudge_reply_window_seconds = 32;
+   * @generated from field: optional int64 stall_nudge_reply_window_seconds = 32;
    */
-  stallNudgeReplyWindowSeconds = protoInt64.zero;
+  stallNudgeReplyWindowSeconds?: bigint;
 
   /**
-   * Minimum gap between nudges. Seconds. Default 60.
+   * Minimum gap between nudges. Seconds. Blank = default 60; 0 disables.
    *
-   * @generated from field: int64 stall_nudge_cooldown_seconds = 33;
+   * @generated from field: optional int64 stall_nudge_cooldown_seconds = 33;
    */
-  stallNudgeCooldownSeconds = protoInt64.zero;
+  stallNudgeCooldownSeconds?: bigint;
 
   /**
    * --- In-flight tool-hang watchdog ---
@@ -107,12 +110,13 @@ export class TenantSettings extends Message<TenantSettings> {
    * window` tool result is synthesized, and a course-correcting redirect is
    * injected as the next user turn (session and cache prefix fully
    * preserved). Latched once per session; an unheeded hang escalates to the
-   * stall/liveness layer (probe → fatal). Zero = unset (env/code default
-   * 180s); negative = disabled.
+   * stall/liveness layer (probe → fatal).
+   * Blank = default 180s; 0 disables. Negative is the OLD spelling of
+   * "disabled" and is now rejected — see the section comment above.
    *
-   * @generated from field: int64 stall_tool_hang_seconds = 34;
+   * @generated from field: optional int64 stall_tool_hang_seconds = 34;
    */
-  stallToolHangSeconds = protoInt64.zero;
+  stallToolHangSeconds?: bigint;
 
   /**
    * How long an execution must have been running before it becomes
@@ -275,15 +279,15 @@ export class TenantSettings extends Message<TenantSettings> {
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "default_worker_model", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "default_ask_orchicon_model", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 10, name: "stall_no_progress_window_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
-    { no: 11, name: "stall_no_file_diff_window_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
-    { no: 12, name: "stall_text_loop_window_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
-    { no: 13, name: "stall_repetition_count", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
-    { no: 14, name: "stall_repetition_window_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
-    { no: 31, name: "stall_nudge_max", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
-    { no: 32, name: "stall_nudge_reply_window_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
-    { no: 33, name: "stall_nudge_cooldown_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
-    { no: 34, name: "stall_tool_hang_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 10, name: "stall_no_progress_window_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */, opt: true },
+    { no: 11, name: "stall_no_file_diff_window_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */, opt: true },
+    { no: 12, name: "stall_text_loop_window_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */, opt: true },
+    { no: 13, name: "stall_repetition_count", kind: "scalar", T: 5 /* ScalarType.INT32 */, opt: true },
+    { no: 14, name: "stall_repetition_window_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */, opt: true },
+    { no: 31, name: "stall_nudge_max", kind: "scalar", T: 5 /* ScalarType.INT32 */, opt: true },
+    { no: 32, name: "stall_nudge_reply_window_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */, opt: true },
+    { no: 33, name: "stall_nudge_cooldown_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */, opt: true },
+    { no: 34, name: "stall_tool_hang_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */, opt: true },
     { no: 15, name: "execution_reap_grace_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 16, name: "execution_reap_consecutive_failures", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 19, name: "default_budget_overrides", kind: "scalar", T: 9 /* ScalarType.STRING */ },

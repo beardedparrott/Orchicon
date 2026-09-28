@@ -124,6 +124,29 @@ func buildSlashRegistry(m *App) *slashRegistry {
 
 	// 2. Entity commands generated from the screens' Sources() — every
 	// TUI list pane gets one, so the set cannot drift from real screens.
+	//
+	// The consent surfaces are SLASH COMMANDS, not bare letters: the conversations rail's keys are
+	// composer-driven (UPDATES rows 296/300/303), so a bare letter there is TYPED. /grants is the
+	// session roll-up (revocable); /permissions is the persistent allow/deny list, deliberately NOT
+	// /policy — the GUI's /policies route is the Rego policy ENGINE, a different concept.
+	add(SlashCommand{
+		Name:  "/grants",
+		Usage: "/grants",
+		Desc:  "the directories allowed for this session, and revoke them",
+		Run: func(m *App, _ []string) tea.Cmd {
+			return m.runAskOverlay("grants")
+		},
+	})
+	add(SlashCommand{
+		Name:    "/permissions",
+		Usage:   "/permissions",
+		Aliases: []string{"/perm"},
+		Desc:    "the persistent allow/deny list (the file is the source of truth)",
+		Run: func(m *App, _ []string) tea.Cmd {
+			return m.runAskOverlay("permissions")
+		},
+	})
+
 	nav := buildNavEntries(m)
 	for _, e := range nav {
 		eCopy := e
@@ -413,6 +436,43 @@ func buildSlashRegistry(m *App) *slashRegistry {
 			// confirmed as a mode, not echoed back as a guess.
 			m.dock.SetNotice("mode → " + m.modeSwitchLabel(mode))
 			return m.chat.SetConversationMode(m.chatConvID, mode)
+		},
+	})
+	add(SlashCommand{
+		Name: "/fullsend", Usage: "/fullsend",
+		Desc: "toggle FULLSEND for this conversation: stop asking for permission (a deny entry and the never-allow class still refuse)",
+		Run: func(m *App, _ []string) tea.Cmd {
+			// NO PENDING FORM, deliberately. The conversation MODE had a pending value for a
+			// chat that did not exist yet, and that leak — changing an open conversation also
+			// changed what the NEXT one would be created with — is exactly the bug this
+			// refuses to repeat. A permission bypass armed for a conversation the operator has
+			// not looked at is one they did not knowingly turn on.
+			if m.chatConvID == "" {
+				m.dock.SetError("no conversation open — /fullsend applies to one conversation, and there is no pending form: a bypass must not be armed for a chat you have not opened")
+				return nil
+			}
+			// THE OPERATOR'S INTENT IS A TOGGLE; THE WIRE CARRIES A VALUE. The state is read
+			// from the shell's list (the server's answer), so two /fullsend taps cannot flip
+			// it back and forth against a stale local belief.
+			on := !m.fullsendOn()
+			switch {
+			case !on:
+				m.dock.SetNotice("FULLSEND off — this conversation asks for permission again")
+			case m.chatStore.hasPendingConsent(m.chatConvID):
+				// A CARD ALREADY ON SCREEN IS CLEARED TOO — the operator's call: "Clear it too —
+				// fullsend means stop asking." It is also the consistent behaviour: a card exists
+				// only because fullsend was OFF when the call was raised, so approving it is what
+				// fullsend would have decided a moment earlier. Leaving it would keep the turn
+				// blocked on a decision the operator has just said to stop making.
+				//
+				// A QUESTION IS NOT A PERMISSION and is not cleared: its reply is the operator's
+				// own words, which the mode cannot supply. The notice says both, because a mode
+				// that appears to do something it did not is worse than one that explains itself.
+				m.dock.SetNotice("⚠ FULLSEND ON — open permission cards are approved and asks from here on are skipped. A question still needs your answer. Your deny list and sudo-class binaries still refuse.")
+			default:
+				m.dock.SetNotice("⚠ FULLSEND ON — Orchicon stops asking for permission in this conversation. Your deny list and sudo-class binaries still refuse. /fullsend again turns it off.")
+			}
+			return m.chat.SetConversationFullsend(m.chatConvID, on)
 		},
 	})
 	add(SlashCommand{

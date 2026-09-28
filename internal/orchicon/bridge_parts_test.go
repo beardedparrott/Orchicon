@@ -163,7 +163,7 @@ func TestSessionPartsRecorderOrphanResultAndHold(t *testing.T) {
 	defer rec.Close() // pump never started — must NOT deadlock
 
 	tc, _ := json.Marshal(map[string]any{
-		"text":       "",
+		"text": "",
 		"tool_calls": []ToolCall{
 			{Index: 0, ToolCallID: "hold1", Name: "bash", ArgsJSON: `{"command":"ls"}`},
 		},

@@ -25,6 +25,10 @@ func baseConfig() Config {
 			EmbeddedOP:  true,
 		},
 		BlobStore: BlobStoreConfig{Kind: "local"},
+		// Validate() refuses an empty policy path (a plane with no policy file
+		// name cannot check the policy at boot), so the valid baseline carries
+		// one, exactly like Default() does.
+		PermissionPolicyPath: "/var/lib/orchicon/permission-policy.yaml",
 	}
 }
 
@@ -170,5 +174,60 @@ func TestDeploymentTenantIDValidation(t *testing.T) {
 		if err := c.Validate(); err == nil {
 			t.Errorf("DeploymentTenantID %q: Validate() = nil, want error", id)
 		}
+	}
+}
+
+// TestValidateExtraBind pins the second HTTP bind (ORCHICON_HTTP_EXTRA_BIND)
+// rules. The load-bearing one is the wildcard rejection: a 0.0.0.0/:: bind
+// would expose the plane to the operator's LAN, which was explicitly
+// rejected. A bad value must fail closed at boot, not degrade quietly to
+// loopback-only (that surfaces much later as "workers cannot reach the
+// plane" from inside a runtime container).
+func TestValidateExtraBind(t *testing.T) {
+	valid := []string{
+		"",                // unset: loopback/primary only
+		"172.17.0.1:8091", // prod's bridge bind
+		"172.17.0.1:8080", // dev's bridge bind
+		"127.0.0.1:8091",  // loopback is a concrete IP, not a wildcard
+		"10.42.0.1:1",     // any concrete bridge address
+		"[fd00::1]:8091",  // IPv6 literal with host part
+	}
+	for _, a := range valid {
+		c := baseConfig()
+		c.ExtraBind = a
+		if err := c.Validate(); err != nil {
+			t.Errorf("ExtraBind %q: Validate() = %v, want nil", a, err)
+		}
+	}
+
+	invalid := []string{
+		"0.0.0.0:8091",              // wildcard: LAN exposure (rejected explicitly)
+		":8091",                     // wildcard: no host part
+		"[::]:8091",                 // wildcard v6
+		"host.docker.internal:8091", // hostname: cannot be bound
+		"172.17.0.1:0",              // port 0
+		"172.17.0.1:99999",          // port out of range
+		"172.17.0.1",                // no port at all
+		"172.17.0.1:http",           // non-numeric port
+	}
+	for _, a := range invalid {
+		c := baseConfig()
+		c.ExtraBind = a
+		if err := c.Validate(); err == nil {
+			t.Errorf("ExtraBind %q: Validate() = nil, want error", a)
+		}
+	}
+}
+
+// TestDefaultExtraBindFromEnv pins the env wiring end to end (the launcher
+// sets ORCHICON_HTTP_EXTRA_BIND per instance; Default() must read it).
+func TestDefaultExtraBindFromEnv(t *testing.T) {
+	t.Setenv("ORCHICON_HTTP_EXTRA_BIND", "172.17.0.1:8091")
+	if got := Default().ExtraBind; got != "172.17.0.1:8091" {
+		t.Fatalf("Default().ExtraBind = %q, want 172.17.0.1:8091", got)
+	}
+	t.Setenv("ORCHICON_HTTP_EXTRA_BIND", "")
+	if got := Default().ExtraBind; got != "" {
+		t.Fatalf("Default().ExtraBind = %q, want empty", got)
 	}
 }

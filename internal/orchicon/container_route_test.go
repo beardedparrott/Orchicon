@@ -14,10 +14,10 @@ import (
 // has no container lease — it must stay in-process even with a daemon.
 func TestNativeContainerRouteEnabled(t *testing.T) {
 	cases := []struct {
-		name       string
-		hasClient  bool
-		manifest   scheduler.ExecutionManifest
-		want       bool
+		name      string
+		hasClient bool
+		manifest  scheduler.ExecutionManifest
+		want      bool
 	}{
 		{
 			name:      "runtime mode, workflow-bound, daemon → route",

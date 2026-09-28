@@ -762,8 +762,8 @@ func (h *childRegistry) startServeAgain(kind string, req AgentRequest) error {
 
 // serveWatchInterval and serveWatchMaxBackoff tune the serve watchdog.
 const (
-	serveWatchInterval    = 10 * time.Second
-	serveWatchMaxBackoff  = 60 * time.Second
+	serveWatchInterval   = 10 * time.Second
+	serveWatchMaxBackoff = 60 * time.Second
 )
 
 // randomServePassword returns a hex password for the container's serve.
@@ -1238,7 +1238,8 @@ func setEnv(env []string, key, value string) []string {
 	return out
 }
 
-func prependGuard(env []string, guardDir string) []string {	out := make([]string, 0, len(env)+1)
+func prependGuard(env []string, guardDir string) []string {
+	out := make([]string, 0, len(env)+1)
 	found := false
 	for _, kv := range env {
 		if strings.HasPrefix(kv, "PATH=") {

@@ -37,15 +37,15 @@ func NewClient(socketPath, instance string) *Client {
 	return &Client{
 		socketPath: socketPath,
 		instance:   instance,
-	hc: &http.Client{
-		Transport: &http.Transport{
-			DialContext:         dial,
-			MaxIdleConns:        4,
-			IdleConnTimeout:     30 * time.Second,
-			ResponseHeaderTimeout: 120 * time.Second,
+		hc: &http.Client{
+			Transport: &http.Transport{
+				DialContext:           dial,
+				MaxIdleConns:          4,
+				IdleConnTimeout:       30 * time.Second,
+				ResponseHeaderTimeout: 120 * time.Second,
+			},
+			Timeout: 0, // exec streams are long-lived
 		},
-		Timeout: 0, // exec streams are long-lived
-	},
 	}
 }
 
@@ -90,8 +90,9 @@ func (c *Client) Kill(ctx context.Context, workflowID string) error {
 
 // Ready returns true if the daemon socket answers /v1/health.
 type StreamDroppedError struct{ Err error }
+
 func (e *StreamDroppedError) Error() string { return "build log stream disconnected: " + e.Err.Error() }
-func IsStreamDropped(err error) bool { _, ok := err.(*StreamDroppedError); return ok }
+func IsStreamDropped(err error) bool        { _, ok := err.(*StreamDroppedError); return ok }
 
 func (c *Client) Ready(ctx context.Context) bool {
 	var out map[string]string
@@ -164,24 +165,39 @@ func (c *Client) BuildImage(ctx context.Context, req BuildRequest, fn func(Agent
 // RemoveImage removes a locally-built runtime image (docker rmi, best-effort).
 func (c *Client) CancelBuild(ctx context.Context, tag string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, "http://runtime"+"/v1/images/build?tag="+url.QueryEscape(tag), nil)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	resp, err := c.hc.Do(req)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK { return readError(resp.Body) }
+	if resp.StatusCode != http.StatusOK {
+		return readError(resp.Body)
+	}
 	return nil
 }
 func (c *Client) IsBuilding(ctx context.Context, tag string) (bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://runtime"+"/v1/images/build?tag="+url.QueryEscape(tag), nil)
-	if err != nil { return false, err }
+	if err != nil {
+		return false, err
+	}
 	resp, err := c.hc.Do(req)
-	if err != nil { return false, err }
+	if err != nil {
+		return false, err
+	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK { return false, readError(resp.Body) }
+	if resp.StatusCode != http.StatusOK {
+		return false, readError(resp.Body)
+	}
 	var out map[string]string
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil { return false, err }
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return false, err
+	}
 	return out["status"] == "building", nil
 }
+
 type ImageInspect struct {
 	Exists      bool   `json:"exists"`
 	SpecVersion string `json:"spec_version"`
@@ -189,13 +205,21 @@ type ImageInspect struct {
 
 func (c *Client) InspectImage(ctx context.Context, tag string) (*ImageInspect, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://runtime"+"/v1/images/inspect?ref="+url.QueryEscape(tag), nil)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	resp, err := c.hc.Do(req)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK { return nil, readError(resp.Body) }
+	if resp.StatusCode != http.StatusOK {
+		return nil, readError(resp.Body)
+	}
 	var out ImageInspect
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil { return nil, err }
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
 	return &out, nil
 }
 
