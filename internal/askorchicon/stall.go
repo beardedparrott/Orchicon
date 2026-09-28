@@ -176,13 +176,53 @@ type chatStallMonitor struct {
 }
 
 // setAwaitingConsent arms/disarms the consent gate on the tool-wedge signal.
+//
+// DISARMING RESTARTS THE OPEN TOOL'S CLOCK, which is the whole reason this is not a plain assignment.
+//
+// A tool held by a human is NOT WEDGED: it has not been RUNNING, it has been WAITING, and this clock
+// measures a tool's silence — not the operator's reading speed. The signal used to be merely SUPPRESSED
+// while an ask was open (toolWedge returns early), while the clock kept ticking from the tool's start. So
+// the moment a decision landed, an already-expired clock was re-read on the next tick (the ticker runs at
+// ≤30s) and the collector declared an MCP wedge: it ABORTED the session, created a FRESH one and
+// re-dispatched the same message, which the operator experiences as the model losing its memory.
+//
+// It is the operator's "The model is constantly losing its brain. It doesn't know it's already done things
+// and then tries to do them again", measured in the prod plane's own log: every one of 13
+// "session wedged on a tool — recycling to a fresh session" entries named bash — the tool that raises the
+// asks — and each fired 395-894s after the last ask was raised, i.e. 3-7x this window, because the human's
+// wait was counted in full against a tool that had not started running yet.
+//
+// Only a tool that is ACTUALLY OPEN is restarted: with no tool in flight there is nothing to be silent, and
+// arming one here would invent a wedge for the next tick to find.
 func (m *chatStallMonitor) setAwaitingConsent(v bool) {
 	if m == nil {
 		return
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	was := m.awaitingConsent
 	m.awaitingConsent = v
+	if was && !v && !m.openToolTime.IsZero() {
+		m.openToolTime = m.now()
+	}
+}
+
+// closeTool marks the open tool call as RESOLVED, so it can never be judged a wedge.
+//
+// THE NATIVE ADAPTER NEEDS THIS AND observe() COULD NOT DO IT FOR IT. It resolves a tool with a typed
+// "tool_result" event (name, args, output, error) and emits NO LegacyEventFromBus "tool_use" part, so the
+// only closeTool paths that existed — the "text"/"reasoning"/"step_finish"/"tool_use" arms of observe —
+// never ran for it. A bash call therefore left this slot armed from its START until the model's next text,
+// which means any silent command longer than the wedge window was declared an MCP wedge and recycled the
+// session with no ask involved at all: a build or a test suite was enough.
+func (m *chatStallMonitor) closeTool() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.openToolTime = time.Time{}
+	m.openToolName = ""
 }
 
 // newChatStallMonitor builds a stall monitor for one chat turn.

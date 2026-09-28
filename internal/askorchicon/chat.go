@@ -2231,6 +2231,17 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *turnReplyWindow
 					continue
 				}
 				c.ledger.recordToolResolution(evt.ToolName, evt.ArgsJSON, evt.Output, evt.IsError)
+				// AND IT CLOSES THE WEDGE SLOT. This event is the ONLY resolution signal the native
+				// adapter sends — there is no LegacyEventFromBus "tool_use" part on this transport — so
+				// without this a bash call stayed "open" in the stall monitor from its start, and a
+				// silent command longer than the wedge window was recycled as an MCP wedge (see
+				// closeTool). A resolved call is not a wedged one.
+				monitor.closeTool()
+				// A RESOLVED TOOL IS FORWARD MOTION, and the monitor's clocks measure the absence of
+				// exactly that. Both were running from the tool's START instead — lastActivity was never
+				// stamped here — so a turn that resolved a tool and then waited on a slow model was
+				// judged silent on a clock that had been running the whole time the tool worked.
+				progress()
 			case "part":
 				// Completed telemetry part (the same LegacyEventFromBus
 				// mapping executions use — the adapter classified it). Events
