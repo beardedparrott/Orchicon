@@ -466,7 +466,7 @@ func resolveAskKey(a askAction, dir string) string {
 	if isBashAsk(a.Tool) || len(a.Targets) == 0 {
 		return filepath.Clean(dir)
 	}
-	return filepath.Dir(abs)
+	return grantScopeKey(abs)
 }
 
 // decisionTarget is one path the consent DECISION covers: the absolute path the
@@ -475,6 +475,55 @@ func resolveAskKey(a askAction, dir string) string {
 type decisionTarget struct {
 	abstarget string
 	key       string
+}
+
+// grantScopeKey is the directory a session grant must name to silence the ask about
+// target: the target's own directory, EXCEPT that it is never the filesystem root.
+//
+// WHY THE ROOT IS EXCLUDED, and it is not a style preference. A grant is what the
+// card's session row OFFERS and what `grantStore.Has`/`Roots` then honour, and
+// `Roots` is what the execution guard's shim is handed as its allowed directories
+// (ask_guard.go). So a key of "/" does not widen consent for one directory — it
+// offers "Never ask again in / this session", one click away, and hands the shim
+// the whole filesystem as a granted root.
+//
+// The operator hit it on an ordinary command: `cd /tmp && …` names /tmp, whose
+// directory is /, so the card for it offered to grant /. Nothing about that is
+// exotic — /tmp, /etc, /usr, /var, /mnt, /opt and /srv all have the root as their
+// parent, so ANY command that touches a top-level directory offered it.
+//
+// The failure is in the DERIVATION, not in the decision: the operator is entitled to
+// silence a directory, but "everything" is not a directory. When the only derivable
+// scope would be the root, the grant narrows to the target itself, which is the most
+// that can honestly be offered — and for the common case (a named directory) that is
+// exactly the scope the operator wanted.
+//
+// The SCOPE DIRECTORY is deliberately not passed through here: it is the work area
+// the operator chose for the conversation, not a path derived from a tool call, so
+// keying on it is their own declared decision rather than an inference.
+func grantScopeKey(target string) string {
+	target = filepath.Clean(target)
+	if target == "." || isFilesystemRoot(target) {
+		// The TARGET is itself a volume root, so there is no directory that scopes it and a grant naming the
+		// root would be a grant for everything. No key is the FAIL-CLOSED answer: Has("") is false, so no
+		// session grant can ever cover it and the ask keeps asking. That is the honest outcome — an operator
+		// may silence a directory, but nothing can silence the whole filesystem in one click.
+		//
+		// ("." is included because filepath.Clean("") is ".", so an empty target would otherwise key on the
+		// current directory — a scope nobody asked for.)
+		return ""
+	}
+	if dir := filepath.Dir(target); !isFilesystemRoot(dir) {
+		return dir
+	}
+	return target
+}
+
+// isFilesystemRoot reports whether p is a volume root. The test is that Dir leaves it
+// unchanged (Dir("/") == "/", Dir("C:\\") == "C:\\"), which is exactly what makes it a
+// fixed point and works for every platform's volume spelling without a special case.
+func isFilesystemRoot(p string) bool {
+	return filepath.Dir(p) == p
 }
 
 // (commandPaths lives below decisionTargets — see its own comment for what it does
@@ -920,7 +969,7 @@ func decisionTargets(a askAction, dir string) []decisionTarget {
 				continue
 			}
 			seen[p] = true
-			out = append(out, decisionTarget{abstarget: p, key: filepath.Dir(p)})
+			out = append(out, decisionTarget{abstarget: p, key: grantScopeKey(p)})
 		}
 		return out
 	}
@@ -934,7 +983,7 @@ func decisionTargets(a askAction, dir string) []decisionTarget {
 		if !filepath.IsAbs(t) {
 			t = filepath.Join(filepath.Clean(dir), t)
 		}
-		out = append(out, decisionTarget{abstarget: t, key: filepath.Dir(t)})
+		out = append(out, decisionTarget{abstarget: t, key: grantScopeKey(t)})
 	}
 	return out
 }
@@ -1021,8 +1070,24 @@ func newGrantStore() *grantStore {
 }
 
 // Grant records a session grant for dir under convID.
+//
+// IT REFUSES A VOLUME ROOT, AND THE REFUSAL IS SILENT BY DESIGN. A root grant is not a scope, it is
+// everything: `Has` would then answer yes for the root itself, and `Roots` — which is what the execution
+// guard's shim is handed as its allowed directories (ask_guard.go) — would report the whole filesystem as
+// granted. That is the one outcome this store must never hold, so it is refused here rather than trusted to
+// stay unreachable: the caller that used to derive a root key (`filepath.Dir("/tmp")`) is fixed, and this is
+// the second line of defence behind it.
+//
+// The silence is acceptable BECAUSE it is unreachable by construction — grantScopeKey never yields a root, and
+// the RPC path grants the SERVER's own derived key rather than anything a client sent (see
+// consent_service.go) — so a refusal here means a bug upstream, and failing closed on a bug is the right
+// posture for a permission.
 func (g *grantStore) Grant(convID, dir string) {
 	if g == nil || convID == "" || strings.TrimSpace(dir) == "" {
+		return
+	}
+	dir = filepath.Clean(dir)
+	if isFilesystemRoot(dir) {
 		return
 	}
 	g.mu.Lock()
@@ -1032,7 +1097,7 @@ func (g *grantStore) Grant(convID, dir string) {
 		set = make(map[string]time.Time)
 		g.byConv[convID] = set
 	}
-	set[filepath.Clean(dir)] = time.Now()
+	set[dir] = time.Now()
 }
 
 // Has reports whether convID holds a grant covering dir.
