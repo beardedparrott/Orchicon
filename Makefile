@@ -37,9 +37,9 @@ GOTMPDIR    ?= $(DEV_TOOLS)/gotmp
 export GOTMPDIR
 # PATH as well: a couple of recipes call a bare `go` (the standing PTY gate), and
 # they must resolve the SAME toolchain rather than whatever the shell happens to
-# have. Deliberately NOT adding .dev/tools/bin — `buf`/`atlas` resolve through
-# BUF_BIN's own prefer-bin-then-PATH rule, and shadowing them here would change
-# which codegen toolchain runs.
+# have. Deliberately NOT adding .dev/tools/bin — `buf` and `atlas` each resolve
+# through their own prefer-bin-then-PATH rule (BUF_BIN / ATLAS_BIN, right below),
+# and shadowing them here would change which codegen toolchain runs.
 PATH        := $(DEV_TOOLS)/go/bin:$(PATH)
 export PATH
 endif
@@ -78,6 +78,20 @@ help: ## Show available targets
 BUF_VERSION := 1.72.0
 BUF_SHA256  := a9c6186cf6fcf062b247345e1b7b12c26f580c1b2a4bbf4d3fe080abf85ceee8
 BUF_BIN     = $(if $(wildcard $(BIN_DIR)/buf),$(BIN_DIR)/buf,buf)
+# ATLAS GETS THE SAME RULE, and its absence is what broke `make rebuild-dev`:
+#
+#     cd db && atlas migrate hash --dir "file://migrations"
+#     bash: line 1: atlas: command not found
+#
+# The comment above the PATH block has always CLAIMED atlas resolved this way — "buf/atlas resolve
+# through BUF_BIN's own prefer-bin-then-PATH rule" — but the rule was only ever written for buf, and
+# `ATLAS := atlas` was a bare name that resolved through PATH alone. So the build depended on the
+# operator's shell having atlas on PATH, which is exactly the fragility that bit: atlas lives in
+# .dev/tools/bin, and the PATH entries that reached it were lost with the rest of the home directory.
+#
+# A BUILD MUST NOT DEPEND ON THE OPERATOR'S SHELL PROFILE — the profile is a file like any other, and
+# this one was on the same filesystem an `rm` emptied. Prefer our own copies, then PATH.
+ATLAS_BIN   = $(if $(wildcard $(BIN_DIR)/atlas),$(BIN_DIR)/atlas,$(if $(wildcard $(DEV_TOOLS)/bin/atlas),$(DEV_TOOLS)/bin/atlas,atlas))
 
 .PHONY: toolchain
 toolchain: ## Show the Go toolchain + env this Makefile will build with
@@ -216,15 +230,16 @@ clean-docker: ## Prune Orchicon's dangling images and stopped containers (never 
 # --- Database --------------------------------------------------------------
 .PHONY: migrate migrate-diff migrate-hash rls-check synth-data
 migrate: ## Apply pending Atlas migrations to $$DB_URL
-	@command -v $(ATLAS) >/dev/null 2>&1 || curl -sSfL https://atlasgo.sh | sh
-	cd db && $(ATLAS) migrate apply --env local --url "$(DB_URL)"
+	@command -v $(ATLAS_BIN) >/dev/null 2>&1 || curl -sSfL https://atlasgo.sh | sh
+	cd db && $(ATLAS_BIN) migrate apply --env local --url "$(DB_URL)"
 
 migrate-diff: ## Generate a new migration from db/schema.hcl (usage: make migrate-diff name=foo)
 	@test -n "$(name)" || { echo "usage: make migrate-diff name=<migration_name>"; exit 1; }
-	cd db && $(ATLAS) migrate diff $(name) --env local --to "file://schema.hcl" --dir "file://migrations"
+	cd db && $(ATLAS_BIN) migrate diff $(name) --env local --to "file://schema.hcl" --dir "file://migrations"
 
 migrate-hash: ## Recompute the Atlas migration directory hash (after hand-edits)
-	cd db && $(ATLAS) migrate hash --dir "file://migrations"
+	@command -v $(ATLAS_BIN) >/dev/null 2>&1 || curl -sSfL https://atlasgo.sh | sh
+	cd db && $(ATLAS_BIN) migrate hash --dir "file://migrations"
 
 rls-check: ## CI gate: every tenant_id table must have the RLS policy (docs/09 §8.5)
 	scripts/check-rls.sh "$(DB_URL)"
