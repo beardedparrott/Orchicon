@@ -198,6 +198,18 @@ func (b *Bridge) spawn(ctx context.Context, spec procSpec, manifest scheduler.Ex
 	return newLocalProc(ctx, spec)
 }
 
+// isContainer reports whether this execution's child runs inside the run's
+// runtime container rather than as a host subprocess. It MUST agree with
+// spawn()'s transport selection: childEnv uses it to decide who owns the
+// OS-level guard shim (the supervisor inside the container, the adapter on the
+// host).
+func (b *Bridge) isContainer(m scheduler.ExecutionManifest) bool {
+	if b.spawnOverride != nil {
+		return false
+	}
+	return b.rt != nil && m.RuntimeWorkflowID != "" && m.ExecutionMode != db.ExecutionModeLocal
+}
+
 // parseModelRefLoose extracts the model segment from a model_ref, tolerating
 // structural-only parsing (nil registry) for refs whose provider is unknown
 // at this layer. Returns "" on error.
