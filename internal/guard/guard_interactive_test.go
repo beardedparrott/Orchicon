@@ -281,14 +281,19 @@ func TestNeverAllowSaysPermanentlyBlocked(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"sudo", []string{"rm", "-rf", "/"}},
+		// Operands are temp paths: the class arm refuses on the BINARY NAME, so what the
+		// arguments name is irrelevant to the assertion and must not be a real device.
+		{"sudo", []string{"rm", "-rf", filepath.Join(t.TempDir(), "x")}},
 		{"dd", []string{"if=/dev/zero", "of=/dev/sda"}},
-		{"mkfs.ext4", []string{"/dev/sdb"}},
+		// Temp operands, for the reason given on the sudo case above: the class arm refuses on
+		// the BINARY NAME, so these arguments never reach a program, and naming real devices
+		// would be relying on root (and on `sudo` needing a tty) rather than on the guard.
+		{"mkfs.ext4", []string{filepath.Join(t.TempDir(), "disk")}},
 		{"fdisk", []string{"-l"}},
-		{"parted", []string{"/dev/sdb", "print"}},
-		{"shred", []string{"/dev/sda"}},
-		{"wipefs", []string{"/dev/sda"}},
-		{"lvremove", []string{"/dev/vg0/lv0"}},
+		{"parted", []string{filepath.Join(t.TempDir(), "disk"), "print"}},
+		{"shred", []string{filepath.Join(t.TempDir(), "disk")}},
+		{"wipefs", []string{filepath.Join(t.TempDir(), "disk")}},
+		{"lvremove", []string{filepath.Join(t.TempDir(), "vg0/lv0")}},
 	}
 	env := InteractiveEnviron(policy, proj, []string{grant}, nil, false)
 	for _, tc := range cases {

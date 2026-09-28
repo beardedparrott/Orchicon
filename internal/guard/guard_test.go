@@ -93,12 +93,17 @@ func TestExecutionGuardBlocksDestructive(t *testing.T) {
 		{"rm", []string{"-rf", ".."}},
 		{"rm", []string{"-rf", "../../escape"}},
 		{"rm", []string{"-rf", filepath.Join(outside, "*")}},
-		// Never-allow: refused by the class arm before any path logic, and the devices need root.
-		{"sudo", []string{"rm", "-rf", "/"}},
+		// NEVER-ALLOW: refused by the class arm on the BINARY NAME, before any argument is
+		// examined — so the operands here are irrelevant to what is being tested, and they are
+		// temp paths for the same reason as everything else in this file. They used to name `/`
+		// and real devices (`/dev/sda`, `/dev/sdb`), which is safe only because those need root
+		// to touch and because `sudo` cannot prompt on a non-interactive tty — two coincidences,
+		// neither of which is a safety property. The assertion is unchanged: the class refuses.
+		{"sudo", []string{"rm", "-rf", filepath.Join(outside, "x")}},
 		{"sudo", []string{"true"}},
-		{"dd", []string{"if=/dev/zero", "of=/dev/sda"}},
-		{"mkfs", []string{"-t", "ext4", "/dev/sdb"}},
-		{"shred", []string{"/dev/sda"}},
+		{"dd", []string{"if=/dev/zero", "of=" + filepath.Join(outside, "disk")}},
+		{"mkfs", []string{"-t", "ext4", filepath.Join(outside, "disk")}},
+		{"shred", []string{filepath.Join(outside, "disk")}},
 	}
 	for _, tc := range cases {
 		exit, out := runGuardIn(t, g, work, tc.name, tc.args...)
@@ -153,8 +158,14 @@ func TestExecutionGuardAllowsInProject(t *testing.T) {
 		t.Errorf("cp in project: dest should exist")
 	}
 
-	// cp from OUTSIDE the project is blocked.
-	exit, out = runGuard(t, g, "cp", "/etc/hostname", filepath.Join(proj, "x.txt"))
+	// cp from OUTSIDE the project is blocked. The SOURCE is a temp file rather than a real
+	// system path: this executes a real `cp`, and while reading /etc/hostname is harmless, a
+	// path a real binary could act on is not what belongs in a test — the same rule as above.
+	outsideSrc := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outsideSrc, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exit, out = runGuard(t, g, "cp", outsideSrc, filepath.Join(proj, "x.txt"))
 	if exit == 0 {
 		t.Errorf("cp from outside project: expected blocked, got exit 0: %s", out)
 	}
@@ -340,7 +351,7 @@ func TestPolicyDenyBlocksInProjectTargetAndNeverAllowStaysAbsolutestFirst(t *tes
 		t.Fatalf("NewExecutionGuardWithPolicy: %v", err)
 	}
 	defer g2.Close()
-	exit, out = runGuard(t, g2, "sudo", "rm", "-rf", "/")
+	exit, out = runGuard(t, g2, "sudo", "rm", "-rf", filepath.Join(t.TempDir(), "x"))
 	if exit == 0 {
 		t.Fatal("sudo ran")
 	}
