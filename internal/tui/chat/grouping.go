@@ -76,6 +76,17 @@ type ParsedAsk struct {
 	// AnswerText is what the operator answered, read from that result, so a settled
 	// card can say what was decided instead of silently going inert.
 	AnswerText string
+
+	// Drafting and Draft are the FREE-TEXT ROW's live state: the recorded-card twin of
+	// ConsentState.OtherMode/OtherInput. Drafting opens an input row on the card and gives that
+	// row the keyboard; Draft is what has been typed into it so far.
+	//
+	// IT LIVES ON THE ITEM, like the consent card's, and for the same reason: the transcript is
+	// a rendered STRING with no component state of its own, so the only place a live input can
+	// live is the item the string was drawn from — and the renderer and the key handler then
+	// read and write the SAME object by construction. Mutated on the tea loop only.
+	Drafting bool
+	Draft    string
 }
 
 // isAskUserCall reports whether a recorded tool call is the clarifying question

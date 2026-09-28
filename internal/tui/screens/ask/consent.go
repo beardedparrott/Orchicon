@@ -73,6 +73,12 @@ func (m *Model) ClaimsKeys() bool {
 	if m.ov != nil {
 		return true
 	}
+	// A RECORDED CARD'S FREE-TEXT ROW CLAIMS TOO: the shell hands a claiming screen every key
+	// verbatim (router.go), and an input row with nothing typing into it is not an input. Released
+	// for THIS item only by ctrl+g, exactly as a consent card is — see draftDeferred.
+	if m.draft != nil && m.draft.Drafting && m.draftKey != m.draftDeferred {
+		return true
+	}
 	if m.consent == nil {
 		return false
 	}
@@ -142,6 +148,13 @@ func (m *Model) OwnsTab() bool { return m.ClaimsKeys() }
 func (m *Model) DropKeyClaim() {
 	if m.consent != nil && m.consent.Pending() {
 		m.consentDeferred = m.consent.Ask.ID
+	}
+	// AN OPEN FREE-TEXT ROW ON A RECORDED CARD YIELDS THE SAME WAY, and for the same reason: the
+	// chord is the advertised way to reach the composer and must never be blocked by a card — and
+	// it must not discard what the operator has typed either. The row stays open and keeps its
+	// text; a click on its Other row claims the keys back (ReArmAskDraftClaim).
+	if m.draft != nil && m.draft.Drafting {
+		m.draftDeferred = m.draftKey
 	}
 	// The overlay is a genuine dismissal: it is a local picker, and leaving it open on an
 	// unfocused screen is what the release exists to prevent.

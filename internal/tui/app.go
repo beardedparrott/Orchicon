@@ -3198,6 +3198,55 @@ func consentDecisionFromOutcome(outcome string) chat.ConsentDecision {
 	}
 }
 
+// reArmAskDraftClaim hands the keyboard back to a RECORDED card's open free-text row, after a click
+// on that row.
+//
+// THE MIRROR OF reArmConsentClaim, for the same gesture and the same reason: the row is an input,
+// ctrl+g can hand the keyboard to the composer, and a click on the row is the operator acting ON the
+// card — so the card takes the keys back. Without it the input row would be drawn while the typing
+// it asks for landed in the composer behind it.
+func (m *App) reArmAskDraftClaim() {
+	s := m.screens[TabAsk]
+	if s == nil {
+		return
+	}
+	if c, ok := s.(interface{ ReArmAskDraftClaim() }); ok {
+		c.ReArmAskDraftClaim()
+	}
+}
+
+// beginAskDraft opens the free-text row on a RECORDED ask card, by the key of the item under the
+// click.
+//
+// THE CARD'S INPUT ROW IS PART OF ITS RENDER, so "open" means "the item says Drafting" — the same
+// shape the consent card uses (ConsentState.OtherMode), and the reason this needs no repaint channel
+// of its own: the item IS the state, and the render reads it.
+//
+// BY KEY, NOT BY "the newest card": a transcript can hold more than one unanswered question, and
+// opening the input on the wrong one would put the operator's answer on a question they did not
+// click. False when the item is gone, already answered, or never offered free text — so a click
+// resolved against a stale layout opens nothing rather than something wrong.
+func (s *chatStore) beginAskDraft(convID, key string) bool {
+	if s == nil || key == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.items[convID] {
+		it := &s.items[convID][i]
+		if it.Kind != chat.KindAsk || it.Key != key || it.Ask == nil {
+			continue
+		}
+		if it.Ask.Answered || !it.Ask.AllowOther {
+			return false
+		}
+		it.Ask.Drafting = true
+		it.Ask.Draft = ""
+		return true
+	}
+	return false
+}
+
 // settleStaleConsent resolves every PENDING consent card for a conversation whose
 // turn has ENDED.
 //
@@ -3751,20 +3800,22 @@ func (m *App) transcriptCodeBlockAtFrameRow(frameRow int) (string, bool) {
 // was a coin flip. Both are clickable now, and both still take the keyboard (the consent card's key
 // handler is unchanged).
 //
-// It returns the item KIND as well as the label, because the two cards DO different things with the
-// answer: a question's label is sent as the next user message, a permission's label is a DECISION.
+// It returns the item KIND, the item KEY and the label, because the three cards DO different things
+// with the answer: a question's label is sent as the next user message, a permission's label is a
+// DECISION, and a free-text row needs to name the CARD it was clicked on so the input opens on that
+// card rather than on whichever one happens to be newest.
 //
 // Same three coordinate spaces as the copy rules (frame row → body row → body line → item), and the
 // same derived body-top row — the geometry comes from the render that drew the card (ItemSpan.Options),
 // so a click cannot resolve against a layout the screen is not showing.
-func (m *App) transcriptCardOptionAtFrameRow(frameRow int) (chat.ItemKind, string, bool) {
+func (m *App) transcriptCardOptionAtFrameRow(frameRow int) (chat.ItemKind, string, string, bool) {
 	str := m.TranscriptStream(m.chatConvID)
 	if str == nil {
-		return "", "", false
+		return "", "", "", false
 	}
 	line := str.LineAtRow(frameRow - m.transcriptBodyTopRow())
 	if line < 0 {
-		return "", "", false
+		return "", "", "", false
 	}
 	for _, sp := range m.transcriptSpans[m.chatConvID] {
 		if sp.Kind != chat.KindAsk && sp.Kind != chat.KindConsent {
@@ -3775,22 +3826,22 @@ func (m *App) transcriptCardOptionAtFrameRow(frameRow int) (chat.ItemKind, strin
 		}
 		label, ok := sp.OptionAt(line)
 		if !ok {
-			return "", "", false // the card's body or header: not a choice
+			return "", "", "", false // the card's body or header: not a choice
 		}
 		// A SETTLED card is no longer a choice. For the question that is "a later user message
 		// exists"; for the permission it is "no longer pending". Without this a click on a stale
 		// card would re-send, or re-decide, something already answered.
 		if sp.Kind == chat.KindAsk && m.askCardSettled(sp.Key) {
-			return "", "", false
+			return "", "", "", false
 		}
 		if sp.Kind == chat.KindConsent {
 			if _, st, ok := m.pendingConsentItem(); !ok || !st.Pending() {
-				return "", "", false
+				return "", "", "", false
 			}
 		}
-		return sp.Kind, label, true
+		return sp.Kind, sp.Key, label, true
 	}
-	return "", "", false
+	return "", "", "", false
 }
 
 // pendingConsentItem finds the open permission/question card in the transcript, with the id and the

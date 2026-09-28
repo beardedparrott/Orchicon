@@ -218,6 +218,10 @@ func renderSig(it ChatItem) uint64 {
 		flag(a.AllowOther)
 		flag(a.Answered)
 		str(a.AnswerText)
+		// The free-text row's live state: an open input row and what is typed in it are both part
+		// of the drawn card.
+		flag(a.Drafting)
+		str(a.Draft)
 		for _, o := range a.Options {
 			str(o.Label)
 			str(o.Description)

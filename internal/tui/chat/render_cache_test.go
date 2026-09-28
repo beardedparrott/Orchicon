@@ -108,6 +108,11 @@ func itemMutations() []mutation {
 		{"ask answer text", func(i []ChatItem) { i[8].Ask.AnswerText = "develop" }},
 		{"ask option label", func(i []ChatItem) { i[8].Ask.Options[0].Label = "main" }},
 		{"ask option description", func(i []ChatItem) { i[8].Ask.Options[0].Description = "other" }},
+		// The free-text row this card gained: an open input row, and the text in it. Both are drawn,
+		// so a signature that ignored either would serve the operator a card with their own typing
+		// missing from it.
+		{"ask drafting", func(i []ChatItem) { i[8].Ask.Drafting = true }},
+		{"ask draft text", func(i []ChatItem) { i[8].Ask.Draft = "seed.sql" }},
 		{"consent ask id", func(i []ChatItem) { i[9].Consent.Ask.ID = "c-2" }},
 		{"consent conversation", func(i []ChatItem) { i[9].Consent.Ask.ConvID = "conv-2" }},
 		{"consent tool", func(i []ChatItem) { i[9].Consent.Ask.Tool = "write" }},

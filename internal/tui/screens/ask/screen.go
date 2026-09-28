@@ -37,6 +37,17 @@ type Model struct {
 	// to be cleared somewhere, and forgetting to clear it would leave a card with no keys.
 	consentDeferred string
 
+	// draft is the adopted FREE-TEXT ROW of a RECORDED ask card — the SAME *chat.ParsedAsk the
+	// transcript item holds, so this screen mutates exactly what the renderer draws (see
+	// askdraft.go). draftKey is that item's key: the claim is keyed on it, and so is the
+	// deferral, so releasing the keyboard for one card cannot leak onto another.
+	draft    *chat.ParsedAsk
+	draftKey string
+	// draftDeferred is the item key whose claim ctrl+g released, so the operator can reach the
+	// composer WITHOUT losing what they had typed into the row. An ID rather than a bool, for the
+	// same reason consentDeferred is one.
+	draftDeferred string
+
 	// ov is the open list overlay (/grants, /permissions, add-rule). The screen
 	// owns its keys while it is up (ClaimsKeys).
 	ov *askOverlay
@@ -166,6 +177,11 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		// decision key can never be read as a screen action. The shell's
 		// input-modal gate (router.go) already handed the key here verbatim.
 		if cmd, handled := m.handleConsentKey(msg); handled {
+			return m, cmd
+		}
+		// The same for a RECORDED card's open free-text row: it is an input the operator is
+		// typing into, so what they type is their answer and not a screen action.
+		if cmd, handled := m.handleAskDraftKey(msg); handled {
 			return m, cmd
 		}
 		if cmd, handled := m.handleOverlayKey(msg); handled {
@@ -360,8 +376,10 @@ func (m *Model) onDetail(src, id string) tea.Cmd {
 func (m *Model) RenderTranscript(items []chat.ChatItem, live chat.Conversation, liveOK bool) (string, []screenkit.Field) {
 	// RECONCILE FIRST, ALWAYS. This is the one hook the shell calls on every wake, so a card whose
 	// ask has left the transcript (turn done, superseded, aborted) releases its key claim here and
-	// nowhere else — see consent.go.
+	// nowhere else — see consent.go — and the same holds for a recorded card's open free-text row
+	// (see askdraft.go).
 	m.SyncTranscriptConsent(items)
+	m.SyncAskDraft(items)
 	m.metaMu.Lock()
 	title, fields := m.metaTitle, append([]screenkit.Field{}, m.metaFields...)
 	m.metaMu.Unlock()

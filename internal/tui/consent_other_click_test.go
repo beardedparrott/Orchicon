@@ -181,7 +181,7 @@ func TestAClickOnOtherTakesTheKeyboardBackFromADeferredCard(t *testing.T) {
 func TestTheOtherRowIsClickable(t *testing.T) {
 	m, _ := otherCardPlane(t)
 	row := rowCarryingFrame(t, m, chat.ConsentOther)
-	kind, label, ok := m.transcriptCardOptionAtFrameRow(row)
+	kind, _, label, ok := m.transcriptCardOptionAtFrameRow(row)
 	if !ok {
 		t.Fatal("the Other row resolved to nothing — it is drawn but not reachable by a click")
 	}

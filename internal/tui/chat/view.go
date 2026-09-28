@@ -780,7 +780,9 @@ func renderAskCardSpans(a *ParsedAsk, maxWidth int) (string, []AskOptionSpan) {
 	// worse than saying nothing.
 	footer := "click an option to answer"
 	if a.AllowOther {
-		footer = "click an option · or reply in your own words"
+		// The free-text row is a ROW now, so the footer names it as one. It keeps the words "reply in
+		// your own words" because that is still exactly what the row is for.
+		footer = "click an option · or click Other to reply in your own words"
 	}
 	spec := kit2.CardSpec{
 		Title:  "Orchicon asks",
@@ -798,18 +800,44 @@ func renderAskCardSpans(a *ParsedAsk, maxWidth int) (string, []AskOptionSpan) {
 		spec.Lines = append(spec.Lines, kit2.CardLine{Text: text})
 	}
 
+	// THE FREE-TEXT ROW, WHICH THIS CARD USED TO NOT HAVE AT ALL.
+	//
+	// The operator: "In the GUI, it lets you type in your own response. In the TUI clicking on it
+	// does nothing. You should be able to click on other and type in a response there." The GUI's
+	// card (frontend AskCard.tsx) draws an "Other…" action on BOTH of its uses — the recorded
+	// question and the consent question — and clicking it opens an inline input whose Enter sends
+	// what was typed as the next message. This card instead said only "or reply in your own
+	// words", which is a DIFFERENT promise: it pointed at the composer. The row is here now, and
+	// it opens the same input the consent card does.
+	//
+	// IT IS NOT NUMBERED, unlike the options above: the numbers are the model's canned answers,
+	// and "5. Other" would read as one more of them.
+	labels := make([]string, 0, len(a.Options)+1)
+	for _, o := range a.Options {
+		labels = append(labels, o.Label)
+	}
+	if a.AllowOther {
+		spec.Lines = append(spec.Lines, kit2.CardLine{Text: ConsentOther, Selected: a.Drafting})
+		spec.ShowInput = a.Drafting
+		spec.Input = a.Draft
+		labels = append(labels, ConsentOther)
+	}
+
 	lines, rows := kit2.CardLinesSpans(spec, maxWidth)
 	var b strings.Builder
 	for _, l := range lines {
 		b.WriteString(l)
 		b.WriteString("\n")
 	}
+	// ONE SPAN PER DRAWABLE ROW, from the labels the rows were built from — the options and, when
+	// it is offered, the free-text row. kit2's ShowInput row is drawn AFTER these and carries no
+	// span of its own, so a click on the input row resolves to nothing rather than to a choice.
 	opts := make([]AskOptionSpan, 0, len(rows))
 	for i, r := range rows {
-		if i >= len(a.Options) {
+		if i >= len(labels) {
 			break
 		}
-		opts = append(opts, AskOptionSpan{Line: r.Line, Lines: r.Lines, Label: a.Options[i].Label})
+		opts = append(opts, AskOptionSpan{Line: r.Line, Lines: r.Lines, Label: labels[i]})
 	}
 	return b.String(), opts
 }
