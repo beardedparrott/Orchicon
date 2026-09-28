@@ -2912,6 +2912,26 @@ type chatStore struct {
 	mu           sync.Mutex
 	items        map[string][]chat.ChatItem
 	reconnecting map[string]bool
+	// orderAt is the ARRIVAL ANCHOR map: convID -> MESSAGE key -> the ordering timestamp every item of that
+	// message must sort by, overriding the timestamp each item was built with.
+	//
+	// WHY IT EXISTS. An item's timestamp is when its ROW was created, and for the acked assistant reply that is
+	// the START of the turn — while every item raised DURING that turn (a permission card, a clarifying
+	// question, a command row) is stamped with the moment IT arrived. Ordered by those two clocks the reply
+	// wins every comparison for the whole turn, so as it grew it stayed pinned ABOVE the cards: the cards sat
+	// at the bottom of the screen with the conversation continuing above them. The operator: "A lot of the
+	// permission/answer logs and even some actual commands ran stays at the bottom of the screen and the
+	// conversation from the model continues above it. This made me think the conversation wasn't going
+	// anywhere."
+	//
+	// The anchor makes a message that is still BEING WRITTEN sort by its LAST ARRIVAL rather than its creation,
+	// so it sinks as new text streams in and the items raised while it was being written float above it — the
+	// operator's "move them up as new text streams in just like any other activity".
+	//
+	// It is keyed by MESSAGE, not by item, so every row derived from one assistant row (its text, each
+	// reasoning part, its recorded ask card) moves as a UNIT and keeps the intra-message ordering those rows
+	// were emitted in.
+	orderAt map[string]map[string]int64
 }
 
 func (s *chatStore) append(convID string, item chat.ChatItem) {
@@ -3073,7 +3093,13 @@ func (s *chatStore) mergeHistory(convID string, history []chat.ChatItem) {
 	// operator's "user messages are printing AFTER the model's messages").
 	// Any live row the dedupe above does not drop has to land in its real
 	// chronological place.
+	// ANCHOR, THEN INTERLEAVE (see chatStore.orderAt). A reply whose text has GROWN since the last merge is
+	// being written right now, so it sorts by its latest arrival rather than by the turn's start — which is
+	// what keeps the cards and command rows raised during the turn ABOVE it, moving up as new text streams
+	// in, instead of pinned to the bottom of the screen under a conversation that appears to have stopped.
+	s.anchorGrowingMessages(convID, history)
 	merged := append(append([]chat.ChatItem{}, history...), kept...)
+	s.applyOrderAnchors(convID, merged)
 	chat.SortChronologically(merged)
 	s.items[convID] = merged
 	s.mu.Unlock()
@@ -3138,7 +3164,12 @@ func (s *chatStore) replace(convID string, items []chat.ChatItem) {
 			out = append(out, it)
 		}
 	}
-	if len(out) != len(items) {
+	// The anchors survive the replace: without applying them here the in-flight reply would JUMP back up to
+	// its row-creation time the moment the turn completed, reordering the transcript under the operator's
+	// eyes at exactly the moment they start reading the finished reply (see chatStore.orderAt).
+	s.anchorGrowingMessages(convID, items)
+	s.applyOrderAnchors(convID, out)
+	if len(out) != len(items) || len(s.orderAt[convID]) > 0 {
 		chat.SortChronologically(out)
 	}
 	s.items[convID] = out
@@ -3292,6 +3323,85 @@ func (s *chatStore) snapshot(convID string) []chat.ChatItem {
 	out := make([]chat.ChatItem, len(items))
 	copy(out, items)
 	return out
+}
+
+// messageKeyOf is the MESSAGE an item was derived from, or "" for an item that
+// is not part of a durable message.
+//
+// The server keys a message's parts off its own id: the message row is "m-<id>",
+// each reasoning part "m-<id>-r<j>", and a recorded ask_user call
+// "m-<id>-ask" (see conversationItems). They are one message for ordering
+// purposes — they were written together and must move together — so the suffixes
+// are stripped here rather than at every call site.
+func messageKeyOf(key string) string {
+	if !strings.HasPrefix(key, "m-") {
+		return ""
+	}
+	if i := strings.Index(key, "-r"); i > 0 {
+		return key[:i]
+	}
+	return strings.TrimSuffix(key, "-ask")
+}
+
+// anchorGrowingMessages records NOW against every durable MESSAGE whose text has
+// GROWN since the store last saw it, so a reply that is still being written sorts
+// below the items raised while it was written. Call with s.mu held.
+//
+// ONLY A MESSAGE THE STORE HAS ALREADY SEEN IS ANCHORED. A key it has never held
+// is a row arriving for the first time — an older conversation being opened, or a
+// whole transcript loading — and anchoring those would sort every past reply to
+// the bottom of its own history. Growth is the signal that a message is live.
+func (s *chatStore) anchorGrowingMessages(convID string, items []chat.ChatItem) {
+	grown := map[string]bool{}
+	seen := map[string]int{}
+	for _, it := range s.items[convID] {
+		if k := messageKeyOf(it.Key); k != "" {
+			if n := len(it.Text); n > seen[k] {
+				seen[k] = n
+			}
+		}
+	}
+	for _, it := range items {
+		k := messageKeyOf(it.Key)
+		if k == "" {
+			continue
+		}
+		was, ok := seen[k]
+		if !ok {
+			continue
+		}
+		if len(it.Text) > was {
+			grown[k] = true
+		}
+	}
+	if len(grown) == 0 {
+		return
+	}
+	if s.orderAt == nil {
+		s.orderAt = map[string]map[string]int64{}
+	}
+	byMsg := s.orderAt[convID]
+	if byMsg == nil {
+		byMsg = map[string]int64{}
+		s.orderAt[convID] = byMsg
+	}
+	for k := range grown {
+		byMsg[k] = time.Now().UnixMilli()
+	}
+}
+
+// applyOrderAnchors rewrites every anchored item's ordering timestamp. Call with
+// s.mu held, BEFORE sorting.
+func (s *chatStore) applyOrderAnchors(convID string, items []chat.ChatItem) {
+	byMsg := s.orderAt[convID]
+	if len(byMsg) == 0 {
+		return
+	}
+	for i := range items {
+		if at, ok := byMsg[messageKeyOf(items[i].Key)]; ok {
+			items[i].At = at
+		}
+	}
 }
 
 // onTranscript ingests the durable transcript. When the turn is no
