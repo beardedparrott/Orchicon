@@ -1,9 +1,11 @@
 package execution
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
+	"github.com/beardedparrott/orchicon/internal/claude"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/worktree"
 )
@@ -115,5 +117,79 @@ func TestClaudeNonTodoPartsAreSkipped(t *testing.T) {
 	}
 	if todos := latestTodos([]db.SessionPart{{Kind: db.SessionPartToolUse, Payload: payload}}); todos != nil {
 		t.Fatalf("latestTodos = %+v, want nil", todos)
+	}
+}
+
+// claudeParityNoop is a do-nothing ExecutionCallbacks: the parity assertion
+// below only cares about what the mapper PERSISTS, so the live-callback fan-out
+// is deliberately inert.
+type claudeParityNoop struct{}
+
+func (claudeParityNoop) OnStarted(context.Context, string)                          {}
+func (claudeParityNoop) OnResult(context.Context, string, bool, string, string)     {}
+func (claudeParityNoop) OnWrittenFiles(context.Context, string, []string)           {}
+func (claudeParityNoop) OnHealth(context.Context, string, string)                   {}
+func (claudeParityNoop) OnStall(context.Context, string, string, bool)              {}
+func (claudeParityNoop) OnRecovered(context.Context, string, string)                {}
+func (claudeParityNoop) OnToolCall(context.Context, string, string, []byte, []byte) {}
+func (claudeParityNoop) OnText(context.Context, string, string)                     {}
+func (claudeParityNoop) OnArtifact(context.Context, string, string, string, string) {}
+
+// TestClaudeMapperPayloadParsesWithoutAdapterBranch closes the loop the
+// hand-mirrored claudeTodoEnvelope above deliberately leaves open: it drives
+// the REAL claude Mapper over a canned stream-json line and feeds the payload
+// the mapper actually persists into the SAME shared parser the RPC path uses.
+// A drift in parse.go's durable envelope (rename the tool, move the todos
+// under a different key, nest the state differently) therefore fails HERE,
+// not just in a mirror that would silently keep matching itself.
+func TestClaudeMapperPayloadParsesWithoutAdapterBranch(t *testing.T) {
+	var (
+		captured []byte
+		kind     string
+	)
+	m := claude.NewMapper("exec-mapper-todo-parity", claudeParityNoop{}, claude.MapperDeps{
+		ExecDir: t.TempDir(),
+		Record: func(_ context.Context, k string, payload map[string]any) {
+			if k != db.SessionPartToolUse {
+				return
+			}
+			b, err := json.Marshal(payload)
+			if err != nil {
+				return
+			}
+			captured = b
+			kind = k
+		},
+	})
+	line := []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"td-1","name":"TodoWrite","input":{"todos":[{"content":"step 1","status":"in_progress","priority":"high","activeForm":"stepping"},{"content":"step 2","status":"","task_id":"2"}]}}]}}`)
+	ev, err := claude.ParseLine(line)
+	if err != nil {
+		t.Fatalf("ParseLine: %v", err)
+	}
+	m.Handle(context.Background(), ev)
+	if captured == nil {
+		t.Fatal("the mapper persisted no tool_use part for the TodoWrite block")
+	}
+
+	// The mapper's own payload must decode through the shared parser.
+	got, ok := todoItemsFromPayload(captured)
+	if !ok {
+		t.Fatalf("the mapper's persisted claude todo payload does not parse: %s", captured)
+	}
+	if len(got) != 2 || got[0].Content != "step 1" || got[1].Content != "step 2" {
+		t.Fatalf("parser read %+v, want step 1 + step 2", got)
+	}
+	// Empty streamed status still lands as pending (claude omits it).
+	if got[1].Status != "pending" {
+		t.Errorf("todos[1].Status = %q, want pending", got[1].Status)
+	}
+
+	// …and through the full RPC walk (DESC by seq) with zero adapter branch.
+	todos := latestTodos([]db.SessionPart{{Kind: kind, Seq: 1, Payload: captured}})
+	if len(todos) != 2 {
+		t.Fatalf("latestTodos = %+v, want the claude list", todos)
+	}
+	if todos[0].Content != "step 1" {
+		t.Errorf("latestTodos[0].Content = %q", todos[0].Content)
 	}
 }
