@@ -43,11 +43,18 @@ const (
 	// will not use.
 	ConsentSessionPrefix = "Never ask again in "
 	ConsentSessionSuffix = " this session"
-	// ConsentSessionNoDir is the label when the ask names no directory (a detail
-	// that never resolved). It says "this directory" rather than borrowing Target,
-	// because Target is a FILE for a write ask and naming a file as the directory a
-	// grant covers would be a lie about the scope.
-	ConsentSessionNoDir = "Never ask again in this directory this session"
+	// ConsentSessionNoDir is the session row's label when the ask names NO directory a grant could cover.
+	//
+	// IT NO LONGER OFFERS ANYTHING, because there is nothing to offer: a grant for such an ask covers
+	// nothing (grantStore.Grant refuses an empty directory), so the row is DISABLED and the label says so
+	// rather than promising a scope. It used to read "Never ask again in this directory this session" — an
+	// offer the system could not keep, which the operator would have clicked, been re-asked, and had no way
+	// to see why.
+	//
+	// WHERE AN EMPTY DIRECTORY COMES FROM: the server sends none when the blocking target IS a volume root
+	// (no grant can silence it — see grantScopeKey), or when the action resolved no path at all (the
+	// fail-closed card).
+	ConsentSessionNoDir = "Not available for a session grant"
 
 	// ConsentSessionRecord is the settled RECORD's name for the session decision.
 	// The record is history rather than a choice, so it is short and it carries the
@@ -84,10 +91,16 @@ type PermissionAsk struct {
 	// and claiming the keyboard there (the Ask screen adopts any pending card from the
 	// items it is handed). Empty on a locally built ask; App.ShowConsentAsk then falls
 	// back to the open conversation.
-	ConvID    string
-	Tool      string
-	Target    string
-	Directory string // the scope a session grant is given for
+	ConvID string
+	Tool   string
+	Target string
+	// Directory is the scope a session grant would be given for.
+	//
+	// AN EMPTY ONE MEANS NO GRANT CAN COVER THIS ASK, and the card disables its session row rather than
+	// offering one (see RowDisabled). The server sends none when the blocking target IS a volume root —
+	// nothing may be allowed "for everything" in one click (see askorchicon.grantScopeKey) — or when the
+	// action resolved no path at all.
+	Directory string
 
 	Kind       AskKind
 	Question   string   // AskQuestion
@@ -252,12 +265,33 @@ func (a PermissionAsk) DecisionForRow(i int) (ConsentDecision, bool) {
 	}
 }
 
-// RowDisabled reports whether a row cannot be selected. The session grant is
-// the one case: a target the persistent list denies cannot be widened for the
-// session, so the row is shown DISABLED with the pattern named rather than
-// offered and then refused.
+// RowDisabled reports whether a row cannot be selected.
+//
+// IT IS ONE QUESTION WITH TWO ANSWERS, and both of them are "offering this row would be a lie":
+//
+//   - a persistent DENY entry covers the target, so a session grant cannot widen it (the card names the
+//     pattern instead of offering a grant the policy will refuse — silent escalation is exactly what a
+//     permission system must not do);
+//   - the ask names NO directory a grant could cover, so a grant would silence nothing at all.
+//
+// See sessionRowSuppressed for the reason the card STATES, which is what the operator needs in order to
+// understand the row they cannot take.
 func (a PermissionAsk) RowDisabled(i int) bool {
-	return a.Kind == AskTool && a.DeniedBy != "" && i == 1
+	return a.Kind == AskTool && i == 1 && a.sessionRowSuppressed() != ""
+}
+
+// sessionRowSuppressed returns WHY the session-grant row cannot be taken, or "" when it can.
+//
+// IT IS THE SINGLE SOURCE for both the disable decision and the card's stated reason, so the row and its
+// explanation cannot drift apart.
+func (a PermissionAsk) sessionRowSuppressed() string {
+	if a.DeniedBy != "" {
+		return "denied by " + a.DeniedBy
+	}
+	if a.Directory == "" {
+		return "no directory here for a session grant to cover"
+	}
+	return ""
 }
 
 // ConsentState is the card's live state, carried on the transcript item so ONE
