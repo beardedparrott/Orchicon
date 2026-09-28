@@ -102,3 +102,4 @@ deploy/runtime/orch
 
 # Orchicon: ignore nested step worktrees (parallel-branch children)
 01*/
+.restore-from-snapshot.sh

@@ -41,6 +41,7 @@ import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/neverallow"
 	"github.com/beardedparrott/orchicon/internal/permpolicy"
+	"github.com/beardedparrott/orchicon/internal/protectedpath"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
@@ -1586,6 +1587,31 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 	absTargets := make([]string, 0, len(targets))
 	for _, t := range targets {
 		absTargets = append(absTargets, t.abstarget)
+	}
+	// A TARGET THAT WOULD DESTROY THE SCOPE IS REFUSED, NOT ASKED ABOUT — and this is the layer where
+	// "asked about" would be the worst outcome, because a card offers the operator a button that
+	// cannot be taken back.
+	//
+	// WHERE IT SITS: above the policy loop and above FULLSEND, in the same position as the never-allow
+	// class and for the same reason — it is a decision, not a permission request. A DENY entry is
+	// consulted first: an operator's own exclusion is their decision to state, and it should be the
+	// reason they are given.
+	//
+	// WHAT IT CATCHES: `rm -rf /home` from a project, `rm -rf ~`, `rm -rf /`, and `rm -rf` of any
+	// directory that CONTAINS the project — every one of which would take the work scope with it. It
+	// does NOT refuse acting on the scope root itself (`chmod -R 755 <project>`, `rm -rf <project>/dist`),
+	// which is ordinary work; see protectedpath's two lists.
+	//
+	// IT IS THE CONSENT HALF OF THE SAME RULE the guard shim enforces, from ONE declaration
+	// (internal/protectedpath), so the two cannot disagree about what is protected.
+	protRoots := protectedpath.Roots("")
+	protScope := protectedpath.ScopeRoots(scope.Dir, ct.svc.grants.Roots(ct.convID))
+	for _, t := range targets {
+		if root := protectedpath.DestroyedBy(t.abstarget, protRoots, protScope); root != "" {
+			ref := protectedpath.Refusal(t.abstarget, root)
+			ct.record(a, "protected_path", ref)
+			return "reject", nil, ref
+		}
 	}
 	// blocking is the FIRST target that is not covered — the path whose consent is
 	// actually missing, and therefore the directory a grant has to name to silence this
