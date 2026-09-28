@@ -232,6 +232,64 @@ func TestParityTheGuardShimRefusesToo(t *testing.T) {
 	}
 }
 
+// TestParityProtectedPathsRefusedByTheShimAndTheHook is the protected-path leg of
+// the parity criterion. The opencode worker's protection against a destructive
+// PATH-SCOPED command is the OS-level shim (its permission config has no
+// protected-path rule), and the claude worker gets the SAME
+// internal/protectedpath declaration through the hook — so the property to pin
+// is: the shim refuses the target AND claude's hook refuses the same command,
+// by the SAME rule name, while ordinary work on the project itself stays allowed
+// in both layers.
+func TestParityProtectedPathsRefusedByTheShimAndTheHook(t *testing.T) {
+	project := t.TempDir()
+	// A PROPER ANCESTOR of the project: destroying it takes the project with it.
+	// No deny pattern covers this command, so the protected-root rule is what is
+	// under test on both sides.
+	ancestor := filepath.Dir(project)
+	dest := t.TempDir()
+
+	g, err := guard.NewExecutionGuard(project)
+	if err != nil {
+		t.Fatalf("NewExecutionGuard: %v", err)
+	}
+	defer g.Close()
+
+	if code, out := runShim(t, g, project, "mv", ancestor, dest); code == 0 {
+		t.Fatalf("the execution guard ALLOWED `mv %s %s` (output %q) — the opencode worker's protected-path protection does not hold", ancestor, dest, out)
+	} else if strings.TrimSpace(out) == "" {
+		t.Error("the shim refused without a message the model can act on")
+	}
+
+	cv := DecideTool(HookInput{ToolName: "Bash", ToolInput: map[string]any{"command": "mv " + ancestor + " " + dest}}, project, "")
+	if cv.Allow {
+		t.Fatalf("claude ALLOWS `mv %s %s` while the execution guard refuses it", ancestor, dest)
+	}
+	if cv.Rule != "protected_path" {
+		t.Errorf("claude refused the protected path by rule %q, want %q — a different rule means a different declaration", cv.Rule, "protected_path")
+	}
+
+	// The FILE-TOOL half has no shim (the guard intercepts processes, not reads),
+	// so the hook is the only layer that can judge a Read/Write target — and it
+	// applies the same internal/protectedpath declaration.
+	if v := DecideTool(HookInput{ToolName: "Read", ToolInput: map[string]any{"file_path": ancestor}}, project, ""); v.Allow {
+		t.Fatalf("claude allows reading the protected ancestor %s", ancestor)
+	}
+
+	// Acting ON the project itself is ordinary work in BOTH layers (the scope rule
+	// refuses a proper ANCESTOR, not the scope root itself).
+	dist := filepath.Join(project, "dist")
+	if err := os.MkdirAll(dist, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	dist2 := filepath.Join(project, "dist2")
+	if code, out := runShim(t, g, project, "mv", dist, dist2); code != 0 {
+		t.Fatalf("the guard refused in-project work `mv %s %s` (exit %d, output %q)", dist, dist2, code, out)
+	}
+	if v := DecideTool(HookInput{ToolName: "Bash", ToolInput: map[string]any{"command": "mv " + dist + " " + dist2}}, project, ""); !v.Allow {
+		t.Fatalf("claude refuses in-project work `mv %s %s` by rule %q — not parity, it is stricter", dist, dist2, v.Rule)
+	}
+}
+
 // runShim executes one binary THROUGH the guard shim directory with an explicit
 // working directory, returning (exitCode, combinedOutput).
 func runShim(t *testing.T, g *guard.Guard, dir, name string, args ...string) (int, string) {

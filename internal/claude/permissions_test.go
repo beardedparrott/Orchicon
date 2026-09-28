@@ -225,6 +225,41 @@ func TestSessionArgvCarriesTheRestrictions(t *testing.T) {
 	if !contains(argv, "--disallowedTools") {
 		t.Fatalf("session argv does not deny the built-in subagent tool: %v", argv)
 	}
+	// The PRODUCTION line is what actually runs, so the headline pin has to hold
+	// here too — not only over PermissionArgs. Every --permission-mode value must
+	// be `default` (a second, later bypass mode flag would win), and no bypass
+	// spelling may appear on the line at all.
+	modes := 0
+	for i, a := range argv {
+		if a == "--permission-mode" && i+1 < len(argv) {
+			modes++
+			if argv[i+1] != "default" {
+				t.Fatalf("session argv carries --permission-mode %q, want %q: %v", argv[i+1], "default", argv)
+			}
+		}
+	}
+	if modes == 0 {
+		t.Fatalf("session argv carries no --permission-mode: %v", argv)
+	}
+	for _, tok := range bypassLaunchFlags {
+		if strings.Contains(strings.ToLower(joined), strings.ToLower(tok)) {
+			t.Fatalf("the production session argv contains the bypass flag %q: %v", tok, argv)
+		}
+	}
+	// The settings document the production line ships must pin the bypass mode OFF.
+	settings := ""
+	for i, a := range argv {
+		if a == "--settings" && i+1 < len(argv) {
+			settings = argv[i+1]
+		}
+	}
+	if settings == "" {
+		t.Fatalf("session argv carries no settings value: %v", argv)
+	}
+	perm, _ := settingsDoc(t, argv)["permissions"].(map[string]any)
+	if got := perm["disableBypassPermissionsMode"]; got != "disable" {
+		t.Fatalf("the production settings carry disableBypassPermissionsMode=%#v, want %q", got, "disable")
+	}
 }
 
 func contains(list []string, want string) bool {
