@@ -178,8 +178,9 @@ func (b *NativeBridge) CompactConversationSession(ctx context.Context, opts sche
 
 	b.mu.Lock()
 	// Archive the pre-collapse history beside the live file: the summary is
-	// lossy by design, so this keeps the detail recoverable by hand.
-	b.archiveAskHistoryLocked(sid)
+	// lossy by design, so this keeps the detail recoverable by hand. It runs BEFORE
+	// the persist below, so what it copies is the PRE-collapse file.
+	archivePath := b.archiveAskHistoryLocked(sid)
 	b.chatHistory[sid] = next
 	b.persistAskHistoryLocked(sid)
 	b.mu.Unlock()
@@ -189,7 +190,8 @@ func (b *NativeBridge) CompactConversationSession(ctx context.Context, opts sche
 		Detail: fmt.Sprintf(
 			"compacted %d messages into 1 summary + %d recent messages (transcript reduced from %s to %s before summarizing)",
 			len(history), len(tail), humanBytes(bytesBefore), humanBytes(bytesAfter)),
-		Summary: summary,
+		Summary:     summary,
+		ArchivePath: archivePath,
 	}, nil
 }
 
@@ -339,23 +341,26 @@ const askCompactLedgerMarkerFrame = "[Identifiers carried verbatim out of the co
 const askCompactLedgerInstruction = `A list of identifiers that appeared VERBATIM in the transcript follows. Note that some of the transcript — tool arguments, tool results and images — was dropped before you saw it, so this list contains facts you cannot otherwise recover. Use it to attribute identifiers to their subject wherever the transcript supports it, and make sure the identifiers that matter for continuing the work are named in your summary. Do NOT simply copy the list out: it is carried verbatim alongside your summary already, so your job is to say what each identifier is for.`
 
 // archiveAskHistoryLocked copies the live history file to a timestamped sibling
-// before compaction replaces it. Callers must hold b.mu. Best-effort: the
-// summary is lossy by design, so the pre-collapse transcript is kept so an
-// operator can recover detail the summary dropped.
-func (b *NativeBridge) archiveAskHistoryLocked(sessionID string) {
+// before compaction replaces it, returning the path it wrote (empty when there was
+// nothing to archive or the write failed). Callers must hold b.mu. Best-effort: the
+// summary is lossy by design, so the pre-collapse transcript is kept so an operator
+// can recover detail the summary dropped.
+func (b *NativeBridge) archiveAskHistoryLocked(sessionID string) string {
 	dir := b.askHistoryDir
 	if dir == "" {
-		return
+		return ""
 	}
 	base := filepath.Join(dir, askHistoryFilename(sessionID)+".json")
 	raw, err := os.ReadFile(base)
 	if err != nil {
-		return // no live file yet — nothing to archive
+		return "" // no live file yet — nothing to archive
 	}
 	dst := fmt.Sprintf("%s.compacted-%s.bak", base, time.Now().UTC().Format("20060102T150405"))
 	if err := os.WriteFile(dst, raw, 0o600); err != nil {
 		b.log.Warn("orchicon: ask history archive failed", "session", sessionID, "error", err)
+		return ""
 	}
+	return dst
 }
 
 // humanBytes renders a byte count for a user-facing notice.

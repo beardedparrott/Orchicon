@@ -217,6 +217,48 @@ func (b *NativeBridge) SetAskHistoryDir(dir string) {
 	b.askHistoryDir = dir
 }
 
+// SetAskCompactNotice wires the durable record for an Ask compaction. The server
+// points it at the Ask service, which owns the transcript; leaving it nil keeps the
+// adapter's own log as the only trace. Guarded by mu.
+func (b *NativeBridge) SetAskCompactNotice(fn scheduler.AskCompactNoticeFunc) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.askCompactNotice = fn
+}
+
+// reportAskCompaction hands a completed compaction to the wired notice sink.
+//
+// It ALWAYS writes the log line first and treats the sink as best-effort: the
+// compaction has already happened and cannot be undone, so a failed notice must not
+// propagate as a turn failure. The one thing it must never do is fail silently AND
+// unlogged, which is why the error is warned rather than dropped.
+func (b *NativeBridge) reportAskCompaction(ctx context.Context, conversationID, sessionID, reason string, res scheduler.ChatCompaction) {
+	if !res.Compacted {
+		return // nothing collapsed — nothing worth a marker
+	}
+	b.mu.Lock()
+	sink := b.askCompactNotice
+	b.mu.Unlock()
+	if sink == nil {
+		return
+	}
+	// WithoutCancel: the notice describes work ALREADY DONE, so a turn that ends or
+	// is aborted mid-record must not lose it — the same reasoning, and the same
+	// technique, as askUsageSink.
+	if err := sink(context.WithoutCancel(ctx), scheduler.AskCompactNotice{
+		ConversationID: conversationID,
+		SessionID:      sessionID,
+		Reason:         reason,
+		Detail:         res.Detail,
+		ArchivePath:    res.ArchivePath,
+		TokensBefore:   res.TokensBefore,
+		TokensAfter:    res.TokensAfter,
+	}); err != nil {
+		b.log.Warn("orchicon: Ask compaction notice was not recorded — the collapse itself stands, but the operator will not see it in the transcript",
+			"session", sessionID, "conversation", conversationID, "reason", reason, "error", err)
+	}
+}
+
 // askHistoryVersion versions the on-disk Ask history envelope.
 const askHistoryVersion = 1
 

@@ -326,7 +326,47 @@ type ChatCompaction struct {
 	// may trust a non-zero value as real.
 	TokensBefore int64
 	TokensAfter  int64
+	// ArchivePath is where the PRE-collapse history was preserved, when the
+	// adapter keeps one. The native transport archives it because the summary is
+	// lossy by design, so the original stays recoverable by hand. Empty when the
+	// adapter archives nothing.
+	ArchivePath string
 }
+
+// AskCompactNotice describes a compaction that replaced a conversation's
+// accumulated context, reported by the adapter that performed it so the service
+// owning the transcript can record it durably.
+//
+// WHY THIS EXISTS. The proactive pressure gate compacts a conversation BEFORE its
+// next turn, from inside the adapter bridge — which has no database handle, so the
+// only trace a collapse left was a warning in the server log. A conversation that
+// turned 2,343 messages into a summary therefore did so SILENTLY, in the transcript
+// the operator was actually reading, and "long conversations lose context" was the
+// only place it surfaced. This carries the outcome up to the layer that can write
+// it down.
+type AskCompactNotice struct {
+	ConversationID string
+	SessionID      string
+	// Reason is why the compaction ran: "pressure" (the proactive
+	// context-pressure gate), "context_limit" (reactive recovery on an overflow),
+	// or "manual" (a client's /compact).
+	Reason string
+	// Detail is the adapter's one-line, user-facing outcome, e.g. "compacted 2343
+	// messages into 1 summary + 7 recent messages (transcript reduced from 9.3MB to
+	// 412.8KB before summarizing)".
+	Detail string
+	// ArchivePath is where the pre-collapse history was preserved, when it was.
+	ArchivePath string
+	// TokensBefore / TokensAfter are the measured prompt sizes around the
+	// compaction; 0 means unknown, never an estimate.
+	TokensBefore int64
+	TokensAfter  int64
+}
+
+// AskCompactNoticeFunc records a completed compaction. It runs INSIDE a live turn,
+// so an implementation must not depend on the turn's context outliving the call —
+// see the native caller, which strips cancellation before invoking it.
+type AskCompactNoticeFunc func(ctx context.Context, notice AskCompactNotice) error
 
 // CompactConversationOpts identifies the conversation to compact.
 type CompactConversationOpts struct {

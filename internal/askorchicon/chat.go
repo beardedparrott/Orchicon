@@ -1248,6 +1248,14 @@ func buildSystemPrompt(mode string, cfg db.AgentConfigRow, registry *ToolRegistr
 			if h.Content == "" {
 				continue
 			}
+			// A `system` row is a NOTICE the platform wrote ABOUT the conversation
+			// (a compaction record today), not something either party said. It is
+			// skipped rather than labelled: the label below only knows user and
+			// assistant, so a notice would otherwise be replayed to the model as
+			// the operator's own words.
+			if h.Role == "system" {
+				continue
+			}
 			roleLabel := "User"
 			if h.Role == "assistant" {
 				roleLabel = "Orchicon"
