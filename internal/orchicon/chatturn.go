@@ -490,6 +490,18 @@ func (b *NativeBridge) askToolsLocked(ctx context.Context) []ToolDef {
 	return b.askTools.AskToolDefs(ctx)
 }
 
+// ToolsRunInProcess implements scheduler.InProcessToolRunner.
+//
+// THE NATIVE BRIDGE RUNS THE MODEL'S TOOLS HERE. The file/shell suite (bash, read, write, batch_*, …) is
+// executed in this process by orchicon.HostTools, and bash carries its own hard deadline
+// (bashTimeoutDefault 120s, bashTimeoutMax 600s) enforced by exec.CommandContext — so a slow shell command is
+// a RUNNING one, not a wedged one, and its tool result always arrives to close the call.
+//
+// Ask Orchicon reads this to stop judging those calls by silence (see scheduler.InProcessToolRunner). It is a
+// declaration about WHERE a call runs, not a promise that a tool can never hang: a call this bridge cannot
+// finish is bounded by the turn's own reply window instead of being healed by a session recycle.
+func (b *NativeBridge) ToolsRunInProcess() bool { return true }
+
 // CreateConversationSession implements scheduler.ChatTurnClient. The native
 // transports are sessionless, so this returns a synthetic session id and
 // initializes an empty in-memory history under it. No server-side session

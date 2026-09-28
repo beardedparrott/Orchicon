@@ -1918,6 +1918,17 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *turnReplyWindow
 	// promptly; the monitor is fed only after sent == true (pre-accept
 	// events belong to a prior turn draining on the shared bus).
 	monitor := newChatStallMonitor(c.modelRef, c.stallNoProgressSeconds)
+	// AND TELL IT WHICH CALLS IT CANNOT JUDGE BY SILENCE. The tool-wedge inference is evidence-from-absence,
+	// which is the right evidence only for a tool dispatched to a session serve (what it was built for: an MCP
+	// call that never resolves). A transport that runs the call itself holds it, and the host suite's bash
+	// bounds itself with its own hard deadline — so judging that call by silence recycled live sessions over
+	// shell commands that were still running (see setLocallyBoundedTools for the numbers).
+	//
+	// GATED ON THE TRANSPORT, not on the tool name alone: on a serve-side transport the SAME "bash" tool is
+	// executed out of process, where a wedged call really is invisible to us and the inference must stand.
+	if inProcessToolRunner(c.client) {
+		monitor.setLocallyBoundedTools(hostSuiteToolNames)
+	}
 	stallTick := monitor.noProgressWindow
 	if rw := monitor.repetitionWindow; rw < stallTick {
 		stallTick = rw
@@ -2869,4 +2880,13 @@ func foldReasoningTail(tail, flushed string) string {
 		return strings.TrimSuffix(tail, flushed)
 	}
 	return tail
+}
+
+// inProcessToolRunner reports whether this turn's transport executes the model's tool calls itself.
+//
+// An adapter that does not implement the capability (or says no) hands its tools to a session serve, where a
+// silent call is genuinely indistinguishable from a wedged one — see scheduler.InProcessToolRunner.
+func inProcessToolRunner(client scheduler.ChatTurnClient) bool {
+	r, ok := client.(scheduler.InProcessToolRunner)
+	return ok && r != nil && r.ToolsRunInProcess()
 }

@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/beardedparrott/orchicon/internal/orchicon"
+	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
 // TestChatStallMonitorNoProgress verifies the no_progress signal: a monitor
@@ -288,3 +291,87 @@ func TestChatStallCloseToolEndsTheWedgeSlot(t *testing.T) {
 		t.Fatalf("a RESOLVED tool was reported wedged: %q", tool)
 	}
 }
+
+// The operator's prod plane carried 13 "session wedged on a tool — recycling to a fresh session" entries in two
+// days, every one of them tool="bash" on the native (in-process) transport — each destroying the session's
+// context over a shell command that was still running. The host suite's bash bounds itself (bashTimeoutDefault
+// 120s / bashTimeoutMax 600s), so a slow call is not a wedged call.
+func TestChatStallLocallyBoundedToolIsNeverAWedge(t *testing.T) {
+	m := newChatStallMonitor("orchicon/deepseek/deepseek-flash", nil)
+	m.noProgressWindow = time.Hour
+	m.toolWedgeWindow = 30 * time.Second
+	m.setLocallyBoundedTools(hostSuiteToolNames)
+	base := time.Now()
+	m.now = func() time.Time { return base }
+
+	m.observeToolStart("bash")
+	// Ten minutes of silence from a build or a test suite — past bash's own default deadline, and past the
+	// wedge window several times over.
+	m.now = func() time.Time { return base.Add(10 * time.Minute) }
+	if tool, wedged := m.toolWedge(); wedged {
+		t.Fatalf("a shell command the transport is RUNNING was reported wedged as %q, and the recycle would have erased the session", tool)
+	}
+}
+
+// THE CONTROL, and the reason the exemption is per-tool and not per-adapter: the same transport also runs MCP
+// tools, which leave this process and CAN wedge with nothing to report. Recovery for the case the signal exists
+// for must survive.
+func TestChatStallUnboundedToolStillWedgesOnAnInProcessTransport(t *testing.T) {
+	m := newChatStallMonitor("orchicon/deepseek/deepseek-flash", nil)
+	m.noProgressWindow = time.Hour
+	m.toolWedgeWindow = 30 * time.Second
+	m.setLocallyBoundedTools(hostSuiteToolNames)
+	base := time.Now()
+	m.now = func() time.Time { return base }
+
+	m.observeToolStart("mcp__sentry__list_issues")
+	m.now = func() time.Time { return base.Add(time.Minute) }
+	tool, wedged := m.toolWedge()
+	if !wedged || tool != "mcp__sentry__list_issues" {
+		t.Fatalf("toolWedge = (%q, %v), want the MCP call reported wedged so the session can be healed", tool, wedged)
+	}
+}
+
+// AND THE SECOND CONTROL: with no locally-bounded set — i.e. a SERVE-side transport, where the same "bash" is
+// executed out of process and silence really is the only evidence — the wedge must stay armed.
+func TestChatStallServeSideTransportKeepsTheWedgeForEveryTool(t *testing.T) {
+	m := newChatStallMonitor("opencode/deepseek-v4-flash-free", nil)
+	m.noProgressWindow = time.Hour
+	m.toolWedgeWindow = 30 * time.Second
+	base := time.Now()
+	m.now = func() time.Time { return base }
+
+	m.observeToolStart("bash")
+	m.now = func() time.Time { return base.Add(time.Minute) }
+	if _, wedged := m.toolWedge(); !wedged {
+		t.Fatal("a serve-side transport must keep the wedge: a call it dispatched is invisible to us, so silence is all we have")
+	}
+}
+
+// The capability gate itself: only a transport that DECLARES in-process tool execution is exempted, and a
+// transport that declares nothing gets the default (armed).
+func TestInProcessToolRunnerOnlyForDeclaringTransports(t *testing.T) {
+	if inProcessToolRunner(nil) {
+		t.Fatal("a nil transport must not be treated as an in-process tool runner")
+	}
+	if !inProcessToolRunner(inProcTransport{}) {
+		t.Fatal("a transport declaring ToolsRunInProcess must be recognized")
+	}
+	if inProcessToolRunner(serveTransport{}) {
+		t.Fatal("a transport that does not declare the capability must keep the wedge armed")
+	}
+	if !inProcessToolRunner(&orchicon.NativeBridge{}) {
+		t.Fatal("the native bridge runs the host suite in-process and must declare it")
+	}
+}
+
+// inProcTransport / serveTransport are minimal declarations of the OPTIONAL capability: the embedded nil
+// interface supplies the rest of ChatTurnClient and panics if it is ever called (it never is — the capability
+// is read, not exercised).
+type inProcTransport struct {
+	scheduler.ChatTurnClient
+}
+
+func (inProcTransport) ToolsRunInProcess() bool { return true }
+
+type serveTransport struct{ scheduler.ChatTurnClient }
