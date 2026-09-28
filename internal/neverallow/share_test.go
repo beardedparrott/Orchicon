@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/beardedparrott/orchicon/internal/claude"
 	"github.com/beardedparrott/orchicon/internal/guard"
 	"github.com/beardedparrott/orchicon/internal/neverallow"
 	"github.com/beardedparrott/orchicon/internal/opencode"
@@ -66,6 +67,39 @@ func TestConfigProfilesConsumeTheSharedCommandClass(t *testing.T) {
 	}
 }
 
+// The CLAUDE worker adapter consumes the shared command class too: a sentinel
+// appended to the declaration must show up in the PreToolUse hook's refusal for
+// that command, with no edit to internal/claude. This is what makes the claude
+// worker's restrictions and the opencode worker's restrictions ONE declaration
+// rather than two that agree today.
+func TestClaudeHookConsumesTheSharedCommandClass(t *testing.T) {
+	const sentinel = "orchicon-neverallow-sentinel *"
+	orig := append([]string(nil), neverallow.CommandPatterns...)
+	neverallow.CommandPatterns = append(neverallow.CommandPatterns, sentinel)
+	t.Cleanup(func() { neverallow.CommandPatterns = orig })
+
+	// The opencode worker profile sees it...
+	bash, ok := opencode.PermissionRulesForProfile(opencode.ProfileWorker)["bash"].(map[string]any)
+	if !ok {
+		t.Fatal("the opencode worker profile has no bash rule map")
+	}
+	if got, ok := bash[sentinel].(string); !ok || got != "deny" {
+		t.Errorf("the opencode worker profile does not carry the sentinel: %#v", bash[sentinel])
+	}
+
+	// ...and so does the claude hook, for the same declaration.
+	v := claude.DecideTool(claude.HookInput{
+		ToolName:  "Bash",
+		ToolInput: map[string]any{"command": "orchicon-neverallow-sentinel off"},
+	}, t.TempDir(), "")
+	if v.Allow {
+		t.Fatal("the claude hook allowed a command in the shared never-allow class — it does not read the declaration")
+	}
+	if v.Rule != sentinel {
+		t.Errorf("the claude hook refused by rule %q, want the sentinel %q", v.Rule, sentinel)
+	}
+}
+
 // THE ANTI-DUPLICATION SCAN. Neither consumer may restate a member of the class
 // as a literal — that is exactly the second list this package exists to remove.
 // It scans for the QUOTED string forms (a Go string literal or a struct field),
@@ -81,7 +115,15 @@ func TestTheClassIsNotRestatedInItsConsumers(t *testing.T) {
 		}
 	}
 
-	for _, file := range []string{"../guard/guard.go", "../opencode/config.go"} {
+	// BOTH worker-adapters' restriction layers are scanned: the claude launch
+	// (permissions.go) and its PreToolUse decision core (hook.go) must consume the
+	// declaration, never re-state it.
+	for _, file := range []string{
+		"../guard/guard.go",
+		"../opencode/config.go",
+		"../claude/permissions.go",
+		"../claude/hook.go",
+	} {
 		src, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatalf("read %s: %v", file, err)

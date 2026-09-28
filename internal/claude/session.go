@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/guard"
+	"github.com/beardedparrott/orchicon/internal/permpolicy"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
@@ -69,12 +72,17 @@ func newSession(b *Bridge, execID, tenantID string, manifest scheduler.Execution
 // run spawns the single subprocess and drives it to a terminal turn.
 func (s *session) run(ctx context.Context) error {
 	argv := s.argv()
+	// The child's environment carries the project boundary the PreToolUse hook
+	// reads, and — on the LOCAL transport — the OS-level execution guard shim on
+	// PATH. The cleanup closes the shim directory when the session ends.
+	env, envCleanup := s.childEnv()
+	defer envCleanup()
 	spec := procSpec{
 		ExecID:     s.execID,
 		Argv:       argv,
 		Cwd:        executionDir(s.manifest),
 		ProjectDir: s.manifest.ProjectDir,
-		Env:        os.Environ(),
+		Env:        env,
 	}
 	p, err := s.b.spawn(ctx, spec, s.manifest)
 	if err != nil {
@@ -334,6 +342,13 @@ done:
 
 // argv builds the claude command line. Model is bound ONCE here (there is no
 // per-turn model switch); --resume re-attaches a prior transcript.
+//
+// The RESTRICTIONS ride this same command line, through claude's own permission
+// mechanism (see internal/claude/permissions.go): --permission-mode default plus
+// an inline --settings document carrying the never-allow deny rules, the
+// carve-outs and the PreToolUse hook, plus --disallowedTools for the built-in
+// subagent tool. There is deliberately NO bypass flag anywhere on this line —
+// TestNoBypassPermissionFlagIsEverEmitted fails if one is introduced.
 func (s *session) argv() []string {
 	argv := []string{
 		"claude", "-p",
@@ -348,7 +363,69 @@ func (s *session) argv() []string {
 	if strings.TrimSpace(s.resumeID) != "" {
 		argv = append(argv, "--resume", s.resumeID)
 	}
-	return argv
+	// A policy LOAD failure is recorded, never silently dropped. PermissionArgs
+	// still returns a complete, restrictive argv in that case (the never-allow
+	// deny rules and the fail-closed hook are unaffected), so the launch
+	// degrades to STRICTER, never to permissive.
+	args, err := PermissionArgs(s.permissionOptions())
+	if err != nil {
+		slog.Default().Warn("claude: the operator permission policy could not be loaded — launching with the never-allow class, the project boundary and the fail-closed hook, but without its deny entries", "error", err)
+	}
+	return append(argv, args...)
+}
+
+// permissionOptions is the launch-time restriction input for this session.
+func (s *session) permissionOptions() PermissionOptions {
+	return PermissionOptions{
+		ProjectDir:  s.manifest.ProjectDir,
+		WorktreeDir: s.manifest.WorktreePath,
+		HookBinary:  HookBinaryPath(),
+		PolicyPath:  permpolicy.DefaultPath(),
+	}
+}
+
+// childEnv builds the environment the claude child (and every process IT spawns)
+// inherits, and returns the cleanup that must run when the session ends.
+//
+// TWO transports, two owners of the OS-level guard, exactly mirroring the
+// opencode adapter:
+//
+//   - CONTAINER: the runtime supervisor's stdio path already builds the shim
+//     inside the container (guard.MakeGuard + prependGuard) and prepends it to
+//     the child's PATH. A host-built shim directory would point at a path that
+//     does not exist in the container, so nothing is added here.
+//   - LOCAL (host subprocess): the adapter owns it, exactly as opencode's
+//     in-process path does (internal/opencode/guard.go). The shim dir goes
+//     FIRST on PATH, so a destructive binary is intercepted however it is
+//     spawned — including from inside another process.
+func (s *session) childEnv() ([]string, func()) {
+	env := os.Environ()
+	env = setEnvVar(env, ProjectDirEnv, executionDir(s.manifest))
+	env = setEnvVar(env, HookBinEnv, HookBinaryPath())
+	cleanup := func() {}
+	if s.b != nil && s.b.isContainer(s.manifest) {
+		return env, cleanup
+	}
+	g, err := guard.NewExecutionGuard(s.manifest.ProjectDir)
+	if err != nil {
+		slog.Default().Warn("claude: the OS-level execution guard could not be built for the local transport — the child runs without the PATH shim", "error", err)
+		return env, cleanup
+	}
+	return g.Apply(env), g.Close
+}
+
+// setEnvVar replaces (or appends) one KEY=value entry, preserving the rest of
+// the environment verbatim.
+func setEnvVar(env []string, key, value string) []string {
+	prefix := key + "="
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if strings.HasPrefix(kv, prefix) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, prefix+value)
 }
 
 // initialTurnPayload is the first user turn: system prompt + goal +
