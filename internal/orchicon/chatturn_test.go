@@ -1314,3 +1314,96 @@ func TestAReplayRepairIsNotReportedAsDataLoss(t *testing.T) {
 		}
 	}
 }
+
+// --- the mid-loop cancellation that discarded a whole tool round ------------------------------
+
+// cancelOnSecondRoundProvider serves a scripted FIRST round and then fails every later one with
+// context.Canceled — the shape a supersede produces when it lands between tool rounds.
+type cancelOnSecondRoundProvider struct {
+	first []Event
+	calls int
+}
+
+func (p *cancelOnSecondRoundProvider) StreamTurn(ctx context.Context, req TurnRequest) (TurnStream, error) {
+	p.calls++
+	if p.calls > 1 {
+		return nil, context.Canceled
+	}
+	return &chatTestStream{events: p.first}, nil
+}
+func (p *cancelOnSecondRoundProvider) ListModels(context.Context) ([]ModelInfo, error) {
+	return nil, nil
+}
+func (p *cancelOnSecondRoundProvider) Capabilities() Capabilities {
+	return Capabilities{Streaming: true}
+}
+
+// TestATurnCancelledBetweenToolRoundsKeepsItsWork is the SECOND data-loss mechanism, found live on the
+// operator's own conversation after the first was fixed.
+//
+// An interjection cancels the running turn mid-loop, and that cancellation surfaces at the NEXT round's
+// StreamTurn as context.Canceled — NOT through drainOneRound's aborted flag. That path returned bare, so a
+// turn that had produced text and RUN TOOLS lost the whole round: the session ended up holding two
+// consecutive user messages with no trace of the turn between them, while the work sat in the transcript and
+// on the operator's screen.
+//
+// The loss guard cannot see this class at all — it compares the session against what it last held, so it only
+// catches a message that DISAPPEARS, and this one never arrived. Which is why the fingerprint (two
+// consecutive user messages), not the guard, is what caught it.
+func TestATurnCancelledBetweenToolRoundsKeepsItsWork(t *testing.T) {
+	const partial = "I will start by reading the code"
+	prov := &cancelOnSecondRoundProvider{first: []Event{
+		TextDelta{Text: partial},
+		ToolCall{Index: 0, ToolCallID: "tc-1", Name: "bash", ArgsJSON: `{"command":"ls"}`},
+		Finish{},
+	}}
+	b := NewBridge(ProviderResolverFunc(func(ctx context.Context, tenantID, providerID string) (Provider, error) {
+		return prov, nil
+	}), "", slog.New(slog.NewTextHandler(&strings.Builder{}, nil)))
+	ctx := tenant.WithID(context.Background(), "tnt_test")
+	sid, _ := b.CreateConversationSession(ctx, "conv-cancel-round", "ask-orchicon:conv-cancel-round")
+
+	bus, _ := b.Subscribe(ctx, "conv-cancel-round")
+	if err := b.SendTurnMessage(ctx, "conv-cancel-round", sid, "system", "orchicon/ollama-cloud/deepseek-v4-flash:0731", "do the thing"); err != nil {
+		t.Fatalf("SendTurnMessage: %v", err)
+	}
+	drainBus(t, bus)
+
+	var got strings.Builder
+	for _, m := range b.chatHistory[sid] {
+		for _, c := range m.Content {
+			if c.Text != nil {
+				got.WriteString(*c.Text)
+				got.WriteString("\n")
+			}
+		}
+	}
+	history := got.String()
+	if !strings.Contains(history, partial) {
+		t.Fatalf("the cancellation between tool rounds DISCARDED the round's text: the session holds no "+
+			"trace of a turn whose work is on the operator's screen.\nsession history:\n%s", history)
+	}
+	// The tool call and its result are what `working` had accumulated; the model must be able to see that it
+	// already ran that command, or it runs it again.
+	if !strings.Contains(history, "tc-1") && !historyHasToolUse(b.chatHistory[sid], "tc-1") {
+		t.Fatalf("the round's tool call was discarded with the text:\n%s", history)
+	}
+	if !strings.Contains(history, "do the thing") {
+		t.Fatalf("the operator's own message must survive:\n%s", history)
+	}
+}
+
+// historyHasToolUse reports whether a session history carries a tool-call id.
+func historyHasToolUse(msgs []Message, id string) bool {
+	for _, m := range msgs {
+		for _, c := range m.Content {
+			if c.ToolUse != nil && c.ToolUse.ToolCallID == id {
+				return true
+			}
+			if c.ToolResult != nil && c.ToolResult.ToolCallID == id {
+				return true
+			}
+		}
+	}
+	return false
+}

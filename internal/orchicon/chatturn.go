@@ -1091,10 +1091,31 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 		req.Messages = append([]Message(nil), working...)
 		next, err := prov.StreamTurn(ctx, req)
 		if err != nil {
+			// COMMIT WHAT THE TURN ALREADY PRODUCED BEFORE LEAVING. This is the abort path's own principle
+			// ("everything the round produced is still in hand here, so it is published") applied to the place
+			// it was still missing. By this point `working` holds every COMPLETED tool round — the assistant's
+			// text, its tool calls and their results — and returning bare DISCARDS all of it, leaving the
+			// session with the operator's message followed by nothing.
+			//
+			// IT IS THE SUPERSEDE PATH, AND IT IS NOT RARE. An interjection cancels the running turn
+			// mid-loop, and the cancellation surfaces HERE — as a context.Canceled from the NEXT round's
+			// StreamTurn — not through drainOneRound's aborted flag. So it bypassed the abort path's commit
+			// entirely, and the abort-path fix (which this file already carried) could not help.
+			//
+			// MEASURED, on the operator's own conversation, on a binary that already had that abort-path fix:
+			// a turn produced 123 chars of text and ran FOUR tools, the operator interjected, and the session
+			// ended up holding two consecutive user messages with no trace of the turn between them — the work
+			// was in the transcript and on the operator's screen, and invisible to the model.
+			//
+			// AND NO GUARD CAN SEE THIS ONE. The loss guard compares the session against what it last held, so
+			// it catches a message that DISAPPEARS. This message never arrived — an omission, not a
+			// disappearance — which is why the guard stayed silent while the work was lost.
 			if errors.Is(err, context.Canceled) {
+				b.commitChatHistory(sessionID, history, working)
 				return
 			}
 			bus.emit(scheduler.SessionEvent{Kind: "error", Type: "error", Text: err.Error()})
+			b.commitChatHistory(sessionID, history, working)
 			return
 		}
 		stream = next
