@@ -121,6 +121,37 @@ type guardedBinary struct {
 	scoped bool // true: allow when targets stay in the project; false: always block
 }
 
+// scopedBinaryNames is the PATH-SCOPED set: the binaries the shim intercepts and then judges by
+// their TARGET, as opposed to the never-allow class, which is refused on the binary name alone.
+//
+// EXPORTED BECAUSE A CALLER NEEDS TO KNOW WHAT THE SHIM WILL LOOK AT. The consent layer refuses a
+// target that would destroy the work scope, and it was refusing BASH commands that merely MENTION
+// such a path — `HOME=/home/me somecmd` was read as a target that contains the home directory. The
+// shim would never judge that command (it intercepts `rm`/`mv`/... and nothing else), so the consent
+// layer was refusing something the enforcement layer would have let run, which is over-refusal and a
+// false statement about what the rule prohibits.
+//
+// The two layers now agree on scope as well as on meaning: this list is what the shim judges, and
+// the consent layer applies the same protected-path rule to a bash command only when it invokes one
+// of these. The SHIM remains the enforcement — it intercepts any invocation by PATH lookup, even one
+// the text does not literally contain — and the consent layer's job is to refuse EARLY rather than
+// offer a card for something that cannot be approved.
+var scopedBinaryNames = []string{"rm", "chmod", "chown", "mv", "cp", "ln"}
+
+func scopedBinaries() []guardedBinary {
+	out := make([]guardedBinary, 0, len(scopedBinaryNames))
+	for _, n := range scopedBinaryNames {
+		out = append(out, guardedBinary{name: n, scoped: true})
+	}
+	return out
+}
+
+// ScopedBinaryNames returns the PATH-SCOPED binary names the shim intercepts. Read-only: callers use
+// it to decide whether a command is one the shim will judge at all.
+func ScopedBinaryNames() []string {
+	return append([]string(nil), scopedBinaryNames...)
+}
+
 // buildGuardedBinaries is the shim set for one guard: the never-allow class
 // (always-block, from the SHARED declaration in internal/neverallow so the guard
 // and the opencode permission config cannot drift apart) followed by the
@@ -131,14 +162,7 @@ type guardedBinary struct {
 // declaration is the single source of truth, so a guard must read it when it is
 // built rather than inherit whatever it held at package init.
 func buildGuardedBinaries() []guardedBinary {
-	scoped := []guardedBinary{
-		{name: "rm", scoped: true},
-		{name: "chmod", scoped: true},
-		{name: "chown", scoped: true},
-		{name: "mv", scoped: true},
-		{name: "cp", scoped: true},
-		{name: "ln", scoped: true},
-	}
+	scoped := scopedBinaries()
 	out := make([]guardedBinary, 0, len(neverallow.Shimmed())+len(scoped))
 	for _, name := range neverallow.Shimmed() {
 		out = append(out, guardedBinary{name: name})
