@@ -4506,18 +4506,34 @@ func (m *App) SendUserMessage(text string) tea.Cmd {
 // ASK ONCE PER DIRECTORY PER SESSION: a directory already granted for this
 // conversation does not ask again.
 func (m *App) ShowConsentAsk(ask chat.PermissionAsk) tea.Cmd {
-	if m.chatConvID == "" {
+	// THE CARD BELONGS TO THE CONVERSATION THAT ASKED, not to whichever conversation
+	// happens to be on screen when the ask lands.
+	//
+	// The operator: "I noticed a bleed through of an ask card from a separate
+	// conversation in the TUI." A turn's ask rides the turn's own stream, so with
+	// conversation A running and B on screen the card was appended to B's slot — a
+	// question about A's work drawn under B's transcript, and claiming the keyboard
+	// there, because the Ask screen adopts any pending card from the items it is
+	// handed. The wire has always carried the ask's conversation_id; the TUI's
+	// adapter dropped it (see PermissionAsk.ConvID), so the target was whatever
+	// m.chatConvID happened to be at that instant. Fall back to the OPEN conversation
+	// only when the ask genuinely names none (a locally built ask).
+	convID := ask.ConvID
+	if convID == "" {
+		convID = m.chatConvID
+	}
+	if convID == "" {
 		return nil
 	}
 	if ask.ID == "" {
 		ask.ID = fmt.Sprintf("ask-%d", time.Now().UnixNano())
 	}
-	if ask.Kind == chat.AskTool && ask.Directory != "" && m.sessionGrants.granted(m.chatConvID, ask.Directory) {
+	if ask.Kind == chat.AskTool && ask.Directory != "" && m.sessionGrants.granted(convID, ask.Directory) {
 		return nil
 	}
 	// Stamped NOW, so the card sorts to the END of the transcript and stays there.
 	// Without a timestamp it sorted to the top on the next poll — see ConsentItem.
-	m.chatStore.append(m.chatConvID, chat.ConsentItem(ask, time.Now().UnixMilli()))
+	m.chatStore.append(convID, chat.ConsentItem(ask, time.Now().UnixMilli()))
 	return m.onChatWake()
 }
 
