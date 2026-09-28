@@ -188,18 +188,30 @@ cache-check: ## Show the Go build cache size
 	@echo "GOCACHE: $(shell $(GO) env GOCACHE)"
 	@du -sh "$$($(GO) env GOCACHE)" 2>/dev/null | cut -f1 || echo "0B"
 
-# clean-docker reclaims disk from Docker build leftovers WITHOUT touching
-# the running stateful instance containers (dev/prod), their data volumes,
-# or the Postgres volumes that preserve instance data. Safe to run
-# regularly during dev: dangling (untagged) images, stopped containers, and
-# volumes not referenced by any container. Note this WILL remove orphaned
-# anonymous volumes from old compose-era/test runs — it does NOT remove
-# tagged images you might still want (e.g. the rocm/vllm images).
+# clean-docker reclaims disk from ORCHICON's own Docker build leftovers, and nothing else.
+#
+# EVERY PRUNE HERE IS SCOPED TO WHAT THIS PROJECT OWNS, which the first version of this target was
+# not. It ran `docker container prune -f` and `docker volume prune -f` — both HOST-WIDE. On a machine
+# where the operator has any other Docker work, that removed THEIR stopped containers and THEIR
+# unused volumes: `docker volume prune` deletes every unreferenced volume on the host, and Orchicon's
+# own data is a BIND MOUNT (not a named volume), so it owned none of what it was deleting. A sweep for
+# "anything that could damage another machine" found it: a destructive operation whose target was not
+# anchored to what the program owns, which is the same defect class as the installer step that deleted
+# the caller's own `bin/` and the guard test that deleted a home directory.
+#
+#   containers  SCOPED to our label. Every Orchicon container carries `orchicon-instance`, so the
+#               filter removes ours and cannot reach anyone else's.
+#   images      DANGLING only. A dangling image has no tag and no container referencing it, so it is
+#               unreferenced by definition rather than by our guess. THIS IS STILL HOST-WIDE and is
+#               the one clause that is not scoped — stated rather than glossed: the alternative is to
+#               leave them, and an untagged image rebuilds for free.
+#   volumes     GONE, deliberately. There is no filter that makes this ours: we create no labelled
+#               volumes, so any predicate would be a guess about someone else's data. An operator who
+#               wants a host-wide volume prune can run it themselves, knowing what it does.
 .PHONY: clean-docker
-clean-docker: ## Prune dangling Docker images, stopped containers, and unused volumes
+clean-docker: ## Prune Orchicon's dangling images and stopped containers (never volumes)
 	@docker image prune -f --filter "dangling=true"
-	@docker container prune -f
-	@docker volume prune -f
+	@docker container prune -f --filter "label=orchicon-instance"
 
 # --- Database --------------------------------------------------------------
 .PHONY: migrate migrate-diff migrate-hash rls-check synth-data
