@@ -182,3 +182,59 @@ func TestServeStateMultiplexedPerAdapterKind(t *testing.T) {
 		t.Errorf("opencode serve state lost its request: %+v", oc.req)
 	}
 }
+
+// TestAgentEnvClaudePathPrefix is the supervisor-side PATH half: the child
+// PATH is prefixed with every adapter CLI launcher dir that is actually
+// present (opencode → ~/.opencode/bin, claude → ~/.local/bin), and with none
+// when no launcher exists.
+func TestAgentEnvClaudePathPrefix(t *testing.T) {
+	home := t.TempDir()
+	ocBin := filepath.Join(home, ".opencode", "bin")
+	clBin := filepath.Join(home, ".local", "bin")
+	for _, d := range []string{ocBin, clBin} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(ocBin, "opencode"), []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clBin, "claude"), []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+
+	pathOf := func(env []string) string {
+		for _, kv := range env {
+			if strings.HasPrefix(kv, "PATH=") {
+				return strings.TrimPrefix(kv, "PATH=")
+			}
+		}
+		return ""
+	}
+	sep := string(os.PathListSeparator)
+
+	got := pathOf(agentEnv(AgentRequest{}))
+	if !strings.HasPrefix(got, ocBin+sep+clBin+sep) {
+		t.Fatalf("both launcher dirs must prefix the child PATH (opencode then claude), got %q", got)
+	}
+
+	// A claude-only host: only ~/.local/bin prefixes, never the absent dir.
+	if err := os.Remove(filepath.Join(ocBin, "opencode")); err != nil {
+		t.Fatal(err)
+	}
+	got = pathOf(agentEnv(AgentRequest{}))
+	if !strings.HasPrefix(got, clBin+sep) {
+		t.Fatalf("claude-only child PATH must start with %q, got %q", clBin, got)
+	}
+	if strings.Contains(got, ocBin) {
+		t.Fatalf("an absent opencode launcher must not appear on the child PATH: %q", got)
+	}
+
+	// Neither launcher present → no adapter prefix at all.
+	t.Setenv("HOME", t.TempDir())
+	got = pathOf(agentEnv(AgentRequest{}))
+	if strings.Contains(got, string(os.PathSeparator)+".opencode") || strings.Contains(got, string(os.PathSeparator)+".local"+string(os.PathSeparator)+"bin") {
+		t.Fatalf("a host with no adapter launcher must add no child PATH prefix, got %q", got)
+	}
+}

@@ -435,3 +435,58 @@ func TestPoolCheckoutReuseAndInvalidation(t *testing.T) {
 		t.Fatalf("expected 3 background resets (run-1, run-2, run-3), got %d", resetCreates)
 	}
 }
+
+// TestAdapterInstallFingerprintCoversClaude is the pool-freshness half for
+// claude: a CLI install that exists ONLY under the claude roots (no opencode)
+// must color the pool key, and both a version-dir swap (upgrade/reinstall) and
+// a launcher-symlink change must flip the fingerprint — otherwise a warm pooled
+// container keeps serving a stale CLI.
+func TestAdapterInstallFingerprintCoversClaude(t *testing.T) {
+	home := t.TempDir()
+	// Neither adapter installed → nothing fingerprinted (unchanged behavior).
+	if got := hostInputsFingerprint(home, ""); got != "" {
+		t.Fatalf("a home with neither adapter install must yield \"\", got %q", got)
+	}
+
+	versions := filepath.Join(home, ".local", "share", "claude", "versions")
+	writeTestFile(t, filepath.Join(versions, "2.1.261"), "\x7fELF fake claude binary")
+	fp := hostInputsFingerprint(home, "")
+	if fp == "" || !hexDigestRe.MatchString(fp) {
+		t.Fatalf("a claude-only home must fingerprint non-empty, got %q", fp)
+	}
+
+	// A CLI upgrade: a new version dir under the install root.
+	writeTestFile(t, filepath.Join(versions, "2.1.262"), "\x7fELF fake claude binary")
+	if got := hostInputsFingerprint(home, ""); got == fp {
+		t.Fatal("a claude CLI upgrade must invalidate a warm pooled container")
+	}
+	fp = hostInputsFingerprint(home, "")
+
+	// The launcher symlink APPEARING (~/.local/bin/claude) must color the key.
+	binDir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	launcher := filepath.Join(binDir, "claude")
+	if err := os.Symlink(filepath.Join(versions, "2.1.261"), launcher); err != nil {
+		t.Fatal(err)
+	}
+	if got := hostInputsFingerprint(home, ""); got == fp {
+		t.Fatal("the launcher symlink appearing must change the fingerprint")
+	}
+
+	// Retargeting it to a DIFFERENT-length target (a version-dir swap on the
+	// host) must change the fingerprint too.
+	longer := filepath.Join(versions, "2.1.2610")
+	writeTestFile(t, longer, "\x7fELF fake claude binary long")
+	fp = hostInputsFingerprint(home, "")
+	if err := os.Remove(launcher); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(longer, launcher); err != nil {
+		t.Fatal(err)
+	}
+	if got := hostInputsFingerprint(home, ""); got == fp {
+		t.Fatal("retargeting the claude launcher symlink must change the fingerprint")
+	}
+}

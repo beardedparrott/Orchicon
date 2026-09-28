@@ -1177,13 +1177,16 @@ func agentEnv(req AgentRequest) []string {
 		}
 		out = append(kept, kv)
 	}
-	// Ensure the mounted adapter CLI bin (~/.opencode/bin) is on the
-	// child's PATH — belt-and-suspenders to the daemon's container-level
-	// PATH so workers and their subprocesses can also resolve opencode.
+	// Ensure every mounted adapter CLI launcher dir (opencode →
+	// ~/.opencode/bin, claude → ~/.local/bin) is on the child's PATH —
+	// belt-and-suspenders to the daemon's container-level PATH so workers and
+	// their subprocesses can also resolve the CLI. The dirs come from the ONE
+	// shared computation the daemon's PATH uses, so the two never drift; the
+	// container env carries no boot profile, so this prefixes any launcher
+	// that is actually present (existence-filtered, never an absent dir).
 	if home := os.Getenv("HOME"); home != "" {
-		bin := filepath.Join(home, ".opencode", "bin")
-		if st, err := os.Stat(bin); err == nil && st.IsDir() {
-			out = setEnv(out, "PATH", bin+string(os.PathListSeparator)+envPath(out))
+		if dirs := adapterCLIPathPrefix(home, adapter.DefaultAdapterKind, "claude"); len(dirs) > 0 {
+			out = setEnv(out, "PATH", strings.Join(dirs, string(os.PathListSeparator))+string(os.PathListSeparator)+envPath(out))
 		}
 	}
 	return out

@@ -66,16 +66,19 @@ func ghTokenFingerprint(tok string) string {
 // pathological tree (a huge node_modules) cannot balloon per-checkout cost.
 const maxAdapterFingerprintEntries = 50000
 
-// adapterInstallFingerprint fingerprints the mounted adapter CLI install
-// (~/.opencode/bin + ~/.opencode/node_modules) with STAT-ONLY metadata:
-// sorted (relpath, size, mtime-ns, mode-type) tuples hashed. No file content
-// is read — the opencode binary and provider packages can be large; metadata
-// changes on any upgrade, install, or reinstall. Returns "" when neither root
-// exists.
+// adapterInstallFingerprint fingerprints the mounted adapter CLI installs —
+// opencode (~/.opencode/bin + ~/.opencode/node_modules) AND claude
+// (~/.local/share/claude native install root + the ~/.local/bin/claude
+// launcher symlink) — with STAT-ONLY metadata: sorted (relpath, size,
+// mtime-ns, mode-type) tuples hashed. No file content is read — the
+// opencode binary and provider packages can be large; metadata changes on any
+// upgrade, install, or reinstall. Returns "" when NO root exists.
 func adapterInstallFingerprint(home string) string {
 	roots := []string{
 		filepath.Join(home, ".opencode", "bin"),
 		filepath.Join(home, ".opencode", "node_modules"),
+		filepath.Join(home, ".local", "share", "claude"),
+		filepath.Join(home, ".local", "bin", "claude"),
 	}
 	var entries []string
 	for _, root := range roots {
@@ -146,13 +149,18 @@ func hostInputsFingerprint(home, ghFp string) string {
 		add("auth", hashFileContent(auth))
 	}
 
-	// 3. adapter install — stat-only fingerprint of ~/.opencode. The serve
-	// execs the binary and loads provider npm packages at start; an upgrade
-	// or a newly installed provider package is invisible to warm containers.
-	if st, err := os.Stat(filepath.Join(home, ".opencode", "bin", "opencode")); err == nil && !st.IsDir() {
-		if fp := adapterInstallFingerprint(home); fp != "" {
-			add("adapter", fp)
-		}
+	// 3. adapter installs — stat-only fingerprint of BOTH kind trees. The
+	// serve/host CLI execs the binary and loads provider packages at start; a
+	// CLI upgrade, reinstall, or a version-dir swap in EITHER tree is
+	// invisible to a warm container, so it must force a fresh checkout. The
+	// gate is the fingerprint's own emptiness test (each tree is itself
+	// existence-gated inside adapterInstallFingerprint), so a home with
+	// neither install contributes nothing — identical to the old behavior.
+	// Credentials are deliberately NOT fingerprinted: ~/.claude is mounted
+	// read-write and read LIVE, so a rotated host login reaches a warm
+	// container without a reset.
+	if fp := adapterInstallFingerprint(home); fp != "" {
+		add("adapter", fp)
 	}
 
 	// 4. GH token — non-sensitive fingerprint of the resolved token (length +

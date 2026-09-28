@@ -459,6 +459,15 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 	if d.createFn != nil {
 		return d.createFn(name, req)
 	}
+	// Fast, ACTIONABLE auth preflight: a claude-demanding run on a host with
+	// no reachable Claude credential must fail with the exact sign-in command,
+	// never silently start a container whose sessions then hang or fail with a
+	// misleading generic error. The session authenticates with the mounted
+	// host login, so this only rejects the case where no credential exists at
+	// all to mount.
+	if demandsKind(req, "claude") && !d.claudeAuthAvailable(req) {
+		return nil, fmt.Errorf(adapter.ClaudeAuthRequiredMessage)
+	}
 	d.createMu.Lock()
 	defer d.createMu.Unlock()
 	// A stopped/crashed container with this name blocks recreation
@@ -683,12 +692,36 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 		}
 	}
 	args = append(args, "-e", "HOME="+d.HostHome)
-	// Put the MOUNTED adapter CLI on PATH so the supervisor's
-	// `exec.Command("opencode", ...)` resolves it.
-	if demandsKind(req, adapter.DefaultAdapterKind) {
-		args = append(args, "-e", "PATH="+filepath.Join(d.HostHome, ".opencode", "bin")+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	// Put every DEMANDED adapter CLI's launcher dir on PATH (opencode →
+	// ~/.opencode/bin, claude → ~/.local/bin) so the supervisor's
+	// `exec.Command("opencode"|"claude", ...)` resolves it. The prefix is the
+	// ONE shared computation (adapterCLIPathPrefix) that also feeds the
+	// supervisor's child PATH, and it emits only dirs whose launcher actually
+	// exists, so PATH never points at an absent host dir. An opencode-only
+	// demand yields the byte-identical string this always produced.
+	if dirs := adapterCLIPathPrefix(d.HostHome, requestedKinds(req)...); len(dirs) > 0 {
+		args = append(args, "-e", "PATH="+strings.Join(dirs, ":")+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 	}
 	return args
+}
+
+// claudeAuthAvailable reports whether the host has a usable Claude credential,
+// so a claude-demanding create can fail ACTIONABLY instead of hanging: the
+// persisted claude.ai host login (~/.claude/.credentials.json, written by the
+// operator's own `claude` sign-in), an ANTHROPIC_API_KEY in the daemon env, or
+// an ANTHROPIC_API_KEY supplied as a create secret. It never reads credential
+// CONTENT — only presence. Orchicon stores no Anthropic credential of its own.
+func (d *Daemon) claudeAuthAvailable(req CreateRequest) bool {
+	if d.HostHome != "" {
+		if st, err := os.Stat(filepath.Join(d.HostHome, ".claude", ".credentials.json")); err == nil && !st.IsDir() {
+			return true
+		}
+	}
+	if os.Getenv("ANTHROPIC_API_KEY") != "" {
+		return true
+	}
+	_, ok := req.Secrets["ANTHROPIC_API_KEY"]
+	return ok
 }
 
 // hostGHToken resolves the operator's effective GitHub CLI token
