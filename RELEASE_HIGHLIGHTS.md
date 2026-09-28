@@ -17,6 +17,12 @@
 
 ## v0.4.5
 
+> **This release replaces v0.4.0.** 0.4.0 introduced the feature set further down and was
+> withdrawn the same day: a single malformed tool call could take the whole control plane down,
+> and that should not be the version anyone downloads. Nothing was dropped in the fix — v0.4.5
+> is the first release of the 0.4 line to carry the features and the fixes in one download, and
+> it is what `install` now gives you.
+
 ### New: The control plane cannot be taken down by one bad tool call
 Ask Orchicon's `update_work_item` tool dereferenced a workflow id that a scheduled sequence parent holds as NULL **by construction** — a shape the API routes to the sequence chain, but which this path skipped. The panic then ran on a background goroutine that the HTTP server's per-connection recovery does not cover, so a single malformed tool call took down the **whole control plane** instead of failing that one call. Three of them are in this instance's own log. It is fixed — and so is the reason it was nearly impossible to find from the outside: the plane runs on the host, so the panic is written to the instance's own serve log (`$ORCHICON_SERVE_STATE_DIR/logs/orchicon.log`) and never appears in `docker logs`.
 
@@ -29,6 +35,38 @@ Two separate limits measured how **long** a turn had been running, so the more h
 ### New: A compacted conversation says so, and keeps what the work depends on
 A long conversation is periodically summarized so it fits the model's window, and until now that happened **silently**: the only record was a line in the server log, where one conversation collapsed 2,343 messages into a single summary with nothing in the transcript to explain why the assistant no longer remembered what had been said. The collapse is now recorded in the conversation itself, in both clients. Two things that made it lossier than it looked are addressed too. The identifiers the work depends on — entity ids, file paths, commit names, the tools used — are extracted **before** the collapse and carried through verbatim, because the part of the transcript they lived in (tool arguments and tool output) is dropped before the summarizer ever sees it. And a history too large to save is compressed rather than silently not saved at all, which is what used to leave a long conversation reverting to a stale copy of itself after a restart.
 
+### New in the 0.4 line
+
+0.4.0 shipped these five features and was then withdrawn. They are unchanged here — listed under their own heading so it is clear which part of this release is the 0.4 feature set and which part is what followed it.
+
+### New: Ask Orchicon can do the work — and asks before it does
+Ask Orchicon was a conversation you could read your project *with*; it now runs the same file and shell suite the workers use, against your real filesystem, scoped to the conversation's project. Nothing that writes or executes happens without your say-so: each one opens a card in whichever client you are in, naming the tool and the exact target. A **session grant** covers a directory and everything beneath it for that conversation, and the row says so — naming the directory it would cover rather than leaving you to guess its reach. A persistent **deny list** (your SSH keys, cloud credentials, `gh` config, `.netrc`, Docker config) is absolute, and the destructive class — `sudo`, `dd`, `mkfs*`, partition and LVM tooling — can never be approved by anyone, including you. Reads never ask. The prompt describes that boundary as it really is, including what it does not cover.
+
+### New: FULLSEND — stop the prompts deliberately, rather than by accident
+A gate that cannot be opened on purpose gets bypassed by accident: mid-task, approving card after card, you stop reading them. FULLSEND is the honest version of that — one explicit, revocable mode per conversation, shown as a badge in the terminal composer and a dropdown in the browser. It waives the *prompt* and nothing else: an entry on your deny list still refuses, and the never-allow class is still unreachable. It lives in memory, so a fresh plane starts with it off and a bypass cannot outlive the session you enabled it in; it is recorded in the audit trail; it can be toggled mid-turn; and turning it on approves a permission card already on screen rather than leaving the turn waiting on it.
+
+### New: A question pauses the turn instead of talking to itself
+Asking a clarifying question used to be record-and-continue — the model wrote the question down, kept going, and your answer arrived as an unrelated message. The call **blocks** now: the question appears as a card, the turn waits exactly where it was, and what you answer becomes the tool's result, so the model resumes holding your words rather than guessing what they referred to.
+
+### New: The plane runs on your host, with the services containerized
+Host residency is the default shape: the control plane runs as a host process while Postgres, NATS and the Grafana telemetry stack stay in one container reached over loopback. It is the same install and the same binary — what changes is that the plane's runtime, file access and process tree are the host's rather than a container's. The rollback is one word, and each instance (`dev`, `prod`) chooses its shape independently, so one can migrate while the other does not.
+
+### New: Orchicon will not destroy the directory it is working in
+
+A command that would delete the project it is running in — or the directory holding it — is now **refused outright, and no approval can override it**. `rm -rf /home` from a project, `rm -rf ~`, `rm -rf /`, and a `rm -rf` of anything that *contains* the project (or a directory you granted) are all refused, on top of your deny list rather than instead of it.
+
+THIS IS A DELIBERATE BEHAVIOUR CHANGE, and it is the one thing in this release that can refuse a
+command you did not explicitly forbid. It exists because the alternative was worse: with FULLSEND on,
+the sandbox's usual checks are waived *by design* — that is what the mode is for — and an ancestor of
+the project was covered by none of them, so the gate that stops you approving card after card also
+stood aside for the one command that takes everything with it.
+
+Working *on* the project is untouched: deleting a build directory, clearing `dist`, a recursive
+`chmod` on the project root all still work, because acting on the thing you opened is ordinary work.
+What is refused is destroying the thing that *holds* it. Pressing FULLSEND does not lift this, and
+neither does a session grant — see *Enforcement, not just prompting* in the documentation for the
+rule and the two lists it uses.
+
 ### Also in this release
 
 - **The terminal client's ask card offers "Other", the way the browser's does.** The recorded "Orchicon asks" card had no free-text row at all — only a footer pointing at the composer — and clicking the row sent the literal word `Other` as the answer. The row is on the card now, and what you type is sent as your next message.
@@ -36,6 +74,16 @@ A long conversation is periodically summarized so it fits the model's window, an
 - **The Windows builds compile, so a release can actually be published.** The 0.4.0 cut could not produce its release assets; the build matrix is green across every platform it ships to.
 - **The build no longer depends on your shell profile.** The makefile resolves its own copy of the schema tooling instead of trusting whatever `PATH` happens to contain at the moment you build.
 - **Docs CI validates Mermaid diagrams**, so a diagram no other check can see cannot silently break in the published documentation.
+- **The one-command installer no longer deletes YOUR directories.** `--force-clean` (and `--nuke`) removed `data`, `.dev` and `bin` as **relative names**, and the installer never changed directory — so they resolved against wherever you happened to be standing. Anyone who ran the documented command from inside a project lost *that project's* `bin/` and `data/`. It is anchored to Orchicon's own state directory now.
+- **A run that executes in your working tree no longer discards your uncommitted work.** Tidying a shared checkout after a run ran `git reset --hard` and `git clean -fd`, and its only signal was "the checkout is dirty" — which is exactly what your own unsaved edits look like. Your work is stashed first and recoverable from `git stash list`, and if it cannot be stashed the tidying is skipped rather than the work being lost.
+- **`make clean-docker` only touches Orchicon's containers.** It used to prune stopped containers and unused volumes across the whole Docker host, removing other projects' containers and data on any machine with more than Orchicon on it.
+- **A card settles for every client, and survives a reload.** Answering in the terminal settles the same question in the browser, in a second tab, and after a page reload — the resolution is written into the turn's durable record rather than only broadcast to whoever happened to be watching at that moment.
+- **Refusals say what actually happened.** A timeout is *expired* rather than an operator denial; an unreadable policy file is reported as a policy problem; a rule that refuses a call is attributed to the rule, not to an operator who was never asked. It matters because the model reads the reason and decides what to do next from it.
+- **A turn that dies mid-work keeps its work.** Streaming reasoning was never finalized, so an interrupted turn lost the thinking entirely — and a completed answer discarded it even on a clean turn. Both now survive in the record.
+- **Ephemeral runs recover.** A run whose git strategy is `none` creates no branch to resume onto, and was retried blindly; recovery now recognises that shape instead of failing it.
+- **Settings: blank means the built-in default, and `0` means disabled.** They were the same value, so leaving a field blank could silently switch a control off.
+- **Installer:** a WSL distro name containing a NUL byte no longer corrupts the generated config, and an empty variable expands safely.
+- **Terminal client:** the Schedules lenses order history the way the browser does and derive queued sequence children; a send the server refuses because a turn is already running is delivered rather than bounced; the detail pane's paint and the terminal's colour profile are resolved rather than assumed.
 
 ## v0.4.0
 
