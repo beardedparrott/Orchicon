@@ -1398,8 +1398,10 @@ func agentEnv(req AgentRequest) []string {
 	// belt-and-suspenders to the daemon's container-level PATH. Only the
 	// kinds the daemon actually mounted (ORCHICON_ADAPTER_KINDS) are
 	// considered, and only dirs that exist in THIS container (i.e. were
-	// actually mounted) are prepended, so a legacy request without the env
-	// var behaves exactly as before.
+	// actually mounted) are prepended. A request without the env var
+	// contributes no prefix (the container-level PATH the daemon set still
+	// resolves the CLIs), so an older daemon cannot have a prefix pointing
+	// at a dir it never mounted.
 	if home := os.Getenv("HOME"); home != "" {
 		kinds := splitKinds(os.Getenv("ORCHICON_ADAPTER_KINDS"))
 		if dirs := adapterPathPrefix(home, kinds...); len(dirs) > 0 {
@@ -1470,6 +1472,27 @@ func setEnv(env []string, key, value string) []string {
 	return out
 }
 
+// forwardFrames relays every follow-up stdin frame of a long-lived "stdio"
+// request onto the supervisor connection until the plane closes its request
+// body. A clean EOF is translated into a "close" frame so the supervisor
+// closes the child's stdin and the child exits (keeping the exit event on the
+// relay path) even when the plane drops the body without saying "close" —
+// otherwise the supervisor's control loop would wait forever and leak the
+// child. After the initial request this goroutine is the ONLY writer on the
+// supervisor connection.
+func forwardFrames(inDec *json.Decoder, enc *json.Encoder, execID string) {
+	for {
+		var f AgentRequest
+		if err := inDec.Decode(&f); err != nil {
+			_ = enc.Encode(AgentRequest{Cmd: "close", ExecID: execID})
+			return
+		}
+		if err := enc.Encode(f); err != nil {
+			return
+		}
+	}
+}
+
 func prependGuard(env []string, guardDir string) []string {
 	out := make([]string, 0, len(env)+1)
 	found := false
@@ -1491,12 +1514,21 @@ func prependGuard(env []string, guardDir string) []string {
 // from stdin) and relays the streamed events to stdout as JSON-lines. It
 // exits with the child's exit code so the daemon can propagate it. It is
 // invoked by the daemon via `docker exec`.
+//
+// For the "stdio" cmd the request is a LONG-LIVED duplex transport, not a
+// single dispatch: every later frame the plane writes on the same stdin (a
+// user turn, a signal, or "close") must ride the SAME supervisor connection,
+// so a forwarding goroutine keeps decoding stdin and encoding onto the
+// socket while the event relay below streams stdout back. Without it the
+// child's stdin would never see a follow-up turn — the streaming session
+// would silently degrade to a one-shot.
 func RunClient(socketPath string, in io.Reader, out io.Writer) (int, error) {
 	if socketPath == "" {
 		socketPath = DefaultAgentSocket
 	}
+	inDec := json.NewDecoder(in)
 	var req AgentRequest
-	if err := json.NewDecoder(in).Decode(&req); err != nil {
+	if err := inDec.Decode(&req); err != nil {
 		return 2, fmt.Errorf("runtime-client: read request: %w", err)
 	}
 	conn, err := net.Dial("unix", socketPath)
@@ -1508,6 +1540,9 @@ func RunClient(socketPath string, in io.Reader, out io.Writer) (int, error) {
 	enc := json.NewEncoder(conn)
 	if err := enc.Encode(req); err != nil {
 		return 2, fmt.Errorf("runtime-client: send request: %w", err)
+	}
+	if req.Cmd == "stdio" {
+		go forwardFrames(inDec, enc, req.ExecID)
 	}
 	// Signal the request boundary; events then stream back.
 	outEnc := json.NewEncoder(out)

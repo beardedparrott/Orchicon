@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 )
@@ -195,10 +194,4 @@ func (s *StdioSession) emit(ev AgentEvent) {
 // closing the channel here would race a concurrent emit (send-on-closed).
 func (s *StdioSession) finish(_ int, _ error) {
 	s.once.Do(func() { close(s.done) })
-}
-
-// stripNewline trims one trailing newline (the supervisor appends one per
-// line so frames stay line-delimited).
-func stripNewline(s string) string {
-	return strings.TrimSuffix(s, "\n")
 }
