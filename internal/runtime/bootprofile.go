@@ -132,8 +132,9 @@ type adapterInstall struct {
 	fingerprint []string
 }
 
-// adapterInstalls returns the read-only host installs a kind contributes to
-// a demanding container, and whether the kind is CLASSIFIED (declared).
+// adapterInstalls returns the host installs a kind contributes to a demanding
+// container, and whether the kind is CLASSIFIED (declared). Each install
+// carries its own read-only/read-write mode (see adapterInstall.rw).
 //
 // declared == false is a guard failure, never a silent pass: a kind the
 // builtin catalog declares but this table has not classified (the next
