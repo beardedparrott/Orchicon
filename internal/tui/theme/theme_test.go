@@ -67,31 +67,33 @@ func TestProfileDegradation(t *testing.T) {
 
 // THE LAUNCH DEFAULT RESOLVES, AND IS A DARK PALETTE.
 //
-// The operator: "I want the default theme for orch to be the Ember dark theme." Two ways that can go
-// wrong silently, and neither reports an error at launch:
+// The operator has moved this default more than once — ember, then forest, then slate, now teal — and
+// each request came with the same shape of risk. Two ways a change can go wrong SILENTLY, neither of
+// which reports an error at launch:
 //
 //  1. the name does not exist — Lookup returns nil and the client falls back to the base palette, so
 //     the operator sees the OLD default and concludes the change did not ship;
-//  2. the name resolves to a LIGHT palette — `ember-light` sits directly beside `ember`, and picking
+//  2. the name resolves to a LIGHT palette — `teal-light` sits directly beside `teal`, and picking
 //     the wrong one is a one-word mistake that would look like a deliberate choice.
 //
 // Both are asserted here rather than trusted, because the failure is invisible: nothing errors, the
 // theme is simply not the one that was asked for.
-func TestTheLaunchDefaultIsSlateAndDark(t *testing.T) {
+func TestTheLaunchDefaultIsTealAndDark(t *testing.T) {
 	th := Lookup(DefaultName)
 	if th == nil {
 		t.Fatalf("the launch default %q does not resolve — orch would silently fall back to the base "+
 			"palette at startup, so the requested default would never appear", DefaultName)
 	}
-	if DefaultName != "slate" {
-		t.Errorf("the launch default is %q, want \"slate\" (the operator's request: \"I think Slate is "+
-			"pretty sleek and professional. Let's make that the default theme\"). If this was changed "+
-			"deliberately, update the comment on DefaultName too.", DefaultName)
+	if DefaultName != "teal" {
+		t.Errorf("the launch default is %q, want \"teal\" (the operator's request: \"I would also like "+
+			"to make teal the default theme in the TUI now\"). If this was changed deliberately, update "+
+			"the comment on DefaultName too — and note that the GUI's default dark slot is meant to "+
+			"track it (frontend/src/lib/theme-store.ts).", DefaultName)
 	}
 	// Dark means the background is darker than the text — the same test cursor_caret_test.go uses.
 	if relLuminance(string(th.Bg)) >= relLuminance(string(th.Text)) {
 		t.Errorf("the launch default %q is a LIGHT palette (bg %s, text %s) — the request was for the "+
-			"DARK one; \"slate-light\" is the light sibling and is easy to select by mistake",
+			"DARK one; \"teal-light\" is the light sibling and is easy to select by mistake",
 			DefaultName, th.Bg, th.Text)
 	}
 	// And it must be active on a fresh process, since `active` is what every render reads before any

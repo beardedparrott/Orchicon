@@ -74,7 +74,7 @@ func TestInteractiveGrantAllowsInsideGrantedDir(t *testing.T) {
 	if err := os.WriteFile(victim, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	env := InteractiveEnviron(policy, proj, []string{grant}, nil)
+	env := InteractiveEnviron(policy, proj, []string{grant}, nil, false)
 	exit, out := runGuardEnv(t, g, env, "rm", "-rf", victim)
 	if exit != 0 {
 		t.Fatalf("rm inside the granted directory: expected exit 0, got %d: %s", exit, out)
@@ -100,7 +100,7 @@ func TestInteractiveRefusesOutsideProjectAndGrants(t *testing.T) {
 	if err := os.WriteFile(victim, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	exit, out := runGuardEnv(t, g, InteractiveEnviron(policy, proj, nil, nil), "rm", "-rf", victim)
+	exit, out := runGuardEnv(t, g, InteractiveEnviron(policy, proj, nil, nil, false), "rm", "-rf", victim)
 	if exit == 0 {
 		t.Fatalf("rm outside project and grants ran: %s", out)
 	}
@@ -132,7 +132,7 @@ func TestInteractiveDenyOutranksGrant(t *testing.T) {
 	if err := os.WriteFile(victim, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	exit, out := runGuardEnv(t, g, InteractiveEnviron(policy, proj, []string{grant}, nil), "rm", "-rf", victim)
+	exit, out := runGuardEnv(t, g, InteractiveEnviron(policy, proj, []string{grant}, nil, false), "rm", "-rf", victim)
 	if exit == 0 {
 		t.Fatalf("a deny entry must outrank a session grant, but the delete ran: %s", out)
 	}
@@ -179,7 +179,7 @@ func TestInteractiveFailsClosedOnUnreadablePolicy(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewExecutionGuardWithPolicy(%s): %v", tc.name, err)
 		}
-		env := InteractiveEnviron(tc.path, "", nil, nil)
+		env := InteractiveEnviron(tc.path, "", nil, nil, false)
 		exit, out := runGuardEnv(t, g, env, "rm", "-f", target)
 		g.Close()
 		if exit == 0 {
@@ -216,7 +216,7 @@ func TestInteractiveAcceptsAcceptEntry(t *testing.T) {
 	if err := os.WriteFile(victim, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	exit, out := runGuardEnv(t, g, InteractiveEnviron(policy, proj, nil, nil), "rm", "-f", victim)
+	exit, out := runGuardEnv(t, g, InteractiveEnviron(policy, proj, nil, nil, false), "rm", "-f", victim)
 	if exit != 0 {
 		t.Fatalf("an accept-covered target must be allowed, got exit %d: %s", exit, out)
 	}
@@ -244,7 +244,7 @@ func TestInteractiveOnceAllowsOnlyTheApprovedPath(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	env := InteractiveEnviron(policy, proj, nil, []string{approved})
+	env := InteractiveEnviron(policy, proj, nil, []string{approved}, false)
 
 	if exit, out := runGuardEnv(t, g, env, "rm", "-f", approved); exit != 0 {
 		t.Fatalf("the approved once-target must run, got exit %d: %s", exit, out)
@@ -290,7 +290,7 @@ func TestNeverAllowSaysPermanentlyBlocked(t *testing.T) {
 		{"wipefs", []string{"/dev/sda"}},
 		{"lvremove", []string{"/dev/vg0/lv0"}},
 	}
-	env := InteractiveEnviron(policy, proj, []string{grant}, nil)
+	env := InteractiveEnviron(policy, proj, []string{grant}, nil, false)
 	for _, tc := range cases {
 		// The shim installs a symlink for EVERY never-allow member (scoped=false
 		// links are created whether or not the host has the binary), so the
@@ -324,7 +324,7 @@ func TestWorkerProfileIsUnchanged(t *testing.T) {
 
 	// A grant/project passed to InteractiveEnviron with NO policy path is the
 	// worker profile: nothing is emitted.
-	if got := InteractiveEnviron("", proj, []string{"/somewhere"}, []string{"/somewhere/x"}); got != nil {
+	if got := InteractiveEnviron("", proj, []string{"/somewhere"}, []string{"/somewhere/x"}, false); got != nil {
 		t.Fatalf("InteractiveEnviron with no policy path must emit nothing, got %v", got)
 	}
 

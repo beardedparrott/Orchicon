@@ -33,10 +33,10 @@ func (s *Service) ReplyPermissionAsk(ctx context.Context, req *connect.Request[a
 			errors.New("conversation_id and ask_id must not be empty"))
 	}
 	switch req.Msg.Choice {
-	case apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_ONCE, apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_SESSION, apiv1.PermissionChoice_PERMISSION_CHOICE_DENY:
+	case apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_ONCE, apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_SESSION, apiv1.PermissionChoice_PERMISSION_CHOICE_DENY, apiv1.PermissionChoice_PERMISSION_CHOICE_UNSPECIFIED:
 	default:
 		return nil, connect.NewError(connect.CodeInvalidArgument,
-			errors.New("choice must be ALLOW_ONCE, ALLOW_SESSION or DENY"))
+			errors.New("choice must be ALLOW_ONCE, ALLOW_SESSION or DENY (UNSPECIFIED is only for a question answer)"))
 	}
 	// Tenant ownership: the conversation must exist in the caller's tenant.
 	// Skipped when the service has no pool (a unit test drives the registry
@@ -53,6 +53,32 @@ func (s *Service) ReplyPermissionAsk(ctx context.Context, req *connect.Request[a
 			Applied: false,
 			Expired: true,
 			Detail:  "this ask is no longer open — the turn ended or was superseded",
+		}), nil
+	}
+	// A QUESTION IS ANSWERED WITH CONTENT, NOT A CHOICE.
+	//
+	// The two are deliberately not conflated: a permission's outcome is a grant
+	// decision (ALLOW_ONCE / ALLOW_SESSION / DENY), a question's is the operator's
+	// words, which BECOME the ask_user tool result so the model resumes the turn
+	// holding them. The question path is checked FIRST because a question ask has no
+	// permission semantics at all — running it through the allow/deny/grant
+	// machinery would record a grant for something that grants nothing.
+	if ask.isQuestion() {
+		ans := strings.TrimSpace(req.Msg.Answer)
+		if ans == "" {
+			return nil, connect.NewError(connect.CodeInvalidArgument,
+				errors.New("answer must not be empty for a clarifying question"))
+		}
+		if !ask.recordClientAnswer(ans) {
+			return connect.NewResponse(&apiv1.ReplyPermissionAskResponse{
+				Applied: false,
+				Expired: true,
+				Detail:  "this question was already answered or expired — the answer was not applied",
+			}), nil
+		}
+		return connect.NewResponse(&apiv1.ReplyPermissionAskResponse{
+			Applied: true,
+			Detail:  "answer recorded for ask " + askID,
 		}), nil
 	}
 	// The transitions are ordered so that nothing is applied unless the reply

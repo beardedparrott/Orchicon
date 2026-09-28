@@ -12,13 +12,14 @@
 4. [Project Structure](#project-structure)
 5. [Installation Guide](#installation-guide)
 6. [User Guide](#user-guide)
-7. [Operator Setup (Adapters)](#operator-setup-adapters)
-8. [Development Guide](#development-guide)
-9. [Deployment](#deployment)
-10. [Environment Variables Reference](#environment-variables-reference)
-11. [Troubleshooting](#troubleshooting)
-12. [Contributing](#contributing)
-13. [License](#license)
+7. [Ask Orchicon & Permissions](#ask-orchicon--permissions)
+8. [Operator Setup (Adapters)](#operator-setup-adapters)
+9. [Development Guide](#development-guide)
+10. [Deployment](#deployment)
+11. [Environment Variables Reference](#environment-variables-reference)
+12. [Troubleshooting](#troubleshooting)
+13. [Contributing](#contributing)
+14. [License](#license)
 
 ---
 
@@ -255,11 +256,11 @@ erDiagram
     Worker ||--o{ Policy : assessed_against
 
     Tenant {
-        string id ULID
+        string id PK "ULID"
         string name
     }
     Project {
-        string id ULID
+        string id PK "ULID"
         string tenant_id
         string name
         string slug
@@ -267,7 +268,7 @@ erDiagram
         json goals
     }
     WorkItem {
-        string id ULID
+        string id PK "ULID"
         string tenant_id
         string project_id
         string kind "Epic|Feature|Task|Subtask"
@@ -277,7 +278,7 @@ erDiagram
         timestamp next_run_at "computed next occurrence of a recurring item"
     }
     Worker {
-        string id ULID
+        string id PK "ULID"
         string tenant_id
         string project_id
         string status "draft|published|deprecated|retired"
@@ -285,7 +286,7 @@ erDiagram
         json budget_overrides
     }
     WorkerExecution {
-        string id ULID
+        string id PK "ULID"
         string tenant_id
         string work_item_id
         string worker_id
@@ -293,19 +294,19 @@ erDiagram
         json prompt_context
     }
     Workflow {
-        string id ULID
+        string id PK "ULID"
         string tenant_id
         string project_id
         string type "one_shot|template"
     }
     WorkflowRun {
-        string id ULID
+        string id PK "ULID"
         string workflow_version_id
         string status "pending|running|completed|failed"
         string work_item_id
     }
     Policy {
-        string id ULID
+        string id PK "ULID"
         string tenant_id
         string project_id
         string rego_module
@@ -318,17 +319,14 @@ erDiagram
 
 ```
 Orchicon/
-├── AGENTS.md                    # AI agent entry point & development guidelines
 ├── assets.go                    # go:embed: container configs, migrations, frontend
 ├── buf.gen.yaml                 # Buf codegen config (Go + TypeScript)
 ├── buf.yaml                     # Buf lint config
-├── CLOUDFLARE_SETUP.md          # Cloudflare Pages one-time setup guide
 ├── DOCUMENTATION.md             # ← This file: comprehensive docs
 ├── LICENSE                      # Custom license (non-commercial)
 ├── Makefile                     # All targets: build, test, gen, container-*, ci
 ├── opencode.jsonc               # Opencode tool configuration
 ├── README.md                    # Project introduction & quick start
-├── UPDATES.md                   # Per-PR change tracking
 ├── wrangler.toml                # Cloudflare Pages project config
 │
 ├── cmd/
@@ -476,6 +474,7 @@ Orchicon/
 │   ├── install.ps1              # Windows PowerShell installer (provisions WSL2, runs the stack inside it)
 │   ├── install-local.sh         # Build & install from local source to ~/.local/bin
 │   ├── container.sh             # Dev/prod single-container instances (build/up/down/status/logs)
+│   ├── orchicon.sh              # Host-resident plane: start/stop/restart/status/logs/rebuild (dev|prod)
 │   ├── build-site.sh            # Cloudflare Pages build step
 │   ├── check-rls.sh             # RLS CI gate (tenant isolation verification)
 │   └── hf-latest-models.sh      # Hugging Face model fetcher utility
@@ -526,9 +525,9 @@ Orchicon/
 | **Landing page** | `site/index.html` |
 | **Install scripts** | `scripts/install.sh` (Linux/macOS), `scripts/install.ps1` (Windows → provisions WSL2, installs the Linux binary inside the distro) |
 | **Container instance controller** | `scripts/container.sh` |
+| **Host plane controller** | `scripts/orchicon.sh` |
 | **CI/CD workflows** | `.github/workflows/` |
-| **AI agent guidelines** | `AGENTS.md` |
-| **Change tracking** | `UPDATES.md` |
+| **Operator's working notes** | `AGENTS.md`, `UPDATES.md`, `worker.md`, `developer.md`, `CLOUDFLARE_SETUP.md` — the maintainer's own files. **Gitignored and not in the repository**: they describe how this project is built rather than what it does, and nothing in the build, the tests or the runtime reads them from disk. (References to an "AGENTS.md" elsewhere in these docs are the per-worker *prompt field* — a database-backed section of the composed worker prompt — which is a different thing.) |
 
 ---
 
@@ -633,6 +632,7 @@ orchicon version
 | `orchicon runtime-client` | Forwards dispatches into the runtime container |
 | `orchicon mcp` | Start the MCP stdio server (exposes the Ask Orchicon tool registry; registered in opencode runs by default) |
 | `scripts/container.sh` | Build / up / down / status / logs / ps / runtime-daemon / runtime-stop for dev + prod container instances |
+| `scripts/orchicon.sh` | Start / stop / restart / status / logs / rebuild the **host-resident** plane (dev or prod), services container included. The host counterpart to `scripts/container.sh`: `start`, `stop`, `restart`, `status`, `logs`, `rebuild`, `help [dev\|prod]`. |
 | `orchicon serve` | Run the control plane with embedded frontend (headless, migrations on boot) |
 | `orchicon serve --detach` / `--stop` | Manage a background `serve` instance (PID file; logs in `.dev/logs/`) |
 | `orchicon db` | Database maintenance: `backup`, `restore`, `list`, `prune` |
@@ -877,12 +877,12 @@ A run's effective git strategy is resolved once, at every layer, from the same s
 
 #### Settings
 1. Navigate to **Settings** (replaces the former Preferences page)
-2. **Appearance**: light/dark mode toggle with 20 theme variants (10 light + 10 dark)
+2. **Appearance**: light/dark mode toggle with 20 theme variants (10 light + 10 dark). The **default dark theme is Teal Depths**, and the TUI's launch default is the matching **`teal`** palette (`theme.DefaultName` in `internal/tui/theme`), so a fresh GUI and a fresh TUI open in the same colours rather than two different ones. Each is a *default, not a pin*: a stored preference always wins, so changing it affects only an operator who has never chosen. The GUI paints its default **before hydration** too (`data-theme` on the `<html>` element in `frontend/index.html` must name the same theme the store defaults to, or a fresh load flashes the previous theme for a frame — asserted by a test, since a comment cannot enforce it)
 3. **Defaults → Default models**:
    - **Default worker model**: fallback when a worker version has no `model_ref` set. If both are empty, dispatch fails (no hardcoded fallback).
    - **Default Ask Orchicon model**: model used by the Ask Orchicon conversational agent. If empty, the conversation falls back to the **free model** (`opencode/deepseek-v4-flash-free`) — surfaced in the Ask Orchicon header as a fallback warning, since that model is rate-limited and a silent provider 429 looks exactly like a "stuck" turn.
  4. **Defaults → Recovery stall parameters**: per-execution stall thresholds stored in the DB and read at dispatch time. Each field has an env-var override (`ORCHICON_STALL_*`) for dev debugging. Stall semantics: a genuine hang/loop (`no_progress`, `text_loop`, `repetition`) **hard-kills** the subprocess and routes the execution to recovery; `no_file_diff` (`no_file_progress`) is **advisory** — the subprocess keeps running, the execution gets a non-terminal `stalled` health notice, and it is revived back to `healthy` when file progress resumes. The terminal `OnResult` alone decides success/failure. `no_file_diff`/`text_loop` windows: empty/`0` applies the built-in default (a fresh/never-configured tenant keeps real stall detection — `0` can't mean "disabled" since it's indistinguishable from "unset"); a negative value (e.g. `-1`) unambiguously disables that specific check (`stallWindowsFromManifest`, `internal/opencode/progress.go`).
- 5. **Defaults → Execution budget (defaults)**: default per-execution budget ceilings (`tokens`, `cost_usd`, `wall_clock_seconds`, `tool_call_count`, `compact_max_turns`) applied when a worker does not set its own value for a field. **A worker's own `budget_overrides` always overrides these per-field**; empty tenant fields fall back to the built-in defaults (tokens 500,000, cost $0.50, wall clock 3600s, tool calls 100, compact interval 12 turns). The cost/tokens defaults are calibrated from real telemetry, but only the post-2026-08-22 slice of it — `cache_read_tokens`/cache-aware `cost_usd` were not even computed before that date's migration, so a naive full-history query looks nothing like reality (see UPDATES.md #217/#218). On the clean sample (110 DeepSeek executions in the ~20h after cache accounting went live): cost/execution median $0.0126, p95 $0.0335, max observed $0.0508 (→ $0.50 default, ~10x that max); fresh tokens median 54.8k, p99 168k, max 172k (→ 500,000 default, ~3x that max). Raise either per-worker for materially costlier providers (e.g. Claude) once real telemetry exists for those. Two of these are HARD aborts, the rest are SOFT (compact and continue): **wall clock** is the hard per-execution deadline that kills the subprocess even if the model is still producing output (the runaway-spend backstop); an explicit `wall_clock_seconds: 0` on a worker disables that worker's timeout (env override `ORCHICON_STALL_WALL_CLOCK_SECONDS`). **`tool_call_count`** is also a hard abort — counted per individual tool call (not per model turn; a turn can make several), it fails the execution the moment the ceiling is reached (`tool_call_limit_exceeded`) because there is no way to "undo" a tool call already made; an explicit `0` disables it. **`cost_usd` / `tokens` / `compact_max_turns` are SOFT-FIRST compaction triggers**: when the accumulated cache-aware spend breaches the configured budget, OR the session has gone `compact_max_turns` turns since the last compact, at a quiet step boundary the adapter asks opencode to compact the session (`POST /session/:id/summarize`) and **continues**. Cost is cache-aware (the primary gate sums the runtime's provider-discounted per-step `part.cost`); the `tokens` gate counts **fresh tokens only** (`prompt`+`completion`+`reasoning`), with **cache reads excluded** — because cache reads are re-sends of already-counted context, and a long-context code worker must not be able to trip the token abort by re-sending context it already holds (the SSE implement step died doing exactly that). Cache reads still govern real spend through the cost gate, which prices them (discounted); they just no longer count against the raw-token ceiling. `compact_max_turns` fires independently of cost/tokens so a long chatty session (many turns each individually cheap) still gets bounded — this is what actually caps how many times the full cached prefix gets resent over a run. An explicit `0` on any of `cost_usd`/`tokens`/`compact_max_turns` disables that specific gate. Up to `ORCHICON_COMPACT_MAX` compacts (default 10) can fire per execution, no closer together than `ORCHICON_COMPACT_MIN_TURNS` (default 2) turns apart. An optional `compact_tiers` array `[warn, escalate, final]` (default `[false, true, true]`) chooses which ladder tiers ALSO trigger a compact — the earliest (warn) tier does not compact by default, because the lossy collapse interrupts the worker mid-flight and forces a re-read/re-derive (itself more tool calls and more re-sent context); escalate and final still do. Turning all three off leaves the turn-count gate + the hard abort as the only context-management, and a worker's `budget_overrides` can set `compact_tiers` per-worker (it flows through `mergeBudgets`). The opencode serve config also sets `compaction.auto: false` so opencode is never an independent lossy compactor alongside Orchicon's own ladder.
+ 5. **Defaults → Execution budget (defaults)**: default per-execution budget ceilings (`tokens`, `cost_usd`, `wall_clock_seconds`, `tool_call_count`, `compact_max_turns`) applied when a worker does not set its own value for a field. **A worker's own `budget_overrides` always overrides these per-field**; empty tenant fields fall back to the built-in defaults (tokens 500,000, cost $0.50, wall clock 3600s, tool calls 100, compact interval 12 turns). The cost/tokens defaults are calibrated from real telemetry, but only the post-2026-08-22 slice of it — `cache_read_tokens`/cache-aware `cost_usd` were not even computed before that date's migration, so a naive full-history query looks nothing like reality. On the clean sample (110 DeepSeek executions in the ~20h after cache accounting went live): cost/execution median $0.0126, p95 $0.0335, max observed $0.0508 (→ $0.50 default, ~10x that max); fresh tokens median 54.8k, p99 168k, max 172k (→ 500,000 default, ~3x that max). Raise either per-worker for materially costlier providers (e.g. Claude) once real telemetry exists for those. Two of these are HARD aborts, the rest are SOFT (compact and continue): **wall clock** is the hard per-execution deadline that kills the subprocess even if the model is still producing output (the runaway-spend backstop); an explicit `wall_clock_seconds: 0` on a worker disables that worker's timeout (env override `ORCHICON_STALL_WALL_CLOCK_SECONDS`). **`tool_call_count`** is also a hard abort — counted per individual tool call (not per model turn; a turn can make several), it fails the execution the moment the ceiling is reached (`tool_call_limit_exceeded`) because there is no way to "undo" a tool call already made; an explicit `0` disables it. **`cost_usd` / `tokens` / `compact_max_turns` are SOFT-FIRST compaction triggers**: when the accumulated cache-aware spend breaches the configured budget, OR the session has gone `compact_max_turns` turns since the last compact, at a quiet step boundary the adapter asks opencode to compact the session (`POST /session/:id/summarize`) and **continues**. Cost is cache-aware (the primary gate sums the runtime's provider-discounted per-step `part.cost`); the `tokens` gate counts **fresh tokens only** (`prompt`+`completion`+`reasoning`), with **cache reads excluded** — because cache reads are re-sends of already-counted context, and a long-context code worker must not be able to trip the token abort by re-sending context it already holds (the SSE implement step died doing exactly that). Cache reads still govern real spend through the cost gate, which prices them (discounted); they just no longer count against the raw-token ceiling. `compact_max_turns` fires independently of cost/tokens so a long chatty session (many turns each individually cheap) still gets bounded — this is what actually caps how many times the full cached prefix gets resent over a run. An explicit `0` on any of `cost_usd`/`tokens`/`compact_max_turns` disables that specific gate. Up to `ORCHICON_COMPACT_MAX` compacts (default 10) can fire per execution, no closer together than `ORCHICON_COMPACT_MIN_TURNS` (default 2) turns apart. An optional `compact_tiers` array `[warn, escalate, final]` (default `[false, true, true]`) chooses which ladder tiers ALSO trigger a compact — the earliest (warn) tier does not compact by default, because the lossy collapse interrupts the worker mid-flight and forces a re-read/re-derive (itself more tool calls and more re-sent context); escalate and final still do. Turning all three off leaves the turn-count gate + the hard abort as the only context-management, and a worker's `budget_overrides` can set `compact_tiers` per-worker (it flows through `mergeBudgets`). The opencode serve config also sets `compaction.auto: false` so opencode is never an independent lossy compactor alongside Orchicon's own ladder.
  5. **Defaults → Execution liveness reaper**: tuning for the execution-liveness reaper (the sweep that fails executions whose runtime process is gone). The liveness probe can false-negative on a transient docker/socket hiccup, so an execution is only reaped once it is **older than the grace window** (default 60s) **and** has been reported not-alive for **consecutive-failures** checks in a row (default 3). Env overrides: `ORCHICON_REAP_GRACE_SECONDS`, `ORCHICON_REAP_CONSECUTIVE_FAILURES`.
   6. **Defaults → Execution transport resilience**: the exec stream between the control plane and the runtime supervisor can break on a transient socket/docker hiccup. The execution is **not** failed on a broken stream: the client retries (**reconnect attempts**, default 3) and the supervisor keeps the child running for the **reconnect grace** (default 60s) so a re-attach can resume. Only when the retries are exhausted (or the context was explicitly cancelled) does the execution fail and fall through to recovery. Env overrides: `ORCHICON_RECONNECT_ATTEMPTS`, `ORCHICON_RECONNECT_GRACE_SECONDS`.
 
@@ -949,7 +949,7 @@ The actor-based audit trail records **who did what** across the whole plane. Eve
 
 **No orphaned turns:** the in-memory turn registry is token-guarded and TTL'd. Every entry carries a token; `remove` only deletes when the token matches, so a superseded collector's finalize can never clobber the replacement turn (the stale-finalize race is eliminated by construction). A background sweeper evicts entries older than `ORCHICON_ASK_TURN_MAX_AGE` (default: reply window + slack, 31m), cancelling the collector and **aborting the serve session** — the "every turn has a hard backstop" guarantee: a collector that can never finalize is reaped in bounded time instead of blocking the conversation until a server restart. In the UI, a dropped ChatStream socket on an **acked** turn keeps the stream slot attached (the Stop button + interject input stay; a "Connection lost — still working…" notice appears) and completion is resolved by the existing `ListMessages` poll, which works across socket drops and page reloads because the detached collector persists the reply regardless. **The Stop button survives a refresh / another tab or device:** each running turn's acked assistant message id is kept in the turn registry and surfaced on reads as computed `Conversation.turn_in_flight` + `Conversation.pending_assistant_message_id` (`GetConversation` and `ListConversations`) — the same authoritative source as the one-turn gate. When the server reports a turn in flight for the conversation you're viewing but the local stream slot is idle (refresh, or a turn started in another tab), the frontend **re-attaches** the slot keyed to the server's pending id, so the Stop button, the thinking indicator, and the completion poll all come back; a live local slot is never overwritten (server state only fills gaps). The conversations sidebar shows a **pulsing dot + Stop button** on every running conversation (so a turn is stoppable even when you're not looking at it) and the list polls on a ~3s cadence **while any conversation is running**, so running state stays live across tabs and devices and settles back to idle polling once everything completes. **Drafts are cleared on send, restored only on failure:** the composer clears immediately when you send (no text lingers while the model responds); a **pre-ack failure** puts the text back in the box and copies it to the clipboard; a turn that is **acked but whose reply later fails** (model error/stall/timeout, discovered via the `ListMessages` poll) signals the composer to put the sent text back and copies it to the clipboard — so a failed send never forces retyping, and a successful send never leaves stale text behind.
 
-**Reasoning stream + persistence (Task 3):** reasoning (thinking) parts are unwrapped from the SSE bus in the live turn loop via the same `LegacyEventFromBus` mapping executions use (`{"type":"reasoning","part":{...}}` — only at part end, `time.end` set), accumulated separately from the reply text (never folded into assistant content), and **persisted as reasoning chunks on the assistant message** (`ask_orchicon_messages.reasoning jsonb NOT NULL DEFAULT '[]'`, a JSON array of strings — one entry per reasoning part, boundaries preserved). Partial reasoning is preserved on error/stop/timeout turns too. `ChatMessage` exposes `repeated string reasoning = 10` (delivered via the existing `ListMessages` poll — the frontend renders thinking bubbles from it) and the `ChatStreamResponse` oneof gains a typed `ReasoningChunk` event (field 7, defined-but-not-emitted like `text_chunk` — retained for a future SSE surface). The data path is additive: a model that emits no reasoning parts yields no events and an empty array.
+**Reasoning stream + persistence (Task 3):** reasoning (thinking) parts are unwrapped from the SSE bus in the live turn loop via the same `LegacyEventFromBus` mapping executions use (`{"type":"reasoning","part":{...}}` — only at part end, `time.end` set), accumulated separately from the reply text (never folded into assistant content), and **persisted as reasoning chunks on the assistant message** (`ask_orchicon_messages.reasoning jsonb NOT NULL DEFAULT '[]'`, a JSON array of strings — one entry per reasoning part, boundaries preserved). **Partial reasoning is preserved on error/stop/timeout turns** — and that claim had to be *made* true rather than merely stated. The collector builds its record from **completed parts**, while reasoning arrives as deltas; and the native adapter streamed reasoning as deltas **only**, never finalizing it. So a turn that died mid-thought lost the thinking entirely, and a completed text part (which resets the live reasoning tail) discarded it even on a clean turn. Both ends are fixed now: the adapter publishes the accumulated reasoning as a **completed part** before the text part, and every exit from a turn attempt folds the live text/reasoning tails into the durable values — **one** exit, so no path can return without them. A stalled or interrupted turn therefore leaves both the answer so far and the thinking so far, rather than an error bubble over an empty row. `ChatMessage` exposes `repeated string reasoning = 10` (delivered via the existing `ListMessages` poll — the frontend renders thinking bubbles from it) and the `ChatStreamResponse` oneof gains a typed `ReasoningChunk` event (field 7, defined-but-not-emitted like `text_chunk` — retained for a future SSE surface). The data path is additive: a model that emits no reasoning parts yields no events and an empty array.
 
 **Mode model + per-mode prompts (Task 4):** a conversation has a **mode** (`ask_orchicon_conversations.mode`, default **brainstorm**) selecting the persona applied per message. `Conversation.mode` is a proto enum (`CONVERSATION_MODE_BRAINSTORM` / `CONVERSATION_MODE_ITERATION` / `CONVERSATION_MODE_QUICK_WORK`; the DB stays a text column, `brainstorm`/`iteration`/`quick_work`, validated at the API boundary); new conversations default to **brainstorm** ("What can I help you create today?" — a deep systems-thinking partner where general design, coding, and brainstorming are in scope). **The three modes share one identity, one project awareness and one tool surface, and differ in their DISPOSITION TOWARD ACTION** — the vocabulary AND the boundary both live in `internal/askmode`, so the persona and the enforcement cannot drift: **Brainstorm** plans and decides (investigates, designs, asks clarifying questions, authors work items); **Iteration** does the work (cuts the branch, edits, runs the tests, commits); **Quick Work** dispatches it (an ephemeral worker + workflow + work item, fired and cleaned up). **Toggling is session-free:** the mode is read from the conversation at turn-dispatch time and applied as opencode's **per-turn `system` field** (`prompt_async`), so the SAME opencode session persists across a switch — no session change, no serve restart, no history re-seed; the next message simply carries the new persona. **A mode switch SUPERSEDES the transcript:** every persona carries a rule that an earlier message describing a different mode, or restating what it may or may not do, is superseded — and `askCompactSummaryInstruction` forbids the summary from recording the mode, or anything declined because of it. Both halves exist because the prompt alone cannot carry a switch: the native transport re-sends the conversation history every turn and a compaction summary is REPLAYED on every later turn, so either could otherwise pin a stale persona permanently. The `SetConversationMode` RPC (`SetConversationModeRequest{id, mode}`) is the toggle surface (wired to the F4 task 9 UI), and `CreateConversationRequest` accepts an optional `mode`; unknown enum values are rejected with `CodeInvalidArgument`. **THE TOOL BOUNDARY IS ENFORCED BY THE PLATFORM, NOT REQUESTED IN PROSE.** Each mode refuses the tools its disposition does not own: **Brainstorm and Quick Work refuse the ACT of the work** (`write`, `edit`, `batch_write`, `bash`) and keep the read-only suite (`read`, `batch_read`, `grep`, `batch_grep`, `glob`, `list`, `list_project_dir`, `read_project_file`, `ask_file_root`) plus the whole `orchicon_*` plan surface; **Iteration refuses the PLAN and the DISPATCH** (`create_work_item`, `update_work_item`, `schedule_work_item`, `reorder_work_items`, `control_sequence`, `force_progress_workflow_run`, `retry_failed_workflow_run`) and keeps the work tools. The policy is ONE table in **`internal/askmode`** — a package with no internal imports, so every adapter reads the same rule — and the native transport applies it TWICE: the denied tools are **withheld** from the tool list (`AskToolDefs(ctx)`) and a call is **refused** at the single choke point every Ask tool call passes (`ExecuteAskTool`), the refusal arriving as the tool's RESULT so the model relays it (*"REFUSED BY THE PLATFORM … only the user can [switch modes]"*). Withholding matters as much as refusing: a model that is OFFERED `write` in Brainstorm will try it and can be argued into trying again, and every attempt is a wrong turn. **An adapter enforces the boundary by implementing `scheduler.ChatToolRestrictor`**; an adapter that does not is dispatching a **PROSE-ONLY** turn, and `applyAskToolPolicy` says so in the log rather than assuming the boundary holds. **`bash` is denied in Brainstorm/Quick Work deliberately** — it can read, but it can also write, so allowing it would make the boundary porous. **Lifecycle is deliberately OUTSIDE the boundary** (`archive`/`restore`/`delete_work_item` stay available in every mode): hygiene is not authoring or dispatch, and blocking it could strand a mistake. **There is no mode-setting tool**, so the model cannot switch itself — `conv.Mode` is read per turn and the user's selector is the only route, which is what makes "ask the user to switch" a real instruction rather than a bluff. **Config semantics:** the DB `role/skills/behavior/agents_md` customization and the DB `system_prompt` ("Additional Instructions") apply in **every** mode — the modes differ in their disposition toward action, not in what they know, so there is no per-mode customization layer to keep in step. Model resolution is unchanged (mode does not select a model). The seed/reuse split (DB history injected on a fresh session vs. already in the live session) is orthogonal to mode and unchanged.
 
@@ -1025,7 +1025,7 @@ MCP work item mutations honor the transactional outbox pattern (invariant #3): `
   hash** is stored — argon2id (RFC 9106 m=64 MiB/t=3/p=4) PHC strings by
   default, bcrypt (`$2a$`/`$2b$`/`$2y$`) accepted on verify via prefix
   dispatch; plaintext is never persisted, logged, or returned. This is a
-  deliberate, narrow amendment to the AGENTS.md "passwords are never stored
+  deliberate, narrow amendment to the project's "passwords are never stored
   by the control plane" standard: human passwords live **only inside the
   identity-provider boundary** (`internal/auth` + `internal/auth/op`), never
   in control-plane business logic — no service, RPC, or Ask Orchicon tool
@@ -1166,6 +1166,223 @@ Consequences for the three features gated on this decision:
 The multi-tenant schema (`tenants` table, RLS, admin `CreateTenant`/`ListTenants`) is **retained unchanged** as the forward-compatible foundation for a future SaaS phase — a SaaS pivot would be additive (subject→tenant routing at the OIDC callback, self-serve tenant provisioning), not a rewrite. The tenants admin surface stays admin-only and is not productized in this phase.
 
 The remaining hardcoded `tnt_dev` literals outside auth (MCP / recovery / scheduler / sequence / runtime / seed paths) are swept to the same config value as documented follow-ups of decision #178; the auth surface above is the first consumer of the shared config field.
+
+---
+
+## Ask Orchicon & Permissions
+
+Ask Orchicon is the conversational surface of the platform — a chat that can plan, investigate, and
+act on the operator's own machine. It is the one surface where a model runs tools against *your*
+filesystem, so its permission model is the most load-bearing part of it.
+
+### The two clients
+
+Both clients drive the **same** server, the same conversations, and the same consent decisions:
+
+| | |
+|---|---|
+| **GUI** | the `/ask-orchicon` route; composer with the model chip, the stat strip, a **Fullsend** dropdown, and the mode dropdown |
+| **TUI** | `bin/orch`, `F1 · Ask Orchicon`; composer with the mode pill and the `FULLSEND` badge, slash commands (`/fullsend`, `/mode`, `/grants`, `/permissions`) |
+
+A conversation is per-project, carries its own model, and is reachable from either client. Consent
+state is server-side, so a decision made in one client settles the card in the other — including a
+second tab, another device, or the same page after a reload (see *Card lifecycle* below).
+
+**The composer's hint line is the live key reference**: the TUI advertises the ACTIVE pane's chords on
+the row above the input (it changes as you move between panes), so it is the surface to trust for what
+a key does where you are. The chords below are the ones readers ask about, and the workflow lifecycle
+is listed in full because its keys are otherwise only discoverable from that line:
+
+| Where | Keys |
+|---|---|
+| **Anywhere** | `ctrl+g` focus the composer · `ctrl+d` diff rail · `enter` send · `alt+enter` newline · `/` command palette |
+| **Workflows pane** | `e` edit the flow (steps) · **`V` create the next version** (a draft) · `n` new workflow · `E` rename · `p` publish · `u` deprecate · `C` categorize · `ctrl+x` delete · `space` mark for bulk · `enter` flow view · `r` refresh |
+| **In the flow editor** | `↑`/`↓` move between steps · `enter` edit the selected step · `a` add a step · `x` remove a step · `E` rename the workflow · `esc` done |
+
+A version is created as a **draft**, which is additive and reversible — so `V` does not confirm, and
+neither does editing a step (editing one on a published version creates the draft for you, since
+published versions are immutable). `V` exists because that implicit route was the *only* one, and a
+mechanism nothing on the surface mentions is not a feature.
+
+### The three modes
+
+`brainstorm`, `iteration`, and `quick work` are **enforced by the platform**, not suggested in a
+prompt: each is a different tool boundary (what the agent may do at all), and the boundary is applied
+by the adapter so it holds for the native engine and for opencode alike. The mode is per
+conversation and can be changed mid-conversation; the next message carries the new boundary. This is
+why the round trip does not depend on the model honouring an instruction.
+
+### What asks, and what never does
+
+- **Reads never ask.** Reading a file or listing a directory cannot change anything, so it is never
+  gated. A malformed permission policy does not block reads either — a broken policy must not lock
+  the operator out of the file that explains the problem.
+- **Writes and executions always ask**, *including inside the conversation's own project directory*.
+  The project was pre-approved as a default scope and the operator removed that rung deliberately:
+  *"any directory should ask before allowing on write/execute, project or otherwise."* So there is no
+  silent project exemption to reason about — the only ways to stop being asked are a session grant or
+  an accept entry.
+
+### The precedence chain
+
+Evaluated in this order, first match wins:
+
+```
+never-allow binaries  →  deny  →  session grant  →  accept  →  ask
+```
+
+- **never-allow binaries** — `sudo`, `dd`, `mkfs*`, `fdisk`, `parted`, `shred`, `wipefs`, LVM
+  tooling, `mkswap`. Refused *before* the policy is consulted, so nothing can approve them: not a
+  session grant, not an accept entry, not the operator, not Fullsend. They are declared once in
+  `internal/neverallow` and consumed by both the opencode config builder and the OS-level execution
+  guard, so the two layers cannot drift apart.
+- **deny** — the operator's own exclusions. A deny is a **decision**, not a permission request: no
+  card is ever raised for it, and a session grant cannot override it. The presets cover the
+  credential stores an agent has no business reading (`~/.ssh`, `~/.gnupg`, `~/.aws`,
+  `~/.config/gh`, `~/.git-credentials`, `~/.netrc`, `~/.docker/config.json`).
+- **session grant** — "never ask again in this directory this session" (see below).
+- **accept** — an entry in the policy file meaning "never prompts".
+- **ask** — everything else.
+
+The policy file is `~/.local/share/orchicon-<instance>/permission-policy.yaml` (override with
+`ORCHICON_PERMISSION_POLICY`). It is read **on every gated decision**, so a hand-edit or a UI change
+takes effect on the very next call — no restart, no reload.
+
+### Session grants
+
+Choosing *"Never ask again in &lt;directory&gt; this session"* on a card records a **grant** for that
+directory:
+
+- **It covers the subtree.** Granting `/p/proj` covers `/p/proj/internal/...` too. (It was an exact
+  string match before, so granting a project root did not cover its packages and the operator got a
+  card per directory — precisely the per-command friction that pushes people to approve without
+  reading.)
+- **Per conversation, in memory, gone on restart.** A grant is a session decision; it is never
+  persisted, so a fresh plane asks again.
+- **The card names the directory the grant would cover**, and that is the directory whose consent is
+  actually missing — not necessarily the command's working directory. If a command's only uncovered
+  path is `/tmp/x`, the card says `/tmp`, so the grant it offers is the grant that works.
+- `/grants` (TUI) and the **Grants** disclosure (GUI) list the active grants and let you revoke them.
+
+### Fullsend
+
+**Fullsend** waives the permission *prompt* for one conversation. It exists because a gate that cannot
+be opened deliberately gets bypassed accidentally: mid-task, approving card after card for the same
+work, the operator stops reading them.
+
+- **What it waives:** the ask. A write or an execution that would have raised a card proceeds.
+- **What it does NOT waive:** a **deny** entry (that is a decision the policy already made — no card
+  is raised for it, so there is nothing to waive) and the **never-allow class** (refused before any
+  permission decision is reached). Fullsend does not open `~/.ssh`, and it does not run `sudo`.
+- **Scope and lifetime:** one conversation, in memory, dying with the plane — the same scope and
+  lifetime as a session grant, and for the same reason: a bypass that survives a restart is one the
+  operator has forgotten is on. It is never persisted.
+- **Toggleable mid-turn**, which is its primary use: nobody arms it before starting; you reach for it
+  when you are already being asked too often. It takes effect on the next ask with no restart.
+- **Turning it on clears a permission card already on screen**, because that card exists only because
+  fullsend was off when the call was raised. A pending *question* is not cleared — a question's answer
+  is the operator's own words, which the mode cannot supply.
+- **Changes are audited** (`conversation.fullsend_changed`): this is the one setting whose purpose is
+  to make a decision not happen, so *who opened the gate, and when* has to be reconstructible.
+- **No pending form.** Fullsend applies to an open conversation; it cannot be armed for a conversation
+  you have not opened.
+
+TUI: `/fullsend` (toggles for the open conversation, and the composer shows a `FULLSEND` badge while
+it is on). GUI: the **Fullsend** dropdown, immediately left of the mode dropdown.
+
+### Card lifecycle
+
+A card is how the turn asks, and it behaves the same in both clients:
+
+- **It appears at the bottom of the conversation**, sectioned off with a border, and the **turn
+  blocks** until it is answered. `ask_user` is genuinely blocking: the question is a pause, not a
+  notification, and the operator's answer is returned as the tool result so the model resumes holding
+  what they actually said.
+- **A permission card offers three choices** — *Allow once*, *Never ask again in &lt;directory&gt; this
+  session*, *Deny* — and a card whose target the deny list already excludes disables the session row
+  (naming the entry) rather than offering a grant the policy will refuse.
+- **A question card offers the model's options** plus *Other* for the operator's own words.
+- **A settled card becomes a one-line record**, not a card: an answered question reads
+  `You answered "<question>" — <answer>`. A card means a decision still to be made; once made it is
+  history, and a full tinted block per past grant buries the live turn under its own audit trail.
+- **A decision settles the card in EVERY client.** The collector writes each decision into the turn's
+  ledger as a record keyed by the ask id, and the ledger is persisted with the message — so the
+  transcript *is* the server's answer to "what happened to this ask", readable by any client at any
+  time. The live stream event is published too, for the clients watching at that moment; the durable
+  record is what makes a second tab or a reload agree.
+- **A timeout is a denial, and the model is told so** — labelled as expired rather than as a refusal,
+  because the operator did not refuse and the same call will ask again if retried. A malformed policy
+  is reported as a policy problem, never as an operator denial.
+
+### What a shell command's consent covers
+
+A bash ask judges **the paths the command names**, not only its working directory — so a session grant
+on `/p/proj` covers commands *run* there, while a command that touches `/etc/x` still raises a card of
+its own. The extraction is deliberately modest, and honest about it:
+
+- literal absolute paths (`/etc/x`, `--flag=/etc/x`) and `~/` paths in the command text;
+- **quoted spans must look like paths** (two segments or a home prefix, no trailing slash), because a
+  quoted token is usually a program or a regex — an awk program's `/^func` is not a filesystem path,
+  and reading it as one produced a grant key of `/` that no grant could ever cover;
+- a token containing a regex/glob metacharacter or a `$` expansion is not treated as a path;
+- **heredoc bodies are skipped** (they are file content that is about to be written, not arguments),
+  while a heredoc's redirect target is still judged;
+- device sinks (`/dev/null`, `/dev/stdout`, …) and read-only process introspection (`/proc/self/status`,
+  `/proc/&lt;pid&gt;/exe`) are not consent targets. The lists are explicit, never prefix matches: `rm -rf
+  /dev/sda`, `dd of=/dev/nvme0n1`, `> /proc/sys/kernel/panic` and `> /proc/&lt;pid&gt;/mem` are all still
+  judged.
+
+A path the command *computes* (`$(cat cfg)`, a variable, a script's own logic) is invisible to this,
+and the OS-level guard is what stands behind it.
+
+**A KNOWN GAP, stated rather than glossed: a `$HOME`-spelled path is not extracted.** Only a literal
+absolute path and a `~/…` path are recognised, so a command that names the same location with the
+`$HOME` (or `${HOME}`) spelling is **not judged at all** — measured rather than assumed:
+`echo x > ~/.config/app/conf` yields the absolute path, while the same command written with `$HOME`
+yields nothing. Expansions are skipped deliberately, because a `$` token is usually a shell variable
+or `$1` and reading one as a path is how invented targets came out of awk programs; that rule is what
+costs this spelling. The practical consequence is narrow but real: the shimmed binaries are still
+caught, and the `~/` spelling a person actually writes (as in a redirect to a credential file) is
+refused, but the same target spelled with `$HOME` in a redirect is judged by neither layer — a
+redirect is a shell operation, and the binary on the left of it is not one the guard shims.
+
+### Enforcement, not just prompting
+
+The prompt is one layer; the same rules are enforced beneath it, so approving a card is not the only
+thing standing between the model and the machine:
+
+- **OS-level execution guard** (`internal/guard`) — shims the dangerous binaries on `PATH` for the
+  Ask bash path, reads the same policy file, and honours the conversation's project, session grants,
+  once-targets, and fullsend. It **fails closed**: a policy it cannot read refuses the command rather
+  than running it unguarded.
+- **The deny list is checked first in both layers**, and its MATCHER is spelling-agnostic about home:
+  once a path reaches it, `~/.ssh`, `$HOME/.ssh` and the absolute path are the same target. What is
+  NOT spelling-agnostic is the extraction that feeds it — see the `$HOME` gap under *What a shell
+  command's consent covers* above. That is why this sentence names the matcher rather than claiming
+  the coverage: read together they are accurate, and read apart the second one overstates.
+- The **never-allow class** is a separate case arm in the shim, so no environment value can reach it.
+
+### Turn durability
+
+An Ask turn is a long, expensive, non-deterministic thing, so its partial work is preserved rather
+than discarded:
+
+- **A turn that dies mid-work keeps its work.** Text *and* reasoning stream as deltas; if the turn
+  ends abnormally (a stall, a reply timeout, a provider error, a dropped serve) the deltas are
+  folded into the durable record instead of being lost. This is why an interrupted turn leaves both
+  the answer so far and the thinking so far, rather than an error bubble over an empty row.
+- **A stalled turn says what stalled** and names the model, because a rate-limited or unavailable
+  provider looks exactly like a "stuck" model to the operator.
+- **Stop** persists the partial reply with the stop notice, rather than throwing the content away.
+
+### Environment overrides
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ORCHICON_PERMISSION_POLICY` | *(per-instance data dir)* | The permission policy file to read |
+| `ORCHICON_ASK_CONSENT_WAIT` | `15m` | How long a permission card waits for an answer before it expires (a timeout is a denial, and the model is told it expired) |
+| `ORCHICON_GUARD_POLICY` / `_PROJECT` / `_GRANTS` / `_ONCE` / `_FULLSEND` | *(set by the plane)* | The interactive guard shim's per-invocation contract. Set by the Ask path; not operator-set |
+
 
 ---
 
@@ -1314,7 +1531,7 @@ The control plane can run as a **host process** while the same instance's Postgr
 | `ORCHICON_CONTAINER_SERVICES_ONLY` | set by the launcher *into the container* | unset | `1` ⇒ `cmd/orchicon/container.go` skips the plane child |
 | `ORCHICON_SERVE_STATE_DIR` | host plane env | `.dev` | per-instance PID/log root for `serve --detach`/`--stop`, so two host planes never share one PID file |
 
-With **no new setting, nothing changes**: an instance still runs its plane inside its container. `make rebuild-dev` opts DEV in (`residency=host`); `make rebuild-prod` stays containerized until you run `make rebuild-prod residency=host`; `make rebuild-dev residency=container` reverts dev.
+**Host is the default through both entry points that rebuild an instance, and the two differ deliberately.** `scripts/container.sh up|down|rebuild <inst>` resolves `${ORCHICON_PLANE_RESIDENCY:-host}`; `make rebuild-dev` / `make rebuild-prod` pin `residency=host` as a target-specific override; `make container-rebuild <inst>` keeps the Makefile's own `residency = container` variable. So `scripts/orchicon.sh start dev` and `make rebuild-dev` both give a host plane with no setting at all. The rollback is one word — `make rebuild-prod residency=container` puts prod's plane back inside its container — and each instance's shape is independent, so one can migrate while the other does not.
 
 **What is published in host mode** — every service bound to **`127.0.0.1` only** (a database and an internal event bus must never be on the LAN), on ports that are disjoint per instance:
 
@@ -1552,12 +1769,18 @@ Before marking any change complete:
 7. No automatic model failover — the human defines the exact model
 8. Recovery is opt-out, not opt-in
 9. Migrations are forward-only
+10. **A permission ask blocks its turn** — the adapter holds the tool call on the decision, so a model can never act on an action the operator has not answered
+11. **A deny is a decision, not a permission request** — no card is raised for it, and no session grant, accept entry or Fullsend can override it
+12. **Silence is a denial, and the model is told which** — a timeout fails closed, but is reported as *expired* rather than as an operator refusal (the operator did not refuse, and the call will ask again)
+13. **The transcript is the server's truth for what happened to an ask** — a decision is written into the turn's ledger keyed by ask id and persisted with the message, so any client (a second tab, another device, a reload) settles the same way the answering client did
+14. **A mode is enforced by the adapter, not requested in a prompt** — the tool boundary for brainstorm/iteration/quick-work is applied below the model, so it holds for every adapter
+15. **A permission bypass lives in memory and dies with the plane** — session grants and Fullsend are never persisted, because a bypass that survives a restart is one the operator has forgotten is on
 
 ### Styling & Conventions
 
 - **Go**: Standard library style, `internal/` packages, pgx parameterized queries
 - **TypeScript**: TanStack Query for server state, Zustand for UI state, shadcn/ui components
-- **CSS**: Tailwind utility classes with 28 CSS-variable themes (14 light + 14 dark)
+- **CSS**: Tailwind utility classes with **20** CSS-variable themes (10 light + 10 dark — `LIGHT_THEMES` + `DARK_THEMES` in `frontend/src/lib/themes.ts`; the default dark theme is **Teal Depths**)
 - **Protobuf**: `proto/orchicon/api/v1/` for public API, `proto/orchicon/adapter/v1/` for runtime contract
 
 ---
@@ -1577,7 +1800,10 @@ The static landing page at `orchicon.dev` is deployed via Cloudflare Pages:
 - Build output directory: `site`
 - Root directory: (blank = repo root)
 
-See [`CLOUDFLARE_SETUP.md`](./CLOUDFLARE_SETUP.md) for the one-time setup guide.
+The Cloudflare Pages project (`orchicon-site`), its `wrangler.toml` and the one-time
+setup notes are deployment configuration rather than part of this repository, and are
+therefore kept out of it.
+
 
 ### GitHub Releases (Binary Distribution)
 
@@ -1639,6 +1865,10 @@ See [`CLOUDFLARE_SETUP.md`](./CLOUDFLARE_SETUP.md) for the one-time setup guide.
 | `ORCHICON_ASK_STALL_REPETITION_WINDOW` | `300s` | Ask Orchicon stall monitor: the window over which identical tool-call signatures are counted for the repetition signal |
 | `ORCHICON_ASK_TURN_MAX_AGE` | `31m` | Ask Orchicon turn-registry TTL: a turn older than this is evicted by the background sweeper (collector cancelled, serve session aborted) so no conversation can be blocked forever by a wedged collector |
 | `ORCHICON_ASK_SWEEP_INTERVAL` | `1m` | Ask Orchicon turn-registry sweeper tick interval (dev/test knob) |
+| `ORCHICON_PERMISSION_POLICY` | *(per-instance data dir)* | The Ask permission policy file (`deny`/`accept` lists). Read on **every** gated decision, so an edit takes effect on the next call — no restart |
+| `ORCHICON_ASK_CONSENT_WAIT` | `15m` | How long a permission card waits for an answer before it expires. A timeout is a **denial** (fail closed), and the model is told it *expired* rather than that the operator refused |
+| `ORCHICON_ASK_MCP_TOOL_WEDGE_WINDOW` | `120s` | A tool call issued but never resolved within this window is treated as a wedged MCP call and the session is recycled (any activity resets it) |
+| `ORCHICON_ASK_MCP_RECONNECT_ATTEMPTS` | `3` | How many times a wedged session is recycled within one turn before the turn is failed with a clear, retryable error |
 | `ORCHICON_MCP_TENANT_ID` | `tnt_dev` | Tenant for the built-in Orchicon MCP registered on the host serve |
 | `ORCHICON_REAP_GRACE_SECONDS` | `60` | Liveness reaper: min execution age before reaping is considered (overrides DB setting) |
 | `ORCHICON_REAP_CONSECUTIVE_FAILURES` | `3` | Liveness reaper: consecutive not-alive probes before an execution is reaped (overrides DB setting) |
@@ -1804,8 +2034,7 @@ branch off `develop`, PR into `develop`, and merge into `develop` — never
 3. The version tag is bumped automatically on each merge to `develop`
    (`.github/workflows/develop-bump.yml`); `git fetch --tags` before rebuilding
 4. Commit early and often with clear present-tense messages
-5. Before PR: update `UPDATES.md` (leave README.md's "Last Release Changes"
-   section alone — it only changes when the human cuts a release)
+5. Before PR: make sure `DOCUMENTATION.md` matches what you changed. (This step used to say "update `UPDATES.md`"; that file is the maintainer's own working inventory and is now **gitignored**, so it is not part of a contribution. Leave README.md's "Last Release Changes" section alone — it only changes when the human cuts a release.)
 6. Ask for approval before creating a PR
 7. PRs target `develop` and must NOT carry the `release` label (that label
    belongs only on the human's `develop` → `main` release PR; merging into

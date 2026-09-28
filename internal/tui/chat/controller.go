@@ -164,6 +164,11 @@ type Conversation struct {
 	MessageN  int32
 	ModelRef  string
 	Mode      apiv1.ConversationMode
+	// Fullsend is whether this conversation is in FULLSEND: the operator has waived the
+	// permission PROMPT for it. Read from the conversation row the server computes at read
+	// time, so the composer indicator tracks the SERVER's state — including a toggle made in
+	// the GUI — on the same conversation-list reload the mode pill already follows.
+	Fullsend bool
 	// ProjectID is the project this conversation belongs to, or "" when unassigned (the API's empty string, kept
 	// as-is rather than normalized into a sentinel so the rail and the GUI agree on what "unassigned" looks like).
 	//
@@ -594,6 +599,28 @@ func (c *Controller) SetConversationModel(id, modelRef string) tea.Cmd {
 	}
 }
 
+// SetConversationFullsend turns FULLSEND on or off for one conversation — the TUI's
+// `/fullsend` write path.
+//
+// IT IS AN EXPLICIT BOOLEAN, never a toggle request: the caller decides from the state it
+// can currently SEE and sends the value it wants, so a retry after a dropped response
+// cannot flip the mode by accident. The OPERATOR's intent is the toggle; the WIRE carries
+// a value.
+func (c *Controller) SetConversationFullsend(id string, enabled bool) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		_, err := c.cl.Ask.SetConversationFullsend(ctx, connect.NewRequest(&apiv1.SetConversationFullsendRequest{
+			Id:      id,
+			Enabled: enabled,
+		}))
+		if err != nil {
+			return ConversationMutatedMsg{Op: "fullsend", ID: id, Err: err.Error()}
+		}
+		return ConversationMutatedMsg{Op: "fullsend", ID: id}
+	}
+}
+
 // LoadConversations fetches the conversation rail.
 func (c *Controller) LoadConversations() tea.Cmd {
 	return func() tea.Msg {
@@ -612,6 +639,7 @@ func (c *Controller) LoadConversations() tea.Cmd {
 				MessageN:  cv.GetMessageCount(),
 				ModelRef:  cv.GetModelRef(),
 				Mode:      cv.GetMode(),
+				Fullsend:  cv.GetFullsend(),
 				ProjectID: cv.GetProjectId(),
 				// Read at list time, so a conversation the server reports as mid-turn is recognisable as such the
 				// moment the rail loads — which is what the re-attach on open needs.
@@ -619,6 +647,67 @@ func (c *Controller) LoadConversations() tea.Cmd {
 			})
 		}
 		return ConversationsMsg{Convs: convs, Categories: resp.Msg.GetCategories(), Assignments: resp.Msg.GetAssignments()}
+	}
+}
+
+// ConsentRepliedMsg reports the SERVER's answer to a permission decision.
+//
+// It exists so a decision that did NOT apply is visible. A reply can legitimately
+// lose — the ask expired, the turn ended, another reply won — and the server says so
+// (`applied: false`, `expired: true`) rather than reporting a silent success. Without
+// this the operator's click looked like an approval while the call was denied.
+type ConsentRepliedMsg struct {
+	ConvID  string
+	Applied bool
+	Expired bool
+	Detail  string
+	Err     string
+}
+
+// ConsentResolvedMsg reports that an ask was SETTLED BY SOMEONE ELSE — the other
+// client, or the collector expiring it.
+//
+// It exists because an ask reaches every watcher of a turn while only the client that
+// answered it cleared its own copy. See the PermissionAskResolved wire arm in
+// handleEvent.
+type ConsentResolvedMsg struct {
+	ConvID  string
+	AskID   string
+	Outcome string
+	Answer  string
+}
+
+// ReplyPermissionAsk answers a pending permission ask ON THE SERVER.
+//
+// THE TUI NEVER DID THIS, WHICH IS WHY APPROVING A CARD DID NOTHING. ConsentResolve
+// recorded a LOCAL session grant and showed a notice, then repainted — while the
+// server's ask stayed open until its wait expired, so the call was denied and the
+// transcript recorded a denial the operator never made. The operator: "it accepted my
+// click … also for some reason the history says I denied it."
+//
+// The GUI has always called this RPC (`askOrchiconClient.replyPermissionAsk`); the TUI
+// had no equivalent, so a permission could be decided in the browser and never from
+// the terminal. The local grant is still recorded (it is what silences the NEXT card
+// for that directory without a round trip) but it is no longer the whole story.
+func (c *Controller) ReplyPermissionAsk(convID, askID string, choice apiv1.PermissionChoice, answer string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		resp, err := c.cl.Ask.ReplyPermissionAsk(ctx, connect.NewRequest(&apiv1.ReplyPermissionAskRequest{
+			ConversationId: convID,
+			AskId:          askID,
+			Choice:         choice,
+			Answer:         answer,
+		}))
+		if err != nil {
+			return ConsentRepliedMsg{ConvID: convID, Err: err.Error()}
+		}
+		return ConsentRepliedMsg{
+			ConvID:  convID,
+			Applied: resp.Msg.GetApplied(),
+			Expired: resp.Msg.GetExpired(),
+			Detail:  resp.Msg.GetDetail(),
+		}
 	}
 }
 
@@ -706,7 +795,26 @@ func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 		// A recorded ask_user call renders as a clarifying-question card. Keyed by
 		// message id + "-ask" so a fold/refresh keeps a stable key (same reason as
 		// the reasoning keys above).
-		if ask := parseAskUserCall(m.GetToolCalls()); ask != nil {
+		//
+		// IT IS EMITTED LAST — after the message's own text — because the card is
+		// the thing the operator ACTS ON, not a transcript record of something that
+		// already happened. The operator: "I see the Orchicon asks box but … it is ON
+		// TOP of a bunch of other text you sent. That is not intuitive. It should be
+		// at the bottom (newest/recent)." Chronologically the tool call precedes the
+		// prose that follows it, so the card used to sit above the reply; the reading
+		// order the operator needs is the opposite, because the question is the last
+		// thing in the turn from their point of view.
+		//
+		// (With the turn PAUSED on the question — see the tool's own docs — there is
+		// normally no prose after it at all, and this ordering makes the card the
+		// bottom line either way.)
+		items = append(items, ChatItem{
+			Kind: kind,
+			Text: m.GetContent(),
+			At:   at,
+			Key:  "m-" + m.GetId(),
+		})
+		if ask := parseAskUserCall(m.GetToolCalls(), m.GetToolResults()); ask != nil {
 			items = append(items, ChatItem{
 				Kind: KindAsk,
 				Ask:  ask,
@@ -714,12 +822,6 @@ func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 				Key:  "m-" + m.GetId() + "-ask",
 			})
 		}
-		items = append(items, ChatItem{
-			Kind: kind,
-			Text: m.GetContent(),
-			At:   at,
-			Key:  "m-" + m.GetId(),
-		})
 	}
 	return items
 }
@@ -983,14 +1085,22 @@ func (c *Controller) Poll(convID string) tea.Cmd { return c.pollTranscript(convI
 // stream also closes cleanly, and without the check that close would clear the slot belonging to the
 // turn that replaced it — killing the thinking indicator, the watchdog and the pending-reply id the
 // moment the operator interjected.
-func (c *Controller) EndStream(convID string, gen uint64) {
+func (c *Controller) EndStream(convID string, gen uint64) bool {
+	ended := false
 	c.mu.Lock()
 	if st := c.state[convID]; st != nil && st.gen == gen {
 		st.streaming = false
 		st.reconnecting = false
 		st.pendingReplyID = ""
+		ended = true
 	}
 	c.mu.Unlock()
+	// IT REPORTS WHETHER IT ENDED THE SLOT so a caller can act on "this turn is over"
+	// without re-deriving it. The generation guard is the whole reason to ask: a
+	// SUPERSEDED stream closes too, and its close must not clear state belonging to
+	// the turn that replaced it — including the stale-consent sweep, which would
+	// otherwise settle a live card on a still-running turn.
+	return ended
 }
 
 // AbortTurn stops the in-flight turn on a conversation: the TUI's Stop control (the composer's ctrl+y),
@@ -1125,6 +1235,55 @@ func (c *Controller) handleEvent(convID string, ev *apiv1.ChatStreamResponse) {
 			Output:   e.ToolCallResult.GetOutput(),
 			At:       now(),
 		}, Key: "tcr-" + id})
+	case *apiv1.ChatStreamResponse_PermissionAskResolved:
+		// THE OTHER CLIENT DECIDED.
+		//
+		// An ask is delivered to EVERY watcher of a turn, but only the client that
+		// ANSWERED it cleared its own copy — so a decision made in the TUI left the
+		// GUI showing a live-looking, inert card, and vice versa. Clients cannot infer
+		// it: a permission ask has no durable per-ask row to reconcile against (the
+		// transcript records the outcome, not the open ask). The collector publishes
+		// this the moment it APPLIES a decision, so every watcher can settle.
+		//
+		// Without this the TUI's card stayed pending until the turn ended (see
+		// settleStaleConsent, which is the convergence path for a client that missed
+		// the message — a decision made before it attached).
+		if r := e.PermissionAskResolved; r != nil && r.GetAskId() != "" {
+			if c.cmds != nil {
+				select {
+				case c.cmds <- func() tea.Msg {
+					return ConsentResolvedMsg{
+						ConvID:  convID,
+						AskID:   r.GetAskId(),
+						Outcome: r.GetOutcome(),
+						Answer:  r.GetAnswer(),
+					}
+				}:
+				default:
+				}
+			}
+		}
+	case *apiv1.ChatStreamResponse_PermissionAsk:
+		// THE PERMISSION CARD'S WIRE ARM.
+		//
+		// This was the missing link: the server builds the ask
+		// (askorchicon.permissionAskEvent), the proto carries it
+		// (ChatStreamResponse.PermissionAsk), and the shell has a hook for it
+		// (App.ShowConsentAsk, whose own comment says it fires "once the sibling
+		// lands the wire arm") — but nothing on the client ever read the field, so
+		// the card was complete and permanently starved. No adapter's ask could
+		// reach the TUI, this one's or opencode's.
+		//
+		// Best-effort like the other live signals: a dropped ask is re-sent on
+		// re-attach (the server's replay path emits the identical shape), so it
+		// cannot be lost permanently.
+		ask := PermissionAskFromProto(e.PermissionAsk)
+		if c.cmds != nil {
+			select {
+			case c.cmds <- func() tea.Msg { return ConsentAskMsg{ConvID: convID, Ask: ask} }:
+			default:
+			}
+		}
 	case *apiv1.ChatStreamResponse_Done:
 		// poll finalizes; nothing to append
 	}

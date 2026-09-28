@@ -35,7 +35,7 @@ accept: []
 // without losing the rules' explanation.
 const fileHeader = `# Orchicon permission policy — read on every gated decision; edits take effect immediately.
 # deny  : always refused. A session grant CANNOT override an entry here.
-# accept: never prompts. Precedence: never-allow binaries > deny > session grant > accept > project dir > ask.
+# accept: never prompts. Precedence: never-allow binaries > deny > session grant > accept > ask.
 # Patterns are doublestar globs; a leading ~ is the operator's home.
 `
 

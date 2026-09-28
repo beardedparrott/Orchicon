@@ -16,19 +16,46 @@ import (
 
 // consentLines renders one consent item at the given pane width.
 func consentLines(it ChatItem, width int) string {
+	text, _ := consentLineSpans(it, width)
+	return text
+}
+
+// consentLineSpans is consentLines plus WHERE EACH OPTION ROW LANDED, so a CLICK on
+// the card resolves to the row under it — the same contract the clarifying-question
+// card has had.
+//
+// The operator: "I saw the card and actually selected accept but I also noticed I
+// couldn't click on it in the TUI. I had to click into the card then use the
+// keyboard to select it." Two cards for the same kind of decision, one clickable
+// and one keyboard-only, is a coin-flip for the operator rather than a design.
+//
+// The offsets come from the widget that DREW the card (kit2.CardLinesSpans), never
+// from a counter here: a drifted offset means a click answers with the row the
+// operator did not choose.
+func consentLineSpans(it ChatItem, width int) (string, []AskOptionSpan) {
 	st := it.Consent
 	if st == nil {
-		return ""
+		return "", nil
 	}
 	if !st.Pending() {
-		return theme.ListMeta.Render(truncateRow(consentRecord(st), width)) + "\n"
+		return theme.ListMeta.Render(truncateRow(consentRecord(st), width)) + "\n", nil
 	}
+	spec := consentSpec(st)
+	lines, rows := kit2.CardLinesSpans(spec, width)
 	var b strings.Builder
-	for _, l := range kit2.CardLines(consentSpec(st), width) {
+	for _, l := range lines {
 		b.WriteString(l)
 		b.WriteString("\n")
 	}
-	return b.String()
+	labels := st.Ask.OptionLabels()
+	opts := make([]AskOptionSpan, 0, len(rows))
+	for i, r := range rows {
+		if i >= len(labels) {
+			break
+		}
+		opts = append(opts, AskOptionSpan{Line: r.Line, Lines: r.Lines, Label: labels[i]})
+	}
+	return b.String(), opts
 }
 
 // consentRecord is the settled form: what was decided, about what.
@@ -41,7 +68,7 @@ func consentRecord(st *ConsentState) string {
 		if scope == "" {
 			scope = a.Target
 		}
-		out := ConsentAllowSession + " · " + scope + " (session)"
+		out := ConsentSessionRecord + " · " + scope + " (this session)"
 		return "consent " + out
 	case DecisionDeny:
 		return "consent " + ConsentDeny + " · " + subject
@@ -52,8 +79,15 @@ func consentRecord(st *ConsentState) string {
 			return "question dismissed — no answer sent"
 		}
 		return "answer · " + st.Choice
+	case DecisionSettled:
+		// NOT "expired unanswered" and NOT a denial: this client simply stopped being
+		// able to see the card. The outcome was decided somewhere it cannot observe.
+		return "no longer pending · " + subject
 	default:
-		return "consent " + ConsentAllowOnce + " · " + subject
+		// An UNRECOGNISED decision must not silently claim "allow once" — that was the
+		// previous default, which would report a permission as granted on the strength
+		// of a value it did not understand.
+		return "consent resolved (" + string(st.Decision) + ") · " + subject
 	}
 }
 
@@ -69,7 +103,16 @@ func consentSpec(st *ConsentState) kit2.CardSpec {
 		spec.Title = "Permission"
 		// THE BODY NAMES THE TOOL AND THE TARGET, which is the whole content of
 		// the decision: "approve" is meaningless without what is being approved.
-		spec.Body = strings.TrimSpace(a.Tool + " " + a.Target)
+		//
+		// The SERVER's summary is preferred when present because it names EVERY
+		// target — Target is a single path, so a batch_write touching two files
+		// showed only the first. The operator: "the GUI showed what file/directory
+		// batch_write was modifying but the TUI did not." The GUI renders the
+		// summary, so the TUI does too and the two describe the same action.
+		spec.Body = a.Summary
+		if spec.Body == "" {
+			spec.Body = strings.TrimSpace(a.Tool + " " + a.Target)
+		}
 		if a.DeniedBy != "" {
 			spec.Notice = "denied by the permission list (" + a.DeniedBy + ") — a session grant cannot override it"
 		}

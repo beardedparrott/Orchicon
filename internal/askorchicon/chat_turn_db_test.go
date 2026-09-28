@@ -998,3 +998,74 @@ func TestPersistMidThinkSupersedeCleanPartial(t *testing.T) {
 		t.Errorf("superseded reasoning = %v, want %v (flushed body)", row.Reasoning, want)
 	}
 }
+
+// busReasoningDelta builds a MID-GENERATION reasoning delta — the shape the native adapter
+// streams (`Kind: "delta"`, IsReasoning) and the one that used to have no durable form at
+// all. field "reasoning" is what makes TokenDeltaInfoFromBus classify it as reasoning.
+func busReasoningDelta(sessionID, delta string) opencode.BusEvent {
+	return opencode.BusEvent{Type: "message.part.delta", Properties: map[string]any{
+		"sessionID": sessionID, "messageID": "m1", "partID": "p1", "field": "reasoning", "delta": delta,
+	}}
+}
+
+// TestStalledTurnKeepsWhatStreamed is THE regression for the reported data loss: "a session
+// will die in the middle of actual work being done, and anything you were currently typing
+// (mostly in thought) goes away and my previous message is considered last message."
+//
+// The chain, all of it pinned here end to end through the real collector and the real DB:
+//
+//  1. the model streams reasoning and text as DELTAS (how the native adapter streams);
+//  2. it then goes silent and the no-progress monitor trips, aborting the session;
+//  3. the attempt settles — folding the live delta tails into the durable values, because
+//     an abnormal exit never receives a completed part to build them from;
+//  4. the finalize persists those values.
+//
+// Before the fix, step 3 handed the caller empty text and empty reasoning AND step 4
+// overwrote the partial row the live mirror had written with "" — so the operator's work was
+// destroyed twice over. This asserts it survives BOTH, in the row they would look at.
+func TestStalledTurnKeepsWhatStreamed(t *testing.T) {
+	t.Setenv("ORCHICON_ASK_STALL_NO_PROGRESS_WINDOW", "300ms")
+	pool := chatDBTestPool(t)
+	client := &fakeSessionClient{}
+	s := newChatService(t, pool, client)
+
+	convID := createConversation(t, pool, "")
+	ctx := context.Background()
+	ackID, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "hello", nil)
+	if err != nil {
+		t.Fatalf("startConversationTurn: %v", err)
+	}
+	waitForSend(t, client, 1)
+	time.Sleep(100 * time.Millisecond) // let the collector flip sent before the deltas
+
+	// The work in progress: thinking, then the start of an answer. Both as deltas, which is
+	// exactly what the native adapter emits and what has no completed part to lean on.
+	client.sub.feed(busReasoningDelta("ses_1", "weighing the options "))
+	client.sub.feed(busReasoningDelta("ses_1", "very carefully"))
+	client.sub.feed(busDelta("ses_1", "The answer so far is"))
+
+	// Then silence: the stall trips and the session is aborted mid-work.
+	msg := waitForErrorMessage(t, pool, convID, ackID)
+
+	// THE TEXT SURVIVED. This is the half that the finalize's "" destroyed.
+	if !strings.Contains(msg.Content, "The answer so far is") {
+		t.Errorf("the stalled turn lost its partial reply: content = %q, want the streamed text — "+
+			"the operator watched this arrive and it must not vanish", msg.Content)
+	}
+	// AND SO DID THE THINKING, which is the half the adapter never made durable.
+	joined := strings.Join(msg.Reasoning, "")
+	if !strings.Contains(joined, "weighing the options") {
+		t.Errorf("the stalled turn lost its reasoning: reasoning = %v, want the streamed thinking — "+
+			"a turn that dies mid-thought must leave the thought behind", msg.Reasoning)
+	}
+	// The error is still reported alongside the content: preserving the work must not
+	// swallow WHY the turn ended.
+	var meta map[string]any
+	if err := json.Unmarshal(msg.Metadata, &meta); err != nil {
+		t.Fatalf("unmarshal metadata: %v", err)
+	}
+	errText, _ := meta["error"].(string)
+	if !strings.Contains(errText, "stalled") {
+		t.Errorf("metadata.error = %q, want the stall reason preserved with the content", errText)
+	}
+}

@@ -604,6 +604,105 @@ func (x *SetConversationModelResponse) GetConversation() *Conversation {
 	return nil
 }
 
+type SetConversationFullsendRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// enabled true turns FULLSEND on for this conversation, false turns it off. It is
+	// an explicit boolean rather than a toggle so a caller retrying after a dropped
+	// response cannot flip the mode by accident.
+	Enabled       bool `protobuf:"varint,2,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetConversationFullsendRequest) Reset() {
+	*x = SetConversationFullsendRequest{}
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetConversationFullsendRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetConversationFullsendRequest) ProtoMessage() {}
+
+func (x *SetConversationFullsendRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetConversationFullsendRequest.ProtoReflect.Descriptor instead.
+func (*SetConversationFullsendRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *SetConversationFullsendRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *SetConversationFullsendRequest) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+type SetConversationFullsendResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Conversation  *Conversation          `protobuf:"bytes,1,opt,name=conversation,proto3" json:"conversation,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetConversationFullsendResponse) Reset() {
+	*x = SetConversationFullsendResponse{}
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetConversationFullsendResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetConversationFullsendResponse) ProtoMessage() {}
+
+func (x *SetConversationFullsendResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetConversationFullsendResponse.ProtoReflect.Descriptor instead.
+func (*SetConversationFullsendResponse) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *SetConversationFullsendResponse) GetConversation() *Conversation {
+	if x != nil {
+		return x.Conversation
+	}
+	return nil
+}
+
 type SetConversationProjectRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -617,7 +716,7 @@ type SetConversationProjectRequest struct {
 
 func (x *SetConversationProjectRequest) Reset() {
 	*x = SetConversationProjectRequest{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[10]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -629,7 +728,7 @@ func (x *SetConversationProjectRequest) String() string {
 func (*SetConversationProjectRequest) ProtoMessage() {}
 
 func (x *SetConversationProjectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[10]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -642,7 +741,7 @@ func (x *SetConversationProjectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetConversationProjectRequest.ProtoReflect.Descriptor instead.
 func (*SetConversationProjectRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{10}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *SetConversationProjectRequest) GetId() string {
@@ -668,7 +767,7 @@ type SetConversationProjectResponse struct {
 
 func (x *SetConversationProjectResponse) Reset() {
 	*x = SetConversationProjectResponse{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[11]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -680,7 +779,7 @@ func (x *SetConversationProjectResponse) String() string {
 func (*SetConversationProjectResponse) ProtoMessage() {}
 
 func (x *SetConversationProjectResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[11]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -693,7 +792,7 @@ func (x *SetConversationProjectResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetConversationProjectResponse.ProtoReflect.Descriptor instead.
 func (*SetConversationProjectResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{11}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *SetConversationProjectResponse) GetConversation() *Conversation {
@@ -712,7 +811,7 @@ type DeleteConversationRequest struct {
 
 func (x *DeleteConversationRequest) Reset() {
 	*x = DeleteConversationRequest{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[12]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -724,7 +823,7 @@ func (x *DeleteConversationRequest) String() string {
 func (*DeleteConversationRequest) ProtoMessage() {}
 
 func (x *DeleteConversationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[12]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -737,7 +836,7 @@ func (x *DeleteConversationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteConversationRequest.ProtoReflect.Descriptor instead.
 func (*DeleteConversationRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{12}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *DeleteConversationRequest) GetId() string {
@@ -755,7 +854,7 @@ type DeleteConversationResponse struct {
 
 func (x *DeleteConversationResponse) Reset() {
 	*x = DeleteConversationResponse{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[13]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -767,7 +866,7 @@ func (x *DeleteConversationResponse) String() string {
 func (*DeleteConversationResponse) ProtoMessage() {}
 
 func (x *DeleteConversationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[13]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -780,7 +879,7 @@ func (x *DeleteConversationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteConversationResponse.ProtoReflect.Descriptor instead.
 func (*DeleteConversationResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{13}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{15}
 }
 
 type UpdateConversationTitleRequest struct {
@@ -793,7 +892,7 @@ type UpdateConversationTitleRequest struct {
 
 func (x *UpdateConversationTitleRequest) Reset() {
 	*x = UpdateConversationTitleRequest{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[14]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -805,7 +904,7 @@ func (x *UpdateConversationTitleRequest) String() string {
 func (*UpdateConversationTitleRequest) ProtoMessage() {}
 
 func (x *UpdateConversationTitleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[14]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -818,7 +917,7 @@ func (x *UpdateConversationTitleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateConversationTitleRequest.ProtoReflect.Descriptor instead.
 func (*UpdateConversationTitleRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{14}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *UpdateConversationTitleRequest) GetId() string {
@@ -844,7 +943,7 @@ type UpdateConversationTitleResponse struct {
 
 func (x *UpdateConversationTitleResponse) Reset() {
 	*x = UpdateConversationTitleResponse{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[15]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -856,7 +955,7 @@ func (x *UpdateConversationTitleResponse) String() string {
 func (*UpdateConversationTitleResponse) ProtoMessage() {}
 
 func (x *UpdateConversationTitleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[15]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -869,7 +968,7 @@ func (x *UpdateConversationTitleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateConversationTitleResponse.ProtoReflect.Descriptor instead.
 func (*UpdateConversationTitleResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{15}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *UpdateConversationTitleResponse) GetConversation() *Conversation {
@@ -890,7 +989,7 @@ type ListMessagesRequest struct {
 
 func (x *ListMessagesRequest) Reset() {
 	*x = ListMessagesRequest{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[16]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -902,7 +1001,7 @@ func (x *ListMessagesRequest) String() string {
 func (*ListMessagesRequest) ProtoMessage() {}
 
 func (x *ListMessagesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[16]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -915,7 +1014,7 @@ func (x *ListMessagesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMessagesRequest.ProtoReflect.Descriptor instead.
 func (*ListMessagesRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{16}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ListMessagesRequest) GetConversationId() string {
@@ -949,7 +1048,7 @@ type ListMessagesResponse struct {
 
 func (x *ListMessagesResponse) Reset() {
 	*x = ListMessagesResponse{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[17]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -961,7 +1060,7 @@ func (x *ListMessagesResponse) String() string {
 func (*ListMessagesResponse) ProtoMessage() {}
 
 func (x *ListMessagesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[17]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -974,7 +1073,7 @@ func (x *ListMessagesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMessagesResponse.ProtoReflect.Descriptor instead.
 func (*ListMessagesResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{17}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ListMessagesResponse) GetMessages() []*ChatMessage {
@@ -1002,7 +1101,7 @@ type ChatStreamRequest struct {
 
 func (x *ChatStreamRequest) Reset() {
 	*x = ChatStreamRequest{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[18]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1014,7 +1113,7 @@ func (x *ChatStreamRequest) String() string {
 func (*ChatStreamRequest) ProtoMessage() {}
 
 func (x *ChatStreamRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[18]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1027,7 +1126,7 @@ func (x *ChatStreamRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatStreamRequest.ProtoReflect.Descriptor instead.
 func (*ChatStreamRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{18}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ChatStreamRequest) GetConversationId() string {
@@ -1064,6 +1163,7 @@ type ChatStreamResponse struct {
 	//	*ChatStreamResponse_Reasoning
 	//	*ChatStreamResponse_Heartbeat
 	//	*ChatStreamResponse_PermissionAsk
+	//	*ChatStreamResponse_PermissionAskResolved
 	Event         isChatStreamResponse_Event `protobuf_oneof:"event"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1071,7 +1171,7 @@ type ChatStreamResponse struct {
 
 func (x *ChatStreamResponse) Reset() {
 	*x = ChatStreamResponse{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[19]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1083,7 +1183,7 @@ func (x *ChatStreamResponse) String() string {
 func (*ChatStreamResponse) ProtoMessage() {}
 
 func (x *ChatStreamResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[19]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1096,7 +1196,7 @@ func (x *ChatStreamResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatStreamResponse.ProtoReflect.Descriptor instead.
 func (*ChatStreamResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{19}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ChatStreamResponse) GetEvent() isChatStreamResponse_Event {
@@ -1187,6 +1287,15 @@ func (x *ChatStreamResponse) GetPermissionAsk() *PermissionAsk {
 	return nil
 }
 
+func (x *ChatStreamResponse) GetPermissionAskResolved() *PermissionAskResolved {
+	if x != nil {
+		if x, ok := x.Event.(*ChatStreamResponse_PermissionAskResolved); ok {
+			return x.PermissionAskResolved
+		}
+	}
+	return nil
+}
+
 type isChatStreamResponse_Event interface {
 	isChatStreamResponse_Event()
 }
@@ -1232,6 +1341,24 @@ type ChatStreamResponse_PermissionAsk struct {
 	PermissionAsk *PermissionAsk `protobuf:"bytes,9,opt,name=permission_ask,json=permissionAsk,proto3,oneof"`
 }
 
+type ChatStreamResponse_PermissionAskResolved struct {
+	// PermissionAskResolved carries the OUTCOME of an ask already sent on this
+	// stream, published the moment the collector applies a decision.
+	//
+	// IT EXISTS SO A DECISION MADE IN ONE CLIENT SETTLES THE CARD IN THE OTHER.
+	// An ask is delivered to every watcher of a turn, but only the client that
+	// ANSWERED it ever cleared its own copy (the TUI in ConsentResolve, the GUI in
+	// handleAskDecision). So answering in the TUI left a live-looking, inert card in
+	// the GUI — the operator: "the choice box is still there for permissions" — and
+	// vice versa. Clients cannot infer it either: a permission ask has no durable
+	// per-ask row to reconcile against (the transcript records the OUTCOME, not the
+	// open ask).
+	//
+	// It is published by the collector that owns the turn, so it reaches every
+	// watcher, including one that re-attached mid-turn.
+	PermissionAskResolved *PermissionAskResolved `protobuf:"bytes,10,opt,name=permission_ask_resolved,json=permissionAskResolved,proto3,oneof"`
+}
+
 func (*ChatStreamResponse_TextChunk) isChatStreamResponse_Event() {}
 
 func (*ChatStreamResponse_ToolCallStart) isChatStreamResponse_Event() {}
@@ -1250,6 +1377,86 @@ func (*ChatStreamResponse_Heartbeat) isChatStreamResponse_Event() {}
 
 func (*ChatStreamResponse_PermissionAsk) isChatStreamResponse_Event() {}
 
+func (*ChatStreamResponse_PermissionAskResolved) isChatStreamResponse_Event() {}
+
+// PermissionAskResolved is the settled form of a PermissionAsk: which ask, and what
+// became of it.
+type PermissionAskResolved struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	AskId          string                 `protobuf:"bytes,1,opt,name=ask_id,json=askId,proto3" json:"ask_id,omitempty"`
+	ConversationId string                 `protobuf:"bytes,2,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
+	// outcome is one of:
+	//
+	//	"allow_once" | "allow_session" | "deny" — the operator decided;
+	//	"answered"                              — a question was answered (answer is set);
+	//	"expired"                               — nobody answered in the window.
+	Outcome string `protobuf:"bytes,3,opt,name=outcome,proto3" json:"outcome,omitempty"`
+	// answer is the operator's words for a QUESTION ask, empty otherwise. It is what
+	// the ask_user tool returned, and it is carried here so a watching client can show
+	// what was answered rather than only that something was.
+	Answer        string `protobuf:"bytes,4,opt,name=answer,proto3" json:"answer,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PermissionAskResolved) Reset() {
+	*x = PermissionAskResolved{}
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PermissionAskResolved) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PermissionAskResolved) ProtoMessage() {}
+
+func (x *PermissionAskResolved) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PermissionAskResolved.ProtoReflect.Descriptor instead.
+func (*PermissionAskResolved) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *PermissionAskResolved) GetAskId() string {
+	if x != nil {
+		return x.AskId
+	}
+	return ""
+}
+
+func (x *PermissionAskResolved) GetConversationId() string {
+	if x != nil {
+		return x.ConversationId
+	}
+	return ""
+}
+
+func (x *PermissionAskResolved) GetOutcome() string {
+	if x != nil {
+		return x.Outcome
+	}
+	return ""
+}
+
+func (x *PermissionAskResolved) GetAnswer() string {
+	if x != nil {
+		return x.Answer
+	}
+	return ""
+}
+
 // TurnStarted is the immediate ack for a ChatStream send: the message was
 // persisted and the turn is in flight. The reply is persisted under
 // assistant_message_id and delivered by polling ListMessages.
@@ -1262,7 +1469,7 @@ type TurnStarted struct {
 
 func (x *TurnStarted) Reset() {
 	*x = TurnStarted{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[20]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1274,7 +1481,7 @@ func (x *TurnStarted) String() string {
 func (*TurnStarted) ProtoMessage() {}
 
 func (x *TurnStarted) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[20]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1287,7 +1494,7 @@ func (x *TurnStarted) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TurnStarted.ProtoReflect.Descriptor instead.
 func (*TurnStarted) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{20}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *TurnStarted) GetAssistantMessageId() string {
@@ -1308,7 +1515,7 @@ type AbortConversationTurnRequest struct {
 
 func (x *AbortConversationTurnRequest) Reset() {
 	*x = AbortConversationTurnRequest{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[21]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1320,7 +1527,7 @@ func (x *AbortConversationTurnRequest) String() string {
 func (*AbortConversationTurnRequest) ProtoMessage() {}
 
 func (x *AbortConversationTurnRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[21]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1333,7 +1540,7 @@ func (x *AbortConversationTurnRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AbortConversationTurnRequest.ProtoReflect.Descriptor instead.
 func (*AbortConversationTurnRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{21}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *AbortConversationTurnRequest) GetConversationId() string {
@@ -1351,7 +1558,7 @@ type AbortConversationTurnResponse struct {
 
 func (x *AbortConversationTurnResponse) Reset() {
 	*x = AbortConversationTurnResponse{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[22]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1363,7 +1570,7 @@ func (x *AbortConversationTurnResponse) String() string {
 func (*AbortConversationTurnResponse) ProtoMessage() {}
 
 func (x *AbortConversationTurnResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[22]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1376,7 +1583,7 @@ func (x *AbortConversationTurnResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AbortConversationTurnResponse.ProtoReflect.Descriptor instead.
 func (*AbortConversationTurnResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{22}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{25}
 }
 
 // WatchTurnStreamRequest identifies the running turn to re-attach to: the
@@ -1393,7 +1600,7 @@ type WatchTurnStreamRequest struct {
 
 func (x *WatchTurnStreamRequest) Reset() {
 	*x = WatchTurnStreamRequest{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[23]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1405,7 +1612,7 @@ func (x *WatchTurnStreamRequest) String() string {
 func (*WatchTurnStreamRequest) ProtoMessage() {}
 
 func (x *WatchTurnStreamRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[23]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1418,7 +1625,7 @@ func (x *WatchTurnStreamRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchTurnStreamRequest.ProtoReflect.Descriptor instead.
 func (*WatchTurnStreamRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{23}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *WatchTurnStreamRequest) GetConversationId() string {
@@ -1449,7 +1656,7 @@ type InterjectConversationTurnRequest struct {
 
 func (x *InterjectConversationTurnRequest) Reset() {
 	*x = InterjectConversationTurnRequest{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[24]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1461,7 +1668,7 @@ func (x *InterjectConversationTurnRequest) String() string {
 func (*InterjectConversationTurnRequest) ProtoMessage() {}
 
 func (x *InterjectConversationTurnRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[24]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1474,7 +1681,7 @@ func (x *InterjectConversationTurnRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InterjectConversationTurnRequest.ProtoReflect.Descriptor instead.
 func (*InterjectConversationTurnRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{24}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *InterjectConversationTurnRequest) GetConversationId() string {
@@ -1511,7 +1718,7 @@ type CompactConversationRequest struct {
 
 func (x *CompactConversationRequest) Reset() {
 	*x = CompactConversationRequest{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[25]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1523,7 +1730,7 @@ func (x *CompactConversationRequest) String() string {
 func (*CompactConversationRequest) ProtoMessage() {}
 
 func (x *CompactConversationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[25]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1536,7 +1743,7 @@ func (x *CompactConversationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompactConversationRequest.ProtoReflect.Descriptor instead.
 func (*CompactConversationRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{25}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *CompactConversationRequest) GetConversationId() string {
@@ -1580,7 +1787,7 @@ type CompactConversationResponse struct {
 
 func (x *CompactConversationResponse) Reset() {
 	*x = CompactConversationResponse{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[26]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1592,7 +1799,7 @@ func (x *CompactConversationResponse) String() string {
 func (*CompactConversationResponse) ProtoMessage() {}
 
 func (x *CompactConversationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[26]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1605,7 +1812,7 @@ func (x *CompactConversationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompactConversationResponse.ProtoReflect.Descriptor instead.
 func (*CompactConversationResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{26}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *CompactConversationResponse) GetCompacted() bool {
@@ -1655,7 +1862,7 @@ type UploadAttachmentRequest struct {
 
 func (x *UploadAttachmentRequest) Reset() {
 	*x = UploadAttachmentRequest{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[27]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1667,7 +1874,7 @@ func (x *UploadAttachmentRequest) String() string {
 func (*UploadAttachmentRequest) ProtoMessage() {}
 
 func (x *UploadAttachmentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[27]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1680,7 +1887,7 @@ func (x *UploadAttachmentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadAttachmentRequest.ProtoReflect.Descriptor instead.
 func (*UploadAttachmentRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{27}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *UploadAttachmentRequest) GetConversationId() string {
@@ -1721,7 +1928,7 @@ type UploadAttachmentResponse struct {
 
 func (x *UploadAttachmentResponse) Reset() {
 	*x = UploadAttachmentResponse{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[28]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1733,7 +1940,7 @@ func (x *UploadAttachmentResponse) String() string {
 func (*UploadAttachmentResponse) ProtoMessage() {}
 
 func (x *UploadAttachmentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[28]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1746,7 +1953,7 @@ func (x *UploadAttachmentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadAttachmentResponse.ProtoReflect.Descriptor instead.
 func (*UploadAttachmentResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{28}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *UploadAttachmentResponse) GetAttachmentId() string {
@@ -1771,7 +1978,7 @@ type GetAgentConfigRequest struct {
 
 func (x *GetAgentConfigRequest) Reset() {
 	*x = GetAgentConfigRequest{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[29]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1783,7 +1990,7 @@ func (x *GetAgentConfigRequest) String() string {
 func (*GetAgentConfigRequest) ProtoMessage() {}
 
 func (x *GetAgentConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[29]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1796,7 +2003,7 @@ func (x *GetAgentConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAgentConfigRequest.ProtoReflect.Descriptor instead.
 func (*GetAgentConfigRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{29}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{32}
 }
 
 type GetAgentConfigResponse struct {
@@ -1808,7 +2015,7 @@ type GetAgentConfigResponse struct {
 
 func (x *GetAgentConfigResponse) Reset() {
 	*x = GetAgentConfigResponse{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[30]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1820,7 +2027,7 @@ func (x *GetAgentConfigResponse) String() string {
 func (*GetAgentConfigResponse) ProtoMessage() {}
 
 func (x *GetAgentConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[30]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1833,7 +2040,7 @@ func (x *GetAgentConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAgentConfigResponse.ProtoReflect.Descriptor instead.
 func (*GetAgentConfigResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{30}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *GetAgentConfigResponse) GetConfig() *AgentConfig {
@@ -1852,7 +2059,7 @@ type UpdateAgentConfigRequest struct {
 
 func (x *UpdateAgentConfigRequest) Reset() {
 	*x = UpdateAgentConfigRequest{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[31]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1864,7 +2071,7 @@ func (x *UpdateAgentConfigRequest) String() string {
 func (*UpdateAgentConfigRequest) ProtoMessage() {}
 
 func (x *UpdateAgentConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[31]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1877,7 +2084,7 @@ func (x *UpdateAgentConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateAgentConfigRequest.ProtoReflect.Descriptor instead.
 func (*UpdateAgentConfigRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{31}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *UpdateAgentConfigRequest) GetConfig() *AgentConfig {
@@ -1896,7 +2103,7 @@ type UpdateAgentConfigResponse struct {
 
 func (x *UpdateAgentConfigResponse) Reset() {
 	*x = UpdateAgentConfigResponse{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[32]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1908,7 +2115,7 @@ func (x *UpdateAgentConfigResponse) String() string {
 func (*UpdateAgentConfigResponse) ProtoMessage() {}
 
 func (x *UpdateAgentConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[32]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1921,7 +2128,7 @@ func (x *UpdateAgentConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateAgentConfigResponse.ProtoReflect.Descriptor instead.
 func (*UpdateAgentConfigResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{32}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *UpdateAgentConfigResponse) GetConfig() *AgentConfig {
@@ -1940,7 +2147,7 @@ type GetModelCapabilitiesRequest struct {
 
 func (x *GetModelCapabilitiesRequest) Reset() {
 	*x = GetModelCapabilitiesRequest{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[33]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1952,7 +2159,7 @@ func (x *GetModelCapabilitiesRequest) String() string {
 func (*GetModelCapabilitiesRequest) ProtoMessage() {}
 
 func (x *GetModelCapabilitiesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[33]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1965,7 +2172,7 @@ func (x *GetModelCapabilitiesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetModelCapabilitiesRequest.ProtoReflect.Descriptor instead.
 func (*GetModelCapabilitiesRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{33}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *GetModelCapabilitiesRequest) GetModelRef() string {
@@ -1984,7 +2191,7 @@ type GetModelCapabilitiesResponse struct {
 
 func (x *GetModelCapabilitiesResponse) Reset() {
 	*x = GetModelCapabilitiesResponse{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[34]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1996,7 +2203,7 @@ func (x *GetModelCapabilitiesResponse) String() string {
 func (*GetModelCapabilitiesResponse) ProtoMessage() {}
 
 func (x *GetModelCapabilitiesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[34]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2009,7 +2216,7 @@ func (x *GetModelCapabilitiesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetModelCapabilitiesResponse.ProtoReflect.Descriptor instead.
 func (*GetModelCapabilitiesResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{34}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *GetModelCapabilitiesResponse) GetCapabilities() *ModelCapabilities {
@@ -2048,13 +2255,30 @@ type PermissionAsk struct {
 	// card says so instead of offering a grant that will be refused for those
 	// paths. Empty when no deny entry sits inside the directory.
 	DenyEntriesBelow []string `protobuf:"bytes,10,rep,name=deny_entries_below,json=denyEntriesBelow,proto3" json:"deny_entries_below,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// --- Clarifying-question asks (ask_user, made blocking) ---
+	//
+	// A question rides THIS message rather than getting its own: the clients already
+	// render one card type from it (the TUI models both as chat.PermissionAsk with a
+	// Kind), and the operator answers both from the transcript. Adding a second
+	// message and a second RPC would have meant two card paths, two reply paths and
+	// two places for a decision to go missing.
+	//
+	// When question is non-empty this is a QUESTION, not a permission: there is no
+	// allow/deny and no grant. The turn is PAUSED on it (the adapter blocks the
+	// ask_user call), so the card is the end of the turn until it is answered —
+	// which is why answering it RESUMES the turn rather than starting a new one.
+	Question string   `protobuf:"bytes,11,opt,name=question,proto3" json:"question,omitempty"`
+	Options  []string `protobuf:"bytes,12,rep,name=options,proto3" json:"options,omitempty"`
+	// allow_other offers the free-text row: the operator can answer in their own
+	// words instead of choosing a canned option.
+	AllowOther    bool `protobuf:"varint,13,opt,name=allow_other,json=allowOther,proto3" json:"allow_other,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PermissionAsk) Reset() {
 	*x = PermissionAsk{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[35]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2066,7 +2290,7 @@ func (x *PermissionAsk) String() string {
 func (*PermissionAsk) ProtoMessage() {}
 
 func (x *PermissionAsk) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[35]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2079,7 +2303,7 @@ func (x *PermissionAsk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PermissionAsk.ProtoReflect.Descriptor instead.
 func (*PermissionAsk) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{35}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *PermissionAsk) GetAskId() string {
@@ -2152,6 +2376,27 @@ func (x *PermissionAsk) GetDenyEntriesBelow() []string {
 	return nil
 }
 
+func (x *PermissionAsk) GetQuestion() string {
+	if x != nil {
+		return x.Question
+	}
+	return ""
+}
+
+func (x *PermissionAsk) GetOptions() []string {
+	if x != nil {
+		return x.Options
+	}
+	return nil
+}
+
+func (x *PermissionAsk) GetAllowOther() bool {
+	if x != nil {
+		return x.AllowOther
+	}
+	return false
+}
+
 // SessionPermissionGrant is one ACTIVE session grant: a directory the operator
 // allowed for the session, and when.
 type SessionPermissionGrant struct {
@@ -2166,7 +2411,7 @@ type SessionPermissionGrant struct {
 
 func (x *SessionPermissionGrant) Reset() {
 	*x = SessionPermissionGrant{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[36]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2178,7 +2423,7 @@ func (x *SessionPermissionGrant) String() string {
 func (*SessionPermissionGrant) ProtoMessage() {}
 
 func (x *SessionPermissionGrant) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[36]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2191,7 +2436,7 @@ func (x *SessionPermissionGrant) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionPermissionGrant.ProtoReflect.Descriptor instead.
 func (*SessionPermissionGrant) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{36}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *SessionPermissionGrant) GetDirectory() string {
@@ -2217,7 +2462,7 @@ type ListPermissionGrantsRequest struct {
 
 func (x *ListPermissionGrantsRequest) Reset() {
 	*x = ListPermissionGrantsRequest{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[37]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2229,7 +2474,7 @@ func (x *ListPermissionGrantsRequest) String() string {
 func (*ListPermissionGrantsRequest) ProtoMessage() {}
 
 func (x *ListPermissionGrantsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[37]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2242,7 +2487,7 @@ func (x *ListPermissionGrantsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPermissionGrantsRequest.ProtoReflect.Descriptor instead.
 func (*ListPermissionGrantsRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{37}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *ListPermissionGrantsRequest) GetConversationId() string {
@@ -2262,7 +2507,7 @@ type ListPermissionGrantsResponse struct {
 
 func (x *ListPermissionGrantsResponse) Reset() {
 	*x = ListPermissionGrantsResponse{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[38]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2274,7 +2519,7 @@ func (x *ListPermissionGrantsResponse) String() string {
 func (*ListPermissionGrantsResponse) ProtoMessage() {}
 
 func (x *ListPermissionGrantsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[38]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2287,7 +2532,7 @@ func (x *ListPermissionGrantsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPermissionGrantsResponse.ProtoReflect.Descriptor instead.
 func (*ListPermissionGrantsResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{38}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *ListPermissionGrantsResponse) GetGrants() []*SessionPermissionGrant {
@@ -2308,7 +2553,7 @@ type RevokePermissionGrantRequest struct {
 
 func (x *RevokePermissionGrantRequest) Reset() {
 	*x = RevokePermissionGrantRequest{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[39]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2320,7 +2565,7 @@ func (x *RevokePermissionGrantRequest) String() string {
 func (*RevokePermissionGrantRequest) ProtoMessage() {}
 
 func (x *RevokePermissionGrantRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[39]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2333,7 +2578,7 @@ func (x *RevokePermissionGrantRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokePermissionGrantRequest.ProtoReflect.Descriptor instead.
 func (*RevokePermissionGrantRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{39}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *RevokePermissionGrantRequest) GetConversationId() string {
@@ -2362,7 +2607,7 @@ type RevokePermissionGrantResponse struct {
 
 func (x *RevokePermissionGrantResponse) Reset() {
 	*x = RevokePermissionGrantResponse{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[40]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2374,7 +2619,7 @@ func (x *RevokePermissionGrantResponse) String() string {
 func (*RevokePermissionGrantResponse) ProtoMessage() {}
 
 func (x *RevokePermissionGrantResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[40]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2387,7 +2632,7 @@ func (x *RevokePermissionGrantResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokePermissionGrantResponse.ProtoReflect.Descriptor instead.
 func (*RevokePermissionGrantResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{40}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *RevokePermissionGrantResponse) GetRemoved() bool {
@@ -2409,13 +2654,22 @@ type ReplyPermissionAskRequest struct {
 	ConversationId string                 `protobuf:"bytes,1,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
 	AskId          string                 `protobuf:"bytes,2,opt,name=ask_id,json=askId,proto3" json:"ask_id,omitempty"`
 	Choice         PermissionChoice       `protobuf:"varint,3,opt,name=choice,proto3,enum=orchicon.api.v1.PermissionChoice" json:"choice,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// answer is the operator's reply to a QUESTION ask (question non-empty): the
+	// chosen option's label, or their own words when allow_other offered the
+	// free-text row. It BECOMES THE ask_user TOOL RESULT, so the model continues the
+	// turn with the answer in hand rather than being told the question was recorded.
+	//
+	// Empty for a permission ask — a permission is answered by `choice`, and the two
+	// are deliberately not conflated: a permission's outcome is a grant decision, a
+	// question's is content the model reads.
+	Answer        string `protobuf:"bytes,4,opt,name=answer,proto3" json:"answer,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ReplyPermissionAskRequest) Reset() {
 	*x = ReplyPermissionAskRequest{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[41]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2427,7 +2681,7 @@ func (x *ReplyPermissionAskRequest) String() string {
 func (*ReplyPermissionAskRequest) ProtoMessage() {}
 
 func (x *ReplyPermissionAskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[41]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2440,7 +2694,7 @@ func (x *ReplyPermissionAskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplyPermissionAskRequest.ProtoReflect.Descriptor instead.
 func (*ReplyPermissionAskRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{41}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *ReplyPermissionAskRequest) GetConversationId() string {
@@ -2464,6 +2718,13 @@ func (x *ReplyPermissionAskRequest) GetChoice() PermissionChoice {
 	return PermissionChoice_PERMISSION_CHOICE_UNSPECIFIED
 }
 
+func (x *ReplyPermissionAskRequest) GetAnswer() string {
+	if x != nil {
+		return x.Answer
+	}
+	return ""
+}
+
 // ReplyPermissionAskResponse reports whether the decision was applied.
 type ReplyPermissionAskResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -2480,7 +2741,7 @@ type ReplyPermissionAskResponse struct {
 
 func (x *ReplyPermissionAskResponse) Reset() {
 	*x = ReplyPermissionAskResponse{}
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[42]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2492,7 +2753,7 @@ func (x *ReplyPermissionAskResponse) String() string {
 func (*ReplyPermissionAskResponse) ProtoMessage() {}
 
 func (x *ReplyPermissionAskResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[42]
+	mi := &file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2505,7 +2766,7 @@ func (x *ReplyPermissionAskResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplyPermissionAskResponse.ProtoReflect.Descriptor instead.
 func (*ReplyPermissionAskResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{42}
+	return file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *ReplyPermissionAskResponse) GetApplied() bool {
@@ -2566,6 +2827,11 @@ const file_orchicon_api_v1_ask_orchicon_service_proto_rawDesc = "" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tmodel_ref\x18\x02 \x01(\tR\bmodelRef\"a\n" +
 	"\x1cSetConversationModelResponse\x12A\n" +
+	"\fconversation\x18\x01 \x01(\v2\x1d.orchicon.api.v1.ConversationR\fconversation\"J\n" +
+	"\x1eSetConversationFullsendRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
+	"\aenabled\x18\x02 \x01(\bR\aenabled\"d\n" +
+	"\x1fSetConversationFullsendResponse\x12A\n" +
 	"\fconversation\x18\x01 \x01(\v2\x1d.orchicon.api.v1.ConversationR\fconversation\"N\n" +
 	"\x1dSetConversationProjectRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
@@ -2592,7 +2858,7 @@ const file_orchicon_api_v1_ask_orchicon_service_proto_rawDesc = "" +
 	"\x11ChatStreamRequest\x12'\n" +
 	"\x0fconversation_id\x18\x01 \x01(\tR\x0econversationId\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12B\n" +
-	"\vattachments\x18\x03 \x03(\v2 .orchicon.api.v1.AttachmentInputR\vattachments\"\xe2\x04\n" +
+	"\vattachments\x18\x03 \x03(\v2 .orchicon.api.v1.AttachmentInputR\vattachments\"\xc4\x05\n" +
 	"\x12ChatStreamResponse\x12;\n" +
 	"\n" +
 	"text_chunk\x18\x01 \x01(\v2\x1a.orchicon.api.v1.TextChunkH\x00R\ttextChunk\x12H\n" +
@@ -2603,8 +2869,15 @@ const file_orchicon_api_v1_ask_orchicon_service_proto_rawDesc = "" +
 	"\fturn_started\x18\x06 \x01(\v2\x1c.orchicon.api.v1.TurnStartedH\x00R\vturnStarted\x12?\n" +
 	"\treasoning\x18\a \x01(\v2\x1f.orchicon.api.v1.ReasoningChunkH\x00R\treasoning\x12:\n" +
 	"\theartbeat\x18\b \x01(\v2\x1a.orchicon.api.v1.HeartbeatH\x00R\theartbeat\x12G\n" +
-	"\x0epermission_ask\x18\t \x01(\v2\x1e.orchicon.api.v1.PermissionAskH\x00R\rpermissionAskB\a\n" +
-	"\x05event\"?\n" +
+	"\x0epermission_ask\x18\t \x01(\v2\x1e.orchicon.api.v1.PermissionAskH\x00R\rpermissionAsk\x12`\n" +
+	"\x17permission_ask_resolved\x18\n" +
+	" \x01(\v2&.orchicon.api.v1.PermissionAskResolvedH\x00R\x15permissionAskResolvedB\a\n" +
+	"\x05event\"\x89\x01\n" +
+	"\x15PermissionAskResolved\x12\x15\n" +
+	"\x06ask_id\x18\x01 \x01(\tR\x05askId\x12'\n" +
+	"\x0fconversation_id\x18\x02 \x01(\tR\x0econversationId\x12\x18\n" +
+	"\aoutcome\x18\x03 \x01(\tR\aoutcome\x12\x16\n" +
+	"\x06answer\x18\x04 \x01(\tR\x06answer\"?\n" +
 	"\vTurnStarted\x120\n" +
 	"\x14assistant_message_id\x18\x01 \x01(\tR\x12assistantMessageId\"G\n" +
 	"\x1cAbortConversationTurnRequest\x12'\n" +
@@ -2644,7 +2917,7 @@ const file_orchicon_api_v1_ask_orchicon_service_proto_rawDesc = "" +
 	"\x1bGetModelCapabilitiesRequest\x12\x1b\n" +
 	"\tmodel_ref\x18\x01 \x01(\tR\bmodelRef\"f\n" +
 	"\x1cGetModelCapabilitiesResponse\x12F\n" +
-	"\fcapabilities\x18\x01 \x01(\v2\".orchicon.api.v1.ModelCapabilitiesR\fcapabilities\"\xc3\x02\n" +
+	"\fcapabilities\x18\x01 \x01(\v2\".orchicon.api.v1.ModelCapabilitiesR\fcapabilities\"\x9a\x03\n" +
 	"\rPermissionAsk\x12\x15\n" +
 	"\x06ask_id\x18\x01 \x01(\tR\x05askId\x12'\n" +
 	"\x0fconversation_id\x18\x02 \x01(\tR\x0econversationId\x12\x1d\n" +
@@ -2657,7 +2930,11 @@ const file_orchicon_api_v1_ask_orchicon_service_proto_rawDesc = "" +
 	"\x0einside_project\x18\b \x01(\bR\rinsideProject\x12\x18\n" +
 	"\asummary\x18\t \x01(\tR\asummary\x12,\n" +
 	"\x12deny_entries_below\x18\n" +
-	" \x03(\tR\x10denyEntriesBelow\"^\n" +
+	" \x03(\tR\x10denyEntriesBelow\x12\x1a\n" +
+	"\bquestion\x18\v \x01(\tR\bquestion\x12\x18\n" +
+	"\aoptions\x18\f \x03(\tR\aoptions\x12\x1f\n" +
+	"\vallow_other\x18\r \x01(\bR\n" +
+	"allowOther\"^\n" +
 	"\x16SessionPermissionGrant\x12\x1c\n" +
 	"\tdirectory\x18\x01 \x01(\tR\tdirectory\x12&\n" +
 	"\x0fgranted_at_unix\x18\x02 \x01(\x03R\rgrantedAtUnix\"F\n" +
@@ -2670,11 +2947,12 @@ const file_orchicon_api_v1_ask_orchicon_service_proto_rawDesc = "" +
 	"\tdirectory\x18\x02 \x01(\tR\tdirectory\"z\n" +
 	"\x1dRevokePermissionGrantResponse\x12\x18\n" +
 	"\aremoved\x18\x01 \x01(\bR\aremoved\x12?\n" +
-	"\x06grants\x18\x02 \x03(\v2'.orchicon.api.v1.SessionPermissionGrantR\x06grants\"\x96\x01\n" +
+	"\x06grants\x18\x02 \x03(\v2'.orchicon.api.v1.SessionPermissionGrantR\x06grants\"\xae\x01\n" +
 	"\x19ReplyPermissionAskRequest\x12'\n" +
 	"\x0fconversation_id\x18\x01 \x01(\tR\x0econversationId\x12\x15\n" +
 	"\x06ask_id\x18\x02 \x01(\tR\x05askId\x129\n" +
-	"\x06choice\x18\x03 \x01(\x0e2!.orchicon.api.v1.PermissionChoiceR\x06choice\"h\n" +
+	"\x06choice\x18\x03 \x01(\x0e2!.orchicon.api.v1.PermissionChoiceR\x06choice\x12\x16\n" +
+	"\x06answer\x18\x04 \x01(\tR\x06answer\"h\n" +
 	"\x1aReplyPermissionAskResponse\x12\x18\n" +
 	"\aapplied\x18\x01 \x01(\bR\aapplied\x12\x18\n" +
 	"\aexpired\x18\x02 \x01(\bR\aexpired\x12\x16\n" +
@@ -2683,7 +2961,7 @@ const file_orchicon_api_v1_ask_orchicon_service_proto_rawDesc = "" +
 	"\x1dPERMISSION_CHOICE_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cPERMISSION_CHOICE_ALLOW_ONCE\x10\x01\x12#\n" +
 	"\x1fPERMISSION_CHOICE_ALLOW_SESSION\x10\x02\x12\x1a\n" +
-	"\x16PERMISSION_CHOICE_DENY\x10\x032\xa7\x12\n" +
+	"\x16PERMISSION_CHOICE_DENY\x10\x032\xa5\x13\n" +
 	"\x12AskOrchiconService\x12j\n" +
 	"\x11ListConversations\x12).orchicon.api.v1.ListConversationsRequest\x1a*.orchicon.api.v1.ListConversationsResponse\x12d\n" +
 	"\x0fGetConversation\x12'.orchicon.api.v1.GetConversationRequest\x1a(.orchicon.api.v1.GetConversationResponse\x12m\n" +
@@ -2691,7 +2969,8 @@ const file_orchicon_api_v1_ask_orchicon_service_proto_rawDesc = "" +
 	"\x12DeleteConversation\x12*.orchicon.api.v1.DeleteConversationRequest\x1a+.orchicon.api.v1.DeleteConversationResponse\x12|\n" +
 	"\x17UpdateConversationTitle\x12/.orchicon.api.v1.UpdateConversationTitleRequest\x1a0.orchicon.api.v1.UpdateConversationTitleResponse\x12p\n" +
 	"\x13SetConversationMode\x12+.orchicon.api.v1.SetConversationModeRequest\x1a,.orchicon.api.v1.SetConversationModeResponse\x12s\n" +
-	"\x14SetConversationModel\x12,.orchicon.api.v1.SetConversationModelRequest\x1a-.orchicon.api.v1.SetConversationModelResponse\x12y\n" +
+	"\x14SetConversationModel\x12,.orchicon.api.v1.SetConversationModelRequest\x1a-.orchicon.api.v1.SetConversationModelResponse\x12|\n" +
+	"\x17SetConversationFullsend\x12/.orchicon.api.v1.SetConversationFullsendRequest\x1a0.orchicon.api.v1.SetConversationFullsendResponse\x12y\n" +
 	"\x16SetConversationProject\x12..orchicon.api.v1.SetConversationProjectRequest\x1a/.orchicon.api.v1.SetConversationProjectResponse\x12[\n" +
 	"\fListMessages\x12$.orchicon.api.v1.ListMessagesRequest\x1a%.orchicon.api.v1.ListMessagesResponse\x12W\n" +
 	"\n" +
@@ -2722,7 +3001,7 @@ func file_orchicon_api_v1_ask_orchicon_service_proto_rawDescGZIP() []byte {
 }
 
 var file_orchicon_api_v1_ask_orchicon_service_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes = make([]protoimpl.MessageInfo, 43)
+var file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes = make([]protoimpl.MessageInfo, 46)
 var file_orchicon_api_v1_ask_orchicon_service_proto_goTypes = []any{
 	(PermissionChoice)(0),                    // 0: orchicon.api.v1.PermissionChoice
 	(*ListConversationsRequest)(nil),         // 1: orchicon.api.v1.ListConversationsRequest
@@ -2735,133 +3014,140 @@ var file_orchicon_api_v1_ask_orchicon_service_proto_goTypes = []any{
 	(*SetConversationModeResponse)(nil),      // 8: orchicon.api.v1.SetConversationModeResponse
 	(*SetConversationModelRequest)(nil),      // 9: orchicon.api.v1.SetConversationModelRequest
 	(*SetConversationModelResponse)(nil),     // 10: orchicon.api.v1.SetConversationModelResponse
-	(*SetConversationProjectRequest)(nil),    // 11: orchicon.api.v1.SetConversationProjectRequest
-	(*SetConversationProjectResponse)(nil),   // 12: orchicon.api.v1.SetConversationProjectResponse
-	(*DeleteConversationRequest)(nil),        // 13: orchicon.api.v1.DeleteConversationRequest
-	(*DeleteConversationResponse)(nil),       // 14: orchicon.api.v1.DeleteConversationResponse
-	(*UpdateConversationTitleRequest)(nil),   // 15: orchicon.api.v1.UpdateConversationTitleRequest
-	(*UpdateConversationTitleResponse)(nil),  // 16: orchicon.api.v1.UpdateConversationTitleResponse
-	(*ListMessagesRequest)(nil),              // 17: orchicon.api.v1.ListMessagesRequest
-	(*ListMessagesResponse)(nil),             // 18: orchicon.api.v1.ListMessagesResponse
-	(*ChatStreamRequest)(nil),                // 19: orchicon.api.v1.ChatStreamRequest
-	(*ChatStreamResponse)(nil),               // 20: orchicon.api.v1.ChatStreamResponse
-	(*TurnStarted)(nil),                      // 21: orchicon.api.v1.TurnStarted
-	(*AbortConversationTurnRequest)(nil),     // 22: orchicon.api.v1.AbortConversationTurnRequest
-	(*AbortConversationTurnResponse)(nil),    // 23: orchicon.api.v1.AbortConversationTurnResponse
-	(*WatchTurnStreamRequest)(nil),           // 24: orchicon.api.v1.WatchTurnStreamRequest
-	(*InterjectConversationTurnRequest)(nil), // 25: orchicon.api.v1.InterjectConversationTurnRequest
-	(*CompactConversationRequest)(nil),       // 26: orchicon.api.v1.CompactConversationRequest
-	(*CompactConversationResponse)(nil),      // 27: orchicon.api.v1.CompactConversationResponse
-	(*UploadAttachmentRequest)(nil),          // 28: orchicon.api.v1.UploadAttachmentRequest
-	(*UploadAttachmentResponse)(nil),         // 29: orchicon.api.v1.UploadAttachmentResponse
-	(*GetAgentConfigRequest)(nil),            // 30: orchicon.api.v1.GetAgentConfigRequest
-	(*GetAgentConfigResponse)(nil),           // 31: orchicon.api.v1.GetAgentConfigResponse
-	(*UpdateAgentConfigRequest)(nil),         // 32: orchicon.api.v1.UpdateAgentConfigRequest
-	(*UpdateAgentConfigResponse)(nil),        // 33: orchicon.api.v1.UpdateAgentConfigResponse
-	(*GetModelCapabilitiesRequest)(nil),      // 34: orchicon.api.v1.GetModelCapabilitiesRequest
-	(*GetModelCapabilitiesResponse)(nil),     // 35: orchicon.api.v1.GetModelCapabilitiesResponse
-	(*PermissionAsk)(nil),                    // 36: orchicon.api.v1.PermissionAsk
-	(*SessionPermissionGrant)(nil),           // 37: orchicon.api.v1.SessionPermissionGrant
-	(*ListPermissionGrantsRequest)(nil),      // 38: orchicon.api.v1.ListPermissionGrantsRequest
-	(*ListPermissionGrantsResponse)(nil),     // 39: orchicon.api.v1.ListPermissionGrantsResponse
-	(*RevokePermissionGrantRequest)(nil),     // 40: orchicon.api.v1.RevokePermissionGrantRequest
-	(*RevokePermissionGrantResponse)(nil),    // 41: orchicon.api.v1.RevokePermissionGrantResponse
-	(*ReplyPermissionAskRequest)(nil),        // 42: orchicon.api.v1.ReplyPermissionAskRequest
-	(*ReplyPermissionAskResponse)(nil),       // 43: orchicon.api.v1.ReplyPermissionAskResponse
-	(*Conversation)(nil),                     // 44: orchicon.api.v1.Conversation
-	(*Category)(nil),                         // 45: orchicon.api.v1.Category
-	(*CategoryAssignment)(nil),               // 46: orchicon.api.v1.CategoryAssignment
-	(ConversationMode)(0),                    // 47: orchicon.api.v1.ConversationMode
-	(*ChatMessage)(nil),                      // 48: orchicon.api.v1.ChatMessage
-	(*AttachmentInput)(nil),                  // 49: orchicon.api.v1.AttachmentInput
-	(*TextChunk)(nil),                        // 50: orchicon.api.v1.TextChunk
-	(*ToolCallChunk)(nil),                    // 51: orchicon.api.v1.ToolCallChunk
-	(*ToolCallResult)(nil),                   // 52: orchicon.api.v1.ToolCallResult
-	(*ErrorChunk)(nil),                       // 53: orchicon.api.v1.ErrorChunk
-	(*DoneSignal)(nil),                       // 54: orchicon.api.v1.DoneSignal
-	(*ReasoningChunk)(nil),                   // 55: orchicon.api.v1.ReasoningChunk
-	(*Heartbeat)(nil),                        // 56: orchicon.api.v1.Heartbeat
-	(*AgentConfig)(nil),                      // 57: orchicon.api.v1.AgentConfig
-	(*ModelCapabilities)(nil),                // 58: orchicon.api.v1.ModelCapabilities
+	(*SetConversationFullsendRequest)(nil),   // 11: orchicon.api.v1.SetConversationFullsendRequest
+	(*SetConversationFullsendResponse)(nil),  // 12: orchicon.api.v1.SetConversationFullsendResponse
+	(*SetConversationProjectRequest)(nil),    // 13: orchicon.api.v1.SetConversationProjectRequest
+	(*SetConversationProjectResponse)(nil),   // 14: orchicon.api.v1.SetConversationProjectResponse
+	(*DeleteConversationRequest)(nil),        // 15: orchicon.api.v1.DeleteConversationRequest
+	(*DeleteConversationResponse)(nil),       // 16: orchicon.api.v1.DeleteConversationResponse
+	(*UpdateConversationTitleRequest)(nil),   // 17: orchicon.api.v1.UpdateConversationTitleRequest
+	(*UpdateConversationTitleResponse)(nil),  // 18: orchicon.api.v1.UpdateConversationTitleResponse
+	(*ListMessagesRequest)(nil),              // 19: orchicon.api.v1.ListMessagesRequest
+	(*ListMessagesResponse)(nil),             // 20: orchicon.api.v1.ListMessagesResponse
+	(*ChatStreamRequest)(nil),                // 21: orchicon.api.v1.ChatStreamRequest
+	(*ChatStreamResponse)(nil),               // 22: orchicon.api.v1.ChatStreamResponse
+	(*PermissionAskResolved)(nil),            // 23: orchicon.api.v1.PermissionAskResolved
+	(*TurnStarted)(nil),                      // 24: orchicon.api.v1.TurnStarted
+	(*AbortConversationTurnRequest)(nil),     // 25: orchicon.api.v1.AbortConversationTurnRequest
+	(*AbortConversationTurnResponse)(nil),    // 26: orchicon.api.v1.AbortConversationTurnResponse
+	(*WatchTurnStreamRequest)(nil),           // 27: orchicon.api.v1.WatchTurnStreamRequest
+	(*InterjectConversationTurnRequest)(nil), // 28: orchicon.api.v1.InterjectConversationTurnRequest
+	(*CompactConversationRequest)(nil),       // 29: orchicon.api.v1.CompactConversationRequest
+	(*CompactConversationResponse)(nil),      // 30: orchicon.api.v1.CompactConversationResponse
+	(*UploadAttachmentRequest)(nil),          // 31: orchicon.api.v1.UploadAttachmentRequest
+	(*UploadAttachmentResponse)(nil),         // 32: orchicon.api.v1.UploadAttachmentResponse
+	(*GetAgentConfigRequest)(nil),            // 33: orchicon.api.v1.GetAgentConfigRequest
+	(*GetAgentConfigResponse)(nil),           // 34: orchicon.api.v1.GetAgentConfigResponse
+	(*UpdateAgentConfigRequest)(nil),         // 35: orchicon.api.v1.UpdateAgentConfigRequest
+	(*UpdateAgentConfigResponse)(nil),        // 36: orchicon.api.v1.UpdateAgentConfigResponse
+	(*GetModelCapabilitiesRequest)(nil),      // 37: orchicon.api.v1.GetModelCapabilitiesRequest
+	(*GetModelCapabilitiesResponse)(nil),     // 38: orchicon.api.v1.GetModelCapabilitiesResponse
+	(*PermissionAsk)(nil),                    // 39: orchicon.api.v1.PermissionAsk
+	(*SessionPermissionGrant)(nil),           // 40: orchicon.api.v1.SessionPermissionGrant
+	(*ListPermissionGrantsRequest)(nil),      // 41: orchicon.api.v1.ListPermissionGrantsRequest
+	(*ListPermissionGrantsResponse)(nil),     // 42: orchicon.api.v1.ListPermissionGrantsResponse
+	(*RevokePermissionGrantRequest)(nil),     // 43: orchicon.api.v1.RevokePermissionGrantRequest
+	(*RevokePermissionGrantResponse)(nil),    // 44: orchicon.api.v1.RevokePermissionGrantResponse
+	(*ReplyPermissionAskRequest)(nil),        // 45: orchicon.api.v1.ReplyPermissionAskRequest
+	(*ReplyPermissionAskResponse)(nil),       // 46: orchicon.api.v1.ReplyPermissionAskResponse
+	(*Conversation)(nil),                     // 47: orchicon.api.v1.Conversation
+	(*Category)(nil),                         // 48: orchicon.api.v1.Category
+	(*CategoryAssignment)(nil),               // 49: orchicon.api.v1.CategoryAssignment
+	(ConversationMode)(0),                    // 50: orchicon.api.v1.ConversationMode
+	(*ChatMessage)(nil),                      // 51: orchicon.api.v1.ChatMessage
+	(*AttachmentInput)(nil),                  // 52: orchicon.api.v1.AttachmentInput
+	(*TextChunk)(nil),                        // 53: orchicon.api.v1.TextChunk
+	(*ToolCallChunk)(nil),                    // 54: orchicon.api.v1.ToolCallChunk
+	(*ToolCallResult)(nil),                   // 55: orchicon.api.v1.ToolCallResult
+	(*ErrorChunk)(nil),                       // 56: orchicon.api.v1.ErrorChunk
+	(*DoneSignal)(nil),                       // 57: orchicon.api.v1.DoneSignal
+	(*ReasoningChunk)(nil),                   // 58: orchicon.api.v1.ReasoningChunk
+	(*Heartbeat)(nil),                        // 59: orchicon.api.v1.Heartbeat
+	(*AgentConfig)(nil),                      // 60: orchicon.api.v1.AgentConfig
+	(*ModelCapabilities)(nil),                // 61: orchicon.api.v1.ModelCapabilities
 }
 var file_orchicon_api_v1_ask_orchicon_service_proto_depIdxs = []int32{
-	44, // 0: orchicon.api.v1.ListConversationsResponse.conversations:type_name -> orchicon.api.v1.Conversation
-	45, // 1: orchicon.api.v1.ListConversationsResponse.categories:type_name -> orchicon.api.v1.Category
-	46, // 2: orchicon.api.v1.ListConversationsResponse.assignments:type_name -> orchicon.api.v1.CategoryAssignment
-	44, // 3: orchicon.api.v1.GetConversationResponse.conversation:type_name -> orchicon.api.v1.Conversation
-	47, // 4: orchicon.api.v1.CreateConversationRequest.mode:type_name -> orchicon.api.v1.ConversationMode
-	44, // 5: orchicon.api.v1.CreateConversationResponse.conversation:type_name -> orchicon.api.v1.Conversation
-	47, // 6: orchicon.api.v1.SetConversationModeRequest.mode:type_name -> orchicon.api.v1.ConversationMode
-	44, // 7: orchicon.api.v1.SetConversationModeResponse.conversation:type_name -> orchicon.api.v1.Conversation
-	44, // 8: orchicon.api.v1.SetConversationModelResponse.conversation:type_name -> orchicon.api.v1.Conversation
-	44, // 9: orchicon.api.v1.SetConversationProjectResponse.conversation:type_name -> orchicon.api.v1.Conversation
-	44, // 10: orchicon.api.v1.UpdateConversationTitleResponse.conversation:type_name -> orchicon.api.v1.Conversation
-	48, // 11: orchicon.api.v1.ListMessagesResponse.messages:type_name -> orchicon.api.v1.ChatMessage
-	49, // 12: orchicon.api.v1.ChatStreamRequest.attachments:type_name -> orchicon.api.v1.AttachmentInput
-	50, // 13: orchicon.api.v1.ChatStreamResponse.text_chunk:type_name -> orchicon.api.v1.TextChunk
-	51, // 14: orchicon.api.v1.ChatStreamResponse.tool_call_start:type_name -> orchicon.api.v1.ToolCallChunk
-	52, // 15: orchicon.api.v1.ChatStreamResponse.tool_call_result:type_name -> orchicon.api.v1.ToolCallResult
-	53, // 16: orchicon.api.v1.ChatStreamResponse.error:type_name -> orchicon.api.v1.ErrorChunk
-	54, // 17: orchicon.api.v1.ChatStreamResponse.done:type_name -> orchicon.api.v1.DoneSignal
-	21, // 18: orchicon.api.v1.ChatStreamResponse.turn_started:type_name -> orchicon.api.v1.TurnStarted
-	55, // 19: orchicon.api.v1.ChatStreamResponse.reasoning:type_name -> orchicon.api.v1.ReasoningChunk
-	56, // 20: orchicon.api.v1.ChatStreamResponse.heartbeat:type_name -> orchicon.api.v1.Heartbeat
-	36, // 21: orchicon.api.v1.ChatStreamResponse.permission_ask:type_name -> orchicon.api.v1.PermissionAsk
-	49, // 22: orchicon.api.v1.InterjectConversationTurnRequest.attachments:type_name -> orchicon.api.v1.AttachmentInput
-	57, // 23: orchicon.api.v1.GetAgentConfigResponse.config:type_name -> orchicon.api.v1.AgentConfig
-	57, // 24: orchicon.api.v1.UpdateAgentConfigRequest.config:type_name -> orchicon.api.v1.AgentConfig
-	57, // 25: orchicon.api.v1.UpdateAgentConfigResponse.config:type_name -> orchicon.api.v1.AgentConfig
-	58, // 26: orchicon.api.v1.GetModelCapabilitiesResponse.capabilities:type_name -> orchicon.api.v1.ModelCapabilities
-	37, // 27: orchicon.api.v1.ListPermissionGrantsResponse.grants:type_name -> orchicon.api.v1.SessionPermissionGrant
-	37, // 28: orchicon.api.v1.RevokePermissionGrantResponse.grants:type_name -> orchicon.api.v1.SessionPermissionGrant
-	0,  // 29: orchicon.api.v1.ReplyPermissionAskRequest.choice:type_name -> orchicon.api.v1.PermissionChoice
-	1,  // 30: orchicon.api.v1.AskOrchiconService.ListConversations:input_type -> orchicon.api.v1.ListConversationsRequest
-	3,  // 31: orchicon.api.v1.AskOrchiconService.GetConversation:input_type -> orchicon.api.v1.GetConversationRequest
-	5,  // 32: orchicon.api.v1.AskOrchiconService.CreateConversation:input_type -> orchicon.api.v1.CreateConversationRequest
-	13, // 33: orchicon.api.v1.AskOrchiconService.DeleteConversation:input_type -> orchicon.api.v1.DeleteConversationRequest
-	15, // 34: orchicon.api.v1.AskOrchiconService.UpdateConversationTitle:input_type -> orchicon.api.v1.UpdateConversationTitleRequest
-	7,  // 35: orchicon.api.v1.AskOrchiconService.SetConversationMode:input_type -> orchicon.api.v1.SetConversationModeRequest
-	9,  // 36: orchicon.api.v1.AskOrchiconService.SetConversationModel:input_type -> orchicon.api.v1.SetConversationModelRequest
-	11, // 37: orchicon.api.v1.AskOrchiconService.SetConversationProject:input_type -> orchicon.api.v1.SetConversationProjectRequest
-	17, // 38: orchicon.api.v1.AskOrchiconService.ListMessages:input_type -> orchicon.api.v1.ListMessagesRequest
-	19, // 39: orchicon.api.v1.AskOrchiconService.ChatStream:input_type -> orchicon.api.v1.ChatStreamRequest
-	22, // 40: orchicon.api.v1.AskOrchiconService.AbortConversationTurn:input_type -> orchicon.api.v1.AbortConversationTurnRequest
-	25, // 41: orchicon.api.v1.AskOrchiconService.InterjectConversationTurn:input_type -> orchicon.api.v1.InterjectConversationTurnRequest
-	24, // 42: orchicon.api.v1.AskOrchiconService.WatchTurnStream:input_type -> orchicon.api.v1.WatchTurnStreamRequest
-	42, // 43: orchicon.api.v1.AskOrchiconService.ReplyPermissionAsk:input_type -> orchicon.api.v1.ReplyPermissionAskRequest
-	38, // 44: orchicon.api.v1.AskOrchiconService.ListPermissionGrants:input_type -> orchicon.api.v1.ListPermissionGrantsRequest
-	40, // 45: orchicon.api.v1.AskOrchiconService.RevokePermissionGrant:input_type -> orchicon.api.v1.RevokePermissionGrantRequest
-	26, // 46: orchicon.api.v1.AskOrchiconService.CompactConversation:input_type -> orchicon.api.v1.CompactConversationRequest
-	28, // 47: orchicon.api.v1.AskOrchiconService.UploadAttachment:input_type -> orchicon.api.v1.UploadAttachmentRequest
-	30, // 48: orchicon.api.v1.AskOrchiconService.GetAgentConfig:input_type -> orchicon.api.v1.GetAgentConfigRequest
-	32, // 49: orchicon.api.v1.AskOrchiconService.UpdateAgentConfig:input_type -> orchicon.api.v1.UpdateAgentConfigRequest
-	34, // 50: orchicon.api.v1.AskOrchiconService.GetModelCapabilities:input_type -> orchicon.api.v1.GetModelCapabilitiesRequest
-	2,  // 51: orchicon.api.v1.AskOrchiconService.ListConversations:output_type -> orchicon.api.v1.ListConversationsResponse
-	4,  // 52: orchicon.api.v1.AskOrchiconService.GetConversation:output_type -> orchicon.api.v1.GetConversationResponse
-	6,  // 53: orchicon.api.v1.AskOrchiconService.CreateConversation:output_type -> orchicon.api.v1.CreateConversationResponse
-	14, // 54: orchicon.api.v1.AskOrchiconService.DeleteConversation:output_type -> orchicon.api.v1.DeleteConversationResponse
-	16, // 55: orchicon.api.v1.AskOrchiconService.UpdateConversationTitle:output_type -> orchicon.api.v1.UpdateConversationTitleResponse
-	8,  // 56: orchicon.api.v1.AskOrchiconService.SetConversationMode:output_type -> orchicon.api.v1.SetConversationModeResponse
-	10, // 57: orchicon.api.v1.AskOrchiconService.SetConversationModel:output_type -> orchicon.api.v1.SetConversationModelResponse
-	12, // 58: orchicon.api.v1.AskOrchiconService.SetConversationProject:output_type -> orchicon.api.v1.SetConversationProjectResponse
-	18, // 59: orchicon.api.v1.AskOrchiconService.ListMessages:output_type -> orchicon.api.v1.ListMessagesResponse
-	20, // 60: orchicon.api.v1.AskOrchiconService.ChatStream:output_type -> orchicon.api.v1.ChatStreamResponse
-	23, // 61: orchicon.api.v1.AskOrchiconService.AbortConversationTurn:output_type -> orchicon.api.v1.AbortConversationTurnResponse
-	20, // 62: orchicon.api.v1.AskOrchiconService.InterjectConversationTurn:output_type -> orchicon.api.v1.ChatStreamResponse
-	20, // 63: orchicon.api.v1.AskOrchiconService.WatchTurnStream:output_type -> orchicon.api.v1.ChatStreamResponse
-	43, // 64: orchicon.api.v1.AskOrchiconService.ReplyPermissionAsk:output_type -> orchicon.api.v1.ReplyPermissionAskResponse
-	39, // 65: orchicon.api.v1.AskOrchiconService.ListPermissionGrants:output_type -> orchicon.api.v1.ListPermissionGrantsResponse
-	41, // 66: orchicon.api.v1.AskOrchiconService.RevokePermissionGrant:output_type -> orchicon.api.v1.RevokePermissionGrantResponse
-	27, // 67: orchicon.api.v1.AskOrchiconService.CompactConversation:output_type -> orchicon.api.v1.CompactConversationResponse
-	29, // 68: orchicon.api.v1.AskOrchiconService.UploadAttachment:output_type -> orchicon.api.v1.UploadAttachmentResponse
-	31, // 69: orchicon.api.v1.AskOrchiconService.GetAgentConfig:output_type -> orchicon.api.v1.GetAgentConfigResponse
-	33, // 70: orchicon.api.v1.AskOrchiconService.UpdateAgentConfig:output_type -> orchicon.api.v1.UpdateAgentConfigResponse
-	35, // 71: orchicon.api.v1.AskOrchiconService.GetModelCapabilities:output_type -> orchicon.api.v1.GetModelCapabilitiesResponse
-	51, // [51:72] is the sub-list for method output_type
-	30, // [30:51] is the sub-list for method input_type
-	30, // [30:30] is the sub-list for extension type_name
-	30, // [30:30] is the sub-list for extension extendee
-	0,  // [0:30] is the sub-list for field type_name
+	47, // 0: orchicon.api.v1.ListConversationsResponse.conversations:type_name -> orchicon.api.v1.Conversation
+	48, // 1: orchicon.api.v1.ListConversationsResponse.categories:type_name -> orchicon.api.v1.Category
+	49, // 2: orchicon.api.v1.ListConversationsResponse.assignments:type_name -> orchicon.api.v1.CategoryAssignment
+	47, // 3: orchicon.api.v1.GetConversationResponse.conversation:type_name -> orchicon.api.v1.Conversation
+	50, // 4: orchicon.api.v1.CreateConversationRequest.mode:type_name -> orchicon.api.v1.ConversationMode
+	47, // 5: orchicon.api.v1.CreateConversationResponse.conversation:type_name -> orchicon.api.v1.Conversation
+	50, // 6: orchicon.api.v1.SetConversationModeRequest.mode:type_name -> orchicon.api.v1.ConversationMode
+	47, // 7: orchicon.api.v1.SetConversationModeResponse.conversation:type_name -> orchicon.api.v1.Conversation
+	47, // 8: orchicon.api.v1.SetConversationModelResponse.conversation:type_name -> orchicon.api.v1.Conversation
+	47, // 9: orchicon.api.v1.SetConversationFullsendResponse.conversation:type_name -> orchicon.api.v1.Conversation
+	47, // 10: orchicon.api.v1.SetConversationProjectResponse.conversation:type_name -> orchicon.api.v1.Conversation
+	47, // 11: orchicon.api.v1.UpdateConversationTitleResponse.conversation:type_name -> orchicon.api.v1.Conversation
+	51, // 12: orchicon.api.v1.ListMessagesResponse.messages:type_name -> orchicon.api.v1.ChatMessage
+	52, // 13: orchicon.api.v1.ChatStreamRequest.attachments:type_name -> orchicon.api.v1.AttachmentInput
+	53, // 14: orchicon.api.v1.ChatStreamResponse.text_chunk:type_name -> orchicon.api.v1.TextChunk
+	54, // 15: orchicon.api.v1.ChatStreamResponse.tool_call_start:type_name -> orchicon.api.v1.ToolCallChunk
+	55, // 16: orchicon.api.v1.ChatStreamResponse.tool_call_result:type_name -> orchicon.api.v1.ToolCallResult
+	56, // 17: orchicon.api.v1.ChatStreamResponse.error:type_name -> orchicon.api.v1.ErrorChunk
+	57, // 18: orchicon.api.v1.ChatStreamResponse.done:type_name -> orchicon.api.v1.DoneSignal
+	24, // 19: orchicon.api.v1.ChatStreamResponse.turn_started:type_name -> orchicon.api.v1.TurnStarted
+	58, // 20: orchicon.api.v1.ChatStreamResponse.reasoning:type_name -> orchicon.api.v1.ReasoningChunk
+	59, // 21: orchicon.api.v1.ChatStreamResponse.heartbeat:type_name -> orchicon.api.v1.Heartbeat
+	39, // 22: orchicon.api.v1.ChatStreamResponse.permission_ask:type_name -> orchicon.api.v1.PermissionAsk
+	23, // 23: orchicon.api.v1.ChatStreamResponse.permission_ask_resolved:type_name -> orchicon.api.v1.PermissionAskResolved
+	52, // 24: orchicon.api.v1.InterjectConversationTurnRequest.attachments:type_name -> orchicon.api.v1.AttachmentInput
+	60, // 25: orchicon.api.v1.GetAgentConfigResponse.config:type_name -> orchicon.api.v1.AgentConfig
+	60, // 26: orchicon.api.v1.UpdateAgentConfigRequest.config:type_name -> orchicon.api.v1.AgentConfig
+	60, // 27: orchicon.api.v1.UpdateAgentConfigResponse.config:type_name -> orchicon.api.v1.AgentConfig
+	61, // 28: orchicon.api.v1.GetModelCapabilitiesResponse.capabilities:type_name -> orchicon.api.v1.ModelCapabilities
+	40, // 29: orchicon.api.v1.ListPermissionGrantsResponse.grants:type_name -> orchicon.api.v1.SessionPermissionGrant
+	40, // 30: orchicon.api.v1.RevokePermissionGrantResponse.grants:type_name -> orchicon.api.v1.SessionPermissionGrant
+	0,  // 31: orchicon.api.v1.ReplyPermissionAskRequest.choice:type_name -> orchicon.api.v1.PermissionChoice
+	1,  // 32: orchicon.api.v1.AskOrchiconService.ListConversations:input_type -> orchicon.api.v1.ListConversationsRequest
+	3,  // 33: orchicon.api.v1.AskOrchiconService.GetConversation:input_type -> orchicon.api.v1.GetConversationRequest
+	5,  // 34: orchicon.api.v1.AskOrchiconService.CreateConversation:input_type -> orchicon.api.v1.CreateConversationRequest
+	15, // 35: orchicon.api.v1.AskOrchiconService.DeleteConversation:input_type -> orchicon.api.v1.DeleteConversationRequest
+	17, // 36: orchicon.api.v1.AskOrchiconService.UpdateConversationTitle:input_type -> orchicon.api.v1.UpdateConversationTitleRequest
+	7,  // 37: orchicon.api.v1.AskOrchiconService.SetConversationMode:input_type -> orchicon.api.v1.SetConversationModeRequest
+	9,  // 38: orchicon.api.v1.AskOrchiconService.SetConversationModel:input_type -> orchicon.api.v1.SetConversationModelRequest
+	11, // 39: orchicon.api.v1.AskOrchiconService.SetConversationFullsend:input_type -> orchicon.api.v1.SetConversationFullsendRequest
+	13, // 40: orchicon.api.v1.AskOrchiconService.SetConversationProject:input_type -> orchicon.api.v1.SetConversationProjectRequest
+	19, // 41: orchicon.api.v1.AskOrchiconService.ListMessages:input_type -> orchicon.api.v1.ListMessagesRequest
+	21, // 42: orchicon.api.v1.AskOrchiconService.ChatStream:input_type -> orchicon.api.v1.ChatStreamRequest
+	25, // 43: orchicon.api.v1.AskOrchiconService.AbortConversationTurn:input_type -> orchicon.api.v1.AbortConversationTurnRequest
+	28, // 44: orchicon.api.v1.AskOrchiconService.InterjectConversationTurn:input_type -> orchicon.api.v1.InterjectConversationTurnRequest
+	27, // 45: orchicon.api.v1.AskOrchiconService.WatchTurnStream:input_type -> orchicon.api.v1.WatchTurnStreamRequest
+	45, // 46: orchicon.api.v1.AskOrchiconService.ReplyPermissionAsk:input_type -> orchicon.api.v1.ReplyPermissionAskRequest
+	41, // 47: orchicon.api.v1.AskOrchiconService.ListPermissionGrants:input_type -> orchicon.api.v1.ListPermissionGrantsRequest
+	43, // 48: orchicon.api.v1.AskOrchiconService.RevokePermissionGrant:input_type -> orchicon.api.v1.RevokePermissionGrantRequest
+	29, // 49: orchicon.api.v1.AskOrchiconService.CompactConversation:input_type -> orchicon.api.v1.CompactConversationRequest
+	31, // 50: orchicon.api.v1.AskOrchiconService.UploadAttachment:input_type -> orchicon.api.v1.UploadAttachmentRequest
+	33, // 51: orchicon.api.v1.AskOrchiconService.GetAgentConfig:input_type -> orchicon.api.v1.GetAgentConfigRequest
+	35, // 52: orchicon.api.v1.AskOrchiconService.UpdateAgentConfig:input_type -> orchicon.api.v1.UpdateAgentConfigRequest
+	37, // 53: orchicon.api.v1.AskOrchiconService.GetModelCapabilities:input_type -> orchicon.api.v1.GetModelCapabilitiesRequest
+	2,  // 54: orchicon.api.v1.AskOrchiconService.ListConversations:output_type -> orchicon.api.v1.ListConversationsResponse
+	4,  // 55: orchicon.api.v1.AskOrchiconService.GetConversation:output_type -> orchicon.api.v1.GetConversationResponse
+	6,  // 56: orchicon.api.v1.AskOrchiconService.CreateConversation:output_type -> orchicon.api.v1.CreateConversationResponse
+	16, // 57: orchicon.api.v1.AskOrchiconService.DeleteConversation:output_type -> orchicon.api.v1.DeleteConversationResponse
+	18, // 58: orchicon.api.v1.AskOrchiconService.UpdateConversationTitle:output_type -> orchicon.api.v1.UpdateConversationTitleResponse
+	8,  // 59: orchicon.api.v1.AskOrchiconService.SetConversationMode:output_type -> orchicon.api.v1.SetConversationModeResponse
+	10, // 60: orchicon.api.v1.AskOrchiconService.SetConversationModel:output_type -> orchicon.api.v1.SetConversationModelResponse
+	12, // 61: orchicon.api.v1.AskOrchiconService.SetConversationFullsend:output_type -> orchicon.api.v1.SetConversationFullsendResponse
+	14, // 62: orchicon.api.v1.AskOrchiconService.SetConversationProject:output_type -> orchicon.api.v1.SetConversationProjectResponse
+	20, // 63: orchicon.api.v1.AskOrchiconService.ListMessages:output_type -> orchicon.api.v1.ListMessagesResponse
+	22, // 64: orchicon.api.v1.AskOrchiconService.ChatStream:output_type -> orchicon.api.v1.ChatStreamResponse
+	26, // 65: orchicon.api.v1.AskOrchiconService.AbortConversationTurn:output_type -> orchicon.api.v1.AbortConversationTurnResponse
+	22, // 66: orchicon.api.v1.AskOrchiconService.InterjectConversationTurn:output_type -> orchicon.api.v1.ChatStreamResponse
+	22, // 67: orchicon.api.v1.AskOrchiconService.WatchTurnStream:output_type -> orchicon.api.v1.ChatStreamResponse
+	46, // 68: orchicon.api.v1.AskOrchiconService.ReplyPermissionAsk:output_type -> orchicon.api.v1.ReplyPermissionAskResponse
+	42, // 69: orchicon.api.v1.AskOrchiconService.ListPermissionGrants:output_type -> orchicon.api.v1.ListPermissionGrantsResponse
+	44, // 70: orchicon.api.v1.AskOrchiconService.RevokePermissionGrant:output_type -> orchicon.api.v1.RevokePermissionGrantResponse
+	30, // 71: orchicon.api.v1.AskOrchiconService.CompactConversation:output_type -> orchicon.api.v1.CompactConversationResponse
+	32, // 72: orchicon.api.v1.AskOrchiconService.UploadAttachment:output_type -> orchicon.api.v1.UploadAttachmentResponse
+	34, // 73: orchicon.api.v1.AskOrchiconService.GetAgentConfig:output_type -> orchicon.api.v1.GetAgentConfigResponse
+	36, // 74: orchicon.api.v1.AskOrchiconService.UpdateAgentConfig:output_type -> orchicon.api.v1.UpdateAgentConfigResponse
+	38, // 75: orchicon.api.v1.AskOrchiconService.GetModelCapabilities:output_type -> orchicon.api.v1.GetModelCapabilitiesResponse
+	54, // [54:76] is the sub-list for method output_type
+	32, // [32:54] is the sub-list for method input_type
+	32, // [32:32] is the sub-list for extension type_name
+	32, // [32:32] is the sub-list for extension extendee
+	0,  // [0:32] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_ask_orchicon_service_proto_init() }
@@ -2872,7 +3158,7 @@ func file_orchicon_api_v1_ask_orchicon_service_proto_init() {
 	file_orchicon_api_v1_category_proto_init()
 	file_orchicon_api_v1_ask_orchicon_proto_init()
 	file_orchicon_api_v1_ai_gateway_proto_init()
-	file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[19].OneofWrappers = []any{
+	file_orchicon_api_v1_ask_orchicon_service_proto_msgTypes[21].OneofWrappers = []any{
 		(*ChatStreamResponse_TextChunk)(nil),
 		(*ChatStreamResponse_ToolCallStart)(nil),
 		(*ChatStreamResponse_ToolCallResult)(nil),
@@ -2882,6 +3168,7 @@ func file_orchicon_api_v1_ask_orchicon_service_proto_init() {
 		(*ChatStreamResponse_Reasoning)(nil),
 		(*ChatStreamResponse_Heartbeat)(nil),
 		(*ChatStreamResponse_PermissionAsk)(nil),
+		(*ChatStreamResponse_PermissionAskResolved)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -2889,7 +3176,7 @@ func file_orchicon_api_v1_ask_orchicon_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_ask_orchicon_service_proto_rawDesc), len(file_orchicon_api_v1_ask_orchicon_service_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   43,
+			NumMessages:   46,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

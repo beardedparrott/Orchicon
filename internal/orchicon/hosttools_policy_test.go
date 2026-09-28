@@ -81,7 +81,7 @@ func TestHostSuitePolicyDenyBlocksAWriteEvenAfterASessionGrant(t *testing.T) {
 	}
 
 	// And the deny outranks a session grant by evaluation order.
-	if d, err := store.Decide(target, permpolicy.Inputs{SessionGranted: true, ProjectDefault: true}); err != nil {
+	if d, err := store.Decide(target, permpolicy.Inputs{SessionGranted: true}); err != nil {
 		t.Fatal(err)
 	} else if d.Verdict != permpolicy.VerdictDeny {
 		t.Errorf("Decide with a session grant = %v, want deny (the deny list sits above the grant)", d.Verdict)

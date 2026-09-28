@@ -88,6 +88,32 @@ code{font-size:.86em; background:var(--paper-2); padding:.1em .35em; border-radi
 .nav nav{display:flex; gap:12px; margin-left:auto; flex-wrap:wrap; row-gap:2px; justify-content:flex-end}
 .nav nav a{text-decoration:none; color:var(--ink-2); font-size:15px; font-weight:500; white-space:nowrap; flex:none}
 .nav nav a:hover{color:var(--ink)}
+/* GROUPED NAV. Hover, keyboard focus and tap all open a group; the attribute is only for the
+   explicit (clicked) state, so the CSS works with no JS at all and the script exists to keep
+   aria-expanded honest rather than to make the menu function. */
+.navgroup{position:relative; flex:none}
+.navgroup>button{font:inherit; font-size:15px; font-weight:500; color:var(--ink-2); background:none; border:0; padding:6px 0; cursor:pointer; display:inline-flex; align-items:center; gap:6px}
+.navgroup>button:hover, .navgroup[data-open="true"]>button, .navgroup:focus-within>button{color:var(--ink)}
+.navgroup>button::after{content:""; width:.42em; height:.42em; margin-top:-.22em; border-right:1.5px solid currentColor; border-bottom:1.5px solid currentColor; transform:rotate(45deg); opacity:.6}
+.navgroup[data-open="true"]>button::after{transform:rotate(-135deg); margin-top:.22em}
+/* THE MENU MUST START AT THE BUTTON'S EDGE, not 10px below it. It used to sit at
+   top:calc(100% + 10px), which left a DEAD GAP between the trigger and the panel: moving the
+   pointer down towards the menu crossed that gap, where it is over neither the group nor any
+   descendant, so mouseleave fired and the menu vanished before a link could be clicked. The
+   operator's report exactly: "The dropdown doesn't stick. It goes away and doesn't allow me to
+   actually click on any submenu."
+   The offset is now the menu's own PADDING-TOP, so the box is contiguous with the button and
+   that strip is part of the hoverable area by construction. The visible panel is the inner
+   .navpanel, so the padding does not get painted. */
+.navmenu{position:absolute; top:100%; left:-12px; display:none; padding-top:10px; z-index:30}
+.navpanel{display:flex; flex-direction:column; gap:2px; min-width:206px; padding:8px; border-radius:14px; background:var(--paper); border:1px solid var(--rule); box-shadow:0 14px 40px rgba(0,0,0,.12)}
+.navgroup[data-open="true"] .navmenu{display:block}
+.navmenu a{padding:8px 10px; border-radius:9px}
+.navmenu a:hover{background:var(--paper-2)}
+.nav .navmenu a[aria-current="true"]{box-shadow:none; background:var(--paper-2)}
+/* A group shows as active when the section the reader is IN is one of its children, so the
+   scroll-spy still says where you are even though the highlighted link is inside the menu. */
+.navgroup[data-current="true"]>button{color:var(--ink); box-shadow:inset 0 -2px 0 var(--cobalt)}
 .btn{display:inline-flex; align-items:center; gap:8px; font:600 15px/1 var(--sans); padding:11px 16px; border-radius:var(--radius-s); text-decoration:none; border:1px solid transparent; cursor:pointer}
 .btn-primary{background:var(--cobalt); color:var(--cobalt-ink)}
 .btn-primary:hover{background:#1f58e6}
@@ -202,9 +228,9 @@ td.with{color:var(--ink)}
    by the base budget above. Each drops the least-load-bearing link to buy room, in order,
    and the wrap backstop covers the seams between them. */
 @media (max-width:1240px){.nav nav{gap:10px}}
-@media (max-width:1180px){.nav nav a:nth-child(6){display:none}} /* Idea Cloud */
-@media (max-width:1080px){.nav nav a:nth-child(3){display:none}} /* Why Workers */
-@media (max-width:980px){.nav nav a:nth-child(7){display:none}}  /* Capabilities */
+ /* Idea Cloud */
+ /* Why Workers */
+  /* Capabilities */
 .hero-side .hero-tui{margin:22px 0 0; padding-top:18px; border-top:1px solid var(--rule); font-size:16px; color:var(--ink-2)}
 .hero-tui a{color:var(--cobalt); font-weight:600; text-decoration:none}
 .hero-tui a:hover{text-decoration:underline}
@@ -353,13 +379,31 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
       Orchicon<span class="byline">(ORCA · CON)</span>
     </a>
     <nav aria-label="Primary" id="primary-nav">
-      <a href="#web">Web app</a>
-      <a href="#terminal">Terminal</a>
-      <a href="#why">Why Workers</a>
-      <a href="#workflows">Workflows</a>
-      <a href="#ask">Ask Orchicon</a>
-      <a href="#automation">Idea Cloud</a>
-      <a href="#capabilities">Capabilities</a>
+      <!-- GROUPED, because nine flat links did not fit: the nav used to hide links by
+           nth-child as the viewport narrowed (see the max-width rules). Grouping removes the
+           cause instead of trimming the symptom, and keeps every section one click away. -->
+      <div class="navgroup">
+        <button type="button" aria-expanded="false" aria-haspopup="true">Product</button>
+        <div class="navmenu"><div class="navpanel">
+          <a href="#web">Web app</a>
+          <a href="#terminal">Terminal</a>
+        </div></div>
+      </div>
+      <div class="navgroup">
+        <button type="button" aria-expanded="false" aria-haspopup="true">How it works</button>
+        <div class="navmenu"><div class="navpanel">
+          <a href="#why">Why Workers</a>
+          <a href="#workflows">Workflows</a>
+        </div></div>
+      </div>
+      <div class="navgroup">
+        <button type="button" aria-expanded="false" aria-haspopup="true">Features</button>
+        <div class="navmenu"><div class="navpanel">
+          <a href="#ask">Ask Orchicon</a>
+          <a href="#automation">Idea Cloud</a>
+          <a href="#capabilities">Capabilities</a>
+        </div></div>
+      </div>
       <a href="#pricing">Pricing</a>
       <a href="#install">Install</a>
     </nav>
@@ -929,11 +973,65 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
   if ('IntersectionObserver' in window){
     var io = new IntersectionObserver(function(es){
       es.forEach(function(e){
-        if (e.isIntersecting){ links.forEach(function(a){ a.removeAttribute('aria-current'); }); var a=map[e.target.id]; if(a) a.setAttribute('aria-current','true'); }
+        if (e.isIntersecting){
+          links.forEach(function(a){ a.removeAttribute('aria-current'); });
+          // The active link is inside a closed menu, so the GROUP is marked as well —
+          // otherwise the nav reads as inactive while the reader is inside a section it
+          // owns. This is the whole reason the spy had to be touched at all.
+          document.querySelectorAll('#primary-nav .navgroup[data-current]').forEach(function(g){ g.removeAttribute('data-current'); });
+          var a=map[e.target.id];
+          if(a){
+            a.setAttribute('aria-current','true');
+            var g=a.closest('.navgroup');
+            if(g) g.setAttribute('data-current','true');
+          }
+        }
       });
     }, {rootMargin:"-45% 0px -50% 0px"});
     Object.keys(map).forEach(function(id){ var el=document.getElementById(id); if(el) io.observe(el); });
   }
+
+  // GROUPED NAV DISCLOSURE. One state, reported two ways: the attribute drives the CSS and
+  // aria-expanded tells assistive tech the same thing, so the two can never disagree. Opened by
+  // hover, keyboard focus or a click; closed on leaving, blur, Escape, or a click outside —
+  // because a menu left open over the page is worse than no menu.
+  var navGroups = document.querySelectorAll('#primary-nav .navgroup');
+  function setGroupOpen(g, open){
+    g.setAttribute('data-open', open ? 'true' : 'false');
+    var b = g.querySelector('button');
+    if (b) b.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  function closeGroups(except){
+    navGroups.forEach(function(g){ if (g !== except) setGroupOpen(g, false); });
+  }
+  navGroups.forEach(function(g){
+    var b = g.querySelector('button');
+    if (!b) return;
+    setGroupOpen(g, false);
+    g.addEventListener('mouseenter', function(){ closeGroups(g); setGroupOpen(g, true); });
+    g.addEventListener('mouseleave', function(){ setGroupOpen(g, false); });
+    g.addEventListener('focusin', function(){ closeGroups(g); setGroupOpen(g, true); });
+    g.addEventListener('focusout', function(){
+      // Focus moving BETWEEN the group's own links must not close the menu, so the decision is
+      // deferred a tick and then made on where focus actually landed.
+      setTimeout(function(){ if (!g.contains(document.activeElement)) setGroupOpen(g, false); }, 0);
+    });
+    b.addEventListener('click', function(e){
+      e.preventDefault();
+      var open = g.getAttribute('data-open') === 'true';
+      closeGroups(g);
+      setGroupOpen(g, !open);
+    });
+  });
+  document.addEventListener('keydown', function(e){ if (e.key === 'Escape') closeGroups(null); });
+  document.addEventListener('click', function(e){
+    if (!e.target.closest || !e.target.closest('#primary-nav .navgroup')) closeGroups(null);
+  });
+  // A menu link is an anchor jump, so the menu must close behind it or it hangs over the
+  // section the reader just asked to see.
+  document.querySelectorAll('#primary-nav .navmenu a').forEach(function(a){
+    a.addEventListener('click', function(){ closeGroups(null); });
+  });
 
   // copy buttons
   document.querySelectorAll('[data-copy]').forEach(function(b){

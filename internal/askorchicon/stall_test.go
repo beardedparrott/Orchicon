@@ -149,3 +149,67 @@ func TestChatStallMonitorRepetitionOpenCodeShape(t *testing.T) {
 		t.Fatalf("stallReason = %q, want model ref named", reason)
 	}
 }
+
+// TestFoldReasoningTail pins the one piece of the exit path that can be silently wrong in
+// two opposite directions.
+//
+// The live reasoning tail and the segmenter's flush describe the SAME bytes from two
+// directions: the tail is everything that went into the live buffer, while `flushed` is the
+// single folded body the flush just committed to the durable slice. Appending the tail
+// unchanged duplicates that body (a doubled thinking bubble); dropping the tail loses the
+// native reasoning deltas, which nothing else ever commits (a missing one). Neither shows up
+// in a happy-path turn, so the rule is pinned here rather than inferred from one.
+func TestFoldReasoningTail(t *testing.T) {
+	cases := []struct {
+		name    string
+		tail    string
+		flushed string
+		want    string
+	}{
+		{
+			name: "nothing flushed leaves the native tail intact",
+			// The ordinary native case: reasoning deltas, no folded run open at all.
+			tail:    "weighing the options",
+			flushed: "",
+			want:    "weighing the options",
+		},
+		{
+			name:    "the flushed body is stripped so it is not recorded twice",
+			tail:    "a folded body",
+			flushed: "a folded body",
+			want:    "",
+		},
+		{
+			name: "native reasoning BEFORE a folded run keeps only the native part",
+			// The realistic mixed case, and the reason a SUFFIX strip is the right rule:
+			// a terminated folded body RESETS the live buffer and is committed at that
+			// moment (the segmenter's terminal callback), so a committed body can never sit
+			// in the MIDDLE of the tail — only an UNTERMINATED one is still in it, and that
+			// one is always its suffix. Native deltas that accumulated before the run opened
+			// are the part that must survive.
+			tail:    "native firstfolded body",
+			flushed: "folded body",
+			want:    "native first",
+		},
+		{
+			name: "an unrelated flush does not eat the tail",
+			// The conservative direction: the worst case must be a duplicate, never a loss.
+			tail:    "native tail",
+			flushed: "something else entirely",
+			want:    "native tail",
+		},
+		{
+			name:    "an empty tail stays empty",
+			tail:    "",
+			flushed: "a folded body",
+			want:    "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := foldReasoningTail(tc.tail, tc.flushed); got != tc.want {
+				t.Fatalf("foldReasoningTail(%q, %q) = %q, want %q", tc.tail, tc.flushed, got, tc.want)
+			}
+		})
+	}
+}

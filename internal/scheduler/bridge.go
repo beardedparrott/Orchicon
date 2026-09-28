@@ -406,6 +406,13 @@ type SessionEvent struct {
 	//                  name); feeds the stall monitor's wedge signal
 	//   "delta"      — mid-generation token delta (Text); liveness + live mirror
 	//   "part"       — a completed text/reasoning/tool_use/step_finish part
+	//   "tool_result"— a tool call RESOLVED: its arguments and output. Typed
+	//                  fields (ToolName/ToolCallID/ArgsJSON/Output/IsError),
+	//                  not a transport-shaped Part map — see ToolName.
+	//   "question"   — the model asked a clarifying question and is WAITING for the
+	//                  answer (ask_user, blocking). Typed fields (Question/
+	//                  Options/AllowOther/InputJSON); the reply is an answer string,
+	//                  not a permission decision.
 	Kind string
 	// Type refines Kind for "delta" ("text"|"reasoning") and "part"
 	// ("text"|"reasoning"|"tool_use"|"step_finish") — the stall-monitor and
@@ -431,6 +438,58 @@ type SessionEvent struct {
 	// carries tool + args for the stall monitor's repetition signature; the
 	// monitor path consumes it). Nil for other kinds.
 	Part map[string]any
+	// --- Typed tool-resolution fields (Kind "tool_result") ---
+	//
+	// These exist so an adapter never has to shape its own tool lifecycle into
+	// ANOTHER adapter's private event encoding. "tool_result" used to be
+	// expressible only by hand-building the Part map that the opencode adapter
+	// happens to emit (part["tool"], part["state"]["input"], …), which made
+	// opencode the reference dialect every future adapter had to imitate.
+	//
+	// ToolCallID is the transport's own correlation id (empty when the adapter
+	// has none). ToolName is the tool that ran. ArgsJSON is the EXACT argument
+	// JSON the call carried, and Output its result text — together these are
+	// what a client needs to render a resolved call (an ask_user card reads its
+	// question and options straight out of ArgsJSON). IsError marks a failed
+	// call so its result is not shown as a success.
+	ToolCallID string
+	ToolName   string
+	ArgsJSON   string
+	Output     string
+	IsError    bool
+	// --- Typed consent fields (Kind "permission") ---
+	//
+	// An adapter that can name the action it is asking about supplies it HERE,
+	// rather than shaping it into the property vocabulary the opencode adapter
+	// happens to emit (Detail: permission/title, metadata.filepath, patterns,
+	// toolInput). Same rule as the tool-result fields above: the shared contract
+	// describes the action, and no adapter has to speak another's dialect.
+	//
+	// Tool is the tool being gated; Command its shell line for an execution;
+	// Targets the paths a write/edit touches; InputJSON the call's argument JSON
+	// (the only detail an MCP-style ask has). Directory, when set, is the
+	// grant/deny key the ask means — it is otherwise derived from the targets.
+	// extractAskAction prefers these fields when Tool is set and falls back to
+	// the Detail map, so both transports stay supported.
+	Tool      string
+	Command   string
+	Targets   []string
+	InputJSON string
+	Directory string
+	// --- Typed question fields (Kind "question") ---
+	//
+	// A clarifying question the model asked and the turn is PAUSED on (ask_user,
+	// made blocking). It carries no permission semantics — there is no grant and no
+	// allow/deny — so it rides its own kind rather than being special-cased inside
+	// the permission path, where the precedence chain would have to be taught to
+	// skip it.
+	//
+	// The answer comes back over the SAME reply RPC (ReplyPermissionAsk.answer) and
+	// becomes the ask_user TOOL RESULT, so the model continues the turn with the
+	// answer in hand instead of being told the question was recorded.
+	Question   string
+	Options    []string
+	AllowOther bool
 	// SessionID is the session the event belongs to. Adapters whose
 	// transport multiplexes sessions (e.g. a shared serve bus) set it so the
 	// drain loop can filter by the turn's current session id (which can

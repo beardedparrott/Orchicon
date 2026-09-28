@@ -40,8 +40,10 @@
 #                        with ORCHICON_CONTAINER_SERVICES_ONLY=1) and the
 #                        control plane runs on the HOST as a separate
 #                        `orchicon serve` process, reaching the services over
-#                        loopback ports. Opt in per instance with
-#                        ORCHICON_PLANE_RESIDENCY=host (or `make rebuild-dev`).
+#                        loopback ports. This is the DEFAULT: `container.sh up
+#                        dev` gives a host plane. Pass `container` as the third
+#                        positional (or set ORCHICON_PLANE_RESIDENCY=container)
+#                        for the self-contained shape.
 #
 # Instance layout:
 #   dev:  orchicon-cnt-dev   ports 8080:8080, 3002:3000   (plane + Grafana)
@@ -151,10 +153,20 @@ instance_info() {
 }
 
 # residency_for prints the plane residency for THIS invocation: host or
-# container. Default is container — the opt-in default is what makes the
-# migration safe: with no new setting, an instance behaves exactly as today.
+# container.
+#
+# DEFAULT IS HOST. The plane runs on the HOST as its own `orchicon serve`
+# process, with the services (Postgres/NATS/telemetry/Grafana) in the one
+# container and the plane reaching them over loopback. That is the supported
+# shape — a user is a host user — so `container.sh up dev` gives a host plane
+# with no extra ceremony. `container` is kept as the self-contained shape (the
+# whole stack, plane included, inside one container) for anyone who wants it.
+#
+# Precedence: an explicit argument, then ORCHICON_PLANE_RESIDENCY, then host.
+# Pass the argument as the third positional to switch back:
+#   scripts/container.sh up dev container
 residency_for() {
-  local value="${ORCHICON_PLANE_RESIDENCY:-container}"
+  local value="${1:-${ORCHICON_PLANE_RESIDENCY:-host}}"
   case "$value" in
     host|container)
       echo "$value"
@@ -1314,7 +1326,7 @@ down_instance() {
   # covers switching an instance BACK to container residency — a leftover host
   # plane would hold the plane port and block the container's publish. (The
   # inverse is a feature: `plane-stop` leaves the services container running.)
-  if [ "$(residency_for 2>/dev/null || echo container)" = "host" ] \
+  if [ "$(residency_for 2>/dev/null || echo host)" = "host" ] \
     || [ -f "$HOST_DATA_DIR/serve/pids/orchicon.pid" ]; then
     plane_stop "$inst"
   fi
@@ -1339,7 +1351,7 @@ status_instances() {
   for i in $instances; do
     instance_info "$i"
     local residency_i
-    residency_i=$(residency_for 2>/dev/null || echo container)
+    residency_i=$(residency_for 2>/dev/null || echo host)
     if docker ps --format '{{.Names}}' | grep -qx "$NAME"; then
       local state
       state=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' "$NAME" 2>/dev/null || echo "running")
@@ -1361,6 +1373,21 @@ logs_instance() {
   instance_info "$inst"
   docker logs -f "$NAME"
 }
+
+# A third positional picks the plane shape for THIS invocation, so the
+# self-contained shape needs no environment change:
+#   scripts/container.sh up dev container
+# host is the default (see residency_for). Recognised only as host|container,
+# so a typo is refused rather than silently ignored.
+if [ -n "${3:-}" ]; then
+  case "${3}" in
+    host|container) export ORCHICON_PLANE_RESIDENCY="${3}" ;;
+    *)
+      echo "residency must be 'host' or 'container' (got '${3}')" >&2
+      exit 2
+      ;;
+  esac
+fi
 
 case "${1:-}" in
   build) build_image ;;
@@ -1405,7 +1432,8 @@ case "${1:-}" in
     ;;
   *)
     echo "Usage: $0 {build|rebuild [dev|prod]|sync-mounts [dev|prod]|up [dev|prod]|down [dev|prod]|status [dev|prod]|logs [dev|prod]|plane-bind [dev|prod]|shape [dev|prod]|verify [dev|prod]|plane-start|plane-stop|plane-status [dev|prod]|ps|runtime-daemon|runtime-stop}"
-    echo "  ORCHICON_PLANE_RESIDENCY=host|container  (default container) picks the shape per invocation."
+    echo "  ORCHICON_PLANE_RESIDENCY=host|container  (default host) picks the shape per invocation;"
+    echo "  a third positional overrides it for one call, e.g. 'up dev container'."
     echo "  plane-bind prints the host plane's PER-INSTANCE bind + URL (ORCHICON_HTTP_EXTRA_BIND, ORCHICON_PLANE_PUBLIC_URL)."
     exit 1
     ;;

@@ -79,22 +79,40 @@ const (
 	// newline-separated, so the approved command runs while a sibling path a
 	// subprocess inside it targets is still refused.
 	OnceEnvVar = "ORCHICON_GUARD_ONCE"
+	// FullsendEnvVar non-empty puts the shim in FULLSEND: the operator has waived the
+	// permission PROMPT for this conversation, so a path-scoped command may touch a
+	// target the sanctioned set does not cover.
+	//
+	// THE SHIM MUST AGREE WITH THE CONSENT LAYER, or the same command is approved and
+	// then refused — the "blocked" retry loop the two layers exist to avoid. So fullsend
+	// skips the SANCTIONED-SET test here exactly as it skips the ASK there, and the two
+	// things that outrank it hold at BOTH layers: the DENY list (checked FIRST in
+	// blocked_path, home-spelling-agnostic via pem_match_either) and the never-allow
+	// binary class (a separate case arm that never enters blocked_path at all).
+	FullsendEnvVar = "ORCHICON_GUARD_FULLSEND"
 )
 
 // InteractiveEnviron returns the ORCHICON_GUARD_* key/values that switch the
 // shim into the interactive profile. An empty policyPath returns nil — that IS
 // the worker profile, which is the frozen half of "no path-scoped check
 // changes for a worker".
-func InteractiveEnviron(policyPath, projectDir string, grants, once []string) []string {
+func InteractiveEnviron(policyPath, projectDir string, grants, once []string, fullsend bool) []string {
 	if strings.TrimSpace(policyPath) == "" {
 		return nil
 	}
-	return []string{
+	env := []string{
 		PolicyEnvVar + "=" + policyPath,
 		ProjectEnvVar + "=" + projectDir,
 		GrantsEnvVar + "=" + strings.Join(grants, "\n"),
 		OnceEnvVar + "=" + strings.Join(once, "\n"),
 	}
+	// The OFF case emits NOTHING rather than "0": unset is the absence of the mode, so a
+	// shim driven by an environment this code did not build cannot be misread as fullsend
+	// by reading a value it does not understand.
+	if fullsend {
+		env = append(env, FullsendEnvVar+"=1")
+	}
+	return env
 }
 
 // guardedBinary names one binary the guard shims on PATH.
@@ -368,6 +386,11 @@ fi
 GUARD_PROJECT="${ORCHICON_GUARD_PROJECT:-}"
 GUARD_GRANTS="${ORCHICON_GUARD_GRANTS:-}"
 GUARD_ONCE="${ORCHICON_GUARD_ONCE:-}"
+# FULLSEND: the operator has waived the permission PROMPT for this conversation.
+# Non-empty allows a path-scoped command past the SANCTIONED-SET test below. It does
+# NOT skip the DENY check (which runs FIRST in blocked_path and matches both spellings
+# of home) and it cannot reach the never-allow class, which is a separate case arm.
+GUARD_FULLSEND="${ORCHICON_GUARD_FULLSEND:-}"
 # extglob: the shim spells "one path segment" as '*([!/])' in pem_translate,
 # so a policy glob cannot match a path permpolicy.Decide would not. It must be
 # enabled BEFORE any function below is defined, because a function body is
@@ -735,6 +758,10 @@ blocked_path() {
         # it lives outside the project (the worker is told to use it).
         inside_dir "$SCRATCH_DIR" "$a" && continue
         if [ -n "$INTERACTIVE" ]; then
+          # FULLSEND: the sanctioned set is waived, so its tests are SKIPPED rather
+          # than each being made to pass. The DENY check above already ran for this
+          # path in both spellings, so an operator exclusion still refuses it.
+          [ -n "$GUARD_FULLSEND" ] && continue
           inside_dir "$GUARD_PROJECT" "$a" && continue
           inside_list "$GUARD_GRANTS" "$a" && continue
           inside_list "$GUARD_ONCE" "$a" && continue
@@ -750,6 +777,13 @@ blocked_path() {
         ;;
       '~'|'~'/*|'$HOME'|'$HOME'/*|'${HOME}'|'${HOME}'/*|*".."*)
         if [ -n "$INTERACTIVE" ]; then
+          # FULLSEND continues past this refusal for the SAME reason as the absolute
+          # arm: the consent layer extracts a literal home-relative path as a target,
+          # so under fullsend it has already decided this may proceed. Refusing it
+          # here would be the shim overturning the operator's decision — approved, then
+          # blocked, with nothing the model can do about it. The DENY check above still
+          # ran for this spelling, so an operator exclusion keeps refusing.
+          [ -n "$GUARD_FULLSEND" ] && continue
           interactive_blocked "$a"
         fi
         return 0

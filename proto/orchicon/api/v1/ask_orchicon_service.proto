@@ -48,6 +48,17 @@ service AskOrchiconService {
   // already-open chat instead of starting a new one.
   rpc SetConversationModel(SetConversationModelRequest) returns (SetConversationModelResponse);
 
+  // SetConversationFullsend turns FULLSEND on or off for one conversation. It is the
+  // write side of Conversation.fullsend; the response carries the conversation back so
+  // the caller renders the state the SERVER holds rather than the one it hoped for.
+  //
+  // It is per CONVERSATION and in-memory (it dies with the plane), which is the same
+  // scope and lifetime as a session grant — and it is deliberately NOT a pending value
+  // for a conversation that does not exist yet. A bypass that applies to a conversation
+  // the operator has not looked at is one they did not knowingly arm; the mode field had
+  // exactly this leak, and it was fixed by scoping the write to the open conversation.
+  rpc SetConversationFullsend(SetConversationFullsendRequest) returns (SetConversationFullsendResponse);
+
   // SetConversationProject places a conversation in a PROJECT (or clears it),
   // which is the second, higher level of organization over conversations: the
   // rail and the GUI sidebar list projects as the parent group, every project
@@ -238,6 +249,18 @@ message SetConversationModelResponse {
   Conversation conversation = 1;
 }
 
+message SetConversationFullsendRequest {
+  string id = 1;
+  // enabled true turns FULLSEND on for this conversation, false turns it off. It is
+  // an explicit boolean rather than a toggle so a caller retrying after a dropped
+  // response cannot flip the mode by accident.
+  bool enabled = 2;
+}
+
+message SetConversationFullsendResponse {
+  Conversation conversation = 1;
+}
+
 message SetConversationProjectRequest {
   string id = 1;
   // project_id is the project to place the conversation in. Empty UNASSIGNS it
@@ -302,7 +325,38 @@ message ChatStreamResponse {
     // stream and every re-attached WatchTurnStream watcher. The answer comes
     // back on ReplyPermissionAsk.
     PermissionAsk permission_ask = 9;
+    // PermissionAskResolved carries the OUTCOME of an ask already sent on this
+    // stream, published the moment the collector applies a decision.
+    //
+    // IT EXISTS SO A DECISION MADE IN ONE CLIENT SETTLES THE CARD IN THE OTHER.
+    // An ask is delivered to every watcher of a turn, but only the client that
+    // ANSWERED it ever cleared its own copy (the TUI in ConsentResolve, the GUI in
+    // handleAskDecision). So answering in the TUI left a live-looking, inert card in
+    // the GUI — the operator: "the choice box is still there for permissions" — and
+    // vice versa. Clients cannot infer it either: a permission ask has no durable
+    // per-ask row to reconcile against (the transcript records the OUTCOME, not the
+    // open ask).
+    //
+    // It is published by the collector that owns the turn, so it reaches every
+    // watcher, including one that re-attached mid-turn.
+    PermissionAskResolved permission_ask_resolved = 10;
   }
+}
+
+// PermissionAskResolved is the settled form of a PermissionAsk: which ask, and what
+// became of it.
+message PermissionAskResolved {
+  string ask_id = 1;
+  string conversation_id = 2;
+  // outcome is one of:
+  //   "allow_once" | "allow_session" | "deny" — the operator decided;
+  //   "answered"                              — a question was answered (answer is set);
+  //   "expired"                               — nobody answered in the window.
+  string outcome = 3;
+  // answer is the operator's words for a QUESTION ask, empty otherwise. It is what
+  // the ask_user tool returned, and it is carried here so a watching client can show
+  // what was answered rather than only that something was.
+  string answer = 4;
 }
 
 // TurnStarted is the immediate ack for a ChatStream send: the message was
@@ -438,6 +492,24 @@ message PermissionAsk {
   // card says so instead of offering a grant that will be refused for those
   // paths. Empty when no deny entry sits inside the directory.
   repeated string deny_entries_below = 10;
+
+  // --- Clarifying-question asks (ask_user, made blocking) ---
+  //
+  // A question rides THIS message rather than getting its own: the clients already
+  // render one card type from it (the TUI models both as chat.PermissionAsk with a
+  // Kind), and the operator answers both from the transcript. Adding a second
+  // message and a second RPC would have meant two card paths, two reply paths and
+  // two places for a decision to go missing.
+  //
+  // When question is non-empty this is a QUESTION, not a permission: there is no
+  // allow/deny and no grant. The turn is PAUSED on it (the adapter blocks the
+  // ask_user call), so the card is the end of the turn until it is answered —
+  // which is why answering it RESUMES the turn rather than starting a new one.
+  string question = 11;
+  repeated string options = 12;
+  // allow_other offers the free-text row: the operator can answer in their own
+  // words instead of choosing a canned option.
+  bool allow_other = 13;
 }
 
 // SessionPermissionGrant is one ACTIVE session grant: a directory the operator
@@ -486,6 +558,15 @@ message ReplyPermissionAskRequest {
   string conversation_id = 1;
   string ask_id = 2;
   PermissionChoice choice = 3;
+  // answer is the operator's reply to a QUESTION ask (question non-empty): the
+  // chosen option's label, or their own words when allow_other offered the
+  // free-text row. It BECOMES THE ask_user TOOL RESULT, so the model continues the
+  // turn with the answer in hand rather than being told the question was recorded.
+  //
+  // Empty for a permission ask — a permission is answered by `choice`, and the two
+  // are deliberately not conflated: a permission's outcome is a grant decision, a
+  // question's is content the model reads.
+  string answer = 4;
 }
 
 // ReplyPermissionAskResponse reports whether the decision was applied.

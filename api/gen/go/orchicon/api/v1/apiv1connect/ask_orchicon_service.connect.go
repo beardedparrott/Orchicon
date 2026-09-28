@@ -62,6 +62,9 @@ const (
 	// AskOrchiconServiceSetConversationModelProcedure is the fully-qualified name of the
 	// AskOrchiconService's SetConversationModel RPC.
 	AskOrchiconServiceSetConversationModelProcedure = "/orchicon.api.v1.AskOrchiconService/SetConversationModel"
+	// AskOrchiconServiceSetConversationFullsendProcedure is the fully-qualified name of the
+	// AskOrchiconService's SetConversationFullsend RPC.
+	AskOrchiconServiceSetConversationFullsendProcedure = "/orchicon.api.v1.AskOrchiconService/SetConversationFullsend"
 	// AskOrchiconServiceSetConversationProjectProcedure is the fully-qualified name of the
 	// AskOrchiconService's SetConversationProject RPC.
 	AskOrchiconServiceSetConversationProjectProcedure = "/orchicon.api.v1.AskOrchiconService/SetConversationProject"
@@ -133,6 +136,16 @@ type AskOrchiconServiceClient interface {
 	// (default_ask_orchicon_model). This is what lets an operator retarget an
 	// already-open chat instead of starting a new one.
 	SetConversationModel(context.Context, *connect.Request[v1.SetConversationModelRequest]) (*connect.Response[v1.SetConversationModelResponse], error)
+	// SetConversationFullsend turns FULLSEND on or off for one conversation. It is the
+	// write side of Conversation.fullsend; the response carries the conversation back so
+	// the caller renders the state the SERVER holds rather than the one it hoped for.
+	//
+	// It is per CONVERSATION and in-memory (it dies with the plane), which is the same
+	// scope and lifetime as a session grant — and it is deliberately NOT a pending value
+	// for a conversation that does not exist yet. A bypass that applies to a conversation
+	// the operator has not looked at is one they did not knowingly arm; the mode field had
+	// exactly this leak, and it was fixed by scoping the write to the open conversation.
+	SetConversationFullsend(context.Context, *connect.Request[v1.SetConversationFullsendRequest]) (*connect.Response[v1.SetConversationFullsendResponse], error)
 	// SetConversationProject places a conversation in a PROJECT (or clears it),
 	// which is the second, higher level of organization over conversations: the
 	// rail and the GUI sidebar list projects as the parent group, every project
@@ -296,6 +309,12 @@ func NewAskOrchiconServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationModel")),
 			connect.WithClientOptions(opts...),
 		),
+		setConversationFullsend: connect.NewClient[v1.SetConversationFullsendRequest, v1.SetConversationFullsendResponse](
+			httpClient,
+			baseURL+AskOrchiconServiceSetConversationFullsendProcedure,
+			connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationFullsend")),
+			connect.WithClientOptions(opts...),
+		),
 		setConversationProject: connect.NewClient[v1.SetConversationProjectRequest, v1.SetConversationProjectResponse](
 			httpClient,
 			baseURL+AskOrchiconServiceSetConversationProjectProcedure,
@@ -392,6 +411,7 @@ type askOrchiconServiceClient struct {
 	updateConversationTitle   *connect.Client[v1.UpdateConversationTitleRequest, v1.UpdateConversationTitleResponse]
 	setConversationMode       *connect.Client[v1.SetConversationModeRequest, v1.SetConversationModeResponse]
 	setConversationModel      *connect.Client[v1.SetConversationModelRequest, v1.SetConversationModelResponse]
+	setConversationFullsend   *connect.Client[v1.SetConversationFullsendRequest, v1.SetConversationFullsendResponse]
 	setConversationProject    *connect.Client[v1.SetConversationProjectRequest, v1.SetConversationProjectResponse]
 	listMessages              *connect.Client[v1.ListMessagesRequest, v1.ListMessagesResponse]
 	chatStream                *connect.Client[v1.ChatStreamRequest, v1.ChatStreamResponse]
@@ -441,6 +461,11 @@ func (c *askOrchiconServiceClient) SetConversationMode(ctx context.Context, req 
 // SetConversationModel calls orchicon.api.v1.AskOrchiconService.SetConversationModel.
 func (c *askOrchiconServiceClient) SetConversationModel(ctx context.Context, req *connect.Request[v1.SetConversationModelRequest]) (*connect.Response[v1.SetConversationModelResponse], error) {
 	return c.setConversationModel.CallUnary(ctx, req)
+}
+
+// SetConversationFullsend calls orchicon.api.v1.AskOrchiconService.SetConversationFullsend.
+func (c *askOrchiconServiceClient) SetConversationFullsend(ctx context.Context, req *connect.Request[v1.SetConversationFullsendRequest]) (*connect.Response[v1.SetConversationFullsendResponse], error) {
+	return c.setConversationFullsend.CallUnary(ctx, req)
 }
 
 // SetConversationProject calls orchicon.api.v1.AskOrchiconService.SetConversationProject.
@@ -540,6 +565,16 @@ type AskOrchiconServiceHandler interface {
 	// (default_ask_orchicon_model). This is what lets an operator retarget an
 	// already-open chat instead of starting a new one.
 	SetConversationModel(context.Context, *connect.Request[v1.SetConversationModelRequest]) (*connect.Response[v1.SetConversationModelResponse], error)
+	// SetConversationFullsend turns FULLSEND on or off for one conversation. It is the
+	// write side of Conversation.fullsend; the response carries the conversation back so
+	// the caller renders the state the SERVER holds rather than the one it hoped for.
+	//
+	// It is per CONVERSATION and in-memory (it dies with the plane), which is the same
+	// scope and lifetime as a session grant — and it is deliberately NOT a pending value
+	// for a conversation that does not exist yet. A bypass that applies to a conversation
+	// the operator has not looked at is one they did not knowingly arm; the mode field had
+	// exactly this leak, and it was fixed by scoping the write to the open conversation.
+	SetConversationFullsend(context.Context, *connect.Request[v1.SetConversationFullsendRequest]) (*connect.Response[v1.SetConversationFullsendResponse], error)
 	// SetConversationProject places a conversation in a PROJECT (or clears it),
 	// which is the second, higher level of organization over conversations: the
 	// rail and the GUI sidebar list projects as the parent group, every project
@@ -699,6 +734,12 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 		connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationModel")),
 		connect.WithHandlerOptions(opts...),
 	)
+	askOrchiconServiceSetConversationFullsendHandler := connect.NewUnaryHandler(
+		AskOrchiconServiceSetConversationFullsendProcedure,
+		svc.SetConversationFullsend,
+		connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationFullsend")),
+		connect.WithHandlerOptions(opts...),
+	)
 	askOrchiconServiceSetConversationProjectHandler := connect.NewUnaryHandler(
 		AskOrchiconServiceSetConversationProjectProcedure,
 		svc.SetConversationProject,
@@ -799,6 +840,8 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 			askOrchiconServiceSetConversationModeHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceSetConversationModelProcedure:
 			askOrchiconServiceSetConversationModelHandler.ServeHTTP(w, r)
+		case AskOrchiconServiceSetConversationFullsendProcedure:
+			askOrchiconServiceSetConversationFullsendHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceSetConversationProjectProcedure:
 			askOrchiconServiceSetConversationProjectHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceListMessagesProcedure:
@@ -862,6 +905,10 @@ func (UnimplementedAskOrchiconServiceHandler) SetConversationMode(context.Contex
 
 func (UnimplementedAskOrchiconServiceHandler) SetConversationModel(context.Context, *connect.Request[v1.SetConversationModelRequest]) (*connect.Response[v1.SetConversationModelResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.SetConversationModel is not implemented"))
+}
+
+func (UnimplementedAskOrchiconServiceHandler) SetConversationFullsend(context.Context, *connect.Request[v1.SetConversationFullsendRequest]) (*connect.Response[v1.SetConversationFullsendResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.SetConversationFullsend is not implemented"))
 }
 
 func (UnimplementedAskOrchiconServiceHandler) SetConversationProject(context.Context, *connect.Request[v1.SetConversationProjectRequest]) (*connect.Response[v1.SetConversationProjectResponse], error) {

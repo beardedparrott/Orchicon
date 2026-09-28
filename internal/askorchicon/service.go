@@ -69,6 +69,11 @@ type Service struct {
 	// grant store ("allow for this directory" answers). In memory by design:
 	// a plane restart clears it and a new conversation asks again.
 	grants *grantStore
+	// fullsend records the conversations in FULLSEND: the operator has waived the
+	// permission PROMPT for them. Per conversation and in memory, exactly like
+	// grants — a bypass that survives a restart is one the operator has forgotten
+	// is on. See fullsend.go.
+	fullsend *fullsendStore
 	// once records the absolute targets the operator answered ALLOW_ONCE for,
 	// per conversation: the execution guard's shim cannot ask, so the command
 	// the operator just approved must be armed for it (while a sibling path a
@@ -120,6 +125,7 @@ func New(pool *db.Pool, log *slog.Logger, blobStore blobstore.Store, modelDisc *
 		turns:        newTurnRegistry(),
 		hubs:         newTurnHubRegistry(),
 		grants:       newGrantStore(),
+		fullsend:     newFullsendStore(),
 		once:         newOnceStore(),
 		pending:      newPendingAskRegistry(),
 	}
@@ -408,7 +414,7 @@ func (s *Service) ListConversations(ctx context.Context, req *connect.Request[ap
 	resp := &apiv1.ListConversationsResponse{}
 	for _, r := range rows {
 		preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, r.ID)
-		resp.Conversations = append(resp.Conversations, conversationRowToProto(r, r.MessageCount, preview, s.turnStatus(r.ID, stallWindow)))
+		resp.Conversations = append(resp.Conversations, s.conversationRowToProto(r, r.MessageCount, preview, s.turnStatus(r.ID, stallWindow)))
 	}
 	if len(rows) > 0 {
 		resp.NextPageToken = rows[len(rows)-1].ID
@@ -450,7 +456,7 @@ func (s *Service) GetConversation(ctx context.Context, req *connect.Request[apiv
 	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
 	st := s.turnStatus(row.ID, s.chatStallWindow(ctx, ttx.Tx, tenantID))
 	return connect.NewResponse(&apiv1.GetConversationResponse{
-		Conversation: conversationRowToProto(row, count, preview, st),
+		Conversation: s.conversationRowToProto(row, count, preview, st),
 	}), nil
 }
 
@@ -542,7 +548,7 @@ func (s *Service) CreateConversation(ctx context.Context, req *connect.Request[a
 		}
 	}
 	return connect.NewResponse(&apiv1.CreateConversationResponse{
-		Conversation: conversationRowToProto(row, 0, preview, turnStatusInfo{}),
+		Conversation: s.conversationRowToProto(row, 0, preview, turnStatusInfo{}),
 	}), nil
 }
 
@@ -664,7 +670,7 @@ func (s *Service) UpdateConversationTitle(ctx context.Context, req *connect.Requ
 	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
 	st := s.turnStatus(row.ID, stallWindow)
 	return connect.NewResponse(&apiv1.UpdateConversationTitleResponse{
-		Conversation: conversationRowToProto(row, count, preview, st),
+		Conversation: s.conversationRowToProto(row, count, preview, st),
 	}), nil
 }
 
@@ -709,7 +715,7 @@ func (s *Service) SetConversationMode(ctx context.Context, req *connect.Request[
 	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
 	st := s.turnStatus(row.ID, stallWindow)
 	return connect.NewResponse(&apiv1.SetConversationModeResponse{
-		Conversation: conversationRowToProto(row, count, preview, st),
+		Conversation: s.conversationRowToProto(row, count, preview, st),
 	}), nil
 }
 
@@ -764,8 +770,107 @@ func (s *Service) SetConversationModel(ctx context.Context, req *connect.Request
 	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
 	st := s.turnStatus(row.ID, s.chatStallWindow(ctx, ttx.Tx, tenantID))
 	return connect.NewResponse(&apiv1.SetConversationModelResponse{
-		Conversation: conversationRowToProto(row, count, preview, st),
+		Conversation: s.conversationRowToProto(row, count, preview, st),
 	}), nil
+}
+
+// SetConversationFullsend turns FULLSEND on or off for one conversation. See
+// fullsend.go for what the mode does and does not waive.
+//
+// THE FLAG IS NOT A COLUMN, so this RPC does not write the conversation — but it does
+// verify the conversation exists IN THIS TENANT first. An in-memory flag keyed on an id
+// nobody owns would arm a mode for a conversation that cannot be addressed, and it would
+// let a caller discover which ids exist by the difference between a 404 and a 200.
+//
+// IT IS AUDITED. Every other setting changes what Orchicon DOES; this one changes what
+// Orchicon will not ASK, which is the one change whose whole purpose is to make a
+// decision not happen. "Who turned the gate off, and when" has to be reconstructible.
+func (s *Service) SetConversationFullsend(ctx context.Context, req *connect.Request[apiv1.SetConversationFullsendRequest]) (*connect.Response[apiv1.SetConversationFullsendResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	row, err := db.GetConversation(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("conversation not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.fullsend_changed", "conversation", row.ID,
+		nil, audit.Snapshot(map[string]any{"fullsend": req.Msg.Enabled})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.fullsend_changed: %w", err))
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	// SET AFTER THE COMMIT: the audit row and the mode must not be able to disagree. A
+	// flag set before a failed commit would be a bypass with no record of who armed it.
+	s.fullsend.Set(row.ID, req.Msg.Enabled)
+
+	// ENABLING FULLSEND ALSO CLEARS A CARD ALREADY ON SCREEN.
+	//
+	// The operator's decision: "Clear it too — fullsend means stop asking." And it is the
+	// consistent behaviour rather than a convenience: a card exists ONLY because fullsend was
+	// OFF when the call was raised — with it on, that same call would never have produced one
+	// — so approving it is exactly what fullsend would have decided a moment earlier. Leaving
+	// it would also leave the TURN blocked on an answer, waiting out the consent window, for a
+	// decision the operator has just told us to stop making.
+	//
+	// A QUESTION IS NOT A PERMISSION, and fullsend cannot clear one: a question's reply is the
+	// operator's own WORDS, which the mode has no way to supply. It stays theirs to answer.
+	//
+	// ALLOW_ONCE, never a session grant: fullsend already covers every later call, so granting
+	// the DIRECTORY here would widen the operator's grants beyond anything they chose, and it
+	// would outlive the mode. The approval is also MARKED as fullsend's (autoApproveOnce), so
+	// the recorded verdict does not claim the operator clicked something they never saw.
+	if req.Msg.Enabled {
+		s.approvePendingForFullsend(row.ID)
+	}
+	count, _ := db.CountConversationMessages(ctx, ttx.Tx, tenantID, row.ID)
+	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
+	st := s.turnStatus(row.ID, s.chatStallWindow(ctx, ttx.Tx, tenantID))
+	return connect.NewResponse(&apiv1.SetConversationFullsendResponse{
+		// The conversation is returned so the caller renders the state the SERVER holds
+		// rather than the one it hoped for — fullsend is read back off the store by
+		// conversationRowToProto, so this is the authoritative value.
+		Conversation: s.conversationRowToProto(row, count, preview, st),
+	}), nil
+}
+
+// approvePendingForFullsend clears the permission cards a conversation already has on screen,
+// and returns how many it cleared.
+//
+// Split out from the RPC so it can be tested without a database: the behaviour worth pinning is
+// WHICH asks it approves and which it leaves, and that has nothing to do with the transaction
+// that verifies the conversation.
+func (s *Service) approvePendingForFullsend(convID string) int {
+	if s == nil || convID == "" {
+		return 0
+	}
+	cleared := 0
+	for _, a := range s.pending.list(convID) {
+		// A QUESTION IS NOT A PERMISSION, and fullsend cannot clear one: a question's reply is
+		// the operator's own WORDS, which the mode has no way to supply. It stays theirs.
+		// An ask that is no longer open is already decided — never overwritten.
+		if a.isQuestion() || !a.isOpen() {
+			continue
+		}
+		if a.autoApproveOnce() {
+			cleared++
+			s.log.Info("fullsend cleared a pending permission card",
+				"conversation", convID, "ask", a.AskID, "tool", a.Tool)
+		}
+	}
+	return cleared
 }
 
 // --- Messages ---
@@ -925,21 +1030,32 @@ func requireTenant(ctx context.Context) (string, error) {
 	return id, nil
 }
 
-func conversationRowToProto(r db.ConversationRow, messageCount int, lastPreview string, s turnStatusInfo) *apiv1.Conversation {
+// conversationRowToProto maps a stored conversation onto the wire.
+//
+// IT IS A METHOD because one of the fields it fills is not a column: FULLSEND is read
+// from the plane's in-memory store at read time. The alternative — a caller decorating
+// the message afterwards — makes "every conversation answer says whether fullsend is
+// on" a thing each call site must remember, which is exactly how one list path ends up
+// rendering a bypass as off.
+func (s *Service) conversationRowToProto(r db.ConversationRow, messageCount int, lastPreview string, st turnStatusInfo) *apiv1.Conversation {
 	p := &apiv1.Conversation{
-		Id:                        r.ID,
-		TenantId:                  r.TenantID,
-		Title:                     r.Title,
-		ModelRef:                  r.ModelRef,
-		SessionId:                 r.SessionID,
-		Mode:                      conversationModeToProto(r.Mode),
+		Id:        r.ID,
+		TenantId:  r.TenantID,
+		Title:     r.Title,
+		ModelRef:  r.ModelRef,
+		SessionId: r.SessionID,
+		Mode:      conversationModeToProto(r.Mode),
+		// FULLSEND is COMPUTED, never stored: it rides the same read-time seam as
+		// turn_in_flight below, so every list/get answers with the state the plane holds
+		// right now rather than a column someone could forget to update.
+		Fullsend:                  s.fullsend.Enabled(r.ID),
 		ProjectId:                 r.ProjectID,
 		MessageCount:              int32(messageCount),
 		LastMessagePreview:        lastPreview,
-		TurnInFlight:              s.inFlight,
-		PendingAssistantMessageId: s.pendingMsgID,
-		TurnProgressing:           s.progressing,
-		TurnLastActivityAt:        s.lastActivity,
+		TurnInFlight:              st.inFlight,
+		PendingAssistantMessageId: st.pendingMsgID,
+		TurnProgressing:           st.progressing,
+		TurnLastActivityAt:        st.lastActivity,
 		CreatedAt:                 timestamppb.New(r.CreatedAt),
 		UpdatedAt:                 timestamppb.New(r.UpdatedAt),
 	}
@@ -1000,7 +1116,7 @@ func (s *Service) SetConversationProject(ctx context.Context, req *connect.Reque
 	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
 	stallWindow := s.chatStallWindow(ctx, ttx.Tx, tenantID)
 	return connect.NewResponse(&apiv1.SetConversationProjectResponse{
-		Conversation: conversationRowToProto(row, count, preview, s.turnStatus(row.ID, stallWindow)),
+		Conversation: s.conversationRowToProto(row, count, preview, s.turnStatus(row.ID, stallWindow)),
 	}), nil
 }
 

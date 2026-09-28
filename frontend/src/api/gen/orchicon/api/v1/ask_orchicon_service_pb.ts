@@ -492,6 +492,90 @@ export class SetConversationModelResponse extends Message<SetConversationModelRe
 }
 
 /**
+ * @generated from message orchicon.api.v1.SetConversationFullsendRequest
+ */
+export class SetConversationFullsendRequest extends Message<SetConversationFullsendRequest> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * enabled true turns FULLSEND on for this conversation, false turns it off. It is
+   * an explicit boolean rather than a toggle so a caller retrying after a dropped
+   * response cannot flip the mode by accident.
+   *
+   * @generated from field: bool enabled = 2;
+   */
+  enabled = false;
+
+  constructor(data?: PartialMessage<SetConversationFullsendRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.SetConversationFullsendRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "enabled", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetConversationFullsendRequest {
+    return new SetConversationFullsendRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetConversationFullsendRequest {
+    return new SetConversationFullsendRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetConversationFullsendRequest {
+    return new SetConversationFullsendRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SetConversationFullsendRequest | PlainMessage<SetConversationFullsendRequest> | undefined, b: SetConversationFullsendRequest | PlainMessage<SetConversationFullsendRequest> | undefined): boolean {
+    return proto3.util.equals(SetConversationFullsendRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.SetConversationFullsendResponse
+ */
+export class SetConversationFullsendResponse extends Message<SetConversationFullsendResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.Conversation conversation = 1;
+   */
+  conversation?: Conversation;
+
+  constructor(data?: PartialMessage<SetConversationFullsendResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.SetConversationFullsendResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "conversation", kind: "message", T: Conversation },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetConversationFullsendResponse {
+    return new SetConversationFullsendResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetConversationFullsendResponse {
+    return new SetConversationFullsendResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetConversationFullsendResponse {
+    return new SetConversationFullsendResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SetConversationFullsendResponse | PlainMessage<SetConversationFullsendResponse> | undefined, b: SetConversationFullsendResponse | PlainMessage<SetConversationFullsendResponse> | undefined): boolean {
+    return proto3.util.equals(SetConversationFullsendResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.SetConversationProjectRequest
  */
 export class SetConversationProjectRequest extends Message<SetConversationProjectRequest> {
@@ -931,6 +1015,27 @@ export class ChatStreamResponse extends Message<ChatStreamResponse> {
      */
     value: PermissionAsk;
     case: "permissionAsk";
+  } | {
+    /**
+     * PermissionAskResolved carries the OUTCOME of an ask already sent on this
+     * stream, published the moment the collector applies a decision.
+     *
+     * IT EXISTS SO A DECISION MADE IN ONE CLIENT SETTLES THE CARD IN THE OTHER.
+     * An ask is delivered to every watcher of a turn, but only the client that
+     * ANSWERED it ever cleared its own copy (the TUI in ConsentResolve, the GUI in
+     * handleAskDecision). So answering in the TUI left a live-looking, inert card in
+     * the GUI — the operator: "the choice box is still there for permissions" — and
+     * vice versa. Clients cannot infer it either: a permission ask has no durable
+     * per-ask row to reconcile against (the transcript records the OUTCOME, not the
+     * open ask).
+     *
+     * It is published by the collector that owns the turn, so it reaches every
+     * watcher, including one that re-attached mid-turn.
+     *
+     * @generated from field: orchicon.api.v1.PermissionAskResolved permission_ask_resolved = 10;
+     */
+    value: PermissionAskResolved;
+    case: "permissionAskResolved";
   } | { case: undefined; value?: undefined } = { case: undefined };
 
   constructor(data?: PartialMessage<ChatStreamResponse>) {
@@ -950,6 +1055,7 @@ export class ChatStreamResponse extends Message<ChatStreamResponse> {
     { no: 7, name: "reasoning", kind: "message", T: ReasoningChunk, oneof: "event" },
     { no: 8, name: "heartbeat", kind: "message", T: Heartbeat, oneof: "event" },
     { no: 9, name: "permission_ask", kind: "message", T: PermissionAsk, oneof: "event" },
+    { no: 10, name: "permission_ask_resolved", kind: "message", T: PermissionAskResolved, oneof: "event" },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ChatStreamResponse {
@@ -966,6 +1072,73 @@ export class ChatStreamResponse extends Message<ChatStreamResponse> {
 
   static equals(a: ChatStreamResponse | PlainMessage<ChatStreamResponse> | undefined, b: ChatStreamResponse | PlainMessage<ChatStreamResponse> | undefined): boolean {
     return proto3.util.equals(ChatStreamResponse, a, b);
+  }
+}
+
+/**
+ * PermissionAskResolved is the settled form of a PermissionAsk: which ask, and what
+ * became of it.
+ *
+ * @generated from message orchicon.api.v1.PermissionAskResolved
+ */
+export class PermissionAskResolved extends Message<PermissionAskResolved> {
+  /**
+   * @generated from field: string ask_id = 1;
+   */
+  askId = "";
+
+  /**
+   * @generated from field: string conversation_id = 2;
+   */
+  conversationId = "";
+
+  /**
+   * outcome is one of:
+   *   "allow_once" | "allow_session" | "deny" — the operator decided;
+   *   "answered"                              — a question was answered (answer is set);
+   *   "expired"                               — nobody answered in the window.
+   *
+   * @generated from field: string outcome = 3;
+   */
+  outcome = "";
+
+  /**
+   * answer is the operator's words for a QUESTION ask, empty otherwise. It is what
+   * the ask_user tool returned, and it is carried here so a watching client can show
+   * what was answered rather than only that something was.
+   *
+   * @generated from field: string answer = 4;
+   */
+  answer = "";
+
+  constructor(data?: PartialMessage<PermissionAskResolved>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.PermissionAskResolved";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "ask_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "outcome", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "answer", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): PermissionAskResolved {
+    return new PermissionAskResolved().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): PermissionAskResolved {
+    return new PermissionAskResolved().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): PermissionAskResolved {
+    return new PermissionAskResolved().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: PermissionAskResolved | PlainMessage<PermissionAskResolved> | undefined, b: PermissionAskResolved | PlainMessage<PermissionAskResolved> | undefined): boolean {
+    return proto3.util.equals(PermissionAskResolved, a, b);
   }
 }
 
@@ -1703,6 +1876,37 @@ export class PermissionAsk extends Message<PermissionAsk> {
    */
   denyEntriesBelow: string[] = [];
 
+  /**
+   * --- Clarifying-question asks (ask_user, made blocking) ---
+   *
+   * A question rides THIS message rather than getting its own: the clients already
+   * render one card type from it (the TUI models both as chat.PermissionAsk with a
+   * Kind), and the operator answers both from the transcript. Adding a second
+   * message and a second RPC would have meant two card paths, two reply paths and
+   * two places for a decision to go missing.
+   *
+   * When question is non-empty this is a QUESTION, not a permission: there is no
+   * allow/deny and no grant. The turn is PAUSED on it (the adapter blocks the
+   * ask_user call), so the card is the end of the turn until it is answered —
+   * which is why answering it RESUMES the turn rather than starting a new one.
+   *
+   * @generated from field: string question = 11;
+   */
+  question = "";
+
+  /**
+   * @generated from field: repeated string options = 12;
+   */
+  options: string[] = [];
+
+  /**
+   * allow_other offers the free-text row: the operator can answer in their own
+   * words instead of choosing a canned option.
+   *
+   * @generated from field: bool allow_other = 13;
+   */
+  allowOther = false;
+
   constructor(data?: PartialMessage<PermissionAsk>) {
     super();
     proto3.util.initPartial(data, this);
@@ -1721,6 +1925,9 @@ export class PermissionAsk extends Message<PermissionAsk> {
     { no: 8, name: "inside_project", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
     { no: 9, name: "summary", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 10, name: "deny_entries_below", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 11, name: "question", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 12, name: "options", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 13, name: "allow_other", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): PermissionAsk {
@@ -1976,6 +2183,20 @@ export class ReplyPermissionAskRequest extends Message<ReplyPermissionAskRequest
    */
   choice = PermissionChoice.UNSPECIFIED;
 
+  /**
+   * answer is the operator's reply to a QUESTION ask (question non-empty): the
+   * chosen option's label, or their own words when allow_other offered the
+   * free-text row. It BECOMES THE ask_user TOOL RESULT, so the model continues the
+   * turn with the answer in hand rather than being told the question was recorded.
+   *
+   * Empty for a permission ask — a permission is answered by `choice`, and the two
+   * are deliberately not conflated: a permission's outcome is a grant decision, a
+   * question's is content the model reads.
+   *
+   * @generated from field: string answer = 4;
+   */
+  answer = "";
+
   constructor(data?: PartialMessage<ReplyPermissionAskRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -1987,6 +2208,7 @@ export class ReplyPermissionAskRequest extends Message<ReplyPermissionAskRequest
     { no: 1, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "ask_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "choice", kind: "enum", T: proto3.getEnumType(PermissionChoice) },
+    { no: 4, name: "answer", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ReplyPermissionAskRequest {

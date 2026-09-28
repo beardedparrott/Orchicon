@@ -145,3 +145,77 @@ func TestStatRowDropsTheModelBeforeTheNumbers(t *testing.T) {
 		t.Fatalf("a model ref too long for the room must be dropped, not clipped into the numbers:\n%s", v)
 	}
 }
+
+// TestStatRowRendersFullsendLeftOfTheModePill pins the FULLSEND indicator's place and its
+// refusal to disappear.
+//
+// The operator placed the GUI's control "to the left of the ask mode drop down", so the TUI
+// draws the same two things in the same order — an operator who learned the shape in one
+// client should not have to learn it again in the other.
+//
+// AND IT IS NOT A DECORATION: this is the only thing on screen that says Orchicon has
+// stopped asking for permission, so it must survive a narrow box the way the pill does. A
+// badge that truncates away under pressure is worse than none, because it teaches the
+// operator that its absence means "the gate is up".
+func TestStatRowRendersFullsendLeftOfTheModePill(t *testing.T) {
+	m := New()
+	m.Width = 140
+	m.Stats = "orchicon/anthropic/claude-sonnet-4 · ctx 124K/200K · 1.2M tok · $1.2345"
+	m.Fullsend = "FULLSEND"
+	m.Mode = "iteration"
+
+	line := ansi.Strip(m.statLine(m.Width - 6))
+	fullsend := strings.Index(line, "FULLSEND")
+	pill := strings.Index(line, "[iteration]")
+	if fullsend < 0 {
+		t.Fatalf("the FULLSEND badge is not in the stat row: %q", line)
+	}
+	if pill < 0 {
+		t.Fatalf("the mode pill vanished when the badge was added: %q", line)
+	}
+	if fullsend > pill {
+		t.Fatalf("FULLSEND must render LEFT of the mode pill (both move together): %q", line)
+	}
+	// The stats still come first, so the order is stats · FULLSEND · mode.
+	if stats := strings.Index(line, "ctx 124K"); stats < 0 || stats > fullsend {
+		t.Fatalf("the stats must still lead the row: %q", line)
+	}
+}
+
+// TestFullsendBadgeSurvivesANarrowBox — the pressure case, and the one that matters.
+func TestFullsendBadgeSurvivesANarrowBox(t *testing.T) {
+	m := New()
+	m.Stats = "orchicon/anthropic/claude-sonnet-4 · ctx 124K/200K · 1.2M tok · cache 78% (940K) · $1.2345"
+	m.Fullsend = "FULLSEND"
+	m.Mode = "iteration"
+
+	// Squeeze the row until nothing but the two CONTROLS can fit. The stats are what give
+	// way; the badge and the pill are what the operator acts on.
+	for _, inner := range []int{60, 40, 30, 24} {
+		m.Width = inner + 6
+		line := ansi.Strip(m.statLine(inner))
+		if !strings.Contains(line, "FULLSEND") {
+			t.Fatalf("inner=%d: the FULLSEND badge was truncated away: %q", inner, line)
+		}
+		if !strings.Contains(line, "[iteration]") {
+			t.Fatalf("inner=%d: the mode pill was truncated away: %q", inner, line)
+		}
+	}
+}
+
+// TestFullsendBadgeAloneReservesTheRow — the shell allocates rows from StatsRows, so a badge
+// that does not count there is drawn on a line that was never reserved, and is clipped by the
+// frame rather than by the row.
+func TestFullsendBadgeAloneReservesTheRow(t *testing.T) {
+	blank := New()
+	if blank.StatsRows() != 0 {
+		t.Fatalf("a blank composer reported %d stat rows", blank.StatsRows())
+	}
+	blank.Fullsend = "FULLSEND"
+	if blank.StatsRows() != 1 {
+		t.Fatalf("the badge alone reported %d stat rows, want 1", blank.StatsRows())
+	}
+	if got := ansi.Strip(blank.statLine(blank.Width - 6)); !strings.Contains(got, "FULLSEND") {
+		t.Fatalf("the badge did not render on its own row: %q", got)
+	}
+}

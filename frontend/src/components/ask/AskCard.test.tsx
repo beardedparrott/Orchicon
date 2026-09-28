@@ -3,7 +3,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import fs from "node:fs";
 import path from "node:path";
-import { ConsentAskCard, isAskUserToolCall, parseAskUserArgs } from "./AskCard";
+import { AskCard, ConsentAskCard, isAskUserToolCall, parseAskUserArgs } from "./AskCard";
 
 describe("parseAskUserArgs", () => {
   it("accepts object options with descriptions", () => {
@@ -81,10 +81,16 @@ describe("AskCard wiring (clarifying-question card)", () => {
     expect(route).toContain("<AskCard");
   });
 
-  it("selecting an option sends it as a normal user message via handleSendMessage", () => {
+  it("selecting an option answers the PAUSED turn through the reply RPC", () => {
     expect(route).toContain("onSelectOption={handleSendMessage}");
-    // Interactivity is gated on nothing following the assistant message.
-    expect(route).toContain("answered={msg.id !== lastMessageId}");
+    // THE CARD'S SETTLED STATE COMES FROM THE ASK'S OWN RESULT, not from "a later
+    // message exists". The old test asserted exactly that heuristic
+    // (`answered={block.message.id !== lastMessageId}`), which the pause made
+    // permanently false: the answer now arrives as the ask_user TOOL RESULT and
+    // nothing follows the message, so the card never settled — the operator's "the
+    // Orchicon asks card does not go away when you select something".
+    expect(route).toContain("const askAnswered =");
+    expect(route).toContain("answered={askAnswered}");
   });
 });
 
@@ -121,7 +127,11 @@ describe("ConsentAskCard", () => {
     expect(html).toContain('data-testid="consent-ask-target"');
     expect(html).toContain("write /p/sibling/notes.md");
     expect(html).toContain("Allow once");
-    expect(html).toContain("Allow for this session");
+    // THE ROW NAMES THE DIRECTORY IT COVERS. The operator asked for "an option that says
+    // something along the lines of 'Never ask again for this directory for this session'"
+    // after being re-asked for the same directory with no way to tell how far a "session"
+    // grant reached.
+    expect(html).toContain("Never ask again in /p/sibling this session");
     expect(html).toContain("Deny");
     // The three actions are reachable by keyboard (data-ask-action) and the
     // directory a session grant would cover is named on the card.
@@ -137,13 +147,17 @@ describe("ConsentAskCard", () => {
     expect(html).toContain("never overrides your deny list");
     // The action is still OFFERED (the grant does cover the rest) — hiding it
     // would be wrong.
-    expect(html).toContain("Allow for this session");
+    // THE ROW NAMES THE DIRECTORY IT COVERS. The operator asked for "an option that says
+    // something along the lines of 'Never ask again for this directory for this session'"
+    // after being re-asked for the same directory with no way to tell how far a "session"
+    // grant reached.
+    expect(html).toContain("Never ask again in /p/sibling this session");
   });
 
   it("renders the outcome in the transcript when settled, with no actions left", () => {
     const html = cardHtml(consentAsk(), { kind: "allow_session" });
     expect(html).toContain('data-testid="consent-ask-outcome"');
-    expect(html).toContain("Allowed for this session — write /p/sibling/notes.md (covers /p/sibling)");
+    expect(html).toContain("Never asking again in /p/sibling this session — write /p/sibling/notes.md");
     expect(html).toContain('data-answered="true"');
     expect(html).not.toContain("data-ask-action");
   });
@@ -192,12 +206,78 @@ describe("card keyboard model and wiring", () => {
     expect(routeSrc).toContain('chunk.event.case === "permissionAsk"');
     expect(routeSrc).toContain("askOrchiconClient.replyPermissionAsk(");
     expect(routeSrc).toContain("asks: resolveAsk(prev.asks, askId");
-    // Rendered outside the isStreaming guard so a settled card stays put.
-    expect(routeSrc).toContain("activeStream?.asks.map(");
+    // THE CARD IS A BLOCK IN THE CONVERSATION, NOT AN APPENDIX. The ask list is
+    // interleaved with the messages by arrival time, so it is rendered through
+    // `interleave(transcriptBlocks, …)` rather than as its own trailing
+    // `activeStream?.asks.map(...)` list pinned to the bottom — the operator's
+    // "the permission blocks in the GUI are still remaining at the bottom at the
+    // end of a turn which makes no sense."
+    expect(routeSrc).toContain("interleave(transcriptBlocks, activeStream?.asks)");
     // Escape denies, through the same handler as the Deny action.
     expect(routeSrc).toContain("PermissionChoice.DENY");
     expect(routeSrc).toContain("e.defaultPrevented");
     // The watch is re-dialled on re-attach so a pending ask is recoverable.
     expect(routeSrc).toContain("void runWatch(activeConvId, slot.pendingReplyId, gen)");
+  });
+});
+
+
+// AN ANSWERED QUESTION IS A RECORD, NOT A CARD.
+//
+// The operator, with a screenshot of a full tinted box headed "QUESTION (ANSWERED)": "it shows
+// a full card still that says 'Answered' and doesn't even show what the answer was. I think it
+// should show up inline as text just like the permissions answers do."
+//
+// The failure was two-fold: a settled ask still drew every option as a button (which LOOKS
+// selectable, and was the "still showing up selectable" complaint), and it never said what was
+// answered. A card in the transcript is a question still to be answered; once answered it is
+// history, and history reads as one line.
+describe("AskCard — settled", () => {
+  const html = (over: Record<string, unknown> = {}) =>
+    renderToStaticMarkup(
+      createElement(AskCard, {
+        question: "Which branch?",
+        options: [{ label: "develop" }, { label: "main" }],
+        answered: true,
+        answer: "develop",
+        ...over,
+      } as never),
+    );
+
+  it("states the question AND the answer inline", () => {
+    const out = html();
+    expect(out).toContain("Which branch?");
+    expect(out).toContain("develop");
+    expect(out).toContain('data-testid="ask-card-outcome"');
+  });
+
+  // THE OPTIONS MUST BE GONE, not merely disabled: buttons that cannot be pressed still read
+  // as a live choice, which is exactly what was reported.
+  it("draws NO options and no card chrome once answered", () => {
+    const out = html();
+    expect(out).not.toContain('data-testid="ask-card-option"');
+    expect(out).not.toContain('data-testid="ask-card-other-open"');
+    expect(out).not.toContain("QUESTION (ANSWERED)");
+  });
+
+  // A question dismissed without an answer must SAY so rather than printing an empty arrow.
+  it("says a dismissed question was dismissed", () => {
+    const out = html({ answer: "" });
+    expect(out).toContain("dismissed");
+    expect(out).toContain("Which branch?");
+  });
+
+  // An UNANSWERED question is still a live card with its options — this change must not
+  // settle a question nobody has answered.
+  it("still renders a live card while unanswered", () => {
+    const out = renderToStaticMarkup(
+      createElement(AskCard, {
+        question: "Which branch?",
+        options: [{ label: "develop" }, { label: "main" }],
+        onSelect: () => {},
+      } as never),
+    );
+    expect(out).toContain('data-testid="ask-card-option"');
+    expect(out).not.toContain('data-testid="ask-card-outcome"');
   });
 });

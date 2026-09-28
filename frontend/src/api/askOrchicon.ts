@@ -195,6 +195,34 @@ export function useSetConversationMode() {
   });
 }
 
+// useSetConversationFullsend turns FULLSEND on or off for one conversation.
+//
+// THE STATE IS NOT HELD HERE. The mutation's job is to tell the server; the control renders
+// from Conversation.fullsend, which the invalidation below refreshes. A local optimistic flag
+// would show "on" for a write that failed, and this is the one control where that lie matters:
+// the operator would proceed believing the gate is down while it is still up.
+//
+// It sends a VALUE rather than a toggle, for the same reason the TUI does — a retry after a
+// dropped response must not invert the mode.
+export function useSetConversationFullsend() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (opts: { id: string; enabled: boolean }) => {
+      const res = await askOrchiconClient.setConversationFullsend({
+        id: opts.id,
+        enabled: opts.enabled,
+      });
+      return res.conversation as Conversation | undefined;
+    },
+    onSuccess: (_data, variables) => {
+      // Both keys: the composer reads the control's state off the conversation row, and the
+      // sidebar/rail list carries the same field.
+      qc.invalidateQueries({ queryKey: askKeys.conversations });
+      qc.invalidateQueries({ queryKey: askKeys.conversation(variables.id) });
+    },
+  });
+}
+
 // useSetConversationModel retargets an OPEN conversation's model (ADR-0004
 // picker → SetConversationModel). The change applies from the NEXT message.
 export function useSetConversationModel() {

@@ -31,6 +31,7 @@ import { Button } from "@/components/ui/button";
 import { LiveDuration } from "@/components/ui/live-duration";
 import { ModeIcon } from "@/components/ui/ModeIcon";
 import { ModeToggle } from "@/components/ui/mode-toggle";
+import { FullsendToggle } from "@/components/ui/fullsend-toggle";
 import { useAskMetricsLive } from "@/lib/ask-metrics";
 import { cn } from "@/lib/utils";
 import { ProjectScopeSelect } from "@/components/conversations/ProjectScopeSelect";
@@ -52,6 +53,7 @@ import {
   useAbortConversationTurn,
   useSetConversationMode,
   useSetConversationModel,
+  useSetConversationFullsend,
   useSetConversationProject,
   useCompactConversation,
   askKeys,
@@ -85,14 +87,18 @@ import {
 import { useCategoryPreferences, getItemsForCategory } from "@/lib/category-store";
 import { AskCard, isAskUserToolCall, parseAskUserArgs } from "@/components/ask/AskCard";
 import { ConsentAskCard } from "@/components/ask/AskCard";
-import { SessionGrants } from "@/components/ask/SessionGrants";
 import {
   applyAskChunk,
+  askCardPlan,
+  interleave,
+  settleFromLedger,
   outcomeFromChoice,
+  outcomeFromWire,
   pendingFor,
   resolveAsk,
   type AskItem,
 } from "@/lib/ask-consent";
+import { SessionGrants } from "@/components/ask/SessionGrants";
 import { CreateCategoryDialog } from "@/components/CreateCategoryDialog";
 import { DiffSidebar, type DiffTab } from "@/components/diffs/DiffSidebar";
 import { usePersistentState } from "@/lib/diff/usePersistentState";
@@ -163,6 +169,19 @@ interface ConvStream {
   // conversation, which is per-slot anyway.
   asks: AskItem[];
 }
+
+/**
+ * One block of the transcript flow a consent card is interleaved into.
+ *
+ * A message carries the server's createdAt; the optimistic echo carries the
+ * moment it was sent. Both are epoch ms, which is the unit the interleave sorts
+ * by — and the unit an AskItem now carries too, so a card, a message and an echo
+ * are ordered by the same clock rather than by where they happened to be
+ * rendered.
+ */
+type TranscriptBlock =
+  | { kind: "message"; at: number; message: ChatMessage }
+  | { kind: "optimistic"; at: number; text: string };
 const EMPTY_STREAM: ConvStream = {
   isStreaming: false,
   isThinking: false,
@@ -385,6 +404,56 @@ function AskOrchiconPage() {
   const pendingReplyId = activeStream?.pendingReplyId ?? null;
   const streamItems = activeStream?.items ?? [];
 
+  // MESSAGES IS DECLARED BEFORE ITS CONSUMERS. `transcriptBlocks` below reads it,
+  // and a `const` used above its declaration is a TDZ error the production build
+  // (`tsc -b`) rejects even though a loose `--noEmit` pass did not — which is how
+  // it reached a release build.
+  const { data: messages, isLoading: msgsLoading } = useListMessages(
+    activeConvId ?? "",
+    { refetchInterval: isStreaming ? 2000 : false },
+  );
+
+  // THE SERVER'S TRUTH SETTLES THE CARD, not only the live stream event.
+  //
+  // A `PermissionAskResolved` event reaches only a client watching the turn at that moment, so
+  // answering in the TUI left a card up in the GUI, in a second tab, and after a reload — which
+  // is why fixing it in the stream kept "working" and kept coming back. The operator's rule is
+  // the right one: "the truth should be set server side and update all clients when a response
+  // is seen whether it's TUI, GUI, separate tabs/browsers."
+  //
+  // The server writes every consent decision into the turn's ledger as a `permission.<verdict>`
+  // record whose ID is the ASK ID, and the ledger is persisted with the assistant message. So
+  // the transcript IS the truth, it survives a restart, and every client already fetches it. Any
+  // card whose ask appears there resolved is settled here — on load, on every poll, in every tab.
+  useEffect(() => {
+    if (!activeConvId || !messages || messages.length === 0) return;
+    const current = streams[activeConvId]?.asks;
+    if (!current || current.length === 0) return;
+    // untouched when there is nothing to settle, so this never churns state or re-renders.
+    if (settleFromLedger(current, messages) === current) return;
+    setStream(activeConvId, (prev) => ({ ...prev, asks: settleFromLedger(prev.asks, messages) }));
+  }, [activeConvId, messages, streams, setStream]);
+
+  // transcriptBlocks is the message flow the cards are interleaved into. The
+  // optimistic echo is only included while the durable view has not caught up
+  // with it (the same rule the old inline render used), so it cannot double.
+  const showOptimistic =
+    !!optimisticUserMsg &&
+    !messages?.some((m) => m.content === optimisticUserMsg && m.role === "user");
+  const transcriptBlocks: TranscriptBlock[] = [];
+  for (const msg of messages ?? []) {
+    transcriptBlocks.push({
+      kind: "message",
+      at: Number(msg.createdAt?.seconds ?? 0) * 1000,
+      message: msg,
+    });
+  }
+  if (showOptimistic) {
+    // Stamped LAST so the echo lands at the end of what has arrived, which is
+    // where a just-sent message belongs.
+    transcriptBlocks.push({ kind: "optimistic", at: Date.now(), text: optimisticUserMsg! });
+  }
+
   const { data: conversations, isLoading: convsLoading } =
     useListConversations({
       // Poll while ANY conversation has a running turn so the sidebar's
@@ -393,10 +462,6 @@ function AskOrchiconPage() {
       // polling once everything settles — no idle network churn.
       refetchInterval: listPollMs,
     });
-  const { data: messages, isLoading: msgsLoading } = useListMessages(
-    activeConvId ?? "",
-    { refetchInterval: isStreaming ? 2000 : false },
-  );
   const { data: activeConv } = useGetConversation(activeConvId ?? "");
   const { data: settings } = useGetSettings();
 
@@ -453,6 +518,7 @@ function AskOrchiconPage() {
   const abortTurn = useAbortConversationTurn();
   const setMode = useSetConversationMode();
   const setConvModel = useSetConversationModel();
+  const setFullsend = useSetConversationFullsend();
   const compactConv = useCompactConversation();
   const qc = useQueryClient();
 
@@ -467,7 +533,13 @@ function AskOrchiconPage() {
   // never a silent nothing. On a transport error the card stays pending so the
   // operator can retry.
   const handleAskDecision = useCallback(
-    async (convId: string, askId: string, choice: PermissionChoice): Promise<void> => {
+    async (
+      convId: string,
+      askId: string,
+      choice: PermissionChoice,
+      /** answer is the operator's words for a QUESTION ask; empty for a permission. */
+      answer = "",
+    ): Promise<void> => {
       if (askInFlight[askId]) return;
       setAskInFlight((prev) => ({ ...prev, [askId]: true }));
       try {
@@ -475,6 +547,7 @@ function AskOrchiconPage() {
           conversationId: convId,
           askId,
           choice,
+          answer,
         });
         if (res.applied) {
           setStream(convId, (prev) => ({
@@ -905,6 +978,15 @@ function AskOrchiconPage() {
             // The ask arm the GUI never read: a pending consent ask arrives on
             // the SAME turn stream (never a second polling loop).
             applyAsk(convId, chunk.event.value);
+          } else if (chunk.event.case === "permissionAskResolved") {
+            // SOMEONE ELSE DECIDED — on the WATCH socket too, not just the dispatch
+            // socket: a watcher that re-attached mid-turn is exactly the client most
+            // likely to be holding a card it did not answer. See the dispatch arm.
+            const r = chunk.event.value;
+            setStream(convId, (prev) => ({
+              ...prev,
+              asks: resolveAsk(prev.asks, r.askId, outcomeFromWire(r.outcome)),
+            }));
           } else if (chunk.event.case === "error") {
             return; // poll resolves the failure rendering
           }
@@ -1063,6 +1145,17 @@ function AskOrchiconPage() {
             );
           } else if (chunk.event.case === "permissionAsk") {
             applyAsk(convId, chunk.event.value);
+          } else if (chunk.event.case === "permissionAskResolved") {
+            // SOMEONE ELSE DECIDED. The ask reaches every watcher of the turn, but only
+            // the answering client cleared its own copy — so a decision made in the TUI
+            // left this client showing a live-looking, inert card, and it cannot be
+            // inferred: a permission ask has no durable per-ask row to reconcile
+            // against. The collector publishes the outcome precisely so this can settle.
+            const r = chunk.event.value;
+            setStream(convId, (prev) => ({
+              ...prev,
+              asks: resolveAsk(prev.asks, r.askId, outcomeFromWire(r.outcome)),
+            }));
           } else if (chunk.event.case === "error") {
             toast.error(chunk.event.value.message);
             fail();
@@ -1072,6 +1165,17 @@ function AskOrchiconPage() {
         if (!acked) {
           fail();
         }
+        // ONE FINAL DURABLE FETCH, after the turn ends.
+        //
+        // The turn's tool calls land on the message row at FINALIZE — after the
+        // last chunk — and this stream's poll stops the moment streaming ends
+        // (`refetchInterval: isStreaming ? 2000 : false`). So without this the
+        // newest durable content is NEVER fetched, and a recorded ask_user call
+        // does not appear in the GUI at all. The operator: "it never popped up in
+        // the GUI but was in the TUI" — the TUI happened to re-read, the GUI had
+        // no reason to. The same race hid the tool calls of a just-finished reply
+        // until the page was reloaded.
+        qc.invalidateQueries({ queryKey: askKeys.messages(convId) });
       } catch (err: unknown) {
         fail(err);
       } finally {
@@ -1198,6 +1302,38 @@ function AskOrchiconPage() {
       }
     },
     [localMode, activeConvId, setMode, toast],
+  );
+
+  // The FULLSEND toggle. NO OPTIMISTIC FLIP HERE, unlike the mode above.
+  //
+  // The mode can flip locally and roll back because a wrong mode is merely a wrong persona for
+  // one turn. This is the permission gate: rendering it "on" before the server has confirmed
+  // would tell the operator the gate is down while it is still up, and they would proceed on
+  // that. So the control re-renders from Conversation.fullsend (which the mutation's
+  // invalidation refreshes) and this handler only reports failure.
+  const handleFullsendChange = useCallback(
+    (next: boolean) => {
+      if (!activeConvId) {
+        // There is deliberately no pending form: a bypass armed for a conversation the operator
+        // has not opened is one they did not knowingly turn on (the leak the conversation mode
+        // had, and had fixed the same way). The control is not rendered without a conversation,
+        // so this is a guard against a future caller rather than a reachable path.
+        toast.error("Open a conversation first — fullsend applies to one conversation", {
+          title: "Fullsend",
+        });
+        return;
+      }
+      setFullsend.mutate(
+        { id: activeConvId, enabled: next },
+        {
+          onError: () =>
+            toast.error("Failed to change fullsend — permissions are unchanged", {
+              title: "Error",
+            }),
+        },
+      );
+    },
+    [activeConvId, setFullsend, toast],
   );
 
   // DnD sensors
@@ -1385,11 +1521,12 @@ function AskOrchiconPage() {
     return [...(messages ?? []), ...groupedStream] as ChatMessage[];
   }, [messages, isStreaming, groupedStream]);
 
-  // The last message in the transcript. A clarifying-question card is
-  // interactive only while nothing follows the assistant message that asked it;
-  // once a later message exists, the question is settled (options shown, not
-  // clickable).
-  const lastMessageId = displayMessages[displayMessages.length - 1]?.id;
+  // (There was a `lastMessageId` here, used to decide whether a clarifying-question
+  // card was still interactive by asking "does a later message exist?". That was right
+  // while answering SENT the choice as the next user message, and became permanently
+  // false once ask_user was made BLOCKING — the answer arrives as the tool RESULT and
+  // nothing follows. The card now reads its own result instead, so the variable is
+  // gone rather than left as a second, wrong source of truth.)
 
   return (
     <div className="flex flex-1 min-h-0 h-full gap-0 min-w-0 overflow-hidden">
@@ -1599,50 +1736,66 @@ function AskOrchiconPage() {
                     </div>
                   )}
 
-                {/* Persisted messages from the server */}
-                {messages?.map((msg) => (
-                  <MessageBubble
-                    key={msg.id}
-                    message={msg}
-                    onRetry={handleRetry}
-                    onSelectOption={handleSendMessage}
-                    answered={msg.id !== lastMessageId}
-                  />
-                ))}
+                {/* THE TRANSCRIPT, WITH THE CONSENT CARDS IN IT.
+                    A card used to be a separate list rendered AFTER every
+                    message, so a settled card sat pinned to the bottom of the
+                    conversation forever. The operator: "the permission blocks in
+                    the GUI are still remaining at the bottom at the end of a
+                    turn which makes no sense. They should be in the conversation
+                    and move up just like any other conversation block."
 
-                {/* Optimistic user message — before streaming bubbles */}
-                {optimisticUserMsg &&
-                  !messages?.some(
-                    (m) =>
-                      m.content === optimisticUserMsg && m.role === "user",
-                  ) && (
-                    <UserBubble
-                      text={optimisticUserMsg}
-                      source="you"
+                    So the messages and the asks are merged into ONE time-ordered
+                    sequence and rendered together: a card sits between the
+                    messages it happened between, and moves up as the conversation
+                    grows, exactly like anything else. */}
+                {interleave(transcriptBlocks, activeStream?.asks).map((slot) => {
+                  if (slot.isAsk) {
+                    const item = slot.block as AskItem;
+                    return (
+                      <ConsentAskCard
+                        key={item.key}
+                        ask={item.ask}
+                        outcome={item.outcome}
+                        busy={!!askInFlight[item.ask.askId]}
+                        onDecide={(choice) =>
+                          void handleAskDecision(activeConvId!, item.ask.askId, choice)
+                        }
+                        // A QUESTION's answer is CONTENT (see ConsentAskCard): it becomes
+                        // the ask_user tool result and resumes the PAUSED turn, so it goes
+                        // as `answer` with no permission choice.
+                        onAnswer={(text) =>
+                          void handleAskDecision(
+                            activeConvId!,
+                            item.ask.askId,
+                            PermissionChoice.UNSPECIFIED,
+                            text,
+                          )
+                        }
+                        onEscape={() =>
+                          void handleAskDecision(
+                            activeConvId!,
+                            item.ask.askId,
+                            PermissionChoice.DENY,
+                          )
+                        }
+                      />
+                    );
+                  }
+                  const block = slot.block as TranscriptBlock;
+                  if (block.kind === "optimistic") {
+                    return (
+                      <UserBubble key="optimistic" text={block.text} source="you" />
+                    );
+                  }
+                  return (
+                    <MessageBubble
+                      key={block.message.id}
+                      message={block.message}
+                      onRetry={handleRetry}
+                      onSelectOption={handleSendMessage}
                     />
-                  )}
-
-                {/* CONSENT ASKS — rendered OUTSIDE the isStreaming guard so a
-                    settled card stays in the transcript after the turn ends
-                    (the outcome is part of the record, not just an effect). */}
-                {activeStream?.asks.map((item) => (
-                  <ConsentAskCard
-                    key={item.key}
-                    ask={item.ask}
-                    outcome={item.outcome}
-                    busy={!!askInFlight[item.ask.askId]}
-                    onDecide={(choice) =>
-                      void handleAskDecision(activeConvId!, item.ask.askId, choice)
-                    }
-                    onEscape={() =>
-                      void handleAskDecision(
-                        activeConvId!,
-                        item.ask.askId,
-                        PermissionChoice.DENY,
-                      )
-                    }
-                  />
-                ))}
+                  );
+                })}
 
                 {/* Live streaming items (text + reasoning chunks) */}
                 {isStreaming &&
@@ -1740,6 +1893,8 @@ function AskOrchiconPage() {
                 placeholder="Ask Orchicon Anything..."
                 mode={localMode}
                 onModeChange={handleModeChange}
+                fullsend={!!activeConv?.fullsend}
+                onFullsendChange={handleFullsendChange}
                 convId={activeConvId}
                 modelRef={askModel}
                 onModelChange={handleAskModelChange}
@@ -2017,16 +2172,12 @@ function MessageBubble({
   message,
   onRetry,
   onSelectOption,
-  answered,
 }: {
   message: ChatMessage;
   onRetry?: () => void;
-  // onSelectOption sends a clicked clarifying-question option as a NORMAL user
-  // message through the conversation's existing send path (handleSendMessage).
+  // onSelectOption sends a clicked clarifying-question option as the answer to the
+  // PAUSED turn (it goes over the reply RPC as the ask_user tool result).
   onSelectOption?: (label: string) => void;
-  // answered=true settles the card: a later message exists, so the question is
-  // no longer answerable by click (options shown, not interactive).
-  answered?: boolean;
 }) {
   const isUser = message.role === "user";
   const isError = !!message.metadata?.error;
@@ -2069,25 +2220,40 @@ function MessageBubble({
   const hasReasoning = Array.isArray(reasoning) && reasoning.length > 0;
 
   // A recorded ask_user call renders as the clarifying-question card. It is
-  // interactive only while nothing follows this message (answered === false);
-  // selecting an option sends its label as a normal user message.
+  // interactive only while NOT answered; selecting an option sends its label as the
+  // answer to the PAUSED turn.
   const askCall = (message.toolCalls ?? []).find((c) =>
     isAskUserToolCall(c.functionName),
   );
   const askParsed = askCall ? parseAskUserArgs(askCall.arguments) : null;
+  // ANSWERED IS READ FROM THE ASK'S OWN RESULT, not from a later message.
+  //
+  // It used to be `answered={message.id !== lastMessageId}` — "a later message
+  // exists" — which was right while answering SENT the choice as the next user
+  // message. With ask_user made BLOCKING the answer arrives as the TOOL RESULT and
+  // nothing follows the message, so that test stayed false forever and the card never
+  // settled. The operator: "the Orchicon asks card does not go away in the TUI or the
+  // GUI when you select something."
+  //
+  // The result is the ask's own outcome — server truth — rather than an inference from
+  // what happened afterwards.
+  const askResult = askCall
+    ? (message.toolResults ?? []).find((r) => r.toolCallId === askCall.id)
+    : undefined;
+  const askAnswered = !!askResult;
+  // WHETHER TO DRAW AT ALL, and whether to draw as an error. The distinction is the reported bug: a
+  // call recorded but NOT YET RESOLVED carries a placeholder `{}` for its arguments, and for
+  // `ask_user` that state lasts as long as the question is open (the call BLOCKS) — so the
+  // transcript held an unparseable card for the whole time the operator was looking at the real
+  // one. See askCardPlan.
+  const askPlan = askCardPlan(!!askCall, !!askParsed, !!askResult);
+  // The answer ITSELF, so the settled record can state it. It is the ask's own tool result —
+  // server truth, present in the persisted transcript — rather than a guess from a later
+  // message, which is the same rule that fixed "answered" in the first place.
+  const askAnswer = askResult?.output ?? "";
 
   return (
     <>
-      {askCall && (
-        <AskCard
-          question={askParsed?.question ?? ""}
-          options={askParsed?.options ?? []}
-          allowOther={askParsed?.allowOther}
-          answered={answered}
-          error={askParsed ? undefined : "the recorded arguments are not valid JSON"}
-          onSelect={onSelectOption}
-        />
-      )}
       {hasReasoning && (
         <ReasoningBubble text={reasoning!.join("\n")} />
       )}
@@ -2097,6 +2263,25 @@ function MessageBubble({
         <AssistantBubble
           text={message.content}
           label="Orchicon"
+        />
+      )}
+      {/* THE QUESTION CARD IS THE LAST THING IN THE MESSAGE.
+
+          It is the thing the operator ACTS ON, not a transcript note buried
+          above the prose that followed the call. The tool call is chronologically
+          first, but reading order is not chronology — the operator: "it is ON TOP
+          of a bunch of other text you sent. That is not intuitive. It should be at
+          the bottom (newest/recent)." The TUI emits its card last for the same
+          reason (chat.conversationItems), so the two clients read the same way. */}
+      {askCall && askPlan.render && (
+        <AskCard
+          question={askParsed?.question ?? ""}
+          options={askParsed?.options ?? []}
+          allowOther={askParsed?.allowOther}
+          answered={askAnswered}
+          answer={askAnswer}
+          error={askPlan.error}
+          onSelect={onSelectOption}
         />
       )}
     </>
@@ -2116,6 +2301,8 @@ function ChatInputField({
   placeholder = "Ask Orchicon anything...",
   mode = ConversationMode.BRAINSTORM,
   onModeChange,
+  fullsend = false,
+  onFullsendChange,
   convId,
   modelRef = "",
   onModelChange,
@@ -2129,6 +2316,12 @@ function ChatInputField({
   placeholder?: string;
   mode?: ConversationMode;
   onModeChange?: (mode: ConversationMode) => void;
+  // fullsend is the conversation's FULLSEND state AS THE SERVER REPORTS IT, and
+  // onFullsendChange writes it. Both are SUPPLIED ONLY WHEN A CONVERSATION IS OPEN: there is no
+  // pending form (see handleFullsendChange), so the control is absent on the hero rather than
+  // present and inert.
+  fullsend?: boolean;
+  onFullsendChange?: (on: boolean) => void;
   convId?: string | null;
   // modelRef is the model answering this conversation. The session stat strip
   // reports it alongside the context / tokens / cache / cost numbers.
@@ -2832,6 +3025,25 @@ function ChatInputField({
               >
                 {statsLine}
               </span>
+            )}
+            {onFullsendChange && (
+              // FULLSEND IS TOGGLEABLE MID-TURN, deliberately, and the `disabled={isStreaming}`
+              // that used to be here was a mistake I introduced by reflex: I copied the
+              // constraint from the MODEL picker beside it, which really cannot change mid-turn
+              // (the running session belongs to the model that opened it). Fullsend has no such
+              // constraint — it is a plain flag the consent layer reads at EACH DECISION
+              // (internal/askorchicon/consent.go) and the bash guard re-reads per invocation, so a
+              // change lands on the very next ask with no session or turn restart.
+              //
+              // AND MID-TURN IS ITS PRIMARY USE CASE. Nobody thinks "I should turn fullsend on
+              // before I start" — you reach for it when you are already mid-task and being asked
+              // too often, which is precisely when the operator found it greyed out. The mode
+              // dropdown on the same row was never disabled, so the two siblings disagreed about
+              // what a running turn allows.
+              <FullsendToggle
+                on={!!fullsend}
+                onChange={onFullsendChange}
+              />
             )}
             {onModeChange && (
               <ModeToggle

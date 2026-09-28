@@ -63,6 +63,19 @@ type ParsedAsk struct {
 	Question   string
 	Options    []AskOption
 	AllowOther bool
+	// Answered reports that this ask_user call HAS A RESULT — the operator answered
+	// it and the answer came back as the tool result.
+	//
+	// IT REPLACES A HEURISTIC THAT THE PAUSE BROKE. The card's interactivity used
+	// to be decided by "a later user message exists", because answering used to
+	// SEND the choice as the next message. With ask_user made blocking the answer
+	// arrives as the TOOL RESULT and nothing follows it — so the old test never went
+	// true and the card stayed clickable forever. The result is the ask's own
+	// outcome, which is server truth rather than an inference from what came after.
+	Answered bool
+	// AnswerText is what the operator answered, read from that result, so a settled
+	// card can say what was decided instead of silently going inert.
+	AnswerText string
 }
 
 // isAskUserCall reports whether a recorded tool call is the clarifying question
@@ -76,10 +89,25 @@ func isAskUserCall(functionName string) bool {
 // ParsedAsk. It NEVER panics or errors outward: a malformed arguments payload
 // yields a card carrying the question-less error text the operator can see,
 // rather than dropping the call or crashing the pane.
-func parseAskUserCall(calls []*apiv1.ToolCall) *ParsedAsk {
+// parseAskUserCall parses the FIRST recorded ask_user call on a message into a
+// card's content, and reports whether it has been ANSWERED.
+//
+// results is the message's tool results: a call that has one has been answered, and
+// its output IS the operator's answer. See ParsedAsk.Answered for why the card's
+// settled state is read from the result rather than inferred from a later message.
+func parseAskUserCall(calls []*apiv1.ToolCall, results []*apiv1.ToolResult) *ParsedAsk {
 	for _, c := range calls {
 		if c == nil || !isAskUserCall(c.GetFunctionName()) {
 			continue
+		}
+		// THE RESULT IS LOOKED UP FIRST, because whether one EXISTS decides what an unreadable
+		// argument list means. See the unmarshal failure below.
+		var result *apiv1.ToolResult
+		for _, r := range results {
+			if r != nil && r.GetToolCallId() == c.GetId() {
+				result = r
+				break
+			}
 		}
 		var in struct {
 			Question string `json:"question"`
@@ -90,7 +118,28 @@ func parseAskUserCall(calls []*apiv1.ToolCall) *ParsedAsk {
 			AllowOther bool `json:"allow_other"`
 		}
 		if err := json.Unmarshal([]byte(c.GetArguments()), &in); err != nil {
-			return &ParsedAsk{Question: "(this clarifying question's arguments could not be read)"}
+			// AN OPEN CALL IS A PLACEHOLDER, NOT A CORRUPT ONE. The transcript records a tool call
+			// the moment it is ISSUED, with `{}` for its arguments — the real ones are backfilled
+			// only when it COMPLETES. For ask_user the call does not complete while the question is
+			// open (it BLOCKS; that is the pause), so for as long as the operator is looking at a
+			// pending question the transcript holds an ask_user call with no arguments.
+			//
+			// Drawing a card for it produced TWO cards for ONE question — a "could not be read"
+			// box beside the real one — for the whole time the operator was deciding. The live
+			// card is already drawing the question, so this draws nothing.
+			//
+			// A call that HAS resolved and is still unreadable really is corrupt, and that IS
+			// worth showing: it is the only remaining evidence that a question was asked.
+			if result == nil {
+				return nil
+			}
+			// ANSWERED, because the call HAS resolved: the card must not render as an interactive
+			// question inviting an answer to something already finished — nothing is waiting on it.
+			return &ParsedAsk{
+				Question:   "(this clarifying question's arguments could not be read)",
+				Answered:   true,
+				AnswerText: strings.TrimSpace(result.GetOutput()),
+			}
 		}
 		ask := &ParsedAsk{Question: strings.TrimSpace(in.Question), AllowOther: in.AllowOther}
 		for _, o := range in.Options {
@@ -98,6 +147,11 @@ func parseAskUserCall(calls []*apiv1.ToolCall) *ParsedAsk {
 				continue
 			}
 			ask.Options = append(ask.Options, AskOption{Label: o.Label, Description: o.Description})
+		}
+		// The answer IS the tool result, when there is one.
+		if result != nil {
+			ask.Answered = true
+			ask.AnswerText = strings.TrimSpace(result.GetOutput())
 		}
 		return ask
 	}

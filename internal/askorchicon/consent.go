@@ -26,11 +26,14 @@ package askorchicon
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -58,6 +61,20 @@ type askAction struct {
 	// CallID is the tool call the ask belongs to (opencode emits it alongside
 	// the ask id); advisory, used for transcript correlation.
 	CallID string
+	// AskID is the ADAPTER's id for the consent ask this action gated (the
+	// `permission.asked` id, or the native bridge's permission id).
+	//
+	// IT IS PERSISTED, and that is the whole reason it is here. The decision the
+	// operator makes is written into the turn's ledger as a synthetic
+	// `permission.<verdict>` record, which becomes part of the assistant message in
+	// the database — so it is DURABLE, where the live stream event is not. Carrying
+	// the id on that record is what lets ANY client reconcile its copy of a card
+	// against server truth: a second tab, a device, or the same page after a
+	// reload, none of which ever see the live event that settled it. Without the id
+	// the record is a decision nobody can attach to the ask it decided, which is
+	// exactly why this stayed broken through several attempts to fix it in the
+	// stream.
+	AskID string
 	// Key is the grant/deny KEY (C4): a cleaned directory. For a file action it
 	// is the target's directory; for bash it is the cwd's directory. It is set
 	// by resolveAskKey (the extraction is scope-blind; the scope is not known
@@ -161,9 +178,18 @@ func toolInputCommand(in map[string]any) string {
 	return detailString(in, "command", "cmd", "script", "shellCommand")
 }
 
-// compactArgs renders a correlated call's args for a card when NO target or
-// command could be recognised, so the user sees what the tool will do rather
-// than only its name. Values are bounded (a write's `content` can be huge).
+// compactArgs renders a call's arguments for the card: SCALARS ONLY, and a
+// shape (a count) for anything nested. It is the fallback for a card when NO
+// target or command could be recognised, so the operator sees what the tool
+// will do rather than only its name.
+//
+// It deliberately does NOT fall back to fmt's %v for a value it does not
+// understand. That is exactly what put a Go struct literal on an operator's
+// card — "writes=[map[mode:edit new:type chatBus struct {…]", truncated
+// mid-struct at 80 chars — because a []map[string]any rendered through %v is
+// Go's own debug formatting. An unrecognised shape is reported as an ellipsis:
+// the card's job is to say what will happen, and a dump of internal structure
+// says nothing while making the card unreadable.
 func compactArgs(in map[string]any) string {
 	keys := make([]string, 0, len(in))
 	for k := range in {
@@ -177,13 +203,50 @@ func compactArgs(in map[string]any) string {
 		}
 		b.WriteString(k)
 		b.WriteString("=")
-		s := fmt.Sprintf("%v", in[k])
-		if len(s) > 80 {
-			s = s[:80] + "…"
-		}
-		b.WriteString(s)
+		b.WriteString(scalarArg(in[k]))
 	}
 	return b.String()
+}
+
+// scalarArg renders one argument value. Scalars are shown as themselves,
+// containers are summarised by SIZE, and anything else is an ellipsis — never a
+// formatted dump of the value (see compactArgs).
+func scalarArg(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return "null"
+	case string:
+		return truncateArg(t)
+	case bool:
+		return strconv.FormatBool(t)
+	case float64, float32, int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64, json.Number:
+		return fmt.Sprintf("%v", t)
+	case []any:
+		return countLabel(len(t), "item")
+	case map[string]any:
+		return countLabel(len(t), "field")
+	default:
+		return "…"
+	}
+}
+
+// countLabel renders a container's size: "[2 items]", "[1 field]".
+func countLabel(n int, noun string) string {
+	if n == 1 {
+		return "[1 " + noun + "]"
+	}
+	return fmt.Sprintf("[%d %ss]", n, noun)
+}
+
+// truncateArg shortens a scalar so a long value cannot push the card's actions
+// off the screen.
+func truncateArg(s string) string {
+	const max = 80
+	if len(s) > max {
+		return s[:max] + "…"
+	}
+	return s
 }
 
 // isBashAsk reports whether a tool name is a shell-command ask. A shell command
@@ -245,6 +308,39 @@ func detailStrings(m map[string]any, keys ...string) []string {
 //
 // Pure: no ctx, no db.
 func extractAskAction(evt scheduler.SessionEvent) askAction {
+	// TYPED CONSENT FIELDS FIRST (adapter-neutral).
+	//
+	// An adapter that can name the action directly — the native bridge knows the
+	// tool, its command and its argument JSON at the moment it is about to run it
+	// — must not have to shape them into opencode's property vocabulary. This is
+	// the same rule the typed tool_result fields follow, and it is what lets a
+	// second adapter raise a real ask without imitating the first.
+	//
+	// The Detail path below stays authoritative for opencode, which is the only
+	// adapter that emits it.
+	if evt.Tool != "" {
+		a := askAction{
+			Tool:    evt.Tool,
+			Command: evt.Command,
+			Targets: realTargets(evt.Targets),
+		}
+		if strings.TrimSpace(evt.InputJSON) != "" {
+			var in map[string]any
+			if err := json.Unmarshal([]byte(evt.InputJSON), &in); err == nil {
+				a.Input = in
+				// The arguments carry the target/command for a call whose own ask
+				// named neither (an MCP/host-suite tool), so they are the fallback
+				// rather than the override.
+				if len(a.Targets) == 0 {
+					a.Targets = toolInputTargets(in)
+				}
+				if a.Command == "" {
+					a.Command = toolInputCommand(in)
+				}
+			}
+		}
+		return a
+	}
 	d := evt.Detail
 	if d == nil {
 		return askAction{Key: ""}
@@ -371,6 +467,17 @@ func resolveAskKey(a askAction, dir string) string {
 	return filepath.Dir(abs)
 }
 
+// decisionTarget is one path the consent DECISION covers: the absolute path the
+// policy is consulted on, plus the directory its grant/project inputs are read
+// from.
+type decisionTarget struct {
+	abstarget string
+	key       string
+}
+
+// (commandPaths lives below decisionTargets — see its own comment for what it does
+// and does not extract.)
+
 // absAskTarget returns the absolute path the policy is consulted on for the
 // action's KEY target: the first target for a file action (resolved against
 // the scope dir when relative), or the scope directory itself for a bash
@@ -386,12 +493,355 @@ func absAskTarget(a askAction, dir string) string {
 	return t
 }
 
-// decisionTarget is one path the consent DECISION covers: the absolute path the
-// policy is consulted on, plus the directory its grant/project inputs are read
-// from.
-type decisionTarget struct {
-	abstarget string
-	key       string
+// commandPaths extracts the filesystem paths a shell command NAMES as arguments.
+//
+// DELIBERATELY MODEST, AND HONEST ABOUT IT. It finds LITERAL absolute paths — `/etc/x`,
+// `--flag=/etc/x`, `~/x` — and nothing more. A path built at runtime (`$(cat cfg)`, a
+// variable, a script's own logic) is invisible to it, so this RAISES the bar rather than
+// guaranteeing containment, and the operator was told exactly that when they chose it. It
+// is worth having because the case that prompted it (`cp ~/a /etc/b`) is a literal path in
+// the text.
+//
+// WHAT IT MUST NOT DO IS INVENT PATHS, because an invented path is an ask no session grant
+// can answer — and that is exactly what it did. The operator granted the project directory
+// again and again and was asked again every time, because an awk program's REGEX was read
+// as a path: `/^func` became a consent target whose grant key is
+// filepath.Dir("/^func") = "/", which no grant can cover, so the ask repeated forever. The
+// ledger of that session shows every `awk`/`sed` command asking, each answered with "never
+// ask again", each asking again. Three rules keep invention out:
+//
+//  1. QUOTED TOKENS ARE DATA AND MUST LOOK LIKE PATHS. A quoted span is a program, a regex
+//     or a literal, not an argument, so `'/^func /'` and `'/return x/'` are rejected on
+//     SHAPE — two path segments or a home prefix, no metacharacter. Unquoted tokens keep
+//     the original permissive rule: they are arguments, and `cp ~/a /etc/b` is the case this
+//     function exists for.
+//  2. A REGEX/GLOB METACHARACTER DISQUALIFIES A TOKEN outright, quoted or not. A token
+//     containing any of `^ + ! * , ? [ ] { } ( ) |` or a backslash is a pattern, not a
+//     target we could judge.
+//  3. HEREDOC BODIES ARE FILE CONTENT, NOT ARGUMENTS. Everything between `<<'EOF'` and its
+//     terminator is text about to be WRITTEN, so a path in it is not a path this command
+//     touches — and reading them meant that writing a test file whose content mentioned
+//     /tmp raised an ask about /tmp. The heredoc operator, delimiter and the rest of the
+//     opening line are KEPT, so the redirect target itself is still judged.
+//
+// Relative paths are intentionally NOT extracted: they resolve against the cwd, which is
+// already the first judged target, so listing them would judge the same directory twice.
+func commandPaths(cmd string) []string {
+	if strings.TrimSpace(cmd) == "" {
+		return nil
+	}
+	var out []string
+	for _, t := range commandTokens(stripHeredocBodies(cmd)) {
+		// Strip the shell punctuation that glues a path to its neighbours: quotes,
+		// redirects, separators, grouping.
+		tok := strings.Trim(t.tok, `"'`+",;|&()<>")
+		// `--flag=/path` and `VAR=/path`: keep the value half.
+		if i := strings.IndexByte(tok, '='); i >= 0 {
+			tok = tok[i+1:]
+		}
+		if tok == "" {
+			continue
+		}
+		isHome := strings.HasPrefix(tok, "~/")
+		if !isHome && !strings.HasPrefix(tok, "/") {
+			continue
+		}
+		// A URL is not a path (`https://host/x` starts with 'h', but
+		// `//host/x` and `--url=//host/x` would look absolute).
+		if strings.Contains(tok, "://") || strings.HasPrefix(tok, "//") {
+			continue
+		}
+		// Rule 2: a pattern is not a path, however it was written.
+		if hasShellMetachar(tok) {
+			continue
+		}
+		// Rule 1: a QUOTED token has to look like a path to be treated as one.
+		if t.quoted && !looksLikePath(tok) {
+			continue
+		}
+		// Rule 4: a token that is not a file to be guarded is not a consent target.
+		// See harmlessDevicePath / procIntrospectionPath for why the lists are explicit.
+		if harmlessDevicePath(tok) || procIntrospectionPath(tok) {
+			continue
+		}
+		if isHome {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				continue
+			}
+			tok = filepath.Join(home, strings.TrimPrefix(tok, "~/"))
+		}
+		// An absolute path that is only the root is not a target worth judging on
+		// its own — the cwd entry already covers "this command runs somewhere".
+		if cleaned := filepath.Clean(tok); cleaned != "/" {
+			out = append(out, cleaned)
+		}
+	}
+	return out
+}
+
+// cmdToken is one word of a shell command, with whether it came from a QUOTED span. The
+// distinction is why this is a scanner rather than strings.Fields: a quoted word is DATA
+// (a program, a regex, a literal), and treating it as an argument is how an awk program's
+// regex became a consent target.
+type cmdToken struct {
+	tok    string
+	quoted bool
+}
+
+// commandTokens splits a command into words the way a shell would for the purposes of THIS
+// scan: whitespace separates words, a quoted span is ONE word with its quotes removed (so a
+// quoted path containing a space survives), and an escaped character does not end a word.
+func commandTokens(cmd string) []cmdToken {
+	var out []cmdToken
+	var b strings.Builder
+	var quote rune
+	quoted, started, escaped := false, false, false
+	flush := func() {
+		if started {
+			out = append(out, cmdToken{tok: b.String(), quoted: quoted})
+		}
+		b.Reset()
+		quoted, started = false, false
+	}
+	for _, r := range cmd {
+		switch {
+		case escaped:
+			b.WriteRune(r)
+			escaped = false
+		case quote != 0:
+			if r == quote {
+				quote = 0
+				continue
+			}
+			b.WriteRune(r)
+		case r == '\\':
+			started = true
+			escaped = true
+		case r == '\'' || r == '"':
+			started, quoted, quote = true, true, r
+		case r == ' ' || r == '\t' || r == '\n':
+			flush()
+		default:
+			started = true
+			b.WriteRune(r)
+		}
+	}
+	flush()
+	return out
+}
+
+// hasShellMetachar reports whether a token contains a character that makes it a PATTERN
+// rather than a path we could judge — a regex or glob operator, or a shell expansion.
+// `$` is in the set for the expansion reason: the consent layer sees the command TEXT, so
+// `/a$b` is not the path the shell would pass, and judging the literal would invent a
+// target. A real path may legally contain most of these, but the two mistakes do not cost
+// the same: a MISSED mention is still covered by the policy's deny list and by the
+// execution guard, while an INVENTED one produces an ask nothing can answer.
+func hasShellMetachar(tok string) bool {
+	return strings.ContainsAny(tok, "^+!*,?$[]{}()|\\")
+}
+
+// harmlessDevicePath reports whether tok names one of the STANDARD device nodes — the
+// ones a shell uses as a sink or a stream rather than as a file it is acting on:
+// /dev/null above all, which appears in ordinary work constantly (`2>/dev/null`,
+// `> /dev/null`, `curl -o /dev/null`).
+//
+// THEY ARE SKIPPED BECAUSE A CONSENT DECISION ABOUT THEM IS MEANINGLESS. "May this command
+// touch /dev/null?" has one answer, and asking it is pure friction — the operator was
+// granting the project directory and being asked about /dev for a command that only threw
+// its stderr away.
+//
+// THE LIST IS EXPLICIT AND MUST STAY THAT WAY. A blanket "skip /dev" would wave through
+// `rm -rf /dev/sda` and `dd of=/dev/nvme0n1`, which are exactly the catastrophic writes
+// this gate exists to stop — so only the members that hold no state and cannot be damaged
+// are named here. `mkfs`/`dd` are separately refused outright by the never-allow class.
+func harmlessDevicePath(tok string) bool {
+	switch filepath.Clean(tok) {
+	case "/dev/null", "/dev/zero", "/dev/full",
+		"/dev/random", "/dev/urandom",
+		"/dev/stdin", "/dev/stdout", "/dev/stderr",
+		"/dev/tty", "/dev/console":
+		return true
+	}
+	return false
+}
+
+// procIntrospectionPath reports whether tok reads KERNEL METADATA about a process —
+// `/proc/self/status`, `/proc/1234/exe`, `/proc/1234/maps` — rather than naming a file the
+// command could act on. Reading a process's executable, its maps or its command line is
+// introspection, and asking the operator for consent to LOOK is noise.
+//
+// DELIBERATELY NARROW, and the exclusions matter more than the inclusions:
+//
+//   - `/proc/sys/**` is WRITABLE kernel configuration and is never skipped.
+//   - `/proc/<pid>/mem` is a direct write into another process's address space and is never
+//     skipped.
+//   - `/proc/<pid>/fd/**` is never skipped either, because a redirect THROUGH an fd
+//     (`echo x > /proc/1234/fd/5`) writes into whatever that descriptor points at — and
+//     commandPaths cannot tell a read from a write, so it must assume the dangerous case.
+//
+// The remaining members are read-only metadata: there is no write-through and no unlink.
+func procIntrospectionPath(tok string) bool {
+	clean := filepath.Clean(tok)
+	rest, ok := strings.CutPrefix(clean, "/proc/")
+	if !ok {
+		return false
+	}
+	// `/proc/self/...` and `/proc/thread-self/...`, or `/proc/<digits>/...`.
+	pid, leaf, found := strings.Cut(rest, "/")
+	if !found || leaf == "" {
+		return false
+	}
+	if pid != "self" && pid != "thread-self" {
+		if pid == "" {
+			return false
+		}
+		for _, r := range pid {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	switch leaf {
+	case "exe", "cwd", "root", "comm",
+		"cmdline", "environ", "status", "stat", "statm", "maps", "smaps",
+		"io", "limits", "mountinfo", "mounts":
+		return true
+	}
+	// A deeper path under one of those leaves (e.g. /proc/self/status/... does not exist,
+	// but /proc/1234/maps is already covered). Anything else is not introspection.
+	return false
+}
+
+// looksLikePath reports whether a QUOTED token is plausibly a filesystem path. A quoted
+// span is data, so the bar is higher than for an unquoted argument: it must be
+// home-relative or carry at least two path segments, and it may not END in a slash —
+// because that is how a regex is delimited. `/func /` (a grep pattern) has two slashes and
+// would otherwise pass; `/etc/b` is a path; `/return` is neither.
+func looksLikePath(tok string) bool {
+	if strings.HasSuffix(tok, "/") {
+		return false
+	}
+	if strings.HasPrefix(tok, "~/") {
+		return true
+	}
+	return strings.Count(tok, "/") >= 2
+}
+
+// stripHeredocBodies removes every heredoc BODY from a command, keeping the `<<DELIM`
+// operator, the delimiter and the rest of the opening line — so the redirect target is
+// still visible to commandPaths.
+//
+// A heredoc body is text about to be WRITTEN TO A FILE, so a path in it is not a path this
+// command touches. Judging them meant that writing a test file whose CONTENT mentioned a
+// /tmp path raised a consent ask about /tmp: the file's content was being read as though it
+// were an argument, which is both wrong and a source of asks the operator cannot satisfy by
+// granting the directory they are actually working in.
+//
+// LIMITS, stated rather than hidden: `<<-` (tab-stripped terminators) is not special-cased,
+// and an operator after an unbalanced quote is not found. Both leave the body in the text,
+// which is the CONSERVATIVE direction — those paths come back and may raise an ask, rather
+// than a body being dropped that held a real argument.
+func stripHeredocBodies(cmd string) string {
+	var out strings.Builder
+	rest := cmd
+	for {
+		i := indexHeredocOp(rest)
+		if i < 0 {
+			out.WriteString(rest)
+			return out.String()
+		}
+		delim, headerLen, ok := parseHeredocDelim(rest[i:])
+		if !ok {
+			out.WriteString(rest)
+			return out.String()
+		}
+		// Through the delimiter word, then to the end of that LINE: the body starts on
+		// the next line, and the opening line may still carry a redirect.
+		headerEnd := i + headerLen
+		nl := strings.IndexByte(rest[headerEnd:], '\n')
+		if nl < 0 {
+			out.WriteString(rest) // nothing follows the operator, so there is no body
+			return out.String()
+		}
+		out.WriteString(rest[:headerEnd+nl+1])
+		rest = cutHeredocBody(rest[headerEnd+nl+1:], delim)
+	}
+}
+
+// indexHeredocOp returns the index of the first `<<` that is not inside quotes, or -1.
+func indexHeredocOp(s string) int {
+	var quote rune
+	for i, r := range s {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			}
+		case r == '\'' || r == '"':
+			quote = r
+		case r == '<':
+			if i+1 < len(s) && s[i+1] == '<' {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// parseHeredocDelim reads a heredoc operator at the head of s (`<<EOF`, `<<'EOF'`) and
+// returns the delimiter plus the byte length of the operator itself.
+func parseHeredocDelim(s string) (string, int, bool) {
+	if !strings.HasPrefix(s, "<<") {
+		return "", 0, false
+	}
+	j := 2
+	// `<<-` strips leading tabs from the body and its terminator.
+	if j < len(s) && s[j] == '-' {
+		j++
+	}
+	for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
+		j++
+	}
+	if j >= len(s) || s[j] == '\n' {
+		return "", 0, false
+	}
+	if s[j] == '\'' || s[j] == '"' {
+		quote := s[j]
+		j++
+		start := j
+		for j < len(s) && s[j] != quote {
+			j++
+		}
+		if j >= len(s) || j == start {
+			return "", 0, false
+		}
+		return s[start:j], j + 1, true
+	}
+	start := j
+	for j < len(s) && s[j] != ' ' && s[j] != '\t' && s[j] != '\n' {
+		j++
+	}
+	if j == start {
+		return "", 0, false
+	}
+	return s[start:j], j, true
+}
+
+// cutHeredocBody returns what follows the first line equal to delim. An unterminated
+// heredoc consumes the rest of the command, which is also what a shell would do.
+func cutHeredocBody(s, delim string) string {
+	for {
+		nl := strings.IndexByte(s, '\n')
+		if nl < 0 {
+			return ""
+		}
+		if strings.TrimSuffix(s[:nl], "\r") == delim {
+			return s[nl+1:]
+		}
+		s = s[nl+1:]
+	}
 }
 
 // decisionTargets returns EVERY path a file action touches, so the decision
@@ -408,7 +858,31 @@ type decisionTarget struct {
 // entry, as does an action that resolved no target at all (the fail-closed
 // card case).
 func decisionTargets(a askAction, dir string) []decisionTarget {
-	if isBashAsk(a.Tool) || len(a.Targets) == 0 {
+	if isBashAsk(a.Tool) {
+		cwd := filepath.Clean(dir)
+		out := []decisionTarget{{abstarget: cwd, key: cwd}}
+		// ALSO JUDGE THE PATHS THE COMMAND NAMES.
+		//
+		// A shell command's consent KEY is its cwd, so one "allow for this session"
+		// on the project directory would otherwise cover every command run there —
+		// including `cp ~/secret /etc/x`, which touches nothing inside the project.
+		// The operator's decision: "also judge the paths a command mentions."
+		//
+		// The cwd stays FIRST because it is the grant KEY (C4): a grant is still
+		// given for the directory the command runs in. Each mentioned path is then
+		// judged on its own absolute value, so a path outside every granted
+		// directory raises an ask of its own.
+		seen := map[string]bool{cwd: true}
+		for _, p := range commandPaths(a.Command) {
+			if seen[p] {
+				continue
+			}
+			seen[p] = true
+			out = append(out, decisionTarget{abstarget: p, key: filepath.Dir(p)})
+		}
+		return out
+	}
+	if len(a.Targets) == 0 {
 		d := filepath.Clean(dir)
 		return []decisionTarget{{abstarget: d, key: d}}
 	}
@@ -423,25 +897,67 @@ func decisionTargets(a askAction, dir string) []decisionTarget {
 	return out
 }
 
-// askSummary is the one-line card text: the tool plus its target (or command),
-// never just an opaque id.
+// askSummary states WHAT THE CALL WILL DO and to WHAT, in the operator's terms:
+// "modify /p/a.go", "run a shell command: go test ./...". It is the whole
+// content of the decision — "approve" is meaningless without it — so it must
+// never leak a raw argument dump. An earlier version concatenated the parsed
+// args with fmt's %v, which put a Go struct literal on an operator's card
+// ("batch_write writes=[map[mode:edit new:type chatBus struct {…]") for any
+// tool whose args are nested. See scalarArg.
 func askSummary(a askAction) string {
+	verb := toolIntentVerb(a.Tool)
+	var out string
 	switch {
 	case isBashAsk(a.Tool) && a.Command != "":
-		return "run shell command: " + a.Command
+		// Returned early: the verb already names the tool class for a shell ask
+		// ("run a shell command"), so the tool suffix below would add nothing.
+		return verb + ": " + truncateArg(a.Command)
 	case len(a.Targets) > 0:
-		return a.Tool + " " + strings.Join(a.Targets, ", ")
+		out = verb + " " + strings.Join(a.Targets, ", ")
 	case a.Command != "":
-		return a.Tool + " " + a.Command
+		out = verb + ": " + truncateArg(a.Command)
 	case a.Tool != "" && len(a.Input) > 0:
-		// No recognised target or command, but the call's args are known:
-		// show them rather than a bare tool name.
-		return a.Tool + " " + compactArgs(a.Input)
-	case a.Tool != "":
-		return a.Tool
+		// The args are known but no target could be read out of them: show the
+		// intent and a SAFE summary of the args (compactArgs never dumps).
+		out = verb + " " + compactArgs(a.Input)
 	default:
-		return "a tool permission request"
+		out = verb
 	}
+	// THE TOOL NAME STAYS ON THE CARD, beside the intent. The verb says what
+	// will happen; the tool says who does it, and an operator diagnosing an
+	// unexpected ask wants both ("modify /p/a.go (batch_write)" reads as one
+	// action, where either half alone is ambiguous about the other). Skipped
+	// when the text already contains it.
+	if a.Tool != "" && !strings.Contains(out, a.Tool) {
+		out += " (" + a.Tool + ")"
+	}
+	return out
+}
+
+// toolIntentVerb maps a tool name onto what the call will DO, in plain terms.
+// The ask is answered by a human, so the verb is the point: "batch_write" says
+// nothing to an operator, "modify" does. Matching is on the tool name because
+// the vocabulary is open (opencode, MCP, and the native suite all name their
+// tools differently), so the classes are deliberately broad.
+func toolIntentVerb(tool string) string {
+	t := strings.ToLower(strings.TrimSpace(tool))
+	switch {
+	case isBashAsk(t):
+		return "run a shell command"
+	case strings.Contains(t, "write"), strings.Contains(t, "edit"),
+		strings.Contains(t, "patch"), strings.Contains(t, "create"):
+		return "modify"
+	case strings.Contains(t, "delete"), strings.Contains(t, "remove"), t == "rm":
+		return "delete"
+	case strings.Contains(t, "read"), strings.Contains(t, "view"),
+		strings.Contains(t, "list"), strings.Contains(t, "glob"),
+		strings.Contains(t, "grep"), strings.Contains(t, "search"),
+		strings.Contains(t, "fetch"):
+		return "read"
+	case strings.Contains(t, "mcp"):
+		return "run a tool"
+	}
+	return "use the tool"
 }
 
 // ---------------------------------------------------------------------------
@@ -477,15 +993,34 @@ func (g *grantStore) Grant(convID, dir string) {
 	set[filepath.Clean(dir)] = time.Now()
 }
 
-// Has reports whether convID holds a grant for dir.
+// Has reports whether convID holds a grant covering dir.
+//
+// A GRANT COVERS ITS SUBTREE. "Allow for this session" on a directory means that
+// directory AND everything under it — a grant was matched by EXACT string before,
+// so granting a project root did not cover its packages and the operator got a
+// card per directory. That is precisely the per-command friction that pushes
+// people to approve without reading, which is the failure the gate exists to
+// prevent.
+//
+// The separator matters: a prefix test alone would make /foo cover /foobar. The
+// grant must be the target itself or a proper ancestor of it.
 func (g *grantStore) Has(convID, dir string) bool {
 	if g == nil || convID == "" || strings.TrimSpace(dir) == "" {
 		return false
 	}
+	target := filepath.Clean(dir)
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	_, ok := g.byConv[convID][filepath.Clean(dir)]
-	return ok
+	set := g.byConv[convID]
+	if len(set) == 0 {
+		return false
+	}
+	for granted := range set {
+		if target == granted || strings.HasPrefix(target, granted+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // ClearConversation drops every grant for a conversation (conversation end).
@@ -692,12 +1227,91 @@ type pendingAsk struct {
 	// (decisionTargets), recorded so an ALLOW_ONCE reply can arm exactly those
 	// paths in the execution guard's shim (the shim cannot ask).
 	AbsTargets []string
+
+	// --- A QUESTION ask (ask_user, blocking) ---
+	//
+	// Question non-empty marks this ask as a clarifying question rather than a
+	// permission decision: there is no grant, no allow/deny and no precedence chain,
+	// so it is not run through decide() at all. It rides the same registry, the same
+	// card and the same reply RPC because those are what make it answerable — adding
+	// a second path would have meant a second place for a reply to go missing.
+	Question   string
+	Options    []string
+	AllowOther bool
+	// Answer is a question ask's reply: the chosen label, or the operator's own
+	// words. It becomes the ask_user TOOL RESULT, so the model continues the turn
+	// holding the answer rather than being told the question was recorded.
+	Answer string
+
 	// reply wakes the drain loop's select when a decision lands.
 	reply chan struct{}
 
 	mu     sync.Mutex
 	state  askState
 	choice apiv1.PermissionChoice
+	// answer holds a QUESTION ask's reply (see recordClientAnswer). Separate from
+	// choice: a permission's outcome is a grant decision, a question's is content
+	// the model reads, and conflating them would let one masquerade as the other.
+	answer string
+	// autoApproved marks a decision made by FULLSEND rather than by the operator, so the
+	// recorded verdict can say so. The decision is genuinely the same (ALLOW_ONCE), but a
+	// transcript that reports it as `user_PERMISSION_CHOICE_ALLOW_ONCE` claims the operator
+	// clicked something they never saw — and this codebase's rule is that a decision record
+	// must not misattribute who decided.
+	autoApproved bool
+}
+
+// autoApproveOnce records an ALLOW_ONCE that the OPERATOR did not make: fullsend cleared a
+// card that was already on screen. False when the ask was no longer open (someone answered
+// it first, or it settled), so the caller cannot report an approval that did not happen.
+func (a *pendingAsk) autoApproveOnce() bool {
+	if !a.clientReply(apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_ONCE) {
+		return false
+	}
+	a.mu.Lock()
+	a.autoApproved = true
+	a.mu.Unlock()
+	return true
+}
+
+// wasAutoApproved reports whether fullsend made this decision rather than the operator.
+func (a *pendingAsk) wasAutoApproved() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.autoApproved
+}
+
+// isQuestion reports whether this ask is a clarifying question rather than a
+// permission decision.
+func (a *pendingAsk) isQuestion() bool { return strings.TrimSpace(a.Question) != "" }
+
+// recordClientAnswer records a QUESTION's answer. Same open-check as clientReply:
+// false when the ask is no longer open, so a late answer reports expired rather
+// than pretending to have been delivered.
+func (a *pendingAsk) recordClientAnswer(text string) bool {
+	a.mu.Lock()
+	if a.state != askOpen {
+		a.mu.Unlock()
+		return false
+	}
+	a.state = askClientReplied
+	a.answer = text
+	a.mu.Unlock()
+	select {
+	case a.reply <- struct{}{}:
+	default:
+	}
+	return true
+}
+
+// clientAnswerValue reports the recorded answer, if one landed.
+func (a *pendingAsk) clientAnswerValue() (string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.state == askClientReplied && a.answer != "" {
+		return a.answer, true
+	}
+	return "", false
 }
 
 // clientReply records a client decision. False when the ask is no longer open
@@ -927,7 +1541,7 @@ func (ct *consentTurn) record(a askAction, verdict, detail string) {
 	if target == "" && len(a.Targets) > 0 {
 		target = strings.Join(a.Targets, ", ")
 	}
-	ct.ledger.recordPermission(a.Tool, target, verdict, detail)
+	ct.ledger.recordPermission(a.Tool, target, verdict, detail, a.AskID)
 }
 
 // decide is THE decision path (the whole precedence chain, in order):
@@ -939,6 +1553,10 @@ func (ct *consentTurn) record(a askAction, verdict, detail string) {
 // this value". An empty response with a non-nil ask means "await the human".
 func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.SessionEvent) (response string, ask *pendingAsk, refusal string) {
 	a := extractAskAction(evt)
+	// STAMP THE ASK ID FIRST, so every record this decision writes carries it — including
+	// the `never_allow` and `policy_error` refusals below, which are decided before any card
+	// is raised and are still decisions about THIS ask.
+	a.AskID = evt.PermissionID
 	if r := binaryClassRefusal(a); r != "" {
 		ct.record(a, "never_allow", r)
 		return "reject", nil, r
@@ -969,10 +1587,13 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 	for _, t := range targets {
 		absTargets = append(absTargets, t.abstarget)
 	}
+	// blocking is the FIRST target that is not covered — the path whose consent is
+	// actually missing, and therefore the directory a grant has to name to silence this
+	// ask. See the card's key below for why it, and not the cwd, is what the card states.
+	var blocking *decisionTarget
 	for i, t := range targets {
 		d, err := pol.Decide(t.abstarget, permpolicy.Inputs{
 			SessionGranted: ct.svc.grants.Has(ct.convID, t.key),
-			ProjectDefault: scope.PreApprovedPath(t.abstarget),
 		})
 		if err != nil {
 			// Fail closed: a malformed policy file must never silently proceed.
@@ -991,6 +1612,10 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 		}
 		if !d.Verdict.Proceed() {
 			proceed = false
+			if blocking == nil {
+				bt := t
+				blocking = &bt
+			}
 		}
 		if !scope.PreApprovedPath(t.abstarget) {
 			allInside = false
@@ -1001,6 +1626,32 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 		ct.record(a, verdict.String(), "")
 		return "once", nil, ""
 	}
+	// FULLSEND: the operator has waived the PROMPT for this conversation, so an action
+	// that would have raised a card proceeds instead.
+	//
+	// WHERE THIS SITS IS THE WHOLE DESIGN, so it is worth being precise about what has
+	// already happened by the time control reaches here:
+	//
+	//   - binaryClassRefusal ran FIRST (the top of this function), so sudo / dd / mkfs*
+	//     are already refused and fullsend cannot reach them. That class is not a
+	//     permission, so there is no permission to waive.
+	//   - the policy has been consulted for EVERY target and a DENY verdict has already
+	//     returned `reject` above. A deny is a decision the policy MADE — no card is
+	//     raised for it — so again there is nothing here to waive. Fullsend does not
+	//     open ~/.ssh, and a mode that did would be one whose name promises more than it
+	//     does in the direction that matters.
+	//   - a malformed policy has already failed closed.
+	//
+	// So what is left to waive is exactly the ASK. It covers an UNRESOLVED action too,
+	// deliberately: an ask we could not describe is still an ask, and fullsend is the
+	// operator saying "stop asking me" — not "ask me only when you can name the target".
+	//
+	// The transcript records `fullsend`, so scrolling back shows WHY no card appeared
+	// rather than a silently missing decision.
+	if ct.svc.fullsend.Enabled(ct.convID) {
+		ct.record(a, "fullsend", "")
+		return "once", nil, ""
+	}
 	if !resolved {
 		ct.log().Warn("ask orchicon consent: the ask carries no target path or command — asking rather than proceeding",
 			"conversation", ct.convID, "ask", evt.PermissionID, "tool", a.Tool)
@@ -1008,26 +1659,45 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 
 	// VerdictAsk (or an unresolved action): record, emit the card, await the
 	// human.
+	// The summary states the INTENT (askSummary). An unresolved action — no
+	// path or command could be extracted — is still described by its verb, so
+	// the card never explains itself in developer terms; the diagnostic for that
+	// case belongs in the Warn above, not in copy an operator reads.
 	summary := askSummary(a)
-	if !resolved {
-		summary += " (no path or command in the ask detail — asking rather than proceeding)"
+	// THE CARD NAMES THE DIRECTORY WHOSE CONSENT IS ACTUALLY MISSING, which is not always
+	// the cwd, and the difference is the difference between an answerable card and a
+	// treadmill.
+	//
+	// A shell command's KEY is its cwd (C4), so the card used to say "never ask again in
+	// <the project>" for a command that the project grant could never silence — because
+	// what forced the ask was a MENTIONED path outside it (a redirect to a log file, a
+	// temp dir). The operator granted the named directory, was asked again by the next
+	// command, and had no way to see why: the card kept naming a directory that was
+	// already granted. Naming the BLOCKING target instead makes the offered grant the one
+	// that works, and it is also the honest description of the ask — this is the path
+	// Orchicon does not have consent for.
+	//
+	// When nothing blocks (the fail-closed unresolved case, where the target IS the scope
+	// dir) this is the scope dir and the card is unchanged.
+	grantDir := a.Key
+	if blocking != nil && blocking.key != "" {
+		grantDir = blocking.key
 	}
 	ask = &pendingAsk{
 		AskID:          evt.PermissionID,
 		ConversationID: ct.convID,
 		SessionID:      sid,
 		Action:         a,
-		Key:            a.Key,
+		Key:            grantDir,
 		Tool:           a.Tool,
 		Command:        a.Command,
 		Targets:        a.Targets,
-		Directory:      a.Key,
+		Directory:      grantDir,
 		// The card claims "inside the project" only when EVERY target is; an
-		// unresolved action has no known target at all, so it cannot (the card
-		// says why it is being asked instead).
+		// unresolved action has no known target at all, so it cannot.
 		InsideProject: allInside,
 		Summary:       summary,
-		DenyBelow:     ct.denyBelowForGrant(pol, a.Key),
+		DenyBelow:     ct.denyBelowForGrant(pol, grantDir),
 		AbsTargets:    absTargets,
 		reply:         ct.replies,
 	}
@@ -1057,10 +1727,100 @@ func (ct *consentTurn) denyBelowForGrant(pol *permpolicy.Store, key string) []st
 	return entries
 }
 
+// raiseQuestion records a clarifying question the model asked and the turn is
+// PAUSED on, and returns it for the client to render.
+//
+// NO POLICY RUNS. A question is not a permission: there is no target to judge, no
+// grant to record and no never-allow class to consult. Routing it through decide()
+// would have asked the operator for PERMISSION TO ASK A QUESTION — which is why it
+// gets its own path rather than a special case inside the precedence chain.
+//
+// The question's own arguments ride evt.InputJSON when the adapter has not parsed
+// them, so the SAME validator the tool uses decides what is askable: a prompt that
+// is not a question (no text, or a single option with no free-text row) is refused
+// here with the tool's own error rather than parked as an unanswerable card.
+func (ct *consentTurn) raiseQuestion(sid string, evt scheduler.SessionEvent) (*pendingAsk, string) {
+	if strings.TrimSpace(evt.PermissionID) == "" {
+		// Without an id the answer could never be correlated, so this must fail
+		// loudly rather than park a card nobody can answer.
+		return nil, "ask_user: the adapter raised a question with no ask id"
+	}
+	question := strings.TrimSpace(evt.Question)
+	options := append([]string(nil), evt.Options...)
+	allowOther := evt.AllowOther
+	if question == "" && strings.TrimSpace(evt.InputJSON) != "" {
+		q, opts, ao, err := parseAskUserArgs([]byte(evt.InputJSON))
+		if err != nil {
+			return nil, err.Error()
+		}
+		question = q
+		allowOther = ao
+		if len(options) == 0 {
+			for _, o := range opts {
+				options = append(options, o.Label)
+			}
+		}
+	}
+	if question == "" {
+		return nil, "ask_user: the question carries no text"
+	}
+	a := &pendingAsk{
+		AskID:          evt.PermissionID,
+		ConversationID: ct.convID,
+		SessionID:      sid,
+		Tool:           "ask_user",
+		Question:       question,
+		Options:        options,
+		AllowOther:     allowOther,
+		Summary:        "asking: " + truncateArg(question),
+		reply:          ct.replies,
+	}
+	ct.svc.pending.put(ct.convID, a)
+	if ct.monitor != nil {
+		// A human reading the card is not a wedged tool.
+		ct.monitor.setAwaitingConsent(true)
+	}
+	ct.record(a.Action, "question", question)
+	return a, ""
+}
+
 // applyClientReplies answers the serve for every ask whose client decision has
 // landed. Called from the drain loop's reply arm.
-func (ct *consentTurn) applyClientReplies(ctx context.Context, client scheduler.ChatTurnClient) {
+// askResolution is one decision this collector APPLIED, ready to be published on the
+// turn's stream so every watcher settles its copy of the card. See
+// apiv1.PermissionAskResolved.
+type askResolution struct {
+	AskID   string
+	Outcome string
+	Answer  string
+}
+
+// applyClientReplies answers the serve for every ask whose client decision has
+// landed, and returns what it APPLIED so the caller can publish each resolution on
+// the turn's stream.
+//
+// THE RETURN VALUE IS THE POINT: an ask reaches EVERY watcher of a turn, but only
+// the client that answered it cleared its own copy — so answering in the TUI left the
+// GUI showing a live-looking, inert card (the operator: "the choice box is still there
+// for permissions"), and the clients cannot infer it, because a permission ask has no
+// durable per-ask row to reconcile against. Publishing the outcome is the only way a
+// watching client learns that someone else decided.
+func (ct *consentTurn) applyClientReplies(ctx context.Context, client scheduler.ChatTurnClient) []askResolution {
+	var out []askResolution
 	for _, a := range ct.svc.pending.list(ct.convID) {
+		// A QUESTION's reply is CONTENT, not a choice. It goes to the adapter as the
+		// decision string, which the adapter returns as the ask_user tool result —
+		// so the model resumes the turn holding the answer.
+		if ans, ok := a.clientAnswerValue(); ok {
+			if err := client.ReplyPermissionDecision(ctx, a.SessionID, a.AskID, ans); err != nil {
+				ct.log().Warn("ask orchicon consent: question reply failed",
+					"conversation", ct.convID, "ask", a.AskID, "error", err)
+			}
+			ct.record(a.Action, "answered", ans)
+			ct.svc.pending.remove(ct.convID, a.AskID)
+			out = append(out, askResolution{AskID: a.AskID, Outcome: "answered", Answer: ans})
+			continue
+		}
 		choice, ok := a.clientChoice()
 		if !ok {
 			continue
@@ -1073,7 +1833,13 @@ func (ct *consentTurn) applyClientReplies(ctx context.Context, client scheduler.
 			ct.log().Warn("ask orchicon consent: reply to serve failed",
 				"conversation", ct.convID, "ask", a.AskID, "response", resp, "error", err)
 		}
-		ct.record(a.Action, "user_"+choice.String(), "")
+		// NAME THE DECIDER. A card fullsend cleared is recorded as fullsend's decision, not
+		// as a click the operator never made.
+		verdict := "user_" + choice.String()
+		if a.wasAutoApproved() {
+			verdict = "fullsend_approved"
+		}
+		ct.record(a.Action, verdict, "")
 		if choice == apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_ONCE {
 			// Arm the approved absolute paths for the execution guard's shim:
 			// the command the operator just approved must run, while a sibling
@@ -1081,19 +1847,74 @@ func (ct *consentTurn) applyClientReplies(ctx context.Context, client scheduler.
 			ct.svc.once.Record(ct.convID, a.AbsTargets...)
 		}
 		ct.svc.pending.remove(ct.convID, a.AskID)
+		out = append(out, askResolution{AskID: a.AskID, Outcome: resolutionOutcome(choice)})
 	}
 	ct.settleMonitor()
+	return out
+}
+
+// resolutionOutcome names a permission choice for the wire. It mirrors the value
+// outcomeFromChoice derives on the clients, so the two sides describe a decision the
+// same way.
+func resolutionOutcome(c apiv1.PermissionChoice) string {
+	switch c {
+	case apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_SESSION:
+		return "allow_session"
+	case apiv1.PermissionChoice_PERMISSION_CHOICE_DENY:
+		return "deny"
+	default:
+		return "allow_once"
+	}
+}
+
+// emitAskResolution publishes one applied decision on the turn's stream.
+func emitAskResolution(emit func(*apiv1.ChatStreamResponse), convID string, r askResolution) {
+	if emit == nil {
+		return
+	}
+	emit(&apiv1.ChatStreamResponse{
+		Event: &apiv1.ChatStreamResponse_PermissionAskResolved{
+			PermissionAskResolved: &apiv1.PermissionAskResolved{
+				AskId:          r.AskID,
+				ConversationId: convID,
+				Outcome:        r.Outcome,
+				Answer:         r.Answer,
+			},
+		},
+	})
 }
 
 // finalize ends the turn's consent state (C8): a client decision that landed
 // but was not yet applied IS applied; every still-open ask is answered
 // `reject` so the serve's session is not left holding a phantom permission;
 // a late client reply then reports expired (never silence).
-func (ct *consentTurn) finalize(ctx context.Context, client scheduler.ChatTurnClient) {
+// finalize ends the turn's consent state (C8): a client decision that landed but was not yet
+// applied IS applied; every still-open ask is answered `reject` so the serve's session is not
+// left holding a phantom permission; a late client reply then reports expired (never
+// silence).
+//
+// IT PUBLISHES WHAT IT SETTLES, which is what stops a card outliving its ask. Every client
+// watching the turn holds its own copy of the card, and only the client that ANSWERED one
+// clears it — so a card settled HERE (a decision that arrived as the turn ended, or an ask
+// that ran out of time) used to stay on screen in every other client as a live-looking
+// choice, clickable and inert. That is the operator's "the GUI and TUI are still not in
+// sync": the resolution was published when a decision was APPLIED mid-turn
+// (applyClientReplies) and never when an ask was settled at the end.
+//
+// emit may be nil (the legacy path has no client stream), in which case nothing is
+// published and behaviour is unchanged.
+func (ct *consentTurn) finalize(ctx context.Context, client scheduler.ChatTurnClient, emit func(*apiv1.ChatStreamResponse)) {
 	for _, a := range ct.svc.pending.removeConversation(ct.convID) {
 		choice, applyClient, wasOpen := a.resolveForFinalize()
 		switch {
 		case applyClient:
+			// A QUESTION's late reply is the operator's WORDS, not a permission choice, and
+			// it settles the card the same way — so it is published with its answer too.
+			if ans, ok := a.clientAnswerValue(); ok {
+				ct.record(a.Action, "answered", ans)
+				emitAskResolution(emit, ct.convID, askResolution{AskID: a.AskID, Outcome: "answered", Answer: ans})
+				continue
+			}
 			resp, ok := consentResponse(choice)
 			if !ok {
 				continue
@@ -1103,12 +1924,16 @@ func (ct *consentTurn) finalize(ctx context.Context, client scheduler.ChatTurnCl
 					"conversation", ct.convID, "ask", a.AskID, "error", err)
 			}
 			ct.record(a.Action, "user_"+choice.String(), "")
+			emitAskResolution(emit, ct.convID, askResolution{AskID: a.AskID, Outcome: resolutionOutcome(choice)})
 		case wasOpen:
 			if err := client.ReplyPermissionDecision(ctx, a.SessionID, a.AskID, "reject"); err != nil {
 				ct.log().Warn("ask orchicon consent: expiring unanswered ask failed",
 					"conversation", ct.convID, "ask", a.AskID, "error", err)
 			}
 			ct.record(a.Action, "expired", "unanswered at turn end")
+			// "expired" is the outcome the wire documents for an ask nobody answered, and it
+			// is what makes a watching client's card read as expired rather than pending.
+			emitAskResolution(emit, ct.convID, askResolution{AskID: a.AskID, Outcome: "expired"})
 		}
 	}
 	ct.settleMonitor()
@@ -1162,6 +1987,12 @@ func permissionAskEvent(a *pendingAsk) *apiv1.ChatStreamResponse {
 				InsideProject:    a.InsideProject,
 				Summary:          a.Summary,
 				DenyEntriesBelow: a.DenyBelow,
+				// The question fields: set for a question ask, empty otherwise. The
+				// clients key on a non-empty Question to render the question card and
+				// to answer with CONTENT rather than a permission choice.
+				Question:   a.Question,
+				Options:    a.Options,
+				AllowOther: a.AllowOther,
 			},
 		},
 	}

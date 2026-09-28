@@ -74,7 +74,7 @@ func newTestModel(t *testing.T) (*Model, *stubHost) {
 func TestConsentCardIsAdoptedAndClaimsKeys(t *testing.T) {
 	m, _ := newTestModel(t)
 	items := []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{
-		ID: "a1", Kind: chat.AskTool, Tool: "write", Target: "/p/x.go", Directory: "/p"})}
+		ID: "a1", Kind: chat.AskTool, Tool: "write", Target: "/p/x.go", Directory: "/p"}, 1000)}
 	m.RenderTranscript(items, chat.Conversation{}, false)
 	if !m.ClaimsKeys() {
 		t.Fatal("a pending card must claim the keys")
@@ -93,7 +93,7 @@ func TestConsentCardIsAdoptedAndClaimsKeys(t *testing.T) {
 func TestConsentEscapeDeniesAndReleasesTheClaim(t *testing.T) {
 	m, h := newTestModel(t)
 	items := []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{
-		ID: "a2", Kind: chat.AskTool, Tool: "bash", Target: "make ci", Directory: "/p"})}
+		ID: "a2", Kind: chat.AskTool, Tool: "bash", Target: "make ci", Directory: "/p"}, 1000)}
 	m.RenderTranscript(items, chat.Conversation{}, false)
 	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if h.resolved != 1 || h.dec != chat.DecisionDeny {
@@ -112,7 +112,7 @@ func TestConsentEscapeDeniesAndReleasesTheClaim(t *testing.T) {
 func TestConsentEnterCommitsTheHighlightedAction(t *testing.T) {
 	m, h := newTestModel(t)
 	items := []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{
-		ID: "a3", Kind: chat.AskTool, Tool: "write", Target: "/p/x.go", Directory: "/p"})}
+		ID: "a3", Kind: chat.AskTool, Tool: "write", Target: "/p/x.go", Directory: "/p"}, 1000)}
 	m.RenderTranscript(items, chat.Conversation{}, false)
 	// Row 0 is Allow once.
 	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -122,7 +122,7 @@ func TestConsentEnterCommitsTheHighlightedAction(t *testing.T) {
 
 	m2, h2 := newTestModel(t)
 	it2 := []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{
-		ID: "a4", Kind: chat.AskTool, Tool: "write", Target: "/p/x.go", Directory: "/p"})}
+		ID: "a4", Kind: chat.AskTool, Tool: "write", Target: "/p/x.go", Directory: "/p"}, 1000)}
 	m2.RenderTranscript(it2, chat.Conversation{}, false)
 	m2.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m2.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -136,7 +136,7 @@ func TestConsentEnterCommitsTheHighlightedAction(t *testing.T) {
 func TestConsentDisabledSessionRowCannotBeChosen(t *testing.T) {
 	m, h := newTestModel(t)
 	items := []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{
-		ID: "a5", Kind: chat.AskTool, Tool: "write", Target: "/etc/hosts", Directory: "/etc", DeniedBy: "/etc/**"})}
+		ID: "a5", Kind: chat.AskTool, Tool: "write", Target: "/etc/hosts", Directory: "/etc", DeniedBy: "/etc/**"}, 1000)}
 	m.RenderTranscript(items, chat.Conversation{}, false)
 	m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	if items[0].Consent.Sel != 2 {
@@ -148,20 +148,59 @@ func TestConsentDisabledSessionRowCannotBeChosen(t *testing.T) {
 	}
 }
 
-// TestConsentCtrlGDeniesRatherThanSilentlyReleasing pins decision 5: the focus
-// chord must always be able to leave the latched claim, and leaving it is a
-// RECORDED deny rather than a silent dismissal.
-func TestConsentCtrlGDeniesRatherThanSilentlyReleasing(t *testing.T) {
+// TestConsentCtrlGRecordsNoDecision — the operator's report as a test:
+//
+//	"I hit ctrl+g to gain focus to the composer in the TUI so I could do a fullsend test and
+//	 it registered it as a deny."
+//
+// This replaces TestConsentCtrlGDeniesRatherThanSilentlyReleasing, which asserted the OPPOSITE
+// and is why the bug survived: the old rationale was that the claim is a latch, ctrl+g has to
+// be able to leave it, and a recorded deny beats a silent dismissal ("decision 5"). Every part
+// of that is true EXCEPT the conclusion. ctrl+g is the advertised way to type (it leads every
+// page's hint line), it is pressed by operators who want to TYPE — to answer this card, or to
+// reach /fullsend while it is up — and it is not an act of refusal. Recording deny made the
+// transcript report a refusal the operator never judged, and the refusal reaches the MODEL,
+// which then chooses a different approach on the strength of an answer nobody gave.
+//
+// So: no decision, the card stays pending, and the card can still be decided the normal ways.
+func TestConsentCtrlGRecordsNoDecision(t *testing.T) {
 	m, h := newTestModel(t)
 	items := []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{
-		ID: "a6", Kind: chat.AskTool, Tool: "write", Target: "/p/x.go", Directory: "/p"})}
+		ID: "a6", Kind: chat.AskTool, Tool: "write", Target: "/p/x.go", Directory: "/p"}, 1000)}
 	m.RenderTranscript(items, chat.Conversation{}, false)
+
 	m.DropKeyClaim()
-	if h.dec != chat.DecisionDeny || h.resolved != 1 {
-		t.Fatalf("ctrl+g while pending must record a deny, got dec=%q resolved=%d", h.dec, h.resolved)
+
+	if h.dec != "" || h.resolved != 0 {
+		t.Fatalf("ctrl+g must record NO decision, got dec=%q resolved=%d", h.dec, h.resolved)
 	}
+	if items[0].Consent == nil || !items[0].Consent.Pending() {
+		t.Fatal("the card must still be PENDING after the focus chord — nothing was decided and nothing was dropped")
+	}
+	// THE CLAIM IS RELEASED, which is what makes the chord USEFUL: the composer is the DEFAULT
+	// focus, so the claim is the only thing making the card own the keys — releasing it is how
+	// the operator types (to answer, or to reach /fullsend while the card is up).
+	//
+	// Letting a focused composer outrank the claim instead (which I tried first) broke the card
+	// outright, because the default focus already IS the composer: every claimed key went to the
+	// composer and the card could not be answered at all. Releasing the claim for THIS ask is the
+	// narrow version, and the shell test proves typing works after the chord.
 	if m.ClaimsKeys() {
-		t.Fatal("the claim must be released after the focus chord")
+		t.Fatal("the claim must be released so the composer can take the keys")
+	}
+	// AND A NEW ASK RE-ARMS IT BY CONSTRUCTION — deferring by ID rather than a bool is what
+	// makes that true with no flag to forget to clear.
+	items2 := []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{
+		ID: "a7", Kind: chat.AskTool, Tool: "write", Target: "/p/y.go", Directory: "/p"}, 2000)}
+	m.RenderTranscript(items2, chat.Conversation{}, false)
+	if !m.ClaimsKeys() {
+		t.Fatal("a NEW ask must claim the keys again — a deferred card must not disarm the next one")
+	}
+	// AND THE CARD IS STILL DECIDABLE — esc still denies, deliberately and explicitly.
+	m.RenderTranscript(items, chat.Conversation{}, false)
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if h.dec != chat.DecisionDeny {
+		t.Fatalf("esc must still deny explicilty, got %q", h.dec)
 	}
 }
 
@@ -170,7 +209,7 @@ func TestConsentCtrlGDeniesRatherThanSilentlyReleasing(t *testing.T) {
 // card and its claim, so the composer becomes typable again.
 func TestConsentReconcileReleasesAStaleCard(t *testing.T) {
 	m, _ := newTestModel(t)
-	m.RenderTranscript([]chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{ID: "a7", Kind: chat.AskTool, Tool: "write", Target: "/p/x.go"})}, chat.Conversation{}, false)
+	m.RenderTranscript([]chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{ID: "a7", Kind: chat.AskTool, Tool: "write", Target: "/p/x.go"}, 1000)}, chat.Conversation{}, false)
 	if !m.ClaimsKeys() {
 		t.Fatal("precondition: the card must be pending")
 	}
@@ -186,7 +225,7 @@ func TestQuestionCardOtherSendsTheTypedText(t *testing.T) {
 	m, h := newTestModel(t)
 	items := []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{
 		ID: "q1", Kind: chat.AskQuestion, Question: "Which file?",
-		Options: []string{"main.go", "util.go"}, AllowOther: true})}
+		Options: []string{"main.go", "util.go"}, AllowOther: true}, 1000)}
 	m.RenderTranscript(items, chat.Conversation{}, false)
 	// options: main.go(0), util.go(1), Other(2)
 	m.Update(tea.KeyMsg{Type: tea.KeyDown})
@@ -210,7 +249,7 @@ func TestQuestionCardOptionSendsTheChoice(t *testing.T) {
 	m, h := newTestModel(t)
 	items := []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{
 		ID: "q2", Kind: chat.AskQuestion, Question: "Which file?",
-		Options: []string{"main.go", "util.go"}, AllowOther: true})}
+		Options: []string{"main.go", "util.go"}, AllowOther: true}, 1000)}
 	m.RenderTranscript(items, chat.Conversation{}, false)
 	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if h.dec != chat.DecisionAnswer || h.choice != "main.go" {
@@ -319,7 +358,7 @@ func TestConsentScreenOwnsTabWhileClaiming(t *testing.T) {
 		t.Fatal("with nothing claimed, tab belongs to the shell")
 	}
 	items := []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{
-		ID: "a9", Kind: chat.AskTool, Tool: "write", Target: "/p/x.go", Directory: "/p"})}
+		ID: "a9", Kind: chat.AskTool, Tool: "write", Target: "/p/x.go", Directory: "/p"}, 1000)}
 	m.RenderTranscript(items, chat.Conversation{}, false)
 	if !m.OwnsTab() {
 		t.Fatal("a pending card must own tab — the card binds it as row movement")

@@ -152,7 +152,28 @@ type Conversation struct {
 	// conversations (categories being the first), and it is also the CONTEXT the
 	// agent is told about: the project's project_dir is the folder the chat's work
 	// happens in, so a client shows it and the prompt carries it.
-	ProjectId     string `protobuf:"bytes,15,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
+	ProjectId string `protobuf:"bytes,15,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
+	// fullsend reports whether this conversation is in FULLSEND mode: the operator
+	// has waived the permission PROMPT for it, so a write or an execution that would
+	// raise a consent card proceeds instead.
+	//
+	// WHAT IT DOES NOT DO, because conflating these is the one way a bypass becomes a
+	// lie to the operator:
+	//   - it does not override a DENY entry. A deny is a policy DECISION, not a
+	//     permission request — no card is raised for it — so there is nothing here to
+	//     waive. The preset denials (ssh / gnupg / aws / gh / git-credentials / netrc /
+	//     docker config) and any the operator writes keep refusing.
+	//   - it cannot resurrect the never-allow binary class (sudo / dd / mkfs* / ...),
+	//     which is refused before any permission decision is reached at all.
+	//
+	// It reaches both enforcement points — the consent decision AND the host-suite
+	// guard shim a bash subprocess runs under — so "everything is allowed" is true of
+	// what actually runs, not only of what the model was told.
+	//
+	// Computed at READ time from the plane's in-memory store and never persisted: a
+	// permission bypass that survives a restart is one the operator has forgotten is
+	// on. Off is always the state a new conversation and a new plane start in.
+	Fullsend      bool `protobuf:"varint,16,opt,name=fullsend,proto3" json:"fullsend,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -290,6 +311,13 @@ func (x *Conversation) GetProjectId() string {
 		return x.ProjectId
 	}
 	return ""
+}
+
+func (x *Conversation) GetFullsend() bool {
+	if x != nil {
+		return x.Fullsend
+	}
+	return false
 }
 
 // ChatMessage is a single message within a conversation.
@@ -1285,7 +1313,7 @@ var File_orchicon_api_v1_ask_orchicon_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_ask_orchicon_proto_rawDesc = "" +
 	"\n" +
-	"\"orchicon/api/v1/ask_orchicon.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x91\x05\n" +
+	"\"orchicon/api/v1/ask_orchicon.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xad\x05\n" +
 	"\fConversation\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x14\n" +
@@ -1306,7 +1334,8 @@ const file_orchicon_api_v1_ask_orchicon_proto_rawDesc = "" +
 	"\x10turn_progressing\x18\r \x01(\bR\x0fturnProgressing\x12M\n" +
 	"\x15turn_last_activity_at\x18\x0e \x01(\v2\x1a.google.protobuf.TimestampR\x12turnLastActivityAt\x12\x1d\n" +
 	"\n" +
-	"project_id\x18\x0f \x01(\tR\tprojectId\"\xc4\x03\n" +
+	"project_id\x18\x0f \x01(\tR\tprojectId\x12\x1a\n" +
+	"\bfullsend\x18\x10 \x01(\bR\bfullsend\"\xc4\x03\n" +
 	"\vChatMessage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12'\n" +
 	"\x0fconversation_id\x18\x02 \x01(\tR\x0econversationId\x12\x12\n" +

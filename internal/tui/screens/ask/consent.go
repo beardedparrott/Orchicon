@@ -69,7 +69,21 @@ func (m *Model) SyncTranscriptConsent(items []chat.ChatItem) {
 // (internal/tui/router.go) hands every key to the screen verbatim while this is
 // true, so a printable key cannot reach the composer and a bare letter cannot
 // fire a shell route.
-func (m *Model) ClaimsKeys() bool { return m.consent != nil || m.ov != nil }
+func (m *Model) ClaimsKeys() bool {
+	if m.ov != nil {
+		return true
+	}
+	if m.consent == nil {
+		return false
+	}
+	// A DEFERRED CARD DOES NOT CLAIM. See DropKeyClaim: ctrl+g has to be able to hand the
+	// keyboard to the composer WITHOUT deciding anything, and the claim is otherwise absolute
+	// (the composer is the DEFAULT focus, so the claim is the only thing that makes the card
+	// own the keys at all). Deferring by ASK ID rather than a bool is what re-arms the card
+	// automatically when a NEW ask arrives — no hook, no bookkeeping, no way to leave it
+	// disarmed by forgetting to clear a flag.
+	return m.consent.Ask.ID != m.consentDeferred
+}
 
 // FormOpen is deliberately FALSE while a card is up. A card is not a form: the
 // shell advertises a form's keys (ctrl+s / esc) when this is true, and Tab must
@@ -93,15 +107,44 @@ func (m *Model) OwnsTab() bool { return m.ClaimsKeys() }
 
 // DropKeyClaim is the focus chord's release (ctrl+g).
 //
-// WHILE A CARD IS PENDING IT IS A DENY, NOT A DISMISSAL. The claim is a latch
-// and ctrl+g is the chord that must always be able to leave it, so it cannot be
-// a no-op; and leaving focus in a composer the card still claims would be worse
-// than either. Denying is already Esc's outcome and it is RECORDED, so the
-// operator's decision is never silently dropped.
+// IT MUST NOT DECIDE ANYTHING, and it used to deny. The reasoning was that the claim is
+// a latch, ctrl+g is the chord that has to be able to leave it, and a decision is better
+// than a silent nothing — so it denied, "because denying is already Esc's outcome and it is
+// RECORDED, so the operator's decision is never silently dropped."
+//
+// THAT REASONING WAS WRONG, and the operator found it: "I hit ctrl+g to gain focus to the
+// composer in the TUI so I could do a fullsend test and it registered it as a deny." Three
+// things are true of ctrl+g, and none of them is a decision:
+//
+//   - IT IS THE ADVERTISED WAY TO TYPE. Every page's hint line leads with it ("ctrl+g: chat
+//     composer"), so it is pressed by operators who want to TYPE — including to answer this
+//     very card, or to reach /fullsend while it is up.
+//   - IT IS NOT A REFUSAL. A refuse is an act with intent; this is a focus chord. Recording
+//     deny means the transcript says the operator refused a call they never judged, which is
+//     the misattribution class this codebase has been corrected on before.
+//   - IT IS NOT RECOVERABLE. The refusal reaches the model, which then chooses a different
+//     approach on the strength of an answer nobody gave.
+//
+// So the chord now DEFERS the card instead of deciding it: the card stays pending and on
+// screen, and the claim is released so the composer takes the keys. Nothing is decided, nothing
+// is dropped, and no answer is invented.
+//
+// THE CLAIM IS WHAT HAD TO MOVE, not the shell's gate. The composer is the DEFAULT focus
+// ("Phase 2a — typing works immediately"), so a card only owns the keys because it CLAIMS them
+// against that default; letting a focused composer outrank the claim (which I tried first)
+// broke the card outright — every claimed key went to the composer and the card could not be
+// answered at all. Releasing the claim for THIS ask is the narrow version: the card yields the
+// keyboard here, and a NEW ask claims it again by construction.
+//
+// The card is still answerable: a click decides it (the click path does not consult the claim),
+// and a new ask re-arms the keys. The dock notice names that, so a deferred card is never a
+// card the operator has lost.
 func (m *Model) DropKeyClaim() {
 	if m.consent != nil && m.consent.Pending() {
-		m.resolveConsent(chat.DecisionDeny)
+		m.consentDeferred = m.consent.Ask.ID
 	}
+	// The overlay is a genuine dismissal: it is a local picker, and leaving it open on an
+	// unfocused screen is what the release exists to prevent.
 	m.ov = nil
 	m.Base.DropKeyClaim()
 }
@@ -188,14 +231,19 @@ func (m *Model) confirmConsent() tea.Cmd {
 		st.Choice = choice
 		return m.resolveConsent(chat.DecisionAnswer)
 	}
-	switch st.Sel {
-	case 0:
-		return m.resolveConsent(chat.DecisionAllowOnce)
-	case 1:
-		return m.resolveConsent(chat.DecisionAllowSession)
-	default:
-		return m.resolveConsent(chat.DecisionDeny)
+	// THE ROW INDEX IS THE DECISION, and it comes from the shared mapping so the
+	// KEYBOARD and the CLICK cannot disagree about what row 1 means. This used to
+	// hard-code the same three indices locally, which is exactly how two paths drift
+	// apart the moment a label changes — and the session row's label now depends on
+	// the ask (it names the directory the grant covers).
+	dec, ok := st.Ask.DecisionForRow(st.Sel)
+	if !ok {
+		// A row that is not a permission choice — the session row when the deny list
+		// disables it. Enter is a no-op, matching the arrows' refusal to land on it and
+		// the click path's refusal to act on it.
+		return nil
 	}
+	return m.resolveConsent(dec)
 }
 
 // resolveConsent settles the card and releases the claim.

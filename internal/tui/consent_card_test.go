@@ -53,7 +53,7 @@ func TestConsentCardRendersTheToolAndTargetInTheTranscript(t *testing.T) {
 	m, _, items := pendingCard(t)
 	out := chat.RenderItems(items, 90)
 	for _, want := range []string{"write", "/home/ops/project/main.go",
-		chat.ConsentAllowOnce, chat.ConsentAllowSession, chat.ConsentDeny} {
+		chat.ConsentAllowOnce, chat.ConsentSessionPrefix, chat.ConsentDeny} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("the transcript must show %q:\n%s", want, out)
 		}
@@ -153,13 +153,20 @@ func TestConsentSessionGrantSuppressesTheNextCardForTheDirectory(t *testing.T) {
 	}
 }
 
-// TestConsentQuestionCardSendsTheChoiceThroughTheComposerFunnel pins the
-// clarifying-question criterion AGAINST THE REAL SHELL: choosing an option
-// sends the choice as the next user message — the operator must not have to
-// retype prose. The screen-level test proves the decision reaches the host;
-// this one proves the host turns it into a user message on the send path the
-// composer itself uses (SendUserMessage -> the optimistic echo in the store).
-func TestConsentQuestionCardSendsTheChoiceThroughTheComposerFunnel(t *testing.T) {
+// TestConsentQuestionCardAnswersThroughTheReplyRPC pins the clarifying-question
+// criterion AGAINST THE REAL SHELL, under the PAUSE contract.
+//
+// IT USED TO ASSERT THE OPPOSITE. Before the pause, ask_user was record-and-return,
+// so answering a card sent the option's label as the NEXT USER MESSAGE — a new turn
+// with the answer as its prompt. Now the question BLOCKS the turn, so the answer is
+// delivered as the ask_user TOOL RESULT over the reply RPC and the SAME turn resumes.
+// Sending it as a user message would leave the blocked call blocked and start a second
+// turn on top of it.
+//
+// What the operator asked for is unchanged and is what this still checks: answering
+// is ONE keystroke, and the card settles with the choice recorded — no retyping prose,
+// and no second turn.
+func TestConsentQuestionCardAnswersThroughTheReplyRPC(t *testing.T) {
 	m, _ := newAskApp(t)
 	as := ask.New(m.clients, m.reg)
 	m.RegisterScreen(TabAsk, as)
@@ -181,15 +188,14 @@ func TestConsentQuestionCardSendsTheChoiceThroughTheComposerFunnel(t *testing.T)
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = nm.(*App)
 
-	sent := false
+	// THE ANSWER MUST NOT BECOME A USER MESSAGE: that was the pre-pause contract, and
+	// under the pause it would spawn a second turn alongside the blocked one.
 	for _, it := range m.chatStore.snapshot("c1") {
-		if it.Kind == chat.KindUser && it.Text == "util.go" {
-			sent = true
+		if it.Kind == chat.KindUser {
+			t.Fatalf("the answer was sent as a user message (%q) — under the pause it must go to the server as the tool result", it.Text)
 		}
 	}
-	if !sent {
-		t.Fatal("choosing an option must send it as the next user message")
-	}
+	// The card settles, so the claim is released and the turn is free to resume.
 	if as.ClaimsKeys() {
 		t.Fatal("the claim must be released once the question is answered")
 	}

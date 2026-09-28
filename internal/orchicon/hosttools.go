@@ -3,6 +3,7 @@ package orchicon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -384,6 +385,24 @@ func shellPolicyTokens(command string) []string {
 
 // checkPolicy runs the installed policy hook over the call's targets. A nil
 // hook (the worker path) is a no-op.
+//
+// A BROKEN POLICY DOES NOT BLOCK A READ. When the file cannot be parsed there is no
+// decision to respect, and failing closed on EVERY action — which is what happened —
+// locks the operator out of the one thing that would explain the problem: looking at
+// the file. A read cannot damage anything, so it proceeds; a write or an execution
+// still refuses, because those are the actions a policy exists to gate.
+//
+// A DENY VERDICT still refuses reads, unchanged: the deny list exists to keep files
+// like ~/.ssh out of reach, and that is a decision the policy successfully made.
+//
+// THE READ PROCEEDS WITHOUT A WARNING, and that is a known limitation rather than an
+// oversight: this function returns a single error, so it cannot both succeed and
+// carry a complaint about the policy. The operator's remedy is the thing this
+// unblocks — they can now READ the file and see what is wrong — and a policy broken
+// at boot is still caught loudly by permpolicy.Boot, which refuses to start. Closing
+// the gap properly means giving the suite a logger; it is recorded as a follow-up
+// rather than papered over with a comment that claimed the error was reported when
+// the code returned nil.
 func (h *HostTools) checkPolicy(name, argsJSON string) error {
 	if h.pathPolicy == nil {
 		return nil
@@ -392,7 +411,27 @@ func (h *HostTools) checkPolicy(name, argsJSON string) error {
 	if len(targets) == 0 {
 		return nil
 	}
-	return h.pathPolicy(targets)
+	err := h.pathPolicy(targets)
+	if err == nil {
+		return nil
+	}
+	var lf interface{ PolicyLoadFailure() bool }
+	if errors.As(err, &lf) && lf.PolicyLoadFailure() && readOnlyHostTool(name) {
+		return nil
+	}
+	return err
+}
+
+// readOnlyHostTool reports whether a host-suite tool only reads. It answers from the
+// SAME classification the consent gate uses (ConsentReadOnlyTools), so the two cannot
+// drift about what counts as a read.
+func readOnlyHostTool(name string) bool {
+	for _, n := range ConsentReadOnlyTools {
+		if n == name {
+			return true
+		}
+	}
+	return false
 }
 
 // --- thin wrappers over the composite engine -------------------------------

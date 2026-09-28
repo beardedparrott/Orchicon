@@ -62,11 +62,34 @@ func CardWidth(avail, want int) int {
 	return want
 }
 
+// CardRowSpan is where one CardSpec.Lines entry landed in the rendered card: the
+// 0-based index of its FIRST line and how many lines it occupies (a long option
+// wraps, and every row of it belongs to that option).
+//
+// It is measured by the code that DRAWS the card, never counted by the caller. A
+// caller-side count drifts the moment the card gains a row — and for a clickable
+// option list the failure mode of that drift is a click that answers with the
+// option the operator did not choose. The transcript's clarifying-question card
+// resolves clicks through these spans, which is why the measurement lives here.
+type CardRowSpan struct {
+	Line  int
+	Lines int
+}
+
 // CardLines renders the card as lines of EXACTLY width cells (ANSI-aware), with
 // a rounded border, the shared panel tint and the shared selection highlight.
 func CardLines(spec CardSpec, width int) []string {
+	lines, _ := CardLinesSpans(spec, width)
+	return lines
+}
+
+// CardLinesSpans is CardLines plus where each spec.Lines entry landed, so a
+// caller that makes rows INTERACTIVE can resolve a click (or a keypress) to the
+// row it actually drew.
+func CardLinesSpans(spec CardSpec, width int) ([]string, []CardRowSpan) {
 	w := CardWidth(width, 0)
 	border := lipgloss.NewStyle().Foreground(theme.AccentIndigo)
+	spans := make([]CardRowSpan, 0, len(spec.Lines))
 	innerW := w - 2
 	if innerW < 1 {
 		innerW = 1
@@ -109,6 +132,7 @@ func CardLines(spec CardSpec, width int) []string {
 		}
 	}
 	for _, l := range spec.Lines {
+		start := len(out)
 		switch {
 		case l.Disabled:
 			text := l.Text
@@ -130,6 +154,7 @@ func CardLines(spec CardSpec, width int) []string {
 				emit(Pad(wl, innerW))
 			}
 		}
+		spans = append(spans, CardRowSpan{Line: start, Lines: len(out) - start})
 	}
 	if spec.ShowInput {
 		for _, wl := range wrapCells(spec.Input, innerW, "> ", "  ") {
@@ -142,7 +167,7 @@ func CardLines(spec CardSpec, width int) []string {
 		}
 	}
 	out = append(out, border.Render("└"+strings.Repeat("─", w-2)+"┘"))
-	return out
+	return out, spans
 }
 
 // wrapCells breaks text into rows of at most `width` DISPLAY CELLS: greedy on

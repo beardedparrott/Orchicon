@@ -11,7 +11,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CompactConversationRequest, CompactConversationResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, InterjectConversationTurnRequest, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, ListPermissionGrantsRequest, ListPermissionGrantsResponse, ReplyPermissionAskRequest, ReplyPermissionAskResponse, RevokePermissionGrantRequest, RevokePermissionGrantResponse, SetConversationModelRequest, SetConversationModelResponse, SetConversationModeRequest, SetConversationModeResponse, SetConversationProjectRequest, SetConversationProjectResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse, WatchTurnStreamRequest } from "./ask_orchicon_service_pb.js";
+import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CompactConversationRequest, CompactConversationResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, InterjectConversationTurnRequest, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, ListPermissionGrantsRequest, ListPermissionGrantsResponse, ReplyPermissionAskRequest, ReplyPermissionAskResponse, RevokePermissionGrantRequest, RevokePermissionGrantResponse, SetConversationFullsendRequest, SetConversationFullsendResponse, SetConversationModelRequest, SetConversationModelResponse, SetConversationModeRequest, SetConversationModeResponse, SetConversationProjectRequest, SetConversationProjectResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse, WatchTurnStreamRequest } from "./ask_orchicon_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -108,6 +108,25 @@ export const AskOrchiconService = {
       name: "SetConversationModel",
       I: SetConversationModelRequest,
       O: SetConversationModelResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * SetConversationFullsend turns FULLSEND on or off for one conversation. It is the
+     * write side of Conversation.fullsend; the response carries the conversation back so
+     * the caller renders the state the SERVER holds rather than the one it hoped for.
+     *
+     * It is per CONVERSATION and in-memory (it dies with the plane), which is the same
+     * scope and lifetime as a session grant — and it is deliberately NOT a pending value
+     * for a conversation that does not exist yet. A bypass that applies to a conversation
+     * the operator has not looked at is one they did not knowingly arm; the mode field had
+     * exactly this leak, and it was fixed by scoping the write to the open conversation.
+     *
+     * @generated from rpc orchicon.api.v1.AskOrchiconService.SetConversationFullsend
+     */
+    setConversationFullsend: {
+      name: "SetConversationFullsend",
+      I: SetConversationFullsendRequest,
+      O: SetConversationFullsendResponse,
       kind: MethodKind.Unary,
     },
     /**

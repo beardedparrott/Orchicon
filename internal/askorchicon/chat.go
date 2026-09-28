@@ -21,6 +21,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/opencode"
+	"github.com/beardedparrott/orchicon/internal/orchicon"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
@@ -1026,7 +1027,11 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 						s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", sid, "", reasoning, finalLedger)
 					}
 				case errors.Is(terr, errUserStop):
-					s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", sid, "Turn stopped by the user.", reasoning, finalLedger)
+					// KEEP THE PARTIAL TEXT. This used to persist "" and discard whatever the
+					// model had already written — the operator watched a reply build up and
+					// then lost all of it to the stop. The error text still explains the stop;
+					// the content is what the turn produced and belongs to them.
+					s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, strings.TrimSpace(reply), sid, "Turn stopped by the user.", reasoning, finalLedger)
 				default:
 					errText := terr.Error()
 					// Surface the failure verbatim on the stream (the TUI dock
@@ -1044,7 +1049,12 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 							"conversation", convID, "session", sid)
 						s.persistConversationSessionID(detached, tenantID, convID, "")
 					}
-					s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", sid, errText, reasoning, finalLedger)
+					// KEEP WHAT THE TURN PRODUCED. A stall, a reply timeout or a provider error
+					// is exactly when the partial output matters most — the operator watched
+					// the work happen — and this persisted "" over the partial row the live
+					// mirror had just written, destroying it. The error text rides in the
+					// message's metadata, so the content and the reason both survive.
+					s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, strings.TrimSpace(reply), sid, errText, reasoning, finalLedger)
 				}
 			} else {
 				s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, strings.TrimSpace(reply), sid, "", reasoning, finalLedger)
@@ -1454,7 +1464,7 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 	defer func() {
 		// Turn end (C8): apply a decision that landed, expire every still-open ask
 		// (reject) so the serve holds no phantom permission, and clear the gate.
-		c.consent.finalize(context.WithoutCancel(ctx), c.client)
+		c.consent.finalize(context.WithoutCancel(ctx), c.client, c.onStreamEvent)
 	}()
 	// reconnects counts the bounded session recycles performed on an MCP
 	// wedge. Bounded by ORCHICON_ASK_MCP_RECONNECT_ATTEMPTS (D2) so a wedged
@@ -1743,16 +1753,50 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 			})
 		}
 	}
-	// flushThinkDrain commits any unterminated folded-think body accumulated in
-	// the live segmenter to the durable reasoning slice (provider truncation /
-	// abort / supersede at turn end — the body must land in the reasoning
-	// channel, NEVER in text). It also clears the live reasoning tail so a
-	// committed body replaces its growing tail in the mirror (matching how a
-	// completed reasoning part resets liveReasoning after appending to the
-	// durable slice).
-	flushThinkDrain := func() {
-		segThink.flushBody(commitThink)
+	// The unterminated-body flush that used to live in its own flushThinkDrain closure is
+	// now part of settleAttempt below, deliberately: an exit that committed the folded body
+	// but did NOT fold the native reasoning tail was exactly the bug — half the thinking
+	// landed and half was dropped, and having two exits made it possible to do half of it.
+	//
+	// settleAttempt is the ONE exit for this attempt: it folds the live delta tails into
+	// the durable text/reasoning so NOTHING THAT STREAMED IS DROPPED.
+	//
+	// WHY IT EXISTS. The durable values were built ONLY from COMPLETED parts, while the
+	// livetail buffers held the deltas not yet superseded by one. On a clean turn that is
+	// fine — the final part resets both tails (see the "text" arm of the part switch). But
+	// every ABNORMAL exit (stall / reply timeout / provider error / bus close) returned
+	// BEFORE any final part, so the attempt handed the caller empty text and empty
+	// reasoning and the operator's work vanished: "anything you were currently typing
+	// (mostly in thought) goes away and my previous message is considered last message".
+	//
+	// NATIVE REASONING WAS NEVER DURABLE AT ALL, which is the sharper half. The orchicon
+	// adapter streams reasoning as DELTAS and, before this, emitted no completed reasoning
+	// part — so liveReasoning was the only place it ever existed, and a completed TEXT part
+	// resets it (the "text" arm below clears liveReasoning). Folding the tail here is what
+	// makes the thinking survive; emitting the completed part from the adapter is the other
+	// half, and it is what keeps reasoning ordered with the committed bodies.
+	//
+	// The tail is captured BEFORE the flush because the flush clears the buffer, and exactly
+	// the body the flush just committed is stripped from the tail first — otherwise an
+	// unterminated folded body would be persisted twice.
+	settleAttempt := func() (string, []string) {
+		tail := liveReasoning.String()
+		flushed := ""
+		segThink.flushBody(func(b string) {
+			if b != "" {
+				flushed = b
+			}
+			commitThink(b)
+		})
+		if rest := foldReasoningTail(tail, flushed); strings.TrimSpace(rest) != "" {
+			reasoning = append(reasoning, rest)
+		}
 		liveReasoning.Reset()
+		text := reply.String()
+		if liveText.Len() > 0 {
+			text += liveText.String()
+		}
+		return text, reasoning
 	}
 	sent := false
 	// The handshake bound (ORCHICON_ASK_TIMEOUT) starts after subscribe and
@@ -1801,14 +1845,15 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 			// finalize behaviour per cause, and carry the partial text (the
 			// superseded turn's partial content is persisted as a plain
 			// message).
-			flushThinkDrain()
-			return turnAttemptResult{kind: turnFailed, text: reply.String(), reasoning: reasoning, err: context.Cause(subCtx)}
+			finalText, finalReasoning := settleAttempt()
+			return turnAttemptResult{kind: turnFailed, text: finalText, reasoning: finalReasoning, err: context.Cause(subCtx)}
 		case <-window.C:
-			flushThinkDrain()
-			return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("reply timed out after %s on model %s — the model may be overloaded or unavailable. Check the Ask Orchicon model in Settings → Default models, then retry.", askReplyWindow(), c.modelRef)}
+			finalText, finalReasoning := settleAttempt()
+			return turnAttemptResult{kind: turnFailed, text: finalText, reasoning: finalReasoning, err: fmt.Errorf("reply timed out after %s on model %s — the model may be overloaded or unavailable. Check the Ask Orchicon model in Settings → Default models, then retry.", askReplyWindow(), c.modelRef)}
 		case <-handshake.C:
 			if !sent {
-				return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("the opencode serve did not accept the message within %s — please try again", askTimeout())}
+				finalText, finalReasoning := settleAttempt()
+				return turnAttemptResult{kind: turnFailed, text: finalText, reasoning: finalReasoning, err: fmt.Errorf("the opencode serve did not accept the message within %s — please try again", askTimeout())}
 			}
 		case <-stallTicker.C:
 			// First, the AC1 MCP-wedge signal: a tool call issued but never
@@ -1818,7 +1863,8 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 			// slow tool that still streams activity never trips it.
 			if tool, wedged := monitor.toolWedge(); wedged {
 				s.log.Warn("ask orchicon turn wedged on a tool call", "conversation", c.convID, "session", sid, "model", c.modelRef, "tool", tool)
-				return turnAttemptResult{kind: turnToolWedge, reasoning: reasoning, wedgeTool: tool, err: fmt.Errorf("tool %s did not respond", tool)}
+				finalText, finalReasoning := settleAttempt()
+				return turnAttemptResult{kind: turnToolWedge, text: finalText, reasoning: finalReasoning, wedgeTool: tool, err: fmt.Errorf("tool %s did not respond", tool)}
 			}
 			if reason := monitor.stallReason(); reason != "" {
 				// The model has stopped making progress: interrupt it NOW
@@ -1828,8 +1874,13 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 				// like a "stuck" model to the user.
 				_ = c.client.AbortConversationSession(context.WithoutCancel(subCtx), sid)
 				s.log.Warn("ask orchicon turn stalled", "conversation", c.convID, "session", sid, "model", c.modelRef, "reason", reason)
-				flushThinkDrain()
-				return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("The model (%s) stopped responding (%s). This is often a provider/model issue (rate limit, quota, or an unavailable model). Check the Ask Orchicon model in Settings → Default models, then retry.", c.modelRef, reason)}
+				// SETTLE, OR THE ABORT TAKES THE WORK WITH IT. The stall aborts the serve
+				// session, and the adapter's abort path finalizes WITHOUT emitting its
+				// accumulated reply (no completed part is coming), so the DELTAS are all this
+				// turn will ever hand over. Folding them here is what makes a stalled turn
+				// leave its work visible instead of an error bubble over an empty row.
+				finalText, finalReasoning := settleAttempt()
+				return turnAttemptResult{kind: turnFailed, text: finalText, reasoning: finalReasoning, err: fmt.Errorf("The model (%s) stopped responding (%s). This is often a provider/model issue (rate limit, quota, or an unavailable model). Check the Ask Orchicon model in Settings → Default models, then retry.", c.modelRef, reason)}
 			}
 		case <-flushTick.C:
 			// Trailing mirror flush: the throttle window elapsed with an
@@ -1848,25 +1899,53 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 					// recreate + re-seed the DB history and re-dispatch once.
 					fresh, cerr := c.client.CreateConversationSession(ctx, c.convID, "ask-orchicon:"+c.convID)
 					if cerr != nil {
-						return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("recreate conversation session: %w", cerr)}
+						finalText, finalReasoning := settleAttempt()
+						return turnAttemptResult{kind: turnFailed, text: finalText, reasoning: finalReasoning, err: fmt.Errorf("recreate conversation session: %w", cerr)}
 					}
 					return turnAttemptResult{kind: turnRecreated, newSid: fresh}
 				}
-				return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: fmt.Errorf("conversation session send: %w", res)}
+				finalText, finalReasoning := settleAttempt()
+				return turnAttemptResult{kind: turnFailed, text: finalText, reasoning: finalReasoning, err: fmt.Errorf("conversation session send: %w", res)}
 			}
 			sent = true
 		case <-consentReplies:
 			// A client decision landed for one of this turn's asks: answer the
 			// serve and resume. The turn was never blocked by us — opencode held
 			// the call; we only awaited this.
-			c.consent.applyClientReplies(context.WithoutCancel(subCtx), c.client)
+			//
+			// AND PUBLISH WHAT WAS APPLIED, so every OTHER watcher of this turn
+			// settles its copy of the card. Without it a decision made in one
+			// client left the other showing a live-looking, inert card — and the
+			// clients cannot infer it, because a permission ask has no durable
+			// per-ask row to reconcile against.
+			for _, r := range c.consent.applyClientReplies(context.WithoutCancel(subCtx), c.client) {
+				emitAskResolution(c.onStreamEvent, c.convID, r)
+			}
+			// AND PUSH THE LEDGER TO DISK NOW, because the ledger is the record every OTHER
+			// client reconciles against and it is only persisted when the partial mirror
+			// flushes. That flush is driven by onPartial — i.e. by model OUTPUT — and a turn
+			// that decides something and then goes quiet (the common case: the operator
+			// answers and the model takes a while to resume) would leave the resolution
+			// in memory until the turn ended. A client that missed the live event would
+			// therefore keep its card for as long as that took, which is the "I shouldn't
+			// have to refresh" complaint in a slower form.
+			//
+			// On a REFRESH the client has no card at all (asks are stream-only), so this is
+			// not for the reloading client — it is for the one that is open, watching, and
+			// did not receive the event (a re-dial, a dropped socket, a second tab that
+			// attached late). Its poll of the transcript is what settles it, and this makes
+			// that poll useful immediately.
+			if c.onPartial != nil {
+				snapText, snapRsn := mirrorSnapshot()
+				c.onPartial(snapText, snapRsn)
+			}
 		case evt, ok := <-sub.Events():
 			if !ok {
 				// Bus closed — the serve died mid-reply. Re-attach (bounded
 				// by the reply window in the collector loop).
 				s.log.Warn("ask orchicon serve bus closed mid-turn", "conversation", c.convID, "session", sid, "cause", "sse-bus-close")
-				flushThinkDrain()
-				return turnAttemptResult{kind: turnReattach, reasoning: reasoning}
+				finalText, finalReasoning := settleAttempt()
+				return turnAttemptResult{kind: turnReattach, text: finalText, reasoning: finalReasoning}
 			}
 			if evt.SessionID != "" && evt.SessionID != sid {
 				continue
@@ -1877,8 +1956,29 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 				// (sent). A stale idle from a prior turn (sent == false)
 				// must never complete a new turn.
 				if sent {
-					flushThinkDrain()
-					return turnAttemptResult{kind: turnCollected, text: strings.TrimSpace(reply.String()), reasoning: reasoning}
+					finalText, finalReasoning := settleAttempt()
+					return turnAttemptResult{kind: turnCollected, text: strings.TrimSpace(finalText), reasoning: finalReasoning}
+				}
+			case "question":
+				// THE PAUSE. The model asked a clarifying question and the adapter is
+				// BLOCKED on the call; the operator's answer becomes the tool result
+				// and the turn resumes. No policy runs — see raiseQuestion.
+				if pid := evt.PermissionID; pid != "" {
+					if qt := c.consent; qt != nil {
+						ask, refusal := qt.raiseQuestion(sid, evt)
+						if ask != nil {
+							emitPermissionAsk(c.onStreamEvent, ask)
+							qt.logAsk(ask)
+						}
+						if refusal != "" {
+							s.log.Warn("ask orchicon: refused to raise a question",
+								"conversation", c.convID, "reason", refusal)
+							// The adapter is waiting: give it the error as the tool result
+							// rather than leaving the turn parked with no card.
+							_ = c.client.ReplyPermissionDecision(context.WithoutCancel(subCtx), sid, pid,
+								"ask_user could not be asked: "+refusal)
+						}
+					}
 				}
 			case "permission":
 				// The consent path: extract the typed action, run the precedence
@@ -1899,7 +1999,19 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 						}
 						if resp != "" {
 							rc, rsid, rpid := c.client, sid, pid
-							go func() { _ = rc.ReplyPermissionDecision(context.WithoutCancel(subCtx), rsid, rpid, resp) }()
+							// CARRY THE REASON WHEN THE LAYER REFUSED THE CALL.
+							//
+							// `refusal != ""` with no ask means nobody was shown a card: the policy
+							// denied the target, or the action was in the never-allow class. Sending the
+							// bare "reject" we answer the serve with would have the bridge report it to
+							// the model as "the operator denied ..." — a false statement about the
+							// operator, since they were never asked, and one that hides the rule that
+							// actually refused it. The reason is the model's only route to a workaround.
+							decision := resp
+							if ask == nil && refusal != "" {
+								decision = orchicon.ConsentRefusedPrefix + refusal
+							}
+							go func() { _ = rc.ReplyPermissionDecision(context.WithoutCancel(subCtx), rsid, rpid, decision) }()
 						}
 					} else {
 						// No consent handle (a bare attempt test): keep the historical
@@ -1912,8 +2024,11 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 				// the turn (the session is kept). Text carries the failed
 				// message.
 				s.log.Warn("ask orchicon session error", "conversation", c.convID, "message", evt.Text)
-				flushThinkDrain()
-				return turnAttemptResult{kind: turnFailed, reasoning: reasoning, err: errors.New(evt.Text)}
+				// CARRY WHAT ARRIVED. A provider error mid-stream used to discard every delta
+				// that had already been streamed: the operator watched text and reasoning
+				// appear and then lost both to an error bubble.
+				finalText, finalReasoning := settleAttempt()
+				return turnAttemptResult{kind: turnFailed, text: finalText, reasoning: finalReasoning, err: errors.New(evt.Text)}
 			case "delta":
 				// Mid-generation token deltas are liveness evidence and the
 				// live partial-reply mirror. Events observed BEFORE our
@@ -1984,6 +2099,18 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 					snapText, snapRsn := mirrorSnapshot()
 					c.onPartial(snapText, snapRsn)
 				}
+			case "tool_result":
+				// A tool call RESOLVED, carrying its arguments and output as TYPED
+				// fields (adapter-neutral — no Part map to imitate). Feed the ledger
+				// so the recorded call keeps its real arguments and its real result.
+				// This is what lets a client render a resolved call: an ask_user
+				// card reads its question and options out of ArgsJSON, and without
+				// this the call kept the "{}" placeholder and every result read back
+				// as "aborted".
+				if !sent {
+					continue
+				}
+				c.ledger.recordToolResolution(evt.ToolName, evt.ArgsJSON, evt.Output, evt.IsError)
 			case "part":
 				// Completed telemetry part (the same LegacyEventFromBus
 				// mapping executions use — the adapter classified it). Events
@@ -2370,7 +2497,7 @@ func (s *Service) runOpenCodeTurn(ctx context.Context, client scheduler.ChatTurn
 	// card, no stall monitor): the decision chain still runs and the reply RPC
 	// still finds the ask in the shared registry.
 	legacyConsent := newConsentTurn(s, convID, tenantID, nil, nil)
-	defer legacyConsent.finalize(context.WithoutCancel(ctx), client)
+	defer legacyConsent.finalize(context.WithoutCancel(ctx), client, nil)
 
 	for {
 		select {
@@ -2407,6 +2534,20 @@ func (s *Service) runOpenCodeTurn(ctx context.Context, client scheduler.ChatTurn
 				// must never complete a new turn.
 				if sent {
 					return msgID, sid, time.Since(start), nil
+				}
+			case "question":
+				// THE PAUSE, on the legacy non-streaming path. This loop has NO client
+				// stream to carry a card, so the question cannot be answered here — and
+				// the adapter is BLOCKED on the call, so it must be RELEASED with an
+				// error rather than parked until the consent window expires.
+				if pid := evt.PermissionID; pid != "" {
+					if qt := legacyConsent; qt != nil {
+						if _, refusal := qt.raiseQuestion(sid, evt); refusal != "" {
+							s.log.Warn("ask orchicon: refused to raise a question", "conversation", convID, "reason", refusal)
+						}
+						_ = client.ReplyPermissionDecision(context.WithoutCancel(ctx), sid, pid,
+							"ask_user cannot be answered on this transport — ask it again in the Ask UI")
+					}
 				}
 			case "permission":
 				// Same consent decision path as the primary drain loop. This legacy
@@ -2572,4 +2713,29 @@ func (s *Service) modelRefOrFallback(ctx context.Context, tenantID, convModelRef
 		return ""
 	}
 	return settings.DefaultAskOrchiconModel
+}
+
+// foldReasoningTail returns the live reasoning tail with the body the segmenter flush JUST
+// committed stripped from it, so an unterminated folded body is not recorded twice.
+//
+// IT IS ITS OWN FUNCTION BECAUSE IT IS THE ONE PIECE OF THIS THAT CAN SILENTLY BE WRONG.
+// The tail and the committer describe the same bytes from two directions: the tail is
+// everything that ever went into the live reasoning buffer, while `flushed` is the single
+// folded body the flush committed to the durable slice a moment ago. Appending the tail
+// unchanged duplicates that body; dropping the tail entirely loses native reasoning deltas,
+// which nothing else ever commits. Both failures are invisible in the UI (a doubled
+// thinking bubble, or a missing one) and neither shows up in a happy-path test, so the rule
+// is pinned directly instead of being inferred from a turn.
+//
+// The suffix test is deliberately conservative: an unrelated tail is returned as-is, so the
+// worst case is a duplicate rather than a LOSS — for a consent-adjacent transcript, showing
+// the operator's thinking twice is a cosmetic bug and losing it is the reported one.
+func foldReasoningTail(tail, flushed string) string {
+	if flushed == "" {
+		return tail
+	}
+	if strings.HasSuffix(tail, flushed) {
+		return strings.TrimSuffix(tail, flushed)
+	}
+	return tail
 }

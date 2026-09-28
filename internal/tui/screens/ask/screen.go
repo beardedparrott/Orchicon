@@ -31,6 +31,11 @@ type Model struct {
 	// transcript item holds (see consent.go). consentID is its ask id.
 	consent   *chat.ConsentState
 	consentID string
+	// consentDeferred is the ask id whose claim the operator released with ctrl+g, so the
+	// keyboard can go to the composer WITHOUT recording a decision on the card. It is an ID
+	// rather than a bool so a NEW ask claims the keys again by construction — a bool would have
+	// to be cleared somewhere, and forgetting to clear it would leave a card with no keys.
+	consentDeferred string
 
 	// ov is the open list overlay (/grants, /permissions, add-rule). The screen
 	// owns its keys while it is up (ClaimsKeys).

@@ -6,7 +6,7 @@ import {
   PermissionChoice,
   type PermissionAsk,
 } from "@/api/gen/orchicon/api/v1/ask_orchicon_service_pb";
-import { askTargetLabel, outcomeLabel, type AskOutcome } from "@/lib/ask-consent";
+import { askTargetLabel, outcomeLabel, sessionLabel, type AskOutcome } from "@/lib/ask-consent";
 
 // AskCard — the shared card primitive for the two things a turn can ask.
 //
@@ -39,6 +39,12 @@ export interface AskCardProps {
   allowOther?: boolean;
   /** answered=true renders a settled, non-clickable card (a later message exists). */
   answered?: boolean;
+  /**
+   * answer is what the operator actually replied, when the ask was answered. It is the
+   * ask's own TOOL RESULT (server truth), so it is available from the persisted transcript
+   * and survives a reload.
+   */
+  answer?: string;
   /** error renders the compact "unparseable call" state instead of options. */
   error?: string;
   /** onSelect fires with the chosen option's label; the caller sends it as a user message. */
@@ -253,6 +259,7 @@ export function AskCard({
   options,
   allowOther = false,
   answered = false,
+  answer,
   error,
   onSelect,
   className,
@@ -260,6 +267,37 @@ export function AskCard({
   const [otherOpen, setOtherOpen] = useState(false);
   const [otherText, setOtherText] = useState("");
   const interactive = !answered && !!onSelect;
+
+  // AN ANSWERED QUESTION IS A RECORD, NOT A CARD — the same split the permission ask makes,
+  // and the same one the TUI makes (internal/tui/chat/consent_render.go: a card while
+  // pending, one line once settled).
+  //
+  // The operator's report: "it shows a full card still that says 'Answered' and doesn't even
+  // show what the answer was. I think it should show up inline as text just like the
+  // permissions answers do." They were reading a full tinted box with every option drawn as a
+  // button — which LOOKS selectable even though it is disabled — and no sign of what was
+  // chosen. A card in the transcript is a question still to be answered; once answered it is
+  // history, and history states the QUESTION and the ANSWER in one line.
+  if (answered) {
+    const said = (answer ?? "").trim();
+    return (
+      <p
+        className={cn(
+          "text-xs text-muted-foreground [overflow-wrap:anywhere]",
+          className,
+        )}
+        data-testid="ask-card-outcome"
+        data-answered="true"
+      >
+        {/* The question is kept because a settled record with no subject is unreadable when
+            you scroll back to it — it would say only what you answered, not what you were
+            asked. */}
+        {said
+          ? `You answered "${question}" — ${said}`
+          : `Question "${question}" was dismissed — no answer sent`}
+      </p>
+    );
+  }
 
   return (
     <AskCardShell
@@ -349,6 +387,12 @@ export interface ConsentAskCardProps {
   /** busy disables the actions while the reply is in flight. */
   busy?: boolean;
   onDecide: (choice: PermissionChoice) => void;
+  /**
+   * onAnswer answers a CLARIFYING QUESTION ask (ask.question non-empty). The turn is
+   * PAUSED on it, so the answer becomes the ask_user tool result and the same turn
+   * resumes — it is not a new user message.
+   */
+  onAnswer?: (answer: string) => void;
   /** onEscape is wired by the caller to Deny — never to a dismissal. */
   onEscape?: () => void;
   className?: string;
@@ -366,23 +410,49 @@ export function ConsentAskCard({
   outcome = null,
   busy = false,
   onDecide,
+  onAnswer,
   onEscape,
   className,
 }: ConsentAskCardProps) {
   const settled = outcome !== null;
   const denyBelow = ask.denyEntriesBelow ?? [];
+
+  // A QUESTION IS NOT A CONSENT DECISION. With ask_user made BLOCKING, a clarifying
+  // question now arrives on the same wire message as a permission ask — it is what the
+  // clients render one card type from — so this component must tell them apart or it
+  // would put "Allow once / Allow for this session / Deny" in front of an operator who
+  // was asked WHICH BRANCH to clone. A non-empty question is the discriminator, and it
+  // reuses the transcript's tested question card rather than growing a second one.
+  if (!settled && (ask.question ?? "").trim() !== "") {
+    return (
+      <AskCard
+        className={className}
+        question={ask.question}
+        options={(ask.options ?? []).map((label) => ({ label }))}
+        allowOther={ask.allowOther}
+        onSelect={(label) => onAnswer?.(label)}
+      />
+    );
+  }
+  // A SETTLED ask is a ONE-LINE RECORD, not a card. The card is for a decision
+  // still to be made; once made it is history, and a full tinted block per past
+  // grant buries the live turn under its own audit trail. This is what the TUI
+  // already does (internal/tui/chat/consent_render.go: card while pending, a
+  // one-line record once decided); the GUI had not adopted that split. The
+  // outcome TEXT is unchanged, so scrolling back still shows that a grant was
+  // given and exactly what it covered.
   if (settled) {
     return (
-      <AskCardShell
-        header="Permission (decided)"
-        tone="consent"
-        answered
-        className={className}
+      <p
+        className={cn(
+          "text-xs text-muted-foreground [overflow-wrap:anywhere]",
+          className,
+        )}
+        data-testid="consent-ask-outcome"
+        data-answered="true"
       >
-        <p className="text-sm [overflow-wrap:anywhere]" data-testid="consent-ask-outcome">
-          {outcomeLabel(ask, outcome)}
-        </p>
-      </AskCardShell>
+        {outcomeLabel(ask, outcome)}
+      </p>
     );
   }
   return (
@@ -429,12 +499,16 @@ export function ConsentAskCard({
           disabled={busy}
           hint={
             ask.directory
-              ? `Covers everything under ${ask.directory} this session`
-              : "Covers this for the rest of the conversation"
+              ? "This directory and everything under it, until this conversation ends"
+              : "This, until this conversation ends"
           }
           onSelect={() => onDecide(PermissionChoice.ALLOW_SESSION)}
         >
-          Allow for this session
+          {/* THE LABEL NAMES THE SCOPE rather than leaving it to the hint. The directory
+              is the whole content of this decision — "this session" does not say HOW FAR,
+              and the operator could not tell whether it meant this file, this folder or the
+              tool. See CONSENT_SESSION_PREFIX for why the row carries it. */}
+          {sessionLabel(ask)}
         </AskCardAction>
         <AskCardAction
           testId="consent-ask-deny"
