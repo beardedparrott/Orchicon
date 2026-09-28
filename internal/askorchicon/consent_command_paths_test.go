@@ -133,6 +133,10 @@ func TestDecideAsksForACommandTouchingOutsideEvenWhenTheCwdIsGranted(t *testing.
 }
 
 func TestCommandPathsDoesNotInventPaths(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home dir")
+	}
 	cases := []struct {
 		name string
 		cmd  string
@@ -171,7 +175,12 @@ func TestCommandPathsDoesNotInventPaths(t *testing.T) {
 		{
 			name: "the case this extraction exists for",
 			cmd:  `cp ~/a /etc/b`,
-			want: []string{"/home/beardedparrott/a", "/etc/b"},
+			// DERIVED, NOT WRITTEN DOWN. `~/` expands to the RUNNING USER's home, so a literal
+			// expectation passes on the author's machine and fails everywhere else — which is
+			// exactly what go-ci caught: "commandPaths = [/home/runner/a /etc/b], want
+			// [/home/beardedparrott/a /etc/b]". The test above already used filepath.Join(home, …)
+			// for the same reason; this case did not follow it.
+			want: []string{filepath.Join(home, "a"), "/etc/b"},
 		},
 		{
 			name: "a flag-carried path",
