@@ -228,7 +228,14 @@ func (m *Model) View() string {
 		// reason the shell wraps the /connect form in a solid panel).
 		body = kit2.FitLines(body, m.w, m.h)
 		if ov := m.overlayView(); ov != "" {
-			body = kit2.Center(body, modalRows(ov, m.w), m.w, m.h)
+			// A STANDARD MODAL: a bordered panel, centered, over a DARKENED backdrop.
+			//
+			// It used to be spliced centered but over a LIVE frame, so the transcript behind it stayed at full
+			// brightness on both sides and the operator read two layers at once — "it puts it in the middle of
+			// screen and it's hard to see because it writes it overtop text". The box is now the only thing at
+			// full contrast, and it carries the same title-in-a-border the shell's own modals do (/connect,
+			// help, the launch prompt), so a list surface looks like every other modal in Orchicon.
+			body = kit2.CenterOnDimmed(body, modalBox(ov, m.w), m.w, m.h)
 		}
 	}
 	return m.Base.Frame(body)
@@ -237,6 +244,9 @@ func (m *Model) View() string {
 // modalRows normalizes an overlay into ONE OPAQUE BLOCK whose rows share a
 // width, so splicing it over the pane can neither leave a hole nor break the
 // splice with a ragged row.
+//
+// It is the panel's INTERIOR: modalBox wraps the result in the standard border, which is what makes a list
+// surface read as a modal rather than as text laid over the view.
 func modalRows(content string, maxW int) string {
 	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
 	w := 0
@@ -450,4 +460,26 @@ func setFieldValue(fields []screenkit.Field, key, value string) []screenkit.Fiel
 		}
 	}
 	return append(fields, screenkit.Field{Key: key, Value: value})
+}
+
+// modalBox wraps an overlay's content in the STANDARD modal panel: the bordered, titled box the shell's own
+// modals use (/connect, help, the launch prompt), so a list surface reads as a modal wherever it appears.
+//
+// IT IS THE ONE PLACE THE BOX'S SHAPE IS DECIDED, so the border, the inner width and the interior's opacity
+// cannot drift apart: modalRows normalizes the interior to a single width, and the panel adds exactly the two
+// border cells around it. The panel renders exactly its own Width×Height cells, which is what makes the splice
+// safe — a ragged box would trip OverlayRow and shift every row after it.
+func modalBox(content string, maxW int) string {
+	inner := modalRows(content, maxW)
+	lines := strings.Split(inner, "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	w := lipgloss.Width(lines[0])
+	if w < 8 {
+		w = 8
+	}
+	p := kit2.NewPanel("", w+2, len(lines)+2)
+	p.SetContent(inner)
+	return p.View()
 }
