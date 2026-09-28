@@ -160,3 +160,54 @@ func TestLocalExecutionModeStillGetsTheShim(t *testing.T) {
 		t.Fatalf("the local transport re-used the ambient guard dir instead of its own: %q", got)
 	}
 }
+
+// A CONTAINER session's hook command must name the in-container bind mount, not
+// the control plane's own (host) executable. The argv — and therefore the
+// settings document naming the hook — is built on the HOST and executed inside
+// the run's container, where the host path does not exist; a hook that cannot
+// launch silently removes the authority layer (protected paths, the carve-outs,
+// the operator policy) from every container run.
+func TestHookBinaryFollowsTheTransport(t *testing.T) {
+	project := t.TempDir()
+	// The operator override names a HOST path — exactly what must never reach a
+	// container hook command.
+	t.Setenv(HookBinEnv, "/host/only/orchicon")
+	settingsOf := func(args []string) string {
+		for i, a := range args {
+			if a == "--settings" && i+1 < len(args) {
+				return args[i+1]
+			}
+		}
+		t.Fatal("the launch argv carries no --settings document")
+		return ""
+	}
+
+	container := newSession(&Bridge{rt: &runtime.Client{}}, "exec-1", "tenant-1", scheduler.ExecutionManifest{
+		ProjectDir:        project,
+		RuntimeWorkflowID: "wf-1",
+		ExecutionMode:     "workflow",
+	}, nil)
+	args, err := PermissionArgs(container.permissionOptions())
+	if err != nil {
+		t.Fatalf("PermissionArgs: %v", err)
+	}
+	if got := SettingsHookBinary(settingsOf(args)); got != HookBinaryContainerPath {
+		t.Fatalf("the container hook command names %q, want the in-container bind mount %q", got, HookBinaryContainerPath)
+	}
+	env, cleanup := container.childEnv()
+	defer cleanup()
+	if got := envValue(env, HookBinEnv); got != HookBinaryContainerPath {
+		t.Fatalf("the container child's %s = %q, want %q", HookBinEnv, got, HookBinaryContainerPath)
+	}
+
+	// The LOCAL transport keeps resolving the operator's host binary: there the
+	// child IS a host process, a sibling of this one.
+	local := newSession(&Bridge{}, "exec-1", "tenant-1", scheduler.ExecutionManifest{ProjectDir: project}, nil)
+	args, err = PermissionArgs(local.permissionOptions())
+	if err != nil {
+		t.Fatalf("PermissionArgs: %v", err)
+	}
+	if got := SettingsHookBinary(settingsOf(args)); got != "/host/only/orchicon" {
+		t.Fatalf("the local hook command names %q, want the host override %q", got, "/host/only/orchicon")
+	}
+}

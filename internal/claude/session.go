@@ -379,10 +379,23 @@ func (s *session) permissionOptions() PermissionOptions {
 	return PermissionOptions{
 		ProjectDir:  s.manifest.ProjectDir,
 		WorktreeDir: s.manifest.WorktreePath,
-		HookBinary:  HookBinaryPath(),
+		HookBinary:  s.hookBinary(),
 		PolicyPath:  permpolicy.DefaultPath(),
 	}
 }
+
+// inContainer reports whether this session's child runs inside the run's
+// runtime container — the same predicate Bridge.isContainer uses to pick the
+// transport, so the two cannot disagree about who owns the OS-level guard or
+// which orchicon path exists.
+func (s *session) inContainer() bool {
+	return s.b != nil && s.b.isContainer(s.manifest)
+}
+
+// hookBinary is the binary the PreToolUse hook command invokes for this
+// session's transport: the in-container bind mount when the child runs inside
+// the run's container, the control plane's own binary otherwise.
+func (s *session) hookBinary() string { return HookBinaryFor(s.inContainer()) }
 
 // childEnv builds the environment the claude child (and every process IT spawns)
 // inherits, and returns the cleanup that must run when the session ends.
@@ -401,9 +414,12 @@ func (s *session) permissionOptions() PermissionOptions {
 func (s *session) childEnv() ([]string, func()) {
 	env := os.Environ()
 	env = setEnvVar(env, ProjectDirEnv, executionDir(s.manifest))
-	env = setEnvVar(env, HookBinEnv, HookBinaryPath())
+	// The hook binary follows the TRANSPORT, not this process: inside the run's
+	// container only the daemon's bind mount exists, so shipping the control
+	// plane's own path there would be a hook that cannot launch.
+	env = setEnvVar(env, HookBinEnv, s.hookBinary())
 	cleanup := func() {}
-	if s.b != nil && s.b.isContainer(s.manifest) {
+	if s.inContainer() {
 		return env, cleanup
 	}
 	g, err := guard.NewExecutionGuard(s.manifest.ProjectDir)

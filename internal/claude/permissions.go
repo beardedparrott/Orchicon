@@ -38,11 +38,20 @@ import (
 //     a second, lossy encoding of the list is exactly what
 //     internal/neverallow/share_test.go exists to prevent.
 
-// HookBinEnv names the absolute path of the `orchicon` binary the PreToolUse
-// hook command invokes. The runtime container sets it to the daemon's
-// bind-mount (/usr/local/bin/orchicon), which is guaranteed present inside every
-// runtime container (same convention as opencode's MCPBinaryPath).
+// HookBinEnv is the operator/deployment override for the absolute path of the
+// `orchicon` binary the PreToolUse hook command invokes when the session runs as
+// a HOST subprocess (the local transport). It is deliberately NOT consulted on
+// the container transport — see HookBinaryFor.
 const HookBinEnv = "ORCHICON_CLAUDE_HOOK_BIN"
+
+// HookBinaryContainerPath is where the runtime daemon bind-mounts its own
+// executable inside EVERY runtime container (internal/runtime/daemon.go:
+// createContainer hard-fails when it cannot — "the orchicon binary is
+// bind-mounted into every runtime container, never baked"). It is the same
+// convention opencode's runtimeContainerBinaryPath follows for its MCP
+// sidecars, and it is the only orchicon path GUARANTEED to exist in the
+// container: the control plane's own os.Executable() is a host path.
+const HookBinaryContainerPath = "/usr/local/bin/orchicon"
 
 // ProjectDirEnv is the env var the hook reads to learn the worker's project
 // boundary. The session sets it on the child's env (childEnv).
@@ -102,6 +111,24 @@ func HookBinaryPath() string {
 		return exe
 	}
 	return HookBinFallback
+}
+
+// HookBinaryFor resolves the binary the PreToolUse hook command invokes for one
+// transport.
+//
+// The container arm is not a nicety. The claude argv — and therefore the
+// settings document naming the hook command — is built by the CONTROL PLANE on
+// the host and executed by the supervisor inside the run's container, so a host
+// path there is a hook that cannot launch: the whole AUTHORITY layer (protected
+// paths, the project boundary with its carve-outs, the operator policy) would
+// silently disappear for every container run, which is every run this platform
+// makes. HookBinEnv is deliberately ignored on this transport: whatever the
+// plane's own environment says, it names a host path.
+func HookBinaryFor(isContainer bool) string {
+	if isContainer {
+		return HookBinaryContainerPath
+	}
+	return HookBinaryPath()
 }
 
 // PermissionArgs returns the FULL permission launch argv: the mode flag, the
