@@ -147,7 +147,7 @@ func TestExtractAskActionCarriesToolAndTarget(t *testing.T) {
 	// ("../sibling-project/notes.md") and `metadata.filepath` ABSOLUTE. The
 	// ABSOLUTE one is used — a relative pattern is only a guess at the base
 	// (the Ask serve has no --directory, so its base is the plane's cwd).
-	if len(a.Targets) != 1 || a.Targets[0] != "/home/beardedparrott/projects/sibling-project/notes.md" {
+	if len(a.Targets) != 1 || a.Targets[0] != "/p/sibling/notes.md" {
 		t.Fatalf("Targets = %#v, want the absolute metadata.filepath", a.Targets)
 	}
 	if a.CallID != "call_01J9Z0TOOLCALL" {
