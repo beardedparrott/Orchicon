@@ -726,13 +726,17 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		return nil, err
 	}
 	// Auto-start workflow after commit, with the same guard the Connect
-	// Update handler applies: bound, no scheduled time, auto-start true,
+	// Update handler applies: no scheduled time, auto-start true,
 	// not a kind-switch (unless the user explicitly asked), any prior run
 	// is terminal, AND the item's status is startable both before this
 	// edit and after it (architecture-notes/fix-update-path-auto-start-…).
 	// A cancelled/terminal/in-flight item is never re-armed by an edit: a
 	// stale stored flag declines silently; an explicit auto_start_workflow
 	// request declines with an explicit warning carried in the tool result.
+	//
+	// The FIRE PATH is routed by SHAPE, exactly as Connect routes it: a work
+	// item with CHILDREN is a sequence and starts its CHAIN; a bound leaf
+	// starts its own run; an unbound leaf has nothing to start and declines.
 	wouldAutoStart := updated.ScheduledStartAt == nil && updated.AutoStartWorkflow &&
 		!(kindSwitchInFlight && !userExplicitlyAutoStarts)
 	autoStartWarning := ""
@@ -751,7 +755,28 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 					}
 				}
 			}
-			if shouldStart {
+			// A work item WITH CHILDREN is a SEQUENCE, never a run: a parent's
+			// own workflow binding is meaningless — StartSequence CLEARS it
+			// ("a parent with children IS a sequence container, its own
+			// workflow_id is ignored") — so every armed epic/feature is stored
+			// in exactly this shape: startable status, auto_start_workflow
+			// true, workflow_id NULL. The Connect handler has always routed
+			// that shape to the CHAIN (itemHasChildren → maybeStartSequence,
+			// internal/workitem/service.go); this path claimed the same parity
+			// and skipped the branch, so a sequence parent fell through to the
+			// leaf branch and dereferenced the NULL binding its own mode
+			// guarantees. That panic ran on a goroutine spawned by
+			// dispatchTurnMessage, which net/http's per-connection recovery
+			// does not cover — so ONE edit killed the WHOLE control plane
+			// (live: three crashed planes on 2026-09-28, the last 2.7 ms after
+			// this row's write; the row was a pending feature with six
+			// children). Pinned by
+			// TestToolUpdateAutoStartSequenceParentFiresChainDB.
+			if toolItemHasChildren(ctx, pool, tenantID, updated.ID) {
+				if err := scheduler.StartSequence(ctx, pool, toolLogger, tenantID, updated.ID, toolStartWorkflowFn(pool)); err != nil {
+					toolLogger.Warn("auto-start sequence after update failed", "work_item", updated.ID, "error", err)
+				}
+			} else if shouldStart && updated.WorkflowID != nil && *updated.WorkflowID != "" {
 				if err := workflow.StartWorkflowDirect(ctx, pool, toolLogger, tenantID, *updated.WorkflowID, updated.ProjectID, updated.ID); err != nil {
 					toolLogger.Warn("auto-start workflow after update failed", "work_item", updated.ID, "error", err)
 				}
@@ -773,6 +798,29 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		}{WorkItemRow: updated, Warning: autoStartWarning})
 	}
 	return json.Marshal(updated)
+}
+
+// toolItemHasChildren reports whether the item has direct children — the
+// "has children = sequence parent" determinant the auto-start fire path
+// routes on. The tool-side twin of workitem.Service.itemHasChildren: a work
+// item with children IS a sequence, so its fire path is the chain.
+func toolItemHasChildren(ctx context.Context, pool *db.Pool, tenantID, itemID string) bool {
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return false
+	}
+	defer ttx.Rollback(ctx)
+	children, err := db.ListDirectChildren(ctx, ttx.Tx, tenantID, itemID)
+	return err == nil && len(children) > 0
+}
+
+// toolStartWorkflowFn is the per-child dispatcher scheduler.StartSequence
+// fires each link through — byte-for-byte the closure toolControlSequence
+// uses, so the auto-start path and the manual gesture cannot drift.
+func toolStartWorkflowFn(pool *db.Pool) scheduler.StartWorkflowFn {
+	return func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error {
+		return workflow.StartWorkflowDirect(ctx, pool, toolLogger, tenantID, workflowID, projectID, workItemID)
+	}
 }
 
 // toolAssignWorker assigns a worker to a work item, mirroring the
