@@ -1139,3 +1139,178 @@ func TestCommitAppendsTheTurnsOwnMessagesToTheSession(t *testing.T) {
 		t.Fatalf("history length = %d, want %d", len(b.chatHistory[sid]), len(prior)+3)
 	}
 }
+
+// --- the shrink guard: silent session loss must be impossible ---------------------------------
+
+// logBridge builds a bridge whose logs the test can read (newChatBridge discards them, and the guard's
+// whole job is what it SAYS).
+func logBridge(t *testing.T) (*NativeBridge, *strings.Builder) {
+	t.Helper()
+	var sb strings.Builder
+	b := NewBridge(ProviderResolverFunc(func(ctx context.Context, tenantID, providerID string) (Provider, error) {
+		return &chatTestProvider{}, nil
+	}), "", slog.New(slog.NewTextHandler(&sb, nil)))
+	return b, &sb
+}
+
+// TestTheGuardCatchesTheEqualLengthSwap is the regression detector for the bug that ran unseen for weeks.
+//
+// IT IS THE PRODUCTION SHAPE, AND THE LENGTH IS THE POINT. The replacing commit did not truncate the session,
+// it SWAPPED a message: with the session holding H+[userA]+[userB], it wrote H+[userA]+replyA — the SAME
+// message count, with the operator's own question B replaced by a reply. A guard built on length, or on
+// per-role counts, sees nothing at all here; that is how this survived so long, and the first version of this
+// guard was written that way and would NOT have caught the bug. The invariant a session actually needs is that
+// no message DISAPPEARS, so this test asserts on that.
+func TestTheGuardCatchesTheEqualLengthSwap(t *testing.T) {
+	b, logs := logBridge(t)
+	const sid = "orchicon-ask:conv-guard"
+	prior := []Message{textMsg(RoleUser, "hello")}
+
+	// A's turn dispatched.
+	historyA := append(append([]Message(nil), prior...), textMsg(RoleUser, "question A"))
+	b.chatHistory[sid] = append([]Message(nil), historyA...)
+	b.persistAskHistoryLocked(sid)
+
+	// The operator interjects: B's snapshot carries A's user message AND B's own.
+	historyB := append(append([]Message(nil), historyA...), textMsg(RoleUser, "question B"))
+	b.chatHistory[sid] = append([]Message(nil), historyB...)
+	b.persistAskHistoryLocked(sid)
+	beforeLen := len(b.chatHistory[sid])
+
+	// WHAT THE OLD COMMIT WROTE: `cur = working`, i.e. turn A's own snapshot-plus-output. Same length,
+	// different content — question B is gone, reply A is in its place.
+	b.chatHistory[sid] = append(append([]Message(nil), historyA...), textMsg(RoleAssistant, "reply A"))
+	b.persistAskHistoryLocked(sid)
+
+	if len(b.chatHistory[sid]) != beforeLen {
+		t.Fatalf("fixture no longer reproduces the swap: length went %d -> %d (it must stay EQUAL, or this "+
+			"test would pass against a length-based guard that cannot catch the real bug)",
+			beforeLen, len(b.chatHistory[sid]))
+	}
+	out := logs.String()
+	if !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "LOST MESSAGES WITHOUT AN INTENTIONAL REDUCTION") {
+		t.Fatalf("a session that swapped a message away was not reported at error level; logs:\n%s", out)
+	}
+	if !strings.Contains(out, sid) {
+		t.Errorf("the report must name the session; logs:\n%s", out)
+	}
+}
+
+// The other half: a session that only GROWS is never reported. Without this the guard could pass its own
+// regression test by shouting at everything, which would make it useless in the log.
+func TestTheGuardIsSilentOnNormalGrowth(t *testing.T) {
+	b, logs := logBridge(t)
+	const sid = "orchicon-ask:conv-guard-grow"
+	prior := []Message{textMsg(RoleUser, "hello")}
+	b.chatHistory[sid] = append([]Message(nil), prior...)
+	b.persistAskHistoryLocked(sid)
+
+	for i, q := range []string{"second", "third", "fourth"} {
+		history := append(append([]Message(nil), b.chatHistory[sid]...), textMsg(RoleUser, q))
+		b.chatHistory[sid] = append([]Message(nil), history...)
+		working := append(append([]Message(nil), history...), textMsg(RoleAssistant, "reply "+q))
+		b.commitChatHistory(sid, history, working)
+		if strings.Contains(logs.String(), "LOST MESSAGES") {
+			t.Fatalf("growth was reported as a shrink on iteration %d; logs:\n%s", i, logs.String())
+		}
+	}
+	if strings.Contains(logs.String(), "level=ERROR") {
+		t.Fatalf("an ordinary growing session logged an error; logs:\n%s", logs.String())
+	}
+}
+
+// An INTENTIONAL reduction (compaction / context reduction) is reported as intended, not as data loss — the
+// distinction is the whole point of the mark, and without it the guard would cry wolf on the one lossy path
+// that is by design and already announced to the operator.
+func TestAnIntentionalReductionIsReportedAsIntendedNotAsLoss(t *testing.T) {
+	b, logs := logBridge(t)
+	const sid = "orchicon-ask:conv-guard-compact"
+	big := make([]Message, 40)
+	for i := range big {
+		big[i] = textMsg(RoleUser, "message")
+	}
+	b.chatHistory[sid] = big
+	b.persistAskHistoryLocked(sid)
+
+	// What reduceSessionHistory / CompactConversationSession do: shrink, declare it, then persist.
+	b.chatHistory[sid] = big[:5]
+	b.markHistoryReductionLocked(sid, "conversation compaction")
+	b.persistAskHistoryLocked(sid)
+
+	out := logs.String()
+	if strings.Contains(out, "level=ERROR") {
+		t.Fatalf("an intentional reduction was reported as data loss; logs:\n%s", out)
+	}
+	// slog QUOTES a value containing spaces (reason="conversation compaction"), so the words are asserted
+	// separately from the key rather than as one literal.
+	if !strings.Contains(out, "reduced as intended") || !strings.Contains(out, "reason=") ||
+		!strings.Contains(out, "conversation compaction") {
+		t.Fatalf("an intentional reduction must be reported WITH its reason; logs:\n%s", out)
+	}
+}
+
+// The mark is consumed exactly once: the persistence after a compaction is expected to shrink, but if the
+// history shrinks AGAIN later without a new mark, that is real loss and must not be excused by a stale mark.
+func TestAStaleReductionMarkDoesNotExcuseLaterLoss(t *testing.T) {
+	b, logs := logBridge(t)
+	const sid = "orchicon-ask:conv-guard-stale"
+	b.chatHistory[sid] = make([]Message, 20)
+	b.persistAskHistoryLocked(sid)
+
+	b.chatHistory[sid] = make([]Message, 10)
+	b.markHistoryReductionLocked(sid, "conversation compaction")
+	b.persistAskHistoryLocked(sid) // intended — consumes the mark
+
+	logs.Reset()
+	b.chatHistory[sid] = make([]Message, 4) // nothing declared this one
+	b.persistAskHistoryLocked(sid)
+
+	out := logs.String()
+	if !strings.Contains(out, "LOST MESSAGES WITHOUT AN INTENTIONAL REDUCTION") {
+		t.Fatalf("a LATER undeclared shrink was excused by a consumed mark; logs:\n%s", out)
+	}
+}
+
+// A legitimate REPLAY REPAIR must not be reported as data loss. sanitizeChatHistory deliberately drops an
+// orphaned tool result (a result whose call no preceding assistant message declares) because providers reject
+// that shape — so a session that loses one of those has not lost anything the model could have used. Without
+// the distinction a guard cries wolf on its own repair path, and a guard nobody trusts is not a guard.
+func TestAReplayRepairIsNotReportedAsDataLoss(t *testing.T) {
+	b, logs := logBridge(t)
+	const sid = "orchicon-ask:conv-guard-repair"
+
+	// A well-formed exchange, then an ORPHANED result appended the way a half-finished tool round leaves one.
+	b.chatHistory[sid] = []Message{
+		textMsg(RoleUser, "run it"),
+		{Role: RoleAssistant, Content: []Content{
+			{Text: strptr("running")},
+			{ToolUse: &ContentToolUse{ToolCallID: "c1", Name: "bash", ArgsJSON: "{}"}},
+		}},
+		{Role: RoleTool, Content: []Content{{ToolResult: &ContentToolResult{ToolCallID: "c1", Content: "ok"}}}},
+	}
+	b.persistAskHistoryLocked(sid)
+
+	// The turn PRODUCES an orphaned result — a result whose call nothing declared, the shape a half-finished
+	// tool round leaves. It must therefore ride the commit's TAIL (what the turn contributed past its
+	// snapshot), because that is the only part of `working` the commit folds into the session.
+	history := append([]Message(nil), b.chatHistory[sid]...)
+	orphan := Message{Role: RoleTool, Content: []Content{{ToolResult: &ContentToolResult{ToolCallID: "ghost", Content: "orphan"}}}}
+	working := append(append(append([]Message(nil), history...), orphan), textMsg(RoleAssistant, "done"))
+	b.commitChatHistory(sid, history, working)
+
+	out := logs.String()
+	if strings.Contains(out, "level=ERROR") {
+		t.Fatalf("a legitimate replay repair was reported as data loss; logs:\n%s", out)
+	}
+	if !strings.Contains(out, "reduced as intended") || !strings.Contains(out, "replay repair removed") {
+		t.Fatalf("the repair must still be REPORTED, as an intended reduction with its reason; logs:\n%s", out)
+	}
+	// And the orphan really was dropped — otherwise the test proves nothing about the repair path.
+	for _, m := range b.chatHistory[sid] {
+		for _, c := range m.Content {
+			if c.ToolResult != nil && c.ToolResult.ToolCallID == "ghost" {
+				t.Fatalf("the orphaned result survived, so this test never exercised the repair; history: %+v", b.chatHistory[sid])
+			}
+		}
+	}
+}

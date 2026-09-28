@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"os"
 	"path/filepath"
@@ -285,6 +286,135 @@ func askHistoryFilename(sessionID string) string {
 	return sb.String()
 }
 
+// sanitizeHistoryLocked runs the replay-repair sanitize and, when it actually REMOVES something, records that
+// as an intended reduction for the persist that follows.
+//
+// IT EXISTS TO KEEP THE LOSS GUARD HONEST. sanitizeChatHistory deliberately drops an orphaned tool result (a
+// result whose call no preceding assistant message declares) and the messages left empty by that, because a
+// provider rejects the shape. Those drops are a REPAIR, not data loss — but the guard cannot tell the two
+// apart by looking at the count, so without this a legitimate repair would be reported as the data-loss bug,
+// and a guard that cries wolf is a guard nobody reads. The repair is still REPORTED, just as intended, with
+// its own reason.
+func (b *NativeBridge) sanitizeHistoryLocked(sessionID string, h []Message) []Message {
+	out := sanitizeChatHistory(h)
+	if len(out) < len(h) {
+		b.markHistoryReductionLocked(sessionID,
+			fmt.Sprintf("replay repair removed %d unpaired message(s)", len(h)-len(out)))
+	}
+	return out
+}
+
+// markHistoryReductionLocked declares that the NEXT persistence for this session is an INTENTIONAL lossy
+// reduction, so the shrink guard reports it as intended rather than as data loss. Call with b.mu held,
+// immediately before persisting. Both reduction paths (context reduction, compaction) are lossy by design and
+// both tell the operator; this is what keeps that distinction visible in the logs too.
+func (b *NativeBridge) markHistoryReductionLocked(sessionID, reason string) {
+	if b.askHistoryReduceReason == nil {
+		b.askHistoryReduceReason = map[string]string{}
+	}
+	b.askHistoryReduceReason[sessionID] = reason
+}
+
+// checkHistoryLostMessagesLocked reports a session that LOST a message it previously held. Call with b.mu
+// held, from the one choke point every history mutation passes (persistAskHistoryLocked).
+//
+// NO MESSAGE MAY DISAPPEAR FROM A SESSION, except by an announced reduction. That invariant is what the
+// operator's "Orchicon is not usable if you can't have a session that remembers what it's doing" is asking
+// for, and it is exactly what was violated silently for weeks:
+//
+//	commitChatHistory assigned `cur = working` — the committing turn's own snapshot-plus-output — so two
+//	overlapping turns destroyed each other's messages. An interjection SUPERSEDES the running turn, so this
+//	was the operator's normal path, and the damage looked like nothing: a run of consecutive USER messages in
+//	the session file, because a user message rides the next turn's snapshot while a reply exists only in the
+//	turn that produced it. The replies stayed in the transcript and on screen, so reading the session files by
+//	hand was the only way to see it.
+//
+// THE COMPARISON IS BY MESSAGE IDENTITY, NOT BY COUNT, and that is the whole difference between a guard that
+// works and one that does not. The replace SWAPS rather than truncates — H+[userA]+[userB] became
+// H+[userA]+replyA, the same length with one message substituted — and the commit after it grew the history
+// again. Neither a length check nor a per-role count check can see that; the missing fingerprint can.
+//
+// The report is at error level when nothing declared it, names the session and how many messages went, and
+// says what it MEANS — the next person to see this line should not have to reconstruct the diagnosis to know
+// that the model has lost work the operator can still read.
+func (b *NativeBridge) checkHistoryLostMessagesLocked(sessionID string) {
+	cur := b.chatHistory[sessionID]
+	reason, intended := b.askHistoryReduceReason[sessionID]
+	delete(b.askHistoryReduceReason, sessionID)
+
+	now := make(map[uint64]int, len(cur))
+	for _, m := range cur {
+		now[messageFingerprint(m)]++
+	}
+	prev, seen := b.askHistorySeen[sessionID]
+	if b.askHistorySeen == nil {
+		b.askHistorySeen = map[string]map[uint64]int{}
+	}
+	b.askHistorySeen[sessionID] = now
+
+	if intended {
+		if seen {
+			b.log.Info("orchicon: ask session history reduced as intended",
+				"session", sessionID, "from", totalCount(prev), "to", len(cur), "reason", reason)
+		}
+		return
+	}
+	if !seen {
+		return // first observation: nothing to compare against
+	}
+	lost := 0
+	for fp, n := range prev {
+		if now[fp] < n {
+			lost += n - now[fp]
+		}
+	}
+	if lost == 0 {
+		return // the invariant held
+	}
+	b.log.Error("orchicon: ASK SESSION HISTORY LOST MESSAGES WITHOUT AN INTENTIONAL REDUCTION — the model has lost messages that are still in the transcript, so it will repeat work the operator can see it already did. This is the data-loss bug (see commitChatHistory); the session no longer matches the durable record.",
+		"session", sessionID, "lost", lost, "before", totalCount(prev), "after", len(cur))
+}
+
+// totalCount sums a fingerprint multiset.
+func totalCount(m map[uint64]int) int {
+	n := 0
+	for _, c := range m {
+		n += c
+	}
+	return n
+}
+
+// messageFingerprint identifies a message's CONTENT, for the "no message may disappear" invariant above. It
+// covers every field a replayed history carries, so a message that was rewritten rather than removed also
+// reads as gone — which is correct: the model can no longer see what it used to.
+func messageFingerprint(m Message) uint64 {
+	h := fnv.New64a()
+	io.WriteString(h, string(m.Role))
+	for _, c := range m.Content {
+		switch {
+		case c.Text != nil:
+			io.WriteString(h, "\x01")
+			io.WriteString(h, *c.Text)
+		case c.Image != nil:
+			io.WriteString(h, "\x02")
+			io.WriteString(h, *c.Image)
+		case c.ToolUse != nil:
+			io.WriteString(h, "\x03")
+			io.WriteString(h, c.ToolUse.ToolCallID)
+			io.WriteString(h, c.ToolUse.Name)
+			io.WriteString(h, c.ToolUse.ArgsJSON)
+		case c.ToolResult != nil:
+			io.WriteString(h, "\x04")
+			io.WriteString(h, c.ToolResult.ToolCallID)
+			io.WriteString(h, c.ToolResult.Content)
+			if c.ToolResult.IsError {
+				io.WriteString(h, "E")
+			}
+		}
+	}
+	return h.Sum64()
+}
+
 // persistAskHistoryLocked writes the session's history to disk (atomic
 // tmp + rename). Callers must hold b.mu. Best-effort: every failure is a
 // warn + return, never a turn failure.
@@ -302,6 +432,11 @@ func askHistoryFilename(sessionID string) string {
 // compressed form is over the cap. Every reduction is logged, so a persisted file
 // is never a reduced one by silence.
 func (b *NativeBridge) persistAskHistoryLocked(sessionID string) {
+	// THE SHRINK GUARD RUNS FIRST, before the persistence decisions below, because it protects the session
+	// HISTORY rather than the FILE: a history that lost messages has lost them whether or not this call
+	// manages to write. Every mutation of b.chatHistory ends in a call here (dispatch, commit, context
+	// reduction, compaction), so this is the one place that sees all of them.
+	b.checkHistoryLostMessagesLocked(sessionID)
 	dir := b.askHistoryDir
 	if dir == "" {
 		return
@@ -374,7 +509,11 @@ func (b *NativeBridge) marshalAskHistoryForStorage(sessionID string, history []M
 		return nil
 	}
 	if len(gz) > askHistoryMaxBytes {
-		b.log.Warn("orchicon: ask history oversize even after dropping image payloads — staying memory-only",
+		// AN ERROR, NOT A WARNING, and the consequence is spelled out: the file on disk is now STALE by
+		// everything committed since the last successful persist, and the load path only consults the file when
+		// the in-memory history is EMPTY — i.e. exactly after a restart. So this state means "a restart loses
+		// every message since then", silently, which is the failure mode this whole guard exists to stop.
+		b.log.Error("orchicon: ask history is oversize even after dropping image payloads — the FILE ON DISK IS NOW STALE, and a restart will reload it and LOSE every message committed since the last successful persist",
 			"session", sessionID, "gz_bytes", len(gz), "cap", askHistoryMaxBytes, "images_dropped", images)
 		return nil
 	}
@@ -545,6 +684,8 @@ func (b *NativeBridge) PurgeConversationHistory(_ context.Context, conversationI
 	}
 	b.mu.Lock()
 	delete(b.chatHistory, sid)
+	delete(b.askHistorySeen, sid)
+	delete(b.askHistoryReduceReason, sid)
 	// The pressure bookkeeping describes a conversation that no longer exists:
 	// drop it with the history so a deleted conversation leaves no memory behind
 	// (nor a stale measurement that could fire a gate on a NEW conversation that
@@ -706,7 +847,7 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 	// the provider is well-formed — and the repair is persisted, so a session
 	// poisoned by a dangling tool call heals permanently instead of 400ing on
 	// every subsequent turn.
-	history = sanitizeChatHistory(history)
+	history = b.sanitizeHistoryLocked(sessionID, history)
 	history = append(history, Message{Role: RoleUser, Content: userContent})
 	b.chatHistory[sessionID] = history
 	b.persistAskHistoryLocked(sessionID)
@@ -1654,7 +1795,7 @@ func (b *NativeBridge) commitChatHistory(sessionID string, history, working []Me
 	cur = append(cur, tail...)
 	// Never persist a dangling tool call: a turn that ended between a call and its result must not poison
 	// the session for the next provider.
-	cur = sanitizeChatHistory(cur)
+	cur = b.sanitizeHistoryLocked(sessionID, cur)
 	b.chatHistory[sessionID] = cur
 	b.persistAskHistoryLocked(sessionID)
 }

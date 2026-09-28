@@ -182,6 +182,7 @@ func (b *NativeBridge) CompactConversationSession(ctx context.Context, opts sche
 	// the persist below, so what it copies is the PRE-collapse file.
 	archivePath := b.archiveAskHistoryLocked(sid)
 	b.chatHistory[sid] = next
+	b.markHistoryReductionLocked(sid, "conversation compaction")
 	b.persistAskHistoryLocked(sid)
 	b.mu.Unlock()
 
