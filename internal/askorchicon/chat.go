@@ -44,11 +44,14 @@ func askTimeout() time.Duration {
 	return defaultHandshakeTimeout
 }
 
-// defaultReplyWindow bounds how long a detached chat turn may run before its
-// reply is persisted as a timeout error. The reply is collected on a
-// request-independent context, so the window can be generous enough to cover
-// a long multi-tool answer without ever blocking the UI. Env-overridable via
-// ORCHICON_ASK_REPLY_WINDOW.
+// defaultReplyWindow bounds how long a detached chat turn may go WITHOUT
+// PROGRESS before its reply is persisted as a timeout error. The reply is
+// collected on a request-independent context, so the window can be generous
+// enough to cover a long multi-tool answer without ever blocking the UI.
+// Env-overridable via ORCHICON_ASK_REPLY_WINDOW.
+//
+// IT IS A SILENCE BUDGET, NOT A STOPWATCH ON THE TURN'S AGE — see
+// turnReplyWindow for what that distinction cost the operator.
 const defaultReplyWindow = 30 * time.Minute
 
 func askReplyWindow() time.Duration {
@@ -60,15 +63,73 @@ func askReplyWindow() time.Duration {
 	return defaultReplyWindow
 }
 
-// defaultTurnMaxAge is the hard upper bound on how long a chat turn may live
-// in the registry before the background sweeper evicts it (cancelling the
-// collector with errTurnExpired and aborting the serve session). It is the
-// "every turn has a hard backstop" guarantee for chat: a collector that can
-// never finalize (wedged serve, lost goroutine) is reaped in bounded time
-// instead of blocking the conversation forever. The reply window covers the
-// normal case, so the TTL is reply window + a generous margin (the sweeper
-// tick granularity + re-attach slack). Env override ORCHICON_ASK_TURN_MAX_AGE
-// is a dev/test knob.
+// turnReplyWindow is the reply window as an INACTIVITY deadline: it fires only
+// after the turn has been quiet for the full window, and every sign of progress
+// (a delta, a tool call, a completed part) RESTARTS it.
+//
+// WHY IT IS NOT A BARE time.Timer ANY MORE. The collector used to create
+//
+//	window := time.NewTimer(askReplyWindow())
+//
+// once per turn, hand that one timer to every attempt, and never reset it —
+// there is no window.Reset anywhere in this file. It therefore measured the AGE
+// OF THE TURN rather than the silence inside it, and thirty minutes after the
+// send the collector returned, verbatim:
+//
+//	reply timed out after 30m0s on model orchicon/deepseek/deepseek-flash —
+//	the model may be overloaded or unavailable. Check the Ask Orchicon model
+//	in Settings → Default models, then retry.
+//
+// The operator: "Sessions seem to be timing out on me... it may be model
+// related but it seems to be occuring quite frequently", against exactly that
+// message. Nothing was wrong with the model. A turn doing twenty minutes of
+// honest tool work and taking a slow final step was indistinguishable, to this
+// timer, from a provider that had died at send time — and the message it
+// produced sent the operator to Settings → Default models to fix it.
+//
+// WHAT IT MEASURES NOW: time since the last progress. A turn that is working is
+// never killed for its age, however long the work takes; a turn that has gone
+// quiet is still bounded, with the same honest, retryable message. The bound is
+// not weakened — it is re-pointed at the evidence that actually describes a
+// dead turn.
+//
+// Touch needs no channel drain because the timer channel is unbuffered as of
+// Go 1.23 (go.mod: go 1.26) and Stop/Reset then guarantee no stale receive.
+type turnReplyWindow struct {
+	d time.Duration
+	t *time.Timer
+}
+
+func newTurnReplyWindow(d time.Duration) *turnReplyWindow {
+	return &turnReplyWindow{d: d, t: time.NewTimer(d)}
+}
+
+// C is the expiry channel: it fires once the window elapses with NO progress.
+func (w *turnReplyWindow) C() <-chan time.Time { return w.t.C }
+
+// Touch restarts the window from now — the turn just made progress, so its
+// deadline is measured from THIS moment rather than from the send.
+func (w *turnReplyWindow) Touch() { w.t.Reset(w.d) }
+
+// Stop releases the timer (the collector defers it).
+func (w *turnReplyWindow) Stop() { w.t.Stop() }
+
+// defaultTurnMaxAge is how long a chat turn may sit in the registry WITHOUT
+// PROGRESS before the background sweeper evicts it (cancelling the collector
+// with errTurnExpired and aborting the serve session). It is the "every turn
+// has a backstop" guarantee for chat: a collector that can never finalize
+// (wedged serve, lost goroutine) stops producing activity, so it is reaped in
+// bounded QUIET time instead of blocking the conversation forever. The reply
+// window covers the normal case, so the TTL is reply window + a generous
+// margin (the sweeper tick granularity + re-attach slack). Env override
+// ORCHICON_ASK_TURN_MAX_AGE is a dev/test knob.
+//
+// QUIET TIME, NOT TURN AGE, and that distinction is the whole fix. The sweep
+// compared against the turn's START, so one minute after the reply window's own
+// (equally age-based) wall it reaped the same long healthy turn — the same bug
+// again, with a bare context cancellation instead of a retryable message.
+// Fixing only the reply window would have moved the kill rather than removing
+// it.
 const defaultTurnMaxAge = 31 * time.Minute
 
 func askTurnMaxAge() time.Duration {
@@ -214,9 +275,11 @@ type turnEntry struct {
 //     finalizes promptly and persists the user-initiated-stop error, rather
 //     than sitting idle waiting the full reply window for an idle the serve
 //     may not emit after abort;
-//   - the no-orphan guarantee: every entry carries a started timestamp and
-//     the background sweeper evicts (cancels + removes) entries older than
-//     the TTL, so a wedged collector can never block a conversation forever.
+//   - the no-orphan guarantee: every entry carries a lastActivity timestamp
+//     and the background sweeper evicts (cancels + removes) entries that have
+//     been QUIET for longer than the TTL, so a wedged collector can never
+//     block a conversation forever — while a turn that is still producing
+//     output is never reaped for its age.
 //
 // Token-guarded removal (remove only when the token matches) eliminates the
 // stale-finalize race once supersede exists: the superseding turn's register
@@ -328,17 +391,24 @@ type turnEviction struct {
 	tenant string
 }
 
-// sweep evicts (cancels with errTurnExpired and removes) every entry older
-// than maxAge and returns the evicted conversations (with their tenants) so
-// the caller can abort their serve sessions (belt-and-suspenders on top of
-// the stall monitor — a collector that finalizes normally never reaches the
-// TTL).
+// sweep evicts (cancels with errTurnExpired and removes) every entry that has
+// been QUIET for longer than maxAge and returns the evicted conversations (with
+// their tenants) so the caller can abort their serve sessions
+// (belt-and-suspenders on top of the stall monitor — a collector that
+// finalizes normally never reaches the TTL).
+//
+// IT MEASURES lastActivity, NOT started. The field it needs already existed and
+// was already maintained on every delta, tool call and completed part
+// (markActivity) — the sweeper simply read the other one. Against `started`, a
+// turn that had been working for an hour was reaped as though it were wedged. A
+// collector that genuinely cannot finalize produces no activity either, so it is
+// still reaped; it is now reaped on the evidence that actually describes it.
 func (r *turnRegistry) sweep(now time.Time, maxAge time.Duration) []turnEviction {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var evicted []turnEviction
 	for id, entry := range r.turns {
-		if now.Sub(entry.started) > maxAge {
+		if now.Sub(entry.lastActivity) > maxAge {
 			entry.cancel(errTurnExpired)
 			delete(r.turns, id)
 			evicted = append(evicted, turnEviction{convID: id, tenant: entry.tenant})
@@ -1485,7 +1555,7 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 		s.persistConversationSessionID(ctx, c.tenantID, c.convID, sid)
 	}
 
-	window := time.NewTimer(askReplyWindow())
+	window := newTurnReplyWindow(askReplyWindow())
 	defer window.Stop()
 
 	// serveDownDeadline bounds how long a turn whose serve has NEVER accepted
@@ -1586,7 +1656,7 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 			select {
 			case <-ctx.Done():
 				return res.text, reasoning, sid, context.Cause(ctx)
-			case <-window.C:
+			case <-window.C():
 				return res.text, reasoning, sid, errors.New("the opencode serve did not recover within the reply window — please retry")
 			case <-time.After(askReattachBackoff()):
 			}
@@ -1609,7 +1679,7 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 				select {
 				case <-ctx.Done():
 					return res.text, reasoning, sid, context.Cause(ctx)
-				case <-window.C:
+				case <-window.C():
 					return res.text, reasoning, sid, errors.New("the opencode serve did not recover within the reply window — please retry")
 				case <-time.After(askReattachBackoff()):
 				}
@@ -1624,7 +1694,18 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 // observed while sent == false and ignored (the stale-idle guard). A 404 on
 // a reused session returns turnRecreated (the caller re-seeds + re-dispatches
 // once); a closed bus returns turnReattach (the caller waits + retries).
-func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c turnCollectOpts, sid, system string, recreated bool) turnAttemptResult {
+func (s *Service) runOneTurnAttempt(ctx context.Context, window *turnReplyWindow, c turnCollectOpts, sid, system string, recreated bool) turnAttemptResult {
+
+	// progress is the ONE place this attempt reports forward motion, and it must
+	// stay one place: markActivity feeds the registry's lastActivity (the
+	// sweeper's TTL basis and the frontend's server-confirmed "still working"
+	// signal) and window.Touch restarts this turn's inactivity deadline. Those are
+	// the same fact — the turn just did something — and two call sites would
+	// eventually drift into disagreeing about what counts as progress.
+	progress := func() {
+		s.turns.markActivity(c.convID, c.token)
+		window.Touch()
+	}
 	subCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -1847,7 +1928,7 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 			// message).
 			finalText, finalReasoning := settleAttempt()
 			return turnAttemptResult{kind: turnFailed, text: finalText, reasoning: finalReasoning, err: context.Cause(subCtx)}
-		case <-window.C:
+		case <-window.C():
 			finalText, finalReasoning := settleAttempt()
 			return turnAttemptResult{kind: turnFailed, text: finalText, reasoning: finalReasoning, err: fmt.Errorf("reply timed out after %s on model %s — the model may be overloaded or unavailable. Check the Ask Orchicon model in Settings → Default models, then retry.", askReplyWindow(), c.modelRef)}
 		case <-handshake.C:
@@ -2039,7 +2120,7 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 					continue
 				}
 				monitor.observe("text", nil)
-				s.turns.markActivity(c.convID, c.token)
+				progress()
 				// Suspect-kind gate: while the folded-think segmenter has a
 				// think run open, even a native `reasoning` delta is suspect
 				// (the serve streams text AND reasoning through the same
@@ -2090,7 +2171,7 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 					continue
 				}
 				monitor.observeToolStart(evt.Text)
-				s.turns.markActivity(c.convID, c.token)
+				progress()
 				// Live tool ledger: the call is recorded the moment it is
 				// issued (not at completion) and mirrored immediately, so a
 				// session killed while the tool runs still shows the call.
@@ -2120,7 +2201,7 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *time.Timer, c t
 					continue
 				}
 				monitor.observe(evt.Type, evt.Part)
-				s.turns.markActivity(c.convID, c.token)
+				progress()
 				// Diff pipeline (AC 1): completed mutating tool_use parts on
 				// an Ask turn ledger file edits from real file-state
 				// snapshots — owner_kind ask_conversation, same ground truth
