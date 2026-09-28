@@ -110,24 +110,6 @@ type PermissionAsk struct {
 	DeniedBy string
 }
 
-// ConsentAskMsg carries a pending permission ask from the turn stream to the
-// shell, which renders it as a transcript card (App.ShowConsentAsk).
-//
-// WHY IT IS A MESSAGE AND NOT A STORE CALL. The controller reaches the UI only
-// through EventStore and this command channel, so a card that arrives mid-turn
-// has to travel the same way every other stream signal does. The shell is the
-// only place that knows the conversation's session grants, and it must consult
-// them before drawing a card — a directory already granted for this session must
-// not ask again.
-//
-// ConvID rides the message because the card is appended to the conversation's
-// slot, not to whatever conversation happens to be on screen when the ask
-// lands.
-type ConsentAskMsg struct {
-	ConvID string
-	Ask    PermissionAsk
-}
-
 // PermissionAskFromProto maps the wire ask onto the TUI's own model.
 //
 // THIS IS THE ONE ADAPTER the package comment promises: the wire shape can change

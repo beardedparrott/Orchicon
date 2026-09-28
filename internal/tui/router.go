@@ -1384,20 +1384,11 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		return m.waitChat()
 	case chat.StreamDoneMsg:
 		return tea.Batch(m.onStreamDone(msg), m.waitChat())
-	case chat.ConsentAskMsg:
-		// A permission ask landed mid-turn: draw its card. ShowConsentAsk consults
-		// the conversation's session grants first, so a directory already allowed
-		// for this session does not ask twice.
-		return tea.Batch(m.ShowConsentAsk(msg.Ask), m.waitChat())
-	case chat.ConsentResolvedMsg:
-		// THE OTHER CLIENT DECIDED, so settle this client's copy of the card.
-		//
-		// The operator: "the choice box is still there for permissions" — in the GUI
-		// after answering in the TUI. Only the answering client cleared its own copy,
-		// and a permission ask has no durable row to reconcile against, so the
-		// collector publishes the outcome and every watcher settles from it.
-		m.chatStore.settleAsk(msg.ConvID, msg.AskID, msg.Outcome, msg.Answer)
-		return tea.Batch(m.onChatWake(), m.waitChat())
+	// NO ConsentAskMsg / ConsentResolvedMsg CASES: an ask and its resolution now reach the store DIRECTLY
+	// from the turn's goroutine (appEventStore.ShowConsentAsk / SettleConsentAsk) instead of riding the
+	// shell's shared command channel, where a non-blocking send could drop a card with no error and no
+	// retry — leaving the pane at "orchicon is thinking" while the turn parked on the server. The wake
+	// poke the store follows each write with is what brings the loop back here to repaint.
 	case chat.ConsentRepliedMsg:
 		// The SERVER's verdict on a decision we sent. A decision that did not apply
 		// (the ask expired, the turn ended) must SAY so — otherwise the operator

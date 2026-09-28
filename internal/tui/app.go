@@ -2794,10 +2794,7 @@ type appEventStore struct{ m *App }
 
 func (s appEventStore) AppendLiveItem(convID string, item chat.ChatItem) {
 	s.m.chatStore.append(convID, item)
-	select {
-	case s.m.chatWake <- struct{}{}:
-	default:
-	}
+	s.pokeChat()
 }
 
 func (s appEventStore) SetReconnecting(convID string, on bool) {
@@ -2805,6 +2802,42 @@ func (s appEventStore) SetReconnecting(convID string, on bool) {
 	// only records state + pokes (bubbletea's value-model copies make a
 	// direct dock write here invisible).
 	s.m.chatStore.setReconnecting(convID, on)
+	s.pokeChat()
+}
+
+// ShowConsentAsk puts a pending ask's card into the conversation's transcript, from the STREAM goroutine.
+//
+// IT REPLACES A NON-BLOCKING SEND ON THE SHELL'S COMMAND CHANNEL, which could DROP a card in silence — see
+// EventStore.ShowConsentAsk for what that cost (the GUI asked, the TUI sat at "orchicon is thinking", and
+// the turn eventually failed on an answer no card ever collected). A store write cannot fail, and the
+// repaint is a coalescing wake poke whose loss is harmless.
+//
+// ONLY POINTER AND CHANNEL FIELDS ARE TOUCHED. App.Update has a VALUE receiver, so the App this goroutine
+// holds is a copy from Bind time: a plain field read here (chatConvID) would see that copy's value, not the
+// live shell's. chatStore and chatWake are the fields designed to survive that, and the CONVERSATION comes
+// from the ask itself, which the controller stamps with the turn that raised it.
+func (s appEventStore) ShowConsentAsk(ask chat.PermissionAsk) {
+	if ask.ConvID == "" {
+		// The controller always stamps the turn's conversation (see the PermissionAsk wire arm), so an
+		// empty id here is a locally built ask and there is no live shell to fall back to. Draw it nowhere
+		// rather than guess a conversation off a stale App copy.
+		return
+	}
+	s.m.chatStore.drawConsentAsk(ask.ConvID, ask)
+	s.pokeChat()
+}
+
+// SettleConsentAsk records an ask that was settled SOMEWHERE ELSE, so this client's card stops being a
+// choice. Straight to the store, for the same reason: a dropped resolution left a live-looking, inert card.
+func (s appEventStore) SettleConsentAsk(convID, askID, outcome, answer string) {
+	s.m.chatStore.settleAsk(convID, askID, outcome, answer)
+	s.pokeChat()
+}
+
+// pokeChat wakes the tea loop for a repaint. A no-op when a poke is already pending: the POKE is a coalescing
+// signal (the loop repaints the whole transcript), so losing one costs nothing — which is exactly why it is
+// safe to be non-blocking here and was not safe for the card itself.
+func (s appEventStore) pokeChat() {
 	select {
 	case s.m.chatWake <- struct{}{}:
 	default:
@@ -2965,6 +2998,48 @@ func (s *chatStore) hasPendingConsent(convID string) bool {
 		}
 	}
 	return false
+}
+
+// drawConsentAsk puts a pending ask's card into the conversation's transcript, and reports whether it drew
+// one (false = this conversation already holds a card for that ask).
+//
+// IT IS THE ONE PLACE A CARD ENTERS THE TRANSCRIPT, called by both the shell (App.ShowConsentAsk, from the tea
+// loop) and the stream (appEventStore.ShowConsentAsk, from the turn's goroutine), so the two paths cannot
+// disagree about the ask's identity, about the conversation it lands in, or about drawing it twice.
+//
+// A CARD THE SERVER RAISED IS ALWAYS DRAWN. This used to be suppressed by the shell's own grant mirror, and
+// the suppression could only ever swallow a decision the operator needed to make:
+//
+//   - the server consults its grant store BEFORE it raises an ask (permpolicy's SessionGranted input), so an
+//     ask that arrives is one the server genuinely has no consent for. A client that mutes it does not remove
+//     a question — it removes the ANSWER, and the turn parks with nothing on screen to act on. The operator,
+//     watching both clients: "the permission ask card pops up in the GUI but it doesn't pop up in the TUI. It
+//     just sits at 'orchicon is thinking'."
+//   - the mirror's inputs were all unreliable: the server's grants are IN MEMORY and are dropped by every plane
+//     restart (the prod plane restarted 14 times in the two days this was measured); a decision this client
+//     sent may have been REFUSED (Applied=false, Expired=true) while the card was still settled locally; and
+//     the server matches a grant over its whole SUBTREE while the mirror matched the directory EXACTLY.
+//
+// A duplicate card is answerable; a missing one hangs the turn. Where the mirror used to silence a repeat, the
+// SERVER does it correctly — it will not raise the ask again once the grant is applied.
+//
+// Idempotence is kept for the SAME ask, which is not hypothetical: a dropped socket re-dials through
+// WatchTurnStream, whose replay re-emits every pending ask (chat.go), so without this the card the operator
+// already has would be drawn a second time.
+func (s *chatStore) drawConsentAsk(convID string, ask chat.PermissionAsk) bool {
+	if convID == "" {
+		return false
+	}
+	if ask.ID == "" {
+		ask.ID = fmt.Sprintf("ask-%d", time.Now().UnixNano())
+	}
+	if s.hasConsent(convID, ask.ID) {
+		return false
+	}
+	// Stamped NOW, so the card sorts to the END of the transcript and stays there. Without a timestamp it
+	// sorted to the top on the next poll — see ConsentItem.
+	s.append(convID, chat.ConsentItem(ask, time.Now().UnixMilli()))
+	return true
 }
 
 // hasConsent reports whether this conversation already holds a card for the ask.
@@ -4718,26 +4793,20 @@ func (m *App) SendUserMessage(text string) tea.Cmd {
 	return tea.Batch(m.sendChat(m.chatConvID, text, preamble), m.onChatWake())
 }
 
-// ShowConsentAsk surfaces a pending ask as a transcript CARD. This is the hook
-// the ask event on the turn stream calls once the sibling lands the wire arm
-// (proto ChatStreamResponse oneof) — the TUI models the ask itself
+// ShowConsentAsk surfaces a pending ask as a transcript CARD. This is the hook the ask event on the turn
+// stream calls (see the PermissionAsk wire arm in internal/tui/chat) — the TUI models the ask itself
 // (chat.PermissionAsk), so only the adapter that calls this changes.
 //
-// ASK ONCE PER DIRECTORY PER SESSION: a directory already granted for this
-// conversation does not ask again.
+// IT IS THE SHELL'S ENTRY POINT ONLY. The stream does NOT come through here any more: it writes the card to
+// the store directly (appEventStore.ShowConsentAsk), because a card delivered as a tea.Cmd through the
+// shell's shared command channel could be dropped in silence. Both paths resolve the conversation and draw
+// through chatStore.drawConsentAsk, so they cannot disagree about where a card belongs or whether it is
+// already up.
+//
+// The conversation fallback here is the shell's own: on the tea loop the LIVE App is in hand, so an ask that
+// names no conversation can be attached to the one on screen. The stream path has no such luxury (it holds a
+// copy from Bind time) and relies on the controller stamping the turn's id, which it always does.
 func (m *App) ShowConsentAsk(ask chat.PermissionAsk) tea.Cmd {
-	// THE CARD BELONGS TO THE CONVERSATION THAT ASKED, not to whichever conversation
-	// happens to be on screen when the ask lands.
-	//
-	// The operator: "I noticed a bleed through of an ask card from a separate
-	// conversation in the TUI." A turn's ask rides the turn's own stream, so with
-	// conversation A running and B on screen the card was appended to B's slot — a
-	// question about A's work drawn under B's transcript, and claiming the keyboard
-	// there, because the Ask screen adopts any pending card from the items it is
-	// handed. The wire has always carried the ask's conversation_id; the TUI's
-	// adapter dropped it (see PermissionAsk.ConvID), so the target was whatever
-	// m.chatConvID happened to be at that instant. Fall back to the OPEN conversation
-	// only when the ask genuinely names none (a locally built ask).
 	convID := ask.ConvID
 	if convID == "" {
 		convID = m.chatConvID
@@ -4745,39 +4814,9 @@ func (m *App) ShowConsentAsk(ask chat.PermissionAsk) tea.Cmd {
 	if convID == "" {
 		return nil
 	}
-	if ask.ID == "" {
-		ask.ID = fmt.Sprintf("ask-%d", time.Now().UnixNano())
+	if !m.chatStore.drawConsentAsk(convID, ask) {
+		return nil // already drawn — see drawConsentAsk's idempotence
 	}
-	// A CARD THE SERVER RAISED IS ALWAYS DRAWN.
-	//
-	// This used to be suppressed by the shell's own grant mirror, and the suppression could only ever swallow a
-	// decision the operator needed to make:
-	//
-	//   * the server consults its grant store BEFORE it raises an ask (permpolicy's SessionGranted input), so an
-	//     ask that arrives is one the server genuinely has no consent for. A client that mutes it therefore does
-	//     not remove a question — it removes the ANSWER, and the turn parks on the server with nothing on screen
-	//     to act on. The operator, watching both clients: "the permission ask card pops up in the GUI but it
-	//     doesn't pop up in the TUI. It just sits at 'orchicon is thinking'."
-	//   * the mirror's inputs are all unreliable. The server's grants are IN MEMORY and are dropped by every plane
-	//     restart (the prod plane restarted 14 times in the two days this was measured); a decision this client
-	//     sent may have been REFUSED (Applied=false, Expired=true) while the card was still settled locally; and
-	//     the server matches a grant over its whole SUBTREE while the mirror matched the directory EXACTLY. Each
-	//     of those leaves the TUI silently deaf to a directory the GUI still asks about, for the life of the
-	//     process — which is exactly the "it's not consistent in the TUI" shape of the report.
-	//
-	// A duplicate card is a minor annoyance the operator can answer; a missing one is a turn that hangs and then
-	// fails. Where the mirror used to silence a repeat, the SERVER does it correctly: it will not raise the ask
-	// again once the grant is applied.
-	//
-	// Idempotence is kept for the SAME ask, which is not hypothetical: a dropped socket re-dials through
-	// WatchTurnStream, whose replay re-emits every pending ask (chat.go) — so the card the operator already has
-	// would otherwise be drawn a second time.
-	if m.chatStore.hasConsent(convID, ask.ID) {
-		return nil
-	}
-	// Stamped NOW, so the card sorts to the END of the transcript and stays there.
-	// Without a timestamp it sorted to the top on the next poll — see ConsentItem.
-	m.chatStore.append(convID, chat.ConsentItem(ask, time.Now().UnixMilli()))
 	return m.onChatWake()
 }
 
