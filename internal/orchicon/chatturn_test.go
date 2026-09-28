@@ -939,3 +939,65 @@ func describeEvents(evts []scheduler.SessionEvent) string {
 	}
 	return strings.Join(parts, ", ")
 }
+
+// TestChatTurnClientAbortKeepsThePublishedReplyInHistory is the SECOND half of the publish
+// fix above, and it is the bug the operator kept reporting as the model "losing its brain":
+// "It doesn't know it's already done things and then tries to do them again."
+//
+// The publish made an aborted turn's work VISIBLE (durable, on every client's screen). But the
+// abort path returned without committing, so the SESSION never learned about it — and the next
+// turn re-sends b.chatHistory as full context. The model was therefore handed a history in which
+// its own last reply had never happened, while the operator was reading that very reply in the
+// transcript. It repeats itself, re-asks what it just asked, and re-does work it already did.
+//
+// Abort is not an edge case here: the collector aborts on a stall, on Stop, and on EVERY
+// supersede — and interjecting is how the operator steers a running turn.
+func TestChatTurnClientAbortKeepsThePublishedReplyInHistory(t *testing.T) {
+	const partial = "the partial answer the operator watched land"
+	prov := &chatTestProvider{stream: &blockingAfterStream{events: []Event{
+		TextDelta{Text: partial},
+	}}}
+	b := newChatBridge(t, prov)
+	ctx := tenant.WithID(context.Background(), "tnt_test")
+	sid, _ := b.CreateConversationSession(ctx, "conv-abort-hist", "ask-orchicon:conv-abort-hist")
+
+	bus, _ := b.Subscribe(ctx, "conv-abort-hist")
+	if err := b.SendTurnMessage(ctx, "conv-abort-hist", sid, "system", "orchicon/ollama-cloud/deepseek-v4-flash:0731", "first"); err != nil {
+		t.Fatalf("SendTurnMessage: %v", err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if err := b.AbortConversationSession(ctx, sid); err != nil {
+		t.Fatalf("AbortConversationSession: %v", err)
+	}
+	drainBus(t, bus)
+
+	// The operator's transcript now holds `partial`. The next turn must re-send it, or the model
+	// answers from a history that contradicts what the operator can read.
+	if err := b.SendTurnMessage(ctx, "conv-abort-hist", sid, "system", "orchicon/ollama-cloud/deepseek-v4-flash:0731", "second"); err != nil {
+		t.Fatalf("SendTurnMessage (2): %v", err)
+	}
+	time.Sleep(150 * time.Millisecond)
+
+	replayed := requestText(prov.lastRequest())
+	if !strings.Contains(replayed, partial) {
+		t.Fatalf("the next turn replayed a history WITHOUT the aborted turn's own reply — the model "+
+			"re-answers work it already did, while the operator reads that reply on screen.\nhistory replayed: %q", replayed)
+	}
+	if !strings.Contains(replayed, "second") {
+		t.Fatalf("the next turn must still carry the new user message; history replayed: %q", replayed)
+	}
+}
+
+// requestText flattens a turn request's replayed history into one string for assertions.
+func requestText(req TurnRequest) string {
+	var b strings.Builder
+	for _, m := range req.Messages {
+		for _, c := range m.Content {
+			if c.Text != nil {
+				b.WriteString(*c.Text)
+				b.WriteString("\n")
+			}
+		}
+	}
+	return b.String()
+}

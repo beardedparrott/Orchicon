@@ -876,6 +876,39 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 				reply.WriteString(rt)
 			}
 			emitTurnParts()
+			// AND COMMIT IT, so the SESSION agrees with the TRANSCRIPT.
+			//
+			// THIS IS THE SECOND HALF OF THE SAME DATA-LOSS BUG, and it is the one the operator kept
+			// reporting as the model "losing its brain": "The model is constantly losing its brain. It
+			// doesn't know it's already done things and then tries to do them again."
+			//
+			// The publish above fixed the VISIBLE half — an aborted turn hands over the work it produced,
+			// so the collector persists it and every client renders it. But this path then returned
+			// WITHOUT committing, deliberately ("the turn was cancelled — finalize without COMMITTING"),
+			// and that left the two views of the conversation PERMANENTLY DISAGREEING:
+			//
+			//   * the TRANSCRIPT (and therefore the operator, and the GUI, and the TUI) contains the
+			//     aborted reply — it is durable, it is on screen;
+			//   * the SESSION does not. The next turn re-sends b.chatHistory (SendTurnMessage: "the
+			//     accumulated history re-sent as full context"), which was never told about the reply, so
+			//     the model is handed a history in which its own last words were never spoken.
+			//
+			// A model that cannot see what it just said repeats it, re-asks what it just asked, and
+			// re-does work it already did — exactly the reported symptom, and the operator can watch it
+			// happen because they are reading the transcript the session is not.
+			//
+			// WHY ABORT IS THE COMMON CASE HERE, not an edge: the collector aborts on a STALL, on STOP, and
+			// on every SUPERSEDE. Interjecting is the operator's normal way to steer a running turn, and a
+			// prod log shows one interjection superseding a turn every few minutes while this was being
+			// diagnosed.
+			//
+			// Only THIS round's text is appended: earlier rounds are already in `working` via
+			// appendAssistantText on the tool-round path, and re-adding `reply` would duplicate them. A
+			// dangling tool call cannot leak in, because commitChatHistory sanitizes what it stores.
+			if rt := strings.TrimSpace(roundReply.String()); rt != "" {
+				b.appendAssistantText(&working, rt)
+			}
+			b.commitChatHistory(sessionID, history, working)
 			return
 		}
 		roundText := roundReply.String()
