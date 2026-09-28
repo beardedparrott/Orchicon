@@ -26,8 +26,52 @@ func runGuard(t *testing.T, g *Guard, name string, args ...string) (int, string)
 	return exit, string(out)
 }
 
+// runGuardIn runs the shim with an explicit WORKING DIRECTORY, so a relative target resolves where
+// the caller chooses rather than relative to wherever `go test` happens to run.
+func runGuardIn(t *testing.T, g *Guard, dir, name string, args ...string) (int, string) {
+	t.Helper()
+	cmd := exec.Command(filepath.Join(g.dir, name), args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	exit := 0
+	if ee, ok := err.(*exec.ExitError); ok {
+		exit = ee.ExitCode()
+	} else if err != nil {
+		t.Fatalf("run guard %s: %v", name, err)
+	}
+	return exit, string(out)
+}
+
+// THESE TESTS EXECUTE REAL BINARIES THROUGH THE REAL SHIM, so a case the shim ALLOWS does not merely
+// fail an assertion — it RUNS. That is not hypothetical: on 2026-09-27 a run on the operator's own
+// machine deleted real data — `~/.ssh`, `~/.orchicon`, `~/ai-tools`, and this project's working tree —
+// because the shim reached a different verdict than the test expected and the case was `rm -rf /home`.
+//
+// A test whose safety depends on the verdict of the thing it is testing FAILS OPEN, and every case
+// here that named a real system path did exactly that. The targets are therefore TEMP SPACE, so the
+// failure mode of a bad verdict is a directory the test owns:
+//
+//   - absolute targets are `t.TempDir()`, never `/`, `/home`, `/tmp/whatever` or `/etc/...`;
+//   - `cmd.Dir` is a temp directory for the RELATIVE cases (`..`, `../../escape`), so those resolve
+//     inside temp space too — still a traversal the shim must refuse, which is the behaviour under
+//     test, but no longer a deletion of the repository's parent;
+//   - the `~` and `$HOME` spellings stay LITERAL, which is what the shim actually receives with no
+//     shell to expand them, and is why they can never name a real home here;
+//   - the never-allow cases (`sudo`, `dd`, `mkfs`, `shred`) keep their arguments: they are refused by
+//     the class arm before any path logic runs, and their devices need root to touch.
+//
+// THE RULE FOR ANYTHING ADDED HERE: a target that a real binary could damage if the guard failed is a
+// target that does not belong in a test.
+
 func TestExecutionGuardBlocksDestructive(t *testing.T) {
 	proj := t.TempDir()
+	// OUTSIDE the project — a real path the project does not cover, which is the branch `/home` used
+	// to exercise — but one this test is free to destroy.
+	outside := t.TempDir()
+	// Where the RELATIVE cases resolve. `..` from here is still outside the project, which is the case
+	// under test, and it is temp space rather than the repository's parent.
+	work := t.TempDir()
+
 	g, err := NewExecutionGuard(proj)
 	if err != nil {
 		t.Fatalf("newExecutionGuard: %v", err)
@@ -38,18 +82,18 @@ func TestExecutionGuardBlocksDestructive(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"rm", []string{"-rf", "/"}},
-		{"rm", []string{"-rf", "/home"}},
-		{"rm", []string{"-fr", "/"}},
-		{"rm", []string{"-r", "/"}},
-		{"rm", []string{"-rf", "/home/user/outside-project"}},
+		{"rm", []string{"-rf", outside}},
+		{"rm", []string{"-fr", outside}},
+		{"rm", []string{"-r", outside}},
+		{"rm", []string{"-rf", filepath.Join(outside, "outside-project")}},
 		{"rm", []string{"-rf", "~"}},
 		{"rm", []string{"-rf", "~/stuff"}},
 		{"rm", []string{"-rf", "$HOME"}},
 		{"rm", []string{"-rf", "$HOME/things"}},
 		{"rm", []string{"-rf", ".."}},
 		{"rm", []string{"-rf", "../../escape"}},
-		{"rm", []string{"-rf", "/*"}},
+		{"rm", []string{"-rf", filepath.Join(outside, "*")}},
+		// Never-allow: refused by the class arm before any path logic, and the devices need root.
 		{"sudo", []string{"rm", "-rf", "/"}},
 		{"sudo", []string{"true"}},
 		{"dd", []string{"if=/dev/zero", "of=/dev/sda"}},
@@ -57,7 +101,7 @@ func TestExecutionGuardBlocksDestructive(t *testing.T) {
 		{"shred", []string{"/dev/sda"}},
 	}
 	for _, tc := range cases {
-		exit, out := runGuard(t, g, tc.name, tc.args...)
+		exit, out := runGuardIn(t, g, work, tc.name, tc.args...)
 		if exit == 0 {
 			t.Errorf("%s %v: expected blocked (non-zero exit), got exit 0: %s", tc.name, tc.args, out)
 		}
@@ -127,20 +171,25 @@ func TestExecutionGuardNoProjectMode(t *testing.T) {
 	}
 	defer g.Close()
 
+	// TEMP TARGETS, and here it matters even more: with an EMPTY project dir EVERY absolute path is
+	// out of scope, so no real path can stand in for the dangerous one. `/home` was the case that did
+	// the damage — see the note above runGuardIn.
+	outside := t.TempDir()
+	work := t.TempDir()
+
 	blocked := []struct {
 		name string
 		args []string
 	}{
-		{"rm", []string{"-rf", "/"}},
-		{"rm", []string{"-rf", "/home"}},
-		{"rm", []string{"-rf", "/tmp/whatever"}},
+		{"rm", []string{"-rf", outside}},
+		{"rm", []string{"-rf", filepath.Join(outside, "outside")}},
 		{"rm", []string{"-rf", "~"}},
 		{"rm", []string{"-rf", "$HOME/x"}},
 		{"rm", []string{"-rf", ".."}},
-		{"cp", []string{"/etc/hostname", "/tmp/copy.txt"}},
+		{"cp", []string{filepath.Join(outside, "f"), filepath.Join(work, "copy.txt")}},
 	}
 	for _, tc := range blocked {
-		exit, out := runGuard(t, g, tc.name, tc.args...)
+		exit, out := runGuardIn(t, g, work, tc.name, tc.args...)
 		if exit == 0 {
 			t.Errorf("%s %v: expected blocked in no-project mode, got exit 0: %s", tc.name, tc.args, out)
 		}
@@ -171,11 +220,17 @@ func TestExecutionGuardAppliesToPATH(t *testing.T) {
 	defer g.Close()
 
 	env := g.Apply(os.Environ())
-	cmd := exec.Command("bash", "-c", "rm -rf /")
+	// A TEMP TARGET, NOT `/`: this runs a real rm through the shimmed PATH, and a temp directory
+	// proves the PATH entry is reached just as well while keeping the failure mode to a directory the
+	// test owns. `rm -rf /` happened to be safe only because GNU coreutils refuses `/` on its own
+	// (--no-preserve-root) — a coincidence of one binary's argv handling, not a safety property, and
+	// the same case written as `/home` would have had no protection at all.
+	outside := t.TempDir()
+	cmd := exec.Command("bash", "-c", "rm -rf "+outside)
 	cmd.Env = env
 	out, _ := cmd.CombinedOutput()
 	if !strings.Contains(string(out), "ORCHICON GUARD") {
-		t.Errorf("bash -c 'rm -rf /' through guard PATH: expected guard message, got: %s", out)
+		t.Errorf("bash -c 'rm -rf <temp>' through guard PATH: expected guard message, got: %s", out)
 	}
 
 	// A safe command still works through the shimmed PATH.
