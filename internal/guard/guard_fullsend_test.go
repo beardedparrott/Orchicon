@@ -150,3 +150,125 @@ func TestInteractiveFullsendCannotReachTheNeverAllowClass(t *testing.T) {
 		t.Fatalf("the refusal must name the never-allow class: %s", out)
 	}
 }
+
+// --- the ISOLATION between the Ask profile and worker executions -----------
+//
+// The operator, before merging a release that reworked the permission model: "The permissions and
+// Ask changes don't actually flip in workflow executions correct? That would be bad."
+//
+// Correct — and these pin it, because it is a property of WHICH layer sets the environment rather
+// than of any single function, so reading one file is not enough to be sure.
+//
+// The interactive profile (session grants, the approved-once targets, FULLSEND, the conversation's
+// project scope) is switched on by ORCHICON_GUARD_POLICY, and the ONLY producer of that environment
+// is askorchicon (guard.InteractiveEnviron has exactly one caller: askGuardEnvironFor). A worker
+// execution reaches the shim through guard.Apply, which prepends the shim dir to PATH and adds
+// nothing else. So a worker's shim runs the WORKER profile — the historical, frozen behaviour.
+
+// TestTheWorkerProfileCarriesNoInteractiveEnvironment — Apply is the worker-side mechanism, and it
+// must not acquire the interactive variables by accident.
+func TestTheWorkerProfileCarriesNoInteractiveEnvironment(t *testing.T) {
+	g, err := NewExecutionGuardWithPolicy(t.TempDir(), writePolicyLists(t, nil, nil))
+	if err != nil {
+		t.Fatalf("NewExecutionGuardWithPolicy: %v", err)
+	}
+	defer g.Close()
+
+	applied := g.Apply([]string{"PATH=/usr/bin:/bin", "HOME=/home/x"})
+	for _, kv := range applied {
+		for _, name := range []string{PolicyEnvVar, ProjectEnvVar, GrantsEnvVar, OnceEnvVar, FullsendEnvVar} {
+			if strings.HasPrefix(kv, name+"=") {
+				t.Errorf("the worker profile set %s — a worker execution would enter the interactive "+
+					"profile, where asks, session grants and FULLSEND apply", kv)
+			}
+		}
+	}
+	// And it DID do its job: the shim is first on PATH.
+	if len(applied) == 0 || !strings.HasPrefix(applied[0], "PATH=") {
+		t.Fatalf("Apply did not rewrite PATH: %v", applied)
+	}
+	if !strings.Contains(applied[0], g.dir) {
+		t.Errorf("the shim dir is not on PATH: %q", applied[0])
+	}
+	// The OTHER environment is preserved untouched — Apply rewrites one entry, not the environment.
+	joined := strings.Join(applied, "\n")
+	if !strings.Contains(joined, "HOME=/home/x") {
+		t.Error("Apply dropped an unrelated variable")
+	}
+}
+
+// TestFullsendCannotBeSmuggledIntoAWorkerShim — DEFENCE IN DEPTH, and the reason FULLSEND is safe to
+// have added to the shim at all.
+//
+// The shim's fullsend branch sits INSIDE the interactive check, because FULLSEND waives the
+// SANCTIONED SET and a worker has no sanctioned set to waive — a worker's rule is "stay inside the
+// project", which is the frozen half of the guard. So even if the variable were present in a
+// worker's environment (a mis-set variable, an inherited one, a future caller), the interactive gate
+// comes first and the path is still refused.
+func TestFullsendCannotBeSmuggledIntoAWorkerShim(t *testing.T) {
+	proj := t.TempDir()
+	outside := t.TempDir()
+	policy := writePolicyLists(t, nil, nil)
+	g, err := NewExecutionGuardWithPolicy(proj, policy)
+	if err != nil {
+		t.Fatalf("NewExecutionGuardWithPolicy: %v", err)
+	}
+	defer g.Close()
+
+	victim := filepath.Join(outside, "smuggled.txt")
+	if err := os.WriteFile(victim, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// FULLSEND set, but NO interactive profile (no ORCHICON_GUARD_POLICY). This is the worker shape.
+	exit, out := runGuardEnv(t, g, []string{FullsendEnvVar + "=1"}, "rm", "-f", victim)
+	if exit == 0 {
+		t.Fatalf("FULLSEND alone opened a path outside the project, with no interactive profile — a "+
+			"worker execution would have been unguarded: %s", out)
+	}
+	if _, err := os.Stat(victim); err != nil {
+		t.Fatalf("the target was removed despite the refusal: %v", err)
+	}
+}
+
+// TestTheDenyListAppliesToWorkersTooAndAlwaysHas — the ONE place the Ask work touches worker
+// behaviour, stated so it is not discovered by surprise.
+//
+// The deny list is consulted FIRST in blocked_path, before the project/scratch/grant/accept
+// allowances, and it is consulted in BOTH profiles: `denied_target` calls policy_lookup without the
+// interactive gate. So the operator's exclusions (the presets: SSH keys, GNUPG, AWS, gh config,
+// git-credentials, netrc, Docker config) already refuse worker commands, and have since the
+// persistent policy landed — this branch does not change it.
+//
+// THAT IS DIFFERENT FROM THE PROMPT. The interactive profile ADDS asking; the deny list is a
+// standing decision that applies everywhere. Worth pinning in both directions: if someone later
+// makes the deny list Ask-only, this fails; and the path used here is INSIDE the project, so the
+// project allowance would otherwise have permitted it.
+func TestTheDenyListAppliesToWorkersTooAndAlwaysHas(t *testing.T) {
+	proj := t.TempDir()
+	policy := writePolicyLists(t, []string{filepath.Join(proj, "secret") + "/**"}, nil)
+	g, err := NewExecutionGuardWithPolicy(proj, policy)
+	if err != nil {
+		t.Fatalf("NewExecutionGuardWithPolicy: %v", err)
+	}
+	defer g.Close()
+
+	if err := os.MkdirAll(filepath.Join(proj, "secret"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(proj, "secret", "key.pem")
+	if err := os.WriteFile(victim, []byte("k"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The WORKER profile: no interactive environment at all.
+	exit, out := runGuardEnv(t, g, g.Apply([]string{"PATH=/usr/bin:/bin"}), "rm", "-f", victim)
+	if exit == 0 {
+		t.Fatalf("a deny entry did not refuse an IN-PROJECT path in the worker profile — the deny "+
+			"list is a standing decision, not part of the asking mechanism: %s", out)
+	}
+	if !strings.Contains(out, "denied by entry") {
+		t.Fatalf("the refusal must name the deny entry: %s", out)
+	}
+	if _, err := os.Stat(victim); err != nil {
+		t.Fatalf("the denied file was removed: %v", err)
+	}
+}
