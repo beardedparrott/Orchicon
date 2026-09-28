@@ -22,6 +22,12 @@ const DefaultAdapterKind = "opencode"
 const (
 	KindOpencode = "opencode"
 	KindOrchicon = "orchicon"
+	// KindClaude is the Claude Code CLI adapter ("claude"). It is NOT
+	// "anthropic": anthropic is a PROVIDER segment (it is also a provider
+	// of opencode), and the 2-segment ref "anthropic/<model>" must keep
+	// inferring kind opencode (modelref_test.go). The Claude adapter is a
+	// streaming-stdio adapter with no in-container HTTP serve.
+	KindClaude = "claude"
 )
 
 // ModelRef is the parsed form of a worker model_ref under the pinned
