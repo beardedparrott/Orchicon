@@ -865,7 +865,18 @@ type sessionPartsRecorder struct {
 	// carrying state.input + state.output; emitting both an input part and
 	// an output part would render duplicate tool bubbles.
 	open map[string]db.SessionPart
-	stop chan struct{}
+	// text/reason hold the in-flight coalesced streaming runs. The engine loop
+	// emits TransText and TransReasoning per token/delta (loop.go), so mapping
+	// each event to its own part wrote tens of thousands of micro-rows per long
+	// turn — measured on the live plane: 30k-65k reasoning rows plus 1k-1.7k
+	// text rows for ONE execution — which pushed the worker's SUMMARY + FACTS
+	// LEARNED tail past the session pane's bounded fetch window. Consecutive
+	// deltas of one kind append to a single growing part, anchored at the run's
+	// first event seq (seq<<8|sub) and sealed on any event of another kind, on
+	// run overflow, and at drain.
+	text   coalesceRun
+	reason coalesceRun
+	stop   chan struct{}
 	// stopped is closed by run() on shutdown. Close only waits when the
 	// pump was actually started (go recorder.run() in Start); tests that
 	// drive the recorder synchronously (no pump) must not deadlock, so
@@ -907,6 +918,10 @@ func (r *sessionPartsRecorder) start() {
 // seqs, so a re-appended transcript entry cannot double-record), and
 // bounded (subIndex < 256 per event by construction).
 func (r *sessionPartsRecorder) observe(seq int64, typ string, data []byte) {
+	// A streaming run never spans a transcript boundary: seal every open run
+	// except the one this event continues. Sealing BEFORE the event's own parts
+	// are queued keeps the pending batch in transcript order.
+	r.sealStreams(typ)
 	// sub pushes one derived part for the source event (subIndex < 256).
 	sub := func(subIndex int64, kind string, payload map[string]any) {
 		r.push(r.part(seq<<8|subIndex, kind, payload))
@@ -944,7 +959,8 @@ func (r *sessionPartsRecorder) observe(seq int64, typ string, data []byte) {
 		if jsonUnmarshal(data, &d) != nil || d.Text == "" {
 			return
 		}
-		sub(0, db.SessionPartText, map[string]any{"part": map[string]any{"text": d.Text}})
+		// Coalesce into the in-flight text run rather than one row per token.
+		r.appendRun(&r.text, seq, db.SessionPartText, d.Text)
 	case TransReasoning:
 		var d struct {
 			Text string `json:"text"`
@@ -952,7 +968,9 @@ func (r *sessionPartsRecorder) observe(seq int64, typ string, data []byte) {
 		if jsonUnmarshal(data, &d) != nil || d.Text == "" {
 			return
 		}
-		sub(0, db.SessionPartReasoning, map[string]any{"part": map[string]any{"text": d.Text}})
+		// Reasoning streams per delta too, and dominates the row count —
+		// coalesce it by the same rule as text.
+		r.appendRun(&r.reason, seq, db.SessionPartReasoning, d.Text)
 	case TransToolCall:
 		// One turn's assistant tool_use. Tool calls mark a generation
 		// boundary (close the previous step, open the next). Each call's
@@ -1108,11 +1126,91 @@ func (r *sessionPartsRecorder) releaseOpen(callID string, merge func(db.SessionP
 	return ok
 }
 
-// drainOpen flushes any still-held invocation parts (session end without a
-// result: crash/cancel mid-call). The input is preserved (status
-// completed, empty output) so the operator sees what the worker was
-// about to do — never a silently missing call.
+// coalesceRun is one in-flight streaming part run: the source event seq that
+// anchors it (0 = none open), the chunk sub-index within that anchor, and the
+// text accumulated so far.
+type coalesceRun struct {
+	seq int64
+	sub int64
+	buf strings.Builder
+}
+
+// maxCoalescedBytes bounds one coalesced part. A longer run seals into chunks
+// (still orders of magnitude fewer rows than one per delta), sub-indexed so
+// every part keeps a distinct seq under the same anchor.
+const maxCoalescedBytes = 32 * 1024
+
+// appendRun extends a streaming run with one delta. Overflow seals full chunks
+// under the run's anchor seq, so N deltas become about
+// ceil(bytes/maxCoalescedBytes) parts instead of N.
+func (r *sessionPartsRecorder) appendRun(run *coalesceRun, seq int64, kind, text string) {
+	if text == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if run.seq == 0 {
+		run.seq, run.sub = seq, 0
+	}
+	rest := text
+	for len(rest) > 0 {
+		room := maxCoalescedBytes - run.buf.Len()
+		if room <= 0 {
+			r.sealRunLocked(run, kind)
+			room = maxCoalescedBytes - run.buf.Len()
+		}
+		if len(rest) <= room {
+			run.buf.WriteString(rest)
+			return
+		}
+		run.buf.WriteString(rest[:room])
+		rest = rest[room:]
+		r.sealRunLocked(run, kind)
+	}
+}
+
+// sealRunLocked queues the buffered run as ONE part (no-op when empty) and
+// advances the run's sub-index. Caller must hold r.mu. It goes through r.part
+// so the baseSeq offset is preserved — a follow-up session's coalesced parts
+// must not collide with the original run's stored seqs (the store's unique key
+// is (tenant, execution, seq) with ON CONFLICT DO NOTHING, so a collision would
+// silently DROP the part).
+func (r *sessionPartsRecorder) sealRunLocked(run *coalesceRun, kind string) {
+	if run.buf.Len() == 0 {
+		return
+	}
+	r.pending = append(r.pending, r.part(run.seq<<8|run.sub, kind,
+		map[string]any{"part": map[string]any{"text": run.buf.String()}}))
+	run.buf.Reset()
+	run.sub++
+}
+
+// sealStreams seals every open streaming run except the one keepType
+// continues (keepType == "" seals all). observe calls it on entry and drainOpen
+// calls it at session end, so a run is always bounded by the transcript event
+// that ended it.
+func (r *sessionPartsRecorder) sealStreams(keepType string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if keepType != TransText {
+		r.sealRunLocked(&r.text, db.SessionPartText)
+		r.text.seq, r.text.sub = 0, 0
+	}
+	if keepType != TransReasoning {
+		r.sealRunLocked(&r.reason, db.SessionPartReasoning)
+		r.reason.seq, r.reason.sub = 0, 0
+	}
+}
+
+// drainOpen seals any streaming run still open, then flushes any still-held
+// invocation parts (a session ending without a result: crash/cancel mid-call).
+// The held input is preserved (status completed, empty output) so the operator
+// sees what the worker was about to do — never a silently missing call; and the
+// sealed streaming tail is the worker's own report (SUMMARY + FACTS LEARNED),
+// so sealing it is the difference between a renderable transcript and a silently
+// truncated one.
 func (r *sessionPartsRecorder) drainOpen() {
+	r.sealStreams("")
 	r.mu.Lock()
 	for callID, p := range r.open {
 		var pl map[string]any
