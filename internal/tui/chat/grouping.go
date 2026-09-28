@@ -34,6 +34,16 @@ const (
 	// KindAsk is a recorded ask_user clarifying question rendered as a card in
 	// the transcript (the non-blocking, recorded-tool-call path).
 	KindAsk ItemKind = "ask"
+	// KindNotice is a `system` row: something the PLATFORM said about the
+	// conversation (today, a record that its context was compacted), not something
+	// either party said in it.
+	//
+	// IT EXISTS BECAUSE THE FALL-THROUGH WAS A LIE. Both clients used to map every
+	// unrecognised role to their text/assistant rendering, so a notice drew in the
+	// model's own band and read as though Orchicon had said it. A collapse that
+	// replaces 2,343 messages with a summary is exactly the event a transcript must
+	// attribute to the right speaker.
+	KindNotice ItemKind = "notice"
 )
 
 // ParsedTool mirrors the TS ParsedTool interface.

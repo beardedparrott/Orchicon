@@ -291,6 +291,8 @@ func renderItem(it ChatItem, maxWidth int, fold bool, copyGlyph string) (string,
 		b.WriteString(renderReasoningBlock(it, maxWidth, fold))
 	case KindError:
 		b.WriteString(renderBubble("error", it.Text, theme.ErrorText, maxWidth))
+	case KindNotice:
+		b.WriteString(renderNotice(it.Text, maxWidth))
 	case KindTool:
 		b.WriteString(renderToolRow(it.Tool, maxWidth))
 	case KindAsk:
@@ -706,6 +708,41 @@ func renderBubble(label, text string, style lipgloss.Style, maxWidth int) string
 	b.WriteString(style.Render(body))
 	if !strings.HasSuffix(body, "\n") {
 		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// noticeLabel is the band label a platform notice carries. It is deliberately the
+// neutral word rather than "context compacted": the notice's own first sentence says
+// what happened, and a label that repeated it would stutter.
+const noticeLabel = "notice"
+
+// renderNotice draws a platform notice — a `system` row, i.e. a record ABOUT the
+// conversation rather than something either party said in it.
+//
+// IT LOOKS DIFFERENT ON PURPOSE. Before KindNotice existed this row reached the
+// KindText branch, so it drew in the assistant's own band and read as though Orchicon
+// had claimed it — which for a compaction record is the wrong attribution on the one
+// event where attribution matters most. Here it is dim, labelled, and
+// paragraph-preserving: the notices are written in short paragraphs (what was lost,
+// why it ran, where the original went) and collapsing them into one wrapped block
+// would make the archive path hardest to find.
+func renderNotice(text string, maxWidth int) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(theme.ListMeta.Render(noticeLabel) + "\n")
+	for _, para := range strings.Split(text, "\n\n") {
+		para = strings.TrimSpace(para)
+		if para == "" {
+			continue
+		}
+		body := para
+		if maxWidth > 0 {
+			body = wrapText(para, maxWidth)
+		}
+		b.WriteString(theme.HintText.Render(body) + "\n")
 	}
 	return b.String()
 }

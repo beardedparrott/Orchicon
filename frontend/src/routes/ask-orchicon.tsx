@@ -62,6 +62,7 @@ import { useGetSettings } from "@/api/settings";
 import { askOrchiconClient } from "@/api/clients";
 import { useToast, useToastStore } from "@/components/ui/toast";
 import { COMPACT_COMMAND, parseComposerCommand } from "@/lib/composer-command";
+import { bubbleKindFor } from "@/lib/ask-bubble";
 import {
   groupStreamItems,
   nextChunkKey,
@@ -82,6 +83,7 @@ import {
   AssistantBubble,
   ErrorBubble,
   ReasoningBubble,
+  NoticeBubble,
   ChatScrollContainer,
 } from "@/components/chat";
 import { useCategoryPreferences, getItemsForCategory } from "@/lib/category-store";
@@ -2179,14 +2181,21 @@ function MessageBubble({
   // PAUSED turn (it goes over the reply RPC as the ask_user tool result).
   onSelectOption?: (label: string) => void;
 }) {
-  const isUser = message.role === "user";
-  const isError = !!message.metadata?.error;
+  // WHICH SHELL DRAWS THIS MESSAGE. Decided in one tested place (lib/ask-bubble.ts)
+  // rather than by a fall-through: `system` is the PLATFORM speaking about the
+  // conversation — today a compaction record — and it used to land in the assistant's
+  // bubble, claiming for the model the one event where attribution is the point.
+  const kind = bubbleKindFor(message);
 
-  if (isUser) {
+  if (kind === "user") {
     return <UserBubble text={message.content} source="you" />;
   }
 
-  if (isError) {
+  if (kind === "notice") {
+    return <NoticeBubble text={message.content} />;
+  }
+
+  if (kind === "error") {
     const errModel = message.metadata?.modelRef;
     return (
       <div className="flex justify-start">

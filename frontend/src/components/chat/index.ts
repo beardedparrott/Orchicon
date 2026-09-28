@@ -5,5 +5,6 @@ export { ToolCard } from "./ToolCard";
 export { ReasoningBubble } from "./ReasoningBubble";
 export { ArtifactCard } from "./ArtifactCard";
 export { ErrorBubble } from "./ErrorBubble";
+export { NoticeBubble } from "./NoticeBubble";
 export { SystemPromptBubble } from "./SystemPromptBubble";
 export { ChatScrollContainer } from "./ChatScrollContainer";

@@ -777,6 +777,11 @@ func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 			kind = KindUser
 		case "error":
 			kind = KindError
+		case "system":
+			// A NOTICE, not the model's words. Without this case the row fell
+			// through to KindText — the assistant's own band — so a compaction
+			// record read as though Orchicon had said it.
+			kind = KindNotice
 		}
 		at := m.GetCreatedAt().AsTime().UnixMilli()
 		for j, part := range m.GetReasoning() {
