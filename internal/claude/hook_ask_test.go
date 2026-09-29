@@ -3,6 +3,7 @@ package claude
 import (
 	"bytes"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -190,5 +191,45 @@ func TestRunHookDefaultsToTheWorkerProfile(t *testing.T) {
 	}
 	if got := doc.HookSpecificOutput.PermissionDecision; got == DecisionAsk {
 		t.Fatal("the worker profile emitted an ask; that transport installs no handler, so the call would hang or auto-deny")
+	}
+}
+
+// THE MATCHER MUST COVER MCP TOOLS. A tool the matcher does not name never
+// reaches this hook, so its verdict — including the allow that makes the
+// platform's own tools usable — never happens, and claude denies the call with
+// "requested permissions ... but you haven't granted it yet". Reproduced live
+// against the real CLI before this was fixed: the hook was not invoked at all.
+func TestHookMatcherCoversMCPTools(t *testing.T) {
+	if !strings.Contains(HookToolMatcher, "mcp__") {
+		t.Fatalf("HookToolMatcher = %q has no MCP pattern, so no mcp__* tool ever reaches the hook", HookToolMatcher)
+	}
+	// The matcher is a regex evaluated against the tool name, so assert the
+	// SHAPES it must match rather than the literal text.
+	re, err := regexp.Compile("^(?:" + HookToolMatcher + ")$")
+	if err != nil {
+		t.Fatalf("HookToolMatcher is not a valid regex: %v", err)
+	}
+	for _, name := range []string{
+		"mcp__orchicon__list_work_items",
+		"mcp__orchicon__get_current_conversation",
+		"mcp__github__create_issue",
+		"Bash", "Read", "Write", "Task", "TodoWrite",
+	} {
+		if !re.MatchString(name) {
+			t.Errorf("the matcher does not cover %q — the hook would never see it", name)
+		}
+	}
+}
+
+// The END-TO-END consequence: with the matcher fixed, an orchicon MCP tool must
+// produce an ALLOW from the Ask profile (not an ask, and never a deny), which is
+// what makes list_work_items readable.
+func TestAskProfileAllowsOrchiconMCPToolsThroughTheMatcher(t *testing.T) {
+	if !regexp.MustCompile("^(?:" + HookToolMatcher + ")$").MatchString("mcp__orchicon__list_work_items") {
+		t.Skip("matcher does not cover MCP tools; the test above already failed")
+	}
+	got := DecideToolForAsk(HookInput{ToolName: "mcp__orchicon__list_work_items", ToolInput: map[string]any{}}, "/tmp/ask", "")
+	if d := got.Decision(); d != DecisionAllow {
+		t.Fatalf("mcp__orchicon__list_work_items = %s, want allow — a read-only platform tool must not need a card", d)
 	}
 }
