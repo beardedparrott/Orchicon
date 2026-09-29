@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -1202,6 +1203,18 @@ type ModelsResult struct {
 // models are INCLUDED with Visible=false (the operator must be able to
 // re-check them); probe failure is non-fatal (Degraded=true — the UI
 // renders visibly degraded, never a blank list).
+// repairBudget bounds the self-healing base-URL sweep (see ListProviderModels).
+//
+// A working LOCAL endpoint resolves in milliseconds, so the bound costs nothing
+// in the case repair exists for. It exists because the sweep is SEQUENTIAL and
+// each candidate probe can block on a dial timeout, so the worst case is
+// (candidates x timeout) — measured at 45 SECONDS in production, exactly the
+// model picker's read budget. The picker therefore timed out before this
+// function returned and the OFFLINE CATALOG SEED below never ran, so a
+// catalog-covered provider listed nothing while its authored models sat one
+// line away.
+const repairBudget = 8 * time.Second
+
 func (s *Service) ListProviderModels(ctx context.Context, tenantID, providerID string) (ModelsResult, error) {
 	profile, enabled, err := s.EffectiveProfile(ctx, tenantID, providerID)
 	if err != nil {
@@ -1231,10 +1244,24 @@ func (s *Service) ListProviderModels(ctx context.Context, tenantID, providerID s
 	// same base URL — the fix must apply to turns, not just the listing)
 	// and log the repair in plain language.
 	if res.Degraded && len(res.Models) == 0 {
+		// THE SWEEP GETS ITS OWN BUDGET, because the caller has one too (see
+		// repairBudget). Bounding it guarantees the catalog seed below is reached;
+		// it does not disable the self-heal a broken local endpoint needs.
+		repairCtx, cancelRepair := context.WithTimeout(ctx, repairBudget)
 		for _, cand := range repairCandidates(profile.BaseURL) {
+			if repairCtx.Err() != nil {
+				if s.log != nil {
+					s.log.Warn("providers: the base-URL repair sweep ran out of budget — continuing to the catalog seed (the LISTING is unaffected; a turn against this endpoint may still fail)",
+						"ref_id", providerID, "budget", repairBudget.String())
+				}
+				break
+			}
 			cp := profile
 			cp.BaseURL = cand
-			if r2 := sourcing.ListModels(ctx, cp, bearer); !r2.Degraded && len(r2.Models) > 0 {
+			if r2 := sourcing.ListModels(repairCtx, cp, bearer); !r2.Degraded && len(r2.Models) > 0 {
+				// Persist on the CALLER's context: the repair has been found, and the
+				// write that makes it stick for turns must not be cancelled by the
+				// sweep's own budget expiring a moment later.
 				if err := s.applyBaseURLRepair(ctx, tenantID, providerID, profile.BaseURL, cand); err != nil {
 					break
 				}
@@ -1246,6 +1273,7 @@ func (s *Service) ListProviderModels(ctx context.Context, tenantID, providerID s
 				break
 			}
 		}
+		cancelRepair()
 	}
 	// OFFLINE CATALOG SEED (picker view only). When the live probe yielded
 	// nothing — no network, no credential, an unreachable endpoint — a

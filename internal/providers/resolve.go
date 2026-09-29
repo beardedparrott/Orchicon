@@ -88,6 +88,32 @@ func resolveForPlane(raw string) (string, string, bool) {
 	return resolved, note, true
 }
 
+// mustTryLocalPorts reports whether a host is one where the common
+// local-inference ports are worth trying.
+//
+// TRUE only for an endpoint reachable on this machine or this network: loopback,
+// the container's host gateway, a private range, or a bare hostname with no dots
+// (a docker service name like `ollama`). FALSE for a public host — see the port
+// fallback in repairCandidates for the cost of getting this wrong.
+func mustTryLocalPorts(host string) bool {
+	h := strings.TrimSpace(host)
+	if h == "" {
+		return true // a portless parse: keep the historical behaviour
+	}
+	switch h {
+	case "localhost", "0.0.0.0", "::1", "host.docker.internal", "gateway.docker.internal":
+		return true
+	}
+	// A bare service name (docker compose network) is local by construction.
+	if !strings.Contains(h, ".") && !strings.Contains(h, ":") {
+		return true
+	}
+	if ip := net.ParseIP(h); ip != nil {
+		return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
+	}
+	return false
+}
+
 // repairCandidates lists the most-likely-working base URLs for a custom
 // provider whose stored URL cannot be probed. Dimensions explored:
 //   - host: loopback → plane-reachable host gateway (container mode only;
@@ -122,20 +148,51 @@ func repairCandidates(raw string) []string {
 		hosts = append(hosts, gw)
 	}
 
-	// Ports to try: as entered, else the common local-inference ports.
+	// PORT FALLBACK, LOCAL ENDPOINTS ONLY.
+	//
+	// The common local-inference ports belong to an endpoint on THIS network
+	// (ollama 11434, vLLM 8000, a dev proxy on 8080/8095). Applying them to a
+	// PUBLIC host manufactures addresses that cannot exist: repairing anthropic's
+	// `https://api.anthropic.com/v1` produced api.anthropic.com:11434 and friends,
+	// nine probes of which several hung for 15-30s on the dial — 45 SECONDS IN
+	// TOTAL, which is exactly the model picker's budget, so the picker never got
+	// an answer and the operator saw a list stuck on "loading models…".
+	//
+	// A public host is repaired by a missing version root or nothing at all; it
+	// does not move to another port. `for a custom` in this function's doc is the
+	// intent: a locally-entered endpoint, not a built-in cloud provider.
+	pathNeedsV1 := u.Path == "" || u.Path == "/"
+
 	port := u.Port()
 	ports := []string{port}
 	if port == "" {
-		ports = []string{"8080", "8095", "8000", "11434"}
+		switch {
+		case mustTryLocalPorts(u.Hostname()):
+			ports = []string{"8080", "8095", "8000", "11434"}
+		case !pathNeedsV1:
+			// A PUBLIC host, portless, whose path ALREADY carries the version root.
+			// The URL is well formed and there is nothing to repair: a 401 from it is
+			// a TOKEN problem, not an endpoint one. Returning here is what keeps a
+			// built-in cloud provider out of the sweep entirely.
+			//
+			// This is the case that cost 45 seconds: `https://api.anthropic.com/v1`
+			// reached the port fallback, which invented api.anthropic.com:11434 and
+			// friends, each dial blocking on a timeout.
+			return nil
+		}
 	}
-
-	pathNeedsV1 := u.Path == "" || u.Path == "/"
 
 	seen := map[string]bool{}
 	var out []string
 	add := func(host, port, path string) {
 		c := *u
-		c.Host = net.JoinHostPort(host, port)
+		if port == "" {
+			// JoinHostPort would render "host:" — a malformed URL. A portless
+			// candidate keeps the host verbatim.
+			c.Host = host
+		} else {
+			c.Host = net.JoinHostPort(host, port)
+		}
 		c.Path = path
 		s := c.String()
 		if s != "" && !seen[s] {
