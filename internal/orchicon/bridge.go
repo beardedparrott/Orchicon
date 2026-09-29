@@ -83,6 +83,25 @@ type NativeBridge struct {
 	// by mu. Lost on a server restart (the DB transcript remains the
 	// durable record).
 	chatHistory map[string][]Message
+	// askHistorySeen is a MULTISET of fingerprints for every message a session has ever held, so a message
+	// that DISAPPEARS is reported instead of passing silently. Guarded by mu.
+	//
+	// IT EXISTS BECAUSE THIS BUG RAN FOR WEEKS UNSEEN. commitChatHistory assigned `cur = working` — the
+	// committing turn's own snapshot-plus-output — so an interjection (which SUPERSEDES the running turn)
+	// silently erased the other turn's reply: the operator read it on screen while the model could not, and it
+	// took reading the session files by hand to find it.
+	//
+	// WHY FINGERPRINTS AND NOT A LENGTH. The replacing commit does not TRUNCATE, it SWAPS: with the session
+	// holding H+[userA]+[userB], the old commit wrote H+[userA]+replyA — the SAME LENGTH, with userB replaced
+	// by replyA. The next commit then grew it again. A length check, and a per-role count check, both sail
+	// straight past that, which is how the bug survived so long. Only the IDENTITY of the messages changes,
+	// so identity is what has to be watched. (A fingerprint is a 64-bit hash; a collision could only ever HIDE
+	// a loss, never invent one, so it cannot produce a false alarm.)
+	askHistorySeen map[string]map[uint64]int
+	// askHistoryReduceReason marks a session whose NEXT persistence is an INTENTIONAL reduction
+	// (context reduction or compaction — both are lossy by design and both are announced to the operator), so
+	// the shrink guard reports it as intended rather than as data loss. Guarded by mu.
+	askHistoryReduceReason map[string]string
 	// chatTurns tracks in-flight Ask turns per session (sessionID → cancel),
 	// so AbortConversationSession can context-cancel the running HTTP turn.
 	// Guarded by mu.
@@ -142,14 +161,16 @@ func NewBridge(resolver ProviderResolver, projectDir string, log *slog.Logger) *
 		log = slog.Default()
 	}
 	return &NativeBridge{
-		resolver:    resolver,
-		projectDir:  projectDir,
-		log:         log,
-		live:        map[string]*liveSession{},
-		chatHistory: map[string][]Message{},
-		chatTurns:   map[string]context.CancelFunc{},
-		chatBuses:   map[string]*chatBus{},
-		permWaits:   map[string]*permWait{},
+		resolver:               resolver,
+		projectDir:             projectDir,
+		log:                    log,
+		live:                   map[string]*liveSession{},
+		chatHistory:            map[string][]Message{},
+		askHistorySeen:         map[string]map[uint64]int{},
+		askHistoryReduceReason: map[string]string{},
+		chatTurns:              map[string]context.CancelFunc{},
+		chatBuses:              map[string]*chatBus{},
+		permWaits:              map[string]*permWait{},
 	}
 }
 

@@ -66,9 +66,32 @@ func (s *stubAsk) WatchTurnStream(ctx context.Context, req *connect.Request[apiv
 }
 
 type recorder struct {
-	mu    sync.Mutex
-	items []ChatItem
-	conn  map[string]bool
+	mu     sync.Mutex
+	items  []ChatItem
+	conn   map[string]bool
+	asks   []PermissionAsk
+	settle []string
+}
+
+func (r *recorder) ShowConsentAsk(ask PermissionAsk) {
+	r.mu.Lock()
+	r.asks = append(r.asks, ask)
+	r.mu.Unlock()
+}
+
+func (r *recorder) SettleConsentAsk(convID, askID, outcome, answer string) {
+	r.mu.Lock()
+	r.settle = append(r.settle, convID+"|"+askID+"|"+outcome+"|"+answer)
+	r.mu.Unlock()
+}
+
+// asksSeen returns the cards the controller delivered, in order.
+func (r *recorder) asksSeen() []PermissionAsk {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]PermissionAsk, len(r.asks))
+	copy(out, r.asks)
+	return out
 }
 
 func (r *recorder) AppendLiveItem(convID string, item ChatItem) {
@@ -103,6 +126,20 @@ func drainCmds(t *testing.T, ch chan tea.Cmd, n int) []tea.Cmd {
 		}
 	}
 	return out
+}
+
+// drainQueued returns everything already on the channel WITHOUT waiting — the way to assert that nothing was
+// queued (drainCmds(n) waits for exactly n, so it cannot express "none").
+func drainQueued(ch chan tea.Cmd) []tea.Cmd {
+	out := []tea.Cmd{}
+	for {
+		select {
+		case cmd := <-ch:
+			out = append(out, cmd)
+		default:
+			return out
+		}
+	}
 }
 
 // Compaction must be refused while a turn is live: it rewrites the history the

@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -158,23 +159,25 @@ func TestHandleEventEmitsConsentAsk(t *testing.T) {
 		},
 	})
 
-	var asks []ConsentAskMsg
-	for _, cmd := range drainCmds(t, cmds, 1) {
-		if msg, ok := cmd().(ConsentAskMsg); ok {
-			asks = append(asks, msg)
-		}
-	}
+	asks := rec.asksSeen()
 	if len(asks) != 1 {
-		t.Fatalf("the stream handler emitted %d consent asks, want exactly 1 — without this the card never reaches the shell", len(asks))
+		t.Fatalf("the stream handler delivered %d consent asks, want exactly 1 — without this the card never reaches the shell", len(asks))
 	}
 	if asks[0].ConvID != "c1" {
 		t.Errorf("ConvID = %q, want the conversation the ask belongs to (not whatever is on screen)", asks[0].ConvID)
 	}
-	if asks[0].Ask.ID != "ask-9" || asks[0].Ask.Target != "cp /etc/hostname /tmp/probe" || asks[0].Ask.Directory != "/tmp" {
-		t.Errorf("ask = %+v, want the wire fields mapped through", asks[0].Ask)
+	if asks[0].ID != "ask-9" || asks[0].Target != "cp /etc/hostname /tmp/probe" || asks[0].Directory != "/tmp" {
+		t.Errorf("ask = %+v, want the wire fields mapped through", asks[0])
 	}
-	if asks[0].Ask.Kind != AskTool {
-		t.Errorf("Kind = %q, want %q", asks[0].Ask.Kind, AskTool)
+	if asks[0].Kind != AskTool {
+		t.Errorf("Kind = %q, want %q", asks[0].Kind, AskTool)
+	}
+	// AND NOTHING WAS QUEUED FOR THE COMMAND CHANNEL. That channel's send is non-blocking (16 slots, shared
+	// with the 1s turn poll), so a card routed through it could be dropped with no error and no retry — the
+	// pane sat at "orchicon is thinking" while the turn parked on the server. An ask is the only event in
+	// this test, so the queue must be empty: the card reached the store, not a droppable mail slot.
+	if queued := drainQueued(cmds); len(queued) != 0 {
+		t.Fatalf("the ask event queued %d command(s) on the droppable channel, want none", len(queued))
 	}
 }
 
@@ -198,25 +201,74 @@ func TestHandleEventOtherSignalsEmitNoConsentAsk(t *testing.T) {
 		},
 	})
 
-	// Drain whatever the handler queued WITHOUT blocking: drainCmds(n) waits for
-	// exactly n, so passing 0 returns nothing and cannot assert "nothing was
-	// sent" — the control would have been vacuous.
-	var got []tea.Cmd
-	for {
-		queued := false
-		select {
-		case cmd := <-cmds:
-			got = append(got, cmd)
-			queued = true
-		default:
-		}
-		if !queued {
-			break
-		}
+	if asks := rec.asksSeen(); len(asks) != 0 {
+		t.Fatalf("an ordinary stream signal fabricated a consent card: %+v", asks)
 	}
-	for _, cmd := range got {
-		if msg, ok := cmd().(ConsentAskMsg); ok {
-			t.Fatalf("an ordinary stream signal fabricated a consent card: %+v", msg)
-		}
+}
+
+// TestAConsentAskSurvivesAFullCommandChannel is the SILENT DROP, reproduced.
+//
+// The card used to be queued with a non-blocking send onto the shell's shared command channel (16 slots, and
+// the 1s turn poll writes to it too). When the buffer was full the card was DISCARDED — no error, no retry,
+// nothing on the wire to notice — and on a healthy stream nothing re-dials, so the loss was permanent for
+// that turn: the pane sat at "orchicon is thinking" while the turn parked on the server waiting for an answer
+// that had no card to collect it. The operator, watching both clients: "the permission ask card pops up in the
+// GUI but it doesn't pop up in the TUI. It just sits at 'orchicon is thinking'. It's not consistent."
+//
+// The channel here is full BEFORE the ask arrives, so any delivery that depends on it fails this test.
+func TestAConsentAskSurvivesAFullCommandChannel(t *testing.T) {
+	stub := &stubAsk{}
+	cl, _ := newTestServer(t, stub)
+	c := NewController(cl)
+	rec := &recorder{conn: map[string]bool{}}
+	cmds := make(chan tea.Cmd, 1) // the shell's channel, at its most hostile
+	c.Bind(rec, cmds)
+	cmds <- func() tea.Msg { return nil } // ...and already occupied
+
+	c.handleEvent("c1", &apiv1.ChatStreamResponse{
+		Event: &apiv1.ChatStreamResponse_PermissionAsk{
+			PermissionAsk: &apiv1.PermissionAsk{
+				AskId: "ask-full", Tool: "bash", Command: "make ci", Directory: "/home/ops/project",
+			},
+		},
+	})
+
+	asks := rec.asksSeen()
+	if len(asks) != 1 || asks[0].ID != "ask-full" {
+		t.Fatalf("the card was lost because the command channel was full — %d ask(s) delivered, want 1", len(asks))
+	}
+	if asks[0].ConvID != "c1" {
+		t.Fatalf("delivered under conversation %q, want c1", asks[0].ConvID)
+	}
+}
+
+// TestAConsentResolutionSurvivesAFullCommandChannel — the same hazard for the OTHER decision event. A dropped
+// resolution leaves a live-looking, INERT card on screen in whichever client did not answer (the collector
+// publishes every applied decision precisely so the other client can settle its copy).
+func TestAConsentResolutionSurvivesAFullCommandChannel(t *testing.T) {
+	stub := &stubAsk{}
+	cl, _ := newTestServer(t, stub)
+	c := NewController(cl)
+	rec := &recorder{conn: map[string]bool{}}
+	cmds := make(chan tea.Cmd, 1)
+	c.Bind(rec, cmds)
+	cmds <- func() tea.Msg { return nil }
+
+	c.handleEvent("c1", &apiv1.ChatStreamResponse{
+		Event: &apiv1.ChatStreamResponse_PermissionAskResolved{
+			PermissionAskResolved: &apiv1.PermissionAskResolved{
+				AskId: "ask-r1", ConversationId: "c1", Outcome: "allow_session",
+			},
+		},
+	})
+
+	rec.mu.Lock()
+	got := append([]string(nil), rec.settle...)
+	rec.mu.Unlock()
+	if len(got) != 1 {
+		t.Fatalf("the resolution was lost because the command channel was full: %v", got)
+	}
+	if !strings.HasPrefix(got[0], "c1|ask-r1|allow_session|") {
+		t.Fatalf("settled as %q, want c1|ask-r1|allow_session|…", got[0])
 	}
 }

@@ -1918,6 +1918,17 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *turnReplyWindow
 	// promptly; the monitor is fed only after sent == true (pre-accept
 	// events belong to a prior turn draining on the shared bus).
 	monitor := newChatStallMonitor(c.modelRef, c.stallNoProgressSeconds)
+	// AND TELL IT WHICH CALLS IT CANNOT JUDGE BY SILENCE. The tool-wedge inference is evidence-from-absence,
+	// which is the right evidence only for a tool dispatched to a session serve (what it was built for: an MCP
+	// call that never resolves). A transport that runs the call itself holds it, and the host suite's bash
+	// bounds itself with its own hard deadline — so judging that call by silence recycled live sessions over
+	// shell commands that were still running (see setLocallyBoundedTools for the numbers).
+	//
+	// GATED ON THE TRANSPORT, not on the tool name alone: on a serve-side transport the SAME "bash" tool is
+	// executed out of process, where a wedged call really is invisible to us and the inference must stand.
+	if inProcessToolRunner(c.client) {
+		monitor.setLocallyBoundedTools(hostSuiteToolNames)
+	}
 	stallTick := monitor.noProgressWindow
 	if rw := monitor.repetitionWindow; rw < stallTick {
 		stallTick = rw
@@ -2093,10 +2104,22 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *turnReplyWindow
 						if refusal != "" {
 							s.log.Warn("ask orchicon: refused to raise a question",
 								"conversation", c.convID, "reason", refusal)
-							// The adapter is waiting: give it the error as the tool result
-							// rather than leaving the turn parked with no card.
+							// THE REFUSAL CARRIES THE PREFIX, AND THAT IS THE WHOLE FIX. The adapter is waiting, so
+							// something has to go back — but a bare sentence came back as the ask_user RESULT, i.e. as
+							// the operator's ANSWER, and a REFUSED question therefore became a SUCCESSFUL tool call whose
+							// "answer" was an internal error message. Three rows on the operator's plane read exactly
+							// that (`is_error: false`, output "ask_user could not be asked: …"), and the transcript drew
+							// them as `answered · …` — claiming a decision they never made about a question they were
+							// never shown.
+							//
+							// The PERMISSION path already had this exactly right (below: `decision =
+							// orchicon.ConsentRefusedPrefix + refusal`), and its own doc says why the distinction is
+							// load-bearing: "the OPERATOR never saw this call, so reporting it as their refusal is a false
+							// statement about them". A question deserves the same honesty as a permission — so this uses
+							// the SAME marker rather than inventing a second convention, and the bridge turns it into a
+							// tool ERROR (see the ask_user branch in chatturn.go).
 							_ = c.client.ReplyPermissionDecision(context.WithoutCancel(subCtx), sid, pid,
-								"ask_user could not be asked: "+refusal)
+								orchicon.ConsentRefusedPrefix+refusal)
 						}
 					}
 				}
@@ -2231,6 +2254,17 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *turnReplyWindow
 					continue
 				}
 				c.ledger.recordToolResolution(evt.ToolName, evt.ArgsJSON, evt.Output, evt.IsError)
+				// AND IT CLOSES THE WEDGE SLOT. This event is the ONLY resolution signal the native
+				// adapter sends — there is no LegacyEventFromBus "tool_use" part on this transport — so
+				// without this a bash call stayed "open" in the stall monitor from its start, and a
+				// silent command longer than the wedge window was recycled as an MCP wedge (see
+				// closeTool). A resolved call is not a wedged one.
+				monitor.closeTool()
+				// A RESOLVED TOOL IS FORWARD MOTION, and the monitor's clocks measure the absence of
+				// exactly that. Both were running from the tool's START instead — lastActivity was never
+				// stamped here — so a turn that resolved a tool and then waited on a slow model was
+				// judged silent on a clock that had been running the whole time the tool worked.
+				progress()
 			case "part":
 				// Completed telemetry part (the same LegacyEventFromBus
 				// mapping executions use — the adapter classified it). Events
@@ -2858,4 +2892,13 @@ func foldReasoningTail(tail, flushed string) string {
 		return strings.TrimSuffix(tail, flushed)
 	}
 	return tail
+}
+
+// inProcessToolRunner reports whether this turn's transport executes the model's tool calls itself.
+//
+// An adapter that does not implement the capability (or says no) hands its tools to a session serve, where a
+// silent call is genuinely indistinguishable from a wedged one — see scheduler.InProcessToolRunner.
+func inProcessToolRunner(client scheduler.ChatTurnClient) bool {
+	r, ok := client.(scheduler.InProcessToolRunner)
+	return ok && r != nil && r.ToolsRunInProcess()
 }

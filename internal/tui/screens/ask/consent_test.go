@@ -3,6 +3,7 @@ package ask
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -19,9 +20,12 @@ type stubHost struct {
 	sent       []string
 	grants     []chat.SessionGrant
 	grantAvail bool
-	store      chat.PermissionStore
-	storeOK    bool
-	revoked    []string
+	// grantLoaded mirrors the server FETCH having happened; the header distinguishes "not asked yet" from "no
+	// grants", so a stub that only sets grantAvail would exercise a state production cannot reach.
+	grantLoaded bool
+	store       chat.PermissionStore
+	storeOK     bool
+	revoked     []string
 }
 
 func (s *stubHost) ConsentResolve(_ string, dec chat.ConsentDecision, choice string) tea.Cmd {
@@ -37,8 +41,10 @@ func (s *stubHost) ConsentSend(text string) tea.Cmd {
 }
 
 func (s *stubHost) ConsentGrants(string) ([]chat.SessionGrant, bool) { return s.grants, s.grantAvail }
-func (s *stubHost) ConsentStore() (chat.PermissionStore, bool)       { return s.store, s.storeOK }
-func (s *stubHost) ConsentRevoke(_, dir string) error                { s.revoked = append(s.revoked, dir); return nil }
+
+func (s *stubHost) ConsentGrantsLoaded(string) bool            { return s.grantLoaded }
+func (s *stubHost) ConsentStore() (chat.PermissionStore, bool) { return s.store, s.storeOK }
+func (s *stubHost) ConsentRevoke(_, dir string) error          { s.revoked = append(s.revoked, dir); return nil }
 
 type stubStore struct {
 	rules    []chat.PolicyRule
@@ -261,8 +267,13 @@ func TestQuestionCardOptionSendsTheChoice(t *testing.T) {
 // directories are countable in the header and listable, and revocable.
 func TestGrantsRollUpIsVisible(t *testing.T) {
 	m, h := newTestModel(t)
-	h.grants = []chat.SessionGrant{{Directory: "/p", Tool: "write", Count: 3}, {Directory: "/q", Tool: "bash", Count: 1}}
+	// The rows are the SERVER's fields: a directory and when it was granted. It used to also carry a tool and a
+	// count accrued locally from the cards this client answered — a second record of grants the plane owns, and
+	// the reason a revoke from this list revoked nothing.
+	now := time.Now().Unix()
+	h.grants = []chat.SessionGrant{{Directory: "/p", GrantedAt: now}, {Directory: "/q", GrantedAt: now}}
 	h.grantAvail = true
+	h.grantLoaded = true
 	if got := m.grantsFieldValue(); !strings.Contains(got, "2") || !strings.Contains(got, "/grants") {
 		t.Fatalf("the grants field must count them and point at /grants, got %q", got)
 	}
@@ -292,6 +303,7 @@ func TestGrantsRollUpIsVisible(t *testing.T) {
 func TestGrantsRollUpSaysUnavailableRatherThanFabricating(t *testing.T) {
 	m, h := newTestModel(t)
 	h.grantAvail = false
+	h.grantLoaded = true
 	if got := m.grantsFieldValue(); !strings.Contains(got, "unavailable") {
 		t.Fatalf("an unanswerable plane must be stated, got %q", got)
 	}
@@ -395,7 +407,11 @@ func TestConsentScreenOwnsTabWhileClaiming(t *testing.T) {
 func TestAskOverlaysAreVisibleInTheViewsRealFrame(t *testing.T) {
 	m, h := newTestModel(t)
 	h.grantAvail = true
-	h.grants = []chat.SessionGrant{{Directory: "/home/ops/project", Tool: "write", Count: 3}, {Directory: "/srv", Tool: "bash", Count: 1}}
+	h.grantLoaded = true
+	h.grants = []chat.SessionGrant{
+		{Directory: "/home/ops/project", GrantedAt: time.Now().Unix()},
+		{Directory: "/srv", GrantedAt: time.Now().Add(-90 * time.Minute).Unix()},
+	}
 	h.store = &stubStore{rules: []chat.PolicyRule{{Effect: "deny", Tool: "write", Pattern: "/etc/**"}}}
 	h.storeOK = true
 
@@ -430,7 +446,11 @@ func TestAskOverlaysAreVisibleInTheViewsRealFrame(t *testing.T) {
 func TestAskListOverlayShowsEveryRowNotOne(t *testing.T) {
 	m, h := newTestModel(t)
 	h.grantAvail = true
-	h.grants = []chat.SessionGrant{{Directory: "/home/ops/project", Tool: "write", Count: 3}, {Directory: "/srv", Tool: "bash", Count: 1}}
+	h.grantLoaded = true
+	h.grants = []chat.SessionGrant{
+		{Directory: "/home/ops/project", GrantedAt: time.Now().Unix()},
+		{Directory: "/srv", GrantedAt: time.Now().Unix()},
+	}
 	m.openGrants()
 	v := m.View()
 	for _, want := range []string{"/home/ops/project", "/srv"} {
@@ -440,5 +460,33 @@ func TestAskListOverlayShowsEveryRowNotOne(t *testing.T) {
 	}
 	if strings.Contains(v, "1-1/2") {
 		t.Fatalf("the list must not be windowed to one row:\n%s", v)
+	}
+}
+
+// The grants roll-up must not claim the operator has allowed NOTHING before it has asked. "No grants" and "not
+// asked yet" look identical in an empty list, and the header reported the first for both — a claim about the
+// operator's permissions that nothing supported, at the exact moment the conversation might be allowed a great
+// deal. The same distinction is why a FAILED fetch says so instead of showing an empty list.
+func TestGrantsHeaderDoesNotGuessBeforeTheFetch(t *testing.T) {
+	m, h := newTestModel(t)
+
+	h.grantAvail = true
+	h.grantLoaded = false
+	if got := m.grantsFieldValue(); strings.Contains(got, "none") {
+		t.Fatalf("the header claimed the operator has allowed nothing before asking: %q", got)
+	} else if !strings.Contains(got, "checking") || !strings.Contains(got, "/grants") {
+		t.Fatalf("the header must say it is still checking and point at /grants, got %q", got)
+	}
+
+	// Asked, and genuinely empty: now "none" is the truth and the header may say it.
+	h.grantLoaded = true
+	if got := m.grantsFieldValue(); !strings.Contains(got, "none") {
+		t.Fatalf("an empty server list must read as none, got %q", got)
+	}
+
+	// Asked, and the plane could not answer: neither "none" nor a count.
+	h.grantAvail = false
+	if got := m.grantsFieldValue(); !strings.Contains(got, "unavailable") {
+		t.Fatalf("a failed fetch must say the plane could not answer, got %q", got)
 	}
 }

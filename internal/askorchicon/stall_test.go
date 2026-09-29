@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/beardedparrott/orchicon/internal/orchicon"
+	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
 // TestChatStallMonitorNoProgress verifies the no_progress signal: a monitor
@@ -213,3 +216,162 @@ func TestFoldReasoningTail(t *testing.T) {
 		})
 	}
 }
+
+// The operator: "The model is constantly losing its brain. It doesn't know it's already done things and then
+// tries to do them again. So holding onto sessions seems broken somewhere."
+//
+// A tool held by a HUMAN was counted as a wedged tool. The wedge clock is stamped when the tool is ISSUED and
+// awaitingConsent only suppressed the VERDICT while the ask was open — so the moment a decision landed, an
+// already-expired clock was re-read on the next tick, and the collector aborted the session and re-seeded a
+// fresh one from the last 50 messages. The wait, not the tool, destroyed the context.
+func TestChatStallToolWedgeDoesNotCountConsentTime(t *testing.T) {
+	m := newChatStallMonitor("orchicon/deepseek/deepseek-flash", nil)
+	m.noProgressWindow = time.Hour // isolate the wedge signal
+	m.toolWedgeWindow = 30 * time.Second
+	base := time.Now()
+	m.now = func() time.Time { return base }
+
+	// The model issues a bash call, and the ask goes out. The operator reads it for two minutes — well past
+	// the window, because a human is not a stalled tool.
+	m.observeToolStart("bash")
+	m.setAwaitingConsent(true)
+	m.now = func() time.Time { return base.Add(2 * time.Minute) }
+	if tool, wedged := m.toolWedge(); wedged {
+		t.Fatalf("a tool held by the operator was reported wedged: %q", tool)
+	}
+
+	// The decision lands. The tool has NOT been running — it starts running NOW, so its clock does too.
+	m.setAwaitingConsent(false)
+	m.now = func() time.Time { return base.Add(2*time.Minute + 20*time.Second) }
+	if tool, wedged := m.toolWedge(); wedged {
+		t.Fatalf("the expiry of the CONSENT WAIT recycled the session %q after 20s of actual tool time", tool)
+	}
+
+	// A genuinely hung tool is still caught, on a clock that now measures the tool.
+	m.now = func() time.Time { return base.Add(2*time.Minute + 31*time.Second) }
+	tool, wedged := m.toolWedge()
+	if !wedged || tool != "bash" {
+		t.Fatalf("toolWedge = (%q, %v), want a wedge on bash once the TOOL has been silent past the window", tool, wedged)
+	}
+}
+
+// Disarming the gate with NO tool in flight must not arm one: the next tick would then find a wedge that does
+// not exist.
+func TestChatStallConsentDisarmWithoutAnOpenToolIsInert(t *testing.T) {
+	m := newChatStallMonitor("orchicon/deepseek/deepseek-flash", nil)
+	m.noProgressWindow = time.Hour
+	m.toolWedgeWindow = 30 * time.Second
+	base := time.Now()
+	m.now = func() time.Time { return base }
+
+	m.setAwaitingConsent(true)
+	m.now = func() time.Time { return base.Add(10 * time.Minute) }
+	m.setAwaitingConsent(false)
+
+	if tool, wedged := m.toolWedge(); wedged {
+		t.Fatalf("toolWedge = (%q, true) with no tool ever issued, want no wedge", tool)
+	}
+}
+
+// The native adapter resolves a tool with a typed "tool_result" and emits no "tool_use" part, so the wedge
+// slot has to be closed by that event. Without it a bash call stayed open from its START, and a silent
+// command longer than the window — a build, a test suite — was recycled as an MCP wedge with no ask involved.
+func TestChatStallCloseToolEndsTheWedgeSlot(t *testing.T) {
+	m := newChatStallMonitor("orchicon/deepseek/deepseek-flash", nil)
+	m.noProgressWindow = time.Hour
+	m.toolWedgeWindow = 30 * time.Second
+	base := time.Now()
+	m.now = func() time.Time { return base }
+
+	m.observeToolStart("bash")
+	m.now = func() time.Time { return base.Add(5 * time.Minute) }
+	m.closeTool()
+
+	if tool, wedged := m.toolWedge(); wedged {
+		t.Fatalf("a RESOLVED tool was reported wedged: %q", tool)
+	}
+}
+
+// The operator's prod plane carried 13 "session wedged on a tool — recycling to a fresh session" entries in two
+// days, every one of them tool="bash" on the native (in-process) transport — each destroying the session's
+// context over a shell command that was still running. The host suite's bash bounds itself (bashTimeoutDefault
+// 120s / bashTimeoutMax 600s), so a slow call is not a wedged call.
+func TestChatStallLocallyBoundedToolIsNeverAWedge(t *testing.T) {
+	m := newChatStallMonitor("orchicon/deepseek/deepseek-flash", nil)
+	m.noProgressWindow = time.Hour
+	m.toolWedgeWindow = 30 * time.Second
+	m.setLocallyBoundedTools(hostSuiteToolNames)
+	base := time.Now()
+	m.now = func() time.Time { return base }
+
+	m.observeToolStart("bash")
+	// Ten minutes of silence from a build or a test suite — past bash's own default deadline, and past the
+	// wedge window several times over.
+	m.now = func() time.Time { return base.Add(10 * time.Minute) }
+	if tool, wedged := m.toolWedge(); wedged {
+		t.Fatalf("a shell command the transport is RUNNING was reported wedged as %q, and the recycle would have erased the session", tool)
+	}
+}
+
+// THE CONTROL, and the reason the exemption is per-tool and not per-adapter: the same transport also runs MCP
+// tools, which leave this process and CAN wedge with nothing to report. Recovery for the case the signal exists
+// for must survive.
+func TestChatStallUnboundedToolStillWedgesOnAnInProcessTransport(t *testing.T) {
+	m := newChatStallMonitor("orchicon/deepseek/deepseek-flash", nil)
+	m.noProgressWindow = time.Hour
+	m.toolWedgeWindow = 30 * time.Second
+	m.setLocallyBoundedTools(hostSuiteToolNames)
+	base := time.Now()
+	m.now = func() time.Time { return base }
+
+	m.observeToolStart("mcp__sentry__list_issues")
+	m.now = func() time.Time { return base.Add(time.Minute) }
+	tool, wedged := m.toolWedge()
+	if !wedged || tool != "mcp__sentry__list_issues" {
+		t.Fatalf("toolWedge = (%q, %v), want the MCP call reported wedged so the session can be healed", tool, wedged)
+	}
+}
+
+// AND THE SECOND CONTROL: with no locally-bounded set — i.e. a SERVE-side transport, where the same "bash" is
+// executed out of process and silence really is the only evidence — the wedge must stay armed.
+func TestChatStallServeSideTransportKeepsTheWedgeForEveryTool(t *testing.T) {
+	m := newChatStallMonitor("opencode/deepseek-v4-flash-free", nil)
+	m.noProgressWindow = time.Hour
+	m.toolWedgeWindow = 30 * time.Second
+	base := time.Now()
+	m.now = func() time.Time { return base }
+
+	m.observeToolStart("bash")
+	m.now = func() time.Time { return base.Add(time.Minute) }
+	if _, wedged := m.toolWedge(); !wedged {
+		t.Fatal("a serve-side transport must keep the wedge: a call it dispatched is invisible to us, so silence is all we have")
+	}
+}
+
+// The capability gate itself: only a transport that DECLARES in-process tool execution is exempted, and a
+// transport that declares nothing gets the default (armed).
+func TestInProcessToolRunnerOnlyForDeclaringTransports(t *testing.T) {
+	if inProcessToolRunner(nil) {
+		t.Fatal("a nil transport must not be treated as an in-process tool runner")
+	}
+	if !inProcessToolRunner(inProcTransport{}) {
+		t.Fatal("a transport declaring ToolsRunInProcess must be recognized")
+	}
+	if inProcessToolRunner(serveTransport{}) {
+		t.Fatal("a transport that does not declare the capability must keep the wedge armed")
+	}
+	if !inProcessToolRunner(&orchicon.NativeBridge{}) {
+		t.Fatal("the native bridge runs the host suite in-process and must declare it")
+	}
+}
+
+// inProcTransport / serveTransport are minimal declarations of the OPTIONAL capability: the embedded nil
+// interface supplies the rest of ChatTurnClient and panics if it is ever called (it never is — the capability
+// is read, not exercised).
+type inProcTransport struct {
+	scheduler.ChatTurnClient
+}
+
+func (inProcTransport) ToolsRunInProcess() bool { return true }
+
+type serveTransport struct{ scheduler.ChatTurnClient }

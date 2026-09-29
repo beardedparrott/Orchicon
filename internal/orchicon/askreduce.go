@@ -303,6 +303,7 @@ func (b *NativeBridge) reduceSessionHistory(sessionID string, keepTail int) ([]M
 		return nil, st, false
 	}
 	b.chatHistory[sessionID] = reduced
+	b.markHistoryReductionLocked(sessionID, "context reduction (keepTail)")
 	b.persistAskHistoryLocked(sessionID)
 	return reduced, st, true
 }

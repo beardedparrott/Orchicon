@@ -124,13 +124,17 @@ func consentSpec(st *ConsentState) kit2.CardSpec {
 		}
 		if a.DeniedBy != "" {
 			spec.Notice = "denied by the permission list (" + a.DeniedBy + ") — a session grant cannot override it"
+		} else if a.Directory == "" {
+			// The row cannot be taken because there is nothing to grant. Saying which of the two reasons applies
+			// is the whole point: a disabled row with no explanation reads as a broken control.
+			spec.Notice = "this ask names no directory a session grant could cover, so there is nothing to allow for the session — allow it once, or deny it"
 		}
 	}
 	labels := a.OptionLabels()
 	for i, l := range labels {
 		line := kit2.CardLine{Text: l, Selected: i == st.Sel, Disabled: a.RowDisabled(i)}
 		if line.Disabled {
-			line.Detail = "denied by " + a.DeniedBy
+			line.Detail = a.sessionRowSuppressed()
 		}
 		spec.Lines = append(spec.Lines, line)
 	}

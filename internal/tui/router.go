@@ -1384,20 +1384,15 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		return m.waitChat()
 	case chat.StreamDoneMsg:
 		return tea.Batch(m.onStreamDone(msg), m.waitChat())
-	case chat.ConsentAskMsg:
-		// A permission ask landed mid-turn: draw its card. ShowConsentAsk consults
-		// the conversation's session grants first, so a directory already allowed
-		// for this session does not ask twice.
-		return tea.Batch(m.ShowConsentAsk(msg.Ask), m.waitChat())
-	case chat.ConsentResolvedMsg:
-		// THE OTHER CLIENT DECIDED, so settle this client's copy of the card.
-		//
-		// The operator: "the choice box is still there for permissions" — in the GUI
-		// after answering in the TUI. Only the answering client cleared its own copy,
-		// and a permission ask has no durable row to reconcile against, so the
-		// collector publishes the outcome and every watcher settles from it.
-		m.chatStore.settleAsk(msg.ConvID, msg.AskID, msg.Outcome, msg.Answer)
-		return tea.Batch(m.onChatWake(), m.waitChat())
+	// NO ConsentAskMsg / ConsentResolvedMsg CASES: an ask and its resolution now reach the store DIRECTLY
+	// from the turn's goroutine (appEventStore.ShowConsentAsk / SettleConsentAsk) instead of riding the
+	// shell's shared command channel, where a non-blocking send could drop a card with no error and no
+	// retry — leaving the pane at "orchicon is thinking" while the turn parked on the server. The wake
+	// poke the store follows each write with is what brings the loop back here to repaint.
+	case chat.PermissionGrantsMsg:
+		// The SERVER's answer to a list or a revoke (see App.ConsentGrants / ConsentRevoke). It carries the
+		// refreshed list in BOTH cases, so this client never keeps its own copy to drift.
+		return tea.Batch(m.applyConsentGrants(msg), m.waitChat())
 	case chat.ConsentRepliedMsg:
 		// The SERVER's verdict on a decision we sent. A decision that did not apply
 		// (the ask expired, the turn ended) must SAY so — otherwise the operator
@@ -1406,11 +1401,26 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		case msg.Err != "":
 			m.dock.SetNotice("permission reply failed: " + msg.Err)
 		case msg.Expired || !msg.Applied:
+			// AND THE CARD STOPS CLAIMING A SCOPE IT NEVER GOT. A refused ALLOW_SESSION used to leave the card
+			// reading "session · /dir" — a scope the server never granted, and one this client used to silence
+			// every later ask for that directory (see ShowConsentAsk).
+			m.settleConsentScope(msg.ConvID, msg.AskID, "")
 			m.dock.SetNotice("that permission ask is no longer open — nothing was applied")
 		default:
+			// THE GRANT IS RECORDED HERE, on the verdict that says the server actually applied it. This is the
+			// only place a session grant may be written locally: see ConsentResolve for what recording it on the
+			// click cost (a client that believed in a grant the server had REFUSED, and went permanently deaf to
+			// a directory the GUI still asked about).
+			if dir := m.settleConsentScope(msg.ConvID, msg.AskID, "session · "); dir != "" {
+				m.dock.SetNotice("allowed for this session · " + dir)
+				// THE SERVER'S LIST JUST CHANGED, and this shell shows it (the grants header and /grants read
+				// the server's answer), so it re-fetches rather than guessing that the grant it just watched
+				// being applied is the only one there is.
+				return tea.Batch(m.loadConsentGrants(msg.ConvID), m.onChatWake(), m.waitChat())
+			}
 			m.dock.SetNotice("permission decision applied")
 		}
-		return m.waitChat()
+		return tea.Batch(m.onChatWake(), m.waitChat())
 	case askDefaultSettingsMsg:
 		// Store the tenant default; if a conversation is already open its strip may
 		// now be able to resolve a model (and therefore a context window) that it

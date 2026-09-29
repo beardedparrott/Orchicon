@@ -173,16 +173,96 @@ type chatStallMonitor struct {
 	// wedged, so reclaiming it (toolWedge) would kill the very call the user
 	// is deciding on. Cleared when the ask is answered or the turn ends.
 	awaitingConsent bool
+
+	// locallyBounded names the tools this turn's transport executes ITSELF, on the process's own clock, so
+	// that a silent call is not treated as a wedged one. Empty means the wedge inference applies to every
+	// tool, which is the correct default for a transport that dispatches them to a session serve.
+	//
+	// See setLocallyBoundedTools for why the distinction is the signal's whole validity condition.
+	locallyBounded map[string]bool
+}
+
+// setLocallyBoundedTools marks the tool NAMES whose calls this turn's transport executes in-process under its
+// own hard deadline.
+//
+// THE WEDGE SIGNAL IS AN INFERENCE FROM ABSENCE — "this call has been issued and silent past the window, and
+// no completion came, so it is wedged" — and it is only sound where absence is the only evidence available.
+// That is true of a call dispatched to a session serve, which is what the signal was built for (AC1, an MCP
+// tool whose serve never answers). It is NOT true of a call the transport is running itself: the transport
+// holds the call, and for the host suite's bash the deadline is its own (bashTimeoutDefault 120s,
+// bashTimeoutMax 600s), enforced by exec.CommandContext.
+//
+// WHAT THE FALSE POSITIVE COST: the wedge is healed by RECYCLING — abort the session, create a fresh one,
+// re-dispatch the same message — so every false trip erases the turn's in-session context. The prod plane's
+// log held 13 of them in two days, every one tool="bash" on the native (in-process) transport, each firing
+// 395-894s after the last permission ask was raised, i.e. on a shell command that was simply still running.
+// The operator: "The model is constantly losing its brain. It doesn't know it's already done things and then
+// tries to do them again."
+//
+// TOOLS NOT NAMED HERE KEEP THE WEDGE, deliberately: the native transport also runs MCP tools, which leave
+// this process and can genuinely wedge, so recovery for the case the signal exists for is preserved.
+func (m *chatStallMonitor) setLocallyBoundedTools(names []string) {
+	if m == nil || len(names) == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.locallyBounded == nil {
+		m.locallyBounded = make(map[string]bool, len(names))
+	}
+	for _, n := range names {
+		m.locallyBounded[n] = true
+	}
 }
 
 // setAwaitingConsent arms/disarms the consent gate on the tool-wedge signal.
+//
+// DISARMING RESTARTS THE OPEN TOOL'S CLOCK, which is the whole reason this is not a plain assignment.
+//
+// A tool held by a human is NOT WEDGED: it has not been RUNNING, it has been WAITING, and this clock
+// measures a tool's silence — not the operator's reading speed. The signal used to be merely SUPPRESSED
+// while an ask was open (toolWedge returns early), while the clock kept ticking from the tool's start. So
+// the moment a decision landed, an already-expired clock was re-read on the next tick (the ticker runs at
+// ≤30s) and the collector declared an MCP wedge: it ABORTED the session, created a FRESH one and
+// re-dispatched the same message, which the operator experiences as the model losing its memory.
+//
+// It is the operator's "The model is constantly losing its brain. It doesn't know it's already done things
+// and then tries to do them again", measured in the prod plane's own log: every one of 13
+// "session wedged on a tool — recycling to a fresh session" entries named bash — the tool that raises the
+// asks — and each fired 395-894s after the last ask was raised, i.e. 3-7x this window, because the human's
+// wait was counted in full against a tool that had not started running yet.
+//
+// Only a tool that is ACTUALLY OPEN is restarted: with no tool in flight there is nothing to be silent, and
+// arming one here would invent a wedge for the next tick to find.
 func (m *chatStallMonitor) setAwaitingConsent(v bool) {
 	if m == nil {
 		return
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	was := m.awaitingConsent
 	m.awaitingConsent = v
+	if was && !v && !m.openToolTime.IsZero() {
+		m.openToolTime = m.now()
+	}
+}
+
+// closeTool marks the open tool call as RESOLVED, so it can never be judged a wedge.
+//
+// THE NATIVE ADAPTER NEEDS THIS AND observe() COULD NOT DO IT FOR IT. It resolves a tool with a typed
+// "tool_result" event (name, args, output, error) and emits NO LegacyEventFromBus "tool_use" part, so the
+// only closeTool paths that existed — the "text"/"reasoning"/"step_finish"/"tool_use" arms of observe —
+// never ran for it. A bash call therefore left this slot armed from its START until the model's next text,
+// which means any silent command longer than the wedge window was declared an MCP wedge and recycled the
+// session with no ask involved at all: a build or a test suite was enough.
+func (m *chatStallMonitor) closeTool() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.openToolTime = time.Time{}
+	m.openToolName = ""
 }
 
 // newChatStallMonitor builds a stall monitor for one chat turn.
@@ -298,6 +378,11 @@ func (m *chatStallMonitor) toolWedge() (string, bool) {
 	}
 	if m.awaitingConsent {
 		// The open tool is a consent ask awaiting the human — not a wedge.
+		return "", false
+	}
+	if m.locallyBounded[m.openToolName] {
+		// The transport is RUNNING this call itself, under its own deadline: silence here is a tool still at
+		// work, not a transport that never answered. See setLocallyBoundedTools.
 		return "", false
 	}
 	if m.now().Sub(m.openToolTime) > m.toolWedgeWindow {

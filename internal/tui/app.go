@@ -8,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -190,12 +189,20 @@ type App struct {
 	chatFocus    focusMode
 	mouseEnabled bool // tea.WithMouseCellMotion is on; footer shows "Mouse Enabled"
 
-	// sessionGrants is the TUI-side mirror of "ask once per directory per session": the directories
-	// this conversation has been granted. The PLANE is the real enforcer (that is where the tool
-	// runs), and this mirror is what lets the shell suppress a second card AND show the operator what
-	// they have allowed — a permission system that escalates silently is the failure the roll-up exists
-	// to prevent.
-	sessionGrants *sessionGrantStore
+	// permGrants is the conversation's active session grants AS LAST REPORTED BY THE SERVER, keyed by
+	// conversation. It is a CACHE OF THE SERVER'S ANSWER, never a record of this client's own decisions: the
+	// plane is the enforcer (that is where the tool runs), grants live in its memory, and the client FETCHES
+	// them (LoadPermissionGrants) instead of accumulating a second copy that can disagree — see App.ConsentGrants.
+	//
+	// permGrantsLoaded/permGrantsErr keep "not asked yet" and "the plane could not answer" distinct from "this
+	// conversation holds no grants", so no surface reports an empty list as a fact.
+	permGrants       map[string][]chat.SessionGrant
+	permGrantsLoaded map[string]bool
+	permGrantsErr    map[string]string
+	// pendingConsentRevoke carries the revoke command the Ask screen's SYNCHRONOUS host call cannot return
+	// (ConsentRevoke must answer "did that work" with an error, and the RPC is asynchronous). Drained by the
+	// shell's staged-command funnel, exactly like pendingScreenCmd and friends.
+	pendingConsentRevoke tea.Cmd
 	// permStore is the PERSISTENT allow/deny list (the FILE is the source of truth; storage is the
 	// sibling policy task's). nil means the plane cannot answer, and every surface says so rather than
 	// fabricating a list.
@@ -493,16 +500,18 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string, o
 		// View and Update each receive a COPY — only a shared pointer lets the frame the
 		// renderer painted be read back by the mouse handler that arrives after it
 		// (clipboard.go).
-		clip:            &clipState{},
-		screens:         map[TabID]Screen{},
-		chatStore:       &chatStore{items: map[string][]chat.ChatItem{}},
-		renderCache:     chat.NewRenderCache(),
-		sessionGrants:   newSessionGrantStore(),
-		execSessions:    map[string][]chat.ChatItem{},
-		loaded:          map[TabID]bool{},
-		chatStreams:     map[string]*kit2.Stream{},
-		transcriptLines: map[string][]string{},
-		reasoningFolded: map[string]bool{},
+		clip:             &clipState{},
+		screens:          map[TabID]Screen{},
+		chatStore:        &chatStore{items: map[string][]chat.ChatItem{}},
+		renderCache:      chat.NewRenderCache(),
+		permGrants:       map[string][]chat.SessionGrant{},
+		permGrantsLoaded: map[string]bool{},
+		permGrantsErr:    map[string]string{},
+		execSessions:     map[string][]chat.ChatItem{},
+		loaded:           map[TabID]bool{},
+		chatStreams:      map[string]*kit2.Stream{},
+		transcriptLines:  map[string][]string{},
+		reasoningFolded:  map[string]bool{},
 		footer: footerModel{
 			URL:           profile.URL,
 			ServerVersion: serverVersion,
@@ -776,6 +785,10 @@ func (m *App) drainStaged() tea.Cmd {
 	if m.pendingCatCmd != nil {
 		cmds = append(cmds, m.pendingCatCmd)
 		m.pendingCatCmd = nil
+	}
+	if m.pendingConsentRevoke != nil {
+		cmds = append(cmds, m.pendingConsentRevoke)
+		m.pendingConsentRevoke = nil
 	}
 	if len(cmds) == 0 {
 		return nil
@@ -2794,10 +2807,7 @@ type appEventStore struct{ m *App }
 
 func (s appEventStore) AppendLiveItem(convID string, item chat.ChatItem) {
 	s.m.chatStore.append(convID, item)
-	select {
-	case s.m.chatWake <- struct{}{}:
-	default:
-	}
+	s.pokeChat()
 }
 
 func (s appEventStore) SetReconnecting(convID string, on bool) {
@@ -2805,6 +2815,42 @@ func (s appEventStore) SetReconnecting(convID string, on bool) {
 	// only records state + pokes (bubbletea's value-model copies make a
 	// direct dock write here invisible).
 	s.m.chatStore.setReconnecting(convID, on)
+	s.pokeChat()
+}
+
+// ShowConsentAsk puts a pending ask's card into the conversation's transcript, from the STREAM goroutine.
+//
+// IT REPLACES A NON-BLOCKING SEND ON THE SHELL'S COMMAND CHANNEL, which could DROP a card in silence — see
+// EventStore.ShowConsentAsk for what that cost (the GUI asked, the TUI sat at "orchicon is thinking", and
+// the turn eventually failed on an answer no card ever collected). A store write cannot fail, and the
+// repaint is a coalescing wake poke whose loss is harmless.
+//
+// ONLY POINTER AND CHANNEL FIELDS ARE TOUCHED. App.Update has a VALUE receiver, so the App this goroutine
+// holds is a copy from Bind time: a plain field read here (chatConvID) would see that copy's value, not the
+// live shell's. chatStore and chatWake are the fields designed to survive that, and the CONVERSATION comes
+// from the ask itself, which the controller stamps with the turn that raised it.
+func (s appEventStore) ShowConsentAsk(ask chat.PermissionAsk) {
+	if ask.ConvID == "" {
+		// The controller always stamps the turn's conversation (see the PermissionAsk wire arm), so an
+		// empty id here is a locally built ask and there is no live shell to fall back to. Draw it nowhere
+		// rather than guess a conversation off a stale App copy.
+		return
+	}
+	s.m.chatStore.drawConsentAsk(ask.ConvID, ask)
+	s.pokeChat()
+}
+
+// SettleConsentAsk records an ask that was settled SOMEWHERE ELSE, so this client's card stops being a
+// choice. Straight to the store, for the same reason: a dropped resolution left a live-looking, inert card.
+func (s appEventStore) SettleConsentAsk(convID, askID, outcome, answer string) {
+	s.m.chatStore.settleAsk(convID, askID, outcome, answer)
+	s.pokeChat()
+}
+
+// pokeChat wakes the tea loop for a repaint. A no-op when a poke is already pending: the POKE is a coalescing
+// signal (the loop repaints the whole transcript), so losing one costs nothing — which is exactly why it is
+// safe to be non-blocking here and was not safe for the card itself.
+func (s appEventStore) pokeChat() {
 	select {
 	case s.m.chatWake <- struct{}{}:
 	default:
@@ -2842,7 +2888,7 @@ func (m *App) onConversations(msg chat.ConversationsMsg) tea.Cmd {
 		// The composer strip is pushed from the list it derives from (AC 9): the
 		// mode pill reads currentModeLabel(), which reads THIS list.
 		m.syncComposerStats()
-		return tea.Batch(m.onChatWake(), m.loadRailProjects(), m.waitChat())
+		return tea.Batch(m.onChatWake(), m.loadRailProjects(), m.waitChat(), m.reattachFromRail())
 	}
 	m.conversations = msg.Convs
 	if m.convSel >= len(m.railRows()) {
@@ -2867,15 +2913,48 @@ func (m *App) onConversations(msg chat.ConversationsMsg) tea.Cmd {
 	// refresh has to repaint the open pane or the new values sit unrendered
 	// until the next unrelated wake.
 	wake := m.onChatWake()
+	// AND ATTACH TO A TURN THAT STARTED WHILE WE WERE LOOKING — see reattachFromRail. This list is POLLED (the
+	// rolling refresh window, every 5s), so it is the one signal that tells this client a turn is running on the
+	// conversation it is already showing.
+	re := m.reattachFromRail()
 	// The MODEL + STATS fields derive from m.metrics, which a rail reload does NOT
 	// refresh: when the open conversation's row now names a different model (a
 	// `/model` set in the other client), re-read the metrics so those fields follow
 	// it too. Only on divergence — a refresh on every reload would put a metrics
 	// RPC on every list poll.
 	if m.composerModelDiverged() {
-		return tea.Batch(wake, m.refreshMetrics())
+		return tea.Batch(wake, m.refreshMetrics(), re)
 	}
-	return wake
+	return tea.Batch(wake, re)
+}
+
+// reattachFromRail attaches this client to a turn the rail reports as running on the OPEN conversation, when no
+// live local stream owns it. Nil when there is nothing to attach to.
+//
+// THE GAP IT CLOSES, reported twice by the operator and structural rather than a flake:
+//
+//	"the permission ask card pops up in the GUI but it doesn't pop up in the TUI. It just sits at
+//	 'orchicon is thinking'. ... It's not consistent in the TUI."
+//
+// A turn's asks ride THAT TURN'S stream, and asks are STREAM-ONLY — the transcript records an ask's OUTCOME,
+// never the open ask, so "a permission ask has no durable per-ask row to reconcile against" (see
+// chat/controller.go). This client opened a stream in exactly two situations: when the TUI ITSELF sent a
+// message, and when a conversation was OPENED whose rail row said the turn was in flight. So a turn started
+// anywhere else — from the GUI, or by an interjection made in the other client — while the TUI sat on that very
+// conversation had NO stream here, and therefore no way to receive its cards. The GUI showed the card; this
+// client showed nothing and could not poll its way back, because there is nothing durable to poll.
+//
+// WHY THE RAIL IS THE RIGHT TRIGGER. It is the freshest server-side view the shell holds, it carries
+// turn_in_flight and the pending assistant id, and it is ALREADY reloaded every 5s by the rolling refresh
+// window — so this needs no new poll, no new RPC and no new subscription. The server half is already built:
+// WatchTurnStream re-emits every still-OPEN ask to a late subscriber (chat.go), which is what makes attaching
+// late sufficient, and the controller dedupes by ask id so a replay cannot draw a second card.
+//
+// IT IS SAFE TO CALL ON EVERY RELOAD. Reattach refuses when a live local stream already owns the slot, so a
+// turn started in THIS client keeps its own stream and only a gap is ever filled; and a row with no turn in
+// flight (or no pending id) returns nil.
+func (m *App) reattachFromRail() tea.Cmd {
+	return m.reattachRunningTurn(m.chatConvID)
 }
 
 // reloadConversations re-fetches the conversations rail from the live API
@@ -2912,6 +2991,26 @@ type chatStore struct {
 	mu           sync.Mutex
 	items        map[string][]chat.ChatItem
 	reconnecting map[string]bool
+	// orderAt is the ARRIVAL ANCHOR map: convID -> MESSAGE key -> the ordering timestamp every item of that
+	// message must sort by, overriding the timestamp each item was built with.
+	//
+	// WHY IT EXISTS. An item's timestamp is when its ROW was created, and for the acked assistant reply that is
+	// the START of the turn — while every item raised DURING that turn (a permission card, a clarifying
+	// question, a command row) is stamped with the moment IT arrived. Ordered by those two clocks the reply
+	// wins every comparison for the whole turn, so as it grew it stayed pinned ABOVE the cards: the cards sat
+	// at the bottom of the screen with the conversation continuing above them. The operator: "A lot of the
+	// permission/answer logs and even some actual commands ran stays at the bottom of the screen and the
+	// conversation from the model continues above it. This made me think the conversation wasn't going
+	// anywhere."
+	//
+	// The anchor makes a message that is still BEING WRITTEN sort by its LAST ARRIVAL rather than its creation,
+	// so it sinks as new text streams in and the items raised while it was being written float above it — the
+	// operator's "move them up as new text streams in just like any other activity".
+	//
+	// It is keyed by MESSAGE, not by item, so every row derived from one assistant row (its text, each
+	// reasoning part, its recorded ask card) moves as a UNIT and keeps the intra-message ordering those rows
+	// were emitted in.
+	orderAt map[string]map[string]int64
 }
 
 func (s *chatStore) append(convID string, item chat.ChatItem) {
@@ -2941,6 +3040,66 @@ func (s *chatStore) hasPendingConsent(convID string) bool {
 	defer s.mu.Unlock()
 	for _, it := range s.items[convID] {
 		if it.Kind == chat.KindConsent && it.Consent != nil && it.Consent.Pending() {
+			return true
+		}
+	}
+	return false
+}
+
+// drawConsentAsk puts a pending ask's card into the conversation's transcript, and reports whether it drew
+// one (false = this conversation already holds a card for that ask).
+//
+// IT IS THE ONE PLACE A CARD ENTERS THE TRANSCRIPT, called by both the shell (App.ShowConsentAsk, from the tea
+// loop) and the stream (appEventStore.ShowConsentAsk, from the turn's goroutine), so the two paths cannot
+// disagree about the ask's identity, about the conversation it lands in, or about drawing it twice.
+//
+// A CARD THE SERVER RAISED IS ALWAYS DRAWN. This used to be suppressed by the shell's own grant mirror, and
+// the suppression could only ever swallow a decision the operator needed to make:
+//
+//   - the server consults its grant store BEFORE it raises an ask (permpolicy's SessionGranted input), so an
+//     ask that arrives is one the server genuinely has no consent for. A client that mutes it does not remove
+//     a question — it removes the ANSWER, and the turn parks with nothing on screen to act on. The operator,
+//     watching both clients: "the permission ask card pops up in the GUI but it doesn't pop up in the TUI. It
+//     just sits at 'orchicon is thinking'."
+//   - the mirror's inputs were all unreliable: the server's grants are IN MEMORY and are dropped by every plane
+//     restart (the prod plane restarted 14 times in the two days this was measured); a decision this client
+//     sent may have been REFUSED (Applied=false, Expired=true) while the card was still settled locally; and
+//     the server matches a grant over its whole SUBTREE while the mirror matched the directory EXACTLY.
+//
+// A duplicate card is answerable; a missing one hangs the turn. Where the mirror used to silence a repeat, the
+// SERVER does it correctly — it will not raise the ask again once the grant is applied.
+//
+// Idempotence is kept for the SAME ask, which is not hypothetical: a dropped socket re-dials through
+// WatchTurnStream, whose replay re-emits every pending ask (chat.go), so without this the card the operator
+// already has would be drawn a second time.
+func (s *chatStore) drawConsentAsk(convID string, ask chat.PermissionAsk) bool {
+	if convID == "" {
+		return false
+	}
+	if ask.ID == "" {
+		ask.ID = fmt.Sprintf("ask-%d", time.Now().UnixNano())
+	}
+	if s.hasConsent(convID, ask.ID) {
+		return false
+	}
+	// Stamped NOW, so the card sorts to the END of the transcript and stays there. Without a timestamp it
+	// sorted to the top on the next poll — see ConsentItem.
+	s.append(convID, chat.ConsentItem(ask, time.Now().UnixMilli()))
+	return true
+}
+
+// hasConsent reports whether this conversation already holds a card for the ask.
+//
+// It is what keeps "draw every card the server raises" idempotent: a re-attach replays every still-open ask on
+// WatchTurnStream (chat.go), so without this the card the operator already has would be drawn twice.
+func (s *chatStore) hasConsent(convID, askID string) bool {
+	if askID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, it := range s.items[convID] {
+		if it.Kind == chat.KindConsent && it.AskID == askID {
 			return true
 		}
 	}
@@ -3073,7 +3232,13 @@ func (s *chatStore) mergeHistory(convID string, history []chat.ChatItem) {
 	// operator's "user messages are printing AFTER the model's messages").
 	// Any live row the dedupe above does not drop has to land in its real
 	// chronological place.
+	// ANCHOR, THEN INTERLEAVE (see chatStore.orderAt). A reply whose text has GROWN since the last merge is
+	// being written right now, so it sorts by its latest arrival rather than by the turn's start — which is
+	// what keeps the cards and command rows raised during the turn ABOVE it, moving up as new text streams
+	// in, instead of pinned to the bottom of the screen under a conversation that appears to have stopped.
+	s.anchorGrowingMessages(convID, history)
 	merged := append(append([]chat.ChatItem{}, history...), kept...)
+	s.applyOrderAnchors(convID, merged)
 	chat.SortChronologically(merged)
 	s.items[convID] = merged
 	s.mu.Unlock()
@@ -3138,7 +3303,12 @@ func (s *chatStore) replace(convID string, items []chat.ChatItem) {
 			out = append(out, it)
 		}
 	}
-	if len(out) != len(items) {
+	// The anchors survive the replace: without applying them here the in-flight reply would JUMP back up to
+	// its row-creation time the moment the turn completed, reordering the transcript under the operator's
+	// eyes at exactly the moment they start reading the finished reply (see chatStore.orderAt).
+	s.anchorGrowingMessages(convID, items)
+	s.applyOrderAnchors(convID, out)
+	if len(out) != len(items) || len(s.orderAt[convID]) > 0 {
 		chat.SortChronologically(out)
 	}
 	s.items[convID] = out
@@ -3294,6 +3464,85 @@ func (s *chatStore) snapshot(convID string) []chat.ChatItem {
 	return out
 }
 
+// messageKeyOf is the MESSAGE an item was derived from, or "" for an item that
+// is not part of a durable message.
+//
+// The server keys a message's parts off its own id: the message row is "m-<id>",
+// each reasoning part "m-<id>-r<j>", and a recorded ask_user call
+// "m-<id>-ask" (see conversationItems). They are one message for ordering
+// purposes — they were written together and must move together — so the suffixes
+// are stripped here rather than at every call site.
+func messageKeyOf(key string) string {
+	if !strings.HasPrefix(key, "m-") {
+		return ""
+	}
+	if i := strings.Index(key, "-r"); i > 0 {
+		return key[:i]
+	}
+	return strings.TrimSuffix(key, "-ask")
+}
+
+// anchorGrowingMessages records NOW against every durable MESSAGE whose text has
+// GROWN since the store last saw it, so a reply that is still being written sorts
+// below the items raised while it was written. Call with s.mu held.
+//
+// ONLY A MESSAGE THE STORE HAS ALREADY SEEN IS ANCHORED. A key it has never held
+// is a row arriving for the first time — an older conversation being opened, or a
+// whole transcript loading — and anchoring those would sort every past reply to
+// the bottom of its own history. Growth is the signal that a message is live.
+func (s *chatStore) anchorGrowingMessages(convID string, items []chat.ChatItem) {
+	grown := map[string]bool{}
+	seen := map[string]int{}
+	for _, it := range s.items[convID] {
+		if k := messageKeyOf(it.Key); k != "" {
+			if n := len(it.Text); n > seen[k] {
+				seen[k] = n
+			}
+		}
+	}
+	for _, it := range items {
+		k := messageKeyOf(it.Key)
+		if k == "" {
+			continue
+		}
+		was, ok := seen[k]
+		if !ok {
+			continue
+		}
+		if len(it.Text) > was {
+			grown[k] = true
+		}
+	}
+	if len(grown) == 0 {
+		return
+	}
+	if s.orderAt == nil {
+		s.orderAt = map[string]map[string]int64{}
+	}
+	byMsg := s.orderAt[convID]
+	if byMsg == nil {
+		byMsg = map[string]int64{}
+		s.orderAt[convID] = byMsg
+	}
+	for k := range grown {
+		byMsg[k] = time.Now().UnixMilli()
+	}
+}
+
+// applyOrderAnchors rewrites every anchored item's ordering timestamp. Call with
+// s.mu held, BEFORE sorting.
+func (s *chatStore) applyOrderAnchors(convID string, items []chat.ChatItem) {
+	byMsg := s.orderAt[convID]
+	if len(byMsg) == 0 {
+		return
+	}
+	for i := range items {
+		if at, ok := byMsg[messageKeyOf(items[i].Key)]; ok {
+			items[i].At = at
+		}
+	}
+}
+
 // onTranscript ingests the durable transcript. When the turn is no
 // longer streaming the transcript REPLACES the live buffer (completion
 // authority — no duplicated reply); mid-turn (reconnect refresh) it
@@ -3307,6 +3556,16 @@ func (m *App) onTranscript(msg chat.TranscriptMsg) tea.Cmd {
 		m.chatStore.mergeHistory(msg.ConvID, msg.Items)
 	} else {
 		m.chatStore.replace(msg.ConvID, msg.Items)
+	}
+	// ASK THE SERVER WHAT THIS CONVERSATION IS ALLOWED, once, when its transcript lands — the grants header
+	// makes a claim about exactly that, and the list is the server's to state. Not on every poll: this is a
+	// fetch, not a subscription (a grant can only change from a decision in a client, and every decision
+	// funnels through a card this shell draws or is told about).
+	// ONE FETCH PER CONVERSATION (permGrantsLoaded latches on success AND on failure, so a failing plane is not
+	// polled once a second). A failure is shown as "unavailable" rather than as an empty list, and reopening
+	// /grants is the retry.
+	if !m.permGrantsLoaded[msg.ConvID] {
+		return tea.Batch(m.onChatWake(), m.loadConsentGrants(msg.ConvID))
 	}
 	return m.onChatWake()
 }
@@ -4484,61 +4743,6 @@ func (m *App) sendFromComposer(text string) tea.Cmd {
 // consent card: the shell's half (see internal/tui/screens/ask/consent.go)
 // ---------------------------------------------------------------------------
 
-// sessionGrantStore mirrors the session's directory grants for one conversation.
-type sessionGrantStore struct {
-	mu     sync.Mutex
-	grants map[string]map[string]chat.SessionGrant
-}
-
-func newSessionGrantStore() *sessionGrantStore {
-	return &sessionGrantStore{grants: map[string]map[string]chat.SessionGrant{}}
-}
-
-func (s *sessionGrantStore) grant(convID, dir, tool string) {
-	if dir == "" {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	byDir, ok := s.grants[convID]
-	if !ok {
-		byDir = map[string]chat.SessionGrant{}
-		s.grants[convID] = byDir
-	}
-	g := byDir[dir]
-	g.Directory = dir
-	if g.Tool == "" {
-		g.Tool = tool
-	}
-	g.Count++
-	byDir[dir] = g
-}
-
-func (s *sessionGrantStore) list(convID string) []chat.SessionGrant {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	byDir := s.grants[convID]
-	out := make([]chat.SessionGrant, 0, len(byDir))
-	for _, g := range byDir {
-		out = append(out, g)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Directory < out[j].Directory })
-	return out
-}
-
-func (s *sessionGrantStore) revoke(convID, dir string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.grants[convID], dir)
-}
-
-func (s *sessionGrantStore) granted(convID, dir string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, ok := s.grants[convID][dir]
-	return ok
-}
-
 // SetPermissionStore wires the persistent allow/deny list. Called by the host
 // once the plane's policy store exists; absent, the TUI says "unavailable".
 func (m *App) SetPermissionStore(s chat.PermissionStore) { m.permStore = s }
@@ -4551,15 +4755,82 @@ func (m *App) ConsentStore() (chat.PermissionStore, bool) {
 	return m.permStore, true
 }
 
-// ConsentGrants lists the session grants for a conversation.
+// ConsentGrants lists the session grants for a conversation, AS THE SERVER HOLDS THEM.
+//
+// The second answer is deliberately three-valued, because "no grants", "not asked yet" and "the plane could not
+// answer" are three different facts, and a surface that shows them as one is lying to the operator about what
+// they have allowed:
+//
+//	available=false  the last fetch FAILED — say so; do not show an empty list as the truth
+//	available=true   the list IS the server's (empty because nothing has been granted yet)
 func (m *App) ConsentGrants(convID string) ([]chat.SessionGrant, bool) {
-	return m.sessionGrants.list(convID), true
+	if convID == "" || !m.permGrantsLoaded[convID] {
+		return nil, true // never fetched: an empty list, reported as a real one
+	}
+	if m.permGrantsErr[convID] != "" {
+		return nil, false
+	}
+	return m.permGrants[convID], true
 }
 
-// ConsentRevoke drops a session grant.
+// ConsentGrantsLoaded reports whether the conversation's grants have been fetched yet (see ConsentGrants).
+func (m *App) ConsentGrantsLoaded(convID string) bool { return m.permGrantsLoaded[convID] }
+
+// ConsentRevoke withdraws a session grant ON THE SERVER (see Controller.RevokePermissionGrant); the refreshed
+// list arrives as a chat.PermissionGrantsMsg.
+//
+// It used to drop the grant from a LOCAL map only, so the row vanished from the operator's list while the server
+// went on honouring the grant: a revoke that revoked nothing, on the surface whose whole job is showing what is
+// allowed.
 func (m *App) ConsentRevoke(convID, directory string) error {
-	m.sessionGrants.revoke(convID, directory)
+	if m.chat == nil || convID == "" || directory == "" {
+		return nil
+	}
+	m.pendingConsentRevoke = m.chat.RevokePermissionGrant(convID, directory)
 	return nil
+}
+
+// loadConsentGrants fetches the conversation's grants from the server.
+func (m *App) loadConsentGrants(convID string) tea.Cmd {
+	if m.chat == nil || convID == "" {
+		return nil
+	}
+	return m.chat.LoadPermissionGrants(convID)
+}
+
+// applyConsentGrants ingests a fetched (or revoked) grant list, keeps a FAILURE visible instead of presenting an
+// empty list as the truth, and re-reads any open grants overlay.
+func (m *App) applyConsentGrants(msg chat.PermissionGrantsMsg) tea.Cmd {
+	if msg.ConvID == "" {
+		return nil
+	}
+	if msg.Err != "" {
+		m.permGrantsErr[msg.ConvID] = msg.Err
+	} else {
+		m.permGrantsErr[msg.ConvID] = ""
+		m.permGrants[msg.ConvID] = msg.Grants
+	}
+	m.permGrantsLoaded[msg.ConvID] = true
+	if msg.Notice != "" {
+		m.dock.SetNotice(msg.Notice)
+	}
+	// The overlay's rows came from the cache this replaced, so they are re-read here rather than waiting for the
+	// operator to reopen it.
+	m.refreshGrantsOverlay()
+	return m.onChatWake()
+}
+
+// refreshGrantsOverlay asks the Ask screen to re-read its session-grant rows, through the same narrow type
+// assertion the shell's other screen hooks use — so the shell keeps no second reference to a screen it does not
+// own.
+func (m *App) refreshGrantsOverlay() {
+	s := m.screens[TabAsk]
+	if s == nil {
+		return
+	}
+	if g, ok := s.(interface{ RefreshGrants() }); ok {
+		g.RefreshGrants()
+	}
 }
 
 // ConsentSend sends text as the next user message (the clarifying-question
@@ -4589,26 +4860,20 @@ func (m *App) SendUserMessage(text string) tea.Cmd {
 	return tea.Batch(m.sendChat(m.chatConvID, text, preamble), m.onChatWake())
 }
 
-// ShowConsentAsk surfaces a pending ask as a transcript CARD. This is the hook
-// the ask event on the turn stream calls once the sibling lands the wire arm
-// (proto ChatStreamResponse oneof) — the TUI models the ask itself
+// ShowConsentAsk surfaces a pending ask as a transcript CARD. This is the hook the ask event on the turn
+// stream calls (see the PermissionAsk wire arm in internal/tui/chat) — the TUI models the ask itself
 // (chat.PermissionAsk), so only the adapter that calls this changes.
 //
-// ASK ONCE PER DIRECTORY PER SESSION: a directory already granted for this
-// conversation does not ask again.
+// IT IS THE SHELL'S ENTRY POINT ONLY. The stream does NOT come through here any more: it writes the card to
+// the store directly (appEventStore.ShowConsentAsk), because a card delivered as a tea.Cmd through the
+// shell's shared command channel could be dropped in silence. Both paths resolve the conversation and draw
+// through chatStore.drawConsentAsk, so they cannot disagree about where a card belongs or whether it is
+// already up.
+//
+// The conversation fallback here is the shell's own: on the tea loop the LIVE App is in hand, so an ask that
+// names no conversation can be attached to the one on screen. The stream path has no such luxury (it holds a
+// copy from Bind time) and relies on the controller stamping the turn's id, which it always does.
 func (m *App) ShowConsentAsk(ask chat.PermissionAsk) tea.Cmd {
-	// THE CARD BELONGS TO THE CONVERSATION THAT ASKED, not to whichever conversation
-	// happens to be on screen when the ask lands.
-	//
-	// The operator: "I noticed a bleed through of an ask card from a separate
-	// conversation in the TUI." A turn's ask rides the turn's own stream, so with
-	// conversation A running and B on screen the card was appended to B's slot — a
-	// question about A's work drawn under B's transcript, and claiming the keyboard
-	// there, because the Ask screen adopts any pending card from the items it is
-	// handed. The wire has always carried the ask's conversation_id; the TUI's
-	// adapter dropped it (see PermissionAsk.ConvID), so the target was whatever
-	// m.chatConvID happened to be at that instant. Fall back to the OPEN conversation
-	// only when the ask genuinely names none (a locally built ask).
 	convID := ask.ConvID
 	if convID == "" {
 		convID = m.chatConvID
@@ -4616,15 +4881,9 @@ func (m *App) ShowConsentAsk(ask chat.PermissionAsk) tea.Cmd {
 	if convID == "" {
 		return nil
 	}
-	if ask.ID == "" {
-		ask.ID = fmt.Sprintf("ask-%d", time.Now().UnixNano())
+	if !m.chatStore.drawConsentAsk(convID, ask) {
+		return nil // already drawn — see drawConsentAsk's idempotence
 	}
-	if ask.Kind == chat.AskTool && ask.Directory != "" && m.sessionGrants.granted(convID, ask.Directory) {
-		return nil
-	}
-	// Stamped NOW, so the card sorts to the END of the transcript and stays there.
-	// Without a timestamp it sorted to the top on the next poll — see ConsentItem.
-	m.chatStore.append(convID, chat.ConsentItem(ask, time.Now().UnixMilli()))
 	return m.onChatWake()
 }
 
@@ -4655,9 +4914,14 @@ func (m *App) ConsentResolve(askID string, dec chat.ConsentDecision, choice stri
 			if dir == "" {
 				dir = ask.Target
 			}
-			m.sessionGrants.grant(m.chatConvID, dir, ask.Tool)
-			st.Note = "session · " + dir
-			m.dock.SetNotice("allowed for this session · " + dir)
+			// THE GRANT IS NOT RECORDED HERE ANY MORE. A session grant is the SERVER's fact — it is what silences
+			// the NEXT ask, and every client reads it (the server's grantStore is what permpolicy consults before
+			// raising one). Recording it on the CLICK meant this client believed a directory was granted even when
+			// the server REFUSED the decision (Applied=false, Expired=true: the ask had already expired, the turn
+			// had ended, another client had answered) — and the mirror then suppressed every later card for that
+			// directory, for the life of the process, while the GUI kept asking. It is recorded on the APPLIED
+			// verdict instead (see ConsentRepliedMsg's handler), where the server has actually granted it.
+			st.Note = "session · " + dir + " (pending)"
 		case chat.DecisionDeny:
 			m.dock.SetNotice("denied · " + strings.TrimSpace(ask.Tool+" "+ask.Target))
 		}
@@ -4695,6 +4959,43 @@ func (m *App) ConsentResolve(askID string, dec chat.ConsentDecision, choice stri
 	return tea.Batch(cmds...)
 }
 
+// settleConsentScope reconciles a decided card with the SERVER's verdict on it.
+//
+// THE ORDER MATTERS AND IT IS THE WHOLE POINT: a session grant is the server's fact, and this client may only
+// record it once the server has APPLIED the decision. The card's scope note follows the same rule, so a
+// refused ALLOW_SESSION ("the ask is no longer open — nothing was applied") stops reading "session · /dir" —
+// a scope the server never granted, and one this client used to let silence every later ask for that
+// directory (see ShowConsentAsk).
+//
+// appliedPrefix is the note's prefix when the decision WAS applied ("session · "), or "" when the server
+// refused it. Returns the directory a confirmed grant covers, or "" when there is no confirmed grant.
+func (m *App) settleConsentScope(convID, askID, appliedPrefix string) string {
+	if convID == "" || askID == "" {
+		return ""
+	}
+	st := m.chatStore.consentState(convID, askID)
+	if st == nil {
+		return ""
+	}
+	ask := st.Ask
+	dir := ask.Directory
+	if dir == "" {
+		dir = ask.Target
+	}
+	if appliedPrefix == "" || st.Decision != chat.DecisionAllowSession || dir == "" {
+		if st.Decision == chat.DecisionAllowSession {
+			st.Note = "session · not applied"
+		}
+		return ""
+	}
+	// NO LOCAL GRANT IS RECORDED — not even on the applied verdict. The server just granted it, and the list the
+	// operator sees is FETCHED from the server (see ConsentGrants): a local copy is the second authority that
+	// made the TUI mute cards the GUI was still asking about. What is kept here is the CARD's own record, which
+	// is this client's business.
+	st.Note = appliedPrefix + dir
+	return dir
+}
+
 // reArmConsentClaim hands the keyboard back to a card that is still pending, after a MOUSE action
 // on it.
 //
@@ -4728,5 +5029,12 @@ func (m *App) runAskOverlay(kind string) tea.Cmd {
 		return nil
 	}
 	m.SwitchTo(TabAsk)
-	return op.OpenAskOverlay(kind)
+	cmd := op.OpenAskOverlay(kind)
+	if kind == "grants" {
+		// ALWAYS FETCH ON OPEN. A grant can be created by the GUI, or dropped by a plane restart, without this
+		// client hearing about it (the store is in memory on the plane), so the list the operator opens must be
+		// the server's current answer rather than whatever this shell last happened to see.
+		return tea.Batch(cmd, m.loadConsentGrants(m.chatConvID))
+	}
+	return cmd
 }

@@ -657,24 +657,93 @@ func (c *Controller) LoadConversations() tea.Cmd {
 // (`applied: false`, `expired: true`) rather than reporting a silent success. Without
 // this the operator's click looked like an approval while the call was denied.
 type ConsentRepliedMsg struct {
-	ConvID  string
+	ConvID string
+	// AskID names the ask the verdict is about, so the shell can settle the ONE card that asked it. It is
+	// what makes a decision the server REFUSED stop being recorded as a session grant locally: the grant may
+	// only be written on the APPLIED verdict, and the verdict has to name its ask to find it.
+	AskID   string
 	Applied bool
 	Expired bool
 	Detail  string
 	Err     string
 }
 
-// ConsentResolvedMsg reports that an ask was SETTLED BY SOMEONE ELSE — the other
-// client, or the collector expiring it.
+// PermissionGrantsMsg carries the conversation's ACTIVE session grants, as the server holds them.
 //
-// It exists because an ask reaches every watcher of a turn while only the client that
-// answered it cleared its own copy. See the PermissionAskResolved wire arm in
-// handleEvent.
-type ConsentResolvedMsg struct {
-	ConvID  string
-	AskID   string
-	Outcome string
-	Answer  string
+// Grants are the SERVER's fact — its store is what decides whether the next tool call asks, and it is in
+// memory, so it changes without this client doing anything (a plane restart drops it; the GUI granting one
+// adds to it). The client therefore never keeps a copy: every list is fetched, and every revoke returns the
+// refreshed list (see RevokePermissionGrant). Notice carries a one-line outcome for the dock when the fetch
+// was triggered by a write.
+type PermissionGrantsMsg struct {
+	ConvID string
+	Grants []SessionGrant
+	Err    string
+	Notice string
+}
+
+// LoadPermissionGrants fetches the conversation's active session grants.
+func (c *Controller) LoadPermissionGrants(convID string) tea.Cmd {
+	if convID == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		resp, err := c.cl.Ask.ListPermissionGrants(ctx, connect.NewRequest(&apiv1.ListPermissionGrantsRequest{
+			ConversationId: convID,
+		}))
+		if err != nil {
+			return PermissionGrantsMsg{ConvID: convID, Err: err.Error()}
+		}
+		return PermissionGrantsMsg{ConvID: convID, Grants: sessionGrantsFromProto(resp.Msg.GetGrants())}
+	}
+}
+
+// RevokePermissionGrant drops one session grant ON THE SERVER and returns the refreshed list.
+//
+// THE TUI ONLY EVER DROPPED IT LOCALLY, which is why revoking did nothing: the server's store still held the
+// grant, so the very next tool call for that directory proceeded without asking — while the client's own list
+// showed the grant gone. Revoking is the operator withdrawing a permission, so it has to reach the thing that
+// enforces it.
+func (c *Controller) RevokePermissionGrant(convID, directory string) tea.Cmd {
+	if convID == "" || directory == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		resp, err := c.cl.Ask.RevokePermissionGrant(ctx, connect.NewRequest(&apiv1.RevokePermissionGrantRequest{
+			ConversationId: convID,
+			Directory:      directory,
+		}))
+		if err != nil {
+			return PermissionGrantsMsg{ConvID: convID, Err: err.Error()}
+		}
+		notice := "revoked · " + directory
+		if !resp.Msg.GetRemoved() {
+			// NEVER A SILENT SUCCESS: the directory was not granted (already revoked, or never was), which is a
+			// different fact from "revoked" and the operator is entitled to it.
+			notice = "no session grant for " + directory + " — nothing was revoked"
+		}
+		return PermissionGrantsMsg{
+			ConvID: convID,
+			Grants: sessionGrantsFromProto(resp.Msg.GetGrants()),
+			Notice: notice,
+		}
+	}
+}
+
+// sessionGrantsFromProto maps the wire's grant list onto the TUI's view type.
+func sessionGrantsFromProto(gs []*apiv1.SessionPermissionGrant) []SessionGrant {
+	out := make([]SessionGrant, 0, len(gs))
+	for _, g := range gs {
+		if g == nil || g.GetDirectory() == "" {
+			continue
+		}
+		out = append(out, SessionGrant{Directory: g.GetDirectory(), GrantedAt: g.GetGrantedAtUnix()})
+	}
+	return out
 }
 
 // ReplyPermissionAsk answers a pending permission ask ON THE SERVER.
@@ -700,10 +769,11 @@ func (c *Controller) ReplyPermissionAsk(convID, askID string, choice apiv1.Permi
 			Answer:         answer,
 		}))
 		if err != nil {
-			return ConsentRepliedMsg{ConvID: convID, Err: err.Error()}
+			return ConsentRepliedMsg{ConvID: convID, AskID: askID, Err: err.Error()}
 		}
 		return ConsentRepliedMsg{
 			ConvID:  convID,
+			AskID:   askID,
 			Applied: resp.Msg.GetApplied(),
 			Expired: resp.Msg.GetExpired(),
 			Detail:  resp.Msg.GetDetail(),
@@ -1165,6 +1235,22 @@ type EventStore interface {
 	AppendLiveItem(convID string, item ChatItem)
 	// SetReconnecting flips the conversation's reconnecting banner.
 	SetReconnecting(convID string, on bool)
+	// ShowConsentAsk surfaces a pending permission ask (or a clarifying question) as a card.
+	//
+	// IT IS ON THE STORE, NOT THE COMMAND CHANNEL, AND THAT IS THE POINT. A card used to be delivered as a
+	// tea.Cmd through the shell's shared command channel with a NON-BLOCKING send — the buffer is 16 slots
+	// and the 1s turn poll writes to it too — so a card could be DROPPED IN SILENCE, with no error, no
+	// retry, and no way for the operator to know a decision was ever asked for. On a healthy stream nothing
+	// re-dials either, so the loss was permanent for that turn: the pane sat at "orchicon is thinking"
+	// while the turn parked on the server waiting for an answer that had no card to give it. The store is an
+	// in-process sink (the same one AppendLiveItem already uses from this goroutine), so delivery cannot
+	// fail; the repaint is a coalescing wake poke, where DROPPING one is harmless because the next poke
+	// repaints everything.
+	ShowConsentAsk(ask PermissionAsk)
+	// SettleConsentAsk records an ask that was settled SOMEWHERE ELSE — the other client, or the collector
+	// expiring it — so this client's copy of the card stops being a choice. Same reasoning as above: a
+	// resolution that is dropped leaves a live-looking, inert card behind.
+	SettleConsentAsk(convID, askID, outcome, answer string)
 }
 
 // handleEvent applies one ChatStreamResponse to the conversation's slot
@@ -1253,20 +1339,11 @@ func (c *Controller) handleEvent(convID string, ev *apiv1.ChatStreamResponse) {
 		// Without this the TUI's card stayed pending until the turn ended (see
 		// settleStaleConsent, which is the convergence path for a client that missed
 		// the message — a decision made before it attached).
-		if r := e.PermissionAskResolved; r != nil && r.GetAskId() != "" {
-			if c.cmds != nil {
-				select {
-				case c.cmds <- func() tea.Msg {
-					return ConsentResolvedMsg{
-						ConvID:  convID,
-						AskID:   r.GetAskId(),
-						Outcome: r.GetOutcome(),
-						Answer:  r.GetAnswer(),
-					}
-				}:
-				default:
-				}
-			}
+		if r := e.PermissionAskResolved; r != nil && r.GetAskId() != "" && c.store != nil {
+			// STRAIGHT TO THE STORE, not through the command channel: a dropped resolution leaves a
+			// live-looking, inert card on screen in whichever client did not answer (see
+			// EventStore.SettleConsentAsk).
+			c.store.SettleConsentAsk(convID, r.GetAskId(), r.GetOutcome(), r.GetAnswer())
 		}
 	case *apiv1.ChatStreamResponse_PermissionAsk:
 		// THE PERMISSION CARD'S WIRE ARM.
@@ -1290,11 +1367,12 @@ func (c *Controller) handleEvent(convID string, ev *apiv1.ChatStreamResponse) {
 		if ask.ConvID == "" {
 			ask.ConvID = convID
 		}
-		if c.cmds != nil {
-			select {
-			case c.cmds <- func() tea.Msg { return ConsentAskMsg{ConvID: convID, Ask: ask} }:
-			default:
-			}
+		// DELIVERED TO THE STORE, NOT THE COMMAND CHANNEL — this was the silent drop. A non-blocking send
+		// onto a 16-slot channel that the 1s turn poll also writes to, with no error and no retry, so a card
+		// could vanish while the turn parked on the server waiting for an answer that had no card to give it.
+		// The store is an in-process sink, so delivery cannot fail. See EventStore.ShowConsentAsk.
+		if c.store != nil {
+			c.store.ShowConsentAsk(ask)
 		}
 	case *apiv1.ChatStreamResponse_Done:
 		// poll finalizes; nothing to append

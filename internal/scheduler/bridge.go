@@ -273,6 +273,27 @@ type SessionOwnerKind interface {
 	SessionOwnerKind() string
 }
 
+// InProcessToolRunner is the OPTIONAL capability for an adapter that EXECUTES the model's tool calls itself,
+// in this process, rather than handing them to a session serve.
+//
+// IT EXISTS BECAUSE A SIGNAL THAT IS HONEST FOR ONE TRANSPORT IS A GUESS FOR THE OTHER. Ask Orchicon's
+// tool-wedge detector infers "this tool call is wedged" from a call that has been issued and SILENT past a
+// window, and then heals it the heavy way: abort the session, create a fresh one, re-dispatch the same
+// message. That inference is the only thing available when the call went to a serve we cannot see into.
+//
+// A transport that runs the call ITSELF does not need the guess, and pays for it: the operator's prod plane
+// carried 13 "session wedged on a tool — recycling to a fresh session" entries in two days, EVERY one of
+// them tool="bash" on this bridge, each one destroying the session's context over a shell command that was
+// simply still running (the numbers are in askorchicon's stall monitor). The host suite's bash bounds itself
+// with its own hard deadline (bashTimeoutDefault 120s / bashTimeoutMax 600s), so a slow call is not a wedged
+// call — it resolves, and its tool result closes the question.
+type InProcessToolRunner interface {
+	// ToolsRunInProcess reports whether every tool call this transport emits is executed by the transport
+	// itself. False — or the interface being absent — means tools are dispatched to a session serve, where
+	// silence genuinely is the only signal available and the wedge inference must stay armed.
+	ToolsRunInProcess() bool
+}
+
 // NativeSessionIDPrefix is the tag the native (orchicon) bridge prepends to
 // its synthetic session ids (internal/orchicon/chatturn.go). Any session id
 // carrying this prefix is owned by the native adapter; dispatching it to any

@@ -183,3 +183,37 @@ func Center(base, box string, width, height int) string {
 	}
 	return Splice(base, box, top, left)
 }
+
+// DimRow recesses one frame row: its content is kept but rendered in the palette's DIM foreground, and the row
+// is normalized to exactly `width` cells.
+//
+// THE CONTENT IS STRIPPED FIRST, deliberately. Trying to preserve a backdrop row's own colours while recessing
+// it would leave the brightest thing on screen behind the modal — the whole point is that everything behind
+// recedes, so the backdrop is re-rendered in ONE colour rather than layered over.
+func DimRow(row string, width int) string {
+	return theme.Opaque(theme.HintText.Render(ansi.Strip(row)), width)
+}
+
+// DimBackdrop recesses every row of a frame, so a modal spliced over it reads as the foreground.
+//
+// THE GEOMETRY IS PRESERVED EXACTLY — same row count, every row `width` cells — because the frame contract
+// depends on it: the shell normalizes its render to exactly w×h, and a backdrop that changed either would
+// reflow the layout behind the modal.
+func DimBackdrop(base string, width int) string {
+	rows := strings.Split(base, "\n")
+	for i, r := range rows {
+		rows[i] = DimRow(r, width)
+	}
+	return strings.Join(rows, "\n")
+}
+
+// CenterOnDimmed splices box centered over base WITH THE BACKDROP RECESSED — the modal treatment: the box is
+// the only thing at full contrast.
+//
+// WHY IT IS NOT JUST Center. Splicing a box over a live frame leaves the rows around it at their own
+// brightness, so with a long transcript behind it the operator reads two layers at once and cannot pick the
+// modal out. The report was "it is hard to see because it writes it overtop text"; a standard modal answers
+// that by darkening what is behind it.
+func CenterOnDimmed(base, box string, width, height int) string {
+	return Center(DimBackdrop(base, width), box, width, height)
+}

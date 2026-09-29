@@ -114,10 +114,25 @@ func TestConsentEscapeDeniesAndRecordsTheRefusal(t *testing.T) {
 	}
 }
 
-// TestConsentSessionGrantSuppressesTheNextCardForTheDirectory pins "ask once per
-// directory per session" AND that the grants are visible afterwards.
-func TestConsentSessionGrantSuppressesTheNextCardForTheDirectory(t *testing.T) {
+// TestConsentSessionGrantIsRecordedOnTheServerVerdict pins "ask once per directory per
+// session" — WITHOUT giving the client a second authority over it.
+//
+// IT USED TO PIN THE OPPOSITE, and that is what broke. The grant was recorded the instant the
+// operator pressed Enter, and the shell then suppressed any later card for that directory. But a
+// session grant is the SERVER's fact: the server's store is in memory and is dropped by every plane
+// restart (the prod plane restarted 14 times in the two days this was measured), it matches a whole
+// SUBTREE while the client matched the directory EXACTLY, and the decision may have been REFUSED
+// (the ask expired, the turn ended, the other client answered first) while the card was still
+// settled locally. Each of those left the TUI silently deaf to a directory the GUI was still asking
+// about — the operator watching both: "the permission ask card pops up in the GUI but it doesn't pop
+// up in the TUI. It just sits at 'orchicon is thinking'."
+//
+// So the grant is now recorded on the server's APPLIED verdict (settleConsentScope), and a card the
+// server raises is ALWAYS drawn — only the server knows whether consent is missing, and the operator
+// can always answer a card that should not have been necessary.
+func TestConsentSessionGrantIsRecordedOnTheServerVerdict(t *testing.T) {
 	m, as, _ := pendingCard(t)
+	before := len(m.chatStore.snapshot("c1"))
 
 	// Move to "Allow for this session" and confirm.
 	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
@@ -125,31 +140,40 @@ func TestConsentSessionGrantSuppressesTheNextCardForTheDirectory(t *testing.T) {
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = nm.(*App)
 
-	grants, ok := m.ConsentGrants("c1")
-	if !ok || len(grants) != 1 || grants[0].Directory != "/home/ops/project" {
-		t.Fatalf("the grant must be recorded for the directory, got %+v (ok=%v)", grants, ok)
+	// NOT YET: the click is not consent. Until the server says it applied the decision, no grant
+	// exists — recording one here is the lie the operator's "worked in the GUI but not the TUI"
+	// report is made of.
+	if grants, _ := m.ConsentGrants("c1"); len(grants) != 0 {
+		t.Fatalf("a grant was recorded before the server applied the decision: %+v", grants)
+	}
+
+	// The verdict arrives: applied. NOW it is a fact — and the fact belongs to the SERVER, so the shell
+	// re-fetches the list rather than inventing it (ConsentGrants reads the server's answer; see the RPC).
+	if dir := m.settleConsentScope("c1", "ask-1", "session · "); dir != "/home/ops/project" {
+		t.Fatalf("the applied verdict did not confirm the grant, got %q", dir)
+	}
+	// THIS CLIENT DOES NOT ACCRUE THE GRANT. What the shell can be asked is the SERVER's list, which here is the
+	// fixture's (a shell with no plane): the point is that nothing local was fabricated from the click, and that
+	// the applied verdict is what the header and /grants are told about.
+	if grants := m.permGrants["c1"]; len(grants) != 0 {
+		t.Fatalf("the shell invented a grant the server did not report: %+v", grants)
 	}
 	if _, v := as.RenderTranscript(m.chatStore.snapshot("c1"), chat.Conversation{}, true); !fieldValueContains(v, "grants", "/grants") {
 		t.Fatalf("the grants roll-up must be visible in the header, got %+v", v)
 	}
 
-	// A second ask for the SAME directory must not produce a card.
-	before := len(m.chatStore.snapshot("c1"))
+	// A second ask for the SAME directory is still DRAWN. The server is the one that decides whether to
+	// raise it (it consults its grant store first), so a card that arrives here is a decision the
+	// operator must be able to make — muting it would hide the answer, not the question.
 	m.ShowConsentAsk(chat.PermissionAsk{
 		ID: "ask-2", Kind: chat.AskTool, Tool: "write",
 		Target: "/home/ops/project/other.go", Directory: "/home/ops/project",
 	})
-	if after := len(m.chatStore.snapshot("c1")); after != before {
-		t.Fatalf("a granted directory must not ask again: %d -> %d items", before, after)
-	}
-
-	// A DIFFERENT directory still asks.
-	m.ShowConsentAsk(chat.PermissionAsk{
-		ID: "ask-3", Kind: chat.AskTool, Tool: "bash",
-		Target: "make ci", Directory: "/home/ops/other",
-	})
 	if after := len(m.chatStore.snapshot("c1")); after != before+1 {
-		t.Fatalf("an ungranted directory must still ask: %d -> %d items", before, after)
+		t.Fatalf("a card the server raised was swallowed by the client: %d -> %d items", before, after)
+	}
+	if st := m.chatStore.consentState("c1", "ask-2"); st == nil || !st.Pending() {
+		t.Fatal("the card the server raised must be answerable")
 	}
 }
 
