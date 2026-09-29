@@ -725,8 +725,10 @@ func TestMapperTickAdvisoryReturnsEmpty(t *testing.T) {
 	}
 	// A file write after the advisory trip clears it.
 	feed(t, m, `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"w","name":"Write","input":{"file_path":"/w/a.go","content":"x"}}]}}`)
-	if len(rec.recovered) != 1 || rec.recovered[0] != reasonNoFileProgress {
-		t.Fatalf("OnRecovered = %v", rec.recovered)
+	// The recovery label is the RECOVERY signal (opencode parity:
+	// "recovered:no_file_progress"), never the stall reason.
+	if len(rec.recovered) != 1 || rec.recovered[0] != recoveredNoFilePrefix {
+		t.Fatalf("OnRecovered = %v, want %q", rec.recovered, recoveredNoFilePrefix)
 	}
 }
 

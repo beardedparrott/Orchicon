@@ -266,6 +266,106 @@ func TestClaudeCompactGuardsAtMostOncePerStep(t *testing.T) {
 	}
 }
 
+// twoDimBudgets is a merged-budget payload where BOTH spend dimensions
+// escalate into a compacting tier, so one step that crosses a compacting tier
+// on BOTH dimensions must still yield exactly ONE compaction. compact_tiers
+// index 0 (warn) does not compact; escalate and final do.
+const twoDimBudgets = `{
+  "tokens": 1000,
+  "cost_usd": 0.06,
+  "compact_max_turns": 0,
+  "compact_dims": ["tokens", "cost_usd"],
+  "compact_tiers": [false, true, true],
+  "warnings": {
+    "fractions": {"tokens": [0.25, 0.5, 0.75], "cost_usd": [0.25, 0.5, 0.75]},
+    "messages": {
+      "tokens": ["T-WARN-{pct}", "T-ESCALATE-{pct}", "T-FINAL-{pct}"],
+      "cost_usd": ["C-WARN-{pct}", "C-ESCALATE-{pct}", "C-FINAL-{pct}"]
+    }
+  }
+}`
+
+// twoDimTurnOne / twoDimTurnTwo are the two completed turns the cross-dimension
+// guard test needs: turn one crosses only the non-compacting WARN tier of the
+// cost dimension (so the session stays alive with a queued warning turn and the
+// token dimension is still below every tier), turn two crosses the compacting
+// ESCALATE tier on BOTH dimensions on the SAME step.
+const (
+	twoDimTurnOne = `{"type":"result","subtype":"success","session_id":"sess-1","result":"ok","total_cost_usd":0.02,"usage":{"input_tokens":80,"output_tokens":20}}`
+	twoDimTurnTwo = `{"type":"result","subtype":"success","session_id":"sess-1","result":"ok","total_cost_usd":0.02,"usage":{"input_tokens":400,"output_tokens":100}}`
+)
+
+// TestClaudeCompactFiresAtMostOncePerStepAcrossDimensions drives the AC
+// literally on the LADDER path (not just through armCompact): when cost AND
+// fresh tokens both reach a compacting tier on the SAME completed step, exactly
+// one compact directive turn is written and exactly one compaction is recorded
+// — while EVERY crossed tier's own warning is still injected, nothing compacts
+// at session start, and the session stays live (a compaction is best-effort,
+// never terminal).
+func TestClaudeCompactFiresAtMostOncePerStepAcrossDimensions(t *testing.T) {
+	fp := newFakeProc()
+	rec := &captureCallbacks{}
+	h, done := budgetSession(t, fp, scheduler.ExecutionManifest{
+		ExecutionID: "exec-two-dims",
+		Goal:        "ship the two-dimension feature",
+		Budgets:     []byte(twoDimBudgets),
+	}, rec)
+
+	fp.push(initLine)
+	// Step 1: cost 0.02/0.06 = 0.33 (warn, injects but does NOT compact) and
+	// fresh tokens 100/1000 = 0.10 (below every tier).
+	fp.push(twoDimTurnOne)
+	waitFor(t, func() bool {
+		s := h.b.liveSession("exec-two-dims")
+		return s != nil && s.stepSnapshot() >= 1
+	}, "first completed turn")
+	if got := turnsContaining(fp, "CONTEXT COMPACTION"); len(got) != 0 {
+		t.Fatalf("compacted at session start: %v", got)
+	}
+	if len(turnsContaining(fp, "C-WARN-")) == 0 {
+		t.Fatal("the crossed warn tier's own message was not injected")
+	}
+
+	// Step 2: fresh tokens 600/1000 = 0.60 (escalate) AND cost 0.04/0.06 = 0.67
+	// (escalate) — two compacting tiers on ONE step.
+	fp.push(twoDimTurnTwo)
+	waitFor(t, func() bool {
+		s := h.b.liveSession("exec-two-dims")
+		return s != nil && s.compactionsSoFar() == 1
+	}, "exactly one compaction on the two-dimension step")
+
+	if got := turnsContaining(fp, "CONTEXT COMPACTION"); len(got) != 1 {
+		t.Fatalf("compact directive turns = %d, want exactly one per step", len(got))
+	}
+	if got := budgetCompactedParts(rec); len(got) != 1 {
+		t.Fatalf("compacted parts = %d, want exactly one per step", len(got))
+	}
+	if len(turnsContaining(fp, "T-ESCALATE-")) == 0 || len(turnsContaining(fp, "C-ESCALATE-")) == 0 {
+		t.Fatal("a crossed escalate tier's own warning was not injected on the two-dimension step")
+	}
+	if !h.b.IsExecutionActive("exec-two-dims") {
+		t.Fatal("the two-dimension step terminated the session instead of compacting it")
+	}
+
+	// The queued warning/directive turns drain, then the session terminates
+	// normally with a single successful result.
+	for i := 0; i < 4; i++ {
+		fp.push(freeResult)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Start after the two-dimension compaction: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the two-dimension session never reached a terminal turn")
+	}
+	s := rec.snap()
+	if len(s.results) != 1 || !s.results[0].succeeded {
+		t.Fatalf("OnResult = %+v, want one success", s.results)
+	}
+}
+
 // setStep is a test-only step setter (the run loop owns step in production).
 func (s *session) setStep(n int) {
 	s.mu.Lock()

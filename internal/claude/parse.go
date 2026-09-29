@@ -254,7 +254,10 @@ func (m *Mapper) addFiles(ctx context.Context, paths []string) {
 	}
 	m.mu.Unlock()
 	if m.stall.sawFileWrite(time.Now()) {
-		m.cbs.OnRecovered(ctx, m.execID, reasonNoFileProgress)
+		// The recovered label is the RECOVERY signal, not the stall reason:
+		// opencode's monitor reports "recovered:no_file_progress" for the same
+		// cleared advisory trip, so the two adapters emit one identical label.
+		m.cbs.OnRecovered(ctx, m.execID, recoveredNoFilePrefix)
 	}
 	if len(fresh) > 0 {
 		m.cbs.OnWrittenFiles(ctx, m.execID, fresh)

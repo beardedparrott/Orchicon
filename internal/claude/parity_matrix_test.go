@@ -435,8 +435,12 @@ func TestClaudeParityMatrix(t *testing.T) {
 		}
 		fp.push(pmWrite)
 		waitFor(t, func() bool { return rec.recoveredCount() == 1 }, "recovery")
-		if got := rec.recoveredSnapshot(); got[0] != reasonNoFileProgress {
-			t.Errorf("OnRecovered = %v", got)
+		// The recovery label is the RECOVERY signal, byte-identical to what BOTH
+		// other bridges emit for the same cleared trip (opencode/progress.go and
+		// the native engine's internal/orchicon/progress.go both report
+		// "recovered:no_file_progress") — never the stall reason.
+		if got := rec.recoveredSnapshot(); got[0] != recoveredNoFilePrefix {
+			t.Errorf("OnRecovered = %v, want %q", got, recoveredNoFilePrefix)
 		}
 		fp.push(resultOne)
 		if err := <-done; err != nil {
