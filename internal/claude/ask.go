@@ -546,8 +546,19 @@ func (s *askSession) argv() []string {
 		"--verbose",
 		"--include-partial-messages",
 	}
+	// THE FLAG FOLLOWS THE DISK, not which turn this is (see transcript.go).
+	//
+	// `--session-id` CREATES and refuses an id that already exists ("Session ID
+	// ... is already in use", exit 1, empty stdout); `--resume` CONTINUES and fails
+	// when there is nothing to continue. Choosing by transcript existence is
+	// therefore the only correct rule, and it also repairs the respawn case: a
+	// child that died mid-conversation is not a new session, so it resumes.
 	if sid != "" {
-		argv = append(argv, "--session-id", sid)
+		if claudeSessionHasTranscript(sid) {
+			argv = append(argv, "--resume", sid)
+		} else {
+			argv = append(argv, "--session-id", sid)
+		}
 	}
 	if model != "" {
 		argv = append(argv, "--model", model)
