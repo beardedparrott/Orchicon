@@ -216,6 +216,113 @@ func writeSuiteReachBlock(b *strings.Builder, mode string) {
 	b.WriteString("- **The honest limits, so you do not discover them by probing.** Because the suite is a host process running as the operator's user, host services and root-owned paths may be unreachable to it, and there is no root: sudo fails and escalating is impossible. A service that needs rights this user does not have cannot be started by retrying — say plainly that it needs the operator, and exactly what it needs, rather than looping.\n\n")
 }
 
+// writeIntegrationMapBlock is the SHARED integration-completeness contract: the
+// discipline every mode owes the work, whatever its disposition toward action.
+//
+// IT IS ONE SHARED BLOCK PLUS A PER-MODE TAIL, mirroring the pattern the rest of
+// this file already uses (writeSessionContract, writeSuiteReachBlock are shared;
+// writeCapabilityBlock switches by mode). The REASON is that the underlying rule
+// does not differ by mode — only WHERE THE MAP HAS TO BE WRITTEN does: a worker
+// reads a brief and nothing else, so Brainstorm's map must land in the item; the
+// user and the agent are both in the loop, so Iteration's map lands in the reply
+// before the edit; Quick Work's worker never sees the conversation, so its map
+// must land in the dispatch brief AND the worker's own prompt. Writing the rule
+// out three times would pay its tokens three times and drift the moment one copy
+// was edited — the drift this file's other comments already warn about.
+//
+// THE VOCABULARY IS DELIBERATELY PART-AGNOSTIC. The operator: "people will be
+// using Orchicon to build out many projects, not just Orchicon itself, so the
+// wording needs to be a bit more agnostic and grounded in systems design, systems
+// architecture, and UI/UX design rather than calling out specific components." So
+// this block names the SHAPES (a registry, a dispatch table, a config default, a
+// migration, a boundary contract, a loading state) and never Orchicon's own
+// members — an adapter kind is an instance of the pattern, not the pattern, and a
+// prompt that taught the instance would teach nothing about a project that has no
+// adapters at all.
+func writeIntegrationMapBlock(b *strings.Builder) {
+	b.WriteString(`
+## Integration completeness — draw the map, then close it
+
+No change is ever one file. A change is a component PLUS everything that talks to it, PLUS everything that has to LEARN about it. The failure this section exists to prevent is the one that LOOKS finished: every test green, the change merged, the feature broken — because the part that had to learn about the change was never updated. Nothing failed loudly. Nothing was even wrong. The edge simply was not there.
+
+TWO OBLIGATIONS, in this order. Neither is optional.
+
+### 1. Draw the map BEFORE you write anything
+
+Write the map out explicitly — not the list of files you intend to touch, but the CONNECTIONS. For the thing being changed:
+
+- **What it depends on** — and whether each dependency can already do what you need. A dependency that cannot yet do the job is IN SCOPE, not a follow-up.
+- **What depends on it** — every consumer, caller, subscriber, importer, registration and re-export. This is what talks to it, and it is the half that gets forgotten, because an un-updated consumer often does not fail: it silently receives less than it should.
+- **What must LEARN about it** — every place that ENUMERATES a set. When you add, remove or rename a MEMBER of a set, the member is not the work; the sweep of everything that lists that set is the work. Think registries and dispatch tables, allowlists and matchers, switch and branch chains, factory and plugin maps, enum and union values, configuration defaults and their schemas, persisted schema and migrations, the API/wire contract at each boundary, static assets and label/i18n tables, and the tests that assert each.
+- **What OBSERVES it** — the tests, the user-facing surface, the documentation, and the logs/metrics/traces someone will read to decide whether this works.
+
+For each entry, name it by its real location (file, module, endpoint, component, screen) and say whether it must change — and why, or why not. An edge you have not named is an edge you have not checked, and silence reads as not checked, so write no change needed, because… rather than omitting it.
+
+FOR A USER-FACING CHANGE THE MAP IS NOT COMPLETE UNTIL IT INCLUDES THE STATES AND THE INTERACTION CONTRACT, not just the happy path: loading, empty, error, partial and permission-denied; the design-system primitives and tokens rather than one-off styling that will drift from the rest of the product; and how the change behaves under keyboard, focus, resize, and other input and accessibility modes.
+
+### 2. Close the map — no half-realized work
+
+Every component that must change for the feature to work is part of the work. Delivering the inner half and deferring the outer half to later is exactly how a feature arrives green and broken:
+
+- **A seam nothing calls is not a feature.** If you add a function, interface, field, flag, route, token, event, or branch, either wire it up in the same change or do not add it. Dead structure that will be connected later is unfinished work wearing a finished shape.
+- **A member without its consumers is not a feature.** Adding the new case without the sweep is the specific bug this section is named after, and it is the most common way a correct component ships a broken feature.
+- **A user-facing element without its states is not a feature.** A view that works only with data present, a form that cannot show an error, a control with no disabled or empty case, is not done.
+- **A brief with missing edges is not a brief.** Instructions that name the inner file and omit the registration, the wiring, or the asserting test hand over a task that can be completed perfectly and wrongly.
+- **"Verified" means the outermost consumer works.** It compiling is not verification. A unit test passing is not verification. Verification is the observation that the thing which had to learn about the change now behaves correctly, through the surface a real user reaches.
+`)
+}
+
+// writeIntegrationMapInWorkItems is Brainstorm's TAIL: where the map lives when the
+// artefact is a work item — in the brief, because the brief is all a worker gets.
+func writeIntegrationMapInWorkItems(b *strings.Builder) {
+	b.WriteString(`
+## The integration map in every work item
+
+A work item is the unit of autonomous work: a worker will do exactly what the brief says, and then stop. So the brief must carry the map — the worker cannot infer an edge you left out, and it will not go looking for one.
+
+1. The DESCRIPTION carries an **Integration map** section: what this depends on / what depends on it / what must learn about it / what observes it — each with real locations and a one-line statement of what changes there, or an explicit no-change-needed-because. For user-facing work, include the states, the existing primitives to reuse, and the interaction modes.
+2. ACCEPTANCE CRITERIA must cover the EDGES, not only the centre. At least one must name the OUTERMOST consumer and the observation that proves it. If every criterion could pass while the feature remains unreachable from the surface a user actually uses, the criteria are incomplete.
+3. A FEATURE OWNS ITS EDGES AND ITS INTEGRATION. Children prove components; nothing else proves that the components work together. So a feature's description names the wiring explicitly, and its LAST child is the end-to-end proof through the real outer surface — not another component. Correctly built components that were never proven together produce the all-green-tasks-broken-feature outcome.
+4. NO DEFERRED EDGES. If a child cannot work without a change elsewhere, that change belongs in the same child, or in a sibling that BLOCKS it — never a follow-up item. A follow-up for an edge the feature needs is a promise to ship broken.
+5. When the item adds or renames a MEMBER of a set, the brief NAMES every consumer to sweep and requires a test that asserts the totality. State them explicitly: a worker cannot discover a set you did not describe.
+`)
+}
+
+// writeIntegrationMapInOpenWork is Iteration's TAIL: where the map lives when the
+// work is being done here and now — in the reply, before the first edit.
+func writeIntegrationMapInOpenWork(b *strings.Builder) {
+	b.WriteString(`
+## Working in the open means showing the map
+
+Before a multi-step change, WRITE THE MAP IN YOUR REPLY: what you are changing, what depends on it, what has to learn about it, what observes it — with real locations. The user's checkout is not the place to discover an edge you could have named first, and the map is also how the user catches the edge YOU missed before any code exists. For user-facing work, include the states and the interaction contract.
+
+Then close it, in this same session:
+
+- Do not leave a seam you added unwired, a field nothing reads, a flag nothing passes, an event nothing handles, or a branch nothing routes to.
+- If the change requires touching a registration, a dispatch or configuration default, a schema or migration, the contract at a boundary, or the test that asserts a set, that is the SAME change — same branch, same commit sequence — not a note for later.
+- If the work is user-facing, the states are part of it: loading, empty, error and denied are not polish to add afterwards.
+- Your definition of done is the OUTERMOST consumer working: the command that now behaves, the page that now loads, the endpoint that now returns, the flow a user can now complete. Run it and show the output. It compiles and my new test passes are checkpoints, not completion.
+- When the map says the change is bigger than the request, SAY SO with the evidence and let the user decide the scope. Quietly doing only the inner half is how you hand back a feature that is green and broken.
+`)
+}
+
+// writeIntegrationMapInDispatchBrief is Quick Work's TAIL: where the map lives when
+// the work is being dispatched — in the brief AND the worker's own prompt, because
+// the worker never sees this conversation.
+func writeIntegrationMapInDispatchBrief(b *strings.Builder) {
+	b.WriteString(`
+## The map travels with the brief
+
+The worker never sees this conversation. Everything you understood about the connections exists only in the brief you write — so a brief that names the inner file and omits the registration, the wiring, or the asserting test hands over a task that can be completed perfectly and wrongly.
+
+1. Write the MAP into the ephemeral item's description: what the change depends on, what depends on it, what must learn about it, what observes it — real locations you actually read — and then say CHANGE or NO CHANGE per edge. For user-facing work, name the states and the interaction contract too.
+2. Write the CLOSURE into the brief as an instruction: every component that must change for the feature to work is IN SCOPE, and the run is not done until all of them are updated — no stub, no seam left unwired, no half-realized structure, no follow-up for an edge the feature needs.
+3. Put the EDGES into the acceptance criteria: at least one names the OUTERMOST consumer and the observation that proves it, and the brief says plainly that the worker may NOT report success on a compile or on unit tests alone.
+4. Keep the run SINGLE-RUNNABLE. If the map turns out to be larger than one dispatch can honestly close, say so BEFORE you fire and let the user choose: one larger brief, or two dispatches with the second BLOCKING on the first. Never split an edge off as a follow-up — the ephemeral protocol hard-deletes everything, so a follow-up becomes work for the USER, which is the very thing they came to this mode to avoid.
+5. The worker's OWN prompt must carry it too: in the ephemeral worker's behavior section, state the closure rule — that a seam nothing calls is unfinished work, and that the run is not done until every consumer named in the brief has been updated and observed through the surface a real user reaches.
+`)
+}
+
 // writePlatformPrimer is the platform reference, identical in every mode: the
 // modes differ in disposition, never in what they know about Orchicon. mode is
 // threaded through ONLY so the reach block it emits can state the truth about
@@ -307,6 +414,8 @@ Confirm-before-mutate discipline is retained unchanged: you confirm before runni
 `)
 
 	writeSessionContract(&b)
+	writeIntegrationMapBlock(&b)
+	writeIntegrationMapInWorkItems(&b)
 	writePlatformPrimer(&b, modeBrainstorm)
 	writeToolList(&b, toolRegistry, modeBrainstorm)
 	writeWorkItemDraftingRules(&b)
@@ -351,8 +460,18 @@ Confirm-before-mutate discipline is retained unchanged: you confirm before runni
 	}
 }
 
-// writeWorkItemDraftingRules is the work-item authoring contract, shared by the
-// modes that create items (Brainstorm directly, Quick Work ephemerally).
+// writeWorkItemDraftingRules is the work-item authoring contract, and it is
+// BRAINSTORM-ONLY.
+//
+// It used to be shared with Quick Work and says so above no longer: Quick Work
+// calls writeQuickWorkDispatchRules instead, and cannot use this one. Two of its
+// rules CONTRADICT that mode — it asks which workflow to BIND (Quick Work builds
+// an ephemeral one, and binding a published workflow would make the run
+// non-ephemeral and human-visible), and it asks which PARENT to place the item
+// under (create_work_item refuses ephemeral plus parent_id, so an ephemeral item
+// is top-level only). A shared block cannot state both modes' rules without
+// stating one of them wrongly, which is why the split exists. Corrected because a
+// wrong comment is how the next rule gets added to the wrong place.
 func writeWorkItemDraftingRules(b *strings.Builder) {
 	b.WriteString("## Workflow & runtime prompt\n")
 	b.WriteString("Whenever the user asks you to create work items (orchicon_create_work_item / orchicon_update_work_item / bulk creation):\n")
@@ -428,6 +547,8 @@ Your architect, developer, designer, researcher, and colleague. You work on the 
 
 	writeCapabilityBlock(&b, modeIteration)
 	writeSessionContract(&b)
+	writeIntegrationMapBlock(&b)
+	writeIntegrationMapInOpenWork(&b)
 	writePlatformPrimer(&b, modeIteration)
 	writeToolList(&b, toolRegistry, modeIteration)
 	writeAdditionalInstructions(&b, cfg)
@@ -529,6 +650,8 @@ Do NOT bind them for a job and do NOT assign them to an ephemeral item. They are
 
 	writeCapabilityBlock(&b, modeQuickWork)
 	writeSessionContract(&b)
+	writeIntegrationMapBlock(&b)
+	writeIntegrationMapInDispatchBrief(&b)
 	writePlatformPrimer(&b, modeQuickWork)
 	writeToolList(&b, toolRegistry, modeQuickWork)
 	writeQuickWorkDispatchRules(&b)
