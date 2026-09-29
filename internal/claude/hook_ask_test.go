@@ -233,3 +233,42 @@ func TestAskProfileAllowsOrchiconMCPToolsThroughTheMatcher(t *testing.T) {
 		t.Fatalf("mcp__orchicon__list_work_items = %s, want allow — a read-only platform tool must not need a card", d)
 	}
 }
+
+// A WORKER may use MCP tools, and this is PARITY, not a concession.
+//
+// It was worth pinning because the claude path once DENIED every MCP tool to a
+// worker — but only because of claude's own matcher gap (the hook never fired, so
+// claude's own permission flow denied with nobody to grant). That was a
+// claude-only defect; the other two transports have always allowed it:
+//
+//	NATIVE   — mcpTools.Defs copies every discovered MCP tool into the worker's
+//	           tool list verbatim and Execute routes straight to the server: no
+//	           askmode check, no permission check, no path check (bridge.go).
+//	OPENCODE — the worker permission map carries NO MCP key at all, and its
+//	           composite MCP sidecar is "always registered alongside", so the
+//	           batch tools a worker depends on are usable (config.go).
+//
+// So "allow" is what the platform does, and a claude-only restriction here would
+// be exactly the adapter drift to avoid. The containment for an MCP tool is the
+// SERVER's own scoping plus the operator's choice to configure it — the same
+// position both other adapters take, and the reason neither the hook nor the OS
+// shim can judge one (an MCP server writes files itself and never invokes a
+// PATH-scoped binary).
+func TestWorkerProfileAllowsMCPTools(t *testing.T) {
+	for _, tool := range []string{
+		"mcp__orchicon__list_work_items",
+		"mcp__orchicon__create_work_item",
+		"mcp__operator_configured__write_file",
+	} {
+		got := DecideTool(HookInput{ToolName: tool, ToolInput: map[string]any{}}, "", "")
+		if d := got.Decision(); d != DecisionAllow {
+			t.Errorf("worker profile: %s = %s, want allow — native and opencode both permit MCP tools to a worker", tool, d)
+		}
+		// And never an ASK: a worker transport installs no canUseTool handler, so
+		// asking is an unanswerable prompt (the same reason the worker profile has
+		// no ask arm at all).
+		if got.Ask {
+			t.Errorf("worker profile asked about %s; a worker session cannot answer a prompt", tool)
+		}
+	}
+}

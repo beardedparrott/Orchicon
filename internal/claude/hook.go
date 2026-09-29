@@ -125,6 +125,16 @@ func DecideTool(h HookInput, projectDir, policyPath string) HookVerdict {
 	case pathToolNames[tool]:
 		return decidePath(tool, h, projectDir, policyPath)
 	}
+	// AN UNRECOGNISED NAME IS ALLOWED, and for an MCP tool that is PARITY rather
+	// than a concession: the native bridge copies every discovered MCP tool into
+	// the worker's tool list with no gating at all (orchicon mcpTools.Defs), and
+	// opencode's worker permission map carries no MCP key, so both already permit
+	// them. A claude-only restriction here would be adapter drift.
+	//
+	// THE CONTAINMENT FOR AN MCP TOOL IS THE SERVER'S OWN SCOPING plus the
+	// operator's choice to configure it. Neither this hook nor the OS shim can
+	// judge one: a server writes files itself and never invokes a PATH-scoped
+	// binary, so there is no path here for either layer to read.
 	return allowVerdict()
 }
 
