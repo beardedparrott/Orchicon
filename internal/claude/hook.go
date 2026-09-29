@@ -481,7 +481,8 @@ func RunHook(in io.Reader, out io.Writer, getenv func(string) string) int {
 	// the child's environment. The default is the worker profile, so a session that
 	// never sets it is unchanged.
 	var v HookVerdict
-	if strings.TrimSpace(getenv(HookProfileEnv)) == ProfileAskEnvValue {
+	asking := strings.TrimSpace(getenv(HookProfileEnv)) == ProfileAskEnvValue
+	if asking {
 		askDir := strings.TrimSpace(getenv(AskDirEnv))
 		if askDir == "" {
 			askDir = strings.TrimSpace(h.Cwd)
@@ -513,10 +514,17 @@ func RunHook(in io.Reader, out io.Writer, getenv func(string) string) int {
 	decision := v.Decision()
 	reason := v.Reason
 	if reason == "" {
-		switch decision {
-		case DecisionDeny:
+		// WORDING IS PER-PROFILE. The worker's string is deliberately the one it
+		// has always been: this file is shared, and a shared file that silently
+		// rewords a worker refusal is a change to the worker path nobody asked
+		// for and no test would catch (every worker deny passes an explicit
+		// reason, so this arm is only reached by a verdict that forgot one).
+		switch {
+		case decision == DecisionDeny && asking:
 			reason = "refused by the Orchicon execution restriction"
-		case DecisionAsk:
+		case decision == DecisionDeny:
+			reason = "refused by the Orchicon worker restriction"
+		case decision == DecisionAsk:
 			reason = "this call needs the operator's approval"
 		}
 	}
