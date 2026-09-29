@@ -135,7 +135,19 @@ export function ModelPicker({ value, onChange, askMode = false, inline = false }
   // (~1–2s), doubling the picker's open latency. It never fires for a
   // catalog-sourced kind: those models come from the providers service, and on
   // a plane with no opencode binary the CLI call only returns Unimplemented.
-  const legacyModelsQ = useListOpenCodeModels(undefined, undefined, !usesCatalogSourcing);
+  //
+  // It also must not fire BEFORE the classification is known. The fallback
+  // while `sourcing_kinds` is still in flight is the native kind alone, so a
+  // stored `claude/...` ref would otherwise issue one doomed `opencode models`
+  // call at mount on the very plane this picker targets (and could flash its
+  // Unimplemented error in the panel for that window). A FAILED
+  // ListAdapterKinds is the one case where the CLI is the only source left, so
+  // the pre-existing fallback still applies there and no legacy adapter starves.
+  const kindsClassified = adapterKindsData !== undefined;
+  const legacyModelsEnabled = kindsClassified
+    ? !usesCatalogSourcing
+    : kindsError != null && !usesCatalogSourcing;
+  const legacyModelsQ = useListOpenCodeModels(undefined, undefined, legacyModelsEnabled);
   const providers = useMemo(() => {
     if (usesMergedProviders) {
       return (providerEntries ?? [])

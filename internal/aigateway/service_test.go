@@ -56,6 +56,39 @@ func TestListAdapterKindsEmptyKindsFunc(t *testing.T) {
 	}
 }
 
+// The published model-tier classification, at the wire level: `claude` is
+// dispatchable (adapter_kinds) and CATALOG-SOURCED (sourcing_kinds), yet it is
+// NOT Ask-capable (ask_capable_kinds) — the Ask path is not widened by
+// catalog sourcing. The GUI banner and the TUI flag both read these fields.
+func TestListAdapterKindsPublishesClaudeAsCatalogSourcedButNotAskCapable(t *testing.T) {
+	svc := testSvc(t, func() []string { return []string{"claude", "opencode", "orchicon"} })
+	svc.SetChatKinds(func() []string { return []string{"opencode", "orchicon"} })
+	resp, err := svc.ListAdapterKinds(context.Background(), connect.NewRequest(&apiv1.ListAdapterKindsRequest{}))
+	if err != nil {
+		t.Fatalf("ListAdapterKinds: %v", err)
+	}
+	contains := func(list []string, want string) bool {
+		for _, v := range list {
+			if v == want {
+				return true
+			}
+		}
+		return false
+	}
+	if !contains(resp.Msg.AdapterKinds, adapter.KindClaude) {
+		t.Errorf("AdapterKinds = %v, want %q (registered kinds are dispatchable)", resp.Msg.AdapterKinds, adapter.KindClaude)
+	}
+	if contains(resp.Msg.AskCapableKinds, adapter.KindClaude) {
+		t.Errorf("AskCapableKinds = %v, must NOT include %q (no ChatTurnClient) — catalog sourcing never widens Ask", resp.Msg.AskCapableKinds, adapter.KindClaude)
+	}
+	if !contains(resp.Msg.SourcingKinds, adapter.KindClaude) {
+		t.Errorf("SourcingKinds = %v, want %q (its models come from the catalog, not opencode)", resp.Msg.SourcingKinds, adapter.KindClaude)
+	}
+	if contains(resp.Msg.SourcingKinds, adapter.KindOpencode) {
+		t.Errorf("SourcingKinds = %v, must NOT include %q (its models ARE opencode-CLI discovery)", resp.Msg.SourcingKinds, adapter.KindOpencode)
+	}
+}
+
 func TestListProvidersUnfiltered(t *testing.T) {
 	svc := testSvc(t, nil)
 	resp, err := svc.ListProviders(context.Background(), connect.NewRequest(&apiv1.ListProvidersRequest{}))

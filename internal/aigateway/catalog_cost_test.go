@@ -37,7 +37,7 @@ func TestCatalogCostResolvesAliasesAndRefShapedProviders(t *testing.T) {
 		t.Fatal("direct lookup failed")
 	}
 	for _, c := range []struct{ provider, model string }{
-		{"anthropic", "sonnet-4"},            // catalog alias
+		{"anthropic", "sonnet-4"},               // catalog alias
 		{"claude/anthropic", "claude-sonnet-4"}, // ref-shaped provider
 	} {
 		got, ok := CatalogCost(c.provider, c.model)

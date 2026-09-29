@@ -116,9 +116,9 @@ func (s *Service) ListAdapterKinds(ctx context.Context, req *connect.Request[api
 	// still excluded from Ask.
 	sourcing := adapter.CatalogSourcedAdapterKinds()
 	return connect.NewResponse(&apiv1.ListAdapterKindsResponse{
-		AdapterKinds:     kinds,
-		AskCapableKinds:  chatKinds,
-		SourcingKinds:    sourcing,
+		AdapterKinds:    kinds,
+		AskCapableKinds: chatKinds,
+		SourcingKinds:   sourcing,
 	}), nil
 }
 

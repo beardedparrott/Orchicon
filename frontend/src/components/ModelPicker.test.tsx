@@ -66,8 +66,14 @@ describe("ModelPicker (three-tier, ADR-0004)", () => {
     // adapter being the native kind.
     expect(src).toMatch(/useProviderModelsForPicker\(\s*usesCatalogSourcing \? provider/);
     // ...and the opencode-CLI query is disabled for those kinds, so an
-    // opencode-free plane never calls ListOpenCodeModels for claude.
-    expect(src).toMatch(/useListOpenCodeModels\(undefined, undefined, !usesCatalogSourcing\)/);
+    // opencode-free plane never calls ListOpenCodeModels for claude. The gate
+    // is `legacyModelsEnabled`: it is false for a catalog-sourced kind AND
+    // while the classification is still in flight (`kindsClassified`), so a
+    // stored claude ref cannot fire a doomed CLI call at mount either.
+    expect(src).toContain("legacyModelsEnabled");
+    expect(src).toMatch(/useListOpenCodeModels\(undefined, undefined, legacyModelsEnabled\)/);
+    expect(src).toMatch(/const kindsClassified = adapterKindsData !== undefined/);
+    expect(src).toMatch(/kindsClassified\s*\n?\s*\? !usesCatalogSourcing/);
     // The provider tier for a catalog-sourced non-native kind is the
     // adapter-scoped gateway set, and no client-side hardcoded "claude".
     expect(src).toContain("adapterScopedKind");
