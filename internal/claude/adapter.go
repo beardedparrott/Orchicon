@@ -3,6 +3,7 @@ package claude
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
@@ -20,10 +21,17 @@ import (
 type FileEditHookFunc = func(ctx context.Context, execID, tenantID, execDir, toolName string, input map[string]any, output string)
 
 // Bridge is the Claude Code adapter. It satisfies scheduler.AdapterBridge
-// (Start) plus the optional capabilities MessageInjector, Aborter and
-// LivenessReporter. It deliberately does NOT implement ChatTurnClient — Ask
-// chat on claude is out of scope, so Dispatcher.ChatKinds() omits "claude"
-// and the Ask guard surfaces an actionable error (never a panic).
+// (Start) plus the optional capabilities MessageInjector, SessionContinuer,
+// Aborter, LivenessReporter and ContextCompacter. It deliberately does NOT
+// implement ChatTurnClient — Ask chat on claude is out of scope, so
+// Dispatcher.ChatKinds() omits "claude" and the Ask guard surfaces an
+// actionable error (never a panic).
+//
+// Context compaction is Claude-NATIVE: claude has no in-container serve
+// (servePortFor("claude") == 0 and it is a MOUNT-only boot-profile entry),
+// so there is no summarize endpoint — CompactExecution writes an in-session
+// directive turn that makes the session summarize its own working context,
+// exactly the soft/lossy compact the opencode adapter's summarize produces.
 type Bridge struct {
 	log           *slog.Logger
 	usageRecorder scheduler.UsageRecorderFunc
@@ -119,6 +127,98 @@ func (b *Bridge) AbortExecution(ctx context.Context, execID, reason string) erro
 	b.log.Info("aborting claude execution session", "execution", execID, "reason", reason)
 	s.abort()
 	return nil
+}
+
+// CompactExecution implements scheduler.ContextCompacter: it compacts the
+// live claude session's working context in place (the Claude-native compact
+// directive turn — there is no serve to call, so no HTTP path exists here).
+// An execution with no live session gets an actionable error naming the
+// capability, never a panic (bridge contract rule).
+func (b *Bridge) CompactExecution(ctx context.Context, execID, provider, model, remainingScope string) error {
+	s := b.liveSession(execID)
+	if s == nil {
+		return errNoLiveSessionForCompact(execID)
+	}
+	return s.Compact(ctx, provider, model, remainingScope)
+}
+
+// ContinueSession implements scheduler.SessionContinuer: a follow-up runs
+// against the SAME claude session identity, never a fresh conversation.
+//
+//   - A live session for the execution: the follow-up is written onto the
+//     live stdin, so it keeps the session's full context (the same path a
+//     mid-run injection takes).
+//   - No live session (a control-plane restart, a lost runtime container, an
+//     execution that already finished): the recorded session id is
+//     RE-ATTACHED through `--resume <session-id>`, and the follow-up is
+//     driven there. The reply lands in the durable transcript through the
+//     same session machinery (the session's mapper owns that fan-out), so the
+//     reply collection is fire-and-forget and detached from the RPC context.
+//
+// An execution with neither a live session nor a recorded session id gets an
+// actionable error (never a panic).
+func (b *Bridge) ContinueSession(ctx context.Context, opts scheduler.ContinueSessionOpts) (string, error) {
+	if s := b.liveSession(opts.ExecutionID); s != nil {
+		if err := s.SendTurn(ctx, opts.Message); err != nil {
+			return "", err
+		}
+		return s.sessionIdentity(), nil
+	}
+	sid := strings.TrimSpace(opts.SessionID)
+	if sid == "" {
+		return "", errNoLiveSession(opts.ExecutionID)
+	}
+	manifest := b.followUpManifest(opts)
+	go func() {
+		// WithoutCancel strips the request's cancellation/deadline while
+		// keeping its values: an RPC returning (or a browser disconnect) must
+		// neither cancel the resumed session nor lose its reply.
+		detached := context.WithoutCancel(ctx)
+		cbs := &followUpCallbacks{log: b.log, execID: opts.ExecutionID}
+		if err := b.Start(detached, db.ExecutionRow{ID: opts.ExecutionID, TenantID: opts.TenantID}, manifest, cbs); err != nil {
+			b.log.Warn("claude follow-up session failed", "execution", opts.ExecutionID, "session", sid, "error", err)
+		}
+	}()
+	return sid, nil
+}
+
+// followUpManifest reconstructs the execution manifest a resumed follow-up
+// needs: the SAME session identity (ContinueFromSessionID → `--resume`), the
+// follow-up as the turn's goal, and the caller's model/system prompt so the
+// follow-up runs with the worker's own configuration.
+func (b *Bridge) followUpManifest(opts scheduler.ContinueSessionOpts) scheduler.ExecutionManifest {
+	return scheduler.ExecutionManifest{
+		ExecutionID:           opts.ExecutionID,
+		Goal:                  opts.Message,
+		SystemPrompt:          opts.SystemPrompt,
+		ModelRef:              opts.ModelRef,
+		ProjectDir:            opts.ProjectDir,
+		SequenceContinue:      true,
+		ContinueFromSessionID: opts.SessionID,
+	}
+}
+
+// followUpCallbacks is the minimal ExecutionCallbacks sink for a resumed
+// follow-up session. The durable transcript is written by the session's own
+// mapper, so this sink exists to observe the outcome (and to keep the bridge
+// contract honest: Start always receives a callbacks value).
+type followUpCallbacks struct {
+	log    *slog.Logger
+	execID string
+}
+
+func (c *followUpCallbacks) OnStarted(context.Context, string)                {}
+func (c *followUpCallbacks) OnText(context.Context, string, string)           {}
+func (c *followUpCallbacks) OnWrittenFiles(context.Context, string, []string) {}
+func (c *followUpCallbacks) OnHealth(context.Context, string, string)         {}
+func (c *followUpCallbacks) OnStall(context.Context, string, string, bool)    {}
+func (c *followUpCallbacks) OnRecovered(context.Context, string, string)      {}
+func (c *followUpCallbacks) OnToolCall(context.Context, string, string, []byte, []byte) {
+}
+func (c *followUpCallbacks) OnArtifact(context.Context, string, string, string, string) {}
+
+func (c *followUpCallbacks) OnResult(_ context.Context, execID string, ok bool, _ string, errMsg string) {
+	c.log.Info("claude follow-up session finished", "execution", execID, "ok", ok, "error", errMsg)
 }
 
 // IsExecutionActive implements scheduler.LivenessReporter.

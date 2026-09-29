@@ -196,6 +196,20 @@ type SessionContinuer interface {
 	ContinueSession(ctx context.Context, opts ContinueSessionOpts) (string, error)
 }
 
+// ContextCompacter is the OPTIONAL context-compaction capability: asks a
+// live execution's session to compact its working context in place. It is
+// the adapter-neutral seam for a bridge-specific compact (there is no
+// execution compaction RPC today — Ask-chat's CompactConversation is a
+// different, conversation-scoped operation), declared here so a caller that
+// needs compaction resolves it by TYPE ASSERTION and surfaces an actionable
+// "does not support context compaction" error when a bridge omits it,
+// exactly like MessageInjector/Aborter — never a panic. remainingScope is
+// the goal/acceptance-criteria text that must survive the (soft, lossy)
+// compact.
+type ContextCompacter interface {
+	CompactExecution(ctx context.Context, execID, provider, model, remainingScope string) error
+}
+
 // Aborter is the optional cancellation capability: stops a live
 // execution's session when a human cancels it, so the model stops
 // generating immediately (workflow/execution abort RPCs). Bridges that

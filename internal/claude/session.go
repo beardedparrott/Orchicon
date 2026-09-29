@@ -12,6 +12,7 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/guard"
+	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/permpolicy"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
@@ -43,6 +44,26 @@ type session struct {
 	// the durable transcript / ledger / todo side effects (parse.go).
 	mapper *Mapper
 
+	// Shared budget gate (ONE source of truth). ladder is parsed from the
+	// SAME merged budget JSON the opencode adapter reads
+	// (manifest.Budgets → opencode.ParseBudgetLadder, tenant defaults merged
+	// with the worker's budget_overrides); spend is fed the SAME cache-aware
+	// usage the telemetry path records. The claude package holds no budget
+	// threshold or message text of its own.
+	ladder    *opencode.BudgetLadder
+	spend     *opencode.BudgetSpend
+	startedAt time.Time
+
+	step            int
+	lastCompactStep int
+	compactions     int
+	tierLatch       map[string]bool
+
+	// abortWindow is this session's SIGINT→SIGTERM grace, resolved once at
+	// construction from the package default so a live session never re-reads
+	// a package-level var.
+	abortWindow time.Duration
+
 	mu       sync.Mutex
 	finished bool
 	aborted  bool
@@ -56,13 +77,18 @@ func newSession(b *Bridge, execID, tenantID string, manifest scheduler.Execution
 		m = manifest.DefaultModelRef
 	}
 	s := &session{
-		b:        b,
-		execID:   execID,
-		tenantID: tenantID,
-		manifest: manifest,
-		cbs:      cbs,
-		model:    modelForRef(m),
-		resumeID: manifest.ContinueFromSessionID,
+		b:           b,
+		execID:      execID,
+		tenantID:    tenantID,
+		manifest:    manifest,
+		cbs:         cbs,
+		model:       modelForRef(m),
+		resumeID:    manifest.ContinueFromSessionID,
+		ladder:      opencode.ParseBudgetLadder(manifest.Budgets),
+		spend:       opencode.NewBudgetSpend(),
+		startedAt:   time.Now(),
+		tierLatch:   map[string]bool{},
+		abortWindow: abortGrace,
 	}
 	s.mapper = NewMapper(execID, cbs, MapperDeps{
 		TenantID:      tenantID,
@@ -168,10 +194,35 @@ func (s *session) handleLine(ctx context.Context, line []byte) error {
 	if err != nil {
 		return nil // tolerate a malformed line; the next one still parses
 	}
+	if ev.IsCompactBoundary {
+		s.onCompactBoundary(ctx)
+	}
 	if s.mapper.Handle(ctx, ev) {
+		// Turn boundary: charge the SHARED, cache-aware budget gate and
+		// evaluate the ladder BEFORE the boundary is applied, so a compact
+		// directive (or a terminal budget abort) is decided on this turn's
+		// real spend. Both paths keep the session alive for the directive
+		// turn they just wrote (SendTurn queues a turn).
+		if reason := s.observeTurnBudget(ctx); reason != "" {
+			s.abort()
+			err := fmt.Errorf("%s", reason)
+			s.finish(ctx, false, reason, err)
+			return err
+		}
+		s.maybeTurnCountCompact(ctx)
 		s.onTerminal(ctx, ev)
 	}
 	return nil
+}
+
+// onCompactBoundary observes a compaction boundary reported by the child
+// (Claude Code's own auto-compact, or the boundary that follows a compact
+// directive turn). The transcript shrank in place, which is a HEALTHY,
+// forward-progress event: it is recorded for the session pane and counts as
+// progress for the stall watchdog.
+func (s *session) onCompactBoundary(ctx context.Context) {
+	s.mapper.stall.sawOutput(time.Now())
+	s.recordPart(ctx, db.SessionPartCompacted, map[string]any{"source": "claude_auto_compact"})
 }
 
 // onTerminal applies the turn boundary: a mid-run injected turn is still
@@ -202,6 +253,16 @@ func (s *session) bindSession(_ context.Context, sid string) {
 		s.b.log.Warn("claude: a live subprocess already owns this session id — refusing the second writer",
 			"session", sid, "execution", s.execID)
 	}
+}
+
+// sessionIdentity is the claude session id this session is bound to (the id
+// the CLI reported, else the resumed id). It is the identity a follow-up or
+// a recovery must re-attach to.
+func (s *session) sessionIdentity() string {
+	if sid := s.mapper.sessionIDFor(); sid != "" {
+		return sid
+	}
+	return s.resumeID
 }
 
 // SendTurn writes a follow-up user turn onto the live stdin and queues it so
@@ -244,11 +305,12 @@ func (s *session) abort() {
 		return
 	}
 	_ = p.Signal("INT")
+	grace := s.abortWindow
 	go func() {
 		select {
-		case <-time.After(abortGrace):
+		case <-time.After(grace):
 			_ = p.Signal("TERM")
-		case <-time.After(abortGrace * 4):
+		case <-time.After(grace * 4):
 		}
 	}()
 }
