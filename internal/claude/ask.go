@@ -921,7 +921,26 @@ func (s *askSession) handleLine(line []byte) {
 	case "text_delta":
 		s.busEmit(scheduler.SessionEvent{Kind: "delta", Type: "text", Text: ev.Text})
 
+	case "thinking_delta":
+		// REASONING, on its own type. The drain loop and the consent/stream
+		// layers classify a delta by `Type` and `IsReasoning` (opencode emits
+		// exactly this shape — chatsession.go: Type "reasoning", IsReasoning
+		// true), so claude matching it is what makes a reasoning bubble render
+		// for an Ask conversation the same way it does for opencode.
+		//
+		// Sent as `delta` rather than folded into `text`: the askorchicon drain
+		// opens a think segment on a reasoning delta (chat.go: "if
+		// evt.IsReasoning && !segThink.inThink()"), and a reasoning chunk marked
+		// as text would open a TEXT segment and leak the model's private thinking
+		// into the visible answer.
+		s.busEmit(scheduler.SessionEvent{Kind: "delta", Type: "reasoning", IsReasoning: true, Text: ev.Text})
+
 	case "assistant":
+		// Reasoning FIRST: a single assistant message can carry both, and
+		// thinking precedes the answer it produced.
+		if ev.Reasoning != "" {
+			s.busEmit(scheduler.SessionEvent{Kind: "part", Type: "reasoning", IsReasoning: true, Text: ev.Reasoning})
+		}
 		if ev.Text != "" {
 			s.busEmit(scheduler.SessionEvent{Kind: "part", Type: "text", Text: ev.Text})
 		}

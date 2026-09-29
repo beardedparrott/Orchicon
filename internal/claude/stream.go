@@ -70,6 +70,18 @@ type StreamEvent struct {
 	// `stream_event` text delta.
 	Text string
 
+	// Reasoning is the assistant's THINKING content for this line — a
+	// `thinking_delta`'s text, or an `assistant` message's `thinking` blocks
+	// concatenated. It is kept SEPARATE from Text on purpose: reasoning is not
+	// prose the worker produced, it must never leak into the worker's reported
+	// output or its ORCHICON WORKER SUMMARY, and the transcript records it under
+	// its own part kind (db.SessionPartReasoning) so the UI renders it in a
+	// reasoning bubble rather than inline in the text.
+	//
+	// IsReasoning marks a line whose Text holds reasoning (a thinking delta).
+	Reasoning   string
+	IsReasoning bool
+
 	// ToolUses / ToolResults are populated for `assistant` / `user` messages.
 	ToolUses    []ToolUse
 	ToolResults []ToolResult
@@ -213,10 +225,31 @@ func ParseLine(line []byte) (StreamEvent, error) {
 		switch strField(inner, "type") {
 		case "content_block_delta":
 			delta, _ := inner["delta"].(map[string]any)
-			if delta != nil && strField(delta, "type") == "text_delta" {
+			if delta == nil {
+				break
+			}
+			switch strField(delta, "type") {
+			case "text_delta":
 				ev.Type = "text_delta"
 				ev.Text = strField(delta, "text")
+			case "thinking_delta":
+				// ASSISTANT REASONING. Anthropic streams extended thinking as
+				// `thinking_delta`, and the text rides `delta.thinking` — NOT
+				// `delta.text`, the same asymmetry the native anthropic path
+				// handles (internal/orchicon/anthropic.go: "case
+				// \"thinking_delta\": return ReasoningDelta{Text: d.Thinking}").
+				// Reading `text` here would produce empty reasoning on every
+				// delta, silently.
+				//
+				// This was dropped ENTIRELY before: the switch admitted only
+				// text_delta, so a thinking block produced no event at all and
+				// executions showed no reasoning even when the model thought.
+				ev.Type = "thinking_delta"
+				ev.Text = strField(delta, "thinking")
+				ev.IsReasoning = true
 			}
+			// `signature_delta` carries the block's cryptographic signature —
+			// no displayable content, so it is deliberately not surfaced.
 		case "message_start":
 			// With --include-partial-messages each API message opens with a
 			// message_start carrying the SAME usage object as the eventual
@@ -251,6 +284,15 @@ func ParseLine(line []byte) (StreamEvent, error) {
 					Name:  strField(block, "name"),
 					Input: in,
 				})
+			case "thinking", "redacted_thinking":
+				// A whole thinking block (no partial-delta stream, or a resumed
+				// session replaying one). `redacted_thinking` carries no text by
+				// design — the provider withheld it — so it contributes nothing
+				// and is only matched so it is not mistaken for prose.
+				if t := strField(block, "thinking"); t != "" {
+					ev.Reasoning += t
+					ev.IsReasoning = true
+				}
 			}
 		}
 		// Per-message usage sample (the full message report). Authoritative
