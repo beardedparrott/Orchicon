@@ -486,7 +486,26 @@ func RunHook(in io.Reader, out io.Writer, getenv func(string) string) int {
 		if askDir == "" {
 			askDir = strings.TrimSpace(h.Cwd)
 		}
-		v = DecideToolForAsk(h, askDir, policyPath)
+		modeFile := strings.TrimSpace(getenv(AskModeFileEnv))
+
+		// THE MODE BOUNDARY, FIRST — it is the turn's own rule rather than a
+		// per-call judgement, and its message is the one that tells the model what
+		// to do (name the mode, ask the user to switch). See modegate.go.
+		switch denied, reason := askModeDenial(modeFile, h.ToolName); {
+		case denied:
+			v = denyVerdict("ask_mode", reason)
+		case isAskStatePath(pathInput(h.ToolName, h.ToolInput), modeFile):
+			// The anti-tamper rule: the ask state directory holds the mode files,
+			// so a write to it is a session trying to lift its own restriction —
+			// the one thing the refusal text above tells it it cannot do. Checked
+			// at the hook rather than only in the shim because claude's Write/Edit
+			// act in-process and never touch the shim.
+			v = denyVerdict("ask_state_tamper", "refused: this path is the platform's own Ask state (the "+
+				"conversation's mode boundary). It is not writable by the session, and editing it would not "+
+				"change the mode — only the user can do that, from the mode selector.")
+		default:
+			v = DecideToolForAsk(h, askDir, policyPath)
+		}
 	} else {
 		v = DecideTool(h, projectDir, policyPath)
 	}

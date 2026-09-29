@@ -66,6 +66,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/beardedparrott/orchicon/internal/askmode"
 	"github.com/beardedparrott/orchicon/internal/guard"
 	"github.com/beardedparrott/orchicon/internal/permpolicy"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
@@ -76,8 +77,9 @@ import (
 // and Dispatcher.ChatKinds() reads the same assertion — so these two lines are
 // what make claude appear in the Ask picker's capable set.
 var (
-	_ scheduler.ChatTurnClient   = (*Bridge)(nil)
-	_ scheduler.SessionOwnerKind = (*Bridge)(nil)
+	_ scheduler.ChatTurnClient     = (*Bridge)(nil)
+	_ scheduler.SessionOwnerKind   = (*Bridge)(nil)
+	_ scheduler.ChatToolRestrictor = (*Bridge)(nil)
 )
 
 // askBusCapacity is the per-conversation event buffer. Sized with headroom: the
@@ -181,26 +183,30 @@ type askSession struct {
 	convID string
 	askDir string
 
-	mu      sync.Mutex
-	sid     string // the claude session id (we choose it: see CreateConversationSession)
-	model   string
-	proc    ProcSession
-	bus     *askBus
-	guard   *guard.Guard           // the OS-level execution shim on this session's PATH
-	pending map[string]struct{}    // open can_use_tool request ids
-	tools   map[string]askToolCall // tool_use_id -> the call it resolved
-	seeded  bool                   // whether the system prompt has been sent
-	cancel  context.CancelFunc
-	running bool
+	mu    sync.Mutex
+	sid   string // the claude session id (we choose it: see CreateConversationSession)
+	model string
+	proc  ProcSession
+	bus   *askBus
+	guard *guard.Guard // the OS-level execution shim on this session's PATH
+	// modeFile is this conversation's Ask mode file (see modegate.go). The hook
+	// reads it per tool call; this session rewrites it per TURN.
+	modeFile string
+	pending  map[string]struct{}    // open can_use_tool request ids
+	tools    map[string]askToolCall // tool_use_id -> the call it resolved
+	seeded   bool                   // whether the system prompt has been sent
+	cancel   context.CancelFunc
+	running  bool
 }
 
 func newAskSession(b *Bridge, convID, askDir string) *askSession {
 	return &askSession{
-		b:       b,
-		convID:  convID,
-		askDir:  askDir,
-		pending: make(map[string]struct{}),
-		tools:   make(map[string]askToolCall),
+		b:        b,
+		convID:   convID,
+		askDir:   askDir,
+		modeFile: askModeFilePath(filepath.Dir(askDir), convID),
+		pending:  make(map[string]struct{}),
+		tools:    make(map[string]askToolCall),
 	}
 }
 
@@ -271,6 +277,22 @@ func (b *Bridge) SendTurnMessage(ctx context.Context, conversationID, sessionID,
 	s.mu.Unlock()
 	b.bindAskSessionID(sessionID, s)
 
+	// The mode boundary is applied HERE, at the turn, because this is the one
+	// place in the adapter that knows BOTH the conversation (conversationID) and
+	// the turn's mode (stamped on ctx by askorchicon before dispatch). The mode is
+	// not reachable from RestrictChatTools — its signature carries no conversation
+	// — which is why claude's enforcement is here and that method is a
+	// declaration, exactly as the native bridge's is.
+	//
+	// The write happens BEFORE the turn is written, so the first tool call of the
+	// turn already sees the new policy. A failure is logged, not fatal: a missing
+	// mode file reads as "no mode policy", so the turn degrades to the prompt-level
+	// boundary rather than failing outright.
+	if err := writeAskModeFile(s.modeFile, askmode.ModeFromContext(ctx)); err != nil {
+		slog.Default().Warn("claude ask: could not record the turn's mode — the mode boundary is prompt-level for this turn",
+			"error", err, "conversation", conversationID, "mode", askmode.ModeFromContext(ctx))
+	}
+
 	if err := s.ensureRunning(ctx); err != nil {
 		return err
 	}
@@ -286,6 +308,26 @@ func (b *Bridge) AbortConversationSession(_ context.Context, sessionID string) e
 		return nil
 	}
 	s.abort()
+	return nil
+}
+
+// RestrictChatTools implements scheduler.ChatToolRestrictor.
+//
+// A DECLARATION, like the native bridge's — and for a reason of the same shape.
+// The native version is a no-op because the native provider IS the tool list and
+// the tool executor, so askorchicon applies the policy at both points. claude's is
+// a no-op because the method CANNOT do the work: its signature carries a context
+// and a policy, no conversation, and this bridge serves many conversations
+// concurrently — recording "the current mode" on the bridge would apply one
+// conversation's mode to another's turns.
+//
+// The enforcement therefore lives at the one point that knows both the
+// conversation and the mode: SendTurnMessage reads the mode off the ctx and
+// records it for the HOOK to enforce per tool call (modegate.go). What this
+// method buys is the honest answer to "is this turn enforced?" — without it the
+// platform would report claude's mode boundary as PROSE ONLY while it is, in
+// fact, enforced.
+func (b *Bridge) RestrictChatTools(_ context.Context, _ scheduler.ToolPolicy) error {
 	return nil
 }
 
@@ -510,6 +552,9 @@ func (s *askSession) childEnv() []string {
 	// Ask is a HOST session, so the host binary path is correct here (unlike the
 	// worker's container transport, which must use the daemon's bind mount).
 	env = setEnvVar(env, HookBinEnv, HookBinaryPath())
+	// The mode boundary (modegate.go): the hook reads this file per tool call, so
+	// a mid-conversation mode switch is enforced on the very next call.
+	env = setEnvVar(env, AskModeFileEnv, s.modeFile)
 
 	// The OS-level guard, exactly as opencode's Ask serve applies it: the shim on
 	// PATH, and NOTHING ELSE. No InteractiveEnviron, so the shim runs its default
