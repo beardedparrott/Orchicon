@@ -68,6 +68,19 @@ func (p *fakeProc) turnCount() int {
 	defer p.mu.Unlock()
 	return len(p.turns)
 }
+
+// turnsSnapshot returns a copy of every frame written to the child's stdin, as
+// strings. The Ask tests need to inspect the exact bytes of a control_response
+// (its nesting is the contract), not just count them.
+func (p *fakeProc) turnsSnapshot() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]string, 0, len(p.turns))
+	for _, t := range p.turns {
+		out = append(out, string(t))
+	}
+	return out
+}
 func (p *fakeProc) signals() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()

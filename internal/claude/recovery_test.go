@@ -61,19 +61,20 @@ func (rh *resumeHarness) fake(i int) *fakeProc {
 }
 
 // TestClaudeBridgeDeclaresEveryOptionalCapability pins the declared contract
-// surface: the bridge implements Start plus every optional capability this
-// work item adds or re-verifies, and still NOT ChatTurnClient.
+// surface: the bridge implements Start plus every optional capability this work
+// item adds or re-verifies — including ChatTurnClient, which Ask chat requires
+// and which this assertion previously required to be ABSENT.
 func TestClaudeBridgeDeclaresEveryOptionalCapability(t *testing.T) {
 	b := New(quietLogger())
 	for name, ok := range map[string]bool{
-		"AdapterBridge":      implements[scheduler.AdapterBridge](b),
-		"MessageInjector":    implements[scheduler.MessageInjector](b),
-		"SessionContinuer":   implements[scheduler.SessionContinuer](b),
-		"Aborter":            implements[scheduler.Aborter](b),
-		"LivenessReporter":   implements[scheduler.LivenessReporter](b),
-		"ContextCompacter":   implements[scheduler.ContextCompacter](b),
-		"SessionOwnerKind":   implements[scheduler.SessionOwnerKind](b),
-		"not ChatTurnClient": !implements[scheduler.ChatTurnClient](b),
+		"AdapterBridge":    implements[scheduler.AdapterBridge](b),
+		"MessageInjector":  implements[scheduler.MessageInjector](b),
+		"SessionContinuer": implements[scheduler.SessionContinuer](b),
+		"Aborter":          implements[scheduler.Aborter](b),
+		"LivenessReporter": implements[scheduler.LivenessReporter](b),
+		"ContextCompacter": implements[scheduler.ContextCompacter](b),
+		"SessionOwnerKind": implements[scheduler.SessionOwnerKind](b),
+		"ChatTurnClient":   implements[scheduler.ChatTurnClient](b),
 	} {
 		if !ok {
 			t.Fatalf("claude bridge capability %s = false", name)

@@ -47,6 +47,15 @@ type Bridge struct {
 	mu        sync.Mutex
 	live      map[string]*session // execID → live session
 	bySession map[string]string   // claude session id → owning execID
+
+	// Ask (interactive) conversations. SEPARATE from the execution registry
+	// above: an Ask session has no execution id, no manifest and no worktree, and
+	// its permission profile differs, so sharing the maps would conflate two
+	// session shapes that must not be confused (see ask.go).
+	askMu           sync.Mutex
+	askByConv       map[string]*askSession // conversationID → session
+	askBySID        map[string]*askSession // claude session id → session
+	askRootOverride string                 // test/server override for the ask dir
 }
 
 // New builds a Claude Code bridge.

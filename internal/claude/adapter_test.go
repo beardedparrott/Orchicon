@@ -9,14 +9,21 @@ import (
 )
 
 // Compile-time capability set: Start + the optional capabilities claude
-// implements. ChatTurnClient is deliberately ABSENT (Ask chat on claude is
-// out of scope).
+// implements, INCLUDING ChatTurnClient.
+//
+// Ask chat on claude WAS out of scope and these assertions said so; the
+// requirement changed. The interactive profile (ask.go + permissions.go) plus
+// the control protocol (stream.go + control.go) is what makes an Ask turn
+// possible, so the capability is now required rather than forbidden. The
+// assertions are INVERTED rather than deleted: they still pin the contract, in
+// the direction that now matters.
 var (
 	_ scheduler.AdapterBridge    = (*Bridge)(nil)
 	_ scheduler.MessageInjector  = (*Bridge)(nil)
 	_ scheduler.Aborter          = (*Bridge)(nil)
 	_ scheduler.LivenessReporter = (*Bridge)(nil)
 	_ scheduler.SessionOwnerKind = (*Bridge)(nil)
+	_ scheduler.ChatTurnClient   = (*Bridge)(nil)
 )
 
 // capability is the anonymous interface matching scheduler.ConfigurableBridge's
@@ -39,10 +46,13 @@ var (
 // the streaming method need not be added to scheduler.RuntimeClient).
 var _ = func(b *Bridge, rt *runtime.Client) { b.SetRuntimeClient(rt) }
 
-func TestBridgeDoesNotImplementChatTurnClient(t *testing.T) {
+// The Ask capability is what puts claude in the Ask picker at all: the GUI/TUI
+// read Dispatcher.ChatKinds(), which type-asserts exactly this interface. Without
+// it claude registers but is never offered for Ask.
+func TestBridgeImplementsChatTurnClient(t *testing.T) {
 	var b any = New(nil)
-	if _, ok := b.(scheduler.ChatTurnClient); ok {
-		t.Fatal("claude Bridge must NOT implement ChatTurnClient (Ask chat on claude is out of scope)")
+	if _, ok := b.(scheduler.ChatTurnClient); !ok {
+		t.Fatal("claude Bridge must implement ChatTurnClient — without it an Ask turn cannot be routed to claude and the pickers report it as not Ask-capable")
 	}
 }
 
@@ -52,18 +62,21 @@ func TestSessionOwnerKindIsClaude(t *testing.T) {
 	}
 }
 
-// TestDispatcherChatKindsOmitsClaude pins the contract: registering the
-// claude bridge makes it dispatchable (Kinds) but NOT offered for Ask chat
-// (ChatKinds), so the GUI/TUI show the honest "no Ask chat" state.
-func TestDispatcherChatKindsOmitsClaude(t *testing.T) {
+// TestDispatcherChatKindsIncludesClaude pins the contract: registering the
+// claude bridge makes it dispatchable (Kinds) AND offered for Ask chat
+// (ChatKinds), because the bridge now implements ChatTurnClient. This is the
+// surface both pickers read, so it is the difference between claude being
+// selectable for Ask and being flagged as unsupported.
+func TestDispatcherChatKindsIncludesClaude(t *testing.T) {
 	d := scheduler.NewDispatcher()
 	d.Register("claude", New(nil))
 	kinds := d.Kinds()
 	if len(kinds) != 1 || kinds[0] != "claude" {
 		t.Fatalf("Kinds() = %v, want [claude]", kinds)
 	}
-	if ck := d.ChatKinds(); len(ck) != 0 {
-		t.Fatalf("ChatKinds() = %v, want empty (claude has no ChatTurnClient)", ck)
+	ck := d.ChatKinds()
+	if len(ck) != 1 || ck[0] != "claude" {
+		t.Fatalf("ChatKinds() = %v, want [claude] (the Ask picker would otherwise refuse claude)", ck)
 	}
 }
 
