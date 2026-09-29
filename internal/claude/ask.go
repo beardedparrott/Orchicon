@@ -63,6 +63,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -513,7 +514,9 @@ func (s *askSession) argv() []string {
 	s.mu.Unlock()
 
 	argv := []string{
-		"claude", "-p",
+		// NOT the bare name: see binary.go. A PATH that reaches a system
+		// install runs a CLI that rejects this argv outright.
+		ClaudeBinaryPath(), "-p",
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--verbose",
@@ -774,11 +777,54 @@ func (s *askSession) readLoop(ctx context.Context, proc ProcSession) {
 			if !ok {
 				// The child ended. Tell the consumer the turn is over, or the
 				// collector waits forever on a session that no longer exists.
-				slog.Default().Warn("claude ask: the session child exited", "conversation", s.convID)
-				s.busEmit(scheduler.SessionEvent{Kind: "error", Text: "claude ask: the session ended"})
+				//
+				// THE STDERR TAIL IS THE POINT. A child that rejects our argv
+				// (an older CLI: "unknown option '--permission-prompts'") writes
+				// its complaint to stderr and NOTHING to stdout, so without this
+				// the turn reports a bare "session ended" and the operator has no
+				// way to learn why. The worker session already carried its tail;
+				// the Ask path did not.
+				tail := s.stderrTail(proc)
+				slog.Default().Warn("claude ask: the session child exited", "conversation", s.convID, "stderr", tail)
+				msg := "claude ask: the session ended"
+				if tail != "" {
+					msg += " — " + tail
+				}
+				s.busEmit(scheduler.SessionEvent{Kind: "error", Text: msg})
 				return
 			}
 			s.handleLine(line)
+		}
+	}
+}
+
+// stderrTail drains whatever the child wrote to stderr and returns a bounded
+// tail of it, so a failure the CHILD explained can be reported rather than
+// guessed at. Draining is bounded by a short deadline: the channel may already
+// be closed (then it returns immediately) or may never close, and an error path
+// must not become the next hang.
+func (s *askSession) stderrTail(proc ProcSession) string {
+	if proc == nil {
+		return ""
+	}
+	ch := proc.Stderr()
+	if ch == nil {
+		return ""
+	}
+	var b strings.Builder
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		select {
+		case line, ok := <-ch:
+			if !ok {
+				return strings.TrimSpace(b.String())
+			}
+			if b.Len() < 512 {
+				b.Write(line)
+				b.WriteByte(' ')
+			}
+		case <-deadline:
+			return strings.TrimSpace(b.String())
 		}
 	}
 }

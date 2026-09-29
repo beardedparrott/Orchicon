@@ -377,7 +377,9 @@ done:
 // TestNoBypassPermissionFlagIsEverEmitted fails if one is introduced.
 func (s *session) argv() []string {
 	argv := []string{
-		"claude", "-p",
+		// NOT the bare name: see binary.go. A PATH that reaches a system
+		// install runs a CLI that rejects this argv outright.
+		ClaudeBinaryPath(), "-p",
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--verbose",
