@@ -249,7 +249,7 @@ func floatField(m map[string]any, key string) float64 {
 // a shape change yields nil rather than an error.
 func writtenFilesFromTool(toolName string, input map[string]any) []string {
 	switch toolName {
-	case "Write", "Edit", "MultiEdit", "NotebookEdit":
+	case "Write", "Edit", "MultiEdit", "NotebookEdit", "ApplyPatch":
 	default:
 		return nil
 	}
