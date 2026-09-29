@@ -19,7 +19,10 @@
 // core acceptance runs with ZERO real Anthropic spend.
 package claude
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // Result message subtypes (the terminal turn marker).
 const (
@@ -93,9 +96,22 @@ type StreamEvent struct {
 	// are merged once by the mapper rather than summed.
 	MessageID string
 
+	// IsCompactBoundary marks a line reporting a context-compaction boundary
+	// (Claude Code's own auto-compact, or the boundary that follows the
+	// adapter's compact directive turn). Detection is tolerant by
+	// construction: an unknown system subtype is a no-op in ParseLine, so a
+	// CLI that renames the event degrades to "no boundary observed" rather
+	// than failing the session.
+	IsCompactBoundary bool
+
 	// Raw is the original JSON line, kept for the durable transcript.
 	Raw []byte
 }
+
+// CompactBoundarySubtypes are the system-message subtypes that report a
+// context compaction. Matched case-insensitively so a CLI that switches
+// between compact_boundary / compactBoundary still reports the boundary.
+var CompactBoundarySubtypes = []string{"compact_boundary", "compactboundary", "compact"}
 
 // ParseLine decodes one stdout line of the claude stream-json protocol into
 // a StreamEvent. An unknown/irrelevant shape yields a zero-value event with
@@ -113,6 +129,18 @@ func ParseLine(line []byte) (StreamEvent, error) {
 		Raw:       append([]byte(nil), line...),
 	}
 	switch ev.Type {
+	case "system":
+		// A compaction boundary is a healthy, forward-progress event (the
+		// transcript shrank in place). Everything else under "system" is
+		// handled by the mapper (init / session identity) and stays a no-op
+		// here.
+		sub := strings.ToLower(ev.Subtype)
+		for _, want := range CompactBoundarySubtypes {
+			if sub == want {
+				ev.IsCompactBoundary = true
+				break
+			}
+		}
 	case "stream_event":
 		inner, _ := raw["event"].(map[string]any)
 		if inner == nil {

@@ -77,9 +77,32 @@ func (l *BudgetLadder) CompactsDim(dim string) bool {
 	return l.spec.compactsDim(d)
 }
 
+// Message returns the ladder's OWN message for a dimension at the given
+// fraction of its limit — the exact text parseBudgetSpec resolved (tenant
+// warnings.messages merged with the worker's budget_overrides), with {pct}
+// substituted. An adapter that injects a budget warning MUST read the text
+// from here: it holds no message text of its own, so opencode and every
+// other adapter share ONE source of truth for the warn/escalate/final
+// ladder copy. Returns "" for an unknown dimension or the abort tier (the
+// abort tier has no message — the session is stopped).
+func (l *BudgetLadder) Message(dim string, frac float64) string {
+	d, ok := dimFromName(dim)
+	if !ok {
+		return ""
+	}
+	return l.spec.message(d, l.spec.levelFor(d, frac), frac)
+}
+
 // CompactionTurnFloor returns the minimum completed turns before the
 // budget/turn gate is armed (ORCHICON_COMPACT_MIN_TURNS).
 func (l *BudgetLadder) CompactionTurnFloor() int { return compactMinTurns() }
+
+// CompactMaxTurns resolves the turn-count context-hygiene gate
+// (compact_max_turns) from the SAME merged budget JSON, plus ok=false when
+// the gate is explicitly disabled (<= 0). Callers never restate the
+// default — it comes from the one place that defines it
+// (defaultCompactMaxTurns).
+func (l *BudgetLadder) CompactMaxTurns() (int, bool) { return effectiveCompactMaxTurns(l.spec) }
 
 // CompactionMax returns the per-execution compaction cap
 // (ORCHICON_COMPACT_MAX; 0 disables).

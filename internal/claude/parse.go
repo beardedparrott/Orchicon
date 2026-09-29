@@ -93,6 +93,36 @@ type Mapper struct {
 	textBuf  strings.Builder // per-turn text, coalesced into ONE part
 
 	stall *stallMonitor
+
+	// turnUsage/turnCost/turnUsageOK expose the usage the LAST completed turn
+	// reported. The budget ladder lives on the session and folds exactly the
+	// figures the telemetry path recorded (cache reads included), so the
+	// claude bridge gates spend on the SAME numbers it reports.
+	turnUsage   Usage
+	turnCost    float64
+	turnUsageOK bool
+}
+
+// sessionIDFor reads the claude session id the stream reported ("" until
+// the first system/init line lands).
+func (m *Mapper) sessionIDFor() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.sessionID
+}
+
+// setTurnUsage records the turn's usage for the budget gate.
+func (m *Mapper) setTurnUsage(u Usage, costUSD float64, ok bool) {
+	m.mu.Lock()
+	m.turnUsage, m.turnCost, m.turnUsageOK = u, costUSD, ok
+	m.mu.Unlock()
+}
+
+// turnUsage returns the usage + priced cost of the last completed turn.
+func (m *Mapper) turnUsageInfo() (Usage, float64, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.turnUsage, m.turnCost, m.turnUsageOK
 }
 
 // toolCall remembers what one in-flight `tool_use` block called, so the
@@ -224,7 +254,10 @@ func (m *Mapper) addFiles(ctx context.Context, paths []string) {
 	}
 	m.mu.Unlock()
 	if m.stall.sawFileWrite(time.Now()) {
-		m.cbs.OnRecovered(ctx, m.execID, reasonNoFileProgress)
+		// The recovered label is the RECOVERY signal, not the stall reason:
+		// opencode's monitor reports "recovered:no_file_progress" for the same
+		// cleared advisory trip, so the two adapters emit one identical label.
+		m.cbs.OnRecovered(ctx, m.execID, recoveredNoFilePrefix)
 	}
 	if len(fresh) > 0 {
 		m.cbs.OnWrittenFiles(ctx, m.execID, fresh)
@@ -480,6 +513,10 @@ func (m *Mapper) Handle(ctx context.Context, ev StreamEvent) bool {
 		if ok {
 			m.recordUsage(ctx, usage, ev.TotalCostUSD, ev.NumTurns)
 		}
+		// Publish the turn's LIVE figures for the shared budget gate (the
+		// cache-aware cost the provider priced, and the cache-read tokens)
+		// so the claude bridge charges the SAME numbers it reports.
+		m.setTurnUsage(usage, ev.TotalCostUSD, ok)
 		return true
 	}
 	return false
@@ -573,6 +610,13 @@ func (m *Mapper) handleToolResult(ctx context.Context, tr ToolResult) {
 	m.mu.Unlock()
 	name := call.canonical
 	m.stall.sawOutput(time.Now())
+	// Feed the repetition signal (opencode parity): the signature is the
+	// canonical tool name plus normalized args, tiered by result status.
+	m.stall.sawToolCall(time.Now(), name, string(marshalAny(call.input)), tr.IsError)
+	if tr.IsError {
+		// A failed call is still activity: it must not look like silence.
+		m.stall.sawOutput(time.Now())
+	}
 
 	// A TaskCreate/TaskUpdate resolution surfaces on the todowrite channel (the
 	// call already did, via emitTodos) so it reads as ONE opencode-style tool
@@ -928,87 +972,4 @@ func artifactTypeFromPath(path string) string {
 	default:
 		return "text"
 	}
-}
-
-// ------------------------------------------------------------- stall monitor
-
-const (
-	reasonNoProgress     = "stalled:no_progress"
-	reasonNoFileProgress = "stalled:no_file_progress"
-
-	// Adapter defaults, used when the tenant left the dimension blank
-	// (manifest pointer nil). An explicit 0 DISABLES the dimension.
-	defaultStallNoProgressWindow = 300 * time.Second
-	defaultStallNoFileDiffWindow = 120 * time.Second
-)
-
-// stallMonitor is the pure progress watchdog: total silence past the
-// no-progress window is FATAL (the caller hard-kills the child), while
-// ongoing activity with no file write past the no-file window is ADVISORY
-// (the subprocess keeps running; a later file write clears it).
-type stallMonitor struct {
-	started       time.Time
-	lastOutput    time.Time
-	lastFileWrite time.Time
-
-	noProgressWindow time.Duration
-	noFileWindow     time.Duration
-
-	progressed    bool
-	advisoryFired bool
-	fatalFired    bool
-}
-
-// newStallMonitor resolves the windows from the manifest. nil pointer = the
-// tenant has no opinion → the adapter default; non-nil = explicit, and 0
-// disables that dimension.
-func newStallMonitor(m scheduler.ExecutionManifest, now time.Time) *stallMonitor {
-	return &stallMonitor{
-		started:          now,
-		lastOutput:       now,
-		lastFileWrite:    now,
-		noProgressWindow: resolveWindow(m.StallNoProgressWindowSeconds, defaultStallNoProgressWindow),
-		noFileWindow:     resolveWindow(m.StallNoFileDiffWindowSeconds, defaultStallNoFileDiffWindow),
-	}
-}
-
-func resolveWindow(v *int64, def time.Duration) time.Duration {
-	if v == nil {
-		return def
-	}
-	if *v <= 0 {
-		return 0
-	}
-	return time.Duration(*v) * time.Second
-}
-
-// sawOutput records progress (any text or tool activity).
-func (s *stallMonitor) sawOutput(now time.Time) {
-	s.lastOutput = now
-	s.progressed = true
-}
-
-// sawFileWrite records a file write and reports whether it cleared an
-// outstanding ADVISORY stall (which the caller surfaces via OnRecovered).
-func (s *stallMonitor) sawFileWrite(now time.Time) bool {
-	s.lastFileWrite = now
-	if s.advisoryFired {
-		s.advisoryFired = false
-		return true
-	}
-	return false
-}
-
-// Evaluate returns the signal to raise ("" = none) and whether it is fatal.
-func (s *stallMonitor) Evaluate(now time.Time) (string, bool) {
-	if s.noProgressWindow > 0 && !s.fatalFired && now.Sub(s.lastOutput) > s.noProgressWindow {
-		s.fatalFired = true
-		return reasonNoProgress, true
-	}
-	if s.noFileWindow > 0 && !s.advisoryFired && !s.fatalFired && s.progressed &&
-		now.Sub(s.lastFileWrite) > s.noFileWindow {
-		s.advisoryFired = true
-		return reasonNoFileProgress, false
-	}
-	return "", false
 }
