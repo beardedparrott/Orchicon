@@ -389,8 +389,25 @@ func (s *session) argv() []string {
 	if strings.TrimSpace(s.model) != "" {
 		argv = append(argv, "--model", s.model)
 	}
-	if strings.TrimSpace(s.resumeID) != "" {
-		argv = append(argv, "--resume", s.resumeID)
+	if rid := strings.TrimSpace(s.resumeID); rid != "" {
+		// ALWAYS RESUME, WITHOUT A DISK CHECK — deliberately, and this is NOT the
+		// same rule as the Ask path (ask.go), for two reasons:
+		//
+		//  1. CONTRACT. A worker continuation must re-attach the SAME session
+		//     identity. Three tests pin it ("must re-attach the SAME session
+		//     identity", "must carry --resume sess-1"), and a silent fresh start
+		//     would drop exactly the history the continuation exists to carry — a
+		//     worse outcome than a visible failure.
+		//  2. A LOST SESSION IS THE RECOVERY SYSTEM'S PROBLEM, not the adapter's.
+		//     capture → summarize → preserve → resume exists to carry context when
+		//     a session is gone. Working around it here would bypass that machinery
+		//     and quietly hand a worker a context-free run.
+		//
+		// It is also why the check cannot be trusted here even if it were wanted:
+		// a worker's child may run INSIDE A RUNTIME CONTAINER, where the adapter's
+		// host-side view of ~/.claude and the child's view can diverge. The Ask
+		// path is host-only, so there the check is exact.
+		argv = append(argv, "--resume", rid)
 	}
 	// A policy LOAD failure is recorded, never silently dropped. PermissionArgs
 	// still returns a complete, restrictive argv in that case (the never-allow
