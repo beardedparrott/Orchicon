@@ -110,36 +110,49 @@ export function useProviderModels(providerId: string, enabled = true) {
 
 // useProviderModelsForPicker projects the providers-service sourcing view
 // into the picker's OpenCodeModel shape (ADR-0004 three-tier contract).
-// This is the NATIVE adapter's model tier: the vendored catalog ⊕ probed ⊕
-// manual models from Settings → Adapters, NOT the opencode-CLI discovery
-// (whose provider namespace the native adapter does not share). Entries
-// keep providerId = the provider id and id = the bare model id, so
-// catalogModelMatches resolves 3-segment refs by segments; modelRef
-// mirrors the legacy 2-segment "providerId/id" shape.
+// This is the model tier of the CATALOG-SOURCED kinds — the kinds the server
+// publishes in ListAdapterKinds.sourcing_kinds (orchicon, claude): the
+// vendored catalog ⊕ probed ⊕ manual models from Settings → Adapters, NOT the
+// opencode-CLI discovery (whose provider namespace those kinds do not share).
+// Entries keep providerId = the provider id and id = the bare model id, so
+// catalogModelMatches resolves 3-segment refs by segments; modelRef mirrors
+// the legacy 2-segment "providerId/id" shape.
+
+// projectPickerModels is the PURE projection useProviderModelsForPicker
+// applies to the sourcing view. Exported so the picker's own suite can run the
+// exact model tier the component renders (a source-text pin cannot assert a
+// non-empty list).
+export function projectPickerModels(
+  providerId: string,
+  models: readonly ProviderModel[],
+): OpenCodeModel[] {
+  return models.map((m) => {
+    const context = Number(m.context) || 0;
+    const maxOutput = Number(m.maxOutput) || 0;
+    return new OpenCodeModel({
+      id: m.id,
+      providerId,
+      name: m.id,
+      modelRef: `${providerId}/${m.id}`,
+      family: providerId,
+      status: "active",
+      limits:
+        context > 0 || maxOutput > 0
+          ? { context: BigInt(context), output: BigInt(maxOutput) }
+          : undefined,
+      capabilities: m.reasoning ? { reasoning: true } : undefined,
+      variants: m.reasoning ? ["low", "medium", "high"] : [],
+    });
+  });
+}
+
 export function useProviderModelsForPicker(providerId: string, enabled = true) {
   const q = useProviderModels(providerId, enabled);
   const models = q.data?.models;
-  const projected = useMemo(() => {
-    if (!models) return undefined;
-    return models.map((m) => {
-      const context = Number(m.context) || 0;
-      const maxOutput = Number(m.maxOutput) || 0;
-      return new OpenCodeModel({
-        id: m.id,
-        providerId,
-        name: m.id,
-        modelRef: `${providerId}/${m.id}`,
-        family: providerId,
-        status: "active",
-        limits:
-          context > 0 || maxOutput > 0
-            ? { context: BigInt(context), output: BigInt(maxOutput) }
-            : undefined,
-        capabilities: m.reasoning ? { reasoning: true } : undefined,
-        variants: m.reasoning ? ["low", "medium", "high"] : [],
-      });
-    });
-  }, [models, providerId]);
+  const projected = useMemo(
+    () => (models ? projectPickerModels(providerId, models) : undefined),
+    [models, providerId],
+  );
   return {
     models: projected,
     isLoading: q.isLoading,
