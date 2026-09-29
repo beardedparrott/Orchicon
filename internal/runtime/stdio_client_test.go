@@ -5,10 +5,37 @@ import (
 	"encoding/json"
 	"io"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+// shortSocketPath returns a unix socket path short enough to bind.
+//
+// A unix socket path is capped by the kernel at 108 bytes INCLUDING the
+// terminating NUL (sun_path), and exceeding it fails with a bare
+// "bind: invalid argument" (EINVAL) that names neither the length nor the
+// limit. t.TempDir() is unbounded: TMPDIR + the test name + a random suffix
+// (+ an ordinal for each further call in the same test), and `go test`
+// inherits GOTMPDIR — which this repo's Makefile points at
+// <repo>/.dev/tools/gotmp. On a deep checkout the tests below therefore
+// overflow the cap and fail to bind on the operator's machine while passing
+// in a container with a short path. /tmp keeps this at ~30 bytes, matching
+// the choice already made in daemon_secrets_test.go.
+func shortSocketPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "ocs-")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "agent.sock")
+	if len(sock) >= 108 {
+		t.Fatalf("socket path is %d bytes, over the 107-byte sun_path limit: %s", len(sock), sock)
+	}
+	return sock
+}
 
 // TestRunClientStdioForwardsFollowUpFrames pins the DUPLEX contract of the
 // in-container `runtime-client` shim: a "stdio" request is long-lived, so
@@ -17,7 +44,7 @@ import (
 // the forwarding goroutine only the opening frame arrives and the claude
 // session silently degrades to a one-shot (container transport).
 func TestRunClientStdioForwardsFollowUpFrames(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "agent.sock")
+	sock := shortSocketPath(t)
 	l, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -89,7 +116,7 @@ func TestRunClientStdioForwardsFollowUpFrames(t *testing.T) {
 // translates the EOF into a "close" frame, so the supervisor's control loop
 // drains instead of waiting forever (a leaked child + a wedged daemon relay).
 func TestRunClientStdioEOFClosesChild(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "agent.sock")
+	sock := shortSocketPath(t)
 	l, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
