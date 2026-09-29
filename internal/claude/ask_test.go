@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -100,10 +101,16 @@ func TestAskLaunchPinsSessionAndTheInteractiveProfile(t *testing.T) {
 	}
 }
 
-// The env the child inherits is what selects the hook's rule set. If the profile
-// var is missing the session silently runs the WORKER sandbox, where nothing is
+// The env the child inherits is what selects the HOOK's rule set. If the profile
+// var is missing the session silently runs the WORKER rule set, where nothing is
 // ever asked.
-func TestAskChildEnvSelectsTheInteractiveProfile(t *testing.T) {
+//
+// TWO PROFILES, NAMED APART ON PURPOSE. This one is the HOOK's (a PreToolUse rule
+// set: allow / deny / ask) and it IS interactive. The GUARD's profile is a
+// different thing entirely and is deliberately NOT interactive (see
+// TestAskChildEnvCarriesTheDefaultProfileExecutionGuard). Conflating the two is
+// the mistake that produced a shim which could only widen the sanctioned set.
+func TestAskChildEnvSelectsTheInteractiveHookProfile(t *testing.T) {
 	s := newAskSession(New(quietLogger()), "conv-env", "/tmp/orchicon-ask/conv-env")
 	env := strings.Join(s.childEnv(), "\n")
 	for _, want := range []string{
@@ -302,15 +309,18 @@ func TestAskAbortUnknownIsQuietButReplyIsLoud(t *testing.T) {
 // THE PARITY PIN. Both other adapters put the OS-level execution shim on the Ask
 // path (opencode's host serve, the native bridge's bash environ). Claude briefly
 // did not, which made it the only Ask transport where `a subprocess did it` was
-// unguarded — the class that carries the never-allow binaries, the protected
-// roots and the operator policy, none of which the PreToolUse hook can see.
+// unguarded — the class that carries the never-allow binaries and the protected
+// roots, neither of which the PreToolUse hook can see.
 //
 // Two things are asserted, and both are load-bearing:
 //  1. the shim DIRECTORY is first on PATH, so any process the session spawns
 //     resolves `rm`/`sudo`/`dd` through it;
-//  2. the INTERACTIVE guard vars are present, because without them the shim runs
-//     the frozen WORKER profile — the same failure one layer down.
-func TestAskChildEnvCarriesTheInteractiveExecutionGuard(t *testing.T) {
+//  2. the INTERACTIVE guard vars are ABSENT, matching opencode's Ask serve. The
+//     interactive profile can only WIDEN the sanctioned set (grants, once-targets,
+//     policy accepts, fullsend) and it fail-closes on a missing policy file,
+//     which would refuse every path-scoped command in every Ask conversation on a
+//     plane with no policy at permpolicy.DefaultPath().
+func TestAskChildEnvCarriesTheDefaultProfileExecutionGuard(t *testing.T) {
 	s := newAskSession(New(quietLogger()), "conv-guard", filepath.Join(t.TempDir(), "ask"))
 	s.ensureGuard()
 	if s.guard == nil {
@@ -321,13 +331,13 @@ func TestAskChildEnvCarriesTheInteractiveExecutionGuard(t *testing.T) {
 	env := s.childEnv()
 
 	var pathEntry string
-	var sawPolicy bool
+	var sawInteractive bool
 	for _, kv := range env {
 		switch {
 		case strings.HasPrefix(kv, "PATH="):
 			pathEntry = strings.TrimPrefix(kv, "PATH=")
 		case strings.HasPrefix(kv, "ORCHICON_GUARD_POLICY="):
-			sawPolicy = true
+			sawInteractive = true
 		}
 	}
 	if pathEntry == "" {
@@ -337,7 +347,70 @@ func TestAskChildEnvCarriesTheInteractiveExecutionGuard(t *testing.T) {
 	if !strings.Contains(first, "orchicon-guard-") {
 		t.Fatalf("PATH[0] = %q, want the guard shim dir first — a spawned process would resolve `rm` directly", first)
 	}
-	if !sawPolicy {
-		t.Fatal("the interactive guard vars are missing; the shim would run the frozen WORKER profile with nothing to ask about")
+	if sawInteractive {
+		t.Fatal("the Ask shim is in the INTERACTIVE profile: it can only widen the sanctioned set, and it fail-closes on a missing policy file — refusing every path-scoped command where opencode's Ask serve refuses nothing extra")
+	}
+}
+
+// THE SCOPE PIN. An empty project dir is not "no guard" — it is the mode where
+// blocked_path refuses EVERY absolute target outside the Orchicon scratch dir and
+// the operator's accept list. That is what opencode's host serve and the native
+// bridge run, and it is what this must match.
+//
+// The bug this pins: the shim allows an absolute target INSIDE its project dir,
+// so scoping the guard to the conversation's directory made `rm -rf
+// <abs path in the ask dir>` legitimate — a WIDER sanctioned set than both
+// references, justified by a claim ("one conversation, one directory") that
+// describes the session's shape rather than containing it.
+//
+// Asserted BEHAVIOURALLY: run the shim's own `rm` against an absolute path inside
+// the ask directory and require a refusal. A future change that re-scopes the
+// guard turns this red.
+func TestAskGuardRefusesAnAbsolutePathInTheAskDir(t *testing.T) {
+	askDir := filepath.Join(t.TempDir(), "ask")
+	if err := os.MkdirAll(filepath.Join(askDir, "scratch"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	s := newAskSession(New(quietLogger()), "conv-scope", askDir)
+	s.ensureGuard()
+	if s.guard == nil {
+		t.Skip("the execution guard could not be built in this environment")
+	}
+	defer s.guard.Close()
+
+	env := s.childEnv()
+
+	// The shim dir is PATH[0]; run the shimmed `rm` directly.
+	var pathEntry string
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "PATH=") {
+			pathEntry = strings.TrimPrefix(kv, "PATH=")
+		}
+	}
+	if pathEntry == "" {
+		t.Fatal("no PATH entry in the ask child env")
+	}
+	shimRm := filepath.Join(strings.Split(pathEntry, string(os.PathListSeparator))[0], "rm")
+
+	target := filepath.Join(askDir, "scratch", "gone")
+	cmd := exec.Command(shimRm, "-rf", target)
+	cmd.Env = env
+	cmd.Dir = askDir
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("the shim ALLOWED `rm -rf %s` — an absolute target inside the ask dir must be refused (the ask dir is a cwd, not a sanctioned scope); output=%q", target, out)
+	}
+	if !strings.Contains(strings.ToUpper(string(out)), "ORCHICON GUARD") {
+		t.Fatalf("refusal did not name the guard: %q", out)
+	}
+
+	// ...while a RELATIVE cleanup still works, which is why the empty scope costs
+	// the session nothing: it manages its own working directory the ordinary way.
+	rel := exec.Command(shimRm, "-rf", "scratch")
+	rel.Env = env
+	rel.Dir = askDir
+	if out, err := rel.CombinedOutput(); err != nil {
+		t.Fatalf("a relative cleanup was refused (%v): %q", err, out)
 	}
 }

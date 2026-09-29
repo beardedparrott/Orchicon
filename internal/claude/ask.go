@@ -38,7 +38,20 @@ package claude
 // that carries the never-allow class, the protected roots and the operator
 // policy against a subprocess ("a subprocess did it" is the hole the 2026-07-30
 // /home wipe went through). The PreToolUse hook never sees those; the shim does.
-// See ensureGuard()/childEnv().
+//
+// A second correction, to the fix itself: this file first built the shim SCOPED
+// to the conversation's directory, reasoning that "one conversation, one
+// directory" made that more precise. It does not. The shim permits absolute
+// targets inside its project dir, so naming the ask dir WIDENED the sanctioned
+// set rather than narrowing it — the opposite of parity. The scope is empty,
+// as in both references. See ensureGuard()/childEnv().
+//
+// NEITHER LAYER CONTAINS THE SESSION, and nothing here should be read as
+// claiming otherwise. The shim judges SUBPROCESSES; the hook judges claude's own
+// tool calls. An absolute write is still an absolute write once the operator
+// approves the card, and reads outside the ask dir are allowed. The ask
+// directory is a cwd and a scope key, not a jail — see the profile table in
+// hook.go for exactly what is allowed, asked and refused.
 
 import (
 	"context"
@@ -450,21 +463,34 @@ func (s *askSession) argv() []string {
 	return append(argv, args...)
 }
 
-// ensureGuard builds this conversation's OS-level execution shim once. It is
-// per-session (not per-plane) because it names the session's own directory as the
-// sanctioned scope; see the file header on why the other two adapters can use a
-// shared, unscoped guard and this one need not.
+// ensureGuard builds the OS-level execution shim for this session.
+//
+// THE SCOPE IS EMPTY, exactly as both other adapters build it
+// (guard.NewExecutionGuard("") in opencode's HostServe.startOnce and in
+// askorchicon's ask_guard). An empty dir is not "no guard": it is the
+// no-single-root mode, in which blocked_path refuses EVERY absolute target
+// outside the Orchicon scratch dir and the operator's accept list.
+//
+// NAMING THE ASK DIR HERE WEAKENED IT, which is the bug this replaces. The shim
+// allows an absolute target inside PROJECT_DIR (guard.go's blocked_path, allow
+// arm 2), so baking the conversation's directory in made an absolute `rm`
+// against that directory legitimate — where the other two adapters refuse it.
+// The ask directory is a CWD and a scope key, NOT a containment boundary: it
+// does not stop the session reaching the rest of the host, so treating it as a
+// sanctioned absolute scope bought no safety and gave away the refusal. Cleanup
+// is unaffected: RELATIVE targets are never blocked, so the session still
+// manages its own working directory the ordinary way.
 func (s *askSession) ensureGuard() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.guard != nil {
 		return
 	}
-	g, err := guard.NewExecutionGuard(s.askDir)
+	g, err := guard.NewExecutionGuard("")
 	if err != nil {
 		// Degrade to unguarded, matching the worker supervisor's warn-and-continue
 		// contract: a temp-dir failure is transient and must not refuse the turn.
-		slog.Default().Warn("claude ask: the OS-level execution guard could not be built — this Ask session runs without the PATH shim", "error", err, "ask_dir", s.askDir)
+		slog.Default().Warn("claude ask: the OS-level execution guard could not be built — this Ask session runs without the PATH shim", "error", err)
 		return
 	}
 	s.guard = g
@@ -485,28 +511,30 @@ func (s *askSession) childEnv() []string {
 	// worker's container transport, which must use the daemon's bind mount).
 	env = setEnvVar(env, HookBinEnv, HookBinaryPath())
 
-	// The OS-level guard, exactly as the worker's host transport applies it
-	// (session.childEnv) and as the other two Ask paths apply it.
+	// The OS-level guard, exactly as opencode's Ask serve applies it: the shim on
+	// PATH, and NOTHING ELSE. No InteractiveEnviron, so the shim runs its default
+	// (worker) path-scoped profile.
 	//
-	// The scope is THIS conversation's directory, not "" as the shared host serve
-	// passes: opencode's serve and the native bridge build ONE guard for many
-	// conversations with no single root, so they name none. A claude Ask session
-	// belongs to exactly one conversation with exactly one directory, so naming it
-	// is both available and more precise — the session can clean up after itself
-	// and nothing else is in scope.
+	// THAT OMISSION IS THE PARITY, and it is also the safe choice:
+	//
+	//   - Nothing can WIDEN the sanctioned set. The interactive profile consults
+	//     grants, once-targets, the operator policy and fullsend, all of which can
+	//     allow a path the default profile refuses. This session wires none of
+	//     them, so adding the profile would add only the ability to widen.
+	//   - It avoids a fail-closed trap. In the interactive profile a policy file
+	//     that is missing or unreadable makes the shim refuse EVERY path-scoped
+	//     command ("fail-closed ... refusing rather than running it unguarded"),
+	//     with no card and no way for the operator to see why. On a plane with no
+	//     policy at permpolicy.DefaultPath() that would refuse every `rm`, `mv`,
+	//     `cp` and `chmod` in every Ask conversation. The native path accepts that
+	//     because its bash env is a per-call factory that always has a live policy
+	//     to point at; a stdio child's environment is fixed at spawn.
+	//
+	// What remains in force is the part that matters and cannot be widened: the
+	// never-allow class (refused on the binary name, before any argument is read)
+	// and the protected roots (judged before every allow-set test).
 	if s.guard != nil {
 		env = s.guard.Apply(env)
-		// InteractiveEnviron switches the shim into the interactive profile and
-		// points it at the operator's policy. An empty policy path emits NOTHING
-		// (that is the worker profile), so this is also what keeps a policy-less
-		// plane from silently handing claude a strict worker shim.
-		//
-		// No grants/once: the native path re-reads those PER INVOCATION because its
-		// bash env is a factory, but a stdio child's environment is fixed at spawn,
-		// so a grant could not take effect without restarting the session. The
-		// policy FILE is re-read per invocation by the shim regardless, so operator
-		// accept/deny entries still apply live. Live grants are a follow-up.
-		env = append(env, guard.InteractiveEnviron(permpolicy.DefaultPath(), s.askDir, nil, nil, false)...)
 	}
 	return env
 }
