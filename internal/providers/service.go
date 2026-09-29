@@ -1203,6 +1203,37 @@ type ModelsResult struct {
 // models are INCLUDED with Visible=false (the operator must be able to
 // re-check them); probe failure is non-fatal (Degraded=true — the UI
 // renders visibly degraded, never a blank list).
+// claudeManagedCatalogProvider is the provider id whose model list the Claude
+// Code managed catalog is authoritative for.
+const claudeManagedCatalogProvider = "anthropic"
+
+// claudeManagedCatalogModels returns the signed Claude Code catalog's models for
+// a provider, or nil for any other provider or on ANY failure.
+//
+// A FAILURE IS LOGGED, not swallowed: the operator otherwise sees a stale three-
+// model list with nothing to explain why. The message names the reason (network,
+// or a signature that did not verify) because those call for different responses.
+func (s *Service) claudeManagedCatalogModels(ctx context.Context, providerID string) []orchicon.ModelInfo {
+	if providerID != claudeManagedCatalogProvider {
+		return nil
+	}
+	models := orchicon.ClaudeCatalogModels(ctx)
+	if len(models) == 0 {
+		if s.log != nil {
+			err := orchicon.ClaudeCatalogLastError()
+			if err != nil {
+				s.log.Warn("providers: the Claude Code managed model catalog is unavailable — falling back to the vendored snapshot (which may be stale)",
+					"ref_id", providerID, "error", err)
+			} else {
+				s.log.Warn("providers: the Claude Code managed model catalog returned no models — falling back to the vendored snapshot",
+					"ref_id", providerID)
+			}
+		}
+		return nil
+	}
+	return models
+}
+
 // repairBudget bounds the self-healing base-URL sweep (see ListProviderModels).
 //
 // A working LOCAL endpoint resolves in milliseconds, so the bound costs nothing
@@ -1284,7 +1315,22 @@ func (s *Service) ListProviderModels(ctx context.Context, tenantID, providerID s
 	// untouched. The live CHAT path keeps its own no-fallback contract
 	// (internal/orchicon/sourcing.go) — this seeds the listing, not dispatch.
 	if len(res.Models) == 0 {
-		if cat := orchicon.CatalogModelsForProvider(providerID); len(cat) > 0 {
+		// SOURCE ORDER, best-authority first:
+		//
+		//  1. the Claude Code MANAGED catalog for the anthropic provider — the
+		//     signed document the CLI's own model selector reads, so the list is
+		//     current by construction rather than by anyone remembering to edit a
+		//     snapshot. (The vendored snapshot listed three anthropic models and
+		//     NONE of them are offered any more.)
+		//  2. the vendored catalog — the offline fallback, and the PRICING source
+		//     the managed catalog does not carry.
+		//
+		// The managed catalog returns nil on any failure, INCLUDING a signature
+		// that does not verify, so an untrusted document degrades to the snapshot
+		// rather than being shown.
+		if managed := s.claudeManagedCatalogModels(ctx, providerID); len(managed) > 0 {
+			res.Models = append(res.Models, managed...)
+		} else if cat := orchicon.CatalogModelsForProvider(providerID); len(cat) > 0 {
 			res.Models = append(res.Models, cat...)
 		}
 	}
