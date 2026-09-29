@@ -304,6 +304,32 @@ export function useBatchArchiveWorkItems() {
   });
 }
 
+// useBatchRestoreWorkItems restores multiple archived work items by id.
+// Mirrors useBatchArchiveWorkItems: fans out with Promise.allSettled so a
+// single non-restorable item (not archived, or a concurrent conflict) does
+// not abort the rest. The server is authoritative — the client counts
+// successes ("restored") vs. failures ("skipped") from the returned
+// results rather than duplicating validation. Callers are expected to
+// order ids bottom-up (children before parents) for a clean sequence.
+export function useBatchRestoreWorkItems() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (ids: string[]) => {
+      const results = await Promise.allSettled(
+        ids.map((id) => workItemClient.restoreWorkItem({ id })),
+      );
+      const restored = results.filter(
+        (r) => r.status === "fulfilled",
+      ).length;
+      const skipped = results.length - restored;
+      return { restored, skipped, results };
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: workItemKeys.all });
+    },
+  });
+}
+
 // useRemoveSchedule removes the schedule from a work item without
 // changing its status. It clears recurring_schedule, unbinds the
 // workflow_run_id, and disables auto_start_workflow using proto3 clear
