@@ -36,16 +36,34 @@ package orchicon
 // sidecar's own `publicKeySha256`, so a sidecar cannot name a key it was not
 // signed with.
 //
-// # What this catalog does NOT have: pricing
+// # What this catalog does NOT have: pricing — and why that costs us nothing
 //
 // It carries windows (max_input_tokens / max_output_tokens), effort levels,
 // capabilities, family and `offered_on` — and ZERO pricing (verified: no
-// price/pricing/cost field occurs anywhere in the document). Pricing is
-// commercial detail the client has no need for. So the two sources are
-// COMPLEMENTARY and both are used: the LIST from here, the PRICING from the
-// vendored catalog, merged by id. A model with no vendored pricing keeps the
-// existing "no catalog pricing — billing applies" treatment rather than
-// inventing a number.
+// price/pricing/cost field occurs anywhere in the document). That is by design
+// for a CLIENT catalog, and it would only matter if a catalog had to be the
+// pricing source. For claude it does not:
+//
+//   - THE CLI REPORTS THE COST ITSELF. `total_cost_usd` rides every turn's
+//     terminal result (stream.go parses it), internal/claude's mapper records it
+//     as UsageInput.CostUSD (parse.go), and UsageRecorder keeps it whenever the
+//     catalog declines (recorder.go; see CatalogModelCost's fail-closed contract
+//     in catalog_data.go — "the adapter-reported cost stands"). So a model NEWER
+//     than the vendored snapshot is still costed, by Claude's own accounting.
+//   - the vendored catalog is therefore a REFINEMENT for the models it knows,
+//     not the mechanism that makes pricing work. (It remains the only source for
+//     an adapter that reports no cost of its own.)
+//
+// CONSEQUENCE, stated because the comments here previously got it backwards: a
+// row left with nil Pricing is a statement about THIS CATALOG, not a claim that
+// the model is unpriced. Do not read it as "billing applies".
+//
+// ONE CAVEAT, and it is Anthropic's own rather than ours: their figure is a USD
+// ESTIMATE at list rates, not an invoice — the CLI says exactly that of /cost,
+// total_cost_usd, --max-budget-usd and the OTel cost metric alike, and offers a
+// `modelPricing` settings block to price at contracted rates instead. For a
+// subscription-backed operator it measures PLAN CONSUMPTION at list rates: a
+// useful proxy for limit burn, not money spent.
 
 import (
 	"context"
@@ -390,10 +408,12 @@ func claudeCatalogGet(ctx context.Context, url string) ([]byte, error) {
 
 // mergeClaudePricing copies vendored pricing onto catalog rows by id.
 //
-// The managed catalog carries NO pricing (verified), and the cost gate needs it.
-// A model with no vendored entry keeps Pricing == nil, which the existing
-// treatment renders as "no catalog pricing — billing applies" rather than a
-// fabricated number.
+// A model with no vendored entry keeps a nil Pricing, and that is a statement
+// about THIS CATALOG rather than about the model being unpriced: the recorded
+// cost for a claude turn comes from the CLI's own `total_cost_usd` whenever the
+// catalog declines (see the file header), so a row newer than the snapshot is
+// still costed at runtime. This function only decides which authored rates the
+// picker prefers where we have them.
 func mergeClaudePricing(models []ModelInfo) []ModelInfo {
 	byID := map[string]*Pricing{}
 	for _, m := range CatalogModelsForProvider("anthropic") {

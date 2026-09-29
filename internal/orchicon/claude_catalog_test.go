@@ -198,8 +198,14 @@ func TestParseClaudeCatalog(t *testing.T) {
 	}
 }
 
-// The managed catalog has no pricing; the vendored one does. The merge is what
-// makes the cost gate work for a model the snapshot knows.
+// The managed catalog carries no pricing; the vendored one does. The merge
+// decides which AUTHORED rates the picker prefers.
+//
+// It is NOT what makes pricing work for claude: the CLI reports total_cost_usd
+// per turn and the usage recorder keeps it whenever this catalog declines
+// (pinned at the recorder level by
+// aigateway.TestRecordPricingFallback). A nil Pricing on a row is
+// a statement about this catalog, not a claim that the model is unpriced.
 func TestMergeClaudePricing(t *testing.T) {
 	in := []ModelInfo{
 		{ID: "claude-sonnet-4", Context: 1000}, // vendored entry exists
@@ -213,7 +219,8 @@ func TestMergeClaudePricing(t *testing.T) {
 		t.Error("claude-sonnet-4 has vendored pricing but the merge dropped it")
 	}
 	if out[1].Pricing != nil {
-		t.Error("a model with no vendored pricing must stay nil (billing-applies), never a fabricated number")
+		t.Error("a model with no vendored entry must stay nil — never a fabricated number " +
+			"(the CLI's own cost still covers it at runtime; nil is a catalog statement, not an unpriced model)")
 	}
 	// Windows come from the managed catalog and must survive the merge.
 	if out[1].Context != 1000 {

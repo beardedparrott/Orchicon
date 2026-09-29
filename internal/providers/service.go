@@ -1322,8 +1322,11 @@ func (s *Service) ListProviderModels(ctx context.Context, tenantID, providerID s
 		//     current by construction rather than by anyone remembering to edit a
 		//     snapshot. (The vendored snapshot listed three anthropic models and
 		//     NONE of them are offered any more.)
-		//  2. the vendored catalog — the offline fallback, and the PRICING source
-		//     the managed catalog does not carry.
+		//  2. the vendored catalog — the offline fallback, and the authored
+		//     PRICING source. For claude this is a REFINEMENT, not what makes
+		//     pricing work: the CLI reports `total_cost_usd` on every turn and the
+		//     usage recorder keeps it whenever this catalog declines, so a model
+		//     newer than the snapshot is still costed.
 		//
 		// The managed catalog returns nil on any failure, INCLUDING a signature
 		// that does not verify, so an untrusted document degrades to the snapshot
