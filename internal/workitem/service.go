@@ -64,6 +64,14 @@ type Service struct {
 	sequenceResumeFn ResumeSequenceStarter
 	sequenceStopFn   StopSequenceStarter
 	runtimeImageFn   RuntimeImageResolver
+	// archiveConflictHook is a test-only seam: invoked with the attempt
+	// number (1 = initial, 2 = the one-shot retry) right after
+	// ArchiveWorkItem's read+validate for that attempt and before its
+	// archive write, so a test can commit a real concurrent version bump
+	// (a separate transaction) and deterministically exercise the retry
+	// path against genuine Postgres optimistic-concurrency behavior rather
+	// than a mock. Nil in production.
+	archiveConflictHook func(attempt int)
 	apiv1connect.UnimplementedWorkItemServiceHandler
 }
 
@@ -1892,25 +1900,34 @@ func (s *Service) ArchiveWorkItem(ctx context.Context, req *connect.Request[apiv
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	// An idea is never terminal-archivable; route it through DismissIdea so
-	// the dismissal is audited as work_item.dismissed rather than archived.
-	if IsIdeaStatus(current.Status) {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, ErrWorkItemIsIdea())
+	if err := validateArchivePreconditions(ctx, ttx.Tx, tenantID, current); err != nil {
+		return nil, err
 	}
-	if !domain.WorkItemIsTerminalArchivable(current.Status) {
-		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			errors.New("work item must be in a terminal state (succeeded, failed, cancelled, or skipped) to be archived; finish or cancel it first"))
-	}
-	children, err := db.ListDirectChildren(ctx, ttx.Tx, tenantID, current.ID)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if len(children) > 0 {
-		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			fmt.Errorf("cannot archive a work item that has %d child work item(s); archive the children first", len(children)))
+	if s.archiveConflictHook != nil {
+		s.archiveConflictHook(1)
 	}
 
 	archived, err := db.ArchiveWorkItem(ctx, ttx.Tx, tenantID, current.ID, current.Version, current.Status)
+	if errors.Is(err, db.ErrVersionConflict) {
+		// The sequence engine (or any concurrent writer) can bump a parent's
+		// version between our read and this write — status transitions and
+		// SequenceLastProgressAt updates happen behind the UI's back. Absorb
+		// exactly one such stale-read window: re-read the row, re-validate
+		// every precondition against the FRESH row, and retry the archive
+		// once. A second conflict is a real race, not staleness, so it
+		// surfaces to the caller normally.
+		current, err = db.GetWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id)
+		if err != nil {
+			return nil, mapDBError(err)
+		}
+		if err := validateArchivePreconditions(ctx, ttx.Tx, tenantID, current); err != nil {
+			return nil, err
+		}
+		if s.archiveConflictHook != nil {
+			s.archiveConflictHook(2)
+		}
+		archived, err = db.ArchiveWorkItem(ctx, ttx.Tx, tenantID, current.ID, current.Version, current.Status)
+	}
 	if err != nil {
 		return nil, mapDBError(err)
 	}
@@ -1926,6 +1943,32 @@ func (s *Service) ArchiveWorkItem(ctx context.Context, req *connect.Request[apiv
 	}
 	s.log.Info("work item archived", "id", archived.ID)
 	return connect.NewResponse(&apiv1.ArchiveWorkItemResponse{WorkItem: rowToProto(archived)}), nil
+}
+
+// validateArchivePreconditions enforces the full archive precondition set
+// (not an idea, terminal-archivable status, no non-archived children)
+// against the given row. Called both on the initial read and again against
+// the freshly re-read row on a version-conflict retry, so a sequence-engine
+// bump mid-flight is re-validated rather than assumed safe.
+func validateArchivePreconditions(ctx context.Context, tx pgx.Tx, tenantID string, current db.WorkItemRow) error {
+	// An idea is never terminal-archivable; route it through DismissIdea so
+	// the dismissal is audited as work_item.dismissed rather than archived.
+	if IsIdeaStatus(current.Status) {
+		return connect.NewError(connect.CodeFailedPrecondition, ErrWorkItemIsIdea())
+	}
+	if !domain.WorkItemIsTerminalArchivable(current.Status) {
+		return connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("work item must be in a terminal state (succeeded, failed, cancelled, or skipped) to be archived; finish or cancel it first"))
+	}
+	children, err := db.ListDirectChildren(ctx, tx, tenantID, current.ID)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	if len(children) > 0 {
+		return connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("cannot archive a work item that has %d child work item(s); archive the children first", len(children)))
+	}
+	return nil
 }
 
 // RestoreWorkItem returns an archived work item to the active views, back

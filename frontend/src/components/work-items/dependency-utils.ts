@@ -174,3 +174,80 @@ export function buildTreeData(
 
 export type BlockState = ReturnType<typeof computeBlockState>;
 export type { DependencyGraph };
+
+// ---------------------------------------------------------------------------
+// Archive view tree (option A — archived-only tree with active ghost
+// anchors). Archived subtrees are self-contained (an archived parent's
+// children are archived too — the block-don't-cascade archive rule holds
+// in the data), but an archived item's parent can be ACTIVE: the sequence
+// engine / operators finish and archive a leaf while its epic stays open.
+// Walking the parentId chain needs BOTH partitions, so callers pass the
+// active items separately (a second, lazily-enabled query) rather than
+// mixing archive semantics into the one archived-only list query.
+// ---------------------------------------------------------------------------
+
+export interface ArchiveTreeData {
+  /** archived items + any active ancestors needed to connect them */
+  treeItems: WorkItem[];
+  /** ids of the active "ghost anchor" rows (non-restorable, non-selectable) */
+  activeAnchorIds: Set<string>;
+}
+
+/**
+ * Builds the archive view's tree: every archived item, plus — for any
+ * archived item whose ancestor chain crosses into an ACTIVE item — the
+ * active ancestors needed to render that connection as muted anchor rows.
+ * `activeItems` only needs to cover items that might be ancestors of the
+ * archived set (the page passes the full active list for the project).
+ */
+export function buildArchiveTreeData(
+  archivedItems: WorkItem[] | undefined,
+  activeItems: WorkItem[] | undefined,
+): ArchiveTreeData {
+  const archived = archivedItems ?? [];
+  const activeById = new Map((activeItems ?? []).map((i) => [i.id, i]));
+  const archivedById = new Map(archived.map((i) => [i.id, i]));
+
+  const activeAnchors = new Map<string, WorkItem>();
+  for (const item of archived) {
+    let parentId = item.parentId;
+    let guard = 0;
+    while (parentId && guard++ < 10) {
+      if (archivedById.has(parentId)) {
+        // Archived ancestor: already in treeItems, keep walking above it.
+        parentId = archivedById.get(parentId)!.parentId;
+        continue;
+      }
+      const activeParent = activeById.get(parentId);
+      if (!activeParent) break; // parent not resolvable (deleted, or out of scope)
+      if (!activeAnchors.has(activeParent.id)) activeAnchors.set(activeParent.id, activeParent);
+      parentId = activeParent.parentId;
+    }
+  }
+
+  return {
+    treeItems: [...archived, ...activeAnchors.values()],
+    activeAnchorIds: new Set(activeAnchors.keys()),
+  };
+}
+
+/**
+ * Orders ids child-first (bottom-up) by parentId depth within `itemsById`,
+ * so a subtree restore issues child requests before their parent — a
+ * clean sequence with no parent momentarily "restored" ahead of children
+ * still archived. Ids outside `itemsById` sort first (depth 0 is safest
+ * last, so unknown-depth items don't block behind a real chain).
+ */
+export function bottomUpOrder(ids: string[], itemsById: Map<string, WorkItem>): string[] {
+  const depthOf = (id: string): number => {
+    let depth = 0;
+    let current = itemsById.get(id);
+    let guard = 0;
+    while (current?.parentId && itemsById.has(current.parentId) && guard++ < 10) {
+      depth++;
+      current = itemsById.get(current.parentId);
+    }
+    return depth;
+  };
+  return [...ids].sort((a, b) => depthOf(b) - depthOf(a));
+}

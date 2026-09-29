@@ -8,6 +8,7 @@ package workitem
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -113,6 +114,103 @@ func TestArchiveWorkItemRejectsHasChildren(t *testing.T) {
 	}
 	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
 		t.Fatalf("error code = %v, want FailedPrecondition", got)
+	}
+}
+
+// bumpWorkItemVersion commits a concurrent version bump (a separate,
+// committed transaction) to simulate the sequence engine mutating a parent
+// behind the archive RPC's back mid-flight.
+func bumpWorkItemVersion(t *testing.T, pool *db.Pool, tenantID, id string, expectedVersion int) db.WorkItemRow {
+	t.Helper()
+	ctx := context.Background()
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("begin bump tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+	title := "bumped by sequence engine"
+	w, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, id, expectedVersion, db.UpdateWorkItemFields{Title: &title})
+	if err != nil {
+		t.Fatalf("bump version: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit bump: %v", err)
+	}
+	return w
+}
+
+// TestArchiveWorkItemRetriesOnceOnVersionConflict exercises the one-shot
+// retry (docs/09 §5): a concurrent writer (simulating the sequence engine)
+// bumps the row's version between ArchiveWorkItem's initial read and its
+// archive write. The RPC must re-read, re-validate against the fresh row,
+// and retry exactly once — succeeding here since only one bump occurs —
+// with exactly one audit event and one outbox event (no double emission).
+func TestArchiveWorkItemRetriesOnceOnVersionConflict(t *testing.T) {
+	pool, s, ctx, tenantID, projectID := archiveEnv(t)
+	item := archiveItem(t, pool, tenantID, projectID, domain.WorkItemSucceeded)
+
+	hookCalls := 0
+	s.archiveConflictHook = func(attempt int) {
+		hookCalls++
+		if attempt == 1 {
+			// Commit the bump from a SEPARATE, already-committed
+			// transaction right before the archive RPC's own transaction
+			// attempts its first write — a real Postgres version conflict,
+			// not a mock.
+			bumpWorkItemVersion(t, pool, tenantID, item.ID, item.Version)
+		}
+	}
+
+	got, err := s.ArchiveWorkItem(ctx, connect.NewRequest(&apiv1.ArchiveWorkItemRequest{Id: item.ID}))
+	if err != nil {
+		t.Fatalf("archive work item: %v", err)
+	}
+	if got.Msg.WorkItem.Status != apiv1.WorkItemStatus_WORK_ITEM_STATUS_ARCHIVED {
+		t.Fatalf("status = %v, want archived", got.Msg.WorkItem.Status)
+	}
+	if hookCalls != 2 {
+		t.Fatalf("archiveConflictHook calls = %d, want 2 (initial attempt + retry)", hookCalls)
+	}
+	if n := auditEventCount(t, pool, tenantID, "work_item.archived", "work_item", item.ID); n != 1 {
+		t.Fatalf("work_item.archived audit rows = %d, want exactly 1 (no double emission)", n)
+	}
+	if n := countOutboxEvent(t, pool, ctx, tenantID, "work_item.archived", item.ID); n != 1 {
+		t.Fatalf("work_item.archived outbox events = %d, want exactly 1", n)
+	}
+}
+
+// TestArchiveWorkItemPersistentConflictSurfacesError: a SECOND consecutive
+// conflict (on the retry itself) is a real race, not staleness — the
+// bounded retry must not loop, and the error must surface to the caller.
+func TestArchiveWorkItemPersistentConflictSurfacesError(t *testing.T) {
+	pool, s, ctx, tenantID, projectID := archiveEnv(t)
+	item := archiveItem(t, pool, tenantID, projectID, domain.WorkItemSucceeded)
+
+	s.archiveConflictHook = func(attempt int) {
+		// Re-read the current row via a throwaway GetWorkItem call so the
+		// bump always targets the row's CURRENT version, then bump again
+		// on both the initial attempt and the retry — a persistent race.
+		ttx, err := pool.BeginTenantTx(ctx, tenantID)
+		if err != nil {
+			t.Fatalf("begin read tx: %v", err)
+		}
+		current, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, item.ID)
+		ttx.Rollback(ctx)
+		if err != nil {
+			t.Fatalf("read current: %v", err)
+		}
+		bumpWorkItemVersion(t, pool, tenantID, item.ID, current.Version)
+	}
+
+	_, err := s.ArchiveWorkItem(ctx, connect.NewRequest(&apiv1.ArchiveWorkItemRequest{Id: item.ID}))
+	if err == nil {
+		t.Fatal("expected a persistent version conflict to surface as an error")
+	}
+	if !errors.Is(err, db.ErrVersionConflict) {
+		t.Fatalf("error = %v, want ErrVersionConflict", err)
+	}
+	if n := auditEventCount(t, pool, tenantID, "work_item.archived", "work_item", item.ID); n != 0 {
+		t.Fatalf("work_item.archived audit rows = %d, want 0 (archive never succeeded)", n)
 	}
 }
 

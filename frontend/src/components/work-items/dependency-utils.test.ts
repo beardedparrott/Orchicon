@@ -17,6 +17,8 @@ import {
   type WorkItemDependency,
 } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import {
+  bottomUpOrder,
+  buildArchiveTreeData,
   buildTreeData,
   computeBlockState,
   filterItemsByKindStatus,
@@ -219,5 +221,47 @@ describe("buildTreeData (regression: search must not orphan matches)", () => {
     const data = buildTreeData(all, [], []);
     expect(data.matches.length).toBe(0);
     expect(data.treeItems.length).toBe(0);
+  });
+});
+
+describe("buildArchiveTreeData", () => {
+  it("renders a fully-archived subtree nested (epic -> feature -> task, all archived)", () => {
+    const e = item({ id: "e", title: "Epic", kind: WorkItemKind.EPIC, status: WorkItemStatus.ARCHIVED, parentId: "" });
+    const f = item({ id: "f", title: "Feature", kind: WorkItemKind.FEATURE, status: WorkItemStatus.ARCHIVED, parentId: "e" });
+    const t = item({ id: "t", title: "Task", kind: WorkItemKind.TASK, status: WorkItemStatus.ARCHIVED, parentId: "f" });
+    const data = buildArchiveTreeData([e, f, t], []);
+    expect(data.treeItems.map((i) => i.id).sort()).toEqual(["e", "f", "t"]);
+    expect(data.activeAnchorIds.size).toBe(0);
+  });
+
+  it("renders a ghost anchor for an archived item whose parent is still active", () => {
+    // Ask Orchicon epic case: an active epic with one archived child.
+    const epic = item({ id: "epic", title: "Ask Orchicon Overhaul", kind: WorkItemKind.EPIC, status: WorkItemStatus.RUNNING, parentId: "" });
+    const task = item({ id: "task", title: "F1 task", kind: WorkItemKind.TASK, status: WorkItemStatus.ARCHIVED, parentId: "epic" });
+    const data = buildArchiveTreeData([task], [epic]);
+    expect(data.treeItems.map((i) => i.id).sort()).toEqual(["epic", "task"]);
+    // The active epic renders as a ghost anchor — not counted as archived.
+    expect(data.activeAnchorIds.has("epic")).toBe(true);
+    expect(data.activeAnchorIds.has("task")).toBe(false);
+  });
+
+  it("walks past an archived ancestor to reach a further-up active ancestor", () => {
+    const epic = item({ id: "epic", title: "Epic", status: WorkItemStatus.RUNNING, parentId: "" });
+    const feature = item({ id: "feature", title: "Feature", status: WorkItemStatus.ARCHIVED, parentId: "epic" });
+    const task = item({ id: "task", title: "Task", status: WorkItemStatus.ARCHIVED, parentId: "feature" });
+    const data = buildArchiveTreeData([feature, task], [epic]);
+    expect(data.activeAnchorIds.has("epic")).toBe(true);
+    expect(data.treeItems.map((i) => i.id).sort()).toEqual(["epic", "feature", "task"]);
+  });
+});
+
+describe("bottomUpOrder", () => {
+  it("orders a selected subtree child-first (deepest first)", () => {
+    const e = item({ id: "e", title: "Epic", parentId: "" });
+    const f = item({ id: "f", title: "Feature", parentId: "e" });
+    const t = item({ id: "t", title: "Task", parentId: "f" });
+    const byId = new Map([e, f, t].map((i) => [i.id, i]));
+    expect(bottomUpOrder(["e", "f", "t"], byId)).toEqual(["t", "f", "e"]);
+    expect(bottomUpOrder(["t", "e", "f"], byId)).toEqual(["t", "f", "e"]);
   });
 });
