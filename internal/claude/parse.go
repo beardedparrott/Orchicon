@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -68,6 +70,16 @@ type Mapper struct {
 	sessionID string
 	tools     map[string]toolCall // tool_use id → what that call was
 	fileSet   map[string]bool
+	// tasks is the ACCUMULATING claude task list (TaskCreate/TaskUpdate), in
+	// creation order. Unlike TodoWrite (a whole-list replacement), the task
+	// family is cumulative and id-correlated: taskIndex maps a task key to its
+	// slot in tasks, and taskKeyByToolUse maps a TaskCreate's tool_use id to
+	// the key that row carries NOW — a freshly created row is keyed by its
+	// tool_use id until the CLI-allocated id arrives in the paired tool_result
+	// (handleToolResult re-keys it).
+	tasks            []taskItem
+	taskIndex        map[string]int
+	taskKeyByToolUse map[string]string
 	// recorded is the idempotence guard: a fingerprint of every usage event
 	// already recorded, so a replayed/duplicated terminal result (a resume
 	// re-emit, a double delivery) never double-charges the execution's budget.
@@ -93,20 +105,32 @@ type toolCall struct {
 	input     map[string]any
 }
 
+// taskItem is one entry of the accumulating claude task list. key is the
+// stable correlation handle (the CLI-allocated id when known, else the
+// TaskCreate tool_use id).
+type taskItem struct {
+	key      string
+	content  string
+	status   string
+	priority string
+}
+
 // NewMapper builds a Mapper for one execution.
 func NewMapper(execID string, cbs scheduler.ExecutionCallbacks, deps MapperDeps) *Mapper {
 	if deps.Log == nil {
 		deps.Log = slog.Default()
 	}
 	return &Mapper{
-		execID:   execID,
-		cbs:      cbs,
-		deps:     deps,
-		tools:    make(map[string]toolCall),
-		fileSet:  make(map[string]bool),
-		recorded: make(map[string]struct{}),
-		usageAcc: make(map[string]Usage),
-		stall:    newStallMonitor(deps.Manifest, time.Now()),
+		execID:           execID,
+		cbs:              cbs,
+		deps:             deps,
+		tools:            make(map[string]toolCall),
+		fileSet:          make(map[string]bool),
+		taskIndex:        make(map[string]int),
+		taskKeyByToolUse: make(map[string]string),
+		recorded:         make(map[string]struct{}),
+		usageAcc:         make(map[string]Usage),
+		stall:            newStallMonitor(deps.Manifest, time.Now()),
 	}
 }
 
@@ -493,6 +517,15 @@ func (m *Mapper) handleToolUse(ctx context.Context, tu ToolUse) {
 	}
 	m.stall.sawOutput(time.Now())
 
+	// The claude task family (TaskCreate/TaskUpdate) is CUMULATIVE, not a
+	// whole-list replacement: accumulate it and re-emit the full list onto the
+	// SAME todowrite envelope. canonicalToolName leaves the name verbatim, so the
+	// subagent deny for Task/Agent is untouched.
+	if isTaskTool(tu.Name) {
+		m.handleTaskTool(ctx, tu)
+		return
+	}
+
 	input := tu.Input
 	if canon == "todowrite" {
 		if items := normalizeTodoItems(tu.Input); len(items) > 0 {
@@ -540,6 +573,20 @@ func (m *Mapper) handleToolResult(ctx context.Context, tr ToolResult) {
 	m.mu.Unlock()
 	name := call.canonical
 	m.stall.sawOutput(time.Now())
+
+	// A TaskCreate/TaskUpdate resolution surfaces on the todowrite channel (the
+	// call already did, via emitTodos) so it reads as ONE opencode-style tool
+	// call, and the TaskCreate's CLI-allocated id — which never rides the
+	// tool_use block — is correlated from the paired tool_result here.
+	if isTaskTool(name) {
+		if !tr.IsError && name == "TaskCreate" {
+			if id := taskIDFromResult(tr.Content); id != "" {
+				m.rekeyCreatedTask(ctx, tr.ToolUseID, id)
+			}
+		}
+		m.cbs.OnToolCall(ctx, m.execID, "todowrite", nil, []byte(tr.Content))
+		return
+	}
 
 	m.cbs.OnToolCall(ctx, m.execID, name, nil, []byte(tr.Content))
 	status := "completed"
@@ -647,6 +694,207 @@ func normalizeTodoItems(input map[string]any) []worktree.TodoItem {
 		})
 	}
 	return items
+}
+
+// ------------------------------------------------------- claude task family
+//
+// Claude Code's task-tracking tools are CUMULATIVE and id-correlated, unlike
+// TodoWrite's whole-list replacement: TaskCreate appends one item (whose
+// CLI-allocated id arrives LATER, in the paired tool_result), TaskUpdate
+// relabels or removes one item by id. The tracker below accumulates that list
+// in the mapper and re-emits the WHOLE list onto the exact todowrite envelope
+// internal/execution/todos.go parses — so the TUI, the GUI and the snapshot all
+// read a claude task list through the SAME single parse site as opencode's
+// todowrite, with no adapter-specific branch anywhere.
+
+// isTaskTool reports whether a claude tool name is one of the cumulative
+// task-tracking family.
+func isTaskTool(name string) bool {
+	return name == "TaskCreate" || name == "TaskUpdate"
+}
+
+// taskRemoveStatus reports whether a status value REMOVES a row rather than
+// relabelling it. claude's family uses "deleted"; "removed" is accepted
+// defensively. "cancelled" is deliberately NOT a removal — it is a visible
+// terminal status in opencode's todo surface (proto TodoStatus_CANCELLED), so
+// treating it as a delete would DIVERGE from parity.
+func taskRemoveStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "deleted", "removed":
+		return true
+	}
+	return false
+}
+
+// handleTaskTool accumulates ONE TaskCreate/TaskUpdate and re-emits the full
+// list. It is reached only for the task family; TodoWrite keeps its own arm.
+func (m *Mapper) handleTaskTool(ctx context.Context, tu ToolUse) {
+	switch tu.Name {
+	case "TaskCreate":
+		content := taskSubject(tu.Input)
+		if content == "" {
+			content = "task"
+		}
+		item := taskItem{key: tu.ID, content: content, status: "pending", priority: strField(tu.Input, "priority")}
+		m.mu.Lock()
+		m.tasks = append(m.tasks, item)
+		if item.key != "" {
+			m.taskIndex[item.key] = len(m.tasks) - 1
+			m.taskKeyByToolUse[tu.ID] = item.key
+		}
+		m.mu.Unlock()
+	case "TaskUpdate":
+		id := taskIDFromInput(tu.Input)
+		m.mu.Lock()
+		if idx, ok := m.taskIndex[id]; ok {
+			if subject := taskSubject(tu.Input); subject != "" {
+				m.tasks[idx].content = subject
+			}
+			if status := strField(tu.Input, "status"); status != "" {
+				if taskRemoveStatus(status) {
+					m.removeTaskLocked(id)
+				} else {
+					m.tasks[idx].status = status
+				}
+			}
+			if p := strField(tu.Input, "priority"); p != "" {
+				m.tasks[idx].priority = p
+			}
+		}
+		m.mu.Unlock()
+	}
+	m.emitTodos(ctx)
+}
+
+// removeTaskLocked drops a row and re-indexes the survivor slots. The caller
+// holds m.mu.
+func (m *Mapper) removeTaskLocked(key string) {
+	idx, ok := m.taskIndex[key]
+	if !ok {
+		return
+	}
+	m.tasks = append(m.tasks[:idx], m.tasks[idx+1:]...)
+	delete(m.taskIndex, key)
+	for k, i := range m.taskIndex {
+		if i > idx {
+			m.taskIndex[k] = i - 1
+		}
+	}
+}
+
+// rekeyCreatedTask correlates a TaskCreate to the id the CLI ALLOCATED, which
+// arrives in the paired tool_result (never in the tool_use block). The row is
+// keyed by its tool_use id until then. A no-op when the id is already the key
+// or the row is unknown.
+func (m *Mapper) rekeyCreatedTask(ctx context.Context, toolUseID, allocated string) {
+	if toolUseID == "" || allocated == "" {
+		return
+	}
+	m.mu.Lock()
+	old, ok := m.taskKeyByToolUse[toolUseID]
+	if !ok || old == allocated {
+		m.mu.Unlock()
+		return
+	}
+	idx, ok := m.taskIndex[old]
+	if !ok {
+		m.mu.Unlock()
+		return
+	}
+	m.tasks[idx].key = allocated
+	delete(m.taskIndex, old)
+	m.taskIndex[allocated] = idx
+	delete(m.taskKeyByToolUse, toolUseID)
+	m.mu.Unlock()
+	m.emitTodos(ctx)
+}
+
+// emitTodos is the ONE place a claude task list leaves the mapper: it snapshots
+// the sidecar file at the SAME site and with the SAME semantics as the TodoWrite
+// arm, then persists the durable {"part":…} envelope through the EXISTING
+// recordToolUse producer. No new envelope is minted here — that is what keeps
+// internal/execution/todos.go's single parse site seeing claude's list with no
+// adapter-specific branch.
+func (m *Mapper) emitTodos(ctx context.Context) {
+	m.mu.Lock()
+	items := make([]worktree.TodoItem, 0, len(m.tasks))
+	for _, t := range m.tasks {
+		items = append(items, worktree.TodoItem{Content: t.content, Status: t.status, Priority: t.priority})
+	}
+	m.mu.Unlock()
+	input := map[string]any{"todos": items}
+	m.cbs.OnToolCall(ctx, m.execID, "todowrite", marshalAny(input), nil)
+	worktree.SaveTodoSnapshot(worktree.BaseFor(m.deps.ExecDir), items)
+	m.recordToolUse(ctx, "todowrite", input, "completed", "", "")
+}
+
+// taskSubject reads a task's human label defensively — the streamed input may
+// spell it `subject` (TaskCreate), `content`, or `description`.
+func taskSubject(input map[string]any) string {
+	for _, k := range []string{"subject", "content", "description"} {
+		if v := strField(input, k); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// taskIDFromInput reads a task's id defensively across claude's spellings
+// (taskId / task_id / id) and both scalar shapes (string or number), stripping a
+// leading '#' (claude renders ids as "#7").
+func taskIDFromInput(input map[string]any) string {
+	for _, k := range []string{"taskId", "task_id", "id"} {
+		if v, ok := input[k]; ok {
+			if s := scalarString(v); s != "" {
+				return normalizeTaskID(s)
+			}
+		}
+	}
+	return ""
+}
+
+// scalarString renders a JSON scalar (string or number) as a trimmed string.
+func scalarString(v any) string {
+	switch t := v.(type) {
+	case string:
+		return strings.TrimSpace(t)
+	case float64:
+		if t == float64(int64(t)) {
+			return strconv.FormatInt(int64(t), 10)
+		}
+		return strconv.FormatFloat(t, 'f', -1, 64)
+	case int:
+		return strconv.Itoa(t)
+	case int64:
+		return strconv.FormatInt(t, 10)
+	}
+	return ""
+}
+
+// normalizeTaskID strips the '#' claude prefixes onto an allocated id.
+func normalizeTaskID(s string) string {
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(s), "#"))
+}
+
+var (
+	// "Task #7 created successfully", "task 7", "task#7" …
+	taskAllocIDRe = regexp.MustCompile(`(?i)task\s*#?\s*([0-9]+)`)
+	// "#7" on its own.
+	hashIDRe = regexp.MustCompile(`#\s*([0-9]+)`)
+)
+
+// taskIDFromResult extracts the id the CLI ALLOCATED for a TaskCreate from the
+// paired tool_result text. The exact wording is not contractual, so the match is
+// tolerant. Empty when no id is extractable — the row then keeps its
+// tool_use-id key: it still renders, updates-by-id simply will not match it.
+func taskIDFromResult(content string) string {
+	if m := taskAllocIDRe.FindStringSubmatch(content); len(m) == 2 {
+		return m[1]
+	}
+	if m := hashIDRe.FindStringSubmatch(content); len(m) == 2 {
+		return m[1]
+	}
+	return ""
 }
 
 // toolInputPath is the path a file-writing tool touched (claude's Write/Edit

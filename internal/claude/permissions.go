@@ -60,10 +60,56 @@ const ProjectDirEnv = "ORCHICON_CLAUDE_PROJECT_DIR"
 // HookBinFallback is used when neither the env var nor os.Executable() resolves.
 const HookBinFallback = "orchicon"
 
-// HookToolMatcher is the PreToolUse matcher: exactly the tools whose input can
-// name a command or a path, plus the built-in subagent tool. Claude matches the
-// matcher as a regular expression against the tool name.
-const HookToolMatcher = "Bash|Read|Write|Edit|MultiEdit|NotebookEdit|Glob|Grep|Task|Agent"
+// TodoToolsEnv is the ENV TOGGLE that puts claude's todo/task-tracking tool
+// family (TodoWrite, TaskCreate/TaskUpdate/TaskList/TaskGet) back into the
+// session's tool registry at all.
+//
+// VERIFIED AGAINST THE INSTALLED NATIVE BINARY (2.1.261), not assumed: the
+// binary's own release notes read "Todo/task-tracking tools
+// (TaskCreate/Get/Update/List, TodoWrite) are no longer available on Opus 4.8,
+// Sonnet 5, Fable 5, Mythos 5, and newer models; set
+// CLAUDE_CODE_ENABLE_TODO_TOOLS=1 to bring them back", and the matching gate in
+// the minified bundle reads (paraphrased, verified by grep on the installed binary):
+//
+//	gateModels = [["opus",[4,8]],["sonnet",[5]],["fable",[5]],["mythos",[5]]]
+//	todoToolsEnabled() { if (isHeadlessTransport()) return true;
+//	  model := currentModel(); if (model === undefined || !isGated(model)) return true;
+//	  return env.CLAUDE_CODE_ENABLE_TODO_TOOLS === true; }
+//
+// so on the models orchicon actually runs claude workers with (Sonnet 5 and
+// newer) the family is absent from the tool list unless this is set. A
+// permission allow cannot conjure a tool the CLI never offers, so WITHOUT this
+// the tool names in HookToolMatcher/permissions.allow are dead letters and NO
+// todo ever streams — the parity feature would silently do nothing. It is a
+// plain opt-in, NOT a permission bypass: every restriction (the hook authority,
+// the deny list, the project boundary) stays in force.
+const TodoToolsEnv = "CLAUDE_CODE_ENABLE_TODO_TOOLS"
+
+// TodoTrackToolNames are the task/todo-tracking tools a claude worker session
+// must be OPTED INTO. Claude Code's task tracking is not on by default for a
+// non-interactive (`-p`) session: a tool that carries no allow verdict falls to
+// claude's default permission flow, which refuses an unanswerable ask. This
+// adapter therefore (a) names the tools in the PreToolUse hook matcher,
+// (b) pre-approves them with `permissions.allow` and (c) sets TodoToolsEnv,
+// all NON-BYPASS — no
+// `--dangerously-*` token is ever emitted (TestNoBypassPermissionFlagIsEverEmitted
+// pins that). TodoWrite is the whole-list-replacement tool; TaskCreate/TaskUpdate
+// are the cumulative task family (see parse.go). TaskList/TaskGet/TaskOutput are
+// read-only members of the same family, named so the family is uniformly allowed.
+var TodoTrackToolNames = []string{
+	"TodoWrite",
+	"TaskCreate",
+	"TaskUpdate",
+	"TaskList",
+	"TaskGet",
+	"TaskOutput",
+}
+
+// HookToolMatcher is the PreToolUse matcher: the tools whose input can name a
+// command or a path, plus the built-in subagent tool, plus the todo/task-tracking
+// family (so the hook's catch-all ALLOW verdict also covers them). Claude matches
+// the matcher as a regular expression against the tool name.
+const HookToolMatcher = "Bash|Read|Write|Edit|MultiEdit|NotebookEdit|Glob|Grep|Task|Agent|TodoWrite|TaskCreate|TaskUpdate|TaskList|TaskGet|TaskOutput"
 
 // bypassLaunchFlags are the LAUNCH spellings that would discard the
 // restrictions. Their ABSENCE from the argv and the settings document is pinned
@@ -193,8 +239,14 @@ func BuildSettings(o PermissionOptions) (string, error) {
 		"permissions": map[string]any{
 			// NOT acceptEdits and NOT bypassPermissions: an unanswerable ask in
 			// -p mode is a refusal, which is the honest worker semantic.
-			"defaultMode":           "default",
-			"deny":                  deny,
+			"defaultMode": "default",
+			"deny":        deny,
+			// The task/todo-tracking family is PRE-APPROVED so it streams at all
+			// in a non-interactive session. This is an explicit opts-in, not a
+			// bypass: every other restriction (the hook authority, the deny list,
+			// the project boundary) stays in force, and these tools only write
+			// the in-session todo list.
+			"allow":                 append([]string(nil), TodoTrackToolNames...),
 			"additionalDirectories": dirs,
 			// Pin the bypass mode OFF at the settings layer too, so a later
 			// `--permission-mode bypassPermissions` on the command line is refused
