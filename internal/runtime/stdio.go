@@ -43,6 +43,11 @@ type StdioSession struct {
 	once sync.Once
 }
 
+// stdioHandshakeTimeout bounds how long Stdio waits for the daemon to accept the
+// stream. Generous (a cold container may still be starting) but finite, because
+// the transport cannot bound it — see the handshake note in Stdio.
+const stdioHandshakeTimeout = 45 * time.Second
+
 // Stdio opens the duplex streaming child. The initial frame is sent through
 // an io.Pipe so the constructor can block on the response HEADERS (which the
 // daemon writes only after it decodes that first frame) without the caller
@@ -100,10 +105,34 @@ func (c *Client) Stdio(ctx context.Context, workflowID string, req StdioRequest)
 		"exec_id":     req.ExecID,
 	}
 	go func() { _ = s.writeFrame(initial) }()
-	if err := <-ready; err != nil {
+
+	// THE HANDSHAKE IS BOUNDED, and the bound cannot be left to the transport.
+	//
+	// A stdio request streams a body that NEVER ENDS (stdin frames continue for
+	// the session's life), and http.Transport.ResponseHeaderTimeout only starts
+	// once the request body is FULLY written — which never happens here.
+	// Client.Timeout is 0 for the same reason. So a daemon that never answers
+	// hangs the caller INDEFINITELY, which is exactly what happened: a dispatch
+	// naming the wrong container id sat in `dispatching` forever with zero tokens
+	// and no log line, and nothing in the client could time it out.
+	//
+	// Bounding it here converts any wedged handshake — a mismatch, a daemon that
+	// cannot answer, a wedged relay — into an actionable error the caller can log
+	// and fail the execution on.
+	select {
+	case err := <-ready:
+		if err != nil {
+			_ = pw.Close()
+			cancel()
+			return nil, err
+		}
+	case <-time.After(stdioHandshakeTimeout):
 		_ = pw.Close()
 		cancel()
-		return nil, err
+		return nil, fmt.Errorf("runtime stdio: the daemon did not answer the handshake within %s "+
+			"(container %q, exec %q) — check that the run has a leased runtime container, "+
+			"because a request naming an unknown run cannot be dispatched",
+			stdioHandshakeTimeout, workflowID, req.ExecID)
 	}
 	return s, nil
 }

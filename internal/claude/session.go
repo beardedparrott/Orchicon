@@ -114,11 +114,15 @@ func (s *session) run(ctx context.Context) error {
 	env, envCleanup := s.childEnv()
 	defer envCleanup()
 	spec := procSpec{
-		ExecID:     s.execID,
-		Argv:       argv,
-		Cwd:        executionDir(s.manifest),
-		ProjectDir: s.manifest.ProjectDir,
-		Env:        env,
+		ExecID: s.execID,
+		Argv:   argv,
+		Cwd:    executionDir(s.manifest),
+		// The container is leased by RUN id, so the transport must name the run —
+		// see procSpec.WorkflowRunID. Empty here is the local transport, which
+		// spawns on the host and needs no container.
+		ProjectDir:    s.manifest.ProjectDir,
+		Env:           env,
+		WorkflowRunID: s.manifest.RuntimeWorkflowID,
 	}
 	p, err := s.b.spawn(ctx, spec, s.manifest)
 	if err != nil {
