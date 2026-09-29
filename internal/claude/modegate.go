@@ -144,7 +144,22 @@ func readAskModeFile(path string) (AskModeState, bool) {
 // has no such tool unless an Orchicon MCP server is configured, so there is
 // nothing here to deny. If that changes, this map is where the pairing goes.
 func claudeToolToPolicyName(tool string) string {
-	switch strings.ToLower(strings.TrimSpace(tool)) {
+	t := strings.ToLower(strings.TrimSpace(tool))
+
+	// MCP TOOLS, whose names claude prefixes: `mcp__<server>__<toolName>`. The
+	// policy names the tool ALONE, so a boundary written as `create_work_item`
+	// never matches `mcp__orchicon__create_work_item` — the mode gate would be
+	// inert for precisely the tools it was written to govern, and silently so.
+	// Naming verified against the real CLI's init line: 87 tools named
+	// mcp__orchicon__* once the sidecar is registered (mcpconfig.go).
+	if rest, ok := strings.CutPrefix(t, "mcp__"); ok {
+		if i := strings.Index(rest, "__"); i >= 0 {
+			rest = rest[i+2:]
+		}
+		return strings.TrimSpace(rest)
+	}
+
+	switch t {
 	case "write":
 		return "write"
 	case "edit", "multiedit", "notebookedit":

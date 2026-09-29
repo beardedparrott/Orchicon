@@ -71,6 +71,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/guard"
 	"github.com/beardedparrott/orchicon/internal/permpolicy"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
+	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
 // Compile-time proof that the claude bridge satisfies the Ask chat-session
@@ -193,6 +194,11 @@ type askSession struct {
 	// modeFile is this conversation's Ask mode file (see modegate.go). The hook
 	// reads it per tool call; this session rewrites it per TURN.
 	modeFile string
+	// tenantID scopes the built-in Orchicon MCP sidecar (see mcpconfig.go). It
+	// arrives on the turn's context — the only place the adapter learns it. The
+	// sidecar falls back to the dev tenant without it, so a session would read
+	// the wrong tenant's work items.
+	tenantID string
 	pending  map[string]struct{}    // open can_use_tool request ids
 	tools    map[string]askToolCall // tool_use_id -> the call it resolved
 	seeded   bool                   // whether the system prompt has been sent
@@ -310,6 +316,14 @@ func (b *Bridge) SendTurnMessage(ctx context.Context, conversationID, sessionID,
 	if err := writeAskModeFile(s.modeFile, askmode.ModeFromContext(ctx)); err != nil {
 		slog.Default().Warn("claude ask: could not record the turn's mode — the mode boundary is prompt-level for this turn",
 			"error", err, "conversation", conversationID, "mode", askmode.ModeFromContext(ctx))
+	}
+
+	// The tenant the Orchicon MCP sidecar is scoped to. Captured here because the
+	// turn's context is where it lives, and the child's argv is fixed at spawn.
+	if tid := tenant.FromContext(ctx); strings.TrimSpace(tid) != "" {
+		s.mu.Lock()
+		s.tenantID = tid
+		s.mu.Unlock()
 	}
 
 	if err := s.ensureRunning(ctx); err != nil {
@@ -540,7 +554,20 @@ func (s *askSession) argv() []string {
 		slog.Default().Warn("claude ask: the operator permission policy could not be loaded — launching with the never-allow class and the interactive hook, but without its deny entries",
 			"error", err)
 	}
-	return append(argv, args...)
+	argv = append(argv, args...)
+
+	// THE ORCHICON TOOL SURFACE (mcpconfig.go). Without this the session has NO
+	// orchicon_* tools: it cannot read its own conversation record, create a work
+	// item, or drive a run — exactly what the operator's Opus 5 reported.
+	//
+	// The binary is this process's own executable, and the sidecar inherits our
+	// environment (childEnv starts from os.Environ, so the plane's
+	// ORCHICON_POSTGRES_DSN rides through), so its DB channel reaches the tenant
+	// the conversation belongs to.
+	argv = append(argv, MCPArgs([]MCPServer{
+		OrchiconMCPServer(HookBinaryPath(), s.tenantID, nil),
+	})...)
+	return argv
 }
 
 // ensureGuard builds the OS-level execution shim for this session.

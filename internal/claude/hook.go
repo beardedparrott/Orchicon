@@ -346,6 +346,18 @@ func DecideToolForAsk(h HookInput, askDir, policyPath string) HookVerdict {
 		return denyVerdict(workerrestrict.TaskToolDeny,
 			"the built-in subagent tool is denied in every profile: Orchicon already splits the work into focused steps, and a spawned subagent re-carries the parent's context.")
 	}
+	// THE PLATFORM'S OWN TOOLS ARE ALLOWED, not asked about. `mcp__orchicon__*` is
+	// the surface the MODE GATE governs (create_work_item, schedule_work_item, …),
+	// and RunHook consults the gate BEFORE reaching here — so by this point the
+	// boundary has already had its say. Asking on each one would put a consent
+	// card in front of a session reading its own conversation record.
+	//
+	// The operator's OWN MCP servers are deliberately NOT in this set: they are
+	// third-party tools, so they keep the ask-by-default treatment.
+	if isOrchiconMCPTool(tool) {
+		return allowVerdict()
+	}
+
 	switch {
 	case tool == "Bash":
 		return decideBashForAsk(h, askDir, policyPath)
@@ -356,6 +368,18 @@ func DecideToolForAsk(h HookInput, askDir, policyPath string) HookVerdict {
 	// and a tool this adapter has never seen is exactly the case where a card is
 	// worth more than an assumption.
 	return askVerdict()
+}
+
+// orchiconMCPServerName is the server name the built-in Orchicon sidecar is
+// registered under (mcpconfig.go), and so the prefix claude gives every tool it
+// provides.
+const orchiconMCPServerName = "orchicon"
+
+// isOrchiconMCPTool reports whether a claude tool name is one of the platform's
+// OWN MCP tools (`mcp__orchicon__<tool>`).
+func isOrchiconMCPTool(tool string) bool {
+	t := strings.ToLower(strings.TrimSpace(tool))
+	return strings.HasPrefix(t, "mcp__"+orchiconMCPServerName+"__")
 }
 
 // decideBashForAsk applies the never-allow class, the protected roots and the

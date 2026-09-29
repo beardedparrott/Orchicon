@@ -14,6 +14,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/guard"
 	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/permpolicy"
+	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
@@ -399,7 +400,54 @@ func (s *session) argv() []string {
 	if err != nil {
 		slog.Default().Warn("claude: the operator permission policy could not be loaded — launching with the never-allow class, the project boundary and the fail-closed hook, but without its deny entries", "error", err)
 	}
-	return append(argv, args...)
+	argv = append(argv, args...)
+	return append(argv, s.mcpArgs()...)
+}
+
+// mcpArgs registers the Orchicon MCP servers a WORKER execution gets, mirroring
+// opencode's RuntimeServeConfig decisions (internal/opencode/adapter.go) so a
+// worker has the same orchicon_* surface whichever adapter it runs on.
+//
+// THE TRANSPORT DECIDES THE BINARY AND THE DATABASE:
+//
+//   - CONTAINER: the sidecar must run from the daemon's bind mount
+//     (MCPBinaryContainerPath) — a host path there is a server that cannot start —
+//     and it must be pointed at the IN-CONTAINER sandbox Postgres
+//     (runtime.SandboxPostgresDSN), because the DSN inherited from the plane's
+//     environment names the HOST's Postgres, which inside the container is
+//     nothing. Same pairing opencode's dev-image case uses.
+//   - HOST: this process's own executable and the inherited environment, which
+//     already carries the plane's DSN.
+//
+// A FAILED MCP SERVER DEGRADES RATHER THAN HANGING, which is what makes
+// registering it on every image safe: measured on the real binary, an
+// unreachable server reports status "failed" in the init line and the model is
+// told the tools are unavailable. (opencode had the opposite problem — a serve
+// eagerly connects at startup and an unresolvable MCP wedged its event loop,
+// which is why it gates on the image tag.) The image tag is not on the
+// ExecutionManifest, so this cannot mirror that gate; the graceful failure is
+// what stands in for it.
+func (s *session) mcpArgs() []string {
+	inContainer := s.inContainer()
+	return MCPArgs([]MCPServer{
+		OrchiconMCPServer(HookBinaryFor(inContainer), s.tenantID, workerMCPExtraEnv(inContainer, s.manifest.RuntimeWorkflowID)),
+	})
+}
+
+// workerMCPExtraEnv is the transport-dependent part of a worker's MCP
+// registration, split out so it is testable without a runtime client (which is
+// what `inContainer` otherwise needs to establish).
+func workerMCPExtraEnv(inContainer bool, workflowRunID string) map[string]string {
+	extra := map[string]string{}
+	if inContainer {
+		// NOT inherited: the plane's ORCHICON_POSTGRES_DSN names the HOST's
+		// Postgres, which inside the container is nothing.
+		extra["ORCHICON_POSTGRES_DSN"] = runtime.SandboxPostgresDSN
+	}
+	if runID := strings.TrimSpace(workflowRunID); runID != "" {
+		extra[MCPWorkflowRunEnv] = runID
+	}
+	return extra
 }
 
 // permissionOptions is the launch-time restriction input for this session.
