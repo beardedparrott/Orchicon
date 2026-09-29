@@ -28,6 +28,17 @@ package claude
 //     fails loudly rather than silently degrading to text-only (the documented
 //     contract for an adapter that lacks the capability). Claude's stream-json
 //     input does support image blocks, so this is a follow-up, not a blocker.
+//
+// CORRECTION: claim 1 was WRONG and is fixed below. Both other adapters DO shim
+// the Ask path — opencode's host serve applies `guard.NewExecutionGuard("")`
+// (internal/opencode/servehost.go, in startOnce, so BOTH profiles get it), and
+// the native path builds the same shim in interactive mode
+// (internal/askorchicon/ask_guard.go). Skipping it made claude the only adapter
+// with no OS-level floor, which is LOOSER, not stricter — and it is the floor
+// that carries the never-allow class, the protected roots and the operator
+// policy against a subprocess ("a subprocess did it" is the hole the 2026-07-30
+// /home wipe went through). The PreToolUse hook never sees those; the shim does.
+// See ensureGuard()/childEnv().
 
 import (
 	"context"
@@ -42,6 +53,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/beardedparrott/orchicon/internal/guard"
 	"github.com/beardedparrott/orchicon/internal/permpolicy"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
@@ -161,6 +173,7 @@ type askSession struct {
 	model   string
 	proc    ProcSession
 	bus     *askBus
+	guard   *guard.Guard           // the OS-level execution shim on this session's PATH
 	pending map[string]struct{}    // open can_use_tool request ids
 	tools   map[string]askToolCall // tool_use_id -> the call it resolved
 	seeded  bool                   // whether the system prompt has been sent
@@ -369,6 +382,11 @@ func (s *askSession) ensureRunning(parent context.Context) error {
 		return fmt.Errorf("claude ask: create the ask directory: %w", err)
 	}
 
+	// Build the OS-level guard BEFORE the environment is assembled: the shim dir
+	// goes on the child's PATH, and a failure here must degrade to a warning
+	// (guardless, like the worker supervisor does) rather than refuse the turn.
+	s.ensureGuard()
+
 	argv := s.argv()
 	env := s.childEnv()
 	spec := procSpec{
@@ -432,8 +450,28 @@ func (s *askSession) argv() []string {
 	return append(argv, args...)
 }
 
+// ensureGuard builds this conversation's OS-level execution shim once. It is
+// per-session (not per-plane) because it names the session's own directory as the
+// sanctioned scope; see the file header on why the other two adapters can use a
+// shared, unscoped guard and this one need not.
+func (s *askSession) ensureGuard() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.guard != nil {
+		return
+	}
+	g, err := guard.NewExecutionGuard(s.askDir)
+	if err != nil {
+		// Degrade to unguarded, matching the worker supervisor's warn-and-continue
+		// contract: a temp-dir failure is transient and must not refuse the turn.
+		slog.Default().Warn("claude ask: the OS-level execution guard could not be built — this Ask session runs without the PATH shim", "error", err, "ask_dir", s.askDir)
+		return
+	}
+	s.guard = g
+}
+
 // childEnv is the Ask child's environment. It carries the hook's profile and the
-// ask directory, and deliberately NO guard shim (see the file header).
+// ask directory, and the OS-level execution guard shim.
 func (s *askSession) childEnv() []string {
 	env := os.Environ()
 	env = setEnvVar(env, HookProfileEnv, ProfileAskEnvValue)
@@ -446,6 +484,30 @@ func (s *askSession) childEnv() []string {
 	// Ask is a HOST session, so the host binary path is correct here (unlike the
 	// worker's container transport, which must use the daemon's bind mount).
 	env = setEnvVar(env, HookBinEnv, HookBinaryPath())
+
+	// The OS-level guard, exactly as the worker's host transport applies it
+	// (session.childEnv) and as the other two Ask paths apply it.
+	//
+	// The scope is THIS conversation's directory, not "" as the shared host serve
+	// passes: opencode's serve and the native bridge build ONE guard for many
+	// conversations with no single root, so they name none. A claude Ask session
+	// belongs to exactly one conversation with exactly one directory, so naming it
+	// is both available and more precise — the session can clean up after itself
+	// and nothing else is in scope.
+	if s.guard != nil {
+		env = s.guard.Apply(env)
+		// InteractiveEnviron switches the shim into the interactive profile and
+		// points it at the operator's policy. An empty policy path emits NOTHING
+		// (that is the worker profile), so this is also what keeps a policy-less
+		// plane from silently handing claude a strict worker shim.
+		//
+		// No grants/once: the native path re-reads those PER INVOCATION because its
+		// bash env is a factory, but a stdio child's environment is fixed at spawn,
+		// so a grant could not take effect without restarting the session. The
+		// policy FILE is re-read per invocation by the shim regardless, so operator
+		// accept/deny entries still apply live. Live grants are a follow-up.
+		env = append(env, guard.InteractiveEnviron(permpolicy.DefaultPath(), s.askDir, nil, nil, false)...)
+	}
 	return env
 }
 
@@ -547,6 +609,12 @@ func (s *askSession) teardown() {
 	}
 	if bus != nil {
 		bus.Close()
+	}
+	if s.guard != nil {
+		// The shim dir is a temp directory; leaving it behind on every recreate
+		// would litter /tmp for the life of the plane.
+		s.guard.Close()
+		s.guard = nil
 	}
 }
 

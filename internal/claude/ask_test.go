@@ -3,6 +3,8 @@ package claude
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -294,5 +296,48 @@ func TestAskAbortUnknownIsQuietButReplyIsLoud(t *testing.T) {
 	}
 	if err := b.ReplyPermissionDecision(ctx, "nope", "req", "once"); err == nil {
 		t.Error("ReplyPermissionDecision(unknown session) = nil, want an actionable error")
+	}
+}
+
+// THE PARITY PIN. Both other adapters put the OS-level execution shim on the Ask
+// path (opencode's host serve, the native bridge's bash environ). Claude briefly
+// did not, which made it the only Ask transport where `a subprocess did it` was
+// unguarded — the class that carries the never-allow binaries, the protected
+// roots and the operator policy, none of which the PreToolUse hook can see.
+//
+// Two things are asserted, and both are load-bearing:
+//  1. the shim DIRECTORY is first on PATH, so any process the session spawns
+//     resolves `rm`/`sudo`/`dd` through it;
+//  2. the INTERACTIVE guard vars are present, because without them the shim runs
+//     the frozen WORKER profile — the same failure one layer down.
+func TestAskChildEnvCarriesTheInteractiveExecutionGuard(t *testing.T) {
+	s := newAskSession(New(quietLogger()), "conv-guard", filepath.Join(t.TempDir(), "ask"))
+	s.ensureGuard()
+	if s.guard == nil {
+		t.Skip("the execution guard could not be built in this environment")
+	}
+	defer s.guard.Close()
+
+	env := s.childEnv()
+
+	var pathEntry string
+	var sawPolicy bool
+	for _, kv := range env {
+		switch {
+		case strings.HasPrefix(kv, "PATH="):
+			pathEntry = strings.TrimPrefix(kv, "PATH=")
+		case strings.HasPrefix(kv, "ORCHICON_GUARD_POLICY="):
+			sawPolicy = true
+		}
+	}
+	if pathEntry == "" {
+		t.Fatal("the Ask child env has no PATH entry")
+	}
+	first := strings.Split(pathEntry, string(os.PathListSeparator))[0]
+	if !strings.Contains(first, "orchicon-guard-") {
+		t.Fatalf("PATH[0] = %q, want the guard shim dir first — a spawned process would resolve `rm` directly", first)
+	}
+	if !sawPolicy {
+		t.Fatal("the interactive guard vars are missing; the shim would run the frozen WORKER profile with nothing to ask about")
 	}
 }
