@@ -143,6 +143,12 @@ type PermissionOptions struct {
 	// AdditionalDirs widens the in-scope directory set (the carve-outs are
 	// always derived from workerrestrict and cannot be removed).
 	AdditionalDirs []string
+	// Profile selects the hook's rule set (ProfileWorkerEnvValue is the
+	// non-interactive sandbox and the ZERO VALUE, so an existing caller is
+	// unchanged; ProfileAskEnvValue is the interactive profile where consent
+	// gates the action). It also switches on `--permission-prompts host`, which
+	// is what makes the CLI raise the ask rather than auto-deny it.
+	Profile string
 }
 
 // HookBinaryPath resolves the binary the PreToolUse hook invokes: the explicit
@@ -191,8 +197,19 @@ func PermissionArgs(o PermissionOptions) ([]string, error) {
 	if settings != "" {
 		args = append(args, "--settings", settings)
 	}
+	if o.Profile == ProfileAskEnvValue {
+		// The Ask session DEPENDS on the CLI asking the host: that request is what
+		// raises the can_use_tool control frame the consent cards answer. The CLI's
+		// default for this flag is already "host", but it is named EXPLICITLY here
+		// because the alternative — "none", nobody answers and anything that would
+		// prompt is denied automatically — would silently turn the interactive
+		// profile back into the worker sandbox on an operator's screen: every write
+		// refused with no card and no explanation.
+		args = append(args, "--permission-prompts", "host")
+	}
 	// Deny the built-in subagent tool by NAME as well as through the hook — the
-	// CLI-level deny survives a hook that fails to launch.
+	// CLI-level deny survives a hook that fails to launch. Denied in EVERY profile
+	// (see DecideToolForAsk).
 	args = append(args, "--disallowedTools", strings.Join(workerrestrict.SubagentToolNames, " "))
 	return args, err
 }
