@@ -44,3 +44,11 @@ func errCompactUnsupported(execID, why string) error {
 func errCompactNotReady(execID, why string) error {
 	return fmt.Errorf("claude execution %s cannot compact now: %s", execID, why)
 }
+
+// errCompactWriteFailed is the actionable error returned when the LIVE
+// session refused the compact directive write (a broken stdin / a dead
+// transport). The session IS live, so the underlying cause rides along
+// instead of being flattened into a misleading "no live session" diagnosis.
+func errCompactWriteFailed(execID string, cause error) error {
+	return fmt.Errorf("claude execution %s: context compaction could not be written to the live session: %v", execID, cause)
+}

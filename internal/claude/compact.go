@@ -219,7 +219,10 @@ func (s *session) Compact(ctx context.Context, provider, model, remainingScope s
 		return err
 	}
 	if err := s.writeCompactDirective(ctx, "bridge:"+provider+"/"+model, scope); err != nil {
-		return errNoLiveSessionForCompact(s.execID)
+		// The session IS live (armCompact armed it): the directive write is
+		// what failed, so the true cause rides along rather than being
+		// flattened into a "no live session" diagnosis.
+		return errCompactWriteFailed(s.execID, err)
 	}
 	return nil
 }

@@ -3,6 +3,7 @@ package claude
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -295,6 +296,42 @@ func newDirectSession(t *testing.T, manifest scheduler.ExecutionManifest, rec *c
 	s := newSession(h.b, manifest.ExecutionID, "t1", manifest, rec)
 	s.proc = fp
 	return s
+}
+
+// failWriteProc is a live ProcSession whose stdin writes always fail, so the
+// compact path's error FIDELITY can be pinned: the session stays live, and a
+// refused directive write surfaces its own cause rather than a misleading
+// "no live session" diagnosis.
+type failWriteProc struct{ ProcSession }
+
+func (failWriteProc) WriteTurn([]byte) error { return errors.New("stdin pipe broken") }
+
+// TestClaudeCompactSurfacesTheWriteCause proves the compact API reports WHY a
+// live session could not be compacted (and records no phantom compaction): a
+// transport failure must not be reported as "no live session".
+func TestClaudeCompactSurfacesTheWriteCause(t *testing.T) {
+	fp := newFakeProc()
+	rec := &captureCallbacks{}
+	s := newDirectSession(t, scheduler.ExecutionManifest{
+		ExecutionID: "exec-write-fail",
+		Budgets:     []byte(costGatedBudgets),
+	}, rec, fp)
+	s.setStep(2) // past the min-turn floor: the guards arm the compaction
+	s.proc = failWriteProc{ProcSession: fp}
+
+	err := s.Compact(context.Background(), "anthropic", "claude-sonnet-5", "scope")
+	if err == nil {
+		t.Fatal("a refused compact directive write must surface an error")
+	}
+	if !strings.Contains(err.Error(), "stdin pipe broken") {
+		t.Fatalf("error = %v, want the underlying write cause", err)
+	}
+	if !strings.Contains(err.Error(), "exec-write-fail") {
+		t.Fatalf("error = %v, want the execution named", err)
+	}
+	if got := budgetCompactedParts(rec); len(got) != 0 {
+		t.Fatalf("a failed compact directive must not be recorded as a compaction: %+v", got)
+	}
 }
 
 // TestClaudeBudgetLadderComesFromTheMergedJSON proves there is exactly ONE
