@@ -16,6 +16,7 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
+	"github.com/beardedparrott/orchicon/internal/workerrestrict"
 	"github.com/beardedparrott/orchicon/internal/worktree"
 )
 
@@ -244,6 +245,43 @@ func TestCanonicalToolNameLeavesTheTaskFamilyVerbatim(t *testing.T) {
 	for _, n := range []string{"TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskOutput"} {
 		if got := canonicalToolName(n); got != n {
 			t.Errorf("canonicalToolName(%q) = %q, want the name verbatim", n, got)
+		}
+	}
+}
+
+// TestTodoTaskFamilyIsNotDeniedByTheAuthorityLayer pins the OTHER half of the
+// opt-in: naming the tools in the matcher is worthless if the AUTHORITY layer
+// then refuses them. The subagent deny is an EXACT match on "Task"/"Agent", so a
+// PrefixMatch on "Task" would silently deny TaskCreate/TaskUpdate and kill the
+// feature end to end — this test fails loudly if that ever changes, and pins
+// that `--disallowedTools` (Task Agent) does not shadow the task family either.
+func TestTodoTaskFamilyIsNotDeniedByTheAuthorityLayer(t *testing.T) {
+	for _, n := range TodoTrackToolNames {
+		if workerrestrict.IsSubagentTool(n) {
+			t.Errorf("%q is classified as the built-in subagent tool — the task family would be DENIED by the hook", n)
+		}
+		v := DecideTool(HookInput{ToolName: n, ToolInput: map[string]any{}}, t.TempDir(), "")
+		if !v.Allow {
+			t.Errorf("DecideTool(%q) = deny (%s: %s), want ALLOW — the opt-in tools must reach the model", n, v.Rule, v.Reason)
+		}
+	}
+
+	args, err := PermissionArgs(PermissionOptions{ProjectDir: t.TempDir(), HookBinary: "orchicon"})
+	if err != nil {
+		t.Fatalf("PermissionArgs: %v", err)
+	}
+	disallowed := ""
+	for i, a := range args {
+		if a == "--disallowedTools" && i+1 < len(args) {
+			disallowed = args[i+1]
+		}
+	}
+	if disallowed == "" {
+		t.Fatalf("PermissionArgs emitted no --disallowedTools: %v", args)
+	}
+	for _, n := range TodoTrackToolNames {
+		if strings.Contains(disallowed, n) {
+			t.Errorf("--disallowedTools %q names the todo/task tool %q — the CLI-level deny would shadow the allow", disallowed, n)
 		}
 	}
 }
