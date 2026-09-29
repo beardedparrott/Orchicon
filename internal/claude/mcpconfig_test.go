@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/beardedparrott/orchicon/internal/askmode"
+	"github.com/beardedparrott/orchicon/internal/mcpclient"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 )
 
@@ -293,5 +294,53 @@ func TestWorkerArgvRegistersTheOrchiconMCP(t *testing.T) {
 		if a == "--strict-mcp-config" {
 			t.Fatal("--strict-mcp-config would suppress every other MCP source")
 		}
+	}
+}
+
+// A name collision between the built-in and an operator-configured entry resolves
+// to the OPERATOR'S — the rule opencode applies too. Getting this backwards would
+// silently override an operator's own connection with ours.
+func TestMCPConfigJSONOperatorEntryWinsANameCollision(t *testing.T) {
+	cfg := MCPConfigJSON([]MCPServer{
+		// built-in first, exactly as resolveMCPServers orders them
+		{Name: "orchicon", Command: "/usr/local/bin/orchicon", Args: []string{"mcp"}},
+		// the operator's own, same name
+		{Name: "orchicon", Command: "/opt/theirs/orchicon", Args: []string{"serve"}},
+	})
+	var doc struct {
+		MCPServers map[string]map[string]any `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(cfg), &doc); err != nil {
+		t.Fatalf("not valid JSON: %v", err)
+	}
+	if len(doc.MCPServers) != 1 {
+		t.Fatalf("a collision must collapse to ONE entry, got %d: %s", len(doc.MCPServers), cfg)
+	}
+	if got := doc.MCPServers["orchicon"]["command"]; got != "/opt/theirs/orchicon" {
+		t.Fatalf("collision resolved to %v, want the operator's entry — theirs must not be silently overridden", got)
+	}
+}
+
+// The neutral-spec renderer, which is the ONLY adapter-specific part of the MCP
+// path. Codex will need its own version of this function and nothing else.
+func TestMCPServersFromSpecs(t *testing.T) {
+	got := MCPServersFromSpecs([]mcpclient.ServerSpec{
+		{ID: "stdio", Command: []string{"/bin/s", "a", "b"}, Env: map[string]string{"K": "V"}},
+		{ID: "http", URL: "https://h/mcp", Headers: map[string]string{"A": "B"}},
+		{ID: ""},      // no id → dropped
+		{ID: "empty"}, // nothing to start → dropped
+		{ID: "urlwins", URL: "https://u", Command: []string{"/bin/x"}}, // url wins
+	})
+	if len(got) != 3 {
+		t.Fatalf("got %d servers, want 3 (unusable dropped): %+v", len(got), got)
+	}
+	if got[0].Command != "/bin/s" || len(got[0].Args) != 2 {
+		t.Errorf("stdio rendered as %+v, want command + 2 args", got[0])
+	}
+	if got[1].URL != "https://h/mcp" || got[1].Headers["A"] != "B" {
+		t.Errorf("http rendered as %+v", got[1])
+	}
+	if got[2].URL != "https://u" {
+		t.Errorf("a spec with both url and command must render as http, got %+v", got[2])
 	}
 }

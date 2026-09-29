@@ -36,8 +36,11 @@ package claude
 // prefix or the boundary silently does nothing.
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
+
+	"github.com/beardedparrott/orchicon/internal/mcpclient"
 )
 
 // MCPBinaryContainerPath is where the runtime daemon bind-mounts its own
@@ -110,6 +113,14 @@ func (s MCPServer) toJSON() map[string]any {
 // {"mcpServers": {name: {…}}}. Unusable entries are skipped, and an empty set
 // returns "" so a caller can simply omit the flag (rather than pass an empty
 // server map, which claude would parse and find nothing in).
+//
+// NAME COLLISIONS RESOLVE TO THE LATER ENTRY, deliberately. The built-in Orchicon
+// server is emitted FIRST and the operator's resolved set after it, so an
+// operator who configures their own entry named `orchicon` gets THEIRS — the
+// same rule opencode applies ("unless the user already defines one named
+// `orchicon` — respect their explicit choice"). A tenant that configures their
+// own connection should not have it silently overridden by ours, and a
+// duplicate entry would otherwise start two servers under one name.
 func MCPConfigJSON(servers []MCPServer) string {
 	entries := map[string]any{}
 	for _, s := range servers {
@@ -156,6 +167,45 @@ func OrchiconMCPServer(binary, tenantID string, extraEnv map[string]string) MCPS
 		Args:    []string{"mcp"},
 		Env:     env,
 	}
+}
+
+// MCPSecretResolver resolves ${SECRET_NAME} references in a spec's env/headers to
+// plaintext. Declared here so the bridge does not import the storage layer that
+// implements it — the same reason the native bridge declares its own.
+type MCPSecretResolver func(ctx context.Context, tenantID string, env, headers map[string]string) (map[string]string, map[string]string, error)
+
+// MCPServersFromSpecs renders the NEUTRAL server specs into claude's entries.
+//
+// THIS IS THE ADAPTER-SPECIFIC HALF, AND IT IS THE ONLY ONE. The resolution —
+// which servers an execution gets (worker → project → tenant-default over the
+// tenant's server list) and the ${SECRET_NAME} → plaintext expansion — is shared
+// and lives in internal/mcpsettings + internal/mcpclient. An adapter supplies
+// only this: a function from []mcpclient.ServerSpec to its own config format.
+// Adding codex means adding a renderer beside this one, not another resolution
+// stack, which is what keeps the surface standard as adapters multiply.
+//
+// A spec's Command is an ARGV SLICE; claude wants `command` plus `args`, so the
+// head and tail are split. A URL spec becomes claude's typed http entry.
+func MCPServersFromSpecs(specs []mcpclient.ServerSpec) []MCPServer {
+	out := make([]MCPServer, 0, len(specs))
+	for _, sp := range specs {
+		if strings.TrimSpace(sp.ID) == "" {
+			continue
+		}
+		m := MCPServer{Name: sp.ID}
+		if u := strings.TrimSpace(sp.URL); u != "" {
+			m.URL = u
+			m.Headers = sp.Headers
+		} else if len(sp.Command) > 0 {
+			m.Command = sp.Command[0]
+			m.Args = append([]string(nil), sp.Command[1:]...)
+			m.Env = sp.Env
+		}
+		if m.usable() {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // MCPArgs returns the `--mcp-config` argv fragment for a server set, or nil when

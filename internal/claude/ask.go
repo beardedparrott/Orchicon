@@ -69,6 +69,7 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/askmode"
 	"github.com/beardedparrott/orchicon/internal/guard"
+	"github.com/beardedparrott/orchicon/internal/mcpclient"
 	"github.com/beardedparrott/orchicon/internal/permpolicy"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/tenant"
@@ -448,6 +449,15 @@ func (b *Bridge) askRoot() string {
 // plane's own root; tests use a temp dir).
 func (b *Bridge) SetAskRoot(dir string) { b.askRootOverride = strings.TrimSpace(dir) }
 
+// SetConfigSource wires the tenant MCP server source. Mirroring the native
+// bridge's setter of the same name is deliberate: ONE resolution, one place the
+// platform decides which servers an execution gets.
+func (b *Bridge) SetConfigSource(src mcpclient.ConfigSource) { b.mcpConfig = src }
+
+// SetMCPSecretResolver wires the ${SECRET_NAME} → plaintext resolver used just
+// before the MCP config is rendered.
+func (b *Bridge) SetMCPSecretResolver(r MCPSecretResolver) { b.mcpSecretResolver = r }
+
 // --- lifecycle --------------------------------------------------------------
 
 // ensureRunning spawns the conversation's child if it is not already live.
@@ -564,9 +574,18 @@ func (s *askSession) argv() []string {
 	// environment (childEnv starts from os.Environ, so the plane's
 	// ORCHICON_POSTGRES_DSN rides through), so its DB channel reaches the tenant
 	// the conversation belongs to.
-	argv = append(argv, MCPArgs([]MCPServer{
-		OrchiconMCPServer(HookBinaryPath(), s.tenantID, nil),
-	})...)
+	servers, err := s.b.resolveMCPServers(context.Background(), s.tenantID, "", "",
+		OrchiconMCPServer(HookBinaryPath(), s.tenantID, nil))
+	if err != nil {
+		// A MISSING selection is fatal on purpose (an Ask session that silently
+		// lost a project's MCP servers is a session that looks fine and cannot do
+		// its job). argv() cannot return an error, so this is recorded and the
+		// admin sees it; the built-in surface still registers.
+		slog.Default().Warn("claude ask: MCP resolution failed — only the built-in Orchicon server will be registered", "error", err)
+		servers = []MCPServer{OrchiconMCPServer(HookBinaryPath(), s.tenantID, nil)}
+	}
+	logMCPResolution("ask", servers)
+	argv = append(argv, MCPArgs(servers)...)
 	return argv
 }
 

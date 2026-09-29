@@ -8,6 +8,7 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/mcpclient"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
@@ -56,6 +57,17 @@ type Bridge struct {
 	askByConv       map[string]*askSession // conversationID → session
 	askBySID        map[string]*askSession // claude session id → session
 	askRootOverride string                 // test/server override for the ask dir
+
+	// mcpConfig resolves the MCP server set an execution/conversation gets: the
+	// tenant's configured servers, narrowed by worker → project → tenant-default
+	// selection. It is the SAME seam the native bridge consumes
+	// (orchicon.SetConfigSource ← mcpsettings.NewConfigSource), so the adapters
+	// cannot drift about WHICH servers apply — only about how each renders them
+	// into its own config format (see mcpconfig.go).
+	mcpConfig mcpclient.ConfigSource
+	// mcpSecretResolver expands ${SECRET_NAME} refs in a spec's env/headers
+	// before the config is rendered. Nil passes them through (tests / degrade).
+	mcpSecretResolver MCPSecretResolver
 }
 
 // New builds a Claude Code bridge.

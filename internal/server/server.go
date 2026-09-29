@@ -704,6 +704,16 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	claudeBridge.SetUsageRecorder(usageRecorderFn)
 	claudeBridge.SetSessionStore(sessionStoreFn)
 	claudeBridge.SetFileEditHook(newFileEditHook(feSvc, log))
+	// MCP: the SAME two wirings the native bridge receives above, because the
+	// resolution is shared rather than per-adapter. Which servers an execution
+	// gets (worker → project → tenant-default over the tenant's configured list,
+	// with ${SECRET_NAME} refs expanded) is decided in ONE place; each adapter
+	// only renders the result into its own config format. Without this a claude
+	// worker or Ask session would get nothing but the built-in Orchicon sidecar.
+	claudeBridge.SetConfigSource(mcpsettings.NewConfigSource(pool))
+	claudeBridge.SetMCPSecretResolver(func(ctx context.Context, tenantID string, env, headers map[string]string) (map[string]string, map[string]string, error) {
+		return mcpsettings.ResolveSecretRefs(ctx, pool, secretsKEK, tenantID, env, headers)
+	})
 	dispatcher.Register(adapter.KindClaude, claudeBridge)
 
 	// Per-adapter enable/disable (AC 3): every kind named in

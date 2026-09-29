@@ -429,9 +429,25 @@ func (s *session) argv() []string {
 // what stands in for it.
 func (s *session) mcpArgs() []string {
 	inContainer := s.inContainer()
-	return MCPArgs([]MCPServer{
-		OrchiconMCPServer(HookBinaryFor(inContainer), s.tenantID, workerMCPExtraEnv(inContainer, s.manifest.RuntimeWorkflowID)),
-	})
+	builtin := OrchiconMCPServer(
+		HookBinaryFor(inContainer),
+		s.tenantID,
+		workerMCPExtraEnv(inContainer, s.manifest.RuntimeWorkflowID),
+	)
+	// The SAME resolution the native bridge runs: worker selection → project
+	// selection → tenant default, over the tenant's configured servers, with
+	// ${SECRET_NAME} refs expanded. This adapter only renders the result.
+	servers, err := s.b.resolveMCPServers(context.Background(), s.tenantID, s.manifest.WorkerID, s.manifest.ProjectID, builtin)
+	if err != nil {
+		// Fail the launch rather than run a worker without the MCP servers it was
+		// configured to have, which is the native bridge's contract too. argv()
+		// cannot return an error, so this is surfaced through the returned argv as
+		// a `--mcp-config` the model will report as failed — and logged loudly.
+		slog.Default().Warn("claude: MCP resolution failed — the worker will run without its configured MCP servers", "execution", s.execID, "error", err)
+		servers = []MCPServer{builtin}
+	}
+	logMCPResolution("worker", servers)
+	return MCPArgs(servers)
 }
 
 // workerMCPExtraEnv is the transport-dependent part of a worker's MCP
