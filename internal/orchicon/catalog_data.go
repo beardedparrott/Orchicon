@@ -3,6 +3,7 @@ package orchicon
 import (
 	"encoding/json"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -108,6 +109,26 @@ func catalogListByProvider(provider string) []ModelInfo {
 			out = append(out, mc)
 		}
 	}
+	return out
+}
+
+// CatalogModelsForProvider returns the vendored catalog's VISIBLE models for
+// one provider — the OFFLINE model source for a catalog-covered provider such
+// as anthropic, where the live probe may be unreachable (no network, no token)
+// or the plane may not have the provider's CLI installed at all.
+//
+// This is the listing half of the ONE catalog-backed model/cost lookup the
+// pickers and the usage-pricing resolver share; the lookup half is this
+// package's GetModelForProvider (alias-aware, same authored data). It NEVER
+// synthesizes: only authored catalog entries are returned, so a provider the
+// catalog does not cover yields nil and every caller keeps its existing
+// live/probe behaviour unchanged.
+//
+// Sorted by id so a picker list is stable across calls (the underlying store
+// is a map, whose iteration order is deliberately random).
+func CatalogModelsForProvider(provider string) []ModelInfo {
+	out := catalogListByProvider(provider)
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
 }
 

@@ -65,6 +65,15 @@ message ListAdapterKindsResponse {
   // kind that registers but does not implement Ask chat is still
   // dispatchable for worker executions but is NOT offered for Ask.
   repeated string ask_capable_kinds = 2;
+  // Catalog/providers-sourced adapter kinds: the subset of adapter_kinds
+  // whose MODEL tier resolves from the providers SOURCING view
+  // (ProviderService.ListProviderModels: vendored catalog ⊕ probe ⊕ manual +
+  // the offline catalog seed) instead of opencode-CLI discovery
+  // (AIGatewayService.ListOpenCodeModels). Both the GUI and the TUI picker
+  // read this field so they cannot diverge. It is a MODEL-tier answer only
+  // and never affects Ask capability (ask_capable_kinds stays authoritative
+  // there).
+  repeated string sourcing_kinds = 3;
 }
 
 message ListOpenCodeModelsRequest {

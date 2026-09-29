@@ -22,6 +22,10 @@ const DefaultAdapterKind = "opencode"
 const (
 	KindOpencode = "opencode"
 	KindOrchicon = "orchicon"
+	// KindClaude is the Anthropic-API adapter kind. It is a MODEL-tier
+	// classification here (see CatalogSourcedAdapterKinds): its models live in
+	// the anthropic provider catalog, not in opencode's namespace.
+	KindClaude = "claude"
 )
 
 // ModelRef is the parsed form of a worker model_ref under the pinned

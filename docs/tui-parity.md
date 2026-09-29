@@ -162,11 +162,21 @@ identically:
 - **Provider tier** — under the native kind, the merged Providers view
   (`ProviderService.ListProviders`: ENABLED only, tenant customs badged) — exactly what
   Settings → Adapters edits. Under every other kind, its adapter-scoped gateway set
-  (`AIGatewayService.ListProviders`).
-- **Model tier** — under the native kind, the providers SOURCING view
-  (`ProviderService.ListProviderModels`: vendored catalog ⊕ probe ⊕ manual). Under every
-  other kind, opencode-CLI discovery (`AIGatewayService.ListOpenCodeModels`). Hidden models
-  are dropped; a model missing a context hint stays SELECTABLE and is ANNOTATED (ADR-0006 D8).
+  (`AIGatewayService.ListProviders`) — which is what `claude` gets: `["anthropic"]`, from
+  the ProviderRegistry (ADR-0003 D3), NOT the tenant-wide merged view (that would leak
+  every other provider into a claude-only scope).
+- **Model tier** — under a CATALOG-SOURCED kind (`orchicon`, `claude` — the kinds the
+  server publishes in `ListAdapterKinds.sourcing_kinds`, so both pickers read one
+  answer), the providers SOURCING view (`ProviderService.ListProviderModels`: vendored
+  catalog ⊕ probe ⊕ manual, plus an offline catalog seed when the live probe returns
+  nothing, so a catalog-covered provider such as `anthropic` is never blank on a plane
+  with no network or no CLI). Under every other kind, opencode-CLI discovery
+  (`AIGatewayService.ListOpenCodeModels`). Hidden models are dropped; a model missing a
+  context hint stays SELECTABLE and is ANNOTATED (ADR-0006 D8).
+
+  The classification is a MODEL-tier answer only: it never changes Ask capability
+  (`AskCapableKinds` stays the Dispatcher's `ChatKinds`, so `claude` — which implements
+  no `ChatTurnClient` — is still excluded from Ask and still flagged in Ask mode).
 
 Switching adapter RESETS the provider and model tiers — a selection is never
 carried across adapters (ADR-0004 stale-selection guard). The committed value is

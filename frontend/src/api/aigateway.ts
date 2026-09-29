@@ -60,19 +60,30 @@ export function useListAdapterKinds() {
       return {
         kinds: (res.adapterKinds ?? []) as string[],
         askCapableKinds: (res.askCapableKinds ?? []) as string[],
+        // Model-tier classification, answered by the server
+        // (internal/adapter.CatalogSourcedAdapterKinds): the kinds whose models
+        // resolve from the providers SOURCING view rather than opencode-CLI
+        // discovery. Reading it (instead of mirroring a constant here) is what
+        // keeps the GUI and the TUI from diverging.
+        sourcingKinds: (res.sourcingKinds ?? []) as string[],
       };
     },
     staleTime: 5 * 60 * 1000,
   });
 }
 
-export function useListProviders(adapter?: string) {
+// useListProviders reads the gateway's provider set, optionally scoped to one
+// adapter kind (claude → ["anthropic"], from the ProviderRegistry). `enabled`
+// lets a picker that only needs this set for SOME adapters avoid the RPC
+// entirely for the others.
+export function useListProviders(adapter?: string, enabled = true) {
   return useQuery({
     queryKey: adapter ? [...usageKeys.providers, adapter] : usageKeys.providers,
     queryFn: async () => {
       const res = await aiGatewayClient.listProviders({ adapter: adapter ?? "" });
       return (res.providers ?? []) as AIProvider[];
     },
+    enabled,
   });
 }
 

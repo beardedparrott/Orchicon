@@ -70,6 +70,20 @@ export class ListAdapterKindsResponse extends Message<ListAdapterKindsResponse> 
    */
   askCapableKinds: string[] = [];
 
+  /**
+   * Catalog/providers-sourced adapter kinds: the subset of adapter_kinds
+   * whose MODEL tier resolves from the providers SOURCING view
+   * (ProviderService.ListProviderModels: vendored catalog ⊕ probe ⊕ manual +
+   * the offline catalog seed) instead of opencode-CLI discovery
+   * (AIGatewayService.ListOpenCodeModels). Both the GUI and the TUI picker
+   * read this field so they cannot diverge. It is a MODEL-tier answer only
+   * and never affects Ask capability (ask_capable_kinds stays authoritative
+   * there).
+   *
+   * @generated from field: repeated string sourcing_kinds = 3;
+   */
+  sourcingKinds: string[] = [];
+
   constructor(data?: PartialMessage<ListAdapterKindsResponse>) {
     super();
     proto3.util.initPartial(data, this);
@@ -80,6 +94,7 @@ export class ListAdapterKindsResponse extends Message<ListAdapterKindsResponse> 
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "adapter_kinds", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
     { no: 2, name: "ask_capable_kinds", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 3, name: "sourcing_kinds", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListAdapterKindsResponse {

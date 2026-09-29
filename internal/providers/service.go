@@ -1247,6 +1247,19 @@ func (s *Service) ListProviderModels(ctx context.Context, tenantID, providerID s
 			}
 		}
 	}
+	// OFFLINE CATALOG SEED (picker view only). When the live probe yielded
+	// nothing — no network, no credential, an unreachable endpoint — a
+	// catalog-COVERED provider (anthropic) still lists its authored models, so
+	// the model picker is never blank on an opencode-free / offline plane.
+	// Additive and non-destructive: probe results always win (the seed only
+	// runs on an empty list), and a provider the catalog does not cover is
+	// untouched. The live CHAT path keeps its own no-fallback contract
+	// (internal/orchicon/sourcing.go) — this seeds the listing, not dispatch.
+	if len(res.Models) == 0 {
+		if cat := orchicon.CatalogModelsForProvider(providerID); len(cat) > 0 {
+			res.Models = append(res.Models, cat...)
+		}
+	}
 	hidden := make(map[string]bool, len(profile.HiddenModels))
 	for _, id := range profile.HiddenModels {
 		hidden[id] = true

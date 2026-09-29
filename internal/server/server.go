@@ -21,7 +21,6 @@ import (
 	"strings"
 	"time"
 
-	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/aigateway"
 	"github.com/beardedparrott/orchicon/internal/api"
@@ -363,27 +362,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// cost verbatim. The discoverer reuses its cache and returns a stale cache
 	// on error rather than failing, so the recording path never blocks on a
 	// subprocess and falls back to adapter cost on any miss/error.
-	usageRecorder.SetPricingResolver(func(ctx context.Context, provider, model string) (*apiv1.ModelCost, bool) {
-		// G5: the opencode binary may be absent (modelDiscoverer == nil —
-		// "model discovery disabled"). ListModels has no nil-receiver guard,
-		// so an orchicon-only Ask turn that records usage would nil-panic
-		// here. Fail closed (no pricing) instead.
-		if modelDiscoverer == nil {
-			return nil, false
-		}
-		models, err := modelDiscoverer.ListModels(ctx, provider)
-		if err != nil {
-			return nil, false
-		}
-		ref := provider + "/" + model
-		for _, m := range models {
-			if (strings.EqualFold(m.ProviderId, provider) && strings.EqualFold(m.Id, model)) ||
-				strings.EqualFold(m.ModelRef, ref) {
-				return m.Cost, m.Cost != nil
-			}
-		}
-		return nil, false
-	})
+	usageRecorder.SetPricingResolver(pricingResolver(modelDiscoverer))
 	adapterBridge.SetUsageRecorder(func(ctx context.Context, in opencode.UsageRecord) error {
 		_, err := usageRecorder.Record(ctx, aigateway.UsageInput{
 			TenantID:         in.TenantID,

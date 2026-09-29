@@ -13,14 +13,18 @@
 //     (ProviderService.ListProviders — built-ins ⊕ stored overrides ⊕ tenant
 //     customs, ENABLED only, exactly what Settings → Adapters edits); every other
 //     kind reads its adapter-scoped gateway set (AIGatewayService.ListProviders).
-//   - model tier: the NATIVE kind reads the sourcing view
-//     (ProviderService.ListProviderModels — vendored catalog ⊕ probe ⊕ manual);
-//     every other kind uses opencode-CLI discovery
-//     (AIGatewayService.ListOpenCodeModels).
+//   - model tier: a CATALOG-SOURCED kind (`orchicon`, `claude` — see
+//     UsesCatalogSourcing) reads the sourcing view
+//     (ProviderService.ListProviderModels — vendored catalog ⊕ probe ⊕ manual,
+//     plus the offline catalog seed); every other kind uses opencode-CLI
+//     discovery (AIGatewayService.ListOpenCodeModels).
 //
 // The two branches exist because the ref's own adapter segment decides which
-// registry can resolve a model list at all: the native bridge does not share the
-// opencode-CLI provider namespace, and vice versa.
+// registry can resolve a model list at all: the native bridge and the claude
+// adapter do not share the opencode-CLI provider namespace, and vice versa.
+// `claude` must NOT take the CLI branch: on a plane with no opencode binary
+// ListOpenCodeModels returns Unimplemented, which is exactly the plane this
+// product targets.
 package modelpick
 
 import (
@@ -42,6 +46,28 @@ import (
 // defaults a fresh selection to it (ADR-0005 D5) — the operator's "select
 // orchicon (first in the list) or opencode".
 const NativeAdapterKind = "orchicon"
+
+// catalogSourcedKinds is the set of adapter kinds whose MODEL tier resolves
+// from the providers SOURCING view instead of opencode-CLI discovery.
+//
+// It is built from internal/adapter.CatalogSourcedAdapterKinds() — the SAME
+// predicate the server publishes to the GUI (ListAdapterKindsResponse.
+// sourcing_kinds) — so the TUI cannot drift from the plane's own answer. The
+// GUI reads the wire field; the TUI derives from the predicate; a parity test
+// (TestCatalogSourcedParity) pins them together.
+var catalogSourcedKinds = func() map[string]bool {
+	set := make(map[string]bool)
+	for _, k := range adapter.CatalogSourcedAdapterKinds() {
+		set[k] = true
+	}
+	return set
+}()
+
+// UsesCatalogSourcing reports whether an adapter kind's model tier comes from
+// the providers sourcing view (vendored catalog ⊕ probe ⊕ manual) rather than
+// opencode-CLI discovery. Provider tier is a SEPARATE question: only the native
+// kind uses the merged Providers view (see FetchProviders).
+func UsesCatalogSourcing(kind string) bool { return catalogSourcedKinds[kind] }
 
 // KindsMsg carries the registered adapter kinds.
 type KindsMsg struct {
@@ -130,7 +156,7 @@ func FetchProviders(ctx context.Context, cl *client.Clients, kind string) ([]kit
 // VALUE is always the bare model id — never the legacy 2-segment model_ref — so
 // the picker's join produces exactly adapter/provider/model.
 func FetchModels(ctx context.Context, cl *client.Clients, kind, provider string) ([]kit2.PickerOption, bool, error) {
-	if kind == NativeAdapterKind {
+	if UsesCatalogSourcing(kind) {
 		if cl == nil || cl.Providers == nil {
 			return nil, false, errors.New("no provider client")
 		}
@@ -235,15 +261,15 @@ func ModelOptionsDiscovery(models []*apiv1.OpenCodeModel) []kit2.PickerOption {
 // ContextWindow resolves a model ref's context-window size (in tokens),
 // reading the source the ref's OWN adapter specifies:
 //
-//   - the native `orchicon` kind reads the providers sourcing view
-//     (ProviderService.ListProviderModels → the native registry/sourcing
+//   - a CATALOG-SOURCED kind (`orchicon`, `claude`) reads the providers sourcing
+//     view (ProviderService.ListProviderModels → the native registry/sourcing
 //     substrate, which shells out to nothing);
 //   - every other kind reads opencode-CLI discovery.
 //
-// The adapter segment is NEVER crossed. In particular an `orchicon` ref must NOT
-// fall back to the opencode CLI: the whole point of the native adapter is that
-// the product works WITHOUT opencode installed, so a cross-source fallback here
-// would make selecting `orchicon` silently invoke the opencode binary
+// The adapter segment is NEVER crossed. In particular an `orchicon` or `claude`
+// ref must NOT fall back to the opencode CLI: the whole point of those adapters
+// is that the product works WITHOUT opencode installed, so a cross-source
+// fallback here would make selecting them silently invoke the opencode binary
 // (ListOpenCodeModels returns Unimplemented when no discoverer is configured) —
 // the exact dependency the native adapter exists to remove. An adapter whose
 // model list legitimately IS the CLI (a legacy `opencode/...` ref) still reads
@@ -259,7 +285,7 @@ func ContextWindow(ctx context.Context, cl *client.Clients, ref string) (int64, 
 	if provider == "" || model == "" {
 		return 0, nil // a partial/legacy ref has no resolvable window
 	}
-	if kind == NativeAdapterKind {
+	if UsesCatalogSourcing(kind) {
 		return nativeModelContext(ctx, cl, provider, model)
 	}
 	return cliModelContext(ctx, cl, kind, provider, model)

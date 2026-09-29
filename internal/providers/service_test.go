@@ -535,3 +535,71 @@ func TestProvidersRegistryEndToEnd(t *testing.T) {
 		t.Fatalf("registry client host still %q after the override was cleared — stale cache", host)
 	}
 }
+
+// The offline picker path for a catalog-covered provider: with the live probe
+// pointed at a dead endpoint (no network / no token / no anthropic CLI on this
+// plane), anthropic still lists its AUTHORED catalog models, so selecting
+// adapter `claude` in the picker is never blank. Additive: probe results always
+// win, and a provider the catalog does not cover stays untouched.
+func TestProvidersListProviderModelsSeedsCatalogOffline(t *testing.T) {
+	svc, pool := newProvidersTestService(t)
+	ensureTenant(t, pool, testTenant)
+	cleanupCustom(t, pool)
+	ctx := context.Background()
+
+	// Force the probe to fail: port 1 on loopback has nothing listening.
+	unreachable := "http://127.0.0.1:1/v1"
+	if _, err := svc.UpdateSettings(ctx, testTenant, providers.UpdateSettingsInput{
+		ProviderID: "anthropic", BaseURLOverride: &unreachable,
+	}); err != nil {
+		t.Fatalf("point the probe at a dead endpoint: %v", err)
+	}
+	t.Cleanup(func() {
+		empty := ""
+		if _, err := svc.UpdateSettings(context.Background(), testTenant, providers.UpdateSettingsInput{
+			ProviderID: "anthropic", BaseURLOverride: &empty,
+		}); err != nil {
+			t.Logf("cleanup anthropic base URL override: %v", err)
+		}
+	})
+
+	res, err := svc.ListProviderModels(ctx, testTenant, "anthropic")
+	if err != nil {
+		t.Fatalf("list provider models: %v", err)
+	}
+	if len(res.Models) == 0 {
+		t.Fatal("anthropic listed NO models with the probe dead — the claude picker would render blank")
+	}
+	byID := map[string]providers.ModelRow{}
+	for _, m := range res.Models {
+		byID[m.ID] = m
+	}
+	son, ok := byID["claude-sonnet-4"]
+	if !ok {
+		t.Fatalf("claude-sonnet-4 missing from the offline list: %+v", res.Models)
+	}
+	if son.Context != 200000 {
+		t.Errorf("claude-sonnet-4 context = %d, want 200000 (the picker's compaction hint)", son.Context)
+	}
+	if son.Source != "catalog" {
+		t.Errorf("claude-sonnet-4 source = %q, want catalog", son.Source)
+	}
+
+	// A provider the catalog does NOT cover is never synthesized: this custom
+	// provider is not in the vendored catalog, so with its probe also dead the
+	// list stays EMPTY (Degraded, not invented). The seed is generic over
+	// catalog-covered providers — it must not become a model fabricator for
+	// every provider.
+	if _, err := svc.CreateCustom(ctx, testTenant, providers.CreateCustomInput{
+		RefID: "seedtest", BaseURL: "http://127.0.0.1:1/v1", AuthMode: providers.AuthModeNone,
+	}); err != nil {
+		t.Fatalf("create custom provider: %v", err)
+	}
+	uncov, err := svc.ListProviderModels(ctx, testTenant, "seedtest")
+	if err != nil {
+		t.Fatalf("list seedtest models: %v", err)
+	}
+	if len(uncov.Models) != 0 {
+		t.Fatalf("a provider the catalog does not cover served %d synthesized models: %+v", len(uncov.Models), uncov.Models)
+	}
+}
