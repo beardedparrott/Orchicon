@@ -414,3 +414,161 @@ func TestAskGuardRefusesAnAbsolutePathInTheAskDir(t *testing.T) {
 		t.Fatalf("a relative cleanup was refused (%v): %q", err, out)
 	}
 }
+
+// THE HANG, pinned. A child that has EXITED must not be reused.
+//
+// The operator's symptom: "who are you" sat on "Orchicon is thinking..." for
+// five minutes, with no child process and nothing in the log. The cause was this
+// pair:
+//
+//	readLoop:      case <-ctx.Done(): return      // left running=true, proc set
+//	ensureRunning: if s.running && s.proc != nil { return nil }   // reused it
+//
+// so the next turn wrote into a pipe nobody read and waited for a reply that
+// could never come. proc != nil is NOT a liveness signal.
+func TestAskDoesNotReuseAnExitedChild(t *testing.T) {
+	spawns := 0
+	var live *fakeProc
+	h := newHarness(t, func() *fakeProc {
+		spawns++
+		live = newFakeProc()
+		return live
+	})
+	h.b.SetAskRoot(t.TempDir())
+	ctx := context.Background()
+	sid, err := h.b.CreateConversationSession(ctx, "conv-respawn", "t")
+	if err != nil {
+		t.Fatalf("CreateConversationSession: %v", err)
+	}
+	bus, _ := h.b.Subscribe(ctx, "conv-respawn")
+	defer bus.Close()
+
+	// Turn 1 spawns the child; then the child DIES (the real case was an OAuth
+	// failure: the CLI emits a result and exits).
+	if err := h.b.SendTurnMessage(ctx, "conv-respawn", sid, "", "claude/anthropic/claude-sonnet-4", "hello"); err != nil {
+		t.Fatalf("SendTurnMessage: %v", err)
+	}
+	if spawns != 1 {
+		t.Fatalf("spawns after turn 1 = %d, want 1", spawns)
+	}
+	first := live
+	first.push(`{"type":"result","subtype":"success","is_error":true,"result":"Failed to authenticate"}`)
+	_ = nextEvent(t, bus) // the error event the dead child produced
+
+	// THE ACTUAL BUG, forced deterministically. The real sequence was the
+	// read loop exiting via ctx.Done() — a cancelled turn — BEFORE it observed
+	// the closed stdout, which the old code did without clearing the live flag.
+	// Cancelling the loop's own context exercises exactly that path; the
+	// channel-close path alone was already handled and would not regress.
+	sess := h.b.ensureAskSession("conv-respawn")
+	sess.mu.Lock()
+	cancelLoop := sess.liveCancel
+	sess.mu.Unlock()
+	if cancelLoop == nil {
+		t.Fatal("the session has no live context to cancel")
+	}
+	cancelLoop()
+
+	waitFor(t, func() bool {
+		sess.mu.Lock()
+		defer sess.mu.Unlock()
+		return !sess.alive
+	}, "the read loop to clear liveness when its context is cancelled")
+
+	// The child is now unreachable; the channel may close later or not at all.
+	first.end()
+
+	// Turn 2 must SPAWN AGAIN. Reusing the dead child is the hang.
+	if err := h.b.SendTurnMessage(ctx, "conv-respawn", sid, "", "claude/anthropic/claude-sonnet-4", "who are you"); err != nil {
+		t.Fatalf("SendTurnMessage (turn 2): %v", err)
+	}
+	if spawns != 2 {
+		t.Fatalf("spawns after turn 2 = %d, want 2 — the dead child was reused and the turn would hang forever", spawns)
+	}
+	if live == first {
+		t.Fatal("turn 2 ran on the SAME child object that had already exited")
+	}
+}
+
+// The child's lifetime is the SESSION's, not the turn's. Cancelling the turn's
+// context (which the collector does when a turn completes or is aborted) must
+// NOT kill the child — otherwise every turn pays a respawn and an aborted turn
+// leaves a corpse behind, which is the same failure by another route.
+func TestAskChildSurvivesTheTurnContextBeingCancelled(t *testing.T) {
+	spawns := 0
+	h := newHarness(t, func() *fakeProc {
+		spawns++
+		return newFakeProc()
+	})
+	h.b.SetAskRoot(t.TempDir())
+	sid, _ := h.b.CreateConversationSession(context.Background(), "conv-survive", "t")
+
+	// Turn 1 on a CANCELABLE context, which is then cancelled as the turn ends.
+	turnCtx, cancelTurn := context.WithCancel(context.Background())
+	bus, _ := h.b.Subscribe(context.Background(), "conv-survive")
+	defer bus.Close()
+	if err := h.b.SendTurnMessage(turnCtx, "conv-survive", sid, "", "claude/anthropic/claude-sonnet-4", "one"); err != nil {
+		t.Fatalf("SendTurnMessage: %v", err)
+	}
+	cancelTurn()
+	time.Sleep(50 * time.Millisecond) // let the cancellation propagate if it were going to
+
+	// Turn 2 → the child is still alive, so NO new spawn.
+	if err := h.b.SendTurnMessage(context.Background(), "conv-survive", sid, "", "claude/anthropic/claude-sonnet-4", "two"); err != nil {
+		t.Fatalf("SendTurnMessage (turn 2): %v", err)
+	}
+	if spawns != 1 {
+		t.Fatalf("spawns = %d, want 1 — the child was tied to the TURN's context, so an ended turn kills the session", spawns)
+	}
+}
+
+// A turn written to a live child must reach it, and a teardown must not leave
+// the session claiming liveness.
+func TestAskTeardownClearsLiveness(t *testing.T) {
+	h, _ := askHarness(t)
+	sid, _ := h.b.CreateConversationSession(context.Background(), "conv-teardown", "t")
+	if err := h.b.SendTurnMessage(context.Background(), "conv-teardown", sid, "", "claude/anthropic/claude-sonnet-4", "x"); err != nil {
+		t.Fatalf("SendTurnMessage: %v", err)
+	}
+	s := h.b.ensureAskSession("conv-teardown")
+	s.mu.Lock()
+	aliveBefore := s.alive
+	s.mu.Unlock()
+	if !aliveBefore {
+		t.Fatal("the session did not report a live child after a turn was written")
+	}
+	s.teardown()
+	s.mu.Lock()
+	aliveAfter, proc := s.alive, s.proc
+	s.mu.Unlock()
+	if aliveAfter || proc != nil {
+		t.Fatalf("after teardown alive=%v proc=%v, want false/nil — a torn-down session must not look live", aliveAfter, proc)
+	}
+}
+
+// A recreate must retire the old child rather than leaving it running: the
+// single-writer rule is that one session id has exactly one child.
+func TestAskRecreateRetiresThePreviousChild(t *testing.T) {
+	h, _ := askHarness(t)
+	ctx := context.Background()
+	firstSid, _ := h.b.CreateConversationSession(ctx, "conv-recreate", "t")
+	if err := h.b.SendTurnMessage(ctx, "conv-recreate", firstSid, "", "claude/anthropic/claude-sonnet-4", "x"); err != nil {
+		t.Fatalf("SendTurnMessage: %v", err)
+	}
+	s := h.b.ensureAskSession("conv-recreate")
+	s.mu.Lock()
+	oldProc := s.proc
+	s.mu.Unlock()
+	old, ok := oldProc.(*fakeProc)
+	if !ok {
+		t.Fatalf("the session's proc is %T, want the fake", oldProc)
+	}
+
+	secondSid, _ := h.b.CreateConversationSession(ctx, "conv-recreate", "t")
+	if secondSid == firstSid {
+		t.Fatal("a recreate must mint a NEW session id")
+	}
+	if !old.isClosed() {
+		t.Fatal("the previous child was not closed on recreate — its stdin and transcript would stay open")
+	}
+}

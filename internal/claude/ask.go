@@ -195,8 +195,26 @@ type askSession struct {
 	pending  map[string]struct{}    // open can_use_tool request ids
 	tools    map[string]askToolCall // tool_use_id -> the call it resolved
 	seeded   bool                   // whether the system prompt has been sent
-	cancel   context.CancelFunc
-	running  bool
+
+	// liveCtx/liveCancel own the CHILD's lifetime, which is NOT the turn's.
+	//
+	// A conversation session is meant to outlive a turn — that is what makes it a
+	// session rather than a request, and why its id can be resumed. Deriving the
+	// child from the turn's context (as this first did) killed it the moment a
+	// turn ended, so every turn paid a respawn and an aborted turn left the state
+	// below describing a process that no longer existed. Only teardown() and
+	// CloseAsk() cancel this.
+	liveCtx    context.Context
+	liveCancel context.CancelFunc
+
+	// alive reports whether the read loop is still running for `proc`.
+	//
+	// IT IS NOT REDUNDANT WITH proc != nil, and conflating the two is the bug
+	// this replaces: a child that EXITED left proc non-nil, so the next turn
+	// "reused" a corpse — writing into a pipe nobody read, then waiting for a
+	// reply that could never come. The operator's symptom was exactly that: a
+	// permanent "thinking…", no child process, and nothing in the log.
+	alive bool
 }
 
 func newAskSession(b *Bridge, convID, askDir string) *askSession {
@@ -418,12 +436,21 @@ func (b *Bridge) SetAskRoot(dir string) { b.askRootOverride = strings.TrimSpace(
 // --- lifecycle --------------------------------------------------------------
 
 // ensureRunning spawns the conversation's child if it is not already live.
-func (s *askSession) ensureRunning(parent context.Context) error {
+func (s *askSession) ensureRunning(_ context.Context) error {
 	s.mu.Lock()
-	if s.running && s.proc != nil {
+	if s.alive && s.proc != nil {
 		s.mu.Unlock()
-		return nil
+		return nil // a live child serves this turn
 	}
+	// NOT ALIVE: reap whatever is left and spawn fresh. See the `alive` field for
+	// why proc != nil alone is not a reuse signal.
+	stale := s.proc
+	s.proc = nil
+	if s.liveCtx == nil {
+		// Session-scoped, NOT the turn's: the child outlives the turn.
+		s.liveCtx, s.liveCancel = context.WithCancel(context.Background())
+	}
+	liveCtx := s.liveCtx
 	// A fresh id if CreateConversationSession was never called (a direct
 	// SendTurnMessage): the session identity must exist before the argv is built.
 	if strings.TrimSpace(s.sid) == "" {
@@ -431,6 +458,10 @@ func (s *askSession) ensureRunning(parent context.Context) error {
 	}
 	sid := s.sid
 	s.mu.Unlock()
+	if stale != nil {
+		slog.Default().Info("claude ask: retiring a child that is no longer serving this session", "conversation", s.convID, "session", sid)
+		_ = stale.Close()
+	}
 	s.b.bindAskSessionID(sid, s)
 
 	if err := os.MkdirAll(s.askDir, 0o755); err != nil {
@@ -452,20 +483,24 @@ func (s *askSession) ensureRunning(parent context.Context) error {
 		Env:        env,
 	}
 
-	ctx, cancel := context.WithCancel(parent)
-	proc, err := s.b.spawnAsk(ctx, spec)
+	proc, err := s.b.spawnAsk(liveCtx, spec)
 	if err != nil {
-		cancel()
 		return fmt.Errorf("claude ask: spawn: %w", err)
 	}
 
 	s.mu.Lock()
 	s.proc = proc
-	s.cancel = cancel
-	s.running = true
+	s.alive = true
 	s.mu.Unlock()
 
-	go s.readLoop(ctx, proc)
+	// LOGGED, because the ABSENCE of any line here is what made the operator's
+	// "thinking…" hang invisible: the adapter had no spawn record, no exit
+	// record and no failure record, so nothing could distinguish "never started"
+	// from "started and died" from "started and stayed silent".
+	slog.Default().Info("claude ask: spawned the session child",
+		"conversation", s.convID, "session", sid, "dir", s.askDir, "argv0", argv[0])
+
+	go s.readLoop(liveCtx, proc)
 	return nil
 }
 
@@ -611,8 +646,10 @@ func (s *askSession) writeUserTurn(system, text string) error {
 		body = "=== SYSTEM ===\n" + strings.TrimSpace(system) + "\n\n" + text
 	}
 	if err := proc.WriteTurn(userTurnPayload(body)); err != nil {
+		slog.Default().Warn("claude ask: could not write the turn to the child", "conversation", s.convID, "error", err)
 		return fmt.Errorf("claude ask: write turn: %w", err)
 	}
+	slog.Default().Info("claude ask: turn written to the child", "conversation", s.convID, "seeded", !seeded, "bytes", len(body))
 	s.mu.Lock()
 	s.seeded = true
 	s.mu.Unlock()
@@ -666,8 +703,9 @@ func (s *askSession) abort() {
 // teardown retires the conversation's child entirely (a recreate).
 func (s *askSession) teardown() {
 	s.mu.Lock()
-	proc, cancel := s.proc, s.cancel
-	s.proc, s.cancel, s.running = nil, nil, false
+	proc, cancel := s.proc, s.liveCancel
+	s.proc, s.liveCancel, s.alive = nil, nil, false
+	s.liveCtx = nil
 	bus := s.bus
 	s.bus = nil
 	s.tools = make(map[string]askToolCall)
@@ -713,6 +751,20 @@ func (b *Bridge) CloseAsk() {
 // readLoop decodes the child's stdout lines until it ends, mapping each onto the
 // session bus.
 func (s *askSession) readLoop(ctx context.Context, proc ProcSession) {
+	// THE DEFER IS THE FIX. Returning early on ctx.Done() used to leave the
+	// session marked live with a `proc` that had already exited, so the next turn
+	// reused a dead child and waited on it forever. However this loop ends — the
+	// child exiting, or the session being torn down — the session must stop
+	// claiming to be alive.
+	defer func() {
+		s.mu.Lock()
+		if s.proc == proc {
+			s.proc = nil
+			s.alive = false
+		}
+		s.mu.Unlock()
+	}()
+
 	lines := proc.Lines()
 	for {
 		select {
@@ -722,10 +774,8 @@ func (s *askSession) readLoop(ctx context.Context, proc ProcSession) {
 			if !ok {
 				// The child ended. Tell the consumer the turn is over, or the
 				// collector waits forever on a session that no longer exists.
+				slog.Default().Warn("claude ask: the session child exited", "conversation", s.convID)
 				s.busEmit(scheduler.SessionEvent{Kind: "error", Text: "claude ask: the session ended"})
-				s.mu.Lock()
-				s.running = false
-				s.mu.Unlock()
 				return
 			}
 			s.handleLine(line)
