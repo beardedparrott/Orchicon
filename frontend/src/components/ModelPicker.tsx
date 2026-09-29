@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { useListAdapterKinds, useListOpenCodeModels } from "@/api/aigateway";
+import { useListAdapterKinds, useListOpenCodeModels, useListProviders } from "@/api/aigateway";
 import { useProviderList, useProviderModelsForPicker } from "@/api/providers";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import type { OpenCodeModel } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
+import type { AIProvider, OpenCodeModel } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
 import type { ProviderEntry } from "@/api/gen/orchicon/api/v1/provider_pb";
 import {
   DEFAULT_ADAPTER_KIND,
@@ -17,7 +17,14 @@ import {
 
 // Per-adapter provider scope is no longer static: under legacy CLI
 // adapters the provider pills derive from the live CLI discovery (the old
-// picker's grouping), under orchicon from the merged providers service.
+// picker's grouping), under the catalog-sourced NATIVE kind from the merged
+// providers service, and under a catalog-sourced non-native kind (claude) from
+// its adapter-scoped gateway set.
+//
+// The MODEL tier's source is per adapter too, and the server is its authority:
+// ListAdapterKinds.sourcing_kinds names the kinds whose models come from the
+// providers sourcing view, so `claude` lists its anthropic models with no
+// opencode binary on the plane, and the GUI cannot drift from the TUI.
 
 interface ModelPickerProps {
   value: string;
@@ -51,6 +58,10 @@ export function ModelPicker({ value, onChange, askMode = false, inline = false }
   const { data: adapterKindsData, error: kindsError } = useListAdapterKinds();
   const adapterKinds = adapterKindsData?.kinds;
   const askCapableKinds = adapterKindsData?.askCapableKinds;
+  // The server's model-tier classification (which kinds' models come from the
+  // providers sourcing view). Absent on an older plane → fall back to the
+  // native kind only, which is exactly the pre-existing behaviour.
+  const sourcingKinds = adapterKindsData?.sourcingKinds;
 
   // Seeded adapter/provider from the stored ref; DEFAULT_ADAPTER_KIND when the
   // ref is empty or unknown (never blank, never hidden).
@@ -87,57 +98,105 @@ export function ModelPicker({ value, onChange, askMode = false, inline = false }
   const inputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Provider tier (ADR-0006): tenant-aware merged view from the providers
-  // service — built-ins plus the tenant's ENABLED custom providers,
-  // projected into the picker's {id, name, custom} shape. Enabled-only:
-  // disabled providers are not selectable.
+  // Two different questions, two different answers (ADR-0004 D1).
+  //
+  //  - MODEL tier (usesCatalogSourcing): kinds whose models resolve from the
+  //    providers SOURCING view (ProviderService.ListProviderModels — vendored
+  //    catalog ⊕ probe ⊕ manual, plus the offline catalog seed). The SERVER
+  //    publishes that list (ListAdapterKindsResponse.sourcing_kinds), so this
+  //    picker and the TUI cannot disagree about it. Every other kind keeps
+  //    opencode-CLI discovery.
+  //  - PROVIDER tier (usesMergedProviders): only the NATIVE kind uses the
+  //    tenant-aware merged view, which GATES its model tier. A catalog-sourced
+  //    NON-native kind (claude) uses its adapter-scoped gateway set
+  //    (["anthropic"], from the ProviderRegistry) — never the merged view, which
+  //    would leak openai/openrouter into a claude-only scope. Legacy CLI kinds
+  //    keep OPTIONAL FILTER pills derived from the live CLI discovery with an
+  //    "All" reset; the model input never requires a selection.
+  const usesCatalogSourcing = (sourcingKinds ?? [ORCHICON_ADAPTER_KIND]).includes(adapter);
+  const usesMergedProviders = adapter === ORCHICON_ADAPTER_KIND;
   const {
     data: providerEntries,
-    isLoading: providersLoading,
-    error: providersError,
+    isLoading: mergedProvidersLoading,
+    error: mergedProvidersError,
   } = useProviderList();
-  // ProviderRegistry semantics (ADR-0003 D3): under the NATIVE kind the
-  // tier is the enabled merged view — providers RESOLVE the model list, so
-  // the tier gates tier 3. Under legacy CLI adapters the tier is a FILTER:
-  // pills derived from the live CLI discovery's distinct providerID values
-  // (the old picker's grouping — opencode, opencode-go, deepseek, …), with
-  // an "All" reset; the model input never requires a selection.
-  const useNativeSourcing = adapter === ORCHICON_ADAPTER_KIND;
+  // Adapter-scoped gateway provider set. Enabled ONLY for a catalog-sourced,
+  // non-merged kind, so neither the native kind nor the legacy CLI kinds pay
+  // for an RPC they never read.
+  const adapterScopedKind = usesCatalogSourcing && !usesMergedProviders ? adapter : undefined;
+  const {
+    data: adapterScopedProviders,
+    isLoading: adapterScopedLoading,
+    error: adapterScopedError,
+  } = useListProviders(adapterScopedKind, adapterScopedKind !== undefined);
   // ONE unfiltered CLI query serves BOTH the provider pills (distinct
   // providerID values) and the model list under legacy adapters — two
   // queries with different keys each shell out `opencode models --verbose`
-  // (~1–2s), doubling the picker's open latency.
-  const legacyModelsQ = useListOpenCodeModels(undefined, undefined, !useNativeSourcing);
+  // (~1–2s), doubling the picker's open latency. It never fires for a
+  // catalog-sourced kind: those models come from the providers service, and on
+  // a plane with no opencode binary the CLI call only returns Unimplemented.
+  //
+  // It also must not fire BEFORE the classification is known. The fallback
+  // while `sourcing_kinds` is still in flight is the native kind alone, so a
+  // stored `claude/...` ref would otherwise issue one doomed `opencode models`
+  // call at mount on the very plane this picker targets (and could flash its
+  // Unimplemented error in the panel for that window). A FAILED
+  // ListAdapterKinds is the one case where the CLI is the only source left, so
+  // the pre-existing fallback still applies there and no legacy adapter starves.
+  const kindsClassified = adapterKindsData !== undefined;
+  const legacyModelsEnabled = kindsClassified
+    ? !usesCatalogSourcing
+    : kindsError != null && !usesCatalogSourcing;
+  const legacyModelsQ = useListOpenCodeModels(undefined, undefined, legacyModelsEnabled);
   const providers = useMemo(() => {
-    if (!useNativeSourcing) {
-      const ids = new Map<string, { id: string; name: string; custom: boolean }>();
-      for (const m of legacyModelsQ.data ?? []) {
-        if (m.providerId && !ids.has(m.providerId)) {
-          ids.set(m.providerId, { id: m.providerId, name: m.providerId, custom: false });
-        }
-      }
-      return [{ id: "", name: "All", custom: false }, ...[...ids.values()]];
+    if (usesMergedProviders) {
+      return (providerEntries ?? [])
+        .filter((p) => p.enabled)
+        .map((p: ProviderEntry) => ({ id: p.id, name: p.displayName || p.id, custom: p.isCustom }));
     }
-    return (providerEntries ?? [])
-      .filter((p) => p.enabled)
-      .map((p: ProviderEntry) => ({ id: p.id, name: p.displayName || p.id, custom: p.isCustom }));
-  }, [useNativeSourcing, providerEntries, legacyModelsQ.data]);
-  // Model tier — per-adapter data source (ADR-0004): the NATIVE adapter
-  // resolves models from the providers service (vendored catalog ⊕ probe ⊕
-  // manual — the Settings → Adapters sourcing view); the legacy CLI
-  // adapters keep opencode-CLI discovery (whose provider namespace the
-  // native bridge does not share — filtering CLI output by orchicon
-  // providers would be structurally empty). Both hooks run unconditionally
-  // (rules of hooks); each query fetches only for its own source.
+    if (usesCatalogSourcing) {
+      return (adapterScopedProviders ?? []).map((p: AIProvider) => ({
+        id: p.id,
+        name: p.name || p.id,
+        custom: p.custom ?? false,
+      }));
+    }
+    const ids = new Map<string, { id: string; name: string; custom: boolean }>();
+    for (const m of legacyModelsQ.data ?? []) {
+      if (m.providerId && !ids.has(m.providerId)) {
+        ids.set(m.providerId, { id: m.providerId, name: m.providerId, custom: false });
+      }
+    }
+    return [{ id: "", name: "All", custom: false }, ...[...ids.values()]];
+  }, [usesMergedProviders, usesCatalogSourcing, providerEntries, adapterScopedProviders, legacyModelsQ.data]);
+  const providersLoading = usesMergedProviders
+    ? mergedProvidersLoading
+    : usesCatalogSourcing
+      ? adapterScopedLoading
+      : legacyModelsQ.isLoading;
+  const providersError = usesMergedProviders
+    ? mergedProvidersError
+    : usesCatalogSourcing
+      ? adapterScopedError
+      : legacyModelsQ.error;
+  // Model tier — per-adapter data source (ADR-0004): a CATALOG-SOURCED kind
+  // (orchicon, claude — from ListAdapterKinds.sourcing_kinds) resolves models
+  // from the providers service (vendored catalog ⊕ probe ⊕ manual — the
+  // Settings → Adapters sourcing view); every other kind keeps opencode-CLI
+  // discovery (whose provider namespace those kinds do not share — filtering
+  // CLI output by their providers would be structurally empty, and on an
+  // opencode-free plane the CLI call is Unimplemented). Both hooks run
+  // unconditionally (rules of hooks); each query fetches only for its own
+  // source.
   const nativeModelsQ = useProviderModelsForPicker(
-    useNativeSourcing ? provider : "",
-    useNativeSourcing && provider !== "",
+    usesCatalogSourcing ? provider : "",
+    usesCatalogSourcing && provider !== "",
   );
   // (legacyModelsQ is declared once, above, feeding both the provider
   // pills and the model tier — one RPC, two projections.)
-  const models = useNativeSourcing ? nativeModelsQ.models : legacyModelsQ.data;
-  const modelsLoading = useNativeSourcing ? nativeModelsQ.isLoading : legacyModelsQ.isLoading;
-  const modelsError = useNativeSourcing ? nativeModelsQ.error : legacyModelsQ.error;
+  const models = usesCatalogSourcing ? nativeModelsQ.models : legacyModelsQ.data;
+  const modelsLoading = usesCatalogSourcing ? nativeModelsQ.isLoading : legacyModelsQ.isLoading;
+  const modelsError = usesCatalogSourcing ? nativeModelsQ.error : legacyModelsQ.error;
 
   // Tier 1 order (AC 5): the ORCHICON adapter leads the rendered list AND is
   // the fresh-selection default (the seeding effect below). Both halves are
@@ -206,7 +265,7 @@ export function ModelPicker({ value, onChange, askMode = false, inline = false }
     let result = models;
     // Legacy adapters: provider pills are OPTIONAL filters ("All" =
     // unfiltered flat list — the red-cursor gate stays dead).
-    if (!useNativeSourcing && provider) {
+    if (!usesCatalogSourcing && provider) {
       result = result.filter((m) => m.providerId === provider);
     }
     if (search) {
@@ -224,7 +283,7 @@ export function ModelPicker({ value, onChange, askMode = false, inline = false }
       if (a.providerId !== b.providerId) return a.providerId.localeCompare(b.providerId);
       return (a.cost?.input ?? 0) - (b.cost?.input ?? 0);
     });
-  }, [models, search, useNativeSourcing, provider]);
+  }, [models, search, usesCatalogSourcing, provider]);
 
   useEffect(() => setFocusedIdx(0), [filtered.length]);
 
@@ -456,9 +515,7 @@ export function ModelPicker({ value, onChange, askMode = false, inline = false }
           <Input
             ref={inputRef}
             placeholder={
-              useNativeSourcing && !provider
-                ? "Select a provider first"
-                : "Search models..."
+              usesCatalogSourcing && !provider ? "Select a provider first" : "Search models..."
             }
             value={search}
             onChange={(e) => {
@@ -512,9 +569,12 @@ export function ModelPicker({ value, onChange, askMode = false, inline = false }
                 )}
               </div>
 
-              {/* Tier 2 — provider pills. Orchicon: the provider RESOLVES the
-                  model list (gate applies). Legacy CLI adapters: OPTIONAL
-                  FILTERS from the live CLI discovery with an All reset. */}
+              {/* Tier 2 — provider pills. The catalog-sourced NATIVE kind uses
+                  the merged providers service view, which GATES the model
+                  tier. A catalog-sourced non-native kind (claude) lists its
+                  adapter-scoped gateway set ([anthropic]). Legacy CLI
+                  adapters: OPTIONAL FILTERS from the live CLI discovery with
+                  an All reset. */}
               <div className="flex flex-wrap items-center gap-1.5 border-b px-3 py-2">
                 <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                   Provider

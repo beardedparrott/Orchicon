@@ -75,8 +75,17 @@ type ListAdapterKindsResponse struct {
 	// kind that registers but does not implement Ask chat is still
 	// dispatchable for worker executions but is NOT offered for Ask.
 	AskCapableKinds []string `protobuf:"bytes,2,rep,name=ask_capable_kinds,json=askCapableKinds,proto3" json:"ask_capable_kinds,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Catalog/providers-sourced adapter kinds: the subset of adapter_kinds
+	// whose MODEL tier resolves from the providers SOURCING view
+	// (ProviderService.ListProviderModels: vendored catalog ⊕ probe ⊕ manual +
+	// the offline catalog seed) instead of opencode-CLI discovery
+	// (AIGatewayService.ListOpenCodeModels). Both the GUI and the TUI picker
+	// read this field so they cannot diverge. It is a MODEL-tier answer only
+	// and never affects Ask capability (ask_capable_kinds stays authoritative
+	// there).
+	SourcingKinds []string `protobuf:"bytes,3,rep,name=sourcing_kinds,json=sourcingKinds,proto3" json:"sourcing_kinds,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ListAdapterKindsResponse) Reset() {
@@ -119,6 +128,13 @@ func (x *ListAdapterKindsResponse) GetAdapterKinds() []string {
 func (x *ListAdapterKindsResponse) GetAskCapableKinds() []string {
 	if x != nil {
 		return x.AskCapableKinds
+	}
+	return nil
+}
+
+func (x *ListAdapterKindsResponse) GetSourcingKinds() []string {
+	if x != nil {
+		return x.SourcingKinds
 	}
 	return nil
 }
@@ -1354,10 +1370,11 @@ var File_orchicon_api_v1_ai_gateway_service_proto protoreflect.FileDescriptor
 const file_orchicon_api_v1_ai_gateway_service_proto_rawDesc = "" +
 	"\n" +
 	"(orchicon/api/v1/ai_gateway_service.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a orchicon/api/v1/ai_gateway.proto\"\x19\n" +
-	"\x17ListAdapterKindsRequest\"k\n" +
+	"\x17ListAdapterKindsRequest\"\x92\x01\n" +
 	"\x18ListAdapterKindsResponse\x12#\n" +
 	"\radapter_kinds\x18\x01 \x03(\tR\fadapterKinds\x12*\n" +
-	"\x11ask_capable_kinds\x18\x02 \x03(\tR\x0faskCapableKinds\"t\n" +
+	"\x11ask_capable_kinds\x18\x02 \x03(\tR\x0faskCapableKinds\x12%\n" +
+	"\x0esourcing_kinds\x18\x03 \x03(\tR\rsourcingKinds\"t\n" +
 	"\x19ListOpenCodeModelsRequest\x12\x1f\n" +
 	"\bprovider\x18\x01 \x01(\tH\x00R\bprovider\x88\x01\x01\x12\x1d\n" +
 	"\aadapter\x18\x02 \x01(\tH\x01R\aadapter\x88\x01\x01B\v\n" +

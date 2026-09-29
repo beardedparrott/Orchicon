@@ -106,7 +106,20 @@ func (s *Service) ListAdapterKinds(ctx context.Context, req *connect.Request[api
 			chatKinds = k
 		}
 	}
-	return connect.NewResponse(&apiv1.ListAdapterKindsResponse{AdapterKinds: kinds, AskCapableKinds: chatKinds}), nil
+	// Sourcing kinds: the adapter kinds whose MODEL tier resolves from the
+	// providers-sourcing path rather than opencode-CLI discovery (ADR-0004
+	// D1). Published so BOTH pickers read one answer instead of mirroring a
+	// constant — the GUI's ModelPicker consumes this field verbatim.
+	//
+	// NOTE: this is the model tier only. AskCapableKinds below is UNCHANGED:
+	// `claude` is catalog-sourced but implements no ChatTurnClient, so it is
+	// still excluded from Ask.
+	sourcing := adapter.CatalogSourcedAdapterKinds()
+	return connect.NewResponse(&apiv1.ListAdapterKindsResponse{
+		AdapterKinds:    kinds,
+		AskCapableKinds: chatKinds,
+		SourcingKinds:   sourcing,
+	}), nil
 }
 
 // ListProviders returns the LLM providers known to the gateway

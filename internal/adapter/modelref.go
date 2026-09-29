@@ -27,6 +27,11 @@ const (
 	// of opencode), and the 2-segment ref "anthropic/<model>" must keep
 	// inferring kind opencode (modelref_test.go). The Claude adapter is a
 	// streaming-stdio adapter with no in-container HTTP serve.
+	//
+	// MODEL tier: it is a catalog-sourced kind (CatalogSourcedAdapterKinds)
+	// — its models are the anthropic provider catalog's, not opencode's —
+	// so `claude` still lists and dispatches on a plane with no opencode
+	// binary, with no Ask widening (it implements no ChatTurnClient).
 	KindClaude = "claude"
 )
 

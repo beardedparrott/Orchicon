@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/adapter"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 )
 
 // SplitRef uses the PINNED grammar, so the picker's tiers are seeded exactly as
@@ -203,3 +205,92 @@ func TestFriendlyErrExplainsAnUnconfiguredDiscoverer(t *testing.T) {
 type errText string
 
 func (e errText) Error() string { return string(e) }
+
+// The MODEL-tier classification: `claude` must resolve from the providers
+// SOURCING view, because on a plane with no opencode binary the CLI branch
+// (AIGatewayService.ListOpenCodeModels) returns Unimplemented — claude would be
+// selectable but UNLISTABLE. `orchicon` shares the classification; `opencode`
+// must NOT (its models ARE the CLI's discovery).
+func TestUsesCatalogSourcing(t *testing.T) {
+	for _, kind := range []string{NativeAdapterKind, adapter.KindClaude} {
+		if !UsesCatalogSourcing(kind) {
+			t.Errorf("UsesCatalogSourcing(%q) = false, want true (it must not require opencode)", kind)
+		}
+	}
+	for _, kind := range []string{adapter.KindOpencode, "", "unknown-kind"} {
+		if UsesCatalogSourcing(kind) {
+			t.Errorf("UsesCatalogSourcing(%q) = true, want false", kind)
+		}
+	}
+}
+
+// PARITY GUARD: the TUI's set must equal the predicate the server publishes to
+// the GUI (adapter.CatalogSourcedAdapterKinds → ListAdapterKindsResponse.
+// sourcing_kinds). Without this, claude could be catalog-sourced in one picker
+// and CLI-discovered in the other — the divergence this item exists to close.
+func TestCatalogSourcedParity(t *testing.T) {
+	want := map[string]bool{}
+	for _, k := range adapter.CatalogSourcedAdapterKinds() {
+		want[k] = true
+	}
+	if len(want) == 0 {
+		t.Fatal("adapter.CatalogSourcedAdapterKinds() is empty — the server would publish no sourcing kinds")
+	}
+	if len(catalogSourcedKinds) != len(want) {
+		t.Fatalf("TUI set %v and adapter predicate %v differ in size", catalogSourcedKinds, want)
+	}
+	for k := range want {
+		if !catalogSourcedKinds[k] {
+			t.Errorf("kind %q is catalog-sourced on the plane but not in the TUI", k)
+		}
+	}
+}
+
+// The claude path, end to end at the seam the TUI owns: the sourcing view's
+// anthropic list projects to a NON-EMPTY option list on an opencode-free plane,
+// the model VALUE stays the bare id, and the picker's join commits exactly
+// `claude/anthropic/<model>` — the ref the grammar (and the plane) accepts.
+func TestClaudeKindListsCatalogModelsAndCommitsAThreeSegmentRef(t *testing.T) {
+	if !UsesCatalogSourcing(adapter.KindClaude) {
+		t.Fatal("claude must take the providers-sourcing branch (the CLI branch returns Unimplemented with no opencode binary)")
+	}
+
+	// What ProviderService.ListProviderModels returns for anthropic with no
+	// probe/network — the offline catalog seed.
+	opts := ModelOptionsNative([]*apiv1.ProviderModel{
+		{Id: "claude-haiku-4", Context: 200000, Visible: true, Source: "catalog"},
+		{Id: "claude-opus-4", Context: 200000, Visible: true, Source: "catalog"},
+		{Id: "claude-sonnet-4", Context: 200000, Visible: true, Source: "catalog"},
+	})
+	if len(opts) == 0 {
+		t.Fatal("the claude model tier projected an EMPTY list — the picker would render blank")
+	}
+	for _, o := range opts {
+		if o.Value == "anthropic/"+o.Value {
+			t.Errorf("option value %q is a legacy 2-segment ref; the picker would join a bogus 4-segment ref", o.Value)
+		}
+	}
+
+	// Provider tier for claude is the adapter-scoped gateway set — [anthropic] —
+	// projected by ProviderOptionsGateway (NOT the merged Providers view).
+	provs := ProviderOptionsGateway([]*apiv1.AIProvider{{Id: "anthropic", Name: "Anthropic", Enabled: true}})
+	if len(provs) != 1 || provs[0].Value != "anthropic" {
+		t.Fatalf("claude provider tier = %+v, want exactly [anthropic]", provs)
+	}
+
+	// The committed ref, joined by the shared picker exactly as a host reads it.
+	mp := kit2.NewModelPicker("Worker model")
+	mp.Open(adapter.KindClaude, "anthropic", "claude-sonnet-4")
+	mp.SetModels(adapter.KindClaude, "anthropic", opts, false)
+	if got := mp.Ref(); got != "claude/anthropic/claude-sonnet-4" {
+		t.Fatalf("Ref() = %q, want claude/anthropic/claude-sonnet-4", got)
+	}
+	// And the grammar authority reads that ref back to the same triple.
+	parsed, err := adapter.ParseModelRef(mp.Ref(), nil)
+	if err != nil {
+		t.Fatalf("ParseModelRef(%q): %v", mp.Ref(), err)
+	}
+	if parsed.Adapter != adapter.KindClaude || parsed.Provider != "anthropic" || parsed.Model != "claude-sonnet-4" {
+		t.Fatalf("round trip = %+v, want claude/anthropic/claude-sonnet-4", parsed)
+	}
+}

@@ -17,10 +17,17 @@ describe("ModelPicker (three-tier, ADR-0004)", () => {
     expect(src).toContain("useProviderList()");
     expect(src).toMatch(/No providers for adapter/);
     // Tier 3 — searchable model list scoped to the selected provider.
-    // Per-adapter data source (ADR-0004): native → providers service,
-    // legacy CLI adapters → opencode-CLI discovery.
+    // Per-adapter data source (ADR-0004): a CATALOG-SOURCED kind — the server's
+    // ListAdapterKinds.sourcing_kinds (orchicon, claude) — resolves models from
+    // the providers service; every other kind uses opencode-CLI discovery.
+    // (The superseded assumption was "native → providers service, legacy CLI
+    // adapters → opencode-CLI discovery"; claude is neither native nor a CLI
+    // adapter, so it used to fall into the CLI branch and list NOTHING on a
+    // plane with no opencode binary.)
     expect(src).toContain("useProviderModelsForPicker");
     expect(src).toContain("useListOpenCodeModels(");
+    expect(src).toContain("usesCatalogSourcing");
+    expect(src).toContain("sourcingKinds");
   });
 
   it("scopes provider list by adapter and model list by provider (stale-selection guard)", () => {
@@ -36,13 +43,45 @@ describe("ModelPicker (three-tier, ADR-0004)", () => {
     // The merged providers list is tenant-wide; the tier filters it to the
     // selected adapter's provider set (legacy kinds: pills derived from the
     // live CLI discovery's distinct providerID values with an All reset —
-    // optional filters, never a gate; orchicon = the merged providers
-    // service view, which gates its model tier). Regression guard: the
-    // legacy tier must never render a static hardcoded set — it must
-    // auto-pull from the same discovery the model tier uses.
+    // optional filters, never a gate; the catalog-sourced NATIVE kind = the
+    // merged providers service view, which gates its model tier; a
+    // catalog-sourced NON-native kind — claude — = its adapter-scoped gateway
+    // set, because the merged view would leak openai/openrouter into a
+    // claude-only scope). Regression guard: the legacy tier must never render a
+    // static hardcoded set — it must auto-pull from the same discovery the
+    // model tier uses.
     expect(src).toContain("legacyModelsQ");
     expect(src).toContain("All");
     expect(src).toContain("adapter === ORCHICON_ADAPTER_KIND");
+    expect(src).toContain("usesMergedProviders");
+    expect(src).toContain("useListProviders");
+  });
+
+  it("routes catalog-sourced kinds through the providers service — claude lists models with no opencode binary", () => {
+    // The model tier's source is the SERVER's answer (sourcing_kinds), so the
+    // GUI and the TUI cannot diverge about which kinds are catalog-sourced.
+    expect(src).toContain("sourcingKinds");
+    expect(src).toContain("usesCatalogSourcing");
+    // The providers-sourcing view is gated by that classification — not by the
+    // adapter being the native kind.
+    expect(src).toMatch(/useProviderModelsForPicker\(\s*usesCatalogSourcing \? provider/);
+    // ...and the opencode-CLI query is disabled for those kinds, so an
+    // opencode-free plane never calls ListOpenCodeModels for claude. The gate
+    // is `legacyModelsEnabled`: it is false for a catalog-sourced kind AND
+    // while the classification is still in flight (`kindsClassified`), so a
+    // stored claude ref cannot fire a doomed CLI call at mount either.
+    expect(src).toContain("legacyModelsEnabled");
+    expect(src).toMatch(/useListOpenCodeModels\(undefined, undefined, legacyModelsEnabled\)/);
+    expect(src).toMatch(/const kindsClassified = adapterKindsData !== undefined/);
+    expect(src).toMatch(/kindsClassified\s*\n?\s*\? !usesCatalogSourcing/);
+    // The provider tier for a catalog-sourced non-native kind is the
+    // adapter-scoped gateway set, and no client-side hardcoded "claude".
+    expect(src).toContain("adapterScopedKind");
+    expect(src).not.toContain('=== "claude"');
+    // ASK-CAPABILITY HONESTY IS PRESERVED: catalog sourcing is a MODEL-tier
+    // classification and never widens Ask.
+    expect(src).toContain("adapter does not support Ask chat");
+    expect(src).toContain("!askCapableKinds.includes(parsed.adapter)");
   });
 
   it("marks custom providers with a badge and manage affordance", () => {
