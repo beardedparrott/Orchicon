@@ -13,7 +13,6 @@ import ReactFlow, {
   type Edge,
   type Node,
 } from "reactflow";
-import { useQueryClient } from "@tanstack/react-query";
 import type { WorkflowStepRun } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import { StepKind, StepRunStatus } from "@/api/gen/orchicon/api/v1/workflow_pb";
 
@@ -29,6 +28,7 @@ import {
 } from "@/api/workflows";
 import { useListExecutions } from "@/api/executions";
 import { useStreamWorkflowEvents } from "@/api/workflowEvents";
+import { useDebouncedInvalidation } from "@/lib/useDebouncedInvalidation";
 import { workflowKeys } from "@/api/workflows";
 import { PrLinkChip } from "@/components/work-items/work-item-card";
 import { Button } from "@/components/ui/button";
@@ -129,7 +129,25 @@ const STEP_RUN_STATUS_COLORS: Record<number, string> = {
 
 function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string }) {
   const navigate = Route.useNavigate();
-  const qc = useQueryClient();
+  // PER-EVENT INVALIDATIONS MUST BE COALESCED (see lib/debouncedInvalidation).
+  //
+  // This route invalidated the run + step-runs queries SYNCHRONOUSLY on every
+  // streamed event. workflowKeys.run(runId) carries the run row AND its version's
+  // steps JSON, and stepRuns carries every step run with its result — so a burst
+  // of events kept several heavy refetches permanently in flight, saturated the
+  // browser's ~6-connection per-origin HTTP/1.1 budget, and HUNG THE WHOLE UI.
+  // The operator reported exactly that: opening the Heads Up view during a run
+  // white-screened the GUI.
+  //
+  // The fix is the pattern already used by every other execution stream in this
+  // app (executions_.$id.tsx, HeadsUpExpandedModal.tsx): one trailing-debounced
+  // batch per quiet period instead of one batch per event. The tile view's own
+  // stream was already coalesced — this route's was the one that was missed,
+  // which is why the symptom showed up on the Heads Up view specifically.
+  const scheduleRunInvalidation = useDebouncedInvalidation([
+    workflowKeys.run(runId),
+    workflowKeys.stepRuns(runId),
+  ]);
   const { data: wfData } = useGetWorkflow(workflowId);
   const { data: run, isLoading, error } = useGetWorkflowRun(runId);
   const { data: stepRuns } = useGetWorkflowStepRuns(runId);
@@ -181,10 +199,7 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
   // canvas and feed refresh on each transition.
   const { events, status } = useStreamWorkflowEvents({
     workflowRunId: runId,
-    onEvent: () => {
-      qc.invalidateQueries({ queryKey: workflowKeys.run(runId) });
-      qc.invalidateQueries({ queryKey: workflowKeys.stepRuns(runId) });
-    },
+    onEvent: scheduleRunInvalidation,
   });
 
   // Build the canvas from the published version's steps, overlaying the

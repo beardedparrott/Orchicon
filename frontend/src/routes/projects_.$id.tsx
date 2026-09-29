@@ -1,7 +1,6 @@
 import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
-import { useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, ArrowUp, Folder } from "lucide-react";
 
 import {
@@ -19,6 +18,7 @@ import { useAvailableRuntimeImages } from "@/api/runtimeImages";
 import { useListExecutions } from "@/api/executions";
 import { useListDirPath, useUpdateProjectDir } from "@/api/projectFiles";
 import { useStreamProjectEvents } from "@/api/projectEvents";
+import { useDebouncedInvalidation } from "@/lib/useDebouncedInvalidation";
 import {
   useGetProjectMCPServers,
   useSetProjectMCPServers,
@@ -60,7 +60,6 @@ function ProjectDetailPage() {
   const activateProject = useActivateProject();
   const createProject = useCreateProject();
   const navigate = useNavigate();
-  const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [viewMode, setViewMode] = useState<"detail" | "code">("detail");
   // True after the user saves a project directory, to remind them the
@@ -122,12 +121,16 @@ function ProjectDetailPage() {
     values: project ? { name: project.name, slug: project.slug } : undefined,
   });
 
-  // Live event feed.
+  // Live event feed. Invalidations are COALESCED (lib/debouncedInvalidation):
+  // a synchronous invalidate per streamed event keeps a refetch permanently in
+  // flight, and a burst saturates the browser's per-origin connection budget and
+  // hangs the UI. Same pattern as executions_.$id.tsx and HeadsUpExpandedModal.
+  const scheduleProjectInvalidation = useDebouncedInvalidation([
+    projectKeys.detail(id),
+  ]);
   const { events, status } = useStreamProjectEvents({
     projectId: id,
-    onEvent: () => {
-      qc.invalidateQueries({ queryKey: projectKeys.detail(id) });
-    },
+    onEvent: scheduleProjectInvalidation,
   });
 
   const handleArchive = async () => {
