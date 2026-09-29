@@ -97,6 +97,24 @@ func GetModelForProvider(provider, id string) (ModelInfo, bool) {
 	return ModelInfo{}, false
 }
 
+// CatalogModelCost resolves the catalog's per-million-token pricing for a
+// provider and a bare model id. It is alias-aware (GetModelForProvider) and is
+// the SINGLE shared catalog-backed cost lookup in the codebase: the server's
+// pricing resolver — which must answer for an anthropic model with NO opencode
+// binary present (Gap 4) — and the model-picker sourcing path both consume
+// it. Do NOT add a second lookup.
+//
+// It returns (nil, false) when the catalog has no entry for the model OR the
+// entry carries no pricing, so callers FAIL CLOSED (the adapter-reported cost
+// stands) — never a fabricated price, never a panic.
+func CatalogModelCost(provider, model string) (*Pricing, bool) {
+	m, ok := GetModelForProvider(provider, model)
+	if !ok || m.Pricing == nil {
+		return nil, false
+	}
+	return m.Pricing, true
+}
+
 // catalogListByProvider returns visible catalog models for one provider.
 func catalogListByProvider(provider string) []ModelInfo {
 	loadCatalog()

@@ -58,10 +58,24 @@ func TestClaudeLiveSmoke(t *testing.T) {
 		t.Fatalf("usage records = %+v, want one", rec.usage)
 	}
 	u := rec.usage[0]
-	t.Logf("live smoke: model=%s tokens_in=%d tokens_out=%d cost_usd=%.6f",
-		u.Model, u.PromptTokens, u.CompletionTokens, u.CostUSD)
+	t.Logf("live smoke: model=%s tokens_in=%d tokens_out=%d cache_read=%d cache_write=%d cost_usd=%.6f",
+		u.Model, u.PromptTokens, u.CompletionTokens, u.CacheReadTokens, u.CacheWriteTokens, u.CostUSD)
 	if u.PromptTokens == 0 && u.CompletionTokens == 0 {
 		t.Error("no token usage reported — the stream mapping may have drifted")
+	}
+	// Attribution parity: the record must carry the pricing provider and the
+	// claude adapter kind, or the resolver can never price it (no discoverer
+	// needed — the offline catalog is the source on this plane).
+	if u.Provider != "anthropic" {
+		t.Errorf("usage Provider = %q, want anthropic", u.Provider)
+	}
+	if u.AdapterKind != "claude" {
+		t.Errorf("usage AdapterKind = %q, want claude", u.AdapterKind)
+	}
+	// Cache buckets are reported distinctly (never flattened) and are never
+	// negative; a fresh session usually reports cache_write > 0.
+	if u.CacheReadTokens < 0 || u.CacheWriteTokens < 0 {
+		t.Errorf("negative cache bucket: read=%d write=%d", u.CacheReadTokens, u.CacheWriteTokens)
 	}
 	if u.CostUSD > 0.05 {
 		t.Errorf("live smoke cost %.4f USD, want a single cheap prompt", u.CostUSD)

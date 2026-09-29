@@ -365,27 +365,41 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// on error rather than failing, so the recording path never blocks on a
 	// subprocess and falls back to adapter cost on any miss/error.
 	usageRecorder.SetPricingResolver(func(ctx context.Context, provider, model string) (*apiv1.ModelCost, bool) {
-		// G5: the opencode binary may be absent (modelDiscoverer == nil —
-		// "model discovery disabled"). ListModels has no nil-receiver guard,
-		// so an orchicon-only Ask turn that records usage would nil-panic
-		// here. Fail closed (no pricing) instead.
-		if modelDiscoverer == nil {
-			return nil, false
-		}
-		models, err := modelDiscoverer.ListModels(ctx, provider)
-		if err != nil {
-			return nil, false
-		}
-		ref := provider + "/" + model
-		for _, m := range models {
-			if (strings.EqualFold(m.ProviderId, provider) && strings.EqualFold(m.Id, model)) ||
-				strings.EqualFold(m.ModelRef, ref) {
-				return m.Cost, m.Cost != nil
+		// Live discoverer first when present: it reflects the running CLI's own
+		// catalog/probe and is the freshest source. G5: the opencode binary may
+		// be ABSENT (modelDiscoverer == nil — "model discovery disabled");
+		// ListModels has no nil-receiver guard, so it must be guarded here.
+		if modelDiscoverer != nil {
+			if models, err := modelDiscoverer.ListModels(ctx, provider); err == nil {
+				ref := provider + "/" + model
+				for _, m := range models {
+					if (strings.EqualFold(m.ProviderId, provider) && strings.EqualFold(m.Id, model)) ||
+						strings.EqualFold(m.ModelRef, ref) {
+						return m.Cost, m.Cost != nil
+					}
+				}
 			}
 		}
-		return nil, false
+		// Gap 4: with NO opencode binary the discoverer is nil — and that
+		// orchicon-only plane is exactly the one this claude/anthropic adapter
+		// exists to enable. Fall through to the OFFLINE vendored catalog (the
+		// SAME shared lookup the model picker consumes) so a claude usage
+		// record's cost_usd is the cache-aware catalog value (cache-read priced
+		// at the cache-read rate) instead of the adapter-reported one. A
+		// genuine catalog miss still returns (nil, false) so the adapter cost
+		// stands — fail CLOSED, never a panic, never a fabricated price.
+		return catalogModelCost(provider, model)
 	})
 	usageRecorderFn := func(ctx context.Context, in scheduler.UsageRecord) error {
+		// Adapter parity: attribute the sample to the adapter that ACTUALLY
+		// drove the model call. The claude bridge sets AdapterKind="claude";
+		// the opencode path sets none, so an empty kind defaults to
+		// "opencode" — preserving the pre-existing behavior for that path
+		// (this recorder is shared by both bridges).
+		adapterKind := in.AdapterKind
+		if adapterKind == "" {
+			adapterKind = "opencode"
+		}
 		_, err := usageRecorder.Record(ctx, aigateway.UsageInput{
 			TenantID:         in.TenantID,
 			ProjectID:        in.ProjectID,
@@ -400,11 +414,10 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			CompletionTokens: in.CompletionTokens,
 			ReasoningTokens:  in.ReasoningTokens,
 			CostUSD:          in.CostUSD,
-			// Adapter parity: the opencode runtime is the adapter kind here.
-			AdapterKind:   "opencode",
-			CorrelationID: in.CorrelationID,
-			TraceID:       in.TraceID,
-			WorkflowRunID: in.WorkflowRunID,
+			AdapterKind:      adapterKind,
+			CorrelationID:    in.CorrelationID,
+			TraceID:          in.TraceID,
+			WorkflowRunID:    in.WorkflowRunID,
 		})
 		return err
 	}
