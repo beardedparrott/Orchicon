@@ -887,8 +887,10 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// orchicon session engine) so the TaskReconciler can find a ready
 	// adapter for dispatch (docs/04 §6.3: in-process adapter for dev
 	// only). Idempotent.
-	seedDevAdapter(context.Background(), pool, log)
-	seedNativeAdapter(context.Background(), pool, log)
+	// Every in-process adapter kind, from one table (devAdapterSeeds). A kind
+	// missing here cannot dispatch at all — which is exactly how claude workers
+	// failed, with `no ready adapters of kind "claude"`.
+	seedAllDevAdapters(context.Background(), pool, log)
 
 	return s, nil
 }
@@ -1214,15 +1216,13 @@ func (s *Server) heartbeatDevAdapter(ctx context.Context) {
 			if err != nil {
 				continue
 			}
-			// Heartbeat both in-process dev adapters (opencode + native
-			// orchicon) so selectAdapter can dispatch beyond the initial
-			// heartbeat TTL for either kind.
-			caps := opencode.BuildCapabilitiesJSON()
-			if err := db.HeartbeatAdapter(ctx, ttx.Tx, "tnt_dev", "adp_opencode_dev", []byte(caps)); err != nil {
-				s.log.Warn("dev adapter heartbeat failed", "error", err)
-			}
-			if err := db.HeartbeatAdapter(ctx, ttx.Tx, "tnt_dev", "adp_orchicon_dev", []byte(orchicon.BuildCapabilitiesJSON())); err != nil {
-				s.log.Warn("dev native adapter heartbeat failed", "error", err)
+			// Heartbeat EVERY in-process dev adapter, from the SAME table the
+			// boot seed uses, so a kind cannot be seeded without also being kept
+			// ready past the TTL (or heartbeated without a row to heartbeat).
+			for _, seed := range devAdapterSeeds() {
+				if err := db.HeartbeatAdapter(ctx, ttx.Tx, "tnt_dev", seed.id, []byte(seed.caps())); err != nil {
+					s.log.Warn("dev adapter heartbeat failed", "kind", seed.kind, "id", seed.id, "error", err)
+				}
 			}
 			_ = ttx.Commit(ctx)
 		}
@@ -1309,31 +1309,50 @@ func resolveAdapterKind(ctx context.Context, pool *db.Pool, deploymentTenant, ex
 	return kind, nil
 }
 
-// seedDevAdapter registers an in-process OpenCode adapter so the
-// TaskReconciler can find a ready adapter for dispatch during local
-// development (docs/04 §6.3: "for local dev, an in-process adapter is
-// supported for tests only, never production"). Idempotent — re-runs
-// on every boot update the heartbeat timestamp.
-func seedDevAdapter(ctx context.Context, pool *db.Pool, log *slog.Logger) {
-	seedDevAdapterKind(ctx, pool, log, "adp_opencode_dev", "opencode", opencode.BuildCapabilitiesJSON)
+// devAdapterSeed is one in-process adapter the plane registers so the
+// TaskReconciler's selectAdapter can find a READY row for its kind.
+//
+// ONE TABLE, READ BY BOTH THE BOOT SEED AND THE HEARTBEAT. That is the point:
+// dispatch needs two things from every kind — a row, and a row that stays ready
+// past the heartbeat TTL — and when those were two separate hardcoded lists
+// (opencode seeded, orchicon seeded, claude NEITHER) a whole adapter kind became
+// undispatchable. The same defect had already shipped twice; see
+// TestEveryBuiltinAdapterKindHasASeededRow, which now fails when a kind is added
+// without an entry here.
+//
+// A BRIDGE REGISTRATION AND A ROW ARE DIFFERENT REQUIREMENTS, and only the row
+// decides whether anything dispatches:
+//
+//	dispatcher.Register(kind, bridge)   routes an execution that was CHOSEN
+//	db.ListReadyAdaptersByKind(kind)    decides a task may be chosen AT ALL
+//
+// A kind missing here fails every dispatch with `no ready adapters of kind <k>`.
+type devAdapterSeed struct {
+	id   string
+	kind string
+	caps func() string
 }
 
-// seedNativeAdapter registers the in-process native session engine
-// (adapter kind "orchicon") the same way seedDevAdapter registers
-// opencode, so a worker with model_ref orchicon/<provider>/<model> (the
-// ref's adapter segment governs dispatch per resolveAdapterRowKind)
-// can find a ready adapter row at dispatch.
-// Without this row, selectAdapter finds no ready adapter of kind
-// "orchicon" and the task requeues forever (the dispatch black hole).
-// Idempotent — re-runs on every boot update the heartbeat timestamp.
-func seedNativeAdapter(ctx context.Context, pool *db.Pool, log *slog.Logger) {
-	seedDevAdapterKind(ctx, pool, log, "adp_orchicon_dev", "orchicon", orchicon.BuildCapabilitiesJSON)
+func devAdapterSeeds() []devAdapterSeed {
+	return []devAdapterSeed{
+		{"adp_opencode_dev", adapter.KindOpencode, opencode.BuildCapabilitiesJSON},
+		{"adp_orchicon_dev", adapter.KindOrchicon, orchicon.BuildCapabilitiesJSON},
+		{"adp_claude_dev", adapter.KindClaude, claude.BuildCapabilitiesJSON},
+	}
 }
 
-// seedDevAdapterKind is the shared body behind seedDevAdapter and
-// seedNativeAdapter: upsert a ready in-process adapter row for the given
-// id/kind, heartbeating when the row already exists. caps builds the
-// capabilities JSON for the kind.
+// seedAllDevAdapters seeds every in-process adapter kind from ONE table. It is
+// the ONLY seeder — the per-kind wrappers it replaced are gone, so there is no
+// second list to forget to update.
+func seedAllDevAdapters(ctx context.Context, pool *db.Pool, log *slog.Logger) {
+	for _, s := range devAdapterSeeds() {
+		seedDevAdapterKind(ctx, pool, log, s.id, s.kind, s.caps)
+	}
+}
+
+// seedDevAdapterKind is the shared body: upsert a ready in-process adapter row
+// for the given id/kind, heartbeating when the row already exists. caps builds
+// the capabilities JSON for the kind.
 func seedDevAdapterKind(ctx context.Context, pool *db.Pool, log *slog.Logger, adapterID, kind string, caps func() string) {
 	tenantID := "tnt_dev"
 
