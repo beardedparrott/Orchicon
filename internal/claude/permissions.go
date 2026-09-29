@@ -60,12 +60,38 @@ const ProjectDirEnv = "ORCHICON_CLAUDE_PROJECT_DIR"
 // HookBinFallback is used when neither the env var nor os.Executable() resolves.
 const HookBinFallback = "orchicon"
 
+// TodoToolsEnv is the ENV TOGGLE that puts claude's todo/task-tracking tool
+// family (TodoWrite, TaskCreate/TaskUpdate/TaskList/TaskGet) back into the
+// session's tool registry at all.
+//
+// VERIFIED AGAINST THE INSTALLED NATIVE BINARY (2.1.261), not assumed: the
+// binary's own release notes read "Todo/task-tracking tools
+// (TaskCreate/Get/Update/List, TodoWrite) are no longer available on Opus 4.8,
+// Sonnet 5, Fable 5, Mythos 5, and newer models; set
+// CLAUDE_CODE_ENABLE_TODO_TOOLS=1 to bring them back", and the matching gate in
+// the minified bundle reads (paraphrased, verified by grep on the installed binary):
+//
+//	gateModels = [["opus",[4,8]],["sonnet",[5]],["fable",[5]],["mythos",[5]]]
+//	todoToolsEnabled() { if (isHeadlessTransport()) return true;
+//	  model := currentModel(); if (model === undefined || !isGated(model)) return true;
+//	  return env.CLAUDE_CODE_ENABLE_TODO_TOOLS === true; }
+//
+// so on the models orchicon actually runs claude workers with (Sonnet 5 and
+// newer) the family is absent from the tool list unless this is set. A
+// permission allow cannot conjure a tool the CLI never offers, so WITHOUT this
+// the tool names in HookToolMatcher/permissions.allow are dead letters and NO
+// todo ever streams — the parity feature would silently do nothing. It is a
+// plain opt-in, NOT a permission bypass: every restriction (the hook authority,
+// the deny list, the project boundary) stays in force.
+const TodoToolsEnv = "CLAUDE_CODE_ENABLE_TODO_TOOLS"
+
 // TodoTrackToolNames are the task/todo-tracking tools a claude worker session
 // must be OPTED INTO. Claude Code's task tracking is not on by default for a
 // non-interactive (`-p`) session: a tool that carries no allow verdict falls to
 // claude's default permission flow, which refuses an unanswerable ask. This
-// adapter therefore (a) names the tools in the PreToolUse hook matcher and
-// (b) pre-approves them with `permissions.allow`, both NON-BYPASS — no
+// adapter therefore (a) names the tools in the PreToolUse hook matcher,
+// (b) pre-approves them with `permissions.allow` and (c) sets TodoToolsEnv,
+// all NON-BYPASS — no
 // `--dangerously-*` token is ever emitted (TestNoBypassPermissionFlagIsEverEmitted
 // pins that). TodoWrite is the whole-list-replacement tool; TaskCreate/TaskUpdate
 // are the cumulative task family (see parse.go). TaskList/TaskGet/TaskOutput are

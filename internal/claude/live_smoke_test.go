@@ -29,6 +29,12 @@ func TestClaudeLiveSmoke(t *testing.T) {
 	if os.Getenv("ORCHICON_TEST_LIVE_CLAUDE") != "1" {
 		t.Skip("live Claude smoke is opt-in: set ORCHICON_TEST_LIVE_CLAUDE=1")
 	}
+	// Same contract as TestClaudeTaskTodoLiveSmoke: a missing CLI SKIPS, it is
+	// never a false red. The gate opts a host IN; it does not assert that every
+	// host (the runtime container included) has the binary and credentials.
+	if _, err := exec.LookPath("claude"); err != nil {
+		t.Skipf("the claude CLI is not installed in this environment: %v", err)
+	}
 	model := os.Getenv("ORCHICON_TEST_LIVE_CLAUDE_MODEL")
 	if model == "" {
 		// Cheapest tier, cheapest alias. Deliberately NOT a sonnet/opus.

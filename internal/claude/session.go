@@ -378,6 +378,14 @@ func (s *session) hookBinary() string { return HookBinaryFor(s.inContainer()) }
 func (s *session) childEnv() ([]string, func()) {
 	env := os.Environ()
 	env = setEnvVar(env, ProjectDirEnv, executionDir(s.manifest))
+	// Opt the session into claude's todo/task-tracking tool family. VERIFIED
+	// against the installed 2.1.261 binary: on Sonnet 5 / Opus 4.8 / Fable 5 /
+	// Mythos 5 and newer the family is REMOVED from the tool registry unless this
+	// is set (see TodoToolsEnv), so without it no todo part is ever emitted and
+	// the parity feature is inert. Set for BOTH transports (the runtime daemon
+	// forwards spec.Env into the container — proc.go's StdioRequest.Env), and it
+	// is an opt-in, never a bypass.
+	env = setEnvVar(env, TodoToolsEnv, "1")
 	// The hook binary follows the TRANSPORT, not this process: inside the run's
 	// container only the daemon's bind mount exists, so shipping the control
 	// plane's own path there would be a hook that cannot launch.
