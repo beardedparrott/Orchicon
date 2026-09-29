@@ -42,8 +42,8 @@ func TestConsentWordingMatchesTheGUILiterals(t *testing.T) {
 	if ConsentSessionSuffix != " this session" {
 		t.Fatalf("the session row's suffix drifted: %q", ConsentSessionSuffix)
 	}
-	if ConsentSessionNoDir != "Never ask again in this directory this session" {
-		t.Fatalf("the session row's no-directory form drifted: %q", ConsentSessionNoDir)
+	if ConsentSessionNoDir != "Not available for a session grant" {
+		t.Fatalf("the session row's suppressed form drifted: %q", ConsentSessionNoDir)
 	}
 }
 

@@ -26,8 +26,16 @@ type consentHost interface {
 	ConsentResolve(askID string, dec chat.ConsentDecision, choice string) tea.Cmd
 	// ConsentSend sends text as the next user message.
 	ConsentSend(text string) tea.Cmd
-	// ConsentGrants lists the session grants for the open conversation.
+	// ConsentGrants lists the session grants for the open conversation, AS THE SERVER HOLDS THEM.
+	// The bool is false when the plane could not answer — a surface must say so rather than show an
+	// empty list, which would tell the operator they have allowed nothing.
 	ConsentGrants(convID string) ([]chat.SessionGrant, bool)
+	// ConsentGrantsLoaded reports whether the grants have been FETCHED for this conversation yet.
+	//
+	// IT EXISTS SO A SURFACE NEVER GUESSES. Before the first fetch "no grants" and "not asked yet" look
+	// identical, and the grants roll-up used to report the first for both — telling the operator that this
+	// conversation has been allowed nothing, at the moment it might be allowed a great deal.
+	ConsentGrantsLoaded(convID string) bool
 	// ConsentStore exposes the persistent allow/deny list, when the plane has one.
 	ConsentStore() (chat.PermissionStore, bool)
 	// ConsentRevoke drops a session grant for a directory.

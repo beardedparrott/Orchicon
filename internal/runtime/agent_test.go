@@ -147,13 +147,14 @@ func TestServeStateMultiplexedPerAdapterKind(t *testing.T) {
 	if got := servePortFor(""); got != defaultServePort {
 		t.Errorf("servePortFor(\"\") = %d, want %d", got, defaultServePort)
 	}
-	// A kind with no bring-up path yet must not collide with opencode's id
+	// A kind with no HTTP serve (claude uses the streaming stdio
+	// transport, AgentRequest.Cmd "stdio") must not collide with opencode's id
 	// or port — the caller fails the handshake instead of binding 4096 twice.
 	if got := serveExecIDFor("claude"); got == serveExecID {
 		t.Error("a second kind must not reuse the opencode reserved exec id")
 	}
 	if got := servePortFor("claude"); got != 0 {
-		t.Errorf("servePortFor(claude) = %d, want 0 (no bring-up path yet)", got)
+		t.Errorf("servePortFor(claude) = %d, want 0 (claude has no HTTP serve — it uses the streaming stdio transport)", got)
 	}
 
 	h := newChildRegistry(tLogger(t))
@@ -180,5 +181,60 @@ func TestServeStateMultiplexedPerAdapterKind(t *testing.T) {
 	}
 	if oc.req.AdapterKind != "opencode" {
 		t.Errorf("opencode serve state lost its request: %+v", oc.req)
+	}
+}
+
+// TestAgentEnvClaudePathPrefix is the supervisor-side PATH half: the child
+// PATH is prefixed with the bin dirs of only the kinds the daemon MOUNTED
+// (ORCHICON_ADAPTER_KINDS), each dir stat-filtered and sorted. A kind that was
+// not demanded contributes nothing even when its host dir exists, and a dir
+// that does not exist is never placed on PATH.
+func TestAgentEnvClaudePathPrefix(t *testing.T) {
+	home := t.TempDir()
+	ocBin := filepath.Join(home, ".opencode", "bin")
+	clBin := filepath.Join(home, ".local", "bin")
+	for _, d := range []string{ocBin, clBin} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("HOME", home)
+
+	pathOf := func(env []string) string {
+		for _, kv := range env {
+			if strings.HasPrefix(kv, "PATH=") {
+				return strings.TrimPrefix(kv, "PATH=")
+			}
+		}
+		return ""
+	}
+	sep := string(os.PathListSeparator)
+
+	// Both kinds demanded: both dirs prefix PATH (sorted → .local/bin before
+	// .opencode/bin).
+	t.Setenv("ORCHICON_ADAPTER_KINDS", "opencode,claude")
+	got := pathOf(agentEnv(AgentRequest{}))
+	if !strings.HasPrefix(got, clBin+sep+ocBin+sep) {
+		t.Fatalf("both demanded kinds must prefix the child PATH (sorted), got %q", got)
+	}
+
+	// Only claude demanded: the opencode dir must NOT appear even though it
+	// exists on this host — per-kind, never default-kind-only.
+	t.Setenv("ORCHICON_ADAPTER_KINDS", "claude")
+	got = pathOf(agentEnv(AgentRequest{}))
+	if !strings.HasPrefix(got, clBin+sep) {
+		t.Fatalf("claude-only child PATH must start with %q, got %q", clBin, got)
+	}
+	if strings.Contains(got, ocBin) {
+		t.Fatalf("a kind that was not demanded must not appear on the child PATH: %q", got)
+	}
+
+	// No demanded kinds (e.g. a daemon predating the env var): no adapter
+	// prefix at all, so an older daemon can never point PATH at a dir it did
+	// not mount.
+	t.Setenv("ORCHICON_ADAPTER_KINDS", "")
+	got = pathOf(agentEnv(AgentRequest{}))
+	if strings.Contains(got, ocBin) || strings.Contains(got, clBin) {
+		t.Fatalf("no demanded kinds must add no child PATH prefix, got %q", got)
 	}
 }

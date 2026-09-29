@@ -28,6 +28,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/backup"
 	"github.com/beardedparrott/orchicon/internal/blobstore"
+	"github.com/beardedparrott/orchicon/internal/claude"
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
@@ -356,14 +357,26 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// The adapter calls the recorder via a closure to stay decoupled
 	// from the aigateway package (docs/04 §6.0: thin bridge).
 	usageRecorder := aigateway.NewUsageRecorder(pool, log)
-	// Cost authority lives in the gateway: resolve catalog pricing per
-	// provider/model from the discoverer (TTL-cached, stale-on-error) so the
+	// Cost authority lives in the gateway: pricingResolver(modelDiscoverer)
+	// (internal/server/pricing_resolver.go) resolves per provider/model so the
 	// recorded CostUSD is cache-aware instead of trusting the adapter-reported
-	// cost verbatim. The discoverer reuses its cache and returns a stale cache
-	// on error rather than failing, so the recording path never blocks on a
-	// subprocess and falls back to adapter cost on any miss/error.
+	// cost verbatim. The discoverer is consulted first when wired (TTL-cached,
+	// stale-on-error, so the recording path never blocks on a subprocess); with
+	// NO opencode binary the OFFLINE vendored catalog answers instead — that
+	// opencode-free plane is exactly the one the claude adapter exists to
+	// enable (Gap 4) — and a genuine miss still fails CLOSED to the
+	// adapter-reported cost.
 	usageRecorder.SetPricingResolver(pricingResolver(modelDiscoverer))
-	adapterBridge.SetUsageRecorder(func(ctx context.Context, in opencode.UsageRecord) error {
+	usageRecorderFn := func(ctx context.Context, in scheduler.UsageRecord) error {
+		// Adapter parity: attribute the sample to the adapter that ACTUALLY
+		// drove the model call. The claude bridge sets AdapterKind="claude";
+		// the opencode path sets none, so an empty kind defaults to
+		// "opencode" — preserving the pre-existing behavior for that path
+		// (this recorder is shared by both bridges).
+		adapterKind := in.AdapterKind
+		if adapterKind == "" {
+			adapterKind = "opencode"
+		}
 		_, err := usageRecorder.Record(ctx, aigateway.UsageInput{
 			TenantID:         in.TenantID,
 			ProjectID:        in.ProjectID,
@@ -378,19 +391,19 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			CompletionTokens: in.CompletionTokens,
 			ReasoningTokens:  in.ReasoningTokens,
 			CostUSD:          in.CostUSD,
-			// Adapter parity: the opencode runtime is the adapter kind here.
-			AdapterKind:   "opencode",
-			CorrelationID: in.CorrelationID,
-			TraceID:       in.TraceID,
-			WorkflowRunID: in.WorkflowRunID,
+			AdapterKind:      adapterKind,
+			CorrelationID:    in.CorrelationID,
+			TraceID:          in.TraceID,
+			WorkflowRunID:    in.WorkflowRunID,
 		})
 		return err
-	})
+	}
+	adapterBridge.SetUsageRecorder(usageRecorderFn)
 	// Durable session transcript (Stage 3): the adapter's session path
 	// records every side of the worker conversation into
 	// execution_session_parts via this writer (best-effort — a write
 	// failure loses the trailing batch, never control flow).
-	adapterBridge.SetSessionStore(func(ctx context.Context, execID, tenantID string, parts []db.SessionPart) error {
+	sessionStoreFn := func(ctx context.Context, execID, tenantID string, parts []db.SessionPart) error {
 		ttx, err := pool.BeginTenantTx(ctx, tenantID)
 		if err != nil {
 			return err
@@ -400,7 +413,8 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			return err
 		}
 		return ttx.Commit(ctx)
-	})
+	}
+	adapterBridge.SetSessionStore(sessionStoreFn)
 
 	// Diff pipeline (file-edit ledger): ground-truth, server-computed diffs
 	// for every file the session touches. The hook parses the worktree
@@ -670,6 +684,18 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	nativeBridge.SetFileEditHook(newFileEditHook(feSvc, log))
 	dispatcher.Register("orchicon", nativeBridge)
 
+	// Claude Code bridge (kind "claude" — NEVER "anthropic": anthropic is a
+	// PROVIDER segment, and a 2-segment "anthropic/<model>" ref must keep
+	// inferring kind opencode — internal/adapter/modelref_test.go). The
+	// claude bridge is a streaming-stdio adapter: it implements Start +
+	// MessageInjector/Aborter/LivenessReporter, and deliberately NOT
+	// ChatTurnClient (Ask chat on claude is out of scope).
+	claudeBridge := claude.New(log)
+	claudeBridge.SetUsageRecorder(usageRecorderFn)
+	claudeBridge.SetSessionStore(sessionStoreFn)
+	claudeBridge.SetFileEditHook(newFileEditHook(feSvc, log))
+	dispatcher.Register(adapter.KindClaude, claudeBridge)
+
 	// Per-adapter enable/disable (AC 3): every kind named in
 	// ORCHICON_DISABLED_ADAPTER_KINDS is switched OFF for this plane.
 	// Resolving such a kind fails with a LOUD, actionable reason
@@ -743,6 +769,9 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			// Always-container native: the native bridge routes `bash`
 			// into the run's container (same lease the gate ensured).
 			nativeBridge.SetRuntimeClient(rtClient)
+			// The claude adapter routes its streaming session into the run's
+			// container over the daemon's duplex stdio transport.
+			claudeBridge.SetRuntimeClient(rtClient)
 			// Execution liveness: fail executions orphaned by a plane
 			// restart or a lost runtime container so recovery re-dispatches.
 			// The probe resolves the execution's adapter kind (worker

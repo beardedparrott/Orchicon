@@ -463,3 +463,92 @@ func TestTheSkipPredicatesAtTheirBoundaries(t *testing.T) {
 		}
 	}
 }
+
+// The operator's card, from a real session: an ORDINARY command (`cd /tmp && …`) produced
+// "Never ask again in / this session" — offering, one click away, a grant for the entire
+// filesystem, which `grantStore.Roots` then hands the execution guard's shim as an allowed root
+// (ask_guard.go). The cause is one derivation: a named path's grant key was `filepath.Dir(p)`,
+// and /tmp's parent is /.
+//
+// Nothing about it was exotic: /tmp, /etc, /usr, /var, /mnt, /opt and /srv all have the root as
+// their parent, so ANY command touching a top-level directory offered it.
+func TestAGrantKeyIsNeverTheFilesystemRoot(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		command string
+		wantKey string
+	}{
+		{"a command naming /tmp", "cd /tmp && ls ./x", "/tmp"},
+		{"a command touching /etc", "cp ./x /etc/y", "/etc"},
+		{"a command touching /usr", "ls /usr/lib", "/usr"},
+		{"a command touching /var", "cat /var/log/messages", "/var/log"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			targets := decisionTargets(askAction{Tool: "bash", Command: tc.command}, "/p/proj")
+			if targets[0].key != "/p/proj" {
+				t.Fatalf("the cwd must stay the first target's key (C4): %+v", targets[0])
+			}
+			if len(targets) < 2 {
+				t.Fatalf("the command's own paths must be judged too: %+v", targets)
+			}
+			for _, tg := range targets[1:] {
+				if tg.key == "/" || tg.key == "" {
+					t.Fatalf("a named path offered %q as its grant scope — a grant for the root is a grant for everything. target: %+v", tg.key, tg)
+				}
+			}
+			if got := targets[1].key; got != tc.wantKey {
+				t.Fatalf("first named path keyed on %q, want %q (the path's own directory, which the operator can actually name)", got, tc.wantKey)
+			}
+		})
+	}
+}
+
+// The same derivation backs a file write, so a target sitting directly in the root must not be
+// granted the root either. It narrows to the target — the most that can honestly be offered.
+func TestAWriteDirectlyUnderTheRootIsNotGrantedTheRoot(t *testing.T) {
+	targets := decisionTargets(askAction{Tool: "write", Targets: []string{"/notes.txt"}}, "/p/proj")
+	if len(targets) != 1 {
+		t.Fatalf("targets = %+v, want one", targets)
+	}
+	if targets[0].key == "/" {
+		t.Fatal("a write to a file directly in the root offered a grant for the root")
+	}
+	if targets[0].key != "/notes.txt" {
+		t.Fatalf("key = %q, want the target itself (the narrowest honest scope)", targets[0].key)
+	}
+}
+
+// And the derivation itself, at its boundaries.
+func TestGrantScopeKeyNeverYieldsTheRoot(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want string
+	}{
+		{"/tmp", "/tmp"},
+		{"/tmp/x.log", "/tmp"},
+		{"/etc/hosts", "/etc"},
+		{"//tmp", "/tmp"}, // an unnormalized spelling must not slip through
+		{"/", ""},         // the root IS the target: no scope can name it
+		{"", ""},          // empty cleans to "." — not a scope the operator asked for
+	} {
+		if got := grantScopeKey(tc.in); got != tc.want {
+			t.Errorf("grantScopeKey(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// An unsilenceable ask stays unsilenceable: the fail-closed half. No grant can cover a key of "",
+// so the ask keeps asking rather than being silenced by a scope that means "everything".
+func TestAnUnscopableAskCannotBeSilenced(t *testing.T) {
+	g := newGrantStore()
+	g.Grant("c1", "/")
+	if g.Has("c1", "/") {
+		t.Fatal("a root grant is honoured: every path would be covered")
+	}
+	if g.Has("c1", "/home/ops/project") {
+		t.Fatal("a root grant covered a project path")
+	}
+	if roots := g.Roots("c1"); len(roots) != 0 {
+		t.Fatalf("the root reached the shim's allowed roots: %v", roots)
+	}
+}

@@ -803,6 +803,19 @@ func renderAskCardSpans(a *ParsedAsk, maxWidth int) (string, []AskOptionSpan) {
 	// again would offer a choice that has already been made (and, before this, the
 	// card simply sat there forever: the operator's "the Orchicon asks card does not go
 	// away when you select something").
+	// A REFUSED QUESTION IS A RECORD TOO, and it must not say "answered".
+	//
+	// The operator's own transcript carried `answered · ask_user could not be asked: ask_user: \`question\` is
+	// required and must not be empty` — a question that was refused, drawn as a decision they made and never
+	// were asked for. The call resolved (so it is a record, not a card) but nothing was shown and nothing was
+	// answered, and the record now says so.
+	if a.Refused {
+		refusal := a.RefusalText
+		if refusal == "" {
+			refusal = "it was refused before you were shown it"
+		}
+		return theme.ListMeta.Render(truncateRow("not asked · "+refusal, maxWidth)) + "\n", nil
+	}
 	if a.Answered {
 		answered := a.AnswerText
 		if answered == "" {

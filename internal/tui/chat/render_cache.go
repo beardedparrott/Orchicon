@@ -218,6 +218,10 @@ func renderSig(it ChatItem) uint64 {
 		flag(a.AllowOther)
 		flag(a.Answered)
 		str(a.AnswerText)
+		// The refused state is drawn too (a record instead of a card, and a different word), so it is part of
+		// the fingerprint: a card whose refusal landed between two frames must repaint.
+		flag(a.Refused)
+		str(a.RefusalText)
 		// The free-text row's live state: an open input row and what is typed in it are both part
 		// of the drawn card.
 		flag(a.Drafting)
