@@ -123,10 +123,18 @@ func (u *UsageRecorder) Record(ctx context.Context, in UsageInput) (db.UsageReco
 	//
 	// The resolver runs on a context detached from the caller so a cancelled
 	// request does not short-circuit the telemetry write.
+	//
+	// resolvedCost carries the catalog ModelCost into the OTel emit below so
+	// `orchicon_cost_usd`'s per-token-class split uses the catalog's REAL
+	// cache rates (cache-read at the cache-read rate) instead of the
+	// documented fallback ratios. It stays nil when the resolver declines, and
+	// the fallback is retained.
+	var resolvedCost *apiv1.ModelCost
 	if u.pricing != nil {
 		cost, ok := u.pricing(context.WithoutCancel(ctx), in.Provider, in.Model)
 		if ok && cost != nil {
 			if p, ok := usageCostFromCatalog(in, cost); ok {
+				resolvedCost = cost
 				in.CostUSD = p
 				row.CostUSD = p
 				u.log.Debug("usage cost from catalog", "source", "catalog", "provider", in.Provider, "model", in.Model, "costUSD", p)
@@ -164,7 +172,9 @@ func (u *UsageRecorder) Record(ctx context.Context, in UsageInput) (db.UsageReco
 	}
 
 	// OTel metrics (VictoriaMetrics half of the dual-write). Best-effort.
-	u.metrics.emit(ctx, &row)
+	// The resolved catalog cost (nil when the resolver declined) gives the
+	// cost split the real per-token-class cache rates.
+	u.metrics.emit(ctx, &row, resolvedCost)
 
 	return row, nil
 }

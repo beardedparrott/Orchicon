@@ -76,7 +76,22 @@ type StreamEvent struct {
 	IsError      bool
 	TotalCostUSD float64
 	NumTurns     int
-	Usage        Usage
+
+	// Usage carries the token counts decoded for this line. UsagePresent is
+	// true when a usage object was actually decoded (result / assistant /
+	// message_start / message_delta) so "no usage" is never mistaken for
+	// "zero usage". UsageIsAggregate is true ONLY for the terminal `result`
+	// line, whose usage is the authoritative TURN AGGREGATE. Per-message
+	// samples (assistant / message_start / message_delta) set it false so the
+	// mapper can accumulate them as a fallback WITHOUT ever summing them into
+	// the aggregate — that would double-count the turn.
+	Usage            Usage
+	UsagePresent     bool
+	UsageIsAggregate bool
+	// MessageID is the Anthropic message a per-message usage sample belongs
+	// to (empty when the wire carries none); repeated samples for one message
+	// are merged once by the mapper rather than summed.
+	MessageID string
 
 	// Raw is the original JSON line, kept for the durable transcript.
 	Raw []byte
@@ -103,13 +118,34 @@ func ParseLine(line []byte) (StreamEvent, error) {
 		if inner == nil {
 			break
 		}
-		if strField(inner, "type") == "content_block_delta" {
+		switch strField(inner, "type") {
+		case "content_block_delta":
 			delta, _ := inner["delta"].(map[string]any)
 			if delta != nil && strField(delta, "type") == "text_delta" {
 				ev.Type = "text_delta"
 				ev.Text = strField(delta, "text")
 			}
+		case "message_start":
+			// With --include-partial-messages each API message opens with a
+			// message_start carrying the SAME usage object as the eventual
+			// assistant message. Decode it as a PER-MESSAGE sample (not the
+			// authoritative aggregate) so the mapper can use it as a fallback
+			// without double-counting the terminal result.
+			msg, _ := inner["message"].(map[string]any)
+			if msg != nil {
+				if u, ok := usageMap(msg["usage"]); ok {
+					ev.MessageID = strField(msg, "id")
+					ev.Usage, ev.UsagePresent = u, true
+				}
+			}
 		}
+		// NOTE: message_delta is deliberately NOT decoded into usage. Its
+		// `usage` carries only the cumulative output_tokens and NO message id,
+		// so it cannot be merged into the in-flight message's accumulator and
+		// would double-count that message's output. The `assistant` message
+		// (which the partial-message stream always emits) reports the message's
+		// FINAL usage under the same message id, and the terminal `result`
+		// carries the authoritative turn aggregate.
 	case "assistant":
 		msg, _ := raw["message"].(map[string]any)
 		for _, block := range contentBlocks(msg) {
@@ -124,6 +160,12 @@ func ParseLine(line []byte) (StreamEvent, error) {
 					Input: in,
 				})
 			}
+		}
+		// Per-message usage sample (the full message report). Authoritative
+		// only as a FALLBACK when the terminal result carries no aggregate.
+		if u, ok := usageMap(msg["usage"]); ok {
+			ev.MessageID = strField(msg, "id")
+			ev.Usage, ev.UsagePresent = u, true
 		}
 	case "user":
 		msg, _ := raw["message"].(map[string]any)
@@ -142,16 +184,31 @@ func ParseLine(line []byte) (StreamEvent, error) {
 		ev.IsError = boolField(raw, "is_error")
 		ev.NumTurns = intField(raw, "num_turns")
 		ev.TotalCostUSD = floatField(raw, "total_cost_usd")
-		if u, ok := raw["usage"].(map[string]any); ok {
-			ev.Usage = Usage{
-				InputTokens:         int64(intField(u, "input_tokens")),
-				OutputTokens:        int64(intField(u, "output_tokens")),
-				CacheReadTokens:     int64(intField(u, "cache_read_input_tokens")),
-				CacheCreationTokens: int64(intField(u, "cache_creation_input_tokens")),
-			}
+		if u, ok := usageMap(raw["usage"]); ok {
+			ev.Usage, ev.UsagePresent = u, true
+			// The result line's usage is the authoritative TURN AGGREGATE.
+			ev.UsageIsAggregate = true
 		}
 	}
 	return ev, nil
+}
+
+// usageMap decodes an Anthropic `usage` object into the adapter Usage. The
+// key vocabulary is identical across the result / assistant / message_start
+// shapes (input_tokens, output_tokens, cache_read_input_tokens,
+// cache_creation_input_tokens). ok is false when the field is absent so a
+// caller never mistakes "no usage" for "zero usage".
+func usageMap(v any) (Usage, bool) {
+	u, ok := v.(map[string]any)
+	if !ok {
+		return Usage{}, false
+	}
+	return Usage{
+		InputTokens:         int64(intField(u, "input_tokens")),
+		OutputTokens:        int64(intField(u, "output_tokens")),
+		CacheReadTokens:     int64(intField(u, "cache_read_input_tokens")),
+		CacheCreationTokens: int64(intField(u, "cache_creation_input_tokens")),
+	}, true
 }
 
 // TurnSucceeded reports whether a terminal `result` message represents a

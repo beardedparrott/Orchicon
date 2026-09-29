@@ -2,12 +2,14 @@ package claude
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/aigateway"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
@@ -66,8 +68,17 @@ type Mapper struct {
 	sessionID string
 	tools     map[string]toolCall // tool_use id → what that call was
 	fileSet   map[string]bool
-	out       strings.Builder // accumulated text for OnResult's output
-	textBuf   strings.Builder // per-turn text, coalesced into ONE part
+	// recorded is the idempotence guard: a fingerprint of every usage event
+	// already recorded, so a replayed/duplicated terminal result (a resume
+	// re-emit, a double delivery) never double-charges the execution's budget.
+	recorded map[string]struct{}
+	// usageAcc accumulates per-message usage samples (assistant /
+	// message_start / message_delta), keyed by message id, as a FALLBACK for a
+	// terminal result that carries no aggregate usage. It is reset at every
+	// turn boundary so usage never leaks across turns.
+	usageAcc map[string]Usage
+	out      strings.Builder // accumulated text for OnResult's output
+	textBuf  strings.Builder // per-turn text, coalesced into ONE part
 
 	stall *stallMonitor
 }
@@ -88,12 +99,14 @@ func NewMapper(execID string, cbs scheduler.ExecutionCallbacks, deps MapperDeps)
 		deps.Log = slog.Default()
 	}
 	return &Mapper{
-		execID:  execID,
-		cbs:     cbs,
-		deps:    deps,
-		tools:   make(map[string]toolCall),
-		fileSet: make(map[string]bool),
-		stall:   newStallMonitor(deps.Manifest, time.Now()),
+		execID:   execID,
+		cbs:      cbs,
+		deps:     deps,
+		tools:    make(map[string]toolCall),
+		fileSet:  make(map[string]bool),
+		recorded: make(map[string]struct{}),
+		usageAcc: make(map[string]Usage),
+		stall:    newStallMonitor(deps.Manifest, time.Now()),
 	}
 }
 
@@ -231,29 +244,178 @@ func (m *Mapper) ledgerPath(p string) string {
 	return filepath.ToSlash(rel)
 }
 
-// recordUsage forwards the terminal result message's token + cost telemetry.
-func (m *Mapper) recordUsage(ctx context.Context, ev StreamEvent) {
+// recordUsage forwards one usage sample (the terminal turn aggregate, or the
+// accumulated per-message fallback) to the shared recorder, attributed to THIS
+// execution. The four Anthropic wire buckets are routed through the SHARED
+// aigateway.UsageFromAnthropic transform so claude's shape + cost accounting
+// are IDENTICAL to opencode's — there is no claude-only bucket mapping. The
+// buckets stay distinct (never a flattened single token/cost total) so the
+// gateway's cache-aware cost formula can price a cache read at the
+// cache-read rate.
+func (m *Mapper) recordUsage(ctx context.Context, usage Usage, costUSD float64, numTurns int) {
 	if m.deps.UsageRecorder == nil {
 		return
 	}
+
+	// Idempotence (D8): a replayed/duplicated usage event (a resume re-emit, a
+	// double delivery) must not double-charge the execution's budget. The
+	// fingerprint is taken under the mutex so concurrent Handle callers cannot
+	// both pass the guard.
+	m.mu.Lock()
+	fp := usageFingerprint(m.execID, m.sessionID, numTurns, usage, costUSD)
+	_, dup := m.recorded[fp]
+	if !dup {
+		m.recorded[fp] = struct{}{}
+	}
+	m.mu.Unlock()
+	if dup {
+		m.deps.Log.Warn("claude: duplicate usage event dropped", "execution", m.execID, "num_turns", numTurns)
+		return
+	}
+
+	provider, model := m.providerModel()
+
+	// Route the four wire buckets through the shared transform. Build the base
+	// identity once; the transform only fills the canonical buckets.
+	base := aigateway.UsageInput{
+		TenantID:      m.deps.TenantID,
+		ProjectID:     m.deps.Manifest.ProjectID,
+		TaskID:        m.deps.Manifest.TaskID,
+		ExecutionID:   m.execID,
+		WorkerID:      m.deps.Manifest.WorkerID,
+		Provider:      provider,
+		Model:         model,
+		AdapterKind:   adapterKindClaude,
+		CostUSD:       costUSD,
+		WorkflowRunID: m.deps.Manifest.RuntimeWorkflowID,
+	}
+	canon := aigateway.UsageFromAnthropic(aigateway.AnthropicUsage{
+		InputTokens:              usage.InputTokens,
+		CacheReadInputTokens:     usage.CacheReadTokens,
+		CacheCreationInputTokens: usage.CacheCreationTokens,
+		OutputTokens:             usage.OutputTokens,
+	}, base)
+
 	in := scheduler.UsageRecord{
-		TenantID:         m.deps.TenantID,
-		ProjectID:        m.deps.Manifest.ProjectID,
-		TaskID:           m.deps.Manifest.TaskID,
-		ExecutionID:      m.execID,
-		WorkerID:         m.deps.Manifest.WorkerID,
-		Model:            m.deps.Model,
-		PromptTokens:     ev.Usage.InputTokens,
-		CacheReadTokens:  ev.Usage.CacheReadTokens,
-		CacheWriteTokens: ev.Usage.CacheCreationTokens,
-		CompletionTokens: ev.Usage.OutputTokens,
-		CostUSD:          ev.TotalCostUSD,
-		AdapterKind:      "claude",
-		WorkflowRunID:    m.deps.Manifest.RuntimeWorkflowID,
+		TenantID:         canon.TenantID,
+		ProjectID:        canon.ProjectID,
+		TaskID:           canon.TaskID,
+		ExecutionID:      canon.ExecutionID,
+		WorkerID:         canon.WorkerID,
+		Provider:         canon.Provider,
+		Model:            canon.Model,
+		PromptTokens:     canon.PromptTokens,
+		CacheReadTokens:  canon.CacheReadTokens,
+		CacheWriteTokens: canon.CacheWriteTokens,
+		CompletionTokens: canon.CompletionTokens,
+		ReasoningTokens:  canon.ReasoningTokens,
+		CostUSD:          canon.CostUSD,
+		AdapterKind:      canon.AdapterKind,
+		WorkflowRunID:    canon.WorkflowRunID,
 	}
 	if err := m.deps.UsageRecorder(ctx, in); err != nil {
 		m.deps.Log.Warn("claude: record usage failed", "execution", m.execID, "error", err)
 	}
+}
+
+// adapterKindClaude tags claude usage rows/metrics for adapter parity.
+const adapterKindClaude = "claude"
+
+// providerModel resolves the pricing provider and the BARE model id for a
+// claude usage record. Claude Code serves the `anthropic` provider. The model
+// is the bare segment (deps.Model is already the parsed segment), with a
+// fallback to the manifest's 3-segment model_ref (claude/anthropic/<model>, of
+// which the adapter segment is stripped) so a Mapper built without an explicit
+// Model still attributes — and therefore still prices — correctly. Without
+// `Provider="anthropic"` the pricing resolver can never match the catalog and
+// the cache-aware cost gate stays blind.
+func (m *Mapper) providerModel() (string, string) {
+	id := strings.TrimSpace(m.deps.Model)
+	if id == "" {
+		if parsed, err := parseModelRefLoose(m.deps.Manifest.ModelRef); err == nil {
+			id = strings.TrimSpace(parsed)
+		}
+	}
+	// Defensive: strip any adapter/provider prefix (take the last segment).
+	if i := strings.LastIndex(id, "/"); i >= 0 {
+		id = id[i+1:]
+	}
+	return "anthropic", id
+}
+
+// usageFingerprint is the D8 idempotence key: the same terminal usage event
+// replayed yields the same fingerprint and is dropped.
+func usageFingerprint(execID, sessionID string, numTurns int, u Usage, costUSD float64) string {
+	return fmt.Sprintf("%s|%s|%d|%d|%d|%d|%d|%.6f",
+		execID, sessionID, numTurns,
+		u.InputTokens, u.CacheReadTokens, u.CacheCreationTokens, u.OutputTokens,
+		costUSD)
+}
+
+// accumulateUsage merges one per-message usage sample (keyed by message id)
+// into the fallback accumulator, element-wise MAX so the repeated samples the
+// partial-message stream emits for ONE message (message_start, then
+// message_delta, then the assistant message) collapse to that message's
+// usage once instead of being triple-counted.
+func (m *Mapper) accumulateUsage(messageID string, u Usage) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.usageAcc == nil {
+		m.usageAcc = map[string]Usage{}
+	}
+	m.usageAcc[messageID] = mergeUsageMax(m.usageAcc[messageID], u)
+}
+
+// takeTurnUsage resolves the usage to record for a terminal turn: the
+// authoritative `result` aggregate when present, else the accumulated
+// per-message SUM. It returns ok=false when neither carries any usage, and it
+// always resets the per-turn accumulator so usage never leaks across turns.
+func (m *Mapper) takeTurnUsage(ev StreamEvent) (Usage, bool) {
+	if ev.UsagePresent {
+		m.resetUsageAccum()
+		return ev.Usage, true
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	defer func() { m.usageAcc = map[string]Usage{} }()
+	if len(m.usageAcc) == 0 {
+		return Usage{}, false
+	}
+	var sum Usage
+	for _, u := range m.usageAcc {
+		sum.InputTokens += u.InputTokens
+		sum.OutputTokens += u.OutputTokens
+		sum.CacheReadTokens += u.CacheReadTokens
+		sum.CacheCreationTokens += u.CacheCreationTokens
+	}
+	if sum == (Usage{}) {
+		return Usage{}, false
+	}
+	return sum, true
+}
+
+// resetUsageAccum clears the per-turn per-message accumulator.
+func (m *Mapper) resetUsageAccum() {
+	m.mu.Lock()
+	m.usageAcc = map[string]Usage{}
+	m.mu.Unlock()
+}
+
+// mergeUsageMax merges two usage samples element-wise by MAX.
+func mergeUsageMax(a, b Usage) Usage {
+	return Usage{
+		InputTokens:         maxInt64(a.InputTokens, b.InputTokens),
+		OutputTokens:        maxInt64(a.OutputTokens, b.OutputTokens),
+		CacheReadTokens:     maxInt64(a.CacheReadTokens, b.CacheReadTokens),
+		CacheCreationTokens: maxInt64(a.CacheCreationTokens, b.CacheCreationTokens),
+	}
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // ------------------------------------------------------------------ handling
@@ -263,6 +425,13 @@ func (m *Mapper) recordUsage(ctx context.Context, ev StreamEvent) {
 // the session stays alive for a queued turn — the mapper never finishes the
 // execution itself.
 func (m *Mapper) Handle(ctx context.Context, ev StreamEvent) bool {
+	// Accumulate per-message usage samples (assistant / message_start /
+	// message_delta) as a FALLBACK for a terminal result that carries no
+	// aggregate usage. They are NEVER summed into an aggregate result — that
+	// would double-count the turn.
+	if ev.UsagePresent && !ev.UsageIsAggregate {
+		m.accumulateUsage(ev.MessageID, ev.Usage)
+	}
 	switch {
 	case ev.Type == "system" && ev.SessionID != "":
 		m.handleSystem(ctx, ev.SessionID)
@@ -283,7 +452,10 @@ func (m *Mapper) Handle(ctx context.Context, ev StreamEvent) bool {
 		}
 	case ev.IsTerminalResult():
 		m.flushText(ctx)
-		m.recordUsage(ctx, ev)
+		usage, ok := m.takeTurnUsage(ev)
+		if ok {
+			m.recordUsage(ctx, usage, ev.TotalCostUSD, ev.NumTurns)
+		}
 		return true
 	}
 	return false
