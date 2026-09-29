@@ -104,8 +104,54 @@ type StreamEvent struct {
 	// than failing the session.
 	IsCompactBoundary bool
 
+	// --- Control protocol (Type == "control_request") ---
+	//
+	// claude's stdio/SDK transport carries out-of-band control messages on the
+	// same stdout stream. The one that matters for Ask is can_use_tool: the
+	// permission ask the CLI raises when a tool needs approval and the session
+	// runs with an interactive profile. VERIFIED against the installed binary
+	// (2.1.261), which documents both halves of the mechanism:
+	//
+	//	"the interface (stdio/SDK canUseTool), the 'ask' path surfaces via a
+	//	 can_use_tool control_request"
+	//	"Without one (bare -p / SDK query() with no canUseTool), 'ask'
+	//	 decisions are terminal"
+	//
+	// The second quote is why the WORKER profile is correct as it stands: a
+	// worker session installs no canUseTool handler, so an ask is a refusal.
+	// The Ask transport installs one, which is what makes the consent cards
+	// meaningful.
+	//
+	// Wire shape (fields mirror `request`):
+	//
+	//	{"type":"control_request","request_id":"…",
+	//	 "request":{"subtype":"can_use_tool","tool_name":"Bash",
+	//	  "input":{…},"permission_suggestions":[…],
+	//	  "blocked_path":"…","decision_reason":"…"}}
+	//
+	// ControlRequestID is the correlation id a control_response must echo.
+	IsControlRequest      bool
+	ControlRequestID      string
+	ControlSubtype        string
+	ControlToolName       string
+	ControlInput          map[string]any
+	ControlSuggestions    []any
+	ControlBlockedPath    string
+	ControlDecisionReason string
+	// IsControlCancel marks a control_cancel_request: the CLI settling an
+	// in-flight control request (a pending can_use_tool after an interrupted
+	// turn, or one another client already answered). The Ask transport uses it
+	// to clear a consent card that is no longer answerable.
+	IsControlCancel bool
+
 	// Raw is the original JSON line, kept for the durable transcript.
 	Raw []byte
+}
+
+// IsToolPermissionAsk reports whether this event is the CLI asking permission
+// for a tool call. It is the Ask transport's consent trigger.
+func (e StreamEvent) IsToolPermissionAsk() bool {
+	return e.IsControlRequest && strings.EqualFold(e.ControlSubtype, "can_use_tool")
 }
 
 // CompactBoundarySubtypes are the system-message subtypes that report a
@@ -129,6 +175,24 @@ func ParseLine(line []byte) (StreamEvent, error) {
 		Raw:       append([]byte(nil), line...),
 	}
 	switch ev.Type {
+	case "control_request":
+		ev.IsControlRequest = true
+		ev.ControlRequestID = strField(raw, "request_id")
+		if req, ok := raw["request"].(map[string]any); ok {
+			ev.ControlSubtype = strField(req, "subtype")
+			ev.ControlToolName = strField(req, "tool_name")
+			if in, ok := req["input"].(map[string]any); ok {
+				ev.ControlInput = in
+			}
+			if sug, ok := req["permission_suggestions"].([]any); ok {
+				ev.ControlSuggestions = sug
+			}
+			ev.ControlBlockedPath = strField(req, "blocked_path")
+			ev.ControlDecisionReason = strField(req, "decision_reason")
+		}
+	case "control_cancel_request":
+		ev.IsControlCancel = true
+		ev.ControlRequestID = strField(raw, "request_id")
 	case "system":
 		// A compaction boundary is a healthy, forward-progress event (the
 		// transcript shrank in place). Everything else under "system" is
