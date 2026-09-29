@@ -60,10 +60,30 @@ const ProjectDirEnv = "ORCHICON_CLAUDE_PROJECT_DIR"
 // HookBinFallback is used when neither the env var nor os.Executable() resolves.
 const HookBinFallback = "orchicon"
 
-// HookToolMatcher is the PreToolUse matcher: exactly the tools whose input can
-// name a command or a path, plus the built-in subagent tool. Claude matches the
-// matcher as a regular expression against the tool name.
-const HookToolMatcher = "Bash|Read|Write|Edit|MultiEdit|NotebookEdit|Glob|Grep|Task|Agent"
+// TodoTrackToolNames are the task/todo-tracking tools a claude worker session
+// must be OPTED INTO. Claude Code's task tracking is not on by default for a
+// non-interactive (`-p`) session: a tool that carries no allow verdict falls to
+// claude's default permission flow, which refuses an unanswerable ask. This
+// adapter therefore (a) names the tools in the PreToolUse hook matcher and
+// (b) pre-approves them with `permissions.allow`, both NON-BYPASS — no
+// `--dangerously-*` token is ever emitted (TestNoBypassPermissionFlagIsEverEmitted
+// pins that). TodoWrite is the whole-list-replacement tool; TaskCreate/TaskUpdate
+// are the cumulative task family (see parse.go). TaskList/TaskGet/TaskOutput are
+// read-only members of the same family, named so the family is uniformly allowed.
+var TodoTrackToolNames = []string{
+	"TodoWrite",
+	"TaskCreate",
+	"TaskUpdate",
+	"TaskList",
+	"TaskGet",
+	"TaskOutput",
+}
+
+// HookToolMatcher is the PreToolUse matcher: the tools whose input can name a
+// command or a path, plus the built-in subagent tool, plus the todo/task-tracking
+// family (so the hook's catch-all ALLOW verdict also covers them). Claude matches
+// the matcher as a regular expression against the tool name.
+const HookToolMatcher = "Bash|Read|Write|Edit|MultiEdit|NotebookEdit|Glob|Grep|Task|Agent|TodoWrite|TaskCreate|TaskUpdate|TaskList|TaskGet|TaskOutput"
 
 // bypassLaunchFlags are the LAUNCH spellings that would discard the
 // restrictions. Their ABSENCE from the argv and the settings document is pinned
@@ -193,8 +213,14 @@ func BuildSettings(o PermissionOptions) (string, error) {
 		"permissions": map[string]any{
 			// NOT acceptEdits and NOT bypassPermissions: an unanswerable ask in
 			// -p mode is a refusal, which is the honest worker semantic.
-			"defaultMode":           "default",
-			"deny":                  deny,
+			"defaultMode": "default",
+			"deny":        deny,
+			// The task/todo-tracking family is PRE-APPROVED so it streams at all
+			// in a non-interactive session. This is an explicit opts-in, not a
+			// bypass: every other restriction (the hook authority, the deny list,
+			// the project boundary) stays in force, and these tools only write
+			// the in-session todo list.
+			"allow":                 append([]string(nil), TodoTrackToolNames...),
 			"additionalDirectories": dirs,
 			// Pin the bypass mode OFF at the settings layer too, so a later
 			// `--permission-mode bypassPermissions` on the command line is refused

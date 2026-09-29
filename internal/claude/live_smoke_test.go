@@ -2,7 +2,10 @@ package claude
 
 import (
 	"context"
+	"encoding/json"
 	"os"
+	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,5 +82,63 @@ func TestClaudeLiveSmoke(t *testing.T) {
 	}
 	if u.CostUSD > 0.05 {
 		t.Errorf("live smoke cost %.4f USD, want a single cheap prompt", u.CostUSD)
+	}
+}
+
+// TestClaudeTaskTodoLiveSmoke is the ONE permitted live session for the
+// TODO-PARITY feature: it asks a real claude session for a two-item task list
+// and proves the task-tracking tools actually stream and land on the todowrite
+// envelope. It is gated by ORCHICON_TEST_LIVE_CLAUDE=1 AND NOTHING ELSE — the
+// default suite is zero-cost — and it SKIPS (never fails) when the `claude` CLI
+// is absent, so it is also the recorded opt-in verification.
+//
+//	ORCHICON_TEST_LIVE_CLAUDE=1 go test ./internal/claude/ -run TestClaudeTaskTodoLiveSmoke -v
+//
+// COST DISCIPLINE: cheapest model, ONE prompt, short reply, 120 s deadline; the
+// reported cost is logged for the operator.
+func TestClaudeTaskTodoLiveSmoke(t *testing.T) {
+	if os.Getenv("ORCHICON_TEST_LIVE_CLAUDE") != "1" {
+		t.Skip("live Claude task-todo smoke is opt-in: set ORCHICON_TEST_LIVE_CLAUDE=1")
+	}
+	if _, err := exec.LookPath("claude"); err != nil {
+		t.Skipf("the claude CLI is not installed in this environment: %v", err)
+	}
+	model := os.Getenv("ORCHICON_TEST_LIVE_CLAUDE_MODEL")
+	if model == "" {
+		model = "claude-haiku-4-5" // cheapest tier, cheapest alias
+	}
+	rec := &captureCallbacks{}
+	b := New(quietLogger())
+	b.SetSessionStore(rec.recordParts)
+	b.SetUsageRecorder(rec.recordUsage)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	manifest := scheduler.ExecutionManifest{
+		ExecutionID: "exec-live-todo",
+		Goal:        "Create a task list with exactly two items: 'alpha' with status in_progress, and 'beta' with status pending. Then stop.",
+		ModelRef:    "claude/anthropic/" + model,
+		ProjectDir:  t.TempDir(),
+	}
+	if err := b.Start(ctx, db.ExecutionRow{ID: "exec-live-todo", TenantID: "t1"}, manifest, rec); err != nil {
+		t.Fatalf("live Start: %v", err)
+	}
+
+	s := rec.snap()
+	parts := s.partsOfKind(db.SessionPartToolUse)
+	found := false
+	for _, p := range parts {
+		body, _ := json.Marshal(p.payload)
+		if strings.Contains(string(body), `"tool":"todowrite"`) && strings.Contains(string(body), `"todos"`) {
+			found = true
+			t.Logf("live task-todo smoke: todowrite envelope = %s", body)
+		}
+	}
+	if !found {
+		t.Errorf("no todowrite envelope part recorded across %d tool_use parts — the task tools did not stream", len(parts))
+	}
+	for _, u := range s.usage {
+		t.Logf("live task-todo smoke: model=%s prompt=%d completion=%d cost_usd=%.6f", u.Model, u.PromptTokens, u.CompletionTokens, u.CostUSD)
 	}
 }
