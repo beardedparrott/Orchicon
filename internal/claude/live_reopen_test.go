@@ -23,6 +23,27 @@ import (
 	"github.com/google/uuid"
 )
 
+// liveTestModel is the model a live test uses.
+//
+// IT DEFAULTS TO THE CHEAPEST AVAILABLE, and that is a correction: these tests
+// exercise FLAG BEHAVIOUR (does an id resume, does a transcript exist), which no
+// model capability contributes to. I originally hard-coded a frontier model, and
+// several of my probes omitted --model entirely and silently ran on the account
+// default (Opus) — including one that loaded 87 MCP tool definitions per call.
+// That combination exhausted the operator's five-hour window.
+//
+// The live model IS overridable, because a smoke test against a specific model is
+// occasionally what you want — but it is never the DEFAULT, so a careless run
+// cannot be expensive.
+func liveTestModel() string {
+	if m := strings.TrimSpace(os.Getenv("ORCHICON_TEST_LIVE_CLAUDE_MODEL")); m != "" {
+		return m
+	}
+	// Haiku: the cheapest tier in the managed catalog, and enough for a
+	// one-word round trip.
+	return "claude-haiku-4-5-20251001"
+}
+
 func TestLiveAskReopenResumes(t *testing.T) {
 	if os.Getenv("ORCHICON_TEST_LIVE_CLAUDE") != "1" {
 		t.Skip("set ORCHICON_TEST_LIVE_CLAUDE=1 (costs real money)")
@@ -39,7 +60,7 @@ func TestLiveAskReopenResumes(t *testing.T) {
 	b := New(quietLogger())
 	s := newAskSession(b, "live-reopen-"+uuid.NewString(), askDir)
 	s.sid = uuid.NewString()
-	s.model = "claude-sonnet-5"
+	s.model = liveTestModel()
 
 	// TURN 1 — a fresh session. Our argv must CREATE it.
 	flag1 := ""
@@ -98,7 +119,7 @@ func TestLiveWorkerResume(t *testing.T) {
 	// pin --session-id (the CLI assigns ids there), so the setup pins one
 	// explicitly to have a known id to continue from.
 	argv := []string{ClaudeBinaryPath(), "-p", "--input-format", "stream-json",
-		"--output-format", "stream-json", "--verbose", "--session-id", sid, "--model", "claude-sonnet-5"}
+		"--output-format", "stream-json", "--verbose", "--session-id", sid, "--model", liveTestModel()}
 	out1 := runLive(t, argv, dir, "Remember the codeword WALRUS. Reply OK.")
 	if !strings.Contains(out1, `"is_error":false`) {
 		t.Fatalf("worker turn 1 failed: %s", truncateForLog(out1))
@@ -108,7 +129,7 @@ func TestLiveWorkerResume(t *testing.T) {
 	}
 
 	// Now a CONTINUATION through the worker's path.
-	cont := &session{b: b, resumeID: sid, model: "claude-sonnet-5"}
+	cont := &session{b: b, resumeID: sid, model: liveTestModel()}
 	out2 := runLive(t, cont.argv(), dir, "What was the codeword? Reply with just the word.")
 	if !strings.Contains(out2, `"is_error":false`) {
 		t.Fatalf("worker continuation failed: %s", truncateForLog(out2))
@@ -121,7 +142,7 @@ func TestLiveWorkerResume(t *testing.T) {
 	// is the worker contract (see TestWorkerAlwaysResumesTheRecordedSession). The
 	// CLI reports "No conversation found" and the execution fails VISIBLY, which
 	// is the recovery system's cue — not something the adapter papers over.
-	gone := &session{b: b, resumeID: uuid.NewString(), model: "claude-sonnet-5"}
+	gone := &session{b: b, resumeID: uuid.NewString(), model: liveTestModel()}
 	joined := strings.Join(gone.argv(), " ")
 	if !strings.Contains(joined, "--resume") {
 		t.Fatal("the worker argv dropped --resume; a continuation must re-attach its identity")
@@ -215,5 +236,21 @@ func TestIsRateLimited(t *testing.T) {
 	}
 	if isRateLimited(`{"type":"result","is_error":false,"result":"PONG"}`) {
 		t.Error("a normal result was read as a limit")
+	}
+}
+
+// A live test must not default to an expensive model, and must not leave the
+// choice implicit. Pinned because the cost of getting this wrong is the
+// operator's quota, not a failing assertion.
+func TestLiveTestModelIsCheapByDefault(t *testing.T) {
+	t.Setenv("ORCHICON_TEST_LIVE_CLAUDE_MODEL", "")
+	got := liveTestModel()
+	if !strings.Contains(got, "haiku") {
+		t.Fatalf("liveTestModel() = %q, want the cheapest tier by default — a live test exercises flag behaviour, not model capability", got)
+	}
+	// Overridable, deliberately.
+	t.Setenv("ORCHICON_TEST_LIVE_CLAUDE_MODEL", "claude-opus-5-5")
+	if got := liveTestModel(); got != "claude-opus-5-5" {
+		t.Fatalf("override ignored: got %q", got)
 	}
 }
