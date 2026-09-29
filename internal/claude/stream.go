@@ -70,6 +70,18 @@ type StreamEvent struct {
 	// `stream_event` text delta.
 	Text string
 
+	// Reasoning is the assistant's THINKING content for this line — a
+	// `thinking_delta`'s text, or an `assistant` message's `thinking` blocks
+	// concatenated. It is kept SEPARATE from Text on purpose: reasoning is not
+	// prose the worker produced, it must never leak into the worker's reported
+	// output or its ORCHICON WORKER SUMMARY, and the transcript records it under
+	// its own part kind (db.SessionPartReasoning) so the UI renders it in a
+	// reasoning bubble rather than inline in the text.
+	//
+	// IsReasoning marks a line whose Text holds reasoning (a thinking delta).
+	Reasoning   string
+	IsReasoning bool
+
 	// ToolUses / ToolResults are populated for `assistant` / `user` messages.
 	ToolUses    []ToolUse
 	ToolResults []ToolResult
@@ -104,8 +116,54 @@ type StreamEvent struct {
 	// than failing the session.
 	IsCompactBoundary bool
 
+	// --- Control protocol (Type == "control_request") ---
+	//
+	// claude's stdio/SDK transport carries out-of-band control messages on the
+	// same stdout stream. The one that matters for Ask is can_use_tool: the
+	// permission ask the CLI raises when a tool needs approval and the session
+	// runs with an interactive profile. VERIFIED against the installed binary
+	// (2.1.261), which documents both halves of the mechanism:
+	//
+	//	"the interface (stdio/SDK canUseTool), the 'ask' path surfaces via a
+	//	 can_use_tool control_request"
+	//	"Without one (bare -p / SDK query() with no canUseTool), 'ask'
+	//	 decisions are terminal"
+	//
+	// The second quote is why the WORKER profile is correct as it stands: a
+	// worker session installs no canUseTool handler, so an ask is a refusal.
+	// The Ask transport installs one, which is what makes the consent cards
+	// meaningful.
+	//
+	// Wire shape (fields mirror `request`):
+	//
+	//	{"type":"control_request","request_id":"…",
+	//	 "request":{"subtype":"can_use_tool","tool_name":"Bash",
+	//	  "input":{…},"permission_suggestions":[…],
+	//	  "blocked_path":"…","decision_reason":"…"}}
+	//
+	// ControlRequestID is the correlation id a control_response must echo.
+	IsControlRequest      bool
+	ControlRequestID      string
+	ControlSubtype        string
+	ControlToolName       string
+	ControlInput          map[string]any
+	ControlSuggestions    []any
+	ControlBlockedPath    string
+	ControlDecisionReason string
+	// IsControlCancel marks a control_cancel_request: the CLI settling an
+	// in-flight control request (a pending can_use_tool after an interrupted
+	// turn, or one another client already answered). The Ask transport uses it
+	// to clear a consent card that is no longer answerable.
+	IsControlCancel bool
+
 	// Raw is the original JSON line, kept for the durable transcript.
 	Raw []byte
+}
+
+// IsToolPermissionAsk reports whether this event is the CLI asking permission
+// for a tool call. It is the Ask transport's consent trigger.
+func (e StreamEvent) IsToolPermissionAsk() bool {
+	return e.IsControlRequest && strings.EqualFold(e.ControlSubtype, "can_use_tool")
 }
 
 // CompactBoundarySubtypes are the system-message subtypes that report a
@@ -129,6 +187,24 @@ func ParseLine(line []byte) (StreamEvent, error) {
 		Raw:       append([]byte(nil), line...),
 	}
 	switch ev.Type {
+	case "control_request":
+		ev.IsControlRequest = true
+		ev.ControlRequestID = strField(raw, "request_id")
+		if req, ok := raw["request"].(map[string]any); ok {
+			ev.ControlSubtype = strField(req, "subtype")
+			ev.ControlToolName = strField(req, "tool_name")
+			if in, ok := req["input"].(map[string]any); ok {
+				ev.ControlInput = in
+			}
+			if sug, ok := req["permission_suggestions"].([]any); ok {
+				ev.ControlSuggestions = sug
+			}
+			ev.ControlBlockedPath = strField(req, "blocked_path")
+			ev.ControlDecisionReason = strField(req, "decision_reason")
+		}
+	case "control_cancel_request":
+		ev.IsControlCancel = true
+		ev.ControlRequestID = strField(raw, "request_id")
 	case "system":
 		// A compaction boundary is a healthy, forward-progress event (the
 		// transcript shrank in place). Everything else under "system" is
@@ -149,10 +225,31 @@ func ParseLine(line []byte) (StreamEvent, error) {
 		switch strField(inner, "type") {
 		case "content_block_delta":
 			delta, _ := inner["delta"].(map[string]any)
-			if delta != nil && strField(delta, "type") == "text_delta" {
+			if delta == nil {
+				break
+			}
+			switch strField(delta, "type") {
+			case "text_delta":
 				ev.Type = "text_delta"
 				ev.Text = strField(delta, "text")
+			case "thinking_delta":
+				// ASSISTANT REASONING. Anthropic streams extended thinking as
+				// `thinking_delta`, and the text rides `delta.thinking` — NOT
+				// `delta.text`, the same asymmetry the native anthropic path
+				// handles (internal/orchicon/anthropic.go: "case
+				// \"thinking_delta\": return ReasoningDelta{Text: d.Thinking}").
+				// Reading `text` here would produce empty reasoning on every
+				// delta, silently.
+				//
+				// This was dropped ENTIRELY before: the switch admitted only
+				// text_delta, so a thinking block produced no event at all and
+				// executions showed no reasoning even when the model thought.
+				ev.Type = "thinking_delta"
+				ev.Text = strField(delta, "thinking")
+				ev.IsReasoning = true
 			}
+			// `signature_delta` carries the block's cryptographic signature —
+			// no displayable content, so it is deliberately not surfaced.
 		case "message_start":
 			// With --include-partial-messages each API message opens with a
 			// message_start carrying the SAME usage object as the eventual
@@ -187,6 +284,15 @@ func ParseLine(line []byte) (StreamEvent, error) {
 					Name:  strField(block, "name"),
 					Input: in,
 				})
+			case "thinking", "redacted_thinking":
+				// A whole thinking block (no partial-delta stream, or a resumed
+				// session replaying one). `redacted_thinking` carries no text by
+				// design — the provider withheld it — so it contributes nothing
+				// and is only matched so it is not mistaken for prose.
+				if t := strField(block, "thinking"); t != "" {
+					ev.Reasoning += t
+					ev.IsReasoning = true
+				}
 			}
 		}
 		// Per-message usage sample (the full message report). Authoritative

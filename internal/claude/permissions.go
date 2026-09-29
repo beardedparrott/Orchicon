@@ -109,7 +109,27 @@ var TodoTrackToolNames = []string{
 // command or a path, plus the built-in subagent tool, plus the todo/task-tracking
 // family (so the hook's catch-all ALLOW verdict also covers them). Claude matches
 // the matcher as a regular expression against the tool name.
-const HookToolMatcher = "Bash|Read|Write|Edit|MultiEdit|NotebookEdit|Glob|Grep|Task|Agent|TodoWrite|TaskCreate|TaskUpdate|TaskList|TaskGet|TaskOutput"
+//
+// `mcp__.*` IS LOAD-BEARING, and its absence was a total failure of the MCP
+// surface. A tool the matcher does not name NEVER REACHES THE HOOK, so the hook's
+// verdict — including its allow — never happens, and claude falls back to its own
+// permission flow. In a `-p` session that flow has nobody to grant, so EVERY MCP
+// tool was denied:
+//
+//	"Claude requested permissions to use mcp__orchicon__list_work_items, but you
+//	 haven't granted it yet."
+//
+// Reproduced against the real CLI with a logging wrapper in place of this
+// handler: the hook was never invoked, for either profile. So workers could not
+// call an MCP tool either — the entire MCP registration (mcpconfig.go) was
+// connected but unusable.
+//
+// MCP tool names are `mcp__<server>__<tool>` (verified: 87 such tools once the
+// sidecar connects), and the pattern is broad on purpose: the PROFILES decide
+// what each tool gets. The Ask profile allows the platform's own `mcp__orchicon__*`
+// and ASKS about third-party ones; the worker profile defers to claude's default,
+// so an operator-configured server is usable.
+const HookToolMatcher = "Bash|Read|Write|Edit|MultiEdit|NotebookEdit|Glob|Grep|Task|Agent|TodoWrite|TaskCreate|TaskUpdate|TaskList|TaskGet|TaskOutput|mcp__.*"
 
 // bypassLaunchFlags are the LAUNCH spellings that would discard the
 // restrictions. Their ABSENCE from the argv and the settings document is pinned
@@ -143,6 +163,12 @@ type PermissionOptions struct {
 	// AdditionalDirs widens the in-scope directory set (the carve-outs are
 	// always derived from workerrestrict and cannot be removed).
 	AdditionalDirs []string
+	// Profile selects the hook's rule set (ProfileWorkerEnvValue is the
+	// non-interactive sandbox and the ZERO VALUE, so an existing caller is
+	// unchanged; ProfileAskEnvValue is the interactive profile where consent
+	// gates the action). It also switches on `--permission-prompts host`, which
+	// is what makes the CLI raise the ask rather than auto-deny it.
+	Profile string
 }
 
 // HookBinaryPath resolves the binary the PreToolUse hook invokes: the explicit
@@ -191,8 +217,19 @@ func PermissionArgs(o PermissionOptions) ([]string, error) {
 	if settings != "" {
 		args = append(args, "--settings", settings)
 	}
+	if o.Profile == ProfileAskEnvValue {
+		// The Ask session DEPENDS on the CLI asking the host: that request is what
+		// raises the can_use_tool control frame the consent cards answer. The CLI's
+		// default for this flag is already "host", but it is named EXPLICITLY here
+		// because the alternative — "none", nobody answers and anything that would
+		// prompt is denied automatically — would silently turn the interactive
+		// profile back into the worker sandbox on an operator's screen: every write
+		// refused with no card and no explanation.
+		args = append(args, "--permission-prompts", "host")
+	}
 	// Deny the built-in subagent tool by NAME as well as through the hook — the
-	// CLI-level deny survives a hook that fails to launch.
+	// CLI-level deny survives a hook that fails to launch. Denied in EVERY profile
+	// (see DecideToolForAsk).
 	args = append(args, "--disallowedTools", strings.Join(workerrestrict.SubagentToolNames, " "))
 	return args, err
 }

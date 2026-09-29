@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -1202,6 +1203,49 @@ type ModelsResult struct {
 // models are INCLUDED with Visible=false (the operator must be able to
 // re-check them); probe failure is non-fatal (Degraded=true — the UI
 // renders visibly degraded, never a blank list).
+// claudeManagedCatalogProvider is the provider id whose model list the Claude
+// Code managed catalog is authoritative for.
+const claudeManagedCatalogProvider = "anthropic"
+
+// claudeManagedCatalogModels returns the signed Claude Code catalog's models for
+// a provider, or nil for any other provider or on ANY failure.
+//
+// A FAILURE IS LOGGED, not swallowed: the operator otherwise sees a stale three-
+// model list with nothing to explain why. The message names the reason (network,
+// or a signature that did not verify) because those call for different responses.
+func (s *Service) claudeManagedCatalogModels(ctx context.Context, providerID string) []orchicon.ModelInfo {
+	if providerID != claudeManagedCatalogProvider {
+		return nil
+	}
+	models := orchicon.ClaudeCatalogModels(ctx)
+	if len(models) == 0 {
+		if s.log != nil {
+			err := orchicon.ClaudeCatalogLastError()
+			if err != nil {
+				s.log.Warn("providers: the Claude Code managed model catalog is unavailable — falling back to the vendored snapshot (which may be stale)",
+					"ref_id", providerID, "error", err)
+			} else {
+				s.log.Warn("providers: the Claude Code managed model catalog returned no models — falling back to the vendored snapshot",
+					"ref_id", providerID)
+			}
+		}
+		return nil
+	}
+	return models
+}
+
+// repairBudget bounds the self-healing base-URL sweep (see ListProviderModels).
+//
+// A working LOCAL endpoint resolves in milliseconds, so the bound costs nothing
+// in the case repair exists for. It exists because the sweep is SEQUENTIAL and
+// each candidate probe can block on a dial timeout, so the worst case is
+// (candidates x timeout) — measured at 45 SECONDS in production, exactly the
+// model picker's read budget. The picker therefore timed out before this
+// function returned and the OFFLINE CATALOG SEED below never ran, so a
+// catalog-covered provider listed nothing while its authored models sat one
+// line away.
+const repairBudget = 8 * time.Second
+
 func (s *Service) ListProviderModels(ctx context.Context, tenantID, providerID string) (ModelsResult, error) {
 	profile, enabled, err := s.EffectiveProfile(ctx, tenantID, providerID)
 	if err != nil {
@@ -1231,10 +1275,24 @@ func (s *Service) ListProviderModels(ctx context.Context, tenantID, providerID s
 	// same base URL — the fix must apply to turns, not just the listing)
 	// and log the repair in plain language.
 	if res.Degraded && len(res.Models) == 0 {
+		// THE SWEEP GETS ITS OWN BUDGET, because the caller has one too (see
+		// repairBudget). Bounding it guarantees the catalog seed below is reached;
+		// it does not disable the self-heal a broken local endpoint needs.
+		repairCtx, cancelRepair := context.WithTimeout(ctx, repairBudget)
 		for _, cand := range repairCandidates(profile.BaseURL) {
+			if repairCtx.Err() != nil {
+				if s.log != nil {
+					s.log.Warn("providers: the base-URL repair sweep ran out of budget — continuing to the catalog seed (the LISTING is unaffected; a turn against this endpoint may still fail)",
+						"ref_id", providerID, "budget", repairBudget.String())
+				}
+				break
+			}
 			cp := profile
 			cp.BaseURL = cand
-			if r2 := sourcing.ListModels(ctx, cp, bearer); !r2.Degraded && len(r2.Models) > 0 {
+			if r2 := sourcing.ListModels(repairCtx, cp, bearer); !r2.Degraded && len(r2.Models) > 0 {
+				// Persist on the CALLER's context: the repair has been found, and the
+				// write that makes it stick for turns must not be cancelled by the
+				// sweep's own budget expiring a moment later.
 				if err := s.applyBaseURLRepair(ctx, tenantID, providerID, profile.BaseURL, cand); err != nil {
 					break
 				}
@@ -1246,6 +1304,7 @@ func (s *Service) ListProviderModels(ctx context.Context, tenantID, providerID s
 				break
 			}
 		}
+		cancelRepair()
 	}
 	// OFFLINE CATALOG SEED (picker view only). When the live probe yielded
 	// nothing — no network, no credential, an unreachable endpoint — a
@@ -1256,7 +1315,25 @@ func (s *Service) ListProviderModels(ctx context.Context, tenantID, providerID s
 	// untouched. The live CHAT path keeps its own no-fallback contract
 	// (internal/orchicon/sourcing.go) — this seeds the listing, not dispatch.
 	if len(res.Models) == 0 {
-		if cat := orchicon.CatalogModelsForProvider(providerID); len(cat) > 0 {
+		// SOURCE ORDER, best-authority first:
+		//
+		//  1. the Claude Code MANAGED catalog for the anthropic provider — the
+		//     signed document the CLI's own model selector reads, so the list is
+		//     current by construction rather than by anyone remembering to edit a
+		//     snapshot. (The vendored snapshot listed three anthropic models and
+		//     NONE of them are offered any more.)
+		//  2. the vendored catalog — the offline fallback, and the authored
+		//     PRICING source. For claude this is a REFINEMENT, not what makes
+		//     pricing work: the CLI reports `total_cost_usd` on every turn and the
+		//     usage recorder keeps it whenever this catalog declines, so a model
+		//     newer than the snapshot is still costed.
+		//
+		// The managed catalog returns nil on any failure, INCLUDING a signature
+		// that does not verify, so an untrusted document degrades to the snapshot
+		// rather than being shown.
+		if managed := s.claudeManagedCatalogModels(ctx, providerID); len(managed) > 0 {
+			res.Models = append(res.Models, managed...)
+		} else if cat := orchicon.CatalogModelsForProvider(providerID); len(cat) > 0 {
 			res.Models = append(res.Models, cat...)
 		}
 	}

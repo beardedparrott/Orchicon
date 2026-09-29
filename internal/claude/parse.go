@@ -91,6 +91,13 @@ type Mapper struct {
 	usageAcc map[string]Usage
 	out      strings.Builder // accumulated text for OnResult's output
 	textBuf  strings.Builder // per-turn text, coalesced into ONE part
+	// reasonBuf is per-turn REASONING, coalesced into ONE reasoning part.
+	//
+	// KEPT APART FROM `out` (which becomes OnResult's output and the worker's
+	// ORCHICON WORKER SUMMARY) and from textBuf: reasoning is not the worker's
+	// prose, and folding it into either would put the model's private thinking
+	// into the artifact a downstream step reads.
+	reasonBuf strings.Builder
 
 	stall *stallMonitor
 
@@ -222,6 +229,43 @@ func (m *Mapper) emitText(ctx context.Context, t string) {
 	m.mu.Unlock()
 	m.stall.sawOutput(time.Now())
 	m.cbs.OnText(ctx, m.execID, t)
+}
+
+// emitReasoning accumulates one reasoning fragment.
+//
+// IT DOES NOT CALL OnText, unlike emitText: OnText is the worker's streamed
+// PROSE, and a reasoning fragment routed there would appear inside the answer
+// the UI renders as the worker speaking. Reasoning reaches the surfaces through
+// its own durable part instead (flushReasoning), which is what the UI's
+// reasoning bubble and the session-item grouping read.
+//
+// It DOES report progress to the stall monitor: a model thinking hard is working,
+// not wedged, and the no-progress window must not trip on it.
+func (m *Mapper) emitReasoning(t string) {
+	if t == "" {
+		return
+	}
+	m.mu.Lock()
+	m.reasonBuf.WriteString(t)
+	m.mu.Unlock()
+	m.stall.sawOutput(time.Now())
+}
+
+// flushReasoning persists the turn's reasoning as ONE durable part, mirroring
+// flushText's shape with db.SessionPartReasoning — the kind the transcript
+// treats as reasoning (internal/transcript/transcript.go) and the UI renders in
+// its own bubble (frontend sessionItems.ts: ChatItem kind "reasoning").
+func (m *Mapper) flushReasoning(ctx context.Context) {
+	m.mu.Lock()
+	body := m.reasonBuf.String()
+	m.reasonBuf.Reset()
+	m.mu.Unlock()
+	if strings.TrimSpace(body) == "" {
+		return
+	}
+	m.recordPart(ctx, db.SessionPartReasoning, map[string]any{
+		"part": map[string]any{"type": "reasoning", "text": body},
+	})
 }
 
 // flushText persists the turn's text as ONE durable part (opencode coalesces
@@ -496,7 +540,15 @@ func (m *Mapper) Handle(ctx context.Context, ev StreamEvent) bool {
 		if ev.Text != "" {
 			m.emitText(ctx, ev.Text)
 		}
+	case ev.Type == "thinking_delta":
+		m.emitReasoning(ev.Text)
 	case ev.Type == "assistant":
+		// Reasoning FIRST, then text: a single assistant message can carry both,
+		// and thinking precedes the answer it produced. Emitting them in one
+		// order here keeps the transcript's phase grouping stable.
+		if ev.Reasoning != "" {
+			m.emitReasoning(ev.Reasoning)
+		}
 		if ev.Text != "" {
 			m.emitText(ctx, ev.Text)
 		}
@@ -508,6 +560,9 @@ func (m *Mapper) Handle(ctx context.Context, ev StreamEvent) bool {
 			m.handleToolResult(ctx, tr)
 		}
 	case ev.IsTerminalResult():
+		// Reasoning first, then text — the order it was produced, so the
+		// transcript's reasoning-before-text grouping holds after the flush.
+		m.flushReasoning(ctx)
 		m.flushText(ctx)
 		usage, ok := m.takeTurnUsage(ev)
 		if ok {

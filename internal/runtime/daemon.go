@@ -334,6 +334,13 @@ func (d *Daemon) handleRuntimeExec(w http.ResponseWriter, r *http.Request, runID
 	}
 	name := d.pool.containerForRun(runID)
 	if name == "" {
+		// LOGGED, because this handler logged nothing and that silence is what made
+		// a wedged dispatch invisible: an execution sat in `dispatching` for twenty
+		// minutes with an empty container and no line anywhere explaining it. The
+		// caller is naming an id the daemon does not lease — usually an EXECUTION id
+		// where a RUN id belongs.
+		d.Log.Warn("runtime stdio: no runtime container leased for this id — the caller must name the RUN, not the execution",
+			"run", runID)
 		httpError(w, http.StatusNotFound, "no runtime container leased for run "+runID)
 		return
 	}

@@ -87,6 +87,13 @@ type Server struct {
 	// Same lazy supervision as hostServe; held separately so plane shutdown
 	// stops both.
 	askHostServe *opencode.HostServe
+	// claudeBridge is the claude adapter, held so plane shutdown can retire its
+	// Ask sessions. They are HOST CHILDREN: the plane's exit does not reap them,
+	// so without this a restart leaves every claude Ask child running, holding
+	// its transcript and its stdin. (opencode's Ask sessions live inside the
+	// askHostServe process above, which the shutdown already stops — claude's are
+	// children of THIS process, which is why they need their own hook.)
+	claudeBridge *claude.Bridge
 }
 
 // New constructs a Server from configuration. It opens the DB pool,
@@ -688,12 +695,25 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// PROVIDER segment, and a 2-segment "anthropic/<model>" ref must keep
 	// inferring kind opencode — internal/adapter/modelref_test.go). The
 	// claude bridge is a streaming-stdio adapter: it implements Start +
-	// MessageInjector/Aborter/LivenessReporter, and deliberately NOT
-	// ChatTurnClient (Ask chat on claude is out of scope).
+	// MessageInjector/Aborter/LivenessReporter, AND ChatTurnClient — claude is
+	// Ask-capable, so Dispatcher.ChatKinds() offers it to both model pickers.
+	// Its Ask sessions run under the INTERACTIVE permission profile (see
+	// internal/claude/ask.go), which is a separate rule set from the worker
+	// sandbox and therefore a separate session shape.
 	claudeBridge := claude.New(log)
 	claudeBridge.SetUsageRecorder(usageRecorderFn)
 	claudeBridge.SetSessionStore(sessionStoreFn)
 	claudeBridge.SetFileEditHook(newFileEditHook(feSvc, log))
+	// MCP: the SAME two wirings the native bridge receives above, because the
+	// resolution is shared rather than per-adapter. Which servers an execution
+	// gets (worker → project → tenant-default over the tenant's configured list,
+	// with ${SECRET_NAME} refs expanded) is decided in ONE place; each adapter
+	// only renders the result into its own config format. Without this a claude
+	// worker or Ask session would get nothing but the built-in Orchicon sidecar.
+	claudeBridge.SetConfigSource(mcpsettings.NewConfigSource(pool))
+	claudeBridge.SetMCPSecretResolver(func(ctx context.Context, tenantID string, env, headers map[string]string) (map[string]string, map[string]string, error) {
+		return mcpsettings.ResolveSecretRefs(ctx, pool, secretsKEK, tenantID, env, headers)
+	})
 	dispatcher.Register(adapter.KindClaude, claudeBridge)
 
 	// Per-adapter enable/disable (AC 3): every kind named in
@@ -729,7 +749,8 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 
 	s := &Server{cfg: cfg, log: log, pool: pool, httpSrv: httpSrv, otel: otelShutdown,
 		blobs: blobs, authH: authHandler, webhookD: webhookDisp, logWriter: logWriter,
-		hostServe: hostServe, askHostServe: askServe}
+		hostServe: hostServe, askHostServe: askServe,
+		claudeBridge: claudeBridge}
 	if pub != nil {
 		// Outbox retention: published rows older than the configured window
 		// are pruned on a schedule in bounded batches. Retention <= 0 disables
@@ -866,8 +887,10 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// orchicon session engine) so the TaskReconciler can find a ready
 	// adapter for dispatch (docs/04 §6.3: in-process adapter for dev
 	// only). Idempotent.
-	seedDevAdapter(context.Background(), pool, log)
-	seedNativeAdapter(context.Background(), pool, log)
+	// Every in-process adapter kind, from one table (devAdapterSeeds). A kind
+	// missing here cannot dispatch at all — which is exactly how claude workers
+	// failed, with `no ready adapters of kind "claude"`.
+	seedAllDevAdapters(context.Background(), pool, log)
 
 	return s, nil
 }
@@ -1081,11 +1104,20 @@ func (s *Server) Run(ctx context.Context) error {
 			s.shutdownOTel()
 			return fmt.Errorf("server: shutdown: %w", err)
 		}
+		// Ask sessions are host children, not processes the plane's exit
+		// reaps: without this a plane restart leaves every claude Ask child
+		// running, holding its transcript and its stdin.
+		if s.claudeBridge != nil {
+			s.claudeBridge.CloseAsk()
+		}
 		s.pool.Close()
 		s.shutdownOTel()
 		return nil
 	case err := <-errCh:
 		s.authH.CloseEmbeddedOP()
+		if s.claudeBridge != nil {
+			s.claudeBridge.CloseAsk()
+		}
 		s.pool.Close()
 		s.shutdownOTel()
 		if errors.Is(err, http.ErrServerClosed) {
@@ -1184,15 +1216,13 @@ func (s *Server) heartbeatDevAdapter(ctx context.Context) {
 			if err != nil {
 				continue
 			}
-			// Heartbeat both in-process dev adapters (opencode + native
-			// orchicon) so selectAdapter can dispatch beyond the initial
-			// heartbeat TTL for either kind.
-			caps := opencode.BuildCapabilitiesJSON()
-			if err := db.HeartbeatAdapter(ctx, ttx.Tx, "tnt_dev", "adp_opencode_dev", []byte(caps)); err != nil {
-				s.log.Warn("dev adapter heartbeat failed", "error", err)
-			}
-			if err := db.HeartbeatAdapter(ctx, ttx.Tx, "tnt_dev", "adp_orchicon_dev", []byte(orchicon.BuildCapabilitiesJSON())); err != nil {
-				s.log.Warn("dev native adapter heartbeat failed", "error", err)
+			// Heartbeat EVERY in-process dev adapter, from the SAME table the
+			// boot seed uses, so a kind cannot be seeded without also being kept
+			// ready past the TTL (or heartbeated without a row to heartbeat).
+			for _, seed := range devAdapterSeeds() {
+				if err := db.HeartbeatAdapter(ctx, ttx.Tx, "tnt_dev", seed.id, []byte(seed.caps())); err != nil {
+					s.log.Warn("dev adapter heartbeat failed", "kind", seed.kind, "id", seed.id, "error", err)
+				}
 			}
 			_ = ttx.Commit(ctx)
 		}
@@ -1279,31 +1309,50 @@ func resolveAdapterKind(ctx context.Context, pool *db.Pool, deploymentTenant, ex
 	return kind, nil
 }
 
-// seedDevAdapter registers an in-process OpenCode adapter so the
-// TaskReconciler can find a ready adapter for dispatch during local
-// development (docs/04 §6.3: "for local dev, an in-process adapter is
-// supported for tests only, never production"). Idempotent — re-runs
-// on every boot update the heartbeat timestamp.
-func seedDevAdapter(ctx context.Context, pool *db.Pool, log *slog.Logger) {
-	seedDevAdapterKind(ctx, pool, log, "adp_opencode_dev", "opencode", opencode.BuildCapabilitiesJSON)
+// devAdapterSeed is one in-process adapter the plane registers so the
+// TaskReconciler's selectAdapter can find a READY row for its kind.
+//
+// ONE TABLE, READ BY BOTH THE BOOT SEED AND THE HEARTBEAT. That is the point:
+// dispatch needs two things from every kind — a row, and a row that stays ready
+// past the heartbeat TTL — and when those were two separate hardcoded lists
+// (opencode seeded, orchicon seeded, claude NEITHER) a whole adapter kind became
+// undispatchable. The same defect had already shipped twice; see
+// TestEveryBuiltinAdapterKindHasASeededRow, which now fails when a kind is added
+// without an entry here.
+//
+// A BRIDGE REGISTRATION AND A ROW ARE DIFFERENT REQUIREMENTS, and only the row
+// decides whether anything dispatches:
+//
+//	dispatcher.Register(kind, bridge)   routes an execution that was CHOSEN
+//	db.ListReadyAdaptersByKind(kind)    decides a task may be chosen AT ALL
+//
+// A kind missing here fails every dispatch with `no ready adapters of kind <k>`.
+type devAdapterSeed struct {
+	id   string
+	kind string
+	caps func() string
 }
 
-// seedNativeAdapter registers the in-process native session engine
-// (adapter kind "orchicon") the same way seedDevAdapter registers
-// opencode, so a worker with model_ref orchicon/<provider>/<model> (the
-// ref's adapter segment governs dispatch per resolveAdapterRowKind)
-// can find a ready adapter row at dispatch.
-// Without this row, selectAdapter finds no ready adapter of kind
-// "orchicon" and the task requeues forever (the dispatch black hole).
-// Idempotent — re-runs on every boot update the heartbeat timestamp.
-func seedNativeAdapter(ctx context.Context, pool *db.Pool, log *slog.Logger) {
-	seedDevAdapterKind(ctx, pool, log, "adp_orchicon_dev", "orchicon", orchicon.BuildCapabilitiesJSON)
+func devAdapterSeeds() []devAdapterSeed {
+	return []devAdapterSeed{
+		{"adp_opencode_dev", adapter.KindOpencode, opencode.BuildCapabilitiesJSON},
+		{"adp_orchicon_dev", adapter.KindOrchicon, orchicon.BuildCapabilitiesJSON},
+		{"adp_claude_dev", adapter.KindClaude, claude.BuildCapabilitiesJSON},
+	}
 }
 
-// seedDevAdapterKind is the shared body behind seedDevAdapter and
-// seedNativeAdapter: upsert a ready in-process adapter row for the given
-// id/kind, heartbeating when the row already exists. caps builds the
-// capabilities JSON for the kind.
+// seedAllDevAdapters seeds every in-process adapter kind from ONE table. It is
+// the ONLY seeder — the per-kind wrappers it replaced are gone, so there is no
+// second list to forget to update.
+func seedAllDevAdapters(ctx context.Context, pool *db.Pool, log *slog.Logger) {
+	for _, s := range devAdapterSeeds() {
+		seedDevAdapterKind(ctx, pool, log, s.id, s.kind, s.caps)
+	}
+}
+
+// seedDevAdapterKind is the shared body: upsert a ready in-process adapter row
+// for the given id/kind, heartbeating when the row already exists. caps builds
+// the capabilities JSON for the kind.
 func seedDevAdapterKind(ctx context.Context, pool *db.Pool, log *slog.Logger, adapterID, kind string, caps func() string) {
 	tenantID := "tnt_dev"
 

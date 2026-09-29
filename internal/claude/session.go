@@ -14,6 +14,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/guard"
 	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/permpolicy"
+	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
@@ -113,11 +114,15 @@ func (s *session) run(ctx context.Context) error {
 	env, envCleanup := s.childEnv()
 	defer envCleanup()
 	spec := procSpec{
-		ExecID:     s.execID,
-		Argv:       argv,
-		Cwd:        executionDir(s.manifest),
-		ProjectDir: s.manifest.ProjectDir,
-		Env:        env,
+		ExecID: s.execID,
+		Argv:   argv,
+		Cwd:    executionDir(s.manifest),
+		// The container is leased by RUN id, so the transport must name the run —
+		// see procSpec.WorkflowRunID. Empty here is the local transport, which
+		// spawns on the host and needs no container.
+		ProjectDir:    s.manifest.ProjectDir,
+		Env:           env,
+		WorkflowRunID: s.manifest.RuntimeWorkflowID,
 	}
 	p, err := s.b.spawn(ctx, spec, s.manifest)
 	if err != nil {
@@ -377,7 +382,9 @@ done:
 // TestNoBypassPermissionFlagIsEverEmitted fails if one is introduced.
 func (s *session) argv() []string {
 	argv := []string{
-		"claude", "-p",
+		// NOT the bare name: see binary.go. A PATH that reaches a system
+		// install runs a CLI that rejects this argv outright.
+		ClaudeBinaryPath(), "-p",
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--verbose",
@@ -386,8 +393,25 @@ func (s *session) argv() []string {
 	if strings.TrimSpace(s.model) != "" {
 		argv = append(argv, "--model", s.model)
 	}
-	if strings.TrimSpace(s.resumeID) != "" {
-		argv = append(argv, "--resume", s.resumeID)
+	if rid := strings.TrimSpace(s.resumeID); rid != "" {
+		// ALWAYS RESUME, WITHOUT A DISK CHECK — deliberately, and this is NOT the
+		// same rule as the Ask path (ask.go), for two reasons:
+		//
+		//  1. CONTRACT. A worker continuation must re-attach the SAME session
+		//     identity. Three tests pin it ("must re-attach the SAME session
+		//     identity", "must carry --resume sess-1"), and a silent fresh start
+		//     would drop exactly the history the continuation exists to carry — a
+		//     worse outcome than a visible failure.
+		//  2. A LOST SESSION IS THE RECOVERY SYSTEM'S PROBLEM, not the adapter's.
+		//     capture → summarize → preserve → resume exists to carry context when
+		//     a session is gone. Working around it here would bypass that machinery
+		//     and quietly hand a worker a context-free run.
+		//
+		// It is also why the check cannot be trusted here even if it were wanted:
+		// a worker's child may run INSIDE A RUNTIME CONTAINER, where the adapter's
+		// host-side view of ~/.claude and the child's view can diverge. The Ask
+		// path is host-only, so there the check is exact.
+		argv = append(argv, "--resume", rid)
 	}
 	// A policy LOAD failure is recorded, never silently dropped. PermissionArgs
 	// still returns a complete, restrictive argv in that case (the never-allow
@@ -397,7 +421,70 @@ func (s *session) argv() []string {
 	if err != nil {
 		slog.Default().Warn("claude: the operator permission policy could not be loaded — launching with the never-allow class, the project boundary and the fail-closed hook, but without its deny entries", "error", err)
 	}
-	return append(argv, args...)
+	argv = append(argv, args...)
+	return append(argv, s.mcpArgs()...)
+}
+
+// mcpArgs registers the Orchicon MCP servers a WORKER execution gets, mirroring
+// opencode's RuntimeServeConfig decisions (internal/opencode/adapter.go) so a
+// worker has the same orchicon_* surface whichever adapter it runs on.
+//
+// THE TRANSPORT DECIDES THE BINARY AND THE DATABASE:
+//
+//   - CONTAINER: the sidecar must run from the daemon's bind mount
+//     (MCPBinaryContainerPath) — a host path there is a server that cannot start —
+//     and it must be pointed at the IN-CONTAINER sandbox Postgres
+//     (runtime.SandboxPostgresDSN), because the DSN inherited from the plane's
+//     environment names the HOST's Postgres, which inside the container is
+//     nothing. Same pairing opencode's dev-image case uses.
+//   - HOST: this process's own executable and the inherited environment, which
+//     already carries the plane's DSN.
+//
+// A FAILED MCP SERVER DEGRADES RATHER THAN HANGING, which is what makes
+// registering it on every image safe: measured on the real binary, an
+// unreachable server reports status "failed" in the init line and the model is
+// told the tools are unavailable. (opencode had the opposite problem — a serve
+// eagerly connects at startup and an unresolvable MCP wedged its event loop,
+// which is why it gates on the image tag.) The image tag is not on the
+// ExecutionManifest, so this cannot mirror that gate; the graceful failure is
+// what stands in for it.
+func (s *session) mcpArgs() []string {
+	inContainer := s.inContainer()
+	builtin := OrchiconMCPServer(
+		HookBinaryFor(inContainer),
+		s.tenantID,
+		workerMCPExtraEnv(inContainer, s.manifest.RuntimeWorkflowID),
+	)
+	// The SAME resolution the native bridge runs: worker selection → project
+	// selection → tenant default, over the tenant's configured servers, with
+	// ${SECRET_NAME} refs expanded. This adapter only renders the result.
+	servers, err := s.b.resolveMCPServers(context.Background(), s.tenantID, s.manifest.WorkerID, s.manifest.ProjectID, builtin)
+	if err != nil {
+		// Fail the launch rather than run a worker without the MCP servers it was
+		// configured to have, which is the native bridge's contract too. argv()
+		// cannot return an error, so this is surfaced through the returned argv as
+		// a `--mcp-config` the model will report as failed — and logged loudly.
+		slog.Default().Warn("claude: MCP resolution failed — the worker will run without its configured MCP servers", "execution", s.execID, "error", err)
+		servers = []MCPServer{builtin}
+	}
+	logMCPResolution("worker", servers)
+	return MCPArgs(servers)
+}
+
+// workerMCPExtraEnv is the transport-dependent part of a worker's MCP
+// registration, split out so it is testable without a runtime client (which is
+// what `inContainer` otherwise needs to establish).
+func workerMCPExtraEnv(inContainer bool, workflowRunID string) map[string]string {
+	extra := map[string]string{}
+	if inContainer {
+		// NOT inherited: the plane's ORCHICON_POSTGRES_DSN names the HOST's
+		// Postgres, which inside the container is nothing.
+		extra["ORCHICON_POSTGRES_DSN"] = runtime.SandboxPostgresDSN
+	}
+	if runID := strings.TrimSpace(workflowRunID); runID != "" {
+		extra[MCPWorkflowRunEnv] = runID
+	}
+	return extra
 }
 
 // permissionOptions is the launch-time restriction input for this session.

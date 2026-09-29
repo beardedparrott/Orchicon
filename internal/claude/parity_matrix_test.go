@@ -479,13 +479,15 @@ func TestClaudeParityMatrix(t *testing.T) {
 		}
 	})
 
-	// no Ask coupling: the bridge is worker-execution only. It must NOT
-	// implement ChatTurnClient, so the dispatcher can never route an Ask turn
-	// to it (Ask-on-claude is an explicit follow-up of the feature).
-	t.Run("no_ask_coupling", func(t *testing.T) {
+	// ask_coupling: the bridge is Ask-capable as well as worker-execution
+	// capable, so the dispatcher can route an Ask turn to it. This assertion used
+	// to require the OPPOSITE (Ask-on-claude was an explicit follow-up); the
+	// requirement changed and the assertion flipped with it, rather than being
+	// dropped.
+	t.Run("ask_coupling", func(t *testing.T) {
 		b := New(quietLogger())
-		if _, ok := any(b).(scheduler.ChatTurnClient); ok {
-			t.Fatal("claude.Bridge must NOT implement scheduler.ChatTurnClient")
+		if _, ok := any(b).(scheduler.ChatTurnClient); !ok {
+			t.Fatal("claude.Bridge must implement scheduler.ChatTurnClient")
 		}
 	})
 }

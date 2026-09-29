@@ -43,16 +43,41 @@ type ProcSession interface {
 
 // procSpec is the spawn request the bridge hands to its proc factory.
 type procSpec struct {
-	ExecID     string
-	Argv       []string
-	Cwd        string
+	ExecID string
+	Argv   []string
+	Cwd    string
+	// ProjectDir is the project root (the guard/hook boundary).
 	ProjectDir string
 	Env        []string
+	// WorkflowRunID is the RUN whose runtime container this execution dispatches
+	// into. It is NOT the execution id, and the difference is load-bearing: the
+	// daemon resolves the container from a LEASE TABLE keyed by RUN id
+	// (daemonPool.containerForRun), so a request naming the execution id finds no
+	// container.
+	//
+	// Passing the wrong one does not fail fast, which is why it cost a dispatch:
+	// the daemon's not-found path could not deliver a response while the client
+	// streamed a body that never ends, and ResponseHeaderTimeout never starts for
+	// an unfinished body — so the call blocked INDEFINITELY. Observed live as an
+	// execution stuck in `dispatching` with zero tokens and no log line.
+	WorkflowRunID string
 }
 
 // procFactory spawns ONE claude subprocess. The production default selects
 // local vs container from the manifest; tests substitute a fake.
 type procFactory func(ctx context.Context, spec procSpec) (ProcSession, error)
+
+// stdioOpener is the slice of *runtime.Client this file needs.
+//
+// IT EXISTS SO THE WORKFLOW ID CAN BE PINNED BY A TEST. The container is leased
+// by RUN id, and naming the execution id instead made a live dispatch hang
+// forever — invisibly, because the daemon could not answer while the client
+// streamed a body that never ends and the transport cannot bound that. A test on
+// the SPEC alone does not catch it (the spec can be right while the call names the
+// wrong field), so the seam lets a fake record exactly which id was named.
+type stdioOpener interface {
+	Stdio(ctx context.Context, workflowID string, req runtime.StdioRequest) (*runtime.StdioSession, error)
+}
 
 // localProc is a host os/exec claude child.
 type localProc struct {
@@ -185,11 +210,14 @@ type containerProc struct {
 	err  error
 }
 
-func newContainerProc(ctx context.Context, rt *runtime.Client, spec procSpec) (*containerProc, error) {
+func newContainerProc(ctx context.Context, rt stdioOpener, spec procSpec) (*containerProc, error) {
 	if rt == nil {
 		return nil, fmt.Errorf("claude: no runtime client for container spawn")
 	}
-	sess, err := rt.Stdio(ctx, spec.ExecID, runtime.StdioRequest{
+	if spec.WorkflowRunID == "" {
+		return nil, fmt.Errorf("claude: no workflow run id for container spawn — the daemon leases containers by RUN id, so a request without one cannot resolve a container")
+	}
+	sess, err := rt.Stdio(ctx, spec.WorkflowRunID, runtime.StdioRequest{
 		Argv:       spec.Argv,
 		Env:        spec.Env,
 		Cwd:        spec.Cwd,

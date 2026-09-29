@@ -351,3 +351,204 @@ func TestEveryModeSupersedesItsEarlierProse(t *testing.T) {
 		}
 	}
 }
+
+// --- The integration-completeness contract -------------------------------------------
+//
+// The operator's requirement, verbatim:
+//
+//	"all work items created or work done (in iteration mode's standpoint) should ensure that all
+//	 interconnecting systems are fleshed out and called out before work is done or inside the work item for
+//	 BrainStorm mode. No half written realized code/instructions. All interconnected systems should have a
+//	 map and a list of what talks to it and ALL components that make it work should also be touched and
+//	 worked on if needed."
+//
+// It is stated ONCE in a shared block plus a PER-MODE TAIL saying WHERE the map has to be written, because the
+// modes differ in where the artefact lives, never in whether the map is required: a worker reads a brief and
+// nothing else (Brainstorm), the user is in the loop (Iteration), and the worker never sees the conversation
+// (Quick Work).
+
+// integrationMapBlock returns the SHARED block's text so a test can assert on it in ISOLATION. The rest of a
+// persona mentions Orchicon's own components legitimately — the platform primer names the adapter, the model
+// question names a registered adapter kind — so a part-agnostic assertion has to be scoped to the block rather
+// than to the whole prompt, or it fails on text that is right.
+func integrationMapBlock(t *testing.T, prompt string) string {
+	t.Helper()
+	const head = "## Integration completeness — draw the map, then close it"
+	i := strings.Index(prompt, head)
+	if i < 0 {
+		t.Fatalf("the integration-completeness block is absent from the prompt")
+	}
+	rest := prompt[i:]
+	// Cut at the next H2 — the per-mode tail — and never at an H3 inside the block.
+	if j := strings.Index(rest[len(head):], "\n## "); j >= 0 {
+		rest = rest[:len(head)+j]
+	}
+	return rest
+}
+
+// EVERY MODE OWES THE MAP. All three produce work, so all three carry the discipline.
+func TestEveryModeCarriesTheIntegrationMapContract(t *testing.T) {
+	for _, mode := range everyMode {
+		p := BuildSystemPrompt(mode, testAgentConfig(), testToolRegistry())
+		for _, want := range []string{
+			"### 1. Draw the map BEFORE you write anything",
+			"### 2. Close the map — no half-realized work",
+			"What it depends on",
+			"What depends on it",
+			"What must LEARN about it",
+			"What OBSERVES it",
+			"A seam nothing calls is not a feature",
+			`"Verified" means the outermost consumer works`,
+		} {
+			if !strings.Contains(p, want) {
+				t.Errorf("%s: the integration contract is missing %q — a mode without it can hand back a green, "+
+					"broken feature", mode, want)
+			}
+		}
+	}
+}
+
+// THE VOCABULARY IS PART-AGNOSTIC — systems design, architecture and UI/UX, never Orchicon's own members.
+//
+// The operator: "people will be using Orchicon to build out many projects, not just Orchicon itself, so the
+// wording needs to be a bit more agnostic and grounded in systems design, systems architecture, and UI/UX design
+// rather than calling out specific components." A rule that named the instance would teach a project with no
+// adapters nothing, so the INSTANCE is asserted ABSENT and the PATTERN's vocabulary asserted present.
+func TestIntegrationMapSpeaksSystemsDesignNotOrchiconComponents(t *testing.T) {
+	for _, mode := range everyMode {
+		block := integrationMapBlock(t, BuildSystemPrompt(mode, testAgentConfig(), testToolRegistry()))
+		lower := strings.ToLower(block)
+
+		for _, banned := range []string{"adapter", "opencode", "orchicon", "claude", "seed_workflows", "work item"} {
+			if strings.Contains(lower, banned) {
+				t.Errorf("%s: the shared block names Orchicon's own member %q — the rule has to read as systems design "+
+					"so it applies to ANY project", mode, banned)
+			}
+		}
+		// The systems/architecture half.
+		for _, want := range []string{
+			"registries and dispatch tables",
+			"configuration defaults",
+			"migrations",
+			"the API/wire contract at each boundary",
+			"the tests that assert each",
+		} {
+			if !strings.Contains(block, want) {
+				t.Errorf("%s: the shared block is missing the systems-design vocabulary %q", mode, want)
+			}
+		}
+		// The UI/UX half — what makes the rule apply to a design or front-end project, not only a back end.
+		for _, want := range []string{
+			"loading, empty, error, partial and permission-denied",
+			"design-system primitives and tokens",
+			"keyboard, focus, resize",
+			"A user-facing element without its states is not a feature",
+		} {
+			if !strings.Contains(block, want) {
+				t.Errorf("%s: the shared block is missing the UI/UX vocabulary %q", mode, want)
+			}
+		}
+	}
+}
+
+// THE SHARED BLOCK IS SHARED — byte-for-byte identical in all three modes — and the TAILS DIFFER.
+//
+// Two halves of one design decision, so both are asserted together: a single function is what stops the rule
+// drifting and stops its tokens being paid three times, and a mode-specific tail is what keeps the PLACEMENT
+// rule (brief / reply / dispatch brief) from collapsing into one generic statement.
+func TestTheIntegrationMapBlockIsSharedAndThePlacementTailsAreNot(t *testing.T) {
+	var first string
+	for _, mode := range everyMode {
+		block := integrationMapBlock(t, BuildSystemPrompt(mode, testAgentConfig(), testToolRegistry()))
+		if first == "" {
+			first = block
+			continue
+		}
+		if block != first {
+			t.Errorf("%s's integration block differs from the first mode's — the shared block has drifted, which is "+
+				"the failure having ONE function exists to prevent", mode)
+		}
+	}
+
+	placements := map[string]string{
+		modeBrainstorm: "## The integration map in every work item",
+		modeIteration:  "## Working in the open means showing the map",
+		modeQuickWork:  "## The map travels with the brief",
+	}
+	for _, mode := range everyMode {
+		p := BuildSystemPrompt(mode, testAgentConfig(), testToolRegistry())
+		want, ok := placements[mode]
+		if !ok {
+			t.Fatalf("%s has no expected placement tail — a mode added later must be added here too", mode)
+		}
+		if !strings.Contains(p, want) {
+			t.Errorf("%s does not carry its own map-placement tail %q", mode, want)
+		}
+		// And no OTHER mode's tail leaked in: the placement rule is mode-specific or it is not a rule.
+		for other, heading := range placements {
+			if other != mode && strings.Contains(p, heading) {
+				t.Errorf("%s carries %s's placement tail %q — the modes' map-placement rules have blurred",
+					mode, other, heading)
+			}
+		}
+	}
+}
+
+// BRAINSTORM: the map goes IN THE ITEM, because the brief is all a worker gets.
+func TestBrainstormPutsTheIntegrationMapInEveryWorkItem(t *testing.T) {
+	p := BuildSystemPrompt(modeBrainstorm, testAgentConfig(), testToolRegistry())
+	for _, want := range []string{
+		"The DESCRIPTION carries an **Integration map** section",
+		"ACCEPTANCE CRITERIA must cover the EDGES, not only the centre",
+		"A FEATURE OWNS ITS EDGES AND ITS INTEGRATION",
+		"its LAST child is the end-to-end proof",
+		"NO DEFERRED EDGES",
+		"never a follow-up item",
+		"requires a test that asserts the totality",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("brainstorm is missing %q — the worker cannot infer an edge the brief leaves out, so a brief "+
+				"without the map is a brief that can be completed perfectly and wrongly", want)
+		}
+	}
+}
+
+// ITERATION: the map goes IN THE REPLY, before the first edit, and is closed in the SAME session.
+func TestIterationShowsTheMapAndClosesItInTheSameSession(t *testing.T) {
+	p := BuildSystemPrompt(modeIteration, testAgentConfig(), testToolRegistry())
+	for _, want := range []string{
+		"WRITE THE MAP IN YOUR REPLY",
+		"same branch, same commit sequence",
+		"the states are part of it: loading, empty, error and denied",
+		"Your definition of done is the OUTERMOST consumer working",
+		"Run it and show the output",
+		"are checkpoints, not completion",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("iteration is missing %q — this mode must show the map, then close every edge it named", want)
+		}
+	}
+	// The tail must not smuggle in brainstorm's authoring vocabulary: this mode authors no work items, and a
+	// rule about what goes INTO one would be a rule this mode cannot act on.
+	if strings.Contains(p, "The integration map in every work item") {
+		t.Error("iteration carries brainstorm's map-into-the-item rule — Iteration authors no work items")
+	}
+}
+
+// QUICK WORK: the map goes in the BRIEF and the WORKER'S OWN PROMPT, because the worker never sees this chat.
+func TestQuickWorkPutsTheMapInTheBriefAndTheWorkerPrompt(t *testing.T) {
+	p := BuildSystemPrompt(modeQuickWork, testAgentConfig(), testToolRegistry())
+	for _, want := range []string{
+		"Write the MAP into the ephemeral item's description",
+		"Write the CLOSURE into the brief as an instruction",
+		"Put the EDGES into the acceptance criteria",
+		"Keep the run SINGLE-RUNNABLE",
+		"BLOCKING on the first",
+		"The worker's OWN prompt must carry it too",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("quick work is missing %q — the dispatched worker never sees this conversation, so the brief "+
+				"and its own prompt are the only places the map can live", want)
+		}
+	}
+}
