@@ -87,6 +87,13 @@ type Server struct {
 	// Same lazy supervision as hostServe; held separately so plane shutdown
 	// stops both.
 	askHostServe *opencode.HostServe
+	// claudeBridge is the claude adapter, held so plane shutdown can retire its
+	// Ask sessions. They are HOST CHILDREN: the plane's exit does not reap them,
+	// so without this a restart leaves every claude Ask child running, holding
+	// its transcript and its stdin. (opencode's Ask sessions live inside the
+	// askHostServe process above, which the shutdown already stops — claude's are
+	// children of THIS process, which is why they need their own hook.)
+	claudeBridge *claude.Bridge
 }
 
 // New constructs a Server from configuration. It opens the DB pool,
@@ -688,8 +695,11 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// PROVIDER segment, and a 2-segment "anthropic/<model>" ref must keep
 	// inferring kind opencode — internal/adapter/modelref_test.go). The
 	// claude bridge is a streaming-stdio adapter: it implements Start +
-	// MessageInjector/Aborter/LivenessReporter, and deliberately NOT
-	// ChatTurnClient (Ask chat on claude is out of scope).
+	// MessageInjector/Aborter/LivenessReporter, AND ChatTurnClient — claude is
+	// Ask-capable, so Dispatcher.ChatKinds() offers it to both model pickers.
+	// Its Ask sessions run under the INTERACTIVE permission profile (see
+	// internal/claude/ask.go), which is a separate rule set from the worker
+	// sandbox and therefore a separate session shape.
 	claudeBridge := claude.New(log)
 	claudeBridge.SetUsageRecorder(usageRecorderFn)
 	claudeBridge.SetSessionStore(sessionStoreFn)
@@ -729,7 +739,8 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 
 	s := &Server{cfg: cfg, log: log, pool: pool, httpSrv: httpSrv, otel: otelShutdown,
 		blobs: blobs, authH: authHandler, webhookD: webhookDisp, logWriter: logWriter,
-		hostServe: hostServe, askHostServe: askServe}
+		hostServe: hostServe, askHostServe: askServe,
+		claudeBridge: claudeBridge}
 	if pub != nil {
 		// Outbox retention: published rows older than the configured window
 		// are pruned on a schedule in bounded batches. Retention <= 0 disables
@@ -1081,11 +1092,20 @@ func (s *Server) Run(ctx context.Context) error {
 			s.shutdownOTel()
 			return fmt.Errorf("server: shutdown: %w", err)
 		}
+		// Ask sessions are host children, not processes the plane's exit
+		// reaps: without this a plane restart leaves every claude Ask child
+		// running, holding its transcript and its stdin.
+		if s.claudeBridge != nil {
+			s.claudeBridge.CloseAsk()
+		}
 		s.pool.Close()
 		s.shutdownOTel()
 		return nil
 	case err := <-errCh:
 		s.authH.CloseEmbeddedOP()
+		if s.claudeBridge != nil {
+			s.claudeBridge.CloseAsk()
+		}
 		s.pool.Close()
 		s.shutdownOTel()
 		if errors.Is(err, http.ErrServerClosed) {
