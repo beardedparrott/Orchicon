@@ -87,6 +87,12 @@ type Server struct {
 	// Same lazy supervision as hostServe; held separately so plane shutdown
 	// stops both.
 	askHostServe *opencode.HostServe
+	// hostServePool / askServePool are the RESOLVED-SET-KEYED pools of host
+	// serves for the in-process population. Held so plane shutdown stops every
+	// pooled serve (each is its OWN process with its OWN data dir). Nil when
+	// the session transport is disabled or no data dir is available.
+	hostServePool *opencode.HostServePool
+	askServePool  *opencode.HostServePool
 	// claudeBridge is the claude adapter, held so plane shutdown can retire its
 	// Ask sessions. They are HOST CHILDREN: the plane's exit does not reap them,
 	// so without this a restart leaves every claude Ask child running, holding
@@ -337,6 +343,22 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// (failed_to_start) rather than degrading to a second transport.
 	var hostServe *opencode.HostServe
 	var askServe *opencode.HostServe
+	// hostServePool backs the in-process population with a serve per RESOLVED
+	// MCP set: a shared serve builds its config ONCE and lives for the plane,
+	// so a cross-project union on it would leak one project's servers into
+	// another project's session (FORBIDDEN — see opencode.HostServePool). The
+	// EMPTY set reuses hostServe itself (adopted as the pool's default), so an
+	// MCP-free plane keeps today's single-serve topology unchanged. askServePool
+	// is the same shape under the INTERACTIVE profile, kept separate so an Ask
+	// turn can never ride a worker serve.
+	//
+	// NOTE: askServePool is constructed (and stopped) here but its ServeFor is
+	// NOT yet called — Ask's own MCP scope and mode policy are child 6's work,
+	// and Ask's turn path still resolves through chatHost(a.askHost, a.host).
+	// It exists now so the interactive half of the host-serve strategy is
+	// explicit and child 6 has the hook, rather than because Ask is pooled today.
+	var hostServePool *opencode.HostServePool
+	var askServePool *opencode.HostServePool
 	if os.Getenv("ORCHICON_OPCODE_SESSION_TRANSPORT") != "0" {
 		dataDir := ""
 		if home, herr := os.UserHomeDir(); herr == nil {
@@ -345,6 +367,10 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		if dataDir != "" {
 			hostServe = opencode.NewHostServe(log, dataDir, "")
 			adapterBridge.SetHostServe(hostServe)
+			hostServePool = opencode.NewHostServePool(log, dataDir, "", opencode.ProfileWorker)
+			hostServePool.SetDefaultServe(hostServe)
+			adapterBridge.SetHostServePool(hostServePool)
+			adapterBridge.SetHostScopeResolver(mcpsettings.NewResolver(pool))
 			// Ask Orchicon gets its OWN serve: opencode's permission config is
 			// per-process, so the interactive profile cannot ride the worker
 			// serve without leaking into dispatched executions. Its data dir
@@ -353,6 +379,8 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			// the worker serve, and stopped with the plane.
 			askServe = opencode.NewAskHostServe(log, dataDir+"-ask", "")
 			adapterBridge.SetAskHostServe(askServe)
+			askServePool = opencode.NewHostServePool(log, dataDir+"-ask", "", opencode.ProfileInteractive)
+			askServePool.SetDefaultServe(askServe)
 		} else {
 			log.Warn("host opencode serve data dir unavailable — sessions disabled")
 		}
@@ -750,6 +778,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	s := &Server{cfg: cfg, log: log, pool: pool, httpSrv: httpSrv, otel: otelShutdown,
 		blobs: blobs, authH: authHandler, webhookD: webhookDisp, logWriter: logWriter,
 		hostServe: hostServe, askHostServe: askServe,
+		hostServePool: hostServePool, askServePool: askServePool,
 		claudeBridge: claudeBridge}
 	if pub != nil {
 		// Outbox retention: published rows older than the configured window
@@ -784,6 +813,15 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	if rtClient != nil {
 		if rtClient.Ready(context.Background()) {
 			runtimeLifecycle = runtime.NewLifecycle(rtClient, pool, log, opencode.RuntimeServeConfig, secretsKEK)
+			// The run-level MCP/skills union comes from the SAME resolver the
+			// native/claude bridges use, so a run's union and a worker's own set
+			// can never disagree on a scope's meaning. The opencode adapter then
+			// takes its self-heal config from the run (never the executing step),
+			// keeping the container's config deterministic for the run.
+			if lc, ok := runtimeLifecycle.(*runtime.Lifecycle); ok {
+				lc.SetScopeResolver(mcpsettings.NewResolver(pool))
+				adapterBridge.SetRunServeConfigProvider(lc)
+			}
 			// Route executions that belong to a workflow run into that
 			// workflow's runtime container instead of a local subprocess.
 			adapterBridge.SetRuntimeClient(rtClient)
@@ -925,6 +963,16 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		if s.askHostServe != nil {
 			s.askHostServe.Stop()
+		}
+		// Pooled serves are ADDITIONAL processes with their own data dirs; the
+		// pool's Stop also stops the default serve it adopted, but the fields
+		// above are stopped first so the default is not double-stopped (Stop is
+		// idempotent, so this is belt-and-braces).
+		if s.hostServePool != nil {
+			s.hostServePool.Stop()
+		}
+		if s.askServePool != nil {
+			s.askServePool.Stop()
 		}
 	}()
 

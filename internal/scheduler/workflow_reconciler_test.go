@@ -136,8 +136,19 @@ func newReconcileRun(t *testing.T, trigger *recordingRecoveryTrigger, steps []wo
 	// run.Version without refreshing `run`, leaving the later terminal-fail
 	// update (line 1154) on a stale version → "db: not found". Headless tests
 	// are always-serve-ready, so set the flag and move one version ahead.
+	//
+	// worktree_status must ALSO be admitted here. CreateWorkflowRun leaves it
+	// at the DB default 'pending', and the in-place serialization guard
+	// (holdInPlaceDispatch, reconciler.go:470) holds EVERY step of a pending
+	// non-repo run until the WorktreeReconciler admits it — which this fixture
+	// never runs, so nothing would dispatch and the pass would end with the
+	// step still 'ready'. The sibling fixture (loop_iteration_wedge_test.go:95)
+	// documents exactly this. 'skipped' is the admission for a non-repo
+	// project (the fixture's project is not a git work tree), mirroring what
+	// the WorktreeReconciler writes for one.
 	run, err = db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, run.ID, run.Version, db.UpdateWorkflowRunFields{
-		RuntimeReady: boolPtr(true),
+		RuntimeReady:   boolPtr(true),
+		WorktreeStatus: strPtr(domain.WorktreeSkipped),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -169,9 +180,16 @@ func createRunningFailedStepRun(t *testing.T, ttx *db.TenantTx, run db.WorkflowR
 	}
 	now := time.Now().UTC()
 	resB, _ := json.Marshal(map[string]any{
-		"_work_item_id":   ticket.ID,
-		"_worker_id":      "w_se_devops_engineer",
-		"_worker_version": "1",
+		"_work_item_id": ticket.ID,
+		"_worker_id":    "w_se_devops_engineer",
+		// A NUMBER, not a string: the dispatch path writes
+		// step.WorkerVersion (an int), and the recovery-dispatch gate
+		// unmarshals this key into float64. A string here makes the WHOLE
+		// unmarshal fail, so the gate reads "no ticket recorded" and
+		// dispatches the recovering step COLD instead of holding it for the
+		// deferred recovery trigger — silently defeating the gate this
+		// fixture exists to exercise.
+		"_worker_version": 1,
 	})
 	if _, err := db.CreateWorkflowStepRun(ctx, ttx.Tx, db.WorkflowStepRunRow{
 		ID:                db.NewID(),
@@ -325,7 +343,10 @@ func TestLoopDecisionUpstreamFailedNoIterationFlood(t *testing.T) {
 		// carry a WorkerExecutionID + _work_item_id so the branch can bind
 		// the recovery trigger to the failed execution.
 		resB, _ := json.Marshal(map[string]any{
-			"_work_item_id": ticket.ID, "_worker_id": "w_se_devops_engineer", "_worker_version": "1",
+			// See createRunningFailedStepRun: a NUMBER, matching what the
+			// dispatch path writes (step.WorkerVersion) and what the
+			// recovery-dispatch gate's float64 unmarshal requires.
+			"_work_item_id": ticket.ID, "_worker_id": "w_se_devops_engineer", "_worker_version": 1,
 		})
 		if _, err := db.CreateWorkflowStepRun(ctx, ttx.Tx, db.WorkflowStepRunRow{
 			ID: db.NewID(), TenantID: approvalTestTenant, WorkflowRunID: run.ID,
