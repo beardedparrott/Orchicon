@@ -458,3 +458,109 @@ func TestTheTreeStillOpensCollapsedAfterTheArchiveException(t *testing.T) {
 		t.Fatalf("expanding the tree must reveal the child: %d visible, want 2", n)
 	}
 }
+
+// TestBulkRestoreFromTheArchive — the operator: "I noticed there is no option to restore
+// on bulk items."
+//
+// RIGHT, and the reason was structural: bulkItemActions offered ARCHIVE and DELETE and
+// knew nothing about the view. In the archive view both are wrong — `a: archive` is a
+// no-op on an item that is already archived, and `x: delete` CANCELS it, which is a
+// different outcome from the restore the operator is in that view to perform. So a marked
+// selection had no restore path at all, while the GUI has had "Restore selected" from the
+// start.
+func TestBulkRestoreFromTheArchive(t *testing.T) {
+	p := newPlane()
+	p.seedProject("proj-1", "Orchicon")
+	p.addItem(&apiv1.WorkItem{Id: "live", Title: "Live Epic", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC,
+		ProjectId: "proj-1", Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING})
+	// A two-level archived subtree, so the ordering rule is exercised rather than assumed.
+	p.addArchive(archivedRow("af", "live", "succeeded", apiv1.WorkItemKind_WORK_ITEM_KIND_FEATURE))
+	p.addArchive(archivedRow("at", "af", "succeeded", apiv1.WorkItemKind_WORK_ITEM_KIND_TASK))
+
+	m := newModel(t, p)
+	m.SelectSource(srcWorkItems)
+	load(t, m, srcWorkItems)
+	press(t, m, "v")
+	load(t, m, srcWorkItems)
+
+	// Mark the two ARCHIVED rows (the anchor is not selectable for this).
+	m.SelectItem(srcWorkItems, "af")
+	press(t, m, " ")
+	press(t, m, "down")
+	press(t, m, " ")
+	if n := m.Base.MarkCount(); n != 2 {
+		t.Fatalf("fixture: expected 2 marked rows, got %d", n)
+	}
+
+	// THE OFFER: restore, on `R`, and NOT the tree's no-op chords.
+	var labels []string
+	for _, a := range m.actionsForSelection() {
+		labels = append(labels, a.Key)
+	}
+	if _, ok := m.actionByKey("R"); !ok {
+		t.Fatalf("a marked archive selection must offer restore, got keys %v", labels)
+	}
+	if _, ok := m.actionByKey("a"); ok {
+		t.Fatalf("the archive view must not offer `a: archive` for a selection — it is a no-op "+
+			"on already-archived items, got keys %v", labels)
+	}
+	if _, ok := m.actionByKey(keyBulkSet); ok {
+		t.Fatalf("the archive view must not offer `%s` for a selection, got keys %v", keyBulkSet, labels)
+	}
+
+	// THE HINT names it (and not the tree's chords).
+	hint := ansi.Strip(m.HintLine())
+	if !strings.Contains(hint, "R: restore") {
+		t.Fatalf("the marked hint must name restore, got %q", hint)
+	}
+	if strings.Contains(hint, "set workflow & image") {
+		t.Fatalf("the marked hint must not advertise a chord this view does not offer: %q", hint)
+	}
+
+	// THE WRITE, and its ORDER: children before parents.
+	press(t, m, "R")
+	if !m.DialogOpen() {
+		t.Fatal("`R` on a marked selection must ask for confirmation first")
+	}
+	run(t, m, press(t, m, "enter"))
+	if len(p.restored) != 2 {
+		t.Fatalf("RestoreWorkItem calls = %v, want both marked ids", p.restored)
+	}
+	if p.restored[0] != "at" || p.restored[1] != "af" {
+		t.Fatalf("restore order = %v, want [at af] — DEEPEST FIRST. A parent restored before "+
+			"its still-archived children leaves the hierarchy briefly inconsistent, which is "+
+			"the same rule the GUI's bottomUpOrder applies.", p.restored)
+	}
+}
+
+// The TREE keeps its own bulk vocabulary — the archive's set must not have replaced it.
+func TestTheTreeKeepsItsBulkActions(t *testing.T) {
+	p := newPlane()
+	p.seedProject("proj-1", "Orchicon")
+	p.addItem(&apiv1.WorkItem{Id: "e", Title: "Epic", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC,
+		ProjectId: "proj-1", Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING})
+	p.addItem(&apiv1.WorkItem{Id: "t", Title: "Task", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_TASK,
+		ProjectId: "proj-1", ParentId: "e", Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING})
+	p.addItem(&apiv1.WorkItem{Id: "u", Title: "Other", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_TASK,
+		ProjectId: "proj-1", Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING})
+
+	m := newModel(t, p)
+	m.SelectSource(srcWorkItems)
+	load(t, m, srcWorkItems)
+
+	if !m.SelectItem(srcWorkItems, "t") {
+		t.Fatal("could not focus the task")
+	}
+	press(t, m, " ")
+	if !m.SelectItem(srcWorkItems, "u") {
+		t.Fatal("could not focus the other task")
+	}
+	press(t, m, " ")
+
+	if _, ok := m.actionByKey("a"); !ok {
+		t.Fatal("the TREE must still offer bulk archive")
+	}
+	if _, ok := m.actionByKey("R"); ok {
+		t.Fatal("the TREE must not offer bulk restore — that is the archive view's operation")
+	}
+}

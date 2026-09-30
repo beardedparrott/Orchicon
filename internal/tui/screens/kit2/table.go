@@ -144,6 +144,21 @@ func (t *Table) MarkedIDs() []string {
 	return out
 }
 
+// RowByID returns the row with the given id, and whether it is present.
+//
+// A caller that needs a row's structural fields for a marked id — the archive view orders a
+// bulk restore child-first by each marked row's DEPTH — has only the ids from MarkedIDs,
+// which carry no structure. Rows (not VisibleRows) is the right set to read: a marked row
+// hidden under a collapsed parent is still part of the selection.
+func (t *Table) RowByID(id string) (Row, bool) {
+	for i := range t.Rows {
+		if t.Rows[i].ID == id {
+			return t.Rows[i], true
+		}
+	}
+	return Row{}, false
+}
+
 // PruneMarks drops marks whose rows are no longer present, and reports how many went.
 //
 // A reload can remove rows (a bulk action deletes them, a filter hides them, the plane

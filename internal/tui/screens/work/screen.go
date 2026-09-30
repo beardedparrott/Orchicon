@@ -16,6 +16,7 @@ package work
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -748,6 +749,12 @@ func (m *Model) actionsForSelection() []kit2.Action {
 		case srcProjects:
 			return m.bulkProjectActions(ids)
 		default:
+			// PER VIEW, because the two views' bulk vocabularies are disjoint: the
+			// archive's operation is RESTORE, and archive/delete are no-ops or
+			// different outcomes there. See bulkArchiveActions.
+			if m.ViewMode() == viewArchive {
+				return m.bulkArchiveActions(ids)
+			}
 			return m.bulkItemActions(ids)
 		}
 	}
@@ -848,6 +855,101 @@ func (m *Model) bulkItemActions(ids []string) []kit2.Action {
 		Do: func(context.Context) error { return nil },
 	}
 	return []kit2.Action{archive, del, setwf, clear}
+}
+
+// bulkArchiveActions is the ARCHIVE VIEW's bulk action set: RESTORE, and only restore.
+//
+// The operator: "I noticed there is no option to restore on bulk items."
+//
+// bulkItemActions offered archive + delete and knew nothing about the view, so a marked
+// selection in the archive was offered two operations that are both wrong there — `a:
+// archive` is a no-op on an already-archived item, and `x: delete` CANCELS it, which is a
+// different outcome from the restore the operator is looking at the view to perform. The
+// GUI has had "Restore selected" all along; this is the TUI's half of that parity.
+//
+// WHY IT IS A SEPARATE LIST RATHER THAN A BRANCH INSIDE bulkItemActions. The two views
+// have genuinely disjoint vocabularies, and the same reasoning that split itemActions
+// applies: an action that is a no-op in the view it is offered from is worse than an
+// absent one, because it reads as supported. Archive/delete return when the operator
+// switches back to the tree, where they belong.
+func (m *Model) bulkArchiveActions(ids []string) []kit2.Action {
+	n := len(ids)
+	count := fmt.Sprintf("%d", n)
+	if m.cl == nil || m.cl.WorkItems == nil {
+		return []kit2.Action{{
+			Label: "no work-item client", Source: srcWorkItems,
+			Do: func(context.Context) error { return fmt.Errorf("no work-item client") },
+		}}
+	}
+	cl := m.cl.WorkItems
+	ordered := m.restoreOrder(ids)
+	restore := kit2.Action{
+		Label: "restore " + count + " selected", Key: "R", Source: srcWorkItems,
+		Confirm: "Restore " + count + " items?\n" +
+			"Each returns to the active views at the status it was archived from.\n" +
+			"Children are restored BEFORE their parents so the hierarchy holds at every step,\n" +
+			"and the first rejection stops the run.",
+		Do: func(ctx context.Context) error {
+			failed := 0
+			for _, id := range ordered {
+				if _, err := cl.RestoreWorkItem(ctx, connect.NewRequest(&apiv1.RestoreWorkItemRequest{Id: id})); err != nil {
+					failed++
+				}
+			}
+			if failed > 0 {
+				return fmt.Errorf("restored %d of %d — %d were rejected", n-failed, n, failed)
+			}
+			return nil
+		},
+	}
+	clear := kit2.Action{
+		Label: "clear selection", Key: "esc", Source: srcWorkItems,
+		Do: func(context.Context) error { return nil },
+		Apply: func() {
+			m.Base.ClearMarks()
+			m.notice = "selection cleared"
+		},
+	}
+	return []kit2.Action{restore, clear}
+}
+
+// restoreOrder returns the marked ids CHILD-FIRST, by each row's depth in the archive
+// tree.
+//
+// THE ORDER IS THE CORRECTNESS, not a nicety — the same reason the GUI sorts with
+// bottomUpOrder: a parent restored before its still-archived children leaves the
+// hierarchy briefly inconsistent, and an archived child whose parent has already returned
+// to the active views is exactly the cross-boundary state the ghost-anchor machinery
+// exists to paper over. Restoring deepest-first means every item lands among siblings that
+// are all in the same partition as it is.
+//
+// Depth comes from the ROW the table already holds (RowByID), so it is the depth the tree
+// was built with rather than a second derivation that could disagree with it. The sort is
+// STABLE and ties keep the pane's order, which is MarkedIDs' order (screen order, top to
+// bottom) — so equal depths restore in the sequence the operator sees.
+func (m *Model) restoreOrder(ids []string) []string {
+	t := m.Base.ActiveTable()
+	if t == nil {
+		return ids
+	}
+	type ranked struct {
+		id    string
+		depth int
+	}
+	rows := make([]ranked, 0, len(ids))
+	for _, id := range ids {
+		d := 0
+		if r, ok := t.RowByID(id); ok {
+			d = r.Depth
+		}
+		rows = append(rows, ranked{id: id, depth: d})
+	}
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].depth > rows[j].depth })
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.id)
+	}
+	return out
 }
 
 // openAction opens the confirmation dialog for an action that needs one, or
@@ -1445,7 +1547,17 @@ func (m *Model) HintLine() string {
 		// get there (mark two or more) are all stated — one line when there is no selection, and the
 		// selection's own line once there is, which is the shape the Workers pane's bulk set-model already
 		// uses (see execution.markHint).
+		// THE MARKED LINE IS ALSO PER VIEW, for the same reason the unmarked one is: it
+		// named the chords of the TREE while the archive was on screen. Measured in the
+		// archive view with two rows marked, it read "2 marked · W: set workflow & image ·
+		// esc: clear" — `W` is not even OFFERED there (bulkArchiveActions returns restore
+		// and clear), so the line advertised a chord that does nothing and omitted the one
+		// the operator had just selected rows to use.
 		if n := m.Base.MarkCount(); n > 1 {
+			if m.ViewMode() == viewArchive {
+				return theme.HintText.Render(fmt.Sprintf("%d marked", n) + " · " +
+					"R: restore · esc: clear · ↑↓: move · enter: detail")
+			}
 			return theme.HintText.Render(fmt.Sprintf("%d marked", n) + " · " +
 				keyBulkSet + ": set workflow & image · esc: clear · ↑↓: move · enter: detail")
 		}
