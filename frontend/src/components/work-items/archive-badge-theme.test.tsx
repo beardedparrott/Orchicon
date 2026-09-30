@@ -36,9 +36,9 @@ import { WorkItemStatus } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import {
   StatusChip,
   StatusPill,
-  statusPillClasses,
 } from "@/components/work-items/work-item-badges";
 import { statusMeta } from "@/components/work-items/work-item-meta";
+import { statusPillClasses } from "@/components/work-items/use-dark-palette";
 import { useThemeStore } from "@/lib/theme-store";
 
 /** Every status an archived item can have been archived FROM. */

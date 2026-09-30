@@ -16,36 +16,7 @@
 import { cn } from "@/lib/utils";
 
 import { kindMeta, statusMeta, type StatusMeta } from "@/components/work-items/work-item-meta";
-import { useDarkPalette } from "@/components/work-items/use-dark-palette";
-
-/**
- * Resolve a StatusMeta's pill classes for the ACTIVE palette.
- *
- * This is the ONE place the light/dark choice is made, so a badge cannot pick
- * the wrong set. It exists because one did: the archive view's "Archived from"
- * chip read `original.pill` directly (the LIGHT-palette classes), so on a dark
- * theme it painted `text-emerald-800` on `bg-emerald-500/15` over a dark-green
- * page — green on green, which is exactly how the operator reported it. Every
- * other badge in the app already went through `useDarkPalette`; the chips built
- * inline did not, because the decision was copyable rather than shared.
- */
-export function useStatusPillClasses(meta: StatusMeta): string {
-  return statusPillClasses(meta, useDarkPalette());
-}
-
-/**
- * The palette decision as a PURE function — the hook above is only the binding of
- * this to the theme store.
- *
- * Split out so the decision itself is directly testable: React's static renderer
- * reads zustand's INITIAL state (useSyncExternalStore's server snapshot), so a
- * component-level test cannot switch palettes in-process. The rule "which class
- * set does a chip use" is what must not regress, and a pure function lets every
- * status be checked in both palettes rather than one example in one theme.
- */
-export function statusPillClasses(meta: StatusMeta, isDarkPalette: boolean): string {
-  return isDarkPalette ? meta.pillDark : meta.pill;
-}
+import { useDarkPalette, useStatusPillClasses } from "@/components/work-items/use-dark-palette";
 
 /**
  * Compact square kind badge ("E", "F", "T", "S", "R") — the Jira-style
