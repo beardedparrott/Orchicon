@@ -146,6 +146,29 @@ service AskOrchiconService {
   // and revoke what was granted; the store itself is the source of truth.
   rpc ListPermissionGrants(ListPermissionGrantsRequest) returns (ListPermissionGrantsResponse);
 
+  // ListPendingAsks returns the conversation's still-OPEN asks: a permission
+  // card or a clarifying question the turn is parked on, awaiting a human
+  // decision.
+  //
+  // WHY A QUERY AND NOT ONLY THE STREAM ARM. An ask is delivered on the turn
+  // stream, which means a client learns about it only if it happens to be
+  // WATCHING that turn at that instant. Any interruption — a re-attach, a pane
+  // switch, a socket drop, a turn the client did not itself start — and the card
+  // has no path to the operator, while the SERVER keeps the turn parked waiting
+  // for an answer that has no card to give it. That is the failure the operator
+  // reported: the GUI showed a pending card while the TUI appeared stalled.
+  //
+  // The server has always held this state (askorchicon.pendingAskRegistry) and
+  // replayed it to a LATE WATCHER; this exposes it as a question any client can
+  // ask at any time, so a card becomes DISCOVERABLE from durable state rather
+  // than merely deliverable as a live event. A client that calls this on attach,
+  // re-attach and its turn poll cannot miss a card, and calling it twice is
+  // harmless because both clients dedupe by ask id.
+  //
+  // Decided and finalized asks are NOT returned: their outcome is already in the
+  // transcript, and replaying one would resurrect a card the operator answered.
+  rpc ListPendingAsks(ListPendingAsksRequest) returns (ListPendingAsksResponse);
+
   // RevokePermissionGrant drops one session grant (by directory) for the
   // conversation. The next tool call for that directory asks again: the guard
   // shim reads the same store (internal/askorchicon/ask_guard.go). An unknown
@@ -528,6 +551,18 @@ message ListPermissionGrantsRequest {
 // ListPermissionGrantsResponse carries the conversation's active grants.
 message ListPermissionGrantsResponse {
   repeated SessionPermissionGrant grants = 1;
+}
+
+message ListPendingAsksRequest {
+  string conversation_id = 1;
+}
+
+// ListPendingAsksResponse carries the conversation's open asks, in the SAME
+// PermissionAsk shape the turn stream emits — deliberately the same message, so
+// a discovered ask and a streamed ask cannot drift into two renderings, and a
+// client can feed both through one path.
+message ListPendingAsksResponse {
+  repeated PermissionAsk asks = 1;
 }
 
 message RevokePermissionGrantRequest {

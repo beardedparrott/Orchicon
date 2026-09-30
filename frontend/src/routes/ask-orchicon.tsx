@@ -49,6 +49,7 @@ import {
   useDeleteConversation,
   useUpdateConversationTitle,
   useListMessages,
+  usePendingAsks,
   useGetConversation,
   useAbortConversationTurn,
   useSetConversationMode,
@@ -435,6 +436,29 @@ function AskOrchiconPage() {
     if (settleFromLedger(current, messages) === current) return;
     setStream(activeConvId, (prev) => ({ ...prev, asks: settleFromLedger(prev.asks, messages) }));
   }, [activeConvId, messages, streams, setStream]);
+
+  // DISCOVERY, beside the ledger settle above. The ledger can retire a card but can
+  // never reveal an open one (it records outcomes, not open asks), so this asks the
+  // server directly — the same call the TUI makes on attach and re-attach.
+  //
+  // It is the half that makes the GUI robust rather than merely lucky: today it
+  // usually holds a watch socket, so it usually receives the live arm. "Usually" is
+  // what the operator caught, from the other side — the TUI appeared stalled while
+  // this client was quietly displaying the waiting card. Both clients now reconcile
+  // against the server's pending set, so neither depends on having caught an event.
+  const { data: pendingAsks } = usePendingAsks(activeConvId ?? "");
+  useEffect(() => {
+    if (!activeConvId || !pendingAsks || pendingAsks.length === 0) return;
+    // Through the SAME fold the wire arm uses, so a card delivered both ways is drawn
+    // once (applyAskChunk dedupes by ask id) and renders identically either way.
+    for (const ask of pendingAsks) {
+      // The message is the SAME proto type the stream arm delivers, so it is folded in
+      // unchanged — no reshaping, which is what keeps a discovered card identical to a
+      // streamed one. Only a producer that omitted the conversation id is corrected.
+      if (!ask.conversationId) ask.conversationId = activeConvId;
+      applyAsk(activeConvId, ask);
+    }
+  }, [activeConvId, pendingAsks, applyAsk]);
 
   // transcriptBlocks is the message flow the cards are interleaved into. The
   // optimistic echo is only included while the durable view has not caught up

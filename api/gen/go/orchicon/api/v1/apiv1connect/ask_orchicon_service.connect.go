@@ -89,6 +89,9 @@ const (
 	// AskOrchiconServiceListPermissionGrantsProcedure is the fully-qualified name of the
 	// AskOrchiconService's ListPermissionGrants RPC.
 	AskOrchiconServiceListPermissionGrantsProcedure = "/orchicon.api.v1.AskOrchiconService/ListPermissionGrants"
+	// AskOrchiconServiceListPendingAsksProcedure is the fully-qualified name of the
+	// AskOrchiconService's ListPendingAsks RPC.
+	AskOrchiconServiceListPendingAsksProcedure = "/orchicon.api.v1.AskOrchiconService/ListPendingAsks"
 	// AskOrchiconServiceRevokePermissionGrantProcedure is the fully-qualified name of the
 	// AskOrchiconService's RevokePermissionGrant RPC.
 	AskOrchiconServiceRevokePermissionGrantProcedure = "/orchicon.api.v1.AskOrchiconService/RevokePermissionGrant"
@@ -222,6 +225,28 @@ type AskOrchiconServiceClient interface {
 	// the time each was granted. The client renders them so an operator can see
 	// and revoke what was granted; the store itself is the source of truth.
 	ListPermissionGrants(context.Context, *connect.Request[v1.ListPermissionGrantsRequest]) (*connect.Response[v1.ListPermissionGrantsResponse], error)
+	// ListPendingAsks returns the conversation's still-OPEN asks: a permission
+	// card or a clarifying question the turn is parked on, awaiting a human
+	// decision.
+	//
+	// WHY A QUERY AND NOT ONLY THE STREAM ARM. An ask is delivered on the turn
+	// stream, which means a client learns about it only if it happens to be
+	// WATCHING that turn at that instant. Any interruption — a re-attach, a pane
+	// switch, a socket drop, a turn the client did not itself start — and the card
+	// has no path to the operator, while the SERVER keeps the turn parked waiting
+	// for an answer that has no card to give it. That is the failure the operator
+	// reported: the GUI showed a pending card while the TUI appeared stalled.
+	//
+	// The server has always held this state (askorchicon.pendingAskRegistry) and
+	// replayed it to a LATE WATCHER; this exposes it as a question any client can
+	// ask at any time, so a card becomes DISCOVERABLE from durable state rather
+	// than merely deliverable as a live event. A client that calls this on attach,
+	// re-attach and its turn poll cannot miss a card, and calling it twice is
+	// harmless because both clients dedupe by ask id.
+	//
+	// Decided and finalized asks are NOT returned: their outcome is already in the
+	// transcript, and replaying one would resurrect a card the operator answered.
+	ListPendingAsks(context.Context, *connect.Request[v1.ListPendingAsksRequest]) (*connect.Response[v1.ListPendingAsksResponse], error)
 	// RevokePermissionGrant drops one session grant (by directory) for the
 	// conversation. The next tool call for that directory asks again: the guard
 	// shim reads the same store (internal/askorchicon/ask_guard.go). An unknown
@@ -363,6 +388,12 @@ func NewAskOrchiconServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(askOrchiconServiceMethods.ByName("ListPermissionGrants")),
 			connect.WithClientOptions(opts...),
 		),
+		listPendingAsks: connect.NewClient[v1.ListPendingAsksRequest, v1.ListPendingAsksResponse](
+			httpClient,
+			baseURL+AskOrchiconServiceListPendingAsksProcedure,
+			connect.WithSchema(askOrchiconServiceMethods.ByName("ListPendingAsks")),
+			connect.WithClientOptions(opts...),
+		),
 		revokePermissionGrant: connect.NewClient[v1.RevokePermissionGrantRequest, v1.RevokePermissionGrantResponse](
 			httpClient,
 			baseURL+AskOrchiconServiceRevokePermissionGrantProcedure,
@@ -420,6 +451,7 @@ type askOrchiconServiceClient struct {
 	watchTurnStream           *connect.Client[v1.WatchTurnStreamRequest, v1.ChatStreamResponse]
 	replyPermissionAsk        *connect.Client[v1.ReplyPermissionAskRequest, v1.ReplyPermissionAskResponse]
 	listPermissionGrants      *connect.Client[v1.ListPermissionGrantsRequest, v1.ListPermissionGrantsResponse]
+	listPendingAsks           *connect.Client[v1.ListPendingAsksRequest, v1.ListPendingAsksResponse]
 	revokePermissionGrant     *connect.Client[v1.RevokePermissionGrantRequest, v1.RevokePermissionGrantResponse]
 	compactConversation       *connect.Client[v1.CompactConversationRequest, v1.CompactConversationResponse]
 	uploadAttachment          *connect.Client[v1.UploadAttachmentRequest, v1.UploadAttachmentResponse]
@@ -506,6 +538,11 @@ func (c *askOrchiconServiceClient) ReplyPermissionAsk(ctx context.Context, req *
 // ListPermissionGrants calls orchicon.api.v1.AskOrchiconService.ListPermissionGrants.
 func (c *askOrchiconServiceClient) ListPermissionGrants(ctx context.Context, req *connect.Request[v1.ListPermissionGrantsRequest]) (*connect.Response[v1.ListPermissionGrantsResponse], error) {
 	return c.listPermissionGrants.CallUnary(ctx, req)
+}
+
+// ListPendingAsks calls orchicon.api.v1.AskOrchiconService.ListPendingAsks.
+func (c *askOrchiconServiceClient) ListPendingAsks(ctx context.Context, req *connect.Request[v1.ListPendingAsksRequest]) (*connect.Response[v1.ListPendingAsksResponse], error) {
+	return c.listPendingAsks.CallUnary(ctx, req)
 }
 
 // RevokePermissionGrant calls orchicon.api.v1.AskOrchiconService.RevokePermissionGrant.
@@ -651,6 +688,28 @@ type AskOrchiconServiceHandler interface {
 	// the time each was granted. The client renders them so an operator can see
 	// and revoke what was granted; the store itself is the source of truth.
 	ListPermissionGrants(context.Context, *connect.Request[v1.ListPermissionGrantsRequest]) (*connect.Response[v1.ListPermissionGrantsResponse], error)
+	// ListPendingAsks returns the conversation's still-OPEN asks: a permission
+	// card or a clarifying question the turn is parked on, awaiting a human
+	// decision.
+	//
+	// WHY A QUERY AND NOT ONLY THE STREAM ARM. An ask is delivered on the turn
+	// stream, which means a client learns about it only if it happens to be
+	// WATCHING that turn at that instant. Any interruption — a re-attach, a pane
+	// switch, a socket drop, a turn the client did not itself start — and the card
+	// has no path to the operator, while the SERVER keeps the turn parked waiting
+	// for an answer that has no card to give it. That is the failure the operator
+	// reported: the GUI showed a pending card while the TUI appeared stalled.
+	//
+	// The server has always held this state (askorchicon.pendingAskRegistry) and
+	// replayed it to a LATE WATCHER; this exposes it as a question any client can
+	// ask at any time, so a card becomes DISCOVERABLE from durable state rather
+	// than merely deliverable as a live event. A client that calls this on attach,
+	// re-attach and its turn poll cannot miss a card, and calling it twice is
+	// harmless because both clients dedupe by ask id.
+	//
+	// Decided and finalized asks are NOT returned: their outcome is already in the
+	// transcript, and replaying one would resurrect a card the operator answered.
+	ListPendingAsks(context.Context, *connect.Request[v1.ListPendingAsksRequest]) (*connect.Response[v1.ListPendingAsksResponse], error)
 	// RevokePermissionGrant drops one session grant (by directory) for the
 	// conversation. The next tool call for that directory asks again: the guard
 	// shim reads the same store (internal/askorchicon/ask_guard.go). An unknown
@@ -788,6 +847,12 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 		connect.WithSchema(askOrchiconServiceMethods.ByName("ListPermissionGrants")),
 		connect.WithHandlerOptions(opts...),
 	)
+	askOrchiconServiceListPendingAsksHandler := connect.NewUnaryHandler(
+		AskOrchiconServiceListPendingAsksProcedure,
+		svc.ListPendingAsks,
+		connect.WithSchema(askOrchiconServiceMethods.ByName("ListPendingAsks")),
+		connect.WithHandlerOptions(opts...),
+	)
 	askOrchiconServiceRevokePermissionGrantHandler := connect.NewUnaryHandler(
 		AskOrchiconServiceRevokePermissionGrantProcedure,
 		svc.RevokePermissionGrant,
@@ -858,6 +923,8 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 			askOrchiconServiceReplyPermissionAskHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceListPermissionGrantsProcedure:
 			askOrchiconServiceListPermissionGrantsHandler.ServeHTTP(w, r)
+		case AskOrchiconServiceListPendingAsksProcedure:
+			askOrchiconServiceListPendingAsksHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceRevokePermissionGrantProcedure:
 			askOrchiconServiceRevokePermissionGrantHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceCompactConversationProcedure:
@@ -941,6 +1008,10 @@ func (UnimplementedAskOrchiconServiceHandler) ReplyPermissionAsk(context.Context
 
 func (UnimplementedAskOrchiconServiceHandler) ListPermissionGrants(context.Context, *connect.Request[v1.ListPermissionGrantsRequest]) (*connect.Response[v1.ListPermissionGrantsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.ListPermissionGrants is not implemented"))
+}
+
+func (UnimplementedAskOrchiconServiceHandler) ListPendingAsks(context.Context, *connect.Request[v1.ListPendingAsksRequest]) (*connect.Response[v1.ListPendingAsksResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.ListPendingAsks is not implemented"))
 }
 
 func (UnimplementedAskOrchiconServiceHandler) RevokePermissionGrant(context.Context, *connect.Request[v1.RevokePermissionGrantRequest]) (*connect.Response[v1.RevokePermissionGrantResponse], error) {
