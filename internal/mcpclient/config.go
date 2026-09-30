@@ -15,6 +15,8 @@ package mcpclient
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -108,6 +110,19 @@ type ScopeRef struct {
 	ConversationID string
 	WorkerID       string // ScopeWorker only; the version is the latest published
 	RunID          string // ScopeRun only
+
+	// Version is the PINNED worker version this ref resolves, used for
+	// provenance when Kind is ScopeWorker (the "inline:<workerID>@<n>"
+	// shape). Zero means "unpinned" — the resolver reads the latest
+	// published version and reports "inline:<workerID>".
+	Version int
+	// OwnPermissions, when non-empty, is the CALLER-HELD own-set for this
+	// scope: the executing worker version's permissions jsonb
+	// (worker_versions.permissions → scheduler.ExecutionManifest.Permissions).
+	// When set the resolver unions THIS and does NOT read the latest
+	// published version — a pinned dispatch must resolve the version it
+	// actually pinned. When empty the storage path holds.
+	OwnPermissions []byte
 }
 
 // ScopedServer is one resolved server plus its PROVENANCE (which scope
@@ -153,4 +168,59 @@ type NoopScopeResolver struct{}
 // ResolveScope implements ScopeResolver: always the empty resolution.
 func (NoopScopeResolver) ResolveScope(context.Context, ScopeRef) (Resolution, error) {
 	return Resolution{}, nil
+}
+
+// ProvenanceString renders the resolved set's provenance as order-stable
+// "<server-id>=<from-id>" pairs, comma separated.
+//
+// IT READS ONLY Spec.ID / From / FromID ON PURPOSE. The specs' Env and Headers
+// are mutated in place by the caller's secret expansion
+// (${SECRET_NAME} → plaintext) BEFORE the transport connects, so a formatter
+// that touched them would put resolved credentials in the log. Provenance is
+// the observation this package exists to make falsifiable; the payload never
+// is.
+func ProvenanceString(servers []ScopedServer) string {
+	if len(servers) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(servers))
+	for _, s := range servers {
+		from := s.FromID
+		if from == "" {
+			from = string(s.From)
+		}
+		parts = append(parts, s.Spec.ID+"="+from)
+	}
+	return strings.Join(parts, ",")
+}
+
+// DescribeFailedServer annotates a connect/tool-discovery error with the SCOPE
+// of the server it names, so a server that cannot run is ACTIONABLE: the
+// operator sees both which server failed and where its definition came from.
+//
+// Manager.Start stops at the FIRST failing server over the SAME ordered spec
+// list, and connectOne quotes the id as `mcp server %q: ...`, so matching the
+// quoted id against the ordered ScopedServer list is deterministic. When no
+// server matches (a manager-level error such as "manager closed"), the error is
+// returned unchanged.
+func DescribeFailedServer(err error, servers []ScopedServer) error {
+	if err == nil || len(servers) == 0 {
+		return err
+	}
+	msg := err.Error()
+	for _, s := range servers {
+		id := s.Spec.ID
+		if id == "" {
+			continue
+		}
+		if !strings.Contains(msg, fmt.Sprintf("%q", id)) {
+			continue
+		}
+		scope := s.FromID
+		if scope == "" {
+			scope = string(s.From)
+		}
+		return fmt.Errorf("MCP server %q cannot run (scope %s): %w", id, scope, err)
+	}
+	return err
 }
