@@ -213,6 +213,16 @@ export class CreateWorkerRequest extends Message<CreateWorkerRequest> {
    */
   adapter = "";
 
+  /**
+   * skill_files is a JSON array of absolute skill file/directory paths for the
+   * new worker's first version. DISTINCT FROM `skills` (free-text prompt prose)
+   * — these are real on-disk paths rendered by contextfiles.RenderManifest and
+   * union-ed with the project's at render time.
+   *
+   * @generated from field: optional string skill_files = 25;
+   */
+  skillFiles?: string;
+
   constructor(data?: PartialMessage<CreateWorkerRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -244,6 +254,7 @@ export class CreateWorkerRequest extends Message<CreateWorkerRequest> {
     { no: 22, name: "agents_md", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 23, name: "role_ref", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 24, name: "adapter", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 25, name: "skill_files", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateWorkerRequest {
@@ -1517,6 +1528,17 @@ export class UpdateWorkerVersionRequest extends Message<UpdateWorkerVersionReque
    */
   republish = false;
 
+  /**
+   * skill_files is a JSON array of absolute skill file/directory paths for this
+   * version. DISTINCT FROM `skills` (free-text prompt prose): these are real
+   * on-disk paths, union-ed with the project's at render time. Paths are
+   * validated structurally (absolute, no ".."); the project-containment check
+   * runs at the render boundary.
+   *
+   * @generated from field: optional string skill_files = 24;
+   */
+  skillFiles?: string;
+
   constructor(data?: PartialMessage<UpdateWorkerVersionRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -1544,6 +1566,7 @@ export class UpdateWorkerVersionRequest extends Message<UpdateWorkerVersionReque
     { no: 21, name: "agents_md", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 22, name: "adapter", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 23, name: "republish", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 24, name: "skill_files", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkerVersionRequest {
@@ -1710,6 +1733,17 @@ export class CreateWorkerVersionRequest extends Message<CreateWorkerVersionReque
    */
   publish = false;
 
+  /**
+   * skill_files is a JSON array of absolute skill file/directory paths for the
+   * new version. DISTINCT FROM `skills` (free-text prompt prose): these are real
+   * on-disk paths, union-ed with the project's at render time. Paths are
+   * validated structurally (absolute, no ".."); the project-containment check
+   * runs at the render boundary.
+   *
+   * @generated from field: optional string skill_files = 24;
+   */
+  skillFiles?: string;
+
   constructor(data?: PartialMessage<CreateWorkerVersionRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -1736,6 +1770,7 @@ export class CreateWorkerVersionRequest extends Message<CreateWorkerVersionReque
     { no: 21, name: "agents_md", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 22, name: "adapter", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 23, name: "publish", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 24, name: "skill_files", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateWorkerVersionRequest {

@@ -368,6 +368,10 @@ func rowToProto(p db.ProjectRow) *apiv1.Project {
 		UpdatedAt:           timestamppb.New(p.UpdatedAt),
 		ProjectDir:          p.ProjectDir,
 		ContextFiles:        contextFilesFromJSONOrEmpty(p.ContextFiles),
+		// SkillFiles is the SELECTABLE skill path array (distinct from the
+		// free-text `skills` prompt section); same best-effort JSON decode as
+		// context_files so a corrupt payload degrades to empty, never a crash.
+		SkillFiles:          contextFilesFromJSONOrEmpty(p.SkillFiles),
 		MaxConcurrentRuns:   int32(p.MaxConcurrentRuns),
 		RepoSlug:            stringOrEmpty(p.RepoSlug),
 		DefaultRuntimeImage: stringOrEmpty(p.DefaultRuntimeImage),

@@ -173,7 +173,16 @@ type Conversation struct {
 	// Computed at READ time from the plane's in-memory store and never persisted: a
 	// permission bypass that survives a restart is one the operator has forgotten is
 	// on. Off is always the state a new conversation and a new plane start in.
-	Fullsend      bool `protobuf:"varint,16,opt,name=fullsend,proto3" json:"fullsend,omitempty"`
+	Fullsend bool `protobuf:"varint,16,opt,name=fullsend,proto3" json:"fullsend,omitempty"`
+	// skill_files are absolute paths (files OR directories) to SKILL artifacts
+	// selected for THIS CONVERSATION. Rendered into the Ask system prompt by
+	// contextfiles.RenderManifest, union-ed with the conversation's project's
+	// skill_files.
+	//
+	// DISTINCT FROM AgentConfig.skills below: that is the tenant-wide free-text
+	// `skills` PROMPT SECTION (prose); these are real on-disk paths. The serialized
+	// names stay distinct on purpose.
+	SkillFiles    []string `protobuf:"bytes,17,rep,name=skill_files,json=skillFiles,proto3" json:"skill_files,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -318,6 +327,13 @@ func (x *Conversation) GetFullsend() bool {
 		return x.Fullsend
 	}
 	return false
+}
+
+func (x *Conversation) GetSkillFiles() []string {
+	if x != nil {
+		return x.SkillFiles
+	}
+	return nil
 }
 
 // ChatMessage is a single message within a conversation.
@@ -1313,7 +1329,7 @@ var File_orchicon_api_v1_ask_orchicon_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_ask_orchicon_proto_rawDesc = "" +
 	"\n" +
-	"\"orchicon/api/v1/ask_orchicon.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xad\x05\n" +
+	"\"orchicon/api/v1/ask_orchicon.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xce\x05\n" +
 	"\fConversation\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x14\n" +
@@ -1335,7 +1351,9 @@ const file_orchicon_api_v1_ask_orchicon_proto_rawDesc = "" +
 	"\x15turn_last_activity_at\x18\x0e \x01(\v2\x1a.google.protobuf.TimestampR\x12turnLastActivityAt\x12\x1d\n" +
 	"\n" +
 	"project_id\x18\x0f \x01(\tR\tprojectId\x12\x1a\n" +
-	"\bfullsend\x18\x10 \x01(\bR\bfullsend\"\xc4\x03\n" +
+	"\bfullsend\x18\x10 \x01(\bR\bfullsend\x12\x1f\n" +
+	"\vskill_files\x18\x11 \x03(\tR\n" +
+	"skillFiles\"\xc4\x03\n" +
 	"\vChatMessage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12'\n" +
 	"\x0fconversation_id\x18\x02 \x01(\tR\x0econversationId\x12\x12\n" +

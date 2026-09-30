@@ -85,6 +85,15 @@ type WorkerVersionRow struct {
 	Behavior            string
 	AgentsMD            string
 	ContextSources      []byte // jsonb
+	// SkillFiles is the jsonb array of absolute skill file/directory paths for
+	// THIS VERSION (never the worker header: published versions are immutable by
+	// version and the version is what every dispatch pins to), union-ed with the
+	// project's SkillFiles at render time by contextfiles.RenderManifest.
+	//
+	// DISTINCT from Skills above: Skills is FREE-TEXT prompt prose ("bullet-style
+	// skill list") the service composes into `# Skills`; SkillFiles is a list of
+	// real on-disk paths. The serialized names stay distinct on purpose.
+	SkillFiles          []byte // jsonb
 	Permissions         []byte // jsonb
 	GatedTools          []byte // jsonb
 	BudgetOverrides     []byte // jsonb
@@ -494,14 +503,14 @@ func CreateWorkerVersion(ctx context.Context, tx pgx.Tx, v WorkerVersionRow) (Wo
 	const q = `INSERT INTO worker_versions
 		(id, tenant_id, worker_id, version, version_note, status,
 		 model_ref, role, skills, behavior, agents_md,
-		 context_sources, permissions,
+		 context_sources, skill_files, permissions,
 		 gated_tools, budget_overrides, execution_policy_ref, concurrency_limit,
 		 recovery_workflow_ref, labels)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-		 $12, $13, $14, $15, $16, $17, $18, $19)
+		 $12, $13, $14, $15, $16, $17, $18, $19, $20)
 		RETURNING id, tenant_id, worker_id, version, version_note, status,
 			model_ref, role, skills, behavior, agents_md,
-			context_sources, permissions,
+			context_sources, skill_files, permissions,
 			gated_tools, budget_overrides, execution_policy_ref, concurrency_limit,
 			recovery_workflow_ref, labels, published_at, created_at`
 	// Every jsonb column on worker_versions is NOT NULL with a schema default.
@@ -511,6 +520,9 @@ func CreateWorkerVersion(ctx context.Context, tx pgx.Tx, v WorkerVersionRow) (Wo
 	// omitted field means exactly what the schema intends.
 	if len(v.ContextSources) == 0 {
 		v.ContextSources = []byte("[]")
+	}
+	if len(v.SkillFiles) == 0 {
+		v.SkillFiles = []byte("[]")
 	}
 	if len(v.Permissions) == 0 {
 		v.Permissions = []byte("{}")
@@ -533,13 +545,13 @@ func CreateWorkerVersion(ctx context.Context, tx pgx.Tx, v WorkerVersionRow) (Wo
 	err := tx.QueryRow(ctx, q,
 		v.ID, v.TenantID, v.WorkerID, v.Version, v.VersionNote, v.Status,
 		v.ModelRef, v.Role, v.Skills, v.Behavior, v.AgentsMD,
-		jsonbOrDefault(v.ContextSources, "[]"), jsonbOrDefault(v.Permissions, "{}"),
+		jsonbOrDefault(v.ContextSources, "[]"), jsonbOrDefault(v.SkillFiles, "[]"), jsonbOrDefault(v.Permissions, "{}"),
 		jsonbOrDefault(v.GatedTools, "[]"), jsonbOrDefault(v.BudgetOverrides, "{}"),
 		v.ExecutionPolicyRef, v.ConcurrencyLimit,
 		v.RecoveryWorkflowRef, jsonbOrDefault(v.Labels, "{}"),
 	).Scan(
 		&row.ID, &row.TenantID, &row.WorkerID, &row.Version, &row.VersionNote, &row.Status,
-		&row.ModelRef, &row.Role, &row.Skills, &row.Behavior, &row.AgentsMD, &row.ContextSources, &row.Permissions,
+		&row.ModelRef, &row.Role, &row.Skills, &row.Behavior, &row.AgentsMD, &row.ContextSources, &row.SkillFiles, &row.Permissions,
 		&row.GatedTools, &row.BudgetOverrides, &row.ExecutionPolicyRef, &row.ConcurrencyLimit,
 		&row.RecoveryWorkflowRef, &row.Labels, &row.PublishedAt, &row.CreatedAt,
 	)
@@ -557,13 +569,13 @@ func PublishWorkerVersion(ctx context.Context, tx pgx.Tx, tenantID, workerID str
 		SET status = 'published', published_at = now()
 		WHERE tenant_id = $1 AND worker_id = $2 AND version = $3 AND status = 'draft'
 		RETURNING id, tenant_id, worker_id, version, version_note, status,
-			model_ref, role, skills, behavior, agents_md, context_sources, permissions,
+			model_ref, role, skills, behavior, agents_md, context_sources, skill_files, permissions,
 			gated_tools, budget_overrides, execution_policy_ref, concurrency_limit,
 			recovery_workflow_ref, labels, published_at, created_at`
 	var v WorkerVersionRow
 	err := tx.QueryRow(ctx, q, tenantID, workerID, version).Scan(
 		&v.ID, &v.TenantID, &v.WorkerID, &v.Version, &v.VersionNote, &v.Status,
-		&v.ModelRef, &v.Role, &v.Skills, &v.Behavior, &v.AgentsMD, &v.ContextSources, &v.Permissions,
+		&v.ModelRef, &v.Role, &v.Skills, &v.Behavior, &v.AgentsMD, &v.ContextSources, &v.SkillFiles, &v.Permissions,
 		&v.GatedTools, &v.BudgetOverrides, &v.ExecutionPolicyRef, &v.ConcurrencyLimit,
 		&v.RecoveryWorkflowRef, &v.Labels, &v.PublishedAt, &v.CreatedAt,
 	)
@@ -582,7 +594,7 @@ func PublishWorkerVersion(ctx context.Context, tx pgx.Tx, tenantID, workerID str
 // status.
 func GetLatestWorkerVersion(ctx context.Context, tx pgx.Tx, tenantID, workerID string, publishedOnly bool) (WorkerVersionRow, error) {
 	q := `SELECT id, tenant_id, worker_id, version, version_note, status,
-		model_ref, role, skills, behavior, agents_md, context_sources, permissions,
+		model_ref, role, skills, behavior, agents_md, context_sources, skill_files, permissions,
 		gated_tools, budget_overrides, execution_policy_ref, concurrency_limit,
 		recovery_workflow_ref, labels, published_at, created_at
 		FROM worker_versions
@@ -595,7 +607,7 @@ func GetLatestWorkerVersion(ctx context.Context, tx pgx.Tx, tenantID, workerID s
 	var v WorkerVersionRow
 	err := tx.QueryRow(ctx, q, args...).Scan(
 		&v.ID, &v.TenantID, &v.WorkerID, &v.Version, &v.VersionNote, &v.Status,
-		&v.ModelRef, &v.Role, &v.Skills, &v.Behavior, &v.AgentsMD, &v.ContextSources, &v.Permissions,
+		&v.ModelRef, &v.Role, &v.Skills, &v.Behavior, &v.AgentsMD, &v.ContextSources, &v.SkillFiles, &v.Permissions,
 		&v.GatedTools, &v.BudgetOverrides, &v.ExecutionPolicyRef, &v.ConcurrencyLimit,
 		&v.RecoveryWorkflowRef, &v.Labels, &v.PublishedAt, &v.CreatedAt,
 	)
@@ -611,7 +623,7 @@ func GetLatestWorkerVersion(ctx context.Context, tx pgx.Tx, tenantID, workerID s
 // ListWorkerVersions returns all versions of a worker, newest first.
 func ListWorkerVersions(ctx context.Context, tx pgx.Tx, tenantID, workerID string) ([]WorkerVersionRow, error) {
 	const q = `SELECT id, tenant_id, worker_id, version, version_note, status,
-		model_ref, role, skills, behavior, agents_md, context_sources, permissions,
+		model_ref, role, skills, behavior, agents_md, context_sources, skill_files, permissions,
 		gated_tools, budget_overrides, execution_policy_ref, concurrency_limit,
 		recovery_workflow_ref, labels, published_at, created_at
 		FROM worker_versions
@@ -627,7 +639,7 @@ func ListWorkerVersions(ctx context.Context, tx pgx.Tx, tenantID, workerID strin
 		var v WorkerVersionRow
 		if err := rows.Scan(
 			&v.ID, &v.TenantID, &v.WorkerID, &v.Version, &v.VersionNote, &v.Status,
-			&v.ModelRef, &v.Role, &v.Skills, &v.Behavior, &v.AgentsMD, &v.ContextSources, &v.Permissions,
+			&v.ModelRef, &v.Role, &v.Skills, &v.Behavior, &v.AgentsMD, &v.ContextSources, &v.SkillFiles, &v.Permissions,
 			&v.GatedTools, &v.BudgetOverrides, &v.ExecutionPolicyRef, &v.ConcurrencyLimit,
 			&v.RecoveryWorkflowRef, &v.Labels, &v.PublishedAt, &v.CreatedAt,
 		); err != nil {
@@ -645,13 +657,13 @@ func DeprecateWorkerVersion(ctx context.Context, tx pgx.Tx, tenantID, workerID s
 		SET status = 'deprecated'
 		WHERE tenant_id = $1 AND worker_id = $2 AND version = $3 AND status = 'published'
 		RETURNING id, tenant_id, worker_id, version, version_note, status,
-			model_ref, role, skills, behavior, agents_md, context_sources, permissions,
+			model_ref, role, skills, behavior, agents_md, context_sources, skill_files, permissions,
 			gated_tools, budget_overrides, execution_policy_ref, concurrency_limit,
 			recovery_workflow_ref, labels, published_at, created_at`
 	var v WorkerVersionRow
 	err := tx.QueryRow(ctx, q, tenantID, workerID, version).Scan(
 		&v.ID, &v.TenantID, &v.WorkerID, &v.Version, &v.VersionNote, &v.Status,
-		&v.ModelRef, &v.Role, &v.Skills, &v.Behavior, &v.AgentsMD, &v.ContextSources, &v.Permissions,
+		&v.ModelRef, &v.Role, &v.Skills, &v.Behavior, &v.AgentsMD, &v.ContextSources, &v.SkillFiles, &v.Permissions,
 		&v.GatedTools, &v.BudgetOverrides, &v.ExecutionPolicyRef, &v.ConcurrencyLimit,
 		&v.RecoveryWorkflowRef, &v.Labels, &v.PublishedAt, &v.CreatedAt,
 	)
@@ -748,7 +760,7 @@ func GetWorkerIDForVersion(ctx context.Context, tx pgx.Tx, tenantID, versionID s
 // the given tenant scope.
 func GetWorkerVersionByID(ctx context.Context, tx pgx.Tx, tenantID, workerID, versionID string) (WorkerVersionRow, error) {
 	const q = `SELECT id, tenant_id, worker_id, version, version_note, status,
-		model_ref, role, skills, behavior, agents_md, context_sources, permissions,
+		model_ref, role, skills, behavior, agents_md, context_sources, skill_files, permissions,
 		gated_tools, budget_overrides, execution_policy_ref, concurrency_limit,
 		recovery_workflow_ref, labels, published_at, created_at
 		FROM worker_versions
@@ -756,7 +768,7 @@ func GetWorkerVersionByID(ctx context.Context, tx pgx.Tx, tenantID, workerID, ve
 	var v WorkerVersionRow
 	err := tx.QueryRow(ctx, q, versionID, workerID, tenantID).Scan(
 		&v.ID, &v.TenantID, &v.WorkerID, &v.Version, &v.VersionNote, &v.Status,
-		&v.ModelRef, &v.Role, &v.Skills, &v.Behavior, &v.AgentsMD, &v.ContextSources, &v.Permissions,
+		&v.ModelRef, &v.Role, &v.Skills, &v.Behavior, &v.AgentsMD, &v.ContextSources, &v.SkillFiles, &v.Permissions,
 		&v.GatedTools, &v.BudgetOverrides, &v.ExecutionPolicyRef, &v.ConcurrencyLimit,
 		&v.RecoveryWorkflowRef, &v.Labels, &v.PublishedAt, &v.CreatedAt,
 	)
@@ -805,7 +817,7 @@ func GetWorkerVersionByID(ctx context.Context, tx pgx.Tx, tenantID, workerID, ve
 // signal to fall back to the latest published version.
 func GetWorkerVersionByNumber(ctx context.Context, tx pgx.Tx, tenantID, workerID string, version int) (WorkerVersionRow, error) {
 	const q = `SELECT id, tenant_id, worker_id, version, version_note, status,
-		model_ref, role, skills, behavior, agents_md, context_sources, permissions,
+		model_ref, role, skills, behavior, agents_md, context_sources, skill_files, permissions,
 		gated_tools, budget_overrides, execution_policy_ref, concurrency_limit,
 		recovery_workflow_ref, labels, published_at, created_at
 		FROM worker_versions
@@ -813,7 +825,7 @@ func GetWorkerVersionByNumber(ctx context.Context, tx pgx.Tx, tenantID, workerID
 	var v WorkerVersionRow
 	err := tx.QueryRow(ctx, q, tenantID, workerID, version).Scan(
 		&v.ID, &v.TenantID, &v.WorkerID, &v.Version, &v.VersionNote, &v.Status,
-		&v.ModelRef, &v.Role, &v.Skills, &v.Behavior, &v.AgentsMD, &v.ContextSources, &v.Permissions,
+		&v.ModelRef, &v.Role, &v.Skills, &v.Behavior, &v.AgentsMD, &v.ContextSources, &v.SkillFiles, &v.Permissions,
 		&v.GatedTools, &v.BudgetOverrides, &v.ExecutionPolicyRef, &v.ConcurrencyLimit,
 		&v.RecoveryWorkflowRef, &v.Labels, &v.PublishedAt, &v.CreatedAt,
 	)
@@ -839,28 +851,29 @@ func UpdateDraftVersion(ctx context.Context, tx pgx.Tx, v WorkerVersionRow) (Wor
 		    behavior = $6,
 		    agents_md = $7,
 		    context_sources = $8,
-		    permissions = $9,
-		    gated_tools = $10,
-		    budget_overrides = $11,
-		    execution_policy_ref = $12,
-		    concurrency_limit = $13,
-		    recovery_workflow_ref = $14,
-		    labels = $15,
-		    version_note = $16
+		    skill_files = $9,
+		    permissions = $10,
+		    gated_tools = $11,
+		    budget_overrides = $12,
+		    execution_policy_ref = $13,
+		    concurrency_limit = $14,
+		    recovery_workflow_ref = $15,
+		    labels = $16,
+		    version_note = $17
 		WHERE id = $1 AND tenant_id = $2 AND status = 'draft'
 		RETURNING id, tenant_id, worker_id, version, version_note, status,
-			model_ref, role, skills, behavior, agents_md, context_sources, permissions,
+			model_ref, role, skills, behavior, agents_md, context_sources, skill_files, permissions,
 			gated_tools, budget_overrides, execution_policy_ref, concurrency_limit,
 			recovery_workflow_ref, labels, published_at, created_at`
 	var row WorkerVersionRow
 	err := tx.QueryRow(ctx, q,
 		v.ID, v.TenantID,
-		v.ModelRef, v.Role, v.Skills, v.Behavior, v.AgentsMD, v.ContextSources, v.Permissions,
+		v.ModelRef, v.Role, v.Skills, v.Behavior, v.AgentsMD, v.ContextSources, v.SkillFiles, v.Permissions,
 		v.GatedTools, v.BudgetOverrides, v.ExecutionPolicyRef, v.ConcurrencyLimit,
 		v.RecoveryWorkflowRef, v.Labels, v.VersionNote,
 	).Scan(
 		&row.ID, &row.TenantID, &row.WorkerID, &row.Version, &row.VersionNote, &row.Status,
-		&row.ModelRef, &row.Role, &row.Skills, &row.Behavior, &row.AgentsMD, &row.ContextSources, &row.Permissions,
+		&row.ModelRef, &row.Role, &row.Skills, &row.Behavior, &row.AgentsMD, &row.ContextSources, &row.SkillFiles, &row.Permissions,
 		&row.GatedTools, &row.BudgetOverrides, &row.ExecutionPolicyRef, &row.ConcurrencyLimit,
 		&row.RecoveryWorkflowRef, &row.Labels, &row.PublishedAt, &row.CreatedAt,
 	)

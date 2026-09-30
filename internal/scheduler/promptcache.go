@@ -116,12 +116,17 @@ func renderContextSectionCached(cache *promptSectionCache, log interface{ Info(s
 		// plain render (uncached).
 		return contextfiles.RenderManifest(rootNote, paths, projectDir), fp
 	}
-	key := tenantID + "\x00" + projectID + "\x00" + fp
+	// rootNote IS PART OF THE KEY. The cache is keyed on (tenant, project, fingerprint), and two DIFFERENT
+	// sections can legitimately share a fingerprint: the skills union and the context union are both derived
+	// from the same project selection and can hash to the same stamps. Without the rootNote in the key the
+	// second render would be served the first section's bytes — the wrong heading, wrong body — and, worse,
+	// silently. The rootNote is the section's identity, so it belongs in the key.
+	key := tenantID + "\x00" + projectID + "\x00" + rootNote + "\x00" + fp
 	if cached, ok := cache.get(key); ok {
 		return cached, fp
 	}
 	section := contextfiles.RenderManifest(rootNote, paths, projectDir)
-	scope := tenantID + "\x00" + projectID
+	scope := tenantID + "\x00" + projectID + "\x00" + rootNote
 	prev := cache.rememberStamps(scope, stamps)
 	if log != nil {
 		if diff := contextfiles.DiffStamps(prev, stamps); len(diff) > 0 {

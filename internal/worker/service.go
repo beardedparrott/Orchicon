@@ -85,6 +85,7 @@ func (s *Service) CreateWorker(ctx context.Context, req *connect.Request[apiv1.C
 		ModelRef:            msg.ModelRef,
 		Role:                msg.Role,
 		Skills:              msg.Skills,
+		SkillFiles:          msg.GetSkillFiles(),
 		Behavior:            msg.Behavior,
 		AgentsMD:            msg.AgentsMd,
 		SystemPrompt:        msg.SystemPrompt,
@@ -1012,6 +1013,15 @@ func (s *Service) UpdateWorkerVersion(ctx context.Context, req *connect.Request[
 	if msg.Skills != nil {
 		merged.Skills = *msg.Skills
 	}
+	// DISTINCT from Skills above: skill_files is a JSON array of absolute PATHS
+	// (validated by contextfiles), not free-text prompt prose.
+	if msg.SkillFiles != nil {
+		sf, err := validateSkillFiles(*msg.SkillFiles)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		merged.SkillFiles = []byte(sf)
+	}
 	if msg.Behavior != nil {
 		merged.Behavior = *msg.Behavior
 	}
@@ -1134,6 +1144,7 @@ func (s *Service) CreateWorkerVersion(ctx context.Context, req *connect.Request[
 		SystemPrompt:        source.SystemPrompt,
 		Role:                source.Role,
 		Skills:              source.Skills,
+		SkillFiles:          source.SkillFiles,
 		Behavior:            source.Behavior,
 		AgentsMD:            source.AgentsMD,
 		ContextSources:      source.ContextSources,
@@ -1186,6 +1197,15 @@ func (s *Service) CreateWorkerVersion(ctx context.Context, req *connect.Request[
 	}
 	if msg.Skills != nil {
 		newVer.Skills = *msg.Skills
+	}
+	// DISTINCT from Skills above: skill_files is a JSON array of absolute PATHS
+	// (validated by contextfiles), not free-text prompt prose.
+	if msg.SkillFiles != nil {
+		sf, err := validateSkillFiles(*msg.SkillFiles)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		newVer.SkillFiles = []byte(sf)
 	}
 	if msg.Behavior != nil {
 		newVer.Behavior = *msg.Behavior
@@ -1604,6 +1624,9 @@ func versionRowToProto(v db.WorkerVersionRow) *apiv1.WorkerVersion {
 		SystemPrompt:        composeWorkerPrompt(v),
 		Role:                v.Role,
 		Skills:              v.Skills,
+		// SkillFiles is the SELECTABLE skill path array (real on-disk paths),
+		// DISTINCT from Skills above (free-text prompt prose).
+		SkillFiles:          skillFilesFromJSON(v.SkillFiles),
 		Behavior:            v.Behavior,
 		AgentsMd:            v.AgentsMD,
 		ContextSources:      string(v.ContextSources),
@@ -1620,6 +1643,20 @@ func versionRowToProto(v db.WorkerVersionRow) *apiv1.WorkerVersion {
 		pv.PublishedAt = timestamppb.New(*v.PublishedAt)
 	}
 	return pv
+}
+
+// skillFilesFromJSON best-effort decodes the skill_files JSONB column into the
+// proto's repeated string field. A corrupt payload degrades to empty rather than
+// failing the read (mirrors contextFilesFromJSONOrEmpty in internal/project).
+func skillFilesFromJSON(data []byte) []string {
+	if len(data) == 0 {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 // composeWorkerPrompt builds the system prompt for the proto response

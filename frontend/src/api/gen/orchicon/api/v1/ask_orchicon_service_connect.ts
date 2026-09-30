@@ -11,7 +11,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CompactConversationRequest, CompactConversationResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, InterjectConversationTurnRequest, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, ListPermissionGrantsRequest, ListPermissionGrantsResponse, ReplyPermissionAskRequest, ReplyPermissionAskResponse, RevokePermissionGrantRequest, RevokePermissionGrantResponse, SetConversationFullsendRequest, SetConversationFullsendResponse, SetConversationModelRequest, SetConversationModelResponse, SetConversationModeRequest, SetConversationModeResponse, SetConversationProjectRequest, SetConversationProjectResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse, WatchTurnStreamRequest } from "./ask_orchicon_service_pb.js";
+import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CompactConversationRequest, CompactConversationResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, InterjectConversationTurnRequest, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, ListPermissionGrantsRequest, ListPermissionGrantsResponse, ReplyPermissionAskRequest, ReplyPermissionAskResponse, RevokePermissionGrantRequest, RevokePermissionGrantResponse, SetConversationFullsendRequest, SetConversationFullsendResponse, SetConversationModelRequest, SetConversationModelResponse, SetConversationModeRequest, SetConversationModeResponse, SetConversationProjectRequest, SetConversationProjectResponse, SetConversationSkillFilesRequest, SetConversationSkillFilesResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse, WatchTurnStreamRequest } from "./ask_orchicon_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -150,6 +150,28 @@ export const AskOrchiconService = {
       name: "SetConversationProject",
       I: SetConversationProjectRequest,
       O: SetConversationProjectResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * SetConversationSkillFiles REPLACES the conversation's skill_files path array
+     * (an empty list clears it). It is the conversation-level half of the skills
+     * feature: a chat can select extra SKILL artifacts on top of its project's, and
+     * the UNION of the two is what the Ask system prompt renders (via
+     * contextfiles.RenderManifest — one shared renderer, no skills-specific code).
+     *
+     * DISTINCT FROM AgentConfig.skills, which is the tenant-wide free-text `skills`
+     * PROMPT SECTION: that is prose, this is a list of real on-disk paths. Paths are
+     * validated by internal/contextfiles — absolute, no "..", and INSIDE the
+     * conversation's project directory when it has one (a path outside it is
+     * invisible to a container-hosted worker, so it is rejected rather than silently
+     * rendering a "could not read" note).
+     *
+     * @generated from rpc orchicon.api.v1.AskOrchiconService.SetConversationSkillFiles
+     */
+    setConversationSkillFiles: {
+      name: "SetConversationSkillFiles",
+      I: SetConversationSkillFilesRequest,
+      O: SetConversationSkillFilesResponse,
       kind: MethodKind.Unary,
     },
     /**

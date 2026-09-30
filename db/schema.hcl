@@ -447,6 +447,12 @@ table "worker_versions" {
     null = false
     default = "[]"
   }
+  column "skill_files" {
+    type = jsonb
+    null = false
+    default = "[]"
+    comment = "Absolute skill file/directory paths for this worker version (union-ed with the project's at render time). Lives on the version: published versions are immutable-by-version. Distinct from the free-text skills prompt section."
+  }
   column "permissions" {
     type = jsonb
     null = false
