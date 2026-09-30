@@ -3,7 +3,9 @@
 // entries (stdio + streamable HTTP), the curated registry catalog with
 // one-click prefill, explicit-only auto-install (dry-run in CI), and
 // write-only credentials via the tenant secrets store (provider-token
-// pattern — never baked, never returned). Selections are references.
+// pattern — never baked, never returned). A definition is OWNER-SCOPED
+// (project XOR conversation); there is no tenant-default tier and no
+// separate selection any more — the owner column IS the selection.
 import { useState } from "react";
 
 import {
@@ -16,8 +18,6 @@ import {
   useInstallMCPServer,
   useSetMCPServerSecret,
   usePrefillMCPCatalogEntry,
-  useGetTenantDefaultMCPServers,
-  useSetTenantDefaultMCPServers,
 } from "@/api/mcpServers";
 import { MCPServerTransport } from "@/api/gen/orchicon/api/v1/mcp_server_pb";
 import { Button } from "@/components/ui/button";
@@ -110,7 +110,6 @@ export function MCPServersTab() {
   const { data: servers = [], isLoading, error } = useMCPServerList();
   const { data: catalog = [] } = useMCPCatalog();
   const { data: runtimes } = useMCPRuntimes();
-  const { data: defaultIds = [] } = useGetTenantDefaultMCPServers();
 
   const createServer = useCreateMCPServer();
   const updateServer = useUpdateMCPServer();
@@ -118,7 +117,6 @@ export function MCPServersTab() {
   const installServer = useInstallMCPServer();
   const setSecret = useSetMCPServerSecret();
   const prefill = usePrefillMCPCatalogEntry();
-  const setDefault = useSetTenantDefaultMCPServers();
 
   const [form, setForm] = useState<FormState>(emptyForm);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -208,13 +206,6 @@ export function MCPServersTab() {
     }
   }
 
-  async function toggleDefault(id: string) {
-    const next = defaultIds.includes(id)
-      ? defaultIds.filter((x) => x !== id)
-      : [...defaultIds, id];
-    await setDefault.mutateAsync({ mcpServerIds: next });
-  }
-
   return (
     <div className="space-y-6">
       <div>
@@ -222,8 +213,9 @@ export function MCPServersTab() {
           <Cable className="h-4 w-4" /> MCP Servers
         </h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Tenant-scoped MCP server entries. Projects and workers reference
-          these by id — editing one entry updates every consumer.
+          Owner-scoped MCP server definitions. Each one belongs to exactly one
+          project or Ask conversation, and is consumed by that scope's
+          resolution union.
           Installations are explicit (click Install); never implicit at
           session time. Credentials persist via the tenant secrets store
           as write-only {`${'${'}SECRET_NAME}`} references.
@@ -340,9 +332,9 @@ export function MCPServersTab() {
         <CardHeader>
           <CardTitle>Configured servers</CardTitle>
           <CardDescription>
-            Check a server to make it the tenant default (used when a
-            worker and project specify none). Selections are references,
-            never copies.
+            Every definition belongs to exactly one scope — a project or an
+            Ask conversation — and is consumed by that scope's resolution
+            union. There is no tenant default and no separate selection.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -353,12 +345,6 @@ export function MCPServersTab() {
           <div className="space-y-2">
             {servers.map((s) => (
               <div key={s.id} className="flex flex-wrap items-center gap-3 rounded-md border border-white/10 p-3">
-                <input
-                  type="checkbox"
-                  title="Tenant default"
-                  checked={defaultIds.includes(s.id)}
-                  onChange={() => toggleDefault(s.id)}
-                />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="font-medium">{s.name}</span>

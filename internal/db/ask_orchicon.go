@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -279,6 +280,24 @@ func DeleteConversation(ctx context.Context, tx pgx.Tx, tenantID, id string) err
 	_, err := tx.Exec(ctx, q, tenantID, id)
 	if err != nil {
 		return fmt.Errorf("db: delete conversation: %w", err)
+	}
+	return nil
+}
+
+// RequireConversation checks that an Ask conversation with the given id exists
+// in the tenant scope. It is the conversation twin of RequireProjectActive:
+// the owner-scoped MCP create path validates its owner with it, so a
+// definition can never be created against a conversation that does not exist
+// (the composite FK mcp_servers_conversation_fk is the backstop).
+func RequireConversation(ctx context.Context, tx pgx.Tx, tenantID, conversationID string) error {
+	const q = `SELECT 1 FROM ask_orchicon_conversations WHERE tenant_id = $1 AND id = $2`
+	var one int
+	err := tx.QueryRow(ctx, q, tenantID, conversationID).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("db: require conversation: %w", err)
 	}
 	return nil
 }

@@ -607,7 +607,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// ${SECRET_NAME} refs resolve to stored plaintext before connect.
 	// With no configured servers the source returns an empty list and
 	// sessions run without MCP tools (never an error).
-	nativeBridge.SetConfigSource(mcpsettings.NewConfigSource(pool))
+	nativeBridge.SetScopeResolver(mcpsettings.NewResolver(pool))
 	nativeBridge.SetMCPSecretResolver(func(ctx context.Context, tenantID string, env, headers map[string]string) (map[string]string, map[string]string, error) {
 		return mcpsettings.ResolveSecretRefs(ctx, pool, secretsKEK, tenantID, env, headers)
 	})
@@ -710,7 +710,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// with ${SECRET_NAME} refs expanded) is decided in ONE place; each adapter
 	// only renders the result into its own config format. Without this a claude
 	// worker or Ask session would get nothing but the built-in Orchicon sidecar.
-	claudeBridge.SetConfigSource(mcpsettings.NewConfigSource(pool))
+	claudeBridge.SetScopeResolver(mcpsettings.NewResolver(pool))
 	claudeBridge.SetMCPSecretResolver(func(ctx context.Context, tenantID string, env, headers map[string]string) (map[string]string, map[string]string, error) {
 		return mcpsettings.ResolveSecretRefs(ctx, pool, secretsKEK, tenantID, env, headers)
 	})

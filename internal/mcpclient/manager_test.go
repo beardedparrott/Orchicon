@@ -260,127 +260,60 @@ func TestHTTPHeaderAuth(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Resolution: worker → project → none
+// Resolution: the ScopeResolver seam
 // ---------------------------------------------------------------------------
 
-type fakeSource struct {
-	servers  []ServerSpec
-	worker   []string
-	project  []string
-	listErr  error
-	workerID string
-	projID   string
+// stubScopeResolver is a ScopeResolver backed by literals — the ONE seam the
+// adapters consume, so a test can drive resolution without storage.
+type stubScopeResolver struct {
+	res Resolution
 }
 
-func (f *fakeSource) ServerList(context.Context) ([]ServerSpec, error) { return f.servers, f.listErr }
-func (f *fakeSource) WorkerSelection(_ context.Context, workerID string) ([]string, error) {
-	f.workerID = workerID
-	return f.worker, nil
-}
-func (f *fakeSource) ProjectSelection(_ context.Context, projectID string) ([]string, error) {
-	f.projID = projectID
-	return f.project, nil
+func (s *stubScopeResolver) ResolveScope(_ context.Context, _ ScopeRef) (Resolution, error) {
+	return s.res, nil
 }
 
-func TestResolveWorkerOverProject(t *testing.T) {
-	src := &fakeSource{
-		servers: []ServerSpec{{ID: "w"}, {ID: "p"}, {ID: "none"}},
-		worker:  []string{"w"},
-		project: []string{"p"},
-	}
-	r, err := Resolve(context.Background(), src, "wid", "pid")
+// TestScopeResolverStubShape pins the seam: a resolver returns the union's
+// servers with provenance, and the no-op resolver resolves every scope to
+// nothing (never an error).
+func TestScopeResolverStubShape(t *testing.T) {
+	var src ScopeResolver = &stubScopeResolver{res: Resolution{
+		Servers: []ScopedServer{{
+			Spec:    ServerSpec{ID: "s1"},
+			From:    ScopeProject,
+			FromID:  "project:p1",
+			EntryID: "s1",
+		}},
+		SelectedIDs: []string{"s1"},
+	}}
+	got, err := src.ResolveScope(context.Background(), ScopeRef{Kind: ScopeProject, ProjectID: "p1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r.Servers) != 1 || r.Servers[0].ID != "w" {
-		t.Fatalf("worker selection should win, got %+v", r.Servers)
+	if len(got.Servers) != 1 || got.Servers[0].Spec.ID != "s1" {
+		t.Fatalf("resolved servers = %+v, want the one server", got.Servers)
+	}
+	if got.Servers[0].From != ScopeProject || got.Servers[0].EntryID != "s1" {
+		t.Fatalf("provenance lost: %+v", got.Servers[0])
 	}
 }
 
-func TestResolveProjectFallback(t *testing.T) {
-	src := &fakeSource{
-		servers: []ServerSpec{{ID: "p"}},
-		project: []string{"p"},
+func TestNoopScopeResolverResolvesToNothing(t *testing.T) {
+	got, err := NoopScopeResolver{}.ResolveScope(context.Background(), ScopeRef{Kind: ScopeProject})
+	if err != nil || len(got.Servers) != 0 || len(got.SelectedIDs) != 0 {
+		t.Fatalf("noop resolver: %+v err=%v", got, err)
 	}
-	r, err := Resolve(context.Background(), src, "wid", "pid")
+}
+
+// TestScopeRefZeroResolvesToNothing pins that the zero ScopeRef is never a
+// wildcard: an unknown kind resolves to nothing rather than the tenant set.
+func TestScopeRefZeroResolvesToNothing(t *testing.T) {
+	got, err := NoopScopeResolver{}.ResolveScope(context.Background(), ScopeRef{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r.Servers) != 1 || r.Servers[0].ID != "p" {
-		t.Fatalf("project selection should apply when no worker selection, got %+v", r.Servers)
-	}
-}
-
-func TestResolveNone(t *testing.T) {
-	src := &fakeSource{servers: []ServerSpec{{ID: "p"}}}
-	r, err := Resolve(context.Background(), src, "wid", "pid")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(r.Servers) != 0 || len(r.SelectedIDs) != 0 {
-		t.Fatalf("no selection → no servers, got %+v", r)
-	}
-}
-
-func TestResolveMissingServer(t *testing.T) {
-	src := &fakeSource{
-		servers: []ServerSpec{{ID: "p"}},
-		worker:  []string{"missing"},
-	}
-	r, err := Resolve(context.Background(), src, "wid", "pid")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(r.Missing) != 1 || r.Missing[0] != "missing" {
-		t.Fatalf("selected-but-unconfigured should be reported missing, got %+v", r)
-	}
-}
-
-func TestResolveNoopSource(t *testing.T) {
-	r, err := Resolve(context.Background(), NoopConfigSource{}, "wid", "pid")
-	if err != nil || len(r.Servers) != 0 {
-		t.Fatalf("noop source: %+v err=%v", r, err)
-	}
-}
-
-func TestManifestWorkerSelectionParses(t *testing.T) {
-	src := ManifestConfigSource{
-		TenantServers:   []ServerSpec{{ID: "s1"}, {ID: "s2"}},
-		PermissionsJSON: []byte(`{"mcp_servers":[{"id":"s1","command":"fixture"}]}`),
-	}
-	r, err := Resolve(context.Background(), src, "wid", "pid")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(r.Servers) != 1 || r.Servers[0].ID != "s1" {
-		t.Fatalf("manifest worker selection not applied: %+v", r.Servers)
-	}
-}
-
-func TestManifestMalformedPermissionsDegrades(t *testing.T) {
-	src := ManifestConfigSource{
-		TenantServers:   []ServerSpec{{ID: "s1"}},
-		PermissionsJSON: []byte(`{not json`),
-	}
-	r, err := Resolve(context.Background(), src, "wid", "pid")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(r.Servers) != 0 {
-		t.Fatalf("malformed permissions should degrade to no selection: %+v", r.Servers)
-	}
-}
-
-func TestResolveSelectedButUnconfiguredFailsActionably(t *testing.T) {
-	// A selected id with no configured spec → Missing; the manager surfaces
-	// an actionable error at Start for "fail" onError.
-	src := &fakeSource{worker: []string{"ghost"}}
-	r, err := Resolve(context.Background(), src, "wid", "pid")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(r.Missing) != 1 {
-		t.Fatalf("expected missing, got %+v", r)
+	if len(got.Servers) != 0 || len(got.Missing) != 0 || len(got.Disabled) != 0 || len(got.Skills) != 0 {
+		t.Fatalf("zero scope must resolve to nothing, got %+v", got)
 	}
 }
 

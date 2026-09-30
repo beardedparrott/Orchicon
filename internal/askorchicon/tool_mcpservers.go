@@ -98,15 +98,17 @@ func toolGetMCPServer(ctx context.Context, pool *db.Pool, args json.RawMessage) 
 
 func toolCreateMCPServer(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
-		Name        string            `json:"name"`
-		Transport   string            `json:"transport"`
-		Command     string            `json:"command"`
-		Args        []string          `json:"args"`
-		Env         map[string]string `json:"env"`
-		URL         string            `json:"url"`
-		Headers     map[string]string `json:"headers"`
-		Enabled     bool              `json:"enabled"`
-		CatalogSlug string            `json:"catalog_slug"`
+		Name           string            `json:"name"`
+		Transport      string            `json:"transport"`
+		Command        string            `json:"command"`
+		Args           []string          `json:"args"`
+		Env            map[string]string `json:"env"`
+		URL            string            `json:"url"`
+		Headers        map[string]string `json:"headers"`
+		Enabled        bool              `json:"enabled"`
+		CatalogSlug    string            `json:"catalog_slug"`
+		ProjectID      string            `json:"project_id"`
+		ConversationID string            `json:"conversation_id"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -114,15 +116,17 @@ func toolCreateMCPServer(ctx context.Context, pool *db.Pool, args json.RawMessag
 	svc := mcpSvc(pool, nil)
 	tenantID := tenant.FromContext(ctx)
 	e, err := svc.Create(ctx, tenantID, mcpsettings.CreateInput{
-		Name:        params.Name,
-		Transport:   params.Transport,
-		Command:     params.Command,
-		Args:        params.Args,
-		Env:         params.Env,
-		URL:         params.URL,
-		Headers:     params.Headers,
-		Enabled:     params.Enabled,
-		CatalogSlug: params.CatalogSlug,
+		Name:           params.Name,
+		ProjectID:      params.ProjectID,
+		ConversationID: params.ConversationID,
+		Transport:      params.Transport,
+		Command:        params.Command,
+		Args:           params.Args,
+		Env:            params.Env,
+		URL:            params.URL,
+		Headers:        params.Headers,
+		Enabled:        params.Enabled,
+		CatalogSlug:    params.CatalogSlug,
 	})
 	if err != nil {
 		return nil, err
@@ -258,35 +262,4 @@ func toolClearMCPServerSecret(ctx context.Context, pool *db.Pool, kek []byte, ar
 		return nil, err
 	}
 	return json.Marshal(map[string]any{"cleared": true})
-}
-
-func toolSetProjectMCPServers(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
-	var params struct {
-		ProjectID string   `json:"project_id"`
-		IDs       []string `json:"ids"`
-	}
-	if err := json.Unmarshal(args, &params); err != nil {
-		return nil, fmt.Errorf("invalid args: %w", err)
-	}
-	svc := mcpSvc(pool, nil)
-	tenantID := tenant.FromContext(ctx)
-	if err := svc.SetProjectSelection(ctx, tenantID, params.ProjectID, params.IDs); err != nil {
-		return nil, err
-	}
-	return json.Marshal(map[string]any{"project_id": params.ProjectID, "mcp_servers": params.IDs})
-}
-
-func toolSetTenantDefaultMCPServers(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
-	var params struct {
-		IDs []string `json:"ids"`
-	}
-	if err := json.Unmarshal(args, &params); err != nil {
-		return nil, fmt.Errorf("invalid args: %w", err)
-	}
-	svc := mcpSvc(pool, nil)
-	tenantID := tenant.FromContext(ctx)
-	if err := svc.SetTenantDefaultSelection(ctx, tenantID, params.IDs); err != nil {
-		return nil, err
-	}
-	return json.Marshal(map[string]any{"mcp_servers": params.IDs})
 }

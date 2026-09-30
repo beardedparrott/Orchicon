@@ -391,9 +391,7 @@ func (m *App) launchSubmit(values map[string]string, multi map[string][]string) 
 	image := strings.TrimSpace(values["default_runtime_image"])
 	dir := strings.TrimSpace(values["project_dir"])
 	goals := work.ParseGoals(values["goals"])
-	// Only written when the operator actually had the field to choose from.
-	mcpChosen := multi["mcp_servers"]
-	mcpLoaded := m.launch != nil && len(m.launch.MCPServers) > 0
+	_ = multi // no MCP selection is written: selection IS ownership (mcp_servers.project_id)
 	return func() tea.Msg {
 		if cl == nil || cl.Projects == nil {
 			return launchFailedMsg{err: errors.New("not connected to a plane")}
@@ -424,15 +422,9 @@ func (m *App) launchSubmit(values map[string]string, multi map[string][]string) 
 				"the project %q was created with its directory, but could not be activated: %w — activate it from "+
 					"the Work screen (select it, press a)", name, err)}
 		}
-		if mcpLoaded && cl.MCP != nil && len(mcpChosen) > 0 {
-			if _, err := cl.MCP.SetProjectMCPServers(ctx, connect.NewRequest(&apiv1.ProjectMCPServersSetRequest{
-				ProjectId:    id,
-				McpServerIds: mcpChosen,
-			})); err != nil {
-				return launchFailedMsg{err: fmt.Errorf(
-					"the project %q was created and activated, but its MCP servers could not be saved: %w", name, err)}
-			}
-		}
+		// NO MCP SELECTION WRITE: the project↔server selection RPC pair is gone
+		// (selection IS ownership now). Child 7 re-homes this control onto the
+		// owner-scoped create.
 		return launchCreatedMsg{projectID: id}
 	}, nil
 }

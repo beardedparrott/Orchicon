@@ -1,6 +1,6 @@
 package work
 
-// project_mcp_test.go — THE MCP SELECTION, AND THE PROJECT DELETE.
+// project_mcp_test.go — THE MCP FIELD SEAM, AND THE PROJECT DELETE.
 //
 // Two operator reports:
 //   "I guess let's create the MCP stuff." — the project forms were missing the MCP
@@ -52,71 +52,11 @@ func TestProjectMCPFieldShape(t *testing.T) {
 	}
 }
 
-// THE EDIT FORM PREFILLS THE SELECTION. An empty multi-select would save as "no
-// selection" and silently clear servers the operator never touched.
-func TestEditFormPrefillsTheMCPSelection(t *testing.T) {
-	m := newModel(t, newPlane())
-	p := &apiv1.Project{Id: "proj-1", Name: "Thing"}
-	servers := []*apiv1.MCPServer{{Id: "m1", Name: "filesystem", Enabled: true}}
-
-	f := m.newProjectEditFormWith(p, projectFormData{mcpServers: servers, mcpSelected: []string{"m1"}})
-	spec := f.Spec("mcp_servers")
-	if spec == nil {
-		t.Fatal("the edit form has no mcp_servers field even though servers are available")
-	}
-	if !f.Multi["mcp_servers"]["m1"] {
-		t.Errorf("the mcp_servers field did not prefill m1 — saving an untouched edit would CLEAR the "+
-			"project's MCP selection: Multi=%v", f.Multi["mcp_servers"])
-	}
-	// And without the data the field is simply absent, rather than present and empty.
-	if plain := m.newProjectEditForm(p); plain.Spec("mcp_servers") != nil {
-		t.Error("the edit form built without MCP data still has the field — it would render empty and read as " +
-			"\"no servers selected\" for a project that has some")
-	}
-}
-
-// THE SELECTION IS WRITTEN, AND ONLY WHEN IT WAS SHOWN.
-//
-// The second half is the one that matters: a failed MCP load leaves the field absent,
-// which must NOT be written as an empty list — that would wipe a selection the operator
-// never saw.
-func TestSetProjectMCPServersWritesOnlyWhenLoaded(t *testing.T) {
-	p := newPlane()
-	m := newModel(t, p)
-
-	// Not loaded: nothing sent, even though the list is empty.
-	if err := m.setProjectMCPServers(context.Background(), "proj-1", nil, false); err != nil {
-		t.Fatalf("setProjectMCPServers with loaded=false: %v", err)
-	}
-	if len(p.projMCPSet) != 0 {
-		t.Errorf("a failed MCP load still wrote the selection (%v) — that clears servers the operator "+
-			"never saw", p.projMCPSet)
-	}
-
-	// Loaded with a selection: sent.
-	if err := m.setProjectMCPServers(context.Background(), "proj-1", []string{"m1", "m2"}, true); err != nil {
-		t.Fatalf("setProjectMCPServers: %v", err)
-	}
-	if len(p.projMCPSet) != 1 {
-		t.Fatalf("SetProjectMCPServers calls = %d, want 1", len(p.projMCPSet))
-	}
-	if got := p.projMCPSet[0].GetMcpServerIds(); len(got) != 2 || got[0] != "m1" {
-		t.Errorf("sent ids = %v, want [m1 m2]", got)
-	}
-
-	// Loaded and EMPTIED by the operator: ALSO sent, because empty is how a selection is
-	// removed (the project then falls through to the tenant default). Sending only
-	// non-empty lists would make a selection impossible to undo.
-	if err := m.setProjectMCPServers(context.Background(), "proj-1", nil, true); err != nil {
-		t.Fatalf("setProjectMCPServers (clear): %v", err)
-	}
-	if len(p.projMCPSet) != 2 {
-		t.Fatalf("clearing the selection sent %d call(s), want 2 — an empty list is a legitimate write", len(p.projMCPSet))
-	}
-	if got := p.projMCPSet[1].GetMcpServerIds(); len(got) != 0 {
-		t.Errorf("the clear sent %v, want empty", got)
-	}
-}
+// NOTE: the project↔server SELECTION tests are GONE with the selection itself.
+// A definition is OWNER-SCOPED (mcp_servers.project_id) and the
+// Set/GetProjectMCPServers RPC pair was removed; the project forms no longer
+// read or write a reference set. ProjectMCPField stays as the seam child 7
+// re-homes onto the owner-scoped create payload.
 
 // DELETE IS OFFERED, SINGLE.
 func TestAProjectOffersDelete(t *testing.T) {

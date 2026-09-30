@@ -58,13 +58,12 @@ type Bridge struct {
 	askBySID        map[string]*askSession // claude session id → session
 	askRootOverride string                 // test/server override for the ask dir
 
-	// mcpConfig resolves the MCP server set an execution/conversation gets: the
-	// tenant's configured servers, narrowed by worker → project → tenant-default
-	// selection. It is the SAME seam the native bridge consumes
-	// (orchicon.SetConfigSource ← mcpsettings.NewConfigSource), so the adapters
+	// mcpResolver resolves the MCP definitions a scope gets (the owner-scoped
+	// union). It is the SAME seam the native bridge consumes
+	// (orchicon.SetScopeResolver ← mcpsettings.NewResolver), so the adapters
 	// cannot drift about WHICH servers apply — only about how each renders them
 	// into its own config format (see mcpconfig.go).
-	mcpConfig mcpclient.ConfigSource
+	mcpResolver mcpclient.ScopeResolver
 	// mcpSecretResolver expands ${SECRET_NAME} refs in a spec's env/headers
 	// before the config is rendered. Nil passes them through (tests / degrade).
 	mcpSecretResolver MCPSecretResolver

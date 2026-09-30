@@ -20,12 +20,14 @@ describe("MCP pickers (ADR-0008 project/worker integration)", () => {
   });
 
   it("selections are reference ids, never copies", () => {
-    // Picker emits `{ id, command }` reference entries and stores ids only.
+    // Picker emits `{ id, command }` reference entries (worker path).
     expect(picker).toContain("{ id: srv.id, command: srv.command }");
     expect(picker).toMatch(/references/);
-    // api layer keys project selection by server id arrays.
-    expect(api).toContain("mcpServerIds");
-    expect(api).toContain("mcpKeys.project");
+    // The api layer is owner-scoped (selection IS ownership): there is no
+    // project/tenant selection-id array any more, only the owner keys.
+    expect(api).not.toContain("mcpServerIds");
+    expect(api).toContain("ownerProject");
+    expect(api).toContain("ownerConversation");
   });
 
   it("worker form renders the tenant MCP picker and writes permissions.mcp_servers", () => {
@@ -36,18 +38,14 @@ describe("MCP pickers (ADR-0008 project/worker integration)", () => {
     expect(workerForm).toMatch(/Worker selection empty = project defaults/);
   });
 
-  it("project edit page lists configured MCP servers and auto-refreshes on save", () => {
-    expect(projectEdit).toContain("useGetProjectMCPServers");
-    expect(projectEdit).toContain("useSetProjectMCPServers");
-    expect(projectEdit).toContain("<MCPPicker");
-    expect(projectEdit).toMatch(/[Aa]uto-refreshes on save/);
-    expect(projectEdit).toMatch(/workers fall back/);
-  });
-
-  it("project create page collects MCP selection and persists after creation", () => {
-    expect(projectNew).toContain("useSetProjectMCPServers");
-    expect(projectNew).toContain("<MCPPicker");
-    expect(projectNew).toContain("mcpServerIds");
-    expect(projectNew).toMatch(/inherit the tenant default/);
+  it("project pages carry NO reference-based MCP selection any more", () => {
+    // Selection IS ownership (mcp_servers.project_id): the project↔server
+    // selection RPC pair is gone, so the pages no longer read or write one.
+    // Child 7 re-homes the owner-scoped control.
+    expect(projectEdit).not.toContain("useGetProjectMCPServers");
+    expect(projectEdit).not.toContain("useSetProjectMCPServers");
+    expect(projectEdit).not.toContain("mcpServerIds");
+    expect(projectNew).not.toContain("useSetProjectMCPServers");
+    expect(projectNew).not.toContain("mcpServerIds");
   });
 });

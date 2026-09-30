@@ -363,7 +363,7 @@ func UpdateProjectGitDetection(ctx context.Context, tx pgx.Tx, tenantID, id stri
 // carrying a project_id that no longer existed. Deleting a project in the GUI left all of it behind;
 // the DB-backed tests, which create and drop projects constantly, left a large share of it.
 //
-// Nine tables carry a project_id and only ONE of them (project_mcp_servers) declares a foreign key,
+// Nine tables carry a project_id and only ONE of them (mcp_servers) declares a foreign key,
 // which is exactly why this has to be explicit: a missing delete is silent rather than an error.
 //
 // ORDER MATTERS, leaves first, so nothing is left mid-cascade if a later statement fails and so the
@@ -385,7 +385,8 @@ func UpdateProjectGitDetection(ctx context.Context, tx pgx.Tx, tenantID, id stri
 // 12. work_item_attachments    — children of the work items
 // 13. work_item_dependencies
 // 14. work_items
-// 15. project_mcp_servers      — the one real FK to projects
+// 15. mcp_servers             — the definitions this project OWNS (mcp_servers' project FK does
+//     cascade, but the explicit step keeps this function's ordered, leaf-first contract)
 // 16. the project
 //
 // Every statement is scoped by BOTH tenant_id and the project, so a cross-tenant id can never match
@@ -420,7 +421,7 @@ func DeleteProject(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
 			WHERE work_item_id IN (SELECT id FROM work_items WHERE tenant_id = $1 AND project_id = $2)`},
 		{"work item dependencies", `DELETE FROM work_item_dependencies WHERE tenant_id = $1 AND project_id = $2`},
 		{"work items", `DELETE FROM work_items WHERE tenant_id = $1 AND project_id = $2`},
-		{"project mcp servers", `DELETE FROM project_mcp_servers WHERE tenant_id = $1 AND project_id = $2`},
+		{"mcp servers", `DELETE FROM mcp_servers WHERE tenant_id = $1 AND project_id = $2`},
 	}
 	for _, s := range steps {
 		if _, err := tx.Exec(ctx, s.q, tenantID, id); err != nil {
