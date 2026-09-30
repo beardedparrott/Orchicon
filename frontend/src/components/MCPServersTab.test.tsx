@@ -71,8 +71,10 @@ describe("MCPServersTab (ADR-0008)", () => {
     // list-relevant mutations: create, update, delete, install (4+)
     expect(invalidations).toBeGreaterThanOrEqual(4);
     expect(api).toContain("mcpKeys.all");
-    // project + tenant-default selections invalidate their own keys too.
-    expect(api).toContain("mcpKeys.ownerProject");
-    expect(api).toContain("mcpKeys.ownerConversation");
+    // The api layer is owner-scoped: the project's and the conversation's
+    // owner keys exist (the removed selection keys do not).
+    expect(api).toContain("ownerProject");
+    expect(api).toContain("ownerConversation");
+    expect(api).not.toContain("mcpKeys.tenantDefault");
   });
 });

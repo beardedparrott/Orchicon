@@ -20,12 +20,14 @@ describe("MCP pickers (ADR-0008 project/worker integration)", () => {
   });
 
   it("selections are reference ids, never copies", () => {
-    // Picker emits `{ id, command }` reference entries and stores ids only.
+    // Picker emits `{ id, command }` reference entries (worker path).
     expect(picker).toContain("{ id: srv.id, command: srv.command }");
     expect(picker).toMatch(/references/);
-    // api layer keys project selection by server id arrays.
-    expect(api).toContain("mcpServerIds");
-    expect(api).toContain("mcpKeys.ownerProject");
+    // The api layer is owner-scoped (selection IS ownership): there is no
+    // project/tenant selection-id array any more, only the owner keys.
+    expect(api).not.toContain("mcpServerIds");
+    expect(api).toContain("ownerProject");
+    expect(api).toContain("ownerConversation");
   });
 
   it("worker form renders the tenant MCP picker and writes permissions.mcp_servers", () => {
