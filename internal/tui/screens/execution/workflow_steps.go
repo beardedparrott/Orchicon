@@ -914,6 +914,54 @@ func workerStatusLabel(s apiv1.WorkerStatus) string {
 	return t
 }
 
+// workerVersionStatusWord is a version's status as a single lowercase word, the same
+// courtesy workerStatusLabel pays the worker's own status.
+//
+// The VERSIONS trail used to print the raw enum, so a line read
+// "v1  worker_version_status_published  <model_ref>" — 29 characters of wire name
+// standing between the operator and the fact they opened the pane for.
+func workerVersionStatusWord(s apiv1.WorkerVersionStatus) string {
+	w := strings.ToLower(strings.TrimPrefix(s.String(), "WORKER_VERSION_STATUS_"))
+	if w == "" || w == "unspecified" {
+		return "unknown"
+	}
+	return w
+}
+
+// workerModelRef is the model_ref of the version dispatch would actually USE, which is
+// what an operator means by "the worker's model".
+//
+// THE ACTIVE VERSION IS THE ANSWER, not the newest one. A worker's versions are chosen
+// explicitly (SetActiveWorkerVersion), so the newest published version is not
+// necessarily the one work is routed to — and reporting the newest would be a confident
+// wrong answer to "where does this worker's work go?". `current ver` is the worker's own
+// active version number, so it is the one to look for.
+//
+// Falls back to the newest version when the worker reports no current version (an older
+// plane, or a worker whose active version was never set), and to "" when there is no
+// version at all — an empty value is OMITTED by the pane rather than drawn as a blank.
+func workerModelRef(w *apiv1.Worker, versions []*apiv1.WorkerVersion) string {
+	if len(versions) == 0 {
+		return ""
+	}
+	if cur := w.GetCurrentVersion(); cur != 0 {
+		for _, v := range versions {
+			if v.GetVersion() == cur {
+				return v.GetModelRef()
+			}
+		}
+	}
+	// Newest first is how the server returns the trail, but pick by number so the
+	// fallback does not depend on that.
+	best := versions[0]
+	for _, v := range versions {
+		if v.GetVersion() > best.GetVersion() {
+			best = v
+		}
+	}
+	return best.GetModelRef()
+}
+
 func (m *Model) defaultListWorkers(ctx context.Context) ([]*apiv1.Worker, error) {
 	if m.cl == nil || m.cl.Workers == nil {
 		return nil, errors.New("no worker client")

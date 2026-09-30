@@ -580,12 +580,30 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 			return "", nil, "", err
 		}
 		w := resp.Msg.GetWorker()
+		// The VERSION TRAIL is read HERE, before the fields are built, because the
+		// worker's MODEL is a property of its newest version (ADR-0003: the ref is
+		// versioned state) and it belongs in the FIELDS, not only in the body.
+		//
+		// THE MODEL WAS EFFECTIVELY INVISIBLE. It existed only inside the VERSIONS
+		// block, printed after the RAW ENUM status — so the line read
+		// "v1  worker_version_status_published  <ref>", and at the operator's own pane
+		// width the ref was pushed past the edge and truncated to about six characters
+		// (measured: "claude/a" at a 100-column terminal). The one fact that decides
+		// where a worker's work is routed was, in practice, not on the screen.
+		var versions []*apiv1.WorkerVersion
+		if vr, err := m.cl.Workers.ListWorkerVersions(ctx, connect.NewRequest(&apiv1.ListWorkerVersionsRequest{WorkerId: id})); err == nil {
+			versions = vr.Msg.GetVersions()
+		}
 		fields := []screenkit.Field{
 			{Key: "id", Value: w.GetId()},
 			{Key: "name", Value: w.GetName()},
 			{Key: "slug", Value: w.GetSlug()},
-			{Key: "status", Value: strings.ToLower(w.GetStatus().String())},
+			{Key: "status", Value: workerStatusLabel(w.GetStatus())},
 			{Key: "current ver", Value: screenkit.FmtInt(int(w.GetCurrentVersion()))},
+			// The model of the version dispatch would USE. Omitted when the worker has
+			// no version at all, rather than rendered as a blank the operator has to
+			// interpret — the same rule the execution detail's context strip follows.
+			{Key: "model", Value: workerModelRef(w, versions)},
 			{Key: "description", Value: w.GetDescription()},
 			{Key: "purpose", Value: w.GetPurpose()},
 			{Key: "created", Value: screenkit.FmtTime(w.GetCreatedAt())},
@@ -593,11 +611,11 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 		// Version trail (published versions are immutable; the model_ref is
 		// pinned by a human, so surfacing it per version matters).
 		var body strings.Builder
-		if vr, err := m.cl.Workers.ListWorkerVersions(ctx, connect.NewRequest(&apiv1.ListWorkerVersionsRequest{WorkerId: id})); err == nil {
+		if len(versions) > 0 {
 			body.WriteString(theme.ListTitle.Render("VERSIONS") + "\n")
-			for _, v := range vr.Msg.GetVersions() {
+			for _, v := range versions {
 				body.WriteString("  v" + screenkit.FmtInt(int(v.GetVersion())) +
-					"  " + strings.ToLower(v.GetStatus().String()) +
+					"  " + workerVersionStatusWord(v.GetStatus()) +
 					"  " + v.GetModelRef() + "\n")
 			}
 		}
