@@ -422,6 +422,89 @@ const walkLimit = 100000
 // THE WALK RESTORES THE CURSOR, which is why it runs only on a CLICK (a rare gesture where moving the caret
 // is the whole point) and never per render: it disturbs cursor state, so doing it on every frame would quietly
 // break the operator's vertical cursor movement.
+// scrollOffset is the first VISIBLE row of the scrolled input area.
+//
+// IT REPLACES A REFUSAL, and that refusal was the operator's bug:
+//
+//	"We have tried to fix this two different times but it seems like the composer in the TUI when
+//	 clicking with the mouse is not always accurate. You have to click under it to position it
+//	 right instead of right on the text. Not sure why this works sometimes and other times it does
+//	 not."
+//
+// ClickAt used to know the offset in exactly ONE state — the caret at the end of the buffer — and
+// REFUSED every other click while the content was scrolled. So the first click worked (typing and
+// pasting leave the caret at the end, which pins the view to the bottom) and every click after it
+// was silently ignored, because the first click moved the caret off the end. "Works sometimes and
+// other times it does not" was literally one-click-then-broken. Measured before this: a 40-line
+// draft, click one → caret 744, click two → still 744, click three → still 744.
+//
+// The offset IS knowable, from public API only:
+//
+//	cursorRow  = (every row of every EARLIER line, soft-wrapped) + LineInfo().RowOffset
+//	offset     = cursorRow when the cursor is unclamped, since RepositionView scrolls the minimum
+//	             needed to reveal the cursor and therefore only clamps when the cursor is in the
+//	             first or last visible row.
+//
+// The TWO CLAMPED states are the ones the old code special-cased, and each is recovered exactly:
+//
+//	cursor at the END   → the view is pinned to the bottom, so offset = total - height
+//	cursor near the TOP → the view is pinned to the top, offset = 0
+//
+// A cursor strictly inside the view cannot be clamped (clamping moves the offset only until the
+// cursor's row is inside the window), which is what makes "offset = cursorRow" exact rather than a
+// guess. There is no residual guessed state, so nothing is refused.
+//
+// The wrap width is the textarea's own (m.ta.Width()), and memoizedWrap wraps by the textarea's
+// width — the same figure — so the row counts agree.
+func (m *Model) scrollOffset(totalRows int) int {
+	height := m.InputRows()
+	if totalRows <= height {
+		return 0 // everything fits: the offset is necessarily zero
+	}
+	lines := strings.Split(m.ta.Value(), "\n")
+	li := m.ta.LineInfo()
+	// The cursor's own line, as a rune count, decides "at the end of the buffer".
+	cursorLine := m.ta.Line()
+	if cursorLine < 0 || cursorLine >= len(lines) {
+		return totalRows - height
+	}
+	lastLineLen := len([]rune(lines[len(lines)-1]))
+	atEnd := cursorLine == len(lines)-1 && li.StartColumn+li.ColumnOffset == lastLineLen
+	if atEnd {
+		return totalRows - height // the widget pins the caret to the bottom row
+	}
+
+	w := m.ta.Width()
+	cursorRow := 0
+	for i := 0; i < cursorLine; i++ {
+		cursorRow += wrappedRowCount(lines[i], w)
+	}
+	cursorRow += li.RowOffset
+
+	// THE CLAMPED-AT-THE-TOP STATE: if the cursor is inside the first window the view need not
+	// have scrolled at all, and RepositionView never scrolls above 0.
+	if cursorRow < height {
+		return 0
+	}
+	if cursorRow > totalRows-height {
+		cursorRow = totalRows - height
+	}
+	return cursorRow
+}
+
+// wrappedRowCount is how many visual rows a single logical line occupies at the given
+// width: ceil(len/width), and at least one (an empty line is still a row).
+func wrappedRowCount(line string, width int) int {
+	if width <= 0 {
+		return 1
+	}
+	n := (len([]rune(line)) + width - 1) / width
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
 func (m *Model) caretRows() []caretRow {
 	// Remember the caret, so a click that turns out not to be placeable leaves it alone.
 	saveLine := m.ta.Line()
@@ -531,19 +614,7 @@ func (m *Model) ClickAt(x, y int) bool {
 		return false
 	}
 	rows := m.caretRows()
-	offset := 0
-	if total := len(rows); total > m.InputRows() {
-		// The area is scrolled. The offset is knowable in exactly one state: the caret at the end of the
-		// buffer, which pins it to the bottom row.
-		lines := strings.Split(m.ta.Value(), "\n")
-		li := m.ta.LineInfo()
-		last := len([]rune(lines[len(lines)-1]))
-		atEnd := m.ta.Line() == len(lines)-1 && li.StartColumn+li.ColumnOffset == last
-		if !atEnd {
-			return false
-		}
-		offset = total - m.InputRows()
-	}
+	offset := m.scrollOffset(len(rows))
 	target := offset + vis
 
 	// A CLICK LEFT OF THE TEXT IS A CLICK AT ITS START, not a refusal: the prompt is two cells of chrome the

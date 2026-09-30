@@ -232,33 +232,54 @@ func TestAClickInAScrolledComposerIsResolvedWhenTheCaretIsAtTheEnd(t *testing.T)
 		t.Errorf("the caret is at buffer rune %d, want %d", got, wantCol)
 	}
 
-	// Now move the caret away from the end: the offset is no longer knowable, so the click must be refused
-	// rather than land on a guess.
+	// Now move the caret AWAY from the end and click again. This used to be REFUSED — the offset was
+	// "unobservable" once the caret was not at the end, which is the operator's bug: the first click
+	// worked and every one after it was silently ignored ("works sometimes and other times it does
+	// not"). The offset is now reconstructed from public API (Dock.scrollOffset), so the click lands.
+	//
+	// The assertion is the LANDING, not merely that a bool came back: a click that returns true and
+	// places the caret somewhere unrelated is the failure this whole area has been fighting.
 	m2 := dockWith(strings.Repeat("line of text\n", 200))
 	row2, col2 := m2.TextOrigin()
 	for i := 0; i < 5; i++ {
 		m2.ta.CursorUp()
 	}
-	if m2.ClickAt(col2+2, row2+1) {
-		t.Error("a click in a scrolled composer with an unobservable scroll offset was resolved by guessing")
+	lineBefore := m2.ta.Line()
+	if !m2.ClickAt(col2+2, row2+1) {
+		t.Fatal("a click in a scrolled composer must be resolved, not refused — refusing every click " +
+			"after the first is the operator's \"works sometimes and other times it does not\"")
+	}
+	if m2.ta.Line() == lineBefore {
+		t.Errorf("the click was accepted but the caret did not move (still line %d)", lineBefore)
 	}
 }
 
-// THE WALK LEAVES THE CARET WHERE IT FOUND IT. caretRows mutates the cursor to read the layout, and a click
-// that turns out not to be placeable must not have moved anything.
-func TestAnUnplaceableClickLeavesTheCaretAlone(t *testing.T) {
+// A CLICK OUTSIDE THE INPUT IS STILL REFUSED — the one refusal that is correct, because
+// there is no row to place the caret on. (The SCROLL refusal is gone; see below.)
+func TestAClickOutsideTheInputIsStillRefused(t *testing.T) {
 	m := dockWith(strings.Repeat("line of text\n", 200))
-	line, li := m.ta.Line(), m.ta.LineInfo()
-	beforeCol := li.StartColumn + li.ColumnOffset
+	row, _ := m.TextOrigin()
+	if m.ClickAt(0, row-1) {
+		t.Error("a click above the input area must be refused")
+	}
+	if m.ClickAt(0, row+m.InputRows()+1) {
+		t.Error("a click below the input area must be refused")
+	}
+}
 
+// THE WALK LEAVES THE CARET WHERE IT FOUND IT WHEN THE CLICK IS REFUSED. caretRows
+// mutates the cursor to read the layout, so a refused click must not have moved
+// anything.
+func TestARefusedClickLeavesTheCaretAlone(t *testing.T) {
+	m := dockWith(strings.Repeat("line of text\n", 200))
 	for i := 0; i < 5; i++ {
 		m.ta.CursorUp()
 	}
-	line, li = m.ta.Line(), m.ta.LineInfo()
-	beforeCol = li.StartColumn + li.ColumnOffset
+	line, li := m.ta.Line(), m.ta.LineInfo()
+	beforeCol := li.StartColumn + li.ColumnOffset
 
 	row, _ := m.TextOrigin()
-	if m.ClickAt(0, row+1) {
+	if m.ClickAt(0, row-1) { // above the box: genuinely unplaceable
 		t.Fatal("fixture: this click was expected to be refused")
 	}
 	afterLi := m.ta.LineInfo()
