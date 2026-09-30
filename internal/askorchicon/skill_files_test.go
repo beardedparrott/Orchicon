@@ -230,3 +230,31 @@ func TestSetConversationSkillFilesRPCValidatesWithin(t *testing.T) {
 		t.Fatalf("an empty list must clear the selection, got: %v", cleared.Msg.Conversation.SkillFiles)
 	}
 }
+
+// AC2 "in EVERY mode": the conversation's skill files reach the prompt in EVERY mode — the
+// skills half of the scope is mode-INDEPENDENT (a skill is context, not an action), unlike
+// MCP tools, whose OFFER is mode-gated. A real conversation row carrying real skill paths is
+// rendered once and asserted across every mode, so a mode that silently dropped the skills
+// section would fail here rather than on a live turn.
+func TestSkillFilesReachEveryMode(t *testing.T) {
+	dir := t.TempDir()
+	convSkill := filepath.Join(dir, "every-mode-skill.md")
+	if err := os.WriteFile(convSkill, []byte("EVERY_MODE_SKILL_SENTINEL\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc, conv, _ := skillConversationForTest(t, dir, nil, []byte(`["`+convSkill+`"]`))
+	ctx := conversationScopeCtx(conv.ProjectID)
+	section := svc.skillManifestSection(ctx, workItemKindTestTenant, conv)
+	if !strings.Contains(section, "EVERY_MODE_SKILL_SENTINEL") {
+		t.Fatalf("the shared skill manifest did not render the conversation's skill:\n%s", section)
+	}
+	for _, mode := range everyMode {
+		p := buildSystemPrompt(mode, testAgentConfig(), testToolRegistry(), nil, true, nil, "", "", section)
+		if !strings.Contains(p, "EVERY_MODE_SKILL_SENTINEL") {
+			t.Errorf("%s prompt is missing the shared skills manifest — skills must reach EVERY mode:\n%s", mode, p)
+		}
+		if !strings.Contains(p, "# Skills") {
+			t.Errorf("%s prompt has no `# Skills` heading", mode)
+		}
+	}
+}

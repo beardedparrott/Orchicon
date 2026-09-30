@@ -63,8 +63,19 @@ type MessageRow struct {
 
 // AgentConfigRow is the in-memory representation of an ask_orchicon_agent_config row.
 type AgentConfigRow struct {
-	ID              string
-	TenantID        string
+	ID       string
+	TenantID string
+	// SystemPrompt / Role / Skills / Behavior / AgentsMD are FREE-TEXT PROSE
+	// rendered by writeAdditionalInstructions into the Ask system prompt (each as
+	// its own heading).
+	//
+	// THEY ARE A PROMPT SECTION ONLY, and they must NOT grow into a scope: there is
+	// no tenant MCP tier and no tenant skill_files tier. `mcp_servers` is
+	// owner-scoped (project / conversation / worker version) and `skill_files` lives
+	// on the project / conversation / worker version — scope is per-project and
+	// per-conversation. In particular `Skills` here is PROSE, distinct from a
+	// conversation's or project's `skill_files` (real on-disk paths, rendered as a
+	// `# Skills` manifest by the ONE shared contextfiles renderer).
 	SystemPrompt    string
 	Role            string
 	Skills          string

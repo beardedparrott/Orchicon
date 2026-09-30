@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/beardedparrott/orchicon/internal/askmode"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/orchicon"
@@ -97,8 +98,13 @@ const askToolNamePrefix = "orchicon_"
 // the prompt would misdescribe that path. Accepting both forms also rescues any
 // conversation whose history already contains prefixed calls — and makes the
 // tool surface immune to prompt/registry drift in either direction.
+// normalizeAskToolName maps a model-emitted tool name onto its registry key,
+// tolerating the MCP-style prefix the prompt advertises. It DELEGATES to the
+// policy package's NormalizeToolName so the table's vocabulary has exactly one
+// definition: a tool this adapter normalised one way and the policy another
+// would be a boundary that silently does not hold.
 func normalizeAskToolName(name string) string {
-	return strings.TrimPrefix(name, askToolNamePrefix)
+	return askmode.NormalizeToolName(name)
 }
 
 // NativeAskTools exposes this service's product tool registry PLUS the
@@ -367,6 +373,32 @@ func (a *nativeAskTools) AskToolDefs(ctx context.Context) []orchicon.ToolDef {
 		defs = append(defs, d)
 	}
 
+	// The conversation's OWN MCP tools (project ∪ conversation), appended BEFORE
+	// the mode filter below so there is still exactly ONE filter over the whole
+	// surface. The discovered names are `mcp__<server>__<tool>`; an operator's
+	// server is OPAQUE, so the filter drops it in a mode that may not act — the
+	// offered surface never advertises an action the mode refuses. A resolution or
+	// connect failure yields no MCP defs and is LOGGED (never a failed turn, and
+	// never a silently empty surface): the failure is reported loudly at call time.
+	//
+	// The set is reconciled FIRST (once per turn): a conversation can gain a project
+	// or a server between two messages, and a cached client would otherwise serve the
+	// set resolved before that write — or keep answering "no servers" forever.
+	// refreshAskMCP keeps the live client when nothing changed, so steady state spawns
+	// nothing.
+	a.service.refreshAskMCP(ctx)
+	for _, d := range a.service.askMCPDefs(ctx) {
+		if have[d.Name] {
+			continue
+		}
+		have[d.Name] = true
+		defs = append(defs, orchicon.ToolDef{
+			Name:        d.Name,
+			Description: d.Description,
+			ParamsJSON:  d.ParamsJSON,
+		})
+	}
+
 	// DROP WHAT THIS MODE MAY NOT RUN — see the doc comment. Built as a new slice rather than filtered in place,
 	// because `defs` is returned to a caller that keeps it for the turn and mutating it would be a surprise.
 	mode := askModeFromContext(ctx)
@@ -404,6 +436,13 @@ func (a *nativeAskTools) ExecuteAskTool(ctx context.Context, name, argsJSON stri
 	// to the user — including the part that names the mode to switch to and says it cannot do that itself.
 	if ok, refusal := modeAllowsTool(askModeFromContext(ctx), name); !ok {
 		return "", errors.New(refusal)
+	}
+	// THE CONVERSATION'S OWN MCP TOOLS, routed from the client's advertised defs
+	// (see isAskMCPTool). It sits AFTER the mode guard so the opaque-MCP refusal
+	// above is the one that speaks first: a mode that may not act never reaches the
+	// MCP client, so the same table governs the offer and the call.
+	if a.service.isAskMCPTool(ctx, name) {
+		return a.service.executeAskMCP(ctx, name, argsJSON)
 	}
 	// The boundary probe: names the project_dir the suite is scoped to AND whether that directory is this
 	// conversation's own project or only the tenant-wide anchor — the scope the consent layer keys on. The

@@ -383,14 +383,53 @@ func writeToolList(b *strings.Builder, toolRegistry *ToolRegistry, mode string) 
 	b.WriteString("When a choice or a missing fact blocks you, ASK WITH `orchicon_ask_user` — one call, with the question and 2+ options. Do NOT write a numbered list of choices in your prose: a question written as prose is not answered as a choice, and the user's reply cannot be sent as an option. The tool RECORDS the question and ENDS YOUR TURN — the user answers in their next message. Ask, then STOP: never ask a question and continue on a guess.\n")
 }
 
-// writeAdditionalInstructions appends the tenant's DB-stored prompt, in every
-// mode — it is the shared customization surface.
+// writeAdditionalInstructions appends the tenant's DB-stored prompt material, in
+// every mode — it is the shared customization surface.
+//
+// IT RENDERS THE FREE-TEXT AGENT-CONFIG PROSE, WHICH WAS PREVIOUSLY DEAD. The
+// tenant's `ask_orchicon_agent_config` row carries SystemPrompt, Role, Skills,
+// Behavior and AgentsMD, but only SystemPrompt ever reached a prompt — the other
+// four were parsed, stored and API-returned while affecting nothing.
+//
+// THE `skills` FIELD HERE IS PROSE, NOT A SCOPE, and the two must not be confused:
+//
+//   - `AgentConfig.skills` is free TEXT (one row per tenant) rendered here as a
+//     `## Skills & Responsibilities (prose)` heading;
+//   - a conversation's / project's `skill_files` are REAL on-disk paths, rendered
+//     by the ONE shared platform renderer as a `# Skills` manifest
+//     (writeSkillsManifest → contextfiles.RenderManifest).
+//
+// The two headings DIFFER on purpose (prose at `##`, the manifest at `#`) so a
+// reader can tell them apart at a glance: the prose heading claims this is prose,
+// and the manifest heading marks a list of real paths. The free-text fields are a
+// PROMPT SECTION ONLY and must NOT grow into a scope: there is no tenant MCP tier
+// and no tenant skill_files tier (mcp_servers is owner-scoped; skill_files lives on
+// the project / conversation / worker version). Scope is per-project and
+// per-conversation. This is the one surviving tenant-level Ask surface, and it
+// stays a prompt section.
+//
+// Emitted only when non-empty, mirroring the other writers so an unset field adds
+// nothing to the prompt (and cannot shift the cached static prefix).
 func writeAdditionalInstructions(b *strings.Builder, cfg db.AgentConfigRow) {
-	if cfg.SystemPrompt != "" {
-		b.WriteString("\n\n## Additional Instructions\n")
-		b.WriteString(cfg.SystemPrompt)
-		b.WriteString("\n")
+	writeProseSection(b, "## Additional Instructions", cfg.SystemPrompt)
+	writeProseSection(b, "## Role", cfg.Role)
+	writeProseSection(b, "## Skills & Responsibilities (prose)", cfg.Skills)
+	writeProseSection(b, "## Behavior", cfg.Behavior)
+	writeProseSection(b, "## Agent Memory (AGENTS.md)", cfg.AgentsMD)
+}
+
+// writeProseSection appends ONE heading-delimited prose block, omitted entirely
+// when its body is empty. Split out so every free-text field renders by the SAME
+// rule (heading style, spacing, omission) — the shape cannot drift field to field.
+func writeProseSection(b *strings.Builder, heading, body string) {
+	if strings.TrimSpace(body) == "" {
+		return
 	}
+	b.WriteString("\n\n")
+	b.WriteString(heading)
+	b.WriteString("\n")
+	b.WriteString(body)
+	b.WriteString("\n")
 }
 
 // --- Brainstorm -------------------------------------------------------------------

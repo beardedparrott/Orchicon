@@ -656,6 +656,13 @@ export class AgentConfig extends Message<AgentConfig> {
   skills = "";
 
   /**
+   * NOTE: `system_prompt`, `role`, `skills`, `behavior` and `agents_md` are FREE-TEXT PROSE rendered as
+   * prompt sections (writeAdditionalInstructions). They are the ONE surviving tenant-level Ask surface
+   * and are a PROMPT SECTION ONLY — they must NOT grow into a scope. There is no tenant MCP tier and no
+   * tenant skill_files tier: `mcp_servers` is owner-scoped (project / conversation / worker version) and
+   * `skill_files` lives on the project / conversation / worker version. `skills` here is PROSE, distinct
+   * from a conversation's `skill_files` (real on-disk paths, rendered as a `# Skills` manifest).
+   *
    * @generated from field: string behavior = 5;
    */
   behavior = "";
