@@ -35,10 +35,20 @@ func serveStateDir() string {
 }
 
 // servePIDFile / serveLogFile locate the detached `serve --detach` state.
-var (
-	servePIDFile = serveStateDir() + "/pids/orchicon.pid"
-	serveLogFile = serveStateDir() + "/logs/orchicon.log"
-)
+//
+// THEY ARE FUNCTIONS, NOT VARS, AND THAT IS LOAD-BEARING. They used to be package
+// vars, which Go resolves BEFORE any init() runs — so a test could not influence
+// them even deliberately: by the time a test binary can unset anything, an
+// operator's ambient ORCHICON_SERVE_STATE_DIR (exported by scripts/container.sh
+// for their live plane) is already baked into both paths. TestServeStatePathsShape
+// asserts the DEFAULT `.dev` shape, so it failed on that machine and passed in CI.
+//
+// Reading the environment at CALL time is what makes the value testable, and it is
+// the same shape the codebase already uses for exactly this reason — internal/tui
+// resolves its collapse prefs and config dir through functions, not vars, because a
+// package var captured at init cannot be isolated by a test.
+func servePIDFile() string { return serveStateDir() + "/pids/orchicon.pid" }
+func serveLogFile() string { return serveStateDir() + "/logs/orchicon.log" }
 
 // procRunning reports whether the process named in pidFile is alive.
 func procRunning(pidFile string) (string, bool) {

@@ -111,6 +111,9 @@ func TestSearchAndTreeInteract(t *testing.T) {
 	m := newModel(t, p)
 	m.SelectSource(srcWorkItems)
 	load(t, m, srcWorkItems)
+	// The tree opens collapsed, so expand it: this test is about the filter's
+	// interaction with the tree, and a collapsed epic has no visible child to filter.
+	expandAll(t, m)
 
 	tbl := m.Base.ActiveTable()
 	// Filter to "alpha": the epic and its kid survive, the unrelated root drops.

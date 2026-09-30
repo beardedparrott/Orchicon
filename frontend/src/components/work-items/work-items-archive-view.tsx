@@ -19,11 +19,10 @@
 // Archive).
 
 import { ChevronRight, Archive as ArchiveIcon, RotateCcw } from "lucide-react";
-import { useState } from "react";
 
 import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import { Button } from "@/components/ui/button";
-import { KindBadge } from "@/components/work-items/work-item-badges";
+import { KindBadge, StatusChip } from "@/components/work-items/work-item-badges";
 import { statusMeta, statusMetaFromString } from "@/components/work-items/work-item-meta";
 import { buildArchiveTreeData } from "@/components/work-items/dependency-utils";
 import { subtreeSelectionState } from "@/components/work-items/use-work-item-selection";
@@ -45,6 +44,18 @@ export interface WorkItemsArchiveViewProps {
   onToggleSelect: (id: string) => void;
   onRestoreSelected: () => void;
   restoreSelectedPending: boolean;
+  /**
+   * Rows the operator has explicitly collapsed (parents only).
+   *
+   * OWNED BY THE PAGE SHELL, not local state. It used to be `useState` inside
+   * this component, which is why the toolbar's Expand all / Collapse all buttons
+   * did nothing here: those buttons write the PERSISTED per-view sets via
+   * `expandAll`/`collapseAll`, and a set that lives inside this component is not
+   * one they can reach. Sharing the set also makes the choice survive navigation,
+   * like every other view's collapse state (ADR-WI-3).
+   */
+  collapsedIds: Set<string>;
+  onToggleCollapse: (id: string) => void;
 }
 
 /** Format an archived-at timestamp to a compact local date+time. */
@@ -71,16 +82,9 @@ export function WorkItemsArchiveView({
   onToggleSelect,
   onRestoreSelected,
   restoreSelectedPending,
+  collapsedIds,
+  onToggleCollapse,
 }: WorkItemsArchiveViewProps) {
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const toggleCollapse = (id: string) =>
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-
   if (isLoading) {
     return <p className="text-sm text-muted-foreground">Loading archived work items…</p>;
   }
@@ -130,8 +134,8 @@ export function WorkItemsArchiveView({
             treeItems={treeItems}
             activeAnchorIds={activeAnchorIds}
             archivedChildrenOf={archivedChildrenOf}
-            collapsed={collapsed}
-            onToggleCollapse={toggleCollapse}
+            collapsed={collapsedIds}
+            onToggleCollapse={onToggleCollapse}
             selected={selected}
             onToggleSelect={onToggleSelect}
             onRestore={onRestore}
@@ -241,18 +245,13 @@ function ArchiveTreeNode({
           {item.title}
         </Link>
         {isGhost ? (
-          <span
-            className={cn("inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium", activeMeta.pill)}
+          <StatusChip
+            meta={activeMeta}
+            label="active"
             title="This ancestor is active, not archived — shown to keep the hierarchy connected."
-          >
-            <span className={cn("h-1 w-1 rounded-full", activeMeta.dot)} />
-            active
-          </span>
+          />
         ) : (
-          <span className={cn("inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium", original.pill)}>
-            <span className={cn("h-1 w-1 rounded-full", original.dot)} />
-            Archived from: {original.label}
-          </span>
+          <StatusChip meta={original} label={`Archived from: ${original.label}`} />
         )}
         {!isGhost && item.archivedAt && (
           <span className="hidden text-xs text-muted-foreground md:inline">{formatArchivedAt(item.archivedAt)}</span>

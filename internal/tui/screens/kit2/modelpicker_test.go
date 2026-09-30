@@ -433,7 +433,8 @@ func TestFormModelFieldOpensThePicker(t *testing.T) {
 }
 
 // An UNSET model field still shows the affordance, so a blank row reads as
-// "go choose one" rather than "not applicable".
+// "go choose one" rather than "not applicable" — and it is the SAME affordance a
+// SET model shows, so the row does not change character as it is filled in.
 func TestFormModelFieldShowsTheAffordanceWhenUnset(t *testing.T) {
 	f := NewForm("Settings",
 		FieldSpec{Name: "default_ask_model", Label: "Default ask model", Kind: KModel},
@@ -444,8 +445,11 @@ func TestFormModelFieldShowsTheAffordanceWhenUnset(t *testing.T) {
 	if !strings.Contains(v, "— none —") {
 		t.Fatalf("an unset model field must show the affordance:\n%s", v)
 	}
-	if !strings.Contains(v, "enter: choose model") {
-		t.Fatalf("the focused model field must state the gesture:\n%s", v)
+	// The gesture now lives IN the value rather than in a focused-only hint, so it is
+	// present here for the same reason it is present on an unfocused row: the operator
+	// has to be able to see which rows can be opened without walking onto each one.
+	if !strings.Contains(v, "enter to choose a model") {
+		t.Fatalf("an unset model field must name the gesture:\n%s", v)
 	}
 }
 

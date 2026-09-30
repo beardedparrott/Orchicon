@@ -590,6 +590,18 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string, o
 	m.chatFocus = focusComposer
 	m.dock.Focus()
 	m.footer.ComposerFocus = true
+	// THE TOKEN-REFRESH RECOVERY HOOK, WIRED. SessionClient.OnRefreshed was documented
+	// as "the shell uses it to redial live streams with the fresh credential" and was
+	// assigned NOWHERE, so the promise never happened: a session that refreshed mid-run
+	// left every ALREADY-OPEN stream holding the stale bearer until it happened to
+	// re-dial on its own error. The operator's "every so often it just loses its
+	// connection" is that window.
+	//
+	// Redialing every live stream on a successful refresh closes it: the re-dial runs
+	// through the interceptors, and the bearer reads the LIVE token, so the new
+	// connection carries the fresh credential. It is safe to call unconditionally —
+	// Reconnect is a no-op on a stopped sub and the subs re-arm themselves.
+	m.wireSessionRecovery(m.clients)
 	// THE TERMINAL'S OWN BACKGROUND IS ASKED FOR ONCE, HERE, before bubbletea takes the tty.
 	//
 	// A transparent theme has to adapt its foregrounds to whatever is behind the app (see
@@ -1396,6 +1408,23 @@ func (m *App) restoreDiffPaneState() {
 	if m.diffPath != "" {
 		m.diffPane.SelectPath(m.diffPath)
 	}
+}
+
+// wireSessionRecovery installs the session's OnRefreshed hook on a client set: on a
+// successful token refresh, redial every live stream so it picks up the fresh bearer.
+//
+// IT IS A METHOD SO EVERY CLIENT SET GOES THROUGH IT. /connect builds a NEW client set
+// (applyConnectResult) and swaps it in, so wiring only in NewApp would leave the
+// reconnected session with the hook unset — the same class of omission that left the
+// hook unwired in the first place. Both call sites use this.
+//
+// The hook is a no-op for api-key mode (Session is nil: nothing ever refreshes), which
+// is why it can be installed unconditionally.
+func (m *App) wireSessionRecovery(cl *client.Clients) {
+	if cl == nil || cl.Session == nil {
+		return
+	}
+	cl.Session.OnRefreshed = m.reconnectStreams
 }
 
 // reconnectStreams forces every live subscription to redial now.

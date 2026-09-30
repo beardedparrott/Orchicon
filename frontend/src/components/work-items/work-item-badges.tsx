@@ -15,8 +15,8 @@
 
 import { cn } from "@/lib/utils";
 
-import { kindMeta, statusMeta } from "@/components/work-items/work-item-meta";
-import { useDarkPalette } from "@/components/work-items/use-dark-palette";
+import { kindMeta, statusMeta, type StatusMeta } from "@/components/work-items/work-item-meta";
+import { useDarkPalette, useStatusPillClasses } from "@/components/work-items/use-dark-palette";
 
 /**
  * Compact square kind badge ("E", "F", "T", "S", "R") — the Jira-style
@@ -62,18 +62,55 @@ export function KindPill({ kind, className }: { kind: number; className?: string
 
 /** Rounded status pill ("pending", "running", …) — theme-safe. */
 export function StatusPill({ status, className }: { status: number; className?: string }) {
-  const isDark = useDarkPalette();
   const meta = statusMeta(status);
+  const pill = useStatusPillClasses(meta);
   return (
     <span
       className={cn(
         "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium",
-        isDark ? meta.pillDark : meta.pill,
+        pill,
         className,
       )}
     >
       <span aria-hidden="true" className={cn("h-1.5 w-1.5 rounded-full", meta.dot)} />
       {meta.label}
+    </span>
+  );
+}
+
+/**
+ * Small status chip with caller-supplied text — the archive view's "Archived
+ * from: succeeded" / "active" markers.
+ *
+ * It takes a resolved StatusMeta rather than a numeric enum because the archive
+ * view renders `WorkItem.archivedFromStatus`, which arrives as a canonical
+ * STRING; forcing it through a number would mean re-inventing that mapping here.
+ * The palette comes from `useStatusPillClasses`, so these chips are theme-safe
+ * by construction (see that hook for the bug this closes).
+ */
+export function StatusChip({
+  meta,
+  label,
+  className,
+  title,
+}: {
+  meta: StatusMeta;
+  label: string;
+  className?: string;
+  title?: string;
+}) {
+  const pill = useStatusPillClasses(meta);
+  return (
+    <span
+      title={title}
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium",
+        pill,
+        className,
+      )}
+    >
+      <span aria-hidden="true" className={cn("h-1 w-1 rounded-full", meta.dot)} />
+      {label}
     </span>
   );
 }

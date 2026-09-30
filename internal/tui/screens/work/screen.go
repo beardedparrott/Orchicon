@@ -16,6 +16,7 @@ package work
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -163,8 +164,51 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	// The Work Items list carries a search row ('/'), per the operator's "search
 	// box at the top of the work items page for filter".
 	m.Base.EnableFilter(srcWorkItems)
-	// ...and a clickable collapse/expand-all control next to it (Tree view only).
+	// A WORK ITEM TREE OPENS COLLAPSED. A four-level Epic → Feature → Task → Subtask
+	// hierarchy is unreadable when it opens fully expanded, and the GUI's tree has
+	// always defaulted to collapsed, so this is the two clients agreeing.
+	//
+	// IT IS APPLIED PER VIEW, NOT PER SOURCE, and the switchView call below is the
+	// other half. The ARCHIVE view must NOT open collapsed: its roots are usually GHOST
+	// ANCHORS (active parents shown only to keep the hierarchy connected), so collapsing
+	// them hides the archived items — the entire content of the view — behind rows
+	// labelled "not archived". Measured before this: the archive view opened showing a
+	// single "+ [epic] Live Epic  active ancestor — not archived", with the archived
+	// item it was anchored to folded underneath and no way to tell it was there.
+	//
+	// Scoped to this source on purpose: the table's OTHER tree is a category folder
+	// grouping (workers/workflows), whose members are the point of the group — a
+	// folder that opened collapsed would hide the rows the operator came for.
+	m.Base.SetCollapsedByDefault(srcWorkItems, true)
+	// ...and a MODE label on that same row, right beside the search box: the
+	// operator's "When in archive or normal mode in the TUI, it should say so at the
+	// top near the search box to indicate what mode you are in."
+	//
+	// It names the view in the same words the switch notice uses, and it says what the
+	// rows ARE rather than only which grouping is on — that is the fact an operator
+	// needs, because the archive's rows are archived items (already out of every other
+	// view), and acting on them by mistake is acting on data rather than on a display.
+	m.Base.SetCaption(srcWorkItems, func() string {
+		if m.ViewMode() == viewArchive {
+			return "ARCHIVE (archived items)"
+		}
+		return "TREE (active items)"
+	})
+	// ...and a clickable collapse/expand-all control next to it. The control is
+	// installed here for the first paint and RE-installed on every landing via
+	// OnItemsLanded: whether it is worth drawing depends on the rows that arrived
+	// (a page with no parent has no tree to collapse), and the first fetch is
+	// asynchronous, so this call runs while the table is still empty.
 	m.syncRowActions()
+	m.Base.OnItemsLanded = func() tea.Cmd {
+		// Only the work-items pane has the control, and only its own landings matter —
+		// re-registering on another source's landing would swap the actions out from
+		// under a pane the operator is looking at.
+		if m.Base.ActiveSourceName() == srcWorkItems {
+			m.syncRowActions()
+		}
+		return nil
+	}
 	m.bar = kit2.NewActionBar()
 	m.build = kit2.NewStream("build log", 80, 20)
 	// The inline detail editor reports its outcome here (the modal path did
@@ -506,6 +550,22 @@ func (m *Model) fetchWorkItems(ctx context.Context, pageToken string) ([]kit2.It
 	// instead of only after a form prep populated m.workflows. TTL-cached: at most one
 	// extra request per nameIndexWorkflowTTL, never one per row (names.go).
 	m.loadWorkflowNames(ctx)
+	// THE ACTIVE PAGE, in the Archive view only: it is what the archive tree's ghost
+	// anchors are resolved from (an archived item whose parent is still active has no
+	// parent row in the archived set, so the edge has to come from here). ONE extra
+	// request, in one view, for the same reason the GUI makes it. Best effort: a
+	// failure degrades the archive to roots-plus-orphans rather than blanking it.
+	var active []*apiv1.WorkItem
+	if view == viewArchive {
+		if ar, aerr := m.cl.WorkItems.ListWorkItems(ctx, connect.NewRequest(&apiv1.ListWorkItemsRequest{
+			PageSize:        workItemPageSize,
+			IncludeArchived: false,
+			RecurringFilter: apiv1.RecurringFilter_RECURRING_FILTER_EXCLUDE_RECURRING,
+			IdeaScope:       apiv1.IdeaScope_IDEA_SCOPE_EXCLUDE_IDEA,
+		})); aerr == nil {
+			active = ar.Msg.GetWorkItems()
+		}
+	}
 	// Index the RAW page (before rowsFor turns it into display rows) so the detail pane can
 	// resolve a `parent` to its title from what is already loaded — and, in the same pass, the
 	// sequence-parent SET: any item that is some other item's parent, which the bulk-set confirm
@@ -532,7 +592,7 @@ func (m *Model) fetchWorkItems(ctx context.Context, pageToken string) ([]kit2.It
 	m.viewMu.Lock()
 	m.runsByItem = prs
 	m.viewMu.Unlock()
-	return rowsFor(view, resp.Msg.GetWorkItems(), m.SortMode(), prs), resp.Msg.GetNextPageToken(), nil
+	return rowsFor(view, resp.Msg.GetWorkItems(), active, m.SortMode(), prs), resp.Msg.GetNextPageToken(), nil
 }
 
 func (m *Model) fetchImages(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
@@ -689,6 +749,12 @@ func (m *Model) actionsForSelection() []kit2.Action {
 		case srcProjects:
 			return m.bulkProjectActions(ids)
 		default:
+			// PER VIEW, because the two views' bulk vocabularies are disjoint: the
+			// archive's operation is RESTORE, and archive/delete are no-ops or
+			// different outcomes there. See bulkArchiveActions.
+			if m.ViewMode() == viewArchive {
+				return m.bulkArchiveActions(ids)
+			}
 			return m.bulkItemActions(ids)
 		}
 	}
@@ -791,6 +857,101 @@ func (m *Model) bulkItemActions(ids []string) []kit2.Action {
 	return []kit2.Action{archive, del, setwf, clear}
 }
 
+// bulkArchiveActions is the ARCHIVE VIEW's bulk action set: RESTORE, and only restore.
+//
+// The operator: "I noticed there is no option to restore on bulk items."
+//
+// bulkItemActions offered archive + delete and knew nothing about the view, so a marked
+// selection in the archive was offered two operations that are both wrong there — `a:
+// archive` is a no-op on an already-archived item, and `x: delete` CANCELS it, which is a
+// different outcome from the restore the operator is looking at the view to perform. The
+// GUI has had "Restore selected" all along; this is the TUI's half of that parity.
+//
+// WHY IT IS A SEPARATE LIST RATHER THAN A BRANCH INSIDE bulkItemActions. The two views
+// have genuinely disjoint vocabularies, and the same reasoning that split itemActions
+// applies: an action that is a no-op in the view it is offered from is worse than an
+// absent one, because it reads as supported. Archive/delete return when the operator
+// switches back to the tree, where they belong.
+func (m *Model) bulkArchiveActions(ids []string) []kit2.Action {
+	n := len(ids)
+	count := fmt.Sprintf("%d", n)
+	if m.cl == nil || m.cl.WorkItems == nil {
+		return []kit2.Action{{
+			Label: "no work-item client", Source: srcWorkItems,
+			Do: func(context.Context) error { return fmt.Errorf("no work-item client") },
+		}}
+	}
+	cl := m.cl.WorkItems
+	ordered := m.restoreOrder(ids)
+	restore := kit2.Action{
+		Label: "restore " + count + " selected", Key: "R", Source: srcWorkItems,
+		Confirm: "Restore " + count + " items?\n" +
+			"Each returns to the active views at the status it was archived from.\n" +
+			"Children are restored BEFORE their parents so the hierarchy holds at every step,\n" +
+			"and the first rejection stops the run.",
+		Do: func(ctx context.Context) error {
+			failed := 0
+			for _, id := range ordered {
+				if _, err := cl.RestoreWorkItem(ctx, connect.NewRequest(&apiv1.RestoreWorkItemRequest{Id: id})); err != nil {
+					failed++
+				}
+			}
+			if failed > 0 {
+				return fmt.Errorf("restored %d of %d — %d were rejected", n-failed, n, failed)
+			}
+			return nil
+		},
+	}
+	clear := kit2.Action{
+		Label: "clear selection", Key: "esc", Source: srcWorkItems,
+		Do: func(context.Context) error { return nil },
+		Apply: func() {
+			m.Base.ClearMarks()
+			m.notice = "selection cleared"
+		},
+	}
+	return []kit2.Action{restore, clear}
+}
+
+// restoreOrder returns the marked ids CHILD-FIRST, by each row's depth in the archive
+// tree.
+//
+// THE ORDER IS THE CORRECTNESS, not a nicety — the same reason the GUI sorts with
+// bottomUpOrder: a parent restored before its still-archived children leaves the
+// hierarchy briefly inconsistent, and an archived child whose parent has already returned
+// to the active views is exactly the cross-boundary state the ghost-anchor machinery
+// exists to paper over. Restoring deepest-first means every item lands among siblings that
+// are all in the same partition as it is.
+//
+// Depth comes from the ROW the table already holds (RowByID), so it is the depth the tree
+// was built with rather than a second derivation that could disagree with it. The sort is
+// STABLE and ties keep the pane's order, which is MarkedIDs' order (screen order, top to
+// bottom) — so equal depths restore in the sequence the operator sees.
+func (m *Model) restoreOrder(ids []string) []string {
+	t := m.Base.ActiveTable()
+	if t == nil {
+		return ids
+	}
+	type ranked struct {
+		id    string
+		depth int
+	}
+	rows := make([]ranked, 0, len(ids))
+	for _, id := range ids {
+		d := 0
+		if r, ok := t.RowByID(id); ok {
+			d = r.Depth
+		}
+		rows = append(rows, ranked{id: id, depth: d})
+	}
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].depth > rows[j].depth })
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.id)
+	}
+	return out
+}
+
 // openAction opens the confirmation dialog for an action that needs one, or
 // runs it immediately.
 func (m *Model) openAction(a kit2.Action) tea.Cmd {
@@ -849,6 +1010,22 @@ func (m *Model) switchView(v viewMode) tea.Cmd {
 	m.viewMu.Lock()
 	m.view = v
 	m.viewMu.Unlock()
+	// THE COLLAPSE DEFAULT IS PER VIEW (see New): the Tree opens collapsed because a
+	// deep hierarchy is unreadable expanded, and the Archive opens EXPANDED because its
+	// roots are ghost anchors and a collapsed anchor hides the archived items the view
+	// exists to show.
+	//
+	// It is set HERE as well as at construction because the table is the same object
+	// across a switch, and a row that has already been seen keeps whatever state it had
+	// — including rows that were loaded while the OTHER view was active. Setting it on
+	// every switch means the default is right for the view being entered rather than
+	// whatever the last load happened to leave behind.
+	m.Base.SetCollapsedByDefault(srcWorkItems, v == viewTree)
+	// …and RE-SEAT the rows already on screen. The default only decides a row the table
+	// has not seen before, and every row here has been seen (they were built under the
+	// view being left), so without this the archive opens with its archived items still
+	// folded under a ghost anchor.
+	m.Base.ResetCollapseState(srcWorkItems)
 	m.notice = "work items: " + string(v) + " view"
 	m.syncRowActions()
 	return m.Refresh(srcWorkItems)
@@ -881,16 +1058,23 @@ func (m *Model) cycleSort() tea.Cmd {
 	return m.Refresh(srcWorkItems)
 }
 
-// syncRowActions (re)installs the pane's clickable controls. The tree's
-// collapse/expand-all only means something in the Tree view, so the flat views
-// carry no button rather than a dead one.
+// syncRowActions (re)installs the pane's clickable controls.
+//
+// The collapse/expand-all control is offered in BOTH work-item views now: the
+// Archive view renders the archived hierarchy as a real tree (see archiveRows), so
+// it has nodes to collapse — and before that it was flat, which is why this used to
+// be Tree-only. It still hides on a pane with no parent at all, because on a flat
+// list the control would do nothing and a dead control is worse than none.
 func (m *Model) syncRowActions() {
+	if m.Base.ActiveSourceName() != srcWorkItems {
+		return
+	}
 	acts := []kit2.RowAction{{
 		// A STATE-reporting label: the control says what is on.
 		Label: func() string { return m.SortMode().label() },
 		Do:    func() tea.Cmd { return m.cycleSort() },
 	}}
-	if m.ViewMode() == viewTree {
+	if t := m.Base.ActiveTable(); t != nil && t.ExpandableCount() > 0 {
 		acts = append(acts, kit2.RowAction{
 			Label: func() string {
 				t := m.Base.ActiveTable()
@@ -1207,18 +1391,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		if src == srcWorkItems {
 			return m.switchView(m.ViewMode().next()), true
 		}
-	case "T":
-		if src == srcWorkItems {
-			return m.switchView(viewTree), true
-		}
-	case "Z":
-		if src == srcWorkItems {
-			return m.switchView(viewArchive), true
-		}
 	case "O":
 		// The OVERALL collapse/expand toggle ('o' is the single-node one,
-		// handled by the table itself). Tree only — Board/Archive are flat.
-		if src == srcWorkItems && m.ViewMode() == viewTree {
+		// handled by the table itself). TREE AND ARCHIVE — both are trees now
+		// (the archive view renders the archived hierarchy), so both carry the
+		// control. It is a no-op on a flat list (no parents).
+		if src == srcWorkItems {
 			return m.toggleAllTreeNodes(), true
 		}
 	case "/":
@@ -1369,13 +1547,35 @@ func (m *Model) HintLine() string {
 		// get there (mark two or more) are all stated — one line when there is no selection, and the
 		// selection's own line once there is, which is the shape the Workers pane's bulk set-model already
 		// uses (see execution.markHint).
+		// THE MARKED LINE IS ALSO PER VIEW, for the same reason the unmarked one is: it
+		// named the chords of the TREE while the archive was on screen. Measured in the
+		// archive view with two rows marked, it read "2 marked · W: set workflow & image ·
+		// esc: clear" — `W` is not even OFFERED there (bulkArchiveActions returns restore
+		// and clear), so the line advertised a chord that does nothing and omitted the one
+		// the operator had just selected rows to use.
 		if n := m.Base.MarkCount(); n > 1 {
+			if m.ViewMode() == viewArchive {
+				return theme.HintText.Render(fmt.Sprintf("%d marked", n) + " · " +
+					"R: restore · esc: clear · ↑↓: move · enter: detail")
+			}
 			return theme.HintText.Render(fmt.Sprintf("%d marked", n) + " · " +
 				keyBulkSet + ": set workflow & image · esc: clear · ↑↓: move · enter: detail")
 		}
+		// THE ARCHIVE VIEW GETS ITS OWN LINE, because half of the tree line's chords do
+		// not exist there and the one chord that DOES was named nowhere.
+		//
+		// The operator: "It doesn't look like there is a way to restore a work item from
+		// the archive in the TUI but you can in the GUI." They were right: the line
+		// advertised "a: archive" (which is a no-op in this view — itemActions offers
+		// restore INSTEAD of archive, not as well as) and never mentioned "R". So the
+		// only chord that works in the archive view was the only one not written down.
+		if m.ViewMode() == viewArchive {
+			return theme.HintText.Render("R: restore · /: search · enter: detail · " +
+				"v: view (archive ⇄ tree) · o/O: collapse · ↑↓: move")
+		}
 		return theme.HintText.Render("n: new · /: search · e: edit · s: status · y: auto-start · +/-: move step · " +
 			"a: archive · x: delete · " + keyBulkSet + ": set workflow & image (space marks 2+) · " +
-			"v/T/Z: view · o/O: collapse · enter: detail")
+			"v: view (tree ⇄ archive) · o/O: collapse · enter: detail")
 	}
 }
 

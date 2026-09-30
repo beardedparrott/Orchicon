@@ -54,6 +54,9 @@ func TestSelectionSurvivesAReload(t *testing.T) {
 // was dropped — the label changed and the list never did.
 func TestSortControlActuallyApplies(t *testing.T) {
 	m, _ := seqPlane(t)
+	// The tree opens collapsed; this test is about sibling ORDER, so the children
+	// have to be rows.
+	expandAll(t, m)
 	// The epic's steps in SEQUENCE order are Bravo(1), Alpha(2), Charlie(3).
 	childTitles := func() []string {
 		var out []string

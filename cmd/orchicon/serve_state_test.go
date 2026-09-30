@@ -37,15 +37,17 @@ func TestServeStateDir(t *testing.T) {
 // The package vars are initialised before any test can set the env, so assert
 // their SHAPE (the env-derived value is covered by TestServeStateDir above).
 func TestServeStatePathsShape(t *testing.T) {
-	for name, got := range map[string]string{"pid": servePIDFile, "log": serveLogFile} {
+	// READ AT CALL TIME — these are functions precisely so a test can isolate the
+	// environment before reading them (see servePath's comment in serve_state.go).
+	for name, got := range map[string]string{"pid": servePIDFile(), "log": serveLogFile()} {
 		if got == "" || filepath.Dir(got) == "" {
 			t.Fatalf("%s path looks unset: %q", name, got)
 		}
 	}
-	if want := filepath.Join(".dev", "pids", "orchicon.pid"); servePIDFile != want {
-		t.Errorf("servePIDFile = %q, want %q (the pre-change value)", servePIDFile, want)
+	if want := filepath.Join(".dev", "pids", "orchicon.pid"); servePIDFile() != want {
+		t.Errorf("servePIDFile() = %q, want %q (the pre-change value)", servePIDFile(), want)
 	}
-	if want := filepath.Join(".dev", "logs", "orchicon.log"); serveLogFile != want {
-		t.Errorf("serveLogFile = %q, want %q (the pre-change value)", serveLogFile, want)
+	if want := filepath.Join(".dev", "logs", "orchicon.log"); serveLogFile() != want {
+		t.Errorf("serveLogFile() = %q, want %q (the pre-change value)", serveLogFile(), want)
 	}
 }

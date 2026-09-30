@@ -62,6 +62,21 @@ type Table struct {
 	// filtered view, so the operator navigates what they can actually see.
 	Filter string
 
+	// CollapsedByDefault is the OPEN STATE a row takes the FIRST TIME it appears.
+	//
+	// It is false (expanded) by default because the table's other tree is a FOLDER
+	// grouping — a category group whose members are the point of the group — and a
+	// folder that opened collapsed would hide the rows the operator came for. The
+	// work-items views set it TRUE: a deep Epic → Feature → Task → Subtask tree is
+	// unreadable when it opens fully expanded, and the GUI's tree has always
+	// defaulted to collapsed (work-items-tree.tsx: "default collapsed"), so the two
+	// clients disagreed about what the same data looks like on open.
+	//
+	// It applies ONLY to a row with no surviving state (see SetItems). An operator's
+	// own expand/collapse choice is never overridden by it — that is what makes the
+	// rolling refresh safe to leave on.
+	CollapsedByDefault bool
+
 	// Marks is the MULTI-SELECTION: row IDs the operator has marked with space, for the
 	// bulk operations every list needs a consistent way to reach.
 	//
@@ -129,6 +144,21 @@ func (t *Table) MarkedIDs() []string {
 	return out
 }
 
+// RowByID returns the row with the given id, and whether it is present.
+//
+// A caller that needs a row's structural fields for a marked id — the archive view orders a
+// bulk restore child-first by each marked row's DEPTH — has only the ids from MarkedIDs,
+// which carry no structure. Rows (not VisibleRows) is the right set to read: a marked row
+// hidden under a collapsed parent is still part of the selection.
+func (t *Table) RowByID(id string) (Row, bool) {
+	for i := range t.Rows {
+		if t.Rows[i].ID == id {
+			return t.Rows[i], true
+		}
+	}
+	return Row{}, false
+}
+
 // PruneMarks drops marks whose rows are no longer present, and reports how many went.
 //
 // A reload can remove rows (a bulk action deletes them, a filter hides them, the plane
@@ -176,6 +206,25 @@ func NewTable(title string, cols ...Column) *Table {
 // group spring back open under the operator's cursor — collapsing would be impossible to use at all.
 // The GUI's folders stay collapsed across updates, so the two clients would also have felt different.
 // Only rows whose id SURVIVES keep their state; a folder that appears for the first time starts open.
+// ApplyCollapseDefault re-seats every row's open state to the table's CURRENT
+// CollapsedByDefault.
+//
+// SetItems deliberately PRESERVES the open state of a row it has seen before (that is what
+// makes collapse usable under the rolling refresh), so changing CollapsedByDefault alone
+// cannot affect rows that are already loaded — which is exactly the hole the archive view
+// fell into: switching into it changed the default, and every row already built under the
+// tree view kept its collapsed state, so the archive opened showing only its ghost anchor.
+//
+// It is for a VIEW CHANGE, where the rows on screen are about to be replaced by a
+// different set and the new view's default is what the operator should see. It is NOT for
+// a refresh: a refresh must keep the operator's own collapse choices (see SetItems).
+func (t *Table) ApplyCollapseDefault() {
+	for i := range t.Rows {
+		t.Rows[i].Open = !t.CollapsedByDefault
+	}
+	t.clampOffset()
+}
+
 func (t *Table) SetItems(items []screenkit.Item, next string) {
 	prev := t.SelectedID()
 	wasOpen := make(map[string]bool, len(t.Rows))
@@ -188,7 +237,7 @@ func (t *Table) SetItems(items []screenkit.Item, next string) {
 	for _, it := range items {
 		open, seen := wasOpen[it.ID]
 		if !seen {
-			open = true
+			open = !t.CollapsedByDefault
 		}
 		rows = append(rows, Row{
 			ID:     it.ID,

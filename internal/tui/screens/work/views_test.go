@@ -78,14 +78,22 @@ func TestCollapseExpandAllOnWorkItems(t *testing.T) {
 	if n := tbl.ExpandableCount(); n != 2 {
 		t.Fatalf("expandable nodes = %d, want 2 (epic + feature)", n)
 	}
-	if n := len(tbl.VisibleRows()); n != 3 {
-		t.Fatalf("fresh tree visible = %d, want 3", n)
+	// THE TREE OPENS COLLAPSED: only the epic root is a visible row.
+	if n := len(tbl.VisibleRows()); n != 1 {
+		t.Fatalf("a fresh tree shows roots only: %d visible, want 1", n)
 	}
 
-	// O collapses everything: only the epic root survives.
+	// O EXPANDS everything — the toggle's label reports the action it will take, and a
+	// collapsed tree is offered "expand".
+	press(t, m, "O")
+	if n := len(tbl.VisibleRows()); n != 3 {
+		t.Fatalf("expanded visible rows = %d, want 3", n)
+	}
+
+	// O again collapses it back to the epic root.
 	press(t, m, "O")
 	if tbl.AllExpanded() {
-		t.Fatal("O must collapse every node")
+		t.Fatal("the second O must collapse every node")
 	}
 	if n := len(tbl.VisibleRows()); n != 1 {
 		t.Fatalf("collapsed visible rows = %d, want 1 (the epic)", n)
@@ -99,4 +107,15 @@ func TestCollapseExpandAllOnWorkItems(t *testing.T) {
 	if n := len(tbl.VisibleRows()); n != 3 {
 		t.Fatalf("expanded visible rows = %d, want 3", n)
 	}
+}
+
+// expandAll is the operator's gesture (the collapse/expand-all control) applied
+// directly, so a test that is about something ELSE — reorder, sort, search — does not
+// have to re-derive how to make the rows visible. The work-items tree opens COLLAPSED
+// by default (see kit2.Table.CollapsedByDefault), so a test asserting on children must
+// expand first.
+func expandAll(t *testing.T, m *Model) {
+	t.Helper()
+	m.toggleAllTreeNodes()
+	load(t, m, srcWorkItems)
 }

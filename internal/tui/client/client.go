@@ -253,6 +253,14 @@ func NewWithHTTPClient(opts Options, httpClient *http.Client) *Clients {
 	c.Webhooks = newClient(apiv1connect.NewWebhookServiceClient, httpClient, base, opts2)
 	c.Categories = newClient(apiv1connect.NewCategoryServiceClient, httpClient, base, opts2)
 	c.Adapters = newClient(apiv1connect.NewRuntimeAdapterServiceClient, httpClient, base, opts2)
+	// The streaming half of the token refresh. The bearer interceptor above already
+	// covers UNARY RPCs (connect retries a unary through the interceptor chain), but a
+	// server-stream is opened once, so a 401 surfaces at the first Receive with no
+	// interceptor left to run — that is what reDial exists for, and it was wired
+	// nowhere, so a live stream could never recover from an expired token.
+	if sc != nil {
+		c.wireStreamReDial()
+	}
 	return c
 }
 
