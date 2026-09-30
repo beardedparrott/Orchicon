@@ -223,3 +223,120 @@ func idsOf(r mcpclient.Resolution) []string {
 func withTenant(ctx context.Context, tenantID string) context.Context {
 	return tenant.WithID(ctx, tenantID)
 }
+
+// TestResolveRunUnionDedupesASharedInlineID pins the union's DEDUP contract
+// for inline (worker-owned) definitions: an inline definition has no
+// mcp_servers row, so its ScopedServer.EntryID is "" — a seen-set seeded from
+// EntryID alone is empty on every call and two steps declaring the SAME inline
+// id would each resolve it. The run scope is exactly where that arises (two
+// worker versions can declare one shared server name), and a duplicate would
+// open the same MCP connection twice under one namespace.
+func TestResolveRunUnionDedupesASharedInlineID(t *testing.T) {
+	dsn := os.Getenv("ORCHICON_TEST_DSN")
+	if dsn == "" {
+		t.Skip("ORCHICON_TEST_DSN not set; skipping DB-backed run-union dedup test")
+	}
+	ctx := context.Background()
+	pool, err := db.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open test pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	if err := migrate.Run(ctx, pool, assets.MigrationsFS, assets.MigrationsDir); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	tenant := "tnt_rundedup_" + db.NewID()[10:22]
+	if err := db.SeedDevTenant(ctx, pool, tenant); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	ttx, err := pool.BeginTenantTx(ctx, tenant)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+
+	proj, err := db.CreateProject(ctx, ttx.Tx, db.ProjectRow{
+		ID: db.NewID(), TenantID: tenant, Name: "Dedup", Slug: "dedup-" + db.NewID()[10:22],
+		Status: "active", Goals: []byte("{}"),
+	})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	// TWO workers whose versions declare the SAME inline id.
+	mkWorker := func() string {
+		suffix := db.NewID()[10:22]
+		w, err := db.CreateWorker(ctx, ttx.Tx, db.WorkerRow{
+			ID: "w-" + suffix, TenantID: tenant, Name: "w-" + suffix[:6],
+			Slug: "w-" + suffix, Status: domain.WorkerPublished,
+		})
+		if err != nil {
+			t.Fatalf("create worker: %v", err)
+		}
+		perms, _ := json.Marshal(map[string]any{
+			"mcp_servers": []map[string]any{{
+				"id": "shared-inline", "type": "stdio", "command": []string{"npx", "-y", "shared"},
+			}},
+		})
+		if _, err := db.CreateWorkerVersion(ctx, ttx.Tx, db.WorkerVersionRow{
+			ID: db.NewID(), TenantID: tenant, WorkerID: w.ID, Version: 1,
+			Status: domain.WorkerVersionPublished, ModelRef: "orchicon/deepseek/deepseek-v4-flash",
+			Permissions: perms,
+		}); err != nil {
+			t.Fatalf("create worker version: %v", err)
+		}
+		return w.ID
+	}
+	wA, wB := mkWorker(), mkWorker()
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit setup: %v", err)
+	}
+
+	wtx, err := pool.BeginTenantTx(ctx, tenant)
+	if err != nil {
+		t.Fatalf("begin run tx: %v", err)
+	}
+	defer wtx.Rollback(ctx)
+	stepsJSON, _ := json.Marshal([]workflow.StepWire{
+		{ID: "step-a", Kind: domain.StepKindTask, Ref: wA},
+		{ID: "step-b", Kind: domain.StepKindTask, Ref: wB},
+	})
+	wf, err := db.CreateWorkflow(ctx, wtx.Tx, db.WorkflowRow{
+		ID: db.NewID(), TenantID: tenant, ProjectID: proj.ID,
+		Name: "Dedup WF", CurrentVersion: 1, Status: "published", Type: "one_shot",
+	})
+	if err != nil {
+		t.Fatalf("create workflow: %v", err)
+	}
+	if _, err := db.CreateWorkflowVersion(ctx, wtx.Tx, db.WorkflowVersionRow{
+		ID: db.NewID(), TenantID: tenant, WorkflowID: wf.ID, Version: 1,
+		Status: "published", Steps: stepsJSON, Inputs: []byte("[]"), Outputs: []byte("[]"),
+	}); err != nil {
+		t.Fatalf("create workflow version: %v", err)
+	}
+	run, err := db.CreateWorkflowRun(ctx, wtx.Tx, db.WorkflowRunRow{
+		ID: db.NewID(), TenantID: tenant, WorkflowID: wf.ID, WorkflowVersion: 1,
+		ProjectID: proj.ID, Status: domain.WorkflowRunRunning, RunContext: []byte("{}"),
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if err := wtx.Commit(ctx); err != nil {
+		t.Fatalf("commit run: %v", err)
+	}
+
+	res, err := mcpsettings.NewResolver(pool).ResolveRunUnion(ctx, tenant, run.ID)
+	if err != nil {
+		t.Fatalf("ResolveRunUnion: %v", err)
+	}
+	n := 0
+	for _, s := range res.Servers {
+		if s.Spec.ID == "shared-inline" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("a shared inline id resolved %d times, want 1 (deduped): %+v", n, idsOf(res))
+	}
+}

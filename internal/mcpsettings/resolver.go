@@ -224,10 +224,21 @@ func resolutionFromRows(rows []db.MCPServerRow) mcpclient.Resolution {
 }
 
 // unionInline appends inline (worker-owned) definitions to a resolution,
-// deduped by inline id, first occurrence wins, in declaration order.
+// deduped by server id, first occurrence wins, in declaration order.
+//
+// The dedup key is Spec.ID, NOT EntryID: an inline definition has no row, so
+// its EntryID is "" (see mcpclient.ScopedServer) and a seen-set seeded from
+// EntryID alone would be empty on every call — two steps declaring the SAME
+// inline id would each resolve it (and the run scope is where that happens:
+// two worker versions can declare one shared name). ServerSpec.ID is the
+// connection namespace (mcp__<server>__<tool>), which is what must appear
+// once.
 func unionInline(res mcpclient.Resolution, inline []db.InlineMCPServer, fromID string) mcpclient.Resolution {
 	seen := map[string]bool{}
 	for _, s := range res.Servers {
+		if s.Spec.ID != "" {
+			seen[s.Spec.ID] = true
+		}
 		if s.EntryID != "" {
 			seen[s.EntryID] = true
 		}

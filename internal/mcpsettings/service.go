@@ -688,9 +688,9 @@ func (s *Service) Update(ctx context.Context, tenantID string, in UpdateInput) (
 	return e, nil
 }
 
-// Delete removes an entry. Blocked (FailedPrecondition) while any
-// project / worker / the tenant-default set still references it; derived
-// secrets are purged in the same tx.
+// Delete removes an entry. There is NO reference guard: an owner-scoped
+// definition cannot be orphaned (its owner IS its only reference, and both
+// owner FKs cascade). Derived secrets are purged in the same tx.
 func (s *Service) Delete(ctx context.Context, tenantID, id string) error {
 	id = strings.TrimSpace(id)
 	if id == "" {

@@ -204,7 +204,7 @@ func (f ProviderResolverFunc) Get(ctx context.Context, tenantID, providerID stri
 }
 
 // buildSession constructs a native worker Session for an execution: MCP
-// tools (worker → project → tenant-default), host tools (worktree-scoped
+// tools (the scope-addressed union), host tools (worktree-scoped
 // bash/file), memory store, and the provider-bound session. It is the
 // shared construction path for a fresh run (Start) and a follow-up
 // (ContinueSession) so a follow-up is a FULL live session with the same
@@ -222,8 +222,8 @@ func (b *NativeBridge) buildSession(ctx context.Context, exec db.ExecutionRow, m
 	if pd == "" {
 		return nil, nil, fmt.Errorf("orchicon bridge: no project dir (manifest.ProjectDir and bridge projectDir are both empty)")
 	}
-	// MCP tool resolution (ADR-0008): worker selection → project selection
-	// → tenant-default → none, over the tenant-configured server list.
+	// MCP tool resolution (ADR-0008): ONE scope-addressed union
+	// (project-owned ∪ the scope's own definitions), no precedence chain.
 	// Connections are established NOW — per session, never at
 	// control-plane boot — and tool discovery runs at construction so the
 	// discovered signatures are present in the model's first request.
