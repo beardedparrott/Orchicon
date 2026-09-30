@@ -79,12 +79,12 @@ type WorkerVersionRow struct {
 	// in practice. Adding the column to those two statements is the fix; it is
 	// left undone pending a decision on whether a raw-prompt-only worker is still
 	// a supported shape.
-	SystemPrompt        string
-	Role                string
-	Skills              string
-	Behavior            string
-	AgentsMD            string
-	ContextSources      []byte // jsonb
+	SystemPrompt   string
+	Role           string
+	Skills         string
+	Behavior       string
+	AgentsMD       string
+	ContextSources []byte // jsonb
 	// SkillFiles is the jsonb array of absolute skill file/directory paths for
 	// THIS VERSION (never the worker header: published versions are immutable by
 	// version and the version is what every dispatch pins to), union-ed with the

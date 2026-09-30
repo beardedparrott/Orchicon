@@ -1614,16 +1614,16 @@ func workerRowToProto(w db.WorkerRow) *apiv1.Worker {
 // uses string for JSON-typed fields).
 func versionRowToProto(v db.WorkerVersionRow) *apiv1.WorkerVersion {
 	pv := &apiv1.WorkerVersion{
-		Id:                  v.ID,
-		WorkerId:            v.WorkerID,
-		Version:             int32(v.Version),
-		VersionNote:         v.VersionNote,
-		Status:              workerVersionStatusToProto(v.Status),
-		ModelRef:            v.ModelRef,
-		Adapter:             adapterKindOf(v.ModelRef),
-		SystemPrompt:        composeWorkerPrompt(v),
-		Role:                v.Role,
-		Skills:              v.Skills,
+		Id:           v.ID,
+		WorkerId:     v.WorkerID,
+		Version:      int32(v.Version),
+		VersionNote:  v.VersionNote,
+		Status:       workerVersionStatusToProto(v.Status),
+		ModelRef:     v.ModelRef,
+		Adapter:      adapterKindOf(v.ModelRef),
+		SystemPrompt: composeWorkerPrompt(v),
+		Role:         v.Role,
+		Skills:       v.Skills,
 		// SkillFiles is the SELECTABLE skill path array (real on-disk paths),
 		// DISTINCT from Skills above (free-text prompt prose).
 		SkillFiles:          skillFilesFromJSON(v.SkillFiles),

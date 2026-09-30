@@ -205,6 +205,12 @@ table "projects" {
     default = "runtime"
     comment = "runtime = always-container; local = in-process allowed with honest prompt + DSN fence"
   }
+  column "skill_files" {
+    type = jsonb
+    null = false
+    default = "[]"
+    comment = "Absolute skill file/directory paths selected for this project; rendered into BOTH the worker composite prompt and the Ask system prompt by contextfiles.RenderManifest. Distinct from the free-text skills prompt section — these are real on-disk paths, not prose."
+  }
   column "version" {
     type = integer
     null = false

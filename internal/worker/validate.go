@@ -23,11 +23,10 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-
-	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"unicode/utf8"
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
+	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
@@ -295,7 +294,6 @@ func validateJSONField(s, empty, field string, max int) ([]byte, error) {
 	return []byte(s), nil
 }
 
-// validateActor trims and bounds-checks the actor field for edit locks.
 // validateSkillFiles validates a worker version's skill_files field: a JSON
 // array of absolute skill file/directory PATHS.
 //

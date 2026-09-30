@@ -1049,8 +1049,8 @@ func (s *Service) conversationRowToProto(r db.ConversationRow, messageCount int,
 		// FULLSEND is COMPUTED, never stored: it rides the same read-time seam as
 		// turn_in_flight below, so every list/get answers with the state the plane holds
 		// right now rather than a column someone could forget to update.
-		Fullsend:                  s.fullsend.Enabled(r.ID),
-		ProjectId:                 r.ProjectID,
+		Fullsend:  s.fullsend.Enabled(r.ID),
+		ProjectId: r.ProjectID,
 		// SkillFiles is the SELECTABLE skill path array (real on-disk paths),
 		// DISTINCT from AgentConfig.skills (tenant-wide free-text prompt prose).
 		SkillFiles:                skillFilesFromJSON(r.SkillFiles),

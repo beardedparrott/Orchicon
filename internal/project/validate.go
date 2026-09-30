@@ -357,17 +357,17 @@ func listDirectory(rootDir string, relPath string) (string, string, []*apiv1.Fil
 // Timestamps are converted to timestamppb.
 func rowToProto(p db.ProjectRow) *apiv1.Project {
 	proj := &apiv1.Project{
-		Id:                  p.ID,
-		TenantId:            p.TenantID,
-		Name:                p.Name,
-		Slug:                p.Slug,
-		Status:              apiv1.ProjectStatus(statusToProto(p.Status)),
-		Goals:               string(p.Goals),
-		Version:             int32(p.Version),
-		CreatedAt:           timestamppb.New(p.CreatedAt),
-		UpdatedAt:           timestamppb.New(p.UpdatedAt),
-		ProjectDir:          p.ProjectDir,
-		ContextFiles:        contextFilesFromJSONOrEmpty(p.ContextFiles),
+		Id:           p.ID,
+		TenantId:     p.TenantID,
+		Name:         p.Name,
+		Slug:         p.Slug,
+		Status:       apiv1.ProjectStatus(statusToProto(p.Status)),
+		Goals:        string(p.Goals),
+		Version:      int32(p.Version),
+		CreatedAt:    timestamppb.New(p.CreatedAt),
+		UpdatedAt:    timestamppb.New(p.UpdatedAt),
+		ProjectDir:   p.ProjectDir,
+		ContextFiles: contextFilesFromJSONOrEmpty(p.ContextFiles),
 		// SkillFiles is the SELECTABLE skill path array (distinct from the
 		// free-text `skills` prompt section); same best-effort JSON decode as
 		// context_files so a corrupt payload degrades to empty, never a crash.
