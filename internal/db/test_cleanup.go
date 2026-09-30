@@ -38,13 +38,11 @@ func CleanupProject(t *testing.T, pool *Pool, tenantID, projectID string) {
 	if pool == nil || projectID == "" {
 		return
 	}
-	if false {
-		t.Cleanup(func() {
-			if err := DeleteProjectByID(context.Background(), pool, tenantID, projectID); err != nil {
-				t.Logf("cleanup: delete project %s (tenant %s): %v", projectID, tenantID, err)
-			}
-		})
-	}
+	t.Cleanup(func() {
+		if err := DeleteProjectByID(context.Background(), pool, tenantID, projectID); err != nil {
+			t.Logf("cleanup: delete project %s (tenant %s): %v", projectID, tenantID, err)
+		}
+	})
 }
 
 // DeleteProjectByID runs DeleteProject in its own transaction. Exported for tests that need to tear a

@@ -2,12 +2,14 @@ package opencode
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/beardedparrott/orchicon/internal/mcpclient"
 	"github.com/beardedparrott/orchicon/internal/neverallow"
 	"github.com/beardedparrott/orchicon/internal/workerrestrict"
 )
@@ -509,6 +511,17 @@ type ConfigOptions struct {
 	// caller that predates the profile split keeps the worker sandbox
 	// byte-identically; only the Ask serve opts into ProfileInteractive.
 	PermissionProfile PermissionProfile
+
+	// RunMCP is the RUN's MCP union (project-owned ∪ every step worker
+	// version's inline specs), resolved ONCE from the run and with
+	// ${SECRET_NAME} expanded at build time. A step sees servers ANOTHER
+	// step defined: that is the same trade the boot profile already makes
+	// for adapter mounts and serves, and it is DELIBERATE (see the
+	// RUN-LEVEL MCP UNION block in BuildConfigContent). Empty = the run
+	// defined no servers.
+	RunMCP []mcpclient.ScopedServer
+	// RunSkills is the RUN's skill-file union (the same walk's skill half).
+	RunSkills []mcpclient.InlineSkillFile
 }
 
 // BuildConfigContent builds the JSON string for the OPENCODE_CONFIG_CONTENT
@@ -552,7 +565,9 @@ func BuildConfigContent(o ConfigOptions) string {
 	// resolved relative to the session cwd (the worktree), where worker.md is
 	// tracked. Ask Orchicon uses a separate session path and is unaffected.
 	if o.DefaultAgent == workerAgent {
-		cfg["instructions"] = []string{"worker.md"}
+		instr := []string{"worker.md"}
+		instr = append(instr, runSkillInstructions(o)...)
+		cfg["instructions"] = instr
 	}
 
 	// Merge MCP servers: the user's own opencode-config servers first,
@@ -581,6 +596,33 @@ func BuildConfigContent(o ConfigOptions) string {
 		if _, exists := mcp["orchicon-worktree"]; !exists {
 			mcp["orchicon-worktree"] = worktreeMCPServer(o.WorktreeDir, o.ProjectDir, o.MCPBinaryPath)
 		}
+	}
+	// RUN-LEVEL MCP UNION. A container's serve is created ONCE and this
+	// config is applied ONCE (the daemon applies ServeConfig only at
+	// container creation), so this set MUST come from the RUN and never
+	// from the dispatching step: a per-execution input would make
+	// "whichever step created the container first" decide what every step
+	// sees — order-dependent, and forbidden.
+	//
+	// OVER-PROVISIONING IS DELIBERATE: a step therefore sees servers
+	// ANOTHER step defined. That is the same trade the run's boot profile
+	// already makes for adapter mounts and serves (CreateRequest.AdapterKinds),
+	// and it is why this field carries a RUN union rather than an
+	// execution's own set. The widening is RECORDED here and LOGGED per
+	// session (the plane logs the union with provenance at resolution, and
+	// the adapter logs the set the session received).
+	//
+	// The built-ins above are emitted FIRST, so a run server whose id
+	// collides with `orchicon`/`orchicon-plane`/`orchicon-worktree` never
+	// overwrites it.
+	for _, ss := range o.RunMCP {
+		if ss.Spec.ID == "" {
+			continue
+		}
+		if _, exists := mcp[ss.Spec.ID]; exists {
+			continue // built-ins (and the user's servers) win a name clash
+		}
+		mcp[ss.Spec.ID] = mcpEntryFromSpec(ss.Spec)
 	}
 	if len(mcp) > 0 {
 		cfg["mcp"] = mcp
@@ -658,6 +700,119 @@ func BuildConfigContent(o ConfigOptions) string {
 		b, _ = json.Marshal(fallback)
 	}
 	return string(b)
+}
+
+// mcpEntryFromSpec renders one resolved MCP ServerSpec into opencode's MCP
+// config entry shape: McpLocalConfig for a stdio server
+// (`{type:"local",command:[...],environment{},enabled}`) or McpRemoteConfig
+// for a streamable-HTTP server (`{type:"remote",url,headers,enabled}`).
+//
+// AUTH IS BEARER/HEADER ONLY — the spec's Headers already carry the resolved
+// plaintext (the plane expands ${SECRET_NAME} at build time, before it
+// reaches this builder), and OAuth is out of scope for v1, exactly as the
+// other adapters already treat it. The spec's Timeout/OnError are the
+// NATIVE adapter's per-call policy and have no opencode analog here, so they
+// are not emitted.
+func mcpEntryFromSpec(s mcpclient.ServerSpec) map[string]any {
+	if s.TransportType() == mcpclient.TypeHTTP {
+		e := map[string]any{"type": "remote", "url": s.URL, "enabled": true}
+		if len(s.Headers) > 0 {
+			e["headers"] = s.Headers
+		}
+		return e
+	}
+	e := map[string]any{"type": "local", "command": s.Command, "enabled": true}
+	if len(s.Env) > 0 {
+		e["environment"] = s.Env
+	}
+	return e
+}
+
+// runSkillInstructions renders the RUN's skill-file union into opencode
+// `instructions` paths.
+//
+// opencode reads skills from DISK (`.opencode/skills/<name>/SKILL.md`) and its
+// `Config.instructions` is a list of PATHS it loads — there is no config field
+// for inline skill TEXT. So a union entry that already names a filesystem path
+// (`Path` set, `Content` empty — the common case: the skill store renders
+// file/dir paths) is emitted verbatim. An entry that carries INLINE content is
+// materialised under `<WorktreeDir>/.orchicon/skills/` at build time and that
+// path is emitted instead.
+//
+// The write runs on the PLANE, but WorktreeDir is bind-mounted at its
+// IDENTICAL absolute host path (the runtime daemon mounts project_dir at the
+// same path), so the file lands in-container where the serve can read it. A
+// write failure is logged and the skill SKIPPED — never a silent loss and
+// never a failed config build: one unplaceable skill must not take down the
+// whole serve.
+func runSkillInstructions(o ConfigOptions) []string {
+	var out []string
+	for _, s := range o.RunSkills {
+		if s.Path == "" {
+			continue
+		}
+		if s.Content == "" {
+			out = append(out, s.Path)
+			continue
+		}
+		p, err := materialiseInlineSkill(o.WorktreeDir, s)
+		if err != nil {
+			slog.Default().Warn("opencode: inline skill not placed — skipping",
+				"skill", s.Path, "worktree", o.WorktreeDir, "error", err)
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// materialiseInlineSkill writes one inline skill file under
+// <worktreeDir>/.orchicon/skills/ and returns the path to emit as an
+// instruction. The name is derived from the skill's own path (base name,
+// sanitised) so two skills with the same base never collide and the emitted
+// path is deterministic for a given run (AC 3).
+func materialiseInlineSkill(worktreeDir string, s mcpclient.InlineSkillFile) (string, error) {
+	if worktreeDir == "" {
+		return "", fmt.Errorf("no worktree dir to place the skill in")
+	}
+	dir := filepath.Join(worktreeDir, ".orchicon", "skills")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	name := sanitiseSkillName(s.Path)
+	if name == "" {
+		return "", fmt.Errorf("skill path %q yields no usable file name", s.Path)
+	}
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte(s.Content), 0o644); err != nil {
+		return "", err
+	}
+	return p, nil
+}
+
+// sanitiseSkillName reduces a skill's declared path to a stable, filesystem-
+// safe `.md` file name. The last path element wins (the skill's own slug),
+// non-alphanumerics collapse to `-`, and the result always ends in `.md`.
+func sanitiseSkillName(p string) string {
+	base := filepath.Base(strings.TrimSpace(p))
+	base = strings.TrimSuffix(base, filepath.Ext(base))
+	var b strings.Builder
+	for _, r := range strings.ToLower(base) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	trimmed := strings.Trim(b.String(), "-")
+	for strings.Contains(trimmed, "--") {
+		trimmed = strings.ReplaceAll(trimmed, "--", "-")
+	}
+	if trimmed == "" {
+		return ""
+	}
+	return trimmed + ".md"
 }
 
 // orchiconBinaryPath returns the path to the orchicon executable used to

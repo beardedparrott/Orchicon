@@ -19,7 +19,10 @@ import (
 	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
+	"github.com/beardedparrott/orchicon/internal/mcpclient"
+	"github.com/beardedparrott/orchicon/internal/mcpsettings"
 	"github.com/beardedparrott/orchicon/internal/secretcrypto"
+	"github.com/beardedparrott/orchicon/internal/tenant"
 	"github.com/beardedparrott/orchicon/internal/workflow"
 	"github.com/jackc/pgx/v5"
 )
@@ -106,19 +109,30 @@ type Lifecycle struct {
 	pool   *db.Pool
 	log    *slog.Logger
 	// serveConfigFor builds the OPENCODE_CONFIG_CONTENT for a run's
-	// container serve from its runtime image tag and in-container project dir.
-	// The sandbox-scoped Orchicon MCP is registered only for dev images
-	// (which boot the sandbox plane against a sandbox DB); the plane-channel
-	// Orchicon MCP (`orchicon-plane`) is registered on EVERY image when the
-	// run's worker role grants it (planeEnv non-empty) — plane access is
-	// role-gated, never image-gated. The project dir is threaded through
-	// because the composite worktree batch tools (batch_read/grep/write) need
-	// a base directory to resolve against — the project is mounted
-	// in-container at the same absolute path.
-	serveConfigFor func(image, projectDir, workflowRunID string, planeEnv map[string]string) string
+	// container serve from its runtime image tag, its in-container project
+	// dir, and THE RUN'S MCP UNION (project-owned ∪ every step worker
+	// version's inline specs + skills). The sandbox-scoped Orchicon MCP is
+	// registered only for dev images (which boot the sandbox plane against a
+	// sandbox DB); the plane-channel Orchicon MCP (`orchicon-plane`) is
+	// registered on EVERY image when the run's worker role grants it
+	// (planeEnv non-empty) — plane access is role-gated, never image-gated.
+	// The project dir is threaded through because the composite worktree
+	// batch tools (batch_read/grep/write) need a base directory to resolve
+	// against — the project is mounted in-container at the same absolute
+	// path.
+	//
+	// The union argument is RUN-LEVEL and carries NO per-execution input: the
+	// daemon applies ServeConfig only at container creation, so a config that
+	// varied per execution would make "whichever step created the container
+	// first" decide what every step sees.
+	serveConfigFor func(image, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution) string
 	// secretsKEK is the plane-resolved 32-byte KEK for tenant secrets
 	// (resolved at server construction; nil disables secret injection).
 	secretsKEK []byte
+	// scopeResolver resolves the RUN's MCP union for the container bake (the
+	// same resolver the native/claude bridges use). Nil = no MCP union: the
+	// container's serve keeps its built-ins only.
+	scopeResolver mcpclient.ScopeResolver
 }
 
 // NewLifecycle creates a workflow runtime lifecycle. client may be nil to
@@ -128,8 +142,111 @@ type Lifecycle struct {
 // sandbox-scoped Orchicon MCP for dev images, and the plane-channel
 // Orchicon MCP on any image when the run's worker role grants it — built
 // by the opencode package).
-func NewLifecycle(client *Client, pool *db.Pool, log *slog.Logger, serveConfigFor func(image, projectDir, workflowRunID string, planeEnv map[string]string) string, secretsKEK []byte) *Lifecycle {
+func NewLifecycle(client *Client, pool *db.Pool, log *slog.Logger, serveConfigFor func(image, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution) string, secretsKEK []byte) *Lifecycle {
 	return &Lifecycle{client: client, pool: pool, log: log, serveConfigFor: serveConfigFor, secretsKEK: secretsKEK}
+}
+
+// SetScopeResolver injects the MCP scope resolver the run-level union is
+// computed from. It is the SAME resolver the native and claude bridges use,
+// so a run's union and a worker's own set can never disagree on what a given
+// scope resolves to.
+func (l *Lifecycle) SetScopeResolver(r mcpclient.ScopeResolver) { l.scopeResolver = r }
+
+// resolveRunUnion resolves a run's RUN-LEVEL MCP union — the project's owned
+// definitions ∪ EVERY step worker version's inline specs, plus the run's
+// skill-file union — and expands ${SECRET_NAME} at BUILD time, the same way
+// the native and claude adapters do.
+//
+// IT IS COMPUTED FROM THE RUN, NEVER THE EXECUTING STEP. The result is baked
+// into the container's serve config ONCE, at container creation (the daemon
+// applies ServeConfig only then), so a per-execution input would make
+// "whichever step created the container first" decide what every step sees —
+// order-dependent, and forbidden. The one walk that resolves each step's
+// worker version lives in mcpsettings.Resolver's run scope (it delegates to
+// adapter.ResolveRunSteps, the SAME traversal the adapter demand set uses), so
+// the union and the boot profile cannot drift.
+//
+// A server whose ${SECRET_NAME} cannot resolve is DROPPED, LOUDLY. The
+// SkipUserMCP rule (internal/opencode/config.go) is explicit: a serve eagerly
+// connects to every configured server, so an entry it cannot connect to hangs
+// the serve's event loop and the published port never answers. That is exactly
+// this class, so the drop is logged with the server AND the scope it came from
+// — never silent.
+//
+// A nil resolver (no MCP storage wired) or a resolution error yields the
+// EMPTY union: the container's serve then carries its built-ins only, exactly
+// as before this change.
+func (l *Lifecycle) resolveRunUnion(ctx context.Context, run db.WorkflowRunRow) mcpclient.Resolution {
+	if l.scopeResolver == nil {
+		return mcpclient.Resolution{}
+	}
+	res, err := l.scopeResolver.ResolveScope(
+		tenant.WithID(ctx, run.TenantID),
+		mcpclient.ScopeRef{Kind: mcpclient.ScopeRun, RunID: run.ID})
+	if err != nil {
+		l.log.Warn("run MCP union unresolved — the container serve will carry built-ins only",
+			"run", run.ID, "error", err)
+		return mcpclient.Resolution{}
+	}
+	// Expand ${SECRET_NAME} in place, dropping any server whose secret cannot
+	// resolve (a serve hangs on a server it cannot connect to).
+	if len(l.secretsKEK) == 32 {
+		for i := 0; i < len(res.Servers); i++ {
+			env, hdr, serr := mcpsettings.ResolveSecretRefs(ctx, l.pool, l.secretsKEK,
+				run.TenantID, res.Servers[i].Spec.Env, res.Servers[i].Spec.Headers)
+			if serr != nil {
+				l.log.Warn("run MCP server dropped — its secret did not resolve (a serve hangs on an unreachable server)",
+					"run", run.ID, "server", res.Servers[i].Spec.ID,
+					"scope", res.Servers[i].FromID, "error", serr)
+				res.Servers = append(res.Servers[:i], res.Servers[i+1:]...)
+				i--
+				continue
+			}
+			res.Servers[i].Spec.Env, res.Servers[i].Spec.Headers = env, hdr
+		}
+	}
+	// AC 4: log the union's provenance ONCE, plane-side. ProvenanceString reads
+	// only ids + scope ids — never env/headers (which now hold resolved
+	// credentials).
+	l.log.Info("run MCP union resolved", "run", run.ID,
+		"servers", mcpclient.ProvenanceString(res.Servers), "skills", len(res.Skills))
+	return res
+}
+
+// RunServeConfig implements opencode.RunServeConfigProvider: the RUN-LEVEL
+// OPENCODE_CONFIG_CONTENT a run's container must carry, derived from the run
+// id ONLY.
+//
+// This is what the opencode adapter's self-heal path asks for instead of
+// rebuilding the config from the executing step: the container's config is
+// applied once at creation, so the self-heal value MUST be byte-identical to
+// the run-start one (it is — both go through buildCreateRequest), which also
+// means the daemon's pool env key matches and the run's warmed container is
+// reused rather than recreated.
+//
+// A false return means "no opencode demand / run unresolvable": the caller
+// sends NO config rather than inventing one.
+func (l *Lifecycle) RunServeConfig(ctx context.Context, runID string) (string, bool) {
+	ttx, err := l.pool.BeginTenantTx(ctx, devTenantID)
+	if err != nil {
+		l.log.Warn("run serve config: begin tx", "run", runID, "error", err)
+		return "", false
+	}
+	defer func() { _ = ttx.Rollback(ctx) }()
+	run, err := db.GetWorkflowRun(ctx, ttx.Tx, devTenantID, runID)
+	if err != nil {
+		l.log.Warn("run serve config: get run", "run", runID, "error", err)
+		return "", false
+	}
+	req, err := l.buildCreateRequest(ctx, run)
+	if err != nil {
+		l.log.Warn("run serve config: build create request", "run", runID, "error", err)
+		return "", false
+	}
+	if req.ServeConfig == "" {
+		return "", false
+	}
+	return req.ServeConfig, true
 }
 
 // Enabled reports whether a daemon is configured.
@@ -220,7 +337,7 @@ func (l *Lifecycle) buildCreateRequest(ctx context.Context, run db.WorkflowRunRo
 	demand := l.adapterDemandFor(ctx, run)
 	req.AdapterKinds = demand.Kinds()
 	if demand.Has(opencodeAdapterKind) {
-		req.ServeConfig = l.serveConfigFor(run.RuntimeImage, runWorktreeBase(ctx, projectDir, run.ID), run.ID, planeEnv)
+		req.ServeConfig = l.serveConfigFor(run.RuntimeImage, runWorktreeBase(ctx, projectDir, run.ID), run.ID, planeEnv, l.resolveRunUnion(ctx, run))
 	}
 	// Secrets: decrypt per-work-item selection and inject as container env.
 	// KEK is plane-only — resolved once at server construction (env override

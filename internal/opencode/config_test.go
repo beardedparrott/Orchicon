@@ -2,8 +2,12 @@ package opencode
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/beardedparrott/orchicon/internal/mcpclient"
 )
 
 func TestBuildConfigContentRegistersOrchiconMCP(t *testing.T) {
@@ -107,7 +111,7 @@ func TestBuildConfigContentDoesNotDenyReadGrepByDefault(t *testing.T) {
 // image (or an unresolved project dir) must NOT emit the deny, so a worker is
 // never locked out of file access with no batch tool to fall back on.
 func TestRuntimeServeConfigCompositeToolsLiveOnDev(t *testing.T) {
-	dev := RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "", nil)
+	dev := RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "", nil, mcpclient.Resolution{})
 	var devCfg map[string]any
 	if err := json.Unmarshal([]byte(dev), &devCfg); err != nil {
 		t.Fatalf("dev config not valid JSON: %v", err)
@@ -133,7 +137,7 @@ func TestRuntimeServeConfigCompositeToolsLiveOnDev(t *testing.T) {
 	// Composite tools are LIVE on base/gui images too: the worktree sidecar is
 	// DB-less and runs from the daemon's bind-mounted binary. Only the sandbox
 	// DB MCP (`orchicon`) stays dev-only.
-	base := RuntimeServeConfig("orchicon-runtime:local", "/worktree", "", nil)
+	base := RuntimeServeConfig("orchicon-runtime:local", "/worktree", "", nil, mcpclient.Resolution{})
 	var bcfg map[string]any
 	if err := json.Unmarshal([]byte(base), &bcfg); err != nil {
 		t.Fatalf("base config not valid JSON: %v", err)
@@ -228,7 +232,7 @@ func TestRuntimeServeConfigPlaneChannelOnEveryImage(t *testing.T) {
 		"orchicon-runtime:web-research",
 		"orchicon-runtime:orchicon-dev",
 	} {
-		out := RuntimeServeConfig(tag, "/worktree", "run-123", planeEnv)
+		out := RuntimeServeConfig(tag, "/worktree", "run-123", planeEnv, mcpclient.Resolution{})
 		var cfg map[string]any
 		if err := json.Unmarshal([]byte(out), &cfg); err != nil {
 			t.Fatalf("%s config not valid JSON: %v", tag, err)
@@ -254,7 +258,7 @@ func TestRuntimeServeConfigPlaneChannelOnEveryImage(t *testing.T) {
 	// Deny-by-default is preserved: no planeEnv → no plane channel on any
 	// image (a worker whose role grants nothing gets no plane tools).
 	for _, tag := range []string{"orchicon-runtime:orchicon-dev", "orchicon-runtime:web-research"} {
-		out := RuntimeServeConfig(tag, "/worktree", "run-123", nil)
+		out := RuntimeServeConfig(tag, "/worktree", "run-123", nil, mcpclient.Resolution{})
 		var cfg map[string]any
 		if err := json.Unmarshal([]byte(out), &cfg); err != nil {
 			t.Fatalf("%s config not valid JSON: %v", tag, err)
@@ -270,7 +274,7 @@ func TestRuntimeServeConfigPlaneChannelOnEveryImage(t *testing.T) {
 func TestRuntimeServeConfigSandboxMCPOnlyOnDevImages(t *testing.T) {
 	// Dev image: the container serve must register the Orchicon MCP against
 	// the sandbox Postgres (workers get orchicon_* tools in-sandbox).
-	dev := RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "", nil)
+	dev := RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "", nil, mcpclient.Resolution{})
 	var devCfg map[string]any
 	if err := json.Unmarshal([]byte(dev), &devCfg); err != nil {
 		t.Fatalf("dev config not valid JSON: %v", err)
@@ -294,7 +298,7 @@ func TestRuntimeServeConfigSandboxMCPOnlyOnDevImages(t *testing.T) {
 
 	// Base/gui image: no sandbox plane, no MCP — behavior identical to today.
 	for _, tag := range []string{"ghcr.io/beardedparrott/orchicon-runtime:latest", "orchicon-runtime:gui-latest"} {
-		base := RuntimeServeConfig(tag, "", "", nil)
+		base := RuntimeServeConfig(tag, "", "", nil, mcpclient.Resolution{})
 		var baseCfg map[string]any
 		if err := json.Unmarshal([]byte(base), &baseCfg); err != nil {
 			t.Fatalf("base config not valid JSON: %v", err)
@@ -337,7 +341,7 @@ func TestBuildConfigContentCompactionPruneEnabled(t *testing.T) {
 
 	// Runtime-container serve (dev image, the SDLC runs) + base image.
 	for _, tag := range []string{"orchicon-runtime:orchicon-dev", "ghcr.io/beardedparrott/orchicon-runtime:latest"} {
-		out := RuntimeServeConfig(tag, "/worktree", "", nil)
+		out := RuntimeServeConfig(tag, "/worktree", "", nil, mcpclient.Resolution{})
 		var cfg map[string]any
 		if err := json.Unmarshal([]byte(out), &cfg); err != nil {
 			t.Fatalf("runtime config not valid JSON: %v", err)
@@ -358,7 +362,7 @@ func TestBuildConfigContentCompactionPruneEnabled(t *testing.T) {
 // is the per-turn token win: Orchicon's real system prompt still rides the
 // per-message `system` field; the agent prompt is just a tool-guideline shell.
 func TestBuildConfigContentWorkerDefaultAgent(t *testing.T) {
-	out := RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "", nil)
+	out := RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "", nil, mcpclient.Resolution{})
 	var cfg map[string]any
 	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
 		t.Fatalf("runtime config not valid JSON: %v", err)
@@ -397,7 +401,7 @@ func TestBuildConfigContentWorkerDefaultAgent(t *testing.T) {
 func TestBuildConfigContentToolOutputAndBatchTool(t *testing.T) {
 	for name, out := range map[string]string{
 		"host serve":  BuildConfigContent(ConfigOptions{AgentName: workerAgent}),
-		"runtime dev": RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "", nil),
+		"runtime dev": RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "", nil, mcpclient.Resolution{}),
 	} {
 		var cfg map[string]any
 		if err := json.Unmarshal([]byte(out), &cfg); err != nil {
@@ -450,5 +454,148 @@ func TestStripJSONC(t *testing.T) {
 	}
 	if mm["url"] != "https://example.com/a/*/b" {
 		t.Fatalf("url mangled: %q", mm["url"])
+	}
+}
+
+// TestRuntimeServeConfigCarriesRunUnion proves AC 1/AC 2/AC 4 at the builder
+// level: the RUN's union (servers a step did NOT itself define included)
+// reaches the container's emitted config, and a run server whose id collides
+// with a BUILT-IN never overwrites it.
+func TestRuntimeServeConfigCarriesRunUnion(t *testing.T) {
+	union := mcpclient.Resolution{
+		Servers: []mcpclient.ScopedServer{
+			// The server another step defined — the whole point of the union.
+			{Spec: mcpclient.ServerSpec{
+				ID:      "step-b-http",
+				Type:    mcpclient.TypeHTTP,
+				URL:     "https://mcp.example.com/sse",
+				Headers: map[string]string{"Authorization": "Bearer plaintext-token"},
+			}, From: mcpclient.ScopeWorker, FromID: "inline:wkr_b@3"},
+			// A stdio server with env.
+			{Spec: mcpclient.ServerSpec{
+				ID:      "step-a-stdio",
+				Command: []string{"/usr/bin/mcp-server", "--flag"},
+				Env:     map[string]string{"TOKEN": "abc"},
+			}, From: mcpclient.ScopeProject, FromID: "project:prj_1"},
+			// A name clash with a built-in: the built-in MUST win.
+			{Spec: mcpclient.ServerSpec{ID: "orchicon", Command: []string{"/bogus"}},
+				From: mcpclient.ScopeProject, FromID: "project:prj_1"},
+		},
+	}
+	out := RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "run-1", nil, union)
+
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("config is not valid JSON: %v", err)
+	}
+	mcp, ok := cfg["mcp"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected mcp block, got %#v", cfg["mcp"])
+	}
+	bHTTP, ok := mcp["step-b-http"].(map[string]any)
+	if !ok {
+		t.Fatalf("the union's step-b-http server is missing from the config (AC 1/AC 2): %#v", mcp)
+	}
+	if bHTTP["type"] != "remote" || bHTTP["url"] != "https://mcp.example.com/sse" {
+		t.Fatalf("remote server not rendered as McpRemoteConfig: %#v", bHTTP)
+	}
+	hdr, ok := bHTTP["headers"].(map[string]any)
+	if !ok || hdr["Authorization"] != "Bearer plaintext-token" {
+		t.Fatalf("resolved headers not carried to the serve (they are expanded at build time): %#v", bHTTP["headers"])
+	}
+	aStdio, ok := mcp["step-a-stdio"].(map[string]any)
+	if !ok {
+		t.Fatalf("the union's step-a-stdio server is missing (AC 1): %#v", mcp)
+	}
+	if aStdio["type"] != "local" {
+		t.Fatalf("stdio server not rendered as McpLocalConfig: %#v", aStdio)
+	}
+	if env, ok := aStdio["environment"].(map[string]any); !ok || env["TOKEN"] != "abc" {
+		t.Fatalf("stdio env not carried: %#v", aStdio["environment"])
+	}
+	// AC 8: the built-in wins a name clash — the union entry must NOT replace it.
+	builtin, ok := mcp["orchicon"].(map[string]any)
+	if !ok {
+		t.Fatalf("built-in orchicon server missing on a dev image: %#v", mcp)
+	}
+	if cmd, _ := builtin["command"].([]any); len(cmd) == 1 && cmd[0] == "/bogus" {
+		t.Fatalf("a run server OVERWROTE the built-in orchicon server; built-ins must win: %#v", builtin)
+	}
+}
+
+// TestRunUnionDeterministic proves AC 3: two builds from the same run produce
+// byte-identical config, and the builder takes no per-execution argument.
+func TestRunUnionDeterministic(t *testing.T) {
+	union := mcpclient.Resolution{
+		Servers: []mcpclient.ScopedServer{
+			{Spec: mcpclient.ServerSpec{ID: "z", URL: "https://z.example.com"}, From: mcpclient.ScopeProject, FromID: "project:p"},
+			{Spec: mcpclient.ServerSpec{ID: "a", Command: []string{"/bin/a"}}, From: mcpclient.ScopeWorker, FromID: "inline:w@1"},
+		},
+		Skills: []mcpclient.InlineSkillFile{{Path: "skills/x.md"}},
+	}
+	first := RuntimeServeConfig("orchicon-runtime:local", "/worktree", "run-9", map[string]string{"A": "1"}, union)
+	second := RuntimeServeConfig("orchicon-runtime:local", "/worktree", "run-9", map[string]string{"A": "1"}, union)
+	if first != second {
+		t.Fatalf("the config is not deterministic for a run:\n%s\n---\n%s", first, second)
+	}
+}
+
+// TestRuntimeServeConfigEmitsRunSkills proves the run's skill-file union
+// reaches the emitted instructions: a path-only entry is emitted verbatim and
+// an inline-content entry is materialised under <worktree>/.orchicon/skills/.
+func TestRuntimeServeConfigEmitsRunSkills(t *testing.T) {
+	worktree := t.TempDir()
+	out := RuntimeServeConfig("orchicon-runtime:local", worktree, "", nil, mcpclient.Resolution{
+		Skills: []mcpclient.InlineSkillFile{
+			{Path: "/abs/skill/from-store.md"},
+			{Path: "inline/Deploy Helper", Content: "# Deploy\nstep 1"},
+		},
+	})
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("config is not valid JSON: %v", err)
+	}
+	instr, ok := cfg["instructions"].([]any)
+	if !ok {
+		t.Fatalf("expected instructions, got %#v", cfg["instructions"])
+	}
+	joined := ""
+	for _, v := range instr {
+		joined += v.(string) + "\n"
+	}
+	if !strings.Contains(joined, "/abs/skill/from-store.md") {
+		t.Fatalf("path-only skill not emitted verbatim: %s", joined)
+	}
+	materialised := filepath.Join(worktree, ".orchicon", "skills", "deploy-helper.md")
+	if !strings.Contains(joined, materialised) {
+		t.Fatalf("inline-content skill path not emitted: %s", joined)
+	}
+	b, err := os.ReadFile(materialised)
+	if err != nil {
+		t.Fatalf("inline skill content not written to disk: %v", err)
+	}
+	if string(b) != "# Deploy\nstep 1" {
+		t.Fatalf("inline skill content mangled: %q", string(b))
+	}
+}
+
+// TestProvenanceOfServeConfigNamesOnly proves the per-session provenance log
+// reads server NAMES only — never the resolved credentials in env/headers.
+func TestProvenanceOfServeConfigNamesOnly(t *testing.T) {
+	cfg := RuntimeServeConfig("orchicon-runtime:local", "/worktree", "", nil, mcpclient.Resolution{
+		Servers: []mcpclient.ScopedServer{
+			{Spec: mcpclient.ServerSpec{ID: "b-secret", URL: "https://x", Headers: map[string]string{"Authorization": "Bearer TOPSECRET"}}},
+			{Spec: mcpclient.ServerSpec{ID: "a-server", Command: []string{"/bin/a"}}},
+		},
+	})
+	got := provenanceOfServeConfig(cfg)
+	if !strings.Contains(got, "a-server") || !strings.Contains(got, "b-secret") {
+		t.Fatalf("provenance did not name the servers: %q", got)
+	}
+	if strings.Contains(got, "TOPSECRET") {
+		t.Fatalf("provenance leaked a resolved credential: %q", got)
+	}
+	if got != "a-server,b-secret,orchicon-worktree" {
+		t.Fatalf("provenance is not the sorted name set: %q", got)
 	}
 }

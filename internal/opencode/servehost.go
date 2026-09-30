@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/guard"
+	"github.com/beardedparrott/orchicon/internal/mcpclient"
 )
 
 // HostServe is the DEMAND-KEYED opencode serve for the in-process (local)
@@ -34,6 +35,15 @@ import (
 // auth, so it never shares an opencode.db with the operator's own
 // opencode instances. Sessions persist there across serve restarts, so a
 // restart is transparent to sessions (the client re-attaches by id).
+//
+// CROSS-PROJECT UNION IS FORBIDDEN ON A SHARED SERVE. This serve's config is
+// built ONCE (serveConfig) and lives for the plane, so unioning several
+// projects' MCP sets onto it would make one project's servers visible in
+// another project's session — a leak with no consent boundary. A session
+// whose set differs must run on a serve built for that set (HostServePool,
+// servepool.go), each with its OWN data dir; the pool is why this is safe to
+// state absolutely, and it is the strategy the runtime-container bake uses
+// too (one serve per run, config applied once).
 //
 // Safety: the serve process runs the agent's tools for every local
 // execution, so the OS-level execution guard is applied to its PATH in
@@ -68,6 +78,14 @@ type HostServe struct {
 	// startErr is the most recent EnsureStarted failure, kept so a caller
 	// can surface the SAME loud reason the start produced (nil once up).
 	startErr error
+
+	// mcpSet is the RESOLVED MCP set this serve is built for, when it comes
+	// from a HostServePool entry. It is baked into the serve's config ONCE
+	// (serveConfig), so it must be the exact set the sessions landing on this
+	// serve are entitled to and nothing else — a cross-project UNION here
+	// would leak one project's servers into another project's session. The
+	// empty set (the default serve) means today's config, unchanged.
+	mcpSet mcpclient.Resolution
 }
 
 // NewHostServe constructs the host-serve manager. dataDir is the
@@ -95,6 +113,16 @@ func NewAskHostServe(log *slog.Logger, dataDir, home string) *HostServe {
 // PermissionProfile reports the profile this serve was built with.
 func (h *HostServe) PermissionProfile() PermissionProfile {
 	return h.profile
+}
+
+// SetMCPSet binds the RESOLVED MCP set this serve is built for (used by
+// HostServePool). It must be called before the serve starts: the set is baked
+// into OPENCODE_CONFIG_CONTENT ONCE. The empty set is the default (today's
+// config).
+func (h *HostServe) SetMCPSet(set mcpclient.Resolution) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.mcpSet = set
 }
 
 // Enabled reports whether the host serve is configured for this plane.
@@ -317,7 +345,18 @@ func (h *HostServe) kill() {
 // Orchicon MCP (tenant-scoped). Agent prompts are NOT baked — the worker
 // system prompt is delivered per message via the prompt_async `system`
 // field (opencode applies it per turn).
+//
+// CROSS-PROJECT UNION IS FORBIDDEN ON A SHARED SERVE. This config is built
+// ONCE and lives for the plane, so unioning several projects' MCP sets onto
+// it would make one project's servers visible in another project's session —
+// a leak with no consent boundary. A session whose set differs must run on a
+// serve built for that set (HostServePool, servepool.go); the pool is why
+// this is safe to state absolutely. h.mcpSet is exactly ONE resolved set (the
+// empty set = today's config), never a union across projects.
 func (h *HostServe) serveConfig() string {
+	h.mu.Lock()
+	set := h.mcpSet
+	h.mu.Unlock()
 	cfg := BuildConfigContent(ConfigOptions{
 		AgentName:         workerAgent,
 		AgentPrompt:       sessionToolShell,
@@ -326,6 +365,8 @@ func (h *HostServe) serveConfig() string {
 		TenantID:          serveTenantID(),
 		OrchiconMCP:       true,
 		PermissionProfile: h.profile,
+		RunMCP:            set.Servers,
+		RunSkills:         set.Skills,
 	})
 	return cfg
 }
