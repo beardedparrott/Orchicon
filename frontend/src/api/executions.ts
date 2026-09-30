@@ -56,6 +56,11 @@ export const executionKeys = {
     [...executionKeys.all, "list", projectId, status, sortOrder] as const,
   detail: (id: string) => [...executionKeys.all, "detail", id] as const,
   session: (id: string) => [...executionKeys.all, "session", id] as const,
+  /** A tile's TAIL of the transcript. A distinct key from `session` on purpose: the two are
+   *  different payloads by three orders of magnitude, and a shared key would let the page's
+   *  event-burst invalidation re-fetch a tile's tail (and vice versa). */
+  sessionTail: (id: string, limit: number) =>
+    [...executionKeys.all, "session-tail", id, limit] as const,
   todos: (id: string) => [...executionKeys.all, "todos", id] as const,
   pendingApprovals: (executionId?: string) =>
     [...executionKeys.all, "approvals", executionId] as const,
@@ -304,6 +309,46 @@ export function useGetExecutionSession(executionId: string, enabled = true) {
         beforeSeq: 9223372036854775807n,
         limit: 10000,
       });
+      return [...res.parts].reverse();
+    },
+    enabled: Boolean(executionId) && enabled,
+  });
+}
+
+// useGetExecutionSessionTail fetches only the NEWEST few parts of an execution's
+// transcript — for a caller that wants the last thing the worker SAID and nothing else.
+//
+// WHY IT EXISTS, and why it is not a tuning of the hook above. The Heads-Up grid renders one
+// tile per DAG step, and every tile called useGetExecutionSession to feed
+// extractLastTextBlock — which scans BACKWARDS from the end and returns at the first text
+// part it finds, usually within a handful. So each tile downloaded limit=10000 parts to read
+// a ~34-byte block. Measured on a real run: 175,024 parts exist, 10,000 were returned
+// (≈399 kB), and the tile looked at one. With a grid of N tiles and the execution page
+// invalidating that shared query key every 500 ms for the length of a live run, the result
+// was a sustained ~400 kB × N every half second — which saturated the API and hung the whole
+// UI until the run went terminal and the burst stopped.
+//
+// A SEPARATE HOOK RATHER THAN A `limit` ARGUMENT ON THE SHARED ONE: the two callers want
+// opposite things, and one shared query key can only cache one of them. Bumping the
+// transcript from the page's event burst would re-fetch a tile's tail too.
+//
+// The key is distinct, so a tile's tail and the chat pane's full transcript never evict or
+// re-trigger each other.
+export function useGetExecutionSessionTail(
+  executionId: string,
+  enabled = true,
+  limit = 200,
+) {
+  return useQuery({
+    queryKey: executionKeys.sessionTail(executionId, limit),
+    queryFn: async () => {
+      const res = await executionClient.getExecutionSession({
+        executionId,
+        beforeSeq: 9223372036854775807n,
+        limit,
+      });
+      // Same DESC→ASC reversal as the full fetch, so callers can treat the array the
+      // same way (extractLastTextBlock scans from the end either way).
       return [...res.parts].reverse();
     },
     enabled: Boolean(executionId) && enabled,
