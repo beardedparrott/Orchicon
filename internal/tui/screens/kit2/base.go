@@ -44,6 +44,14 @@ type source struct {
 	// rowActions are the CLICKABLE controls rendered on that same top row (the
 	// tree's collapse/expand-all), right-aligned.
 	rowActions []RowAction
+	// caption is a SCREEN-SUPPLIED mode label drawn on that same top row, beside the
+	// search box. It answers "which view am I in?" — the operator's "When in archive
+	// or normal mode in the TUI, it should say so at the top near the search box to
+	// indicate what mode you are in."
+	//
+	// It is a func so the label reports the CURRENT mode at render time, without the
+	// screen re-registering on every switch (the same reason RowAction.Label is one).
+	caption func() string
 	// markable says this source's rows support MULTI-SELECT marks. It defaults to
 	// true, and a screen turns it off for a list it has no bulk operations for.
 	//
@@ -59,7 +67,7 @@ type source struct {
 // topRows is the number of rows this source draws above the table's own rows
 // (the search / controls row).
 func (s *source) topRows() int {
-	if s.filterable || len(s.rowActions) > 0 {
+	if s.filterable || len(s.rowActions) > 0 || s.caption != nil {
 		return 1
 	}
 	return 0
@@ -227,6 +235,19 @@ type Base struct {
 	// The returned cmd is batched with the row's own detail load, so a live preview repaint and the detail
 	// landing cannot arrive out of order.
 	OnHighlight func() tea.Cmd
+
+	// OnItemsLanded, when set, runs after a source's rows are (re)placed by a fetch or a
+	// direct load. A screen uses it to reconcile anything that DEPENDS ON THE ROWS THAT
+	// ARRIVED — the work-items screen rebuilds its collapse/expand-all control here,
+	// because whether that control is worth drawing depends on whether the landed page has
+	// any parent at all.
+	//
+	// It has to be a LANDED-ROWS hook rather than a one-off call at registration: the first
+	// fetch is asynchronous, so at registration time the table is still empty, and a control
+	// gated on "are there parents?" would be dropped for good on a screen that had not
+	// loaded yet. It runs on the UPDATE loop (so it may touch the table), and its command is
+	// batched with the landing's own.
+	OnItemsLanded func() tea.Cmd
 }
 
 // AddSource registers a fetchable list pane.
@@ -768,6 +789,20 @@ func (b *Base) EnableFilter(src string) {
 	}
 }
 
+// SetCaption installs a mode label drawn on the source's top row, beside the
+// search box. Passing nil removes it.
+//
+// The label is read per render, so a screen whose mode changes (the work-items
+// Tree ⇄ Archive switch) only has to install the reader once.
+func (b *Base) SetCaption(src string, label func() string) {
+	for _, s := range b.sources {
+		if s.name == src {
+			s.caption = label
+			return
+		}
+	}
+}
+
 // Filtering reports whether the operator is typing into the filter box.
 func (b *Base) Filtering() bool { return b.filtering }
 
@@ -905,8 +940,14 @@ func (b *Base) Update(msg tea.Msg) (bool, tea.Cmd) {
 			// A freshly created entity is focused the moment it appears.
 			b.focusPending(s.name, s.table)
 			s.table.Loading = false
+			// The rows have LANDED: give the screen the chance to reconcile whatever depends
+			// on them, before the detail path returns (see OnItemsLanded).
+			var landed tea.Cmd
+			if b.OnItemsLanded != nil {
+				landed = b.OnItemsLanded()
+			}
 			if b.noAutoDetail {
-				return true, nil
+				return true, landed
 			}
 			// A JUMP owns the pane until its target has actually landed: the detail it asked for
 			// is the one the operator wants, and the row under the cursor is not it when the
@@ -916,9 +957,9 @@ func (b *Base) Update(msg tea.Msg) (bool, tea.Cmd) {
 			// ownsPending for why consuming it on the first list landing is the bug rather than
 			// the fix.
 			if b.ownsPending(s.name) {
-				return true, nil
+				return true, landed
 			}
-			return true, b.loadDetail()
+			return true, tea.Batch(landed, b.loadDetail())
 		}
 		return true, nil
 
@@ -1724,30 +1765,84 @@ func (b *Base) topLine(s *source, w int) string {
 			left += "  " + strconv.Itoa(n) + "/" + strconv.Itoa(total)
 		}
 	}
+	// The MODE caption the screen asked for, if any (see SetCaption).
+	caption := ""
+	if s.caption != nil {
+		caption = s.caption()
+	}
 
-	// Lay the controls out from the right edge, recording each one's columns
-	// (relative to the row's first cell inside the panel border).
+	// ── The top row is laid out as: LEFT text, then the caption, then the CONTROLS
+	// hard against the right edge.
+	//
+	// THE ORDER OF SACRIFICE IS THE WHOLE DESIGN, and it is: a control's room is
+	// reserved FIRST, out of the SEARCH BOX's remainder (never the caption's), so a
+	// caption can never squeeze a control out; the caption then takes only what is
+	// genuinely left over, and is dropped entirely rather than shrunk to a stub. The
+	// controls on the right are CLICKABLE, so losing one costs a gesture, while the
+	// mode label is one word that the switch notice states in full anyway.
+	//
+	// A CONTROL IS DROPPED, NEVER CLIPPED: the recorded hit-box comes from where a
+	// control was DRAWN, so a clipped control still holds a hit-box the operator
+	// cannot read. (The clip was possible before the caption existed — the loop
+	// always advanced `used` regardless of the room left — so this is a fix, not a
+	// precaution.)
+	baseLeft := left
 	b.actionHits = b.actionHits[:0]
 	var labels []string
-	used := 0
 	// A live MULTI-SELECTION is stated on the same row, left of the controls: the operator
 	// needs to know how many rows a bulk action will hit, and how to drop the selection.
 	if n := b.MarkCount(); n > 0 {
 		if n == 1 {
-			left += "  1 marked (space adds, esc clears)"
+			baseLeft += "  1 marked (space adds, esc clears)"
 		} else {
-			left += fmt.Sprintf("  %d marked (esc clears)", n)
+			baseLeft += fmt.Sprintf("  %d marked (esc clears)", n)
 		}
 	}
-	for i := len(s.rowActions) - 1; i >= 0; i-- {
+	// WHICH CONTROLS SURVIVE IS DECIDED IN DECLARATION ORDER, and a screen declares
+	// them most-important-first. The row right-aligns whatever survives, so the set
+	// that fits is the longest PREFIX of the declared list: a control is dropped
+	// because something declared BEFORE it needed the room, never because a
+	// lower-priority control was placed first. (Placing them right-to-left directly
+	// got this backwards — the last-declared control took the space and the pane's
+	// most important one was the first to go.)
+	minLeft := lipgloss.Width(baseLeft) + 2
+	room := inner - minLeft - 1
+	kept := 0
+	need := 0
+	for i := 0; i < len(s.rowActions); i++ {
+		w := lipgloss.Width("[ "+s.rowActions[i].Label()+" ]") + 1 // +1 for the join space
+		if need+w > room {
+			break
+		}
+		need += w
+		kept++
+	}
+	// Lay the survivors out hard against the right edge, recording where each landed.
+	end := inner - 1
+	for i := kept - 1; i >= 0; i-- {
 		label := "[ " + s.rowActions[i].Label() + " ]"
-		end := inner - used - 1
-		start := end - lipgloss.Width(label) + 1
+		labelW := lipgloss.Width(label)
+		start := end - labelW + 1
 		b.actionHits = append(b.actionHits, actionHit{src: s.name, i: i, x0: start, x1: end})
 		labels = append([]string{label}, labels...)
-		used += lipgloss.Width(label) + 1
+		end = start - 2 // one space, then the next control
 	}
 	right := strings.Join(labels, " ")
+
+	// The MODE caption, in whatever the search box and the reserved controls left
+	// over. It answers the operator's "When in archive or normal mode in the TUI, it
+	// should say so at the top near the search box to indicate what mode you are in."
+	left = baseLeft
+	if caption != "" {
+		const gap = 3
+		avail := inner - lipgloss.Width(baseLeft) - lipgloss.Width(right) - gap - 1
+		if avail >= lipgloss.Width(caption)+2 {
+			if left != "" {
+				left += strings.Repeat(" ", gap)
+			}
+			left += caption
+		}
+	}
 
 	pad := inner - lipgloss.Width(left) - lipgloss.Width(right)
 	if pad < 1 {
@@ -1920,6 +2015,12 @@ func (b *Base) LoadItems(source string, items []Item, next string) bool {
 		// is the synchronous load path, so a caller that is not the shell's
 		// fetch command still focuses the new row.
 		b.focusPending(s.name, s.table)
+		// A direct load is a LANDING too, so the same reconciliation the fetch path
+		// gets applies (see OnItemsLanded) — a test or an optimistic refresh that seeds
+		// rows must leave the pane in the same shape a fetch would.
+		if b.OnItemsLanded != nil {
+			b.OnItemsLanded()
+		}
 		return true
 	}
 	return false

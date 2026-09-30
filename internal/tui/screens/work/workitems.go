@@ -728,6 +728,14 @@ func (m *Model) itemActions() []kit2.Action {
 		return nil
 	}
 	if m.ViewMode() == viewArchive {
+		// A GHOST ANCHOR IS NOT ARCHIVED. It is an ACTIVE ancestor rendered only to
+		// keep an archived item's hierarchy connected (see archiveRows), so offering
+		// "restore" on it would send a request the plane refuses — and, worse, the
+		// operator would read the row as an archived item that had failed to restore.
+		// The row carries the marker in its Meta, so the action layer can tell.
+		if strings.HasPrefix(it.Meta, archiveGhostPrefix+" ancestor") {
+			return nil
+		}
 		return []kit2.Action{{
 			Label: "restore", Key: "R", Source: srcWorkItems,
 			Confirm:  "Restore " + title + "?\nIt returns to the active views at the status it was archived from.",

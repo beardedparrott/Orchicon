@@ -20,6 +20,7 @@ import (
 
 	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
@@ -1065,7 +1066,8 @@ func TestTreeViewRendersRealHierarchy(t *testing.T) {
 
 // The Board view was REMOVED: a status-grouped Kanban does not read as a list
 // in a single-column terminal pane. The cycle is now tree -> archive, and the
-// retired 'B' chord must do nothing at all.
+// retired 'B' chord must do nothing at all — as must 'T' and 'Z', which were
+// direct view chords until the operator retired them in favour of 'v' alone.
 func TestBoardViewIsGone(t *testing.T) {
 	p := newPlane()
 	seedHierarchy(p)
@@ -1097,6 +1099,35 @@ func TestBoardViewIsGone(t *testing.T) {
 	press(t, m, "v")
 	if m.ViewMode() != viewTree {
 		t.Fatalf("v must cycle back to tree, got %q", m.ViewMode())
+	}
+
+	// 'T' and 'Z' are RETIRED as view chords: the operator asked for 'v' alone.
+	// They still ANSWER (an explaining stub, never silence) but they must NOT
+	// change the view — a retired chord that quietly still worked would defeat the
+	// point of retiring it, and one that went silent reads as a broken key.
+	for _, k := range []string{"T", "Z"} {
+		before := m.ViewMode()
+		m.notice = ""
+		press(t, m, k)
+		if m.ViewMode() != before {
+			t.Fatalf("%q must no longer switch views, got %q", k, m.ViewMode())
+		}
+		if m.notice == "" {
+			t.Fatalf("%q was retired but says nothing — the operator is left guessing", k)
+		}
+		if !strings.Contains(m.notice, "v") {
+			t.Fatalf("%q must name the key that does the job, notice = %q", k, m.notice)
+		}
+	}
+
+	// …and the composer's cheat-sheet advertises 'v' alone, which is the half the
+	// operator explicitly asked for ("the shortcut helper in the composer should be
+	// updated").
+	if hint := ansi.Strip(m.HintLine()); strings.Contains(hint, "v/T/Z") {
+		t.Fatalf("the hint still advertises the retired chords: %q", hint)
+	}
+	if hint := ansi.Strip(m.HintLine()); !strings.Contains(hint, "v: view") {
+		t.Fatalf("the hint must advertise v for the view, got %q", hint)
 	}
 
 	// Display switch never mutates or writes.
@@ -1141,7 +1172,8 @@ func TestArchiveViewListsArchivedItems(t *testing.T) {
 		}
 	}
 	// …and the Archive view lists it with the status it restores to.
-	press(t, m, "Z")
+	// `v` cycles tree → archive (the T/Z chords are retired — see screen.go).
+	press(t, m, "v")
 	load(t, m, srcWorkItems)
 	rows := itemsOf(m, srcWorkItems)
 	if !hasTitle(rows, "[task] Done thing") {
@@ -1256,7 +1288,7 @@ func TestArchiveRestoreFromArchiveView(t *testing.T) {
 		t.Fatalf("ArchiveWorkItem calls = %v", p.archived)
 	}
 
-	press(t, m, "Z")
+	press(t, m, "v")
 	load(t, m, srcWorkItems)
 	if !hasTitle(itemsOf(m, srcWorkItems), "[task] Item") {
 		t.Fatalf("the archive view must list the item: %v", titles(itemsOf(m, srcWorkItems)))
