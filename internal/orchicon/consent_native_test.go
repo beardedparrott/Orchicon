@@ -63,6 +63,28 @@ func TestConsentReadOnlyToolsNeverAsk(t *testing.T) {
 	}
 }
 
+// TestOpaqueMCPToolsAreAlwaysGated is child 6's CONSENT half, beside the native
+// tool-loop's classification it belongs to. An operator's MCP tool is a third-party
+// action the platform cannot classify, so it is gated in EVERY mode — Iteration
+// included. The platform's OWN mcp__orchicon__* tools are exempt: the mode table
+// governs them, not consent.
+func TestOpaqueMCPToolsAreAlwaysGated(t *testing.T) {
+	for _, name := range []string{
+		"mcp__github__create_issue", "mcp__sentry__list_issues", "mcp__notes__append",
+	} {
+		if !consentGatedTool(name) {
+			t.Errorf("%q must be gated — an opaque MCP tool is a third-party action the platform cannot classify", name)
+		}
+	}
+	for _, name := range []string{
+		"mcp__orchicon__create_work_item", "mcp__orchicon__get_current_conversation", "orchicon_list_projects",
+	} {
+		if consentGatedTool(name) {
+			t.Errorf("%q must NOT be gated by consent — the mode table governs the platform's own surface", name)
+		}
+	}
+}
+
 // pendingPermIDs returns the ask ids currently parked, for a test that needs to
 // answer one.
 func pendingPermIDs(b *NativeBridge) []string {

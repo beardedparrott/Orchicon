@@ -21,8 +21,9 @@ package claude
 //
 // The scope resolved here is the WORKER scope for a worker execution — the
 // union of the project's owned definitions and the executing version's inline
-// specs (ScopeRef.OwnPermissions, from ExecutionManifest.Permissions). Ask
-// resolves the PROJECT scope (child 6 owns the Ask surface).
+// specs (ScopeRef.OwnPermissions, from ExecutionManifest.Permissions). An Ask
+// conversation resolves the CONVERSATION scope — project-owned ∪ conversation-owned
+// — so it receives both the project's servers and its own (child 6's Ask surface).
 //
 // WHAT IS ADAPTER-SPECIFIC IS ONE FUNCTION: rendering the neutral []ServerSpec
 // into claude's config format (MCPServersFromSpecs in mcpconfig.go). A codex
@@ -44,6 +45,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/beardedparrott/orchicon/internal/askmode"
 	"github.com/beardedparrott/orchicon/internal/mcpclient"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
@@ -151,4 +153,82 @@ func logMCPResolution(where string, servers []MCPServer, provenance string) {
 		names = append(names, s.Name)
 	}
 	slog.Default().Info("claude: MCP servers registered", "transport", where, "servers", strings.Join(names, ","), "provenance", provenance)
+}
+
+// --- the conversation's MCP set, and why it is fingerprinted ----------------
+
+// mcpServerNames renders a RAW resolution's server ids as a stable join: the
+// fingerprint of the set, independent of provenance or transport.
+func mcpServerNames(servers []mcpclient.ScopedServer) string {
+	names := make([]string, 0, len(servers))
+	for _, s := range servers {
+		names = append(names, s.Spec.ID)
+	}
+	return strings.Join(names, ",")
+}
+
+// recordMCPFingerprint stores the resolved set the child is being launched with,
+// tagged with whether the mode could act (which is what decided whether the
+// operator's opaque servers were offered). The value is built by mcpFingerprint,
+// the SAME function the comparator uses, so the two cannot drift.
+func (s *askSession) recordMCPFingerprint(fp string) {
+	s.mu.Lock()
+	s.mcpFingerprint = fp
+	s.mu.Unlock()
+}
+
+// sessionMCPStale reports whether the conversation's CURRENT MCP resolution (or the
+// mode's may-act, which decides whether the operator's servers are offered) differs
+// from what the live child was launched with.
+//
+// WHY THIS EXISTS RATHER THAN BEING IMPLIED. claude's Ask child is long-lived per
+// conversation and takes its servers as `--mcp-config` at SPAWN, so a live child
+// cannot see a server added afterwards, nor a mode switch that flips MayAct. Without
+// this check, AC2/AC4 ("a conversation receives its project's and its own servers")
+// would hold only for a set that was complete before the first message. A false result
+// on any resolution failure is deliberate: argv() reports that failure at spawn, so
+// re-resolving here must not turn a reporting concern into a respawn loop.
+func (s *askSession) sessionMCPStale() bool {
+	s.mu.Lock()
+	alive, fp, mode := s.alive, s.mcpFingerprint, s.mode
+	tenantID, projectID, convID := s.tenantID, s.projectID, s.convID
+	s.mu.Unlock()
+	if !alive {
+		return false
+	}
+	res, err := s.b.resolveMCP(context.Background(), tenantID, mcpclient.ScopeRef{
+		Kind:           mcpclient.ScopeConversation,
+		ProjectID:      projectID,
+		ConversationID: convID,
+	})
+	if err != nil {
+		return false
+	}
+	return mcpFingerprint(askmode.MayAct(mode), res.Servers) != fp
+}
+
+// mcpFingerprint is the ONE rendering of "what the child was launched with": the
+// may-act flag (which decides whether the operator's opaque servers were offered) and
+// the resolved server ids. Both producer and comparator call it, so they cannot drift.
+func mcpFingerprint(mayAct bool, servers []mcpclient.ScopedServer) string {
+	return fmt.Sprintf("mayact=%v;%s", mayAct, mcpServerNames(servers))
+}
+
+// withholdOpaqueMCP drops every server from an Ask render EXCEPT the platform's own
+// Orchicon sidecar. It is the OFFERED half of the opaque-MCP mode rule for this
+// adapter: the operator's servers are opaque, so a mode that may not act is not
+// offered them at all.
+//
+// The platform's sidecar is kept unconditionally: its tools ARE classified by the
+// table (`mcp__orchicon__create_work_item` etc.), so the hook's mode gate governs
+// them precisely, and withholding them in Brainstorm/Quick Work would remove the
+// in-Orchicon work those modes exist to do.
+func withholdOpaqueMCP(servers []MCPServer) []MCPServer {
+	out := make([]MCPServer, 0, 1)
+	for _, s := range servers {
+		if strings.EqualFold(strings.TrimSpace(s.Name), orchiconMCPServerName) {
+			out = append(out, s)
+		}
+	}
+	return out
 }

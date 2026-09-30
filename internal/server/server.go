@@ -100,6 +100,12 @@ type Server struct {
 	// askHostServe process above, which the shutdown already stops — claude's are
 	// children of THIS process, which is why they need their own hook.)
 	claudeBridge *claude.Bridge
+	// askService is the Ask Orchicon service, held so plane shutdown can close its
+	// per-conversation MCP clients. Those hold MCP stdio children — host children the
+	// plane's exit does not reap — so without this a restart leaks them. (The native
+	// bridge holds no MCP client for Ask: the clients live on the service, one per
+	// conversation, which is why the close belongs here.)
+	askService *askorchicon.Service
 }
 
 // New constructs a Server from configuration. It opens the DB pool,
@@ -639,6 +645,15 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	nativeBridge.SetMCPSecretResolver(func(ctx context.Context, tenantID string, env, headers map[string]string) (map[string]string, map[string]string, error) {
 		return mcpsettings.ResolveSecretRefs(ctx, pool, secretsKEK, tenantID, env, headers)
 	})
+	// The NATIVE Ask path resolves and starts its own MCP client per conversation
+	// (ask_mcp.go): the SAME resolver and the SAME KEK the worker bridge uses, so a
+	// conversation receives its project's ∪ its own servers and a ${SECRET_NAME}
+	// definition expands identically on every path. Without this the native Ask turn
+	// has no MCP surface at all, while claude/opencode do.
+	if deps.AskService != nil {
+		deps.AskService.SetScopeResolver(mcpsettings.NewResolver(pool))
+		deps.AskService.SetSecretKEK(secretsKEK)
+	}
 	nativeBridge.SetUsageRecorder(func(ctx context.Context, in scheduler.UsageRecord) error {
 		_, err := usageRecorder.Record(ctx, aigateway.UsageInput{
 			TenantID:         in.TenantID,
@@ -780,6 +795,11 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		hostServe: hostServe, askHostServe: askServe,
 		hostServePool: hostServePool, askServePool: askServePool,
 		claudeBridge: claudeBridge}
+	if deps.AskService != nil {
+		// The Ask service holds the per-conversation MCP clients, so it is the
+		// object plane shutdown must reach; keep the reference.
+		s.askService = deps.AskService
+	}
 	if pub != nil {
 		// Outbox retention: published rows older than the configured window
 		// are pruned on a schedule in bounded batches. Retention <= 0 disables
@@ -1158,6 +1178,12 @@ func (s *Server) Run(ctx context.Context) error {
 		if s.claudeBridge != nil {
 			s.claudeBridge.CloseAsk()
 		}
+		// Ask Orchicon's per-conversation MCP clients: their stdio children are
+		// host children too, so a plane restart must close them here beside the
+		// claude Ask sessions.
+		if s.askService != nil {
+			s.askService.CloseAskMCP()
+		}
 		s.pool.Close()
 		s.shutdownOTel()
 		return nil
@@ -1165,6 +1191,12 @@ func (s *Server) Run(ctx context.Context) error {
 		s.authH.CloseEmbeddedOP()
 		if s.claudeBridge != nil {
 			s.claudeBridge.CloseAsk()
+		}
+		// Ask Orchicon's per-conversation MCP clients: their stdio children are
+		// host children too, so a plane restart must close them here beside the
+		// claude Ask sessions.
+		if s.askService != nil {
+			s.askService.CloseAskMCP()
 		}
 		s.pool.Close()
 		s.shutdownOTel()

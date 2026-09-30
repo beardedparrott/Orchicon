@@ -757,11 +757,17 @@ func (x *MessageMetadata) GetError() string {
 // guardrails. Stored in the database so it can be versioned and edited
 // through the UI.
 type AgentConfig struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	Id              string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	SystemPrompt    string                 `protobuf:"bytes,2,opt,name=system_prompt,json=systemPrompt,proto3" json:"system_prompt,omitempty"`
-	Role            string                 `protobuf:"bytes,3,opt,name=role,proto3" json:"role,omitempty"`
-	Skills          string                 `protobuf:"bytes,4,opt,name=skills,proto3" json:"skills,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Id           string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	SystemPrompt string                 `protobuf:"bytes,2,opt,name=system_prompt,json=systemPrompt,proto3" json:"system_prompt,omitempty"`
+	Role         string                 `protobuf:"bytes,3,opt,name=role,proto3" json:"role,omitempty"`
+	Skills       string                 `protobuf:"bytes,4,opt,name=skills,proto3" json:"skills,omitempty"`
+	// NOTE: `system_prompt`, `role`, `skills`, `behavior` and `agents_md` are FREE-TEXT PROSE rendered as
+	// prompt sections (writeAdditionalInstructions). They are the ONE surviving tenant-level Ask surface
+	// and are a PROMPT SECTION ONLY — they must NOT grow into a scope. There is no tenant MCP tier and no
+	// tenant skill_files tier: `mcp_servers` is owner-scoped (project / conversation / worker version) and
+	// `skill_files` lives on the project / conversation / worker version. `skills` here is PROSE, distinct
+	// from a conversation's `skill_files` (real on-disk paths, rendered as a `# Skills` manifest).
 	Behavior        string                 `protobuf:"bytes,5,opt,name=behavior,proto3" json:"behavior,omitempty"`
 	AgentsMd        string                 `protobuf:"bytes,6,opt,name=agents_md,json=agentsMd,proto3" json:"agents_md,omitempty"`
 	ToolNames       []string               `protobuf:"bytes,7,rep,name=tool_names,json=toolNames,proto3" json:"tool_names,omitempty"`

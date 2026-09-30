@@ -35,30 +35,30 @@ func askModeFromContext(ctx context.Context) string {
 
 // --- the turn's conversation ----------------------------------------------------------------
 
-// ctxKeyConversation is the unexported context key for the turn's conversation id.
-//
 // WHY IT IS ON THE CONTEXT rather than passed as a parameter. A tool that reports facts about THIS session —
 // which conversation it is in, which mode it runs under, which model_ref it resolves to — cannot ask the caller
 // for them: the model would be guessing at its own identity, and "which model am I on" is exactly the fact a
 // Quick Work dispatch has to state out loud before it pins one into a worker. The id is stamped in the SAME
 // place the mode is (chat.go's startConversationTurnOpts) and rides the same path to the tool boundary, so both
 // halves of a turn's self-knowledge come from one read of one row.
-type ctxKeyConversation struct{}
+//
+// THE KEY LIVES IN internal/askmode NOW (ConversationScope), because a SECOND adapter reads the same ids: the
+// claude Ask child resolves its `--mcp-config` from the conversation's project and its own id, and it cannot
+// see an unexported key declared here. The two wrappers below keep this package's names and signatures (its
+// tests and native_tools.go call them) while the VALUE is the one every adapter reads.
 
 // withAskConversation stamps a turn's context with its conversation id.
 func withAskConversation(ctx context.Context, convID string) context.Context {
-	return context.WithValue(ctx, ctxKeyConversation{}, convID)
+	s := askmode.ConversationScopeFromContext(ctx)
+	s.ConversationID = convID
+	return askmode.WithConversationScope(ctx, s)
 }
 
 // askConversationFromContext reads the conversation id stamped on a turn. "" when there is none — a test driving
 // a tool directly, or a caller that never stamped one. A tool that REQUIRES the id must fail loud on "" rather
 // than substituting a guess, because a confidently wrong answer about this session is worse than an error.
 func askConversationFromContext(ctx context.Context) string {
-	if ctx == nil {
-		return ""
-	}
-	v, _ := ctx.Value(ctxKeyConversation{}).(string)
-	return v
+	return askmode.ConversationScopeFromContext(ctx).ConversationID
 }
 
 // --- the conversation's PROJECT -------------------------------------------------------------------
@@ -75,23 +75,22 @@ func askConversationFromContext(ctx context.Context) string {
 // "" means "no project" — an unassigned conversation, or a caller (a test) that never stamped one. The two are
 // deliberately the same value: a sentinel for "never stamped" would buy nothing and need a second code path (see
 // AskFileScope).
-type ctxKeyConversationProject struct{}
+// The VALUE rides in askmode.ConversationScope beside the conversation id; these two wrappers keep the local
+// names so this package's call sites and tests are unchanged.
 
 // withAskConversationProject stamps a turn's context with its conversation's project id. An empty id clears it to
 // the unassigned view, which is exactly what an unassigned conversation wants.
 func withAskConversationProject(ctx context.Context, projectID string) context.Context {
-	return context.WithValue(ctx, ctxKeyConversationProject{}, projectID)
+	s := askmode.ConversationScopeFromContext(ctx)
+	s.ProjectID = projectID
+	return askmode.WithConversationScope(ctx, s)
 }
 
 // askConversationProjectFromContext reads the conversation's project id stamped on a turn. "" when the
 // conversation has no project, or the caller never stamped one — both mean "this conversation has no project",
 // which is what the file/shell suite's scope resolver falls back from.
 func askConversationProjectFromContext(ctx context.Context) string {
-	if ctx == nil {
-		return ""
-	}
-	v, _ := ctx.Value(ctxKeyConversationProject{}).(string)
-	return v
+	return askmode.ConversationScopeFromContext(ctx).ProjectID
 }
 
 // applyAskToolPolicy hands the turn's policy to the adapter, and — the important half — reports when the adapter

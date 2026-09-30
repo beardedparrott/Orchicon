@@ -162,7 +162,7 @@ func OrchiconMCPServer(binary, tenantID string, extraEnv map[string]string) MCPS
 		env[MCPTenantEnv] = t
 	}
 	return MCPServer{
-		Name:    "orchicon",
+		Name:    orchiconMCPServerName,
 		Command: binary,
 		Args:    []string{"mcp"},
 		Env:     env,

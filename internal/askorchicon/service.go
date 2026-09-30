@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -20,6 +21,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/blobstore"
 	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/mcpclient"
 	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
@@ -110,6 +112,23 @@ type Service struct {
 	// the conversation's ledger reconciles against the project dir's git
 	// state. Nil = skipped.
 	fileEditReconciler func(ctx context.Context, tenantID, convID string)
+
+	// mcpResolver is the ONE scope-addressed MCP resolver (internal/mcpsettings).
+	// An Ask conversation resolves SCOPE CONVERSATION — project ∪ conversation —
+	// from it, which is the whole of the native Ask MCP surface's input. Nil
+	// (tests / unwired planes) resolves nothing: no MCP tools, never an error.
+	mcpResolver mcpclient.ScopeResolver
+	// kek is the tenant-secrets key used to expand ${SECRET_NAME} references in a
+	// resolved MCP definition's env/headers before connect. Without it an Ask
+	// conversation whose server carries a reference cannot start, while every
+	// other path can — so it is wired from the server's own KEK.
+	kek []byte
+	// askMCP caches one LIVE MCP client per conversation (see ask_mcp.go). Ask
+	// turns are long-lived, so the client is created once and closed only at
+	// conversation teardown or plane shutdown — never per turn (per-turn close
+	// would re-spawn stdio children on every message).
+	askMCP   map[string]*askMCPEntry
+	askMCPMu sync.Mutex
 
 	apiv1connect.UnimplementedAskOrchiconServiceHandler
 }
@@ -208,6 +227,22 @@ func (s *Service) SetUsageRecorder(rec *aigateway.UsageRecorder) {
 func (s *Service) SetRuntimeClient(rt *runtime.Client) {
 	s.runtimeClient = rt
 	toolRuntimeClient = rt
+}
+
+// SetScopeResolver wires the ONE MCP scope resolver (internal/mcpsettings) into
+// the native Ask path. Mirroring the bridges' setter of the same name is
+// deliberate: ONE resolution, one place the platform decides which servers a
+// session gets. Nil resolves nothing (tests / unwired planes).
+func (s *Service) SetScopeResolver(src mcpclient.ScopeResolver) {
+	s.mcpResolver = src
+}
+
+// SetSecretKEK wires the tenant-secrets key the native Ask path uses to expand
+// ${SECRET_NAME} references in a resolved MCP definition. Every other path
+// (worker bridge, claude bridge) already resolves secrets; without this the
+// native path alone would fail on a server that carries a reference.
+func (s *Service) SetSecretKEK(kek []byte) {
+	s.kek = kek
 }
 
 // SetAdapterKinds wires the Dispatcher's registered adapter kinds (ADR-0004
@@ -636,6 +671,10 @@ func (s *Service) DeleteConversation(ctx context.Context, req *connect.Request[a
 	s.grants.ClearConversation(req.Msg.Id)
 	s.once.ClearConversation(req.Msg.Id)
 	s.pending.removeConversation(req.Msg.Id)
+	// And its MCP client (child 6): the conversation's stdio children must not
+	// outlive it. Closed here rather than per turn — an Ask turn is long-lived, so
+	// a per-turn close would re-spawn every server on every message.
+	s.closeAskMCP(req.Msg.Id)
 	return connect.NewResponse(&apiv1.DeleteConversationResponse{}), nil
 }
 
