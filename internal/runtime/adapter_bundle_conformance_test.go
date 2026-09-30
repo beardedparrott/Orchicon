@@ -69,56 +69,89 @@ func TestAdapterConsumesResolvedBundleOrDeclaresWhyNot(t *testing.T) {
 		t.Fatal("an undeclared kind reported declared=true — the classification check is vacuous")
 	}
 
-	positives := 0
-	runUnionPositives := 0
-	serveDependentCount := 0
-	witnessesExamined := 0
 	for _, kind := range kinds {
 		c, declared := classifyAdapter("", kind)
-		if declared {
-			if c.perSessionBundle {
-				positives++
-			}
-			if serveDependentKind(kind) {
-				serveDependentCount++
-			}
-			if c.runUnionAtServe {
-				positives++
-				runUnionPositives++
-			}
-		}
-		failures := conformanceFailures(kind, c, declared, readSourceFile)
-		for _, axis := range []struct {
-			on        bool
-			witnesses []consumptionWitness
-		}{{c.perSessionBundle, c.perSessionWitnesses}, {c.runUnionAtServe, c.runUnionWitnesses}} {
-			if axis.on {
-				witnessesExamined += len(axis.witnesses)
-			}
-		}
-		if len(failures) > 0 {
+		if failures := conformanceFailures(kind, c, declared, readSourceFile); len(failures) > 0 {
 			t.Fatalf("%s", strings.Join(failures, "\n"))
 		}
 	}
 
-	// Anti-vacuity: if no kind declared any consumption, the gate would pass
-	// trivially. Every builtin kind genuinely consumes the per-session bundle
-	// today, so at least len(kinds) positives must exist.
-	if positives < len(kinds) {
-		t.Fatalf("only %d positive consumption declarations across %d catalog kinds — the gate passes vacuously", positives, len(kinds))
+	// Catalog-level anti-vacuity (the axis is EXERCISED — see
+	// catalogVacuityFailures for why this is NOT "every kind must be
+	// positive").
+	rollup := collectCatalogRollup("", kinds)
+	if failures := catalogVacuityFailures(rollup); len(failures) > 0 {
+		t.Fatalf("%s", strings.Join(failures, "\n"))
 	}
-	if witnessesExamined == 0 {
-		t.Fatal("no consumption witnesses were examined — every positive axis is declarative only; the gate asserts nothing")
+	t.Logf("checked %d catalog kind(s) on both consumption axes (%d serve-dependent); verified %d witness needle(s)", rollup.kinds, rollup.serveDependent, rollup.witnessesExamined)
+}
+
+// catalogRollup tallies the LIVE catalog onto the two consumption axes for
+// the catalog-level anti-vacuity checks.
+type catalogRollup struct {
+	kinds               int
+	perSessionPositives int
+	runUnionPositives   int
+	serveDependent      int
+	witnessesExamined   int
+}
+
+// collectCatalogRollup tallies a kind list through the ONE classification
+// (classifyAdapter), so the anti-vacuity check reads the same declaration the
+// per-kind checker and the daemon do. An undeclared kind is skipped here (the
+// per-kind checker has already failed the gate for it, naming the kind).
+func collectCatalogRollup(home string, kinds []string) catalogRollup {
+	r := catalogRollup{kinds: len(kinds)}
+	for _, kind := range kinds {
+		c, declared := classifyAdapter(home, kind)
+		if !declared {
+			continue
+		}
+		if c.perSessionBundle {
+			r.perSessionPositives++
+			r.witnessesExamined += len(c.perSessionWitnesses)
+		}
+		if c.runUnionAtServe {
+			r.runUnionPositives++
+			r.witnessesExamined += len(c.runUnionWitnesses)
+		}
+		if serveDependentKind(kind) {
+			r.serveDependent++
+		}
 	}
-	// Anti-vacuity on the RUN-UNION axis specifically: every serve-dependent
-	// kind MUST carry a positive runUnionAtServe (conformanceFailures enforces
-	// this per kind), so if the catalog declares any serve-dependent kind but
-	// NONE declares the positive axis, this gate is not actually asserting the
-	// axis at all.
-	if serveDependentCount > 0 && runUnionPositives < serveDependentCount {
-		t.Fatalf("%d serve-dependent catalog kind(s) but only %d positive runUnionAtServe declaration(s) — the run-level-union axis passes vacuously", serveDependentCount, runUnionPositives)
+	return r
+}
+
+// catalogVacuityFailures is the PURE catalog-level anti-vacuity check (no
+// *testing.T) so its accept AND reject paths are demonstrable in-test
+// (TestAdapterConsumptionCheckerIsNotVacuous).
+//
+// It is deliberately NOT "every kind must be positive". AC2 explicitly
+// sanctions a kind whose classification is "an explicit declaration naming
+// what it does not do and why" — a documented NEGATIVE. Demanding
+// len(kinds) positives would FAIL a legitimate catalog that contains one,
+// i.e. exactly the future adapter the task anticipates, and the failure would
+// name no kind (violating AC3). So this asserts the axis is genuinely
+// EXERCISED instead:
+//
+//   - at least one kind positively declares perSessionBundle (the per-session
+//     axis is asserted by somebody), and
+//   - every serve-dependent kind carries a positive runUnionAtServe — the
+//     per-kind checker enforces this too, so a serve-dependent catalog with no
+//     run-union positive means the axis is not being asserted at all.
+//
+// Note: "witnessesExamined == 0" needs no separate fatal — conformanceFailures
+// already fails any positive axis with no witnesses, so a clean per-kind pass
+// implies at least one witness was examined.
+func catalogVacuityFailures(r catalogRollup) []string {
+	var out []string
+	if r.perSessionPositives < 1 {
+		out = append(out, "no catalog kind positively declares perSessionBundle — the per-session axis is asserted by nobody and the gate would pass vacuously. Wire at least one kind's per-session resolving path and declare perSessionBundle:true with perSessionWitnesses.")
 	}
-	t.Logf("checked %d catalog kind(s) on both consumption axes (%d serve-dependent); verified %d witness needle(s)", len(kinds), serveDependentCount, witnessesExamined)
+	if r.serveDependent > 0 && r.runUnionPositives < r.serveDependent {
+		out = append(out, fmt.Sprintf("%d serve-dependent catalog kind(s) but only %d positive runUnionAtServe declaration(s) — the run-level-union axis passes vacuously", r.serveDependent, r.runUnionPositives))
+	}
+	return out
 }
 
 // readSourceFile is the production witness reader: it reads a witness file
@@ -287,5 +320,46 @@ func TestAdapterConsumptionCheckerIsNotVacuous(t *testing.T) {
 		if got := conformanceFailures(kind, c, declared, readSourceFile); len(got) > 0 {
 			t.Fatalf("the REAL declaration for kind %q failed the checker — the gate would fail a correct declaration:\n%s", kind, strings.Join(got, "\n"))
 		}
+	}
+
+	// The catalog-level anti-vacuity check must REJECT a catalog that asserts
+	// neither axis, and ACCEPT a catalog that contains a documented NEGATIVE
+	// kind (AC2 sanctions those) as long as the axis is exercised by somebody.
+	// This is the regression guard for "the rollup must not demand every kind
+	// be positive" — the exact shape the NEXT adapter will have.
+	rollupCases := []struct {
+		name       string
+		r          catalogRollup
+		wantReject bool
+	}{
+		{
+			name:       "no positive per-session declaration is vacuous",
+			r:          catalogRollup{kinds: 3},
+			wantReject: true,
+		},
+		{
+			name:       "serve-dependent kind with no run-union positive is vacuous",
+			r:          catalogRollup{kinds: 3, perSessionPositives: 3, serveDependent: 1},
+			wantReject: true,
+		},
+		{
+			name: "one documented-negative kind alongside a positive one is FINE",
+			r:    catalogRollup{kinds: 4, perSessionPositives: 3, runUnionPositives: 1, serveDependent: 1, witnessesExamined: 4},
+		},
+		{
+			name: "each axis exercised by one kind, other kinds negative, is FINE",
+			r:    catalogRollup{kinds: 5, perSessionPositives: 1, runUnionPositives: 1, serveDependent: 1, witnessesExamined: 3},
+		},
+	}
+	for _, tc := range rollupCases {
+		t.Run("catalog rollup: "+tc.name, func(t *testing.T) {
+			got := catalogVacuityFailures(tc.r)
+			if tc.wantReject && len(got) == 0 {
+				t.Fatalf("the catalog rollup passed a vacuous catalog the gate exists to catch (%s)", tc.name)
+			}
+			if !tc.wantReject && len(got) > 0 {
+				t.Fatalf("the catalog rollup FAILED a legitimate catalog (%s) — a documented-negative kind is sanctioned by AC2:\n%s", tc.name, strings.Join(got, "\n"))
+			}
+		})
 	}
 }
