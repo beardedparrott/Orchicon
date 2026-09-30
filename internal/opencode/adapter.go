@@ -40,6 +40,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
+	"github.com/beardedparrott/orchicon/internal/tenant"
 	"github.com/beardedparrott/orchicon/internal/worktree"
 	"go.opentelemetry.io/otel/attribute"
 	otelmetric "go.opentelemetry.io/otel/metric"
@@ -285,7 +286,16 @@ func executionDir(m scheduler.ExecutionManifest) string {
 // exists + is serving), or the host serve for the in-process population.
 // Returns nil when no serve is available — the caller fails the execution
 // (the legacy one-shot fallback was removed).
-func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.ExecutionManifest) *SessionClient {
+//
+// tenantID is the EXECUTION's tenant (exec.TenantID). It is threaded through
+// because the host-serve pool resolves the session's project MCP set through
+// mcpsettings.Resolver, which reads the tenant from the CONTEXT and errors
+// when none is present — and the reconciler's dispatch context carries NO
+// tenant (it derives straight from the plane's signal context). Without it,
+// every in-process session resolved the EMPTY set and silently landed on the
+// default serve with none of its project's servers (the silent absence AC 6
+// forbids).
+func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.ExecutionManifest, tenantID string) *SessionClient {
 	// Local execution mode: run in-process via the host serve, never
 	// create/exec a container. The reconciler skipped EnsureForRun for a
 	// local run, so RuntimeWorkflowID has no lease — routing it to
@@ -365,7 +375,7 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 		// never a silent absence.
 		h := a.host
 		if a.hostPool != nil {
-			set := a.hostResolvedSet(ctx, manifest)
+			set := a.hostResolvedSet(ctx, manifest, tenantID)
 			pooled, perr := a.hostPool.ServeFor(ctx, set)
 			if perr != nil {
 				a.log.Warn("session transport: host serve pool has no serve for this MCP set — failing execution",
@@ -394,11 +404,16 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 // leak one project's servers into another project's session. A session with
 // no project (standalone dispatch, Ask) resolves the EMPTY set, which maps to
 // the default serve — today's behaviour, unchanged.
-func (a *Adapter) hostResolvedSet(ctx context.Context, manifest scheduler.ExecutionManifest) mcpclient.Resolution {
+//
+// tenantID is scoped onto the context because mcpsettings.Resolver reads the
+// tenant from it (tenant.FromContext) and REFUSES an unscoped context — the
+// reconciler's dispatch context carries no tenant, so passing ctx verbatim
+// made every resolution fail and every session fall back to the default serve.
+func (a *Adapter) hostResolvedSet(ctx context.Context, manifest scheduler.ExecutionManifest, tenantID string) mcpclient.Resolution {
 	if a.hostScope == nil || manifest.ProjectID == "" {
 		return mcpclient.Resolution{}
 	}
-	res, err := a.hostScope.ResolveScope(ctx, mcpclient.ScopeRef{
+	res, err := a.hostScope.ResolveScope(tenant.WithID(ctx, tenantID), mcpclient.ScopeRef{
 		Kind:      mcpclient.ScopeProject,
 		ProjectID: manifest.ProjectID,
 	})
@@ -886,7 +901,7 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		// is picked up: sessionClientFor re-runs Create, which rebuilds the
 		// container and returns the freshly-published serve once it answers
 		// health — the repair's health-gate before re-dispatch.
-		client := a.sessionClientFor(ctx, manifest)
+		client := a.sessionClientFor(ctx, manifest, execRow.TenantID)
 		if client == nil {
 			// No serve to talk to at all. For a runtime-container run this
 			// is itself an infra condition: recycle and retry (bounded).
