@@ -132,55 +132,153 @@ type adapterInstall struct {
 	fingerprint []string
 }
 
-// adapterInstalls returns the host installs a kind contributes to a demanding
-// container, and whether the kind is CLASSIFIED (declared). Each install
-// carries its own read-only/read-write mode (see adapterInstall.rw).
+// consumptionWitness is one file+needle PROVING a consumption axis is
+// actually wired. It is a literal substring of an existing source file, so a
+// declaration that is never backed by real wiring FAILS the conformance gate
+// (internal/runtime/adapter_bundle_conformance_test.go). The needle is
+// checked by READING the file, never by importing the package — the runtime
+// package cannot import internal/opencode|claude|orchicon (no such import
+// exists in any internal/runtime file), so a source scan is the only
+// mechanism available across that boundary. Same technique as
+// internal/neverallow/share_test.go.
+type consumptionWitness struct {
+	// file is a path relative to this package dir (internal/runtime).
+	file string
+	// needle is a literal substring that MUST appear in file.
+	needle string
+}
+
+// The negative-axis notes. Each NAMES what the kind does NOT do and why — the
+// gate requires a non-empty note for every axis a kind leaves negative, so
+// an unexplained negative is a failure, not a silence.
+const (
+	// hostServeUnionLimitationNote states opencode's HOST-SERVE limitation
+	// precisely: a positive runUnionAtServe covers the CONTAINER serve (baked
+	// once at container creation), but the in-process HOST serve is a
+	// different artifact with a different constraint.
+	hostServeUnionLimitationNote = "opencode consumes the per-session bundle (project-owned ∪ own) via hostResolvedSet and a CONTAINER serve receives the run-level union once at creation (resolveRunUnion → RunMCP). HOST-SERVE LIMITATION: an IN-PROCESS host serve builds its OPENCODE_CONFIG_CONTENT ONCE per serve process (internal/opencode/servehost.go serveConfig, BuildConfigContent) and that process lives for the plane, so unioning several projects' MCP sets onto it would make one project's servers visible in another project's session — a leak with no consent boundary. A session whose set differs therefore runs on a serve built for that set (HostServePool, internal/opencode/servepool.go); the host serve resolves exactly ONE set, the PROJECT scope, and never a cross-project union. The run-level (per-container) union is delivered once, at container creation, and is NOT what a host serve carries."
+
+	// claudeNoServeNote: claude has no in-container HTTP serve at all.
+	claudeNoServeNote = "claude is a streaming-stdio adapter with NO in-container HTTP serve (internal/claude/modelref.go; its dispatch path is a host CLI process streaming stdio), so there is no once-per-run serve to bake the run-level union into. It receives the per-SESSION worker scope (the project's owned definitions ∪ THE EXECUTING VERSION's inline specs) at each launch via ScopeRef{Kind: ScopeWorker} → resolveMCP, which this adapter renders. A per-container run-level union is unavailable by construction, not by omission."
+
+	// nativeNoServeNote: the native bridge execs one-shot, no serve.
+	nativeNoServeNote = "the native (orchicon) bridge execs sessions ONE-SHOT inside the run container through the supervisor's exec path with no opencode serve (bootprofile.go nativeAdapterKind), so there is no once-per-run serve to receive the run-level union. The native bridge receives the per-session worker scope (project-owned ∪ own) via ResolveExecutionMCP (internal/orchicon/mcptools.go), which it starts its MCP manager from."
+)
+
+// adapterClass is the ONE classification of an adapter kind. It carries the
+// mount half (installs — read by the daemon's mounts and by
+// adapter_bake_guard_test.go) PLUS the two bundle-consumption axes read by
+// adapter_bundle_conformance_test.go, so the mount guard and the conformance
+// gate read ONE declaration and cannot drift.
+type adapterClass struct {
+	installs []adapterInstall
+	// perSessionBundle: the kind resolves AND consumes the per-session bundle
+	// (project-owned ∪ the scope's own specs). Positive ⇒ perSessionWitnesses
+	// required; negative ⇒ note must explain.
+	perSessionBundle    bool
+	perSessionWitnesses []consumptionWitness
+	// runUnionAtServe: the kind's container-serve path receives the RUN-LEVEL
+	// union at container creation. REQUIRED true for every serve-dependent
+	// kind (ServeDependent==true) — the gate fails a serve-dependent kind that
+	// declares it false.
+	runUnionAtServe   bool
+	runUnionWitnesses []consumptionWitness
+	// note: the explicit declaration for any NEGATIVE axis, naming what the
+	// kind does NOT do and why. Also carries opencode's HOST-SERVE limitation.
+	// The gate requires it to be non-empty whenever an axis is negative.
+	note string
+}
+
+// classifyAdapter is the ONE adapter-kind classification the daemon mounts
+// from AND both guards read. adapterInstalls is a thin wrapper over it (the
+// mount half), so existing callers and tests compile unchanged and the two
+// concerns cannot diverge.
 //
 // declared == false is a guard failure, never a silent pass: a kind the
-// builtin catalog declares but this table has not classified (the next
-// adapter — claude/codex-shaped growth) must fail the mount-never-bake
-// guard loudly instead of quietly mounting nothing.
-func adapterInstalls(home, kind string) ([]adapterInstall, bool) {
+// builtin catalog declares but this switch has not classified (the next
+// adapter — claude/codex-shaped growth) must fail the mount-never-bake guard
+// AND the bundle-conformance gate loudly instead of quietly doing nothing.
+func classifyAdapter(home, kind string) (adapterClass, bool) {
 	join := func(parts ...string) string {
 		return filepath.Join(append([]string{home}, parts...)...)
 	}
 	switch normalizedKind(kind) {
 	case adapter.DefaultAdapterKind: // opencode
-		return []adapterInstall{
-			{probe: join(".config", "opencode"), dir: true},
-			{probe: join(".local", "share", "opencode"), dir: true},
-			{probe: join(".opencode", "bin", "opencode"), mount: join(".opencode"),
-				fingerprint: []string{join(".opencode", "bin"), join(".opencode", "node_modules")}},
+		return adapterClass{
+			installs: []adapterInstall{
+				{probe: join(".config", "opencode"), dir: true},
+				{probe: join(".local", "share", "opencode"), dir: true},
+				{probe: join(".opencode", "bin", "opencode"), mount: join(".opencode"),
+					fingerprint: []string{join(".opencode", "bin"), join(".opencode", "node_modules")}},
+			},
+			perSessionBundle: true,
+			perSessionWitnesses: []consumptionWitness{
+				{file: "../opencode/adapter.go", needle: "hostResolvedSet"},
+			},
+			runUnionAtServe: true,
+			runUnionWitnesses: []consumptionWitness{
+				{file: "lifecycle.go", needle: "resolveRunUnion"},
+				{file: "../opencode/servehost.go", needle: "RunMCP"},
+			},
+			note: hostServeUnionLimitationNote,
 		}, true
 	case adapter.KindClaude:
-		return []adapterInstall{
-			// The config/transcript home: the CLI writes
-			// ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl at run time,
-			// so these two MUST be read-write. NOT fingerprinted (they change
-			// every session and would churn the warm pool).
-			{probe: join(".claude"), dir: true, rw: true},
-			{probe: join(".claude.json"), rw: true},
-			// The launcher is a SYMLINK into the install root below, mounted
-			// at its IDENTICAL absolute host path so the link resolves. Mount
-			// it WITHOUT the install root and the link dangles in-container.
-			// NEVER probe a version string (versions/2.1.261): its basename
-			// survives the bake guard's <3-char filter and becomes a
-			// forbidden-bake needle. Probing .local/bin/claude and
-			// .local/share/claude yields only the benign needles claude and
-			// claude — never a version.
-			{probe: join(".local", "bin", "claude"),
-				fingerprint: []string{join(".local", "bin", "claude")}},
-			{probe: join(".local", "share", "claude"), dir: true,
-				fingerprint: []string{join(".local", "share", "claude")}},
+		return adapterClass{
+			installs: []adapterInstall{
+				// The config/transcript home: the CLI writes
+				// ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl at run time,
+				// so these two MUST be read-write. NOT fingerprinted (they change
+				// every session and would churn the warm pool).
+				{probe: join(".claude"), dir: true, rw: true},
+				{probe: join(".claude.json"), rw: true},
+				// The launcher is a SYMLINK into the install root below, mounted
+				// at its IDENTICAL absolute host path so the link resolves. Mount
+				// it WITHOUT the install root and the link dangles in-container.
+				// NEVER probe a version string (versions/2.1.261): its basename
+				// survives the bake guard's <3-char filter and becomes a
+				// forbidden-bake needle. Probing .local/bin/claude and
+				// .local/share/claude yields only the benign needles claude and
+				// claude — never a version.
+				{probe: join(".local", "bin", "claude"),
+					fingerprint: []string{join(".local", "bin", "claude")}},
+				{probe: join(".local", "share", "claude"), dir: true,
+					fingerprint: []string{join(".local", "share", "claude")}},
+			},
+			perSessionBundle: true,
+			perSessionWitnesses: []consumptionWitness{
+				{file: "../claude/session.go", needle: "ScopeWorker"},
+			},
+			runUnionAtServe: false,
+			note:            claudeNoServeNote,
 		}, true
 	case nativeAdapterKind:
 		// The orchicon binary is the PRODUCT binary: the daemon bind-mounts
 		// it at /usr/local/bin/orchicon (never an adapter CLI, never a
 		// host-home install). It contributes no adapter mount, but it IS
 		// classified — the mount-never-bake rule for it is unchanged.
-		return nil, true
+		return adapterClass{
+			perSessionBundle: true,
+			perSessionWitnesses: []consumptionWitness{
+				{file: "../orchicon/mcptools.go", needle: "ResolveExecutionMCP"},
+			},
+			runUnionAtServe: false,
+			note:            nativeNoServeNote,
+		}, true
 	}
-	return nil, false
+	return adapterClass{}, false
+}
+
+// adapterInstalls returns the host installs a kind contributes to a demanding
+// container, and whether the kind is CLASSIFIED (declared). Each install
+// carries its own read-only/read-write mode (see adapterInstall.rw).
+//
+// It is a THIN WRAPPER over classifyAdapter (the ONE declaration): the mount
+// half lives there, so the daemon's mounts and BOTH guards
+// (adapter_bake_guard_test.go and adapter_bundle_conformance_test.go) read a
+// single classification and cannot drift.
+func adapterInstalls(home, kind string) ([]adapterInstall, bool) {
+	c, ok := classifyAdapter(home, kind)
+	return c.installs, ok
 }
 
 // adapterInstallPaths returns the host install paths a kind's adapter CLI
