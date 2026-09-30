@@ -211,7 +211,7 @@ func TestAskUserAllowedInEveryMode(t *testing.T) {
 func TestAskUserPromptTeachesTheToolNotProse(t *testing.T) {
 	reg := NewToolRegistry(nil, slog.Default(), nil)
 	for _, mode := range []string{modeBrainstorm, modeIteration, modeQuickWork} {
-		p := BuildSystemPrompt(mode, db.AgentConfigRow{}, reg)
+		p := BuildSystemPrompt(mode, db.AgentConfigRow{}, reg, "")
 		if !strings.Contains(p, "orchicon_ask_user") {
 			t.Errorf("mode %q prompt does not name orchicon_ask_user", mode)
 		}
@@ -221,7 +221,7 @@ func TestAskUserPromptTeachesTheToolNotProse(t *testing.T) {
 	}
 	// Brainstorm's clarifying-questions principle must route the question
 	// through the tool, not prose.
-	bp := BuildSystemPrompt(modeBrainstorm, db.AgentConfigRow{}, reg)
+	bp := BuildSystemPrompt(modeBrainstorm, db.AgentConfigRow{}, reg, "")
 	if !strings.Contains(bp, "Put the question to the user with orchicon_ask_user") {
 		t.Error("Brainstorm principle #2 must route clarifying questions through orchicon_ask_user")
 	}

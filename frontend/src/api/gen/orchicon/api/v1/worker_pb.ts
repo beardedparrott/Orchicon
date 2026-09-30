@@ -357,6 +357,21 @@ export class WorkerVersion extends Message<WorkerVersion> {
   agentsMd = "";
 
   /**
+   * skill_files are absolute paths (files OR directories) to SKILL artifacts
+   * selected for THIS VERSION (never the worker header — published versions are
+   * immutable by version and the version is what a dispatch pins to). Rendered
+   * into the composite worker prompt by contextfiles.RenderManifest, union-ed
+   * with the project's skill_files.
+   *
+   * DISTINCT FROM `skills` above: `skills` is free-text prompt PROSE composed
+   * into `# Skills`; these are real on-disk paths. The names stay distinct on
+   * purpose.
+   *
+   * @generated from field: repeated string skill_files = 24;
+   */
+  skillFiles: string[] = [];
+
+  /**
    * adapter is the COMPUTED per-worker adapter selection (ADR-0005 D2):
    * the parsed adapter segment of model_ref (server-side, read-only —
    * never stored separately; the ref is the only store). Legacy 1/2-segment
@@ -396,6 +411,7 @@ export class WorkerVersion extends Message<WorkerVersion> {
     { no: 20, name: "skills", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 21, name: "behavior", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 22, name: "agents_md", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 24, name: "skill_files", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
     { no: 23, name: "adapter", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 

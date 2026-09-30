@@ -49,7 +49,7 @@ func TestQuickWorkToolsAreAllowedInQuickWorkMode(t *testing.T) {
 // THE PERSONA ADVERTISES THEM, which is the only way the model learns they exist.
 func TestThePromptAdvertisesTheQuickWorkTools(t *testing.T) {
 	r := NewToolRegistry(nil, nil, nil)
-	p := BuildSystemPrompt(modeQuickWork, testAgentConfig(), r)
+	p := BuildSystemPrompt(modeQuickWork, testAgentConfig(), r, "")
 	for _, want := range []string{
 		"`orchicon_publish_workflow_version`",
 		"`orchicon_get_current_conversation`",

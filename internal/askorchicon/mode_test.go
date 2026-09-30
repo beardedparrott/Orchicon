@@ -15,7 +15,7 @@ import (
 func TestBuildSystemPromptBrainstorm(t *testing.T) {
 	cfg := testAgentConfig()
 	reg := testToolRegistry()
-	p := BuildSystemPrompt(modeBrainstorm, cfg, reg)
+	p := BuildSystemPrompt(modeBrainstorm, cfg, reg, "")
 	for _, want := range []string{
 		"What can I help you create today?",
 		"## Purpose",

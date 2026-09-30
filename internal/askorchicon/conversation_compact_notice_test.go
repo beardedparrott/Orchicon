@@ -37,7 +37,7 @@ func TestTheSeedDigestSkipsAPlatformNotice(t *testing.T) {
 		{ID: "m3", Role: "assistant", Content: "looking at it now"},
 	}
 
-	prompt := buildSystemPrompt(modeIteration, testAgentConfig(), testToolRegistry(), history, true, nil, "", "")
+	prompt := buildSystemPrompt(modeIteration, testAgentConfig(), testToolRegistry(), history, true, nil, "", "", "")
 
 	if strings.Contains(prompt, "Context compacted to keep this conversation") {
 		t.Fatal("the seed digest replayed a platform notice — the label loop would present it to the " +

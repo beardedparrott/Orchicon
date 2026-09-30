@@ -2994,9 +2994,9 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	if wi.ProjectID != "" {
 		var p db.ProjectRow
 		if err := tx.QueryRow(ctx,
-			`SELECT project_dir, context_files FROM projects WHERE id = $1 AND tenant_id = $2`,
+			`SELECT project_dir, context_files, skill_files FROM projects WHERE id = $1 AND tenant_id = $2`,
 			wi.ProjectID, tenantID,
-		).Scan(&p.ProjectDir, &p.ContextFiles); err == nil {
+		).Scan(&p.ProjectDir, &p.ContextFiles, &p.SkillFiles); err == nil {
 			var sb2 strings.Builder
 			if p.ProjectDir != "" {
 				fmt.Fprintf(&sb2, "Working directory: `%s`\n\n", p.ProjectDir)
@@ -3010,6 +3010,46 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 			}
 			if sb2.Len() > 0 {
 				sb.WriteString(sb2.String())
+			}
+
+			// 2b. SKILLS — the SELECTABLE skill artifacts, rendered by the SAME
+			//     renderer as every other context section (contextfiles.RenderManifest),
+			//     over the UNION of the project's skill_files and this VERSION's
+			//     skill_files. This is the worker half of the one shared platform render
+			//     path; the Ask half calls the same renderer in
+			//     internal/askorchicon/chat.go. NO adapter knows about skills: the
+			//     rendered section is consumed verbatim as part of the composite prompt
+			//     (ADR-0009), which is what makes the feature adapter-agnostic.
+			//
+			//     DISTINCT from worker.Skills, the free-text prompt prose rendered as
+			//     `## Skills` above — this section is real on-disk paths.
+			//
+			//     CONTAINMENT IS ENFORCED HERE, at the render boundary, because a worker
+			//     version is project-agnostic (structural Validate happened at save
+			//     time); the union is filtered against THIS project's dir so a skill
+			//     outside it can never render a dead "could not read" note. Sorted +
+			//     deduped by contextfiles.Union, so two renders of one selection are
+			//     byte-identical (the section sits inside the cached static prefix).
+			var versionSkillFiles []string
+			_ = json.Unmarshal(worker.SkillFiles, &versionSkillFiles)
+			var projectSkillFiles []string
+			_ = json.Unmarshal(p.SkillFiles, &projectSkillFiles)
+			skillUnion := contextfiles.Union(projectSkillFiles, versionSkillFiles)
+			if len(skillUnion) > 0 {
+				if err := contextfiles.ValidateWithin(skillUnion, p.ProjectDir); err != nil {
+					if r.log != nil {
+						r.log.Info("dropping out-of-project skill files from the composite prompt",
+							"project", wi.ProjectID, "error", err.Error())
+					}
+				} else {
+					skillSection, skillFP := r.renderContextSectionCached(tenantID, wi.ProjectID, "# Skills", skillUnion, p.ProjectDir)
+					if skillSection != "" {
+						sb.WriteString(skillSection)
+					}
+					if skillFP != "" {
+						contextFP = contextFP + ".skills:" + skillFP
+					}
+				}
 			}
 		}
 	}

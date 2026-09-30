@@ -25,6 +25,14 @@ type ProjectRow struct {
 	UpdatedAt    time.Time
 	ProjectDir   string
 	ContextFiles []byte // jsonb: absolute file paths selected as context
+	// SkillFiles is the jsonb array of absolute skill file/directory paths
+	// selected for this project. It is the SELECTABLE-skill half of the
+	// prompt, union-ed with a worker version's (or a conversation's)
+	// SkillFiles at render time. DISTINCT from the free-text `skills`
+	// prompt section on worker_versions / ask_orchicon_agent_config: these
+	// are real on-disk paths rendered by contextfiles.RenderManifest, not
+	// prose.
+	SkillFiles []byte // jsonb: absolute skill file/directory paths
 
 	// MaxConcurrentRuns caps how many executions may run concurrently for
 	// this project (concurrency guards). 0 = no additional restriction
@@ -100,7 +108,7 @@ func CreateProject(ctx context.Context, tx pgx.Tx, p ProjectRow) (ProjectRow, er
 		(id, tenant_id, name, slug, status, goals, project_dir, max_concurrent_runs, git_strategy, default_runtime_image, execution_mode)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at,
-			project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy, default_runtime_image, execution_mode`
+			project_dir, context_files, skill_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy, default_runtime_image, execution_mode`
 	row := p
 	if row.GitStrategy == "" {
 		row.GitStrategy = "local"
@@ -115,7 +123,7 @@ func CreateProject(ctx context.Context, tx pgx.Tx, p ProjectRow) (ProjectRow, er
 	).Scan(
 		&row.ID, &row.TenantID, &row.Name, &row.Slug, &row.Status, &row.Goals,
 		&row.Version, &row.CreatedAt, &row.UpdatedAt,
-		&row.ProjectDir, &row.ContextFiles, &row.MaxConcurrentRuns, &row.GitWorkTree, &row.GitDetectedAt, &row.RepoSlug, &row.GitStrategy, &row.DefaultRuntimeImage, &row.ExecutionMode,
+		&row.ProjectDir, &row.ContextFiles, &row.SkillFiles, &row.MaxConcurrentRuns, &row.GitWorkTree, &row.GitDetectedAt, &row.RepoSlug, &row.GitStrategy, &row.DefaultRuntimeImage, &row.ExecutionMode,
 	)
 	if err != nil {
 		return ProjectRow{}, fmt.Errorf("db: create project: %w", err)
@@ -128,13 +136,13 @@ func CreateProject(ctx context.Context, tx pgx.Tx, p ProjectRow) (ProjectRow, er
 // isolation layer; RLS is the backstop (docs/09 §8.5).
 func GetProject(ctx context.Context, tx pgx.Tx, tenantID, id string) (ProjectRow, error) {
 	const q = `SELECT id, tenant_id, name, slug, status, goals, version,
-		created_at, updated_at, project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy, default_runtime_image, execution_mode
+		created_at, updated_at, project_dir, context_files, skill_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy, default_runtime_image, execution_mode
 		FROM projects WHERE id = $1 AND tenant_id = $2`
 	var p ProjectRow
 	err := tx.QueryRow(ctx, q, id, tenantID).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
-		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy, &p.DefaultRuntimeImage, &p.ExecutionMode,
+		&p.ProjectDir, &p.ContextFiles, &p.SkillFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy, &p.DefaultRuntimeImage, &p.ExecutionMode,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ProjectRow{}, ErrNotFound
@@ -211,7 +219,7 @@ func ListProjects(ctx context.Context, tx pgx.Tx, f ListProjectsFilter) ([]Proje
 		idx++
 	}
 	q := fmt.Sprintf(`SELECT id, tenant_id, name, slug, status, goals, version,
-		created_at, updated_at, project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy, default_runtime_image, execution_mode
+		created_at, updated_at, project_dir, context_files, skill_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy, default_runtime_image, execution_mode
 		FROM projects
 		WHERE %s
 		ORDER BY %s %s, id %s LIMIT $%d`, where, sortBy, sortOrder, sortOrder, idx)
@@ -226,7 +234,7 @@ func ListProjects(ctx context.Context, tx pgx.Tx, f ListProjectsFilter) ([]Proje
 		var p ProjectRow
 		if err := rows.Scan(&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status,
 			&p.Goals, &p.Version, &p.CreatedAt, &p.UpdatedAt,
-			&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy, &p.DefaultRuntimeImage, &p.ExecutionMode); err != nil {
+			&p.ProjectDir, &p.ContextFiles, &p.SkillFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy, &p.DefaultRuntimeImage, &p.ExecutionMode); err != nil {
 			return nil, fmt.Errorf("db: scan project: %w", err)
 		}
 		out = append(out, p)
@@ -245,6 +253,7 @@ type UpdateProjectFields struct {
 	Goals               *[]byte
 	ProjectDir          *string
 	ContextFiles        *[]byte
+	SkillFiles          *[]byte
 	MaxConcurrentRuns   *int
 	GitStrategy         *string
 	DefaultRuntimeImage *string
@@ -289,6 +298,11 @@ func UpdateProject(ctx context.Context, tx pgx.Tx, tenantID, id string, expected
 		args = append(args, *f.ContextFiles)
 		setIdx++
 	}
+	if f.SkillFiles != nil {
+		q += fmt.Sprintf(`, skill_files = $%d`, setIdx)
+		args = append(args, *f.SkillFiles)
+		setIdx++
+	}
 	if f.MaxConcurrentRuns != nil {
 		q += fmt.Sprintf(`, max_concurrent_runs = $%d`, setIdx)
 		args = append(args, *f.MaxConcurrentRuns)
@@ -310,12 +324,12 @@ func UpdateProject(ctx context.Context, tx pgx.Tx, tenantID, id string, expected
 		setIdx++
 	}
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
-	q += ` RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at, project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy, default_runtime_image, execution_mode`
+	q += ` RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at, project_dir, context_files, skill_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy, default_runtime_image, execution_mode`
 	var p ProjectRow
 	err := tx.QueryRow(ctx, q, args...).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
-		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy, &p.DefaultRuntimeImage, &p.ExecutionMode,
+		&p.ProjectDir, &p.ContextFiles, &p.SkillFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy, &p.DefaultRuntimeImage, &p.ExecutionMode,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ProjectRow{}, ErrNotFound
@@ -336,12 +350,12 @@ func UpdateProjectGitDetection(ctx context.Context, tx pgx.Tx, tenantID, id stri
 	q := `UPDATE projects SET updated_at = now(), version = version + 1,
 		git_work_tree = $4, git_detected_at = now(), repo_slug = $5
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
-		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at, project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy, default_runtime_image, execution_mode`
+		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at, project_dir, context_files, skill_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy, default_runtime_image, execution_mode`
 	var p ProjectRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion, isWorkTree, repoSlug).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
-		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy, &p.DefaultRuntimeImage, &p.ExecutionMode,
+		&p.ProjectDir, &p.ContextFiles, &p.SkillFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy, &p.DefaultRuntimeImage, &p.ExecutionMode,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ProjectRow{}, ErrNotFound
@@ -447,12 +461,12 @@ func ArchiveProject(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 		SET status = 'archived', updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
 		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at,
-			project_dir, context_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy, default_runtime_image, execution_mode`
+			project_dir, context_files, skill_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy, default_runtime_image, execution_mode`
 	var p ProjectRow
 	err := tx.QueryRow(ctx, q, tenantID, id, expectedVersion).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
-		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy, &p.DefaultRuntimeImage, &p.ExecutionMode,
+		&p.ProjectDir, &p.ContextFiles, &p.SkillFiles, &p.MaxConcurrentRuns, &p.GitWorkTree, &p.GitDetectedAt, &p.RepoSlug, &p.GitStrategy, &p.DefaultRuntimeImage, &p.ExecutionMode,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ProjectRow{}, ErrNotFound

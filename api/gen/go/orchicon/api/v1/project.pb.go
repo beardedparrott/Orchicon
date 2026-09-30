@@ -344,6 +344,18 @@ type Project struct {
 	// execution_mode selects always-container (runtime, default) vs
 	// in-process (local, with honest prompt + DSN fence).
 	ExecutionMode ExecutionMode `protobuf:"varint,16,opt,name=execution_mode,json=executionMode,proto3,enum=orchicon.api.v1.ExecutionMode" json:"execution_mode,omitempty"`
+	// skill_files are absolute paths (files OR directories) to SKILL artifacts
+	// selected for this project. Each is validated by internal/contextfiles
+	// (absolute, no "..", inside project_dir) and rendered into BOTH the worker
+	// composite prompt and the Ask system prompt by contextfiles.RenderManifest —
+	// small files are inlined, larger files and directories become a
+	// "read on demand" manifest.
+	//
+	// DISTINCT FROM the free-text `skills` field on WorkerVersion /
+	// AgentConfig: that is prompt PROSE ("bullet-style skill list"); these are
+	// real on-disk paths. The serialized names stay distinct on purpose so the
+	// two can never be conflated.
+	SkillFiles    []string `protobuf:"bytes,17,rep,name=skill_files,json=skillFiles,proto3" json:"skill_files,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -488,6 +500,13 @@ func (x *Project) GetExecutionMode() ExecutionMode {
 		return x.ExecutionMode
 	}
 	return ExecutionMode_EXECUTION_MODE_UNSPECIFIED
+}
+
+func (x *Project) GetSkillFiles() []string {
+	if x != nil {
+		return x.SkillFiles
+	}
+	return nil
 }
 
 // ContextFiles is a wrapper so UpdateProjectRequest can distinguish
@@ -914,8 +933,14 @@ type UpdateProjectRequest struct {
 	// back to inherit); nil = unchanged (field-mask semantics).
 	DefaultRuntimeImage *string        `protobuf:"bytes,10,opt,name=default_runtime_image,json=defaultRuntimeImage,proto3,oneof" json:"default_runtime_image,omitempty"`
 	ExecutionMode       *ExecutionMode `protobuf:"varint,11,opt,name=execution_mode,json=executionMode,proto3,enum=orchicon.api.v1.ExecutionMode,oneof" json:"execution_mode,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// skill_files REPLACES the project's skill path selection. An empty list
+	// CLEARS it; nil (unset) leaves it unchanged (field-mask semantics, matching
+	// context_files). Reuses the ContextFiles wrapper for the same
+	// presence-vs-empty distinction. Absolute paths only, and each must be inside
+	// the project directory (or the project dir this request sets).
+	SkillFiles    *ContextFiles `protobuf:"bytes,12,opt,name=skill_files,json=skillFiles,proto3,oneof" json:"skill_files,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *UpdateProjectRequest) Reset() {
@@ -1023,6 +1048,13 @@ func (x *UpdateProjectRequest) GetExecutionMode() ExecutionMode {
 		return *x.ExecutionMode
 	}
 	return ExecutionMode_EXECUTION_MODE_UNSPECIFIED
+}
+
+func (x *UpdateProjectRequest) GetSkillFiles() *ContextFiles {
+	if x != nil {
+		return x.SkillFiles
+	}
+	return nil
 }
 
 type ListProjectFilesRequest struct {
@@ -1338,7 +1370,7 @@ const file_orchicon_api_v1_project_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value\"@\n" +
 	"\n" +
 	"GoalFields\x122\n" +
-	"\x06fields\x18\x01 \x03(\v2\x1a.orchicon.api.v1.GoalFieldR\x06fields\"\x8b\x05\n" +
+	"\x06fields\x18\x01 \x03(\v2\x1a.orchicon.api.v1.GoalFieldR\x06fields\"\xac\x05\n" +
 	"\aProject\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x12\n" +
@@ -1359,7 +1391,9 @@ const file_orchicon_api_v1_project_proto_rawDesc = "" +
 	"\trepo_slug\x18\r \x01(\tR\brepoSlug\x12?\n" +
 	"\fgit_strategy\x18\x0e \x01(\x0e2\x1c.orchicon.api.v1.GitStrategyR\vgitStrategy\x122\n" +
 	"\x15default_runtime_image\x18\x0f \x01(\tR\x13defaultRuntimeImage\x12E\n" +
-	"\x0eexecution_mode\x18\x10 \x01(\x0e2\x1e.orchicon.api.v1.ExecutionModeR\rexecutionMode\"$\n" +
+	"\x0eexecution_mode\x18\x10 \x01(\x0e2\x1e.orchicon.api.v1.ExecutionModeR\rexecutionMode\x12\x1f\n" +
+	"\vskill_files\x18\x11 \x03(\tR\n" +
+	"skillFiles\"$\n" +
 	"\fContextFiles\x12\x14\n" +
 	"\x05files\x18\x01 \x03(\tR\x05files\"\x8a\x01\n" +
 	"\rFileTreeEntry\x12\x12\n" +
@@ -1392,7 +1426,7 @@ const file_orchicon_api_v1_project_proto_rawDesc = "" +
 	"\a_status\"t\n" +
 	"\x14ListProjectsResponse\x124\n" +
 	"\bprojects\x18\x01 \x03(\v2\x18.orchicon.api.v1.ProjectR\bprojects\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xb2\x05\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\x87\x06\n" +
 	"\x14UpdateProjectRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\x04name\x18\x02 \x01(\tH\x00R\x04name\x88\x01\x01\x12\x17\n" +
@@ -1407,7 +1441,9 @@ const file_orchicon_api_v1_project_proto_rawDesc = "" +
 	"\fgit_strategy\x18\t \x01(\x0e2\x1c.orchicon.api.v1.GitStrategyH\x06R\vgitStrategy\x88\x01\x01\x127\n" +
 	"\x15default_runtime_image\x18\n" +
 	" \x01(\tH\aR\x13defaultRuntimeImage\x88\x01\x01\x12J\n" +
-	"\x0eexecution_mode\x18\v \x01(\x0e2\x1e.orchicon.api.v1.ExecutionModeH\bR\rexecutionMode\x88\x01\x01B\a\n" +
+	"\x0eexecution_mode\x18\v \x01(\x0e2\x1e.orchicon.api.v1.ExecutionModeH\bR\rexecutionMode\x88\x01\x01\x12C\n" +
+	"\vskill_files\x18\f \x01(\v2\x1d.orchicon.api.v1.ContextFilesH\tR\n" +
+	"skillFiles\x88\x01\x01B\a\n" +
 	"\x05_nameB\a\n" +
 	"\x05_slugB\b\n" +
 	"\x06_goalsB\x0e\n" +
@@ -1416,7 +1452,8 @@ const file_orchicon_api_v1_project_proto_rawDesc = "" +
 	"\x14_max_concurrent_runsB\x0f\n" +
 	"\r_git_strategyB\x18\n" +
 	"\x16_default_runtime_imageB\x11\n" +
-	"\x0f_execution_mode\"^\n" +
+	"\x0f_execution_modeB\x0e\n" +
+	"\f_skill_files\"^\n" +
 	"\x17ListProjectFilesRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
 	"\asubpath\x18\x02 \x01(\tR\asubpath\x12\x19\n" +
@@ -1510,13 +1547,14 @@ var file_orchicon_api_v1_project_proto_depIdxs = []int32{
 	6,  // 13: orchicon.api.v1.UpdateProjectRequest.context_files:type_name -> orchicon.api.v1.ContextFiles
 	1,  // 14: orchicon.api.v1.UpdateProjectRequest.git_strategy:type_name -> orchicon.api.v1.GitStrategy
 	2,  // 15: orchicon.api.v1.UpdateProjectRequest.execution_mode:type_name -> orchicon.api.v1.ExecutionMode
-	7,  // 16: orchicon.api.v1.ListProjectFilesResponse.entries:type_name -> orchicon.api.v1.FileTreeEntry
-	18, // 17: orchicon.api.v1.ProjectEvent.occurred_at:type_name -> google.protobuf.Timestamp
-	18, // [18:18] is the sub-list for method output_type
-	18, // [18:18] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	6,  // 16: orchicon.api.v1.UpdateProjectRequest.skill_files:type_name -> orchicon.api.v1.ContextFiles
+	7,  // 17: orchicon.api.v1.ListProjectFilesResponse.entries:type_name -> orchicon.api.v1.FileTreeEntry
+	18, // 18: orchicon.api.v1.ProjectEvent.occurred_at:type_name -> google.protobuf.Timestamp
+	19, // [19:19] is the sub-list for method output_type
+	19, // [19:19] is the sub-list for method input_type
+	19, // [19:19] is the sub-list for extension type_name
+	19, // [19:19] is the sub-list for extension extendee
+	0,  // [0:19] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_project_proto_init() }

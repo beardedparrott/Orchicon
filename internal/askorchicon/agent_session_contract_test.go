@@ -17,7 +17,7 @@ import (
 // to Ask, this test forces the claim to be revisited rather than silently lying.
 func TestAskPromptDeclaresNoExecutionBudget(t *testing.T) {
 	reg := NewToolRegistry(nil, nil, nil)
-	p := BuildSystemPrompt(modeBrainstorm, db.AgentConfigRow{}, reg)
+	p := BuildSystemPrompt(modeBrainstorm, db.AgentConfigRow{}, reg, "")
 
 	if !strings.Contains(p, "## Session contract") {
 		t.Fatal("the Ask prompt must declare its session contract")
@@ -39,7 +39,7 @@ func TestAskPromptDeclaresNoExecutionBudget(t *testing.T) {
 // block.
 func TestAskPromptCarriesNoWorkerIdentityOrBudgetFraming(t *testing.T) {
 	reg := NewToolRegistry(nil, nil, nil)
-	p := BuildSystemPrompt(modeBrainstorm, db.AgentConfigRow{}, reg)
+	p := BuildSystemPrompt(modeBrainstorm, db.AgentConfigRow{}, reg, "")
 
 	banned := []string{
 		"autonomous coding agent",

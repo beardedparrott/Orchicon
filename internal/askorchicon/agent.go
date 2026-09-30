@@ -40,15 +40,38 @@ type SystemPromptParts struct {
 //
 // An unknown or empty mode falls back to brainstorm, which is the safe default:
 // it is the mode whose disposition is "ask before acting".
-func BuildSystemPrompt(mode string, cfg db.AgentConfigRow, toolRegistry *ToolRegistry) string {
+// skillsSection is the ALREADY-RENDERED `# Skills` manifest (contextfiles.RenderManifest output) for this
+// turn, or "" when the conversation has no skill files. It is passed IN rather than rendered here because
+// rendering needs the conversation and its project row, which this pure function deliberately does not have —
+// the render happens in chat.go (skillManifestSection), where the rows are already loaded. See
+// buildSystemPrompt in chat.go.
+func BuildSystemPrompt(mode string, cfg db.AgentConfigRow, toolRegistry *ToolRegistry, skillsSection string) string {
 	switch mode {
 	case modeIteration:
-		return iterationModeSystemPrompt(cfg, toolRegistry)
+		return iterationModeSystemPrompt(cfg, toolRegistry, skillsSection)
 	case modeQuickWork:
-		return quickWorkModeSystemPrompt(cfg, toolRegistry)
+		return quickWorkModeSystemPrompt(cfg, toolRegistry, skillsSection)
 	default:
-		return brainstormModeSystemPrompt(cfg, toolRegistry)
+		return brainstormModeSystemPrompt(cfg, toolRegistry, skillsSection)
 	}
+}
+
+// writeSkillsManifest appends the `# Skills` manifest produced by the ONE shared platform renderer
+// (internal/contextfiles.RenderManifest) to the persona. It is the Ask half of the single shared render path —
+// the worker composite prompt renders the same manifest in internal/scheduler/workflow_reconciler.go — and it is
+// deliberately the ONLY place a persona learns about skills, so no adapter and no mode needs skill-handling
+// code of its own.
+//
+// The section is distinct from writeAdditionalInstructions (the tenant's free-text prompt) and from the
+// AgentConfig `skills` field (tenant-wide prompt PROSE): this is a manifest of REAL on-disk skill paths, each
+// read on demand. Emitted only when non-empty, mirroring writeAdditionalInstructions.
+func writeSkillsManifest(b *strings.Builder, skillsSection string) {
+	if strings.TrimSpace(skillsSection) == "" {
+		return
+	}
+	b.WriteString("\n\n")
+	b.WriteString(strings.TrimSpace(skillsSection))
+	b.WriteString("\n")
 }
 
 // modeGuide is the roster every persona is given, so any mode can name the
@@ -375,7 +398,7 @@ func writeAdditionalInstructions(b *strings.Builder, cfg db.AgentConfigRow) {
 // brainstormModeSystemPrompt is the DEFAULT persona: the open systems-thinking
 // partner whose actionable outcome is a work item (or working directly, if the
 // operator prefers).
-func brainstormModeSystemPrompt(cfg db.AgentConfigRow, toolRegistry *ToolRegistry) string {
+func brainstormModeSystemPrompt(cfg db.AgentConfigRow, toolRegistry *ToolRegistry, skillsSection string) string {
 	var b strings.Builder
 
 	writeIdentity(&b, modeBrainstorm)
@@ -419,6 +442,7 @@ Confirm-before-mutate discipline is retained unchanged: you confirm before runni
 	writePlatformPrimer(&b, modeBrainstorm)
 	writeToolList(&b, toolRegistry, modeBrainstorm)
 	writeWorkItemDraftingRules(&b)
+	writeSkillsManifest(&b, skillsSection)
 	writeAdditionalInstructions(&b, cfg)
 
 	return b.String()
@@ -522,7 +546,7 @@ func writeQuickWorkDispatchRules(b *strings.Builder) {
 // ensures it runs a full suite of tests that are available. It should make
 // suggestions based on feedback and be helpful the whole way. It is your
 // architect, developer, designer, researcher, and friend/colleague."
-func iterationModeSystemPrompt(cfg db.AgentConfigRow, toolRegistry *ToolRegistry) string {
+func iterationModeSystemPrompt(cfg db.AgentConfigRow, toolRegistry *ToolRegistry, skillsSection string) string {
 	var b strings.Builder
 
 	writeIdentity(&b, modeIteration)
@@ -551,6 +575,7 @@ Your architect, developer, designer, researcher, and colleague. You work on the 
 	writeIntegrationMapInOpenWork(&b)
 	writePlatformPrimer(&b, modeIteration)
 	writeToolList(&b, toolRegistry, modeIteration)
+	writeSkillsManifest(&b, skillsSection)
 	writeAdditionalInstructions(&b, cfg)
 
 	return b.String()
@@ -571,7 +596,7 @@ Your architect, developer, designer, researcher, and colleague. You work on the 
 // workers, and workflows in an ephemeral fashion and kick them off immediately,
 // and monitor the status of those workflows. It should basically work like
 // subagents, but the subagents are separate workers/workflows."
-func quickWorkModeSystemPrompt(cfg db.AgentConfigRow, toolRegistry *ToolRegistry) string {
+func quickWorkModeSystemPrompt(cfg db.AgentConfigRow, toolRegistry *ToolRegistry, skillsSection string) string {
 	var b strings.Builder
 
 	writeIdentity(&b, modeQuickWork)
@@ -655,6 +680,7 @@ Do NOT bind them for a job and do NOT assign them to an ephemeral item. They are
 	writePlatformPrimer(&b, modeQuickWork)
 	writeToolList(&b, toolRegistry, modeQuickWork)
 	writeQuickWorkDispatchRules(&b)
+	writeSkillsManifest(&b, skillsSection)
 	writeAdditionalInstructions(&b, cfg)
 
 	return b.String()

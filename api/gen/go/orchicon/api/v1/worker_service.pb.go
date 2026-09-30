@@ -127,7 +127,12 @@ type CreateWorkerRequest struct {
 	// kind; when model_ref is also set the two must AGREE (the ref's parsed
 	// adapter segment == this value); a lone adapter with no model_ref is
 	// rejected — the ref is the only persisted store of the selection.
-	Adapter       string `protobuf:"bytes,24,opt,name=adapter,proto3" json:"adapter,omitempty"`
+	Adapter string `protobuf:"bytes,24,opt,name=adapter,proto3" json:"adapter,omitempty"`
+	// skill_files is a JSON array of absolute skill file/directory paths for the
+	// new worker's first version. DISTINCT FROM `skills` (free-text prompt prose)
+	// — these are real on-disk paths rendered by contextfiles.RenderManifest and
+	// union-ed with the project's at render time.
+	SkillFiles    *string `protobuf:"bytes,25,opt,name=skill_files,json=skillFiles,proto3,oneof" json:"skill_files,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -319,6 +324,13 @@ func (x *CreateWorkerRequest) GetRoleRef() string {
 func (x *CreateWorkerRequest) GetAdapter() string {
 	if x != nil {
 		return x.Adapter
+	}
+	return ""
+}
+
+func (x *CreateWorkerRequest) GetSkillFiles() string {
+	if x != nil && x.SkillFiles != nil {
+		return *x.SkillFiles
 	}
 	return ""
 }
@@ -1693,7 +1705,13 @@ type UpdateWorkerVersionRequest struct {
 	// contract. A DEPRECATED version is rejected FailedPrecondition in both
 	// modes: it cannot be reverted to draft, and this API offers no
 	// unpublished edit of it.
-	Republish     bool `protobuf:"varint,23,opt,name=republish,proto3" json:"republish,omitempty"`
+	Republish bool `protobuf:"varint,23,opt,name=republish,proto3" json:"republish,omitempty"`
+	// skill_files is a JSON array of absolute skill file/directory paths for this
+	// version. DISTINCT FROM `skills` (free-text prompt prose): these are real
+	// on-disk paths, union-ed with the project's at render time. Paths are
+	// validated structurally (absolute, no ".."); the project-containment check
+	// runs at the render boundary.
+	SkillFiles    *string `protobuf:"bytes,24,opt,name=skill_files,json=skillFiles,proto3,oneof" json:"skill_files,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1861,6 +1879,13 @@ func (x *UpdateWorkerVersionRequest) GetRepublish() bool {
 	return false
 }
 
+func (x *UpdateWorkerVersionRequest) GetSkillFiles() string {
+	if x != nil && x.SkillFiles != nil {
+		return *x.SkillFiles
+	}
+	return ""
+}
+
 type UpdateWorkerVersionResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Version       *WorkerVersion         `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
@@ -1936,7 +1961,13 @@ type CreateWorkerVersionRequest struct {
 	// calls leaves an unpublished draft behind. The version number advances
 	// as usual and current_version follows the newly published version.
 	// false (default) creates a draft, exactly as before.
-	Publish       bool `protobuf:"varint,23,opt,name=publish,proto3" json:"publish,omitempty"`
+	Publish bool `protobuf:"varint,23,opt,name=publish,proto3" json:"publish,omitempty"`
+	// skill_files is a JSON array of absolute skill file/directory paths for the
+	// new version. DISTINCT FROM `skills` (free-text prompt prose): these are real
+	// on-disk paths, union-ed with the project's at render time. Paths are
+	// validated structurally (absolute, no ".."); the project-containment check
+	// runs at the render boundary.
+	SkillFiles    *string `protobuf:"bytes,24,opt,name=skill_files,json=skillFiles,proto3,oneof" json:"skill_files,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2095,6 +2126,13 @@ func (x *CreateWorkerVersionRequest) GetPublish() bool {
 		return x.Publish
 	}
 	return false
+}
+
+func (x *CreateWorkerVersionRequest) GetSkillFiles() string {
+	if x != nil && x.SkillFiles != nil {
+		return *x.SkillFiles
+	}
+	return ""
 }
 
 type CreateWorkerVersionResponse struct {
@@ -2812,7 +2850,7 @@ var File_orchicon_api_v1_worker_service_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\n" +
-	"$orchicon/api/v1/worker_service.proto\x12\x0forchicon.api.v1\x1a\x1corchicon/api/v1/worker.proto\x1a\x1eorchicon/api/v1/category.proto\"\xfc\x05\n" +
+	"$orchicon/api/v1/worker_service.proto\x12\x0forchicon.api.v1\x1a\x1corchicon/api/v1/worker.proto\x1a\x1eorchicon/api/v1/category.proto\"\xb2\x06\n" +
 	"\x13CreateWorkerRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
@@ -2839,7 +2877,10 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\bbehavior\x18\x15 \x01(\tR\bbehavior\x12\x1b\n" +
 	"\tagents_md\x18\x16 \x01(\tR\bagentsMd\x12\x19\n" +
 	"\brole_ref\x18\x17 \x01(\tR\aroleRef\x12\x18\n" +
-	"\aadapter\x18\x18 \x01(\tR\aadapterJ\x04\b\x06\x10\a\"\x81\x01\n" +
+	"\aadapter\x18\x18 \x01(\tR\aadapter\x12$\n" +
+	"\vskill_files\x18\x19 \x01(\tH\x00R\n" +
+	"skillFiles\x88\x01\x01B\x0e\n" +
+	"\f_skill_filesJ\x04\b\x06\x10\a\"\x81\x01\n" +
 	"\x14CreateWorkerResponse\x12/\n" +
 	"\x06worker\x18\x01 \x01(\v2\x17.orchicon.api.v1.WorkerR\x06worker\x128\n" +
 	"\aversion\x18\x02 \x01(\v2\x1e.orchicon.api.v1.WorkerVersionR\aversion\"\xa2\x01\n" +
@@ -2918,7 +2959,7 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\x17GetWorkerVersionRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"T\n" +
 	"\x18GetWorkerVersionResponse\x128\n" +
-	"\aversion\x18\x01 \x01(\v2\x1e.orchicon.api.v1.WorkerVersionR\aversion\"\xfb\a\n" +
+	"\aversion\x18\x01 \x01(\v2\x1e.orchicon.api.v1.WorkerVersionR\aversion\"\xb1\b\n" +
 	"\x1aUpdateWorkerVersionRequest\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12\x1d\n" +
 	"\n" +
@@ -2942,7 +2983,9 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\bbehavior\x18\x14 \x01(\tH\rR\bbehavior\x88\x01\x01\x12 \n" +
 	"\tagents_md\x18\x15 \x01(\tH\x0eR\bagentsMd\x88\x01\x01\x12\x1d\n" +
 	"\aadapter\x18\x16 \x01(\tH\x0fR\aadapter\x88\x01\x01\x12\x1c\n" +
-	"\trepublish\x18\x17 \x01(\bR\trepublishB\f\n" +
+	"\trepublish\x18\x17 \x01(\bR\trepublish\x12$\n" +
+	"\vskill_files\x18\x18 \x01(\tH\x10R\n" +
+	"skillFiles\x88\x01\x01B\f\n" +
 	"\n" +
 	"_model_refB\x10\n" +
 	"\x0e_system_promptB\x12\n" +
@@ -2961,9 +3004,10 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\n" +
 	"_agents_mdB\n" +
 	"\n" +
-	"\b_adapterJ\x04\b\x06\x10\a\"W\n" +
+	"\b_adapterB\x0e\n" +
+	"\f_skill_filesJ\x04\b\x06\x10\a\"W\n" +
 	"\x1bUpdateWorkerVersionResponse\x128\n" +
-	"\aversion\x18\x01 \x01(\v2\x1e.orchicon.api.v1.WorkerVersionR\aversion\"\xd8\a\n" +
+	"\aversion\x18\x01 \x01(\v2\x1e.orchicon.api.v1.WorkerVersionR\aversion\"\x8e\b\n" +
 	"\x1aCreateWorkerVersionRequest\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12 \n" +
 	"\tmodel_ref\x18\a \x01(\tH\x00R\bmodelRef\x88\x01\x01\x12(\n" +
@@ -2985,7 +3029,9 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\bbehavior\x18\x14 \x01(\tH\rR\bbehavior\x88\x01\x01\x12 \n" +
 	"\tagents_md\x18\x15 \x01(\tH\x0eR\bagentsMd\x88\x01\x01\x12\x1d\n" +
 	"\aadapter\x18\x16 \x01(\tH\x0fR\aadapter\x88\x01\x01\x12\x18\n" +
-	"\apublish\x18\x17 \x01(\bR\apublishB\f\n" +
+	"\apublish\x18\x17 \x01(\bR\apublish\x12$\n" +
+	"\vskill_files\x18\x18 \x01(\tH\x10R\n" +
+	"skillFiles\x88\x01\x01B\f\n" +
 	"\n" +
 	"_model_refB\x10\n" +
 	"\x0e_system_promptB\x12\n" +
@@ -3004,7 +3050,8 @@ const file_orchicon_api_v1_worker_service_proto_rawDesc = "" +
 	"\n" +
 	"_agents_mdB\n" +
 	"\n" +
-	"\b_adapterJ\x04\b\x06\x10\a\"W\n" +
+	"\b_adapterB\x0e\n" +
+	"\f_skill_filesJ\x04\b\x06\x10\a\"W\n" +
 	"\x1bCreateWorkerVersionResponse\x128\n" +
 	"\aversion\x18\x01 \x01(\v2\x1e.orchicon.api.v1.WorkerVersionR\aversion\"K\n" +
 	"\x16AcquireEditLockRequest\x12\x1b\n" +
@@ -3219,6 +3266,7 @@ func file_orchicon_api_v1_worker_service_proto_init() {
 	}
 	file_orchicon_api_v1_worker_proto_init()
 	file_orchicon_api_v1_category_proto_init()
+	file_orchicon_api_v1_worker_service_proto_msgTypes[0].OneofWrappers = []any{}
 	file_orchicon_api_v1_worker_service_proto_msgTypes[2].OneofWrappers = []any{}
 	file_orchicon_api_v1_worker_service_proto_msgTypes[20].OneofWrappers = []any{}
 	file_orchicon_api_v1_worker_service_proto_msgTypes[27].OneofWrappers = []any{}

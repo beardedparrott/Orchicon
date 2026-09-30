@@ -246,6 +246,17 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 		}
 		fields.ContextFiles = &filesJSON
 	}
+	if msg.SkillFiles != nil {
+		files := msg.SkillFiles.Files
+		if err := validateContextFiles(files); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		filesJSON, err := contextFilesToJSON(files)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		fields.SkillFiles = &filesJSON
+	}
 	if msg.MaxConcurrentRuns != nil {
 		limit := int(*msg.MaxConcurrentRuns)
 		if limit < 0 {
@@ -302,7 +313,7 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 			}
 		}
 	}
-	if fields.Name == nil && fields.Slug == nil && fields.Goals == nil && fields.ProjectDir == nil && fields.ContextFiles == nil && fields.MaxConcurrentRuns == nil && fields.GitStrategy == nil && fields.DefaultRuntimeImage == nil && fields.ExecutionMode == nil {
+	if fields.Name == nil && fields.Slug == nil && fields.Goals == nil && fields.ProjectDir == nil && fields.ContextFiles == nil && fields.SkillFiles == nil && fields.MaxConcurrentRuns == nil && fields.GitStrategy == nil && fields.DefaultRuntimeImage == nil && fields.ExecutionMode == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("at least one field must be set"))
 	}
 
@@ -330,6 +341,20 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
 	}
+	// Skill files are held to the SAME boundary as context files, and for the
+	// same reason: the project directory is the only directory mounted into a
+	// worker's container, so a skill path outside it is invisible to the worker.
+	// Rejecting it at save time (with the project dir NAMED in the error) beats
+	// letting it render as a dead "could not read" note in every prompt.
+	if msg.SkillFiles != nil {
+		effDir := current.ProjectDir
+		if fields.ProjectDir != nil {
+			effDir = *fields.ProjectDir
+		}
+		if err := contextfiles.ValidateWithin(msg.SkillFiles.Files, effDir); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+	}
 	updated, err := db.UpdateProject(ctx, ttx.Tx, tenantID, msg.Id, current.Version, fields)
 	if err != nil {
 		return nil, mapDBError(err)
@@ -347,7 +372,7 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 	s.log.Info("project updated", "id", updated.ID, "version", updated.Version)
 	// Project dir / context files changed → refresh the container mount
 	// manifest immediately (the periodic writer is a safety net).
-	if fields.ProjectDir != nil || fields.ContextFiles != nil {
+	if fields.ProjectDir != nil || fields.ContextFiles != nil || fields.SkillFiles != nil {
 		notifyProjectChanged()
 	}
 	return connect.NewResponse(&apiv1.UpdateProjectResponse{Project: rowToProto(updated)}), nil
@@ -448,12 +473,12 @@ func (s *Service) PauseProject(ctx context.Context, req *connect.Request[apiv1.P
 	const q = `UPDATE projects SET status = 'paused', updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
 		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at,
-			project_dir, context_files, max_concurrent_runs`
+			project_dir, context_files, skill_files, max_concurrent_runs`
 	var p db.ProjectRow
 	err = ttx.Tx.QueryRow(ctx, q, tenantID, req.Msg.Id, current.Version).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
-		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns,
+		&p.ProjectDir, &p.ContextFiles, &p.SkillFiles, &p.MaxConcurrentRuns,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("project not found"))
@@ -497,12 +522,12 @@ func (s *Service) ActivateProject(ctx context.Context, req *connect.Request[apiv
 	const q = `UPDATE projects SET status = 'active', updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3 AND status = 'drafting'
 		RETURNING id, tenant_id, name, slug, status, goals, version, created_at, updated_at,
-			project_dir, context_files, max_concurrent_runs`
+			project_dir, context_files, skill_files, max_concurrent_runs`
 	var p db.ProjectRow
 	err = ttx.Tx.QueryRow(ctx, q, tenantID, req.Msg.Id, current.Version).Scan(
 		&p.ID, &p.TenantID, &p.Name, &p.Slug, &p.Status, &p.Goals,
 		&p.Version, &p.CreatedAt, &p.UpdatedAt,
-		&p.ProjectDir, &p.ContextFiles, &p.MaxConcurrentRuns,
+		&p.ProjectDir, &p.ContextFiles, &p.SkillFiles, &p.MaxConcurrentRuns,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Either the version was stale or the project is not drafting.

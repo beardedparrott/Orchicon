@@ -18,6 +18,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/blobstore"
+	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/runtime"
@@ -1048,8 +1049,11 @@ func (s *Service) conversationRowToProto(r db.ConversationRow, messageCount int,
 		// FULLSEND is COMPUTED, never stored: it rides the same read-time seam as
 		// turn_in_flight below, so every list/get answers with the state the plane holds
 		// right now rather than a column someone could forget to update.
-		Fullsend:                  s.fullsend.Enabled(r.ID),
-		ProjectId:                 r.ProjectID,
+		Fullsend:  s.fullsend.Enabled(r.ID),
+		ProjectId: r.ProjectID,
+		// SkillFiles is the SELECTABLE skill path array (real on-disk paths),
+		// DISTINCT from AgentConfig.skills (tenant-wide free-text prompt prose).
+		SkillFiles:                skillFilesFromJSON(r.SkillFiles),
 		MessageCount:              int32(messageCount),
 		LastMessagePreview:        lastPreview,
 		TurnInFlight:              st.inFlight,
@@ -1118,6 +1122,93 @@ func (s *Service) SetConversationProject(ctx context.Context, req *connect.Reque
 	return connect.NewResponse(&apiv1.SetConversationProjectResponse{
 		Conversation: s.conversationRowToProto(row, count, preview, s.turnStatus(row.ID, stallWindow)),
 	}), nil
+}
+
+// SetConversationSkillFiles replaces a conversation's skill_files path array (an empty list clears it). It is
+// the conversation-level half of the skills feature: the UNION of a conversation's skill files and its project's
+// is what the Ask system prompt renders (see skillManifestSection in chat.go), through the ONE shared renderer
+// contextfiles.RenderManifest — no Ask-specific skill code exists.
+//
+// TWO VALIDATION RULES, both reusing internal/contextfiles unchanged:
+//
+//   - STRUCTURAL (Validate): every entry must be absolute, non-empty, bounded, and free of "..".
+//   - CONTAINMENT (ValidateWithin): when the conversation is assigned to a project WITH a project_dir, every
+//     entry must live inside it. The project directory is the only directory mounted into a worker's container,
+//     so a skill outside it is invisible to the worker — rejecting it at save time (with the directory NAMED in
+//     the error) is strictly better than rendering a dead "could not read" note in every turn's prompt.
+//
+// DISTINCT FROM the free-text `skills` PROMPT SECTION on the tenant agent config: that is prose, this is a list
+// of real on-disk paths.
+func (s *Service) SetConversationSkillFiles(ctx context.Context, req *connect.Request[apiv1.SetConversationSkillFilesRequest]) (*connect.Response[apiv1.SetConversationSkillFilesResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	files := req.Msg.Files
+	if err := contextfiles.Validate(files); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	// Read the conversation first so the containment check runs against the project it is ACTUALLY in, read in
+	// the same transaction as the write — the conversation's project cannot move between the check and the save.
+	current, err := db.GetConversation(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("conversation not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if current.ProjectID != "" {
+		if p, err := db.GetProject(ctx, ttx.Tx, tenantID, current.ProjectID); err == nil {
+			if err := contextfiles.ValidateWithin(files, p.ProjectDir); err != nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			}
+		}
+	}
+	filesJSON, err := contextfiles.ToJSON(files)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	row, err := db.SetConversationSkillFiles(ctx, ttx.Tx, tenantID, req.Msg.Id, filesJSON)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("conversation not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.skill_files_changed", "conversation", row.ID,
+		nil, audit.Snapshot(map[string]any{"skill_files": files})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.skill_files_changed: %w", err))
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	count, _ := db.CountConversationMessages(ctx, ttx.Tx, tenantID, row.ID)
+	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
+	stallWindow := s.chatStallWindow(ctx, ttx.Tx, tenantID)
+	return connect.NewResponse(&apiv1.SetConversationSkillFilesResponse{
+		Conversation: s.conversationRowToProto(row, count, preview, s.turnStatus(row.ID, stallWindow)),
+	}), nil
+}
+
+// skillFilesFromJSON best-effort decodes a conversation's skill_files JSONB column into the proto's repeated
+// string field. A corrupt payload degrades to empty rather than failing the read.
+func skillFilesFromJSON(data []byte) []string {
+	if len(data) == 0 {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 // turnStatusInfo is the server-confirmed snapshot of a conversation's running

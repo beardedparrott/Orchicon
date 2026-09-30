@@ -144,6 +144,12 @@ func TestWorktreeExecutionRowSkippedRun(t *testing.T) {
 		t.Fatalf("commit step run: %v", err)
 	}
 
+	// A ready adapter of the seeded runtime kind so selectAdapter succeeds —
+	// without it the dispatch is held ("no suitable adapter") and no execution
+	// is ever linked to the step run, which is what this test asserts. (Its
+	// sibling above creates one; this test was missing the call.)
+	_ = createTestAdapter(t, env.pool, "opencode", 8)
+
 	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
 	if err := rec.reconcileOne(ctx, env.itemID, sr.ID); err != nil {
 		t.Fatalf("reconcileOne: %v", err)

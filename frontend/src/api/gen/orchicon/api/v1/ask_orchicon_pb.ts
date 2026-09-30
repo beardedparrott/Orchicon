@@ -216,6 +216,20 @@ export class Conversation extends Message<Conversation> {
    */
   fullsend = false;
 
+  /**
+   * skill_files are absolute paths (files OR directories) to SKILL artifacts
+   * selected for THIS CONVERSATION. Rendered into the Ask system prompt by
+   * contextfiles.RenderManifest, union-ed with the conversation's project's
+   * skill_files.
+   *
+   * DISTINCT FROM AgentConfig.skills below: that is the tenant-wide free-text
+   * `skills` PROMPT SECTION (prose); these are real on-disk paths. The serialized
+   * names stay distinct on purpose.
+   *
+   * @generated from field: repeated string skill_files = 17;
+   */
+  skillFiles: string[] = [];
+
   constructor(data?: PartialMessage<Conversation>) {
     super();
     proto3.util.initPartial(data, this);
@@ -240,6 +254,7 @@ export class Conversation extends Message<Conversation> {
     { no: 14, name: "turn_last_activity_at", kind: "message", T: Timestamp },
     { no: 15, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 16, name: "fullsend", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 17, name: "skill_files", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Conversation {

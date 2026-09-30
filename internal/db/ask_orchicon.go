@@ -31,8 +31,15 @@ type ConversationRow struct {
 	// about the chat). It is also the CONTEXT the agent is told about: a project's
 	// project_dir is the folder the chat's work happens in.
 	ProjectID string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	// SkillFiles is the jsonb array of absolute skill file/directory paths
+	// selected for THIS CONVERSATION, union-ed with the project's SkillFiles at
+	// render time by contextfiles.RenderManifest when the Ask system prompt is
+	// built. DISTINCT from AgentConfigRow.Skills below, which is the free-text
+	// `skills` PROMPT SECTION on the per-tenant agent config: that is prose, this
+	// is real on-disk paths.
+	SkillFiles []byte
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 	// MessageCount is populated by the LIST query only (ListConversations); the
 	// single-row queries leave it 0 because their callers compute the count
 	// separately via CountConversationMessages. See scanConversationWithCount.
@@ -78,7 +85,7 @@ type AgentConfigRow struct {
 // this file had NINE such lists (the insert, the get, the list, three updates' RETURNING, and two scans).
 // Adding project_id would otherwise have been a nine-place edit with eight chances to miss one.
 var conversationCols = []string{
-	"id", "tenant_id", "title", "model_ref", "session_id", "mode", "project_id", "created_at", "updated_at",
+	"id", "tenant_id", "title", "model_ref", "session_id", "mode", "project_id", "skill_files", "created_at", "updated_at",
 }
 
 // conversationSelect renders conversationCols for a query, optionally qualified (the LIST query aliases the
@@ -105,12 +112,12 @@ func CreateConversation(ctx context.Context, tx pgx.Tx, c ConversationRow) (Conv
 	// project_id takes the row's value verbatim; an empty one is the column's own default, i.e. unassigned. The
 	// service validates a NON-empty id against the projects table before it gets here (see
 	// Service.SetConversationProject), so this layer stays a plain write.
-	q := `INSERT INTO ask_orchicon_conversations (id, tenant_id, title, model_ref, mode, project_id)
-		VALUES ($1, $2, $3, $4, COALESCE(NULLIF($5, ''), 'brainstorm'), $6)
+	q := `INSERT INTO ask_orchicon_conversations (id, tenant_id, title, model_ref, mode, project_id, skill_files)
+		VALUES ($1, $2, $3, $4, COALESCE(NULLIF($5, ''), 'brainstorm'), $6, COALESCE($7, '[]'::jsonb))
 		RETURNING ` + conversationSelect("")
 	row := c
-	err := tx.QueryRow(ctx, q, c.ID, c.TenantID, c.Title, c.ModelRef, c.Mode, c.ProjectID).Scan(
-		&row.ID, &row.TenantID, &row.Title, &row.ModelRef, &row.SessionID, &row.Mode, &row.ProjectID,
+	err := tx.QueryRow(ctx, q, c.ID, c.TenantID, c.Title, c.ModelRef, c.Mode, c.ProjectID, c.SkillFiles).Scan(
+		&row.ID, &row.TenantID, &row.Title, &row.ModelRef, &row.SessionID, &row.Mode, &row.ProjectID, &row.SkillFiles,
 		&row.CreatedAt, &row.UpdatedAt,
 	)
 	if err != nil {
@@ -255,6 +262,31 @@ func SetConversationProject(ctx context.Context, tx pgx.Tx, tenantID, id, projec
 // session is created (best-effort, its own tiny tenant tx) so a crash
 // mid-turn cannot orphan a session the next message would have to rediscover,
 // and again when a lost session is recreated.
+// SetConversationSkillFiles replaces a conversation's skill_files path array. It is the write behind the
+// conversation-level half of the skills feature: a chat can select EXTRA skill files on top of its project's,
+// and the union of the two is what the Ask system prompt renders.
+//
+// DISTINCT FROM AgentConfigRow.Skills, which is the tenant-wide free-text `skills` PROMPT SECTION — that is
+// prose and is not touched here; this is a list of real on-disk paths a worker reads on demand.
+//
+// The caller validates the paths (contextfiles.Validate, plus ValidateWithin against the conversation's project
+// directory when it has one) BEFORE calling; this layer is a plain write, mirroring SetConversationProject's
+// contract.
+func SetConversationSkillFiles(ctx context.Context, tx pgx.Tx, tenantID, id string, skillFiles []byte) (ConversationRow, error) {
+	q := `UPDATE ask_orchicon_conversations SET skill_files = COALESCE($3, '[]'::jsonb), updated_at = now()
+		WHERE tenant_id = $1 AND id = $2
+		RETURNING ` + conversationSelect("")
+	row, err := tx.Query(ctx, q, tenantID, id, skillFiles)
+	if err != nil {
+		return ConversationRow{}, fmt.Errorf("db: set conversation skill files: %w", err)
+	}
+	defer row.Close()
+	if row.Next() {
+		return scanConversation(row)
+	}
+	return ConversationRow{}, ErrNotFound
+}
+
 func UpdateConversationSessionID(ctx context.Context, tx pgx.Tx, tenantID, id, sessionID string) error {
 	const q = `UPDATE ask_orchicon_conversations SET session_id = $3, updated_at = now()
 		WHERE tenant_id = $1 AND id = $2`
@@ -550,7 +582,7 @@ func UpsertAgentConfig(ctx context.Context, tx pgx.Tx, tenantID string, c AgentC
 
 func scanConversation(row pgx.Rows) (ConversationRow, error) {
 	var r ConversationRow
-	if err := row.Scan(&r.ID, &r.TenantID, &r.Title, &r.ModelRef, &r.SessionID, &r.Mode, &r.ProjectID,
+	if err := row.Scan(&r.ID, &r.TenantID, &r.Title, &r.ModelRef, &r.SessionID, &r.Mode, &r.ProjectID, &r.SkillFiles,
 		&r.CreatedAt, &r.UpdatedAt); err != nil {
 		return ConversationRow{}, fmt.Errorf("db: scan conversation: %w", err)
 	}
@@ -564,7 +596,7 @@ func scanConversation(row pgx.Rows) (ConversationRow, error) {
 // scan above consumes.
 func scanConversationWithCount(row pgx.Rows) (ConversationRow, error) {
 	var r ConversationRow
-	if err := row.Scan(&r.ID, &r.TenantID, &r.Title, &r.ModelRef, &r.SessionID, &r.Mode, &r.ProjectID,
+	if err := row.Scan(&r.ID, &r.TenantID, &r.Title, &r.ModelRef, &r.SessionID, &r.Mode, &r.ProjectID, &r.SkillFiles,
 		&r.CreatedAt, &r.UpdatedAt, &r.MessageCount); err != nil {
 		return ConversationRow{}, fmt.Errorf("db: scan conversation with count: %w", err)
 	}

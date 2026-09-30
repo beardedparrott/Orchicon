@@ -17,6 +17,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -273,6 +274,14 @@ func WalkDir(root string, maxEntries int) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("walk %q: %w", root, err)
 	}
+	// SORT THE WALK. filepath.WalkDir's order is filesystem-dependent
+	// (fs.ReadDir order, not lexical), so an unsorted result would make the
+	// rendered directory manifest — and therefore the prompt's cached static
+	// prefix (ADR-0009 D5) — differ between machines and even between passes on
+	// one machine. Sorting here makes every caller deterministic
+	// (renderDirectoryManifest, renderDirectory, and the fingerprint stamp,
+	// which already sorts its own copy for the same reason).
+	sort.Strings(out)
 	return out, nil
 }
 
@@ -369,7 +378,14 @@ func RenderManifest(rootNote string, paths []string, projectDir string) string {
 	wroteAny := false
 	budget := &renderBudget{remaining: MaxInlineContextBytes}
 	initLen := sb.Len()
-	for _, p := range paths {
+	// DETERMINISTIC ORDER. The manifest lands inside the prompt's cached static
+	// prefix (ADR-0009 D5), so the order the caller supplied — or the order a
+	// filesystem walk returns — must never reach the bytes: a differing order is
+	// a differing prefix, i.e. a prefix-cache miss on every turn. Sorting the
+	// resolved paths makes two renders of the SAME selection byte-identical.
+	// The budget also degrades later paths first, which is precisely why the
+	// order has to be a property of the selection rather than of the caller.
+	for _, p := range sortedByResolved(paths, projectDir) {
 		if budget.exhausted() {
 			fmt.Fprintf(&sb, "**Note:** manifest budget reached — read `%s` from disk only if needed\n\n", p)
 			wroteAny = true

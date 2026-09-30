@@ -32,7 +32,7 @@ func TestEveryModeKnowsItsNameAndItsJob(t *testing.T) {
 	cfg := testAgentConfig()
 	reg := testToolRegistry()
 	for _, mode := range everyMode {
-		p := BuildSystemPrompt(mode, cfg, reg)
+		p := BuildSystemPrompt(mode, cfg, reg, "")
 		if !strings.Contains(p, "You are Orchicon") {
 			t.Errorf("%s: the persona does not say it is Orchicon — the operator: \"All personalities of "+
 				"Orchicon should know that their name is Orchicon\"", mode)
@@ -57,7 +57,7 @@ func TestEveryModeKnowsWhichModeItIsInAndTheOthers(t *testing.T) {
 	cfg := testAgentConfig()
 	reg := testToolRegistry()
 	for _, mode := range everyMode {
-		p := BuildSystemPrompt(mode, cfg, reg)
+		p := BuildSystemPrompt(mode, cfg, reg, "")
 
 		banner := "You are currently in **" + modeLabel(mode) + "** mode"
 		if !strings.Contains(p, banner) {
@@ -96,7 +96,7 @@ func TestEveryModeSharesThePlatformAndToolKnowledge(t *testing.T) {
 	cfg := testAgentConfig()
 	reg := testToolRegistry()
 	for _, mode := range everyMode {
-		p := BuildSystemPrompt(mode, cfg, reg)
+		p := BuildSystemPrompt(mode, cfg, reg, "")
 		for _, want := range []string{
 			"## About Orchicon",
 			"## Available Tools",
@@ -120,7 +120,7 @@ func TestEveryModeSharesThePlatformAndToolKnowledge(t *testing.T) {
 // firing off workflows or schedules." That is the mode's defining constraint, so it is asserted as an
 // ABSENCE — the strongest form available for a prompt.
 func TestIterationNeverProposesWorkItemsOrWorkflows(t *testing.T) {
-	p := BuildSystemPrompt(modeIteration, testAgentConfig(), testToolRegistry())
+	p := BuildSystemPrompt(modeIteration, testAgentConfig(), testToolRegistry(), "")
 
 	if !strings.Contains(p, "DO NOT propose creating work items in this mode") {
 		t.Error("iteration does not forbid proposing work items")
@@ -150,7 +150,7 @@ func TestIterationNeverProposesWorkItemsOrWorkflows(t *testing.T) {
 // The operator: ephemeral items/workers/workflows that never appear in the console and are hard-deleted when
 // the job ends; the worker uses the agent's own model_ref; a failure is reported and a re-run offered.
 func TestQuickWorkDispatchesEphemerally(t *testing.T) {
-	p := BuildSystemPrompt(modeQuickWork, testAgentConfig(), testToolRegistry())
+	p := BuildSystemPrompt(modeQuickWork, testAgentConfig(), testToolRegistry(), "")
 
 	for _, want := range []string{
 		// It dispatches rather than doing the work.
@@ -216,7 +216,7 @@ func TestQuickWorkDispatchesEphemerally(t *testing.T) {
 // the work or work directly with Orchicon after answering the user's question. This check should always be
 // reinforced."
 func TestBrainstormAlwaysAsksWhatToDoNext(t *testing.T) {
-	p := BuildSystemPrompt(modeBrainstorm, testAgentConfig(), testToolRegistry())
+	p := BuildSystemPrompt(modeBrainstorm, testAgentConfig(), testToolRegistry(), "")
 
 	for _, want := range []string{
 		"AFTER YOU HAVE ANSWERED, ALWAYS CLOSE THE LOOP ON WHAT TO DO WITH IT",
@@ -245,9 +245,9 @@ func TestBrainstormAlwaysAsksWhatToDoNext(t *testing.T) {
 func TestUnknownModeFallsBackToBrainstorm(t *testing.T) {
 	cfg := testAgentConfig()
 	reg := testToolRegistry()
-	want := BuildSystemPrompt(modeBrainstorm, cfg, reg)
+	want := BuildSystemPrompt(modeBrainstorm, cfg, reg, "")
 	for _, mode := range []string{"", "nonsense", "ORCHICON", "brainstorm "} {
-		if got := BuildSystemPrompt(mode, cfg, reg); got != want {
+		if got := BuildSystemPrompt(mode, cfg, reg, ""); got != want {
 			t.Errorf("BuildSystemPrompt(%q) is not the brainstorm prompt — the fallback must be the safe "+
 				"default", mode)
 		}
@@ -292,7 +292,7 @@ func TestPersonasDifferByMode(t *testing.T) {
 	reg := testToolRegistry()
 	seen := map[string]string{}
 	for _, mode := range everyMode {
-		p := BuildSystemPrompt(mode, cfg, reg)
+		p := BuildSystemPrompt(mode, cfg, reg, "")
 		if prev, ok := seen[p]; ok {
 			t.Errorf("%s and %s produce the SAME system prompt — the mode is being ignored", mode, prev)
 		}
@@ -317,7 +317,7 @@ func TestNoModeIsGrantedTheWorkItCannotDo(t *testing.T) {
 		"or working through it directly",
 	}
 	for _, mode := range everyMode {
-		p := BuildSystemPrompt(mode, testAgentConfig(), testToolRegistry())
+		p := BuildSystemPrompt(mode, testAgentConfig(), testToolRegistry(), "")
 		for _, b := range banned {
 			if strings.Contains(p, b) {
 				t.Errorf("%s still carries the permission %q — while that is in the prompt the tool boundary is "+
@@ -334,7 +334,7 @@ func TestNoModeIsGrantedTheWorkItCannotDo(t *testing.T) {
 // transcript it cannot go stale. Its absence in any one mode is a mode that would carry the old person forward.
 func TestEveryModeSupersedesItsEarlierProse(t *testing.T) {
 	for _, mode := range everyMode {
-		p := BuildSystemPrompt(mode, testAgentConfig(), testToolRegistry())
+		p := BuildSystemPrompt(mode, testAgentConfig(), testToolRegistry(), "")
 		for _, want := range []string{
 			"### A mode change SUPERSEDES everything said before it",
 			"applied FRESH to every message",
@@ -389,7 +389,7 @@ func integrationMapBlock(t *testing.T, prompt string) string {
 // EVERY MODE OWES THE MAP. All three produce work, so all three carry the discipline.
 func TestEveryModeCarriesTheIntegrationMapContract(t *testing.T) {
 	for _, mode := range everyMode {
-		p := BuildSystemPrompt(mode, testAgentConfig(), testToolRegistry())
+		p := BuildSystemPrompt(mode, testAgentConfig(), testToolRegistry(), "")
 		for _, want := range []string{
 			"### 1. Draw the map BEFORE you write anything",
 			"### 2. Close the map — no half-realized work",
@@ -416,7 +416,7 @@ func TestEveryModeCarriesTheIntegrationMapContract(t *testing.T) {
 // adapters nothing, so the INSTANCE is asserted ABSENT and the PATTERN's vocabulary asserted present.
 func TestIntegrationMapSpeaksSystemsDesignNotOrchiconComponents(t *testing.T) {
 	for _, mode := range everyMode {
-		block := integrationMapBlock(t, BuildSystemPrompt(mode, testAgentConfig(), testToolRegistry()))
+		block := integrationMapBlock(t, BuildSystemPrompt(mode, testAgentConfig(), testToolRegistry(), ""))
 		lower := strings.ToLower(block)
 
 		for _, banned := range []string{"adapter", "opencode", "orchicon", "claude", "seed_workflows", "work item"} {
@@ -459,7 +459,7 @@ func TestIntegrationMapSpeaksSystemsDesignNotOrchiconComponents(t *testing.T) {
 func TestTheIntegrationMapBlockIsSharedAndThePlacementTailsAreNot(t *testing.T) {
 	var first string
 	for _, mode := range everyMode {
-		block := integrationMapBlock(t, BuildSystemPrompt(mode, testAgentConfig(), testToolRegistry()))
+		block := integrationMapBlock(t, BuildSystemPrompt(mode, testAgentConfig(), testToolRegistry(), ""))
 		if first == "" {
 			first = block
 			continue
@@ -476,7 +476,7 @@ func TestTheIntegrationMapBlockIsSharedAndThePlacementTailsAreNot(t *testing.T) 
 		modeQuickWork:  "## The map travels with the brief",
 	}
 	for _, mode := range everyMode {
-		p := BuildSystemPrompt(mode, testAgentConfig(), testToolRegistry())
+		p := BuildSystemPrompt(mode, testAgentConfig(), testToolRegistry(), "")
 		want, ok := placements[mode]
 		if !ok {
 			t.Fatalf("%s has no expected placement tail — a mode added later must be added here too", mode)
@@ -496,7 +496,7 @@ func TestTheIntegrationMapBlockIsSharedAndThePlacementTailsAreNot(t *testing.T) 
 
 // BRAINSTORM: the map goes IN THE ITEM, because the brief is all a worker gets.
 func TestBrainstormPutsTheIntegrationMapInEveryWorkItem(t *testing.T) {
-	p := BuildSystemPrompt(modeBrainstorm, testAgentConfig(), testToolRegistry())
+	p := BuildSystemPrompt(modeBrainstorm, testAgentConfig(), testToolRegistry(), "")
 	for _, want := range []string{
 		"The DESCRIPTION carries an **Integration map** section",
 		"ACCEPTANCE CRITERIA must cover the EDGES, not only the centre",
@@ -515,7 +515,7 @@ func TestBrainstormPutsTheIntegrationMapInEveryWorkItem(t *testing.T) {
 
 // ITERATION: the map goes IN THE REPLY, before the first edit, and is closed in the SAME session.
 func TestIterationShowsTheMapAndClosesItInTheSameSession(t *testing.T) {
-	p := BuildSystemPrompt(modeIteration, testAgentConfig(), testToolRegistry())
+	p := BuildSystemPrompt(modeIteration, testAgentConfig(), testToolRegistry(), "")
 	for _, want := range []string{
 		"WRITE THE MAP IN YOUR REPLY",
 		"same branch, same commit sequence",
@@ -537,7 +537,7 @@ func TestIterationShowsTheMapAndClosesItInTheSameSession(t *testing.T) {
 
 // QUICK WORK: the map goes in the BRIEF and the WORKER'S OWN PROMPT, because the worker never sees this chat.
 func TestQuickWorkPutsTheMapInTheBriefAndTheWorkerPrompt(t *testing.T) {
-	p := BuildSystemPrompt(modeQuickWork, testAgentConfig(), testToolRegistry())
+	p := BuildSystemPrompt(modeQuickWork, testAgentConfig(), testToolRegistry(), "")
 	for _, want := range []string{
 		"Write the MAP into the ephemeral item's description",
 		"Write the CLOSURE into the brief as an instruction",

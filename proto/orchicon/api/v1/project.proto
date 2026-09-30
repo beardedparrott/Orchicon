@@ -66,6 +66,18 @@ message Project {
   // execution_mode selects always-container (runtime, default) vs
   // in-process (local, with honest prompt + DSN fence).
   ExecutionMode execution_mode = 16;
+  // skill_files are absolute paths (files OR directories) to SKILL artifacts
+  // selected for this project. Each is validated by internal/contextfiles
+  // (absolute, no "..", inside project_dir) and rendered into BOTH the worker
+  // composite prompt and the Ask system prompt by contextfiles.RenderManifest —
+  // small files are inlined, larger files and directories become a
+  // "read on demand" manifest.
+  //
+  // DISTINCT FROM the free-text `skills` field on WorkerVersion /
+  // AgentConfig: that is prompt PROSE ("bullet-style skill list"); these are
+  // real on-disk paths. The serialized names stay distinct on purpose so the
+  // two can never be conflated.
+  repeated string skill_files = 17;
 }
 
 // ContextFiles is a wrapper so UpdateProjectRequest can distinguish
@@ -166,6 +178,12 @@ message UpdateProjectRequest {
   // back to inherit); nil = unchanged (field-mask semantics).
   optional string default_runtime_image = 10;
   optional ExecutionMode execution_mode = 11;
+  // skill_files REPLACES the project's skill path selection. An empty list
+  // CLEARS it; nil (unset) leaves it unchanged (field-mask semantics, matching
+  // context_files). Reuses the ContextFiles wrapper for the same
+  // presence-vs-empty distinction. Absolute paths only, and each must be inside
+  // the project directory (or the project dir this request sets).
+  optional ContextFiles skill_files = 12;
 }
 
 message ListProjectFilesRequest {
