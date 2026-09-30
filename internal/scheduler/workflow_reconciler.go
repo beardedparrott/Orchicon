@@ -173,38 +173,22 @@ func (r *WorkflowReconciler) runNeedsServe(ctx context.Context, tx pgx.Tx, tenan
 		defer ttx.Rollback(ctx)
 		tx = ttx.Tx
 	}
-	var refs []string
-	for _, s := range steps {
-		switch s.Kind {
-		case domain.StepKindTask, domain.StepKindApproval:
-		default:
-			continue // no worker ref → no adapter → no serve demand
-		}
-		if s.Ref == "" {
-			continue
-		}
-		var modelRef string
-		if s.WorkerVersion > 0 {
-			// By NUMBER, not by id (see GetWorkerVersionByNumber).
-			if v, err := db.GetWorkerVersionByNumber(ctx, tx, tenantID, s.Ref, s.WorkerVersion); err == nil {
-				modelRef = v.ModelRef
-			}
-		}
-		if modelRef == "" {
-			if v, err := db.GetLatestWorkerVersion(ctx, tx, tenantID, s.Ref, true); err == nil {
-				modelRef = v.ModelRef
-			}
-		}
-		refs = append(refs, modelRef)
-	}
-	// ONE computation, ONE place (AC 7): the per-step refs gathered above
-	// are fed to the shared demand-set primitive, which resolves each ref
-	// to its adapter kind (empty/unresolvable → the conservative default)
-	// and asks the ONE serve-dependency predicate. The host-side plane
-	// computes its own half of the same set through the same primitive
-	// (adapter.TenantDemandSet → AdapterDemandSet), so this gate and the
-	// host serve can never disagree about whether opencode is in demand.
-	return adapter.AdapterDemandSet(refs...).NeedsServe(r.runtime.ServeDependent)
+	// ONE WALK, ONE PLACE (AC 2): the per-step worker versions are resolved
+	// by adapter.ResolveRunSteps, the SAME walk the run-level MCP/skills union
+	// reads (mcpsettings' run-scope resolver), so the adapter demand and the
+	// MCP/skills union cannot drift. This used to be an in-line loop here and
+	// a second resolution in mcpsettings; it is now one function with two
+	// readers.
+	//
+	// The refs are then fed to the shared demand-set primitive, which
+	// resolves each ref to its adapter kind (empty/unresolvable → the
+	// conservative default) and asks the ONE serve-dependency predicate. The
+	// host-side plane computes its own half of the same set through the same
+	// primitive (adapter.TenantDemandSet → AdapterDemandSet), so this gate
+	// and the host serve can never disagree about whether opencode is in
+	// demand.
+	res := adapter.ResolveRunSteps(ctx, tx, tenantID, steps)
+	return adapter.AdapterDemandSet(res.ModelRefs()...).NeedsServe(r.runtime.ServeDependent)
 }
 
 // NewWorkflowReconciler creates a WorkflowReconciler. The policy

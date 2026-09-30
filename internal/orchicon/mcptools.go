@@ -37,31 +37,41 @@ func (b *NativeBridge) resolveMCPSpecSecrets(ctx context.Context, tenantID strin
 	return nil
 }
 
-// mcpResolveSecretsAndStart resolves the execution's MCP server set
-// (worker → project → tenant-default → none over the tenant server list),
+// mcpResolveAndStart resolves the execution's MCP definitions by SCOPE,
 // resolves secret references, and starts the manager. It returns the tool
 // registry (or nil when no servers resolve — no MCP tools, never an
 // error).
+//
+// SCOPE: the PROJECT scope (the project-owned definitions). Child 3 owns
+// feeding the worker version's inline specs in as the WORKER scope; this
+// repoint exists only so the tree keeps resolving.
 func (b *NativeBridge) mcpResolveAndStart(ctx context.Context, exec db.ExecutionRow) (*mcpTools, error) {
-	if b.mcpConfig == nil {
+	if b.mcpResolver == nil {
 		return nil, nil
 	}
 	sctx := tenant.WithID(ctx, exec.TenantID)
-	res, rerr := mcpclient.Resolve(sctx, b.mcpConfig, exec.WorkerID, exec.ProjectID)
+	res, rerr := b.mcpResolver.ResolveScope(sctx, mcpclient.ScopeRef{
+		Kind:      mcpclient.ScopeProject,
+		ProjectID: exec.ProjectID,
+	})
 	if rerr != nil {
 		return nil, fmt.Errorf("orchicon bridge: resolve MCP servers: %w", rerr)
 	}
 	if len(res.Missing) > 0 {
-		return nil, fmt.Errorf("orchicon bridge: MCP server(s) selected but not configured: %v — fix the worker/project MCP selection or the tenant server list", res.Missing)
+		return nil, fmt.Errorf("orchicon bridge: MCP server(s) selected but not configured: %v — fix the project's MCP definitions", res.Missing)
 	}
 	if len(res.Servers) == 0 {
 		return nil, nil
 	}
-	if err := b.resolveMCPSpecSecrets(sctx, exec.TenantID, res.Servers); err != nil {
+	specs := make([]mcpclient.ServerSpec, 0, len(res.Servers))
+	for _, ss := range res.Servers {
+		specs = append(specs, ss.Spec)
+	}
+	if err := b.resolveMCPSpecSecrets(sctx, exec.TenantID, specs); err != nil {
 		return nil, err
 	}
 	mgr := mcpclient.NewManager(b.log)
-	if _, merr := mgr.Start(sctx, res.Servers); merr != nil {
+	if _, merr := mgr.Start(sctx, specs); merr != nil {
 		return nil, fmt.Errorf("orchicon bridge: MCP connect: %w", merr)
 	}
 	// Start blocks until the session's terminal result; Close runs at
@@ -69,4 +79,4 @@ func (b *NativeBridge) mcpResolveAndStart(ctx context.Context, exec db.Execution
 	return &mcpTools{mgr: mgr, close: mgr.Close}, nil
 }
 
-var errNoConfigSource = errors.New("no MCP config source")
+var errNoScopeResolver = errors.New("no MCP scope resolver")

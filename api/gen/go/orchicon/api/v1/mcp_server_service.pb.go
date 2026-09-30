@@ -24,7 +24,7 @@ var File_orchicon_api_v1_mcp_server_service_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_mcp_server_service_proto_rawDesc = "" +
 	"\n" +
-	"(orchicon/api/v1/mcp_server_service.proto\x12\x0forchicon.api.v1\x1a orchicon/api/v1/mcp_server.proto2\x82\r\n" +
+	"(orchicon/api/v1/mcp_server_service.proto\x12\x0forchicon.api.v1\x1a orchicon/api/v1/mcp_server.proto2\x88\t\n" +
 	"\n" +
 	"MCPService\x12_\n" +
 	"\x0eListMCPServers\x12%.orchicon.api.v1.MCPServerListRequest\x1a&.orchicon.api.v1.MCPServerListResponse\x12[\n" +
@@ -37,44 +37,32 @@ const file_orchicon_api_v1_mcp_server_service_proto_rawDesc = "" +
 	"\x11InstallMCPRuntime\x12(.orchicon.api.v1.MCPServerInstallRequest\x1a).orchicon.api.v1.MCPServerInstallResponse\x12h\n" +
 	"\x11DetectMCPRuntimes\x12(.orchicon.api.v1.MCPRuntimeDetectRequest\x1a).orchicon.api.v1.MCPRuntimeDetectResponse\x12m\n" +
 	"\x12SetMCPServerSecret\x12*.orchicon.api.v1.MCPServerSetSecretRequest\x1a+.orchicon.api.v1.MCPServerSetSecretResponse\x12s\n" +
-	"\x14ClearMCPServerSecret\x12,.orchicon.api.v1.MCPServerClearSecretRequest\x1a-.orchicon.api.v1.MCPServerClearSecretResponse\x12s\n" +
-	"\x14SetProjectMCPServers\x12,.orchicon.api.v1.ProjectMCPServersSetRequest\x1a-.orchicon.api.v1.ProjectMCPServersSetResponse\x12s\n" +
-	"\x14GetProjectMCPServers\x12,.orchicon.api.v1.ProjectMCPServersGetRequest\x1a-.orchicon.api.v1.ProjectMCPServersGetResponse\x12\x85\x01\n" +
-	"\x1aSetTenantDefaultMCPServers\x122.orchicon.api.v1.TenantDefaultMCPServersSetRequest\x1a3.orchicon.api.v1.TenantDefaultMCPServersSetResponse\x12\x85\x01\n" +
-	"\x1aGetTenantDefaultMCPServers\x122.orchicon.api.v1.TenantDefaultMCPServersGetRequest\x1a3.orchicon.api.v1.TenantDefaultMCPServersGetResponseB\xcf\x01\n" +
+	"\x14ClearMCPServerSecret\x12,.orchicon.api.v1.MCPServerClearSecretRequest\x1a-.orchicon.api.v1.MCPServerClearSecretResponseB\xcf\x01\n" +
 	"\x13com.orchicon.api.v1B\x15McpServerServiceProtoP\x01ZCgithub.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1;apiv1\xa2\x02\x03OAX\xaa\x02\x0fOrchicon.Api.V1\xca\x02\x0fOrchicon\\Api\\V1\xe2\x02\x1bOrchicon\\Api\\V1\\GPBMetadata\xea\x02\x11Orchicon::Api::V1b\x06proto3"
 
 var file_orchicon_api_v1_mcp_server_service_proto_goTypes = []any{
-	(*MCPServerListRequest)(nil),               // 0: orchicon.api.v1.MCPServerListRequest
-	(*MCPServerGetRequest)(nil),                // 1: orchicon.api.v1.MCPServerGetRequest
-	(*MCPServerCreateRequest)(nil),             // 2: orchicon.api.v1.MCPServerCreateRequest
-	(*MCPServerUpdateRequest)(nil),             // 3: orchicon.api.v1.MCPServerUpdateRequest
-	(*MCPServerDeleteRequest)(nil),             // 4: orchicon.api.v1.MCPServerDeleteRequest
-	(*MCPCatalogListRequest)(nil),              // 5: orchicon.api.v1.MCPCatalogListRequest
-	(*MCPCatalogPrefillRequest)(nil),           // 6: orchicon.api.v1.MCPCatalogPrefillRequest
-	(*MCPServerInstallRequest)(nil),            // 7: orchicon.api.v1.MCPServerInstallRequest
-	(*MCPRuntimeDetectRequest)(nil),            // 8: orchicon.api.v1.MCPRuntimeDetectRequest
-	(*MCPServerSetSecretRequest)(nil),          // 9: orchicon.api.v1.MCPServerSetSecretRequest
-	(*MCPServerClearSecretRequest)(nil),        // 10: orchicon.api.v1.MCPServerClearSecretRequest
-	(*ProjectMCPServersSetRequest)(nil),        // 11: orchicon.api.v1.ProjectMCPServersSetRequest
-	(*ProjectMCPServersGetRequest)(nil),        // 12: orchicon.api.v1.ProjectMCPServersGetRequest
-	(*TenantDefaultMCPServersSetRequest)(nil),  // 13: orchicon.api.v1.TenantDefaultMCPServersSetRequest
-	(*TenantDefaultMCPServersGetRequest)(nil),  // 14: orchicon.api.v1.TenantDefaultMCPServersGetRequest
-	(*MCPServerListResponse)(nil),              // 15: orchicon.api.v1.MCPServerListResponse
-	(*MCPServerGetResponse)(nil),               // 16: orchicon.api.v1.MCPServerGetResponse
-	(*MCPServerCreateResponse)(nil),            // 17: orchicon.api.v1.MCPServerCreateResponse
-	(*MCPServerUpdateResponse)(nil),            // 18: orchicon.api.v1.MCPServerUpdateResponse
-	(*MCPServerDeleteResponse)(nil),            // 19: orchicon.api.v1.MCPServerDeleteResponse
-	(*MCPCatalogListResponse)(nil),             // 20: orchicon.api.v1.MCPCatalogListResponse
-	(*MCPCatalogPrefillResponse)(nil),          // 21: orchicon.api.v1.MCPCatalogPrefillResponse
-	(*MCPServerInstallResponse)(nil),           // 22: orchicon.api.v1.MCPServerInstallResponse
-	(*MCPRuntimeDetectResponse)(nil),           // 23: orchicon.api.v1.MCPRuntimeDetectResponse
-	(*MCPServerSetSecretResponse)(nil),         // 24: orchicon.api.v1.MCPServerSetSecretResponse
-	(*MCPServerClearSecretResponse)(nil),       // 25: orchicon.api.v1.MCPServerClearSecretResponse
-	(*ProjectMCPServersSetResponse)(nil),       // 26: orchicon.api.v1.ProjectMCPServersSetResponse
-	(*ProjectMCPServersGetResponse)(nil),       // 27: orchicon.api.v1.ProjectMCPServersGetResponse
-	(*TenantDefaultMCPServersSetResponse)(nil), // 28: orchicon.api.v1.TenantDefaultMCPServersSetResponse
-	(*TenantDefaultMCPServersGetResponse)(nil), // 29: orchicon.api.v1.TenantDefaultMCPServersGetResponse
+	(*MCPServerListRequest)(nil),         // 0: orchicon.api.v1.MCPServerListRequest
+	(*MCPServerGetRequest)(nil),          // 1: orchicon.api.v1.MCPServerGetRequest
+	(*MCPServerCreateRequest)(nil),       // 2: orchicon.api.v1.MCPServerCreateRequest
+	(*MCPServerUpdateRequest)(nil),       // 3: orchicon.api.v1.MCPServerUpdateRequest
+	(*MCPServerDeleteRequest)(nil),       // 4: orchicon.api.v1.MCPServerDeleteRequest
+	(*MCPCatalogListRequest)(nil),        // 5: orchicon.api.v1.MCPCatalogListRequest
+	(*MCPCatalogPrefillRequest)(nil),     // 6: orchicon.api.v1.MCPCatalogPrefillRequest
+	(*MCPServerInstallRequest)(nil),      // 7: orchicon.api.v1.MCPServerInstallRequest
+	(*MCPRuntimeDetectRequest)(nil),      // 8: orchicon.api.v1.MCPRuntimeDetectRequest
+	(*MCPServerSetSecretRequest)(nil),    // 9: orchicon.api.v1.MCPServerSetSecretRequest
+	(*MCPServerClearSecretRequest)(nil),  // 10: orchicon.api.v1.MCPServerClearSecretRequest
+	(*MCPServerListResponse)(nil),        // 11: orchicon.api.v1.MCPServerListResponse
+	(*MCPServerGetResponse)(nil),         // 12: orchicon.api.v1.MCPServerGetResponse
+	(*MCPServerCreateResponse)(nil),      // 13: orchicon.api.v1.MCPServerCreateResponse
+	(*MCPServerUpdateResponse)(nil),      // 14: orchicon.api.v1.MCPServerUpdateResponse
+	(*MCPServerDeleteResponse)(nil),      // 15: orchicon.api.v1.MCPServerDeleteResponse
+	(*MCPCatalogListResponse)(nil),       // 16: orchicon.api.v1.MCPCatalogListResponse
+	(*MCPCatalogPrefillResponse)(nil),    // 17: orchicon.api.v1.MCPCatalogPrefillResponse
+	(*MCPServerInstallResponse)(nil),     // 18: orchicon.api.v1.MCPServerInstallResponse
+	(*MCPRuntimeDetectResponse)(nil),     // 19: orchicon.api.v1.MCPRuntimeDetectResponse
+	(*MCPServerSetSecretResponse)(nil),   // 20: orchicon.api.v1.MCPServerSetSecretResponse
+	(*MCPServerClearSecretResponse)(nil), // 21: orchicon.api.v1.MCPServerClearSecretResponse
 }
 var file_orchicon_api_v1_mcp_server_service_proto_depIdxs = []int32{
 	0,  // 0: orchicon.api.v1.MCPService.ListMCPServers:input_type -> orchicon.api.v1.MCPServerListRequest
@@ -88,27 +76,19 @@ var file_orchicon_api_v1_mcp_server_service_proto_depIdxs = []int32{
 	8,  // 8: orchicon.api.v1.MCPService.DetectMCPRuntimes:input_type -> orchicon.api.v1.MCPRuntimeDetectRequest
 	9,  // 9: orchicon.api.v1.MCPService.SetMCPServerSecret:input_type -> orchicon.api.v1.MCPServerSetSecretRequest
 	10, // 10: orchicon.api.v1.MCPService.ClearMCPServerSecret:input_type -> orchicon.api.v1.MCPServerClearSecretRequest
-	11, // 11: orchicon.api.v1.MCPService.SetProjectMCPServers:input_type -> orchicon.api.v1.ProjectMCPServersSetRequest
-	12, // 12: orchicon.api.v1.MCPService.GetProjectMCPServers:input_type -> orchicon.api.v1.ProjectMCPServersGetRequest
-	13, // 13: orchicon.api.v1.MCPService.SetTenantDefaultMCPServers:input_type -> orchicon.api.v1.TenantDefaultMCPServersSetRequest
-	14, // 14: orchicon.api.v1.MCPService.GetTenantDefaultMCPServers:input_type -> orchicon.api.v1.TenantDefaultMCPServersGetRequest
-	15, // 15: orchicon.api.v1.MCPService.ListMCPServers:output_type -> orchicon.api.v1.MCPServerListResponse
-	16, // 16: orchicon.api.v1.MCPService.GetMCPServer:output_type -> orchicon.api.v1.MCPServerGetResponse
-	17, // 17: orchicon.api.v1.MCPService.CreateMCPServer:output_type -> orchicon.api.v1.MCPServerCreateResponse
-	18, // 18: orchicon.api.v1.MCPService.UpdateMCPServer:output_type -> orchicon.api.v1.MCPServerUpdateResponse
-	19, // 19: orchicon.api.v1.MCPService.DeleteMCPServer:output_type -> orchicon.api.v1.MCPServerDeleteResponse
-	20, // 20: orchicon.api.v1.MCPService.ListMCPCatalog:output_type -> orchicon.api.v1.MCPCatalogListResponse
-	21, // 21: orchicon.api.v1.MCPService.PrefillMCPCatalogEntry:output_type -> orchicon.api.v1.MCPCatalogPrefillResponse
-	22, // 22: orchicon.api.v1.MCPService.InstallMCPRuntime:output_type -> orchicon.api.v1.MCPServerInstallResponse
-	23, // 23: orchicon.api.v1.MCPService.DetectMCPRuntimes:output_type -> orchicon.api.v1.MCPRuntimeDetectResponse
-	24, // 24: orchicon.api.v1.MCPService.SetMCPServerSecret:output_type -> orchicon.api.v1.MCPServerSetSecretResponse
-	25, // 25: orchicon.api.v1.MCPService.ClearMCPServerSecret:output_type -> orchicon.api.v1.MCPServerClearSecretResponse
-	26, // 26: orchicon.api.v1.MCPService.SetProjectMCPServers:output_type -> orchicon.api.v1.ProjectMCPServersSetResponse
-	27, // 27: orchicon.api.v1.MCPService.GetProjectMCPServers:output_type -> orchicon.api.v1.ProjectMCPServersGetResponse
-	28, // 28: orchicon.api.v1.MCPService.SetTenantDefaultMCPServers:output_type -> orchicon.api.v1.TenantDefaultMCPServersSetResponse
-	29, // 29: orchicon.api.v1.MCPService.GetTenantDefaultMCPServers:output_type -> orchicon.api.v1.TenantDefaultMCPServersGetResponse
-	15, // [15:30] is the sub-list for method output_type
-	0,  // [0:15] is the sub-list for method input_type
+	11, // 11: orchicon.api.v1.MCPService.ListMCPServers:output_type -> orchicon.api.v1.MCPServerListResponse
+	12, // 12: orchicon.api.v1.MCPService.GetMCPServer:output_type -> orchicon.api.v1.MCPServerGetResponse
+	13, // 13: orchicon.api.v1.MCPService.CreateMCPServer:output_type -> orchicon.api.v1.MCPServerCreateResponse
+	14, // 14: orchicon.api.v1.MCPService.UpdateMCPServer:output_type -> orchicon.api.v1.MCPServerUpdateResponse
+	15, // 15: orchicon.api.v1.MCPService.DeleteMCPServer:output_type -> orchicon.api.v1.MCPServerDeleteResponse
+	16, // 16: orchicon.api.v1.MCPService.ListMCPCatalog:output_type -> orchicon.api.v1.MCPCatalogListResponse
+	17, // 17: orchicon.api.v1.MCPService.PrefillMCPCatalogEntry:output_type -> orchicon.api.v1.MCPCatalogPrefillResponse
+	18, // 18: orchicon.api.v1.MCPService.InstallMCPRuntime:output_type -> orchicon.api.v1.MCPServerInstallResponse
+	19, // 19: orchicon.api.v1.MCPService.DetectMCPRuntimes:output_type -> orchicon.api.v1.MCPRuntimeDetectResponse
+	20, // 20: orchicon.api.v1.MCPService.SetMCPServerSecret:output_type -> orchicon.api.v1.MCPServerSetSecretResponse
+	21, // 21: orchicon.api.v1.MCPService.ClearMCPServerSecret:output_type -> orchicon.api.v1.MCPServerClearSecretResponse
+	11, // [11:22] is the sub-list for method output_type
+	0,  // [0:11] is the sub-list for method input_type
 	0,  // [0:0] is the sub-list for extension type_name
 	0,  // [0:0] is the sub-list for extension extendee
 	0,  // [0:0] is the sub-list for field type_name

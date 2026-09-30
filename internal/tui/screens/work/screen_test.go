@@ -52,11 +52,9 @@ type fakePlane struct {
 	execs     []*apiv1.WorkerExecution // newest first, as ListExecutions returns them
 	projects  map[string]*apiv1.Project
 	projOrder []string
-	// projectMCP is each project's MCP selection, as GetProjectMCPServers would report it.
-	projectMCP map[string][]string
-	images     map[string]*apiv1.RuntimeImage
-	imgOrder   []string
-	nextID     int
+	images    map[string]*apiv1.RuntimeImage
+	imgOrder  []string
+	nextID    int
 
 	created     []*apiv1.CreateWorkItemRequest
 	updated     []*apiv1.UpdateWorkItemRequest
@@ -71,7 +69,6 @@ type fakePlane struct {
 	// projActivated records the ids ActivateProject was called with, in order.
 	projActivated []string
 	projDeleted   []string
-	projMCPSet    []*apiv1.ProjectMCPServersSetRequest
 	// mcpServers is what ListMCPServers returns; mcpError, when set, makes it fail —
 	// which is how a test exercises the "the MCP data did not load" path.
 	mcpServers []*apiv1.MCPServer
@@ -101,10 +98,9 @@ type fakePlane struct {
 
 func newPlane() *fakePlane {
 	return &fakePlane{
-		items:      map[string]*apiv1.WorkItem{},
-		projects:   map[string]*apiv1.Project{},
-		projectMCP: map[string][]string{},
-		images:     map[string]*apiv1.RuntimeImage{},
+		items:    map[string]*apiv1.WorkItem{},
+		projects: map[string]*apiv1.Project{},
+		images:   map[string]*apiv1.RuntimeImage{},
 	}
 }
 
@@ -445,25 +441,8 @@ func (p *fakePlane) ListMCPServers(_ context.Context, _ *connect.Request[apiv1.M
 	return connect.NewResponse(&apiv1.MCPServerListResponse{Servers: p.mcpServers}), nil
 }
 
-func (p *fakePlane) GetProjectMCPServers(_ context.Context, req *connect.Request[apiv1.ProjectMCPServersGetRequest]) (*connect.Response[apiv1.ProjectMCPServersGetResponse], error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return connect.NewResponse(&apiv1.ProjectMCPServersGetResponse{McpServerIds: p.projectMCP[req.Msg.GetProjectId()]}), nil
-}
-
-// SetProjectMCPServers records the write AND updates the stored selection, so a read-back
-// sees what a save produced. It does not validate the ids: the server treats them as
-// references, and this fake's job is to record what the TUI sent.
-func (p *fakePlane) SetProjectMCPServers(_ context.Context, req *connect.Request[apiv1.ProjectMCPServersSetRequest]) (*connect.Response[apiv1.ProjectMCPServersSetResponse], error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.projMCPSet = append(p.projMCPSet, req.Msg)
-	if p.projectMCP == nil {
-		p.projectMCP = map[string][]string{}
-	}
-	p.projectMCP[req.Msg.GetProjectId()] = req.Msg.GetMcpServerIds()
-	return connect.NewResponse(&apiv1.ProjectMCPServersSetResponse{McpServerIds: req.Msg.GetMcpServerIds()}), nil
-}
+// NOTE: Get/SetProjectMCPServers are gone with the reference model — a
+// definition is OWNER-SCOPED now, so there is no selection RPC to fake.
 
 // ActivateProject mirrors the SERVER'S PRECONDITION rather than accepting anything:
 // the real UPDATE carries `AND status = 'drafting'`, so activating a non-drafting

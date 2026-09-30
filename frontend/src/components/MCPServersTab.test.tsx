@@ -58,10 +58,12 @@ describe("MCPServersTab (ADR-0008)", () => {
     expect(src).toMatch(/not installed/);
   });
 
-  it("manages the tenant-default selection set (references, never copies)", () => {
-    expect(src).toContain("useGetTenantDefaultMCPServers");
-    expect(src).toContain("useSetTenantDefaultMCPServers");
-    expect(src).toMatch(/reference/);
+  it("has NO tenant-default tier any more (owner-scoped definitions only)", () => {
+    // The tenant tier was removed with the owner-scoped model: there is no
+    // tenant default and no reference-based selection to manage.
+    expect(src).not.toContain("useGetTenantDefaultMCPServers");
+    expect(src).not.toContain("useSetTenantDefaultMCPServers");
+    expect(src).toMatch(/one scope/);
   });
 
   it("every mutation invalidates the shared MCP key — pickers auto-refresh on save", () => {
@@ -69,8 +71,10 @@ describe("MCPServersTab (ADR-0008)", () => {
     // list-relevant mutations: create, update, delete, install (4+)
     expect(invalidations).toBeGreaterThanOrEqual(4);
     expect(api).toContain("mcpKeys.all");
-    // project + tenant-default selections invalidate their own keys too.
-    expect(api).toContain("mcpKeys.project");
-    expect(api).toContain("mcpKeys.tenantDefault");
+    // The api layer is owner-scoped: the project's and the conversation's
+    // owner keys exist (the removed selection keys do not).
+    expect(api).toContain("ownerProject");
+    expect(api).toContain("ownerConversation");
+    expect(api).not.toContain("mcpKeys.tenantDefault");
   });
 });

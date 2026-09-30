@@ -1,4 +1,4 @@
--- Reverses 20260929000000_skill_files.sql: the skill_files path arrays on
+-- Reverses 20260929000001_skill_files.sql: the skill_files path arrays on
 -- projects, ask_orchicon_conversations and worker_versions.
 --
 -- Drops only the columns this migration added. The pre-existing free-text

@@ -266,6 +266,18 @@ export class MCPServer extends Message<MCPServer> {
    */
   updatedAt?: Timestamp;
 
+  /**
+   * Owner: exactly one is non-empty (project XOR conversation).
+   *
+   * @generated from field: string project_id = 17;
+   */
+  projectId = "";
+
+  /**
+   * @generated from field: string conversation_id = 18;
+   */
+  conversationId = "";
+
   constructor(data?: PartialMessage<MCPServer>) {
     super();
     proto3.util.initPartial(data, this);
@@ -290,6 +302,8 @@ export class MCPServer extends Message<MCPServer> {
     { no: 14, name: "has_secret_stored", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
     { no: 15, name: "created_at", kind: "message", T: Timestamp },
     { no: 16, name: "updated_at", kind: "message", T: Timestamp },
+    { no: 17, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 18, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): MCPServer {
@@ -639,11 +653,27 @@ export class MCPCatalogPrefillResponse extends Message<MCPCatalogPrefillResponse
 }
 
 /**
- * CRUD.
+ * CRUD. list/create are SCOPE-AWARE: both scope fields empty lists the
+ * whole tenant (the unscoped Settings view), one non-empty narrows to that
+ * owner. A definition belongs to exactly one scope.
  *
  * @generated from message orchicon.api.v1.MCPServerListRequest
  */
 export class MCPServerListRequest extends Message<MCPServerListRequest> {
+  /**
+   * scope filter; empty = not scoped by project
+   *
+   * @generated from field: string project_id = 1;
+   */
+  projectId = "";
+
+  /**
+   * scope filter; empty = not scoped by conversation
+   *
+   * @generated from field: string conversation_id = 2;
+   */
+  conversationId = "";
+
   constructor(data?: PartialMessage<MCPServerListRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -652,6 +682,8 @@ export class MCPServerListRequest extends Message<MCPServerListRequest> {
   static readonly runtime: typeof proto3 = proto3;
   static readonly typeName = "orchicon.api.v1.MCPServerListRequest";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): MCPServerListRequest {
@@ -841,6 +873,18 @@ export class MCPServerCreateRequest extends Message<MCPServerCreateRequest> {
    */
   catalogSlug = "";
 
+  /**
+   * Owner: exactly ONE of the two must be set (mcp_servers_owner_xor).
+   *
+   * @generated from field: string project_id = 10;
+   */
+  projectId = "";
+
+  /**
+   * @generated from field: string conversation_id = 11;
+   */
+  conversationId = "";
+
   constructor(data?: PartialMessage<MCPServerCreateRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -858,6 +902,8 @@ export class MCPServerCreateRequest extends Message<MCPServerCreateRequest> {
     { no: 7, name: "headers", kind: "map", K: 9 /* ScalarType.STRING */, V: {kind: "scalar", T: 9 /* ScalarType.STRING */} },
     { no: 8, name: "enabled", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
     { no: 9, name: "catalog_slug", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 10, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 11, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): MCPServerCreateRequest {
@@ -987,6 +1033,19 @@ export class MCPServerUpdateRequest extends Message<MCPServerUpdateRequest> {
    */
   catalogSlug?: string;
 
+  /**
+   * Owner echo: a value that DIFFERS from the stored owner is rejected
+   * (the scope is immutable after create).
+   *
+   * @generated from field: string project_id = 14;
+   */
+  projectId = "";
+
+  /**
+   * @generated from field: string conversation_id = 15;
+   */
+  conversationId = "";
+
   constructor(data?: PartialMessage<MCPServerUpdateRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -1008,6 +1067,8 @@ export class MCPServerUpdateRequest extends Message<MCPServerUpdateRequest> {
     { no: 11, name: "replace_headers", kind: "scalar", T: 8 /* ScalarType.BOOL */, opt: true },
     { no: 12, name: "enabled", kind: "scalar", T: 8 /* ScalarType.BOOL */, opt: true },
     { no: 13, name: "catalog_slug", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 14, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 15, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): MCPServerUpdateRequest {
@@ -1489,304 +1550,6 @@ export class MCPServerClearSecretResponse extends Message<MCPServerClearSecretRe
 
   static equals(a: MCPServerClearSecretResponse | PlainMessage<MCPServerClearSecretResponse> | undefined, b: MCPServerClearSecretResponse | PlainMessage<MCPServerClearSecretResponse> | undefined): boolean {
     return proto3.util.equals(MCPServerClearSecretResponse, a, b);
-  }
-}
-
-/**
- * Project + tenant-default selections (references, never copies).
- *
- * @generated from message orchicon.api.v1.ProjectMCPServersSetRequest
- */
-export class ProjectMCPServersSetRequest extends Message<ProjectMCPServersSetRequest> {
-  /**
-   * @generated from field: string project_id = 1;
-   */
-  projectId = "";
-
-  /**
-   * @generated from field: repeated string mcp_server_ids = 2;
-   */
-  mcpServerIds: string[] = [];
-
-  constructor(data?: PartialMessage<ProjectMCPServersSetRequest>) {
-    super();
-    proto3.util.initPartial(data, this);
-  }
-
-  static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "orchicon.api.v1.ProjectMCPServersSetRequest";
-  static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 2, name: "mcp_server_ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
-  ]);
-
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ProjectMCPServersSetRequest {
-    return new ProjectMCPServersSetRequest().fromBinary(bytes, options);
-  }
-
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ProjectMCPServersSetRequest {
-    return new ProjectMCPServersSetRequest().fromJson(jsonValue, options);
-  }
-
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ProjectMCPServersSetRequest {
-    return new ProjectMCPServersSetRequest().fromJsonString(jsonString, options);
-  }
-
-  static equals(a: ProjectMCPServersSetRequest | PlainMessage<ProjectMCPServersSetRequest> | undefined, b: ProjectMCPServersSetRequest | PlainMessage<ProjectMCPServersSetRequest> | undefined): boolean {
-    return proto3.util.equals(ProjectMCPServersSetRequest, a, b);
-  }
-}
-
-/**
- * @generated from message orchicon.api.v1.ProjectMCPServersSetResponse
- */
-export class ProjectMCPServersSetResponse extends Message<ProjectMCPServersSetResponse> {
-  /**
-   * @generated from field: repeated string mcp_server_ids = 1;
-   */
-  mcpServerIds: string[] = [];
-
-  constructor(data?: PartialMessage<ProjectMCPServersSetResponse>) {
-    super();
-    proto3.util.initPartial(data, this);
-  }
-
-  static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "orchicon.api.v1.ProjectMCPServersSetResponse";
-  static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "mcp_server_ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
-  ]);
-
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ProjectMCPServersSetResponse {
-    return new ProjectMCPServersSetResponse().fromBinary(bytes, options);
-  }
-
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ProjectMCPServersSetResponse {
-    return new ProjectMCPServersSetResponse().fromJson(jsonValue, options);
-  }
-
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ProjectMCPServersSetResponse {
-    return new ProjectMCPServersSetResponse().fromJsonString(jsonString, options);
-  }
-
-  static equals(a: ProjectMCPServersSetResponse | PlainMessage<ProjectMCPServersSetResponse> | undefined, b: ProjectMCPServersSetResponse | PlainMessage<ProjectMCPServersSetResponse> | undefined): boolean {
-    return proto3.util.equals(ProjectMCPServersSetResponse, a, b);
-  }
-}
-
-/**
- * @generated from message orchicon.api.v1.ProjectMCPServersGetRequest
- */
-export class ProjectMCPServersGetRequest extends Message<ProjectMCPServersGetRequest> {
-  /**
-   * @generated from field: string project_id = 1;
-   */
-  projectId = "";
-
-  constructor(data?: PartialMessage<ProjectMCPServersGetRequest>) {
-    super();
-    proto3.util.initPartial(data, this);
-  }
-
-  static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "orchicon.api.v1.ProjectMCPServersGetRequest";
-  static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-  ]);
-
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ProjectMCPServersGetRequest {
-    return new ProjectMCPServersGetRequest().fromBinary(bytes, options);
-  }
-
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ProjectMCPServersGetRequest {
-    return new ProjectMCPServersGetRequest().fromJson(jsonValue, options);
-  }
-
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ProjectMCPServersGetRequest {
-    return new ProjectMCPServersGetRequest().fromJsonString(jsonString, options);
-  }
-
-  static equals(a: ProjectMCPServersGetRequest | PlainMessage<ProjectMCPServersGetRequest> | undefined, b: ProjectMCPServersGetRequest | PlainMessage<ProjectMCPServersGetRequest> | undefined): boolean {
-    return proto3.util.equals(ProjectMCPServersGetRequest, a, b);
-  }
-}
-
-/**
- * @generated from message orchicon.api.v1.ProjectMCPServersGetResponse
- */
-export class ProjectMCPServersGetResponse extends Message<ProjectMCPServersGetResponse> {
-  /**
-   * @generated from field: repeated string mcp_server_ids = 1;
-   */
-  mcpServerIds: string[] = [];
-
-  constructor(data?: PartialMessage<ProjectMCPServersGetResponse>) {
-    super();
-    proto3.util.initPartial(data, this);
-  }
-
-  static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "orchicon.api.v1.ProjectMCPServersGetResponse";
-  static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "mcp_server_ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
-  ]);
-
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ProjectMCPServersGetResponse {
-    return new ProjectMCPServersGetResponse().fromBinary(bytes, options);
-  }
-
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ProjectMCPServersGetResponse {
-    return new ProjectMCPServersGetResponse().fromJson(jsonValue, options);
-  }
-
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ProjectMCPServersGetResponse {
-    return new ProjectMCPServersGetResponse().fromJsonString(jsonString, options);
-  }
-
-  static equals(a: ProjectMCPServersGetResponse | PlainMessage<ProjectMCPServersGetResponse> | undefined, b: ProjectMCPServersGetResponse | PlainMessage<ProjectMCPServersGetResponse> | undefined): boolean {
-    return proto3.util.equals(ProjectMCPServersGetResponse, a, b);
-  }
-}
-
-/**
- * @generated from message orchicon.api.v1.TenantDefaultMCPServersSetRequest
- */
-export class TenantDefaultMCPServersSetRequest extends Message<TenantDefaultMCPServersSetRequest> {
-  /**
-   * @generated from field: repeated string mcp_server_ids = 1;
-   */
-  mcpServerIds: string[] = [];
-
-  constructor(data?: PartialMessage<TenantDefaultMCPServersSetRequest>) {
-    super();
-    proto3.util.initPartial(data, this);
-  }
-
-  static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "orchicon.api.v1.TenantDefaultMCPServersSetRequest";
-  static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "mcp_server_ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
-  ]);
-
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): TenantDefaultMCPServersSetRequest {
-    return new TenantDefaultMCPServersSetRequest().fromBinary(bytes, options);
-  }
-
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): TenantDefaultMCPServersSetRequest {
-    return new TenantDefaultMCPServersSetRequest().fromJson(jsonValue, options);
-  }
-
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): TenantDefaultMCPServersSetRequest {
-    return new TenantDefaultMCPServersSetRequest().fromJsonString(jsonString, options);
-  }
-
-  static equals(a: TenantDefaultMCPServersSetRequest | PlainMessage<TenantDefaultMCPServersSetRequest> | undefined, b: TenantDefaultMCPServersSetRequest | PlainMessage<TenantDefaultMCPServersSetRequest> | undefined): boolean {
-    return proto3.util.equals(TenantDefaultMCPServersSetRequest, a, b);
-  }
-}
-
-/**
- * @generated from message orchicon.api.v1.TenantDefaultMCPServersSetResponse
- */
-export class TenantDefaultMCPServersSetResponse extends Message<TenantDefaultMCPServersSetResponse> {
-  /**
-   * @generated from field: repeated string mcp_server_ids = 1;
-   */
-  mcpServerIds: string[] = [];
-
-  constructor(data?: PartialMessage<TenantDefaultMCPServersSetResponse>) {
-    super();
-    proto3.util.initPartial(data, this);
-  }
-
-  static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "orchicon.api.v1.TenantDefaultMCPServersSetResponse";
-  static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "mcp_server_ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
-  ]);
-
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): TenantDefaultMCPServersSetResponse {
-    return new TenantDefaultMCPServersSetResponse().fromBinary(bytes, options);
-  }
-
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): TenantDefaultMCPServersSetResponse {
-    return new TenantDefaultMCPServersSetResponse().fromJson(jsonValue, options);
-  }
-
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): TenantDefaultMCPServersSetResponse {
-    return new TenantDefaultMCPServersSetResponse().fromJsonString(jsonString, options);
-  }
-
-  static equals(a: TenantDefaultMCPServersSetResponse | PlainMessage<TenantDefaultMCPServersSetResponse> | undefined, b: TenantDefaultMCPServersSetResponse | PlainMessage<TenantDefaultMCPServersSetResponse> | undefined): boolean {
-    return proto3.util.equals(TenantDefaultMCPServersSetResponse, a, b);
-  }
-}
-
-/**
- * @generated from message orchicon.api.v1.TenantDefaultMCPServersGetRequest
- */
-export class TenantDefaultMCPServersGetRequest extends Message<TenantDefaultMCPServersGetRequest> {
-  constructor(data?: PartialMessage<TenantDefaultMCPServersGetRequest>) {
-    super();
-    proto3.util.initPartial(data, this);
-  }
-
-  static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "orchicon.api.v1.TenantDefaultMCPServersGetRequest";
-  static readonly fields: FieldList = proto3.util.newFieldList(() => [
-  ]);
-
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): TenantDefaultMCPServersGetRequest {
-    return new TenantDefaultMCPServersGetRequest().fromBinary(bytes, options);
-  }
-
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): TenantDefaultMCPServersGetRequest {
-    return new TenantDefaultMCPServersGetRequest().fromJson(jsonValue, options);
-  }
-
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): TenantDefaultMCPServersGetRequest {
-    return new TenantDefaultMCPServersGetRequest().fromJsonString(jsonString, options);
-  }
-
-  static equals(a: TenantDefaultMCPServersGetRequest | PlainMessage<TenantDefaultMCPServersGetRequest> | undefined, b: TenantDefaultMCPServersGetRequest | PlainMessage<TenantDefaultMCPServersGetRequest> | undefined): boolean {
-    return proto3.util.equals(TenantDefaultMCPServersGetRequest, a, b);
-  }
-}
-
-/**
- * @generated from message orchicon.api.v1.TenantDefaultMCPServersGetResponse
- */
-export class TenantDefaultMCPServersGetResponse extends Message<TenantDefaultMCPServersGetResponse> {
-  /**
-   * @generated from field: repeated string mcp_server_ids = 1;
-   */
-  mcpServerIds: string[] = [];
-
-  constructor(data?: PartialMessage<TenantDefaultMCPServersGetResponse>) {
-    super();
-    proto3.util.initPartial(data, this);
-  }
-
-  static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "orchicon.api.v1.TenantDefaultMCPServersGetResponse";
-  static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "mcp_server_ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
-  ]);
-
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): TenantDefaultMCPServersGetResponse {
-    return new TenantDefaultMCPServersGetResponse().fromBinary(bytes, options);
-  }
-
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): TenantDefaultMCPServersGetResponse {
-    return new TenantDefaultMCPServersGetResponse().fromJson(jsonValue, options);
-  }
-
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): TenantDefaultMCPServersGetResponse {
-    return new TenantDefaultMCPServersGetResponse().fromJsonString(jsonString, options);
-  }
-
-  static equals(a: TenantDefaultMCPServersGetResponse | PlainMessage<TenantDefaultMCPServersGetResponse> | undefined, b: TenantDefaultMCPServersGetResponse | PlainMessage<TenantDefaultMCPServersGetResponse> | undefined): boolean {
-    return proto3.util.equals(TenantDefaultMCPServersGetResponse, a, b);
   }
 }
 

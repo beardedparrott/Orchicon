@@ -47,10 +47,6 @@ func requireTenant(ctx context.Context) (string, error) {
 // mapErr translates service errors into connect codes (typed, never
 // error-string sniffing for the sentinel paths).
 func (h *Handler) mapErr(err error) error {
-	var refErr *ReferencedError
-	if errors.As(err, &refErr) {
-		return connect.NewError(connect.CodeFailedPrecondition, err)
-	}
 	if errors.Is(err, errInvalidArgument) {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -65,7 +61,9 @@ func (h *Handler) ListMCPServers(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, connect.NewError(connect.CodeUnauthenticated, err)
 	}
-	entries, err := h.svc.ListForTenant(ctx, tenantID)
+	// Scope-aware list: both empty = tenant-wide (the unscoped Settings
+	// view); one non-empty narrows to that owner.
+	entries, err := h.svc.ListForScope(ctx, tenantID, req.Msg.ProjectId, req.Msg.ConversationId)
 	if err != nil {
 		return nil, h.mapErr(err)
 	}
@@ -95,15 +93,17 @@ func (h *Handler) CreateMCPServer(ctx context.Context, req *connect.Request[apiv
 	}
 	msg := req.Msg
 	e, err := h.svc.Create(ctx, tenantID, CreateInput{
-		Name:        msg.Name,
-		Transport:   transportFromProto(msg.Transport),
-		Command:     msg.Command,
-		Args:        msg.Args,
-		Env:         msg.Env,
-		URL:         msg.Url,
-		Headers:     msg.Headers,
-		Enabled:     msg.Enabled,
-		CatalogSlug: msg.CatalogSlug,
+		Name:           msg.Name,
+		ProjectID:      msg.ProjectId,
+		ConversationID: msg.ConversationId,
+		Transport:      transportFromProto(msg.Transport),
+		Command:        msg.Command,
+		Args:           msg.Args,
+		Env:            msg.Env,
+		URL:            msg.Url,
+		Headers:        msg.Headers,
+		Enabled:        msg.Enabled,
+		CatalogSlug:    msg.CatalogSlug,
 	})
 	if err != nil {
 		return nil, h.mapErr(err)
@@ -117,7 +117,7 @@ func (h *Handler) UpdateMCPServer(ctx context.Context, req *connect.Request[apiv
 		return nil, connect.NewError(connect.CodeUnauthenticated, err)
 	}
 	msg := req.Msg
-	in := UpdateInput{ID: msg.Id}
+	in := UpdateInput{ID: msg.Id, ProjectID: msg.ProjectId, ConversationID: msg.ConversationId}
 	if msg.Name != nil {
 		in.Name = msg.Name
 	}
@@ -161,23 +161,9 @@ func (h *Handler) DeleteMCPServer(ctx context.Context, req *connect.Request[apiv
 	if err != nil {
 		return nil, connect.NewError(connect.CodeUnauthenticated, err)
 	}
-	err = h.svc.Delete(ctx, tenantID, req.Msg.Id)
-	if err != nil {
-		var refErr *ReferencedError
-		if errors.As(err, &refErr) {
-			var parts []string
-			for _, p := range refErr.Projects {
-				parts = append(parts, "project "+p.ProjectName)
-			}
-			for _, w := range refErr.Workers {
-				parts = append(parts, "worker "+w.WorkerName)
-			}
-			if refErr.InTenantDefault {
-				parts = append(parts, "the tenant default MCP set")
-			}
-			return nil, connect.NewError(connect.CodeFailedPrecondition,
-				fmt.Errorf("this MCP server is still referenced by %s — remove the references first", strings.Join(parts, ", ")))
-		}
+	// No reference guard any more: an owner-scoped definition cannot be
+	// orphaned (its owner IS its only reference).
+	if err := h.svc.Delete(ctx, tenantID, req.Msg.Id); err != nil {
 		return nil, h.mapErr(err)
 	}
 	return connect.NewResponse(&apiv1.MCPServerDeleteResponse{}), nil
@@ -269,60 +255,6 @@ func (h *Handler) ClearMCPServerSecret(ctx context.Context, req *connect.Request
 	return connect.NewResponse(&apiv1.MCPServerClearSecretResponse{}), nil
 }
 
-func (h *Handler) SetProjectMCPServers(ctx context.Context, req *connect.Request[apiv1.ProjectMCPServersSetRequest]) (*connect.Response[apiv1.ProjectMCPServersSetResponse], error) {
-	tenantID, err := requireTenant(ctx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeUnauthenticated, err)
-	}
-	if err := h.svc.SetProjectSelection(ctx, tenantID, req.Msg.ProjectId, req.Msg.McpServerIds); err != nil {
-		return nil, h.mapErr(err)
-	}
-	ids, err := h.svc.GetProjectSelection(ctx, tenantID, req.Msg.ProjectId)
-	if err != nil {
-		return nil, h.mapErr(err)
-	}
-	return connect.NewResponse(&apiv1.ProjectMCPServersSetResponse{McpServerIds: ids}), nil
-}
-
-func (h *Handler) GetProjectMCPServers(ctx context.Context, req *connect.Request[apiv1.ProjectMCPServersGetRequest]) (*connect.Response[apiv1.ProjectMCPServersGetResponse], error) {
-	tenantID, err := requireTenant(ctx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeUnauthenticated, err)
-	}
-	ids, err := h.svc.GetProjectSelection(ctx, tenantID, req.Msg.ProjectId)
-	if err != nil {
-		return nil, h.mapErr(err)
-	}
-	return connect.NewResponse(&apiv1.ProjectMCPServersGetResponse{McpServerIds: ids}), nil
-}
-
-func (h *Handler) SetTenantDefaultMCPServers(ctx context.Context, req *connect.Request[apiv1.TenantDefaultMCPServersSetRequest]) (*connect.Response[apiv1.TenantDefaultMCPServersSetResponse], error) {
-	tenantID, err := requireTenant(ctx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeUnauthenticated, err)
-	}
-	if err := h.svc.SetTenantDefaultSelection(ctx, tenantID, req.Msg.McpServerIds); err != nil {
-		return nil, h.mapErr(err)
-	}
-	ids, err := h.svc.GetTenantDefaultSelection(ctx, tenantID)
-	if err != nil {
-		return nil, h.mapErr(err)
-	}
-	return connect.NewResponse(&apiv1.TenantDefaultMCPServersSetResponse{McpServerIds: ids}), nil
-}
-
-func (h *Handler) GetTenantDefaultMCPServers(ctx context.Context, req *connect.Request[apiv1.TenantDefaultMCPServersGetRequest]) (*connect.Response[apiv1.TenantDefaultMCPServersGetResponse], error) {
-	tenantID, err := requireTenant(ctx)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeUnauthenticated, err)
-	}
-	ids, err := h.svc.GetTenantDefaultSelection(ctx, tenantID)
-	if err != nil {
-		return nil, h.mapErr(err)
-	}
-	return connect.NewResponse(&apiv1.TenantDefaultMCPServersGetResponse{McpServerIds: ids}), nil
-}
-
 func transportFromProto(t apiv1.MCPServerTransport) string {
 	switch t {
 	case apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STREAMABLE_HTTP:
@@ -358,6 +290,8 @@ func entryToProto(e Entry) *apiv1.MCPServer {
 	out := &apiv1.MCPServer{
 		Id:              e.ID,
 		Name:            e.Name,
+		ProjectId:       e.ProjectID,
+		ConversationId:  e.ConversationID,
 		Transport:       transportToProto(e.Transport),
 		Command:         e.Command,
 		Url:             e.URL,
