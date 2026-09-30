@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
@@ -133,6 +134,22 @@ type Lifecycle struct {
 	// same resolver the native/claude bridges use). Nil = no MCP union: the
 	// container's serve keeps its built-ins only.
 	scopeResolver mcpclient.ScopeResolver
+
+	// planeCredMu guards planeCredCache.
+	planeCredMu sync.Mutex
+	// planeCredCache MEMOIZES the plane-channel credential env per run so two
+	// builds of a run's serve config are BYTE-IDENTICAL.
+	//
+	// WHY IT MUST EXIST: mintPlaneCredential MINTS A FRESH RANDOM API KEY on
+	// every call. Because RunServeConfig is invoked from the adapter's
+	// per-execution self-heal path (not only at run start), a run with a
+	// plane-channel worker would otherwise emit a config that differs from the
+	// run-start one on every dispatch — which (a) breaks the determinism AC 3
+	// requires, (b) changes the daemon's serve-config pool key so the run's
+	// already-warmed container is NOT reused, and (c) leaks one api_keys row
+	// per execution. The credential is a stable per-run input, so it is
+	// computed ONCE and reused; it is evicted when the run is reaped.
+	planeCredCache map[string]map[string]string
 }
 
 // NewLifecycle creates a workflow runtime lifecycle. client may be nil to
@@ -498,7 +515,47 @@ func parseHostsIP(body, hostname string) string {
 // config + container need for the `orchicon-plane` MCP channel, or nil when
 // no plane access is granted. The plaintext key is returned once and never
 // persisted — only its SHA-256 hash is stored (internal/auth/apikeys.go).
+// IT IS MEMOIZED PER RUN (planeCredCache) so a self-heal build of a run's
+// serve config reuses the SAME credential the run-start container was baked
+// with — the mint is a fresh random key, so an unmemoized call would make the
+// config non-deterministic and leak an api_keys row per execution.
 func (l *Lifecycle) mintPlaneCredential(ctx context.Context, run db.WorkflowRunRow) (map[string]string, error) {
+	if run.WorkItemID == "" {
+		return nil, nil
+	}
+	// Fast path: a memoized credential for this run is what the run-start
+	// container was baked with, so a self-heal build MUST reuse it verbatim.
+	l.planeCredMu.Lock()
+	if env, ok := l.planeCredCache[run.ID]; ok {
+		l.planeCredMu.Unlock()
+		return env, nil
+	}
+	l.planeCredMu.Unlock()
+	env, err := l.mintPlaneCredentialUncached(ctx, run)
+	if err != nil {
+		return nil, err
+	}
+	if env == nil {
+		return nil, nil
+	}
+	l.planeCredMu.Lock()
+	if l.planeCredCache == nil {
+		l.planeCredCache = map[string]map[string]string{}
+	}
+	// Another concurrent build may have won the race; first occurrence wins so
+	// every caller sees the SAME credential.
+	if existing, ok := l.planeCredCache[run.ID]; ok {
+		l.planeCredMu.Unlock()
+		return existing, nil
+	}
+	l.planeCredCache[run.ID] = env
+	l.planeCredMu.Unlock()
+	return env, nil
+}
+
+// mintPlaneCredentialUncached performs the actual mint (see mintPlaneCredential,
+// its sole caller, for the memoization contract).
+func (l *Lifecycle) mintPlaneCredentialUncached(ctx context.Context, run db.WorkflowRunRow) (map[string]string, error) {
 	if run.WorkItemID == "" {
 		return nil, nil
 	}
@@ -892,6 +949,11 @@ func (l *Lifecycle) ReapForRun(ctx context.Context, runID string) error {
 		l.log.Warn("reap runtime failed", "run", runID, "error", err)
 		return err
 	}
+	// Evict the memoized plane credential: a re-created container must mint a
+	// fresh, unexpired key rather than reuse a token from the reaped one.
+	l.planeCredMu.Lock()
+	delete(l.planeCredCache, runID)
+	l.planeCredMu.Unlock()
 	l.log.Info("workflow runtime reaped", "run", runID)
 	return nil
 }
