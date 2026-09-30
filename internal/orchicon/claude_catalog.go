@@ -294,6 +294,24 @@ var claudeCatalogState claudeCatalogCache
 // setClaudeCatalogClientForTest swaps the HTTP client (tests only).
 var claudeCatalogClient = &http.Client{Timeout: claudeCatalogFetchTimeout}
 
+// SetClaudeCatalogClientForTest swaps the HTTP client this package fetches the
+// managed catalog with, returning a restore function. It exists so a caller whose
+// subject is the OFFLINE behaviour (e.g. the picker's vendored-snapshot seed) can
+// pin the "live source unreachable" condition instead of depending on the ambient
+// network: on a plane WITH egress the managed catalog answers and replaces the
+// snapshot, so such a test would assert something other than its subject.
+//
+// It is exported because the callers are in OTHER packages (providers_test), which
+// cannot reach the unexported var above. Test-only in intent and in use: nothing on
+// a production path calls it.
+func SetClaudeCatalogClientForTest(c *http.Client) (restore func()) {
+	prev := claudeCatalogClient
+	if c != nil {
+		claudeCatalogClient = c
+	}
+	return func() { claudeCatalogClient = prev }
+}
+
 // ClaudeCatalogModels returns the managed catalog's models for the `anthropic`
 // provider, with pricing merged from the vendored catalog.
 //

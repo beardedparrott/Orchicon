@@ -44,6 +44,17 @@ func TestMessageWriteSurvivesANulByte(t *testing.T) {
 	if err := migrate.Run(ctx, pool, assets.MigrationsFS, assets.MigrationsDir); err != nil {
 		t.Fatal(err)
 	}
+	// PRECONDITION: this test's SUBJECT is UTF-8 storage — a NUL is sanitized so the
+	// UTF-8-encoded write succeeds. On a database whose server_encoding is NOT UTF8
+	// (the runtime container's test DB is SQL_ASCII) the same write fails for an
+	// UNRELATED reason — a driver-level conversion error (SQLSTATE 0A000) — so the test
+	// cannot exercise its subject and would report a false negative. Skip there, naming
+	// the reason, rather than fail on an encoding CI never uses (the CI runner's
+	// postgres:16 is UTF8).
+	var serverEncoding string
+	if err := pool.QueryRow(ctx, "SHOW server_encoding").Scan(&serverEncoding); err == nil && !strings.EqualFold(serverEncoding, "UTF8") {
+		t.Skipf("test database server_encoding is %s, not UTF8 — this test's subject (a NUL sanitized for a UTF-8 write) cannot be exercised here", serverEncoding)
+	}
 	const tenant = "tnt_nulmsg"
 
 	// (a) THE COUNTERFACTUAL, in its OWN transaction: the raw write, exactly as the mirror used to make it. A

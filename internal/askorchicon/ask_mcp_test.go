@@ -313,3 +313,102 @@ func TestNativeAskRestartsTheClientWhenTheProjectChanges(t *testing.T) {
 		t.Error("the stale project's client was not closed before the restart")
 	}
 }
+
+// AC 2 (native leg), THE CASE THE PROJECT CHECK ALONE MISSES: a conversation that
+// started with NO project resolves nothing (a cached "none"), then GAINS a project.
+// Without the per-turn reconciliation the cached empty answer would persist for the
+// life of the conversation and the new project's servers would never be offered.
+func TestNativeAskResolvesWhenAConversationGainsAProject(t *testing.T) {
+	fake := &askMCPFakeClient{defs: mcpDefsFor(), execOut: "ok"}
+	// The resolver answers by the project asked for: none ⇒ nothing.
+	resolver := &askMCPProjectResolver{
+		byProject: map[string]mcpclient.Resolution{"": {}, "p1": opaqueMCPResolution()},
+	}
+	restore := stubAskMCPConnect(func(context.Context, []mcpclient.ServerSpec) (askMCPClient, error) {
+		return fake, nil
+	})
+	defer restore()
+
+	svc := &Service{toolRegistry: NewToolRegistry(nil, nil, nil)}
+	svc.SetScopeResolver(resolver)
+	p := svc.NativeAskTools()
+
+	// Turn 1: unassigned — no MCP tools, no client, and no error.
+	for _, d := range p.AskToolDefs(mcpCtx(modeIteration, "c1", "")) {
+		if strings.HasPrefix(d.Name, "mcp__") {
+			t.Fatalf("a project-less conversation was offered an MCP tool: %q", d.Name)
+		}
+	}
+	// Turn 2: the operator assigns p1 — its servers must now be offered.
+	var offered []string
+	for _, d := range p.AskToolDefs(mcpCtx(modeIteration, "c1", "p1")) {
+		offered = append(offered, d.Name)
+	}
+	for _, want := range []string{"mcp__github__create_issue", "mcp__notes__append"} {
+		if !contains(offered, want) {
+			t.Errorf("after gaining a project the conversation was not offered %q — the cached empty answer was not reconciled: %v", want, offered)
+		}
+	}
+	// And the call routes to the live client.
+	if _, err := p.ExecuteAskTool(mcpCtx(modeIteration, "c1", "p1"), "mcp__github__create_issue", `{}`); err != nil {
+		t.Fatalf("ExecuteAskTool after gaining a project: %v", err)
+	}
+}
+
+// AC 2 (native leg), THE OTHER CASE: the conversation's OWN server is added between
+// two turns while its project is unchanged. The project check cannot see this, so the
+// client would keep serving the set resolved before the write. The fingerprint compare
+// catches it and the new tool becomes offerable.
+func TestNativeAskPicksUpAServerAddedMidConversation(t *testing.T) {
+	fake := &askMCPFakeClient{defs: mcpDefsFor(), execOut: "ok"}
+	resolver := &askMCPProjectResolver{byProject: map[string]mcpclient.Resolution{
+		"p1": opaqueMCPResolution(),
+	}}
+	// A second resolution with ONE MORE conversation-owned server, swapped in below.
+	grown := mcpclient.Resolution{
+		Servers: append(append([]mcpclient.ScopedServer{}, opaqueMCPResolution().Servers...),
+			mcpclient.ScopedServer{Spec: mcpclient.ServerSpec{ID: "late", Type: mcpclient.TypeStdio, Command: []string{"/bin/late"}},
+				From: mcpclient.ScopeConversation, FromID: "conversation:c1", EntryID: "late"}),
+		SelectedIDs: []string{"github", "notes", "late"},
+	}
+	restore := stubAskMCPConnect(func(context.Context, []mcpclient.ServerSpec) (askMCPClient, error) {
+		return fake, nil
+	})
+	defer restore()
+
+	svc := &Service{toolRegistry: NewToolRegistry(nil, nil, nil)}
+	svc.SetScopeResolver(resolver)
+	p := svc.NativeAskTools()
+
+	// Turn 1: the original set. One connect.
+	_ = p.AskToolDefs(mcpCtx(modeIteration, "c1", "p1"))
+	// The operator adds a server to the conversation (same project).
+	resolver.byProject["p1"] = grown
+	// Turn 2: the client must be replaced so the new server's tools are offerable.
+	// The fake reports the grown set so the assertion reads the ROUTED defs.
+	fake.defs = append(mcpDefsFor(), mcpclient.ToolDef{Name: mcpclient.ToolName("late", "do"), Description: "late"})
+	var offered []string
+	for _, d := range p.AskToolDefs(mcpCtx(modeIteration, "c1", "p1")) {
+		offered = append(offered, d.Name)
+	}
+	if !contains(offered, "mcp__late__do") {
+		t.Errorf("a server added mid-conversation was not picked up — the client was not reconciled: %v", offered)
+	}
+	if !fake.closed {
+		t.Error("the stale set's client was not closed when it was replaced")
+	}
+}
+
+// askMCPProjectResolver answers per-project, so a test can change what a project
+// resolves BETWEEN turns (a server added, a conversation assigned a project).
+// askMCPFakeResolver cannot: its answer is fixed.
+// The write below is not concurrently raced in these tests (single goroutine).
+type askMCPProjectResolver struct {
+	byProject map[string]mcpclient.Resolution
+	got       []mcpclient.ScopeRef
+}
+
+func (r *askMCPProjectResolver) ResolveScope(_ context.Context, ref mcpclient.ScopeRef) (mcpclient.Resolution, error) {
+	r.got = append(r.got, ref)
+	return r.byProject[ref.ProjectID], nil
+}

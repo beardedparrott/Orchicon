@@ -380,6 +380,13 @@ func (a *nativeAskTools) AskToolDefs(ctx context.Context) []orchicon.ToolDef {
 	// offered surface never advertises an action the mode refuses. A resolution or
 	// connect failure yields no MCP defs and is LOGGED (never a failed turn, and
 	// never a silently empty surface): the failure is reported loudly at call time.
+	//
+	// The set is reconciled FIRST (once per turn): a conversation can gain a project
+	// or a server between two messages, and a cached client would otherwise serve the
+	// set resolved before that write — or keep answering "no servers" forever.
+	// refreshAskMCP keeps the live client when nothing changed, so steady state spawns
+	// nothing.
+	a.service.refreshAskMCP(ctx)
 	for _, d := range a.service.askMCPDefs(ctx) {
 		if have[d.Name] {
 			continue

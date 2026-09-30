@@ -3,8 +3,10 @@ package providers_test
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -562,6 +564,18 @@ func TestProvidersListProviderModelsSeedsCatalogOffline(t *testing.T) {
 			t.Logf("cleanup anthropic base URL override: %v", err)
 		}
 	})
+
+	// HERMETIC: this test's SUBJECT is the OFFLINE seed — the vendored snapshot must
+	// fill the picker when the live sources are unreachable. The Claude Code MANAGED
+	// catalog is one such live source, and on a plane WITH egress it answers — and it
+	// no longer offers `claude-sonnet-4` (superseded upstream by the `-4-6` / `-5`
+	// generations), so it REPLACES the snapshot this test asserts. Pin the "live source
+	// unreachable" condition with a client whose timeout makes the fetch fail anyway,
+	// so the assertion holds on an offline plane and a wired one alike. The
+	// package-level catalog cache is cold here (nothing else in this test binary
+	// resolves the `anthropic` catalog), so the first call fetches and fails.
+	restore := orchicon.SetClaudeCatalogClientForTest(&http.Client{Timeout: time.Nanosecond})
+	t.Cleanup(restore)
 
 	res, err := svc.ListProviderModels(ctx, testTenant, "anthropic")
 	if err != nil {
