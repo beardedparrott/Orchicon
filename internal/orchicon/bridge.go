@@ -67,8 +67,9 @@ type NativeBridge struct {
 	rtClient scheduler.RuntimeClient
 	// mcpResolver resolves the session's MCP definitions by SCOPE (ADR-0008,
 	// owner-scoped union). Nil/absent → no MCP tools (sessions unaffected).
-	// The native bridge resolves the PROJECT scope only; child 3 owns feeding
-	// the worker version's inline specs into the worker scope.
+	// A session resolves the WORKER scope — the union of the project's owned
+	// definitions and the executing version's inline specs, the latter
+	// carried on scheduler.ExecutionManifest.Permissions.
 	mcpResolver mcpclient.ScopeResolver
 	// mcpSecretResolver replaces ${SECRET_NAME} refs in resolved MCP server
 	// env/headers with stored tenant-secret plaintext at session time.
@@ -227,7 +228,7 @@ func (b *NativeBridge) buildSession(ctx context.Context, exec db.ExecutionRow, m
 	// Connections are established NOW — per session, never at
 	// control-plane boot — and tool discovery runs at construction so the
 	// discovered signatures are present in the model's first request.
-	mt, terr := b.mcpResolveAndStart(ctx, exec)
+	mt, terr := b.mcpResolveAndStart(ctx, exec, manifest)
 	if terr != nil {
 		return nil, nil, terr
 	}

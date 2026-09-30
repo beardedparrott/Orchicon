@@ -585,8 +585,16 @@ func (s *askSession) argv() []string {
 	// environment (childEnv starts from os.Environ, so the plane's
 	// ORCHICON_POSTGRES_DSN rides through), so its DB channel reaches the tenant
 	// the conversation belongs to.
-	servers, err := s.b.resolveMCPServers(context.Background(), s.tenantID, "", "",
-		OrchiconMCPServer(HookBinaryPath(), s.tenantID, nil))
+	// The Ask surface resolves the PROJECT scope (child 6 owns it): the
+	// project's owned definitions, rendered with the built-in.
+	projRef := mcpclient.ScopeRef{Kind: mcpclient.ScopeProject}
+	res, rerr := s.b.resolveMCP(context.Background(), s.tenantID, projRef)
+	var servers []MCPServer
+	err = rerr
+	if rerr == nil {
+		servers, err = s.b.renderMCP(context.Background(), s.tenantID, res, OrchiconMCPServer(HookBinaryPath(), s.tenantID, nil))
+	}
+	provenance := mcpclient.ProvenanceString(res.Servers)
 	if err != nil {
 		// A MISSING selection is fatal on purpose (an Ask session that silently
 		// lost a project's MCP servers is a session that looks fine and cannot do
@@ -594,8 +602,9 @@ func (s *askSession) argv() []string {
 		// admin sees it; the built-in surface still registers.
 		slog.Default().Warn("claude ask: MCP resolution failed — only the built-in Orchicon server will be registered", "error", err)
 		servers = []MCPServer{OrchiconMCPServer(HookBinaryPath(), s.tenantID, nil)}
+		provenance = ""
 	}
-	logMCPResolution("ask", servers)
+	logMCPResolution("ask", servers, provenance)
 	argv = append(argv, MCPArgs(servers)...)
 	return argv
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/guard"
+	"github.com/beardedparrott/orchicon/internal/mcpclient"
 	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/permpolicy"
 	"github.com/beardedparrott/orchicon/internal/runtime"
@@ -455,19 +456,42 @@ func (s *session) mcpArgs() []string {
 		s.tenantID,
 		workerMCPExtraEnv(inContainer, s.manifest.RuntimeWorkflowID),
 	)
-	// The SAME resolution the native bridge runs: worker selection → project
-	// selection → tenant default, over the tenant's configured servers, with
-	// ${SECRET_NAME} refs expanded. This adapter only renders the result.
-	servers, err := s.b.resolveMCPServers(context.Background(), s.tenantID, s.manifest.WorkerID, s.manifest.ProjectID, builtin)
+	// The SAME resolution the native bridge runs, at the SAME scope: the
+	// WORKER scope — the project's owned definitions ∪ THE EXECUTING VERSION's
+	// inline specs, the latter carried on the manifest
+	// (ExecutionManifest.Permissions, from worker_versions.permissions) so a
+	// PINNED dispatch resolves the version it actually pinned rather than
+	// whatever is latest published. This adapter only renders the result.
+	ref := mcpclient.ScopeRef{
+		Kind:           mcpclient.ScopeWorker,
+		ProjectID:      s.manifest.ProjectID,
+		WorkerID:       s.manifest.WorkerID,
+		Version:        s.manifest.WorkerVersion,
+		OwnPermissions: s.manifest.Permissions,
+	}
+	res, rerr := s.b.resolveMCP(context.Background(), s.tenantID, ref)
+	var servers []MCPServer
+	err := rerr
+	if rerr == nil {
+		servers, err = s.b.renderMCP(context.Background(), s.tenantID, res, builtin)
+	}
+	provenance := mcpclient.ProvenanceString(res.Servers)
 	if err != nil {
 		// Fail the launch rather than run a worker without the MCP servers it was
 		// configured to have, which is the native bridge's contract too. argv()
 		// cannot return an error, so this is surfaced through the returned argv as
-		// a `--mcp-config` the model will report as failed — and logged loudly.
-		slog.Default().Warn("claude: MCP resolution failed — the worker will run without its configured MCP servers", "execution", s.execID, "error", err)
+		// a `--mcp-config` the model will report as failed — and logged loudly,
+		// naming the server AND the scope it came from (DescribeFailedServer) so
+		// the operator can tell "misconfigured server" from "server resolved from
+		// the wrong scope".
+		slog.Default().Warn("claude: MCP resolution failed — the worker will run without its configured MCP servers",
+			"execution", s.execID, "error", mcpclient.DescribeFailedServer(err, res.Servers))
 		servers = []MCPServer{builtin}
+		// The registered set is the built-in alone; do not report provenance for
+		// servers this session did NOT get.
+		provenance = ""
 	}
-	logMCPResolution("worker", servers)
+	logMCPResolution("worker", servers, provenance)
 	return MCPArgs(servers)
 }
 

@@ -55,7 +55,7 @@ func (r *Resolver) ResolveScope(ctx context.Context, ref mcpclient.ScopeRef) (mc
 	case mcpclient.ScopeConversation:
 		return r.resolveConversation(ctx, tenantID, ref.ProjectID, ref.ConversationID)
 	case mcpclient.ScopeWorker:
-		return r.resolveWorker(ctx, tenantID, ref.ProjectID, ref.WorkerID)
+		return r.resolveWorker(ctx, tenantID, ref)
 	case mcpclient.ScopeRun:
 		return r.resolveRun(ctx, tenantID, ref.RunID)
 	}
@@ -105,30 +105,55 @@ func (r *Resolver) resolveConversation(ctx context.Context, tenantID, projectID,
 	return resolutionFromRows(rows), nil
 }
 
-// resolveWorker is the per-session scope: project-owned ∪ the worker's
-// latest published version's INLINE specs (its permissions.mcp_servers).
-func (r *Resolver) resolveWorker(ctx context.Context, tenantID, projectID, workerID string) (mcpclient.Resolution, error) {
+// resolveWorker is the per-session scope: project-owned ∪ the resolving
+// VERSION's INLINE specs (its permissions.mcp_servers).
+//
+// THE VERSION'S OWN SET COMES FROM THE CALLER WHEN IT HAS ONE. A dispatch
+// pins a worker version and carries its permissions on the manifest
+// (worker_versions.permissions → ExecutionManifest.Permissions →
+// ScopeRef.OwnPermissions); resolving the LATEST published version instead
+// would union a different version's servers than the one that is actually
+// running. When the caller has no bytes (direct / TUI / ContinueSession
+// callers) the storage read holds, so those paths keep resolving the latest
+// published version.
+func (r *Resolver) resolveWorker(ctx context.Context, tenantID string, ref mcpclient.ScopeRef) (mcpclient.Resolution, error) {
 	tx, err := r.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return mcpclient.Resolution{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	rows, err := db.ListMCPServersByOwner(ctx, tx.Tx, tenantID, projectID, "")
+	rows, err := db.ListMCPServersByOwner(ctx, tx.Tx, tenantID, ref.ProjectID, "")
 	if err != nil {
 		return mcpclient.Resolution{}, err
 	}
 	res := resolutionFromRows(rows)
-	if workerID == "" {
+	if ref.WorkerID == "" {
 		return res, nil
 	}
-	perms, err := workerPermissions(ctx, tx.Tx, tenantID, workerID)
-	if err != nil && !errors.Is(err, db.ErrNotFound) {
-		return res, err
+	perms := ref.OwnPermissions
+	if len(perms) == 0 {
+		p, perr := workerPermissions(ctx, tx.Tx, tenantID, ref.WorkerID)
+		if perr != nil && !errors.Is(perr, db.ErrNotFound) {
+			return res, perr
+		}
+		perms = p
 	}
 	inline := db.MCPServersFromPermissions(perms)
-	res = unionInline(res, inline, "inline:"+workerID)
+	res = unionInline(res, inline, inlineFromID(ref))
 	res.Skills = unionSkills(res.Skills, db.SkillsFromPermissions(perms))
 	return res, nil
+}
+
+// inlineFromID is the provenance label for a worker scope's own half.
+// Unpinned (Version == 0) keeps child 1's "inline:<workerID>" shape (the
+// storage path); a PINNED dispatch reports "inline:<workerID>@<n>", the
+// documented shape resolveRun already uses, so the log names the version the
+// execution actually ran.
+func inlineFromID(ref mcpclient.ScopeRef) string {
+	if ref.Version != 0 {
+		return fmt.Sprintf("inline:%s@%d", ref.WorkerID, ref.Version)
+	}
+	return "inline:" + ref.WorkerID
 }
 
 // resolveRun is the RUN scope — the one to get right by construction.
