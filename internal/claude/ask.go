@@ -449,10 +449,10 @@ func (b *Bridge) askRoot() string {
 // plane's own root; tests use a temp dir).
 func (b *Bridge) SetAskRoot(dir string) { b.askRootOverride = strings.TrimSpace(dir) }
 
-// SetConfigSource wires the tenant MCP server source. Mirroring the native
-// bridge's setter of the same name is deliberate: ONE resolution, one place the
-// platform decides which servers an execution gets.
-func (b *Bridge) SetConfigSource(src mcpclient.ConfigSource) { b.mcpConfig = src }
+// SetScopeResolver wires the MCP scope resolver. Mirroring the native bridge's
+// setter of the same name is deliberate: ONE resolution, one place the platform
+// decides which servers an execution gets.
+func (b *Bridge) SetScopeResolver(src mcpclient.ScopeResolver) { b.mcpResolver = src }
 
 // SetMCPSecretResolver wires the ${SECRET_NAME} → plaintext resolver used just
 // before the MCP config is rendered.

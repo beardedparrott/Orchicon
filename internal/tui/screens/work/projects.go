@@ -107,21 +107,15 @@ func (m *Model) prepProjectForm(mode, id string) tea.Cmd {
 				}
 			}
 		}
+		// NO MCP SELECTION READ ANY MORE. There is no project↔server selection
+		// RPC: a definition is OWNED by a project (mcp_servers.project_id), and the
+		// project form no longer picks a set of tenant-wide servers by reference.
+		// The scope-aware list is kept so the picker still has data to render once
+		// child 7 re-homes the control onto owner-scoped create.
 		if cl.MCP != nil {
 			list, err := cl.MCP.ListMCPServers(ctx, connect.NewRequest(&apiv1.MCPServerListRequest{}))
 			if err == nil {
 				msg.data.mcpServers = list.Msg.GetServers()
-				msg.data.mcpLoaded = true
-				if id != "" {
-					if sel, serr := cl.MCP.GetProjectMCPServers(ctx, connect.NewRequest(&apiv1.ProjectMCPServersGetRequest{ProjectId: id})); serr == nil {
-						msg.data.mcpSelected = sel.Msg.GetMcpServerIds()
-					} else {
-						// The list loaded but THIS project's selection did not, so we do not know what
-						// it is. Treating that as "nothing selected" would let a save clear a selection
-						// the operator never saw.
-						msg.data.mcpLoaded = false
-					}
-				}
 			}
 		}
 		return msg
@@ -279,25 +273,10 @@ func withMCP(specs []kit2.FieldSpec, servers []*apiv1.MCPServer, selected []stri
 	return specs
 }
 
-// setProjectMCPServers writes a project's MCP selection. It is a no-op when mcpLoaded is
-// false, which is the important case: the field was not shown, so an empty list here
-// means "we do not know", not "clear it". Writing on a failed load would wipe a
-// selection the operator never saw.
-//
-// AN EMPTY LIST IS OTHERWISE SENT DELIBERATELY, and the server reads it as "no project
-// selection" — the project then falls through to the tenant default. That is what makes
-// the selection removable from the TUI; sending only non-empty lists would leave a
-// selection that could never be undone.
-func (m *Model) setProjectMCPServers(ctx context.Context, projectID string, ids []string, loaded bool) error {
-	if !loaded || m.cl == nil || m.cl.MCP == nil || projectID == "" {
-		return nil
-	}
-	_, err := m.cl.MCP.SetProjectMCPServers(ctx, connect.NewRequest(&apiv1.ProjectMCPServersSetRequest{
-		ProjectId:    projectID,
-		McpServerIds: ids,
-	}))
-	return err
-}
+// NOTE: setProjectMCPServers was REMOVED. The project↔server selection RPC pair
+// (SetProjectMCPServers / GetProjectMCPServers) is gone: selection is OWNERSHIP
+// (mcp_servers.project_id), so there is no separate selection to write. Child 7
+// re-homes the create form's MCP control onto the owner-scoped create payload.
 
 // newProjectCreateForm builds the create form from the shared field list.
 func (m *Model) newProjectCreateForm() *kit2.Form {
@@ -307,7 +286,7 @@ func (m *Model) newProjectCreateForm() *kit2.Form {
 // newProjectCreateFormWith adds the option lists that need a round trip: the runtime-image picker
 // and the MCP selection.
 func (m *Model) newProjectCreateFormWith(d projectFormData) *kit2.Form {
-	specs := withMCP(ProjectFormFields(nil, d.images), d.mcpServers, d.mcpSelected)
+	specs := ProjectFormFields(nil, d.images)
 	f := kit2.NewForm("New project", specs...)
 	m.wireProjectForm(f, formCreateProject, "")
 	return f
@@ -325,7 +304,7 @@ func (m *Model) newProjectEditFormWith(p *apiv1.Project, d projectFormData) *kit
 		Name: "project_dir", Label: "Project dir", Kind: kit2.KText,
 		Initial: p.GetProjectDir(), Placeholder: "/home/me/projects/orchicon",
 	})
-	specs = withMCP(specs, d.mcpServers, d.mcpSelected)
+
 	f := kit2.NewForm("Edit project", specs...)
 	m.wireProjectForm(f, formEditProject, p.GetId())
 	return f
@@ -549,11 +528,9 @@ func (m *Model) wireProjectForm(f *kit2.Form, mode, id string) {
 		goals := ParseGoals(v["goals"])
 		contextFiles := ParseContextFiles(v["context_files"])
 		maxRuns := parseMaxConcurrentRuns(v["max_concurrent_runs"])
-		// A MULTI-SELECT THAT WAS NOT SHOWN has no entry in `multi`, so mcpChosen is nil
-		// and mcpLoaded is false — and mcpLoaded is what decides whether the selection is
-		// written at all. An absent field must never clear a project's servers.
-		mcpChosen, present := multi["mcp_servers"]
-		mcpLoaded := present && m.formMCPLoaded
+		// No MCP selection is written: selection IS ownership (mcp_servers.project_id).
+		// Child 7 re-homes the project form's MCP control onto the owner-scoped create.
+		_ = multi
 		switch mode {
 		case formCreateProject:
 			req := &apiv1.CreateProjectRequest{
@@ -580,7 +557,7 @@ func (m *Model) wireProjectForm(f *kit2.Form, mode, id string) {
 					if err := applyProjectPostCreate(ctx, cl.Projects, created.Msg.GetProject().GetId(), maxRuns, contextFiles); err != nil {
 						return err
 					}
-					return m.setProjectMCPServers(ctx, created.Msg.GetProject().GetId(), mcpChosen, mcpLoaded)
+					return nil
 				},
 			}), nil
 
@@ -608,7 +585,7 @@ func (m *Model) wireProjectForm(f *kit2.Form, mode, id string) {
 					if _, err := m.cl.Projects.UpdateProject(ctx, connect.NewRequest(req)); err != nil {
 						return err
 					}
-					return m.setProjectMCPServers(ctx, id, mcpChosen, mcpLoaded)
+					return nil
 				},
 			}), nil
 

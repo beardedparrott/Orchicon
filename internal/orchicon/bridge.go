@@ -65,12 +65,11 @@ type NativeBridge struct {
 	// is container-backed (always-container runtime mode). Nil =
 	// in-process (local mode / standalone / headless).
 	rtClient scheduler.RuntimeClient
-	// mcpConfig resolves the session's MCP server selection (ADR-0008:
-	// worker → project → tenant-default → none over the tenant server list).
-	// Nil/absent → no MCP tools (sessions unaffected). Defaults to the no-op
-	// source so the feature degrades safely until adapter-settings storage
-	// lands.
-	mcpConfig mcpclient.ConfigSource
+	// mcpResolver resolves the session's MCP definitions by SCOPE (ADR-0008,
+	// owner-scoped union). Nil/absent → no MCP tools (sessions unaffected).
+	// The native bridge resolves the PROJECT scope only; child 3 owns feeding
+	// the worker version's inline specs into the worker scope.
+	mcpResolver mcpclient.ScopeResolver
 	// mcpSecretResolver replaces ${SECRET_NAME} refs in resolved MCP server
 	// env/headers with stored tenant-secret plaintext at session time.
 	// Nil → pass-through (no secret resolution).
@@ -184,12 +183,10 @@ func (b *NativeBridge) Kind() string { return "orchicon" }
 // foreign adapter).
 func (b *NativeBridge) SessionOwnerKind() string { return "orchicon" }
 
-// SetConfigSource sets the MCP server config-resolution source for
-// sessions (ADR-0008). Absent → no MCP tools. The platform injects a
-// real source once tenant server storage lands (adapter-settings task);
-// until then the no-op default keeps sessions unaffected.
-func (b *NativeBridge) SetConfigSource(src mcpclient.ConfigSource) {
-	b.mcpConfig = src
+// SetScopeResolver sets the MCP scope resolver for sessions (ADR-0008).
+// Absent → no MCP tools (sessions unaffected).
+func (b *NativeBridge) SetScopeResolver(src mcpclient.ScopeResolver) {
+	b.mcpResolver = src
 }
 
 // SetMCPSecretResolver sets the ${SECRET_NAME} → plaintext resolver used

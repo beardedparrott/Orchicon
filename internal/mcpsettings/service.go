@@ -1,13 +1,21 @@
 // Package mcpsettings implements the tenant-facing MCP server management
-// surface behind Settings → Adapters → MCP: CRUD over tenant-scoped MCP
-// server entries (stdio + streamable HTTP), the curated registry catalog
-// with install specs, explicit-only auto-install (runtime detection +
-// dry-run for CI), write-only credentials via the tenant secrets store
-// (provider-token pattern, ADR-0006 D5), and project/tenant-default
-// selections (references, never copies). The sibling MCP-client task
-// (internal/mcpclient) consumes the stored entries at session time;
-// resolution order worker → project → tenant default → none is defined
-// here and implemented there.
+// surface behind Settings → Adapters → MCP: CRUD over OWNER-SCOPED MCP
+// definitions (stdio + streamable HTTP), the curated registry catalog with
+// install specs, explicit-only auto-install (runtime detection + dry-run
+// for CI), and write-only credentials via the tenant secrets store
+// (provider-token pattern, ADR-0006 D5).
+//
+// A definition belongs to EXACTLY ONE owner — a project OR an Ask
+// conversation (mcp_servers.project_id XOR mcp_servers.conversation_id).
+// There is no tenant-wide tier and no selection join table: the owner
+// column IS the selection, so a definition can never be orphaned and the
+// deletion guard that existed only because a definition could be shared is
+// gone with it.
+//
+// Resolution is ONE union, addressed by SCOPE — see Resolver and
+// mcpclient.ScopeResolver. The old three-place precedence chain (worker →
+// project → tenant default → none) is replaced by
+// project-owned ∪ scope-owned, deduped, order-stable.
 package mcpsettings
 
 import (
@@ -70,50 +78,14 @@ func invalidf(format string, a ...any) error {
 	return fmt.Errorf("%w: %s", errInvalidArgument, fmt.Sprintf(format, a...))
 }
 
-// ReferencingProject is one live project reference (deletion guard).
-type ReferencingProject struct {
-	ProjectID   string
-	ProjectName string
-}
-
-// ReferencingWorker is one live worker reference (deletion guard).
-type ReferencingWorker struct {
-	WorkerID   string
-	WorkerName string
-}
-
-// ErrReferenced is the deletion-guard sentinel (errors.As →
-// *ReferencedError).
-var ErrReferenced = errors.New("mcp server referenced")
-
-// ReferencedError lists every live reference blocking a delete.
-type ReferencedError struct {
-	Projects        []ReferencingProject
-	Workers         []ReferencingWorker
-	InTenantDefault bool
-}
-
-func (e *ReferencedError) Error() string {
-	var parts []string
-	for _, p := range e.Projects {
-		parts = append(parts, "project "+p.ProjectName)
-	}
-	for _, w := range e.Workers {
-		parts = append(parts, "worker "+w.WorkerName)
-	}
-	if e.InTenantDefault {
-		parts = append(parts, "the tenant default set")
-	}
-	return fmt.Sprintf("%s: %s", ErrReferenced, strings.Join(parts, ", "))
-}
-
-func (e *ReferencedError) Is(target error) bool { return target == ErrReferenced }
-
 // Entry is one MCP server row as the service exposes it. Plaintext
 // credentials never appear here.
 type Entry struct {
-	ID              string
-	Name            string
+	ID   string
+	Name string
+	// ProjectID / ConversationID are the OWNER — exactly one is non-empty.
+	ProjectID       string
+	ConversationID  string
 	Transport       string
 	Command         string
 	Args            []string
@@ -139,9 +111,9 @@ type InstallResult struct {
 	InstalledAt string `json:"installed_at,omitempty"`
 }
 
-// Service is the MCP settings core: storage over mcp_servers + the
-// project join table + tenant_settings.default_mcp_servers, catalog and
-// auto-install logic, and write-only secret wiring.
+// Service is the MCP settings core: storage over the OWNER-SCOPED
+// mcp_servers table, catalog and auto-install logic, and write-only secret
+// wiring.
 type Service struct {
 	pool *db.Pool
 	kek  []byte
@@ -170,19 +142,21 @@ func (s *Service) begin(ctx context.Context, tenantID string) (*db.TenantTx, err
 
 func entryFromRow(r db.MCPServerRow) Entry {
 	e := Entry{
-		ID:            r.ID,
-		Name:          r.Name,
-		Transport:     r.Transport,
-		Command:       r.Command,
-		Args:          r.Args,
-		Env:           r.Env,
-		URL:           r.URL,
-		Headers:       r.Headers,
-		Enabled:       r.Enabled,
-		CatalogSlug:   r.CatalogSlug,
-		InstallStatus: r.InstallStatus,
-		CreatedAt:     r.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
-		UpdatedAt:     r.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		ID:             r.ID,
+		Name:           r.Name,
+		ProjectID:      r.ProjectID,
+		ConversationID: r.ConversationID,
+		Transport:      r.Transport,
+		Command:        r.Command,
+		Args:           r.Args,
+		Env:            r.Env,
+		URL:            r.URL,
+		Headers:        r.Headers,
+		Enabled:        r.Enabled,
+		CatalogSlug:    r.CatalogSlug,
+		InstallStatus:  r.InstallStatus,
+		CreatedAt:      r.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		UpdatedAt:      r.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 	}
 	if e.InstallStatus == "" {
 		e.InstallStatus = InstallUnknown
@@ -217,6 +191,40 @@ func (s *Service) ListForTenant(ctx context.Context, tenantID string) ([]Entry, 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	rows, err := db.ListMCPServers(ctx, tx.Tx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Entry, 0, len(rows))
+	for _, r := range rows {
+		e := entryFromRow(r)
+		e.RequiredSecrets = RequiredSecretsFor(e)
+		if len(e.RequiredSecrets) > 0 {
+			e.HasSecretStored, err = anySecretStored(ctx, tx.Tx, tenantID, e)
+			if err != nil {
+				return nil, err
+			}
+		}
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+// ListForScope returns the definitions VISIBLE to a scope, owner-scoped:
+// project-only when conversationID is empty, project ∪ conversation
+// otherwise; both empty lists the whole tenant (preserving ListForTenant's
+// behaviour for the unscoped callers).
+func (s *Service) ListForScope(ctx context.Context, tenantID, projectID, conversationID string) ([]Entry, error) {
+	projectID = strings.TrimSpace(projectID)
+	conversationID = strings.TrimSpace(conversationID)
+	if projectID == "" && conversationID == "" {
+		return s.ListForTenant(ctx, tenantID)
+	}
+	tx, err := s.begin(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	rows, err := db.ListMCPServersByOwner(ctx, tx.Tx, tenantID, projectID, conversationID)
 	if err != nil {
 		return nil, err
 	}
@@ -392,24 +400,47 @@ func validateURL(raw string) error {
 
 // CreateInput is the writable create payload.
 type CreateInput struct {
-	Name        string
-	Transport   string
-	Command     string
-	Args        []string
-	Env         map[string]string
-	URL         string
-	Headers     map[string]string
-	Enabled     bool
-	CatalogSlug string
+	Name string
+	// ProjectID / ConversationID are the scope the definition is created
+	// in. Exactly ONE must be non-empty (owner XOR); the scope is IMMUTABLE
+	// after create.
+	ProjectID      string
+	ConversationID string
+	Transport      string
+	Command        string
+	Args           []string
+	Env            map[string]string
+	URL            string
+	Headers        map[string]string
+	Enabled        bool
+	CatalogSlug    string
 }
 
 func (s *Service) validateCreate(ctx context.Context, tx pgx.Tx, tenantID string, in *CreateInput) error {
 	in.Name = strings.TrimSpace(in.Name)
+	in.ProjectID = strings.TrimSpace(in.ProjectID)
+	in.ConversationID = strings.TrimSpace(in.ConversationID)
 	in.Command = strings.TrimSpace(in.Command)
 	in.URL = strings.TrimSpace(in.URL)
 	in.CatalogSlug = strings.TrimSpace(in.CatalogSlug)
 	if in.Name == "" || len(in.Name) > maxNameLen {
 		return invalidf("name must be 1–%d characters", maxNameLen)
+	}
+	// Owner XOR: a definition must belong to exactly one scope. Both set or
+	// neither is a caller bug, not a default.
+	switch {
+	case in.ProjectID == "" && in.ConversationID == "":
+		return invalidf("exactly one of project_id or conversation_id must be set")
+	case in.ProjectID != "" && in.ConversationID != "":
+		return invalidf("project_id and conversation_id are mutually exclusive")
+	case in.ProjectID != "":
+		if err := db.RequireProjectActive(ctx, tx, tenantID, in.ProjectID); err != nil {
+			return err
+		}
+	default:
+		if err := db.RequireConversation(ctx, tx, tenantID, in.ConversationID); err != nil {
+			return err
+		}
 	}
 	switch in.Transport {
 	case "":
@@ -462,26 +493,30 @@ func (s *Service) Create(ctx context.Context, tenantID string, in CreateInput) (
 	if err := s.validateCreate(ctx, tx.Tx, tenantID, &in); err != nil {
 		return Entry{}, err
 	}
-	// Name-uniqueness pre-check for a clean error (the UNIQUE constraint
-	// is the backstop).
-	if _, err := db.GetMCPServerByName(ctx, tx.Tx, tenantID, in.Name); err == nil {
-		return Entry{}, invalidf("an MCP server named %q already exists", in.Name)
+	// Name-uniqueness pre-check for a clean error. The uniqueness is
+	// OWNER-SCOPED now (two projects may each own a `postgres`), and the
+	// partial unique index is the backstop for the race the pre-check
+	// cannot close.
+	if _, err := db.GetMCPServerByNameForOwner(ctx, tx.Tx, tenantID, in.ProjectID, in.ConversationID, in.Name); err == nil {
+		return Entry{}, invalidf("an MCP server named %q already exists in this scope", in.Name)
 	} else if !errors.Is(err, db.ErrNotFound) {
 		return Entry{}, err
 	}
 	row, err := db.UpsertMCPServer(ctx, tx.Tx, db.MCPServerRow{
-		ID:            uuid.NewString(),
-		TenantID:      tenantID,
-		Name:          in.Name,
-		Transport:     in.Transport,
-		Command:       in.Command,
-		Args:          in.Args,
-		Env:           in.Env,
-		URL:           in.URL,
-		Headers:       in.Headers,
-		Enabled:       in.Enabled,
-		CatalogSlug:   in.CatalogSlug,
-		InstallStatus: InstallUnknown,
+		ID:             uuid.NewString(),
+		TenantID:       tenantID,
+		Name:           in.Name,
+		ProjectID:      in.ProjectID,
+		ConversationID: in.ConversationID,
+		Transport:      in.Transport,
+		Command:        in.Command,
+		Args:           in.Args,
+		Env:            in.Env,
+		URL:            in.URL,
+		Headers:        in.Headers,
+		Enabled:        in.Enabled,
+		CatalogSlug:    in.CatalogSlug,
+		InstallStatus:  InstallUnknown,
 	})
 	if err != nil {
 		return Entry{}, err
@@ -523,6 +558,10 @@ func (s *Service) Get(ctx context.Context, tenantID, id string) (Entry, error) {
 // UpdateInput is the partial-update merge (optional-pointer pattern).
 type UpdateInput struct {
 	ID string
+	// ProjectID / ConversationID may be echoed by a client; a value that
+	// DIFFERS from the stored owner is rejected (owner is immutable).
+	ProjectID      string
+	ConversationID string
 
 	Name           *string
 	Transport      *string
@@ -556,6 +595,15 @@ func (s *Service) Update(ctx context.Context, tenantID string, in UpdateInput) (
 	merged := existing
 	if in.Name != nil {
 		return Entry{}, invalidf("name is immutable after create; delete + recreate to rename")
+	}
+	// The SCOPE is immutable after create too (like the name): moving a
+	// definition is a different row semantically, and an owner swap would
+	// race the owner-scoped partial unique indexes.
+	if strings.TrimSpace(in.ProjectID) != "" && strings.TrimSpace(in.ProjectID) != existing.ProjectID {
+		return Entry{}, invalidf("owner is immutable after create; delete + recreate to move")
+	}
+	if strings.TrimSpace(in.ConversationID) != "" && strings.TrimSpace(in.ConversationID) != existing.ConversationID {
+		return Entry{}, invalidf("owner is immutable after create; delete + recreate to move")
 	}
 	if in.Transport != nil {
 		merged.Transport = strings.TrimSpace(*in.Transport)
@@ -596,17 +644,22 @@ func (s *Service) Update(ctx context.Context, tenantID string, in UpdateInput) (
 		merged.CatalogSlug = strings.TrimSpace(*in.CatalogSlug)
 	}
 
-	// Re-validate the merged shape through the create validator.
+	// Re-validate the merged shape through the create validator. The OWNER is
+	// carried through: the validator requires exactly one owner, and the
+	// merged row already has it (it is immutable, so it equals the stored
+	// one).
 	chk := CreateInput{
-		Name:        merged.Name,
-		Transport:   merged.Transport,
-		Command:     merged.Command,
-		Args:        merged.Args,
-		Env:         merged.Env,
-		URL:         merged.URL,
-		Headers:     merged.Headers,
-		Enabled:     merged.Enabled,
-		CatalogSlug: merged.CatalogSlug,
+		Name:           merged.Name,
+		ProjectID:      merged.ProjectID,
+		ConversationID: merged.ConversationID,
+		Transport:      merged.Transport,
+		Command:        merged.Command,
+		Args:           merged.Args,
+		Env:            merged.Env,
+		URL:            merged.URL,
+		Headers:        merged.Headers,
+		Enabled:        merged.Enabled,
+		CatalogSlug:    merged.CatalogSlug,
 	}
 	if err := s.validateCreate(ctx, tx.Tx, tenantID, &chk); err != nil {
 		return Entry{}, err
@@ -652,20 +705,12 @@ func (s *Service) Delete(ctx context.Context, tenantID, id string) error {
 	if err != nil {
 		return err
 	}
-	projects, workers, inDefault, err := db.ListMCPServerReferences(ctx, tx.Tx, tenantID, id)
-	if err != nil {
-		return err
-	}
-	if len(projects) > 0 || len(workers) > 0 || inDefault {
-		ref := &ReferencedError{InTenantDefault: inDefault}
-		for _, p := range projects {
-			ref.Projects = append(ref.Projects, ReferencingProject{ProjectID: p.ProjectID, ProjectName: p.ProjectName})
-		}
-		for _, w := range workers {
-			ref.Workers = append(ref.Workers, ReferencingWorker{WorkerID: w.WorkerID, WorkerName: w.WorkerName})
-		}
-		return ref
-	}
+	// NO REFERENCE GUARD: an owner-scoped definition cannot be orphaned —
+	// every reference IS the row's owner (mcp_servers.project_id /
+	// conversation_id, with ON DELETE CASCADE on both FKs). The guard and
+	// its ReferencedError existed only because a definition could be
+	// SHARED, which the owner-scoped model removes.
+	//
 	// Purge derived secrets: delete where name LIKE 'MCP_<slug>_%'.
 	comp := strings.ToUpper(existing.CatalogSlug)
 	if comp == "" {
@@ -855,100 +900,6 @@ func (s *Service) ClearSecret(ctx context.Context, tenantID, id, name string) er
 		return fmt.Errorf("mcpsettings: audit secret clear: %w", err)
 	}
 	return tx.Commit(ctx)
-}
-
-// SetProjectSelection replaces the project's MCP server selection
-// (references). All ids are validated against the tenant scope.
-func (s *Service) SetProjectSelection(ctx context.Context, tenantID, projectID string, ids []string) error {
-	projectID = strings.TrimSpace(projectID)
-	if projectID == "" {
-		return invalidf("project_id must not be empty")
-	}
-	ids = dedupIDs(ids)
-	tx, err := s.begin(ctx, tenantID)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err := db.RequireProjectActive(ctx, tx.Tx, tenantID, projectID); err != nil {
-		return err
-	}
-	if err := s.validateIDs(ctx, tx.Tx, tenantID, ids); err != nil {
-		return err
-	}
-	if err := db.SetProjectMCPServers(ctx, tx.Tx, tenantID, projectID, ids); err != nil {
-		return err
-	}
-	if err := audit.Record(ctx, tx.Tx, audit.Entry{TenantID: tenantID, Action: "project.mcp_servers_updated", TargetType: "project", TargetID: projectID,
-		After: audit.Snapshot(map[string]any{"mcp_servers": ids})}); err != nil {
-		return fmt.Errorf("mcpsettings: audit project mcp servers: %w", err)
-	}
-	return tx.Commit(ctx)
-}
-
-// GetProjectSelection returns the project's MCP server ids.
-func (s *Service) GetProjectSelection(ctx context.Context, tenantID, projectID string) ([]string, error) {
-	tx, err := s.begin(ctx, tenantID)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	return db.ListProjectMCPServerIDs(ctx, tx.Tx, tenantID, projectID)
-}
-
-// SetTenantDefaultSelection replaces the tenant default MCP server set.
-func (s *Service) SetTenantDefaultSelection(ctx context.Context, tenantID string, ids []string) error {
-	ids = dedupIDs(ids)
-	tx, err := s.begin(ctx, tenantID)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err := s.validateIDs(ctx, tx.Tx, tenantID, ids); err != nil {
-		return err
-	}
-	if err := db.SetTenantDefaultMCPServers(ctx, tx.Tx, tenantID, ids); err != nil {
-		return err
-	}
-	if err := audit.Record(ctx, tx.Tx, audit.Entry{TenantID: tenantID, Action: "tenant.default_mcp_servers_updated", TargetType: "tenant", TargetID: tenantID,
-		After: audit.Snapshot(map[string]any{"mcp_servers": ids})}); err != nil {
-		return fmt.Errorf("mcpsettings: audit tenant default: %w", err)
-	}
-	return tx.Commit(ctx)
-}
-
-// GetTenantDefaultSelection returns the tenant default MCP server ids.
-func (s *Service) GetTenantDefaultSelection(ctx context.Context, tenantID string) ([]string, error) {
-	tx, err := s.begin(ctx, tenantID)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	return db.GetTenantDefaultMCPServers(ctx, tx.Tx, tenantID)
-}
-
-func (s *Service) validateIDs(ctx context.Context, tx pgx.Tx, tenantID string, ids []string) error {
-	if len(ids) == 0 {
-		return nil
-	}
-	rows, err := db.ListMCPServersByIDs(ctx, tx, tenantID, ids)
-	if err != nil {
-		return err
-	}
-	found := make(map[string]bool, len(rows))
-	for _, r := range rows {
-		found[r.ID] = true
-	}
-	var missing []string
-	for _, id := range ids {
-		if !found[id] {
-			missing = append(missing, id)
-		}
-	}
-	if len(missing) > 0 {
-		return invalidf("unknown MCP server ids: %s", strings.Join(missing, ", "))
-	}
-	return nil
 }
 
 func dedupIDs(ids []string) []string {

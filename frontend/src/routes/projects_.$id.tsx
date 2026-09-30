@@ -20,11 +20,8 @@ import { useListDirPath, useUpdateProjectDir } from "@/api/projectFiles";
 import { useStreamProjectEvents } from "@/api/projectEvents";
 import { useDebouncedInvalidation } from "@/lib/useDebouncedInvalidation";
 import {
-  useGetProjectMCPServers,
-  useSetProjectMCPServers,
 } from "@/api/mcpServers";
 import { EntityYamlView } from "@/components/EntityYamlView";
-import { MCPPicker, type MCPConfig } from "@/components/MCPPicker";
 import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import {
@@ -73,17 +70,9 @@ function ProjectDetailPage() {
   const [draftExecutionMode, setDraftExecutionMode] = useState<"runtime" | "local">("runtime");
   const [savingRuntime, setSavingRuntime] = useState(false);
   const { data: availableImages } = useAvailableRuntimeImages();
-  // MCP server selection (references into Settings → Adapters → MCP).
-  // Auto-refreshes on save via react-query invalidation (mcpKeys.project).
-  const { data: projectMCPServers } = useGetProjectMCPServers(id);
-  const setProjectMCPServers = useSetProjectMCPServers();
-  const [mcpDraft, setMcpDraft] = useState<MCPConfig[]>([]);
-  const [mcpDirty, setMcpDirty] = useState(false);
-  const [savingMCP, setSavingMCP] = useState(false);
-  useEffect(() => {
-    setMcpDraft((projectMCPServers ?? []).map((srvId) => ({ id: srvId })));
-    setMcpDirty(false);
-  }, [projectMCPServers]);
+  // The project↔server SELECTION is gone: a definition is OWNED by its scope
+  // (mcp_servers.project_id), so there is no reference set to read or save.
+  // Child 7 re-homes this control onto the owner-scoped create.
   // Active executions (non-terminal) for the current-vs-limit meter.
   const { data: executions } = useListExecutions({ projectId: id, enabled: !!id });
   const { data: tenantSettings } = useGetSettings();
@@ -467,56 +456,9 @@ function ProjectDetailPage() {
         </Card>
       )}
 
-      {/* MCP servers — reference-based selection into the tenant registry */}
-      {project && (
-        <Card>
-          <CardHeader>
-            <CardTitle>MCP servers</CardTitle>
-            <CardDescription>
-              MCP servers enabled for this project (references — editing an
-              entry in Settings → Adapters → MCP updates every consumer).
-              Selections here are the project defaults workers fall back to.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <MCPPicker
-              value={mcpDraft}
-              onChange={(configs) => {
-                setMcpDraft(configs);
-                setMcpDirty(true);
-              }}
-            />
-            {editing && (
-              <Button
-                variant="outline"
-                disabled={savingMCP || !mcpDirty}
-                onClick={() => {
-                  setSavingMCP(true);
-                  setProjectMCPServers.mutate(
-                    {
-                      projectId: project.id,
-                      mcpServerIds: mcpDraft.map((c) => c.id),
-                    },
-                    {
-                      onSettled: () => setSavingMCP(false),
-                      onSuccess: () => setMcpDirty(false),
-                    },
-                  );
-                }}
-              >
-                {savingMCP ? "Saving…" : "Save MCP selection"}
-              </Button>
-            )}
-            {!editing && (
-              <p className="text-xs text-muted-foreground">
-                {mcpDraft.length === 0
-                  ? "No MCP servers selected — workers fall back to the tenant default."
-                  : `${mcpDraft.length} MCP server(s) selected.`}
-              </p>
-            )}
-          </CardContent>
-        </Card>
-      )}
+      {/* MCP definitions are OWNER-SCOPED (mcp_servers.project_id): there is no
+          separate project selection card any more. Child 7 owns re-homing the
+          owner-scoped management control onto this page. */}
 
       {/* Runtime defaults — project-level container image + execution mode */}
       {project && (

@@ -7,8 +7,6 @@ import { z } from "zod";
 import { useCreateProject, useUpdateProject } from "@/api/projects";
 import { GoalField } from "@/api/gen/orchicon/api/v1/project_pb";
 import { useAvailableRuntimeImages } from "@/api/runtimeImages";
-import { useSetProjectMCPServers } from "@/api/mcpServers";
-import { MCPPicker, type MCPConfig } from "@/components/MCPPicker";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -62,8 +60,6 @@ function NewProjectPage() {
   const navigate = useNavigate();
   const createProject = useCreateProject();
   const updateProject = useUpdateProject();
-  const setProjectMCPServers = useSetProjectMCPServers();
-  const [mcpSelection, setMcpSelection] = useState<MCPConfig[]>([]);
   const { data: availableImages } = useAvailableRuntimeImages();
   const runtimeOptions = [
     ...((availableImages as { stockImages?: string[] } | undefined)?.stockImages ?? []),
@@ -138,17 +134,8 @@ function NewProjectPage() {
         console.error("Failed to save project concurrency guard", err);
       }
     }
-    // Persist MCP server selection (references, never copies) after creation.
-    if (mcpSelection.length > 0) {
-      try {
-        await setProjectMCPServers.mutateAsync({
-          projectId: project.id,
-          mcpServerIds: mcpSelection.map((c) => c.id),
-        });
-      } catch (err) {
-        console.error("Failed to save project MCP selection", err);
-      }
-    }
+    // NO MCP SELECTION WRITE: selection IS ownership (mcp_servers.project_id).
+    // Child 7 re-homes this control onto the owner-scoped create payload.
     navigate({ to: "/projects/$id", params: { id: project.id } });
   };
 
@@ -259,12 +246,6 @@ function NewProjectPage() {
 
             <div className="space-y-2">
               <Label>MCP servers</Label>
-              <p className="text-xs text-muted-foreground">
-                MCP servers enabled for this project (references — leave
-                empty to inherit the tenant default). Configured in Settings
-                → Adapters → MCP.
-              </p>
-              <MCPPicker value={mcpSelection} onChange={setMcpSelection} />
             </div>
 
             <div className="space-y-2">

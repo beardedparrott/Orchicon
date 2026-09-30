@@ -55,6 +55,9 @@ message MCPServer {
   bool has_secret_stored = 14;          // any of required_secrets present in secrets store
   google.protobuf.Timestamp created_at = 15;
   google.protobuf.Timestamp updated_at = 16;
+  // Owner: exactly one is non-empty (project XOR conversation).
+  string project_id = 17;
+  string conversation_id = 18;
 }
 
 // MCPCatalogEnvVar is one default env var (or header) entry in the
@@ -101,8 +104,13 @@ message MCPCatalogPrefillResponse {
   MCPServerCreateRequest prefill = 2;
 }
 
-// CRUD.
-message MCPServerListRequest {}
+// CRUD. list/create are SCOPE-AWARE: both scope fields empty lists the
+// whole tenant (the unscoped Settings view), one non-empty narrows to that
+// owner. A definition belongs to exactly one scope.
+message MCPServerListRequest {
+  string project_id = 1;       // scope filter; empty = not scoped by project
+  string conversation_id = 2;  // scope filter; empty = not scoped by conversation
+}
 message MCPServerListResponse {
   repeated MCPServer servers = 1;
 }
@@ -124,6 +132,9 @@ message MCPServerCreateRequest {
   map<string, string> headers = 7; // streamable-http
   bool enabled = 8;
   string catalog_slug = 9;
+  // Owner: exactly ONE of the two must be set (mcp_servers_owner_xor).
+  string project_id = 10;
+  string conversation_id = 11;
 }
 message MCPServerCreateResponse {
   MCPServer server = 1;
@@ -143,6 +154,10 @@ message MCPServerUpdateRequest {
   optional bool replace_headers = 11;
   optional bool enabled = 12;
   optional string catalog_slug = 13;
+  // Owner echo: a value that DIFFERS from the stored owner is rejected
+  // (the scope is immutable after create).
+  string project_id = 14;
+  string conversation_id = 15;
 }
 message MCPServerUpdateResponse {
   MCPServer server = 1;
@@ -187,31 +202,3 @@ message MCPServerClearSecretRequest {
   string name = 2;
 }
 message MCPServerClearSecretResponse {}
-
-// Project + tenant-default selections (references, never copies).
-message ProjectMCPServersSetRequest {
-  string project_id = 1;
-  repeated string mcp_server_ids = 2;
-}
-message ProjectMCPServersSetResponse {
-  repeated string mcp_server_ids = 1;
-}
-
-message ProjectMCPServersGetRequest {
-  string project_id = 1;
-}
-message ProjectMCPServersGetResponse {
-  repeated string mcp_server_ids = 1;
-}
-
-message TenantDefaultMCPServersSetRequest {
-  repeated string mcp_server_ids = 1;
-}
-message TenantDefaultMCPServersSetResponse {
-  repeated string mcp_server_ids = 1;
-}
-
-message TenantDefaultMCPServersGetRequest {}
-message TenantDefaultMCPServersGetResponse {
-  repeated string mcp_server_ids = 1;
-}

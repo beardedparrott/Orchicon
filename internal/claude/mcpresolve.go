@@ -9,15 +9,18 @@ package claude
 // how two adapters end up disagreeing about which servers apply. The platform
 // already owns the whole resolution:
 //
-//	mcpclient.ConfigSource              — the seam: ServerList + Worker/Project selection
-//	mcpsettings.NewConfigSource(pool)   — the storage-backed implementation
-//	mcpclient.Resolve(ctx, src, …)      — worker → project → tenant-default → none
+//	mcpclient.ScopeResolver             — the seam: ResolveScope(ScopeRef)
+//	mcpsettings.NewResolver(pool)       — the storage-backed implementation
+//	mcpclient.Resolution/ScopedServer   — the union + per-server provenance
 //	mcpclient.ServerSpec                — the neutral transport shape
 //	mcpsettings.ResolveSecretRefs       — ${SECRET_NAME} → plaintext
 //
-// The NATIVE bridge consumes exactly that set (orchicon.SetConfigSource +
+// The NATIVE bridge consumes exactly that set (orchicon.SetScopeResolver +
 // SetMCPSecretResolver, wired in server.go). This file makes claude consume the
 // same set, so the two cannot drift about WHICH servers apply.
+//
+// The scope resolved here is the PROJECT scope; child 3 owns feeding the
+// version's inline specs in (the WORKER scope).
 //
 // WHAT IS ADAPTER-SPECIFIC IS ONE FUNCTION: rendering the neutral []ServerSpec
 // into claude's config format (MCPServersFromSpecs in mcpconfig.go). A codex
@@ -58,28 +61,37 @@ import (
 // Ask session runs this process's own executable. Resolution is shared; the
 // built-in's shape is not.
 func (b *Bridge) resolveMCPServers(ctx context.Context, tenantID, workerID, projectID string, builtin MCPServer) ([]MCPServer, error) {
-	if b.mcpConfig == nil {
+	if b.mcpResolver == nil {
 		return []MCPServer{builtin}, nil
 	}
-	// The source reads the tenant from the context (mcpsettings.ConfigSource),
-	// so the session's tenant must be ON it — the same convention the native
-	// bridge follows.
-	res, err := mcpclient.Resolve(tenant.WithID(ctx, tenantID), b.mcpConfig, workerID, projectID)
+	// The resolver reads the tenant from the context, so the session's tenant
+	// must be ON it — the same convention the native bridge follows.
+	//
+	// PROJECT scope only (child 3 owns the WORKER scope, which adds the
+	// version's inline specs).
+	res, err := b.mcpResolver.ResolveScope(tenant.WithID(ctx, tenantID), mcpclient.ScopeRef{
+		Kind:      mcpclient.ScopeProject,
+		ProjectID: projectID,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("claude: resolve MCP servers: %w", err)
 	}
 	if len(res.Missing) > 0 {
-		return nil, fmt.Errorf("claude: MCP server(s) selected but not configured: %v — fix the worker/project MCP selection or the tenant server list", res.Missing)
+		return nil, fmt.Errorf("claude: MCP server(s) selected but not configured: %v — fix the project's MCP definitions", res.Missing)
 	}
 	if len(res.Servers) == 0 {
 		return []MCPServer{builtin}, nil
 	}
-	if err := b.resolveMCPSpecSecrets(ctx, tenantID, res.Servers); err != nil {
+	specs := make([]mcpclient.ServerSpec, 0, len(res.Servers))
+	for _, ss := range res.Servers {
+		specs = append(specs, ss.Spec)
+	}
+	if err := b.resolveMCPSpecSecrets(ctx, tenantID, specs); err != nil {
 		return nil, err
 	}
-	out := make([]MCPServer, 0, len(res.Servers)+1)
+	out := make([]MCPServer, 0, len(specs)+1)
 	out = append(out, builtin)
-	out = append(out, MCPServersFromSpecs(res.Servers)...)
+	out = append(out, MCPServersFromSpecs(specs)...)
 	return out, nil
 }
 
