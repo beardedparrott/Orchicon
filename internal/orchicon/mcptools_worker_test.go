@@ -13,6 +13,7 @@ package orchicon
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -148,6 +149,39 @@ func TestMCPConnectFailureNamesServerAndScope(t *testing.T) {
 	}
 	msg := err.Error()
 	if !strings.Contains(msg, `"ghost"`) {
+		t.Errorf("the failure does not name the server: %v", msg)
+	}
+	if !strings.Contains(msg, "inline:w1@3") {
+		t.Errorf("the failure does not name the scope: %v", msg)
+	}
+}
+
+// AC 3 (native half, parity with claude): a spec whose secret reference cannot
+// be resolved ALSO fails the session, and the failure names the server AND the
+// scope it came from — the same annotation claude applies in its own error path
+// (session.go). Without this the native secret failure named only the server.
+func TestMCPSecretFailureNamesServerAndScope(t *testing.T) {
+	stub := &stubScopeResolver{res: mcpclient.Resolution{
+		Servers: []mcpclient.ScopedServer{
+			{Spec: mcpclient.ServerSpec{ID: "gh", Type: mcpclient.TypeStdio, Command: []string{"/bin/true"},
+				Env: map[string]string{"TOKEN": "${GITHUB_TOKEN}"}},
+				From: mcpclient.ScopeWorker, FromID: "inline:w1@3"},
+		},
+		SelectedIDs: []string{"gh"},
+	}}
+	b := NewBridge(nil, t.TempDir(), slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	b.SetScopeResolver(stub)
+	b.SetMCPSecretResolver(func(context.Context, string, map[string]string, map[string]string) (map[string]string, map[string]string, error) {
+		return nil, nil, errors.New(`secret "GITHUB_TOKEN" referenced by the server is not stored`)
+	})
+
+	exec := db.ExecutionRow{ID: "exec-1", TenantID: "tnt_native", ProjectID: "p1", WorkerID: "w1"}
+	_, err := b.mcpResolveAndStart(context.Background(), exec, scheduler.ExecutionManifest{WorkerVersion: 3})
+	if err == nil {
+		t.Fatal("an unresolvable secret did not fail the session")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, `"gh"`) {
 		t.Errorf("the failure does not name the server: %v", msg)
 	}
 	if !strings.Contains(msg, "inline:w1@3") {

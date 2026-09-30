@@ -111,7 +111,11 @@ func (b *NativeBridge) mcpResolveAndStart(ctx context.Context, exec db.Execution
 		specs = append(specs, ss.Spec)
 	}
 	if err := b.resolveMCPSpecSecrets(sctx, exec.TenantID, specs); err != nil {
-		return nil, err
+		// A spec whose ${SECRET_NAME} cannot be resolved cannot run either, so
+		// the failure is scope-annotated exactly like a connect failure —
+		// parity with claude's error path. The resolver's error already names
+		// the server; DescribeFailedServer adds WHERE the spec came from.
+		return nil, mcpclient.DescribeFailedServer(err, res.Servers)
 	}
 	mgr := mcpclient.NewManager(b.log)
 	if _, merr := mgr.Start(sctx, specs); merr != nil {
