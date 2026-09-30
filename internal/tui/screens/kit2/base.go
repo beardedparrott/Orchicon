@@ -805,6 +805,18 @@ func (b *Base) SetCollapsedByDefault(src string, on bool) {
 	}
 }
 
+// ResetCollapseState re-seats a source's rows to its current collapse default. Call it
+// after changing the default for a view the operator is entering, so rows already built
+// under another view do not keep that view's shape (see Table.ApplyCollapseDefault).
+func (b *Base) ResetCollapseState(src string) {
+	for _, s := range b.sources {
+		if s.name == src {
+			s.table.ApplyCollapseDefault()
+			return
+		}
+	}
+}
+
 // SetCaption installs a mode label drawn on the source's top row, beside the
 // search box. Passing nil removes it.
 //

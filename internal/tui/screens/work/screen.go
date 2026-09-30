@@ -163,11 +163,17 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	// The Work Items list carries a search row ('/'), per the operator's "search
 	// box at the top of the work items page for filter".
 	m.Base.EnableFilter(srcWorkItems)
-	// A WORK ITEM TREE OPENS COLLAPSED — both views (the archive view is a tree too,
-	// so it gets the same default rather than a second rule). A four-level
-	// Epic → Feature → Task → Subtask hierarchy is unreadable when it opens fully
-	// expanded, and the GUI's tree has always defaulted to collapsed, so this is the
-	// two clients agreeing rather than a new preference.
+	// A WORK ITEM TREE OPENS COLLAPSED. A four-level Epic → Feature → Task → Subtask
+	// hierarchy is unreadable when it opens fully expanded, and the GUI's tree has
+	// always defaulted to collapsed, so this is the two clients agreeing.
+	//
+	// IT IS APPLIED PER VIEW, NOT PER SOURCE, and the switchView call below is the
+	// other half. The ARCHIVE view must NOT open collapsed: its roots are usually GHOST
+	// ANCHORS (active parents shown only to keep the hierarchy connected), so collapsing
+	// them hides the archived items — the entire content of the view — behind rows
+	// labelled "not archived". Measured before this: the archive view opened showing a
+	// single "+ [epic] Live Epic  active ancestor — not archived", with the archived
+	// item it was anchored to folded underneath and no way to tell it was there.
 	//
 	// Scoped to this source on purpose: the table's OTHER tree is a category folder
 	// grouping (workers/workflows), whose members are the point of the group — a
@@ -902,6 +908,22 @@ func (m *Model) switchView(v viewMode) tea.Cmd {
 	m.viewMu.Lock()
 	m.view = v
 	m.viewMu.Unlock()
+	// THE COLLAPSE DEFAULT IS PER VIEW (see New): the Tree opens collapsed because a
+	// deep hierarchy is unreadable expanded, and the Archive opens EXPANDED because its
+	// roots are ghost anchors and a collapsed anchor hides the archived items the view
+	// exists to show.
+	//
+	// It is set HERE as well as at construction because the table is the same object
+	// across a switch, and a row that has already been seen keeps whatever state it had
+	// — including rows that were loaded while the OTHER view was active. Setting it on
+	// every switch means the default is right for the view being entered rather than
+	// whatever the last load happened to leave behind.
+	m.Base.SetCollapsedByDefault(srcWorkItems, v == viewTree)
+	// …and RE-SEAT the rows already on screen. The default only decides a row the table
+	// has not seen before, and every row here has been seen (they were built under the
+	// view being left), so without this the archive opens with its archived items still
+	// folded under a ghost anchor.
+	m.Base.ResetCollapseState(srcWorkItems)
 	m.notice = "work items: " + string(v) + " view"
 	m.syncRowActions()
 	return m.Refresh(srcWorkItems)
@@ -1426,6 +1448,18 @@ func (m *Model) HintLine() string {
 		if n := m.Base.MarkCount(); n > 1 {
 			return theme.HintText.Render(fmt.Sprintf("%d marked", n) + " · " +
 				keyBulkSet + ": set workflow & image · esc: clear · ↑↓: move · enter: detail")
+		}
+		// THE ARCHIVE VIEW GETS ITS OWN LINE, because half of the tree line's chords do
+		// not exist there and the one chord that DOES was named nowhere.
+		//
+		// The operator: "It doesn't look like there is a way to restore a work item from
+		// the archive in the TUI but you can in the GUI." They were right: the line
+		// advertised "a: archive" (which is a no-op in this view — itemActions offers
+		// restore INSTEAD of archive, not as well as) and never mentioned "R". So the
+		// only chord that works in the archive view was the only one not written down.
+		if m.ViewMode() == viewArchive {
+			return theme.HintText.Render("R: restore · /: search · enter: detail · " +
+				"v: view (archive ⇄ tree) · o/O: collapse · ↑↓: move")
 		}
 		return theme.HintText.Render("n: new · /: search · e: edit · s: status · y: auto-start · +/-: move step · " +
 			"a: archive · x: delete · " + keyBulkSet + ": set workflow & image (space marks 2+) · " +

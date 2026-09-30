@@ -94,21 +94,16 @@ func TestArchiveViewIsATree(t *testing.T) {
 			t.Fatalf("archive title %q must not pre-indent", r.Cells[0])
 		}
 	}
-	// THE TREE OPENS COLLAPSED, so the frame shows the ROOTS only — while the rows
-	// themselves are all present and nested (asserted above). Both halves matter: a
-	// flat list would also show one row here, and the nesting is what distinguishes
-	// "collapsed tree" from "no hierarchy at all".
-	if n := len(tbl.VisibleRows()); n != 1 {
-		t.Fatalf("a collapsed archive shows its roots only: %d visible, want 1", n)
-	}
-	if v := ansi.Strip(m.View()); !strings.Contains(v, "[epic] ae") {
-		t.Fatalf("the archive frame must draw the root:\n%s", v)
-	}
-	// Expanding reveals every level — the nesting was real, not inferred.
-	expandAll(t, m)
+	// THE ARCHIVE OPENS EXPANDED, unlike the Tree — and that is deliberate. Its roots
+	// are usually GHOST ANCHORS (active parents), so collapsing them would hide the
+	// archived items behind a row that says "not archived": the operator would open the
+	// archive and see nothing to restore. That is the bug this asserts against.
 	v := ansi.Strip(m.View())
 	if !strings.Contains(v, "[epic] ae") || !strings.Contains(v, "[task] at") {
-		t.Fatalf("expanded, the archive frame must draw every level:\n%s", v)
+		t.Fatalf("the archive frame must draw every level on open:\n%s", v)
+	}
+	if n := len(tbl.VisibleRows()); n != 3 {
+		t.Fatalf("a fresh archive shows its whole hierarchy: %d visible, want 3", n)
 	}
 }
 
@@ -324,27 +319,24 @@ func TestTreeOpensCollapsed(t *testing.T) {
 	if am := m.ViewMode(); am != viewArchive {
 		t.Fatalf("fixture: expected the archive view, got %q", am)
 	}
+	// THE ARCHIVE IS THE EXCEPTION, and it must be: it opens EXPANDED so its archived
+	// items are on screen. See TestArchiveViewIsATree.
 	atbl := m.Base.ActiveTable()
-	if n := len(atbl.VisibleRows()); n != 1 {
-		t.Fatalf("the ARCHIVE view must open the same way: %d visible rows, want 1", n)
-	}
-	// The archived child is present but folded — a flat archive would also show 1 row,
-	// so assert the nesting survived rather than trusting the count.
-	expandAll(t, m)
 	if n := len(atbl.VisibleRows()); n != 2 {
-		t.Fatalf("after expanding: %d archive rows, want 2 (ae + af)", n)
+		t.Fatalf("the ARCHIVE view must open EXPANDED: %d visible rows, want 2 (ae + af)", n)
 	}
 	rows := archiveRowsByID(m)
 	if rows["af"].Depth != 1 || rows["af"].Parent != "ae" {
 		t.Fatalf("the archived child must stay nested under its parent: %+v", rows["af"])
 	}
 
-	// The choice is the DEFAULT, not a lock, and it SURVIVES a reload — the rolling
-	// refresh re-reads every few seconds, and a collapse that undid itself on the next
-	// tick would be unusable.
+	// And the operator's own choice still SURVIVES a reload — the rolling refresh
+	// re-reads every few seconds, and a collapse that undid itself on the next tick
+	// would be unusable.
+	m.toggleAllTreeNodes() // collapse
 	load(t, m, srcWorkItems)
-	if n := len(m.Base.ActiveTable().VisibleRows()); n != 2 {
-		t.Fatalf("an expanded archive must STAY expanded across a reload: %d visible, want 2", n)
+	if n := len(m.Base.ActiveTable().VisibleRows()); n != 1 {
+		t.Fatalf("an explicit collapse must STAY collapsed across a reload: %d visible, want 1", n)
 	}
 }
 
@@ -362,5 +354,107 @@ func TestFolderGroupingStillOpensExpanded(t *testing.T) {
 	}
 	if n := len(tbl.VisibleRows()); n != 2 {
 		t.Fatalf("folder + member = %d visible rows, want 2", n)
+	}
+}
+
+// TestArchiveRestoreIsReachableAndNamed — the operator: "It doesn't look like there is a
+// way to restore a work item from the archive in the TUI but you can in the GUI."
+//
+// The chord (`R`) existed and worked; it was UNDISCOVERABLE, and reaching it was blocked,
+// for three separate reasons that together made the feature invisible:
+//
+//  1. The archive view opened COLLAPSED, and its root is usually a GHOST ANCHOR — an
+//     active parent rendered only to keep the hierarchy connected. So the first screen of
+//     the archive showed a single row reading "active ancestor — not archived", with the
+//     archived items folded underneath and nothing to say they were there.
+//  2. The ghost anchor is not restorable (correctly — the plane would refuse), so the
+//     focused row offered NO actions at all. The operator's first impression was a view
+//     where nothing could be restored.
+//  3. The composer's hint line advertised `a: archive`, which is a NO-OP in this view
+//     (itemActions offers restore INSTEAD of archive), and never mentioned `R`. The one
+//     chord that works was the one chord not written down.
+//
+// This asserts the whole path: the archived rows are on screen on arrival, the row offers
+// the action, the hint names it, and confirming it calls RestoreWorkItem.
+func TestArchiveRestoreIsReachableAndNamed(t *testing.T) {
+	p := newPlane()
+	p.seedProject("proj-1", "Orchicon")
+	// The shape that broke it: an ACTIVE parent with an ARCHIVED child, so the archive's
+	// root is a ghost anchor.
+	p.addItem(&apiv1.WorkItem{Id: "live", Title: "Live Epic", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC,
+		ProjectId: "proj-1", Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING})
+	p.addArchive(archivedRow("af", "live", "succeeded", apiv1.WorkItemKind_WORK_ITEM_KIND_FEATURE))
+
+	m := newModel(t, p)
+	m.SelectSource(srcWorkItems)
+	load(t, m, srcWorkItems)
+	press(t, m, "v")
+	load(t, m, srcWorkItems)
+
+	// 1. THE ARCHIVED ITEM IS ON SCREEN, on arrival, without expanding anything.
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "[feature] af") {
+		t.Fatalf("the archived item must be visible when the archive view opens — otherwise "+
+			"there is nothing the operator can see to restore:\n%s", v)
+	}
+
+	// 2. THE HINT NAMES THE CHORD (and does not advertise the no-op `a`).
+	hint := ansi.Strip(m.HintLine())
+	if !strings.Contains(hint, "R: restore") {
+		t.Fatalf("the composer must name the restore chord, got %q", hint)
+	}
+	if strings.Contains(hint, "a: archive") {
+		t.Fatalf("the archive view must not advertise `a: archive`, which does nothing here: %q", hint)
+	}
+
+	// 3. THE ROW OFFERS IT, and confirming calls the RPC.
+	if !m.SelectItem(srcWorkItems, "af") {
+		t.Fatal("could not focus the archived row")
+	}
+	if _, ok := m.actionByKey("R"); !ok {
+		t.Fatalf("the archived row must offer `R`, got %v", archiveActionLabels(m))
+	}
+	press(t, m, "R")
+	if !m.DialogOpen() {
+		t.Fatal("`R` must ask for confirmation before restoring")
+	}
+	run(t, m, press(t, m, "enter"))
+	if len(p.restored) != 1 || p.restored[0] != "af" {
+		t.Fatalf("RestoreWorkItem calls = %v, want [af]", p.restored)
+	}
+}
+
+// The TREE view keeps the collapsed default — the archive's exception must not have
+// quietly removed it, which is the mistake this change corrected one layer down.
+func TestTheTreeStillOpensCollapsedAfterTheArchiveException(t *testing.T) {
+	p := newPlane()
+	p.seedProject("proj-1", "Orchicon")
+	p.addItem(&apiv1.WorkItem{Id: "e", Title: "Epic", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC,
+		ProjectId: "proj-1", Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING})
+	p.addItem(&apiv1.WorkItem{Id: "t", Title: "Task", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_TASK,
+		ProjectId: "proj-1", ParentId: "e", Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING})
+	p.addArchive(archivedRow("af", "", "succeeded", apiv1.WorkItemKind_WORK_ITEM_KIND_FEATURE))
+
+	m := newModel(t, p)
+	m.SelectSource(srcWorkItems)
+	load(t, m, srcWorkItems)
+	if n := len(m.Base.ActiveTable().VisibleRows()); n != 1 {
+		t.Fatalf("the Tree must still open collapsed: %d visible, want 1", n)
+	}
+
+	// …and the default follows the view in BOTH directions, not just into the archive.
+	press(t, m, "v") // -> archive (expanded)
+	load(t, m, srcWorkItems)
+	if n := len(m.Base.ActiveTable().VisibleRows()); n != 1 {
+		t.Fatalf("the archive's own root is archived, so it is one visible row: %d, want 1", n)
+	}
+	press(t, m, "v") // -> back to tree (collapsed)
+	load(t, m, srcWorkItems)
+	if n := len(m.Base.ActiveTable().VisibleRows()); n != 1 {
+		t.Fatalf("returning to the Tree must restore its collapsed default: %d visible, want 1", n)
+	}
+	// And expanding there still works.
+	expandAll(t, m)
+	if n := len(m.Base.ActiveTable().VisibleRows()); n != 2 {
+		t.Fatalf("expanding the tree must reveal the child: %d visible, want 2", n)
 	}
 }

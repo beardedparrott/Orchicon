@@ -118,9 +118,8 @@ func TestCollapseAllButtonWorksInTheArchiveView(t *testing.T) {
 		t.Fatalf("fixture: expected the archive view, got %q", m.ViewMode())
 	}
 	tbl := m.Base.ActiveTable()
-	// The archive tree opens collapsed too, so expand it first — this test is about the
-	// CONTROL, and the default is asserted in TestArchiveViewIsATree.
-	expandAll(t, m)
+	// The archive opens EXPANDED (its roots are ghost anchors — see archiveRows), so the
+	// whole hierarchy is already on screen here.
 	// Ghost anchor ("Active Root") + the archived feature + the archived task.
 	if n := len(tbl.VisibleRows()); n != 3 {
 		t.Fatalf("archive visible rows = %d, want 3 (root anchor, feature, task):\n%s",

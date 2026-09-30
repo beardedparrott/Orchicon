@@ -191,6 +191,25 @@ func NewTable(title string, cols ...Column) *Table {
 // group spring back open under the operator's cursor — collapsing would be impossible to use at all.
 // The GUI's folders stay collapsed across updates, so the two clients would also have felt different.
 // Only rows whose id SURVIVES keep their state; a folder that appears for the first time starts open.
+// ApplyCollapseDefault re-seats every row's open state to the table's CURRENT
+// CollapsedByDefault.
+//
+// SetItems deliberately PRESERVES the open state of a row it has seen before (that is what
+// makes collapse usable under the rolling refresh), so changing CollapsedByDefault alone
+// cannot affect rows that are already loaded — which is exactly the hole the archive view
+// fell into: switching into it changed the default, and every row already built under the
+// tree view kept its collapsed state, so the archive opened showing only its ghost anchor.
+//
+// It is for a VIEW CHANGE, where the rows on screen are about to be replaced by a
+// different set and the new view's default is what the operator should see. It is NOT for
+// a refresh: a refresh must keep the operator's own collapse choices (see SetItems).
+func (t *Table) ApplyCollapseDefault() {
+	for i := range t.Rows {
+		t.Rows[i].Open = !t.CollapsedByDefault
+	}
+	t.clampOffset()
+}
+
 func (t *Table) SetItems(items []screenkit.Item, next string) {
 	prev := t.SelectedID()
 	wasOpen := make(map[string]bool, len(t.Rows))
