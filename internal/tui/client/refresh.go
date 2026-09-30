@@ -30,6 +30,9 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+
+	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
 )
 
 // SessionClient carries refreshable password-mode state. The bearer
@@ -47,13 +50,21 @@ type SessionClient struct {
 	// returns the new access token (nil = no refresh token stored: api-key
 	// mode → never refresh, the 401 surfaces as-is).
 	Refresh func(ctx context.Context) (string, error)
-	// OnRefreshed fires after a successful refresh (nil-safe). The shell
-	// uses it to redial live streams with the fresh credential — a stream
-	// opened before the refresh keeps the old bearer until it re-dials.
+	// OnRefreshed fires after a successful refresh (nil-safe).
+	//
+	// IT IS WIRED BY THE SHELL (App.NewApp), not by whoever builds the client. It was
+	// nil for every real client because nothing ever assigned it — the field's own doc
+	// promised "the shell uses it to redial live streams with the fresh credential",
+	// and the shell did not. See wireSessionRecovery for the consequence and the fix.
 	OnRefreshed func()
-	// reDial re-opens a stream spec with the current credential. The
-	// refreshingStreamConn uses it to re-dial a stream whose OPEN surfaced
-	// UNAUTHENTICATED; nil (api-key mode) → streams surface 401 as-is.
+	// reDial re-opens a stream spec with the current credential, for a stream whose
+	// OPEN surfaced UNAUTHENTICATED.
+	//
+	// WIRED BY THE CLIENT SET ITSELF, in NewWithHTTPClient: it needs the generated
+	// stream clients, which only exist there. It used to be nil for every real client
+	// — read at refresh.go's stream path and assigned NOWHERE — so a live stream's 401
+	// reached `if reDial == nil { return err }` and could never recover. See
+	// wireStreamReDial for why a fresh dial is the right recovery.
 	reDial func(ctx context.Context, spec connect.Spec) (connect.StreamingClientConn, error)
 	// cell is the live token cell (tests read the refreshed token through
 	// Holder()); Token/SetToken close over it.
@@ -249,6 +260,68 @@ func (r *refreshingInterceptor) WrapStreamingClient(next connect.StreamingClient
 
 func (r *refreshingInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return next // client-side only
+}
+
+// wireStreamReDial installs the streaming 401 recovery: open a NEW stream connection
+// for the SAME spec with the CURRENT token.
+//
+// WHY A FRESH DIAL AND NOT A RE-DIAL OF THE SAME CONNECTION. The wrapper's contract is
+// "the stream is being opened, and if the open is rejected we swap in a working
+// connection" — and connect surfaces a rejected OPEN as an error from the first
+// Receive, so there is no connection left to reuse. s.conn is also the only handle the
+// wrapper holds (it implements StreamingClientConn, not a re-open). So the recovery is
+// a new dial, which is exactly what the streaming client would have produced: the
+// interceptors run again (the bearer reads the LIVE token, so the refreshed credential
+// is picked up) and the request headers are rebuilt, so the Authorization header the
+// wrapper had already set is replaced rather than duplicated.
+//
+// It is wired HERE rather than by a caller because it needs the generated stream
+// clients, and this is the one place that constructs the whole set. The spec's
+// Procedure is the only thing needed to pick the right client, so the mapping is
+// explicit rather than reflective: a new stream RPC must be added here, and
+// TestEveryStreamSpecHasAReDial fails loudly until it is.
+func (c *Clients) wireStreamReDial() {
+	c.Session.reDial = func(ctx context.Context, spec connect.Spec) (connect.StreamingClientConn, error) {
+		switch spec.Procedure {
+		case apiv1connect.ProjectServiceStreamProjectEventsProcedure:
+			st, err := c.Projects.StreamProjectEvents(ctx, connect.NewRequest(&apiv1.StreamProjectEventsRequest{}))
+			if err != nil {
+				return nil, err
+			}
+			return st.Conn()
+		case apiv1connect.ExecutionServiceStreamExecutionEventsProcedure:
+			st, err := c.Executions.StreamExecutionEvents(ctx, connect.NewRequest(&apiv1.StreamExecutionEventsRequest{}))
+			if err != nil {
+				return nil, err
+			}
+			return st.Conn()
+		case apiv1connect.WorkflowServiceStreamWorkflowEventsProcedure:
+			st, err := c.Workflows.StreamWorkflowEvents(ctx, connect.NewRequest(&apiv1.StreamWorkflowEventsRequest{}))
+			if err != nil {
+				return nil, err
+			}
+			return st.Conn()
+		case apiv1connect.RecoveryServiceStreamRecoveryEventsProcedure:
+			st, err := c.Recovery.StreamRecoveryEvents(ctx, connect.NewRequest(&apiv1.StreamRecoveryEventsRequest{}))
+			if err != nil {
+				return nil, err
+			}
+			return st.Conn()
+		case apiv1connect.TelemetryServiceStreamTelemetryProcedure:
+			st, err := c.Telemetry.StreamTelemetry(ctx, connect.NewRequest(&apiv1.StreamTelemetryRequest{}))
+			if err != nil {
+				return nil, err
+			}
+			return st.Conn()
+		case apiv1connect.FileEditServiceStreamFileEditsProcedure:
+			st, err := c.FileEdits.StreamFileEdits(ctx, connect.NewRequest(&apiv1.StreamFileEditsRequest{}))
+			if err != nil {
+				return nil, err
+			}
+			return st.Conn()
+		}
+		return nil, fmt.Errorf("no streaming client for %s", spec.Procedure)
+	}
 }
 
 // refreshingStreamConn re-dials the stream once with a refreshed credential
