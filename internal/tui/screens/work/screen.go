@@ -1257,33 +1257,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		if src == srcWorkItems {
 			return m.switchView(m.ViewMode().next()), true
 		}
-	case "T", "Z":
-		// `T` (tree) and `Z` (archive) are RETIRED as view chords — `v` alone cycles
-		// the view, which is the operator's call: "We don't need T/Z to alternate view
-		// mode on work items in the TUI, just v will suffice. That should be removed as
-		// an option and the shortcut helper in the composer should be updated."
-		//
-		// They are kept as EXPLAINING STUBS rather than deleted, for the reason the
-		// retired `f`/`i` interject keys are (see actions.go on the Execution screen):
-		// a chord an operator learned last week must not go silent, and these two are
-		// especially likely to be pressed because the archive view is BRAND NEW — the
-		// muscle memory for getting to it is being formed right now. The stub names
-		// the key that does the job and where the view is stated on screen.
-		//
-		// (`T` is also the webhooks pane's "test" chord on the Control screen, which
-		// is why this is SCOPED to the work-items source rather than claimed globally.)
-		if src == srcWorkItems {
-			want := viewTree
-			if msg.String() == "Z" {
-				want = viewArchive
-			}
-			if m.ViewMode() == want {
-				m.notice = "already in the " + string(want) + " view — v switches between tree and archive"
-				return nil, true
-			}
-			m.notice = "v cycles the view (tree ⇄ archive) — T/Z are retired"
-			return nil, true
-		}
 	case "O":
 		// The OVERALL collapse/expand toggle ('o' is the single-node one,
 		// handled by the table itself). TREE AND ARCHIVE — both are trees now

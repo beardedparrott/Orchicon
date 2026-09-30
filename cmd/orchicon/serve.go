@@ -383,23 +383,23 @@ func serveForeground() int {
 // to it, and live-applies Settings → Defaults log management. The parent
 // only passes the path and creates the directory.
 func serveDetach() int {
-	if pid, running := procRunning(servePIDFile); running {
+	if pid, running := procRunning(servePIDFile()); running {
 		fmt.Fprintf(os.Stderr, "✗ serve is already running (PID %s)\n", pid)
 		fmt.Fprintf(os.Stderr, "  Stop it with: %s serve --stop\n", filepath.Base(os.Args[0]))
 		return 1
 	}
 
-	if err := os.MkdirAll(filepath.Dir(servePIDFile), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(servePIDFile()), 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "✗ failed to create PID directory: %v\n", err)
 		return 1
 	}
-	if err := os.MkdirAll(filepath.Dir(serveLogFile), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(serveLogFile()), 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "✗ failed to create log directory: %v\n", err)
 		return 1
 	}
 
 	cmd := exec.Command(os.Args[0], "serve")
-	cmd.Env = append(os.Environ(), serveEnvDetached+"=1", serveEnvLogFile+"="+serveLogFile)
+	cmd.Env = append(os.Environ(), serveEnvDetached+"=1", serveEnvLogFile+"="+serveLogFile())
 	cmd.Stdin = nil // /dev/null — the child must not inherit the caller's stdin
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -410,7 +410,7 @@ func serveDetach() int {
 		return 1
 	}
 	pid := cmd.Process.Pid
-	if err := os.WriteFile(servePIDFile, []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(servePIDFile(), []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "  ! failed to write PID file: %v\n", err)
 	}
 	// Release the child from our care so nothing waits on it. Start it in
@@ -418,7 +418,7 @@ func serveDetach() int {
 	_ = cmd.Process.Release()
 
 	fmt.Printf("✓ serve detached (PID %d)\n", pid)
-	fmt.Printf("  Logs: %s\n", serveLogFile)
+	fmt.Printf("  Logs: %s\n", serveLogFile())
 	fmt.Printf("  Check: %s serve --status\n", filepath.Base(os.Args[0]))
 	fmt.Printf("  Stop: %s serve --stop\n", filepath.Base(os.Args[0]))
 	return 0
@@ -426,14 +426,14 @@ func serveDetach() int {
 
 // serveStop sends SIGTERM to a detached serve and clears the PID file.
 func serveStop() int {
-	pid, running := procRunning(servePIDFile)
+	pid, running := procRunning(servePIDFile())
 	if !running {
 		fmt.Println("serve is not running")
 		return 1
 	}
 	pidNum, err := strconv.Atoi(pid)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "✗ invalid PID file (%s): %v\n", servePIDFile, err)
+		fmt.Fprintf(os.Stderr, "✗ invalid PID file (%s): %v\n", servePIDFile(), err)
 		return 1
 	}
 	if proc, err := os.FindProcess(pidNum); err == nil {
@@ -442,14 +442,14 @@ func serveStop() int {
 			return 1
 		}
 	}
-	_ = os.Remove(servePIDFile)
+	_ = os.Remove(servePIDFile())
 	fmt.Printf("✓ serve stopped (PID %d)\n", pidNum)
 	return 0
 }
 
 // serveStatus prints whether a detached serve is running.
 func serveStatus() int {
-	if pid, running := procRunning(servePIDFile); running {
+	if pid, running := procRunning(servePIDFile()); running {
 		fmt.Printf("serve is running (PID %s)\n", pid)
 		return 0
 	}

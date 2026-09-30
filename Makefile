@@ -170,6 +170,23 @@ test: ## Run Go tests
 	@# The package redirects its own config dir too (internal/tui/isolate_test.go); this contains ANY
 	@# package that writes config without asking, now or later. Declared at the command rather than
 	@# exported into each test binary so there is no per-package opt-in to forget.
+	@#
+	@# A TEST MUST ALSO NEVER INHERIT THE OPERATOR'S LIVE PLANE. The same reasoning, one layer up: a
+	@# shell that launched a host plane carries that plane's configuration (scripts/container.sh
+	@# exports ORCHICON_SERVE_STATE_DIR, ORCHICON_GUARD_POLICY, ...), and a test that EXECS a
+	@# subprocess hands the whole ambient environment to it. Four packages failed on the operator's
+	@# machine and none in CI for exactly that reason — cmd/orchicon (the serve state paths resolved
+	@# to the LIVE instance), internal/guard + internal/runtime (the shim ran the interactive profile
+	@# where the tests assert the worker one), internal/claude (Ask's shim refused differently than
+	@# the docs say).
+	@#
+	@# The list is testfixtures.AmbientConfigEnv, and each affected package unsets it in its own
+	@# `init` (so a bare `go test ./...` works too, and a test written later cannot forget). It is
+	@# cleared here as well so anything running under `make` matches CI even in a package that has no
+	@# isolate file yet. It is NOT env -i: the opt-in variables (ORCHICON_TEST_DSN,
+	@# ORCHICON_SKIP_NETWORK_TESTS, ORCHICON_LIVE_*) are deliberately left reachable.
+	@for v in ORCHICON_GUARD_POLICY ORCHICON_GUARD_GRANTS ORCHICON_GUARD_ONCE ORCHICON_GUARD_PROJECT \
+	         ORCHICON_GUARD_FULLSEND ORCHICON_SERVE_STATE_DIR; do unset "$$v"; done; \
 	ORCHICON_CONFIG_DIR="$$(mktemp -d)" $(GO) test ./...
 
 vet: ## Run go vet

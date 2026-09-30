@@ -1065,9 +1065,14 @@ func TestTreeViewRendersRealHierarchy(t *testing.T) {
 }
 
 // The Board view was REMOVED: a status-grouped Kanban does not read as a list
-// in a single-column terminal pane. The cycle is now tree -> archive, and the
-// retired 'B' chord must do nothing at all — as must 'T' and 'Z', which were
-// direct view chords until the operator retired them in favour of 'v' alone.
+// in a single-column terminal pane. The cycle is now tree -> archive.
+//
+// A RETIRED VIEW CHORD MUST BE GONE, NOT MERELY SILENT. 'B' (board) and 'T'/'Z'
+// (direct tree/archive jumps, retired in favour of 'v' alone) must neither change
+// the view NOR answer with an explaining notice: the operator's "I don't want T/Z
+// there at all since we removed it". An explaining stub was the first cut and it
+// was wrong for these keys — they are chords to a VIEW, and 'v' plus the mode
+// label beside the search box already say where you are and how to move.
 func TestBoardViewIsGone(t *testing.T) {
 	p := newPlane()
 	seedHierarchy(p)
@@ -1101,32 +1106,34 @@ func TestBoardViewIsGone(t *testing.T) {
 		t.Fatalf("v must cycle back to tree, got %q", m.ViewMode())
 	}
 
-	// 'T' and 'Z' are RETIRED as view chords: the operator asked for 'v' alone.
-	// They still ANSWER (an explaining stub, never silence) but they must NOT
-	// change the view — a retired chord that quietly still worked would defeat the
-	// point of retiring it, and one that went silent reads as a broken key.
-	for _, k := range []string{"T", "Z"} {
-		before := m.ViewMode()
-		m.notice = ""
-		press(t, m, k)
-		if m.ViewMode() != before {
-			t.Fatalf("%q must no longer switch views, got %q", k, m.ViewMode())
-		}
-		if m.notice == "" {
-			t.Fatalf("%q was retired but says nothing — the operator is left guessing", k)
-		}
-		if !strings.Contains(m.notice, "v") {
-			t.Fatalf("%q must name the key that does the job, notice = %q", k, m.notice)
+	// 'T' and 'Z' are GONE, not stubbed and not silent: neither switches the view
+	// nor says anything. Checked in BOTH modes, because the archive view is where a
+	// 'T' press would be most tempting (and where a stub would have been loudest).
+	for _, mode := range []viewMode{viewTree, viewArchive} {
+		m.switchView(mode)
+		load(t, m, srcWorkItems)
+		for _, k := range []string{"T", "Z"} {
+			m.notice = ""
+			press(t, m, k)
+			if got := m.ViewMode(); got != mode {
+				t.Fatalf("%q must not switch views (in %q): got %q", k, mode, got)
+			}
+			if m.notice != "" {
+				t.Fatalf("%q is retired and must say nothing, got %q", k, m.notice)
+			}
 		}
 	}
 
-	// …and the composer's cheat-sheet advertises 'v' alone, which is the half the
-	// operator explicitly asked for ("the shortcut helper in the composer should be
-	// updated").
-	if hint := ansi.Strip(m.HintLine()); strings.Contains(hint, "v/T/Z") {
-		t.Fatalf("the hint still advertises the retired chords: %q", hint)
+	// The composer's cheat-sheet advertises 'v' alone, which is the half the
+	// operator asked for explicitly ("the shortcut helper in the composer should be
+	// updated") — and it must not name the retired chords at all.
+	m.switchView(viewTree)
+	load(t, m, srcWorkItems)
+	hint := ansi.Strip(m.HintLine())
+	if strings.Contains(hint, "v/T/Z") || strings.Contains(hint, "T/Z") {
+		t.Fatalf("the hint still names the retired chords: %q", hint)
 	}
-	if hint := ansi.Strip(m.HintLine()); !strings.Contains(hint, "v: view") {
+	if !strings.Contains(hint, "v: view") {
 		t.Fatalf("the hint must advertise v for the view, got %q", hint)
 	}
 
