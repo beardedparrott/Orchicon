@@ -19,7 +19,7 @@ import type { StreamExecutionEventsResponse } from "@/api/gen/orchicon/api/v1/ex
 
 import { useApproveStep } from "@/api/approvals";
 import { useRetryStepRun } from "@/api/workflows";
-import { useGetExecutionSession, useStreamExecutionEvents } from "@/api/executions";
+import { useGetExecutionSessionTail, useStreamExecutionEvents } from "@/api/executions";
 import { executionStreamEnabled } from "@/lib/debouncedInvalidation";
 import {
   formatCompactTokens,
@@ -89,7 +89,12 @@ function TileUsage({ executionId }: { executionId: string }) {
 
 export function HeadsUpTile({ tile, runId, liveStream, onExpand }: HeadsUpTileProps) {
   const execId = tile.execution?.id ?? "";
-  const { data: session, refetch: refetchSession } = useGetExecutionSession(
+  // THE TAIL, NOT THE TRANSCRIPT. This tile renders one line — the last thing the worker
+  // said (extractLastTextBlock scans backwards and stops at the first text part). Asking the
+  // shared transcript hook for limit=10000 downloaded ~399 kB per tile per refetch to read a
+  // ~34-byte block; on a many-step run, re-fetched twice a second, that is what hung the UI.
+  // See useGetExecutionSessionTail.
+  const { data: session, refetch: refetchSession } = useGetExecutionSessionTail(
     execId,
     Boolean(execId),
   );

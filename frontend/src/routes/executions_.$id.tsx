@@ -108,9 +108,25 @@ function ExecutionDetailPage() {
   // refetches that saturate the per-origin HTTP/1.1 connection budget),
   // and the stream is gated by liveness so terminal executions never hold
   // a connection.
+  // THE SESSION KEY IS DELIBERATELY ABSENT from this burst.
+  //
+  // It used to be invalidated here, and that single entry is what took the plane down on a
+  // live run: `session` is the FULL transcript (limit=10000 — 399 kB on a real 175k-part
+  // execution), it is a SHARED query key, and this fires on every event burst (a 500 ms
+  // trailing debounce). So for the whole length of a run every mounted consumer of that key
+  // — the context sidebar, and every Heads-Up tile that used to read it — re-fetched the
+  // largest response in the app, twice a second. The API saturated, the SPA chunk queued
+  // behind it, and the page hung until the run went terminal and the burst stopped, which is
+  // exactly the "hangs and then frees up on its own" the operator reported.
+  //
+  // Nothing here needs it refreshed on this cadence: a live execution's text arrives on the
+  // event stream (which is what `events` below feeds the transcript view), the durable
+  // transcript has its OWN lightweight tail poll (useGetExecutionTodos, 2s), and the chat
+  // pane refetches explicitly when it sends. A caller that genuinely wants the whole
+  // transcript on demand still gets it — that is what the hook is for; it just is not
+  // dragged along by a token-frequency burst any more.
   const scheduleInvalidation = useDebouncedInvalidation([
     executionKeys.detail(id),
-    executionKeys.session(id),
     executionKeys.todos(id),
     usageKeys.records(undefined, id),
   ]);
