@@ -88,6 +88,61 @@ func resolveForPlane(raw string) (string, string, bool) {
 	return resolved, note, true
 }
 
+// ContainerHostAddress is the address a RUNTIME CONTAINER uses to reach a
+// service listening on the HOST's loopback.
+//
+// MEASURED, not assumed, because the two Docker flavours differ:
+//
+//	                       on the HOST        inside a CONTAINER
+//	127.0.0.1:<port>       works              the container's OWN loopback — nothing there
+//	host.docker.internal   DOES NOT RESOLVE   resolves via --add-host (daemon.go)
+//	172.17.0.1:<port>      works (docker0)    works
+//
+// So `host.docker.internal` is a CONTAINER-ONLY name: rewriting a stored host
+// value to it would break the host-plane consumer that works today (verified on
+// this host — `getent hosts host.docker.internal` returns nothing outside a
+// container). The bridge IP is the one value that works from BOTH sides, so it
+// is what a transposition uses. It is still not universally right — a
+// non-default bridge subnet moves it — which is why the operator is warned
+// about the firewall rule and the address is stated in the UI.
+const ContainerHostAddress = "172.17.0.1"
+
+// TransposeForContainer rewrites a provider base URL whose host is the HOST's
+// loopback into the address a runtime container can dial.
+//
+// A runtime container's loopback is its own, so a local model published on the
+// operator's machine is unreachable from a worker at 127.0.0.1 — while the same
+// URL is exactly right for the host-plane consumer that dials it in-process.
+// One stored provider therefore needs two addresses, and this is the container's.
+//
+// 0.0.0.0 and ::1 are rewritten too, for the same reason: none of them name the
+// host from inside a container.
+//
+// The PORT and PATH are preserved (net.JoinHostPort), because a local model's
+// port IS its identity and the version root (…/v1) is part of the endpoint.
+// A URL that is not loopback is returned unchanged: a public endpoint, a LAN
+// address and an already-transposed value are all reachable as they stand.
+func TransposeForContainer(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	u, err := url.Parse(trimmed)
+	if err != nil || u.Hostname() == "" {
+		return trimmed
+	}
+	switch u.Hostname() {
+	case "localhost", "127.0.0.1", "0.0.0.0", "::1":
+	default:
+		return trimmed
+	}
+	if u.Port() == "" {
+		// A portless loopback URL cannot be transposed usefully — the address is
+		// not the problem, the missing port is, and guessing one would point the
+		// worker at a service that is not the model.
+		return trimmed
+	}
+	u.Host = net.JoinHostPort(ContainerHostAddress, u.Port())
+	return u.String()
+}
+
 // mustTryLocalPorts reports whether a host is one where the common
 // local-inference ports are worth trying.
 //

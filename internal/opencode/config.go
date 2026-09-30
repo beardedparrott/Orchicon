@@ -494,6 +494,21 @@ type ConfigOptions struct {
 	// worker is forced onto the batch tools — which is what collapses the
 	// number of turns. Only set alongside WorktreeDir.
 	CompositeTools bool
+	// Providers are the tenant's provider definitions to inject as opencode's
+	// `provider` block, with their base URLs ALREADY TRANSPOSED for the consumer
+	// (see ProviderConfig). Empty = inherit whatever the mounted opencode config
+	// defines, which is the host-plane path.
+	//
+	// WHY THE PLANE INJECTS THEM AT ALL. A runtime container reaches the host
+	// through the docker bridge, where `127.0.0.1` is the CONTAINER, not the
+	// machine running a local model. The stored provider URL is correct for the
+	// plane (which runs on the host) and wrong for a container, so something has
+	// to hand the container a transposed address. Doing it here — in the config
+	// the plane already builds for the container's serve — keeps it OUT of
+	// adapter-specific files: every adapter that boots an opencode serve gets the
+	// same generated block, and no user has to hand-edit an opencode.jsonc to
+	// make a local model work.
+	Providers []ProviderConfig
 	// WorktreeDir is the base directory the composite worktree MCP server
 	// resolves its paths against: the worker's project/worktree directory. It
 	// is injected as the sidecar's ORCHICON_MCP_WORKTREE_DIR env var.
@@ -509,6 +524,25 @@ type ConfigOptions struct {
 	// caller that predates the profile split keeps the worker sandbox
 	// byte-identically; only the Ask serve opts into ProfileInteractive.
 	PermissionProfile PermissionProfile
+}
+
+// ProviderConfig is one provider as opencode's `provider` block needs it: the
+// id, the npm package that speaks its wire protocol, and the BASE URL THAT THIS
+// CONSUMER CAN ACTUALLY DIAL.
+//
+// BaseURL is expected to be transposed already — see TransposeForContainer — so
+// this type carries no locality of its own. That split is deliberate: the
+// transposition is a property of WHERE the client runs, and it is applied by the
+// caller that knows (the container-arming path), never guessed here.
+type ProviderConfig struct {
+	// ID is the opencode provider id (the middle segment of a model_ref:
+	// opencode/<id>/<model>).
+	ID string
+	// NPM is the package implementing the provider's protocol, e.g.
+	// "@ai-sdk/openai-compatible" for an OpenAI-compatible local server.
+	NPM string
+	// BaseURL is the endpoint THIS consumer dials (already transposed).
+	BaseURL string
 }
 
 // BuildConfigContent builds the JSON string for the OPENCODE_CONFIG_CONTENT
@@ -626,6 +660,37 @@ func BuildConfigContent(o ConfigOptions) string {
 	// two caps are independent: opencode controls what the model per-turn
 	// sees, Orchicon controls what is stored.
 	cfg["tool_output"] = map[string]any{"max_bytes": 1000000, "max_lines": 5000}
+
+	// The tenant's providers, with base URLs transposed for this consumer. Only
+	// set when non-empty: an empty block would OVERRIDE the mounted config's
+	// provider definitions with nothing, which is how a host-plane serve would
+	// lose the operator's own providers.
+	if len(o.Providers) > 0 {
+		providers := make(map[string]any, len(o.Providers))
+		for _, p := range o.Providers {
+			entry := map[string]any{}
+			if p.NPM != "" {
+				entry["npm"] = p.NPM
+			}
+			opts := map[string]any{}
+			if p.BaseURL != "" {
+				opts["baseURL"] = p.BaseURL
+			}
+			if len(opts) > 0 {
+				entry["options"] = opts
+			}
+			// A provider with neither an npm package nor a base URL carries nothing
+			// opencode can act on, so it is skipped rather than emitted as a stub
+			// that would shadow a real definition of the same name.
+			if len(entry) == 0 {
+				continue
+			}
+			providers[p.ID] = entry
+		}
+		if len(providers) > 0 {
+			cfg["provider"] = providers
+		}
+	}
 
 	// Ask opencode to batch independent tool calls into a single assistant
 	// turn rather than emit them one at a time. Being explicit about batching

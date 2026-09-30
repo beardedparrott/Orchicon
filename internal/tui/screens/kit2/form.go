@@ -141,6 +141,17 @@ type Form struct {
 	Focused   bool
 	Title     string
 
+	// Note is a paragraph drawn under the title: context the operator needs in order to
+	// fill the form in correctly that no single field owns.
+	//
+	// IT IS NOT A PLACEHOLDER, and that is why it exists. A placeholder is drawn INSIDE
+	// a field's value column and truncated to fit, so a sentence of explanation lost its
+	// tail exactly where the operator needed it — and a multi-line one could not be
+	// expressed at all. The provider base-URL hint is the case that forced this (a local
+	// model needs two different addresses and a firewall rule; none of that fits in a
+	// field).
+	Note string
+
 	// pos is the CARET position (a rune index) per editable field. Without it
 	// the only edit available was appending to the end of the prefilled value,
 	// which is why editing an existing item read as "I can't actually edit
@@ -1622,6 +1633,14 @@ func (f *Form) View() string {
 	if f.Title != "" {
 		b.WriteString(theme.ListTitle.Render(f.Title))
 		b.WriteString("\n")
+	}
+	if f.Note != "" {
+		// Padded like a field row and wrapped to the form's width, so the note cannot
+		// shift the fields below it or bleed past the panel.
+		for _, line := range wrapHint(theme.HintText.Render(f.Note), width) {
+			b.WriteString(theme.HintText.Render(Pad(line, width)))
+			b.WriteString("\n")
+		}
 	}
 	for i, s := range f.Specs {
 		if !f.fieldVisible(s) {

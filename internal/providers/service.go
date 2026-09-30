@@ -28,6 +28,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/orchicon"
 	"github.com/beardedparrott/orchicon/internal/secretcrypto"
 	"github.com/beardedparrott/orchicon/internal/secrets"
@@ -211,6 +212,70 @@ func mergeManualModels(current, updates []ManualModel, replace bool) ([]ManualMo
 		dedup = append(dedup, m)
 	}
 	return dedup, nil
+}
+
+// ContainerProviders returns the tenant's providers as a RUNTIME CONTAINER must
+// see them: each with its base URL TRANSPOSED off the host's loopback, because a
+// container's 127.0.0.1 is the container itself and a local model published on
+// the operator's machine is unreachable there.
+//
+// WHY THE TRANSPOSITION DOES NOT LIVE IN THE STORED ROW. The same provider row is
+// dialled by the host-plane consumer (the native engine, Ask Orchicon), where
+// 127.0.0.1 is correct and a bridge address would be wrong. One row, two
+// consumers, two correct answers — so the row keeps what the operator typed and
+// the consumer gets a view it can actually dial. That is the operator's own
+// framing: "we now have two different IP addresses to reference the same model…
+// Previously the GUI would automatically transpose the container IP when you put
+// in 127.0.0.1".
+//
+// Only ENABLED providers are returned: an entry the operator turned off must not
+// be handed to a container as a usable endpoint.
+//
+// It returns opencode.ProviderConfig values rather than profiles because the only
+// consumer is opencode's `provider` block, which needs an npm package per id —
+// the wire protocol is opencode's concern, not the provider row's. Mapping it here
+// keeps the adapter from growing its own provider table.
+func (s *Service) ContainerProviders(ctx context.Context, tenantID string) []opencode.ProviderConfig {
+	entries, err := s.ListForTenant(ctx, tenantID)
+	if err != nil {
+		return nil
+	}
+	out := make([]opencode.ProviderConfig, 0, len(entries))
+	for _, e := range entries {
+		if !e.Enabled || e.BaseURL == "" {
+			continue
+		}
+		npm := opencodeProviderNPM(e.Kind)
+		if npm == "" {
+			// A provider opencode has no package for is skipped rather than emitted
+			// with a guessed npm: a wrong package makes opencode fail to LOAD the
+			// provider, taking the working ones with it.
+			continue
+		}
+		out = append(out, opencode.ProviderConfig{
+			ID:      e.ID,
+			NPM:     npm,
+			BaseURL: TransposeForContainer(e.BaseURL),
+		})
+	}
+	return out
+}
+
+// opencodeProviderNPM maps a provider KIND to the npm package that speaks its wire
+// protocol.
+//
+// OpenAI-compatible, custom and ollama entries are the local-model case this
+// exists for (llama-server, vLLM, llama.cpp — all OpenAI-compatible; ollama is
+// served through the same compat surface). The Anthropic-native and commandcode
+// kinds are deliberately absent: they are not reached by a base URL a container
+// would dial, and inventing a package for them would break the provider rather
+// than fix it.
+func opencodeProviderNPM(kind string) string {
+	switch orchicon.ProfileKind(kind) {
+	case orchicon.ProfileKindOpenAICompat, orchicon.ProfileKindCustom, orchicon.ProfileKindOllama:
+		return "@ai-sdk/openai-compatible"
+	}
+	return ""
 }
 
 // Entry is one merged provider row (ADR-0006 D4). Built-ins carry

@@ -69,6 +69,20 @@ type Adapter struct {
 	// tests and an unconfigured plane get.
 	askHost *HostServe
 
+	// containerProviders resolves the tenants' providers as a runtime CONTAINER
+	// must see them: each with a base URL transposed off the host's loopback
+	// (see providers.TransposeForContainer), because a container's 127.0.0.1 is
+	// the container itself and a local model published on the operator's machine
+	// is unreachable there.
+	//
+	// Injected as a function for the same reason serveConfigFor is (Lifecycle):
+	// it needs the tenant's provider rows, which only the server can read, and an
+	// adapter must not grow a database dependency to get them. Nil = no provider
+	// block is injected, which leaves the mounted opencode config in charge —
+	// exactly the pre-fix behaviour, so an unconfigured plane degrades rather
+	// than breaks.
+	containerProviders func(ctx context.Context, tenantID string) []ProviderConfig
+
 	// rt is the workflow runtime daemon client. When non-nil AND an
 	// execution carries a RuntimeWorkflowID, the adapter reaches that
 	// workflow's runtime container serve for the session. Nil keeps
@@ -135,6 +149,13 @@ type SessionStoreFunc = scheduler.SessionStoreFunc
 // runtime container; without it the adapter runs in-process. It is the
 // opencode implementation of scheduler.ConfigurableBridge.
 func (a *Adapter) SetRuntimeClient(rt *runtime.Client) { a.rt = rt }
+
+// SetContainerProviders installs the container-locality provider resolver: it
+// returns the tenant's providers with base URLs transposed for a runtime
+// container. See the field's own note for why it is injected.
+func (a *Adapter) SetContainerProviders(fn func(ctx context.Context, tenantID string) []ProviderConfig) {
+	a.containerProviders = fn
+}
 
 // SetHostServe injects the always-on host opencode serve manager. When
 // set AND sessions are enabled, local (in-process) executions run as
@@ -235,7 +256,7 @@ func executionDir(m scheduler.ExecutionManifest) string {
 // exists + is serving), or the host serve for the in-process population.
 // Returns nil when no serve is available — the caller fails the execution
 // (the legacy one-shot fallback was removed).
-func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.ExecutionManifest) *SessionClient {
+func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.ExecutionManifest, tenantID string) *SessionClient {
 	// Local execution mode: run in-process via the host serve, never
 	// create/exec a container. The reconciler skipped EnsureForRun for a
 	// local run, so RuntimeWorkflowID has no lease — routing it to
@@ -255,7 +276,7 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 			WorkflowID:  manifest.RuntimeWorkflowID,
 			Image:       manifest.RuntimeImage,
 			Mounts:      projectMount(manifest.ProjectDir),
-			ServeConfig: RuntimeServeConfig(manifest.RuntimeImage, executionDir(manifest), manifest.RuntimeWorkflowID, nil),
+			ServeConfig: a.containerServeConfig(ctx, tenantID, manifest, executionDir(manifest)),
 			ProjectDir:  manifest.ProjectDir,
 		})
 		if err != nil {
@@ -322,7 +343,50 @@ func runtimeContainerRouteEnabled(hasClient bool, m scheduler.ExecutionManifest)
 // (ORCHICON_POSTGRES_DSN), so workers get the `orchicon_*` tools natively
 // against their own sandbox — never the host plane's DB. Base/gui images
 // get no MCP (no sandbox plane), behavior identical to today.
+// containerServeConfig builds the serve config for a run's container, injecting
+// the tenant's providers with base URLs TRANSPOSED for a container.
+//
+// THE TRANSPOSITION LIVES HERE, at the one point where both facts are known: the
+// consumer is a container (this config boots its serve) and the tenant is known
+// (the manifest carries it). It cannot live in the stored provider row, because
+// that same row is dialled by the host plane, where 127.0.0.1 is correct and a
+// bridge address would be wrong — the operator's own words for the shape this
+// replaces: "we now have two different IP addresses to reference the same
+// model… Previously the GUI would automatically transpose the container IP when
+// you put in 127.0.0.1".
+//
+// The resolver is best-effort and non-fatal. A provider list that cannot be read
+// leaves the mounted opencode config in charge (the pre-fix behaviour) rather
+// than failing the run: an unreachable local model is a worse outcome than a
+// missing override, but it is not a reason to refuse to start.
+func (a *Adapter) containerServeConfig(ctx context.Context, tenantID string, manifest scheduler.ExecutionManifest, execDir string) string {
+	var cfgs []ProviderConfig
+	if a.containerProviders != nil {
+		cfgs = a.containerProviders(ctx, tenantID)
+	}
+	return RuntimeServeConfigWithProviders(manifest.RuntimeImage, execDir, manifest.RuntimeWorkflowID, nil, cfgs)
+}
+
+// RuntimeServeConfigWithProviders is RuntimeServeConfig plus the provider block.
+//
+// It is a separate function rather than a new parameter on RuntimeServeConfig
+// because that one is the Lifecycle's serveConfigFor hook, wired as a func value
+// at server construction — changing its signature would ripple through the
+// Lifecycle and every call site for a block only the session transport needs.
+func RuntimeServeConfigWithProviders(imageTag, projectDir, workflowRunID string, planeEnv map[string]string, providers []ProviderConfig) string {
+	cfg := runtimeServeConfigOptions(imageTag, projectDir, workflowRunID, planeEnv)
+	cfg.Providers = providers
+	return BuildConfigContent(cfg)
+}
+
 func RuntimeServeConfig(imageTag, projectDir, workflowRunID string, planeEnv map[string]string) string {
+	return BuildConfigContent(runtimeServeConfigOptions(imageTag, projectDir, workflowRunID, planeEnv))
+}
+
+// runtimeServeConfigOptions is the ONE builder of the container serve's options,
+// shared by the Lifecycle's hook and the session transport's provider-injecting
+// path, so the two can never disagree about permissions, MCP or the sandbox.
+func runtimeServeConfigOptions(imageTag, projectDir, workflowRunID string, planeEnv map[string]string) ConfigOptions {
 	opts := ConfigOptions{
 		AgentName:    workerAgent,
 		AgentPrompt:  sessionToolShell,
@@ -392,7 +456,7 @@ func RuntimeServeConfig(imageTag, projectDir, workflowRunID string, planeEnv map
 		}
 	}
 	opts.CompositeTools = opts.WorktreeDir != ""
-	return BuildConfigContent(opts)
+	return opts
 }
 
 // startViaSession runs an execution through a persistent opencode session
@@ -728,7 +792,7 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		// is picked up: sessionClientFor re-runs Create, which rebuilds the
 		// container and returns the freshly-published serve once it answers
 		// health — the repair's health-gate before re-dispatch.
-		client := a.sessionClientFor(ctx, manifest)
+		client := a.sessionClientFor(ctx, manifest, execRow.TenantID)
 		if client == nil {
 			// No serve to talk to at all. For a runtime-container run this
 			// is itself an infra condition: recycle and retry (bounded).
