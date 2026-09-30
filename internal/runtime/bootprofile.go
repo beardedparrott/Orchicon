@@ -159,7 +159,7 @@ const (
 	hostServeUnionLimitationNote = "opencode consumes the per-session bundle (project-owned ∪ own) via hostResolvedSet and a CONTAINER serve receives the run-level union once at creation (resolveRunUnion → RunMCP). HOST-SERVE LIMITATION: an IN-PROCESS host serve builds its OPENCODE_CONFIG_CONTENT ONCE per serve process (internal/opencode/servehost.go serveConfig, BuildConfigContent) and that process lives for the plane, so unioning several projects' MCP sets onto it would make one project's servers visible in another project's session — a leak with no consent boundary. A session whose set differs therefore runs on a serve built for that set (HostServePool, internal/opencode/servepool.go); the host serve resolves exactly ONE set, the PROJECT scope, and never a cross-project union. The run-level (per-container) union is delivered once, at container creation, and is NOT what a host serve carries."
 
 	// claudeNoServeNote: claude has no in-container HTTP serve at all.
-	claudeNoServeNote = "claude is a streaming-stdio adapter with NO in-container HTTP serve (internal/claude/modelref.go; its dispatch path is a host CLI process streaming stdio), so there is no once-per-run serve to bake the run-level union into. It receives the per-SESSION worker scope (the project's owned definitions ∪ THE EXECUTING VERSION's inline specs) at each launch via ScopeRef{Kind: ScopeWorker} → resolveMCP, which this adapter renders. A per-container run-level union is unavailable by construction, not by omission."
+	claudeNoServeNote = "claude is a streaming-stdio adapter with NO in-container HTTP serve (internal/claude/adapter.go: servePortFor(\"claude\") == 0 — its dispatch path is a host CLI process streaming stdio over the daemon's duplex transport), so there is no once-per-run serve to bake the run-level union into. It receives the per-SESSION worker scope (the project's owned definitions ∪ THE EXECUTING VERSION's inline specs) at each launch via ScopeRef{Kind: ScopeWorker} → resolveMCP (internal/claude/mcpresolve.go), which this adapter renders. A per-container run-level union is unavailable by construction, not by omission."
 
 	// nativeNoServeNote: the native bridge execs one-shot, no serve.
 	nativeNoServeNote = "the native (orchicon) bridge execs sessions ONE-SHOT inside the run container through the supervisor's exec path with no opencode serve (bootprofile.go nativeAdapterKind), so there is no once-per-run serve to receive the run-level union. The native bridge receives the per-session worker scope (project-owned ∪ own) via ResolveExecutionMCP (internal/orchicon/mcptools.go), which it starts its MCP manager from."
@@ -217,8 +217,16 @@ func classifyAdapter(home, kind string) (adapterClass, bool) {
 			},
 			runUnionAtServe: true,
 			runUnionWitnesses: []consumptionWitness{
+				// The CONTAINER-serve path — the axis this declares. resolveRunUnion
+				// (lifecycle.go) is the resolver; adapter.RuntimeServeConfig receives
+				// its `union` and bakes `RunMCP: union.Servers` into the container's
+				// OPENCODE_CONFIG_CONTENT ONCE at creation. NOTE: this is NOT
+				// servehost.go's `RunMCP` — that is the in-process HOST serve, which
+				// resolves exactly ONE set (the PROJECT scope) and never the run
+				// union (see hostServeUnionLimitationNote); witnessing it here would
+				// assert the wrong artifact and false-assure the axis.
 				{file: "lifecycle.go", needle: "resolveRunUnion"},
-				{file: "../opencode/servehost.go", needle: "RunMCP"},
+				{file: "../opencode/adapter.go", needle: "union.Servers"},
 			},
 			note: hostServeUnionLimitationNote,
 		}, true

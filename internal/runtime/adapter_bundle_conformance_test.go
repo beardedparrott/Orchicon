@@ -55,12 +55,23 @@ func TestAdapterConsumesResolvedBundleOrDeclaresWhyNot(t *testing.T) {
 	// An undeclared kind MUST be reported unclassified: the gate's
 	// classification check must be able to FAIL, not vacuously pass. This is
 	// the exact non-vacuous-fail demonstration adapter_bake_guard_test.go:64-66
-	// uses for the mount axis.
+	// uses for the mount axis — and (AC3) the message must NAME the kind so its
+	// reader (whoever adds the next adapter) knows exactly which kind and which
+	// behaviour is missing.
+	unclassified := conformanceFailures("codex-unclassified-probe", adapterClass{}, false, readSourceFile)
+	if len(unclassified) == 0 {
+		t.Fatal("an undeclared kind reported NO conformance failure — the classification check is vacuous")
+	}
+	if !strings.Contains(strings.Join(unclassified, "\n"), "codex-unclassified-probe") {
+		t.Fatalf("the unclassified-kind failure message does NOT name the kind (AC3): its reader is whoever adds the next adapter and it must name precisely which kind is missing. Got:\n%s", strings.Join(unclassified, "\n"))
+	}
 	if _, declared := classifyAdapter("", "codex-unclassified-probe"); declared {
 		t.Fatal("an undeclared kind reported declared=true — the classification check is vacuous")
 	}
 
 	positives := 0
+	runUnionPositives := 0
+	serveDependentCount := 0
 	witnessesExamined := 0
 	for _, kind := range kinds {
 		c, declared := classifyAdapter("", kind)
@@ -68,8 +79,12 @@ func TestAdapterConsumesResolvedBundleOrDeclaresWhyNot(t *testing.T) {
 			if c.perSessionBundle {
 				positives++
 			}
+			if serveDependentKind(kind) {
+				serveDependentCount++
+			}
 			if c.runUnionAtServe {
 				positives++
+				runUnionPositives++
 			}
 		}
 		failures := conformanceFailures(kind, c, declared, readSourceFile)
@@ -95,7 +110,15 @@ func TestAdapterConsumesResolvedBundleOrDeclaresWhyNot(t *testing.T) {
 	if witnessesExamined == 0 {
 		t.Fatal("no consumption witnesses were examined — every positive axis is declarative only; the gate asserts nothing")
 	}
-	t.Logf("checked %d catalog kind(s) on both consumption axes; verified %d witness needle(s)", len(kinds), witnessesExamined)
+	// Anti-vacuity on the RUN-UNION axis specifically: every serve-dependent
+	// kind MUST carry a positive runUnionAtServe (conformanceFailures enforces
+	// this per kind), so if the catalog declares any serve-dependent kind but
+	// NONE declares the positive axis, this gate is not actually asserting the
+	// axis at all.
+	if serveDependentCount > 0 && runUnionPositives < serveDependentCount {
+		t.Fatalf("%d serve-dependent catalog kind(s) but only %d positive runUnionAtServe declaration(s) — the run-level-union axis passes vacuously", serveDependentCount, runUnionPositives)
+	}
+	t.Logf("checked %d catalog kind(s) on both consumption axes (%d serve-dependent); verified %d witness needle(s)", len(kinds), serveDependentCount, witnessesExamined)
 }
 
 // readSourceFile is the production witness reader: it reads a witness file
