@@ -163,6 +163,16 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	// The Work Items list carries a search row ('/'), per the operator's "search
 	// box at the top of the work items page for filter".
 	m.Base.EnableFilter(srcWorkItems)
+	// A WORK ITEM TREE OPENS COLLAPSED — both views (the archive view is a tree too,
+	// so it gets the same default rather than a second rule). A four-level
+	// Epic → Feature → Task → Subtask hierarchy is unreadable when it opens fully
+	// expanded, and the GUI's tree has always defaulted to collapsed, so this is the
+	// two clients agreeing rather than a new preference.
+	//
+	// Scoped to this source on purpose: the table's OTHER tree is a category folder
+	// grouping (workers/workflows), whose members are the point of the group — a
+	// folder that opened collapsed would hide the rows the operator came for.
+	m.Base.SetCollapsedByDefault(srcWorkItems, true)
 	// ...and a MODE label on that same row, right beside the search box: the
 	// operator's "When in archive or normal mode in the TUI, it should say so at the
 	// top near the search box to indicate what mode you are in."

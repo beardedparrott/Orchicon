@@ -94,10 +94,21 @@ func TestArchiveViewIsATree(t *testing.T) {
 			t.Fatalf("archive title %q must not pre-indent", r.Cells[0])
 		}
 	}
-	// And the rendered frame shows the nested structure via the +/- markers.
+	// THE TREE OPENS COLLAPSED, so the frame shows the ROOTS only — while the rows
+	// themselves are all present and nested (asserted above). Both halves matter: a
+	// flat list would also show one row here, and the nesting is what distinguishes
+	// "collapsed tree" from "no hierarchy at all".
+	if n := len(tbl.VisibleRows()); n != 1 {
+		t.Fatalf("a collapsed archive shows its roots only: %d visible, want 1", n)
+	}
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "[epic] ae") {
+		t.Fatalf("the archive frame must draw the root:\n%s", v)
+	}
+	// Expanding reveals every level — the nesting was real, not inferred.
+	expandAll(t, m)
 	v := ansi.Strip(m.View())
 	if !strings.Contains(v, "[epic] ae") || !strings.Contains(v, "[task] at") {
-		t.Fatalf("the archive frame must draw every level:\n%s", v)
+		t.Fatalf("expanded, the archive frame must draw every level:\n%s", v)
 	}
 }
 
@@ -266,5 +277,90 @@ func TestTheModeLabelNeverCrowdsOutTheControls(t *testing.T) {
 		if strings.Contains(v, "[ sort:") && !strings.Contains(v, "[ sort: sequence ]") && !strings.Contains(v, "[ sort: title ]") && !strings.Contains(v, "[ sort: status ]") && !strings.Contains(v, "[ sort: priority ]") {
 			t.Fatalf("at %dx%d a control was clipped mid-label:\n%s", sz[0], sz[1], v)
 		}
+	}
+}
+
+// TestTreeOpensCollapsed — item 1: the work-items tree (BOTH views) opens with its
+// parents collapsed, so a four-level hierarchy is readable on arrival.
+//
+// The operator: "I think the default for work items (both normal and archive) view
+// should be 'collapsed all'." The TUI started fully expanded while the GUI's tree has
+// always defaulted to collapsed (work-items-tree.tsx "default collapsed"), so the two
+// clients showed the same data in different shapes on open.
+//
+// THE SCOPE MATTERS AS MUCH AS THE DEFAULT: kit2.Table has a SECOND tree — the category
+// folder grouping on the workers/workflows panes — and a folder that opened collapsed
+// would hide the rows the operator came for. That is why this is per-source
+// (Table.CollapsedByDefault) rather than a change to the table's default.
+func TestTreeOpensCollapsed(t *testing.T) {
+	p := newPlane()
+	p.seedProject("proj-1", "Orchicon")
+	p.addItem(&apiv1.WorkItem{Id: "e", Title: "Epic", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC,
+		ProjectId: "proj-1", Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING})
+	p.addItem(&apiv1.WorkItem{Id: "f", Title: "Feature", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_FEATURE,
+		ProjectId: "proj-1", ParentId: "e", Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING})
+	p.addItem(&apiv1.WorkItem{Id: "t", Title: "Task", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_TASK,
+		ProjectId: "proj-1", ParentId: "f", Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING})
+	// An ARCHIVED pair too, so the archive view has a hierarchy of its own to open
+	// collapsed (an empty archive would pass the count for the wrong reason).
+	p.addArchive(archivedRow("ae", "", "succeeded", apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC))
+	p.addArchive(archivedRow("af", "ae", "succeeded", apiv1.WorkItemKind_WORK_ITEM_KIND_FEATURE))
+
+	m := newModel(t, p)
+	m.SelectSource(srcWorkItems)
+	load(t, m, srcWorkItems)
+
+	tbl := m.Base.ActiveTable()
+	if !tbl.CollapsedByDefault {
+		t.Fatal("the work-items table must be marked collapsed-by-default")
+	}
+	if n := len(tbl.VisibleRows()); n != 1 {
+		t.Fatalf("the TREE view must open with its root only: %d visible rows, want 1", n)
+	}
+	// …and the archive view, which is a tree too, gets the SAME default rather than a
+	// second rule. It has its own archived hierarchy (ae → af) to prove it.
+	press(t, m, "v")
+	load(t, m, srcWorkItems)
+	if am := m.ViewMode(); am != viewArchive {
+		t.Fatalf("fixture: expected the archive view, got %q", am)
+	}
+	atbl := m.Base.ActiveTable()
+	if n := len(atbl.VisibleRows()); n != 1 {
+		t.Fatalf("the ARCHIVE view must open the same way: %d visible rows, want 1", n)
+	}
+	// The archived child is present but folded — a flat archive would also show 1 row,
+	// so assert the nesting survived rather than trusting the count.
+	expandAll(t, m)
+	if n := len(atbl.VisibleRows()); n != 2 {
+		t.Fatalf("after expanding: %d archive rows, want 2 (ae + af)", n)
+	}
+	rows := archiveRowsByID(m)
+	if rows["af"].Depth != 1 || rows["af"].Parent != "ae" {
+		t.Fatalf("the archived child must stay nested under its parent: %+v", rows["af"])
+	}
+
+	// The choice is the DEFAULT, not a lock, and it SURVIVES a reload — the rolling
+	// refresh re-reads every few seconds, and a collapse that undid itself on the next
+	// tick would be unusable.
+	load(t, m, srcWorkItems)
+	if n := len(m.Base.ActiveTable().VisibleRows()); n != 2 {
+		t.Fatalf("an expanded archive must STAY expanded across a reload: %d visible, want 2", n)
+	}
+}
+
+// The category-folder tree is NOT collapsed by this: its members are the point of the
+// group. Asserted on the table default rather than on a live pane, because it is the
+// DEFAULT that this change touched (and briefly broke).
+func TestFolderGroupingStillOpensExpanded(t *testing.T) {
+	var tbl kit2.Table
+	tbl.SetItems([]kit2.Item{
+		{ID: "group:cat-1", Title: "Engineering", HasChildren: true},
+		{ID: "w1", Title: "writer", Depth: 1, Parent: "group:cat-1"},
+	}, "")
+	if !tbl.AllExpanded() {
+		t.Fatal("a category folder must still open EXPANDED — its members are the point of the group")
+	}
+	if n := len(tbl.VisibleRows()); n != 2 {
+		t.Fatalf("folder + member = %d visible rows, want 2", n)
 	}
 }

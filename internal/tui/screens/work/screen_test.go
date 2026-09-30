@@ -1056,6 +1056,9 @@ func TestTreeViewRendersRealHierarchy(t *testing.T) {
 	if meta := metaOf(itemsOf(m, srcWorkItems), "wi-task"); !strings.HasPrefix(meta, "running") {
 		t.Fatalf("state pill = %q, want running", meta)
 	}
+	// The tree opens COLLAPSED, so expand it before asserting on its levels — the
+	// default is asserted separately (TestTreeOpensCollapsed).
+	expandAll(t, m)
 	view := m.View()
 	for _, want := range []string{"[epic]", "[feature]", "[task]", "[subtask]", "running", "succeeded"} {
 		if !strings.Contains(view, want) {
@@ -1202,6 +1205,10 @@ func TestReorderChildrenPersists(t *testing.T) {
 	p.addItem(&apiv1.WorkItem{Id: "wi-c", Title: "C", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_TASK, ParentId: "wi-epic", ProjectId: "proj-1", Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING, SortOrder: 3})
 	m := newModel(t, p)
 	m.SelectSource(srcWorkItems)
+	load(t, m, srcWorkItems)
+	// The tree opens COLLAPSED now, so expand it: reordering acts on rows, and a
+	// collapsed parent's children are not rows.
+	m.toggleAllTreeNodes()
 	load(t, m, srcWorkItems)
 
 	press(t, m, "down")         // select wi-a (the first step)

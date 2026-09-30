@@ -77,31 +77,34 @@ func clickAt(t *testing.T, m *Model, x, y int) {
 func TestCollapseAllButtonRendersAndWorks(t *testing.T) {
 	m := treePlane(t)
 	tbl := m.Base.ActiveTable()
-	if n := len(tbl.VisibleRows()); n != 2 {
-		t.Fatalf("fresh tree visible = %d, want 2", n)
-	}
-
-	// The button is drawn, and offers to COLLAPSE while everything is open.
-	x, y := findText(t, m.View(), "collapse all")
-	clickAt(t, m, x, y)
-
-	if tbl.AllExpanded() {
-		t.Fatal("clicking the button must collapse every node")
-	}
+	// THE TREE OPENS COLLAPSED, so the control's first label is "expand all" — and
+	// that is the state the operator asked for, not a regression in the button.
 	if n := len(tbl.VisibleRows()); n != 1 {
-		t.Fatalf("collapsed visible rows = %d, want 1 (the epic)", n)
+		t.Fatalf("fresh tree visible = %d, want 1 (a collapsed tree shows roots only)", n)
 	}
-	// The label now states the opposite action, and clicking it expands again.
 	if v := ansi.Strip(m.View()); !strings.Contains(v, "expand all") {
-		t.Fatalf("the button must offer to expand once collapsed:\n%s", v)
+		t.Fatalf("a collapsed tree must offer to expand:\n%s", v)
 	}
-	x, y = findText(t, m.View(), "expand all")
+
+	x, y := findText(t, m.View(), "expand all")
 	clickAt(t, m, x, y)
 	if !tbl.AllExpanded() {
-		t.Fatal("clicking the button again must expand every node")
+		t.Fatal("clicking the button must expand every node")
 	}
 	if n := len(tbl.VisibleRows()); n != 2 {
 		t.Fatalf("expanded visible rows = %d, want 2", n)
+	}
+	// The label now states the opposite action, and clicking it collapses again.
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "collapse all") {
+		t.Fatalf("the button must offer to collapse once expanded:\n%s", v)
+	}
+	x, y = findText(t, m.View(), "collapse all")
+	clickAt(t, m, x, y)
+	if tbl.AllExpanded() {
+		t.Fatal("clicking the button again must collapse every node")
+	}
+	if n := len(tbl.VisibleRows()); n != 1 {
+		t.Fatalf("collapsed visible rows = %d, want 1 (the epic)", n)
 	}
 }
 
@@ -115,6 +118,9 @@ func TestCollapseAllButtonWorksInTheArchiveView(t *testing.T) {
 		t.Fatalf("fixture: expected the archive view, got %q", m.ViewMode())
 	}
 	tbl := m.Base.ActiveTable()
+	// The archive tree opens collapsed too, so expand it first — this test is about the
+	// CONTROL, and the default is asserted in TestArchiveViewIsATree.
+	expandAll(t, m)
 	// Ghost anchor ("Active Root") + the archived feature + the archived task.
 	if n := len(tbl.VisibleRows()); n != 3 {
 		t.Fatalf("archive visible rows = %d, want 3 (root anchor, feature, task):\n%s",

@@ -62,6 +62,21 @@ type Table struct {
 	// filtered view, so the operator navigates what they can actually see.
 	Filter string
 
+	// CollapsedByDefault is the OPEN STATE a row takes the FIRST TIME it appears.
+	//
+	// It is false (expanded) by default because the table's other tree is a FOLDER
+	// grouping — a category group whose members are the point of the group — and a
+	// folder that opened collapsed would hide the rows the operator came for. The
+	// work-items views set it TRUE: a deep Epic → Feature → Task → Subtask tree is
+	// unreadable when it opens fully expanded, and the GUI's tree has always
+	// defaulted to collapsed (work-items-tree.tsx: "default collapsed"), so the two
+	// clients disagreed about what the same data looks like on open.
+	//
+	// It applies ONLY to a row with no surviving state (see SetItems). An operator's
+	// own expand/collapse choice is never overridden by it — that is what makes the
+	// rolling refresh safe to leave on.
+	CollapsedByDefault bool
+
 	// Marks is the MULTI-SELECTION: row IDs the operator has marked with space, for the
 	// bulk operations every list needs a consistent way to reach.
 	//
@@ -188,7 +203,7 @@ func (t *Table) SetItems(items []screenkit.Item, next string) {
 	for _, it := range items {
 		open, seen := wasOpen[it.ID]
 		if !seen {
-			open = true
+			open = !t.CollapsedByDefault
 		}
 		rows = append(rows, Row{
 			ID:     it.ID,

@@ -789,6 +789,22 @@ func (b *Base) EnableFilter(src string) {
 	}
 }
 
+// SetCollapsedByDefault makes a source's tree rows start CLOSED the first time they
+// appear (see Table.CollapsedByDefault). It is per-SOURCE because not every tree is
+// the same shape: a work-item hierarchy wants to start collapsed, a category folder
+// grouping does not.
+//
+// It must be set before the source's first load to have any effect on what the
+// operator sees on open; setting it later only changes rows that appear afterwards.
+func (b *Base) SetCollapsedByDefault(src string, on bool) {
+	for _, s := range b.sources {
+		if s.name == src {
+			s.table.CollapsedByDefault = on
+			return
+		}
+	}
+}
+
 // SetCaption installs a mode label drawn on the source's top row, beside the
 // search box. Passing nil removes it.
 //
