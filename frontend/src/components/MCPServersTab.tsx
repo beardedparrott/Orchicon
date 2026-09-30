@@ -213,8 +213,9 @@ export function MCPServersTab() {
           <Cable className="h-4 w-4" /> MCP Servers
         </h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Owner-scoped MCP server definitions. Each one belongs to a project
-          these by id — editing one entry updates every consumer.
+          Owner-scoped MCP server definitions. Each one belongs to exactly one
+          project or Ask conversation, and is consumed by that scope's
+          resolution union.
           Installations are explicit (click Install); never implicit at
           session time. Credentials persist via the tenant secrets store
           as write-only {`${'${'}SECRET_NAME}`} references.

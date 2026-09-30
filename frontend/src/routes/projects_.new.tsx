@@ -1,7 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useFieldArray, useForm } from "react-hook-form";
-import { useState } from "react";
 import { z } from "zod";
 
 import { useCreateProject, useUpdateProject } from "@/api/projects";
@@ -242,10 +241,6 @@ function NewProjectPage() {
               <p className="text-xs text-muted-foreground">
                 Caps how many executions may run concurrently (effective limit is min(tenant, project)).
               </p>
-            </div>
-
-            <div className="space-y-2">
-              <Label>MCP servers</Label>
             </div>
 
             <div className="space-y-2">
