@@ -15,8 +15,37 @@
 
 import { cn } from "@/lib/utils";
 
-import { kindMeta, statusMeta } from "@/components/work-items/work-item-meta";
+import { kindMeta, statusMeta, type StatusMeta } from "@/components/work-items/work-item-meta";
 import { useDarkPalette } from "@/components/work-items/use-dark-palette";
+
+/**
+ * Resolve a StatusMeta's pill classes for the ACTIVE palette.
+ *
+ * This is the ONE place the light/dark choice is made, so a badge cannot pick
+ * the wrong set. It exists because one did: the archive view's "Archived from"
+ * chip read `original.pill` directly (the LIGHT-palette classes), so on a dark
+ * theme it painted `text-emerald-800` on `bg-emerald-500/15` over a dark-green
+ * page — green on green, which is exactly how the operator reported it. Every
+ * other badge in the app already went through `useDarkPalette`; the chips built
+ * inline did not, because the decision was copyable rather than shared.
+ */
+export function useStatusPillClasses(meta: StatusMeta): string {
+  return statusPillClasses(meta, useDarkPalette());
+}
+
+/**
+ * The palette decision as a PURE function — the hook above is only the binding of
+ * this to the theme store.
+ *
+ * Split out so the decision itself is directly testable: React's static renderer
+ * reads zustand's INITIAL state (useSyncExternalStore's server snapshot), so a
+ * component-level test cannot switch palettes in-process. The rule "which class
+ * set does a chip use" is what must not regress, and a pure function lets every
+ * status be checked in both palettes rather than one example in one theme.
+ */
+export function statusPillClasses(meta: StatusMeta, isDarkPalette: boolean): string {
+  return isDarkPalette ? meta.pillDark : meta.pill;
+}
 
 /**
  * Compact square kind badge ("E", "F", "T", "S", "R") — the Jira-style
@@ -62,18 +91,55 @@ export function KindPill({ kind, className }: { kind: number; className?: string
 
 /** Rounded status pill ("pending", "running", …) — theme-safe. */
 export function StatusPill({ status, className }: { status: number; className?: string }) {
-  const isDark = useDarkPalette();
   const meta = statusMeta(status);
+  const pill = useStatusPillClasses(meta);
   return (
     <span
       className={cn(
         "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium",
-        isDark ? meta.pillDark : meta.pill,
+        pill,
         className,
       )}
     >
       <span aria-hidden="true" className={cn("h-1.5 w-1.5 rounded-full", meta.dot)} />
       {meta.label}
+    </span>
+  );
+}
+
+/**
+ * Small status chip with caller-supplied text — the archive view's "Archived
+ * from: succeeded" / "active" markers.
+ *
+ * It takes a resolved StatusMeta rather than a numeric enum because the archive
+ * view renders `WorkItem.archivedFromStatus`, which arrives as a canonical
+ * STRING; forcing it through a number would mean re-inventing that mapping here.
+ * The palette comes from `useStatusPillClasses`, so these chips are theme-safe
+ * by construction (see that hook for the bug this closes).
+ */
+export function StatusChip({
+  meta,
+  label,
+  className,
+  title,
+}: {
+  meta: StatusMeta;
+  label: string;
+  className?: string;
+  title?: string;
+}) {
+  const pill = useStatusPillClasses(meta);
+  return (
+    <span
+      title={title}
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium",
+        pill,
+        className,
+      )}
+    >
+      <span aria-hidden="true" className={cn("h-1 w-1 rounded-full", meta.dot)} />
+      {label}
     </span>
   );
 }

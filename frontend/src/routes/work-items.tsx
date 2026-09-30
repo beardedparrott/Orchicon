@@ -85,6 +85,8 @@ function WorkItemsPage() {
     toggleTreeCollapsed,
     boardCollapsed,
     toggleBoardCollapsed,
+    archiveCollapsed,
+    toggleArchiveCollapsed,
     expandAll,
     collapseAll,
   } = useWorkItemsPreferences(projectId);
@@ -358,22 +360,32 @@ function WorkItemsPage() {
   // items list (not the filtered set) so collapsing a filtered-out
   // ancestor is harmless. The buttons are disabled when the action is
   // already the default state for the active view.
+  //
+  // THE ARCHIVE VIEW IS INCLUDED HERE, and its slice is the ARCHIVED items —
+  // which is what `items` holds while that view is active (the query opts in to
+  // archived rows for that view only, routes/work-items.tsx). Before this the
+  // disabled-state only knew about tree and board, so in the archive view both
+  // buttons read the TREE's state and could be enabled while doing nothing.
   const parentIDs = useMemo(() => parentIds(items ?? []), [items]);
   const hasParents = parentIDs.length > 0;
   const expandAllDisabled =
     !hasParents ||
     (view === "board"
       ? boardCollapsed.size === 0
-      : hasQuery
-        ? treeCollapsed.size === 0
-        : parentIDs.every((p) => treeExpanded.has(p)));
+      : view === "archive"
+        ? archiveCollapsed.size === 0
+        : hasQuery
+          ? treeCollapsed.size === 0
+          : parentIDs.every((p) => treeExpanded.has(p)));
   const collapseAllDisabled =
     !hasParents ||
     (view === "board"
       ? false
-      : hasQuery
-        ? parentIDs.every((p) => treeCollapsed.has(p))
-        : treeExpanded.size === 0);
+      : view === "archive"
+        ? parentIDs.every((p) => archiveCollapsed.has(p))
+        : hasQuery
+          ? parentIDs.every((p) => treeCollapsed.has(p))
+          : treeExpanded.size === 0);
   const handleExpandAll = () => expandAll(view, hasQuery, parentIDs);
   const handleCollapseAll = () => collapseAll(view, hasQuery, parentIDs);
 
@@ -485,6 +497,8 @@ function WorkItemsPage() {
                 onToggleSelect={toggle}
                 onRestoreSelected={handleRestoreSelected}
                 restoreSelectedPending={batchRestore.isPending}
+                collapsedIds={archiveCollapsed}
+                onToggleCollapse={toggleArchiveCollapsed}
               />
             ) : view === "tree" ? (
               <WorkItemsTree

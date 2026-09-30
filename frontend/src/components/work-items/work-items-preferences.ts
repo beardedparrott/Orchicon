@@ -148,14 +148,14 @@ export function saveFiltersPreference(projectId: string, filters: WorkItemFilter
   writeEnvelope(`${PREFIX}filters.${projectId}`, filters);
 }
 
-export function loadExpandedPreference(projectId: string, kind: "tree" | "board"): Set<string> {
+export function loadExpandedPreference(projectId: string, kind: CollapseViewKind): Set<string> {
   const parsed = parseEnvelope<{ ids: string[] }>(`${PREFIX}${kind}Expanded.${projectId}`);
   return new Set(Array.isArray(parsed?.ids) ? parsed!.ids.filter((id) => typeof id === "string") : []);
 }
 
 export function saveExpandedPreference(
   projectId: string,
-  kind: "tree" | "board",
+  kind: CollapseViewKind,
   ids: Set<string>,
 ): void {
   writeEnvelope(`${PREFIX}${kind}Expanded.${projectId}`, { ids: Array.from(ids) });
@@ -167,14 +167,22 @@ export function saveExpandedPreference(
 // collapsed ids because its default state is expanded; the tree stores
 // collapsed ids for filter-mode so auto-expanded ancestors can still be
 // collapsed and that choice survives navigation (ADR-WI-3).
-export function loadCollapsedPreference(projectId: string, kind: "tree" | "board"): Set<string> {
+//
+// `CollapseViewKind` is the set of views that OWN a collapse slice. The Archive
+// view joins Tree and Board here rather than keeping a local `useState`: the
+// toolbar's Expand all / Collapse all buttons drive these persisted sets, so a
+// view whose collapse state lives elsewhere is a view those buttons cannot reach
+// — which is exactly why they did nothing in the archive view.
+export type CollapseViewKind = "tree" | "board" | "archive";
+
+export function loadCollapsedPreference(projectId: string, kind: CollapseViewKind): Set<string> {
   const parsed = parseEnvelope<{ ids: string[] }>(`${PREFIX}${kind}Collapsed.${projectId}`);
   return new Set(Array.isArray(parsed?.ids) ? parsed!.ids.filter((id) => typeof id === "string") : []);
 }
 
 export function saveCollapsedPreference(
   projectId: string,
-  kind: "tree" | "board",
+  kind: CollapseViewKind,
   ids: Set<string>,
 ): void {
   writeEnvelope(`${PREFIX}${kind}Collapsed.${projectId}`, { ids: Array.from(ids) });
@@ -191,6 +199,94 @@ export function parentIds(items: WorkItem[]): string[] {
     if (item.parentId) ids.add(item.parentId);
   }
   return Array.from(ids);
+}
+
+// ---------------------------------------------------------------------------
+// Bulk expand/collapse — the pure decision (ADR-WIT-4)
+// ---------------------------------------------------------------------------
+
+/** Which persisted set a bulk collapse action writes, and what it holds. */
+export interface CollapseEffect {
+  /** the slice to write */
+  slice: "board" | "archive" | "treeCollapsed" | "treeExpanded";
+  /** the ids the slice should hold (empty = cleared) */
+  ids: Set<string>;
+}
+
+/**
+ * What "expand all" / "collapse all" MEAN for a view — as a pure function, so
+ * each view's rule is a value a test can assert rather than a branch buried in a
+ * hook.
+ *
+ * THE THREE RULES, and why they differ:
+ *
+ *   board / archive — rows default EXPANDED, so the persisted set is the
+ *     EXPLICITLY COLLAPSED one. "Expand all" therefore CLEARS it and "collapse
+ *     all" fills it with every parent id. A filter does not change this (neither
+ *     view re-derives its rows from a filtered ancestor walk).
+ *   tree, filter active — rows default EXPANDED too (file-explorer auto-expand so
+ *     matches stay reachable), so the same rule applies to the collapsed set.
+ *   tree, no filter — rows default COLLAPSED, so the persisted set is the
+ *     EXPLICITLY EXPANDED one: "expand all" fills it, "collapse all" clears it.
+ */
+export function bulkCollapseEffect(
+  view: WorkItemsView,
+  filterActive: boolean,
+  parentIDs: string[],
+  expand: boolean,
+): CollapseEffect {
+  if (view === "board" || view === "archive") {
+    return { slice: view, ids: expand ? new Set<string>() : new Set(parentIDs) };
+  }
+  if (filterActive) {
+    return {
+      slice: "treeCollapsed",
+      ids: expand ? new Set<string>() : new Set(parentIDs),
+    };
+  }
+  return {
+    slice: "treeExpanded",
+    ids: expand ? new Set(parentIDs) : new Set<string>(),
+  };
+}
+
+/**
+ * Apply a CollapseEffect: set the state, then persist it under the view's own
+ * key.
+ *
+ * It takes the setters from the caller rather than reaching for module state,
+ * because the hook owns them — and it persists through the SAME
+ * saveCollapsedPreference/saveExpandedPreference pair `toggleTreeCollapsed` uses,
+ * so a bulk action and a per-row click write the identical envelope shape.
+ */
+function applyCollapseEffect(
+  eff: CollapseEffect,
+  projectId: string,
+  set: {
+    board: (ids: Set<string>) => void;
+    archive: (ids: Set<string>) => void;
+    treeCollapsed: (ids: Set<string>) => void;
+    treeExpanded: (ids: Set<string>) => void;
+  },
+): void {
+  switch (eff.slice) {
+    case "board":
+      set.board(eff.ids);
+      saveCollapsedPreference(projectId, "board", eff.ids);
+      return;
+    case "archive":
+      set.archive(eff.ids);
+      saveCollapsedPreference(projectId, "archive", eff.ids);
+      return;
+    case "treeCollapsed":
+      set.treeCollapsed(eff.ids);
+      saveCollapsedPreference(projectId, "tree", eff.ids);
+      return;
+    case "treeExpanded":
+      set.treeExpanded(eff.ids);
+      saveExpandedPreference(projectId, "tree", eff.ids);
+      return;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -211,6 +307,9 @@ export interface WorkItemsPreferences {
   /** Board rows explicitly collapsed (default expanded). */
   boardCollapsed: Set<string>;
   toggleBoardCollapsed: (id: string) => void;
+  /** Archive rows explicitly collapsed (default expanded). */
+  archiveCollapsed: Set<string>;
+  toggleArchiveCollapsed: (id: string) => void;
   /**
    * Expand all rows that have children in the given view. "Expand all"
    * always means *show the full tree*: board/tree-filter-active clear
@@ -240,6 +339,9 @@ export function useWorkItemsPreferences(projectId: string): WorkItemsPreferences
   const [boardCollapsed, setBoardCollapsedState] = useState<Set<string>>(() =>
     loadCollapsedPreference(projectId, "board"),
   );
+  const [archiveCollapsed, setArchiveCollapsedState] = useState<Set<string>>(() =>
+    loadCollapsedPreference(projectId, "archive"),
+  );
 
   // Per-project slices: re-read when the project selector changes.
   useEffect(() => {
@@ -247,6 +349,7 @@ export function useWorkItemsPreferences(projectId: string): WorkItemsPreferences
     setTreeExpandedState(loadExpandedPreference(projectId, "tree"));
     setTreeCollapsedState(loadCollapsedPreference(projectId, "tree"));
     setBoardCollapsedState(loadCollapsedPreference(projectId, "board"));
+    setArchiveCollapsedState(loadCollapsedPreference(projectId, "archive"));
   }, [projectId]);
 
   const setView = useCallback((next: WorkItemsView) => {
@@ -304,46 +407,43 @@ export function useWorkItemsPreferences(projectId: string): WorkItemsPreferences
     [projectId],
   );
 
-  // Bulk expand/collapse (ADR-WIT-4): each view stores its state in a
-  // different set, so a single pair of handlers works for both views.
+  const toggleArchiveCollapsed = useCallback(
+    (id: string) => {
+      setArchiveCollapsedState((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        saveCollapsedPreference(projectId, "archive", next);
+        return next;
+      });
+    },
+    [projectId],
+  );
+
+  // Bulk expand/collapse (ADR-WIT-4): the DECISION lives in one pure function
+  // (`bulkCollapseEffect`), so what "expand all" means for each view is asserted
+  // in a test rather than re-derived here — and so the archive view cannot be
+  // silently left out of the switch a third time.
   const expandAll = useCallback(
     (view: WorkItemsView, filterActive: boolean, parentIDs: string[]) => {
-      if (view === "board") {
-        const next = new Set<string>();
-        setBoardCollapsedState(next);
-        saveCollapsedPreference(projectId, "board", next);
-        return;
-      }
-      if (filterActive) {
-        const next = new Set<string>();
-        setTreeCollapsedState(next);
-        saveCollapsedPreference(projectId, "tree", next);
-      } else {
-        const next = new Set(parentIDs);
-        setTreeExpandedState(next);
-        saveExpandedPreference(projectId, "tree", next);
-      }
+      applyCollapseEffect(bulkCollapseEffect(view, filterActive, parentIDs, true), projectId, {
+        board: setBoardCollapsedState,
+        archive: setArchiveCollapsedState,
+        treeCollapsed: setTreeCollapsedState,
+        treeExpanded: setTreeExpandedState,
+      });
     },
     [projectId],
   );
 
   const collapseAll = useCallback(
     (view: WorkItemsView, filterActive: boolean, parentIDs: string[]) => {
-      if (view === "board") {
-        const next = new Set(parentIDs);
-        setBoardCollapsedState(next);
-        saveCollapsedPreference(projectId, "board", next);
-        return;
-      }
-      if (filterActive) {
-        const next = new Set(parentIDs);
-        setTreeCollapsedState(next);
-        saveCollapsedPreference(projectId, "tree", next);
-      } else {
-        const next = new Set<string>();
-        setTreeExpandedState(next);
-        saveExpandedPreference(projectId, "tree", next);
-      }
+      applyCollapseEffect(bulkCollapseEffect(view, filterActive, parentIDs, false), projectId, {
+        board: setBoardCollapsedState,
+        archive: setArchiveCollapsedState,
+        treeCollapsed: setTreeCollapsedState,
+        treeExpanded: setTreeExpandedState,
+      });
     },
     [projectId],
   );
@@ -359,6 +459,8 @@ export function useWorkItemsPreferences(projectId: string): WorkItemsPreferences
     toggleTreeCollapsed,
     boardCollapsed,
     toggleBoardCollapsed,
+    archiveCollapsed,
+    toggleArchiveCollapsed,
     expandAll,
     collapseAll,
   };
