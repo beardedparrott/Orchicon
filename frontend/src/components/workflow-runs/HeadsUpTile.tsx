@@ -39,7 +39,6 @@ interface HeadsUpTileProps {
   runId: string;
   /** Mount the execution event stream. The grid sets this on exactly one
    *  tile (the first running step with an execution) — the perf guard. */
-  onExpand: (tile: HeadsUpTileData) => void;
 }
 
 
@@ -59,7 +58,7 @@ function TileUsage({ executionId }: { executionId: string }) {
   );
 }
 
-export function HeadsUpTile({ tile, runId, onExpand }: HeadsUpTileProps) {
+export function HeadsUpTile({ tile, runId }: HeadsUpTileProps) {
   const execId = tile.execution?.id ?? "";
   // THE TAIL, NOT THE TRANSCRIPT. This tile renders one line — the last thing the worker
   // said (extractLastTextBlock scans backwards and stops at the first text part). Asking the
@@ -90,12 +89,24 @@ export function HeadsUpTile({ tile, runId, onExpand }: HeadsUpTileProps) {
       extractLastTextBlock(session, 600) || resultSummaryLine(tile.stepRun)
     );
   }, [session, tile.stepRun, tile.isUpcoming]);
-  const Container = expandable ? "button" : "div";
+  // A TILE OPENS THE EXECUTION PAGE — it does not expand into a live view.
+  //
+  // It used to open HeadsUpExpandedModal, which hosted the full SessionChatPane: a live event
+  // STREAM plus five fetches, mounted on top of a run route that already polls. Clicking from
+  // there to the execution page then left that stream alive behind the page being opened, on an
+  // HTTP/1.1 origin with ~6 connections — which is the non-responsive page the operator hit
+  // ("as soon as I clicked 'launch live execution page'"). The modal's only unique offering was
+  // hosting the transcript, which is the execution page's own job, and the tile already carries
+  // inline Approve/Reject/Retry for approval steps — so removing it costs no capability.
+  //
+  // An ANCHOR rather than a JS handler: a real link gives middle-click and cmd-click for free,
+  // works before hydration, and cannot silently break the way a handler can.
+  const Container = expandable ? "a" : "div";
+  const href = expandable ? `/executions/${execId}` : undefined;
   return (
     <Container
-      type={expandable ? "button" : undefined}
-      onClick={expandable ? () => onExpand(tile) : undefined}
-      aria-label={expandable ? `Expand step ${tile.stepName}` : undefined}
+      {...(expandable ? { href, target: "_blank", rel: "noopener noreferrer" } : {})}
+      aria-label={expandable ? `Open the execution page for step ${tile.stepName}` : undefined}
       className={cn(
         "flex min-h-[190px] flex-col gap-2 rounded-xl border bg-card p-3 text-left shadow-sm",
         tile.isActive && "ring-2 ring-emerald-500 shadow-lg",
@@ -121,12 +132,11 @@ export function HeadsUpTile({ tile, runId, onExpand }: HeadsUpTileProps) {
           >
             {status.label}
           </span>
-          {tile.isActive && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500 px-2 py-0.5 text-[10px] font-bold uppercase text-white">
-              <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
-              live
-            </span>
-          )}
+          {/* NO "live" CHIP. It used to pulse here, and it read as "this card is updating" —
+              which this card cannot do: it holds no stream and no poll, so between a step's
+              writes nothing on it moves. The STATUS PILL above already says "running", which is
+              the true statement about the run; a pulsing chip beside it only implied the card was
+              live too. The operator called the pairing a misnomer, and this was half of it. */}
         </div>
       </div>
 
@@ -166,11 +176,17 @@ export function HeadsUpTile({ tile, runId, onExpand }: HeadsUpTileProps) {
         ) : tile.stepKind === 3 ? (
           <ApprovalTilePanel stepRun={tile.stepRun} runId={runId} summary={summary} />
         ) : tile.isActive ? (
-          // A RUNNING tile keeps the "waiting for first output" affordance it had while it
-          // streamed. Losing the stream must not lose the one state that tells an operator
-          // the step is alive but quiet — that is a fact about the RUN, not about liveness.
+          // SAY WHAT IS TRUE. This used to read "Worker starting — waiting for first output…",
+          // which the operator flagged as "a misnomer" — and he was right, for a reason that is
+          // about THIS card rather than about the run: the tile is a static snapshot (no stream,
+          // no poll — see above), so nothing will appear here however long you wait. A message
+          // promising output on a card that cannot produce it is the card lying about itself.
+          //
+          // The truth is: the RUN is still going, and this card is a snapshot of what has been
+          // written to the step run SO FAR. The action that actually shows progress is opening
+          // it, so the message names that instead of a wait.
           <p className="text-xs italic text-muted-foreground">
-            {summary || "Worker starting — waiting for first output…"}
+            {summary || "Running — no summary yet. Open it for live output."}
           </p>
         ) : (
           <p className="line-clamp-6 max-h-36 overflow-hidden whitespace-pre-wrap break-words text-xs leading-relaxed text-foreground/85">

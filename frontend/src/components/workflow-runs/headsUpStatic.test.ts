@@ -34,7 +34,6 @@ const read = (rel: string) => readFileSync(resolve(process.cwd(), rel), "utf8");
 
 const TILE = "src/components/workflow-runs/HeadsUpTile.tsx";
 const GRID = "src/components/workflow-runs/HeadsUpGrid.tsx";
-const MODAL = "src/components/workflow-runs/HeadsUpExpandedModal.tsx";
 
 /** Strip comments so a MENTION of a pattern (in a rationale) is not read as code. */
 function code(src: string): string {
@@ -84,12 +83,24 @@ describe("the grid holds no liveness at all", () => {
   });
 });
 
-describe("liveness moved to the one place that should have it", () => {
-  it("the expanded modal streams exactly one execution", () => {
-    const c = code(read(MODAL));
-    expect(c).toContain("useStreamExecutionEvents");
-    // One stream, not one per tile: a single call site in the modal.
-    expect(c.match(/useStreamExecutionEvents\(/g)?.length).toBe(1);
+describe("liveness moved OFF the run view entirely", () => {
+  it("the live modal is GONE — clicking a tile opens the execution page", () => {
+    // The modal hosted a second live stream (plus five fetches) on a route that already polls,
+    // and clicking through to the execution page left that stream alive behind it — the
+    // non-responsive page the operator hit. A tile is a link now, so there is nothing to
+    // unmount and nothing running behind the page you open.
+    expect(() => read("src/components/workflow-runs/HeadsUpExpandedModal.tsx")).toThrow();
+    expect(code(read("src/routes/workflows_.$id_.runs.$runId.tsx"))).not.toContain("HeadsUpExpandedModal");
+  });
+
+  it("a tile is an ANCHOR to the execution page, not a click handler", () => {
+    const c = code(read(TILE));
+    expect(c).toContain("`/executions/${execId}`");
+    expect(c).toContain('target: "_blank"');
+    // A handler would make it a JS-only affordance; an href keeps middle-click and
+    // cmd-click, which is what an operator opens a page with.
+    expect(c).not.toContain("onOpenExecution");
+    expect(c).not.toContain("onExpand");
   });
 
   it("the route no longer passes a suspended step to the grid", () => {

@@ -12,10 +12,9 @@ interface HeadsUpGridProps {
   tiles: HeadsUpTileData[];
   runId: string;
   /** Step id whose stream is suspended (expanded into the modal). */
-  onExpand: (tile: HeadsUpTileData) => void;
 }
 
-export function HeadsUpGrid({ tiles, runId, onExpand }: HeadsUpGridProps) {
+export function HeadsUpGrid({ tiles, runId }: HeadsUpGridProps) {
   // NOTHING IN THE GRID IS LIVE, so there is no "live step" to pick. A tile is a
   // thumbnail: it shows the step's status and last known summary and holds no stream and no
   // timer. The EXPANDED tile and the execution page own liveness for one execution each —
@@ -35,7 +34,6 @@ export function HeadsUpGrid({ tiles, runId, onExpand }: HeadsUpGridProps) {
           key={t.stepId}
           tile={t}
           runId={runId}
-          onExpand={onExpand}
         />
       ))}
     </div>
