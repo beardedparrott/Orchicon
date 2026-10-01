@@ -633,9 +633,9 @@ func joinBody(parts ...string) string {
 	return strings.Join(kept, "\n\n")
 }
 
-func (m *Model) fetchUsage(ctx context.Context, _ string) ([]kit2.Item, string, error) {
+func (m *Model) fetchUsage(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
 	resp, err := m.cl.AIGateway.GetUsage(ctx, connect.NewRequest(&apiv1.GetUsageRequest{
-		TenantId: m.tenantID, PageSize: 500,
+		TenantId: m.tenantID, PageSize: 200, PageToken: pageToken,
 	}))
 	if err != nil {
 		return nil, "", err
@@ -656,22 +656,6 @@ func (m *Model) fetchUsage(ctx context.Context, _ string) ([]kit2.Item, string, 
 		})
 	}
 	return items, resp.Msg.GetNextPageToken(), nil
-}
-
-// usageAggregate reads the AI gateway's usage records and rolls them up by
-// provider and by model, with a grand total (the orchicon_get_usage shape).
-func (m *Model) usageAggregate(ctx context.Context) (*usageAgg, error) {
-	resp, err := m.cl.AIGateway.GetUsage(ctx, connect.NewRequest(&apiv1.GetUsageRequest{
-		TenantId: m.tenantID, PageSize: 500,
-	}))
-	if err != nil {
-		return nil, err
-	}
-	a := newUsageAgg()
-	for _, r := range resp.Msg.GetRecords() {
-		a.add(r)
-	}
-	return a, nil
 }
 
 // usageDetail renders one raw usage record (`/usage`).
@@ -779,155 +763,6 @@ func fmtDuration(us int64) string {
 		return "—"
 	}
 	return time.Duration(us * int64(time.Microsecond)).String()
-}
-
-// bucket is a cost/token roll-up.
-type bucket struct {
-	cost   float64
-	tokens int64
-	count  int
-}
-
-// usageAgg rolls usage records up by provider and by model with a total.
-type usageAgg struct {
-	cost      float64
-	tokens    int64
-	count     int
-	providers map[string]*bucket
-	models    map[string]*bucket
-	pm        map[string]map[string]*bucket // provider → model → bucket
-}
-
-func newUsageAgg() *usageAgg {
-	return &usageAgg{
-		providers: map[string]*bucket{},
-		models:    map[string]*bucket{},
-		pm:        map[string]map[string]*bucket{},
-	}
-}
-
-func (a *usageAgg) add(r *apiv1.UsageRecord) {
-	a.cost += r.GetCostUsd()
-	a.tokens += r.GetTotalTokens()
-	a.count++
-
-	p := r.GetProvider()
-	if p == "" {
-		p = "(unknown)"
-	}
-	mo := r.GetModel()
-	if mo == "" {
-		mo = "(unknown)"
-	}
-	addTo(a.providers, p, r)
-	addTo(a.models, mo, r)
-	if a.pm[p] == nil {
-		a.pm[p] = map[string]*bucket{}
-	}
-	addTo(a.pm[p], mo, r)
-}
-
-func addTo(m map[string]*bucket, key string, r *apiv1.UsageRecord) {
-	b := m[key]
-	if b == nil {
-		b = &bucket{}
-		m[key] = b
-	}
-	b.cost += r.GetCostUsd()
-	b.tokens += r.GetTotalTokens()
-	b.count++
-}
-
-// items renders the cost-explorer list: the total first, then the provider
-// breakdown, then the model breakdown. Empty (no records) returns nil so
-// the pane's empty state fires.
-func (a *usageAgg) items() []kit2.Item {
-	if a.count == 0 {
-		return nil
-	}
-	items := []kit2.Item{{
-		ID:    "total",
-		Title: "Total",
-		Meta:  fmt.Sprintf("%s · %s tok · %d rec", fmtCost(a.cost), fmtTokens(a.tokens), a.count),
-	}}
-	for _, p := range sortedKeys(a.providers) {
-		b := a.providers[p]
-		items = append(items, kit2.Item{
-			ID:    "provider:" + p,
-			Title: "By provider · " + p,
-			Meta:  fmt.Sprintf("%s · %s tok", fmtCost(b.cost), fmtTokens(b.tokens)),
-		})
-	}
-	for _, mo := range sortedKeys(a.models) {
-		b := a.models[mo]
-		items = append(items, kit2.Item{
-			ID:    "model:" + mo,
-			Title: "By model · " + mo,
-			Meta:  fmt.Sprintf("%s · %s tok", fmtCost(b.cost), fmtTokens(b.tokens)),
-		})
-	}
-	return items
-}
-
-func (a *usageAgg) providerLines() string {
-	keys := sortedKeys(a.providers)
-	if len(keys) == 0 {
-		return "(no provider usage in this window)"
-	}
-	var b strings.Builder
-	b.WriteString("by provider\n")
-	for _, k := range keys {
-		bk := a.providers[k]
-		b.WriteString(fmt.Sprintf("  %-18s %10s  %10s  %d rec\n", k, fmtCost(bk.cost), fmtTokens(bk.tokens), bk.count))
-	}
-	return strings.TrimRight(b.String(), "\n")
-}
-
-func (a *usageAgg) modelLines() string {
-	keys := sortedKeys(a.models)
-	if len(keys) == 0 {
-		return "(no model usage in this window)"
-	}
-	var b strings.Builder
-	b.WriteString("by model\n")
-	for _, k := range keys {
-		bk := a.models[k]
-		b.WriteString(fmt.Sprintf("  %-28s %10s  %10s  %d rec\n", k, fmtCost(bk.cost), fmtTokens(bk.tokens), bk.count))
-	}
-	return strings.TrimRight(b.String(), "\n")
-}
-
-// modelLinesFor renders the per-model breakdown inside one provider.
-func (a *usageAgg) modelLinesFor(provider string) string {
-	inner := a.pm[provider]
-	keys := sortedKeys(inner)
-	if len(keys) == 0 {
-		return "(no model breakdown for this provider)"
-	}
-	var b strings.Builder
-	b.WriteString("by model\n")
-	for _, k := range keys {
-		bk := inner[k]
-		b.WriteString(fmt.Sprintf("  %-28s %10s  %10s  %d rec\n", k, fmtCost(bk.cost), fmtTokens(bk.tokens), bk.count))
-	}
-	return strings.TrimRight(b.String(), "\n")
-}
-
-// providerLinesFor renders which providers contributed to one model.
-func (a *usageAgg) providerLinesFor(model string) string {
-	var b strings.Builder
-	b.WriteString("by provider\n")
-	any := false
-	for _, p := range sortedKeys(a.pm) {
-		if bk, ok := a.pm[p][model]; ok {
-			any = true
-			b.WriteString(fmt.Sprintf("  %-18s %10s  %10s  %d rec\n", p, fmtCost(bk.cost), fmtTokens(bk.tokens), bk.count))
-		}
-	}
-	if !any {
-		return "(no provider breakdown for this model)"
-	}
-	return strings.TrimRight(b.String(), "\n")
 }
 
 func sortedKeys[V any](m map[string]V) []string {
