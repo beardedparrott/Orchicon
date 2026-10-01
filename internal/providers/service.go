@@ -28,8 +28,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/db"
-	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/orchicon"
+	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/secretcrypto"
 	"github.com/beardedparrott/orchicon/internal/secrets"
 	"github.com/jackc/pgx/v5"
@@ -231,16 +231,16 @@ func mergeManualModels(current, updates []ManualModel, replace bool) ([]ManualMo
 // Only ENABLED providers are returned: an entry the operator turned off must not
 // be handed to a container as a usable endpoint.
 //
-// It returns opencode.ProviderConfig values rather than profiles because the only
+// It returns runtime.ProviderConfig values rather than profiles because the only
 // consumer is opencode's `provider` block, which needs an npm package per id —
 // the wire protocol is opencode's concern, not the provider row's. Mapping it here
 // keeps the adapter from growing its own provider table.
-func (s *Service) ContainerProviders(ctx context.Context, tenantID string) []opencode.ProviderConfig {
+func (s *Service) ContainerProviders(ctx context.Context, tenantID string) []runtime.ProviderConfig {
 	entries, err := s.ListForTenant(ctx, tenantID)
 	if err != nil {
 		return nil
 	}
-	out := make([]opencode.ProviderConfig, 0, len(entries))
+	out := make([]runtime.ProviderConfig, 0, len(entries))
 	for _, e := range entries {
 		if !e.Enabled || e.BaseURL == "" {
 			continue
@@ -252,7 +252,7 @@ func (s *Service) ContainerProviders(ctx context.Context, tenantID string) []ope
 			// provider, taking the working ones with it.
 			continue
 		}
-		out = append(out, opencode.ProviderConfig{
+		out = append(out, runtime.ProviderConfig{
 			ID:      e.ID,
 			NPM:     npm,
 			BaseURL: TransposeForContainer(e.BaseURL),

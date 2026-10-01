@@ -121,7 +121,7 @@ func TestRunServeConfigDeterministicWithPlaneCredential(t *testing.T) {
 	// The builder returns the PLANE TOKEN, so a fresh mint on any call makes the
 	// two values differ — exactly the AC 3 violation this test pins.
 	lc := NewLifecycle(nil, pool, slog.Default(),
-		func(image, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution) string {
+		func(image, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution, _ []ProviderConfig) string {
 			if planeEnv == nil {
 				return "NO-PLANE-CHANNEL"
 			}

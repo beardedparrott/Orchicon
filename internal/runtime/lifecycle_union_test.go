@@ -152,7 +152,7 @@ func TestBuildCreateRequestBakesRunUnionForTwoSteps(t *testing.T) {
 	var got mcpclient.Resolution
 	var called bool
 	lc := NewLifecycle(nil, pool, slog.Default(),
-		func(image, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution) string {
+		func(image, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution, _ []ProviderConfig) string {
 			called = true
 			got = union
 			return "{}"
@@ -284,7 +284,7 @@ func TestRunServeConfigProviderIsDeterministicForARun(t *testing.T) {
 	}
 
 	lc := NewLifecycle(nil, pool, slog.Default(),
-		func(image, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution) string {
+		func(image, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution, _ []ProviderConfig) string {
 			return `{"tag":"` + image + `"}`
 		}, nil)
 	lc.SetScopeResolver(mcpsettings.NewResolver(pool))
