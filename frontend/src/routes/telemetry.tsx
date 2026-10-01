@@ -268,7 +268,11 @@ function MetricsPanel() {
 }
 
 function CreditsPanel() {
-  const { data: usageRecords, isLoading } = useGetUsage({});
+  // fetchAll: lifetime totals must cover EVERY record. The GetUsage RPC is
+  // cursor-paginated (a full page returns next_page_token), so a single
+  // request summed only the first pageSize rows and credits read far
+  // smaller than reality.
+  const { data: usageRecords, isLoading } = useGetUsage({ fetchAll: true });
   const { data: providers } = useListProviders();
   const providerMap = useMemo(() => {
     const m = new Map<string, string>();
