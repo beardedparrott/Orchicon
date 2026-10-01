@@ -36,6 +36,10 @@ type stubProjectList struct {
 	// that errors must not leave the picker permanently empty.
 	failFirst bool
 
+	// failAlways makes EVERY ListProjects fail, so a test can drive the "the plane cannot be reached" path
+	// (launch.go:125-130) — a failed check must stay silent rather than become a question.
+	failAlways bool
+
 	mu    sync.Mutex
 	calls int
 }
@@ -43,7 +47,7 @@ type stubProjectList struct {
 func (s *stubProjectList) ListProjects(_ context.Context, _ *connect.Request[apiv1.ListProjectsRequest]) (*connect.Response[apiv1.ListProjectsResponse], error) {
 	s.mu.Lock()
 	s.calls++
-	shouldFail := s.failFirst && s.calls == 1
+	shouldFail := s.failAlways || (s.failFirst && s.calls == 1)
 	s.mu.Unlock()
 	if shouldFail {
 		return nil, connect.NewError(connect.CodeUnavailable, errors.New("transient"))
@@ -66,8 +70,15 @@ func (s *stubProjectList) callCount() int {
 	return s.calls
 }
 
-// appWithProjectService builds a shell whose ProjectService is the stub, on the Ask tab.
+// appWithProjectService builds a shell whose ProjectService is the stub, on the Ask tab, with no AppOptions.
 func appWithProjectService(t *testing.T, stub apiv1connect.ProjectServiceHandler) *App {
+	t.Helper()
+	return appWithProjectServiceOpts(t, stub)
+}
+
+// appWithProjectServiceOpts is appWithProjectService with TUI options, so a test can build a shell that
+// carries the launch directory (and, on a first shell, the armed prompt) the way cmd/orch does.
+func appWithProjectServiceOpts(t *testing.T, stub apiv1connect.ProjectServiceHandler, opts ...AppOption) *App {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.Handle(apiv1connect.NewProjectServiceHandler(stub))
@@ -75,7 +86,7 @@ func appWithProjectService(t *testing.T, stub apiv1connect.ProjectServiceHandler
 	t.Cleanup(srv.Close)
 
 	cl := client.NewWithHTTPClient(client.Options{BaseURL: srv.URL}, srv.Client())
-	m := NewApp(cl, &config.Profile{Name: "default", URL: srv.URL}, "v0")
+	m := NewApp(cl, &config.Profile{Name: "default", URL: srv.URL}, "v0", opts...)
 	m.width, m.height = 120, 40
 	m.RegisterScreen(TabAsk, &stubScreen{id: "ask"})
 	m.RegisterScreen(TabWork, &stubScreen{id: "work"})
