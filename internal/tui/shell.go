@@ -197,6 +197,14 @@ func (m *App) MenuClick(x, y int) bool {
 //
 // Nothing else opens it, and no VERTICAL key does from anywhere: "no menus should
 // grab up/down until you actually select it".
+//
+// SPACE DOES NOT OPEN IT ON A SCREEN WHERE SPACE MARKS. On the Ask tab with the conversations rail
+// up, space is the rail's MARK gesture (railbulk.go), and letting the shell open a dropdown instead
+// is exactly "spacebar is selecting a conversation" — the menu is drawn over the list the operator
+// was marking. Asking screenOwnsSpace (the hook the shell already consults for the FOCUS RING) keeps
+// one answer about who owns space, rather than the shell and the rail each deciding. Everywhere else
+// — including the Ask LAUNCH page, where there is no rail to mark — the original affordance stands,
+// so a space-opens-the-menu expectation on a fresh screen is not broken.
 func (m *App) menuActivationKey(k tea.KeyMsg) bool {
 	if m.chatFocus == focusTabs {
 		return k.String() == "enter"
@@ -208,9 +216,30 @@ func (m *App) menuActivationKey(k tea.KeyMsg) bool {
 	case "enter":
 		return strings.TrimSpace(m.dock.Value()) == ""
 	case " ", "space":
-		return m.dock.Value() == ""
+		// TrimSpace, matching the Enter arm above and the rule the rail's chords use: a buffer of
+		// only whitespace is empty for this purpose. The untrimmed test meant leading spaces left
+		// the menu reachable by space while every other space gesture saw an empty box.
+		return m.dock.Value() == "" && !m.screenOwnsSpace()
 	}
 	return false
+}
+
+// screenOwnsSpace reports whether a list on the active screen claims the SPACE key for its own
+// gesture (multi-select marking), so the shell must not spend it opening a dropdown.
+//
+// IT ASKS ABOUT THE RAIL, not about a generic screen hook. The question is concrete — "is there a
+// list on screen right now whose space means mark?" — and on this client there is exactly one such
+// list: the Ask conversations rail. That is the SAME predicate the rail's own keys use
+// (railbulk.go railOwnsVerticalKey: `m.railVisible() && m.active == TabAsk`), so the shell and the
+// rail cannot disagree about whether the rail is claiming the keyboard.
+//
+// It deliberately does NOT reuse screenOwnsTab. That hook reads a screen's OwnsTab method, which the
+// Ask screen answers with ClaimsKeys — true only while a permission card or overlay is pending. At
+// rest that is false, so routing space through it would look like a fix and change nothing: the menu
+// would still open over the rail. Measured, not assumed — the first draft of this fix was exactly
+// that no-op.
+func (m *App) screenOwnsSpace() bool {
+	return m.railVisible()
 }
 
 // menuHit reports whether (x, y) is inside the open dropdown panel.
@@ -668,8 +697,23 @@ func (m *App) menuHandleKey(k tea.KeyMsg) (bool, tea.Cmd) {
 	case "down", "j":
 		m.selectMenu(1)
 		return true, nil
-	case "enter", " ", "space":
+	case "enter":
 		m.MenuSelect()
+		return true, nil
+	case " ", "space":
+		// ENTER ACTIVATES A DROPDOWN ROW; SPACE DOES NOT.
+		//
+		// The operator: "In conversations in the TUI, spacebar is selecting a conversation when it
+		// should be marking it for bulk operations instead." On the Ask tab the dropdown's rows are
+		// conversation VERBS ("New" clears the open conversation, "Conversations" re-scopes the
+		// rail), so a space that activated the highlighted row literally SELECTED something — the
+		// opposite of the mark gesture space means on every list in this client.
+		//
+		// Space is still a legitimate way to OPEN a dropdown (see menuActivationKey: the launch-page
+		// affordance), and once it is open ENTER is the select gesture — so nothing became
+		// unreachable. Closing here rather than falling through is deliberate: the key was spent on
+		// the menu the operator is looking at, so it must not also land in the composer behind it.
+		m.closeTabMenu()
 		return true, nil
 	case "ctrl+c":
 		return false, nil // quit route handles it
