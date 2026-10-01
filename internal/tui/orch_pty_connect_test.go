@@ -52,7 +52,18 @@ func connectPlaneFixture(t *testing.T) *httptest.Server {
 		_ = json.NewEncoder(w).Encode(map[string]string{"version": "v9.9.9-pty"})
 	})
 	// The cheap authenticated probe: an in-process fake service.
-	fake := &ptyProjects{}
+	//
+	// THE PROJECT CARRIES A DIRECTORY, and it is the directory orch is launched from
+	// (the package dir — that is what startOrchPtyAt's child inherits). Without it the
+	// plane reports an UNATTACHED launch directory, the launch-time project prompt
+	// fires, and its full-frame question REPLACES the shell — so a pty test waiting for
+	// the composer (❯) never sees one and reads as a dead shell. The fixture says where
+	// the project lives; that is all the prompt needs to stay quiet.
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("resolve cwd: %v", err)
+	}
+	fake := &ptyProjects{dir: cwd}
 	path, handler := apiv1connect.NewProjectServiceHandler(fake)
 	mux.Handle(path, handler)
 	// Ask service: ListConversations (the shell's ask rail + the post-
@@ -83,14 +94,16 @@ func connectPlaneFixture(t *testing.T) *httptest.Server {
 	return srv
 }
 
-// ptyProjects is the minimal fake for the ListProjects auth probe.
+// ptyProjects is the minimal fake for the ListProjects auth probe. dir is the
+// project's project_dir (see connectPlaneFixture).
 type ptyProjects struct {
 	apiv1connect.UnimplementedProjectServiceHandler
+	dir string
 }
 
 func (f *ptyProjects) ListProjects(ctx context.Context, req *connect.Request[v1.ListProjectsRequest]) (*connect.Response[v1.ListProjectsResponse], error) {
 	out := &v1.ListProjectsResponse{}
-	out.Projects = append(out.Projects, &v1.Project{Id: "p1", Name: "pty"})
+	out.Projects = append(out.Projects, &v1.Project{Id: "p1", Name: "pty", ProjectDir: f.dir})
 	return connect.NewResponse(out), nil
 }
 
