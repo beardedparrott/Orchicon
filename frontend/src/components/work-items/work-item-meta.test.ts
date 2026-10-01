@@ -271,6 +271,25 @@ describe("skipped status (terminal-success, skip-status/depends_on interplay)", 
 // The route imports THIS predicate and refuses the save with it, so the unit test
 // covers the rule that ships rather than a re-implementation of it.
 describe("autoStartBlocked (auto-start needs a bound workflow)", () => {
+  // THE SERVER'S PARENT EXEMPTION. ValidateWorkflowFirstTransition exempts hasChildren:
+  // "A sequence PARENT with children is exempt: it is a container that contributes ordering
+  // only and never executes itself (its children each carry their own binding)."
+  //
+  // The operator hit the missing exemption as a client-side refusal of a save the plane would
+  // have accepted: "I tried to kick off a feature and it denied me in the TUI saying that it
+  // has to have a workflow set, but that is incorrect. Parents should not have a workflow set
+  // in order to fire off the children."
+  it("does NOT block a sequence PARENT with no workflow (the plane accepts it)", () => {
+    expect(autoStartBlocked(true, "", true)).toBe(false);
+    // …and a parent with a binding is not blocked either.
+    expect(autoStartBlocked(true, "wf-1", true)).toBe(false);
+  });
+
+  it("still blocks a LEAF with no workflow (the original rule stands)", () => {
+    expect(autoStartBlocked(true, "", false)).toBe(true);
+    expect(autoStartBlocked(true, "   ", false)).toBe(true);
+  });
+
   it("refuses auto-start with no workflow bound", () => {
     expect(autoStartBlocked(true, "")).toBe(true);
     // Whitespace is not a binding.

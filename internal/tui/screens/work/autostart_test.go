@@ -180,3 +180,95 @@ func TestServerRejectionLandsOnTheDock(t *testing.T) {
 			it.GetAutoStartWorkflow(), it.GetWorkflowId())
 	}
 }
+
+// A SEQUENCE PARENT IS EXEMPT — the operator's report, and the client disagreeing with the plane.
+//
+//	"I tried to kick off a feature and it denied me in the TUI saying that it has to have a
+//	 workflow set, but that is incorrect. Parents should not have a workflow set in order to fire
+//	 off the children."
+//
+// The server always exempted a parent (ValidateWorkflowFirstTransition: "A sequence PARENT with
+// children is exempt: it is a container that contributes ordering only and never executes itself"),
+// and the TUI refused anyway — so the plane would have accepted a save the client blocked.
+//
+// These pin BOTH halves of the rule on a parent, because fixing only the refusal would leave the
+// operator able to save the state but unable to HOLD it: the coupling would silently untick the box
+// the moment the workflow was emptied.
+func TestASequenceParentNeedsNoWorkflowForAutoStart(t *testing.T) {
+	p := newPlane()
+	p.seedProject("proj-1", "Orchicon")
+	// A FEATURE with a child — a container. Its own binding is inert (its children each run
+	// their own), which is exactly why the server exempts it.
+	p.addItem(&apiv1.WorkItem{
+		Id: "feat", Title: "A feature", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_FEATURE,
+		ProjectId: "proj-1", Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING,
+	})
+	p.addItem(&apiv1.WorkItem{
+		Id: "kid", Title: "Its child", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_TASK,
+		ParentId: "feat", ProjectId: "proj-1", Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING,
+	})
+	m := newModel(t, p)
+	m.SelectSource(srcWorkItems)
+	load(t, m, srcWorkItems)
+
+	// The screen must know it is a parent: that fact is what the exemption keys on.
+	if !m.itemHasChildren("feat") {
+		t.Fatal("the screen must recognise an item with children as a sequence parent")
+	}
+	if m.itemHasChildren("kid") {
+		t.Fatal("a leaf must not be treated as a parent")
+	}
+
+	if !m.SelectItem(srcWorkItems, "feat") {
+		t.Fatal("could not select the feature")
+	}
+	run(t, m, press(t, m, "e"))
+	f := m.ActiveForm()
+	if f == nil {
+		t.Fatal("e must open the edit form")
+	}
+
+	// HALF 1 — the coupling must not strip the box on a parent.
+	f.Set("auto_start", "true")
+	f.Set("workflow", "") // "— none —"
+	if got := f.Values["auto_start"]; got != "true" {
+		t.Fatalf("a parent's auto-start was cleared by emptying the workflow (got %q) — the "+
+			"coupling must carry the same exemption as the refusal, or the operator cannot even "+
+			"HOLD the state the plane accepts", got)
+	}
+
+	// HALF 2 — the submit must go through, driven through the REAL ctrl+s path.
+	//
+	// submit() drives ctrl+s and returns the command WITHOUT running it, so the write only lands
+	// when the command is executed — which is what `run` does here. Asserting on p.updated
+	// without running it would report a refusal that never happened (it did, on the first draft
+	// of this test).
+	run(t, m, submit(t, m, "auto_start"))
+	if len(p.updated) == 0 {
+		t.Fatalf("the save was refused (SubmitErr=%q): the plane exempts a parent, so the client "+
+			"must not block it", f.SubmitErr)
+	}
+}
+
+// AND THE LEAF RULE STANDS: the exemption must not have opened the door for a leaf, which is the
+// item that genuinely has nothing to run.
+func TestALeafStillNeedsAWorkflowForAutoStart(t *testing.T) {
+	p, m := autoStartPlane(t)
+	shell := &fakeShell{}
+	m.Base.SetShell(shell)
+	run(t, m, press(t, m, "e"))
+	f := m.ActiveForm()
+	if f == nil {
+		t.Fatal("e must open the edit form")
+	}
+	f.Set("auto_start", "true")
+	submit(t, m, "auto_start")
+
+	if len(p.updated) != 0 {
+		t.Fatalf("a leaf with auto-start and no workflow must still be refused, got %d request(s)",
+			len(p.updated))
+	}
+	if !strings.Contains(f.SubmitErr, "needs a workflow") {
+		t.Fatalf("SubmitErr = %q, want the leaf refusal", f.SubmitErr)
+	}
+}

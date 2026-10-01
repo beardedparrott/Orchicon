@@ -338,7 +338,7 @@ function WorkItemDetailPage() {
                     );
                     return;
                   }
-                  if (autoStartBlocked(editAutoStartWorkflow, editWorkflowId)) {
+                  if (autoStartBlocked(editAutoStartWorkflow, editWorkflowId, hasChildren)) {
                     toast.error(AUTO_START_NEEDS_WORKFLOW);
                     return;
                   }

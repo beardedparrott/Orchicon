@@ -507,20 +507,33 @@ export function showRecurringBadge(item: WorkItem): boolean {
 // Auto-start requires a bound workflow (the client half of the workflow-first rule)
 // ---------------------------------------------------------------------------
 
-/** True when a save would send a combination the plane rejects: an item told to
- *  start immediately on save with NO workflow bound. Task A makes that item
- *  permanently unrunnable — every transition to ready/assigned/scheduled/running
- *  is refused, and the reconciler backstops fail loudly — so the form must not
- *  offer the state and the save handler must refuse it before the mutation goes
- *  out.
+/** True when a save would send a combination the plane rejects: a LEAF item told
+ *  to start immediately on save with NO workflow bound. That item is permanently
+ *  unrunnable — every transition to ready/assigned/scheduled/running is refused,
+ *  and the reconciler backstops fail loudly — so the form must not offer the state
+ *  and the save handler must refuse it before the mutation goes out.
  *
- *  It is the SAME rule as the TUI's `autoStartRefusal`
- *  (internal/tui/screens/work/workitems.go): auto_start requires a bound
- *  workflow. The create form has no auto-start control at all
- *  (routes/work-items_.new.tsx), so the gap is this page's edit card, which stays
- *  visible on an item WITH CHILDREN (`editWorkflowId || hasChildren`) and
- *  therefore survives the workflow being cleared back to "-- No workflow --". */
-export function autoStartBlocked(autoStart: boolean, workflowId: string): boolean {
+ *  A SEQUENCE PARENT IS EXEMPT, which this rule did not know and the server always
+ *  did. ValidateWorkflowFirstTransition (internal/workitem/validate.go) exempts
+ *  hasChildren with an explicit reason: "A sequence PARENT with children is exempt:
+ *  it is a container that contributes ordering only and never executes itself (its
+ *  children each carry their own binding)." Refusing one HERE blocked a legal save
+ *  in the client — the plane would have accepted it — so the operator was told to
+ *  bind a workflow to a container that must not have one.
+ *
+ *  This is the SAME rule as the TUI's `autoStartRefusal`
+ *  (internal/tui/screens/work/workitems.go), including the exemption, so the two
+ *  clients and the plane cannot disagree about who needs a binding.
+ *
+ *  hasChildren is the SERVER's fact about the item being edited, not a form field:
+ *  "is this item a container" is stored state, and the page already derives it
+ *  (`hasChildren` in routes/work-items_.$id.tsx) for the schedule card. */
+export function autoStartBlocked(
+  autoStart: boolean,
+  workflowId: string,
+  hasChildren = false,
+): boolean {
+  if (hasChildren) return false; // the server's exemption, applied verbatim
   return autoStart && !workflowId.trim();
 }
 
