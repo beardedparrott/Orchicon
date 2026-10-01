@@ -1,25 +1,25 @@
-// THE EXEMPTION MUST BE REACHABLE, in both clients.
+// AUTO-START IS NOT GATED ON A WORKFLOW — in either client, on either path.
 //
-// The operator: "I tried to kick off a feature and it denied me in the TUI saying that it has to
-// have a workflow set, but that is incorrect. Parents should not have a workflow set in order to
-// fire off the children."
+// The operator, after three failed attempts to make this validation go away:
 //
-// The rule was wrong in THREE places, and each one hid the next:
+//	"We shouldn't have the validation at all no matter what the circumstance is. If it is a
+//	 feature, epic, or even a task that has children then it shouldnd't be blocking me. Workflows
+//	 need to be empty for a sequential workflow to kick off. We just need to remove that validation
+//	 from creating new items AND editing current items that already exist."
 //
-//   1. the server exempts a parent — it always did, and said why: "A sequence PARENT with children
-//      is exempt: it is a container that contributes ordering only and never executes itself";
-//   2. the GUI's checkbox was `disabled={!editWorkflowId}` — a HARD BLOCK, so on a parent the
-//      operator could not tick it at all and the exemption could never run;
-//   3. the TUI refused on the CREATE path, which the server takes no gate on — "The CREATE path
-//      needs no gate — new items always start pending."
+// He is right, and the rule was wrong at its PREMISE rather than at its edges: the plane asks "is a
+// workflow bound?" only at a TRANSITION into a runnable status (ready/assigned/scheduled/running),
+// and it exempts a sequence parent even then. Both clients applied it to EVERY save, so they refused
+// writes that transitioned nothing — which is why each earlier fix (exempt the parent, then exempt
+// create) moved the boundary instead of removing it.
 //
-// A disabled control and a refusal look identical to the operator (the thing cannot be done), so
-// both are asserted here: `autoStartBlocked` being permissive is worthless if the checkbox that
-// feeds it cannot be ticked.
+// These assert the rule is ABSENT, because the regression risk now is a re-introduction: three
+// separate mechanisms expressed it (a save guard, a disabled control, and a coupling that cleared
+// the value), and any one of them coming back would silently re-block the operator.
 //
-// The assertions are SOURCE-LEVEL, deliberately: the failure is an attribute expression and a
-// conditional inside a large page component, and catching it through rendering would need a full
-// router + query harness for a rule that is decidable from the source.
+// The assertions are SOURCE-LEVEL, deliberately: the failure is a missing/extra attribute and a
+// guard clause inside a large page component, and catching it through rendering would need a full
+// router + query harness for rules decidable from the source.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -37,40 +37,68 @@ function code(src: string): string {
 }
 
 const PAGE = "src/routes/work-items_.$id.tsx";
+const META = "src/components/work-items/work-item-meta.ts";
 
-describe("the GUI's auto-start control is reachable on a parent", () => {
-  it("the checkbox is not disabled solely because no workflow is bound", () => {
+describe("the GUI does not gate auto-start on a workflow", () => {
+  it("the save path has no auto-start guard", () => {
     const c = code(read(PAGE));
-    // The old hard block, verbatim. A parent must be able to tick the box.
-    expect(
-      c.includes("disabled={!editWorkflowId}"),
-      "the auto-start checkbox is hard-disabled without a workflow — a parent can never tick it, " +
-        "so the parent exemption can never run",
-    ).toBe(false);
-    // …and it must still be gated by the child fact, so a LEAF with no workflow stays blocked.
-    expect(c).toContain("disabled={!editWorkflowId && !hasChildren}");
+    expect(c).not.toContain("autoStartBlocked");
+    expect(c).not.toContain("AUTO_START_NEEDS_WORKFLOW");
   });
 
-  it("the advisory does not tell a parent it needs a workflow", () => {
+  it("the auto-start checkbox is NEVER disabled", () => {
     const c = code(read(PAGE));
-    // The advisory is for a LEAF only; a parent gets its own explanation.
-    expect(c).toContain("{!editWorkflowId && !hasChildren && (");
-    expect(c).toContain("parent");
+    // The old hard block, in every form it took.
+    expect(c, "the checkbox is disabled somewhere").not.toContain("disabled={!editWorkflowId}");
+    expect(c).not.toContain("disabled={!editWorkflowId && !hasChildren}");
+    // It must still be a real controlled checkbox — absence of a disabled attr, not absence of
+    // the control.
+    expect(c).toContain('id="autoStart"');
+  });
+
+  it("the workflow select does NOT clear auto-start when emptied", () => {
+    // The THIRD mechanism, and the one I missed on my first inventory: the binding and
+    // auto-start are independent. Clearing one must not clear the other, because a
+    // workflow-less parent is exactly how a sequential workflow is kicked off.
+    //
+    // SCOPED TO THE SELECT'S HANDLER on purpose. `setEditAutoStartWorkflow(false)` also appears
+    // when the editor OPENS, resetting the box so a save never kicks off a run the operator did
+    // not ask for — that is correct opt-in behaviour and must stay. What must not exist is the
+    // coupling: clearing the value because the WORKFLOW was emptied.
+    const c = code(read(PAGE));
+    const sel = c.slice(c.indexOf('id="editWorkflow"') >= 0 ? c.indexOf('id="editWorkflow"') : c.indexOf("value={editWorkflowId}"));
+    const handler = sel.slice(0, sel.indexOf("className"));
+    expect(
+      handler.includes("setEditAutoStartWorkflow"),
+      `emptying the workflow still clears auto-start:\n${handler}`,
+    ).toBe(false);
+    // …and the handler still does its real job.
+    expect(handler).toContain("setEditWorkflowId(e.target.value)");
+  });
+
+  it("no advisory tells the operator a workflow is required", () => {
+    const c = code(read(PAGE));
+    expect(c).not.toContain("Auto-start needs a workflow");
+  });
+
+  it("the rule's exports are gone from the metadata module", () => {
+    const c = code(read(META));
+    expect(c).not.toContain("autoStartBlocked");
+    expect(c).not.toContain("AUTO_START_NEEDS_WORKFLOW");
   });
 });
 
-describe("the rule itself matches the server in both clients", () => {
-  it("the GUI's autoStartBlocked exempts a parent", () => {
-    const c = code(read("src/components/work-items/work-item-meta.ts"));
-    expect(c).toContain("hasChildren = false");
-    expect(c).toContain("if (hasChildren) return false;");
+describe("the TUI does not gate auto-start on a workflow either", () => {
+  it("has no refusal, no message and no coupling", () => {
+    const c = code(read("../internal/tui/screens/work/workitems.go"));
+    expect(c, "the refusal is back").not.toContain("autoStartRefusal");
+    expect(c, "the refusal message is back").not.toContain("autoStartUnboundMsg");
+    expect(c, "the coupling is back — it CLEARS auto-start when the workflow empties, which is "
+      + "exactly the state a sequential workflow needs").not.toContain("clearAutoStartWhenUnbound");
   });
 
-  it("the TUI's refusal takes the create path and the child fact", () => {
+  it("the message text survives nowhere in the client", () => {
     const c = code(read("../internal/tui/screens/work/workitems.go"));
-    // Create takes no gate; a parent is exempt; a leaf still refuses.
-    expect(c).toContain("func autoStartRefusal(v map[string]string, isCreate, hasChildren bool) error");
-    expect(c).toContain("if isCreate {");
-    expect(c).toContain("if hasChildren {");
+    expect(c).not.toContain("auto-start needs a workflow");
   });
 });

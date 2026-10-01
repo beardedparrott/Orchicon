@@ -1,21 +1,40 @@
 package work
 
-// autostart_test.go — Concern 1: a work item with NO WORKFLOW BOUND cannot be given auto-start,
-// through EITHER work-item form, and the refusal is visible where the operator is looking.
+// autostart_test.go — AUTO-START IS NOT GATED ON A WORKFLOW, in either work-item form.
 //
-// Task A makes such an item permanently unrunnable — every transition to ready / assigned /
-// scheduled / running is rejected and the reconciler backstops fail loudly — so the client must not
-// offer the state at all. The rule implemented is "auto-start requires a bound workflow" (see
-// autoStartRefusal in workitems.go for why it is not "workflow is Required").
+// The operator, after three failed attempts to make this validation go away:
 //
-// These tests drive the REAL forms through the real submit path: the assertion is on the refusal
-// that reaches the operator (the form's own error line and the composer dock) and on the request the
-// plane would have received (none), not on internal fields alone.
+//	"We shouldn't have the validation at all no matter what the circumstance is. If it is a
+//	 feature, epic, or even a task that has children then it shouldnd't be blocking me. Workflows
+//	 need to be empty for a sequential workflow to kick off. We just need to remove that validation
+//	 from creating new items AND editing current items that already exist."
+//
+// He is right, and the client's rule was wrong at its PREMISE rather than at its edges. The server
+// never asks "does this item have a workflow?" — it asks it only at a TRANSITION into a runnable
+// status (ready/assigned/scheduled/running), and it exempts a sequence parent even then:
+//
+//	if !runnableWorkflowStatuses[newStatus] { return nil }   // pending is not runnable
+//	if hasChildren { return nil }
+//	if workflowID != "" { return nil }
+//	return error("Cannot move … to …: no workflow is set…")
+//
+// The client applied it to EVERY save, so it refused writes that transitioned nothing. That is why
+// each earlier fix — exempt the parent, then exempt create — moved the boundary instead of removing
+// it: they widened an exemption whose premise was wrong.
+//
+// So the rule is GONE from both clients: no refusal, no advisory, and no coupling. The coupling
+// mattered as much as the refusal, because emptying the workflow must NOT clear auto-start — a
+// workflow-less parent is precisely how a sequential workflow is kicked off.
+//
+// These tests drive the REAL forms through the real ctrl+s path and assert on what the PLANE
+// received, not on internal fields.
 
 import (
 	"errors"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 )
@@ -87,82 +106,87 @@ func TestCreateFormAllowsAutoStartWithNoWorkflow(t *testing.T) {
 }
 
 // The edit form: same rule, and the same two surfaces.
-func TestEditFormRefusesAutoStartWithoutWorkflow(t *testing.T) {
-	p, m := autoStartPlane(t)
-	shell := &fakeShell{}
-	m.Base.SetShell(shell)
-
-	run(t, m, press(t, m, "e"))
-	f := m.ActiveForm()
-	if f == nil {
-		t.Fatal("e must open the edit form")
-	}
-	f.Set("auto_start", "true")
-
-	submit(t, m, "auto_start")
-
-	if len(p.updated) != 0 {
-		t.Fatalf("a refused combination must not save anything, got %d request(s)", len(p.updated))
-	}
-	if m.ActiveForm() == nil {
-		t.Fatal("a refused submit must keep the edit form OPEN")
-	}
-	if !strings.Contains(f.SubmitErr, "needs a workflow") {
-		t.Fatalf("SubmitErr = %q", f.SubmitErr)
-	}
-	if got := f.View(); !strings.Contains(got, "needs a workflow") {
-		t.Fatalf("the refusal must be drawn inside the edit form:\n%s", got)
-	}
-	if len(shell.errors) == 0 || !strings.Contains(shell.errors[0], "needs a workflow") {
-		t.Fatalf("the refusal must reach the dock, errors = %v", shell.errors)
-	}
-}
-
-// The COUPLING half of the rule, on the path where it still applies: the EDIT form.
+// THE EDIT FORM TAKES NO GATE EITHER, on ANY kind — leaf, feature, epic or parent.
 //
-// Emptying the workflow CLEARS auto-start there, so the value cannot be HELD and submitted from a
-// state the operator can no longer see. This is exactly why the coupling and the refusal must carry
-// the SAME condition — on the CREATE form neither applies (the plane gates on transition, and a new
-// item is pending), so the box must be holdable; on an EDIT of a LEAF they both do.
-func TestClearingTheWorkflowClearsAutoStartOnEdit(t *testing.T) {
-	p, m := autoStartPlane(t)
-	// A LEAF: no children, so neither exemption applies.
-	run(t, m, press(t, m, "e"))
-	f := m.ActiveForm()
-	if f == nil {
-		t.Fatal("e must open the edit form")
-	}
+// This replaces a test that asserted the opposite. The old rule refused "auto-start with no
+// workflow" on every save; the server asks that question only at a transition into a runnable
+// status, so the client was refusing writes that transitioned nothing.
+func TestEditFormAllowsAutoStartWithNoWorkflow(t *testing.T) {
+	for _, kind := range []apiv1.WorkItemKind{
+		apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC,
+		apiv1.WorkItemKind_WORK_ITEM_KIND_FEATURE,
+		apiv1.WorkItemKind_WORK_ITEM_KIND_TASK,
+	} {
+		p := newPlane()
+		p.seedProject("proj-1", "Orchicon")
+		p.addItem(&apiv1.WorkItem{
+			Id: "wi-a", Title: "Undeclared work", Kind: kind,
+			ProjectId: "proj-1", Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING, SortOrder: 1,
+		})
+		m := newModel(t, p)
+		m.SelectSource(srcWorkItems)
+		load(t, m, srcWorkItems)
 
-	// The picker carries the workflows the plane lists (the fake returns wf-1 / Fanout).
-	f.Set("workflow", "wf-1")
-	f.Set("auto_start", "true")
-	if got := f.Values["auto_start"]; got != "true" {
-		t.Fatalf("auto-start must be held while a workflow is bound, got %q", got)
-	}
+		run(t, m, press(t, m, "e"))
+		f := m.ActiveForm()
+		if f == nil {
+			t.Fatalf("%s: e must open the edit form", kind)
+		}
 
-	f.Set("workflow", "") // the "— none —" option
-	if got := f.Values["auto_start"]; got != "false" {
-		t.Fatalf("emptying the workflow must clear auto-start on a leaf, got %q", got)
-	}
+		// THE BOX MUST BE HOLDABLE with no workflow bound: "Workflows need to be empty for a
+		// sequential workflow to kick off."
+		f.Set("auto_start", "true")
+		f.Set("workflow", "")
+		if got := f.Values["auto_start"]; got != "true" {
+			t.Fatalf("%s: auto-start was CLEARED by an empty workflow (got %q) — a workflow-less "+
+				"parent is exactly how a sequential run is kicked off", kind, got)
+		}
 
-	// And it cannot be re-held: tick it once more and the form refuses, because a LEAF with
-	// no workflow cannot be moved to a runnable status.
-	f.Set("auto_start", "true")
-	// A REFUSED submit returns NO command (there is nothing to run), so this is a plain
-	// `submit` — the refusal is asserted on the form, not on a write that never happened.
-	submit(t, m, "auto_start")
-	if len(p.updated) != 0 {
-		t.Fatalf("a leaf must not be re-holdable without a workflow, %d request(s)", len(p.updated))
-	}
-	if !strings.Contains(f.SubmitErr, "needs a workflow") {
-		t.Fatalf("SubmitErr = %q, want the leaf refusal", f.SubmitErr)
+		// AND THE SAVE MUST GO THROUGH, asserting on what the PLANE received.
+		run(t, m, submit(t, m, "auto_start"))
+		if len(p.updated) == 0 {
+			t.Fatalf("%s: the save was refused (SubmitErr=%q) — the client must not gate auto-start "+
+				"on a workflow at all", kind, f.SubmitErr)
+		}
+		if req := p.updated[0]; !req.GetAutoStartWorkflow() {
+			t.Fatalf("%s: the request must carry auto-start as the operator set it", kind)
+		}
 	}
 }
 
-// AC2: the SERVER's rejection — the sentence Task A's enforcement produces — lands on the dock, not
-// merely in the screen's notice line that FitLines truncates. The local guard must NOT be what
-// refuses here (a bound workflow makes the combination legal), so the assertion is specifically that
-// the plane's own wording arrives.
+// THE COUPLING IS GONE TOO, and it is the half that would be forgotten.
+//
+// Clearing auto-start when the workflow was emptied is not a neutral safety net: it removes the
+// exact state a sequential run needs. This asserts the box SURVIVES an emptied workflow on both
+// forms, which is the behaviour the operator asked for and the one neither earlier fix delivered.
+func TestAnEmptyWorkflowDoesNotClearAutoStart(t *testing.T) {
+	_, m := autoStartPlane(t)
+
+	for _, open := range []struct {
+		name string
+		key  string
+	}{{"create", "n"}, {"edit", "e"}} {
+		run(t, m, press(t, m, open.key))
+		f := m.ActiveForm()
+		if f == nil {
+			t.Fatalf("%s: form did not open", open.name)
+		}
+		// Bind a workflow first, so the clear would have something to fire on.
+		f.Set("workflow", "wf-1")
+		f.Set("auto_start", "true")
+		if got := f.Values["auto_start"]; got != "true" {
+			t.Fatalf("%s: auto-start must be held while a workflow is bound, got %q", open.name, got)
+		}
+		// Empty it — the coupling used to untick the box right here.
+		f.Set("workflow", "")
+		if got := f.Values["auto_start"]; got != "true" {
+			t.Fatalf("%s: emptying the workflow CLEARED auto-start (got %q) — that removes the "+
+				"state a sequential workflow needs", open.name, got)
+		}
+		m.Base.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	}
+}
+
 func TestServerRejectionLandsOnTheDock(t *testing.T) {
 	p, m := autoStartPlane(t)
 	shell := &fakeShell{}
@@ -202,94 +226,35 @@ func TestServerRejectionLandsOnTheDock(t *testing.T) {
 	}
 }
 
-// A SEQUENCE PARENT IS EXEMPT — the operator's report, and the client disagreeing with the plane.
+// THE PLANE IS STILL THE DECIDER, and the client must not pre-empt it.
 //
-//	"I tried to kick off a feature and it denied me in the TUI saying that it has to have a
-//	 workflow set, but that is incorrect. Parents should not have a workflow set in order to fire
-//	 off the children."
-//
-// The server always exempted a parent (ValidateWorkflowFirstTransition: "A sequence PARENT with
-// children is exempt: it is a container that contributes ordering only and never executes itself"),
-// and the TUI refused anyway — so the plane would have accepted a save the client blocked.
-//
-// These pin BOTH halves of the rule on a parent, because fixing only the refusal would leave the
-// operator able to save the state but unable to HOLD it: the coupling would silently untick the box
-// the moment the workflow was emptied.
-func TestASequenceParentNeedsNoWorkflowForAutoStart(t *testing.T) {
-	p := newPlane()
-	p.seedProject("proj-1", "Orchicon")
-	// A FEATURE with a child — a container. Its own binding is inert (its children each run
-	// their own), which is exactly why the server exempts it.
-	p.addItem(&apiv1.WorkItem{
-		Id: "feat", Title: "A feature", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_FEATURE,
-		ProjectId: "proj-1", Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING,
-	})
-	p.addItem(&apiv1.WorkItem{
-		Id: "kid", Title: "Its child", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_TASK,
-		ParentId: "feat", ProjectId: "proj-1", Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING,
-	})
-	m := newModel(t, p)
-	m.SelectSource(srcWorkItems)
-	load(t, m, srcWorkItems)
-
-	// The screen must know it is a parent: that fact is what the exemption keys on.
-	if !m.itemHasChildren("feat") {
-		t.Fatal("the screen must recognise an item with children as a sequence parent")
-	}
-	if m.itemHasChildren("kid") {
-		t.Fatal("a leaf must not be treated as a parent")
-	}
-
-	if !m.SelectItem(srcWorkItems, "feat") {
-		t.Fatal("could not select the feature")
-	}
-	run(t, m, press(t, m, "e"))
-	f := m.ActiveForm()
-	if f == nil {
-		t.Fatal("e must open the edit form")
-	}
-
-	// HALF 1 — the coupling must not strip the box on a parent.
-	f.Set("auto_start", "true")
-	f.Set("workflow", "") // "— none —"
-	if got := f.Values["auto_start"]; got != "true" {
-		t.Fatalf("a parent's auto-start was cleared by emptying the workflow (got %q) — the "+
-			"coupling must carry the same exemption as the refusal, or the operator cannot even "+
-			"HOLD the state the plane accepts", got)
-	}
-
-	// HALF 2 — the submit must go through, driven through the REAL ctrl+s path.
-	//
-	// submit() drives ctrl+s and returns the command WITHOUT running it, so the write only lands
-	// when the command is executed — which is what `run` does here. Asserting on p.updated
-	// without running it would report a refusal that never happened (it did, on the first draft
-	// of this test).
-	run(t, m, submit(t, m, "auto_start"))
-	if len(p.updated) == 0 {
-		t.Fatalf("the save was refused (SubmitErr=%q): the plane exempts a parent, so the client "+
-			"must not block it", f.SubmitErr)
-	}
-}
-
-// AND THE LEAF RULE STANDS: the exemption must not have opened the door for a leaf, which is the
-// item that genuinely has nothing to run.
-func TestALeafStillNeedsAWorkflowForAutoStart(t *testing.T) {
+// Removing the client guard does NOT remove the server's rule: a transition into a runnable status
+// with no workflow is still refused by the plane, and that refusal must reach the operator on the
+// composer dock (the transport FitLines never truncates) rather than being swallowed or faked by a
+// client-side check.
+func TestThePlanesOwnRefusalStillReachesTheDock(t *testing.T) {
 	p, m := autoStartPlane(t)
 	shell := &fakeShell{}
 	m.Base.SetShell(shell)
+	p.setUpdateErr(errors.New(`Cannot move "Undeclared work" to "ready": no workflow is set, so there is nothing to run. Bind a workflow first.`))
+
 	run(t, m, press(t, m, "e"))
 	f := m.ActiveForm()
 	if f == nil {
 		t.Fatal("e must open the edit form")
 	}
 	f.Set("auto_start", "true")
-	submit(t, m, "auto_start")
+	f.Set("status", "ready") // the transition the plane DOES gate on
 
-	if len(p.updated) != 0 {
-		t.Fatalf("a leaf with auto-start and no workflow must still be refused, got %d request(s)",
-			len(p.updated))
+	run(t, m, press(t, m, "ctrl+s"))
+
+	if f.SubmitErr != "" {
+		t.Fatalf("the CLIENT must not be what refused: SubmitErr = %q", f.SubmitErr)
 	}
-	if !strings.Contains(f.SubmitErr, "needs a workflow") {
-		t.Fatalf("SubmitErr = %q, want the leaf refusal", f.SubmitErr)
+	if len(shell.errors) == 0 || !strings.Contains(shell.errors[0], "no workflow is set") {
+		t.Fatalf("the plane's own rejection must reach the dock, errors = %v", shell.errors)
+	}
+	if len(p.updated) != 0 {
+		t.Fatalf("a rejected update must not be recorded, got %d", len(p.updated))
 	}
 }

@@ -237,29 +237,6 @@ func (m *Model) prepEditItem(mode string) tea.Cmd {
 	}
 }
 
-// itemHasChildren reports whether the item is a sequence PARENT, using the screen's OWN
-// sequence-parent set — m.parentIDs, the same one the bulk-set path consults to say a parent's
-// own binding is inert. It exists so autoStartRefusal can apply the server's parent exemption
-// instead of refusing a save the plane would accept.
-//
-// IT REUSES THE EXISTING SET RATHER THAN DERIVING A SECOND ONE. The wire carries no child count
-// on a WorkItem (children are found by their parent_id), so a per-item check would have to
-// re-read the page anyway — and two derivations of "is this a parent" is exactly how a client
-// and its own guard end up disagreeing. This is built by fetchWorkItems from the fetched page,
-// so it answers the same question the server's ListDirectChildren answers.
-//
-// A FALSE NEGATIVE IS THE SAFE DIRECTION: an item outside the loaded page keeps the original
-// refusal, which is the pre-existing behaviour. A false POSITIVE would skip a guard the plane
-// then rejects, which is worse — so this deliberately errs toward refusing.
-func (m *Model) itemHasChildren(id string) bool {
-	if id == "" {
-		return false
-	}
-	m.viewMu.Lock()
-	defer m.viewMu.Unlock()
-	return m.parentIDs[id]
-}
-
 // workflowPickerOpts is the workflow picker's option list ("none" first).
 func (m *Model) workflowPickerOpts() []kit2.Option {
 	opts := []kit2.Option{{Value: "", Label: "— none —"}}
@@ -396,81 +373,6 @@ func loadParentOptions(ctx context.Context, cl *client.Clients) ([]kit2.Option, 
 	return opts, kinds, projects
 }
 
-// autoStartUnboundMsg is the refusal the work-item forms share. It names the FIX, not the field: an
-// operator who ticked Auto-start workflow and left Workflow empty needs to be told which of the two
-// to change, not that "validation failed".
-const autoStartUnboundMsg = "auto-start needs a workflow — pick one in the Workflow field, or untick Auto-start workflow"
-
-// autoStartRefusal reports the one combination an EDIT must not be able to express: a LEAF work
-// item moved into a RUNNABLE status with auto-start ticked and NO WORKFLOW BOUND. That item is
-// permanently unrunnable — every transition to ready/assigned/scheduled/running is rejected — so
-// the client must not offer it, and the refusal has to be visible where the operator is looking.
-//
-// IT IS AN EDIT-TIME RULE, NOT A CREATE-TIME ONE, and applying it to the create form was wrong for
-// a reason the server states in its own words:
-//
-//	"The CREATE path needs no gate — new items always start pending."
-//	                                        — workitem.IsStartableForAutoStart
-//
-// The plane gates on TRANSITION (ValidateWorkflowFirstTransition fires when an item ENTERS
-// ready/assigned/scheduled/running). A newly created item is `pending`, which is not a runnable
-// status, so the plane accepts auto-start with no workflow on create and the operator can bind a
-// workflow — or add children — afterwards. Refusing it in the client blocked a save the plane
-// would have taken, which is the operator's report: "I tried to kick off a feature and it denied
-// me in the TUI saying that it has to have a workflow set, but that is incorrect."
-//
-// A CREATE FORM ALSO CANNOT KNOW THE ANSWER. Whether a new item will become a sequence parent
-// depends on items that do not exist yet, so "hasChildren" is unknowable there — the original
-// author said as much ("'leaf' is not statically knowable in a form") and then refused anyway
-// rather than letting the plane decide. The plane is the right decider, and it already does.
-//
-// hasChildren is passed for the EDIT path, where it IS knowable, because a sequence PARENT is
-// exempt: ValidateWorkflowFirstTransition exempts it with an explicit reason — "A sequence PARENT
-// with children is exempt: it is a container that contributes ordering only and never executes
-// itself (its children each carry their own binding)." Refusing a parent here was the FIRST half
-// of the operator's report and the fix for it; the create-path refusal was the second.
-func autoStartRefusal(v map[string]string, isCreate, hasChildren bool) error {
-	if isCreate {
-		// The CREATE path takes no gate, per the server: a new item is pending, and pending is
-		// not a runnable status, so this combination is legal and the plane will accept it.
-		return nil
-	}
-	if hasChildren {
-		// The server's parent exemption, applied verbatim.
-		return nil
-	}
-	if v["auto_start"] != "true" || strings.TrimSpace(v["workflow"]) != "" {
-		return nil
-	}
-	return fmt.Errorf("%s", autoStartUnboundMsg)
-}
-
-// clearAutoStartWhenUnbound is the coupling half of the rule: an item with no bound workflow cannot
-// HOLD auto-start on. Ticking it and then emptying the workflow (or picking "— none —") clears it,
-// so the value cannot survive in the form and be submitted from a state the operator cannot see.
-//
-// It writes Values DIRECTLY rather than through Form.Set, for the reason the project re-scope above
-// does: Set re-enters OnChange, and a correction that recurses through its own handler is how a
-// derived-field rule turns into a loop. Checkbox values are the strings "true"/"false".
-func clearAutoStartWhenUnbound(f *kit2.Form, isCreate, hasChildren bool) {
-	// THE COUPLING CARRIES THE SAME EXEMPTIONS AS THE REFUSAL, and forgetting that is how the
-	// rule becomes self-contradictory: refusing nothing on submit while SILENTLY UNTICKING the
-	// box as soon as the workflow was emptied. The operator ticks auto-start, picks "— none —"
-	// for the workflow, watches the tick disappear with no explanation, and has no way to
-	// express the state the plane accepts.
-	//
-	//   - CREATE: no gate at all (a new item is pending, which is not a runnable status), so
-	//     the box must be HOLDABLE — clearing it here was the second half of the operator's
-	//     report and would have survived the first fix.
-	//   - A SEQUENCE PARENT: exempt from the transition rule, so exempt from the coupling.
-	if isCreate || hasChildren {
-		return
-	}
-	if strings.TrimSpace(f.Values["workflow"]) == "" {
-		f.Values["auto_start"] = "false"
-	}
-}
-
 // newItemCreateForm builds the typed create form.
 func (m *Model) newItemCreateForm() *kit2.Form {
 	projOpts := make([]kit2.Option, 0, len(m.projects))
@@ -513,9 +415,16 @@ func (m *Model) newItemCreateForm() *kit2.Form {
 	//     Any strictly deeper kind is legal, so a deliberate choice survives —
 	//     an epic may parent a feature, a task or a subtask; a FEATURE may
 	//     parent a task or a subtask; a TASK may parent a subtask.
-	//  3. Emptying the WORKFLOW clears auto-start: the two fields are one
-	//     decision, and the combination with no workflow is one the server
-	//     refuses outright (see autoStartRefusal).
+	//
+	// THERE IS NO AUTO-START COUPLING, deliberately. Emptying the workflow must NOT clear
+	// auto-start, because a workflow-less item is exactly how a sequential workflow is kicked
+	// off: the parent carries no binding of its own and its children run in chain order. The
+	// operator: "Workflows need to be empty for a sequential workflow to kick off. We just need
+	// to remove that validation."
+	//
+	// Auto-start with no workflow is legal at every status the operator can save (the server
+	// only gates on ENTERING ready/assigned/scheduled/running, and it exempts a sequence parent
+	// entirely), so the client must not refuse it, warn about it, or clear it.
 	f.OnChange = func(name, value string) {
 		switch name {
 		case "project":
@@ -538,12 +447,6 @@ func (m *Model) newItemCreateForm() *kit2.Form {
 			if k := kindForParent(m.parentKind[value]); k != "" {
 				f.Values["kind"] = k
 			}
-		case "workflow":
-			// Emptying the workflow clears auto-start: the two fields are ONE decision,
-			// and without a workflow the server refuses the combination outright
-			// (see autoStartRefusal). A sequence parent is exempt from the coupling, so
-			// the SAME fact the submit uses has to reach here.
-			clearAutoStartWhenUnbound(f, true, m.itemHasChildren(f.Values["parent"]))
 		}
 	}
 	m.wireItemForm(f, formCreateItem, "")
@@ -607,24 +510,7 @@ func (m *Model) editFormFor(w *apiv1.WorkItem, projOpts []kit2.Option) *kit2.For
 			Validate: validateOptionalRFC3339},
 		kit2.FieldSpec{Name: "auto_start", Label: "Auto-start workflow", Kind: kit2.KCheckbox, Initial: boolStr(w.GetAutoStartWorkflow())},
 	)
-	// THE PARENT EXEMPTION NEEDS THIS ITEM'S OWN CHILD FACT, resolved ONCE here and used by BOTH
-	// halves of the rule below — the OnChange coupling and the submit. Resolving it twice would
-	// be two chances to disagree, and a rule whose halves disagree is worse than either half: it
-	// would accept the save while silently unticking the box that was saved.
-	//
-	// This is the same question the server asks in the same transaction (itemHasChildren →
-	// ListDirectChildren), so the client and the plane agree about who is a container.
-	hasChildren := m.itemHasChildren(w.GetId())
-	// The same auto-start coupling the create form carries, installed HERE rather than only in the
-	// RPC handler so the value cannot be HELD in the form: emptying the workflow clears auto-start
-	// (see clearAutoStartWhenUnbound) — EXCEPT on a sequence parent, which is exempt from the
-	// coupling because it is exempt from the rule, and is why the two share this one fact.
-	f.OnChange = func(name, _ string) {
-		if name == "workflow" {
-			clearAutoStartWhenUnbound(f, false, hasChildren)
-		}
-	}
-	m.wireItemFormWithChildren(f, formEditItem, w.GetId(), hasChildren)
+	m.wireItemForm(f, formEditItem, w.GetId())
 	return f
 }
 
@@ -674,16 +560,7 @@ func validateOptionalRFC3339(v string) error {
 // wireItemForm installs the submit handler: it builds the RPC request from
 // the collected values and hands it to the mutation executor. No screen
 // calls a write RPC from the update loop.
-// hasChildren is the SERVER's fact about the item being edited — whether it is a sequence
-// PARENT. It is threaded from the fetched WorkItem (editItemHasChildren) rather than read off
-// the form, because a form's fields describe what the operator is typing while "is this item a
-// container" is stored state. It exists so autoStartRefusal can apply the server's own
-// exemption for a parent instead of refusing a save the plane would accept.
 func (m *Model) wireItemForm(f *kit2.Form, mode, id string) {
-	m.wireItemFormWithChildren(f, mode, id, false)
-}
-
-func (m *Model) wireItemFormWithChildren(f *kit2.Form, mode, id string, hasChildren bool) {
 	f.Focused = true
 	f.Width = 70
 	// The combined calendar + clock, for the scheduled-start field. Wired HERE so every form that
@@ -693,14 +570,6 @@ func (m *Model) wireItemFormWithChildren(f *kit2.Form, mode, id string, hasChild
 	f.OnOpenDateTimePicker = m.openDateTimePicker
 	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
 		title := strings.TrimSpace(v["title"])
-		// Concern 1: a combination the PLANE will reject is refused here, before a request
-		// exists. Returning the error makes Form.Submit store it in SubmitErr (drawn as "✗ …"
-		// INSIDE the form, which stays open), and the sink puts the same sentence on the
-		// composer's dock — the transport that FitLines never truncates.
-		if err := autoStartRefusal(v, mode == formCreateItem, hasChildren); err != nil {
-			workSink{m}.Fail(err.Error())
-			return nil, err
-		}
 		switch mode {
 		case formCreateItem:
 			project := v["project"]
