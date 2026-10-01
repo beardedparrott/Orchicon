@@ -419,7 +419,16 @@ func (m *Model) click(x, y int) {
 	// Body row: terminal row 4 is body row 0 (after the tab bar at row 3).
 	row := y - paneBodyRow
 	if m.Tab != TabDiff && row >= 0 && row < len(m.groups) {
+		// Parity with the GUI mounts (DiffSidebar.tsx:109,112 / :138,141): a
+		// file-row click selects AND focuses the diff, in one event. The tab
+		// switch is deliberately here (the interaction) and not inside
+		// SelectPath (the state setter) — restoreDiffPaneState (app.go) pushes
+		// a persisted tab and then calls SelectPath; a switch inside
+		// SelectPath would discard it on every reopen. Unconditional SetTab:
+		// SelectPath early-returns on the same path, but re-clicking the
+		// selected row must still bounce to Diff.
 		m.SelectPath(m.groups[row].Path)
+		m.SetTab(TabDiff)
 	}
 }
 
@@ -659,10 +668,18 @@ func (m *Model) timelineBody() string {
 	}
 	var b strings.Builder
 	for i, g := range m.groups {
+		sel := g.Path == m.SelectedPath
 		line := fmt.Sprintf(" %s %s (%s)", g.Path, g.Kind, g.LastTool)
-		// Styled for the same reason as treeBody: a raw row carries no theme colour and renders in
-		// whatever the terminal's default foreground happens to be.
-		b.WriteString(theme.ListItem.Render(line))
+		if sel {
+			// Same selected-row treatment as treeBody: without it a Timeline
+			// click changed the shared selection invisibly, which is why
+			// clicking a Timeline row read as doing nothing.
+			b.WriteString(theme.DiffFileSel.Render(line))
+		} else {
+			// Styled for the same reason as treeBody: a raw row carries no theme colour and renders in
+			// whatever the terminal's default foreground happens to be.
+			b.WriteString(theme.ListItem.Render(line))
+		}
 		if i < len(m.groups)-1 {
 			b.WriteString("\n")
 		}
