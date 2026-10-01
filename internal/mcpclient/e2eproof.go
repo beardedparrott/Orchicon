@@ -23,8 +23,8 @@ package mcpclient
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"strings"
 
@@ -71,14 +71,26 @@ func E2EServer() *mcp.Server {
 }
 
 // E2EHTTPFixture starts an in-process streamable-HTTP MCP fixture server (the
-// E2EServer above) and returns its URL. No child process, no network: the
-// manager connects over a real JSON-RPC transport, which is what makes the
-// discovery and the call observations real.
+// E2EServer above) and returns its URL. No child process, no external network:
+// the manager connects over a real JSON-RPC transport on a loopback socket,
+// which is what makes the discovery and the call observations real.
+//
+// It serves with a plain net.Listener + http.Server rather than
+// httptest.NewServer ON PURPOSE: this file is NOT a _test.go file (the proof
+// packages outside mcpclient reuse E2EServer), so importing net/http/httptest
+// here would link the test-only httptest package (and its hidden `-httptest.serve`
+// flag) into the SHIPPED control-plane binary — a production-hygiene regression
+// with no bearing on the proof.
 func E2EHTTPFixture() (string, func()) {
 	srv := E2EServer()
 	h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil)
-	ts := httptest.NewServer(h)
-	return ts.URL, ts.Close
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", func() {}
+	}
+	httpSrv := &http.Server{Handler: h}
+	go func() { _ = httpSrv.Serve(ln) }()
+	return "http://" + ln.Addr().String(), func() { _ = httpSrv.Close() }
 }
 
 // E2EHTTPFixtureT is the *testing.T-shaped convenience (starts the server and

@@ -12,7 +12,7 @@ package opencode
 //     (BuildConfigContent's RunMCP/RunSkills) and the pool keys serves by that
 //     set — so a session whose project owns a server gets a serve built for it.
 //  2. LIVE (gated): a real `opencode serve` + a real FREE model
-//     (opencode/deepseek-v4-flash-free) makes the call. When opencode is absent
+//     (opencode/longcat-2.5-preview-free) makes the call. When opencode is absent
 //     or the free model is unreachable, the leg RECORDS the actionable reason
 //     ("unavailable", naming the server it could not exercise) and skips — it
 //     never passes silently, which is what criterion 3 requires.
@@ -172,7 +172,7 @@ func TestE2EOpenCodeLiveWorkerCallsTheProjectServer(t *testing.T) {
 	if lerr != nil || bin == "" {
 		testfixtures.WriteEvidence(t, testfixtures.EvidenceRecord{
 			Leg: "opencode-worker-live", Adapter: "opencode", Surface: "worker-execution",
-			Model: "opencode/deepseek-v4-flash-free", ModelAccess: "unavailable",
+			Model: "opencode/longcat-2.5-preview-free", ModelAccess: "unavailable",
 			Note: "no `opencode` binary on PATH in this container; the offline serve-config + pool-keying halves are the recorded evidence, and the live leg is the actionable failure criterion 3 permits",
 		})
 		t.Skip("no opencode binary on PATH; recording model_access=unavailable with the reason")
@@ -180,7 +180,7 @@ func TestE2EOpenCodeLiveWorkerCallsTheProjectServer(t *testing.T) {
 	if os.Getenv("ORCHICON_TEST_OPENCODE") != "1" {
 		testfixtures.WriteEvidence(t, testfixtures.EvidenceRecord{
 			Leg: "opencode-worker-live", Adapter: "opencode", Surface: "worker-execution",
-			Model: "opencode/deepseek-v4-flash-free", ModelAccess: "unavailable",
+			Model: "opencode/longcat-2.5-preview-free", ModelAccess: "unavailable",
 			Note: "ORCHICON_TEST_OPENCODE is not set; the live serve leg is opt-in (it spawns opencode and makes one free-model call)",
 		})
 		t.Skip("ORCHICON_TEST_OPENCODE not set; recording model_access=unavailable")
@@ -200,7 +200,7 @@ func TestE2EOpenCodeLiveWorkerCallsTheProjectServer(t *testing.T) {
 	if err := hs.Start(ctx); err != nil {
 		testfixtures.WriteEvidence(t, testfixtures.EvidenceRecord{
 			Leg: "opencode-worker-live", Adapter: "opencode", Surface: "worker-execution",
-			ServerID: seed.HTTPServerID, Model: "opencode/deepseek-v4-flash-free", ModelAccess: "unavailable",
+			ServerID: seed.HTTPServerID, Model: "opencode/longcat-2.5-preview-free", ModelAccess: "unavailable",
 			Note: "a real `opencode serve` could not boot in this container: " + err.Error() + " — the actionable failure criterion 3 permits, naming the server it could not exercise",
 		})
 		t.Skipf("opencode serve could not start (%v); recording model_access=unavailable", err)
@@ -219,11 +219,19 @@ func TestE2EOpenCodeLiveWorkerCallsTheProjectServer(t *testing.T) {
 		ID: db.NewID(), TenantID: testfixtures.E2ETenant,
 		ProjectID: seed.ProjectID, TaskID: seed.WorkItemID,
 	}
+	// opencode renders a namespaced MCP tool as `<server>_<tool>` (it strips
+	// the native `mcp__`/`__` framing), so the model is told the name opencode
+	// actually exposes. The assertion below normalizes both forms.
 	manifest := scheduler.ExecutionManifest{
-		Goal:         "Call the tool " + wantTool + ` with {"nonce":"` + nonce + `"} and report its output verbatim.`,
-		SystemPrompt: "You are a terse test bot. Use the tool you were given.",
-		ModelRef:     "opencode/deepseek-v4-flash-free",
-		ProjectDir:   seed.ProjectDir,
+		Goal: "Call the tool " + e2eOpenCodeToolName(seed.HTTPServerID, mcpclient.E2EProbeTool) +
+			` with {"nonce":"` + nonce + `"} and report its output verbatim. ` +
+			"Finish your reply with the literal line: " + e2eDecisionMarker +
+			" success — called the project's MCP tool and saw its result.",
+		SystemPrompt: "You are a terse test bot. Use the tool you were given. " +
+			"You MUST end your final message with the literal line " + e2eDecisionMarker +
+			" success — <one line>. Do not omit it.",
+		ModelRef:   "opencode/longcat-2.5-preview-free",
+		ProjectDir: seed.ProjectDir,
 	}
 	a := New(quietTestLogger())
 	r := &sessionRun{
@@ -239,7 +247,7 @@ func TestE2EOpenCodeLiveWorkerCallsTheProjectServer(t *testing.T) {
 	if !got {
 		t.Fatal("OnResult never fired")
 	}
-	if !strings.Contains(callbacks.toolName(), wantTool) {
+	if !e2eSameTool(callbacks.toolName(), wantTool) {
 		t.Fatalf("the live opencode model did not call %q (called %q); ok=%v err=%s output=%s",
 			wantTool, callbacks.toolName(), ok, errMsg, output)
 	}
@@ -251,12 +259,44 @@ func TestE2EOpenCodeLiveWorkerCallsTheProjectServer(t *testing.T) {
 		Leg: "opencode-worker-live", Adapter: "opencode", Surface: "worker-execution",
 		Execution: execRow.ID, ProjectID: seed.ProjectID, ServerID: seed.HTTPServerID,
 		Tool: wantTool, Args: `{"nonce":"` + nonce + `"}`, Result: wantResult,
-		Model: "opencode/deepseek-v4-flash-free", ModelAccess: "available", SkillPath: seed.SkillPath,
+		Model: "opencode/longcat-2.5-preview-free", ModelAccess: "available", SkillPath: seed.SkillPath,
 		Note: "real `opencode serve` with the project's MCP set baked into its config + a real FREE model that called the project's tool",
 	})
 }
 
 // --- small helpers -----------------------------------------------------------
+
+// e2eDecisionMarker is the worker completion contract's terminal line. The LIVE
+// model only emits it when it is told to (in production it rides the composite
+// worker prompt), so the gate instructs the model and the run does not stall on
+// `missing_decision_signal`.
+const e2eDecisionMarker = "ORCHICON WORKER SUMMARY:"
+
+// e2eOpenCodeToolName renders the tool name opencode exposes for a namespaced
+// MCP tool: it strips the native `mcp__<server>__<tool>` framing down to
+// `<server>_<tool>`, so the model must be asked for THAT name.
+func e2eOpenCodeToolName(server, tool string) string {
+	return server + "_" + tool
+}
+
+// e2eSameTool reports whether two tool names denote the same MCP tool, ignoring
+// the framing opencode strips (`mcp__` prefix, `__`/`_` separators). This keeps
+// the assertion tied to the OBSERVATION — that the project's distinctive probe
+// was called — rather than to one adapter's spelling.
+func e2eSameTool(got, want string) bool {
+	return e2eNormTool(got) == e2eNormTool(strings.TrimPrefix(want, "mcp"))
+}
+
+// e2eNormTool lowercases and drops every non-alphanumeric byte.
+func e2eNormTool(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
 
 // tenantWithID stamps the tenant on a context (the resolvers read it there).
 func tenantWithID(ctx context.Context, tenantID string) context.Context {

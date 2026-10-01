@@ -43,20 +43,22 @@ cannot manufacture — `model` + `model_access` (`available` | `unavailable`).
 | `claude-ask-negative` | claude | AC 5.1: the fixed `--mcp-config` argv drops the deleted project server on the next session and the fingerprint changed |
 | `opencode-serve-config` | opencode | real DB rows → real resolver → the config the opencode serve boots from names the project server + the materialised skill instruction |
 | `opencode-pool-keying` | opencode | AC 3 granularity: the pool keys one serve + data dir per resolved set |
-| `opencode-worker-live` | opencode | **model_access: unavailable** — no `opencode` binary in this container (the actionable failure criterion 3 permits) |
+| `opencode-worker-live` | opencode | real `opencode serve` (npm `opencode-ai` 1.18.34) + the FREE model `opencode/longcat-2.5-preview-free` called the project's probe tool and echoed the nonce (`model_access: available`) |
 | `ask-native-turn` | native | a LIVE Ask turn in the project: the model's system prompt carries the project's + conversation's skill files AND it was offered + successfully called the project's tool |
 | `ask-native-mode-policy` | native | AC 4/mode policy: brainstorm + quick_work neither OFFERED nor EXECUTED the project's opaque MCP tool; the refusal names the mode |
 | `ask-claude-scope` | claude | the claude Ask conversation scope resolves the project's server from the real row |
 | `ask-native-negative` | native | AC 5.2: `refreshAskMCP`/`askMCPFor` reconcile per turn — the deleted server leaves the fingerprint and the live client is retired |
 | `ask-tool-list` | ask | AC 6: the Ask tool registry carries no tenant-tier MCP tool |
 
-## The two recorded unavailabilities
+## The recorded unavailability (claude)
 
-`claude-worker-live` and `opencode-worker-live` record `model_access: unavailable`
-WITH the reason. No permitted model (nothing outside `-free` / `ollama/*` /
-`local-models/*`) and no `claude`/`opencode` binary exists in this runtime
-container, so the live half of those two legs cannot run here. That is a recorded
-distinction, not a failed criterion: the task says a model-access skip proves
-nothing about MCP, and turning it into a red would be the wrong signal. The
-offline halves (argv / serve config) carry those two legs' configuration proof,
-and the live legs run unchanged where a binary and a permitted model exist.
+`claude-worker-live` records `model_access: unavailable` WITH the reason — no
+`claude` binary exists in this runtime container. That is a recorded distinction,
+not a failed criterion: the task says a model-access skip proves nothing about
+MCP, and turning it into a red would be the wrong signal.
+
+`opencode-worker-live` is NOT skipped here: the npm `opencode-ai` CLI installs
+into the container, and with `ORCHICON_TEST_OPENCODE=1` the leg runs a real
+`opencode serve` against the project's MCP set and a real FREE model
+(`opencode/longcat-2.5-preview-free`) that calls the project's probe tool and
+echoes its nonce — the recorded `model_access: available` above is that run.
