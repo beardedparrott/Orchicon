@@ -122,12 +122,6 @@ type Model struct {
 	// the detail pane, both off the update loop, so it is guarded by viewMu like parentIDs. See prindex.go.
 	runsByItem prIndex
 
-	// formMCPLoaded records whether the OPEN project form's MCP data arrived. It is
-	// consulted at submit time to decide whether the MCP selection may be WRITTEN: the
-	// field is absent when the load failed, and an absent field must not be read as "the
-	// operator cleared it". See projects.go setProjectMCPServers.
-	formMCPLoaded bool
-
 	// pending is the action the open confirmation dialog will run.
 	pending *kit2.Action
 	bar     *kit2.ActionBar
@@ -635,6 +629,23 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 			{Key: "max concurrent", Value: screenkit.FmtInt(int(p.GetMaxConcurrentRuns()))},
 			{Key: "created", Value: screenkit.FmtTime(p.GetCreatedAt())},
 			{Key: "updated", Value: screenkit.FmtTime(p.GetUpdatedAt())},
+		}
+		// The project's OWNED MCP servers, one row each — the TUI counterpart of
+		// the GUI panel's "Configured servers". They are owner-scoped rows
+		// (mcp_servers.project_id), so this list IS the project's MCP scope; the
+		// define/edit/secret/install controls live in projectActions(). A failed
+		// list degrades to no rows rather than failing the whole detail.
+		if m.cl != nil && m.cl.MCP != nil {
+			if lr, err := m.cl.MCP.ListMCPServers(ctx, connect.NewRequest(&apiv1.MCPServerListRequest{ProjectId: p.GetId()})); err == nil {
+				for _, s := range lr.Msg.GetServers() {
+					fields = append(fields, kit2.Field{Key: "mcp: " + s.GetName(), Value: mcpRowSummary(s)})
+				}
+			}
+		}
+		// The project's skill files, so the operator can see them without opening
+		// the edit form.
+		if len(p.GetSkillFiles()) > 0 {
+			fields = append(fields, kit2.Field{Key: "skill files", Value: strings.Join(p.GetSkillFiles(), ", ")})
 		}
 		return "Project: " + p.GetName(), fields, p.GetGoals(), nil
 
@@ -1180,7 +1191,6 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 			m.notice = "couldn't open the form: " + msg.err.Error()
 			return m, nil
 		}
-		m.formMCPLoaded = msg.data.mcpLoaded
 		// Cache the runtime-image options so the next form costs no round trip — the same
 		// treatment the work-item form's image list gets.
 		if len(msg.data.images) > 0 {
@@ -1379,6 +1389,22 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		if src == srcProjects {
 			return m.prepEditProject(formProjectDir), true
 		}
+	case "m":
+		// DEFINE an MCP server OWNED by the project — the TUI's new surface for
+		// AC 9. It replaces the old select-from-tenant field: the form builds an
+		// owned create request (project_id set), never a reference selection.
+		if src == srcProjects {
+			if it, ok := m.ActiveItem(); ok {
+				return m.openForm(m.newProjectMCPDefineForm(it.ID), formDefineProjectMCP, it.ID), true
+			}
+		}
+	case "M":
+		// One-click add from the Registry catalog (the GUI's "Add" button).
+		if src == srcProjects {
+			if it, ok := m.ActiveItem(); ok {
+				return m.openForm(m.newProjectMCPCatalogForm(it.ID), formCatalogProjectMCP, it.ID), true
+			}
+		}
 	case "s":
 		if src == srcWorkItems {
 			return m.prepEditItem(formStatusItem), true
@@ -1535,7 +1561,7 @@ func (m *Model) toggleAllTreeNodes() tea.Cmd {
 func (m *Model) HintLine() string {
 	switch m.ActiveSourceName() {
 	case srcProjects:
-		return theme.HintText.Render("n: new project · e: edit · d: set+create dir · enter: detail · ←/→: pane")
+		return theme.HintText.Render("n: new project · e: edit · d: set+create dir · m: define MCP · M: add MCP from catalog · enter: detail · ←/→: pane")
 	case srcImages:
 		return theme.HintText.Render("n: new image · e: edit spec · b: build (live logs) · x: delete · enter: detail")
 	default:

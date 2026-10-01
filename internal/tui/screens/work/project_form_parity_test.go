@@ -116,6 +116,32 @@ func TestContextFilesRoundTrip(t *testing.T) {
 	}
 }
 
+// SKILL FILES USE THE SAME RULE AS CONTEXT FILES — this equality IS AC 10's "same
+// treatment" in executable form. The GUI selects skill files with a file-tree
+// browser; the TUI has no file browser, so it uses the SAME typed path-list idiom
+// context_files already uses. The capability is identical; only the control differs,
+// and it differs because there is nothing else to differ with.
+func TestSkillFilesUsesTheSameRule(t *testing.T) {
+	for _, in := range []string{
+		"/a\n/b",
+		"/a, /b",
+		"/a\n\n  \n/b\n",
+		"   ",
+		"/home/me/projects/x/SKILL.md",
+	} {
+		got := ParseSkillFiles(in)
+		want := ParseContextFiles(in)
+		if len(got) != len(want) {
+			t.Fatalf("ParseSkillFiles(%q) = %v, ParseContextFiles = %v — the two must agree", in, got, want)
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				t.Fatalf("ParseSkillFiles(%q)[%d] = %q, want %q (same as context files)", in, i, got[i], want[i])
+			}
+		}
+	}
+}
+
 // THE CONCURRENCY FIELD DEGRADES TO "NO RESTRICTION" rather than failing the save or
 // sending a negative the server would reject.
 func TestParseMaxConcurrentRuns(t *testing.T) {
@@ -144,7 +170,7 @@ func TestApplyProjectPostCreateSkipsAnEmptyUpdate(t *testing.T) {
 	// (it mirrors the server), so an unseeded fixture would pass the empty case for the
 	// wrong reason — the call was skipped rather than the project being absent.
 	p.seedProject("proj-1", "Thing")
-	if err := applyProjectPostCreate(context.Background(), p, "proj-1", 0, nil); err != nil {
+	if err := applyProjectPostCreate(context.Background(), p, nil, "proj-1", 0, nil, nil, nil); err != nil {
 		t.Fatalf("applyProjectPostCreate with nothing to send: %v", err)
 	}
 	if len(p.projUpdated) != 0 {
@@ -153,7 +179,7 @@ func TestApplyProjectPostCreateSkipsAnEmptyUpdate(t *testing.T) {
 	}
 
 	// With something to say, it is sent.
-	if err := applyProjectPostCreate(context.Background(), p, "proj-1", 3, []string{"/a"}); err != nil {
+	if err := applyProjectPostCreate(context.Background(), p, nil, "proj-1", 3, []string{"/a"}, nil, nil); err != nil {
 		t.Fatalf("applyProjectPostCreate: %v", err)
 	}
 	if len(p.projUpdated) != 1 {

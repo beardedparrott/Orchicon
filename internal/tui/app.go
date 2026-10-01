@@ -236,8 +236,12 @@ type App struct {
 	// title to edit. The GUI prefills an input with the existing title (startRenameConv), which is what
 	// this form does, and `ctrl+n` opens it from the rail itself so the gesture is available where the
 	// operator is looking.
-	renameConv   *kit2.Form
-	renameConvID string
+	renameConv *kit2.Form
+	// convScopeForm is the conversation-scope MCP modal (/mcp define|edit|secret|install), hosted
+	// here for the same reason: the surface it edits belongs to the SHELL's open conversation, not to
+	// any screen.
+	convScopeForm *kit2.Form
+	renameConvID  string
 	// Categories (worker / workflow / conversation groupings). The CACHE is one slice for every target
 	// type because the picker needs whichever type its item belongs to and the Control pane lists all
 	// three; assignForm is the assign-or-create modal (nil = closed); assignTarget/assignEntities record
@@ -2239,6 +2243,9 @@ func (m App) viewFrame() string {
 	// both are hosted here rather than on a screen, so ordering is not load-bearing.
 	if m.renameConv != nil {
 		base = m.renameConvView(base, w, h)
+	}
+	if m.convScopeForm != nil {
+		base = m.convScopeView(base, w, h)
 	}
 	if m.assignForm != nil {
 		base = m.assignCategoryView(base, w, h)

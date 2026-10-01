@@ -101,6 +101,7 @@ import {
   type AskItem,
 } from "@/lib/ask-consent";
 import { SessionGrants } from "@/components/ask/SessionGrants";
+import { ConversationScopeDisclosure } from "@/components/ask/ConversationScopeDisclosure";
 import { CreateCategoryDialog } from "@/components/CreateCategoryDialog";
 import { DiffSidebar, type DiffTab } from "@/components/diffs/DiffSidebar";
 import { usePersistentState } from "@/lib/diff/usePersistentState";
@@ -1697,6 +1698,10 @@ function AskOrchiconPage() {
                     Small and discoverable rather than prominent: it is a short
                     list, and most of the time it is empty. */}
                 <SessionGrants conversationId={activeConvId ?? ""} />
+                {/* This conversation's OWN MCP servers + skill files, the exact
+                    sibling of the Grants disclosure above. One MCP surface for
+                    every scope (MCPServersPanel). */}
+                <ConversationScopeDisclosure conversationId={activeConvId ?? ""} />
                 <Button variant="ghost" size="sm" onClick={handleNewChat}>
                   <Plus aria-hidden="true" className="h-4 w-4" />
                 </Button>
@@ -2118,6 +2123,10 @@ function AskOrchiconPage() {
                   onChange={setProjectScope}
                   label="Project workspace"
                 />
+                {/* Mirrored here so a phone user can reach the open
+                    conversation's MCP servers + skill files too — the desktop
+                    header control is off-screen in the sheet layout. */}
+                <ConversationScopeDisclosure conversationId={activeConvId ?? ""} />
                 <button onClick={() => setFolderDialogOpen(true)} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition" title="New folder" aria-label="New folder"><FolderPlus aria-hidden="true" className="w-4 h-4" /></button>
                 <button onClick={() => { setMobileSheetOpen(false); handleNewChat(); }} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition" title="New Chat" aria-label="New conversation"><Plus aria-hidden="true" className="w-4 h-4" /></button>
                 <button onClick={closeMobileSheet} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition" title="Close" aria-label="Close conversations"><PanelRightClose aria-hidden="true" className="w-4 h-4" /></button>

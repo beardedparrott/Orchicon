@@ -1,9 +1,8 @@
 import * as React from "react";
 import { createRoute } from "@tanstack/react-router";
 import { useState, useEffect, useCallback } from "react";
-import { Sun, Moon, Check, Save, BookOpen, Palette, SlidersHorizontal, Database, Download, RotateCcw, Folder, ArrowUp, Loader2, Trash2, Clock, Plug, Cable, ShieldCheck } from "lucide-react";
+import { Sun, Moon, Check, Save, BookOpen, Palette, SlidersHorizontal, Database, Download, RotateCcw, Folder, ArrowUp, Loader2, Trash2, Clock, Plug, ShieldCheck } from "lucide-react";
 import { ProvidersTab } from "@/components/ProvidersTab";
-import { MCPServersTab } from "@/components/MCPServersTab";
 import { PermissionsTab } from "@/components/PermissionsTab";
 
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -25,7 +24,7 @@ export const Route = createRoute({
   component: SettingsPage,
 });
 
-type SettingsTab = "appearance" | "defaults" | "session" | "backups" | "secrets" | "permissions" | "providers" | "mcp" | "guide";
+type SettingsTab = "appearance" | "defaults" | "session" | "backups" | "secrets" | "permissions" | "providers" | "guide";
 
 function SettingsPage() {
   const [tab, setTab] = useState<SettingsTab>("appearance");
@@ -48,7 +47,6 @@ function SettingsPage() {
           ["secrets", "Secrets", Database],
           ["permissions", "Permissions", ShieldCheck],
           ["providers", "Providers", Plug],
-          ["mcp", "MCP", Cable],
           ["guide", "User Guide", BookOpen],
         ] as const).map(([id, label, Icon]) => (
           <button
@@ -74,7 +72,6 @@ function SettingsPage() {
       {tab === "secrets" && <SecretsTab />}
       {tab === "permissions" && <PermissionsTab />}
       {tab === "providers" && <ProvidersTab />}
-      {tab === "mcp" && <MCPServersTab />}
       {tab === "guide" && <UserGuideTab />}
     </div>
   );
@@ -937,7 +934,7 @@ function UserGuideTab() {
               </li>
               <li>
                 <strong>Define a worker</strong> — a reusable persona (Role,
-                Skills, Behavior, AGENTS.md, model, budget). Draft it, then{" "}
+                Skills (prompt text), Behavior, AGENTS.md, model, budget). Draft it, then{" "}
                 <strong>publish</strong>; published versions are immutable and
                 dispatchable.
               </li>

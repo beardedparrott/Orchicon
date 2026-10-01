@@ -73,6 +73,13 @@ type fakePlane struct {
 	// which is how a test exercises the "the MCP data did not load" path.
 	mcpServers []*apiv1.MCPServer
 	mcpError   error
+	// mcpCreated records the OWNED create requests the project forms issue (the
+	// define path), so a test can prove the definition reaches the API with the
+	// project id set rather than a tenant selection.
+	mcpCreated []*apiv1.MCPServerCreateRequest
+	// mcpListFilter records the scope filter each ListMCPServers call carried, so a
+	// test can prove the detail asks for ONE owner's rows.
+	mcpListFilter []*apiv1.MCPServerListRequest
 	// updateErr, when set, makes UpdateWorkItem fail the way a SERVER-SIDE
 	// rejection does (Task A's workflow-first gate is the reason it exists): the
 	// write never lands, so nothing is recorded and nothing is mutated.
@@ -432,13 +439,40 @@ func (p *fakePlane) DeleteProject(_ context.Context, req *connect.Request[apiv1.
 // ListMCPServers returns the seeded entries, or the seeded error. The ERROR path is the
 // point: it is how a test proves that a failed MCP load leaves the form without the field
 // rather than with an empty one.
-func (p *fakePlane) ListMCPServers(_ context.Context, _ *connect.Request[apiv1.MCPServerListRequest]) (*connect.Response[apiv1.MCPServerListResponse], error) {
+func (p *fakePlane) ListMCPServers(_ context.Context, req *connect.Request[apiv1.MCPServerListRequest]) (*connect.Response[apiv1.MCPServerListResponse], error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.mcpListFilter = append(p.mcpListFilter, req.Msg)
 	if p.mcpError != nil {
 		return nil, p.mcpError
 	}
-	return connect.NewResponse(&apiv1.MCPServerListResponse{Servers: p.mcpServers}), nil
+	// The owner filter is the INHERITANCE QUERY: a non-empty project_id narrows to
+	// that project's rows, exactly as the server does.
+	var out []*apiv1.MCPServer
+	for _, s := range p.mcpServers {
+		if req.Msg.GetProjectId() != "" && s.GetProjectId() != req.Msg.GetProjectId() {
+			continue
+		}
+		if req.Msg.GetConversationId() != "" && s.GetConversationId() != req.Msg.GetConversationId() {
+			continue
+		}
+		out = append(out, s)
+	}
+	return connect.NewResponse(&apiv1.MCPServerListResponse{Servers: out}), nil
+}
+
+// CreateMCPServer records the OWNED definition create the project forms issue —
+// the define path (AC 9). It mirrors the server's owner-XOR precondition so a test
+// cannot pass with an ownerless (tenant-level) request.
+func (p *fakePlane) CreateMCPServer(_ context.Context, req *connect.Request[apiv1.MCPServerCreateRequest]) (*connect.Response[apiv1.MCPServerCreateResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.mcpCreated = append(p.mcpCreated, req.Msg)
+	p.nextID++
+	s := &apiv1.MCPServer{Id: req.Msg.GetName(), Name: req.Msg.GetName(),
+		ProjectId: req.Msg.GetProjectId(), ConversationId: req.Msg.GetConversationId()}
+	p.mcpServers = append(p.mcpServers, s)
+	return connect.NewResponse(&apiv1.MCPServerCreateResponse{Server: s}), nil
 }
 
 // NOTE: Get/SetProjectMCPServers are gone with the reference model — a

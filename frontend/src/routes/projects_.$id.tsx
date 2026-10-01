@@ -19,8 +19,7 @@ import { useListExecutions } from "@/api/executions";
 import { useListDirPath, useUpdateProjectDir } from "@/api/projectFiles";
 import { useStreamProjectEvents } from "@/api/projectEvents";
 import { useDebouncedInvalidation } from "@/lib/useDebouncedInvalidation";
-import {
-} from "@/api/mcpServers";
+import { MCPServersPanel } from "@/components/MCPServersPanel";
 import { EntityYamlView } from "@/components/EntityYamlView";
 import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
@@ -69,10 +68,15 @@ function ProjectDetailPage() {
   const [draftDefaultImage, setDraftDefaultImage] = useState("");
   const [draftExecutionMode, setDraftExecutionMode] = useState<"runtime" | "local">("runtime");
   const [savingRuntime, setSavingRuntime] = useState(false);
+  // The project's skill-file selection is edited through the SAME FileBrowser
+  // as context files, but reported back here (onChange) so a skills save does
+  // not overwrite the context-files list.
+  const [skillDraft, setSkillDraft] = useState<string[]>([]);
+  const [skillDirty, setSkillDirty] = useState(false);
   const { data: availableImages } = useAvailableRuntimeImages();
   // The project↔server SELECTION is gone: a definition is OWNED by its scope
   // (mcp_servers.project_id), so there is no reference set to read or save.
-  // Child 7 re-homes this control onto the owner-scoped create.
+  // The scope's own definitions are managed by MCPServersPanel below.
   // Active executions (non-terminal) for the current-vs-limit meter.
   const { data: executions } = useListExecutions({ projectId: id, enabled: !!id });
   const { data: tenantSettings } = useGetSettings();
@@ -103,6 +107,9 @@ function ProjectDetailPage() {
     setDraftDefaultImage(typeof imgRaw === "string" ? imgRaw : "");
     const execRaw = proj?.executionMode ?? proj?.execution_mode;
     setDraftExecutionMode(protoToExecutionMode(typeof execRaw === "number" || typeof execRaw === "string" ? execRaw : undefined));
+    // Seed the skill-file draft from the project (the same seed pattern used
+    // above) so a read-only view shows the saved list.
+    setSkillDraft(project?.skillFiles ?? []);
   }, [project]);
 
   const { register, handleSubmit, reset } = useForm({
@@ -407,6 +414,47 @@ function ProjectDetailPage() {
           projectId={project.id}
           projectDir={project.projectDir || ""}
           initialSelectedFiles={project.contextFiles || []}
+          readOnly={!editing}
+        />
+      )}
+
+      {/* Skill files — the SAME FileBrowser, reported back instead of persisting
+          (the project's context-file save would otherwise clobber it). */}
+      {project && (
+        <>
+          <FileBrowser
+            projectId={project.id}
+            projectDir={project.projectDir || ""}
+            initialSelectedFiles={skillDraft}
+            readOnly={!editing}
+            onChange={(next) => {
+              setSkillDraft(next);
+              setSkillDirty(true);
+            }}
+            title="Skill files"
+            description="Skill artifacts (files or directories) rendered into this project's worker and Ask prompts."
+            emptyHint="No skill files on this project. Click Edit to browse its tree."
+          />
+          {editing && skillDirty && (
+            <Button
+              variant="outline"
+              onClick={() =>
+                updateProject.mutate(
+                  { id: project.id, skillFiles: skillDraft },
+                  { onSuccess: () => setSkillDirty(false) },
+                )
+              }
+            >
+              Save skills
+            </Button>
+          )}
+        </>
+      )}
+
+      {/* MCP servers this project OWNS. It is the ROOT, so no inherited section. */}
+      {project && (
+        <MCPServersPanel
+          scope={{ kind: "project", projectId: project.id }}
           readOnly={!editing}
         />
       )}

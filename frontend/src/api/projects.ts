@@ -61,6 +61,10 @@ export function useUpdateProject() {
       execution_mode?: string | number;
       projectDir?: string;
       project_dir?: string;
+      // skillFiles is the project's skill-file path selection (absolute
+      // paths to skill artifacts). It is an `optional ContextFiles` on the
+      // wire, so sending it REPLACES the list (an empty array clears).
+      skillFiles?: string[];
     }) => {
       const raw = input as {
         gitStrategy?: string;
@@ -87,6 +91,9 @@ export function useUpdateProject() {
       if (imgVal !== undefined) { payload.defaultRuntimeImage = imgVal; }
       if (execVal !== undefined) { payload.executionMode = execVal; }
       if (dirVal !== undefined) { payload.projectDir = dirVal; }
+      if (input.skillFiles !== undefined) {
+        payload.skillFiles = { files: input.skillFiles } as UpdateProjectRequest["skillFiles"];
+      }
       const res = await projectClient.updateProject(payload);
       return res.project as Project;
     },

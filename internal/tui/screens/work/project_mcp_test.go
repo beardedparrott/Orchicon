@@ -8,55 +8,163 @@ package work
 //   the Project message.
 //   "There is no ctrl+x delete for single or bulk on projects." — the RPC existed and
 //   the TUI never offered it; worse, the BULK path silently aimed at the wrong resource.
+//
+// CORRECTION (child 7): the "selection" above is GONE. A definition is OWNER-SCOPED
+// (mcp_servers.project_id), so there is no tenant list to select from and the old
+// ProjectMCPField (a KMultiSelect over the tenant's entries) was REMOVED. The create
+// form now carries an OWNED-DEFINITION SEED (ProjectMCPDefinitionsField, a JSON array)
+// and the project action bar defines rows one at a time. The tests below pin the NEW
+// shape; the select-from-tenant shape is gone with the RPC that fed it.
 
 import (
 	"context"
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/tui/mutate"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/mcpforms"
 )
 
-// THE FIELD APPEARS ONLY WHEN THERE IS SOMETHING TO CHOOSE, and its options are the
-// servers with a visible label.
-func TestProjectMCPFieldShape(t *testing.T) {
-	if f := ProjectMCPField(nil, nil); f != nil {
-		t.Errorf("ProjectMCPField with no servers returned a field (%v) — an empty multi-select is a control "+
-			"that cannot do anything", f)
+// THE CREATE FORM CARRIES AN OWNED-DEFINITION SEED, not a selection. It is a KJSON
+// field, present ALWAYS (a create has no existing rows, so the array cannot delete
+// anything, and an empty array is simply "no definitions yet").
+func TestProjectMCPDefinitionsFieldShape(t *testing.T) {
+	f := ProjectMCPDefinitionsField()
+	if f.Kind != kit2.KJSON {
+		t.Errorf("the MCP definitions field kind is %v, want KJSON — it is a JSON array of "+
+			"inline specs, not a multi-select over a tenant list", f.Kind)
 	}
-	servers := []*apiv1.MCPServer{
-		{Id: "m1", Name: "filesystem", Enabled: true},
-		{Id: "m2", Name: "github", Enabled: false},
+	if f.Name != "mcp_servers" {
+		t.Errorf("field name = %q, want mcp_servers", f.Name)
 	}
-	f := ProjectMCPField(servers, []string{"m1"})
-	if f == nil {
-		t.Fatal("ProjectMCPField returned nil with two servers")
+	// A create form always offers it (unlike the old field, which vanished when the
+	// tenant list failed to load). The seed is the form's own.
+	m := newModel(t, newPlane())
+	form := m.newProjectCreateForm()
+	if !formHasField(form, "mcp_servers") {
+		t.Error("the create form offers no mcp_servers field — the TUI cannot define a project MCP entry")
 	}
-	if f.Kind != kit2.KMultiSelect {
-		t.Errorf("the MCP field kind is %v, want a multi-select", f.Kind)
+	// The EDIT form deliberately does NOT: a blob save on an edit would silently
+	// delete rows the operator never saw.
+	edit := m.newProjectEditForm(&apiv1.Project{Id: "p1", Name: "P"})
+	if formHasField(edit, "mcp_servers") {
+		t.Error("the EDIT form offers an mcp_servers field — a blob editor on an edit can delete " +
+			"rows the operator never saw, which is the failure the field exists to avoid")
 	}
-	if len(f.Options) != 2 || f.Options[0].Value != "m1" || f.Options[0].Label != "filesystem" {
-		t.Errorf("options = %+v, want m1/filesystem first", f.Options)
-	}
-	// A DISABLED server is still selectable (a project may reference one that is off),
-	// but its row says so.
-	if !strings.Contains(f.Options[1].Label, "disabled") {
-		t.Errorf("a disabled server's option label is %q — it should say so, or the operator is surprised "+
-			"when nothing happens at run time", f.Options[1].Label)
-	}
-	// The initial value is the COMMA-JOINED selection: that is what seeds a multi-select,
-	// and it is why a project with servers selected cannot open with none ticked.
-	if f.Initial != "m1" {
-		t.Errorf("Initial = %q, want the project's selection joined", f.Initial)
+	// But the edit form DOES carry skill_files (the same path-list idiom as context_files).
+	if !formHasField(edit, "skill_files") {
+		t.Error("the edit form offers no skill_files field")
 	}
 }
 
-// NOTE: the project↔server SELECTION tests are GONE with the selection itself.
-// A definition is OWNER-SCOPED (mcp_servers.project_id) and the
-// Set/GetProjectMCPServers RPC pair was removed; the project forms no longer
-// read or write a reference set. ProjectMCPField stays as the seam child 7
-// re-homes onto the owner-scoped create payload.
+// A PROJECT'S OWNED DEFINITIONS REACH THE API AS OWNED ROWS — the define path (AC 9).
+// The request carries the project id, never a tenant selection.
+func TestProjectMCPDefinitionReachesTheApiAsAnOwnedRow(t *testing.T) {
+	p := newPlane()
+	m := newModel(t, p)
+	projID := "proj-1"
+	f := m.newProjectMCPDefineForm(projID)
+	f.Set("name", "github")
+	f.Set("transport", "stdio")
+	f.Set("command", "npx")
+	f.Set("args", "-y @modelcontextprotocol/server-github")
+	f.Set("env", "GITHUB_TOKEN=${GITHUB_TOKEN}")
+	cmd, err := f.OnSubmit(f.Values, nil)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if cmd == nil {
+		t.Fatal("the define form produced no command — the write never fires")
+	}
+	runCmd(t, cmd)
+	if len(p.mcpCreated) != 1 {
+		t.Fatalf("CreateMCPServer calls = %d, want 1 (got %v)", len(p.mcpCreated), p.mcpCreated)
+	}
+	got := p.mcpCreated[0]
+	if got.GetProjectId() != projID {
+		t.Errorf("the definition's project_id = %q, want %q — an ownerless create would be a "+
+			"tenant-level entry, which no longer exists", got.GetProjectId(), projID)
+	}
+	if got.GetConversationId() != "" {
+		t.Errorf("the definition carries a conversation_id (%q) as well as a project — the owner "+
+			"is XOR", got.GetConversationId())
+	}
+	if got.GetCommand() != "npx" || len(got.GetArgs()) != 2 {
+		t.Errorf("command/args = %q / %v, want npx + two args", got.GetCommand(), got.GetArgs())
+	}
+	// ${SECRET_NAME} is passed through verbatim — resolved by the tenant secrets store
+	// at session time, never here.
+	if got.GetEnv()["GITHUB_TOKEN"] != "${GITHUB_TOKEN}" {
+		t.Errorf("env = %v, want the ${SECRET_NAME} reference preserved", got.GetEnv())
+	}
+}
+
+// AN EMPTY DEFINITION ARRAY CREATES NOTHING — the create form's other fields still
+// apply, and no stray owned row is written.
+func TestEmptyProjectMCPDefinitionsCreateNothing(t *testing.T) {
+	p := newPlane()
+	p.seedProject("proj-1", "Thing")
+	if err := applyProjectPostCreate(context.Background(), p, p, "proj-1", 0, nil, nil, nil); err != nil {
+		t.Fatalf("applyProjectPostCreate: %v", err)
+	}
+	if len(p.mcpCreated) != 0 {
+		t.Errorf("an empty definitions array issued %d create(s); an empty array means no "+
+			"definitions, not a null one", len(p.mcpCreated))
+	}
+}
+
+// THE CREATE FORM'S SEED REACHES THE OWNED CREATE. A definition typed into the create
+// form's JSON, submitted, lands as a project-owned row.
+func TestCreateFormSeedBecomesOwnedRows(t *testing.T) {
+	p := newPlane()
+	p.seedProject("proj-1", "Thing")
+	specs := `{"mcp_servers":[{"id":"github","type":"stdio","command":["npx","-y","x"],"env":{"T":"${T}"}}]}`
+	defs := mcpforms.ParseInline(specs)
+	if len(defs) != 1 {
+		t.Fatalf("parsed %d specs, want 1", len(defs))
+	}
+	if err := applyProjectPostCreate(context.Background(), p, p, "proj-1", 0, nil, nil, defs); err != nil {
+		t.Fatalf("applyProjectPostCreate: %v", err)
+	}
+	if len(p.mcpCreated) != 1 {
+		t.Fatalf("CreateMCPServer calls = %d, want 1", len(p.mcpCreated))
+	}
+	if p.mcpCreated[0].GetProjectId() != "proj-1" {
+		t.Errorf("project_id = %q, want proj-1", p.mcpCreated[0].GetProjectId())
+	}
+	if p.mcpCreated[0].GetName() != "github" {
+		t.Errorf("name = %q, want github", p.mcpCreated[0].GetName())
+	}
+}
+
+// formHasField reports whether a form offers a named field — the kit2 form's Specs.
+func formHasField(f *kit2.Form, name string) bool {
+	for i := range f.Specs {
+		if f.Specs[i].Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// runCmd executes a mutation cmd and asserts it succeeded.
+func runCmd(t *testing.T, cmd tea.Cmd) {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("expected a write cmd, got nil")
+	}
+	res, ok := cmd().(mutate.Result)
+	if !ok {
+		t.Fatal("the write cmd must produce a mutate.Result")
+	}
+	if res.Err != nil {
+		t.Fatalf("write failed: %v", res.Err)
+	}
+}
 
 // DELETE IS OFFERED, SINGLE.
 func TestAProjectOffersDelete(t *testing.T) {
