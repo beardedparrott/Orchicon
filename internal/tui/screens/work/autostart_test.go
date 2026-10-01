@@ -38,7 +38,19 @@ func autoStartPlane(t *testing.T) (*fakePlane, *Model) {
 
 // The create form: tick auto-start with an empty Workflow picker and the write is REFUSED — the form
 // stays open, says why inside itself, and the dock carries the same sentence.
-func TestCreateFormRefusesAutoStartWithoutWorkflow(t *testing.T) {
+// THE CREATE FORM TAKES NO GATE. The server says so in its own words —
+//
+//	"The CREATE path needs no gate — new items always start pending."
+//	                                        — workitem.IsStartableForAutoStart
+//
+// — because the plane gates on TRANSITION to a runnable status (ready/assigned/scheduled/running)
+// and a new item is PENDING. This test used to assert the opposite (a refusal), which is exactly
+// what blocked the operator: "I tried to kick off a feature and it denied me in the TUI saying
+// that it has to have a workflow set, but that is incorrect."
+//
+// A create form ALSO cannot know whether the item will become a parent, so the client has no
+// grounds to decide — the plane is the right decider, and it already accepts this.
+func TestCreateFormAllowsAutoStartWithNoWorkflow(t *testing.T) {
 	p, m := autoStartPlane(t)
 	shell := &fakeShell{}
 	m.Base.SetShell(shell)
@@ -52,26 +64,25 @@ func TestCreateFormRefusesAutoStartWithoutWorkflow(t *testing.T) {
 		t.Fatalf("the create form must start with no workflow bound, got %q", f.Values["workflow"])
 	}
 	f.Set("title", "No workflow, auto-start ticked")
+
+	// THE BOX MUST BE HOLDABLE. The coupling used to clear it the instant the workflow was
+	// empty, so the operator could not even express the state the plane accepts — the second
+	// half of the same defect, and it would have survived a fix to the refusal alone.
 	f.Set("auto_start", "true")
+	if got := f.Values["auto_start"]; got != "true" {
+		t.Fatalf("the create form must HOLD auto-start with no workflow (got %q) — the plane "+
+			"accepts it (a new item is pending), so the client must not silently untick it", got)
+	}
 
-	submit(t, m, "auto_start")
-
-	// No request may be built from this state: a refusal that still sent the write would be a
-	// refusal the plane rejects, which is the defect this exists to remove.
-	if len(p.created) != 0 {
-		t.Fatalf("a refused combination must not create anything, got %d request(s)", len(p.created))
+	// AND THE SAVE MUST GO THROUGH, driven via the real ctrl+s path (submit returns the command
+	// without running it, so it must be executed for the write to land).
+	run(t, m, submit(t, m, "auto_start"))
+	if len(p.created) != 1 {
+		t.Fatalf("auto-start with no workflow must be creatable (the plane's own rule), got %d "+
+			"request(s); SubmitErr=%q", len(p.created), f.SubmitErr)
 	}
-	if m.ActiveForm() == nil {
-		t.Fatal("a refused submit must keep the form OPEN so the operator can fix it")
-	}
-	if !strings.Contains(f.SubmitErr, "needs a workflow") {
-		t.Fatalf("the form must name the refusal, SubmitErr = %q", f.SubmitErr)
-	}
-	if got := f.View(); !strings.Contains(got, "needs a workflow") {
-		t.Fatalf("the refusal must be DRAWN inside the form:\n%s", got)
-	}
-	if len(shell.errors) == 0 || !strings.Contains(shell.errors[0], "needs a workflow") {
-		t.Fatalf("the refusal must reach the composer dock, errors = %v", shell.errors)
+	if req := p.created[0]; !req.GetAutoStartWorkflow() {
+		t.Fatal("the create request must carry auto-start as the operator set it")
 	}
 }
 
@@ -107,15 +118,19 @@ func TestEditFormRefusesAutoStartWithoutWorkflow(t *testing.T) {
 	}
 }
 
-// The COUPLING half of the rule, which the refusal alone does not cover: emptying the workflow CLEARS
-// auto-start, so the value cannot be HELD in the form and submitted from a state the operator can no
-// longer see. Ticking it again with nothing bound is then refused (the assertion at the end).
-func TestClearingTheWorkflowClearsAutoStart(t *testing.T) {
+// The COUPLING half of the rule, on the path where it still applies: the EDIT form.
+//
+// Emptying the workflow CLEARS auto-start there, so the value cannot be HELD and submitted from a
+// state the operator can no longer see. This is exactly why the coupling and the refusal must carry
+// the SAME condition — on the CREATE form neither applies (the plane gates on transition, and a new
+// item is pending), so the box must be holdable; on an EDIT of a LEAF they both do.
+func TestClearingTheWorkflowClearsAutoStartOnEdit(t *testing.T) {
 	p, m := autoStartPlane(t)
-	run(t, m, press(t, m, "n"))
+	// A LEAF: no children, so neither exemption applies.
+	run(t, m, press(t, m, "e"))
 	f := m.ActiveForm()
 	if f == nil {
-		t.Fatal("n must open the create form")
+		t.Fatal("e must open the edit form")
 	}
 
 	// The picker carries the workflows the plane lists (the fake returns wf-1 / Fanout).
@@ -127,14 +142,20 @@ func TestClearingTheWorkflowClearsAutoStart(t *testing.T) {
 
 	f.Set("workflow", "") // the "— none —" option
 	if got := f.Values["auto_start"]; got != "false" {
-		t.Fatalf("emptying the workflow must clear auto-start, got %q", got)
+		t.Fatalf("emptying the workflow must clear auto-start on a leaf, got %q", got)
 	}
 
-	// And it cannot be re-held: tick it once more and the form refuses.
+	// And it cannot be re-held: tick it once more and the form refuses, because a LEAF with
+	// no workflow cannot be moved to a runnable status.
 	f.Set("auto_start", "true")
+	// A REFUSED submit returns NO command (there is nothing to run), so this is a plain
+	// `submit` — the refusal is asserted on the form, not on a write that never happened.
 	submit(t, m, "auto_start")
-	if len(p.created) != 0 {
-		t.Fatalf("auto-start must not be re-holdable without a workflow, %d request(s)", len(p.created))
+	if len(p.updated) != 0 {
+		t.Fatalf("a leaf must not be re-holdable without a workflow, %d request(s)", len(p.updated))
+	}
+	if !strings.Contains(f.SubmitErr, "needs a workflow") {
+		t.Fatalf("SubmitErr = %q, want the leaf refusal", f.SubmitErr)
 	}
 }
 

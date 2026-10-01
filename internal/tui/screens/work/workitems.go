@@ -401,35 +401,42 @@ func loadParentOptions(ctx context.Context, cl *client.Clients) ([]kit2.Option, 
 // to change, not that "validation failed".
 const autoStartUnboundMsg = "auto-start needs a workflow — pick one in the Workflow field, or untick Auto-start workflow"
 
-// autoStartRefusal reports the one combination these forms must not be able to express: a LEAF work
-// item with AUTO-START TICKED and NO WORKFLOW BOUND. That item is permanently unrunnable — every
-// transition to ready/assigned/scheduled/running is rejected — so the client must not offer it, and
-// the refusal has to be visible where the operator is looking.
+// autoStartRefusal reports the one combination an EDIT must not be able to express: a LEAF work
+// item moved into a RUNNABLE status with auto-start ticked and NO WORKFLOW BOUND. That item is
+// permanently unrunnable — every transition to ready/assigned/scheduled/running is rejected — so
+// the client must not offer it, and the refusal has to be visible where the operator is looking.
 //
-// A SEQUENCE PARENT IS EXEMPT, which this did not know and the server always did. The server's
-// ValidateWorkflowFirstTransition exempts hasChildren with an explicit reason: "A sequence PARENT
+// IT IS AN EDIT-TIME RULE, NOT A CREATE-TIME ONE, and applying it to the create form was wrong for
+// a reason the server states in its own words:
+//
+//	"The CREATE path needs no gate — new items always start pending."
+//	                                        — workitem.IsStartableForAutoStart
+//
+// The plane gates on TRANSITION (ValidateWorkflowFirstTransition fires when an item ENTERS
+// ready/assigned/scheduled/running). A newly created item is `pending`, which is not a runnable
+// status, so the plane accepts auto-start with no workflow on create and the operator can bind a
+// workflow — or add children — afterwards. Refusing it in the client blocked a save the plane
+// would have taken, which is the operator's report: "I tried to kick off a feature and it denied
+// me in the TUI saying that it has to have a workflow set, but that is incorrect."
+//
+// A CREATE FORM ALSO CANNOT KNOW THE ANSWER. Whether a new item will become a sequence parent
+// depends on items that do not exist yet, so "hasChildren" is unknowable there — the original
+// author said as much ("'leaf' is not statically knowable in a form") and then refused anyway
+// rather than letting the plane decide. The plane is the right decider, and it already does.
+//
+// hasChildren is passed for the EDIT path, where it IS knowable, because a sequence PARENT is
+// exempt: ValidateWorkflowFirstTransition exempts it with an explicit reason — "A sequence PARENT
 // with children is exempt: it is a container that contributes ordering only and never executes
-// itself (its children each carry their own binding)." Refusing one here blocked a legal save in
-// the CLIENT — the plane would have accepted it — so the operator was told to bind a workflow to a
-// container that must not have one, and told it by a client the server disagreed with.
-//
-// The operator's report is the exact shape: "I tried to kick off a feature and it denied me in the
-// TUI saying that it has to have a workflow set, but that is incorrect. Parents should not have a
-// workflow set in order to fire off the children."
-//
-// hasChildren comes from the SERVER for the item being edited (the fetched WorkItem's own child
-// count), never from the form: a form's fields describe what the operator is TYPING, and whether
-// this item is a container is a fact about stored state. See the two call sites — the edit form
-// passes the fetched item's child fact, and the create form passes false because a brand-new item
-// genuinely has no children and the server would not exempt it either.
-//
-// It reads the FORM's value, which is exactly what the submit sends (WorkflowId: v["workflow"]),
-// so "the form cannot express it" and "the request cannot carry it" are the same statement. The
-// status form carries neither field and is therefore inert here.
-func autoStartRefusal(v map[string]string, hasChildren bool) error {
+// itself (its children each carry their own binding)." Refusing a parent here was the FIRST half
+// of the operator's report and the fix for it; the create-path refusal was the second.
+func autoStartRefusal(v map[string]string, isCreate, hasChildren bool) error {
+	if isCreate {
+		// The CREATE path takes no gate, per the server: a new item is pending, and pending is
+		// not a runnable status, so this combination is legal and the plane will accept it.
+		return nil
+	}
 	if hasChildren {
-		// The server's exemption, applied verbatim: a container contributes ordering and never
-		// executes itself, so it must not be forced to name a workflow.
+		// The server's parent exemption, applied verbatim.
 		return nil
 	}
 	if v["auto_start"] != "true" || strings.TrimSpace(v["workflow"]) != "" {
@@ -445,14 +452,18 @@ func autoStartRefusal(v map[string]string, hasChildren bool) error {
 // It writes Values DIRECTLY rather than through Form.Set, for the reason the project re-scope above
 // does: Set re-enters OnChange, and a correction that recurses through its own handler is how a
 // derived-field rule turns into a loop. Checkbox values are the strings "true"/"false".
-func clearAutoStartWhenUnbound(f *kit2.Form, hasChildren bool) {
-	// A SEQUENCE PARENT IS EXEMPT FROM THE COUPLING TOO, and forgetting that half would have
-	// left the rule self-contradictory: refusing nothing on submit (autoStartRefusal returns
-	// nil for a parent) while SILENTLY UNTICKING the box as soon as the workflow was emptied.
-	// The operator would tick auto-start on a feature, pick "— none —" for the workflow, watch
-	// the tick disappear with no explanation, and have no way to express the state the plane
-	// accepts. Both halves of one rule must carry one condition.
-	if hasChildren {
+func clearAutoStartWhenUnbound(f *kit2.Form, isCreate, hasChildren bool) {
+	// THE COUPLING CARRIES THE SAME EXEMPTIONS AS THE REFUSAL, and forgetting that is how the
+	// rule becomes self-contradictory: refusing nothing on submit while SILENTLY UNTICKING the
+	// box as soon as the workflow was emptied. The operator ticks auto-start, picks "— none —"
+	// for the workflow, watches the tick disappear with no explanation, and has no way to
+	// express the state the plane accepts.
+	//
+	//   - CREATE: no gate at all (a new item is pending, which is not a runnable status), so
+	//     the box must be HOLDABLE — clearing it here was the second half of the operator's
+	//     report and would have survived the first fix.
+	//   - A SEQUENCE PARENT: exempt from the transition rule, so exempt from the coupling.
+	if isCreate || hasChildren {
 		return
 	}
 	if strings.TrimSpace(f.Values["workflow"]) == "" {
@@ -532,7 +543,7 @@ func (m *Model) newItemCreateForm() *kit2.Form {
 			// and without a workflow the server refuses the combination outright
 			// (see autoStartRefusal). A sequence parent is exempt from the coupling, so
 			// the SAME fact the submit uses has to reach here.
-			clearAutoStartWhenUnbound(f, m.itemHasChildren(f.Values["parent"]))
+			clearAutoStartWhenUnbound(f, true, m.itemHasChildren(f.Values["parent"]))
 		}
 	}
 	m.wireItemForm(f, formCreateItem, "")
@@ -610,7 +621,7 @@ func (m *Model) editFormFor(w *apiv1.WorkItem, projOpts []kit2.Option) *kit2.For
 	// coupling because it is exempt from the rule, and is why the two share this one fact.
 	f.OnChange = func(name, _ string) {
 		if name == "workflow" {
-			clearAutoStartWhenUnbound(f, hasChildren)
+			clearAutoStartWhenUnbound(f, false, hasChildren)
 		}
 	}
 	m.wireItemFormWithChildren(f, formEditItem, w.GetId(), hasChildren)
@@ -686,7 +697,7 @@ func (m *Model) wireItemFormWithChildren(f *kit2.Form, mode, id string, hasChild
 		// exists. Returning the error makes Form.Submit store it in SubmitErr (drawn as "✗ …"
 		// INSIDE the form, which stays open), and the sink puts the same sentence on the
 		// composer's dock — the transport that FitLines never truncates.
-		if err := autoStartRefusal(v, hasChildren); err != nil {
+		if err := autoStartRefusal(v, mode == formCreateItem, hasChildren); err != nil {
 			workSink{m}.Fail(err.Error())
 			return nil, err
 		}

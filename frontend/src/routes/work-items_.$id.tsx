@@ -620,21 +620,32 @@ function WorkItemDetailPage() {
                 className="mt-1 h-11 sm:h-9 min-h-[44px] w-full rounded-xl glass-input px-3 text-sm"
               />
             </div>
+            {/* A SEQUENCE PARENT IS EXEMPT, so its auto-start control must be REACHABLE.
+                `disabled={!editWorkflowId}` was a HARD BLOCK: on a parent the box could not be
+                ticked at all, so the exemption in autoStartBlocked never ran and the operator had
+                no way to express the state the plane accepts. The server gates on TRANSITION to a
+                runnable status, and a parent is a container that never executes itself. */}
             <div className="flex items-center gap-2">
               <input
                 type="checkbox"
                 id="autoStart"
                 checked={editAutoStartWorkflow}
-                disabled={!editWorkflowId}
+                disabled={!editWorkflowId && !hasChildren}
                 onChange={(e) => { setEditAutoStartWorkflow(e.target.checked); if (e.target.checked) setEditScheduledStartAt(""); }}
                 className="h-4 w-4 rounded border-input"
               />
               <Label htmlFor="autoStart">Start immediately on save</Label>
             </div>
-            {!editWorkflowId && (
+            {!editWorkflowId && !hasChildren && (
               <p className="text-xs text-muted-foreground">
                 Auto-start needs a workflow — pick one in Workflow template to start this item
                 immediately on save.
+              </p>
+            )}
+            {!editWorkflowId && hasChildren && (
+              <p className="text-xs text-muted-foreground">
+                This item is a sequence <span className="font-medium">parent</span>, so it needs no
+                workflow of its own — its children each run their own, in order.
               </p>
             )}
           </CardContent>
