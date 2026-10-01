@@ -493,7 +493,7 @@ func runtimeContainerRouteEnabled(hasClient bool, m scheduler.ExecutionManifest)
 // (ORCHICON_POSTGRES_DSN), so workers get the `orchicon_*` tools natively
 // against their own sandbox — never the host plane's DB. Base/gui images
 // get no MCP (no sandbox plane), behavior identical to today.
-func RuntimeServeConfig(imageTag, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution) string {
+func RuntimeServeConfig(imageTag, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution, providers []runtime.ProviderConfig) string {
 	opts := ConfigOptions{
 		AgentName:    workerAgent,
 		AgentPrompt:  sessionToolShell,
@@ -502,6 +502,12 @@ func RuntimeServeConfig(imageTag, projectDir, workflowRunID string, planeEnv map
 		SkipUserMCP:  true,
 		RunMCP:       union.Servers,
 		RunSkills:    union.Skills,
+		// Providers are the tenant's local-model endpoints, TRANSPOSED for this
+		// container by the run-level resolver (providers.TransposeForContainer). A
+		// container's own 127.0.0.1 is itself, so the host's loopback is unreachable
+		// there; the row keeps what the operator typed and this consumer gets a view
+		// it can dial.
+		Providers: providers,
 	}
 	if runtime.IsDevImageTag(imageTag) {
 		opts.TenantID = serveTenantID()

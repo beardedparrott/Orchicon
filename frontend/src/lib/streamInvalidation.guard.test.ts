@@ -11,10 +11,15 @@ import path from "node:path";
 // GUI to hang up because it is processing a large stream", a white screen on
 // every page.
 //
-// It was fixed for the execution streams (executions_.$id.tsx,
-// HeadsUpExpandedModal.tsx) via lib/useDebouncedInvalidation, and then MISSED for
-// the run route's workflow stream — and because the run route IS the Heads Up
-// view, the symptom came straight back on the one view that mounts it.
+// It was fixed for the execution streams (executions_.$id.tsx) via
+// lib/useDebouncedInvalidation, and then MISSED for the run route's workflow
+// stream — and because the run route IS the Heads Up view, the symptom came
+// straight back on the one view that mounts it.
+//
+// HeadsUpExpandedModal USED TO BE LISTED HERE and is now deleted: it hosted a
+// second live stream on the run route, which is one of the things that made the
+// view hang. The run view's tiles are static and a tile links to the execution
+// page, so there is no second stream left to guard.
 //
 // WHY A SOURCE ASSERTION: the defect is a WIRING OMISSION, and nothing about the
 // resulting code is wrong in isolation — the invalidation is valid, the stream is
@@ -29,7 +34,6 @@ const STREAMING_FILES = [
   "routes/workflows_.$id_.runs.$runId.tsx",
   "routes/executions_.$id.tsx",
   "routes/projects_.$id.tsx",
-  "components/workflow-runs/HeadsUpExpandedModal.tsx",
 ];
 
 function read(rel: string): string {

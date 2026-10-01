@@ -49,10 +49,8 @@ import {
   parseViewParam,
   readStoredView,
   storeView,
-  type HeadsUpTileData,
   type RunView,
 } from "@/components/workflow-runs/headsUp";
-import { HeadsUpExpandedModal } from "@/components/workflow-runs/HeadsUpExpandedModal";
 import { HeadsUpGrid } from "@/components/workflow-runs/HeadsUpGrid";
 import {
   ExecStatusBadge,
@@ -177,7 +175,6 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
 
   // Expanded tile (expand-to-interrogate modal). The grid stays mounted
   // underneath — closing returns without losing streams.
-  const [expandedStepId, setExpandedStepId] = useState<string | null>(null);
 
   // Tiled HUD data-join: steps LEFT JOIN latest step-run LEFT JOIN
   // execution (same superseded-filter semantics as the canvas overlay
@@ -191,8 +188,6 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
       ),
     [wfData?.latestVersion?.steps, stepRuns, runExecs],
   );
-  const expandedTile: HeadsUpTileData | null =
-    tiles.find((t) => t.stepId === expandedStepId) ?? null;
 
   // Live event stream (docs/10 §4). Subscribes to StreamWorkflowEvents
   // filtered to this run; invalidates the run + step-runs queries so the
@@ -474,15 +469,7 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
           <HeadsUpGrid
             tiles={tiles}
             runId={runId}
-            suspendedStepId={expandedStepId}
-            onExpand={(t) => setExpandedStepId(t.stepId)}
           />
-          {expandedTile && (
-            <HeadsUpExpandedModal
-              tile={expandedTile}
-              onClose={() => setExpandedStepId(null)}
-            />
-          )}
         </>
       ) : (
         <></>

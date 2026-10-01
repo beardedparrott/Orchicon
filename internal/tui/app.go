@@ -1776,11 +1776,18 @@ func (m *App) reattachRunningTurn(convID string) tea.Cmd {
 	if m.chat == nil {
 		return nil
 	}
+	// DISCOVERY IS UNCONDITIONAL, the re-attach is not. The early return below is exactly
+	// how a card went missing: it fires when the row does not say a turn is in flight with a
+	// pending reply id — which is the case for a turn this client never started, or stopped
+	// tracking. The server is parked on that turn regardless, so a card for it had no path
+	// into the pane at all while the GUI (holding a watch socket) displayed one. Asking the
+	// server directly costs nothing when there is nothing pending, and the store dedupes.
+	discover := m.chat.DiscoverPendingAsks(convID)
 	c, ok := m.conversationByID(convID)
 	if !ok || !c.TurnInFly || c.PendingReplyID == "" {
-		return nil
+		return discover
 	}
-	return m.chat.Reattach(convID, c.PendingReplyID)
+	return tea.Batch(discover, m.chat.Reattach(convID, c.PendingReplyID))
 }
 
 // onExecutionSessionLoaded paints the merged session view into the

@@ -38,7 +38,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { KindPill, PositionBadge, RecurringBadge } from "@/components/work-items/work-item-badges";
 import { WorkItemParentSelect } from "@/components/work-items/work-item-parent-select";
 import { computeSequencePositions } from "@/components/work-items/sequence-utils";
-import { kindLabel, kindMeta, statusMeta, isTerminal, showRecurringBadge, MANUALLY_UNMOVABLE_STATUSES, autoStartBlocked, AUTO_START_NEEDS_WORKFLOW } from "@/components/work-items/work-item-meta";
+import { kindLabel, kindMeta, statusMeta, isTerminal, showRecurringBadge, MANUALLY_UNMOVABLE_STATUSES } from "@/components/work-items/work-item-meta";
 import { cn } from "@/lib/utils";
 import { Timestamp } from "@bufbuild/protobuf";
 import { RecurringSchedule, WorkItemKind, WorkItemStatus } from "@/api/gen/orchicon/api/v1/work_item_pb";
@@ -338,10 +338,6 @@ function WorkItemDetailPage() {
                     );
                     return;
                   }
-                  if (autoStartBlocked(editAutoStartWorkflow, editWorkflowId)) {
-                    toast.error(AUTO_START_NEEDS_WORKFLOW);
-                    return;
-                  }
                   if (kindChanging) {
                     const moving = directChildren.filter(
                       (c) => depthForKind(c.kind) <= depthForKind(editKind),
@@ -620,21 +616,25 @@ function WorkItemDetailPage() {
                 className="mt-1 h-11 sm:h-9 min-h-[44px] w-full rounded-xl glass-input px-3 text-sm"
               />
             </div>
+            {/* AUTO-START IS NEVER GATED ON A WORKFLOW, so this control is never disabled and the
+                workflow select never clears it. The plane asks "is a workflow bound?" only at a
+                TRANSITION into a runnable status (ready/assigned/scheduled/running), and it exempts
+                a sequence parent even then — so a client-side gate refused saves the plane would
+                have accepted, and the coupling removed the state a chain needs to start. */}
             <div className="flex items-center gap-2">
               <input
                 type="checkbox"
                 id="autoStart"
                 checked={editAutoStartWorkflow}
-                disabled={!editWorkflowId}
                 onChange={(e) => { setEditAutoStartWorkflow(e.target.checked); if (e.target.checked) setEditScheduledStartAt(""); }}
                 className="h-4 w-4 rounded border-input"
               />
               <Label htmlFor="autoStart">Start immediately on save</Label>
             </div>
-            {!editWorkflowId && (
+            {!editWorkflowId && hasChildren && (
               <p className="text-xs text-muted-foreground">
-                Auto-start needs a workflow — pick one in Workflow template to start this item
-                immediately on save.
+                This item has children, so a workflow here would sequence <em>them</em> — leave it
+                empty for a chain your children supply.
               </p>
             )}
           </CardContent>
@@ -841,13 +841,12 @@ function WorkItemDetailPage() {
               {editing ? (
                 <select
                   value={editWorkflowId}
-                  onChange={(e) => {
-                    setEditWorkflowId(e.target.value);
-                    // Same coupling as the TUI forms: an item with no workflow cannot HOLD
-                    // auto-start, so clearing the binding clears it too (see
-                    // autoStartBlocked).
-                    if (!e.target.value) setEditAutoStartWorkflow(false);
-                  }}
+                  // THE BINDING AND AUTO-START ARE INDEPENDENT. This used to clear auto-start
+                  // when the workflow was emptied ("same coupling as the TUI forms"), which is
+                  // not a safety net but the removal of the exact state a sequential run needs:
+                  // a workflow-less parent is how a chain is kicked off. The operator: "Workflows
+                  // need to be empty for a sequential workflow to kick off."
+                  onChange={(e) => setEditWorkflowId(e.target.value)}
                   className="w-full rounded-xl glass-input px-3 py-1.5 text-sm"
                 >
                   <option value="">-- No workflow --</option>

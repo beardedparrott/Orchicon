@@ -2161,6 +2161,85 @@ export class ListPermissionGrantsResponse extends Message<ListPermissionGrantsRe
 }
 
 /**
+ * @generated from message orchicon.api.v1.ListPendingAsksRequest
+ */
+export class ListPendingAsksRequest extends Message<ListPendingAsksRequest> {
+  /**
+   * @generated from field: string conversation_id = 1;
+   */
+  conversationId = "";
+
+  constructor(data?: PartialMessage<ListPendingAsksRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ListPendingAsksRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListPendingAsksRequest {
+    return new ListPendingAsksRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListPendingAsksRequest {
+    return new ListPendingAsksRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListPendingAsksRequest {
+    return new ListPendingAsksRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListPendingAsksRequest | PlainMessage<ListPendingAsksRequest> | undefined, b: ListPendingAsksRequest | PlainMessage<ListPendingAsksRequest> | undefined): boolean {
+    return proto3.util.equals(ListPendingAsksRequest, a, b);
+  }
+}
+
+/**
+ * ListPendingAsksResponse carries the conversation's open asks, in the SAME
+ * PermissionAsk shape the turn stream emits — deliberately the same message, so
+ * a discovered ask and a streamed ask cannot drift into two renderings, and a
+ * client can feed both through one path.
+ *
+ * @generated from message orchicon.api.v1.ListPendingAsksResponse
+ */
+export class ListPendingAsksResponse extends Message<ListPendingAsksResponse> {
+  /**
+   * @generated from field: repeated orchicon.api.v1.PermissionAsk asks = 1;
+   */
+  asks: PermissionAsk[] = [];
+
+  constructor(data?: PartialMessage<ListPendingAsksResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ListPendingAsksResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "asks", kind: "message", T: PermissionAsk, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListPendingAsksResponse {
+    return new ListPendingAsksResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListPendingAsksResponse {
+    return new ListPendingAsksResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListPendingAsksResponse {
+    return new ListPendingAsksResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListPendingAsksResponse | PlainMessage<ListPendingAsksResponse> | undefined, b: ListPendingAsksResponse | PlainMessage<ListPendingAsksResponse> | undefined): boolean {
+    return proto3.util.equals(ListPendingAsksResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.RevokePermissionGrantRequest
  */
 export class RevokePermissionGrantRequest extends Message<RevokePermissionGrantRequest> {

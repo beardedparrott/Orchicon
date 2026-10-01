@@ -2181,26 +2181,40 @@ func permissionAskEvent(a *pendingAsk) *apiv1.ChatStreamResponse {
 		return nil
 	}
 	return &apiv1.ChatStreamResponse{
-		Event: &apiv1.ChatStreamResponse_PermissionAsk{
-			PermissionAsk: &apiv1.PermissionAsk{
-				AskId:            a.AskID,
-				ConversationId:   a.ConversationID,
-				SessionId:        a.SessionID,
-				Tool:             a.Tool,
-				Command:          a.Command,
-				Targets:          a.Targets,
-				Directory:        a.Directory,
-				InsideProject:    a.InsideProject,
-				Summary:          a.Summary,
-				DenyEntriesBelow: a.DenyBelow,
-				// The question fields: set for a question ask, empty otherwise. The
-				// clients key on a non-empty Question to render the question card and
-				// to answer with CONTENT rather than a permission choice.
-				Question:   a.Question,
-				Options:    a.Options,
-				AllowOther: a.AllowOther,
-			},
-		},
+		Event: &apiv1.ChatStreamResponse_PermissionAsk{PermissionAsk: permissionAskProto(a)},
+	}
+}
+
+// permissionAskProto is the ONE mapping from a server-side pendingAsk to the wire
+// message, shared by the LIVE emit path, the RE-ATTACH replay and the
+// ListPendingAsks query.
+//
+// It is extracted so the three cannot drift: a discovered ask and a streamed ask
+// must be byte-identical, because a client feeds both through one path and dedupes
+// by ask id. If they differed by even one field, a card discovered on attach could
+// render differently from the same card delivered live — which is precisely the
+// class of bug this file has been chasing (the wire arm that nothing read).
+func permissionAskProto(a *pendingAsk) *apiv1.PermissionAsk {
+	if a == nil {
+		return nil
+	}
+	return &apiv1.PermissionAsk{
+		AskId:            a.AskID,
+		ConversationId:   a.ConversationID,
+		SessionId:        a.SessionID,
+		Tool:             a.Tool,
+		Command:          a.Command,
+		Targets:          a.Targets,
+		Directory:        a.Directory,
+		InsideProject:    a.InsideProject,
+		Summary:          a.Summary,
+		DenyEntriesBelow: a.DenyBelow,
+		// The question fields: set for a question ask, empty otherwise. The
+		// clients key on a non-empty Question to render the question card and
+		// to answer with CONTENT rather than a permission choice.
+		Question:   a.Question,
+		Options:    a.Options,
+		AllowOther: a.AllowOther,
 	}
 }
 

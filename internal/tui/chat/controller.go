@@ -1176,6 +1176,64 @@ func (c *Controller) pollTranscript(convID string) tea.Cmd {
 // Poll is the exported poll hook (shell-side turn resolution).
 func (c *Controller) Poll(convID string) tea.Cmd { return c.pollTranscript(convID) }
 
+// DiscoverPendingAsks asks the SERVER which asks are still open for a conversation and
+// raises a card for each.
+//
+// THE BUG IT FIXES, in the operator's words: "you sent numerous permission card requests
+// and user ask card requests. ALL of them reached the GUI conversation just fine, however,
+// they did not all reach the TUI… it appeared you were stalled. So I went into the GUI and
+// lo and behold, a permissions card was waiting."
+//
+// An ask reached the TUI only through consume(), which runs for a conversation the TUI is
+// ACTIVELY streaming — and the shell only re-attaches to a turn the server's conversation
+// row says is in flight WITH a pending reply id. A turn the TUI never started (or one it
+// stopped tracking) therefore had no path for a card at all, while the SERVER kept the turn
+// parked waiting for an answer that had no card to give it. That is the stall.
+//
+// So this is a QUERY, not another live event: the state has always been on the server
+// (askorchicon.pendingAskRegistry) and was only ever replayed to a late watcher of the
+// stream. Asking for it directly makes a card DISCOVERABLE rather than merely deliverable,
+// which removes the dependency on "is this client streaming right now?" — the variable that
+// has broken this every time it was fixed.
+//
+// It is IDEMPOTENT by construction: the result is fed through the same ShowConsentAsk path
+// the wire arm uses, and the store's drawConsentAsk refuses an ask id it already holds. So a
+// card that arrives twice — once discovered, once streamed — is drawn once, and calling this
+// on every attach, re-attach and poll costs nothing.
+//
+// Best-effort, like every live signal here: a failure returns nil and the next attach or
+// poll tries again. It must never fail a turn.
+func (c *Controller) DiscoverPendingAsks(convID string) tea.Cmd {
+	if convID == "" || c.cl == nil || c.cl.Ask == nil {
+		return nil
+	}
+	cl, store := c.cl, c.store
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		resp, err := cl.Ask.ListPendingAsks(ctx, connect.NewRequest(&apiv1.ListPendingAsksRequest{
+			ConversationId: convID,
+		}))
+		if err != nil || resp == nil {
+			return nil
+		}
+		// Straight to the store, NOT the command channel: the store is an in-process sink
+		// whose delivery cannot fail, which is the lesson the wire arm learned (a 16-slot
+		// channel the turn poll also writes to dropped cards silently). See
+		// EventStore.ShowConsentAsk.
+		if store != nil {
+			for _, p := range resp.Msg.GetAsks() {
+				ask := PermissionAskFromProto(p)
+				if ask.ConvID == "" {
+					ask.ConvID = convID
+				}
+				store.ShowConsentAsk(ask)
+			}
+		}
+		return nil
+	}
+}
+
 // EndStream clears a conversation's stream slot when the server closed
 // the stream cleanly (consume's EOF path pushed StreamDoneMsg). The
 // ListMessages poll that follows is the completion authority.

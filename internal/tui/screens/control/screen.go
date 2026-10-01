@@ -1594,6 +1594,33 @@ func (m *Model) settingsForm() *kit2.Form {
 	return f
 }
 
+// providerLocalModelNote is the note both provider forms carry.
+//
+// The operator asked for exactly this: "I also think we need to modify the add and edit
+// provider sections in the GUI and TUI to give a hint that a firewall rule will need to
+// be added for the docker container IP to make their local models work with both claude
+// and opencode. Otherwise users would be lost."
+//
+// It is ONE constant so the add form and the edit form cannot drift — the GUI's two
+// dialogs had already diverged this way, with the create dialog still promising an
+// automatic translation that had been removed.
+//
+// WHAT IT SAYS AND WHY EACH LINE IS TRUE HERE:
+//   - 127.0.0.1 is correct for the control plane, which now runs ON THE HOST. The
+//     native engine dials in-process, so Ask Orchicon works with what the operator types.
+//   - a runtime container's own 127.0.0.1 is the CONTAINER, so a worker arming a run is
+//     handed a transposed address automatically (internal/providers.TransposeForContainer,
+//     applied to the serve config a container boots with). The operator types one URL.
+//   - that transposed address crosses the docker bridge, which a host firewall often
+//     blocks — and when it does, container workers fail while Ask Orchicon keeps working.
+//     Without this sentence that asymmetry is undiagnosable.
+const providerLocalModelNote = "Local models need TWO addresses. 127.0.0.1 is correct for the control plane " +
+	"(it runs on this machine) and Ask Orchicon uses it as typed. A worker in a runtime container cannot: its own " +
+	"localhost is itself, so orchicon hands the container the host's bridge address (172.17.0.1) automatically when " +
+	"a run is armed. That needs a FIREWALL RULE — if your host firewall blocks the docker bridge from reaching your " +
+	"model's port, container workers fail while Ask Orchicon keeps working. Allow the bridge subnet (172.17.0.0/16 " +
+	"on a default docker bridge) to that port."
+
 // newProviderForm builds the custom-provider create form.
 func (m *Model) newProviderForm() *kit2.Form {
 	f := kit2.NewForm("New custom provider",
@@ -1613,6 +1640,8 @@ func (m *Model) newProviderForm() *kit2.Form {
 		kit2.FieldSpec{Name: "token", Label: "API token (optional)", Kind: kit2.KSecret,
 			Placeholder: "paste the key — stored as CUSTOM_<REF>_API_KEY, never read back"},
 	)
+	// The base-URL consequence, stated where the operator is entering the URL.
+	f.Note = providerLocalModelNote
 	f.Focused = true
 	f.Width = 64
 	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
@@ -1679,6 +1708,7 @@ func (m *Model) editProviderForm(item kit2.Item) *kit2.Form {
 		kit2.FieldSpec{Name: "token", Label: "API token (blank = unchanged)", Kind: kit2.KSecret,
 			Placeholder: m.tokenPlaceholder(item.ID)},
 	)
+	f.Note = providerLocalModelNote
 	f.Focused = true
 	f.Width = 64
 	id := item.ID

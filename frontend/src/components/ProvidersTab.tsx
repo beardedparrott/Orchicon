@@ -6,6 +6,7 @@
 // entries (custom providers), and the deletion guard (blocked while
 // workers reference the provider).
 import { useState } from "react";
+import { createPortal } from "react-dom";
 
 import {
   useProviderList,
@@ -493,7 +494,17 @@ function EditCustomDialog({
     );
   }
 
-  return (
+  // PORTALLED TO document.body, and that is a FIX rather than tidiness.
+  //
+  // This dialog is rendered INSIDE its ProviderCard (so it can report errors back into
+  // the card), and the card is a `glass-panel` — which applies `backdrop-filter`, a
+  // property that CREATES A STACKING CONTEXT. Inside one, `z-50` only ranks the dialog
+  // among that card's own children, so every LATER card in the list paints over it: the
+  // operator's "the edit bubble is somewhat under the provider cards". Escaping to the
+  // body removes it from the card's context entirely, so `z-50` means what it says
+  // against the page. The error-reporting wiring is untouched — that is why this
+  // portals rather than relocating the JSX, which would break the callback.
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" role="dialog" aria-label={`Edit ${entry.id}`}>
       <div className="w-full max-w-md space-y-3 rounded-lg border bg-background p-4">
         <h2 className="text-base font-semibold">
@@ -502,10 +513,7 @@ function EditCustomDialog({
         <p className="text-xs text-muted-foreground">ref id is immutable after create.</p>
         <Input placeholder="display name (optional)" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
         <Input placeholder="base URL (http(s)://…)" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
-        <p className="text-[10px] text-muted-foreground">
-          localhost works even though the app runs in a container — we translate it to the address
-          your machine is reachable at, automatically. Keep the version root at the end (…/v1).
-        </p>
+        <LocalModelAddressHint />
         <label className="flex items-center gap-2 text-xs">
           auth mode
           <select
@@ -527,6 +535,52 @@ function EditCustomDialog({
           </Button>
         </div>
       </div>
+    </div>,
+    document.body,
+  );
+}
+
+// LocalModelAddressHint explains how ONE local-model URL serves TWO consumers, and
+// the firewall rule a container needs.
+//
+// IT IS ONE COMPONENT because the two dialogs had drifted: the edit dialog was
+// corrected and the create dialog kept the old wording, so an operator adding a
+// provider was told "we translate it automatically for the app's container" while
+// nothing translated it and the plane is not in a container. A shared component is
+// what stops the next correction from landing in only one of them.
+//
+// The copy states what is MEASURED on this host rather than what sounds plausible —
+// the whole failure was a promise the code did not keep:
+//
+//   - 127.0.0.1 is correct for the host plane (the native engine dials in-process),
+//     so Ask Orchicon works with what the operator types, unchanged.
+//   - a runtime container's own 127.0.0.1 is the CONTAINER, so a worker arming a run
+//     gets a transposed address automatically (internal/providers.TransposeForContainer,
+//     applied to the serve config the container boots with).
+//   - that transposed address crosses the docker bridge, which is exactly what a host
+//     firewall blocks by default on many setups — and when it does, container workers
+//     fail while Ask Orchicon keeps working. That asymmetry is undiagnosable without
+//     being told, which is why the rule is named here.
+function LocalModelAddressHint() {
+  return (
+    <div className="space-y-1 rounded-md border border-input/60 bg-muted/30 p-2">
+      <p className="text-[10px] font-medium text-foreground">Local models need two addresses</p>
+      <p className="text-[10px] text-muted-foreground">
+        <span className="font-mono">127.0.0.1</span> is correct for the control plane, which runs on
+        your machine — Ask Orchicon reaches your model directly with it.
+      </p>
+      <p className="text-[10px] text-muted-foreground">
+        A worker in a runtime <span className="font-medium">container</span> cannot use it: its own
+        localhost means itself. When a run is armed, Orchicon automatically gives the container the
+        host&apos;s bridge address (<span className="font-mono">172.17.0.1</span>) instead, so you
+        only ever enter one URL.
+      </p>
+      <p className="text-[10px] text-muted-foreground">
+        <span className="font-medium">That needs a firewall rule.</span> If your host firewall blocks
+        the docker bridge from reaching your model&apos;s port, container workers fail while Ask
+        Orchicon keeps working. Allow the bridge subnet to that port —{" "}
+        <span className="font-mono">172.17.0.0/16</span> on a default docker bridge.
+      </p>
     </div>
   );
 }
@@ -564,11 +618,11 @@ function CreateDialog({ onClose }: { onClose: () => void }) {
         <Input placeholder="display name (optional)" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
         <Input placeholder="base URL (http(s)://…)" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
         <p className="text-[10px] text-muted-foreground">
-          Point this at the server running on YOUR computer — e.g. llama-server's
-          <code className="mx-1">http://localhost:8095/v1</code> just works: if you type localhost, we
-          translate it automatically for the app's container. The URL should end in <code>/v1</code>
-          {" "}— that's where the app looks for the model list.
+          Any OpenAI-compatible server on YOUR computer works — e.g. llama-server&apos;s{" "}
+          <code className="mx-1">http://localhost:8095/v1</code>. The URL should end in{" "}
+          <code>/v1</code> — that&apos;s where the model list is read from.
         </p>
+        <LocalModelAddressHint />
         <label className="flex items-center gap-2 text-xs">
           auth mode
           <select

@@ -844,6 +844,21 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			// Route executions that belong to a workflow run into that
 			// workflow's runtime container instead of a local subprocess.
 			adapterBridge.SetRuntimeClient(rtClient)
+			// The container-locality provider view: a runtime container's 127.0.0.1
+			// is the container itself, so a local model published on this machine is
+			// unreachable from a worker at the URL the operator typed. The serve
+			// config baked for the container therefore carries a TRANSPOSED copy —
+			// the stored row is untouched, so the host-plane consumer keeps the
+			// loopback address that is correct for it. Resolved lazily per run
+			// (the tenant is only known at dispatch), so a provider edited after
+			// boot is picked up by the next run rather than requiring a restart.
+			adapterBridge.SetContainerProviders(func(ctx context.Context, tenantID string) []opencode.ProviderConfig {
+				svc := deps.ProvidersService
+				if svc == nil {
+					return nil
+				}
+				return svc.ContainerProviders(ctx, tenantID)
+			})
 			// Always-container native: the native bridge routes `bash`
 			// into the run's container (same lease the gate ensured).
 			nativeBridge.SetRuntimeClient(rtClient)
