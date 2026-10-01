@@ -29,6 +29,7 @@ package execution
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -41,6 +42,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/modelpick"
 	"github.com/beardedparrott/orchicon/internal/tui/mutate"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/mcpforms"
 )
 
 // workerOps identifies which form an interactive operation needs once the
@@ -456,12 +458,24 @@ func (m *Model) versionFields(src *apiv1.WorkerVersion) []kit2.FieldSpec {
 		// The structured prompt fields compose into system_prompt server-side; they
 		// are the source of truth, so they are what the operator edits.
 		{Name: "role", Label: "Role", Kind: kit2.KTextArea, Initial: src.GetRole()},
-		{Name: "skills", Label: "Skills", Kind: kit2.KTextArea, Initial: src.GetSkills()},
+		{Name: "skills", Label: "Skills (prompt text)", Kind: kit2.KTextArea, Initial: src.GetSkills()},
+		// SKILL FILES: paths, not prose — the same path-list idiom as projects'
+		// context_files (see the doc comment on screens/work/projects.go's
+		// skillFilesLabel for why this asymmetry with the GUI's file browser is
+		// deliberate).
+		{Name: "skill_files", Label: "Skill files (abs paths, one per line)", Kind: kit2.KTextArea,
+			Initial: strings.Join(src.GetSkillFiles(), "\n")},
 		{Name: "behavior", Label: "Behavior", Kind: kit2.KTextArea, Initial: src.GetBehavior()},
 		{Name: "agents_md", Label: "AGENTS.md", Kind: kit2.KTextArea, Initial: src.GetAgentsMd()},
 		{Name: "version_note", Label: "Version note", Kind: kit2.KText, Initial: src.GetVersionNote()},
 		{Name: "context_sources", Label: "Context sources (JSON)", Kind: kit2.KJSON, Initial: src.GetContextSources()},
 		{Name: "permissions", Label: "Permissions (JSON)", Kind: kit2.KJSON, Initial: src.GetPermissions()},
+		// MCP DEFINITIONS for THIS VERSION, INLINE — no mcp_servers row is created,
+		// so a published version stays immutable and the version is what a dispatch
+		// pins to. The shape is db.InlineMCPServer verbatim (the same one the GUI
+		// workerVersion mode and mcpforms.InlineForm use).
+		{Name: "mcp_servers", Label: "MCP definitions (JSON)", Kind: kit2.KJSON,
+			Initial: inlineJSONFromPermissions(src.GetPermissions())},
 		{Name: "gated_tools", Label: "Gated tools (JSON)", Kind: kit2.KJSON, Initial: src.GetGatedTools()},
 		{Name: "budget_overrides", Label: "Budget overrides (JSON)", Kind: kit2.KJSON, Initial: src.GetBudgetOverrides()},
 		{Name: "concurrency_limit", Label: "Concurrency limit", Kind: kit2.KNumber,
@@ -602,9 +616,9 @@ func newestVersion(vs []*apiv1.WorkerVersion) *apiv1.WorkerVersion {
 // version — a write, an outbox event and an audit row — even when the operator
 // only renamed the worker.
 type versionEdit struct {
-	modelRef, role, skills, behavior, agents, note  string
-	contextSources, permissions, gatedTools, budget string
-	limit                                           int32
+	modelRef, role, skills, skillFiles, behavior, agents, note  string
+	contextSources, permissions, mcpServers, gatedTools, budget string
+	limit                                                       int32
 }
 
 // versionSnapshot records the values a form started from.
@@ -613,11 +627,13 @@ func versionSnapshot(v *apiv1.WorkerVersion) versionEdit {
 		modelRef:       strings.TrimSpace(v.GetModelRef()),
 		role:           v.GetRole(),
 		skills:         v.GetSkills(),
+		skillFiles:     strings.Join(v.GetSkillFiles(), "\n"),
 		behavior:       v.GetBehavior(),
 		agents:         v.GetAgentsMd(),
 		note:           v.GetVersionNote(),
 		contextSources: v.GetContextSources(),
 		permissions:    v.GetPermissions(),
+		mcpServers:     inlineJSONFromPermissions(v.GetPermissions()),
 		gatedTools:     v.GetGatedTools(),
 		budget:         v.GetBudgetOverrides(),
 		limit:          v.GetConcurrencyLimit(),
@@ -630,11 +646,13 @@ func versionUnchanged(v map[string]string, limit int32, orig versionEdit) bool {
 	return strings.TrimSpace(v["model_ref"]) == orig.modelRef &&
 		v["role"] == orig.role &&
 		v["skills"] == orig.skills &&
+		v["skill_files"] == orig.skillFiles &&
 		v["behavior"] == orig.behavior &&
 		v["agents_md"] == orig.agents &&
 		v["version_note"] == orig.note &&
 		v["context_sources"] == orig.contextSources &&
 		v["permissions"] == orig.permissions &&
+		v["mcp_servers"] == orig.mcpServers &&
 		v["gated_tools"] == orig.gatedTools &&
 		v["budget_overrides"] == orig.budget &&
 		limit == orig.limit
@@ -647,9 +665,11 @@ func versionUnchanged(v map[string]string, limit int32, orig versionEdit) bool {
 func setVersionFieldsOnCreate(req *apiv1.CreateWorkerRequest, v map[string]string, limit int32) {
 	req.Role, req.Skills, req.Behavior = v["role"], v["skills"], v["behavior"]
 	req.AgentsMd, req.VersionNote = v["agents_md"], v["version_note"]
-	req.ContextSources, req.Permissions = v["context_sources"], v["permissions"]
+	req.ContextSources, req.Permissions = v["context_sources"], mergedPermissions(v)
 	req.GatedTools, req.BudgetOverrides = v["gated_tools"], v["budget_overrides"]
 	req.ModelRef = strings.TrimSpace(v["model_ref"])
+	sfOnCreate := skillFilesJSON(v["skill_files"])
+	req.SkillFiles = &sfOnCreate
 	req.ConcurrencyLimit = limit
 }
 
@@ -657,12 +677,16 @@ func setVersionFieldsOnCreate(req *apiv1.CreateWorkerRequest, v map[string]strin
 // Every field is sent (a create has no "unchanged" to preserve).
 func setVersionFields(req *apiv1.CreateWorkerVersionRequest, v map[string]string, limit int32) {
 	role, skills, behavior, agents := v["role"], v["skills"], v["behavior"], v["agents_md"]
-	n, cs, perm := v["version_note"], v["context_sources"], v["permissions"]
+	// The permissions blob the panel OWNS the mcp_servers key of: merge the MCP
+	// definitions field into the permissions field so the two controls agree.
+	n, cs, perm := v["version_note"], v["context_sources"], mergedPermissions(v)
 	gt, bo, mr := v["gated_tools"], v["budget_overrides"], strings.TrimSpace(v["model_ref"])
 	req.Role, req.Skills, req.Behavior, req.AgentsMd = &role, &skills, &behavior, &agents
 	req.VersionNote, req.ContextSources, req.Permissions = &n, &cs, &perm
 	req.GatedTools, req.BudgetOverrides = &gt, &bo
 	req.ModelRef = &mr
+	sf := skillFilesJSON(v["skill_files"])
+	req.SkillFiles = &sf
 	req.ConcurrencyLimit = &limit
 }
 
@@ -670,13 +694,82 @@ func setVersionFields(req *apiv1.CreateWorkerVersionRequest, v map[string]string
 // (every mutable field is optional there, so all of them are sent).
 func setVersionFieldsU(req *apiv1.UpdateWorkerVersionRequest, v map[string]string, limit int32) {
 	role, skills, behavior, agents := v["role"], v["skills"], v["behavior"], v["agents_md"]
-	n, cs, perm := v["version_note"], v["context_sources"], v["permissions"]
+	// The permissions blob the panel OWNS the mcp_servers key of: merge the MCP
+	// definitions field into the permissions field so the two controls agree.
+	n, cs, perm := v["version_note"], v["context_sources"], mergedPermissions(v)
 	gt, bo, mr := v["gated_tools"], v["budget_overrides"], strings.TrimSpace(v["model_ref"])
 	req.Role, req.Skills, req.Behavior, req.AgentsMd = &role, &skills, &behavior, &agents
 	req.VersionNote, req.ContextSources, req.Permissions = &n, &cs, &perm
 	req.GatedTools, req.BudgetOverrides = &gt, &bo
 	req.ModelRef = &mr
+	sf := skillFilesJSON(v["skill_files"])
+	req.SkillFiles = &sf
 	req.ConcurrencyLimit = &limit
+}
+
+// skillFilesJSON encodes the skill_files field's path list as the JSON array the
+// wire expects. An empty list becomes "[]" — the server's validateSkillFiles
+// reads "" AND "[]" the same way (empty), so either is legitimate; "[]" is what a
+// filled form would send and is thus the honest round-trip.
+func skillFilesJSON(text string) string {
+	files := mcpforms.ParseSkillPaths(text)
+	if files == nil {
+		files = []string{}
+	}
+	b, err := json.Marshal(files)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
+// mergedPermissions returns the version's permissions JSON with the form's
+// mcp_servers array merged in — the panel OWNS that one key, so the separate
+// permissions KJSON field and the MCP definitions field cannot fight over the
+// blob. If the operator left mcp_servers empty, the permissions blob is passed
+// through unchanged (an empty array is a legitimate clear, but merging an empty
+// array would drop a legacy reference the permissions field still holds — the
+// merge only writes when there is something to write).
+func mergedPermissions(v map[string]string) string {
+	mcp := strings.TrimSpace(v["mcp_servers"])
+	// An empty/absent MCP field AND a permissions blob that carries no
+	// mcp_servers key: nothing to merge, so pass the blob through byte-for-byte
+	// (a no-op write must not rewrite the operator's JSON).
+	if (mcp == "" || mcp == "[]") && !permissionsHasMCPServers(v["permissions"]) {
+		return v["permissions"]
+	}
+	merged, err := mcpforms.MergeIntoPermissions(v["permissions"], v["mcp_servers"])
+	if err != nil {
+		return v["permissions"]
+	}
+	return merged
+}
+
+// permissionsHasMCPServers reports whether the permissions JSON already carries an
+// mcp_servers key. Used to decide whether an emptied MCP field means "clear it"
+// (the key is present) or "leave the blob alone" (there is nothing to clear).
+func permissionsHasMCPServers(permissions string) bool {
+	var p map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(permissions), &p); err != nil {
+		return false
+	}
+	_, ok := p["mcp_servers"]
+	return ok
+}
+
+// inlineJSONFromPermissions renders a version's inline MCP specs as the JSON
+// array the mcp_servers field shows. Absent specs render as "[]" so the field is
+// never blank.
+func inlineJSONFromPermissions(permissions string) string {
+	specs := mcpforms.ParseInline(permissions)
+	if specs == nil {
+		return "[]"
+	}
+	b, err := json.Marshal(specs)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
 }
 
 // openFormModelPicker opens the screen's model picker for a KModel field inside

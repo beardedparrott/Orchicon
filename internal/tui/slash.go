@@ -439,6 +439,38 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		},
 	})
 	add(SlashCommand{
+		// /mcp IS THE CONVERSATION SCOPE NOW, and it took the name from the generated command
+		// deliberately: the control screen's tenant-level "mcp" source was REMOVED (a definition is
+		// OWNER-SCOPED), so the /mcp it generated disappeared, and the name already means MCP to the
+		// operator. It joins /mode, /models, /fullsend and /project — the conversation's other
+		// per-conversation controls — exactly as the GUI's header disclosure joins SessionGrants.
+		Name: "/mcp", Usage: "/mcp [define | edit <name> | delete <name> | secret <name> | install <name>]",
+		Desc: "this conversation's MCP definitions — a definition belongs to exactly ONE scope (project / conversation / worker version)",
+		Run: func(m *App, args []string) tea.Cmd {
+			if m.chatConvID == "" {
+				m.dock.SetError("no conversation open — /mcp applies to ONE conversation; /project chooses the workspace")
+				return nil
+			}
+			return m.conversationMCPCommand(args)
+		},
+	})
+	add(SlashCommand{
+		// /skills IS THE PATH-LIST IDIOM, DELIBERATELY. The GUI selects skill files with a file-tree
+		// browser; the TUI has no file browser, and its established idiom for a path list is a typed
+		// field — the same treatment context_files already gets. The CAPABILITY is identical (enter
+		// the list, see it, save it) and validation is the SERVER'S, so only the control differs.
+		Name: "/skills", Usage: "/skills [<path>[, <path>…] | clear]",
+		Desc:    "this conversation's skill FILES (paths, not prompt text) — no argument reports them; clear empties the list",
+		MinArgs: 0,
+		Run: func(m *App, args []string) tea.Cmd {
+			if m.chatConvID == "" {
+				m.dock.SetError("no conversation open — /skills applies to one conversation; /project chooses the workspace")
+				return nil
+			}
+			return m.openConversationSkills(args)
+		},
+	})
+	add(SlashCommand{
 		Name: "/fullsend", Usage: "/fullsend",
 		Desc: "toggle FULLSEND for this conversation: stop asking for permission (a deny entry and the never-allow class still refuse)",
 		Run: func(m *App, _ []string) tea.Cmd {

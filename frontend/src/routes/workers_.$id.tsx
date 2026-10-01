@@ -21,6 +21,10 @@ import {
 } from "@/api/workers";
 import { EntityYamlView } from "@/components/EntityYamlView";
 import { FileInputButton } from "@/components/FileInputButton";
+import { useListProjects } from "@/api/projects";
+import { MCPServersPanel } from "@/components/MCPServersPanel";
+import { FileBrowser } from "@/components/FileBrowser";
+import { ProjectScopeSelect } from "@/components/conversations/ProjectScopeSelect";
 import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import {
@@ -40,6 +44,8 @@ import {
   GatedToolsSection,
   PermissionsSection,
   PlaneRoleField,
+  permissionsMCPServers,
+  withPermissionsMCPServers,
 } from "@/components/WorkerFormSections";
 import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
@@ -84,6 +90,9 @@ interface EditFormData {
   contextSources: string;
   concurrencyLimit: number;
   versionNote: string;
+  // skillFiles is a JSON array of absolute paths to skill artifacts — DISTINCT
+  // from `skills`, which is free-text prompt PROSE.
+  skillFiles: string;
 }
 
 // promptFields returns the four structured prompt fields from a version.
@@ -127,6 +136,15 @@ function WorkerDetailPage() {
   const [editing, setEditing] = useState(false);
   const [viewMode, setViewMode] = useState<"detail" | "code">("detail");
   const [selectedVersionId, setSelectedVersionId] = useState<string | undefined>();
+  // The worker version is project-agnostic, so a project is chosen PURELY to
+  // browse a tree for skill files. The stored values are absolute paths.
+  const [browseProjectId, setBrowseProjectId] = useState("");
+  const { data: projects } = useListProjects();
+  const browseProject = projects?.find((p) => p.id === browseProjectId);
+  const projectOptions = [
+    { value: "", label: "— pick a project to browse —", count: 0, archived: false },
+    ...(projects ?? []).map((p) => ({ value: p.id, label: p.name, count: 0, archived: false })),
+  ];
   const { data: selectedVersionData } = useGetWorkerVersion(selectedVersionId ?? "");
   const selectedVersion = selectedVersionId
     ? selectedVersionData ?? versions?.find((v) => v.id === selectedVersionId)
@@ -145,6 +163,7 @@ function WorkerDetailPage() {
       contextSources: "[]",
       concurrencyLimit: 1,
       versionNote: "",
+      skillFiles: "[]",
     },
     values: (selectedVersion ?? latestVersion)
       ? (() => {
@@ -161,6 +180,7 @@ function WorkerDetailPage() {
             contextSources: (selectedVersion ?? latestVersion)!.contextSources || "[]",
             concurrencyLimit: (selectedVersion ?? latestVersion)!.concurrencyLimit ?? 1,
             versionNote: (selectedVersion ?? latestVersion)!.versionNote ?? "",
+            skillFiles: JSON.stringify((selectedVersion ?? latestVersion)!.skillFiles ?? []),
           };
         })()
       : undefined,
@@ -273,6 +293,7 @@ function WorkerDetailPage() {
                       contextSources: formData.contextSources,
                       concurrencyLimit: formData.concurrencyLimit,
                       versionNote: formData.versionNote,
+                      skillFiles: formData.skillFiles,
                     });
                     publishVersion.mutateAsync(id);
                   })();
@@ -561,6 +582,7 @@ function WorkerDetailPage() {
                       contextSources: formData.contextSources,
                       concurrencyLimit: formData.concurrencyLimit,
                       versionNote: formData.versionNote,
+                      skillFiles: formData.skillFiles,
                     });
                     setEditing(false);
               })}
@@ -604,7 +626,7 @@ function WorkerDetailPage() {
               </div>
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <Label htmlFor="skills">Skills</Label>
+                  <Label htmlFor="skills">Skills (prompt text)</Label>
                   <FileInputButton onLoad={(c) => setValue("skills", c, { shouldValidate: true })} multiple label="Load files" />
                 </div>
                 <Textarea id="skills" className="min-h-[80px] font-mono text-xs" {...register("skills")} />
@@ -655,6 +677,55 @@ function WorkerDetailPage() {
                   onChange={(v) => setValue("contextSources", v)}
                 />
               </div>
+
+              {/* Skill FILES (real on-disk paths) — the SAME FileBrowser the GUI
+                  uses everywhere. A version is project-agnostic, so a project is
+                  chosen only to browse its tree. */}
+              <div className="space-y-2 rounded-lg border p-4">
+                <Label>Skill files</Label>
+                <p className="text-xs text-muted-foreground">
+                  Absolute paths to skill artifacts (files or directories)
+                  rendered into this version's prompt — distinct from the
+                  free-text Skills above. Pick a project to browse its tree; the
+                  paths are stored on the version, not the project.
+                </p>
+                <ProjectScopeSelect
+                  options={projectOptions}
+                  value={browseProjectId}
+                  onChange={setBrowseProjectId}
+                  label="Browse project"
+                />
+                {browseProject && (
+                  <FileBrowser
+                    projectId={browseProject.id}
+                    projectDir={browseProject.projectDir || ""}
+                    initialSelectedFiles={(() => {
+                      try {
+                        const a = JSON.parse(watch("skillFiles") || "[]");
+                        return Array.isArray(a) ? a : [];
+                      } catch {
+                        return [];
+                      }
+                    })()}
+                    onChange={(next) => setValue("skillFiles", JSON.stringify(next))}
+                    title="Skill files"
+                    description="Skill artifacts rendered into this version's prompt."
+                  />
+                )}
+              </div>
+
+              {/* MCP servers this VERSION defines inline. */}
+              <MCPServersPanel
+                scope={{
+                  kind: "workerVersion",
+                  value: permissionsMCPServers(watch("permissions")),
+                  onChange: (next) =>
+                    setValue("permissions", withPermissionsMCPServers(watch("permissions"), next)),
+                }}
+                inheritedFrom={
+                  browseProject ? { projectId: browseProject.id, projectName: browseProject.name } : undefined
+                }
+              />
 
               {errors.permissions && (
                 <p className="text-xs text-destructive">

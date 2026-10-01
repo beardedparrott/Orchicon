@@ -22,11 +22,25 @@ export const mcpKeys = {
     ["mcp-servers", "owner-conversation", conversationId] as const,
 };
 
-export function useMCPServerList() {
+// useMCPServerList lists MCP definitions. The SCOPE FILTER IS THE
+// INHERITANCE QUERY: the owner column IS the selection, so narrowing to a
+// project returns exactly the servers that project contributes — there is
+// no separate "inherited" RPC and no client-side union. With no scope the
+// list is the whole tenant (kept for callers that have no scope); every
+// screen passes a scope.
+export function useMCPServerList(scope?: { projectId?: string; conversationId?: string }) {
+  const key = scope?.projectId
+    ? mcpKeys.ownerProject(scope.projectId)
+    : scope?.conversationId
+      ? mcpKeys.ownerConversation(scope.conversationId)
+      : mcpKeys.all;
   return useQuery({
-    queryKey: mcpKeys.all,
+    queryKey: key,
     queryFn: async () => {
-      const res = await mcpClient.listMCPServers({});
+      const res = await mcpClient.listMCPServers({
+        projectId: scope?.projectId ?? "",
+        conversationId: scope?.conversationId ?? "",
+      });
       return (res.servers ?? []) as MCPServer[];
     },
   });

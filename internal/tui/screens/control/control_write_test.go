@@ -66,7 +66,7 @@ func TestControlRegistersEverySource(t *testing.T) {
 	// No "categories": groupings are managed IN PLACE, matching the GUI (a create in each pane's assign
 	// gesture; rename/delete on the folder row). See control_populate_test.go for the full reasoning.
 	want := map[string]bool{
-		"secrets": false, "mcp": false, "themes": false,
+		"secrets": false, "themes": false,
 		"providers": false, "webhooks": false, "adapters": false,
 		"settings": false, "admin": false,
 		// The durable permission policy: a full CRUD surface (list/add/remove
@@ -410,148 +410,34 @@ func TestAdaptersSourceDetailAndToggle(t *testing.T) {
 
 // ------------------------------------------------------------------- mcp
 
-func TestMCPCRUDToggleSecretInstallAndDelete(t *testing.T) {
-	m, _ := newWriteModel(t)
-
-	var created *apiv1.MCPServerCreateRequest
-	var updated *apiv1.MCPServerUpdateRequest
-	var installed, deleted string
-	var setID, setName, setVal, clearID, clearName string
-	m.rpcCreateMCP = func(ctx context.Context, r *apiv1.MCPServerCreateRequest) error { created = r; return nil }
-	m.rpcUpdateMCP = func(ctx context.Context, r *apiv1.MCPServerUpdateRequest) error { updated = r; return nil }
-	m.rpcInstallMCP = func(ctx context.Context, id string) error { installed = id; return nil }
-	m.rpcDeleteMCP = func(ctx context.Context, id string) error { deleted = id; return nil }
-	m.rpcSetMCPSecret = func(ctx context.Context, id, name, value string) error {
-		setID, setName, setVal = id, name, value
-		return nil
+// THE TENANT MCP SOURCE IS GONE, and this pins its absence.
+//
+// A definition is OWNER-SCOPED now (project / conversation / worker version), so the Control screen
+// has no tenant-level MCP pane — the same removal as the GUI's Settings MCP tab. The capability moved
+// to the three scopes through screens/mcpforms; what must not survive is the tenant LIST, which is
+// exactly what the old TestMCPCRUDToggleSecretInstallAndDelete drove (it selected the "mcp" source
+// and exercised create / edit / toggle / install / credential / delete against the unscoped list).
+//
+// The assertion is on the SOURCE SET rather than on one call, because the source is what generated the
+// `/mcp` command and what rendered the tenant list: if it is absent here, neither can come back
+// without this test failing.
+func TestControlHasNoTenantMCPSource(t *testing.T) {
+	m := New(nil, nil)
+	for _, s := range m.Base.SourcesForTest() {
+		if s.Name == "mcp" {
+			t.Fatalf("the tenant-level mcp source must be gone — a definition is owner-scoped now")
+		}
 	}
-	m.rpcClearMCPSecret = func(ctx context.Context, id, name string) error { clearID, clearName = id, name; return nil }
-
-	m.SelectSource("mcp")
-
-	// create
-	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	if !m.formOpen() {
-		t.Fatal("n did not open the MCP create form")
+	if m.SelectSource("mcp") {
+		t.Fatal(`SelectSource("mcp") must fail: there is no tenant-level MCP pane`)
 	}
-	m.activeForm().Set("name", "github-mcp")
-	m.activeForm().Set("transport", "stdio")
-	m.activeForm().Set("command", "npx")
-	m.activeForm().Set("args", "-y @mcp/server")
-	m.activeForm().Set("enabled", "true")
-	cmd, err := m.activeForm().Submit()
-	if err != nil {
-		t.Fatalf("mcp create submit: %v (%v)", err, m.activeForm().Errors)
-	}
-	if res := runCmd(t, cmd); res.Err != nil {
-		t.Fatalf("mcp create failed: %v", res.Err)
-	}
-	if created == nil || created.GetName() != "github-mcp" || created.GetCommand() != "npx" ||
-		!created.GetEnabled() || created.GetTransport() != apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STDIO {
-		t.Fatalf("mcp create payload wrong: %+v", created)
-	}
-	if len(created.GetArgs()) != 2 {
-		t.Fatalf("mcp args not split: %+v", created.GetArgs())
-	}
-
-	m.clearForm() // the screen clears the form on submit
-
-	// seed the pane with a cached server
-	m.LoadItems("mcp", []kit2.Item{{ID: "m1", Title: "github", Meta: "enabled"}}, "")
-	m.SelectSource("mcp")
-	m.mcpServers["m1"] = &apiv1.MCPServer{
-		Id: "m1", Name: "github", Enabled: true,
-		Transport:       apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STDIO,
-		RequiredSecrets: []string{"GITHUB_TOKEN"},
-	}
-
-	// edit
-	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
-	if !m.formOpen() {
-		t.Fatal("e did not open the MCP edit form")
-	}
-	m.activeForm().Set("command", "uvx")
-	m.activeForm().Set("enabled", "false")
-	cmd, err = m.activeForm().Submit()
-	if err != nil {
-		t.Fatalf("mcp edit submit: %v (%v)", err, m.activeForm().Errors)
-	}
-	if res := runCmd(t, cmd); res.Err != nil {
-		t.Fatalf("mcp edit failed: %v", res.Err)
-	}
-	if updated == nil || updated.GetId() != "m1" || updated.GetCommand() != "uvx" || updated.GetEnabled() {
-		t.Fatalf("mcp edit payload wrong: %+v", updated)
-	}
-
-	m.clearForm() // the screen clears the form on submit
-
-	// toggle enabled (currently enabled → disable)
-	updated = nil
-	tog, ok := m.actionForKey("t")
-	if !ok || tog.Label != "disable" || !tog.NeedsConfirm() {
-		t.Fatalf("mcp toggle action = %+v (ok=%v)", tog, ok)
-	}
-	if res := runCmd(t, m.confirmAndRun(tog, "disable")); res.Err != nil {
-		t.Fatalf("mcp disable failed: %v", res.Err)
-	}
-	if updated == nil || updated.GetEnabled() {
-		t.Fatalf("mcp disable payload wrong: %+v", updated)
-	}
-
-	// install
-	inst, ok := m.actionForKey("i")
-	if !ok {
-		t.Fatal("no install action for a stdio MCP server")
-	}
-	if res := runCmd(t, m.openActionsDialog(inst)); res.Err != nil {
-		t.Fatalf("install failed: %v", res.Err)
-	}
-	if installed != "m1" {
-		t.Fatalf("install RPC did not fire: %q", installed)
-	}
-
-	// store a credential (value masked, written once)
-	f := m.secretFormForSource()
-	if f == nil {
-		t.Fatal("no MCP credential form")
-	}
-	if f.Values["name"] != "GITHUB_TOKEN" {
-		t.Fatalf("credential key not prefilled: %q", f.Values["name"])
-	}
-	f.Set("value", "ghp_supersecret")
-	cmd, err = f.Submit()
-	if err != nil {
-		t.Fatalf("mcp secret submit: %v (%v)", err, f.Errors)
-	}
-	if res := runCmd(t, cmd); res.Err != nil {
-		t.Fatalf("set credential failed: %v", res.Err)
-	}
-	if setID != "m1" || setName != "GITHUB_TOKEN" || setVal != "ghp_supersecret" {
-		t.Fatalf("set credential payload wrong: %q %q %q", setID, setName, setVal)
-	}
-
-	// clear the credential (Confirm-gated)
-	clr, ok := m.actionForKey("c")
-	if !ok || !clr.NeedsConfirm() {
-		t.Fatalf("no clear-credential action: %+v (ok=%v)", clr, ok)
-	}
-	if res := runCmd(t, m.confirmAndRun(clr, "clear credential")); res.Err != nil {
-		t.Fatalf("clear credential failed: %v", res.Err)
-	}
-	if clearID != "m1" || clearName != "GITHUB_TOKEN" {
-		t.Fatalf("clear credential payload wrong: %q %q", clearID, clearName)
-	}
-
-	// delete (Confirm-gated)
-	del, ok := m.actionForKey("x")
-	if !ok || !del.NeedsConfirm() {
-		t.Fatalf("no delete action for MCP: %+v", del)
-	}
-	if res := runCmd(t, m.confirmAndRun(del, "delete")); res.Err != nil {
-		t.Fatalf("mcp delete failed: %v", res.Err)
-	}
-	if deleted != "m1" {
-		t.Fatalf("mcp delete RPC did not fire: %q", deleted)
+	// The `s` credential chord reaches NO pane any more (the provider token became a field on the
+	// provider form; the MCP pane is gone), so an `s` keystroke must open nothing. A leftover opener
+	// would be a knob nothing reaches — the same reasoning the provider token assertion above uses.
+	m.SelectSource("secrets")
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if m.formOpen() {
+		t.Fatal("the s chord must not open a credential form — no pane answers secretFormForSource now")
 	}
 }
 

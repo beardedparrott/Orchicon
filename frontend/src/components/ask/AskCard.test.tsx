@@ -50,7 +50,7 @@ describe("parseAskUserArgs", () => {
   });
 });
 
-// Source-scan checks (mirrors MCPPicker.test.tsx): verify the card and its
+// Source-scan checks (mirrors MCPServersPanel.test.tsx): verify the card and its
 // wiring into the transcript route. Rendering is intentionally not exercised
 // here — these assertions pin the CONTRACT (interactivity only when
 // unanswered; the reply goes out through the existing send path).
