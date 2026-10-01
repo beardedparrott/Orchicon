@@ -11,7 +11,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CompactConversationRequest, CompactConversationResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, InterjectConversationTurnRequest, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, ListPermissionGrantsRequest, ListPermissionGrantsResponse, ReplyPermissionAskRequest, ReplyPermissionAskResponse, RevokePermissionGrantRequest, RevokePermissionGrantResponse, SetConversationFullsendRequest, SetConversationFullsendResponse, SetConversationModelRequest, SetConversationModelResponse, SetConversationModeRequest, SetConversationModeResponse, SetConversationProjectRequest, SetConversationProjectResponse, SetConversationSkillFilesRequest, SetConversationSkillFilesResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse, WatchTurnStreamRequest } from "./ask_orchicon_service_pb.js";
+import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CompactConversationRequest, CompactConversationResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, InterjectConversationTurnRequest, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, ListPendingAsksRequest, ListPendingAsksResponse, ListPermissionGrantsRequest, ListPermissionGrantsResponse, ReplyPermissionAskRequest, ReplyPermissionAskResponse, RevokePermissionGrantRequest, RevokePermissionGrantResponse, SetConversationFullsendRequest, SetConversationFullsendResponse, SetConversationModelRequest, SetConversationModelResponse, SetConversationModeRequest, SetConversationModeResponse, SetConversationProjectRequest, SetConversationProjectResponse, SetConversationSkillFilesRequest, SetConversationSkillFilesResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse, WatchTurnStreamRequest } from "./ask_orchicon_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -297,6 +297,37 @@ export const AskOrchiconService = {
       name: "ListPermissionGrants",
       I: ListPermissionGrantsRequest,
       O: ListPermissionGrantsResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ListPendingAsks returns the conversation's still-OPEN asks: a permission
+     * card or a clarifying question the turn is parked on, awaiting a human
+     * decision.
+     *
+     * WHY A QUERY AND NOT ONLY THE STREAM ARM. An ask is delivered on the turn
+     * stream, which means a client learns about it only if it happens to be
+     * WATCHING that turn at that instant. Any interruption — a re-attach, a pane
+     * switch, a socket drop, a turn the client did not itself start — and the card
+     * has no path to the operator, while the SERVER keeps the turn parked waiting
+     * for an answer that has no card to give it. That is the failure the operator
+     * reported: the GUI showed a pending card while the TUI appeared stalled.
+     *
+     * The server has always held this state (askorchicon.pendingAskRegistry) and
+     * replayed it to a LATE WATCHER; this exposes it as a question any client can
+     * ask at any time, so a card becomes DISCOVERABLE from durable state rather
+     * than merely deliverable as a live event. A client that calls this on attach,
+     * re-attach and its turn poll cannot miss a card, and calling it twice is
+     * harmless because both clients dedupe by ask id.
+     *
+     * Decided and finalized asks are NOT returned: their outcome is already in the
+     * transcript, and replaying one would resurrect a card the operator answered.
+     *
+     * @generated from rpc orchicon.api.v1.AskOrchiconService.ListPendingAsks
+     */
+    listPendingAsks: {
+      name: "ListPendingAsks",
+      I: ListPendingAsksRequest,
+      O: ListPendingAsksResponse,
       kind: MethodKind.Unary,
     },
     /**
