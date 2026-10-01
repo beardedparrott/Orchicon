@@ -168,8 +168,8 @@ func TestE2ENativeWorkerUsesProjectServerAndSkill(t *testing.T) {
 	mf := scheduler.ExecutionManifest{
 		ExecutionID: exec.ID, ProjectID: seed.ProjectID, TaskID: seed.WorkItemID,
 		WorkerID: seed.WorkerID, WorkerVersion: seed.WorkerVersion,
-		Permissions: seed.VersionPermissions,
-		ProjectDir:  seed.ProjectDir,
+		Permissions:  seed.VersionPermissions,
+		ProjectDir:   seed.ProjectDir,
 		SystemPrompt: "You are the E2E proof worker.", ModelRef: "orchicon/e2e-probe",
 	}
 

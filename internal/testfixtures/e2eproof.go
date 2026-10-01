@@ -56,6 +56,17 @@ func Pool(t *testing.T) *db.Pool {
 	if err := migrate.Run(ctx, pool, assets.MigrationsFS, assets.MigrationsDir); err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
+	// The tenant ROOT row MUST exist before any tenant-scoped write: mcp_servers
+	// carries a `(tenant_id) REFERENCES tenants(id)` FK, so on a freshly-migrated
+	// database (CI, or any database the sandbox daemon has not already booted
+	// against) an UpsertMCPServer for E2ETenant fails with SQLSTATE 23503 unless
+	// the tenant is seeded first. SeedDevWorkers does NOT create the tenant (it
+	// writes tenant-scoped rows, which is exactly what would then violate the
+	// FK), so the seed belongs here rather than relying on the daemon's boot path
+	// having run — which is what made this harness pass locally and fail on CI.
+	if err := db.SeedDevTenant(ctx, pool, E2ETenant); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
 	if err := db.SeedDevWorkers(ctx, pool, E2ETenant); err != nil {
 		t.Fatalf("seed dev workers: %v", err)
 	}

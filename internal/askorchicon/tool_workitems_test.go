@@ -47,6 +47,15 @@ func workItemKindTestPool(t *testing.T) *db.Pool {
 	if err := migrate.Run(ctx, pool, assets.MigrationsFS, assets.MigrationsDir); err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
+	// The tenant ROOT row must exist before any tenant-scoped write: mcp_servers
+	// carries a `(tenant_id) REFERENCES tenants(id)` FK, so a freshly-migrated
+	// database (CI, or any DB the sandbox daemon has not booted against) rejects
+	// an UpsertMCPServer for tnt_dev with SQLSTATE 23503. Seeding the tenant here
+	// makes the DB-backed askorchicon suites self-sufficient instead of depending
+	// on the daemon's boot path having run first.
+	if err := db.SeedDevTenant(ctx, pool, "tnt_dev"); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
 	if err := db.SeedDevWorkers(ctx, pool, "tnt_dev"); err != nil {
 		t.Fatalf("seed dev workers: %v", err)
 	}

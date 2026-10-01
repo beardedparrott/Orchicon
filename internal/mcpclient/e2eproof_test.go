@@ -69,7 +69,8 @@ func TestE2EFixtureProbeDiscoversAndEchoesNonce(t *testing.T) {
 
 // AC 5 (fixture half, stdio): the SAME probe tool is reachable over the stdio
 // transport (the transport with child-lifecycle risk in production). The re-exec
-// hook lives in this package's TestMain / TestE2EFixtureReexec below.
+// hook lives in this package's TestMain (the stdio child returns from TestMain
+// via E2EStdioReexec before m.Run, so no test function of its own is needed).
 func TestE2EFixtureProbeOverStdio(t *testing.T) {
 	spec := E2EStdioSpec("e2estdio")
 	m := NewManager(nil)
