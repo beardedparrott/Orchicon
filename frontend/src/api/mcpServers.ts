@@ -1,6 +1,6 @@
-// MCP server management hooks (ADR-0008): the tenant-facing MCP surface
-// behind Settings → Adapters → MCP. CRUD over tenant-scoped MCP server
-// entries (stdio + streamable HTTP), the curated registry catalog with
+// MCP server management hooks (ADR-0008): the MCP surface
+// behind Settings → Adapters → MCP. CRUD over OWNER-SCOPED MCP server
+// definitions (stdio + streamable HTTP), the curated registry catalog with
 // one-click prefill, explicit-only auto-install (dry-run in CI), and
 // write-only credentials via the tenant secrets store (never returned).
 //

@@ -843,9 +843,13 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		// --- MCP servers (adapter-settings MCP management) ---
 		{
 			Name:        "list_mcp_servers",
-			Description: "List MCP server entries for the current tenant (Settings → Adapters → MCP). Credentials never appear — env/header values are ${SECRET_NAME} references; has_secret_stored reports whether any required secret exists.",
+			Description: "List MCP server definitions, SCOPE-ADDRESSED (Settings → Adapters → MCP): pass project_id and/or conversation_id to list that owner's definitions (project ∪ conversation), or neither to list every definition in the tenant. Credentials never appear — env/header values are ${SECRET_NAME} references; has_secret_stored reports whether any required secret exists.",
 			Mutating:    false,
 			Fn:          toolListMCPServers,
+			Properties: map[string]PropertySchema{
+				"project_id":      {Type: "string", Description: "Optional scope: the project whose definitions to list"},
+				"conversation_id": {Type: "string", Description: "Optional scope: the Ask conversation whose definitions to list"},
+			},
 		},
 		{
 			Name:        "get_mcp_server",

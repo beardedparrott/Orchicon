@@ -64,9 +64,22 @@ func compactServer(e mcpsettings.Entry) compactMCPServer {
 }
 
 func toolListMCPServers(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
+	// SCOPE-ADDRESSED, mirroring the MCPService RPC (MCPServerListRequest's
+	// project_id / conversation_id → Service.ListForScope): pass an owner to
+	// list that owner's definitions (project ∪ conversation), or neither to
+	// list every definition in the tenant. Before this the tool called
+	// ListForTenant unconditionally, so the Ask surface listed every owner's
+	// definitions — a drift from the platform surface it mirrors.
+	var params struct {
+		ProjectID      string `json:"project_id"`
+		ConversationID string `json:"conversation_id"`
+	}
+	if len(args) > 0 && string(args) != "null" {
+		_ = json.Unmarshal(args, &params)
+	}
 	svc := mcpSvc(pool, nil)
 	tenantID := tenant.FromContext(ctx)
-	list, err := svc.ListForTenant(ctx, tenantID)
+	list, err := svc.ListForScope(ctx, tenantID, params.ProjectID, params.ConversationID)
 	if err != nil {
 		return nil, err
 	}
