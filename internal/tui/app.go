@@ -156,11 +156,27 @@ type App struct {
 	help          helpModel
 	routes        []KeyRoute
 	quitting      bool
-	// launchDir is the directory orch was launched from, set ONLY by the real
-	// client (tui.WithLaunchDir) and empty in tests and embedders. Empty means the
-	// launch check never runs — which is why every existing NewApp caller is
-	// unaffected by the launch prompt existing at all.
+	// launchDir is the directory the process was launched from — a FACT ABOUT THE
+	// PROCESS (os.Getwd), set by tui.WithLaunchDir and empty in tests and embedders.
+	//
+	// IT IS NEEDED ON EVERY SHELL, including a post-/connect continuation: the rail's
+	// workspace default (railprojects.go applyLaunchDirScope) is derived from it, so
+	// the directory is passed on every shell of a launch. Empty means "no directory",
+	// which disables that default.
 	launchDir string
+	// launchPromptArmed says whether THIS shell may raise the launch-time project
+	// PROMPT (launch.go). It is deliberately a SEPARATE signal from launchDir being
+	// non-empty: they answer two different questions and gating both on one decision
+	// is what silently disabled the workspace default after every reconnect.
+	//
+	// The prompt is a QUESTION, asked only on the FIRST shell of a launch: a /connect
+	// round trip re-enters runShell (cmd/orch/main.go) and is a CONTINUATION of the
+	// session, where re-asking would be the nagging the feature exists to avoid. The
+	// directory is not a question and is still needed there for the scope default.
+	//
+	// Defaults to false, so every existing NewApp caller (tests, embedders) is
+	// unaffected. Set only by tui.WithLaunchPrompt.
+	launchPromptArmed bool
 	// launch is the launch-time project prompt while it is up (nil = not showing).
 	// It is an App-level overlay rather than a screen because it exists BEFORE any
 	// tab has been chosen and must not be reachable as a tab.
@@ -475,8 +491,14 @@ func (m *App) diffPaneWidth() int {
 // passes none behaves exactly as before.
 type AppOption func(*App)
 
-// WithLaunchDir tells the app which directory orch was launched from, enabling the
-// launch-time project prompt (launch.go). An empty dir disables it.
+// WithLaunchDir sets the launch DIRECTORY — where the process was started. It is a
+// FACT ABOUT THE PROCESS and is passed on every shell of a launch.
+//
+// It does NOT arm the launch-time project prompt: that is a first-shell-only rule and
+// has its own option, WithLaunchPrompt. The directory still feeds the rail's workspace
+// default (railprojects.go applyLaunchDirScope) on every shell, including a
+// post-/connect continuation. An empty dir sets no directory at all, which disables
+// both the default and (indirectly) the prompt.
 func WithLaunchDir(dir string) AppOption {
 	return func(m *App) {
 		dir = strings.TrimSpace(dir)
@@ -488,6 +510,28 @@ func WithLaunchDir(dir string) AppOption {
 		}
 		m.launchDir = filepath.Clean(dir)
 	}
+}
+
+// WithLaunchPrompt arms the launch-time project prompt (launch.go) for THIS shell.
+//
+// IT IS SEPARATE FROM WithLaunchDir ON PURPOSE. The directory is a fact about the process
+// and is passed on every shell; the prompt is a question, and it is armed only on the
+// FIRST shell of a launch. A continuation (/connect, or a rejected stored session)
+// re-enters the shell with the same directory and this option NOT passed, so it derives
+// its workspace from the directory without asking anything again.
+//
+// It is an option of its own, rather than a boolean on WithLaunchDir, so the two cannot
+// be left out of step by argument order or by a zero value.
+//
+// A continuation does NOT remember the previous shell's workspace: the new App starts
+// unchosen (NewApp sets projectScopeAll, projectScopeChosen=false) and re-derives the
+// scope from the launch directory. A workspace the operator picked BY HAND before
+// reconnecting is therefore replaced by the launch-directory default — deliberate: the
+// alternative is carrying scope state across shells, which is wrong the moment a shell
+// sits in a different directory, and the default is strictly better than falling back to
+// All projects. WithLaunchDir's empty-directory opt-out still wins over this option.
+func WithLaunchPrompt() AppOption {
+	return func(m *App) { m.launchPromptArmed = true }
 }
 
 // NewApp builds the shell over an established client set.
@@ -1961,13 +2005,19 @@ func (m *App) Init() tea.Cmd {
 	// poke only arrives when the server chooses to emit one, and the follow-up reply that made this
 	// necessary is written durably without any live event at all.
 	cmds = append(cmds, refreshCmd(m.refreshGen))
-	// THE LAUNCH CHECK — one question, and only when this directory is unattached.
+	// THE LAUNCH CHECK — one question, and only when this shell may ask it and the
+	// directory is unattached.
 	//
 	// It runs ALONGSIDE the first loads rather than before them, so a slow check
 	// never delays startup and a failed one costs nothing: until the answer lands,
 	// the app is simply the normal launch page. That also keeps the worst case
 	// honest — if the plane cannot be listed, no question is asked at all.
-	if m.launchDir != "" {
+	//
+	// THE ARMING GATE IS SEPARATE FROM THE DIRECTORY, and both must hold: the directory
+	// (a fact about the process, passed on every shell) and launchPromptArmed (a
+	// first-shell-only rule). A /connect continuation carries the directory but is not
+	// armed, so it re-derives the rail's workspace without re-asking this question.
+	if m.launchDir != "" && m.launchPromptArmed {
 		cmds = append(cmds, m.checkLaunchProject())
 	}
 	if c := m.drainStaged(); c != nil {
