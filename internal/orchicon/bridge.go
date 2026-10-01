@@ -65,12 +65,12 @@ type NativeBridge struct {
 	// is container-backed (always-container runtime mode). Nil =
 	// in-process (local mode / standalone / headless).
 	rtClient scheduler.RuntimeClient
-	// mcpConfig resolves the session's MCP server selection (ADR-0008:
-	// worker → project → tenant-default → none over the tenant server list).
-	// Nil/absent → no MCP tools (sessions unaffected). Defaults to the no-op
-	// source so the feature degrades safely until adapter-settings storage
-	// lands.
-	mcpConfig mcpclient.ConfigSource
+	// mcpResolver resolves the session's MCP definitions by SCOPE (ADR-0008,
+	// owner-scoped union). Nil/absent → no MCP tools (sessions unaffected).
+	// A session resolves the WORKER scope — the union of the project's owned
+	// definitions and the executing version's inline specs, the latter
+	// carried on scheduler.ExecutionManifest.Permissions.
+	mcpResolver mcpclient.ScopeResolver
 	// mcpSecretResolver replaces ${SECRET_NAME} refs in resolved MCP server
 	// env/headers with stored tenant-secret plaintext at session time.
 	// Nil → pass-through (no secret resolution).
@@ -184,12 +184,10 @@ func (b *NativeBridge) Kind() string { return "orchicon" }
 // foreign adapter).
 func (b *NativeBridge) SessionOwnerKind() string { return "orchicon" }
 
-// SetConfigSource sets the MCP server config-resolution source for
-// sessions (ADR-0008). Absent → no MCP tools. The platform injects a
-// real source once tenant server storage lands (adapter-settings task);
-// until then the no-op default keeps sessions unaffected.
-func (b *NativeBridge) SetConfigSource(src mcpclient.ConfigSource) {
-	b.mcpConfig = src
+// SetScopeResolver sets the MCP scope resolver for sessions (ADR-0008).
+// Absent → no MCP tools (sessions unaffected).
+func (b *NativeBridge) SetScopeResolver(src mcpclient.ScopeResolver) {
+	b.mcpResolver = src
 }
 
 // SetMCPSecretResolver sets the ${SECRET_NAME} → plaintext resolver used
@@ -207,7 +205,7 @@ func (f ProviderResolverFunc) Get(ctx context.Context, tenantID, providerID stri
 }
 
 // buildSession constructs a native worker Session for an execution: MCP
-// tools (worker → project → tenant-default), host tools (worktree-scoped
+// tools (the scope-addressed union), host tools (worktree-scoped
 // bash/file), memory store, and the provider-bound session. It is the
 // shared construction path for a fresh run (Start) and a follow-up
 // (ContinueSession) so a follow-up is a FULL live session with the same
@@ -225,12 +223,12 @@ func (b *NativeBridge) buildSession(ctx context.Context, exec db.ExecutionRow, m
 	if pd == "" {
 		return nil, nil, fmt.Errorf("orchicon bridge: no project dir (manifest.ProjectDir and bridge projectDir are both empty)")
 	}
-	// MCP tool resolution (ADR-0008): worker selection → project selection
-	// → tenant-default → none, over the tenant-configured server list.
+	// MCP tool resolution (ADR-0008): ONE scope-addressed union
+	// (project-owned ∪ the scope's own definitions), no precedence chain.
 	// Connections are established NOW — per session, never at
 	// control-plane boot — and tool discovery runs at construction so the
 	// discovered signatures are present in the model's first request.
-	mt, terr := b.mcpResolveAndStart(ctx, exec)
+	mt, terr := b.mcpResolveAndStart(ctx, exec, manifest)
 	if terr != nil {
 		return nil, nil, terr
 	}

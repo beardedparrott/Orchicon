@@ -33,6 +33,7 @@ import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/mutate"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/mcpforms"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 )
 
@@ -41,6 +42,10 @@ const (
 	formCreateProject = "project-create"
 	formEditProject   = "project-edit"
 	formProjectDir    = "project-dir"
+	// formDefineProjectMCP / formCatalogProjectMCP are the project's OWNED-MCP
+	// definition surfaces — the `m` key (define one) and `M` key (catalog pick).
+	formDefineProjectMCP  = "project-mcp-define"
+	formCatalogProjectMCP = "project-mcp-catalog"
 )
 
 type projectFormMsg struct {
@@ -63,10 +68,7 @@ type projectFormMsg struct {
 // THE MCP SELECTION IS HERE because it is not carried on the Project message at all (ListProjects
 // and GetProject omit it), so it needs GetProjectMCPServers.
 type projectFormData struct {
-	images      []kit2.Option
-	mcpServers  []*apiv1.MCPServer
-	mcpSelected []string
-	mcpLoaded   bool
+	images []kit2.Option
 }
 
 // prepProjectForm fetches what the form needs and opens it.
@@ -107,23 +109,11 @@ func (m *Model) prepProjectForm(mode, id string) tea.Cmd {
 				}
 			}
 		}
-		if cl.MCP != nil {
-			list, err := cl.MCP.ListMCPServers(ctx, connect.NewRequest(&apiv1.MCPServerListRequest{}))
-			if err == nil {
-				msg.data.mcpServers = list.Msg.GetServers()
-				msg.data.mcpLoaded = true
-				if id != "" {
-					if sel, serr := cl.MCP.GetProjectMCPServers(ctx, connect.NewRequest(&apiv1.ProjectMCPServersGetRequest{ProjectId: id})); serr == nil {
-						msg.data.mcpSelected = sel.Msg.GetMcpServerIds()
-					} else {
-						// The list loaded but THIS project's selection did not, so we do not know what
-						// it is. Treating that as "nothing selected" would let a save clear a selection
-						// the operator never saw.
-						msg.data.mcpLoaded = false
-					}
-				}
-			}
-		}
+		// NO MCP LIST READ ANY MORE. There is no project↔server selection RPC: a
+		// definition is OWNED by a project (mcp_servers.project_id), so the form
+		// no longer picks a set of tenant-wide servers. The create FORM carries a
+		// JSON seed of owned definitions (ProjectMCPDefinitionsField) and the edit
+		// path manages rows one at a time from the project action bar.
 		return msg
 	}
 }
@@ -180,6 +170,13 @@ func ProjectFormFields(p *apiv1.Project, images []kit2.Option) []kit2.FieldSpec 
 			Name: "context_files", Label: contextFilesLabel, Kind: kit2.KTextArea,
 			Placeholder: contextFilesPlaceholder, Initial: initial(func() string { return contextFilesText(p.GetContextFiles()) }),
 		},
+		// SKILL FILES: the SAME path-list idiom as context_files, beside it.
+		// See the doc comment on skillFilesLabel for why this asymmetry with the
+		// GUI's file-tree browser is deliberate.
+		{
+			Name: "skill_files", Label: skillFilesLabel, Kind: kit2.KTextArea,
+			Placeholder: skillFilesPlaceholder, Initial: initial(func() string { return contextFilesText(p.GetSkillFiles()) }),
+		},
 	}
 }
 
@@ -211,6 +208,27 @@ const (
 	contextFilesPlaceholder = "(dirs read in full)"
 )
 
+// SKILL FILES USE THE PATH-LIST IDIOM, DELIBERATELY, AND THIS IS THE ONE PLACE IT IS
+// WRITTEN DOWN. The GUI selects skill files with a file-tree browser (FileBrowser.tsx);
+// the TUI has NO file browser, and its established idiom for a path list is a typed
+// field — which is exactly what context_files already is (ParseContextFiles, and
+// TestContextFilesRoundTrip in project_form_parity_test.go). The CAPABILITY is
+// identical — enter the list, see it, save it — and validation is the SERVER'S
+// (contextfiles.Validate / ValidateWithin), never a second client-side copy. Only the
+// control differs, and it differs because there is nothing else to differ with.
+const (
+	skillFilesLabel = "Skill files (in project dir, one per line)"
+	// Same directory note as context_files: a skill artifact may be a directory.
+	skillFilesPlaceholder = "(dirs read in full)"
+)
+
+// ParseSkillFiles reads the skill_files field with the SAME rule as context_files: one
+// path per line, commas also accepted, blanks dropped. It is a thin alias rather than a
+// twin implementation — the rule is literally identical, and two parsers would
+// eventually disagree about an edge. The alias exists so a reader of wireProjectForm is
+// not misled about which field it is parsing.
+func ParseSkillFiles(s string) []string { return ParseContextFiles(s) }
+
 // runtimeImageField is the project's default runtime image.
 //
 // A PICKER WHEN THE LIST LOADED, a plain text field otherwise — the same shape the work item's
@@ -236,78 +254,41 @@ func runtimeImageField(current string, images []kit2.Option) kit2.FieldSpec {
 	}
 }
 
-// ProjectMCPField is the MCP server selection as a form field, or nil when there is
-// nothing to choose from.
+// ProjectMCPDefinitionsField is the CREATE form's MCP seed: a JSON array of inline
+// specs, applied as OWNED ROWS for the new project after CreateProject returns.
 //
-// A SEPARATE ADAPTER rather than a member of ProjectFormFields, because its options are
-// ASYNC — the field list is built synchronously by three hosts, while this needs the
-// tenant's server list to have been fetched first. Same shape as project_dir, which is
-// appended by the hosts that can supply it.
+// IT IS A SEED AND NOT AN EDITOR, on purpose. A create has no existing rows, so
+// writing the array cannot delete anything. The EDIT form deliberately has no MCP
+// field: rows are edited one at a time from the project's action bar, because a
+// single text blob save would silently delete rows the operator never saw — the exact
+// failure the old `mcpLoaded` flag existed to prevent, and it cannot be prevented in a
+// blob editor.
 //
-// NIL WHEN THERE ARE NO SERVERS: an empty multi-select would be a control that cannot do
-// anything, and the project's MCP behaviour in that state (fall through to the tenant
-// default) is not something the operator can change from here anyway.
-//
-// Initial is the COMMA-JOINED selection, which is how kit2.Form seeds a multi-select
-// (and why it can never open empty for a project that has servers selected).
-func ProjectMCPField(servers []*apiv1.MCPServer, selected []string) *kit2.FieldSpec {
-	if len(servers) == 0 {
-		return nil
-	}
-	opts := make([]kit2.Option, 0, len(servers))
-	for _, s := range servers {
-		label := s.GetName()
-		if !s.GetEnabled() {
-			// Disabled servers are still selectable — a project may reference one that is
-			// currently off — but the row says so, so the operator is not surprised when
-			// nothing happens at run time.
-			label += " (disabled)"
-		}
-		opts = append(opts, kit2.Option{Value: s.GetId(), Label: label})
-	}
-	return &kit2.FieldSpec{
-		Name: "mcp_servers", Label: "MCP servers (space toggles)", Kind: kit2.KMultiSelect,
-		Options: opts, Initial: strings.Join(selected, ","),
+// IT REPLACES THE OLD SELECT-FROM-TENANT FIELD (ProjectMCPField + withMCP). That field
+// listed the tenant's entries and wrote a reference selection; under ownership the TUI
+// must DEFINE project-owned entries, which is a different act. This is the create half;
+// the define/edit/secret/install forms live in projectActions().
+func ProjectMCPDefinitionsField() kit2.FieldSpec {
+	return kit2.FieldSpec{
+		Name: "mcp_servers", Label: "MCP definitions (JSON)", Kind: kit2.KJSON,
+		Placeholder: `[{"id":"github","type":"stdio","command":["npx","-y","@modelcontextprotocol/server-github"],"env":{"GITHUB_TOKEN":"${GITHUB_TOKEN}"}}]`,
 	}
 }
 
-// withMCP appends the MCP field when it exists.
-func withMCP(specs []kit2.FieldSpec, servers []*apiv1.MCPServer, selected []string) []kit2.FieldSpec {
-	if f := ProjectMCPField(servers, selected); f != nil {
-		specs = append(specs, *f)
-	}
-	return specs
-}
-
-// setProjectMCPServers writes a project's MCP selection. It is a no-op when mcpLoaded is
-// false, which is the important case: the field was not shown, so an empty list here
-// means "we do not know", not "clear it". Writing on a failed load would wipe a
-// selection the operator never saw.
-//
-// AN EMPTY LIST IS OTHERWISE SENT DELIBERATELY, and the server reads it as "no project
-// selection" — the project then falls through to the tenant default. That is what makes
-// the selection removable from the TUI; sending only non-empty lists would leave a
-// selection that could never be undone.
-func (m *Model) setProjectMCPServers(ctx context.Context, projectID string, ids []string, loaded bool) error {
-	if !loaded || m.cl == nil || m.cl.MCP == nil || projectID == "" {
-		return nil
-	}
-	_, err := m.cl.MCP.SetProjectMCPServers(ctx, connect.NewRequest(&apiv1.ProjectMCPServersSetRequest{
-		ProjectId:    projectID,
-		McpServerIds: ids,
-	}))
-	return err
-}
+// NOTE: setProjectMCPServers was REMOVED. The project↔server selection RPC pair
+// (SetProjectMCPServers / GetProjectMCPServers) is gone: selection is OWNERSHIP
+// (mcp_servers.project_id), so there is no separate selection to write. The create
+// form's MCP control is now the owned-definition seed (ProjectMCPDefinitionsField).
 
 // newProjectCreateForm builds the create form from the shared field list.
 func (m *Model) newProjectCreateForm() *kit2.Form {
 	return m.newProjectCreateFormWith(projectFormData{})
 }
 
-// newProjectCreateFormWith adds the option lists that need a round trip: the runtime-image picker
-// and the MCP selection.
+// newProjectCreateFormWith adds the option lists that need a round trip (the runtime-image
+// picker) and the owned-MCP-definition seed.
 func (m *Model) newProjectCreateFormWith(d projectFormData) *kit2.Form {
-	specs := withMCP(ProjectFormFields(nil, d.images), d.mcpServers, d.mcpSelected)
+	specs := append(ProjectFormFields(nil, d.images), ProjectMCPDefinitionsField())
 	f := kit2.NewForm("New project", specs...)
 	m.wireProjectForm(f, formCreateProject, "")
 	return f
@@ -325,7 +306,7 @@ func (m *Model) newProjectEditFormWith(p *apiv1.Project, d projectFormData) *kit
 		Name: "project_dir", Label: "Project dir", Kind: kit2.KText,
 		Initial: p.GetProjectDir(), Placeholder: "/home/me/projects/orchicon",
 	})
-	specs = withMCP(specs, d.mcpServers, d.mcpSelected)
+
 	f := kit2.NewForm("Edit project", specs...)
 	m.wireProjectForm(f, formEditProject, p.GetId())
 	return f
@@ -516,18 +497,35 @@ type projectUpdater interface {
 	UpdateProject(context.Context, *connect.Request[apiv1.UpdateProjectRequest]) (*connect.Response[apiv1.UpdateProjectResponse], error)
 }
 
+// projectMCPCreator is the slice of the MCP client applyProjectPostCreate needs to
+// materialize the create form's owned definitions. A narrow interface so the two-call
+// create is testable without a full client, the same seam as projectUpdater.
+type projectMCPCreator interface {
+	CreateMCPServer(context.Context, *connect.Request[apiv1.MCPServerCreateRequest]) (*connect.Response[apiv1.MCPServerCreateResponse], error)
+}
+
 // applyProjectPostCreate attaches what CreateProject cannot carry: the concurrency
-// override and the context files.
+// override, the context files, the skill files, and the owned MCP definitions the create
+// form seeded.
 //
-// BOTH ARE CONDITIONALLY SENT, which is right for a CREATE and the opposite of the edit
-// path: there is nothing to clear on a project that was just made, so an empty list
+// THE UPDATE IS CONDITIONALLY SENT, which is right for a CREATE and the opposite of the
+// edit path: there is nothing to clear on a project that was just made, so an empty list
 // would be a no-op write and max_concurrent_runs=0 would write the value the server
 // already defaulted to. An update with nothing to say is SKIPPED ENTIRELY, so a plain
 // create does not depend on a second call succeeding — otherwise a failed follow-up
 // would report failure for a project that exists and is perfectly usable.
-func applyProjectPostCreate(ctx context.Context, cl projectUpdater, id string, maxRuns int32, contextFiles []string) error {
-	if id == "" || (maxRuns == 0 && len(contextFiles) == 0) {
+//
+// THE MCP DEFINITIONS ARE OWNED ROWS, created one per spec with ProjectId set. A create
+// has no existing rows, so writing them cannot delete anything (unlike the edit form,
+// which deliberately carries no MCP field — see ProjectMCPDefinitionsField). A failed
+// definition leaves the project created and usable, so the caller reports it as such.
+func applyProjectPostCreate(ctx context.Context, cl projectUpdater, mcp projectMCPCreator, id string, maxRuns int32, contextFiles, skillFiles []string, mcpDefs []mcpforms.InlineSpec) error {
+	if id == "" {
 		return nil
+	}
+	if maxRuns == 0 && len(contextFiles) == 0 && len(skillFiles) == 0 {
+		// Nothing for the follow-up UPDATE. The MCP definitions still have to be created.
+		return createOwnedMCPServers(ctx, mcp, id, mcpDefs)
 	}
 	req := &apiv1.UpdateProjectRequest{Id: id}
 	if maxRuns > 0 {
@@ -536,8 +534,143 @@ func applyProjectPostCreate(ctx context.Context, cl projectUpdater, id string, m
 	if len(contextFiles) > 0 {
 		req.ContextFiles = &apiv1.ContextFiles{Files: contextFiles}
 	}
-	_, err := cl.UpdateProject(ctx, connect.NewRequest(req))
-	return err
+	if len(skillFiles) > 0 {
+		req.SkillFiles = &apiv1.ContextFiles{Files: skillFiles}
+	}
+	if _, err := cl.UpdateProject(ctx, connect.NewRequest(req)); err != nil {
+		return err
+	}
+	return createOwnedMCPServers(ctx, mcp, id, mcpDefs)
+}
+
+// createOwnedMCPServers materializes the create form's definitions as project-owned rows.
+// An empty array creates nothing (the same rule the update follows).
+func createOwnedMCPServers(ctx context.Context, mcp projectMCPCreator, projectID string, specs []mcpforms.InlineSpec) error {
+	if len(specs) == 0 {
+		return nil
+	}
+	if mcp == nil {
+		return fmt.Errorf("no MCP client — the project's MCP definitions were not saved")
+	}
+	for _, spec := range specs {
+		req := InlineSpecToCreateRequest(spec, projectID)
+		if _, err := mcp.CreateMCPServer(ctx, connect.NewRequest(req)); err != nil {
+			return fmt.Errorf("MCP definition %q could not be saved: %w", spec.ID, err)
+		}
+	}
+	return nil
+}
+
+// InlineSpecToCreateRequest turns an inline spec (the shape db.MCPServerFromPermissions parses)
+// into an OWNED create request. stdio → command/args/env; http → url/headers. The owner is
+// always the project, because this is the project scope's writer.
+func InlineSpecToCreateRequest(spec mcpforms.InlineSpec, projectID string) *apiv1.MCPServerCreateRequest {
+	enabled := true
+	if spec.Enabled != nil {
+		enabled = *spec.Enabled
+	}
+	req := &apiv1.MCPServerCreateRequest{
+		Name:        spec.ID,
+		ProjectId:   projectID,
+		Transport:   apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STDIO,
+		Enabled:     enabled,
+		CatalogSlug: "",
+	}
+	if spec.Type == "http" || spec.URL != "" {
+		req.Transport = apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STREAMABLE_HTTP
+		req.Url = spec.URL
+		req.Headers = spec.Headers
+		return req
+	}
+	if len(spec.Command) > 0 {
+		req.Command = spec.Command[0]
+		req.Args = spec.Command[1:]
+	}
+	req.Env = spec.Env
+	return req
+}
+
+// newProjectMCPDefineForm opens the owned-MCP-definition form for a project —
+// the TUI's DEFINE path (AC 9). It is the mcpforms.DefineForm, owner-stamped
+// with the project id, so the request it builds is a project-owned create and
+// never a tenant selection.
+func (m *Model) newProjectMCPDefineForm(projectID string) *kit2.Form {
+	cl := m.cl
+	f := mcpforms.DefineForm("Define a project MCP server", mcpforms.Owner{ProjectID: projectID}, nil,
+		func(req *apiv1.MCPServerCreateRequest) tea.Cmd {
+			return m.Mutate(mutate.Request{
+				Name: "define MCP server " + req.GetName(), Source: srcProjects,
+				Rollback: func() { m.Refresh(srcProjects) },
+				Do: func(ctx context.Context) error {
+					if cl == nil || cl.MCP == nil {
+						return fmt.Errorf("no MCP client")
+					}
+					_, err := cl.MCP.CreateMCPServer(ctx, connect.NewRequest(req))
+					return err
+				},
+			})
+		})
+	return f
+}
+
+// newProjectMCPCatalogForm lists the registry catalog and, on a pick, opens the
+// define form prefilled — the TUI's one-click add, mirroring the GUI.
+func (m *Model) newProjectMCPCatalogForm(projectID string) *kit2.Form {
+	cl := m.cl
+	f := mcpforms.CatalogForm(mcpforms.Owner{ProjectID: projectID},
+		func() []*apiv1.MCPCatalogEntry {
+			if cl == nil || cl.MCP == nil {
+				return nil
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			res, err := cl.MCP.ListMCPCatalog(ctx, connect.NewRequest(&apiv1.MCPCatalogListRequest{}))
+			if err != nil {
+				return nil
+			}
+			return res.Msg.GetEntries()
+		},
+		func(slug string) (*apiv1.MCPServerCreateRequest, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			res, err := cl.MCP.PrefillMCPCatalogEntry(ctx, connect.NewRequest(&apiv1.MCPCatalogPrefillRequest{Slug: slug}))
+			if err != nil {
+				return nil, err
+			}
+			return res.Msg.GetPrefill(), nil
+		},
+		func(req *apiv1.MCPServerCreateRequest) tea.Cmd {
+			return m.Mutate(mutate.Request{
+				Name: "define MCP server " + req.GetName(), Source: srcProjects,
+				Rollback: func() { m.Refresh(srcProjects) },
+				Do: func(ctx context.Context) error {
+					if cl == nil || cl.MCP == nil {
+						return fmt.Errorf("no MCP client")
+					}
+					_, err := cl.MCP.CreateMCPServer(ctx, connect.NewRequest(req))
+					return err
+				},
+			})
+		})
+	return f
+}
+
+// mcpRowSummary renders one owned MCP row for the project detail pane: transport
+// plus command-or-url, the same facts the GUI card shows.
+func mcpRowSummary(s *apiv1.MCPServer) string {
+	transport := "stdio"
+	if s.GetTransport() == apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STREAMABLE_HTTP {
+		transport = "http"
+	}
+	where := s.GetCommand()
+	if transport == "http" {
+		where = s.GetUrl()
+	}
+	state := "enabled"
+	if !s.GetEnabled() {
+		state = "disabled"
+	}
+	return transport + " · " + where + " · " + state
 }
 
 // wireProjectForm installs the submit handler.
@@ -548,12 +681,12 @@ func (m *Model) wireProjectForm(f *kit2.Form, mode, id string) {
 		name := strings.TrimSpace(v["name"])
 		goals := ParseGoals(v["goals"])
 		contextFiles := ParseContextFiles(v["context_files"])
+		skillFiles := ParseSkillFiles(v["skill_files"])
 		maxRuns := parseMaxConcurrentRuns(v["max_concurrent_runs"])
-		// A MULTI-SELECT THAT WAS NOT SHOWN has no entry in `multi`, so mcpChosen is nil
-		// and mcpLoaded is false — and mcpLoaded is what decides whether the selection is
-		// written at all. An absent field must never clear a project's servers.
-		mcpChosen, present := multi["mcp_servers"]
-		mcpLoaded := present && m.formMCPLoaded
+		// The MCP field is an OWNED-DEFINITION seed (create only) — no selection is
+		// written, because selection IS ownership (mcp_servers.project_id).
+		mcpDefs := mcpforms.ParseInline(v["mcp_servers"])
+		_ = multi
 		switch mode {
 		case formCreateProject:
 			req := &apiv1.CreateProjectRequest{
@@ -574,13 +707,14 @@ func (m *Model) wireProjectForm(f *kit2.Form, mode, id string) {
 						return err
 					}
 					// THE SECOND CALL IS FORCED BY THE PROTO, not chosen: CreateProject
-					// accepts no max_concurrent_runs and no context_files, so a create form
-					// offering them has to apply them afterwards. Same two-call shape the GUI
-					// uses for maxConcurrentRuns.
-					if err := applyProjectPostCreate(ctx, cl.Projects, created.Msg.GetProject().GetId(), maxRuns, contextFiles); err != nil {
+					// accepts no max_concurrent_runs, no context_files and no skill_files,
+					// so a create form offering them has to apply them afterwards. Same
+					// two-call shape the GUI uses. The MCP definitions are created as owned
+					// rows here.
+					if err := applyProjectPostCreate(ctx, cl.Projects, cl.MCP, created.Msg.GetProject().GetId(), maxRuns, contextFiles, skillFiles, mcpDefs); err != nil {
 						return err
 					}
-					return m.setProjectMCPServers(ctx, created.Msg.GetProject().GetId(), mcpChosen, mcpLoaded)
+					return nil
 				},
 			}), nil
 
@@ -600,6 +734,12 @@ func (m *Model) wireProjectForm(f *kit2.Form, mode, id string) {
 				// operator emptying a prefilled list means exactly that. Sending it only when
 				// non-empty would make a selection impossible to remove from the TUI.
 				ContextFiles: &apiv1.ContextFiles{Files: contextFiles},
+				// skill_files is an `optional ContextFiles` (field-mask semantics), so it is
+				// ALWAYS sent from the edit form — an emptied field CLEARS, the same rule
+				// context_files follows. The EDIT form carries no MCP field on purpose: rows
+				// are edited one at a time from the project action bar, because a blob save
+				// would silently delete rows the operator never saw.
+				SkillFiles: &apiv1.ContextFiles{Files: skillFiles},
 			}
 			return m.Mutate(mutate.Request{
 				Name: "save project " + name, Source: srcProjects,
@@ -608,7 +748,7 @@ func (m *Model) wireProjectForm(f *kit2.Form, mode, id string) {
 					if _, err := m.cl.Projects.UpdateProject(ctx, connect.NewRequest(req)); err != nil {
 						return err
 					}
-					return m.setProjectMCPServers(ctx, id, mcpChosen, mcpLoaded)
+					return nil
 				},
 			}), nil
 

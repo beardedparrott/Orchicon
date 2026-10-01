@@ -335,6 +335,23 @@ export class Project extends Message<Project> {
    */
   executionMode = ExecutionMode.UNSPECIFIED;
 
+  /**
+   * skill_files are absolute paths (files OR directories) to SKILL artifacts
+   * selected for this project. Each is validated by internal/contextfiles
+   * (absolute, no "..", inside project_dir) and rendered into BOTH the worker
+   * composite prompt and the Ask system prompt by contextfiles.RenderManifest —
+   * small files are inlined, larger files and directories become a
+   * "read on demand" manifest.
+   *
+   * DISTINCT FROM the free-text `skills` field on WorkerVersion /
+   * AgentConfig: that is prompt PROSE ("bullet-style skill list"); these are
+   * real on-disk paths. The serialized names stay distinct on purpose so the
+   * two can never be conflated.
+   *
+   * @generated from field: repeated string skill_files = 17;
+   */
+  skillFiles: string[] = [];
+
   constructor(data?: PartialMessage<Project>) {
     super();
     proto3.util.initPartial(data, this);
@@ -359,6 +376,7 @@ export class Project extends Message<Project> {
     { no: 14, name: "git_strategy", kind: "enum", T: proto3.getEnumType(GitStrategy) },
     { no: 15, name: "default_runtime_image", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 16, name: "execution_mode", kind: "enum", T: proto3.getEnumType(ExecutionMode) },
+    { no: 17, name: "skill_files", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Project {
@@ -799,6 +817,17 @@ export class UpdateProjectRequest extends Message<UpdateProjectRequest> {
    */
   executionMode?: ExecutionMode;
 
+  /**
+   * skill_files REPLACES the project's skill path selection. An empty list
+   * CLEARS it; nil (unset) leaves it unchanged (field-mask semantics, matching
+   * context_files). Reuses the ContextFiles wrapper for the same
+   * presence-vs-empty distinction. Absolute paths only, and each must be inside
+   * the project directory (or the project dir this request sets).
+   *
+   * @generated from field: optional orchicon.api.v1.ContextFiles skill_files = 12;
+   */
+  skillFiles?: ContextFiles;
+
   constructor(data?: PartialMessage<UpdateProjectRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -818,6 +847,7 @@ export class UpdateProjectRequest extends Message<UpdateProjectRequest> {
     { no: 9, name: "git_strategy", kind: "enum", T: proto3.getEnumType(GitStrategy), opt: true },
     { no: 10, name: "default_runtime_image", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 11, name: "execution_mode", kind: "enum", T: proto3.getEnumType(ExecutionMode), opt: true },
+    { no: 12, name: "skill_files", kind: "message", T: ContextFiles, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateProjectRequest {

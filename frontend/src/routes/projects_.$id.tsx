@@ -19,12 +19,8 @@ import { useListExecutions } from "@/api/executions";
 import { useListDirPath, useUpdateProjectDir } from "@/api/projectFiles";
 import { useStreamProjectEvents } from "@/api/projectEvents";
 import { useDebouncedInvalidation } from "@/lib/useDebouncedInvalidation";
-import {
-  useGetProjectMCPServers,
-  useSetProjectMCPServers,
-} from "@/api/mcpServers";
+import { MCPServersPanel } from "@/components/MCPServersPanel";
 import { EntityYamlView } from "@/components/EntityYamlView";
-import { MCPPicker, type MCPConfig } from "@/components/MCPPicker";
 import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import {
@@ -72,18 +68,15 @@ function ProjectDetailPage() {
   const [draftDefaultImage, setDraftDefaultImage] = useState("");
   const [draftExecutionMode, setDraftExecutionMode] = useState<"runtime" | "local">("runtime");
   const [savingRuntime, setSavingRuntime] = useState(false);
+  // The project's skill-file selection is edited through the SAME FileBrowser
+  // as context files, but reported back here (onChange) so a skills save does
+  // not overwrite the context-files list.
+  const [skillDraft, setSkillDraft] = useState<string[]>([]);
+  const [skillDirty, setSkillDirty] = useState(false);
   const { data: availableImages } = useAvailableRuntimeImages();
-  // MCP server selection (references into Settings → Adapters → MCP).
-  // Auto-refreshes on save via react-query invalidation (mcpKeys.project).
-  const { data: projectMCPServers } = useGetProjectMCPServers(id);
-  const setProjectMCPServers = useSetProjectMCPServers();
-  const [mcpDraft, setMcpDraft] = useState<MCPConfig[]>([]);
-  const [mcpDirty, setMcpDirty] = useState(false);
-  const [savingMCP, setSavingMCP] = useState(false);
-  useEffect(() => {
-    setMcpDraft((projectMCPServers ?? []).map((srvId) => ({ id: srvId })));
-    setMcpDirty(false);
-  }, [projectMCPServers]);
+  // The project↔server SELECTION is gone: a definition is OWNED by its scope
+  // (mcp_servers.project_id), so there is no reference set to read or save.
+  // The scope's own definitions are managed by MCPServersPanel below.
   // Active executions (non-terminal) for the current-vs-limit meter.
   const { data: executions } = useListExecutions({ projectId: id, enabled: !!id });
   const { data: tenantSettings } = useGetSettings();
@@ -114,6 +107,9 @@ function ProjectDetailPage() {
     setDraftDefaultImage(typeof imgRaw === "string" ? imgRaw : "");
     const execRaw = proj?.executionMode ?? proj?.execution_mode;
     setDraftExecutionMode(protoToExecutionMode(typeof execRaw === "number" || typeof execRaw === "string" ? execRaw : undefined));
+    // Seed the skill-file draft from the project (the same seed pattern used
+    // above) so a read-only view shows the saved list.
+    setSkillDraft(project?.skillFiles ?? []);
   }, [project]);
 
   const { register, handleSubmit, reset } = useForm({
@@ -422,6 +418,47 @@ function ProjectDetailPage() {
         />
       )}
 
+      {/* Skill files — the SAME FileBrowser, reported back instead of persisting
+          (the project's context-file save would otherwise clobber it). */}
+      {project && (
+        <>
+          <FileBrowser
+            projectId={project.id}
+            projectDir={project.projectDir || ""}
+            initialSelectedFiles={skillDraft}
+            readOnly={!editing}
+            onChange={(next) => {
+              setSkillDraft(next);
+              setSkillDirty(true);
+            }}
+            title="Skill files"
+            description="Skill artifacts (files or directories) rendered into this project's worker and Ask prompts."
+            emptyHint="No skill files on this project. Click Edit to browse its tree."
+          />
+          {editing && skillDirty && (
+            <Button
+              variant="outline"
+              onClick={() =>
+                updateProject.mutate(
+                  { id: project.id, skillFiles: skillDraft },
+                  { onSuccess: () => setSkillDirty(false) },
+                )
+              }
+            >
+              Save skills
+            </Button>
+          )}
+        </>
+      )}
+
+      {/* MCP servers this project OWNS. It is the ROOT, so no inherited section. */}
+      {project && (
+        <MCPServersPanel
+          scope={{ kind: "project", projectId: project.id }}
+          readOnly={!editing}
+        />
+      )}
+
       {/* Git strategy — how worktrees materialize */}
       {project && (
         <Card>
@@ -467,56 +504,9 @@ function ProjectDetailPage() {
         </Card>
       )}
 
-      {/* MCP servers — reference-based selection into the tenant registry */}
-      {project && (
-        <Card>
-          <CardHeader>
-            <CardTitle>MCP servers</CardTitle>
-            <CardDescription>
-              MCP servers enabled for this project (references — editing an
-              entry in Settings → Adapters → MCP updates every consumer).
-              Selections here are the project defaults workers fall back to.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <MCPPicker
-              value={mcpDraft}
-              onChange={(configs) => {
-                setMcpDraft(configs);
-                setMcpDirty(true);
-              }}
-            />
-            {editing && (
-              <Button
-                variant="outline"
-                disabled={savingMCP || !mcpDirty}
-                onClick={() => {
-                  setSavingMCP(true);
-                  setProjectMCPServers.mutate(
-                    {
-                      projectId: project.id,
-                      mcpServerIds: mcpDraft.map((c) => c.id),
-                    },
-                    {
-                      onSettled: () => setSavingMCP(false),
-                      onSuccess: () => setMcpDirty(false),
-                    },
-                  );
-                }}
-              >
-                {savingMCP ? "Saving…" : "Save MCP selection"}
-              </Button>
-            )}
-            {!editing && (
-              <p className="text-xs text-muted-foreground">
-                {mcpDraft.length === 0
-                  ? "No MCP servers selected — workers fall back to the tenant default."
-                  : `${mcpDraft.length} MCP server(s) selected.`}
-              </p>
-            )}
-          </CardContent>
-        </Card>
-      )}
+      {/* MCP definitions are OWNER-SCOPED (mcp_servers.project_id): there is no
+          separate project selection card any more. Child 7 owns re-homing the
+          owner-scoped management control onto this page. */}
 
       {/* Runtime defaults — project-level container image + execution mode */}
       {project && (

@@ -138,6 +138,11 @@ message CreateWorkerRequest {
   // adapter segment == this value); a lone adapter with no model_ref is
   // rejected — the ref is the only persisted store of the selection.
   string adapter = 24;
+  // skill_files is a JSON array of absolute skill file/directory paths for the
+  // new worker's first version. DISTINCT FROM `skills` (free-text prompt prose)
+  // — these are real on-disk paths rendered by contextfiles.RenderManifest and
+  // union-ed with the project's at render time.
+  optional string skill_files = 25;
 }
 
 message CreateWorkerResponse {
@@ -332,6 +337,12 @@ message UpdateWorkerVersionRequest {
   // modes: it cannot be reverted to draft, and this API offers no
   // unpublished edit of it.
   bool republish = 23;
+  // skill_files is a JSON array of absolute skill file/directory paths for this
+  // version. DISTINCT FROM `skills` (free-text prompt prose): these are real
+  // on-disk paths, union-ed with the project's at render time. Paths are
+  // validated structurally (absolute, no ".."); the project-containment check
+  // runs at the render boundary.
+  optional string skill_files = 24;
 }
 
 message UpdateWorkerVersionResponse {
@@ -371,6 +382,12 @@ message CreateWorkerVersionRequest {
   // as usual and current_version follows the newly published version.
   // false (default) creates a draft, exactly as before.
   bool publish = 23;
+  // skill_files is a JSON array of absolute skill file/directory paths for the
+  // new version. DISTINCT FROM `skills` (free-text prompt prose): these are real
+  // on-disk paths, union-ed with the project's at render time. Paths are
+  // validated structurally (absolute, no ".."); the project-containment check
+  // runs at the render boundary.
+  optional string skill_files = 24;
 }
 
 message CreateWorkerVersionResponse {

@@ -11,7 +11,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CompactConversationRequest, CompactConversationResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, InterjectConversationTurnRequest, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, ListPendingAsksRequest, ListPendingAsksResponse, ListPermissionGrantsRequest, ListPermissionGrantsResponse, ReplyPermissionAskRequest, ReplyPermissionAskResponse, RevokePermissionGrantRequest, RevokePermissionGrantResponse, SetConversationFullsendRequest, SetConversationFullsendResponse, SetConversationModelRequest, SetConversationModelResponse, SetConversationModeRequest, SetConversationModeResponse, SetConversationProjectRequest, SetConversationProjectResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse, WatchTurnStreamRequest } from "./ask_orchicon_service_pb.js";
+import { AbortConversationTurnRequest, AbortConversationTurnResponse, ChatStreamRequest, ChatStreamResponse, CompactConversationRequest, CompactConversationResponse, CreateConversationRequest, CreateConversationResponse, DeleteConversationRequest, DeleteConversationResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConversationRequest, GetConversationResponse, GetModelCapabilitiesRequest, GetModelCapabilitiesResponse, InterjectConversationTurnRequest, ListConversationsRequest, ListConversationsResponse, ListMessagesRequest, ListMessagesResponse, ListPermissionGrantsRequest, ListPermissionGrantsResponse, ReplyPermissionAskRequest, ReplyPermissionAskResponse, RevokePermissionGrantRequest, RevokePermissionGrantResponse, SetConversationFullsendRequest, SetConversationFullsendResponse, SetConversationModelRequest, SetConversationModelResponse, SetConversationModeRequest, SetConversationModeResponse, SetConversationProjectRequest, SetConversationProjectResponse, SetConversationSkillFilesRequest, SetConversationSkillFilesResponse, UpdateAgentConfigRequest, UpdateAgentConfigResponse, UpdateConversationTitleRequest, UpdateConversationTitleResponse, UploadAttachmentRequest, UploadAttachmentResponse, WatchTurnStreamRequest } from "./ask_orchicon_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -153,6 +153,28 @@ export const AskOrchiconService = {
       kind: MethodKind.Unary,
     },
     /**
+     * SetConversationSkillFiles REPLACES the conversation's skill_files path array
+     * (an empty list clears it). It is the conversation-level half of the skills
+     * feature: a chat can select extra SKILL artifacts on top of its project's, and
+     * the UNION of the two is what the Ask system prompt renders (via
+     * contextfiles.RenderManifest — one shared renderer, no skills-specific code).
+     *
+     * DISTINCT FROM AgentConfig.skills, which is the tenant-wide free-text `skills`
+     * PROMPT SECTION: that is prose, this is a list of real on-disk paths. Paths are
+     * validated by internal/contextfiles — absolute, no "..", and INSIDE the
+     * conversation's project directory when it has one (a path outside it is
+     * invisible to a container-hosted worker, so it is rejected rather than silently
+     * rendering a "could not read" note).
+     *
+     * @generated from rpc orchicon.api.v1.AskOrchiconService.SetConversationSkillFiles
+     */
+    setConversationSkillFiles: {
+      name: "SetConversationSkillFiles",
+      I: SetConversationSkillFilesRequest,
+      O: SetConversationSkillFilesResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
      * ListMessages returns messages for a conversation, ordered by
      * created_at ascending (oldest first).
      *
@@ -275,37 +297,6 @@ export const AskOrchiconService = {
       name: "ListPermissionGrants",
       I: ListPermissionGrantsRequest,
       O: ListPermissionGrantsResponse,
-      kind: MethodKind.Unary,
-    },
-    /**
-     * ListPendingAsks returns the conversation's still-OPEN asks: a permission
-     * card or a clarifying question the turn is parked on, awaiting a human
-     * decision.
-     *
-     * WHY A QUERY AND NOT ONLY THE STREAM ARM. An ask is delivered on the turn
-     * stream, which means a client learns about it only if it happens to be
-     * WATCHING that turn at that instant. Any interruption — a re-attach, a pane
-     * switch, a socket drop, a turn the client did not itself start — and the card
-     * has no path to the operator, while the SERVER keeps the turn parked waiting
-     * for an answer that has no card to give it. That is the failure the operator
-     * reported: the GUI showed a pending card while the TUI appeared stalled.
-     *
-     * The server has always held this state (askorchicon.pendingAskRegistry) and
-     * replayed it to a LATE WATCHER; this exposes it as a question any client can
-     * ask at any time, so a card becomes DISCOVERABLE from durable state rather
-     * than merely deliverable as a live event. A client that calls this on attach,
-     * re-attach and its turn poll cannot miss a card, and calling it twice is
-     * harmless because both clients dedupe by ask id.
-     *
-     * Decided and finalized asks are NOT returned: their outcome is already in the
-     * transcript, and replaying one would resurrect a card the operator answered.
-     *
-     * @generated from rpc orchicon.api.v1.AskOrchiconService.ListPendingAsks
-     */
-    listPendingAsks: {
-      name: "ListPendingAsks",
-      I: ListPendingAsksRequest,
-      O: ListPendingAsksResponse,
       kind: MethodKind.Unary,
     },
     /**

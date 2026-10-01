@@ -8,13 +8,13 @@
 // established per session (never at control-plane boot); stdio children
 // cannot outlive a dead control plane (PDEATHSIG + boot-time sweep);
 // MCP tool calls honor per-call timeouts and cancellation; config
-// resolution is worker selection → project selection → none over the
-// tenant-configured server list.
+// resolution is ONE union, addressed by SCOPE (project / conversation /
+// worker / run) — see ScopeResolver; there is no precedence chain and no
+// tenant-default tier any more.
 package mcpclient
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -32,9 +32,9 @@ const (
 	TypeHTTP Type = "http"
 )
 
-// ServerSpec is a tenant-configured MCP server entry (one element of the
-// selectable universe consumed by ConfigSource; storage is owned by the
-// adapter-settings task, this package only consumes it).
+// ServerSpec is one MCP server entry (one element of a resolved scope;
+// storage is owned by internal/mcpsettings, this package only consumes
+// it).
 type ServerSpec struct {
 	// ID is the stable server identifier (also the prefix in the
 	// mcp__<server>__<tool> namespace).
@@ -91,155 +91,136 @@ const (
 	defaultConnectTimeout = 15 * time.Second
 )
 
-// ConfigSource is the contract the session manager uses to resolve which
-// MCP servers an execution may use (ADR-0008). Resolution order:
-// worker selection → project selection → none. Implementations are
-// tenant-scoped; the storage backend is owned by the adapter-settings
-// task — until it lands, NoopConfigSource degrades safely.
-type ConfigSource interface {
-	// ServerList returns the tenant-configured selectable MCP servers.
-	// This is the universe selections are drawn from.
-	ServerList(ctx context.Context) ([]ServerSpec, error)
-	// WorkerSelection returns the ids of MCP servers selected for a
-	// worker (its permissions.mcp_servers). Nil/empty = no worker
-	// selection.
-	WorkerSelection(ctx context.Context, workerID string) ([]string, error)
-	// ProjectSelection returns the ids of MCP servers selected for a
-	// project. Nil/empty = no project selection.
-	ProjectSelection(ctx context.Context, projectID string) ([]string, error)
+// ScopeKind addresses a resolution scope. RUN is run-shaped on purpose: its
+// result is applied ONCE per container (child 4), so it must never be
+// derived from an executing worker.
+type ScopeKind string
+
+const (
+	ScopeProject      ScopeKind = "project"
+	ScopeConversation ScopeKind = "conversation"
+	ScopeWorker       ScopeKind = "worker"
+	ScopeRun          ScopeKind = "run"
+)
+
+// ScopeRef addresses exactly one scope. The zero value resolves to nothing.
+type ScopeRef struct {
+	Kind           ScopeKind
+	ProjectID      string
+	ConversationID string
+	WorkerID       string // ScopeWorker only; the version is the latest published
+	RunID          string // ScopeRun only
+
+	// Version is the PINNED worker version this ref resolves, used for
+	// provenance when Kind is ScopeWorker (the "inline:<workerID>@<n>"
+	// shape). Zero means "unpinned" — the resolver reads the latest
+	// published version and reports "inline:<workerID>".
+	Version int
+	// OwnPermissions, when non-empty, is the CALLER-HELD own-set for this
+	// scope: the executing worker version's permissions jsonb
+	// (worker_versions.permissions → scheduler.ExecutionManifest.Permissions).
+	// When set the resolver unions THIS and does NOT read the latest
+	// published version — a pinned dispatch must resolve the version it
+	// actually pinned. When empty the storage path holds.
+	OwnPermissions []byte
 }
 
-// NoopConfigSource is the default ConfigSource shipped until the
-// adapter-settings task lands tenant server-list storage: no servers are
-// configured and no selections exist, so MCP tools are simply absent
-// (the feature degrades safely and never errors).
-type NoopConfigSource struct{}
-
-func (NoopConfigSource) ServerList(context.Context) ([]ServerSpec, error) { return nil, nil }
-func (NoopConfigSource) WorkerSelection(context.Context, string) ([]string, error) {
-	return nil, nil
-}
-func (NoopConfigSource) ProjectSelection(context.Context, string) ([]string, error) {
-	return nil, nil
+// ScopedServer is one resolved server plus its PROVENANCE (which scope
+// supplied it) — the caller logs and reports it.
+type ScopedServer struct {
+	Spec   ServerSpec
+	From   ScopeKind
+	FromID string // "project:<id>" | "conversation:<id>" | "worker:<id>@<n>" | "inline:<workerID>@<n>"
+	// EntryID is the mcp_servers row id, "" for an inline (worker-owned)
+	// definition — an inline definition has no row.
+	EntryID string
 }
 
-// workerPermissionSelection is the shape of the per-worker permissions
-// jsonb already carried on executions (ExecutionManifest.Permissions):
-// {"mcp_servers": [{"id": "...", "command": "..."}]} (frontend
-// MCPPicker/MCPConfig shape; entries may also be bare id strings).
-type workerPermissionSelection struct {
-	MCPServers []mcpSelectionEntry `json:"mcp_servers"`
-}
-
-type mcpSelectionEntry struct {
-	ID      string `json:"id"`
-	Command string `json:"command,omitempty"`
-}
-
-// ManifestConfigSource is a ConfigSource backed by one execution's
-// manifest data: the worker's permissions jsonb (which carries its MCP
-// selection) plus a server list from a static set. The server list is
-// the tenant-configured universe; until storage lands the caller passes
-// the static set (e.g. from config). Project selection is empty (no
-// project-selection storage exists yet — the adapter-settings task owns
-// it; the resolution order still holds: worker → project → none).
-type ManifestConfigSource struct {
-	// TenantServers is the selectable universe for this execution.
-	TenantServers []ServerSpec
-	// PermissionsJSON is the worker's permissions jsonb
-	// (worker_versions.permissions → ExecutionManifest.Permissions).
-	PermissionsJSON []byte
-	// ProjectMCPServers optionally supplies a project-level selection
-	// (ids); nil = no project selection.
-	ProjectMCPServers []string
-}
-
-// ServerList implements ConfigSource.
-func (m ManifestConfigSource) ServerList(context.Context) ([]ServerSpec, error) {
-	return m.TenantServers, nil
-}
-
-// WorkerSelection implements ConfigSource: it parses the worker
-// permissions' mcp_servers list. A malformed permissions jsonb degrades
-// to no selection (never fails a session over worker config shape).
-func (m ManifestConfigSource) WorkerSelection(_ context.Context, _ string) ([]string, error) {
-	if len(m.PermissionsJSON) == 0 {
-		return nil, nil
-	}
-	var p workerPermissionSelection
-	if err := json.Unmarshal(m.PermissionsJSON, &p); err != nil {
-		return nil, nil // malformed → no selection (defensive; never blocks a session)
-	}
-	ids := make([]string, 0, len(p.MCPServers))
-	for _, e := range p.MCPServers {
-		if id := strings.TrimSpace(e.ID); id != "" {
-			ids = append(ids, id)
-		}
-	}
-	return ids, nil
-}
-
-// ProjectSelection implements ConfigSource.
-func (m ManifestConfigSource) ProjectSelection(context.Context, string) ([]string, error) {
-	return m.ProjectMCPServers, nil
-}
-
-// Resolved is the outcome of config resolution for one execution: the
-// concrete, ordered server set to connect, plus provenance for errors.
-type Resolved struct {
-	// Servers are the specs to connect, in selection order (worker
-	// selection first when present, else project, else none).
-	Servers []ServerSpec
-	// SelectedIDs are the raw ids the resolution drew (worker or
-	// project), for actionable error messages.
+// Resolution is the outcome of resolving ONE scope: the union of the
+// project-owned definitions and the scope's own definitions, deduped and
+// order-stable (project rows by name, then own definitions in declaration
+// order), plus the skill-file union for the run scope.
+type Resolution struct {
+	Servers     []ScopedServer
 	SelectedIDs []string
-	// Missing are selected ids that are NOT present in the tenant server
-	// list (selected-but-unconfigured). Resolution fails the session
-	// actionably for these unless the matched server degrades.
-	Missing []string
+	Missing     []string // selected ids with no matching row/definition
+	Disabled    []string // resolved definitions whose enabled flag is false
+	Skills      []InlineSkillFile
 }
 
-// Resolve implements ADR-0008 resolution: worker selection → project
-// selection → none, over the tenant-configured server list. A selected
-// id with no matching configured server is reported as Missing (the
-// caller decides fail vs degrade per the offending spec / policy). An
-// empty ServerList result or empty selections yields an empty Resolved
-// (no MCP tools — never an error).
-func Resolve(ctx context.Context, src ConfigSource, workerID, projectID string) (Resolved, error) {
-	var r Resolved
-	if src == nil {
-		return r, nil
-	}
-	servers, err := src.ServerList(ctx)
-	if err != nil {
-		return r, fmt.Errorf("mcp config: server list: %w", err)
-	}
-	byID := make(map[string]ServerSpec, len(servers))
-	for _, s := range servers {
-		byID[s.ID] = s
-	}
+// InlineSkillFile is one inline skill file carried by the scope (a worker
+// version's permissions.skill_files). Mirrors db.InlineSkillFile so this
+// package needs no db import.
+type InlineSkillFile struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
 
-	sel, err := src.WorkerSelection(ctx, workerID)
-	if err != nil {
-		return r, fmt.Errorf("mcp config: worker selection: %w", err)
+// ScopeResolver is the ONE resolution contract. Exactly one implementation
+// exists (mcpsettings.Resolver).
+type ScopeResolver interface {
+	ResolveScope(ctx context.Context, ref ScopeRef) (Resolution, error)
+}
+
+// NoopScopeResolver resolves every scope to nothing (tests, unwired planes).
+type NoopScopeResolver struct{}
+
+// ResolveScope implements ScopeResolver: always the empty resolution.
+func (NoopScopeResolver) ResolveScope(context.Context, ScopeRef) (Resolution, error) {
+	return Resolution{}, nil
+}
+
+// ProvenanceString renders the resolved set's provenance as order-stable
+// "<server-id>=<from-id>" pairs, comma separated.
+//
+// IT READS ONLY Spec.ID / From / FromID ON PURPOSE. The specs' Env and Headers
+// are mutated in place by the caller's secret expansion
+// (${SECRET_NAME} → plaintext) BEFORE the transport connects, so a formatter
+// that touched them would put resolved credentials in the log. Provenance is
+// the observation this package exists to make falsifiable; the payload never
+// is.
+func ProvenanceString(servers []ScopedServer) string {
+	if len(servers) == 0 {
+		return ""
 	}
-	if len(sel) == 0 {
-		sel, err = src.ProjectSelection(ctx, projectID)
-		if err != nil {
-			return r, fmt.Errorf("mcp config: project selection: %w", err)
+	parts := make([]string, 0, len(servers))
+	for _, s := range servers {
+		from := s.FromID
+		if from == "" {
+			from = string(s.From)
 		}
+		parts = append(parts, s.Spec.ID+"="+from)
 	}
-	r.SelectedIDs = sel
-	if len(sel) == 0 {
-		return r, nil // no selection → no MCP tools (resolved, not an error)
+	return strings.Join(parts, ",")
+}
+
+// DescribeFailedServer annotates a connect/tool-discovery error with the SCOPE
+// of the server it names, so a server that cannot run is ACTIONABLE: the
+// operator sees both which server failed and where its definition came from.
+//
+// Manager.Start stops at the FIRST failing server over the SAME ordered spec
+// list, and connectOne quotes the id as `mcp server %q: ...`, so matching the
+// quoted id against the ordered ScopedServer list is deterministic. When no
+// server matches (a manager-level error such as "manager closed"), the error is
+// returned unchanged.
+func DescribeFailedServer(err error, servers []ScopedServer) error {
+	if err == nil || len(servers) == 0 {
+		return err
 	}
-	for _, id := range sel {
-		spec, ok := byID[id]
-		if !ok {
-			r.Missing = append(r.Missing, id)
+	msg := err.Error()
+	for _, s := range servers {
+		id := s.Spec.ID
+		if id == "" {
 			continue
 		}
-		r.Servers = append(r.Servers, spec)
+		if !strings.Contains(msg, fmt.Sprintf("%q", id)) {
+			continue
+		}
+		scope := s.FromID
+		if scope == "" {
+			scope = string(s.From)
+		}
+		return fmt.Errorf("MCP server %q cannot run (scope %s): %w", id, scope, err)
 	}
-	return r, nil
+	return err
 }

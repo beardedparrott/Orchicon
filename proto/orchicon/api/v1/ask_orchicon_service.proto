@@ -74,6 +74,20 @@ service AskOrchiconService {
   // does not exist.
   rpc SetConversationProject(SetConversationProjectRequest) returns (SetConversationProjectResponse);
 
+  // SetConversationSkillFiles REPLACES the conversation's skill_files path array
+  // (an empty list clears it). It is the conversation-level half of the skills
+  // feature: a chat can select extra SKILL artifacts on top of its project's, and
+  // the UNION of the two is what the Ask system prompt renders (via
+  // contextfiles.RenderManifest — one shared renderer, no skills-specific code).
+  //
+  // DISTINCT FROM AgentConfig.skills, which is the tenant-wide free-text `skills`
+  // PROMPT SECTION: that is prose, this is a list of real on-disk paths. Paths are
+  // validated by internal/contextfiles — absolute, no "..", and INSIDE the
+  // conversation's project directory when it has one (a path outside it is
+  // invisible to a container-hosted worker, so it is rejected rather than silently
+  // rendering a "could not read" note).
+  rpc SetConversationSkillFiles(SetConversationSkillFilesRequest) returns (SetConversationSkillFilesResponse);
+
   // Messages.
 
   // ListMessages returns messages for a conversation, ordered by
@@ -293,6 +307,21 @@ message SetConversationProjectRequest {
 }
 
 message SetConversationProjectResponse {
+  Conversation conversation = 1;
+}
+
+message SetConversationSkillFilesRequest {
+  string id = 1;
+  // files REPLACES the conversation's skill path selection. An empty list CLEARS
+  // it. Each entry must be an absolute path with no ".." that lives inside the
+  // conversation's project directory (when the conversation has one).
+  //
+  // DISTINCT from AgentConfig.skills (free-text prose) — these are real on-disk
+  // paths rendered by contextfiles.RenderManifest.
+  repeated string files = 2;
+}
+
+message SetConversationSkillFilesResponse {
   Conversation conversation = 1;
 }
 

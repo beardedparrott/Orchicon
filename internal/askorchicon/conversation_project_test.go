@@ -29,7 +29,7 @@ func TestEveryModeIsToldWhichProjectTheChatIsIn(t *testing.T) {
 	convProject := "This chat belongs to the project **Orchicon** (ID 01ABC, status active), whose directory is " +
 		"`/home/me/projects/Orchicon`.\n"
 	for _, mode := range everyMode {
-		p := buildSystemPrompt(mode, cfg, reg, nil, true, nil, "", convProject)
+		p := buildSystemPrompt(mode, cfg, reg, nil, true, nil, "", convProject, "")
 		if !strings.Contains(p, "## This conversation's project") {
 			t.Errorf("%s: the prompt has no conversation-project section, so the agent cannot know which chat "+
 				"belongs to which project folder", mode)
@@ -50,7 +50,7 @@ func TestAnUnassignedChatIsToldItHasNoProject(t *testing.T) {
 	cfg := testAgentConfig()
 	reg := testToolRegistry()
 	for _, mode := range everyMode {
-		p := buildSystemPrompt(mode, cfg, reg, nil, true, nil, "", "")
+		p := buildSystemPrompt(mode, cfg, reg, nil, true, nil, "", "", "")
 		if !strings.Contains(p, "## This conversation's project") {
 			t.Errorf("%s: the section header is omitted when unassigned, so the omission is silent", mode)
 		}

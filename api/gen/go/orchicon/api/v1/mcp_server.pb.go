@@ -212,7 +212,9 @@ func (x *MCPInstallResult) GetInstalledAt() string {
 	return ""
 }
 
-// MCPServer is one tenant-scoped MCP server entry. Plaintext credentials
+// MCPServer is one OWNER-SCOPED MCP server definition (a project XOR an
+// Ask conversation owns it; the owner IS the selection — there is no
+// tenant-wide list and no reference model). Plaintext credentials
 // NEVER appear here — env/header values may be ${SECRET_NAME} references
 // and has_secret_stored reports whether the referenced tenant secret
 // exists. Values are never returned.
@@ -234,8 +236,11 @@ type MCPServer struct {
 	HasSecretStored bool                   `protobuf:"varint,14,opt,name=has_secret_stored,json=hasSecretStored,proto3" json:"has_secret_stored,omitempty"` // any of required_secrets present in secrets store
 	CreatedAt       *timestamppb.Timestamp `protobuf:"bytes,15,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt       *timestamppb.Timestamp `protobuf:"bytes,16,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Owner: exactly one is non-empty (project XOR conversation).
+	ProjectId      string `protobuf:"bytes,17,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
+	ConversationId string `protobuf:"bytes,18,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *MCPServer) Reset() {
@@ -378,6 +383,20 @@ func (x *MCPServer) GetUpdatedAt() *timestamppb.Timestamp {
 		return x.UpdatedAt
 	}
 	return nil
+}
+
+func (x *MCPServer) GetProjectId() string {
+	if x != nil {
+		return x.ProjectId
+	}
+	return ""
+}
+
+func (x *MCPServer) GetConversationId() string {
+	if x != nil {
+		return x.ConversationId
+	}
+	return ""
 }
 
 // MCPCatalogEnvVar is one default env var (or header) entry in the
@@ -765,11 +784,15 @@ func (x *MCPCatalogPrefillResponse) GetPrefill() *MCPServerCreateRequest {
 	return nil
 }
 
-// CRUD.
+// CRUD. list/create are SCOPE-AWARE: both scope fields empty lists the
+// whole tenant (the unscoped Settings view), one non-empty narrows to that
+// owner. A definition belongs to exactly one scope.
 type MCPServerListRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	ProjectId      string                 `protobuf:"bytes,1,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`                // scope filter; empty = not scoped by project
+	ConversationId string                 `protobuf:"bytes,2,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"` // scope filter; empty = not scoped by conversation
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *MCPServerListRequest) Reset() {
@@ -800,6 +823,20 @@ func (x *MCPServerListRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use MCPServerListRequest.ProtoReflect.Descriptor instead.
 func (*MCPServerListRequest) Descriptor() ([]byte, []int) {
 	return file_orchicon_api_v1_mcp_server_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *MCPServerListRequest) GetProjectId() string {
+	if x != nil {
+		return x.ProjectId
+	}
+	return ""
+}
+
+func (x *MCPServerListRequest) GetConversationId() string {
+	if x != nil {
+		return x.ConversationId
+	}
+	return ""
 }
 
 type MCPServerListResponse struct {
@@ -935,18 +972,21 @@ func (x *MCPServerGetResponse) GetServer() *MCPServer {
 }
 
 type MCPServerCreateRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Transport     MCPServerTransport     `protobuf:"varint,2,opt,name=transport,proto3,enum=orchicon.api.v1.MCPServerTransport" json:"transport,omitempty"`
-	Command       string                 `protobuf:"bytes,3,opt,name=command,proto3" json:"command,omitempty"`                                                                           // stdio
-	Args          []string               `protobuf:"bytes,4,rep,name=args,proto3" json:"args,omitempty"`                                                                                 // stdio
-	Env           map[string]string      `protobuf:"bytes,5,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`         // stdio; values may be ${SECRET_NAME}
-	Url           string                 `protobuf:"bytes,6,opt,name=url,proto3" json:"url,omitempty"`                                                                                   // streamable-http
-	Headers       map[string]string      `protobuf:"bytes,7,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // streamable-http
-	Enabled       bool                   `protobuf:"varint,8,opt,name=enabled,proto3" json:"enabled,omitempty"`
-	CatalogSlug   string                 `protobuf:"bytes,9,opt,name=catalog_slug,json=catalogSlug,proto3" json:"catalog_slug,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Name        string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Transport   MCPServerTransport     `protobuf:"varint,2,opt,name=transport,proto3,enum=orchicon.api.v1.MCPServerTransport" json:"transport,omitempty"`
+	Command     string                 `protobuf:"bytes,3,opt,name=command,proto3" json:"command,omitempty"`                                                                           // stdio
+	Args        []string               `protobuf:"bytes,4,rep,name=args,proto3" json:"args,omitempty"`                                                                                 // stdio
+	Env         map[string]string      `protobuf:"bytes,5,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`         // stdio; values may be ${SECRET_NAME}
+	Url         string                 `protobuf:"bytes,6,opt,name=url,proto3" json:"url,omitempty"`                                                                                   // streamable-http
+	Headers     map[string]string      `protobuf:"bytes,7,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // streamable-http
+	Enabled     bool                   `protobuf:"varint,8,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	CatalogSlug string                 `protobuf:"bytes,9,opt,name=catalog_slug,json=catalogSlug,proto3" json:"catalog_slug,omitempty"`
+	// Owner: exactly ONE of the two must be set (mcp_servers_owner_xor).
+	ProjectId      string `protobuf:"bytes,10,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
+	ConversationId string `protobuf:"bytes,11,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *MCPServerCreateRequest) Reset() {
@@ -1042,6 +1082,20 @@ func (x *MCPServerCreateRequest) GetCatalogSlug() string {
 	return ""
 }
 
+func (x *MCPServerCreateRequest) GetProjectId() string {
+	if x != nil {
+		return x.ProjectId
+	}
+	return ""
+}
+
+func (x *MCPServerCreateRequest) GetConversationId() string {
+	if x != nil {
+		return x.ConversationId
+	}
+	return ""
+}
+
 type MCPServerCreateResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Server        *MCPServer             `protobuf:"bytes,1,opt,name=server,proto3" json:"server,omitempty"`
@@ -1101,6 +1155,10 @@ type MCPServerUpdateRequest struct {
 	ReplaceHeaders *bool                  `protobuf:"varint,11,opt,name=replace_headers,json=replaceHeaders,proto3,oneof" json:"replace_headers,omitempty"`
 	Enabled        *bool                  `protobuf:"varint,12,opt,name=enabled,proto3,oneof" json:"enabled,omitempty"`
 	CatalogSlug    *string                `protobuf:"bytes,13,opt,name=catalog_slug,json=catalogSlug,proto3,oneof" json:"catalog_slug,omitempty"`
+	// Owner echo: a value that DIFFERS from the stored owner is rejected
+	// (the scope is immutable after create).
+	ProjectId      string `protobuf:"bytes,14,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
+	ConversationId string `protobuf:"bytes,15,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -1222,6 +1280,20 @@ func (x *MCPServerUpdateRequest) GetEnabled() bool {
 func (x *MCPServerUpdateRequest) GetCatalogSlug() string {
 	if x != nil && x.CatalogSlug != nil {
 		return *x.CatalogSlug
+	}
+	return ""
+}
+
+func (x *MCPServerUpdateRequest) GetProjectId() string {
+	if x != nil {
+		return x.ProjectId
+	}
+	return ""
+}
+
+func (x *MCPServerUpdateRequest) GetConversationId() string {
+	if x != nil {
+		return x.ConversationId
 	}
 	return ""
 }
@@ -1760,359 +1832,6 @@ func (*MCPServerClearSecretResponse) Descriptor() ([]byte, []int) {
 	return file_orchicon_api_v1_mcp_server_proto_rawDescGZIP(), []int{25}
 }
 
-// Project + tenant-default selections (references, never copies).
-type ProjectMCPServersSetRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ProjectId     string                 `protobuf:"bytes,1,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
-	McpServerIds  []string               `protobuf:"bytes,2,rep,name=mcp_server_ids,json=mcpServerIds,proto3" json:"mcp_server_ids,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ProjectMCPServersSetRequest) Reset() {
-	*x = ProjectMCPServersSetRequest{}
-	mi := &file_orchicon_api_v1_mcp_server_proto_msgTypes[26]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ProjectMCPServersSetRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ProjectMCPServersSetRequest) ProtoMessage() {}
-
-func (x *ProjectMCPServersSetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_mcp_server_proto_msgTypes[26]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ProjectMCPServersSetRequest.ProtoReflect.Descriptor instead.
-func (*ProjectMCPServersSetRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_mcp_server_proto_rawDescGZIP(), []int{26}
-}
-
-func (x *ProjectMCPServersSetRequest) GetProjectId() string {
-	if x != nil {
-		return x.ProjectId
-	}
-	return ""
-}
-
-func (x *ProjectMCPServersSetRequest) GetMcpServerIds() []string {
-	if x != nil {
-		return x.McpServerIds
-	}
-	return nil
-}
-
-type ProjectMCPServersSetResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	McpServerIds  []string               `protobuf:"bytes,1,rep,name=mcp_server_ids,json=mcpServerIds,proto3" json:"mcp_server_ids,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ProjectMCPServersSetResponse) Reset() {
-	*x = ProjectMCPServersSetResponse{}
-	mi := &file_orchicon_api_v1_mcp_server_proto_msgTypes[27]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ProjectMCPServersSetResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ProjectMCPServersSetResponse) ProtoMessage() {}
-
-func (x *ProjectMCPServersSetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_mcp_server_proto_msgTypes[27]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ProjectMCPServersSetResponse.ProtoReflect.Descriptor instead.
-func (*ProjectMCPServersSetResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_mcp_server_proto_rawDescGZIP(), []int{27}
-}
-
-func (x *ProjectMCPServersSetResponse) GetMcpServerIds() []string {
-	if x != nil {
-		return x.McpServerIds
-	}
-	return nil
-}
-
-type ProjectMCPServersGetRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ProjectId     string                 `protobuf:"bytes,1,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ProjectMCPServersGetRequest) Reset() {
-	*x = ProjectMCPServersGetRequest{}
-	mi := &file_orchicon_api_v1_mcp_server_proto_msgTypes[28]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ProjectMCPServersGetRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ProjectMCPServersGetRequest) ProtoMessage() {}
-
-func (x *ProjectMCPServersGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_mcp_server_proto_msgTypes[28]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ProjectMCPServersGetRequest.ProtoReflect.Descriptor instead.
-func (*ProjectMCPServersGetRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_mcp_server_proto_rawDescGZIP(), []int{28}
-}
-
-func (x *ProjectMCPServersGetRequest) GetProjectId() string {
-	if x != nil {
-		return x.ProjectId
-	}
-	return ""
-}
-
-type ProjectMCPServersGetResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	McpServerIds  []string               `protobuf:"bytes,1,rep,name=mcp_server_ids,json=mcpServerIds,proto3" json:"mcp_server_ids,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ProjectMCPServersGetResponse) Reset() {
-	*x = ProjectMCPServersGetResponse{}
-	mi := &file_orchicon_api_v1_mcp_server_proto_msgTypes[29]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ProjectMCPServersGetResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ProjectMCPServersGetResponse) ProtoMessage() {}
-
-func (x *ProjectMCPServersGetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_mcp_server_proto_msgTypes[29]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ProjectMCPServersGetResponse.ProtoReflect.Descriptor instead.
-func (*ProjectMCPServersGetResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_mcp_server_proto_rawDescGZIP(), []int{29}
-}
-
-func (x *ProjectMCPServersGetResponse) GetMcpServerIds() []string {
-	if x != nil {
-		return x.McpServerIds
-	}
-	return nil
-}
-
-type TenantDefaultMCPServersSetRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	McpServerIds  []string               `protobuf:"bytes,1,rep,name=mcp_server_ids,json=mcpServerIds,proto3" json:"mcp_server_ids,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *TenantDefaultMCPServersSetRequest) Reset() {
-	*x = TenantDefaultMCPServersSetRequest{}
-	mi := &file_orchicon_api_v1_mcp_server_proto_msgTypes[30]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *TenantDefaultMCPServersSetRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*TenantDefaultMCPServersSetRequest) ProtoMessage() {}
-
-func (x *TenantDefaultMCPServersSetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_mcp_server_proto_msgTypes[30]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use TenantDefaultMCPServersSetRequest.ProtoReflect.Descriptor instead.
-func (*TenantDefaultMCPServersSetRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_mcp_server_proto_rawDescGZIP(), []int{30}
-}
-
-func (x *TenantDefaultMCPServersSetRequest) GetMcpServerIds() []string {
-	if x != nil {
-		return x.McpServerIds
-	}
-	return nil
-}
-
-type TenantDefaultMCPServersSetResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	McpServerIds  []string               `protobuf:"bytes,1,rep,name=mcp_server_ids,json=mcpServerIds,proto3" json:"mcp_server_ids,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *TenantDefaultMCPServersSetResponse) Reset() {
-	*x = TenantDefaultMCPServersSetResponse{}
-	mi := &file_orchicon_api_v1_mcp_server_proto_msgTypes[31]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *TenantDefaultMCPServersSetResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*TenantDefaultMCPServersSetResponse) ProtoMessage() {}
-
-func (x *TenantDefaultMCPServersSetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_mcp_server_proto_msgTypes[31]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use TenantDefaultMCPServersSetResponse.ProtoReflect.Descriptor instead.
-func (*TenantDefaultMCPServersSetResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_mcp_server_proto_rawDescGZIP(), []int{31}
-}
-
-func (x *TenantDefaultMCPServersSetResponse) GetMcpServerIds() []string {
-	if x != nil {
-		return x.McpServerIds
-	}
-	return nil
-}
-
-type TenantDefaultMCPServersGetRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *TenantDefaultMCPServersGetRequest) Reset() {
-	*x = TenantDefaultMCPServersGetRequest{}
-	mi := &file_orchicon_api_v1_mcp_server_proto_msgTypes[32]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *TenantDefaultMCPServersGetRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*TenantDefaultMCPServersGetRequest) ProtoMessage() {}
-
-func (x *TenantDefaultMCPServersGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_mcp_server_proto_msgTypes[32]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use TenantDefaultMCPServersGetRequest.ProtoReflect.Descriptor instead.
-func (*TenantDefaultMCPServersGetRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_mcp_server_proto_rawDescGZIP(), []int{32}
-}
-
-type TenantDefaultMCPServersGetResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	McpServerIds  []string               `protobuf:"bytes,1,rep,name=mcp_server_ids,json=mcpServerIds,proto3" json:"mcp_server_ids,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *TenantDefaultMCPServersGetResponse) Reset() {
-	*x = TenantDefaultMCPServersGetResponse{}
-	mi := &file_orchicon_api_v1_mcp_server_proto_msgTypes[33]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *TenantDefaultMCPServersGetResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*TenantDefaultMCPServersGetResponse) ProtoMessage() {}
-
-func (x *TenantDefaultMCPServersGetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_mcp_server_proto_msgTypes[33]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use TenantDefaultMCPServersGetResponse.ProtoReflect.Descriptor instead.
-func (*TenantDefaultMCPServersGetResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_mcp_server_proto_rawDescGZIP(), []int{33}
-}
-
-func (x *TenantDefaultMCPServersGetResponse) GetMcpServerIds() []string {
-	if x != nil {
-		return x.McpServerIds
-	}
-	return nil
-}
-
 var File_orchicon_api_v1_mcp_server_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_mcp_server_proto_rawDesc = "" +
@@ -2123,7 +1842,7 @@ const file_orchicon_api_v1_mcp_server_proto_rawDesc = "" +
 	"\acommand\x18\x02 \x01(\tR\acommand\x12\x0e\n" +
 	"\x02ok\x18\x03 \x01(\bR\x02ok\x12\x14\n" +
 	"\x05error\x18\x04 \x01(\tR\x05error\x12!\n" +
-	"\finstalled_at\x18\x05 \x01(\tR\vinstalledAt\"\xbe\x06\n" +
+	"\finstalled_at\x18\x05 \x01(\tR\vinstalledAt\"\x86\a\n" +
 	"\tMCPServer\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12A\n" +
@@ -2143,7 +1862,10 @@ const file_orchicon_api_v1_mcp_server_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\x10 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x1a6\n" +
+	"updated_at\x18\x10 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x1d\n" +
+	"\n" +
+	"project_id\x18\x11 \x01(\tR\tprojectId\x12'\n" +
+	"\x0fconversation_id\x18\x12 \x01(\tR\x0econversationId\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a:\n" +
@@ -2178,14 +1900,17 @@ const file_orchicon_api_v1_mcp_server_proto_rawDesc = "" +
 	"\x04slug\x18\x01 \x01(\tR\x04slug\"\x96\x01\n" +
 	"\x19MCPCatalogPrefillResponse\x126\n" +
 	"\x05entry\x18\x01 \x01(\v2 .orchicon.api.v1.MCPCatalogEntryR\x05entry\x12A\n" +
-	"\aprefill\x18\x02 \x01(\v2'.orchicon.api.v1.MCPServerCreateRequestR\aprefill\"\x16\n" +
-	"\x14MCPServerListRequest\"M\n" +
+	"\aprefill\x18\x02 \x01(\v2'.orchicon.api.v1.MCPServerCreateRequestR\aprefill\"^\n" +
+	"\x14MCPServerListRequest\x12\x1d\n" +
+	"\n" +
+	"project_id\x18\x01 \x01(\tR\tprojectId\x12'\n" +
+	"\x0fconversation_id\x18\x02 \x01(\tR\x0econversationId\"M\n" +
 	"\x15MCPServerListResponse\x124\n" +
 	"\aservers\x18\x01 \x03(\v2\x1a.orchicon.api.v1.MCPServerR\aservers\"%\n" +
 	"\x13MCPServerGetRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"J\n" +
 	"\x14MCPServerGetResponse\x122\n" +
-	"\x06server\x18\x01 \x01(\v2\x1a.orchicon.api.v1.MCPServerR\x06server\"\xf4\x03\n" +
+	"\x06server\x18\x01 \x01(\v2\x1a.orchicon.api.v1.MCPServerR\x06server\"\xbc\x04\n" +
 	"\x16MCPServerCreateRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12A\n" +
 	"\ttransport\x18\x02 \x01(\x0e2#.orchicon.api.v1.MCPServerTransportR\ttransport\x12\x18\n" +
@@ -2195,7 +1920,11 @@ const file_orchicon_api_v1_mcp_server_proto_rawDesc = "" +
 	"\x03url\x18\x06 \x01(\tR\x03url\x12N\n" +
 	"\aheaders\x18\a \x03(\v24.orchicon.api.v1.MCPServerCreateRequest.HeadersEntryR\aheaders\x12\x18\n" +
 	"\aenabled\x18\b \x01(\bR\aenabled\x12!\n" +
-	"\fcatalog_slug\x18\t \x01(\tR\vcatalogSlug\x1a6\n" +
+	"\fcatalog_slug\x18\t \x01(\tR\vcatalogSlug\x12\x1d\n" +
+	"\n" +
+	"project_id\x18\n" +
+	" \x01(\tR\tprojectId\x12'\n" +
+	"\x0fconversation_id\x18\v \x01(\tR\x0econversationId\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a:\n" +
@@ -2203,7 +1932,7 @@ const file_orchicon_api_v1_mcp_server_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"M\n" +
 	"\x17MCPServerCreateResponse\x122\n" +
-	"\x06server\x18\x01 \x01(\v2\x1a.orchicon.api.v1.MCPServerR\x06server\"\x9b\x06\n" +
+	"\x06server\x18\x01 \x01(\v2\x1a.orchicon.api.v1.MCPServerR\x06server\"\xe3\x06\n" +
 	"\x16MCPServerUpdateRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\x04name\x18\x02 \x01(\tH\x00R\x04name\x88\x01\x01\x12F\n" +
@@ -2219,7 +1948,10 @@ const file_orchicon_api_v1_mcp_server_proto_rawDesc = "" +
 	" \x03(\v24.orchicon.api.v1.MCPServerUpdateRequest.HeadersEntryR\aheaders\x12,\n" +
 	"\x0freplace_headers\x18\v \x01(\bH\x06R\x0ereplaceHeaders\x88\x01\x01\x12\x1d\n" +
 	"\aenabled\x18\f \x01(\bH\aR\aenabled\x88\x01\x01\x12&\n" +
-	"\fcatalog_slug\x18\r \x01(\tH\bR\vcatalogSlug\x88\x01\x01\x1a6\n" +
+	"\fcatalog_slug\x18\r \x01(\tH\bR\vcatalogSlug\x88\x01\x01\x12\x1d\n" +
+	"\n" +
+	"project_id\x18\x0e \x01(\tR\tprojectId\x12'\n" +
+	"\x0fconversation_id\x18\x0f \x01(\tR\x0econversationId\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a:\n" +
@@ -2269,25 +2001,7 @@ const file_orchicon_api_v1_mcp_server_proto_rawDesc = "" +
 	"\x1bMCPServerClearSecretRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\"\x1e\n" +
-	"\x1cMCPServerClearSecretResponse\"b\n" +
-	"\x1bProjectMCPServersSetRequest\x12\x1d\n" +
-	"\n" +
-	"project_id\x18\x01 \x01(\tR\tprojectId\x12$\n" +
-	"\x0emcp_server_ids\x18\x02 \x03(\tR\fmcpServerIds\"D\n" +
-	"\x1cProjectMCPServersSetResponse\x12$\n" +
-	"\x0emcp_server_ids\x18\x01 \x03(\tR\fmcpServerIds\"<\n" +
-	"\x1bProjectMCPServersGetRequest\x12\x1d\n" +
-	"\n" +
-	"project_id\x18\x01 \x01(\tR\tprojectId\"D\n" +
-	"\x1cProjectMCPServersGetResponse\x12$\n" +
-	"\x0emcp_server_ids\x18\x01 \x03(\tR\fmcpServerIds\"I\n" +
-	"!TenantDefaultMCPServersSetRequest\x12$\n" +
-	"\x0emcp_server_ids\x18\x01 \x03(\tR\fmcpServerIds\"J\n" +
-	"\"TenantDefaultMCPServersSetResponse\x12$\n" +
-	"\x0emcp_server_ids\x18\x01 \x03(\tR\fmcpServerIds\"#\n" +
-	"!TenantDefaultMCPServersGetRequest\"J\n" +
-	"\"TenantDefaultMCPServersGetResponse\x12$\n" +
-	"\x0emcp_server_ids\x18\x01 \x03(\tR\fmcpServerIds*\x84\x01\n" +
+	"\x1cMCPServerClearSecretResponse*\x84\x01\n" +
 	"\x12MCPServerTransport\x12$\n" +
 	" MCP_SERVER_TRANSPORT_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aMCP_SERVER_TRANSPORT_STDIO\x10\x01\x12(\n" +
@@ -2314,61 +2028,53 @@ func file_orchicon_api_v1_mcp_server_proto_rawDescGZIP() []byte {
 }
 
 var file_orchicon_api_v1_mcp_server_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_orchicon_api_v1_mcp_server_proto_msgTypes = make([]protoimpl.MessageInfo, 41)
+var file_orchicon_api_v1_mcp_server_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
 var file_orchicon_api_v1_mcp_server_proto_goTypes = []any{
-	(MCPServerTransport)(0),                    // 0: orchicon.api.v1.MCPServerTransport
-	(MCPInstallStatus)(0),                      // 1: orchicon.api.v1.MCPInstallStatus
-	(*MCPInstallResult)(nil),                   // 2: orchicon.api.v1.MCPInstallResult
-	(*MCPServer)(nil),                          // 3: orchicon.api.v1.MCPServer
-	(*MCPCatalogEnvVar)(nil),                   // 4: orchicon.api.v1.MCPCatalogEnvVar
-	(*MCPCatalogEntry)(nil),                    // 5: orchicon.api.v1.MCPCatalogEntry
-	(*MCPCatalogListRequest)(nil),              // 6: orchicon.api.v1.MCPCatalogListRequest
-	(*MCPCatalogListResponse)(nil),             // 7: orchicon.api.v1.MCPCatalogListResponse
-	(*MCPCatalogPrefillRequest)(nil),           // 8: orchicon.api.v1.MCPCatalogPrefillRequest
-	(*MCPCatalogPrefillResponse)(nil),          // 9: orchicon.api.v1.MCPCatalogPrefillResponse
-	(*MCPServerListRequest)(nil),               // 10: orchicon.api.v1.MCPServerListRequest
-	(*MCPServerListResponse)(nil),              // 11: orchicon.api.v1.MCPServerListResponse
-	(*MCPServerGetRequest)(nil),                // 12: orchicon.api.v1.MCPServerGetRequest
-	(*MCPServerGetResponse)(nil),               // 13: orchicon.api.v1.MCPServerGetResponse
-	(*MCPServerCreateRequest)(nil),             // 14: orchicon.api.v1.MCPServerCreateRequest
-	(*MCPServerCreateResponse)(nil),            // 15: orchicon.api.v1.MCPServerCreateResponse
-	(*MCPServerUpdateRequest)(nil),             // 16: orchicon.api.v1.MCPServerUpdateRequest
-	(*MCPServerUpdateResponse)(nil),            // 17: orchicon.api.v1.MCPServerUpdateResponse
-	(*MCPServerDeleteRequest)(nil),             // 18: orchicon.api.v1.MCPServerDeleteRequest
-	(*MCPServerDeleteResponse)(nil),            // 19: orchicon.api.v1.MCPServerDeleteResponse
-	(*MCPServerInstallRequest)(nil),            // 20: orchicon.api.v1.MCPServerInstallRequest
-	(*MCPServerInstallResponse)(nil),           // 21: orchicon.api.v1.MCPServerInstallResponse
-	(*MCPRuntimeDetectRequest)(nil),            // 22: orchicon.api.v1.MCPRuntimeDetectRequest
-	(*MCPRuntimeDetectResponse)(nil),           // 23: orchicon.api.v1.MCPRuntimeDetectResponse
-	(*MCPServerSetSecretRequest)(nil),          // 24: orchicon.api.v1.MCPServerSetSecretRequest
-	(*MCPServerSetSecretResponse)(nil),         // 25: orchicon.api.v1.MCPServerSetSecretResponse
-	(*MCPServerClearSecretRequest)(nil),        // 26: orchicon.api.v1.MCPServerClearSecretRequest
-	(*MCPServerClearSecretResponse)(nil),       // 27: orchicon.api.v1.MCPServerClearSecretResponse
-	(*ProjectMCPServersSetRequest)(nil),        // 28: orchicon.api.v1.ProjectMCPServersSetRequest
-	(*ProjectMCPServersSetResponse)(nil),       // 29: orchicon.api.v1.ProjectMCPServersSetResponse
-	(*ProjectMCPServersGetRequest)(nil),        // 30: orchicon.api.v1.ProjectMCPServersGetRequest
-	(*ProjectMCPServersGetResponse)(nil),       // 31: orchicon.api.v1.ProjectMCPServersGetResponse
-	(*TenantDefaultMCPServersSetRequest)(nil),  // 32: orchicon.api.v1.TenantDefaultMCPServersSetRequest
-	(*TenantDefaultMCPServersSetResponse)(nil), // 33: orchicon.api.v1.TenantDefaultMCPServersSetResponse
-	(*TenantDefaultMCPServersGetRequest)(nil),  // 34: orchicon.api.v1.TenantDefaultMCPServersGetRequest
-	(*TenantDefaultMCPServersGetResponse)(nil), // 35: orchicon.api.v1.TenantDefaultMCPServersGetResponse
-	nil,                           // 36: orchicon.api.v1.MCPServer.EnvEntry
-	nil,                           // 37: orchicon.api.v1.MCPServer.HeadersEntry
-	nil,                           // 38: orchicon.api.v1.MCPServerCreateRequest.EnvEntry
-	nil,                           // 39: orchicon.api.v1.MCPServerCreateRequest.HeadersEntry
-	nil,                           // 40: orchicon.api.v1.MCPServerUpdateRequest.EnvEntry
-	nil,                           // 41: orchicon.api.v1.MCPServerUpdateRequest.HeadersEntry
-	nil,                           // 42: orchicon.api.v1.MCPRuntimeDetectResponse.AvailableEntry
-	(*timestamppb.Timestamp)(nil), // 43: google.protobuf.Timestamp
+	(MCPServerTransport)(0),              // 0: orchicon.api.v1.MCPServerTransport
+	(MCPInstallStatus)(0),                // 1: orchicon.api.v1.MCPInstallStatus
+	(*MCPInstallResult)(nil),             // 2: orchicon.api.v1.MCPInstallResult
+	(*MCPServer)(nil),                    // 3: orchicon.api.v1.MCPServer
+	(*MCPCatalogEnvVar)(nil),             // 4: orchicon.api.v1.MCPCatalogEnvVar
+	(*MCPCatalogEntry)(nil),              // 5: orchicon.api.v1.MCPCatalogEntry
+	(*MCPCatalogListRequest)(nil),        // 6: orchicon.api.v1.MCPCatalogListRequest
+	(*MCPCatalogListResponse)(nil),       // 7: orchicon.api.v1.MCPCatalogListResponse
+	(*MCPCatalogPrefillRequest)(nil),     // 8: orchicon.api.v1.MCPCatalogPrefillRequest
+	(*MCPCatalogPrefillResponse)(nil),    // 9: orchicon.api.v1.MCPCatalogPrefillResponse
+	(*MCPServerListRequest)(nil),         // 10: orchicon.api.v1.MCPServerListRequest
+	(*MCPServerListResponse)(nil),        // 11: orchicon.api.v1.MCPServerListResponse
+	(*MCPServerGetRequest)(nil),          // 12: orchicon.api.v1.MCPServerGetRequest
+	(*MCPServerGetResponse)(nil),         // 13: orchicon.api.v1.MCPServerGetResponse
+	(*MCPServerCreateRequest)(nil),       // 14: orchicon.api.v1.MCPServerCreateRequest
+	(*MCPServerCreateResponse)(nil),      // 15: orchicon.api.v1.MCPServerCreateResponse
+	(*MCPServerUpdateRequest)(nil),       // 16: orchicon.api.v1.MCPServerUpdateRequest
+	(*MCPServerUpdateResponse)(nil),      // 17: orchicon.api.v1.MCPServerUpdateResponse
+	(*MCPServerDeleteRequest)(nil),       // 18: orchicon.api.v1.MCPServerDeleteRequest
+	(*MCPServerDeleteResponse)(nil),      // 19: orchicon.api.v1.MCPServerDeleteResponse
+	(*MCPServerInstallRequest)(nil),      // 20: orchicon.api.v1.MCPServerInstallRequest
+	(*MCPServerInstallResponse)(nil),     // 21: orchicon.api.v1.MCPServerInstallResponse
+	(*MCPRuntimeDetectRequest)(nil),      // 22: orchicon.api.v1.MCPRuntimeDetectRequest
+	(*MCPRuntimeDetectResponse)(nil),     // 23: orchicon.api.v1.MCPRuntimeDetectResponse
+	(*MCPServerSetSecretRequest)(nil),    // 24: orchicon.api.v1.MCPServerSetSecretRequest
+	(*MCPServerSetSecretResponse)(nil),   // 25: orchicon.api.v1.MCPServerSetSecretResponse
+	(*MCPServerClearSecretRequest)(nil),  // 26: orchicon.api.v1.MCPServerClearSecretRequest
+	(*MCPServerClearSecretResponse)(nil), // 27: orchicon.api.v1.MCPServerClearSecretResponse
+	nil,                                  // 28: orchicon.api.v1.MCPServer.EnvEntry
+	nil,                                  // 29: orchicon.api.v1.MCPServer.HeadersEntry
+	nil,                                  // 30: orchicon.api.v1.MCPServerCreateRequest.EnvEntry
+	nil,                                  // 31: orchicon.api.v1.MCPServerCreateRequest.HeadersEntry
+	nil,                                  // 32: orchicon.api.v1.MCPServerUpdateRequest.EnvEntry
+	nil,                                  // 33: orchicon.api.v1.MCPServerUpdateRequest.HeadersEntry
+	nil,                                  // 34: orchicon.api.v1.MCPRuntimeDetectResponse.AvailableEntry
+	(*timestamppb.Timestamp)(nil),        // 35: google.protobuf.Timestamp
 }
 var file_orchicon_api_v1_mcp_server_proto_depIdxs = []int32{
 	0,  // 0: orchicon.api.v1.MCPServer.transport:type_name -> orchicon.api.v1.MCPServerTransport
-	36, // 1: orchicon.api.v1.MCPServer.env:type_name -> orchicon.api.v1.MCPServer.EnvEntry
-	37, // 2: orchicon.api.v1.MCPServer.headers:type_name -> orchicon.api.v1.MCPServer.HeadersEntry
+	28, // 1: orchicon.api.v1.MCPServer.env:type_name -> orchicon.api.v1.MCPServer.EnvEntry
+	29, // 2: orchicon.api.v1.MCPServer.headers:type_name -> orchicon.api.v1.MCPServer.HeadersEntry
 	1,  // 3: orchicon.api.v1.MCPServer.install_status:type_name -> orchicon.api.v1.MCPInstallStatus
 	2,  // 4: orchicon.api.v1.MCPServer.install_result:type_name -> orchicon.api.v1.MCPInstallResult
-	43, // 5: orchicon.api.v1.MCPServer.created_at:type_name -> google.protobuf.Timestamp
-	43, // 6: orchicon.api.v1.MCPServer.updated_at:type_name -> google.protobuf.Timestamp
+	35, // 5: orchicon.api.v1.MCPServer.created_at:type_name -> google.protobuf.Timestamp
+	35, // 6: orchicon.api.v1.MCPServer.updated_at:type_name -> google.protobuf.Timestamp
 	4,  // 7: orchicon.api.v1.MCPCatalogEntry.default_env:type_name -> orchicon.api.v1.MCPCatalogEnvVar
 	4,  // 8: orchicon.api.v1.MCPCatalogEntry.default_headers:type_name -> orchicon.api.v1.MCPCatalogEnvVar
 	5,  // 9: orchicon.api.v1.MCPCatalogListResponse.entries:type_name -> orchicon.api.v1.MCPCatalogEntry
@@ -2377,15 +2083,15 @@ var file_orchicon_api_v1_mcp_server_proto_depIdxs = []int32{
 	3,  // 12: orchicon.api.v1.MCPServerListResponse.servers:type_name -> orchicon.api.v1.MCPServer
 	3,  // 13: orchicon.api.v1.MCPServerGetResponse.server:type_name -> orchicon.api.v1.MCPServer
 	0,  // 14: orchicon.api.v1.MCPServerCreateRequest.transport:type_name -> orchicon.api.v1.MCPServerTransport
-	38, // 15: orchicon.api.v1.MCPServerCreateRequest.env:type_name -> orchicon.api.v1.MCPServerCreateRequest.EnvEntry
-	39, // 16: orchicon.api.v1.MCPServerCreateRequest.headers:type_name -> orchicon.api.v1.MCPServerCreateRequest.HeadersEntry
+	30, // 15: orchicon.api.v1.MCPServerCreateRequest.env:type_name -> orchicon.api.v1.MCPServerCreateRequest.EnvEntry
+	31, // 16: orchicon.api.v1.MCPServerCreateRequest.headers:type_name -> orchicon.api.v1.MCPServerCreateRequest.HeadersEntry
 	3,  // 17: orchicon.api.v1.MCPServerCreateResponse.server:type_name -> orchicon.api.v1.MCPServer
 	0,  // 18: orchicon.api.v1.MCPServerUpdateRequest.transport:type_name -> orchicon.api.v1.MCPServerTransport
-	40, // 19: orchicon.api.v1.MCPServerUpdateRequest.env:type_name -> orchicon.api.v1.MCPServerUpdateRequest.EnvEntry
-	41, // 20: orchicon.api.v1.MCPServerUpdateRequest.headers:type_name -> orchicon.api.v1.MCPServerUpdateRequest.HeadersEntry
+	32, // 19: orchicon.api.v1.MCPServerUpdateRequest.env:type_name -> orchicon.api.v1.MCPServerUpdateRequest.EnvEntry
+	33, // 20: orchicon.api.v1.MCPServerUpdateRequest.headers:type_name -> orchicon.api.v1.MCPServerUpdateRequest.HeadersEntry
 	3,  // 21: orchicon.api.v1.MCPServerUpdateResponse.server:type_name -> orchicon.api.v1.MCPServer
 	3,  // 22: orchicon.api.v1.MCPServerInstallResponse.server:type_name -> orchicon.api.v1.MCPServer
-	42, // 23: orchicon.api.v1.MCPRuntimeDetectResponse.available:type_name -> orchicon.api.v1.MCPRuntimeDetectResponse.AvailableEntry
+	34, // 23: orchicon.api.v1.MCPRuntimeDetectResponse.available:type_name -> orchicon.api.v1.MCPRuntimeDetectResponse.AvailableEntry
 	24, // [24:24] is the sub-list for method output_type
 	24, // [24:24] is the sub-list for method input_type
 	24, // [24:24] is the sub-list for extension type_name
@@ -2405,7 +2111,7 @@ func file_orchicon_api_v1_mcp_server_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_mcp_server_proto_rawDesc), len(file_orchicon_api_v1_mcp_server_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   41,
+			NumMessages:   33,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

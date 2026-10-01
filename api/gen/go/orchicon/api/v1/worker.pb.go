@@ -315,6 +315,16 @@ type WorkerVersion struct {
 	Skills   string `protobuf:"bytes,20,opt,name=skills,proto3" json:"skills,omitempty"`                     // bullet-style skill list
 	Behavior string `protobuf:"bytes,21,opt,name=behavior,proto3" json:"behavior,omitempty"`                 // working-style guidance
 	AgentsMd string `protobuf:"bytes,22,opt,name=agents_md,json=agentsMd,proto3" json:"agents_md,omitempty"` // project-level conventions (AGENTS.md)
+	// skill_files are absolute paths (files OR directories) to SKILL artifacts
+	// selected for THIS VERSION (never the worker header — published versions are
+	// immutable by version and the version is what a dispatch pins to). Rendered
+	// into the composite worker prompt by contextfiles.RenderManifest, union-ed
+	// with the project's skill_files.
+	//
+	// DISTINCT FROM `skills` above: `skills` is free-text prompt PROSE composed
+	// into `# Skills`; these are real on-disk paths. The names stay distinct on
+	// purpose.
+	SkillFiles []string `protobuf:"bytes,24,rep,name=skill_files,json=skillFiles,proto3" json:"skill_files,omitempty"`
 	// adapter is the COMPUTED per-worker adapter selection (ADR-0005 D2):
 	// the parsed adapter segment of model_ref (server-side, read-only —
 	// never stored separately; the ref is the only store). Legacy 1/2-segment
@@ -502,6 +512,13 @@ func (x *WorkerVersion) GetAgentsMd() string {
 	return ""
 }
 
+func (x *WorkerVersion) GetSkillFiles() []string {
+	if x != nil {
+		return x.SkillFiles
+	}
+	return nil
+}
+
 func (x *WorkerVersion) GetAdapter() string {
 	if x != nil {
 		return x.Adapter
@@ -603,7 +620,7 @@ const file_orchicon_api_v1_worker_proto_rawDesc = "" +
 	"created_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
 	"updated_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x19\n" +
-	"\brole_ref\x18\r \x01(\tR\aroleRef\"\xba\x06\n" +
+	"\brole_ref\x18\r \x01(\tR\aroleRef\"\xdb\x06\n" +
 	"\rWorkerVersion\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tworker_id\x18\x02 \x01(\tR\bworkerId\x12\x18\n" +
@@ -628,7 +645,9 @@ const file_orchicon_api_v1_worker_proto_rawDesc = "" +
 	"\x04role\x18\x13 \x01(\tR\x04role\x12\x16\n" +
 	"\x06skills\x18\x14 \x01(\tR\x06skills\x12\x1a\n" +
 	"\bbehavior\x18\x15 \x01(\tR\bbehavior\x12\x1b\n" +
-	"\tagents_md\x18\x16 \x01(\tR\bagentsMd\x12\x18\n" +
+	"\tagents_md\x18\x16 \x01(\tR\bagentsMd\x12\x1f\n" +
+	"\vskill_files\x18\x18 \x03(\tR\n" +
+	"skillFiles\x12\x18\n" +
 	"\aadapter\x18\x17 \x01(\tR\aadapterJ\x04\b\x06\x10\a\"\xbc\x01\n" +
 	"\bEditLock\x12\x1f\n" +
 	"\vresource_id\x18\x01 \x01(\tR\n" +

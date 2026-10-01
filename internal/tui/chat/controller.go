@@ -177,6 +177,11 @@ type Conversation struct {
 	// because every site that renders a conversation needs it and a parallel map is one more thing that can
 	// disagree with the list it describes.
 	ProjectID string
+	// SkillFiles is the conversation's skill_files path list (Conversation.skill_files) — the
+	// conversation-level half of the skills feature, union-ed with the project's by the same
+	// contextfiles renderer. Read at list time so the composer can report it without a second
+	// fetch, exactly as ProjectID above.
+	SkillFiles []string
 	// PendingReplyID is the acked assistant message id of a turn the SERVER reports as still running, or "".
 	//
 	// IT IS WHAT LETS THIS CLIENT RE-ATTACH TO ITS OWN TURN, which is the reported bug: "When I leave an chat
@@ -464,6 +469,24 @@ func (c *Controller) SetConversationProject(id, projectID string) tea.Cmd {
 	}
 }
 
+// SetConversationSkillFiles REPLACES the conversation's skill_files path list
+// (SetConversationSkillFiles; an empty list clears it) — the conversation-level half
+// of the skills feature, and the exact mirror of SetConversationProject above.
+// Rendered by the same contextfiles.RenderManifest as the project's, union-ed with it.
+func (c *Controller) SetConversationSkillFiles(id string, files []string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if _, err := c.cl.Ask.SetConversationSkillFiles(ctx, connect.NewRequest(&apiv1.SetConversationSkillFilesRequest{
+			Id:    id,
+			Files: files,
+		})); err != nil {
+			return ConversationMutatedMsg{Op: "skill_files", ID: id, Err: err.Error()}
+		}
+		return ConversationMutatedMsg{Op: "skill_files", ID: id}
+	}
+}
+
 // RenameConversation persists a conversation title (UpdateConversationTitle).
 func (c *Controller) RenameConversation(id, title string) tea.Cmd {
 	return func() tea.Msg {
@@ -633,14 +656,15 @@ func (c *Controller) LoadConversations() tea.Cmd {
 		convs := make([]Conversation, 0, len(resp.Msg.GetConversations()))
 		for _, cv := range resp.Msg.GetConversations() {
 			convs = append(convs, Conversation{
-				ID:        cv.GetId(),
-				Title:     cv.GetTitle(),
-				TurnInFly: cv.GetTurnInFlight(),
-				MessageN:  cv.GetMessageCount(),
-				ModelRef:  cv.GetModelRef(),
-				Mode:      cv.GetMode(),
-				Fullsend:  cv.GetFullsend(),
-				ProjectID: cv.GetProjectId(),
+				ID:         cv.GetId(),
+				Title:      cv.GetTitle(),
+				TurnInFly:  cv.GetTurnInFlight(),
+				MessageN:   cv.GetMessageCount(),
+				ModelRef:   cv.GetModelRef(),
+				Mode:       cv.GetMode(),
+				Fullsend:   cv.GetFullsend(),
+				ProjectID:  cv.GetProjectId(),
+				SkillFiles: cv.GetSkillFiles(),
 				// Read at list time, so a conversation the server reports as mid-turn is recognisable as such the
 				// moment the rail loads — which is what the re-attach on open needs.
 				PendingReplyID: cv.GetPendingAssistantMessageId(),

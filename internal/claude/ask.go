@@ -200,9 +200,27 @@ type askSession struct {
 	// sidecar falls back to the dev tenant without it, so a session would read
 	// the wrong tenant's work items.
 	tenantID string
-	pending  map[string]struct{}    // open can_use_tool request ids
-	tools    map[string]askToolCall // tool_use_id -> the call it resolved
-	seeded   bool                   // whether the system prompt has been sent
+	// projectID is the PROJECT the conversation belongs to, captured from the turn's
+	// stamped scope (askmode.ConversationScope) beside tenantID. It is one half of
+	// the conversation's MCP scope: with s.convID it is what makes a conversation
+	// receive its project's AND its own MCP servers instead of resolving with empty
+	// ids (the defect this closes).
+	projectID string
+	// mcpFingerprint is the resolved MCP set at SPAWN, together with whether the
+	// mode could act when it was built. The child's servers arrive as fixed
+	// `--mcp-config` argv, so a set (or a mode's may-act) that CHANGES mid-conversation
+	// is invisible to a live child; comparing this on the next turn is what triggers
+	// the respawn that applies it (see SendTurnMessage).
+	mcpFingerprint string
+	// mode is the turn's Ask mode, captured from the SAME stamp the hook's mode file
+	// is written from. It is kept on the session so argv() can decide whether an
+	// OPAQUE MCP server may be OFFERED: a mode that may not act must not register the
+	// operator's servers at all (the offered half of the mode rule), not merely deny
+	// every call against them.
+	mode    string
+	pending map[string]struct{}    // open can_use_tool request ids
+	tools   map[string]askToolCall // tool_use_id -> the call it resolved
+	seeded  bool                   // whether the system prompt has been sent
 
 	// liveCtx/liveCancel own the CHILD's lifetime, which is NOT the turn's.
 	//
@@ -319,12 +337,51 @@ func (b *Bridge) SendTurnMessage(ctx context.Context, conversationID, sessionID,
 			"error", err, "conversation", conversationID, "mode", askmode.ModeFromContext(ctx))
 	}
 
+	// The turn's MODE, recorded on the session for the same reason as the tenant and
+	// the project: argv() is built at spawn, and it must know whether this mode may
+	// OFFER an opaque MCP server. The mode file (written just above) carries the same
+	// value to the hook for the ENFORCED half; this is the OFFERED half, and both read
+	// the ONE table (internal/askmode). A mode switch that flips MayAct is picked up by
+	// the respawn check below.
+	mode := askmode.ModeFromContext(ctx)
+	s.mu.Lock()
+	s.mode = mode
+	s.mu.Unlock()
+
 	// The tenant the Orchicon MCP sidecar is scoped to. Captured here because the
 	// turn's context is where it lives, and the child's argv is fixed at spawn.
 	if tid := tenant.FromContext(ctx); strings.TrimSpace(tid) != "" {
 		s.mu.Lock()
 		s.tenantID = tid
 		s.mu.Unlock()
+	}
+	// The conversation's PROJECT, from the SAME stamped scope the native adapter
+	// reads (askmode.ConversationScope, stamped by askorchicon before dispatch). It
+	// is the other half of the conversation MCP scope, and it arrives here for the
+	// same reason the tenant does: the child's argv is fixed at spawn.
+	if pid := askmode.ConversationScopeFromContext(ctx).ProjectID; strings.TrimSpace(pid) != "" {
+		s.mu.Lock()
+		changed := s.projectID != pid
+		s.projectID = pid
+		s.mu.Unlock()
+		if changed {
+			// THE CHILD'S MCP SET IS FIXED AT SPAWN. A project change means the
+			// resolved servers may differ, so a live child is holding the wrong
+			// `--mcp-config`. Retire it and let ensureRunning spawn fresh below —
+			// the same recreate path a dead child takes.
+			slog.Default().Info("claude ask: the conversation's project changed — respawning to apply its MCP set",
+				"conversation", conversationID, "project", pid)
+			s.teardown()
+		}
+	}
+	// AND A CHANGE THAT DID NOT COME FROM THE PROJECT: a server added to the
+	// conversation (or the project) since the live child was launched. The child's
+	// servers ride fixed `--mcp-config` argv, so a differing resolution means it is
+	// holding a stale set — respawn to apply the current one.
+	if s.sessionMCPStale() {
+		slog.Default().Info("claude ask: the conversation's MCP set changed — respawning the child to apply it",
+			"conversation", conversationID)
+		s.teardown()
 	}
 
 	if err := s.ensureRunning(ctx); err != nil {
@@ -449,10 +506,10 @@ func (b *Bridge) askRoot() string {
 // plane's own root; tests use a temp dir).
 func (b *Bridge) SetAskRoot(dir string) { b.askRootOverride = strings.TrimSpace(dir) }
 
-// SetConfigSource wires the tenant MCP server source. Mirroring the native
-// bridge's setter of the same name is deliberate: ONE resolution, one place the
-// platform decides which servers an execution gets.
-func (b *Bridge) SetConfigSource(src mcpclient.ConfigSource) { b.mcpConfig = src }
+// SetScopeResolver wires the MCP scope resolver. Mirroring the native bridge's
+// setter of the same name is deliberate: ONE resolution, one place the platform
+// decides which servers an execution gets.
+func (b *Bridge) SetScopeResolver(src mcpclient.ScopeResolver) { b.mcpResolver = src }
 
 // SetMCPSecretResolver wires the ${SECRET_NAME} → plaintext resolver used just
 // before the MCP config is rendered.
@@ -585,8 +642,22 @@ func (s *askSession) argv() []string {
 	// environment (childEnv starts from os.Environ, so the plane's
 	// ORCHICON_POSTGRES_DSN rides through), so its DB channel reaches the tenant
 	// the conversation belongs to.
-	servers, err := s.b.resolveMCPServers(context.Background(), s.tenantID, "", "",
-		OrchiconMCPServer(HookBinaryPath(), s.tenantID, nil))
+	// The Ask surface resolves the CONVERSATION scope (child 6 owns it): the
+	// conversation's own owned definitions UNIONED with its project's, in ONE
+	// owner-scoped read by the shared resolver. Resolving with empty ids (the old
+	// `{Kind: ScopeProject}` with no ProjectID/ConversationID) meant a conversation's
+	// project could never reach it — under the old model only the tenant default
+	// applied, and there is no tenant tier any more, so the set was empty.
+	s.mu.Lock()
+	projRef := mcpclient.ScopeRef{Kind: mcpclient.ScopeConversation, ProjectID: s.projectID, ConversationID: s.convID}
+	s.mu.Unlock()
+	res, rerr := s.b.resolveMCP(context.Background(), s.tenantID, projRef)
+	var servers []MCPServer
+	err = rerr
+	if rerr == nil {
+		servers, err = s.b.renderMCP(context.Background(), s.tenantID, res, OrchiconMCPServer(HookBinaryPath(), s.tenantID, nil))
+	}
+	provenance := mcpclient.ProvenanceString(res.Servers)
 	if err != nil {
 		// A MISSING selection is fatal on purpose (an Ask session that silently
 		// lost a project's MCP servers is a session that looks fine and cannot do
@@ -594,8 +665,31 @@ func (s *askSession) argv() []string {
 		// admin sees it; the built-in surface still registers.
 		slog.Default().Warn("claude ask: MCP resolution failed — only the built-in Orchicon server will be registered", "error", err)
 		servers = []MCPServer{OrchiconMCPServer(HookBinaryPath(), s.tenantID, nil)}
+		provenance = ""
 	}
-	logMCPResolution("ask", servers)
+	// THE OFFERED HALF OF THE MODE RULE. An operator's MCP server is OPAQUE to the
+	// platform, so a mode that may not act must not be OFFERED its tools at all —
+	// denying every call is the hook's job (the ENFORCED half), but advertising an
+	// action the mode refuses would invite the model to try it. The platform's own
+	// `orchicon` sidecar is CLASSIFIED by the table, so it stays registered in every
+	// mode; only the operator's servers are withheld.
+	s.mu.Lock()
+	mayAct := askmode.MayAct(s.mode)
+	s.mu.Unlock()
+	if !mayAct {
+		servers = withholdOpaqueMCP(servers)
+		if len(servers) < 2 && provenance != "" {
+			// The operator's servers were withheld by the mode: the log must say so,
+			// or the operator sees an MCP surface that quietly vanished.
+			slog.Default().Info("claude ask: the mode may not act — the operator's MCP servers are not offered this turn",
+				"conversation", s.convID, "mode", s.mode, "withheld", provenance)
+		}
+	}
+	// Record the set's FINGERPRINT (WITH the may-act flag) so a later turn whose set
+	// or mode differs can respawn and apply it (a live child holds its servers as
+	// fixed argv).
+	s.recordMCPFingerprint(mcpFingerprint(mayAct, res.Servers))
+	logMCPResolution("ask", servers, provenance)
 	argv = append(argv, MCPArgs(servers)...)
 	return argv
 }

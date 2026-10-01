@@ -10,6 +10,11 @@ import (
 // into fixtureRun() instead of printing test output to stdout (which would
 // corrupt the MCP JSON-RPC stream).
 func TestMain(m *testing.M) {
+	// The E2E probe stdio child (a DIFFERENT server from the bare fixture):
+	// it carries its own marker and must not fall through to m.Run().
+	if E2EStdioReexec() {
+		return
+	}
 	_ = os.Setenv("ORCHICON_MCP_FIXTURE", "1")
 	os.Exit(m.Run())
 }

@@ -19,7 +19,7 @@ import (
 // moment it appears, and that the run's own words matter more than its
 // counters — plus why an early commit is what makes work survive.
 func TestQuickWorkPromptEnforcesRunMonitoring(t *testing.T) {
-	p := BuildSystemPrompt(modeQuickWork, testAgentConfig(), NewToolRegistry(nil, nil, nil))
+	p := BuildSystemPrompt(modeQuickWork, testAgentConfig(), NewToolRegistry(nil, nil, nil), "")
 	for _, want := range []string{
 		// HealthState is the authoritative liveness signal, not the token count.
 		"HealthState is the authoritative liveness signal",

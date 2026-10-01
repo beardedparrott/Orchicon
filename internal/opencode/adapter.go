@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,9 +36,11 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/fileedit"
+	"github.com/beardedparrott/orchicon/internal/mcpclient"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
+	"github.com/beardedparrott/orchicon/internal/tenant"
 	"github.com/beardedparrott/orchicon/internal/worktree"
 	"go.opentelemetry.io/otel/attribute"
 	otelmetric "go.opentelemetry.io/otel/metric"
@@ -69,19 +72,28 @@ type Adapter struct {
 	// tests and an unconfigured plane get.
 	askHost *HostServe
 
-	// containerProviders resolves the tenants' providers as a runtime CONTAINER
-	// must see them: each with a base URL transposed off the host's loopback
-	// (see providers.TransposeForContainer), because a container's 127.0.0.1 is
-	// the container itself and a local model published on the operator's machine
-	// is unreachable there.
-	//
-	// Injected as a function for the same reason serveConfigFor is (Lifecycle):
-	// it needs the tenant's provider rows, which only the server can read, and an
-	// adapter must not grow a database dependency to get them. Nil = no provider
-	// block is injected, which leaves the mounted opencode config in charge —
-	// exactly the pre-fix behaviour, so an unconfigured plane degrades rather
-	// than breaks.
-	containerProviders func(ctx context.Context, tenantID string) []ProviderConfig
+	// hostPool is the DEMAND-KEYED pool of host serves for the in-process
+	// population, keyed by the RESOLVED MCP set (see HostServePool). A shared
+	// host serve builds its config ONCE and lives for the plane, so unioning
+	// several projects' MCP sets onto it would leak one project's servers into
+	// another project's session — FORBIDDEN; the pool is why each session lands
+	// on a serve whose config matches exactly what that session is entitled to.
+	// Nil keeps today's single-serve behaviour (legacy/tests).
+	hostPool *HostServePool
+
+	// runServeCfg is the RUN-LEVEL serve-config provider (see
+	// RunServeConfigProvider). It is why the adapter never rebuilds the
+	// container config per execution: the daemon applies ServeConfig only at
+	// container creation, so a per-execution input would make "whichever step
+	// created the container first" decide what every step sees. Nil = no
+	// provider (tests/headless); the container path then sends an empty config
+	// and the daemon's create-time config stands.
+	runServeCfg RunServeConfigProvider
+
+	// hostScope resolves the in-process session's MCP set for the host pool.
+	// Nil = the EMPTY set, which maps to the default serve (today's single
+	// host serve) — an unconfigured plane behaves exactly as before.
+	hostScope mcpclient.ScopeResolver
 
 	// rt is the workflow runtime daemon client. When non-nil AND an
 	// execution carries a RuntimeWorkflowID, the adapter reaches that
@@ -150,13 +162,6 @@ type SessionStoreFunc = scheduler.SessionStoreFunc
 // opencode implementation of scheduler.ConfigurableBridge.
 func (a *Adapter) SetRuntimeClient(rt *runtime.Client) { a.rt = rt }
 
-// SetContainerProviders installs the container-locality provider resolver: it
-// returns the tenant's providers with base URLs transposed for a runtime
-// container. See the field's own note for why it is injected.
-func (a *Adapter) SetContainerProviders(fn func(ctx context.Context, tenantID string) []ProviderConfig) {
-	a.containerProviders = fn
-}
-
 // SetHostServe injects the always-on host opencode serve manager. When
 // set AND sessions are enabled, local (in-process) executions run as
 // persistent sessions on it. Nil means no host serve is available — such
@@ -168,6 +173,31 @@ func (a *Adapter) SetHostServe(hs *HostServe) { a.host = hs }
 // permission profile). Nil leaves Ask on the worker serve, so an unconfigured
 // plane behaves exactly as it did before the profile split.
 func (a *Adapter) SetAskHostServe(hs *HostServe) { a.askHost = hs }
+
+// SetHostServePool injects the resolved-set-keyed pool of host serves for the
+// in-process population. Nil keeps today's single host serve (a.host).
+func (a *Adapter) SetHostServePool(p *HostServePool) { a.hostPool = p }
+
+// SetHostScopeResolver injects the resolver used to compute an in-process
+// session's MCP set (the pool key). Nil = the empty set for every in-process
+// session, which maps to the default serve.
+func (a *Adapter) SetHostScopeResolver(r mcpclient.ScopeResolver) { a.hostScope = r }
+
+// RunServeConfigProvider supplies the RUN-LEVEL serve config for a workflow
+// run's container. It takes ONLY a run id — never a per-execution input —
+// because the daemon applies the config once at container creation: a value
+// that varied per execution would let whichever step created the container
+// first decide what every step sees (order-dependent, forbidden).
+type RunServeConfigProvider interface {
+	// RunServeConfig returns the OPENCODE_CONFIG_CONTENT the run's container
+	// must carry, derived from the RUN. ok=false means the run has no opencode
+	// demand (or the run could not be resolved) — the caller then sends no
+	// config rather than inventing one.
+	RunServeConfig(ctx context.Context, runID string) (string, bool)
+}
+
+// SetRunServeConfigProvider injects the run-level serve-config provider.
+func (a *Adapter) SetRunServeConfigProvider(p RunServeConfigProvider) { a.runServeCfg = p }
 
 // SendExecutionMessage routes a mid-run human message into a live session
 // execution. It does NOT create a new execution, work item, or workflow
@@ -256,6 +286,15 @@ func executionDir(m scheduler.ExecutionManifest) string {
 // exists + is serving), or the host serve for the in-process population.
 // Returns nil when no serve is available — the caller fails the execution
 // (the legacy one-shot fallback was removed).
+//
+// tenantID is the EXECUTION's tenant (exec.TenantID). It is threaded through
+// because the host-serve pool resolves the session's project MCP set through
+// mcpsettings.Resolver, which reads the tenant from the CONTEXT and errors
+// when none is present — and the reconciler's dispatch context carries NO
+// tenant (it derives straight from the plane's signal context). Without it,
+// every in-process session resolved the EMPTY set and silently landed on the
+// default serve with none of its project's servers (the silent absence AC 6
+// forbids).
 func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.ExecutionManifest, tenantID string) *SessionClient {
 	// Local execution mode: run in-process via the host serve, never
 	// create/exec a container. The reconciler skipped EnsureForRun for a
@@ -272,11 +311,25 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 		// executionDir mirrors the reconciler's cwd resolution, so the
 		// serve config baked for a self-healed/recreated container carries
 		// the same base the run-start gate uses.
+		// The serve config is the RUN-LEVEL one, resolved from the RUN by the
+		// plane's provider — NEVER rebuilt here from the dispatching execution.
+		// The daemon applies ServeConfig only at container creation, so a
+		// per-execution input would make "whichever step created the container
+		// first" decide what every step sees: order-dependent, and forbidden.
+		// Asking the run also makes this self-heal path BYTE-IDENTICAL to the
+		// run-start one, so the pool env key matches and the daemon reuses the
+		// run's already-warmed container instead of building a fresh one.
+		serveCfg := ""
+		if a.runServeCfg != nil {
+			if cfg, ok := a.runServeCfg.RunServeConfig(ctx, manifest.RuntimeWorkflowID); ok {
+				serveCfg = cfg
+			}
+		}
 		resp, err := a.rt.Create(ctx, runtime.CreateRequest{
 			WorkflowID:  manifest.RuntimeWorkflowID,
 			Image:       manifest.RuntimeImage,
 			Mounts:      projectMount(manifest.ProjectDir),
-			ServeConfig: a.containerServeConfig(ctx, tenantID, manifest, executionDir(manifest)),
+			ServeConfig: serveCfg,
 			ProjectDir:  manifest.ProjectDir,
 		})
 		if err != nil {
@@ -287,6 +340,13 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 		if resp.ServePort == 0 || resp.ServePassword == "" {
 			return nil
 		}
+		// AC 4: record the set the session ACTUALLY received, with the RUN it
+		// came from. The plane logs the union's provenance (which scope
+		// supplied each server) once at resolution; this per-session line
+		// confirms an execution really got it, and names only the server IDS —
+		// never env/headers (a resolved credential must never reach a log).
+		a.log.Info("session MCP provenance", "execution", manifest.ExecutionID,
+			"run", manifest.RuntimeWorkflowID, "servers", provenanceOfServeConfig(serveCfg))
 		// The daemon returns the plane-reachable base URL (the docker
 		// bridge gateway, reachable from a containerized plane). Fall back
 		// to loopback for host-plane deployments.
@@ -303,19 +363,97 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 		// Adapter.Start, so a plane with no opencode demand never spawns
 		// (or probes for) the serve at all (AC 1).
 		//
-		// The failure is LOUD and fail-fast: EnsureStarted's error (disabled
-		// transport kill-switch, missing binary, serve never ready) is
-		// logged verbatim, and returning nil preserves the caller's existing
-		// nil-client failure path — the execution fails rather than
-		// degrading to a second transport.
-		if err := a.host.EnsureStarted(ctx); err != nil {
+		// WHEN A POOL IS WIRED the serve is chosen by the session's RESOLVED
+		// MCP SET: the shared serve builds its config once and lives for the
+		// plane, so a cross-project union on it would leak one project's
+		// servers into another project's session (FORBIDDEN — see HostServe
+		// and HostServePool). A session with no project resolves the EMPTY set
+		// and gets the default serve, i.e. exactly today's behaviour.
+		//
+		// The failure is LOUD and fail-fast: a pool with no serve for the set
+		// (at cap, or a start failure) NAMES the set and fails the execution —
+		// never a silent absence.
+		h := a.host
+		if a.hostPool != nil {
+			set := a.hostResolvedSet(ctx, manifest, tenantID)
+			pooled, perr := a.hostPool.ServeFor(ctx, set)
+			if perr != nil {
+				a.log.Warn("session transport: host serve pool has no serve for this MCP set — failing execution",
+					"execution", manifest.ExecutionID, "servers", mcpclient.ProvenanceString(set.Servers), "error", perr)
+				return nil
+			}
+			h = pooled
+		}
+		if err := h.EnsureStarted(ctx); err != nil {
 			a.log.Warn("session transport: host opencode serve unavailable — failing execution",
 				"execution", manifest.ExecutionID, "error", err)
 			return nil
 		}
-		return a.host.Client()
+		return h.Client()
 	}
 	return nil
+}
+
+// hostResolvedSet resolves the MCP set an in-process (host-serve) session is
+// entitled to, so the pool can hand out a serve whose config matches exactly
+// that set.
+//
+// SCOPE IS PROJECT — deliberately NOT the run union. The run union is a
+// per-CONTAINER artifact (one serve per run, created once); the host serve
+// serves heterogeneous work over time, so a cross-project union there would
+// leak one project's servers into another project's session. A session with
+// no project (standalone dispatch, Ask) resolves the EMPTY set, which maps to
+// the default serve — today's behaviour, unchanged.
+//
+// tenantID is scoped onto the context because mcpsettings.Resolver reads the
+// tenant from it (tenant.FromContext) and REFUSES an unscoped context — the
+// reconciler's dispatch context carries no tenant, so passing ctx verbatim
+// made every resolution fail and every session fall back to the default serve.
+func (a *Adapter) hostResolvedSet(ctx context.Context, manifest scheduler.ExecutionManifest, tenantID string) mcpclient.Resolution {
+	if a.hostScope == nil || manifest.ProjectID == "" {
+		return mcpclient.Resolution{}
+	}
+	res, err := a.hostScope.ResolveScope(tenant.WithID(ctx, tenantID), mcpclient.ScopeRef{
+		Kind:      mcpclient.ScopeProject,
+		ProjectID: manifest.ProjectID,
+	})
+	if err != nil {
+		// A failed resolution is NOT silently an empty set: an execution that
+		// silently lost its project's servers is one that looks fine and cannot
+		// do its job. Log it; the empty set still maps to the default serve so
+		// the execution is not blocked by an operator misconfiguration.
+		a.log.Warn("host serve: MCP resolution failed — using the default serve",
+			"execution", manifest.ExecutionID, "project", manifest.ProjectID, "error", err)
+		return mcpclient.Resolution{}
+	}
+	return res
+}
+
+// provenanceOfServeConfig extracts the server NAMES an emitted
+// OPENCODE_CONFIG_CONTENT carries, sorted, for the per-session provenance log
+// (AC 4). It reports names ONLY — the config's `mcp` entries carry resolved
+// env/headers (credentials), and a resolved credential must never reach a
+// log (the same rule mcpclient.ProvenanceString states). An empty or
+// unparseable config yields an empty string.
+func provenanceOfServeConfig(cfgContent string) string {
+	if cfgContent == "" {
+		return ""
+	}
+	var parsed struct {
+		MCP map[string]json.RawMessage `json:"mcp"`
+	}
+	if err := json.Unmarshal([]byte(cfgContent), &parsed); err != nil {
+		return ""
+	}
+	if len(parsed.MCP) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(parsed.MCP))
+	for k := range parsed.MCP {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ",")
 }
 
 // runtimeContainerRouteEnabled is the always-container routing gate: an
@@ -336,6 +474,18 @@ func runtimeContainerRouteEnabled(hasClient bool, m scheduler.ExecutionManifest)
 // tolerates MCP failures and keeps them). Worker system prompts ride the
 // per-message `system` field instead.
 //
+// THE MCP SET IS THE RUN'S UNION, NOT THE DISPATCHING STEP'S. union is
+// resolved once from the RUN (project-owned ∪ every step worker version's
+// inline specs, plus the run's skill-file union) and this result is applied
+// ONCE, at container creation. A step therefore sees servers ANOTHER step
+// defined — a DELIBERATE over-provision, the same trade the run's boot
+// profile already makes for adapter mounts and serves
+// (CreateRequest.AdapterKinds). It is NOT the dispatching execution's own
+// set: a per-execution input would make "whichever step created the
+// container first" decide what every step sees (order-dependent, and
+// forbidden). That is why this builder takes NO per-execution argument and
+// why its only new input is the run union.
+//
 // For DEV images (which boot the sandbox plane — Postgres + NATS +
 // `orchicon serve` in-container), the serve ALSO registers the built-in
 // Orchicon MCP against the sandbox DB: the `orchicon mcp` sidecar is
@@ -343,56 +493,21 @@ func runtimeContainerRouteEnabled(hasClient bool, m scheduler.ExecutionManifest)
 // (ORCHICON_POSTGRES_DSN), so workers get the `orchicon_*` tools natively
 // against their own sandbox — never the host plane's DB. Base/gui images
 // get no MCP (no sandbox plane), behavior identical to today.
-// containerServeConfig builds the serve config for a run's container, injecting
-// the tenant's providers with base URLs TRANSPOSED for a container.
-//
-// THE TRANSPOSITION LIVES HERE, at the one point where both facts are known: the
-// consumer is a container (this config boots its serve) and the tenant is known
-// (the manifest carries it). It cannot live in the stored provider row, because
-// that same row is dialled by the host plane, where 127.0.0.1 is correct and a
-// bridge address would be wrong — the operator's own words for the shape this
-// replaces: "we now have two different IP addresses to reference the same
-// model… Previously the GUI would automatically transpose the container IP when
-// you put in 127.0.0.1".
-//
-// The resolver is best-effort and non-fatal. A provider list that cannot be read
-// leaves the mounted opencode config in charge (the pre-fix behaviour) rather
-// than failing the run: an unreachable local model is a worse outcome than a
-// missing override, but it is not a reason to refuse to start.
-func (a *Adapter) containerServeConfig(ctx context.Context, tenantID string, manifest scheduler.ExecutionManifest, execDir string) string {
-	var cfgs []ProviderConfig
-	if a.containerProviders != nil {
-		cfgs = a.containerProviders(ctx, tenantID)
-	}
-	return RuntimeServeConfigWithProviders(manifest.RuntimeImage, execDir, manifest.RuntimeWorkflowID, nil, cfgs)
-}
-
-// RuntimeServeConfigWithProviders is RuntimeServeConfig plus the provider block.
-//
-// It is a separate function rather than a new parameter on RuntimeServeConfig
-// because that one is the Lifecycle's serveConfigFor hook, wired as a func value
-// at server construction — changing its signature would ripple through the
-// Lifecycle and every call site for a block only the session transport needs.
-func RuntimeServeConfigWithProviders(imageTag, projectDir, workflowRunID string, planeEnv map[string]string, providers []ProviderConfig) string {
-	cfg := runtimeServeConfigOptions(imageTag, projectDir, workflowRunID, planeEnv)
-	cfg.Providers = providers
-	return BuildConfigContent(cfg)
-}
-
-func RuntimeServeConfig(imageTag, projectDir, workflowRunID string, planeEnv map[string]string) string {
-	return BuildConfigContent(runtimeServeConfigOptions(imageTag, projectDir, workflowRunID, planeEnv))
-}
-
-// runtimeServeConfigOptions is the ONE builder of the container serve's options,
-// shared by the Lifecycle's hook and the session transport's provider-injecting
-// path, so the two can never disagree about permissions, MCP or the sandbox.
-func runtimeServeConfigOptions(imageTag, projectDir, workflowRunID string, planeEnv map[string]string) ConfigOptions {
+func RuntimeServeConfig(imageTag, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution, providers []runtime.ProviderConfig) string {
 	opts := ConfigOptions{
 		AgentName:    workerAgent,
 		AgentPrompt:  sessionToolShell,
 		DefaultAgent: workerAgent,
 		ModelRef:     "",
 		SkipUserMCP:  true,
+		RunMCP:       union.Servers,
+		RunSkills:    union.Skills,
+		// Providers are the tenant's local-model endpoints, TRANSPOSED for this
+		// container by the run-level resolver (providers.TransposeForContainer). A
+		// container's own 127.0.0.1 is itself, so the host's loopback is unreachable
+		// there; the row keeps what the operator typed and this consumer gets a view
+		// it can dial.
+		Providers: providers,
 	}
 	if runtime.IsDevImageTag(imageTag) {
 		opts.TenantID = serveTenantID()
@@ -456,7 +571,7 @@ func runtimeServeConfigOptions(imageTag, projectDir, workflowRunID string, plane
 		}
 	}
 	opts.CompositeTools = opts.WorktreeDir != ""
-	return opts
+	return BuildConfigContent(opts)
 }
 
 // startViaSession runs an execution through a persistent opencode session

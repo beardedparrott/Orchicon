@@ -1,9 +1,11 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useForm } from "react-hook-form";
+import { useState } from "react";
 import { z } from "zod";
 
 import { useCreateWorker } from "@/api/workers";
+import { useListProjects } from "@/api/projects";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -23,7 +25,13 @@ import {
   GatedToolsSection,
   PermissionsSection,
   PlaneRoleField,
+  permissionsMCPServers,
+  withPermissionsMCPServers,
 } from "@/components/WorkerFormSections";
+import { MCPServersPanel } from "@/components/MCPServersPanel";
+import { InheritedSkillFiles } from "@/components/InheritedSkillFiles";
+import { FileBrowser } from "@/components/FileBrowser";
+import { ProjectScopeSelect } from "@/components/conversations/ProjectScopeSelect";
 import { Route as rootRoute } from "@/routes/__root";
 
 // Create worker form (docs/10 §5, §2: React Hook Form + Zod).
@@ -105,6 +113,9 @@ const createWorkerSchema = z.object({
     .optional(),
   concurrencyLimit: z.number().int().min(0).max(1000),
   versionNote: z.string().max(16000, "Version note is too long").optional(),
+  // skillFiles is a JSON array of absolute paths to skill artifacts (files or
+  // directories) — DISTINCT from `skills`, which is free-text prompt PROSE.
+  skillFiles: z.string().optional(),
 });
 
 type CreateWorkerForm = z.infer<typeof createWorkerSchema>;
@@ -154,6 +165,7 @@ function NewWorkerPage() {
       budgetOverrides: DEFAULT_BUDGETS,
       concurrencyLimit: 1,
       versionNote: "",
+      skillFiles: "[]",
     },
   });
 
@@ -164,6 +176,24 @@ function NewWorkerPage() {
   const gatedTools = watch("gatedTools");
   const budgetOverrides = watch("budgetOverrides");
   const contextSources = watch("contextSources");
+  const skillFilesRaw = watch("skillFiles");
+  // The worker version is project-agnostic, so a project must be chosen PURELY
+  // to browse a tree for skill files. The stored values are absolute paths.
+  const [browseProjectId, setBrowseProjectId] = useState("");
+  const { data: projects } = useListProjects();
+  const browseProject = projects?.find((p) => p.id === browseProjectId);
+  const projectOptions = [
+    { value: "", label: "— pick a project to browse —", count: 0, archived: false },
+    ...(projects ?? []).map((p) => ({ value: p.id, label: p.name, count: 0, archived: false })),
+  ];
+  const skillFiles: string[] = (() => {
+    try {
+      const a = JSON.parse(skillFilesRaw || "[]");
+      return Array.isArray(a) ? a : [];
+    } catch {
+      return [];
+    }
+  })();
 
   const onSubmit = async (values: CreateWorkerForm) => {
     const result = await createWorker.mutateAsync({
@@ -183,6 +213,7 @@ function NewWorkerPage() {
       budgetOverrides: values.budgetOverrides || undefined,
       concurrencyLimit: values.concurrencyLimit,
       versionNote: values.versionNote || undefined,
+      skillFiles: values.skillFiles || undefined,
     });
     navigate({ to: "/workers/$id", params: { id: result.worker.id } });
   };
@@ -306,7 +337,7 @@ function NewWorkerPage() {
             </div>
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <Label htmlFor="skills">Skills</Label>
+                <Label htmlFor="skills">Skills (prompt text)</Label>
                 <FileInputButton onLoad={(c) => setValue("skills", c, { shouldValidate: true })} multiple label="Load files" />
               </div>
               <Textarea id="skills" placeholder="Go, TypeScript, PostgreSQL…" rows={3} className="font-mono text-xs" {...register("skills")} />
@@ -385,6 +416,62 @@ function NewWorkerPage() {
                 </p>
               )}
             </div>
+
+            {/* Skill FILES (real on-disk paths) — selected with the SAME
+                FileBrowser the GUI uses everywhere. A worker version is
+                project-agnostic, so a project is chosen only to browse its
+                tree; the stored values are absolute paths. */}
+            <div className="space-y-2 rounded-lg border p-4">
+              <Label>Skill files</Label>
+              <p className="text-xs text-muted-foreground">
+                Absolute paths to skill artifacts (files or directories)
+                rendered into this version's prompt — distinct from the
+                free-text Skills above. Pick a project to browse its tree; the
+                paths are stored on the version, not the project.
+              </p>
+              <ProjectScopeSelect
+                options={projectOptions}
+                value={browseProjectId}
+                onChange={setBrowseProjectId}
+                label="Browse project"
+              />
+              {browseProject && (
+                <InheritedSkillFiles
+                  projectName={browseProject.name}
+                  files={browseProject.skillFiles ?? []}
+                />
+              )}
+              {browseProject && (
+                <FileBrowser
+                  projectId={browseProject.id}
+                  projectDir={browseProject.projectDir || ""}
+                  initialSelectedFiles={skillFiles}
+                  onChange={(next) => setValue("skillFiles", JSON.stringify(next), { shouldValidate: true })}
+                  title="Skill files"
+                  description="Skill artifacts rendered into this version's prompt."
+                  emptyHint="No skill files on this version. Pick a project to browse its tree."
+                />
+              )}
+            </div>
+
+            {/* MCP servers this VERSION defines inline. The panel writes the
+                version's permissions.mcp_servers array — no owned row, so a
+                published version stays immutable. */}
+            <MCPServersPanel
+              scope={{
+                kind: "workerVersion",
+                value: permissionsMCPServers(permissions ?? DEFAULT_PERMISSIONS),
+                onChange: (next) =>
+                  setValue(
+                    "permissions",
+                    withPermissionsMCPServers(permissions ?? DEFAULT_PERMISSIONS, next),
+                    { shouldValidate: true },
+                  ),
+              }}
+              inheritedFrom={
+                browseProject ? { projectId: browseProject.id, projectName: browseProject.name } : undefined
+              }
+            />
 
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">

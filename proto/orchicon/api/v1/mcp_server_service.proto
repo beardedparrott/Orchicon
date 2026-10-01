@@ -6,12 +6,12 @@ import "orchicon/api/v1/mcp_server.proto";
 
 // MCPService (adapter-settings MCP management): the tenant-facing MCP
 // server surface behind Settings → Adapters → MCP, mirroring
-// ProviderService. CRUD over server entries (stdio + streamable HTTP),
-// the curated registry catalog (list + one-click prefill), explicit-only
-// auto-install with dry-run + runtime detection, write-only credentials
-// via the tenant secrets store, and project/tenant-default selections
-// (references, never copies). The sibling MCP-client task consumes the
-// stored entries at session time.
+// ProviderService. CRUD over OWNER-SCOPED server definitions (stdio +
+// streamable HTTP), the curated registry catalog (list + one-click
+// prefill), explicit-only auto-install with dry-run + runtime detection,
+// and write-only credentials via the tenant secrets store. A definition
+// belongs to exactly one scope (project XOR conversation); the selection
+// RPCs are gone because selection IS ownership.
 service MCPService {
   rpc ListMCPServers(MCPServerListRequest) returns (MCPServerListResponse);
   rpc GetMCPServer(MCPServerGetRequest) returns (MCPServerGetResponse);
@@ -27,9 +27,4 @@ service MCPService {
 
   rpc SetMCPServerSecret(MCPServerSetSecretRequest) returns (MCPServerSetSecretResponse);
   rpc ClearMCPServerSecret(MCPServerClearSecretRequest) returns (MCPServerClearSecretResponse);
-
-  rpc SetProjectMCPServers(ProjectMCPServersSetRequest) returns (ProjectMCPServersSetResponse);
-  rpc GetProjectMCPServers(ProjectMCPServersGetRequest) returns (ProjectMCPServersGetResponse);
-  rpc SetTenantDefaultMCPServers(TenantDefaultMCPServersSetRequest) returns (TenantDefaultMCPServersSetResponse);
-  rpc GetTenantDefaultMCPServers(TenantDefaultMCPServersGetRequest) returns (TenantDefaultMCPServersGetResponse);
 }

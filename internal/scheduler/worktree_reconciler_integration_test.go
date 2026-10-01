@@ -45,6 +45,17 @@ func newTestRepo(t *testing.T) string {
 	gitRun(t, dir, "init", "-b", "develop")
 	gitRun(t, dir, "config", "user.email", "worktree-test@orchicon.dev")
 	gitRun(t, dir, "config", "user.name", "Worktree Test")
+	// Disable git's BACKGROUND auto-maintenance for the fixture repo.
+	//
+	// WHY: `git commit`/`git worktree` may detach a `gc --auto`/`maintenance`
+	// child that keeps writing into `.git` after the command returns. The test
+	// body then finishes and t.TempDir()'s RemoveAll races that child, failing
+	// the test with `TempDir RemoveAll cleanup: unlinkat …/.git: directory not
+	// empty` (a cleanup error, not an assertion failure — seen intermittently
+	// under load). Turning auto-gc off at the source removes the concurrent
+	// writer; the fixture needs no gc, so nothing of value is lost.
+	gitRun(t, dir, "config", "gc.auto", "0")
+	gitRun(t, dir, "config", "maintenance.auto", "false")
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# test repo\n"), 0o644); err != nil {
 		t.Fatalf("write README: %v", err)
 	}
@@ -81,9 +92,45 @@ type worktreeTestEnv struct {
 	itemID string
 }
 
+// purgeWorktreeSweepResidue clears the orphan-sweep's shared-tenant surface
+// before each worktree fixture, mirroring blocked_reconciler_test.go's
+// purgeScanResidue.
+//
+// WHY: the orphan sweep reads a BOUNDED, tenant-wide page
+// (ListTerminalRunsWithPrunedBranchesInclusive: pruned + a recorded branch,
+// ORDER BY created_at ASC LIMIT 32) — it ignores the test's own run id. Each
+// worktree test leaves a terminal+pruned row recording a branch whose
+// project_dir is a t.TempDir() that is DELETED when the test ends, so those
+// rows can never be reclaimed by the sweep (`isInsideWorkTree` fails on the
+// vanished dir) and accumulate across the package run. After ~32 of them they
+// pin the entire bounded window, the fixture's own freshly-created (newest)
+// row never enters it, and the sweep silently reaches nothing — so
+// TestWorktreeScanRunsSlowPassAfterInterval and
+// TestWorktreeSlowPassBudgetExpiryResumesNextTick fail non-deterministically
+// depending on how many sibling tests ran first. Clearing the recorded branch
+// on the shared tenant's terminal+pruned rows (exactly what the sweep does to
+// a row it can reach) gives the scan a deterministic, clean page — the same
+// remedy the blocked-scan and parallel-dispatch suites already apply.
+func purgeWorktreeSweepResidue(t *testing.T, pool *db.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		return
+	}
+	defer ttx.Rollback(ctx)
+	if _, err := ttx.Tx.Exec(ctx, `UPDATE workflow_runs SET worktree_branch = ''
+		WHERE tenant_id = $1 AND status IN ('completed', 'failed', 'aborted')
+		  AND worktree_status = 'pruned' AND worktree_branch <> ''`, approvalTestTenant); err != nil {
+		return
+	}
+	_ = ttx.Commit(ctx)
+}
+
 func newWorktreeTestEnv(t *testing.T) *worktreeTestEnv {
 	t.Helper()
 	pool := approvalTestPool(t)
+	purgeWorktreeSweepResidue(t, pool)
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	env := &worktreeTestEnv{t: t, pool: pool,

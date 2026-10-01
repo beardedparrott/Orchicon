@@ -55,14 +55,20 @@ const AskModeFileEnv = "ORCHICON_CLAUDE_ASK_MODE_FILE"
 // does not go through the shim at all.
 const askModeStateDirName = ".state"
 
-// AskModeState is the file's contents: the mode, and the tools it denies.
+// AskModeState is the file's contents: the mode, the tools it denies, and whether the mode MAY ACT.
 //
 // Denied is carried EXPLICITLY rather than recomputed from the mode, so the hook
 // does not have to agree with the writer about which policy version is current —
 // the file states the decision that was actually taken for the turn.
+//
+// MayAct is carried for the same reason, and it is the OPAQUE-MCP half (askmode.Policy.MayAct): an MCP
+// tool whose name the platform cannot classify is an ACTION, so a mode that may not act refuses it. The
+// hook reads the flag the turn's writer recorded rather than re-deriving it, so the offered surface (the
+// adapter's own resolution) and the enforced surface (this hook) cannot drift.
 type AskModeState struct {
 	Mode   string   `json:"mode"`
 	Denied []string `json:"denied"`
+	MayAct bool     `json:"may_act"`
 }
 
 // askModeFilePath returns the mode file for one conversation.
@@ -71,25 +77,32 @@ func askModeFilePath(askRoot, convID string) string {
 }
 
 // writeAskModeFile records the turn's mode, or CLEARS it when the mode denies
-// nothing.
+// nothing AND may act.
 //
 // A mode with no policy (empty, or a value written by an older build) allows
 // everything — see askmode.Allows — so the file is removed rather than written
-// with an empty denial list. Absence and "denies nothing" then mean the same
-// thing to the reader, and a stale file cannot outlive the mode it described.
+// with an empty denial list. Absence and "denies nothing and may act" then mean
+// the same thing to the reader, and a stale file cannot outlive the mode it
+// described.
+//
+// IT WRITES WHENEVER THE MODE HAS ANYTHING TO SAY — a denial, OR "this mode may
+// not act" (the opaque-MCP rule). An Iteration turn has denials anyway, but the
+// writer must not DEPEND on that: a future mode that denied only opaque MCP would
+// otherwise be handed an absent file and a silently dropped boundary.
 //
 // Written atomically (temp + rename) because the hook may read at any moment: a
 // partially written file would parse as a garbled mode, and the safe reading of a
 // garbled file is "no policy", i.e. the boundary silently drops.
 func writeAskModeFile(path, mode string) error {
 	denied := askmode.DeniedNames(mode)
-	if len(denied) == 0 {
+	mayAct := askmode.MayAct(mode)
+	if len(denied) == 0 && mayAct {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 		return nil
 	}
-	b, err := json.Marshal(AskModeState{Mode: mode, Denied: denied})
+	b, err := json.Marshal(AskModeState{Mode: mode, Denied: denied, MayAct: mayAct})
 	if err != nil {
 		return err
 	}
@@ -174,18 +187,36 @@ func claudeToolToPolicyName(tool string) string {
 // askModeDenial reports whether the turn's mode refuses this tool call, and the
 // refusal to hand back.
 //
-// The DECISION is askmode's (via the file's Denied list, which was askmode's
-// answer at write time); only the WORDING is here, mirroring askorchicon's native
-// refusal so a model sees the same boundary whichever adapter it runs on. It
-// states that the PLATFORM refused it, that the model cannot switch its own mode,
-// and the one action that resolves it — the user switching the mode.
+// TWO KINDS OF DENIAL, from the ONE table (internal/askmode), and the OPAQUE-MCP
+// rule comes first because it is the one a bare-name lookup cannot express:
+//
+//  1. an OPAQUE MCP tool (`mcp__<server>__<tool>`, server != the platform's own
+//     orchicon sidecar) is an ACTION to a table that cannot classify it, so it is
+//     refused by any mode that MAY NOT ACT — read from the flag the turn's writer
+//     recorded (askmode.MayAct), never re-derived here. This is what makes a
+//     Brainstorm conversation unable to call an operator's MCP server.
+//  2. the mode's classic denials, via the translated bare name.
+//
+// BOTH ARE READ FROM THE SAME FILE, written from the same table, and the WORDING
+// is shared — mirroring askorchicon's native refusal so a model sees the same
+// boundary whichever adapter it runs on. It states that the PLATFORM refused it,
+// that the model cannot switch its own mode, and the one action that resolves it —
+// the user switching the mode.
 func askModeDenial(path, tool string) (bool, string) {
-	name := claudeToolToPolicyName(tool)
-	if name == "" {
-		return false, ""
-	}
 	st, ok := readAskModeFile(path)
 	if !ok {
+		return false, ""
+	}
+
+	if askmode.IsOpaqueMCPTool(tool) {
+		if st.MayAct {
+			return false, ""
+		}
+		return true, askModeRefusal(tool, st.Mode)
+	}
+
+	name := claudeToolToPolicyName(tool)
+	if name == "" {
 		return false, ""
 	}
 	denied := false
@@ -198,8 +229,14 @@ func askModeDenial(path, tool string) (bool, string) {
 	if !denied {
 		return false, ""
 	}
+	return true, askModeRefusal(tool, st.Mode)
+}
 
-	p, _ := askmode.PolicyFor(st.Mode)
+// askModeRefusal builds the refusal both denial kinds hand back. It names the
+// mode, says the platform refused it, and names the ONE thing that resolves it —
+// the user switching the mode — because the model cannot switch its own mode.
+func askModeRefusal(tool, mode string) string {
+	p, _ := askmode.PolicyFor(mode)
 	why := strings.TrimSpace(p.Why)
 	if why == "" {
 		why = "this mode does not do that kind of work"
@@ -208,8 +245,7 @@ func askModeDenial(path, tool string) (bool, string) {
 	if switchTo == "" {
 		switchTo = askmode.Iteration
 	}
-
-	return true, "REFUSED BY THE PLATFORM: " + tool + " is not available in " + st.Mode +
+	return "REFUSED BY THE PLATFORM: " + tool + " is not available in " + mode +
 		" mode, so it was NOT executed. " + why +
 		"\n\nYou cannot override this, and you cannot switch your own mode — only the user can, from the mode " +
 		"selector on this conversation. Say plainly that this is a " + switchTo + " job, name the mode, and ASK " +

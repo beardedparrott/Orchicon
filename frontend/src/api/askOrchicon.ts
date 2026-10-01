@@ -90,6 +90,25 @@ export function useSetConversationProject() {
   });
 }
 
+// useSetConversationSkillFiles replaces the conversation's skill_files path
+// list (SetConversationSkillFiles; an empty list clears it) — the
+// conversation-level half of the skills feature, the exact mirror of
+// useSetConversationProject. Rendered by the same contextfiles.RenderManifest
+// as the project's, union-ed with it.
+export function useSetConversationSkillFiles(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (files: string[]) => {
+      const res = await askOrchiconClient.setConversationSkillFiles({ id, files });
+      return res.conversation as Conversation | undefined;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: askKeys.conversations });
+      qc.invalidateQueries({ queryKey: askKeys.conversation(id) });
+    },
+  });
+}
+
 export function useDeleteConversation() {
   const qc = useQueryClient();
   return useMutation({

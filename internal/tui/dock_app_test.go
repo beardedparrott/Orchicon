@@ -165,7 +165,7 @@ func TestNavCommandParity(t *testing.T) {
 		"/ask", "/overview", "/work", "/execution", "/automation", "/enforcement", "/control",
 		// entity commands from nav config
 		"/workers", "/work-items", "/workflows", "/runs", "/executions",
-		"/approvals", "/policies", "/secrets", "/mcp", "/runtime-images",
+		"/approvals", "/policies", "/secrets", "/runtime-images",
 		"/settings", "/providers",
 		// arg jumps
 		"/wi", "/exec", "/run", "/worker",
@@ -177,6 +177,13 @@ func TestNavCommandParity(t *testing.T) {
 		// source removed the command: this list is the parity check between the two, so dropping
 		// the entry here is the change, not a workaround. A decision record is still rendered
 		// where it belongs, as policy context on an approval.
+		//
+		// "/mcp" IS ALSO GONE FROM THE TENANT SOURCES. The control screen's tenant-level "mcp"
+		// source was removed (a definition is OWNER-SCOPED now — project / conversation / worker
+		// version — there is no tenant-level MCP pane), so the generated command left with it.
+		// /mcp is a DIFFERENT command now: the conversation scope's slash command (owned
+		// definitions for the OPEN conversation), registered explicitly in slash.go rather than
+		// generated from a source. It is therefore not asserted here.
 		"/projects", "/conversations", "/schedules",
 		// Overview domain (Dashboard / Telemetry / Cost Explorer + /usage)
 		"/dashboard", "/telemetry", "/cost-explorer", "/usage",

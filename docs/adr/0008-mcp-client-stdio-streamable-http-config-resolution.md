@@ -1,6 +1,6 @@
 # ADR-0008: MCP client — stdio + streamable HTTP & config resolution
 
-Status: **Proposed** (architect design, workflow step 1)
+Status: **Superseded by [ADR-0012](0012-owner-scoped-mcp-definitions-one-union-resolution.md)** — decisions 4 and 6 superseded; the rest stands as the record of what was decided then.
 Work item: "MCP client: stdio + streamable HTTP & config resolution"
 Full design + test plan: `architecture-notes/mcp-client-stdio-streamable-http-config-resolution.md` (worker artifact of the architect step).
 

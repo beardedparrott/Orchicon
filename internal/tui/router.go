@@ -415,7 +415,7 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	// would fall through to the screens and be lost.
 	if lm, ok := msg.(launchPromptMsg); ok {
 		if lm.need {
-			m.beginLaunchPrompt(lm.dir, lm.visible, lm.mcpServers, lm.images)
+			m.beginLaunchPrompt(lm.dir, lm.visible, lm.images)
 		}
 		return m, nil
 	}
@@ -482,6 +482,14 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	if m.renameConv != nil {
 		if k, ok := msg.(tea.KeyMsg); ok {
 			return m.renameConvKey(k)
+		}
+		return m, nil
+	}
+	// The conversation-scope MCP modal (/mcp define) is the same shape again: it is layered above the
+	// composer, so a save chord aimed at the form can never reach a message being typed.
+	if m.convScopeForm != nil {
+		if k, ok := msg.(tea.KeyMsg); ok {
+			return m.convScopeKey(k)
 		}
 		return m, nil
 	}
@@ -1356,6 +1364,30 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		return tea.Batch(m.chat.LoadConversations(), m.waitChat())
 	case chat.ConversationMutatedMsg:
 		return tea.Batch(m.onConversationMutated(msg), m.waitChat())
+	case convScopePrefillMsg:
+		// The definition arrived: open the EDIT form on it. The fetch is asynchronous, so the form is
+		// opened HERE rather than inside the cmd (a cmd mutates a discarded App copy).
+		if msg.err != "" {
+			m.dock.SetError(msg.err)
+			return nil
+		}
+		m.openConversationMCPDefine(msg.server)
+		return nil
+	case convScopeMsg:
+		if msg.err != "" {
+			m.dock.SetError(msg.op + " failed: " + msg.err)
+			return nil
+		}
+		if msg.detail != "" {
+			m.dock.SetNotice(msg.op + ": " + msg.detail)
+		}
+		// A definitions write changes nothing the RAIL shows, but the skill-files write does (the list
+		// carries the conversation's skill_files), so both re-read: the reload is cheap and keeps the
+		// two clients from disagreeing about what the conversation holds.
+		if msg.op == "/skills" {
+			return m.reloadConversations()
+		}
+		return nil
 	case chat.TranscriptMsg:
 		return tea.Batch(m.onTranscript(msg), m.waitChat())
 	case chat.ErrMsg:

@@ -39,6 +39,7 @@ import (
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/mcpforms"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/work"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
@@ -68,9 +69,9 @@ type launchPrompt struct {
 	// project root, or may simply not care yet. It only changes what the question
 	// SAYS.
 	Visible bool
-	// MCPServers is the tenant's MCP entry list, carried so the create form can offer
-	// the selection. Empty means the list did not load, and the field is then absent.
-	MCPServers []*apiv1.MCPServer
+	// MCPServers was REMOVED with the tenant selection: the launch form now DEFINES
+	// project-owned MCP entries (work.ProjectMCPDefinitionsField) rather than selecting
+	// from the tenant list. See openLaunchForm / launchSubmit.
 	// Images is the runtime-image list, carried so the create form's image field can be a
 	// picker. Empty means the list did not load, and the field falls back to free text.
 	Images []kit2.Option
@@ -94,9 +95,9 @@ type launchPromptMsg struct {
 	// check, so nothing else would ever say so. The prompt is the one place the
 	// operator is deciding, which makes it the right place to be told.
 	visible bool
-	// mcpServers are the tenant's MCP entries, loaded so the launch form can offer the
-	// same selection the Work screen's create does.
-	mcpServers []*apiv1.MCPServer
+	// mcpServers was REMOVED: the launch form no longer selects from a tenant list.
+	// Under ownership it DEFINES project-owned entries, via the same
+	// work.ProjectMCPDefinitionsField the Work screen's create uses. See openLaunchForm.
 	// images are the runtime images, loaded for the same reason: the launch form's image
 	// field is a picker, so its options must exist before the form is built.
 	images []kit2.Option
@@ -145,15 +146,8 @@ func (m *App) checkLaunchProject() tea.Cmd {
 		}
 		// The MCP selection AND the runtime-image options ride along on this same round trip
 		// rather than a second one: the launch form offers the same fields as the Work screen's
-		// create, and both need a list. A failure here just means the MCP field is absent and the
-		// image field falls back to free text — it must not block a prompt whose purpose is to let
-		// the operator work.
-		var servers []*apiv1.MCPServer
-		if cl.MCP != nil {
-			if list, err := cl.MCP.ListMCPServers(ctx, connect.NewRequest(&apiv1.MCPServerListRequest{})); err == nil {
-				servers = list.Msg.GetServers()
-			}
-		}
+		// create, and both need a list. A failure here just means the image field falls back to
+		// free text — it must not block a prompt whose purpose is to let the operator work.
 		var images []kit2.Option
 		if cl.Images != nil {
 			if lr, err := cl.Images.ListRuntimeImages(ctx, connect.NewRequest(&apiv1.ListRuntimeImagesRequest{PageSize: 100})); err == nil {
@@ -162,7 +156,7 @@ func (m *App) checkLaunchProject() tea.Cmd {
 				}
 			}
 		}
-		return launchPromptMsg{dir: dir, need: true, visible: visible, mcpServers: servers, images: images}
+		return launchPromptMsg{dir: dir, need: true, visible: visible, images: images}
 	}
 }
 
@@ -233,8 +227,8 @@ func launchProjectSlug(name string) string {
 }
 
 // beginLaunchPrompt raises the prompt: the blank screen carrying the question.
-func (m *App) beginLaunchPrompt(dir string, visible bool, mcpServers []*apiv1.MCPServer, images []kit2.Option) {
-	m.launch = &launchPrompt{Dir: dir, Phase: launchAsking, Visible: visible, MCPServers: mcpServers, Images: images}
+func (m *App) beginLaunchPrompt(dir string, visible bool, images []kit2.Option) {
+	m.launch = &launchPrompt{Dir: dir, Phase: launchAsking, Visible: visible, Images: images}
 }
 
 // dismissLaunchPrompt closes the prompt and continues into the app normally — the
@@ -339,12 +333,11 @@ func (m *App) openLaunchForm() {
 		Initial:     m.launch.Dir,
 		Placeholder: "/home/me/projects/orchicon",
 	})
-	// The MCP selection is appended the same way, and is absent when the server list did
-	// not load — the launch form offers what the Work screen offers, but never a control
-	// it cannot populate.
-	if spec := work.ProjectMCPField(m.launch.MCPServers, nil); spec != nil {
-		specs = append(specs, *spec)
-	}
+	// The MCP definitions the operator seeds are appended the same way — an OWNED
+	// definition seed, not a selection: under ownership the launch form DEFINES
+	// project-owned entries (work.ProjectMCPDefinitionsField), the same control the Work
+	// screen's create uses.
+	specs = append(specs, work.ProjectMCPDefinitionsField())
 	f := kit2.NewForm("New project for this directory", specs...)
 	f.Set("name", name)
 	f.Set("slug", launchProjectSlug(name))
@@ -391,9 +384,12 @@ func (m *App) launchSubmit(values map[string]string, multi map[string][]string) 
 	image := strings.TrimSpace(values["default_runtime_image"])
 	dir := strings.TrimSpace(values["project_dir"])
 	goals := work.ParseGoals(values["goals"])
-	// Only written when the operator actually had the field to choose from.
-	mcpChosen := multi["mcp_servers"]
-	mcpLoaded := m.launch != nil && len(m.launch.MCPServers) > 0
+	// The MCP definitions the operator seeded are OWNED rows, created after the
+	// project exists (CreateProject carries no MCP field). This INVERTS the old
+	// select-from-tenant field: the request is a project-owned create, never a
+	// reference selection.
+	mcpDefs := mcpforms.ParseInline(values["mcp_servers"])
+	_ = multi
 	return func() tea.Msg {
 		if cl == nil || cl.Projects == nil {
 			return launchFailedMsg{err: errors.New("not connected to a plane")}
@@ -424,13 +420,20 @@ func (m *App) launchSubmit(values map[string]string, multi map[string][]string) 
 				"the project %q was created with its directory, but could not be activated: %w — activate it from "+
 					"the Work screen (select it, press a)", name, err)}
 		}
-		if mcpLoaded && cl.MCP != nil && len(mcpChosen) > 0 {
-			if _, err := cl.MCP.SetProjectMCPServers(ctx, connect.NewRequest(&apiv1.ProjectMCPServersSetRequest{
-				ProjectId:    id,
-				McpServerIds: mcpChosen,
-			})); err != nil {
+		// The operator's MCP definitions become project-owned rows. A failure here
+		// leaves the project created and activated — so it is reported as such, not
+		// as a bare failure that would send them hunting for a project that exists.
+		if len(mcpDefs) > 0 {
+			if cl.MCP == nil {
 				return launchFailedMsg{err: fmt.Errorf(
-					"the project %q was created and activated, but its MCP servers could not be saved: %w", name, err)}
+					"the project %q was created and activated, but its MCP definitions could not be saved: no MCP client", name)}
+			}
+			for _, spec := range mcpDefs {
+				req := work.InlineSpecToCreateRequest(spec, id)
+				if _, err := cl.MCP.CreateMCPServer(ctx, connect.NewRequest(req)); err != nil {
+					return launchFailedMsg{err: fmt.Errorf(
+						"the project %q was created and activated, but its MCP definition %q could not be saved: %w", name, spec.ID, err)}
+				}
 			}
 		}
 		return launchCreatedMsg{projectID: id}

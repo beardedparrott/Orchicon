@@ -6,7 +6,6 @@
 // It carries the GUI Control surface read-WRITE:
 //
 //	secrets    list (names/metadata ONLY) · create · rotate value · delete
-//	mcp        create · edit · enable/disable · set/clear credential · install
 //	providers  create custom · edit · enable/disable · set/clear token · delete
 //	webhooks   create · edit · enable/disable · test · delete · deliveries view
 //	adapters   list + detail (capabilities) + local enable/disable toggle
@@ -96,10 +95,9 @@ type Model struct {
 	// list-response caches: the list RPCs carry the rich rows and v1 has no
 	// Get-RPC for providers / webhooks / deliveries, so the list hit is the
 	// detail source of truth (same pattern as the enforcement screen).
-	webhooks   map[string]*apiv1.WebhookSubscription
-	providers  map[string]*apiv1.ProviderEntry
-	mcpServers map[string]*apiv1.MCPServer
-	adapters   map[string]*apiv1.RuntimeAdapter
+	webhooks  map[string]*apiv1.WebhookSubscription
+	providers map[string]*apiv1.ProviderEntry
+	adapters  map[string]*apiv1.RuntimeAdapter
 	// secretNames is the set of secret NAMES the tenant holds (never values — the list API does not
 	// return them). The provider forms use it to say whether a token is already stored, which is the
 	// one thing a masked field cannot tell the operator.
@@ -129,12 +127,6 @@ type Model struct {
 	rpcUpdateSettings              func(ctx context.Context, s *apiv1.TenantSettings) error
 	rpcAddPermissionPolicyEntry    func(ctx context.Context, r *apiv1.AddPermissionPolicyEntryRequest) error
 	rpcRemovePermissionPolicyEntry func(ctx context.Context, r *apiv1.RemovePermissionPolicyEntryRequest) error
-	rpcCreateMCP                   func(ctx context.Context, r *apiv1.MCPServerCreateRequest) error
-	rpcUpdateMCP                   func(ctx context.Context, r *apiv1.MCPServerUpdateRequest) error
-	rpcDeleteMCP                   func(ctx context.Context, id string) error
-	rpcInstallMCP                  func(ctx context.Context, id string) error
-	rpcSetMCPSecret                func(ctx context.Context, id, name, value string) error
-	rpcClearMCPSecret              func(ctx context.Context, id, name string) error
 	rpcCreateProvider              func(ctx context.Context, r *apiv1.ProviderCreateCustomRequest) error
 	rpcUpdateProvider              func(ctx context.Context, r *apiv1.ProviderUpdateCustomRequest) error
 	rpcDeleteProvider              func(ctx context.Context, id string) error
@@ -161,7 +153,6 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 		reg:             reg,
 		webhooks:        map[string]*apiv1.WebhookSubscription{},
 		providers:       map[string]*apiv1.ProviderEntry{},
-		mcpServers:      map[string]*apiv1.MCPServer{},
 		adapters:        map[string]*apiv1.RuntimeAdapter{},
 		adapterDisabled: map[string]bool{},
 		secretNames:     map[string]bool{},
@@ -171,7 +162,12 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 	// (both match the GUI nav-config group placement); Control keeps only the
 	// surfaces the GUI files under Control.
 	m.AddSource("secrets", "Secrets (names only)", m.fetchSecrets)
-	m.AddSource("mcp", "MCP Servers", m.fetchMCP)
+	// NO "mcp" SOURCE, DELIBERATELY. A definition is OWNER-SCOPED now (project /
+	// conversation / worker version) and there is no tenant-level MCP pane: the
+	// unscoped ListMCPServers this source used is the whole-tenant view the epic
+	// removed, and the same reasoning deleted the GUI's Settings MCP tab. The
+	// capability did not leave the TUI — it moved to the three scopes through
+	// screens/mcpforms (and the conversation's /mcp slash command).
 	m.AddSource("providers", "Providers", m.fetchProviders)
 	m.AddSource("webhooks", "Webhooks", m.fetchWebhooks)
 	m.AddSource("adapters", "Adapters", m.fetchAdapters)
@@ -312,48 +308,6 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 			return errNoClient("settings")
 		}
 		_, err := m.cl.Settings.RemovePermissionPolicyEntry(ctx, connect.NewRequest(r))
-		return err
-	}
-	m.rpcCreateMCP = func(ctx context.Context, r *apiv1.MCPServerCreateRequest) error {
-		if m.cl == nil || m.cl.MCP == nil {
-			return errNoClient("mcp")
-		}
-		_, err := m.cl.MCP.CreateMCPServer(ctx, connect.NewRequest(r))
-		return err
-	}
-	m.rpcUpdateMCP = func(ctx context.Context, r *apiv1.MCPServerUpdateRequest) error {
-		if m.cl == nil || m.cl.MCP == nil {
-			return errNoClient("mcp")
-		}
-		_, err := m.cl.MCP.UpdateMCPServer(ctx, connect.NewRequest(r))
-		return err
-	}
-	m.rpcDeleteMCP = func(ctx context.Context, id string) error {
-		if m.cl == nil || m.cl.MCP == nil {
-			return errNoClient("mcp")
-		}
-		_, err := m.cl.MCP.DeleteMCPServer(ctx, connect.NewRequest(&apiv1.MCPServerDeleteRequest{Id: id}))
-		return err
-	}
-	m.rpcInstallMCP = func(ctx context.Context, id string) error {
-		if m.cl == nil || m.cl.MCP == nil {
-			return errNoClient("mcp")
-		}
-		_, err := m.cl.MCP.InstallMCPRuntime(ctx, connect.NewRequest(&apiv1.MCPServerInstallRequest{Id: id}))
-		return err
-	}
-	m.rpcSetMCPSecret = func(ctx context.Context, id, name, value string) error {
-		if m.cl == nil || m.cl.MCP == nil {
-			return errNoClient("mcp")
-		}
-		_, err := m.cl.MCP.SetMCPServerSecret(ctx, connect.NewRequest(&apiv1.MCPServerSetSecretRequest{Id: id, Name: name, Value: value}))
-		return err
-	}
-	m.rpcClearMCPSecret = func(ctx context.Context, id, name string) error {
-		if m.cl == nil || m.cl.MCP == nil {
-			return errNoClient("mcp")
-		}
-		_, err := m.cl.MCP.ClearMCPServerSecret(ctx, connect.NewRequest(&apiv1.MCPServerClearSecretRequest{Id: id, Name: name}))
 		return err
 	}
 	m.rpcCreateProvider = func(ctx context.Context, r *apiv1.ProviderCreateCustomRequest) error {
@@ -560,26 +514,6 @@ func (m *Model) fetchSecrets(ctx context.Context, pageToken string) ([]kit2.Item
 		items = append(items, kit2.Item{ID: s.GetId(), Title: s.GetName(), Meta: "value hidden"})
 	}
 	return items, resp.Msg.NextPageToken, nil
-}
-
-func (m *Model) fetchMCP(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
-	resp, err := m.cl.MCP.ListMCPServers(ctx, connect.NewRequest(&apiv1.MCPServerListRequest{}))
-	if err != nil {
-		return nil, "", err
-	}
-	items := make([]kit2.Item, 0, len(resp.Msg.Servers))
-	for _, s := range resp.Msg.Servers {
-		m.mcpServers[s.GetId()] = s
-		meta := "disabled"
-		if s.GetEnabled() {
-			meta = "enabled"
-		}
-		if s.GetHasSecretStored() {
-			meta += " · cred"
-		}
-		items = append(items, kit2.Item{ID: s.GetId(), Title: s.GetName(), Meta: meta})
-	}
-	return items, "", nil
 }
 
 func (m *Model) fetchProviders(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
@@ -896,30 +830,6 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 			{Key: "id", Value: id},
 			{Key: "note", Value: "orch never reads a secret value — write it on create, rotate it blind"},
 			{Key: "actions", Value: "e: rotate value/description · x: delete"},
-		}, "", nil
-
-	case "mcp":
-		s := m.mcpServers[id]
-		if s == nil {
-			resp, err := m.cl.MCP.GetMCPServer(ctx, connect.NewRequest(&apiv1.MCPServerGetRequest{Id: id}))
-			if err != nil {
-				return "", nil, "", err
-			}
-			s = resp.Msg.GetServer()
-		}
-		return "MCP Server: " + s.GetName(), []kit2.Field{
-			{Key: "id", Value: s.GetId()},
-			{Key: "name", Value: s.GetName()},
-			{Key: "transport", Value: strings.ToLower(s.GetTransport().String())},
-			{Key: "command", Value: s.GetCommand()},
-			{Key: "args", Value: strings.Join(s.GetArgs(), " ")},
-			{Key: "url", Value: s.GetUrl()},
-			{Key: "enabled", Value: screenkit.FmtBool(s.GetEnabled())},
-			{Key: "install status", Value: strings.ToLower(s.GetInstallStatus().String())},
-			{Key: "required secrets", Value: strings.Join(s.GetRequiredSecrets(), ", ")},
-			{Key: "credential stored", Value: screenkit.FmtBool(s.GetHasSecretStored())},
-			{Key: "catalog", Value: s.GetCatalogSlug()},
-			{Key: "actions", Value: "e: edit · t: toggle · s: set credential · c: clear credential · i: install · x: delete"},
 		}, "", nil
 
 	case "providers":
@@ -1253,61 +1163,6 @@ func (m *Model) actionsForSelection() []kit2.Action {
 		)
 		return acts
 
-	case "mcp":
-		id, name := item.ID, item.Title
-		enabled, hasCred, installable := false, false, false
-		secName := ""
-		if s := m.mcpServers[id]; s != nil {
-			enabled = s.GetEnabled()
-			hasCred = s.GetHasSecretStored()
-			installable = s.GetTransport() == apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STDIO || s.GetCatalogSlug() != ""
-			if len(s.GetRequiredSecrets()) > 0 {
-				secName = s.GetRequiredSecrets()[0]
-			}
-		}
-		acts := []kit2.Action{}
-		if enabled {
-			acts = append(acts, kit2.Action{
-				Label: "disable", Key: "t", Danger: true, Source: "mcp",
-				Confirm:  "Disable " + name + "?\nThe MCP client stops offering its tools at session time.",
-				Apply:    func() { m.setMCPEnabledLocally(id, false) },
-				Rollback: func() { m.setMCPEnabledLocally(id, true) },
-				Do: func(ctx context.Context) error {
-					off := false
-					return m.rpcUpdateMCP(ctx, &apiv1.MCPServerUpdateRequest{Id: id, Enabled: &off})
-				},
-			})
-		} else {
-			acts = append(acts, kit2.Action{
-				Label: "enable", Key: "t", Source: "mcp",
-				Apply:    func() { m.setMCPEnabledLocally(id, true) },
-				Rollback: func() { m.setMCPEnabledLocally(id, false) },
-				Do: func(ctx context.Context) error {
-					on := true
-					return m.rpcUpdateMCP(ctx, &apiv1.MCPServerUpdateRequest{Id: id, Enabled: &on})
-				},
-			})
-		}
-		if installable {
-			acts = append(acts, kit2.Action{Label: "install", Key: "i", Source: "mcp",
-				Do: func(ctx context.Context) error { return m.rpcInstallMCP(ctx, id) }})
-		}
-		if hasCred || secName != "" {
-			acts = append(acts, kit2.Action{
-				Label: "clear credential", Key: "c", Danger: true, Source: "mcp",
-				Confirm: "Clear the stored credential for " + name + "?\nThe MCP client can no longer authenticate.",
-				Do:      func(ctx context.Context) error { return m.rpcClearMCPSecret(ctx, id, secName) },
-			})
-		}
-		acts = append(acts, kit2.Action{
-			Label: "delete", Key: "x", Danger: true, Source: "mcp",
-			Confirm:  "Delete " + name + "?\nThis cannot be undone.",
-			Apply:    func() { m.RemoveRow("mcp", id) },
-			Rollback: func() { m.Refresh("mcp") },
-			Do:       func(ctx context.Context) error { return m.rpcDeleteMCP(ctx, id) },
-		})
-		return acts
-
 	case "providers":
 		id, name := item.ID, item.Title
 		enabled, custom, hasToken := false, false, false
@@ -1404,16 +1259,6 @@ func (m *Model) setWebhookStatus(id, status string) {
 	m.MutateRow("webhooks", id, func(r *kit2.Row) { r.Meta = status })
 }
 
-func (m *Model) setMCPEnabledLocally(id string, enabled bool) {
-	m.MutateRow("mcp", id, func(r *kit2.Row) {
-		if enabled {
-			r.Meta = "enabled"
-		} else {
-			r.Meta = "disabled"
-		}
-	})
-}
-
 func (m *Model) setProviderEnabledLocally(id string, enabled bool) {
 	m.MutateRow("providers", id, func(r *kit2.Row) {
 		prefix, suffix := r.Meta, ""
@@ -1468,8 +1313,6 @@ func (m *Model) newFormForSource() *kit2.Form {
 	switch m.ActiveSourceName() {
 	case "webhooks":
 		return m.newWebhookForm()
-	case "mcp":
-		return m.newMCPForm()
 	case "providers":
 		return m.newProviderForm()
 	case "secrets":
@@ -1494,8 +1337,6 @@ func (m *Model) editFormForSource() *kit2.Form {
 	switch m.ActiveSourceName() {
 	case "webhooks":
 		return m.editWebhookForm(item)
-	case "mcp":
-		return m.editMCPForm(item)
 	case "providers":
 		return m.editProviderForm(item)
 	case "secrets":
@@ -1748,106 +1589,6 @@ func (m *Model) settingsForm() *kit2.Form {
 		return m.Mutate(mutate.Request{
 			Name: "save settings", Source: "settings",
 			Do: func(ctx context.Context) error { return m.rpcUpdateSettings(ctx, out) },
-		}), nil
-	}
-	return f
-}
-
-// newMCPForm builds the typed MCP server create form.
-func (m *Model) newMCPForm() *kit2.Form {
-	f := kit2.NewForm("New MCP server",
-		kit2.FieldSpec{Name: "name", Label: "Name", Kind: kit2.KText, Required: true, Placeholder: "github-mcp"},
-		kit2.FieldSpec{Name: "transport", Label: "Transport", Kind: kit2.KSelect, Initial: "stdio", Options: []kit2.Option{
-			{Value: "stdio", Label: "stdio"}, {Value: "streamable-http", Label: "streamable-http"},
-		}},
-		kit2.FieldSpec{Name: "command", Label: "Command (stdio)", Kind: kit2.KText, Placeholder: "npx"},
-		kit2.FieldSpec{Name: "args", Label: "Args (space separated)", Kind: kit2.KText},
-		kit2.FieldSpec{Name: "url", Label: "URL (streamable-http)", Kind: kit2.KText},
-		kit2.FieldSpec{Name: "enabled", Label: "Enabled", Kind: kit2.KCheckbox, Initial: "true"},
-	)
-	f.Focused = true
-	f.Width = 64
-	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
-		req := &apiv1.MCPServerCreateRequest{
-			Name:      v["name"],
-			Transport: mcpTransport(v["transport"]),
-			Command:   v["command"],
-			Args:      strings.Fields(v["args"]),
-			Url:       v["url"],
-			Enabled:   v["enabled"] == "true",
-		}
-		return m.Mutate(mutate.Request{
-			Name: "create MCP server " + v["name"], Source: "mcp",
-			Do: func(ctx context.Context) error { return m.rpcCreateMCP(ctx, req) },
-		}), nil
-	}
-	return f
-}
-
-// editMCPForm edits the mutable MCP server fields (command/args, url, enabled).
-func (m *Model) editMCPForm(item kit2.Item) *kit2.Form {
-	s := m.mcpServers[item.ID]
-	command, args, url, enabled := "", "", "", "true"
-	if s != nil {
-		command = s.GetCommand()
-		args = strings.Join(s.GetArgs(), " ")
-		url = s.GetUrl()
-		if !s.GetEnabled() {
-			enabled = "false"
-		}
-	}
-	f := kit2.NewForm("Edit MCP server: "+item.Title,
-		kit2.FieldSpec{Name: "command", Label: "Command (stdio)", Kind: kit2.KText, Initial: command},
-		kit2.FieldSpec{Name: "args", Label: "Args (space separated)", Kind: kit2.KText, Initial: args},
-		kit2.FieldSpec{Name: "url", Label: "URL (streamable-http)", Kind: kit2.KText, Initial: url},
-		kit2.FieldSpec{Name: "enabled", Label: "Enabled", Kind: kit2.KCheckbox, Initial: enabled},
-	)
-	f.Focused = true
-	f.Width = 64
-	id := item.ID
-	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
-		req := &apiv1.MCPServerUpdateRequest{Id: id}
-		if cmd := strings.TrimSpace(v["command"]); cmd != "" {
-			req.Command = &cmd
-		}
-		if argv := strings.Fields(v["args"]); len(argv) > 0 {
-			req.Args = argv
-			replace := true
-			req.ReplaceArgs = &replace
-		}
-		if u := strings.TrimSpace(v["url"]); u != "" {
-			req.Url = &u
-		}
-		en := v["enabled"] == "true"
-		req.Enabled = &en
-		return m.Mutate(mutate.Request{
-			Name: "edit MCP server " + item.Title, Source: "mcp",
-			Do: func(ctx context.Context) error { return m.rpcUpdateMCP(ctx, req) },
-		}), nil
-	}
-	return f
-}
-
-// mcpSecretForm stores a credential for an MCP server via the secret store.
-// The value field is a KSecret — masked in the view, written once, never read
-// back.
-func (m *Model) mcpSecretForm(item kit2.Item) *kit2.Form {
-	name := ""
-	if s := m.mcpServers[item.ID]; s != nil && len(s.GetRequiredSecrets()) > 0 {
-		name = s.GetRequiredSecrets()[0]
-	}
-	f := kit2.NewForm("Store MCP credential: "+item.Title,
-		kit2.FieldSpec{Name: "name", Label: "Credential key", Kind: kit2.KText, Required: true, Initial: name, Placeholder: "GITHUB_TOKEN"},
-		kit2.FieldSpec{Name: "value", Label: "Value", Kind: kit2.KSecret, Required: true},
-	)
-	f.Focused = true
-	f.Width = 64
-	id := item.ID
-	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
-		key, val := v["name"], v["value"]
-		return m.Mutate(mutate.Request{
-			Name: "store MCP credential " + key, Source: "mcp",
-			Do: func(ctx context.Context) error { return m.rpcSetMCPSecret(ctx, id, key, val) },
 		}), nil
 	}
 	return f
@@ -2231,24 +1972,15 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 	return m, nil
 }
 
-// secretFormForSource opens the credential/token entry form for panes that
-// store secrets (MCP "s", Providers "s").
-// --- the `s` chord is GONE for providers -------------------------------------------------------
+// secretFormForSource opens the credential form for panes that store secrets.
 //
-// The operator: "We should get rid of the 's' to set a token on providers and have that as just
-// another inline field in the edit/new." The token is now a field on both provider forms, so there is
-// no separate form to open — and no chord to explain. `secretFormForSource` no longer answers for the
-// providers pane; MCP keeps its own `s` (a credential per MCP SERVER is a genuinely separate object,
-// not a field of the server's own definition).
+// NO PANE ANSWERS ANY MORE, and that is the point rather than a gap. The MCP pane it used to serve
+// is gone (a definition is OWNER-SCOPED — project / conversation / worker version — so there is no
+// tenant-level MCP list to hang a credential off), and the provider token became a field on the
+// provider forms. The method is kept, and kept answering nil for every pane, because the `s` chord
+// is part of the screen's Update loop; a pane that grows a credential surface again re-registers
+// here rather than re-inventing the chord.
 func (m *Model) secretFormForSource() *kit2.Form {
-	item, ok := m.ActiveItem()
-	if !ok {
-		return nil
-	}
-	switch m.ActiveSourceName() {
-	case "mcp":
-		return m.mcpSecretForm(item)
-	}
 	return nil
 }
 
@@ -2313,8 +2045,6 @@ func (m *Model) HintLine() string {
 	switch m.ActiveSourceName() {
 	case "webhooks":
 		hint = "n: new · e: edit · t: enable/disable · T: test · x: delete (deliveries ride the detail)"
-	case "mcp":
-		hint = "n: new · e: edit · t: enabled · s: set credential · c: clear · i: install · x: delete"
 	case "providers":
 		hint = "n: new custom · e: edit (the token is a field) · t: enable/disable · c: clear token · x: delete"
 	case "secrets":
@@ -2393,13 +2123,6 @@ func validURL(v string) error {
 		return errors.New("must start with http:// or https://")
 	}
 	return nil
-}
-
-func mcpTransport(v string) apiv1.MCPServerTransport {
-	if v == "streamable-http" {
-		return apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STREAMABLE_HTTP
-	}
-	return apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STDIO
 }
 
 // buildBudgetJSON composes the individual budget fields back into the transport

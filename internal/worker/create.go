@@ -38,6 +38,13 @@ type CreateWorkerInput struct {
 	// Threaded through the row so the create path stays one insert.
 	Ephemeral bool
 
+	// SkillFiles is a JSON array of absolute skill file/directory paths for the
+	// worker's first version. DISTINCT FROM Skills above (free-text prompt prose):
+	// these are real on-disk paths, validated by contextfiles.Validate, and
+	// rendered into the composite prompt by contextfiles.RenderManifest, union-ed
+	// with the project's skill_files at render time.
+	SkillFiles string // JSON array of absolute paths
+
 	// JSON-encoded fields (validated; empty becomes the canonical default).
 	ContextSources  string // JSON array
 	Permissions     string // JSON object
@@ -115,6 +122,9 @@ func ValidateCreateWorkerInput(in *CreateWorkerInput) error {
 		return err
 	}
 	if in.AgentsMD, err = validateTextField(in.AgentsMD, maxPromptLen, "agents_md"); err != nil {
+		return err
+	}
+	if in.SkillFiles, err = validateSkillFiles(in.SkillFiles); err != nil {
 		return err
 	}
 	if in.ContextSources, err = validateJSONString(in.ContextSources, "[]", "context_sources"); err != nil {
@@ -197,6 +207,7 @@ func CreateWorkerTx(ctx context.Context, tx pgx.Tx, in CreateWorkerInput) (db.Wo
 		Behavior:            in.Behavior,
 		AgentsMD:            in.AgentsMD,
 		ContextSources:      []byte(in.ContextSources),
+		SkillFiles:          []byte(in.SkillFiles),
 		Permissions:         []byte(in.Permissions),
 		GatedTools:          []byte(in.GatedTools),
 		BudgetOverrides:     []byte(in.BudgetOverrides),

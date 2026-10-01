@@ -68,6 +68,9 @@ const (
 	// AskOrchiconServiceSetConversationProjectProcedure is the fully-qualified name of the
 	// AskOrchiconService's SetConversationProject RPC.
 	AskOrchiconServiceSetConversationProjectProcedure = "/orchicon.api.v1.AskOrchiconService/SetConversationProject"
+	// AskOrchiconServiceSetConversationSkillFilesProcedure is the fully-qualified name of the
+	// AskOrchiconService's SetConversationSkillFiles RPC.
+	AskOrchiconServiceSetConversationSkillFilesProcedure = "/orchicon.api.v1.AskOrchiconService/SetConversationSkillFiles"
 	// AskOrchiconServiceListMessagesProcedure is the fully-qualified name of the AskOrchiconService's
 	// ListMessages RPC.
 	AskOrchiconServiceListMessagesProcedure = "/orchicon.api.v1.AskOrchiconService/ListMessages"
@@ -163,6 +166,19 @@ type AskOrchiconServiceClient interface {
 	// conversation can be unassigned, but it can never point at a project that
 	// does not exist.
 	SetConversationProject(context.Context, *connect.Request[v1.SetConversationProjectRequest]) (*connect.Response[v1.SetConversationProjectResponse], error)
+	// SetConversationSkillFiles REPLACES the conversation's skill_files path array
+	// (an empty list clears it). It is the conversation-level half of the skills
+	// feature: a chat can select extra SKILL artifacts on top of its project's, and
+	// the UNION of the two is what the Ask system prompt renders (via
+	// contextfiles.RenderManifest — one shared renderer, no skills-specific code).
+	//
+	// DISTINCT FROM AgentConfig.skills, which is the tenant-wide free-text `skills`
+	// PROMPT SECTION: that is prose, this is a list of real on-disk paths. Paths are
+	// validated by internal/contextfiles — absolute, no "..", and INSIDE the
+	// conversation's project directory when it has one (a path outside it is
+	// invisible to a container-hosted worker, so it is rejected rather than silently
+	// rendering a "could not read" note).
+	SetConversationSkillFiles(context.Context, *connect.Request[v1.SetConversationSkillFilesRequest]) (*connect.Response[v1.SetConversationSkillFilesResponse], error)
 	// ListMessages returns messages for a conversation, ordered by
 	// created_at ascending (oldest first).
 	ListMessages(context.Context, *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error)
@@ -346,6 +362,12 @@ func NewAskOrchiconServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationProject")),
 			connect.WithClientOptions(opts...),
 		),
+		setConversationSkillFiles: connect.NewClient[v1.SetConversationSkillFilesRequest, v1.SetConversationSkillFilesResponse](
+			httpClient,
+			baseURL+AskOrchiconServiceSetConversationSkillFilesProcedure,
+			connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationSkillFiles")),
+			connect.WithClientOptions(opts...),
+		),
 		listMessages: connect.NewClient[v1.ListMessagesRequest, v1.ListMessagesResponse](
 			httpClient,
 			baseURL+AskOrchiconServiceListMessagesProcedure,
@@ -444,6 +466,7 @@ type askOrchiconServiceClient struct {
 	setConversationModel      *connect.Client[v1.SetConversationModelRequest, v1.SetConversationModelResponse]
 	setConversationFullsend   *connect.Client[v1.SetConversationFullsendRequest, v1.SetConversationFullsendResponse]
 	setConversationProject    *connect.Client[v1.SetConversationProjectRequest, v1.SetConversationProjectResponse]
+	setConversationSkillFiles *connect.Client[v1.SetConversationSkillFilesRequest, v1.SetConversationSkillFilesResponse]
 	listMessages              *connect.Client[v1.ListMessagesRequest, v1.ListMessagesResponse]
 	chatStream                *connect.Client[v1.ChatStreamRequest, v1.ChatStreamResponse]
 	abortConversationTurn     *connect.Client[v1.AbortConversationTurnRequest, v1.AbortConversationTurnResponse]
@@ -503,6 +526,11 @@ func (c *askOrchiconServiceClient) SetConversationFullsend(ctx context.Context, 
 // SetConversationProject calls orchicon.api.v1.AskOrchiconService.SetConversationProject.
 func (c *askOrchiconServiceClient) SetConversationProject(ctx context.Context, req *connect.Request[v1.SetConversationProjectRequest]) (*connect.Response[v1.SetConversationProjectResponse], error) {
 	return c.setConversationProject.CallUnary(ctx, req)
+}
+
+// SetConversationSkillFiles calls orchicon.api.v1.AskOrchiconService.SetConversationSkillFiles.
+func (c *askOrchiconServiceClient) SetConversationSkillFiles(ctx context.Context, req *connect.Request[v1.SetConversationSkillFilesRequest]) (*connect.Response[v1.SetConversationSkillFilesResponse], error) {
+	return c.setConversationSkillFiles.CallUnary(ctx, req)
 }
 
 // ListMessages calls orchicon.api.v1.AskOrchiconService.ListMessages.
@@ -626,6 +654,19 @@ type AskOrchiconServiceHandler interface {
 	// conversation can be unassigned, but it can never point at a project that
 	// does not exist.
 	SetConversationProject(context.Context, *connect.Request[v1.SetConversationProjectRequest]) (*connect.Response[v1.SetConversationProjectResponse], error)
+	// SetConversationSkillFiles REPLACES the conversation's skill_files path array
+	// (an empty list clears it). It is the conversation-level half of the skills
+	// feature: a chat can select extra SKILL artifacts on top of its project's, and
+	// the UNION of the two is what the Ask system prompt renders (via
+	// contextfiles.RenderManifest — one shared renderer, no skills-specific code).
+	//
+	// DISTINCT FROM AgentConfig.skills, which is the tenant-wide free-text `skills`
+	// PROMPT SECTION: that is prose, this is a list of real on-disk paths. Paths are
+	// validated by internal/contextfiles — absolute, no "..", and INSIDE the
+	// conversation's project directory when it has one (a path outside it is
+	// invisible to a container-hosted worker, so it is rejected rather than silently
+	// rendering a "could not read" note).
+	SetConversationSkillFiles(context.Context, *connect.Request[v1.SetConversationSkillFilesRequest]) (*connect.Response[v1.SetConversationSkillFilesResponse], error)
 	// ListMessages returns messages for a conversation, ordered by
 	// created_at ascending (oldest first).
 	ListMessages(context.Context, *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error)
@@ -805,6 +846,12 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 		connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationProject")),
 		connect.WithHandlerOptions(opts...),
 	)
+	askOrchiconServiceSetConversationSkillFilesHandler := connect.NewUnaryHandler(
+		AskOrchiconServiceSetConversationSkillFilesProcedure,
+		svc.SetConversationSkillFiles,
+		connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationSkillFiles")),
+		connect.WithHandlerOptions(opts...),
+	)
 	askOrchiconServiceListMessagesHandler := connect.NewUnaryHandler(
 		AskOrchiconServiceListMessagesProcedure,
 		svc.ListMessages,
@@ -909,6 +956,8 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 			askOrchiconServiceSetConversationFullsendHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceSetConversationProjectProcedure:
 			askOrchiconServiceSetConversationProjectHandler.ServeHTTP(w, r)
+		case AskOrchiconServiceSetConversationSkillFilesProcedure:
+			askOrchiconServiceSetConversationSkillFilesHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceListMessagesProcedure:
 			askOrchiconServiceListMessagesHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceChatStreamProcedure:
@@ -980,6 +1029,10 @@ func (UnimplementedAskOrchiconServiceHandler) SetConversationFullsend(context.Co
 
 func (UnimplementedAskOrchiconServiceHandler) SetConversationProject(context.Context, *connect.Request[v1.SetConversationProjectRequest]) (*connect.Response[v1.SetConversationProjectResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.SetConversationProject is not implemented"))
+}
+
+func (UnimplementedAskOrchiconServiceHandler) SetConversationSkillFiles(context.Context, *connect.Request[v1.SetConversationSkillFilesRequest]) (*connect.Response[v1.SetConversationSkillFilesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.SetConversationSkillFiles is not implemented"))
 }
 
 func (UnimplementedAskOrchiconServiceHandler) ListMessages(context.Context, *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error) {

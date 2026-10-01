@@ -3,18 +3,18 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { MCPCatalogListRequest, MCPCatalogListResponse, MCPCatalogPrefillRequest, MCPCatalogPrefillResponse, MCPRuntimeDetectRequest, MCPRuntimeDetectResponse, MCPServerClearSecretRequest, MCPServerClearSecretResponse, MCPServerCreateRequest, MCPServerCreateResponse, MCPServerDeleteRequest, MCPServerDeleteResponse, MCPServerGetRequest, MCPServerGetResponse, MCPServerInstallRequest, MCPServerInstallResponse, MCPServerListRequest, MCPServerListResponse, MCPServerSetSecretRequest, MCPServerSetSecretResponse, MCPServerUpdateRequest, MCPServerUpdateResponse, ProjectMCPServersGetRequest, ProjectMCPServersGetResponse, ProjectMCPServersSetRequest, ProjectMCPServersSetResponse, TenantDefaultMCPServersGetRequest, TenantDefaultMCPServersGetResponse, TenantDefaultMCPServersSetRequest, TenantDefaultMCPServersSetResponse } from "./mcp_server_pb.js";
+import { MCPCatalogListRequest, MCPCatalogListResponse, MCPCatalogPrefillRequest, MCPCatalogPrefillResponse, MCPRuntimeDetectRequest, MCPRuntimeDetectResponse, MCPServerClearSecretRequest, MCPServerClearSecretResponse, MCPServerCreateRequest, MCPServerCreateResponse, MCPServerDeleteRequest, MCPServerDeleteResponse, MCPServerGetRequest, MCPServerGetResponse, MCPServerInstallRequest, MCPServerInstallResponse, MCPServerListRequest, MCPServerListResponse, MCPServerSetSecretRequest, MCPServerSetSecretResponse, MCPServerUpdateRequest, MCPServerUpdateResponse } from "./mcp_server_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
  * MCPService (adapter-settings MCP management): the tenant-facing MCP
  * server surface behind Settings → Adapters → MCP, mirroring
- * ProviderService. CRUD over server entries (stdio + streamable HTTP),
- * the curated registry catalog (list + one-click prefill), explicit-only
- * auto-install with dry-run + runtime detection, write-only credentials
- * via the tenant secrets store, and project/tenant-default selections
- * (references, never copies). The sibling MCP-client task consumes the
- * stored entries at session time.
+ * ProviderService. CRUD over OWNER-SCOPED server definitions (stdio +
+ * streamable HTTP), the curated registry catalog (list + one-click
+ * prefill), explicit-only auto-install with dry-run + runtime detection,
+ * and write-only credentials via the tenant secrets store. A definition
+ * belongs to exactly one scope (project XOR conversation); the selection
+ * RPCs are gone because selection IS ownership.
  *
  * @generated from service orchicon.api.v1.MCPService
  */
@@ -118,42 +118,6 @@ export const MCPService = {
       name: "ClearMCPServerSecret",
       I: MCPServerClearSecretRequest,
       O: MCPServerClearSecretResponse,
-      kind: MethodKind.Unary,
-    },
-    /**
-     * @generated from rpc orchicon.api.v1.MCPService.SetProjectMCPServers
-     */
-    setProjectMCPServers: {
-      name: "SetProjectMCPServers",
-      I: ProjectMCPServersSetRequest,
-      O: ProjectMCPServersSetResponse,
-      kind: MethodKind.Unary,
-    },
-    /**
-     * @generated from rpc orchicon.api.v1.MCPService.GetProjectMCPServers
-     */
-    getProjectMCPServers: {
-      name: "GetProjectMCPServers",
-      I: ProjectMCPServersGetRequest,
-      O: ProjectMCPServersGetResponse,
-      kind: MethodKind.Unary,
-    },
-    /**
-     * @generated from rpc orchicon.api.v1.MCPService.SetTenantDefaultMCPServers
-     */
-    setTenantDefaultMCPServers: {
-      name: "SetTenantDefaultMCPServers",
-      I: TenantDefaultMCPServersSetRequest,
-      O: TenantDefaultMCPServersSetResponse,
-      kind: MethodKind.Unary,
-    },
-    /**
-     * @generated from rpc orchicon.api.v1.MCPService.GetTenantDefaultMCPServers
-     */
-    getTenantDefaultMCPServers: {
-      name: "GetTenantDefaultMCPServers",
-      I: TenantDefaultMCPServersGetRequest,
-      O: TenantDefaultMCPServersGetResponse,
       kind: MethodKind.Unary,
     },
   }

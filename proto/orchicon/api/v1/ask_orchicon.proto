@@ -122,6 +122,15 @@ message Conversation {
   // permission bypass that survives a restart is one the operator has forgotten is
   // on. Off is always the state a new conversation and a new plane start in.
   bool fullsend = 16;
+  // skill_files are absolute paths (files OR directories) to SKILL artifacts
+  // selected for THIS CONVERSATION. Rendered into the Ask system prompt by
+  // contextfiles.RenderManifest, union-ed with the conversation's project's
+  // skill_files.
+  //
+  // DISTINCT FROM AgentConfig.skills below: that is the tenant-wide free-text
+  // `skills` PROMPT SECTION (prose); these are real on-disk paths. The serialized
+  // names stay distinct on purpose.
+  repeated string skill_files = 17;
 }
 
 // ChatMessage is a single message within a conversation.
@@ -188,6 +197,12 @@ message AgentConfig {
   string system_prompt = 2;
   string role = 3;
   string skills = 4;
+  // NOTE: `system_prompt`, `role`, `skills`, `behavior` and `agents_md` are FREE-TEXT PROSE rendered as
+  // prompt sections (writeAdditionalInstructions). They are the ONE surviving tenant-level Ask surface
+  // and are a PROMPT SECTION ONLY — they must NOT grow into a scope. There is no tenant MCP tier and no
+  // tenant skill_files tier: `mcp_servers` is owner-scoped (project / conversation / worker version) and
+  // `skill_files` lives on the project / conversation / worker version. `skills` here is PROSE, distinct
+  // from a conversation's `skill_files` (real on-disk paths, rendered as a `# Skills` manifest).
   string behavior = 5;
   string agents_md = 6;
   repeated string tool_names = 7;

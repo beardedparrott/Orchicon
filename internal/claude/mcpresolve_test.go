@@ -10,8 +10,11 @@ import (
 	"github.com/beardedparrott/orchicon/internal/mcpclient"
 )
 
-// fakeMCPConfigSource is a ConfigSource backed by literals — the seam every
+// fakeMCPConfigSource is a ScopeResolver backed by literals — the seam every
 // adapter consumes, so a test can drive the full resolution without storage.
+// It returns `servers` for EVERY scope (the union shape); `project`/`worker`
+// are the ids it reports as selected, kept so the existing assertions read
+// the same way.
 type fakeMCPConfigSource struct {
 	servers []mcpclient.ServerSpec
 	worker  []string
@@ -20,14 +23,34 @@ type fakeMCPConfigSource struct {
 	selErr  error
 }
 
-func (f *fakeMCPConfigSource) ServerList(context.Context) ([]mcpclient.ServerSpec, error) {
-	return f.servers, f.listErr
-}
-func (f *fakeMCPConfigSource) WorkerSelection(context.Context, string) ([]string, error) {
-	return f.worker, f.selErr
-}
-func (f *fakeMCPConfigSource) ProjectSelection(context.Context, string) ([]string, error) {
-	return f.project, nil
+func (f *fakeMCPConfigSource) ResolveScope(_ context.Context, _ mcpclient.ScopeRef) (mcpclient.Resolution, error) {
+	if f.listErr != nil {
+		return mcpclient.Resolution{}, f.listErr
+	}
+	if f.selErr != nil {
+		return mcpclient.Resolution{}, f.selErr
+	}
+	byID := map[string]mcpclient.ServerSpec{}
+	for _, sp := range f.servers {
+		byID[sp.ID] = sp
+	}
+	sel := f.project
+	if len(sel) == 0 {
+		sel = f.worker
+	}
+	var res mcpclient.Resolution
+	for _, id := range sel {
+		res.SelectedIDs = append(res.SelectedIDs, id)
+		sp, ok := byID[id]
+		if !ok {
+			// A selected id with no matching definition is REPORTED as
+			// missing — the resolution contract the adapters surface.
+			res.Missing = append(res.Missing, id)
+			continue
+		}
+		res.Servers = append(res.Servers, mcpclient.ScopedServer{Spec: sp, EntryID: sp.ID, From: mcpclient.ScopeProject})
+	}
+	return res, nil
 }
 
 func builtinFor(t *testing.T) MCPServer {
@@ -39,11 +62,11 @@ func builtinFor(t *testing.T) MCPServer {
 	return OrchiconMCPServer(HookBinaryPath(), "tnt_dev", nil)
 }
 
-// THE AGNOSTIC CONTRACT: the same ConfigSource the native bridge consumes drives
+// THE AGNOSTIC CONTRACT: the same ScopeResolver the native bridge consumes drives
 // claude's set, so the two adapters cannot disagree about WHICH servers apply.
 func TestResolveMCPServersUsesTheSharedSource(t *testing.T) {
 	b := New(quietLogger())
-	b.SetConfigSource(&fakeMCPConfigSource{
+	b.SetScopeResolver(&fakeMCPConfigSource{
 		servers: []mcpclient.ServerSpec{
 			{ID: "stdio-srv", Command: []string{"/usr/bin/thing", "--flag"}, Env: map[string]string{"K": "V"}},
 			{ID: "http-srv", URL: "https://mcp.example.com", Headers: map[string]string{"Authorization": "Bearer x"}},
@@ -90,7 +113,7 @@ func TestResolveMCPServersAlwaysRegistersTheBuiltin(t *testing.T) {
 
 	// An empty SELECTION is also "no operator servers", not an error.
 	b2 := New(quietLogger())
-	b2.SetConfigSource(&fakeMCPConfigSource{
+	b2.SetScopeResolver(&fakeMCPConfigSource{
 		servers: []mcpclient.ServerSpec{{ID: "s1", Command: []string{"/bin/s1"}}},
 	})
 	got2, err := b2.resolveMCPServers(context.Background(), "tnt_dev", "", "", builtinFor(t))
@@ -107,7 +130,7 @@ func TestResolveMCPServersAlwaysRegistersTheBuiltin(t *testing.T) {
 // configured to have looks healthy and cannot do its job.
 func TestResolveMCPServersFailsOnAMissingSelection(t *testing.T) {
 	b := New(quietLogger())
-	b.SetConfigSource(&fakeMCPConfigSource{
+	b.SetScopeResolver(&fakeMCPConfigSource{
 		servers: []mcpclient.ServerSpec{{ID: "configured", Command: []string{"/bin/x"}}},
 		project: []string{"configured", "ghost"},
 	})
@@ -123,7 +146,7 @@ func TestResolveMCPServersFailsOnAMissingSelection(t *testing.T) {
 // A source error must surface, not be swallowed into "no servers".
 func TestResolveMCPServersSurfacesASourceError(t *testing.T) {
 	b := New(quietLogger())
-	b.SetConfigSource(&fakeMCPConfigSource{listErr: errors.New("storage down")})
+	b.SetScopeResolver(&fakeMCPConfigSource{listErr: errors.New("storage down")})
 	if _, err := b.resolveMCPServers(context.Background(), "tnt_dev", "", "", builtinFor(t)); err == nil {
 		t.Fatal("a source error was swallowed")
 	}
@@ -133,7 +156,7 @@ func TestResolveMCPServersSurfacesASourceError(t *testing.T) {
 // path the native bridge uses.
 func TestResolveMCPServersExpandsSecrets(t *testing.T) {
 	b := New(quietLogger())
-	b.SetConfigSource(&fakeMCPConfigSource{
+	b.SetScopeResolver(&fakeMCPConfigSource{
 		servers: []mcpclient.ServerSpec{{
 			ID:      "github",
 			Command: []string{"/bin/gh-mcp"},
@@ -171,7 +194,7 @@ func TestResolveMCPServersExpandsSecrets(t *testing.T) {
 // token, and the server would just fail to authenticate.
 func TestResolveMCPServersFailsOnASecretError(t *testing.T) {
 	b := New(quietLogger())
-	b.SetConfigSource(&fakeMCPConfigSource{
+	b.SetScopeResolver(&fakeMCPConfigSource{
 		servers: []mcpclient.ServerSpec{{ID: "s", Command: []string{"/bin/s"}, Env: map[string]string{"K": "${NOPE}"}}},
 		project: []string{"s"},
 	})
@@ -189,7 +212,7 @@ func TestResolveMCPServersFailsOnASecretError(t *testing.T) {
 func TestAskArgvCarriesResolvedOperatorMCPs(t *testing.T) {
 	builtinFor(t) // installs the fake CLI + HOME
 	b := New(quietLogger())
-	b.SetConfigSource(&fakeMCPConfigSource{
+	b.SetScopeResolver(&fakeMCPConfigSource{
 		servers: []mcpclient.ServerSpec{
 			{ID: "sentry", URL: "https://mcp.sentry.dev", Headers: map[string]string{"X": "1"}},
 		},

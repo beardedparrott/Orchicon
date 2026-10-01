@@ -162,7 +162,7 @@ func OrchiconMCPServer(binary, tenantID string, extraEnv map[string]string) MCPS
 		env[MCPTenantEnv] = t
 	}
 	return MCPServer{
-		Name:    "orchicon",
+		Name:    orchiconMCPServerName,
 		Command: binary,
 		Args:    []string{"mcp"},
 		Env:     env,
@@ -177,8 +177,8 @@ type MCPSecretResolver func(ctx context.Context, tenantID string, env, headers m
 // MCPServersFromSpecs renders the NEUTRAL server specs into claude's entries.
 //
 // THIS IS THE ADAPTER-SPECIFIC HALF, AND IT IS THE ONLY ONE. The resolution —
-// which servers an execution gets (worker → project → tenant-default over the
-// tenant's server list) and the ${SECRET_NAME} → plaintext expansion — is shared
+// which servers an execution gets (the project-owned ∪ the scope's own
+// definitions) and the ${SECRET_NAME} → plaintext expansion — is shared
 // and lives in internal/mcpsettings + internal/mcpclient. An adapter supplies
 // only this: a function from []mcpclient.ServerSpec to its own config format.
 // Adding codex means adding a renderer beside this one, not another resolution

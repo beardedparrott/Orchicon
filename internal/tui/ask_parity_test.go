@@ -61,6 +61,13 @@ type stubAskParity struct {
 	// not be exercised end to end. The missing fixture was the missing coverage.
 	projectMoveFor  string
 	projectMoveDest string
+
+	// skillFilesFor + skillFilesSet record the conversation-skills write — the pair a test needs
+	// to tell "the write reached the API carrying the list the operator typed" from "the dock said
+	// something". An EMPTY slice is a legitimate write (it CLEARS the list), so the recorder
+	// carries the slice rather than only the id.
+	skillFilesFor string
+	skillFilesSet []string
 }
 
 func (s *stubAskParity) SetConversationProject(_ context.Context, req *connect.Request[apiv1.SetConversationProjectRequest]) (*connect.Response[apiv1.SetConversationProjectResponse], error) {
@@ -140,6 +147,23 @@ func (s *stubAskParity) SetConversationFullsend(_ context.Context, req *connect.
 
 func (s *stubAskParity) ListMessages(context.Context, *connect.Request[apiv1.ListMessagesRequest]) (*connect.Response[apiv1.ListMessagesResponse], error) {
 	return connect.NewResponse(&apiv1.ListMessagesResponse{}), nil
+}
+
+func (s *stubAskParity) SetConversationSkillFiles(_ context.Context, req *connect.Request[apiv1.SetConversationSkillFilesRequest]) (*connect.Response[apiv1.SetConversationSkillFilesResponse], error) {
+	s.skillFilesFor, s.skillFilesSet = req.Msg.GetId(), req.Msg.GetFiles()
+	// The stub PERSISTS the list, because ListConversations reads this same slice — a stub that
+	// only recorded the call would reload the OLD list and every "did the report see it?"
+	// assertion would fail for a reason unrelated to the shell (the same reasoning as
+	// SetConversationProject above).
+	for _, c := range s.convs {
+		if c.GetId() == req.Msg.GetId() {
+			c.SkillFiles = req.Msg.GetFiles()
+			break
+		}
+	}
+	return connect.NewResponse(&apiv1.SetConversationSkillFilesResponse{
+		Conversation: &apiv1.Conversation{Id: req.Msg.GetId(), SkillFiles: req.Msg.GetFiles()},
+	}), nil
 }
 
 // newAskApp builds an App wired to a stub Ask service on a real Connect
