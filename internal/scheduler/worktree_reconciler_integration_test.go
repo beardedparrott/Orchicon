@@ -45,6 +45,17 @@ func newTestRepo(t *testing.T) string {
 	gitRun(t, dir, "init", "-b", "develop")
 	gitRun(t, dir, "config", "user.email", "worktree-test@orchicon.dev")
 	gitRun(t, dir, "config", "user.name", "Worktree Test")
+	// Disable git's BACKGROUND auto-maintenance for the fixture repo.
+	//
+	// WHY: `git commit`/`git worktree` may detach a `gc --auto`/`maintenance`
+	// child that keeps writing into `.git` after the command returns. The test
+	// body then finishes and t.TempDir()'s RemoveAll races that child, failing
+	// the test with `TempDir RemoveAll cleanup: unlinkat …/.git: directory not
+	// empty` (a cleanup error, not an assertion failure — seen intermittently
+	// under load). Turning auto-gc off at the source removes the concurrent
+	// writer; the fixture needs no gc, so nothing of value is lost.
+	gitRun(t, dir, "config", "gc.auto", "0")
+	gitRun(t, dir, "config", "maintenance.auto", "false")
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# test repo\n"), 0o644); err != nil {
 		t.Fatalf("write README: %v", err)
 	}

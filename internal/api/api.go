@@ -224,10 +224,10 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 
 	// MCPService (adapter-settings MCP management) — tenant-facing MCP
 	// server surface behind Settings → Adapters → MCP: CRUD over server
-	// entries (stdio + streamable HTTP), curated registry catalog with
-	// one-click prefill, explicit-only auto-install (dry-run for CI), and
-	// project/tenant-default selections (references, never copies). The
-	// sibling MCP-client task consumes the stored entries at session time.
+	// definitions (project XOR Ask conversation), the curated registry catalog
+	// with one-click prefill, explicit-only auto-install (dry-run for CI), and
+	// tenant-scoped credentials. The sibling MCP-client task resolves the
+	// project-owned ∪ scope-owned union at session time.
 	mcpSvc := mcpsettings.NewHandler(deps.Pool, deps.SecretsKEK, deps.Log)
 	mux.Handle(apiv1connect.NewMCPServiceHandler(mcpSvc, interceptorOpt))
 

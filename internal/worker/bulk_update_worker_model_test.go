@@ -103,9 +103,9 @@ func bulkEnv(t *testing.T) (*db.Pool, *Service, context.Context, string) {
 // WHY THIS EXISTS. GetOrCreateIdentity writes an `identities` row and NOT a
 // `tenants` row, so a synthetic tenant id was enough to commit workers under a
 // tenant that never existed. There is no FK from workers.tenant_id to tenants —
-// only 5 of the 44 tenant-scoped tables carry one (categories, mcp_servers,
-// project_mcp_servers, provider_settings, tenant_secrets); isolation is
-// RLS-only — so nothing refused it. Measured on the dev database before this
+// only 4 of the 43 tenant-scoped tables carry one (categories, mcp_servers,
+// provider_settings, tenant_secrets); isolation is RLS-only — so nothing
+// refused it. Measured on the dev database before this
 // fix: 314 orphaned worker rows across 238 tenant ids with no tenant row,
 // created 2026-08-25 through 2026-09-12 by runs of THIS SUITE pointed at a real
 // database. They are unreachable from any client (RLS scopes every read to

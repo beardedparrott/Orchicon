@@ -34,7 +34,9 @@ message MCPInstallResult {
   string installed_at = 5;  // RFC3339; empty when never installed
 }
 
-// MCPServer is one tenant-scoped MCP server entry. Plaintext credentials
+// MCPServer is one OWNER-SCOPED MCP server definition (a project XOR an
+// Ask conversation owns it; the owner IS the selection — there is no
+// tenant-wide list and no reference model). Plaintext credentials
 // NEVER appear here — env/header values may be ${SECRET_NAME} references
 // and has_secret_stored reports whether the referenced tenant secret
 // exists. Values are never returned.
