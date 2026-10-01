@@ -636,11 +636,10 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		"",
 		log,
 	)
-	// MCP server storage (ADR-0008): sessions resolve worker → project →
-	// tenant-default selections over the tenant-configured server list and
-	// ${SECRET_NAME} refs resolve to stored plaintext before connect.
-	// With no configured servers the source returns an empty list and
-	// sessions run without MCP tools (never an error).
+	// MCP definitions are scope-addressed (ADR-0012): ResolveScope returns the
+	// project-owned ∪ scope-owned union (SetScopeResolver), and ${SECRET_NAME}
+	// refs resolve to stored plaintext before connect. An empty resolution
+	// runs the session without MCP tools — never an error.
 	nativeBridge.SetScopeResolver(mcpsettings.NewResolver(pool))
 	nativeBridge.SetMCPSecretResolver(func(ctx context.Context, tenantID string, env, headers map[string]string) (map[string]string, map[string]string, error) {
 		return mcpsettings.ResolveSecretRefs(ctx, pool, secretsKEK, tenantID, env, headers)
@@ -749,10 +748,10 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	claudeBridge.SetFileEditHook(newFileEditHook(feSvc, log))
 	// MCP: the SAME two wirings the native bridge receives above, because the
 	// resolution is shared rather than per-adapter. Which servers an execution
-	// gets (worker → project → tenant-default over the tenant's configured list,
-	// with ${SECRET_NAME} refs expanded) is decided in ONE place; each adapter
-	// only renders the result into its own config format. Without this a claude
-	// worker or Ask session would get nothing but the built-in Orchicon sidecar.
+	// gets (the project-owned ∪ the scope's own definitions, with ${SECRET_NAME}
+	// refs expanded) is decided in ONE place; each adapter only renders the
+	// result into its own config format. Without this a claude worker or Ask
+	// session would get nothing but the built-in Orchicon sidecar.
 	claudeBridge.SetScopeResolver(mcpsettings.NewResolver(pool))
 	claudeBridge.SetMCPSecretResolver(func(ctx context.Context, tenantID string, env, headers map[string]string) (map[string]string, map[string]string, error) {
 		return mcpsettings.ResolveSecretRefs(ctx, pool, secretsKEK, tenantID, env, headers)
