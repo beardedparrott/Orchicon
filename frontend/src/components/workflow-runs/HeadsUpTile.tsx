@@ -1,11 +1,11 @@
 // HeadsUpTile — one DAG step in the run Heads-Up Dashboard.
 //
-// Summary rules (the tile contract):
-//   - ACTIVE tile (stepRun.status === RUNNING): mounts the grid's single
-//     execution event stream (see HeadsUpGrid `liveStream`) + polls the
-//     durable transcript every 2s, renders a live-tail mini block and a
-//     pulsing emerald ring + `live` badge. NEVER raw chunk soup: reasoning
-//     chunks are skipped, text is tailed to the last ~600 chars.
+// Summary rules (the tile contract). THE TILE IS STATIC — it holds no stream and no
+// timer. See the rationale above the tail fetch for why the grid gave up liveness; the
+// short version is that N timers behind a grid of thumbnails is what made this view hang.
+//   - ACTIVE tile (stepRun.status === RUNNING): the last durable `kind:text` transcript
+//     block (extractLastTextBlock), falling back to a "waiting for first output" line —
+//     plus the pulsing ring + `live` badge, which are facts about the RUN, not liveness.
 //   - DONE tiles: the last durable `kind:text` transcript block
 //     (extractLastTextBlock), falling back to the step-run `_summary`
 //     head — never streaming chunks.
@@ -13,14 +13,12 @@
 //     "Upcoming — not run yet · #N in DAG".
 //   - APPROVAL steps: compact approval state + Approve/Reject/Retry.
 //   - loop_decision: the loopOutcome tag (mirror of the graph node).
-import { useEffect, useMemo } from "react";
+import { useMemo } from "react";
 import { CheckCircle2, RefreshCw, XCircle } from "lucide-react";
-import type { StreamExecutionEventsResponse } from "@/api/gen/orchicon/api/v1/execution_pb";
 
 import { useApproveStep } from "@/api/approvals";
 import { useRetryStepRun } from "@/api/workflows";
-import { useGetExecutionSessionTail, useStreamExecutionEvents } from "@/api/executions";
-import { executionStreamEnabled } from "@/lib/debouncedInvalidation";
+import { useGetExecutionSessionTail } from "@/api/executions";
 import {
   formatCompactTokens,
   useExecutionUsageSummary,
@@ -41,35 +39,9 @@ interface HeadsUpTileProps {
   runId: string;
   /** Mount the execution event stream. The grid sets this on exactly one
    *  tile (the first running step with an execution) — the perf guard. */
-  liveStream: boolean;
   onExpand: (tile: HeadsUpTileData) => void;
 }
 
-/** Tail of assistant text from live TELEMETRY events (reasoning skipped). */
-function liveTailText(events: StreamExecutionEventsResponse[], maxChars = 600): string {
-  const decode = new TextDecoder();
-  let out = "";
-  for (const resp of events) {
-    const evt = resp.event;
-    if (!evt || evt.eventType !== 2 || !evt.payload?.length) continue;
-    try {
-      const p = JSON.parse(decode.decode(evt.payload)) as { text?: unknown };
-      if (typeof p.text !== "string" || !p.text) continue;
-      if (p.text.startsWith("{")) {
-        try {
-          const inner = JSON.parse(p.text) as { kind?: unknown; text?: unknown };
-          if (inner?.kind === "reasoning") continue; // noise in a mini tail
-        } catch {
-          /* not JSON — keep as plain text */
-        }
-      }
-      out += p.text;
-    } catch {
-      /* unparseable event — skip */
-    }
-  }
-  return out.length > maxChars ? "…" + out.slice(-maxChars) : out;
-}
 
 /** Compact cost + context line; mounted only when an execution exists so
  *  upcoming tiles never fire an unfiltered usage query. Aggregation mirrors
@@ -87,36 +59,29 @@ function TileUsage({ executionId }: { executionId: string }) {
   );
 }
 
-export function HeadsUpTile({ tile, runId, liveStream, onExpand }: HeadsUpTileProps) {
+export function HeadsUpTile({ tile, runId, onExpand }: HeadsUpTileProps) {
   const execId = tile.execution?.id ?? "";
   // THE TAIL, NOT THE TRANSCRIPT. This tile renders one line — the last thing the worker
   // said (extractLastTextBlock scans backwards and stops at the first text part). Asking the
   // shared transcript hook for limit=10000 downloaded ~399 kB per tile per refetch to read a
   // ~34-byte block; on a many-step run, re-fetched twice a second, that is what hung the UI.
   // See useGetExecutionSessionTail.
-  const { data: session, refetch: refetchSession } = useGetExecutionSessionTail(
-    execId,
-    Boolean(execId),
-  );
-  // Liveness gate: a terminal execution (7/8/9/10) never holds a stream
-  // connection, even when it is the grid's designated live tile.
-  const execStatus = tile.execution?.status ?? 0;
-  const isTerminal =
-    execStatus === 7 || execStatus === 8 || execStatus === 9 || execStatus === 10;
-  const { events } = useStreamExecutionEvents({
-    executionId: execId,
-    enabled: liveStream && executionStreamEnabled(execId, isTerminal),
-  });
-
-  // Running tile: re-pull the durable transcript every 2s (the runner
-  // flushes on that cadence) so the summary converges even between
-  // stream bursts.
-  useEffect(() => {
-    if (!liveStream || !execId) return;
-    const t = window.setInterval(() => void refetchSession(), 2000);
-    return () => window.clearInterval(t);
-  }, [liveStream, execId, refetchSession]);
-
+  const { data: session } = useGetExecutionSessionTail(execId, Boolean(execId));
+  // A TILE IS A THUMBNAIL, NOT A WINDOW. It holds NO stream and NO poll: it fetches the
+  // tail ONCE (for its summary line) and then stays put.
+  //
+  // WHAT THIS REPLACES, and why reducing the payload was not enough. This tile used to hold
+  // an execution event stream (for the one "active" tile) plus a 2s transcript poll (for
+  // EVERY tile) — so opening the grid started N timers and a stream, all of them re-reading
+  // and re-rendering while the operator looked at a grid of small cards. The earlier fix
+  // shrank each fetch from 399 kB to a few kB, but a smaller payload re-requested every two
+  // seconds from every tile is still a saturating load, and it is what made this view hang.
+  //
+  // LIVENESS WAS NEVER THE POINT HERE. An operator scanning a run wants to know which step
+  // is where — the status chip and the last summary line answer that. Watching output
+  // advance is what the EXPANDED tile and the execution page are for, and both own their own
+  // stream for exactly one execution. So the grid gives up liveness deliberately: no stream
+  // here, no timer here, nothing updating off-screen.
   const status = tileStatusStyle(tile.stepRun?.status ?? 1);
   const expandable = Boolean(tile.execution);
   const summary = useMemo(() => {
@@ -125,8 +90,6 @@ export function HeadsUpTile({ tile, runId, liveStream, onExpand }: HeadsUpTilePr
       extractLastTextBlock(session, 600) || resultSummaryLine(tile.stepRun)
     );
   }, [session, tile.stepRun, tile.isUpcoming]);
-  const liveTail = liveStream ? liveTailText(events) : "";
-
   const Container = expandable ? "button" : "div";
   return (
     <Container
@@ -202,18 +165,13 @@ export function HeadsUpTile({ tile, runId, liveStream, onExpand }: HeadsUpTilePr
           </p>
         ) : tile.stepKind === 3 ? (
           <ApprovalTilePanel stepRun={tile.stepRun} runId={runId} summary={summary} />
-        ) : liveStream ? (
-          <div className="space-y-1">
-            {liveTail ? (
-              <pre className="max-h-28 overflow-hidden whitespace-pre-wrap break-words font-mono text-[11px] leading-snug text-foreground/90">
-                {liveTail}
-              </pre>
-            ) : (
-              <p className="text-xs italic text-muted-foreground">
-                {summary || "Worker starting — waiting for first output…"}
-              </p>
-            )}
-          </div>
+        ) : tile.isActive ? (
+          // A RUNNING tile keeps the "waiting for first output" affordance it had while it
+          // streamed. Losing the stream must not lose the one state that tells an operator
+          // the step is alive but quiet — that is a fact about the RUN, not about liveness.
+          <p className="text-xs italic text-muted-foreground">
+            {summary || "Worker starting — waiting for first output…"}
+          </p>
         ) : (
           <p className="line-clamp-6 max-h-36 overflow-hidden whitespace-pre-wrap break-words text-xs leading-relaxed text-foreground/85">
             {summary || "No summary yet."}

@@ -474,7 +474,6 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
           <HeadsUpGrid
             tiles={tiles}
             runId={runId}
-            suspendedStepId={expandedStepId}
             onExpand={(t) => setExpandedStepId(t.stepId)}
           />
           {expandedTile && (

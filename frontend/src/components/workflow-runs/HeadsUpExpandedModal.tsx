@@ -60,7 +60,8 @@ export function HeadsUpExpandedModal({ tile, onClose }: HeadsUpExpandedModalProp
   }, [onClose]);
 
   // The modal owns the live subscription while open (the grid suspended
-  // this tile's stream via suspendedStepId — still exactly one stream).
+  // this tile's stream — and it is now the ONLY stream on this page, because the grid
+  // holds none. See HeadsUpTile for why the grid gave up liveness.
   // Stream events invalidate the detail/session/todos/usage queries so the
   // Context rail and todo list go live while running (mirrors
   // executions_.$id.tsx). Invalidations are coalesced behind a trailing
