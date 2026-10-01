@@ -126,7 +126,7 @@ type Lifecycle struct {
 	// daemon applies ServeConfig only at container creation, so a config that
 	// varied per execution would make "whichever step created the container
 	// first" decide what every step sees.
-	serveConfigFor func(image, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution) string
+	serveConfigFor func(image, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution, providers []ProviderConfig) string
 	// secretsKEK is the plane-resolved 32-byte KEK for tenant secrets
 	// (resolved at server construction; nil disables secret injection).
 	secretsKEK []byte
@@ -134,6 +134,24 @@ type Lifecycle struct {
 	// same resolver the native/claude bridges use). Nil = no MCP union: the
 	// container's serve keeps its built-ins only.
 	scopeResolver mcpclient.ScopeResolver
+
+	// containerProviders resolves the TENANT's providers as a runtime container
+	// must see them: base URLs transposed off the host's loopback (a container's
+	// own 127.0.0.1 is itself, so a local model on the operator's machine is
+	// unreachable at the URL they typed).
+	//
+	// IT LIVES HERE, not on the opencode adapter, because this is where the
+	// container's serve config is built — from the RUN. The daemon applies
+	// ServeConfig only at container creation, so a config assembled from the
+	// DISPATCHING step would make "whichever step created the container first"
+	// decide what every step sees: order-dependent, and forbidden. Resolving it
+	// here also keeps the run-start and self-heal configs byte-identical, which
+	// is what lets the daemon reuse the run's warmed container.
+	//
+	// Set by the server (the provider rows live behind the providers service).
+	// Nil = no provider block, which is the pre-fix behaviour: the mounted
+	// opencode config stays in charge.
+	containerProviders func(ctx context.Context, tenantID string) []ProviderConfig
 
 	// planeCredMu guards planeCredCache.
 	planeCredMu sync.Mutex
@@ -159,7 +177,7 @@ type Lifecycle struct {
 // sandbox-scoped Orchicon MCP for dev images, and the plane-channel
 // Orchicon MCP on any image when the run's worker role grants it — built
 // by the opencode package).
-func NewLifecycle(client *Client, pool *db.Pool, log *slog.Logger, serveConfigFor func(image, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution) string, secretsKEK []byte) *Lifecycle {
+func NewLifecycle(client *Client, pool *db.Pool, log *slog.Logger, serveConfigFor func(image, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution, providers []ProviderConfig) string, secretsKEK []byte) *Lifecycle {
 	return &Lifecycle{client: client, pool: pool, log: log, serveConfigFor: serveConfigFor, secretsKEK: secretsKEK}
 }
 
@@ -168,6 +186,12 @@ func NewLifecycle(client *Client, pool *db.Pool, log *slog.Logger, serveConfigFo
 // so a run's union and a worker's own set can never disagree on what a given
 // scope resolves to.
 func (l *Lifecycle) SetScopeResolver(r mcpclient.ScopeResolver) { l.scopeResolver = r }
+
+// SetContainerProviders injects the container-locality provider resolver (see the
+// field's note for why the Lifecycle, not the adapter, owns it).
+func (l *Lifecycle) SetContainerProviders(fn func(ctx context.Context, tenantID string) []ProviderConfig) {
+	l.containerProviders = fn
+}
 
 // resolveRunUnion resolves a run's RUN-LEVEL MCP union — the project's owned
 // definitions ∪ EVERY step worker version's inline specs, plus the run's
@@ -266,6 +290,15 @@ func (l *Lifecycle) RunServeConfig(ctx context.Context, runID string) (string, b
 	return req.ServeConfig, true
 }
 
+// runContainerProviders resolves the tenant's providers for a container bake, or nil
+// when no resolver is wired (the pre-fix behaviour: no provider block).
+func (l *Lifecycle) runContainerProviders(ctx context.Context, tenantID string) []ProviderConfig {
+	if l.containerProviders == nil {
+		return nil
+	}
+	return l.containerProviders(ctx, tenantID)
+}
+
 // Enabled reports whether a daemon is configured.
 func (l *Lifecycle) Enabled() bool { return l.client != nil }
 
@@ -354,7 +387,8 @@ func (l *Lifecycle) buildCreateRequest(ctx context.Context, run db.WorkflowRunRo
 	demand := l.adapterDemandFor(ctx, run)
 	req.AdapterKinds = demand.Kinds()
 	if demand.Has(opencodeAdapterKind) {
-		req.ServeConfig = l.serveConfigFor(run.RuntimeImage, runWorktreeBase(ctx, projectDir, run.ID), run.ID, planeEnv, l.resolveRunUnion(ctx, run))
+		req.ServeConfig = l.serveConfigFor(run.RuntimeImage, runWorktreeBase(ctx, projectDir, run.ID), run.ID, planeEnv,
+			l.resolveRunUnion(ctx, run), l.runContainerProviders(ctx, run.TenantID))
 	}
 	// Secrets: decrypt per-work-item selection and inject as container env.
 	// KEK is plane-only — resolved once at server construction (env override

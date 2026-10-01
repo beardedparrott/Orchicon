@@ -10,12 +10,15 @@ package opencode
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/beardedparrott/orchicon/internal/mcpclient"
+	"github.com/beardedparrott/orchicon/internal/runtime"
 )
 
 // The generated container serve config carries a provider block with the
 // transposed base URL — the thing a worker's serve will actually read.
 func TestTheContainerServeConfigCarriesTransposedProviders(t *testing.T) {
-	cfg := RuntimeServeConfigWithProviders("orchicon:base", "/proj", "run-1", nil, []ProviderConfig{
+	cfg := RuntimeServeConfig("orchicon:base", "/proj", "run-1", nil, mcpclient.Resolution{}, []runtime.ProviderConfig{
 		{ID: "local-gufo", NPM: "@ai-sdk/openai-compatible", BaseURL: "http://172.17.0.1:8741/v1"},
 		{ID: "halogen", NPM: "@ai-sdk/openai-compatible", BaseURL: "http://172.17.0.1:8731/v1"},
 	})

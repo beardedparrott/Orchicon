@@ -3,6 +3,7 @@ package opencode
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/beardedparrott/orchicon/internal/runtime"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -510,7 +511,7 @@ type ConfigOptions struct {
 	// adapter-specific files: every adapter that boots an opencode serve gets the
 	// same generated block, and no user has to hand-edit an opencode.jsonc to
 	// make a local model work.
-	Providers []ProviderConfig
+	Providers []runtime.ProviderConfig
 	// WorktreeDir is the base directory the composite worktree MCP server
 	// resolves its paths against: the worker's project/worktree directory. It
 	// is injected as the sidecar's ORCHICON_MCP_WORKTREE_DIR env var.
@@ -537,25 +538,6 @@ type ConfigOptions struct {
 	RunMCP []mcpclient.ScopedServer
 	// RunSkills is the RUN's skill-file union (the same walk's skill half).
 	RunSkills []mcpclient.InlineSkillFile
-}
-
-// ProviderConfig is one provider as opencode's `provider` block needs it: the
-// id, the npm package that speaks its wire protocol, and the BASE URL THAT THIS
-// CONSUMER CAN ACTUALLY DIAL.
-//
-// BaseURL is expected to be transposed already — see TransposeForContainer — so
-// this type carries no locality of its own. That split is deliberate: the
-// transposition is a property of WHERE the client runs, and it is applied by the
-// caller that knows (the container-arming path), never guessed here.
-type ProviderConfig struct {
-	// ID is the opencode provider id (the middle segment of a model_ref:
-	// opencode/<id>/<model>).
-	ID string
-	// NPM is the package implementing the provider's protocol, e.g.
-	// "@ai-sdk/openai-compatible" for an OpenAI-compatible local server.
-	NPM string
-	// BaseURL is the endpoint THIS consumer dials (already transposed).
-	BaseURL string
 }
 
 // BuildConfigContent builds the JSON string for the OPENCODE_CONFIG_CONTENT
