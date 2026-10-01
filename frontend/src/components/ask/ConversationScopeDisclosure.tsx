@@ -7,6 +7,7 @@ import {
 } from "@/api/askOrchicon";
 import { useListProjects } from "@/api/projects";
 import { MCPServersPanel } from "@/components/MCPServersPanel";
+import { InheritedSkillFiles } from "@/components/InheritedSkillFiles";
 import { FileBrowser } from "@/components/FileBrowser";
 import { popoverNudge } from "@/lib/ask-consent";
 
@@ -114,6 +115,15 @@ export function ConversationScopeDisclosure({ conversationId, className }: Conve
 
               <div className="space-y-2">
                 <h3 className="text-sm font-semibold">Skill files</h3>
+                {/* The PROJECT's contributed skill files, read-only and named,
+                    ABOVE this conversation's own — the same inherited-display
+                    rule the MCP panel follows (AC 6). */}
+                {project && (
+                  <InheritedSkillFiles
+                    projectName={project.name}
+                    files={project.skillFiles ?? []}
+                  />
+                )}
                 {projectId === "" ? (
                   <p className="text-xs text-muted-foreground">
                     Assign a project to this conversation to browse its tree for
@@ -128,6 +138,7 @@ export function ConversationScopeDisclosure({ conversationId, className }: Conve
                     onChange={(next) => setSkillFiles.mutate(next)}
                     title="Skill files"
                     description="Skill artifacts (files or directories) rendered into this conversation's prompt."
+                    emptyHint="No skill files on this conversation. Click Edit to browse its project tree."
                   />
                 )}
               </div>

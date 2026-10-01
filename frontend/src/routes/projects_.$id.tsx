@@ -433,6 +433,7 @@ function ProjectDetailPage() {
             }}
             title="Skill files"
             description="Skill artifacts (files or directories) rendered into this project's worker and Ask prompts."
+            emptyHint="No skill files on this project. Click Edit to browse its tree."
           />
           {editing && skillDirty && (
             <Button

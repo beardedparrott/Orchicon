@@ -92,6 +92,25 @@ describe("MCPServersPanel (child 7, AC 1-3)", () => {
     expect(src).toContain("scope.kind === \"workerVersion\"");
   });
 
+  it("the edit form ROUND-TRIPS env/headers, which the update replaces", () => {
+    // The update sends replaceEnv/replaceHeaders, so an edit that started from
+    // empty fields would silently ERASE the entry's env/headers. The row must
+    // carry them and startEdit must seed the form from them.
+    expect(src).toContain("env: keyValueText(r.env)");
+    expect(src).toContain("headers: keyValueText(r.headers)");
+    expect(src).toContain("env: s.env");
+    expect(src).toContain("headers: s.headers");
+    // And the pre-fix shape (blank env/headers on edit) must be gone.
+    expect(src).not.toMatch(/args: \(r\.args \?\? \[\]\)\.join\("\\n"\),\s*env: ""/);
+  });
+
+  it("the worker-version mode fires NO unscoped (tenant-wide) list", () => {
+    // An unscoped ListMCPServers IS the whole-tenant list the epic removed, so
+    // the panel must switch the query OFF rather than run it and ignore it.
+    expect(src).toContain("{ enabled: owned }");
+    expect(api).toContain("enabled: opts?.enabled ?? true");
+  });
+
   it("every mutation invalidates the shared MCP key, and the api is owner-scoped", () => {
     const invalidations = (api.match(/invalidateQueries\(\{ queryKey: mcpKeys\.all \}\)/g) ?? []).length;
     expect(invalidations).toBeGreaterThanOrEqual(4);

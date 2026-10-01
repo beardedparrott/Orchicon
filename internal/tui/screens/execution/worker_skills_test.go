@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/mcpforms"
 )
 
 // THE VERSION FORM CARRIES BOTH FIELDS, and the free-text `skills` PROMPT SECTION stays
@@ -125,6 +126,22 @@ func TestCreateVersionCarriesSkillFilesAndMCP(t *testing.T) {
 	// The merged spec is the field's, not the blob's stale one.
 	if !strings.Contains(req.GetPermissions(), `"new"`) {
 		t.Fatalf("create permissions do not carry the edited spec: %q", req.GetPermissions())
+	}
+}
+
+// A LEGACY REFERENCE STILL DECODES THROUGH THE SAME FIELD THE OPERATOR SEES. The mcp_servers
+// KJSON field is fed by inlineJSONFromPermissions and read back by mcpforms.ParseInline, so
+// the two must agree on the shape; they did NOT before (the field emits a BARE array, and
+// ParseInline only accepted the wrapped object), which silently dropped a definition typed
+// exactly as the field's own placeholder demonstrates.
+func TestInlineJSONFromPermissionsRoundTripsThroughParseInline(t *testing.T) {
+	perms := `{"mcp_servers":[{"id":"a","type":"stdio","command":["npx"]}]}`
+	field := inlineJSONFromPermissions(perms)
+	if len(field) == 0 || field[0] != '[' {
+		t.Fatalf("the field value is %q, want a bare JSON array", field)
+	}
+	if n := len(mcpforms.ParseInline(field)); n != 1 {
+		t.Fatalf("the field's own output does not parse back: %q -> %d specs", field, n)
 	}
 }
 

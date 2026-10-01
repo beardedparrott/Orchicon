@@ -1561,7 +1561,7 @@ func (m *Model) toggleAllTreeNodes() tea.Cmd {
 func (m *Model) HintLine() string {
 	switch m.ActiveSourceName() {
 	case srcProjects:
-		return theme.HintText.Render("n: new project · e: edit · d: set+create dir · enter: detail · ←/→: pane")
+		return theme.HintText.Render("n: new project · e: edit · d: set+create dir · m: define MCP · M: add MCP from catalog · enter: detail · ←/→: pane")
 	case srcImages:
 		return theme.HintText.Render("n: new image · e: edit spec · b: build (live logs) · x: delete · enter: detail")
 	default:

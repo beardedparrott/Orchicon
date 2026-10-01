@@ -23,6 +23,7 @@ import { EntityYamlView } from "@/components/EntityYamlView";
 import { FileInputButton } from "@/components/FileInputButton";
 import { useListProjects } from "@/api/projects";
 import { MCPServersPanel } from "@/components/MCPServersPanel";
+import { InheritedSkillFiles } from "@/components/InheritedSkillFiles";
 import { FileBrowser } from "@/components/FileBrowser";
 import { ProjectScopeSelect } from "@/components/conversations/ProjectScopeSelect";
 import { Markdown } from "@/components/markdown";
@@ -696,6 +697,12 @@ function WorkerDetailPage() {
                   label="Browse project"
                 />
                 {browseProject && (
+                  <InheritedSkillFiles
+                    projectName={browseProject.name}
+                    files={browseProject.skillFiles ?? []}
+                  />
+                )}
+                {browseProject && (
                   <FileBrowser
                     projectId={browseProject.id}
                     projectDir={browseProject.projectDir || ""}
@@ -710,6 +717,7 @@ function WorkerDetailPage() {
                     onChange={(next) => setValue("skillFiles", JSON.stringify(next))}
                     title="Skill files"
                     description="Skill artifacts rendered into this version's prompt."
+                    emptyHint="No skill files on this version. Pick a project to browse its tree."
                   />
                 )}
               </div>

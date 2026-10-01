@@ -139,6 +139,11 @@ interface Row {
   enabled: boolean;
   command?: string;
   args?: string[];
+  // env/headers are carried so the EDIT form can show what the entry already
+  // has. The update sends replaceEnv/replaceHeaders, so an edit that started
+  // from empty fields would ERASE them — the env/headers must round-trip.
+  env?: Record<string, string>;
+  headers?: Record<string, string>;
   url?: string;
   installStatus: number;
   hasSecretStored: boolean;
@@ -153,6 +158,8 @@ function ownedRow(s: {
   enabled: boolean;
   command?: string;
   args?: string[];
+  env?: Record<string, string>;
+  headers?: Record<string, string>;
   url?: string;
   installStatus: number;
   hasSecretStored?: boolean;
@@ -166,6 +173,8 @@ function ownedRow(s: {
     enabled: s.enabled,
     command: s.command,
     args: s.args,
+    env: s.env,
+    headers: s.headers,
     url: s.url,
     installStatus: s.installStatus,
     hasSecretStored: !!s.hasSecretStored,
@@ -185,6 +194,8 @@ function inlineRow(s: InlineMCP): Row {
     enabled: s.enabled ?? true,
     command: stdio ? (s.command ?? [])[0] : undefined,
     args: stdio ? (s.command ?? []).slice(1) : undefined,
+    env: s.env,
+    headers: s.headers,
     url: stdio ? undefined : s.url,
     // An inline worker spec has no row, so it has no install status.
     installStatus: 0,
@@ -268,10 +279,14 @@ export function MCPServersPanel({ scope, readOnly = false, inheritedFrom }: MCPS
         ? { conversationId: scope.conversationId }
         : undefined;
 
-  // In the worker-version mode there is no list query: the entries live in
-  // the caller's array (the version's permissions JSON).
+  // In the worker-version mode there is no list query AT ALL: the entries live
+  // in the caller's array (the version's permissions JSON). It is disabled
+  // rather than merely unused because an unscoped ListMCPServers IS the
+  // whole-tenant list the epic removed — a query that fires and is then ignored
+  // would still be a live tenant surface.
   const { data: listed = [], isLoading, error } = useMCPServerList(
     owned ? scopeFilter : undefined,
+    { enabled: owned },
   );
   const { data: catalog = [] } = useMCPCatalog();
   const { data: runtimes } = useMCPRuntimes();
@@ -372,9 +387,11 @@ export function MCPServersPanel({ scope, readOnly = false, inheritedFrom }: MCPS
       transport: r.transport,
       command: r.command ?? "",
       args: (r.args ?? []).join("\n"),
-      env: "",
+      // The update replaces env/headers, so the edit form must start from what
+      // the entry already holds or saving would silently erase it.
+      env: keyValueText(r.env),
       url: r.url ?? "",
-      headers: "",
+      headers: keyValueText(r.headers),
       enabled: r.enabled,
     });
     setShowForm(true);

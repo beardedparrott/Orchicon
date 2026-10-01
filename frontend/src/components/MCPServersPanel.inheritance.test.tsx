@@ -35,3 +35,39 @@ describe("MCPServersPanel inheritance (child 7, AC 6)", () => {
     expect(body).toContain("useMCPServerList({ projectId })");
   });
 });
+
+// AC 6 ALSO COVERS SKILL FILES. The project's contributed skill files are rendered
+// read-only and named at the scopes that inherit them, ABOVE the scope's own — the same rule
+// the MCP panel follows, and the same component everywhere.
+describe("inherited project SKILL FILES are visible (child 7, AC 6)", () => {
+  const read = (p: string) => fs.readFileSync(path.join(__dirname, "..", p), "utf8");
+  const inherited = fs.readFileSync(path.join(__dirname, "InheritedSkillFiles.tsx"), "utf8");
+
+  it("the component is read-only: no mutating hook, no selection control", () => {
+    expect(inherited).toMatch(/Inherited skill files from project/);
+    expect(inherited).toMatch(/read-only at this scope/);
+    // It names its source and is NOT the FileBrowser (no picker is written).
+    expect(inherited).not.toContain("useMutation");
+    expect(inherited).not.toContain("FileBrowser");
+    expect(inherited).not.toContain("onChange");
+  });
+
+  it("the conversation scope renders it ABOVE its own skill files", () => {
+    const d = read("components/ask/ConversationScopeDisclosure.tsx");
+    expect(d).toContain("<InheritedSkillFiles");
+    expect(d.indexOf("<InheritedSkillFiles")).toBeLessThan(d.indexOf("<FileBrowser"));
+  });
+
+  it("both worker-version placements render it ABOVE their own skill files", () => {
+    for (const f of ["routes/workers_.$id.tsx", "routes/workers_.new.tsx"]) {
+      const p = read(f);
+      expect(p, f).toContain("<InheritedSkillFiles");
+      expect(p.indexOf("<InheritedSkillFiles"), f).toBeLessThan(p.indexOf("<FileBrowser"));
+    }
+  });
+
+  it("the project scope (the root) does NOT render an inherited block", () => {
+    const p = read("routes/projects_.$id.tsx");
+    expect(p).not.toContain("InheritedSkillFiles");
+  });
+});

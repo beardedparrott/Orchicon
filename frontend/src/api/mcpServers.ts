@@ -28,7 +28,14 @@ export const mcpKeys = {
 // no separate "inherited" RPC and no client-side union. With no scope the
 // list is the whole tenant (kept for callers that have no scope); every
 // screen passes a scope.
-export function useMCPServerList(scope?: { projectId?: string; conversationId?: string }) {
+// `enabled` lets a caller with NO scope (the worker-version placement, whose
+// entries are inline specs in the caller's array) switch the query OFF rather
+// than fire an unscoped one. An unscoped ListMCPServers is the whole-tenant
+// list the epic removes, so firing it and ignoring the result is not acceptable.
+export function useMCPServerList(
+  scope?: { projectId?: string; conversationId?: string },
+  opts?: { enabled?: boolean },
+) {
   const key = scope?.projectId
     ? mcpKeys.ownerProject(scope.projectId)
     : scope?.conversationId
@@ -36,6 +43,7 @@ export function useMCPServerList(scope?: { projectId?: string; conversationId?: 
       : mcpKeys.all;
   return useQuery({
     queryKey: key,
+    enabled: opts?.enabled ?? true,
     queryFn: async () => {
       const res = await mcpClient.listMCPServers({
         projectId: scope?.projectId ?? "",

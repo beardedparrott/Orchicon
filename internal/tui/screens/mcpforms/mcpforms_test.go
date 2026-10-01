@@ -243,6 +243,28 @@ func TestParseSkillPathsAcceptsTheContextFilesRule(t *testing.T) {
 	}
 }
 
+// ParseInline ACCEPTS THE BARE ARRAY as well as the wrapped object. The bare array is
+// what the TUI's own mcp_servers KJSON field SHOWS and teaches (ProjectMCPDefinitionsField's
+// Placeholder, and inlineJSONFromPermissions' output), so a definition typed exactly as the
+// placeholder demonstrates must round-trip; accepting only the wrapped form made a
+// correctly-typed definition vanish silently on save.
+func TestParseInlineAcceptsTheBareArrayTheFormShows(t *testing.T) {
+	bare := `[{"id":"github","type":"stdio","command":["npx","-y","x"]}]`
+	got := ParseInline(bare)
+	if len(got) != 1 || got[0].ID != "github" || len(got[0].Command) != 3 {
+		t.Fatalf("ParseInline(bare array) = %+v, want the one github spec", got)
+	}
+	// The wrapped form keeps working — this ADDS a shape, it does not replace one.
+	wrapped := `{"tools":["read"],"mcp_servers":` + bare + `}`
+	if len(ParseInline(wrapped)) != 1 {
+		t.Fatalf("ParseInline(wrapped object) = %+v, want the one github spec", ParseInline(wrapped))
+	}
+	// The empty array is "no definitions", not a parse failure.
+	if n := len(ParseInline("[]")); n != 0 {
+		t.Fatalf("ParseInline(\"[]\") = %d specs, want 0", n)
+	}
+}
+
 // submitForm drives a kit2 form's own Submit (which validates and calls OnSubmit), so the
 // tests exercise the real submit path rather than OnSubmit directly.
 func submitForm(t *testing.T, f *kit2Form) {

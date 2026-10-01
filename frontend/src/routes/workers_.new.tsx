@@ -29,6 +29,7 @@ import {
   withPermissionsMCPServers,
 } from "@/components/WorkerFormSections";
 import { MCPServersPanel } from "@/components/MCPServersPanel";
+import { InheritedSkillFiles } from "@/components/InheritedSkillFiles";
 import { FileBrowser } from "@/components/FileBrowser";
 import { ProjectScopeSelect } from "@/components/conversations/ProjectScopeSelect";
 import { Route as rootRoute } from "@/routes/__root";
@@ -435,6 +436,12 @@ function NewWorkerPage() {
                 label="Browse project"
               />
               {browseProject && (
+                <InheritedSkillFiles
+                  projectName={browseProject.name}
+                  files={browseProject.skillFiles ?? []}
+                />
+              )}
+              {browseProject && (
                 <FileBrowser
                   projectId={browseProject.id}
                   projectDir={browseProject.projectDir || ""}
@@ -442,6 +449,7 @@ function NewWorkerPage() {
                   onChange={(next) => setValue("skillFiles", JSON.stringify(next), { shouldValidate: true })}
                   title="Skill files"
                   description="Skill artifacts rendered into this version's prompt."
+                  emptyHint="No skill files on this version. Pick a project to browse its tree."
                 />
               )}
             </div>

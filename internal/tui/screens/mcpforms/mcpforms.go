@@ -339,18 +339,33 @@ func InlineForm(title string, src *InlineSpec, onSave func(InlineSpec)) *kit2.Fo
 //
 // An empty or malformed input yields nil (a shape error must not block a form
 // from opening — the same degradation the server does).
+// It accepts the BARE ARRAY as well as the wrapped object, because the bare
+// array is what the TUI's own mcp_servers field shows and teaches (see
+// ProjectMCPDefinitionsField's Placeholder, and inlineJSONFromPermissions):
+// accepting only the wrapped form meant a definition typed exactly as the
+// placeholder demonstrates was silently dropped. MergeIntoPermissions already
+// accepted both, so this closes the disagreement rather than inventing a rule.
 func ParseInline(permissionsJSON string) []InlineSpec {
-	if strings.TrimSpace(permissionsJSON) == "" {
+	t := strings.TrimSpace(permissionsJSON)
+	if t == "" {
 		return nil
 	}
-	var p struct {
-		MCPServers []json.RawMessage `json:"mcp_servers"`
-	}
-	if err := json.Unmarshal([]byte(permissionsJSON), &p); err != nil {
-		return nil
+	var raw []json.RawMessage
+	if strings.HasPrefix(t, "[") {
+		if err := json.Unmarshal([]byte(t), &raw); err != nil {
+			return nil
+		}
+	} else {
+		var p struct {
+			MCPServers []json.RawMessage `json:"mcp_servers"`
+		}
+		if err := json.Unmarshal([]byte(t), &p); err != nil {
+			return nil
+		}
+		raw = p.MCPServers
 	}
 	var out []InlineSpec
-	for _, raw := range p.MCPServers {
+	for _, raw := range raw {
 		s := strings.TrimSpace(string(raw))
 		switch {
 		case s == "" || s == "null":
