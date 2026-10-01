@@ -498,31 +498,48 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	deps.AskService = askSvc
 	mux.Handle(apiv1connect.NewAskOrchiconServiceHandler(askSvc, interceptorOpt))
 
-	// Grafana UI reverse proxy (docs/10 §11): serves Grafana same-origin
-	// under /grafana so the embedded iframe in the Telemetry page works in
-	// all deployment modes (not just Vite dev proxy). Grafana runs with
-	// serve_from_sub_path=true and root_url=<control-plane>/grafana, so it
-	// expects to be reached AT the /grafana path and generates every asset
-	// and API URL with that prefix itself. The proxy therefore forwards the
-	// full /grafana/... path unchanged — no StripPrefix (stripping makes
-	// Grafana see "/" and 301-redirect back to the subpath, a loop).
+	// Wrap everything the auth middleware should guard. The Grafana proxy
+	// is deliberately MOUNTED OUTSIDE this wrapper: the embedded Telemetry
+	// iframe (frontend/src/routes/telemetry.tsx) loads /grafana same-origin
+	// and an iframe request cannot carry an Authorization header, so under
+	// ResolveAuth every pane 401'd with {"error":"missing credentials"} —
+	// while the tests passed because they exercised the proxy without the
+	// wrapper. The bypass matches Grafana's own posture inside the stack
+	// (GF_AUTH_ANONYMOUS_ENABLED=true, Viewer): every consumer that could
+	// previously reach Grafana directly (the published :3002 port) already
+	// got the dashboards with no credential. When GrafanaURL is unset no
+	// /grafana route exists at all, so these requests still fall through to
+	// ResolveAuth and die 401 exactly as before — the bypass cannot widen
+	// any surface the mux does not actually serve.
 	if deps.GrafanaURL != "" {
 		grafanaTarget, err := url.Parse(deps.GrafanaURL)
 		if err == nil {
 			grafanaProxy := httputil.NewSingleHostReverseProxy(grafanaTarget)
 			grafanaProxy.ErrorLog = nil
-			mux.Handle("/grafana", grafanaProxy)
-			mux.Handle("/grafana/", grafanaProxy)
+			// Dispatch split: the proxy handlers are registered on an OUTER
+			// mux, ahead of the guarded chain on the "/" catch-all, so
+			// /grafana requests bypass ResolveAuth entirely. The net/http
+			// mux does not strip the matched pattern, so the proxy still
+			// forwards the full /grafana... path unchanged (pinned by
+			// TestGrafanaProxyEndToEnd, which this time exercises the REAL
+			// Mount wiring — see grafana_proxy_test.go).
+			root := http.NewServeMux()
+			root.Handle("/grafana", grafanaProxy)
+			root.Handle("/grafana/", grafanaProxy)
+			root.Handle("/", middleware.ResolveAuth(mux, deps.AuthHandler.Issuer(), deps.AuthHandler.Resolver(), deps.Log))
+			_ = blobstore.ErrNotFound
+			return root
 		}
 	}
 
-	// Wrap the whole surface with the auth-resolution middleware
-	// (docs/07 §6.3). It resolves the caller's identity from the bearer
-	// token (OIDC access token or API key) and stores identity + tenant
-	// in the context. Auth is mandatory in every mode — a request without
-	// a valid credential is 401 and the tenant always comes from the
-	// resolved identity, never a request header. There is no tenant-only
-	// fallback and no anonymous path into tenant-scoped data.
+	// The auth-resolution middleware (docs/07 §6.3) resolves the caller's
+	// identity from the bearer token (OIDC access token or API key) and
+	// stores identity + tenant in the context. Auth is mandatory in every
+	// mode — a request without a valid credential is 401 and the tenant
+	// always comes from the resolved identity, never a request header.
+	// There is no tenant-only fallback and no anonymous path into
+	// tenant-scoped data. The Grafana proxy (when mounted) sits outside
+	// this wrapper — see the dispatch split above.
 	h := middleware.ResolveAuth(mux, deps.AuthHandler.Issuer(), deps.AuthHandler.Resolver(), deps.Log)
 	_ = blobstore.ErrNotFound
 	return h
