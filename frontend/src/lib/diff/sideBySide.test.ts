@@ -16,6 +16,11 @@ import {
   emphasizeTokens,
   groupByFile,
   isLanguage,
+  sideBySideFits,
+  columnCharBudget,
+  rowNeedsWrap,
+  MIN_SIDE_BY_SIDE_PX,
+  MONO_CHAR_PX,
 } from "./sideBySide";
 
 const vectors: Record<string, string> = import.meta.glob(
@@ -205,5 +210,56 @@ describe("sideBySide groupByFile + isLanguage", () => {
     expect(isLanguage("CMakeLists.txt")).toBe(true); // .txt → plaintext
     expect(isLanguage("Dockerfile")).toBe(false); // no extension
     expect(isLanguage("README")).toBe(false);
+  });
+});
+
+// The GUI rail decides side-by-side vs unified from its MEASURED width, and the
+// rows wrap. These pins fix (a) the threshold decision, (b) its equivalence to
+// the TUI sibling in char cells, and (c) that rowNeedsWrap is actually a
+// function of the measured budget — not decorative. Driven by the SHARED
+// fixtures so the wrap decision is pinned against real diff text.
+describe("sideBySide wrap + width threshold", () => {
+  it("decides side-by-side from measured width (unknown keeps side-by-side)", () => {
+    expect(sideBySideFits(479)).toBe(true);
+    expect(sideBySideFits(MIN_SIDE_BY_SIDE_PX)).toBe(true);
+    expect(sideBySideFits(MIN_SIDE_BY_SIDE_PX - 1)).toBe(false);
+    // Unknown / not-yet-measured width must NOT collapse (no unified flash).
+    expect(sideBySideFits(0)).toBe(true);
+    expect(sideBySideFits(-1)).toBe(true);
+  });
+
+  it("threshold matches the TUI sibling in char cells (>=48)", () => {
+    expect(Math.round(MIN_SIDE_BY_SIDE_PX / MONO_CHAR_PX)).toBeGreaterThanOrEqual(48);
+  });
+
+  it("columnCharBudget shrinks with the rail and never goes negative", () => {
+    expect(columnCharBudget(480)).toBeGreaterThan(columnCharBudget(360));
+    expect(columnCharBudget(100)).toBe(0); // 50-56 < 0
+  });
+
+  it("wraps long fixture lines only under a tight budget", () => {
+    const withDiff = parsed.filter((v) => !!v.expected_unified_diff);
+    expect(withDiff.length).toBeGreaterThan(0);
+
+    for (const v of withDiff) {
+      const rows = parseUnifiedDiff(v.expected_unified_diff ?? "");
+      if (rows.length === 0) continue;
+      // Every fixture line is short: nothing wraps at a generous budget…
+      expect(rows.some((r) => rowNeedsWrap(r, 200))).toBe(false);
+      // …but the decision is a function of the MEASURED budget: at the longest
+      // side's own length it fits, one char tighter and it must wrap.
+      const maxSide = Math.max(0, ...rows.map((r) => Math.max(r.oldText.length, r.newText.length)));
+      if (maxSide > 0) {
+        expect(rows.every((r) => !rowNeedsWrap(r, maxSide))).toBe(true);
+        expect(rows.some((r) => rowNeedsWrap(r, maxSide - 1))).toBe(true);
+      }
+    }
+  });
+
+  it("the create vector needs no wrap at the default 480px rail", () => {
+    const v = parsed.find((p) => p.name === "create-new-file")!;
+    const rows = parseUnifiedDiff(v.expected_unified_diff ?? "");
+    const budget = columnCharBudget(480); // the default rail width
+    expect(rows.every((r) => !rowNeedsWrap(r, budget))).toBe(true);
   });
 });

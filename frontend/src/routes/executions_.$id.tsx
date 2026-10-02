@@ -263,7 +263,7 @@ function ExecutionDetailPage() {
               Rendered as a flex sibling so the live session chat stays fully
               visible and interactive alongside it (chat column is flex-1
               min-w-0). Distinct from ExecutionContextSidebar on the right. */}
-          <div className="flex gap-3 min-w-0">
+          <div className="flex items-stretch min-h-0 gap-3 min-w-0">
             <DiffSidebar
               open={diffOpen}
               onClose={() => setDiffOpen(false)}

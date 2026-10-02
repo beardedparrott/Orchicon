@@ -1556,7 +1556,7 @@ function AskOrchiconPage() {
   // gone rather than left as a second, wrong source of truth.)
 
   return (
-    <div className="flex flex-1 min-h-0 h-full gap-0 min-w-0 overflow-hidden">
+    <div className="flex flex-1 min-h-0 h-full items-stretch gap-0 min-w-0 overflow-hidden">
       {/* Left diff rail — slide-out file-edit + diff side-by-side view.
           First flex child; the chat column is flex-1 min-w-0 so it keeps
           width as the rail opens. Distinct from the right conversation panel. */}

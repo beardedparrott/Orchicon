@@ -1335,6 +1335,35 @@
       radial-gradient(circle at 20% 80%, hsla(var(--mesh-glow-3) / var(--mesh-glow-3-a)), transparent 50%),
       hsl(var(--mesh-bg));
   }
+  /* Scoped scrollbar for the diff rail. Wider + higher contrast than the
+     global 4px / 0.15-alpha hairline (index.css:55,1311-1328): the thumb is a
+     6px visual bar inside a 12px grab area (3px transparent border +
+     background-clip: padding-box) so it is both visible AND grabbable.
+     Colour comes from the SAME per-theme --scroll-thumb tokens, so no theme
+     can fall back to another palette's thumb colour and no new token needs a
+     20-theme sweep. This rule lives in @layer utilities, AFTER the @layer base
+     global rule (which closes above), so it wins the cascade. */
+  .diff-scroll {
+    scrollbar-width: auto;
+    scrollbar-color: hsla(var(--scroll-thumb) / 0.55) transparent;
+  }
+  .diff-scroll::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+  }
+  .diff-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .diff-scroll::-webkit-scrollbar-thumb {
+    background: hsla(var(--scroll-thumb) / 0.55);
+    border: 3px solid transparent;
+    background-clip: padding-box;
+    border-radius: 6px;
+  }
+  .diff-scroll::-webkit-scrollbar-thumb:hover {
+    background: hsla(var(--scroll-thumb-hover) / 0.75);
+    background-clip: padding-box;
+  }
   .glass-panel {
     background: hsla(var(--glass-panel-bg) / var(--glass-panel-bg-a));
     backdrop-filter: blur(var(--glass-panel-blur));

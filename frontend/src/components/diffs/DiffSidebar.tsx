@@ -12,12 +12,13 @@
 //   - StreamFileEdits (live events) via the useStream pattern
 // merged with the sessionItems.mergeSessionItems discipline (mergeEdits).
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useSessionFileEdits } from "@/api/fileEdits";
-import { groupByFile } from "@/lib/diff/sideBySide";
+import { groupByFile, sideBySideFits } from "@/lib/diff/sideBySide";
+import { useRailWidth } from "@/lib/diff/useRailWidth";
 import { DiffView } from "@/components/diffs/DiffView";
 import { DiffTimeline } from "@/components/diffs/DiffTimeline";
 import { DiffTree } from "@/components/diffs/DiffTree";
@@ -58,7 +59,8 @@ export interface DiffSidebarProps {
   onTabChange: (tab: DiffTab) => void;
   selectedPath: string;
   onSelectPath: (path: string) => void;
-  /** force the unified (single-column) diff fallback on narrow widths */
+  /** force the unified (single-column) diff fallback; when omitted, the
+   * decision is DERIVED from the rail's measured width (see useRailWidth). */
   unified?: boolean;
 }
 
@@ -72,10 +74,18 @@ export function DiffSidebar({
   onTabChange,
   selectedPath,
   onSelectPath,
-  unified = false,
+  unified,
 }: DiffSidebarProps) {
   const { edits, loading, error } = useSessionFileEdits(ownerKind, ownerId, isLive);
   const narrow = useIsNarrow();
+  // The rail reads its OWN measured width (host-set inline width OR the 480px
+  // default) and collapses to one column below MIN_SIDE_BY_SIDE_PX. Hooks are
+  // unconditional and MUST run before the `if (!open) return null` below.
+  const railRef = useRef<HTMLDivElement>(null);
+  const railWidth = useRailWidth(railRef);
+  // An explicit `unified` prop forces the choice (the sub-768px drawer does);
+  // otherwise the measured width decides. Unknown width keeps side-by-side.
+  const unifiedEffective = unified ?? !sideBySideFits(railWidth);
 
   const files = useMemo(() => groupByFile(edits), [edits]);
   const selected = useMemo(
@@ -102,7 +112,7 @@ export function DiffSidebar({
     return (
       <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-label="Diff sidebar">
         <div className="absolute inset-0 bg-black/50" onClick={onClose} aria-hidden="true" />
-        <div className="absolute inset-y-0 left-0 flex w-[min(480px,88vw)] max-w-full shrink-0 flex-col overflow-hidden border-r border-border/60 bg-background shadow-xl">
+        <div ref={railRef} className="absolute inset-y-0 left-0 flex w-[min(480px,88vw)] max-w-full shrink-0 flex-col overflow-hidden border-r border-border/60 bg-background shadow-xl">
           <TabHeader tab={tab} onTabChange={onTabChange} onClose={onClose} tabClasses={tabClasses} />
           {error && <LedgerErrorBanner error={error} />}
           {tab === "timeline" && (
@@ -129,8 +139,11 @@ export function DiffSidebar({
   }
 
   return (
-    <div className="relative flex h-full shrink-0 overflow-hidden border-r border-border/60 bg-background/60 backdrop-blur transition-[width] duration-300 ease-in-out w-[480px] min-w-[480px]">
-      <aside className="flex h-full w-[480px] flex-col">
+    <div
+      ref={railRef}
+      className="relative flex h-full shrink-0 items-stretch overflow-hidden border-r border-border/60 bg-background/60 backdrop-blur transition-[width] duration-300 ease-in-out w-[480px]"
+    >
+      <aside className="flex h-full w-full flex-col">
         <TabHeader tab={tab} onTabChange={onTabChange} onClose={onClose} tabClasses={tabClasses} />
         {error && <LedgerErrorBanner error={error} />}
         {/* Tab content */}
@@ -144,7 +157,7 @@ export function DiffSidebar({
           <DiffView
             diff={selected?.edits[selected.edits.length - 1]?.unifiedDiff ?? ""}
             path={effectivePath}
-            unified={unified}
+            unified={unifiedEffective}
           />
         )}
         {loading && (

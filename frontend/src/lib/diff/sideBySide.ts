@@ -347,3 +347,55 @@ export function languageFor(path: string): string {
   const ext = last.slice(dot + 1).toLowerCase();
   return EXT_MAP[ext] ?? "plaintext";
 }
+
+// --- rail width / wrap decisions ------------------------------------------
+//
+// The GUI rail measures its own width and decides whether TWO columns still
+// fit; below the threshold it renders the single-column unified fallback.
+// These predicates are pure so the decision is unit-testable without a DOM.
+
+/**
+ * Minimum total rail width (px) at which two side-by-side columns are still
+ * readable. Equivalence to the TUI sibling is stated in CHAR CELLS, not
+ * pixels: text-xs (12px) monospace advances ~7.2px/char, so 360px ~= 50
+ * cells, vs internal/tui/diffs/render.go:22 `MinSideBySideWidth = 48`.
+ * 360 is deliberately BELOW the 480px default rail so the desktop default
+ * stays side-by-side and only a dragged-narrower rail collapses.
+ */
+export const MIN_SIDE_BY_SIDE_PX = 360;
+
+/** Advance width (px) of one `text-xs` monospace character. */
+export const MONO_CHAR_PX = 7.2;
+
+/** Per-column chrome (line-number gutter + sign spacer) that is not code. */
+export const COLUMN_GUTTER_PX = 56;
+
+/**
+ * sideBySideFits reports whether the measured rail can afford two columns.
+ * An unknown (<=0, not yet measured) width KEEPS the primary side-by-side
+ * view — treating "not yet observed" as narrow would flash a unified render
+ * on every open. Measuring happens in useLayoutEffect, before paint.
+ */
+export function sideBySideFits(widthPx: number): boolean {
+  return widthPx <= 0 || widthPx >= MIN_SIDE_BY_SIDE_PX;
+}
+
+/**
+ * columnCharBudget is how many code characters one side-by-side column can
+ * hold once its gutter is spent. Used by rowNeedsWrap and by the tests that
+ * pin the wrap decision to MEASURED width rather than a constant.
+ */
+export function columnCharBudget(railWidthPx: number): number {
+  const columnPx = railWidthPx / 2 - COLUMN_GUTTER_PX;
+  if (columnPx <= 0) return 0;
+  return Math.floor(columnPx / MONO_CHAR_PX);
+}
+
+/**
+ * rowNeedsWrap reports whether this row's old/new text cannot fit the column
+ * character budget unwrapped. A context row carries the same text on both
+ * sides; both are checked so the predicate is side-agnostic.
+ */
+export function rowNeedsWrap(r: SideBySideRow, columnChars: number): boolean {
+  return r.oldText.length > columnChars || r.newText.length > columnChars;
+}

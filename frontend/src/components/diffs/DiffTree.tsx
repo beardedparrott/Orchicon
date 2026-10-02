@@ -139,7 +139,7 @@ export function DiffTree({ files, onSelect, selectedPath }: DiffTreeProps) {
   }
   const tree = buildTree(files);
   return (
-    <div className="flex-1 overflow-y-auto p-1.5">
+    <div className="diff-scroll flex-1 overflow-y-auto p-1.5">
       {tree.map((n) => (
         <TreeItem key={n.path} node={n} depth={0} onSelect={onSelect} selectedPath={selectedPath} />
       ))}
