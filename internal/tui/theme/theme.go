@@ -577,6 +577,11 @@ var (
 	DiffClose       = lipgloss.NewStyle()
 	DiffBadgeAdd    = lipgloss.NewStyle()
 	DiffBadgeDel    = lipgloss.NewStyle()
+	// DiffScrollTrack / DiffScrollThumb are the diff pane's scrollbar column
+	// (a track plus a proportional thumb). They are separate styles rather than
+	// reusing DiffGutter/DiffLineNo so the bar reads as chrome, not content.
+	DiffScrollTrack = lipgloss.NewStyle()
+	DiffScrollThumb = lipgloss.NewStyle()
 
 	// PickerChip marks the CHOSEN chip in the model picker's ADAPTER/PROVIDER strip: plain theme
 	// text with an UNDERLINE. No fill, no border — see buildStyles.
@@ -795,6 +800,15 @@ func buildStyles(t Theme) {
 	DiffTabInactive = lipgloss.NewStyle().Foreground(t.TextDim).Background(t.Surface).Padding(0, 1)
 	DiffFileSel = lipgloss.NewStyle().Foreground(white).Bold(true).Background(t.Select)
 	DiffClose = lipgloss.NewStyle().Foreground(t.TextFaint).Bold(true)
+	// The diff pane's scrollbar column: a faint TRACK with a more prominent THUMB, so the operator
+	// can see that there is more content and where they are in it. They carry PALETTE tokens (not the
+	// terminal's default foreground) for exactly the reason the list rows do: an unset style renders
+	// in whatever the terminal happens to use, which is invisible-or-wrong on a palette that disagrees
+	// with it. Track is the faintest structural step (BorderFaint); the thumb steps up to TextDim so
+	// the two are distinguishable by MORE than the glyph, which is what lets a colour-blind or
+	// monochrome terminal still read position.
+	DiffScrollTrack = lipgloss.NewStyle().Foreground(t.BorderFaint)
+	DiffScrollThumb = lipgloss.NewStyle().Foreground(t.TextDim).Bold(true)
 	// PickerChip is the model picker's chosen chip: plain theme text, UNDERLINED.
 	//
 	// The operator, having seen the outlined version: "I think we should just make those normal
