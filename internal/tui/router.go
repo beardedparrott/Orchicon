@@ -537,6 +537,26 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		}
 		return m, nil
 	}
+	// THE CONVERSATION SCOPE MODAL sits HERE, below the form it can open (convScopeForm) and below the
+	// confirm dialog it can raise (bulkConfirm) — so those two, which are layered ON TOP of it, win the
+	// keyboard — and above every screen claim, because it is layered over the whole shell and a keystroke
+	// aimed at the scope must never reach the list behind it.
+	//
+	// IT CONSUMES KEYS AND THE MOUSE, BUT NOT EVERY MESSAGE, and that asymmetry is deliberate: the other
+	// modals here are transient enough to swallow the world, while this one can sit open for minutes. A
+	// modal that ate every message would eat the CHAT WAITER's replays and stream ticks too, leaving the
+	// shell behind it frozen for the rest of the session — a modal must hide a surface, not suspend it.
+	if m.scope != nil {
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			return m.scopeKey(msg)
+		case tea.MouseMsg:
+			return m, nil
+		case scopeDataMsg:
+			m.onScopeData(msg)
+			return m, nil
+		}
+	}
 	// The grouping-rename form, opened from a category row in any grouped pane.
 	if m.catForm != nil {
 		if k, ok := msg.(tea.KeyMsg); ok {
@@ -1445,19 +1465,19 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		return tea.Batch(m.chat.LoadConversations(), m.waitChat())
 	case chat.ConversationMutatedMsg:
 		return tea.Batch(m.onConversationMutated(msg), m.waitChat())
-	case convScopePrefillMsg:
-		// The definition arrived: open the EDIT form on it. The fetch is asynchronous, so the form is
-		// opened HERE rather than inside the cmd (a cmd mutates a discarded App copy).
-		if msg.err != "" {
-			m.dock.SetError(msg.err)
-			return nil
-		}
-		m.openConversationMCPDefine(msg.server)
-		return nil
 	case convScopeMsg:
+		// THE SCOPE MODAL RE-READS AFTER EVERY WRITE IT CAUSED, whatever the outcome: a definition added,
+		// edited or deleted, a credential stored, an install started, a skill path set or removed. The
+		// write went through a FORM hosted above the modal, so the list underneath is stale the moment it
+		// lands — and a scope pane showing the thing the operator just deleted is the specific failure
+		// this closes. A failed write re-reads too, so the row is back to what the plane actually holds.
+		var cmd tea.Cmd
+		if m.scope != nil {
+			cmd = m.loadScope()
+		}
 		if msg.err != "" {
 			m.dock.SetError(msg.op + " failed: " + msg.err)
-			return nil
+			return cmd
 		}
 		if msg.detail != "" {
 			m.dock.SetNotice(msg.op + ": " + msg.detail)
@@ -1466,9 +1486,9 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		// carries the conversation's skill_files), so both re-read: the reload is cheap and keeps the
 		// two clients from disagreeing about what the conversation holds.
 		if msg.op == "/skills" {
-			return m.reloadConversations()
+			return tea.Batch(cmd, m.reloadConversations())
 		}
-		return nil
+		return cmd
 	case chat.TranscriptMsg:
 		return tea.Batch(m.onTranscript(msg), m.waitChat())
 	case chat.ErrMsg:

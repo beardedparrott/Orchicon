@@ -257,7 +257,12 @@ type App struct {
 	// here for the same reason: the surface it edits belongs to the SHELL's open conversation, not to
 	// any screen.
 	convScopeForm *kit2.Form
-	renameConvID  string
+	// scope is the CONVERSATION SCOPE modal (/scope, /mcp, /skills): the conversation's MCP
+	// definitions and skill files in one list, with the project's shown read-only above them
+	// (scope_modal.go). It sits BELOW convScopeForm: a form it opens is layered on top, and the
+	// confirm dialog it raises is on top of that.
+	scope        *scopeModal
+	renameConvID string
 	// Categories (worker / workflow / conversation groupings). The CACHE is one slice for every target
 	// type because the picker needs whichever type its item belongs to and the Control pane lists all
 	// three; assignForm is the assign-or-create modal (nil = closed); assignTarget/assignEntities record
@@ -988,6 +993,9 @@ func (m *App) showAskConversations() {
 func (m *App) newChat() {
 	m.askMode = askNew
 	m.chatConvID = ""
+	// A new chat has no scope to show: the modal is per-conversation and the conversation it named is
+	// gone.
+	m.closeScopeModal()
 	if m.chat != nil {
 		m.chat.SetActive("")
 		// A NEW CONVERSATION STARTS AT THE DEFAULT MODE.
@@ -1833,6 +1841,10 @@ func (m *App) OpenAskConversation(id string) tea.Cmd {
 	if m.chatConvID == id {
 		return nil
 	}
+	// THE SCOPE MODAL BELONGS TO ONE CONVERSATION: opening a different one closes it rather than leaving
+	// a pane on screen that edits the previous chat's servers (the GUI's Scope disclosure closes on a
+	// conversation switch for the same reason).
+	m.closeScopeModal()
 	m.askMode = askConversations
 	m.chatConvID = id
 	// OPENING A CONVERSATION SELECTS IT FOR THE KEYBOARD. Opening one is a deliberate
@@ -2410,6 +2422,11 @@ func (m App) viewFrame() string {
 	}
 	if m.convScopeForm != nil {
 		base = m.convScopeView(base, w, h)
+	}
+	// THE CONVERSATION SCOPE MODAL is drawn UNDER convScopeForm and UNDER the confirm dialog, matching
+	// the key order in the router: the list the operator opened, then any form or confirm raised from it.
+	if m.scope != nil {
+		base = m.scopeView(base, w, h)
 	}
 	if m.assignForm != nil {
 		base = m.assignCategoryView(base, w, h)
@@ -4507,6 +4524,7 @@ func (m *App) onConversationMutated(msg chat.ConversationMutatedMsg) tea.Cmd {
 		}
 		if m.chatConvID == msg.ID {
 			m.chatConvID = ""
+			m.closeScopeModal()
 			m.chat.SetActive("")
 			if s := m.screens[TabAsk]; s != nil {
 				if st, ok := s.(interface {

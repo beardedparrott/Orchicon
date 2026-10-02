@@ -264,6 +264,40 @@ func SecretForm(label, key string, onSet func(key, value string) tea.Cmd) *kit2.
 	return f
 }
 
+// SkillPathsForm edits a SKILL FILES path list — the control that sits in the same
+// scope surface as the MCP panel, which is why it lives here rather than beside
+// any one caller.
+//
+// IT IS THE PATH-LIST IDIOM, DELIBERATELY (see ParseSkillPaths): the GUI selects
+// skill files with a file-tree browser, the TUI has no file browser, and its
+// established control for a path list is a typed field — the same treatment
+// context_files already gets. Validation is the SERVER'S (contextfiles.Validate /
+// ValidateWithin), never a second client-side copy, so this form only has to
+// express what the operator wants.
+//
+// The field is PREFILLED with what the scope already holds, so changing one path
+// is an edit rather than a retype, and EMPTYING it clears the list — which is the
+// same write /skills clear performs.
+func SkillPathsForm(current string, onSave func(paths []string) tea.Cmd) *kit2.Form {
+	f := kit2.NewForm("Skill files for this conversation",
+		kit2.FieldSpec{
+			Name: "paths", Label: "Paths (one per line, or comma-separated)",
+			Kind: kit2.KTextArea, Initial: current,
+			Placeholder: "skills/review.md  ·  docs/ (a directory is read in full)",
+		},
+	)
+	f.Note = "Real on-disk paths in the conversation's project directory. The union of these and the " +
+		"project's skill files is rendered into the prompt. Clearing the field removes them all."
+	f.Focused = true
+	f.Width = 64
+	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
+		// An emptied field is a CLEAR, not a no-op: the operator who deleted every
+		// line has said what they mean, and ParseSkillPaths already drops blanks.
+		return onSave(ParseSkillPaths(v["paths"])), nil
+	}
+	return f
+}
+
 // InlineSpec mirrors db.InlineMCPServer (internal/db/mcp_servers.go) — the ONE
 // shape the server already parses out of a worker version's
 // permissions.mcp_servers. The worker-version placement writes THIS array rather
