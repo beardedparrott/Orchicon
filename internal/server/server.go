@@ -492,7 +492,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// ingestion point — engine file_edits output tried first for
 	// write/edit, observer fallback for genuine built-in usage
 	// (internal/server/fileedit_hook.go).
-	adapterBridge.SetFileEditHook(newFileEditHook(feSvc, log))
+	adapterBridge.SetFileEditHook(newFileEditHook(feSvc, log, db.FileEditOwnerExecution))
 
 	// Register the opencode bridge under its adapter kind. This is the
 	// ONLY place the concrete adapter appears in a dispatch-capable
@@ -730,7 +730,13 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// same constructor as the opencode adapter above — the session fires it
 	// once per completed registry result in executeTools, so every
 	// native-loop provider (ollama, commandcode, …) ledgers through one site.
-	nativeBridge.SetFileEditHook(newFileEditHook(feSvc, log))
+	nativeBridge.SetFileEditHook(newFileEditHook(feSvc, log, db.FileEditOwnerExecution))
+	// The native Ask path runs its tools in-process via chatturn.executeToolCalls
+	// (NOT via a Session), so it needs its own hook: attributed to the ASK
+	// CONVERSATION so the live per-edit rows land under the exact tuple both
+	// clients query, instead of being visible only after the post-turn git
+	// sweep. Same constructor, owner kind Ask.
+	nativeBridge.SetAskFileEditHook(newFileEditHook(feSvc, log, db.FileEditOwnerAskConversation))
 	dispatcher.Register("orchicon", nativeBridge)
 
 	// Claude Code bridge (kind "claude" — NEVER "anthropic": anthropic is a
@@ -745,7 +751,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	claudeBridge := claude.New(log)
 	claudeBridge.SetUsageRecorder(usageRecorderFn)
 	claudeBridge.SetSessionStore(sessionStoreFn)
-	claudeBridge.SetFileEditHook(newFileEditHook(feSvc, log))
+	claudeBridge.SetFileEditHook(newFileEditHook(feSvc, log, db.FileEditOwnerExecution))
 	// MCP: the SAME two wirings the native bridge receives above, because the
 	// resolution is shared rather than per-adapter. Which servers an execution
 	// gets (the project-owned ∪ the scope's own definitions, with ${SECRET_NAME}

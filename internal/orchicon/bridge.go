@@ -59,8 +59,16 @@ type NativeBridge struct {
 	sessionStore scheduler.SessionStoreFunc
 	// fileEditHook is the diff-pipeline ledger hook fanned out to every
 	// session built here (wired by the server with the same constructor as
-	// the opencode adapter). Nil = no ledger.
+	// the opencode adapter). Nil = no ledger. Its rows are attributed
+	// (execution, <execution id>).
 	fileEditHook opencode.FileEditHookFunc
+	// askFileEditHook is the diff-pipeline ledger hook for the native Ask
+	// path (fired from executeToolCalls, not from a Session). Its rows are
+	// attributed (ask_conversation, <conversation id>) — the exact tuple both
+	// clients' Ask diff panes query — so the live per-edit rows are visible
+	// DURING the turn rather than only via the post-turn git sweep. Nil = no
+	// Ask ledger. Guarded by mu.
+	askFileEditHook opencode.FileEditHookFunc
 	// rtClient routes native bash into the run's container when the run
 	// is container-backed (always-container runtime mode). Nil =
 	// in-process (local mode / standalone / headless).
@@ -704,7 +712,22 @@ func (b *NativeBridge) SetUsageRecorder(fn scheduler.UsageRecorderFunc) {
 // this bridge builds (one shared site in executeTools covers the whole
 // native-loop family). Nil = no ledger (sessions unaffected).
 func (b *NativeBridge) SetFileEditHook(fn opencode.FileEditHookFunc) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.fileEditHook = fn
+}
+
+// SetAskFileEditHook wires the diff-pipeline ledger hook for the native Ask
+// path. Unlike SetFileEditHook (whose sessions are worker executions), the
+// hook fired here is attributed to the ASK CONVERSATION: executeToolCalls
+// passes the conversation id as the hook's owner id and the server builds the
+// hook with db.FileEditOwnerAskConversation, so the live rows land under the
+// tuple both clients already query. Nil = no Ask ledger (Ask then relies on
+// the post-turn git sweep only, the pre-fix behaviour).
+func (b *NativeBridge) SetAskFileEditHook(fn opencode.FileEditHookFunc) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.askFileEditHook = fn
 }
 
 // SetCacheSink wires the session-terminal prefix-cache rollup drain (D3,

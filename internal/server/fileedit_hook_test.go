@@ -68,6 +68,21 @@ func (f *fakeFileEditStore) tools() []string {
 	return tools
 }
 
+// ownerTuples returns each row's owner as "kind|id" — the tuple a client
+// queries by. Asserting on it (rather than a row count) is what makes a test
+// delta-proof against the post-turn git sweep: the sweep writes CORRECT rows
+// under the right owner, so only a tuple assertion can distinguish a live,
+// correctly-attributed hook row from the sweep's backstop.
+func (f *fakeFileEditStore) ownerTuples() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	tuples := make([]string, 0, len(f.rows))
+	for _, r := range f.rows {
+		tuples = append(tuples, r.OwnerKind+"|"+r.OwnerID)
+	}
+	return tuples
+}
+
 const engineWriteOutput = "write: applied 1 write(s): notes/a.txt\n" +
 	`{"summary":"write: applied 1 write(s): notes/a.txt","file_edits":[` +
 	`{"path":"notes/a.txt","kind":"create","unified_diff":"--- /dev/null\n+++ b/notes/a.txt\n@@ -0,0 +1,1 @@\n+hi\n",` +
@@ -87,7 +102,7 @@ const engineEditOutput = "edit: applied 1 edit(s): notes/a.txt\n" +
 func TestFileEditHookEngineWriteEdit(t *testing.T) {
 	store := &fakeFileEditStore{}
 	svc := fileedit.NewService(store, slog.Default())
-	hook := newFileEditHook(svc, slog.Default())
+	hook := newFileEditHook(svc, slog.Default(), db.FileEditOwnerExecution)
 
 	ctx := context.Background()
 	emptyDir := t.TempDir()
@@ -109,7 +124,7 @@ func TestFileEditHookEngineWriteEdit(t *testing.T) {
 func TestFileEditHookBuiltinFallback(t *testing.T) {
 	store := &fakeFileEditStore{}
 	svc := fileedit.NewService(store, slog.Default())
-	hook := newFileEditHook(svc, slog.Default())
+	hook := newFileEditHook(svc, slog.Default(), db.FileEditOwnerExecution)
 
 	ctx := context.Background()
 	execDir := t.TempDir()
@@ -133,7 +148,7 @@ func TestFileEditHookBuiltinFallback(t *testing.T) {
 func TestFileEditHookFailedOutputSilent(t *testing.T) {
 	store := &fakeFileEditStore{}
 	svc := fileedit.NewService(store, slog.Default())
-	hook := newFileEditHook(svc, slog.Default())
+	hook := newFileEditHook(svc, slog.Default(), db.FileEditOwnerExecution)
 
 	ctx := context.Background()
 	execDir := t.TempDir()
@@ -154,7 +169,7 @@ func TestFileEditHookFailedOutputSilent(t *testing.T) {
 func TestFileEditHookBatchWrite(t *testing.T) {
 	store := &fakeFileEditStore{}
 	svc := fileedit.NewService(store, slog.Default())
-	hook := newFileEditHook(svc, slog.Default())
+	hook := newFileEditHook(svc, slog.Default(), db.FileEditOwnerExecution)
 
 	ctx := context.Background()
 	out := "batch_write: applied 2 write(s): a.txt, b.md\n" +
@@ -165,5 +180,42 @@ func TestFileEditHookBatchWrite(t *testing.T) {
 
 	if got := store.count(); got != 2 {
 		t.Fatalf("batch_write yielded %d rows, want 2", got)
+	}
+}
+
+// TestFileEditHookAskOwnerTuple pins the Ask half of the owner attribution:
+// the SAME constructor, built with the Ask owner kind, records the row under
+// (ask_conversation, <conversation id>) — the exact tuple both clients' Ask
+// diff panes query. It is a TUPLE assertion, not a row count: a count would
+// also pass for a row written under the wrong owner, which is the bug this
+// item exists to fix.
+func TestFileEditHookAskOwnerTuple(t *testing.T) {
+	store := &fakeFileEditStore{}
+	svc := fileedit.NewService(store, slog.Default())
+	hook := newFileEditHook(svc, slog.Default(), db.FileEditOwnerAskConversation)
+
+	hook(context.Background(), "conv-1", "tnt-1", t.TempDir(), "write",
+		map[string]any{"filePath": "notes/a.txt"}, engineWriteOutput)
+
+	tuples := store.ownerTuples()
+	if len(tuples) != 1 || tuples[0] != db.FileEditOwnerAskConversation+"|conv-1" {
+		t.Fatalf("owner tuples = %v, want exactly [%s|conv-1]", tuples, db.FileEditOwnerAskConversation)
+	}
+}
+
+// TestFileEditHookExecutionOwnerTuple is the no-regression half: a hook built
+// with the execution owner kind still records (execution, <execution id>) —
+// worker/execution sessions must be unchanged by the Ask wiring.
+func TestFileEditHookExecutionOwnerTuple(t *testing.T) {
+	store := &fakeFileEditStore{}
+	svc := fileedit.NewService(store, slog.Default())
+	hook := newFileEditHook(svc, slog.Default(), db.FileEditOwnerExecution)
+
+	hook(context.Background(), "exec-1", "tnt-1", t.TempDir(), "write",
+		map[string]any{"filePath": "notes/a.txt"}, engineWriteOutput)
+
+	tuples := store.ownerTuples()
+	if len(tuples) != 1 || tuples[0] != db.FileEditOwnerExecution+"|exec-1" {
+		t.Fatalf("owner tuples = %v, want exactly [%s|exec-1]", tuples, db.FileEditOwnerExecution)
 	}
 }
