@@ -3801,6 +3801,30 @@ func (m *App) conversationByID(id string) (chat.Conversation, bool) {
 	return chat.Conversation{}, false
 }
 
+// turnInFlight reports whether the PLANE says this conversation has a turn in flight.
+//
+// IT IS THE DURABLE HALF OF "is the model working?", and the activity line needs both halves.
+//
+// THE LIVE HALF is this client's own stream slot (chat.IsStreaming): it is what supplies the watchdog's
+// age — "· last activity 12s ago" — and so what makes the line's countdown mean anything.
+//
+// THE DURABLE HALF IS THIS. A turn can be running with no local slot at all: started in the GUI, or a
+// slot this client lost and has not re-attached. The shell already holds the plane's own answer on the
+// conversation row (turn_in_flight), and it already trusts that field for two other things — the rail
+// marks the row as running from it (rightrail.go) and re-attach is gated on it (reattachRunningTurn).
+// Keying the ACTIVITY LINE to the slot alone was therefore the odd one out, and the operator saw the
+// contradiction: "I am no longer seeing the 'Orchicon is thinking...' and the watchdog countdown in the
+// TUI." while the rail beside it said the conversation was running.
+//
+// The cost of the gap was not only a missing line. The notice takes a row from the body
+// (kit2.Stream.bodyRows), so an empty notice hands the transcript the WHOLE pane and the text runs one
+// row further down — which is the second half of the operator's report, "the conversation text is going
+// to the bottom", and it is the same bug seen from the other side.
+func (m *App) turnInFlight(convID string) bool {
+	c, ok := m.conversationByID(convID)
+	return ok && c.TurnInFly
+}
+
 // onChatWake repaints the open ask-conversation detail pane with the
 // merged, phase-grouped transcript + live chunks. Cheap (no RPC): the
 // conversation detail's fields render from the last GetConversation —
@@ -3909,7 +3933,7 @@ func (m *App) onChatWake() tea.Cmd {
 			// reading a transcript, and it is the TRANSCRIPT that looks broken when a reply cannot arrive.
 			// Same slot and same row cost as "reconnecting…", so nothing moves.
 			str.SetNotice("⚠ disconnected — replies will resume when the plane returns (r retries now)")
-		case m.chat.IsStreaming(m.chatConvID):
+		case m.chat.IsStreaming(m.chatConvID) || m.turnInFlight(m.chatConvID):
 			// THE ACTIVITY LINE RUNS FOR THE WHOLE TURN, not only before the first token.
 			//
 			// It used to require `awaitingReply(items)` — the GUI's rule, where the indicator is "visible
