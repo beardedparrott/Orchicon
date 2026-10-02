@@ -219,6 +219,14 @@ func (s *Service) ListOpenCodeMCPs(ctx context.Context, req *connect.Request[api
 // GetUsage returns usage records matching the tenant-scoped filter. The
 // tenant_id is injected from the request context (AGENTS.md tenant
 // isolation); a client-supplied tenant_id hint is ignored.
+//
+// Cursor pagination: page_token is the cursor (the usage_records id of
+// the last row of the previous request) and a full page returns
+// next_page_token for the client to send back as page_token — resolved
+// by the DB layer's (occurred_at, id) keyset predicate
+// (ListUsageRecordsFilter.AfterID). Clients that never page are
+// unaffected; the Credits panel drives the loop to termination for
+// exact lifetime totals.
 func (s *Service) GetUsage(ctx context.Context, req *connect.Request[apiv1.GetUsageRequest]) (*connect.Response[apiv1.GetUsageResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -244,6 +252,7 @@ func (s *Service) GetUsage(ctx context.Context, req *connect.Request[apiv1.GetUs
 		StartTime:   tsToTime(req.Msg.Start),
 		EndTime:     tsToTime(req.Msg.End),
 		PageSize:    pageSize,
+		AfterID:     req.Msg.PageToken,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -252,7 +261,15 @@ func (s *Service) GetUsage(ctx context.Context, req *connect.Request[apiv1.GetUs
 	for i := range records {
 		out = append(out, usageRowToProto(&records[i]))
 	}
-	return connect.NewResponse(&apiv1.GetUsageResponse{Records: out}), nil
+	resp := &apiv1.GetUsageResponse{Records: out}
+	// A FULL page might have a successor — hand back the cursor for the
+	// client to probe. If the page was the last one, the next request
+	// returns an empty page with no token and the loop terminates. A
+	// partial page is provably the end and returns none.
+	if len(records) == int(pageSize) && len(records) > 0 {
+		resp.NextPageToken = records[len(records)-1].ID
+	}
+	return connect.NewResponse(resp), nil
 }
 
 // GetCost returns a cost roll-up at the requested drill-down level

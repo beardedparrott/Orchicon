@@ -916,9 +916,23 @@ func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
 		// Clear the field. Without a clear gesture an operator could only ever
 		// APPEND to a prefilled value, which is the difference between editing
 		// an item and being unable to.
-		if s != nil && f.editable(s.Kind) {
+		//
+		// REFERENCE FIELDS CLEAR TOO, and this is the operator's report: "There is no way to clear a
+		// schedule on a work item in the TUI currently in edit mode. There should be a clear key to
+		// easily empty out a field."
+		//
+		// A KDateTime/KDate/KModel field is CHOSEN from a control, so `editable` (text kinds only) was
+		// false and this key was a SILENT NO-OP on exactly the fields where clearing matters most —
+		// while the footer advertised "ctrl+u: clear" the whole time. The value here is a plain string
+		// in f.Values (the picker writes it, the host reads it), so clearing it is the same act as
+		// clearing text: empty the value and put the caret back. An empty reference field renders as
+		// its "unset" affordance ("enter to pick a date & time"), which is the visible confirmation.
+		if s != nil && (f.editable(s.Kind) || f.reference(s.Kind)) {
 			f.Values[s.Name] = ""
 			f.setCaret(s.Name, 0)
+			if f.OnChange != nil {
+				f.OnChange(s.Name, "")
+			}
 		}
 		return nil, true
 	case " ", "space":
@@ -1946,7 +1960,11 @@ func (f *Form) View() string {
 			// here, and it was the line the operator was reading while hunting for the
 			// model. The field's own row names its gesture; the footer names the GESTURE,
 			// because the control differs per kind (a model picker, a calendar, a list).
-			footer = "↑/↓ or tab: field · ←/→: move · enter: open the " + f.referenceControlName(*s) + " · ctrl+s: save · esc: cancel"
+			// CTRL+U IS NAMED HERE because a reference field can now be CLEARED (see the ctrl+u
+			// case) — the operator's "there should be a clear key to easily empty out a field".
+			// Naming the clear beside the open gesture is what makes it discoverable on the one
+			// field family whose whole complaint was that clearing was impossible.
+			footer = "↑/↓ or tab: field · ←/→: move · ctrl+u: clear · enter: open the " + f.referenceControlName(*s) + " · ctrl+s: save · esc: cancel"
 		}
 	}
 	for _, l := range wrapHint(theme.HintText.Render(footer), width) {

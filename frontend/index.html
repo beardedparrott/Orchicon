@@ -6,10 +6,13 @@
 <html lang="en" class="dark" data-theme="orchicon-dark-teal">
   <head>
     <meta charset="UTF-8" />
-    <!-- The favicon is the brand mark: adaptive (dark ink on a light browser chrome, light on a dark one) via
-         a prefers-color-scheme block INSIDE the SVG, so one file serves both. It replaces a reference to
-         `/vite.svg` — which was Vite's scaffold default AND never existed on disk (there is no public/ dir in
-         this project), so the app had no favicon at all: every page load asked for a 404. -->
+    <!-- The favicon is the brand mark: adaptive ink (dark on a light browser chrome, light #EDEDE6 on a
+         dark one) via a prefers-color-scheme <style> block INSIDE the SVG, so one file serves both. Safari
+         ignores CSS in SVG favicons and renders the dark-ink default. Before this, the comment promised the
+         adaptation but the file carried fill="currentColor" with no style — browser defaulting rendered the
+         arrows black everywhere. The favicon replaces a reference to `/vite.svg` — Vite's scaffold default,
+         which never existed on disk — so before favicon.svg landed the app had none at all: every page load
+         404'd. -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />

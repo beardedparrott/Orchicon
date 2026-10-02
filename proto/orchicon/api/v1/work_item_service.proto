@@ -271,6 +271,19 @@ message UpdateWorkItemRequest {
   optional bool recurring_enabled = 26;
   // secret_ids replaces the secret selection (set-replace): empty list clears, absent leaves unchanged. Max 10.
   optional SecretIds secret_ids = 27;
+  // clear_scheduled_start_at removes the item's scheduled start WITHOUT starting it — the
+  // "present but empty" convention the schema already uses for recurring_schedule and context_files.
+  //
+  // WHY IT EXISTS: scheduled_start_at is optional, so "absent" means UNCHANGED, and there was no
+  // shape that meant "clear it". The edit forms therefore round-tripped the stored schedule back on
+  // every save, so an operator could never remove a schedule — and because a surviving schedule
+  // suppresses auto-start (an item with a start time waits for it), it also blocked starting a bound
+  // workflow from a pending item. Setting auto_start_workflow=true clears the schedule as a side
+  // effect, but that also FIRES the run: there was no way to clear without starting.
+  //
+  // When both this and scheduled_start_at are present, CLEAR WINS (the explicit removal is the more
+  // specific intent, and leaving both applied would be contradictory).
+  bool clear_scheduled_start_at = 28;
 }
 
 // DependencyIds is a set of dependency target work item IDs. Used for

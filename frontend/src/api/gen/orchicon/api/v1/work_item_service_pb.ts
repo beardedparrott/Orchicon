@@ -802,6 +802,24 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
    */
   secretIds?: SecretIds;
 
+  /**
+   * clear_scheduled_start_at removes the item's scheduled start WITHOUT starting it — the
+   * "present but empty" convention the schema already uses for recurring_schedule and context_files.
+   *
+   * WHY IT EXISTS: scheduled_start_at is optional, so "absent" means UNCHANGED, and there was no
+   * shape that meant "clear it". The edit forms therefore round-tripped the stored schedule back on
+   * every save, so an operator could never remove a schedule — and because a surviving schedule
+   * suppresses auto-start (an item with a start time waits for it), it also blocked starting a bound
+   * workflow from a pending item. Setting auto_start_workflow=true clears the schedule as a side
+   * effect, but that also FIRES the run: there was no way to clear without starting.
+   *
+   * When both this and scheduled_start_at are present, CLEAR WINS (the explicit removal is the more
+   * specific intent, and leaving both applied would be contradictory).
+   *
+   * @generated from field: bool clear_scheduled_start_at = 28;
+   */
+  clearScheduledStartAt = false;
+
   constructor(data?: PartialMessage<UpdateWorkItemRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -833,6 +851,7 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
     { no: 25, name: "depends_on", kind: "message", T: DependencyIds, opt: true },
     { no: 26, name: "recurring_enabled", kind: "scalar", T: 8 /* ScalarType.BOOL */, opt: true },
     { no: 27, name: "secret_ids", kind: "message", T: SecretIds, opt: true },
+    { no: 28, name: "clear_scheduled_start_at", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkItemRequest {

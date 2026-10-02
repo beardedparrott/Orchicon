@@ -102,3 +102,25 @@ describe("the TUI does not gate auto-start on a workflow either", () => {
     expect(c).not.toContain("auto-start needs a workflow");
   });
 });
+
+// THE SCHEDULE CAN BE CLEARED — a value or an explicit clear, never a silent drop.
+//
+// The operator: "There is no way to clear a schedule on a work item." scheduledStartAt is an optional
+// proto field, so an EMPTY input meant "unchanged": the page seeded the input from the item and an
+// emptied field sent nothing at all, so the stored schedule round-tripped on every save. The save must
+// now carry clearScheduledStartAt whenever the input is empty.
+describe("the GUI can clear a schedule", () => {
+  it("the save sends clearScheduledStartAt when the input is empty", () => {
+    const c = code(read(PAGE));
+    expect(c, "the save never sends clearScheduledStartAt — an emptied date is indistinguishable from 'unchanged'").toContain(
+      "clearScheduledStartAt",
+    );
+    // The pair: a value when set, the clear when empty.
+    expect(c).toContain("clearScheduledStartAt: editScheduledStartAt ? false : true");
+  });
+
+  it("the scheduled-start input is seeded from the item (so an untouched save cannot clear it)", () => {
+    const c = code(read(PAGE));
+    expect(c, "the schedule input must be seeded from item.scheduledStartAt").toContain("setEditScheduledStartAt(");
+  });
+});

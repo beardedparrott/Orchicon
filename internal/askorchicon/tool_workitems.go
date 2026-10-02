@@ -354,24 +354,28 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	// explicit zero/empty value, exactly like the proto optional fields
 	// the Connect Update handler reads.
 	var params struct {
-		ID                 string    `json:"id"`
-		Title              *string   `json:"title"`
-		Description        *string   `json:"description"`
-		AcceptanceCriteria *string   `json:"acceptance_criteria"`
-		AcceptanceReview   *string   `json:"acceptance_review"`
-		Status             *string   `json:"status"`
-		Priority           *int      `json:"priority"`
-		Budgets            *string   `json:"budgets"`
-		ContextWindow      *int      `json:"context_window"`
-		ProjectID          *string   `json:"project_id"`
-		WorkflowID         *string   `json:"workflow_id"`
-		ParentID           *string   `json:"parent_id"`
-		ScheduledStartAt   *string   `json:"scheduled_start_at"`
-		AutoStartWorkflow  *bool     `json:"auto_start_workflow"`
-		WorkflowRunID      *string   `json:"workflow_run_id"`
-		RuntimeImage       *string   `json:"runtime_image"`
-		Kind               *string   `json:"kind"`
-		ContextFiles       *[]string `json:"context_files"`
+		ID                 string  `json:"id"`
+		Title              *string `json:"title"`
+		Description        *string `json:"description"`
+		AcceptanceCriteria *string `json:"acceptance_criteria"`
+		AcceptanceReview   *string `json:"acceptance_review"`
+		Status             *string `json:"status"`
+		Priority           *int    `json:"priority"`
+		Budgets            *string `json:"budgets"`
+		ContextWindow      *int    `json:"context_window"`
+		ProjectID          *string `json:"project_id"`
+		WorkflowID         *string `json:"workflow_id"`
+		ParentID           *string `json:"parent_id"`
+		ScheduledStartAt   *string `json:"scheduled_start_at"`
+		// ClearScheduledStartAt removes the schedule WITHOUT starting the item — the answer to
+		// "there is no way to clear a schedule". Distinct from AutoStartWorkflow, which clears as a
+		// side effect of FIRING.
+		ClearScheduledStartAt *bool     `json:"clear_scheduled_start_at"`
+		AutoStartWorkflow     *bool     `json:"auto_start_workflow"`
+		WorkflowRunID         *string   `json:"workflow_run_id"`
+		RuntimeImage          *string   `json:"runtime_image"`
+		Kind                  *string   `json:"kind"`
+		ContextFiles          *[]string `json:"context_files"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -478,6 +482,13 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		}
 		scheduledStartAt = &t
 		update.ScheduledStartAt = &t
+	}
+	if params.ClearScheduledStartAt != nil && *params.ClearScheduledStartAt {
+		// An EXPLICIT removal, independent of starting — mirrors the service's clear (clear wins over a
+		// simultaneous scheduled_start_at).
+		update.ClearScheduledStartAt = true
+		scheduledStartAt = nil
+		update.ScheduledStartAt = nil
 	}
 	if params.AutoStartWorkflow != nil {
 		v := *params.AutoStartWorkflow
@@ -737,7 +748,10 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	// The FIRE PATH is routed by SHAPE, exactly as Connect routes it: a work
 	// item with CHILDREN is a sequence and starts its CHAIN; a bound leaf
 	// starts its own run; an unbound leaf has nothing to start and declines.
-	wouldAutoStart := updated.ScheduledStartAt == nil && updated.AutoStartWorkflow &&
+	// The flag alone is NOT a request (see the service's copy of this rule): auto-start fires only on an
+	// EXPLICIT gesture in this request, so a stale stored flag cannot start a run on an unrelated edit.
+	requestNamedStart := userExplicitlyAutoStarts || params.ScheduledStartAt != nil
+	wouldAutoStart := requestNamedStart && updated.ScheduledStartAt == nil && updated.AutoStartWorkflow &&
 		!(kindSwitchInFlight && !userExplicitlyAutoStarts)
 	autoStartWarning := ""
 	if wouldAutoStart {
@@ -745,7 +759,9 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		if update.Status != nil {
 			effectiveStatus = *update.Status
 		}
-		if workitem.IsStartableForAutoStart(current.Status) && workitem.IsStartableForAutoStart(effectiveStatus) {
+		// An EXPLICIT gesture overrides the status gate (an operator may kick off a cancelled/failed
+		// item); a stale stored flag is already excluded above, so nothing re-arms silently.
+		if userExplicitlyAutoStarts || workitem.IsStartableForAutoStart(effectiveStatus) {
 			shouldStart := true
 			if updated.WorkflowRunID != "" {
 				var runStatus string

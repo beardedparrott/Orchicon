@@ -12,10 +12,8 @@ import { useEffect, useMemo, useRef } from "react";
 
 import { useQuery } from "@tanstack/react-query";
 
-import { aiGatewayClient } from "@/api/clients";
-import { useListOpenCodeModels } from "@/api/aigateway";
+import { fetchAllUsageRecords, useListOpenCodeModels } from "@/api/aigateway";
 import { useProviderModels } from "@/api/providers";
-import type { UsageRecord } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
 import { formatAskMetricsLine, formatAskMetricsStats, summarizeAskMetrics } from "@/lib/ask-metrics-format";
 import { ORCHICON_ADAPTER_KIND, parseModelRef } from "@/lib/model-ref";
 
@@ -32,8 +30,10 @@ export function useAskSessionMetrics(convId: string | null | undefined) {
   return useQuery({
     queryKey: askMetricsKeys.session(id),
     queryFn: async () => {
-      const res = await aiGatewayClient.getUsage({ sessionId: id, pageSize: 200 });
-      return (res.records ?? []) as UsageRecord[];
+      // One Ask conversation can legally exceed ANY single page ( pageSize
+      // clamps at 200 server-side): walk the cursor so the strip's token/
+      // cache/cost totals cover the whole conversation, not just turn 1–200.
+      return await fetchAllUsageRecords({ sessionId: id, fetchAll: true });
     },
     enabled: id !== "",
     staleTime: 0,

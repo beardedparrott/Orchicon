@@ -113,10 +113,13 @@ func TestToolUpdateAutoStartDeclinedOnCancelledDB(t *testing.T) {
 	}
 }
 
-// TestToolUpdateAutoStartExplicitWarnsDB — explicit auto_start on a failed
-// item: no run, warning carried in the JSON result listing the required
-// statuses.
-func TestToolUpdateAutoStartExplicitWarnsDB(t *testing.T) {
+// TestToolUpdateAutoStartExplicitFiresFromFailedDB — tool parity with the service's inverted rule.
+//
+// An EXPLICIT auto_start_workflow=true on a failed item now STARTS the bound run: the operator's "it
+// should take no matter what status it is in". Starting asserts status=running unconditionally, so the
+// pre-status was never a correctness requirement — only the STALE-flag rule guards what the old status
+// gate was protecting (see the stale-flag test below, still green).
+func TestToolUpdateAutoStartExplicitFiresFromFailedDB(t *testing.T) {
 	pool := workItemKindTestPool(t)
 	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
 	proj := createProjectForTest(t, ctx, pool)
@@ -133,12 +136,12 @@ func TestToolUpdateAutoStartExplicitWarnsDB(t *testing.T) {
 	if err := json.Unmarshal(res, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if !strings.Contains(out.Warning, "NOT applied") ||
-		!strings.Contains(out.Warning, "pending, scheduled, ready, or assigned") {
-		t.Fatalf("warning missing markers: %q", out.Warning)
+	if out.Warning != "" {
+		t.Fatalf("an honoured explicit auto-start must not warn, got %q", out.Warning)
 	}
-	if n := toolRunsForItem(t, pool, item.ID); n != 0 {
-		t.Fatalf("%d runs created for failed item, want 0", n)
+	if n := toolRunsForItem(t, pool, item.ID); n != 1 {
+		t.Fatalf("%d runs created for an EXPLICITLY auto-started failed item, want 1 — the tool must "+
+			"match the service's 'takes no matter what status' rule", n)
 	}
 }
 
@@ -286,8 +289,13 @@ func TestToolUpdateAutoStartSequenceParentFiresChainDB(t *testing.T) {
 	// The armed shape: startable, stored flag on, and no binding of its own.
 	forceToolState(t, pool, parent.ID, domain.WorkItemPending, true)
 
+	// THE GESTURE IS EXPLICIT. This used to rely on the STORED flag firing under a title-only edit —
+	// which is exactly the hazard the operator named ("not fire anything off that already has auto
+	// set… it must be done as an action when saving the record only"), and which the service now
+	// refuses. The parity being pinned is the ROUTING (a parent with children is a CHAIN, never the
+	// leaf deref that panicked the plane), so the request asks for a start outright.
 	res, err := toolUpdateWorkItem(ctx, pool,
-		json.RawMessage(fmt.Sprintf(`{"id":%q,"title":"Renamed Armed Chain"}`, parent.ID)))
+		json.RawMessage(fmt.Sprintf(`{"id":%q,"title":"Renamed Armed Chain","auto_start_workflow":true}`, parent.ID)))
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
