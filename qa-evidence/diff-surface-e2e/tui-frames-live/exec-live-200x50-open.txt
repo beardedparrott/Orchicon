@@ -1,0 +1,50 @@
+                                                  F1·Ask Orchicon   F2·Overview   F3·Work   F4·Execution   F5·Automation   F6·Enforcement   F7·Control                                                  
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                             ╭───────────────────╮                                                                                      
+│  diff   tree   timeline  ✕                                                              ┌─ │  Execution ▾      │──────────────────────────────┐┌─ Detail ───────────────────────────────────────────┐ 
+│─ old ──────────────────────────────────── │  new ────────────────────────────────────  █│  │ ▸ Executions      │ftware Engineer · E2E diff-sur││Execution 01M3XX7CEW7PH0GNMCV4RTGQ6B                │ 
+│                                           │ 1    package e2e                           █│  │   Workflow Runs   │ftware Engineer · E2E diff-sur││  id 01M3XX7CEW7PH0GNMCV4RTGQ6B                     │ 
+│                                           │ 2    // alpha-line-000                     █│  │   Schedules       │ftware Engineer · E2E diff-sur││  status succeeded                                  │ 
+│                                           │ 3    // alpha-line-001                     █│  │   Workflows       │ftware Engineer �� E2E diff-sur││  health terminating                                 
+│                                           │ 4    // alpha-line-002                     █│  │   Workers         │ftware Engineer · E2E diff-sur││  worker Quick Software Engineer  (01M1ERH9921YS9S1Q│ 
+│                                           │ 5    // alpha-line-003                     █│  │                   │ftware Engineer · E2E diff-sur││  workflow Quick Work                               │ 
+│                                           │ 6    // alpha-line-004                     █│  ╰───────────────────╯ftware Engineer · E2E diff-sur││  work item 01M3XX7C18W6V8D8MFBPSDQJKE              │ 
+│                                           │ 7    // alpha-line-005                     █│  Quick Work · Quick Software Engineer · E2E diff-sur││  tokens 30                                         │ 
+│                                           │ 8    // alpha-line-006                     █│  Quick Work · Quick Software Engineer · E2E diff-sur││  started 2026-10-02 08:55 UTC                      │ 
+│                                           │ 9    // alpha-line-007                     █│  Quick Work · Quick Software Engineer · E2E diff-sur││  ended 2026-10-02 08:55 UTC                        │ 
+│                                           │ 10   // alpha-line-008                     █│  Quick Work · Quick Software Engineer · E2E diff-sur││                                                    │ 
+│                                           │ 11   // alpha-line-009                     █│  Quick Work · Quick Software Engineer · E2E diff-sur││context                                             │ 
+│                                           │ 12   // alpha-line-010                     █│  Quick Work · Quick Software Engineer · E2E diff-sur││e2estub/stub-model  ·  15 working set               │ 
+│                                           │ 13   // alpha-line-011                     █│  Quick Work · Quick Software Engineer · E2E diff-sur││in 20 · out 10 · total 30 · 2 turns                 │ 
+│                                           │ 14   // alpha-line-012                     █│  Quick Work · Quick Software Engineer · E2E diff-sur││                                                    │ 
+│                                           │ 15   // alpha-line-013                     █│  Quick Work · Quick Software Engineer · E2E diff-sur││output                                              │ 
+│                                           │ 16   // alpha-line-014                     █│  Quick Work · Quick Software Engineer · E2E diff-sur││done editing files                                  │ 
+│                                           │ 17   // alpha-line-015                     █│  Quick Work · Quick Software Engineer · E2E diff-sur││                                                    │ 
+│                                           │ 18   // alpha-line-016                     █│  Quick Work · Quick Software Engineer · E2E diff-sur││ORCHICON WORKER SUMMARY: success — edited the e2e fi│ 
+│                                           │ 19   // alpha-line-017                     █│  Quick Work · Quick Software Engineer · E2E diff-sur││                                                    │ 
+│                                           │ 20   // alpha-line-018                     █│  Quick Work · Quick Software Engineer · E2E diff-sur││ ▸ session session 01M3XX7CEW7PH0GNMCV4RTGQ6B · nati│ 
+│                                           │ 21   // alpha-line-019                     █│  Quick Work · Quick Software Engineer · E2E diff-sur││   You                                              │ 
+│                                           │ 22   // alpha-line-020                     █│  Quick Work · Quick Software Engineer · E2E diff-sur││   E2E diff-surface execution probe                 │ 
+│                                           │ 23   // alpha-line-021                     █│  Quick Work · Quick Software Engineer · E2E diff-sur││   ▸ tool ⚙ batch_write {"writes":[{"content":"packa│ 
+│                                           │ 24   // alpha-line-022                     █│  Quick Work · Quick Software Engineer · E2E diff-sur││   done editing files                               │ 
+│                                           │ 25   // alpha-line-023                     █│  Quick Work · Quick Software Engineer · E2E diff-sur││                                                    │ 
+│                                           │ 26   // alpha-line-024                     █│  Quick Work · Quick Software Engineer · E2E diff-sur││   ORCHICON WORKER SUMMARY: success — edited the e2e│ 
+│                                           │ 27   // alpha-line-025                     █│  Quick Work · Quick Software Engineer · E2E diff-sur││                                                    │ 
+│                                           │ 28   // alpha-line-026                     █│  Quick Work · Quick Software Engineer · E2E diff-sur││                                                    │ 
+│                                           │ 29   // alpha-line-027                     █│  Quick Work · Quick Software Engineer · E2E diff-sur││                                                    │ 
+│                                           │ 30   // alpha-line-028                     █│  Quick Work · Quick Software Engineer · E2E diff-sur││                                                    │ 
+│                                           │ 31   // alpha-line-029                     █│  Quick Work · Quick Software Engineer · E2E diff-sur││                                                    │ 
+│                                           │ 32   // alpha-line-030                     ││  exec-e2e-diff  succeeded                           ││follow-up› Ask a follow-up — it continues this conve│ 
+│                                           │ 33   // alpha-line-031                     ││1-33/33                                              ││                                                    │ 
+│                                           │ 34   // alpha-line-032                     ││                                                     ││                                                    │ 
+│                                           │ 35   // alpha-line-033                     │└─────────────────────────────────────────────────────┘└────────────────────────────────────────────────────┘ 
+│                                           │ 36   // alpha-line-034                     │╭────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                           │ 37   // alpha-line-035                     ││  ❯                                                                                                         │
+│                                           │ 38   // alpha-line-036                     ││                                                                                                            │
+│                                           │ 39   // alpha-line-037                     ││                                                                                                            │
+│                                           │ 40   // alpha-line-038                     ││  ctrl+g text · ctrl+d diff · c: cancel (confirm) · ctrl+x: delete (confirm) · i: interject                 │
+│                                           │ 41   // alpha-line-039                     ││  · space: mark for bulk · enter: live session · ←/→: pane · r: refresh · enter send · alt+enter newline    │
+│                                           │ 42   // alpha-line-040                     ││  · / commands                                                                                              │
+│                                           │ 43   // alpha-line-041                     ││                                                                                              [brainstorm]  │
+│                                           │ 44   // alpha-line-042                     │╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ● connected · http://127.0.0.1:8081 · server v0.4.39 · identity: e2eprobe · ctrl+g composer · Mouse Enabled                                                                                            

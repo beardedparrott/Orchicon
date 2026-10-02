@@ -1,0 +1,40 @@
+          F1·Ask Orchicon   F2·Overview   F3·Work   F4·Execution   F5·Automation   F6·Enforcement   F7·Control
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+│  diff   tree   timeline  ✕                          ┌─ Executions ──────────────────┐┌─ Detail ─────────────────────┐
+│─ old ────────────────── │  new ──────────────────  █│  exec-diff-e2e  running       ││Execution exec-diff-e2e       │
+│1    context-line-alpha  │ 1    context-line-alpha  █│1-1/1                          ││  id exec-diff-e2e            │
+│2    context-line-beta   │ 2    context-line-beta   ││                               ││  status running              │
+│                         │ 3    WITFIRST            ││                               ││  tokens 0                    │
+│                         │ 4    TAILWITNESS_0123456 ││                               ││  started —                   │
+│                         │      7890123456789012345 ││                               ││  ended —                     │
+│                         │      6789012345678901234 ││                               ││                              │
+│                         │      5678901234567890123 ││                               ││message› Message the worker mi│
+│                         │      4567890123456789012 ││                               ││                              │
+│                         │      3456789012345678901 ││                               ││                              │
+│                         │      23456789TAILEND     ││                               ││                              │
+│                         │ 5    added-first.go-h00- ││                               ││                              │
+│                         │      l000                ││                               ││                              │
+│                         │ 6    added-first.go-h00- ││                               ││                              │
+│                         │      l001                ││                               ││                              │
+│                         │ 7    added-first.go-h00- ││                               ││                              │
+│                         │      l002                ││                               ││                              │
+│                         │ 8    added-first.go-h00- ││                               ││                              │
+│                         │      l003                ││                               ││                              │
+│                         │ 9    added-first.go-h00- ││                               ││                              │
+│                         │      l004                ││                               ││                              │
+│                         │ 10   added-first.go-h00- ││                               ││                              │
+│                         │      l005                │└───────────────────────────────┘└──────────────────────────────┘
+│                         │ 11   added-first.go-h00- │╭────────────────────────────────────────────────────────────────╮
+│                         │      l006                ││  ❯                                                             │
+│                         │ 12   added-first.go-h00- ││                                                                │
+│                         │      l007                ││                                                                │
+│                         │ 13   added-first.go-h00- ││  session: unimplemented:                                       │
+│                         │      l008                ││  orchicon.api.v1.ExecutionService.GetExecutionSession is not   │
+│                         │ 14   added-first.go-h00- ││  implemented                                                   │
+│                         │      l009                ││  ctrl+g text · ctrl+d diff · c: cancel (confirm)               │
+│                         │ 15   added-first.go-h00- ││  · ctrl+x: delete (confirm) · i: interject                     │
+│                         │      l010                ││  · space: mark for bulk · enter: live session · ←/→: pane …    │
+│                         │ 16   added-first.go-h00- ││                                                  [brainstorm]  │
+│                         │      l011                │╰────────────────────────────────────────────────────────────────╯
+ ○ disconnected, retrying · http://127.0.0.1:41517 · server v9.9.9-diffe2e ⚠ drift: client v0.4.39 · identity: e2e · ct

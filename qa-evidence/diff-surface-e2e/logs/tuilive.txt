@@ -1,0 +1,1 @@
+wrote /var/tmp/orchicon/tui-live-200x50.raw 41455 bytes

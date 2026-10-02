@@ -1,0 +1,24 @@
+   Ask Orchicon  Overview  Work  Execution  Automation  Enforcement  Control    
+────────────────────────────────────────────────────────────────────────────────
+                                                                                
+│  diff   tree   time┌─ Detail ──────────┐┌─ Conversations · All projects (3) ─┐
+│   1   + LIVE ASK E█│Conversation: live ││ ▾ Software Development          1  │
+│         DIT       █│  id conv-live-e2e ││ diff-e2e-live              0 msgs  │
+│   2   + ask-a-line█│  title live e2e as││ ▾ Uncategorized                 2  │
+│         -000      █│  model orchicon/e2││ live e2… E2E Diff Project · 2 ms…  │
+│   3   + ask-a-line││  messages 2       ││ live as… E2E Diff Project · 1 ms…  │
+│         -001      ││  mode conversation││1-5/5                               │
+│   4   + ask-a-line││  created 2026-10-0││                                    │
+│         -002      ││  updated 2026-10-0││                                    │
+│   5   + ask-a-line││  grants 1 dir(s) —││                                    │
+│         -003      │└───────────────────┘│                                    │
+│   6   + ask-a-line│╭────────────────────│                                    │
+│         -004      ││  ❯                 │                                    │
+│   7   + ask-a-line││                    │                                    │
+│         -005      ││                    │                                    │
+│   8   + ask-a-line││  ctrl+g text · ctrl│                                    │
+│         -006      ││  · ctrl+t: categori│                                    │
+│   9   + ask-a-line││  · alt+enter newlin│                                    │
+│         -007      ││  orchicon/e2estu…  │                                    │
+│   10  + ask-a-line│╰────────────────────└────────────────────────────────────┘
+ ● connected · http://127.0.0.1:8081 · server v0.4.39 · identity: e2eprobe · ct 

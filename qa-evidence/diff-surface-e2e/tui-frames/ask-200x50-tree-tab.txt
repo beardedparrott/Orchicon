@@ -1,0 +1,50 @@
+                                                  F1·Ask Orchicon   F2·Overview   F3·Work   F4·Execution   F5·Automation   F6·Enforcement   F7·Control
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+│  diff   tree   timeline  ✕                                            ┌─ Detail ───────────────────────────────────────────────────────────────────────────────┐┌─ Conversations · pty (1) ──────────┐
+│ cmd/first.go +290 −0                                                  │Conversation: diff-e2e-conv                                                             ││ diff-e2e-conv              2 msgs  │
+│ internal/second.go +290 −0                                            │  id conv-diff-e2e                                                                      ││1-1/1                               │
+                                                                        │  title diff-e2e-conv                                                                   ││                                    │
+                                                                        │  model —                                                                               ││                                    │
+                                                                        │  messages 2                                                                            ││                                    │
+                                                                        │  mode conversation_mode_unspecified                                                    ││                                    │
+                                                                        │  created —                                                                             ││                                    │
+                                                                        │  updated —                                                                             ││                                    │
+                                                                        │  grants (unavailable on this plane)                                                    ││                                    │
+                                                                        │  scroll 1-1/1 · ▼ following                                                            ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │ You ⧉                                                               please edit a file ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        └────────────────────────────────────────────────────────────────────────────────────────┘│                                    │
+                                                                        ╭────────────────────────────────────────────────────────────────────────────────────────╮│                                    │
+                                                                        │  ❯                                                                                     ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │  ✓ conversations                                                                       ││                                    │
+                                                                        │  ctrl+g text · ctrl+d diff · space: mark · ctrl+n: rename · ctrl+t: categorize         ││                                    │
+                                                                        │  · click your message to copy · enter send · alt+enter newline · / commands            ││                                    │
+                                                                        │                                                                          [brainstorm]  ││                                    │
+                                                                        ╰────────────────────────────────────────────────────────────────────────────────────────╯└────────────────────────────────────┘
+ ● connected · http://127.0.0.1:39433 · server v9.9.9-diffe2e ⚠ drift: client v0.4.39 · identity: e2e · ctrl+g composer · Mouse Enabled

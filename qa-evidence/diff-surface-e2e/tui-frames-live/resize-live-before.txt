@@ -1,0 +1,50 @@
+                                                  F1·Ask Orchicon   F2·Overview   F3·Work   F4·Execution   F5·Automation   F6·Enforcement   F7·Control                                                  
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                                                                                                                        
+│  diff   tree   timeline  ✕                                            ┌─ Detail ───────────────────────────────────────────────────────────────────────────────┐┌─ Conversations · All projects (3) ─┐
+│─ old ─────────────────────────── │  new ───────────────────────────   │Conversation: live e2e ask                                                              ││ ▾ Software Development          1  │
+│                                  │ 1    LIVE ASK EDIT                 │  id conv-live-e2e                                                                      ││ diff-e2e-live              0 msgs  │
+│                                  │ 2    ask-a-line-000                │  title live e2e ask                                                                    ││ ▾ Uncategorized                 2  │
+│                                  │ 3    ask-a-line-001                │  model orchicon/e2estub/stub-model                                                     ││ live e2… E2E Diff Project · 2 ms…  │
+│                                  │ 4    ask-a-line-002                │  messages 2                                                                            ││ live as… E2E Diff Project · 1 ms…  │
+│                                  │ 5    ask-a-line-003                │  mode conversation_mode_iteration                                                      ││1-5/5                               │
+│                                  │ 6    ask-a-line-004                │  created 2026-10-02 08:42 UTC                                                          ││                                    │
+│                                  │ 7    ask-a-line-005                │  updated 2026-10-02 08:51 UTC                                                          ││                                    │
+│                                  │ 8    ask-a-line-006                │  grants 1 dir(s) — /grants                                                             ││                                    │
+│                                  │ 9    ask-a-line-007                │  scroll 1-5/5 · ▼ following                                                            ││                                    │
+│                                  │ 10   ask-a-line-008                │                                                                                        ││                                    │
+│                                  │ 11   ask-a-line-009                │ You ⧉                                                                                  ││                                    │
+│                                  │ 12   ask-a-line-010                │                                                                                        ││                                    │
+│                                  │ 13   ask-a-line-011                │                                                                                        ││                                    │
+│                                  │ 14   ask-a-line-012                │                                                                                        ││                                    │
+│                                  │ 15   ask-a-line-013                │ done editing files                                                                     ││                                    │
+│                                  │ 16   ask-a-line-014                │                                                                                        ││                                    │
+│                                  │ 17   ask-a-line-015                │                                                                                        ││                                    │
+│                                  │ 18   ask-a-line-016                │                                                                                        ││                                    │
+│                                  │ 19   ask-a-line-017                │                                                                                        ││                                    │
+│                                  │ 20   ask-a-line-018                │                                                                                        ││                                    │
+│                                  │ 21   ask-a-line-019                │                                                                                        ││                                    │
+│                                  │ 22   ask-a-line-020                │                                                                                        ││                                    │
+│                                  │ 23   ask-a-line-021                │                                                                                        ││                                    │
+│                                  │ 24   ask-a-line-022                │                                                                                        ││                                    │
+│                                  │ 25   ask-a-line-023                │                                                                                        ││                                    │
+│                                  │ 26   ask-a-line-024                │                                                                                        ││                                    │
+│                                  │ 27   ask-a-line-025                │                                                                                        ││                                    │
+│                                  │ 28   ask-a-line-026                │                                                                                        ││                                    │
+│                                  │ 29   ask-a-line-027                │                                                                                        ││                                    │
+│                                  │ 30   ask-a-line-028                │                                                                                        ││                                    │
+│                                  │ 31   ask-a-line-029                │                                                                                        ││                                    │
+│                                  │ 32   ask-a-line-030                │                                                                                        ││                                    │
+│                                  │ 33   ask-a-line-031                │                                                                                        ││                                    │
+│                                  │ 34   ask-a-line-032                │                                                                                        ││                                    │
+│                                  │ 35   ask-a-line-033                │                                                                                        ││                                    │
+│                                  │ 36   ask-a-line-034                └────────────────────────────────────────────────────────────────────────────────────────┘│                                    │
+│                                  │ 37   ask-a-line-035                ╭───────────────────────────────────────────────────��────────────────────────────────────╮│                                   │
+│                                  │ 38   ask-a-line-036                │  ❯                                                                                     ││                                    │
+│                                  │ 39   ask-a-line-037                │                                                                                        ││                                    │
+│                                  │ 40   ask-a-line-038                │                                                                                        ││                                    │
+│                                  │ 41   ask-a-line-039                │  ctrl+g text · ctrl+d diff · space: mark · ctrl+n: rename · ctrl+t: categorize         ││                                    │
+│                                  │ 42   MARKER_ASK_A                  │  · click your message to copy · enter send · alt+enter newline · / commands            ││                                    │
+                                                                        │  orchicon/e2estub/stub-mod…  ctx 10/8K · 90 tok · cache 0% (0) · $0.0000  [iteration]  ││                                    │
+                                                                        ╰────────────────────────────────────────────────────────────────────────────────────────╯└────────────────────────────────────┘
+ ● connected · http://127.0.0.1:8081 · server v0.4.39 · identity: e2eprobe · ctrl+g composer · Mouse Enabled                                                                                            
