@@ -371,9 +371,16 @@ function WorkItemDetailPage() {
                       projectId: editProjectId,
                       workflowId: editWorkflowId,
                       runtimeImage: editRuntimeImage || undefined,
+                      // THE SCHEDULE IS SENT AS A VALUE OR AN EXPLICIT CLEAR, never silently
+                      // dropped. scheduledStartAt is optional, so `undefined` means UNCHANGED —
+                      // which is how the form could never remove a schedule: it seeded the input
+                      // from the item and an emptied field sent nothing. Clearing the input now
+                      // sends clearScheduledStartAt, the operator's "there is no way to clear a
+                      // schedule on a work item".
                       scheduledStartAt: editScheduledStartAt
                         ? Timestamp.fromDate(new Date(editScheduledStartAt))
                         : undefined,
+                      clearScheduledStartAt: editScheduledStartAt ? false : true,
                       autoStartWorkflow: editAutoStartWorkflow,
                       parentId: editParentId || undefined,
                       kind: kindChanging ? editKind : undefined,
