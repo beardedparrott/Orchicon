@@ -17,6 +17,7 @@ package execution
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -24,6 +25,7 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
+	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
 // transcriptItems is a realistic transcript: prose, a tool call with a LONG body, thinking, an
@@ -446,4 +448,122 @@ func modelWithTranscript(t *testing.T) (*Model, []textBlock) {
 	blocks := blocksFromItems(transcriptItems(), 100)
 	m.clampBlockCursor(len(blocks))
 	return m, blocks
+}
+
+// A LIVE BLOCK'S BODY IS BOUNDED, and says so. A live block is drawn expanded without the operator
+// having asked (defaultExpanded), so a long one — streamed reasoning is routinely tens of thousands of
+// characters — buried the rest of the transcript in text nobody chose to open. That is the execution half
+// of the report "tools and thought are not being collapsed": the TOOLS were collapsed and the streamed
+// THINKING was drawn in full, because it was live.
+//
+// The bound is the chat pane's own (reasoningBodyMaxRows), so the two panes show the same amount of the
+// model's thinking, and the elision is EXPLICIT: a silent cut reads as the end of the reasoning.
+//
+// The fixture is a TOOL block on purpose: a tool body is RAW text (ToolCard draws a <pre>), so one source
+// line is one rendered row and the count is exact. A MARKDOWN body is re-flowed — consecutive lines join
+// into a paragraph — so counting occurrences there measures the renderer's wrapping, not the bound.
+func TestLiveBodiesAreBoundedAndSaySo(t *testing.T) {
+	const bodyLines = liveBodyMaxRows * 3
+	var out []string
+	for i := 0; i < bodyLines; i++ {
+		out = append(out, fmt.Sprintf("out-%02d", i))
+	}
+	live := []chat.ChatItem{{Kind: chat.KindTool, Key: "t1", Live: true,
+		Tool: &chat.ParsedTool{ID: "t1", ToolName: "bash", Output: strings.Join(out, "\n")}}}
+	blocks := blocksFromItems(live, 100)
+	if !blocks[0].live || !blocks[0].defaultExpanded() {
+		t.Fatal("fixture: a live block is drawn expanded")
+	}
+	body, _ := renderBlocks(blocks, &blockState{}, 100, transcriptCursor{})
+
+	drawn := 0
+	for i := 0; i < bodyLines; i++ {
+		if strings.Contains(body, fmt.Sprintf("out-%02d", i)) {
+			drawn++
+		}
+	}
+	if drawn != liveBodyMaxRows-1 {
+		t.Errorf("a live block drew %d output lines, want %d — the bound is %d ROWS of the body, and "+
+			"the body's own %q label occupies one of them:\n%s",
+			drawn, liveBodyMaxRows-1, liveBodyMaxRows, "output:", body)
+	}
+	if !strings.Contains(body, "more lines") {
+		t.Errorf("the bound is SILENT — an operator would read it as the end of the thinking:\n%s", body)
+	}
+	if !strings.Contains(body, "expand") {
+		t.Errorf("the elision does not say the rest is reachable:\n%s", body)
+	}
+
+	// A SETTLED block is NOT bounded once the operator expands it: they asked for all of it, and
+	// truncating that would be the same defect in reverse.
+	settled := blocksFromItems([]chat.ChatItem{{Kind: chat.KindTool, Key: "t1",
+		Tool: &chat.ParsedTool{ID: "t1", ToolName: "bash", Output: strings.Join(out, "\n")}}}, 100)
+	state := &blockState{}
+	state.toggle(settled[0]) // tools start collapsed; the operator opens this one
+	if !state.expanded(settled[0]) {
+		t.Fatal("fixture: the operator's expansion was not recorded")
+	}
+	got, _ := renderBlocks(settled, state, 100, transcriptCursor{})
+	all := 0
+	for i := 0; i < bodyLines; i++ {
+		if strings.Contains(got, fmt.Sprintf("out-%02d", i)) {
+			all++
+		}
+	}
+	if all != bodyLines {
+		t.Errorf("an OPERATOR-EXPANDED block drew %d of %d lines — a block they opened must not be cut",
+			all, bodyLines)
+	}
+	if strings.Contains(got, "more lines") {
+		t.Error("an operator-expanded block carries an elision marker")
+	}
+
+	// The MARKDOWN path is bounded too (streamed reasoning is markdown in the GUI), which is the case
+	// the operator actually hit.
+	var think []string
+	for i := 0; i < bodyLines; i++ {
+		think = append(think, fmt.Sprintf("thought %02d about the problem", i))
+	}
+	liveThink := blocksFromItems([]chat.ChatItem{{Kind: chat.KindReasoning, Key: "r1", Live: true,
+		Text: strings.Join(think, "\n\n")}}, 100)
+	got, _ = renderBlocks(liveThink, &blockState{}, 100, transcriptCursor{})
+	if !strings.Contains(got, "more lines") {
+		t.Errorf("a live MARKDOWN body is unbounded — the bound must cover the markdown path, which is "+
+			"where streamed reasoning lands:\n%s", got)
+	}
+}
+
+// THE COLLAPSE DECISION AND THE LAYOUT ARE THEME-INDEPENDENT. The operator narrowed the report to the
+// transparent themes ("I believe it may only be happening in the transparent themes. It looks like tools
+// and thought are not being collapsed"), and that is worth pinning either way: a transparent theme paints
+// no fills, so the ONLY thing separating one block from the next is the layout this renderer emits. If a
+// future change ever made collapsing theme-dependent, the transcript would read as one wall of text on a
+// transparent theme and this test would catch it.
+func TestTranscriptLayoutIsThemeIndependent(t *testing.T) {
+	items := transcriptItems()
+	var first string
+	for _, name := range []string{"obsidian", "obsidian-transparent", "lumen-transparent", "light"} {
+		if !theme.Use(name) {
+			t.Fatalf("theme %q not found — the named transparent variants must exist", name)
+		}
+		blocks := blocksFromItems(items, 100)
+		for _, b := range blocks {
+			// The COLLAPSE decision, which is the operator's actual complaint.
+			if b.kind.collapsible() && b.defaultExpanded() {
+				t.Errorf("theme %s: a %s block is drawn EXPANDED — collapsing must not depend on the theme",
+					name, b.label())
+			}
+		}
+		body, offsets := renderBlocks(blocks, &blockState{}, 100, transcriptCursor{})
+		got := fmt.Sprintf("%v\n%s", offsets, ansi.Strip(body))
+		if first == "" {
+			first = got
+			continue
+		}
+		if got != first {
+			t.Errorf("theme %s renders a DIFFERENT transcript from the first theme — the layout (and so the "+
+				"only separator a transparent theme has) must not vary by palette", name)
+		}
+	}
+	theme.Use("obsidian") // leave the process on the default
 }

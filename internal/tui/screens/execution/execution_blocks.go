@@ -255,6 +255,25 @@ func splitFirstLine(s string) (string, string) {
 	return "", ""
 }
 
+// drawnBody is the body actually PAINTED: bodyLines, bounded when the block is live.
+//
+// A live block is drawn expanded without the operator having asked (defaultExpanded), so a long one —
+// streamed reasoning is routinely tens of thousands of characters — buries the rest of the transcript in
+// text nobody chose to open. THE ELISION IS EXPLICIT, like the chat pane's: a silent cut would read as the
+// end of the model's thinking rather than as a display limit, and the operator would have no way to know
+// there was more. The line says what to do about it, because the rest is reachable — a settled block can be
+// expanded with enter.
+func (b textBlock) drawnBody(width int) []string {
+	lines := b.bodyLines(width)
+	if !b.live || len(lines) <= liveBodyMaxRows {
+		return lines
+	}
+	out := append([]string{}, lines[:liveBodyMaxRows]...)
+	out = append(out, theme.ReasoningBody.Render(fmt.Sprintf("  … %d more lines (enter expands once it settles)",
+		len(lines)-liveBodyMaxRows)))
+	return out
+}
+
 // --- the cursor over the transcript -------------------------------------------------------------
 
 // transcriptCursor is where the keyboard is in the execution detail: a block, or the composer.
@@ -418,7 +437,7 @@ func renderBlocks(blocks []textBlock, state *blockState, width int, cur transcri
 		// The body, indented under its header. A collapsed block emits NOTHING here — not an empty
 		// row — so a collapsed transcript really is one line per block.
 		if expanded && strings.TrimSpace(blk.body) != "" {
-			for _, l := range blk.bodyLines(width - len(bodyIndent)) {
+			for _, l := range blk.drawnBody(width - len(bodyIndent)) {
 				write(bodyIndent + l)
 			}
 		}
@@ -428,6 +447,20 @@ func renderBlocks(blocks []textBlock, state *blockState, width int, cur transcri
 
 // bodyIndent is the columns a block's body is indented by, under its header row.
 const bodyIndent = "   "
+
+// liveBodyMaxRows bounds how much of a LIVE block's body is drawn.
+//
+// IT MIRRORS THE CHAT PANE'S reasoningBodyMaxRows, and for the same measured reason (internal/tui/chat/
+// view.go: reasoning was the one long body drawn in full, and giving it a visible body made it visible at
+// FULL LENGTH). This is that regression repeating one surface over, which is why the number is the same
+// rather than chosen again: an operator reading a live run must not be reading a different amount of the
+// model's thinking depending on which pane they are in.
+//
+// WHY ONLY LIVE BLOCKS ARE BOUNDED, and this is the whole design: a live block is drawn expanded WITHOUT
+// an operator decision (see defaultExpanded), so nothing has been opted into — whereas an operator who
+// expanded a settled 200-line tool dump asked for all of it, and truncating that would be the same defect
+// in reverse. The bound therefore applies exactly where the decision was made for them.
+const liveBodyMaxRows = 12
 
 // bodyLines renders a block's body to display lines at the available width.
 //
