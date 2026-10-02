@@ -1059,7 +1059,16 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 	// clipState untouched — and consuming the press/motion/release here also means neither the region
 	// setter nor the pane's own mouse handler ever sees them, so a drag can neither select nor switch the
 	// pane's tab, select a file, or trigger its ✕.
-	if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft && m.diffDividerHit(mo.X, mo.Y) {
+	//
+	// AN OPEN TAB DROPDOWN WINS OVER THE DIVIDER. The dropdown is an OVERLAY painted over the whole
+	// frame (composeView), so it can cover the divider column — a wide menu hangs from a tab in the
+	// centered bar and spans many body rows (e.g. at 200 columns, Overview's menu runs from column 69
+	// to 89 and the divider sits at 89). Without this gate the resize claim fired FIRST and ATE the
+	// menu's press: a click meant for a dropdown entry silently resized the rail and the entry never
+	// activated. Resolving the overlay before the divider keeps the menu owning the clicks inside its
+	// own rectangle, exactly as it owns the keyboard.
+	if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft &&
+		!m.menuHit(mo.X, mo.Y) && m.diffDividerHit(mo.X, mo.Y) {
 		m.diffResizing = true
 		m.setDiffPaneW(mo.X + 1) // seed the override from the column the operator grabbed
 		return m, nil            // never forwarded to the pane: no tab switch, no file select, no ✕

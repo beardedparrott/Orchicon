@@ -222,6 +222,48 @@ func TestDiffRailPaneClickIsNotADividerDrag(t *testing.T) {
 	}
 }
 
+// AN OPEN TAB DROPDOWN OVER THE DIVIDER OWNS THE CLICK. The dropdown is an overlay over the whole
+// frame (composeView), so it can cover the divider column — a wide menu hangs from a tab in the
+// centered bar across many body rows. Resolving the resize claim FIRST (before the menu) would eat a
+// click meant for a dropdown entry and resize the rail instead, so the menu must win inside its own
+// rectangle. This is the regression the press-order change introduced.
+func TestDiffRailDividerDoesNotStealAnOpenMenuClick(t *testing.T) {
+	// A width where a tab dropdown actually spans the divider column (see menuGeometry: the menu
+	// hangs from its tab's start column in the centered bar).
+	m := newDiffRailApp(t, 200, 40)
+	m.SwitchTo(TabOverview)
+	m.openTabWithMenu(TabOverview)
+	tm := m.TabMenu()
+	if tm == nil || len(tm.Entries) == 0 {
+		t.Skip("no dropdown entries for this tab in the fixture")
+	}
+	top, left := m.menuGeometry()
+	mw, _ := m.menuSize(tm)
+	divX := m.diffPaneWidth() - 1
+	if divX < left || divX >= left+mw {
+		t.Skipf("the dropdown (cols %d..%d) does not cover the divider column %d at this width", left, left+mw-1, divX)
+	}
+
+	// A press on a dropdown ENTRY row that happens to sit on the divider column.
+	y := top + 3
+	if y < tabBarRows+1 {
+		t.Skip("menu entry row is above the divider's body rows")
+	}
+	nm, _ := m.Update(mouse(tea.MouseActionPress, divX, y))
+	m = nm.(*App)
+
+	if m.diffResizing {
+		t.Fatal("a press on the divider column INSIDE an open dropdown started a resize — the menu lost its click")
+	}
+	if m.diffPaneW != 0 {
+		t.Errorf("a menu click set a rail override (%d) — only a real divider drag may", m.diffPaneW)
+	}
+	// The menu consumed the press (MenuClick -> MenuSelect -> closeTabMenu).
+	if m.TabMenu() != nil {
+		t.Error("the dropdown did not handle the press — the resize claim swallowed it")
+	}
+}
+
 // A press on the divider with NO pane open must not resize anything (and must not panic).
 func TestDiffRailDividerIsInertWithThePaneClosed(t *testing.T) {
 	m := newDiffRailApp(t, 120, 40)
