@@ -1,0 +1,113 @@
+
+ RUN  v2.1.9 /home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M3XSF2P8D6R18S19ENRTH7NJ/frontend
+
+ ✓ src/lib/ask-consent.test.ts (34 tests) 8ms
+ ✓ src/components/cost-explorer/utils.test.ts (31 tests) 15ms
+ ✓ src/lib/diff/sideBySide.test.ts (30 tests) 9ms
+ ✓ src/components/notifications/notifications.test.ts (37 tests) 9ms
+ ✓ src/components/work-items/work-items-preferences.test.ts (20 tests) 7ms
+ ✓ src/components/ask/AskCard.test.tsx (20 tests) 17ms
+ ✓ src/components/work-items/work-item-meta.test.ts (24 tests) 10ms
+ ✓ src/lib/conversationProjects.test.ts (24 tests) 7ms
+ ✓ src/components/work-items/dependency-utils.test.ts (28 tests) 6ms
+ ✓ src/components/executions/sessionItems.test.ts (20 tests) 7ms
+ ✓ src/components/ModelPicker.test.tsx (14 tests) 5ms
+ ✓ src/lib/schedules-model.test.ts (20 tests) 6ms
+ ✓ src/components/workflow-runs/headsUp.test.ts (19 tests) 7ms
+ ✓ src/components/work-items/archive-badge-theme.test.tsx (7 tests) 13ms
+ ✓ src/components/work-items/batch-run.test.ts (11 tests) 5ms
+ ✓ src/lib/model-ref.test.ts (14 tests) 5ms
+ ✓ src/components/work-items/autoStartReachable.test.ts (9 tests) 6ms
+ ✓ src/components/MCPServersPanel.test.tsx (11 tests) 5ms
+ ✓ src/routes/-ask-compact-progress.test.ts (7 tests) 4ms
+ ✓ src/components/workflow-runs/headsUpStatic.test.ts (9 tests) 5ms
+ ✓ src/lib/ask-attachment.test.ts (13 tests) 4ms
+ ✓ src/components/workflow-runs/headsUpCost.test.ts (4 tests) 3ms
+stderr | src/components/diffs/DiffSidebar.railHandle.test.tsx > DiffSidebar inline rail — resize handle > renders the handle with the separator role in the inline rail
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at DiffSidebar (/home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M3XSF2P8D6R18S19ENRTH7NJ/frontend/src/components/diffs/DiffSidebar.tsx:40:3)
+    at QueryClientProvider (file:///home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M3XSF2P8D6R18S19ENRTH7NJ/frontend/node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js:20:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at DiffSidebar (/home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M3XSF2P8D6R18S19ENRTH7NJ/frontend/src/components/diffs/DiffSidebar.tsx:40:3)
+    at QueryClientProvider (file:///home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M3XSF2P8D6R18S19ENRTH7NJ/frontend/node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js:20:3)
+
+stderr | src/components/diffs/DiffSidebar.railHandle.test.tsx > DiffSidebar inline rail — resize handle > renders the rail at the width it is GIVEN (the persisted value path)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at DiffSidebar (/home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M3XSF2P8D6R18S19ENRTH7NJ/frontend/src/components/diffs/DiffSidebar.tsx:40:3)
+    at QueryClientProvider (file:///home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M3XSF2P8D6R18S19ENRTH7NJ/frontend/node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js:20:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at DiffSidebar (/home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M3XSF2P8D6R18S19ENRTH7NJ/frontend/src/components/diffs/DiffSidebar.tsx:40:3)
+    at QueryClientProvider (file:///home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M3XSF2P8D6R18S19ENRTH7NJ/frontend/node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js:20:3)
+
+stderr | src/components/diffs/DiffSidebar.railHandle.test.tsx > DiffSidebar inline rail — resize handle > renders a container-clamped width rather than the raw stored one
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at DiffSidebar (/home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M3XSF2P8D6R18S19ENRTH7NJ/frontend/src/components/diffs/DiffSidebar.tsx:40:3)
+    at QueryClientProvider (file:///home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M3XSF2P8D6R18S19ENRTH7NJ/frontend/node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js:20:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at DiffSidebar (/home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M3XSF2P8D6R18S19ENRTH7NJ/frontend/src/components/diffs/DiffSidebar.tsx:40:3)
+    at QueryClientProvider (file:///home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M3XSF2P8D6R18S19ENRTH7NJ/frontend/node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js:20:3)
+
+stderr | src/components/diffs/DiffSidebar.railHandle.test.tsx > DiffSidebar inline rail — resize handle > keeps the rail's tabs and their aria-pressed after the handle is added
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at DiffSidebar (/home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M3XSF2P8D6R18S19ENRTH7NJ/frontend/src/components/diffs/DiffSidebar.tsx:40:3)
+    at QueryClientProvider (file:///home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M3XSF2P8D6R18S19ENRTH7NJ/frontend/node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js:20:3)
+Warning: useLayoutEffect does nothing on the server, because its effect cannot be encoded into the server renderer's output format. This will lead to a mismatch between the initial, non-hydrated UI and the intended UI. To avoid this, useLayoutEffect should only be used in components that render exclusively on the client. See https://reactjs.org/link/uselayouteffect-ssr for common fixes.
+    at DiffSidebar (/home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M3XSF2P8D6R18S19ENRTH7NJ/frontend/src/components/diffs/DiffSidebar.tsx:40:3)
+    at QueryClientProvider (file:///home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M3XSF2P8D6R18S19ENRTH7NJ/frontend/node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js:20:3)
+
+ ✓ src/components/diffs/DiffSidebar.railHandle.test.tsx (12 tests) 21ms
+ ✓ src/lib/diff/railResize.test.ts (19 tests) 4ms
+ ✓ src/components/work-items/batch-set.test.ts (14 tests) 6ms
+ ✓ src/components/ui/fullsend-toggle.test.tsx (7 tests) 14ms
+ ✓ src/auth/session.test.ts (27 tests) 3036ms
+   ✓ ensureSession > resolves unauthenticated (never throws) when the bootstrap fetch fails 3015ms
+ ✓ src/lib/ask-metrics-format.test.ts (12 tests) 5ms
+ ✓ src/components/OrchiconLogo.test.ts (4 tests) 3ms
+ ✓ src/lib/category-store.test.ts (7 tests) 5ms
+ ✓ src/auth/route-guard.test.ts (6 tests) 9ms
+ ✓ src/lib/ask-consent-interleave.test.ts (8 tests) 3ms
+ ✓ src/components/bulkChangeWorkerModel.test.ts (10 tests) 4ms
+ ✓ src/lib/budget-defaults.test.ts (7 tests) 4ms
+ ✓ src/components/ProvidersTab.test.tsx (10 tests) 4ms
+ ✓ src/components/work-items/sequence-utils.test.ts (8 tests) 4ms
+ ✓ src/lib/streamInvalidation.guard.test.ts (7 tests) 4ms
+ ✓ src/components/MCPServersPanel.inheritance.test.tsx (7 tests) 4ms
+ ✓ src/components/work-items/work-item-parent-select.test.ts (7 tests) 10ms
+ ✓ src/lib/ask-metrics.test.ts (3 tests) 4ms
+ ✓ src/components/MCPServersPanel.placement.test.tsx (6 tests) 11ms
+ ✓ src/components/ask/SessionGrants.test.tsx (6 tests) 3ms
+ ✓ src/lib/pr.test.ts (9 tests) 4ms
+ ✓ src/components/work-items/use-work-item-selection.test.ts (10 tests) 4ms
+ ✓ src/lib/conversationModes.test.ts (7 tests) 3ms
+ ✓ src/lib/fileedit/testvectors.test.ts (15 tests) 168ms
+ ✓ src/lib/remarkHardBreaks.test.ts (6 tests) 4ms
+ ✓ src/components/executions/workerSummary.test.ts (8 tests) 5ms
+ ✓ src/components/ui/mode-toggle-source.test.ts (5 tests) 3ms
+ ✓ src/components/ModelPicker.claude.test.tsx (2 tests) 3ms
+ ✓ src/routes/-diff-rail-width-wiring.test.ts (7 tests) 3ms
+ ✓ src/api/fileEdits.merge.test.ts (6 tests) 3ms
+ ✓ src/components/ModelPicker.order.test.tsx (3 tests) 2ms
+ ✓ src/lib/schedules-fixture.test.ts (3 tests) 3ms
+ ✓ src/lib/theme-store.test.ts (3 tests) 3ms
+ ✓ src/components/work-items/sequence-controls.test.ts (9 tests) 3ms
+ ✓ src/lib/debouncedInvalidation.test.ts (5 tests) 6ms
+ ✓ src/lib/ask-stream-group.test.ts (6 tests) 3ms
+ ✓ src/components/chat/NoticeBubble.test.tsx (3 tests) 8ms
+ ✓ src/routes/-settings-defaults.test.ts (3 tests) 3ms
+ ✓ src/api/workItems.keys.test.ts (3 tests) 3ms
+ ✓ src/components/ModelPicker.adapter.test.tsx (4 tests) 3ms
+ ✓ src/routes/-workers-new.runtime-ref.test.ts (4 tests) 3ms
+ ✓ src/lib/composer-command.test.ts (6 tests) 3ms
+ ✓ src/lib/category-isolation.test.ts (3 tests) 3ms
+ ✓ src/routes/-signup.test.ts (6 tests) 3ms
+ ✓ src/lib/worker-display.test.ts (5 tests) 3ms
+ ✓ src/components/workflow-runs/executionUsage.test.ts (3 tests) 3ms
+ ✓ src/components/RuntimeImageFailureAlert.test.tsx (1 test) 2ms
+ ✓ src/lib/ask-bubble.test.ts (5 tests) 2ms
+ ✓ src/components/BuildLogViewer.test.tsx (1 test) 2ms
+
+ Test Files  71 passed (71)
+      Tests  744 passed (744)
+   Start at  09:03:18
+   Duration  6.89s (transform 1.92s, setup 0ms, collect 6.84s, tests 3.59s, environment 10ms, prepare 3.00s)
+

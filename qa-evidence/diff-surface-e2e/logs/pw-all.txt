@@ -1,0 +1,36 @@
+
+Running 24 tests using 16 workers
+
+  -   6 [dark-tablet] › tests/diff-surface-e2e.spec.ts:309:3 › diff surface — GUI › narrow viewport (<768px): the drawer overlay forces the unified diff
+  -   5 [dark-desktop] › tests/diff-surface-e2e.spec.ts:309:3 › diff surface — GUI › narrow viewport (<768px): the drawer overlay forces the unified diff
+  -   8 [light-desktop] › tests/diff-surface-e2e.spec.ts:309:3 › diff surface — GUI › narrow viewport (<768px): the drawer overlay forces the unified diff
+  -  10 [light-tablet] › tests/diff-surface-e2e.spec.ts:309:3 › diff surface — GUI › narrow viewport (<768px): the drawer overlay forces the unified diff
+  ✓  15 [light-tablet] › tests/diff-surface-e2e.spec.ts:263:3 › diff surface — GUI › Execution mount: pane opens and renders the (execution, id) ledger (13.0s)
+  ✓  14 [light-tablet] › tests/diff-surface-e2e.spec.ts:273:3 › diff surface — GUI › honest states: empty ledger renders empty, failed fetch renders the error banner (13.4s)
+  ✓   2 [light-desktop] › tests/diff-surface-e2e.spec.ts:263:3 › diff surface — GUI › Execution mount: pane opens and renders the (execution, id) ledger (15.3s)
+  ✓  16 [dark-tablet] › tests/diff-surface-e2e.spec.ts:263:3 › diff surface — GUI › Execution mount: pane opens and renders the (execution, id) ledger (13.9s)
+  ✓   7 [dark-desktop] › tests/diff-surface-e2e.spec.ts:263:3 › diff surface — GUI › Execution mount: pane opens and renders the (execution, id) ledger (15.1s)
+  ✓  20 [dark-mobile] › tests/diff-surface-e2e.spec.ts:309:3 › diff surface — GUI › narrow viewport (<768px): the drawer overlay forces the unified diff (9.3s)
+[diff-surface-e2e] gutter=0 — headless Chromium paints overlay scrollbars on this platform
+[diff-surface-e2e] gutter=0 — headless Chromium paints overlay scrollbars on this platform
+[diff-surface-e2e] gutter=0 — headless Chromium paints overlay scrollbars on this platform
+  ✓  13 [light-desktop] › tests/diff-surface-e2e.spec.ts:273:3 › diff surface — GUI › honest states: empty ledger renders empty, failed fetch renders the error banner (14.3s)
+[diff-surface-e2e] gutter=0 — headless Chromium paints overlay scrollbars on this platform
+  ✓  12 [dark-tablet] › tests/diff-surface-e2e.spec.ts:273:3 › diff surface — GUI › honest states: empty ledger renders empty, failed fetch renders the error banner (15.7s)
+  ✓   3 [dark-desktop] › tests/diff-surface-e2e.spec.ts:273:3 › diff surface — GUI › honest states: empty ledger renders empty, failed fetch renders the error banner (17.4s)
+  ✓  17 [dark-mobile] › tests/diff-surface-e2e.spec.ts:263:3 › diff surface — GUI › Execution mount: pane opens and renders the (execution, id) ledger (13.1s)
+[diff-surface-e2e] gutter=0 — headless Chromium paints overlay scrollbars on this platform
+  ✓  19 [dark-mobile] › tests/diff-surface-e2e.spec.ts:149:3 › diff surface — GUI › Ask mount: click-through, fit, scrollbar, resize, honest states, drawer (13.1s)
+  ✓  18 [dark-mobile] › tests/diff-surface-e2e.spec.ts:273:3 › diff surface — GUI › honest states: empty ledger renders empty, failed fetch renders the error banner (13.8s)
+  ✓  11 [light-tablet] › tests/diff-surface-e2e.spec.ts:149:3 › diff surface — GUI › Ask mount: click-through, fit, scrollbar, resize, honest states, drawer (18.3s)
+  ✓   9 [dark-tablet] › tests/diff-surface-e2e.spec.ts:149:3 › diff surface — GUI › Ask mount: click-through, fit, scrollbar, resize, honest states, drawer (19.2s)
+  ✓   4 [light-desktop] › tests/diff-surface-e2e.spec.ts:149:3 › diff surface — GUI › Ask mount: click-through, fit, scrollbar, resize, honest states, drawer (20.5s)
+  ✓   1 [dark-desktop] › tests/diff-surface-e2e.spec.ts:149:3 › diff surface — GUI › Ask mount: click-through, fit, scrollbar, resize, honest states, drawer (20.7s)
+  ✓  24 [light-mobile] › tests/diff-surface-e2e.spec.ts:309:3 › diff surface — GUI › narrow viewport (<768px): the drawer overlay forces the unified diff (2.2s)
+[diff-surface-e2e] gutter=0 — headless Chromium paints overlay scrollbars on this platform
+  ✓  21 [light-mobile] › tests/diff-surface-e2e.spec.ts:263:3 › diff surface — GUI › Execution mount: pane opens and renders the (execution, id) ledger (2.7s)
+  ✓  22 [light-mobile] › tests/diff-surface-e2e.spec.ts:149:3 › diff surface — GUI › Ask mount: click-through, fit, scrollbar, resize, honest states, drawer (3.0s)
+  ✓  23 [light-mobile] › tests/diff-surface-e2e.spec.ts:273:3 › diff surface — GUI › honest states: empty ledger renders empty, failed fetch renders the error banner (4.0s)
+
+  4 skipped
+  20 passed (25.0s)

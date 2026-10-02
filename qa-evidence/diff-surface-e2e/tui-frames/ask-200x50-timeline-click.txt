@@ -1,0 +1,50 @@
+                                                  F1·Ask Orchicon   F2·Overview   F3·Work   F4·Execution   F5·Automation   F6·Enforcement   F7·Control
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+│  diff   tree   timeline  ✕                                            ┌─ Detail ───────────────────────────────────────────────────────────────────────────────┐┌─ Conversations · pty (1) ──────────┐
+│─ old ─────────────────────────── │  new ───────────────────────────  █│Conversation: diff-e2e-conv                                                             ││ diff-e2e-conv              2 msgs  │
+│1    context-line-alpha           │ 1    context-line-alpha           █│  id conv-diff-e2e                                                                      ││1-1/1                               │
+│2    context-line-beta            │ 2    context-line-beta            █│  title diff-e2e-conv                                                                   ││                                    │
+│                                  │ 3    WITFIRST                     █│  model —                                                                               ││                                    │
+│                                  │ 4    TAILWITNESS_0123456789012345 █│  messages 2                                                                            ││                                    │
+│                                  │      6789012345678901234567890123 █│  mode conversation_mode_unspecified                                                    ││                                    │
+│                                  │      4567890123456789012345678901 ││  created —                                                                             ││                                    │
+│                                  │      2345678901234567890123456789 ││  updated —                                                                             ││                                    │
+│                                  │      0123456789TAILEND            ││  grants (unavailable on this plane)                                                    ││                                    │
+│                                  │ 5    added-first.go-h00-l000      ││  scroll 1-1/1 · ▼ following                                                            ││                                    │
+│                                  │ 6    added-first.go-h00-l001      ││                                                                                        ││                                    │
+│                                  │ 7    added-first.go-h00-l002      ││ You ⧉                                                               please edit a file ││                                    │
+│                                  │ 8    added-first.go-h00-l003      ││                                                                                        ││                                    │
+│                                  │ 9    added-first.go-h00-l004      ││                                                                                        ││                                    │
+│                                  │ 10   added-first.go-h00-l005      ││                                                                                        ││                                    │
+│                                  │ 11   added-first.go-h00-l006      ││                                                                                        ││                                    │
+│                                  │ 12   added-first.go-h00-l007      ││                                                                                        ││                                    │
+│                                  │ 13   added-first.go-h00-l008      ││                                                                                        ││                                    │
+│                                  │ 14   added-first.go-h00-l009      ││                                                                                        ││                                    │
+│                                  │ 15   added-first.go-h00-l010      ││                                                                                        ││                                    │
+│                                  │ 16   added-first.go-h00-l011      ││                                                                                        ││                                    │
+│                                  │ 17   added-first.go-h00-l012      ││                                                                                        ││                                    │
+│                                  │ 18   added-first.go-h00-l013      ││                                                                                        ││                                    │
+│                                  │ 19   added-first.go-h00-l014      ││                                                                                        ││                                    │
+│                                  │ 20   added-first.go-h00-l015      ││                                                                                        ││                                    │
+│                                  │ 21   added-first.go-h00-l016      ││                                                                                        ││                                    │
+│                                  │ 22   added-first.go-h00-l017      ││                                                                                        ││                                    │
+│                                  │ 23   added-first.go-h00-l018      ││                                                                                        ││                                    │
+│                                  │ 24   added-first.go-h00-l019      ││                                                                                        ││                                    │
+│                                  │ 25   added-first.go-h00-l020      ││                                                                                        ││                                    │
+│                                  │ 26   added-first.go-h00-l021      ││                                                                                        ││                                    │
+│                                  │ 27   added-first.go-h00-l022      ││                                                                                        ││                                    │
+│                                  │ 28   added-first.go-h00-l023      ││                                                                                        ││                                    │
+│                                  │ 29   added-first.go-h00-l024      ││                                                                                        ││                                    │
+│                                  │ 30   added-first.go-h00-l025      ││                                                                                        ││                                    │
+│                                  │ 31   added-first.go-h00-l026      │└────────────────────────────────────────────────────────────────────────────────────────┘│                                    │
+│                                  │ 32   added-first.go-h00-l027      │╭────────────────────────────────────────────────────────────────────────────────────────╮│                                    │
+│                                  │ 33   added-first.go-h00-l028      ││  ❯                                                                                     ││                                    │
+│                                  │ 34   added-first.go-h00-l029      ││                                                                                        ││                                    │
+│                                  │ 35   added-first.go-h00-l030      ││                                                                                        ││                                    │
+│                                  │ 36   added-first.go-h00-l031      ││  ✓ conversations                                                                       ││                                    │
+│                                  │ 37   added-first.go-h00-l032      ││  ctrl+g text · ctrl+d diff · space: mark · ctrl+n: rename · ctrl+t: categorize         ││                                    │
+│                                  │ 38   added-first.go-h00-l033      ││  · click your message to copy · enter send · alt+enter newline · / commands            ││                                    │
+│                                  │ 39   added-first.go-h00-l034      ││                                                                          [brainstorm]  ││                                    │
+│                                  │ 40   added-first.go-h00-l035      │╰────────────────────────────────────────────────────────────────────────────────────────╯└────────────────────────────────────┘
+ ● connected · http://127.0.0.1:32969 · server v9.9.9-diffe2e · identity: e2e · ctrl+g composer · Mouse Enabled

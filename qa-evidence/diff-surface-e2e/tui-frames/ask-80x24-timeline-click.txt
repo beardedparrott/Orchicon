@@ -1,0 +1,24 @@
+   Ask Orchicon  Overview  Work  Execution  Automation  Enforcement  Control
+────────────────────────────────────────────────────────────────────────────────
+
+│  diff   tree   time┌─ Detail ──────────┐┌─ Conversations · pty (1) ──────────┐
+│1  1     context-li█│Conversation: diff-││ diff-e2e-conv              2 msgs  │
+│         ne-alpha  ││  id conv-diff-e2e ││1-1/1                               │
+│2  2     context-li││  title diff-e2e-co││                                    │
+│         ne-beta   ││  model —          ││                                    │
+│   3   + WITFIRST  ││  messages 2       ││                                    │
+│   4   + TAILWITNES││  mode conversation││                                    │
+│         S_01234567││  created —        ││                                    │
+│         8901234567││  updated —        ││                                    │
+│         8901234567│└───────────────────┘│                                    │
+│         8901234567│╭────────────────────│                                    │
+│         8901234567││  ❯                 │                                    │
+│         8901234567││                    │                                    │
+│         8901234567││                    │                                    │
+│         8901234567││  ✓ conversations   │                                    │
+│         8901234567││  ctrl+g text · ctrl│                                    │
+│         8901234567││  · ctrl+t: categori│                                    │
+│         8901234567││  · alt+enter newlin│                                    │
+│         89TAILEND ││                    │                                    │
+│   5   + added-firs│╰────────────────────└────────────────────────────────────┘
+ ● connected · http://127.0.0.1:32969 · server v9.9.9-diffe2e · identity: e2e ·
