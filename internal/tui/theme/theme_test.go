@@ -30,7 +30,8 @@ func TestStylesConstruct(t *testing.T) {
 		DiffGutter.Render("│") + DiffPanel.Render("P") +
 		DiffTabActive.Render("t") + DiffTabInactive.Render("t") +
 		DiffFileSel.Render("f") + DiffClose.Render("✕") +
-		DiffBadgeAdd.Render("+") + DiffBadgeDel.Render("-")
+		DiffBadgeAdd.Render("+") + DiffBadgeDel.Render("-") +
+		DiffScrollThumb.Render("│") + DiffScrollTrack.Render("│")
 	if styled == "" {
 		t.Fatal("styles rendered empty")
 	}

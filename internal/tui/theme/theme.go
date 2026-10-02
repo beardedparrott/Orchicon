@@ -577,6 +577,11 @@ var (
 	DiffClose       = lipgloss.NewStyle()
 	DiffBadgeAdd    = lipgloss.NewStyle()
 	DiffBadgeDel    = lipgloss.NewStyle()
+	// DiffScrollTrack / DiffScrollThumb are the diff pane's scrollbar column
+	// (a track plus a proportional thumb). They are separate styles rather than
+	// reusing DiffGutter/DiffLineNo so the bar reads as chrome, not content.
+	DiffScrollTrack = lipgloss.NewStyle()
+	DiffScrollThumb = lipgloss.NewStyle()
 
 	// PickerChip marks the CHOSEN chip in the model picker's ADAPTER/PROVIDER strip: plain theme
 	// text with an UNDERLINE. No fill, no border — see buildStyles.

@@ -234,12 +234,12 @@ func TestClickNoDiffFileStillSelectsAndFocuses(t *testing.T) {
 	// ...while the selection still highlights in both list tabs.
 	selLine := fmt.Sprintf(" %s %s (%s)", m.groups[1].Path, m.groups[1].Kind, m.groups[1].LastTool)
 	tl := strings.Split(m.timelineBody(), "\n")
-	if len(tl) != 2 || tl[1] != theme.DiffFileSel.Render(selLine) {
+	if len(tl) != 2 || trimPad(tl[1]) != theme.DiffFileSel.Render(selLine) {
 		t.Errorf("timeline did not highlight the selected no-diff row")
 	}
 	wantTree := theme.DiffFileSel.Render(fmt.Sprintf(" %s +%d −%d", m.groups[1].Path, m.groups[1].Adds, m.groups[1].Dels))
 	tr := strings.Split(m.treeBody(), "\n")
-	if len(tr) != 2 || tr[1] != wantTree {
+	if len(tr) != 2 || trimPad(tr[1]) != wantTree {
 		t.Errorf("tree did not highlight the selected no-diff row")
 	}
 }
@@ -270,11 +270,15 @@ func TestTimelineBodySelection(t *testing.T) {
 	}
 	wantSel := theme.DiffFileSel.Render(fmt.Sprintf(" %s %s (%s)", m.groups[1].Path, m.groups[1].Kind, m.groups[1].LastTool))
 	wantUn := theme.ListItem.Render(fmt.Sprintf(" %s %s (%s)", m.groups[0].Path, m.groups[0].Kind, m.groups[0].LastTool))
-	if tl[1] != wantSel {
-		t.Errorf("selected timeline row is not styled with DiffFileSel:\n got %q\nwant %q", tl[1], wantSel)
+	// The list body now pads each row to the body width and appends the
+	// scrollbar cell (so every rendered line is exactly the pane's inner width).
+	// trimPad removes that trailing padding + bar cell so the styling
+	// assertions still compare the ROW CONTENT.
+	if trimPad(tl[1]) != wantSel {
+		t.Errorf("selected timeline row is not styled with DiffFileSel:\n got %q\nwant %q", trimPad(tl[1]), wantSel)
 	}
-	if tl[0] != wantUn {
-		t.Errorf("unselected timeline row is not styled with ListItem:\n got %q\nwant %q", tl[0], wantUn)
+	if trimPad(tl[0]) != wantUn {
+		t.Errorf("unselected timeline row is not styled with ListItem:\n got %q\nwant %q", trimPad(tl[0]), wantUn)
 	}
 	if tl[0] == tl[1] {
 		t.Errorf("selected and unselected timeline rows are identical — no visible selection")
@@ -287,10 +291,17 @@ func TestTimelineBodySelection(t *testing.T) {
 		t.Fatalf("tree body has %d lines, want 2", len(tr))
 	}
 	wantTreeSel := theme.DiffFileSel.Render(fmt.Sprintf(" %s +%d −%d", m.groups[1].Path, m.groups[1].Adds, m.groups[1].Dels))
-	if tr[1] != wantTreeSel {
-		t.Errorf("selected tree row is not styled with DiffFileSel:\n got %q\nwant %q", tr[1], wantTreeSel)
+	if trimPad(tr[1]) != wantTreeSel {
+		t.Errorf("selected tree row is not styled with DiffFileSel:\n got %q\nwant %q", trimPad(tr[1]), wantTreeSel)
 	}
 }
+
+// trimPad strips the trailing cell padding a body row carries (the fit to the
+// body width plus the scrollbar column) so a styling assertion can compare the
+// row's CONTENT. It only strips spaces, so a row whose last visible cell is the
+// scrollbar track glyph would NOT be trimmed — but when everything fits the bar
+// cell is a blank space, which is exactly the case these list tests exercise.
+func trimPad(s string) string { return strings.TrimRight(s, " ") }
 
 // TestHandleKeyTabSwitchAsymmetric verifies `l` steps the tab forward and `h`
 // steps it backward — the two directions are symmetric and reach every tab.
@@ -344,3 +355,6 @@ func TestRenderSideBySideColumnsAlign(t *testing.T) {
 		}
 	}
 }
+
+// the old|new separator in a fixed cell column across every row (the
+// acceptance criteria: paired line numbers / no tearing or column drift).
