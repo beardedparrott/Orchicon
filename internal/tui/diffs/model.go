@@ -87,8 +87,14 @@ func NewModel(cl *client.Clients, reg *subs.Registry) *Model {
 }
 
 // SetSize updates the pane dimensions (content width excludes the border).
+//
+// It re-clamps the scroll: the pane's PHYSICAL line count changes with the body
+// width (a row wraps to more lines when the pane narrows, fewer when it widens)
+// and viewHeight changes with the height, so a scroll that was valid at the old
+// size can sit past the new last rendered page and render a blank body.
 func (m *Model) SetSize(w, h int) {
 	m.Width, m.Height = w, h
+	m.clampScroll()
 }
 
 // Open activates the pane (renders its frame). Does not refetch.
@@ -197,7 +203,16 @@ func (m *Model) SelectPath(path string) {
 }
 
 // SetTab switches the pane tab.
-func (m *Model) SetTab(t Tab) { m.Tab = t }
+//
+// It re-clamps the scroll: the two list tabs index one line PER GROUP while the
+// Diff tab indexes PHYSICAL rendered lines, so a Diff scroll (potentially
+// hundreds of lines) leaks past the end of a short file list and the viewport
+// slices an empty range — a BLANK body, the failure this pane exists to avoid.
+// clampScroll reads the ACTIVE tab's extent, so it must run after m.Tab is set.
+func (m *Model) SetTab(t Tab) {
+	m.Tab = t
+	m.clampScroll()
+}
 
 // Live returns whether the current owner is live.
 func (m *Model) Live() bool { return m.isLive }
@@ -342,6 +357,12 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 				m.SelectedPath = m.groups[0].Path
 				m.rows = m.rowsForSelected()
 			}
+			// The rows (and therefore the rendered line count) just changed
+			// underneath the scroll — a fetch that returns a SHORTER diff (a new
+			// owner, or a file whose latest edit shrank) would leave the viewport
+			// sliced past its end and render a BLANK body. Re-clamp here, at the
+			// one place the rows are replaced.
+			m.clampScroll()
 		}
 		// The durable fetch caches the tenant; if this owner is live, arm the
 		// live stream now (on the tea loop) and park a re-armable event poke.
@@ -547,7 +568,10 @@ func (m *Model) clickTab(contentX int) {
 		// clickable (the padding cells do not overlap other tabs — separated
 		// by the 1-space separator).
 		if contentX >= textStart-tabPadding && contentX < end+tabPadding {
-			m.Tab = t
+			// SetTab (not a bare m.Tab =) so the stale-scroll clamp runs: a
+			// mouse tab switch out of a scrolled Diff must not leave the list
+			// tabs scrolled past their (much shorter) extent.
+			m.SetTab(t)
 			return
 		}
 		// Advance past: this label's text + right padding (tabPadding) +
@@ -628,6 +652,9 @@ func (m *Model) mergeLive() {
 	merged := MergeEdits(durable, edits)
 	m.groups = GroupByFile(merged)
 	m.rows = m.rowsForSelected()
+	// Live events rebuild the rows (and so the rendered line count) while the
+	// operator is scrolled: clamp, or a shrinking diff leaves a blank viewport.
+	m.clampScroll()
 }
 
 // flattenGroups collapses the grouped edits back into a flat, seq-ordered
