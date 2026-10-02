@@ -11,7 +11,7 @@
 // metadata — the new layout makes the live chat the primary surface
 // and the context sidebar the secondary reference.
 import { createRoute, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Pause, Play, Square, Trash2, ArrowLeft, PanelLeft, PanelLeftClose } from "lucide-react";
 
 import {
@@ -37,6 +37,7 @@ import { WorkerSummaryCard } from "@/components/executions/WorkerSummaryCard";
 import { ExecutionContextSidebar } from "@/components/executions/ExecutionContextSidebar";
 import { DiffSidebar, type DiffTab } from "@/components/diffs/DiffSidebar";
 import { usePersistentState } from "@/lib/diff/usePersistentState";
+import { RAIL_DEFAULT_WIDTH } from "@/lib/diff/railResize";
 import { PrLinkChip } from "@/components/work-items/work-item-card";
 import { worktreeTileItems } from "@/components/WorktreeTiles";
 import { Button } from "@/components/ui/button";
@@ -89,6 +90,15 @@ function ExecutionDetailPage() {
   const [diffOpen, setDiffOpen] = usePersistentState(`execution:${id}:open`, false);
   const [diffTab, setDiffTab] = usePersistentState<DiffTab>(`execution:${id}:tab`, "diff");
   const [diffPath, setDiffPath] = usePersistentState(`execution:${id}:selectedPath`, "");
+  // Rail width — persisted per EXECUTION (its own key, so two execution pages
+  // and the Ask page cannot overwrite each other's width). `diffRowRef` is the
+  // flex row the rail is the first child of; the rail clamps against that row's
+  // measured width so the chat column beside it is never squeezed out.
+  const [railWidth, setRailWidth] = usePersistentState<number>(
+    `execution:${id}:railWidth`,
+    RAIL_DEFAULT_WIDTH,
+  );
+  const diffRowRef = useRef<HTMLDivElement>(null);
   const toggleDiffSidebar = useCallback(() => {
     setDiffOpen((prev) => !prev);
   }, [setDiffOpen]);
@@ -263,7 +273,7 @@ function ExecutionDetailPage() {
               Rendered as a flex sibling so the live session chat stays fully
               visible and interactive alongside it (chat column is flex-1
               min-w-0). Distinct from ExecutionContextSidebar on the right. */}
-          <div className="flex gap-3 min-w-0">
+          <div ref={diffRowRef} className="flex gap-3 min-w-0">
             <DiffSidebar
               open={diffOpen}
               onClose={() => setDiffOpen(false)}
@@ -275,6 +285,9 @@ function ExecutionDetailPage() {
               onTabChange={setDiffTab}
               selectedPath={diffPath}
               onSelectPath={setDiffPath}
+              containerRef={diffRowRef}
+              width={railWidth}
+              onWidthChange={setRailWidth}
             />
             <div className="flex flex-1 min-w-0 flex-col space-y-4">
           {/* Failure card: pulled out of the sidebar so the operator

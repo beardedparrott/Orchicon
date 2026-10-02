@@ -12,12 +12,14 @@
 //   - StreamFileEdits (live events) via the useStream pattern
 // merged with the sessionItems.mergeSessionItems discipline (mergeEdits).
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useSessionFileEdits } from "@/api/fileEdits";
 import { groupByFile } from "@/lib/diff/sideBySide";
+import { RAIL_DEFAULT_WIDTH } from "@/lib/diff/railResize";
+import { useRailResize } from "@/lib/diff/useRailResize";
 import { DiffView } from "@/components/diffs/DiffView";
 import { DiffTimeline } from "@/components/diffs/DiffTimeline";
 import { DiffTree } from "@/components/diffs/DiffTree";
@@ -60,6 +62,22 @@ export interface DiffSidebarProps {
   onSelectPath: (path: string) => void;
   /** force the unified (single-column) diff fallback on narrow widths */
   unified?: boolean;
+  /**
+   * The flex row the rail is the first child of. The rail can never be widened
+   * so far that the chat column beside it drops below ~360px, so the drag and
+   * the stored width are clamped against THIS node's measured width — not
+   * against constants alone. Optional: without it the clamp falls back to the
+   * constant ceiling (e.g. a host that renders the rail detached).
+   */
+  containerRef?: React.RefObject<HTMLElement | null>;
+  /**
+   * Inline-rail width in px. Host-owned + persisted per page (a distinct
+   * usePersistentState key per mount, like open/tab/selectedPath) so the Ask
+   * page and the execution page cannot overwrite each other's width.
+   */
+  width?: number;
+  /** host setter, called with the clamped width (drag, keyboard, re-clamp) */
+  onWidthChange?: (w: number) => void;
 }
 
 export function DiffSidebar({
@@ -73,9 +91,22 @@ export function DiffSidebar({
   selectedPath,
   onSelectPath,
   unified = false,
+  containerRef,
+  width = RAIL_DEFAULT_WIDTH,
+  onWidthChange,
 }: DiffSidebarProps) {
   const { edits, loading, error } = useSessionFileEdits(ownerKind, ownerId, isLive);
   const narrow = useIsNarrow();
+
+  // Resize interaction (pointer drag + keyboard) for the rail's trailing edge.
+  // Called ABOVE the `if (!open) return null` below so the hook order is stable
+  // whether or not the rail is open (the container node exists either way).
+  const detachedRef = useRef<HTMLElement | null>(null);
+  const { effectiveWidth, dragging, handleProps } = useRailResize({
+    containerRef: containerRef ?? detachedRef,
+    width,
+    onWidthChange: onWidthChange ?? (() => {}),
+  });
 
   const files = useMemo(() => groupByFile(edits), [edits]);
   const selected = useMemo(
@@ -129,8 +160,20 @@ export function DiffSidebar({
   }
 
   return (
-    <div className="relative flex h-full shrink-0 overflow-hidden border-r border-border/60 bg-background/60 backdrop-blur transition-[width] duration-300 ease-in-out w-[480px] min-w-[480px]">
-      <aside className="flex h-full w-[480px] flex-col">
+    <div
+      // The width is an INLINE style on this node (not a utility class): this is
+      // the same node the sibling wrap/measured-width item observes, so it
+      // re-derives side-by-side vs unified on every drag without a second
+      // source of truth. `w-[480px]` stays as the pre-measure fallback.
+      style={{ width: effectiveWidth }}
+      className={cn(
+        "relative flex h-full shrink-0 overflow-hidden border-r border-border/60 bg-background/60 backdrop-blur w-[480px]",
+        // Suspend the slide-open transition while dragging — an animating edge
+        // would lag behind the pointer instead of tracking it.
+        !dragging && "transition-[width] duration-300 ease-in-out",
+      )}
+    >
+      <aside className="flex h-full w-full flex-col">
         <TabHeader tab={tab} onTabChange={onTabChange} onClose={onClose} tabClasses={tabClasses} />
         {error && <LedgerErrorBanner error={error} />}
         {/* Tab content */}
@@ -153,6 +196,18 @@ export function DiffSidebar({
           </div>
         )}
       </aside>
+      {/* Resize handle — the rail's trailing edge. A real control, not a
+          decorative div: role="separator" (a window splitter, per the WAI-ARIA
+          separator pattern) with 
+          aria-orientation="vertical" + value semantics, reachable by Tab and
+          operable with ←/→ (step), Home/End (min/max), Escape (cancel a drag)
+          and double-click (reset). It sits AFTER </aside> so the rail's tabs
+          keep their existing tab order; the sub-768px drawer above renders no
+          handle at all. */}
+      <div
+        {...handleProps}
+        className="absolute inset-y-0 right-0 z-10 w-1.5 cursor-col-resize select-none bg-transparent transition-colors hover:bg-accent/60 focus-visible:bg-accent focus-visible:outline-none"
+      />
     </div>
   );
 }

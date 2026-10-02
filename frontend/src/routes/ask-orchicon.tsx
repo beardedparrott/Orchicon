@@ -106,6 +106,7 @@ import { ConversationScopeDisclosure } from "@/components/ask/ConversationScopeD
 import { CreateCategoryDialog } from "@/components/CreateCategoryDialog";
 import { DiffSidebar, type DiffTab } from "@/components/diffs/DiffSidebar";
 import { usePersistentState } from "@/lib/diff/usePersistentState";
+import { RAIL_DEFAULT_WIDTH } from "@/lib/diff/railResize";
 import {
   DndContext,
   DragOverlay,
@@ -340,6 +341,16 @@ function AskOrchiconPage() {
   const [diffOpen, setDiffOpen] = usePersistentState("ask-orchicon:open", false);
   const [diffTab, setDiffTab] = usePersistentState<DiffTab>("ask-orchicon:tab", "diff");
   const [diffPath, setDiffPath] = usePersistentState("ask-orchicon:selectedPath", "");
+  // Rail width — same per-page persistence discipline as open/tab/selectedPath,
+  // under its OWN key so this page and the execution page cannot overwrite each
+  // other's width. `diffRowRef` is the flex row the rail is the first child of;
+  // the rail clamps its width against that row's measured width so the chat
+  // column beside it can never be squeezed out.
+  const [railWidth, setRailWidth] = usePersistentState<number>(
+    "ask-orchicon:railWidth",
+    RAIL_DEFAULT_WIDTH,
+  );
+  const diffRowRef = useRef<HTMLDivElement>(null);
   const toggleDiffSidebar = useCallback(() => {
     setDiffOpen((prev) => !prev);
   }, [setDiffOpen]);
@@ -1556,7 +1567,7 @@ function AskOrchiconPage() {
   // gone rather than left as a second, wrong source of truth.)
 
   return (
-    <div className="flex flex-1 min-h-0 h-full gap-0 min-w-0 overflow-hidden">
+    <div ref={diffRowRef} className="flex flex-1 min-h-0 h-full gap-0 min-w-0 overflow-hidden">
       {/* Left diff rail — slide-out file-edit + diff side-by-side view.
           First flex child; the chat column is flex-1 min-w-0 so it keeps
           width as the rail opens. Distinct from the right conversation panel. */}
@@ -1571,6 +1582,9 @@ function AskOrchiconPage() {
         onTabChange={setDiffTab}
         selectedPath={diffPath}
         onSelectPath={setDiffPath}
+        containerRef={diffRowRef}
+        width={railWidth}
+        onWidthChange={setRailWidth}
       />
       {/* Main chat area — centered column */}
       <div className="flex flex-1 flex-col min-h-0 min-w-0">
