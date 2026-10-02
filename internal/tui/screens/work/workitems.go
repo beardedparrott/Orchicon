@@ -508,7 +508,19 @@ func (m *Model) editFormFor(w *apiv1.WorkItem, projOpts []kit2.Option) *kit2.For
 			Initial:  rfc3339OrEmpty(w.GetScheduledStartAt()),
 			Display:  displayScheduledStart,
 			Validate: validateOptionalRFC3339},
-		kit2.FieldSpec{Name: "auto_start", Label: "Auto-start workflow", Kind: kit2.KCheckbox, Initial: boolStr(w.GetAutoStartWorkflow())},
+		// THE BOX OPENS UNCHECKED, ALWAYS — never seeded from the stored flag.
+		//
+		// Auto-start is an ACT on the save, not a state the form reports (the operator's rule: "not fire
+		// anything off that already has auto or schedule set… it must be done as an action when saving
+		// the record only"). Seeding it from auto_start_workflow meant that opening an item whose stored
+		// flag was still true — a legacy row, or one armed by an earlier save — and saving any unrelated
+		// edit (a rename, a kind switch) sent auto=true and LAUNCHED the workflow. The server refuses to
+		// fire on the stored flag alone; the client must not manufacture the explicit gesture either, or
+		// the two halves disagree about what the operator asked for.
+		//
+		// It matches the GUI, which has always reset the box to false when the editor opens, and the
+		// form's own create variant above.
+		kit2.FieldSpec{Name: "auto_start", Label: "Auto-start workflow", Kind: kit2.KCheckbox, Initial: "false"},
 	)
 	m.wireItemForm(f, formEditItem, w.GetId())
 	return f
@@ -619,6 +631,16 @@ func (m *Model) wireItemForm(f *kit2.Form, mode, id string) {
 			cw := int32(atoiOr(v["context_window"], 0))
 			kind := kindFromName(v["kind"])
 			status := statusFromName(v["status"])
+			// THE SCHEDULE IS SENT AS EITHER A VALUE OR AN EXPLICIT CLEAR, never silently dropped.
+			//
+			// scheduled_start_at is optional, so an EMPTY field means "unchanged" — which is how the
+			// form could never remove a schedule: it seeded the field from the item, round-tripped the
+			// same value back every save, and an operator who emptied it sent nothing at all. The
+			// request now carries clear_scheduled_start_at when the field reads empty, which is the
+			// operator's "there is no way to clear a schedule on a work item".
+			//
+			// A surviving schedule also suppresses auto-start (an item with a start time waits for it),
+			// so clearing is what lets a pending item start on save — the second half of the report.
 			req := &apiv1.UpdateWorkItemRequest{
 				Id:                 id,
 				Title:              strPtr(title),
@@ -634,6 +656,9 @@ func (m *Model) wireItemForm(f *kit2.Form, mode, id string) {
 				AutoStartWorkflow:  &auto,
 				ContextFiles:       &apiv1.ContextFiles{Files: splitList(v["context_files"])},
 				ScheduledStartAt:   tsOrNil(v["scheduled_start"]),
+			}
+			if req.ScheduledStartAt == nil {
+				req.ClearScheduledStartAt = true
 			}
 			name := "save work item " + strconv.Quote(title)
 			return m.Mutate(mutate.Request{
