@@ -271,13 +271,14 @@ describe("sideBySide wrap + width threshold", () => {
   });
 });
 
-// The diff rail's scrollbar is TWO mutually-exclusive render paths, and only
-// one runs per engine: Chromium/Safari paint ::-webkit-scrollbar* (12px lane /
-// 6px thumb + its :hover), while a non-auto `scrollbar-color` is the STANDARD
-// path (Firefox) and makes Chromium IGNORE the ::-webkit rules entirely. So the
-// rail must carry a hover declaration on BOTH paths. Pinned here (not a DOM
-// test) because a missing standard-path :hover silently kills the hover state
-// in the engine that matters, and no functional test would catch it.
+// The diff rail's scrollbar is TWO render paths, and only one is active per
+// engine. The STANDARD one (`scrollbar-color`/`scrollbar-width`, what Chromium
+// and Firefox paint) supplies the widened 0.55-alpha lane; the ::-webkit-*
+// rules are the fallback for engines without standard support (12px lane / 6px
+// thumb). An engine paints ONE of them, so the rail must carry a hover
+// declaration on BOTH. Pinned here (not a DOM test) because a missing
+// standard-path :hover silently kills the hover state in the engine that
+// matters, and no functional test would catch it.
 describe("diff rail scrollbar treatment pins both render paths", () => {
   const css = cssRaw;
 
