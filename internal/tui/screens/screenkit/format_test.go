@@ -151,3 +151,93 @@ func TestLocalZoneLabelMatchesTheSystemZone(t *testing.T) {
 		t.Errorf("LocalZoneLabel() = %q, want it to start with the system zone name %q", got, name)
 	}
 }
+
+// --- spans: FmtElapsed, ElapsedSince, ElapsedBetween -------------------------
+//
+// The operator: "It would be nice to apply the current running time and finished time onto schedules in
+// the schedules section for both run and history as well as schedule details in the TUI."
+//
+// THE TABLE IS THE GUI'S formatElapsed (frontend/src/lib/format.ts) SPELLED OUT. That file is the other
+// client's one definition of what a span looks like, and these rows are copied from it verbatim — "2m
+// 30s" with a space, "<1s" rather than "0s", one decimal below a minute. Two clients rendering the same
+// run as "2m 30s" and "2m30s" is a difference an operator has to stop and interpret, so it is pinned
+// here as a test rather than left to whoever edits either side next.
+
+func TestFmtElapsedMatchesTheGUIsForms(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{0, "<1s"},
+		{400 * time.Millisecond, "<1s"},
+		{999 * time.Millisecond, "<1s"},
+		{time.Second, "1s"},
+		{5400 * time.Millisecond, "5.4s"},
+		{59*time.Second + 400*time.Millisecond, "59.4s"},
+		{90 * time.Second, "1m 30s"},
+		{2 * time.Minute, "2m 0s"},
+		{59*time.Minute + 59*time.Second, "59m 59s"},
+		{time.Hour, "1h 0m"},
+		{3*time.Hour + 15*time.Minute, "3h 15m"},
+		{26 * time.Hour, "26h 0m"},
+	}
+	for _, c := range cases {
+		if got := FmtElapsed(c.d); got != c.want {
+			t.Errorf("FmtElapsed(%v) = %q, want %q", c.d, got, c.want)
+		}
+	}
+}
+
+// A NEGATIVE SPAN IS CLAMPED, not printed as a minus sign: an end before its start is a clock
+// disagreement between this machine and the plane, and the operator needs to know the job is running.
+// The GUI clamps the same way (LiveDuration's Math.max(0, …)).
+func TestFmtElapsedClampsANegativeSpan(t *testing.T) {
+	if got := FmtElapsed(-30 * time.Second); got != "<1s" {
+		t.Errorf("FmtElapsed(-30s) = %q, want the clamp (\"<1s\")", got)
+	}
+}
+
+// ElapsedSince measures a RUNNING span from a start to now, and refuses when there is no usable start —
+// so a caller renders nothing rather than a fabricated "<1s" for an item that never started.
+func TestElapsedSince(t *testing.T) {
+	now := time.Date(2026, time.September, 18, 14, 30, 0, 0, time.UTC)
+
+	// No start at all: nil, and — the case that actually occurs — a nil protobuf in a non-nil interface.
+	var nilTS *timestamppb.Timestamp
+	if _, ok := ElapsedSince(nilTS, now); ok {
+		t.Error("ElapsedSince reported a span for an unset start")
+	}
+	if _, ok := ElapsedSince(timestamppb.New(now.Add(-2*time.Minute)), now); !ok {
+		t.Error("ElapsedSince refused a real start")
+	}
+	d, _ := ElapsedSince(timestamppb.New(now.Add(-90*time.Second)), now)
+	if d != 90*time.Second {
+		t.Errorf("ElapsedSince = %v, want 90s", d)
+	}
+
+	// A start in the FUTURE (this machine's clock behind the plane's) still reports a span: the thing
+	// exists, it simply cannot be positive, and the row must say it is running.
+	d, ok := ElapsedSince(timestamppb.New(now.Add(time.Minute)), now)
+	if !ok || d != 0 {
+		t.Errorf("ElapsedSince(future start) = (%v, %v), want (0, true)", d, ok)
+	}
+}
+
+// ElapsedBetween measures a COMPLETED span, and refuses unless BOTH ends are real: an absent end means
+// the span is still running, which is the caller's distinction to make (the run rows make it).
+func TestElapsedBetween(t *testing.T) {
+	start := time.Date(2026, time.September, 18, 14, 30, 0, 0, time.UTC)
+
+	d, ok := ElapsedBetween(timestamppb.New(start), timestamppb.New(start.Add(150*time.Second)))
+	if !ok || d != 150*time.Second {
+		t.Errorf("ElapsedBetween = (%v, %v), want (150s, true)", d, ok)
+	}
+
+	var nilTS *timestamppb.Timestamp
+	if _, ok := ElapsedBetween(nilTS, timestamppb.New(start)); ok {
+		t.Error("ElapsedBetween reported a span with no start")
+	}
+	if _, ok := ElapsedBetween(timestamppb.New(start), nilTS); ok {
+		t.Error("ElapsedBetween reported a span with no end — an unfailed end means it is still running")
+	}
+}

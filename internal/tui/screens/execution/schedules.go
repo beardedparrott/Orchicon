@@ -40,6 +40,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
@@ -255,16 +256,60 @@ func (m *Model) fetchRunningSchedules(ctx context.Context) ([]screenkit.Item, st
 	sort.SliceStable(running, func(i, j int) bool { return running[i].GetStatus() < running[j].GetStatus() })
 
 	items := make([]screenkit.Item, 0, len(running))
+	now := time.Now()
 	for _, w := range running {
 		m.sched.remember(w.GetId(), w.GetWorkflowRunId())
 		meta := strings.ToLower(strings.TrimPrefix(w.GetStatus().String(), "WORK_ITEM_STATUS_"))
 		if w.GetWorkflowRunId() == "" {
 			meta += " (sequence)"
 		}
+		// THE RUNNING TIME, on the row (the operator's ask: "apply the current running time … onto
+		// schedules in the schedules section for both run and history"). It is derived from the ITEM's
+		// own timestamps by runningSince — the GUI's rule, so the two clients put the same number on
+		// the same run — and it is measured against `now` at FETCH time, so it advances with the pane's
+		// rolling refresh (5s) rather than on a timer of its own.
+		if since, _ := runningSince(w); since != nil {
+			if d, ok := screenkit.ElapsedSince(since, now); ok {
+				meta += " · " + screenkit.FmtElapsed(d)
+			}
+		}
 		items = append(items, screenkit.Item{ID: w.GetId(), Title: w.GetTitle(), Meta: meta})
 	}
 	items = append(items, m.schedCapNote(len(all))...)
 	return items, "", nil
+}
+
+// runningSince is WHEN a running work item started, as far as its own record can say — the GUI's rule
+// verbatim (frontend/src/routes/schedules.tsx, runningStartedAt): the scheduled start, else the last
+// update, else creation — plus the NAME of the field it came from, so a detail pane can say what the
+// number is based on rather than presenting a derivation as a stored fact. (nil, "") when the item
+// carries no usable timestamp at all.
+//
+// IT IS DERIVED, AND THAT IS A DELIBERATE SHARING OF THE GUI'S APPROXIMATION. A WorkItem carries no
+// run-start field, so the alternative is a second read of workflow_runs to join against — and then the
+// TUI would print a different number from the GUI's for the same run. One value the two clients agree
+// on is worth more than a second, more precise one they disagree about.
+//
+// THE ONE CASE WHERE THE DERIVATION IS KNOWN TO BE LOOSE: a SEQUENCE PARENT. Its status is re-stamped
+// as each child is armed, so its "since" moves with the chain's current step and the elapsed reads as
+// the current STEP's time, not the whole chain's. The GUI shows the same number for the same reason
+// (and the detail pane spells the derivation out), so this is a shared approximation rather than a
+// second one invented here.
+func runningSince(w *apiv1.WorkItem) (*timestamppb.Timestamp, string) {
+	sources := []struct {
+		ts     *timestamppb.Timestamp
+		source string
+	}{
+		{w.GetScheduledStartAt(), "its scheduled start"},
+		{w.GetUpdatedAt(), "its last update"},
+		{w.GetCreatedAt(), "its creation"},
+	}
+	for _, s := range sources {
+		if s.ts != nil && s.ts.IsValid() {
+			return s.ts, s.source
+		}
+	}
+	return nil, ""
 }
 
 // fetchFinishedSchedules lists the workflow runs that have RUN — the GUI's history view.
@@ -303,15 +348,27 @@ func (m *Model) fetchFinishedSchedules(ctx context.Context, pageToken string) ([
 		m.loadRunNames(ctx)
 	}
 	items := make([]screenkit.Item, 0, len(resp.Msg.GetRuns()))
+	now := time.Now()
 	for _, r := range resp.Msg.GetRuns() {
 		if r.GetStartedAt() == nil {
 			continue // never ran: a queued run is not history
 		}
 		m.sched.rememberRun(r.GetId(), r.GetWorkItemId())
+		meta := strings.ToLower(strings.TrimPrefix(r.GetStatus().String(), "WORKFLOW_RUN_STATUS_"))
+		// THE FINISHED TIME (the operator's ask for the history half). A run with an ended_at reports the
+		// span it took; one without is still in flight — History membership is "it has a real started_at"
+		// (frontend/src/lib/schedules-model.ts, isHistoryRun), so a live run belongs here too — and it
+		// reports the time so far. Both come from the RUN's own record, which is exact: this is the half
+		// of the ask that needs no derivation at all.
+		if d, ok := screenkit.ElapsedBetween(r.GetStartedAt(), r.GetEndedAt()); ok {
+			meta += " · " + screenkit.FmtElapsed(d)
+		} else if d, ok := screenkit.ElapsedSince(r.GetStartedAt(), now); ok {
+			meta += " · " + screenkit.FmtElapsed(d)
+		}
 		items = append(items, screenkit.Item{
 			ID:    r.GetId(),
 			Title: m.runsTitle(r),
-			Meta:  strings.ToLower(strings.TrimPrefix(r.GetStatus().String(), "WORKFLOW_RUN_STATUS_")),
+			Meta:  meta,
 		})
 	}
 	return items, resp.Msg.GetNextPageToken(), nil
@@ -601,6 +658,31 @@ func (m *Model) rpcRemoveSchedule(ctx context.Context, itemID string) error {
 	return err
 }
 
+// runSpanFields is the RUN's own elapsed, as detail rows: "ran for" a finished span, or "running for"
+// one that has not ended yet.
+//
+// IT IS ONE HELPER BECAUSE IT HAS TWO CALLERS AND THEY ARE THE SAME QUESTION: a run opened from the
+// Schedules history view (internal/tui/screens/execution/screen.go, the schedFinished branch) and one
+// opened from the Runs pane. Both show started/ended already, and an operator reading two timestamps to
+// work out "how long did that take?" is the thing the operator asked to stop doing ("apply the current
+// running time and finished time onto schedules … as well as schedule details").
+//
+// Unlike the RUNNING-view row's derived span (see runningSince), both halves here come from the run's
+// own started_at/ended_at — the authoritative record — so nothing is approximated and there is nothing
+// to caveat. An ended_at in the FUTURE of started_at is impossible in practice; a clock disagreement
+// renders as "<1s" (screenkit.FmtElapsed clamps) rather than as a negative.
+func runSpanFields(r *apiv1.WorkflowRun) []screenkit.Field {
+	if d, ok := screenkit.ElapsedBetween(r.GetStartedAt(), r.GetEndedAt()); ok {
+		return []screenkit.Field{{Key: "ran for", Value: screenkit.FmtElapsed(d)}}
+	}
+	// No ended_at: the run is still in flight (History membership is "has a started_at", so a live run
+	// belongs in this list too — frontend/src/lib/schedules-model.ts, isHistoryRun).
+	if d, ok := screenkit.ElapsedSince(r.GetStartedAt(), time.Now()); ok {
+		return []screenkit.Field{{Key: "running for", Value: screenkit.FmtElapsed(d)}}
+	}
+	return nil
+}
+
 // scheduleHint is the pane's key cheat-sheet, view-aware so it always describes what the keys
 // will actually do in the view on screen.
 func (m *Model) scheduleHint() string {
@@ -627,6 +709,22 @@ func (m *Model) scheduleItemDetail(ctx context.Context, id string) (string, []sc
 		{Key: "id", Value: w.GetId()},
 		{Key: "status", Value: strings.ToLower(strings.TrimPrefix(w.GetStatus().String(), "WORK_ITEM_STATUS_"))},
 		{Key: "view", Value: view.label()},
+	}
+	// HOW LONG IT HAS BEEN RUNNING — the detail half of the row's elapsed (see fetchRunningSchedules).
+	//
+	// TWO FIELDS, NOT ONE, AND THE SECOND IS THE POINT. The number is DERIVED from the item's own
+	// timestamps (a WorkItem has no run-start field), so the pane says which timestamp it used: an
+	// operator comparing this against a clock, or against the GUI, can see what the span is measured
+	// from instead of taking an approximation for a stored fact.
+	if activeRunStatuses[w.GetStatus()] {
+		if since, source := runningSince(w); since != nil {
+			if d, ok := screenkit.ElapsedSince(since, time.Now()); ok {
+				fields = append(fields,
+					screenkit.Field{Key: "running for", Value: screenkit.FmtElapsed(d)},
+					screenkit.Field{Key: "measured from", Value: screenkit.FmtTime(since) + "  (" + source + ")"},
+				)
+			}
+		}
 	}
 	if ts := w.GetScheduledStartAt(); ts != nil {
 		fields = append(fields, screenkit.Field{Key: "scheduled for", Value: screenkit.FmtTime(ts)})
