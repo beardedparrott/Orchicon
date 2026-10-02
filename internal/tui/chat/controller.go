@@ -644,6 +644,63 @@ func (c *Controller) SetConversationFullsend(id string, enabled bool) tea.Cmd {
 	}
 }
 
+// ConversationStatusMsg carries the PLANE's answer about ONE conversation — its authoritative turn
+// state, read from the in-memory turn registry.
+//
+// WHY THE CLIENT ASKS FOR THIS AT ALL. The rail renders the LIST, which the shell refreshes on a
+// timer, so a turn the client did not start (or one whose list refresh has not landed) leaves the
+// client believing nothing is running while the plane says otherwise. MEASURED against the live plane
+// with a standalone curl DURING a turn:
+//
+//	GetConversation  → turnInFlight: true, pendingAssistantMessageId: 01M3…, turnProgressing: true
+//	ListConversations → the same row, same fields
+//
+// while the TUI showed no activity line and the rail showed no running marker. The plane was right and
+// the client was wrong, and a stale list is exactly how that happens — so the client stops trusting its
+// copy for this one question and asks the row directly. It is ONE conversation, not the list, so the
+// cost is a single row per ask.
+type ConversationStatusMsg struct {
+	Conv Conversation
+	Err  string
+}
+
+// FetchConversationStatus reads one conversation's server-side turn state (GetConversation).
+func (c *Controller) FetchConversationStatus(convID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		resp, err := c.cl.Ask.GetConversation(ctx, connect.NewRequest(&apiv1.GetConversationRequest{Id: convID}))
+		if err != nil {
+			return ConversationStatusMsg{Err: err.Error()}
+		}
+		cv := resp.Msg.GetConversation()
+		if cv == nil {
+			return ConversationStatusMsg{}
+		}
+		return ConversationStatusMsg{Conv: conversationFromProto(cv)}
+	}
+}
+
+// conversationFromProto maps a wire conversation onto the client's row shape. ONE definition, used by
+// both the list load and the single-row status read, so the two cannot disagree about what a row says —
+// which is the whole point of asking the row in the first place.
+func conversationFromProto(cv *apiv1.Conversation) Conversation {
+	return Conversation{
+		ID:         cv.GetId(),
+		Title:      cv.GetTitle(),
+		TurnInFly:  cv.GetTurnInFlight(),
+		MessageN:   cv.GetMessageCount(),
+		ModelRef:   cv.GetModelRef(),
+		Mode:       cv.GetMode(),
+		Fullsend:   cv.GetFullsend(),
+		ProjectID:  cv.GetProjectId(),
+		SkillFiles: cv.GetSkillFiles(),
+		// Read at list time, so a conversation the server reports as mid-turn is recognisable as such the
+		// moment the rail loads — which is what the re-attach on open needs.
+		PendingReplyID: cv.GetPendingAssistantMessageId(),
+	}
+}
+
 // LoadConversations fetches the conversation rail.
 func (c *Controller) LoadConversations() tea.Cmd {
 	return func() tea.Msg {
@@ -655,20 +712,9 @@ func (c *Controller) LoadConversations() tea.Cmd {
 		}
 		convs := make([]Conversation, 0, len(resp.Msg.GetConversations()))
 		for _, cv := range resp.Msg.GetConversations() {
-			convs = append(convs, Conversation{
-				ID:         cv.GetId(),
-				Title:      cv.GetTitle(),
-				TurnInFly:  cv.GetTurnInFlight(),
-				MessageN:   cv.GetMessageCount(),
-				ModelRef:   cv.GetModelRef(),
-				Mode:       cv.GetMode(),
-				Fullsend:   cv.GetFullsend(),
-				ProjectID:  cv.GetProjectId(),
-				SkillFiles: cv.GetSkillFiles(),
-				// Read at list time, so a conversation the server reports as mid-turn is recognisable as such the
-				// moment the rail loads — which is what the re-attach on open needs.
-				PendingReplyID: cv.GetPendingAssistantMessageId(),
-			})
+			// ONE mapper for the row shape, shared with the single-row status read (see
+			// conversationFromProto) so the two paths cannot disagree about what a row says.
+			convs = append(convs, conversationFromProto(cv))
 		}
 		return ConversationsMsg{Convs: convs, Categories: resp.Msg.GetCategories(), Assignments: resp.Msg.GetAssignments()}
 	}

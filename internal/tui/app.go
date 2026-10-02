@@ -3831,6 +3831,62 @@ func (m *App) turnInFlight(convID string) bool {
 	return ok && c.TurnInFly
 }
 
+// refreshTurnStatus asks the PLANE for the open conversation's turn state.
+//
+// WHY THE SHELL ASKS INSTEAD OF TRUSTING ITS OWN ROW. m.conversations is refreshed on a timer, so
+// between a turn starting and the next list landing — or for a turn this client never started — the
+// shell's copy says "idle" while the plane says "running". The rail then shows no running marker, the
+// activity line has nothing to key off, and the Stop button claims there is nothing to stop. MEASURED
+// against the live plane during a turn: turnInFlight true, turnProgressing true, pendingAssistantMessageId
+// set — all of it invisible in the TUI.
+//
+// It is ONE row (GetConversation), so the refresh tick can afford it.
+func (m *App) refreshTurnStatus() tea.Cmd {
+	if m.chatConvID == "" || m.chat == nil {
+		return nil
+	}
+	return m.chat.FetchConversationStatus(m.chatConvID)
+}
+
+// onConversationStatus applies the plane's answer about one conversation.
+//
+// THE ROW IS UPDATED IN PLACE, which fixes every consumer at once: the rail's running marker, the
+// activity line (which falls back to the row when this client holds no stream), and re-attach (which
+// is gated on the row saying a turn is in flight).
+//
+// It also RE-ATTACHES: a plane-confirmed turn with no local stream is exactly the state where the
+// completion poll, the watchdog and the activity line's countdown are all missing — and re-attach is
+// the existing path that restores them, so this needs no second one.
+func (m *App) onConversationStatus(msg chat.ConversationStatusMsg) tea.Cmd {
+	if msg.Err != "" || msg.Conv.ID == "" || msg.Conv.ID != m.chatConvID {
+		// A failed read, or an answer about a conversation the operator has since left: nothing to
+		// apply, and nothing worth telling them about (the line is a status, not a report).
+		return nil
+	}
+	applied := false
+	for i := range m.conversations {
+		if m.conversations[i].ID == msg.Conv.ID {
+			m.conversations[i].TurnInFly = msg.Conv.TurnInFly
+			m.conversations[i].PendingReplyID = msg.Conv.PendingReplyID
+			applied = true
+			break
+		}
+	}
+	if !applied {
+		// Not in the shell's list (a brand-new conversation, or one filtered out of the rail): the
+		// status is still worth acting on, and the re-attach below is what matters.
+		m.conversations = append(m.conversations, msg.Conv)
+	}
+	cmd := m.onChatWake()
+	if msg.Conv.TurnInFly && !m.chat.IsStreaming(msg.Conv.ID) {
+		// The plane says a turn is running and this client has no stream for it: fill the gap with the
+		// EXISTING re-attach path (discovery + WatchTurnStream), which is what arms the slot the
+		// activity line and the watchdog read.
+		cmd = tea.Batch(cmd, m.reattachRunningTurn(msg.Conv.ID))
+	}
+	return cmd
+}
+
 // onChatWake repaints the open ask-conversation detail pane with the
 // merged, phase-grouped transcript + live chunks. Cheap (no RPC): the
 // conversation detail's fields render from the last GetConversation —
