@@ -20,6 +20,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 )
@@ -76,12 +78,104 @@ func TestToolAndReasoningBlocksStartCollapsed(t *testing.T) {
 	if got := strings.Count(body, "nested block handling"); got != 1 {
 		t.Errorf("the collapsed tool's output appears %d times, want ONCE (the summary line only — the body must not be drawn)", got)
 	}
-	if strings.Count(body, "\n")+1 > len(blocks)+3 {
-		t.Errorf("a collapsed transcript should be roughly one line per block; got %d lines for %d blocks:\n%s",
-			strings.Count(body, "\n")+1, len(blocks), body)
+	// One row per block PLUS the gap row between them: the gap is blockGap rows per BOUNDARY, so n
+	// blocks occupy n + blockGap*(n-1) rows before slack. (Before the gap existed this was "roughly
+	// one line per block"; the gap is what makes the blocks readable, so the bound moves with it
+	// rather than the gap being dropped to keep a stale number.)
+	budget := len(blocks) + blockGap*(len(blocks)-1) + 3
+	if strings.Count(body, "\n")+1 > budget {
+		t.Errorf("a collapsed transcript should be roughly one line per block plus the gap; got %d lines for %d blocks (budget %d):\n%s",
+			strings.Count(body, "\n")+1, len(blocks), budget, body)
 	}
 	if !strings.Contains(body, "bash") {
 		t.Error("the collapsed tool SUMMARY is missing — a collapsed tool call must say which tool ran")
+	}
+}
+
+// BLOCKS ARE SEPARATED BY A BLANK ROW — the operator's "the text in executions in the TUI are hard to
+// read. They are very scrunched up."
+//
+// The separator was written through the same closure that renders a block's rows, and that closure
+// SKIPS an empty string (which is how a collapsed block contributes nothing) — so the separator was
+// silently dropped and every block's last row ran straight into the next block's header. Measured
+// before the fix, the six-block fixture rendered as six consecutive non-blank rows.
+//
+// The assertion uses the offsets renderBlocks returns, because those are what the pane SCROLLS by:
+// pinning the gap through them covers the layout and the scroll math in one go.
+func TestBlocksAreSeparatedByABlankRow(t *testing.T) {
+	blocks := blocksFromItems(transcriptItems(), 100)
+	body, offsets := renderBlocks(blocks, &blockState{}, 100, transcriptCursor{})
+	rows := strings.Split(body, "\n")
+	if len(offsets) != len(blocks) {
+		t.Fatalf("offsets cover %d blocks, want %d", len(offsets), len(blocks))
+	}
+	for i := 1; i < len(blocks); i++ {
+		at := offsets[i]
+		if at <= 0 || at > len(rows) {
+			t.Fatalf("block %d starts at row %d, outside the %d rendered rows", i, at, len(rows))
+		}
+		// The row ABOVE a block (other than the first) is the gap.
+		if gap := rows[at-1]; strings.TrimSpace(ansi.Strip(gap)) != "" {
+			t.Errorf("block %d starts on row %d with no blank row before it — the block above runs into it:\n%s",
+				i, at, body)
+		}
+	}
+	// And the gap is exactly blockGap rows: a run of blank rows would be dead space (a stray extra
+	// newline is how the gap would silently double if the writer were changed). A run of k blank rows
+	// is k+1 consecutive newlines, so ONE blank row — the expected gap — shows up as "\n\n".
+	if strings.Contains(body, strings.Repeat("\n", blockGap+2)) {
+		t.Errorf("the transcript contains more than %d blank row(s) in a row; the gap is %d", blockGap, blockGap)
+	}
+}
+
+// AN ERROR'S TEXT IS PRINTED ONCE. An error block is never collapsible, so its summary is not a
+// preview — it is the header itself. Keeping the whole text in the body as well printed the same
+// sentence on two consecutive rows ("error boom: index out of range" / "boom: index out of range").
+func TestErrorBlockPrintsItsTextOnce(t *testing.T) {
+	items := []chat.ChatItem{{Kind: chat.KindError, Text: "boom: index out of range", Key: "e1"}}
+	body, _ := renderBlocks(blocksFromItems(items, 100), &blockState{}, 100, transcriptCursor{})
+	if got := strings.Count(body, "boom: index out of range"); got != 1 {
+		t.Errorf("the error text appears %d times, want ONCE:\n%s", got, body)
+	}
+	if !strings.Contains(body, "error") {
+		t.Errorf("the error block lost its label:\n%s", body)
+	}
+
+	// A MULTI-LINE error keeps everything below its first line — the split removes the duplication,
+	// not the diagnostic text (which is what an operator reads an execution for).
+	multi := chat.ChatItem{Kind: chat.KindError, Key: "e2", Text: "boom\n  at parser.go:12\n  at main.go:3"}
+	body, _ = renderBlocks(blocksFromItems([]chat.ChatItem{multi}, 100), &blockState{}, 100, transcriptCursor{})
+	for _, want := range []string{"boom", "at parser.go:12", "at main.go:3"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("a multi-line error dropped %q:\n%s", want, body)
+		}
+	}
+	if got := strings.Count(body, "boom"); got != 1 {
+		t.Errorf("the first line of a multi-line error appears %d times, want ONCE:\n%s", got, body)
+	}
+}
+
+// splitFirstLine is the error-block split as a unit: first non-empty line, then the remainder.
+func TestSplitFirstLine(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		summary string
+		body    string
+	}{
+		{"one line", "boom", "boom", ""},
+		{"two lines", "boom\n  at parser.go:12", "boom", "  at parser.go:12"},
+		{"leading blanks are skipped", "\n\nboom\nrest", "boom", "rest"},
+		{"empty", "", "", ""},
+		{"only blanks", "  \n\t\n", "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gotSummary, gotBody := splitFirstLine(c.in)
+			if gotSummary != c.summary || gotBody != c.body {
+				t.Errorf("splitFirstLine(%q) = (%q, %q), want (%q, %q)", c.in, gotSummary, gotBody, c.summary, c.body)
+			}
+		})
 	}
 }
 
