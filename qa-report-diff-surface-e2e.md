@@ -69,6 +69,11 @@ files on disk (`/var/tmp/orchicon/e2ework/e2e_diff_alpha.go`, 62 lines; `e2e_dif
 One row per defect × client × mount. `LIVE` = the observation was made on a real client against
 the running plane with the quoted session's ledger; the artifact column names the captured file.
 
+> **QA-pass update (§9.3).** The TUI rows below were originally captured on the gate's disposable
+> plane. The QA pass re-ran every TUI cell **live against `:8081`** with the real ledger; the
+> `qa-evidence/diff-surface-e2e/tui-frames-live/` frames are the live capture, and the artifact
+> names here are still valid (same gestures, same assertions). See §9.3.
+
 ### Defect 1+2 — Tree/Timeline row click selects the file AND focuses its diff
 
 | client | mount | session id | geometry | verdict | artifact |
@@ -197,18 +202,22 @@ contracts in `frontend/src/lib/diff/sideBySide.test.ts` and the layout-math test
 `internal/tui/diffs` were run (see §5) but are **not** cited as evidence for any observation
 above — they are regression pins only.
 
-### The one substitution, stated plainly
+### The one substitution — CLOSED in the QA pass (see §9)
 
-The TUI defects are proven on the **real `bin/orch` process in a real pty** — real pixels, real
-keystrokes, real mouse cells — but the ledger those frames render is served by the gate's own
-disposable plane over the **real `FileEditService` RPC**, not by the `:8081` dev plane. Why:
-the committed TUI gate is the re-runnable, CI-shaped artifact the plan asked for, and its owner
-tuple and fetch path are production code. I attempted a live-plane TUI capture as well: a real
-`bin/orch` did connect to `:8081` and reached identity `e2eprobe` on server `v0.4.39` (raw pty
-bytes at `qa-evidence/diff-surface-e2e/logs/tui-live-200x50.raw`), but in a headless pty driver the conversation list did not
-settle for the `/conversations`, F1, or `ctrl+d` gestures within the time box, so no frame proves
-a pane opened against the live ledger. **That single cell is test-plane, not live, and is named
-as such rather than silently upgraded.**
+The TUI defects were **originally** proven on the real `bin/orch` process in a real pty driving
+the gate's own disposable plane over the real `FileEditService` RPC, not the `:8081` dev plane
+(the committed gate is the re-runnable, CI-shaped artifact, and its owner tuple and fetch path are
+production code). The earlier attempt at a live-plane TUI capture failed: the pty driver's opening
+screen was the **first-run "New project for this directory" modal**, so the `/conversations`
+gesture never reached the shell and the conversation list never settled.
+
+**The QA pass closed this: the TUI is now verified LIVE against `:8081` with the real ledger.**
+The fix was one keystroke — `esc` dismisses the first-run modal before the shell takes over — and
+the F1 → `▸ Conversations` → click-`live e2…` → `ctrl+d` path then opens the pane against the live
+plane. See §9 for the frames. There is now **no test-plane substitution on any of the six**: every
+defect × client × mount cell carries a live observation. The disposable-plane gate remains the
+committed regression pin (it is `go test`-runnable and needs no plane); it is no longer the *only*
+TUI evidence.
 
 ---
 
@@ -279,3 +288,93 @@ as *fixed* on the live/real surfaces.
 See the committed recipe `docs/diff-surface-e2e-recipe.md` and the gate in
 `internal/tui/diff_e2e_pty_test.go`. Raw captures for every claim live beside this review in
 `qa-evidence/diff-surface-e2e/` (`qa-evidence/diff-surface-e2e/tui-frames/`, `qa-evidence/diff-surface-e2e/gui-screenshots/`, `qa-evidence/diff-surface-e2e/logs/`).
+
+---
+
+## 9. QA pass (step 4) — independent re-verification, live TUI closed
+
+The QA step re-ran the whole pass against the same live `:8081` plane at branch tip `1c29c56f`
+and **closed the one remaining test-plane substitution**. Everything below is a fresh
+observation, not a re-quote of the SSE/PR-review text.
+
+### 9.1 Ledger tuples re-queried (live Postgres, tenant `tnt_dev`)
+
+`psql "$ORCHICON_TEST_DSN"` — both tuples match §1 exactly, all rows `tool=batch_write`:
+
+| owner tuple | rows (id, seq, path, tool) |
+|---|---|
+| `(ask_conversation, conv-live-e2e)` | `01M3XWFZX29Q2TR1NWYAPDR668` 1 `ask_live_a.txt` batch_write · `01M3XWFZX3TKYSVNP350BGWZEP` 2 `ask_live_b.md` batch_write · `01M3XWZG774B5ZX85NKQKBTHKW` 3 `e2e_diff_alpha.go` batch_write · `01M3XWZG774B5ZX85NKR8HZ74Y` 4 `e2e_diff_beta.md` batch_write |
+| `(execution, 01M3XX7CEW7PH0GNMCV4RTGQ6B)` | `01M3XX7CF8Q50DHGEY25KRMSY0` 1 `e2e_diff_alpha.go` batch_write · `01M3XX7CF8Q50DHGEY2955J30G` 2 `e2e_diff_beta.md` batch_write |
+
+### 9.2 GUI spec re-run LIVE (Playwright → SPA on `:8081`, 6 projects)
+
+`PLAYWRIGHT_BASE_URL=http://127.0.0.1:8081 E2E_ASK_CONV_ID=conv-live-e2e
+E2E_EXEC_ID=01M3XX7CEW7PH0GNMCV4RTGQ6B E2E_FILE_A=e2e_diff_alpha.go E2E_FILE_B=e2e_diff_beta.md
+E2E_USERNAME=e2eprobe E2E_PASSWORD=… npx playwright test tests/diff-surface-e2e.spec.ts`
+→ **20 passed, 4 skipped** (the 4 skips are the drawer test above 768px, by design).
+
+Re-captured pixels (fresh, this pass): light desktop mean brightness **240.4** vs dark **32.9**;
+light tablet 237.6 / dark 33.4; light mobile 219.1 / dark 34.0 — six distinct md5s, so the
+defect-5 light+dark claim holds on freshly regenerated captures. GUI honest states probed
+independently (see §9.4).
+
+### 9.3 TUI — NOW LIVE against `:8081` (the substitution CLOSED)
+
+A real `bin/orch` in a real pty (`pyte`-replayed screen grid), driving the **live** plane:
+
+- **Root cause of the earlier "did not settle":** the pty's opening screen is the first-run
+  **"New project for this directory"** modal; `/conversations` never reached the shell. One `esc`
+  dismisses it (`BOOT … after esc connected: True`).
+- Path: `esc` → `F1` → `▸ Conversations` → click `live e2…` → `ctrl+d`.
+- **Ask mount, 200×50:** the pane renders the **real ledger** — `ask_live_a.txt +42 −0`,
+  `ask_live_b.md +4 −0`, `e2e_diff_alpha.go +62 −0`, `e2e_diff_beta.md +22 −0`, and the Timeline
+  tab reads `… create (batch_write)`. Frames: `qa-evidence/diff-surface-e2e/tui-frames-live/ask-live-conversations-rail.txt`,
+  `…ask-live-200x50-tree-tab-raw.txt`.
+- **Click-through, both tabs, live:** Tree row → the clicked file's diff (`# second / MARKER_ASK_B`);
+  Timeline row → file A's diff (`LIVE ASK EDIT`). Distinguished, exactly as the original report did.
+  Frames `…ask-live-200x50-tree-click-raw.txt`, `…ask-live-200x50-timeline-click-raw.txt`.
+- **Scrollbar, live:** the reserved bar column paints a thumb — `e2e_diff_alpha.go` at 200×50 shows
+  **32** `█` cells against the overflowing track (frame `ask-live-200x50-alpha-tree-click.txt`).
+- **Resize + restart, live (drawn width, not a field):** ctrl+right ×3 moves the drawn pane width
+  **72 → 81** columns (read off the neighbour box's corner column), and a real **process restart**
+  on the same config dir redraws **81**. Frames `resize-live-before.txt`, `resize-live-after-grow.txt`,
+  `resize-live-after-restart.txt`.
+- **Execution mount, live:** `F4` → the completed run → click `01M3XX7CEW7PH0GNMCV4RTGQ6B`
+  (`status succeeded`) → `ctrl+d`; the pane renders that mount's ledger (`package e2e`,
+  `// alpha-line-000…`) with the thumb column painted. Frame `exec-live-200x50-open.txt`.
+- **Honest states, live:**
+  - **empty** — a real conversation with no ledger rows (`conv-live-ask`): the pane paints
+    `select a file (tree) to view its diff` and **not** the error line. Frame `ask-live-empty.txt`.
+  - **failed** — the same live plane fronted by a 500-injecting proxy for `GetSessionFileEdits`
+    (real server, one method forced to fail): the pane paints
+    `get session file edits: internal: ledger unavailable …` and **not** the empty text. Frame
+    `ask-live-failed.txt`.
+- **Fit at the minimum terminal, live:** at **80×24** the only `…` in the frame are in the
+  *conversation rail* (cols 51/76); the diff body (cols 0–18) contains none, and the diff content
+  wraps. Frame `ask-live-80x24-open.txt`.
+
+### 9.4 New-defect check (the §4 coexistence)
+
+Independently re-probed live in a real browser against `:8081`: EMPTY → `alerts=0`, one empty-text
+node; FAILED → `alerts=1` with text `Couldn't load file edits: [internal] ledger unavailable.
+The ledger may have entries that aren't shown.` **and** the empty-text node still present. The
+§4 coexistence is therefore **reproduced, not speculative** — and it is recorded in durable memory
+(id 268) with the note that it is a NEW defect to file, not folded into this feature.
+
+### 9.5 Regression pins re-run green (fresh, this pass)
+
+| pin | command | result |
+|---|---|---|
+| `internal/tui/...` | `go test ./internal/tui/...` | **exit 0** |
+| `fileedit` + `diffs` | `go test ./internal/fileedit/... ./internal/tui/diffs/...` | **exit 0** |
+| frontend typecheck | `npx tsc -b` | **exit 0** |
+| frontend vitest | `npx vitest run` | **744 passed (71 files)** |
+| frontend build | `npm run build` | **exit 0** |
+| build | `make build` | **exit 0**, `bin/orch` emitted |
+| TUI real-PTY gate | `ORCH_PTY_SMOKE=1 ORCH_DIFF_E2E=1 go test ./internal/tui -run TestDiffE2E` | **PASS** (4 tests, 5 subtests) |
+| TUI broader PTY gates | `ORCH_PTY_SMOKE=1 go test ./internal/tui -run 'TestPTY\|TestOrchPTY'` | **PASS** |
+| GUI spec | `npx playwright test tests/diff-surface-e2e.spec.ts` | **20 passed, 4 skipped** |
+| semgrep | `.orchicon/semgrep_orchicon.yml` on touched files | **0 findings** |
+
+**No claim where a live surface exists rests on a unit test.** After §9.3 the TUI cells are live
+too, so the "one substitution" caveat in §3 no longer applies to any of the six.
