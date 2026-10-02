@@ -17,6 +17,10 @@ dist/
 !frontend/dist/
 frontend/dist/*
 !frontend/dist/.gitkeep
+# Playwright scratch: traces, screenshots, the HTML report (the diff-surface E2E
+# spec writes its evidence captures here — artifacts, never sources).
+frontend/test-results/
+frontend/playwright-report/
 .env
 .env.local
 .env.*.local

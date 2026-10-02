@@ -49,17 +49,42 @@ what the review's SQL quotes against the live plane (see §3).
 ```sh
 export E2E_ASK_CONV_ID=<conversation id with >=2 file-edit ledger rows>
 export E2E_EXEC_ID=<execution id with >=2 file-edit ledger rows>
-export E2E_FILE_A=<changed path A>  E2E_FILE_B=<changed path B>
+export E2E_FILE_A=<ask path A>   E2E_FILE_B=<ask path B>
+export E2E_EXEC_FILE_A=<exec path A> E2E_EXEC_FILE_B=<exec path B>   # optional; defaults to the ask pair
+export E2E_USERNAME=<seeded local account>  E2E_PASSWORD=<its password>   # optional; enables live login
 PLAYWRIGHT_BASE_URL=http://localhost:5173 \
   npx playwright test tests/diff-surface-e2e.spec.ts
 ```
 
 Start the dev plane (`orchicon serve` on the SPA's proxy target, port 8080 — see
-`frontend/vite.config.ts`) and the SPA (`pnpm dev`) first. The six projects in
-`playwright.config.ts` (dark/light × desktop 1280×800 / tablet 768×1024 /
-mobile 375×812) supply the light+dark scrollbar check and the sub-768px drawer.
-The main claims run against the REAL ledger; only the two honest-state subtests
-intercept `GetSessionFileEdits` (an empty `{edits,maxSeq}` body and a 500).
+`frontend/vite.config.ts`) and the SPA first. In the runtime container there is
+**no pnpm**, so start Vite directly: `node_modules/.bin/vite --host 127.0.0.1
+--port 5173` (the config's `webServer` needs pnpm and will exit 127; with the
+server already up, `reuseExistingServer` lets the run proceed).
+
+Two mounts hold **different** owner tuples, so give each its own file pair
+(`E2E_EXEC_FILE_*`) or the Execution click-through asserts against an Ask path
+and cannot find the row. The six projects in `playwright.config.ts` (dark/light
+× desktop 1280×800 / tablet 768×1024 / mobile 375×812) supply the light+dark
+scrollbar check and the sub-768px drawer. The main claims run against the REAL
+ledger; only the two honest-state subtests intercept `GetSessionFileEdits` (an
+empty `{edits,maxSeq}` body and a 500).
+
+**Live-run gotchas (learned running this against a real plane):**
+- The SPA keeps its access token **in memory only**. `E2E_USERNAME/PASSWORD`
+  make the spec `POST /auth/local-login` and seed the token via the app's own
+  `sessionStorage["orchicon_access_token"]` stash path (the OIDC-callback
+  mechanism); that survives full-page navigations and the reload the resize
+  check performs. Without credentials the spec reaches `/login`, never the rail.
+- `waitForLoadState("networkidle")` never settles — the mounts poll
+  (ListMessages / execution status) — so every navigation uses
+  `domcontentloaded`.
+- The rail is the inline `<aside>` at ≥768px but the `role="dialog"` overlay
+  below 768px (no `<aside>` at all); the resize separator exists only inline.
+  `diffRail()` in the spec scopes to whichever is present.
+- A browser download may be needed: `npx playwright install chromium`
+  (`PLAYWRIGHT_BROWSERS_PATH=/ms-playwright` in the container).
+
 
 ## 3. Quoting the live ledger tuples
 
