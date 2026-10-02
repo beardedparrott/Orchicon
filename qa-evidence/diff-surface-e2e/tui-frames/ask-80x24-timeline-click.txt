@@ -21,4 +21,4 @@
 │         8901234567││  · alt+enter newlin│                                    │
 │         89TAILEND ││                    │                                    │
 │   5   + added-firs│╰────────────────────└────────────────────────────────────┘
- ● connected · http://127.0.0.1:32969 · server v9.9.9-diffe2e · identity: e2e ·
+ ● connected · http://127.0.0.1:39433 · server v9.9.9-diffe2e ⚠ drift: client v

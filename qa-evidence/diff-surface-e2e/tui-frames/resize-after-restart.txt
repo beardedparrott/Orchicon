@@ -47,4 +47,4 @@
 │                                       │ 39   added-first.go-h00-l034          ││  · alt+enter newline · / commands                                             ││                                    │
 │                                       │ 40   added-first.go-h00-l035          ││                                                                 [brainstorm]  ││                                    │
 │                                       │ 41   added-first.go-h00-l036          │╰───────────────────────────────────────────────────────────────────────────────╯└────────────────────────────────────┘
- ● connected · http://127.0.0.1:38851 · server v9.9.9-diffe2e · identity: e2e · ctrl+g composer · Mouse Enabled
+ ● connected · http://127.0.0.1:45211 · server v9.9.9-diffe2e ⚠ drift: client v0.4.39 · identity: e2e · ctrl+g composer · Mouse Enabled

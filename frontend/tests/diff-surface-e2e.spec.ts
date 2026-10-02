@@ -46,6 +46,69 @@ const USERNAME = process.env.E2E_USERNAME ?? "";
 const PASSWORD = process.env.E2E_PASSWORD ?? "";
 
 /**
+ * applyProjectTheme seeds the app's OWN theme store so the light/dark Playwright
+ * projects actually PAINT the theme they name.
+ *
+ * WHY THIS EXISTS. The config's `light-*` and `dark-*` projects carry an
+ * IDENTICAL `use` block — only the project NAME differs — and `theme-store.ts`
+ * defaults a fresh session to DARK (`loadMode()` returns "dark" when no
+ * preference is stored). Without this helper every one of the six projects
+ * paints dark, so the defect-5 "visible and grabbable in a light AND a dark
+ * theme" claim would rest on duplicate captures — exactly the "on paper"
+ * evidence this item exists to prevent. This follows the established pattern in
+ * tests/snapshots.spec.ts, which drives the GUI theme the same way.
+ */
+async function applyProjectTheme(page: Page, isLight: boolean): Promise<void> {
+  await page.addInitScript((light: boolean) => {
+    try {
+      localStorage.setItem("orchicon_mode", light ? "light" : "dark");
+      localStorage.setItem("orchicon_theme_light", "orchicon-light");
+      localStorage.setItem("orchicon_theme_dark", "orchicon-dark-teal");
+      const root = document.documentElement;
+      if (light) root.classList.remove("dark");
+      else root.classList.add("dark");
+      root.setAttribute("data-theme", light ? "orchicon-light" : "orchicon-dark-teal");
+    } catch {
+      /* localStorage may be unavailable — theme pre-set is best-effort */
+    }
+  }, isLight);
+}
+
+/**
+ * assertProjectTheme asserts the RUNNING document really carries the theme the
+ * project names, and returns the theme's painted-surface colour. Without this a
+ * light-project capture could silently be a copy of the dark one — the exact
+ * failure this helper was added to close.
+ *
+ * The signal is the `--mesh-bg` token (the colour `.bg-mesh` paints behind the
+ * whole shell), read from `documentElement` — a value the theme's CSS sets
+ * immediately from `data-theme`, so it is hydration-independent and does not
+ * race React's first paint the way `body`'s computed background does.
+ */
+async function assertProjectTheme(
+  page: Page,
+  isLight: boolean,
+): Promise<{ lightness: number; token: string }> {
+  // Poll: the attribute is set by an init script, but the matching CSS custom
+  // property resolves a beat later during the shell's first paint.
+  const want = isLight ? "orchicon-light" : "orchicon-dark-teal";
+  await expect
+    .poll(async () =>
+      page.evaluate(() => ({
+        isDark: document.documentElement.classList.contains("dark"),
+        theme: document.documentElement.getAttribute("data-theme") ?? "",
+        token: getComputedStyle(document.documentElement).getPropertyValue("--mesh-bg").trim(),
+      })),
+    )
+    .toEqual(expect.objectContaining({ isDark: !isLight, theme: want }));
+  const token = await page.evaluate(
+    () => getComputedStyle(document.documentElement).getPropertyValue("--mesh-bg").trim(),
+  );
+  const lightness = Number((token.match(/(\d+(?:\.\d+)?)%\s*$/) ?? [])[1]);
+  return { lightness, token };
+}
+
+/**
  * loginIfNeeded authenticates the browser against the live plane's local IdP.
  * The SPA keeps its access token in memory only, so a real UI login is the
  * honest way to reach the mounts — and the HttpOnly refresh cookie it sets
@@ -146,11 +209,16 @@ function diffRail(page: Page) {
 test.describe("diff surface — GUI", () => {
   requireLive(test);
 
-  test("Ask mount: click-through, fit, scrollbar, resize, honest states, drawer", async ({ page }) => {
+  test("Ask mount: click-through, fit, scrollbar, resize, honest states, drawer", async ({ page }, testInfo) => {
+    const isLight = testInfo.project.name.includes("light");
+    await applyProjectTheme(page, isLight);
     await loginIfNeeded(page);
     await page.goto(`${BASE}/ask-orchicon?conversationId=${encodeURIComponent(ASK_CONV_ID)}`, {
       waitUntil: "domcontentloaded",
     });
+    // The project's theme is real, not just its name: this is what makes the
+    // light and dark captures below two DIFFERENT renders.
+    const themeState = await assertProjectTheme(page, isLight);
     await openDiffRail(page, "ask-diff-sidebar-trigger");
 
     // The rail rendered the real ledger.
@@ -258,9 +326,18 @@ test.describe("diff surface — GUI", () => {
     // theme are the Playwright project's, so the light/dark and sub-768px
     // claims cite a real capture).
     await page.screenshot({ path: `test-results/diff-surface-ask-${test.info().project.name}.png`, fullPage: false });
+    // The capture is only meaningful if its theme is real: assert the theme's
+    // painted-surface token is actually light in a light project and dark in a
+    // dark one (a byte-identical duplicate is the failure this closes).
+    if (isLight) {
+      expect(themeState.lightness, `a light project must paint a light surface (got ${themeState.token})`).toBeGreaterThan(50);
+    } else {
+      expect(themeState.lightness, `a dark project must paint a dark surface (got ${themeState.token})`).toBeLessThan(50);
+    }
   });
 
-  test("Execution mount: pane opens and renders the (execution, id) ledger", async ({ page }) => {
+  test("Execution mount: pane opens and renders the (execution, id) ledger", async ({ page }, testInfo) => {
+    await applyProjectTheme(page, testInfo.project.name.includes("light"));
     await loginIfNeeded(page);
     await page.goto(`${BASE}/executions/${encodeURIComponent(EXEC_ID)}`, { waitUntil: "domcontentloaded" });
     await openDiffRail(page, "execution-diff-sidebar-trigger");
@@ -270,7 +347,8 @@ test.describe("diff surface — GUI", () => {
     await assertClickThrough(page, "Timeline", EXEC_FILE_A);
   });
 
-  test("honest states: empty ledger renders empty, failed fetch renders the error banner", async ({ page }) => {
+  test("honest states: empty ledger renders empty, failed fetch renders the error banner", async ({ page }, testInfo) => {
+    await applyProjectTheme(page, testInfo.project.name.includes("light"));
     await loginIfNeeded(page);
     // EMPTY: the durable fetch returns a genuinely empty ledger.
     await page.route(`**${GET_EDITS_SUFFIX}*`, (route) =>
@@ -306,9 +384,10 @@ test.describe("diff surface — GUI", () => {
     // is recorded here rather than enforced, so the pin stays truthful.
   });
 
-  test("narrow viewport (<768px): the drawer overlay forces the unified diff", async ({ page }) => {
+  test("narrow viewport (<768px): the drawer overlay forces the unified diff", async ({ page }, testInfo) => {
     const vw = page.viewportSize()?.width ?? 0;
     test.skip(vw >= 768, "the overlay drawer exists only below 768px");
+    await applyProjectTheme(page, testInfo.project.name.includes("light"));
     await loginIfNeeded(page);
     await page.goto(`${BASE}/ask-orchicon?conversationId=${encodeURIComponent(ASK_CONV_ID)}`, {
       waitUntil: "domcontentloaded",

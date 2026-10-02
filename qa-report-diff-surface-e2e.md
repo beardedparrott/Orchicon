@@ -3,11 +3,19 @@
 Work item: `verify-end-to-end-proof-of-the-diff-surface-…-d6r18s19enrth7nj`
 Feature: the diff surface (session file-edit ledger → GUI sidebar + TUI pane).
 Ran on branch `verify-end-to-end-proof-of-the-diff-surface-…` at `3a79df7d` (rebased onto
-`origin/develop`; see §6).
+`origin/develop`; see §6), re-verified in the PR-review pass against the same `:8081` plane.
 **Method: a real, file-editing session per owner kind against a running dev plane; every
 ledger-backed claim quotes the `(owner_kind, owner_id)` rows it rests on. No fixture stands in
 for a claim that has a live surface** — the one place a fixture plane is used (the TUI real-PTY
 gate) is called out explicitly in §3 and is NOT used to back any of the six defects.
+
+**PR-review result.** The ledger tuples were re-queried from the live sandbox Postgres and match
+this review exactly (6 rows, all `tool=batch_write`). Every regression pin was re-run green
+(`go test ./internal/tui/...`, `fileedit`+`diffs`, `tsc -b`, vitest 744, `make build`, the TUI
+real-PTY gate, and the GUI spec — all exit 0). One defect was found and **fixed** in the evidence
+harness: the light/dark captures were both dark (see §2 defect 4+5 and §7), so the defect-5 "light
+AND dark" claim was unsupported until the fix regenerated genuinely distinct captures. Semgrep
+(`.orchicon/semgrep_orchicon.yml`) reports **0 findings in any file this change touches**.
 
 ---
 
@@ -105,8 +113,16 @@ the running plane with the quoted session's ledger; the artifact column names th
 - **GUI:** the rail's own scoped treatment is applied to the overflowing container — computed
   `scrollbar-width: auto` (the wider lane, vs the global `thin`) and `scrollbar-color` at the
   `.diff-scroll` alpha (0.55 base / 0.75 hover, vs the global 0.15 hairline) — and the scrollbar
-  is **grabbable**: setting `scrollTop` to `scrollHeight` moves the viewport (0 → 251 px). The
-  light and dark projects both run this, so both themes are covered.
+  is **grabbable**: setting `scrollTop` to `scrollHeight` moves the viewport (0 → 251 px).
+- **Both themes are genuinely distinct (PR-review fix).** The spec now seeds the app's own theme
+  store per project (`orchicon_mode` + the light/dark theme slots, the same mechanism
+  `tests/snapshots.spec.ts` uses) and ASSERTS the running document carries it (`data-theme`, the
+  `dark` class, and the `--mesh-bg` surface token with a light/dark lightness bound). Before the
+  fix the `light-*` and `dark-*` projects had **identical** Playwright configs and the spec set no
+  theme, so every capture rendered dark (the light and dark mobile PNGs were byte-identical) and
+  this claim was unsupported. Now all six captures are distinct: mean pixel brightness **≈241
+  (light)** vs **≈32 (dark)** on desktop, and the six md5s are all different
+  (`qa-evidence/diff-surface-e2e/gui-screenshots/`). See §7.
 - **Honest limit (engine, not product):** headless Chromium on this platform paints **overlay**
   scrollbars, so the pixel *gutter* (`offsetWidth − clientWidth`) reads 0 for **every** page,
   including a control page carrying this exact CSS. The gutter is therefore logged as a
@@ -248,6 +264,15 @@ as *fixed* on the live/real surfaces.
   auto`, `.diff-scroll` alpha) + a grabbable `scrollTop` move, and log the pixel gutter as a
   diagnostic (headless Chromium paints overlay scrollbars here, so the gutter is 0 for every
   page). This is a harness fix; the criterion is unchanged and still asserted.
+- `frontend/tests/diff-surface-e2e.spec.ts` — **PR-review fix: the light/dark evidence was
+  false.** The six Playwright projects named `light-*`/`dark-*` carried identical `use` blocks
+  and the spec never set a theme, so all six captures (incl. the byte-identical light/dark
+  mobile PNGs) rendered dark — the defect-5 "light AND dark" claim was unsupported. Added
+  `applyProjectTheme` (seeds `orchicon_mode` + the theme slots via `addInitScript`, the
+  `tests/snapshots.spec.ts` pattern) and `assertProjectTheme` (a runtime assertion that the
+  document really carries the project's `data-theme`, `dark` class, and a light/dark-bounded
+  `--mesh-bg` token). Every test now applies its project's theme. Captures regenerated live
+  against `:8081`; all six distinct (light ≈241 vs dark ≈32 mean brightness).
 
 ## 8. Reproduce
 

@@ -1,19 +1,10 @@
 === RUN   TestDiffE2EAskMountPTY
 === RUN   TestDiffE2EAskMountPTY/80x24
 === RUN   TestDiffE2EAskMountPTY/200x50
---- PASS: TestDiffE2EAskMountPTY (36.98s)
-    --- PASS: TestDiffE2EAskMountPTY/80x24 (17.38s)
-    --- PASS: TestDiffE2EAskMountPTY/200x50 (19.59s)
+--- PASS: TestDiffE2EAskMountPTY (31.09s)
 === RUN   TestDiffE2EResizeAndRestartPTY
---- PASS: TestDiffE2EResizeAndRestartPTY (27.77s)
-=== RUN   TestDiffE2EExecutionMountPTY
---- PASS: TestDiffE2EExecutionMountPTY (13.65s)
-=== RUN   TestDiffE2EHonestStatesPTY
-=== RUN   TestDiffE2EHonestStatesPTY/empty
 === RUN   TestDiffE2EHonestStatesPTY/failed
---- PASS: TestDiffE2EHonestStatesPTY (28.99s)
-    --- PASS: TestDiffE2EHonestStatesPTY/empty (13.82s)
-    --- PASS: TestDiffE2EHonestStatesPTY/failed (15.17s)
+--- PASS: TestDiffE2EHonestStatesPTY (24.07s)
 PASS
-ok  	github.com/beardedparrott/orchicon/internal/tui	107.397s
-tui gate exit=0
+ok  	github.com/beardedparrott/orchicon/internal/tui	92.827s
+gate exit=0

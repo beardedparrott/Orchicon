@@ -37,4 +37,4 @@
 │                         │      l010                ││  · space: mark for bulk · enter: live session · ←/→: pane …    │
 │                         │ 16   added-first.go-h00- ││                                                  [brainstorm]  │
 │                         │      l011                │╰────────────────────────────────────────────────────────────────╯
- ○ disconnected, retrying · http://127.0.0.1:33461 · server v9.9.9-diffe2e · identity: e2e · ctrl+g composer · Mouse En
+ ○ disconnected, retrying · http://127.0.0.1:41517 · server v9.9.9-diffe2e ⚠ drift: client v0.4.39 · identity: e2e · ct

@@ -47,4 +47,4 @@
 │                                  │ 38   added-first.go-h00-l033      ││  · click your message to copy · enter send · alt+enter newline · / commands            ││                                    │
 │                                  │ 39   added-first.go-h00-l034      ││                                                                          [brainstorm]  ││                                    │
 │                                  │ 40   added-first.go-h00-l035      │╰────────────────────────────────────────────────────────────────────────────────────────╯└────────────────────────────────────┘
- ● connected · http://127.0.0.1:38851 · server v9.9.9-diffe2e · identity: e2e · ctrl+g composer · Mouse Enabled
+ ● connected · http://127.0.0.1:45211 · server v9.9.9-diffe2e ⚠ drift: client v0.4.39 · identity: e2e · ctrl+g composer · Mouse Enabled
