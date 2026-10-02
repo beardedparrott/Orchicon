@@ -2420,13 +2420,19 @@ func (m App) viewFrame() string {
 	if m.renameConv != nil {
 		base = m.renameConvView(base, w, h)
 	}
-	if m.convScopeForm != nil {
-		base = m.convScopeView(base, w, h)
-	}
-	// THE CONVERSATION SCOPE MODAL is drawn UNDER convScopeForm and UNDER the confirm dialog, matching
-	// the key order in the router: the list the operator opened, then any form or confirm raised from it.
+	// THE CONVERSATION SCOPE MODAL IS DRAWN FIRST OF THE TWO, so a form raised FROM it lands ON TOP.
+	//
+	// THIS ORDER IS LOAD-BEARING, and getting it backwards is the operator's "none of the buttons
+	// within the modal does anything excepet for ESC": the keys were routed correctly (the form WAS
+	// built and hosted), but the shell composited the list AFTER the form, so the form rendered
+	// UNDERNEATH the modal that opened it and the key looked dead. It matches the router's order —
+	// convScopeForm's keys are claimed before the list's — which is the invariant to keep: whatever
+	// takes the keys must be what the operator sees.
 	if m.scope != nil {
 		base = m.scopeView(base, w, h)
+	}
+	if m.convScopeForm != nil {
+		base = m.convScopeView(base, w, h)
 	}
 	if m.assignForm != nil {
 		base = m.assignCategoryView(base, w, h)

@@ -612,3 +612,131 @@ func TestScopeDoesNotSwallowNonKeyMessages(t *testing.T) {
 		t.Error("a transcript message was swallowed by the modal — the chat waiter would starve")
 	}
 }
+
+// --- what the operator can SEE (the layer the report is true at) -------------
+
+// PRESSING A VERB PUTS ITS RESULT IN THE PAINTED FRAME, not merely in a field.
+//
+// The operator: "none of the buttons within the modal does anything excepet for ESC".
+//
+// The keys were reaching the shell — the form WAS created — but the shell painted it UNDERNEATH the
+// scope modal: viewFrame composited the scope view AFTER convScopeForm, so the form the verb had just
+// opened was covered by the list it was opened from. Every assertion in this file checked a FIELD
+// (m.convScopeForm != nil), which is exactly the layer that was fine; the operator judges m.View().
+// This is the same lesson as the transcript's tail-clipping test, and the reason both now assert on the
+// frame.
+func TestScopeVerbShowsItsFormInThePaintedFrame(t *testing.T) {
+	m, _ := newScopeApp(t)
+	openScopeFrom(t, m, "/scope")
+
+	pressScope(t, m, "a")
+	if m.convScopeForm == nil {
+		t.Fatal("fixture: `a` built no form")
+	}
+	frame := stripANSI(m.View())
+	if !strings.Contains(frame, "Define an MCP server") {
+		t.Errorf("the definition form the operator just asked for is NOT in the painted frame — it is "+
+			"being drawn under the scope modal, so the key reads as dead:\n%s", tailOf(frame, 1600))
+	}
+	for _, want := range []string{"Name", "Transport", "Command"} {
+		if !strings.Contains(frame, want) {
+			t.Errorf("the definition form's %q field is not visible:\n%s", want, tailOf(frame, 1600))
+		}
+	}
+}
+
+// AND THE MODAL IS BACK WHEN THE FORM IS DISMISSED. Reversal of the same ordering: after esc the list
+// must be what the operator sees, with the form gone.
+func TestScopeModalIsVisibleAgainAfterTheFormCloses(t *testing.T) {
+	m, _ := newScopeApp(t)
+	openScopeFrom(t, m, "/scope")
+	pressScope(t, m, "a")
+
+	m.convScopeKey(tea.KeyMsg{Type: tea.KeyEsc}) // the modal host's esc: closes the form
+	if m.convScopeForm != nil {
+		t.Fatal("esc did not close the definition form")
+	}
+	frame := stripANSI(m.View())
+	if !strings.Contains(frame, "Scope — this conversation") {
+		t.Errorf("the scope list is not what the operator sees after closing the form:\n%s", tailOf(frame, 1200))
+	}
+	if strings.Contains(frame, "Define an MCP server") {
+		t.Errorf("the definition form outlived its dismissal:\n%s", tailOf(frame, 1200))
+	}
+}
+
+// THE KEY HINT SURVIVES IN FULL — the operator: "the shortcut advice is also a bit cut off".
+//
+// The hint is the ONLY place the verbs are named, so a cut-off hint hides exactly the capabilities the
+// modal exists to advertise. It was rendered through truncateRight (ONE line, hard cut), which always
+// kills the END — and the end is "esc: close".
+//
+// Asserted two ways, because there are two things to be wrong: the WRAP must lose nothing at any width,
+// and the VIEW must actually use the wrapped form.
+func TestScopeKeyHintIsNotCutOff(t *testing.T) {
+	m, _ := newScopeApp(t)
+	openScopeFrom(t, m, "/scope")
+	// The MCP row has the LONGEST hint (it names install, credential and delete as well), so a width
+	// that fits it fits every other row's.
+	putCursor(m, rowIndexOf(t, m, "github"))
+	items := m.scopeHintItems()
+
+	for _, w := range []int{120, 80, 72, 60, 48, 40, 24} {
+		m.width = w
+		inner := m.modalInnerWidth()
+		lines := wrapHintItems(items, inner)
+		if len(lines) == 0 {
+			t.Fatalf("width %d: the hint produced no lines", w)
+		}
+		for i, l := range lines {
+			if n := len([]rune(l)); n > inner {
+				t.Errorf("width %d: hint line %d is %d cells, over the %d-cell interior — the panel "+
+					"will cut it: %q", w, i, n, inner, l)
+			}
+		}
+		// NOTHING IS LOST. The lines were broken at the separators, so concatenating them reproduces the
+		// items contiguously (a hard-split item is contiguous across the two lines it spans).
+		flat := strings.Join(lines, "")
+		for _, it := range items {
+			if !strings.Contains(flat, it) {
+				t.Errorf("width %d: the hint dropped %q — a verb the operator is looking for:\n%q",
+					w, it, flat)
+			}
+		}
+
+		// AND THE VIEW USES IT: the last verb must be in the rendered modal, not merely in a helper.
+		body := stripANSI(m.scopeBody())
+		if !strings.Contains(body, "esc: close") {
+			t.Errorf("width %d: the rendered modal lost the hint's last verb:\n%s", w, body)
+		}
+		if !strings.Contains(body, "↑/↓ move") {
+			t.Errorf("width %d: the rendered modal lost the hint entirely:\n%s", w, body)
+		}
+	}
+}
+
+// THE EMPTY SCOPE STILL NAMES WHAT CAN BE DONE. The operator's screenshot is this state — no
+// definitions, no skill files — and every row is a heading or a note, so nothing is selectable and the
+// cursor has nowhere to go. The keys that CREATE something must still be advertised, or there is no way
+// out of the state at all.
+func TestEmptyScopeStillAdvertisesTheCreateKeys(t *testing.T) {
+	m, stub := newScopeApp(t)
+	stub.servers = nil
+	stub.projectServers = nil
+	// Unassigned, so there is no inherited half either: this is the screenshot's shape.
+	m.conversations = []chat.Conversation{{ID: "c1", Title: "a chat"}}
+	m.railProjects = nil
+	openScopeFrom(t, m, "/scope")
+
+	body := scopeText(m)
+	for _, want := range []string{"add", "catalog", "skill files"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the empty scope does not advertise %q — the operator's screenshot is this state, "+
+				"and nothing in it is selectable:\n%s", want, body)
+		}
+	}
+	// And the hint must not be cut, here too: this is where the operator saw it clipped.
+	if strings.Contains(body, "\u2026") {
+		t.Errorf("the empty scope's hint is truncated:\n%s", body)
+	}
+}

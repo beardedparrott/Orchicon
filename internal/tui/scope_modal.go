@@ -648,8 +648,13 @@ func (m *App) scopeBody() string {
 	if hi < len(rows) {
 		b.WriteString(theme.HintText.Render(truncateRight("  … more rows below", inner)) + "\n")
 	}
-	b.WriteString(theme.HintText.Render(truncateRight(m.scopeHint(), inner)))
-	return b.String()
+	// THE HINT WRAPS, it is never truncated — see scopeHintItems. Its final verb (esc: close) is the one
+	// an operator reaches for when the verbs above it did not do what they expected, so it is the last
+	// thing that may be cut.
+	for _, line := range wrapHintItems(m.scopeHintItems(), inner) {
+		b.WriteString(theme.HintText.Render(line) + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // scopeWindow returns the [lo,hi) slice of rows to draw, following the cursor.
@@ -682,20 +687,66 @@ func (m *App) scopeWindow(rows []scopeRow, n int) (int, int) {
 	return m.scope.scroll, m.scope.scroll + budget
 }
 
-// scopeHint is the modal's key line. EVERY verb is named — that is the whole repair: the old surface
-// made the operator learn /mcp's five subcommands from a usage string that did not fit on screen.
-func (m *App) scopeHint() string {
+// scopeHintItems is the modal's key list as ITEMS, and the items are why the hint can WRAP.
+//
+// The operator: "the shortcut advice is also a bit cut off". It was rendered through truncateRight,
+// which cuts to ONE line — so the verbs at the end (the ones the operator needs named, because this
+// line is the only place they exist) were the first thing lost. Items let it break on its own
+// separators instead, so nothing is ever dropped.
+func (m *App) scopeHintItems() []string {
 	row, ok := m.scope.selected(m)
-	verbs := "a: add · c: catalog · s: skill files · r: refresh · esc: close"
+	items := []string{"↑/↓ move", "a: add", "c: catalog", "s: skill files", "r: refresh", "esc: close"}
 	switch {
-	case ok && (row.kind == scopeRowMCP):
-		verbs = "enter/e: edit · i: install · k: credential · d: delete · a: add · s: skill files · esc: close"
+	case ok && row.kind == scopeRowMCP:
+		items = []string{"↑/↓ move", "enter/e: edit", "i: install", "k: credential", "d: delete",
+			"a: add", "s: skill files", "esc: close"}
 	case ok && (row.kind == scopeRowInheritedMCP || row.kind == scopeRowProjectSkill):
-		verbs = "read-only (from the project) · a: add · s: skill files · esc: close"
+		items = []string{"↑/↓ move", "read-only (from the project)", "a: add", "s: skill files", "esc: close"}
 	case ok && row.kind == scopeRowSkill:
-		verbs = "enter/e: edit list · d: remove · s: skill files · a: add MCP · esc: close"
+		items = []string{"↑/↓ move", "enter/e: edit list", "d: remove", "s: skill files", "a: add MCP", "esc: close"}
 	}
-	return "↑/↓ move · " + verbs
+	return items
+}
+
+// scopeHint is the hint on one line (the single-line consumers).
+func (m *App) scopeHint() string { return strings.Join(m.scopeHintItems(), " · ") }
+
+// wrapHintItems packs the items into lines of at most width cells, joined with the " · " the hint has
+// always used. An item WIDER than the whole line is hard-split rather than truncated: a cut-off key
+// label is the defect being fixed, and losing one is worse than an ugly break.
+func wrapHintItems(items []string, width int) []string {
+	const sep = " · "
+	if len(items) == 0 {
+		return nil
+	}
+	if width <= 0 {
+		return []string{strings.Join(items, sep)}
+	}
+	var out []string
+	cur := ""
+	for _, it := range items {
+		for len([]rune(it)) > width {
+			if cur != "" {
+				out = append(out, cur)
+				cur = ""
+			}
+			out = append(out, string([]rune(it)[:width]))
+			it = string([]rune(it)[width:])
+		}
+		switch {
+		case cur == "":
+			cur = it
+		case len([]rune(cur))+len([]rune(sep))+len([]rune(it)) <= width:
+			cur += sep + it
+		default:
+			out = append(out, cur)
+			cur = it
+		}
+	}
+	if cur != "" {
+		out = append(out, cur)
+	}
+	return out
 }
 
 // --- the conversation-scope hooks -------------------------------------------
