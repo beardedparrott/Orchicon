@@ -9,6 +9,7 @@
 // We validate the renderer's INPUT side: parseUnifiedDiff must faithfully
 // reconstruct what computeUnifiedDiff produced for each vector, so the
 // sidebar provably displays exactly what the ledger stores.
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { computeUnifiedDiff } from "@/lib/fileedit/diff";
 import {
@@ -27,6 +28,12 @@ const vectors: Record<string, string> = import.meta.glob(
   "../../../../internal/testfixtures/fileedit/*.json",
   { query: "?raw", import: "default", eager: true },
 );
+
+// The rail's scrollbar styling lives in the global stylesheet (Tailwind
+// utilities layer), so it is read straight off disk here rather than through a
+// DOM — `import.meta.glob("*.css", {query:"?raw"})` yields an EMPTY string
+// (Vite's CSS plugin intercepts .css before the ?raw loader runs).
+const cssRaw = readFileSync(new URL("../../index.css", import.meta.url), "utf8");
 
 interface FileEditVector {
   name: string;
@@ -261,5 +268,29 @@ describe("sideBySide wrap + width threshold", () => {
     const rows = parseUnifiedDiff(v.expected_unified_diff ?? "");
     const budget = columnCharBudget(480); // the default rail width
     expect(rows.every((r) => !rowNeedsWrap(r, budget))).toBe(true);
+  });
+});
+
+// The diff rail's scrollbar is TWO mutually-exclusive render paths, and only
+// one runs per engine: Chromium/Safari paint ::-webkit-scrollbar* (12px lane /
+// 6px thumb + its :hover), while a non-auto `scrollbar-color` is the STANDARD
+// path (Firefox) and makes Chromium IGNORE the ::-webkit rules entirely. So the
+// rail must carry a hover declaration on BOTH paths. Pinned here (not a DOM
+// test) because a missing standard-path :hover silently kills the hover state
+// in the engine that matters, and no functional test would catch it.
+describe("diff rail scrollbar treatment pins both render paths", () => {
+  const css = cssRaw;
+
+  it("scopes a wider, higher-contrast treatment to .diff-scroll only", () => {
+    expect(css).toMatch(/\.diff-scroll\s*\{[^}]*scrollbar-width:\s*auto/);
+    expect(css).toMatch(/\.diff-scroll\s*\{[^}]*scrollbar-color:\s*hsla\(var\(--scroll-thumb\)/);
+    expect(css).toMatch(/\.diff-scroll::-webkit-scrollbar\s*\{[^}]*width:\s*12px/);
+  });
+
+  it("keeps a hover state on BOTH the standard and the -webkit path", () => {
+    // Standard path: `.diff-scroll:hover` must beat the base (specificity).
+    expect(css).toMatch(/\.diff-scroll:hover\s*\{[^}]*--scroll-thumb-hover/);
+    // -webkit path.
+    expect(css).toMatch(/\.diff-scroll::-webkit-scrollbar-thumb:hover\s*\{[^}]*--scroll-thumb-hover/);
   });
 });

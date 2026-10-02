@@ -1336,16 +1336,34 @@
       hsl(var(--mesh-bg));
   }
   /* Scoped scrollbar for the diff rail. Wider + higher contrast than the
-     global 4px / 0.15-alpha hairline (index.css:55,1311-1328): the thumb is a
-     6px visual bar inside a 12px grab area (3px transparent border +
-     background-clip: padding-box) so it is both visible AND grabbable.
-     Colour comes from the SAME per-theme --scroll-thumb tokens, so no theme
-     can fall back to another palette's thumb colour and no new token needs a
-     20-theme sweep. This rule lives in @layer utilities, AFTER the @layer base
-     global rule (which closes above), so it wins the cascade. */
+     global 4px / 0.15-alpha hairline (index.css:55,1311-1328). Colour comes
+     from the SAME per-theme --scroll-thumb tokens, so no theme can fall back
+     to another palette's thumb colour and no new token needs a 20-theme sweep.
+     This rule lives in @layer utilities, AFTER the @layer base global rule
+     (which closes above), so it wins the cascade.
+
+     TWO render paths, and only ONE of them runs per engine — do not "fix" one
+     by editing the other:
+       - Chromium/Safari use the ::-webkit-* path, giving a 12px lane with a
+         6px visual thumb (3px transparent border + background-clip:
+         padding-box) — the part that is actually grabbable.
+       - `scrollbar-color`/`scrollbar-width` are the STANDARD path (Firefox,
+         and the ones the global `*` rule at index.css:1325 sets). A non-auto
+         `scrollbar-color` makes Chromium IGNORE every ::-webkit-scrollbar*
+         rule on that element (verified: the thumb stops painting and the lane
+         drops from 15px to the 10px `thin` width), so those declarations MUST
+         stay `auto`/absent here.
+     Because the two paths are mutually exclusive, the hover state needs a
+     declaration in BOTH: the ::-webkit-thumb:hover rule for Chromium/Safari,
+     and `.diff-scroll:hover { scrollbar-color }` for the standard path. The
+     latter's specificity (0,2,0) beats the (0,1,0) base rule — a bare
+     `.diff-scroll` hover would lose and leave the thumb un-hoverable. */
   .diff-scroll {
     scrollbar-width: auto;
     scrollbar-color: hsla(var(--scroll-thumb) / 0.55) transparent;
+  }
+  .diff-scroll:hover {
+    scrollbar-color: hsla(var(--scroll-thumb-hover) / 0.75) transparent;
   }
   .diff-scroll::-webkit-scrollbar {
     width: 12px;
