@@ -79,7 +79,7 @@ export function permissionsMCPServers(raw: string): InlineMCP[] {
       const o = m as Record<string, unknown>;
       const command = o.command;
       return {
-        ...(o as InlineMCP),
+        ...(o as unknown as InlineMCP),
         id: String(o.id ?? ""),
         // A legacy {id, command:"npx -y x"} string becomes the argv array.
         command: typeof command === "string" ? command.split(/\s+/).filter(Boolean) : (command as string[] | undefined),

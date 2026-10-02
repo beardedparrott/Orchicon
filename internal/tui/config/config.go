@@ -89,6 +89,15 @@ type Config struct {
 	// EXPANDED, which is what a new folder should be. Storing the open set would
 	// make every new grouping silently collapsed until the operator opened it.
 	CollapsedGroups []string
+	// DiffRailWidth is the operator's width for the TUI's left DIFF RAIL, in
+	// cells (0 = auto/proportional). TOP LEVEL, for the same reason Theme and
+	// CollapsedGroups are: it is a DISPLAY preference, not a credential, and it
+	// has to survive a session launched from ORCHICON_URL/ORCHICON_TOKEN — where
+	// the profile is a synthetic "env" that is deliberately never written.
+	//
+	// 0 is written back on a reset-to-auto, so the file never pins a width the
+	// operator has abandoned.
+	DiffRailWidth int
 }
 
 // FileName / DirName are the fixed locations under the user's home dir.
@@ -197,6 +206,11 @@ func render(cfg *Config) string {
 		sortStrings(keys)
 		fmt.Fprintf(&b, "collapsed_groups = [%s]\n", quoteList(keys))
 	}
+	// The diff rail's width, OMITTED at 0 so "auto" never writes a key that would
+	// pin a value the operator never chose (the same contract collapsed_groups uses).
+	if cfg.DiffRailWidth > 0 {
+		fmt.Fprintf(&b, "diff_rail_width = %d\n", cfg.DiffRailWidth)
+	}
 	names := make([]string, 0, len(cfg.Profiles))
 	for name := range cfg.Profiles {
 		names = append(names, name)
@@ -287,6 +301,17 @@ func parse(data string) (*Config, error) {
 		case "collapsed_groups":
 			if cur == nil {
 				cfg.CollapsedGroups = parseList(value)
+			}
+		case "diff_rail_width":
+			// MANDATORY, not optional: the `default` below REJECTS an unknown key, so
+			// without this case a file render() wrote would fail to load — a hard
+			// startup error, not a silent default.
+			if cur == nil {
+				n, err := strconv.Atoi(value)
+				if err != nil {
+					return nil, fmt.Errorf("config line %d: %w", i+1, err)
+				}
+				cfg.DiffRailWidth = n
 			}
 		case "newline":
 			if cur != nil {

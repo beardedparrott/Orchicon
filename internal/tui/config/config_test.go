@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -242,5 +243,59 @@ func TestDefaultPathFallsBackToHome(t *testing.T) {
 	}
 	if want := filepath.Join(home, DirName, FileName); got != want {
 		t.Fatalf("DefaultPath() = %q, want %q", got, want)
+	}
+}
+
+// The diff rail's width is a TOP-LEVEL display preference beside theme/collapsed_groups, so it must
+// round-trip through the same file — render writes it, parse reads it — and 0 (auto) must write NOTHING.
+func TestDiffRailWidthRoundTripsWithoutAProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+
+	// Simulates an env-driven session: a config with NO profiles at all.
+	cfg := &Config{Profiles: map[string]*Profile{}, DiffRailWidth: 72}
+	if err := Save(path, cfg); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got.DiffRailWidth != 72 {
+		t.Fatalf("DiffRailWidth = %d after a round trip, want 72", got.DiffRailWidth)
+	}
+	if len(got.Profiles) != 0 {
+		t.Fatalf("round trip invented %d profiles", len(got.Profiles))
+	}
+
+	// AUTO (0) OMITS the key, the same contract collapsed_groups uses: a width the operator never chose
+	// must not be pinned in the file.
+	if err := Save(path, &Config{Profiles: map[string]*Profile{}}); err != nil {
+		t.Fatalf("save auto: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "diff_rail_width") {
+		t.Errorf("auto mode wrote a diff_rail_width key:\n%s", data)
+	}
+	auto, err := Load(path)
+	if err != nil {
+		t.Fatalf("load auto: %v", err)
+	}
+	if auto.DiffRailWidth != 0 {
+		t.Errorf("auto reloaded as %d, want 0", auto.DiffRailWidth)
+	}
+}
+
+// The parser still REJECTS a genuinely unknown key: the new case must not have loosened the default.
+func TestUnknownKeyStillRejected(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	if err := os.WriteFile(path, []byte("active = \"x\"\nsome_future_key = \"v\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load accepted an unknown key — a typo'd or foreign key must be a hard error, not a silent " +
+			"default (the property that makes the parser case mandatory for every new key)")
 	}
 }

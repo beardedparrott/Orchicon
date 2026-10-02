@@ -257,6 +257,29 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 				return false
 			},
 		},
+		// THE DIFF RAIL'S RESIZE FLOOR. The drag is the primary gesture, but a terminal that does not
+		// report motion (or an operator without a mouse) must still be able to size the rail — so these
+		// three chords exist. They are NON-TEXT ctrl chords (the repo's rule for composerBypassKeys), they
+		// are bound by NO bubbles textarea key (its word motions are alt+arrows), and they are registered
+		// HERE rather than hand-listed in the help overlay, so `?` and the behaviour cannot drift.
+		//
+		// Gate: they return false when the diff pane is CLOSED (diffRailWidthStep / diffRailWidthReset),
+		// so the chord is a no-op there and falls through to whatever else might want it.
+		{
+			Name: "widen diff rail", Keys: "ctrl+right", Scope: "global",
+			Match:  keyMatcher("ctrl+right"),
+			Handle: func(m *App, _ tea.Msg) bool { return m.diffRailWidthStep(+1) },
+		},
+		{
+			Name: "narrow diff rail", Keys: "ctrl+left", Scope: "global",
+			Match:  keyMatcher("ctrl+left"),
+			Handle: func(m *App, _ tea.Msg) bool { return m.diffRailWidthStep(-1) },
+		},
+		{
+			Name: "reset diff rail width (auto)", Keys: "ctrl+down", Scope: "global",
+			Match:  keyMatcher("ctrl+down"),
+			Handle: func(m *App, _ tea.Msg) bool { return m.diffRailWidthReset() },
+		},
 	}
 	// One chord route per tab, in tab order: F1 … F7.
 	//
@@ -337,6 +360,11 @@ var composerBypassKeys = map[string]bool{
 	// ctrl+a selects the whole composer (see its route). It has to bypass the textarea for the same reason:
 	// the textarea binds ctrl+a to "line start", so without this the route would never see the key.
 	"ctrl+a": true,
+	// THE DIFF RAIL'S RESIZE CHORDS are here for the same structural reason: they must work while the
+	// composer holds the focus, because that is where the operator is typing. They are NON-TEXT ctrl
+	// chords (the rule above), and the textarea binds only alt+arrows for word motion — so ctrl+arrows
+	// reach the routes instead of being eaten as editing no-ops.
+	"ctrl+left": true, "ctrl+right": true, "ctrl+down": true,
 }
 
 // The tab chords are ADDED from the SAME source the tab bar draws from.
@@ -1023,6 +1051,59 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 // tab bar (click = switch + open its menu), the Ask rail, then
 // fall-through to the screen/pane.
 func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
+	// DRAG-RESIZE THE DIFF RAIL — RESOLVED FIRST, ABOVE THE CLIPBOARD BLOCK BELOW.
+	//
+	// The press-order is the whole fix: clipState.handleMouse begins a text selection on ANY left press
+	// (clipboard.go) and then consumes motion, so a divider drag routed through it would SELECT TEXT
+	// instead of resizing. Claiming the divider's press here, before `if m.clip != nil`, is what keeps
+	// clipState untouched — and consuming the press/motion/release here also means neither the region
+	// setter nor the pane's own mouse handler ever sees them, so a drag can neither select nor switch the
+	// pane's tab, select a file, or trigger its ✕.
+	//
+	// AN OPEN TAB DROPDOWN WINS OVER THE DIVIDER. The dropdown is an OVERLAY painted over the whole
+	// frame (composeView), so it can cover the divider column — a wide menu hangs from a tab in the
+	// centered bar and spans many body rows (e.g. at 200 columns, Overview's menu runs from column 69
+	// to 89 and the divider sits at 89). Without this gate the resize claim fired FIRST and ATE the
+	// menu's press: a click meant for a dropdown entry silently resized the rail and the entry never
+	// activated. Resolving the overlay before the divider keeps the menu owning the clicks inside its
+	// own rectangle, exactly as it owns the keyboard.
+	if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft &&
+		!m.menuHit(mo.X, mo.Y) && m.diffDividerHit(mo.X, mo.Y) {
+		m.diffResizing = true
+		m.diffResizeMoved = false      // a press is not yet a drag — see the release below
+		m.diffResizePrev = m.diffPaneW // the override to restore if it never becomes one
+		m.setDiffPaneW(mo.X + 1)       // seed the override from the column the operator grabbed
+		return m, nil                  // never forwarded to the pane: no tab switch, no file select, no ✕
+	}
+	if m.diffResizing {
+		switch mo.Action {
+		case tea.MouseActionMotion:
+			// The button may arrive as MouseButtonNone (the shape clipState already tolerates,
+			// clipboard.go) — the HELD flag lives on the App, not in the button, so the drag holds.
+			// A motion that does not MOVE the rail (cell-motion can report the press cell) is not
+			// the operator dragging, so it must not turn a click into a resize.
+			cells := mo.X + 1
+			if cells != m.diffPaneW {
+				m.diffResizeMoved = true
+			}
+			m.setDiffPaneW(cells)
+			return m, nil
+		case tea.MouseActionRelease:
+			m.diffResizing = false
+			if !m.diffResizeMoved {
+				// A CLICK, NOT A DRAG. The press seeded an override from the grabbed column, so
+				// without this a stray click on the rail's edge would pin AUTO to a fixed width:
+				// the pane would stop scaling with the terminal and the number would persist.
+				// Restore the pre-gesture override (0 = auto) and persist NOTHING.
+				m.diffPaneW = m.diffResizePrev
+				m.refreshLayout()
+				return m, nil
+			}
+			m.persistDiffRailWidth()
+			return m, nil
+		}
+		// Any other action while resizing (e.g. a wheel) falls through to normal handling.
+	}
 	// SELECT AND COPY runs ahead of everything else, because it has to work over EVERYTHING: the
 	// tab bar, the dropdown, the rails, a pane, the transcript. The shell owns the frame, so it
 	// is the only layer that can select across all of them (clipboard.go).

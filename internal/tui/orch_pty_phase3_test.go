@@ -67,6 +67,13 @@ func TestPTYPhase3PaletteSubmenuConnectGate(t *testing.T) {
 	// esc (menu already closed) is harmless.
 	_, _ = s.tty.WriteString("\x1b")
 	_ = s.readFor(500 * time.Millisecond)
+	// RE-FOCUS THE COMPOSER. The submenu step above navigated by key, and the panel/menu owns
+	// the keyboard afterwards — so the composer did not receive the keys typed below and "/connect"
+	// went nowhere (the palette step before it still echoed, which is what made this look like a
+	// /connect bug rather than a focus one). ctrl+g is the gate's own documented focus chord, used
+	// for exactly this in the other pty gates, and it restores the launch state this step assumes.
+	_, _ = s.tty.WriteString("\x07")
+	_ = s.readFor(700 * time.Millisecond)
 
 	// 3. CONNECT OVERLAY IS A REAL MODAL: /connect opens it in place (no
 	// alt-screen teardown) and its fields can be focused + typed into.

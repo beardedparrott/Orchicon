@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -58,6 +59,12 @@ func (f *mouseAsk) ListConversations(ctx context.Context, req *connect.Request[v
 			Id:           fmt.Sprintf("conv-%02d", i),
 			Title:        fmt.Sprintf("rail-conv-%02d", i),
 			MessageCount: int32(i + 1),
+			// THE CONVERSATIONS BELONG TO THE SEEDED PROJECT. mousePlaneFixture makes the launch
+			// directory resolve to project "p1" (that is what keeps the launch prompt quiet), and
+			// applyLaunchDirScope then points the rail at that workspace. A conversation with no
+			// project_id is filtered OUT of the scoped rail, so the fixture's rows must carry p1 or
+			// the rail renders empty and every row assertion in this gate is vacuous.
+			ProjectId: "p1",
 		})
 	}
 	return connect.NewResponse(out), nil
@@ -90,7 +97,17 @@ func mousePlaneFixture(t *testing.T) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"version": "v9.9.9-ptymouse"})
 	})
-	pp, ph := apiv1connect.NewProjectServiceHandler(&ptyProjects{})
+	// THE PROJECT CARRIES A DIRECTORY, and it is the directory orch is launched from
+	// (the package dir — what startOrchPtyAt's child inherits). Without it the plane
+	// reports an UNATTACHED launch directory, the launch-time project prompt fires, and
+	// its full-frame question REPLACES the shell — so this gate waiting for the composer
+	// (❯) never sees one and fails as "❯ never painted". This is the same trap
+	// connectPlaneFixture documents; an empty &ptyProjects{} is not enough.
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("resolve cwd: %v", err)
+	}
+	pp, ph := apiv1connect.NewProjectServiceHandler(&ptyProjects{dir: cwd})
 	mux.Handle(pp, ph)
 	ap, ah := apiv1connect.NewAskOrchiconServiceHandler(&mouseAsk{})
 	mux.Handle(ap, ah)
@@ -139,12 +156,19 @@ func TestPTYMouseGate(t *testing.T) {
 	s := startOrchPtyAt(t, bin, plane.URL, home)
 	defer s.close()
 
-	// 1. LAUNCH: composer focused + the conversations rail UP and populated
-	// from the live API (operator screenshot showed an EMPTY floating box).
+	// 1. LAUNCH: composer focused. The launch page is the HERO view ("New", no
+	// rail — see askMode/welcomeMode), so the conversations rail is reached by
+	// its VERB, exactly as an operator reaches it: `/conversations`. Asserting a
+	// rail straight off the launch frame was the stale half of this gate.
 	out := s.readFor(5 * time.Second)
-	for _, want := range []string{"❯", "CONVERSATIONS", "rail-conv-00"} {
+	if !strings.Contains(out, "❯") {
+		t.Fatalf("launch: composer (❯) never painted (%d bytes)\n%s", len(out), tailOf(out, 2500))
+	}
+	_, _ = s.tty.WriteString("/conversations\r")
+	out = s.readFor(5 * time.Second)
+	for _, want := range []string{"❯", "Conversations", "rail-conv-00"} {
 		if !strings.Contains(out, want) {
-			t.Fatalf("launch: %q never painted (%d bytes)\n%s", want, len(out), tailOf(out, 2500))
+			t.Fatalf("launch: %q never painted after /conversations (%d bytes)\n%s", want, len(out), tailOf(out, 2500))
 		}
 	}
 	if got := railRangeStart(t, out); got != 1 {
@@ -152,19 +176,33 @@ func TestPTYMouseGate(t *testing.T) {
 	}
 
 	// 2. CLICK THE RAIL HEADER (absolute row 2 → SGR row 3) collapses it: the
-	// header text must leave the CURRENT repaint.
+	// header text must leave the frame.
+	//
+	// Assert on the repaint DELTA from the click, like step 3 below. A tail window of a whole-frame
+	// repaint is vacuous here: the collapse repaints the entire shell, and the rail header sits on the
+	// frame's FIRST body row, so it is never in the last few KB whether or not the rail left. That
+	// vacuity is exactly what let a no-op ctrl+r/toggle look green.
+	beforeCollapse := len(s.readFor(0))
 	s.sendMouse(0, 120-ConversationsRailWidth+5, railTopRow+1, false)
 	s.sendMouse(0, 120-ConversationsRailWidth+5, railTopRow+1, true)
 	collapsed := s.readFor(2 * time.Second)
-	if strings.Contains(tailOf(collapsed, 4000), "CONVERSATIONS") {
+	if strings.Contains(stripCSI(collapsed[beforeCollapse:]), "Conversations") {
 		t.Fatal("mouse click on the rail header did not collapse the rail")
 	}
 
 	// 3. ctrl+r re-opens it.
+	//
+	// Assert on the repaint DELTA, not on a byte window of the whole capture. Re-opening repaints the
+	// WHOLE frame (the shell draws in alt-screen), and the rail's header sits on the frame's FIRST body
+	// row — so a tail window can only find it if the window happens to be larger than the frame, which is
+	// why the previous `tailOf(reopened, 20000)` went flaky as soon as the frame grew past 20KB. The
+	// delta is the exact bytes this key press produced, and the header is always in it.
+	before := len(collapsed)
 	_, _ = s.tty.WriteString("\x12")
 	reopened := s.readFor(2 * time.Second)
-	if !strings.Contains(tailOf(reopened, 20000), "CONVERSATIONS") {
-		t.Fatal("ctrl+r did not re-open the conversations rail")
+	if !strings.Contains(reopened[before:], "Conversations") {
+		t.Fatalf("ctrl+r did not re-open the conversations rail (no header in this key press's %d-byte "+
+			"repaint)\n%s", len(reopened)-before, tailOfPlain(stripCSI(reopened), 2000))
 	}
 
 	// 4. WHEEL over the rail scrolls the list.
@@ -181,19 +219,33 @@ func TestPTYMouseGate(t *testing.T) {
 	// (which type commands) start from an empty buffer.
 	_, _ = s.tty.WriteString(strings.Repeat("\x7f", 40))
 
-	// 5. CLICK A RAIL ROW opens that conversation: its transcript paints.
-	_, _ = s.tty.WriteString("\x1bOP") // F1 → back to Ask (a structural chord; vt100/xterm encoding)
+	// 5. CLICK A RAIL ROW opens that conversation: its detail paints.
+	//
+	// F1 is a no-op navigation here (the shell launched on Ask and never left), but the tab
+	// CHORD is openTabWithMenu now: pressing the OPEN tab's chord drops its dropdown down
+	// (shell.go), and the open menu owns the next click — so the rail-row press below landed on
+	// the menu, not the rail. The LONE esc that step 6 already relies on dismisses it (the menu
+	// owns esc), returning the frame to the rail before the click.
+	_, _ = s.tty.WriteString("\x1bOP") // F1 → Ask (opens its submenu)
 	s.readFor(1500 * time.Millisecond)
+	_, _ = s.tty.WriteString("\x1b") // dismiss the submenu so the rail is clickable
+	s.readFor(700 * time.Millisecond)
 	// SGR rows are 1-based: the FIRST conversation row (0-based railTopRow+1)
 	// is SGR row railTopRow+2.
 	s.sendMouse(0, 120-ConversationsRailWidth+8, railTopRow+2, false)
 	s.sendMouse(0, 120-ConversationsRailWidth+8, railTopRow+2, true)
+	// The ASSERTION is the conversation the click OPENED, read off the detail pane:
+	// its "Conversation: <title>" header and its "id conv-NN" row. The fixture's older
+	// "detail-of-<id>" marker is no longer what the pane draws (the detail header comes from the
+	// LIST row that was clicked), so keying on it made a WORKING click look broken.
 	opened := s.readFor(3 * time.Second)
-	// The fixture titles each detail "detail-of-<id>", so this string can
-	// only appear if the click opened THAT conversation's detail pane.
-	wantConv := fmt.Sprintf("detail-of-conv-%02d", firstRow-1)
-	if !strings.Contains(opened, wantConv) {
-		t.Fatalf("clicking the rail row did not open its conversation (want %q in the painted stream)\n%s", wantConv, tailOf(opened, 2500))
+	wantID := fmt.Sprintf("id conv-%02d", firstRow-1)
+	// stripCSI, not stripANSI: stripANSI stops at the '[', so a parameterised colour like
+	// "\x1b[38;5;231m" leaves "38;5;231m" in the text and SPLITS the needle. The painted
+	// stream here is full of those (the shell paints 256-colour cells), so the strip has to
+	// consume the whole CSI sequence.
+	if !strings.Contains(stripCSI(opened), wantID) {
+		t.Fatalf("clicking the rail row did not open its conversation (want %q in the painted stream)\n%s", wantID, tailOfPlain(stripCSI(tailOf(opened, 12000)), 2500))
 	}
 
 	// 6. CLICK TABS: a click on the tab bar opens that tab's dropdown
@@ -231,12 +283,17 @@ func TestPTYMouseGate(t *testing.T) {
 	_, _ = s.tty.WriteString(strings.Repeat("\x7f", 40))
 	_, _ = s.tty.WriteString("/theme\r")
 	themed := s.readFor(2 * time.Second)
-	tail := stripANSI(tailOf(themed, 6000))
+	tail := stripCSI(tailOf(themed, 6000))
 	// The /theme command surface runs IN the running shell (palette select +
 	// live repaint). The switch itself is asserted at shell level by
 	// TestThemeStepSequence (palette -> "/theme light" -> enter), which drives
 	// the identical sequence deterministically.
-	for _, want := range []string{"themes:", "/theme <name> switches"} {
+	//
+	// The markers are the notice's CURRENT text (its palette list header and its
+	// switching hint). An earlier gate keyed on a bare "themes:", which the notice has
+	// not printed since it grew its "(TUI palettes)" clause — slash.go's runThemeCmd —
+	// so a WORKING /theme read as broken.
+	for _, want := range []string{"themes (TUI palettes)", "/theme <name> switches"} {
 		if !strings.Contains(tail, want) {
 			t.Fatalf("/theme never ran in the running shell: %q missing\n%s", want, tailOf(tail, 1500))
 		}
@@ -271,6 +328,16 @@ func stripANSI(s string) string {
 	}
 	return b.String()
 }
+
+// stripCSI removes whole ANSI CSI sequences — "\x1b[" plus any parameter bytes up to and including
+// the final byte. It is the strip the PAINTED-FRAME assertions need: stripANSI above stops at the
+// first byte in the escape body, so a 256-colour cell like "\x1b[38;5;231m" leaves the literal
+// "38;5;231m" in the text and splits any needle that spans a style boundary. The real-pty frames are
+// almost entirely such cells, so a substring that looks present to the eye can be un-findable to
+// strings.Contains.
+var csiSeqRE = regexp.MustCompile("\x1b\\[[0-9;?]*[a-zA-Z]")
+
+func stripCSI(s string) string { return csiSeqRE.ReplaceAllString(s, "") }
 
 func hasAny(hay string, needles []string) bool {
 	for _, n := range needles {
