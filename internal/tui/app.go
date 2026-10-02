@@ -352,6 +352,20 @@ type App struct {
 	diffPane *diffs.Model
 	diffTab  diffs.Tab
 	diffPath string
+	// diffPaneW is the operator's OVERRIDE for the left rail's width in cells
+	// (0 = auto). It is the ONLY extra input to diffPaneWidth, so every consumer
+	// of the width — contentWidth, refreshLayout, both SetSize calls, the mouse
+	// hit-tests, the selection-region guard, the clipboard region resolver and the
+	// View join — follows from one accessor with no call-site change.
+	//
+	// It stores the operator's INTENT (the grabbed column + 1), not the clamped
+	// width: clamping is diffPaneWidth's job alone, so a terminal that grows back
+	// restores what the operator asked for.
+	diffPaneW int
+	// diffResizing is true from a divider press until its release. The HELD state
+	// lives here rather than in the mouse button because tea delivers motion with
+	// MouseButtonNone (the same shape clipState already tolerates).
+	diffResizing bool
 
 	// Ask conversations rail (GUI Ask sidebar). OPEN by default; collapsible
 	// via ctrl+r toggle and a mouse click on the rail header. State persists
@@ -456,28 +470,34 @@ type App struct {
 // numbers, which is not enough to read a line of Go.
 const DiffRailMinWidth = 48
 
-// diffPaneWidth is the left diff rail's width for the CURRENT terminal.
-//
-// It is a METHOD rather than a constant because the mouse hit-tests, the pane's
-// SetSize and the View's join all have to agree on the width — a single constant
-// made that free, and making it dynamic without a shared accessor would let the
-// drawn pane and its clickable region drift apart (a click near the right edge
-// would land on the content pane while looking like it was inside the diff).
-//
-// The floor keeps the pane usable on a narrow terminal; the cap leaves the content
-// pane at least half the screen, since the diff is a sidebar and the work item or
-// execution beside it is the primary surface.
-func (m *App) diffPaneWidth() int {
-	w := m.width
-	if w < 1 {
-		w = DiffRailMinWidth * 2
+// diffPaneAutoWidth is the PROPORTIONAL width the pane gets when the operator has set no override: the
+// auto share of the available columns, normalised through the SAME clamp every other width uses. It is
+// expressed as "compute, then clamp" rather than repeating the floor/cap inline, so AUTO mode and an
+// override cannot drift into two different width policies.
+func (m *App) diffPaneAutoWidth() int {
+	return m.clampDiffPaneWidth(m.diffAvailWidth() * 45 / 100)
+}
+
+// diffAvailWidth is the column budget the diff rail and the content pane share: the terminal width, less
+// the conversations rail when it is showing. It is the ONE derivation of "available", so the auto width
+// and the clamp cannot disagree about what they are dividing.
+func (m *App) diffAvailWidth() int {
+	avail := m.width
+	if avail < 1 {
+		avail = DiffRailMinWidth * 2
 	}
 	// The conversation rail, when present, is not ours to spend.
-	avail := w
 	if m.railVisible() {
 		avail -= ConversationsRailWidth
 	}
-	width := avail * 45 / 100
+	return avail
+}
+
+// clampDiffPaneWidth is THE width clamp — the floor and the cap are expressed in this one function and
+// nowhere else, so neither an override nor the auto path can invent a third rule. Every width (auto,
+// drag, keyboard step, stored value) is normalised here.
+func (m *App) clampDiffPaneWidth(width int) int {
+	avail := m.diffAvailWidth()
 	if width < DiffRailMinWidth {
 		width = DiffRailMinWidth
 	}
@@ -488,6 +508,82 @@ func (m *App) diffPaneWidth() int {
 		width = 20
 	}
 	return width
+}
+
+// diffPaneWidth returns the left rail's APPLIED width for the current terminal: the operator's override
+// when they have set one, the proportional width otherwise, clamped in exactly one place.
+//
+// Clamping is applied on every CALL, so a terminal shrink re-clamps a stored width that no longer fits
+// with no WindowSizeMsg hook needed — refreshLayout runs on the resize and every consumer reads back
+// through here.
+func (m *App) diffPaneWidth() int {
+	w := m.diffPaneAutoWidth()
+	if m.diffPaneW > 0 {
+		w = m.diffPaneW
+	}
+	return m.clampDiffPaneWidth(w)
+}
+
+// diffResizeStep is how many cells one keyboard resize chord moves the rail. Fixed rather than
+// proportional so the chord's effect is predictable on any terminal.
+const diffResizeStep = 4
+
+// setDiffPaneW records the operator's chosen rail width (the pane's right-edge column + 1) and re-lays the
+// layout out. Clamping is diffPaneWidth's job, so this stores the INTENT: a value below the floor is
+// raised to it here only so the stored number is never nonsensical, never to fight the terminal (the cap
+// is applied on read).
+//
+// It does NOT persist: a drag calls this on every motion CELL, and a config write per cell is pointless
+// I/O. The gesture's release (and each keyboard chord) persists once, when the width has settled.
+func (m *App) setDiffPaneW(cells int) {
+	if cells < DiffRailMinWidth {
+		cells = DiffRailMinWidth
+	}
+	m.diffPaneW = cells
+	m.refreshLayout()
+}
+
+// diffRailWidthStep grows (delta > 0) or shrinks (delta < 0) the rail by one step. It returns false
+// when the pane is not open, so the route falls through and the chord is a no-op — the item's stated
+// gate. On the FIRST step with no override yet, it seeds from the width the operator is LOOKING at
+// (diffPaneWidth returns the auto width while diffPaneW == 0), so the rail never jumps on first use.
+func (m *App) diffRailWidthStep(delta int) bool {
+	if !m.diffOpen || m.diffPane == nil {
+		return false
+	}
+	m.setDiffPaneW(m.diffPaneWidth() + delta*diffResizeStep)
+	m.persistDiffRailWidth()
+	return true
+}
+
+// diffRailWidthReset returns the rail to the automatic/proportional width and clears the persisted
+// override, so a restart does not resurrect the width the operator just abandoned.
+func (m *App) diffRailWidthReset() bool {
+	if !m.diffOpen || m.diffPane == nil {
+		return false
+	}
+	m.diffPaneW = 0
+	m.refreshLayout()
+	m.persistDiffRailWidth()
+	return true
+}
+
+// diffDividerHit reports whether a frame CELL is the pane's right-most column — the divider a drag
+// grabs — over the pane's body rows. The vertical extent mirrors selectionRegionAt's bounds
+// (clipboard.go), so the drag region and the selectable region agree at the pane's edge.
+func (m *App) diffDividerHit(x, y int) bool {
+	if !m.diffOpen || m.diffPane == nil {
+		return false
+	}
+	if x != m.diffPaneWidth()-1 {
+		return false
+	}
+	top := tabBarRows + 1 // row 0 the tab bar, row 1 the rule, row 2 the blank separator
+	bottom := top + m.screenRows() + m.panelRows() + m.dock.Lines() - 1
+	if last := m.height - 2; bottom > last {
+		bottom = last
+	}
+	return y >= top && y <= bottom
 }
 
 // AppOption customizes App construction. Options are how the launch prompt stays
@@ -671,6 +767,9 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string, o
 	// operator reported ("Conversation categories don't stay collapsed when you leave orch and come back
 	// in"). Silent on failure by design — see prefs.go.
 	m.loadCollapsedGroups()
+	// The diff rail's width is the SAME kind of preference in the SAME file, so it is restored at the SAME
+	// moment and by the same silent-on-failure rule (see prefs.go loadDiffRailWidth).
+	m.loadDiffRailWidth()
 	// Caller options LAST, so anything they set wins over the defaults above.
 	for _, o := range opts {
 		o(m)

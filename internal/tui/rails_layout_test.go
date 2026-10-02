@@ -657,3 +657,25 @@ func TestTabYieldsOnlyToAWindowedModalForm(t *testing.T) {
 			m.active, m.chatFocus)
 	}
 }
+
+// CTRL+R IS NOT A NO-OP: toggleRightRail must actually change what railVisible reports. Its route and
+// its help entry both say "toggle conversations rail", but railVisible() used to ignore rightRailOpen
+// (the flag the toggle flips), so the chord changed dead state and the rail never left the screen. The
+// real-PTY mouse gate surfaced it; this pins it where it cannot drift.
+func TestRailToggleIsNotANoOp(t *testing.T) {
+	m := newTestApp()
+	m.active = TabAsk
+	m.askMode = askConversations
+	m.rightRailOpen = true
+	if !m.railVisible() {
+		t.Fatal("precondition: the conversations rail should be visible to start")
+	}
+	m.toggleRightRail()
+	if m.railVisible() {
+		t.Fatal("toggleRightRail did not hide the rail — ctrl+r would be a silent no-op")
+	}
+	m.toggleRightRail()
+	if !m.railVisible() {
+		t.Fatal("toggleRightRail did not bring the rail back")
+	}
+}

@@ -72,7 +72,12 @@ func (m *App) railVisible() bool {
 	if m.chatConvID != "" {
 		return true // continuing a session
 	}
-	return m.askMode == askConversations
+	// rightRailOpen IS CONSULTED, and that is the whole point of ctrl+r: its route and its help
+	// entry both say "toggle conversations rail", but railVisible ignored the flag, so the chord
+	// changed dead state and the rail never left the screen. The gate caught it (a collapse followed
+	// by ctrl+r never brought the rail back). Default true, so nothing that predates the toggle
+	// changes behaviour.
+	return m.askMode == askConversations && m.rightRailOpen
 }
 
 // toggleRightRail collapses/expands the Ask conversations rail (ctrl+r).
