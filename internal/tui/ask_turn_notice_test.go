@@ -23,6 +23,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 )
 
@@ -97,5 +99,58 @@ func TestTheActivityLineReservesItsRow(t *testing.T) {
 	m.onChatWake()
 	if got := len(str.Visible()); got <= withNotice {
 		t.Errorf("with no notice the body should get the row back: %d visible, was %d", got, withNotice)
+	}
+}
+
+// SENDING PUTS BOTH THE ECHO AND THE ACTIVITY LINE IN THE FRAME, immediately — the operator's "the use
+// message doesn't append at the bottom right away anymore".
+//
+// Driven through the REAL funnel (sendFromComposer and the commands it returns, applied the way the
+// bubbletea runtime applies them), not by appending to the store and calling onChatWake by hand. That
+// distinction is the whole test: a funnel that appends but forgets to WAKE renders the message only when
+// some later event happens to repaint, which reads to the operator as a lag — and a hand-wired test
+// cannot see it.
+func TestSendingAppendsTheEchoAndTheLineImmediately(t *testing.T) {
+	m, _ := askWithTranscript(t, "c1")
+
+	cmd := m.sendFromComposer("hello from the funnel")
+	if cmd == nil {
+		t.Fatal("sendFromComposer produced no command")
+	}
+	// Apply the returned commands as the runtime does. The RPC inside is best-effort here (the stub
+	// plane answers nothing for it); what matters is the wake.
+	applyCmds(m, cmd)
+
+	frame := stripANSI(m.View())
+	if !strings.Contains(frame, "hello from the funnel") {
+		t.Errorf("the operator's own message is not in the painted frame straight after sending — the "+
+			"echo was written but nothing repainted, which is the reported lag:\n%s", tailOf(frame, 1200))
+	}
+	if !strings.Contains(frame, "Orchicon is") {
+		t.Errorf("no activity line in the painted frame straight after sending:\n%s", tailOf(frame, 1200))
+	}
+}
+
+// applyCmds evaluates a (possibly batched) command and feeds every message it produces back into the
+// shell, which is what the runtime does with a returned cmd.
+func applyCmds(m *App, cmd tea.Cmd) {
+	queue := []tea.Cmd{cmd}
+	for len(queue) > 0 {
+		next := queue[0]
+		queue = queue[1:]
+		if next == nil {
+			continue
+		}
+		switch msg := next().(type) {
+		case tea.BatchMsg:
+			queue = append(queue, msg...)
+		case chatWakeMsg:
+			// The shell's own repaint poke. Feed it through the router's handler so the pane is rebuilt
+			// exactly as it is in the running program.
+			_, c := m.Update(msg)
+			if c != nil {
+				queue = append(queue, c)
+			}
+		}
 	}
 }
