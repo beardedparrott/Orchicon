@@ -37,6 +37,63 @@ func TestStylesConstruct(t *testing.T) {
 	}
 }
 
+// THE DIFF PANE'S SCROLLBAR CARRIES PALETTE COLOURS — on every palette.
+//
+// TestStylesConstruct above only proves the two styles RENDER (a bare
+// lipgloss.NewStyle() renders its text unchanged and would pass), so it cannot
+// catch the failure this gate exists for: a style that is declared and used by
+// the renderer but never assigned in buildStyles. Such a style carries
+// lipgloss.NoColor and draws in the TERMINAL's default foreground — exactly the
+// defect the Tree/Timeline list rows were fixed for, and invisible in a test
+// like TestStylesConstruct. It also renders nothing at all under the Ascii
+// profile, so the operator on a monochrome terminal would see no bar.
+//
+// The track and thumb must also be DISTINGUISHABLE (by colour, on top of the
+// distinct glyphs), so position is readable even when the glyphs look similar.
+func TestDiffScrollbarStylesCarryPaletteColours(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev); Use(DefaultName) })
+
+	const white = "#f8fafc"
+	for _, name := range Names() {
+		Use(name)
+		th := Active()
+		bg := string(th.Bg)
+
+		for label, style := range map[string]lipgloss.Style{
+			"DiffScrollTrack": DiffScrollTrack,
+			"DiffScrollThumb": DiffScrollThumb,
+		} {
+			if _, ok := style.GetForeground().(lipgloss.NoColor); ok {
+				t.Errorf("%s: %s has NO foreground — it renders in the terminal's default colour "+
+					"(or nothing under Ascii), so the scrollbar is invisible or wrong-coloured", name, label)
+				continue
+			}
+			if !strings.Contains(style.Render("│"), "\x1b[") {
+				t.Errorf("%s: %s emitted no SGR — the bar has no colour under TrueColor", name, label)
+			}
+		}
+
+		// The track must be visible against the pane background (a track nobody can see is not an
+		// affordance), and the thumb must stand out from the track so the position reads.
+		track := colorHex(DiffScrollTrack.GetForeground())
+		thumb := colorHex(DiffScrollThumb.GetForeground())
+		if track == "" || thumb == "" {
+			t.Fatalf("%s: scrollbar colours are not concrete (%q / %q)", name, track, thumb)
+		}
+		if r := contrastRatio(track, bg); r < 1.3 {
+			t.Errorf("%s: the scrollbar TRACK (%s) is indistinguishable from the background (%s): %.2f:1",
+				name, track, bg, r)
+		}
+		if r := contrastRatio(track, thumb); r < 1.5 {
+			t.Errorf("%s: the scrollbar THUMB (%s) is indistinguishable from its track (%s): %.2f:1 — "+
+				"the operator cannot see where in the content they are", name, thumb, track, r)
+		}
+		_ = white
+	}
+}
+
 // go test cannot allocate a real terminal, so assert the ANSI output under
 // each profile explicitly instead of relying on termenv detection.
 func TestProfileDegradation(t *testing.T) {
