@@ -887,7 +887,12 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		pid := *msg.ParentId
 		fields.ParentID = &pid
 	}
-	if msg.ScheduledStartAt != nil {
+	if msg.ClearScheduledStartAt {
+		// An EXPLICIT removal of the schedule, independent of starting. CLEAR WINS over a
+		// simultaneous scheduled_start_at: removing is the more specific intent, and applying both
+		// would be contradictory (a value and its removal in one request).
+		fields.ClearScheduledStartAt = true
+	} else if msg.ScheduledStartAt != nil {
 		t := msg.ScheduledStartAt.AsTime()
 		fields.ScheduledStartAt = &t
 	}
@@ -1346,7 +1351,14 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	// flag. A stale flag declines silently (log only); an EXPLICIT
 	// auto_start_workflow=true in this request declines with a warning on
 	// the response. Either way the edit itself is saved.
-	wouldAutoStart := updated.ScheduledStartAt == nil && updated.AutoStartWorkflow &&
+	// The flag alone is NOT a request. Auto-start fires only when THIS request explicitly asks for it
+	// (userExplicitlyAutoStarts) or — for backward compatibility with a client that saves an item
+	// whose status is genuinely startable — when the request named a start AND the item is in a
+	// pre-run status. The distinction is what keeps a stale stored flag from firing a run on an
+	// unrelated edit (the operator's explicit warning: "not fire anything off that already has auto
+	// set… done as an action when saving the record only").
+	requestNamedStart := userExplicitlyAutoStarts || msg.ScheduledStartAt != nil
+	wouldAutoStart := requestNamedStart && updated.ScheduledStartAt == nil && updated.AutoStartWorkflow &&
 		!(kindSwitchInFlight && !userExplicitlyAutoStarts)
 	autoStartWarning := ""
 	if wouldAutoStart {
@@ -1354,7 +1366,28 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		if fields.Status != nil {
 			effectiveStatus = *fields.Status
 		}
-		if IsStartableForAutoStart(current.Status) && IsStartableForAutoStart(effectiveStatus) {
+		// WHO MAY FIRE. Two rules, and the difference between them is the whole point:
+		//
+		//   AN EXPLICIT GESTURE OVERRIDES THE STATUS GATE. The operator's report: "if a work item is
+		//   in cancelled or failed, I can't kick it off or schedule it unless I first edit the work
+		//   item, set it to pending, save it, then edit it again, then set my auto start. I think
+		//   setting an auto start on a work item should take no matter what status it is in." They
+		//   are right: starting writes status=running unconditionally (StartWorkflow flips the bound
+		//   item), so the PRE-status was never a correctness requirement — it was only ever a guard
+		//   against STALE state, which rule (2) covers on its own. Requiring a startable pre-status
+		//   additionally refused an act the operator explicitly asked for, twice.
+		//
+		//   A STALE STORED FLAG STILL NEVER FIRES. wouldAutoStart above is now driven by
+		//   userExplicitlyAutoStarts, so a legacy row carrying auto_start_workflow=true cannot be
+		//   re-armed by an unrelated edit — the bug 410a3089 fixed, and the one the operator warned
+		//   about ("We have to be careful though to not fire anything off that already has auto or
+		//   schedule set. It must be done as an action when saving the record only").
+		//
+		// What remains refused on an explicit gesture, because it is a genuine correctness rule and
+		// not status policy: an ACTIVE run (checked below — two runs must never share one item), and
+		// a subtree with nothing to run (ValidateSequenceSchedule already ran in-tx).
+		effectiveStartable := IsStartableForAutoStart(effectiveStatus)
+		if userExplicitlyAutoStarts || effectiveStartable {
 			if s.itemHasChildren(ctx, tenantID, updated.ID) {
 				s.maybeStartSequence(ctx, tenantID, updated)
 			} else if updated.WorkflowID != nil && *updated.WorkflowID != "" && s.startWorkflowFn != nil {

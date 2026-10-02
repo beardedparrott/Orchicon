@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -132,15 +131,22 @@ func TestUpdateAutoStartDeclinedOnCancelledLeafDB(t *testing.T) {
 	}
 }
 
-// TestUpdateAutoStartExplicitNonStartableWarnsDB — an EXPLICIT
-// auto_start_workflow=true on a non-startable item saves the edit but
-// returns a warning naming the required statuses, and starts nothing.
-func TestUpdateAutoStartExplicitNonStartableWarnsDB(t *testing.T) {
+// TestUpdateAutoStartExplicitFiresFromFailedDB — the operator's item 2, inverted.
+//
+// "if a work item is in cancelled or failed, I can't kick it off or schedule it unless I first edit
+// the work item, set it to pending, save it, then edit it again, then set my auto start. I think
+// setting an auto start on a work item should take no matter what status it is in."
+//
+// An EXPLICIT auto_start_workflow=true on a failed item now starts the bound run. Starting writes
+// status=running unconditionally, so the pre-status was never a correctness requirement — the
+// pre-status gate only ever guarded against STALE state, and the stale-flag rule (requestNamedStart)
+// guards that on its own. No warning: the request was honoured.
+func TestUpdateAutoStartExplicitFiresFromFailedDB(t *testing.T) {
 	pool, s, ctx, proj := autoStartTestEnv(t)
 	wf := seedPublishedWorkflowForTest(t, pool, proj, true)
 	item := createSequenceItem(t, pool, proj, domain.WorkItemKindTask, "Failed Leaf", nil, &wf, nil)
 	forceAutoStartState(t, pool, item.ID, domain.WorkItemFailed, false)
-	started, seqStarted := installAutoStartSpies(s)
+	started, _ := installAutoStartSpies(s)
 
 	truthy := true
 	resp, err := s.UpdateWorkItem(ctx, connect.NewRequest(&apiv1.UpdateWorkItemRequest{
@@ -149,16 +155,15 @@ func TestUpdateAutoStartExplicitNonStartableWarnsDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if *started != 0 || *seqStarted != 0 {
-		t.Fatalf("failed item started: %d/%d, want 0/0", *started, *seqStarted)
+	if *started != 1 {
+		t.Fatalf("explicit auto-start on a failed item did not fire: workflow starts=%d, want 1 "+
+			"(the operator's 'it should take no matter what status it is in')", *started)
 	}
-	for _, marker := range []string{"NOT applied", "pending, scheduled, ready, or assigned", "saved"} {
-		if !strings.Contains(resp.Msg.Warning, marker) {
-			t.Errorf("warning %q missing marker %q", resp.Msg.Warning, marker)
-		}
+	if resp.Msg.Warning != "" {
+		t.Fatalf("an honoured explicit start must not warn, got %q", resp.Msg.Warning)
 	}
 	if !resp.Msg.WorkItem.GetAutoStartWorkflow() {
-		t.Fatal("explicit auto_start_workflow=true must still be SAVED (edit persists)")
+		t.Fatal("explicit auto_start_workflow=true must be SAVED as well as fired")
 	}
 }
 
@@ -191,14 +196,16 @@ func TestUpdateAutoStartStaleFlagSilentNoFireDB(t *testing.T) {
 	}
 }
 
-// TestUpdateAutoStartDeclinedWhenRequestCancelsDB — the same-request edge:
-// an explicit auto_start=true together with a non-startable target status
-// (status=cancelled in this very request) must also decline, with warning.
-func TestUpdateAutoStartDeclinedWhenRequestCancelsDB(t *testing.T) {
+// TestUpdateAutoStartExplicitOverridesSameRequestStatusDB — the same-request edge.
+//
+// An explicit auto_start=true together with a non-startable target status (status=cancelled in this
+// very request, e.g. the edit form saving the item it just cancelled) fires: the explicit gesture
+// outranks the status. The RESULTING status is running, because the start itself asserts that.
+func TestUpdateAutoStartExplicitOverridesSameRequestStatusDB(t *testing.T) {
 	pool, s, ctx, proj := autoStartTestEnv(t)
 	wf := seedPublishedWorkflowForTest(t, pool, proj, true)
 	item := createSequenceItem(t, pool, proj, domain.WorkItemKindTask, "Cancel Same Request", nil, &wf, nil)
-	started, seqStarted := installAutoStartSpies(s)
+	started, _ := installAutoStartSpies(s)
 
 	truthy := true
 	cancelled := apiv1.WorkItemStatus_WORK_ITEM_STATUS_CANCELLED
@@ -208,15 +215,48 @@ func TestUpdateAutoStartDeclinedWhenRequestCancelsDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if *started != 0 || *seqStarted != 0 {
-		t.Fatalf("same-request cancel started: %d/%d, want 0/0", *started, *seqStarted)
+	if *started != 1 {
+		t.Fatalf("explicit auto-start alongside a status override did not fire: starts=%d, want 1", *started)
 	}
-	if !strings.Contains(resp.Msg.Warning, "NOT applied") {
-		t.Fatalf("warning missing on explicit decline: %q", resp.Msg.Warning)
+	if resp.Msg.Warning != "" {
+		t.Fatalf("an honoured explicit start must not warn, got %q", resp.Msg.Warning)
+	}
+}
+
+// TestUpdateAutoStartStaleFlagOnPendingNeverFiresDB — THE LANDMINE, and the operator's own warning.
+//
+// "We have to be careful though to not fire anything off that already has auto or schedule set. It
+// must be done as an action when saving the record only."
+//
+// A pending item carrying a STALE stored auto_start_workflow=true (a legacy row, or a row armed by a
+// previous save) must NOT fire when an unrelated field is edited. Before this rule the stored flag
+// alone drove the fire, so renaming a pending item launched its workflow — the exact hazard the
+// operator named.
+func TestUpdateAutoStartStaleFlagOnPendingNeverFiresDB(t *testing.T) {
+	pool, s, ctx, proj := autoStartTestEnv(t)
+	wf := seedPublishedWorkflowForTest(t, pool, proj, true)
+	item := createSequenceItem(t, pool, proj, domain.WorkItemKindTask, "Pending Armed", nil, &wf, nil)
+	forceAutoStartState(t, pool, item.ID, domain.WorkItemPending, true) // stale stored flag
+	started, seqStarted := installAutoStartSpies(s)
+
+	newTitle := "Renamed " + db.NewID()
+	resp, err := s.UpdateWorkItem(ctx, connect.NewRequest(&apiv1.UpdateWorkItemRequest{
+		Id: item.ID, Title: &newTitle,
+	}))
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if *started != 0 || *seqStarted != 0 {
+		t.Fatalf("a TITLE-ONLY edit on a pending item with a stale stored flag FIRED a run: %d/%d, want 0/0 — "+
+			"auto-start must be an explicit act on the save, never a side effect of the stored flag",
+			*started, *seqStarted)
+	}
+	if resp.Msg.Warning != "" {
+		t.Fatalf("a stale-flag edit is silent, got warning %q", resp.Msg.Warning)
 	}
 	got := mustGetSequenceItem(t, pool, item.ID)
-	if got.Status != domain.WorkItemCancelled {
-		t.Fatalf("status = %q, want cancelled", got.Status)
+	if got.Title != newTitle || got.Status != domain.WorkItemPending || !got.AutoStartWorkflow {
+		t.Fatalf("edit not saved as-is: title=%q status=%q flag=%v", got.Title, got.Status, got.AutoStartWorkflow)
 	}
 }
 
