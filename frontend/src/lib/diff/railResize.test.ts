@@ -44,8 +44,8 @@ describe("clampRailWidth", () => {
   });
 
   it("re-clamps a stored wide width after the window shrinks", () => {
-    const wide = clampRailWidth(RAIL_DEFAULT_WIDTH, 1600);
-    expect(wide).toBe(RAIL_DEFAULT_WIDTH);
+    const wide = clampRailWidth(RAIL_MAX_WIDTH, 1600);
+    expect(wide).toBe(RAIL_MAX_WIDTH);
     const shrunk = clampRailWidth(wide, 900);
     expect(shrunk).toBe(540); // 900 - 360
     expect(shrunk).toBeLessThan(wide);

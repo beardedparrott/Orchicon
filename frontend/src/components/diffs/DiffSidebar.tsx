@@ -17,7 +17,8 @@ import { X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useSessionFileEdits } from "@/api/fileEdits";
-import { groupByFile } from "@/lib/diff/sideBySide";
+import { groupByFile, sideBySideFits } from "@/lib/diff/sideBySide";
+import { useRailWidth } from "@/lib/diff/useRailWidth";
 import { RAIL_DEFAULT_WIDTH } from "@/lib/diff/railResize";
 import { useRailResize } from "@/lib/diff/useRailResize";
 import { DiffView } from "@/components/diffs/DiffView";
@@ -60,7 +61,8 @@ export interface DiffSidebarProps {
   onTabChange: (tab: DiffTab) => void;
   selectedPath: string;
   onSelectPath: (path: string) => void;
-  /** force the unified (single-column) diff fallback on narrow widths */
+  /** force the unified (single-column) diff fallback; when omitted, the
+   * decision is DERIVED from the rail's measured width (see useRailWidth). */
   unified?: boolean;
   /**
    * The flex row the rail is the first child of. The rail can never be widened
@@ -90,13 +92,24 @@ export function DiffSidebar({
   onTabChange,
   selectedPath,
   onSelectPath,
-  unified = false,
+  // No `= false` default here: an explicit `unified` forces the choice (the
+  // sub-768px drawer passes true); undefined lets the rail's MEASURED width
+  // decide, which is what makes a narrow drag collapse to one column.
+  unified,
   containerRef,
   width = RAIL_DEFAULT_WIDTH,
   onWidthChange,
 }: DiffSidebarProps) {
   const { edits, loading, error } = useSessionFileEdits(ownerKind, ownerId, isLive);
   const narrow = useIsNarrow();
+  // The rail reads its OWN measured width (host-set inline width OR the 480px
+  // default) and collapses to one column below MIN_SIDE_BY_SIDE_PX. Hooks are
+  // unconditional and MUST run before the `if (!open) return null` below.
+  const railRef = useRef<HTMLDivElement>(null);
+  const railWidth = useRailWidth(railRef);
+  // An explicit `unified` prop forces the choice (the sub-768px drawer does);
+  // otherwise the measured width decides. Unknown width keeps side-by-side.
+  const unifiedEffective = unified ?? !sideBySideFits(railWidth);
 
   // Resize interaction (pointer drag + keyboard) for the rail's trailing edge.
   // Called ABOVE the `if (!open) return null` below so the hook order is stable
@@ -133,7 +146,7 @@ export function DiffSidebar({
     return (
       <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-label="Diff sidebar">
         <div className="absolute inset-0 bg-black/50" onClick={onClose} aria-hidden="true" />
-        <div className="absolute inset-y-0 left-0 flex w-[min(480px,88vw)] max-w-full shrink-0 flex-col overflow-hidden border-r border-border/60 bg-background shadow-xl">
+        <div ref={railRef} className="absolute inset-y-0 left-0 flex w-[min(480px,88vw)] max-w-full shrink-0 flex-col overflow-hidden border-r border-border/60 bg-background shadow-xl">
           <TabHeader tab={tab} onTabChange={onTabChange} onClose={onClose} tabClasses={tabClasses} />
           {error && <LedgerErrorBanner error={error} />}
           {tab === "timeline" && (
@@ -161,13 +174,14 @@ export function DiffSidebar({
 
   return (
     <div
+      ref={railRef}
       // The width is an INLINE style on this node (not a utility class): this is
-      // the same node the sibling wrap/measured-width item observes, so it
-      // re-derives side-by-side vs unified on every drag without a second
+      // the same node useRailWidth observes, so the measured-width
+      // side-by-side/unified decision re-derives on every drag — no second
       // source of truth. `w-[480px]` stays as the pre-measure fallback.
       style={{ width: effectiveWidth }}
       className={cn(
-        "relative flex h-full shrink-0 overflow-hidden border-r border-border/60 bg-background/60 backdrop-blur w-[480px]",
+        "relative flex h-full shrink-0 items-stretch overflow-hidden border-r border-border/60 bg-background/60 backdrop-blur w-[480px]",
         // Suspend the slide-open transition while dragging — an animating edge
         // would lag behind the pointer instead of tracking it.
         !dragging && "transition-[width] duration-300 ease-in-out",
@@ -187,7 +201,7 @@ export function DiffSidebar({
           <DiffView
             diff={selected?.edits[selected.edits.length - 1]?.unifiedDiff ?? ""}
             path={effectivePath}
-            unified={unified}
+            unified={unifiedEffective}
           />
         )}
         {loading && (
@@ -206,7 +220,7 @@ export function DiffSidebar({
           handle at all. */}
       <div
         {...handleProps}
-        className="absolute inset-y-0 right-0 z-10 w-1.5 cursor-col-resize select-none bg-transparent transition-colors hover:bg-accent/60 focus-visible:bg-accent focus-visible:outline-none"
+        className="absolute inset-y-0 right-0 z-10 w-1.5 cursor-col-resize touch-none select-none bg-transparent transition-colors hover:bg-accent/60 focus-visible:bg-accent focus-visible:outline-none"
       />
     </div>
   );

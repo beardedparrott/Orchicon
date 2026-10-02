@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -17,6 +18,9 @@ const hookSrc = fs.readFileSync(
   "utf8",
 );
 
+// The rail fetches its ledger through TanStack Query, so the render needs a
+// provider. No jsdom here (repo idiom) — server rendering is enough to assert
+// the markup contract (role/aria, tab order, no drawer handle).
 function render(overrides: Record<string, unknown> = {}) {
   const props = {
     open: true,
@@ -29,8 +33,17 @@ function render(overrides: Record<string, unknown> = {}) {
     onSelectPath: () => {},
     ...overrides,
   };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return renderToStaticMarkup(createElement(DiffSidebar, props as any));
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, enabled: false } },
+  });
+  return renderToStaticMarkup(
+    createElement(
+      QueryClientProvider,
+      { client },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      createElement(DiffSidebar, props as any),
+    ),
+  );
 }
 
 describe("DiffSidebar inline rail — resize handle", () => {
@@ -51,6 +64,23 @@ describe("DiffSidebar inline rail — resize handle", () => {
     // Default 480 on an unmeasured container (no layout in this harness).
     expect(html).toContain('aria-valuenow="480"');
     expect(html).toContain("cursor-col-resize");
+  });
+
+  it("renders the rail at the width it is GIVEN (the persisted value path)", () => {
+    const html = render({ width: 760 });
+    // The rendered rail carries the width — not just a stored number. This is
+    // the reload path: usePersistentState feeds `width`, the rail renders it.
+    expect(html).toContain("width:760px");
+    expect(html).toContain('aria-valuenow="760"');
+  });
+
+  it("renders a container-clamped width rather than the raw stored one", () => {
+    // No container ref in this harness (unmeasured) → the constant ceiling
+    // applies, so a stored 3000 cannot paint a 3000px rail.
+    const html = render({ width: 3000 });
+    expect(html).not.toContain("width:3000px");
+    expect(html).toContain("width:960px");
+    expect(html).toContain('aria-valuemax="960"');
   });
 
   it("keeps the rail's tabs and their aria-pressed after the handle is added", () => {

@@ -9,6 +9,7 @@
 // We validate the renderer's INPUT side: parseUnifiedDiff must faithfully
 // reconstruct what computeUnifiedDiff produced for each vector, so the
 // sidebar provably displays exactly what the ledger stores.
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { computeUnifiedDiff } from "@/lib/fileedit/diff";
 import {
@@ -16,12 +17,23 @@ import {
   emphasizeTokens,
   groupByFile,
   isLanguage,
+  sideBySideFits,
+  columnCharBudget,
+  rowNeedsWrap,
+  MIN_SIDE_BY_SIDE_PX,
+  MONO_CHAR_PX,
 } from "./sideBySide";
 
 const vectors: Record<string, string> = import.meta.glob(
   "../../../../internal/testfixtures/fileedit/*.json",
   { query: "?raw", import: "default", eager: true },
 );
+
+// The rail's scrollbar styling lives in the global stylesheet (Tailwind
+// utilities layer), so it is read straight off disk here rather than through a
+// DOM — `import.meta.glob("*.css", {query:"?raw"})` yields an EMPTY string
+// (Vite's CSS plugin intercepts .css before the ?raw loader runs).
+const cssRaw = readFileSync(new URL("../../index.css", import.meta.url), "utf8");
 
 interface FileEditVector {
   name: string;
@@ -205,5 +217,81 @@ describe("sideBySide groupByFile + isLanguage", () => {
     expect(isLanguage("CMakeLists.txt")).toBe(true); // .txt → plaintext
     expect(isLanguage("Dockerfile")).toBe(false); // no extension
     expect(isLanguage("README")).toBe(false);
+  });
+});
+
+// The GUI rail decides side-by-side vs unified from its MEASURED width, and the
+// rows wrap. These pins fix (a) the threshold decision, (b) its equivalence to
+// the TUI sibling in char cells, and (c) that rowNeedsWrap is actually a
+// function of the measured budget — not decorative. Driven by the SHARED
+// fixtures so the wrap decision is pinned against real diff text.
+describe("sideBySide wrap + width threshold", () => {
+  it("decides side-by-side from measured width (unknown keeps side-by-side)", () => {
+    expect(sideBySideFits(479)).toBe(true);
+    expect(sideBySideFits(MIN_SIDE_BY_SIDE_PX)).toBe(true);
+    expect(sideBySideFits(MIN_SIDE_BY_SIDE_PX - 1)).toBe(false);
+    // Unknown / not-yet-measured width must NOT collapse (no unified flash).
+    expect(sideBySideFits(0)).toBe(true);
+    expect(sideBySideFits(-1)).toBe(true);
+  });
+
+  it("threshold matches the TUI sibling in char cells (>=48)", () => {
+    expect(Math.round(MIN_SIDE_BY_SIDE_PX / MONO_CHAR_PX)).toBeGreaterThanOrEqual(48);
+  });
+
+  it("columnCharBudget shrinks with the rail and never goes negative", () => {
+    expect(columnCharBudget(480)).toBeGreaterThan(columnCharBudget(360));
+    expect(columnCharBudget(100)).toBe(0); // 50-56 < 0
+  });
+
+  it("wraps long fixture lines only under a tight budget", () => {
+    const withDiff = parsed.filter((v) => !!v.expected_unified_diff);
+    expect(withDiff.length).toBeGreaterThan(0);
+
+    for (const v of withDiff) {
+      const rows = parseUnifiedDiff(v.expected_unified_diff ?? "");
+      if (rows.length === 0) continue;
+      // Every fixture line is short: nothing wraps at a generous budget…
+      expect(rows.some((r) => rowNeedsWrap(r, 200))).toBe(false);
+      // …but the decision is a function of the MEASURED budget: at the longest
+      // side's own length it fits, one char tighter and it must wrap.
+      const maxSide = Math.max(0, ...rows.map((r) => Math.max(r.oldText.length, r.newText.length)));
+      if (maxSide > 0) {
+        expect(rows.every((r) => !rowNeedsWrap(r, maxSide))).toBe(true);
+        expect(rows.some((r) => rowNeedsWrap(r, maxSide - 1))).toBe(true);
+      }
+    }
+  });
+
+  it("the create vector needs no wrap at the default 480px rail", () => {
+    const v = parsed.find((p) => p.name === "create-new-file")!;
+    const rows = parseUnifiedDiff(v.expected_unified_diff ?? "");
+    const budget = columnCharBudget(480); // the default rail width
+    expect(rows.every((r) => !rowNeedsWrap(r, budget))).toBe(true);
+  });
+});
+
+// The diff rail's scrollbar is TWO render paths, and only one is active per
+// engine. The STANDARD one (`scrollbar-color`/`scrollbar-width`, what Chromium
+// and Firefox paint) supplies the widened 0.55-alpha lane; the ::-webkit-*
+// rules are the fallback for engines without standard support (12px lane / 6px
+// thumb). An engine paints ONE of them, so the rail must carry a hover
+// declaration on BOTH. Pinned here (not a DOM test) because a missing
+// standard-path :hover silently kills the hover state in the engine that
+// matters, and no functional test would catch it.
+describe("diff rail scrollbar treatment pins both render paths", () => {
+  const css = cssRaw;
+
+  it("scopes a wider, higher-contrast treatment to .diff-scroll only", () => {
+    expect(css).toMatch(/\.diff-scroll\s*\{[^}]*scrollbar-width:\s*auto/);
+    expect(css).toMatch(/\.diff-scroll\s*\{[^}]*scrollbar-color:\s*hsla\(var\(--scroll-thumb\)/);
+    expect(css).toMatch(/\.diff-scroll::-webkit-scrollbar\s*\{[^}]*width:\s*12px/);
+  });
+
+  it("keeps a hover state on BOTH the standard and the -webkit path", () => {
+    // Standard path: `.diff-scroll:hover` must beat the base (specificity).
+    expect(css).toMatch(/\.diff-scroll:hover\s*\{[^}]*--scroll-thumb-hover/);
+    // -webkit path.
+    expect(css).toMatch(/\.diff-scroll::-webkit-scrollbar-thumb:hover\s*\{[^}]*--scroll-thumb-hover/);
   });
 });

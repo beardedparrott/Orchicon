@@ -116,7 +116,13 @@ export function useRailResize({
   }, []);
 
   const onPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    // preventDefault stops the browser starting a text selection / native drag
+    // behind the pointer; it ALSO suppresses the default focus-on-pointerdown,
+    // so focus the handle explicitly — the keyboard step keys must work right
+    // after a click, not only after Tab. preventScroll keeps a click on the
+    // edge from nudging the page scroll.
     e.preventDefault();
+    e.currentTarget.focus?.({ preventScroll: true });
     startWidthRef.current = widthRef.current;
     pointerIdRef.current = e.pointerId;
     // Capture on the handle: moves keep arriving even when the pointer leaves
@@ -198,15 +204,20 @@ export function useRailResize({
     onWidthChangeRef.current(clampRailWidth(RAIL_DEFAULT_WIDTH, containerWidth));
   }, [containerWidth]);
 
-  // Drag cursor is owned by the body: the pointer is captured by the handle but
-  // visually sweeps across the chat column, so the resize cursor must apply
-  // there too. Cleanup is unconditional → no stuck cursor after any ending.
+  // Drag cursor + selection are owned by the body: the pointer is captured by
+  // the handle but visually sweeps across the chat column, so both must apply
+  // there too. Cleanup is unconditional → no stuck cursor/selection after any
+  // ending (pointerup, pointercancel, lost capture, unmount mid-drag).
   useEffect(() => {
     if (!dragging || typeof document === "undefined") return;
-    const prev = document.body.style.cursor;
-    document.body.style.cursor = "col-resize";
+    const body = document.body.style;
+    const prevCursor = body.cursor;
+    const prevSelect = body.userSelect;
+    body.cursor = "col-resize";
+    body.userSelect = "none";
     return () => {
-      document.body.style.cursor = prev;
+      body.cursor = prevCursor;
+      body.userSelect = prevSelect;
     };
   }, [dragging]);
 

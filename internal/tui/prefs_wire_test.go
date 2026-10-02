@@ -128,3 +128,69 @@ func TestCollapsingOnePageDoesNotClobberAnother(t *testing.T) {
 		t.Errorf("the credential was lost by a preference write:\n%s", got)
 	}
 }
+
+// THE RAIL'S WIDTH SURVIVES A RESTART. This is the operator's report end to end: drag (or chord) the width,
+// then "leave orch and come back in" — a NEW App over the SAME sandboxed config dir — and the RESTARTED
+// model must render the pane at the chosen width.
+//
+// The assertion is on the RESTARTED model's COMPOSED view, not on the struct: a field that round-trips
+// through the file but is never consulted by diffPaneWidth would look correct in a struct assertion and
+// draw the wrong pane.
+func TestDiffRailWidthSurvivesARelaunch(t *testing.T) {
+	path := useTempConfigDir(t)
+
+	// Session one: the operator sizes the rail.
+	m := newDiffRailApp(t, 240, 40)
+	m.setDiffPaneW(96)
+	m.persistDiffRailWidth()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("resizing wrote no config file (%s): %v — the width cannot come back", path, err)
+	}
+	if got := contentStartColumn(t, m); got != 96 {
+		t.Fatalf("session one draws the pane %d cells wide, want the set 96", got)
+	}
+
+	// Session two: a NEW App, constructed the way a relaunch is, at the SAME terminal size.
+	m2 := newDiffRailApp(t, 240, 40)
+	if m2.diffPaneW != 96 {
+		t.Fatalf("a fresh session restored override %d, want 96 — the width did not come back", m2.diffPaneW)
+	}
+	if got := contentStartColumn(t, m2); got != 96 {
+		t.Errorf("the RESTARTED model draws the pane %d cells wide, want the persisted 96", got)
+	}
+	if got := m2.contentWidth(); got != 240-96 {
+		t.Errorf("the restarted model's contentWidth is %d, want %d", got, 240-96)
+	}
+}
+
+// RESET-TO-AUTO IS REMEMBERED TOO: a width the operator abandoned must not come back on the next launch.
+func TestDiffRailResetToAutoSurvivesARelaunch(t *testing.T) {
+	path := useTempConfigDir(t)
+
+	m := newDiffRailApp(t, 240, 40)
+	m.setDiffPaneW(96)
+	m.persistDiffRailWidth()
+
+	// The operator resets to auto.
+	if !m.diffRailWidthReset() {
+		t.Fatal("the reset was refused with the pane open")
+	}
+
+	// The FILE no longer pins a width...
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "diff_rail_width") {
+		t.Errorf("a reset-to-auto left the width in the file:\n%s", data)
+	}
+
+	// ...and the restarted model returns to the PROPORTIONAL width.
+	m2 := newDiffRailApp(t, 240, 40)
+	if m2.diffPaneW != 0 {
+		t.Errorf("the restarted model restored override %d after a reset, want 0 (auto)", m2.diffPaneW)
+	}
+	if got, want := contentStartColumn(t, m2), m2.diffPaneAutoWidth(); got != want {
+		t.Errorf("the restarted model draws %d cells after a reset, want the auto width %d", got, want)
+	}
+}
