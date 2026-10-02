@@ -117,6 +117,10 @@ export function DiffSidebar({
   const detachedRef = useRef<HTMLElement | null>(null);
   const { effectiveWidth, dragging, handleProps } = useRailResize({
     containerRef: containerRef ?? detachedRef,
+    // The rail's own node: lets the clamp reserve the row's OTHER fixed
+    // siblings (the Ask page's 288px conversations panel) + flex gaps, so a
+    // wide rail can never squeeze them out and collapse the chat.
+    railRef,
     width,
     onWidthChange: onWidthChange ?? (() => {}),
   });

@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
   clampRailWidth,
   maxRailWidth,
+  MIN_CHAT_WIDTH,
   RAIL_DEFAULT_WIDTH,
   RAIL_MAX_WIDTH,
   RAIL_MIN_WIDTH,
@@ -65,11 +66,49 @@ describe("clampRailWidth", () => {
     expect(clampRailWidth(500, Number.NaN)).toBe(500);
     expect(Number.isFinite(clampRailWidth(500, Number.POSITIVE_INFINITY))).toBe(true);
   });
+
+  it("the default reservation is the bare [rail | chat] MIN_CHAT_WIDTH", () => {
+    expect(clampRailWidth(960, 800)).toBe(clampRailWidth(960, 800, MIN_CHAT_WIDTH));
+  });
+});
+
+// The Ask page row is [rail | chat(flex-1) | 288px conversations panel]: the
+// reservation must include that fixed panel (and any flex gap), or a wide rail
+// collapses the chat to 1248 - rail - 288 = 72px at the 888 ceiling.
+describe("clampRailWidth reserves the row's fixed siblings", () => {
+  const ASK_ROW = 1248; // 1280 viewport - 2 x 16px page padding
+  const PANEL = 288;
+
+  it("reserves the fixed conversations panel so the chat keeps its minimum", () => {
+    const reserved = MIN_CHAT_WIDTH + PANEL;
+    const max = clampRailWidth(960, ASK_ROW, reserved);
+    expect(max).toBe(ASK_ROW - reserved); // 600
+    const chat = ASK_ROW - max - PANEL;
+    expect(chat).toBe(MIN_CHAT_WIDTH);
+    expect(chat).toBeGreaterThan(100); // never the 72px squeeze
+  });
+
+  it("without the reservation the same row squeezes the chat (regression guard)", () => {
+    const max = clampRailWidth(960, ASK_ROW); // old behaviour
+    const chat = ASK_ROW - max - PANEL;
+    expect(chat).toBeLessThan(MIN_CHAT_WIDTH); // 72px — the bug
+  });
+
+  it("includes flex gaps in the reservation (the exec page's gap-3)", () => {
+    // [rail | gap-3(12px) | chat] on an 848px row ⇒ ceiling 848 - 372 = 476.
+    const max = clampRailWidth(960, 848, MIN_CHAT_WIDTH + 12);
+    expect(max).toBe(476);
+    expect(848 - max - 12).toBe(MIN_CHAT_WIDTH);
+  });
 });
 
 describe("maxRailWidth", () => {
   it("reserves the chat column's minimum width", () => {
     expect(maxRailWidth(1400)).toBe(Math.min(RAIL_MAX_WIDTH, 1400 - 360));
+  });
+
+  it("reserves an explicit reservation when given one", () => {
+    expect(maxRailWidth(1248, 648)).toBe(600);
   });
 });
 
@@ -86,5 +125,10 @@ describe("stepRailWidth", () => {
     expect(stepRailWidth(RAIL_MIN_WIDTH, -1, 1600)).toBe(RAIL_MIN_WIDTH);
     expect(stepRailWidth(RAIL_MAX_WIDTH, 1, 1600)).toBe(RAIL_MAX_WIDTH);
     expect(stepRailWidth(600, 1, 800)).toBe(440); // container-clamped ceiling
+  });
+
+  it("honours the reservation", () => {
+    // 1248 row - (360 chat + 288 panel) = 600 ceiling.
+    expect(stepRailWidth(590, 1, 1248, MIN_CHAT_WIDTH + 288)).toBe(600);
   });
 });
