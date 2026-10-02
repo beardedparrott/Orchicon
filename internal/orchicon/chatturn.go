@@ -914,7 +914,7 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 	bus.adopt()
 	b.mu.Unlock()
 
-	go b.drainChatTurn(turnCtx, prov, bus, stream, req, sessionID, history, b.askUsageSink(tenantID, conversationID, sessionID, modelRef, providerID, model))
+	go b.drainChatTurn(turnCtx, prov, bus, stream, req, conversationID, sessionID, history, b.askUsageSink(tenantID, conversationID, sessionID, modelRef, providerID, model))
 
 	// Return nil (accepted) BEFORE the drain goroutine emits, so the
 	// collector observes every event with sent == true (D4).
@@ -930,7 +930,7 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 // completion the full working history (assistant texts, tool uses and tool
 // results — not just the final text) replaces the session's history so a
 // follow-up re-sends the complete context.
-func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *chatBus, stream TurnStream, req TurnRequest, sessionID string, history []Message, usageSink func(context.Context, Usage)) {
+func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *chatBus, stream TurnStream, req TurnRequest, conversationID, sessionID string, history []Message, usageSink func(context.Context, Usage)) {
 	defer bus.release()
 	defer func() {
 		b.mu.Lock()
@@ -1088,7 +1088,7 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 		// turn TTL sweeper (askTurnMaxAge(), default 31m,
 		// ORCHICON_ASK_TURN_MAX_AGE — internal/askorchicon/chat.go), and the
 		// stall monitor (tenant stall settings).
-		b.executeToolCalls(ctx, bus, &working, calls)
+		b.executeToolCalls(ctx, bus, &working, calls, conversationID)
 		req.Messages = append([]Message(nil), working...)
 		next, err := prov.StreamTurn(ctx, req)
 		if err != nil {
@@ -1212,9 +1212,16 @@ func (b *NativeBridge) askUsageSink(tenantID, conversationID, sessionID, modelRe
 // tools and appends one tool-result message per call to working. Calls are
 // never dropped: with no tool provider injected the result records the
 // misconfiguration as an error so the model can explain instead of
-// hanging. A tool execution failure is recorded as an error result (the
+// hanging. A tool execution failure is recorded as an error tool result (the
 // model sees it and can recover), never as a turn failure.
-func (b *NativeBridge) executeToolCalls(ctx context.Context, bus *chatBus, working *[]Message, calls []ToolCall) {
+//
+// conversationID is the ledger owner id for every row the Ask file-edit hook
+// writes: the server builds that hook with db.FileEditOwnerAskConversation, so
+// a completed mutating call ledgers (ask_conversation, <conversationID>) — the
+// exact tuple both clients' Ask diff panes query. This is what puts LIVE
+// per-edit rows in the pane during the turn; without it the pane only fills
+// after the turn from the git reconciler.
+func (b *NativeBridge) executeToolCalls(ctx context.Context, bus *chatBus, working *[]Message, calls []ToolCall, conversationID string) {
 	b.mu.Lock()
 	tools := b.askTools
 	b.mu.Unlock()
@@ -1289,6 +1296,29 @@ func (b *NativeBridge) executeToolCalls(ctx context.Context, bus *chatBus, worki
 		*working = append(*working, Message{Role: RoleTool, Content: []Content{{
 			ToolResult: &ContentToolResult{ToolCallID: c.ToolCallID, Content: content, IsError: isErr},
 		}}})
+		// Diff-pipeline ledger hook (native Ask file-edit gap): a COMPLETED
+		// mutating call ledgers its ground-truth engine payload under the Ask
+		// conversation's owner tuple, so the live per-edit rows are queryable
+		// DURING the turn (both clients already query this exact tuple).
+		// Failed calls carry no ground truth and never ledger (parity with the
+		// execution funnel in loop.go, which fires only after a nil error).
+		// The hook owns its own error posture (best-effort); nil = no Ask
+		// ledger. Read under mu because the server may wire it concurrently.
+		if toolErr == nil {
+			b.mu.Lock()
+			hook := b.askFileEditHook
+			b.mu.Unlock()
+			if hook != nil {
+				var inputMap map[string]any
+				if err := json.Unmarshal([]byte(args), &inputMap); err != nil || inputMap == nil {
+					inputMap = map[string]any{}
+				}
+				// Owner id = the conversation id; execDir is "" because the
+				// engine payload is exact and needs no plane-side observer
+				// (which also makes the non-git / no-project-dir case work).
+				hook(ctx, conversationID, tenant.FromContext(ctx), "", c.Name, inputMap, out)
+			}
+		}
 		// Emit the RESOLUTION as an adapter-neutral typed event. Without this the
 		// bus carried only the start (tool_part, name alone), so a consumer could
 		// never learn the call's arguments or its outcome: the Ask tool ledger
