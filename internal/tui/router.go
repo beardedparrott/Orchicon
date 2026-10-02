@@ -1070,18 +1070,35 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 	if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft &&
 		!m.menuHit(mo.X, mo.Y) && m.diffDividerHit(mo.X, mo.Y) {
 		m.diffResizing = true
-		m.setDiffPaneW(mo.X + 1) // seed the override from the column the operator grabbed
-		return m, nil            // never forwarded to the pane: no tab switch, no file select, no ✕
+		m.diffResizeMoved = false      // a press is not yet a drag — see the release below
+		m.diffResizePrev = m.diffPaneW // the override to restore if it never becomes one
+		m.setDiffPaneW(mo.X + 1)       // seed the override from the column the operator grabbed
+		return m, nil                  // never forwarded to the pane: no tab switch, no file select, no ✕
 	}
 	if m.diffResizing {
 		switch mo.Action {
 		case tea.MouseActionMotion:
 			// The button may arrive as MouseButtonNone (the shape clipState already tolerates,
 			// clipboard.go) — the HELD flag lives on the App, not in the button, so the drag holds.
-			m.setDiffPaneW(mo.X + 1)
+			// A motion that does not MOVE the rail (cell-motion can report the press cell) is not
+			// the operator dragging, so it must not turn a click into a resize.
+			cells := mo.X + 1
+			if cells != m.diffPaneW {
+				m.diffResizeMoved = true
+			}
+			m.setDiffPaneW(cells)
 			return m, nil
 		case tea.MouseActionRelease:
 			m.diffResizing = false
+			if !m.diffResizeMoved {
+				// A CLICK, NOT A DRAG. The press seeded an override from the grabbed column, so
+				// without this a stray click on the rail's edge would pin AUTO to a fixed width:
+				// the pane would stop scaling with the terminal and the number would persist.
+				// Restore the pre-gesture override (0 = auto) and persist NOTHING.
+				m.diffPaneW = m.diffResizePrev
+				m.refreshLayout()
+				return m, nil
+			}
 			m.persistDiffRailWidth()
 			return m, nil
 		}

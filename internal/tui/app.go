@@ -366,6 +366,14 @@ type App struct {
 	// lives here rather than in the mouse button because tea delivers motion with
 	// MouseButtonNone (the same shape clipState already tolerates).
 	diffResizing bool
+	// diffResizeMoved records whether the live gesture actually MOVED the rail, and
+	// diffResizePrev is the override in force when it began (0 = auto). They exist so
+	// a PRESS WITH NO DRAG is treated as the click it is: the press seeds the override
+	// from the grabbed column, so without this a stray click on the rail's edge would
+	// silently pin AUTO to a fixed width — the pane would stop scaling with the
+	// terminal and the release would persist that pin.
+	diffResizeMoved bool
+	diffResizePrev  int
 
 	// Ask conversations rail (GUI Ask sidebar). OPEN by default; collapsible
 	// via ctrl+r toggle and a mouse click on the rail header. State persists
