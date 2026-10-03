@@ -225,3 +225,64 @@ func (m *App) detailIDOfAskScreen() string {
 	}
 	return ""
 }
+
+// THE OPERATOR'S OWN SEQUENCE, end to end: the echo appears immediately with the line, the line survives
+// EVERY kind of chunk the model produces, and it clears only when the turn is truly done.
+//
+// The operator's spec, verbatim: "A typical conversation should go: User sends message, message shows up
+// on the right side immediately, Orchicon is thinking... and a time of the last message from the model
+// (which resets automatically) should show up in the bottom left corner of the conversation pane. The
+// model's response should show up on the left (reasoning, thinking, and actual prose/work) ... The status
+// at the bottom indicating that actual thinking is occurring and how long since the last thought should
+// NEVER go away unless a turn is truly done."
+//
+// THE CHUNK LOOP IS THE POINT. The report this guards against is "After the initial 'Orchicon is
+// thinking...', streaming started and the 'Orchicon is thinking...' went away and never came back" — so a
+// single assertion after one chunk would not catch it. Each kind is streamed in turn, and the line is
+// checked after every one: reasoning, prose, a tool call, and prose again.
+func TestTheStatusLineSurvivesTheWholeTurn(t *testing.T) {
+	m, _ := askWithTranscript(t, "c1")
+	for i := 0; i < 40; i++ {
+		m.chatStore.append("c1", chat.ChatItem{
+			Kind: chat.KindUser, Text: fmt.Sprintf("old-%02d", i), Key: fmt.Sprintf("h%d", i), At: int64(i),
+		})
+	}
+	// The PLANE's view of the turn, which is what a real session has (verified against the live plane) and
+	// what the status fetch keeps fresh.
+	m.conversations = []chat.Conversation{{ID: "c1", Title: "a chat", TurnInFly: true, PendingReplyID: "m1"}}
+
+	// 1. SEND: the echo is on screen immediately, with the line under it.
+	applyCmds(m, m.sendFromComposer("MY NEW MESSAGE"))
+	frame := stripANSI(m.View())
+	if !strings.Contains(frame, "MY NEW MESSAGE") {
+		t.Errorf("the operator's own message is not on screen straight after sending:\n%s", tailOf(frame, 1200))
+	}
+	if !strings.Contains(frame, "Orchicon is") {
+		t.Errorf("no status line straight after sending:\n%s", tailOf(frame, 1200))
+	}
+
+	// 2. THE TURN'S CHUNKS, one kind at a time.
+	chunks := []chat.ChatItem{
+		{Kind: chat.KindReasoning, Text: "thinking about it", Key: "r1", Live: true, At: 2},
+		{Kind: chat.KindText, Text: "Here is my answer as it streams in.", Key: "m2", Live: true, At: 5},
+		{Kind: chat.KindTool, Key: "t1", Tool: &chat.ParsedTool{ID: "t1", ToolName: "bash", Output: "ok"}, At: 8},
+		{Kind: chat.KindText, Text: "And more prose after the tool.", Key: "m3", Live: true, At: 9},
+	}
+	for i, c := range chunks {
+		m.chatStore.append("c1", c)
+		m.onChatWake()
+		if got := stripANSI(m.View()); !strings.Contains(got, "Orchicon is") {
+			t.Fatalf("the status line went away mid-turn after chunk %d (%v) — the operator's "+
+				"\"streaming started and the 'Orchicon is thinking...' went away and never came back\":"+
+				"\n%s", i+1, c.Kind, tailOf(got, 1200))
+		}
+	}
+
+	// 3. THE TURN IS DONE, and only then does it clear.
+	m.conversations = []chat.Conversation{{ID: "c1", Title: "a chat"}}
+	m.onChatWake()
+	if got := stripANSI(m.View()); strings.Contains(got, "Orchicon is") {
+		t.Errorf("the status line outlived the turn — a line that never clears is as untrue as one that "+
+			"never shows:\n%s", tailOf(got, 1200))
+	}
+}
