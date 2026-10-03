@@ -934,6 +934,27 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 				"marks more, esc clears. Nothing was deleted.", n)), true
 		}
 	}
+	// `m` MANAGES the selected worker's MCP + skills in the ONE MODAL — the same surface a conversation
+	// gets from /scope and a project gets from the Work screen's `m`, and the same panel the GUI mounts on
+	// a worker page (MCPServersPanel with scope {kind:"workerVersion"}).
+	//
+	// A VERSION'S SPECS ARE INLINE, so there is no row to hand-edit and no create-only form to reach: the
+	// modal is the only surface that can LIST them, edit one, or remove one. Before this the TUI could
+	// only take the version's permissions JSON as raw text (and its skill files as an absolute-path list).
+	//
+	// Placed BEFORE actionByKey so it cannot be shadowed by a per-row action, and gated on the pane so it
+	// claims nothing anywhere else.
+	if kstr == "m" && m.ActiveSourceName() == srcWorkers {
+		it, ok := m.ActiveItem()
+		if !ok {
+			return m.refuse("no worker selected"), true
+		}
+		h, ok := m.mcpModalHost()
+		if !ok {
+			return m.refuse("the MCP + skills modal is unavailable here"), true
+		}
+		return h.OpenWorkerMCPModal(it.ID, it.Title), true
+	}
 	if a, ok := m.actionByKey(kstr); ok {
 		return m.openAction(a), true
 	}
@@ -978,6 +999,19 @@ func (m *Model) paneNoun() string {
 		return "schedule"
 	}
 	return "row"
+}
+
+// mcpModalHost is the shell surface that owns the MCP + skills modal — the panel the GUI imports into
+// the worker page. The modal is layered over every screen, so it belongs to the shell and a screen only
+// asks for it.
+type mcpModalHost interface {
+	OpenWorkerMCPModal(workerID, name string) tea.Cmd
+}
+
+// mcpModalHost resolves the shell, when it offers the modal.
+func (m *Model) mcpModalHost() (mcpModalHost, bool) {
+	h, ok := m.Shell().(mcpModalHost)
+	return h, ok
 }
 
 // actionByKey returns the action bound to a key for the focused row.
@@ -1252,6 +1286,7 @@ func (m *Model) HintLine() string {
 		}
 		return theme.HintText.Render(
 			"n: new " + theme.DetailKey.Render("·") + " e: edit " + theme.DetailKey.Render("·") +
+				" m: MCP + skills " + theme.DetailKey.Render("·") +
 				" V: edit version (prompt/config) " + theme.DetailKey.Render("·") +
 				" p: publish " + theme.DetailKey.Render("·") + " a: set active version " + theme.DetailKey.Render("·") +
 				" u: deprecate " + theme.DetailKey.Render("·") + " C: categorize " + theme.DetailKey.Render("·") +

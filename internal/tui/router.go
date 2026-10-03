@@ -1465,6 +1465,9 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		return tea.Batch(m.chat.LoadConversations(), m.waitChat())
 	case chat.ConversationMutatedMsg:
 		return tea.Batch(m.onConversationMutated(msg), m.waitChat())
+	case workerVersionScopeMsg:
+		// A worker's version landed: open the MCP + skills modal on it (see App.OpenWorkerMCPModal).
+		return tea.Batch(m.onWorkerVersionScope(msg), m.waitChat())
 	case chat.ConversationStatusMsg:
 		// The PLANE's answer about the open conversation's turn (see App.refreshTurnStatus): it updates the
 		// row, repaints, and re-attaches when the plane says a turn is running that this client is not

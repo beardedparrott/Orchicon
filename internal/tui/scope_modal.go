@@ -31,6 +31,8 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -49,7 +51,8 @@ const (
 	scopeRowSection      scopeRowKind = iota // a section heading (not selectable)
 	scopeRowMCP                              // a definition THIS conversation owns (selectable, actionable)
 	scopeRowInheritedMCP                     // a definition the PROJECT owns (selectable to read the note, not writable)
-	scopeRowSkill                            // a skill path THIS conversation carries (selectable, removable)
+	scopeRowSkill                            // a skill path THIS surface carries (selectable, removable)
+	scopeRowInlineMCP                        // an INLINE spec (a worker version's) — editable in memory, no row
 	scopeRowProjectSkill                     // a skill path the PROJECT contributes (read-only)
 	scopeRowNote                             // an empty-state sentence or an explanation (not selectable)
 )
@@ -73,20 +76,97 @@ type scopeRow struct {
 // three things they show do not come from the modal's own fetch: the conversation's skill files ride on
 // the rail's conversation list, and the project's contributions ride on the rail's project list. Caching
 // rows would leave the pane showing a skill path the operator just removed until the next fetch landed.
+// scopeOwnerKind is WHERE the entries the modal manages live and how they persist — the TUI mirror of
+// the GUI's MCPScope (frontend/src/components/MCPServersPanel.tsx), which is ONE panel parameterized by
+// exactly these three cases.
+//
+// THE TUI ALREADY HAD THE PANEL FOR ONE OF THEM. /scope (and /mcp, /skills) opens it for a CONVERSATION;
+// a project and a worker version were left with raw text fields — an absolute-path list for skills and a
+// JSON blob for MCP — so the operator had a modal on one surface and hand-editing on the other two. The
+// operator: "I simply want at least a similar modal to manage MCP and skills for projects and workers.
+// Right now it's one line edit with absolute paths. It doesn't pop up a modal like /mcp or /scope does."
+//
+// The three cases differ in exactly two ways, and both are the GUI's:
+//
+//	conversation    OWNED ROWS through the MCP service (conversation_id), skills on the conversation row.
+//	                Also shows the PROJECT's contributions read-only, because a conversation consumes
+//	                the union of the two.
+//	project         OWNED ROWS through the MCP service (project_id), skills on the project row. Nothing
+//	                is inherited at this scope — the project IS the source.
+//	workerVersion   INLINE SPECS with no row at all: a published version is immutable, so the specs live
+//	                in the version's permissions JSON. No install, no credential, no catalog (there is no
+//	                row to attach them to) — the same refusals the GUI's panel makes for this scope.
+type scopeOwnerKind int
+
+const (
+	ownerConversation scopeOwnerKind = iota
+	ownerProject
+	ownerWorkerVersion
+)
+
 type scopeModal struct {
-	// convID is the conversation this modal is ABOUT. The fetch result is discarded when it does not
-	// match, so a reply that lands after a conversation switch cannot scope the wrong chat.
-	convID string
-	// mcp and inherited are this conversation's owned definitions and the project's (read-only).
+	// kind is the scope this modal manages. See scopeOwnerKind.
+	kind scopeOwnerKind
+	// convID / projectID identify the surface for the OWNED-ROW scopes. The fetch result is discarded
+	// when it does not match the open surface, so a reply that lands after a switch cannot scope the
+	// wrong thing.
+	convID    string
+	projectID string
+	// label names the surface in the modal's title (a project's name, a worker's name + version).
+	label string
+
+	// mcp and inherited are the OWNED definitions at this scope, and the read-only contributions from
+	// an outer scope (a conversation's project). A project scope has no inherited half.
 	mcp       []*apiv1.MCPServer
 	inherited []*apiv1.MCPServer
+
+	// ── the WORKER-VERSION half, which is IN MEMORY ───────────────────────────────────────
+	//
+	// A version has no MCP row to create or delete: its specs live in the version's permissions JSON, so
+	// the modal EDITS AN ARRAY and commits it. These fields hold that array and the two things needed to
+	// write it back losslessly — the base permissions blob (the modal owns ONE key of it, never the
+	// whole blob) and the version's skill paths.
+	inline     []mcpforms.InlineSpec
+	permBase   string
+	skills     []string
+	saveInline func(permJSON, skillsJSON string) tea.Cmd
+
 	// loading is true until the first fetch lands, and err carries a failed one.
 	loading bool
 	err     string
+	// dirty marks an IN-MEMORY edit that has not been committed yet. The inline form's save callback
+	// cannot return a command (mcpforms.InlineForm's contract), so a worker-version edit is committed when
+	// the FORM CLOSES — and only when something actually changed, so dismissing a form unchanged is not a
+	// write.
+	dirty bool
 	// cursor is the index into rows() of the SELECTED row (movement skips non-selectable rows).
 	cursor int
 	// scroll is the first drawn row, so a long scope never overflows the terminal.
 	scroll int
+}
+
+// ownedRows reports whether this scope's definitions are ROWS in mcp_servers (so they can be created,
+// edited, deleted, installed and given credentials) rather than inline specs written into a version.
+func (s *scopeModal) ownedRows() bool { return s.kind != ownerWorkerVersion }
+
+// ownerID is the id the MCP list/create/update calls are scoped by ("" for a worker version, which has
+// no row).
+func (s *scopeModal) ownerID() string {
+	if s.kind == ownerProject {
+		return s.projectID
+	}
+	return s.convID
+}
+
+// ownerName names the scope for messages ("this conversation", "this project", "this worker version").
+func (s *scopeModal) ownerName() string {
+	switch s.kind {
+	case ownerProject:
+		return "this project"
+	case ownerWorkerVersion:
+		return "this worker version"
+	}
+	return "this conversation"
 }
 
 // scopeDataMsg carries a fetched scope.
@@ -108,7 +188,7 @@ func (m *App) openScopeModal() tea.Cmd {
 			"/project chooses the workspace")
 		return nil
 	}
-	m.scope = &scopeModal{convID: m.chatConvID, loading: true}
+	m.scope = &scopeModal{kind: ownerConversation, convID: m.chatConvID, loading: true}
 	// The project's skill files are part of the union this modal shows, and the rail's project list is
 	// where they live — a cold rail would render the inherited half as empty.
 	cmd := tea.Cmd(m.loadScope())
@@ -116,6 +196,40 @@ func (m *App) openScopeModal() tea.Cmd {
 		cmd = tea.Batch(cmd, m.loadRailProjects())
 	}
 	return cmd
+}
+
+// openProjectScopeModal opens the same modal for a PROJECT — its MCP definitions and its skill files.
+//
+// The project is the SOURCE of what its conversations and workers inherit, so nothing is inherited here
+// and the whole surface is writable.
+func (m *App) openProjectScopeModal(projectID, name string) tea.Cmd {
+	if projectID == "" {
+		m.dock.SetError("no project selected")
+		return nil
+	}
+	m.scope = &scopeModal{kind: ownerProject, projectID: projectID, label: name, loading: true}
+	return m.loadScope()
+}
+
+// openWorkerVersionScopeModal opens the modal for a WORKER VERSION — its inline MCP specs and its skill
+// files, both held in the version's own fields.
+//
+// IN MEMORY, because a version has no rows: a published version is immutable, so its specs live in the
+// permissions JSON and are written back THROUGH the version update. The caller supplies that write as
+// saveInline (the Execution screen owns the RPC, and the shell must not re-implement it).
+func (m *App) openWorkerVersionScopeModal(label, permissionsJSON, skillFilesJSON string, saveInline func(permJSON, skillsJSON string) tea.Cmd) tea.Cmd {
+	m.scope = &scopeModal{
+		kind:       ownerWorkerVersion,
+		label:      label,
+		inline:     mcpforms.ParseInline(permissionsJSON),
+		permBase:   permissionsJSON,
+		// THE VERSION'S FIELD IS A JSON ARRAY, not the newline/comma path list the form uses — decoding
+		// it with the path-list parser left the raw JSON as a single "path" (caught by
+		// TestWorkerVersionSkillsCommitThroughTheSave).
+		skills:     decodeSkillFilesJSON(skillFilesJSON),
+		saveInline: saveInline,
+	}
+	return nil
 }
 
 // closeScopeModal closes it. Called when the surface under it changes identity (a different
@@ -126,27 +240,48 @@ func (m *App) closeScopeModal() {
 	m.scope = nil
 }
 
-// loadScope fetches the conversation's owned definitions and the project's, for the read-only half.
+// loadScope fetches the scope's owned definitions — and, for a conversation, the project's for the
+// read-only half. A WORKER VERSION fetches nothing: its specs are in the version's own fields, which the
+// opener already put in memory.
 func (m *App) loadScope() tea.Cmd {
 	if m.scope == nil {
 		return nil
 	}
+	if m.scope.kind == ownerWorkerVersion {
+		m.scope.loading = false
+		return nil
+	}
 	convID := m.scope.convID
+	ownerID := m.scope.ownerID()
+	isProject := m.scope.kind == ownerProject
 	cl := m.clients
-	projectID := m.conversationProjectID(convID)
+	projectID := ""
+	if !isProject {
+		projectID = m.conversationProjectID(convID)
+	}
 	return func() tea.Msg {
 		if cl == nil || cl.MCP == nil {
 			return scopeDataMsg{convID: convID, err: "not connected to a plane"}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		mine, err := cl.MCP.ListMCPServers(ctx, connect.NewRequest(&apiv1.MCPServerListRequest{
-			ConversationId: convID,
-		}))
+		// THE OWNER COLUMN IS THE SELECTION: a definition belongs to exactly one scope, so the request
+		// carries that scope's id and nothing else (the server enforces the owner XOR).
+		req := &apiv1.MCPServerListRequest{}
+		if isProject {
+			req.ProjectId = ownerID
+		} else {
+			req.ConversationId = ownerID
+		}
+		mine, err := cl.MCP.ListMCPServers(ctx, connect.NewRequest(req))
 		if err != nil {
 			return scopeDataMsg{convID: convID, err: err.Error()}
 		}
 		out := scopeDataMsg{convID: convID, mcp: mine.Msg.GetServers()}
+		// A PROJECT scope is the source: it inherits nothing, so there is no second read.
+		if isProject {
+			return out
+		}
 		// The PROJECT's definitions are a second read, and only when there is a project: a
 		// conversation with no project inherits nothing, so there is nothing to ask for.
 		if projectID != "" {
@@ -212,6 +347,17 @@ func (m *App) conversationProjectID(id string) string {
 	return ""
 }
 
+// projectSkillFiles reads a project's skill path list from the rail — the same source the conversation
+// surface uses for the inherited half, so the two cannot disagree about what a project contributes.
+func (m *App) projectSkillFiles(projectID string) []string {
+	for _, p := range m.railProjects {
+		if p.ID == projectID {
+			return p.SkillFiles
+		}
+	}
+	return nil
+}
+
 // projectForConversation resolves the project ROW a conversation belongs to, for its name and its
 // skill files (the inherited half of the modal).
 func (m *App) projectForConversation(id string) (railProject, bool) {
@@ -231,7 +377,23 @@ func (m *App) projectForConversation(id string) (railProject, bool) {
 
 // rows builds the modal's rows from current shell state. See scopeModal's doc for why this is derived
 // per render rather than stored.
+//
+// IT BRANCHES ON THE OWNER, which is the whole point of the generalization: the GUI's panel renders one
+// shape over three persistence targets, and so does this. The two halves that differ are named in
+// scopeOwnerKind.
 func (s *scopeModal) rows(m *App) []scopeRow {
+	switch s.kind {
+	case ownerWorkerVersion:
+		return s.workerVersionRows()
+	case ownerProject:
+		return s.projectRows(m)
+	}
+	return s.conversationRows(m)
+}
+
+// conversationRows is the original surface: the conversation's own definitions, the PROJECT's read-only
+// above them (a conversation consumes the union), then the conversation's skill files and the project's.
+func (s *scopeModal) conversationRows(m *App) []scopeRow {
 	var out []scopeRow
 
 	// --- this conversation's MCP servers ---
@@ -278,6 +440,70 @@ func (s *scopeModal) rows(m *App) []scopeRow {
 			out = append(out, scopeRow{kind: scopeRowProjectSkill, id: p, name: p, text: p, selectable: true})
 		}
 	}
+	return out
+}
+
+// projectRows is the PROJECT surface: its own definitions and its own skill files, with nothing
+// inherited — a project is the SOURCE of what its conversations and workers inherit, so there is no
+// outer scope to show.
+func (s *scopeModal) projectRows(m *App) []scopeRow {
+	var out []scopeRow
+
+	out = append(out, scopeRow{kind: scopeRowSection, text: "MCP servers — this project"})
+	if len(s.mcp) == 0 {
+		out = append(out, scopeRow{kind: scopeRowNote,
+			text: "none yet — a adds one by hand, c adds one from the catalog"})
+	}
+	for _, srv := range s.mcp {
+		out = append(out, scopeRow{
+			kind: scopeRowMCP, id: srv.GetId(), name: srv.GetName(),
+			text: mcpScopeLine(srv), selectable: true,
+		})
+	}
+
+	out = append(out, scopeRow{kind: scopeRowSection, text: "Skill files — this project"})
+	mine := m.projectSkillFiles(s.projectID)
+	if len(mine) == 0 {
+		out = append(out, scopeRow{kind: scopeRowNote, text: "none yet — s sets the path list"})
+	}
+	for _, p := range mine {
+		out = append(out, scopeRow{kind: scopeRowSkill, id: p, name: p, text: p, selectable: true})
+	}
+	// A project's inheritors, named — the same question the conversation surface answers in reverse
+	// ("why is this server available here?"), and the reason the definitions are worth managing here.
+	out = append(out, scopeRow{kind: scopeRowNote,
+		text: "consumed by this project's conversations and worker versions"})
+	return out
+}
+
+// workerVersionRows is the WORKER-VERSION surface: the inline specs the version's permissions carry and
+// its skill files, both IN MEMORY (a version has no rows to fetch, and a published one is immutable).
+func (s *scopeModal) workerVersionRows() []scopeRow {
+	var out []scopeRow
+
+	out = append(out, scopeRow{kind: scopeRowSection, text: "MCP servers — inline in this version"})
+	if len(s.inline) == 0 {
+		out = append(out, scopeRow{kind: scopeRowNote,
+			text: "none yet — a adds one; a version's specs are written into its permissions"})
+	}
+	for i := range s.inline {
+		out = append(out, scopeRow{
+			kind: scopeRowInlineMCP, id: s.inline[i].ID, name: s.inline[i].ID,
+			text: inlineScopeLine(s.inline[i]), selectable: true,
+		})
+	}
+
+	out = append(out, scopeRow{kind: scopeRowSection, text: "Skill files — this version"})
+	if len(s.skills) == 0 {
+		out = append(out, scopeRow{kind: scopeRowNote, text: "none yet — s sets the path list"})
+	}
+	for _, p := range s.skills {
+		out = append(out, scopeRow{kind: scopeRowSkill, id: p, name: p, text: p, selectable: true})
+	}
+	// WHAT THIS SCOPE CANNOT DO, said plainly: the GUI's panel offers no install and no credential for a
+	// version either, because there is no row to attach them to.
+	out = append(out, scopeRow{kind: scopeRowNote,
+		text: "a version's specs are inline — no catalog add, install or stored credential here"})
 	return out
 }
 
@@ -339,6 +565,24 @@ func mcpScopeLine(s *apiv1.MCPServer) string {
 	parts = append(parts, installStateWord(s.GetInstallStatus()))
 	if s.GetHasSecretStored() {
 		parts = append(parts, "secrets stored")
+	}
+	return strings.Join(parts, " · ")
+}
+
+// inlineScopeLine renders one INLINE spec (a worker version's) — the same facts mcpScopeLine shows for
+// an owned row, minus the two a version cannot have (an install status and a stored credential).
+func inlineScopeLine(spec mcpforms.InlineSpec) string {
+	transport := "stdio"
+	where := strings.Join(spec.Command, " ")
+	if spec.Type == "http" || spec.URL != "" {
+		transport, where = "http", spec.URL
+	}
+	parts := []string{spec.ID, transport}
+	if w := strings.TrimSpace(where); w != "" {
+		parts = append(parts, w)
+	}
+	if spec.Enabled != nil && !*spec.Enabled {
+		parts = append(parts, "disabled")
 	}
 	return strings.Join(parts, " · ")
 }
@@ -421,10 +665,11 @@ func (m *App) scopeTarget(verb, needs string) (scopeRow, bool) {
 		m.dock.SetError("nothing selected — ↑/↓ moves through the scope")
 		return scopeRow{}, false
 	}
+	owned := m.scope.ownedRows()
 	switch needs {
 	case "mcp":
 		switch row.kind {
-		case scopeRowMCP:
+		case scopeRowMCP, scopeRowInlineMCP:
 			return row, true
 		case scopeRowInheritedMCP:
 			m.dock.SetError(row.name + " belongs to project " +
@@ -434,9 +679,23 @@ func (m *App) scopeTarget(verb, needs string) (scopeRow, bool) {
 		}
 		m.dock.SetError(verb + " applies to an MCP server — ↑/↓ moves to one (this row is " + scopeRowKindWord(row.kind) + ")")
 		return scopeRow{}, false
+	case "row":
+		// A ROW IN mcp_servers — so install and credential apply, which need something to attach to. An
+		// INLINE spec has none, and the GUI's panel does not offer them for that scope either.
+		if row.kind == scopeRowMCP && owned {
+			return row, true
+		}
+		if row.kind == scopeRowInlineMCP {
+			m.dock.SetError(verb + " needs a stored definition: a worker version's specs are INLINE, so " +
+				"there is no row to attach a runtime install or a credential to — put the " +
+				"${SECRET_NAME} in the spec's env/headers instead")
+			return scopeRow{}, false
+		}
+		m.dock.SetError(verb + " applies to an MCP definition — ↑/↓ moves to one")
+		return scopeRow{}, false
 	case "writable":
 		switch row.kind {
-		case scopeRowMCP, scopeRowSkill:
+		case scopeRowMCP, scopeRowSkill, scopeRowInlineMCP:
 			return row, true
 		case scopeRowInheritedMCP, scopeRowProjectSkill:
 			m.dock.SetError(row.name + " comes from the project — this scope cannot change it")
@@ -454,25 +713,181 @@ func scopeRowKindWord(k scopeRowKind) string {
 		return "a heading"
 	case scopeRowSkill, scopeRowProjectSkill:
 		return "a skill file"
+	case scopeRowInlineMCP:
+		return "an inline MCP spec"
 	case scopeRowNote:
 		return "a note"
 	}
 	return "another kind of row"
 }
 
-// scopeAddMCP opens the typed definition form for this conversation (mcpforms.DefineForm, owner-stamped
-// with the conversation) — the same control the GUI's Add opens.
+// ── the owner-aware writes ───────────────────────────────────────────────────────────────
+//
+// Every verb below resolves the CURRENT scope's persistence target and writes there: an OWNED ROW
+// through the MCP service for a conversation or a project, or the version's own fields for an inline
+// spec. That split is the whole difference between the three scopes, and it is the same split the GUI's
+// panel makes.
+
+// scopeMCPOwner is the OWNER STAMP for a create/update at this scope. A definition belongs to exactly
+// one scope, so this is the field that decides where it lands.
+func (s *scopeModal) scopeMCPOwner() mcpforms.Owner {
+	if s.kind == ownerProject {
+		return mcpforms.Owner{ProjectID: s.projectID}
+	}
+	return mcpforms.Owner{ConversationID: s.convID}
+}
+
+// scopeAddMCP opens the typed definition form for THIS scope — the same control the GUI's Add opens.
 func (m *App) scopeAddMCP() tea.Cmd {
-	m.openConversationMCPDefine(nil)
+	if m.scope.kind == ownerWorkerVersion {
+		m.openInlineSpecForm(nil)
+		return nil
+	}
+	m.openScopeMCPDefine(nil)
 	return nil
 }
 
-// scopeAddMCPFromCatalog opens the registry picker, which prefills the same definition form — the TUI's
-// one-click add, mirroring the GUI's Registry catalog grid.
+// openScopeMCPDefine builds the owned-definition form for the current scope, owner-stamped so the write
+// cannot land in another scope. With prefill set it EDITS (the owner rides as an echo on the update).
+func (m *App) openScopeMCPDefine(prefill *apiv1.MCPServer) {
+	s := m.scope
+	if s == nil || !s.ownedRows() {
+		return
+	}
+	cl := m.clients
+	owner := s.scopeMCPOwner()
+	title := "Define an MCP server for " + s.ownerName()
+	var seed *apiv1.MCPServerCreateRequest
+	if prefill != nil {
+		title = "Edit MCP server: " + prefill.GetName()
+		seed = serverAsCreate(prefill)
+	}
+	f := mcpforms.DefineForm(title, owner, seed, func(req *apiv1.MCPServerCreateRequest) tea.Cmd {
+		return func() tea.Msg {
+			if cl == nil || cl.MCP == nil {
+				return convScopeMsg{op: "/scope", err: "not connected to a plane"}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			if prefill != nil {
+				up := &apiv1.MCPServerUpdateRequest{
+					Id:          prefill.GetId(),
+					Command:     strPtr(req.GetCommand()),
+					ReplaceArgs: boolPtr(true),
+					Args:        req.GetArgs(),
+					Env:         req.GetEnv(),
+					Url:         strPtr(req.GetUrl()),
+					Headers:     req.GetHeaders(),
+					Enabled:     boolPtr(req.GetEnabled()),
+				}
+				// THE OWNER IS AN ECHO ON UPDATE: the scope is immutable after create, and a differing
+				// echo is rejected — which is what stops an edit silently re-scoping a row.
+				up.ProjectId, up.ConversationId = owner.ProjectID, owner.ConversationID
+				if _, err := cl.MCP.UpdateMCPServer(ctx, connect.NewRequest(up)); err != nil {
+					return convScopeMsg{op: "/scope", err: err.Error()}
+				}
+				return convScopeMsg{op: "/scope", detail: "updated " + req.GetName()}
+			}
+			if _, err := cl.MCP.CreateMCPServer(ctx, connect.NewRequest(req)); err != nil {
+				return convScopeMsg{op: "/scope", err: err.Error()}
+			}
+			return convScopeMsg{op: "/scope", detail: "defined " + req.GetName() + " for " + s.ownerName()}
+		}
+	})
+	f.Width = m.modalWidth()
+	m.convScopeForm = f
+}
+
+// scopeAddMCPFromCatalog opens the registry picker for this scope, which prefills the same definition
+// form — the TUI's one-click add, mirroring the GUI's Registry catalog grid. A version has no row to
+// create, so this is refused there rather than opening a form whose save would go nowhere.
 func (m *App) scopeAddMCPFromCatalog() tea.Cmd {
-	m.convScopeForm = m.newConversationMCPCatalogForm()
-	m.convScopeForm.Width = m.modalWidth()
+	if m.scope.kind == ownerWorkerVersion {
+		m.dock.SetError("a worker version's specs are INLINE — there is no row for a catalog add to " +
+			"create. Press a to add a spec by hand (it is written into the version's permissions)")
+		return nil
+	}
+	cl := m.clients
+	owner := m.scope.scopeMCPOwner()
+	save := func(req *apiv1.MCPServerCreateRequest) tea.Cmd {
+		return func() tea.Msg {
+			if cl == nil || cl.MCP == nil {
+				return convScopeMsg{op: "/scope", err: "not connected to a plane"}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			if _, err := cl.MCP.CreateMCPServer(ctx, connect.NewRequest(req)); err != nil {
+				return convScopeMsg{op: "/scope", err: err.Error()}
+			}
+			return convScopeMsg{op: "/scope", detail: "added " + req.GetName() + " from the catalog"}
+		}
+	}
+	f := mcpforms.CatalogForm(owner,
+		func() []*apiv1.MCPCatalogEntry {
+			if cl == nil || cl.MCP == nil {
+				return nil
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			res, err := cl.MCP.ListMCPCatalog(ctx, connect.NewRequest(&apiv1.MCPCatalogListRequest{}))
+			if err != nil {
+				return nil
+			}
+			return res.Msg.GetEntries()
+		},
+		func(slug string) (*apiv1.MCPServerCreateRequest, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			res, err := cl.MCP.PrefillMCPCatalogEntry(ctx, connect.NewRequest(&apiv1.MCPCatalogPrefillRequest{Slug: slug}))
+			if err != nil {
+				return nil, err
+			}
+			return res.Msg.GetPrefill(), nil
+		},
+		save)
+	f.Width = m.modalWidth()
+	m.convScopeForm = f
 	return nil
+}
+
+// openInlineSpecForm edits ONE inline spec of a worker version and commits it through the version's own
+// save. There is no RPC per spec: the modal owns the array and writes it back as a whole, which is what
+// keeps a published version's history intact (see scopeOwnerKind).
+func (m *App) openInlineSpecForm(src *mcpforms.InlineSpec) {
+	s := m.scope
+	if s == nil || s.kind != ownerWorkerVersion {
+		return
+	}
+	title := "Add an inline MCP spec"
+	seed := mcpforms.InlineSpec{}
+	if src != nil {
+		title, seed = "Edit MCP spec: "+src.ID, *src
+	}
+	f := mcpforms.InlineForm(title, &seed, func(next mcpforms.InlineSpec) {
+		if src != nil {
+			for i := range s.inline {
+				if s.inline[i].ID == src.ID {
+					s.inline[i] = next
+					break
+				}
+			}
+		} else {
+			// Same id = same spec: replace rather than append a duplicate.
+			replaced := false
+			for i := range s.inline {
+				if s.inline[i].ID == next.ID {
+					s.inline[i], replaced = next, true
+					break
+				}
+			}
+			if !replaced {
+				s.inline = append(s.inline, next)
+			}
+		}
+		s.dirty = true
+	})
+	f.Width = m.modalWidth()
+	m.convScopeForm = f
 }
 
 // scopeEditSelected acts on the focused row: an MCP definition opens its edit form, a skill path opens
@@ -488,11 +903,20 @@ func (m *App) scopeEditSelected() tea.Cmd {
 	case scopeRowMCP:
 		for _, s := range m.scope.mcp {
 			if s.GetId() == row.id {
-				m.openConversationMCPDefine(s)
+				m.openScopeMCPDefine(s)
 				return nil
 			}
 		}
 		m.dock.SetError(row.name + " is no longer in this scope — r re-reads it")
+		return nil
+	case scopeRowInlineMCP:
+		for i := range m.scope.inline {
+			if m.scope.inline[i].ID == row.id {
+				m.openInlineSpecForm(&m.scope.inline[i])
+				return nil
+			}
+		}
+		m.dock.SetError(row.name + " is no longer in this version — r re-reads it")
 		return nil
 	case scopeRowInheritedMCP:
 		m.dock.SetError(row.name + " belongs to the project and is read-only here — edit it on the project")
@@ -504,32 +928,123 @@ func (m *App) scopeEditSelected() tea.Cmd {
 	return nil
 }
 
-// scopeEditSkills opens the typed path list, PREFILLED with what the conversation holds — the TUI's
-// control for the skill_files array (the GUI browses with a file tree; the TUI types a path list, the
-// same deliberate asymmetry context_files already has). The form is prefilled so a removal is an edit
-// rather than a retype, and an emptied field clears the list (which is what /skills clear does).
+// scopeEditSkills opens the typed path list, PREFILLED with what this scope holds — the TUI's control
+// for the skill_files array (the GUI browses with a file tree; the TUI types a path list, the same
+// deliberate asymmetry context_files already has). The form is prefilled so a removal is an edit rather
+// than a retype, and an emptied field clears the list.
 func (m *App) scopeEditSkills() tea.Cmd {
-	convID := m.chatConvID
-	if m.scope != nil {
-		convID = m.scope.convID
-	}
-	if convID == "" {
-		m.dock.SetError("no conversation open — /skills applies to one conversation")
+	s := m.scope
+	if s == nil {
 		return nil
 	}
-	current := m.conversationSkillFiles(convID)
-	f := mcpforms.SkillPathsForm(strings.Join(current, "\n"), func(paths []string) tea.Cmd {
-		return m.chat.SetConversationSkillFiles(convID, paths)
-	})
+	save := m.scopeSkillsSaver()
+	if save == nil {
+		m.dock.SetError("no skill-file target for this surface")
+		return nil
+	}
+	f := mcpforms.SkillPathsForm(strings.Join(m.scopeSkillPaths(), "\n"), save)
 	f.Width = m.modalWidth()
 	m.convScopeForm = f
 	return nil
 }
 
+// scopeSkillPaths is what this scope currently carries, so the path form opens prefilled.
+func (m *App) scopeSkillPaths() []string {
+	s := m.scope
+	switch s.kind {
+	case ownerProject:
+		return m.projectSkillFiles(s.projectID)
+	case ownerWorkerVersion:
+		return s.skills
+	}
+	return m.conversationSkillFiles(s.convID)
+}
+
+// scopeSkillsSaver is the write for this scope's skill list — the ONE place the three targets differ.
+func (m *App) scopeSkillsSaver() func([]string) tea.Cmd {
+	s := m.scope
+	switch s.kind {
+	case ownerProject:
+		projectID, cl := s.projectID, m.clients
+		return func(paths []string) tea.Cmd {
+			return func() tea.Msg {
+				if cl == nil || cl.Projects == nil {
+					return convScopeMsg{op: "/scope", err: "not connected to a plane"}
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				defer cancel()
+				// skill_files is an `optional ContextFiles` (field-mask semantics), so an empty list is
+				// sent as an EMPTY ContextFiles rather than omitted — that is what clears it.
+				if _, err := cl.Projects.UpdateProject(ctx, connect.NewRequest(&apiv1.UpdateProjectRequest{
+					Id:         projectID,
+					SkillFiles: &apiv1.ContextFiles{Files: paths},
+				})); err != nil {
+					return convScopeMsg{op: "/scope", err: err.Error()}
+				}
+				msg := "skill files updated for this project"
+				if len(paths) == 0 {
+					msg = "skill files cleared for this project"
+				}
+				return convScopeMsg{op: "/scope", detail: msg}
+			}
+		}
+	case ownerWorkerVersion:
+		return func(paths []string) tea.Cmd {
+			s.skills = paths
+			return m.commitWorkerVersion()
+		}
+	}
+	convID := s.convID
+	return func(paths []string) tea.Cmd { return m.chat.SetConversationSkillFiles(convID, paths) }
+}
+
+// commitWorkerVersion writes the modal's in-memory edit back through the version's own save.
+//
+// IT MERGES INTO THE BASE PERMISSIONS, never replaces them: the modal OWNS the mcp_servers key of that
+// blob, and the version's other keys (tools, model_providers, …) must survive the edit. The same rule
+// mcpforms.MergeIntoPermissions documents for the form fields.
+func (m *App) commitWorkerVersion() tea.Cmd {
+	s := m.scope
+	if s == nil || s.kind != ownerWorkerVersion || s.saveInline == nil {
+		return nil
+	}
+	perm, err := mcpforms.MarshalInline(s.permBase, s.inline)
+	if err != nil {
+		m.dock.SetError("could not encode the version's MCP specs: " + err.Error())
+		return nil
+	}
+	s.permBase = perm // keep the base in step, so a second edit merges from the first
+	return s.saveInline(perm, skillFilesJSONForPaths(s.skills))
+}
+
+// decodeSkillFilesJSON reads a version's skill_files JSON array into a path list. A malformed or empty
+// value yields nil, so a version with no skills opens on an empty list rather than on a parse error.
+func decodeSkillFilesJSON(raw string) []string {
+	t := strings.TrimSpace(raw)
+	if t == "" {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(t), &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+// skillFilesJSONForPaths encodes a path list as the JSON array the wire expects (the same shape
+// execution.skillFilesJSON writes from the field, so the two cannot disagree).
+func skillFilesJSONForPaths(paths []string) string {
+	b, err := json.Marshal(paths)
+	if err != nil || len(paths) == 0 {
+		return "[]"
+	}
+	return string(b)
+}
+
 // scopeInstallSelected runs the explicit auto-install for the focused definition (the GUI's Install
 // button; never implicit at session time).
 func (m *App) scopeInstallSelected() tea.Cmd {
-	row, ok := m.scopeTarget("install", "mcp")
+	row, ok := m.scopeTarget("install", "row")
 	if !ok {
 		return nil
 	}
@@ -542,7 +1057,7 @@ func (m *App) scopeInstallSelected() tea.Cmd {
 // secrets store is tenant-scoped (RLS needs a tenant) — a credential store, not an MCP scope — which is
 // why the key is typed here rather than derived from the definition.
 func (m *App) scopeCredentialForSelected() tea.Cmd {
-	row, ok := m.scopeTarget("credential", "mcp")
+	row, ok := m.scopeTarget("credential", "row")
 	if !ok {
 		return nil
 	}
@@ -551,35 +1066,71 @@ func (m *App) scopeCredentialForSelected() tea.Cmd {
 	return nil
 }
 
-// scopeDeleteSelected removes the focused row's thing: an owned definition, or one skill path.
+// scopeDeleteSelected removes the focused row's thing: an owned definition, an inline spec, or one skill
+// path.
 //
-// BOTH ARE CONFIRMED, through the shell's own confirm dialog, even though the GUI deletes a definition
-// on a single button press: `d` sits one key from the movement keys in a list the operator is scanning,
-// and the write is not undoable from here. The dialog NAMES what goes and what does not, which is the
-// part a bare "are you sure" would leave out.
+// ALL ARE CONFIRMED, through the shell's own confirm dialog, even though the GUI deletes a definition on
+// a single button press: `d` sits one key from the movement keys in a list the operator is scanning, and
+// the write is not undoable from here. The dialog NAMES what goes and what does not, which is the part a
+// bare "are you sure" would leave out.
 func (m *App) scopeDeleteSelected() tea.Cmd {
 	row, ok := m.scopeTarget("delete", "writable")
 	if !ok {
 		return nil
 	}
+	s := m.scope
 	switch row.kind {
 	case scopeRowMCP:
+		where := "this conversation"
+		if s.kind == ownerProject {
+			where = "this project"
+		}
 		m.openBulkConfirm("Delete this MCP definition?",
-			row.name+" will be removed from this conversation's scope.\n"+
-				"The definition belongs to the conversation only — the project's and any worker's are untouched.",
-			"delete", func() tea.Cmd { return m.deleteConversationMCP(row.id, row.name) })
+			row.name+" will be removed from "+where+"'s scope.\n"+
+				"The definition belongs to "+where+" only — other scopes are untouched.",
+			"delete", func() tea.Cmd { return m.scopeDeleteMCP(row.id, row.name) })
+		return nil
+	case scopeRowInlineMCP:
+		m.openBulkConfirm("Remove this MCP spec from the version?",
+			row.name+" will be removed from this worker version's permissions.\n"+
+				"The change is not saved until the version is saved; the version's other permissions are untouched.",
+			"remove", func() tea.Cmd {
+				kept := make([]mcpforms.InlineSpec, 0, len(s.inline))
+				for _, spec := range s.inline {
+					if spec.ID != row.id {
+						kept = append(kept, spec)
+					}
+				}
+				s.inline = kept
+				return m.commitWorkerVersion()
+			})
 		return nil
 	case scopeRowSkill:
-		remaining := withoutPath(m.conversationSkillFiles(m.scope.convID), row.id)
+		remaining := withoutPath(m.scopeSkillPaths(), row.id)
+		save := m.scopeSkillsSaver()
 		m.openBulkConfirm("Remove this skill file?",
-			row.id+" will no longer be rendered into this conversation's prompt.\n"+
+			row.id+" will no longer be rendered into "+s.ownerName()+"'s prompt.\n"+
 				"The file itself is untouched; s shows the remaining list.",
-			"remove", func() tea.Cmd {
-				return m.chat.SetConversationSkillFiles(m.scope.convID, remaining)
-			})
+			"remove", func() tea.Cmd { return save(remaining) })
 		return nil
 	}
 	return nil
+}
+
+// scopeDeleteMCP deletes an OWNED definition at the modal's current scope, by ID.
+func (m *App) scopeDeleteMCP(id, name string) tea.Cmd {
+	cl := m.clients
+	return func() tea.Msg {
+		if cl == nil || cl.MCP == nil {
+			return convScopeMsg{op: "/scope", err: "not connected to a plane"}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if _, err := cl.MCP.DeleteMCPServer(ctx, connect.NewRequest(&apiv1.MCPServerDeleteRequest{Id: id})); err != nil {
+			return convScopeMsg{op: "/scope", err: err.Error()}
+		}
+		return convScopeMsg{op: "/scope", detail: "deleted " + name}
+	}
 }
 
 // withoutPath removes one entry from a path list.
@@ -612,7 +1163,7 @@ func (m *App) scopeBody() string {
 	s.clampCursor(len(rows))
 
 	var b strings.Builder
-	b.WriteString(theme.ListTitle.Render(truncateRight("Scope — this conversation", inner)) + "\n")
+	b.WriteString(theme.ListTitle.Render(truncateRight(m.scopeTitle(), inner)) + "\n")
 	if s.loading {
 		b.WriteString(theme.HintText.Render("loading…") + "\n")
 	}
@@ -687,6 +1238,30 @@ func (m *App) scopeWindow(rows []scopeRow, n int) (int, int) {
 	return m.scope.scroll, m.scope.scroll + budget
 }
 
+// scopeTitle names the surface the modal is managing — one line, so the operator always knows WHICH
+// scope a destructive verb would touch.
+func (m *App) scopeTitle() string {
+	s := m.scope
+	if s == nil {
+		return "Manage MCP + skills"
+	}
+	switch s.kind {
+	case ownerProject:
+		name := s.label
+		if name == "" {
+			name = "this project"
+		}
+		return "MCP + skills — project " + name
+	case ownerWorkerVersion:
+		name := s.label
+		if name == "" {
+			name = "this version"
+		}
+		return "MCP + skills — " + name
+	}
+	return "MCP + skills — this conversation"
+}
+
 // scopeHintItems is the modal's key list as ITEMS, and the items are why the hint can WRAP.
 //
 // The operator: "the shortcut advice is also a bit cut off". It was rendered through truncateRight,
@@ -695,11 +1270,19 @@ func (m *App) scopeWindow(rows []scopeRow, n int) (int, int) {
 // separators instead, so nothing is ever dropped.
 func (m *App) scopeHintItems() []string {
 	row, ok := m.scope.selected(m)
-	items := []string{"↑/↓ move", "a: add", "c: catalog", "s: skill files", "r: refresh", "esc: close"}
+	// AN INLINE SPEC HAS NO ROW, so the three verbs that need one are not offered — the GUI's panel makes
+	// the same omission for this scope rather than showing buttons that cannot work.
+	inline := m.scope != nil && m.scope.kind == ownerWorkerVersion
+	items := []string{"↑/↓ move", "a: add", "s: skill files", "r: refresh", "esc: close"}
+	if !inline {
+		items = []string{"↑/↓ move", "a: add", "c: catalog", "s: skill files", "r: refresh", "esc: close"}
+	}
 	switch {
 	case ok && row.kind == scopeRowMCP:
 		items = []string{"↑/↓ move", "enter/e: edit", "i: install", "k: credential", "d: delete",
 			"a: add", "s: skill files", "esc: close"}
+	case ok && row.kind == scopeRowInlineMCP:
+		items = []string{"↑/↓ move", "enter/e: edit", "d: remove", "a: add", "s: skill files", "esc: close"}
 	case ok && (row.kind == scopeRowInheritedMCP || row.kind == scopeRowProjectSkill):
 		items = []string{"↑/↓ move", "read-only (from the project)", "a: add", "s: skill files", "esc: close"}
 	case ok && row.kind == scopeRowSkill:
@@ -767,7 +1350,115 @@ func (m *App) scopeConversation() string {
 // about. It is the shell's guard rather than a call at each switch site, so a future switch path cannot
 // forget it — the failure it prevents is a modal editing one chat's scope while another is open.
 func (m *App) scopeConversationChanged() {
-	if m.scope != nil && m.scope.convID != m.chatConvID {
+	if m.scope != nil && m.scope.kind == ownerConversation && m.scope.convID != m.chatConvID {
 		m.closeScopeModal()
 	}
+}
+
+// ── the shell surface a SCREEN opens the modal through ────────────────────────────────────
+//
+// The modal is the SHELL's (it is layered over every screen), so a screen reaches it through these two
+// calls rather than owning a second copy of it. The GUI has the same shape: MCPServersPanel is one
+// component imported by the project page, the worker page and the conversation disclosure.
+
+// OpenProjectMCPModal opens the MCP + skills modal for a project — the surface the Work screen's
+// Projects pane opens on `m`, matching the panel the GUI mounts on a project page.
+func (m *App) OpenProjectMCPModal(projectID, name string) tea.Cmd {
+	return m.openProjectScopeModal(projectID, name)
+}
+
+// workerVersionScopeMsg carries a worker's version data into the modal. The fetch is asynchronous, so
+// the modal is opened on the MESSAGE rather than inside the cmd (a cmd mutates a discarded App copy).
+type workerVersionScopeMsg struct {
+	workerID    string
+	workerName  string
+	versionID   string
+	version     int32
+	permissions string
+	skillFiles  string
+	err         string
+}
+
+// OpenWorkerMCPModal opens the MCP + skills modal for a worker's version — the surface the Execution
+// screen's Workers pane opens on `m`, matching the panel the GUI mounts on a worker page.
+//
+// IT FETCHES FIRST, because the list row carries neither the version id (which the update needs) nor the
+// version's permissions and skill files (which are what the modal manages). One read of the worker, then
+// the modal owns an in-memory copy until the operator saves.
+func (m *App) OpenWorkerMCPModal(workerID, workerName string) tea.Cmd {
+	if workerID == "" {
+		m.dock.SetError("no worker selected")
+		return nil
+	}
+	cl := m.clients
+	return func() tea.Msg {
+		if cl == nil || cl.Workers == nil {
+			return workerVersionScopeMsg{err: "not connected to a plane"}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		resp, err := cl.Workers.GetWorker(ctx, connect.NewRequest(&apiv1.GetWorkerRequest{Id: workerID}))
+		if err != nil {
+			return workerVersionScopeMsg{err: err.Error()}
+		}
+		msg := workerVersionScopeMsg{workerID: workerID, workerName: workerName}
+		v := resp.Msg.GetLatestVersion()
+		if v == nil {
+			// NO VERSION YET: nothing to manage, and saying so is better than opening an empty modal whose
+			// save would have no version to write to.
+			msg.err = workerName + " has no version yet — a worker's MCP and skills live on a version, " +
+				"so create one first (V on the Workers pane)"
+			return msg
+		}
+		msg.versionID, msg.version = v.GetId(), v.GetVersion()
+		msg.permissions = v.GetPermissions()
+		msg.skillFiles = skillFilesJSONForPaths(v.GetSkillFiles())
+		return msg
+	}
+}
+
+// onWorkerVersionScope opens the modal once a worker's version has landed.
+func (m *App) onWorkerVersionScope(msg workerVersionScopeMsg) tea.Cmd {
+	if msg.err != "" {
+		m.dock.SetError(msg.err)
+		return nil
+	}
+	label := msg.workerName
+	if label == "" {
+		label = msg.workerID
+	}
+	label = fmt.Sprintf("%s · v%d", label, msg.version)
+	workerID, versionID, cl := msg.workerID, msg.versionID, m.clients
+	return m.openWorkerVersionScopeModal(label, msg.permissions, msg.skillFiles,
+		func(permJSON, skillsJSON string) tea.Cmd {
+			return func() tea.Msg {
+				if cl == nil || cl.Workers == nil {
+					return convScopeMsg{op: "/scope", err: "not connected to a plane"}
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				defer cancel()
+				// PERMISSIONS AND SKILL FILES TOGETHER, in one update: they are both optional fields on
+				// the request, and writing one without the other would leave the version's two halves
+				// disagreeing about what the modal just showed.
+				if _, err := cl.Workers.UpdateWorkerVersion(ctx, connect.NewRequest(&apiv1.UpdateWorkerVersionRequest{
+					WorkerId:    workerID,
+					VersionId:   versionID,
+					Permissions: &permJSON,
+					SkillFiles:  &skillsJSON,
+				})); err != nil {
+					return convScopeMsg{op: "/scope", err: err.Error()}
+				}
+				return convScopeMsg{op: "/scope", detail: "version saved — MCP specs and skill files updated"}
+			}
+		})
+}
+
+// OpenProjectMCPCatalog opens the project modal STRAIGHT ON its catalog verb — the Projects pane's `M`
+// shortcut. It is a shell method so the shortcut and the modal share one add flow rather than drifting
+// into two.
+func (m *App) OpenProjectMCPCatalog() tea.Cmd {
+	if m.scope == nil || m.scope.kind != ownerProject {
+		return nil
+	}
+	return m.scopeAddMCPFromCatalog()
 }

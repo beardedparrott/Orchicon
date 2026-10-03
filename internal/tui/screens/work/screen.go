@@ -361,6 +361,20 @@ type dockSink interface {
 	DockNotice(msg string)
 }
 
+// mcpModalHost is the shell surface that owns the MCP + skills modal. The modal is LAYERED OVER every
+// screen, so it belongs to the shell (as it does in the GUI, where MCPServersPanel is imported by the
+// project page rather than reimplemented there) — a screen only asks for it.
+type mcpModalHost interface {
+	OpenProjectMCPModal(projectID, name string) tea.Cmd
+	OpenProjectMCPCatalog() tea.Cmd
+}
+
+// mcpModalHost resolves the shell, when it offers the modal.
+func (m *Model) mcpModalHost() (mcpModalHost, bool) {
+	h, ok := m.Shell().(mcpModalHost)
+	return h, ok
+}
+
 // ActiveForm returns the form currently open on this screen, whichever host
 // draws it — the modal form (creates) or the inline detail-pane editor (edits).
 // Tests and the shell read the in-progress input through it.
@@ -1390,19 +1404,38 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return m.prepEditProject(formProjectDir), true
 		}
 	case "m":
-		// DEFINE an MCP server OWNED by the project — the TUI's new surface for
-		// AC 9. It replaces the old select-from-tenant field: the form builds an
-		// owned create request (project_id set), never a reference selection.
+		// MANAGE the project's MCP definitions and skill files in the ONE MODAL — the same surface a
+		// conversation gets from /scope, and the same panel the GUI mounts on a project page
+		// (MCPServersPanel with scope {kind:"project"}).
+		//
+		// IT REPLACES A CREATE-ONLY FORM. `m` used to open a bare "define an MCP server" form, and the
+		// project's skill files were reachable only as an absolute-path text field inside the edit form —
+		// so an operator had a modal on one surface and hand-editing on another. The operator: "I simply
+		// want at least a similar modal to manage MCP and skills for projects and workers. Right now it's
+		// one line edit with absolute paths. It doesn't pop up a modal like /mcp or /scope does."
+		//
+		// The modal lists what the project actually owns, and its verbs are keys on visible rows: a add ·
+		// c catalog · enter/e edit · i install · k credential · d delete · s skill files. The old
+		// define/catalog forms are still what those verbs OPEN — one implementation, not a second one.
 		if src == srcProjects {
 			if it, ok := m.ActiveItem(); ok {
-				return m.openForm(m.newProjectMCPDefineForm(it.ID), formDefineProjectMCP, it.ID), true
+				if h, ok := m.mcpModalHost(); ok {
+					return h.OpenProjectMCPModal(it.ID, it.Title), true
+				}
+				m.notice = "the MCP + skills modal is unavailable here"
+				return nil, true
 			}
 		}
 	case "M":
-		// One-click add from the Registry catalog (the GUI's "Add" button).
+		// One-click add from the Registry catalog — the same modal, opened straight ON its catalog verb,
+		// so the shortcut and the modal cannot drift into two different add flows.
 		if src == srcProjects {
 			if it, ok := m.ActiveItem(); ok {
-				return m.openForm(m.newProjectMCPCatalogForm(it.ID), formCatalogProjectMCP, it.ID), true
+				if h, ok := m.mcpModalHost(); ok {
+					return tea.Batch(h.OpenProjectMCPModal(it.ID, it.Title), h.OpenProjectMCPCatalog()), true
+				}
+				m.notice = "the MCP + skills modal is unavailable here"
+				return nil, true
 			}
 		}
 	case "s":
@@ -1561,7 +1594,8 @@ func (m *Model) toggleAllTreeNodes() tea.Cmd {
 func (m *Model) HintLine() string {
 	switch m.ActiveSourceName() {
 	case srcProjects:
-		return theme.HintText.Render("n: new project · e: edit · d: set+create dir · m: define MCP · M: add MCP from catalog · enter: detail · ←/→: pane")
+		return theme.HintText.Render("n: new project · e: edit · d: set+create dir · " +
+			"m: MCP + skills · M: add MCP from catalog · enter: detail · ←/→: pane")
 	case srcImages:
 		return theme.HintText.Render("n: new image · e: edit spec · b: build (live logs) · x: delete · enter: detail")
 	default:

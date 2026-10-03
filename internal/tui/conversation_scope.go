@@ -245,6 +245,14 @@ func (m *App) convScopeKey(k tea.KeyMsg) (*App, tea.Cmd) {
 	cmd, _ := m.convScopeForm.HandleKey(k)
 	if m.convScopeForm != nil && m.convScopeForm.Submitted {
 		m.convScopeForm = nil
+		// AN IN-MEMORY EDIT COMMITS WHEN ITS FORM CLOSES. A worker version's specs live in its own
+		// permissions, and mcpforms.InlineForm's save callback cannot return a command — so this is the
+		// first point at which the modal can write the version back. Gated on `dirty`, so a form
+		// dismissed without a change is not a write.
+		if m.scope != nil && m.scope.kind == ownerWorkerVersion && m.scope.dirty {
+			m.scope.dirty = false
+			cmd = tea.Batch(cmd, m.commitWorkerVersion())
+		}
 	}
 	return m, cmd
 }

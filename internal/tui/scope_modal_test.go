@@ -657,7 +657,9 @@ func TestScopeModalIsVisibleAgainAfterTheFormCloses(t *testing.T) {
 		t.Fatal("esc did not close the definition form")
 	}
 	frame := stripANSI(m.View())
-	if !strings.Contains(frame, "Scope — this conversation") {
+	// The title NAMES THE OWNER now (the modal serves three scopes), so the assertion follows the
+	// surface rather than a fixed string.
+	if !strings.Contains(frame, "MCP + skills — this conversation") {
 		t.Errorf("the scope list is not what the operator sees after closing the form:\n%s", tailOf(frame, 1200))
 	}
 	if strings.Contains(frame, "Define an MCP server") {
