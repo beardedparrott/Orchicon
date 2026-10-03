@@ -904,6 +904,36 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 		// or a muscle memory — may still send it. Explain rather than no-op.
 		return m.refuse("the model is a field on the Edit form (e) and the version editor (V) — open one and choose it there, or press " + keyBulkSetModel + " to set it for several marked workers"), true
 	}
+	// A MARKED SELECTION THAT YIELDS NO BULK ACTION MUST REFUSE, NEVER RETARGET — AND THIS CHECK HAS
+	// TO RUN BEFORE actionByKey, WHICH IS THE WHOLE POINT.
+	//
+	// The operator: "If I bulk select items but then move the selector onto a single item and hit
+	// ctrl+x, it asks to delete the item you have currently selected versus the bulk items you
+	// selected."
+	//
+	// REPRODUCED: a category FOLDER row can be marked (it is a row), but markableIDs filters it out —
+	// so marking ONE real row plus a folder leaves TWO marks (and the hint read "2 marked") while only
+	// one is writable, below BulkThreshold. The bulk action therefore does not exist... except
+	// actionByKey still FINDS one: the list's single-row delete for the CURSOR row. So the operator
+	// marks two things, the chord opens a confirm, and the confirm names a third.
+	//
+	// Placing this after the lookup made it unreachable — the single-row action always matched first —
+	// which is why the check is here, ahead of it, and gated on the chord THE PANE ACTUALLY BINDS
+	// (schedules delete on `x`, every other pane on ctrl+x). Refusing any other key here would make the
+	// pane swallow a key it does not own, which is the failure mode the unavailableReason comment
+	// above warns about.
+	if len(m.Base.MarkedIDs()) > 0 && kstr == m.paneDeleteChord() {
+		n, k := len(m.Base.MarkedIDs()), len(m.markableIDs())
+		if k < kit2.BulkThreshold {
+			if k < n {
+				return m.refuse(fmt.Sprintf("%d rows are marked but only %d can be deleted here — a "+
+					"category folder is not a %s. Nothing was deleted; esc clears the selection.",
+					n, k, m.paneNoun())), true
+			}
+			return m.refuse(fmt.Sprintf("%d rows are marked, which is not a bulk selection — space "+
+				"marks more, esc clears. Nothing was deleted.", n)), true
+		}
+	}
 	if a, ok := m.actionByKey(kstr); ok {
 		return m.openAction(a), true
 	}
@@ -911,6 +941,43 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 		return m.refuse(why), true
 	}
 	return nil, false
+}
+
+// paneDeleteChord is the delete chord the FOCUSED pane binds — not a fixed pair.
+//
+// The Schedules pane deletes on `x` (keySchedDelete) while every other pane uses ctrl+x, so a refusal
+// keyed on a hardcoded pair either misses schedules' chord or claims a key schedules does not own.
+func (m *Model) paneDeleteChord() string {
+	if m.ActiveSourceName() == srcSchedules {
+		return keySchedDelete
+	}
+	return keyDelete
+}
+
+// markableCount is how many marked rows a bulk WRITE could actually act on — the number the hint
+// must show, because it is the number the confirm will name.
+//
+// It exists because the hint counted every MARK (MarkCount) while the actions counted only the
+// markable ones (markableIDs), so a selection containing a category folder read "2 marked · ctrl+x:
+// delete 2" and then deleted one thing — or, below the threshold, nothing but the cursor row. The
+// count the operator sees and the set the write touches are the same question and must have one answer.
+func (m *Model) markableCount() int { return len(m.markableIDs()) }
+
+// paneNoun names what a row on the focused pane IS, for refusal text.
+func (m *Model) paneNoun() string {
+	switch m.ActiveSourceName() {
+	case srcWorkers:
+		return "worker"
+	case srcWorkflows:
+		return "workflow"
+	case srcExecutions:
+		return "execution"
+	case srcRuns:
+		return "workflow run"
+	case srcSchedules:
+		return "schedule"
+	}
+	return "row"
 }
 
 // actionByKey returns the action bound to a key for the focused row.
@@ -1151,7 +1218,7 @@ func (m *Model) HintLine() string {
 		// THE DELETE CHORD IS NAMED, and the mark state is stated when there is one — the same reason
 		// the Workers pane names it: a bulk delete that nothing advertises is invisible until it has
 		// already been selected. `space` is mentioned because marking is the bulk gesture.
-		if n := m.Base.MarkCount(); n > 0 {
+		if n := m.markableCount(); n > 0 {
 			return theme.HintText.Render(keyDelete + ": delete " + fmt.Sprint(n) + " selected " +
 				theme.DetailKey.Render("·") + " esc: clear " + theme.DetailKey.Render("·") +
 				" space: mark · ←/→: pane · r: refresh")
@@ -1161,7 +1228,7 @@ func (m *Model) HintLine() string {
 			" i: interject · space: mark for bulk · enter: live session · ←/→: pane · r: refresh")
 	case srcRuns:
 		// The delete chord is named, and the mark state is stated when there is one.
-		if n := m.Base.MarkCount(); n > 0 {
+		if n := m.markableCount(); n > 0 {
 			return theme.HintText.Render(keyDelete + ": delete " + fmt.Sprint(n) + " selected " +
 				theme.DetailKey.Render("·") + " esc: clear " + theme.DetailKey.Render("·") +
 				" space: mark · ←/→: pane · r: refresh")
@@ -1177,7 +1244,7 @@ func (m *Model) HintLine() string {
 		// because the composer is the row the operator reads. It used to advertise `x: delete` — a chord
 		// that no longer exists anywhere — and said nothing about what marking rows does, so a bulk
 		// delete was invisible until it was already selected.
-		if n := m.Base.MarkCount(); n > 0 {
+		if n := m.markableCount(); n > 0 {
 			return theme.HintText.Render(m.markHint(n) +
 				keyDelete + ": delete " + fmt.Sprint(n) + " " + theme.DetailKey.Render("·") +
 				" " + keyBulkSetModel + ": set model " + theme.DetailKey.Render("·") +
@@ -1203,7 +1270,7 @@ func (m *Model) HintLine() string {
 		}
 		// The Workflows pane used to advertise NO delete at all — the chord existed (`shift+x`) and was
 		// simply not written down, which is how it stayed undiscoverable.
-		if n := m.Base.MarkCount(); n > 0 {
+		if n := m.markableCount(); n > 0 {
 			return theme.HintText.Render(m.markHint(n) +
 				keyDelete + ": delete " + fmt.Sprint(n) + " " + theme.DetailKey.Render("·") +
 				" esc: clear " + theme.DetailKey.Render("·") + " ↑↓: move · r: refresh")
