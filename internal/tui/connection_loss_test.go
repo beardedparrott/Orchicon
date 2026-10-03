@@ -101,7 +101,8 @@ func TestConnectingIsNotTreatedAsDead(t *testing.T) {
 // THE CONVERSATION PANE ITSELF SAYS THE CONNECTION IS DOWN.
 //
 // This is the operator's actual ask: the notification has to be where the conversation is, not only in the
-// footer. Asserted on the transcript's notice — the one row the pane reserves for exactly this.
+// shell's footer. It is the PANE'S fixed footer now (see App.transcriptStatusLine) — the one band the pane
+// reserves for exactly this, and the one place a status line cannot be pushed out by transcript content.
 func TestConversationPaneWarnsWhenThePlaneIsUnreachable(t *testing.T) {
 	m, _ := newAskApp(t)
 	scr := ask.New(m.clients, m.reg)
@@ -116,19 +117,15 @@ func TestConversationPaneWarnsWhenThePlaneIsUnreachable(t *testing.T) {
 	m.chatStore.append("c1", chat.ChatItem{Kind: chat.KindUser, Text: "hello", Key: "u1", At: 1})
 	healthyPlane(m)
 	m.onChatWake()
-	if str := m.TranscriptStream("c1"); str != nil && strings.Contains(str.Notice, "disconnected") {
-		t.Fatalf("a HEALTHY plane showed a disconnection banner: %q", str.Notice)
+	if got := m.askStatusLine(); strings.Contains(got, "disconnected") {
+		t.Fatalf("a HEALTHY plane showed a disconnection banner: %q", got)
 	}
 
 	deadPlane(m)
 	m.onChatWake()
-	str := m.TranscriptStream("c1")
-	if str == nil {
-		t.Fatal("no transcript stream")
-	}
-	if !strings.Contains(str.Notice, "disconnected") {
+	if got := m.askStatusLine(); !strings.Contains(got, "disconnected") {
 		t.Errorf("the conversation pane says %q with a dead plane — the operator's \"the TUI conversation "+
-			"does not\" tell you", str.Notice)
+			"does not\" tell you", got)
 	}
 	// And the notice must be PAINTED, not merely stored: the failure this class of bug ships with is a
 	// value set on the widget that the host's row budget clips away.

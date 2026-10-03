@@ -108,9 +108,11 @@ func TestPlaneReportedTurnReattachesTheClient(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("a plane-reported turn produced no follow-up — the slot would stay unarmed")
 	}
-	// The activity line is the visible consequence, and it is what the operator reported missing.
-	if str := m.TranscriptStream("c1"); str != nil && str.Notice == "" {
-		t.Error("the activity line is still empty for a turn the plane reports as running")
+	// The client now KNOWS the turn is running — the state every visible consequence (the rail's marker,
+	// the status line, the stop affordance) is derived from. The line itself is asserted on a real Ask
+	// pane, in TestActivityLineShowsForAServerReportedTurn; this harness has no such pane.
+	if !m.turnInFlight("c1") {
+		t.Error("the plane-reported turn was not applied to the row")
 	}
 }
 

@@ -39,15 +39,11 @@ func TestActivityLineShowsForAServerReportedTurn(t *testing.T) {
 	}
 	m.onChatWake()
 
-	str := m.TranscriptStream("c1")
-	if str == nil {
-		t.Fatal("no transcript stream for the open conversation")
-	}
-	if !strings.Contains(str.Notice, "Orchicon is") {
-		t.Errorf("no activity line while the PLANE reports a turn in flight (notice = %q). The rail "+
+	if got := m.askStatusLine(); !strings.Contains(got, "Orchicon is") {
+		t.Errorf("no activity line while the PLANE reports a turn in flight (footer = %q). The rail "+
 			"marks this conversation as running, so the pane and the rail contradict each other — and "+
-			"an empty notice also hands the transcript the row the line would have reserved, which is "+
-			"the operator's \"the conversation text is going to the bottom\"", str.Notice)
+			"an empty status hands the transcript the footer's rows, which is the operator's "+
+			"\"the conversation text is going to the bottom\"", got)
 	}
 	if frame := m.View(); !strings.Contains(frame, "Orchicon is") {
 		t.Errorf("the activity line is not in the PAINTED frame:\n%s", tailOf(frame, 1200))
@@ -60,45 +56,76 @@ func TestActivityLineClearsWhenTheTurnEnds(t *testing.T) {
 	m, _ := askWithTranscript(t, "c1")
 	m.conversations = []chat.Conversation{{ID: "c1", Title: "a chat", TurnInFly: true, PendingReplyID: "m1"}}
 	m.onChatWake()
-	if str := m.TranscriptStream("c1"); str == nil || str.Notice == "" {
+	if m.askStatusLine() == "" {
 		t.Fatal("fixture: the line should be showing")
 	}
 
 	// The turn finishes: the conversation row no longer reports it.
 	m.conversations = []chat.Conversation{{ID: "c1", Title: "a chat"}}
 	m.onChatWake()
-	if str := m.TranscriptStream("c1"); str != nil && str.Notice != "" {
-		t.Errorf("the activity line outlived the turn it describes: notice = %q", str.Notice)
+	if got := m.askStatusLine(); got != "" {
+		t.Errorf("the activity line outlived the turn it describes: footer = %q", got)
 	}
 }
 
-// THE LINE'S ROW IS RESERVED, which is what stops the transcript running to the pane's bottom edge.
-// Asserted through the stream's own visible-row count, so it holds whatever the pane's height is.
-func TestTheActivityLineReservesItsRow(t *testing.T) {
+// THE LINE'S ROWS ARE TAKEN OUT OF THE BODY, so the transcript can never run to the pane's bottom
+// edge and the line can never be squeezed out.
+//
+// This is the whole reason the line is a PANE FOOTER rather than a stream notice. As a notice it claimed
+// a body row INSIDE the stream (kit2.Stream.bodyRows), which meant the transcript got the whole pane
+// whenever the notice was empty — the operator's "the model's text is reach the bottom of the
+// conversation pane and this should never happen" — and the notice was drawn last, so any sizing
+// mistake clipped it. As a footer the PANE budgets it (screenkit.Detail.footerRows) and subtracts it
+// BEFORE the stream is measured, which is asserted here from both directions.
+func TestTheStatusLineIsBudgetedOutOfTheBody(t *testing.T) {
 	m, _ := askWithTranscript(t, "c1")
 	for i := 0; i < 60; i++ {
 		m.chatStore.append("c1", chat.ChatItem{
 			Kind: chat.KindUser, Text: fmt.Sprintf("history-%02d", i), Key: fmt.Sprintf("h%d", i), At: int64(i),
 		})
 	}
+
+	// A turn in flight: the line is up, and the body is smaller than the pane by the footer's rows.
 	m.conversations = []chat.Conversation{{ID: "c1", Title: "a chat", TurnInFly: true, PendingReplyID: "m1"}}
 	m.onChatWake()
-
-	str := m.TranscriptStream("c1")
-	if str == nil || str.Notice == "" {
-		t.Fatalf("fixture: the notice must be showing (notice = %v)", str.Notice)
+	if m.askStatusLine() == "" {
+		t.Fatal("fixture: the status line must be showing")
 	}
-	withNotice := len(str.Visible())
-	if withNotice >= str.Height {
-		t.Errorf("the transcript takes %d of the stream's %d rows with a notice set — the notice's row "+
-			"must come OUT of the body, or the line is what gets clipped", withNotice, str.Height)
-	}
+	withLine := m.TranscriptStream("c1").Height
 
-	// With the turn over, the body gets that row back.
+	// The turn ends: the footer clears and the body gets those rows back.
 	m.conversations = []chat.Conversation{{ID: "c1", Title: "a chat"}}
 	m.onChatWake()
-	if got := len(str.Visible()); got <= withNotice {
-		t.Errorf("with no notice the body should get the row back: %d visible, was %d", got, withNotice)
+	if m.askStatusLine() != "" {
+		t.Fatalf("the status line outlived the turn: %q", m.askStatusLine())
+	}
+	without := m.TranscriptStream("c1").Height
+	if without <= withLine {
+		t.Errorf("the footer's rows were not returned to the body: %d with the line up, %d without",
+			withLine, without)
+	}
+
+	// AND THE OPERATOR'S INVARIANT, on the painted frame: with a turn running, the line is on screen AND
+	// the transcript has not reached the pane's last row.
+	m.conversations = []chat.Conversation{{ID: "c1", Title: "a chat", TurnInFly: true, PendingReplyID: "m1"}}
+	m.onChatWake()
+	frame := stripANSI(m.View())
+	if !strings.Contains(frame, "Orchicon is") {
+		t.Errorf("the status line is not in the painted frame:\n%s", tailOf(frame, 1200))
+	}
+	rows := strings.Split(frame, "\n")
+	bottom := -1
+	for i, r := range rows {
+		if strings.Contains(r, "└") {
+			bottom = i
+			break
+		}
+	}
+	if bottom < 0 {
+		t.Fatal("could not find the pane's bottom border")
+	}
+	if last := rows[bottom-1]; !strings.Contains(last, "│") || strings.Contains(last, "history-") {
+		t.Errorf("the pane's last row is not the status band: %q", strings.TrimRight(last, " "))
 	}
 }
 

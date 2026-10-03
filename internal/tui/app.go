@@ -3887,6 +3887,61 @@ func (m *App) onConversationStatus(msg chat.ConversationStatusMsg) tea.Cmd {
 	return cmd
 }
 
+// transcriptStatusLine is the Ask pane's fixed footer: the conversation's status line, ONE slot.
+//
+// PRECEDENCE IS THE POINT, and the order is deliberate: a broken CONNECTION outranks a working TURN.
+// Telling the operator "the model is thinking" while the plane is unreachable would claim liveness the
+// connection cannot deliver — the same lie the footer's own disconnected banner exists to prevent.
+//
+// The activity line then runs FOR THE WHOLE TURN, not only before the first token. It used to require
+// `awaitingReply(items)` — the GUI's rule, where the indicator is "visible until any streaming content
+// arrives". That is right for a THINKING indicator and wrong for an ACTIVITY line, and the operator
+// reported the difference as a bug: "After the initial 'Orchicon is thinking...', streaming started and
+// the 'Orchicon is thinking...' went away and never came back."
+//
+// What they lost was the only signal that the stream is ALIVE. Mid-reply is exactly when it matters: a
+// long tool call, a slow provider or a stalled socket look identical from the outside, and with the line
+// gone nothing on screen changes until the reply finishes. So the line tracks the TURN, and the verb
+// follows the PHASE — "thinking" before there is anything to read, "replying" once there is — which keeps
+// the GUI's wording where the GUI uses it and extends the line where the operator asked for it.
+//
+// The age comes from the watchdog's own clock (lastActivity), so the line cannot claim a liveness the
+// liveness check would contradict.
+//
+// THE TURN TEST IS EITHER HALF, and both are load-bearing: IsStreaming is this client's own slot (which
+// supplies the age), and turnInFlight is the PLANE's answer (which covers a turn this client is not
+// streaming). See turnInFlight.
+func (m *App) transcriptStatusLine(items []chat.ChatItem) string {
+	if m.chatConvID == "" {
+		return ""
+	}
+	switch {
+	case m.chatStore.isReconnecting(m.chatConvID):
+		return "reconnecting…"
+	case m.planeUnreachable():
+		// THE PANE ITSELF SAYS THE CONNECTION IS DOWN — the operator's ask, verbatim: "if a connection
+		// dies, the GUI tells you, but the TUI conversation does not." The shell footer is easy to miss
+		// when reading a transcript, and it is the TRANSCRIPT that looks broken when a reply cannot arrive.
+		return "⚠ disconnected — replies will resume when the plane returns (r retries now)"
+	case m.chat.IsStreaming(m.chatConvID) || m.turnInFlight(m.chatConvID):
+		return turnActivityNotice(m.chat.SilenceSince(m.chatConvID), awaitingReply(items))
+	}
+	return ""
+}
+
+// askStatusLine reads the Ask pane's fixed footer — where the activity/status line now lives.
+//
+// It exists so a caller (or a test) asks the SURFACE rather than reaching for the stream's old notice
+// field, which is no longer where the line is drawn. See App.transcriptStatusLine.
+func (m *App) askStatusLine() string {
+	if s := m.screens[TabAsk]; s != nil {
+		if f, ok := s.(interface{ DetailFooter() string }); ok {
+			return f.DetailFooter()
+		}
+	}
+	return ""
+}
+
 // onChatWake repaints the open ask-conversation detail pane with the
 // merged, phase-grouped transcript + live chunks. Cheap (no RPC): the
 // conversation detail's fields render from the last GetConversation —
@@ -3916,6 +3971,14 @@ func (m *App) onChatWake() tea.Cmd {
 	}
 	s := m.screens[TabAsk]
 	if s == nil || m.chatConvID == "" {
+		// NO CONVERSATION, NO STATUS: clear the band rather than leaving the previous chat's line sitting
+		// under a fresh transcript, which would be exactly the kind of untrue claim the line exists to
+		// avoid (a "thinking…" over a chat that is doing nothing).
+		if s != nil {
+			if stf, ok := s.(interface{ SetDetailFooter(string) }); ok {
+				stf.SetDetailFooter("")
+			}
+		}
 		return nil
 	}
 	type detailIDer interface{ DetailID() string }
@@ -3971,6 +4034,34 @@ func (m *App) onChatWake() tea.Cmd {
 		// BEFORE the stream is sized (below). A conditional field would make the body height depend on
 		// the stream's own content — circular — and the label is informative even when nothing is hidden.
 		fields = append(fields, screenkit.Field{Key: "scroll", Value: ""})
+
+		// THE ACTIVITY LINE IS THE PANE'S FIXED FOOTER, AND IT IS SET *BEFORE* THE STREAM IS SIZED.
+		//
+		// The operator, on the line disappearing while text ran to the pane's edge: "the model's text is
+		// reach the bottom of the conversation pane and this should never happen" and "The status at the
+		// bottom indicating that actual thinking is occurring ... should NEVER go away unless a turn is
+		// truly done."
+		//
+		// As a STREAM NOTICE it took a row out of the body (kit2.Stream.bodyRows) and was drawn LAST, which
+		// made it the first casualty of every sizing mistake and of every full transcript — and when it was
+		// gone, the transcript simply filled the pane, which is exactly the reported symptom. A FOOTER is
+		// budgeted by the PANE (screenkit.Detail.footerRows), which subtracts it from the body height BEFORE
+		// the stream is measured. So it cannot be squeezed out by content, cannot be clipped by an
+		// off-by-one in the sizing, and cannot be scrolled away.
+		//
+		// It is the same reasoning that put the execution detail's composer in a footer, from that
+		// feature's own note: "a footer is the shape an input needs: always visible, never scrolled away".
+		// The activity line has identical requirements, and it is computed HERE, ahead of the measurement,
+		// because that is what makes the two agree: the pane gives the footer its rows first and the body
+		// gets what is left, so the stream can never be sized into the footer's space.
+		//
+		// ONE STATUS SLOT, like every other status surface here: reconnecting and disconnected take it while
+		// they are true (a dead plane must not be reported as a thinking model), otherwise the turn's own
+		// activity line owns it. It is empty only when there is genuinely nothing to say.
+		if stf, ok := s.(interface{ SetDetailFooter(string) }); ok {
+			stf.SetDetailFooter(m.transcriptStatusLine(items))
+		}
+
 		// THE STREAM IS SIZED TO THE PANE'S BODY, NOT THE CONTENT REGION.
 		//
 		// It was sized to m.contentHeight() — the whole region the screen is given — while the pane
@@ -4010,39 +4101,6 @@ func (m *App) onChatWake() tea.Cmd {
 		}
 		str := m.newTranscriptStream(m.chatConvID, w, strH)
 		m.syncTranscript(m.chatConvID, str, items, w)
-		// ONE notice slot, set through SetNotice so the view stays pinned: the notice takes a row from
-		// the body, so a direct assignment would move the window and hide the newest line.
-		switch {
-		case m.chatStore.isReconnecting(m.chatConvID):
-			str.SetNotice("reconnecting…")
-		case m.planeUnreachable():
-			// THE PANE ITSELF SAYS THE CONNECTION IS DOWN — the operator's ask, verbatim: "if a connection
-			// dies, the GUI tells you, but the TUI conversation does not." The footer is easy to miss when
-			// reading a transcript, and it is the TRANSCRIPT that looks broken when a reply cannot arrive.
-			// Same slot and same row cost as "reconnecting…", so nothing moves.
-			str.SetNotice("⚠ disconnected — replies will resume when the plane returns (r retries now)")
-		case m.chat.IsStreaming(m.chatConvID) || m.turnInFlight(m.chatConvID):
-			// THE ACTIVITY LINE RUNS FOR THE WHOLE TURN, not only before the first token.
-			//
-			// It used to require `awaitingReply(items)` — the GUI's rule, where the indicator is "visible
-			// until any streaming content arrives". That is right for a THINKING indicator and wrong for an
-			// ACTIVITY line, and the operator reported the difference as a bug: "After the initial
-			// 'Orchicon is thinking...', streaming started and the 'Orchicon is thinking...' went away and
-			// never came back."
-			//
-			// What they lost was the only signal that the stream is ALIVE. Mid-reply is exactly when it
-			// matters: a long tool call, a slow provider or a stalled socket look identical from the
-			// outside, and with the line gone nothing on screen changes until the reply finishes. So the
-			// notice now tracks the TURN, and the verb follows the PHASE — "thinking" before there is
-			// anything to read, "replying" once there is — which keeps the GUI's wording where the GUI uses
-			// it and extends the line where the operator asked for it.
-			//
-			// The age comes from the watchdog's own clock (lastActivity), so the line cannot claim a
-			// liveness the liveness check would contradict.
-			str.SetNotice(turnActivityNotice(m.chat.SilenceSince(m.chatConvID), awaitingReply(items)))
-		default:
-			str.SetNotice("")
-		}
 		// Surface the scroll position when the transcript is taller than the pane.
 		//
 		// The transcript follows the TAIL, so a reply longer than the pane scrolls

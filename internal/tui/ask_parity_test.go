@@ -520,10 +520,11 @@ func TestUserMessageIsVisibleImmediatelyOnOpenConversation(t *testing.T) {
 	if joined := strings.Join(str.Lines, "\n"); !strings.Contains(joined, "hello there") {
 		t.Errorf("the operator's message is not in the transcript: %q", joined)
 	}
-	// And nothing has replied yet, so the GUI's thinking indicator should be showing.
-	if str.Notice != "Orchicon is thinking…" {
-		t.Errorf("transcript notice = %q, want %q — the GUI shows it until the first content arrives",
-			str.Notice, "Orchicon is thinking…")
+	// And nothing has replied yet, so the GUI's thinking indicator should be showing. It is the pane's
+	// FOOTER (see App.transcriptStatusLine), so it is read from the surface that draws it.
+	if got := m.askStatusLine(); got != "Orchicon is thinking…" {
+		t.Errorf("status line = %q, want %q — the GUI shows it until the first content arrives",
+			got, "Orchicon is thinking…")
 	}
 }
 
