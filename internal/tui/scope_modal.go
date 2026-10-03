@@ -1091,9 +1091,12 @@ func (m *App) scopeDeleteSelected() tea.Cmd {
 			"delete", func() tea.Cmd { return m.scopeDeleteMCP(row.id, row.name) })
 		return nil
 	case scopeRowInlineMCP:
+		// THE COPY SAYS WHAT ACTUALLY HAPPENS. The modal commits to the version as soon as the change is
+		// made (there is no outer "Save" on a shell-hosted modal), so promising "not saved until you save
+		// the version" would be a lie about a write that has already gone out.
 		m.openBulkConfirm("Remove this MCP spec from the version?",
-			row.name+" will be removed from this worker version's permissions.\n"+
-				"The change is not saved until the version is saved; the version's other permissions are untouched.",
+			row.name+" will be removed from this worker version's permissions and SAVED immediately.\n"+
+				"The version's other permissions are untouched.",
 			"remove", func() tea.Cmd {
 				kept := make([]mcpforms.InlineSpec, 0, len(s.inline))
 				for _, spec := range s.inline {
