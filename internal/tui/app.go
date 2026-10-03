@@ -3965,6 +3965,9 @@ func (m *App) askStatusLine() string {
 // conversation detail's fields render from the last GetConversation —
 // we rebuild the body only.
 func (m *App) onChatWake() tea.Cmd {
+	tracef("onChatWake: conv=%q active=%s focus=%v streaming=%v planeTurn=%v",
+		m.chatConvID, m.active, m.chatFocus, m.chat != nil && m.chat.IsStreaming(m.chatConvID),
+		m.turnInFlight(m.chatConvID))
 	// dock-level banner first (any screen): reconnecting state from the
 	// shared store, applied on the tea loop.
 	//
@@ -3989,6 +3992,7 @@ func (m *App) onChatWake() tea.Cmd {
 	}
 	s := m.screens[TabAsk]
 	if s == nil || m.chatConvID == "" {
+		tracef("onChatWake: SKIP — screen=%v conv=%q", s != nil, m.chatConvID)
 		// NO CONVERSATION, NO STATUS: clear the band rather than leaving the previous chat's line sitting
 		// under a fresh transcript, which would be exactly the kind of untrue claim the line exists to
 		// avoid (a "thinking…" over a chat that is doing nothing).
@@ -4009,6 +4013,7 @@ func (m *App) onChatWake() tea.Cmd {
 	dr, ok1 := s.(detailIDer)
 	st, ok2 := s.(setter)
 	if !ok1 || !ok2 {
+		tracef("onChatWake: SKIP — screen lacks DetailID(%v)/SetContentLaidOut(%v)", ok1, ok2)
 		return nil
 	}
 	// A DRIFTED DETAIL ID IS RE-ASSERTED, NOT TREATED AS "SHOWING SOMETHING ELSE".
@@ -4033,8 +4038,10 @@ func (m *App) onChatWake() tea.Cmd {
 	if dr.DetailID() != m.chatConvID {
 		sid, ok := s.(interface{ SetDetailID(string) })
 		if !ok {
+			tracef("onChatWake: SKIP — detailID=%q != conv=%q, no SetDetailID", dr.DetailID(), m.chatConvID)
 			return nil
 		}
+		tracef("onChatWake: detailID drifted %q -> re-asserting %q", dr.DetailID(), m.chatConvID)
 		sid.SetDetailID(m.chatConvID)
 	}
 	if askS, ok := s.(interface {
@@ -4132,6 +4139,8 @@ func (m *App) onChatWake() tea.Cmd {
 		// plainly that 22 lines sit above. Same field shape the Work screen's
 		// build log already uses.
 		fields[len(fields)-1].Value = str.ScrollLabel()
+		tracef("onChatWake: PAINT conv=%s items=%d bodyRows=%d footer=%q",
+			m.chatConvID, len(items), strings.Count(str.View(), "\n")+1, m.transcriptStatusLine(items))
 		st.SetDetailContentLaidOut(title, fields, str.View())
 	}
 	return nil
@@ -4895,6 +4904,7 @@ func (m *App) RepaintTranscript() tea.Cmd { return m.onChatWake() }
 func (m *App) composerKey(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 	handled, cmd = m.dock.Update(msg)
 	if text := m.dock.SendRequest(); text != "" {
+		tracef("composerKey: send collected %q (composerHeld=%v)", text, m.chatFocus == focusComposer)
 		// Batched with whatever the key produced, so the edit and the send it triggered cannot be separated
 		// (or one of them lost).
 		cmd = tea.Batch(cmd, m.sendFromComposer(text))
@@ -5130,6 +5140,7 @@ func (m *App) sendFromComposer(text string) tea.Cmd {
 	if m.chatConvID == "" {
 		return m.createConversationAndSend(text, preamble)
 	}
+	tracef("sendFromComposer: appending echo conv=%s text=%q", m.chatConvID, text)
 	m.chatStore.append(m.chatConvID, chat.ChatItem{
 		Kind: chat.KindUser, Text: text, At: time.Now().UnixMilli(),
 		Key: fmt.Sprintf("draft-%d", time.Now().UnixNano()), Live: true,
