@@ -3775,7 +3775,25 @@ func (m *App) onTranscript(msg chat.TranscriptMsg) tea.Cmd {
 		m.setChatErrorPlain(msg.Err)
 		return nil
 	}
-	if m.chat.IsStreaming(msg.ConvID) {
+	// MID-TURN IS EITHER HALF, AND THAT IS THE FIX FOR "my user messages are being swallowed up when I
+	// send them ... and permission cards no longer let me click on items".
+	//
+	// The choice used to be made on THIS CLIENT'S STREAM SLOT alone. replace() keeps only two kinds of
+	// live-only row — a "draft-" echo and a PENDING consent card — so any other row that exists only live
+	// was DROPPED by a delivery: a recorded clarifying-question card (KindAsk), an in-flight text or
+	// reasoning chunk, an artifact. All of those have no durable row yet BY DESIGN (the transcript records
+	// outcomes, and the server persists the reply as it goes), so the operator's own message and their
+	// card disappeared from screen and came back only when the server caught up — "not until the agent
+	// starts reasoning".
+	//
+	// A DURABLE TRANSCRIPT IS INCOMPLETE BY DEFINITION WHILE A TURN RUNS, so mid-turn the live buffer must
+	// be preserved. The plane states whether a turn is running (turn_in_flight) and the shell already
+	// trusts that field elsewhere (the rail's marker, re-attach, the activity line), so the decision uses
+	// BOTH halves — the same either-half rule the activity line uses. The REPLACE is reserved for the state
+	// it was written for: the turn is over, the durable transcript IS the authority, and any surviving live
+	// row would render twice.
+	midTurn := m.chat.IsStreaming(msg.ConvID) || m.turnInFlight(msg.ConvID)
+	if midTurn {
 		m.chatStore.mergeHistory(msg.ConvID, msg.Items)
 	} else {
 		m.chatStore.replace(msg.ConvID, msg.Items)
