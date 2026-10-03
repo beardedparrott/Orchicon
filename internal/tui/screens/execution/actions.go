@@ -899,6 +899,25 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 		}
 		return m.beginBulkSetModel(ids), true
 	}
+	// `m` MANAGES the selected worker's MCP + skills in the ONE MODAL — the same surface a conversation
+	// gets from /scope and a project gets from the Work screen's `m`, and the same panel the GUI mounts on
+	// a worker page (MCPServersPanel with scope {kind:"workerVersion"}).
+	//
+	// A VERSION'S SPECS ARE INLINE, so there is no row to hand-edit and no create-only form to reach: the
+	// modal lists them, edits one, or removes one. Before this the TUI could only take the version's
+	// permissions as raw JSON (and its skill files as an absolute-path list).
+	//
+	// IT SITS ABOVE THE DEPRECATED SET-MODEL CHORD, which also claims `m` (keySetModel). That chord is
+	// gone — the model is an Edit-form field — and survives only as an EXPLANATION for muscle memory. The
+	// modal is the live surface for this key, so it is resolved first; when there is no host to open it,
+	// control falls THROUGH to that explanation rather than to silence.
+	if kstr == "m" && m.ActiveSourceName() == srcWorkers {
+		if it, ok := m.ActiveItem(); ok {
+			if h, ok := m.mcpModalHost(); ok {
+				return h.OpenWorkerMCPModal(it.ID, it.Title), true
+			}
+		}
+	}
 	if kstr == keySetModel {
 		// The chord is gone (the model is a form field now), but a conversation —
 		// or a muscle memory — may still send it. Explain rather than no-op.
@@ -944,17 +963,6 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 	//
 	// Placed BEFORE actionByKey so it cannot be shadowed by a per-row action, and gated on the pane so it
 	// claims nothing anywhere else.
-	if kstr == "m" && m.ActiveSourceName() == srcWorkers {
-		it, ok := m.ActiveItem()
-		if !ok {
-			return m.refuse("no worker selected"), true
-		}
-		h, ok := m.mcpModalHost()
-		if !ok {
-			return m.refuse("the MCP + skills modal is unavailable here"), true
-		}
-		return h.OpenWorkerMCPModal(it.ID, it.Title), true
-	}
 	if a, ok := m.actionByKey(kstr); ok {
 		return m.openAction(a), true
 	}

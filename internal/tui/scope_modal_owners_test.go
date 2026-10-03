@@ -316,3 +316,22 @@ func TestSwitchingConversationsDoesNotCloseAnotherScopesModal(t *testing.T) {
 	_ = mcpforms.InlineSpec{}
 	_ = tea.KeyMsg{}
 }
+
+// ── the shell satisfies the hosts the panes assert ───────────────────────────────────────
+//
+// The Work and Execution screens reach the modal through unexported one-method interfaces
+// (mcpModalHost, in each package) that they type-assert on the shell. Those interfaces cannot be
+// referenced from here, so this pins the METHOD SETS instead: if a signature drifts, the panes' assertion
+// silently fails and the key goes inert — which is exactly the class of bug this feature is fixing, and
+// a compile error here is a far better place to find it.
+var (
+	_ interface {
+		OpenProjectMCPModal(projectID, name string) tea.Cmd
+	} = (*App)(nil)
+	_ interface {
+		OpenProjectMCPCatalog() tea.Cmd
+	} = (*App)(nil)
+	_ interface {
+		OpenWorkerMCPModal(workerID, name string) tea.Cmd
+	} = (*App)(nil)
+)
