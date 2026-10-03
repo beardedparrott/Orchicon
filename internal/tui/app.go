@@ -4980,6 +4980,28 @@ type chatConvCreatedMsg struct {
 	preamble string
 }
 
+// pinTranscriptToTail points the open transcript back at its newest line.
+//
+// A SEND IS A NEW, DELIBERATE ACT, and it must show what it sent. The stream's follow intent is
+// cleared by the operator's own scroll (kit2.Stream.follow — deliberately sticky, so an arriving
+// chunk cannot yank a reader out of the history mid-sentence). That stickiness is right for READING
+// and wrong for SENDING: an operator who scrolled back through a long conversation and then asked a
+// question is no longer reading, and leaving the view parked in the history means their own message
+// and the activity line are both appended BELOW the fold.
+//
+// THIS IS THE SIZE-DEPENDENT BUG, and the operator's two example conversations are the proof: a SHORT
+// transcript cannot be scrolled at all, so it is always at the bottom and always works; a LONG one can
+// be scrolled, and once it is, everything sent afterwards is invisible until something else moves the
+// window. "conversation ID 01M4… is working. Your conversation 01M3… is not."
+func (m *App) pinTranscriptToTail() {
+	if m.chatConvID == "" {
+		return
+	}
+	if str := m.chatStreams[m.chatConvID]; str != nil {
+		str.ScrollToBottom()
+	}
+}
+
 // runningExecutionID reports the selected execution when it is RUNNING
 // (interjection context). Status comes from the execution screen.
 func (m *App) runningExecutionID() (string, bool) {
@@ -5149,6 +5171,9 @@ func (m *App) sendFromComposer(text string) tea.Cmd {
 		// cleared on send.
 		Attachments: m.pendingAttachMarkers(),
 	})
+	// SHOW IT. See pinTranscriptToTail: on a long transcript the follow intent may be off, and the echo
+	// plus the activity line would land below the fold.
+	m.pinTranscriptToTail()
 	// The turn is in flight as soon as sendChat is evaluated (chat.Send flips the slot synchronously),
 	// so the composer's stop affordance appears with it — the operator can see HOW to stop before the
 	// first token lands.
@@ -5273,6 +5298,7 @@ func (m *App) SendUserMessage(text string) tea.Cmd {
 		Kind: chat.KindUser, Text: text, At: time.Now().UnixMilli(),
 		Key: fmt.Sprintf("draft-%d", time.Now().UnixNano()), Live: true,
 	})
+	m.pinTranscriptToTail()
 	m.refreshComposerHint()
 	return tea.Batch(m.sendChat(m.chatConvID, text, preamble), m.onChatWake())
 }
