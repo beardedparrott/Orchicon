@@ -3927,8 +3927,34 @@ func (m *App) onChatWake() tea.Cmd {
 	}
 	dr, ok1 := s.(detailIDer)
 	st, ok2 := s.(setter)
-	if !ok1 || !ok2 || dr.DetailID() != m.chatConvID {
-		return nil // detail pane is showing something else
+	if !ok1 || !ok2 {
+		return nil
+	}
+	// A DRIFTED DETAIL ID IS RE-ASSERTED, NOT TREATED AS "SHOWING SOMETHING ELSE".
+	//
+	// This guard used to return nil on a mismatch — painting NOTHING: no transcript update and no
+	// activity line, both at once, until some incidental path restored the id (opening the conversation
+	// again, or clicking away and back). That is the operator's report exactly: "I have to click away
+	// and back again to see updates. No 'Orchicon is thinking...' block."
+	//
+	// AND THE ID REALLY DOES DRIFT. kit2.Base writes it on EVERY detail landing for a source it owns
+	// (base.go: `b.detailID = msg.id`), and the rail's row selection loads that row's detail — so while a
+	// conversation is open, a rail reload (the tick does one every 5s) can stamp the id of whichever row
+	// the cursor happens to be on, which need not be the open conversation.
+	//
+	// Refusing to paint was never the right answer for THIS screen, and it is not a judgement call:
+	// ask.New declares exactly ONE source ("conversations"), sets HideSources, and declares the pane's
+	// body HOST-OWNED (SetDetailBodyHostOwned(true)) — so on this tab the detail pane can only ever be
+	// the open conversation's transcript, and the shell is its painter. "The pane is showing that
+	// conversation" is therefore true whenever a conversation is open, and saying so is the honest
+	// repair rather than a workaround. A screen that genuinely can show something else still returns nil
+	// here, because only this screen carries the host-owned declaration.
+	if dr.DetailID() != m.chatConvID {
+		sid, ok := s.(interface{ SetDetailID(string) })
+		if !ok {
+			return nil
+		}
+		sid.SetDetailID(m.chatConvID)
 	}
 	if askS, ok := s.(interface {
 		RenderTranscript([]chat.ChatItem, chat.Conversation, bool) (title string, fields []screenkit.Field)

@@ -154,3 +154,47 @@ func applyCmds(m *App, cmd tea.Cmd) {
 		}
 	}
 }
+
+// A DRIFTED DETAIL ID MUST NOT SILENCE THE PANE.
+//
+// The guard in onChatWake (app.go) used to return nil whenever the Ask pane's detail id did not equal
+// the open conversation — painting NOTHING: no transcript update and no activity line, together, until
+// something incidental restored the id. The operator's report is exactly that shape: "I have to click
+// away and back again to see updates. No 'Orchicon is thinking...' block."
+//
+// The id does drift: kit2.Base stamps it on EVERY detail landing for a source it owns, and the rail's
+// row selection loads that row's detail — so a rail reload (the tick does one every 5s) can stamp the
+// id of whichever row the cursor is on, which need not be the open conversation. The Ask screen has ONE
+// source and a HOST-OWNED pane, so the pane is always the open conversation's transcript and the shell
+// re-asserts that rather than refusing to paint.
+func TestADriftedDetailIDDoesNotSilenceThePane(t *testing.T) {
+	m, _ := askWithTranscript(t, "c1")
+	m.conversations = []chat.Conversation{{ID: "c1", Title: "a chat", TurnInFly: true, PendingReplyID: "m1"}}
+
+	// The drift: the screen's detail id now names a DIFFERENT row (a rail row the cursor landed on).
+	s, ok := m.screens[TabAsk].(interface{ SetDetailID(string) })
+	if !ok {
+		t.Fatal("fixture: the Ask screen no longer exposes SetDetailID")
+	}
+	s.SetDetailID("01SOMEOTHERROW")
+
+	// A live wake arrives — the thing that must repaint the transcript and its activity line.
+	m.Update(chatWakeMsg{})
+
+	frame := stripANSI(m.View())
+	if !strings.Contains(frame, "Orchicon is") {
+		t.Errorf("a drifted detail id silenced the pane — no activity line:\n%s", tailOf(frame, 1200))
+	}
+	// And the id is corrected, so every later consumer agrees the pane shows this conversation.
+	if got := m.detailIDOfAskScreen(); got != "c1" {
+		t.Errorf("the detail id was not re-asserted: got %q, want the open conversation", got)
+	}
+}
+
+// detailIDOfAskScreen reads the Ask pane's detail id through the same interface the shell uses.
+func (m *App) detailIDOfAskScreen() string {
+	if dr, ok := m.screens[TabAsk].(interface{ DetailID() string }); ok {
+		return dr.DetailID()
+	}
+	return ""
+}
