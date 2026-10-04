@@ -1468,11 +1468,6 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 	case workerVersionScopeMsg:
 		// A worker's version landed: open the MCP + skills modal on it (see App.OpenWorkerMCPModal).
 		return tea.Batch(m.onWorkerVersionScope(msg), m.waitChat())
-	case chat.ConversationStatusMsg:
-		// The PLANE's answer about the open conversation's turn (see App.refreshTurnStatus): it updates the
-		// row, repaints, and re-attaches when the plane says a turn is running that this client is not
-		// streaming.
-		return tea.Batch(m.onConversationStatus(msg), m.waitChat())
 	case convScopeMsg:
 		// THE SCOPE MODAL RE-READS AFTER EVERY WRITE IT CAUSED, whatever the outcome: a definition added,
 		// edited or deleted, a credential stored, an install started, a skill path set or removed. The

@@ -166,16 +166,10 @@ func (m *App) refreshActiveView() tea.Cmd {
 		if m.convLoaded {
 			load = m.chat.LoadConversations()
 		}
-		// THE PLANE'S TURN STATE, every tick. The shell's own copy of it lives in m.conversations,
-		// which this same tick refreshes — but a turn the client did not start, or one whose list has
-		// not landed yet, leaves that copy saying "idle" while the plane says "running". Asking the
-		// open conversation directly (ONE row) is what keeps the rail's marker, the activity line and
-		// the Stop affordance honest in that window.
-		status := m.refreshTurnStatus()
 		if r, ok := s.(Refresher); ok {
-			return tea.Batch(m.onChatWake(), r.RefreshView(), load, status)
+			return tea.Batch(m.onChatWake(), r.RefreshView(), load)
 		}
-		return tea.Batch(m.onChatWake(), load, status)
+		return tea.Batch(m.onChatWake(), load)
 	}
 	if r, ok := s.(Refresher); ok {
 		return r.RefreshView()
