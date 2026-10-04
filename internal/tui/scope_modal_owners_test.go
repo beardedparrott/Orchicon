@@ -69,7 +69,7 @@ func TestProjectScopeModalListsTheProjectsRowsAndSkills(t *testing.T) {
 // A CREATE FROM THE PROJECT MODAL IS OWNED BY THE PROJECT — the owner stamp is the whole safety
 // property (a definition belongs to exactly one scope), and it is asserted on the request the plane
 // would receive.
-func TestProjectModalCreateIsStampedWithTheProject(t *testing.T) {
+func TestProjectModalCreateIsStampedWithTheProjectAndCarriesItsArgs(t *testing.T) {
 	m, stub := newScopeApp(t)
 	openProjectScope(t, m)
 
@@ -80,6 +80,10 @@ func TestProjectModalCreateIsStampedWithTheProject(t *testing.T) {
 	m.convScopeForm.Set("name", "slack")
 	m.convScopeForm.Set("command", "npx")
 	m.convScopeForm.Set("args", "-y server-slack")
+	// ${SECRET_NAME} IS PASSED THROUGH VERBATIM — resolved by the tenant secrets store at session time,
+	// never by this form. (This assertion came from the work package's wrapper test, which this replaced
+	// when that wrapper was removed: the modal is what builds this request now.)
+	m.convScopeForm.Set("env", "SLACK_TOKEN=${SLACK_TOKEN}")
 	cmd, err := m.convScopeForm.OnSubmit(m.convScopeForm.Values, nil)
 	if err != nil {
 		t.Fatalf("the form refused a complete entry: %v", err)
@@ -99,6 +103,14 @@ func TestProjectModalCreateIsStampedWithTheProject(t *testing.T) {
 	}
 	if got.GetConversationId() != "" {
 		t.Errorf("the create also carries conversation_id %q — the owner XOR is broken", got.GetConversationId())
+	}
+	// THE ARGV SPLIT IS THE FORM'S, and it matters: the operator's args must reach the wire as separate
+	// entries, because a single joined string would be handed to the runtime as ONE argument.
+	if args := got.GetArgs(); len(args) != 2 || args[0] != "-y" || args[1] != "server-slack" {
+		t.Errorf("args = %v, want [-y server-slack] split into two", args)
+	}
+	if env := got.GetEnv(); env["SLACK_TOKEN"] != "${SLACK_TOKEN}" {
+		t.Errorf("env = %v, want the ${SECRET_NAME} reference passed through verbatim", env)
 	}
 }
 
@@ -327,9 +339,6 @@ func TestSwitchingConversationsDoesNotCloseAnotherScopesModal(t *testing.T) {
 var (
 	_ interface {
 		OpenProjectMCPModal(projectID, name string) tea.Cmd
-	} = (*App)(nil)
-	_ interface {
-		OpenProjectMCPCatalog() tea.Cmd
 	} = (*App)(nil)
 	_ interface {
 		OpenWorkerMCPModal(workerID, name string) tea.Cmd

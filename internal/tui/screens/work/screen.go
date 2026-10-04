@@ -366,7 +366,6 @@ type dockSink interface {
 // project page rather than reimplemented there) — a screen only asks for it.
 type mcpModalHost interface {
 	OpenProjectMCPModal(projectID, name string) tea.Cmd
-	OpenProjectMCPCatalog() tea.Cmd
 }
 
 // mcpModalHost resolves the shell, when it offers the modal.
@@ -1408,6 +1407,13 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		// conversation gets from /scope, and the same panel the GUI mounts on a project page
 		// (MCPServersPanel with scope {kind:"project"}).
 		//
+		// ONE KEY FOR BOTH ADD PATHS. There used to be a second chord (`M`) that opened the modal
+		// straight on its catalog verb, which was a shortcut to a key INSIDE the surface the same key
+		// already opens — the operator: "Instead of 'm' and 'M' for add mcp server or add from catalog,
+		// can't we put both of those operations into 'm' and get rid of the additional control?"
+		// Conversations have always worked this way (one /scope, with add and catalog as keys within it),
+		// so this removes the divergence rather than inventing a rule.
+		//
 		// IT REPLACES A CREATE-ONLY FORM. `m` used to open a bare "define an MCP server" form, and the
 		// project's skill files were reachable only as an absolute-path text field inside the edit form —
 		// so an operator had a modal on one surface and hand-editing on another. The operator: "I simply
@@ -1421,18 +1427,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			if it, ok := m.ActiveItem(); ok {
 				if h, ok := m.mcpModalHost(); ok {
 					return h.OpenProjectMCPModal(it.ID, it.Title), true
-				}
-				m.notice = "the MCP + skills modal is unavailable here"
-				return nil, true
-			}
-		}
-	case "M":
-		// One-click add from the Registry catalog — the same modal, opened straight ON its catalog verb,
-		// so the shortcut and the modal cannot drift into two different add flows.
-		if src == srcProjects {
-			if it, ok := m.ActiveItem(); ok {
-				if h, ok := m.mcpModalHost(); ok {
-					return tea.Batch(h.OpenProjectMCPModal(it.ID, it.Title), h.OpenProjectMCPCatalog()), true
 				}
 				m.notice = "the MCP + skills modal is unavailable here"
 				return nil, true
@@ -1595,7 +1589,7 @@ func (m *Model) HintLine() string {
 	switch m.ActiveSourceName() {
 	case srcProjects:
 		return theme.HintText.Render("n: new project · e: edit · d: set+create dir · " +
-			"m: MCP + skills · M: add MCP from catalog · enter: detail · ←/→: pane")
+			"m: MCP + skills (add, or add from catalog) · enter: detail · ←/→: pane")
 	case srcImages:
 		return theme.HintText.Render("n: new image · e: edit spec · b: build (live logs) · x: delete · enter: detail")
 	default:

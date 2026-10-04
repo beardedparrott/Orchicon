@@ -17,17 +17,11 @@ import (
 // fakeMCPHost records what the pane asked the shell for.
 type fakeMCPHost struct {
 	projectID, projectName string
-	catalog                bool
 	workerID, workerName   string
 }
 
 func (f *fakeMCPHost) OpenProjectMCPModal(projectID, name string) tea.Cmd {
 	f.projectID, f.projectName = projectID, name
-	return nil
-}
-
-func (f *fakeMCPHost) OpenProjectMCPCatalog() tea.Cmd {
-	f.catalog = true
 	return nil
 }
 
@@ -60,16 +54,24 @@ func TestMOnProjectsOpensTheMCPModal(t *testing.T) {
 	}
 }
 
-// `M` OPENS THE SAME MODAL STRAIGHT ON ITS CATALOG VERB, so the shortcut and the modal cannot drift into
-// two different add flows.
-func TestMShiftOnProjectsOpensTheModalCatalog(t *testing.T) {
+// THERE IS NO SECOND CHORD FOR THE CATALOG. The modal offers both add paths as keys inside itself
+// (`a` add, `c` catalog), so a shortcut that jumped straight to one of them was a key to a key — and it
+// made the project surface differ from the conversation one, which has only ever had the single opener.
+//
+// The operator: "Instead of 'm' and 'M' for add mcp server or add from catalog, can't we put both of
+// those operations into 'm' and get rid of the additional control?"
+func TestThereIsNoSeparateCatalogChord(t *testing.T) {
 	m, host := projectsPane(t)
+	// `M` must now be INERT on this pane rather than opening the modal on a verb the operator can reach
+	// from the modal itself. (Nothing else on the Projects pane binds it.)
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("M")})
-	if host.projectID != "p1" {
-		t.Fatalf("the catalog shortcut did not open the modal (got %q)", host.projectID)
+	if host.projectID != "" {
+		t.Errorf("`M` still opens the modal (for %q) — the second control was meant to be gone", host.projectID)
 	}
-	if !host.catalog {
-		t.Error("the catalog shortcut opened the modal but not its catalog verb")
+	// And `m` is the one opener.
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	if host.projectID != "p1" {
+		t.Errorf("`m` did not open the modal (got %q)", host.projectID)
 	}
 }
 

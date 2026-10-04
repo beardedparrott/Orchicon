@@ -201,7 +201,7 @@ func FmtElapsed(d time.Duration) string {
 		return trimZero(float64(int(secs*10+0.5)) / 10)
 	}
 	m := int(secs) / 60
-	s := int(secs + 0.5) % 60
+	s := int(secs+0.5) % 60
 	if m < 60 {
 		return fmt.Sprintf("%dm %ds", m, s)
 	}

@@ -337,9 +337,9 @@ func (s *blockState) toggle(b textBlock) {
 // scrunched up." Measured before it: renderBlocks emitted every block's rows back to back, so a
 // transcript read as one dense column with a tool's output running straight into the next header:
 //
-//	   tool ⚙ bash grep -rn nested internal/ → internal/parser.go:12: nested
-//	   thinking The recursive case is missing a base.
-//	   error boom: index out of range
+//	tool ⚙ bash grep -rn nested internal/ → internal/parser.go:12: nested
+//	thinking The recursive case is missing a base.
+//	error boom: index out of range
 //
 // ONE blank row is what makes each block read as a paragraph, and it is the whole fix — the rows were
 // already correct, there was simply nothing telling the operator where one block stopped. It is

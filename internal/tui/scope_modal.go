@@ -219,10 +219,10 @@ func (m *App) openProjectScopeModal(projectID, name string) tea.Cmd {
 // saveInline (the Execution screen owns the RPC, and the shell must not re-implement it).
 func (m *App) openWorkerVersionScopeModal(label, permissionsJSON, skillFilesJSON string, saveInline func(permJSON, skillsJSON string) tea.Cmd) tea.Cmd {
 	m.scope = &scopeModal{
-		kind:       ownerWorkerVersion,
-		label:      label,
-		inline:     mcpforms.ParseInline(permissionsJSON),
-		permBase:   permissionsJSON,
+		kind:     ownerWorkerVersion,
+		label:    label,
+		inline:   mcpforms.ParseInline(permissionsJSON),
+		permBase: permissionsJSON,
 		// THE VERSION'S FIELD IS A JSON ARRAY, not the newline/comma path list the form uses — decoding
 		// it with the path-list parser left the raw JSON as a single "path" (caught by
 		// TestWorkerVersionSkillsCommitThroughTheSave).
@@ -1454,14 +1454,4 @@ func (m *App) onWorkerVersionScope(msg workerVersionScopeMsg) tea.Cmd {
 				return convScopeMsg{op: "/scope", detail: "version saved — MCP specs and skill files updated"}
 			}
 		})
-}
-
-// OpenProjectMCPCatalog opens the project modal STRAIGHT ON its catalog verb — the Projects pane's `M`
-// shortcut. It is a shell method so the shortcut and the modal share one add flow rather than drifting
-// into two.
-func (m *App) OpenProjectMCPCatalog() tea.Cmd {
-	if m.scope == nil || m.scope.kind != ownerProject {
-		return nil
-	}
-	return m.scopeAddMCPFromCatalog()
 }

@@ -262,14 +262,14 @@ func TestScopeShowsTheConversationsAndTheProjectsContributions(t *testing.T) {
 	body := scopeText(m)
 
 	for _, want := range []string{
-		"github",                      // the conversation's own definition
-		"npx -y server-github",        // where it points
-		"postgres",                    // the project's
-		"npx -y server-postgres",      // where THAT points
+		"github",                               // the conversation's own definition
+		"npx -y server-github",                 // where it points
+		"postgres",                             // the project's
+		"npx -y server-postgres",               // where THAT points
 		"Inherited from project " + "Orchicon", // named, so "why is this here?" is answerable
 		"read-only",
-		"/skills/conv.md",             // the conversation's own skill file
-		"/skills/project.md",          // the project's
+		"/skills/conv.md",    // the conversation's own skill file
+		"/skills/project.md", // the project's
 		"Skill files — this conversation",
 	} {
 		if !strings.Contains(body, want) {

@@ -78,11 +78,11 @@ func TestADurableDeliveryMidTurnMergesRatherThanReplaces(t *testing.T) {
 		t.Fatal("the durable row did not land — the delivery was not applied at all")
 	}
 	if !haveEcho {
-		t.Errorf("THE OPERATOR'S OWN MESSAGE WAS WIPED by a durable delivery mid-turn — the operator's "+
+		t.Errorf("THE OPERATOR'S OWN MESSAGE WAS WIPED by a durable delivery mid-turn — the operator's " +
 			"\"user messages are being swallowed up when I send them\"")
 	}
 	if !haveCard {
-		t.Errorf("AN ASK CARD WAS WIPED by a durable delivery mid-turn — the operator's card that no "+
+		t.Errorf("AN ASK CARD WAS WIPED by a durable delivery mid-turn — the operator's card that no " +
 			"longer lets them click on items (its spans are rebuilt from a store the card is no longer in)")
 	}
 }
