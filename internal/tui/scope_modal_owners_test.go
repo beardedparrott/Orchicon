@@ -344,3 +344,79 @@ var (
 		OpenWorkerMCPModal(workerID, name string) tea.Cmd
 	} = (*App)(nil)
 )
+
+// ── the hint advertises every verb that applies ──────────────────────────────────────────
+
+// `c: catalog` IS OFFERED FROM EVERY ROW OF AN OWNED-ROW SCOPE.
+//
+// The operator: "The mcp add screen does not have a shortcut helper or button to add MCPs from the
+// catalog." The catalog is reachable from ANY row — it does not act on the selection — so it must be
+// ADVERTISED from any row. It had been dropped by the MCP row's case, because each case wrote out a
+// complete list and the global verbs were the ones it forgot.
+func TestTheCatalogVerbIsAdvertisedFromEveryRow(t *testing.T) {
+	m, _ := newScopeApp(t)
+	openProjectScope(t, m)
+	rows := m.scope.rows(m)
+	if len(rows) == 0 {
+		t.Fatal("fixture: the project scope has no rows")
+	}
+	for i, r := range rows {
+		if !r.selectable {
+			continue
+		}
+		putCursor(m, i)
+		hint := strings.Join(m.scopeHintItems(), " · ")
+		if !strings.Contains(hint, "c: catalog") {
+			t.Errorf("row %d (%q) does not offer the catalog add: %q", i, r.text, hint)
+		}
+		// And the other global verbs, for the same reason.
+		for _, verb := range []string{"a: add", "s: skill files", "esc: close"} {
+			if !strings.Contains(hint, verb) {
+				t.Errorf("row %d (%q) is missing the global verb %q: %q", i, r.text, verb, hint)
+			}
+		}
+	}
+}
+
+// A WORKER VERSION ADVERTISES NEITHER THE CATALOG NOR THE ROW-ONLY VERBS — there is no row to create,
+// and nothing to install or attach a credential to. The note in the list says why.
+func TestTheVersionScopeAdvertisesOnlyWhatItCanDo(t *testing.T) {
+	m, _, _ := openingWorkerVersion(t, versionPermissions, `[]`)
+	putCursor(m, rowIndexOf(t, m, "pg"))
+	hint := strings.Join(m.scopeHintItems(), " · ")
+	for _, absent := range []string{"c: catalog", "i: install", "k: credential"} {
+		if strings.Contains(hint, absent) {
+			t.Errorf("the worker-version scope offers %q, which it cannot do: %q", absent, hint)
+		}
+	}
+	for _, present := range []string{"enter/e: edit", "d: remove", "a: add", "s: skill files"} {
+		if !strings.Contains(hint, present) {
+			t.Errorf("the worker-version scope does not offer %q: %q", present, hint)
+		}
+	}
+}
+
+// THE PROJECT SCOPE DOES NOT CLAIM DISCIPLES IT HAS NONE OF. Workers are TENANT-level, so a project's
+// definitions are consumed by its CONVERSATIONS — not by workers, whose specs are their own inline list.
+// The operator caught the earlier wording: "Workers are tenant level and not project level so I don't
+// think the wording on the mcp add for projects should mention 'worker versions'."
+func TestTheProjectScopeDoesNotClaimWorkersAsDisciples(t *testing.T) {
+	m, _ := newScopeApp(t)
+	openProjectScope(t, m)
+	body := scopeText(m)
+	if strings.Contains(body, "worker") {
+		t.Errorf("the project scope mentions workers, which are tenant-level and inherit nothing from a "+
+			"project:\n%s", body)
+	}
+	if !strings.Contains(body, "consumed by this project's conversations") {
+		t.Errorf("the project scope does not say what consumes it:\n%s", body)
+	}
+
+	// And the version scope states the fact from its own side, so an operator who expected inheritance is
+	// told rather than left guessing.
+	m2, _, _ := openingWorkerVersion(t, versionPermissions, `[]`)
+	vbody := scopeText(m2)
+	if !strings.Contains(vbody, "tenant-level") {
+		t.Errorf("the worker-version scope does not say a worker inherits no project's MCP:\n%s", vbody)
+	}
+}

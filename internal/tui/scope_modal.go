@@ -469,10 +469,16 @@ func (s *scopeModal) projectRows(m *App) []scopeRow {
 	for _, p := range mine {
 		out = append(out, scopeRow{kind: scopeRowSkill, id: p, name: p, text: p, selectable: true})
 	}
-	// A project's inheritors, named — the same question the conversation surface answers in reverse
+	// WHAT CONSUMES THIS SCOPE, named — the same question the conversation surface answers in reverse
 	// ("why is this server available here?"), and the reason the definitions are worth managing here.
+	//
+	// A PROJECT'S DEFINITIONS ARE CONSUMED BY ITS CONVERSATIONS, NOT BY WORKERS. Workers are TENANT-LEVEL
+	// ("Workers are tenant level and not project level"), and a worker version's MCP specs are its OWN
+	// inline list — the GUI's panel resolves a version's specs from the version, and nothing here is read
+	// by a worker. Saying otherwise would send an operator to add a server "for my workers" on a project
+	// page, which would do nothing.
 	out = append(out, scopeRow{kind: scopeRowNote,
-		text: "consumed by this project's conversations and worker versions"})
+		text: "consumed by this project's conversations"})
 	return out
 }
 
@@ -500,10 +506,10 @@ func (s *scopeModal) workerVersionRows() []scopeRow {
 	for _, p := range s.skills {
 		out = append(out, scopeRow{kind: scopeRowSkill, id: p, name: p, text: p, selectable: true})
 	}
-	// WHAT THIS SCOPE CANNOT DO, said plainly: the GUI's panel offers no install and no credential for a
-	// version either, because there is no row to attach them to.
+	// WHAT THIS SCOPE IS, said plainly: the specs are this version's OWN — a worker is TENANT-LEVEL, so it
+	// inherits nothing from a project, and a catalog add would have no row to create here.
 	out = append(out, scopeRow{kind: scopeRowNote,
-		text: "a version's specs are inline — no catalog add, install or stored credential here"})
+		text: "this version's own specs — a worker is tenant-level, so it inherits no project's MCP"})
 	return out
 }
 
@@ -1271,26 +1277,43 @@ func (m *App) scopeTitle() string {
 // which cuts to ONE line — so the verbs at the end (the ones the operator needs named, because this
 // line is the only place they exist) were the first thing lost. Items let it break on its own
 // separators instead, so nothing is ever dropped.
+// scopeHintItems is the modal's key list for the CURRENT row: the verbs that apply to it, plus the ones
+// that apply everywhere.
+//
+// THE ROW-INDEPENDENT VERBS ARE ADDED ONCE, AT THE END, AND THAT IS A FIX. Writing each case as a
+// complete list meant the row-specific cases could silently DROP a global verb — and the MCP row's case
+// did exactly that, omitting `c: catalog`. The operator, looking at a definition on a project:
+// "The mcp add screen does not have a shortcut helper or button to add MCPs from the catalog." The
+// catalog is reachable from any row (it does not act on the selection), so it must be advertised from
+// any row; deriving the list that way makes the omission impossible rather than fixing this instance.
+//
+// AN INLINE SPEC OFFERS NEITHER `c` NOR `i`/`k`: a worker version's specs are its own, so there is no row
+// for a catalog add to create, nothing to install, and nothing to attach a credential to. That is the
+// GUI's own omission for this scope, and the row's note says why.
 func (m *App) scopeHintItems() []string {
 	row, ok := m.scope.selected(m)
-	// AN INLINE SPEC HAS NO ROW, so the three verbs that need one are not offered — the GUI's panel makes
-	// the same omission for this scope rather than showing buttons that cannot work.
 	inline := m.scope != nil && m.scope.kind == ownerWorkerVersion
-	items := []string{"↑/↓ move", "a: add", "s: skill files", "r: refresh", "esc: close"}
-	if !inline {
-		items = []string{"↑/↓ move", "a: add", "c: catalog", "s: skill files", "r: refresh", "esc: close"}
-	}
+
+	var items []string
 	switch {
 	case ok && row.kind == scopeRowMCP:
-		items = []string{"↑/↓ move", "enter/e: edit", "i: install", "k: credential", "d: delete",
-			"a: add", "s: skill files", "esc: close"}
+		items = []string{"↑/↓ move", "enter/e: edit", "i: install", "k: credential", "d: delete"}
 	case ok && row.kind == scopeRowInlineMCP:
-		items = []string{"↑/↓ move", "enter/e: edit", "d: remove", "a: add", "s: skill files", "esc: close"}
+		items = []string{"↑/↓ move", "enter/e: edit", "d: remove"}
 	case ok && (row.kind == scopeRowInheritedMCP || row.kind == scopeRowProjectSkill):
-		items = []string{"↑/↓ move", "read-only (from the project)", "a: add", "s: skill files", "esc: close"}
+		items = []string{"↑/↓ move", "read-only (from the project)"}
 	case ok && row.kind == scopeRowSkill:
-		items = []string{"↑/↓ move", "enter/e: edit list", "d: remove", "s: skill files", "a: add MCP", "esc: close"}
+		items = []string{"↑/↓ move", "enter/e: edit list", "d: remove"}
 	}
+
+	// The global verbs. `a` (add by hand) exists at every scope — a version adds an inline spec, the
+	// others add an owned row — and `s` (skill files) likewise.
+	add := []string{"a: add"}
+	if !inline {
+		add = append(add, "c: catalog")
+	}
+	items = append(items, add...)
+	items = append(items, "s: skill files", "r: refresh", "esc: close")
 	return items
 }
 
