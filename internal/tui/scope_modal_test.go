@@ -20,6 +20,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -94,6 +95,29 @@ func (s *stubMCP) SetMCPServerSecret(_ context.Context, req *connect.Request[api
 	defer s.mu.Unlock()
 	s.secrets = append(s.secrets, req.Msg)
 	return connect.NewResponse(&apiv1.MCPServerSetSecretResponse{}), nil
+}
+
+// ListMCPCatalog / PrefillMCPCatalogEntry serve the catalog, so the pick path can be driven for real.
+func (s *stubMCP) ListMCPCatalog(_ context.Context, _ *connect.Request[apiv1.MCPCatalogListRequest]) (*connect.Response[apiv1.MCPCatalogListResponse], error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return connect.NewResponse(&apiv1.MCPCatalogListResponse{Entries: []*apiv1.MCPCatalogEntry{
+		{Slug: "playwright", DisplayName: "Playwright", InstallMechanism: "npx", Transport: "stdio"},
+	}}), nil
+}
+
+func (s *stubMCP) PrefillMCPCatalogEntry(_ context.Context, req *connect.Request[apiv1.MCPCatalogPrefillRequest]) (*connect.Response[apiv1.MCPCatalogPrefillResponse], error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if req.Msg.GetSlug() != "playwright" {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("no such catalog entry"))
+	}
+	return connect.NewResponse(&apiv1.MCPCatalogPrefillResponse{
+		Prefill: &apiv1.MCPServerCreateRequest{
+			Name: "playwright", Command: "npx", Args: []string{"-y", "@playwright/mcp@latest"},
+			Transport: apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STDIO, Enabled: true,
+		},
+	}), nil
 }
 
 // newScopeApp builds a shell whose MCP client is the stub, with one open conversation (c1) inside a

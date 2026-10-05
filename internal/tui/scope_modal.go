@@ -817,9 +817,11 @@ func (m *App) scopeAddMCPFromCatalog() tea.Cmd {
 		// thing the GUI does (handleCatalogAdd fills the form, and the form's save writes the version's
 		// array). The operator confirms before anything is written, and the spec lands inline.
 		if versionScope {
+			// A MESSAGE, not a direct call: this runs inside the CATALOG form's OnSubmit, and a form must
+			// be opened on the live model (see versionSpecPrefillMsg). The spec is converted here because
+			// the prefill's shape is the catalog's business.
 			spec := mcpforms.InlineSpecFromCreateRequest(req)
-			m.openInlineSpecForm(&spec, false)
-			return nil
+			return func() tea.Msg { return versionSpecPrefillMsg{spec: spec} }
 		}
 		return func() tea.Msg {
 			if cl == nil || cl.MCP == nil {
@@ -866,6 +868,18 @@ func (m *App) scopeAddMCPFromCatalog() tea.Cmd {
 	return nil
 }
 
+// versionSpecPrefillMsg asks the shell to open the INLINE add form on a spec it has just built — the
+// catalog's pick, converted.
+//
+// IT IS A MESSAGE, NOT A DIRECT CALL, and that is this file's own recorded rule (see
+// openWorkerVersionScopeModal: "the modal is opened on the MESSAGE rather than inside the cmd, because a
+// cmd mutates a discarded App copy"). The pick runs inside ANOTHER FORM's OnSubmit, so a direct
+// `m.openInlineSpecForm(...)` would mutate whichever App copy that callback happens to hold — and if it
+// did not reach the live one, the catalog form would still be cleared (it submitted) while the form it
+// was supposed to open never appeared. That is precisely the operator's report: "it just jumps back to
+// the mcp screen and doesn't show that any MCP servers have been added."
+type versionSpecPrefillMsg struct{ spec mcpforms.InlineSpec }
+
 // openInlineSpecForm opens the add/edit form for ONE inline spec of a worker version, and commits it
 // through the version's own save. There is no RPC per spec: the modal owns the array and writes it back
 // as a whole, which is what keeps a published version's history intact (see scopeOwnerKind).
@@ -877,6 +891,10 @@ func (m *App) scopeAddMCPFromCatalog() tea.Cmd {
 func (m *App) openInlineSpecForm(src *mcpforms.InlineSpec, isEdit bool) {
 	s := m.scope
 	if s == nil || s.kind != ownerWorkerVersion {
+		// REFUSE OUT LOUD. A silent return here is the worst possible outcome: the caller (another form's
+		// submit, or a message that arrived after the scope changed) is cleared either way, so the
+		// operator sees a modal that closes having added nothing — indistinguishable from a broken key.
+		m.dock.SetError("no worker version is open — a version's MCP specs are edited from its own scope")
 		return
 	}
 	title := "Add an inline MCP spec"

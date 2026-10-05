@@ -433,54 +433,84 @@ func TestTheProjectScopeDoesNotClaimWorkersAsDisciples(t *testing.T) {
 
 // A CATALOG PICK AT THE VERSION SCOPE PREFILLS THE INLINE FORM AND CREATES NO ROW.
 //
-// The operator: "on workers for catalogs I get ... The gui allows this." The GUI's catalog Add fills the
-// ADD FORM and opens it — nothing is created by the pick itself — and the form's save writes the
-// version's array. This is the same path, and the assertions are the two halves of that sentence: the
-// form opens PREFILLED, and no MCP row is created.
+// The operator: "When I add an MCP from the catalog for workers, it just jumps back to the mcp screen and
+// doesn't show that any MCP servers have been added."
+//
+// The pick must PREFILL the add form (the GUI's handleCatalogAdd fills the form and opens it; nothing is
+// created by the pick itself) — and the form must be opened THROUGH A MESSAGE, from the live model, which
+// is this flow's whole hazard: the pick runs inside the CATALOG form's OnSubmit, so a direct call could
+// mutate a discarded App copy while the catalog form was cleared anyway (it had submitted), which is
+// exactly "it jumps back and nothing was added".
+//
+// Driven the way the runtime drives it: the pick's cmd is run, its message is fed back through Update,
+// and the form is then asserted on the model that Update returned.
 func TestVersionCatalogPickPrefillsTheInlineFormAndCreatesNoRow(t *testing.T) {
 	m, stub, _ := openingWorkerVersion(t, `{"tools":["read"],"mcp_servers":[]}`, `[]`)
 
-	// What the picker would hand the save: a catalog prefill, in the owned-create shape.
-	prefill := &apiv1.MCPServerCreateRequest{
-		Name: "playwright", Command: "npx", Args: []string{"-y", "@playwright/mcp@latest"},
-		Transport: apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STDIO, Enabled: true,
+	if cmd := pressScope(t, m, "c"); cmd != nil {
+		_ = cmd() // the catalog LIST fetch
 	}
-	cmd := m.scopeAddMCPFromCatalog()
-	if cmd != nil {
-		_ = cmd() // the catalog LIST fetch (the stub serves none); the pick is driven below
-	}
-	// Drive the pick the way the form's OnSubmit would: through the callback the catalog form was built
-	// with. The catalog form is the open modal form at this point.
 	if m.convScopeForm == nil {
 		t.Fatal("`c` opened no catalog form")
 	}
-	// Simulate the operator choosing an entry: the catalog form's OnSubmit builds the prefill via the
-	// injected prefill func, which the modal wires to the plane. Assert the SAVE's shape instead, by
-	// calling the same conversion the save uses.
-	spec := mcpforms.InlineSpecFromCreateRequest(prefill)
-	if spec.ID != "playwright" || spec.Type != "stdio" {
-		t.Fatalf("the conversion lost the entry: %+v", spec)
+	// The operator picks an entry (the select's value) and submits.
+	m.convScopeForm.Set("slug", "playwright")
+	pickCmd, err := m.convScopeForm.Submit()
+	if err != nil {
+		t.Fatalf("the catalog form refused the pick: %v", err)
 	}
-	if len(spec.Command) != 3 || spec.Command[0] != "npx" || spec.Command[2] != "@playwright/mcp@latest" {
-		t.Errorf("argv = %v, want [npx -y @playwright/mcp@latest] (command FIRST, then args)", spec.Command)
+	if pickCmd == nil {
+		t.Fatal("the pick produced NO command — nothing would open the add form, which is the reported " +
+			"\"it just jumps back ... and doesn't show that any MCP servers have been added\"")
 	}
 
-	// And the form it opens is PREFILLED with it.
-	m.openInlineSpecForm(&spec, false)
-	if m.convScopeForm == nil {
-		t.Fatal("the prefill opened no inline form")
+	// THE RUNTIME'S PATH: run the cmd, feed the message back through Update.
+	next, follow := m.Update(pickCmd())
+	mm, ok := next.(*App)
+	if !ok {
+		t.Fatalf("Update returned %T", next)
 	}
-	if got := m.convScopeForm.Values["name"]; got != "playwright" {
-		t.Errorf("the inline form is prefilled %q, want the catalog entry's name — the operator should be "+
+	if mm.convScopeForm == nil {
+		t.Fatal("the pick produced a message that opened NO form — the catalog form is submitted and " +
+			"therefore cleared, so the operator is left on the scope list with nothing added")
+	}
+	if got := mm.convScopeForm.Values["name"]; got != "playwright" {
+		t.Errorf("the add form is prefilled %q, want the catalog entry's name — the operator should be "+
 			"confirming a filled form, not retyping it", got)
 	}
+	if got := mm.convScopeForm.Values["command"]; !strings.Contains(got, "@playwright/mcp@latest") {
+		t.Errorf("the add form's command is %q, want the catalog entry's argv — command FIRST, then args",
+			got)
+	}
+	_ = follow
 
-	// NOTHING WAS CREATED BY THE PICK.
+	// NOTHING WAS CREATED BY THE PICK: only the form's save writes.
 	stub.mu.Lock()
 	defer stub.mu.Unlock()
 	if len(stub.created) != 0 {
-		t.Errorf("a catalog pick created %d MCP rows — the pick PREFILLS; only the form's save writes",
-			len(stub.created))
+		t.Errorf("a catalog pick created %d MCP rows — the pick PREFILLS", len(stub.created))
+	}
+}
+
+// THE GUARD REFUSES OUT LOUD. If the form is asked to open when no version scope is live, saying so is
+// the difference between "the key is broken" and "the scope moved" — and the caller is cleared either
+// way, so silence leaves the operator with a modal that closed having done nothing.
+func TestOpeningTheInlineFormWithoutAVersionScopeSaysSo(t *testing.T) {
+	m, _ := newScopeApp(t)
+	m.scope = nil
+	m.dock.SetError("")
+	m.openInlineSpecForm(&mcpforms.InlineSpec{ID: "x"}, false)
+	if m.convScopeForm != nil {
+		t.Error("a form opened with no version scope")
+	}
+	if m.dock.Err == "" {
+		t.Error("opening the inline form with no version scope was SILENT — it must name the reason")
+	}
+	// The live path still opens it.
+	m2, _, _ := openingWorkerVersion(t, `{"tools":["read"],"mcp_servers":[]}`, `[]`)
+	m2.openInlineSpecForm(&mcpforms.InlineSpec{ID: "sentry", Type: "stdio"}, false)
+	if m2.convScopeForm == nil {
+		t.Error("the inline form did not open on a live version scope")
 	}
 }
 

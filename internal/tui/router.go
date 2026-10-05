@@ -513,6 +513,36 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		}
 		return m, nil
 	}
+	// A FORM'S OWN ANCILLARY MESSAGES OUTRANK THE FORM GUARD BELOW, and this is the ONE working example of
+	// why: the guard swallows EVERY non-key message while a form is open, so a message produced by that
+	// form's own submit is eaten before anything can act on it.
+	//
+	// The catalog pick is exactly that case. It asks for the INLINE add form to be opened, and the request
+	// arrives while the CATALOG form is still up (a form is cleared on the next KEY, not on its submit) —
+	// so under the guard the request was swallowed, the add form never appeared, and the next keypress
+	// cleared the catalog form. The operator saw precisely that: "it just jumps back to the mcp screen and
+	// doesn't show that any MCP servers have been added."
+	//
+	// The rule the guard needs: a modal must hide a surface, not suspend the shell — the same rule the
+	// conversation-scope modal's own guard is written to (see dispatch's scope branch). Anything a form's
+	// SUBMIT has to hand onward belongs here, ABOVE the guard.
+	// A FORM'S OWN ANCILLARY MESSAGES OUTRANK THE FORM GUARD BELOW, and this is the ONE working example of
+	// why: the guard swallows EVERY non-key message while a form is open, so a message produced by that
+	// form's own submit is eaten before anything can act on it.
+	//
+	// The catalog pick is exactly that case. It asks for the INLINE add form to be opened, and the request
+	// arrives while the CATALOG form is still up (a form is cleared on the next KEY, not on its submit) —
+	// so under the guard the request was swallowed, the add form never appeared, and the next keypress
+	// cleared the catalog form. The operator saw precisely that: "it just jumps back to the mcp screen and
+	// doesn't show that any MCP servers have been added."
+	//
+	// The rule the guard needs: a modal must hide a surface, not suspend the shell — the same rule the
+	// conversation-scope modal's own guard is written to. Anything a form's SUBMIT has to hand onward
+	// belongs here, ABOVE the guard.
+	if pm, ok := msg.(versionSpecPrefillMsg); ok {
+		m.openInlineSpecForm(&pm.spec, false)
+		return m, nil
+	}
 	// The conversation-scope MCP modal (/mcp define) is the same shape again: it is layered above the
 	// composer, so a save chord aimed at the form can never reach a message being typed.
 	if m.convScopeForm != nil {
