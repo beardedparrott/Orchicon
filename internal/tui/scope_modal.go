@@ -40,6 +40,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/tui/client"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/mcpforms"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
@@ -1473,10 +1474,16 @@ func (m *App) onWorkerVersionScope(msg workerVersionScopeMsg) tea.Cmd {
 		label = msg.workerID
 	}
 	label = fmt.Sprintf("%s · v%d", label, msg.version)
-	workerID, versionID, cl := msg.workerID, msg.versionID, m.clients
 	return m.openWorkerVersionScopeModal(label, msg.permissions, msg.skillFiles,
-		func(permJSON, skillsJSON string) tea.Cmd {
-			return func() tea.Msg {
+		m.workerVersionSaver(msg.workerID, msg.versionID, m.clients))
+}
+
+// workerVersionSaver is the write for a worker version's MCP specs and skill files, as a function of the
+// worker, the version and the client set — so a test can drive the REAL request rather than a copy of it.
+func (m *App) workerVersionSaver(workerID, versionID string, cl *client.Clients) func(permJSON, skillsJSON string) tea.Cmd {
+	return func(permJSON, skillsJSON string) tea.Cmd {
+		return func() tea.Msg {
+			{
 				if cl == nil || cl.Workers == nil {
 					return convScopeMsg{op: "/scope", err: "not connected to a plane"}
 				}
@@ -1485,15 +1492,30 @@ func (m *App) onWorkerVersionScope(msg workerVersionScopeMsg) tea.Cmd {
 				// PERMISSIONS AND SKILL FILES TOGETHER, in one update: they are both optional fields on
 				// the request, and writing one without the other would leave the version's two halves
 				// disagreeing about what the modal just showed.
+				//
+				// REPUBLISH IS WHAT MAKES THIS WORK ON A PUBLISHED VERSION, and leaving it unset was a
+				// real bug: the server refuses a non-draft version to update ("status is \"published\",
+				// must be 'draft'"), so the modal would have failed on exactly the versions an operator
+				// is most likely to be editing. With it set, a PUBLISHED version takes the same
+				// revert → update → republish flow the model gets from BulkUpdateWorkerModel, keeping the
+				// version number and the published state. A DRAFT ignores the flag (the server only
+				// consults it for a non-draft status), so it is edited in place and stays a draft.
+				//
+				// The operator's question is what surfaced it: "You can add models to a worker without
+				// modifying a version. Why can't we add MCP servers like that as well?" The model path
+				// edits the version row too (model_ref is a column there) — it just has a dedicated RPC
+				// that does revert→set→republish for you, which is why it never looks like a version edit.
 				if _, err := cl.Workers.UpdateWorkerVersion(ctx, connect.NewRequest(&apiv1.UpdateWorkerVersionRequest{
 					WorkerId:    workerID,
 					VersionId:   versionID,
 					Permissions: &permJSON,
 					SkillFiles:  &skillsJSON,
+					Republish:   true,
 				})); err != nil {
 					return convScopeMsg{op: "/scope", err: err.Error()}
 				}
 				return convScopeMsg{op: "/scope", detail: "version saved — MCP specs and skill files updated"}
 			}
-		})
+		}
+	}
 }

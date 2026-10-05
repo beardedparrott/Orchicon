@@ -14,13 +14,19 @@ package tui
 // worker version's are INLINE SPECS written into the version's permissions — never a row.
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
+	"github.com/beardedparrott/orchicon/internal/tui/client"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/mcpforms"
 )
 
@@ -476,4 +482,70 @@ func TestVersionCatalogPickPrefillsTheInlineFormAndCreatesNoRow(t *testing.T) {
 		t.Errorf("a catalog pick created %d MCP rows — the pick PREFILLS; only the form's save writes",
 			len(stub.created))
 	}
+}
+
+// A VERSION SAVE ASKS TO REPUBLISH — which is what makes editing a PUBLISHED version work at all.
+//
+// The operator's question is what surfaced this: "You can add models to a worker without modifying a
+// version. Why can't we add MCP servers like that as well?" The model path edits the version row too —
+// model_ref is a column on it — but it has a dedicated RPC (BulkUpdateWorkerModel) that does
+// revert → set → republish for it, preserving the version number (internal/worker/service.go,
+// applyModelChange). The GENERIC version update supports the same flow when the request asks for it, and
+// my modal was not asking: the server refuses a published version with "status is \"published\", must be
+// 'draft' to update" — and published is the state most workers are in.
+//
+// Asserted through a real request (a hermetic worker service that records what it receives), not on a
+// copy of the request built by the test: the whole value here is the WIRE shape.
+func TestVersionSaveRequestCarriesRepublish(t *testing.T) {
+	rec := &recordingWorkerService{}
+	mux := http.NewServeMux()
+	mux.Handle(apiv1connect.NewWorkerServiceHandler(rec))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	cl := client.NewWithHTTPClient(client.Options{BaseURL: srv.URL}, srv.Client())
+
+	m, _ := newScopeApp(t)
+	m.openWorkerVersionScopeModal("Sweeper · v1", versionPermissions, `[]`,
+		m.workerVersionSaver("w1", "v1", cl))
+
+	// Edit in memory (what the inline form does), then commit.
+	m.scope.inline = append(m.scope.inline, mcpforms.InlineSpec{ID: "sentry", Type: "stdio"})
+	m.scope.dirty = true
+	if cmd := m.commitWorkerVersion(); cmd != nil {
+		if msg := cmd(); msg == nil {
+			t.Fatal("the commit produced no message")
+		}
+	}
+
+	req := rec.update
+	if req == nil {
+		t.Fatal("the commit issued no version update")
+	}
+	if !req.GetRepublish() {
+		t.Error("the version update does not ask to republish — a PUBLISHED version is refused with " +
+			"\"must be 'draft' to update\", which is the state most workers are in")
+	}
+	if req.GetWorkerId() != "w1" || req.GetVersionId() != "v1" {
+		t.Errorf("the update targets %q/%q, want w1/v1", req.GetWorkerId(), req.GetVersionId())
+	}
+	if !strings.Contains(req.GetPermissions(), "sentry") {
+		t.Errorf("the update does not carry the edit: %s", req.GetPermissions())
+	}
+	// AND THE VERSION'S OTHER PERMISSION KEYS SURVIVE — the modal owns the mcp_servers key, never the blob.
+	if !strings.Contains(req.GetPermissions(), `"tools"`) {
+		t.Errorf("the update dropped the version's other permissions: %s", req.GetPermissions())
+	}
+}
+
+// recordingWorkerService records the version update it is sent.
+type recordingWorkerService struct {
+	apiv1connect.UnimplementedWorkerServiceHandler
+	update *apiv1.UpdateWorkerVersionRequest
+}
+
+func (r *recordingWorkerService) UpdateWorkerVersion(_ context.Context, req *connect.Request[apiv1.UpdateWorkerVersionRequest]) (*connect.Response[apiv1.UpdateWorkerVersionResponse], error) {
+	r.update = req.Msg
+	return connect.NewResponse(&apiv1.UpdateWorkerVersionResponse{
+		Version: &apiv1.WorkerVersion{Id: req.Msg.GetVersionId(), Version: 1},
+	}), nil
 }
