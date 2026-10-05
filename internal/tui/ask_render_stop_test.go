@@ -135,8 +135,8 @@ func TestStopChordAbortsTheInFlightTurn(t *testing.T) {
 	if !strings.Contains(m.dock.Notice, "stopped") {
 		t.Errorf("the stop must be acknowledged in the composer strip, notice = %q", m.dock.Notice)
 	}
-	if str := m.TranscriptStream("c1"); str != nil && str.Notice != "" {
-		t.Errorf("the thinking indicator must clear when the turn stops, notice = %q", str.Notice)
+	if got := m.askStatusLine(); got != "" {
+		t.Errorf("the thinking indicator must clear when the turn stops, footer = %q", got)
 	}
 }
 

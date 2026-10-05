@@ -61,47 +61,10 @@ func TestProjectMCPDefinitionsFieldShape(t *testing.T) {
 	}
 }
 
-// A PROJECT'S OWNED DEFINITIONS REACH THE API AS OWNED ROWS — the define path (AC 9).
-// The request carries the project id, never a tenant selection.
-func TestProjectMCPDefinitionReachesTheApiAsAnOwnedRow(t *testing.T) {
-	p := newPlane()
-	m := newModel(t, p)
-	projID := "proj-1"
-	f := m.newProjectMCPDefineForm(projID)
-	f.Set("name", "github")
-	f.Set("transport", "stdio")
-	f.Set("command", "npx")
-	f.Set("args", "-y @modelcontextprotocol/server-github")
-	f.Set("env", "GITHUB_TOKEN=${GITHUB_TOKEN}")
-	cmd, err := f.OnSubmit(f.Values, nil)
-	if err != nil {
-		t.Fatalf("submit: %v", err)
-	}
-	if cmd == nil {
-		t.Fatal("the define form produced no command — the write never fires")
-	}
-	runCmd(t, cmd)
-	if len(p.mcpCreated) != 1 {
-		t.Fatalf("CreateMCPServer calls = %d, want 1 (got %v)", len(p.mcpCreated), p.mcpCreated)
-	}
-	got := p.mcpCreated[0]
-	if got.GetProjectId() != projID {
-		t.Errorf("the definition's project_id = %q, want %q — an ownerless create would be a "+
-			"tenant-level entry, which no longer exists", got.GetProjectId(), projID)
-	}
-	if got.GetConversationId() != "" {
-		t.Errorf("the definition carries a conversation_id (%q) as well as a project — the owner "+
-			"is XOR", got.GetConversationId())
-	}
-	if got.GetCommand() != "npx" || len(got.GetArgs()) != 2 {
-		t.Errorf("command/args = %q / %v, want npx + two args", got.GetCommand(), got.GetArgs())
-	}
-	// ${SECRET_NAME} is passed through verbatim — resolved by the tenant secrets store
-	// at session time, never here.
-	if got.GetEnv()["GITHUB_TOKEN"] != "${GITHUB_TOKEN}" {
-		t.Errorf("env = %v, want the ${SECRET_NAME} reference preserved", got.GetEnv())
-	}
-}
+// THE OWNERSHIP RULE THIS FILE USED TO PIN THROUGH THE DEFINE WRAPPER NOW LIVES WITH THE MODAL, which
+// is what actually builds that request: see TestProjectModalCreateIsStampedWithTheProjectAndCarriesItsArgs
+// in internal/tui/scope_modal_owners_test.go. The wrapper is gone (the modal calls mcpforms directly), so
+// keeping the assertion here would have pinned a helper nothing calls.
 
 // AN EMPTY DEFINITION ARRAY CREATES NOTHING — the create form's other fields still
 // apply, and no stray owned row is written.

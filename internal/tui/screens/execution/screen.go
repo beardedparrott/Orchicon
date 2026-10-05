@@ -637,8 +637,9 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 				{Key: "work item", Value: m.runsWorkItemField(r)},
 				{Key: "started", Value: screenkit.FmtTime(r.GetStartedAt())},
 				{Key: "ended", Value: screenkit.FmtTime(r.GetEndedAt())},
-				{Key: "actions", Value: "x: remove schedule · g: go to the run"},
 			}
+			fields = append(fields, runSpanFields(r)...)
+			fields = append(fields, screenkit.Field{Key: "actions", Value: "x: remove schedule · g: go to the run"})
 			return "Finished run " + r.GetId(), fields, "", nil
 		}
 		return m.scheduleItemDetail(ctx, id)
@@ -687,6 +688,7 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 			{Key: "started", Value: screenkit.FmtTime(r.GetStartedAt())},
 			{Key: "ended", Value: screenkit.FmtTime(r.GetEndedAt())},
 		}
+		fields = append(fields, runSpanFields(r)...)
 		// Step runs are rendered as a FLOW, not a list (run_flow.go): the operator's "mimic a
 		// similar look to our new workflow view where we have the steps, and it should show next
 		// to the steps if it succeeded, failed, how many retries". The cursor lives here so

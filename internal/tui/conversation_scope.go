@@ -1,19 +1,25 @@
 package tui
 
-// conversation_scope.go — the CONVERSATION scope's MCP definitions and skill files, reachable
-// exactly where the conversation's other per-conversation controls live: the slash surface.
+// conversation_scope.go — the CONVERSATION scope's WRITES: the RPCs behind the scope modal
+// (scope_modal.go), reachable exactly where the conversation's other per-conversation controls live:
+// the slash surface.
 //
 // IT IS THE SAME PLACEMENT RULE AS THE GUI. There, the chat header carries mode / model / fullsend
 // and hosts a disclosure beside SessionGrants; here, /mode, /models, /fullsend and /project already
-// set the conversation's per-conversation state, so /mcp and /skills join them rather than inventing
-// a second navigation. The capability is identical and only the control differs (the documented
-// asymmetry: the GUI browses skill files in a file tree, the TUI types a path list — the same
-// treatment context_files already gets).
+// set the conversation's per-conversation state, so /scope (and the /mcp and /skills names that open
+// the same modal) joins them rather than inventing a second navigation. The capability is identical
+// and only the control differs (the documented asymmetry: the GUI browses skill files in a file tree,
+// the TUI types a path list — the same treatment context_files already gets).
 //
 // THE MCP HALF USES screens/mcpforms, THE ONE TUI MCP SURFACE, with Owner{ConversationID}. A
 // conversation owns its definitions exactly as a project does (mcp_servers.conversation_id); the
 // OWNER COLUMN IS THE SELECTION, which is what replaced the removed tenant-level select-from-list
 // field. Nothing here writes a tenant-level entry, and there is no tenant list to write one into.
+//
+// EVERY WRITE HERE RESOLVES ITS TARGET BY ID. The old subcommand grammar addressed a definition BY
+// NAME, so each verb re-listed the conversation's definitions to turn a name into a row — a round trip
+// per keystroke, and a second place for "which definition did they mean?" to be answered. The modal
+// holds the rows, so it knows the id, and these take it.
 
 import (
 	"context"
@@ -25,6 +31,7 @@ import (
 	connect "connectrpc.com/connect"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/mcpforms"
 )
 
@@ -37,90 +44,48 @@ type convScopeMsg struct {
 	err    string
 }
 
-// convScopePrefillMsg carries a fetched definition into the edit form. The fetch is asynchronous, so
-// the form is opened on the message rather than inside the cmd for the reason above.
-type convScopePrefillMsg struct {
-	server *apiv1.MCPServer
-	err    string
-}
-
-// listConversationMCP reports the OPEN conversation's owned definitions.
-func (m *App) listConversationMCP() tea.Cmd {
+// newConversationMCPCatalogForm lists the curated registry and, on a pick, creates the entry owned by
+// THIS conversation — the TUI's one-click add, mirroring the GUI's Registry catalog grid. It is the
+// conversation-scoped twin of the Work screen's project form, over the same mcpforms.CatalogForm.
+func (m *App) newConversationMCPCatalogForm() *kit2.Form {
 	convID := m.chatConvID
 	cl := m.clients
-	return func() tea.Msg {
-		if cl == nil || cl.MCP == nil {
-			return convScopeMsg{op: "/mcp", err: "not connected to a plane"}
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		defer cancel()
-		resp, err := cl.MCP.ListMCPServers(ctx, connect.NewRequest(&apiv1.MCPServerListRequest{
-			ConversationId: convID,
-		}))
-		if err != nil {
-			return convScopeMsg{op: "/mcp", err: err.Error()}
-		}
-		servers := resp.Msg.GetServers()
-		if len(servers) == 0 {
-			return convScopeMsg{op: "/mcp", detail: "no definitions owned by this conversation — /mcp define adds one (a definition belongs to exactly one scope)"}
-		}
-		parts := make([]string, 0, len(servers))
-		for _, s := range servers {
-			loc := s.GetCommand()
-			if loc == "" {
-				loc = s.GetUrl()
+	save := func(req *apiv1.MCPServerCreateRequest) tea.Cmd {
+		return func() tea.Msg {
+			if cl == nil || cl.MCP == nil {
+				return convScopeMsg{op: "/scope", err: "not connected to a plane"}
 			}
-			parts = append(parts, s.GetName()+" ("+strings.ToLower(s.GetTransport().String())+" · "+loc+")")
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			if _, err := cl.MCP.CreateMCPServer(ctx, connect.NewRequest(req)); err != nil {
+				return convScopeMsg{op: "/scope", err: err.Error()}
+			}
+			return convScopeMsg{op: "/scope", detail: "added " + req.GetName() + " from the catalog"}
 		}
-		return convScopeMsg{op: "/mcp", detail: strings.Join(parts, ", ")}
 	}
-}
-
-// conversationMCPCommand dispatches the /mcp subcommands against the OPEN conversation.
-func (m *App) conversationMCPCommand(args []string) tea.Cmd {
-	sub := "list"
-	if len(args) > 0 {
-		sub = strings.ToLower(args[0])
-	}
-	name := strings.TrimSpace(strings.Join(args[1:], " "))
-	switch sub {
-	case "list":
-		return m.listConversationMCP()
-	case "define", "add", "new":
-		m.openConversationMCPDefine(nil)
-		return nil
-	case "edit":
-		if name == "" {
-			m.dock.SetError("usage: /mcp edit <name>")
-			return nil
-		}
-		return m.fetchConversationMCPForEdit(name)
-	case "delete", "rm":
-		if name == "" {
-			m.dock.SetError("usage: /mcp delete <name>")
-			return nil
-		}
-		return m.deleteConversationMCP(name)
-	case "secret":
-		if name == "" {
-			m.dock.SetError("usage: /mcp secret <name>")
-			return nil
-		}
-		m.convScopeForm = mcpforms.SecretForm(name, "", m.conversationSecretSetter(name))
-		m.convScopeForm.Width = m.modalWidth()
-		return nil
-	case "install":
-		if name == "" {
-			m.dock.SetError("usage: /mcp install <name>")
-			return nil
-		}
-		m.convScopeForm = mcpforms.InstallForm(name, m.conversationInstaller(name))
-		m.convScopeForm.Width = m.modalWidth()
-		return nil
-	default:
-		m.dock.SetError("unknown /mcp subcommand " + sub + " — use define | edit <name> | delete <name> | secret <name> | install <name>")
-		return nil
-	}
+	return mcpforms.CatalogForm(mcpforms.Owner{ConversationID: convID},
+		func() []*apiv1.MCPCatalogEntry {
+			if cl == nil || cl.MCP == nil {
+				return nil
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			res, err := cl.MCP.ListMCPCatalog(ctx, connect.NewRequest(&apiv1.MCPCatalogListRequest{}))
+			if err != nil {
+				return nil
+			}
+			return res.Msg.GetEntries()
+		},
+		func(slug string) (*apiv1.MCPServerCreateRequest, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			res, err := cl.MCP.PrefillMCPCatalogEntry(ctx, connect.NewRequest(&apiv1.MCPCatalogPrefillRequest{Slug: slug}))
+			if err != nil {
+				return nil, err
+			}
+			return res.Msg.GetPrefill(), nil
+		},
+		save)
 }
 
 // openConversationMCPDefine opens the typed DEFINITION form for the conversation. With prefill set
@@ -174,150 +139,80 @@ func (m *App) openConversationMCPDefine(prefill *apiv1.MCPServer) {
 	m.convScopeForm = f
 }
 
-// fetchConversationMCPForEdit resolves a definition BY NAME, then opens the edit form on it.
-func (m *App) fetchConversationMCPForEdit(name string) tea.Cmd {
-	convID := m.chatConvID
+// deleteConversationMCP deletes a definition by ID — the row the modal had selected.
+func (m *App) deleteConversationMCP(id, name string) tea.Cmd {
 	cl := m.clients
 	return func() tea.Msg {
 		if cl == nil || cl.MCP == nil {
-			return convScopeMsg{op: "/mcp", err: "not connected to a plane"}
+			return convScopeMsg{op: "/scope", err: "not connected to a plane"}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		resp, err := cl.MCP.ListMCPServers(ctx, connect.NewRequest(&apiv1.MCPServerListRequest{
-			ConversationId: convID,
-		}))
-		if err != nil {
-			return convScopeMsg{op: "/mcp", err: err.Error()}
+		if _, err := cl.MCP.DeleteMCPServer(ctx, connect.NewRequest(&apiv1.MCPServerDeleteRequest{Id: id})); err != nil {
+			return convScopeMsg{op: "/scope", err: err.Error()}
 		}
-		for _, s := range resp.Msg.GetServers() {
-			if s.GetName() == name {
-				return convScopePrefillMsg{server: s}
-			}
-		}
-		return convScopeMsg{op: "/mcp", err: "this conversation owns no definition named " + name}
+		return convScopeMsg{op: "/scope", detail: "deleted " + name}
 	}
 }
 
-// deleteConversationMCP resolves a definition by name and deletes it.
-func (m *App) deleteConversationMCP(name string) tea.Cmd {
-	convID := m.chatConvID
-	cl := m.clients
-	return func() tea.Msg {
-		if cl == nil || cl.MCP == nil {
-			return convScopeMsg{op: "/mcp", err: "not connected to a plane"}
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		defer cancel()
-		resp, err := cl.MCP.ListMCPServers(ctx, connect.NewRequest(&apiv1.MCPServerListRequest{
-			ConversationId: convID,
-		}))
-		if err != nil {
-			return convScopeMsg{op: "/mcp", err: err.Error()}
-		}
-		for _, s := range resp.Msg.GetServers() {
-			if s.GetName() != name {
-				continue
-			}
-			if _, err := cl.MCP.DeleteMCPServer(ctx, connect.NewRequest(&apiv1.MCPServerDeleteRequest{Id: s.GetId()})); err != nil {
-				return convScopeMsg{op: "/mcp", err: err.Error()}
-			}
-			return convScopeMsg{op: "/mcp", detail: "deleted " + name}
-		}
-		return convScopeMsg{op: "/mcp", err: "this conversation owns no definition named " + name}
-	}
-}
-
-// conversationSecretSetter writes a credential for a name-resolved definition. The credential store
-// is tenant-scoped (RLS needs a tenant); that is a credential store, not an MCP scope.
-func (m *App) conversationSecretSetter(name string) func(key, value string) tea.Cmd {
-	convID := m.chatConvID
+// conversationSecretSetter writes a credential for a definition, by ID. The credential store is
+// tenant-scoped (RLS needs a tenant); that is a credential store, not an MCP scope.
+func (m *App) conversationSecretSetter(id, name string) func(key, value string) tea.Cmd {
 	cl := m.clients
 	return func(key, value string) tea.Cmd {
 		return func() tea.Msg {
 			if cl == nil || cl.MCP == nil {
-				return convScopeMsg{op: "/mcp", err: "not connected to a plane"}
+				return convScopeMsg{op: "/scope", err: "not connected to a plane"}
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			resp, err := cl.MCP.ListMCPServers(ctx, connect.NewRequest(&apiv1.MCPServerListRequest{
-				ConversationId: convID,
-			}))
-			if err != nil {
-				return convScopeMsg{op: "/mcp", err: err.Error()}
+			if _, err := cl.MCP.SetMCPServerSecret(ctx, connect.NewRequest(&apiv1.MCPServerSetSecretRequest{
+				Id: id, Name: key, Value: value,
+			})); err != nil {
+				return convScopeMsg{op: "/scope", err: err.Error()}
 			}
-			for _, s := range resp.Msg.GetServers() {
-				if s.GetName() != name {
-					continue
-				}
-				if _, err := cl.MCP.SetMCPServerSecret(ctx, connect.NewRequest(&apiv1.MCPServerSetSecretRequest{
-					Id: s.GetId(), Name: key, Value: value,
-				})); err != nil {
-					return convScopeMsg{op: "/mcp", err: err.Error()}
-				}
-				return convScopeMsg{op: "/mcp", detail: "stored credential " + key + " for " + name}
-			}
-			return convScopeMsg{op: "/mcp", err: "this conversation owns no definition named " + name}
+			return convScopeMsg{op: "/scope", detail: "stored credential " + key + " for " + name}
 		}
 	}
 }
 
-// conversationInstaller installs the runtime for a name-resolved definition.
-func (m *App) conversationInstaller(name string) func() tea.Cmd {
-	convID := m.chatConvID
+// conversationInstaller installs the runtime for a definition, by ID.
+func (m *App) conversationInstaller(id, name string) func() tea.Cmd {
 	cl := m.clients
 	return func() tea.Cmd {
 		return func() tea.Msg {
 			if cl == nil || cl.MCP == nil {
-				return convScopeMsg{op: "/mcp", err: "not connected to a plane"}
+				return convScopeMsg{op: "/scope", err: "not connected to a plane"}
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			resp, err := cl.MCP.ListMCPServers(ctx, connect.NewRequest(&apiv1.MCPServerListRequest{
-				ConversationId: convID,
-			}))
-			if err != nil {
-				return convScopeMsg{op: "/mcp", err: err.Error()}
+			if _, err := cl.MCP.InstallMCPRuntime(ctx, connect.NewRequest(&apiv1.MCPServerInstallRequest{Id: id})); err != nil {
+				return convScopeMsg{op: "/scope", err: err.Error()}
 			}
-			for _, s := range resp.Msg.GetServers() {
-				if s.GetName() != name {
-					continue
-				}
-				if _, err := cl.MCP.InstallMCPRuntime(ctx, connect.NewRequest(&apiv1.MCPServerInstallRequest{Id: s.GetId()})); err != nil {
-					return convScopeMsg{op: "/mcp", err: err.Error()}
-				}
-				return convScopeMsg{op: "/mcp", detail: "installing " + name}
-			}
-			return convScopeMsg{op: "/mcp", err: "this conversation owns no definition named " + name}
+			return convScopeMsg{op: "/scope", detail: "installing " + name}
 		}
 	}
 }
 
-// openConversationSkills applies /skills. The path-list control and the SAME server-side validation:
-// the CLIENTSIDE deliberately validates nothing (contextfiles is the one validator, at the render
-// boundary), so a rejection surfaces from the server as a plain error rather than a second, drifting
-// copy of the rule.
-func (m *App) openConversationSkills(args []string) tea.Cmd {
+// applyConversationSkills is the DIRECT-WRITE half of /skills: the operator typed the path list, so it
+// is written without a modal. The control and the SAME server-side validation: the CLIENTSIDE
+// deliberately validates nothing (contextfiles is the one validator, at the render boundary), so a
+// rejection surfaces from the server as a plain error rather than a second, drifting copy of the rule.
+//
+// "clear" is the empty list, and an empty ARGUMENT list is refused rather than treated as a clear —
+// clearing is destructive enough to deserve the word, and bare `/skills` opens the modal (where the
+// paths and a `d` per path are visible).
+func (m *App) applyConversationSkills(args []string) tea.Cmd {
 	convID := m.chatConvID
-	switch {
-	case len(args) == 0:
-		return func() tea.Msg {
-			files := m.conversationSkillFiles(m.chatConvID)
-			if len(files) == 0 {
-				return convScopeMsg{op: "/skills", detail: "no skill files on this conversation — /skills <paths> sets them (comma- or newline-separated)"}
-			}
-			return convScopeMsg{op: "/skills", detail: strings.Join(files, ", ")}
-		}
-	case strings.EqualFold(args[0], "clear"):
+	if len(args) == 1 && strings.EqualFold(args[0], "clear") {
 		return m.chat.SetConversationSkillFiles(convID, nil)
-	default:
-		files := mcpforms.ParseSkillPaths(strings.Join(args, " "))
-		if len(files) == 0 {
-			m.dock.SetError("usage: /skills <path>[, <path>…] | /skills clear")
-			return nil
-		}
-		return m.chat.SetConversationSkillFiles(convID, files)
 	}
+	files := mcpforms.ParseSkillPaths(strings.Join(args, " "))
+	if len(files) == 0 {
+		m.dock.SetError("usage: /skills <path>[, <path>…] | /skills clear — bare /skills opens the scope")
+		return nil
+	}
+	return m.chat.SetConversationSkillFiles(convID, files)
 }
 
 // conversationSkillFiles reads the open conversation's skill files from the rail (the list the
@@ -350,6 +245,14 @@ func (m *App) convScopeKey(k tea.KeyMsg) (*App, tea.Cmd) {
 	cmd, _ := m.convScopeForm.HandleKey(k)
 	if m.convScopeForm != nil && m.convScopeForm.Submitted {
 		m.convScopeForm = nil
+		// AN IN-MEMORY EDIT COMMITS WHEN ITS FORM CLOSES. A worker version's specs live in its own
+		// permissions, and mcpforms.InlineForm's save callback cannot return a command — so this is the
+		// first point at which the modal can write the version back. Gated on `dirty`, so a form
+		// dismissed without a change is not a write.
+		if m.scope != nil && m.scope.kind == ownerWorkerVersion && m.scope.dirty {
+			m.scope.dirty = false
+			cmd = tea.Batch(cmd, m.commitWorkerVersion())
+		}
 	}
 	return m, cmd
 }

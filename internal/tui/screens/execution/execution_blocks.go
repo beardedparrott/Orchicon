@@ -168,9 +168,15 @@ func blocksFromItems(items []chat.ChatItem, width int) []textBlock {
 		case chat.KindError:
 			// ERRORS STAY RAW. An error is diagnostic text the operator reads verbatim, and
 			// emphasis markers inside a stack trace are evidence, not formatting.
+			//
+			// THE BODY IS THE TEXT AFTER THE FIRST LINE, and that is not a truncation: an error block is
+			// NEVER collapsible, so its summary is not a preview — it IS its first line, drawn on the header
+			// row. Keeping the whole text in the body printed that first line twice (measured: "error boom:
+			// index out of range" then "boom: index out of range"), which is exactly the noise the operator
+			// reads past to find the actual failure. Splitting means the header carries the first line and
+			// the body carries the rest, uniformly with every other kind.
 			b.kind = blockError
-			b.summary = firstLine(it.Text)
-			b.body = it.Text
+			b.summary, b.body = splitFirstLine(it.Text)
 		case chat.KindTool:
 			b.kind = blockTool
 			b.summary, b.body = toolSummaryBody(it.Tool)
@@ -227,6 +233,45 @@ func firstLine(s string) string {
 		}
 	}
 	return ""
+}
+
+// splitFirstLine splits text into its first non-empty line (as a summary) and EVERYTHING AFTER it
+// (as a body).
+//
+// It is the shape a NON-COLLAPSIBLE block needs: such a block always draws its body, so its summary
+// is not a preview but the header row itself — and a summary that also stayed in the body printed the
+// same sentence on two consecutive rows (see the KindError case). The body keeps the blank lines and
+// the indentation of what remains, so a multi-line error or stack trace is unchanged below its first
+// line; only the duplication goes.
+func splitFirstLine(s string) (string, string) {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		rest := strings.Trim(strings.Join(lines[i+1:], "\n"), "\n")
+		return truncateForField(strings.TrimSpace(line), 120), rest
+	}
+	return "", ""
+}
+
+// drawnBody is the body actually PAINTED: bodyLines, bounded when the block is live.
+//
+// A live block is drawn expanded without the operator having asked (defaultExpanded), so a long one —
+// streamed reasoning is routinely tens of thousands of characters — buries the rest of the transcript in
+// text nobody chose to open. THE ELISION IS EXPLICIT, like the chat pane's: a silent cut would read as the
+// end of the model's thinking rather than as a display limit, and the operator would have no way to know
+// there was more. The line says what to do about it, because the rest is reachable — a settled block can be
+// expanded with enter.
+func (b textBlock) drawnBody(width int) []string {
+	lines := b.bodyLines(width)
+	if !b.live || len(lines) <= liveBodyMaxRows {
+		return lines
+	}
+	out := append([]string{}, lines[:liveBodyMaxRows]...)
+	out = append(out, theme.ReasoningBody.Render(fmt.Sprintf("  … %d more lines (enter expands once it settles)",
+		len(lines)-liveBodyMaxRows)))
+	return out
 }
 
 // --- the cursor over the transcript -------------------------------------------------------------
@@ -286,6 +331,23 @@ func (s *blockState) toggle(b textBlock) {
 	s.overrides[b.key] = !s.expanded(b)
 }
 
+// blockGap is how many BLANK rows separate one block from the next.
+//
+// IT IS THE FIX FOR THE OPERATOR'S "the text in executions in the TUI are hard to read. They are very
+// scrunched up." Measured before it: renderBlocks emitted every block's rows back to back, so a
+// transcript read as one dense column with a tool's output running straight into the next header:
+//
+//	tool ⚙ bash grep -rn nested internal/ → internal/parser.go:12: nested
+//	thinking The recursive case is missing a base.
+//	error boom: index out of range
+//
+// ONE blank row is what makes each block read as a paragraph, and it is the whole fix — the rows were
+// already correct, there was simply nothing telling the operator where one block stopped. It is
+// deliberately not the chat pane's chatBandGap (3): that gap separates multi-row BUBBLES, while a
+// transcript block is often a single summary line (a collapsed tool call), and three blank rows per
+// summary line would make a 60-block transcript mostly whitespace.
+const blockGap = 1
+
 // renderBlocks draws the transcript with the cursor, collapsing what has not been expanded.
 //
 // It returns the body and a block-index → line-offset map, so the pane can scroll to FOLLOW the
@@ -302,8 +364,25 @@ func renderBlocks(blocks []textBlock, state *blockState, width int, cur transcri
 		b.WriteString(s + "\n")
 		line += strings.Count(s, "\n") + 1
 	}
+	// blank emits a GAP row. It exists because `write` SKIPS an empty string — that is how a collapsed
+	// block contributes no body rows at all — so writing the separator through `write("")` silently
+	// dropped it. The separator needs its own writer, or the very guard that makes collapsing work
+	// eats it again.
+	blank := func() {
+		for i := 0; i < blockGap; i++ {
+			b.WriteString("\n")
+			line++
+		}
+	}
 
 	for i, blk := range blocks {
+		// The gap goes BETWEEN blocks — before every block but the first — so the emitted body never
+		// ends on a separator (a trailing run of blank rows would be dead space at the bottom of the
+		// pane, and TrimRight would remove it anyway, making the last block's offset the only honest
+		// one).
+		if i > 0 {
+			blank()
+		}
 		offsets[i] = line
 		onCursor := !cur.atComposer && i == cur.idx
 		marker := "  "
@@ -334,6 +413,9 @@ func renderBlocks(blocks []textBlock, state *blockState, width int, cur transcri
 			if blk.user {
 				header += theme.BubbleUser.Render("You") + " "
 			}
+			// The "You" band ends with a space so the label reads as a prefix to the text; with the
+			// text on its own row that space is trailing whitespace on every operator message.
+			header = strings.TrimRight(header, " ")
 			if onCursor {
 				header = theme.ListTitle.Render(header)
 			}
@@ -355,17 +437,30 @@ func renderBlocks(blocks []textBlock, state *blockState, width int, cur transcri
 		// The body, indented under its header. A collapsed block emits NOTHING here — not an empty
 		// row — so a collapsed transcript really is one line per block.
 		if expanded && strings.TrimSpace(blk.body) != "" {
-			for _, l := range blk.bodyLines(width - len(bodyIndent)) {
+			for _, l := range blk.drawnBody(width - len(bodyIndent)) {
 				write(bodyIndent + l)
 			}
 		}
-		write("")
 	}
 	return strings.TrimRight(b.String(), "\n"), offsets
 }
 
 // bodyIndent is the columns a block's body is indented by, under its header row.
 const bodyIndent = "   "
+
+// liveBodyMaxRows bounds how much of a LIVE block's body is drawn.
+//
+// IT MIRRORS THE CHAT PANE'S reasoningBodyMaxRows, and for the same measured reason (internal/tui/chat/
+// view.go: reasoning was the one long body drawn in full, and giving it a visible body made it visible at
+// FULL LENGTH). This is that regression repeating one surface over, which is why the number is the same
+// rather than chosen again: an operator reading a live run must not be reading a different amount of the
+// model's thinking depending on which pane they are in.
+//
+// WHY ONLY LIVE BLOCKS ARE BOUNDED, and this is the whole design: a live block is drawn expanded WITHOUT
+// an operator decision (see defaultExpanded), so nothing has been opted into — whereas an operator who
+// expanded a settled 200-line tool dump asked for all of it, and truncating that would be the same defect
+// in reverse. The bound therefore applies exactly where the decision was made for them.
+const liveBodyMaxRows = 12
 
 // bodyLines renders a block's body to display lines at the available width.
 //

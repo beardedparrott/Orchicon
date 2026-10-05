@@ -665,8 +665,8 @@ func (c *Controller) LoadConversations() tea.Cmd {
 				Fullsend:   cv.GetFullsend(),
 				ProjectID:  cv.GetProjectId(),
 				SkillFiles: cv.GetSkillFiles(),
-				// Read at list time, so a conversation the server reports as mid-turn is recognisable as such the
-				// moment the rail loads — which is what the re-attach on open needs.
+				// Read at list time, so a conversation the server reports as mid-turn is recognisable as such
+				// the moment the rail loads — which is what the re-attach on open needs.
 				PendingReplyID: cv.GetPendingAssistantMessageId(),
 			})
 		}

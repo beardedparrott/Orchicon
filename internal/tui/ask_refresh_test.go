@@ -117,14 +117,15 @@ func TestRollingTickPaintsTheThinkingNotice(t *testing.T) {
 	if str == nil {
 		t.Fatal("the tick never created the transcript stream")
 	}
-	if !strings.Contains(str.Notice, "thinking") {
+	if !strings.Contains(m.askStatusLine(), "thinking") {
 		t.Errorf("the tick did not set the thinking indicator — the operator's \"No 'Orchicon is thinking...' "+
-			"block\". notice=%q", str.Notice)
+			"block\". footer=%q", m.askStatusLine())
 	}
-	// AND IT IS IN WHAT THE PANE IS HANDED TO PAINT: the stream's own render carries it, so a paint either
-	// side of the layout change shows it.
-	if !strings.Contains(str.View(), "thinking") {
-		t.Errorf("the notice is set but missing from the pane's own body render:\n%s", str.View())
+	// AND IT IS IN WHAT THE OPERATOR ACTUALLY SEES. The line is the pane's FIXED FOOTER now, so the
+	// assertion is on the painted FRAME — the layer the report is true at — rather than on the stream's
+	// body, which is where it used to live and where it could be pushed out by a full transcript.
+	if frame := stripANSI(m.View()); !strings.Contains(frame, "thinking") {
+		t.Errorf("the status line is set but missing from the painted frame:\n%s", tailOf(frame, 1200))
 	}
 }
 
@@ -144,26 +145,24 @@ func TestThinkingYieldsToTheConnectionBanner(t *testing.T) {
 	// Healthy first: the indicator is what the operator sees while waiting.
 	healthyPlane(m)
 	m.onChatWake()
-	str := m.TranscriptStream("c1")
-	if str == nil || !strings.Contains(str.Notice, "thinking") {
-		t.Fatalf("with a healthy plane the notice should be the thinking indicator, got %q", str.Notice)
+	m.onChatWake()
+	if got := m.askStatusLine(); !strings.Contains(got, "thinking") {
+		t.Fatalf("with a healthy plane the status line should be the thinking indicator, got %q", got)
 	}
 
 	// The plane dies mid-turn: the banner takes the slot.
 	deadPlane(m)
 	m.onChatWake()
-	str = m.TranscriptStream("c1")
-	if !strings.Contains(str.Notice, "disconnected") {
-		t.Errorf("a dead plane did not take the notice slot from the thinking indicator — the operator "+
-			"would be told the model is thinking while no reply can arrive. notice=%q", str.Notice)
+	if got := m.askStatusLine(); !strings.Contains(got, "disconnected") {
+		t.Errorf("a dead plane did not take the status slot from the thinking indicator — the operator "+
+			"would be told the model is thinking while no reply can arrive. footer=%q", got)
 	}
 
 	// And it recovers, rather than sticking like an alarm.
 	healthyPlane(m)
 	m.onChatWake()
-	str = m.TranscriptStream("c1")
-	if !strings.Contains(str.Notice, "thinking") {
-		t.Errorf("the indicator did not return after recovery: notice=%q", str.Notice)
+	if got := m.askStatusLine(); !strings.Contains(got, "thinking") {
+		t.Errorf("the indicator did not return after recovery: footer=%q", got)
 	}
 }
 

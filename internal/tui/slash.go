@@ -438,36 +438,63 @@ func buildSlashRegistry(m *App) *slashRegistry {
 			return m.chat.SetConversationMode(m.chatConvID, mode)
 		},
 	})
+	// --- THE CONVERSATION SCOPE: ONE MODAL, THREE NAMES -------------------------------
+	//
+	// The operator: "The MCP tools that were added for the TUI is abysmal. There are too many commands and
+	// the shortcuts go off screen. I think simply type /mcp should pop up a modal that mimics what the gui
+	// has for scope. Same with /skills. It should pop up the same modal. Or /scope."
+	//
+	// So the subcommand grammar is GONE — /mcp [define | edit <name> | delete <name> | secret <name> |
+	// install <name>] was 76 cells, and the palette (capped at 70) had to clip its last verbs, which is
+	// the "shortcuts go off screen" half of the report. The capabilities did not change; they moved into
+	// the modal (scope_modal.go), where the hint bar names every one of them and the conversation's
+	// definitions are visible instead of being recallable only by someone who already knew the grammar.
+	//
+	// THREE NAMES, ONE SURFACE, on purpose: /scope is the honest name for what it edits, /mcp and /skills
+	// are the words an operator will actually type, and a name that opens the thing you want is not
+	// duplication — it is the difference between a command that has to be learned and one that is found.
+	scopeCmd := func(m *App, args []string) tea.Cmd {
+		// NO ARGUMENTS, AND THAT IS THE POINT: the grammar is gone. An argument is REFUSED rather than
+		// silently ignored, and the refusal names the modal's key for each verb — so an operator who
+		// types the old `/mcp define` is told where define went in one line instead of watching the modal
+		// open and wondering why "define" did nothing.
+		if len(args) > 0 {
+			m.dock.SetError("/" + strings.TrimPrefix(args[0], "/") + " is not a subcommand any more — " +
+				"the scope modal has every one of them as a key: a add · c catalog · enter/e edit · " +
+				"i install · k credential · d delete · s skill files · esc close")
+			return nil
+		}
+		return m.openScopeModal()
+	}
 	add(SlashCommand{
-		// /mcp IS THE CONVERSATION SCOPE NOW, and it took the name from the generated command
-		// deliberately: the control screen's tenant-level "mcp" source was REMOVED (a definition is
-		// OWNER-SCOPED), so the /mcp it generated disappeared, and the name already means MCP to the
-		// operator. It joins /mode, /models, /fullsend and /project — the conversation's other
-		// per-conversation controls — exactly as the GUI's header disclosure joins SessionGrants.
-		Name: "/mcp", Usage: "/mcp [define | edit <name> | delete <name> | secret <name> | install <name>]",
-		Desc: "this conversation's MCP definitions — a definition belongs to exactly ONE scope (project / conversation / worker version)",
-		Run: func(m *App, args []string) tea.Cmd {
-			if m.chatConvID == "" {
-				m.dock.SetError("no conversation open — /mcp applies to ONE conversation; /project chooses the workspace")
-				return nil
-			}
-			return m.conversationMCPCommand(args)
-		},
+		Name: "/scope", Usage: "/scope",
+		Desc: "this conversation's scope: its MCP servers and skill files, with the project's shown read-only",
+		Run:  scopeCmd,
 	})
 	add(SlashCommand{
-		// /skills IS THE PATH-LIST IDIOM, DELIBERATELY. The GUI selects skill files with a file-tree
-		// browser; the TUI has no file browser, and its established idiom for a path list is a typed
-		// field — the same treatment context_files already gets. The CAPABILITY is identical (enter
-		// the list, see it, save it) and validation is the SERVER'S, so only the control differs.
+		// /mcp KEEPS THE NAME THE OPERATOR ALREADY KNOWS. It is the conversation's MCP half of the scope
+		// modal; the tenant-level "mcp" source it once shadowed was REMOVED (a definition is
+		// OWNER-SCOPED), so this name was free and already means MCP to the operator.
+		Name: "/mcp", Usage: "/mcp",
+		Desc: "open the scope modal at this conversation's MCP servers (same modal as /scope)",
+		Run:  scopeCmd,
+	})
+	add(SlashCommand{
+		// /skills WITH NO ARGUMENT opens the same modal; WITH a path list it writes directly, because a
+		// typed list is a complete statement and does not need a modal in between. Validation is the
+		// SERVER'S either way (contextfiles), so the two paths cannot disagree about what is valid.
 		Name: "/skills", Usage: "/skills [<path>[, <path>…] | clear]",
-		Desc:    "this conversation's skill FILES (paths, not prompt text) — no argument reports them; clear empties the list",
+		Desc:    "this conversation's skill FILES — no argument opens the scope modal; paths (or clear) write directly",
 		MinArgs: 0,
 		Run: func(m *App, args []string) tea.Cmd {
 			if m.chatConvID == "" {
 				m.dock.SetError("no conversation open — /skills applies to one conversation; /project chooses the workspace")
 				return nil
 			}
-			return m.openConversationSkills(args)
+			if len(args) == 0 {
+				return m.openScopeModal()
+			}
+			return m.applyConversationSkills(args)
 		},
 	})
 	add(SlashCommand{

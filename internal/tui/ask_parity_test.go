@@ -29,6 +29,11 @@ type stubAskParity struct {
 
 	convs []*apiv1.Conversation
 
+	// conv + getConvID serve the ONE-conversation status read (GetConversation): conv is what the plane
+	// reports for it, getConvID records which conversation was asked about.
+	conv      *apiv1.Conversation
+	getConvID string
+
 	createdModel string
 	createdMode  apiv1.ConversationMode
 
@@ -106,6 +111,16 @@ func (s *stubAskParity) CompactConversation(_ context.Context, req *connect.Requ
 
 func (s *stubAskParity) ListConversations(context.Context, *connect.Request[apiv1.ListConversationsRequest]) (*connect.Response[apiv1.ListConversationsResponse], error) {
 	return connect.NewResponse(&apiv1.ListConversationsResponse{Conversations: s.convs}), nil
+}
+
+// GetConversation serves the ONE-conversation status read. It records the id asked for, so a test can
+// assert the fetch is SCOPED to the open conversation rather than re-reading the whole list.
+func (s *stubAskParity) GetConversation(_ context.Context, req *connect.Request[apiv1.GetConversationRequest]) (*connect.Response[apiv1.GetConversationResponse], error) {
+	s.getConvID = req.Msg.GetId()
+	if s.conv == nil {
+		return connect.NewResponse(&apiv1.GetConversationResponse{}), nil
+	}
+	return connect.NewResponse(&apiv1.GetConversationResponse{Conversation: s.conv}), nil
 }
 
 func (s *stubAskParity) CreateConversation(_ context.Context, req *connect.Request[apiv1.CreateConversationRequest]) (*connect.Response[apiv1.CreateConversationResponse], error) {
@@ -505,10 +520,11 @@ func TestUserMessageIsVisibleImmediatelyOnOpenConversation(t *testing.T) {
 	if joined := strings.Join(str.Lines, "\n"); !strings.Contains(joined, "hello there") {
 		t.Errorf("the operator's message is not in the transcript: %q", joined)
 	}
-	// And nothing has replied yet, so the GUI's thinking indicator should be showing.
-	if str.Notice != "Orchicon is thinking…" {
-		t.Errorf("transcript notice = %q, want %q — the GUI shows it until the first content arrives",
-			str.Notice, "Orchicon is thinking…")
+	// And nothing has replied yet, so the GUI's thinking indicator should be showing. It is the pane's
+	// FOOTER (see App.transcriptStatusLine), so it is read from the surface that draws it.
+	if got := m.askStatusLine(); got != "Orchicon is thinking…" {
+		t.Errorf("status line = %q, want %q — the GUI shows it until the first content arrives",
+			got, "Orchicon is thinking…")
 	}
 }
 

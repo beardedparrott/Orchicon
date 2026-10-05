@@ -189,6 +189,12 @@ func (m *App) refreshBlocked() bool {
 		return true
 	case m.modelPicker != nil:
 		return true
+	case m.scope != nil:
+		// THE SCOPE MODAL BLOCKS TOO. It is a list of the very things a background reload would move
+		// under the operator's cursor (definitions being added, installs landing, skill paths changing),
+		// and its own writes already re-read it — so a concurrent refresh could only add churn the
+		// operator did not ask for. Its data is fetched by the modal itself, so nothing here goes stale.
+		return true
 	}
 	return false
 }

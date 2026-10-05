@@ -42,10 +42,6 @@ const (
 	formCreateProject = "project-create"
 	formEditProject   = "project-edit"
 	formProjectDir    = "project-dir"
-	// formDefineProjectMCP / formCatalogProjectMCP are the project's OWNED-MCP
-	// definition surfaces — the `m` key (define one) and `M` key (catalog pick).
-	formDefineProjectMCP  = "project-mcp-define"
-	formCatalogProjectMCP = "project-mcp-catalog"
 )
 
 type projectFormMsg struct {
@@ -590,70 +586,14 @@ func InlineSpecToCreateRequest(spec mcpforms.InlineSpec, projectID string) *apiv
 	return req
 }
 
-// newProjectMCPDefineForm opens the owned-MCP-definition form for a project —
-// the TUI's DEFINE path (AC 9). It is the mcpforms.DefineForm, owner-stamped
-// with the project id, so the request it builds is a project-owned create and
-// never a tenant selection.
-func (m *Model) newProjectMCPDefineForm(projectID string) *kit2.Form {
-	cl := m.cl
-	f := mcpforms.DefineForm("Define a project MCP server", mcpforms.Owner{ProjectID: projectID}, nil,
-		func(req *apiv1.MCPServerCreateRequest) tea.Cmd {
-			return m.Mutate(mutate.Request{
-				Name: "define MCP server " + req.GetName(), Source: srcProjects,
-				Rollback: func() { m.Refresh(srcProjects) },
-				Do: func(ctx context.Context) error {
-					if cl == nil || cl.MCP == nil {
-						return fmt.Errorf("no MCP client")
-					}
-					_, err := cl.MCP.CreateMCPServer(ctx, connect.NewRequest(req))
-					return err
-				},
-			})
-		})
-	return f
-}
-
-// newProjectMCPCatalogForm lists the registry catalog and, on a pick, opens the
-// define form prefilled — the TUI's one-click add, mirroring the GUI.
-func (m *Model) newProjectMCPCatalogForm(projectID string) *kit2.Form {
-	cl := m.cl
-	f := mcpforms.CatalogForm(mcpforms.Owner{ProjectID: projectID},
-		func() []*apiv1.MCPCatalogEntry {
-			if cl == nil || cl.MCP == nil {
-				return nil
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			defer cancel()
-			res, err := cl.MCP.ListMCPCatalog(ctx, connect.NewRequest(&apiv1.MCPCatalogListRequest{}))
-			if err != nil {
-				return nil
-			}
-			return res.Msg.GetEntries()
-		},
-		func(slug string) (*apiv1.MCPServerCreateRequest, error) {
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			defer cancel()
-			res, err := cl.MCP.PrefillMCPCatalogEntry(ctx, connect.NewRequest(&apiv1.MCPCatalogPrefillRequest{Slug: slug}))
-			if err != nil {
-				return nil, err
-			}
-			return res.Msg.GetPrefill(), nil
-		},
-		func(req *apiv1.MCPServerCreateRequest) tea.Cmd {
-			return m.Mutate(mutate.Request{
-				Name: "define MCP server " + req.GetName(), Source: srcProjects,
-				Rollback: func() { m.Refresh(srcProjects) },
-				Do: func(ctx context.Context) error {
-					if cl == nil || cl.MCP == nil {
-						return fmt.Errorf("no MCP client")
-					}
-					_, err := cl.MCP.CreateMCPServer(ctx, connect.NewRequest(req))
-					return err
-				},
-			})
-		})
-	return f
-}
+// THE PROJECT'S MCP FORMS ARE THE MODAL'S NOW. Two wrappers used to live here —
+// newProjectMCPDefineForm and newProjectMCPCatalogForm — each building an mcpforms form for the `m` and
+// `M` keys respectively. The `m` key opens the MCP + skills MODAL (scope_modal.go), whose verbs call
+// mcpforms.DefineForm and mcpforms.CatalogForm directly, so the wrappers had no caller left: a second
+// implementation of the same two forms waiting to drift from the one the operator actually uses.
+//
+// `M` is gone entirely — the modal offers both add paths as keys inside itself (a, c), which is how
+// conversations have always worked.
 
 // mcpRowSummary renders one owned MCP row for the project detail pane: transport
 // plus command-or-url, the same facts the GUI card shows.

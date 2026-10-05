@@ -257,7 +257,12 @@ type App struct {
 	// here for the same reason: the surface it edits belongs to the SHELL's open conversation, not to
 	// any screen.
 	convScopeForm *kit2.Form
-	renameConvID  string
+	// scope is the CONVERSATION SCOPE modal (/scope, /mcp, /skills): the conversation's MCP
+	// definitions and skill files in one list, with the project's shown read-only above them
+	// (scope_modal.go). It sits BELOW convScopeForm: a form it opens is layered on top, and the
+	// confirm dialog it raises is on top of that.
+	scope        *scopeModal
+	renameConvID string
 	// Categories (worker / workflow / conversation groupings). The CACHE is one slice for every target
 	// type because the picker needs whichever type its item belongs to and the Control pane lists all
 	// three; assignForm is the assign-or-create modal (nil = closed); assignTarget/assignEntities record
@@ -988,6 +993,9 @@ func (m *App) showAskConversations() {
 func (m *App) newChat() {
 	m.askMode = askNew
 	m.chatConvID = ""
+	// A new chat has no scope to show: the modal is per-conversation and the conversation it named is
+	// gone.
+	m.closeScopeModal()
 	if m.chat != nil {
 		m.chat.SetActive("")
 		// A NEW CONVERSATION STARTS AT THE DEFAULT MODE.
@@ -1833,6 +1841,10 @@ func (m *App) OpenAskConversation(id string) tea.Cmd {
 	if m.chatConvID == id {
 		return nil
 	}
+	// THE SCOPE MODAL BELONGS TO ONE CONVERSATION: opening a different one closes it rather than leaving
+	// a pane on screen that edits the previous chat's servers (the GUI's Scope disclosure closes on a
+	// conversation switch for the same reason).
+	m.closeScopeModal()
 	m.askMode = askConversations
 	m.chatConvID = id
 	// OPENING A CONVERSATION SELECTS IT FOR THE KEYBOARD. Opening one is a deliberate
@@ -2407,6 +2419,17 @@ func (m App) viewFrame() string {
 	// both are hosted here rather than on a screen, so ordering is not load-bearing.
 	if m.renameConv != nil {
 		base = m.renameConvView(base, w, h)
+	}
+	// THE CONVERSATION SCOPE MODAL IS DRAWN FIRST OF THE TWO, so a form raised FROM it lands ON TOP.
+	//
+	// THIS ORDER IS LOAD-BEARING, and getting it backwards is the operator's "none of the buttons
+	// within the modal does anything excepet for ESC": the keys were routed correctly (the form WAS
+	// built and hosted), but the shell composited the list AFTER the form, so the form rendered
+	// UNDERNEATH the modal that opened it and the key looked dead. It matches the router's order —
+	// convScopeForm's keys are claimed before the list's — which is the invariant to keep: whatever
+	// takes the keys must be what the operator sees.
+	if m.scope != nil {
+		base = m.scopeView(base, w, h)
 	}
 	if m.convScopeForm != nil {
 		base = m.convScopeView(base, w, h)
@@ -3752,7 +3775,25 @@ func (m *App) onTranscript(msg chat.TranscriptMsg) tea.Cmd {
 		m.setChatErrorPlain(msg.Err)
 		return nil
 	}
-	if m.chat.IsStreaming(msg.ConvID) {
+	// MID-TURN IS EITHER HALF, AND THAT IS THE FIX FOR "my user messages are being swallowed up when I
+	// send them ... and permission cards no longer let me click on items".
+	//
+	// The choice used to be made on THIS CLIENT'S STREAM SLOT alone. replace() keeps only two kinds of
+	// live-only row — a "draft-" echo and a PENDING consent card — so any other row that exists only live
+	// was DROPPED by a delivery: a recorded clarifying-question card (KindAsk), an in-flight text or
+	// reasoning chunk, an artifact. All of those have no durable row yet BY DESIGN (the transcript records
+	// outcomes, and the server persists the reply as it goes), so the operator's own message and their
+	// card disappeared from screen and came back only when the server caught up — "not until the agent
+	// starts reasoning".
+	//
+	// A DURABLE TRANSCRIPT IS INCOMPLETE BY DEFINITION WHILE A TURN RUNS, so mid-turn the live buffer must
+	// be preserved. The plane states whether a turn is running (turn_in_flight) and the shell already
+	// trusts that field elsewhere (the rail's marker, re-attach, the activity line), so the decision uses
+	// BOTH halves — the same either-half rule the activity line uses. The REPLACE is reserved for the state
+	// it was written for: the turn is over, the durable transcript IS the authority, and any surviving live
+	// row would render twice.
+	midTurn := m.chat.IsStreaming(msg.ConvID) || m.turnInFlight(msg.ConvID)
+	if midTurn {
 		m.chatStore.mergeHistory(msg.ConvID, msg.Items)
 	} else {
 		m.chatStore.replace(msg.ConvID, msg.Items)
@@ -3784,6 +3825,86 @@ func (m *App) conversationByID(id string) (chat.Conversation, bool) {
 	return chat.Conversation{}, false
 }
 
+// turnInFlight reports whether the PLANE says this conversation has a turn in flight.
+//
+// IT IS THE DURABLE HALF OF "is the model working?", and the activity line needs both halves.
+//
+// THE LIVE HALF is this client's own stream slot (chat.IsStreaming): it is what supplies the watchdog's
+// age — "· last activity 12s ago" — and so what makes the line's countdown mean anything.
+//
+// THE DURABLE HALF IS THIS. A turn can be running with no local slot at all: started in the GUI, or a
+// slot this client lost and has not re-attached. The shell already holds the plane's own answer on the
+// conversation row (turn_in_flight), and it already trusts that field for two other things — the rail
+// marks the row as running from it (rightrail.go) and re-attach is gated on it (reattachRunningTurn).
+// Keying the ACTIVITY LINE to the slot alone was therefore the odd one out, and the operator saw the
+// contradiction: "I am no longer seeing the 'Orchicon is thinking...' and the watchdog countdown in the
+// TUI." while the rail beside it said the conversation was running.
+//
+// The cost of the gap was not only a missing line. The notice takes a row from the body
+// (kit2.Stream.bodyRows), so an empty notice hands the transcript the WHOLE pane and the text runs one
+// row further down — which is the second half of the operator's report, "the conversation text is going
+// to the bottom", and it is the same bug seen from the other side.
+func (m *App) turnInFlight(convID string) bool {
+	c, ok := m.conversationByID(convID)
+	return ok && c.TurnInFly
+}
+
+// transcriptStatusLine is the Ask pane's fixed footer: the conversation's status line, ONE slot.
+//
+// PRECEDENCE IS THE POINT, and the order is deliberate: a broken CONNECTION outranks a working TURN.
+// Telling the operator "the model is thinking" while the plane is unreachable would claim liveness the
+// connection cannot deliver — the same lie the footer's own disconnected banner exists to prevent.
+//
+// The activity line then runs FOR THE WHOLE TURN, not only before the first token. It used to require
+// `awaitingReply(items)` — the GUI's rule, where the indicator is "visible until any streaming content
+// arrives". That is right for a THINKING indicator and wrong for an ACTIVITY line, and the operator
+// reported the difference as a bug: "After the initial 'Orchicon is thinking...', streaming started and
+// the 'Orchicon is thinking...' went away and never came back."
+//
+// What they lost was the only signal that the stream is ALIVE. Mid-reply is exactly when it matters: a
+// long tool call, a slow provider or a stalled socket look identical from the outside, and with the line
+// gone nothing on screen changes until the reply finishes. So the line tracks the TURN, and the verb
+// follows the PHASE — "thinking" before there is anything to read, "replying" once there is — which keeps
+// the GUI's wording where the GUI uses it and extends the line where the operator asked for it.
+//
+// The age comes from the watchdog's own clock (lastActivity), so the line cannot claim a liveness the
+// liveness check would contradict.
+//
+// THE TURN TEST IS EITHER HALF, and both are load-bearing: IsStreaming is this client's own slot (which
+// supplies the age, so the countdown means something), and turnInFlight covers a turn this client is not
+// streaming. turnInFlight reads the CONVERSATION ROW the server computed (turn_in_flight), kept current by
+// the same list reload the rolling refresh already performs — cheap, and never a second source of truth.
+func (m *App) transcriptStatusLine(items []chat.ChatItem) string {
+	if m.chatConvID == "" {
+		return ""
+	}
+	switch {
+	case m.chatStore.isReconnecting(m.chatConvID):
+		return "reconnecting…"
+	case m.planeUnreachable():
+		// THE PANE ITSELF SAYS THE CONNECTION IS DOWN — the operator's ask, verbatim: "if a connection
+		// dies, the GUI tells you, but the TUI conversation does not." The shell footer is easy to miss
+		// when reading a transcript, and it is the TRANSCRIPT that looks broken when a reply cannot arrive.
+		return "⚠ disconnected — replies will resume when the plane returns (r retries now)"
+	case m.chat.IsStreaming(m.chatConvID) || m.turnInFlight(m.chatConvID):
+		return turnActivityNotice(m.chat.SilenceSince(m.chatConvID), awaitingReply(items))
+	}
+	return ""
+}
+
+// askStatusLine reads the Ask pane's fixed footer — where the activity/status line now lives.
+//
+// It exists so a caller (or a test) asks the SURFACE rather than reaching for the stream's old notice
+// field, which is no longer where the line is drawn. See App.transcriptStatusLine.
+func (m *App) askStatusLine() string {
+	if s := m.screens[TabAsk]; s != nil {
+		if f, ok := s.(interface{ DetailFooter() string }); ok {
+			return f.DetailFooter()
+		}
+	}
+	return ""
+}
+
 // onChatWake repaints the open ask-conversation detail pane with the
 // merged, phase-grouped transcript + live chunks. Cheap (no RPC): the
 // conversation detail's fields render from the last GetConversation —
@@ -3813,6 +3934,14 @@ func (m *App) onChatWake() tea.Cmd {
 	}
 	s := m.screens[TabAsk]
 	if s == nil || m.chatConvID == "" {
+		// NO CONVERSATION, NO STATUS: clear the band rather than leaving the previous chat's line sitting
+		// under a fresh transcript, which would be exactly the kind of untrue claim the line exists to
+		// avoid (a "thinking…" over a chat that is doing nothing).
+		if s != nil {
+			if stf, ok := s.(interface{ SetDetailFooter(string) }); ok {
+				stf.SetDetailFooter("")
+			}
+		}
 		return nil
 	}
 	type detailIDer interface{ DetailID() string }
@@ -3824,8 +3953,34 @@ func (m *App) onChatWake() tea.Cmd {
 	}
 	dr, ok1 := s.(detailIDer)
 	st, ok2 := s.(setter)
-	if !ok1 || !ok2 || dr.DetailID() != m.chatConvID {
-		return nil // detail pane is showing something else
+	if !ok1 || !ok2 {
+		return nil
+	}
+	// A DRIFTED DETAIL ID IS RE-ASSERTED, NOT TREATED AS "SHOWING SOMETHING ELSE".
+	//
+	// This guard used to return nil on a mismatch — painting NOTHING: no transcript update and no
+	// activity line, both at once, until some incidental path restored the id (opening the conversation
+	// again, or clicking away and back). That is the operator's report exactly: "I have to click away
+	// and back again to see updates. No 'Orchicon is thinking...' block."
+	//
+	// AND THE ID REALLY DOES DRIFT. kit2.Base writes it on EVERY detail landing for a source it owns
+	// (base.go: `b.detailID = msg.id`), and the rail's row selection loads that row's detail — so while a
+	// conversation is open, a rail reload (the tick does one every 5s) can stamp the id of whichever row
+	// the cursor happens to be on, which need not be the open conversation.
+	//
+	// Refusing to paint was never the right answer for THIS screen, and it is not a judgement call:
+	// ask.New declares exactly ONE source ("conversations"), sets HideSources, and declares the pane's
+	// body HOST-OWNED (SetDetailBodyHostOwned(true)) — so on this tab the detail pane can only ever be
+	// the open conversation's transcript, and the shell is its painter. "The pane is showing that
+	// conversation" is therefore true whenever a conversation is open, and saying so is the honest
+	// repair rather than a workaround. A screen that genuinely can show something else still returns nil
+	// here, because only this screen carries the host-owned declaration.
+	if dr.DetailID() != m.chatConvID {
+		sid, ok := s.(interface{ SetDetailID(string) })
+		if !ok {
+			return nil
+		}
+		sid.SetDetailID(m.chatConvID)
 	}
 	if askS, ok := s.(interface {
 		RenderTranscript([]chat.ChatItem, chat.Conversation, bool) (title string, fields []screenkit.Field)
@@ -3842,6 +3997,34 @@ func (m *App) onChatWake() tea.Cmd {
 		// BEFORE the stream is sized (below). A conditional field would make the body height depend on
 		// the stream's own content — circular — and the label is informative even when nothing is hidden.
 		fields = append(fields, screenkit.Field{Key: "scroll", Value: ""})
+
+		// THE ACTIVITY LINE IS THE PANE'S FIXED FOOTER, AND IT IS SET *BEFORE* THE STREAM IS SIZED.
+		//
+		// The operator, on the line disappearing while text ran to the pane's edge: "the model's text is
+		// reach the bottom of the conversation pane and this should never happen" and "The status at the
+		// bottom indicating that actual thinking is occurring ... should NEVER go away unless a turn is
+		// truly done."
+		//
+		// As a STREAM NOTICE it took a row out of the body (kit2.Stream.bodyRows) and was drawn LAST, which
+		// made it the first casualty of every sizing mistake and of every full transcript — and when it was
+		// gone, the transcript simply filled the pane, which is exactly the reported symptom. A FOOTER is
+		// budgeted by the PANE (screenkit.Detail.footerRows), which subtracts it from the body height BEFORE
+		// the stream is measured. So it cannot be squeezed out by content, cannot be clipped by an
+		// off-by-one in the sizing, and cannot be scrolled away.
+		//
+		// It is the same reasoning that put the execution detail's composer in a footer, from that
+		// feature's own note: "a footer is the shape an input needs: always visible, never scrolled away".
+		// The activity line has identical requirements, and it is computed HERE, ahead of the measurement,
+		// because that is what makes the two agree: the pane gives the footer its rows first and the body
+		// gets what is left, so the stream can never be sized into the footer's space.
+		//
+		// ONE STATUS SLOT, like every other status surface here: reconnecting and disconnected take it while
+		// they are true (a dead plane must not be reported as a thinking model), otherwise the turn's own
+		// activity line owns it. It is empty only when there is genuinely nothing to say.
+		if stf, ok := s.(interface{ SetDetailFooter(string) }); ok {
+			stf.SetDetailFooter(m.transcriptStatusLine(items))
+		}
+
 		// THE STREAM IS SIZED TO THE PANE'S BODY, NOT THE CONTENT REGION.
 		//
 		// It was sized to m.contentHeight() — the whole region the screen is given — while the pane
@@ -3881,39 +4064,6 @@ func (m *App) onChatWake() tea.Cmd {
 		}
 		str := m.newTranscriptStream(m.chatConvID, w, strH)
 		m.syncTranscript(m.chatConvID, str, items, w)
-		// ONE notice slot, set through SetNotice so the view stays pinned: the notice takes a row from
-		// the body, so a direct assignment would move the window and hide the newest line.
-		switch {
-		case m.chatStore.isReconnecting(m.chatConvID):
-			str.SetNotice("reconnecting…")
-		case m.planeUnreachable():
-			// THE PANE ITSELF SAYS THE CONNECTION IS DOWN — the operator's ask, verbatim: "if a connection
-			// dies, the GUI tells you, but the TUI conversation does not." The footer is easy to miss when
-			// reading a transcript, and it is the TRANSCRIPT that looks broken when a reply cannot arrive.
-			// Same slot and same row cost as "reconnecting…", so nothing moves.
-			str.SetNotice("⚠ disconnected — replies will resume when the plane returns (r retries now)")
-		case m.chat.IsStreaming(m.chatConvID):
-			// THE ACTIVITY LINE RUNS FOR THE WHOLE TURN, not only before the first token.
-			//
-			// It used to require `awaitingReply(items)` — the GUI's rule, where the indicator is "visible
-			// until any streaming content arrives". That is right for a THINKING indicator and wrong for an
-			// ACTIVITY line, and the operator reported the difference as a bug: "After the initial
-			// 'Orchicon is thinking...', streaming started and the 'Orchicon is thinking...' went away and
-			// never came back."
-			//
-			// What they lost was the only signal that the stream is ALIVE. Mid-reply is exactly when it
-			// matters: a long tool call, a slow provider or a stalled socket look identical from the
-			// outside, and with the line gone nothing on screen changes until the reply finishes. So the
-			// notice now tracks the TURN, and the verb follows the PHASE — "thinking" before there is
-			// anything to read, "replying" once there is — which keeps the GUI's wording where the GUI uses
-			// it and extends the line where the operator asked for it.
-			//
-			// The age comes from the watchdog's own clock (lastActivity), so the line cannot claim a
-			// liveness the liveness check would contradict.
-			str.SetNotice(turnActivityNotice(m.chat.SilenceSince(m.chatConvID), awaitingReply(items)))
-		default:
-			str.SetNotice("")
-		}
 		// Surface the scroll position when the transcript is taller than the pane.
 		//
 		// The transcript follows the TAIL, so a reply longer than the pane scrolls
@@ -4507,6 +4657,7 @@ func (m *App) onConversationMutated(msg chat.ConversationMutatedMsg) tea.Cmd {
 		}
 		if m.chatConvID == msg.ID {
 			m.chatConvID = ""
+			m.closeScopeModal()
 			m.chat.SetActive("")
 			if s := m.screens[TabAsk]; s != nil {
 				if st, ok := s.(interface {
@@ -4764,6 +4915,28 @@ type chatConvCreatedMsg struct {
 	preamble string
 }
 
+// pinTranscriptToTail points the open transcript back at its newest line.
+//
+// A SEND IS A NEW, DELIBERATE ACT, and it must show what it sent. The stream's follow intent is
+// cleared by the operator's own scroll (kit2.Stream.follow — deliberately sticky, so an arriving
+// chunk cannot yank a reader out of the history mid-sentence). That stickiness is right for READING
+// and wrong for SENDING: an operator who scrolled back through a long conversation and then asked a
+// question is no longer reading, and leaving the view parked in the history means their own message
+// and the activity line are both appended BELOW the fold.
+//
+// THIS IS THE SIZE-DEPENDENT BUG, and the operator's two example conversations are the proof: a SHORT
+// transcript cannot be scrolled at all, so it is always at the bottom and always works; a LONG one can
+// be scrolled, and once it is, everything sent afterwards is invisible until something else moves the
+// window. "conversation ID 01M4… is working. Your conversation 01M3… is not."
+func (m *App) pinTranscriptToTail() {
+	if m.chatConvID == "" {
+		return
+	}
+	if str := m.chatStreams[m.chatConvID]; str != nil {
+		str.ScrollToBottom()
+	}
+}
+
 // runningExecutionID reports the selected execution when it is RUNNING
 // (interjection context). Status comes from the execution screen.
 func (m *App) runningExecutionID() (string, bool) {
@@ -4932,6 +5105,9 @@ func (m *App) sendFromComposer(text string) tea.Cmd {
 		// cleared on send.
 		Attachments: m.pendingAttachMarkers(),
 	})
+	// SHOW IT. See pinTranscriptToTail: on a long transcript the follow intent may be off, and the echo
+	// plus the activity line would land below the fold.
+	m.pinTranscriptToTail()
 	// The turn is in flight as soon as sendChat is evaluated (chat.Send flips the slot synchronously),
 	// so the composer's stop affordance appears with it — the operator can see HOW to stop before the
 	// first token lands.
@@ -5056,6 +5232,7 @@ func (m *App) SendUserMessage(text string) tea.Cmd {
 		Kind: chat.KindUser, Text: text, At: time.Now().UnixMilli(),
 		Key: fmt.Sprintf("draft-%d", time.Now().UnixNano()), Live: true,
 	})
+	m.pinTranscriptToTail()
 	m.refreshComposerHint()
 	return tea.Batch(m.sendChat(m.chatConvID, text, preamble), m.onChatWake())
 }

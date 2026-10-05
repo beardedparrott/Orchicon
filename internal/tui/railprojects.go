@@ -109,6 +109,12 @@ type railProject struct {
 	// Dir is the project's project_dir. It is here so the rail can answer "which workspace was I launched in?"
 	// with the SAME boundary rule the launch prompt uses (dirInsideProject) rather than a second one.
 	Dir string
+	// SkillFiles is the project's skill_files path list, for the SHOWING half of the conversation scope modal:
+	// a conversation's skills are the UNION of its own and its project's (the same union the server renders
+	// into the turn — internal/askorchicon/chat.go, skillManifestSection), so the modal lists the project's
+	// contributions read-only above the conversation's own. It rides on the project list the rail already
+	// fetches rather than a second RPC for the same rows.
+	SkillFiles []string
 }
 
 // railProjectsMsg carries the project list back to the shell.
@@ -144,7 +150,8 @@ func (m *App) loadRailProjects() tea.Cmd {
 		for _, p := range resp.Msg.GetProjects() {
 			out = append(out, railProject{
 				ID: p.GetId(), Name: p.GetName(), Status: projectStatusWord(p.GetStatus()),
-				Dir: strings.TrimSpace(p.GetProjectDir()),
+				Dir:        strings.TrimSpace(p.GetProjectDir()),
+				SkillFiles: p.GetSkillFiles(),
 			})
 		}
 		return railProjectsMsg{Projects: out}
