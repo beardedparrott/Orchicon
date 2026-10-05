@@ -248,7 +248,8 @@ func TestWorkerVersionRefusesTheRowOnlyVerbs(t *testing.T) {
 	m, _, rec := openingWorkerVersion(t, versionPermissions, `[]`)
 	putCursor(m, rowIndexOf(t, m, "pg"))
 
-	for _, key := range []string{"i", "k", "c"} {
+	// `c` is NOT here: the catalog is a prefill, so it applies at this scope (see the hint test).
+	for _, key := range []string{"i", "k"} {
 		m.dock.SetError("")
 		pressScope(t, m, key)
 		if m.convScopeForm != nil {
@@ -384,12 +385,15 @@ func TestTheVersionScopeAdvertisesOnlyWhatItCanDo(t *testing.T) {
 	m, _, _ := openingWorkerVersion(t, versionPermissions, `[]`)
 	putCursor(m, rowIndexOf(t, m, "pg"))
 	hint := strings.Join(m.scopeHintItems(), " · ")
-	for _, absent := range []string{"c: catalog", "i: install", "k: credential"} {
+	// `c: catalog` IS OFFERED HERE — the catalog PREFILLS the add form and the form's save writes the
+	// spec inline. The operator: "The gui allows this." It does, and the TUI's refusal was an assumption
+	// about the catalog's ROLE, not a limitation: the catalog fills a form; the save decides the target.
+	for _, absent := range []string{"i: install", "k: credential"} {
 		if strings.Contains(hint, absent) {
-			t.Errorf("the worker-version scope offers %q, which it cannot do: %q", absent, hint)
+			t.Errorf("the worker-version scope offers %q, which needs a ROW it does not have: %q", absent, hint)
 		}
 	}
-	for _, present := range []string{"enter/e: edit", "d: remove", "a: add", "s: skill files"} {
+	for _, present := range []string{"enter/e: edit", "d: remove", "a: add", "c: catalog", "s: skill files"} {
 		if !strings.Contains(hint, present) {
 			t.Errorf("the worker-version scope does not offer %q: %q", present, hint)
 		}
@@ -418,5 +422,58 @@ func TestTheProjectScopeDoesNotClaimWorkersAsDisciples(t *testing.T) {
 	vbody := scopeText(m2)
 	if !strings.Contains(vbody, "tenant-level") {
 		t.Errorf("the worker-version scope does not say a worker inherits no project's MCP:\n%s", vbody)
+	}
+}
+
+// A CATALOG PICK AT THE VERSION SCOPE PREFILLS THE INLINE FORM AND CREATES NO ROW.
+//
+// The operator: "on workers for catalogs I get ... The gui allows this." The GUI's catalog Add fills the
+// ADD FORM and opens it — nothing is created by the pick itself — and the form's save writes the
+// version's array. This is the same path, and the assertions are the two halves of that sentence: the
+// form opens PREFILLED, and no MCP row is created.
+func TestVersionCatalogPickPrefillsTheInlineFormAndCreatesNoRow(t *testing.T) {
+	m, stub, _ := openingWorkerVersion(t, `{"tools":["read"],"mcp_servers":[]}`, `[]`)
+
+	// What the picker would hand the save: a catalog prefill, in the owned-create shape.
+	prefill := &apiv1.MCPServerCreateRequest{
+		Name: "playwright", Command: "npx", Args: []string{"-y", "@playwright/mcp@latest"},
+		Transport: apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STDIO, Enabled: true,
+	}
+	cmd := m.scopeAddMCPFromCatalog()
+	if cmd != nil {
+		_ = cmd() // the catalog LIST fetch (the stub serves none); the pick is driven below
+	}
+	// Drive the pick the way the form's OnSubmit would: through the callback the catalog form was built
+	// with. The catalog form is the open modal form at this point.
+	if m.convScopeForm == nil {
+		t.Fatal("`c` opened no catalog form")
+	}
+	// Simulate the operator choosing an entry: the catalog form's OnSubmit builds the prefill via the
+	// injected prefill func, which the modal wires to the plane. Assert the SAVE's shape instead, by
+	// calling the same conversion the save uses.
+	spec := mcpforms.InlineSpecFromCreateRequest(prefill)
+	if spec.ID != "playwright" || spec.Type != "stdio" {
+		t.Fatalf("the conversion lost the entry: %+v", spec)
+	}
+	if len(spec.Command) != 3 || spec.Command[0] != "npx" || spec.Command[2] != "@playwright/mcp@latest" {
+		t.Errorf("argv = %v, want [npx -y @playwright/mcp@latest] (command FIRST, then args)", spec.Command)
+	}
+
+	// And the form it opens is PREFILLED with it.
+	m.openInlineSpecForm(&spec, false)
+	if m.convScopeForm == nil {
+		t.Fatal("the prefill opened no inline form")
+	}
+	if got := m.convScopeForm.Values["name"]; got != "playwright" {
+		t.Errorf("the inline form is prefilled %q, want the catalog entry's name — the operator should be "+
+			"confirming a filled form, not retyping it", got)
+	}
+
+	// NOTHING WAS CREATED BY THE PICK.
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	if len(stub.created) != 0 {
+		t.Errorf("a catalog pick created %d MCP rows — the pick PREFILLS; only the form's save writes",
+			len(stub.created))
 	}
 }

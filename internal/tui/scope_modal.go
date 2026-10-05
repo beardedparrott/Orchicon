@@ -746,7 +746,7 @@ func (s *scopeModal) scopeMCPOwner() mcpforms.Owner {
 // scopeAddMCP opens the typed definition form for THIS scope — the same control the GUI's Add opens.
 func (m *App) scopeAddMCP() tea.Cmd {
 	if m.scope.kind == ownerWorkerVersion {
-		m.openInlineSpecForm(nil)
+		m.openInlineSpecForm(nil, false)
 		return nil
 	}
 	m.openScopeMCPDefine(nil)
@@ -808,14 +808,18 @@ func (m *App) openScopeMCPDefine(prefill *apiv1.MCPServer) {
 // form — the TUI's one-click add, mirroring the GUI's Registry catalog grid. A version has no row to
 // create, so this is refused there rather than opening a form whose save would go nowhere.
 func (m *App) scopeAddMCPFromCatalog() tea.Cmd {
-	if m.scope.kind == ownerWorkerVersion {
-		m.dock.SetError("a worker version's specs are INLINE — there is no row for a catalog add to " +
-			"create. Press a to add a spec by hand (it is written into the version's permissions)")
-		return nil
-	}
 	cl := m.clients
 	owner := m.scope.scopeMCPOwner()
+	versionScope := m.scope.kind == ownerWorkerVersion
 	save := func(req *apiv1.MCPServerCreateRequest) tea.Cmd {
+		// A WORKER VERSION HAS NO ROW TO CREATE, so the catalog PREFILLS ITS ADD FORM instead — the same
+		// thing the GUI does (handleCatalogAdd fills the form, and the form's save writes the version's
+		// array). The operator confirms before anything is written, and the spec lands inline.
+		if versionScope {
+			spec := mcpforms.InlineSpecFromCreateRequest(req)
+			m.openInlineSpecForm(&spec, false)
+			return nil
+		}
 		return func() tea.Msg {
 			if cl == nil || cl.MCP == nil {
 				return convScopeMsg{op: "/scope", err: "not connected to a plane"}
@@ -827,6 +831,11 @@ func (m *App) scopeAddMCPFromCatalog() tea.Cmd {
 			}
 			return convScopeMsg{op: "/scope", detail: "added " + req.GetName() + " from the catalog"}
 		}
+	}
+	if versionScope {
+		// No owner: the catalog is a PREFILL here, and nothing is created from it, so stamping a scope
+		// would be a claim about a row that never exists.
+		owner = mcpforms.Owner{}
 	}
 	f := mcpforms.CatalogForm(owner,
 		func() []*apiv1.MCPCatalogEntry {
@@ -856,10 +865,15 @@ func (m *App) scopeAddMCPFromCatalog() tea.Cmd {
 	return nil
 }
 
-// openInlineSpecForm edits ONE inline spec of a worker version and commits it through the version's own
-// save. There is no RPC per spec: the modal owns the array and writes it back as a whole, which is what
-// keeps a published version's history intact (see scopeOwnerKind).
-func (m *App) openInlineSpecForm(src *mcpforms.InlineSpec) {
+// openInlineSpecForm opens the add/edit form for ONE inline spec of a worker version, and commits it
+// through the version's own save. There is no RPC per spec: the modal owns the array and writes it back
+// as a whole, which is what keeps a published version's history intact (see scopeOwnerKind).
+//
+// `seed` PREFILLS the form. A CATALOG PICK passes a seed derived from the catalog entry
+// (mcpforms.InlineSpecFromCreateRequest) and isEdit=false, so the two add paths — by hand and from the
+// catalog — are the SAME control, and the operator confirms before anything is written. That is how the
+// GUI works: its catalog Add fills the add form rather than creating anything.
+func (m *App) openInlineSpecForm(src *mcpforms.InlineSpec, isEdit bool) {
 	s := m.scope
 	if s == nil || s.kind != ownerWorkerVersion {
 		return
@@ -867,12 +881,19 @@ func (m *App) openInlineSpecForm(src *mcpforms.InlineSpec) {
 	title := "Add an inline MCP spec"
 	seed := mcpforms.InlineSpec{}
 	if src != nil {
-		title, seed = "Edit MCP spec: "+src.ID, *src
+		seed = *src
+	}
+	if isEdit {
+		title = "Edit MCP spec: " + src.ID
+	}
+	editID := ""
+	if isEdit {
+		editID = src.ID
 	}
 	f := mcpforms.InlineForm(title, &seed, func(next mcpforms.InlineSpec) {
-		if src != nil {
+		if editID != "" {
 			for i := range s.inline {
-				if s.inline[i].ID == src.ID {
+				if s.inline[i].ID == editID {
 					s.inline[i] = next
 					break
 				}
@@ -918,7 +939,7 @@ func (m *App) scopeEditSelected() tea.Cmd {
 	case scopeRowInlineMCP:
 		for i := range m.scope.inline {
 			if m.scope.inline[i].ID == row.id {
-				m.openInlineSpecForm(&m.scope.inline[i])
+				m.openInlineSpecForm(&m.scope.inline[i], true)
 				return nil
 			}
 		}
@@ -1292,7 +1313,6 @@ func (m *App) scopeTitle() string {
 // GUI's own omission for this scope, and the row's note says why.
 func (m *App) scopeHintItems() []string {
 	row, ok := m.scope.selected(m)
-	inline := m.scope != nil && m.scope.kind == ownerWorkerVersion
 
 	var items []string
 	switch {
@@ -1308,12 +1328,11 @@ func (m *App) scopeHintItems() []string {
 
 	// The global verbs. `a` (add by hand) exists at every scope — a version adds an inline spec, the
 	// others add an owned row — and `s` (skill files) likewise.
-	add := []string{"a: add"}
-	if !inline {
-		add = append(add, "c: catalog")
-	}
-	items = append(items, add...)
-	items = append(items, "s: skill files", "r: refresh", "esc: close")
+	// `c: catalog` APPLIES AT EVERY SCOPE, including a worker version: the catalog PREFILLS the add form
+	// and the form's save writes whichever target the scope has (a row, or an inline spec). The verbs that
+	// genuinely need a ROW — install and credential — are omitted by the row cases above, where they
+	// belong, rather than by a scope-wide flag here.
+	items = append(items, "a: add", "c: catalog", "s: skill files", "r: refresh", "esc: close")
 	return items
 }
 

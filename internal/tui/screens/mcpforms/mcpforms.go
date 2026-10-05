@@ -298,6 +298,35 @@ func SkillPathsForm(current string, onSave func(paths []string) tea.Cmd) *kit2.F
 	return f
 }
 
+// InlineSpecFromCreateRequest converts a CATALOG PREFILL (an owned-create shape) into an INLINE spec, so
+// the same catalog control can seed a WORKER VERSION's list.
+//
+// IT EXISTS BECAUSE THE CATALOG IS A PREFILL, NOT A CREATE. The GUI's catalog Add fills the add form and
+// opens it (MCPServersPanel.handleCatalogAdd → setShowForm(true)); what happens next is decided by the
+// FORM's save, which writes an owned row for a project/conversation and an INLINE spec for a version
+// (scope.kind === "workerVersion" → writeInline). Treating the catalog as "create a row" is what made an
+// earlier TUI cut refuse the catalog at the version scope: the capability was there, the assumption was
+// wrong.
+//
+// It is the inverse of screens/work.InlineSpecToCreateRequest, and mirrors the spec the GUI builds in its
+// submit branch field for field (type from the transport, argv = command + args, env for stdio,
+// url/headers for http).
+func InlineSpecFromCreateRequest(req *apiv1.MCPServerCreateRequest) InlineSpec {
+	enabled := req.GetEnabled()
+	out := InlineSpec{ID: req.GetName(), Enabled: &enabled}
+	if req.GetTransport() == apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STREAMABLE_HTTP {
+		out.Type, out.URL, out.Headers = "http", req.GetUrl(), req.GetHeaders()
+		return out
+	}
+	out.Type = "stdio"
+	if cmd := strings.TrimSpace(req.GetCommand()); cmd != "" {
+		// argv is command FIRST, then the args — the shape db.MCPServerFromPermissions reads back.
+		out.Command = append([]string{cmd}, req.GetArgs()...)
+	}
+	out.Env = req.GetEnv()
+	return out
+}
+
 // InlineSpec mirrors db.InlineMCPServer (internal/db/mcp_servers.go) — the ONE
 // shape the server already parses out of a worker version's
 // permissions.mcp_servers. The worker-version placement writes THIS array rather
