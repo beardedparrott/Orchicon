@@ -53,6 +53,36 @@ func Summarize(callsJSON []byte, now time.Time, window time.Duration) string {
 	if err := json.Unmarshal(callsJSON, &calls); err != nil {
 		return ""
 	}
+	in := make([]Call, 0, len(calls))
+	for _, c := range calls {
+		in = append(in, Call{ToolName: c.FunctionName, AtMs: c.IssuedAtUnixMs})
+	}
+	return SummarizeCalls(in, now, window)
+}
+
+// Call is one tool call the ACTIVITY LINE can count: the name to classify and the epoch-ms instant
+// it was issued.
+//
+// WHY THIS SHAPE EXISTS. The ledger column is not the only place a client meets a tool call. The
+// TUI's Ask pane receives the durable tool rows over the wire (the ListMessages poll) as a proto
+// ToolCall with a name and a stamp, not as JSON text — and re-encoding them to []byte purely to
+// satisfy Summarize's signature would be a needless round trip through the encoder, and a place
+// for a tag to drift. So the counting RULE lives here, once, over the shape both callers have in
+// hand: Summarize decodes the ledger column into []Call and delegates, and a wire-side caller
+// builds []Call directly.
+type Call struct {
+	// ToolName is the tool's name as the model issued it ("write", "orchicon_bash", …). It is
+	// classified by Classify, so an unknown name is Ignore rather than a new bucket.
+	ToolName string
+	// AtMs is when the call was issued, epoch MILLISECONDS — the clients' existing convention
+	// (chat.ParsedTool.At). 0 means "no timestamp" and is SKIPPED, never treated as the epoch.
+	AtMs int64
+}
+
+// SummarizeCalls is Summarize over calls the caller already holds: the SAME rendering rule, no
+// JSON. The trailing age, the window boundary, the fixed modify→read→bash order and the
+// load-bearing empty string are all Summarize's (see its doc); this is that body.
+func SummarizeCalls(calls []Call, now time.Time, window time.Duration) string {
 	if window <= 0 {
 		// A non-positive window is a caller slip, not a request for a blank line: "the last
 		// zero seconds" is not a display anybody wants. Fall back to the named default rather
@@ -64,12 +94,12 @@ func Summarize(callsJSON []byte, now time.Time, window time.Duration) string {
 	newest := int64(0)
 	counted := false
 	for _, c := range calls {
-		if c.IssuedAtUnixMs == 0 {
+		if c.AtMs == 0 {
 			// No timestamp: a pre-change row, or a synthesized one. An entry that cannot be
 			// placed in a window is skipped, so an old conversation does not render a wrong count.
 			continue
 		}
-		ageMs := nowMs - c.IssuedAtUnixMs
+		ageMs := nowMs - c.AtMs
 		if ageMs < 0 {
 			ageMs = 0 // clock skew / a future stamp: clamp, never drop the work.
 		}
@@ -78,7 +108,7 @@ func Summarize(callsJSON []byte, now time.Time, window time.Duration) string {
 		if time.Duration(ageMs)*time.Millisecond > window {
 			continue
 		}
-		switch Classify(c.FunctionName) {
+		switch Classify(c.ToolName) {
 		case Modify:
 			modifies++
 		case Read:
@@ -91,8 +121,8 @@ func Summarize(callsJSON []byte, now time.Time, window time.Duration) string {
 		// Track the NEWEST COUNTED entry explicitly rather than seeding a 0 sentinel and taking
 		// the max: a malformed negative stamp would then leave `newest` at 0 and the trailing age
 		// would be measured from the epoch, not from the entry that was just counted.
-		if !counted || c.IssuedAtUnixMs > newest {
-			newest = c.IssuedAtUnixMs
+		if !counted || c.AtMs > newest {
+			newest = c.AtMs
 		}
 		counted = true
 	}

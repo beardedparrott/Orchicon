@@ -404,6 +404,17 @@ export class ToolCall extends Message<ToolCall> {
    */
   arguments = "";
 
+  /**
+   * issued_at_unix_ms is when the call was ISSUED, epoch MILLISECONDS — the same
+   * stamp internal/askorchicon/tool_ledger.go writes into the tool_calls column.
+   * It rides the wire so the client can count a ROLLING window (see
+   * internal/toolclass.Summarize); 0 means "not stamped" (a row persisted before
+   * the field existed) and must be treated as unknown, never as the epoch.
+   *
+   * @generated from field: int64 issued_at_unix_ms = 5;
+   */
+  issuedAtUnixMs = protoInt64.zero;
+
   constructor(data?: PartialMessage<ToolCall>) {
     super();
     proto3.util.initPartial(data, this);
@@ -416,6 +427,7 @@ export class ToolCall extends Message<ToolCall> {
     { no: 2, name: "type", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "function_name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 4, name: "arguments", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "issued_at_unix_ms", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ToolCall {

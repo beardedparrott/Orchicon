@@ -31,9 +31,11 @@ type toolCallEntry struct {
 	// IssuedAtUnixMs is the wall-clock time at which the call was ISSUED, in
 	// epoch milliseconds — the same time encoding the chat path already uses
 	// (chat.ParsedTool.At). It is display-only durable data for the
-	// rolling-window summarizer, never a wire contract: the ToolCall proto has no
-	// field for it. 0 means "not stamped" (a row persisted before this field
-	// existed); a reader must treat 0 as unknown, never as the epoch.
+	// rolling-window summarizer (internal/toolclass), and it now RIDES THE WIRE
+	// as well: ToolCall.issued_at_unix_ms carries it to clients, which never see
+	// this column, so the activity line's rolling counter can count the same
+	// window the server does. 0 means "not stamped" (a row persisted before this
+	// field existed); a reader must treat 0 as unknown, never as the epoch.
 	IssuedAtUnixMs int64 `json:"issued_at_unix_ms"`
 	resolved       bool
 }

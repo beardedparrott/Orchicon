@@ -459,13 +459,19 @@ func (x *ChatMessage) GetReasoning() []string {
 
 // ToolCall represents a function call made by the agent.
 type ToolCall struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Type          string                 `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"` // "function"
-	FunctionName  string                 `protobuf:"bytes,3,opt,name=function_name,json=functionName,proto3" json:"function_name,omitempty"`
-	Arguments     string                 `protobuf:"bytes,4,opt,name=arguments,proto3" json:"arguments,omitempty"` // JSON
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Id           string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Type         string                 `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"` // "function"
+	FunctionName string                 `protobuf:"bytes,3,opt,name=function_name,json=functionName,proto3" json:"function_name,omitempty"`
+	Arguments    string                 `protobuf:"bytes,4,opt,name=arguments,proto3" json:"arguments,omitempty"` // JSON
+	// issued_at_unix_ms is when the call was ISSUED, epoch MILLISECONDS — the same
+	// stamp internal/askorchicon/tool_ledger.go writes into the tool_calls column.
+	// It rides the wire so the client can count a ROLLING window (see
+	// internal/toolclass.Summarize); 0 means "not stamped" (a row persisted before
+	// the field existed) and must be treated as unknown, never as the epoch.
+	IssuedAtUnixMs int64 `protobuf:"varint,5,opt,name=issued_at_unix_ms,json=issuedAtUnixMs,proto3" json:"issued_at_unix_ms,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ToolCall) Reset() {
@@ -524,6 +530,13 @@ func (x *ToolCall) GetArguments() string {
 		return x.Arguments
 	}
 	return ""
+}
+
+func (x *ToolCall) GetIssuedAtUnixMs() int64 {
+	if x != nil {
+		return x.IssuedAtUnixMs
+	}
+	return 0
 }
 
 // ToolResult represents the result of a tool call execution.
@@ -1373,12 +1386,13 @@ const file_orchicon_api_v1_ask_orchicon_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12\x1c\n" +
 	"\treasoning\x18\n" +
-	" \x03(\tR\treasoning\"q\n" +
+	" \x03(\tR\treasoning\"\x9c\x01\n" +
 	"\bToolCall\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12#\n" +
 	"\rfunction_name\x18\x03 \x01(\tR\ffunctionName\x12\x1c\n" +
-	"\targuments\x18\x04 \x01(\tR\targuments\"a\n" +
+	"\targuments\x18\x04 \x01(\tR\targuments\x12)\n" +
+	"\x11issued_at_unix_ms\x18\x05 \x01(\x03R\x0eissuedAtUnixMs\"a\n" +
 	"\n" +
 	"ToolResult\x12 \n" +
 	"\ftool_call_id\x18\x01 \x01(\tR\n" +

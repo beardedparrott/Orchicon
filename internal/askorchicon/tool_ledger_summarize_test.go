@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/toolclass"
 )
 
@@ -102,5 +103,57 @@ func TestSummarizeEmptyRealLedgerIsTheEmptyString(t *testing.T) {
 	}
 	if got := toolclass.Summarize(calls, time.UnixMilli(1), toolclass.DefaultWindow); got != "" {
 		t.Errorf("Summarize(empty ledger) = %q, want the empty string", got)
+	}
+}
+
+// TestTheIssueStampSurvivesTheWire is the SECOND half of the same seam: the
+// ledger's stamp has to survive `messageRowToProto` to reach a CLIENT at all.
+//
+// This is the gap the activity line's rolling counter would otherwise die in.
+// The stamp is written to the DB at tool_ledger.go and read back by the
+// summarizer's sibling test above — but a client never sees the column; it sees
+// the ChatMessage wire field. `toolCallsFromJSON` decodes the column into a
+// struct and rebuilds a proto ToolCall, so a field missing from THAT struct (or
+// from the proto) drops the stamp silently: every row arrives with
+// issued_at_unix_ms = 0, the client's SummarizeCalls skips every entry as
+// "no timestamp", and the line renders "" over a turn that is plainly working.
+//
+// No fixture in internal/toolclass can catch this, because that package never
+// crosses a proto boundary. This drives the real ledger bytes through the real
+// projection.
+func TestTheIssueStampSurvivesTheWire(t *testing.T) {
+	const stamp = int64(1_700_000_000_123)
+	withLedgerClock(t, stamp)
+	led := newToolLedger()
+	led.recordStart("write")
+	led.recordStart("read")
+	calls, _ := led.snapshot()
+
+	wire := messageRowToProto(db.MessageRow{
+		ID: "a1", ConversationID: "c1", Role: "assistant", Content: "done",
+		ToolCalls: calls,
+	})
+
+	got := wire.GetToolCalls()
+	if len(got) != 2 {
+		t.Fatalf("the wire carries %d tool calls, want 2 — messageRowToProto dropped the ledger rows: %v",
+			len(got), got)
+	}
+	for i, c := range got {
+		if c.GetIssuedAtUnixMs() != stamp {
+			t.Errorf("tool call %d reaches the client with issued_at_unix_ms = %d, want %d — the stamp did not "+
+				"survive toolCallsFromJSON, so the activity line's rolling counter would see every row as "+
+				"unstamped and render nothing", i, c.GetIssuedAtUnixMs(), stamp)
+		}
+	}
+	// AND THE CLIENT-SIDE SUMMARIZER COUNTS THEM, which is the point of carrying it: the wire shape is what
+	// toolclass.SummarizeCalls (the TUI's entry point) is handed.
+	callsForLine := make([]toolclass.Call, 0, len(got))
+	for _, c := range got {
+		callsForLine = append(callsForLine, toolclass.Call{ToolName: c.GetFunctionName(), AtMs: c.GetIssuedAtUnixMs()})
+	}
+	if summary := toolclass.SummarizeCalls(callsForLine, time.UnixMilli(stamp), toolclass.DefaultWindow); summary == "" {
+		t.Error("SummarizeCalls over the wire tool calls rendered nothing — the counter the TUI draws would be " +
+			"empty for a turn that just made two calls")
 	}
 }

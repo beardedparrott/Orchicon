@@ -144,25 +144,35 @@ func TestThinkingYieldsToTheConnectionBanner(t *testing.T) {
 	_ = m.chat.Send("c1", "hello", "") // a turn is in flight throughout
 
 	// Healthy first: the indicator is what the operator sees while waiting.
+	//
+	// THE ASSERTION IS THE SHARED PROPERTY, NOT THE OLD LITERAL. It used to read
+	// strings.Contains(got, "thinking"), and that stayed green after the verb began to ROTATE only by
+	// coincidence: this fixture plants no heartbeat, so the stamp is 0 and VerbAt(0) happens to be the
+	// rotation's first entry, "thinking". The moment the reviewed list is reordered the literal would
+	// fail while the feature was entirely correct; and a row that had dropped the verb could still pass
+	// on the word alone. The invariant this has always meant is "an activity line is up, and its word is
+	// one the reviewed rotation names" — never the disconnected banner.
 	healthyPlane(m)
 	m.onChatWake()
 	m.onChatWake()
-	if got := m.askStatusLine(); !strings.Contains(got, "thinking") {
-		t.Fatalf("with a healthy plane the status line should be the thinking indicator, got %q", got)
+	if got := m.askStatusLine(); !containsStr(got, "Orchicon is ") || !activityWordInList(got) {
+		t.Fatalf("with a healthy plane the status line should be the activity indicator (a reviewed "+
+			"rotation word), got %q", got)
 	}
 
 	// The plane dies mid-turn: the banner takes the slot.
 	deadPlane(m)
 	m.onChatWake()
 	if got := m.askStatusLine(); !strings.Contains(got, "disconnected") {
-		t.Errorf("a dead plane did not take the status slot from the thinking indicator — the operator "+
+		t.Errorf("a dead plane did not take the status slot from the activity indicator — the operator "+
 			"would be told the model is thinking while no reply can arrive. footer=%q", got)
 	}
 
-	// And it recovers, rather than sticking like an alarm.
+	// And it recovers, rather than sticking like an alarm. Same invariant as the healthy leg: the
+	// activity line is back, and its word is one the rotation names.
 	healthyPlane(m)
 	m.onChatWake()
-	if got := m.askStatusLine(); !strings.Contains(got, "thinking") {
+	if got := m.askStatusLine(); !containsStr(got, "Orchicon is ") || !activityWordInList(got) {
 		t.Errorf("the indicator did not return after recovery: footer=%q", got)
 	}
 }
