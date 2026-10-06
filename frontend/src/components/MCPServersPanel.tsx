@@ -105,6 +105,14 @@ interface FormState {
   url: string;
   headers: string;
   enabled: boolean;
+  /** The registry entry this form came from, EMPTY for a manual entry.
+   *
+   *  It is carried so the credential control can offer the key the entry DECLARES it needs (a catalog
+   *  entry's requiredEnv) as the default — and so the create sends it, because the plane derives a row's
+   *  required_secrets — and therefore its Install button and "secrets stored" badge — from the slug this
+   *  request carries. Dropping it (which the panel used to do) left a catalog-added server with no
+   *  declared keys and no Install control at all. */
+  catalogSlug: string;
 }
 
 const emptyForm: FormState = {
@@ -116,6 +124,7 @@ const emptyForm: FormState = {
   url: "",
   headers: "",
   enabled: true,
+  catalogSlug: "",
 };
 
 function parseKeyValue(input: string): Record<string, string> {
@@ -287,6 +296,15 @@ function InheritedServers({ projectId, projectName }: { projectId: string; proje
 // from one that resolves.
 const NEW_SELECTION = "__new__";
 
+// FORM_TARGET_ID names the SERVER BEING EDITED as a credential target.
+//
+// It exists because the edit page is where the operator reported typing credentials ("Credentials are still
+// something you type in … we need the ability to select/create the secret credentials from the MCP edit
+// page"). At that placement there is no row yet — the reference is written into the FORM's own env/headers
+// and travels with the Create/Save that follows — so the target needs an id that cannot collide with a real
+// server's.
+const FORM_TARGET_ID = "__form__";
+
 // CredentialTarget is one server a credential can be attached to, in either placement.
 interface CredentialTarget {
   id: string;
@@ -312,6 +330,96 @@ interface CredentialDraft {
 
 // CredentialCard is the ONE credential control: a target, a key, and a stored secret, all chosen from
 // lists — with a field appearing only where a list cannot answer (a new key, or a new secret).
+// SecretCombobox is the SEARCHABLE half of the credential control: type to filter the store's names, pick
+// one — or ask for a NEW secret, which is its own row at the foot of the list rather than a name the box
+// guessed at. The operator asked for exactly this: "you should be able to search through current available
+// secrets or 'create new secret'".
+//
+// IT IS A COMBOBOX AND NOT A DATALIST-BACKED TEXT BOX, because the options must be the ONLY thing that can be
+// picked. A datalist suggests without constraining, so a typed name matching nothing looks exactly like one
+// matching a stored secret — which is how "type a credential" creeps back in. Here every option is a real
+// name, and the one row that is not says what it does.
+//
+// The list is RENDERED ALWAYS and hidden by class, so what the markup says and what the operator sees are
+// the same set of names.
+function SecretCombobox({
+  names,
+  value,
+  disabled,
+  onPick,
+  onNew,
+}: {
+  names: string[];
+  value: string;
+  disabled?: boolean;
+  onPick: (name: string) => void;
+  onNew: (name: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const q = query.trim();
+  const matches = q === "" ? names : names.filter((n) => n.toLowerCase().includes(q.toLowerCase()));
+  return (
+    <div className="relative">
+      <Input
+        placeholder="Search stored secrets…"
+        value={query}
+        disabled={disabled}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setOpen(true);
+        }}
+      />
+      {/* onMouseDown, not onClick: the pick has to land BEFORE the input's blur closes the list. */}
+      <div
+        className={
+          open
+            ? "absolute z-50 mt-1 max-h-56 w-full overflow-auto rounded-md border border-input bg-muted shadow-lg"
+            : "hidden"
+        }
+      >
+        {matches.map((n) => (
+          <button
+            key={n}
+            type="button"
+            className="block w-full px-3 py-1.5 text-left text-sm hover:bg-accent"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              onPick(n);
+              setQuery(n);
+              setOpen(false);
+            }}
+          >
+            {n}
+          </button>
+        ))}
+        <button
+          type="button"
+          className="block w-full px-3 py-1.5 text-left text-sm text-muted-foreground hover:bg-accent"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            onNew(q);
+            setOpen(false);
+          }}
+        >
+          {q === "" ? "Create a new secret…" : `Create a new secret “${q}”…`}
+        </button>
+      </div>
+      {value !== "" && !open && <p className="mt-1 text-xs text-muted-foreground">stored secret: {value}</p>}
+    </div>
+  );
+}
+
+// CredentialCard is the ONE credential control: a target, a key, and a stored secret — the key picked from
+// what the server declares and already carries, the secret SEARCHED and picked from the store, and a field
+// appearing only where a list cannot answer (a new key, or a new secret).
+//
+// IT RENDERS IN THE SERVER'S OWN EDIT FORM TOO (compact), because the operator's report was about the edit
+// page: "Credentials are still something you type in … We need the ability to select/create the secret
+// credentials from the MCP edit page". At that placement the target IS the form being filled in, and the
+// reference it writes travels with the Create/Save that follows.
 function CredentialCard({
   targets,
   secretNames,
@@ -319,6 +427,7 @@ function CredentialCard({
   onApply,
   description,
   note,
+  compact = false,
 }: {
   targets: CredentialTarget[];
   secretNames: string[];
@@ -326,6 +435,7 @@ function CredentialCard({
   onApply: (draft: CredentialDraft) => void;
   description: string;
   note?: string;
+  compact?: boolean;
 }) {
   const [targetId, setTargetId] = useState("");
   const [keyChoice, setKeyChoice] = useState("");
@@ -346,6 +456,102 @@ function CredentialCard({
   const resolvedSecret = creatingSecret ? newSecretName.trim() : secretChoice;
   const keyLabel = target?.isHTTP ? "header" : "env var";
 
+  const controls = (
+    <>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {targets.length > 1 ? (
+          <select
+            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+            value={target?.id ?? ""}
+            onChange={(e) => {
+              setTargetId(e.target.value);
+              // The candidate keys belong to the SERVER, so they are re-chosen with it.
+              setKeyChoice("");
+              setNewKey("");
+            }}
+          >
+            {targets.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <div className="flex h-9 items-center text-sm text-muted-foreground">{target?.label}</div>
+        )}
+
+        <select
+          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+          value={keyChoiceValue}
+          onChange={(e) => setKeyChoice(e.target.value)}
+        >
+          {candidates.map((k) => (
+            <option key={k} value={k}>
+              {k}
+            </option>
+          ))}
+          <option value={NEW_SELECTION}>Add a new {keyLabel}…</option>
+        </select>
+
+        {keyChoiceValue === NEW_SELECTION && (
+          <Input placeholder={`New ${keyLabel} name`} value={newKey} onChange={(e) => setNewKey(e.target.value)} />
+        )}
+
+        <SecretCombobox
+          names={secretNames}
+          value={creatingSecret ? "" : secretChoice}
+          disabled={busy}
+          onPick={(name) => {
+            setSecretChoice(name);
+            setNewSecretName("");
+          }}
+          onNew={(name) => {
+            // An explicit new-secret choice: the name (typed in the search box, or empty) becomes the pair
+            // the two fields below fill in.
+            setSecretChoice(NEW_SELECTION);
+            setNewSecretName(name);
+            setNewSecretValue("");
+          }}
+        />
+
+        {creatingSecret && (
+          <>
+            <Input
+              placeholder="New secret name (e.g. MCP_GITHUB_TOKEN)"
+              value={newSecretName}
+              onChange={(e) => setNewSecretName(e.target.value)}
+            />
+            <Input
+              placeholder="Value (write-only)"
+              type="password"
+              value={newSecretValue}
+              onChange={(e) => setNewSecretValue(e.target.value)}
+            />
+          </>
+        )}
+      </div>
+
+      <Button
+        type="button"
+        size="sm"
+        disabled={busy || !resolvedKey || !resolvedSecret || (creatingSecret && !newSecretValue.trim())}
+        onClick={() =>
+          onApply({
+            targetId: target?.id ?? "",
+            key: resolvedKey,
+            secretName: resolvedSecret,
+            createNew: creatingSecret,
+            newValue: newSecretValue,
+          })
+        }
+      >
+        <KeyRound className="mr-1 h-3 w-3" /> {creatingSecret ? "Store and attach" : "Attach"}
+      </Button>
+
+      {note && <p className="text-xs text-muted-foreground">{note}</p>}
+    </>
+  );
+
   if (!target) {
     return (
       <Card>
@@ -362,102 +568,23 @@ function CredentialCard({
     );
   }
 
+  if (compact) {
+    return (
+      <div className="space-y-3 rounded-md border border-white/10 p-3">
+        <div className="text-sm font-medium">Credentials</div>
+        <p className="text-xs text-muted-foreground">{description}</p>
+        {controls}
+      </div>
+    );
+  }
+
   return (
     <Card>
       <CardHeader>
         <CardTitle>Credentials</CardTitle>
         <CardDescription>{description}</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="grid gap-2 sm:grid-cols-2">
-          {targets.length > 1 ? (
-            <select
-              className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
-              value={target.id}
-              onChange={(e) => {
-                setTargetId(e.target.value);
-                // The candidate keys belong to the SERVER, so they are re-chosen with it.
-                setKeyChoice("");
-                setNewKey("");
-              }}
-            >
-              {targets.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.label}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <div className="flex h-9 items-center text-sm text-muted-foreground">{target.label}</div>
-          )}
-
-          <select
-            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
-            value={keyChoiceValue}
-            onChange={(e) => setKeyChoice(e.target.value)}
-          >
-            {candidates.map((k) => (
-              <option key={k} value={k}>
-                {k}
-              </option>
-            ))}
-            <option value={NEW_SELECTION}>Add a new {keyLabel}…</option>
-          </select>
-
-          {keyChoiceValue === NEW_SELECTION && (
-            <Input placeholder={`New ${keyLabel} name`} value={newKey} onChange={(e) => setNewKey(e.target.value)} />
-          )}
-
-          <select
-            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
-            value={secretChoice}
-            onChange={(e) => setSecretChoice(e.target.value)}
-          >
-            <option value="">Choose a stored secret…</option>
-            {secretNames.map((n) => (
-              <option key={n} value={n}>
-                {n}
-              </option>
-            ))}
-            <option value={NEW_SELECTION}>Store a new secret…</option>
-          </select>
-
-          {creatingSecret && (
-            <>
-              <Input
-                placeholder="New secret name (e.g. MCP_GITHUB_TOKEN)"
-                value={newSecretName}
-                onChange={(e) => setNewSecretName(e.target.value)}
-              />
-              <Input
-                placeholder="Value (write-only)"
-                type="password"
-                value={newSecretValue}
-                onChange={(e) => setNewSecretValue(e.target.value)}
-              />
-            </>
-          )}
-        </div>
-
-        <Button
-          type="button"
-          size="sm"
-          disabled={busy || !resolvedKey || !resolvedSecret || (creatingSecret && !newSecretValue.trim())}
-          onClick={() =>
-            onApply({
-              targetId: target.id,
-              key: resolvedKey,
-              secretName: resolvedSecret,
-              createNew: creatingSecret,
-              newValue: newSecretValue,
-            })
-          }
-        >
-          <KeyRound className="mr-1 h-3 w-3" /> {creatingSecret ? "Store and attach" : "Attach"}
-        </Button>
-
-        {note && <p className="text-xs text-muted-foreground">{note}</p>}
-      </CardContent>
+      <CardContent className="space-y-3">{controls}</CardContent>
     </Card>
   );
 }
@@ -583,6 +710,10 @@ export function MCPServersPanel({ scope, readOnly = false, inheritedFrom }: MCPS
           url: form.url,
           headers: parseKeyValue(form.headers),
           enabled: form.enabled,
+          // Sent, so the plane records the provenance: required_secrets, the Install control and the
+          // secrets-stored badge are all derived from it. Omitting it (as this panel used to) made a
+          // catalog-added server indistinguishable from a hand-written one.
+          catalogSlug: form.catalogSlug,
           projectId: scope.kind === "project" ? scope.projectId : "",
           conversationId: scope.kind === "conversation" ? scope.conversationId : "",
         });
@@ -608,6 +739,9 @@ export function MCPServersPanel({ scope, readOnly = false, inheritedFrom }: MCPS
       url: r.url ?? "",
       headers: keyValueText(r.headers),
       enabled: r.enabled,
+      // The provenance survives an edit, so the credential control keeps offering the key this entry
+      // DECLARES and the Install / secrets-stored affordances keep working.
+      catalogSlug: r.catalogSlug,
     });
     setShowForm(true);
   }
@@ -626,6 +760,10 @@ export function MCPServersPanel({ scope, readOnly = false, inheritedFrom }: MCPS
         url: p?.url ?? "",
         headers: keyValueText(p?.headers),
         enabled: p?.enabled ?? true,
+        // THE SLUG IS REMEMBERED, not discarded. It is what makes the entry's DECLARED credential key the
+        // default in the picker below, and what the create sends so the plane can derive the row's
+        // required_secrets (and with them the Install control and the secrets-stored badge).
+        catalogSlug: slug,
       });
       setEditingId(null);
       setShowForm(true);
@@ -667,6 +805,22 @@ export function MCPServersPanel({ scope, readOnly = false, inheritedFrom }: MCPS
       if (scope.kind === "workerVersion") {
         // Inline: the reference goes into the VERSION's own spec, kept by the worker form's Save.
         writeInline(attachSecret(scope.value, draft.targetId, draft.key, draft.secretName));
+        return;
+      }
+
+      // THE SERVER BEING EDITED: nothing is persisted yet, so the reference is written into the FORM's own
+      // env/headers text and travels with the Create/Save that follows. This is the placement the operator
+      // asked for — the credential is selectable where the server is being defined, not only afterwards.
+      if (draft.targetId === FORM_TARGET_ID) {
+        const isHTTP = form.transport === MCPServerTransport.MCP_SERVER_TRANSPORT_STREAMABLE_HTTP;
+        const next = withReference(
+          parseKeyValue(form.env),
+          parseKeyValue(form.headers),
+          isHTTP,
+          draft.key,
+          draft.secretName,
+        );
+        setForm({ ...form, env: keyValueText(next.env), headers: keyValueText(next.headers) });
         return;
       }
 
@@ -807,7 +961,7 @@ export function MCPServersPanel({ scope, readOnly = false, inheritedFrom }: MCPS
                   onChange={(e) => setForm({ ...form, args: e.target.value })}
                 />
                 <Input
-                  placeholder="Env (KEY=VALUE per line; values may be ${SECRET_NAME})"
+                  placeholder="Env (KEY=VALUE per line — non-secret values; set credentials below)"
                   value={form.env}
                   onChange={(e) => setForm({ ...form, env: e.target.value })}
                 />
@@ -820,11 +974,45 @@ export function MCPServersPanel({ scope, readOnly = false, inheritedFrom }: MCPS
                   onChange={(e) => setForm({ ...form, url: e.target.value })}
                 />
                 <Input
-                  placeholder="Headers (KEY=VALUE per line; values may be ${SECRET_NAME})"
+                  placeholder="Headers (KEY=VALUE per line — non-secret values; set credentials below)"
                   value={form.headers}
                   onChange={(e) => setForm({ ...form, headers: e.target.value })}
                 />
               </>
+            )}
+            {/* THE CREDENTIAL CONTROL, IN THE FORM ITSELF. This is the edit page the operator meant: "we
+             *  need the ability to select/create the secret credentials from the MCP edit page". Before
+             *  this the only credential affordance was the Credentials card BELOW the server list — which
+             *  does not exist yet while the server is being defined, so the env field was the only place
+             *  left to put a credential, and it took one typed by hand.
+             *
+             *  The target is the FORM, so the reference lands in its env/headers text and travels with the
+             *  Create/Save that follows. A new secret is still STORED FIRST (see handleApplyCredential),
+             *  because a reference is resolved when a session uses the server. */}
+            {!readOnly && (
+              <CredentialCard
+                compact
+                targets={[
+                  {
+                    id: FORM_TARGET_ID,
+                    label: form.name.trim() || "this server",
+                    isHTTP: form.transport === MCPServerTransport.MCP_SERVER_TRANSPORT_STREAMABLE_HTTP,
+                    env: parseKeyValue(form.env),
+                    headers: parseKeyValue(form.headers),
+                    // What the picked registry entry DECLARES it needs, offered before the form's own keys
+                    // so the right one is the default rather than a retype.
+                    declaredKeys: catalog.find((c) => c.slug === form.catalogSlug)?.requiredEnv ?? [],
+                  },
+                ]}
+                secretNames={secrets.map((s) => s.name)}
+                busy={createSecret.isPending || updateSecret.isPending}
+                onApply={handleApplyCredential}
+                description={
+                  "Search the tenant secrets store and pick one (or create a new secret), and it is written " +
+                  "into this server's env (stdio) or headers (streamable HTTP) as a ${SECRET_NAME} reference."
+                }
+                note={secretsNote}
+              />
             )}
             <label className="flex items-center gap-2 text-sm">
               <input

@@ -95,17 +95,19 @@ describe("MCPServersPanel inline credential", () => {
     expect(html).toContain("gh");
   });
 
-  it("offers the spec's OWN keys and the STORE's names as PICKS", () => {
+  it("offers the spec's OWN keys as a picker and the STORE's names as a searchable pick", () => {
     const html = renderWorkerVersion([
       { id: "gh", type: "stdio", command: ["npx", "-y", "server-github"], env: { GITHUB_PERSONAL_ACCESS_TOKEN: "" } },
     ]);
     const selects = selectOptions(html);
-    expect(selects.length).toBeGreaterThanOrEqual(2);
+    // ONE <select> and it is the KEY: a single-spec card has no target picker of its own, and the secret is
+    // no longer a select — it is a combobox, so the store's list can be SEARCHED.
+    expect(selects.length).toBe(1);
     expect(selects[0]).toContain("GITHUB_PERSONAL_ACCESS_TOKEN");
-    expect(selects[1]).toContain("MCP_GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN");
-    // The store's list is what "selected rather than typed" means: every option is a name the store
-    // really holds (or the explicit new-secret case).
-    expect(selects[1]).toContain("__new__");
+    // The secret side offers the store's own names as picks, plus the one explicit way to add another.
+    expect(html).toContain("MCP_GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN");
+    expect(html).toContain("Search stored secrets…");
+    expect(html).toContain("Create a new secret…");
   });
 
   it("offers the spec's HEADER keys for a streamable-HTTP server, not its env", () => {
@@ -137,15 +139,17 @@ describe("MCPServersPanel inline credential", () => {
     //
     // The removed shape was a text box plus a <datalist> of suggestions — which CANNOT tell the two apart:
     // every value looked typed, and a reference to a secret nobody stored was indistinguishable from one
-    // that resolves. A <select> can only offer values that exist.
-    expect(src).not.toContain("<datalist");
+    // that resolves. The replacement's options are only ever REAL names, and the one row that is not says
+    // what it does. (The source mentions <datalist> in a comment explaining that choice; what must not
+    // exist is the ELEMENT.)
+    expect(src).not.toMatch(/<datalist[\s>/]/);
     expect(src).not.toContain("Env var / header name");
     expect(src).not.toContain("Env var name (e.g. GITHUB_TOKEN)");
     expect(src).not.toContain("Secret value (write-only)");
     // …and the one typed case is explicit, in both fields.
     expect(src).toContain('const NEW_SELECTION = "__new__"');
     expect(src).toContain("Add a new ");
-    expect(src).toContain("Store a new secret…");
+    expect(src).toContain("Create a new secret");
   });
 
   it("stores the value BEFORE the reference is written into the spec", () => {

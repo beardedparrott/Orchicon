@@ -98,13 +98,14 @@ function renderProject(): string {
 
 describe("MCPServersPanel owned-scope credentials (vault-driven)", () => {
   it("offers the VAULT's names — the thing the report could not select from", () => {
-    const selects = selectOptions(renderProject());
-    expect(selects.length).toBeGreaterThanOrEqual(2);
-    const secrets = selects[selects.length - 1];
-    expect(secrets).toContain("GITHUB_TOKEN");
-    expect(secrets).toContain("MCP_GITHUB_PAT");
-    // Storing a new one is the single escape hatch, and it is explicit.
-    expect(secrets).toContain("__new__");
+    const html = renderProject();
+    // SEARCHABLE, and the options are the store's own names: the report asked for exactly this — "you
+    // should be able to search through current available secrets or 'create new secret'".
+    expect(html).toContain("Search stored secrets…");
+    expect(html).toContain("GITHUB_TOKEN");
+    expect(html).toContain("MCP_GITHUB_PAT");
+    // Creating one is its own row, not a free-text field the control has to guess about.
+    expect(html).toContain("Create a new secret…");
   });
 
   it("offers the server's DECLARED key first, so the right one is the default rather than a retype", () => {
@@ -130,5 +131,47 @@ describe("MCPServersPanel owned-scope credentials (vault-driven)", () => {
     expect(src).toContain("withReference(row.env, row.headers, isHTTP, draft.key, draft.secretName)");
     expect(src).toContain("replaceEnv: true");
     expect(src).toContain("replaceHeaders: true");
+  });
+
+  it("is reachable FROM THE ADD/EDIT FORM, which is where the report came from", () => {
+    // The follow-up report, verbatim: "Credentials are still something you type in. You should be able to
+    // search through current available secrets or 'create new secret' from the MCP edit page in projects
+    // and workers" — and again: "We need the ability to select/create the secret credentials from the MCP
+    // edit page".
+    //
+    // Source-pinned because the placement is the claim: the card is rendered INSIDE the form block, so the
+    // env field is no longer the only place a credential can go while a server is being defined. (The
+    // other Credentials card sits below the server list, which does not exist yet at that moment.)
+    const formStart = src.indexOf("{!readOnly && showForm && (");
+    const formEnd = src.indexOf("Enabled", formStart);
+    expect(formStart, "the add/edit form block").toBeGreaterThan(-1);
+    expect(formEnd, "the form's Enabled control" ).toBeGreaterThan(formStart);
+    const formBlock = src.slice(formStart, formEnd);
+    expect(formBlock, "the credential control is not inside the add/edit form").toContain("<CredentialCard");
+    expect(formBlock).toContain("compact");
+    // …and the form's own env/headers fields stop advertising a hand-written reference, so the two do not
+    // give opposite instructions.
+    expect(formBlock).not.toContain("values may be ${SECRET_NAME}");
+    expect(formBlock).toContain("non-secret values");
+  });
+
+  it("keeps the catalog provenance, so a declared key is offered and the row stays installable", () => {
+    // A catalog pick must REMEMBER its slug: the credential control reads the entry's requiredEnv from it
+    // (the declared key as the default), and the create must SEND it — the plane derives a row's
+    // required_secrets, its Install control and its secrets-stored badge from catalog_slug. The panel used
+    // to discard it on prefill and never send it, which left a catalog-added server indistinguishable from
+    // a hand-written one.
+    expect(src).toContain("catalogSlug: slug");
+    expect(src).toContain("catalogSlug: form.catalogSlug");
+    expect(src).toContain("catalogSlug: r.catalogSlug");
+    expect(src).toMatch(/requiredEnv/);
+  });
+
+  it("searches the store rather than offering a free-text name", () => {
+    // "you should be able to search through current available secrets or 'create new secret'". The
+    // combobox's options are only ever REAL names; creating one is its own explicit row.
+    expect(src).toContain("Search stored secrets…");
+    expect(src).toContain("Create a new secret");
+    expect(src).toContain("function SecretCombobox(");
   });
 });
