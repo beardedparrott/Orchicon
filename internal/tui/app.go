@@ -368,6 +368,10 @@ type App struct {
 	// width: clamping is diffPaneWidth's job alone, so a terminal that grows back
 	// restores what the operator asked for.
 	diffPaneW int
+	// diffScrollDragging is a LIVE scrollbar drag on the rail (see dispatchMouse): the press jumped the
+	// viewport and every motion follows the pointer until the release. It is the shell's state for the same
+	// reason diffResizing is — the gesture is claimed above the clipboard layer, so the pane cannot own it.
+	diffScrollDragging bool
 	// diffResizing is true from a divider press until its release. The HELD state
 	// lives here rather than in the mouse button because tea delivers motion with
 	// MouseButtonNone (the same shape clipState already tolerates).
@@ -2310,6 +2314,16 @@ func (m *App) passToScreen(msg tea.Msg) (*App, tea.Cmd) {
 // would not scroll ("In the TUI diff bar, the scroll doesn't seem to be working").
 func (m *App) diffRailOwnsX(x int) bool {
 	return m.diffOpen && m.diffPane != nil && x < m.diffPaneWidth()
+}
+
+// diffScrollbarHit reports whether a terminal (x, y) is on the diff rail's SCROLLBAR — the cell the
+// operator grabs to jump or drag the viewport.
+//
+// The GEOMETRY is the pane's (diffs.Model.ScrollbarHit knows where its bar is and how tall it is); the
+// GESTURE is the shell's, because a left press in the rail sets a selection region and the clipboard layer
+// consumes the motion that follows — so the drag cannot be handled inside the pane.
+func (m *App) diffScrollbarHit(x, y int) bool {
+	return m.diffOpen && m.diffPane != nil && m.diffPane.ScrollbarHit(x, y)
 }
 
 // diffMsg forwards a pane-scoped message to the diff pane's Update and

@@ -1175,6 +1175,46 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 		}
 		// Any other action while resizing (e.g. a wheel) falls through to normal handling.
 	}
+	// DRAG THE DIFF RAIL'S SCROLLBAR — claimed here for the SAME reason the divider is, one block up.
+	//
+	// The bar's press JUMPS the viewport (as it always did) and starts the drag; its motion follows the
+	// pointer; its release ends the gesture. It has to be claimed ABOVE `if m.clip != nil`, because a left
+	// press in the rail sets a SELECTION REGION (selectionRegionAt) and clipState then CONSUMES the motion —
+	// so a drag handled by the pane would win the press and lose every step after it, selecting text
+	// instead of scrolling.
+	//
+	// THE OPERATOR: "I can't grab onto the scroll bar and drag it up and down like you can in the GUI." The
+	// bar also could not be CLICKED, for the same underlying reason: it occupied the pane's last cell, which
+	// the divider claims, so the pane never saw a press there at all. The bar now has a column of its own
+	// (one cell inside the edge) and this is the gesture that uses it.
+	if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft &&
+		!m.menuHit(mo.X, mo.Y) && m.diffScrollbarHit(mo.X, mo.Y) {
+		m.diffScrollDragging = true
+		m.diffPane.ScrollbarJumpTo(mo.Y)
+		m.syncDiffPaneState()
+		return m, nil // never forwarded: no selection region is set over the rail
+	}
+	if m.diffScrollDragging {
+		if !m.diffOpen || m.diffPane == nil {
+			// The rail was closed mid-drag (esc, or the ✕). Drop the gesture rather than jump a pane that is
+			// no longer on screen.
+			m.diffScrollDragging = false
+			return m, nil
+		}
+		switch mo.Action {
+		case tea.MouseActionMotion:
+			// NO X TEST, deliberately: the gesture was claimed at the press, and the bar must keep following
+			// the pointer even when a diagonal hand movement takes it out of the rail's columns. Terminal
+			// rows outside the body clamp, which is what dragging past either end should do.
+			m.diffPane.ScrollbarJumpTo(mo.Y)
+			m.syncDiffPaneState()
+			return m, nil
+		case tea.MouseActionRelease:
+			m.diffScrollDragging = false
+			return m, nil
+		}
+		// Any other action while dragging (e.g. a wheel) falls through to normal handling.
+	}
 	// SELECT AND COPY runs ahead of everything else, because it has to work over EVERYTHING: the
 	// tab bar, the dropdown, the rails, a pane, the transcript. The shell owns the frame, so it
 	// is the only layer that can select across all of them (clipboard.go).

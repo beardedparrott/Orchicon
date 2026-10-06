@@ -58,9 +58,13 @@ func scrollbarCell(i, scroll, viewH, total int) string {
 	return theme.DiffScrollTrack.Render(scrollTrackGlyph)
 }
 
-// withScrollbar pins each body line to the body content width and appends the
-// scrollbar cell, so every produced line is exactly m.contentWidth() cells
+// withScrollbar pins each body line to the body content width, appends the scrollbar cell, and pads the
+// cell the shell's rail-resize handle occupies, so every produced line is exactly m.bodyWidth()+2 cells
 // (which the panel border then carries to m.Width — the shell's budget).
+//
+// THE TRAILING CELL IS THE DIVIDER'S, and emitting it here is what keeps the bar off the resize edge: the
+// scrollbar is the cell BEFORE it, so a press on the bar reaches the pane and a press on the edge resizes
+// the rail.
 func (m *Model) withScrollbar(lines []string, total int) string {
 	if len(lines) == 0 {
 		return ""
@@ -69,7 +73,7 @@ func (m *Model) withScrollbar(lines []string, total int) string {
 	viewH := m.viewHeight()
 	out := make([]string, 0, len(lines))
 	for i, l := range lines {
-		out = append(out, fitToWidth(l, w)+scrollbarCell(i, m.scroll, viewH, total))
+		out = append(out, fitToWidth(l, w)+scrollbarCell(i, m.scroll, viewH, total)+" ")
 	}
 	return strings.Join(out, "\n")
 }

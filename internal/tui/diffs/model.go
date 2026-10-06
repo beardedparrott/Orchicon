@@ -287,16 +287,53 @@ func (m *Model) paneInnerWidth() int {
 	return w
 }
 
-// bodyWidth is the width available to BODY TEXT: the inner content minus the
-// scrollbar's reserved 1-cell column. Every body line is text of exactly this
-// width followed by the bar cell, so the whole line is exactly paneInnerWidth
-// cells and the pane stays flush with its rail.
+// bodyWidth is the width available to BODY TEXT: the pane's inner content minus the scrollbar's reserved
+// 1-cell column AND the cell the shell's rail-resize handle uses. Every body line is text of exactly this
+// width, then the bar cell, then the divider cell, so the line stays paneInnerWidth cells wide and the pane
+// stays flush with its rail.
+//
+// bodyWidth is the width of the pane's CONTENT — the pane's budget minus the DiffPanel's 1-cell LEFT
+// border, the reserved scrollbar column, and the cell the shell's rail-resize handle uses.
+//
+// THREE CELLS, not two, and the third is the point: the scrollbar used to occupy the pane's LAST cell,
+// which is also where the shell's resize divider lives (diffDividerHit matches x == diffPaneWidth()-1).
+// The shell claims a press there before the pane ever sees it, so the bar's own click-to-jump could not
+// run and dragging the bar RESIZED THE RAIL — the operator: "I can't grab onto the scroll bar and drag it
+// up and down like you can in the GUI". One cell of content is a cheap price for an affordance that
+// works, and it also puts a visible gap between the text and the resize edge.
 func (m *Model) bodyWidth() int {
-	w := m.Width - 2
+	w := m.Width - 3
 	if w < 1 {
 		w = 1
 	}
 	return w
+}
+
+// ScrollbarHit reports whether a terminal (x, y) is on the pane's scrollbar column — the cell the operator
+// grabs to jump or to drag the viewport.
+//
+// It is the pane's own geometry, so the shell can ask rather than re-derive: the column is one cell inside
+// the resize divider, and the band is the pane's BODY (a press on the bar's column up at the tab bar is not
+// a grab).
+func (m *Model) ScrollbarHit(x, y int) bool {
+	if m.Width <= 0 {
+		return false
+	}
+	// contentX is the terminal X minus the panel's left border.
+	if x-1 != m.bodyWidth() {
+		return false
+	}
+	return y >= paneBodyRow && y < paneBodyRow+m.viewHeight()
+}
+
+// ScrollbarJumpTo moves the viewport so the terminal row the bar was grabbed at maps to the same relative
+// position.
+//
+// THE PRESS AND EVERY STEP OF THE DRAG SHARE IT, which is what makes a drag a drag rather than a series of
+// jumps: the mapping is the bar's own (proportional over the body), so the thumb lands under the pointer
+// and stays there.
+func (m *Model) ScrollbarJumpTo(termY int) {
+	m.jumpToBodyRow(termY - paneBodyRow)
 }
 
 // viewHeight is the number of body rows the pane can show (the pane's Height
@@ -505,13 +542,19 @@ func (m *Model) click(x, y int) {
 	}
 	// Body row: terminal row 4 is body row 0 (after the tab bar at row 3).
 	bodyRow := y - paneBodyRow
-	// SCROLLBAR HIT, resolved BEFORE the body hit-test: a press in the reserved
-	// right-hand column (content X >= bodyWidth, i.e. the last cell before the
-	// panel border) jumps the viewport proportionally. Click-to-jump only — the
-	// bar is not draggable (motion/release stay dropped above so Shift+drag
-	// native selection keeps working).
+	// SCROLLBAR HIT, resolved BEFORE the body hit-test: a press on the reserved
+	// bar column (content X == bodyWidth — one cell INSIDE the panel edge, which the shell keeps for its
+	// rail-resize handle) jumps the viewport proportionally.
+	//
+	// THE DRAG IS THE SHELL'S (dispatchMouse claims the bar's press and its motion), because a left press
+	// in the rail sets a selection region and clipState then consumes the motion — a drag handled here
+	// would win the press and lose every step after it.
 	if contentX >= m.bodyWidth() {
-		m.jumpToBodyRow(bodyRow)
+		// ONE IMPLEMENTATION with the shell's drag: the shell claims the bar's press (so a selection region
+		// is never set over the rail) and calls the same method, and this branch is what a click that reaches
+		// the pane directly — a test, or any future caller — still resolves correctly. Jumping is the right
+		// answer for a click here either way; selecting a file is not.
+		m.ScrollbarJumpTo(y)
 		return
 	}
 	// VIEWPORT-AWARE row: the list is scrolled, so the row under the cursor is
@@ -535,6 +578,14 @@ func (m *Model) click(x, y int) {
 // jumpToBodyRow resolves a click on the scrollbar's reserved column to a
 // proportional scroll offset, so the operator can throw the viewport to where
 // the bar was pressed.
+// jumpToBodyRow maps a grab at body row `bodyRow` onto a scroll offset: the bar's press, and every step of
+// its drag.
+//
+// END-INCLUSIVE, and that is what makes it usable for a DRAG. The mapping is over the reachable range,
+// so the FIRST body row is the top and the LAST is the bottom — dragging the thumb to either end gets the
+// operator there. A plain `bodyRow * total / viewH` (what a click alone could live with) tops out short of
+// the end: at viewH=8 it reached 87 of a 92-line range, which reads as the bar refusing to go all the way
+// down exactly when the operator is holding it there.
 func (m *Model) jumpToBodyRow(bodyRow int) {
 	viewH := m.viewHeight()
 	total := m.visibleLines()
@@ -544,7 +595,16 @@ func (m *Model) jumpToBodyRow(bodyRow int) {
 	if bodyRow < 0 {
 		bodyRow = 0
 	}
-	m.scroll = bodyRow * total / viewH
+	if bodyRow > viewH-1 {
+		bodyRow = viewH - 1
+	}
+	reach := m.maxScroll()
+	if viewH == 1 || reach <= 0 {
+		m.scroll = 0
+		m.clampScroll()
+		return
+	}
+	m.scroll = bodyRow * reach / (viewH - 1)
 	m.clampScroll()
 }
 
