@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"google.golang.org/protobuf/proto"
+
+	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 )
 
 // Issue-time stamping for the live tool ledger.
@@ -22,7 +24,7 @@ import (
 //	4. both synthesized-call branches stamp "now"
 //	5. recordPermission stamps its decision record
 //	6. the terminal sanitizer re-marshal keeps it
-//	7. the wire readers are untouched by the extra key
+//	7. the wire readers carry the stamp WITHOUT disturbing the other four fields
 //
 // Every timestamp assertion is on the SNAPSHOT JSON — the bytes the mirror
 // writes — not on an internal field, because the internal field persisting
@@ -243,10 +245,24 @@ func TestToolLedgerSurvivesTheTerminalSanitizer(t *testing.T) {
 	}
 }
 
-// AC 2: the added key perturbs nothing a reader depends on. toolCallsFromJSON
-// decodes into a fixed four-field struct, so a stamped payload and its
-// pre-change predecessor must yield byte-identical proto ToolCalls.
-func TestToolCallsFromJSONIgnoresTheStamp(t *testing.T) {
+// AC 2, RE-POINTED: the stamp RIDES THE WIRE, and the four original fields are
+// still byte-identical.
+//
+// THIS TEST USED TO ASSERT THE OPPOSITE — that a stamped payload and its
+// pre-change predecessor yielded byte-identical proto ToolCalls, i.e. that the
+// stamp DIED at the wire boundary. That was child 1's deliberate scope ("never
+// a wire contract"). It is no longer true, and the change is the whole point of
+// the activity line's rolling counter: a client never sees the ledger COLUMN,
+// only the ChatMessage wire field, so a stamp that stops at the boundary leaves
+// every client rendering "" over a turn that is plainly working.
+//
+// WHAT IS STILL PINNED HERE, unchanged: the four pre-existing fields. A reader
+// that lost `arguments`, or renamed `function_name`, would be a wire
+// regression — so the decode is asserted field by field, and the unstamped
+// predecessor (a row persisted before the stamp existed) still decodes to the
+// same four fields with a ZERO stamp, which the summarizer reads as "no
+// timestamp" rather than as the epoch.
+func TestToolCallsFromJSONCarriesTheStamp(t *testing.T) {
 	unstamped := []byte(`[{"id":"tc-1","type":"function","function_name":"bash","arguments":"{\"command\":\"ls\"}"}]`)
 	stamped := []byte(`[{"id":"tc-1","type":"function","function_name":"bash","arguments":"{\"command\":\"ls\"}","issued_at_unix_ms":1700000000123}]`)
 
@@ -255,11 +271,32 @@ func TestToolCallsFromJSONIgnoresTheStamp(t *testing.T) {
 	if len(before) != 1 || len(after) != 1 {
 		t.Fatalf("reader returned %d and %d calls, want 1 and 1", len(before), len(after))
 	}
-	if !proto.Equal(before[0], after[0]) {
-		t.Errorf("the stamp changed the wire ToolCall: before=%v after=%v", before[0], after[0])
+
+	// THE FOUR ORIGINAL FIELDS ARE UNTOUCHED BY THE STAMP, before and after.
+	for i, c := range []*apiv1.ToolCall{before[0], after[0]} {
+		if c.GetId() != "tc-1" || c.GetType() != "function" ||
+			c.GetFunctionName() != "bash" || c.GetArguments() != `{"command":"ls"}` {
+			t.Errorf("decode %d = %v, want id/type/function_name/arguments byte-identical", i, c)
+		}
 	}
-	if after[0].GetId() != "tc-1" || after[0].GetType() != "function" ||
-		after[0].GetFunctionName() != "bash" || after[0].GetArguments() != `{"command":"ls"}` {
-		t.Errorf("stamped decode = %v, want the four fields byte-identical to before", after[0])
+
+	// AND THE STAMP SURVIVES — the half that makes the counter possible.
+	if after[0].GetIssuedAtUnixMs() != 1_700_000_000_123 {
+		t.Errorf("the stamped row reaches the client with issued_at_unix_ms = %d, want 1700000000123 — "+
+			"toolCallsFromJSON is dropping the stamp, so every client's rolling counter would see the row "+
+			"as unstamped and render nothing: %v", after[0].GetIssuedAtUnixMs(), after[0])
+	}
+	// A PRE-CHANGE ROW IS ZERO, NOT THE EPOCH. The absent key must decode to 0 so the summarizer SKIPS the
+	// entry; the only other reading, the epoch, would place a genuinely old call inside the window.
+	if before[0].GetIssuedAtUnixMs() != 0 {
+		t.Errorf("an unstamped legacy row decoded to issued_at_unix_ms = %d, want 0 (\"no timestamp\") — "+
+			"the summarizer must SKIP it, never count it as issued in 1970", before[0].GetIssuedAtUnixMs())
+	}
+	// proto.Equal must now DIFFER on the stamp alone, which is the mechanical statement of "it rides the
+	// wire". Asserted so a future refactor that silently strips it again fails HERE rather than in a
+	// client that renders an empty line.
+	if proto.Equal(before[0], after[0]) {
+		t.Error("the stamped and unstamped wire ToolCalls are identical — the stamp is being stripped at " +
+			"the wire boundary again, which is what the rolling counter depends on")
 	}
 }

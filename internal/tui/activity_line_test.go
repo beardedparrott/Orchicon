@@ -62,6 +62,12 @@ const activityTestServerTime int64 = 1_700_000_123_456
 // the age bands stay asserted exactly while the word is no longer a literal.
 func TestActivityNoticeEscalatesWithSilence(t *testing.T) {
 	verb := "Orchicon is " + chat.VerbAt(activityTestServerTime) + "…"
+	// THE CALLS BELOW PASS (summary="", width=0), which is exactly the state these cases describe: a turn
+	// that counted no tool work (so the counter contributes nothing) and a pane wide enough to hold the
+	// whole line (width 0 = unbounded in fitNotice). Every expected string is therefore UNCHANGED from
+	// before the counter landed — the invariant this test pins is still "the band boundaries are the
+	// behaviour", and the new arguments cannot mask a band regression: the counter cases live in
+	// activity_summary_test.go.
 	cases := []struct {
 		silent time.Duration
 		want   string
@@ -79,7 +85,7 @@ func TestActivityNoticeEscalatesWithSilence(t *testing.T) {
 			"a long stall reports the same thing rather than inventing a new state"},
 	}
 	for _, c := range cases {
-		if got := turnActivityNotice(c.silent, activityTestServerTime); got != c.want {
+		if got := turnActivityNotice(c.silent, activityTestServerTime, "", 0); got != c.want {
 			t.Errorf("turnActivityNotice(%v, %d) = %q, want %q (%s)", c.silent, activityTestServerTime, got, c.want, c.why)
 		}
 	}
@@ -93,7 +99,7 @@ func TestActivityNoticeEscalatesWithSilence(t *testing.T) {
 func TestActivityNoticeVerbFollowsTheServerClock(t *testing.T) {
 	want := "Orchicon is " + chat.VerbAt(activityTestServerTime)
 	for _, silent := range []time.Duration{0, 2 * time.Second, 30 * time.Second, time.Minute} {
-		got := turnActivityNotice(silent, activityTestServerTime)
+		got := turnActivityNotice(silent, activityTestServerTime, "", 0)
 		if !containsStr(got, want) {
 			t.Errorf("turnActivityNotice(%v, %d) = %q — want it to open with %q, the word the selector names "+
 				"for that server time", silent, activityTestServerTime, got, want)
@@ -121,7 +127,7 @@ func TestActivityNoticeVerbFollowsTheServerClock(t *testing.T) {
 func TestThereIsAlwaysAnActivityLineDuringATurn(t *testing.T) {
 	for _, serverTime := range []int64{0, activityTestServerTime, activityTestServerTime + 9_000} {
 		for _, silent := range []time.Duration{0, time.Second, 5 * time.Second, 20 * time.Second, 40 * time.Second, time.Hour} {
-			got := turnActivityNotice(silent, serverTime)
+			got := turnActivityNotice(silent, serverTime, "", 0)
 			if got == "" {
 				t.Fatalf("turnActivityNotice(%v, %d) is empty — that is the state the operator reported as "+
 					"the line \"never coming back\"", silent, serverTime)
@@ -144,7 +150,7 @@ func TestThereIsAlwaysAnActivityLineDuringATurn(t *testing.T) {
 func TestTheLineNeverClaimsActivityItCannotSee(t *testing.T) {
 	for _, serverTime := range []int64{0, activityTestServerTime} {
 		for _, silent := range []time.Duration{26 * time.Second, 40 * time.Second, time.Minute, time.Hour} {
-			got := turnActivityNotice(silent, serverTime)
+			got := turnActivityNotice(silent, serverTime, "", 0)
 			if containsStr(got, "receiving") {
 				t.Errorf("turnActivityNotice(%v, %d) = %q — it asserts the stream is receiving, which is exactly "+
 					"the claim a stalled stream would make falsely", silent, serverTime, got)

@@ -58,6 +58,12 @@ type stubAskParity struct {
 	// button calls the same RPC).
 	abortedID string
 
+	// listMessagesCalls counts the ListMessages RPCs this plane served. It exists so a test can assert
+	// that the activity line's rolling tool counter adds NO fetch of its own: the counter must render
+	// from the page the transcript poll already carried (AC10). The field is additive — every other
+	// assertion in this file is untouched by it.
+	listMessagesCalls int
+
 	// projectMoveFor records the conversation whose project was changed, and the target — the pair a test needs
 	// to tell "the write happened" from "the rail merely reloaded".
 	//
@@ -161,6 +167,7 @@ func (s *stubAskParity) SetConversationFullsend(_ context.Context, req *connect.
 }
 
 func (s *stubAskParity) ListMessages(context.Context, *connect.Request[apiv1.ListMessagesRequest]) (*connect.Response[apiv1.ListMessagesResponse], error) {
+	s.listMessagesCalls++
 	return connect.NewResponse(&apiv1.ListMessagesResponse{}), nil
 }
 
