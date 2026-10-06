@@ -4757,6 +4757,23 @@ func (m *App) onStreamDone(msg chat.StreamDoneMsg) tea.Cmd {
 // signals the composer), so this is the TUI's missing half, and it is what makes the error row's retry line
 // TRUE on the case the operator actually hit rather than only on the pre-ack case.
 //
+// IT IS SCOPED TO THE TURN THIS CLIENT ACTUALLY SENT, and that guard is not optional:
+//
+//	A durable KindError row is HISTORICAL. Opening any conversation whose transcript ends in a turn that
+//	failed — a previous session, the OTHER client, hours ago — delivers exactly that row through this same
+//	path, and an unscoped restore would then dump the text THIS session last sent into the composer of a
+//	chat that never carried it (measured: open a conversation with an old failed turn after sending in
+//	another chat and the composer came back holding the OTHER chat's message). The GUI is immune for the
+//	same reason its completion effect keys on `pendingReplyId`: it only restores for the turn its own
+//	slot was tracking.
+//
+// SO THE RESTORE REQUIRES THAT THE FAILED TURN'S OWN USER MESSAGE IS WHAT THIS CLIENT LAST SENT. The
+//
+//	error row's preceding user row is the turn's message (chronologically ordered), and it is compared with
+//	dock.LastSent() through matchesAny — the SAME suffix rule the transcript merge uses — so a prepended
+//	context preamble does not defeat it. Anything else is a failure that was not this client's send, and it
+//	gets the error ROW (drawn by conversationItems) but not a composer injection.
+//
 // IT IS LATCHED PER ROW: the transcript is re-read every second while a turn runs and again on completion, so
 // the same failed row arrives many times. dock.RestoreDraft already refuses to clobber text typed since, but the
 // latch keeps the restore to the moment the row FIRST appears, so a later poll cannot re-clobber a draft the
@@ -4765,11 +4782,21 @@ func (m *App) restoreDraftForFailedTurn(convID string, items []chat.ChatItem) {
 	if convID == "" {
 		return
 	}
+	last := m.dock.LastSent()
+	// The text of the user row the current error row belongs to, tracked as the items are walked (they
+	// are chronologically ordered), so each error row is scoped to its own turn rather than to the shell's
+	// most recent send.
+	turnText := ""
 	for _, it := range items {
-		if it.Kind != chat.KindError || it.Key == "" {
+		switch it.Kind {
+		case chat.KindUser:
+			turnText = it.Text
+			continue
+		case chat.KindError:
+		default:
 			continue
 		}
-		if m.failedTurnRestored[it.Key] {
+		if it.Key == "" || m.failedTurnRestored[it.Key] {
 			continue
 		}
 		m.failedTurnRestored[it.Key] = true
@@ -4779,9 +4806,29 @@ func (m *App) restoreDraftForFailedTurn(convID string, items []chat.ChatItem) {
 		if convID != m.chatConvID {
 			continue
 		}
+		// AND ONLY FOR THE TURN THIS CLIENT SENT — see the doc above. A historical failure, or one this
+		// client never sent, is drawn (conversationItems) but does not touch the composer.
+		if last == "" || !matchesAny([]string{turnText}, last) {
+			continue
+		}
 		m.restoreAttachments()
 		m.dock.RestoreDraft()
 	}
+}
+
+// modelRefForConv is the model ref the composer's chain would resolve for a SPECIFIC conversation: that
+// conversation's own row from the shell's list, else the pending selection, else the tenant default. It is
+// currentAskModel's chain pointed at a conversation that need not be the open one, so a failure reported for
+// another chat names THAT chat's model rather than the one on screen.
+func (m *App) modelRefForConv(convID string) string {
+	if convID != "" {
+		if c, ok := m.conversationByID(convID); ok && c.ModelRef != "" {
+			return c.ModelRef
+		}
+	}
+	// No row for that conversation (a failed create, or a list that has not landed): fall back to the
+	// composer's own resolution, which is the best available answer for "what would this have been sent to".
+	return m.currentAskModel()
 }
 
 // surfaceTurnFailure puts a PRE-ACK send/turn failure on the TRANSCRIPT, not only on the composer strip.
@@ -4814,11 +4861,12 @@ func (m *App) surfaceTurnFailure(convID string, err error) tea.Cmd {
 	if strings.TrimSpace(errText) == "" {
 		return nil
 	}
-	// The model the operator's send was bound for, from the same chain the composer uses — so the error row
-	// names it exactly as the composer would (the GUI's bubble names the ref, and it is the actionable half).
+	// The model the FAILING conversation's send was bound for, NOT the open one's: a failure can belong to a
+	// conversation other than the one on screen (the store keeps it for when that chat is opened), and naming
+	// the open chat's ref there would be a claim about the wrong model. See modelRefForConv.
 	m.chatStore.append(convID, chat.ChatItem{
 		Kind: chat.KindError,
-		Text: chat.FailedTurnText("", errText, m.currentAskModel()),
+		Text: chat.FailedTurnText("", errText, m.modelRefForConv(convID)),
 		At:   time.Now().UnixMilli(),
 		Key:  fmt.Sprintf("fail-%d", time.Now().UnixNano()),
 		Live: true,

@@ -173,3 +173,80 @@ func TestAPreAckFailureForAnotherConversationDoesNotPaintThisOne(t *testing.T) {
 			ansi.Strip(str.View()))
 	}
 }
+
+// REGRESSION (reviewer): the durable-restore must be SCOPED to the turn THIS client sent.
+//
+// An unscoped restore is not a theoretical miss: a durable KindError row is HISTORICAL, so opening any
+// conversation whose transcript ends in a turn that failed — a previous session, the OTHER client, hours
+// ago — delivers exactly that row through onTranscript, and the composer came back holding the message
+// this session last sent into a DIFFERENT chat. Measured against the pre-fix code:
+//
+//	composer after opening a conversation with an OLD failed turn = "hello from another chat"
+//
+// The legitimate restore (the failed turn IS this client's own send — the operator's POST-ack case) must
+// still happen, and both halves are asserted here so the guard cannot be "fixed" by removing it.
+func TestAnOldFailedTurnDoesNotInjectThisSessionsDraftIntoTheComposer(t *testing.T) {
+	m, _ := askWithTranscript(t, "c1")
+	// This session sent in ANOTHER chat: the dock's lastSent is that message.
+	m.dock.SetValue("hello from another chat")
+	m.dock.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.dock.Value() != "" {
+		t.Fatalf("fixture: the composer still holds %q after Enter", m.dock.Value())
+	}
+
+	// Opening c1 delivers its durable transcript, which ends in an OLD failed turn that has nothing to do
+	// with what this session sent.
+	m.onTranscript(chat.TranscriptMsg{ConvID: "c1", Items: []chat.ChatItem{
+		{Kind: chat.KindUser, Text: "an old question", Key: "m-x1", At: 1},
+		{Kind: chat.KindError, Text: chat.FailedTurnText("", "old failure", "old-model"), Key: "m-x2", At: 2},
+	}})
+
+	if got := m.dock.Value(); got != "" {
+		t.Errorf("a HISTORICAL failed turn injected this session's last send into the composer: %q — the "+
+			"restore must be scoped to the turn this client actually sent (the dock's lastSent), not to any "+
+			"error row a transcript happens to carry", got)
+	}
+}
+
+// The scoping uses matchesAny (the same suffix rule the transcript merge uses), so the prepended context
+// preamble does not defeat it: the durable user row carries the preamble, lastSent is the bare text.
+func TestTheScopedRestoreSurvivesAPrependedContextPreamble(t *testing.T) {
+	m, _ := askWithTranscript(t, "c1")
+	m.dock.SetValue("why can't you connect?")
+	m.dock.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	m.onTranscript(chat.TranscriptMsg{ConvID: "c1", Items: []chat.ChatItem{
+		{Kind: chat.KindUser, Text: "[context: some worker]\nwhy can't you connect?", Key: "m-u1", At: 1},
+		{Kind: chat.KindError, Text: chat.FailedTurnText("", "401", "m"), Key: "m-e1", At: 2},
+	}})
+
+	if got := m.dock.Value(); got != "why can't you connect?" {
+		t.Errorf("the scoped restore lost the operator's own POST-ack case: composer = %q", got)
+	}
+}
+
+// AC 3 (reviewer): a PRE-ACK failure is named for the FAILING conversation's model, not the open one's — the
+// store keeps a failure for a chat that is not on screen, and naming the open chat's ref there is a claim
+// about the wrong model.
+func TestAPreAckFailureNamesTheFailingConversationsModel(t *testing.T) {
+	m, _ := askWithTranscript(t, "c1")
+	// c1 is open; the failure belongs to c2, whose row names a DIFFERENT model.
+	m.conversations = []chat.Conversation{
+		{ID: "c1", Title: "open", ModelRef: "orchicon/ollama/model-for-the-open-chat"},
+		{ID: "c2", Title: "other", ModelRef: "orchicon/ollama/model-that-actually-refused"},
+	}
+
+	m.surfaceTurnFailure("c2", errStringer(operatorFailureText))
+
+	items := m.chatStore.snapshot("c2")
+	if len(items) == 0 {
+		t.Fatalf("no failure row was recorded for c2")
+	}
+	body := items[len(items)-1].Text
+	if !strings.Contains(body, "orchicon/ollama/model-that-actually-refused") {
+		t.Errorf("the failure for c2 did not name c2's model (AC 3): %q", body)
+	}
+	if strings.Contains(body, "model-for-the-open-chat") {
+		t.Errorf("the failure for c2 named the OPEN conversation's model: %q", body)
+	}
+}
