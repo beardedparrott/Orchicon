@@ -33,6 +33,7 @@ import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/mcpforms"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 	"github.com/beardedparrott/orchicon/internal/tui/config"
 )
@@ -659,7 +660,7 @@ func TestScopeInstallAndCredentialAddressTheRow(t *testing.T) {
 		t.Fatal("`k` opened no credential form a second time")
 	}
 	cmd, err = m.convScopeForm.OnSubmit(map[string]string{
-		"key": "GH_FRESH", "secret": fresh, "value": "s3cret",
+		"key": "GH_FRESH", "secret": mcpforms.CustomSecretChoice, "newname": fresh, "value": "s3cret",
 	}, nil)
 	if err != nil {
 		t.Fatalf("the credential form refused a new secret with a value: %v", err)

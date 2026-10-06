@@ -351,6 +351,71 @@ const versionPermissionsWithEnv = `{"tools":["read"],"mcp_servers":[{"id":"gh","
 // squeezing whitespace cannot make two different documents look alike.
 func flatJSON(s string) string { return strings.Join(strings.Fields(s), "") }
 
+// A STORED SECRET AND A TYPED VALUE ARE TWO INTENTIONS, AND THE FORM NEVER SHOWS BOTH AT ONCE.
+//
+// The report, exactly: "if someone already went through the list and added a current secret, it doesn't
+// matter what value they put in the custom field, the stored secret supersedes it. I think a better approach
+// would be to add another item under stored secret called Custom that then only accepts the custom entered
+// new key below". So:
+//
+//   - the new-secret pair exists ONLY under Custom — hidden, not merely ignored, while a stored name is
+//     picked, so the two answers are never on screen together;
+//   - a value left over from BEFORE the pick is REFUSED with a message naming Custom, because silently
+//     dropping it is precisely the behaviour being reported;
+//   - Custom reveals the pair, and the write goes through.
+func TestCredentialFormSeparatesPickingAStoredSecretFromStoringANewOne(t *testing.T) {
+	m, _, sec, rec := openingWorkerVersionWithStore(t, versionPermissionsWithEnv, `[]`)
+	putCursor(m, rowIndexOf(t, m, "gh"))
+	pressScope(t, m, "k")
+	f := m.convScopeForm
+	if f == nil {
+		t.Fatal("`k` opened no credential form")
+	}
+
+	f.Set("secret", "SLACK_BOT_TOKEN")
+	if specVisible(f.Spec("newname"), f.Values) || specVisible(f.Spec("value"), f.Values) {
+		t.Error("the new-secret fields are visible while a STORED secret is picked — the two intentions " +
+			"would be on screen at once, which is the confusion this separates")
+	}
+
+	// Typed BEFORE the pick, as the report describes doing it.
+	f.Set("value", "leftover")
+	if _, err := f.Submit(); err == nil {
+		t.Fatal("a value standing beside a stored secret was accepted — that is the silent supersede the " +
+			"report described")
+	}
+	if !strings.Contains(f.SubmitErr, "Custom") {
+		t.Errorf("the refusal does not name the choice that would work: %q", f.SubmitErr)
+	}
+
+	f.Set("value", "")
+	f.Set("secret", mcpforms.CustomSecretChoice)
+	if !specVisible(f.Spec("newname"), f.Values) || !specVisible(f.Spec("value"), f.Values) {
+		t.Fatal("choosing Custom did not reveal the new-secret fields")
+	}
+	f.Set("newname", "FRESH_TOKEN")
+	f.Set("value", "s3cret")
+	submitAndRoute(t, m)
+
+	sec.mu.Lock()
+	defer sec.mu.Unlock()
+	if len(sec.created) != 1 || sec.created[0].GetName() != "FRESH_TOKEN" ||
+		sec.created[0].GetValue() != "s3cret" {
+		t.Fatalf("the store received %+v, want the freshly named secret", sec.created)
+	}
+	if rec.saves != 1 {
+		t.Errorf("the version was saved %d times, want 1", rec.saves)
+	}
+}
+
+// specVisible reports whether a field is part of the form right now (nil Visible means always).
+func specVisible(sp *kit2.FieldSpec, values map[string]string) bool {
+	if sp == nil {
+		return false
+	}
+	return sp.Visible == nil || sp.Visible(values)
+}
+
 // optionValues lists a select/picker field's option values, in order.
 func optionValues(spec *kit2.FieldSpec) []string {
 	if spec == nil {
@@ -383,11 +448,12 @@ func TestWorkerVersionCredentialIsSelectedAndBuiltIntoTheSpec(t *testing.T) {
 		t.Fatal("`k` opened no credential form on an inline spec")
 	}
 	// SELECTION: the picker's options ARE the store's names — never a value, and never empty for a
-	// store that holds secrets (the names are the whole point of the control).
+	// store that holds secrets (the names are the whole point of the control). CUSTOM IS LAST, and it is
+	// the only way to store a new one: a name that is not in the store is not a reference.
 	if got, want := optionValues(f.Spec("secret")), []string{
-		"MCP_GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN", "SLACK_BOT_TOKEN",
+		"MCP_GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN", "SLACK_BOT_TOKEN", mcpforms.CustomSecretChoice,
 	}; !slices.Equal(got, want) {
-		t.Errorf("the secret field offers %v, want the tenant store's names %v", got, want)
+		t.Errorf("the secret field offers %v, want the tenant store's names and Custom %v", got, want)
 	}
 	// THE KEY IS THE SPEC'S OWN, offered and preselected because it is the only one — so the common
 	// case is one pick, not a decision about a name that has a single answer.
@@ -470,7 +536,10 @@ func TestWorkerVersionCredentialStoresANewSecretBeforeTheVersion(t *testing.T) {
 	sec.mu.Unlock()
 
 	f := m.convScopeForm
-	f.Set("secret", "JIRA_API_TOKEN")
+	// A NEW SECRET IS THE CUSTOM CHOICE, in BOTH halves: the name and the value belong to one intention,
+	// which is why picking a stored secret no longer leaves a stray value field beside it.
+	f.Set("secret", mcpforms.CustomSecretChoice)
+	f.Set("newname", "JIRA_API_TOKEN")
 	f.Set("value", "s3cret")
 	submitAndRoute(t, m)
 
@@ -540,7 +609,8 @@ func TestWorkerVersionCredentialStoreFailureLeavesTheSpecAlone(t *testing.T) {
 
 	f := m.convScopeForm
 	m.dock.SetError("")
-	f.Set("secret", "my_token")
+	f.Set("secret", mcpforms.CustomSecretChoice)
+	f.Set("newname", "my_token")
 	f.Set("value", "s3cret")
 	submitAndRoute(t, m)
 
@@ -556,15 +626,17 @@ func TestWorkerVersionCredentialStoreFailureLeavesTheSpecAlone(t *testing.T) {
 	}
 }
 
-// AN EXISTING SECRET IS REPLACED IN PLACE (by its ID), which is how a rotated token is stored from the
-// scope that references it.
+// AN EXISTING SECRET IS ROTATED IN PLACE (an UPDATE by id, not a create) — which is now the CUSTOM path,
+// because a ROTATION still means "here is a new value": picking the name from the list is a REFERENCE, and
+// the value it points at is not re-sent from the form.
 func TestWorkerVersionCredentialReplacesAnExistingSecret(t *testing.T) {
 	m, _, sec, _ := openingWorkerVersionWithStore(t, versionPermissionsWithEnv, `[]`)
 	putCursor(m, rowIndexOf(t, m, "gh"))
 	pressScope(t, m, "k")
 
 	f := m.convScopeForm
-	f.Set("secret", "MCP_GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN")
+	f.Set("secret", mcpforms.CustomSecretChoice)
+	f.Set("newname", "MCP_GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN")
 	f.Set("value", "ghp_rotated")
 	submitAndRoute(t, m)
 
