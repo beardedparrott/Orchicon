@@ -1526,7 +1526,12 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		return tea.Batch(m.onTranscript(msg), m.waitChat())
 	case chat.ErrMsg:
 		m.setChatError(msg.Where, msg.Err)
-		return m.waitChat()
+		// AND THE FAILURE IS SURFACED ON THE TRANSCRIPT, not only on the composer strip. This is the
+		// PRE-ACK path (see ErrMsg.ConvID): the send never became a turn, so NO durable row is written and
+		// the row-rendering fix in conversationItems has nothing to find. Left alone it reproduced the
+		// operator's report exactly — "The TUI just drops with no indication as to why" — because the strip
+		// sits under the composer while the operator reads the conversation. See App.surfaceTurnFailure.
+		return tea.Batch(m.surfaceTurnFailure(msg.ConvID, msg.Err), m.waitChat())
 	case chat.AbortTurnMsg:
 		// The Stop outcome. The controller has ALREADY cleared the turn slot (that is what makes Stop
 		// instant), so this repaint is what makes the thinking indicator and the composer's stop
@@ -1545,7 +1550,13 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		// settled. THIS IS THE CASE THAT WAS MISSING — see TurnAckedMsg, and onStreamDone for the end-of-turn
 		// settle that covers an ack the channel dropped.
 		m.dock.SettleSendingAck()
-		return m.waitChat()
+		// AND THE RAIL IS REFRESHED AT ONCE, so the row marks the conversation it just started. The ack is the
+		// FIRST moment the turn provably exists server-side, and the shell holds the fact that THIS client is
+		// streaming it (chat.IsStreaming) — so the row reads "running" from the union the instant we repaint,
+		// without waiting for the 5s rolling list tick. The reload is the same one the rolling window already
+		// performs, just pulled forward to the moment the operator acted on: a send must be visible as sent,
+		// which is the other half of "the rail's running marker misses active turns".
+		return tea.Batch(m.reloadConversations(), m.waitChat())
 	case chat.TurnResolvedMsg:
 		return m.waitChat()
 	case chat.StreamDoneMsg:

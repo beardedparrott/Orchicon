@@ -262,9 +262,17 @@ type TurnResolvedMsg struct {
 }
 
 // ErrMsg carries a dock-visible failure (send/interject/watch/list).
+//
+// CONVID IS THE CONVERSATION THE FAILURE BELONGS TO, or "" when there is none (a failed create). It exists
+// so the shell can put the failure ON THE TRANSCRIPT and not only on the composer strip: a PRE-ACK send
+// failure writes NO durable row anywhere (the service refuses/aborts before the turn is registered), so
+// unlike a failed TURN — which is persisted as an error row and now draws through conversationItems — this
+// one has nothing to be found by the row-rendering fix. Without it the operator's message vanished with
+// only a strip that a transcript reader is not looking at. See App.surfaceTurnFailure.
 type ErrMsg struct {
-	Where string
-	Err   error
+	Where  string
+	Err    error
+	ConvID string
 }
 
 // ConversationCreatedMsg carries a freshly created conversation (the GUI's
@@ -877,6 +885,30 @@ func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 			// record read as though Orchicon had said it.
 			kind = KindNotice
 		}
+		// THE METADATA ERROR IS CONSULTED BEFORE THE ASSISTANT DEFAULT, and the ORDER is the fix — the SAME
+		// order as the GUI's bubbleKindFor (frontend/src/lib/ask-bubble.ts): the two NAMED speakers first,
+		// then the error, then everything else as the model's reply, which is the correct default here
+		// because every other row this service writes IS the model's reply.
+		//
+		// THE TUI DISPATCHED ON ROLE ALONE and that is why a failed turn was SILENT. The server persists a
+		// failed turn as an assistant row with EMPTY content and metadata.error set (proto: "The message
+		// content is empty in that case; the frontend renders an error bubble with a retry affordance").
+		// `assistant` matched no case, so it fell through to KindText and — with empty content — drew
+		// nothing at all: two failed sends left the transcript reading as a conversation that simply
+		// stopped, the operator's "The TUI just drops with no indication as to why." The GUI decides this
+		// through bubbleKindFor, a pure function written for exactly this miss (its header: "the
+		// fall-through was a lie" — an unnamed role used to land in the assistant's bubble). This is the
+		// same class of miss running the OTHER way: a row that IS an error never reached the error
+		// renderer. Do not "simplify" this back to a role-only switch.
+		text := m.GetContent()
+		if kind != KindUser && kind != KindNotice {
+			if errText := m.GetMetadata().GetError(); errText != "" {
+				kind = KindError
+				// The row is composed, not empty: it names the error, the model that refused (the metadata
+				// already carries model_ref) and the retry affordance. See FailedTurnText.
+				text = FailedTurnText(m.GetContent(), errText, m.GetMetadata().GetModelRef())
+			}
+		}
 		at := m.GetCreatedAt().AsTime().UnixMilli()
 		for j, part := range m.GetReasoning() {
 			// A blank part is not a reasoning block, and rendering it would put an empty
@@ -909,7 +941,7 @@ func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 		// bottom line either way.)
 		items = append(items, ChatItem{
 			Kind: kind,
-			Text: m.GetContent(),
+			Text: text,
 			At:   at,
 			Key:  "m-" + m.GetId(),
 		})
@@ -1049,7 +1081,7 @@ func (c *Controller) startStream(convID, full, call string, files []*apiv1.Attac
 		// that reports it up front, which this client's connect stack does not.
 		if err != nil {
 			c.failStream(convID, err)
-			return ErrMsg{Where: call, Err: err}
+			return ErrMsg{Where: call, Err: err, ConvID: convID}
 		}
 		go c.consume(convID, gen, stream)
 		// RE-ARM BOTH, and HERE it is correct to arm after the call returns: this is a RE-DIAL of a turn
@@ -1584,7 +1616,7 @@ func (c *Controller) dropStream(convID string, gen uint64, err error) {
 			// send that never went out. ErrMsg is the shell's existing failed-send path: the dock's error
 			// strip, and the draft back in the composer (see App.setChatError / dock.RestoreDraft).
 			if st.attempt.full != "" {
-				report = func() tea.Msg { return ErrMsg{Where: "send", Err: err} }
+				report = func() tea.Msg { return ErrMsg{Where: "send", Err: err, ConvID: convID} }
 			}
 			st.streaming = false
 			st.optimisticUser = ""

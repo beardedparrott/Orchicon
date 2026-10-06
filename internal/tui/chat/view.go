@@ -712,6 +712,46 @@ func renderBubble(label, text string, style lipgloss.Style, maxWidth int) string
 	return b.String()
 }
 
+// FailedTurnText composes the transcript row for a FAILED turn.
+//
+// THE ROW EXISTS BECAUSE A FAILED TURN IS A MESSAGE, and the TUI never drew it. Two failed sends left the
+// operator's words stacked with NOTHING between them (their report, with the screenshot to match: "The GUI
+// has an actual error message in the conversation that tells you why you couldn't connect or if there was a
+// problem. The TUI just drops with no indication as to why.").
+//
+// IT NAMES THE MODEL, because that is the ACTIONABLE half: the GUI's error bubble names the ref and adds
+// "if this repeats, check Settings → Default models", and the operator's own screenshot shows the model as
+// the thing they needed. The ref is already on the row's metadata (internal/askorchicon/service.go parses
+// model_ref out of the stored JSON), so carrying it here costs no new state and no round trip.
+//
+// AND IT MAKES THE RETRY VISIBLE. The shell already puts the draft back in the composer after a failed send
+// (App.setChatError → dock.RestoreDraft, and the attachments with it) — but SILENTLY, so the operator could
+// not know their message was recoverable. The GUI shows an explicit Retry button; the TUI's equivalent is
+// Enter on the restored draft, and this line is how the operator is told. It is a standing affordance, the
+// same way the GUI's Retry button is always present on a durable error bubble.
+func FailedTurnText(partial, errText, modelRef string) string {
+	var b strings.Builder
+	if p := strings.TrimSpace(partial); p != "" {
+		// A turn can fail AFTER it produced prose (a mid-reply provider drop), so keep what was said above
+		// the error rather than discarding it — the same partial content the GUI's bubble renders.
+		b.WriteString(p)
+		b.WriteString("\n")
+	}
+	b.WriteString("turn failed: " + strings.TrimSpace(errText))
+	if ref := strings.TrimSpace(modelRef); ref != "" {
+		b.WriteString("\nmodel: " + ref)
+	}
+	// RAW, not markdown: errors stay unwrapped/unstyled, per the transcript's existing rule for KindError
+	// (renderBubble, which soft-wraps the raw text to the pane width so a long provider error degrades by
+	// wrapping rather than clipping the footer).
+	b.WriteString("\n" + failedTurnRetryLine)
+	return b.String()
+}
+
+// failedTurnRetryLine is the TUI's own retry affordance — the equivalent of the GUI's Retry button, phrased
+// as the thing the operator actually does here.
+const failedTurnRetryLine = "your message is back in the composer — press enter to send it again"
+
 // noticeLabel is the band label a platform notice carries. It is deliberately the
 // neutral word rather than "context compacted": the notice's own first sentence says
 // what happened, and a label that repeated it would stutter.

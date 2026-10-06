@@ -43,6 +43,7 @@ import {
   scopeOptions,
 } from "@/lib/conversationProjects";
 import { conversationModeLabel, conversationModeMeta } from "@/lib/conversationModes";
+import { runningConvIds } from "@/lib/ask-running";
 import {
   useListConversations,
   useCreateConversation,
@@ -502,6 +503,16 @@ function AskOrchiconPage() {
     });
   const { data: activeConv } = useGetConversation(activeConvId ?? "");
   const { data: settings } = useGetSettings();
+
+  // THE RAIL'S RUNNING SET IS A UNION OF BOTH HALVES, not the polled field alone. The row used to read
+  // `conv.turnInFlight` by itself, so a conversation THIS client is streaming still read as idle until the
+  // next list poll caught up — the operator's "the 'running' status on the conversation rail list doesn't
+  // always show up on active running conversations." See lib/ask-running.ts for why it is a union (a turn
+  // started in the OTHER client has no local slot and must still mark) and not a local-only check.
+  const runningIds = useMemo(
+    () => runningConvIds(conversations, streams),
+    [conversations, streams],
+  );
 
   // Server-reported turn state for the ACTIVE conversation, freshest source
   // first. The conversations list polls every 3s while any turn is running;
@@ -1135,6 +1146,13 @@ function AskOrchiconPage() {
               reconnecting: false,
             }));
             acked = true;
+            // THE RAIL IS REFRESHED AT ONCE, so the row marks the conversation it just started. The ack is
+            // the FIRST moment the turn provably exists server-side, and the running set already includes
+            // this conversation from the LOCAL half (streams[convId].isStreaming, set by sendStreaming before
+            // the call) — so this invalidate makes the sidebar row catch up without waiting for the 3s/5s list
+            // poll. That is the "a send is reflected promptly" half of "the rail's running marker misses
+            // active turns": before it, a just-sent turn's row could lag by seconds.
+            qc.invalidateQueries({ queryKey: askKeys.conversations });
           } else if (chunk.event.case === "textChunk") {
             const content = chunk.event.value.content;
             if (content) {
@@ -1221,7 +1239,7 @@ function AskOrchiconPage() {
       }
       return acked;
     },
-    [toast, setStream, runWatch, applyAsk],
+    [toast, setStream, runWatch, applyAsk, qc],
   );
 
   // A normal send: starts a fresh turn on the conversation.
@@ -2082,6 +2100,7 @@ function AskOrchiconPage() {
                     onStopConv={handleStopConversation}
                     activeDragId={activeDragId}
                     renderMoveControl={renderMoveControl}
+                    runningIds={runningIds}
                   />
                 );
               })}
@@ -2106,6 +2125,7 @@ function AskOrchiconPage() {
                 isOver={overFolderId === "__uncategorized__"}
                 hasFolders={visibleCategories.length > 0}
                 renderMoveControl={renderMoveControl}
+                runningIds={runningIds}
               />
             </SortableContext>
             <DragOverlay dropAnimation={null}>
@@ -2181,10 +2201,10 @@ function AskOrchiconPage() {
                     const isOver = overFolderId === category.id;
                     const isRenaming = renamingFolderId === category.id;
                     return (
-                      <FolderItem key={category.id} id={category.id} name={category.name} isCollapsed={isCollapsed} isOver={isOver} isRenaming={isRenaming} renameValue={folderRenameValue} renameInputRef={folderRenameInputRef} onToggle={() => convPrefs.toggleCollapsed(category.id)} onStartRename={() => startRenameFolder(category.id, category.name)} onSaveRename={() => saveRenameFolder(category.id)} onCancelRename={cancelRenameFolder} onRenameChange={setFolderRenameValue} onDelete={() => convPrefs.deleteCategory(category.id)} convIds={folderConvIds} convById={convById} activeConvId={activeConvId} renamingConvId={renamingConvId} convRenameValue={renameValue} convRenameInputRef={renameInputRef} onSelectConv={(id) => { setMobileSheetOpen(false); setActiveConvId(id); }} onStartRenameConv={startRenameConv} onSaveRenameConv={saveRenameConv} onCancelRenameConv={cancelRenameConv} onRenameConvChange={setRenameValue} onDeleteConv={handleDeleteConv} onStopConv={handleStopConversation} activeDragId={activeDragId} renderMoveControl={renderMoveControl} />
+                      <FolderItem key={category.id} id={category.id} name={category.name} isCollapsed={isCollapsed} isOver={isOver} isRenaming={isRenaming} renameValue={folderRenameValue} renameInputRef={folderRenameInputRef} onToggle={() => convPrefs.toggleCollapsed(category.id)} onStartRename={() => startRenameFolder(category.id, category.name)} onSaveRename={() => saveRenameFolder(category.id)} onCancelRename={cancelRenameFolder} onRenameChange={setFolderRenameValue} onDelete={() => convPrefs.deleteCategory(category.id)} convIds={folderConvIds} convById={convById} activeConvId={activeConvId} renamingConvId={renamingConvId} convRenameValue={renameValue} convRenameInputRef={renameInputRef} onSelectConv={(id) => { setMobileSheetOpen(false); setActiveConvId(id); }} onStartRenameConv={startRenameConv} onSaveRenameConv={saveRenameConv} onCancelRenameConv={cancelRenameConv} onRenameConvChange={setRenameValue} onDeleteConv={handleDeleteConv} onStopConv={handleStopConversation} activeDragId={activeDragId} renderMoveControl={renderMoveControl} runningIds={runningIds} />
                     );
                   })}
-                  <UncategorizedDropZone id="__uncategorized__" convIds={categorizedConversations.uncategorized} convById={convById} activeConvId={activeConvId} renamingConvId={renamingConvId} renameValue={renameValue} renameInputRef={renameInputRef} onSelectConv={(id) => { setMobileSheetOpen(false); setActiveConvId(id); }} onStartRenameConv={startRenameConv} onSaveRenameConv={saveRenameConv} onCancelRenameConv={cancelRenameConv} onRenameConvChange={setRenameValue} onDeleteConv={handleDeleteConv} onStopConv={handleStopConversation} activeDragId={activeDragId} isOver={overFolderId === "__uncategorized__"} hasFolders={visibleCategories.length > 0} renderMoveControl={renderMoveControl} />
+                  <UncategorizedDropZone id="__uncategorized__" convIds={categorizedConversations.uncategorized} convById={convById} activeConvId={activeConvId} renamingConvId={renamingConvId} renameValue={renameValue} renameInputRef={renameInputRef} onSelectConv={(id) => { setMobileSheetOpen(false); setActiveConvId(id); }} onStartRenameConv={startRenameConv} onSaveRenameConv={saveRenameConv} onCancelRenameConv={cancelRenameConv} onRenameConvChange={setRenameValue} onDeleteConv={handleDeleteConv} onStopConv={handleStopConversation} activeDragId={activeDragId} isOver={overFolderId === "__uncategorized__"} hasFolders={visibleCategories.length > 0} renderMoveControl={renderMoveControl} runningIds={runningIds} />
                 </SortableContext>
                 <DragOverlay dropAnimation={null}>
                   {activeDragId ? <div className="rounded-md bg-background border shadow-md px-3 py-2 text-sm text-foreground max-w-[200px] truncate">{convById.get(activeDragId)?.title || "New conversation"}</div> : null}
@@ -3329,6 +3349,12 @@ interface FolderItemProps {
   activeDragId: string | null;
   /** Builds each member row's "move to project" control — see ConversationItemProps.renderMoveControl. */
   renderMoveControl?: (convId: string, projectId: string) => React.ReactNode;
+  /**
+   * The conversation ids the rail should show as running — the UNION of the server's polled turnInFlight and
+   * this client's own live stream slots (lib/ask-running.ts). Passed down rather than re-derived per row so
+   * every list (folded, uncategorized, mobile) reads ONE decision.
+   */
+  runningIds: Set<string>;
 }
 
 function FolderItem({
@@ -3360,6 +3386,7 @@ function FolderItem({
   onStopConv,
   activeDragId,
   renderMoveControl,
+  runningIds,
 }: FolderItemProps) {
   const { setNodeRef } = useDroppable({ id });
 
@@ -3433,7 +3460,7 @@ function FolderItem({
                 projectId={conv.projectId ?? ""}
                 renderMoveControl={renderMoveControl}
                 lastMessagePreview={conv.lastMessagePreview}
-                isRunning={conv.turnInFlight ?? false}
+                isRunning={runningIds.has(convId)}
                 onStop={() => onStopConv(convId)}
                 isActive={activeConvId === convId}
                 isRenaming={renamingConvId === convId}
@@ -3475,6 +3502,8 @@ interface UncategorizedDropZoneProps {
   hasFolders: boolean;
   /** Builds each row's "move to project" control — see ConversationItemProps.renderMoveControl. */
   renderMoveControl?: (convId: string, projectId: string) => React.ReactNode;
+  /** See FolderItemProps.runningIds — the union the rail rows read. */
+  runningIds: Set<string>;
 }
 
 function UncategorizedDropZone({
@@ -3496,6 +3525,7 @@ function UncategorizedDropZone({
   isOver,
   hasFolders,
   renderMoveControl,
+  runningIds,
 }: UncategorizedDropZoneProps) {
   const { setNodeRef } = useDroppable({ id });
 
@@ -3526,7 +3556,7 @@ function UncategorizedDropZone({
             projectId={conv.projectId ?? ""}
             renderMoveControl={renderMoveControl}
             lastMessagePreview={conv.lastMessagePreview}
-            isRunning={conv.turnInFlight ?? false}
+            isRunning={runningIds.has(convId)}
             onStop={() => onStopConv(convId)}
             isActive={activeConvId === convId}
             isRenaming={renamingConvId === convId}
