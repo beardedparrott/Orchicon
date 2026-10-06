@@ -424,6 +424,12 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	// It is cheap: an interface assertion per screen (a handful), on a path that already walks the whole
 	// screen/route tree.
 	m.rebindScreens()
+	// AN ESC-LESS MOUSE REPORT IS NOT TEXT. A resize streams motion reports, bubbletea's lone-ESC timeout can
+	// fire mid-sequence, and the tail arrives as runes — which every field in the shell would happily insert.
+	// Dropped here, in the message funnel, so it cannot reach the composer or a form field at all.
+	if m.dropOrphanedMouseReport(msg) {
+		return m, nil
+	}
 	if cmd, ok := m.pasteKey(msg); ok {
 		return m, cmd
 	}
@@ -1345,7 +1351,17 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 			return m, m.chat.AnswerQuestion(m.chatConvID, label)
 		}
 	}
-	if (mo.Button == tea.MouseButtonWheelUp || mo.Button == tea.MouseButtonWheelDown) && m.active == TabAsk && m.chatConvID != "" {
+	// THE DIFF RAIL OWNS THE WHEEL IN ITS OWN COLUMNS.
+	//
+	// The operator: "In the TUI diff bar, the scroll doesn't seem to be working." It was not the rail's
+	// handler — the rail scrolls on a wheel (diffs.Model.handleMouse) and on the keyboard (j/k/pgup/pgdown/g/G,
+	// forwarded by diffMsg) — it was this claim, which fired FIRST and took EVERY wheel event on the Ask tab.
+	// The rail is painted over the transcript, so scrolling it moved the transcript underneath while the rail
+	// itself never budged.
+	//
+	// The test is the SAME one diffMsg uses for a click (diffRailOwnsX), deliberately: a column either belongs
+	// to the rail or it does not, and a wheel and a click must not disagree about which.
+	if (mo.Button == tea.MouseButtonWheelUp || mo.Button == tea.MouseButtonWheelDown) && m.active == TabAsk && m.chatConvID != "" && !m.diffRailOwnsX(mo.X) {
 		delta := -3
 		if mo.Button == tea.MouseButtonWheelDown {
 			delta = 3

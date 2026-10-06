@@ -2302,6 +2302,16 @@ func (m *App) passToScreen(msg tea.Msg) (*App, tea.Cmd) {
 	return m, cmd
 }
 
+// diffRailOwnsX reports whether a terminal column belongs to the diff rail.
+//
+// ONE DEFINITION, TWO CALLERS, because a column belongs to the rail or it does not: diffMsg routes a
+// message that lands there to the pane, and the Ask transcript's wheel claim has to YIELD to it. Those two
+// disagreed — the wheel claim tested nothing but the tab — and the operator felt it as a diff rail that
+// would not scroll ("In the TUI diff bar, the scroll doesn't seem to be working").
+func (m *App) diffRailOwnsX(x int) bool {
+	return m.diffOpen && m.diffPane != nil && x < m.diffPaneWidth()
+}
+
 // diffMsg forwards a pane-scoped message to the diff pane's Update and
 // reports whether the pane consumed it. Pane-scoped (consumed=true): the
 // pane's own async results (FetchDoneMsg/OwnerSetMsg), the file-edits
@@ -2345,7 +2355,7 @@ func (m *App) diffMsg(msg tea.Msg) (bool, tea.Cmd) {
 		// Forward clicks/wheel that land in the left pane rail (x <
 		// the pane width). Motion/Release stay native (Shift+drag); the pane
 		// ignores them anyway. Clicks right of the rail pass to the screen.
-		if msg.X < m.diffPaneWidth() {
+		if m.diffRailOwnsX(msg.X) {
 			cmd := m.diffPane.Update(msg)
 			// A click may have hit the pane's ✕ close button (the mouse
 			// toggle area). If so, close the pane (restore the layout) and
