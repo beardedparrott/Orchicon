@@ -131,7 +131,11 @@ function countHalf(line: string): string {
   return rest;
 }
 
-const COUNTER_RE = /\d+ (modif(?:y|ies)|reads?|bash)/;
+// The counter vocabulary is the summarizer's OWN bucket words (toolclass countLabel), kept in step
+// with the shared contract: `other tools?` is the catch-all the under-report fix added, so a turn
+// whose only counted work is product tools still reads as a counter here. Mirrored byte-for-byte by
+// counterRE in internal/tui/activity_e2e_pty_test.go.
+const COUNTER_RE = /\d+ (modif(?:y|ies)|reads?|bash|other tools?)/;
 
 /** seedSession stashes a token on the app's OWN bootstrap path (session.ts loadStashedToken), so the
  *  router guard resolves an authenticated session and /ask-orchicon renders for real. */

@@ -191,7 +191,11 @@ func footerCounter(row string) string {
 	return rest
 }
 
-var counterRE = regexp.MustCompile(`\d+ (modif(?:y|ies)|reads?|bash)`)
+// The counter vocabulary is the summarizer's OWN bucket words (toolclass.go countLabel), kept in
+// step with the shared contract: `other tools?` is the catch-all the under-report fix added, so a
+// turn whose only counted work is product tools still reads as a counter here. Mirrored byte-for-byte
+// by COUNTER_RE in frontend/tests/activity-line-e2e.spec.ts.
+var counterRE = regexp.MustCompile(`\d+ (modif(?:y|ies)|reads?|bash|other tools?)`)
 
 // hasCounter reports whether a painted footer row carries a TOOL COUNT. It is deliberately narrow
 // (a digit followed by a count word) so the watchdog's own "last activity 4s ago" — which also
