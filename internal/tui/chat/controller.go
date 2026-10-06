@@ -1876,7 +1876,7 @@ func (c *Controller) SetSilenceForTest(convID string, d time.Duration) {
 // where `recvMono` was taken the moment the stamp arrived: only the time since OUR OWN receipt is added,
 // so a client whose wall clock is skewed by hours still sees the SAME word as every other client for the
 // same server time (the skew cancels out of the delta), while the word still advances smoothly between
-// the 15s heartbeats instead of freezing for a quarter of a minute.
+// the 15s heartbeats, so it never lags a whole period behind a late heartbeat.
 //
 // IT IS READ UNDER THE SAME MUTEX AS THE WRITE, so a heartbeat landing mid-render cannot tear the pair.
 func (c *Controller) ServerTimeSince(convID string) (int64, bool) {

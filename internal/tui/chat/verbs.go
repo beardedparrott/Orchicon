@@ -11,6 +11,13 @@ import (
 // that means 'orchicon is thinking' but variations like 'inquisiting, contemplating, planning, etc.' that
 // changes every few seconds. We should have a ton of them."
 //
+// THAT BRIEF WAS WRONG ABOUT THE CADENCE, AND THIS RECORD CORRECTS IT. It set the period to 4s and
+// explicitly rejected the heartbeat-aligned value as too slow. The operator's verdict on shipping it:
+// "the values are changing WAY too often. Every single update is a new word for 'thinking'." The line
+// repaints about once a second (the TUI on every stream chunk and the 1s askTurnPollInterval), so a 4s
+// period swapped the word on roughly every fourth repaint — churn on a line the operator stares at for
+// minutes. The period is now 15s, the server heartbeat cadence (askHeartbeatInterval).
+//
 // Before this, the TUI drew a fixed pair of literals ("Orchicon is thinking…" before content, "Orchicon is
 // replying…" after), so a long quiet phase looked byte-identical for minutes. That is the complaint.
 //
@@ -60,15 +67,21 @@ var AskVerbs = []string{
 // failure rather than a clipped or wrapped footer.
 const VerbCellCap = 14
 
-// VerbPeriodMS is how long one word stays up. IT IS DELIBERATELY NOT THE HEARTBEAT CADENCE.
+// VerbPeriodMS is how long one word stays up: 15s, the server's heartbeat cadence (askHeartbeatInterval,
+// internal/askorchicon/chat.go), so the word advances about once per heartbeat.
 //
-// The server's heartbeat is every 15s (askHeartbeatInterval, internal/askorchicon/chat.go), so an index of
-// serverTime/15000 would advance exactly once per heartbeat — the word would sit still for a quarter of a
-// minute, which is not the "changes every few seconds" the operator asked for. 4000ms advances one word
-// every four seconds and three or four words per heartbeat, while the *source* of the index stays the
-// server stamp: between heartbeats each client extrapolates from its own receipt instant, so no client
-// invents a clock and no client needs to hear a heartbeat to keep drawing the same word.
-const VerbPeriodMS int64 = 4000
+// IT WAS 4s FIRST, AND THAT WAS THE BUG. The original brief asked for a word that changed "every few
+// seconds" and explicitly rejected the heartbeat-aligned value as too slow, and 4s was chosen to satisfy
+// it. The operator's verdict on shipping it: "the values are changing WAY too often. Every single update
+// is a new word for 'thinking'." The activity line repaints about once a second — the TUI on every stream
+// chunk and on the 1s askTurnPollInterval — so a 4s period swapped the word on roughly every fourth
+// repaint: churn on a line the operator stares at for minutes. 15s, the operator's decision, fixes that.
+//
+// The *source* of the index is still the server stamp: between heartbeats each client extrapolates from
+// its own receipt instant (applying only a DELTA), so no client invents a clock, no client needs to hear
+// a heartbeat to keep drawing the same word, and the word does not lag a whole period behind a late
+// heartbeat.
+const VerbPeriodMS int64 = 15000
 
 // VerbAt is the pure selector: the same timestamp always yields the same word, on any client, in any
 // process. No clock, no RNG, no global mutable state — integer division and modulo only, so Go and JS

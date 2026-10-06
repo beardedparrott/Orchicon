@@ -5,7 +5,7 @@
 // skipped: the survives-first-content case (AC1 — the whole point) and the escalation ABSENCE (AC5).
 import { describe, expect, it, vi } from "vitest";
 
-import { ASK_VERBS, activityVerb } from "@/lib/ask-verbs";
+import { ASK_VERBS, VERB_PERIOD_MS, activityVerb } from "@/lib/ask-verbs";
 import {
   NOTICE_WARN_AFTER_MS,
   activityLineAnnouncement,
@@ -65,14 +65,16 @@ describe("ask-activity-notice — the rotation", () => {
   });
 
   it("AC3 — a period apart rotates the word, from the SHARED selector", () => {
+    // invariant: a full period apart rotates the word, and the word comes from the SHARED selector
+    // (ASK_VERBS / VERB_PERIOD_MS), not a literal — the two clients cannot rotate at different speeds.
     const t0 = 8_000;
-    const t1 = 12_000; // VERB_PERIOD_MS apart
+    const t1 = 8_000 + VERB_PERIOD_MS; // VERB_PERIOD_MS apart
     expect(activityVerb(t0)).not.toBe(activityVerb(t1));
     expect(activityLineFor({ ...BASE, effectiveServerTimeMs: t0 })).toContain(
-      ASK_VERBS[Math.floor(t0 / 4000) % ASK_VERBS.length],
+      ASK_VERBS[Math.floor(t0 / VERB_PERIOD_MS) % ASK_VERBS.length],
     );
     expect(activityLineFor({ ...BASE, effectiveServerTimeMs: t1 })).toContain(
-      ASK_VERBS[Math.floor(t1 / 4000) % ASK_VERBS.length],
+      ASK_VERBS[Math.floor(t1 / VERB_PERIOD_MS) % ASK_VERBS.length],
     );
   });
 

@@ -5,6 +5,12 @@
 // that means 'orchicon is thinking' but variations like 'inquisiting, contemplating, planning, etc.' that
 // changes every few seconds. We should have a ton of them."
 //
+// THAT BRIEF WAS WRONG ABOUT THE CADENCE, AND THIS RECORD CORRECTS IT. It set the period to 4s and
+// explicitly rejected the heartbeat-aligned value as too slow. The operator's verdict on shipping it:
+// "the values are changing WAY too often. Every single update is a new word for 'thinking'." The line
+// repaints about once a second, so a 4s period churned on roughly every fourth repaint. The period is now
+// 15s, the server heartbeat cadence (see internal/tui/chat/verbs.go for the Go half of this record).
+//
 // THE INDEX IS A PURE FUNCTION OF SERVER TIME. verbAt takes the timestamp the server already puts on the
 // wire — Heartbeat.server_time_unix_ms (emitted at internal/askorchicon/chat.go, whose own doc says it is
 // there so a client can measure socket age/skew). Two clients holding the same server stamp draw the SAME
@@ -12,7 +18,14 @@
 // its own wall clock for the index, a skewed clock still draws the same word (the callers add only a DELTA
 // since their own receipt instant, so the word keeps advancing between heartbeats).
 
-export const VERB_PERIOD_MS = 4000;
+/**
+ * How long one word stays up: 15s, the server heartbeat cadence, so the word advances about once per
+ * heartbeat. It was 4s first — the original brief asked for a word that changed "every few seconds" and
+ * rejected the heartbeat-aligned value as too slow — but the operator's verdict on shipping it was "the
+ * values are changing WAY too often." The line repaints about once a second, so a 4s period churned on
+ * roughly every fourth repaint; 15s, the operator's decision, fixes that.
+ */
+export const VERB_PERIOD_MS = 15000;
 
 /**
  * The widest entry the one-row footer will accept. Asserted against the list, not merely documented
@@ -74,8 +87,8 @@ export function verbAt(serverTimeUnixMs: number): string {
  * where `receivedAt` was taken by the SAME clock as `now` at the moment the stamp arrived. Only a
  * difference of two readings of our own clock is ever added, so a client whose wall clock is skewed by
  * hours still draws the SAME word as every other client for the same server time — the skew cancels
- * out of the delta — while the word still advances smoothly BETWEEN the 15s heartbeats instead of
- * freezing for a quarter of a minute. (This is the property AC4 asks for, and it is asserted in
+ * out of the delta — while the word still advances smoothly BETWEEN the 15s heartbeats, so it never
+ * lags a whole period behind a late heartbeat. (This is the property AC4 asks for, and it is asserted in
  * ask-verbs.test.ts by applying an identical skew to both `now` and `receivedAt`.)
  *
  * `null`/non-positive stamp means "no heartbeat yet" (a real server stamp is Unix milliseconds and

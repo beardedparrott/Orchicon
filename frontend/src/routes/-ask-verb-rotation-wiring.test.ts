@@ -70,9 +70,10 @@ describe("ask-orchicon rotating verb — the heartbeat feeds the clock (GUI half
   });
 
   it("keeps a repaint tick alive while the rotation is on screen", () => {
-    // The verb is animation: without a tick between the 15s heartbeats it would freeze for a quarter of a
-    // minute. The useNow ticker now runs for the WHOLE turn (turnInFlight), not only before the first
-    // token — the line must keep rotating after content has arrived.
+    // The verb is animation: the repaint tick supplies the DELTA since the last heartbeat that advances
+    // the word (the word itself indexes on the server stamp, see ask-verbs.ts). The useNow ticker now runs
+    // for the WHOLE turn (turnInFlight), not only before the first token — the line must keep rotating
+    // after content has arrived.
     expect(src).toMatch(/useNow\(turnInFlight\s*\?\s*1000\s*:\s*false\)/);
   });
 });

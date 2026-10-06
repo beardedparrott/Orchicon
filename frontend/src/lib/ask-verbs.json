@@ -1,5 +1,5 @@
 {
-  "periodMs": 4000,
+  "periodMs": 15000,
   "verbs": [
     "thinking", "pondering", "contemplating", "considering", "deliberating",
     "musing", "ruminating", "cogitating", "reasoning", "reflecting",

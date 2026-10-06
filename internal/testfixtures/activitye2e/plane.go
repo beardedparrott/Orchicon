@@ -54,12 +54,12 @@ const (
 	Prompt = "E2EPROMPT inspect files and run the tests"
 
 	// StampOnPeriod is the heartbeat's server_time_unix_ms, chosen EXACTLY on a
-	// chat.VerbPeriodMS (4000 ms) boundary so that a client sampling within the next four seconds
-	// derives the SAME word from it (VerbAt(stamp + delta) == VerbAt(stamp) for delta < 4000 ms).
+	// chat.VerbPeriodMS (15000 ms) boundary so that a client sampling within the next fifteen seconds
+	// derives the SAME word from it (VerbAt(stamp + delta) == VerbAt(stamp) for delta < 15000 ms).
 	// That is what lets the cross-client comparison be EXACT rather than "some entry of the list":
 	// both clients draw VerbAt(StampOnPeriod), and the harness asserts the equality rather than
 	// accepting any rotation member.
-	StampOnPeriod int64 = 1_700_000_000_000
+	StampOnPeriod int64 = 1_699_999_995_000
 
 	// HeartbeatCadence is how often the live stream re-sends the heartbeat. It is well inside
 	// the 25 s warn band, so a HEALTHY turn never escalates — which is what makes the escalation
