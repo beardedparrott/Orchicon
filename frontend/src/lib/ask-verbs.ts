@@ -68,6 +68,33 @@ export function verbAt(serverTimeUnixMs: number): string {
 }
 
 /**
+ * Extrapolate the SERVER's clock to a repaint instant, from the last heartbeat's stamp.
+ *
+ * THE LOCAL CLOCK IS A DELTA, NEVER THE SOURCE. The result is `serverTimeMs + (now - receivedAt)`,
+ * where `receivedAt` was taken by the SAME clock as `now` at the moment the stamp arrived. Only a
+ * difference of two readings of our own clock is ever added, so a client whose wall clock is skewed by
+ * hours still draws the SAME word as every other client for the same server time — the skew cancels
+ * out of the delta — while the word still advances smoothly BETWEEN the 15s heartbeats instead of
+ * freezing for a quarter of a minute. (This is the property AC4 asks for, and it is asserted in
+ * ask-verbs.test.ts by applying an identical skew to both `now` and `receivedAt`.)
+ *
+ * `null`/non-positive stamp means "no heartbeat yet" (a real server stamp is Unix milliseconds and
+ * always positive), and 0 is the sentinel `verbAt` turns into the list's first word — so the caller
+ * never has to special-case the first second after the operator sends.
+ */
+export function extrapolateServerTime(
+  serverTimeMs: number | null,
+  receivedAt: number | null,
+  now: number,
+): number {
+  if (serverTimeMs === null || !Number.isFinite(serverTimeMs) || serverTimeMs <= 0) {
+    return 0;
+  }
+  const base = receivedAt === null || !Number.isFinite(receivedAt) ? now : receivedAt;
+  return serverTimeMs + Math.max(0, now - base);
+}
+
+/**
  * The accessibility off-switch, and it is part of the feature rather than a follow-up: the rotation IS
  * animation.
  *

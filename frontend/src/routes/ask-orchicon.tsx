@@ -43,7 +43,7 @@ import {
   scopeOptions,
 } from "@/lib/conversationProjects";
 import { conversationModeLabel, conversationModeMeta } from "@/lib/conversationModes";
-import { activityVerb } from "@/lib/ask-verbs";
+import { activityVerb, extrapolateServerTime } from "@/lib/ask-verbs";
 import {
   useListConversations,
   useCreateConversation,
@@ -542,14 +542,14 @@ function AskOrchiconPage() {
   // is what keeps the rotating verb advancing between the 15s heartbeats without a new packet, while a
   // skewed local clock CANCELS OUT of it — only a difference of our own two readings is ever added — so
   // two clients holding the same stamp draw the same word. 0 is the pre-heartbeat sentinel (no stamp
-  // yet), which activityVerb turns into the list's first word rather than an empty line. It is computed
-  // HERE, after liveNow, because liveNow is the delta's clock.
-  const serverTimeMs = activeStream?.serverTimeMs ?? null;
-  const serverTimeRecvAt = activeStream?.serverTimeRecvAt ?? null;
-  const effectiveServerTimeMs =
-    serverTimeMs === null
-      ? 0
-      : serverTimeMs + Math.max(0, liveNow - (serverTimeRecvAt ?? liveNow));
+  // yet), which activityVerb turns into the list's first word rather than an empty line. The rule lives
+  // in @/lib/ask-verbs so it is unit-testable (both the skew-cancellation and the pre-heartbeat
+  // fallback are asserted there) rather than reachable only through this very large route.
+  const effectiveServerTimeMs = extrapolateServerTime(
+    activeStream?.serverTimeMs ?? null,
+    activeStream?.serverTimeRecvAt ?? null,
+    liveNow,
+  );
 
   // Keep the conversation-list poll live while any conversation is running
   // and stop it once everything settles (see listPollMs above). The condition

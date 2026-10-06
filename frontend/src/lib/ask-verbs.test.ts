@@ -20,6 +20,7 @@ import {
   VERB_CELL_CAP,
   VERB_PERIOD_MS,
   activityVerb,
+  extrapolateServerTime,
   verbAt,
   verbRotationOn,
 } from "@/lib/ask-verbs";
@@ -124,5 +125,50 @@ describe("ask-verbs — the rotation is a pure function of server time", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+// THE CLOCK WIRING IS PART OF THE FEATURE, NOT AN IMPLEMENTATION DETAIL (AC4/AC5). The word is a pure
+// function of SERVER time; the only place server time reaches this client is Heartbeat.server_time_unix_ms,
+// and the client must extrapolate from it using ONLY a delta of its own clock readings. These tests pin
+// that: a skewed local clock must not change the word (both clients still agree), the pre-heartbeat case
+// must fall back to a list member, and a heartbeat-fed stamp must actually feed the selector.
+describe("ask-verbs — the server clock feeds the rotation (AC4/AC5)", () => {
+  const STAMP = 1_700_000_123_456; // a real Unix ms stamp (2023-11-14T22:13:20Z) and not a period multiple
+
+  it("extrapolates the server stamp forward by the local delta, never past the heartbeat", () => {
+    // 3s after receipt the word is the one the SERVER time names, not a frozen one.
+    const effective = extrapolateServerTime(STAMP, 1_000, 4_000);
+    expect(effective).toBe(STAMP + 3_000);
+    expect(verbAt(effective)).toBe(verbAt(STAMP + 3_000));
+    // And the returned value advances the rotation across the period boundary (the "every few seconds").
+    expect(verbAt(effective)).not.toBe(verbAt(extrapolateServerTime(STAMP, 1_000, 1_000)));
+  });
+
+  it("cancels a skewed local clock: two clients with different wall clocks agree", () => {
+    // Client A's clock is "correct" and it reads 1_000/4_000 around its receipt of the stamp. Client B's
+    // clock is skewed by +3h (10_800_000 ms). BOTH readings of a given client's clock move by the same
+    // skew, so BOTH extrapolations are the same server time and therefore the same word — the whole point
+    // of indexing on the server stamp. A client that used Date.now() as the SOURCE would diverge here.
+    const skewed = 10_800_000;
+    const a = extrapolateServerTime(STAMP, 1_000, 4_000);
+    const b = extrapolateServerTime(STAMP, 1_000 + skewed, 4_000 + skewed);
+    expect(b).toBe(a);
+    expect(verbAt(b)).toBe(verbAt(a));
+  });
+
+  it("falls back to the list's first word before any heartbeat, and never to empty", () => {
+    // No heartbeat yet: the first second after the operator sends, when they are most likely looking.
+    expect(extrapolateServerTime(null, null, Date.now())).toBe(0);
+    expect(verbAt(extrapolateServerTime(null, null, Date.now()))).toBe(ASK_VERBS[0]);
+    // A zero/negative stamp is not a stamp either; it must not anchor at the epoch.
+    expect(extrapolateServerTime(0, 1_000, 2_000)).toBe(0);
+    // A clock that stepped backwards must not produce a negative age.
+    expect(extrapolateServerTime(STAMP, 4_000, 1_000)).toBe(STAMP);
+    // And a heartbeat stamp really does move the word: the selector over the extrapolated stamp is a list
+    // member, so the rotation is reading the server clock rather than a constant.
+    const w = verbAt(extrapolateServerTime(STAMP, 1_000, 1_000));
+    expect(ASK_VERBS).toContain(w);
+    expect(w).toBe(verbAt(STAMP));
   });
 });
