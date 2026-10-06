@@ -2,23 +2,23 @@
   "calls": [
     {
       "tool_name": "read",
-      "at_ms": 1791291801362
+      "at_ms": 1791326563056
     },
     {
       "tool_name": "batch_grep",
-      "at_ms": 1791291803865
+      "at_ms": 1791326565559
     },
     {
       "tool_name": "bash",
-      "at_ms": 1791291806365
+      "at_ms": 1791326568060
     },
     {
       "tool_name": "write",
-      "at_ms": 1791291808865
+      "at_ms": 1791326570561
     }
   ],
-  "counter": "1 modify · 2 reads · 1 bash · last 1s",
+  "counter": "1 modify · 2 reads · 1 bash · newest call 1s ago",
   "phase": "flight",
-  "stamp": 1700000000000,
-  "streamed": "E2EWITNESSCONTENT Reading the repo layout and the files this change touches.E2EWITNESSCONTENT Reading the repo layout and the files this change touches. E2EWITNESSFINAL Now running the focused tests."
+  "stamp": 1699999995000,
+  "streamed": "E2EWITNESSCONTENT Reading the repo layout and the files this change touches. E2EWITNESSFINAL Now running the focused tests."
 }

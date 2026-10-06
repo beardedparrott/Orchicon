@@ -66,11 +66,12 @@ describe("ask-tool-summary — the shared cross-client counter", () => {
     expect(toolCountPhrase([], 1_000, TOOL_SUMMARY_WINDOW_MS)).toBe("");
   });
 
-  it("AC6 — a ledger of only excluded tools is also the empty string", () => {
+  it("AC6 — a ledger of only a card and a consent record is also the empty string", () => {
+    // todowrite and mcp__* are NOT in this list any more: the under-report fix counts mcp__* as
+    // real work (`other`) and todowrite stays `ignore` by its own explicit guard. Only the card
+    // (ask_user) and the consent record (permission.*) are excluded by shape.
     const excluded: ToolCallStamp[] = [
       { toolName: "ask_user", atMs: 60_000 },
-      { toolName: "todowrite", atMs: 60_000 },
-      { toolName: "mcp__github__create_issue", atMs: 60_000 },
       { toolName: "permission.allow_once", atMs: 60_000 },
     ];
     expect(summarizeToolCalls(excluded, 61_000, TOOL_SUMMARY_WINDOW_MS)).toBe("");
@@ -82,7 +83,7 @@ describe("ask-tool-summary — the shared cross-client counter", () => {
         61_000,
         TOOL_SUMMARY_WINDOW_MS,
       ),
-    ).toBe("1 read · last 1s");
+    ).toBe("1 read · newest call 1s ago");
   });
 
   it("D4 — a bigint stamp is COERCED, not compared (protoInt64 is a BigInt at runtime)", () => {
@@ -95,7 +96,7 @@ describe("ask-tool-summary — the shared cross-client counter", () => {
     // Without Number() this throws `Cannot mix BigInt and other types` rather than rendering "".
     expect(
       summarizeToolCalls(toolCallsFromMessages(messages), 61_000, TOOL_SUMMARY_WINDOW_MS),
-    ).toBe("1 modify · last 0s");
+    ).toBe("1 modify · newest call 0s ago");
   });
 
   it("counts a ROLLING window, not a total", () => {
@@ -104,7 +105,7 @@ describe("ask-tool-summary — the shared cross-client counter", () => {
       { toolName: "read", atMs: 64_000 }, // 1s before `now` — in
     ];
     expect(summarizeToolCalls(calls, 65_000, TOOL_SUMMARY_WINDOW_MS)).toBe(
-      "1 read · last 1s",
+      "1 read · newest call 1s ago",
     );
   });
 
@@ -132,11 +133,11 @@ describe("ask-tool-summary — the shared cross-client counter", () => {
       ["askuser", "ignore"],
       ["ask_user_question", "ignore"],
       ["orchicon_ask_user", "ignore"],
-      ["mcp__github__create_issue", "ignore"],
+      ["mcp__github__create_issue", "other"],
       ["todowrite", "ignore"],
-      ["orchicon_list_projects", "ignore"],
+      ["orchicon_list_projects", "other"],
       ["", "ignore"],
-      ["nonsense", "ignore"],
+      ["nonsense", "other"],
     ];
     for (const [name, want] of cases) {
       expect(classifyTool(name), name).toBe(want);

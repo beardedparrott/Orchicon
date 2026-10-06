@@ -13,7 +13,7 @@ import { ActivityLine } from "./ActivityLine";
 const markup = () =>
   renderToStaticMarkup(
     createElement(ActivityLine, {
-      text: "Orchicon is contemplating… · 3 modifies · 1 read · last 4s",
+      text: "Orchicon is contemplating… · 3 modifies · 1 read · newest call 4s ago",
       announcement: "Orchicon is working · 3 modifies · 1 read",
     }),
   );

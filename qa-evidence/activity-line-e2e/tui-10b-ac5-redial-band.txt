@@ -35,7 +35,7 @@
 │                                                                                                                                            ││                                    │
 │                                                                                                                                            ││                                    │
 │                                                                                                                                            ││                                    │
-│Orchicon is weighing… · no output for 35s — the stream will re-attach if it stays silent                                                    ││                                    │
+│Orchicon is reasoning… · no output for 35s — the stream will re-attach if it stays silent                                                   ││                                    │
 │                                                                                                                                            ││                                    │
 │                                                                                                                                            ││                                    │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘│                                    │
@@ -47,4 +47,4 @@
 │  · alt+enter newline · / commands                                                                                                          ││                                    │
 │                                                                                                                              [brainstorm]  ││                                    │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯└────────────────────────────────────┘
- ● connected · http://127.0.0.1:18085 · server — · identity: e2e · — esc/ctrl+g content · Mouse Enabled
+ ● connected · http://127.0.0.1:18081 · server — · identity: e2e · — esc/ctrl+g content · Mouse Enabled

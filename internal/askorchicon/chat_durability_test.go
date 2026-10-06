@@ -144,6 +144,21 @@ func TestLiveToolLedgerPersistsCallsAndResults(t *testing.T) {
 	if len(calls) != 1 || calls[0]["function_name"] != "orchicon_list_projects" {
 		t.Errorf("tool_calls = %v, want one orchicon_list_projects call", calls)
 	}
+	// AC12 — THE FINISHED ROW CARRIES ITS ISSUE STAMP. This is the terminal write
+	// (finalize -> ledger.repairedSnapshot() -> db.UpsertMessage), read back off the
+	// persisted row: the state the operator actually sees after a turn ends. A stamp
+	// lost here is indistinguishable from "no work happened" — the summarizer SKIPS
+	// an unstamped entry (issued_at_unix_ms == 0) rather than rendering a wrong
+	// count, so every completed turn would tally nothing. The sanitizer re-marshals
+	// through askToolCallJSON, so a field missing from THAT struct is silently
+	// stripped here while every snapshot-level test still passes; this assertion is
+	// what makes that failure loud on a real DB round-trip.
+	issueStamp, ok := calls[0]["issued_at_unix_ms"].(float64)
+	if !ok || issueStamp <= 0 {
+		t.Errorf("the finished row's tool_calls lost their issue stamp (got %v of type %T) — "+
+			"issued_at_unix_ms did not survive the terminal write, so the activity line would count "+
+			"NOTHING over a completed turn: %s", calls[0]["issued_at_unix_ms"], calls[0]["issued_at_unix_ms"], msg.ToolCalls)
+	}
 	var results []map[string]any
 	if err := json.Unmarshal(msg.ToolResults, &results); err != nil {
 		t.Fatalf("unmarshal tool_results: %v", err)

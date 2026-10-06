@@ -4370,11 +4370,11 @@ func turnActivityNotice(silent time.Duration, effectiveServerTimeMs int64, summa
 	case silent >= warnAfter:
 		want = fmt.Sprintf("%s · no output for %ds", verb, secs)
 	case summary != "":
-		// THE HEALTHY BAND, AND THE SUMMARY'S OWN TRAILING "last Ns" IS THE AGE. It therefore REPLACES
+		// THE HEALTHY BAND, AND THE SUMMARY'S OWN TRAILING "newest call Ns ago" IS THE AGE. It therefore REPLACES
 		// "last activity Ns ago" rather than joining it: one age, one phrase, on one row (the work item's
 		// own example string). The summary is "" when nothing was counted — never "0 modifies" — so this
 		// arm only fires on real work, and it fires IMMEDIATELY rather than waiting out showAgeAfter,
-		// because "3 modifies · 1 read · last 0s" is a true report while "last activity 0s ago" is not.
+		// because "3 modifies · 1 read · newest call 0s ago" is a true report while "last activity 0s ago" is not.
 		want = verb + " · " + summary
 	case silent <= 0 || silent < showAgeAfter:
 		// No counted work and no age yet — the moment between sending and the stream's first event. The

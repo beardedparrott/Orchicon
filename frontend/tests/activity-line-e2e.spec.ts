@@ -120,18 +120,22 @@ function verbWord(line: string): string {
   return m ? m[1] : "";
 }
 
-/** The count half, dropping the clients' own trailing "last Ns" age. */
+/** The count half, dropping the clients' own trailing "newest call Ns ago" age. */
 function countHalf(line: string): string {
   const i = line.indexOf("…");
   if (i < 0) return "";
   let rest = line.slice(i + 1).replace(/^\s*·\s*/, "").trim();
   if (rest.startsWith("no output for") || rest.startsWith("last activity")) return "";
-  const j = rest.lastIndexOf("· last ");
+  const j = rest.lastIndexOf("· newest call ");
   if (j >= 0) rest = rest.slice(0, j).trim();
   return rest;
 }
 
-const COUNTER_RE = /\d+ (modif(?:y|ies)|reads?|bash)/;
+// The counter vocabulary is the summarizer's OWN bucket words (toolclass countLabel), kept in step
+// with the shared contract: `other tools?` is the catch-all the under-report fix added, so a turn
+// whose only counted work is product tools still reads as a counter here. Mirrored byte-for-byte by
+// counterRE in internal/tui/activity_e2e_pty_test.go.
+const COUNTER_RE = /\d+ (modif(?:y|ies)|reads?|bash|other tools?)/;
 
 /** seedSession stashes a token on the app's OWN bootstrap path (session.ts loadStashedToken), so the
  *  router guard resolves an authenticated session and /ask-orchicon renders for real. */
