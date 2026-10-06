@@ -3864,8 +3864,9 @@ func (m *App) turnInFlight(convID string) bool {
 // What they lost was the only signal that the stream is ALIVE. Mid-reply is exactly when it matters: a
 // long tool call, a slow provider or a stalled socket look identical from the outside, and with the line
 // gone nothing on screen changes until the reply finishes. So the line tracks the TURN, and the verb
-// follows the PHASE — "thinking" before there is anything to read, "replying" once there is — which keeps
-// the GUI's wording where the GUI uses it and extends the line where the operator asked for it.
+// ROTATES on the SERVER's clock (chat/verbs.go) so a long quiet stretch reads as live activity rather than
+// one frozen phrase. Both clients draw the same word for the same server time — the stronger form of the
+// "thinking"/"replying" parity this comment used to describe, which rotation deliberately retires.
 //
 // The age comes from the watchdog's own clock (lastActivity), so the line cannot claim a liveness the
 // liveness check would contradict.
@@ -3887,7 +3888,11 @@ func (m *App) transcriptStatusLine(items []chat.ChatItem) string {
 		// when reading a transcript, and it is the TRANSCRIPT that looks broken when a reply cannot arrive.
 		return "⚠ disconnected — replies will resume when the plane returns (r retries now)"
 	case m.chat.IsStreaming(m.chatConvID) || m.turnInFlight(m.chatConvID):
-		return turnActivityNotice(m.chat.SilenceSince(m.chatConvID), awaitingReply(items))
+		// THE SERVER'S CLOCK FEEDS THE ROTATING VERB (see turnActivityNotice). ServerTimeSince returns
+		// (0, false) when no heartbeat has arrived yet, and 0 is the selector's "use the first word"
+		// sentinel — the line stays present from the instant the operator hits send.
+		serverTime, _ := m.chat.ServerTimeSince(m.chatConvID)
+		return turnActivityNotice(m.chat.SilenceSince(m.chatConvID), serverTime)
 	}
 	return ""
 }
@@ -4233,10 +4238,21 @@ func (m *App) TranscriptStream(convID string) *kit2.Stream { return m.chatStream
 // turnActivityNotice is the transcript's activity line while a turn is streaming: what the turn is doing,
 // plus how long the stream has been quiet.
 //
-// THE VERB FOLLOWS THE PHASE. Before any content, the GUI's own wording applies — "Orchicon is
-// thinking…", which is what the operator sees while their message is being read. Once text has arrived,
-// the turn is no longer thinking, it is REPLYING, and saying "thinking" under a half-written answer would
-// be wrong; "replying" keeps the line honest and keeps it present, which is the point.
+// THE VERB ROTATES, INDEXED ON THE SERVER'S CLOCK. It used to be a fixed pair of literals — "thinking"
+// before the first content, "replying" after — so a long quiet phase looked byte-identical for minutes,
+// which is the operator's complaint this answers: "rotating through a series of words that means 'orchicon
+// is thinking' but variations like 'inquisiting, contemplating, planning, etc.' that changes every few
+// seconds. We should have a ton of them." The word now comes from chat.ActivityVerb over the server stamp
+// (see chat/verbs.go), so the rotation says what the turn is DOING to the problem rather than repeating one
+// fixed phrase — and BOTH phases rotate, because the quiet stretch the operator was staring at is not a
+// phase-specific phenomenon (a long tool call mid-reply looks exactly like a slow first token).
+//
+// THE SERVER'S CLOCK, NOT OURS. effectiveServerTimeMs is the server's server_time_unix_ms extrapolated to
+// now by chat.Controller.ServerTimeSince, which adds only the time since THIS client received the last
+// heartbeat. A client whose wall clock is skewed therefore draws the SAME word as every other client at the
+// same server time; the local clock is a delta, never the source. When no heartbeat has arrived yet — the
+// first second after sending, which is exactly when the operator is looking — the caller passes 0 and the
+// selector returns the list's first word, so the line is never empty.
 //
 // IT REPORTS, IT DOES NOT GUESS. The number is the age of the last event received, so it cannot claim
 // activity that is not happening — and as it grows the operator can see the model is genuinely silent
@@ -4247,7 +4263,7 @@ func (m *App) TranscriptStream(convID string) *kit2.Stream { return m.chatStream
 //
 // silent <= 0 means "no activity recorded" — the moment between sending and the stream's first event — so
 // it shows the bare line rather than an absurd "0s ago".
-func turnActivityNotice(silent time.Duration, beforeContent bool) string {
+func turnActivityNotice(silent time.Duration, effectiveServerTimeMs int64) string {
 	const (
 		// ONE SECOND, not five. The operator asked for the line to be visible immediately — "we should
 		// print the watchdog line right away so users know it's there" — because a line that only appears
@@ -4261,10 +4277,10 @@ func turnActivityNotice(silent time.Duration, beforeContent bool) string {
 		// unexplained stall into a stated one.
 		reDialAfter = 35 * time.Second
 	)
-	verb := "Orchicon is replying…"
-	if beforeContent {
-		verb = "Orchicon is thinking…"
-	}
+	// ONE WORD, FROM ONE PURE FUNCTION. chat.ActivityVerb holds the reduced-motion off-switch too, so a
+	// rotation the operator turned off and a rotation with no server stamp yet land on the same word
+	// (the list's first) — "the line is present and says something true" either way.
+	verb := "Orchicon is " + chat.ActivityVerb(effectiveServerTimeMs) + "…"
 	if silent <= 0 || silent < showAgeAfter {
 		return verb
 	}

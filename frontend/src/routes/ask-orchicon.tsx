@@ -43,6 +43,7 @@ import {
   scopeOptions,
 } from "@/lib/conversationProjects";
 import { conversationModeLabel, conversationModeMeta } from "@/lib/conversationModes";
+import { activityVerb } from "@/lib/ask-verbs";
 import {
   useListConversations,
   useCreateConversation,
@@ -158,6 +159,17 @@ interface ConvStream {
   // => the turn is stalled/wedged, so show an accurate "stalled" state instead
   // of the misleading "connection lost — still working".
   turnProgressing: boolean;
+  // serverTimeMs is the SERVER's clock as last heard (Heartbeat.server_time_unix_ms), and
+  // serverTimeRecvAt is the LOCAL instant it arrived. Together they index the rotating activity
+  // verb (see @/lib/ask-verbs): the word is a pure function of server time, so two clients draw the
+  // same word with no shared state and no new RPC — and because only the DELTA since our own receipt
+  // is added, a skewed local clock never changes the word. null means "no heartbeat yet": the render
+  // falls back to the list's first word rather than to an empty line.
+  //
+  // BOTH heartbeat arms must feed this — the dispatch stream and the re-dialled watch stream. A
+  // watcher that re-attached mid-turn is the client LEAST likely to be holding a stamp.
+  serverTimeMs: number | null;
+  serverTimeRecvAt: number | null;
   optimisticUserMsg: string | null;
   pendingReplyId: string | null;
   // sentText is the message text captured at send time, held in-memory so the
@@ -192,6 +204,8 @@ const EMPTY_STREAM: ConvStream = {
   isThinking: false,
   reconnecting: false,
   turnProgressing: false,
+  serverTimeMs: null,
+  serverTimeRecvAt: null,
   optimisticUserMsg: null,
   pendingReplyId: null,
   sentText: null,
@@ -515,11 +529,27 @@ function AskOrchiconPage() {
     conversations?.find((c) => c.id === activeConvId)?.turnLastActivityAt ??
     activeConv?.turnLastActivityAt ??
     null;
-  // 1s ticker while the reconnecting banner is live so the "last activity"
-  // line updates in place; frozen (no timer) otherwise.
+  // 1s ticker while the activity verb can advance, the same trick the reconnecting banner uses for
+  // its "last activity" line. THE VERB IS ANIMATION, so it needs a repaint between the 15s heartbeats:
+  // the word itself is computed from SERVER time (see activityVerb), but `liveNow` supplies only the
+  // delta since the last heartbeat, which is what makes it move without a new packet.
   const liveNow = useNow(
-    isStreaming && reconnecting && turnProgressing ? 1000 : false,
+    (isStreaming && reconnecting && turnProgressing) || isThinking ? 1000 : false,
   );
+
+  // effectiveServerTimeMs is the SERVER's clock, extrapolated to this repaint: the last heartbeat's
+  // server_time_unix_ms plus ONLY the delta since we received it (liveNow - serverTimeRecvAt). The delta
+  // is what keeps the rotating verb advancing between the 15s heartbeats without a new packet, while a
+  // skewed local clock CANCELS OUT of it — only a difference of our own two readings is ever added — so
+  // two clients holding the same stamp draw the same word. 0 is the pre-heartbeat sentinel (no stamp
+  // yet), which activityVerb turns into the list's first word rather than an empty line. It is computed
+  // HERE, after liveNow, because liveNow is the delta's clock.
+  const serverTimeMs = activeStream?.serverTimeMs ?? null;
+  const serverTimeRecvAt = activeStream?.serverTimeRecvAt ?? null;
+  const effectiveServerTimeMs =
+    serverTimeMs === null
+      ? 0
+      : serverTimeMs + Math.max(0, liveNow - (serverTimeRecvAt ?? liveNow));
 
   // Keep the conversation-list poll live while any conversation is running
   // and stop it once everything settles (see listPollMs above). The condition
@@ -1008,10 +1038,18 @@ function AskOrchiconPage() {
                 ],
               }));
             }
-          } else if ((chunk.event.case as string) === "heartbeat") {
-            setStream(convId, (prev) =>
-              prev.reconnecting ? { ...prev, reconnecting: false } : prev,
-            );
+          } else if (chunk.event.case === "heartbeat") {
+            // Server keepalive. Beyond clearing the reconnecting banner, this is where the ROTATING
+            // ACTIVITY VERB gets its clock: server_time_unix_ms is already on the wire (the proto
+            // documents it as the client's means to measure socket age/skew) and this client used to
+            // discard it. Number(...) is required — the generated field is a bigint (protoInt64.zero),
+            // and `bigint % number` throws.
+            const stamp = Number(chunk.event.value.serverTimeUnixMs);
+            setStream(convId, (prev) => ({
+              ...prev,
+              ...(stamp > 0 ? { serverTimeMs: stamp, serverTimeRecvAt: Date.now() } : {}),
+              ...(prev.reconnecting ? { reconnecting: false } : {}),
+            }));
           } else if (chunk.event.case === "permissionAsk") {
             // The ask arm the GUI never read: a pending consent ask arrives on
             // the SAME turn stream (never a second polling loop).
@@ -1175,12 +1213,16 @@ function AskOrchiconPage() {
                 ],
               }));
             }
-          } else if ((chunk.event.case as string) === "heartbeat") {
-            // Server keepalive: no rendering, but the socket is live —
-            // clear any reconnecting banner so liveness is visible.
-            setStream(convId, (prev) =>
-              prev.reconnecting ? { ...prev, reconnecting: false } : prev,
-            );
+          } else if (chunk.event.case === "heartbeat") {
+            // Server keepalive. This is the WATCH (re-dial) arm, and it must feed the verb rotation's
+            // clock too — a watcher that re-attached mid-turn is the client least likely to hold a
+            // stamp. Same Number(...) coercion as the dispatch arm: the field is a bigint on the wire.
+            const stamp = Number(chunk.event.value.serverTimeUnixMs);
+            setStream(convId, (prev) => ({
+              ...prev,
+              ...(stamp > 0 ? { serverTimeMs: stamp, serverTimeRecvAt: Date.now() } : {}),
+              ...(prev.reconnecting ? { reconnecting: false } : {}),
+            }));
           } else if (chunk.event.case === "permissionAsk") {
             applyAsk(convId, chunk.event.value);
           } else if (chunk.event.case === "permissionAskResolved") {
@@ -1870,14 +1912,19 @@ function AskOrchiconPage() {
                     }
                   })}
 
-                {/* Thinking indicator — visible until any streaming content arrives */}
+                {/* Activity indicator — visible until any streaming content arrives.
+                    The verb ROTATES, indexed on the SERVER's clock: activityVerb takes the last
+                    heartbeat's server_time_unix_ms plus only the delta since we received it, so two
+                    clients draw the same word for the same server time and a skewed local clock
+                    cannot change it. Before the first heartbeat (serverTimeMs === null) the stamp is
+                    0 and the selector returns the list's first word — the line is never empty. */}
                 {isThinking && groupedStream.length === 0 && (
                   <div className="flex justify-start">
                     <div className="max-w-[88%] rounded-2xl rounded-tl-sm border border-sky-300/30 bg-sky-50/20 px-4 py-3 dark:border-sky-950/40 dark:bg-sky-950/10">
                       <div className="flex items-center gap-2">
                         <span aria-hidden="true" className="shrink-0 inline-block h-1.5 w-1.5 rounded-full bg-sky-500 animate-pulse" />
                         <span className="min-w-0 text-sm text-muted-foreground [overflow-wrap:anywhere]">
-                          Orchicon is thinking
+                          Orchicon is {activityVerb(effectiveServerTimeMs)}
                           {isUsingFallbackModel && (
                             <span className="text-muted-foreground/70">
                               {" "}
