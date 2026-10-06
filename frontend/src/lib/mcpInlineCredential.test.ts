@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   attachSecret,
   credentialKeys,
+  existingReference,
   inlineSpecIsHTTP,
+  referenceName,
   type InlineSpecLike,
 } from "@/lib/mcpInlineCredential";
 
@@ -95,5 +97,50 @@ describe("mcpInlineCredential", () => {
     expect(attachSecret(specs, "gh", "TOKEN", "  ")).toBe(specs);
     // An id that is not in the array changes nothing either.
     expect(attachSecret(specs, "nope", "TOKEN", "STORED")[0].env).toEqual({});
+  });
+});
+
+// READING BACK WHAT IS ALREADY ATTACHED.
+//
+// The operator: "when you save an MCP server and go back into it, it doesn't list the credential that was
+// already created/added. It is blank again. It should retain that credentials."
+//
+// The reference IS the record of the attachment — it lives in the server's env (stdio) or headers (HTTP) —
+// so reading it back is how the control can open SHOWING what the server already uses instead of a blank
+// slate.
+describe("reading an existing credential reference", () => {
+  it("recognises exactly the values the plane resolves", () => {
+    // It MIRRORS mcpsettings.secretRefName (a "${" prefix and a "}" suffix), so the client cannot recognise
+    // a value the server would not resolve, or miss one it would.
+    expect(referenceName("${MCP_GITHUB_TOKEN}")).toBe("MCP_GITHUB_TOKEN");
+    expect(referenceName("  ${SPACED}  ")).toBe("SPACED");
+    // Not references: a bare name, a plain value, an unterminated one, or the empty case.
+    expect(referenceName("MCP_GITHUB_TOKEN")).toBeUndefined();
+    expect(referenceName("ghp_literal_token")).toBeUndefined();
+    expect(referenceName("${UNCLOSED")).toBeUndefined();
+    expect(referenceName("${}")).toBe(""); // mirrors the plane's grammar: a reference with an empty name
+    expect(existingReference({ BROKEN: "${}" }, undefined, false)).toBeUndefined(); // …but not an attachment
+    expect(referenceName("")).toBeUndefined();
+    expect(referenceName(undefined)).toBeUndefined();
+  });
+
+  it("finds the attachment in the map the transport ACTUALLY reads", () => {
+    const env = { LOG_LEVEL: "info", GITHUB_PERSONAL_ACCESS_TOKEN: "${MCP_GH}" };
+    const headers = { Authorization: "${REMOTE_TOKEN}" };
+    // A stdio server reads env, so the header is not its attachment (and vice versa).
+    expect(existingReference(env, headers, false)).toEqual({
+      key: "GITHUB_PERSONAL_ACCESS_TOKEN",
+      secretName: "MCP_GH",
+    });
+    expect(existingReference(env, headers, true)).toEqual({
+      key: "Authorization",
+      secretName: "REMOTE_TOKEN",
+    });
+  });
+
+  it("finds nothing when nothing is attached", () => {
+    expect(existingReference({ LOG_LEVEL: "info" }, undefined, false)).toBeUndefined();
+    expect(existingReference(undefined, undefined, false)).toBeUndefined();
+    expect(existingReference({}, {}, false)).toBeUndefined();
   });
 });

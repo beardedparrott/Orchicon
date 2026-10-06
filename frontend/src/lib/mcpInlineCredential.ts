@@ -85,6 +85,41 @@ export function credentialKeyCandidates(
   return out;
 }
 
+// referenceName reads the ${SECRET_NAME} reference a value carries, MIRRORING the plane's own
+// mcpsettings.secretRefName (a "${" prefix and a "}" suffix) so the client recognises exactly the values the
+// server resolves — no more and no fewer.
+//
+// ONE CONSEQUENCE OF MIRRORING IT: `${}` is a reference with an EMPTY name, because the plane's own check is
+// length-and-affixes only (and then looks up a secret named "", which cannot exist). So this returns "" for
+// it rather than pretending the grammar is stricter than it is. Callers that need a real name test for truth
+// — existingReference does, so an empty reference is not reported as an attachment.
+export function referenceName(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const v = value.trim();
+  if (v.length >= 3 && v.startsWith("${") && v.endsWith("}")) return v.slice(2, -1);
+  return undefined;
+}
+
+// existingReference finds the credential a server ALREADY carries: the first key whose value is a ${NAME}
+// reference, in the map its transport reads.
+//
+// IT EXISTS SO THE CONTROL CAN SHOW WHAT IS ALREADY ATTACHED. Without it the picker opens blank even though
+// the server's env holds a reference, and the operator reads that as the credential having been lost — "when
+// you save an MCP server and go back into it, it doesn't list the credential that was already
+// created/added. It is blank again. It should retain that credentials."
+export function existingReference(
+  env: Record<string, string> | undefined,
+  headers: Record<string, string> | undefined,
+  isHTTP: boolean,
+): { key: string; secretName: string } | undefined {
+  const m = (isHTTP ? headers : env) ?? {};
+  for (const [key, value] of Object.entries(m)) {
+    const secretName = referenceName(value);
+    if (secretName) return { key, secretName };
+  }
+  return undefined;
+}
+
 // withReference writes `${NAME}` at KEY in the map this transport reads, returning NEW maps — for an
 // OWNED row, whose env/headers are updated through the MCP service (replaceEnv/replaceHeaders), which is
 // the only difference from an inline spec's attachSecret below: same write, same reference, different

@@ -380,7 +380,7 @@ const CustomSecretChoice = "__custom__"
 // It returns the names the store holds ALONGSIDE the fields, because the submit rule is about the list that
 // was just offered and belongs with the fields that offer it (credentialSubmit).
 func credentialFormFields(
-	initialKey string, keyOptions []kit2.Option, keyPlaceholder string, choices []SecretChoice,
+	initialKey, initialSecret string, keyOptions []kit2.Option, keyPlaceholder string, choices []SecretChoice,
 ) ([]kit2.FieldSpec, map[string]bool) {
 	names := make([]kit2.Option, 0, len(choices)+1)
 	stored := make(map[string]bool, len(choices))
@@ -393,8 +393,12 @@ func credentialFormFields(
 	return []kit2.FieldSpec{
 		{Name: "key", Label: "Credential key", Kind: kit2.KPicker, Required: true,
 			Initial: initialKey, Options: keyOptions, Placeholder: keyPlaceholder},
+		// SEEDED WITH WHAT THE SERVER ALREADY USES, when it already references one. Opening on a blank picker
+		// is what the operator saw as the credential not being kept ("when you save an MCP server and go back
+		// into it, it doesn't list the credential that was already created/added") — and the reference in the
+		// server's own env/headers IS the record of it.
 		{Name: "secret", Label: "Stored secret", Kind: kit2.KPicker, Required: true,
-			Options: names, Placeholder: "pick a stored secret, or choose Custom"},
+			Initial: initialSecret, Options: names, Placeholder: "pick a stored secret, or choose Custom"},
 		// Hidden while a STORED secret is picked, so the two halves cannot be told at once — which is
 		// exactly the confusion this replaces.
 		{Name: "newname", Label: "New secret name", Kind: kit2.KText, Required: true,
@@ -457,7 +461,11 @@ func CredentialForm(title string, spec InlineSpec, choices []SecretChoice, onSav
 	if len(keys) == 1 {
 		initialKey = keys[0].Value
 	}
-	fields, stored := credentialFormFields(initialKey, keys,
+	attachedKey, attachedSecret := attachedReference(spec.Env, spec.Headers, inlineSpecIsHTTP(spec))
+	if attachedKey != "" {
+		initialKey = attachedKey
+	}
+	fields, stored := credentialFormFields(initialKey, attachedSecret, keys,
 		"the name the server reads, e.g. GITHUB_PERSONAL_ACCESS_TOKEN", choices)
 	f := kit2.NewForm(title, fields...)
 	f.Note = "Written into this version's spec as " + spec.ID + "'s ${SECRET_NAME} reference — a " +
@@ -471,6 +479,45 @@ func CredentialForm(title string, spec InlineSpec, choices []SecretChoice, onSav
 	f.Width = 64
 	f.OnSubmit = credentialSubmit(stored, onSave)
 	return f
+}
+
+// secretRefName reads the ${NAME} reference a value carries, mirroring the plane's own
+// mcpsettings.secretRefName. The grammar is only a prefix and a suffix — `${}` is a reference to an empty
+// name there too — so callers test the RESULT for emptiness rather than treating the match as an attachment.
+func secretRefName(v string) string {
+	v = strings.TrimSpace(v)
+	if len(v) >= 3 && strings.HasPrefix(v, "${") && strings.HasSuffix(v, "}") {
+		return v[2 : len(v)-1]
+	}
+	return ""
+}
+
+// attachedReference reports which key a server ALREADY points at a stored secret, and at which secret.
+//
+// The keys are walked in SORTED order so two reads of the same server agree: a map's iteration order is
+// random in Go, and a form that preselects a different key on each open would be worse than one that
+// preselects none.
+func attachedReference(env, headers map[string]string, isHTTP bool) (key, secretName string) {
+	m := env
+	if isHTTP {
+		m = headers
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if name := secretRefName(m[k]); name != "" {
+			return k, name
+		}
+	}
+	return "", ""
+}
+
+// isHTTPRow reports whether an owned row reads HEADERS rather than env.
+func isHTTPRow(row *apiv1.MCPServer) bool {
+	return row.GetTransport() == apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STREAMABLE_HTTP
 }
 
 // OwnedKeyOptions lists the keys a credential could fill for an OWNED row: what the catalog DECLARES the
@@ -532,7 +579,11 @@ func OwnedCredentialForm(
 	if len(keys) == 1 {
 		initialKey = keys[0].Value
 	}
-	fields, stored := credentialFormFields(initialKey, keys,
+	attachedKey, attachedSecret := attachedReference(row.GetEnv(), row.GetHeaders(), isHTTPRow(row))
+	if attachedKey != "" {
+		initialKey = attachedKey
+	}
+	fields, stored := credentialFormFields(initialKey, attachedSecret, keys,
 		"the name this server reads, e.g. GITHUB_PERSONAL_ACCESS_TOKEN", choices)
 	f := kit2.NewForm("Store MCP credential: "+label, fields...)
 	transport := "env"

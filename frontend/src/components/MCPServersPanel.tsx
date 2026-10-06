@@ -40,7 +40,7 @@ import {
 } from "@/api/mcpServers";
 import { MCPServerTransport } from "@/api/gen/orchicon/api/v1/mcp_server_pb";
 import { useCreateSecret, useSecretList, useUpdateSecret } from "@/api/secrets";
-import { attachSecret, credentialKeyCandidates, inlineSpecIsHTTP, withReference } from "@/lib/mcpInlineCredential";
+import { attachSecret, credentialKeyCandidates, existingReference, inlineSpecIsHTTP, withReference } from "@/lib/mcpInlineCredential";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -470,12 +470,25 @@ function CredentialCard({
   const candidates = target
     ? credentialKeyCandidates(target.env, target.headers, target.isHTTP, target.declaredKeys ?? [])
     : [];
-  // A server with no candidate keys has exactly one honest answer — a new one — so the picker defaults to
+  // A server with no candidate keys has exactly one honest answer — a new one — so the picker falls back to
   // that rather than sitting on a value it cannot offer.
-  const keyChoiceValue = keyChoice || candidates[0] || NEW_SELECTION;
-  const resolvedKey = keyChoiceValue === NEW_SELECTION ? newKey.trim() : keyChoiceValue;
-  const creatingSecret = secretChoice === NEW_SELECTION;
-  const resolvedSecret = creatingSecret ? newSecretName.trim() : secretChoice;
+  const candidateDefault = candidates[0] || NEW_SELECTION;
+  // AN ALREADY-ATTACHED CREDENTIAL IS THE STARTING POINT, NOT A BLANK SLATE.
+  //
+  // The server's env (or headers) holds the reference a previous attach wrote, so the control opens SHOWING
+  // it: the key it fills, and the stored secret it names. Opening blank is what the operator reported as the
+  // credential not being retained — and it made the card useless for the question it should answer first,
+  // "what is this server already using?".
+  //
+  // Three-way fallback, in the order that matters: the operator's own choice wins once it is made, then what
+  // the server ALREADY carries, then the default candidate. existingReference reads the map the transport
+  // actually uses, so a header on a stdio server is not mistaken for an attachment.
+  const attached = existingReference(target?.env, target?.headers, !!target?.isHTTP);
+  const effectiveKeyChoice = keyChoice || attached?.key || candidateDefault;
+  const secretChoiceValue = secretChoice || attached?.secretName || "";
+  const resolvedKey = effectiveKeyChoice === NEW_SELECTION ? newKey.trim() : effectiveKeyChoice;
+  const creatingSecret = secretChoiceValue === NEW_SELECTION;
+  const resolvedSecret = creatingSecret ? newSecretName.trim() : secretChoiceValue;
   const keyLabel = target?.isHTTP ? "header" : "env var";
 
   const controls = (
@@ -504,7 +517,7 @@ function CredentialCard({
 
         <select
           className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
-          value={keyChoiceValue}
+          value={effectiveKeyChoice}
           onChange={(e) => setKeyChoice(e.target.value)}
         >
           {candidates.map((k) => (
@@ -515,13 +528,13 @@ function CredentialCard({
           <option value={NEW_SELECTION}>Add a new {keyLabel}…</option>
         </select>
 
-        {keyChoiceValue === NEW_SELECTION && (
+        {effectiveKeyChoice === NEW_SELECTION && (
           <Input placeholder={`New ${keyLabel} name`} value={newKey} onChange={(e) => setNewKey(e.target.value)} />
         )}
 
         <SecretCombobox
           names={secretNames}
-          value={creatingSecret ? "" : secretChoice}
+          value={creatingSecret ? "" : secretChoiceValue}
           disabled={busy}
           onPick={(name) => {
             setSecretChoice(name);

@@ -24,6 +24,9 @@ import { MCPServerTransport } from "@/api/gen/orchicon/api/v1/mcp_server_pb";
 
 // A project-owned GitHub row added from the catalog: the plane then requires the credential key to be a
 // key the entry declares (a catalog requiredEnv) or already has, which is exactly what the picker offers.
+//
+// ITS ENV CARRIES A REFERENCE, because that is what a row looks like AFTER a credential was attached — and
+// reopening the form against exactly this row is the reported case.
 const ROW = {
   id: "srv-gh",
   name: "GitHub",
@@ -32,7 +35,7 @@ const ROW = {
   enabled: true,
   command: "npx",
   args: ["-y", "@modelcontextprotocol/server-github"],
-  env: { GITHUB_PERSONAL_ACCESS_TOKEN: "" },
+  env: { GITHUB_PERSONAL_ACCESS_TOKEN: "${MCP_GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN}" },
   headers: {},
   url: "",
   installStatus: 0,
@@ -183,5 +186,24 @@ describe("MCPServersPanel owned-scope credentials (vault-driven)", () => {
     const combo = src.slice(src.indexOf("function SecretCombobox("), src.indexOf("function CredentialCard("));
     expect(combo).toContain('e.key !== "Enter"');
     expect(combo).toContain("e.preventDefault()");
+  });
+
+  it("opens SHOWING the credential the server already carries", () => {
+    // THE REPORTED CASE, verbatim: "when you save an MCP server and go back into it, it doesn't list the
+    // credential that was already created/added. It is blank again. It should retain that credentials."
+    //
+    // The reference in the row's env IS the record of the attachment (it is what the plane resolves at
+    // session time), so the control reads it back and opens on it rather than on a blank slate. That also
+    // answers the first question the card should answer — "what is this server already using?".
+    const html = renderProject();
+    expect(html).toContain("stored secret: MCP_GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN");
+  });
+
+  it("still lets the operator CHANGE an existing attachment", () => {
+    // Retaining it must not make it read-only: the derived value is a DEFAULT, and the operator's own pick
+    // wins once made. Source-pinned, because the derivation is state (the pick wins by being truthy).
+    expect(src).toContain("const attached = existingReference(target?.env, target?.headers, !!target?.isHTTP)");
+    expect(src).toMatch(/keyChoice \|\| attached\?\.key \|\| candidateDefault/);
+    expect(src).toMatch(/secretChoice \|\| attached\?\.secretName/);
   });
 });
