@@ -42,13 +42,33 @@ export interface ButtonProps
   asChild?: boolean;
 }
 
+// A BUTTON IS NOT A SUBMIT BUTTON UNLESS IT SAYS SO.
+//
+// HTML's default for a <button> with no `type` is "submit", so a `<Button>`
+// rendered inside somebody else's <form> — which is how every reusable
+// component here is used (the worker routes mount MCPServersPanel, FileBrowser
+// and ModelPicker inside the draft-version form) — submitted that form on
+// click. The reported defect: adding an MCP server from the Registry catalog on
+// a worker page ran the panel's handler AND the draft form's onSubmit, so the
+// version was saved, edit mode closed, and the server never appeared.
+//
+// Defaulting to "button" makes the whole codebase safe by construction, and an
+// intended submit stays a one-word opt-in (`<Button type="submit">`, which is
+// how every form here already declares its submit control). This matches the
+// convention MUI/Chakra follow for the same reason, and is the reason
+// components/FileBrowser.tsx and components/FileInputButton.tsx had each already
+// spelled `type="button"` out by hand.
+//
+// `asChild` passes props to whatever it wraps (already an <a> or a custom
+// element), so there the type is left exactly as the caller gave it.
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant, size, asChild = false, ...props }, ref) => {
+  ({ className, variant, size, asChild = false, type, ...props }, ref) => {
     const Comp = asChild ? Slot : "button";
     return (
       <Comp
         className={cn(buttonVariants({ variant, size, className }))}
         ref={ref}
+        {...(asChild ? {} : { type: type ?? "button" })}
         {...props}
       />
     );
