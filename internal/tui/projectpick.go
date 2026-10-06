@@ -317,9 +317,10 @@ func (m *App) setProjectScope(scope string) {
 	// A DELIBERATE CHOICE, recorded so the launch-directory default can never overrule it — including in the
 	// window before the project list has landed.
 	m.projectScopeChosen = true
-	opts := projectScopeOptions(m.railProjects, m.conversations)
-	label := projectScopeLabel(scope, opts)
-	m.dock.SetNotice("project: " + label)
+	// THE PALETTE FOLLOWS the workspace too — see projecttheme.go. This also writes the "project: <label>"
+	// notice (announceScope=true), replacing the plain SetNotice this used to do directly, so the theme
+	// half of the story (bound / default / pin released) rides in the same notice rather than racing it.
+	m.applyScopeTheme(true)
 	if m.convSel >= len(m.railRows()) {
 		m.convSel = max(0, len(m.railRows())-1)
 	}

@@ -701,10 +701,17 @@ func runThemeCmd(m *App, args []string) tea.Cmd {
 // and persists the choice to the profile. Reports false for an unknown name
 // (nothing changes). This is the ONE path for switching themes, shared by the
 // /theme command and the Control screen's Themes pane.
+//
+// PRECEDENCE AGAINST A PROJECT BINDING (criterion 5, see projecttheme.go): this call PINS the palette for
+// the rest of the current scope — themePinned marks it so. The pin is released the next time the workspace
+// changes (applyScopeTheme), at which point the SCOPE's own palette (a project's binding, or this same
+// persisted default when it has none) takes back over, with a notice saying so. An explicit choice never
+// gets silently overwritten mid-scope, and it never silently survives past a workspace switch either.
 func (m *App) SetTheme(name string) bool {
 	if !m.applyThemeAndRefresh(name) {
 		return false
 	}
+	m.themePinned = true
 	if m.profile != nil {
 		m.profile.Theme = name
 	}
@@ -730,7 +737,11 @@ func (m *App) SetTheme(name string) bool {
 		m.dock.SetNotice("theme: " + name + " (this run only — cannot write " + path + ": " + err.Error() + ")")
 		return true
 	}
-	m.dock.SetNotice("theme: " + name + " (saved to " + path + ")")
+	pin := ""
+	if _, _, hasProject := m.CurrentProjectTheme(); hasProject {
+		pin = " — pinned for this workspace; its own palette returns on the next project switch"
+	}
+	m.dock.SetNotice("theme: " + name + " (saved to " + path + ")" + pin)
 	// Reconcile any open Themes pane so its active marker moves.
 	if s := m.screens[TabControl]; s != nil {
 		if r, ok := s.(interface{ Refresh(string) tea.Cmd }); ok {
