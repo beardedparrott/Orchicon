@@ -26,7 +26,7 @@
 // The honest consequence is stated rather than hidden: a server can no
 // longer be defined once and inherited by several projects. The catalog's
 // one-click Add per scope is the mitigation.
-import { useId, useState } from "react";
+import { useState } from "react";
 
 import {
   useMCPServerList,
@@ -36,12 +36,11 @@ import {
   useUpdateMCPServer,
   useDeleteMCPServer,
   useInstallMCPServer,
-  useSetMCPServerSecret,
   usePrefillMCPCatalogEntry,
 } from "@/api/mcpServers";
 import { MCPServerTransport } from "@/api/gen/orchicon/api/v1/mcp_server_pb";
 import { useCreateSecret, useSecretList, useUpdateSecret } from "@/api/secrets";
-import { attachSecret, credentialKeys } from "@/lib/mcpInlineCredential";
+import { attachSecret, credentialKeyCandidates, inlineSpecIsHTTP, withReference } from "@/lib/mcpInlineCredential";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -278,6 +277,192 @@ function InheritedServers({ projectId, projectName }: { projectId: string; proje
   );
 }
 
+// NEW_SELECTION is the sentinel a <select> uses for "type a new one".
+//
+// A SELECT CANNOT HOLD FREE TEXT, AND THAT IS THE POINT. The rule for credentials is "select what exists;
+// typing is only for creating something new", and a picker enforces exactly that: the static case is a
+// choice among real values (the keys the server declares, the names the store holds), and the new case is
+// an explicit, separate choice that reveals its own field. The text boxes this replaced could not tell the
+// two apart — every value looked typed, and a reference to a secret nobody stored was indistinguishable
+// from one that resolves.
+const NEW_SELECTION = "__new__";
+
+// CredentialTarget is one server a credential can be attached to, in either placement.
+interface CredentialTarget {
+  id: string;
+  label: string;
+  /** True when this server reads HEADERS rather than env (streamable HTTP). */
+  isHTTP: boolean;
+  env?: Record<string, string>;
+  headers?: Record<string, string>;
+  /** Keys the server DECLARES it needs (a catalog entry's requiredEnv), offered before its own. */
+  declaredKeys?: string[];
+}
+
+// CredentialDraft is what the card hands back: a target, the key to fill, and the NAME of a stored secret —
+// plus whether that name still has to be stored. The card never handles a VALUE it did not just receive
+// for storing, and the value it does receive goes straight to the secrets store, never to the server.
+interface CredentialDraft {
+  targetId: string;
+  key: string;
+  secretName: string;
+  createNew: boolean;
+  newValue?: string;
+}
+
+// CredentialCard is the ONE credential control: a target, a key, and a stored secret, all chosen from
+// lists — with a field appearing only where a list cannot answer (a new key, or a new secret).
+function CredentialCard({
+  targets,
+  secretNames,
+  busy,
+  onApply,
+  description,
+  note,
+}: {
+  targets: CredentialTarget[];
+  secretNames: string[];
+  busy: boolean;
+  onApply: (draft: CredentialDraft) => void;
+  description: string;
+  note?: string;
+}) {
+  const [targetId, setTargetId] = useState("");
+  const [keyChoice, setKeyChoice] = useState("");
+  const [newKey, setNewKey] = useState("");
+  const [secretChoice, setSecretChoice] = useState("");
+  const [newSecretName, setNewSecretName] = useState("");
+  const [newSecretValue, setNewSecretValue] = useState("");
+
+  const target = targets.find((t) => t.id === (targetId || targets[0]?.id)) ?? targets[0];
+  const candidates = target
+    ? credentialKeyCandidates(target.env, target.headers, target.isHTTP, target.declaredKeys ?? [])
+    : [];
+  // A server with no candidate keys has exactly one honest answer — a new one — so the picker defaults to
+  // that rather than sitting on a value it cannot offer.
+  const keyChoiceValue = keyChoice || candidates[0] || NEW_SELECTION;
+  const resolvedKey = keyChoiceValue === NEW_SELECTION ? newKey.trim() : keyChoiceValue;
+  const creatingSecret = secretChoice === NEW_SELECTION;
+  const resolvedSecret = creatingSecret ? newSecretName.trim() : secretChoice;
+  const keyLabel = target?.isHTTP ? "header" : "env var";
+
+  if (!target) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Credentials</CardTitle>
+          <CardDescription>{description}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            Add a server first — a credential is attached to one of this scope&apos;s servers.
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Credentials</CardTitle>
+        <CardDescription>{description}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="grid gap-2 sm:grid-cols-2">
+          {targets.length > 1 ? (
+            <select
+              className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+              value={target.id}
+              onChange={(e) => {
+                setTargetId(e.target.value);
+                // The candidate keys belong to the SERVER, so they are re-chosen with it.
+                setKeyChoice("");
+                setNewKey("");
+              }}
+            >
+              {targets.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <div className="flex h-9 items-center text-sm text-muted-foreground">{target.label}</div>
+          )}
+
+          <select
+            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+            value={keyChoiceValue}
+            onChange={(e) => setKeyChoice(e.target.value)}
+          >
+            {candidates.map((k) => (
+              <option key={k} value={k}>
+                {k}
+              </option>
+            ))}
+            <option value={NEW_SELECTION}>Add a new {keyLabel}…</option>
+          </select>
+
+          {keyChoiceValue === NEW_SELECTION && (
+            <Input placeholder={`New ${keyLabel} name`} value={newKey} onChange={(e) => setNewKey(e.target.value)} />
+          )}
+
+          <select
+            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+            value={secretChoice}
+            onChange={(e) => setSecretChoice(e.target.value)}
+          >
+            <option value="">Choose a stored secret…</option>
+            {secretNames.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+            <option value={NEW_SELECTION}>Store a new secret…</option>
+          </select>
+
+          {creatingSecret && (
+            <>
+              <Input
+                placeholder="New secret name (e.g. MCP_GITHUB_TOKEN)"
+                value={newSecretName}
+                onChange={(e) => setNewSecretName(e.target.value)}
+              />
+              <Input
+                placeholder="Value (write-only)"
+                type="password"
+                value={newSecretValue}
+                onChange={(e) => setNewSecretValue(e.target.value)}
+              />
+            </>
+          )}
+        </div>
+
+        <Button
+          type="button"
+          size="sm"
+          disabled={busy || !resolvedKey || !resolvedSecret || (creatingSecret && !newSecretValue.trim())}
+          onClick={() =>
+            onApply({
+              targetId: target.id,
+              key: resolvedKey,
+              secretName: resolvedSecret,
+              createNew: creatingSecret,
+              newValue: newSecretValue,
+            })
+          }
+        >
+          <KeyRound className="mr-1 h-3 w-3" /> {creatingSecret ? "Store and attach" : "Attach"}
+        </Button>
+
+        {note && <p className="text-xs text-muted-foreground">{note}</p>}
+      </CardContent>
+    </Card>
+  );
+}
+
+
 export function MCPServersPanel({ scope, readOnly = false, inheritedFrom }: MCPServersPanelProps) {
   const owned = scope.kind !== "workerVersion";
   const scopeFilter =
@@ -303,32 +488,33 @@ export function MCPServersPanel({ scope, readOnly = false, inheritedFrom }: MCPS
   const updateServer = useUpdateMCPServer();
   const deleteServer = useDeleteMCPServer();
   const installServer = useInstallMCPServer();
-  const setSecret = useSetMCPServerSecret();
   const prefill = usePrefillMCPCatalogEntry();
 
   const [form, setForm] = useState<FormState>(emptyForm);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
-  const [secretServerId, setSecretServerId] = useState("");
-  const [secretName, setSecretName] = useState("");
-  const [secretValue, setSecretValue] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
 
-  // The INLINE credential's fields (worker-version scope): which spec, which key, which stored secret,
-  // and an optional value to store a new one under that name.
-  const [credSpecId, setCredSpecId] = useState("");
-  const [credKey, setCredKey] = useState("");
-  const [credSecret, setCredSecret] = useState("");
-  const [credValue, setCredValue] = useState("");
-  // Two datalists per mount, so two panels on one page cannot collide on their suggestion lists.
-  const credKeyListId = useId();
-  const credSecretListId = useId();
+  // THE CREDENTIAL CONTROL OWNS ITS OWN FIELD STATE (CredentialCard below). It used to live here, in two
+  // near-identical sets of fields — one for the owned scope (a server id, a typed key, a typed value) and
+  // one for the inline scope (a spec, a typed key, a typed name, a typed value). Collapsing them into one
+  // component is what removed the typed value: there is no field left for one.
 
   // The write-only credential store, read for its NAMES: the picker offers what exists (the only shape
   // a reference can take and still resolve), and the value path needs the id when it replaces one.
   const { data: secrets = [], error: secretsError } = useSecretList();
   const createSecret = useCreateSecret();
   const updateSecret = useUpdateSecret();
+
+  // The one honest note about the store the picker reads: unreadable, or empty. Either way the operator
+  // needs to know why the list is short — and "Store a new secret…" is always offered, so an unreadable
+  // store never blocks a valid credential.
+  const secretsNote =
+    secretsError != null
+      ? `The tenant secrets store could not be read (${String(secretsError)}), so nothing is offered to pick — store a new secret to proceed.`
+      : secrets.length === 0
+        ? 'No secrets are stored yet — choose "Store a new secret…" to add one, or create it in Settings → Secrets.'
+        : undefined;
 
   // rows is the common render list, whatever the persistence mode.
   const rows: Row[] =
@@ -340,7 +526,6 @@ export function MCPServersPanel({ scope, readOnly = false, inheritedFrom }: MCPS
   // rather than on a display row: a row's `command` is a single string with `args` beside it, while the
   // spec carries the argv and the env/headers a reference has to land in.
   const inlineSpecs: InlineMCP[] = scope.kind === "workerVersion" ? scope.value : [];
-  const credSpec = inlineSpecs.find((sp) => sp.id === (credSpecId || inlineSpecs[0]?.id));
 
   const mechanismBySlug = new Map(catalog.map((c) => [c.slug, c.installMechanism]));
   const runtimeAvailable = (m: string) => {
@@ -449,54 +634,67 @@ export function MCPServersPanel({ scope, readOnly = false, inheritedFrom }: MCPS
     }
   }
 
-  // handleAttachCredential points one of THIS VERSION's inline specs at a stored secret.
+  // handleApplyCredential attaches a STORED credential to one server, in either placement.
   //
-  // THE STORE WRITE COMES FIRST when the operator asked for a name it does not hold, because the spec
-  // must never reference a secret that is not there: a reference is resolved when the worker runs
-  // (mcpsettings.ResolveSecretRefs), so a missing one fails that server's session rather than this
-  // click. The same order the TUI's credential form keeps.
-  async function handleAttachCredential() {
+  // ONE HANDLER, TWO TARGETS, one rule for both: the VALUE is never here. An existing secret is referenced
+  // as ${NAME}; a NEW one is stored FIRST, because a reference is resolved when a session starts
+  // (mcpsettings.ResolveSecretRefs) and a dangling one fails that server's session rather than this click.
+  // So the order is store-then-point, at every scope.
+  async function handleApplyCredential(draft: CredentialDraft) {
     setActionError(null);
-    if (scope.kind !== "workerVersion") return;
-    const specId = credSpecId || inlineSpecs[0]?.id || "";
-    const key = credKey.trim();
-    const secret = credSecret.trim();
-    if (!specId) {
-      setActionError("Add a server first — a credential is attached to one of this version's specs.");
-      return;
-    }
-    if (!key) {
-      setActionError("Name the env var or header the secret should fill (e.g. GITHUB_PERSONAL_ACCESS_TOKEN).");
-      return;
-    }
-    if (!secret) {
-      setActionError("Pick a stored secret, or name one and give it a value to store it.");
-      return;
-    }
-    const stored = secrets.find((s) => s.name === secret);
-    if (!credValue && !stored && !secretsError) {
-      // The form's own rule, about the list it just offered: a name that is not in the store cannot be
-      // referenced. (The plane refuses it at version save too — this says it before the save.) It is
-      // skipped when the list could not be read, so a store we cannot see never blocks a valid name.
-      setActionError(`${secret} is not in the tenant secrets store — pick one from the list, or give it a value to store it.`);
-      return;
-    }
     try {
-      if (credValue) {
-        if (stored) {
-          await updateSecret.mutateAsync({ id: stored.id, value: credValue });
+      if (draft.createNew) {
+        // A name the store already holds is a ROTATION, not a duplicate: the value is replaced under the
+        // same name, so every server referencing it picks the new value up at once. A new name is created.
+        const existing = secrets.find((s) => s.name === draft.secretName);
+        if (existing) {
+          await updateSecret.mutateAsync({ id: existing.id, value: draft.newValue ?? "" });
         } else {
           await createSecret.mutateAsync({
-            name: secret,
-            value: credValue,
-            description: "MCP server credential (attached to a worker version's inline spec)",
+            name: draft.secretName,
+            value: draft.newValue ?? "",
+            description: `MCP server credential (${draft.key})`,
           });
         }
+      } else if (!secretsError && !secrets.some((s) => s.name === draft.secretName)) {
+        // The form's own rule, about the list it just offered: a name the store does not hold cannot be
+        // referenced. Skipped when the store could not be read, so a store we cannot see never blocks a
+        // name that may well be there.
+        setActionError(`${draft.secretName} is not in the tenant secrets store — pick one from the list, or store a new one.`);
+        return;
       }
-      writeInline(attachSecret(scope.value, specId, key, secret));
-      setCredKey("");
-      setCredSecret("");
-      setCredValue("");
+
+      if (scope.kind === "workerVersion") {
+        // Inline: the reference goes into the VERSION's own spec, kept by the worker form's Save.
+        writeInline(attachSecret(scope.value, draft.targetId, draft.key, draft.secretName));
+        return;
+      }
+
+      // Owned: the reference goes into the ROW's env/headers, through the MCP service.
+      const row = rows.find((r) => r.id === draft.targetId);
+      if (!row) {
+        setActionError("Pick a server to attach the credential to.");
+        return;
+      }
+      const isHTTP = row.transport === MCPServerTransport.MCP_SERVER_TRANSPORT_STREAMABLE_HTTP;
+      const { env, headers } = withReference(row.env, row.headers, isHTTP, draft.key, draft.secretName);
+      await updateServer.mutateAsync({
+        id: row.id,
+        // The update REPLACES args/env/headers, so everything the row already holds is echoed back: an
+        // update that sent only the credential would erase the server's own configuration.
+        command: row.command ?? "",
+        replaceArgs: true,
+        args: row.args ?? [],
+        env,
+        replaceEnv: true,
+        url: row.url ?? "",
+        headers,
+        replaceHeaders: true,
+        enabled: row.enabled,
+        // The owner echo is required on update — a differing echo is rejected.
+        projectId: scope.kind === "project" ? scope.projectId : "",
+        conversationId: scope.kind === "conversation" ? scope.conversationId : "",
+      });
     } catch (e) {
       setActionError(String(e));
     }
@@ -754,168 +952,80 @@ export function MCPServersPanel({ scope, readOnly = false, inheritedFrom }: MCPS
         </Card>
       )}
 
-      {/* AN INLINE SPEC'S CREDENTIAL IS ATTACHED, NOT STORED AGAINST A ROW. A worker version has no
-       *  definition row, so the picked secret becomes a ${SECRET_NAME} reference in the spec's own
-       *  env/headers — which is the half that was missing: before this, the operator had to hand-write
-       *  the reference into the Env textarea. The control is the SAME control as the owned scope's
-       *  (a spec, a key, a credential, a value), pointed at a different target.
+      {/* A CREDENTIAL IS SELECTED FROM THE STORE — AT EVERY SCOPE.
        *
-       *  It renders only when the version HAS a spec: there is nothing to attach a credential to
-       *  otherwise, and the Configured-servers card already says so. The version is only ever mounted
-       *  inside the worker form (routes/workers_.$id.tsx, routes/workers_.new.tsx), so the change is
-       *  kept by that form's Save — said below rather than assumed. */}
+       *  The operator's rule: "we should not allow [a typed key/value pair] at all. ALL SECRETS should be
+       *  driven from the secrets that can be stored on the platform", and, for the one case no list can
+       *  answer, "if the user wants to type in a NEW one to create one that is fine, otherwise it should be
+       *  static". So the control below is a PICKER: the KEY comes from what the server declares or already
+       *  carries, the SECRET from the store's own names, and a text field appears only where the operator
+       *  chose to add something new.
+       *
+       *  It replaces a form whose env field invited KEY=VALUE by hand and advertised ${SECRET_NAME} as
+       *  something to type — the shape being removed. A typed value in a server's config is a credential in
+       *  the wrong place: not rotated with the store, not write-only, and written into the version's
+       *  permissions JSON, which is what a published version is immutable ABOUT.
+       *
+       *  ONE CONTROL, THREE SCOPES; only the target differs. A worker version has no definition row, so the
+       *  reference is written into the version's own spec; an owned row's env/headers are updated through
+       *  the MCP service (the card below). Both are the same ${NAME} reference, resolved at session time by
+       *  mcpsettings.ResolveSecretRefs.
+       *
+       *  A worker version's change is kept by the HOST FORM's Save (routes/workers_.$id.tsx), not by this
+       *  panel — stated here rather than assumed, because this panel holds no write at that scope. */}
       {!readOnly && !owned && inlineSpecs.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Credentials</CardTitle>
-            <CardDescription>
-              Point one of this version's servers at a credential in the tenant
-              secrets store: the picked secret is written into that server's env
-              (stdio) or headers (streamable HTTP) as{" "}
-              {`${'${'}SECRET_NAME}`} and resolved when the worker runs. A
-              version has no definition row, so the reference IS the credential.
-              Save the version (or publish it) to keep the change.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            <div className="flex flex-wrap gap-2">
-              <select
-                className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
-                value={credSpecId || inlineSpecs[0]?.id || ""}
-                onChange={(e) => {
-                  setCredSpecId(e.target.value);
-                  setCredKey("");
-                }}
-              >
-                {inlineSpecs.map((sp) => (
-                  <option key={sp.id} value={sp.id}>
-                    {sp.id}
-                  </option>
-                ))}
-              </select>
-              <Input
-                className="max-w-72"
-                list={credKeyListId}
-                placeholder="Env var / header name (e.g. GITHUB_PERSONAL_ACCESS_TOKEN)"
-                value={credKey}
-                onChange={(e) => setCredKey(e.target.value)}
-              />
-              {/* The keys the chosen spec already carries, offered as suggestions — the same list the
-               *  TUI's picker offers. A typable field, because a catalog pick leaves a secret key out
-               *  on purpose and the operator is the one who knows the name it reads. */}
-              <datalist id={credKeyListId}>
-                {credentialKeys(credSpec).map((k) => (
-                  <option key={k} value={k} />
-                ))}
-              </datalist>
-              <Input
-                className="max-w-72"
-                list={credSecretListId}
-                placeholder="Stored secret (pick one, or name a new one)"
-                value={credSecret}
-                onChange={(e) => setCredSecret(e.target.value)}
-              />
-              {/* THE STORE'S NAMES, which is what "selected rather than typed" means: a reference to a
-               *  name that is not stored cannot resolve. Free text stays allowed for one case — a new
-               *  name travelling with a value, which is stored first. */}
-              <datalist id={credSecretListId}>
-                {secrets.map((s) => (
-                  <option key={s.id} value={s.name}>
-                    {s.description}
-                  </option>
-                ))}
-              </datalist>
-              <Input
-                className="max-w-60"
-                placeholder="Value (only to store a new secret)"
-                type="password"
-                value={credValue}
-                onChange={(e) => setCredValue(e.target.value)}
-              />
-              <Button
-                type="button"
-                size="sm"
-                onClick={handleAttachCredential}
-                disabled={createSecret.isPending || updateSecret.isPending}
-              >
-                <KeyRound className="mr-1 h-3 w-3" /> Attach
-              </Button>
-            </div>
-            {secretsError != null && (
-              <p className="text-xs text-muted-foreground">
-                The tenant secrets store could not be read (
-                {String(secretsError)}), so nothing is offered to pick — name
-                the secret and give it a value to store it.
-              </p>
-            )}
-            {secrets.length === 0 && secretsError == null && (
-              <p className="text-xs text-muted-foreground">
-                No secrets are stored yet — name one and give it a value to
-                store it here, or create it in Settings → Secrets.
-              </p>
-            )}
-          </CardContent>
-        </Card>
+        <CredentialCard
+          targets={inlineSpecs.map((sp) => ({
+            id: sp.id,
+            label: sp.id,
+            isHTTP: inlineSpecIsHTTP(sp),
+            env: sp.env,
+            headers: sp.headers,
+          }))}
+          secretNames={secrets.map((s) => s.name)}
+          busy={createSecret.isPending || updateSecret.isPending}
+          onApply={handleApplyCredential}
+          description={
+            "Point one of this version's servers at a stored secret: the chosen name is written into that " +
+            "server's env (stdio) or headers (streamable HTTP) as a ${SECRET_NAME} reference, resolved when " +
+            "the worker runs. A version has no definition row, so the reference IS the credential — save the " +
+            "version to keep it."
+          }
+          note={secretsNote}
+        />
       )}
 
-      {/* The OWNED scopes' credential card: the secret is stored against the ROW's id, and the plane
-       *  points the row's env/header at it for us (mcpsettings.SetSecret). */}
-      {!readOnly && owned && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Credentials</CardTitle>
-            <CardDescription>
-              Write credentials for a server's required secrets (e.g.
-              GITHUB_TOKEN). Stored in the tenant secrets store (the store is
-              tenant-scoped because RLS needs a tenant) — never returned by the
-              API, resolved at session time.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            <div className="flex flex-wrap gap-2">
-              <select
-                className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
-                value={secretServerId}
-                onChange={(e) => setSecretServerId(e.target.value)}
-              >
-                <option value="">Server…</option>
-                {rows.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
-              </select>
-              <Input
-                className="max-w-40"
-                placeholder="Env var name (e.g. GITHUB_TOKEN)"
-                value={secretName}
-                onChange={(e) => setSecretName(e.target.value)}
-              />
-              <Input
-                className="max-w-60"
-                placeholder="Secret value (write-only)"
-                type="password"
-                value={secretValue}
-                onChange={(e) => setSecretValue(e.target.value)}
-              />
-              <Button
-                size="sm"
-                disabled={!secretServerId || !secretName || !secretValue}
-                onClick={async () => {
-                  try {
-                    await setSecret.mutateAsync({ id: secretServerId, name: secretName, value: secretValue });
-                    setSecretName("");
-                    setSecretValue("");
-                  } catch (e) {
-                    setActionError(String(e));
-                  }
-                }}
-              >
-                <KeyRound className="mr-1 h-3 w-3" /> Save secret
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+      {/* The OWNED scopes' credential: the reference lands in the ROW's env/headers, and the value is
+       *  stored once in the tenant secrets store (internal/mcpsettings.ResolveSecretRefs resolves it at
+       *  session time).
+       *
+       *  This replaces a form that typed a key and a value straight into the server — the second report:
+       *  "on projects in the GUI, it does add the servers but it does NOT allow you to select/add from the
+       *  secrets vault. It is still manually typed in key, value pair. We should not allow that option at
+       *  all." The option is gone: there is no value field outside the "store a new secret" case, and that
+       *  value goes to the STORE, never into the server. */}
+      {!readOnly && owned && rows.length > 0 && (
+        <CredentialCard
+          targets={rows.map((r) => ({
+            id: r.id,
+            label: r.name,
+            isHTTP: r.transport === MCPServerTransport.MCP_SERVER_TRANSPORT_STREAMABLE_HTTP,
+            env: r.env,
+            headers: r.headers,
+            // The keys the catalog entry DECLARES this server reads, offered before its own keys — which
+            // makes the right one the default for a catalog-added server instead of a retype.
+            declaredKeys: catalog.find((c) => c.slug === r.catalogSlug)?.requiredEnv ?? [],
+          }))}
+          secretNames={secrets.map((s) => s.name)}
+          busy={createSecret.isPending || updateServer.isPending}
+          onApply={handleApplyCredential}
+          description={
+            "Point a server at a stored secret: the chosen name is written into that server's env (stdio) or " +
+            "headers (streamable HTTP) as a ${SECRET_NAME} reference. The value itself is never stored on the " +
+            "server — it lives once in the tenant secrets store and is resolved when a session uses it."
+          }
+          note={secretsNote}
+        />
       )}
     </div>
   );

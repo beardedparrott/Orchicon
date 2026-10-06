@@ -1,4 +1,18 @@
-// The credential half of an INLINE MCP spec (a worker version's), as pure functions.
+// The credential half of an MCP server's env/headers, as pure functions — BOTH placements.
+//
+// It began as the inline (worker-version) half and now serves an OWNED row as well, because the operator's
+// rule turned out to make the two identical: a credential is DRAWN FROM THE STORE, never typed into the
+// server, and the thing that gets stored on the server is the reference `${SECRET_NAME}` — which
+// internal/mcpsettings.ResolveSecretRefs resolves at session time for an owned row and an inline spec
+// alike (internal/server/server.go, internal/runtime/lifecycle.go). So one control serves all three
+// scopes, differing only in WHERE the reference lands: a worker version's permissions JSON, or an owned
+// row's env/headers.
+//
+// SELECT FROM THE STORE, TYPE ONLY TO CREATE. A value is never handled here. The KEY and the NAME are
+// both STATIC where a static answer exists — the keys the server already declares and carries
+// (credentialKeyCandidates), and the names the store already holds — and typing is offered only to
+// introduce something new, which is the one case no list can answer. The write stays a pure
+// `${NAME}`-into-a-map either way, so the new/static distinction lives in the form, not here.
 //
 // WHY THIS IS A LIB AND NOT INLINE IN THE PANEL. A worker version has no definition row, so a credential
 // cannot be STORED against it — it has to be REFERENCED, and the reference is built into the spec's own
@@ -42,6 +56,55 @@ export function credentialKeys(spec: InlineSpecLike | undefined): string[] {
   if (!spec) return [];
   const m = inlineSpecIsHTTP(spec) ? spec.headers : spec.env;
   return Object.keys(m ?? {}).sort();
+}
+
+// credentialKeyCandidates lists the keys a credential could fill for a server, in the order a picker
+// should offer them: the keys the server DECLARES it needs first (a catalog entry's requiredEnv — the
+// server's own statement of which credential it reads), then whatever keys it already carries for its
+// transport. Deduplicated, declaration first, trimmed.
+//
+// Declared-before-existing is the useful order: for a catalog entry the declared key IS the answer, and
+// the already-present keys are usually the non-secret ones (PATH, LOG_LEVEL). It also means an arbitrary
+// server that declares nothing still gets its own existing keys rather than an empty list.
+export function credentialKeyCandidates(
+  env: Record<string, string> | undefined,
+  headers: Record<string, string> | undefined,
+  isHTTP: boolean,
+  declared: string[] = [],
+): string[] {
+  const existing = Object.keys((isHTTP ? headers : env) ?? {});
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of [...declared, ...existing]) {
+    const k = raw.trim();
+    if (k && !seen.has(k)) {
+      seen.add(k);
+      out.push(k);
+    }
+  }
+  return out;
+}
+
+// withReference writes `${NAME}` at KEY in the map this transport reads, returning NEW maps — for an
+// OWNED row, whose env/headers are updated through the MCP service (replaceEnv/replaceHeaders), which is
+// the only difference from an inline spec's attachSecret below: same write, same reference, different
+// target. Both spell their map the same way so the picker's suggestion and the write cannot disagree.
+export function withReference(
+  env: Record<string, string> | undefined,
+  headers: Record<string, string> | undefined,
+  isHTTP: boolean,
+  key: string,
+  secretName: string,
+): { env: Record<string, string>; headers: Record<string, string> } {
+  const k = key.trim();
+  const name = secretName.trim();
+  const e = { ...(env ?? {}) };
+  const h = { ...(headers ?? {}) };
+  if (!k || !name) return { env: e, headers: h };
+  const ref = "${" + name + "}";
+  if (isHTTP) h[k] = ref;
+  else e[k] = ref;
+  return { env: e, headers: h };
 }
 
 // attachSecret points one key of one spec at a stored tenant secret, as ${NAME}.

@@ -45,7 +45,6 @@ vi.mock("@/api/mcpServers", () => {
     useUpdateMCPServer: idle,
     useDeleteMCPServer: idle,
     useInstallMCPServer: idle,
-    useSetMCPServerSecret: idle,
     usePrefillMCPCatalogEntry: () => ({
       mutateAsync: async () => ({ prefill: { name: "GitHub", command: "npx", args: [] } }),
       isPending: false,
