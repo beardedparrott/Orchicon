@@ -124,9 +124,9 @@ type scopeModal struct {
 	inherited []*apiv1.MCPServer
 
 	// secrets is the tenant secrets store's NAMES, and secretsNote explains why that list may be
-	// incomplete (the store could not be read, or it is longer than one page). A WORKER VERSION needs
-	// them and the other two scopes do not: an owned row stores a credential against its ID, while an
-	// inline spec has no row and can only REFERENCE one — which is a selection, so it needs the list.
+	// incomplete (the store could not be read, or it is longer than one page). EVERY scope needs them:
+	// a credential is never typed onto a server, so each scope's credential form PICKS from this list —
+	// an owned row as much as an inline spec.
 	secrets     []mcpforms.SecretChoice
 	secretsNote string
 
@@ -184,7 +184,13 @@ type scopeDataMsg struct {
 	convID    string
 	mcp       []*apiv1.MCPServer
 	inherited []*apiv1.MCPServer
-	err       string
+	// secrets / secretsNote are the tenant store's NAMES and why that list may be short. They ride along
+	// with the definitions because a credential is SELECTED at every scope now, and this is the read the
+	// open path already makes — a second round trip after `k` would make the picker feel broken rather
+	// than ready.
+	secrets     []mcpforms.SecretChoice
+	secretsNote string
+	err         string
 }
 
 // openScopeModal opens the modal for the OPEN conversation and starts its fetch.
@@ -288,6 +294,11 @@ func (m *App) loadScope() tea.Cmd {
 			return scopeDataMsg{convID: convID, err: err.Error()}
 		}
 		out := scopeDataMsg{convID: convID, mcp: mine.Msg.GetServers()}
+		// THE STORE'S NAMES RIDE ALONG, at every scope: a credential is SELECTED from the tenant store at
+		// every scope now (mcpforms.OwnedCredentialForm / CredentialForm), so all three scopes need the
+		// list. A FAILED STORE READ IS NOT A FAILED OPEN — the definitions are what the operator came to
+		// edit, and secretsNote is how the picker explains a list it could not fill.
+		out.secrets, out.secretsNote = listSecretChoices(ctx, cl)
 		// A PROJECT scope is the source: it inherits nothing, so there is no second read.
 		if isProject {
 			return out
@@ -322,6 +333,7 @@ func (m *App) onScopeData(msg scopeDataMsg) {
 	m.scope.err = msg.err
 	m.scope.mcp = msg.mcp
 	m.scope.inherited = msg.inherited
+	m.scope.secrets, m.scope.secretsNote = msg.secrets, msg.secretsNote
 	// SEAT THE CURSOR ON A REAL ROW before the first paint. A fresh modal starts at 0, which is the
 	// section heading — and a cursor resting on a heading is both wrong to look at and a trap for every
 	// verb (`enter`, `d`, `i` … all resolve through the selected row). The row list only becomes
@@ -1131,9 +1143,13 @@ func (m *App) scopeInstallSelected() tea.Cmd {
 	return nil
 }
 
-// scopeCredentialForSelected opens the write-only credential form for the focused definition. The
-// secrets store is tenant-scoped (RLS needs a tenant) — a credential store, not an MCP scope — which is
-// why the key is typed here rather than derived from the definition.
+// scopeCredentialForSelected opens the credential form for the focused definition.
+//
+// THE CREDENTIAL IS SELECTED, NOT TYPED — at every scope. The form picks the KEY from what the server
+// declares and already carries, and the SECRET from the tenant store's names; a value is asked for only to
+// CREATE a new secret. What this replaced typed a key and a value straight onto the row and stored the value
+// under a plane-derived name, so nothing about it was visible to, or rotatable from, the secrets store
+// ("we should not allow that option at all").
 func (m *App) scopeCredentialForSelected() tea.Cmd {
 	row, ok := m.scopeTarget("credential", "credential")
 	if !ok {
@@ -1144,8 +1160,36 @@ func (m *App) scopeCredentialForSelected() tea.Cmd {
 		m.openInlineCredentialForm(row)
 		return nil
 	}
-	m.convScopeForm = mcpforms.SecretForm(row.name, "", m.conversationSecretSetter(row.id, row.name))
-	m.convScopeForm.Width = m.modalWidth()
+	// AN OWNED ROW gets the reference written into its own env/headers.
+	srv := m.scopeServerByID(row.id)
+	if srv == nil {
+		m.dock.SetError(row.name + " is no longer in this scope — r re-reads it")
+		return nil
+	}
+	choices := m.scope.secrets
+	f := mcpforms.OwnedCredentialForm(row.name, srv, choices, m.ownedCredentialAttacher(srv, choices))
+	if m.scope.secretsNote != "" {
+		// SAID ON THE FORM, where the missing choices are, rather than as a dock error the operator has
+		// to connect to a short picker.
+		f.Note += "\n\n" + m.scope.secretsNote
+	}
+	f.Width = m.modalWidth()
+	m.convScopeForm = f
+	return nil
+}
+
+// scopeServerByID finds one of the scope's OWNED rows by id. Nil when it is gone: the modal can be showing
+// a list the plane has since changed, and a credential form built against a vanished row would write a
+// reference nobody reads.
+func (m *App) scopeServerByID(id string) *apiv1.MCPServer {
+	if m.scope == nil {
+		return nil
+	}
+	for _, s := range m.scope.mcp {
+		if s.GetId() == id {
+			return s
+		}
+	}
 	return nil
 }
 
@@ -1294,7 +1338,8 @@ func storeTenantSecret(ctx context.Context, cl *client.Clients, choices []mcpfor
 	}
 	if _, err := cl.Secrets.CreateSecret(ctx, connect.NewRequest(&apiv1.CreateSecretRequest{
 		Name: name, Value: value,
-		Description: "MCP server credential (attached to a worker version's inline spec)",
+		// Scope-neutral: the same store write serves an owned row and an inline spec.
+		Description: "MCP server credential",
 	})); err != nil {
 		return err
 	}
