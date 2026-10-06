@@ -43,7 +43,14 @@ import {
   scopeOptions,
 } from "@/lib/conversationProjects";
 import { conversationModeLabel, conversationModeMeta } from "@/lib/conversationModes";
-import { activityVerb, extrapolateServerTime } from "@/lib/ask-verbs";
+import { extrapolateServerTime } from "@/lib/ask-verbs";
+import {
+  activityLineAnnouncement,
+  activityLineFor,
+  type ActivityLineInput,
+} from "@/lib/ask-activity-notice";
+import { toolCallsFromMessages, type CountableMessage } from "@/lib/ask-tool-summary";
+import { useRailWidth } from "@/lib/diff/useRailWidth";
 import {
   useListConversations,
   useCreateConversation,
@@ -87,6 +94,7 @@ import {
   ReasoningBubble,
   NoticeBubble,
   ChatScrollContainer,
+  ActivityLine,
 } from "@/components/chat";
 import { useCategoryPreferences, getItemsForCategory } from "@/lib/category-store";
 import { AskCard, isAskUserToolCall, parseAskUserArgs } from "@/components/ask/AskCard";
@@ -525,6 +533,16 @@ function AskOrchiconPage() {
     conversations?.find((c) => c.id === activeConvId)?.turnInFlight ??
     activeConv?.turnInFlight ??
     false;
+  // A TURN IS IN FLIGHT FOR THIS CONVERSATION — EITHER HALF, and both are load-bearing:
+  // `isStreaming` is this client's own live slot (which supplies the local age), and
+  // `serverTurnInFlight` covers a turn this client is not streaming (started in another tab, or a
+  // slot lost on reload). The same union gates the TUI's status line (internal/tui/app.go
+  // transcriptStatusLine: `IsStreaming(conv) || turnInFlight(conv)`), and keying it to the slot
+  // alone was the contradiction the operator reported: "After the initial 'Orchicon is
+  // thinking...', streaming started and the 'Orchicon is thinking...' went away and never came
+  // back." This is the whole regression fix — the activity line is gated on the TURN, not on
+  // "before the first token".
+  const turnInFlight = isStreaming || serverTurnInFlight;
   const turnLastActivityAt =
     conversations?.find((c) => c.id === activeConvId)?.turnLastActivityAt ??
     activeConv?.turnLastActivityAt ??
@@ -533,9 +551,12 @@ function AskOrchiconPage() {
   // its "last activity" line. THE VERB IS ANIMATION, so it needs a repaint between the 15s heartbeats:
   // the word itself is computed from SERVER time (see activityVerb), but `liveNow` supplies only the
   // delta since the last heartbeat, which is what makes it move without a new packet.
-  const liveNow = useNow(
-    (isStreaming && reconnecting && turnProgressing) || isThinking ? 1000 : false,
-  );
+  //
+  // IT NOW RUNS FOR THE WHOLE TURN, not only while reconnecting or before the first token: `liveNow`
+  // is the delta that advances BOTH the rotating verb between the 15s heartbeats AND the line's own
+  // silence age. Freezing it the moment content arrived is exactly the bug this task fixes — the line
+  // would be correct but motionless.
+  const liveNow = useNow(turnInFlight ? 1000 : false);
 
   // effectiveServerTimeMs is the SERVER's clock, extrapolated to this repaint: the last heartbeat's
   // server_time_unix_ms plus ONLY the delta since we received it (liveNow - serverTimeRecvAt). The delta
@@ -550,6 +571,43 @@ function AskOrchiconPage() {
     activeStream?.serverTimeRecvAt ?? null,
     liveNow,
   );
+
+  // THE COUNTER IS A PURE RENDER OVER DATA ALREADY IN HAND. The durable ledger of this turn's tool
+  // calls arrived on the ListMessages page the transcript was built from — the same page
+  // internal/tui/chat/pageToolCalls reads on the Go side — on the poll that is already running (2s
+  // while streaming). So the summary costs NO fetch of its own, and ConvStream stays free of summary
+  // state. `messages` is used rather than the streamed items on purpose: the stream cannot see a tool
+  // call this client did not witness, and the ledger is the server's record.
+  const activityToolCalls = useMemo(
+    () => toolCallsFromMessages(messages as unknown as CountableMessage[] | undefined),
+    [messages],
+  );
+
+  // The line's own ref, so the pane width is measured rather than assumed (fitActivityNotice drops
+  // the counters before the verb when the pane is narrow). useRailWidth is the repo's one
+  // element-width observer; it returns 0 until measured, which activityLineFor treats as unbounded.
+  const activityLineRef = useRef<HTMLDivElement>(null);
+  const activityLineWidth = useRailWidth(activityLineRef);
+
+  // THE DECISION LIVES IN @/lib/ask-activity-notice, NOT HERE. This route cannot be rendered by the
+  // test setup, so logic left inline is logic nothing can assert. Precedence is the TUI's own
+  // (transcriptStatusLine: reconnecting › disconnected › escalation › count › verb): reconnecting
+  // returns null so the existing connection banner keeps its slot and the counter never claims a
+  // liveness the plane cannot deliver.
+  const activityLineInput: ActivityLineInput = {
+    convId: activeConvId ?? "",
+    turnInFlight,
+    reconnecting,
+    lastActivityMs: turnLastActivityAt ? turnLastActivityAt.toDate().getTime() : null,
+    effectiveServerTimeMs,
+    nowMs: liveNow,
+    toolCalls: activityToolCalls,
+    widthPx: activityLineWidth,
+    cardPending: pendingFor(streams[activeConvId ?? ""]?.asks).length > 0,
+  };
+  const activityLine = activityLineFor(activityLineInput);
+  const activityAnnouncement =
+    activityLine === null ? "" : activityLineAnnouncement(activityLineInput);
 
   // Keep the conversation-list poll live while any conversation is running
   // and stop it once everything settles (see listPollMs above). The condition
@@ -1912,30 +1970,33 @@ function AskOrchiconPage() {
                     }
                   })}
 
-                {/* Activity indicator — visible until any streaming content arrives.
+                {/* THE ACTIVITY LINE — for the WHOLE turn, not only before the first token.
+                    The operator, on the old rule: "After the initial 'Orchicon is thinking...',
+                    streaming started and the 'Orchicon is thinking...' went away and never came
+                    back." What they lost was the only signal that the stream is ALIVE, and
+                    mid-reply is exactly when it matters: a long tool call, a slow provider and a
+                    stalled socket look identical from the outside, and with the line gone nothing
+                    on screen changes until the reply finishes.
+
                     The verb ROTATES, indexed on the SERVER's clock: activityVerb takes the last
                     heartbeat's server_time_unix_ms plus only the delta since we received it, so two
                     clients draw the same word for the same server time and a skewed local clock
                     cannot change it. Before the first heartbeat (serverTimeMs === null) the stamp is
-                    0 and the selector returns the list's first word — the line is never empty. */}
-                {isThinking && groupedStream.length === 0 && (
-                  <div className="flex justify-start">
-                    <div className="max-w-[88%] rounded-2xl rounded-tl-sm border border-sky-300/30 bg-sky-50/20 px-4 py-3 dark:border-sky-950/40 dark:bg-sky-950/10">
-                      <div className="flex items-center gap-2">
-                        <span aria-hidden="true" className="shrink-0 inline-block h-1.5 w-1.5 rounded-full bg-sky-500 animate-pulse" />
-                        <span className="min-w-0 text-sm text-muted-foreground [overflow-wrap:anywhere]">
-                          Orchicon is {activityVerb(effectiveServerTimeMs)}
-                          {isUsingFallbackModel && (
-                            <span className="text-muted-foreground/70">
-                              {" "}
-                              ({effectiveModel} — free fallback, may be rate-limited)
-                            </span>
-                          )}
-                          …
-                        </span>
-                      </div>
-                    </div>
-                  </div>
+                    0 and the selector returns the list's first word — the line is never empty.
+
+                    THE DECISION LIVES IN @/lib/ask-activity-notice, NOT HERE. This route cannot be
+                    rendered by the test setup, so logic left inline is logic nothing can assert —
+                    the same reason lib/conversationProjects owns the folder-scope rule. It is
+                    rendered BELOW the transcript and ABOVE the reconnecting banner, which is the
+                    TUI's own order (transcriptStatusLine: reconnecting › disconnected › activity),
+                    and activityLineFor returns null while reconnecting so the banner keeps its slot. */}
+                {activityLine !== null && (
+                  <ActivityLine
+                    text={activityLine}
+                    announcement={activityAnnouncement}
+                    fallbackModel={isUsingFallbackModel ? effectiveModel : null}
+                    containerRef={activityLineRef}
+                  />
                 )}
 
                 {/* Reconnecting notice — the acked turn's socket dropped but

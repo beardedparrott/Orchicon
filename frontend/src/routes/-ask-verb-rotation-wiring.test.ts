@@ -50,7 +50,14 @@ describe("ask-orchicon rotating verb — the heartbeat feeds the clock (GUI half
   });
 
   it("renders the word from the server-derived clock, not from Date.now()", () => {
-    expect(src).toContain("Orchicon is {activityVerb(effectiveServerTimeMs)}");
+    // The WORD now comes from src/lib/ask-activity-notice.ts (the route cannot be rendered by this
+    // suite, so the decision moved where it is testable); it composes the verb from
+    // effectiveServerTimeMs, which the route derives below.
+    const notice = fs.readFileSync(
+      path.join(__dirname, "../lib/ask-activity-notice.ts"),
+      "utf8",
+    );
+    expect(notice).toContain("activityVerb(effectiveServerTimeMs)");
     // effectiveServerTimeMs is the SERVER stamp extrapolated by a delta of our own clock readings — the
     // helper that guarantees a skewed local clock cancels out (both properties asserted in
     // ask-verbs.test.ts).
@@ -59,11 +66,13 @@ describe("ask-orchicon rotating verb — the heartbeat feeds the clock (GUI half
     expect(src).toContain("activeStream?.serverTimeRecvAt ?? null");
     // The verb must never be rendered straight off a raw local clock.
     expect(src).not.toContain("activityVerb(Date.now())");
+    expect(notice).not.toContain("activityVerb(Date.now())");
   });
 
   it("keeps a repaint tick alive while the rotation is on screen", () => {
     // The verb is animation: without a tick between the 15s heartbeats it would freeze for a quarter of a
-    // minute. The existing useNow ticker is widened to also run while isThinking.
-    expect(src).toMatch(/isThinking\s*\?\s*1000\s*:\s*false/);
+    // minute. The useNow ticker now runs for the WHOLE turn (turnInFlight), not only before the first
+    // token — the line must keep rotating after content has arrived.
+    expect(src).toMatch(/useNow\(turnInFlight\s*\?\s*1000\s*:\s*false\)/);
   });
 });

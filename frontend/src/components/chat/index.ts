@@ -8,3 +8,4 @@ export { ErrorBubble } from "./ErrorBubble";
 export { NoticeBubble } from "./NoticeBubble";
 export { SystemPromptBubble } from "./SystemPromptBubble";
 export { ChatScrollContainer } from "./ChatScrollContainer";
+export { ActivityLine } from "./ActivityLine";
