@@ -31,18 +31,21 @@ func TestClassify(t *testing.T) {
 		{"glob", Read},
 		{"todoread", Read},
 
-		// Ignore — a card, a decision record, an opaque MCP tool, a name nobody classified (AC2-4).
+		// Other — REAL WORK this classifier cannot bucket: an MCP tool, a product tool, a name
+		// nobody classified (the under-report fix). Counted, never silently dropped.
+		// Ignore — only the shapes excluded BEFORE the default: a card, a decision record, the
+		// empty name, and todowrite.
 		{"orchicon_ask_user", Ignore},
 		{"ask_user", Ignore},
 		{"askuser", Ignore},
 		{"permission.allow_once", Ignore},
 		{"permission.deny", Ignore},
 		{"permission.never_allow", Ignore},
-		{"mcp__github__create_issue", Ignore},
-		{"mcp__orchicon__create_work_item", Ignore},
-		{"orchicon_list_projects", Ignore},
+		{"mcp__github__create_issue", Other},
+		{"mcp__orchicon__create_work_item", Other},
+		{"orchicon_list_projects", Other},
 		{"", Ignore},
-		{"who_knows", Ignore},
+		{"who_knows", Other},
 		// todowrite is Ignore DELIBERATELY, and the divergence from orchicon.ConsentReadOnlyTools
 		// is a decision rather than an oversight (D7): "reads" on this line means reading the
 		// REPOSITORY, and a todo update neither reads the repo nor changes the work.
@@ -64,7 +67,7 @@ func TestClassify(t *testing.T) {
 func TestClassifyAskUserNeverCounted(t *testing.T) {
 	for _, n := range []string{"orchicon_ask_user", "ask_user", "askuser"} {
 		c := Classify(n)
-		if c == Modify || c == Read || c == Bash {
+		if c == Modify || c == Read || c == Bash || c == Other {
 			t.Errorf("Classify(%q) = %v: an ask_user is a card, not work", n, c)
 		}
 	}
@@ -85,17 +88,25 @@ func TestClassifyPermissionRecordsNeverCounted(t *testing.T) {
 	}
 }
 
-// TestClassifyUnknownIsIgnore is AC4: a name this package does not recognise is NEVER counted into
-// a class it does not belong to. Fails closed, so a new MCP server or a future product tool shows
-// up as silence rather than as work nobody did.
-func TestClassifyUnknownIsIgnore(t *testing.T) {
+// TestClassifyUnknownIsCountedAsOther is the AC2 fix stated as its own assertion: a name this
+// package does not recognise is REAL WORK and must be COUNTED as `Other`. The old default was
+// `Ignore`, which silently dropped 93 of the 94 native Ask product tools — the operator saw
+// "3 bash" on a twelve-call turn. Silence over real work is the defect; a mis-filed bucket is not.
+// The EMPTY name is the one case that is not work: nobody made that call, so it must not count.
+func TestClassifyUnknownIsCountedAsOther(t *testing.T) {
 	for _, n := range []string{
 		"mcp__github__create_issue", "mcp__slack__post_message", "mcp__orchicon__create_work_item",
-		"orchicon_brand_new_tool", "some_future_tool", "", "random-name",
+		"orchicon_brand_new_tool", "some_future_tool", "random-name",
+		"list_projects", "get_work_item", "orchicon_read_project_file",
 	} {
-		if c := Classify(n); c == Modify || c == Read || c == Bash {
-			t.Errorf("Classify(%q) = %v: an unclassified name must be Ignore, not counted", n, c)
+		if c := Classify(n); c != Other {
+			t.Errorf("Classify(%q) = %v, want Other: an unrecognised name is real work and must be counted, "+
+				"not dropped (the under-report this test guards)", n, c)
 		}
+	}
+	// The empty name is NOT work: no call was made, so no count may be manufactured.
+	if c := Classify(""); c != Ignore {
+		t.Errorf("Classify(\"\") = %v, want Ignore: an unnamed entry is not a call anybody made", c)
 	}
 	// Case folding is not "unrecognised": `Write` IS `write`.
 	if Classify("Write") != Modify {

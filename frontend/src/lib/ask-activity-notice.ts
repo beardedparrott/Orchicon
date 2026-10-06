@@ -61,7 +61,7 @@ export function fitActivityNotice(line: string, verb: string, width: number): st
  * turn that made five calls and then died must escalate, not glow, and a tool tally beside the
  * watchdog's verdict would read as work still happening.
  *
- * THE SUMMARY'S OWN TRAILING "last Ns" IS THE AGE, so on the healthy arm it REPLACES
+ * THE SUMMARY'S OWN TRAILING "newest call Ns ago" IS THE AGE, so on the healthy arm it REPLACES
  * "last activity Ns ago" rather than joining it — one age, one phrase, one row.
  */
 export function activityNoticeText(

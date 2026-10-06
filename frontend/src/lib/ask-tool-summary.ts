@@ -3,7 +3,7 @@
 // read verbatim here AND by internal/toolclass/summarize_test.go — so the two clients cannot drift.
 //
 // It is a PORT of internal/toolclass/{toolclass.go,summarize.go}: the counting rule, the fixed
-// modify→read→bash order, the singular/plural labels, the inclusive window boundary, the
+// modify→read→bash→other order, the singular/plural labels, the inclusive window boundary, the
 // skipped zero/absent stamp, the future-stamp clamp and the load-bearing empty string are all that
 // package's, restated here so the web client renders the identical sentence the TUI renders for the
 // same ledger.
@@ -12,7 +12,7 @@
  *  constant because the Go caller and this file must count the SAME span. */
 export const TOOL_SUMMARY_WINDOW_MS = 30_000;
 
-export type ToolClass = "modify" | "read" | "bash" | "ignore";
+export type ToolClass = "modify" | "read" | "bash" | "other" | "ignore";
 
 const MODIFY_TOOLS = new Set(["write", "edit", "batch_write"]);
 const READ_TOOLS = new Set([
@@ -27,8 +27,9 @@ const READ_TOOLS = new Set([
 const BASH_TOOLS = new Set(["bash", "shell"]);
 
 /** Mirrors toolclass.Classify: case-insensitive, whitespace-tolerant, `orchicon_` stripped,
- *  `permission.` -> ignore, ask_user (3 spellings) -> ignore, UNKNOWN -> ignore (the load-bearing
- *  default: a name nobody has heard of is never counted into a bucket it does not belong to). */
+ *  `permission.` -> ignore, ask_user (3 spellings) -> ignore, todowrite -> ignore, the empty name ->
+ *  ignore, and UNKNOWN -> other (the load-bearing default: a name nobody has heard of is real work
+ *  and must be COUNTED, not silently dropped). */
 export function classifyTool(toolName: string): ToolClass {
   let n = (toolName ?? "").toLowerCase().trim();
   // A consent decision is a record OF a decision, not work (tool_ledger.go): counting an approval
@@ -38,12 +39,17 @@ export function classifyTool(toolName: string): ToolClass {
   if (n.startsWith("orchicon_")) n = n.slice("orchicon_".length);
   // ask_user is a CARD, not work — all three spellings the clients use.
   if (n === "ask_user" || n === "askuser" || n === "ask_user_question") return "ignore";
+  // todowrite is session bookkeeping, not operator-meaningful work: excluded EXPLICITLY (not by the
+  // default) so a permanent counter does not appear on every line. Mirrors toolclass.go's D4 guard.
+  if (n === "todowrite") return "ignore";
   if (MODIFY_TOOLS.has(n)) return "modify";
   if (READ_TOOLS.has(n)) return "read";
   if (BASH_TOOLS.has(n)) return "bash";
-  // Everything else: MCP (`mcp__*`), product tools outside this line's three buckets, todowrite,
-  // and unknown names.
-  return "ignore";
+  // An empty name is not a call anybody made: never manufacture a count.
+  if (n === "") return "ignore";
+  // Everything else is REAL WORK, counted as `other`: Orchicon product tools (`list_projects`),
+  // MCP tools (`mcp__*`) and any name added later. This is the default the under-report was missing.
+  return "other";
 }
 
 /** One tool call the line can count: the name to classify and the epoch-MILLISECOND instant it was
@@ -91,6 +97,7 @@ interface Counted {
   modifies: number;
   reads: number;
   bashes: number;
+  others: number;
   newest: number;
   counted: boolean;
 }
@@ -102,7 +109,7 @@ function countWindow(
 ): Counted {
   // A non-positive window is a caller slip, not a request for a blank line — mirror summarize.go.
   const window = windowMs > 0 ? windowMs : TOOL_SUMMARY_WINDOW_MS;
-  const r: Counted = { modifies: 0, reads: 0, bashes: 0, newest: 0, counted: false };
+  const r: Counted = { modifies: 0, reads: 0, bashes: 0, others: 0, newest: 0, counted: false };
   for (const c of calls) {
     if (!c || c.atMs === 0) continue; // no timestamp: skipped, never placed at the epoch
     let ageMs = nowMs - c.atMs;
@@ -117,6 +124,9 @@ function countWindow(
         break;
       case "bash":
         r.bashes++;
+        break;
+      case "other":
+        r.others++;
         break;
       default:
         continue;
@@ -144,13 +154,16 @@ export function toolCountPhrase(
   if (r.modifies > 0) parts.push(countLabel(r.modifies, "modify", "modifies"));
   if (r.reads > 0) parts.push(countLabel(r.reads, "read", "reads"));
   if (r.bashes > 0) parts.push(countLabel(r.bashes, "bash", "bash")); // "bash" deliberately invariable
+  // The catch-all goes LAST: the three NAMED buckets keep their fixed leading order so the line
+  // never reorders as counts change (AC6).
+  if (r.others > 0) parts.push(countLabel(r.others, "other tool", "other tools"));
   return parts.join(" · ");
 }
 
 /** The full summary, the EXACT string toolclass.Summarize renders for the same ledger:
- *  "5 modifies · 2 reads · 3 bash · last 30s". Empty input, JSON-less input or all-ignored calls
- *  return "" — load-bearing, because the caller APPENDS this to an existing line and "0 modifies"
- *  would be a false claim that work is happening. Pinned by rollup_fixture.json. */
+ *  "5 modifies · 2 reads · 3 bash · newest call 30s ago". Empty input, JSON-less input or
+ *  all-ignored calls return "" — load-bearing, because the caller APPENDS this to an existing line
+ *  and "0 modifies" would be a false claim that work is happening. Pinned by rollup_fixture.json. */
 export function summarizeToolCalls(
   calls: readonly ToolCallStamp[],
   nowMs: number,
@@ -164,5 +177,7 @@ export function summarizeToolCalls(
   // The age rounds with the activity line's own rule: Round-to-nearest SECOND
   // (`int(d.Round(time.Second)/time.Second)` in internal/tui/app.go), not floor.
   const ageSecs = Math.round(ageMs / 1000);
-  return `${phrase} · last ${ageSecs}s`;
+  // `newest call Ns ago` NAMES what is being aged: a bare `last Ns` read as "the window is Ns long"
+  // (AC7) — the operator's own misreading of `last 12s` against a 30s window.
+  return `${phrase} · newest call ${ageSecs}s ago`;
 }

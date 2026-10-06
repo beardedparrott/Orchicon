@@ -120,13 +120,13 @@ function verbWord(line: string): string {
   return m ? m[1] : "";
 }
 
-/** The count half, dropping the clients' own trailing "last Ns" age. */
+/** The count half, dropping the clients' own trailing "newest call Ns ago" age. */
 function countHalf(line: string): string {
   const i = line.indexOf("…");
   if (i < 0) return "";
   let rest = line.slice(i + 1).replace(/^\s*·\s*/, "").trim();
   if (rest.startsWith("no output for") || rest.startsWith("last activity")) return "";
-  const j = rest.lastIndexOf("· last ");
+  const j = rest.lastIndexOf("· newest call ");
   if (j >= 0) rest = rest.slice(0, j).trim();
   return rest;
 }

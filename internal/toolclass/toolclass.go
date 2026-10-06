@@ -38,8 +38,16 @@ const (
 	// distinguishes "edits" from "commands" because the operator reads those as different work.
 	// The reconcile test asserts `bash` is a MUTATING class, not that it is Modify.
 	Bash
-	// Ignore contributes nothing. It covers ask_user (a card, not work), the synthetic
-	// permission.* records, MCP tools, and every name this package does not recognise.
+	// Other is real work this package cannot place in one of the three named buckets: an Orchicon
+	// product tool (`list_projects`, `get_work_item`, …), an MCP tool (`mcp__*`), or any name
+	// added later. It is COUNTED deliberately, because this line tallies work that is HAPPENING
+	// and a call the classifier cannot bucket is still a call the model made. Classify returns it
+	// for every unrecognised name (the unknown-name default), so the earlier `Ignore` default —
+	// which silently dropped 93 of the 94 native Ask product tools — cannot recur.
+	Other
+	// Ignore contributes nothing. It covers the shapes excluded BEFORE that default: ask_user (a
+	// card, not work), the synthetic permission.* records, `todowrite` (session bookkeeping, D4)
+	// and the empty name (a call nobody made, D5). It is NOT the unknown-name default — Other is.
 	Ignore
 )
 
@@ -70,9 +78,12 @@ const permissionPrefix = "permission."
 // Classify maps a tool name to its class. Case-insensitive and whitespace-tolerant, because the
 // name arrives from a model (and from a JSON column).
 //
-// AN UNRECOGNISED NAME IS ALWAYS Ignore. That is the load-bearing default (AC4): a tool this
-// package has never heard of — an operator's MCP server (`mcp__github__create_issue`), a future
-// product tool, a misspelling — is never counted into a class it does not belong to.
+// AN UNRECOGNISED NAME IS COUNTED AS Other. That is the default, and it is load-bearing: a tool
+// this package has never heard of — an Orchicon product tool (`list_projects`), an operator's MCP
+// server (`mcp__github__create_issue`), a future product tool — is real work the operator watched
+// happen, so the failure mode to avoid is SILENCE, not a mis-filed count. Other is the bucket
+// named for exactly that and is never merged into Modify/Read/Bash. Ignore is reserved for the
+// shapes excluded BEFORE this default: a consent record, a card, `todowrite`, the empty name.
 func Classify(toolName string) Class {
 	n := strings.ToLower(strings.TrimSpace(toolName))
 	// A consent decision is a record OF a decision, not work (tool_ledger.go:74).
@@ -85,6 +96,12 @@ func Classify(toolName string) Class {
 	if n == "ask_user" || n == "askuser" || n == "ask_user_question" {
 		return Ignore
 	}
+	// `todowrite` is session bookkeeping the model does every turn, not operator-meaningful work:
+	// counting it would put a permanent counter on every line. Excluded EXPLICITLY, not by the
+	// default, and pinned by reconcile_test.go's D7 divergence assertion.
+	if n == "todowrite" {
+		return Ignore
+	}
 	switch {
 	case modifyTools[n]:
 		return Modify
@@ -93,7 +110,12 @@ func Classify(toolName string) Class {
 	case bashTools[n]:
 		return Bash
 	}
-	// Everything else: MCP (`mcp__*`, including `mcp__orchicon__*`), product tools outside this
-	// line's three buckets, `todowrite` (see summarize.go's D7 note), and unknown names.
-	return Ignore
+	// An empty name is not a call anybody made: it must not manufacture a count.
+	if n == "" {
+		return Ignore
+	}
+	// Everything else is REAL WORK, counted as Other: Orchicon product tools (`list_projects`,
+	// `get_work_item`, …), MCP tools (`mcp__*`, including `mcp__orchicon__*`) and any name added
+	// later. This is the default the under-report was missing.
+	return Other
 }

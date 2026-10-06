@@ -44,7 +44,7 @@ describe("ask-activity-notice — the line survives first content", () => {
       nowMs: 5_000,
       toolCalls: [{ toolName: "write", atMs: 4_500 }],
     });
-    expect(line).toContain("1 modify · last 1s");
+    expect(line).toContain("1 modify · newest call 1s ago");
     expect(line!.startsWith("Orchicon is ")).toBe(true);
   });
 
@@ -190,13 +190,13 @@ describe("ask-activity-notice — resize degrades like the TUI", () => {
   const verb = "Orchicon is thinking…";
 
   it("width 0 is UNBOUNDED (not yet measured), and a fitting line is untouched", () => {
-    const line = `${verb} · 3 modifies · 1 read · last 4s`;
+    const line = `${verb} · 3 modifies · 1 read · newest call 4s ago`;
     expect(fitActivityNotice(line, verb, 0)).toBe(line);
     expect(fitActivityNotice(line, verb, 1_000)).toBe(line);
   });
 
   it("STEP 1 — the summary goes first", () => {
-    const line = `${verb} · 3 modifies · 1 read · last 4s`;
+    const line = `${verb} · 3 modifies · 1 read · newest call 4s ago`;
     expect(fitActivityNotice(line, verb, [...verb].length)).toBe(verb);
   });
 
@@ -236,10 +236,10 @@ describe("ask-activity-notice — resize degrades like the TUI", () => {
 
   it("activityNoticeText is total over its bands", () => {
     expect(activityNoticeText(0, 0, "", 0)).toBe(`Orchicon is ${ASK_VERBS[0]}…`);
-    expect(activityNoticeText(5_000, 0, "1 read · last 1s", 0)).toBe(
-      `Orchicon is ${ASK_VERBS[0]}… · 1 read · last 1s`,
+    expect(activityNoticeText(5_000, 0, "1 read · newest call 1s ago", 0)).toBe(
+      `Orchicon is ${ASK_VERBS[0]}… · 1 read · newest call 1s ago`,
     );
-    expect(activityNoticeText(30_000, 0, "1 read · last 1s", 0)).toBe(
+    expect(activityNoticeText(30_000, 0, "1 read · newest call 1s ago", 0)).toBe(
       `Orchicon is ${ASK_VERBS[0]}… · no output for 30s`,
     );
   });

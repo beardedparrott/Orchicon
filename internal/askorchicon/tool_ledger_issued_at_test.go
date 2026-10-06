@@ -13,7 +13,7 @@ import (
 
 // Issue-time stamping for the live tool ledger.
 //
-// The rolling-window summary ("5 modifies · 2 reads · 3 bash · last 30s") needs
+// The rolling-window summary ("5 modifies · 2 reads · 3 bash · newest call 30s ago") needs
 // to know WHEN each tool call was issued, and the ledger had no time at all.
 // These tests pin the new `issued_at_unix_ms` field at every place it can be
 // written, preserved, or silently lost:

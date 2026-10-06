@@ -66,7 +66,7 @@ func TestSummarizeAcceptanceExample(t *testing.T) {
 		{"function_name":"shell","issued_at_unix_ms":35000},
 		{"function_name":"bash","issued_at_unix_ms":35000}
 	]`
-	const want = "5 modifies · 2 reads · 3 bash · last 30s"
+	const want = "5 modifies · 2 reads · 3 bash · newest call 30s ago"
 	if got := Summarize([]byte(ledger), now, DefaultWindow); got != want {
 		t.Fatalf("Summarize = %q, want %q", got, want)
 	}
@@ -85,22 +85,22 @@ func TestSummarizeFormatEdgeCases(t *testing.T) {
 		{
 			"a single entry is singular",
 			`[{"function_name":"write","issued_at_unix_ms":100000}]`,
-			"1 modify · last 0s",
+			"1 modify · newest call 0s ago",
 		},
 		{
 			"two entries are plural",
 			`[{"function_name":"write","issued_at_unix_ms":100000},{"function_name":"edit","issued_at_unix_ms":100000}]`,
-			"2 modifies · last 0s",
+			"2 modifies · newest call 0s ago",
 		},
 		{
 			"a zero class is omitted, and the separator never dangles",
 			`[{"function_name":"bash","issued_at_unix_ms":100000}]`,
-			"1 bash · last 0s",
+			"1 bash · newest call 0s ago",
 		},
 		{
 			"the order is modify, read, bash however the ledger is ordered",
 			`[{"function_name":"bash","issued_at_unix_ms":100000},{"function_name":"glob","issued_at_unix_ms":100000},{"function_name":"write","issued_at_unix_ms":100000}]`,
-			"1 modify · 1 read · 1 bash · last 0s",
+			"1 modify · 1 read · 1 bash · newest call 0s ago",
 		},
 		{
 			"nothing counted is the EMPTY string, never 0 modifies",
@@ -129,7 +129,7 @@ func TestSummarizeWindowIsReal(t *testing.T) {
 		{"function_name":"bash","issued_at_unix_ms":40000}
 	]`
 	// issued_at_unix_ms=0 is skipped (no window can place it); 10000 is 30s old and IS counted; 40000 is now.
-	if got, want := Summarize([]byte(ledger), now, DefaultWindow), "1 read · 1 bash · last 0s"; got != want {
+	if got, want := Summarize([]byte(ledger), now, DefaultWindow), "1 read · 1 bash · newest call 0s ago"; got != want {
 		t.Errorf("Summarize = %q, want %q", got, want)
 	}
 
@@ -138,7 +138,7 @@ func TestSummarizeWindowIsReal(t *testing.T) {
 		t.Errorf("an entry 1ms past the window must not be counted, got %q", got)
 	}
 	exactBoundary := `[{"function_name":"read","issued_at_unix_ms":10000}]`
-	if got, want := Summarize([]byte(exactBoundary), now, DefaultWindow), "1 read · last 30s"; got != want {
+	if got, want := Summarize([]byte(exactBoundary), now, DefaultWindow), "1 read · newest call 30s ago"; got != want {
 		t.Errorf("an entry exactly window-old is counted (inclusive rule): got %q, want %q", got, want)
 	}
 }
@@ -165,12 +165,12 @@ func TestSummarizeIsPureAndTotal(t *testing.T) {
 		{"entry with no timestamp", []byte(`[{"function_name":"write"}]`), DefaultWindow, ""},
 		{"entry with a zero timestamp", []byte(`[{"function_name":"write","issued_at_unix_ms":0}]`), DefaultWindow, ""},
 		{"entry with no function name", []byte(`[{"issued_at_unix_ms":50000}]`), DefaultWindow, ""},
-		{"a ledger of only ignored tools", []byte(
-			`[{"function_name":"todoread_typo","issued_at_unix_ms":50000},{"function_name":"mcp__x__y","issued_at_unix_ms":50000},{"function_name":"","issued_at_unix_ms":50000}]`), DefaultWindow, ""},
+		{"unrecognised names COUNT as other, but the empty name is still skipped", []byte(
+			`[{"function_name":"todoread_typo","issued_at_unix_ms":50000},{"function_name":"mcp__x__y","issued_at_unix_ms":50000},{"function_name":"","issued_at_unix_ms":50000}]`), DefaultWindow, "2 other tools · newest call 0s ago"},
 		{"a future timestamp clamps rather than dropping the work", []byte(
-			`[{"function_name":"write","issued_at_unix_ms":90000}]`), DefaultWindow, "1 modify · last 0s"},
+			`[{"function_name":"write","issued_at_unix_ms":90000}]`), DefaultWindow, "1 modify · newest call 0s ago"},
 		{"window of zero falls back to the named default", []byte(
-			`[{"function_name":"write","issued_at_unix_ms":40000}]`), 0, "1 modify · last 10s"},
+			`[{"function_name":"write","issued_at_unix_ms":40000}]`), 0, "1 modify · newest call 10s ago"},
 		{"a zero timestamp is untouched by a long window", []byte(
 			`[{"function_name":"write","issued_at_unix_ms":0}]`), time.Hour, ""},
 	}
@@ -199,7 +199,7 @@ func TestSummarizeIsIdempotentAndClockless(t *testing.T) {
 	if first != second {
 		t.Fatalf("Summarize is not deterministic: %q then %q", first, second)
 	}
-	if want := "1 modify · 1 read · last 25s"; first != want {
+	if want := "1 modify · 1 read · newest call 25s ago"; first != want {
 		t.Fatalf("Summarize = %q, want %q", first, want)
 	}
 	// The input is not mutated: the same bytes must still parse to the same ledger.
@@ -218,7 +218,7 @@ func TestSummarizeIsIdempotentAndClockless(t *testing.T) {
 func TestSummarizeRoundsTheAgeLikeTheActivityLine(t *testing.T) {
 	now := time.UnixMilli(10_500)
 	ledger := `[{"function_name":"write","issued_at_unix_ms":10000}]`
-	want := "1 modify · last " + itoaLikeAppDotGo(now.UnixMilli()-10_000) + "s"
+	want := "1 modify · newest call " + itoaLikeAppDotGo(now.UnixMilli()-10_000) + "s ago"
 	if got := Summarize([]byte(ledger), now, DefaultWindow); got != want {
 		t.Errorf("Summarize = %q, want %q (the activity line's own rounding)", got, want)
 	}
@@ -234,20 +234,20 @@ func itoaLikeAppDotGo(deltaMs int64) string {
 // TestSummarizeAgeIsTheNewestCountedEntryNotZero pins the invariant QA found broken: the trailing
 // age is the age of the NEWEST COUNTED entry, and it must be derived from that entry even when its
 // stamp is a malformed NEGATIVE value. Seeding `newest` at 0 and taking the max left the age
-// measured from the EPOCH (here `now - 0` = "last 10s") instead of from the entry that was actually
-// counted ("last 15s") — the "who is newest" sentinel must be the first counted entry, not 0.
+// measured from the EPOCH (here `now - 0` = an age of 10s) instead of from the entry that was
+// actually counted (an age of 15s) — the "who is newest" sentinel must be the first counted entry, not 0.
 // Unreachable from the real producer (time.UnixMilli is always positive), but a total function
 // must not violate its own stated contract on malformed input.
 func TestSummarizeAgeIsTheNewestCountedEntryNotZero(t *testing.T) {
 	now := time.UnixMilli(10_000)
 	ledger := `[{"function_name":"write","issued_at_unix_ms":-5000}]`
-	if got, want := Summarize([]byte(ledger), now, DefaultWindow), "1 modify · last 15s"; got != want {
+	if got, want := Summarize([]byte(ledger), now, DefaultWindow), "1 modify · newest call 15s ago"; got != want {
 		t.Errorf("Summarize(negative-stamped entry) = %q, want %q "+
 			"(the age is measured from the counted entry, not from a 0 sentinel)", got, want)
 	}
 	// With one real and one negative entry, the newest is still the real one.
 	both := `[{"function_name":"write","issued_at_unix_ms":-5000},{"function_name":"read","issued_at_unix_ms":9000}]`
-	if got, want := Summarize([]byte(both), now, DefaultWindow), "1 modify · 1 read · last 1s"; got != want {
+	if got, want := Summarize([]byte(both), now, DefaultWindow), "1 modify · 1 read · newest call 1s ago"; got != want {
 		t.Errorf("Summarize(negative + real) = %q, want %q", got, want)
 	}
 }

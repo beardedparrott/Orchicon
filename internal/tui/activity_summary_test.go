@@ -125,7 +125,7 @@ func TestTheLineReportsTheRollingToolSummary(t *testing.T) {
 func TestSummaryYieldsToEscalation(t *testing.T) {
 	const stamp int64 = activityTestServerTime
 	verb := "Orchicon is " + chat.VerbAt(stamp) + "…"
-	summary := "3 modifies · 1 read · last 4s"
+	summary := "3 modifies · 1 read · newest call 4s ago"
 
 	// (a) THE PURE FUNCTION. One summary, three silences, and the band switch decides which text survives.
 	cases := []struct {
@@ -307,9 +307,9 @@ func TestTheSummaryNeverWrapsTheFooterRow(t *testing.T) {
 			silent  time.Duration
 			summary string
 		}{
-			{"with a summary to drop", 4 * time.Second, "3 modifies · 1 read · last 4s"},
+			{"with a summary to drop", 4 * time.Second, "3 modifies · 1 read · newest call 4s ago"},
 			{"the bare-verb arm", 0, ""},
-			{"the escalation band", 30 * time.Second, "3 modifies · 1 read · last 4s"},
+			{"the escalation band", 30 * time.Second, "3 modifies · 1 read · newest call 4s ago"},
 		} {
 			got := turnActivityNotice(c.silent, stamp, c.summary, w)
 			if got == "" {
@@ -330,7 +330,7 @@ func TestTheSummaryNeverWrapsTheFooterRow(t *testing.T) {
 	}
 	// AND THE ESCALATION BAND STILL WINS AT THAT FLOOR — never the counter — so the truncation cannot
 	// resurrect a stale summary inside a stall.
-	if got := turnActivityNotice(30*time.Second, stamp, "3 modifies · 1 read · last 4s", 24); strings.Contains(got, "modifies") {
+	if got := turnActivityNotice(30*time.Second, stamp, "3 modifies · 1 read · newest call 4s ago", 24); strings.Contains(got, "modifies") {
 		t.Errorf("at the width floor the counter survived an escalation: %q", got)
 	}
 }

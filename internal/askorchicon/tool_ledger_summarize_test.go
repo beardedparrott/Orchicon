@@ -54,7 +54,7 @@ func TestSummarizeCountsTheRealLedgerShape(t *testing.T) {
 	}
 
 	now := time.UnixMilli(1_700_000_000_000)
-	const want = "2 modifies · 1 read · 1 bash · last 0s"
+	const want = "2 modifies · 1 read · 1 bash · newest call 0s ago"
 	if got := toolclass.Summarize(calls, now, toolclass.DefaultWindow); got != want {
 		t.Errorf("toolclass.Summarize(real ledger) = %q, want %q\n"+
 			"the ledger's field tag and the summarizer's reader tag have diverged", got, want)
@@ -85,7 +85,7 @@ func TestSummarizeSkipsAnUnstampedPreChangeRowOverRealLedgerBytes(t *testing.T) 
 	}
 
 	now := time.UnixMilli(9_000_000_000_000)
-	const want = "1 modify · last 0s"
+	const want = "1 modify · newest call 0s ago"
 	if got := toolclass.Summarize(mixed, now, toolclass.DefaultWindow); got != want {
 		t.Errorf("Summarize(real ledger + an untimestamped pre-change row) = %q, want %q "+
 			"(the old row is skipped; the stamped one still counts)", got, want)
@@ -155,5 +155,47 @@ func TestTheIssueStampSurvivesTheWire(t *testing.T) {
 	if summary := toolclass.SummarizeCalls(callsForLine, time.UnixMilli(stamp), toolclass.DefaultWindow); summary == "" {
 		t.Error("SummarizeCalls over the wire tool calls rendered nothing — the counter the TUI draws would be " +
 			"empty for a turn that just made two calls")
+	}
+}
+
+// TestTheOperatorTurnIsFullyCounted is AC1 (the measurement) and AC2 (the fix) on a REAL ledger.
+//
+// The operator reported "3 bash and nothing else" on a turn that had plainly been working, because
+// the classifier's unknown-name default was `Ignore`: every native Ask product tool is emitted under
+// its BARE name (`native_tools.go:84` — the registry is keyed by bare name), so `list_projects`,
+// `get_work_item`, … fell straight through to Ignore and only the host-suite `bash` ever counted.
+//
+// This drives the REAL ledger (real `recordStart` stamps, real `snapshot()` bytes) through the real
+// `toolclass.Summarize` for a turn of 3 bash + 9 product calls, and pins that the line now accounts
+// for ALL TWELVE. Before the fix the same bytes rendered "3 bash · last 0s" — three of twelve.
+func TestTheOperatorTurnIsFullyCounted(t *testing.T) {
+	const nowMs int64 = 1_700_000_000_000
+	withLedgerClock(t, nowMs)
+	led := newToolLedger()
+	for _, name := range []string{
+		"bash", "bash", "bash",
+		"list_projects", "list_work_items", "get_work_item", "read_project_file",
+		"list_executions", "get_execution", "list_ideas", "get_project", "list_audit_events",
+	} {
+		led.recordStart(name)
+	}
+	calls, _ := led.snapshot()
+
+	// The raw ledger: 12 rows, each stamped, each carrying the BARE product name (so the prefix
+	// strip is not in play and the unknown-name default is the only thing that could drop them).
+	rows := decodeLedgerCalls(t, calls)
+	if len(rows) != 12 {
+		t.Fatalf("the real ledger has %d rows, want 12: %s", len(rows), calls)
+	}
+	for i, r := range rows {
+		if r.IssuedAtUnixMs != nowMs {
+			t.Errorf("row %d (%s) is unstamped (%d) — the summarizer would skip it", i, r.FunctionName, r.IssuedAtUnixMs)
+		}
+	}
+
+	const want = "3 bash · 9 other tools · newest call 0s ago"
+	if got := toolclass.Summarize(calls, time.UnixMilli(nowMs), toolclass.DefaultWindow); got != want {
+		t.Errorf("Summarize(operator turn) = %q, want %q\n"+
+			"the turn made 12 calls in the window; the line must account for all 12", got, want)
 	}
 }

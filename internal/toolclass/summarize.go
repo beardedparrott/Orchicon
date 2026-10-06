@@ -36,7 +36,7 @@ type ledgerCall struct {
 
 // Summarize renders the rolling-window activity summary for a turn's tool_calls JSON:
 //
-//	"5 modifies · 2 reads · 3 bash · last 30s"
+//	"5 modifies · 2 reads · 3 bash · newest call 30s ago"
 //
 // It is PURE and TOTAL: no I/O, no clock of its own (the caller passes now), and it never panics.
 // An empty, nil, unparseable, JSON-null or non-array input returns "".
@@ -47,7 +47,9 @@ type ledgerCall struct {
 //
 // The trailing age is the age of the NEWEST COUNTED entry, rounded with the SAME rule as the
 // activity line (internal/tui/app.go: `int(d.Round(time.Second)/time.Second)`) so the two numbers
-// on one line cannot disagree.
+// on one line cannot disagree. It is WORDED `newest call Ns ago`, not a bare `last Ns`, so it
+// cannot be misread as the WINDOW's length (AC7): the window is 30s and a bare `last 12s` on the
+// same line reads like a different window.
 func Summarize(callsJSON []byte, now time.Time, window time.Duration) string {
 	var calls []ledgerCall
 	if err := json.Unmarshal(callsJSON, &calls); err != nil {
@@ -90,7 +92,7 @@ func SummarizeCalls(calls []Call, now time.Time, window time.Duration) string {
 		window = DefaultWindow
 	}
 	nowMs := now.UnixMilli()
-	var modifies, reads, bashes int
+	var modifies, reads, bashes, others int
 	newest := int64(0)
 	counted := false
 	for _, c := range calls {
@@ -115,8 +117,10 @@ func SummarizeCalls(calls []Call, now time.Time, window time.Duration) string {
 			reads++
 		case Bash:
 			bashes++
+		case Other:
+			others++
 		default:
-			continue // Ignore: ask_user, permission.*, MCP, unknown names.
+			continue // Ignore: ask_user, permission.*, todowrite, the empty name.
 		}
 		// Track the NEWEST COUNTED entry explicitly rather than seeding a 0 sentinel and taking
 		// the max: a malformed negative stamp would then leave `newest` at 0 and the trailing age
@@ -130,8 +134,8 @@ func SummarizeCalls(calls []Call, now time.Time, window time.Duration) string {
 		return ""
 	}
 
-	// Ordering is FIXED (modify, read, bash) so the line does not reorder as counts change.
-	parts := make([]string, 0, 4)
+	// Ordering is FIXED (modify, read, bash, other) so the line does not reorder as counts change.
+	parts := make([]string, 0, 5)
 	if modifies > 0 {
 		parts = append(parts, countLabel(modifies, "modify", "modifies"))
 	}
@@ -143,6 +147,13 @@ func SummarizeCalls(calls []Call, now time.Time, window time.Duration) string {
 		// and the shared string is the compact form both clients render.
 		parts = append(parts, countLabel(bashes, "bash", "bash"))
 	}
+	if others > 0 {
+		// The catch-all goes LAST (it is the residual bucket) and the three named buckets precede
+		// it, so the line still never reorders as counts change (AC6). "other tool" / "other tools"
+		// pluralises correctly and collides with no bucket word; `calls` would have to total
+		// modifies+reads+bash too, a redundant second total that breaks the omit-a-zero rule.
+		parts = append(parts, countLabel(others, "other tool", "other tools"))
+	}
 	ageMs := nowMs - newest
 	if ageMs < 0 {
 		ageMs = 0
@@ -150,7 +161,9 @@ func SummarizeCalls(calls []Call, now time.Time, window time.Duration) string {
 	// ageMs is MILLISECONDS: scale to a Duration, then apply the activity line's own rule
 	// (internal/tui/app.go: `int(d.Round(time.Second)/time.Second)`).
 	ageSecs := int((time.Duration(ageMs) * time.Millisecond).Round(time.Second) / time.Second)
-	parts = append(parts, fmt.Sprintf("last %ds", ageSecs))
+	// `newest call Ns ago` NAMES what is being aged. A bare `last Ns` read as "the window is Ns
+	// long" (AC7) — the operator's own misreading of `last 12s` against a 30s window.
+	parts = append(parts, fmt.Sprintf("newest call %ds ago", ageSecs))
 	return strings.Join(parts, " · ")
 }
 

@@ -212,11 +212,11 @@ func verbWord(row string) string {
 	return rest
 }
 
-// countHalf drops the summarizer's trailing age ("· last Ns"), which is measured from each client's
+// countHalf drops the summarizer's trailing age ("· newest call Ns ago"), which is measured from each client's
 // own clock and is therefore the ONE token the two clients may legitimately differ on. Everything
 // before it is the work, and the work must agree exactly.
 func countHalf(counter string) string {
-	if i := strings.LastIndex(counter, "· last "); i >= 0 {
+	if i := strings.LastIndex(counter, "· newest call "); i >= 0 {
 		return strings.TrimSpace(counter[:i])
 	}
 	return counter
