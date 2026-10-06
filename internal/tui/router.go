@@ -424,6 +424,9 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	// It is cheap: an interface assertion per screen (a handful), on a path that already walks the whole
 	// screen/route tree.
 	m.rebindScreens()
+	if cmd, ok := m.pasteKey(msg); ok {
+		return m, cmd
+	}
 	if wm, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width, m.height = wm.Width, wm.Height
 		m.footer.Width = wm.Width

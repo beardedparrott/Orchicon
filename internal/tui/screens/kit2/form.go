@@ -567,6 +567,59 @@ func (f *Form) setCaret(name string, p int) {
 	f.pos[name] = p
 }
 
+// PasteText inserts PASTED text into the focused field, and is the one path a paste takes — so the
+// sanitising below is stated once rather than at every call site.
+//
+// A paste is not typing, and the difference matters in exactly one place: a SINGLE-LINE field must not be
+// able to receive a newline. A token copied out of a config file or a browser frequently carries a trailing
+// newline, and inserting it into a KText field would put a line break inside a value the operator can see
+// only one line of — the value would then fail validation or, worse, be stored with a newline in it. So
+// newlines and tabs collapse to spaces for every single-line kind, and are PRESERVED for the multi-line
+// ones (KTextArea/KJSON/KYAML), where they are the point.
+//
+// It reports whether it inserted anything, so a caller can tell "pasted into a field" from "there was no
+// field to paste into" — which is how the shell decides between pasting and its own ctrl+v behaviour.
+func (f *Form) PasteText(text string) bool {
+	f.normalizeCursor()
+	s := f.current()
+	if s == nil {
+		return false
+	}
+	// Newlines and tabs collapse to spaces for every field that shows ONE LINE, and are preserved for the
+	// multi-line kinds, where they are the content.
+	if s.Kind != KTextArea && s.Kind != KJSON && s.Kind != KYAML {
+		text = strings.Join(strings.Fields(text), " ")
+	}
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	// A PICKER IS A CHOSEN VALUE, NOT A TEXT BUFFER. It has no caret for the operator to aim at, so
+	// "insert at the caret" would be meaningless here — and APPENDING to a picker that already holds a
+	// selection would produce a value matching no option at all. The paste IS the choice: it replaces what
+	// was there, which is exactly what the picker's own free-form entry commits when a typed value matches
+	// no option.
+	//
+	// This is the case that matters most in practice: the credential form's first two fields are BOTH
+	// pickers (the env var/header key, and the stored secret), and pasting a token name into them is the
+	// whole point of the report.
+	if s.Kind == KPicker {
+		f.Values[s.Name] = text
+		f.setCaret(s.Name, len([]rune(text)))
+		if f.OnChange != nil {
+			f.OnChange(s.Name, text)
+		}
+		return true
+	}
+	if !f.editable(s.Kind) {
+		return false
+	}
+	f.insertRunes(s.Name, text)
+	if f.OnChange != nil {
+		f.OnChange(s.Name, f.Values[s.Name])
+	}
+	return true
+}
+
 // insertRunes splices text into a field at the caret.
 func (f *Form) insertRunes(name, ins string) {
 	v := []rune(f.Values[name])
