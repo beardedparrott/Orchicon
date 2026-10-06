@@ -1,19 +1,19 @@
 {
-  "_comment": "CROSS-CLIENT CONTRACT. Read verbatim by internal/toolclass/summarize_test.go (Go, this repo) and by the GUI's Vitest test (child 5). ts/now/window are epoch MILLISECONDS (JS has no time.Duration). want is the EXACT output string of toolclass.Summarize(ledger, now, window). Do not copy this file: assert against these bytes so the two clients cannot drift. An entry with an absent `ts`, or `ts: 0`, is NOT in any window and is skipped (an old conversation must not render a wrong count). The window is INCLUSIVE on the left: an entry exactly `window` ms old IS counted.",
+  "_comment": "CROSS-CLIENT CONTRACT. Read verbatim by internal/toolclass/summarize_test.go (Go, this repo) and by the GUI's Vitest test (child 5). issued_at_unix_ms/now/window are epoch MILLISECONDS (JS has no time.Duration). want is the EXACT output string of toolclass.Summarize(ledger, now, window). Do not copy this file: assert against these bytes so the two clients cannot drift. An entry with an absent `issued_at_unix_ms`, or `issued_at_unix_ms: 0`, is NOT in any window and is skipped (an old conversation must not render a wrong count). The window is INCLUSIVE on the left: an entry exactly `window` ms old IS counted.",
   "cases": [
     {
       "name": "the acceptance example (every counted entry sits exactly on the 30s edge, which also pins the inclusive boundary)",
       "ledger": [
-        {"id":"tc-1","type":"function","function_name":"write","arguments":"{}","ts":35000},
-        {"id":"tc-2","type":"function","function_name":"edit","arguments":"{}","ts":35000},
-        {"id":"tc-3","type":"function","function_name":"batch_write","arguments":"{}","ts":35000},
-        {"id":"tc-4","type":"function","function_name":"orchicon_write","arguments":"{}","ts":35000},
-        {"id":"tc-5","type":"function","function_name":"write","arguments":"{}","ts":35000},
-        {"id":"tc-6","type":"function","function_name":"read","arguments":"{}","ts":35000},
-        {"id":"tc-7","type":"function","function_name":"batch_grep","arguments":"{}","ts":35000},
-        {"id":"tc-8","type":"function","function_name":"bash","arguments":"{}","ts":35000},
-        {"id":"tc-9","type":"function","function_name":"shell","arguments":"{}","ts":35000},
-        {"id":"tc-10","type":"function","function_name":"bash","arguments":"{}","ts":35000}
+        {"id":"tc-1","type":"function","function_name":"write","arguments":"{}","issued_at_unix_ms":35000},
+        {"id":"tc-2","type":"function","function_name":"edit","arguments":"{}","issued_at_unix_ms":35000},
+        {"id":"tc-3","type":"function","function_name":"batch_write","arguments":"{}","issued_at_unix_ms":35000},
+        {"id":"tc-4","type":"function","function_name":"orchicon_write","arguments":"{}","issued_at_unix_ms":35000},
+        {"id":"tc-5","type":"function","function_name":"write","arguments":"{}","issued_at_unix_ms":35000},
+        {"id":"tc-6","type":"function","function_name":"read","arguments":"{}","issued_at_unix_ms":35000},
+        {"id":"tc-7","type":"function","function_name":"batch_grep","arguments":"{}","issued_at_unix_ms":35000},
+        {"id":"tc-8","type":"function","function_name":"bash","arguments":"{}","issued_at_unix_ms":35000},
+        {"id":"tc-9","type":"function","function_name":"shell","arguments":"{}","issued_at_unix_ms":35000},
+        {"id":"tc-10","type":"function","function_name":"bash","arguments":"{}","issued_at_unix_ms":35000}
       ],
       "now": 65000,
       "window": 30000,
@@ -22,11 +22,11 @@
     {
       "name": "a realistic burst spread across the window",
       "ledger": [
-        {"id":"tc-1","type":"function","function_name":"write","arguments":"{}","ts":44000},
-        {"id":"tc-2","type":"function","function_name":"batch_write","arguments":"{}","ts":45000},
-        {"id":"tc-3","type":"function","function_name":"read","arguments":"{}","ts":46000},
-        {"id":"tc-4","type":"function","function_name":"bash","arguments":"{}","ts":47000},
-        {"id":"tc-5","type":"function","function_name":"write","arguments":"{}","ts":48000}
+        {"id":"tc-1","type":"function","function_name":"write","arguments":"{}","issued_at_unix_ms":44000},
+        {"id":"tc-2","type":"function","function_name":"batch_write","arguments":"{}","issued_at_unix_ms":45000},
+        {"id":"tc-3","type":"function","function_name":"read","arguments":"{}","issued_at_unix_ms":46000},
+        {"id":"tc-4","type":"function","function_name":"bash","arguments":"{}","issued_at_unix_ms":47000},
+        {"id":"tc-5","type":"function","function_name":"write","arguments":"{}","issued_at_unix_ms":48000}
       ],
       "now": 65000,
       "window": 30000,
@@ -35,8 +35,8 @@
     {
       "name": "AC5 - the 40s-old entry is out of the window, only the newest is counted",
       "ledger": [
-        {"id":"tc-1","type":"function","function_name":"bash","arguments":"{}","ts":25000},
-        {"id":"tc-2","type":"function","function_name":"read","arguments":"{}","ts":65000}
+        {"id":"tc-1","type":"function","function_name":"bash","arguments":"{}","issued_at_unix_ms":25000},
+        {"id":"tc-2","type":"function","function_name":"read","arguments":"{}","issued_at_unix_ms":65000}
       ],
       "now": 65000,
       "window": 30000,
@@ -44,14 +44,14 @@
     },
     {
       "name": "AC5 boundary - exactly window ms old IS counted",
-      "ledger": [{"id":"tc-1","type":"function","function_name":"read","arguments":"{}","ts":35000}],
+      "ledger": [{"id":"tc-1","type":"function","function_name":"read","arguments":"{}","issued_at_unix_ms":35000}],
       "now": 65000,
       "window": 30000,
       "want": "1 read \u00b7 last 30s"
     },
     {
       "name": "AC5 boundary - one millisecond past the window is NOT counted",
-      "ledger": [{"id":"tc-1","type":"function","function_name":"read","arguments":"{}","ts":34999}],
+      "ledger": [{"id":"tc-1","type":"function","function_name":"read","arguments":"{}","issued_at_unix_ms":34999}],
       "now": 65000,
       "window": 30000,
       "want": ""
@@ -59,12 +59,12 @@
     {
       "name": "AC2/AC3/AC4 - ask_user (3 spellings), permission.* and MCP count for nothing; the one real read is counted",
       "ledger": [
-        {"id":"a","type":"function","function_name":"orchicon_ask_user","arguments":"{}","ts":60000},
-        {"id":"b","type":"function","function_name":"ask_user","arguments":"{}","ts":60000},
-        {"id":"c","type":"function","function_name":"askuser","arguments":"{}","ts":60000},
-        {"id":"d","type":"function","function_name":"permission.allow_once","arguments":"{}","ts":60000},
-        {"id":"e","type":"function","function_name":"mcp__github__create_issue","arguments":"{}","ts":60000},
-        {"id":"f","type":"function","function_name":"todoread","arguments":"{}","ts":60000}
+        {"id":"a","type":"function","function_name":"orchicon_ask_user","arguments":"{}","issued_at_unix_ms":60000},
+        {"id":"b","type":"function","function_name":"ask_user","arguments":"{}","issued_at_unix_ms":60000},
+        {"id":"c","type":"function","function_name":"askuser","arguments":"{}","issued_at_unix_ms":60000},
+        {"id":"d","type":"function","function_name":"permission.allow_once","arguments":"{}","issued_at_unix_ms":60000},
+        {"id":"e","type":"function","function_name":"mcp__github__create_issue","arguments":"{}","issued_at_unix_ms":60000},
+        {"id":"f","type":"function","function_name":"todoread","arguments":"{}","issued_at_unix_ms":60000}
       ],
       "now": 61000,
       "window": 30000,
@@ -73,9 +73,9 @@
     {
       "name": "AC2/AC3/AC4 - a ledger of only excluded tools is the empty string, never \"0 modifies\"",
       "ledger": [
-        {"id":"a","type":"function","function_name":"orchicon_ask_user","arguments":"{}","ts":60000},
-        {"id":"b","type":"function","function_name":"permission.deny","arguments":"{}","ts":60000},
-        {"id":"c","type":"function","function_name":"mcp__github__create_issue","arguments":"{}","ts":60000}
+        {"id":"a","type":"function","function_name":"orchicon_ask_user","arguments":"{}","issued_at_unix_ms":60000},
+        {"id":"b","type":"function","function_name":"permission.deny","arguments":"{}","issued_at_unix_ms":60000},
+        {"id":"c","type":"function","function_name":"mcp__github__create_issue","arguments":"{}","issued_at_unix_ms":60000}
       ],
       "now": 61000,
       "window": 30000,
@@ -89,10 +89,10 @@
       "want": ""
     },
     {
-      "name": "a pre-change row with no `ts` field at all is skipped",
+      "name": "a pre-change row with no `issued_at_unix_ms` field at all is skipped",
       "ledger": [
         {"id":"a","type":"function","function_name":"write","arguments":"{}"},
-        {"id":"b","type":"function","function_name":"todoread","arguments":"{}","ts":61000}
+        {"id":"b","type":"function","function_name":"todoread","arguments":"{}","issued_at_unix_ms":61000}
       ],
       "now": 61000,
       "window": 30000,
@@ -101,8 +101,8 @@
     {
       "name": "a zero timestamp is skipped",
       "ledger": [
-        {"id":"a","type":"function","function_name":"write","arguments":"{}","ts":0},
-        {"id":"b","type":"function","function_name":"read","arguments":"{}","ts":61000}
+        {"id":"a","type":"function","function_name":"write","arguments":"{}","issued_at_unix_ms":0},
+        {"id":"b","type":"function","function_name":"read","arguments":"{}","issued_at_unix_ms":61000}
       ],
       "now": 61000,
       "window": 30000,
@@ -111,10 +111,10 @@
     {
       "name": "AC4 - an unrecognised orchicon_* tool, an MCP tool and todowrite are all ignored",
       "ledger": [
-        {"id":"a","type":"function","function_name":"orchicon_list_projects","arguments":"{}","ts":61000},
-        {"id":"b","type":"function","function_name":"mcp__github__create_issue","arguments":"{}","ts":61000},
-        {"id":"c","type":"function","function_name":"todowrite","arguments":"{}","ts":61000},
-        {"id":"d","type":"function","function_name":"write","arguments":"{}","ts":60500}
+        {"id":"a","type":"function","function_name":"orchicon_list_projects","arguments":"{}","issued_at_unix_ms":61000},
+        {"id":"b","type":"function","function_name":"mcp__github__create_issue","arguments":"{}","issued_at_unix_ms":61000},
+        {"id":"c","type":"function","function_name":"todowrite","arguments":"{}","issued_at_unix_ms":61000},
+        {"id":"d","type":"function","function_name":"write","arguments":"{}","issued_at_unix_ms":60500}
       ],
       "now": 61000,
       "window": 30000,
@@ -123,9 +123,9 @@
     {
       "name": "AC7 - ordering is modify, read, bash no matter how the ledger is ordered",
       "ledger": [
-        {"id":"a","type":"function","function_name":"bash","arguments":"{}","ts":60000},
-        {"id":"b","type":"function","function_name":"read","arguments":"{}","ts":60500},
-        {"id":"c","type":"function","function_name":"write","arguments":"{}","ts":61000}
+        {"id":"a","type":"function","function_name":"bash","arguments":"{}","issued_at_unix_ms":60000},
+        {"id":"b","type":"function","function_name":"read","arguments":"{}","issued_at_unix_ms":60500},
+        {"id":"c","type":"function","function_name":"write","arguments":"{}","issued_at_unix_ms":61000}
       ],
       "now": 61000,
       "window": 30000,
@@ -133,14 +133,14 @@
     },
     {
       "name": "AC8 - a future timestamp clamps to a zero age rather than being dropped",
-      "ledger": [{"id":"a","type":"function","function_name":"write","arguments":"{}","ts":70000}],
+      "ledger": [{"id":"a","type":"function","function_name":"write","arguments":"{}","issued_at_unix_ms":70000}],
       "now": 61000,
       "window": 30000,
       "want": "1 modify \u00b7 last 0s"
     },
     {
       "name": "AC8 - window <= 0 falls back to the named default (an omitted window is a caller slip, not a blank line)",
-      "ledger": [{"id":"a","type":"function","function_name":"write","arguments":"{}","ts":40000}],
+      "ledger": [{"id":"a","type":"function","function_name":"write","arguments":"{}","issued_at_unix_ms":40000}],
       "now": 61000,
       "window": 0,
       "want": "1 modify \u00b7 last 21s"

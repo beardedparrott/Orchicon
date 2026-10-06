@@ -18,12 +18,20 @@ import (
 const DefaultWindow = 30 * time.Second
 
 // ledgerCall is the subset of the tool_calls JSON this package reads. The shape is
-// internal/askorchicon/tool_ledger.go:25-31 (id/type/function_name/arguments) plus the issue
-// timestamp child 1 adds to each entry: `ts`, epoch MILLISECONDS — the clients' existing
+// internal/askorchicon/tool_ledger.go (id/type/function_name/arguments) plus the issue timestamp
+// child 1 adds to each entry: `issued_at_unix_ms`, epoch MILLISECONDS — the clients' existing
 // convention (chat.ParsedTool.At, internal/tui/chat/grouping.go).
+//
+// THE FIELD NAME IS NOT NEGOTIABLE, and it is the ONE thing this package must agree with the
+// ledger on. internal/askorchicon/toolCallEntry stamps `json:"issued_at_unix_ms"`
+// (tool_ledger.go:37) and carries it through askToolCallJSON in chathistory.go; if this tag ever
+// drifts from that one, json.Unmarshal silently leaves the field 0, every entry is skipped as
+// "no timestamp", and the line renders "" over a turn that is plainly working — with no error and
+// no failing fixture, because the fixture is written in this package's own vocabulary. That is why
+// TestSummarizeCountsTheRealLedgerShape (askorchicon side) unmarshals a REAL ledger snapshot.
 type ledgerCall struct {
-	FunctionName string `json:"function_name"`
-	Ts           int64  `json:"ts"`
+	FunctionName   string `json:"function_name"`
+	IssuedAtUnixMs int64  `json:"issued_at_unix_ms"`
 }
 
 // Summarize renders the rolling-window activity summary for a turn's tool_calls JSON:
@@ -56,12 +64,12 @@ func Summarize(callsJSON []byte, now time.Time, window time.Duration) string {
 	newest := int64(0)
 	counted := false
 	for _, c := range calls {
-		if c.Ts == 0 {
+		if c.IssuedAtUnixMs == 0 {
 			// No timestamp: a pre-change row, or a synthesized one. An entry that cannot be
 			// placed in a window is skipped, so an old conversation does not render a wrong count.
 			continue
 		}
-		ageMs := nowMs - c.Ts
+		ageMs := nowMs - c.IssuedAtUnixMs
 		if ageMs < 0 {
 			ageMs = 0 // clock skew / a future stamp: clamp, never drop the work.
 		}
@@ -81,8 +89,8 @@ func Summarize(callsJSON []byte, now time.Time, window time.Duration) string {
 			continue // Ignore: ask_user, permission.*, MCP, unknown names.
 		}
 		counted = true
-		if c.Ts > newest {
-			newest = c.Ts
+		if c.IssuedAtUnixMs > newest {
+			newest = c.IssuedAtUnixMs
 		}
 	}
 	if !counted {

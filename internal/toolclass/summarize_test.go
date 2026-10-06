@@ -27,7 +27,7 @@ type fixture struct {
 // the browser cannot render different numbers from one ledger JSON. Precedent: the TUI's
 // grouping_test.go:5-6 ports sessionItems.test.ts's cases verbatim for the same reason.
 //
-// ts/now/window in the fixture are epoch MILLISECONDS.
+// issued_at_unix_ms/now/window in the fixture are epoch MILLISECONDS.
 func TestSummarizeAgainstSharedFixture(t *testing.T) {
 	raw, err := os.ReadFile("testdata/rollup_fixture.json")
 	if err != nil {
@@ -55,16 +55,16 @@ func TestSummarizeAgainstSharedFixture(t *testing.T) {
 func TestSummarizeAcceptanceExample(t *testing.T) {
 	now := time.UnixMilli(65000)
 	ledger := `[
-		{"function_name":"write","ts":35000},
-		{"function_name":"edit","ts":35000},
-		{"function_name":"batch_write","ts":35000},
-		{"function_name":"orchicon_write","ts":35000},
-		{"function_name":"write","ts":35000},
-		{"function_name":"read","ts":35000},
-		{"function_name":"batch_grep","ts":35000},
-		{"function_name":"bash","ts":35000},
-		{"function_name":"shell","ts":35000},
-		{"function_name":"bash","ts":35000}
+		{"function_name":"write","issued_at_unix_ms":35000},
+		{"function_name":"edit","issued_at_unix_ms":35000},
+		{"function_name":"batch_write","issued_at_unix_ms":35000},
+		{"function_name":"orchicon_write","issued_at_unix_ms":35000},
+		{"function_name":"write","issued_at_unix_ms":35000},
+		{"function_name":"read","issued_at_unix_ms":35000},
+		{"function_name":"batch_grep","issued_at_unix_ms":35000},
+		{"function_name":"bash","issued_at_unix_ms":35000},
+		{"function_name":"shell","issued_at_unix_ms":35000},
+		{"function_name":"bash","issued_at_unix_ms":35000}
 	]`
 	const want = "5 modifies · 2 reads · 3 bash · last 30s"
 	if got := Summarize([]byte(ledger), now, DefaultWindow); got != want {
@@ -84,27 +84,27 @@ func TestSummarizeFormatEdgeCases(t *testing.T) {
 	}{
 		{
 			"a single entry is singular",
-			`[{"function_name":"write","ts":100000}]`,
+			`[{"function_name":"write","issued_at_unix_ms":100000}]`,
 			"1 modify · last 0s",
 		},
 		{
 			"two entries are plural",
-			`[{"function_name":"write","ts":100000},{"function_name":"edit","ts":100000}]`,
+			`[{"function_name":"write","issued_at_unix_ms":100000},{"function_name":"edit","issued_at_unix_ms":100000}]`,
 			"2 modifies · last 0s",
 		},
 		{
 			"a zero class is omitted, and the separator never dangles",
-			`[{"function_name":"bash","ts":100000}]`,
+			`[{"function_name":"bash","issued_at_unix_ms":100000}]`,
 			"1 bash · last 0s",
 		},
 		{
 			"the order is modify, read, bash however the ledger is ordered",
-			`[{"function_name":"bash","ts":100000},{"function_name":"glob","ts":100000},{"function_name":"write","ts":100000}]`,
+			`[{"function_name":"bash","issued_at_unix_ms":100000},{"function_name":"glob","issued_at_unix_ms":100000},{"function_name":"write","issued_at_unix_ms":100000}]`,
 			"1 modify · 1 read · 1 bash · last 0s",
 		},
 		{
 			"nothing counted is the EMPTY string, never 0 modifies",
-			`[{"function_name":"ask_user","ts":100000},{"function_name":"permission.allow_once","ts":100000}]`,
+			`[{"function_name":"ask_user","issued_at_unix_ms":100000},{"function_name":"permission.allow_once","issued_at_unix_ms":100000}]`,
 			"",
 		},
 	}
@@ -124,20 +124,20 @@ func TestSummarizeFormatEdgeCases(t *testing.T) {
 func TestSummarizeWindowIsReal(t *testing.T) {
 	now := time.UnixMilli(40_000)
 	ledger := `[
-		{"function_name":"write","ts":0},
-		{"function_name":"read","ts":10000},
-		{"function_name":"bash","ts":40000}
+		{"function_name":"write","issued_at_unix_ms":0},
+		{"function_name":"read","issued_at_unix_ms":10000},
+		{"function_name":"bash","issued_at_unix_ms":40000}
 	]`
-	// ts=0 is skipped (no window can place it); ts=10000 is 30s old and IS counted; ts=40000 is now.
+	// issued_at_unix_ms=0 is skipped (no window can place it); 10000 is 30s old and IS counted; 40000 is now.
 	if got, want := Summarize([]byte(ledger), now, DefaultWindow), "1 read · 1 bash · last 0s"; got != want {
 		t.Errorf("Summarize = %q, want %q", got, want)
 	}
 
-	oneMsOver := `[{"function_name":"read","ts":9999}]`
+	oneMsOver := `[{"function_name":"read","issued_at_unix_ms":9999}]`
 	if got := Summarize([]byte(oneMsOver), now, DefaultWindow); got != "" {
 		t.Errorf("an entry 1ms past the window must not be counted, got %q", got)
 	}
-	exactBoundary := `[{"function_name":"read","ts":10000}]`
+	exactBoundary := `[{"function_name":"read","issued_at_unix_ms":10000}]`
 	if got, want := Summarize([]byte(exactBoundary), now, DefaultWindow), "1 read · last 30s"; got != want {
 		t.Errorf("an entry exactly window-old is counted (inclusive rule): got %q, want %q", got, want)
 	}
@@ -163,16 +163,16 @@ func TestSummarizeIsPureAndTotal(t *testing.T) {
 		{"truncated array", []byte(`[{"function_name":"write"`), DefaultWindow, ""},
 		{"empty array", []byte("[]"), DefaultWindow, ""},
 		{"entry with no timestamp", []byte(`[{"function_name":"write"}]`), DefaultWindow, ""},
-		{"entry with a zero timestamp", []byte(`[{"function_name":"write","ts":0}]`), DefaultWindow, ""},
-		{"entry with no function name", []byte(`[{"ts":50000}]`), DefaultWindow, ""},
+		{"entry with a zero timestamp", []byte(`[{"function_name":"write","issued_at_unix_ms":0}]`), DefaultWindow, ""},
+		{"entry with no function name", []byte(`[{"issued_at_unix_ms":50000}]`), DefaultWindow, ""},
 		{"a ledger of only ignored tools", []byte(
-			`[{"function_name":"todoread_typo","ts":50000},{"function_name":"mcp__x__y","ts":50000},{"function_name":"","ts":50000}]`), DefaultWindow, ""},
+			`[{"function_name":"todoread_typo","issued_at_unix_ms":50000},{"function_name":"mcp__x__y","issued_at_unix_ms":50000},{"function_name":"","issued_at_unix_ms":50000}]`), DefaultWindow, ""},
 		{"a future timestamp clamps rather than dropping the work", []byte(
-			`[{"function_name":"write","ts":90000}]`), DefaultWindow, "1 modify · last 0s"},
+			`[{"function_name":"write","issued_at_unix_ms":90000}]`), DefaultWindow, "1 modify · last 0s"},
 		{"window of zero falls back to the named default", []byte(
-			`[{"function_name":"write","ts":40000}]`), 0, "1 modify · last 10s"},
+			`[{"function_name":"write","issued_at_unix_ms":40000}]`), 0, "1 modify · last 10s"},
 		{"a zero timestamp is untouched by a long window", []byte(
-			`[{"function_name":"write","ts":0}]`), time.Hour, ""},
+			`[{"function_name":"write","issued_at_unix_ms":0}]`), time.Hour, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -192,7 +192,7 @@ func TestSummarizeIsPureAndTotal(t *testing.T) {
 // and the ONLY time input is `now` — the function owns no clock, so two calls a second apart over
 // the same `now` agree.
 func TestSummarizeIsIdempotentAndClockless(t *testing.T) {
-	in := []byte(`[{"function_name":"write","ts":10000},{"function_name":"read","ts":15000}]`)
+	in := []byte(`[{"function_name":"write","issued_at_unix_ms":10000},{"function_name":"read","issued_at_unix_ms":15000}]`)
 	now := time.UnixMilli(40_000)
 	first := Summarize(in, now, DefaultWindow)
 	second := Summarize(in, now, DefaultWindow)
@@ -217,7 +217,7 @@ func TestSummarizeIsIdempotentAndClockless(t *testing.T) {
 // numbers must agree at the halfway point. 500ms rounds UP here, exactly as it does there.
 func TestSummarizeRoundsTheAgeLikeTheActivityLine(t *testing.T) {
 	now := time.UnixMilli(10_500)
-	ledger := `[{"function_name":"write","ts":10000}]`
+	ledger := `[{"function_name":"write","issued_at_unix_ms":10000}]`
 	want := "1 modify · last " + itoaLikeAppDotGo(now.UnixMilli()-10_000) + "s"
 	if got := Summarize([]byte(ledger), now, DefaultWindow); got != want {
 		t.Errorf("Summarize = %q, want %q (the activity line's own rounding)", got, want)

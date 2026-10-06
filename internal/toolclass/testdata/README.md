@@ -10,11 +10,13 @@ This file is read **verbatim** by two tests in two languages:
 
 Rules for anyone touching it:
 
-- **`ts`, `now` and `window` are epoch MILLISECONDS** (`ts` on a ledger entry, `now` and `window` on
+- **`issued_at_unix_ms`, `now` and `window` are epoch MILLISECONDS** (`issued_at_unix_ms` on a ledger
+  entry — the field internal/askorchicon/tool_ledger.go stamps; `now` and `window` on
   a case). JS has no `time.Duration`; ms is the one unit both sides can express exactly.
 - **`want` is the exact output string** of `toolclass.Summarize(ledger, now, window)`, separator
   ` · ` (U+00B7). Nothing trims or reformats it.
-- An entry with an **absent `ts`** or **`ts: 0`** is in no window and is skipped.
+- An entry with an **absent `issued_at_unix_ms`** or **`issued_at_unix_ms: 0`** is in no window and is
+  skipped.
 - The window is **inclusive** on the left: an entry exactly `window` ms old is counted.
 - `window <= 0` falls back to `toolclass.DefaultWindow` (30s), on both sides.
 - **Do not move, copy or regenerate this file per client.** A Go `testdata/` directory is the one
