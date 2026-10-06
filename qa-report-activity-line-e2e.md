@@ -345,3 +345,81 @@ otherwise failed with `GOMODCACHE entry is relative; must be absolute`.
 `go test ./internal/tui/... ./internal/toolclass/... ./internal/testfixtures/...` ok; `tsc -b` exit 0;
 `vitest run` 796/796; semgrep 0 findings. The refreshed evidence reproduces the same
 stamp/word/counter, so the fix changed reproducibility only.
+
+---
+
+# Addendum 3 — QA Engineer (step 4/5, this pass)
+
+Independently re-ran the whole capstone from a clean shell and audited the observation table
+against the live behaviour. **One real harness defect was found and fixed here.**
+
+## What was run (all on this branch, from a clean shell)
+
+| Command | Result |
+|---|---|
+| `bash scripts/activity-line-e2e.sh` (ambient `PLAYWRIGHT_BROWSERS_PATH` UNSET) | **EXIT 0** — `OK — evidence under qa-evidence/activity-line-e2e`; TUI leg 3/3 PASS, GUI leg 2/2 PASS |
+| `go vet ./internal/testfixtures/activitye2e/... ./internal/tui/...` | clean |
+| `go test ./internal/tui/... ./internal/toolclass/... ./internal/testfixtures/...` | **ok**, all packages |
+| `cd frontend && npx tsc -b` | exit **0** |
+| `cd frontend && npx vitest run` | **796/796** (77 files) |
+
+The GUI evidence was re-read as **pixels** (OCR over the committed PNGs), not trusted from the
+DOM assertions alone — every screenshot carries the exact string the spec claims:
+
+| Screenshot | Painted text (OCR) |
+|---|---|
+| `gui-01-turn-started-bare-line.png` | `Orchicon is polishing…` (no counter) |
+| `gui-02-counter-first-call.png` | `Orchicon is honing… · 1 read · last 1s` |
+| `gui-03-ac3-content-and-line-same-frame.png` | `E2EWITNESS*` content **and** `Orchicon is distilling… · 1 modify · 2 reads · 1 bash` |
+| `gui-03b-ac7-same-server-clock.png` | `Orchicon is honing… · 1 modify · 2 reads · 1 bash` (matches `tui-cross-client.json`) |
+| `gui-04-ac5-stalled-no-output.png` | `Orchicon is enumerating… · no output for 26s` |
+| `gui-04c-ac5-redial-band.png` | `Orchicon is weighing… · no output for 36s — the stream will re-attach…` |
+| `gui-05-ac5-plane-down-banner-outranks.png` | `Turn stalled — the model stopped responding.` (line gone) |
+| `gui-07-turn-end-line-cleared.png` | line gone, `E2EWITNESS*` still rendered |
+
+## Defect found and fixed here (harness, not client — AC10)
+
+**Subtest 8's AC5 assertion was not load-bearing.** It killed the plane's sockets with
+`CloseClientConnections` and then waited up to 45 s for the footer to stop painting a counter.
+A purpose-built diagnostic leg (a second live turn, the footer logged every second for 50 s) shows
+what actually happens on a bare socket teardown:
+
+```
+T+ 1s  Orchicon is polishing… · 1 read · last 2s
+T+29s  Orchicon is polishing… · 1 read · last 30s     <- window ages the call out
+T+30s  Orchicon is polishing…                          <- bare, live-looking line
+T+45s  Orchicon is polishing…
+```
+
+The plane keeps **listening**, so the client's re-dial reconnects and heartbeats resume; the counter
+disappears only because the summarizer's **30 s rolling window** aged the call out (~T+30 s), which
+a 45 s budget always reaches. The leg therefore passed whether or not the kill did anything — the
+same false-green shape the feature's own honesty check exists to catch. (Pre-change, the line would
+have shown the same bare word.)
+
+The fix drives the control the work item explicitly permits and the GUI leg already uses —
+**stop the plane** (`PhaseDown`: every RPC errors, the re-dial fails, no heartbeat can arrive) — and
+asserts the **escalation itself** (`no output for Ns` with the counter absent), not merely the
+counter's absence. A separate diagnostic confirmed the escalation is real under that control
+(`no output for 28s` at T+35 s, re-dial band at T+45 s). The leg now costs 26.8 s and fails loudly if
+the plane is not actually down or if the line keeps claiming work.
+
+**Re-verified**: the TUI leg re-ran green (3/3, 120 s) with the strengthened assertion; the refreshed
+`tui-12-ac5-killed-connection-counter-gone.txt` now reads `Orchicon is enumerating… · no output for
+26s` (was a bare `Orchicon is honing…`), with `tui-11-…` still showing the pre-stop counter.
+
+## Surface-impact determination
+
+Every observation is on the OUTER surface, and I checked the pixels myself: the TUI assertions are on
+the **replayed screen grid** of the real `bin/orch` under a pty, and the GUI assertions are on the
+**rendered DOM** of a real Chromium. I OCR'd all ten GUI screenshots and read all sixteen TUI frames;
+each carries the exact line the spec names. The TUI `Ask`-tab `disconnected` banner is deliberately
+NOT claimed here — the Ask tab registers no live subscription of its own, so the observable form of
+AC5 on that surface is the watchdog escalation asserted above; the GUI's `disconnected` → banner
+outranking is observed directly. This limitation is now stated in the code comment rather than
+implied.
+
+## Verdict
+
+All ten acceptance criteria verified against the live surfaces; the one defect found is fixed and
+re-verified here; no client code changed and no follow-up filed.

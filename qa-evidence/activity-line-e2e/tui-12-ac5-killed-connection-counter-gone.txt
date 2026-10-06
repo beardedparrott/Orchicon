@@ -1,20 +1,19 @@
                                         F1·Ask Orchicon   F2·Overview   F3·Work   F4·Execution   F5·Automation   F6·Enforcement   F7·Control
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-┌─ Detail ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐┌─ Conversations · activity-e2e (1) ─┐
-│Conversation: activity-e2e                                                                                                                  ││ activity-e2e              running  │
-│  id conv-activity-e2e                                                                                                                      ││1-1/1                               │
-│  title activity-e2e                                                                                                                        ││                                    │
+┌─ Detail ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐┌─ Conversations · activity-e2e ─────┐
+│Conversation: activity-e2e                                                                                                                  ││⚠ conversations unavailable         │
+│  id conv-activity-e2e                                                                                                                      ││unavailable: activitye2e: plane d…  │
+│  title activity-e2e                                                                                                                        ││[ click to retry ]                  │
 │  model —                                                                                                                                   ││                                    │
 │  messages 2                                                                                                                                ││                                    │
 │  mode conversation_mode_unspecified                                                                                                        ││                                    │
 │  created —                                                                                                                                 ││                                    │
 │  updated —                                                                                                                                 ││                                    │
 │  grants (unavailable on this plane)                                                                                                        ││                                    │
-│  scroll 1-6/6 · ▼ following                                                                                                                ││                                    │
+│  scroll 1-5/5 · ▼ following                                                                                                                ││                                    │
 │                                                                                                                                            ││                                    │
-│ E2EWITNESSCONTENT Reading the repo layout and the files this change touches. E2EWITNESSFINAL Now running the focused                       ││                                    │
-│ tests.E2EWITNESSCONTENT Reading the repo layout and the files this change touches.                                                         ││                                    │
+│ E2EWITNESSCONTENT Reading the repo layout and the files this change touches. E2EWITNESSFINAL Now running the focused tests.                ││                                    │
 │                                                                                                                                            ││                                    │
 │                                                                                                                                            ││                                    │
 │                                                                                                                                            ││                                    │
@@ -35,7 +34,7 @@
 │                                                                                                                                            ││                                    │
 │                                                                                                                                            ││                                    │
 │                                                                                                                                            ││                                    │
-│Orchicon is honing…                                                                                                                         ││                                    │
+│Orchicon is enumerating… · no output for 26s                                                                                                ││                                    │
 │                                                                                                                                            ││                                    │
 │                                                                                                                                            ││                                    │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘│                                    │
@@ -43,8 +42,9 @@
 │  ❯                                                                                                                                         ││                                    │
 │                                                                                                                                            ││                                    │
 │                                                                                                                                            ││                                    │
+│  unavailable: activitye2e: plane down (harness control)                                                                                    ││                                    │
 │  ctrl+g text · ctrl+y stop · ctrl+d diff · space: mark · ctrl+n: rename · ctrl+t: categorize · click your message to copy · enter send     ││                                    │
 │  · alt+enter newline · / commands                                                                                                          ││                                    │
 │                                                                                                                              [brainstorm]  ││                                    │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯└────────────────────────────────────┘
- ● connected · http://127.0.0.1:18081 · server — · identity: e2e · — esc/ctrl+g content · Mouse Enabled
+ ● connected · http://127.0.0.1:18085 · server — · identity: e2e · — esc/ctrl+g content · Mouse Enabled

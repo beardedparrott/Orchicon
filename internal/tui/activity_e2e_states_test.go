@@ -235,24 +235,36 @@ func TestActivityLineE2E(t *testing.T) {
 	})
 
 	// ------------------------------------------------------------------
-	// OBSERVATION 8 — AC5's SAFETY PROPERTY, observed live on the REAL socket: with the counters
-	// GENUINELY SHOWING, the connection is killed mid-turn (every socket the plane holds is closed)
-	// and the footer must stop painting a live-looking tool counter — the false liveness claim the
-	// whole precedence chain exists to prevent.
+	// OBSERVATION 8 — AC5's SAFETY PROPERTY, observed live: with the counters GENUINELY SHOWING, the
+	// plane is STOPPED mid-turn (the work item's own "kill the connection (or stop the plane)") and
+	// the footer must ESCALATE to the watchdog's verdict with the counter GONE — the false liveness
+	// claim the whole precedence chain exists to prevent.
+	//
+	// WHY "STOP THE PLANE", MEASURED, NOT PREFERRED. A bare socket teardown
+	// (`http.Server.CloseClientConnections`) was tried first and does NOT escalate this surface: the
+	// plane is still LISTENING, so the client's re-dial reconnects, heartbeats resume, and the counter
+	// merely ages out of the summarizer's 30s rolling window (~T+30s) while the line stays a bare,
+	// live-looking "Orchicon is …". A leg that accepted "counter gone" within a 45s budget therefore
+	// passed whether or not the kill did anything — it was not load-bearing for AC5. Stopping the plane
+	// (PhaseDown: every RPC errors, so the re-dial fails and no heartbeat can arrive) makes the silence
+	// grow for real and the line escalate through the 25s warn band to `no output for Ns` and then the
+	// 35s re-dial band. This leg drives THAT control — the same one the GUI leg drives (`rpc-down`) and
+	// the work item explicitly permits — and asserts the escalation itself, so it fails if the plane is
+	// not actually down or if the line keeps claiming work.
 	//
 	// WHY THE HEALTHY PHASE IS RESTORED FIRST. Coming straight out of the escalated leg the counter is
-	// already absent, so killing the plane there would "pass" while proving nothing. Re-establishing
-	// the healthy turn puts counters back on the row; killing the socket then makes their
-	// disappearance an observation rather than an inheritance.
+	// already absent, so stopping the plane there would "pass" while proving nothing. Re-establishing
+	// the healthy turn puts counters back on the row; the stop then makes their disappearance an
+	// observation rather than an inheritance.
 	//
 	// THE OBSERVABLE FORM ON THE ASK TAB. `transcriptStatusLine`'s disconnected/`reconnecting` arms key
 	// off the SUBSCRIPTION REGISTRY's worst status and the event store's reconnect flag, and the Ask
 	// tab registers no live subscription of its own (its conversation list is the shell's rail — see
-	// subs.go's own note). So the honest assertion on THIS surface is the one that holds here: the
-	// counter cannot survive the dead connection; the line escalates to the watchdog's own verdict
-	// ("no output for Ns") or clears, and never keeps claiming work. The GUI leg
-	// (frontend/tests/activity-line-e2e.spec.ts) observes its `disconnected` outranking directly,
-	// because that state is a client-side guard rather than a registry status.
+	// subs.go's own note). So the honest assertion on THIS surface is the one that holds here: with the
+	// plane stopped the line escalates to the WATCHDOG's own verdict ("no output for Ns"), counters
+	// absent, and never keeps claiming work. The GUI leg (frontend/tests/activity-line-e2e.spec.ts)
+	// observes its `disconnected` banner outranking directly, because that state is a client-side guard
+	// rather than a registry status.
 	t.Run("8_ac5_killed_connection_never_keeps_the_counter", func(t *testing.T) {
 		// FRESH WORK LANDS ON THE TURN. The stall leg above ran past the summarizer's 30s rolling
 		// window, so the earlier calls have honestly aged out and the row is bare again by design.
@@ -267,26 +279,30 @@ func TestActivityLineE2E(t *testing.T) {
 		}
 		e2eDumpFrame(t, "tui-11-with-counters-before-the-kill", replay(t, s, cols, rows))
 
-		if _deadPlane == nil {
-			t.Skip("no plane handle: this leg needs the in-process fixture to tear its own sockets down")
+		// STOP THE PLANE MID-TURN. PhaseDown answers every RPC with an error, so the open stream and
+		// the re-dial both fail and no heartbeat can arrive: the silence the watchdog reads grows for
+		// real. A real socket teardown is applied too, so the leg exercises the drop as well as the
+		// unavailability (the plane still listens, but nothing it holds can complete).
+		plane.SetPhase(activitye2e.PhaseDown)
+		if _deadPlane != nil {
+			_deadPlane()
 		}
-		_deadPlane()
 
-		deadline := time.Now().Add(45 * time.Second)
-		for {
-			frame := replay(t, s, cols, rows)
-			row := footerRow(frame)
-			if row == "" || !hasCounter(row) {
-				e2eDumpFrame(t, "tui-12-ac5-killed-connection-counter-gone", frame)
-				return
-			}
-			if time.Now().After(deadline) {
-				e2eDumpFrame(t, "tui-12-ac5-killed-connection-FAILED", frame)
-				t.Fatalf("AC5 FAILED: the connection was killed mid-turn with counters on the row and "+
-					"the footer is STILL painting a live-looking tool counter (%q) — a liveness claim "+
-					"the dead plane cannot deliver:\n%s", row, screenText(frame))
-			}
-			time.Sleep(400 * time.Millisecond)
+		// THE ESCALATION, on the replayed frame. It must reach the watchdog's OWN verdict — not merely
+		// lose the counter — and must not carry a tool count beside it.
+		row, frame := waitFooter(t, s, cols, rows, 70*time.Second, func(r string) bool {
+			return strings.Contains(r, "no output for")
+		})
+		e2eDumpFrame(t, "tui-12-ac5-killed-connection-counter-gone", frame)
+		if !strings.Contains(row, "no output for") {
+			t.Fatalf("AC5 FAILED: the plane was stopped mid-turn with counters on the row and the line "+
+				"never escalated to the watchdog's own verdict — a bare, live-looking line is not an "+
+				"escalation. footer = %q\n%s", row, screenText(frame))
+		}
+		if hasCounter(row) {
+			t.Errorf("AC5 FAILED: the escalated line kept its tool counter (%q) — a count beside "+
+				"\"no output\" claims work is still happening, which is the exact false claim this "+
+				"band exists to prevent", row)
 		}
 	})
 
