@@ -409,6 +409,20 @@ type App struct {
 	// railProjectsLoaded records that a project load SUCCEEDED, so a failed one is retried by the next
 	// conversations load rather than leaving an empty picker for the session.
 	railProjectsLoaded bool
+	// projectThemes mirrors the config file's top-level project_themes map: project id -> palette name,
+	// verbatim (see config.Config.ProjectThemes). Loaded once at construction (loadProjectThemes) and
+	// read/written by Bind/UnbindProjectTheme — see projecttheme.go.
+	projectThemes map[string]string
+	// themePinned marks that the ACTIVE palette was chosen by an explicit /theme (or the Themes pane),
+	// not by the project-scope follower. It is the precedence switch for criterion 5: an explicit choice
+	// PINS the session, and the project's own palette (bound or default) returns the next time the
+	// workspace changes — see applyScopeTheme, which clears it. What must never happen is a SILENT
+	// override in either direction, so every place that would flip this also writes a notice saying so.
+	themePinned bool
+	// degradedPaletteWarned dedupes the "this project's palette is unknown to this build" notice per
+	// (project id, palette name) pair, so re-entering the same project does not repeat it on every scope
+	// change — criterion 7's "says so once".
+	degradedPaletteWarned map[string]bool
 	// projectPick is the /project modal (nil = closed). It chooses the scope, or moves one conversation — see
 	// projectpick.go for why the two share the control.
 	projectPick  *projectPicker
@@ -787,6 +801,9 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string, o
 	// The diff rail's width is the SAME kind of preference in the SAME file, so it is restored at the SAME
 	// moment and by the same silent-on-failure rule (see prefs.go loadDiffRailWidth).
 	m.loadDiffRailWidth()
+	// The project→palette bindings are the SAME kind of preference too, loaded now so they are already in
+	// memory by the time applyLaunchDirScope resolves the launch directory's project (see projecttheme.go).
+	m.loadProjectThemes()
 	// Caller options LAST, so anything they set wins over the defaults above.
 	for _, o := range opts {
 		o(m)

@@ -595,6 +595,13 @@ func (m *Model) fetchThemes(ctx context.Context, pageToken string) ([]kit2.Item,
 	active := theme.Active().Name
 	names := theme.Names()
 
+	// The project this scope names, if any, and what it is bound to — so the row for a bound palette
+	// can say so rather than leaving the binding only discoverable by pressing "bind" on it again.
+	var boundTo string
+	if pt, ok := m.Shell().(projectThemer); ok {
+		_, boundTo, _ = pt.CurrentProjectTheme()
+	}
+
 	var dark, light []string
 	for _, name := range names {
 		if theme.IsDark(name) {
@@ -615,12 +622,24 @@ func (m *Model) fetchThemes(ctx context.Context, pageToken string) ([]kit2.Item,
 			if name == active {
 				meta = "active"
 			}
+			if name == boundTo {
+				meta += " · bound to this project"
+			}
 			items = append(items, kit2.Item{ID: name, Title: name, Meta: meta})
 		}
 	}
 	emit("DARK", dark)
 	emit("LIGHT", light)
 	return items, "", nil
+}
+
+// projectThemer is the shell's project-binding surface (see tui.projecttheme.go). A separate interface
+// from applyTheme's local `themer` because binding is a DIFFERENT action from applying: the preview path
+// never touches it (criterion 2).
+type projectThemer interface {
+	BindProjectTheme(name string) (label string, ok bool)
+	UnbindProjectTheme() (label string, ok bool)
+	CurrentProjectTheme() (label, bound string, hasProject bool)
 }
 
 // applyTheme switches the TUI palette through the shell (the shell owns the
@@ -1112,15 +1131,50 @@ func (m *Model) actionsForSelection() []kit2.Action {
 
 	case "themes":
 		id := item.ID
-		if id == theme.Active().Name {
-			return nil // already active: nothing to apply
+		if id == "" {
+			return nil // a section heading (DARK / LIGHT): nothing to act on
 		}
-		return []kit2.Action{{
-			Label: "apply", Key: "a", Source: "themes",
-			Apply: func() { m.applyTheme(id) },
-			// No RPC: applying a palette is local + a profile write.
-			Do: func(ctx context.Context) error { return nil },
-		}}
+		var acts []kit2.Action
+		if id != theme.Active().Name {
+			acts = append(acts, kit2.Action{
+				Label: "apply", Key: "a", Source: "themes",
+				Apply: func() { m.applyTheme(id) },
+				// No RPC: applying a palette is local + a profile write.
+				Do: func(ctx context.Context) error { return nil },
+			})
+		}
+		// BIND/UNBIND are DELIBERATE actions, distinct from the cursor preview above (previewTheme calls
+		// applyTheme, never these) — criterion 2: moving through the list must never silently rebind a
+		// project. Offered only while the scope names a real project (All projects / No project have
+		// nothing to bind to).
+		if pt, ok := m.Shell().(projectThemer); ok {
+			if _, bound, hasProject := pt.CurrentProjectTheme(); hasProject {
+				if bound == id {
+					acts = append(acts, kit2.Action{
+						Label: "unbind", Key: "u", Source: "themes",
+						Apply: func() {
+							if label, ok := pt.UnbindProjectTheme(); ok {
+								m.Notice(id + " unbound from " + label)
+							}
+							m.Refresh("themes")
+						},
+						Do: func(ctx context.Context) error { return nil },
+					})
+				} else {
+					acts = append(acts, kit2.Action{
+						Label: "bind", Key: "b", Source: "themes",
+						Apply: func() {
+							if label, ok := pt.BindProjectTheme(id); ok {
+								m.Notice(id + " bound to " + label)
+							}
+							m.Refresh("themes")
+						},
+						Do: func(ctx context.Context) error { return nil },
+					})
+				}
+			}
+		}
+		return acts
 	case "webhooks":
 		id, name := item.ID, item.Title
 		enabled := true

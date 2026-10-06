@@ -98,6 +98,22 @@ type Config struct {
 	// 0 is written back on a reset-to-auto, so the file never pins a width the
 	// operator has abandoned.
 	DiffRailWidth int
+	// ProjectThemes binds a palette to a PROJECT, keyed by project ID (not name or slug — a slug can
+	// change and a name would churn this file on rename; the id is the stable key). TOP LEVEL, for the
+	// same reason Theme is: a per-operator display preference, not a tenant fact, that has to survive a
+	// session launched from ORCHICON_URL/ORCHICON_TOKEN where the profile is a synthetic "env" that is
+	// deliberately never written.
+	//
+	// This is a CLIENT-SIDE, TUI-ONLY preference, by design, not an oversight: a `theme` field on the
+	// project row was considered and rejected, because it would put a terminal-validated palette name
+	// into platform data the GUI cannot honour — the GUI's theming is CSS tokens with hairline borders
+	// (see Theme's doc above), not this palette set. Putting it there would cost a migration plus proto
+	// plus both clients' forms for a value only one client can ever use. So it lives here, same as Theme.
+	//
+	// Values are stored VERBATIM and resolved at Use() time, same as Theme: a project bound to a palette
+	// this build does not know (a removed palette, a hand-edit) degrades to the default rather than
+	// failing to load or rendering broken.
+	ProjectThemes map[string]string
 }
 
 // FileName / DirName are the fixed locations under the user's home dir.
@@ -211,6 +227,19 @@ func render(cfg *Config) string {
 	if cfg.DiffRailWidth > 0 {
 		fmt.Fprintf(&b, "diff_rail_width = %d\n", cfg.DiffRailWidth)
 	}
+	// The project→palette bindings, SORTED by project id so an unchanged map rewrites byte-identical —
+	// the same reason collapsed_groups sorts, above.
+	if len(cfg.ProjectThemes) > 0 {
+		ids := make([]string, 0, len(cfg.ProjectThemes))
+		for id := range cfg.ProjectThemes {
+			ids = append(ids, id)
+		}
+		sortStrings(ids)
+		b.WriteString("\n[project_themes]\n")
+		for _, id := range ids {
+			fmt.Fprintf(&b, "%s = %q\n", id, cfg.ProjectThemes[id])
+		}
+	}
 	names := make([]string, 0, len(cfg.Profiles))
 	for name := range cfg.Profiles {
 		names = append(names, name)
@@ -239,6 +268,7 @@ func render(cfg *Config) string {
 func parse(data string) (*Config, error) {
 	cfg := &Config{Profiles: map[string]*Profile{}}
 	var cur *Profile
+	inProjectThemes := false
 	for i, line := range strings.Split(data, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -251,6 +281,33 @@ func parse(data string) (*Config, error) {
 			}
 			cur = &Profile{Name: name}
 			cfg.Profiles[name] = cur
+			inProjectThemes = false
+			continue
+		}
+		// MANDATORY, not optional: render() above writes this section whenever a binding exists, so
+		// without this case the operator's OWN config (the moment they bind one palette) would fail to
+		// load outright — the "default" key below rejects any key it does not recognise.
+		if line == "[project_themes]" {
+			cur = nil
+			inProjectThemes = true
+			continue
+		}
+		if inProjectThemes {
+			id, value, ok := strings.Cut(line, "=")
+			if !ok {
+				// A malformed entry DEGRADES to "no binding for that project" rather than failing the
+				// whole load — same rule parseList follows below: a display preference must never be
+				// able to stop the operator connecting.
+				continue
+			}
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			if cfg.ProjectThemes == nil {
+				cfg.ProjectThemes = map[string]string{}
+			}
+			cfg.ProjectThemes[id] = unquote(strings.TrimSpace(value))
 			continue
 		}
 		key, value, ok := strings.Cut(line, "=")

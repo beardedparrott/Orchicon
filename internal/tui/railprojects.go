@@ -199,6 +199,10 @@ func (m *App) applyLaunchDirScope() {
 		return
 	}
 	m.projectScope = p.ID
+	// THE PALETTE FOLLOWS, same as any other scope change — see projecttheme.go. Quiet about the scope
+	// itself (this default is automatic, not a declared switch, and was already silent above it), but
+	// not about anything the operator still needs to hear, like a degraded palette.
+	m.applyScopeTheme(false)
 }
 
 // projectForDir resolves the project a directory belongs to, using the SAME boundary rule the launch prompt
