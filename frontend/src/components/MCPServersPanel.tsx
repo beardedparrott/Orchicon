@@ -371,6 +371,28 @@ function SecretCombobox({
           setQuery(e.target.value);
           setOpen(true);
         }}
+        // ENTER PICKS; IT MUST NEVER SUBMIT. This control is mounted inside the worker routes' draft-version
+        // form element (and the add/edit form), and HTML's implicit submission fires on Enter in a text
+        // field whenever the form has a submit control — which both hosts do. Left alone, typing a secret
+        // name and pressing Enter would have SAVED the version or submitted the form: the same surprise
+        // class as the reported bounce, arriving by keyboard instead of by click.
+        //
+        // (The wording avoids writing the tag itself: the form-nesting suite scans these files for form
+        // tags, and a tag inside a comment would open a phantom form and flag every Button after it.)
+        //
+        // So Enter is consumed here and does the useful thing: an exact match is picked, a single match is
+        // picked, and otherwise the list stays open for an explicit pick.
+        onKeyDown={(e) => {
+          if (e.key !== "Enter") return;
+          e.preventDefault();
+          const exact = names.find((n) => n.toLowerCase() === q.toLowerCase());
+          const pick = exact ?? (matches.length === 1 ? matches[0] : undefined);
+          if (pick) {
+            onPick(pick);
+            setQuery(pick);
+            setOpen(false);
+          }
+        }}
       />
       {/* onMouseDown, not onClick: the pick has to land BEFORE the input's blur closes the list. */}
       <div

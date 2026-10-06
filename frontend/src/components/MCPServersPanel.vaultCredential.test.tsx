@@ -174,4 +174,14 @@ describe("MCPServersPanel owned-scope credentials (vault-driven)", () => {
     expect(src).toContain("Create a new secret");
     expect(src).toContain("function SecretCombobox(");
   });
+
+  it("does not let Enter in the search box submit the host form", () => {
+    // THE SAME SURPRISE CLASS AS THE REPORTED BOUNCE, arriving by keyboard. The panel — and so this input —
+    // is mounted inside the worker routes' draft <form>, and HTML submits a form on Enter in a text field
+    // whenever the form has a submit control (both hosts do). Unconsumed, Enter in the search box would
+    // SAVE the version. It is consumed, and does the useful thing instead.
+    const combo = src.slice(src.indexOf("function SecretCombobox("), src.indexOf("function CredentialCard("));
+    expect(combo).toContain('e.key !== "Enter"');
+    expect(combo).toContain("e.preventDefault()");
+  });
 });
