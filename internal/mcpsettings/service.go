@@ -330,7 +330,10 @@ func validateSecretNameRe(name string) error {
 	return nil
 }
 
-func (s *Service) validateSecretRefs(ctx context.Context, tx pgx.Tx, tenantID string, env, headers map[string]string) error {
+// IT IS A FREE FUNCTION, not a method: it needs no service state (only the tx), and the INLINE half of
+// definition validation (ValidateInlinePermissions, validate_inline.go) applies the same rule to a
+// worker version's specs — which no *Service is involved in validating.
+func validateSecretRefs(ctx context.Context, tx pgx.Tx, tenantID string, env, headers map[string]string) error {
 	for k, v := range env {
 		if name, ok := secretRefName(v); ok {
 			exists, err := secretExists(ctx, tx, tenantID, name)
@@ -480,7 +483,7 @@ func (s *Service) validateCreate(ctx context.Context, tx pgx.Tx, tenantID string
 			return invalidf("catalog_slug %q is not a known catalog entry", in.CatalogSlug)
 		}
 	}
-	return s.validateSecretRefs(ctx, tx, tenantID, in.Env, in.Headers)
+	return validateSecretRefs(ctx, tx, tenantID, in.Env, in.Headers)
 }
 
 // Create stores a new MCP server entry.

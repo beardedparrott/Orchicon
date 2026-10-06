@@ -1043,7 +1043,11 @@ func (s *Service) UpdateWorkerVersion(ctx context.Context, req *connect.Request[
 		merged.ContextSources = []byte(*msg.ContextSources)
 	}
 	if msg.Permissions != nil {
-		merged.Permissions = []byte(*msg.Permissions)
+		perms, err := validatePermissions(ctx, ttx.Tx, tenantID, current.Permissions, *msg.Permissions)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		merged.Permissions = perms
 	}
 	if msg.GatedTools != nil {
 		merged.GatedTools = []byte(*msg.GatedTools)
@@ -1224,7 +1228,13 @@ func (s *Service) CreateWorkerVersion(ctx context.Context, req *connect.Request[
 		newVer.ContextSources = []byte(*msg.ContextSources)
 	}
 	if msg.Permissions != nil {
-		newVer.Permissions = []byte(*msg.Permissions)
+		// The SOURCE version is the diff base: this new version starts as its copy, so a spec it did
+		// not touch is carried over rather than re-judged (validatePermissions).
+		perms, err := validatePermissions(ctx, ttx.Tx, tenantID, source.Permissions, *msg.Permissions)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		newVer.Permissions = perms
 	}
 	if msg.GatedTools != nil {
 		newVer.GatedTools = []byte(*msg.GatedTools)

@@ -25,8 +25,11 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/contextfiles"
+	"github.com/beardedparrott/orchicon/internal/mcpsettings"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
@@ -331,6 +334,31 @@ func validateSkillFiles(s string) (string, error) {
 		return "", fmt.Errorf("skill_files: %w", err)
 	}
 	return string(out), nil
+}
+
+// validatePermissions validates a worker version's permissions payload — the field that carries the
+// version's MCP servers (permissions.mcp_servers) and its tool policy — and returns the bytes to store.
+//
+// TWO GATES, because the field had one and needed two. It is validated as a JSON field like every other
+// JSON member (valid JSON, bounded — validateJSONField), which the version-update paths did NOT do: they
+// stored whatever string arrived. And the INLINE MCP specs it carries are validated too
+// (mcpsettings.ValidateInlinePermissions), which is the same set of rules an OWNED definition already
+// has applied at create/update: the argv shape, the env/header key grammar, the transport's own
+// requirement, and — the one that only ever surfaced when a worker RAN — that every ${SECRET_NAME} it
+// references actually exists in the tenant secrets store.
+//
+// previous is what the version (or, for a new version, the version it was copied from) already held: the
+// specs that are UNCHANGED are left alone, so stored data can never turn an unrelated edit into a
+// failure. See mcpsettings/validate_inline.go for why that distinction is the contract and not leniency.
+func validatePermissions(ctx context.Context, tx pgx.Tx, tenantID string, previous []byte, raw string) ([]byte, error) {
+	out, err := validateJSONField(raw, "{}", "permissions", maxJSONFieldLen)
+	if err != nil {
+		return nil, err
+	}
+	if err := mcpsettings.ValidateInlinePermissions(ctx, tx, tenantID, previous, out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // validateActor trims and bounds-checks the actor field for edit locks.
