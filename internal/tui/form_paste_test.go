@@ -18,6 +18,9 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 )
 
 // openCredentialFormOnARow opens the MCP scope modal and presses `k`, which opens the credential form for the
@@ -111,5 +114,60 @@ func TestAFailedClipboardReadSaysSo(t *testing.T) {
 	}
 	if !strings.Contains(m.dock.Err, "paste") || !strings.Contains(m.dock.Err, "no text") {
 		t.Errorf("the message does not name the paste or the reason: %q", m.dock.Err)
+	}
+}
+
+// pasteScreenStub embeds kit2.Base exactly as every screen Model does, which is the whole point: the shell
+// asks the SCREEN for its form instead of being handed a list of screens to remember.
+type pasteScreenStub struct{ kit2.Base }
+
+func (s *pasteScreenStub) Init() tea.Cmd                              { return nil }
+func (s *pasteScreenStub) Update(tea.Msg) (screenkit.Screen, tea.Cmd) { return s, nil }
+func (s *pasteScreenStub) Name() string                               { return "paste-stub" }
+func (s *pasteScreenStub) Close()                                     {}
+
+// A SCREEN-HOSTED FORM IS PASTED INTO TOO — the half that was MISSING.
+//
+// The first version of this support enumerated the forms the SHELL owns, so a screen's forms were invisible
+// to it and the operator could not paste into the Control screen's secret form. The capability now lives on
+// kit2.Base, which every screen embeds, so the shell reaches any screen's form by one assertion.
+func TestCtrlVPastesIntoScreenHostedForm(t *testing.T) {
+	m, _, _ := newScopeApp(t)
+	st := &pasteScreenStub{}
+	st.BeginDetailEdit("New secret", kit2.NewForm("New secret",
+		kit2.FieldSpec{Name: "name", Label: "Name", Kind: kit2.KText},
+	))
+	m.screens[m.active] = st
+
+	if !m.hasPasteTarget() {
+		t.Fatal("the shell sees no paste target while a screen has a form open — this is the report: a " +
+			"secret form you cannot paste into")
+	}
+	cmd, handled := m.pasteKey(tea.KeyMsg{Type: tea.KeyCtrlV})
+	if !handled {
+		t.Fatal("ctrl+v was not handled with a screen-hosted form open")
+	}
+	if cmd == nil {
+		t.Fatal("ctrl+v produced no clipboard read for a screen-hosted form")
+	}
+	if !m.pasteIntoForms("MCP_GITHUB_TOKEN") {
+		t.Fatal("the paste did not land in the screen's form")
+	}
+	if got := st.DetailForm().Values["name"]; got != "MCP_GITHUB_TOKEN" {
+		t.Errorf("the screen's form holds %q, want the pasted token", got)
+	}
+}
+
+// THE GUARD IS PER-SCREEN, and it has to be: every screen can paste by virtue of embedding Base, so asking
+// "can you paste?" would claim ctrl+v on EVERY tab and the composer's own paste would never run again. The
+// question is "is a form actually up?" — EditingDetail.
+func TestAScreenWithNoFormDoesNotClaimCtrlV(t *testing.T) {
+	m, _, _ := newScopeApp(t)
+	m.screens[m.active] = &pasteScreenStub{} // embeds Base, but no form is open
+	if m.hasPasteTarget() {
+		t.Fatal("a screen with no form open claimed a paste target — ctrl+v would never reach the composer")
+	}
+	if _, handled := m.pasteKey(tea.KeyMsg{Type: tea.KeyCtrlV}); handled {
+		t.Fatal("ctrl+v was claimed with no form open ANYWHERE")
 	}
 }

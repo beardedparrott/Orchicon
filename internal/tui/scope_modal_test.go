@@ -33,9 +33,9 @@ import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
-	"github.com/beardedparrott/orchicon/internal/tui/screens/mcpforms"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 	"github.com/beardedparrott/orchicon/internal/tui/config"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/mcpforms"
 )
 
 // stubMCP is the MCP service the scope modal talks to: it answers the owner-scoped list and records

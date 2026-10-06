@@ -746,6 +746,25 @@ func (b *Base) EditingDetail() bool { return b.editForm != nil }
 // DetailForm exposes the open inline editor (nil when not editing).
 func (b *Base) DetailForm() *Form { return b.editForm }
 
+// PasteIntoForm inserts pasted text into the DETAIL-PANE form's focused field, reporting whether it landed.
+//
+// IT LIVES ON THE BASE RATHER THAN ON EACH SCREEN, AND THAT IS THE FIX. Base is EMBEDDED by every screen
+// (control, work, execution, automation, ask, enforcement, overwiew), so ONE method here gives all of them
+// the capability by Go's method promotion — and the shell can ask any screen "can you take this paste?" with
+// a single assertion.
+//
+// THE ENUMERATION IS EXACTLY WHAT WENT WRONG. The shell's paste support listed the forms the SHELL owns
+// (the scope modal, the launch prompt, the grouping forms), so the forms a SCREEN owns were missed — and
+// screen forms are most of them, because they open here in the pane. The operator hit it on the first one
+// they tried: "I can't copy and paste a value into a secret in the TUI under the secrets section when
+// creating a new or editing a secret." A method on the shared host cannot be forgotten the way a list can.
+func (b *Base) PasteIntoForm(text string) bool {
+	if f := b.DetailForm(); f != nil {
+		return f.PasteText(text)
+	}
+	return false
+}
+
 // finishDetailEdit closes the inline editor and reports the outcome once.
 func (b *Base) finishDetailEdit(submitted bool) {
 	b.editForm = nil

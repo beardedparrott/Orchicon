@@ -78,15 +78,52 @@ func (m *App) formPasteTargets() []*kit2.Form {
 	return out
 }
 
-// pasteIntoForms inserts text into the topmost form whose focused field can take it, reporting whether it
-// landed anywhere.
+// pasteIntoForms inserts text into the topmost form that can take it, reporting whether it landed anywhere.
+//
+// TWO HOSTS, in layering order. The SHELL's modals first (they are drawn above every screen), then the ACTIVE
+// SCREEN's own form — which is where most forms live, in the details pane, and where the report's secret
+// form was.
 func (m *App) pasteIntoForms(text string) bool {
 	for _, f := range m.formPasteTargets() {
 		if f.PasteText(text) {
 			return true
 		}
 	}
+	if p, ok := m.pasteScreen(); ok {
+		return p.PasteIntoForm(text)
+	}
 	return false
+}
+
+// pasteScreen is the ACTIVE screen, when it can take a paste at all.
+//
+// The capability is ASKED FOR rather than listed: screens embed kit2.Base, which hosts their forms, so one
+// assertion reaches every screen's form and no screen has to be remembered here.
+func (m *App) pasteScreen() (interface{ PasteIntoForm(string) bool }, bool) {
+	s, ok := m.screens[m.active]
+	if !ok || s == nil {
+		return nil, false
+	}
+	p, ok := s.(interface{ PasteIntoForm(string) bool })
+	return p, ok
+}
+
+// hasPasteTarget reports whether ANY form is open to paste into — the shell's, or the active screen's.
+//
+// IT ASKS FOR AN OPEN FORM, NOT FOR THE CAPABILITY, and the difference is the whole guard: every screen can
+// paste by virtue of embedding Base, so "can paste" would be true on every tab and ctrl+v would never
+// reach the composer again. EditingDetail is the accurate question —
+// "is a form actually up?".
+func (m *App) hasPasteTarget() bool {
+	if len(m.formPasteTargets()) > 0 {
+		return true
+	}
+	s, ok := m.screens[m.active]
+	if !ok || s == nil {
+		return false
+	}
+	ed, ok := s.(interface{ EditingDetail() bool })
+	return ok && ed.EditingDetail()
 }
 
 // onClipboardText is the shell's answer to a clipboard read that ctrl+v started in a form.
@@ -112,9 +149,9 @@ func (m *App) onClipboardText(msg formClipboardTextMsg) tea.Cmd {
 // TWO SHAPES OF PASTE, and both must go through the form rather than around it:
 //
 //   - ctrl+v        a chord; nothing in the shell inserted it, so it has to be read. Answered with the cmd
-//                   that reads the clipboard.
+//     that reads the clipboard.
 //   - bracketed     the TERMINAL's own paste, which arrives as runes and would otherwise be inserted by the
-//                   form's ordinary rune path — losing the newline-and-whitespace sanitising PasteText does.
+//     form's ordinary rune path — losing the newline-and-whitespace sanitising PasteText does.
 //
 // GUARDED ON A FORM BEING OPEN, and that guard is the contract: with no form up, ctrl+v is the composer's
 // attachment chord (paste an image, or a file path) and must stay exactly as it was, and a bracketed paste
@@ -127,7 +164,7 @@ func (m *App) pasteKey(msg tea.Msg) (tea.Cmd, bool) {
 	if !ok {
 		return nil, false
 	}
-	if len(m.formPasteTargets()) == 0 {
+	if !m.hasPasteTarget() {
 		return nil, false
 	}
 	if k.String() == "ctrl+v" {
