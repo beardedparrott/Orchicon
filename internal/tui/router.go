@@ -543,6 +543,13 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		m.openInlineSpecForm(&pm.spec, false)
 		return m, nil
 	}
+	// A CREDENTIAL FOR AN INLINE SPEC ARRIVES THE SAME WAY AND FOR THE SAME REASON. It is produced by
+	// the credential FORM's submit (which must not change the spec until the store write it depends on
+	// has landed), so it arrives while that form is still up — above the guard, where a form's own
+	// submit can be acted on.
+	if cm, ok := msg.(credentialAttachedMsg); ok {
+		return m, m.onCredentialAttached(cm)
+	}
 	// The conversation-scope MCP modal (/mcp define) is the same shape again: it is layered above the
 	// composer, so a save chord aimed at the form can never reach a message being typed.
 	if m.convScopeForm != nil {
@@ -584,6 +591,11 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			return m, nil
 		case scopeDataMsg:
 			m.onScopeData(msg)
+			return m, nil
+		case scopeSecretsMsg:
+			// The tenant secrets store's names, for the credential picker (`r`, and the open path's own
+			// read). Discarded unless it is still about THIS surface — see onScopeSecrets.
+			m.onScopeSecrets(msg)
 			return m, nil
 		}
 	}

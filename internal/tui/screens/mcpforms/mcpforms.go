@@ -24,6 +24,7 @@ package mcpforms
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -262,6 +263,177 @@ func SecretForm(label, key string, onSet func(key, value string) tea.Cmd) *kit2.
 		return onSet(v["name"], v["value"]), nil
 	}
 	return f
+}
+
+// ── credentials: the SELECTION half ──────────────────────────────────────────────────────
+
+// SecretChoice is one SELECTABLE credential from the tenant secrets store: the NAME that goes into a
+// ${...} reference, and the ID the store needs in order to REPLACE the value.
+//
+// THE VALUE IS NEVER FETCHED, and that is why this type has no field for one. The store is
+// write-only from a client's side — ListSecrets returns names and metadata, GetSecret is never
+// called — the same rule the Control screen's Secrets list follows.
+type SecretChoice struct {
+	ID   string
+	Name string
+	// Description is the store row's own description, shown beside the name so a list of
+	// MCP_..._... entries stays distinguishable.
+	Description string
+}
+
+// inlineSpecIsHTTP reports whether an inline spec speaks streamable HTTP. It mirrors
+// mcpsettings.specFromInline's inference (type first, URL as the fallback) so the reference lands in
+// the same map the spec's own transport reads from — env for stdio, headers for HTTP.
+func inlineSpecIsHTTP(spec InlineSpec) bool {
+	switch spec.Type {
+	case "http", "streamable-http":
+		return true
+	case "stdio":
+		return false
+	}
+	return spec.URL != ""
+}
+
+// CredentialKeyOptions lists the keys the spec ALREADY carries for its transport, so the common case
+// — point this server's existing GITHUB_PERSONAL_ACCESS_TOKEN at a stored secret — is a PICK rather
+// than a retype. An empty list is normal (a catalog pick leaves a secret key out on purpose: the
+// prefill never writes a blank secret), and the field stays typable for exactly that case.
+func CredentialKeyOptions(spec InlineSpec) []kit2.Option {
+	m := spec.Env
+	if inlineSpecIsHTTP(spec) {
+		m = spec.Headers
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]kit2.Option, 0, len(keys))
+	for _, k := range keys {
+		label := k
+		if v := strings.TrimSpace(m[k]); v != "" {
+			label += " (currently " + v + ")"
+		}
+		out = append(out, kit2.Option{Value: k, Label: label})
+	}
+	return out
+}
+
+// AttachSecret points ONE key of an inline spec at a stored tenant secret, as ${NAME}.
+//
+// IT WRITES INTO THE MAP THE SPEC'S TRANSPORT READS: Env for stdio, Headers for streamable HTTP — the
+// same split InlineForm's own submit enforces, so the field the operator was shown is the field the
+// reference lands in. An existing value at that key is REPLACED (that is the point: a plaintext
+// credential becomes a reference), and the reference is passed through verbatim — it is resolved by
+// the tenant secrets store at session time (mcpsettings.ResolveSecretRefs), never here.
+func AttachSecret(spec *InlineSpec, key, secretName string) {
+	key, secretName = strings.TrimSpace(key), strings.TrimSpace(secretName)
+	if key == "" || secretName == "" {
+		return
+	}
+	ref := "${" + secretName + "}"
+	if inlineSpecIsHTTP(*spec) {
+		if spec.Headers == nil {
+			spec.Headers = map[string]string{}
+		}
+		spec.Headers[key] = ref
+		return
+	}
+	if spec.Env == nil {
+		spec.Env = map[string]string{}
+	}
+	spec.Env[key] = ref
+}
+
+// envKeyRE is the env/header key grammar. It MIRRORS internal/mcpsettings's envKeyRE, and the mirror
+// is deliberate rather than drift: the plane validates an OWNED row's env/header keys
+// (mcpsettings.validateMapKeys), but a worker version's inline specs are opaque JSON to it — nothing
+// server-side ever looks at them. So on this path the form is the ONLY gate between a typed key and
+// `cmd.Env = append(..., k+"="+v)` in the MCP stdio transport, where a key carrying a space or an "="
+// corrupts the child's environment.
+var envKeyRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// CredentialForm attaches a STORED credential to one INLINE spec (a worker version's).
+//
+// WHY IT EXISTS. A worker version has no row, so `k` on one of its specs could only say "put the
+// ${SECRET_NAME} in the spec's env/headers instead" — the operator: "the credentials should be able
+// to be selected rather than typed just like it does for projects and conversations. I understand
+// that it is inline but that doesn't mean that info can't be built on top and passed to the config."
+// It can: the reference is built here and written into the spec's own config, which is the half that
+// was missing.
+//
+// THE SELECTION IS THE POINT. `secret` is a PICKER over the tenant secrets store's names, which is
+// what "selected rather than typed" means and what makes the reference RESOLVABLE: a name that is not
+// stored fails that server's session at resolve time (mcpsettings.ResolveSecretRefs), so a free-typed
+// name would be a promise the store cannot keep. It stays typable for one case only — a name given
+// together with a value, which the caller STORES first (see onSave's contract).
+//
+// onSave receives (key, secretName, value): value is "" when an existing secret is simply referenced,
+// and non-empty when the operator asked for that name to be created (or replaced) in the store. THE
+// CALLER OWNS BOTH WRITES and their order — the store must land before the version does, or the
+// version would reference a secret that is not there.
+func CredentialForm(title string, spec InlineSpec, choices []SecretChoice, onSave func(key, secret, value string) tea.Cmd) *kit2.Form {
+	names := make([]kit2.Option, 0, len(choices))
+	stored := make(map[string]bool, len(choices))
+	for _, c := range choices {
+		names = append(names, kit2.Option{Value: c.Name, Label: c.Name + secretChoiceSuffix(c.Description)})
+		stored[c.Name] = true
+	}
+	// The spec's own key is PRESELECTED when there is exactly one, so the common case is two
+	// keystrokes (open, pick the secret) rather than a decision about a name that only has one answer.
+	keys := CredentialKeyOptions(spec)
+	initialKey := ""
+	if len(keys) == 1 {
+		initialKey = keys[0].Value
+	}
+	f := kit2.NewForm(title,
+		kit2.FieldSpec{Name: "key", Label: "Env var / header name", Kind: kit2.KPicker, Required: true,
+			Initial: initialKey, Options: keys,
+			Placeholder: "the name the server reads, e.g. GITHUB_PERSONAL_ACCESS_TOKEN"},
+		kit2.FieldSpec{Name: "secret", Label: "Stored secret", Kind: kit2.KPicker, Required: true,
+			Options:     names,
+			Placeholder: "pick a secret from the tenant store"},
+		kit2.FieldSpec{Name: "value", Label: "Value (only to store a new secret)", Kind: kit2.KSecret,
+			Placeholder: "leave blank to reference an existing secret"},
+	)
+	f.Note = "Written into this version's spec as " + spec.ID + "'s ${SECRET_NAME} reference — a " +
+		"worker version has no definition row to attach a credential to. The secret is resolved from " +
+		"the tenant secrets store when the worker runs."
+	if len(choices) == 0 {
+		f.Note += " The tenant secrets store holds nothing to pick: give the name AND a value to " +
+			"store one (the name must be UPPERCASE)."
+	}
+	f.Focused = true
+	f.Width = 64
+	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
+		key := strings.TrimSpace(v["key"])
+		secret := strings.TrimSpace(v["secret"])
+		value := strings.TrimSpace(v["value"])
+		if !envKeyRE.MatchString(key) {
+			return nil, fmt.Errorf("the env var / header name must match %s (e.g. GITHUB_TOKEN)", envKeyRE)
+		}
+		if secret == "" {
+			return nil, fmt.Errorf("pick the stored secret to reference")
+		}
+		if !stored[secret] && value == "" {
+			return nil, fmt.Errorf("%q is not in the tenant secrets store — pick one from the list, "+
+				"or give it a value to store it", secret)
+		}
+		return onSave(key, secret, value), nil
+	}
+	return f
+}
+
+// secretChoiceSuffix renders a stored secret's description beside its name, when it has one.
+func secretChoiceSuffix(desc string) string {
+	desc = strings.TrimSpace(desc)
+	if desc == "" {
+		return ""
+	}
+	return " — " + desc
 }
 
 // SkillPathsForm edits a SKILL FILES path list — the control that sits in the same

@@ -120,9 +120,63 @@ func (s *stubMCP) PrefillMCPCatalogEntry(_ context.Context, req *connect.Request
 	}), nil
 }
 
+// stubSecrets is the TENANT SECRETS STORE the worker-version scope's credential picker reads.
+//
+// It answers names and metadata only and NEVER a value — like the real service, whose ListSecrets
+// returns names while GetSecret is not part of this flow at all. The two writes are recorded because
+// the credential form's contract is about the ORDER of its two writes: the store first, the version
+// second (a version written first would reference a secret nothing resolves).
+type stubSecrets struct {
+	apiv1connect.UnimplementedSecretsServiceHandler
+
+	mu      sync.Mutex
+	rows    []*apiv1.TenantSecret
+	created []*apiv1.CreateSecretRequest
+	updated []*apiv1.UpdateSecretRequest
+	// refuse makes every write fail, so a test can drive the path where the store rejects the one
+	// write the version's reference depends on.
+	refuse error
+	// onWrite runs INSIDE a write, so a test can observe what else had happened by then — which is the
+	// only way to pin an ORDER between two writes rather than just their presence.
+	onWrite func()
+}
+
+func (s *stubSecrets) ListSecrets(_ context.Context, _ *connect.Request[apiv1.ListSecretsRequest]) (*connect.Response[apiv1.ListSecretsResponse], error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return connect.NewResponse(&apiv1.ListSecretsResponse{Secrets: s.rows}), nil
+}
+
+func (s *stubSecrets) CreateSecret(_ context.Context, req *connect.Request[apiv1.CreateSecretRequest]) (*connect.Response[apiv1.CreateSecretResponse], error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.refuse != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, s.refuse)
+	}
+	if s.onWrite != nil {
+		s.onWrite()
+	}
+	s.created = append(s.created, req.Msg)
+	s.rows = append(s.rows, &apiv1.TenantSecret{Id: "sec-" + req.Msg.GetName(), Name: req.Msg.GetName()})
+	return connect.NewResponse(&apiv1.CreateSecretResponse{}), nil
+}
+
+func (s *stubSecrets) UpdateSecret(_ context.Context, req *connect.Request[apiv1.UpdateSecretRequest]) (*connect.Response[apiv1.UpdateSecretResponse], error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.refuse != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, s.refuse)
+	}
+	if s.onWrite != nil {
+		s.onWrite()
+	}
+	s.updated = append(s.updated, req.Msg)
+	return connect.NewResponse(&apiv1.UpdateSecretResponse{}), nil
+}
+
 // newScopeApp builds a shell whose MCP client is the stub, with one open conversation (c1) inside a
 // project (p1) that owns a definition of its own.
-func newScopeApp(t *testing.T) (*App, *stubMCP) {
+func newScopeApp(t *testing.T) (*App, *stubMCP, *stubSecrets) {
 	t.Helper()
 	stub := &stubMCP{
 		servers: []*apiv1.MCPServer{{
@@ -136,8 +190,16 @@ func newScopeApp(t *testing.T) (*App, *stubMCP) {
 			Command:   "npx", Args: []string{"-y", "server-postgres"},
 		}},
 	}
+	// The tenant secrets store: the credential picker's source, holding the two names an MCP server's
+	// credential is normally stored under (the derived MCP_<SLUG>_<ENVNAME> shape mcpsettings uses).
+	sec := &stubSecrets{rows: []*apiv1.TenantSecret{
+		{Id: "sec-gh", Name: "MCP_GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN", Description: "GitHub personal access token"},
+		{Id: "sec-slack", Name: "SLACK_BOT_TOKEN", Description: "Slack bot token"},
+	}}
+
 	mux := http.NewServeMux()
 	mux.Handle(apiv1connect.NewMCPServiceHandler(stub))
+	mux.Handle(apiv1connect.NewSecretsServiceHandler(sec))
 	mux.Handle(apiv1connect.NewAskOrchiconServiceHandler(&stubAskParity{}))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -154,7 +216,7 @@ func newScopeApp(t *testing.T) (*App, *stubMCP) {
 		Dir: "/home/x/Orchicon", SkillFiles: []string{"/skills/project.md"},
 	}}
 	m.railProjectsLoaded = true
-	return m, stub
+	return m, stub, sec
 }
 
 // openScopeFrom opens the modal through a slash line, letting the fetch command run so the modal's data
@@ -195,6 +257,10 @@ func applyFetch(t *testing.T, m *App, cmd tea.Cmd) {
 			queue = append(queue, msg...)
 		case scopeDataMsg:
 			m.onScopeData(msg)
+		case scopeSecretsMsg:
+			// The same call the router makes for it (internal/tui/router.go), so a fetch driven by a
+			// test lands where a fetch driven by the shell lands.
+			m.onScopeSecrets(msg)
 		case railProjectsMsg:
 			m.onRailProjects(msg)
 		}
@@ -244,7 +310,7 @@ func putCursor(m *App, i int) { m.scope.cursor = i }
 func TestScopeNamesOpenOneModal(t *testing.T) {
 	for _, line := range []string{"/scope", "/mcp", "/skills"} {
 		t.Run(line, func(t *testing.T) {
-			m, _ := newScopeApp(t)
+			m, _, _ := newScopeApp(t)
 			openScopeFrom(t, m, line)
 			if got := m.scopeConversation(); got != "c1" {
 				t.Fatalf("%s scoped %q, want the open conversation (c1)", line, got)
@@ -257,7 +323,7 @@ func TestScopeNamesOpenOneModal(t *testing.T) {
 // /mcp usage string was 76 cells against a 70-cell cap, so the palette had to clip its last verbs.
 // EVERY registered command is checked, not just this one — the next long usage string is the same bug.
 func TestEverySlashUsageFitsThePalette(t *testing.T) {
-	m, _ := newScopeApp(t)
+	m, _, _ := newScopeApp(t)
 	cap := m.paletteContentWidth()
 	if cap < 70 {
 		t.Fatalf("fixture: the palette cap is %d, expected the production 70 at this width", cap)
@@ -281,7 +347,7 @@ func TestEverySlashUsageFitsThePalette(t *testing.T) {
 // card shows) and the PROJECT's, labelled read-only — because the server renders the UNION of the two
 // into the turn, and a scope pane that showed only half of it would answer "what runs here?" wrongly.
 func TestScopeShowsTheConversationsAndTheProjectsContributions(t *testing.T) {
-	m, _ := newScopeApp(t)
+	m, _, _ := newScopeApp(t)
 	openScopeFrom(t, m, "/scope")
 	body := scopeText(m)
 
@@ -306,7 +372,7 @@ func TestScopeShowsTheConversationsAndTheProjectsContributions(t *testing.T) {
 // ConversationId, the project's by ProjectId. An unscoped list would be the tenant-wide read the
 // owner-scoped model removed.
 func TestScopeListRequestsAreOwnerScoped(t *testing.T) {
-	m, stub := newScopeApp(t)
+	m, stub, _ := newScopeApp(t)
 	openScopeFrom(t, m, "/scope")
 	stub.mu.Lock()
 	defer stub.mu.Unlock()
@@ -329,7 +395,7 @@ func TestScopeListRequestsAreOwnerScoped(t *testing.T) {
 
 // A conversation with NO project inherits nothing, so there is no second read to make.
 func TestScopeSkipsTheProjectReadWhenUnassigned(t *testing.T) {
-	m, stub := newScopeApp(t)
+	m, stub, _ := newScopeApp(t)
 	m.conversations = []chat.Conversation{{ID: "c1", Title: "a chat", SkillFiles: []string{"/a.md"}}}
 	openScopeFrom(t, m, "/scope")
 	stub.mu.Lock()
@@ -347,7 +413,7 @@ func TestScopeSkipsTheProjectReadWhenUnassigned(t *testing.T) {
 // owner-stamping rule (a definition belongs to exactly one scope) asserted end to end, through the
 // request the plane actually receives.
 func TestScopeAddDefinesAConversationOwnedServer(t *testing.T) {
-	m, stub := newScopeApp(t)
+	m, stub, _ := newScopeApp(t)
 	openScopeFrom(t, m, "/scope")
 	pressScope(t, m, "a")
 	if m.convScopeForm == nil {
@@ -395,7 +461,7 @@ func TestScopeAddDefinesAConversationOwnedServer(t *testing.T) {
 // `d` on an owned definition raises the shell's CONFIRM (a stray keypress must not delete), and the
 // affirmative answer deletes THE ROW'S ID — not a name re-resolved from a re-listing.
 func TestScopeDeleteConfirmsThenDeletesTheRow(t *testing.T) {
-	m, stub := newScopeApp(t)
+	m, stub, _ := newScopeApp(t)
 	openScopeFrom(t, m, "/scope")
 	putCursor(m, rowIndexOf(t, m, "github"))
 	pressScope(t, m, "d")
@@ -442,7 +508,7 @@ func TestScopeDeleteConfirmsThenDeletesTheRow(t *testing.T) {
 // THE PROJECT'S DEFINITIONS ARE NOT DELETABLE FROM HERE, and the refusal says why: they belong to the
 // project, which is where they must be edited. A silent no-op would read as a broken key.
 func TestScopeRefusesToWriteAProjectOwnedDefinition(t *testing.T) {
-	m, stub := newScopeApp(t)
+	m, stub, _ := newScopeApp(t)
 	openScopeFrom(t, m, "/scope")
 	for _, key := range []string{"d", "i", "k"} {
 		m.dock.SetError("")
@@ -466,7 +532,7 @@ func TestScopeRefusesToWriteAProjectOwnedDefinition(t *testing.T) {
 // `i` INSTALLS THE ROW'S ID (the explicit auto-install must not re-resolve a name), and `k` opens the
 // write-only credential form for it.
 func TestScopeInstallAndCredentialAddressTheRow(t *testing.T) {
-	m, stub := newScopeApp(t)
+	m, stub, _ := newScopeApp(t)
 	openScopeFrom(t, m, "/scope")
 	putCursor(m, rowIndexOf(t, m, "github"))
 
@@ -509,7 +575,7 @@ func TestScopeInstallAndCredentialAddressTheRow(t *testing.T) {
 // `s` OPENS THE SKILL-FILE LIST PREFILLED with what the conversation holds, and saving it writes the
 // list — the TUI's control for skill_files, in the same modal as the MCP half.
 func TestScopeSkillFilesFormIsPrefilledAndWritesTheList(t *testing.T) {
-	m, _ := newScopeApp(t)
+	m, _, _ := newScopeApp(t)
 	openScopeFrom(t, m, "/scope")
 	pressScope(t, m, "s")
 	if m.convScopeForm == nil {
@@ -536,7 +602,7 @@ func TestScopeSkillFilesFormIsPrefilledAndWritesTheList(t *testing.T) {
 
 // A SKILL ROW'S `d` removes THAT path from the list and confirms first.
 func TestScopeRemovesOneSkillPath(t *testing.T) {
-	m, _ := newScopeApp(t)
+	m, _, _ := newScopeApp(t)
 	openScopeFrom(t, m, "/scope")
 	putCursor(m, rowIndexOf(t, m, "/skills/conv.md"))
 	pressScope(t, m, "d")
@@ -557,7 +623,7 @@ func TestScopeRemovesOneSkillPath(t *testing.T) {
 
 // ESC CLOSES IT, and nothing else does: the modal stays up while the operator works through it.
 func TestScopeEscCloses(t *testing.T) {
-	m, _ := newScopeApp(t)
+	m, _, _ := newScopeApp(t)
 	openScopeFrom(t, m, "/scope")
 	pressScope(t, m, "esc")
 	if m.scope != nil {
@@ -567,7 +633,7 @@ func TestScopeEscCloses(t *testing.T) {
 
 // THE CURSOR SKIPS HEADINGS AND NOTES: it can only rest on a real row, so a verb always has a subject.
 func TestScopeCursorOnlyRestsOnRealRows(t *testing.T) {
-	m, _ := newScopeApp(t)
+	m, _, _ := newScopeApp(t)
 	openScopeFrom(t, m, "/scope")
 	for i := 0; i < 12; i++ {
 		row, ok := m.scope.selected(m)
@@ -584,7 +650,7 @@ func TestScopeCursorOnlyRestsOnRealRows(t *testing.T) {
 // SWITCHING CONVERSATION CLOSES IT. A modal that outlived its conversation would edit one chat's scope
 // while another was open — the same reason the GUI's disclosure closes on a switch.
 func TestScopeClosesWhenTheConversationChanges(t *testing.T) {
-	m, _ := newScopeApp(t)
+	m, _, _ := newScopeApp(t)
 	openScopeFrom(t, m, "/scope")
 
 	// A different conversation is opened.
@@ -605,7 +671,7 @@ func TestScopeClosesWhenTheConversationChanges(t *testing.T) {
 // A FETCH FOR A CONVERSATION THE MODAL IS NO LONGER ABOUT IS DISCARDED: the reply is asynchronous, so
 // applying it would put one chat's definitions in another's scope pane.
 func TestScopeDiscardsAStaleFetch(t *testing.T) {
-	m, _ := newScopeApp(t)
+	m, _, _ := newScopeApp(t)
 	openScopeFrom(t, m, "/scope")
 	m.onScopeData(scopeDataMsg{
 		convID: "some-other-chat",
@@ -619,7 +685,7 @@ func TestScopeDiscardsAStaleFetch(t *testing.T) {
 // THE MODAL OWNS THE KEYBOARD BUT NOT THE WORLD: it consumes keys and the mouse, and lets everything
 // else through — so the chat waiter behind it keeps running (see the router's note).
 func TestScopeDoesNotSwallowNonKeyMessages(t *testing.T) {
-	m, _ := newScopeApp(t)
+	m, _, _ := newScopeApp(t)
 	openScopeFrom(t, m, "/scope")
 	opened := m.scope != nil
 	// A transcript message must reach the shell's handler, which re-arms the waiter. If the modal ate
@@ -650,7 +716,7 @@ func TestScopeDoesNotSwallowNonKeyMessages(t *testing.T) {
 // This is the same lesson as the transcript's tail-clipping test, and the reason both now assert on the
 // frame.
 func TestScopeVerbShowsItsFormInThePaintedFrame(t *testing.T) {
-	m, _ := newScopeApp(t)
+	m, _, _ := newScopeApp(t)
 	openScopeFrom(t, m, "/scope")
 
 	pressScope(t, m, "a")
@@ -672,7 +738,7 @@ func TestScopeVerbShowsItsFormInThePaintedFrame(t *testing.T) {
 // AND THE MODAL IS BACK WHEN THE FORM IS DISMISSED. Reversal of the same ordering: after esc the list
 // must be what the operator sees, with the form gone.
 func TestScopeModalIsVisibleAgainAfterTheFormCloses(t *testing.T) {
-	m, _ := newScopeApp(t)
+	m, _, _ := newScopeApp(t)
 	openScopeFrom(t, m, "/scope")
 	pressScope(t, m, "a")
 
@@ -700,7 +766,7 @@ func TestScopeModalIsVisibleAgainAfterTheFormCloses(t *testing.T) {
 // Asserted two ways, because there are two things to be wrong: the WRAP must lose nothing at any width,
 // and the VIEW must actually use the wrapped form.
 func TestScopeKeyHintIsNotCutOff(t *testing.T) {
-	m, _ := newScopeApp(t)
+	m, _, _ := newScopeApp(t)
 	openScopeFrom(t, m, "/scope")
 	// The MCP row has the LONGEST hint (it names install, credential and delete as well), so a width
 	// that fits it fits every other row's.
@@ -746,7 +812,7 @@ func TestScopeKeyHintIsNotCutOff(t *testing.T) {
 // cursor has nowhere to go. The keys that CREATE something must still be advertised, or there is no way
 // out of the state at all.
 func TestEmptyScopeStillAdvertisesTheCreateKeys(t *testing.T) {
-	m, stub := newScopeApp(t)
+	m, stub, _ := newScopeApp(t)
 	stub.servers = nil
 	stub.projectServers = nil
 	// Unassigned, so there is no inherited half either: this is the screenshot's shape.
