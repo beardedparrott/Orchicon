@@ -80,6 +80,20 @@ type convState struct {
 	// runLivenessWatch); without it, a stream whose socket died silently is indistinguishable
 	// from a turn that is simply thinking.
 	lastActivity int64
+	// serverTimeMs and serverRecvMonoMs are the SERVER's clock, and the moment THIS client heard it,
+	// captured together from Heartbeat.server_time_unix_ms — a field the server already emits and both
+	// clients used to discard.
+	//
+	// THEY EXIST FOR THE ACTIVITY VERB ROTATION. The word the line shows is verbAt(server-time), a PURE
+	// function of the server's clock (see verbs.go), so two clients draw the same word with no shared
+	// state and no new RPC. A heartbeat is the only place that clock arrives, so these two numbers are
+	// the whole of the slot's knowledge about it. serverRecvMonoMs is a LOCAL receipt instant used only
+	// as a DELTA — `serverTimeMs + (now() - serverRecvMonoMs)` — which keeps the word advancing between
+	// the 15s heartbeats WITHOUT ever letting the client's own (possibly skewed) wall clock become the
+	// source of the word. serverTimeMs == 0 means "no heartbeat yet": the caller falls back to the
+	// list's first word rather than to an empty line.
+	serverTimeMs     int64
+	serverRecvMonoMs int64
 }
 
 // askStreamStallTimeout is how long a streaming turn may go with NO event at all before the
@@ -1380,8 +1394,19 @@ func (c *Controller) handleEvent(convID string, ev *apiv1.ChatStreamResponse) {
 		}
 	case *apiv1.ChatStreamResponse_Heartbeat:
 		c.mu.Lock()
-		if st := c.state[convID]; st != nil && st.reconnecting {
-			st.reconnecting = false
+		if st := c.state[convID]; st != nil {
+			if st.reconnecting {
+				st.reconnecting = false
+			}
+			// THE SERVER'S CLOCK, RECORDED WITH THE INSTANT WE HEARD IT. These two lines are the entire
+			// clock of the activity-verb rotation: server_time_unix_ms is already on the wire (chat.go
+			// emits it precisely so "the client [can] measure socket age/skew") and this client used to
+			// throw it away, clearing only the reconnect flag. Guarded on ts > 0 so a server that sends
+			// a zero stamp cannot plant a bogus anchor; the zero anchor stays "no stamp yet".
+			if ts := e.Heartbeat.GetServerTimeUnixMs(); ts > 0 {
+				st.serverTimeMs = ts
+				st.serverRecvMonoMs = now()
+			}
 		}
 		c.mu.Unlock()
 	case *apiv1.ChatStreamResponse_Error:
@@ -1759,6 +1784,32 @@ func (c *Controller) SilenceSince(convID string) time.Duration {
 		return 0 // a clock that stepped backwards is not a silence
 	}
 	return time.Duration(d) * time.Millisecond
+}
+
+// ServerTimeSince reports the SERVER's clock, extrapolated to right now — the value the activity verb
+// rotation indexes on. It returns (0, false) when no heartbeat has ever been recorded for the
+// conversation, which is the caller's cue to use the list's first word (VerbAt(0)); a real server stamp is
+// Unix milliseconds and always positive, so 0 is unambiguous.
+//
+// THE LOCAL CLOCK IS A DELTA, NOT THE SOURCE. The returned value is `serverTimeMs + (now() - recvMono)`,
+// where `recvMono` was taken the moment the stamp arrived: only the time since OUR OWN receipt is added,
+// so a client whose wall clock is skewed by hours still sees the SAME word as every other client for the
+// same server time (the skew cancels out of the delta), while the word still advances smoothly between
+// the 15s heartbeats instead of freezing for a quarter of a minute.
+//
+// IT IS READ UNDER THE SAME MUTEX AS THE WRITE, so a heartbeat landing mid-render cannot tear the pair.
+func (c *Controller) ServerTimeSince(convID string) (int64, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	st := c.state[convID]
+	if st == nil || st.serverTimeMs <= 0 || st.serverRecvMonoMs <= 0 {
+		return 0, false
+	}
+	delta := now() - st.serverRecvMonoMs
+	if delta < 0 {
+		delta = 0 // a clock that stepped backwards is not a negative age
+	}
+	return st.serverTimeMs + delta, true
 }
 
 // errStreamStalled reports a stream that stopped sending anything. It is not a failure the operator

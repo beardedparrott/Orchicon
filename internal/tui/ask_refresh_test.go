@@ -117,14 +117,15 @@ func TestRollingTickPaintsTheThinkingNotice(t *testing.T) {
 	if str == nil {
 		t.Fatal("the tick never created the transcript stream")
 	}
-	if !strings.Contains(m.askStatusLine(), "thinking") {
-		t.Errorf("the tick did not set the thinking indicator — the operator's \"No 'Orchicon is thinking...' "+
-			"block\". footer=%q", m.askStatusLine())
+	line := m.askStatusLine()
+	if !containsStr(line, "Orchicon is ") || !activityWordInList(line) {
+		t.Errorf("the tick did not set the activity line, or set a word outside the reviewed rotation — the "+
+			"operator's \"No 'Orchicon is thinking...' block\". footer=%q", line)
 	}
 	// AND IT IS IN WHAT THE OPERATOR ACTUALLY SEES. The line is the pane's FIXED FOOTER now, so the
 	// assertion is on the painted FRAME — the layer the report is true at — rather than on the stream's
 	// body, which is where it used to live and where it could be pushed out by a full transcript.
-	if frame := stripANSI(m.View()); !strings.Contains(frame, "thinking") {
+	if frame := stripANSI(m.View()); !strings.Contains(frame, "Orchicon is ") {
 		t.Errorf("the status line is set but missing from the painted frame:\n%s", tailOf(frame, 1200))
 	}
 }

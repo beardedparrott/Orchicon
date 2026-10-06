@@ -520,11 +520,19 @@ func TestUserMessageIsVisibleImmediatelyOnOpenConversation(t *testing.T) {
 	if joined := strings.Join(str.Lines, "\n"); !strings.Contains(joined, "hello there") {
 		t.Errorf("the operator's message is not in the transcript: %q", joined)
 	}
-	// And nothing has replied yet, so the GUI's thinking indicator should be showing. It is the pane's
-	// FOOTER (see App.transcriptStatusLine), so it is read from the surface that draws it.
-	if got := m.askStatusLine(); got != "Orchicon is thinking…" {
-		t.Errorf("status line = %q, want %q — the GUI shows it until the first content arrives",
-			got, "Orchicon is thinking…")
+	// And nothing has replied yet, so the activity line is showing. It is the pane's FOOTER (see
+	// App.transcriptStatusLine), so it is read from the surface that draws it. No heartbeat has arrived in
+	// this fixture, so the server stamp is 0 and the line carries the list's FIRST word — which is the
+	// fallback the operator sees in the first second after sending.
+	//
+	// The assertion is the SHARED property, not the old literal: for a server time, the selector's word.
+	// internal/tui/chat/verbs_test.go and frontend/src/lib/ask-verbs.test.ts pin both lists to one fixture,
+	// so "both clients draw the same word for the same server time" is the promise this now rests on.
+	wantStatus := "Orchicon is " + chat.VerbAt(0) + "…"
+	if got := m.askStatusLine(); got != wantStatus {
+		t.Errorf("status line = %q, want %q — the line must name the word the rotation selects for the "+
+			"server time (here the pre-heartbeat fallback), and it must be present until the first content "+
+			"arrives", got, wantStatus)
 	}
 }
 

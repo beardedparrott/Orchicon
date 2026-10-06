@@ -1,0 +1,20 @@
+{
+  "periodMs": 4000,
+  "verbs": [
+    "thinking", "pondering", "contemplating", "considering", "deliberating",
+    "musing", "ruminating", "cogitating", "reasoning", "reflecting",
+    "meditating", "mulling", "brooding", "speculating", "hypothesizing",
+    "theorizing", "analyzing", "scrutinizing", "examining", "inspecting",
+    "investigating", "inquiring", "inquisiting", "questioning", "probing",
+    "exploring", "researching", "studying", "surveying", "scouting",
+    "mapping", "charting", "plotting", "planning", "scheming",
+    "strategizing", "devising", "designing", "drafting", "sketching",
+    "outlining", "organizing", "arranging", "sorting", "sifting",
+    "parsing", "dissecting", "unraveling", "untangling", "synthesizing",
+    "assembling", "composing", "crafting", "constructing", "shaping",
+    "refining", "polishing", "honing", "pruning", "distilling",
+    "conjuring", "calculating", "computing", "enumerating", "estimating",
+    "weighing", "balancing", "verifying", "validating", "rehearsing",
+    "preparing", "calibrating"
+  ]
+}

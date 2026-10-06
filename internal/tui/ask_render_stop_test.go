@@ -75,11 +75,16 @@ func TestAskFullTranscriptPaintsTheNewestLineAndTheThinkingNotice(t *testing.T) 
 			"transcript taller than itself, which is the operator's \"once we hit the bottom pane, I no "+
 			"longer see my messages popping up right away\"\n--- frame tail ---\n%s", tailOf(frame, 2000))
 	}
-	if !strings.Contains(frame, "Orchicon is thinking…") {
-		t.Errorf("the thinking indicator is not in the painted frame — the notice is emitted AFTER the "+
+	if !strings.Contains(frame, "Orchicon is ") {
+		t.Errorf("the activity line is not in the painted frame — the notice is emitted AFTER the "+
 			"transcript rows, so an over-tall stream clips it away (the operator: \"I still don't see the "+
 			"'Orchicon is thinking...' being printed when the model is responding\")\n--- frame tail ---\n%s",
 			tailOf(frame, 2000))
+	}
+	// The word it painted is a member of the reviewed rotation — the re-pointed form of the old literal,
+	// resting on the stronger promise that both clients draw the same word for the same server time.
+	if line := m.askStatusLine(); !activityWordInList(line) {
+		t.Errorf("the activity line names a word outside the reviewed rotation: %q", line)
 	}
 }
 
