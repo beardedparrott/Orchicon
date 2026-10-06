@@ -17,10 +17,16 @@
 //     tenant-scoped because RLS needs a tenant, and that is a credential
 //     store, not an MCP scope.
 //
+// A CREDENTIAL IS OFFERED AT EVERY SCOPE, and it is ATTACHED differently at each:
+// an owned row stores it against its ID (the Credentials card below), while a
+// worker version's inline spec has no row and gets the ${SECRET_NAME} reference
+// built INTO its own env/headers (workerCredential) — the same split the TUI's
+// scope modal makes with its `k` verb (internal/tui/scope_modal.go).
+//
 // The honest consequence is stated rather than hidden: a server can no
 // longer be defined once and inherited by several projects. The catalog's
 // one-click Add per scope is the mitigation.
-import { useState } from "react";
+import { useId, useState } from "react";
 
 import {
   useMCPServerList,
@@ -34,6 +40,8 @@ import {
   usePrefillMCPCatalogEntry,
 } from "@/api/mcpServers";
 import { MCPServerTransport } from "@/api/gen/orchicon/api/v1/mcp_server_pb";
+import { useCreateSecret, useSecretList, useUpdateSecret } from "@/api/secrets";
+import { attachSecret, credentialKeys } from "@/lib/mcpInlineCredential";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -306,11 +314,33 @@ export function MCPServersPanel({ scope, readOnly = false, inheritedFrom }: MCPS
   const [secretValue, setSecretValue] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
 
+  // The INLINE credential's fields (worker-version scope): which spec, which key, which stored secret,
+  // and an optional value to store a new one under that name.
+  const [credSpecId, setCredSpecId] = useState("");
+  const [credKey, setCredKey] = useState("");
+  const [credSecret, setCredSecret] = useState("");
+  const [credValue, setCredValue] = useState("");
+  // Two datalists per mount, so two panels on one page cannot collide on their suggestion lists.
+  const credKeyListId = useId();
+  const credSecretListId = useId();
+
+  // The write-only credential store, read for its NAMES: the picker offers what exists (the only shape
+  // a reference can take and still resolve), and the value path needs the id when it replaces one.
+  const { data: secrets = [], error: secretsError } = useSecretList();
+  const createSecret = useCreateSecret();
+  const updateSecret = useUpdateSecret();
+
   // rows is the common render list, whatever the persistence mode.
   const rows: Row[] =
     scope.kind === "workerVersion"
       ? scope.value.map(inlineRow)
       : listed.map(ownedRow);
+
+  // THE INLINE SPECS THEMSELVES (worker-version scope only). The credential control acts on a SPEC
+  // rather than on a display row: a row's `command` is a single string with `args` beside it, while the
+  // spec carries the argv and the env/headers a reference has to land in.
+  const inlineSpecs: InlineMCP[] = scope.kind === "workerVersion" ? scope.value : [];
+  const credSpec = inlineSpecs.find((sp) => sp.id === (credSpecId || inlineSpecs[0]?.id));
 
   const mechanismBySlug = new Map(catalog.map((c) => [c.slug, c.installMechanism]));
   const runtimeAvailable = (m: string) => {
@@ -414,6 +444,59 @@ export function MCPServersPanel({ scope, readOnly = false, inheritedFrom }: MCPS
       });
       setEditingId(null);
       setShowForm(true);
+    } catch (e) {
+      setActionError(String(e));
+    }
+  }
+
+  // handleAttachCredential points one of THIS VERSION's inline specs at a stored secret.
+  //
+  // THE STORE WRITE COMES FIRST when the operator asked for a name it does not hold, because the spec
+  // must never reference a secret that is not there: a reference is resolved when the worker runs
+  // (mcpsettings.ResolveSecretRefs), so a missing one fails that server's session rather than this
+  // click. The same order the TUI's credential form keeps.
+  async function handleAttachCredential() {
+    setActionError(null);
+    if (scope.kind !== "workerVersion") return;
+    const specId = credSpecId || inlineSpecs[0]?.id || "";
+    const key = credKey.trim();
+    const secret = credSecret.trim();
+    if (!specId) {
+      setActionError("Add a server first — a credential is attached to one of this version's specs.");
+      return;
+    }
+    if (!key) {
+      setActionError("Name the env var or header the secret should fill (e.g. GITHUB_PERSONAL_ACCESS_TOKEN).");
+      return;
+    }
+    if (!secret) {
+      setActionError("Pick a stored secret, or name one and give it a value to store it.");
+      return;
+    }
+    const stored = secrets.find((s) => s.name === secret);
+    if (!credValue && !stored && !secretsError) {
+      // The form's own rule, about the list it just offered: a name that is not in the store cannot be
+      // referenced. (The plane refuses it at version save too — this says it before the save.) It is
+      // skipped when the list could not be read, so a store we cannot see never blocks a valid name.
+      setActionError(`${secret} is not in the tenant secrets store — pick one from the list, or give it a value to store it.`);
+      return;
+    }
+    try {
+      if (credValue) {
+        if (stored) {
+          await updateSecret.mutateAsync({ id: stored.id, value: credValue });
+        } else {
+          await createSecret.mutateAsync({
+            name: secret,
+            value: credValue,
+            description: "MCP server credential (attached to a worker version's inline spec)",
+          });
+        }
+      }
+      writeInline(attachSecret(scope.value, specId, key, secret));
+      setCredKey("");
+      setCredSecret("");
+      setCredValue("");
     } catch (e) {
       setActionError(String(e));
     }
@@ -671,10 +754,112 @@ export function MCPServersPanel({ scope, readOnly = false, inheritedFrom }: MCPS
         </Card>
       )}
 
-      {/* Credentials are OWNED-MODE ONLY: the secrets store is
-       *  tenant-scoped (RLS needs a tenant) and an inline worker spec has no
-       *  row to attach a credential to — the operator supplies a
-       *  ${SECRET_NAME} in the spec's env/headers instead. */}
+      {/* AN INLINE SPEC'S CREDENTIAL IS ATTACHED, NOT STORED AGAINST A ROW. A worker version has no
+       *  definition row, so the picked secret becomes a ${SECRET_NAME} reference in the spec's own
+       *  env/headers — which is the half that was missing: before this, the operator had to hand-write
+       *  the reference into the Env textarea. The control is the SAME control as the owned scope's
+       *  (a spec, a key, a credential, a value), pointed at a different target.
+       *
+       *  It renders only when the version HAS a spec: there is nothing to attach a credential to
+       *  otherwise, and the Configured-servers card already says so. The version is only ever mounted
+       *  inside the worker form (routes/workers_.$id.tsx, routes/workers_.new.tsx), so the change is
+       *  kept by that form's Save — said below rather than assumed. */}
+      {!readOnly && !owned && inlineSpecs.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Credentials</CardTitle>
+            <CardDescription>
+              Point one of this version's servers at a credential in the tenant
+              secrets store: the picked secret is written into that server's env
+              (stdio) or headers (streamable HTTP) as{" "}
+              {`${'${'}SECRET_NAME}`} and resolved when the worker runs. A
+              version has no definition row, so the reference IS the credential.
+              Save the version (or publish it) to keep the change.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <div className="flex flex-wrap gap-2">
+              <select
+                className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+                value={credSpecId || inlineSpecs[0]?.id || ""}
+                onChange={(e) => {
+                  setCredSpecId(e.target.value);
+                  setCredKey("");
+                }}
+              >
+                {inlineSpecs.map((sp) => (
+                  <option key={sp.id} value={sp.id}>
+                    {sp.id}
+                  </option>
+                ))}
+              </select>
+              <Input
+                className="max-w-72"
+                list={credKeyListId}
+                placeholder="Env var / header name (e.g. GITHUB_PERSONAL_ACCESS_TOKEN)"
+                value={credKey}
+                onChange={(e) => setCredKey(e.target.value)}
+              />
+              {/* The keys the chosen spec already carries, offered as suggestions — the same list the
+               *  TUI's picker offers. A typable field, because a catalog pick leaves a secret key out
+               *  on purpose and the operator is the one who knows the name it reads. */}
+              <datalist id={credKeyListId}>
+                {credentialKeys(credSpec).map((k) => (
+                  <option key={k} value={k} />
+                ))}
+              </datalist>
+              <Input
+                className="max-w-72"
+                list={credSecretListId}
+                placeholder="Stored secret (pick one, or name a new one)"
+                value={credSecret}
+                onChange={(e) => setCredSecret(e.target.value)}
+              />
+              {/* THE STORE'S NAMES, which is what "selected rather than typed" means: a reference to a
+               *  name that is not stored cannot resolve. Free text stays allowed for one case — a new
+               *  name travelling with a value, which is stored first. */}
+              <datalist id={credSecretListId}>
+                {secrets.map((s) => (
+                  <option key={s.id} value={s.name}>
+                    {s.description}
+                  </option>
+                ))}
+              </datalist>
+              <Input
+                className="max-w-60"
+                placeholder="Value (only to store a new secret)"
+                type="password"
+                value={credValue}
+                onChange={(e) => setCredValue(e.target.value)}
+              />
+              <Button
+                type="button"
+                size="sm"
+                onClick={handleAttachCredential}
+                disabled={createSecret.isPending || updateSecret.isPending}
+              >
+                <KeyRound className="mr-1 h-3 w-3" /> Attach
+              </Button>
+            </div>
+            {secretsError != null && (
+              <p className="text-xs text-muted-foreground">
+                The tenant secrets store could not be read (
+                {String(secretsError)}), so nothing is offered to pick — name
+                the secret and give it a value to store it.
+              </p>
+            )}
+            {secrets.length === 0 && secretsError == null && (
+              <p className="text-xs text-muted-foreground">
+                No secrets are stored yet — name one and give it a value to
+                store it here, or create it in Settings → Secrets.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* The OWNED scopes' credential card: the secret is stored against the ROW's id, and the plane
+       *  points the row's env/header at it for us (mcpsettings.SetSecret). */}
       {!readOnly && owned && (
         <Card>
           <CardHeader>

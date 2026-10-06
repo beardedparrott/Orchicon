@@ -15,6 +15,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -641,8 +642,13 @@ func TestOpeningAWorkerVersionCarriesTheStoresNames(t *testing.T) {
 
 // THE CATALOG CASE: a spec with NO env key yet — the catalog prefill deliberately leaves a secret key
 // out (it never writes a blank one), so the KEY is typed while the SECRET is still picked. The
-// reference lands the same way, and a key the transport could not hand to a child process is refused
-// before anything is written (nothing else validates an inline spec's keys — see mcpforms.envKeyRE).
+// reference lands the same way.
+//
+// THE KEY'S GRAMMAR IS NOT THE FORM'S BUSINESS, and that is asserted here by typing a name no
+// environment could carry: the form takes it and builds the reference, because the rule belongs to the
+// plane — a worker version's inline specs are validated at save
+// (mcpsettings.ValidateInlinePermissions, which reuses the owned-row rule), so every writer is covered
+// by one copy of it rather than by one per client.
 func TestWorkerVersionCredentialHandlesASpecWithNoKeysYet(t *testing.T) {
 	const freshCatalogSpec = `{"mcp_servers":[{"id":"github","type":"stdio",` +
 		`"command":["npx","-y","@modelcontextprotocol/server-github"]}]}`
@@ -661,23 +667,38 @@ func TestWorkerVersionCredentialHandlesASpecWithNoKeysYet(t *testing.T) {
 
 	f.Set("key", "NOT A KEY")
 	f.Set("secret", "MCP_GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN")
-	if _, err := f.Submit(); err == nil {
-		t.Error("a key that no environment can carry was accepted — the spec's keys reach a child " +
-			"process as k=v, so this is the only gate on the inline path")
-	}
-	if rec.saves != 0 {
-		t.Error("the rejected key still saved the version")
-	}
-
-	// The typed key is the answer for this spec: put a real one in and it lands.
-	f.Set("key", "GITHUB_PERSONAL_ACCESS_TOKEN")
 	submitAndRoute(t, m)
 	if rec.saves != 1 {
-		t.Fatalf("the version was saved %d times, want 1", rec.saves)
+		t.Fatalf("the version was saved %d times, want 1 — the form does not restate the plane's key "+
+			"grammar, it builds the reference the operator asked for", rec.saves)
 	}
-	if !strings.Contains(flatJSON(rec.perm), `"env":{"GITHUB_PERSONAL_ACCESS_TOKEN":"${MCP_GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN}"}`) {
-		t.Errorf("the typed key was not pointed at the picked secret: %s", rec.perm)
+	// Parsed rather than substring-matched, because THIS key deliberately contains a space (flatJSON
+	// squeezes whitespace, so it cannot be used to assert a value that contains any).
+	if got := specEnv(t, rec.perm, "github")["NOT A KEY"]; got != "${MCP_GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN}" {
+		t.Errorf("the typed key reads %q, want the picked secret's reference", got)
 	}
+}
+
+// specEnv parses a committed permissions blob and returns one inline spec's env — the layout- and
+// whitespace-independent way to assert what a reference landed as.
+func specEnv(t *testing.T, permsJSON, specID string) map[string]string {
+	t.Helper()
+	var p struct {
+		MCPServers []struct {
+			ID  string            `json:"id"`
+			Env map[string]string `json:"env"`
+		} `json:"mcp_servers"`
+	}
+	if err := json.Unmarshal([]byte(permsJSON), &p); err != nil {
+		t.Fatalf("the committed permissions are not JSON: %v\n%s", err, permsJSON)
+	}
+	for _, sp := range p.MCPServers {
+		if sp.ID == specID {
+			return sp.Env
+		}
+	}
+	t.Fatalf("no inline spec %q in the committed permissions:\n%s", specID, permsJSON)
+	return nil
 }
 
 // secretChoiceNames lists the choices' names, for assertions.

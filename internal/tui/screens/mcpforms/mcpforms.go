@@ -24,7 +24,6 @@ package mcpforms
 import (
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -348,14 +347,6 @@ func AttachSecret(spec *InlineSpec, key, secretName string) {
 	spec.Env[key] = ref
 }
 
-// envKeyRE is the env/header key grammar. It MIRRORS internal/mcpsettings's envKeyRE, and the mirror
-// is deliberate rather than drift: the plane validates an OWNED row's env/header keys
-// (mcpsettings.validateMapKeys), but a worker version's inline specs are opaque JSON to it — nothing
-// server-side ever looks at them. So on this path the form is the ONLY gate between a typed key and
-// `cmd.Env = append(..., k+"="+v)` in the MCP stdio transport, where a key carrying a space or an "="
-// corrupts the child's environment.
-var envKeyRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-
 // CredentialForm attaches a STORED credential to one INLINE spec (a worker version's).
 //
 // WHY IT EXISTS. A worker version has no row, so `k` on one of its specs could only say "put the
@@ -375,6 +366,12 @@ var envKeyRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // and non-empty when the operator asked for that name to be created (or replaced) in the store. THE
 // CALLER OWNS BOTH WRITES and their order — the store must land before the version does, or the
 // version would reference a secret that is not there.
+//
+// THE KEY'S GRAMMAR IS THE PLANE'S RULE, not a copy kept here: an inline spec's env/header keys (and
+// every ${SECRET_NAME} it references) are validated at version save
+// (internal/mcpsettings/validate_inline.go), which is also the gate for the clients that do not come
+// through this form at all. The one rule the form DOES own is about the list it just offered: a name
+// that is not in the tenant store cannot be referenced, so it needs a value to create it.
 func CredentialForm(title string, spec InlineSpec, choices []SecretChoice, onSave func(key, secret, value string) tea.Cmd) *kit2.Form {
 	names := make([]kit2.Option, 0, len(choices))
 	stored := make(map[string]bool, len(choices))
@@ -412,9 +409,11 @@ func CredentialForm(title string, spec InlineSpec, choices []SecretChoice, onSav
 		key := strings.TrimSpace(v["key"])
 		secret := strings.TrimSpace(v["secret"])
 		value := strings.TrimSpace(v["value"])
-		if !envKeyRE.MatchString(key) {
-			return nil, fmt.Errorf("the env var / header name must match %s (e.g. GITHUB_TOKEN)", envKeyRE)
-		}
+		// THE KEY'S GRAMMAR IS NOT CHECKED HERE. The plane validates an inline spec's keys at version
+		// save (mcpsettings.ValidateInlinePermissions, which reuses the owned-row rule), so restating it
+		// in the form would be a second copy of a rule the server owns — and the server is the one that
+		// can enforce it for every writer, including the ones that are not this form. What IS the form's
+		// own business is the pair below, because it is about the list the form just offered.
 		if secret == "" {
 			return nil, fmt.Errorf("pick the stored secret to reference")
 		}

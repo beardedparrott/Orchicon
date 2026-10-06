@@ -53,6 +53,17 @@ vi.mock("@/api/mcpServers", () => {
   };
 });
 
+// The tenant secrets store, so the worker-version placement's credential card renders (it is one of the
+// components in this form, and its Attach button has to be covered by the invariant below).
+vi.mock("@/api/secrets", () => {
+  const idle = () => ({ mutateAsync: async () => ({}), isPending: false });
+  return {
+    useSecretList: () => ({ data: [{ id: "sec-gh", name: "MCP_GITHUB_TOKEN", description: "" }], error: null }),
+    useCreateSecret: idle,
+    useUpdateSecret: idle,
+  };
+});
+
 const { MCPServersPanel } = await import("./MCPServersPanel");
 const { Button } = await import("./ui/button");
 const workerRoute = fs.readFileSync(
@@ -103,8 +114,15 @@ describe("MCPServersPanel inside a host form", () => {
   it("renders NO submit button — nothing here may submit the draft form", () => {
     // Every placement the panel has: the worker-version scope is the one the
     // report came from, and the other two prove the fix is not worker-only.
+    // The worker-version scope carries a SPEC, because its credential card (an inline reference into the
+    // spec's own env) renders only when there is something to attach one to — and that card's Attach
+    // button is a button in this form like any other.
     const scopes: MCPScope[] = [
-      { kind: "workerVersion", value: [], onChange: () => {} },
+      {
+        kind: "workerVersion",
+        value: [{ id: "gh", type: "stdio", command: ["npx", "-y", "server-github"], env: { TOKEN: "" } }],
+        onChange: () => {},
+      },
       { kind: "project", projectId: "proj-1" },
       { kind: "conversation", conversationId: "conv-1" },
     ];
