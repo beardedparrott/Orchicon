@@ -367,6 +367,10 @@ func (p *Plane) streamTurn(ctx context.Context, st *connect.ServerStream[v1.Chat
 	// myGen is the generation this stream belongs to. Reset bumps p.gen, so a stream that attached
 	// before a reset recognises itself as stale at every call it is about to make.
 	myGen := p.gen
+	// myDone is the end-signal channel THIS stream watches, captured under the same lock. Reset
+	// replaces p.done (so one ended turn does not end every later one); reading the field directly in
+	// the selects below would race that write, so the channel is pinned to the stream's generation.
+	myDone := p.done
 	p.mu.Unlock()
 	trace("streamTurn attach runWork=%v gen=%d", runWork, myGen)
 	// stale reports whether a Reset has superseded this stream. It is checked immediately before
@@ -408,7 +412,7 @@ func (p *Plane) streamTurn(ctx context.Context, st *connect.ServerStream[v1.Chat
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-p.done:
+		case <-myDone:
 			return nil
 		case <-time.After(p.settleBeforeCalls):
 		}
@@ -416,7 +420,7 @@ func (p *Plane) streamTurn(ctx context.Context, st *connect.ServerStream[v1.Chat
 			select {
 			case <-ctx.Done():
 				return nil
-			case <-p.done:
+			case <-myDone:
 				return nil
 			case <-time.After(200 * time.Millisecond):
 			}
@@ -440,7 +444,7 @@ func (p *Plane) streamTurn(ctx context.Context, st *connect.ServerStream[v1.Chat
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-p.done:
+		case <-myDone:
 			return nil
 		case <-time.After(p.settleBeforeCalls):
 		}
@@ -463,7 +467,7 @@ func (p *Plane) streamTurn(ctx context.Context, st *connect.ServerStream[v1.Chat
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-p.done:
+		case <-myDone:
 			// A CLEAN END: the done signal, then the stream closes. A real turn's completion is what
 			// makes the client clear its line and hand the transcript body its row back.
 			_ = send(&v1.ChatStreamResponse{Event: &v1.ChatStreamResponse_Done{
@@ -514,6 +518,12 @@ func (p *Plane) Reset(ph Phase) {
 	p.scripted = false
 	p.phase = ph
 	p.stalledAt = time.Time{}
+	// ENDTURN IS UNDONE BY RESET. Without this the first EndTurn closes p.done for the life of the
+	// process and every stream opened afterwards returns at once — the control surface would work
+	// exactly once and then silently serve nothing, which is why an end/turn-end observation could not
+	// be composed with the legs that follow it.
+	p.done = make(chan struct{})
+	p.endOnce = sync.Once{}
 	p.mu.Unlock()
 }
 
@@ -698,6 +708,15 @@ func Mux(plane *Plane, sessions *Sessions, dir string) http.Handler {
 		plane.EndTurn()
 		JSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
+	// reissue appends a FRESH burst of calls to the running turn, stamped NOW. It is the browser's
+	// half of Plane.Reissue: after a long stall leg the earlier calls have honestly aged out of the
+	// summarizer's 30s rolling window, so a leg that wants counters BACK on the row must earn them
+	// with new work rather than rewind a clock. Without it the GUI's restore-to-flight assertion was
+	// racing the window (it passed only while the stall leg stayed under ~30s).
+	mux.HandleFunc("/__e2e/reissue", func(w http.ResponseWriter, _ *http.Request) {
+		plane.Reissue()
+		JSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
 	mux.HandleFunc("/__e2e/reset", func(w http.ResponseWriter, r *http.Request) {
 		ph := Phase(r.URL.Query().Get("p"))
 		switch ph {
@@ -706,6 +725,10 @@ func Mux(plane *Plane, sessions *Sessions, dir string) http.Handler {
 			ph = PhaseFlight
 		}
 		plane.Reset(ph)
+		// RESET CLEARS THE WHOLE HARNESS, not only the ledger: a run that stopped the plane
+		// (`down`/`rpc-down`) flipped the SPA's auth routes off, and a later reset that left them off
+		// would serve an unauthenticated page — a "clean slate" that is not one. See Sessions.SetDown.
+		sessions.SetDown(false)
 		JSON(w, http.StatusOK, map[string]any{"ok": true, "phase": string(ph)})
 	})
 	mux.HandleFunc("/__e2e/state", func(w http.ResponseWriter, _ *http.Request) {

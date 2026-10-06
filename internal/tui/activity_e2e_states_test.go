@@ -210,6 +210,28 @@ func TestActivityLineE2E(t *testing.T) {
 		if !strings.Contains(row, "Orchicon is ") {
 			t.Errorf("the escalated line lost its verb entirely: %q", row)
 		}
+		// THE RE-DIAL BAND (35s), observed live in the SAME stall. It is a distinct state from the
+		// 25s warn band — the watchdog re-dials at 40s and the operator is told the stream will
+		// re-attach BEFORE it happens — and the work item's observation table names it separately, so
+		// asserting only the warn band would leave a named state unproven. It is reached by the same
+		// real clock the first band was, not by a literal.
+		redial, redialFrame := waitFooter(t, s, cols, rows, 25*time.Second, func(r string) bool {
+			return strings.Contains(r, "will re-attach")
+		})
+		e2eDumpFrame(t, "tui-10b-ac5-redial-band", redialFrame)
+		if !strings.Contains(redial, "will re-attach") {
+			t.Fatalf("AC5 FAILED: the stall never reached the 35s RE-DIAL band — the line "+
+				"escalated to the warn band and then stopped, leaving the operator with no notice that "+
+				"the stream is about to be re-dialled. footer = %q", redial)
+		}
+		if hasCounter(redial) {
+			t.Errorf("AC5 FAILED: the RE-DIAL line kept a tool counter (%q) — past the warn band the "+
+				"counters are ABSENT, not merely outranked", redial)
+		}
+		if !strings.Contains(redial, "no output for") {
+			t.Errorf("the re-dial band dropped the watchdog's own verdict (\"no output for Ns\") and "+
+				"kept only the re-attach note: %q", redial)
+		}
 	})
 
 	// ------------------------------------------------------------------
@@ -324,5 +346,81 @@ func TestActivityLineE2EZeroToolCalls(t *testing.T) {
 				"turn — the counter changed the pane's row budget instead of riding the footer it "+
 				"already had", got, e2eFooterRow)
 		}
+	}
+}
+
+// TestActivityLineE2ETurnEnd is the work item's "turn ends" observation, and it is the LAST row of
+// its table for a reason: it is the state in which the line must GET OUT OF THE WAY. The activity
+// line is the pane's FIXED FOOTER (App.transcriptStatusLine -> DetailFooter), and the footer's own
+// contract is that it takes its rows from the scrolling body (kit2.Stream.bodyRows). A line that
+// outlived its turn would claim work that has stopped AND cost the transcript a row for the rest of
+// the session — the operator's other complaint, "the conversation text is going to the bottom".
+//
+// It runs its OWN session because the with-tools test ends by tearing the plane's sockets down; a
+// turn-end observation composed after that would be reading a dead pane. The control surface's
+// /__e2e/end arm (Plane.EndTurn) is what the GUI leg drives too, so both clients end the SAME way.
+func TestActivityLineE2ETurnEnd(t *testing.T) {
+	skipActivityE2E(t)
+
+	const cols, rows = 180, 50
+	url, plane, _ := activityE2EPlane(t)
+	plane.Reset(activitye2e.PhaseFlight)
+
+	bin := orchBinPath(t)
+	home := t.TempDir()
+	writeOrchConfig(t, home, url)
+	s := startOrchPtySized(t, bin, url, home, cols, rows)
+	defer s.close()
+	openActivityConversation(t, s, cols, rows)
+	sendPrompt(s, activitye2e.Prompt)
+
+	// THE TURN IS GENUINELY LIVE AND THE LINE IS UP WITH ITS COUNTER — otherwise "the line cleared"
+	// would be asserting the absence of something that was never there.
+	live, liveFrame := waitFooter(t, s, cols, rows, 30*time.Second, func(r string) bool {
+		return hasCounter(r)
+	})
+	e2eDumpFrame(t, "tui-14-turn-live-before-end", liveFrame)
+	if !hasCounter(live) {
+		t.Fatalf("fixture: no counter reached the row before the turn ended (%q), so the clearing "+
+			"assertion below would prove nothing", live)
+	}
+	footerBefore := footerRowIndex(liveFrame)
+	if footerBefore < 0 {
+		t.Fatalf("fixture: the activity line was not painted before the turn ended")
+	}
+
+	// END THE TURN, for real: turn_in_flight false and a Done signal on the stream, which is the
+	// same close a completed reply produces.
+	plane.EndTurn()
+
+	deadline := time.Now().Add(20 * time.Second)
+	var after *screen
+	var afterRow string
+	for {
+		after = replay(t, s, cols, rows)
+		afterRow = footerRow(after)
+		if afterRow == "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			e2eDumpFrame(t, "tui-15-turn-end-line-still-there-FAILED", after)
+			t.Fatalf("the activity line did NOT clear when the turn ended: the pane is still painting "+
+				"%q, which claims a turn that is over\n%s", afterRow, screenText(after))
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	e2eDumpFrame(t, "tui-15-turn-end-line-cleared", after)
+
+	// AND THE BODY GOT ITS ROW BACK. The line is a fixed footer band, so while it is up the body is
+	// sized around it; its clearing (SetDetailFooter("")) hands those rows back. The transcript's own
+	// witness line proves the body is intact rather than blank, and the footer row is empty of the
+	// line rather than holding a stale one.
+	if !strings.Contains(screenText(after), "E2EWITNESSFINAL") {
+		t.Errorf("the transcript body lost its witness line when the turn ended — clearing the line "+
+			"must not clear the reply with it:\n%s", screenText(after))
+	}
+	if got := footerRowIndex(after); got != -1 {
+		t.Errorf("the activity line still occupies frame row %d after the turn ended (was %d) — the "+
+			"body never got the row back", got, footerBefore)
 	}
 }

@@ -78,6 +78,23 @@ async function reset(p: string): Promise<void> {
   if (!res.ok) throw new Error(`control surface refused reset ${p}: ${res.status}`);
 }
 
+/** end marks the running turn over exactly as a completed reply does: turn_in_flight false and a
+ *  Done on the open stream. It is the control the TUI leg drives too (Plane.EndTurn), so "the turn
+ *  ends" is one observable fact and not two clients' opinions of it. */
+async function endTurn(): Promise<void> {
+  const res = await fetch(`${PLANE}/__e2e/end`, { method: "POST" });
+  if (!res.ok) throw new Error(`control surface refused end: ${res.status}`);
+}
+
+/** reissue lands a FRESH burst of tool calls on the running turn (the browser's half of
+ *  Plane.Reissue). Past a 30s stall the earlier calls have honestly aged out of the summarizer's
+ *  rolling window, so a leg that needs the counters BACK must earn them with new work rather than
+ *  rewind a clock — the same move the TUI leg makes. */
+async function reissue(): Promise<void> {
+  const res = await fetch(`${PLANE}/__e2e/reissue`, { method: "POST" });
+  if (!res.ok) throw new Error(`control surface refused reissue: ${res.status}`);
+}
+
 /**
  * lineText returns the line's PAINTED text, or null when the line is absent.
  *
@@ -259,6 +276,22 @@ test.describe("activity line through the real GUI pane", () => {
     );
     expect(stalled!).toContain("Orchicon is");
 
+    // THE RE-DIAL BAND (35s), observed live in the SAME stall. It is a DISTINCT state from the 25s
+    // warn band — the watchdog re-dials at 40s and the operator is told the stream will re-attach
+    // BEFORE it happens — and the work item's observation table names it as its own row, so stopping
+    // at the warn band would leave a named state unproven. Same real clock: the silence age is the
+    // gap between the server's last-activity stamp and this repaint, so it escalates on its own.
+    await expect(page.locator(LINE)).toContainText("will re-attach", { timeout: 40_000 });
+    const redial = await lineText(page);
+    await dump(page, "04c-ac5-redial-band");
+    expect(redial, "AC5: the line must still be present at the re-dial band").toBeTruthy();
+    expect(redial!, "AC5: the RE-DIAL line must keep the watchdog's own verdict").toContain(
+      "no output for",
+    );
+    expect(redial!, "AC5: past the warn band the counters are ABSENT, not merely outranked").not.toMatch(
+      COUNTER_RE,
+    );
+
     // -----------------------------------------------------------------
     // OBSERVATION 7 — AC5's SAFETY PROPERTY, observed live: the plane STOPS mid-turn (the work
     // item's own "kill the connection (or stop the plane) mid-turn"). The fixture's PhaseDown ends
@@ -266,11 +299,15 @@ test.describe("activity line through the real GUI pane", () => {
     // stream — so the client's own failure path (`fail()` -> `reconnecting`) runs for real and the
     // disconnected banner must outrank the activity line.
     //
-    // WHY THE HEALTHY PHASE IS RESTORED FIRST. Coming out of the escalation leg the counter is
-    // already absent, so stopping there would "pass" while proving nothing. Re-establishing the
-    // healthy turn puts the counters back; the stop then makes their disappearance an observation.
+    // WHY THE COUNTERS ARE RE-EARNED FIRST. Coming out of the escalation legs the counter is absent
+    // for two honest reasons — the bands drop it, and the earlier calls have now aged out of the
+    // summarizer's 30s rolling window. Stopping a counter-less row would "pass" while proving
+    // nothing, so fresh work is issued (reissue) to put counters back on a row that is genuinely
+    // claiming work; the stop then makes their disappearance an observation rather than an
+    // inheritance. Same move the TUI leg's kill subtest makes.
     // -----------------------------------------------------------------
     await phase("flight");
+    await reissue();
     await expect(page.locator(LINE)).toContainText(COUNTER_RE, { timeout: 40_000 });
     await dump(page, "04b-ac5-counters-before-the-kill");
 
@@ -285,5 +322,43 @@ test.describe("activity line through the real GUI pane", () => {
     });
     await expect(page.locator(LINE)).toHaveCount(0, { timeout: 30_000 });
     await dump(page, "05-ac5-plane-down-banner-outranks");
+  });
+
+  // THE TURN-ENDS OBSERVATION — the last row of the work item's table, and the state in which the
+  // line must GET OUT OF THE WAY: it clears, and the transcript body gets its row back. A line that
+  // outlived its turn would claim work that has stopped; that is why this is a second, separately
+  // reset turn rather than an assertion bolted onto a leg that ends by stopping the plane.
+  //
+  // The end is driven by the SAME control the TUI leg uses (Plane.EndTurn via /__e2e/end), so "the
+  // turn ends" is one server fact both clients observe, not two clients' opinions of it.
+  test("the line clears when the turn ends", async ({ page }) => {
+    test.setTimeout(180_000);
+    await reset("flight");
+    await seedSession(page);
+    await page.goto(`${BASE}/ask-orchicon?conversationId=${CONV_ID}`, { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: "activity-e2e", level: 2 })).toBeVisible({
+      timeout: 30_000,
+    });
+
+    const composer = page.getByRole("textbox", { name: "Ask Orchicon Anything..." });
+    await composer.click();
+    await composer.fill("E2EPROMPT inspect files and run the tests");
+    await composer.press("Enter");
+
+    // THE TURN IS GENUINELY LIVE, with a counter on the line, BEFORE it ends. Without this the
+    // "cleared" assertion would be proving the absence of something that was never there.
+    await expect(page.locator(LINE)).toContainText(COUNTER_RE, { timeout: 60_000 });
+    await dump(page, "06-turn-live-before-end");
+
+    await endTurn();
+
+    // THE LINE CLEARS: the client's own completion effect sees turn_in_flight false plus the Done
+    // on the stream and drops the slot, so the line's gate (turnInFlight) closes.
+    await expect(page.locator(LINE)).toHaveCount(0, { timeout: 30_000 });
+    await dump(page, "07-turn-end-line-cleared");
+
+    // AND THE BODY KEEPS ITS CONTENT. The reply the turn produced is still rendered — clearing the
+    // line must hand the body its rows back, never clear the reply with it.
+    await expect(page.getByText(WITNESS_CONTENT).first()).toBeVisible({ timeout: 30_000 });
   });
 });

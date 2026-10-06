@@ -47,7 +47,7 @@ step "2/4 TUI leg: the real binary in a real pty, asserted on the replayed frame
 ORCH_ACTIVITY_E2E=1 ORCH_PTY_SMOKE=1 \
   ORCH_ACTIVITY_E2E_ADDR="${ORCH_ACTIVITY_E2E_ADDR:-127.0.0.1:18081}" \
   ORCH_ACTIVITY_E2E_OUT="$OUT" \
-  go test ./internal/tui -run TestActivityLineE2E -v -count=1 -timeout 600s \
+  go test ./internal/tui -run 'TestActivityLineE2E$|TestActivityLineE2ETurnEnd|TestActivityLineE2EZeroToolCalls' -v -count=1 -timeout 900s \
   2>&1 | tee "$OUT/logs/tui-leg.log" || fail "TUI leg"
 
 step "3/4 GUI leg: the real DOM, mid-reply (Playwright starts the plane + SPA itself)"

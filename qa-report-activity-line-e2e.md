@@ -237,3 +237,84 @@ follow-up work item was filed.
   servers as `webServer` entries, so one command runs the entire observation against a fresh plane
   on `:18080` / `:5174` and can never attach to a stale plane or the container's own sandbox plane.
 * `scripts/activity-line-e2e.sh` — the combined runner.
+
+---
+
+# Addendum — PR Reviewer (step 3/5)
+
+The reviewer independently re-ran both live legs and the standing suites on this branch, then
+audited the harness against the work item's observation table. **Both legs pass as committed.** The
+audit found two states in that table that the capstone never observed, and one pre-existing harness
+fragility the added observation exposed. All three are fixed here, in this task (AC10: no deferred
+edge).
+
+## What the reviewer re-ran (all green, on this branch)
+
+| Command | Result |
+|---|---|
+| `go build ./internal/testfixtures/activitye2e/...` | exit 0 |
+| `go vet ./internal/testfixtures/activitye2e/... ./internal/tui/...` | clean |
+| `ORCH_ACTIVITY_E2E=1 ORCH_PTY_SMOKE=1 … go test ./internal/tui -run 'TestActivityLineE2E$\|TestActivityLineE2ETurnEnd\|TestActivityLineE2EZeroToolCalls'` | **PASS** (124.3 s) |
+| `cd frontend && npx playwright test --config playwright.activity-e2e.config.ts --project=dark-desktop` | **PASS** (2 tests, 55.3 s + 10.0 s) |
+| `go test ./internal/tui/... ./internal/toolclass/... ./internal/testfixtures/...` | **ok**, all packages |
+| `cd frontend && npx tsc -b` | exit 0 |
+| `cd frontend && npx vitest run` | **796/796** (77 files) |
+| `semgrep scan --config .orchicon/semgrep_orchicon.yml --error <changed files>` | **0 findings** |
+
+## Gap 1 — the 35s re-dial band was never observed (fixed, both clients)
+
+The table names *"Silence past re-dial (35s) → the re-dial line"* as its own state, distinct from the
+25s warn band. The capstone asserted only the warn band, so an escalation that stopped at 25s — the
+operator told "no output" but never that the stream is about to be re-dialled — would have passed.
+
+Now observed live in the SAME stall, in both clients:
+
+* TUI `TestActivityLineE2E/7_…` — `tui-10b-ac5-redial-band.txt`: `│Orchicon is weighing… · no output
+  for 35s — the stream will re-attach if it stays silent│`, counters absent.
+* GUI — `gui-04c-ac5-redial-band.png`: same band asserted on the rendered DOM.
+
+Both also assert the re-dial line KEEPS the watchdog's own "no output for Ns" and DROPS the counter.
+
+## Gap 2 — "turn ends: the line clears and the body gets its row back" was never observed (fixed)
+
+The table's last row, and the state the whole feature must not break. The plane already shipped an
+unused `Plane.EndTurn` / `POST /__e2e/end` — the control existed and nothing drove it.
+
+* TUI `TestActivityLineE2ETurnEnd` (new, own session): `tui-14-turn-live-before-end.txt` (line up with
+  a counter) → `plane.EndTurn()` → `tui-15-turn-end-line-cleared.txt` (no activity row on the frame,
+  transcript witness still present).
+* GUI `the line clears when the turn ends` (new): `gui-06-turn-live-before-end.png` →
+  `endTurn()` → `gui-07-turn-end-line-cleared.png` (`[data-testid=ask-activity-line]` count 0,
+  reply still visible).
+
+## Defects found in the HARNESS and fixed here
+
+These are harness bugs, not client bugs — the feature's two client implementations were not
+touched. They are fixed in this task rather than filed (AC10).
+
+1. **`EndTurn` poisoned every later turn.** `p.done` was closed once via a process-lifetime
+   `sync.Once`, so after the first `EndTurn` every stream the plane opened returned immediately and
+   the control surface worked exactly once — which is why no turn-end observation could coexist with
+   the other legs. **Fix** (`plane.go`): `Reset` now replaces `p.done` and zeroes the `Once`; a
+   stream pins the channel it watches at attach (`myDone`), so it never races the replacement.
+   Pinned by `TestEndTurnIsUndoneByReset`.
+2. **`Reset` left the SPA's auth routes down.** A leg that stopped the plane (`down`/`rpc-down`)
+   flipped `Sessions.down` on, and a later reset left it on — the next leg's browser would load an
+   unauthenticated page and observe nothing. **Fix**: reset clears it. Pinned by
+   `TestResetReenablesAuthRoutes`.
+3. **The GUI's restore-to-flight leg raced the 30s rolling window** (pre-existing, latent). It
+   re-asserted `COUNTER_RE` after a stall whose length it did not bound; once the new 35s band
+   extended that stall, the calls had honestly aged out of the summarizer's window and the assertion
+   failed. The TUI leg already solved this with `plane.Reissue()`; the browser had no equivalent.
+   **Fix**: `POST /__e2e/reissue` + `reissue()` in the spec, used before the kill leg — counters are
+   re-earned with fresh work, never rewound. Pinned by `TestReissueLandsFreshCalls` and
+   `TestControlSurfaceServesEndResetAndReissue`.
+
+The fixture plane's control surface now has its own non-gated unit test (`plane_test.go`, 5 tests) so
+the mechanics the opt-in E2E legs depend on are asserted in the standing suite.
+
+## Verdict
+
+All ten acceptance criteria were already met as committed; the two additions make the observation
+table complete rather than leaving named states proven only by argument. Both live legs and every
+standing suite are green on this branch.
