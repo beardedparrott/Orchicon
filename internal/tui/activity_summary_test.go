@@ -289,6 +289,50 @@ func TestTheSummaryNeverWrapsTheFooterRow(t *testing.T) {
 				p.appWidth, tailOf(frame, 1200))
 		}
 	}
+
+	// THE FLOOR, asserted on the pure function because a pane narrower than the VERB cannot be reached
+	// through the app's rail geometry. Three widths below the verb's own cells pin the LAST degradation
+	// step: when even the verb does not fit, fitNotice truncates it rather than WRAPPING — a wrapped
+	// footer is a SECOND row, which pushes the notice off the pane (ask/screen.go:293-298) and is the
+	// failure the one-row budget exists to prevent.
+	//
+	// The bare-verb arm (silent 0, the first second after send) is included deliberately: it returns
+	// through fitNotice too, so "the line never overflows" is true of EVERY state and not only of the
+	// states that happen to have something degradable in them.
+	const stamp int64 = activityTestServerTime
+	verb := "Orchicon is " + chat.VerbAt(stamp) + "…"
+	for _, w := range []int{1, 12, len([]rune(verb)) - 1} {
+		for _, c := range []struct {
+			name    string
+			silent  time.Duration
+			summary string
+		}{
+			{"with a summary to drop", 4 * time.Second, "3 modifies · 1 read · last 4s"},
+			{"the bare-verb arm", 0, ""},
+			{"the escalation band", 30 * time.Second, "3 modifies · 1 read · last 4s"},
+		} {
+			got := turnActivityNotice(c.silent, stamp, c.summary, w)
+			if got == "" {
+				t.Errorf("at width %d (%s) the line is EMPTY — there is always an activity line during a "+
+					"turn", w, c.name)
+				continue
+			}
+			if strings.Contains(got, "\n") {
+				t.Errorf("at width %d (%s) the line WRAPPED into a second row, which pushes the notice "+
+					"off the pane: %q", w, c.name, got)
+			}
+			if cells := ansi.StringWidth(got); cells > w {
+				t.Errorf("at width %d (%s) the line is %d cells — it OVERFLOWS the one row it is given "+
+					"(fitNotice must truncate the verb as its last resort, never let the row wrap): %q",
+					w, c.name, cells, got)
+			}
+		}
+	}
+	// AND THE ESCALATION BAND STILL WINS AT THAT FLOOR — never the counter — so the truncation cannot
+	// resurrect a stale summary inside a stall.
+	if got := turnActivityNotice(30*time.Second, stamp, "3 modifies · 1 read · last 4s", 24); strings.Contains(got, "modifies") {
+		t.Errorf("at the width floor the counter survived an escalation: %q", got)
+	}
 }
 
 // AC9 — THE PLAIN (ascii) PROFILE IS NOT GARBLED.

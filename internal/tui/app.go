@@ -4362,7 +4362,14 @@ func turnActivityNotice(silent time.Duration, effectiveServerTimeMs int64, summa
 	case silent <= 0 || silent < showAgeAfter:
 		// No counted work and no age yet — the moment between sending and the stream's first event. The
 		// bare line, rather than an absurd "0s ago".
-		return verb
+		//
+		// IT STILL GOES THROUGH fitNotice, because the one-row budget is a property of the LINE and not of
+		// the bands: a pane narrower than the verb itself would otherwise WRAP, and a wrapped footer is a
+		// SECOND row, which pushes the notice off the pane — the failure fitNotice exists to prevent. There
+		// is nothing left to degrade on this arm (no summary, no band), so it can only ever truncate; but
+		// leaving it out would make "the line never overflows" true of every state EXCEPT the first second
+		// after send, which is exactly when the operator is looking.
+		return fitNotice(verb, verb, width)
 	default:
 		want = fmt.Sprintf("%s · last activity %ds ago", verb, secs)
 	}
