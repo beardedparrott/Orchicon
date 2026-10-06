@@ -174,6 +174,24 @@ func (s *stubSecrets) UpdateSecret(_ context.Context, req *connect.Request[apiv1
 	return connect.NewResponse(&apiv1.UpdateSecretResponse{}), nil
 }
 
+// stubWorkers answers GetWorker with ONE version, which is what the worker-version modal's open path
+// reads (OpenWorkerMCPModal: the version id, its permissions and its skill files).
+type stubWorkers struct {
+	apiv1connect.UnimplementedWorkerServiceHandler
+
+	mu      sync.Mutex
+	version *apiv1.WorkerVersion
+}
+
+func (s *stubWorkers) GetWorker(_ context.Context, _ *connect.Request[apiv1.GetWorkerRequest]) (*connect.Response[apiv1.GetWorkerResponse], error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return connect.NewResponse(&apiv1.GetWorkerResponse{
+		Worker:        &apiv1.Worker{Id: "w1", Name: "Sweeper"},
+		LatestVersion: s.version,
+	}), nil
+}
+
 // newScopeApp builds a shell whose MCP client is the stub, with one open conversation (c1) inside a
 // project (p1) that owns a definition of its own.
 func newScopeApp(t *testing.T) (*App, *stubMCP, *stubSecrets) {
@@ -200,6 +218,11 @@ func newScopeApp(t *testing.T) (*App, *stubMCP, *stubSecrets) {
 	mux := http.NewServeMux()
 	mux.Handle(apiv1connect.NewMCPServiceHandler(stub))
 	mux.Handle(apiv1connect.NewSecretsServiceHandler(sec))
+	mux.Handle(apiv1connect.NewWorkerServiceHandler(&stubWorkers{version: &apiv1.WorkerVersion{
+		Id: "wv1", Version: 3,
+		Permissions: versionPermissionsWithEnv,
+		SkillFiles:  []string{"/skills/w.md"},
+	}}))
 	mux.Handle(apiv1connect.NewAskOrchiconServiceHandler(&stubAskParity{}))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)

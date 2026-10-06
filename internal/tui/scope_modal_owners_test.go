@@ -604,6 +604,82 @@ func TestWorkerVersionScopeRefreshRereadsTheStore(t *testing.T) {
 	}
 }
 
+// THE OPEN PATH READS THE STORE IN THE ONE FETCH IT ALREADY MAKES, so the picker is POPULATED when the
+// modal appears rather than after a second round trip — and so the wiring that carries the names from
+// the fetch onto the modal cannot come loose unnoticed (it is two assignments, which is exactly the
+// kind of thing that silently stops happening).
+func TestOpeningAWorkerVersionCarriesTheStoresNames(t *testing.T) {
+	m, _, _ := newScopeApp(t)
+	cmd := m.OpenWorkerMCPModal("w1", "Sweeper")
+	if cmd == nil {
+		t.Fatal("the open produced no fetch")
+	}
+	msg, ok := cmd().(workerVersionScopeMsg)
+	if !ok {
+		t.Fatalf("the open produced %#v, want a workerVersionScopeMsg", msg)
+	}
+	if msg.err != "" {
+		t.Fatalf("the fetch failed: %s", msg.err)
+	}
+	m.dispatch(msg)
+	if m.scope == nil || m.scope.kind != ownerWorkerVersion {
+		t.Fatalf("the modal did not open on the version (scope=%+v)", m.scope)
+	}
+	if got := secretChoiceNames(m.scope.secrets); !slices.Contains(got, "SLACK_BOT_TOKEN") {
+		t.Errorf("the open did not carry the store's names onto the modal: %v", got)
+	}
+	// AND THE FORM IS READY TO PICK FROM THEM, on the version's own spec.
+	putCursor(m, rowIndexOf(t, m, "gh"))
+	pressScope(t, m, "k")
+	if m.convScopeForm == nil {
+		t.Fatal("`k` opened no credential form after the real open path")
+	}
+	if got := optionValues(m.convScopeForm.Spec("secret")); !slices.Contains(got, "SLACK_BOT_TOKEN") {
+		t.Errorf("the form does not offer the names the open read: %v", got)
+	}
+}
+
+// THE CATALOG CASE: a spec with NO env key yet — the catalog prefill deliberately leaves a secret key
+// out (it never writes a blank one), so the KEY is typed while the SECRET is still picked. The
+// reference lands the same way, and a key the transport could not hand to a child process is refused
+// before anything is written (nothing else validates an inline spec's keys — see mcpforms.envKeyRE).
+func TestWorkerVersionCredentialHandlesASpecWithNoKeysYet(t *testing.T) {
+	const freshCatalogSpec = `{"mcp_servers":[{"id":"github","type":"stdio",` +
+		`"command":["npx","-y","@modelcontextprotocol/server-github"]}]}`
+	m, _, _, rec := openingWorkerVersionWithStore(t, freshCatalogSpec, `[]`)
+	putCursor(m, rowIndexOf(t, m, "github"))
+
+	pressScope(t, m, "k")
+	f := m.convScopeForm
+	if f == nil {
+		t.Fatal("`k` opened no credential form on a spec with no env key")
+	}
+	if got := optionValues(f.Spec("key")); len(got) != 0 {
+		t.Errorf("the key field offers %v — its options are the spec's OWN keys, and this spec has "+
+			"none yet", got)
+	}
+
+	f.Set("key", "NOT A KEY")
+	f.Set("secret", "MCP_GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN")
+	if _, err := f.Submit(); err == nil {
+		t.Error("a key that no environment can carry was accepted — the spec's keys reach a child " +
+			"process as k=v, so this is the only gate on the inline path")
+	}
+	if rec.saves != 0 {
+		t.Error("the rejected key still saved the version")
+	}
+
+	// The typed key is the answer for this spec: put a real one in and it lands.
+	f.Set("key", "GITHUB_PERSONAL_ACCESS_TOKEN")
+	submitAndRoute(t, m)
+	if rec.saves != 1 {
+		t.Fatalf("the version was saved %d times, want 1", rec.saves)
+	}
+	if !strings.Contains(flatJSON(rec.perm), `"env":{"GITHUB_PERSONAL_ACCESS_TOKEN":"${MCP_GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN}"}`) {
+		t.Errorf("the typed key was not pointed at the picked secret: %s", rec.perm)
+	}
+}
+
 // secretChoiceNames lists the choices' names, for assertions.
 func secretChoiceNames(choices []mcpforms.SecretChoice) []string {
 	out := make([]string, 0, len(choices))
