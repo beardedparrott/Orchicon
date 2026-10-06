@@ -941,7 +941,15 @@ export function MCPServersPanel({ scope, readOnly = false, inheritedFrom }: MCPS
       )}
 
       {!readOnly && showForm && (
-        <Card>
+        // RAISED, so the credential control's picker list is not painted over.
+        //
+        // THE DEFECT: `glass-panel` carries a backdrop-filter, and a backdrop-filter creates a STACKING
+        // CONTEXT. This card and the "Configured servers" card below it are SIBLINGS, both contexts, both
+        // z-index auto — so the LATER one paints on top, and the dropdown's own z-50 cannot lift it: an
+        // inner z-index only orders elements within its own context. The operator saw the list cut off
+        // where the next card began. Giving this card an explicit position + z-index orders the two
+        // siblings, and everything inside (the dropdown included) comes with it.
+        <Card className="relative z-20">
           <CardHeader>
             <CardTitle>{editingId ? "Edit server" : "Add MCP server"}</CardTitle>
             <CardDescription>
