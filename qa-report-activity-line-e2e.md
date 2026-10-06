@@ -318,3 +318,30 @@ the mechanics the opt-in E2E legs depend on are asserted in the standing suite.
 All ten acceptance criteria were already met as committed; the two additions make the observation
 table complete rather than leaving named states proven only by argument. Both live legs and every
 standing suite are green on this branch.
+
+## Addendum 2 — PR Reviewer (iteration 1, this pass)
+
+Re-ran the whole capstone from a clean shell and found the committed RUNNER did not reproduce.
+
+**Defect (harness/runner, not client): the bundled runner lost to the image's ambient
+`PLAYWRIGHT_BROWSERS_PATH`.** The runtime image exports `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright` for
+its GLOBAL playwright (1.63, chromium rev **1243**); this repo's `@playwright/test` is 1.62 and wants
+chromium rev **1234** — a different build. `scripts/activity-line-e2e.sh` set the path with
+`export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/tmp/orchicon/pw}"`, and a `:-` default
+does **not** override an already-set variable, so the ambient `/ms-playwright` survived.
+`go test`(TUI) passed, then the GUI leg died with
+`browserType.launch: Executable doesn't exist at /ms-playwright/chromium_headless_shell-1234/...`.
+The prior evidence was only green because it was produced by prefixing the env var by hand, bypassing
+the script.
+
+**Fix** (`scripts/activity-line-e2e.sh`): pin `PLAYWRIGHT_BROWSERS_PATH` to a gitignored bundle under
+the tree (`.dev/pw`) UNCONDITIONALLY and `npx playwright install chromium` on first run (~15 s).
+(`frontend/playwright.activity-e2e.config.ts`) also pin the same bundle, and resolve the plane's
+`GOMODCACHE` to an ABSOLUTE path — a raw `npx playwright test --config ...` (the report's own recipe)
+otherwise failed with `GOMODCACHE entry is relative; must be absolute`.
+
+**Re-verified**: `bash scripts/activity-line-e2e.sh` from a clean shell now ends
+`OK — evidence under qa-evidence/activity-line-e2e` — TUI leg 3/3 PASS (124 s), GUI leg 2/2 PASS (1.1 m).
+`go test ./internal/tui/... ./internal/toolclass/... ./internal/testfixtures/...` ok; `tsc -b` exit 0;
+`vitest run` 796/796; semgrep 0 findings. The refreshed evidence reproduces the same
+stamp/word/counter, so the fix changed reproducibility only.

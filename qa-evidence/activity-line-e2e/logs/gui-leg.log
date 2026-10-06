@@ -1,9 +1,9 @@
-[WebServer] 2026/10/06 12:40:45 activitye2e: serving the fixture plane on http://127.0.0.1:18080 (conv conv-activity-e2e)
+[WebServer] 2026/10/06 12:58:11 activitye2e: serving the fixture plane on http://127.0.0.1:18080 (conv conv-activity-e2e)
 
 Running 2 tests using 1 worker
 
-  ✓  1 [dark-desktop] › tests/activity-line-e2e.spec.ts:149:3 › activity line through the real GUI pane › the line is present mid-reply, carries reconciled counters, rotates, and yields to escalation (55.3s)
-  ✓  2 [dark-desktop] › tests/activity-line-e2e.spec.ts:334:3 › activity line through the real GUI pane › the line clears when the turn ends (10.0s)
+  ✓  1 [dark-desktop] › tests/activity-line-e2e.spec.ts:149:3 › activity line through the real GUI pane › the line is present mid-reply, carries reconciled counters, rotates, and yields to escalation (55.6s)
+  ✓  2 [dark-desktop] › tests/activity-line-e2e.spec.ts:334:3 › activity line through the real GUI pane › the line clears when the turn ends (9.9s)
 
   2 passed (1.1m)
 npm notice
@@ -11,4 +11,3 @@ npm notice New major version of npm available! 10.9.8 -> 12.2.0
 npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0
 npm notice To update run: npm install -g npm@12.2.0
 npm notice
-EXIT=0

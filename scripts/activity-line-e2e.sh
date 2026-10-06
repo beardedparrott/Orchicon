@@ -33,12 +33,24 @@ mkdir -p "$OUT/logs"
 export GOMODCACHE="${GOMODCACHE:-$PROJ/.dev/mod}"
 export GOCACHE="${GOCACHE:-/tmp/orchicon/gocache}"
 export GOTMPDIR="${GOTMPDIR:-/tmp/orchicon/gotmp}"
-# Playwright's browser bundle is installed under the private tmpfs in this image.
-export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/tmp/orchicon/pw}"
 mkdir -p "$GOCACHE" "$GOTMPDIR"
 
 step() { printf '\n==> %s\n' "$*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
+
+# THE BROWSER BUNDLE IS PINNED TO THE PROJECT, NOT INHERITED. The runtime image ships
+# PLAYWRIGHT_BROWSERS_PATH=/ms-playwright for its GLOBAL playwright (1.63, chromium rev 1243), but
+# this repo's @playwright/test is 1.62 and wants chromium rev 1234 — a DIFFERENT build. A
+# `${PLAYWRIGHT_BROWSERS_PATH:-default}` default does NOT override an already-set variable, so the
+# ambient image value survived and `playwright test` failed with "Executable doesn't exist at
+# /ms-playwright/chromium_headless_shell-1234/chrome-headless-shell". The path is therefore assigned
+# UNCONDITIONALLY (an explicit override must name a real bundle; verify-and-fail beats inheriting a
+# wrong one), and the bundle is installed into a gitignored dir under the tree on first run.
+export PLAYWRIGHT_BROWSERS_PATH="$PROJ/.dev/pw"
+if [ ! -x "$PLAYWRIGHT_BROWSERS_PATH/chromium_headless_shell-1234/chrome-headless-shell-linux64/chrome-headless-shell" ]; then
+  step "0/4 install the Playwright browser bundle (rev 1234) into $PLAYWRIGHT_BROWSERS_PATH"
+  ( cd frontend && npx playwright install chromium ) || fail "playwright install chromium"
+fi
 
 step "1/4 build bin/orch"
 make build 2>&1 | tee "$OUT/logs/build.log" || fail "make build"

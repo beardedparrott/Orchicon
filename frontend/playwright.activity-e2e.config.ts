@@ -1,4 +1,23 @@
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import { defineConfig, devices } from "@playwright/test";
+
+// THE BROWSER BUNDLE IS PINNED TO THE PROJECT, NOT INHERITED FROM THE IMAGE.
+//
+// The runtime image exports PLAYWRIGHT_BROWSERS_PATH=/ms-playwright for its GLOBAL playwright (1.63,
+// chromium rev 1243). This repo's @playwright/test is 1.62, which wants chromium rev 1234 — a
+// DIFFERENT build — so inheriting the image value makes `playwright test` fail with "Executable
+// doesn't exist at /ms-playwright/chromium_headless_shell-1234/...". A `${VAR:-default}` fallback does
+// NOT help: the variable is already set. So the path is pinned to the project bundle unless an
+// override actually holds rev 1234. Playwright loads this config as an ES module, so there is no
+// __dirname; the documented invocation runs from frontend/, so the bundle resolves from process.cwd().
+const PROJECT_BUNDLE = resolve(process.cwd(), "..", ".dev", "pw");
+const revBin = (dir: string) =>
+  resolve(dir, "chromium_headless_shell-1234", "chrome-headless-shell-linux64", "chrome-headless-shell");
+const inherited = process.env.PLAYWRIGHT_BROWSERS_PATH || "";
+if (!inherited || !existsSync(revBin(inherited))) {
+  process.env.PLAYWRIGHT_BROWSERS_PATH = PROJECT_BUNDLE;
+}
 
 /**
  * playwright.activity-e2e.config.ts — the GUI half of the activity-line end-to-end capstone.
@@ -46,7 +65,10 @@ export default defineConfig({
       reuseExistingServer: false,
       timeout: 120_000,
       env: {
-        GOMODCACHE: process.env.GOMODCACHE || "../.dev/mod",
+        // ABSOLUTE paths: `go` refuses a relative GOMODCACHE ("entry is relative; must be absolute").
+        // The container's default Go paths are unwritable, so the plane's `go run` needs a writable
+        // cache under the tree — resolved from cwd because this config is loaded as an ES module.
+        GOMODCACHE: process.env.GOMODCACHE || resolve(process.cwd(), "..", ".dev", "mod"),
         GOCACHE: process.env.GOCACHE || "/tmp/orchicon/gocache",
         GOTMPDIR: process.env.GOTMPDIR || "/tmp/orchicon/gotmp",
         ORCH_ACTIVITY_E2E_TRACE: process.env.ORCH_ACTIVITY_E2E_TRACE || "",
