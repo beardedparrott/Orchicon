@@ -88,10 +88,13 @@ func Summarize(callsJSON []byte, now time.Time, window time.Duration) string {
 		default:
 			continue // Ignore: ask_user, permission.*, MCP, unknown names.
 		}
-		counted = true
-		if c.IssuedAtUnixMs > newest {
+		// Track the NEWEST COUNTED entry explicitly rather than seeding a 0 sentinel and taking
+		// the max: a malformed negative stamp would then leave `newest` at 0 and the trailing age
+		// would be measured from the epoch, not from the entry that was just counted.
+		if !counted || c.IssuedAtUnixMs > newest {
 			newest = c.IssuedAtUnixMs
 		}
+		counted = true
 	}
 	if !counted {
 		return ""

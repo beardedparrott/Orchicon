@@ -230,3 +230,24 @@ func itoaLikeAppDotGo(deltaMs int64) string {
 	secs := int((time.Duration(deltaMs) * time.Millisecond).Round(time.Second) / time.Second)
 	return strconv.Itoa(secs)
 }
+
+// TestSummarizeAgeIsTheNewestCountedEntryNotZero pins the invariant QA found broken: the trailing
+// age is the age of the NEWEST COUNTED entry, and it must be derived from that entry even when its
+// stamp is a malformed NEGATIVE value. Seeding `newest` at 0 and taking the max left the age
+// measured from the EPOCH (here `now - 0` = "last 10s") instead of from the entry that was actually
+// counted ("last 15s") — the "who is newest" sentinel must be the first counted entry, not 0.
+// Unreachable from the real producer (time.UnixMilli is always positive), but a total function
+// must not violate its own stated contract on malformed input.
+func TestSummarizeAgeIsTheNewestCountedEntryNotZero(t *testing.T) {
+	now := time.UnixMilli(10_000)
+	ledger := `[{"function_name":"write","issued_at_unix_ms":-5000}]`
+	if got, want := Summarize([]byte(ledger), now, DefaultWindow), "1 modify · last 15s"; got != want {
+		t.Errorf("Summarize(negative-stamped entry) = %q, want %q "+
+			"(the age is measured from the counted entry, not from a 0 sentinel)", got, want)
+	}
+	// With one real and one negative entry, the newest is still the real one.
+	both := `[{"function_name":"write","issued_at_unix_ms":-5000},{"function_name":"read","issued_at_unix_ms":9000}]`
+	if got, want := Summarize([]byte(both), now, DefaultWindow), "1 modify · 1 read · last 1s"; got != want {
+		t.Errorf("Summarize(negative + real) = %q, want %q", got, want)
+	}
+}
