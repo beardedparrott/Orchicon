@@ -102,3 +102,80 @@ func TestAskUserRecordedCallSurvivesHistoryRepair(t *testing.T) {
 		t.Error("allow_other was lost — a free-text answer would no longer be offered")
 	}
 }
+
+// persistedToolCallStamped is the STAMPED sibling of persistedToolCall: the
+// same four wire fields plus the ledger's issue time. Its existence pins that
+// the stamped row shape is a superset the history repair passes through.
+type persistedToolCallStamped struct {
+	persistedToolCall
+	IssuedAtUnixMs int64 `json:"issued_at_unix_ms"`
+}
+
+// TestPersistedToolCallStampedRowStillRepairs is the sibling of
+// TestAskUserRecordedCallSurvivesHistoryRepair for the STAMPED row shape: the
+// ledger now stamps every entry, so the repair must carry BOTH the issue time
+// and the arguments/options the card is rebuilt from. The unstamped test is
+// left byte-for-byte unchanged, because its inertness is itself the property
+// being asserted (Go ignores unknown JSON keys).
+func TestPersistedToolCallStampedRowStillRepairs(t *testing.T) {
+	args := `{"question":"Which branch should the run clone off?",` +
+		`"options":[{"label":"develop","description":"the integration branch"},{"label":"main"}],` +
+		`"allow_other":true}`
+	callsJSON, err := json.Marshal([]persistedToolCallStamped{
+		{
+			persistedToolCall: persistedToolCall{ID: "tc-1", Type: "function", FunctionName: "orchicon_ask_user", Arguments: args},
+			IssuedAtUnixMs:    1_700_000_000_123,
+		},
+		// The interrupted-turn shape: the repair must attach an aborted result
+		// without touching either call's stamp.
+		{
+			persistedToolCall: persistedToolCall{ID: "tc-2", Type: "function", FunctionName: "bash", Arguments: `{"cmd":"git status"}`},
+			IssuedAtUnixMs:    1_700_000_000_456,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal fixture calls: %v", err)
+	}
+	resultsJSON := []byte(`[{"tool_call_id":"tc-1","output":"{\"recorded\":true}","is_error":false}]`)
+
+	history := []db.MessageRow{
+		{ID: "u1", Role: "user", Content: "cut me a branch", ToolCalls: []byte("[]"), ToolResults: []byte("[]")},
+		{ID: "a1", Role: "assistant", Content: "Which branch?", ToolCalls: callsJSON, ToolResults: resultsJSON},
+	}
+
+	repaired := sanitizeHistoryRows(history)
+	if len(repaired) != 2 {
+		t.Fatalf("repair changed the row count: %d", len(repaired))
+	}
+	row := repaired[1]
+	assertLedgerWellFormed(t, row.ToolCalls, row.ToolResults)
+
+	var calls []persistedToolCallStamped
+	if err := json.Unmarshal(row.ToolCalls, &calls); err != nil {
+		t.Fatalf("decoded tool_calls: %v (%s)", err, row.ToolCalls)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("want 2 repaired calls, got %d (%s)", len(calls), row.ToolCalls)
+	}
+	if calls[0].IssuedAtUnixMs != 1_700_000_000_123 || calls[1].IssuedAtUnixMs != 1_700_000_000_456 {
+		t.Errorf("the repair did not preserve the issue times: %d, %d", calls[0].IssuedAtUnixMs, calls[1].IssuedAtUnixMs)
+	}
+
+	// The card is still rebuildable from the repaired row alone.
+	var ask *persistedToolCallStamped
+	for i := range calls {
+		if calls[i].FunctionName == "orchicon_ask_user" {
+			ask = &calls[i]
+		}
+	}
+	if ask == nil {
+		t.Fatalf("the recorded ask_user call did not survive history repair: %s", row.ToolCalls)
+	}
+	question, options, allowOther, perr := parseAskUserArgs([]byte(ask.Arguments))
+	if perr != nil {
+		t.Fatalf("the persisted arguments no longer parse (%v): %q", perr, ask.Arguments)
+	}
+	if !strings.Contains(question, "clone off") || len(options) != 2 || !allowOther {
+		t.Errorf("question/options/allow_other not intact: %q %+v %v", question, options, allowOther)
+	}
+}

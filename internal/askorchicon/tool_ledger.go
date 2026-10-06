@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Live tool ledger for Ask Orchicon turns: every tool call issued and every
@@ -27,8 +28,21 @@ type toolCallEntry struct {
 	Type         string `json:"type"`
 	FunctionName string `json:"function_name"`
 	Arguments    string `json:"arguments"`
-	resolved     bool
+	// IssuedAtUnixMs is the wall-clock time at which the call was ISSUED, in
+	// epoch milliseconds — the same time encoding the chat path already uses
+	// (chat.ParsedTool.At). It is display-only durable data for the
+	// rolling-window summarizer, never a wire contract: the ToolCall proto has no
+	// field for it. 0 means "not stamped" (a row persisted before this field
+	// existed); a reader must treat 0 as unknown, never as the epoch.
+	IssuedAtUnixMs int64 `json:"issued_at_unix_ms"`
+	resolved       bool
 }
+
+// ledgerNowMillis is the ledger's clock seam: the epoch-millisecond time of a
+// tool event. It is indirected through a package-level var because askorchicon
+// has no injectable clock today and the ledger tests need to assert an EXACT
+// issuance time rather than a range. Production never replaces it.
+var ledgerNowMillis = func() int64 { return time.Now().UnixMilli() }
 
 type toolResultEntry struct {
 	ToolCallID string `json:"tool_call_id"`
@@ -53,6 +67,10 @@ func newToolLedger() *toolLedger { return &toolLedger{} }
 // The sequential fallback is kept for a decision with no ask id (a worker-path
 // record, or a defensive caller): those are transcript notes, not reconcilable
 // resolutions, and they must still be recorded.
+//
+// The record is stamped with the decision's own wall-clock issue time: it IS a
+// real event, and the window classifier excludes `permission.*` by name, so the
+// stamp costs the summary nothing.
 func (l *toolLedger) recordPermission(tool, target, verdict, detail, askID string) {
 	if l == nil {
 		return
@@ -69,10 +87,11 @@ func (l *toolLedger) recordPermission(tool, target, verdict, detail, askID strin
 		out += ": " + detail
 	}
 	l.calls = append(l.calls, toolCallEntry{
-		ID:           id,
-		Type:         "function",
-		FunctionName: "permission." + verdict,
-		Arguments:    truncateLedgerString(target, 4000),
+		ID:             id,
+		Type:           "function",
+		FunctionName:   "permission." + verdict,
+		Arguments:      truncateLedgerString(target, 4000),
+		IssuedAtUnixMs: ledgerNowMillis(),
 	})
 	l.results = append(l.results, toolResultEntry{
 		ToolCallID: id,
@@ -93,10 +112,11 @@ func (l *toolLedger) recordStart(tool string) {
 	defer l.mu.Unlock()
 	l.nextID++
 	l.calls = append(l.calls, toolCallEntry{
-		ID:           fmt.Sprintf("tc-%d", l.nextID),
-		Type:         "function",
-		FunctionName: tool,
-		Arguments:    "{}",
+		ID:             fmt.Sprintf("tc-%d", l.nextID),
+		Type:           "function",
+		FunctionName:   tool,
+		Arguments:      "{}",
+		IssuedAtUnixMs: ledgerNowMillis(), // THE issue-time stamp: this call just went out.
 	})
 }
 
@@ -121,6 +141,9 @@ func (l *toolLedger) recordResolve(part map[string]any) {
 	callID := ""
 	for i := len(l.calls) - 1; i >= 0; i-- {
 		if l.calls[i].FunctionName == tool && !l.calls[i].resolved {
+			// The issue time is deliberately NOT re-stamped here: this branch
+			// backfills arguments onto a call that recordStart already stamped,
+			// and the timestamp taken at ISSUE is the one the window needs.
 			l.calls[i].Arguments = argsJSON
 			l.calls[i].resolved = true
 			callID = l.calls[i].ID
@@ -129,15 +152,18 @@ func (l *toolLedger) recordResolve(part map[string]any) {
 	}
 	if callID == "" {
 		// Resolution without an observed start (re-attached mid-tool, or a
-		// start event missed): synthesize the call so the result is kept.
+		// start event missed): synthesize the call so the result is kept. "Now"
+		// is the honest issue time for it — the call is known to have happened
+		// by the time its result arrived, and the start was never seen.
 		l.nextID++
 		callID = fmt.Sprintf("tc-%d", l.nextID)
 		l.calls = append(l.calls, toolCallEntry{
-			ID:           callID,
-			Type:         "function",
-			FunctionName: tool,
-			Arguments:    argsJSON,
-			resolved:     true,
+			ID:             callID,
+			Type:           "function",
+			FunctionName:   tool,
+			Arguments:      argsJSON,
+			IssuedAtUnixMs: ledgerNowMillis(),
+			resolved:       true,
 		})
 	}
 	l.results = append(l.results, toolResultEntry{
@@ -179,6 +205,8 @@ func (l *toolLedger) recordToolResolution(tool, argsJSON, output string, isErr b
 	// share.
 	for i := 0; i < len(l.calls); i++ {
 		if l.calls[i].FunctionName == tool && !l.calls[i].resolved {
+			// The issue time is deliberately NOT re-stamped here either: the
+			// backfill must not disturb the stamp recordStart took at issue.
 			l.calls[i].resolved = true
 			// Only replace the "{}" placeholder when real arguments arrived.
 			if args := strings.TrimSpace(argsJSON); args != "" && args != "{}" {
@@ -191,12 +219,13 @@ func (l *toolLedger) recordToolResolution(tool, argsJSON, output string, isErr b
 	if callID == "" {
 		// Resolution without an observed start (re-attached mid-tool, or a start
 		// event missed): synthesize the call so the result is kept — the same
-		// rule recordResolve applies.
+		// rule recordResolve applies, including the "stamp now" answer.
 		l.nextID++
 		callID = fmt.Sprintf("tc-%d", l.nextID)
 		l.calls = append(l.calls, toolCallEntry{
 			ID: callID, Type: "function", FunctionName: tool,
 			Arguments: truncateLedgerString(argsJSON, 4000), resolved: true,
+			IssuedAtUnixMs: ledgerNowMillis(),
 		})
 	}
 	l.results = append(l.results, toolResultEntry{
@@ -217,7 +246,7 @@ func (l *toolLedger) snapshot() (calls, results []byte) {
 	defer l.mu.Unlock()
 	pub := make([]toolCallEntry, 0, len(l.calls))
 	for _, c := range l.calls {
-		pub = append(pub, toolCallEntry{ID: c.ID, Type: c.Type, FunctionName: c.FunctionName, Arguments: c.Arguments})
+		pub = append(pub, toolCallEntry{ID: c.ID, Type: c.Type, FunctionName: c.FunctionName, Arguments: c.Arguments, IssuedAtUnixMs: c.IssuedAtUnixMs})
 	}
 	calls, _ = json.Marshal(pub)
 	res := l.results
