@@ -64,9 +64,12 @@ describe("ask-verbs — the rotation is a pure function of server time", () => {
       // Within one period the word does not change.
       expect(verbAt(k * VERB_PERIOD_MS + VERB_PERIOD_MS - 1)).toBe(want);
     }
-    // The divisor is deliberately NOT the 15s heartbeat cadence — see VERB_PERIOD_MS's comment.
-    expect(VERB_PERIOD_MS).toBeLessThan(15_000);
+    // invariant (AC2): the period is the 15s heartbeat cadence, and the operator's reaction is the
+    // boundary — 1s apart must NOT move the word (a ~1s repaint would read as churn), a period apart must.
+    expect(VERB_PERIOD_MS).toBe(15_000);
     expect(VERB_PERIOD_MS).toBeGreaterThan(0);
+    expect(verbAt(0)).toBe(verbAt(1_000));
+    expect(verbAt(0)).not.toBe(verbAt(15_000));
   });
 
   it("stays a single short ASCII word — the one-row footer budget", () => {
@@ -141,8 +144,11 @@ describe("ask-verbs — the server clock feeds the rotation (AC4/AC5)", () => {
     const effective = extrapolateServerTime(STAMP, 1_000, 4_000);
     expect(effective).toBe(STAMP + 3_000);
     expect(verbAt(effective)).toBe(verbAt(STAMP + 3_000));
-    // And the returned value advances the rotation across the period boundary (the "every few seconds").
-    expect(verbAt(effective)).not.toBe(verbAt(extrapolateServerTime(STAMP, 1_000, 1_000)));
+    // invariant: the extrapolated value advances the rotation across the period boundary — indexing on
+    // server time (not a constant) is what keeps the word moving between heartbeats.
+    expect(verbAt(effective)).not.toBe(
+      verbAt(extrapolateServerTime(STAMP, 1_000, 1_000 + VERB_PERIOD_MS)),
+    );
   });
 
   it("cancels a skewed local clock: two clients with different wall clocks agree", () => {

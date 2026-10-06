@@ -62,8 +62,9 @@ func TestVerbAtFallbackIsNeverEmpty(t *testing.T) {
 }
 
 // TestVerbAtRotatesOnThePeriod — the word advances once per VerbPeriodMS and wraps at the list's end
-// (AC1/AC2 boundary). It also shows the deliberate divergence from the heartbeat cadence: 15s (one
-// heartbeat) moves three words, not one.
+// (AC1/AC2 boundary). invariant: the rotation is driven by server time and is deterministic, and the
+// operator's reaction is the boundary — a line repainted about once a second must NOT churn, so two
+// stamps 1s apart draw the SAME word and two stamps a full period apart draw DIFFERENT ones.
 func TestVerbAtRotatesOnThePeriod(t *testing.T) {
 	for k := int64(0); k < int64(len(AskVerbs))*2; k++ {
 		want := AskVerbs[(k)%int64(len(AskVerbs))]
@@ -76,10 +77,17 @@ func TestVerbAtRotatesOnThePeriod(t *testing.T) {
 				k, VerbPeriodMS-1, got, want)
 		}
 	}
-	// 15s of server time must land in a DIFFERENT bucket than 0s, or the divisor collapsed to the heartbeat.
-	if VerbAt(0) == VerbAt(15_000) && VerbPeriodMS >= 15_000 {
-		t.Errorf("VerbPeriodMS = %d is at or above the 15s heartbeat, so the word would only change once "+
-			"per heartbeat — not the \"every few seconds\" the operator asked for", VerbPeriodMS)
+	// invariant (AC2): the operator's "changing WAY too often" is the boundary. 1s apart must NOT move the
+	// word (a ~1s repaint would read as churn), a full 15s period apart must.
+	if VerbAt(0) != VerbAt(1_000) {
+		t.Errorf("VerbAt(0) = %q but VerbAt(1000) = %q — the word changed within a second",
+			VerbAt(0), VerbAt(1_000))
+	}
+	if VerbAt(0) == VerbAt(15_000) {
+		t.Errorf("VerbAt(0) == VerbAt(15000) = %q — 15s did not advance the word", VerbAt(0))
+	}
+	if VerbPeriodMS != 15_000 {
+		t.Errorf("VerbPeriodMS = %d, want 15000 — the operator's heartbeat-aligned decision", VerbPeriodMS)
 	}
 }
 

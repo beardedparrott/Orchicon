@@ -23,7 +23,7 @@ interface ActivityLineProps {
  * IT IS NOT FOCUSABLE. There is no tabIndex, no button, no anchor — a status line that entered the
  * tab order would put a keystroke between the operator and the composer.
  *
- * ONE VOICE TO A SCREEN READER. The visible line is aria-hidden (its verb rotates every 4s and its
+ * ONE VOICE TO A SCREEN READER. The visible line is aria-hidden (its verb rotates every 15s and its
  * age every 1s — announcing either would be a machine gun), and the region's accessible content is
  * the stable announcement, which changes only when a call lands.
  *

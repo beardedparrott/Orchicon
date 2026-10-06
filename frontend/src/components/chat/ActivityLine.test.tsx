@@ -30,7 +30,7 @@ describe("ActivityLine", () => {
 
   it("AC9 — the rotating text is SILENT to a screen reader; the stable announcement is not", () => {
     const html = markup();
-    // The verb + counters are visual animation (4s rotation, 1s age): inside aria-hidden.
+    // The verb + counters are visual animation (15s rotation, 1s age): inside aria-hidden.
     const hiddenIdx = html.indexOf('aria-hidden="true"');
     const textIdx = html.indexOf("Orchicon is contemplating");
     expect(hiddenIdx).toBeGreaterThanOrEqual(0);
