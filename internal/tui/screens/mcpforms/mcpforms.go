@@ -148,10 +148,10 @@ func DefineForm(title string, owner Owner, prefill *apiv1.MCPServerCreateRequest
 		// stdio runs a subprocess (command + args + env).
 		kit2.FieldSpec{Name: "command", Label: "Command (stdio)", Kind: kit2.KText, Initial: command, Placeholder: "npx"},
 		kit2.FieldSpec{Name: "args", Label: "Args (space separated)", Kind: kit2.KText, Initial: args},
-		kit2.FieldSpec{Name: "env", Label: "Env (KEY=VALUE per line; ${SECRET_NAME} allowed)", Kind: kit2.KTextArea, Initial: env},
+		kit2.FieldSpec{Name: "env", Label: "Env (KEY=VALUE per line; non-secret values — set credentials with k)", Kind: kit2.KTextArea, Initial: env},
 		// streamable HTTP connects to a remote endpoint (url + headers).
 		kit2.FieldSpec{Name: "url", Label: "URL (streamable-http)", Kind: kit2.KText, Initial: url, Placeholder: "https://…"},
-		kit2.FieldSpec{Name: "headers", Label: "Headers (KEY=VALUE per line; ${SECRET_NAME} allowed)", Kind: kit2.KTextArea, Initial: headers},
+		kit2.FieldSpec{Name: "headers", Label: "Headers (KEY=VALUE per line; set credentials with k)", Kind: kit2.KTextArea, Initial: headers},
 		kit2.FieldSpec{Name: "enabled", Label: "Enabled", Kind: kit2.KCheckbox, Initial: enabled},
 	)
 	f.Focused = true
@@ -535,9 +535,9 @@ func InlineForm(title string, src *InlineSpec, onSave func(InlineSpec)) *kit2.Fo
 			{Value: "stdio", Label: "stdio"}, {Value: "streamable-http", Label: "streamable-http"},
 		}},
 		kit2.FieldSpec{Name: "command", Label: "Command (stdio)", Kind: kit2.KText, Initial: strings.Join(spec.Command, " ")},
-		kit2.FieldSpec{Name: "env", Label: "Env (KEY=VALUE per line; ${SECRET_NAME} allowed)", Kind: kit2.KTextArea, Initial: keyValueText(spec.Env)},
+		kit2.FieldSpec{Name: "env", Label: "Env (KEY=VALUE per line; non-secret values — set credentials with k)", Kind: kit2.KTextArea, Initial: keyValueText(spec.Env)},
 		kit2.FieldSpec{Name: "url", Label: "URL (streamable-http)", Kind: kit2.KText, Initial: spec.URL},
-		kit2.FieldSpec{Name: "headers", Label: "Headers (KEY=VALUE per line)", Kind: kit2.KTextArea, Initial: keyValueText(spec.Headers)},
+		kit2.FieldSpec{Name: "headers", Label: "Headers (KEY=VALUE per line; set credentials with k)", Kind: kit2.KTextArea, Initial: keyValueText(spec.Headers)},
 		kit2.FieldSpec{Name: "enabled", Label: "Enabled", Kind: kit2.KCheckbox, Initial: enabled},
 	)
 	f.Focused = true

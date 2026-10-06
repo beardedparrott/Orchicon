@@ -276,3 +276,39 @@ func submitForm(t *testing.T, f *kit2Form) {
 		t.Fatalf("submit: %v", err)
 	}
 }
+
+// THE SPEC FORM IS NOT WHERE A CREDENTIAL IS TYPED.
+//
+// The operator, on a worker version's spec form: "it still shows the field to manually type in a
+// credential. We should not be doing that. Everything should be driven from the credential store."
+//
+// The env/headers fields carry NON-secret configuration plus the ${NAME} references the credential path
+// itself writes (CredentialForm/AttachSecret) — so their labels no longer advertise the reference as
+// something to type, and point at the credential verb instead. The reference stays legal INSIDE the field,
+// because the picker's own write lands there; what must not be invited is the hand-typed form of it, and
+// the LABEL is therefore the thing pinned here rather than a rejection of the value.
+func TestSpecFormsDoNotInviteTypedCredentials(t *testing.T) {
+	forms := map[string]*kit2.Form{
+		"InlineForm": InlineForm("Edit spec", &InlineSpec{ID: "github", Type: "stdio"}, func(InlineSpec) {}),
+		"DefineForm": DefineForm("Add server", Owner{ProjectID: "p1"}, nil,
+			func(*apiv1.MCPServerCreateRequest) tea.Cmd { return nil }),
+	}
+	for name, f := range forms {
+		seen := 0
+		for _, spec := range f.Specs {
+			if spec.Name != "env" && spec.Name != "headers" {
+				continue
+			}
+			seen++
+			if strings.Contains(spec.Label, "${SECRET_NAME}") {
+				t.Errorf("%s: field %q still invites a TYPED reference: %q", name, spec.Name, spec.Label)
+			}
+			if !strings.Contains(spec.Label, "credential") {
+				t.Errorf("%s: field %q does not point at the credential path: %q", name, spec.Name, spec.Label)
+			}
+		}
+		if seen == 0 {
+			t.Errorf("%s: no env/headers field found — the assertions above proved nothing", name)
+		}
+	}
+}
