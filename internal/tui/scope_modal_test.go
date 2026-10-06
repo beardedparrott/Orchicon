@@ -691,6 +691,88 @@ func readUpdates(s *stubMCP) []*apiv1.MCPServerUpdateRequest {
 	return append([]*apiv1.MCPServerUpdateRequest{}, s.updated...)
 }
 
+// THE PICKER IS DRIVEN BY THE STORE AND BY THE SERVER'S OWN DECLARATION — the TUI half of the operator's
+// rule ("everything should be driven from the credential store", with typing only to create a new one).
+//
+// The submit test above proves what a credential WRITES; this one proves what the form OFFERS, which is the
+// half the operator actually sees. The row declares SLACK_BOT_TOKEN (MCPServer.required_secrets, which the
+// plane resolves onto the row) and already carries LOG_LEVEL, so the assertions are:
+//
+//   - the KEY picker offers the DECLARED secret as its first option (the default, not a retype) and then the
+//     row's own keys;
+//   - the SECRET picker offers the tenant store's names;
+//   - both are PICKERS (a <select> cannot hold a value that does not exist — which is how "static" is
+//     enforced by the control's shape rather than by a validation message).
+func TestScopeCredentialFormOffersTheDeclaredKeyAndTheStoresNames(t *testing.T) {
+	m, stub, _ := newScopeApp(t)
+	stub.mu.Lock()
+	stub.servers = append(stub.servers, &apiv1.MCPServer{
+		Id: "mcp-slack", Name: "slack", Enabled: true,
+		Transport:       apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STDIO,
+		Command:         "npx",
+		Args:            []string{"-y", "server-slack"},
+		Env:             map[string]string{"LOG_LEVEL": "info"},
+		RequiredSecrets: []string{"SLACK_BOT_TOKEN"},
+	})
+	stub.mu.Unlock()
+
+	openScopeFrom(t, m, "/scope")
+	putCursor(m, rowIndexOf(t, m, "slack"))
+	pressScope(t, m, "k")
+	if m.convScopeForm == nil {
+		t.Fatal("`k` opened no credential form")
+	}
+
+	var keyOpts, secretOpts []string
+	var keyKind, secretKind, valueKind string
+	for _, s := range m.convScopeForm.Specs {
+		switch s.Name {
+		case "key":
+			keyKind = string(s.Kind)
+			for _, o := range s.Options {
+				keyOpts = append(keyOpts, o.Value)
+			}
+		case "secret":
+			secretKind = string(s.Kind)
+			for _, o := range s.Options {
+				secretOpts = append(secretOpts, o.Value)
+			}
+		case "value":
+			valueKind = string(s.Kind)
+		}
+	}
+
+	if keyKind != "picker" || secretKind != "picker" {
+		t.Errorf("key/secret kinds = %q/%q, want pickers — a typed field cannot express \"static unless it "+
+			"is new\"", keyKind, secretKind)
+	}
+	if len(keyOpts) == 0 || keyOpts[0] != "SLACK_BOT_TOKEN" {
+		t.Errorf("key options = %v, want the DECLARED secret first — the declared key IS the answer for a "+
+			"catalog-described server, so it should be the default rather than a retype", keyOpts)
+	}
+	if !contains(keyOpts, "LOG_LEVEL") {
+		t.Errorf("key options = %v, want the row's own keys too", keyOpts)
+	}
+	for _, want := range []string{"MCP_GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN", "SLACK_BOT_TOKEN"} {
+		if !contains(secretOpts, want) {
+			t.Errorf("secret options = %v, want the store's own names (missing %q)", secretOpts, want)
+		}
+	}
+	// The value stays a SECRET field, offered only to store a new one — it is not the write.
+	if valueKind != "secret" {
+		t.Errorf("value kind = %q, want a masked secret field", valueKind)
+	}
+}
+
+func contains(hay []string, needle string) bool {
+	for _, s := range hay {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}
+
 // `s` OPENS THE SKILL-FILE LIST PREFILLED with what the conversation holds, and saving it writes the
 // list — the TUI's control for skill_files, in the same modal as the MCP half.
 func TestScopeSkillFilesFormIsPrefilledAndWritesTheList(t *testing.T) {
