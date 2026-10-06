@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/diffs"
@@ -69,14 +70,43 @@ func openRailWithContent(t *testing.T) (*App, int) {
 	return m, barX
 }
 
-// THE REPORTED BUG: a press on the bar was claimed as a RAIL RESIZE. It must jump the viewport instead, and
-// must not touch the rail's width.
-func TestPressOnTheScrollbarJumpsInsteadOfResizingTheRail(t *testing.T) {
+// trackRow finds a terminal row on the bar's TRACK (outside the thumb), and thumbRow one ON the thumb, by
+// asking the pane rather than hard-coding rows: the thumb's position depends on the viewport and the content,
+// so a fixed row would make these tests silently change meaning as the fixture grows.
+func trackRow(t *testing.T, m *App, barX int, from, to int) int {
+	t.Helper()
+	for y := from; y <= to; y++ {
+		if m.diffPane.ScrollbarThumbAt(y) {
+			continue
+		}
+		if m.diffScrollbarHit(barX, y) {
+			return y
+		}
+	}
+	t.Fatal("no track row found on the bar")
+	return 0
+}
+
+func thumbRow(t *testing.T, m *App, barX int, from, to int) int {
+	t.Helper()
+	for y := from; y <= to; y++ {
+		if m.diffPane.ScrollbarThumbAt(y) && m.diffScrollbarHit(barX, y) {
+			return y
+		}
+	}
+	t.Fatal("no thumb row found on the bar")
+	return 0
+}
+
+// A press on the TRACK asks to GO somewhere: it jumps, it starts a drag, and — the reported bug — it must
+// NOT be claimed as a rail resize.
+func TestPressOnTheScrollbarTrackJumpsWithoutResizingTheRail(t *testing.T) {
 	m, barX := openRailWithContent(t)
 	widthBefore := m.diffPaneWidth()
 	viewBefore := m.diffPane.View()
 
-	nm, _ := m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: barX, Y: 10})
+	y := trackRow(t, m, barX, 5, 30)
+	nm, _ := m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: barX, Y: y})
 	m = nm.(*App)
 
 	if m.diffResizing {
@@ -90,30 +120,68 @@ func TestPressOnTheScrollbarJumpsInsteadOfResizingTheRail(t *testing.T) {
 		t.Errorf("the rail width changed from %d to %d on a bar press", widthBefore, m.diffPaneWidth())
 	}
 	if m.diffPane.View() == viewBefore {
-		t.Error("the press did not move the viewport — the grab did not reach the pane")
+		t.Error("a TRACK press did not move the viewport — a track press asks to go there")
+	}
+}
+
+// A press on the THUMB picks the content up where it is: the drag starts and NOTHING MOVES YET.
+//
+// This is the operator's "seems to jump a bit": the thumb is the obvious place to grab, and jumping on that
+// press yanked the content to the pointer before the drag had even begun.
+func TestPressOnTheScrollbarThumbDoesNotJump(t *testing.T) {
+	m, barX := openRailWithContent(t)
+	// Park the content mid-way so the thumb is away from the top and a thumb row exists below the grab.
+	m.diffPane.ScrollbarJumpTo(20)
+	viewBefore := m.diffPane.View()
+	widthBefore := m.diffPaneWidth()
+
+	y := thumbRow(t, m, barX, 5, 30)
+	nm, _ := m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: barX, Y: y})
+	m = nm.(*App)
+
+	if !m.diffScrollDragging {
+		t.Fatal("a press on the thumb did not start a drag")
+	}
+	if m.diffResizing {
+		t.Error("a press on the thumb resized the rail")
+	}
+	if m.diffPaneWidth() != widthBefore {
+		t.Errorf("the rail width changed on a thumb press")
+	}
+	if m.diffPane.View() != viewBefore {
+		t.Error("grabbing the THUMB jumped the viewport — grabbing the thumb must pick the content up " +
+			"where it is, and only a TRACK press asks to go somewhere")
 	}
 }
 
 // THE DRAG ITSELF: motion tracks the pointer, and it keeps tracking even when a diagonal hand movement takes
 // the pointer out of the rail's columns (the gesture was claimed at the press, so no X test applies to it).
+//
+// The pane opens at the TOP, so the drag goes DOWNWARD — the direction with somewhere to go. (Dragging up
+// from the top correctly does nothing, which is why the earlier version of this test, which started near the
+// bottom, had to be rewritten around the relative semantics rather than the old absolute jump.)
 func TestDraggingTheScrollbarFollowsThePointer(t *testing.T) {
 	m, barX := openRailWithContent(t)
+	opening := m.diffPane.View()
 
-	nm, _ := m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: barX, Y: 30})
+	grab := thumbRow(t, m, barX, 5, 30)
+	nm, _ := m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: barX, Y: grab})
 	m = nm.(*App)
-	atBottom := m.diffPane.View()
+	if m.diffPane.View() != opening {
+		t.Fatal("grabbing the thumb moved the viewport before the drag even started")
+	}
 
-	// Drag UP: the viewport must move back towards the top.
-	nm, _ = m.Update(tea.MouseMsg{Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft, X: barX, Y: 6})
+	// Drag DOWN: the viewport must follow.
+	nm, _ = m.Update(tea.MouseMsg{Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft, X: barX, Y: grab + 6})
 	m = nm.(*App)
-	if m.diffPane.View() == atBottom {
+	if m.diffPane.View() == opening {
 		t.Error("motion during the bar drag did not move the viewport")
 	}
 	midway := m.diffPane.View()
 
 	// …and keep dragging with the pointer OUTSIDE the rail's columns, which is what a real drag does when the
 	// hand drifts. The gesture is the shell's now, so the bar must still follow.
-	nm, _ = m.Update(tea.MouseMsg{Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft, X: m.diffPaneWidth() + 25, Y: 34})
+	nm, _ = m.Update(tea.MouseMsg{Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft, X: m.diffPaneWidth() + 25, Y: grab + 14})
 	m = nm.(*App)
 	if m.diffPane.View() == midway {
 		t.Error("the drag stopped when the pointer left the rail's columns — a diagonal drag must keep " +
@@ -165,5 +233,46 @@ func TestTheResizeEdgeStillResizesNextToTheBar(t *testing.T) {
 	}
 	if m.diffScrollDragging {
 		t.Error("a press on the resize edge also started a scrollbar drag")
+	}
+}
+
+// THE GRIP IS VISIBLE IN THE COLUMN THE SHELL GRABS.
+//
+// This is the REGRESSION pin. The bar's own column moved one cell in from the pane's edge, and the edge
+// (where the shell's divider hit-test lives) was left blank — so the operator went to resize the rail, saw
+// nothing to grab, and reported that resizing had been broken by the scrollbar fix. The two facts have to
+// hold together: the column the shell resizes from, and the column the operator can SEE is a grip.
+func TestTheResizeGripIsVisibleWhereItCanBeGrabbed(t *testing.T) {
+	m, barX := openRailWithContent(t)
+	divX := m.diffPaneWidth() - 1
+
+	// The shell resizes from this column…
+	if !m.diffDividerHit(divX, 8) {
+		t.Fatalf("the divider is not grabbable at x=%d", divX)
+	}
+	// …and the pane DRAWS a grip there, on the body rows.
+	//
+	// Read from the rendered pane (ANSI-stripped) rather than from the style table, so this asserts what an
+	// operator sees: the pane's row 0 is its tab bar, so row 1 is its first body row — terminal row 4.
+	rows := strings.Split(m.diffPane.View(), "\n")
+	if len(rows) < 2 {
+		t.Fatalf("the pane rendered %d rows", len(rows))
+	}
+	body := []rune(ansi.Strip(rows[1]))
+	if len(body) != m.diffPaneWidth() {
+		t.Fatalf("a pane row is %d cells, want the pane width %d", len(body), m.diffPaneWidth())
+	}
+	cell := string(body[divX])
+	if strings.TrimSpace(cell) == "" {
+		t.Error("the resize handle's column renders BLANK — an invisible grip is what made the operator " +
+			"think resizing no longer worked")
+	}
+	if strings.ContainsAny(cell, "█│") {
+		t.Errorf("the handle column renders a BAR glyph (%q); it must stay distinguishable from the "+
+			"scrollbar beside it", cell)
+	}
+	// And the bar's own column renders the bar, so the two are genuinely side by side.
+	if barCell := strings.TrimSpace(string(body[barX])); barCell == "" {
+		t.Error("the scrollbar's column renders blank next to the handle")
 	}
 }

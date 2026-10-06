@@ -20,7 +20,41 @@ import (
 const (
 	scrollThumbGlyph = "█"
 	scrollTrackGlyph = "│"
+	// scrollHandleGlyph marks the cell the SHELL's rail-resize handle occupies (the pane's last cell).
+	//
+	// IT IS DRAWN, AND DASHED, and both matter. Drawn, because an invisible handle is what made the
+	// operator report that resizing was broken: the handle has its own column now (the bar moved one cell
+	// in from the edge, so the two affordances stopped competing), and with nothing rendered there the only
+	// visible thing in that region was the BAR — which is what they had been grabbing. Dashed, so it cannot
+	// be confused with the bar's solid track or its block thumb.
+	scrollHandleGlyph = "┊"
 )
+
+// scrollbarThumb is the thumb's row range within the track, for a viewport of `viewH` rows showing `total`
+// lines scrolled to `scroll`.
+//
+// ONE DEFINITION, THREE READERS: the cell that draws it, the hit-test that decides whether a grab landed on
+// the thumb, and the drag that needs the thumb's travel range to know how far a row of pointer movement
+// should move the content. They used to be derived separately (the cell alone had the arithmetic), which is
+// exactly how a bar can be drawn in one place and grabbed in another.
+func scrollbarThumb(scroll, viewH, total int) (start, length int) {
+	if viewH < 1 || total <= viewH {
+		return 0, 0
+	}
+	length = viewH * viewH / total
+	if length < 1 {
+		length = 1
+	}
+	if length > viewH {
+		length = viewH
+	}
+	track := viewH - length
+	denom := total - viewH
+	if denom > 0 && track > 0 {
+		start = scroll * track / denom
+	}
+	return start, length
+}
 
 // scrollbarCell returns the single-cell bar for viewport row `i` (0-based,
 // within a viewport of `viewH` rows showing `total` content lines scrolled to
@@ -39,19 +73,7 @@ func scrollbarCell(i, scroll, viewH, total int) string {
 	if viewH < 1 || total <= viewH {
 		return " "
 	}
-	thumbLen := viewH * viewH / total
-	if thumbLen < 1 {
-		thumbLen = 1
-	}
-	if thumbLen > viewH {
-		thumbLen = viewH
-	}
-	track := viewH - thumbLen
-	denom := total - viewH
-	thumbStart := 0
-	if denom > 0 && track > 0 {
-		thumbStart = scroll * track / denom
-	}
+	thumbStart, thumbLen := scrollbarThumb(scroll, viewH, total)
 	if i >= thumbStart && i < thumbStart+thumbLen {
 		return theme.DiffScrollThumb.Render(scrollThumbGlyph)
 	}
@@ -62,9 +84,10 @@ func scrollbarCell(i, scroll, viewH, total int) string {
 // cell the shell's rail-resize handle occupies, so every produced line is exactly m.bodyWidth()+2 cells
 // (which the panel border then carries to m.Width — the shell's budget).
 //
-// THE TRAILING CELL IS THE DIVIDER'S, and emitting it here is what keeps the bar off the resize edge: the
-// scrollbar is the cell BEFORE it, so a press on the bar reaches the pane and a press on the edge resizes
-// the rail.
+// THE TRAILING CELL IS THE RESIZE HANDLE'S, and emitting it here is what keeps the bar off the resize edge:
+// the scrollbar is the cell BEFORE it, so a press on the bar reaches the pane and a press on the edge
+// resizes the rail. It is RENDERED (a faint dashed rule) rather than left blank, because the blank version
+// read as "there is no handle here" — the operator went looking for the resize grip and found only the bar.
 func (m *Model) withScrollbar(lines []string, total int) string {
 	if len(lines) == 0 {
 		return ""
@@ -73,7 +96,12 @@ func (m *Model) withScrollbar(lines []string, total int) string {
 	viewH := m.viewHeight()
 	out := make([]string, 0, len(lines))
 	for i, l := range lines {
-		out = append(out, fitToWidth(l, w)+scrollbarCell(i, m.scroll, viewH, total)+" ")
+		// [content][bar][handle]: the last cell is the SHELL's resize handle, drawn here (the pane owns the
+		// rail's cells) so the affordance the shell's hit-test uses is visible where it can be grabbed.
+		out = append(out,
+			fitToWidth(l, w)+
+				scrollbarCell(i, m.scroll, viewH, total)+
+				theme.DiffResizeHandle.Render(scrollHandleGlyph))
 	}
 	return strings.Join(out, "\n")
 }

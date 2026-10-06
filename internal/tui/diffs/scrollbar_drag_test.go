@@ -73,10 +73,18 @@ func TestABodyRowCarriesTheBarInTheGrabbableColumn(t *testing.T) {
 		t.Errorf("the cell at the bar's column is %q, want the thumb — the hit-test and the drawing must "+
 			"agree about where the bar is", string(row[barX]))
 	}
-	// And the shell's handle column is NOT the bar.
+	// The shell's handle column is NOT the bar — it carries the resize grip instead, in its own style.
+	//
+	// IT IS RENDERED, deliberately. It was blank when the bar first got its own column, and that is exactly
+	// what the operator reported as broken resizing: the grip was invisible, and the only thing in that
+	// region they could see to grab was the BAR next to it.
+	if got := string(row[barX+1]); got != scrollHandleGlyph {
+		t.Errorf("the resize-handle cell is %q, want the grip glyph %q — an invisible handle reads as no "+
+			"handle at all", got, scrollHandleGlyph)
+	}
 	if strings.ContainsAny(string(row[barX+1]), scrollThumbGlyph+scrollTrackGlyph) {
-		t.Errorf("the divider cell carries the bar (%q) — it must stay blank so the resize edge is not "+
-			"mistaken for the scrollbar", string(row[barX+1]))
+		t.Errorf("the handle cell carries the bar (%q) — the two affordances must stay distinguishable",
+			string(row[barX+1]))
 	}
 }
 
@@ -115,5 +123,92 @@ func TestAGrabAtEitherEndReachesTheEnd(t *testing.T) {
 	m.ScrollbarJumpTo(paneBodyRow - 5)
 	if m.scroll != 0 {
 		t.Errorf("a grab above the top scrolled to %d, want 0", m.scroll)
+	}
+}
+
+// GRABBING THE THUMB DOES NOT JUMP — the "jumps a bit" report.
+//
+// A GUI scrollbar picks the content up where it is when you grab the thumb, and only jumps when you press
+// the track (clicking the track is asking to GO somewhere). Treating both as a jump yanked the content to
+// wherever the pointer happened to be before the drag had started, which is what made the bar feel like it
+// leapt about.
+func TestGrabbingTheThumbDoesNotJump(t *testing.T) {
+	m := overflowingModel()
+	m.scroll = 0
+	start, length := scrollbarThumb(0, m.viewHeight(), m.visibleLines())
+	if length == 0 || length >= m.viewHeight() {
+		t.Fatalf("fixture thumb is %d rows of %d — need a partial thumb", length, m.viewHeight())
+	}
+
+	thumb := paneBodyRow + start
+	if !m.ScrollbarThumbAt(thumb) {
+		t.Fatalf("row %d is not recognised as the thumb (start=%d len=%d)", thumb, start, length)
+	}
+	if m.ScrollbarDragStart(thumb) != true {
+		t.Error("ScrollbarDragStart did not report the grab as a thumb grab")
+	}
+	if m.scroll != 0 {
+		t.Errorf("grabbing the thumb jumped the content to %d, want it left where it was (0)", m.scroll)
+	}
+	m.ScrollbarDragEnd()
+
+	// The TRACK is the jumping gesture, and it is the rows outside the thumb.
+	track := paneBodyRow + m.viewHeight() - 1
+	if m.ScrollbarThumbAt(track) {
+		t.Fatalf("row %d is on the thumb; the fixture needs a track row below it", track)
+	}
+	if m.ScrollbarDragStart(track) != false {
+		t.Error("ScrollbarDragStart reported a track grab as a thumb grab")
+	}
+	if m.scroll == 0 {
+		t.Error("grabbing the track did not jump the viewport")
+	}
+}
+
+// DRAGGING FROM THE THUMB TRACKS THE POINTER: relative to where it was grabbed, and scaled by the thumb's
+// own travel range, so one row of pointer movement is one row of thumb movement.
+func TestDraggingFromTheThumbTracksThePointer(t *testing.T) {
+	m := overflowingModel()
+	m.scroll = 0
+	start, length := scrollbarThumb(0, m.viewHeight(), m.visibleLines())
+	travel := m.viewHeight() - length
+	reach := m.maxScroll()
+	if travel < 4 || reach < 4 {
+		t.Fatalf("fixture too small to measure a drag: travel=%d reach=%d", travel, reach)
+	}
+	grab := paneBodyRow + start
+	m.ScrollbarDragStart(grab)
+
+	// One row down: the content advances by exactly the thumb's ratio.
+	m.ScrollbarDragTo(grab + 1)
+	if want := 1 * reach / travel; m.scroll != want {
+		t.Errorf("one row of drag scrolled to %d, want %d (reach/travel)", m.scroll, want)
+	}
+	// Three rows down: three times the distance, because the anchor is where it was GRABBED.
+	m.ScrollbarDragTo(grab + 3)
+	if want := 3 * reach / travel; m.scroll != want {
+		t.Errorf("three rows of drag scrolled to %d, want %d", m.scroll, want)
+	}
+	// Back to the anchor: exactly where it started.
+	m.ScrollbarDragTo(grab)
+	if m.scroll != 0 {
+		t.Errorf("dragging back to the grab row left the viewport at %d, want the original 0", m.scroll)
+	}
+	// Upward past the start, and down past the end, both clamp.
+	m.ScrollbarDragTo(grab - 50)
+	if m.scroll != 0 {
+		t.Errorf("dragging above the top scrolled to %d, want 0", m.scroll)
+	}
+	m.ScrollbarDragTo(grab + 500)
+	if m.scroll != m.maxScroll() {
+		t.Errorf("dragging below the bottom scrolled to %d, want maxScroll=%d", m.scroll, m.maxScroll())
+	}
+
+	// The gesture ends with the release: no further motion moves anything.
+	m.ScrollbarDragEnd()
+	settled := m.scroll
+	m.ScrollbarDragTo(grab)
+	if m.scroll != settled {
+		t.Errorf("the pane followed the pointer after the drag ended (%d -> %d)", settled, m.scroll)
 	}
 }

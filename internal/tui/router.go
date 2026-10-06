@@ -1177,8 +1177,8 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 	}
 	// DRAG THE DIFF RAIL'S SCROLLBAR — claimed here for the SAME reason the divider is, one block up.
 	//
-	// The bar's press JUMPS the viewport (as it always did) and starts the drag; its motion follows the
-	// pointer; its release ends the gesture. It has to be claimed ABOVE `if m.clip != nil`, because a left
+	// The bar's press starts the gesture (the pane decides whether that means a jump — see
+	// ScrollbarDragStart), its motion follows the pointer, its release ends it. It has to be claimed ABOVE `if m.clip != nil`, because a left
 	// press in the rail sets a SELECTION REGION (selectionRegionAt) and clipState then CONSUMES the motion —
 	// so a drag handled by the pane would win the press and lose every step after it, selecting text
 	// instead of scrolling.
@@ -1190,8 +1190,9 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 	if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft &&
 		!m.menuHit(mo.X, mo.Y) && m.diffScrollbarHit(mo.X, mo.Y) {
 		m.diffScrollDragging = true
-		m.diffPane.ScrollbarJumpTo(mo.Y)
-		m.syncDiffPaneState()
+		// ON THE THUMB the content is picked up where it is; ON THE TRACK the viewport jumps to the pointer
+		// first. Both are the pane's arithmetic — this only forwards the gesture.
+		m.diffPane.ScrollbarDragStart(mo.Y)
 		return m, nil // never forwarded: no selection region is set over the rail
 	}
 	if m.diffScrollDragging {
@@ -1206,11 +1207,11 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 			// NO X TEST, deliberately: the gesture was claimed at the press, and the bar must keep following
 			// the pointer even when a diagonal hand movement takes it out of the rail's columns. Terminal
 			// rows outside the body clamp, which is what dragging past either end should do.
-			m.diffPane.ScrollbarJumpTo(mo.Y)
-			m.syncDiffPaneState()
+			m.diffPane.ScrollbarDragTo(mo.Y)
 			return m, nil
 		case tea.MouseActionRelease:
 			m.diffScrollDragging = false
+			m.diffPane.ScrollbarDragEnd()
 			return m, nil
 		}
 		// Any other action while dragging (e.g. a wheel) falls through to normal handling.

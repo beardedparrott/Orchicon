@@ -58,6 +58,12 @@ type Model struct {
 	Err     string
 
 	scroll int
+	// The live scrollbar DRAG's anchor: the terminal row the grab started at and the scroll offset the
+	// content had then. The gesture is relative to these, so the grabbed point of the bar follows the
+	// pointer instead of the content leaping to wherever the pointer is (see ScrollbarDragTo).
+	dragActive bool
+	dragFromY  int
+	dragScroll int
 
 	// closeReq is set when the user clicks the pane's "✕" close button
 	// (the mouse toggle area). The shell polls it after forwarding a mouse
@@ -326,14 +332,74 @@ func (m *Model) ScrollbarHit(x, y int) bool {
 	return y >= paneBodyRow && y < paneBodyRow+m.viewHeight()
 }
 
-// ScrollbarJumpTo moves the viewport so the terminal row the bar was grabbed at maps to the same relative
-// position.
+// ScrollbarJumpTo moves the viewport so the terminal row it is given maps to the same relative position.
 //
-// THE PRESS AND EVERY STEP OF THE DRAG SHARE IT, which is what makes a drag a drag rather than a series of
-// jumps: the mapping is the bar's own (proportional over the body), so the thumb lands under the pointer
-// and stays there.
+// THIS IS THE TRACK's gesture, not the thumb's: pressing the track is asking to GO somewhere, and the
+// mapping is the bar's own (proportional over the body).
 func (m *Model) ScrollbarJumpTo(termY int) {
 	m.jumpToBodyRow(termY - paneBodyRow)
+}
+
+// ScrollbarThumbAt reports whether a terminal row is on the THUMB rather than the track.
+//
+// The distinction is the whole feel of the drag, and it is what a GUI scrollbar does: grabbing the thumb
+// picks the content up where it is, while grabbing the track asks to go to that spot. Treating both as a
+// jump is what the operator felt as the bar "jumping a bit": pressing the thumb (the obvious place to grab)
+// yanked the content to wherever the pointer happened to be before the drag had even started.
+func (m *Model) ScrollbarThumbAt(termY int) bool {
+	start, length := scrollbarThumb(m.scroll, m.viewHeight(), m.visibleLines())
+	if length == 0 {
+		return false
+	}
+	row := termY - paneBodyRow
+	return row >= start && row < start+length
+}
+
+// ScrollbarDragStart begins a bar gesture, returning whether the grab landed on the THUMB.
+//
+// ON THE THUMB: nothing moves yet — the content is picked up exactly where it is, and the drag tracks the
+// pointer from there (that is what "grabbing" means). ON THE TRACK: the viewport jumps to the pointer
+// first, which is the click-to-jump the bar has always had, and the drag continues from that position.
+func (m *Model) ScrollbarDragStart(termY int) bool {
+	onThumb := m.ScrollbarThumbAt(termY)
+	if !onThumb {
+		m.ScrollbarJumpTo(termY)
+	}
+	m.dragFromY = termY
+	m.dragScroll = m.scroll
+	m.dragActive = true
+	return onThumb
+}
+
+// ScrollbarDragTo moves the viewport with the pointer, so the grabbed point of the bar stays under it.
+//
+// RELATIVE, NOT ABSOLUTE, and that is what makes it smooth. An absolute mapping recomputes the scroll from
+// the pointer's row on every event, so the content leaps to wherever the pointer is and any rounding is
+// re-applied from scratch each time. Tracking the DELTA against the thumb's own travel range moves the
+// content by the same distance the thumb would have moved: one row of pointer movement is one row of thumb
+// movement, which is the ratio a scrollbar is supposed to have.
+func (m *Model) ScrollbarDragTo(termY int) {
+	if !m.dragActive {
+		return
+	}
+	viewH := m.viewHeight()
+	total := m.visibleLines()
+	if viewH < 1 || total <= viewH {
+		return
+	}
+	_, thumbLen := scrollbarThumb(m.scroll, viewH, total)
+	travel := viewH - thumbLen // the thumb's own range: the rows it can move through
+	reach := m.maxScroll()
+	if travel <= 0 || reach <= 0 {
+		return
+	}
+	m.scroll = m.dragScroll + (termY-m.dragFromY)*reach/travel
+	m.clampScroll()
+}
+
+// ScrollbarDragEnd ends the gesture, so the pane stops following a pointer that is no longer held.
+func (m *Model) ScrollbarDragEnd() {
+	m.dragActive = false
 }
 
 // viewHeight is the number of body rows the pane can show (the pane's Height
