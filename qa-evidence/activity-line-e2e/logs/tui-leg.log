@@ -1,0 +1,26 @@
+=== RUN   TestActivityLineE2E
+=== RUN   TestActivityLineE2E/1_turn_started_bare_line
+=== RUN   TestActivityLineE2E/2_counters_appear_and_grow
+=== RUN   TestActivityLineE2E/3_ac3_line_survives_content
+=== RUN   TestActivityLineE2E/4_verb_rotates_on_the_server_clock
+=== RUN   TestActivityLineE2E/5_counters_match_the_server_ledger
+=== RUN   TestActivityLineE2E/6_ac6_footer_is_one_row
+=== RUN   TestActivityLineE2E/7_ac5_silence_escalates_and_drops_the_counter
+=== RUN   TestActivityLineE2E/8_ac5_killed_connection_never_keeps_the_counter
+=== NAME  TestActivityLineE2E
+    activity_e2e_states_test.go:309: cross-client handshake written: stamp=1700000004000 word="honing" counter="1 modify · 2 reads · 1 bash"
+--- PASS: TestActivityLineE2E (85.26s)
+    --- PASS: TestActivityLineE2E/1_turn_started_bare_line (0.25s)
+    --- PASS: TestActivityLineE2E/2_counters_appear_and_grow (13.85s)
+    --- PASS: TestActivityLineE2E/3_ac3_line_survives_content (0.00s)
+    --- PASS: TestActivityLineE2E/4_verb_rotates_on_the_server_clock (1.21s)
+    --- PASS: TestActivityLineE2E/5_counters_match_the_server_ledger (0.00s)
+    --- PASS: TestActivityLineE2E/6_ac6_footer_is_one_row (0.00s)
+    --- PASS: TestActivityLineE2E/7_ac5_silence_escalates_and_drops_the_counter (34.93s)
+    --- PASS: TestActivityLineE2E/8_ac5_killed_connection_never_keeps_the_counter (26.81s)
+=== RUN   TestActivityLineE2EZeroToolCalls
+--- PASS: TestActivityLineE2EZeroToolCalls (12.43s)
+=== RUN   TestActivityLineE2ETurnEnd
+--- PASS: TestActivityLineE2ETurnEnd (22.36s)
+PASS
+ok  	github.com/beardedparrott/orchicon/internal/tui	120.069s
