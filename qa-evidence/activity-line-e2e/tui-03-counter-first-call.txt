@@ -35,7 +35,7 @@
 │                                                                                                                                            ││                                    │
 │                                                                                                                                            ││                                    │
 │                                                                                                                                            ││                                    │
-│Orchicon is honing… · 1 read · last 1s                                                                                                      ││                                    │
+│Orchicon is musing… · 1 read · newest call 1s ago                                                                                           ││                                    │
 │                                                                                                                                            ││                                    │
 │                                                                                                                                            ││                                    │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘│                                    │
@@ -47,4 +47,4 @@
 │  · alt+enter newline · / commands                                                                                                          ││                                    │
 │                                                                                                                              [brainstorm]  ││                                    │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯└────────────────────────────────────┘
- ● connected · http://127.0.0.1:18085 · server — · identity: e2e · — esc/ctrl+g content · Mouse Enabled
+ ● connected · http://127.0.0.1:18081 · server — · identity: e2e · — esc/ctrl+g content · Mouse Enabled
