@@ -1,4 +1,13 @@
-// ask-orchicon.activity-line.guard.test.ts — THE ROUTE FACTS THAT LIVE ONLY IN THE ROUTE.
+// -ask-orchicon.activity-line.guard.test.ts — THE ROUTE FACTS THAT LIVE ONLY IN THE ROUTE.
+//
+// The `-` PREFIX IS LOAD-BEARING (TanStack Router's routeFileIgnorePrefix, the convention every
+// other route-side test already follows: -ask-compact-progress, -ask-verb-rotation-wiring,
+// -diff-rail-width-wiring, -settings-defaults, -signup, -workers-new.runtime-ref). Without it the
+// router plugin treats this file as a ROUTE and prints
+// "Route file ... does not export a Route. This file will not be included in the route tree."
+// on every `vite build` / dev-server start: a warning this repo had zero of before the file
+// existed, and one that makes the real signal unreadable. The suite itself is unaffected either
+// way (vitest collects both names) — this is the build, not the test, that cares.
 //
 // The route cannot be rendered by this repo's test setup (it is a 4000-line TanStack route with
 // providers, sockets and queries), so the three facts that exist ONLY as wiring — the gate, the
