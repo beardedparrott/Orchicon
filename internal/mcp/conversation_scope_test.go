@@ -49,9 +49,12 @@ func TestGetCurrentConversationResolvesThroughTheSidecarWithTheEnvScope(t *testi
 		t.Fatalf("apply migrations: %v", err)
 	}
 
-	// A conversation carrying a model_ref, so the tool has something real to resolve.
+	// A conversation carrying a model_ref, so the tool has something real to resolve. It is DELETED on
+	// cleanup: a DB-backed test must not leave rows in the tenant it ran against — that is how the rail's
+	// newest-100 window filled up with test conversations in the first place.
 	const wantRef = "orchicon/anthropic/claude-sonnet-4"
 	convID := seedConversation(t, pool, wantRef)
+	t.Cleanup(func() { deleteConversation(t, pool, convID) })
 
 	t.Setenv("ORCHICON_MCP_CONVERSATION_ID", convID)
 	t.Setenv("ORCHICON_MCP_TENANT_ID", "tnt_dev")
@@ -118,6 +121,25 @@ func seedConversation(t *testing.T, pool *db.Pool, modelRef string) string {
 		t.Fatalf("commit: %v", err)
 	}
 	return row.ID
+}
+
+// deleteConversation removes one probe conversation, IN a tenant transaction and COMMITTED — these tables
+// are RLS-scoped, so a bare pool.Exec sees nothing, and rolling back would discard the DELETE and leave the
+// row behind.
+func deleteConversation(t *testing.T, pool *db.Pool, id string) {
+	t.Helper()
+	ctx := context.Background()
+	ptx, err := pool.BeginTenantTx(ctx, "tnt_dev")
+	if err != nil {
+		t.Errorf("cleanup: begin tenant tx: %v", err)
+		return
+	}
+	if _, err := ptx.Exec(ctx, `DELETE FROM ask_orchicon_conversations WHERE tenant_id = $1 AND id = $2`, "tnt_dev", id); err != nil {
+		t.Errorf("cleanup: delete %s: %v", id, err)
+	}
+	if err := ptx.Commit(ctx); err != nil {
+		t.Errorf("cleanup: commit: %v", err)
+	}
 }
 
 func quietTestLogger() *slog.Logger {
