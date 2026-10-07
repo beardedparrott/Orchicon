@@ -35,7 +35,7 @@ environment variables, troubleshooting), see [`ARCHITECTURE.md`](./ARCHITECTURE.
 9. [Automation: Recurring Items, Idea Cloud](#9-automation-domain)
 10. [Enforcement: Approvals, Policies](#10-enforcement-domain)
 11. [Control: Webhooks, Adapters, Settings, Admin, MCP](#11-control-domain)
-12. [Account screens: Login and Sign up](#12-account-screens)
+12. [Account screens: signing in and creating an account](#12-account-screens)
 
 **Part II — The terminal client**
 
@@ -220,9 +220,10 @@ request — there is no anonymous or synthetic dev-login bypass — so the first
 you do is create your account.
 
 1. **Install and start the stack** (§1). The UI is at `http://localhost:8080`.
-2. **Create the first account.** Open the UI and click **Sign up**. The **first
-   sign-up on a tenant with no admin becomes the tenant admin** — granted
-   atomically with account creation. Subsequent sign-ups are plain `user`
+2. **Create the first account.** Open the UI and click **Create an account**
+   (the sign-in screen offers it as "New here? Create an account"). The **first
+   account created on a tenant with no admin becomes the tenant admin** — granted
+   automatically with account creation. Later accounts are plain `user`
    identities with no entitlements until an admin grants them a role.
 3. **Create a project.** *Work → Projects → New Project*. A project carries a
    `project_dir` (where workers operate), goals, and context files that are
@@ -239,10 +240,47 @@ you do is create your account.
    schedule, or on a recurrence.
 7. **Watch it.** *Execution → Executions* streams the worker's output live.
 
-New planes also ship **canned workers** (Senior Software Engineer, PR Reviewer, QA
-Engineer, DevOps Engineer, Design/Code Approver, Principal Software Architect, and
-their **- Vision** variants), so you can run something end to end without writing
-a worker from scratch.
+New planes also ship **canned workers** and **canned workflows**, so you can run
+something end to end without authoring either from scratch.
+
+**Canned workers** — reusable personas, ready to dispatch:
+
+| Worker | What it does |
+|---|---|
+| **Senior Software Engineer** | Full-stack development: implements features and fixes bugs |
+| **PR Reviewer** | Code review — finds bugs, security issues and correctness problems |
+| **QA Engineer** | Functional and regression testing against the acceptance criteria |
+| **DevOps Engineer** | Opens and merges the pull request once work is approved |
+| **Design Approver** | Worker-backed approval of an architecture/design plan |
+| **Code Approver** | Worker-backed approval of a completed implementation |
+| **Principal Software Architect** | Architecture design, decision records, technical strategy |
+| **- Vision** variants | Copies of the above on a vision-capable model, adding visual verification of UI work (screenshots, accessibility, responsive checks) |
+
+**Canned workflows** — ready-made step DAGs you can bind to a work item:
+
+| Workflow | What it does |
+|---|---|
+| **SDLC (non-human)** | The full development pipeline with no human gates: Architect → Senior Software Engineer → PR Reviewer → gate → QA Engineer → gate → DevOps (opens and merges the PR), with a conflict loop that sends merge conflicts back to DevOps |
+| **SDLC (human approval)** | The same pipeline with two human gates: a **Design Approval** after the Architect, and a **Code Approval** after QA. The run waits for you at each gate |
+| **Automation Research** | Planner → Analyst → Synthesizer: researches your market and proposes new work (see §9.2) |
+| **Quick Work** | The fast path: one worker implements, verifies, commits, pushes and merges the pull request. No separate review or DevOps step — use it for small, self-contained changes |
+
+**You do not have to use any of this to get value from Orchicon.** Projects,
+workers, work items and workflows are the *orchestration* half of the product —
+they are how you run autonomous work at scale, in the background, on a schedule,
+with recovery and an audit trail. But Orchicon is equally usable as an ordinary
+agentic coding harness, with none of them:
+
+> **Just want to work on your code with an agent?** Open **Ask Orchicon**, set the
+> conversation to **Iteration** mode, and point it at a directory. It reads your
+> files, edits them, runs your tests and commits — the same tools the workers use,
+> against your real filesystem, with you approving each write or command. No
+> project, no worker, no work item, no workflow. You can add those later if you
+> want the autonomous half.
+
+So the two halves are independent: skip the orchestration entirely, use only the
+orchestration, or use the harness first and grow into the rest. Nothing in §3–§11
+below is a prerequisite for the harness in §5.
 
 ---
 
@@ -275,16 +313,28 @@ preference always wins.
 
 ## 4. Getting around the GUI
 
-The GUI is a single-page app with a persistent **sidebar**, a **topbar**, and a
-content area.
+The GUI is a single-page app with a **top bar** and a content area. There is **no
+sidebar** — navigation lives entirely in the top bar.
 
-**The sidebar** groups screens into seven domains. Each domain is a collapsible
-section; the active domain and item are highlighted, and the topbar shows your
-position as a breadcrumb.
+### The top bar
 
-| Domain | Screens |
+Left to right, the bar holds:
+
+- **The Orchicon mark** — click it to return to Ask Orchicon.
+- **Ask Orchicon** — its own button, directly beside the mark.
+- **The seven domain menus** — Overview, Work, Execution, Automation, Enforcement
+  and Control.
+- **Notifications**, the **theme toggle**, and your **profile menu** (Settings,
+  Admin, and Sign out) on the right.
+
+### Getting to a screen
+
+Every screen is **two clicks: click a domain menu in the top bar, then click the
+screen in the dropdown that opens.**
+
+| Domain menu | Screens inside |
 |---|---|
-| *(top level)* | **Ask Orchicon** |
+| **Ask Orchicon** | *(its own button — no menu)* |
 | **Overview** | Dashboard · Telemetry · Cost Explorer |
 | **Work** | Projects · Work Items · Runtime Images |
 | **Execution** | Workers · Workflows · Executions · Schedules · Recovery |
@@ -292,29 +342,34 @@ position as a breadcrumb.
 | **Enforcement** | Approvals · Policies |
 | **Control** | Webhooks · Adapters · Settings · Admin *(admin only)* |
 
-**Note on the course of the app.** `/` (the root) opens **Ask Orchicon**, not a
-dashboard — asking is the front door. A few convenience paths redirect to their
-canonical screen: `/home` and `/overview` → Dashboard, `/usage` → Cost Explorer,
-`/conversations` → Ask Orchicon.
+The menus work from the keyboard too: open one with **Enter** or **Space**, move
+with the **arrow keys**, select with **Enter**, and close with **Escape**. Once you
+are on a screen, a **breadcrumb** under the top bar names the domain and screen you
+are in.
 
-**Theme and appearance** are set in *Settings → Appearance* (light/dark plus 20
-theme variants — 10 light, 10 dark).
+**On a phone or a narrow window** the domain menus collapse into a **hamburger
+button** on the left, which opens a drawer with the same screens.
+
+**Opening the app lands you on Ask Orchicon** — asking is the front door, not a
+dashboard.
+
+**Theme and appearance** are set in **Control → Settings → Appearance** (light/dark
+plus 20 theme variants — 10 light, 10 dark).
 
 **Long-running lists refresh themselves.** Screens that show live state (Work
-Items, Schedules, Executions) poll on a short interval, pause while the tab is
-hidden, and refetch when the window regains focus. A `Live HH:MM:SS` indicator
-makes the refresh visible rather than mysterious.
+Items, Schedules, Executions) update on a short interval, pause while the tab is
+hidden, and refresh when the window regains focus. A `Live HH:MM:SS` indicator
+makes that visible.
 
-There is deliberately **no GUI command palette**. The GUI is mouse-first and gives
-every per-conversation command a native control, so a palette would re-implement
-controls that already exist. "Commands" in the GUI therefore means **the actions
-and buttons on each screen** — documented per screen below.
+**"Commands" in the GUI means the actions and buttons on each screen** — documented
+per screen below. (The terminal client is different: it has a slash-command
+palette. See Part II.)
 
 ---
 
 ## 5. Ask Orchicon
 
-**Route:** `/ask-orchicon` · top of the sidebar
+**Where:** the **Ask Orchicon** button in the top bar — it sits directly beside the Orchicon mark
 
 **Purpose.** A conversational partner that shares the platform's understanding of
 your project. It can answer questions, read your files, plan and author work, do
@@ -325,7 +380,7 @@ the work itself, and dispatch it — depending on the **mode** you select.
 - **Transcript** (centre) — the conversation, with streaming replies, reasoning
   bubbles, tool-call cards, and an **activity line** that reports what is happening
   while a turn runs.
-- **Conversations sidebar** (right) — your history. Switch, resume, rename or
+- **Conversations panel** (right) — your history. Switch, resume, rename or
   delete conversations. A **pulsing dot and Stop button** appear on any
   conversation with a turn running, so a turn is stoppable even when you are
   looking at a different conversation.
@@ -340,16 +395,16 @@ not requested in prose.
 
 | Mode | Disposition | What it does |
 |---|---|---|
-| **Brainstorm** | plans and decides | Investigates, designs, asks clarifying questions, authors work items. Refuses to write or execute. |
-| **Iteration** | does the work | Cuts the branch, edits files, runs the tests, commits — working alongside you in this session. |
-| **Quick Work** | dispatches it | Creates an ephemeral worker, workflow and work item, fires the run, and cleans up after itself. |
+| **Brainstorm** | plans and decides | Does **everything in Orchicon that a human can do through the GUI** — it creates and edits projects, workers, work items and workflows; schedules and re-schedules work; fires runs and sequences; approves, retries and cancels; and reads and updates your settings. What it will not do is **act on your filesystem**: no writing files, no running commands. It investigates, designs, asks clarifying questions, and authors the work. |
+| **Iteration** | does the work | Cuts the branch, edits files, runs the tests, commits — working alongside you in this session. It **cannot** author work items or dispatch runs: it is refused the plan and dispatch tools, because doing the work and planning the work are different jobs. |
+| **Quick Work** | dispatches it | Creates an ephemeral worker, workflow and work item, fires the run, and cleans up after itself. The hands-off path: it hands the task over rather than doing it in front of you. |
 
 Each mode **refuses** the tools its disposition does not own. Brainstorm and Quick
 Work are withheld `write`, `edit` and `bash`; Iteration is refused the plan and
 dispatch tools. The refusal arrives as the tool's result, so the model relays it
-rather than silently failing. There is **no mode-setting tool** — the model cannot
-switch itself, and the mode selector is the only route. This is what makes "ask
-the user to switch" a real instruction rather than a bluff.
+rather than silently failing. **Only you can change the mode**: the model has no tool
+for it, and the mode selector is the only route — so when it asks you to switch, it
+is genuinely asking.
 
 Toggling is **session-free**: the mode is read per turn, so the same session
 persists across a switch and the next message simply carries the new persona. A
@@ -366,7 +421,9 @@ different mode no longer applies.
 | **Mode dropdown** | Switch between Brainstorm / Iteration / Quick Work. |
 | **Model chip** | Opens the three-tier **model picker** (adapter → provider → searchable model) and sets the model for the open conversation. |
 | **Paperclip** | Attach a file to the next message. |
-| **Diff sidebar toggle** | Slide out the file-diff pane for the current work. |
+| **Diff toggle** | Slide out the file-diff pane for the current work. |
+| **Grants** | Opens this conversation's **active session grants** — the directories you have approved for it. The button carries a count when any are active (e.g. `Grants (2)`), and each grant can be **revoked** from the panel. This is where you see and take back what you have already allowed. |
+| **Scope** | Opens this conversation's **scope**: its own **MCP servers** and **skill files**, plus the project's shown read-only for reference. This is where you add an MCP server to one conversation rather than to a whole project (see §11.5). |
 
 **The conversation's scope.** Each Ask conversation owns its own **MCP servers**
 and **skill files**, managed from the conversation's scope panel. The project's
@@ -453,7 +510,7 @@ and what is it costing me?" — they expose no mutations.
 
 ### 6.1 Dashboard
 
-**Route:** `/dashboard`
+**Where:** top bar → **Overview** → **Dashboard**
 
 **Purpose.** The aggregate state of the plane in one view.
 
@@ -469,7 +526,7 @@ Workers, Recovery, or Cost Explorer.
 
 ### 6.2 Telemetry
 
-**Route:** `/telemetry`
+**Where:** top bar → **Overview** → **Telemetry**
 
 **Purpose.** Traces, metrics and logs, and the entry point to the embedded Grafana
 stack.
@@ -491,7 +548,7 @@ subscription (footnote status, refresh on event, automatic reconnect).
 
 ### 6.3 Cost Explorer
 
-**Route:** `/cost-explorer`
+**Where:** top bar → **Overview** → **Cost Explorer**
 
 **Purpose.** Where the money went, at several levels of detail.
 
@@ -514,11 +571,10 @@ spend, cache hit rate).
 
 **Actions.** Read-only.
 
-> **A note on cache-aware cost.** Cost is cache-aware, and the `tokens` budget gate
-> counts **fresh tokens only** — cache reads are excluded, because cache reads are
-> re-sends of context already counted. A long-context worker cannot trip its token
-> ceiling by re-reading what it already holds; cache reads still govern real spend
-> through the cost gate.
+> **Reading the numbers.** Cost is cache-aware, and the `tokens` budget counts
+> **fresh tokens only** — re-sent context does not count against it. So a long-running
+> worker cannot trip its token ceiling just by re-reading what it already holds, while
+> the cost figure still accounts for that re-sending.
 
 ---
 
@@ -528,11 +584,38 @@ The domain where you describe *what* should be done and *where*.
 
 ### 7.1 Projects
 
-**Routes:** `/projects` (list) · `/projects/new` · `/projects/$id` (detail)
+**Where:** top bar → **Work** → **Projects** (the list; a project opens its own detail page, and **New Project** creates one)
 
 **Purpose.** A project is the top-level container for work. It owns a
 `project_dir` — the directory workers operate in — plus goals and context files
 that are injected into every worker prompt.
+
+**The fields, and why you'd set them.**
+
+| Field | What it is | Why you'd set it |
+|---|---|---|
+| **Name** / **Slug** | The display name, and an optional short slug used in URLs and references | Set the slug once if you will refer to the project by name in scripts or URLs |
+| **Project directory** | The directory workers operate in — and the boundary they are held to | Always set it. It is also the only directory guaranteed to be mounted into the containers where workers run, so everything a worker may touch must live under it |
+| **Git strategy** | How a run handles branches and pull requests — see below | Choose the outcome you want: a pushed branch, a reviewed PR, or nothing pushed at all |
+| **Default runtime image** | The container image work items use unless they set their own. Empty = the base image | Set it when your projects need extra tooling (a language runtime, a browser, a CLI) so you are not setting it per work item |
+| **Execution mode** | `runtime` — always run in a container (default), or `local` — run in-process on the host | Keep `runtime` for isolation. Use `local` when a task genuinely needs the host's own environment, accepting that it is no longer contained |
+| **Max concurrent runs** | Caps how many executions may run at once. `0` = no additional restriction | Set it when a project would otherwise saturate the machine or race itself; the effective limit is `min(tenant, project)` |
+| **Goals** | Free-form markdown describing what the project is for | Worth writing: goals are injected into worker prompts, so they steer every task in the project |
+| **Context files** | Files or directories injected into every worker prompt, on top of the work item's own | Point them at the conventions, specs or reference material a worker should always have |
+| **MCP servers** / **Skill files** | The tools and skills this project's sessions may use (see §11.5) | Add them when the work needs external systems (an issue tracker, a database, a docs server) |
+| **Status** | Active or paused | Pause a project to stop it accepting new work without deleting anything |
+
+**Git strategy, in detail.** This is the field most worth understanding, because it
+decides what a run leaves behind:
+
+| Strategy | What the run does | Best when |
+|---|---|---|
+| **Local** (default) | Commits in an isolated worktree and **pushes the branch** to origin. No pull request is opened; the branch stays on origin for you to review or merge by hand | You want the work preserved and inspectable, but do not require a review step |
+| **PR** | Pushes the branch **and opens a pull request**, respecting branch protection | You require human review before anything reaches your main branch — this gives you a full audit trail in the forge |
+| **Ephemeral** | **Pushes nothing.** The work lives in the run's results and artifacts, and the worktree and branch are discarded | Checks, scrapes and recurring monitors, where no code change should persist |
+
+You can set the strategy per project and override it per workflow; the workflow's
+value wins when both are set.
 
 **How to use it.**
 
@@ -572,11 +655,13 @@ plus archive and delete.
 
 ### 7.2 Work Items
 
-**Routes:** `/work-items` (tree + board) · `/work-items/new` · `/work-items/$id`
-(detail) · `/work-items/graph`
+**Where:** top bar → **Work** → **Work Items** (the tree and board; a work item opens its detail page, **New Work Item** creates one)
 
-**Purpose.** The unit of work. Work items form a hierarchy — **Epic → Feature →
-Task → Subtask**, max 4 levels — and a dependency **DAG** on top of it.
+**Purpose.** The unit of work — and, taken together, **a full project-management suite** that happens to be attached to autonomous execution.
+
+If you are used to a tracker, everything you expect is here: a **hierarchy** (Epic → Feature → Task → Subtask, max 4 levels), **dependencies** between items (`depends_on` / `blocks`, enforced as a real DAG with cycle protection), **priority**, **assignees**, **schedules and recurrences**, **search and filter**, **bulk operations**, **archive and restore**, a **Kanban board** you can drag cards across, a **tree** view, a **dependency graph**, **acceptance criteria** and a generated **acceptance review** on completion, and a **per-item comment-free audit trail** through the plane's own event log.
+
+What makes it more than a tracker is that an item is not just a record — **it is what gets executed.** Assign it a worker, bind a workflow, and the ticket *does itself*, reports back, and recovers if it fails. You can run the whole suite as your board of record, or use it purely as the control surface for autonomous work, or both.
 
 **Two views, one filter bar.** The list page has a **Tree** and a **Board** that
 share the same filter bar, selection set and auto-refresh loop.
@@ -603,7 +688,7 @@ share the same filter bar, selection set and auto-refresh loop.
    is symmetric and non-ordering, so it is exempt from cycle detection.
 5. **Run** — bind a workflow and start it (§8).
 
-**Things that behave in a specific, deliberate way:**
+**Things worth knowing:**
 
 - **Blocked is a real status.** An item that is armed but cannot dispatch because
   an upstream dependency is not yet terminal-success shows as **`blocked`** (its
@@ -631,7 +716,7 @@ share the same filter bar, selection set and auto-refresh loop.
 derived from the true chain order rather than display order — so the sequence
 stays unambiguous even when you sort by title or priority.
 
-**Detail page (`/work-items/$id`).** Kind badge, state pill, parent, priority,
+**The work item's detail page.** Kind badge, state pill, parent, priority,
 budgets, context window, runtime image, worker, workflow, schedule, chain
 position, plus the description and acceptance-criteria bodies. For a parent, a
 **Parent** card with a searchable picker in edit mode.
@@ -655,8 +740,7 @@ schedule, assign/unassign a worker, reorder children, archive/restore, delete
 
 ### 7.3 Runtime Images
 
-**Routes:** `/runtime-images` (list) · `/runtime-images/new` ·
-`/runtime-images/$id` (detail)
+**Where:** top bar → **Work** → **Runtime Images** (a runtime image opens its detail page, **New Runtime Image** creates one)
 
 **Purpose.** The container image a worker execution runs inside. A runtime image
 is a buildable spec — apt packages, toolchains, environment, and an optional
@@ -686,7 +770,7 @@ The domain where the work actually happens.
 
 ### 8.1 Workers
 
-**Routes:** `/workers` (list) · `/workers/new` · `/workers/$id` (detail)
+**Where:** top bar → **Execution** → **Workers** (a worker opens its detail page, **New Worker** creates one)
 
 **Purpose.** A worker is a reusable agent persona — the unit that is dispatched to
 do work. It carries prompt fields, a model, budgets, and permissions.
@@ -739,17 +823,15 @@ iteration count, execution history, and prior issues found.
 
 **The summary contract.** Worker output is parsed for
 `ORCHICON WORKER SUMMARY: success|failure — <summary>`. **The summary word is the
-single decision signal** — there is deliberately no separate `_decision:` or
-`_issues:` channel that can override it, which removes a class of false failures
-where a reviewer's prose was misparsed as an issues block.
+single decision signal** — a separate `_decision:` or `_issues:` line does not
+override it, so a reviewer's passing remarks cannot accidentally fail a run.
 
 **Actions.** Create, edit, new version, publish, deprecate, set active, set model
 in bulk across a selection, delete (bulk-capable).
 
 ### 8.2 Workflows
 
-**Routes:** `/workflows` (list) · `/workflows/new` · `/workflows/$id` (detail) ·
-`/workflows/$id/runs/$runId` (run detail)
+**Where:** top bar → **Execution** → **Workflows** (a workflow opens its detail page, **New Workflow** creates one, and a run opens its own run page)
 
 **Purpose.** A workflow is a **DAG of steps** that turns a work item into
 autonomous work. Every run is workflow-driven — standalone dispatch is retired, so
@@ -791,7 +873,7 @@ bound how many times a workflow can loop back before the run fails.
 **Versioning.** Workflows are versioned with a version trail; a run is bound to a
 specific version, so editing a workflow never changes a run in flight.
 
-**Run detail (`/workflows/$id/runs/$runId`).** Per-step status, the run body, and
+**A run's detail page.** Per-step status, the run body, and
 failure diagnosis for a failed run (the failed/blocked steps and the linked failed
 executions' error messages), plus the live execution detail pane.
 
@@ -822,7 +904,7 @@ run, **retry a failed run**, **force progress** a stuck run.
 
 ### 8.3 Executions
 
-**Routes:** `/executions` (list) · `/executions/$id` (detail)
+**Where:** top bar → **Execution** → **Executions** (an execution opens its live detail page)
 
 **Purpose.** The live record of every worker execution.
 
@@ -852,7 +934,7 @@ pause/resume, bulk delete.
 
 ### 8.4 Schedules
 
-**Route:** `/schedules`
+**Where:** top bar → **Execution** → **Schedules**
 
 **Purpose.** Everything about *when* work runs, in three lenses over the same
 subject.
@@ -905,7 +987,7 @@ derived cursor cannot act on its own:
 
 ### 8.5 Recovery
 
-**Routes:** `/recovery` (list) · `/recovery/$id` (detail)
+**Where:** top bar → **Execution** → **Recovery** (a recovery opens its detail page)
 
 **Purpose.** What happened after something failed, and what Orchicon proposes to
 do about it.
@@ -942,8 +1024,7 @@ Where Orchicon finds work for you, rather than only executing what you hand it.
 
 ### 9.1 Recurring Items
 
-**Routes:** `/recurring-items` (list) · `/recurring-items/new` ·
-`/recurring-items/$id` (detail)
+**Where:** top bar → **Automation** → **Recurring Items** (an item opens its detail page, **New Recurring Item** creates one)
 
 **Purpose.** A recurring work item re-fires on a cadence. This page is a dedicated
 flat card list, not the work-items tree — for a recurring item, **cadence and
@@ -981,15 +1062,36 @@ the question you are asking.
 
 ### 9.2 Idea Cloud
 
-**Route:** `/idea-cloud`
+**Where:** top bar → **Automation** → **Idea Cloud**
 
 **Purpose.** A triage board for proposals Orchicon generated itself, kept
 **separate from your real work items**.
 
-**The flagship producer** is the **Automation Research** pipeline (a three-worker
-crew — Planner → Analyst → Synthesizer) that surveys the market live, verifies each
-candidate against external evidence, and distills feature proposals. Any recurring
-fire configured with "Outputs: ideas" lands here too.
+**What actually goes on here, and why it is worth setting up.** The Idea Cloud is
+where **Orchicon does your product research and proposes your next work.** You point
+a scheduled crew at your market, and it comes back with feature-sized proposals —
+not a summary you have to act on by hand, but **candidate work items you can accept
+with one click.**
+
+The flagship producer is the **Automation Research** workflow: a three-worker crew
+(**Planner → Analyst → Synthesizer**) that surveys the competitive landscape live,
+verifies every candidate against external evidence, and distills what it finds into
+proposals. It targets capabilities competitors treat as headline features that your
+product has **no analogue for**, so the output is genuinely new work rather than a
+restatement of your backlog. It checks your existing items and the previously
+rejected ideas first, so it will not re-propose something you already have or have
+already declined.
+
+**Why that is useful:** instead of maintaining a roadmap by hand — reading release
+notes, comparing products, writing tickets — you review a short, evidence-backed
+shortlist on a cadence and accept what is worth building. You stay the
+decision-maker; the searching is done for you.
+
+**Setting it up.** Bind the **Automation Research** workflow to a **recurring work
+item** whose schedule is how often you want it to look (weekly is a reasonable
+start), and give that item a brief describing what your product is and which
+markets to watch. Any recurring item configured with **Outputs: ideas** lands here
+too, so you can point your own research at other questions.
 
 **Two sections:**
 
@@ -1011,8 +1113,8 @@ fire configured with "Outputs: ideas" lands here too.
 
 **Actions.** Promote, dismiss.
 
-**No cross-fire carry-forward.** An idea's facts are scoped to its run, deliberately.
-Across fires, lifecycle state is the ledger: the Rejected section is the durable,
+**Facts stay within a run.** An idea's facts are scoped to the run that produced
+it. Across fires, lifecycle state is the record: the Rejected section is the durable,
 bounded memory of what was proposed and refused, while accepted history lives in the
 normal work items. No prompt block compounds with recurrence.
 
@@ -1022,7 +1124,7 @@ normal work items. No prompt block compounds with recurrence.
 
 ### 10.1 Approvals
 
-**Route:** `/approvals`
+**Where:** top bar → **Enforcement** → **Approvals**
 
 **Purpose.** The human review gate for workflow **Approval** steps — pending step
 approvals, in one place.
@@ -1044,14 +1146,11 @@ the approver worker's decision recorded on the step run.
 
 ### 10.2 Policies
 
-**Route:** `/policies`
+**Where:** top bar → **Enforcement** → **Policies**
 
-> **Coming soon.** The Policies surface is a **deliberate placeholder** — the route
-> stays registered (so the nav entry leads somewhere honest rather than 404ing) and
-> both clients say "Coming soon…", using the same words so they cannot disagree
-> about the state of the feature. The RPCs and the proto remain in place, so the
-> surface returns when the design is settled; it is the untested UI shape that was
-> removed, not the capability.
+> **Coming soon.** Policies are not built yet — both clients say so, and neither
+> offers a policy editor. Policy *decisions* are still evaluated and recorded by the
+> plane, and you can read them (see below).
 
 **So what enforces policy today?** Policy *decisions* are still evaluated and
 recorded by the plane — you see them as **policy context** on the Approvals
@@ -1065,7 +1164,7 @@ narrowest-scope-first evaluation and a default of allow.
 
 ### 11.1 Webhooks
 
-**Route:** `/webhooks`
+**Where:** top bar → **Control** → **Webhooks**
 
 **Purpose.** Data export — subscription-driven delivery of plane events to
 external endpoints.
@@ -1084,7 +1183,7 @@ external endpoints.
 
 ### 11.2 Adapters
 
-**Route:** `/adapters`
+**Where:** top bar → **Control** → **Adapters**
 
 **Purpose.** The runtime adapter registry — which runtimes the dispatcher can
 route work to.
@@ -1106,7 +1205,7 @@ there is no separate runtime reference.
 
 ### 11.3 Settings
 
-**Route:** `/settings`
+**Where:** top bar → **Control** → **Settings**
 
 **Purpose.** The plane's configuration, in tabs.
 
@@ -1180,7 +1279,7 @@ mounts — is Linux/POSIX-only. On Windows everything runs inside WSL2 (see §1)
 
 ### 11.4 Admin
 
-**Route:** `/admin` · **admin role required**
+**Where:** top bar → **Control** → **Admin** (or your profile menu, top right) · **admin role required**
 
 **Purpose.** Identity, roles, API keys, the audit trail, and tenant administration.
 
@@ -1229,7 +1328,7 @@ filter and export the audit trail.
 
 ### 11.5 MCP servers and skill files (owner-scoped)
 
-There is **no tenant-level MCP screen**, and that is deliberate: an MCP server
+There is **no tenant-level MCP screen**: an MCP server
 definition is **owner-scoped**, and its owner *is* the selection. A definition
 belongs to exactly one **project**, one **Ask conversation**, or one **worker
 version** — there is no shared tenant list and no per-project checkbox over one.
@@ -1271,9 +1370,9 @@ captured error is recorded on the entry. `remote_url` entries need no install.
 
 **Skill files** are managed the same way, at the same three scopes.
 
-> **The honest consequence, stated rather than hidden:** a server can no longer be
-> defined once and inherited by several projects. The catalog's one-click add per
-> scope is the mitigation.
+> **Worth knowing before you commit to this:** a server can no longer be defined
+> once and shared by several projects. Each project keeps its own entry — the
+> catalog's one-click add per scope is how you avoid retyping the details.
 
 **The TUI reaches the same surfaces** through the conversation's **scope modal**
 (`/scope`, or `/mcp` for the MCP servers and `/skills` for the skill files) and
@@ -1292,7 +1391,7 @@ entry's config.
 
 ### 12.1 Login
 
-**Route:** `/login`
+**Where:** the sign-in screen, shown automatically when you are signed out
 
 **Purpose.** Sign in.
 
@@ -1304,8 +1403,9 @@ available.
   provider.
 - **SSO** — when an external OIDC identity provider is configured, an SSO button
   takes you through the authorization-code flow.
-- **Sign up** — linked only when the plane advertises it (sign-up availability *is*
-  the embedded provider being enabled).
+- **Create an account** — offered as **"New here? Create an account"**, and only
+  when the plane offers it (account creation availability *is* the embedded
+  identity provider being enabled).
 
 Failures return a **generic** error with no user-enumeration hint, and no identity
 is auto-provisioned by a login.
@@ -1314,20 +1414,21 @@ is auto-provisioned by a login.
 redirects here with the intended destination preserved, and a successful login
 returns you there.
 
-### 12.2 Sign up
+### 12.2 Creating an account
 
-**Route:** `/signup`
+**Where:** the sign-in screen → **New here? Create an account**
 
-**Purpose.** Self-service account creation.
+**Purpose.** Self-service account creation. The page itself is titled **Create your
+account**, and its button reads **Create account**.
 
-**How to use it.** Provide a username and password. Creating an account also starts
-a session — the server mints the token pair and sets the refresh cookie — so a
-successful sign-up lands you in the app in one step.
+**How to use it.** Provide a username and password (and confirm it). Creating an
+account also starts a session, so a successful sign-up lands you in the app in one
+step.
 
 **The first account becomes the admin.** On a tenant with no admin, the first
-sign-up is granted the tenant admin role atomically with account creation.
-Subsequent sign-ups are plain `user` identities with **zero entitlements** until an
-admin grants them a role. An existing admin is never demoted or clobbered.
+account created is granted the tenant admin role automatically. Later accounts are
+plain `user` identities with **zero entitlements** until an admin grants them a
+role. An existing admin is never demoted or clobbered.
 
 **Failure modes.** A duplicate username, or a subject that already exists, returns a
 generic conflict — which also blocks identity squatting on SSO handles.
@@ -1359,12 +1460,6 @@ press — there is no modifier to remember):
 | **F6** | Enforcement | Policies · Pending Approvals · Recoveries |
 | **F7** | Control | Secrets · Providers · Webhooks · Adapters · Settings · Permissions · Themes · Admin |
 
-**Why F-keys and not Ctrl+1..7?** Because it was measured: `ctrl+3` arrives as
-ESCAPE and `ctrl+8` as BACKSPACE (a control byte is `digit & 0x1f`, so 3 and 8
-collide with escape and delete), `alt+<digit>` is claimed by the terminal emulator
-before any program sees it, and `shift+<digit>` arrives as the shifted symbol.
-F1–F7 is delivered cleanly, is claimed by nothing, and collides with nothing.
-
 ### The shell around every screen
 
 - **Content pane** — the focused screen, split into a **list** of sources and a
@@ -1373,10 +1468,16 @@ F1–F7 is delivered cleanly, is claimed by nothing, and collides with nothing.
   can type immediately.
 - **Right rail** — the Ask conversations list, toggled with `ctrl+r` (open by
   default).
-- **Left diff rail** — the file-diff sidebar, toggled with `d` / `shift+d` from
+- **Left diff rail** — the file-diff panel, toggled with `d` / `shift+d` from
   content focus, or `/diff` from the composer.
-- **`?`** — the help overlay, rendered **from the live key registry**, so it cannot
-  drift from actual behaviour.
+- **`?`** — the help overlay, listing the keys for the screen you are on.
+
+### Resizing a screen
+
+Every screen that is split into panes can be **resized**: **`ctrl+←`** and
+**`ctrl+→`** move the divider, giving the list or the detail pane more room. The
+width you choose is remembered, so it persists between sessions. The composer
+advertises the chord whenever there is a split on screen.
 
 ### Switching screens
 
@@ -1390,15 +1491,21 @@ F1–F7 is delivered cleanly, is claimed by nothing, and collides with nothing.
 ### The composer
 
 - Type and press **Enter** to send.
-- **`alt+enter`**, or a trailing `\` then Enter, inserts a newline.
+- **`shift+enter`** or **`alt+enter`** inserts a newline (a trailing `\` then Enter
+  does the same, if you prefer).
+- **`ctrl+a`** takes the whole composer in one gesture: it **copies what you have
+  typed to the clipboard** and clears the way for the next keystroke to replace it.
+  Use it to grab a draft, or to throw one away and start again.
+- **`ctrl+v`** reads the clipboard: an **image** on the clipboard is **attached to
+  your next message**, while **text** on the clipboard is **pasted into the
+  composer**. One key, whichever you have.
+- **`ctrl+f`** attaches a **file by path**. Both this and a clipboard image land in
+  the pending set for the next message, reported in the strip above the composer.
 - **Pasted text never sends until you press Enter.**
 - **`ctrl+y`** stops an in-flight reply (the GUI's Stop button). The affordance row
   offers it while a reply streams.
 - **Sending while a reply streams interjects** — it supersedes the turn rather than
   queueing behind it.
-- **`ctrl+v`** attaches an image from the clipboard; **`ctrl+f`** attaches a file
-  by path. Both land in the pending set for the next message and are reported in
-  the strip above the composer.
 - **`ctrl+g` / `esc`** toggle between content focus and the composer.
 
 ### Slash commands
@@ -1433,10 +1540,9 @@ Type `/` to open the palette, or `/help` to list every command with its usage.
 tab's **workspace scope**. `/projects` (**plural**) is the generated navigation
 command that opens the Work tab's Projects pane.
 
-**Navigation commands are generated from the screens themselves.** Every list pane
-a screen actually has becomes a command (e.g. `/work-items`, `/runtime-images`,
-`/executions`), so the command list cannot drift from what the screens offer. There
-are no notice-only "use the web GUI" commands.
+**Every list pane has a navigation command.** Each pane a screen offers has a
+matching command (e.g. `/work-items`, `/runtime-images`, `/executions`), so you can
+jump straight to a pane by name.
 
 ### The Ask conversations rail
 
@@ -1698,11 +1804,8 @@ drives the footer status, because recovery rides the enforcement UX.
 
 ### Policies
 
-> **Coming soon…** — the same deliberate placeholder as the GUI (§10.2). The pane
-> lists nothing and binds no chords, and it **fetches nothing**: issuing a list call
-> behind a "coming soon" pane would be a request nothing can act on. Keeping the
-> source registered is what keeps the section discoverable, so the nav entry does
-> not silently disappear.
+> **Coming soon…** — the same as the GUI (§10.2): Policies are not built yet, so
+> this pane is empty.
 
 ### Pending Approvals
 
@@ -1833,7 +1936,7 @@ press n to create one") rather than showing a bare "nothing here".
 Orchicon authenticates **every** RPC. There is no anonymous dev bypass and no
 synthetic dev-login surface — a request without a credential is rejected
 everywhere. A fresh plane is bootstrapped by the operator creating their own admin
-account through **Sign up** (§2).
+account through **Create an account** (§2).
 
 ### The embedded identity provider
 
@@ -1912,8 +2015,8 @@ records are scoped to the seeded deployment tenant.
 - The tenant is **config-driven** and validated at boot — a misconfigured value
   fails boot rather than seeding a second tenant.
 - **Every auth path resolves logins into the deployment tenant.** Identity-provider
-  claims (`org`, `groups`, `tenant`) are deliberately **not** consulted for tenant
-  selection.
+  claims (`org`, `groups`, `tenant`) are **not** consulted for tenant
+  selection — a group in your identity provider does not choose your tenant.
 - **Row-level security backs it up.** Every tenant-scoped table carries a tenant
   isolation policy, so cross-tenant reads are impossible even through a direct
   query, and the data-access layer additionally scopes by tenant.
