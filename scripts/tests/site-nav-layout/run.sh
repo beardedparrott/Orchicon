@@ -15,12 +15,15 @@
 #      WIDEST and no `max-width` tier can reach that case.
 #
 # The lesson is an INVARIANT rather than a number: a nav label must never be
-# splittable or shrinkable (`nowrap` + `flex:none`), and the row must be able to
-# wrap (`flex-wrap:wrap`) so a font-metric miss degrades to a second line
-# instead of to the reported break. This asserts the invariant and the shape of
-# the tiers, not a pixel width — the widths depend on platform font metrics, and
-# this container has no browser to measure them with (Chromium cannot launch:
-# 20 missing shared libraries, no root to install them).
+# splittable or shrinkable (`nowrap` + `flex:none`), the row must be able to wrap
+# (`flex-wrap:wrap`) so a font-metric miss degrades to a second line instead of to
+# the reported break, and nine links must never all be laid out inline. How the
+# last one is achieved is NOT pinned: the nav hid links by nth-child, then grouped
+# them behind collapsed menus, and the assertion follows the intent rather than the
+# mechanism — see the grouping check at the end for why that distinction matters.
+# This asserts the invariant, not a pixel width — the widths depend on platform font
+# metrics, and this container has no browser to measure them with (Chromium cannot
+# launch: 20 missing shared libraries, no root to install them).
 #
 # Deliberately dependency-free: it reads the committed CSS as text, the same
 # "source assertion" idiom the frontend uses for things it cannot render
@@ -141,10 +144,34 @@ for n in $(printf '%s' "$CSS" | grep -o 'nth-child([0-9]*)' | tr -dc '0-9\n'); d
 done
 eq "every nth-child tier is within 1..9" "" "$BAD"
 
-# --- and the anti-regression that matters most: at least one tier must actually
-#     drop a link, or nine links are being asked to fit at every width ---
-HIDERS="$(printf '%s' "$CSS" | grep -c 'nth-child([0-9]*)')"
-num_ge "at least one tier drops a link" "$HIDERS" "1"
+# --- and the anti-regression that matters most: nine links must never all be
+#     asked to fit at once.
+#
+#     THE MECHANISM CHANGED, SO THIS ASSERTION HAD TO. The nav used to HIDE
+#     links by nth-child as the viewport narrowed; it now GROUPS them behind
+#     collapsed menus (the markup says so). Asserting the old mechanism pinned a
+#     design that was deliberately replaced, so it reported a failure against
+#     correct markup — a stale assertion, not a regression. It went unnoticed
+#     because nothing runs this script.
+#
+#     The INTENT is unchanged and is what is asserted here: fewer items are laid
+#     out inline than the nav contains, because the rest are collapsed.
+MENU_DECLS="$(all_decls '\.navmenu')"
+has "nav menu panels are collapsed by default" "display:none" "$MENU_DECLS"
+has "a collapsed menu opens when its group is active" "display:block" \
+    "$(all_decls '\.navgroup\[data-open="true"\] \.navmenu')"
+TOP="$(awk '/<nav aria-label="Primary"/{f=1} f; /<\/nav>/{if(f)exit}' "$PAGE" | awk '
+  inmenu { depth += gsub(/<div/,"&",$0) - gsub(/<\/div>/,"&",$0); if (depth <= 0) inmenu = 0; next }
+  /<div class="navmenu"/ { inmenu = 1; depth = gsub(/<div/,"&",$0) - gsub(/<\/div>/,"&",$0); next }
+  /<(a href|button)/ { top++ }
+  END { print top+0 }')"
+num_le "inline items fewer than links (not all nine inline)" "$TOP" "$((COUNT - 1))"
+
+# --- the footer version must be STAMPED at build time, never hardcoded. A
+#     literal here goes stale in silence: it read v0.4.0 while releases had
+#     reached v0.4.5, and nothing would ever have corrected it. Assert the
+#     marker build-site.sh rewrites is present. ---
+has "footer version is a build-time stamp, not a literal" 'id="site-version"' "$(cat "$PAGE")"
 
 echo
 if [ "$FAILED" -eq 0 ]; then
