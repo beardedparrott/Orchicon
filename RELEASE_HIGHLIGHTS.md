@@ -44,8 +44,8 @@ hidden — a server can no longer be defined once and inherited by several proje
 catalog's one-click add per scope is the mitigation.
 
 ### New: A live activity line that says what a turn is actually doing
-A long turn used to be indistinguishable from a stalled one. Both clients now render the same
-single row from the same rule: an unbroken answer states what the agent is doing with a
+A long turn used to be indistinguishable from a stalled one. The thinking indicator now says
+what is actually happening, and both clients render the same single row from the same rule: an unbroken answer states what the agent is doing with a
 **rotating verb** and a **rolling tool counter** ("3 modifies · 1 read · last 4s"), a dropped
 socket says it is reconnecting, and a turn that has genuinely gone quiet states the watchdog's
 verdict instead of silently spinning. The verb list and the counter are pinned **cross-client**
@@ -55,13 +55,22 @@ gated on the turn, not on "before any content") and yields to an escalation rath
 through one — a turn that made five calls and then died escalates, as it must.
 
 ### New: The diff surface, finished in both clients
-The diff rail is now a first-class panel rather than a viewer. In the browser it is
-drag-resizable with a **per-page persisted width**, wrapped rather than clipped for long lines,
-and carries a scrollbar you can actually grab; in the terminal it resizes by drag **and** by
-keyboard, wraps, viewports its lists, and measures its own collapse — with its width persisted
-between sessions. Getting there meant fixing the reasons it felt heavy: the terminal diffs to
-the render path once per change rather than once per mouse event, and both clients were
-verified end to end against a live plane, in the GUI and the TUI, on both mounts.
+The diff panel now shows the whole change instead of hiding parts of it.
+Long lines wrap rather than clip, the file lists are viewported rather than rendered whole, the
+collapse state is measured rather than guessed, and the scrollbar is one you can actually grab.
+Getting there meant fixing why it felt heavy: the terminal rendered the diff once per **mouse
+event** rather than once per change, which is what made dragging it lag. Both clients were then
+verified end to end against a live plane — in the GUI and the TUI, on both mounts.
+
+### New: Quality of life across both clients
+A run of smaller changes that alter how the clients feel to use, in both of them.
+Panes resize. The browser's diff rail drags to any width and remembers it **per page**; in the
+terminal every tree/detail split is adjustable, the diff rail resizes by drag **and** by
+keyboard, and its width persists between sessions. The terminal is also **project-aware** now —
+the conversations rail and the theme are scoped to the project workspace you are in, so
+switching projects switches your context with you. Terminal list surfaces are real modals,
+bordered and centred over a darkened backdrop, the schedules list shows both running and
+finished times, and the composer advertises `ctrl+←/→` wherever there is a split to move.
 
 ### New: Ask turns stop losing work — and stop blaming the wrong thing
 Most of this cycle is a set of defects that only real use surfaces, and they share one cause.
@@ -76,7 +85,6 @@ turn says why, and the setting that governs all of it survives a partial save.
 ### Also in this release
 
 - **Providers and local models:** transposed local-model URLs, discoverable Ask cards, a static Heads-Up grid, and no client-side auto-start gate.
-- **Terminal client:** a list surface is a real modal (bordered, centred, over a darkened backdrop), every screen's tree/detail split is adjustable, themes can be scoped per project, the schedules list shows running and finished times, and the composer advertises `ctrl+←/→` wherever there is a split.
 - **Work items:** the Archive view is a real hierarchical tree, and a one-shot archive can be retried instead of failing silently.
 - **Documentation:** a new `USERGUIDE.md` covers installing Orchicon and using **every screen in both clients**, and the in-app Settings → User Guide tab is gone with it — one guide, in one place, that cannot drift from a second copy of itself.
 - **Fixes:** work-item schedule clearing and auto-start from any status, telemetry, credits and favicon corrections, and the TUI's spacebar behaving itself.
