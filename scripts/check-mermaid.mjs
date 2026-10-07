@@ -10,7 +10,12 @@
 // is the parser GitHub itself runs.
 //
 // USAGE
-//   node scripts/check-mermaid.mjs [file.md ...]     # defaults to DOCUMENTATION.md
+//   node scripts/check-mermaid.mjs [file.md ...]     # defaults to every *.md at the repo root
+//
+// THE DEFAULT IS THE WHOLE ROOT DOC SET, deliberately. It used to be DOCUMENTATION.md alone, which
+// meant a diagram added to any other doc was never validated by anything — the same silent-pass
+// failure this file exists to prevent, one directory level up. Every root *.md is a document a reader
+// sees on GitHub, so every root *.md is checked. Naming files on the command line still overrides.
 //
 // DEPENDENCIES, deliberately NOT part of the product or the frontend toolchain: `mermaid` and `jsdom`
 // are installed into a scratch prefix by CI (`npm install --prefix "$RUNNER_TEMP/mermaid-check"`),
@@ -34,7 +39,13 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, "..");
 
 const files = process.argv.slice(2);
-const targets = files.length ? files : [path.join(repo, "DOCUMENTATION.md")];
+const targets = files.length
+  ? files
+  : fs
+      .readdirSync(repo)
+      .filter((f) => f.endsWith(".md"))
+      .sort()
+      .map((f) => path.join(repo, f));
 
 function resolveDeps() {
   const prefixes = [

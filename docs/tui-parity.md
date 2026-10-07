@@ -13,6 +13,7 @@ Legend — TUI state:
 - **exists**: the data renderable now (read-only). May still lack write.
 - **partial**: data + some detail render, but a mutation (create/edit/delete) or a sub-surface is absent.
 - **missing**: no TUI surface (no source pane, no detail, no command).
+- **coming soon**: a placeholder BOTH clients render deliberately — the surface exists and says so in the same words, and the capability behind it is deferred by an explicit decision rather than merely unbuilt. Distinct from `missing`, which would make the nav entry disappear and hide the fact that the capability exists.
 
 The TUI is a first-class Orchicon client: keyboard-first with mouse support, Lipgloss theming,
 the mockup's design language. It is **not** a literal port of GUI pixels, and it does not punt
@@ -75,9 +76,9 @@ whole areas to "use the web GUI".
 | GUI route | Screen | TUI state | TUI tab | Notes / mutations |
 |---|---|---|---|---|
 | `/approvals` | Pending Approvals | **exists** | Enforcement | List + detail — the detail shows the upstream summary, acceptance criteria, touched files, the rejection reason and the recorded policy decision (`require_approval`, which policy). **Read-write:** `a` approve · `x` reject (`ApproveStep`), form-gated by the reason prompt, disabled while in flight, list reconciles after the write. |
-| `/policies` | Policies | **exists** | Enforcement | List + detail. **Read-write:** `n` create (`CreatePolicy`) · `e` edit the draft version (`UpdatePolicyVersion`) · `p` publish a version (`PublishPolicy`, Confirm) · `v` list versions. |
-| `/policies/$id` | Policy detail | **exists** | Enforcement | Detail + version trail; `v` opens the version picker and `enter` inspects a version's Rego/OPA body **verbatim** (no silent truncation). |
-| `/policies/new` | Create policy | **exists** | Enforcement | The `n` chord on Policies: the definition form (name / decision point / scope / effect / query / version note / Rego module) → `CreatePolicy`, the module body sent whole. |
+| `/policies` | Policies | **coming soon** | Enforcement | The ROUTE stays registered (an unregistered route would 404 instead of telling the operator anything), but both clients render a **"Coming soon..."** placeholder. The TUI pane lists NOTHING and binds NO chords, and deliberately FETCHES nothing — issuing a list call behind a placeholder pane would be a request nothing can act on. Keeping the source registered is what keeps the surface discoverable. The RPCs and proto remain (`ListPolicies`/`CreatePolicy`/`PublishPolicy`/…), so the surface returns when the editor design is settled: it was the untested UI shape that was removed, not the capability. |
+| `/policies/$id` | Policy detail | **coming soon** | Enforcement | Not reachable — the list renders no rows, so there is nothing to select. |
+| `/policies/new` | Create policy | **coming soon** | Enforcement | Not reachable while the placeholder is in place. The definition form (name / decision point / scope / effect / query / version note / Rego module) waits behind it. |
 | `/recovery` | Recovery | **exists** | Enforcement | Recoveries source (`ListRecoveries`) + recovery-events stream. **Read-write:** `a` approve continuation plan · `x` reject plan (reason required) · `c` cancel recovery · `m` mark task succeeded — all Confirm-gated. |
 | `/recovery/$id` | Recovery detail | **exists** | Enforcement | Recovery detail + the continuation plan, plus the **available action surface** the plane allows for that recovery/plan state. |
 
@@ -303,7 +304,7 @@ Each child carries this grounding: the GUI route (from `routeTree.gen.ts`), the 
 2. **Create/edit project** (`/projects/new`) — mutates `ProjectService`.
 3. **Approve/reject step approval** (`/approvals`) — mutates `ApprovalService`. **Landed:** the Enforcement screen's `a`/`x` chords (`ApproveStep`) with the reason form, in-flight guard, and list reconciliation.
 4. **Recovery actions** (`/recovery`, `/recovery/$id`) — mutates `RecoveryService`. **Landed:** `a`/`x`/`c`/`m` on the Recoveries source (`ApproveContinuationPlan`, `RejectContinuationPlan`, `CancelRecovery`, `MarkTaskSucceeded`), all Confirm-gated.
-5. **Policies create/edit/publish + version inspection** (`/policies`, `/policies/new`) — mutates `PolicyService`. **Landed:** `n`/`e`/`p`/`v` on the Policies source (`CreatePolicy`, `UpdatePolicyVersion`, `PublishPolicy`, `ListPolicyVersions`); the `/policies/new` row moves missing → exists.
+5. ~~**Policies create/edit/publish + version inspection** (`/policies`, `/policies/new`) — mutates `PolicyService`.~~ — **WITHDRAWN, not landed.** This row previously claimed `n`/`e`/`p`/`v` on the Policies source were landed. The code says otherwise: `internal/tui/screens/enforcement/screen.go` fetches nothing for the `policies` source and binds no chords, and `frontend/src/routes/policies.tsx` renders `PoliciesComingSoon` — both deliberately showing the same **"Coming soon..."** wording, so the two clients cannot disagree about the state of the feature. The operator's instruction was explicit that the policy form was the untested, weird part and that a half-wired surface is worse than an honest placeholder. The RPCs and the proto remain, so this becomes a real row again when the editor design is settled — it is the untested UI shape that was removed, not the capability. **Policy DECISIONS are still evaluated and recorded**, and both clients still surface them: the approvals detail's "policy context" section and the Admin → Audit **Decisions** trail.
 6. ~~**Schedules + recurring-item create/edit** (`/schedules`, `/recurring-items/new`) — mutates `WorkItemService`~~ — **landed** (Automation: Recurring Items create/edit/pause/resume/delete + per-fire run history).
 7. **Webhook subscription create/edit/delete + deliveries** (`/webhooks`) — mutates `WebhookService`.
 8. **Settings edit/save** (`/settings`) — mutates `SettingsService`.

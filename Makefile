@@ -297,7 +297,7 @@ fe-lint: ## Lint the frontend
 fe-test: ## Run frontend unit/component tests (vitest; Playwright specs live under test:snapshots/test:a11y/test:scope)
 	cd frontend && npm test
 
-docs-check: ## Validate every Mermaid diagram in DOCUMENTATION.md with a real parser
+docs-check: ## Validate every Mermaid diagram in the root docs with a real parser
 	@# The prefix is REUSED once installed, so a repeat run is instant rather than re-resolving the
 	@# tree every time; CI passes ORCHICON_MERMAID_PREFIX from its own $RUNNER_TEMP install.
 	@if [ -n "$$ORCHICON_MERMAID_PREFIX" ]; then \
