@@ -276,3 +276,101 @@ func submitForm(t *testing.T, f *kit2Form) {
 		t.Fatalf("submit: %v", err)
 	}
 }
+
+// THE SPEC FORM IS NOT WHERE A CREDENTIAL IS TYPED.
+//
+// The operator, on a worker version's spec form: "it still shows the field to manually type in a
+// credential. We should not be doing that. Everything should be driven from the credential store."
+//
+// The env/headers fields carry NON-secret configuration plus the ${NAME} references the credential path
+// itself writes (CredentialForm/AttachSecret) — so their labels no longer advertise the reference as
+// something to type, and point at the credential verb instead. The reference stays legal INSIDE the field,
+// because the picker's own write lands there; what must not be invited is the hand-typed form of it, and
+// the LABEL is therefore the thing pinned here rather than a rejection of the value.
+func TestSpecFormsDoNotInviteTypedCredentials(t *testing.T) {
+	forms := map[string]*kit2.Form{
+		"InlineForm": InlineForm("Edit spec", &InlineSpec{ID: "github", Type: "stdio"}, func(InlineSpec) {}),
+		"DefineForm": DefineForm("Add server", Owner{ProjectID: "p1"}, nil,
+			func(*apiv1.MCPServerCreateRequest) tea.Cmd { return nil }),
+	}
+	for name, f := range forms {
+		seen := 0
+		for _, spec := range f.Specs {
+			if spec.Name != "env" && spec.Name != "headers" {
+				continue
+			}
+			seen++
+			if strings.Contains(spec.Label, "${SECRET_NAME}") {
+				t.Errorf("%s: field %q still invites a TYPED reference: %q", name, spec.Name, spec.Label)
+			}
+			if !strings.Contains(spec.Label, "credential") {
+				t.Errorf("%s: field %q does not point at the credential path: %q", name, spec.Name, spec.Label)
+			}
+		}
+		if seen == 0 {
+			t.Errorf("%s: no env/headers field found — the assertions above proved nothing", name)
+		}
+	}
+}
+
+// THE CREDENTIAL FORM OPENS ON WHAT THE SERVER ALREADY USES.
+//
+// The GUI report — "when you save an MCP server and go back into it, it doesn't list the credential that was
+// already created/added. It is blank again." — described a defect the TUI shared: the entry's own env (or
+// headers) carries the ${NAME} reference a previous attach wrote, and that reference IS the record of the
+// attachment, so a form that opens blank is hiding it.
+func TestCredentialFormsOpenOnTheServersExistingAttachment(t *testing.T) {
+	const stored = "MCP_GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN"
+	choices := []SecretChoice{{ID: "sec-1", Name: stored}}
+
+	// INLINE (a worker version's spec).
+	spec := InlineSpec{ID: "gh", Type: "stdio",
+		Env: map[string]string{"GITHUB_PERSONAL_ACCESS_TOKEN": "${" + stored + "}"}}
+	f := CredentialForm("Attach", spec, choices, func(string, string, string) tea.Cmd { return nil })
+	if got := f.Values["secret"]; got != stored {
+		t.Errorf("the inline form opens with secret = %q, want the one already attached (%q)", got, stored)
+	}
+	if got := f.Values["key"]; got != "GITHUB_PERSONAL_ACCESS_TOKEN" {
+		t.Errorf("the inline form opens with key = %q, want the key already carrying the reference", got)
+	}
+
+	// OWNED (a project's or conversation's row).
+	row := &apiv1.MCPServer{
+		Id: "s1", Name: "github", Enabled: true,
+		Transport: apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STDIO,
+		Env:       map[string]string{"TOKEN": "${MCP_SHARED}"},
+	}
+	g := OwnedCredentialForm("Store", row, choices, func(string, string, string) tea.Cmd { return nil })
+	if got := g.Values["secret"]; got != "MCP_SHARED" {
+		t.Errorf("the owned form opens with secret = %q, want the one already attached", got)
+	}
+	if got := g.Values["key"]; got != "TOKEN" {
+		t.Errorf("the owned form opens with key = %q, want TOKEN", got)
+	}
+
+	// A server with NO attachment still opens blank, so the default is not invented.
+	bare := OwnedCredentialForm("Store", &apiv1.MCPServer{
+		Id: "s2", Transport: apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STDIO,
+		Env: map[string]string{"LOG_LEVEL": "info"},
+	}, choices, func(string, string, string) tea.Cmd { return nil })
+	if got := bare.Values["secret"]; got != "" {
+		t.Errorf("a server with no attachment opened with secret = %q, want blank", got)
+	}
+}
+
+// The reference reader mirrors the plane's grammar, and a map is walked in SORTED order so two opens agree.
+func TestAttachedReferenceReadsTheTransportAndIsDeterministic(t *testing.T) {
+	env := map[string]string{"B_KEY": "${SECOND}", "A_KEY": "${FIRST}", "PLAIN": "value"}
+	if k, n := attachedReference(env, nil, false); k != "A_KEY" || n != "FIRST" {
+		t.Errorf("stdio attachment = (%q, %q), want the first key in sorted order", k, n)
+	}
+	// HEADERS for a streamable-HTTP row: the env is not what it reads.
+	headers := map[string]string{"Authorization": "${REMOTE}"}
+	if k, n := attachedReference(env, headers, true); k != "Authorization" || n != "REMOTE" {
+		t.Errorf("http attachment = (%q, %q), want the header", k, n)
+	}
+	// Plain values are not references, and neither is an empty name.
+	if k, _ := attachedReference(map[string]string{"A": "literal", "B": "${}"}, nil, false); k != "" {
+		t.Errorf("a plain value or an empty reference was read as an attachment (key %q)", k)
+	}
+}

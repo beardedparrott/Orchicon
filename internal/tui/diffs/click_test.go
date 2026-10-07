@@ -8,6 +8,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"regexp"
+
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 
@@ -296,12 +298,34 @@ func TestTimelineBodySelection(t *testing.T) {
 	}
 }
 
-// trimPad strips the trailing cell padding a body row carries (the fit to the
-// body width plus the scrollbar column) so a styling assertion can compare the
-// row's CONTENT. It only strips spaces, so a row whose last visible cell is the
-// scrollbar track glyph would NOT be trimmed — but when everything fits the bar
-// cell is a blank space, which is exactly the case these list tests exercise.
-func trimPad(s string) string { return strings.TrimRight(s, " ") }
+// trimPad strips the trailing CHROME a body row carries — the two reserved cells (the scrollbar and the
+// shell's resize handle) plus the fit-to-width padding — so a styling assertion can compare the row's
+// CONTENT.
+//
+// IT CUTS CELLS RATHER THAN TRIMMING SPACES, because the last cell is no longer blank: the handle is a
+// rendered glyph in its own style, so a space-trim cannot reach it and every styled-row comparison would
+// carry it. Cutting by WIDTH is also what makes this immune to the cell count changing again.
+func trimPad(s string) string {
+	w := ansi.StringWidth(s)
+	if w > 2 {
+		s = ansi.Truncate(s, w-2, "")
+	}
+	// CUTTING CELLS CAN LEAVE THEIR STYLE BEHIND: truncating inside the handle's styled glyph leaves the
+	// sequence that opened it as an empty trailing span (`\x1b[38;…m\x1b[0m`), which renders as nothing but
+	// compares as a difference. It carries no content, so it is dropped — repeatedly, because the chrome is
+	// more than one styled cell.
+	for {
+		if trimmed := emptyTrailingStyle.ReplaceAllString(s, ""); trimmed != s {
+			s = trimmed
+			continue
+		}
+		break
+	}
+	return strings.TrimRight(s, " ")
+}
+
+// emptyTrailingStyle matches a run of style sequences at the END of a string that encloses no text.
+var emptyTrailingStyle = regexp.MustCompile(`(?:\x1b\[[0-9;]*m)+$`)
 
 // TestHandleKeyTabSwitchAsymmetric verifies `l` steps the tab forward and `h`
 // steps it backward — the two directions are symmetric and reach every tab.

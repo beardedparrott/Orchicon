@@ -129,7 +129,7 @@ func (s *RPCService) StreamFileEdits(ctx context.Context, req *connect.Request[a
 		// whole answer; end the stream cleanly instead of erroring.
 		return nil
 	}
-	filter := eventbus.SubjectFor("execution", "file_edit")
+	filter := EventSubject(kind)
 	ch, err := s.subscriber.Subscribe(ctx, filter, 0)
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("subscribe to file edit events: %w", err))

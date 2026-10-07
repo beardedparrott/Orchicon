@@ -155,25 +155,75 @@ func (m *App) deleteConversationMCP(id, name string) tea.Cmd {
 	}
 }
 
-// conversationSecretSetter writes a credential for a definition, by ID. The credential store is
-// tenant-scoped (RLS needs a tenant); that is a credential store, not an MCP scope.
-func (m *App) conversationSecretSetter(id, name string) func(key, value string) tea.Cmd {
+// ownedCredentialAttacher stores a NEW credential when one is asked for, then points the row at it.
+//
+// IT REPLACES A TYPED KEY/VALUE WRITE (SetMCPServerSecret), which stored the value against the row under a
+// plane-derived name — the shape the operator rejected. The credential is now SELECTED and the row carries a
+// reference, exactly as the GUI's owned branch (MCPServersPanel) and the TUI's inline path do.
+//
+// THE STORE WRITE IS THE FIRST LINK. A reference is resolved when a session USES the server
+// (mcpsettings.ResolveSecretRefs), so a row written first would point at a secret that is not there and the
+// operator would find out only when the server failed to start. A name the store ALREADY holds is a
+// ROTATION: the value is replaced under the same name, so every row referencing it picks the new value up at
+// once — which the typed-value form could not express at all.
+//
+// THE ROW IS ECHOED WHOLE, because the update REPLACES env/headers: a request carrying only the new
+// reference would erase the entry's own configuration. The owner echo rides along too (exactly one of the
+// two is non-empty): the scope is immutable, and a differing echo is rejected by the plane.
+func (m *App) ownedCredentialAttacher(srv *apiv1.MCPServer, choices []mcpforms.SecretChoice) func(key, secret, value string) tea.Cmd {
 	cl := m.clients
-	return func(key, value string) tea.Cmd {
+	isHTTP := srv.GetTransport() == apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STREAMABLE_HTTP
+	// COPIED, so the row's maps on screen are never mutated before the update has landed.
+	env := copyStringMap(srv.GetEnv())
+	headers := copyStringMap(srv.GetHeaders())
+	return func(key, secret, value string) tea.Cmd {
 		return func() tea.Msg {
 			if cl == nil || cl.MCP == nil {
 				return convScopeMsg{op: "/scope", err: "not connected to a plane"}
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			if _, err := cl.MCP.SetMCPServerSecret(ctx, connect.NewRequest(&apiv1.MCPServerSetSecretRequest{
-				Id: id, Name: key, Value: value,
-			})); err != nil {
+			if value != "" {
+				if err := storeTenantSecret(ctx, cl, choices, secret, value); err != nil {
+					// NOTHING WAS TOUCHED: the row still holds what it held, so the row and the store agree.
+					return convScopeMsg{op: "/scope", err: "the credential was not stored: " + err.Error()}
+				}
+			}
+			ref := "${" + secret + "}"
+			if isHTTP {
+				headers[key] = ref
+			} else {
+				env[key] = ref
+			}
+			up := &apiv1.MCPServerUpdateRequest{
+				Id:             srv.GetId(),
+				ProjectId:      srv.GetProjectId(),
+				ConversationId: srv.GetConversationId(),
+				Command:        strPtr(srv.GetCommand()),
+				ReplaceArgs:    boolPtr(true),
+				Args:           srv.GetArgs(),
+				Env:            env,
+				ReplaceEnv:     boolPtr(true),
+				Url:            strPtr(srv.GetUrl()),
+				Headers:        headers,
+				ReplaceHeaders: boolPtr(true),
+				Enabled:        boolPtr(srv.GetEnabled()),
+			}
+			if _, err := cl.MCP.UpdateMCPServer(ctx, connect.NewRequest(up)); err != nil {
 				return convScopeMsg{op: "/scope", err: err.Error()}
 			}
-			return convScopeMsg{op: "/scope", detail: "stored credential " + key + " for " + name}
+			return convScopeMsg{op: "/scope", detail: "attached " + secret + " to " + srv.GetName() + "'s " + key}
 		}
 	}
+}
+
+// copyStringMap returns a copy, so a row's stored map is never mutated in place before the write lands.
+func copyStringMap(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // conversationInstaller installs the runtime for a definition, by ID.

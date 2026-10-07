@@ -148,10 +148,10 @@ func DefineForm(title string, owner Owner, prefill *apiv1.MCPServerCreateRequest
 		// stdio runs a subprocess (command + args + env).
 		kit2.FieldSpec{Name: "command", Label: "Command (stdio)", Kind: kit2.KText, Initial: command, Placeholder: "npx"},
 		kit2.FieldSpec{Name: "args", Label: "Args (space separated)", Kind: kit2.KText, Initial: args},
-		kit2.FieldSpec{Name: "env", Label: "Env (KEY=VALUE per line; ${SECRET_NAME} allowed)", Kind: kit2.KTextArea, Initial: env},
+		kit2.FieldSpec{Name: "env", Label: "Enter a KEY=VALUE pair here (non-secret stored) or use k to create/store secret credentials", Kind: kit2.KTextArea, Initial: env},
 		// streamable HTTP connects to a remote endpoint (url + headers).
 		kit2.FieldSpec{Name: "url", Label: "URL (streamable-http)", Kind: kit2.KText, Initial: url, Placeholder: "https://…"},
-		kit2.FieldSpec{Name: "headers", Label: "Headers (KEY=VALUE per line; ${SECRET_NAME} allowed)", Kind: kit2.KTextArea, Initial: headers},
+		kit2.FieldSpec{Name: "headers", Label: "Enter a KEY=VALUE pair here (non-secret stored) or use k to create/store secret credentials", Kind: kit2.KTextArea, Initial: headers},
 		kit2.FieldSpec{Name: "enabled", Label: "Enabled", Kind: kit2.KCheckbox, Initial: enabled},
 	)
 	f.Focused = true
@@ -247,21 +247,369 @@ func InstallForm(label string, onInstall func() tea.Cmd) *kit2.Form {
 	return f
 }
 
-// SecretForm writes a credential for an owned entry's required secret. The value
-// field is a KSecret — masked in the view, written once, never read back. The
-// secrets store is tenant-scoped (RLS needs a tenant); that is a credential
-// store, not an MCP scope.
-func SecretForm(label, key string, onSet func(key, value string) tea.Cmd) *kit2.Form {
-	f := kit2.NewForm("Store MCP credential: "+label,
-		kit2.FieldSpec{Name: "name", Label: "Credential key", Kind: kit2.KText, Required: true, Initial: key, Placeholder: "GITHUB_TOKEN"},
-		kit2.FieldSpec{Name: "value", Label: "Value", Kind: kit2.KSecret, Required: true},
-	)
+// ── credentials: the SELECTION half ──────────────────────────────────────────────────────
+
+// SecretChoice is one SELECTABLE credential from the tenant secrets store: the NAME that goes into a
+// ${...} reference, and the ID the store needs in order to REPLACE the value.
+//
+// THE VALUE IS NEVER FETCHED, and that is why this type has no field for one. The store is
+// write-only from a client's side — ListSecrets returns names and metadata, GetSecret is never
+// called — the same rule the Control screen's Secrets list follows.
+type SecretChoice struct {
+	ID   string
+	Name string
+	// Description is the store row's own description, shown beside the name so a list of
+	// MCP_..._... entries stays distinguishable.
+	Description string
+}
+
+// inlineSpecIsHTTP reports whether an inline spec speaks streamable HTTP. It mirrors
+// mcpsettings.specFromInline's inference (type first, URL as the fallback) so the reference lands in
+// the same map the spec's own transport reads from — env for stdio, headers for HTTP.
+func inlineSpecIsHTTP(spec InlineSpec) bool {
+	switch spec.Type {
+	case "http", "streamable-http":
+		return true
+	case "stdio":
+		return false
+	}
+	return spec.URL != ""
+}
+
+// CredentialKeyOptions lists the keys the spec ALREADY carries for its transport, so the common case
+// — point this server's existing GITHUB_PERSONAL_ACCESS_TOKEN at a stored secret — is a PICK rather
+// than a retype. An empty list is normal (a catalog pick leaves a secret key out on purpose: the
+// prefill never writes a blank secret), and the field stays typable for exactly that case.
+func CredentialKeyOptions(spec InlineSpec) []kit2.Option {
+	m := spec.Env
+	if inlineSpecIsHTTP(spec) {
+		m = spec.Headers
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]kit2.Option, 0, len(keys))
+	for _, k := range keys {
+		label := k
+		if v := strings.TrimSpace(m[k]); v != "" {
+			label += " (currently " + v + ")"
+		}
+		out = append(out, kit2.Option{Value: k, Label: label})
+	}
+	return out
+}
+
+// AttachSecret points ONE key of an inline spec at a stored tenant secret, as ${NAME}.
+//
+// IT WRITES INTO THE MAP THE SPEC'S TRANSPORT READS: Env for stdio, Headers for streamable HTTP — the
+// same split InlineForm's own submit enforces, so the field the operator was shown is the field the
+// reference lands in. An existing value at that key is REPLACED (that is the point: a plaintext
+// credential becomes a reference), and the reference is passed through verbatim — it is resolved by
+// the tenant secrets store at session time (mcpsettings.ResolveSecretRefs), never here.
+func AttachSecret(spec *InlineSpec, key, secretName string) {
+	key, secretName = strings.TrimSpace(key), strings.TrimSpace(secretName)
+	if key == "" || secretName == "" {
+		return
+	}
+	ref := "${" + secretName + "}"
+	if inlineSpecIsHTTP(*spec) {
+		if spec.Headers == nil {
+			spec.Headers = map[string]string{}
+		}
+		spec.Headers[key] = ref
+		return
+	}
+	if spec.Env == nil {
+		spec.Env = map[string]string{}
+	}
+	spec.Env[key] = ref
+}
+
+// CredentialForm attaches a STORED credential to one INLINE spec (a worker version's).
+//
+// WHY IT EXISTS. A worker version has no row, so `k` on one of its specs could only say "put the
+// ${SECRET_NAME} in the spec's env/headers instead" — the operator: "the credentials should be able
+// to be selected rather than typed just like it does for projects and conversations. I understand
+// that it is inline but that doesn't mean that info can't be built on top and passed to the config."
+// It can: the reference is built here and written into the spec's own config, which is the half that
+// was missing.
+//
+// THE SELECTION IS THE POINT. `secret` is a PICKER over the tenant secrets store's names, which is
+// what "selected rather than typed" means and what makes the reference RESOLVABLE: a name that is not
+// stored fails that server's session at resolve time (mcpsettings.ResolveSecretRefs), so a free-typed
+// name would be a promise the store cannot keep. It stays typable for one case only — a name given
+// together with a value, which the caller STORES first (see onSave's contract).
+//
+// onSave receives (key, secretName, value): value is "" when an existing secret is simply referenced,
+// and non-empty when the operator asked for that name to be created (or replaced) in the store. THE
+// CALLER OWNS BOTH WRITES and their order — the store must land before the version does, or the
+// version would reference a secret that is not there.
+//
+// THE KEY'S GRAMMAR IS THE PLANE'S RULE, not a copy kept here: an inline spec's env/header keys (and
+// every ${SECRET_NAME} it references) are validated at version save
+// (internal/mcpsettings/validate_inline.go), which is also the gate for the clients that do not come
+// through this form at all. The one rule the form DOES own is about the list it just offered: a name
+// that is not in the tenant store cannot be referenced, so it needs a value to create it.
+// ── the credential surface: ONE definition, every scope ──────────────────────────────────
+
+// CustomSecretChoice is the stored-secret picker's entry that means "store a NEW secret, named and valued
+// in the fields below".
+//
+// IT IS AN EXPLICIT CHOICE RATHER THAN A PROPERTY OF A TYPED NAME, and that is the point. A stored secret
+// that is PICKED is the whole answer, while a value typed beside it used to be silently ignored — the
+// report: "if someone already went through the list and added a current secret, it doesn't matter what
+// value they put in the custom field, the stored secret supersedes it". Picking one and creating one are
+// different intentions, so they are now two controls: pick a name, OR choose Custom and fill in the pair.
+const CustomSecretChoice = "__custom__"
+
+// credentialFormFields is the ONE definition of the fields a credential form has at any scope: the KEY
+// (picked from the keys the server declares or already carries), the SECRET (picked from the store's names,
+// with Custom as the explicit new-secret choice), and the new-secret pair, which exists ONLY when Custom
+// was chosen.
+//
+// THE OPERATOR'S RULE IS A PROPERTY OF THE CREDENTIAL, NOT OF THE SCOPE — "everything should be driven from
+// the credential store", and "if the user wants to type in a NEW one to create one that is fine, otherwise
+// it should be static" — so an owned row and an inline spec are handed the same fields by the same code and
+// cannot drift into two different answers about what a credential is.
+//
+// It returns the names the store holds ALONGSIDE the fields, because the submit rule is about the list that
+// was just offered and belongs with the fields that offer it (credentialSubmit).
+func credentialFormFields(
+	initialKey, initialSecret string, keyOptions []kit2.Option, keyPlaceholder string, choices []SecretChoice,
+) ([]kit2.FieldSpec, map[string]bool) {
+	names := make([]kit2.Option, 0, len(choices)+1)
+	stored := make(map[string]bool, len(choices))
+	for _, c := range choices {
+		names = append(names, kit2.Option{Value: c.Name, Label: c.Name + secretChoiceSuffix(c.Description)})
+		stored[c.Name] = true
+	}
+	names = append(names, kit2.Option{Value: CustomSecretChoice, Label: "Custom — store a new secret (name it below)"})
+	custom := func(v map[string]string) bool { return v["secret"] == CustomSecretChoice }
+	return []kit2.FieldSpec{
+		{Name: "key", Label: "Credential key", Kind: kit2.KPicker, Required: true,
+			Initial: initialKey, Options: keyOptions, Placeholder: keyPlaceholder},
+		// SEEDED WITH WHAT THE SERVER ALREADY USES, when it already references one. Opening on a blank picker
+		// is what the operator saw as the credential not being kept ("when you save an MCP server and go back
+		// into it, it doesn't list the credential that was already created/added") — and the reference in the
+		// server's own env/headers IS the record of it.
+		{Name: "secret", Label: "Stored secret", Kind: kit2.KPicker, Required: true,
+			Initial: initialSecret, Options: names, Placeholder: "pick a stored secret, or choose Custom"},
+		// Hidden while a STORED secret is picked, so the two halves cannot be told at once — which is
+		// exactly the confusion this replaces.
+		{Name: "newname", Label: "New secret name", Kind: kit2.KText, Required: true,
+			Visible: custom, Placeholder: "e.g. MCP_SLACK_BOT_TOKEN (UPPERCASE)"},
+		{Name: "value", Label: "New secret value", Kind: kit2.KSecret, Required: true,
+			Visible: custom, Placeholder: "write-only — kept in the tenant secrets store"},
+	}, stored
+}
+
+// credentialSubmit is the shared submit: the rules the form owns, then the caller's write.
+//
+// They are all about the list the form just OFFERED — a name the store does not hold is not a reference,
+// and Custom is how an operator says they mean to STORE one instead. Everything ELSE about a credential
+// belongs to the plane, which can enforce it for every writer rather than only for this form: the key's
+// grammar is checked when a version is saved (mcpsettings.ValidateInlinePermissions, which reuses the
+// owned-row rule) and the reference resolving is checked when a session starts
+// (mcpsettings.ResolveSecretRefs). Restating either here would be a second copy of a rule the server owns.
+func credentialSubmit(
+	stored map[string]bool, onSave func(key, secret, value string) tea.Cmd,
+) func(map[string]string, map[string][]string) (tea.Cmd, error) {
+	return func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
+		key := strings.TrimSpace(v["key"])
+		secret := strings.TrimSpace(v["secret"])
+		if secret == CustomSecretChoice {
+			name := strings.TrimSpace(v["newname"])
+			value := strings.TrimSpace(v["value"])
+			if name == "" {
+				return nil, fmt.Errorf("name the new secret")
+			}
+			if value == "" {
+				return nil, fmt.Errorf("give %s a value to store", name)
+			}
+			return onSave(key, name, value), nil
+		}
+		switch {
+		case secret == "":
+			return nil, fmt.Errorf("pick the stored secret to reference, or choose Custom to store a new one")
+		case !stored[secret]:
+			return nil, fmt.Errorf("%q is not in the tenant secrets store — pick one from the list, or "+
+				"choose Custom to store it", secret)
+		}
+		// A STORED SECRET IS REFERENCED WITH NO VALUE, and a value left over from before the pick is
+		// REFUSED rather than ignored. Ignoring it is what the report described — "it doesn't matter what
+		// value they put in the custom field, the stored secret supersedes it" — so the form says which of
+		// the two the operator actually wants instead of quietly dropping one of them.
+		if strings.TrimSpace(v["value"]) != "" {
+			return nil, fmt.Errorf("%s is already stored — its value is not re-sent. Choose Custom to store "+
+				"a new or rotated value", secret)
+		}
+		return onSave(key, secret, ""), nil
+	}
+}
+
+// CredentialForm points one of a WORKER VERSION's inline specs at a stored credential.
+func CredentialForm(title string, spec InlineSpec, choices []SecretChoice, onSave func(key, secret, value string) tea.Cmd) *kit2.Form {
+	// The spec's own key is PRESELECTED when there is exactly one, so the common case is two keystrokes
+	// (open, pick the secret) rather than a decision about a name that only has one answer.
+	keys := CredentialKeyOptions(spec)
+	initialKey := ""
+	if len(keys) == 1 {
+		initialKey = keys[0].Value
+	}
+	attachedKey, attachedSecret := attachedReference(spec.Env, spec.Headers, inlineSpecIsHTTP(spec))
+	if attachedKey != "" {
+		initialKey = attachedKey
+	}
+	fields, stored := credentialFormFields(initialKey, attachedSecret, keys,
+		"the name the server reads, e.g. GITHUB_PERSONAL_ACCESS_TOKEN", choices)
+	f := kit2.NewForm(title, fields...)
+	f.Note = "Written into this version's spec as " + spec.ID + "'s ${SECRET_NAME} reference — a " +
+		"worker version has no definition row to attach a credential to. The secret is resolved from " +
+		"the tenant secrets store when the worker runs."
+	if len(choices) == 0 {
+		f.Note += " The tenant secrets store holds nothing to pick yet: choose Custom to name and " +
+			"store one (the name must be UPPERCASE)."
+	}
 	f.Focused = true
 	f.Width = 64
-	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
-		return onSet(v["name"], v["value"]), nil
-	}
+	f.OnSubmit = credentialSubmit(stored, onSave)
 	return f
+}
+
+// secretRefName reads the ${NAME} reference a value carries, mirroring the plane's own
+// mcpsettings.secretRefName. The grammar is only a prefix and a suffix — `${}` is a reference to an empty
+// name there too — so callers test the RESULT for emptiness rather than treating the match as an attachment.
+func secretRefName(v string) string {
+	v = strings.TrimSpace(v)
+	if len(v) >= 3 && strings.HasPrefix(v, "${") && strings.HasSuffix(v, "}") {
+		return v[2 : len(v)-1]
+	}
+	return ""
+}
+
+// attachedReference reports which key a server ALREADY points at a stored secret, and at which secret.
+//
+// The keys are walked in SORTED order so two reads of the same server agree: a map's iteration order is
+// random in Go, and a form that preselects a different key on each open would be worse than one that
+// preselects none.
+func attachedReference(env, headers map[string]string, isHTTP bool) (key, secretName string) {
+	m := env
+	if isHTTP {
+		m = headers
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if name := secretRefName(m[k]); name != "" {
+			return k, name
+		}
+	}
+	return "", ""
+}
+
+// isHTTPRow reports whether an owned row reads HEADERS rather than env.
+func isHTTPRow(row *apiv1.MCPServer) bool {
+	return row.GetTransport() == apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STREAMABLE_HTTP
+}
+
+// OwnedKeyOptions lists the keys a credential could fill for an OWNED row: what the catalog DECLARES the
+// entry needs (MCPServer.required_secrets, which the plane resolves onto the row, so no catalog read is
+// needed here) followed by the keys the row already carries for its transport.
+//
+// DECLARED FIRST, and the order is the useful one: for a catalog-added entry the declared key IS the answer
+// and is therefore the default, while the keys a row already carries are usually its non-secret ones
+// (PATH, LOG_LEVEL).
+func OwnedKeyOptions(row *apiv1.MCPServer) []kit2.Option {
+	existing := row.GetEnv()
+	if row.GetTransport() == apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STREAMABLE_HTTP {
+		existing = row.GetHeaders()
+	}
+	declared := row.GetRequiredSecrets()
+	seen := make(map[string]bool, len(existing)+len(declared))
+	out := make([]kit2.Option, 0, len(existing)+len(declared))
+	add := func(k string) {
+		k = strings.TrimSpace(k)
+		if k == "" || seen[k] {
+			return
+		}
+		seen[k] = true
+		out = append(out, kit2.Option{Value: k, Label: k})
+	}
+	for _, k := range declared {
+		add(k)
+	}
+	// Sorted, so the picker offers the same order on two reads of the same row.
+	keys := make([]string, 0, len(existing))
+	for k := range existing {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		add(k)
+	}
+	return out
+}
+
+// OwnedCredentialForm points an OWNED row (a project's or a conversation's server) at a STORED credential.
+//
+// THE SAME THREE FIELDS AS CredentialForm, deliberately: the rule is about credentials, not scopes. It
+// replaces a form that typed a Credential key and a Value straight onto the row — the shape the operator
+// rejected ("it is still manually typed in key, value pair. We should not allow that option at all") — which
+// stored the value against the row's id under a plane-derived name, so the value was invisible to the
+// secrets store and could not be rotated from it.
+//
+// The write is STORE-THEN-REFERENCE, in that order and for the reason the inline path documents: the
+// reference ${NAME} is resolved when a session USES the server, so a row pointing at a secret nobody stored
+// fails that server's session rather than this form's submit. A name the store already holds is a ROTATION —
+// the value is replaced under the same name, so every row referencing it picks the new value up at once,
+// which the typed-value form could not express at all.
+func OwnedCredentialForm(
+	label string, row *apiv1.MCPServer, choices []SecretChoice, onApply func(key, secret, value string) tea.Cmd,
+) *kit2.Form {
+	keys := OwnedKeyOptions(row)
+	initialKey := ""
+	if len(keys) == 1 {
+		initialKey = keys[0].Value
+	}
+	attachedKey, attachedSecret := attachedReference(row.GetEnv(), row.GetHeaders(), isHTTPRow(row))
+	if attachedKey != "" {
+		initialKey = attachedKey
+	}
+	fields, stored := credentialFormFields(initialKey, attachedSecret, keys,
+		"the name this server reads, e.g. GITHUB_PERSONAL_ACCESS_TOKEN", choices)
+	f := kit2.NewForm("Store MCP credential: "+label, fields...)
+	transport := "env"
+	if row.GetTransport() == apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STREAMABLE_HTTP {
+		transport = "headers"
+	}
+	f.Note = "Written into this row's " + transport + " as a ${SECRET_NAME} reference. The value itself is " +
+		"never stored on the server: it lives in the tenant secrets store and is resolved when a session " +
+		"uses the server."
+	if len(choices) == 0 {
+		f.Note += " The tenant secrets store holds nothing to pick yet: choose Custom to name and " +
+			"store one (the name must be UPPERCASE)."
+	}
+	f.Focused = true
+	f.Width = 64
+	f.OnSubmit = credentialSubmit(stored, onApply)
+	return f
+}
+
+// secretChoiceSuffix renders a stored secret's description beside its name, when it has one.
+func secretChoiceSuffix(desc string) string {
+	desc = strings.TrimSpace(desc)
+	if desc == "" {
+		return ""
+	}
+	return " — " + desc
 }
 
 // SkillPathsForm edits a SKILL FILES path list — the control that sits in the same
@@ -364,9 +712,9 @@ func InlineForm(title string, src *InlineSpec, onSave func(InlineSpec)) *kit2.Fo
 			{Value: "stdio", Label: "stdio"}, {Value: "streamable-http", Label: "streamable-http"},
 		}},
 		kit2.FieldSpec{Name: "command", Label: "Command (stdio)", Kind: kit2.KText, Initial: strings.Join(spec.Command, " ")},
-		kit2.FieldSpec{Name: "env", Label: "Env (KEY=VALUE per line; ${SECRET_NAME} allowed)", Kind: kit2.KTextArea, Initial: keyValueText(spec.Env)},
+		kit2.FieldSpec{Name: "env", Label: "Enter a KEY=VALUE pair here (non-secret stored) or use k to create/store secret credentials", Kind: kit2.KTextArea, Initial: keyValueText(spec.Env)},
 		kit2.FieldSpec{Name: "url", Label: "URL (streamable-http)", Kind: kit2.KText, Initial: spec.URL},
-		kit2.FieldSpec{Name: "headers", Label: "Headers (KEY=VALUE per line)", Kind: kit2.KTextArea, Initial: keyValueText(spec.Headers)},
+		kit2.FieldSpec{Name: "headers", Label: "Enter a KEY=VALUE pair here (non-secret stored) or use k to create/store secret credentials", Kind: kit2.KTextArea, Initial: keyValueText(spec.Headers)},
 		kit2.FieldSpec{Name: "enabled", Label: "Enabled", Kind: kit2.KCheckbox, Initial: enabled},
 	)
 	f.Focused = true

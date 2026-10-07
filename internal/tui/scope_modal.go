@@ -95,8 +95,10 @@ type scopeRow struct {
 //	project         OWNED ROWS through the MCP service (project_id), skills on the project row. Nothing
 //	                is inherited at this scope — the project IS the source.
 //	workerVersion   INLINE SPECS with no row at all: a published version is immutable, so the specs live
-//	                in the version's permissions JSON. No install, no credential, no catalog (there is no
-//	                row to attach them to) — the same refusals the GUI's panel makes for this scope.
+//	                in the version's permissions JSON. NO INSTALL (an install status can only live on a
+//	                row), but the CATALOG and a CREDENTIAL both apply here — the catalog prefills the
+//	                add form, and a credential is SELECTED from the tenant secrets store and built into
+//	                the spec's own env/headers as ${SECRET_NAME} (mcpforms.CredentialForm).
 type scopeOwnerKind int
 
 const (
@@ -120,6 +122,13 @@ type scopeModal struct {
 	// an outer scope (a conversation's project). A project scope has no inherited half.
 	mcp       []*apiv1.MCPServer
 	inherited []*apiv1.MCPServer
+
+	// secrets is the tenant secrets store's NAMES, and secretsNote explains why that list may be
+	// incomplete (the store could not be read, or it is longer than one page). EVERY scope needs them:
+	// a credential is never typed onto a server, so each scope's credential form PICKS from this list —
+	// an owned row as much as an inline spec.
+	secrets     []mcpforms.SecretChoice
+	secretsNote string
 
 	// ── the WORKER-VERSION half, which is IN MEMORY ───────────────────────────────────────
 	//
@@ -175,7 +184,13 @@ type scopeDataMsg struct {
 	convID    string
 	mcp       []*apiv1.MCPServer
 	inherited []*apiv1.MCPServer
-	err       string
+	// secrets / secretsNote are the tenant store's NAMES and why that list may be short. They ride along
+	// with the definitions because a credential is SELECTED at every scope now, and this is the read the
+	// open path already makes — a second round trip after `k` would make the picker feel broken rather
+	// than ready.
+	secrets     []mcpforms.SecretChoice
+	secretsNote string
+	err         string
 }
 
 // openScopeModal opens the modal for the OPEN conversation and starts its fetch.
@@ -279,6 +294,11 @@ func (m *App) loadScope() tea.Cmd {
 			return scopeDataMsg{convID: convID, err: err.Error()}
 		}
 		out := scopeDataMsg{convID: convID, mcp: mine.Msg.GetServers()}
+		// THE STORE'S NAMES RIDE ALONG, at every scope: a credential is SELECTED from the tenant store at
+		// every scope now (mcpforms.OwnedCredentialForm / CredentialForm), so all three scopes need the
+		// list. A FAILED STORE READ IS NOT A FAILED OPEN — the definitions are what the operator came to
+		// edit, and secretsNote is how the picker explains a list it could not fill.
+		out.secrets, out.secretsNote = listSecretChoices(ctx, cl)
 		// A PROJECT scope is the source: it inherits nothing, so there is no second read.
 		if isProject {
 			return out
@@ -313,6 +333,7 @@ func (m *App) onScopeData(msg scopeDataMsg) {
 	m.scope.err = msg.err
 	m.scope.mcp = msg.mcp
 	m.scope.inherited = msg.inherited
+	m.scope.secrets, m.scope.secretsNote = msg.secrets, msg.secretsNote
 	// SEAT THE CURSOR ON A REAL ROW before the first paint. A fresh modal starts at 0, which is the
 	// section heading — and a cursor resting on a heading is both wrong to look at and a trap for every
 	// verb (`enter`, `d`, `i` … all resolve through the selected row). The row list only becomes
@@ -510,7 +531,8 @@ func (s *scopeModal) workerVersionRows() []scopeRow {
 	// WHAT THIS SCOPE IS, said plainly: the specs are this version's OWN — a worker is TENANT-LEVEL, so it
 	// inherits nothing from a project, and a catalog add would have no row to create here.
 	out = append(out, scopeRow{kind: scopeRowNote,
-		text: "this version's own specs — a worker is tenant-level, so it inherits no project's MCP"})
+		text: "this version's own specs — a worker is tenant-level, so it inherits no project's MCP; " +
+			"k points a spec's env/header at a stored secret"})
 	return out
 }
 
@@ -642,7 +664,7 @@ func (m *App) scopeKey(k tea.KeyMsg) (*App, tea.Cmd) {
 		m.scope.move(m, 1)
 		return m, nil
 	case "r":
-		return m, m.loadScope()
+		return m, m.reloadScope()
 	case "a":
 		return m, m.scopeAddMCP()
 	case "c":
@@ -687,18 +709,40 @@ func (m *App) scopeTarget(verb, needs string) (scopeRow, bool) {
 		m.dock.SetError(verb + " applies to an MCP server — ↑/↓ moves to one (this row is " + scopeRowKindWord(row.kind) + ")")
 		return scopeRow{}, false
 	case "row":
-		// A ROW IN mcp_servers — so install and credential apply, which need something to attach to. An
-		// INLINE spec has none, and the GUI's panel does not offer them for that scope either.
+		// A ROW IN mcp_servers — install needs something to hang an install STATUS on, and an INLINE
+		// spec has none (the GUI's panel does not offer Install for that scope either).
 		if row.kind == scopeRowMCP && owned {
 			return row, true
 		}
 		if row.kind == scopeRowInlineMCP {
 			m.dock.SetError(verb + " needs a stored definition: a worker version's specs are INLINE, so " +
-				"there is no row to attach a runtime install or a credential to — put the " +
-				"${SECRET_NAME} in the spec's env/headers instead")
+				"there is no row for an install status to live on")
 			return scopeRow{}, false
 		}
 		m.dock.SetError(verb + " applies to an MCP definition — ↑/↓ moves to one")
+		return scopeRow{}, false
+	case "credential":
+		// A DEFINITION ROW *OR* AN INLINE SPEC, because the two attach a credential DIFFERENTLY rather
+		// than one of them not at all: an owned row stores it against its ID (mcpsettings.SetSecret),
+		// while a version's spec has no row and gets the ${SECRET_NAME} reference built INTO its own
+		// config (mcpforms.CredentialForm). The refusal this case replaced — "there is no row to attach
+		// a credential to" — was true about the row and wrong about the capability. The operator: "I
+		// understand that it is inline but that doesn't mean that info can't be built on top and passed
+		// to the config."
+		switch row.kind {
+		case scopeRowMCP:
+			if owned {
+				return row, true
+			}
+		case scopeRowInlineMCP:
+			return row, true
+		case scopeRowInheritedMCP:
+			m.dock.SetError(row.name + " belongs to project " +
+				m.projectLabelFor(m.conversationProjectID(m.scope.convID)) +
+				" — edit it there; this scope only consumes it")
+			return scopeRow{}, false
+		}
+		m.dock.SetError(verb + " applies to an MCP definition or an inline spec — ↑/↓ moves to one")
 		return scopeRow{}, false
 	case "writable":
 		switch row.kind {
@@ -1099,17 +1143,272 @@ func (m *App) scopeInstallSelected() tea.Cmd {
 	return nil
 }
 
-// scopeCredentialForSelected opens the write-only credential form for the focused definition. The
-// secrets store is tenant-scoped (RLS needs a tenant) — a credential store, not an MCP scope — which is
-// why the key is typed here rather than derived from the definition.
+// scopeCredentialForSelected opens the credential form for the focused definition.
+//
+// THE CREDENTIAL IS SELECTED, NOT TYPED — at every scope. The form picks the KEY from what the server
+// declares and already carries, and the SECRET from the tenant store's names; a value is asked for only to
+// CREATE a new secret. What this replaced typed a key and a value straight onto the row and stored the value
+// under a plane-derived name, so nothing about it was visible to, or rotatable from, the secrets store
+// ("we should not allow that option at all").
 func (m *App) scopeCredentialForSelected() tea.Cmd {
-	row, ok := m.scopeTarget("credential", "row")
+	row, ok := m.scopeTarget("credential", "credential")
 	if !ok {
 		return nil
 	}
-	m.convScopeForm = mcpforms.SecretForm(row.name, "", m.conversationSecretSetter(row.id, row.name))
-	m.convScopeForm.Width = m.modalWidth()
+	// AN INLINE SPEC HAS NO ROW TO STORE AGAINST, so its credential is attached to the SPEC.
+	if row.kind == scopeRowInlineMCP {
+		m.openInlineCredentialForm(row)
+		return nil
+	}
+	// AN OWNED ROW gets the reference written into its own env/headers.
+	srv := m.scopeServerByID(row.id)
+	if srv == nil {
+		m.dock.SetError(row.name + " is no longer in this scope — r re-reads it")
+		return nil
+	}
+	choices := m.scope.secrets
+	f := mcpforms.OwnedCredentialForm(row.name, srv, choices, m.ownedCredentialAttacher(srv, choices))
+	if m.scope.secretsNote != "" {
+		// SAID ON THE FORM, where the missing choices are, rather than as a dock error the operator has
+		// to connect to a short picker.
+		f.Note += "\n\n" + m.scope.secretsNote
+	}
+	f.Width = m.modalWidth()
+	m.convScopeForm = f
 	return nil
+}
+
+// scopeServerByID finds one of the scope's OWNED rows by id. Nil when it is gone: the modal can be showing
+// a list the plane has since changed, and a credential form built against a vanished row would write a
+// reference nobody reads.
+func (m *App) scopeServerByID(id string) *apiv1.MCPServer {
+	if m.scope == nil {
+		return nil
+	}
+	for _, s := range m.scope.mcp {
+		if s.GetId() == id {
+			return s
+		}
+	}
+	return nil
+}
+
+// ── attaching a STORED credential to an inline spec ──────────────────────────────────────
+//
+// The operator, looking at a worker version's spec: "the credentials should be able to be selected
+// rather than typed just like it does for projects and conversations. I understand that it is inline
+// but that doesn't mean that info can't be built on top and passed to the config."
+//
+// Both halves of that are here. SELECTED: the form's secret field is a picker over the tenant secrets
+// store, so the operator chooses a name that EXISTS — which is also the only shape the reference can
+// take, because an unset ${NAME} fails that server's session at resolve time
+// (mcpsettings.ResolveSecretRefs). BUILT ON TOP OF THE SPEC: the pick becomes `KEY=${NAME}` in the
+// spec's own env (stdio) or headers (http), and the version is saved through its own write.
+//
+// IT IS TWO WRITES AND THEY ARE ORDERED. When the operator asks for a NEW secret (a name the store
+// does not hold, with a value), the store write goes first and the version second: a version written
+// first would carry a reference nothing resolves, and the operator would only find out when the
+// worker ran. The in-memory spec is therefore changed on the MESSAGE the store returns (see
+// onCredentialAttached), never before it — the same "a form's submit hands a message onward" rule the
+// catalog prefill follows.
+
+// openInlineCredentialForm opens the credential form for one of THIS version's inline specs.
+func (m *App) openInlineCredentialForm(row scopeRow) {
+	s := m.scope
+	if s == nil || s.kind != ownerWorkerVersion {
+		m.dock.SetError("no worker version is open — a version's specs are edited from its own scope")
+		return
+	}
+	idx := inlineSpecIndex(s.inline, row.id)
+	if idx < 0 {
+		m.dock.SetError(row.name + " is no longer in this version — r re-reads it")
+		return
+	}
+	spec := s.inline[idx]
+	f := mcpforms.CredentialForm("Attach a credential to "+spec.ID, spec, s.secrets,
+		func(key, secret, value string) tea.Cmd {
+			return m.attachCredentialCmd(spec.ID, key, secret, value)
+		})
+	if s.secretsNote != "" {
+		// SAID ON THE FORM, where the missing choices are, rather than as a dock error the operator has
+		// to connect to an empty picker.
+		f.Note += "\n\n" + s.secretsNote
+	}
+	f.Width = m.modalWidth()
+	m.convScopeForm = f
+}
+
+// attachCredentialCmd stores a NEW credential when one is asked for, then hands the attach onward.
+//
+// THE STORE WRITE IS THE FIRST LINK and a failure stops the chain with the version untouched. The
+// secret NAME is not validated here: the store's own rule (secrets.ValidateName) is the source of
+// truth and it answers with its own message, which reaches the operator as the store's rejection —
+// the same reasoning the Control screen's secret form documents.
+func (m *App) attachCredentialCmd(specID, key, secret, value string) tea.Cmd {
+	cl := m.clients
+	label := ""
+	// The choices are SNAPSHOT here, at submit: they are what the form offered, and the store write must
+	// target the row the operator was shown rather than whatever a later read would return.
+	var choices []mcpforms.SecretChoice
+	if m.scope != nil {
+		label, choices = m.scope.label, m.scope.secrets
+	}
+	return func() tea.Msg {
+		msg := credentialAttachedMsg{scopeLabel: label, specID: specID, key: key, secret: secret}
+		if value == "" {
+			// The form has already established that this name is IN the store (a name that is not,
+			// without a value, never reaches here) — so there is nothing to write yet.
+			return msg
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if err := storeTenantSecret(ctx, cl, choices, secret, value); err != nil {
+			msg.err = err.Error()
+			return msg
+		}
+		msg.stored = true
+		return msg
+	}
+}
+
+// credentialAttachedMsg reports a credential that is safe to reference (it was already stored, or it
+// has just been). IT IS A MESSAGE, NOT A DIRECT CALL, because the store write is asynchronous and the
+// in-memory edit must not happen until it has landed — and because the form's own submit is the only
+// thing that can hand it onward (see the router's form-guard note).
+type credentialAttachedMsg struct {
+	// scopeLabel names the surface it belongs to, so a reply that lands after the operator opened a
+	// DIFFERENT worker version is discarded rather than applied to the wrong spec.
+	scopeLabel string
+	specID     string
+	key        string
+	secret     string
+	stored     bool
+	err        string
+}
+
+// onCredentialAttached applies the attach: change the spec, save the version.
+func (m *App) onCredentialAttached(msg credentialAttachedMsg) tea.Cmd {
+	s := m.scope
+	if s == nil || s.kind != ownerWorkerVersion || s.label != msg.scopeLabel {
+		return nil
+	}
+	if msg.err != "" {
+		// NOTHING WAS TOUCHED — the spec still holds what it held, so the version and the spec agree.
+		m.dock.SetError("/scope: the credential was not stored: " + msg.err + " — the spec is unchanged")
+		return nil
+	}
+	idx := inlineSpecIndex(s.inline, msg.specID)
+	if idx < 0 {
+		m.dock.SetError(msg.specID + " is no longer in this version — r re-reads it")
+		return nil
+	}
+	mcpforms.AttachSecret(&s.inline[idx], msg.key, msg.secret)
+	if msg.stored {
+		m.dock.SetNotice("/scope: stored " + msg.secret + " and pointed " + msg.key + " at it — saving the version")
+	} else {
+		m.dock.SetNotice("/scope: " + msg.key + " now reads ${" + msg.secret + "} — saving the version")
+	}
+	return m.commitWorkerVersion()
+}
+
+// inlineSpecIndex finds one inline spec by id (-1 when it is gone).
+func inlineSpecIndex(specs []mcpforms.InlineSpec, id string) int {
+	for i := range specs {
+		if specs[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+// storeTenantSecret creates — or replaces — a credential in the tenant secrets store under the name
+// the operator chose. The name IS the reference (${NAME}), so the two can never disagree.
+func storeTenantSecret(ctx context.Context, cl *client.Clients, choices []mcpforms.SecretChoice, name, value string) error {
+	if cl == nil || cl.Secrets == nil {
+		return fmt.Errorf("not connected to a plane")
+	}
+	for _, c := range choices {
+		if c.Name == name {
+			if _, err := cl.Secrets.UpdateSecret(ctx, connect.NewRequest(
+				&apiv1.UpdateSecretRequest{Id: c.ID, Value: &value})); err != nil {
+				return err
+			}
+			return nil
+		}
+	}
+	if _, err := cl.Secrets.CreateSecret(ctx, connect.NewRequest(&apiv1.CreateSecretRequest{
+		Name: name, Value: value,
+		// Scope-neutral: the same store write serves an owned row and an inline spec.
+		Description: "MCP server credential",
+	})); err != nil {
+		return err
+	}
+	return nil
+}
+
+// listSecretChoices reads the tenant secrets store's NAMES (never values — GetSecret is not called)
+// for the credential picker, with a note explaining an unreadable or partial list.
+func listSecretChoices(ctx context.Context, cl *client.Clients) ([]mcpforms.SecretChoice, string) {
+	if cl == nil || cl.Secrets == nil {
+		return nil, "not connected to a plane, so nothing can be listed to pick from"
+	}
+	res, err := cl.Secrets.ListSecrets(ctx, connect.NewRequest(&apiv1.ListSecretsRequest{PageSize: 200}))
+	if err != nil {
+		return nil, "the tenant secrets store could not be read (" + err.Error() + ") — a name that is " +
+			"not listed can still be given a value to store it"
+	}
+	out := make([]mcpforms.SecretChoice, 0, len(res.Msg.GetSecrets()))
+	for _, s := range res.Msg.GetSecrets() {
+		out = append(out, mcpforms.SecretChoice{ID: s.GetId(), Name: s.GetName(), Description: s.GetDescription()})
+	}
+	note := ""
+	if res.Msg.GetNextPageToken() != "" {
+		note = "the store holds more secrets than are listed here — give a name a value to store or " +
+			"replace it"
+	}
+	return out, note
+}
+
+// scopeSecretsMsg carries the store's names back to the modal (`r`, and the open path's own read).
+type scopeSecretsMsg struct {
+	scopeLabel string
+	secrets    []mcpforms.SecretChoice
+	note       string
+}
+
+// loadScopeSecrets re-reads the tenant secrets store for the modal's credential picker.
+func (m *App) loadScopeSecrets() tea.Cmd {
+	label, cl := "", m.clients
+	if m.scope != nil {
+		label = m.scope.label
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		choices, note := listSecretChoices(ctx, cl)
+		return scopeSecretsMsg{scopeLabel: label, secrets: choices, note: note}
+	}
+}
+
+// onScopeSecrets applies a store read. A reply for a surface this modal is no longer about is
+// DISCARDED rather than applied.
+func (m *App) onScopeSecrets(msg scopeSecretsMsg) {
+	if m.scope == nil || m.scope.kind != ownerWorkerVersion || m.scope.label != msg.scopeLabel {
+		return
+	}
+	m.scope.secrets, m.scope.secretsNote = msg.secrets, msg.note
+}
+
+// reloadScope re-reads what the CURRENT scope's rows are built from.
+//
+// A WORKER VERSION HAS NO ROWS TO RE-READ, but its credential picker does: the tenant secrets store is
+// a live thing the operator may have just written to from the Control screen, and `r` is advertised as
+// the refresh — a picker that silently refuses a secret created a minute ago would read as broken.
+func (m *App) reloadScope() tea.Cmd {
+	if m.scope != nil && m.scope.kind == ownerWorkerVersion {
+		return m.loadScopeSecrets()
+	}
+	return m.loadScope()
 }
 
 // scopeDeleteSelected removes the focused row's thing: an owned definition, an inline spec, or one skill
@@ -1338,7 +1637,9 @@ func (m *App) scopeHintItems() []string {
 	case ok && row.kind == scopeRowMCP:
 		items = []string{"↑/↓ move", "enter/e: edit", "i: install", "k: credential", "d: delete"}
 	case ok && row.kind == scopeRowInlineMCP:
-		items = []string{"↑/↓ move", "enter/e: edit", "d: remove"}
+		// `k: credential` IS OFFERED HERE, and `i: install` is not: a credential is built into the
+		// spec's own env/headers (so it needs no row), while an install status can only live on one.
+		items = []string{"↑/↓ move", "enter/e: edit", "k: credential", "d: remove"}
 	case ok && (row.kind == scopeRowInheritedMCP || row.kind == scopeRowProjectSkill):
 		items = []string{"↑/↓ move", "read-only (from the project)"}
 	case ok && row.kind == scopeRowSkill:
@@ -1440,6 +1741,11 @@ type workerVersionScopeMsg struct {
 	version     int32
 	permissions string
 	skillFiles  string
+	// secrets (and the note explaining an unreadable or partial list) ride along because THIS scope's
+	// credential form needs something to pick from, and this is the one read the open path already
+	// makes — a second round trip after `k` would make the picker feel broken rather than ready.
+	secrets     []mcpforms.SecretChoice
+	secretsNote string
 	err         string
 }
 
@@ -1477,6 +1783,9 @@ func (m *App) OpenWorkerMCPModal(workerID, workerName string) tea.Cmd {
 		msg.versionID, msg.version = v.GetId(), v.GetVersion()
 		msg.permissions = v.GetPermissions()
 		msg.skillFiles = skillFilesJSONForPaths(v.GetSkillFiles())
+		// A FAILED STORE READ IS NOT A FAILED OPEN: the version is what the operator came to edit, and
+		// the credential form still works by name + value. The note is how the picker explains itself.
+		msg.secrets, msg.secretsNote = listSecretChoices(ctx, cl)
 		return msg
 	}
 }
@@ -1492,8 +1801,12 @@ func (m *App) onWorkerVersionScope(msg workerVersionScopeMsg) tea.Cmd {
 		label = msg.workerID
 	}
 	label = fmt.Sprintf("%s · v%d", label, msg.version)
-	return m.openWorkerVersionScopeModal(label, msg.permissions, msg.skillFiles,
+	cmd := m.openWorkerVersionScopeModal(label, msg.permissions, msg.skillFiles,
 		m.workerVersionSaver(msg.workerID, msg.versionID, m.clients))
+	if m.scope != nil && m.scope.kind == ownerWorkerVersion {
+		m.scope.secrets, m.scope.secretsNote = msg.secrets, msg.secretsNote
+	}
+	return cmd
 }
 
 // workerVersionSaver is the write for a worker version's MCP specs and skill files, as a function of the

@@ -582,6 +582,10 @@ var (
 	// reusing DiffGutter/DiffLineNo so the bar reads as chrome, not content.
 	DiffScrollTrack = lipgloss.NewStyle()
 	DiffScrollThumb = lipgloss.NewStyle()
+	// DiffResizeHandle is the diff rail's resize grip — the pane's last cell, which the shell's divider
+	// hit-test owns. It is a style of its own (rather than the track's) because it is CHROME the operator
+	// aims at, not part of the scrollbar: a visible grip is what tells them where the rail can be dragged.
+	DiffResizeHandle = lipgloss.NewStyle()
 
 	// PickerChip marks the CHOSEN chip in the model picker's ADAPTER/PROVIDER strip: plain theme
 	// text with an UNDERLINE. No fill, no border — see buildStyles.
@@ -809,6 +813,10 @@ func buildStyles(t Theme) {
 	// monochrome terminal still read position.
 	DiffScrollTrack = lipgloss.NewStyle().Foreground(t.BorderFaint)
 	DiffScrollThumb = lipgloss.NewStyle().Foreground(t.TextDim).Bold(true)
+	// The handle steps UP to TextDim — the same weight as the thumb, one step brighter than the track — so a
+	// grip the operator needs to find is not the faintest thing on the pane. Its glyph is what distinguishes
+	// it from the track beside it (dashed vs solid), so it stays readable without colour.
+	DiffResizeHandle = lipgloss.NewStyle().Foreground(t.TextDim)
 	// PickerChip is the model picker's chosen chip: plain theme text, UNDERLINED.
 	//
 	// The operator, having seen the outlined version: "I think we should just make those normal

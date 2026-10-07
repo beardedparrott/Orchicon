@@ -26,7 +26,7 @@ import (
 // modal." The report it used to print is now something the operator can SEE, with the paths and the
 // keys that act on them.
 func TestSkillsWithoutArgumentsOpensTheScope(t *testing.T) {
-	m, _ := newScopeApp(t)
+	m, _, _ := newScopeApp(t)
 	if cmd := mustSlash(t, m, "/skills"); cmd == nil {
 		t.Fatal("/skills with no argument must fetch the scope, not print a line and vanish")
 	}

@@ -15,8 +15,11 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -27,6 +30,7 @@ import (
 	"github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/mcpforms"
 )
 
@@ -47,7 +51,7 @@ func openProjectScope(t *testing.T, m *App) {
 // THE MODAL LISTS WHAT THE PROJECT OWNS, and nothing else — no inherited half, because a project is the
 // SOURCE of what its conversations and workers inherit.
 func TestProjectScopeModalListsTheProjectsRowsAndSkills(t *testing.T) {
-	m, _ := newScopeApp(t)
+	m, _, _ := newScopeApp(t)
 	openProjectScope(t, m)
 
 	body := scopeText(m)
@@ -76,7 +80,7 @@ func TestProjectScopeModalListsTheProjectsRowsAndSkills(t *testing.T) {
 // property (a definition belongs to exactly one scope), and it is asserted on the request the plane
 // would receive.
 func TestProjectModalCreateIsStampedWithTheProjectAndCarriesItsArgs(t *testing.T) {
-	m, stub := newScopeApp(t)
+	m, stub, _ := newScopeApp(t)
 	openProjectScope(t, m)
 
 	pressScope(t, m, "a")
@@ -123,7 +127,7 @@ func TestProjectModalCreateIsStampedWithTheProjectAndCarriesItsArgs(t *testing.T
 // THE SKILLS CONTROL IS THE SAME ONE, pointed at the project: `s` opens the prefilled path list, and
 // saving it writes the project's skill_files (the field that used to be a raw text box in the edit form).
 func TestProjectModalSkillsFormWritesTheProject(t *testing.T) {
-	m, _ := newScopeApp(t)
+	m, _, _ := newScopeApp(t)
 	openProjectScope(t, m)
 
 	pressScope(t, m, "s")
@@ -142,17 +146,18 @@ func TestProjectModalSkillsFormWritesTheProject(t *testing.T) {
 
 // ── the worker-version scope ─────────────────────────────────────────────────────────────
 
-// openingWorkerVersion opens the inline-scope modal and records what a save would write.
-func openingWorkerVersion(t *testing.T, permissions, skills string) (*App, *stubMCP, *struct {
+// versionSaveRec records what a worker version's own save was handed: the two fields the modal writes,
+// and how many times it wrote them (a count, because "committed twice" is a defect a bool would hide).
+type versionSaveRec struct {
 	perm, skills string
 	saves        int
-}) {
+}
+
+// openingWorkerVersion opens the inline-scope modal and records what a save would write.
+func openingWorkerVersion(t *testing.T, permissions, skills string) (*App, *stubMCP, *stubSecrets, *versionSaveRec) {
 	t.Helper()
-	m, stub := newScopeApp(t)
-	rec := &struct {
-		perm, skills string
-		saves        int
-	}{}
+	m, stub, sec := newScopeApp(t)
+	rec := &versionSaveRec{}
 	m.openWorkerVersionScopeModal("Sweeper · v3", permissions, skills, func(p, s string) tea.Cmd {
 		rec.perm, rec.skills, rec.saves = p, s, rec.saves+1
 		return nil
@@ -160,7 +165,43 @@ func openingWorkerVersion(t *testing.T, permissions, skills string) (*App, *stub
 	if m.scope == nil || m.scope.kind != ownerWorkerVersion {
 		t.Fatalf("the worker-version modal did not open (scope=%+v)", m.scope)
 	}
-	return m, stub, rec
+	return m, stub, sec, rec
+}
+
+// openingWorkerVersionWithStore is the same modal WITH the tenant secrets store read applied — the
+// state the real open path is in (OpenWorkerMCPModal reads the store in the one command that fetches
+// the version, and `r` re-reads it).
+func openingWorkerVersionWithStore(t *testing.T, permissions, skills string) (*App, *stubMCP, *stubSecrets, *versionSaveRec) {
+	t.Helper()
+	m, stub, sec, rec := openingWorkerVersion(t, permissions, skills)
+	applyFetch(t, m, m.loadScopeSecrets())
+	if m.scope.secrets == nil {
+		t.Fatal("the tenant secrets store read landed nothing — the credential picker would be empty " +
+			"for a store that holds secrets")
+	}
+	return m, stub, sec, rec
+}
+
+// submitAndRoute submits the open form and feeds the message it produced back through the ROUTER, the
+// way the shell does — which is the point on the credential path: its message arrives while the form
+// is still up, so it must be routed above the form guard (see router.go's form-guard note).
+func submitAndRoute(t *testing.T, m *App) {
+	t.Helper()
+	cmd, err := m.convScopeForm.Submit()
+	if err != nil {
+		t.Fatalf("the credential form refused a complete entry: %v", err)
+	}
+	if cmd == nil {
+		return
+	}
+	msg := cmd()
+	if msg == nil {
+		return
+	}
+	_, after := m.dispatch(msg)
+	if after != nil {
+		_ = after()
+	}
 }
 
 const versionPermissions = `{"tools":["read","write"],"mcp_servers":[{"id":"pg","type":"stdio","command":["npx","-y","pg"]}]}`
@@ -168,7 +209,7 @@ const versionPermissions = `{"tools":["read","write"],"mcp_servers":[{"id":"pg",
 // THE MODAL LISTS THE VERSION'S INLINE SPECS AND ITS SKILL FILES — the two things that were only
 // reachable as raw JSON and an absolute-path list.
 func TestWorkerVersionModalListsInlineSpecsAndSkills(t *testing.T) {
-	m, _, _ := openingWorkerVersion(t, versionPermissions, `["/skills/w.md"]`)
+	m, _, _, _ := openingWorkerVersion(t, versionPermissions, `["/skills/w.md"]`)
 
 	body := scopeText(m)
 	for _, want := range []string{
@@ -190,7 +231,7 @@ func TestWorkerVersionModalListsInlineSpecsAndSkills(t *testing.T) {
 // This is the difference that matters for this scope: a version is immutable once published, so its
 // specs live in its own permissions JSON. A create here would be a row nothing would ever read.
 func TestWorkerVersionAddSpecCommitsInlineAndCreatesNoRow(t *testing.T) {
-	m, stub, rec := openingWorkerVersion(t, `{"tools":["read"],"mcp_servers":[]}`, `[]`)
+	m, stub, _, rec := openingWorkerVersion(t, `{"tools":["read"],"mcp_servers":[]}`, `[]`)
 	pressScope(t, m, "a")
 	if m.convScopeForm == nil {
 		t.Fatal("`a` opened no inline spec form")
@@ -227,7 +268,7 @@ func TestWorkerVersionAddSpecCommitsInlineAndCreatesNoRow(t *testing.T) {
 
 // REMOVING A SPEC COMMITS TOO, and the confirm names it.
 func TestWorkerVersionRemoveSpecCommits(t *testing.T) {
-	m, _, rec := openingWorkerVersion(t, versionPermissions, `[]`)
+	m, _, _, rec := openingWorkerVersion(t, versionPermissions, `[]`)
 
 	putCursor(m, rowIndexOf(t, m, "pg"))
 	pressScope(t, m, "d")
@@ -248,22 +289,27 @@ func TestWorkerVersionRemoveSpecCommits(t *testing.T) {
 	}
 }
 
-// THE VERBS THAT NEED A ROW ARE REFUSED, WITH A REASON — install, credential and the catalog. The GUI's
-// panel makes the same omission for this scope rather than offering buttons that cannot work.
-func TestWorkerVersionRefusesTheRowOnlyVerbs(t *testing.T) {
-	m, _, rec := openingWorkerVersion(t, versionPermissions, `[]`)
+// `i` IS REFUSED, WITH A REASON: an INSTALL STATUS can only live on a row, and a version's spec has
+// none. `k` IS NOT — a credential needs no row, it needs a place in the spec's own config, which is
+// what the credential form builds (below).
+func TestWorkerVersionRefusesInstallButNotTheCredential(t *testing.T) {
+	m, _, _, rec := openingWorkerVersion(t, versionPermissions, `[]`)
 	putCursor(m, rowIndexOf(t, m, "pg"))
 
-	// `c` is NOT here: the catalog is a prefill, so it applies at this scope (see the hint test).
-	for _, key := range []string{"i", "k"} {
-		m.dock.SetError("")
-		pressScope(t, m, key)
-		if m.convScopeForm != nil {
-			t.Errorf("`%s` opened a form for a scope with no row — nothing it saved could be read", key)
-		}
-		if m.dock.Err == "" {
-			t.Errorf("`%s` was refused silently on a worker version", key)
-		}
+	m.dock.SetError("")
+	pressScope(t, m, "i")
+	if m.convScopeForm != nil {
+		t.Error("`i` opened a form for a spec with no row — an install status has nowhere to live")
+	}
+	if m.dock.Err == "" {
+		t.Error("`i` was refused silently on a worker version")
+	}
+
+	m.dock.SetError("")
+	pressScope(t, m, "k")
+	if m.convScopeForm == nil {
+		t.Error("`k` opened no credential form — a credential is built INTO the spec, so the lack of " +
+			"a row is not a reason to refuse it")
 	}
 	if rec.saves != 0 {
 		t.Error("a refused verb still wrote something")
@@ -272,7 +318,7 @@ func TestWorkerVersionRefusesTheRowOnlyVerbs(t *testing.T) {
 
 // THE SKILLS CONTROL WRITES BACK THROUGH THE VERSION TOO.
 func TestWorkerVersionSkillsCommitThroughTheSave(t *testing.T) {
-	m, _, rec := openingWorkerVersion(t, versionPermissions, `["/old.md"]`)
+	m, _, _, rec := openingWorkerVersion(t, versionPermissions, `["/old.md"]`)
 
 	pressScope(t, m, "s")
 	if m.convScopeForm == nil {
@@ -292,11 +338,455 @@ func TestWorkerVersionSkillsCommitThroughTheSave(t *testing.T) {
 	}
 }
 
+// ── a worker version's CREDENTIAL: selected, and built into the spec ─────────────────────
+
+// versionPermissionsWithEnv is a version whose spec ALREADY carries the env key a GitHub MCP server
+// needs, with no value in it — the shape a catalog pick leaves behind (the prefill never writes a
+// blank secret) and the shape an operator hand-adds when they intend to reference a stored one.
+const versionPermissionsWithEnv = `{"tools":["read"],"mcp_servers":[{"id":"gh","type":"stdio",` +
+	`"command":["npx","-y","server-github"],"env":{"GITHUB_PERSONAL_ACCESS_TOKEN":""}}]}`
+
+// flatJSON drops the whitespace MarshalIndent writes, so an assertion can name a key/value pair
+// without depending on the encoding's layout. The fixtures hold no value containing a space, so
+// squeezing whitespace cannot make two different documents look alike.
+func flatJSON(s string) string { return strings.Join(strings.Fields(s), "") }
+
+// A STORED SECRET AND A TYPED VALUE ARE TWO INTENTIONS, AND THE FORM NEVER SHOWS BOTH AT ONCE.
+//
+// The report, exactly: "if someone already went through the list and added a current secret, it doesn't
+// matter what value they put in the custom field, the stored secret supersedes it. I think a better approach
+// would be to add another item under stored secret called Custom that then only accepts the custom entered
+// new key below". So:
+//
+//   - the new-secret pair exists ONLY under Custom — hidden, not merely ignored, while a stored name is
+//     picked, so the two answers are never on screen together;
+//   - a value left over from BEFORE the pick is REFUSED with a message naming Custom, because silently
+//     dropping it is precisely the behaviour being reported;
+//   - Custom reveals the pair, and the write goes through.
+func TestCredentialFormSeparatesPickingAStoredSecretFromStoringANewOne(t *testing.T) {
+	m, _, sec, rec := openingWorkerVersionWithStore(t, versionPermissionsWithEnv, `[]`)
+	putCursor(m, rowIndexOf(t, m, "gh"))
+	pressScope(t, m, "k")
+	f := m.convScopeForm
+	if f == nil {
+		t.Fatal("`k` opened no credential form")
+	}
+
+	f.Set("secret", "SLACK_BOT_TOKEN")
+	if specVisible(f.Spec("newname"), f.Values) || specVisible(f.Spec("value"), f.Values) {
+		t.Error("the new-secret fields are visible while a STORED secret is picked — the two intentions " +
+			"would be on screen at once, which is the confusion this separates")
+	}
+
+	// Typed BEFORE the pick, as the report describes doing it.
+	f.Set("value", "leftover")
+	if _, err := f.Submit(); err == nil {
+		t.Fatal("a value standing beside a stored secret was accepted — that is the silent supersede the " +
+			"report described")
+	}
+	if !strings.Contains(f.SubmitErr, "Custom") {
+		t.Errorf("the refusal does not name the choice that would work: %q", f.SubmitErr)
+	}
+
+	f.Set("value", "")
+	f.Set("secret", mcpforms.CustomSecretChoice)
+	if !specVisible(f.Spec("newname"), f.Values) || !specVisible(f.Spec("value"), f.Values) {
+		t.Fatal("choosing Custom did not reveal the new-secret fields")
+	}
+	f.Set("newname", "FRESH_TOKEN")
+	f.Set("value", "s3cret")
+	submitAndRoute(t, m)
+
+	sec.mu.Lock()
+	defer sec.mu.Unlock()
+	if len(sec.created) != 1 || sec.created[0].GetName() != "FRESH_TOKEN" ||
+		sec.created[0].GetValue() != "s3cret" {
+		t.Fatalf("the store received %+v, want the freshly named secret", sec.created)
+	}
+	if rec.saves != 1 {
+		t.Errorf("the version was saved %d times, want 1", rec.saves)
+	}
+}
+
+// specVisible reports whether a field is part of the form right now (nil Visible means always).
+func specVisible(sp *kit2.FieldSpec, values map[string]string) bool {
+	if sp == nil {
+		return false
+	}
+	return sp.Visible == nil || sp.Visible(values)
+}
+
+// optionValues lists a select/picker field's option values, in order.
+func optionValues(spec *kit2.FieldSpec) []string {
+	if spec == nil {
+		return nil
+	}
+	out := make([]string, 0, len(spec.Options))
+	for _, o := range spec.Options {
+		out = append(out, o.Value)
+	}
+	return out
+}
+
+// THE CREDENTIAL IS SELECTED FROM THE TENANT STORE AND WRITTEN INTO THE SPEC'S OWN CONFIG.
+//
+// The operator: "When adding an MCP server for a worker either through catalog or manually, the
+// credentials should be able to be selected rather than typed just like it does for projects and
+// conversations. I understand that it is inline but that doesn't mean that info can't be built on top
+// and passed to the config."
+//
+// This is that sentence, asserted end to end: the field offers the STORE'S names (selection), the
+// spec's own env key is what it points at, the reference lands in the version's permissions, and
+// nothing is created in mcp_servers (there is no row to create).
+func TestWorkerVersionCredentialIsSelectedAndBuiltIntoTheSpec(t *testing.T) {
+	m, stub, _, rec := openingWorkerVersionWithStore(t, versionPermissionsWithEnv, `[]`)
+	putCursor(m, rowIndexOf(t, m, "gh"))
+
+	pressScope(t, m, "k")
+	f := m.convScopeForm
+	if f == nil {
+		t.Fatal("`k` opened no credential form on an inline spec")
+	}
+	// SELECTION: the picker's options ARE the store's names — never a value, and never empty for a
+	// store that holds secrets (the names are the whole point of the control). CUSTOM IS LAST, and it is
+	// the only way to store a new one: a name that is not in the store is not a reference.
+	if got, want := optionValues(f.Spec("secret")), []string{
+		"MCP_GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN", "SLACK_BOT_TOKEN", mcpforms.CustomSecretChoice,
+	}; !slices.Equal(got, want) {
+		t.Errorf("the secret field offers %v, want the tenant store's names and Custom %v", got, want)
+	}
+	// THE KEY IS THE SPEC'S OWN, offered and preselected because it is the only one — so the common
+	// case is one pick, not a decision about a name that has a single answer.
+	key := f.Spec("key")
+	if key == nil {
+		t.Fatal("the credential form has no key field")
+	}
+	if key.Initial != "GITHUB_PERSONAL_ACCESS_TOKEN" {
+		t.Errorf("the key field starts at %q, want the spec's own env key", key.Initial)
+	}
+	if got := optionValues(key); !slices.Contains(got, "GITHUB_PERSONAL_ACCESS_TOKEN") {
+		t.Errorf("the key field does not offer the spec's existing env key: %v", got)
+	}
+
+	f.Set("secret", "MCP_GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN")
+	submitAndRoute(t, m)
+
+	if rec.saves != 1 {
+		t.Fatalf("the version was saved %d times, want exactly 1", rec.saves)
+	}
+	if !strings.Contains(flatJSON(rec.perm), `"GITHUB_PERSONAL_ACCESS_TOKEN":"${MCP_GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN}"`) {
+		t.Errorf("the committed spec does not reference the stored secret: %s", rec.perm)
+	}
+	// THE VERSION'S OTHER PERMISSION KEYS SURVIVE (the modal owns mcp_servers, never the blob).
+	if !strings.Contains(rec.perm, `"tools"`) {
+		t.Errorf("the commit dropped the version's other permissions: %s", rec.perm)
+	}
+	// NO ROW, AND NO OWNED-ROW CREDENTIAL RPC: this scope's credential is a reference in the spec.
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	if len(stub.created) != 0 {
+		t.Errorf("attaching a credential created %d MCP rows — a version's specs are INLINE", len(stub.created))
+	}
+	if len(stub.secrets) != 0 {
+		t.Errorf("attaching a credential sent %d SetMCPServerSecret calls, which address a ROW this "+
+			"scope does not have", len(stub.secrets))
+	}
+}
+
+// THE REFERENCE LANDS IN THE MAP THE SPEC'S TRANSPORT READS: headers for streamable HTTP, env for
+// stdio. A credential written into the wrong map would be silently never sent.
+func TestWorkerVersionCredentialWritesHeadersForAnHTTPspec(t *testing.T) {
+	const httpPerms = `{"mcp_servers":[{"id":"remote","type":"http","url":"https://mcp.example/sse",` +
+		`"headers":{"Authorization":""}}]}`
+	m, _, _, rec := openingWorkerVersionWithStore(t, httpPerms, `[]`)
+	putCursor(m, rowIndexOf(t, m, "remote"))
+
+	pressScope(t, m, "k")
+	f := m.convScopeForm
+	if f == nil {
+		t.Fatal("`k` opened no credential form on an http spec")
+	}
+	if got := optionValues(f.Spec("key")); !slices.Contains(got, "Authorization") {
+		t.Errorf("the key field does not offer the spec's existing header: %v", got)
+	}
+	f.Set("secret", "SLACK_BOT_TOKEN")
+	submitAndRoute(t, m)
+
+	if !strings.Contains(flatJSON(rec.perm), `"headers":{"Authorization":"${SLACK_BOT_TOKEN}"}`) {
+		t.Errorf("the header was not pointed at the stored secret: %s", rec.perm)
+	}
+	if !strings.Contains(rec.perm, `"url"`) {
+		t.Errorf("the commit dropped the spec's url: %s", rec.perm)
+	}
+}
+
+// A NAME THE STORE DOES NOT HOLD IS STORED FIRST, AND ONLY THEN IS THE VERSION WRITTEN.
+//
+// The order is the contract: a version written first would carry a reference nothing resolves, and
+// the operator would find out when the worker ran. The store's write is observed to happen while the
+// version has NOT been saved yet.
+func TestWorkerVersionCredentialStoresANewSecretBeforeTheVersion(t *testing.T) {
+	m, _, sec, rec := openingWorkerVersionWithStore(t, versionPermissionsWithEnv, `[]`)
+	putCursor(m, rowIndexOf(t, m, "gh"))
+	pressScope(t, m, "k")
+
+	savesWhenStored := -1
+	sec.mu.Lock()
+	sec.onWrite = func() { savesWhenStored = rec.saves }
+	sec.mu.Unlock()
+
+	f := m.convScopeForm
+	// A NEW SECRET IS THE CUSTOM CHOICE, in BOTH halves: the name and the value belong to one intention,
+	// which is why picking a stored secret no longer leaves a stray value field beside it.
+	f.Set("secret", mcpforms.CustomSecretChoice)
+	f.Set("newname", "JIRA_API_TOKEN")
+	f.Set("value", "s3cret")
+	submitAndRoute(t, m)
+
+	if savesWhenStored != 0 {
+		t.Errorf("the version had already been saved %d time(s) when the secret was stored — the "+
+			"reference must not reach the version before the secret it points at exists", savesWhenStored)
+	}
+	sec.mu.Lock()
+	defer sec.mu.Unlock()
+	if len(sec.created) != 1 || sec.created[0].GetName() != "JIRA_API_TOKEN" ||
+		sec.created[0].GetValue() != "s3cret" {
+		t.Fatalf("the store received %+v, want the typed name and value", sec.created)
+	}
+	if rec.saves != 1 {
+		t.Fatalf("the version was saved %d times, want 1", rec.saves)
+	}
+	if !strings.Contains(flatJSON(rec.perm), `"GITHUB_PERSONAL_ACCESS_TOKEN":"${JIRA_API_TOKEN}"`) {
+		t.Errorf("the spec does not reference the secret just stored: %s", rec.perm)
+	}
+}
+
+// A NAME THAT IS NOT STORED, WITH NO VALUE, IS REFUSED BEFORE ANYTHING IS WRITTEN — because the
+// reference could not be resolved when the worker ran, and a form that accepted it would be promising
+// something the store cannot keep.
+func TestWorkerVersionCredentialRefusesAnUnstoredNameWithoutAValue(t *testing.T) {
+	m, stub, sec, rec := openingWorkerVersionWithStore(t, versionPermissionsWithEnv, `[]`)
+	putCursor(m, rowIndexOf(t, m, "gh"))
+	pressScope(t, m, "k")
+
+	f := m.convScopeForm
+	f.Set("secret", "NOT_A_STORED_SECRET")
+	if _, err := f.Submit(); err == nil {
+		t.Fatal("the form accepted a secret name that is not in the store, with no value to store it")
+	}
+	if f.Submitted {
+		t.Error("the form closed on a rejected submit — it must stay open so the reason can be read")
+	}
+	if f.SubmitErr == "" {
+		t.Error("the form rejected the credential without saying why")
+	}
+	sec.mu.Lock()
+	created, updated := len(sec.created), len(sec.updated)
+	sec.mu.Unlock()
+	stub.mu.Lock()
+	rows := len(stub.created)
+	stub.mu.Unlock()
+	if created+updated+rows != 0 || rec.saves != 0 {
+		t.Errorf("a refused credential wrote something (store creates=%d updates=%d, rows=%d, version "+
+			"saves=%d)", created, updated, rows, rec.saves)
+	}
+	if got := m.scope.inline[0].Env["GITHUB_PERSONAL_ACCESS_TOKEN"]; got != "" {
+		t.Errorf("the refused credential still changed the spec's env: %q", got)
+	}
+}
+
+// A STORE THAT REJECTS THE WRITE LEAVES THE SPEC AND THE VERSION EXACTLY AS THEY WERE. This is the
+// failure the ordering exists for: the operator sees the store's own message, and the version does not
+// end up referencing a secret that is not there.
+func TestWorkerVersionCredentialStoreFailureLeavesTheSpecAlone(t *testing.T) {
+	m, _, sec, rec := openingWorkerVersionWithStore(t, versionPermissionsWithEnv, `[]`)
+	putCursor(m, rowIndexOf(t, m, "gh"))
+	pressScope(t, m, "k")
+
+	sec.mu.Lock()
+	sec.refuse = errors.New("invalid secret name \"my_token\": must match ^[A-Z][A-Z0-9_]+$")
+	sec.mu.Unlock()
+
+	f := m.convScopeForm
+	m.dock.SetError("")
+	f.Set("secret", mcpforms.CustomSecretChoice)
+	f.Set("newname", "my_token")
+	f.Set("value", "s3cret")
+	submitAndRoute(t, m)
+
+	if rec.saves != 0 {
+		t.Errorf("the version was saved %d time(s) after the store refused the credential — it now "+
+			"references a secret nothing resolves", rec.saves)
+	}
+	if m.dock.Err == "" {
+		t.Error("a rejected credential was accepted silently")
+	}
+	if got := m.scope.inline[0].Env["GITHUB_PERSONAL_ACCESS_TOKEN"]; got != "" {
+		t.Errorf("the spec was changed by a store write that failed: %q", got)
+	}
+}
+
+// AN EXISTING SECRET IS ROTATED IN PLACE (an UPDATE by id, not a create) — which is now the CUSTOM path,
+// because a ROTATION still means "here is a new value": picking the name from the list is a REFERENCE, and
+// the value it points at is not re-sent from the form.
+func TestWorkerVersionCredentialReplacesAnExistingSecret(t *testing.T) {
+	m, _, sec, _ := openingWorkerVersionWithStore(t, versionPermissionsWithEnv, `[]`)
+	putCursor(m, rowIndexOf(t, m, "gh"))
+	pressScope(t, m, "k")
+
+	f := m.convScopeForm
+	f.Set("secret", mcpforms.CustomSecretChoice)
+	f.Set("newname", "MCP_GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN")
+	f.Set("value", "ghp_rotated")
+	submitAndRoute(t, m)
+
+	sec.mu.Lock()
+	defer sec.mu.Unlock()
+	if len(sec.created) != 0 {
+		t.Errorf("replacing a stored secret created %d rows, want an UPDATE of the existing one", len(sec.created))
+	}
+	if len(sec.updated) != 1 || sec.updated[0].GetId() != "sec-gh" ||
+		sec.updated[0].GetValue() != "ghp_rotated" {
+		t.Fatalf("the store received %+v, want an update of sec-gh", sec.updated)
+	}
+}
+
+// `r` RE-READS THE STORE, because the picker's list is as live as the store: a secret the operator has
+// just created in the Control screen must be selectable here without reopening the modal.
+func TestWorkerVersionScopeRefreshRereadsTheStore(t *testing.T) {
+	m, _, sec, _ := openingWorkerVersionWithStore(t, versionPermissionsWithEnv, `[]`)
+	putCursor(m, rowIndexOf(t, m, "gh"))
+
+	sec.mu.Lock()
+	sec.rows = append(sec.rows, &apiv1.TenantSecret{Id: "sec-new", Name: "NEWLY_STORED_TOKEN"})
+	sec.mu.Unlock()
+
+	cmd := pressScope(t, m, "r")
+	if cmd == nil {
+		t.Fatal("`r` fetched nothing at the worker-version scope — the credential picker cannot be " +
+			"refreshed")
+	}
+	applyFetch(t, m, cmd)
+	if !slices.Contains(secretChoiceNames(m.scope.secrets), "NEWLY_STORED_TOKEN") {
+		t.Errorf("`r` did not re-read the store: %v", secretChoiceNames(m.scope.secrets))
+	}
+
+	pressScope(t, m, "k")
+	if got := optionValues(m.convScopeForm.Spec("secret")); !slices.Contains(got, "NEWLY_STORED_TOKEN") {
+		t.Errorf("the re-read names are not what the form offers: %v", got)
+	}
+}
+
+// THE OPEN PATH READS THE STORE IN THE ONE FETCH IT ALREADY MAKES, so the picker is POPULATED when the
+// modal appears rather than after a second round trip — and so the wiring that carries the names from
+// the fetch onto the modal cannot come loose unnoticed (it is two assignments, which is exactly the
+// kind of thing that silently stops happening).
+func TestOpeningAWorkerVersionCarriesTheStoresNames(t *testing.T) {
+	m, _, _ := newScopeApp(t)
+	cmd := m.OpenWorkerMCPModal("w1", "Sweeper")
+	if cmd == nil {
+		t.Fatal("the open produced no fetch")
+	}
+	msg, ok := cmd().(workerVersionScopeMsg)
+	if !ok {
+		t.Fatalf("the open produced %#v, want a workerVersionScopeMsg", msg)
+	}
+	if msg.err != "" {
+		t.Fatalf("the fetch failed: %s", msg.err)
+	}
+	m.dispatch(msg)
+	if m.scope == nil || m.scope.kind != ownerWorkerVersion {
+		t.Fatalf("the modal did not open on the version (scope=%+v)", m.scope)
+	}
+	if got := secretChoiceNames(m.scope.secrets); !slices.Contains(got, "SLACK_BOT_TOKEN") {
+		t.Errorf("the open did not carry the store's names onto the modal: %v", got)
+	}
+	// AND THE FORM IS READY TO PICK FROM THEM, on the version's own spec.
+	putCursor(m, rowIndexOf(t, m, "gh"))
+	pressScope(t, m, "k")
+	if m.convScopeForm == nil {
+		t.Fatal("`k` opened no credential form after the real open path")
+	}
+	if got := optionValues(m.convScopeForm.Spec("secret")); !slices.Contains(got, "SLACK_BOT_TOKEN") {
+		t.Errorf("the form does not offer the names the open read: %v", got)
+	}
+}
+
+// THE CATALOG CASE: a spec with NO env key yet — the catalog prefill deliberately leaves a secret key
+// out (it never writes a blank one), so the KEY is typed while the SECRET is still picked. The
+// reference lands the same way.
+//
+// THE KEY'S GRAMMAR IS NOT THE FORM'S BUSINESS, and that is asserted here by typing a name no
+// environment could carry: the form takes it and builds the reference, because the rule belongs to the
+// plane — a worker version's inline specs are validated at save
+// (mcpsettings.ValidateInlinePermissions, which reuses the owned-row rule), so every writer is covered
+// by one copy of it rather than by one per client.
+func TestWorkerVersionCredentialHandlesASpecWithNoKeysYet(t *testing.T) {
+	const freshCatalogSpec = `{"mcp_servers":[{"id":"github","type":"stdio",` +
+		`"command":["npx","-y","@modelcontextprotocol/server-github"]}]}`
+	m, _, _, rec := openingWorkerVersionWithStore(t, freshCatalogSpec, `[]`)
+	putCursor(m, rowIndexOf(t, m, "github"))
+
+	pressScope(t, m, "k")
+	f := m.convScopeForm
+	if f == nil {
+		t.Fatal("`k` opened no credential form on a spec with no env key")
+	}
+	if got := optionValues(f.Spec("key")); len(got) != 0 {
+		t.Errorf("the key field offers %v — its options are the spec's OWN keys, and this spec has "+
+			"none yet", got)
+	}
+
+	f.Set("key", "NOT A KEY")
+	f.Set("secret", "MCP_GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN")
+	submitAndRoute(t, m)
+	if rec.saves != 1 {
+		t.Fatalf("the version was saved %d times, want 1 — the form does not restate the plane's key "+
+			"grammar, it builds the reference the operator asked for", rec.saves)
+	}
+	// Parsed rather than substring-matched, because THIS key deliberately contains a space (flatJSON
+	// squeezes whitespace, so it cannot be used to assert a value that contains any).
+	if got := specEnv(t, rec.perm, "github")["NOT A KEY"]; got != "${MCP_GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN}" {
+		t.Errorf("the typed key reads %q, want the picked secret's reference", got)
+	}
+}
+
+// specEnv parses a committed permissions blob and returns one inline spec's env — the layout- and
+// whitespace-independent way to assert what a reference landed as.
+func specEnv(t *testing.T, permsJSON, specID string) map[string]string {
+	t.Helper()
+	var p struct {
+		MCPServers []struct {
+			ID  string            `json:"id"`
+			Env map[string]string `json:"env"`
+		} `json:"mcp_servers"`
+	}
+	if err := json.Unmarshal([]byte(permsJSON), &p); err != nil {
+		t.Fatalf("the committed permissions are not JSON: %v\n%s", err, permsJSON)
+	}
+	for _, sp := range p.MCPServers {
+		if sp.ID == specID {
+			return sp.Env
+		}
+	}
+	t.Fatalf("no inline spec %q in the committed permissions:\n%s", specID, permsJSON)
+	return nil
+}
+
+// secretChoiceNames lists the choices' names, for assertions.
+func secretChoiceNames(choices []mcpforms.SecretChoice) []string {
+	out := make([]string, 0, len(choices))
+	for _, c := range choices {
+		out = append(out, c.Name)
+	}
+	return out
+}
+
 // ── one modal, three owners: the surface must not confuse them ───────────────────────────
 
 // THE TITLE NAMES THE OWNER, so a destructive verb can never be aimed at the wrong scope by mistake.
 func TestTheModalTitleNamesTheOwner(t *testing.T) {
-	m, _ := newScopeApp(t)
+	m, _, _ := newScopeApp(t)
 
 	m.scope = &scopeModal{kind: ownerProject, projectID: "p1", label: "Orchicon"}
 	if got := m.scopeTitle(); !strings.Contains(got, "Orchicon") || !strings.Contains(got, "project") {
@@ -315,7 +805,7 @@ func TestTheModalTitleNamesTheOwner(t *testing.T) {
 // THE CONVERSATION-CLOSE GUARD MUST NOT CLOSE A PROJECT OR VERSION MODAL. It fires when the open
 // conversation changes — and a project modal has no conversation to be about, so it must survive.
 func TestSwitchingConversationsDoesNotCloseAnotherScopesModal(t *testing.T) {
-	m, _ := newScopeApp(t)
+	m, _, _ := newScopeApp(t)
 	openProjectScope(t, m)
 
 	m.chatConvID = "some-other-chat"
@@ -361,7 +851,7 @@ var (
 // ADVERTISED from any row. It had been dropped by the MCP row's case, because each case wrote out a
 // complete list and the global verbs were the ones it forgot.
 func TestTheCatalogVerbIsAdvertisedFromEveryRow(t *testing.T) {
-	m, _ := newScopeApp(t)
+	m, _, _ := newScopeApp(t)
 	openProjectScope(t, m)
 	rows := m.scope.rows(m)
 	if len(rows) == 0 {
@@ -385,21 +875,24 @@ func TestTheCatalogVerbIsAdvertisedFromEveryRow(t *testing.T) {
 	}
 }
 
-// A WORKER VERSION ADVERTISES NEITHER THE CATALOG NOR THE ROW-ONLY VERBS — there is no row to create,
-// and nothing to install or attach a credential to. The note in the list says why.
+// A WORKER VERSION ADVERTISES WHAT IT CAN DO AND NOT WHAT IT CANNOT.
+//
+// `i: install` IS ABSENT, because an install status can only live on a row this scope does not have.
+// `c: catalog` and `k: credential` ARE PRESENT, and both were once refused here for the same wrong
+// reason — that a version's specs are INLINE. Inline decides WHERE a thing is written (the version's
+// own permissions, the spec's own env), not whether it can be done: the catalog fills the add form,
+// and a credential is built into the spec's config.
 func TestTheVersionScopeAdvertisesOnlyWhatItCanDo(t *testing.T) {
-	m, _, _ := openingWorkerVersion(t, versionPermissions, `[]`)
+	m, _, _, _ := openingWorkerVersion(t, versionPermissions, `[]`)
 	putCursor(m, rowIndexOf(t, m, "pg"))
 	hint := strings.Join(m.scopeHintItems(), " · ")
-	// `c: catalog` IS OFFERED HERE — the catalog PREFILLS the add form and the form's save writes the
-	// spec inline. The operator: "The gui allows this." It does, and the TUI's refusal was an assumption
-	// about the catalog's ROLE, not a limitation: the catalog fills a form; the save decides the target.
-	for _, absent := range []string{"i: install", "k: credential"} {
-		if strings.Contains(hint, absent) {
-			t.Errorf("the worker-version scope offers %q, which needs a ROW it does not have: %q", absent, hint)
-		}
+	if strings.Contains(hint, "i: install") {
+		t.Errorf("the worker-version scope offers %q, which needs a ROW it does not have: %q",
+			"i: install", hint)
 	}
-	for _, present := range []string{"enter/e: edit", "d: remove", "a: add", "c: catalog", "s: skill files"} {
+	for _, present := range []string{
+		"enter/e: edit", "d: remove", "k: credential", "a: add", "c: catalog", "s: skill files",
+	} {
 		if !strings.Contains(hint, present) {
 			t.Errorf("the worker-version scope does not offer %q: %q", present, hint)
 		}
@@ -411,7 +904,7 @@ func TestTheVersionScopeAdvertisesOnlyWhatItCanDo(t *testing.T) {
 // The operator caught the earlier wording: "Workers are tenant level and not project level so I don't
 // think the wording on the mcp add for projects should mention 'worker versions'."
 func TestTheProjectScopeDoesNotClaimWorkersAsDisciples(t *testing.T) {
-	m, _ := newScopeApp(t)
+	m, _, _ := newScopeApp(t)
 	openProjectScope(t, m)
 	body := scopeText(m)
 	if strings.Contains(body, "worker") {
@@ -424,7 +917,7 @@ func TestTheProjectScopeDoesNotClaimWorkersAsDisciples(t *testing.T) {
 
 	// And the version scope states the fact from its own side, so an operator who expected inheritance is
 	// told rather than left guessing.
-	m2, _, _ := openingWorkerVersion(t, versionPermissions, `[]`)
+	m2, _, _, _ := openingWorkerVersion(t, versionPermissions, `[]`)
 	vbody := scopeText(m2)
 	if !strings.Contains(vbody, "tenant-level") {
 		t.Errorf("the worker-version scope does not say a worker inherits no project's MCP:\n%s", vbody)
@@ -445,7 +938,7 @@ func TestTheProjectScopeDoesNotClaimWorkersAsDisciples(t *testing.T) {
 // Driven the way the runtime drives it: the pick's cmd is run, its message is fed back through Update,
 // and the form is then asserted on the model that Update returned.
 func TestVersionCatalogPickPrefillsTheInlineFormAndCreatesNoRow(t *testing.T) {
-	m, stub, _ := openingWorkerVersion(t, `{"tools":["read"],"mcp_servers":[]}`, `[]`)
+	m, stub, _, _ := openingWorkerVersion(t, `{"tools":["read"],"mcp_servers":[]}`, `[]`)
 
 	if cmd := pressScope(t, m, "c"); cmd != nil {
 		_ = cmd() // the catalog LIST fetch
@@ -496,7 +989,7 @@ func TestVersionCatalogPickPrefillsTheInlineFormAndCreatesNoRow(t *testing.T) {
 // the difference between "the key is broken" and "the scope moved" — and the caller is cleared either
 // way, so silence leaves the operator with a modal that closed having done nothing.
 func TestOpeningTheInlineFormWithoutAVersionScopeSaysSo(t *testing.T) {
-	m, _ := newScopeApp(t)
+	m, _, _ := newScopeApp(t)
 	m.scope = nil
 	m.dock.SetError("")
 	m.openInlineSpecForm(&mcpforms.InlineSpec{ID: "x"}, false)
@@ -507,7 +1000,7 @@ func TestOpeningTheInlineFormWithoutAVersionScopeSaysSo(t *testing.T) {
 		t.Error("opening the inline form with no version scope was SILENT — it must name the reason")
 	}
 	// The live path still opens it.
-	m2, _, _ := openingWorkerVersion(t, `{"tools":["read"],"mcp_servers":[]}`, `[]`)
+	m2, _, _, _ := openingWorkerVersion(t, `{"tools":["read"],"mcp_servers":[]}`, `[]`)
 	m2.openInlineSpecForm(&mcpforms.InlineSpec{ID: "sentry", Type: "stdio"}, false)
 	if m2.convScopeForm == nil {
 		t.Error("the inline form did not open on a live version scope")
@@ -534,7 +1027,7 @@ func TestVersionSaveRequestCarriesRepublish(t *testing.T) {
 	t.Cleanup(srv.Close)
 	cl := client.NewWithHTTPClient(client.Options{BaseURL: srv.URL}, srv.Client())
 
-	m, _ := newScopeApp(t)
+	m, _, _ := newScopeApp(t)
 	m.openWorkerVersionScopeModal("Sweeper · v1", versionPermissions, `[]`,
 		m.workerVersionSaver("w1", "v1", cl))
 

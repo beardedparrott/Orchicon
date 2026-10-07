@@ -548,7 +548,12 @@ func TestEmphasisSurvivesWrap(t *testing.T) {
 }
 
 // barColumn returns the reserved scrollbar column of the active body as a
-// per-row string (the last cell of each body row), for bar assertions.
+// per-row string, for bar assertions.
+//
+// THE BAR IS NOT THE ROW'S LAST CELL. A body row renders [content][bar][divider], where the final cell is the
+// one the shell's rail-RESIZE handle owns — so reading the last cell reads the divider and reports no bar at
+// all. The bar sits at the body's content width, which is also where the pane's own hit-test looks for it
+// (diffs.Model.ScrollbarHit), so the reading and the grabbing agree.
 func barColumn(m *Model) string {
 	var body string
 	switch m.Tab {
@@ -559,14 +564,14 @@ func barColumn(m *Model) string {
 	case TabTimeline:
 		body = m.timelineBody()
 	}
+	barX := m.bodyWidth()
 	var b strings.Builder
 	for _, line := range strings.Split(body, "\n") {
-		plain := ansi.Strip(line)
-		if plain == "" {
+		rs := []rune(ansi.Strip(line))
+		if len(rs) <= barX {
 			continue
 		}
-		rs := []rune(plain)
-		b.WriteString(string(rs[len(rs)-1]))
+		b.WriteString(string(rs[barX]))
 	}
 	return b.String()
 }

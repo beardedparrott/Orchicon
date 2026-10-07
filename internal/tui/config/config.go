@@ -114,6 +114,13 @@ type Config struct {
 	// this build does not know (a removed palette, a hand-edit) degrades to the default rather than
 	// failing to load or rendering broken.
 	ProjectThemes map[string]string
+	// ListSharePct is the operator's width preference for the TREE/LIST pane of every master-detail screen
+	// (work items, executions, workers …), as a percentage of the content width (0 = the default even split).
+	//
+	// It is a DIFFERENT preference from DiffRailWidth and deliberately so: that one sizes the diff rail
+	// beside the content, this one sizes the list INSIDE a screen. Reading a long work-item name is a
+	// standing preference, not a per-session choice, which is why it persists.
+	ListSharePct int
 }
 
 // FileName / DirName are the fixed locations under the user's home dir.
@@ -239,6 +246,10 @@ func render(cfg *Config) string {
 		for _, id := range ids {
 			fmt.Fprintf(&b, "%s = %q\n", id, cfg.ProjectThemes[id])
 		}
+	}
+	// The master-detail split, under the same omit-at-zero contract.
+	if cfg.ListSharePct > 0 {
+		fmt.Fprintf(&b, "list_share_pct = %d\n", cfg.ListSharePct)
 	}
 	names := make([]string, 0, len(cfg.Profiles))
 	for name := range cfg.Profiles {
@@ -369,6 +380,16 @@ func parse(data string) (*Config, error) {
 					return nil, fmt.Errorf("config line %d: %w", i+1, err)
 				}
 				cfg.DiffRailWidth = n
+			}
+		case "list_share_pct":
+			// MANDATORY for the same reason diff_rail_width's case is: render writes it, and the `default`
+			// below rejects an unknown key, so a config this program wrote must load.
+			if cur == nil {
+				n, err := strconv.Atoi(value)
+				if err != nil {
+					return nil, fmt.Errorf("config line %d: %w", i+1, err)
+				}
+				cfg.ListSharePct = n
 			}
 		case "newline":
 			if cur != nil {

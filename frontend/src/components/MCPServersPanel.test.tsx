@@ -52,11 +52,19 @@ describe("MCPServersPanel (child 7, AC 1-3)", () => {
     expect(src).toMatch(/Installations are explicit/);
   });
 
-  it("the Credentials form is write-only", () => {
-    expect(src).toContain("useSetMCPServerSecret");
-    expect(api).toContain("setMCPServerSecret");
+  it("the credential control draws from the vault — a key/value pair is not an option", () => {
+    // THE CONTRACT MOVED WITH THE OPERATOR'S RULE, and this is the assertion that changed: a credential is
+    // SELECTED from the tenant secrets store and referenced as ${SECRET_NAME}, never typed onto a server.
+    // ("on projects in the GUI … it does NOT allow you to select/add from the secrets vault. It is still
+    // manually typed in key, value pair. We should not allow that option at all.")
+    expect(src).toContain("useSecretList");
+    expect(src).toContain("useCreateSecret");
+    expect(src).toContain("useUpdateSecret");
+    // A value field survives for ONE case only — creating a new secret, which is write-only by nature.
     expect(src).toContain('type="password"');
     expect(src).toMatch(/tenant secrets store/);
+    // The mechanism that typed a key and a value straight onto the server is gone from the panel.
+    expect(src).not.toContain("useSetMCPServerSecret");
   });
 
   it("has NO tenant-default tier: the checkbox, toggleDefault and the selection hooks are gone", () => {

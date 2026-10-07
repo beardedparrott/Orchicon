@@ -10,7 +10,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -467,25 +466,20 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	feStore := fileedit.NewPGStore(pool)
 	feSvc := fileedit.NewService(feStore, log)
 	if pub != nil {
+		// PUBLISHED FOR EVERY OWNER KIND, under its OWN subject and event type.
+		//
+		// This used to return early unless the owner was an execution and hardcode the subject to match, so an
+		// Ask conversation's edits reached the ledger and never the live stream — the operator saw them only
+		// after a browser refresh, and the TUI's diff pane (which subscribes with the same owner kind) sat
+		// frozen in exactly the same way. Which subject and which event type a kind uses is decided in
+		// fileedit.EventPayload, in ONE place, because a publisher and a subscriber that each spell the subject
+		// out are free to drift — which is what happened.
 		feSvc.Publisher = func(ownerKind, ownerID string, row *db.FileEditLedgerRow) {
-			if ownerKind != db.FileEditOwnerExecution || pub == nil {
-				return
-			}
-			payload, err := json.Marshal(map[string]any{
-				"event_type":   "execution.file_edit",
-				"tenant_id":    row.TenantID,
-				"execution_id": row.OwnerID,
-				"owner_kind":   ownerKind,
-				"owner_id":     ownerID,
-				"edit":         fileedit.RowToProto(row),
-				"occurred_at":  time.Now().UTC().Format(time.RFC3339Nano),
-			})
+			subject, payload, err := fileedit.EventPayload(ownerKind, ownerID, row)
 			if err != nil {
 				return
 			}
-			_ = pub.Publish(context.Background(),
-				eventbus.SubjectFor("execution", "file_edit"),
-				row.ID, payload)
+			_ = pub.Publish(context.Background(), subject, row.ID, payload)
 		}
 	}
 	// File-edit ledger hook (diff pipeline): the execution population's

@@ -266,19 +266,19 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 		// Gate: they return false when the diff pane is CLOSED (diffRailWidthStep / diffRailWidthReset),
 		// so the chord is a no-op there and falls through to whatever else might want it.
 		{
-			Name: "widen diff rail", Keys: "ctrl+right", Scope: "global",
+			Name: "widen the split (diff rail, or the screen's tree/detail)", Keys: "ctrl+right", Scope: "global",
 			Match:  keyMatcher("ctrl+right"),
-			Handle: func(m *App, _ tea.Msg) bool { return m.diffRailWidthStep(+1) },
+			Handle: func(m *App, _ tea.Msg) bool { return m.splitWidthStep(+1) },
 		},
 		{
-			Name: "narrow diff rail", Keys: "ctrl+left", Scope: "global",
+			Name: "narrow the split (diff rail, or the screen's tree/detail)", Keys: "ctrl+left", Scope: "global",
 			Match:  keyMatcher("ctrl+left"),
-			Handle: func(m *App, _ tea.Msg) bool { return m.diffRailWidthStep(-1) },
+			Handle: func(m *App, _ tea.Msg) bool { return m.splitWidthStep(-1) },
 		},
 		{
-			Name: "reset diff rail width (auto)", Keys: "ctrl+down", Scope: "global",
+			Name: "reset the split width", Keys: "ctrl+down", Scope: "global",
 			Match:  keyMatcher("ctrl+down"),
-			Handle: func(m *App, _ tea.Msg) bool { return m.diffRailWidthReset() },
+			Handle: func(m *App, _ tea.Msg) bool { return m.splitWidthReset() },
 		},
 	}
 	// One chord route per tab, in tab order: F1 … F7.
@@ -424,6 +424,15 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	// It is cheap: an interface assertion per screen (a handful), on a path that already walks the whole
 	// screen/route tree.
 	m.rebindScreens()
+	// AN ESC-LESS MOUSE REPORT IS NOT TEXT. A resize streams motion reports, bubbletea's lone-ESC timeout can
+	// fire mid-sequence, and the tail arrives as runes — which every field in the shell would happily insert.
+	// Dropped here, in the message funnel, so it cannot reach the composer or a form field at all.
+	if m.dropOrphanedMouseReport(msg) {
+		return m, nil
+	}
+	if cmd, ok := m.pasteKey(msg); ok {
+		return m, cmd
+	}
 	if wm, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width, m.height = wm.Width, wm.Height
 		m.footer.Width = wm.Width
@@ -543,6 +552,13 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		m.openInlineSpecForm(&pm.spec, false)
 		return m, nil
 	}
+	// A CREDENTIAL FOR AN INLINE SPEC ARRIVES THE SAME WAY AND FOR THE SAME REASON. It is produced by
+	// the credential FORM's submit (which must not change the spec until the store write it depends on
+	// has landed), so it arrives while that form is still up — above the guard, where a form's own
+	// submit can be acted on.
+	if cm, ok := msg.(credentialAttachedMsg); ok {
+		return m, m.onCredentialAttached(cm)
+	}
 	// The conversation-scope MCP modal (/mcp define) is the same shape again: it is layered above the
 	// composer, so a save chord aimed at the form can never reach a message being typed.
 	if m.convScopeForm != nil {
@@ -584,6 +600,11 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			return m, nil
 		case scopeDataMsg:
 			m.onScopeData(msg)
+			return m, nil
+		case scopeSecretsMsg:
+			// The tenant secrets store's names, for the credential picker (`r`, and the open path's own
+			// read). Discarded unless it is still about THIS surface — see onScopeSecrets.
+			m.onScopeSecrets(msg)
 			return m, nil
 		}
 	}
@@ -1154,6 +1175,47 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 		}
 		// Any other action while resizing (e.g. a wheel) falls through to normal handling.
 	}
+	// DRAG THE DIFF RAIL'S SCROLLBAR — claimed here for the SAME reason the divider is, one block up.
+	//
+	// The bar's press starts the gesture (the pane decides whether that means a jump — see
+	// ScrollbarDragStart), its motion follows the pointer, its release ends it. It has to be claimed ABOVE `if m.clip != nil`, because a left
+	// press in the rail sets a SELECTION REGION (selectionRegionAt) and clipState then CONSUMES the motion —
+	// so a drag handled by the pane would win the press and lose every step after it, selecting text
+	// instead of scrolling.
+	//
+	// THE OPERATOR: "I can't grab onto the scroll bar and drag it up and down like you can in the GUI." The
+	// bar also could not be CLICKED, for the same underlying reason: it occupied the pane's last cell, which
+	// the divider claims, so the pane never saw a press there at all. The bar now has a column of its own
+	// (one cell inside the edge) and this is the gesture that uses it.
+	if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft &&
+		!m.menuHit(mo.X, mo.Y) && m.diffScrollbarHit(mo.X, mo.Y) {
+		m.diffScrollDragging = true
+		// ON THE THUMB the content is picked up where it is; ON THE TRACK the viewport jumps to the pointer
+		// first. Both are the pane's arithmetic — this only forwards the gesture.
+		m.diffPane.ScrollbarDragStart(mo.Y)
+		return m, nil // never forwarded: no selection region is set over the rail
+	}
+	if m.diffScrollDragging {
+		if !m.diffOpen || m.diffPane == nil {
+			// The rail was closed mid-drag (esc, or the ✕). Drop the gesture rather than jump a pane that is
+			// no longer on screen.
+			m.diffScrollDragging = false
+			return m, nil
+		}
+		switch mo.Action {
+		case tea.MouseActionMotion:
+			// NO X TEST, deliberately: the gesture was claimed at the press, and the bar must keep following
+			// the pointer even when a diagonal hand movement takes it out of the rail's columns. Terminal
+			// rows outside the body clamp, which is what dragging past either end should do.
+			m.diffPane.ScrollbarDragTo(mo.Y)
+			return m, nil
+		case tea.MouseActionRelease:
+			m.diffScrollDragging = false
+			m.diffPane.ScrollbarDragEnd()
+			return m, nil
+		}
+		// Any other action while dragging (e.g. a wheel) falls through to normal handling.
+	}
 	// SELECT AND COPY runs ahead of everything else, because it has to work over EVERYTHING: the
 	// tab bar, the dropdown, the rails, a pane, the transcript. The shell owns the frame, so it
 	// is the only layer that can select across all of them (clipboard.go).
@@ -1330,7 +1392,17 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 			return m, m.chat.AnswerQuestion(m.chatConvID, label)
 		}
 	}
-	if (mo.Button == tea.MouseButtonWheelUp || mo.Button == tea.MouseButtonWheelDown) && m.active == TabAsk && m.chatConvID != "" {
+	// THE DIFF RAIL OWNS THE WHEEL IN ITS OWN COLUMNS.
+	//
+	// The operator: "In the TUI diff bar, the scroll doesn't seem to be working." It was not the rail's
+	// handler — the rail scrolls on a wheel (diffs.Model.handleMouse) and on the keyboard (j/k/pgup/pgdown/g/G,
+	// forwarded by diffMsg) — it was this claim, which fired FIRST and took EVERY wheel event on the Ask tab.
+	// The rail is painted over the transcript, so scrolling it moved the transcript underneath while the rail
+	// itself never budged.
+	//
+	// The test is the SAME one diffMsg uses for a click (diffRailOwnsX), deliberately: a column either belongs
+	// to the rail or it does not, and a wheel and a click must not disagree about which.
+	if (mo.Button == tea.MouseButtonWheelUp || mo.Button == tea.MouseButtonWheelDown) && m.active == TabAsk && m.chatConvID != "" && !m.diffRailOwnsX(mo.X) {
 		delta := -3
 		if mo.Button == tea.MouseButtonWheelDown {
 			delta = 3
