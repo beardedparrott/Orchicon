@@ -60,19 +60,30 @@ export function useListAdapterKinds() {
       return {
         kinds: (res.adapterKinds ?? []) as string[],
         askCapableKinds: (res.askCapableKinds ?? []) as string[],
+        // Model-tier classification, answered by the server
+        // (internal/adapter.CatalogSourcedAdapterKinds): the kinds whose models
+        // resolve from the providers SOURCING view rather than opencode-CLI
+        // discovery. Reading it (instead of mirroring a constant here) is what
+        // keeps the GUI and the TUI from diverging.
+        sourcingKinds: (res.sourcingKinds ?? []) as string[],
       };
     },
     staleTime: 5 * 60 * 1000,
   });
 }
 
-export function useListProviders(adapter?: string) {
+// useListProviders reads the gateway's provider set, optionally scoped to one
+// adapter kind (claude → ["anthropic"], from the ProviderRegistry). `enabled`
+// lets a picker that only needs this set for SOME adapters avoid the RPC
+// entirely for the others.
+export function useListProviders(adapter?: string, enabled = true) {
   return useQuery({
     queryKey: adapter ? [...usageKeys.providers, adapter] : usageKeys.providers,
     queryFn: async () => {
       const res = await aiGatewayClient.listProviders({ adapter: adapter ?? "" });
       return (res.providers ?? []) as AIProvider[];
     },
+    enabled,
   });
 }
 
@@ -82,22 +93,66 @@ export function useGetUsage(opts?: {
   executionId?: string;
   provider?: string;
   model?: string;
+  // fetchAll walks the server's next_page_token cursor (the RPC emits it on
+  // full pages) until termination, so totals computed from the result cover
+  // EVERY record, not just the first page. The single-page default keeps the
+  // existing panel behavior (recent rows) for consumers that don't sum.
+  fetchAll?: boolean;
 }, enabled = true) {
   return useQuery({
     queryKey: usageKeys.records(opts?.projectId, opts?.executionId, opts?.taskId),
     queryFn: async () => {
-      const res = await aiGatewayClient.getUsage({
-        pageSize: 100,
+      return await fetchAllUsageRecords({
         projectId: opts?.projectId ?? "",
         taskId: opts?.taskId ?? "",
         executionId: opts?.executionId ?? "",
         provider: opts?.provider ?? "",
         model: opts?.model ?? "",
+        fetchAll: opts?.fetchAll ?? false,
       });
-      return (res.records ?? []) as UsageRecord[];
     },
     enabled,
   });
+}
+
+export async function fetchAllUsageRecords(opts: {
+  projectId?: string;
+  taskId?: string;
+  executionId?: string;
+  provider?: string;
+  model?: string;
+  sessionId?: string;
+  fetchAll?: boolean;
+}): Promise<UsageRecord[]> {
+  const base = {
+    projectId: opts?.projectId ?? "",
+    taskId: opts?.taskId ?? "",
+    executionId: opts?.executionId ?? "",
+    provider: opts?.provider ?? "",
+    model: opts?.model ?? "",
+    sessionId: opts?.sessionId ?? "",
+  };
+  // Single-page mode (the default) reproduces the pre-cursor behavior
+  // exactly: one request, pageSize 100, recent rows for list consumers.
+  if (!opts?.fetchAll) {
+    const res = await aiGatewayClient.getUsage({ ...base, pageSize: 100 });
+    return (res.records ?? []) as UsageRecord[];
+  }
+  // fetchAll drives the GetUsage cursor to termination (the server clamps
+  // pageSize to ≤200 and hands back the last row's id as next_page_token on
+  // a FULL page only). The hard page cap guards against a server that keeps
+  // minting tokens — termination must never depend on the remote behaving:
+  // 63 pages of 200 = up to 12,600 records, far beyond any lifetime a
+  // single tenant's credits view should aggregate.
+  const first = await aiGatewayClient.getUsage({ ...base, pageSize: 200 });
+  const records = [...(first.records ?? [])] as UsageRecord[];
+  let token = first.nextPageToken;
+  for (let page = 0; token && page < 63; page++) {
+    const next = await aiGatewayClient.getUsage({ ...base, pageSize: 200, pageToken: token });
+    records.push(...((next.records ?? []) as UsageRecord[]));
+    token = next.nextPageToken;
+  }
+  return records;
 }
 
 export function useGetWorkflowCosts() {

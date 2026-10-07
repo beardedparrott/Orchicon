@@ -59,18 +59,26 @@ type NativeBridge struct {
 	sessionStore scheduler.SessionStoreFunc
 	// fileEditHook is the diff-pipeline ledger hook fanned out to every
 	// session built here (wired by the server with the same constructor as
-	// the opencode adapter). Nil = no ledger.
+	// the opencode adapter). Nil = no ledger. Its rows are attributed
+	// (execution, <execution id>).
 	fileEditHook opencode.FileEditHookFunc
+	// askFileEditHook is the diff-pipeline ledger hook for the native Ask
+	// path (fired from executeToolCalls, not from a Session). Its rows are
+	// attributed (ask_conversation, <conversation id>) — the exact tuple both
+	// clients' Ask diff panes query — so the live per-edit rows are visible
+	// DURING the turn rather than only via the post-turn git sweep. Nil = no
+	// Ask ledger. Guarded by mu.
+	askFileEditHook opencode.FileEditHookFunc
 	// rtClient routes native bash into the run's container when the run
 	// is container-backed (always-container runtime mode). Nil =
 	// in-process (local mode / standalone / headless).
 	rtClient scheduler.RuntimeClient
-	// mcpConfig resolves the session's MCP server selection (ADR-0008:
-	// worker → project → tenant-default → none over the tenant server list).
-	// Nil/absent → no MCP tools (sessions unaffected). Defaults to the no-op
-	// source so the feature degrades safely until adapter-settings storage
-	// lands.
-	mcpConfig mcpclient.ConfigSource
+	// mcpResolver resolves the session's MCP definitions by SCOPE (ADR-0008,
+	// owner-scoped union). Nil/absent → no MCP tools (sessions unaffected).
+	// A session resolves the WORKER scope — the union of the project's owned
+	// definitions and the executing version's inline specs, the latter
+	// carried on scheduler.ExecutionManifest.Permissions.
+	mcpResolver mcpclient.ScopeResolver
 	// mcpSecretResolver replaces ${SECRET_NAME} refs in resolved MCP server
 	// env/headers with stored tenant-secret plaintext at session time.
 	// Nil → pass-through (no secret resolution).
@@ -83,6 +91,25 @@ type NativeBridge struct {
 	// by mu. Lost on a server restart (the DB transcript remains the
 	// durable record).
 	chatHistory map[string][]Message
+	// askHistorySeen is a MULTISET of fingerprints for every message a session has ever held, so a message
+	// that DISAPPEARS is reported instead of passing silently. Guarded by mu.
+	//
+	// IT EXISTS BECAUSE THIS BUG RAN FOR WEEKS UNSEEN. commitChatHistory assigned `cur = working` — the
+	// committing turn's own snapshot-plus-output — so an interjection (which SUPERSEDES the running turn)
+	// silently erased the other turn's reply: the operator read it on screen while the model could not, and it
+	// took reading the session files by hand to find it.
+	//
+	// WHY FINGERPRINTS AND NOT A LENGTH. The replacing commit does not TRUNCATE, it SWAPS: with the session
+	// holding H+[userA]+[userB], the old commit wrote H+[userA]+replyA — the SAME LENGTH, with userB replaced
+	// by replyA. The next commit then grew it again. A length check, and a per-role count check, both sail
+	// straight past that, which is how the bug survived so long. Only the IDENTITY of the messages changes,
+	// so identity is what has to be watched. (A fingerprint is a 64-bit hash; a collision could only ever HIDE
+	// a loss, never invent one, so it cannot produce a false alarm.)
+	askHistorySeen map[string]map[uint64]int
+	// askHistoryReduceReason marks a session whose NEXT persistence is an INTENTIONAL reduction
+	// (context reduction or compaction — both are lossy by design and both are announced to the operator), so
+	// the shrink guard reports it as intended rather than as data loss. Guarded by mu.
+	askHistoryReduceReason map[string]string
 	// chatTurns tracks in-flight Ask turns per session (sessionID → cancel),
 	// so AbortConversationSession can context-cancel the running HTTP turn.
 	// Guarded by mu.
@@ -142,14 +169,16 @@ func NewBridge(resolver ProviderResolver, projectDir string, log *slog.Logger) *
 		log = slog.Default()
 	}
 	return &NativeBridge{
-		resolver:    resolver,
-		projectDir:  projectDir,
-		log:         log,
-		live:        map[string]*liveSession{},
-		chatHistory: map[string][]Message{},
-		chatTurns:   map[string]context.CancelFunc{},
-		chatBuses:   map[string]*chatBus{},
-		permWaits:   map[string]*permWait{},
+		resolver:               resolver,
+		projectDir:             projectDir,
+		log:                    log,
+		live:                   map[string]*liveSession{},
+		chatHistory:            map[string][]Message{},
+		askHistorySeen:         map[string]map[uint64]int{},
+		askHistoryReduceReason: map[string]string{},
+		chatTurns:              map[string]context.CancelFunc{},
+		chatBuses:              map[string]*chatBus{},
+		permWaits:              map[string]*permWait{},
 	}
 }
 
@@ -163,12 +192,10 @@ func (b *NativeBridge) Kind() string { return "orchicon" }
 // foreign adapter).
 func (b *NativeBridge) SessionOwnerKind() string { return "orchicon" }
 
-// SetConfigSource sets the MCP server config-resolution source for
-// sessions (ADR-0008). Absent → no MCP tools. The platform injects a
-// real source once tenant server storage lands (adapter-settings task);
-// until then the no-op default keeps sessions unaffected.
-func (b *NativeBridge) SetConfigSource(src mcpclient.ConfigSource) {
-	b.mcpConfig = src
+// SetScopeResolver sets the MCP scope resolver for sessions (ADR-0008).
+// Absent → no MCP tools (sessions unaffected).
+func (b *NativeBridge) SetScopeResolver(src mcpclient.ScopeResolver) {
+	b.mcpResolver = src
 }
 
 // SetMCPSecretResolver sets the ${SECRET_NAME} → plaintext resolver used
@@ -186,7 +213,7 @@ func (f ProviderResolverFunc) Get(ctx context.Context, tenantID, providerID stri
 }
 
 // buildSession constructs a native worker Session for an execution: MCP
-// tools (worker → project → tenant-default), host tools (worktree-scoped
+// tools (the scope-addressed union), host tools (worktree-scoped
 // bash/file), memory store, and the provider-bound session. It is the
 // shared construction path for a fresh run (Start) and a follow-up
 // (ContinueSession) so a follow-up is a FULL live session with the same
@@ -204,12 +231,12 @@ func (b *NativeBridge) buildSession(ctx context.Context, exec db.ExecutionRow, m
 	if pd == "" {
 		return nil, nil, fmt.Errorf("orchicon bridge: no project dir (manifest.ProjectDir and bridge projectDir are both empty)")
 	}
-	// MCP tool resolution (ADR-0008): worker selection → project selection
-	// → tenant-default → none, over the tenant-configured server list.
+	// MCP tool resolution (ADR-0008): ONE scope-addressed union
+	// (project-owned ∪ the scope's own definitions), no precedence chain.
 	// Connections are established NOW — per session, never at
 	// control-plane boot — and tool discovery runs at construction so the
 	// discovered signatures are present in the model's first request.
-	mt, terr := b.mcpResolveAndStart(ctx, exec)
+	mt, terr := b.mcpResolveAndStart(ctx, exec, manifest)
 	if terr != nil {
 		return nil, nil, terr
 	}
@@ -685,7 +712,22 @@ func (b *NativeBridge) SetUsageRecorder(fn scheduler.UsageRecorderFunc) {
 // this bridge builds (one shared site in executeTools covers the whole
 // native-loop family). Nil = no ledger (sessions unaffected).
 func (b *NativeBridge) SetFileEditHook(fn opencode.FileEditHookFunc) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.fileEditHook = fn
+}
+
+// SetAskFileEditHook wires the diff-pipeline ledger hook for the native Ask
+// path. Unlike SetFileEditHook (whose sessions are worker executions), the
+// hook fired here is attributed to the ASK CONVERSATION: executeToolCalls
+// passes the conversation id as the hook's owner id and the server builds the
+// hook with db.FileEditOwnerAskConversation, so the live rows land under the
+// tuple both clients already query. Nil = no Ask ledger (Ask then relies on
+// the post-turn git sweep only, the pre-fix behaviour).
+func (b *NativeBridge) SetAskFileEditHook(fn opencode.FileEditHookFunc) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.askFileEditHook = fn
 }
 
 // SetCacheSink wires the session-terminal prefix-cache rollup drain (D3,

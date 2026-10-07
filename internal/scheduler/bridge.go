@@ -196,6 +196,20 @@ type SessionContinuer interface {
 	ContinueSession(ctx context.Context, opts ContinueSessionOpts) (string, error)
 }
 
+// ContextCompacter is the OPTIONAL context-compaction capability: asks a
+// live execution's session to compact its working context in place. It is
+// the adapter-neutral seam for a bridge-specific compact (there is no
+// execution compaction RPC today — Ask-chat's CompactConversation is a
+// different, conversation-scoped operation), declared here so a caller that
+// needs compaction resolves it by TYPE ASSERTION and surfaces an actionable
+// "does not support context compaction" error when a bridge omits it,
+// exactly like MessageInjector/Aborter — never a panic. remainingScope is
+// the goal/acceptance-criteria text that must survive the (soft, lossy)
+// compact.
+type ContextCompacter interface {
+	CompactExecution(ctx context.Context, execID, provider, model, remainingScope string) error
+}
+
 // Aborter is the optional cancellation capability: stops a live
 // execution's session when a human cancels it, so the model stops
 // generating immediately (workflow/execution abort RPCs). Bridges that
@@ -271,6 +285,27 @@ type SessionOwnerKind interface {
 	// SessionOwnerKind returns the adapter kind this client's sessions
 	// belong to (e.g. "orchicon", "opencode").
 	SessionOwnerKind() string
+}
+
+// InProcessToolRunner is the OPTIONAL capability for an adapter that EXECUTES the model's tool calls itself,
+// in this process, rather than handing them to a session serve.
+//
+// IT EXISTS BECAUSE A SIGNAL THAT IS HONEST FOR ONE TRANSPORT IS A GUESS FOR THE OTHER. Ask Orchicon's
+// tool-wedge detector infers "this tool call is wedged" from a call that has been issued and SILENT past a
+// window, and then heals it the heavy way: abort the session, create a fresh one, re-dispatch the same
+// message. That inference is the only thing available when the call went to a serve we cannot see into.
+//
+// A transport that runs the call ITSELF does not need the guess, and pays for it: the operator's prod plane
+// carried 13 "session wedged on a tool — recycling to a fresh session" entries in two days, EVERY one of
+// them tool="bash" on this bridge, each one destroying the session's context over a shell command that was
+// simply still running (the numbers are in askorchicon's stall monitor). The host suite's bash bounds itself
+// with its own hard deadline (bashTimeoutDefault 120s / bashTimeoutMax 600s), so a slow call is not a wedged
+// call — it resolves, and its tool result closes the question.
+type InProcessToolRunner interface {
+	// ToolsRunInProcess reports whether every tool call this transport emits is executed by the transport
+	// itself. False — or the interface being absent — means tools are dispatched to a session serve, where
+	// silence genuinely is the only signal available and the wedge inference must stay armed.
+	ToolsRunInProcess() bool
 }
 
 // NativeSessionIDPrefix is the tag the native (orchicon) bridge prepends to

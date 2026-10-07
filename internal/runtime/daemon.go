@@ -289,6 +289,8 @@ func (d *Daemon) handleRuntime(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "released"})
 	case action == "exec" && r.Method == http.MethodPost:
 		d.handleRuntimeExec(w, r, id)
+	case action == "stdio" && r.Method == http.MethodPost:
+		d.handleRuntimeStdio(w, r, id)
 	default:
 		httpError(w, http.StatusNotFound, "not found")
 	}
@@ -332,6 +334,13 @@ func (d *Daemon) handleRuntimeExec(w http.ResponseWriter, r *http.Request, runID
 	}
 	name := d.pool.containerForRun(runID)
 	if name == "" {
+		// LOGGED, because this handler logged nothing and that silence is what made
+		// a wedged dispatch invisible: an execution sat in `dispatching` for twenty
+		// minutes with an empty container and no line anywhere explaining it. The
+		// caller is naming an id the daemon does not lease — usually an EXECUTION id
+		// where a RUN id belongs.
+		d.Log.Warn("runtime stdio: no runtime container leased for this id — the caller must name the RUN, not the execution",
+			"run", runID)
 		httpError(w, http.StatusNotFound, "no runtime container leased for run "+runID)
 		return
 	}
@@ -372,6 +381,115 @@ func (d *Daemon) handleRuntimeExec(w http.ResponseWriter, r *http.Request, runID
 		}
 	}
 	_ = cmd.Wait()
+}
+
+// handleRuntimeStdio opens a long-lived DUPLEX streaming child in the run's
+// leased container: the claude adapter's transport. The first frame is the
+// `stdio` start request; every later frame on the same request body is a
+// follow-up control frame (stdin/signal/close) the supervisor consumes on
+// the SAME connection. The supervisor's JSON-lines AgentEvents stream back
+// verbatim. EnableFullDuplex is required so the handler can read the body
+// while streaming the response (Go >= 1.21).
+func (d *Daemon) handleRuntimeStdio(w http.ResponseWriter, r *http.Request, runID string) {
+	// The container MUST resolve from the lease table — the plane can never
+	// exec into an arbitrary container (identical gate to handleRuntimeExec).
+	name := d.pool.containerForRun(runID)
+	if name == "" {
+		httpError(w, http.StatusNotFound, "no runtime container leased for run "+runID)
+		return
+	}
+	rc := http.NewResponseController(w)
+	if err := rc.EnableFullDuplex(); err != nil {
+		d.Log.Warn("runtime stdio: EnableFullDuplex unavailable — stdin frames may not drain", "error", err)
+	}
+	dec := json.NewDecoder(r.Body)
+	var req StdioRequest
+	if err := dec.Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "bad stdio request: "+err.Error())
+		return
+	}
+	if len(req.Argv) == 0 {
+		httpError(w, http.StatusBadRequest, "stdio argv required")
+		return
+	}
+	first, err := json.Marshal(AgentRequest{
+		Cmd:        "stdio",
+		Argv:       req.Argv,
+		Env:        req.Env,
+		Cwd:        req.Cwd,
+		ProjectDir: req.ProjectDir,
+		ExecID:     req.ExecID,
+	})
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	cmd := exec.Command(d.DockerBin, "exec", "-i", name, "orchicon", "runtime-client")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		httpError(w, http.StatusInternalServerError, "docker exec: "+err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.WriteHeader(http.StatusOK)
+	fl, _ := w.(http.Flusher)
+	if fl != nil {
+		fl.Flush()
+	}
+	if _, err := stdin.Write(append(first, '\n')); err != nil {
+		_ = stdout.Close()
+		_ = cmd.Wait()
+		return
+	}
+	// Relay the child's JSON-lines stdout verbatim (flushing per line so the
+	// plane sees events live).
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		relayNDJSON(stdout, w, fl)
+	}()
+	// Read follow-up frames off the SAME request body and forward them.
+	for {
+		var f map[string]any
+		if err := dec.Decode(&f); err != nil {
+			break
+		}
+		b, merr := json.Marshal(f)
+		if merr != nil {
+			continue
+		}
+		if _, err := stdin.Write(append(b, '\n')); err != nil {
+			break
+		}
+	}
+	_ = stdin.Close()
+	<-done
+	_ = cmd.Wait()
+}
+
+// relayNDJSON copies newline-delimited lines from r to w, flushing after
+// each line. Shared by the exec and stdio handlers.
+func relayNDJSON(r io.Reader, w io.Writer, fl http.Flusher) {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for sc.Scan() {
+		if _, err := w.Write(append(sc.Bytes(), '\n')); err != nil {
+			return
+		}
+		if fl != nil {
+			fl.Flush()
+		}
+	}
 }
 
 // validateCreate enforces the daemon's security policy: image allowlist,
@@ -458,6 +576,15 @@ func (d *Daemon) withinAllowedRoots(path string) bool {
 func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateResponse, error) {
 	if d.createFn != nil {
 		return d.createFn(name, req)
+	}
+	// Fast, ACTIONABLE auth preflight: a claude-demanding run on a host with
+	// no reachable Claude credential must fail with the exact sign-in command,
+	// never silently start a container whose sessions then hang or fail with a
+	// misleading generic error. The session authenticates with the mounted
+	// host login, so this only rejects the case where no credential exists at
+	// all to mount.
+	if demandsKind(req, "claude") && !d.claudeAuthAvailable(req) {
+		return nil, fmt.Errorf(adapter.ClaudeAuthRequiredMessage)
 	}
 	d.createMu.Lock()
 	defer d.createMu.Unlock()
@@ -683,12 +810,38 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 		}
 	}
 	args = append(args, "-e", "HOME="+d.HostHome)
-	// Put the MOUNTED adapter CLI on PATH so the supervisor's
-	// `exec.Command("opencode", ...)` resolves it.
-	if demandsKind(req, adapter.DefaultAdapterKind) {
-		args = append(args, "-e", "PATH="+filepath.Join(d.HostHome, ".opencode", "bin")+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	// Put every MOUNTED adapter CLI on PATH so the supervisor's
+	// exec.Command("opencode", ...) / exec.Command("claude", ...) resolves
+	// it. Per-kind (not just the default kind), and ONLY for a demanded
+	// kind whose host bin dir actually exists — the prefix never points at
+	// an absent host dir (the invariant above).
+	kinds := requestedKinds(req)
+	if dirs := adapterPathPrefix(d.HostHome, kinds...); len(dirs) > 0 {
+		args = append(args, "-e", "PATH="+strings.Join(dirs, string(os.PathListSeparator))+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+		// Tell the supervisor (agentEnv) which kinds were actually mounted,
+		// so a CHILD process gets the same bin dirs prepended.
+		args = append(args, "-e", "ORCHICON_ADAPTER_KINDS="+strings.Join(kinds, ","))
 	}
 	return args
+}
+
+// claudeAuthAvailable reports whether the host has a usable Claude credential,
+// so a claude-demanding create can fail ACTIONABLY instead of hanging: the
+// persisted claude.ai host login (~/.claude/.credentials.json, written by the
+// operator's own `claude` sign-in), an ANTHROPIC_API_KEY in the daemon env, or
+// an ANTHROPIC_API_KEY supplied as a create secret. It never reads credential
+// CONTENT — only presence. Orchicon stores no Anthropic credential of its own.
+func (d *Daemon) claudeAuthAvailable(req CreateRequest) bool {
+	if d.HostHome != "" {
+		if st, err := os.Stat(filepath.Join(d.HostHome, ".claude", ".credentials.json")); err == nil && !st.IsDir() {
+			return true
+		}
+	}
+	if os.Getenv("ANTHROPIC_API_KEY") != "" {
+		return true
+	}
+	_, ok := req.Secrets["ANTHROPIC_API_KEY"]
+	return ok
 }
 
 // hostGHToken resolves the operator's effective GitHub CLI token

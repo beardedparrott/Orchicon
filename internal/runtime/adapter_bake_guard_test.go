@@ -192,3 +192,39 @@ func logicalInstructions(body string) []string {
 	}
 	return out
 }
+
+// TestClaudeBakeNeedlesNoVersionString pins the constraint that no claude
+// probe may name a version directory: adapterBakeNeedles derives needles from
+// probe BASENAMES, and a probe like ".../versions/2.1.261" would survive the
+// >=3-char filter and become a forbidden-bake needle that false-positives on
+// an unrelated Dockerfile line. The four claude installs must therefore probe
+// only ~/.claude, ~/.claude.json, ~/.local/bin/claude and
+// ~/.local/share/claude — all with the benign basename "claude"/".claude".
+func TestClaudeBakeNeedlesNoVersionString(t *testing.T) {
+	const fakeHome = "/home/orchicon-host"
+	paths, declared := adapterInstallPaths(fakeHome, "claude")
+	if !declared {
+		t.Fatal("claude must be classified in adapterInstalls")
+	}
+	if len(paths) != 4 {
+		t.Fatalf("claude must declare exactly 4 host installs (config home, .claude.json, launcher, install root), got %v", paths)
+	}
+	for _, p := range paths {
+		if strings.Contains(p, "versions") {
+			t.Errorf("claude install path %q probes a versions/ dir — its basename would become a forbidden-bake needle", p)
+		}
+	}
+	needles := adapterBakeNeedles("claude", paths)
+	if len(needles) == 0 {
+		t.Fatal("claude must contribute bake needles")
+	}
+	allowed := map[string]bool{"claude": true, ".claude": true, "claude.json": true, ".claude.json": true}
+	for _, n := range needles {
+		if len(n) < 3 {
+			t.Errorf("needle %q would be dropped by the >=3-char filter", n)
+		}
+		if !allowed[n] {
+			t.Errorf("claude bake needle %q is not a benign basename — a version/token string leaked into the forbidden-bake set", n)
+		}
+	}
+}

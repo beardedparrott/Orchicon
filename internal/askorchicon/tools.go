@@ -843,9 +843,13 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		// --- MCP servers (adapter-settings MCP management) ---
 		{
 			Name:        "list_mcp_servers",
-			Description: "List MCP server entries for the current tenant (Settings → Adapters → MCP). Credentials never appear — env/header values are ${SECRET_NAME} references; has_secret_stored reports whether any required secret exists.",
+			Description: "List MCP server definitions, SCOPE-ADDRESSED (Settings → Adapters → MCP): pass project_id and/or conversation_id to list that owner's definitions (project ∪ conversation), or neither to list every definition in the tenant. Credentials never appear — env/header values are ${SECRET_NAME} references; has_secret_stored reports whether any required secret exists.",
 			Mutating:    false,
 			Fn:          toolListMCPServers,
+			Properties: map[string]PropertySchema{
+				"project_id":      {Type: "string", Description: "Optional scope: the project whose definitions to list"},
+				"conversation_id": {Type: "string", Description: "Optional scope: the Ask conversation whose definitions to list"},
+			},
 		},
 		{
 			Name:        "get_mcp_server",
@@ -857,19 +861,21 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		},
 		{
 			Name:        "create_mcp_server",
-			Description: "Create an MCP server entry (tenant-scoped). Transport is 'stdio' (command + args + env) or 'streamable-http' (url + headers). Catalog entries are one-click added via list_mcp_catalog + create_mcp_server with catalog_slug.",
+			Description: "Create an OWNER-SCOPED MCP server entry. Exactly one of project_id / conversation_id is required (the definition's owner; immutable after create). Transport is 'stdio' (command + args + env) or 'streamable-http' (url + headers). Catalog entries are one-click added via list_mcp_catalog + create_mcp_server with catalog_slug.",
 			Mutating:    true,
 			Fn:          toolCreateMCPServer,
 			Properties: map[string]PropertySchema{
-				"name":         {Type: "string", Description: "Entry name (immutable after create)"},
-				"transport":    {Type: "string", Description: "'stdio' or 'streamable-http' (default stdio)"},
-				"command":      {Type: "string", Description: "stdio: executable"},
-				"args":         {Type: "array", Description: "stdio: argv array"},
-				"env":          {Type: "object", Description: "stdio: env map; values may be ${SECRET_NAME} references"},
-				"url":          {Type: "string", Description: "streamable-http: endpoint URL"},
-				"headers":      {Type: "object", Description: "streamable-http: headers; values may be ${SECRET_NAME} references"},
-				"enabled":      {Type: "boolean", Description: "Enabled flag (default false)"},
-				"catalog_slug": {Type: "string", Description: "Registry provenance slug, e.g. 'github'"},
+				"name":            {Type: "string", Description: "Entry name (immutable after create)"},
+				"transport":       {Type: "string", Description: "'stdio' or 'streamable-http' (default stdio)"},
+				"command":         {Type: "string", Description: "stdio: executable"},
+				"args":            {Type: "array", Description: "stdio: argv array"},
+				"env":             {Type: "object", Description: "stdio: env map; values may be ${SECRET_NAME} references"},
+				"url":             {Type: "string", Description: "streamable-http: endpoint URL"},
+				"headers":         {Type: "object", Description: "streamable-http: headers; values may be ${SECRET_NAME} references"},
+				"enabled":         {Type: "boolean", Description: "Enabled flag (default false)"},
+				"catalog_slug":    {Type: "string", Description: "Registry provenance slug, e.g. 'github'"},
+				"project_id":      {Type: "string", Description: "Owner: the project id (exactly one of project_id / conversation_id)"},
+				"conversation_id": {Type: "string", Description: "Owner: the Ask conversation id (exactly one of project_id / conversation_id)"},
 			},
 			Required: []string{"name"},
 		},
@@ -896,7 +902,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		},
 		{
 			Name:        "delete_mcp_server",
-			Description: "Delete an MCP server entry. Blocked while any project/worker/tenant-default set still references it — clear references first.",
+			Description: "Delete an MCP server entry (an owner-scoped definition; deleting its owning project/conversation cascades to it). No reference guard: the owner IS the only reference.",
 			Mutating:    true,
 			Fn:          toolDeleteMCPServer,
 			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "MCP server ID"}},
@@ -936,23 +942,6 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Properties: map[string]PropertySchema{"id": {Type: "string", Description: "MCP server ID"}, "name": {Type: "string", Description: "Env/header key or required secret name"}},
 			Required:   []string{"id", "name"},
 		},
-		{
-			Name:        "set_project_mcp_servers",
-			Description: "Replace a project's MCP server selection (references, never copies). Editing an entry updates every consumer automatically.",
-			Mutating:    true,
-			Fn:          toolSetProjectMCPServers,
-			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Project ID"}, "ids": {Type: "array", Description: "MCP server IDs to select (empty = project defaults fall through to tenant default)"}},
-			Required:    []string{"project_id", "ids"},
-		},
-		{
-			Name:        "set_tenant_default_mcp_servers",
-			Description: "Replace the tenant default MCP server set (used when a project/worker has no selection). References, never copies.",
-			Mutating:    true,
-			Fn:          toolSetTenantDefaultMCPServers,
-			Properties:  map[string]PropertySchema{"ids": {Type: "array", Description: "MCP server IDs to select as tenant default (empty = no default)"}},
-			Required:    []string{"ids"},
-		},
-
 		// --- Audit ---
 		{
 			Name:        "list_audit_events",

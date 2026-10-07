@@ -364,7 +364,7 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 	}
 	if _, err := ttx.Exec(ctx,
 		`UPDATE worker_versions
-		    SET agents_md = replace(agents_md, 'orchicon.safety=v23', 'orchicon.safety=v0')
+		    SET agents_md = replace(agents_md, 'orchicon.safety=v24', 'orchicon.safety=v0')
 		  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`, userID); err != nil {
 		t.Fatalf("stale marker: %v", err)
 	}
@@ -385,7 +385,7 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 		userID).Scan(&agents); err != nil {
 		t.Fatalf("query adopted agents: %v", err)
 	}
-	if !strings.Contains(agents, "orchicon.safety=v23") {
+	if !strings.Contains(agents, "orchicon.safety=v24") {
 		t.Errorf("adopted worker should have been rolled forward to the current marker, got %q", agents[len(agents)-40:])
 	}
 }
@@ -433,7 +433,7 @@ func TestSeedBaseQACarriesPlaywright(t *testing.T) {
 	for _, want := range []string{
 		"Browser automation (Playwright) — VISUAL verification",
 		"read the screenshot back with your Read tool",
-		"orchicon.safety=v23",
+		"orchicon.safety=v24",
 	} {
 		if !strings.Contains(agents, want) {
 			t.Errorf("base QA agents_md missing %q", want)
@@ -522,8 +522,8 @@ func TestSeedCannedWorkersCarrySandboxPlaneGuard(t *testing.T) {
 			t.Errorf("canned worker must not carry prod/dev instance wording (contains %q)", forbid)
 		}
 	}
-	if !strings.Contains(agents, "orchicon.safety=v23") {
-		t.Errorf("canned worker must carry the current safety marker (orchicon.safety=v23)")
+	if !strings.Contains(agents, "orchicon.safety=v24") {
+		t.Errorf("canned worker must carry the current safety marker (orchicon.safety=v24)")
 	}
 }
 
@@ -559,7 +559,7 @@ func TestSeedSDLCWorkersAreTimeBoxedWorkhorses(t *testing.T) {
 		if !strings.Contains(agents, tc.box) {
 			t.Errorf("%s agents_md missing %q", id, tc.box)
 		}
-		if !strings.Contains(agents, "orchicon.safety=v23") {
+		if !strings.Contains(agents, "orchicon.safety=v24") {
 			t.Errorf("%s agents_md missing the safety marker", id)
 		}
 		if budget != tc.budget {
@@ -674,7 +674,7 @@ func TestSeedDesignApproverCarriesDesignReviewContract(t *testing.T) {
 		t.Fatalf("query canned Design Approver agents: %v", err)
 	}
 	checks := []string{
-		"orchicon.safety=v23",
+		"orchicon.safety=v24",
 		"review the design/architecture PLAN only",
 		"plan is sound and complete; implementation may begin",
 		"plan does not meet the bar",
@@ -718,7 +718,7 @@ func TestSeedCodeApproverCarriesCodeReviewContract(t *testing.T) {
 		t.Fatalf("query canned Code Approver agents: %v", err)
 	}
 	checks := []string{
-		"orchicon.safety=v23",
+		"orchicon.safety=v24",
 		"review the completed IMPLEMENTATION",
 		"do not re-review it",
 		"implementation is done and meets the acceptance criteria",
@@ -758,7 +758,7 @@ func TestSeedDevOpsCarriesMergeConflictResolutionContract(t *testing.T) {
 		t.Fatalf("query canned DevOps agents: %v", err)
 	}
 	checks := []string{
-		"orchicon.safety=v23",
+		"orchicon.safety=v24",
 		"Merge conflicts — detect AND resolve",
 		"git merge origin/develop",
 		"git add",
@@ -849,7 +849,7 @@ func TestSeedRollForwardPreservesModelRef(t *testing.T) {
 		     labels, published_at, created_at)
 		 SELECT $1, 'tnt_dev', worker_id, 2, 'user version', 'published',
 		        'google/gemini-2.5-pro', role, skills, behavior,
-		        replace(agents_md, 'orchicon.safety=v23', 'orchicon.safety=v0'),
+		        replace(agents_md, 'orchicon.safety=v24', 'orchicon.safety=v0'),
 		        context_sources, permissions, gated_tools, budget_overrides,
 		        execution_policy_ref, concurrency_limit, recovery_workflow_ref,
 		        labels, now(), now()
@@ -950,7 +950,7 @@ func TestSeedAutomationResearchTrioSeededWithRoleAndGenericPurposes(t *testing.T
 		if modelRef != "" {
 			t.Errorf("%s model_ref = %q, want empty (runtime_ref retired; dispatch kind derives at run time)", tc.slug, modelRef)
 		}
-		if !strings.Contains(agents, "Sandbox vs plane") || !strings.Contains(agents, "orchicon.safety=v23") {
+		if !strings.Contains(agents, "Sandbox vs plane") || !strings.Contains(agents, "orchicon.safety=v24") {
 			t.Errorf("%s agents_md missing seed markers", tc.slug)
 		}
 		if !strings.Contains(agents, "Worktree hygiene") {

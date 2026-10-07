@@ -1,0 +1,3 @@
+==> frontend bundle up to date
+go build -ldflags "-X github.com/beardedparrott/orchicon/internal/version.gitCommit=3a79df7d -X github.com/beardedparrott/orchicon/internal/version.gitTag=v0.4.39 -X github.com/beardedparrott/orchicon/internal/version.buildDate=2026-10-02T09:03:25Z" -o bin/orchicon ./cmd/orchicon
+go build -ldflags "-X github.com/beardedparrott/orchicon/internal/version.gitCommit=3a79df7d -X github.com/beardedparrott/orchicon/internal/version.gitTag=v0.4.39 -X github.com/beardedparrott/orchicon/internal/version.buildDate=2026-10-02T09:03:25Z" -o bin/orch ./cmd/orch

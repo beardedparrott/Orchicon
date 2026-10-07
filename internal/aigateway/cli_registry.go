@@ -142,6 +142,12 @@ func (r *CLIProviderRegistry) IsKnownProvider(adapterKind, provider string) bool
 			return true
 		}
 	}
+	// CLI ids validate under the DEFAULT kind only (see Providers): under any
+	// other kind they are not a provider that kind can resolve, so accepting
+	// them would validate a ref that fails at dispatch.
+	if !hasCLINamespace(adapterKind) {
+		return false
+	}
 	for _, id := range r.providerIDs(context.Background()) {
 		if id == provider {
 			return true
@@ -150,9 +156,37 @@ func (r *CLIProviderRegistry) IsKnownProvider(adapterKind, provider string) bool
 	return false
 }
 
-// Providers implements ProviderRegistry: the static set, the additive
-// layer, then CLI ids appended (deduped, sorted) — mirroring the picker's
-// union derivation.
+// cliNamespaceKind resolves the adapter kind whose provider namespace the live
+// CLI ids belong to. An empty kind is the legacy/unspecified case and folds to
+// the default kind — the same inference the 2-segment ref grammar makes.
+func cliNamespaceKind(kind string) string {
+	if k := strings.TrimSpace(kind); k != "" {
+		return k
+	}
+	return adapter.DefaultAdapterKind
+}
+
+// hasCLINamespace reports whether CLI-discovered provider ids may extend this
+// kind's provider set.
+//
+// ONLY the default (opencode) kind, because those ids ARE the opencode CLI's
+// namespace. This is the file's stated contract; it was not what the code did.
+func hasCLINamespace(adapterKind string) bool {
+	return cliNamespaceKind(adapterKind) == adapter.DefaultAdapterKind
+}
+
+// Providers implements ProviderRegistry: the static set, the kind's additive
+// layer (tenant customs), then — for the DEFAULT kind ONLY — the live CLI ids
+// (deduped, sorted).
+//
+// THE KIND GATE IS LOAD-BEARING, not a tidy-up. Unioning the CLI ids into EVERY
+// kind put `commandcode`, `deepseek`, `gufo`, `halogen`, … in the CLAUDE
+// picker's provider tier. Choosing one then failed at the provider layer,
+// because those ids have no builtin profile (only anthropic/openai/openrouter/
+// opencode/opencode-go/commandcode/ollama do), so `EffectiveProfile` returned
+// ErrNotFound and the claude model tier loaded NOTHING — an adapter that looked
+// like it could not source models at all, caused entirely by the provider tier
+// offering ids the model tier could not resolve.
 func (r *CLIProviderRegistry) Providers(adapterKind string) []string {
 	out := r.static.Providers(adapterKind)
 	seen := map[string]struct{}{}
@@ -169,8 +203,10 @@ func (r *CLIProviderRegistry) Providers(adapterKind string) []string {
 	for _, p := range r.extraIDs(adapterKind) {
 		add(p)
 	}
-	for _, id := range r.providerIDs(context.Background()) {
-		add(id)
+	if hasCLINamespace(adapterKind) {
+		for _, id := range r.providerIDs(context.Background()) {
+			add(id)
+		}
 	}
 	sort.Strings(extra)
 	return append(out, extra...)

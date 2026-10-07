@@ -29,6 +29,11 @@ type stubAskParity struct {
 
 	convs []*apiv1.Conversation
 
+	// conv + getConvID serve the ONE-conversation status read (GetConversation): conv is what the plane
+	// reports for it, getConvID records which conversation was asked about.
+	conv      *apiv1.Conversation
+	getConvID string
+
 	createdModel string
 	createdMode  apiv1.ConversationMode
 
@@ -53,6 +58,12 @@ type stubAskParity struct {
 	// button calls the same RPC).
 	abortedID string
 
+	// listMessagesCalls counts the ListMessages RPCs this plane served. It exists so a test can assert
+	// that the activity line's rolling tool counter adds NO fetch of its own: the counter must render
+	// from the page the transcript poll already carried (AC10). The field is additive — every other
+	// assertion in this file is untouched by it.
+	listMessagesCalls int
+
 	// projectMoveFor records the conversation whose project was changed, and the target — the pair a test needs
 	// to tell "the write happened" from "the rail merely reloaded".
 	//
@@ -61,6 +72,13 @@ type stubAskParity struct {
 	// not be exercised end to end. The missing fixture was the missing coverage.
 	projectMoveFor  string
 	projectMoveDest string
+
+	// skillFilesFor + skillFilesSet record the conversation-skills write — the pair a test needs
+	// to tell "the write reached the API carrying the list the operator typed" from "the dock said
+	// something". An EMPTY slice is a legitimate write (it CLEARS the list), so the recorder
+	// carries the slice rather than only the id.
+	skillFilesFor string
+	skillFilesSet []string
 }
 
 func (s *stubAskParity) SetConversationProject(_ context.Context, req *connect.Request[apiv1.SetConversationProjectRequest]) (*connect.Response[apiv1.SetConversationProjectResponse], error) {
@@ -101,6 +119,16 @@ func (s *stubAskParity) ListConversations(context.Context, *connect.Request[apiv
 	return connect.NewResponse(&apiv1.ListConversationsResponse{Conversations: s.convs}), nil
 }
 
+// GetConversation serves the ONE-conversation status read. It records the id asked for, so a test can
+// assert the fetch is SCOPED to the open conversation rather than re-reading the whole list.
+func (s *stubAskParity) GetConversation(_ context.Context, req *connect.Request[apiv1.GetConversationRequest]) (*connect.Response[apiv1.GetConversationResponse], error) {
+	s.getConvID = req.Msg.GetId()
+	if s.conv == nil {
+		return connect.NewResponse(&apiv1.GetConversationResponse{}), nil
+	}
+	return connect.NewResponse(&apiv1.GetConversationResponse{Conversation: s.conv}), nil
+}
+
 func (s *stubAskParity) CreateConversation(_ context.Context, req *connect.Request[apiv1.CreateConversationRequest]) (*connect.Response[apiv1.CreateConversationResponse], error) {
 	s.createdModel = req.Msg.GetModelRef()
 	s.createdMode = req.Msg.GetMode()
@@ -139,7 +167,25 @@ func (s *stubAskParity) SetConversationFullsend(_ context.Context, req *connect.
 }
 
 func (s *stubAskParity) ListMessages(context.Context, *connect.Request[apiv1.ListMessagesRequest]) (*connect.Response[apiv1.ListMessagesResponse], error) {
+	s.listMessagesCalls++
 	return connect.NewResponse(&apiv1.ListMessagesResponse{}), nil
+}
+
+func (s *stubAskParity) SetConversationSkillFiles(_ context.Context, req *connect.Request[apiv1.SetConversationSkillFilesRequest]) (*connect.Response[apiv1.SetConversationSkillFilesResponse], error) {
+	s.skillFilesFor, s.skillFilesSet = req.Msg.GetId(), req.Msg.GetFiles()
+	// The stub PERSISTS the list, because ListConversations reads this same slice — a stub that
+	// only recorded the call would reload the OLD list and every "did the report see it?"
+	// assertion would fail for a reason unrelated to the shell (the same reasoning as
+	// SetConversationProject above).
+	for _, c := range s.convs {
+		if c.GetId() == req.Msg.GetId() {
+			c.SkillFiles = req.Msg.GetFiles()
+			break
+		}
+	}
+	return connect.NewResponse(&apiv1.SetConversationSkillFilesResponse{
+		Conversation: &apiv1.Conversation{Id: req.Msg.GetId(), SkillFiles: req.Msg.GetFiles()},
+	}), nil
 }
 
 // newAskApp builds an App wired to a stub Ask service on a real Connect
@@ -481,10 +527,19 @@ func TestUserMessageIsVisibleImmediatelyOnOpenConversation(t *testing.T) {
 	if joined := strings.Join(str.Lines, "\n"); !strings.Contains(joined, "hello there") {
 		t.Errorf("the operator's message is not in the transcript: %q", joined)
 	}
-	// And nothing has replied yet, so the GUI's thinking indicator should be showing.
-	if str.Notice != "Orchicon is thinking…" {
-		t.Errorf("transcript notice = %q, want %q — the GUI shows it until the first content arrives",
-			str.Notice, "Orchicon is thinking…")
+	// And nothing has replied yet, so the activity line is showing. It is the pane's FOOTER (see
+	// App.transcriptStatusLine), so it is read from the surface that draws it. No heartbeat has arrived in
+	// this fixture, so the server stamp is 0 and the line carries the list's FIRST word — which is the
+	// fallback the operator sees in the first second after sending.
+	//
+	// The assertion is the SHARED property, not the old literal: for a server time, the selector's word.
+	// internal/tui/chat/verbs_test.go and frontend/src/lib/ask-verbs.test.ts pin both lists to one fixture,
+	// so "both clients draw the same word for the same server time" is the promise this now rests on.
+	wantStatus := "Orchicon is " + chat.VerbAt(0) + "…"
+	if got := m.askStatusLine(); got != wantStatus {
+		t.Errorf("status line = %q, want %q — the line must name the word the rotation selects for the "+
+			"server time (here the pre-heartbeat fallback), and it must be present until the first content "+
+			"arrives", got, wantStatus)
 	}
 }
 

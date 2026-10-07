@@ -13,6 +13,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -109,6 +110,12 @@ type railProject struct {
 	// Dir is the project's project_dir. It is here so the rail can answer "which workspace was I launched in?"
 	// with the SAME boundary rule the launch prompt uses (dirInsideProject) rather than a second one.
 	Dir string
+	// SkillFiles is the project's skill_files path list, for the SHOWING half of the conversation scope modal:
+	// a conversation's skills are the UNION of its own and its project's (the same union the server renders
+	// into the turn — internal/askorchicon/chat.go, skillManifestSection), so the modal lists the project's
+	// contributions read-only above the conversation's own. It rides on the project list the rail already
+	// fetches rather than a second RPC for the same rows.
+	SkillFiles []string
 }
 
 // railProjectsMsg carries the project list back to the shell.
@@ -144,7 +151,8 @@ func (m *App) loadRailProjects() tea.Cmd {
 		for _, p := range resp.Msg.GetProjects() {
 			out = append(out, railProject{
 				ID: p.GetId(), Name: p.GetName(), Status: projectStatusWord(p.GetStatus()),
-				Dir: strings.TrimSpace(p.GetProjectDir()),
+				Dir:        strings.TrimSpace(p.GetProjectDir()),
+				SkillFiles: p.GetSkillFiles(),
 			})
 		}
 		return railProjectsMsg{Projects: out}
@@ -192,6 +200,40 @@ func (m *App) applyLaunchDirScope() {
 		return
 	}
 	m.projectScope = p.ID
+
+	// AND IF THAT HID ANYTHING, SAY SO. This default NARROWS the rail, and before this the narrowing was
+	// completely silent: the only clue was the scope label, so a rail holding one row out of 184 looked
+	// like catastrophic data loss rather than a filter. The operator: "ALL conversations except this one
+	// disappeared ... even after restarting orch they are missing" — and it survived a restart precisely
+	// because this line re-derives the same scope from the same launch directory every time.
+	//
+	// THE SCOPE LABEL STAYS QUIET (this is an automatic default, not a declared switch — the existing
+	// contract), but the CONSEQUENCE is not: the operator is told what was hidden and how to widen it.
+	var extra []string
+	if hidden := m.scopeHiddenCount(); hidden > 0 {
+		extra = append(extra, fmt.Sprintf("scope: %s — %d conversation(s) not shown; /project to widen",
+			projectScopeLabel(p.ID, projectScopeOptions(m.railProjects, m.conversations)), hidden))
+	}
+	// THE PALETTE FOLLOWS, same as any other scope change — see projecttheme.go. Quiet about the scope
+	// itself, and about anything the operator still needs to hear, like a degraded palette; the caller's
+	// own note rides in the SAME notice rather than replacing it.
+	m.applyScopeTheme(false, extra...)
+}
+
+// scopeHiddenCount is how many of the LOADED conversations the active scope hides. 0 for All projects
+// (which filters nothing).
+//
+// It deliberately measures the loaded list rather than the table: this is the number the OPERATOR can act
+// on right now, and claiming a total the client never fetched would be a different (and unverifiable)
+// statement.
+func (m *App) scopeHiddenCount() int {
+	if m.projectScope == projectScopeAll {
+		return 0
+	}
+	if hidden := len(m.conversations) - len(m.scopedConversations()); hidden > 0 {
+		return hidden
+	}
+	return 0
 }
 
 // projectForDir resolves the project a directory belongs to, using the SAME boundary rule the launch prompt

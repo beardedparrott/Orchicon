@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,16 +30,34 @@ import (
 // was never called (the observed 10-minute test hang: defer rec.Close()
 // blocked on <-r.stopped with no pump running).
 
+// recordingStore collects the recorder's flushed batches. record runs on the
+// recorder's PUMP goroutine while the test body polls from its own, so batches
+// is mutex-guarded: without it `go test -race` reports a genuine data race on
+// every test that observes the store before Close (the write in record vs the
+// read in the pump-liveness poll below).
 type recordingStore struct {
+	mu      sync.Mutex
 	batches [][]db.SessionPart
 }
 
 func (r *recordingStore) record(ctx context.Context, execID, tenantID string, parts []db.SessionPart) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.batches = append(r.batches, parts)
 	return nil
 }
 
+// batchCount reports how many flushes have landed. It is the safe way for a
+// test to poll for progress while the pump is running.
+func (r *recordingStore) batchCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.batches)
+}
+
 func partsOf(r *recordingStore) []db.SessionPart {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	var out []db.SessionPart
 	for _, b := range r.batches {
 		out = append(out, b...)
@@ -242,10 +261,10 @@ func TestSessionPartsRecorderPumpLifecycle(t *testing.T) {
 	rec.start()
 	rec.observe(1, TransSession, []byte(`{"identity":{"execution_id":"exec_pump"}}`))
 	deadline := time.Now().Add(3 * time.Second)
-	for len(store.batches) == 0 && time.Now().Before(deadline) {
+	for store.batchCount() == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(store.batches) == 0 {
+	if store.batchCount() == 0 {
 		t.Error("pump never flushed")
 	}
 	done := make(chan struct{})

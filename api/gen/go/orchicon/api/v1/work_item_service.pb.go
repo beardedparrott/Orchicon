@@ -830,9 +830,22 @@ type UpdateWorkItemRequest struct {
 	// is excluded from the scheduler due-scan. true = firing. Unset = unchanged.
 	RecurringEnabled *bool `protobuf:"varint,26,opt,name=recurring_enabled,json=recurringEnabled,proto3,oneof" json:"recurring_enabled,omitempty"`
 	// secret_ids replaces the secret selection (set-replace): empty list clears, absent leaves unchanged. Max 10.
-	SecretIds     *SecretIds `protobuf:"bytes,27,opt,name=secret_ids,json=secretIds,proto3,oneof" json:"secret_ids,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	SecretIds *SecretIds `protobuf:"bytes,27,opt,name=secret_ids,json=secretIds,proto3,oneof" json:"secret_ids,omitempty"`
+	// clear_scheduled_start_at removes the item's scheduled start WITHOUT starting it — the
+	// "present but empty" convention the schema already uses for recurring_schedule and context_files.
+	//
+	// WHY IT EXISTS: scheduled_start_at is optional, so "absent" means UNCHANGED, and there was no
+	// shape that meant "clear it". The edit forms therefore round-tripped the stored schedule back on
+	// every save, so an operator could never remove a schedule — and because a surviving schedule
+	// suppresses auto-start (an item with a start time waits for it), it also blocked starting a bound
+	// workflow from a pending item. Setting auto_start_workflow=true clears the schedule as a side
+	// effect, but that also FIRES the run: there was no way to clear without starting.
+	//
+	// When both this and scheduled_start_at are present, CLEAR WINS (the explicit removal is the more
+	// specific intent, and leaving both applied would be contradictory).
+	ClearScheduledStartAt bool `protobuf:"varint,28,opt,name=clear_scheduled_start_at,json=clearScheduledStartAt,proto3" json:"clear_scheduled_start_at,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *UpdateWorkItemRequest) Reset() {
@@ -1024,6 +1037,13 @@ func (x *UpdateWorkItemRequest) GetSecretIds() *SecretIds {
 		return x.SecretIds
 	}
 	return nil
+}
+
+func (x *UpdateWorkItemRequest) GetClearScheduledStartAt() bool {
+	if x != nil {
+		return x.ClearScheduledStartAt
+	}
+	return false
 }
 
 // DependencyIds is a set of dependency target work item IDs. Used for
@@ -2905,7 +2925,7 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\x15ListWorkItemsResponse\x128\n" +
 	"\n" +
 	"work_items\x18\x01 \x03(\v2\x19.orchicon.api.v1.WorkItemR\tworkItems\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xd7\v\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\x90\f\n" +
 	"\x15UpdateWorkItemRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\x05title\x18\x02 \x01(\tH\x00R\x05title\x88\x01\x01\x12%\n" +
@@ -2936,7 +2956,8 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"depends_on\x18\x19 \x01(\v2\x1e.orchicon.api.v1.DependencyIdsH\x12R\tdependsOn\x88\x01\x01\x120\n" +
 	"\x11recurring_enabled\x18\x1a \x01(\bH\x13R\x10recurringEnabled\x88\x01\x01\x12>\n" +
 	"\n" +
-	"secret_ids\x18\x1b \x01(\v2\x1a.orchicon.api.v1.SecretIdsH\x14R\tsecretIds\x88\x01\x01B\b\n" +
+	"secret_ids\x18\x1b \x01(\v2\x1a.orchicon.api.v1.SecretIdsH\x14R\tsecretIds\x88\x01\x01\x127\n" +
+	"\x18clear_scheduled_start_at\x18\x1c \x01(\bR\x15clearScheduledStartAtB\b\n" +
 	"\x06_titleB\x0e\n" +
 	"\f_descriptionB\x16\n" +
 	"\x14_acceptance_criteriaB\t\n" +

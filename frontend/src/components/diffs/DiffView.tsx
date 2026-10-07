@@ -9,7 +9,12 @@
 // line/word coloring to avoid a new dependency.
 //
 // Large diffs are virtualized via @tanstack/react-virtual so a 5k-line diff
-// scrolls without jank (each row is a fixed leading-5 height).
+// scrolls without jank. Rows WRAP (`whitespace-pre-wrap` + `overflow-wrap:
+// anywhere`), so their height is variable, not a fixed `leading-5` line: the
+// virtualizer MEASURES each row (`measureElement` on one absolutely-positioned
+// grid wrapper) instead of assuming an estimate. Both columns of a row live in
+// one CSS grid, so they share the row's measured height by construction and
+// cannot drift apart while scrolling.
 
 import { useMemo, useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -86,62 +91,46 @@ function SideBySideBody({ rows }: { rows: SideBySideRow[] }) {
     getScrollElement: () => parentRef.current,
     estimateSize: () => 20,
     overscan: 12,
+    // Key the measurement cache by row identity, not index, so heights are not
+    // poisoned across file switches (the row set changes under the virtualizer).
+    getItemKey: (i) => rowKey(rows[i], i),
   });
 
   return (
-    <div ref={parentRef} className="h-full overflow-auto">
-      <div
-        className="relative w-full min-w-[640px]"
-        style={{ height: `${virtualizer.getTotalSize()}px` }}
-      >
-        <div className="grid grid-cols-2">
-          {virtualizer.getVirtualItems().map((vi) => {
-            const r = rows[vi.index];
-            const bg = rowClasses(r);
-            return (
-              <div
-                key={rowKey(r, vi.index)}
-                className="contents"
-                data-index={vi.index}
-              >
-                <div
-                  className={cn("flex items-stretch whitespace-pre", bg)}
-                  style={{
-                    position: "absolute",
-                    top: 0,
-                    left: 0,
-                    width: "50%",
-                    height: `${vi.size}px`,
-                    transform: `translateY(${vi.start}px)`,
-                  }}
-                >
-                  <LineNo value={r.lineNoOld} tone="old" />
-                  <span className="w-4 shrink-0" />
-                  <span className="flex-1 break-words font-mono text-xs leading-5">
-                    {renderLine(r.oldText, r.oldSpans, "del")}
-                  </span>
-                </div>
-                <div
-                  className={cn("flex items-stretch whitespace-pre", bg)}
-                  style={{
-                    position: "absolute",
-                    top: 0,
-                    left: "50%",
-                    width: "50%",
-                    height: `${vi.size}px`,
-                    transform: `translateY(${vi.start}px)`,
-                  }}
-                >
-                  <LineNo value={r.lineNoNew} tone="new" />
-                  <span className="w-4 shrink-0" />
-                  <span className="flex-1 break-words font-mono text-xs leading-5">
-                    {renderLine(r.newText, r.newSpans, "add")}
-                  </span>
-                </div>
+    <div ref={parentRef} className="diff-scroll h-full overflow-auto">
+      <div className="relative w-full" style={{ height: `${virtualizer.getTotalSize()}px` }}>
+        {virtualizer.getVirtualItems().map((vi) => {
+          const r = rows[vi.index];
+          const bg = rowClasses(r);
+          return (
+            // ONE measured, absolutely-positioned row wrapper (no inline height
+            // — a fixed height would make measurement return the estimate
+            // forever). A 2-column grid stretches BOTH halves to the measured
+            // content height, so the columns cannot drift apart.
+            <div
+              key={rowKey(r, vi.index)}
+              data-index={vi.index}
+              ref={virtualizer.measureElement}
+              className="absolute left-0 top-0 grid w-full grid-cols-2"
+              style={{ transform: `translateY(${vi.start}px)` }}
+            >
+              <div className={cn("flex min-w-0 items-stretch whitespace-pre-wrap", bg)}>
+                <LineNo value={r.lineNoOld} tone="old" />
+                <span className="w-4 shrink-0" />
+                <span className="min-w-0 flex-1 font-mono text-xs leading-5 [overflow-wrap:anywhere]">
+                  {renderLine(r.oldText, r.oldSpans, "del")}
+                </span>
               </div>
-            );
-          })}
-        </div>
+              <div className={cn("flex min-w-0 items-stretch whitespace-pre-wrap", bg)}>
+                <LineNo value={r.lineNoNew} tone="new" />
+                <span className="w-4 shrink-0" />
+                <span className="min-w-0 flex-1 font-mono text-xs leading-5 [overflow-wrap:anywhere]">
+                  {renderLine(r.newText, r.newSpans, "add")}
+                </span>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -149,10 +138,13 @@ function SideBySideBody({ rows }: { rows: SideBySideRow[] }) {
 
 function UnifiedBody({ rows }: { rows: SideBySideRow[] }) {
   return (
-    <div className="h-full overflow-auto">
+    <div className="diff-scroll h-full overflow-auto">
       <div className="min-w-0 py-1">
         {rows.map((r, i) => (
-          <div key={rowKey(r, i)} className={cn("flex items-stretch whitespace-pre", rowClasses(r))}>
+          <div
+            key={rowKey(r, i)}
+            className={cn("flex min-w-0 items-stretch whitespace-pre-wrap", rowClasses(r))}
+          >
             <span className="w-6 shrink-0 text-center font-mono text-[10px] text-muted-foreground/50">
               {r.sign}
             </span>
@@ -162,7 +154,7 @@ function UnifiedBody({ rows }: { rows: SideBySideRow[] }) {
             <span className="shrink-0 px-1 font-mono text-[10px] text-muted-foreground/50">
               {r.lineNoNew ?? ""}
             </span>
-            <span className="flex-1 break-words px-2 font-mono text-xs leading-5">
+            <span className="min-w-0 flex-1 px-2 font-mono text-xs leading-5 [overflow-wrap:anywhere]">
               {r.kind === "add"
                 ? renderLine(r.newText, r.newSpans, "add")
                 : r.kind === "del"

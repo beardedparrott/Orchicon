@@ -198,7 +198,7 @@ func TestUnassignedConversationGetsTheAnchorAndIsToldItHasNoProject(t *testing.T
 	}
 
 	// The PROMPT tells the same story.
-	prompt := buildSystemPrompt(modeIteration, testAgentConfig(), testToolRegistry(), nil, true, nil, "", "")
+	prompt := buildSystemPrompt(modeIteration, testAgentConfig(), testToolRegistry(), nil, true, nil, "", "", "")
 	if !strings.Contains(prompt, "not assigned to a project") {
 		t.Fatal("the unassigned prompt no longer states the chat has no project")
 	}
@@ -228,7 +228,7 @@ func TestPromptBlockAndToolScopeAgree(t *testing.T) {
 	if !strings.Contains(block, scope.Dir) {
 		t.Fatalf("the prompt block does not name the tool boundary %q:\n%s", scope.Dir, block)
 	}
-	full := buildSystemPrompt(modeIteration, testAgentConfig(), testToolRegistry(), nil, true, nil, "", block)
+	full := buildSystemPrompt(modeIteration, testAgentConfig(), testToolRegistry(), nil, true, nil, "", block, "")
 	if !strings.Contains(full, "## This conversation's project") || !strings.Contains(full, scope.Dir) {
 		t.Fatalf("the full prompt does not carry the conversation-project block naming %q", scope.Dir)
 	}
@@ -245,7 +245,7 @@ func TestPromptBlockAndToolScopeAgree(t *testing.T) {
 	if anchorScope.FromConversation {
 		t.Fatal("the unassigned tool scope claims to come from the conversation")
 	}
-	unassignedFull := buildSystemPrompt(modeIteration, testAgentConfig(), testToolRegistry(), nil, true, nil, "", "")
+	unassignedFull := buildSystemPrompt(modeIteration, testAgentConfig(), testToolRegistry(), nil, true, nil, "", "", "")
 	if !strings.Contains(unassignedFull, "not assigned to a project") {
 		t.Fatal("the unassigned prompt does not state the chat has no project")
 	}

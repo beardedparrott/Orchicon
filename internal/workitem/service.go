@@ -64,6 +64,14 @@ type Service struct {
 	sequenceResumeFn ResumeSequenceStarter
 	sequenceStopFn   StopSequenceStarter
 	runtimeImageFn   RuntimeImageResolver
+	// archiveConflictHook is a test-only seam: invoked with the attempt
+	// number (1 = initial, 2 = the one-shot retry) right after
+	// ArchiveWorkItem's read+validate for that attempt and before its
+	// archive write, so a test can commit a real concurrent version bump
+	// (a separate transaction) and deterministically exercise the retry
+	// path against genuine Postgres optimistic-concurrency behavior rather
+	// than a mock. Nil in production.
+	archiveConflictHook func(attempt int)
 	apiv1connect.UnimplementedWorkItemServiceHandler
 }
 
@@ -879,7 +887,12 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		pid := *msg.ParentId
 		fields.ParentID = &pid
 	}
-	if msg.ScheduledStartAt != nil {
+	if msg.ClearScheduledStartAt {
+		// An EXPLICIT removal of the schedule, independent of starting. CLEAR WINS over a
+		// simultaneous scheduled_start_at: removing is the more specific intent, and applying both
+		// would be contradictory (a value and its removal in one request).
+		fields.ClearScheduledStartAt = true
+	} else if msg.ScheduledStartAt != nil {
 		t := msg.ScheduledStartAt.AsTime()
 		fields.ScheduledStartAt = &t
 	}
@@ -1338,7 +1351,14 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	// flag. A stale flag declines silently (log only); an EXPLICIT
 	// auto_start_workflow=true in this request declines with a warning on
 	// the response. Either way the edit itself is saved.
-	wouldAutoStart := updated.ScheduledStartAt == nil && updated.AutoStartWorkflow &&
+	// The flag alone is NOT a request. Auto-start fires only when THIS request explicitly asks for it
+	// (userExplicitlyAutoStarts) or — for backward compatibility with a client that saves an item
+	// whose status is genuinely startable — when the request named a start AND the item is in a
+	// pre-run status. The distinction is what keeps a stale stored flag from firing a run on an
+	// unrelated edit (the operator's explicit warning: "not fire anything off that already has auto
+	// set… done as an action when saving the record only").
+	requestNamedStart := userExplicitlyAutoStarts || msg.ScheduledStartAt != nil
+	wouldAutoStart := requestNamedStart && updated.ScheduledStartAt == nil && updated.AutoStartWorkflow &&
 		!(kindSwitchInFlight && !userExplicitlyAutoStarts)
 	autoStartWarning := ""
 	if wouldAutoStart {
@@ -1346,7 +1366,28 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		if fields.Status != nil {
 			effectiveStatus = *fields.Status
 		}
-		if IsStartableForAutoStart(current.Status) && IsStartableForAutoStart(effectiveStatus) {
+		// WHO MAY FIRE. Two rules, and the difference between them is the whole point:
+		//
+		//   AN EXPLICIT GESTURE OVERRIDES THE STATUS GATE. The operator's report: "if a work item is
+		//   in cancelled or failed, I can't kick it off or schedule it unless I first edit the work
+		//   item, set it to pending, save it, then edit it again, then set my auto start. I think
+		//   setting an auto start on a work item should take no matter what status it is in." They
+		//   are right: starting writes status=running unconditionally (StartWorkflow flips the bound
+		//   item), so the PRE-status was never a correctness requirement — it was only ever a guard
+		//   against STALE state, which rule (2) covers on its own. Requiring a startable pre-status
+		//   additionally refused an act the operator explicitly asked for, twice.
+		//
+		//   A STALE STORED FLAG STILL NEVER FIRES. wouldAutoStart above is now driven by
+		//   userExplicitlyAutoStarts, so a legacy row carrying auto_start_workflow=true cannot be
+		//   re-armed by an unrelated edit — the bug 410a3089 fixed, and the one the operator warned
+		//   about ("We have to be careful though to not fire anything off that already has auto or
+		//   schedule set. It must be done as an action when saving the record only").
+		//
+		// What remains refused on an explicit gesture, because it is a genuine correctness rule and
+		// not status policy: an ACTIVE run (checked below — two runs must never share one item), and
+		// a subtree with nothing to run (ValidateSequenceSchedule already ran in-tx).
+		effectiveStartable := IsStartableForAutoStart(effectiveStatus)
+		if userExplicitlyAutoStarts || effectiveStartable {
 			if s.itemHasChildren(ctx, tenantID, updated.ID) {
 				s.maybeStartSequence(ctx, tenantID, updated)
 			} else if updated.WorkflowID != nil && *updated.WorkflowID != "" && s.startWorkflowFn != nil {
@@ -1892,25 +1933,34 @@ func (s *Service) ArchiveWorkItem(ctx context.Context, req *connect.Request[apiv
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	// An idea is never terminal-archivable; route it through DismissIdea so
-	// the dismissal is audited as work_item.dismissed rather than archived.
-	if IsIdeaStatus(current.Status) {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, ErrWorkItemIsIdea())
+	if err := validateArchivePreconditions(ctx, ttx.Tx, tenantID, current); err != nil {
+		return nil, err
 	}
-	if !domain.WorkItemIsTerminalArchivable(current.Status) {
-		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			errors.New("work item must be in a terminal state (succeeded, failed, cancelled, or skipped) to be archived; finish or cancel it first"))
-	}
-	children, err := db.ListDirectChildren(ctx, ttx.Tx, tenantID, current.ID)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if len(children) > 0 {
-		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			fmt.Errorf("cannot archive a work item that has %d child work item(s); archive the children first", len(children)))
+	if s.archiveConflictHook != nil {
+		s.archiveConflictHook(1)
 	}
 
 	archived, err := db.ArchiveWorkItem(ctx, ttx.Tx, tenantID, current.ID, current.Version, current.Status)
+	if errors.Is(err, db.ErrVersionConflict) {
+		// The sequence engine (or any concurrent writer) can bump a parent's
+		// version between our read and this write — status transitions and
+		// SequenceLastProgressAt updates happen behind the UI's back. Absorb
+		// exactly one such stale-read window: re-read the row, re-validate
+		// every precondition against the FRESH row, and retry the archive
+		// once. A second conflict is a real race, not staleness, so it
+		// surfaces to the caller normally.
+		current, err = db.GetWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id)
+		if err != nil {
+			return nil, mapDBError(err)
+		}
+		if err := validateArchivePreconditions(ctx, ttx.Tx, tenantID, current); err != nil {
+			return nil, err
+		}
+		if s.archiveConflictHook != nil {
+			s.archiveConflictHook(2)
+		}
+		archived, err = db.ArchiveWorkItem(ctx, ttx.Tx, tenantID, current.ID, current.Version, current.Status)
+	}
 	if err != nil {
 		return nil, mapDBError(err)
 	}
@@ -1926,6 +1976,32 @@ func (s *Service) ArchiveWorkItem(ctx context.Context, req *connect.Request[apiv
 	}
 	s.log.Info("work item archived", "id", archived.ID)
 	return connect.NewResponse(&apiv1.ArchiveWorkItemResponse{WorkItem: rowToProto(archived)}), nil
+}
+
+// validateArchivePreconditions enforces the full archive precondition set
+// (not an idea, terminal-archivable status, no non-archived children)
+// against the given row. Called both on the initial read and again against
+// the freshly re-read row on a version-conflict retry, so a sequence-engine
+// bump mid-flight is re-validated rather than assumed safe.
+func validateArchivePreconditions(ctx context.Context, tx pgx.Tx, tenantID string, current db.WorkItemRow) error {
+	// An idea is never terminal-archivable; route it through DismissIdea so
+	// the dismissal is audited as work_item.dismissed rather than archived.
+	if IsIdeaStatus(current.Status) {
+		return connect.NewError(connect.CodeFailedPrecondition, ErrWorkItemIsIdea())
+	}
+	if !domain.WorkItemIsTerminalArchivable(current.Status) {
+		return connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("work item must be in a terminal state (succeeded, failed, cancelled, or skipped) to be archived; finish or cancel it first"))
+	}
+	children, err := db.ListDirectChildren(ctx, tx, tenantID, current.ID)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	if len(children) > 0 {
+		return connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("cannot archive a work item that has %d child work item(s); archive the children first", len(children)))
+	}
+	return nil
 }
 
 // RestoreWorkItem returns an archived work item to the active views, back

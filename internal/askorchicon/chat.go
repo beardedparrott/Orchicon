@@ -19,6 +19,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/aigateway"
 	"github.com/beardedparrott/orchicon/internal/audit"
+	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/orchicon"
@@ -923,6 +924,12 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// scope SELF-EVIDENT rather than something the agent has to spend a tool call discovering. Built from the
 	// already-loaded conversation row, so it costs one project lookup and no extra conversation read.
 	convProject := s.conversationProjectContext(ctx, tenantID, conv)
+	// AND THIS CONVERSATION'S SKILLS — the SELECTABLE skill artifacts, rendered by the ONE shared platform
+	// renderer (contextfiles.RenderManifest) over the union of the conversation's skill_files and its project's.
+	// This is the Ask half of the single shared render path; the worker half renders the same manifest in
+	// internal/scheduler/workflow_reconciler.go. No adapter and no persona contains skill-handling code — the
+	// rendered section travels verbatim in the system prompt, which is the adapter-agnostic property.
+	skillsSection := s.skillManifestSection(ctx, tenantID, conv)
 
 	// System prompt variants for the session transport: the seed variant
 	// (DB history included) is used when a fresh session is created (first
@@ -932,8 +939,8 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// mode: the mode is applied per message as the opencode per-turn `system`
 	// field, so a mid-conversation mode switch changes the next message's
 	// persona with no session change or serve restart.
-	seedSystem := buildSystemPrompt(conv.Mode, cfg, s.toolRegistry, prevMessages, true, attachments, projectContext, convProject)
-	reuseSystem := buildSystemPrompt(conv.Mode, cfg, s.toolRegistry, prevMessages, false, attachments, projectContext, convProject)
+	seedSystem := buildSystemPrompt(conv.Mode, cfg, s.toolRegistry, prevMessages, true, attachments, projectContext, convProject, skillsSection)
+	reuseSystem := buildSystemPrompt(conv.Mode, cfg, s.toolRegistry, prevMessages, false, attachments, projectContext, convProject, skillsSection)
 
 	// --- 4. Launch the detached reply collector and stream events to the
 	// client. The stream channel is buffered so the collector never blocks.
@@ -1226,10 +1233,13 @@ func (s *Service) AbortConversationTurn(ctx context.Context, req *connect.Reques
 // prior turns. When false (the steady-state follow-up on a live session) no
 // history block is emitted: the history already lives in the session, and
 // re-injecting it would double tokens and can confuse the model.
-func buildSystemPrompt(mode string, cfg db.AgentConfigRow, registry *ToolRegistry, history []db.MessageRow, includeHistory bool, attachments []*apiv1.AttachmentInput, projectContext, convProject string) string {
+// skillsSection is the ALREADY-RENDERED `# Skills` manifest for this turn ("" when the conversation and its
+// project have no skill files). It is rendered by skillManifestSection and forwarded to BuildSystemPrompt,
+// which appends it beside the tenant's free-text additional instructions — see writeSkillsManifest.
+func buildSystemPrompt(mode string, cfg db.AgentConfigRow, registry *ToolRegistry, history []db.MessageRow, includeHistory bool, attachments []*apiv1.AttachmentInput, projectContext, convProject, skillsSection string) string {
 	var b strings.Builder
 
-	b.WriteString(BuildSystemPrompt(mode, cfg, registry))
+	b.WriteString(BuildSystemPrompt(mode, cfg, registry, skillsSection))
 	b.WriteString("\n\n")
 
 	if includeHistory {
@@ -1918,6 +1928,17 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *turnReplyWindow
 	// promptly; the monitor is fed only after sent == true (pre-accept
 	// events belong to a prior turn draining on the shared bus).
 	monitor := newChatStallMonitor(c.modelRef, c.stallNoProgressSeconds)
+	// AND TELL IT WHICH CALLS IT CANNOT JUDGE BY SILENCE. The tool-wedge inference is evidence-from-absence,
+	// which is the right evidence only for a tool dispatched to a session serve (what it was built for: an MCP
+	// call that never resolves). A transport that runs the call itself holds it, and the host suite's bash
+	// bounds itself with its own hard deadline — so judging that call by silence recycled live sessions over
+	// shell commands that were still running (see setLocallyBoundedTools for the numbers).
+	//
+	// GATED ON THE TRANSPORT, not on the tool name alone: on a serve-side transport the SAME "bash" tool is
+	// executed out of process, where a wedged call really is invisible to us and the inference must stand.
+	if inProcessToolRunner(c.client) {
+		monitor.setLocallyBoundedTools(hostSuiteToolNames)
+	}
 	stallTick := monitor.noProgressWindow
 	if rw := monitor.repetitionWindow; rw < stallTick {
 		stallTick = rw
@@ -2093,10 +2114,22 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *turnReplyWindow
 						if refusal != "" {
 							s.log.Warn("ask orchicon: refused to raise a question",
 								"conversation", c.convID, "reason", refusal)
-							// The adapter is waiting: give it the error as the tool result
-							// rather than leaving the turn parked with no card.
+							// THE REFUSAL CARRIES THE PREFIX, AND THAT IS THE WHOLE FIX. The adapter is waiting, so
+							// something has to go back — but a bare sentence came back as the ask_user RESULT, i.e. as
+							// the operator's ANSWER, and a REFUSED question therefore became a SUCCESSFUL tool call whose
+							// "answer" was an internal error message. Three rows on the operator's plane read exactly
+							// that (`is_error: false`, output "ask_user could not be asked: …"), and the transcript drew
+							// them as `answered · …` — claiming a decision they never made about a question they were
+							// never shown.
+							//
+							// The PERMISSION path already had this exactly right (below: `decision =
+							// orchicon.ConsentRefusedPrefix + refusal`), and its own doc says why the distinction is
+							// load-bearing: "the OPERATOR never saw this call, so reporting it as their refusal is a false
+							// statement about them". A question deserves the same honesty as a permission — so this uses
+							// the SAME marker rather than inventing a second convention, and the bridge turns it into a
+							// tool ERROR (see the ask_user branch in chatturn.go).
 							_ = c.client.ReplyPermissionDecision(context.WithoutCancel(subCtx), sid, pid,
-								"ask_user could not be asked: "+refusal)
+								orchicon.ConsentRefusedPrefix+refusal)
 						}
 					}
 				}
@@ -2231,6 +2264,17 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *turnReplyWindow
 					continue
 				}
 				c.ledger.recordToolResolution(evt.ToolName, evt.ArgsJSON, evt.Output, evt.IsError)
+				// AND IT CLOSES THE WEDGE SLOT. This event is the ONLY resolution signal the native
+				// adapter sends — there is no LegacyEventFromBus "tool_use" part on this transport — so
+				// without this a bash call stayed "open" in the stall monitor from its start, and a
+				// silent command longer than the wedge window was recycled as an MCP wedge (see
+				// closeTool). A resolved call is not a wedged one.
+				monitor.closeTool()
+				// A RESOLVED TOOL IS FORWARD MOTION, and the monitor's clocks measure the absence of
+				// exactly that. Both were running from the tool's START instead — lastActivity was never
+				// stamped here — so a turn that resolved a tool and then waited on a slow model was
+				// judged silent on a clock that had been running the whole time the tool worked.
+				progress()
 			case "part":
 				// Completed telemetry part (the same LegacyEventFromBus
 				// mapping executions use — the adapter classified it). Events
@@ -2784,6 +2828,50 @@ func (s *Service) fetchProjectContext(ctx context.Context, tenantID string) stri
 // Returns "" when the conversation is unassigned or the project cannot be read, and the caller prints the
 // unassigned text instead. A failure here must never fail the turn: the context is an aid, not a
 // precondition.
+// skillManifestSection renders this turn's `# Skills` section: the UNION of the conversation's skill_files and
+// its PROJECT's skill_files, rendered by the ONE shared renderer contextfiles.RenderManifest. It is the Ask
+// half of the single shared render path — the worker composite prompt renders the same manifest through the
+// same function — and it is deliberately the only place the Ask side knows about skills, so no persona and no
+// adapter carries skill-handling code.
+//
+// WHY THE UNION IS SORTED AND VALIDATED HERE:
+//
+//   - contextfiles.Union sorts and dedupes, so the rendered bytes are a function of the SELECTION and not of
+//     the two lists' arrival order. The section sits inside the prompt's cached static prefix, so an unstable
+//     order would invalidate the prefix cache on every turn.
+//   - contextfiles.ValidateWithin drops a selection that leaves the project directory. A skill outside it is
+//     invisible to a container-hosted worker, so rendering it would only produce a dead "could not read" note.
+//
+// Best-effort by construction: an unassigned conversation, an unreadable project row, or a corrupt
+// skill_files payload all yield "" and the turn proceeds without skills — a skills aid must never fail the
+// turn. DISTINCT from the free-text `skills` prompt section on the tenant agent config, which is prose.
+func (s *Service) skillManifestSection(ctx context.Context, tenantID string, conv db.ConversationRow) string {
+	var convSkills []string
+	if len(conv.SkillFiles) > 0 {
+		_ = json.Unmarshal(conv.SkillFiles, &convSkills)
+	}
+	var projectSkills []string
+	projectDir := ""
+	if conv.ProjectID != "" {
+		if p, err := conversationProjectRow(ctx, s.pool, tenantID, conv.ProjectID); err == nil {
+			projectDir = p.ProjectDir
+			if len(p.SkillFiles) > 0 {
+				_ = json.Unmarshal(p.SkillFiles, &projectSkills)
+			}
+		}
+	}
+	union := contextfiles.Union(projectSkills, convSkills)
+	if len(union) == 0 {
+		return ""
+	}
+	if err := contextfiles.ValidateWithin(union, projectDir); err != nil {
+		s.log.Info("dropping out-of-project skill files from the Ask system prompt",
+			"conversation", conv.ID, "error", err.Error())
+		return ""
+	}
+	return contextfiles.RenderManifest("# Skills", union, projectDir)
+}
+
 func (s *Service) conversationProjectContext(ctx context.Context, tenantID string, conv db.ConversationRow) string {
 	if conv.ProjectID == "" {
 		return ""
@@ -2858,4 +2946,13 @@ func foldReasoningTail(tail, flushed string) string {
 		return strings.TrimSuffix(tail, flushed)
 	}
 	return tail
+}
+
+// inProcessToolRunner reports whether this turn's transport executes the model's tool calls itself.
+//
+// An adapter that does not implement the capability (or says no) hands its tools to a session serve, where a
+// silent call is genuinely indistinguishable from a wedged one — see scheduler.InProcessToolRunner.
+func inProcessToolRunner(client scheduler.ChatTurnClient) bool {
+	r, ok := client.(scheduler.InProcessToolRunner)
+	return ok && r != nil && r.ToolsRunInProcess()
 }

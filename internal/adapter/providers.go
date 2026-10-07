@@ -77,6 +77,28 @@ func BuiltinAdapterKinds() map[string]struct{} {
 	return out
 }
 
+// CatalogSourcedAdapterKinds returns the adapter kinds whose MODEL tier
+// resolves from the providers-sourcing path (the vendored catalog ⊕ probe ⊕
+// manual view served by ProviderService.ListProviderModels) rather than from
+// opencode-CLI discovery (AIGatewayService.ListOpenCodeModels).
+//
+// The list is authored HERE so the server can publish exactly one answer that
+// BOTH pickers consume: the GUI reads ListAdapterKindsResponse.sourcing_kinds
+// and the TUI mirrors this predicate (internal/tui/modelpick), pinned equal by
+// a parity test — no picker can drift from the plane's answer.
+//
+// KindClaude belongs here because its model namespace is the anthropic
+// provider catalog, not opencode's: on a plane with no opencode binary the CLI
+// path returns Unimplemented, so selecting `claude` would otherwise render an
+// EMPTY model list with no dispatchable ref.
+//
+// This is a MODEL-tier classification only, and it is not what decides Ask
+// capability. AskCapableKinds stays the Dispatcher's ChatKinds, which reads the
+// ChatTurnClient assertion off each registered bridge; claude satisfies it
+// (internal/claude/ask.go), so it can appear in both sets — by two independent
+// routes that must not be conflated.
+func CatalogSourcedAdapterKinds() []string { return []string{KindOrchicon, KindClaude} }
+
 // ProviderKindExtender is the optional seam for registries that can be
 // extended with provider ids per adapter kind without mutating the
 // shared instance. It extends ProviderRegistry with the extension

@@ -173,38 +173,22 @@ func (r *WorkflowReconciler) runNeedsServe(ctx context.Context, tx pgx.Tx, tenan
 		defer ttx.Rollback(ctx)
 		tx = ttx.Tx
 	}
-	var refs []string
-	for _, s := range steps {
-		switch s.Kind {
-		case domain.StepKindTask, domain.StepKindApproval:
-		default:
-			continue // no worker ref → no adapter → no serve demand
-		}
-		if s.Ref == "" {
-			continue
-		}
-		var modelRef string
-		if s.WorkerVersion > 0 {
-			// By NUMBER, not by id (see GetWorkerVersionByNumber).
-			if v, err := db.GetWorkerVersionByNumber(ctx, tx, tenantID, s.Ref, s.WorkerVersion); err == nil {
-				modelRef = v.ModelRef
-			}
-		}
-		if modelRef == "" {
-			if v, err := db.GetLatestWorkerVersion(ctx, tx, tenantID, s.Ref, true); err == nil {
-				modelRef = v.ModelRef
-			}
-		}
-		refs = append(refs, modelRef)
-	}
-	// ONE computation, ONE place (AC 7): the per-step refs gathered above
-	// are fed to the shared demand-set primitive, which resolves each ref
-	// to its adapter kind (empty/unresolvable → the conservative default)
-	// and asks the ONE serve-dependency predicate. The host-side plane
-	// computes its own half of the same set through the same primitive
-	// (adapter.TenantDemandSet → AdapterDemandSet), so this gate and the
-	// host serve can never disagree about whether opencode is in demand.
-	return adapter.AdapterDemandSet(refs...).NeedsServe(r.runtime.ServeDependent)
+	// ONE WALK, ONE PLACE (AC 2): the per-step worker versions are resolved
+	// by adapter.ResolveRunSteps, the SAME walk the run-level MCP/skills union
+	// reads (mcpsettings' run-scope resolver), so the adapter demand and the
+	// MCP/skills union cannot drift. This used to be an in-line loop here and
+	// a second resolution in mcpsettings; it is now one function with two
+	// readers.
+	//
+	// The refs are then fed to the shared demand-set primitive, which
+	// resolves each ref to its adapter kind (empty/unresolvable → the
+	// conservative default) and asks the ONE serve-dependency predicate. The
+	// host-side plane computes its own half of the same set through the same
+	// primitive (adapter.TenantDemandSet → AdapterDemandSet), so this gate
+	// and the host serve can never disagree about whether opencode is in
+	// demand.
+	res := adapter.ResolveRunSteps(ctx, tx, tenantID, steps)
+	return adapter.AdapterDemandSet(res.ModelRefs()...).NeedsServe(r.runtime.ServeDependent)
 }
 
 // NewWorkflowReconciler creates a WorkflowReconciler. The policy
@@ -3010,9 +2994,9 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	if wi.ProjectID != "" {
 		var p db.ProjectRow
 		if err := tx.QueryRow(ctx,
-			`SELECT project_dir, context_files FROM projects WHERE id = $1 AND tenant_id = $2`,
+			`SELECT project_dir, context_files, skill_files FROM projects WHERE id = $1 AND tenant_id = $2`,
 			wi.ProjectID, tenantID,
-		).Scan(&p.ProjectDir, &p.ContextFiles); err == nil {
+		).Scan(&p.ProjectDir, &p.ContextFiles, &p.SkillFiles); err == nil {
 			var sb2 strings.Builder
 			if p.ProjectDir != "" {
 				fmt.Fprintf(&sb2, "Working directory: `%s`\n\n", p.ProjectDir)
@@ -3026,6 +3010,46 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 			}
 			if sb2.Len() > 0 {
 				sb.WriteString(sb2.String())
+			}
+
+			// 2b. SKILLS — the SELECTABLE skill artifacts, rendered by the SAME
+			//     renderer as every other context section (contextfiles.RenderManifest),
+			//     over the UNION of the project's skill_files and this VERSION's
+			//     skill_files. This is the worker half of the one shared platform render
+			//     path; the Ask half calls the same renderer in
+			//     internal/askorchicon/chat.go. NO adapter knows about skills: the
+			//     rendered section is consumed verbatim as part of the composite prompt
+			//     (ADR-0009), which is what makes the feature adapter-agnostic.
+			//
+			//     DISTINCT from worker.Skills, the free-text prompt prose rendered as
+			//     `## Skills` above — this section is real on-disk paths.
+			//
+			//     CONTAINMENT IS ENFORCED HERE, at the render boundary, because a worker
+			//     version is project-agnostic (structural Validate happened at save
+			//     time); the union is filtered against THIS project's dir so a skill
+			//     outside it can never render a dead "could not read" note. Sorted +
+			//     deduped by contextfiles.Union, so two renders of one selection are
+			//     byte-identical (the section sits inside the cached static prefix).
+			var versionSkillFiles []string
+			_ = json.Unmarshal(worker.SkillFiles, &versionSkillFiles)
+			var projectSkillFiles []string
+			_ = json.Unmarshal(p.SkillFiles, &projectSkillFiles)
+			skillUnion := contextfiles.Union(projectSkillFiles, versionSkillFiles)
+			if len(skillUnion) > 0 {
+				if err := contextfiles.ValidateWithin(skillUnion, p.ProjectDir); err != nil {
+					if r.log != nil {
+						r.log.Info("dropping out-of-project skill files from the composite prompt",
+							"project", wi.ProjectID, "error", err.Error())
+					}
+				} else {
+					skillSection, skillFP := r.renderContextSectionCached(tenantID, wi.ProjectID, "# Skills", skillUnion, p.ProjectDir)
+					if skillSection != "" {
+						sb.WriteString(skillSection)
+					}
+					if skillFP != "" {
+						contextFP = contextFP + ".skills:" + skillFP
+					}
+				}
 			}
 		}
 	}

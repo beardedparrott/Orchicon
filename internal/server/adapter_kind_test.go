@@ -36,6 +36,40 @@ func TestResolveAdapterKind(t *testing.T) {
 	now := time.Now()
 	u := db.NewID()[:10]
 
+	// LEAVE NO ROWS BEHIND. This test writes into a REAL database
+	// (ORCHICON_TEST_DSN), and until now it never removed what it created —
+	// every run left two adapter rows (plus their worker and versions) in
+	// the plane it ran against. Because nothing heartbeats them they sit at
+	// status "ready" with a NULL last_heartbeat_at forever, so a dev plane
+	// accumulated eight dead adapter rows over four runs, all claiming to be
+	// live adapters of a kind the dispatcher should route to. Unique per-run
+	// ids kept re-runs from COLLIDING; they did not keep them from
+	// ACCUMULATING, which is the failure that actually mattered.
+	//
+	// Children first (worker_versions references workers), and patterns
+	// rather than reconstructed ids so the cleanup is correct even when the
+	// test fails midway and never reaches its own id assertions.
+	t.Cleanup(func() {
+		ttx, err := pool.BeginTenantTx(ctx, tenant)
+		if err != nil {
+			t.Logf("cleanup: begin tenant tx: %v", err)
+			return
+		}
+		defer ttx.Rollback(ctx)
+		for _, q := range []string{
+			`DELETE FROM worker_versions WHERE tenant_id = $1 AND worker_id LIKE 'w_ak_resolve_%'`,
+			`DELETE FROM workers         WHERE tenant_id = $1 AND id        LIKE 'w_ak_resolve_%'`,
+			`DELETE FROM runtime_adapters WHERE tenant_id = $1 AND id       LIKE 'adp_ak_%'`,
+		} {
+			if _, err := ttx.Tx.Exec(ctx, q, tenant); err != nil {
+				t.Logf("cleanup: %v", err)
+			}
+		}
+		if err := ttx.Commit(ctx); err != nil {
+			t.Logf("cleanup: commit: %v", err)
+		}
+	})
+
 	// Orchicon adapter row (the dispatching adapter for the exec under
 	// test) and an opencode row that the worker's latest version would
 	// mislead us toward.

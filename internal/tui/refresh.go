@@ -162,6 +162,15 @@ func (m *App) refreshActiveView() tea.Cmd {
 		//     ConversationsMsg and therefore a waitChat, and two of those drainers invoke commands INLINE.
 		//     (They are bounded now — see runCmdBounded — so the next such command cannot do this again, but the
 		//     gate is what stops it being asked for at all.)
+		//
+		// THE GATE USED TO BE A ONE-WAY LATCH, AND THAT WAS A REAL DEFECT (AC 16). `reloadConversations` set
+		// `convLoaded = false` (app.go), and only a SUCCESSFUL `onConversations` sets it back true — the error
+		// branch returns before reaching that line. So ONE failed reload (a blip, a 401) left the flag false for
+		// the rest of the session and this reload NEVER FIRED AGAIN, silently disabling the rolling refresh of
+		// the rail. The `ask.Model.RefreshView` candidate does NOT cover it: that reloads the SCREEN's screenkit
+		// list (the pane's own source), not the shell's `m.conversations`, which is what the rail and every
+		// turn-state read use. THE FIX IS THE ONE LINE: `reloadConversations` no longer clears the flag, because
+		// "a load is in flight" is `convLoading`'s job and a successful-load marker must survive a re-read.
 		var load tea.Cmd
 		if m.convLoaded {
 			load = m.chat.LoadConversations()
@@ -188,6 +197,12 @@ func (m *App) refreshBlocked() bool {
 	case m.palette.PaletteOpen():
 		return true
 	case m.modelPicker != nil:
+		return true
+	case m.scope != nil:
+		// THE SCOPE MODAL BLOCKS TOO. It is a list of the very things a background reload would move
+		// under the operator's cursor (definitions being added, installs landing, skill paths changing),
+		// and its own writes already re-read it — so a concurrent refresh could only add churn the
+		// operator did not ask for. Its data is fetched by the modal itself, so nothing here goes stale.
 		return true
 	}
 	return false

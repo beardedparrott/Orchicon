@@ -177,19 +177,21 @@ func run(fl *flags) error {
 	// ORCHICON_THEME wins over the file, so a palette can be pinned where the
 	// config is not persisted.
 	applyStoredTheme(profile, cfg)
-	// The launch prompt asks about the directory the operator is sitting in, computed
-	// ONCE here: the app takes it as an option, and a later shell in this session is
-	// passed "" so a reconnect never re-asks. os.Getwd can fail (a deleted cwd); that
-	// is not worth failing a launch over — no directory simply means no question.
+	// The launch DIRECTORY is computed ONCE here and passed to EVERY shell in this
+	// session. It is a fact about the process (os.Getwd): the rail derives its workspace
+	// default from it, so a post-/connect continuation needs it just as much as the first
+	// launch does. os.Getwd can fail (a deleted cwd); that is not worth failing a launch
+	// over — no directory simply means no default and no question.
+	//
+	// The launch PROMPT is a separate, first-shell-only decision: shellLaunchOptions arms
+	// it only on the first shell, so a reconnect never re-asks. Gating the directory on
+	// that same decision is what silently lost the workspace default after a reconnect.
 	launchDir, _ := os.Getwd()
 	firstShell := true
 	for {
-		dir := ""
-		if firstShell {
-			dir = launchDir
-		}
+		opts := shellLaunchOptions(firstShell, launchDir)
 		firstShell = false
-		reconnect, err := runShell(profile, dir)
+		reconnect, err := runShell(profile, opts...)
 		if !reconnect {
 			return err
 		}
@@ -274,18 +276,44 @@ func applyStoredTheme(p *config.Profile, cfg *config.Config) {
 	}
 }
 
+// shellLaunchOptions is ONE shell's TUI options, and it is where the session's two
+// separate decisions are expressed:
+//
+//   - THE LAUNCH DIRECTORY is passed on EVERY shell. It is a fact about the process
+//     (os.Getwd), and the rail derives its workspace default from it
+//     (internal/tui/railprojects.go, applyLaunchDirScope).
+//   - THE LAUNCH PROMPT is armed ONLY on the FIRST shell. A /connect round trip
+//     re-enters the shell as a CONTINUATION of the session, and re-asking the project
+//     question there is the nagging the feature exists to avoid: the operator has
+//     already given an answer this session.
+//
+// Collapsing these two into one decision — the old code passed "" as the directory on a
+// continuation, which WithLaunchDir reads as "do nothing" — silently disabled the
+// workspace default after every reconnect. The directory is not a question and has no
+// answer to remember, so it must survive; only the QUESTION is suppressed.
+//
+// A continuation therefore does NOT remember the previous shell's workspace: the new App
+// starts unchosen and re-derives the scope from the launch directory, so a workspace the
+// operator picked BY HAND before reconnecting is replaced by the launch-directory default.
+// Deliberate: carrying scope across shells would be wrong the moment a shell sits in a
+// different directory, and the derived default is strictly better than falling back to All
+// projects. See tui.WithLaunchPrompt.
+func shellLaunchOptions(firstShell bool, launchDir string) []tui.AppOption {
+	opts := []tui.AppOption{tui.WithLaunchDir(launchDir)}
+	if firstShell {
+		opts = append(opts, tui.WithLaunchPrompt())
+	}
+	return opts
+}
+
 // runShell probes /versionz, builds the client set, and runs the app
 // shell until the user quits. Returns (reconnect=true, nil) when the
 // shell exited for re-auth (/connect) — main's loop then re-runs the
 // connection screen with the updated profile.
-func runShell(profile *config.Profile, launchDir string) (bool, error) {
-	// The launch-time project prompt is armed ONLY on the FIRST shell of a launch.
-	//
-	// A /connect round trip (or a rejected stored session) re-enters this function,
-	// and that is a CONTINUATION of the session rather than a new launch: asking the
-	// same question again there would be exactly the nagging the feature is built to
-	// avoid, and the operator has already given an answer this session.
-	launchOption := tui.WithLaunchDir(launchDir)
+//
+// opts are the shell's TUI options (see shellLaunchOptions): the launch directory on
+// every shell, and the prompt armed only on the first.
+func runShell(profile *config.Profile, opts ...tui.AppOption) (bool, error) {
 	vr, err := client.Ping(context.Background(), profile.URL, profile.InsecureSkipVerify)
 	if err != nil {
 		// Non-blocking per the plan: stale config still opens the shell;
@@ -323,7 +351,7 @@ func runShell(profile *config.Profile, launchDir string) (bool, error) {
 	if probeErr != nil && connect.CodeOf(probeErr) == connect.CodeUnauthenticated {
 		return true, nil // main reopens the connection screen, with a reason
 	}
-	app := tui.NewApp(cl, profile, serverVersion, launchOption)
+	app := tui.NewApp(cl, profile, serverVersion, opts...)
 	if identity != "" {
 		app.SetIdentity(identity)
 	}

@@ -151,3 +151,89 @@ func (m *App) persistCollapsedGroups() {
 		return
 	}
 }
+
+// diffRailPrefNote is the noun both the load and the write failure report under, so the operator sees ONE
+// phrase for the preference regardless of which direction failed.
+const diffRailPrefNote = "diff rail width"
+
+// loadDiffRailWidth restores the operator's diff-rail width from the config file. Silent on failure, for
+// the same reason loadCollapsedGroups is: a display preference that cannot be read must never stop the
+// operator connecting.
+//
+// It runs from NewApp, so it MUST honour collapsedPrefsPath's sandbox rules (empty under `go test` unless
+// the test opted in) — otherwise a shell built by a test would inherit the DEVELOPER's own width.
+func (m *App) loadDiffRailWidth() {
+	path := collapsedPrefsPath()
+	if path == "" {
+		return // no config location (or a test): nothing persisted to restore
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		return
+	}
+	if cfg.DiffRailWidth > 0 {
+		m.diffPaneW = cfg.DiffRailWidth
+	}
+}
+
+// persistDiffRailWidth writes the operator's diff-rail width (0 = auto) to the config file.
+//
+// It is a read-modify-write through the SAME config.Load/Save the theme uses, so it can never clobber a
+// credential or another preference. A failure is REPORTED in the persistCollapsedGroups shape rather than
+// swallowed, but it does not undo the resize: the operator keeps the width they asked for THIS session,
+// and the notice is the honesty about whether it will come back.
+func (m *App) persistDiffRailWidth() {
+	path := collapsedPrefsPath()
+	if path == "" {
+		return // no config location (or a test): nothing to write, and nothing to report
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		m.dock.SetNotice(diffRailPrefNote + " (this run only — cannot read " + path + ")")
+		return
+	}
+	cfg.DiffRailWidth = m.diffPaneW
+	if err := config.Save(path, cfg); err != nil {
+		m.dock.SetNotice(diffRailPrefNote + " (this run only — cannot write " + path + ": " + err.Error() + ")")
+	}
+}
+
+// listSharePrefNote is the noun the split's load/write failures report under.
+const listSharePrefNote = "list/detail split"
+
+// loadListShare restores the operator's master-detail split from the config file, on the same
+// silent-on-failure rule as the other display preferences: a preference that cannot be read must never stop
+// the operator connecting.
+//
+// It lands on the APP, not on the screens, and rebindScreens pushes it out — screens are created lazily on
+// first visit, so a value applied only to the screens alive at startup would be missing on every tab the
+// operator had not opened yet.
+func (m *App) loadListShare() {
+	path := collapsedPrefsPath()
+	if path == "" {
+		return
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		return
+	}
+	m.listSharePct = cfg.ListSharePct // 0 = the default split
+}
+
+// persistListShare writes the split (0 = default) back to the config file, read-modify-write through the same
+// config.Load/Save the other preferences use so it cannot clobber a credential.
+func (m *App) persistListShare() {
+	path := collapsedPrefsPath()
+	if path == "" {
+		return // no config location (or a test): nothing to write
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		m.dock.SetNotice(listSharePrefNote + " (this run only — cannot read " + path + ")")
+		return
+	}
+	cfg.ListSharePct = m.listSharePct
+	if err := config.Save(path, cfg); err != nil {
+		m.dock.SetNotice(listSharePrefNote + " (this run only — cannot write " + path + ": " + err.Error() + ")")
+	}
+}

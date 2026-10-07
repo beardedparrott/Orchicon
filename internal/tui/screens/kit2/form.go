@@ -141,6 +141,17 @@ type Form struct {
 	Focused   bool
 	Title     string
 
+	// Note is a paragraph drawn under the title: context the operator needs in order to
+	// fill the form in correctly that no single field owns.
+	//
+	// IT IS NOT A PLACEHOLDER, and that is why it exists. A placeholder is drawn INSIDE
+	// a field's value column and truncated to fit, so a sentence of explanation lost its
+	// tail exactly where the operator needed it — and a multi-line one could not be
+	// expressed at all. The provider base-URL hint is the case that forced this (a local
+	// model needs two different addresses and a firewall rule; none of that fits in a
+	// field).
+	Note string
+
 	// pos is the CARET position (a rune index) per editable field. Without it
 	// the only edit available was appending to the end of the prefilled value,
 	// which is why editing an existing item read as "I can't actually edit
@@ -556,6 +567,59 @@ func (f *Form) setCaret(name string, p int) {
 	f.pos[name] = p
 }
 
+// PasteText inserts PASTED text into the focused field, and is the one path a paste takes — so the
+// sanitising below is stated once rather than at every call site.
+//
+// A paste is not typing, and the difference matters in exactly one place: a SINGLE-LINE field must not be
+// able to receive a newline. A token copied out of a config file or a browser frequently carries a trailing
+// newline, and inserting it into a KText field would put a line break inside a value the operator can see
+// only one line of — the value would then fail validation or, worse, be stored with a newline in it. So
+// newlines and tabs collapse to spaces for every single-line kind, and are PRESERVED for the multi-line
+// ones (KTextArea/KJSON/KYAML), where they are the point.
+//
+// It reports whether it inserted anything, so a caller can tell "pasted into a field" from "there was no
+// field to paste into" — which is how the shell decides between pasting and its own ctrl+v behaviour.
+func (f *Form) PasteText(text string) bool {
+	f.normalizeCursor()
+	s := f.current()
+	if s == nil {
+		return false
+	}
+	// Newlines and tabs collapse to spaces for every field that shows ONE LINE, and are preserved for the
+	// multi-line kinds, where they are the content.
+	if s.Kind != KTextArea && s.Kind != KJSON && s.Kind != KYAML {
+		text = strings.Join(strings.Fields(text), " ")
+	}
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	// A PICKER IS A CHOSEN VALUE, NOT A TEXT BUFFER. It has no caret for the operator to aim at, so
+	// "insert at the caret" would be meaningless here — and APPENDING to a picker that already holds a
+	// selection would produce a value matching no option at all. The paste IS the choice: it replaces what
+	// was there, which is exactly what the picker's own free-form entry commits when a typed value matches
+	// no option.
+	//
+	// This is the case that matters most in practice: the credential form's first two fields are BOTH
+	// pickers (the env var/header key, and the stored secret), and pasting a token name into them is the
+	// whole point of the report.
+	if s.Kind == KPicker {
+		f.Values[s.Name] = text
+		f.setCaret(s.Name, len([]rune(text)))
+		if f.OnChange != nil {
+			f.OnChange(s.Name, text)
+		}
+		return true
+	}
+	if !f.editable(s.Kind) {
+		return false
+	}
+	f.insertRunes(s.Name, text)
+	if f.OnChange != nil {
+		f.OnChange(s.Name, f.Values[s.Name])
+	}
+	return true
+}
+
 // insertRunes splices text into a field at the caret.
 func (f *Form) insertRunes(name, ins string) {
 	v := []rune(f.Values[name])
@@ -905,9 +969,23 @@ func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
 		// Clear the field. Without a clear gesture an operator could only ever
 		// APPEND to a prefilled value, which is the difference between editing
 		// an item and being unable to.
-		if s != nil && f.editable(s.Kind) {
+		//
+		// REFERENCE FIELDS CLEAR TOO, and this is the operator's report: "There is no way to clear a
+		// schedule on a work item in the TUI currently in edit mode. There should be a clear key to
+		// easily empty out a field."
+		//
+		// A KDateTime/KDate/KModel field is CHOSEN from a control, so `editable` (text kinds only) was
+		// false and this key was a SILENT NO-OP on exactly the fields where clearing matters most —
+		// while the footer advertised "ctrl+u: clear" the whole time. The value here is a plain string
+		// in f.Values (the picker writes it, the host reads it), so clearing it is the same act as
+		// clearing text: empty the value and put the caret back. An empty reference field renders as
+		// its "unset" affordance ("enter to pick a date & time"), which is the visible confirmation.
+		if s != nil && (f.editable(s.Kind) || f.reference(s.Kind)) {
 			f.Values[s.Name] = ""
 			f.setCaret(s.Name, 0)
+			if f.OnChange != nil {
+				f.OnChange(s.Name, "")
+			}
 		}
 		return nil, true
 	case " ", "space":
@@ -991,6 +1069,73 @@ func (f *Form) editable(k Kind) bool {
 		return true
 	}
 	return false
+}
+
+// reference reports whether a field is CHOSEN from a control rather than typed into —
+// the family whose `enter` OPENS something instead of advancing.
+//
+// It is ONE predicate rather than a repeated kind test because these kinds must agree
+// in three separate places (the value's affordance, the form's footer, the key
+// handling), and they had already drifted: an unset model deliberately showed its
+// affordance always, while a SET model, the dates and the datetimes named their
+// gesture only while the cursor was on them.
+func (f *Form) reference(k Kind) bool {
+	switch k {
+	case KModel, KDate, KDateTime, KPicker:
+		return true
+	}
+	return false
+}
+
+// referenceControlName names the control an `enter` opens, in prose, for the footer.
+func (f *Form) referenceControlName(s FieldSpec) string {
+	switch s.Kind {
+	case KModel:
+		return "model picker"
+	case KDate:
+		return "calendar"
+	case KDateTime:
+		return "date & time picker"
+	case KPicker:
+		return "list"
+	}
+	return "control"
+}
+
+// referenceGesture is the affordance a reference field's ROW carries, with the current
+// value folded in, so every kind advertises itself the same way.
+//
+// IT IS DELIBERATELY SHORT ON A SET FIELD. The row already carries the label ("Model:")
+// and the value, and it is the row's TOTAL width that decides whether it fits: a model
+// ref is ~32 cells on its own, so "enter: change" is what keeps the row on ONE line at
+// the operator's pane width (measured: 56 of 58 cells) where "enter: change model"
+// wrapped and pushed every field below it down a row. The noun is not lost — the label
+// directly to its left is the noun.
+//
+// The UNSET wording is longer because there is nothing else on the row to say what the
+// field wants, and it appears in the value position rather than beside one.
+func (f *Form) referenceGesture(s FieldSpec) string {
+	unset := f.Values[s.Name] == ""
+	switch s.Kind {
+	case KModel:
+		if unset {
+			return "enter to choose a model"
+		}
+		return "enter: change"
+	case KDate:
+		if unset {
+			return "enter to pick a date"
+		}
+		return "enter: change"
+	case KDateTime:
+		if unset {
+			return "enter to pick a date & time"
+		}
+		return "enter: change"
+	case KPicker:
+		return "enter: choose"
+	}
+	return ""
 }
 
 func (f *Form) cycleSelect(s *FieldSpec, d int) {
@@ -1354,17 +1499,50 @@ func (f *Form) display(s FieldSpec) string {
 			}
 		}
 		return v
-	case KModel:
-		// Show the committed adapter/provider/model ref; when unset, always show
-		// the affordance (not only while focused) so a blank model row reads as
-		// "unset — go choose one" rather than "not applicable".
-		if v == "" {
-			if s.Placeholder != "" {
-				return s.Placeholder
+	case KModel, KDate, KDateTime:
+		// A REFERENCE FIELD ALWAYS NAMES ITS GESTURE, whatever the cursor is doing.
+		//
+		// This was the operator's "no model is showing to edit it": the affordance was
+		// drawn only on the FOCUSED row, so with the cursor on Name the Model row read
+		// as inert text — indistinguishable from a field that cannot be edited, which is
+		// why they went hunting for a separate way in. Value and gesture now render
+		// together, so a row advertises itself from anywhere in the form.
+		//
+		// It also removes a contradiction the old code carried: an UNSET model showed its
+		// affordance unconditionally ("so a blank model row reads as 'unset — go choose
+		// one' rather than 'not applicable'"), while a SET model hid it behind the cursor.
+		//
+		// KPicker is deliberately NOT in this branch: it already resolves and shows a
+		// CHOSEN LABEL (the worker's name, not `w_x`), so its row is self-evidently a
+		// picked thing — and it is the most space-constrained reference kind, used on
+		// forms where an extra 14 cells of hint would crowd the value. It still gets the
+		// footer's gesture (see reference()).
+		shown := v
+		// Only while the form is FOCUSED at all: an unfocused form is background (the
+		// list beside it owns the keyboard) and the value alone is the right amount.
+		if !f.Focused {
+			if shown == "" {
+				if s.Placeholder != "" {
+					return s.Placeholder
+				}
+				return "— none —"
 			}
-			return "— none —"
+			return shown
 		}
-		return v
+		if shown == "" {
+			base := "— none —"
+			if s.Placeholder != "" {
+				base = s.Placeholder
+			}
+			if g := f.referenceGesture(s); g != "" {
+				return base + " (" + g + ")"
+			}
+			return base
+		}
+		if g := f.referenceGesture(s); g != "" {
+			return shown + "  " + g
+		}
+		return shown
 	default:
 		// AN EMPTY FIELD SHOWS ITS PLACEHOLDER, whoever is on it.
 		//
@@ -1522,6 +1700,14 @@ func (f *Form) View() string {
 	if f.Title != "" {
 		b.WriteString(theme.ListTitle.Render(f.Title))
 		b.WriteString("\n")
+	}
+	if f.Note != "" {
+		// Padded like a field row and wrapped to the form's width, so the note cannot
+		// shift the fields below it or bleed past the panel.
+		for _, line := range wrapHint(theme.HintText.Render(f.Note), width) {
+			b.WriteString(theme.HintText.Render(Pad(line, width)))
+			b.WriteString("\n")
+		}
 	}
 	for i, s := range f.Specs {
 		if !f.fieldVisible(s) {
@@ -1817,10 +2003,21 @@ func (f *Form) View() string {
 	} else if f.preview != "" {
 		footer = "markdown preview · ctrl+p or esc: back to the raw text · ctrl+s: save"
 	} else {
-		if s != nil && f.canPreviewName(*s) {
+		switch {
+		case s != nil && f.canPreviewName(*s):
 			footer = "↑/↓ or tab: field · ←/→: move · enter: edit · ctrl+p: preview markdown · ctrl+s: save · esc: cancel"
-		} else if s != nil && f.expandable(s.Kind) {
+		case s != nil && f.expandable(s.Kind):
 			footer = "↑/↓ or tab: field · ←/→: move · enter: edit · ctrl+e: expand · ctrl+s: save · esc: cancel"
+		case s != nil && f.reference(s.Kind):
+			// A REFERENCE FIELD IS OPENED, NOT ADVANCED — so "enter: next" is simply WRONG
+			// here, and it was the line the operator was reading while hunting for the
+			// model. The field's own row names its gesture; the footer names the GESTURE,
+			// because the control differs per kind (a model picker, a calendar, a list).
+			// CTRL+U IS NAMED HERE because a reference field can now be CLEARED (see the ctrl+u
+			// case) — the operator's "there should be a clear key to easily empty out a field".
+			// Naming the clear beside the open gesture is what makes it discoverable on the one
+			// field family whose whole complaint was that clearing was impossible.
+			footer = "↑/↓ or tab: field · ←/→: move · ctrl+u: clear · enter: open the " + f.referenceControlName(*s) + " · ctrl+s: save · esc: cancel"
 		}
 	}
 	for _, l := range wrapHint(theme.HintText.Render(footer), width) {
@@ -2116,28 +2313,40 @@ func wrapFormLine(line string, width int) []string {
 	if width < 8 || lipgloss.Width(line) <= width {
 		return []string{line}
 	}
+	// THE ROW'S OWN LEADING WHITESPACE IS PART OF THE ROW.
+	//
+	// It used to be dropped, and that alone was enough to make a form render at TWO
+	// indents. The early return above hands back a FITTING row verbatim (prefix intact),
+	// while this loop rebuilt a WRAPPING one out of `strings.Fields`, which discards
+	// leading whitespace — so a field whose value happened to fit kept its two-space
+	// prefix and its neighbour dropped to column 0. Measured on the worker edit form:
+	// `Purpose:` at column 0 and `Plane role:` at column 2, in the same list. That is
+	// how the operator spotted the very field they were hunting for ("it's not inline
+	// with the other fields").
+	lead := line[:len(line)-len(strings.TrimLeft(line, " "))]
 	// The continuation indent mirrors the field's leading marker + label so a
-	// wrapped value reads as part of the same field.
-	indent := "    "
-	if i := strings.Index(line, ": "); i >= 0 && i < width/2 {
-		indent = strings.Repeat(" ", i+2)
+	// wrapped value reads as part of the same field. Measured on the row as it was
+	// GIVEN (label first), not as a bare word.
+	body := strings.TrimLeft(line, " ")
+	indent := lead + "    "
+	if i := strings.Index(body, ": "); i >= 0 && i < width/2 {
+		indent = lead + strings.Repeat(" ", i+2)
 	}
 	words := strings.Fields(line)
 	if len(words) == 0 {
 		return []string{line}
 	}
 	out := make([]string, 0, 2)
-	cur := ""
-	for _, w := range words {
-		switch {
-		case cur == "":
-			cur = w
-		case lipgloss.Width(cur)+1+lipgloss.Width(w) <= width:
+	// The FIRST line re-attaches the row's own indent, so a wrapped row lands in the
+	// same column as an unwrapped one.
+	cur := lead + words[0]
+	for _, w := range words[1:] {
+		if lipgloss.Width(cur)+1+lipgloss.Width(w) <= width {
 			cur += " " + w
-		default:
-			out = append(out, cur)
-			cur = indent + w
+			continue
 		}
+		out = append(out, cur)
+		cur = indent + w
 	}
 	if cur != "" {
 		out = append(out, cur)

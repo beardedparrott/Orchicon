@@ -60,6 +60,8 @@ func main() {
 			os.Exit(runDB(os.Args[2:], log))
 		case "backfill-pr":
 			os.Exit(runBackfillPR(os.Args[2:], log))
+		case "claude-hook":
+			os.Exit(runClaudeHook(os.Stdin, os.Stdout))
 		case "run-context":
 			os.Exit(runRunContext(os.Args[2:], log))
 		case "runtime-daemon":
@@ -264,7 +266,8 @@ Usage:
   %s db prune       Remove backups older than N days
   %s backfill-pr    Backfill real PR URLs for completed git-backed runs
   %s run-context    Print a run's .orchicon archive (steps/summary) for context-by-reference
-`, bin, version.Current().Tag, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin)
+  %s claude-hook    Run the PreToolUse permission hook for a claude worker session
+`, bin, version.Current().Tag, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin)
 
 	fmt.Printf(`
   %s version       Print version info
@@ -272,7 +275,7 @@ Usage:
 
 The binary embeds the single-container runtime configs, migrations, and
 the frontend bundle. Run the full stack with `+"`docker run`"+` (see
-DOCUMENTATION.md §Single-Container Deployment) or `+"`%s container`"+` as
+ARCHITECTURE.md §Single-Container Deployment) or `+"`%s container`"+` as
 the container's PID-1 supervisor.
 `, bin, bin, bin)
 }

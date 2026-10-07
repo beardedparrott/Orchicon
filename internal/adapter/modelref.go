@@ -22,6 +22,19 @@ const DefaultAdapterKind = "opencode"
 const (
 	KindOpencode = "opencode"
 	KindOrchicon = "orchicon"
+	// KindClaude is the Claude Code CLI adapter ("claude"). It is NOT
+	// "anthropic": anthropic is a PROVIDER segment (it is also a provider
+	// of opencode), and the 2-segment ref "anthropic/<model>" must keep
+	// inferring kind opencode (modelref_test.go). The Claude adapter is a
+	// streaming-stdio adapter with no in-container HTTP serve.
+	//
+	// MODEL tier: it is a catalog-sourced kind (CatalogSourcedAdapterKinds)
+	// — its models are the anthropic provider catalog's, not opencode's —
+	// so `claude` still lists and dispatches on a plane with no opencode
+	// binary. This classification is about the MODEL namespace only, and
+	// decides nothing about Ask: that comes from the ChatTurnClient
+	// assertion, which claude satisfies (internal/claude/ask.go).
+	KindClaude = "claude"
 )
 
 // ModelRef is the parsed form of a worker model_ref under the pinned

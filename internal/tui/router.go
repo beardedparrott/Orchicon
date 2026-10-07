@@ -257,6 +257,29 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 				return false
 			},
 		},
+		// THE DIFF RAIL'S RESIZE FLOOR. The drag is the primary gesture, but a terminal that does not
+		// report motion (or an operator without a mouse) must still be able to size the rail — so these
+		// three chords exist. They are NON-TEXT ctrl chords (the repo's rule for composerBypassKeys), they
+		// are bound by NO bubbles textarea key (its word motions are alt+arrows), and they are registered
+		// HERE rather than hand-listed in the help overlay, so `?` and the behaviour cannot drift.
+		//
+		// Gate: they return false when the diff pane is CLOSED (diffRailWidthStep / diffRailWidthReset),
+		// so the chord is a no-op there and falls through to whatever else might want it.
+		{
+			Name: "widen the split (diff rail, or the screen's tree/detail)", Keys: "ctrl+right", Scope: "global",
+			Match:  keyMatcher("ctrl+right"),
+			Handle: func(m *App, _ tea.Msg) bool { return m.splitWidthStep(+1) },
+		},
+		{
+			Name: "narrow the split (diff rail, or the screen's tree/detail)", Keys: "ctrl+left", Scope: "global",
+			Match:  keyMatcher("ctrl+left"),
+			Handle: func(m *App, _ tea.Msg) bool { return m.splitWidthStep(-1) },
+		},
+		{
+			Name: "reset the split width", Keys: "ctrl+down", Scope: "global",
+			Match:  keyMatcher("ctrl+down"),
+			Handle: func(m *App, _ tea.Msg) bool { return m.splitWidthReset() },
+		},
 	}
 	// One chord route per tab, in tab order: F1 … F7.
 	//
@@ -337,6 +360,11 @@ var composerBypassKeys = map[string]bool{
 	// ctrl+a selects the whole composer (see its route). It has to bypass the textarea for the same reason:
 	// the textarea binds ctrl+a to "line start", so without this the route would never see the key.
 	"ctrl+a": true,
+	// THE DIFF RAIL'S RESIZE CHORDS are here for the same structural reason: they must work while the
+	// composer holds the focus, because that is where the operator is typing. They are NON-TEXT ctrl
+	// chords (the rule above), and the textarea binds only alt+arrows for word motion — so ctrl+arrows
+	// reach the routes instead of being eaten as editing no-ops.
+	"ctrl+left": true, "ctrl+right": true, "ctrl+down": true,
 }
 
 // The tab chords are ADDED from the SAME source the tab bar draws from.
@@ -396,6 +424,15 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	// It is cheap: an interface assertion per screen (a handful), on a path that already walks the whole
 	// screen/route tree.
 	m.rebindScreens()
+	// AN ESC-LESS MOUSE REPORT IS NOT TEXT. A resize streams motion reports, bubbletea's lone-ESC timeout can
+	// fire mid-sequence, and the tail arrives as runes — which every field in the shell would happily insert.
+	// Dropped here, in the message funnel, so it cannot reach the composer or a form field at all.
+	if m.dropOrphanedMouseReport(msg) {
+		return m, nil
+	}
+	if cmd, ok := m.pasteKey(msg); ok {
+		return m, cmd
+	}
 	if wm, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width, m.height = wm.Width, wm.Height
 		m.footer.Width = wm.Width
@@ -415,7 +452,7 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	// would fall through to the screens and be lost.
 	if lm, ok := msg.(launchPromptMsg); ok {
 		if lm.need {
-			m.beginLaunchPrompt(lm.dir, lm.visible, lm.mcpServers, lm.images)
+			m.beginLaunchPrompt(lm.dir, lm.visible, lm.images)
 		}
 		return m, nil
 	}
@@ -485,6 +522,51 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		}
 		return m, nil
 	}
+	// A FORM'S OWN ANCILLARY MESSAGES OUTRANK THE FORM GUARD BELOW, and this is the ONE working example of
+	// why: the guard swallows EVERY non-key message while a form is open, so a message produced by that
+	// form's own submit is eaten before anything can act on it.
+	//
+	// The catalog pick is exactly that case. It asks for the INLINE add form to be opened, and the request
+	// arrives while the CATALOG form is still up (a form is cleared on the next KEY, not on its submit) —
+	// so under the guard the request was swallowed, the add form never appeared, and the next keypress
+	// cleared the catalog form. The operator saw precisely that: "it just jumps back to the mcp screen and
+	// doesn't show that any MCP servers have been added."
+	//
+	// The rule the guard needs: a modal must hide a surface, not suspend the shell — the same rule the
+	// conversation-scope modal's own guard is written to (see dispatch's scope branch). Anything a form's
+	// SUBMIT has to hand onward belongs here, ABOVE the guard.
+	// A FORM'S OWN ANCILLARY MESSAGES OUTRANK THE FORM GUARD BELOW, and this is the ONE working example of
+	// why: the guard swallows EVERY non-key message while a form is open, so a message produced by that
+	// form's own submit is eaten before anything can act on it.
+	//
+	// The catalog pick is exactly that case. It asks for the INLINE add form to be opened, and the request
+	// arrives while the CATALOG form is still up (a form is cleared on the next KEY, not on its submit) —
+	// so under the guard the request was swallowed, the add form never appeared, and the next keypress
+	// cleared the catalog form. The operator saw precisely that: "it just jumps back to the mcp screen and
+	// doesn't show that any MCP servers have been added."
+	//
+	// The rule the guard needs: a modal must hide a surface, not suspend the shell — the same rule the
+	// conversation-scope modal's own guard is written to. Anything a form's SUBMIT has to hand onward
+	// belongs here, ABOVE the guard.
+	if pm, ok := msg.(versionSpecPrefillMsg); ok {
+		m.openInlineSpecForm(&pm.spec, false)
+		return m, nil
+	}
+	// A CREDENTIAL FOR AN INLINE SPEC ARRIVES THE SAME WAY AND FOR THE SAME REASON. It is produced by
+	// the credential FORM's submit (which must not change the spec until the store write it depends on
+	// has landed), so it arrives while that form is still up — above the guard, where a form's own
+	// submit can be acted on.
+	if cm, ok := msg.(credentialAttachedMsg); ok {
+		return m, m.onCredentialAttached(cm)
+	}
+	// The conversation-scope MCP modal (/mcp define) is the same shape again: it is layered above the
+	// composer, so a save chord aimed at the form can never reach a message being typed.
+	if m.convScopeForm != nil {
+		if k, ok := msg.(tea.KeyMsg); ok {
+			return m.convScopeKey(k)
+		}
+		return m, nil
+	}
 	// The assign-or-create modal is the same shape and the same discipline: every key, above every
 	// route and every screen claim, so ctrl+s can never be swallowed by the screen behind it.
 	if m.assignForm != nil {
@@ -500,6 +582,31 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			return m.bulkConfirmKey(k)
 		}
 		return m, nil
+	}
+	// THE CONVERSATION SCOPE MODAL sits HERE, below the form it can open (convScopeForm) and below the
+	// confirm dialog it can raise (bulkConfirm) — so those two, which are layered ON TOP of it, win the
+	// keyboard — and above every screen claim, because it is layered over the whole shell and a keystroke
+	// aimed at the scope must never reach the list behind it.
+	//
+	// IT CONSUMES KEYS AND THE MOUSE, BUT NOT EVERY MESSAGE, and that asymmetry is deliberate: the other
+	// modals here are transient enough to swallow the world, while this one can sit open for minutes. A
+	// modal that ate every message would eat the CHAT WAITER's replays and stream ticks too, leaving the
+	// shell behind it frozen for the rest of the session — a modal must hide a surface, not suspend it.
+	if m.scope != nil {
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			return m.scopeKey(msg)
+		case tea.MouseMsg:
+			return m, nil
+		case scopeDataMsg:
+			m.onScopeData(msg)
+			return m, nil
+		case scopeSecretsMsg:
+			// The tenant secrets store's names, for the credential picker (`r`, and the open path's own
+			// read). Discarded unless it is still about THIS surface — see onScopeSecrets.
+			m.onScopeSecrets(msg)
+			return m, nil
+		}
 	}
 	// The grouping-rename form, opened from a category row in any grouped pane.
 	if m.catForm != nil {
@@ -1015,6 +1122,100 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 // tab bar (click = switch + open its menu), the Ask rail, then
 // fall-through to the screen/pane.
 func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
+	// DRAG-RESIZE THE DIFF RAIL — RESOLVED FIRST, ABOVE THE CLIPBOARD BLOCK BELOW.
+	//
+	// The press-order is the whole fix: clipState.handleMouse begins a text selection on ANY left press
+	// (clipboard.go) and then consumes motion, so a divider drag routed through it would SELECT TEXT
+	// instead of resizing. Claiming the divider's press here, before `if m.clip != nil`, is what keeps
+	// clipState untouched — and consuming the press/motion/release here also means neither the region
+	// setter nor the pane's own mouse handler ever sees them, so a drag can neither select nor switch the
+	// pane's tab, select a file, or trigger its ✕.
+	//
+	// AN OPEN TAB DROPDOWN WINS OVER THE DIVIDER. The dropdown is an OVERLAY painted over the whole
+	// frame (composeView), so it can cover the divider column — a wide menu hangs from a tab in the
+	// centered bar and spans many body rows (e.g. at 200 columns, Overview's menu runs from column 69
+	// to 89 and the divider sits at 89). Without this gate the resize claim fired FIRST and ATE the
+	// menu's press: a click meant for a dropdown entry silently resized the rail and the entry never
+	// activated. Resolving the overlay before the divider keeps the menu owning the clicks inside its
+	// own rectangle, exactly as it owns the keyboard.
+	if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft &&
+		!m.menuHit(mo.X, mo.Y) && m.diffDividerHit(mo.X, mo.Y) {
+		m.diffResizing = true
+		m.diffResizeMoved = false      // a press is not yet a drag — see the release below
+		m.diffResizePrev = m.diffPaneW // the override to restore if it never becomes one
+		m.setDiffPaneW(mo.X + 1)       // seed the override from the column the operator grabbed
+		return m, nil                  // never forwarded to the pane: no tab switch, no file select, no ✕
+	}
+	if m.diffResizing {
+		switch mo.Action {
+		case tea.MouseActionMotion:
+			// The button may arrive as MouseButtonNone (the shape clipState already tolerates,
+			// clipboard.go) — the HELD flag lives on the App, not in the button, so the drag holds.
+			// A motion that does not MOVE the rail (cell-motion can report the press cell) is not
+			// the operator dragging, so it must not turn a click into a resize.
+			cells := mo.X + 1
+			if cells != m.diffPaneW {
+				m.diffResizeMoved = true
+			}
+			m.setDiffPaneW(cells)
+			return m, nil
+		case tea.MouseActionRelease:
+			m.diffResizing = false
+			if !m.diffResizeMoved {
+				// A CLICK, NOT A DRAG. The press seeded an override from the grabbed column, so
+				// without this a stray click on the rail's edge would pin AUTO to a fixed width:
+				// the pane would stop scaling with the terminal and the number would persist.
+				// Restore the pre-gesture override (0 = auto) and persist NOTHING.
+				m.diffPaneW = m.diffResizePrev
+				m.refreshLayout()
+				return m, nil
+			}
+			m.persistDiffRailWidth()
+			return m, nil
+		}
+		// Any other action while resizing (e.g. a wheel) falls through to normal handling.
+	}
+	// DRAG THE DIFF RAIL'S SCROLLBAR — claimed here for the SAME reason the divider is, one block up.
+	//
+	// The bar's press starts the gesture (the pane decides whether that means a jump — see
+	// ScrollbarDragStart), its motion follows the pointer, its release ends it. It has to be claimed ABOVE `if m.clip != nil`, because a left
+	// press in the rail sets a SELECTION REGION (selectionRegionAt) and clipState then CONSUMES the motion —
+	// so a drag handled by the pane would win the press and lose every step after it, selecting text
+	// instead of scrolling.
+	//
+	// THE OPERATOR: "I can't grab onto the scroll bar and drag it up and down like you can in the GUI." The
+	// bar also could not be CLICKED, for the same underlying reason: it occupied the pane's last cell, which
+	// the divider claims, so the pane never saw a press there at all. The bar now has a column of its own
+	// (one cell inside the edge) and this is the gesture that uses it.
+	if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft &&
+		!m.menuHit(mo.X, mo.Y) && m.diffScrollbarHit(mo.X, mo.Y) {
+		m.diffScrollDragging = true
+		// ON THE THUMB the content is picked up where it is; ON THE TRACK the viewport jumps to the pointer
+		// first. Both are the pane's arithmetic — this only forwards the gesture.
+		m.diffPane.ScrollbarDragStart(mo.Y)
+		return m, nil // never forwarded: no selection region is set over the rail
+	}
+	if m.diffScrollDragging {
+		if !m.diffOpen || m.diffPane == nil {
+			// The rail was closed mid-drag (esc, or the ✕). Drop the gesture rather than jump a pane that is
+			// no longer on screen.
+			m.diffScrollDragging = false
+			return m, nil
+		}
+		switch mo.Action {
+		case tea.MouseActionMotion:
+			// NO X TEST, deliberately: the gesture was claimed at the press, and the bar must keep following
+			// the pointer even when a diagonal hand movement takes it out of the rail's columns. Terminal
+			// rows outside the body clamp, which is what dragging past either end should do.
+			m.diffPane.ScrollbarDragTo(mo.Y)
+			return m, nil
+		case tea.MouseActionRelease:
+			m.diffScrollDragging = false
+			m.diffPane.ScrollbarDragEnd()
+			return m, nil
+		}
+		// Any other action while dragging (e.g. a wheel) falls through to normal handling.
+	}
 	// SELECT AND COPY runs ahead of everything else, because it has to work over EVERYTHING: the
 	// tab bar, the dropdown, the rails, a pane, the transcript. The shell owns the frame, so it
 	// is the only layer that can select across all of them (clipboard.go).
@@ -1191,7 +1392,17 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 			return m, m.chat.AnswerQuestion(m.chatConvID, label)
 		}
 	}
-	if (mo.Button == tea.MouseButtonWheelUp || mo.Button == tea.MouseButtonWheelDown) && m.active == TabAsk && m.chatConvID != "" {
+	// THE DIFF RAIL OWNS THE WHEEL IN ITS OWN COLUMNS.
+	//
+	// The operator: "In the TUI diff bar, the scroll doesn't seem to be working." It was not the rail's
+	// handler — the rail scrolls on a wheel (diffs.Model.handleMouse) and on the keyboard (j/k/pgup/pgdown/g/G,
+	// forwarded by diffMsg) — it was this claim, which fired FIRST and took EVERY wheel event on the Ask tab.
+	// The rail is painted over the transcript, so scrolling it moved the transcript underneath while the rail
+	// itself never budged.
+	//
+	// The test is the SAME one diffMsg uses for a click (diffRailOwnsX), deliberately: a column either belongs
+	// to the rail or it does not, and a wheel and a click must not disagree about which.
+	if (mo.Button == tea.MouseButtonWheelUp || mo.Button == tea.MouseButtonWheelDown) && m.active == TabAsk && m.chatConvID != "" && !m.diffRailOwnsX(mo.X) {
 		delta := -3
 		if mo.Button == tea.MouseButtonWheelDown {
 			delta = 3
@@ -1356,11 +1567,43 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		return tea.Batch(m.chat.LoadConversations(), m.waitChat())
 	case chat.ConversationMutatedMsg:
 		return tea.Batch(m.onConversationMutated(msg), m.waitChat())
+	case workerVersionScopeMsg:
+		// A worker's version landed: open the MCP + skills modal on it (see App.OpenWorkerMCPModal).
+		return tea.Batch(m.onWorkerVersionScope(msg), m.waitChat())
+	case convScopeMsg:
+		// THE SCOPE MODAL RE-READS AFTER EVERY WRITE IT CAUSED, whatever the outcome: a definition added,
+		// edited or deleted, a credential stored, an install started, a skill path set or removed. The
+		// write went through a FORM hosted above the modal, so the list underneath is stale the moment it
+		// lands — and a scope pane showing the thing the operator just deleted is the specific failure
+		// this closes. A failed write re-reads too, so the row is back to what the plane actually holds.
+		var cmd tea.Cmd
+		if m.scope != nil {
+			cmd = m.loadScope()
+		}
+		if msg.err != "" {
+			m.dock.SetError(msg.op + " failed: " + msg.err)
+			return cmd
+		}
+		if msg.detail != "" {
+			m.dock.SetNotice(msg.op + ": " + msg.detail)
+		}
+		// A definitions write changes nothing the RAIL shows, but the skill-files write does (the list
+		// carries the conversation's skill_files), so both re-read: the reload is cheap and keeps the
+		// two clients from disagreeing about what the conversation holds.
+		if msg.op == "/skills" {
+			return tea.Batch(cmd, m.reloadConversations())
+		}
+		return cmd
 	case chat.TranscriptMsg:
 		return tea.Batch(m.onTranscript(msg), m.waitChat())
 	case chat.ErrMsg:
 		m.setChatError(msg.Where, msg.Err)
-		return m.waitChat()
+		// AND THE FAILURE IS SURFACED ON THE TRANSCRIPT, not only on the composer strip. This is the
+		// PRE-ACK path (see ErrMsg.ConvID): the send never became a turn, so NO durable row is written and
+		// the row-rendering fix in conversationItems has nothing to find. Left alone it reproduced the
+		// operator's report exactly — "The TUI just drops with no indication as to why" — because the strip
+		// sits under the composer while the operator reads the conversation. See App.surfaceTurnFailure.
+		return tea.Batch(m.surfaceTurnFailure(msg.ConvID, msg.Err), m.waitChat())
 	case chat.AbortTurnMsg:
 		// The Stop outcome. The controller has ALREADY cleared the turn slot (that is what makes Stop
 		// instant), so this repaint is what makes the thinking indicator and the composer's stop
@@ -1379,25 +1622,26 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		// settled. THIS IS THE CASE THAT WAS MISSING — see TurnAckedMsg, and onStreamDone for the end-of-turn
 		// settle that covers an ack the channel dropped.
 		m.dock.SettleSendingAck()
-		return m.waitChat()
+		// AND THE RAIL IS REFRESHED AT ONCE, so the row marks the conversation it just started. The ack is the
+		// FIRST moment the turn provably exists server-side, and the shell holds the fact that THIS client is
+		// streaming it (chat.IsStreaming) — so the row reads "running" from the union the instant we repaint,
+		// without waiting for the 5s rolling list tick. The reload is the same one the rolling window already
+		// performs, just pulled forward to the moment the operator acted on: a send must be visible as sent,
+		// which is the other half of "the rail's running marker misses active turns".
+		return tea.Batch(m.reloadConversations(), m.waitChat())
 	case chat.TurnResolvedMsg:
 		return m.waitChat()
 	case chat.StreamDoneMsg:
 		return tea.Batch(m.onStreamDone(msg), m.waitChat())
-	case chat.ConsentAskMsg:
-		// A permission ask landed mid-turn: draw its card. ShowConsentAsk consults
-		// the conversation's session grants first, so a directory already allowed
-		// for this session does not ask twice.
-		return tea.Batch(m.ShowConsentAsk(msg.Ask), m.waitChat())
-	case chat.ConsentResolvedMsg:
-		// THE OTHER CLIENT DECIDED, so settle this client's copy of the card.
-		//
-		// The operator: "the choice box is still there for permissions" — in the GUI
-		// after answering in the TUI. Only the answering client cleared its own copy,
-		// and a permission ask has no durable row to reconcile against, so the
-		// collector publishes the outcome and every watcher settles from it.
-		m.chatStore.settleAsk(msg.ConvID, msg.AskID, msg.Outcome, msg.Answer)
-		return tea.Batch(m.onChatWake(), m.waitChat())
+	// NO ConsentAskMsg / ConsentResolvedMsg CASES: an ask and its resolution now reach the store DIRECTLY
+	// from the turn's goroutine (appEventStore.ShowConsentAsk / SettleConsentAsk) instead of riding the
+	// shell's shared command channel, where a non-blocking send could drop a card with no error and no
+	// retry — leaving the pane at "orchicon is thinking" while the turn parked on the server. The wake
+	// poke the store follows each write with is what brings the loop back here to repaint.
+	case chat.PermissionGrantsMsg:
+		// The SERVER's answer to a list or a revoke (see App.ConsentGrants / ConsentRevoke). It carries the
+		// refreshed list in BOTH cases, so this client never keeps its own copy to drift.
+		return tea.Batch(m.applyConsentGrants(msg), m.waitChat())
 	case chat.ConsentRepliedMsg:
 		// The SERVER's verdict on a decision we sent. A decision that did not apply
 		// (the ask expired, the turn ended) must SAY so — otherwise the operator
@@ -1406,11 +1650,26 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		case msg.Err != "":
 			m.dock.SetNotice("permission reply failed: " + msg.Err)
 		case msg.Expired || !msg.Applied:
+			// AND THE CARD STOPS CLAIMING A SCOPE IT NEVER GOT. A refused ALLOW_SESSION used to leave the card
+			// reading "session · /dir" — a scope the server never granted, and one this client used to silence
+			// every later ask for that directory (see ShowConsentAsk).
+			m.settleConsentScope(msg.ConvID, msg.AskID, "")
 			m.dock.SetNotice("that permission ask is no longer open — nothing was applied")
 		default:
+			// THE GRANT IS RECORDED HERE, on the verdict that says the server actually applied it. This is the
+			// only place a session grant may be written locally: see ConsentResolve for what recording it on the
+			// click cost (a client that believed in a grant the server had REFUSED, and went permanently deaf to
+			// a directory the GUI still asked about).
+			if dir := m.settleConsentScope(msg.ConvID, msg.AskID, "session · "); dir != "" {
+				m.dock.SetNotice("allowed for this session · " + dir)
+				// THE SERVER'S LIST JUST CHANGED, and this shell shows it (the grants header and /grants read
+				// the server's answer), so it re-fetches rather than guessing that the grant it just watched
+				// being applied is the only one there is.
+				return tea.Batch(m.loadConsentGrants(msg.ConvID), m.onChatWake(), m.waitChat())
+			}
 			m.dock.SetNotice("permission decision applied")
 		}
-		return m.waitChat()
+		return tea.Batch(m.onChatWake(), m.waitChat())
 	case askDefaultSettingsMsg:
 		// Store the tenant default; if a conversation is already open its strip may
 		// now be able to resolve a model (and therefore a context window) that it

@@ -49,7 +49,10 @@ const ACTIVE_STATUSES = new Set([1, 2, 3, 4, 5, 6]);
 function ExecutionsPage() {
   const { workflowRunId } = Route.useSearch();
   const [search, setSearch] = useState("");
-  const [status, setStatus] = useState("running"); // default: show running executions
+  // Default: All. Landing on "Running" hid everything that had already
+  // finished, so a returning operator saw an empty page and had to guess that
+  // a filter was on. The full list is the honest default.
+  const [status, setStatus] = useState("all");
   const [sortBy, setSortBy] = useState("created_at");
   const [sortOrder, setSortOrder] = useState("desc");
   const [selected, setSelected] = useState<Set<string>>(new Set());

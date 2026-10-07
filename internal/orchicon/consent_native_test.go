@@ -63,6 +63,49 @@ func TestConsentReadOnlyToolsNeverAsk(t *testing.T) {
 	}
 }
 
+// TestOpaqueMCPToolsAreNeverConsentGated pins the CONSENT half for MCP, which now ALLOWS the class.
+//
+// It used to be its own inverse (`AreAlwaysGated`): an operator's MCP tool was treated as a
+// third-party action the platform cannot classify, gated in every mode. The operator overruled it —
+// the server is in the conversation because they attached it, so consent was spent at configuration
+// time. The MODE table was already the governor for the platform's own surface and remains it for
+// everyone's.
+func TestOpaqueMCPToolsAreNeverConsentGated(t *testing.T) {
+	// THE REQUIREMENT FLIPPED, and the assertion flipped with it rather than being deleted. An MCP
+	// server is in this conversation only because the operator put it there, so the approval already
+	// happened at configuration time; a per-call card asks them to re-decide a standing decision.
+	// The operator: "If it's added in scope it should just have access tbh. I don't want cards for
+	// that."
+	//
+	// WHAT STILL GOVERNS ONE is the MODE boundary, which is a separate layer and is NOT asserted from
+	// here — see internal/askmode's MayExecute (an opaque MCP tool takes its mode's MayAct, so
+	// Brainstorm and Quick Work still refuse it) and native_tools.go, which enforces that at both the
+	// OFFER and the EXECUTE end. Pinning it THERE is what keeps this test honest: this one claims only
+	// that consent is not the thing doing the governing.
+	for _, name := range []string{
+		"mcp__github__create_issue", "mcp__sentry__list_issues", "mcp__notes__append",
+	} {
+		if consentGatedTool(name) {
+			t.Errorf("%q must NOT be consent-gated — the server is in scope because the operator attached it, "+
+				"so a card here asks them to re-decide a decision they already made", name)
+		}
+	}
+	for _, name := range []string{
+		"mcp__orchicon__create_work_item", "mcp__orchicon__get_current_conversation", "orchicon_list_projects",
+	} {
+		if consentGatedTool(name) {
+			t.Errorf("%q must NOT be gated by consent — the mode table governs the platform's own surface", name)
+		}
+	}
+	// AND THE HOST SUITE IS UNAFFECTED by that change: a write or a command still asks, which is the
+	// half of this gate that the operator has never disputed.
+	for _, name := range []string{"write", "edit", "batch_write", "bash"} {
+		if !consentGatedTool(name) {
+			t.Errorf("%q must STILL be gated — allowing MCP must not loosen the file/shell suite", name)
+		}
+	}
+}
+
 // pendingPermIDs returns the ask ids currently parked, for a test that needs to
 // answer one.
 func pendingPermIDs(b *NativeBridge) []string {

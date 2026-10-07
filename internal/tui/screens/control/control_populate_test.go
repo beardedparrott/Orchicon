@@ -49,7 +49,7 @@ func TestControlSourcesPopulateFromFetchedMsg(t *testing.T) {
 	// the two clients look like they had separate sets of categories. The TUI now does the same: create
 	// folds into the assign gesture on each pane, and rename/delete are the folder row's `e` / `x`.
 	want := map[string]bool{
-		"secrets": false, "mcp": false, "themes": false,
+		"secrets": false, "themes": false,
 		"providers": false, "webhooks": false, "adapters": false,
 		"settings": false, "admin": false,
 		// The durable permission policy: a full CRUD surface (list/add/remove

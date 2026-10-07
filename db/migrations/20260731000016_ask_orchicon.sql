@@ -50,6 +50,16 @@ CREATE POLICY tenant_isolation ON ask_orchicon_messages
 
 -- Agent configuration: Orchicon's system prompt, skills, tools, and
 -- behavior definition. One row per tenant (id = 'default').
+--
+-- THE FREE-TEXT FIELDS ARE PROSE (system_prompt / role / skills / behavior /
+-- agents_md): they are rendered as PROMPT SECTIONS by writeAdditionalInstructions
+-- and are the ONE surviving tenant-level Ask surface. They are a PROMPT SECTION
+-- ONLY and must NOT grow into a scope: there is no tenant MCP tier and no tenant
+-- skill_files tier. `mcp_servers` is owner-scoped (project / conversation / worker
+-- version) and `skill_files` lives on the project / conversation / worker version —
+-- scope is per-project and per-conversation. `skills` here is PROSE, DISTINCT from
+-- a conversation's / project's `skill_files` (real on-disk paths, rendered as a
+-- `# Skills` manifest by the ONE shared contextfiles renderer).
 CREATE TABLE IF NOT EXISTS ask_orchicon_agent_config (
   id                text NOT NULL DEFAULT 'default',
   tenant_id         text NOT NULL,

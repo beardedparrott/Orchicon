@@ -2,13 +2,17 @@ package opencode
 
 import (
 	"encoding/json"
+	"fmt"
+	"github.com/beardedparrott/orchicon/internal/runtime"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/beardedparrott/orchicon/internal/mcpclient"
 	"github.com/beardedparrott/orchicon/internal/neverallow"
+	"github.com/beardedparrott/orchicon/internal/workerrestrict"
 )
 
 // opencodeConfigPath returns the path to the opencode config file
@@ -241,7 +245,7 @@ func normalizeMCPEntries(entries map[string]any) map[string]any {
 // (/tmp/opencode-data-*, which hold the seeded model auth.json copies) stay
 // behind the deny. Workers are told to use it in the composite prompt's
 // runtime-environment block.
-const ScratchDir = "/tmp/orchicon"
+const ScratchDir = workerrestrict.ScratchDir
 
 // OrchiconRunDirGlob is the external_directory carve-out for Orchicon's
 // own run metadata (`.orchicon/<run>/` under the project root, and any
@@ -253,7 +257,7 @@ const ScratchDir = "/tmp/orchicon"
 // carve-out is tight: only the `.orchicon/` subtree (Orchicon-owned,
 // aliased run metadata, gitignored), never the supervisor socket or the
 // auth/data dirs elsewhere on disk.
-const orchidsRunDirPattern = "**/.orchicon/**"
+const orchidsRunDirPattern = workerrestrict.RunDirPattern
 
 // taskToolDeny denies opencode's built-in `task` (subagent) tool for every
 // worker execution. Orchicon already splits work into focused per-worker
@@ -262,7 +266,7 @@ const orchidsRunDirPattern = "**/.orchicon/**"
 // turn. This rule removes the surface entirely (permission layers gate the
 // built-in `task` tool the same way they gate `bash`/`edit`). Denied via a
 // "*" catch-all so no subagent plan can be approved.
-const taskToolDeny = "task"
+const taskToolDeny = workerrestrict.TaskToolDeny
 
 // readGrepDeny doubles as the composite-tool carve-out: when orchicon's
 // worktree batch tools are enabled (ConfigOptions.CompositeTools), the
@@ -394,38 +398,11 @@ func interactivePermissionRules() map[string]any {
 // APPENDED from the shared declaration; the patterns that stay inline below are
 // the worker's own project-boundary deny list, which is not part of that class.
 func workerPermissionRules(compositeTools bool) map[string]any {
-	bashDeny := append(neverallow.DenyRules(), []string{
-		// rm family — target-scoped. In-project cleanup (`rm -rf build/`,
-		// `node_modules`, `.next`) is legitimate and no longer denied (the
-		// denial burned worker tokens on `find -delete`/python workarounds);
-		// the OS-level execution guard is the precise backstop (it allows rm
-		// only when every path stays inside the project + scratch). What stays
-		// denied is the destructive class: absolute system paths, /, ~, $HOME,
-		// --no-preserve-root, and the current-dir-wipe variants — the
-		// commands that escape the project no matter how they're written.
-		"rm -rf /", "rm -r /", "rm -R /", "rm -f /", "rm -fr /", "rm -Rf /",
-		"rm -rf /*", "rm -fr /*", "rm -r /*", "rm -R /*", "rm -f /*",
-		"rm -rf /home/*", "rm -rf /root/*", "rm -rf /etc/*", "rm -rf /usr/*",
-		"rm -rf /var/*", "rm -rf /bin/*", "rm -rf /boot/*",
-		"rm -rf ~", "rm -rf ~/*", "rm -rf $HOME", "rm -rf $HOME/*",
-		"rm -rf ${HOME}/*", "rm -rf ${HOME}*",
-		"rm --no-preserve-root *", "rm -rf --no-preserve-root *",
-		"/bin/rm *", "/usr/bin/rm *", "/bin/rm -rf *", "/usr/bin/rm -rf *",
-		"rm -rf . /", "rm -rf . ..",
-		// shell-construct smuggling variants that hide rm.
-		"(*rm*", "{*rm*",
-		"* & rm *", "* && rm *", "* ; rm *", "* || rm *", "* | rm *",
-		"* > /dev/sd*", "* >> /dev/sd*", ": > /dev/sd*",
-		"echo * > /dev/sd*", "echo * >> /dev/sd*",
-		"cat * > /dev/sd*", "cat * >> /dev/sd*", "cp * /dev/sd*",
-		"mv * /dev/null", "cp -r * /dev/null", "cp -a * /dev/null",
-		// root-wide permission changes.
-		"chmod -R 777 /*", "chmod -R 777 /", "chmod -R 000 /*", "chmod -R 000 /",
-		"chown -R * /*", "chown -R * /", "chmod -R 777 * /",
-		// download-and-execute (arbitrary remote code).
-		"curl * | sh", "curl * | bash", "curl * | sh -", "curl * | bash -",
-		"curl * | zsh", "wget * | sh", "wget * | bash", "wget * | zsh",
-	}...)
+	// The worker bash deny list — the shared never-allow binary class PLUS the
+	// project-boundary rules — in ONE copy, in internal/workerrestrict. The
+	// claude adapter's PreToolUse hook matches the SAME list, which is what
+	// makes "a destructive command is refused identically" true by construction.
+	bashDeny := workerrestrict.WorkerDenyPatterns()
 	rules := make(map[string]any, len(bashDeny))
 	for _, p := range bashDeny {
 		rules[p] = "deny"
@@ -520,6 +497,21 @@ type ConfigOptions struct {
 	// worker is forced onto the batch tools — which is what collapses the
 	// number of turns. Only set alongside WorktreeDir.
 	CompositeTools bool
+	// Providers are the tenant's provider definitions to inject as opencode's
+	// `provider` block, with their base URLs ALREADY TRANSPOSED for the consumer
+	// (see ProviderConfig). Empty = inherit whatever the mounted opencode config
+	// defines, which is the host-plane path.
+	//
+	// WHY THE PLANE INJECTS THEM AT ALL. A runtime container reaches the host
+	// through the docker bridge, where `127.0.0.1` is the CONTAINER, not the
+	// machine running a local model. The stored provider URL is correct for the
+	// plane (which runs on the host) and wrong for a container, so something has
+	// to hand the container a transposed address. Doing it here — in the config
+	// the plane already builds for the container's serve — keeps it OUT of
+	// adapter-specific files: every adapter that boots an opencode serve gets the
+	// same generated block, and no user has to hand-edit an opencode.jsonc to
+	// make a local model work.
+	Providers []runtime.ProviderConfig
 	// WorktreeDir is the base directory the composite worktree MCP server
 	// resolves its paths against: the worker's project/worktree directory. It
 	// is injected as the sidecar's ORCHICON_MCP_WORKTREE_DIR env var.
@@ -535,6 +527,17 @@ type ConfigOptions struct {
 	// caller that predates the profile split keeps the worker sandbox
 	// byte-identically; only the Ask serve opts into ProfileInteractive.
 	PermissionProfile PermissionProfile
+
+	// RunMCP is the RUN's MCP union (project-owned ∪ every step worker
+	// version's inline specs), resolved ONCE from the run and with
+	// ${SECRET_NAME} expanded at build time. A step sees servers ANOTHER
+	// step defined: that is the same trade the boot profile already makes
+	// for adapter mounts and serves, and it is DELIBERATE (see the
+	// RUN-LEVEL MCP UNION block in BuildConfigContent). Empty = the run
+	// defined no servers.
+	RunMCP []mcpclient.ScopedServer
+	// RunSkills is the RUN's skill-file union (the same walk's skill half).
+	RunSkills []mcpclient.InlineSkillFile
 }
 
 // BuildConfigContent builds the JSON string for the OPENCODE_CONFIG_CONTENT
@@ -578,7 +581,9 @@ func BuildConfigContent(o ConfigOptions) string {
 	// resolved relative to the session cwd (the worktree), where worker.md is
 	// tracked. Ask Orchicon uses a separate session path and is unaffected.
 	if o.DefaultAgent == workerAgent {
-		cfg["instructions"] = []string{"worker.md"}
+		instr := []string{"worker.md"}
+		instr = append(instr, runSkillInstructions(o)...)
+		cfg["instructions"] = instr
 	}
 
 	// Merge MCP servers: the user's own opencode-config servers first,
@@ -607,6 +612,33 @@ func BuildConfigContent(o ConfigOptions) string {
 		if _, exists := mcp["orchicon-worktree"]; !exists {
 			mcp["orchicon-worktree"] = worktreeMCPServer(o.WorktreeDir, o.ProjectDir, o.MCPBinaryPath)
 		}
+	}
+	// RUN-LEVEL MCP UNION. A container's serve is created ONCE and this
+	// config is applied ONCE (the daemon applies ServeConfig only at
+	// container creation), so this set MUST come from the RUN and never
+	// from the dispatching step: a per-execution input would make
+	// "whichever step created the container first" decide what every step
+	// sees — order-dependent, and forbidden.
+	//
+	// OVER-PROVISIONING IS DELIBERATE: a step therefore sees servers
+	// ANOTHER step defined. That is the same trade the run's boot profile
+	// already makes for adapter mounts and serves (CreateRequest.AdapterKinds),
+	// and it is why this field carries a RUN union rather than an
+	// execution's own set. The widening is RECORDED here and LOGGED per
+	// session (the plane logs the union with provenance at resolution, and
+	// the adapter logs the set the session received).
+	//
+	// The built-ins above are emitted FIRST, so a run server whose id
+	// collides with `orchicon`/`orchicon-plane`/`orchicon-worktree` never
+	// overwrites it.
+	for _, ss := range o.RunMCP {
+		if ss.Spec.ID == "" {
+			continue
+		}
+		if _, exists := mcp[ss.Spec.ID]; exists {
+			continue // built-ins (and the user's servers) win a name clash
+		}
+		mcp[ss.Spec.ID] = mcpEntryFromSpec(ss.Spec)
 	}
 	if len(mcp) > 0 {
 		cfg["mcp"] = mcp
@@ -653,6 +685,37 @@ func BuildConfigContent(o ConfigOptions) string {
 	// sees, Orchicon controls what is stored.
 	cfg["tool_output"] = map[string]any{"max_bytes": 1000000, "max_lines": 5000}
 
+	// The tenant's providers, with base URLs transposed for this consumer. Only
+	// set when non-empty: an empty block would OVERRIDE the mounted config's
+	// provider definitions with nothing, which is how a host-plane serve would
+	// lose the operator's own providers.
+	if len(o.Providers) > 0 {
+		providers := make(map[string]any, len(o.Providers))
+		for _, p := range o.Providers {
+			entry := map[string]any{}
+			if p.NPM != "" {
+				entry["npm"] = p.NPM
+			}
+			opts := map[string]any{}
+			if p.BaseURL != "" {
+				opts["baseURL"] = p.BaseURL
+			}
+			if len(opts) > 0 {
+				entry["options"] = opts
+			}
+			// A provider with neither an npm package nor a base URL carries nothing
+			// opencode can act on, so it is skipped rather than emitted as a stub
+			// that would shadow a real definition of the same name.
+			if len(entry) == 0 {
+				continue
+			}
+			providers[p.ID] = entry
+		}
+		if len(providers) > 0 {
+			cfg["provider"] = providers
+		}
+	}
+
 	// Ask opencode to batch independent tool calls into a single assistant
 	// turn rather than emit them one at a time. Being explicit about batching
 	// (rather than only prompting for it) collapses the number of model
@@ -684,6 +747,119 @@ func BuildConfigContent(o ConfigOptions) string {
 		b, _ = json.Marshal(fallback)
 	}
 	return string(b)
+}
+
+// mcpEntryFromSpec renders one resolved MCP ServerSpec into opencode's MCP
+// config entry shape: McpLocalConfig for a stdio server
+// (`{type:"local",command:[...],environment{},enabled}`) or McpRemoteConfig
+// for a streamable-HTTP server (`{type:"remote",url,headers,enabled}`).
+//
+// AUTH IS BEARER/HEADER ONLY — the spec's Headers already carry the resolved
+// plaintext (the plane expands ${SECRET_NAME} at build time, before it
+// reaches this builder), and OAuth is out of scope for v1, exactly as the
+// other adapters already treat it. The spec's Timeout/OnError are the
+// NATIVE adapter's per-call policy and have no opencode analog here, so they
+// are not emitted.
+func mcpEntryFromSpec(s mcpclient.ServerSpec) map[string]any {
+	if s.TransportType() == mcpclient.TypeHTTP {
+		e := map[string]any{"type": "remote", "url": s.URL, "enabled": true}
+		if len(s.Headers) > 0 {
+			e["headers"] = s.Headers
+		}
+		return e
+	}
+	e := map[string]any{"type": "local", "command": s.Command, "enabled": true}
+	if len(s.Env) > 0 {
+		e["environment"] = s.Env
+	}
+	return e
+}
+
+// runSkillInstructions renders the RUN's skill-file union into opencode
+// `instructions` paths.
+//
+// opencode reads skills from DISK (`.opencode/skills/<name>/SKILL.md`) and its
+// `Config.instructions` is a list of PATHS it loads — there is no config field
+// for inline skill TEXT. So a union entry that already names a filesystem path
+// (`Path` set, `Content` empty — the common case: the skill store renders
+// file/dir paths) is emitted verbatim. An entry that carries INLINE content is
+// materialised under `<WorktreeDir>/.orchicon/skills/` at build time and that
+// path is emitted instead.
+//
+// The write runs on the PLANE, but WorktreeDir is bind-mounted at its
+// IDENTICAL absolute host path (the runtime daemon mounts project_dir at the
+// same path), so the file lands in-container where the serve can read it. A
+// write failure is logged and the skill SKIPPED — never a silent loss and
+// never a failed config build: one unplaceable skill must not take down the
+// whole serve.
+func runSkillInstructions(o ConfigOptions) []string {
+	var out []string
+	for _, s := range o.RunSkills {
+		if s.Path == "" {
+			continue
+		}
+		if s.Content == "" {
+			out = append(out, s.Path)
+			continue
+		}
+		p, err := materialiseInlineSkill(o.WorktreeDir, s)
+		if err != nil {
+			slog.Default().Warn("opencode: inline skill not placed — skipping",
+				"skill", s.Path, "worktree", o.WorktreeDir, "error", err)
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// materialiseInlineSkill writes one inline skill file under
+// <worktreeDir>/.orchicon/skills/ and returns the path to emit as an
+// instruction. The name is derived from the skill's own path (base name,
+// sanitised) so two skills with the same base never collide and the emitted
+// path is deterministic for a given run (AC 3).
+func materialiseInlineSkill(worktreeDir string, s mcpclient.InlineSkillFile) (string, error) {
+	if worktreeDir == "" {
+		return "", fmt.Errorf("no worktree dir to place the skill in")
+	}
+	dir := filepath.Join(worktreeDir, ".orchicon", "skills")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	name := sanitiseSkillName(s.Path)
+	if name == "" {
+		return "", fmt.Errorf("skill path %q yields no usable file name", s.Path)
+	}
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte(s.Content), 0o644); err != nil {
+		return "", err
+	}
+	return p, nil
+}
+
+// sanitiseSkillName reduces a skill's declared path to a stable, filesystem-
+// safe `.md` file name. The last path element wins (the skill's own slug),
+// non-alphanumerics collapse to `-`, and the result always ends in `.md`.
+func sanitiseSkillName(p string) string {
+	base := filepath.Base(strings.TrimSpace(p))
+	base = strings.TrimSuffix(base, filepath.Ext(base))
+	var b strings.Builder
+	for _, r := range strings.ToLower(base) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	trimmed := strings.Trim(b.String(), "-")
+	for strings.Contains(trimmed, "--") {
+		trimmed = strings.ReplaceAll(trimmed, "--", "-")
+	}
+	if trimmed == "" {
+		return ""
+	}
+	return trimmed + ".md"
 }
 
 // orchiconBinaryPath returns the path to the orchicon executable used to

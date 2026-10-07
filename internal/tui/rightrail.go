@@ -72,7 +72,12 @@ func (m *App) railVisible() bool {
 	if m.chatConvID != "" {
 		return true // continuing a session
 	}
-	return m.askMode == askConversations
+	// rightRailOpen IS CONSULTED, and that is the whole point of ctrl+r: its route and its help
+	// entry both say "toggle conversations rail", but railVisible ignored the flag, so the chord
+	// changed dead state and the rail never left the screen. The gate caught it (a collapse followed
+	// by ctrl+r never brought the rail back). Default true, so nothing that predates the toggle
+	// changes behaviour.
+	return m.askMode == askConversations && m.rightRailOpen
 }
 
 // toggleRightRail collapses/expands the Ask conversations rail (ctrl+r).
@@ -249,7 +254,13 @@ func (m *App) railLine(r railRow, i, w int) string {
 // row would be the same duplication this comment already warns about.
 func (m *App) conversationRow(c chat.Conversation, i, w int) string {
 	meta := fmt.Sprintf("%d msgs", c.MessageN)
-	if c.TurnInFly {
+	// THE UNION, not the polled field alone. The row and the pane must agree about the SAME conversation: the
+	// pane's activity line reads `IsStreaming || TurnInFly` (App.runningFor), so keying the row to TurnInFly
+	// ALONE made the two contradict each other whenever THIS client held the live turn but the last list
+	// read predated it — the operator's "the 'running' status on the conversation rail list doesn't always
+	// show up on active running conversations." See App.runningFor for why it is a union (a turn started in
+	// the OTHER client has no local slot and must still mark) rather than a local-only check.
+	if m.runningFor(c.ID) {
 		meta = "running"
 	}
 	if m.projectScope == projectScopeAll {

@@ -1,12 +1,12 @@
-// MCP server management hooks (ADR-0008): the tenant-facing MCP surface
-// behind Settings → Adapters → MCP. CRUD over tenant-scoped MCP server
-// entries (stdio + streamable HTTP), the curated registry catalog with
+// MCP server management hooks (ADR-0008): the MCP surface
+// behind Settings → Adapters → MCP. CRUD over OWNER-SCOPED MCP server
+// definitions (stdio + streamable HTTP), the curated registry catalog with
 // one-click prefill, explicit-only auto-install (dry-run in CI), and
 // write-only credentials via the tenant secrets store (never returned).
 //
-// Selections (project + tenant-default + worker) are references, never
-// copies — every mutation invalidates the shared keys so every consumer
-// auto-refreshes on save.
+// A definition is OWNER-SCOPED (project XOR conversation) and there is no
+// separate selection: the owner column IS the selection. Every mutation
+// invalidates the shared keys so every consumer auto-refreshes on save.
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { mcpClient } from "@/api/clients";
@@ -16,15 +16,39 @@ export const mcpKeys = {
   all: ["mcp-servers"] as const,
   catalog: ["mcp-catalog"] as const,
   runtimes: ["mcp-runtimes"] as const,
-  project: (projectId: string) => ["mcp-servers", "project", projectId] as const,
-  tenantDefault: ["mcp-servers", "tenant-default"] as const,
+  // Owner-scoped scopes: the definitions a project / conversation owns.
+  ownerProject: (projectId: string) => ["mcp-servers", "owner-project", projectId] as const,
+  ownerConversation: (conversationId: string) =>
+    ["mcp-servers", "owner-conversation", conversationId] as const,
 };
 
-export function useMCPServerList() {
+// useMCPServerList lists MCP definitions. The SCOPE FILTER IS THE
+// INHERITANCE QUERY: the owner column IS the selection, so narrowing to a
+// project returns exactly the servers that project contributes — there is
+// no separate "inherited" RPC and no client-side union. With no scope the
+// list is the whole tenant (kept for callers that have no scope); every
+// screen passes a scope.
+// `enabled` lets a caller with NO scope (the worker-version placement, whose
+// entries are inline specs in the caller's array) switch the query OFF rather
+// than fire an unscoped one. An unscoped ListMCPServers is the whole-tenant
+// list the epic removes, so firing it and ignoring the result is not acceptable.
+export function useMCPServerList(
+  scope?: { projectId?: string; conversationId?: string },
+  opts?: { enabled?: boolean },
+) {
+  const key = scope?.projectId
+    ? mcpKeys.ownerProject(scope.projectId)
+    : scope?.conversationId
+      ? mcpKeys.ownerConversation(scope.conversationId)
+      : mcpKeys.all;
   return useQuery({
-    queryKey: mcpKeys.all,
+    queryKey: key,
+    enabled: opts?.enabled ?? true,
     queryFn: async () => {
-      const res = await mcpClient.listMCPServers({});
+      const res = await mcpClient.listMCPServers({
+        projectId: scope?.projectId ?? "",
+        conversationId: scope?.conversationId ?? "",
+      });
       return (res.servers ?? []) as MCPServer[];
     },
   });
@@ -118,49 +142,5 @@ export function useClearMCPServerSecret() {
     mutationFn: async (req: Parameters<typeof mcpClient.clearMCPServerSecret>[0]) =>
       mcpClient.clearMCPServerSecret(req),
     onSuccess: () => qc.invalidateQueries({ queryKey: mcpKeys.all }),
-  });
-}
-
-// --- Selections (references, never copies) ---------------------------------
-
-// useGetProjectMCPServers fetches the project's MCP server selection
-// (auto-refreshed when the servers list invalidates).
-export function useGetProjectMCPServers(projectId: string | undefined) {
-  return useQuery({
-    queryKey: mcpKeys.project(projectId ?? ""),
-    enabled: !!projectId,
-    queryFn: async () => {
-      const res = await mcpClient.getProjectMCPServers({ projectId: projectId! });
-      return (res.mcpServerIds ?? []) as string[];
-    },
-  });
-}
-
-export function useSetProjectMCPServers() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async (req: Parameters<typeof mcpClient.setProjectMCPServers>[0]) =>
-      mcpClient.setProjectMCPServers(req),
-    onSuccess: (_data, vars) =>
-      qc.invalidateQueries({ queryKey: mcpKeys.project(vars.projectId ?? "") }),
-  });
-}
-
-export function useGetTenantDefaultMCPServers() {
-  return useQuery({
-    queryKey: mcpKeys.tenantDefault,
-    queryFn: async () => {
-      const res = await mcpClient.getTenantDefaultMCPServers({});
-      return (res.mcpServerIds ?? []) as string[];
-    },
-  });
-}
-
-export function useSetTenantDefaultMCPServers() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async (req: Parameters<typeof mcpClient.setTenantDefaultMCPServers>[0]) =>
-      mcpClient.setTenantDefaultMCPServers(req),
-    onSuccess: () => qc.invalidateQueries({ queryKey: mcpKeys.tenantDefault }),
   });
 }

@@ -216,6 +216,20 @@ export class Conversation extends Message<Conversation> {
    */
   fullsend = false;
 
+  /**
+   * skill_files are absolute paths (files OR directories) to SKILL artifacts
+   * selected for THIS CONVERSATION. Rendered into the Ask system prompt by
+   * contextfiles.RenderManifest, union-ed with the conversation's project's
+   * skill_files.
+   *
+   * DISTINCT FROM AgentConfig.skills below: that is the tenant-wide free-text
+   * `skills` PROMPT SECTION (prose); these are real on-disk paths. The serialized
+   * names stay distinct on purpose.
+   *
+   * @generated from field: repeated string skill_files = 17;
+   */
+  skillFiles: string[] = [];
+
   constructor(data?: PartialMessage<Conversation>) {
     super();
     proto3.util.initPartial(data, this);
@@ -240,6 +254,7 @@ export class Conversation extends Message<Conversation> {
     { no: 14, name: "turn_last_activity_at", kind: "message", T: Timestamp },
     { no: 15, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 16, name: "fullsend", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 17, name: "skill_files", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Conversation {
@@ -389,6 +404,17 @@ export class ToolCall extends Message<ToolCall> {
    */
   arguments = "";
 
+  /**
+   * issued_at_unix_ms is when the call was ISSUED, epoch MILLISECONDS — the same
+   * stamp internal/askorchicon/tool_ledger.go writes into the tool_calls column.
+   * It rides the wire so the client can count a ROLLING window (see
+   * internal/toolclass.Summarize); 0 means "not stamped" (a row persisted before
+   * the field existed) and must be treated as unknown, never as the epoch.
+   *
+   * @generated from field: int64 issued_at_unix_ms = 5;
+   */
+  issuedAtUnixMs = protoInt64.zero;
+
   constructor(data?: PartialMessage<ToolCall>) {
     super();
     proto3.util.initPartial(data, this);
@@ -401,6 +427,7 @@ export class ToolCall extends Message<ToolCall> {
     { no: 2, name: "type", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "function_name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 4, name: "arguments", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "issued_at_unix_ms", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ToolCall {
@@ -641,6 +668,13 @@ export class AgentConfig extends Message<AgentConfig> {
   skills = "";
 
   /**
+   * NOTE: `system_prompt`, `role`, `skills`, `behavior` and `agents_md` are FREE-TEXT PROSE rendered as
+   * prompt sections (writeAdditionalInstructions). They are the ONE surviving tenant-level Ask surface
+   * and are a PROMPT SECTION ONLY — they must NOT grow into a scope. There is no tenant MCP tier and no
+   * tenant skill_files tier: `mcp_servers` is owner-scoped (project / conversation / worker version) and
+   * `skill_files` lives on the project / conversation / worker version. `skills` here is PROSE, distinct
+   * from a conversation's `skill_files` (real on-disk paths, rendered as a `# Skills` manifest).
+   *
    * @generated from field: string behavior = 5;
    */
   behavior = "";

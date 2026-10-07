@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/toolclass"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 )
 
@@ -80,6 +81,20 @@ type convState struct {
 	// runLivenessWatch); without it, a stream whose socket died silently is indistinguishable
 	// from a turn that is simply thinking.
 	lastActivity int64
+	// serverTimeMs and serverRecvMonoMs are the SERVER's clock, and the moment THIS client heard it,
+	// captured together from Heartbeat.server_time_unix_ms — a field the server already emits and both
+	// clients used to discard.
+	//
+	// THEY EXIST FOR THE ACTIVITY VERB ROTATION. The word the line shows is verbAt(server-time), a PURE
+	// function of the server's clock (see verbs.go), so two clients draw the same word with no shared
+	// state and no new RPC. A heartbeat is the only place that clock arrives, so these two numbers are
+	// the whole of the slot's knowledge about it. serverRecvMonoMs is a LOCAL receipt instant used only
+	// as a DELTA — `serverTimeMs + (now() - serverRecvMonoMs)` — which keeps the word advancing between
+	// the 15s heartbeats WITHOUT ever letting the client's own (possibly skewed) wall clock become the
+	// source of the word. serverTimeMs == 0 means "no heartbeat yet": the caller falls back to the
+	// list's first word rather than to an empty line.
+	serverTimeMs     int64
+	serverRecvMonoMs int64
 }
 
 // askStreamStallTimeout is how long a streaming turn may go with NO event at all before the
@@ -177,6 +192,11 @@ type Conversation struct {
 	// because every site that renders a conversation needs it and a parallel map is one more thing that can
 	// disagree with the list it describes.
 	ProjectID string
+	// SkillFiles is the conversation's skill_files path list (Conversation.skill_files) — the
+	// conversation-level half of the skills feature, union-ed with the project's by the same
+	// contextfiles renderer. Read at list time so the composer can report it without a second
+	// fetch, exactly as ProjectID above.
+	SkillFiles []string
 	// PendingReplyID is the acked assistant message id of a turn the SERVER reports as still running, or "".
 	//
 	// IT IS WHAT LETS THIS CLIENT RE-ATTACH TO ITS OWN TURN, which is the reported bug: "When I leave an chat
@@ -233,7 +253,15 @@ type ConversationsMsg struct {
 type TranscriptMsg struct {
 	ConvID string
 	Items  []ChatItem
-	Err    string
+	// ToolCalls are the durable tool-call rows of the page just loaded, in ledger order, for the
+	// activity line's rolling counter (internal/toolclass.SummarizeCalls).
+	//
+	// THEY ARE DELIBERATELY NOT RENDERED. conversationItems emits no KindTool row on purpose: the
+	// GUI's Ask transcript draws no tool bubbles, and ask_parity_test.go pins that TUI<->GUI parity,
+	// so emitting durable tool rows would be a visible, parity-breaking change. The counter needs
+	// only the name and the issue stamp, so it rides this sibling field instead.
+	ToolCalls []toolclass.Call
+	Err       string
 }
 
 // chatEventMsg forwards one ChatStreamResponse oneof event. ConvID tags
@@ -257,9 +285,17 @@ type TurnResolvedMsg struct {
 }
 
 // ErrMsg carries a dock-visible failure (send/interject/watch/list).
+//
+// CONVID IS THE CONVERSATION THE FAILURE BELONGS TO, or "" when there is none (a failed create). It exists
+// so the shell can put the failure ON THE TRANSCRIPT and not only on the composer strip: a PRE-ACK send
+// failure writes NO durable row anywhere (the service refuses/aborts before the turn is registered), so
+// unlike a failed TURN — which is persisted as an error row and now draws through conversationItems — this
+// one has nothing to be found by the row-rendering fix. Without it the operator's message vanished with
+// only a strip that a transcript reader is not looking at. See App.surfaceTurnFailure.
 type ErrMsg struct {
-	Where string
-	Err   error
+	Where  string
+	Err    error
+	ConvID string
 }
 
 // ConversationCreatedMsg carries a freshly created conversation (the GUI's
@@ -464,6 +500,24 @@ func (c *Controller) SetConversationProject(id, projectID string) tea.Cmd {
 	}
 }
 
+// SetConversationSkillFiles REPLACES the conversation's skill_files path list
+// (SetConversationSkillFiles; an empty list clears it) — the conversation-level half
+// of the skills feature, and the exact mirror of SetConversationProject above.
+// Rendered by the same contextfiles.RenderManifest as the project's, union-ed with it.
+func (c *Controller) SetConversationSkillFiles(id string, files []string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if _, err := c.cl.Ask.SetConversationSkillFiles(ctx, connect.NewRequest(&apiv1.SetConversationSkillFilesRequest{
+			Id:    id,
+			Files: files,
+		})); err != nil {
+			return ConversationMutatedMsg{Op: "skill_files", ID: id, Err: err.Error()}
+		}
+		return ConversationMutatedMsg{Op: "skill_files", ID: id}
+	}
+}
+
 // RenameConversation persists a conversation title (UpdateConversationTitle).
 func (c *Controller) RenameConversation(id, title string) tea.Cmd {
 	return func() tea.Msg {
@@ -621,32 +675,72 @@ func (c *Controller) SetConversationFullsend(id string, enabled bool) tea.Cmd {
 	}
 }
 
+// convRailPageSize is the page the rail asks for. The server CLAMPS a larger request down to ITS OWN
+// default (askorchicon.Service.ListConversations turns anything over 100 into 50), so 100 is both the
+// ceiling and the only correct ask.
+const convRailPageSize = 100
+
+// convRailMaxPages bounds the paging loop. The rail is a COMPLETE list with no "load more" affordance,
+// so it pages to exhaustion; this cap is the backstop that keeps a pathological tenant from turning the
+// 5s rolling refresh into an unbounded RPC chain.
+const convRailMaxPages = 20
+
 // LoadConversations fetches the conversation rail.
+//
+// IT PAGES TO EXHAUSTION, and that is a defect fix rather than a nicety. This used to ask for ONE page of
+// 100 and DISCARD `next_page_token` — the only conversation loader in the TUI that did (the screenkit
+// screens all page). So the rail was a fixed "newest 100" window over an unlimited table: every
+// conversation past rank 100 became UNREACHABLE, with no affordance saying so, while the same rows stayed
+// visible in the GUI. The operator, on a tenant holding 184 conversations of which 132 were newer test
+// rows: "ALL conversations except this one disappeared from the conversation rail". The conversations were
+// never deleted — the rail could not ask for them.
+//
+// The cost is one RPC per 100 conversations, on the same 5s cadence as before (two for that tenant).
 func (c *Controller) LoadConversations() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		resp, err := c.cl.Ask.ListConversations(ctx, connect.NewRequest(&apiv1.ListConversationsRequest{PageSize: 100}))
-		if err != nil {
-			return ConversationsMsg{Err: err.Error()}
+
+		convs := make([]Conversation, 0, convRailPageSize)
+		var categories []*apiv1.Category
+		var assignments []*apiv1.CategoryAssignment
+		token := ""
+		for page := 0; page < convRailMaxPages; page++ {
+			resp, err := c.cl.Ask.ListConversations(ctx, connect.NewRequest(&apiv1.ListConversationsRequest{
+				PageSize:  convRailPageSize,
+				PageToken: token,
+			}))
+			if err != nil {
+				return ConversationsMsg{Err: err.Error()}
+			}
+			for _, cv := range resp.Msg.GetConversations() {
+				convs = append(convs, Conversation{
+					ID:         cv.GetId(),
+					Title:      cv.GetTitle(),
+					TurnInFly:  cv.GetTurnInFlight(),
+					MessageN:   cv.GetMessageCount(),
+					ModelRef:   cv.GetModelRef(),
+					Mode:       cv.GetMode(),
+					Fullsend:   cv.GetFullsend(),
+					ProjectID:  cv.GetProjectId(),
+					SkillFiles: cv.GetSkillFiles(),
+					// Read at list time, so a conversation the server reports as mid-turn is recognisable as
+					// such the moment the rail loads — which is what the re-attach on open needs.
+					PendingReplyID: cv.GetPendingAssistantMessageId(),
+				})
+			}
+			// The grouping set is the TENANT's and is identical on every page, so it is taken once from
+			// the first — a later page cannot legitimately differ, and reading it per page would let an
+			// empty tail response clobber it.
+			if page == 0 {
+				categories = resp.Msg.GetCategories()
+				assignments = resp.Msg.GetAssignments()
+			}
+			if token = resp.Msg.GetNextPageToken(); token == "" {
+				break
+			}
 		}
-		convs := make([]Conversation, 0, len(resp.Msg.GetConversations()))
-		for _, cv := range resp.Msg.GetConversations() {
-			convs = append(convs, Conversation{
-				ID:        cv.GetId(),
-				Title:     cv.GetTitle(),
-				TurnInFly: cv.GetTurnInFlight(),
-				MessageN:  cv.GetMessageCount(),
-				ModelRef:  cv.GetModelRef(),
-				Mode:      cv.GetMode(),
-				Fullsend:  cv.GetFullsend(),
-				ProjectID: cv.GetProjectId(),
-				// Read at list time, so a conversation the server reports as mid-turn is recognisable as such the
-				// moment the rail loads — which is what the re-attach on open needs.
-				PendingReplyID: cv.GetPendingAssistantMessageId(),
-			})
-		}
-		return ConversationsMsg{Convs: convs, Categories: resp.Msg.GetCategories(), Assignments: resp.Msg.GetAssignments()}
+		return ConversationsMsg{Convs: convs, Categories: categories, Assignments: assignments}
 	}
 }
 
@@ -657,24 +751,93 @@ func (c *Controller) LoadConversations() tea.Cmd {
 // (`applied: false`, `expired: true`) rather than reporting a silent success. Without
 // this the operator's click looked like an approval while the call was denied.
 type ConsentRepliedMsg struct {
-	ConvID  string
+	ConvID string
+	// AskID names the ask the verdict is about, so the shell can settle the ONE card that asked it. It is
+	// what makes a decision the server REFUSED stop being recorded as a session grant locally: the grant may
+	// only be written on the APPLIED verdict, and the verdict has to name its ask to find it.
+	AskID   string
 	Applied bool
 	Expired bool
 	Detail  string
 	Err     string
 }
 
-// ConsentResolvedMsg reports that an ask was SETTLED BY SOMEONE ELSE — the other
-// client, or the collector expiring it.
+// PermissionGrantsMsg carries the conversation's ACTIVE session grants, as the server holds them.
 //
-// It exists because an ask reaches every watcher of a turn while only the client that
-// answered it cleared its own copy. See the PermissionAskResolved wire arm in
-// handleEvent.
-type ConsentResolvedMsg struct {
-	ConvID  string
-	AskID   string
-	Outcome string
-	Answer  string
+// Grants are the SERVER's fact — its store is what decides whether the next tool call asks, and it is in
+// memory, so it changes without this client doing anything (a plane restart drops it; the GUI granting one
+// adds to it). The client therefore never keeps a copy: every list is fetched, and every revoke returns the
+// refreshed list (see RevokePermissionGrant). Notice carries a one-line outcome for the dock when the fetch
+// was triggered by a write.
+type PermissionGrantsMsg struct {
+	ConvID string
+	Grants []SessionGrant
+	Err    string
+	Notice string
+}
+
+// LoadPermissionGrants fetches the conversation's active session grants.
+func (c *Controller) LoadPermissionGrants(convID string) tea.Cmd {
+	if convID == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		resp, err := c.cl.Ask.ListPermissionGrants(ctx, connect.NewRequest(&apiv1.ListPermissionGrantsRequest{
+			ConversationId: convID,
+		}))
+		if err != nil {
+			return PermissionGrantsMsg{ConvID: convID, Err: err.Error()}
+		}
+		return PermissionGrantsMsg{ConvID: convID, Grants: sessionGrantsFromProto(resp.Msg.GetGrants())}
+	}
+}
+
+// RevokePermissionGrant drops one session grant ON THE SERVER and returns the refreshed list.
+//
+// THE TUI ONLY EVER DROPPED IT LOCALLY, which is why revoking did nothing: the server's store still held the
+// grant, so the very next tool call for that directory proceeded without asking — while the client's own list
+// showed the grant gone. Revoking is the operator withdrawing a permission, so it has to reach the thing that
+// enforces it.
+func (c *Controller) RevokePermissionGrant(convID, directory string) tea.Cmd {
+	if convID == "" || directory == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		resp, err := c.cl.Ask.RevokePermissionGrant(ctx, connect.NewRequest(&apiv1.RevokePermissionGrantRequest{
+			ConversationId: convID,
+			Directory:      directory,
+		}))
+		if err != nil {
+			return PermissionGrantsMsg{ConvID: convID, Err: err.Error()}
+		}
+		notice := "revoked · " + directory
+		if !resp.Msg.GetRemoved() {
+			// NEVER A SILENT SUCCESS: the directory was not granted (already revoked, or never was), which is a
+			// different fact from "revoked" and the operator is entitled to it.
+			notice = "no session grant for " + directory + " — nothing was revoked"
+		}
+		return PermissionGrantsMsg{
+			ConvID: convID,
+			Grants: sessionGrantsFromProto(resp.Msg.GetGrants()),
+			Notice: notice,
+		}
+	}
+}
+
+// sessionGrantsFromProto maps the wire's grant list onto the TUI's view type.
+func sessionGrantsFromProto(gs []*apiv1.SessionPermissionGrant) []SessionGrant {
+	out := make([]SessionGrant, 0, len(gs))
+	for _, g := range gs {
+		if g == nil || g.GetDirectory() == "" {
+			continue
+		}
+		out = append(out, SessionGrant{Directory: g.GetDirectory(), GrantedAt: g.GetGrantedAtUnix()})
+	}
+	return out
 }
 
 // ReplyPermissionAsk answers a pending permission ask ON THE SERVER.
@@ -700,10 +863,11 @@ func (c *Controller) ReplyPermissionAsk(convID, askID string, choice apiv1.Permi
 			Answer:         answer,
 		}))
 		if err != nil {
-			return ConsentRepliedMsg{ConvID: convID, Err: err.Error()}
+			return ConsentRepliedMsg{ConvID: convID, AskID: askID, Err: err.Error()}
 		}
 		return ConsentRepliedMsg{
 			ConvID:  convID,
+			AskID:   askID,
 			Applied: resp.Msg.GetApplied(),
 			Expired: resp.Msg.GetExpired(),
 			Detail:  resp.Msg.GetDetail(),
@@ -726,8 +890,34 @@ func (c *Controller) OpenConversation(id string) tea.Cmd {
 		}
 		// The page arrives NEWEST-first (see conversationItems) — it is reversed
 		// there, together with the millisecond timestamps.
-		return TranscriptMsg{ConvID: id, Items: GroupByPhase(conversationItems(resp.Msg.GetMessages()))}
+		return TranscriptMsg{
+			ConvID:    id,
+			Items:     GroupByPhase(conversationItems(resp.Msg.GetMessages())),
+			ToolCalls: pageToolCalls(resp.Msg.GetMessages()),
+		}
 	}
+}
+
+// pageToolCalls collects the page's tool calls for the activity line's rolling counter, as the
+// shape the shared summarizer takes (toolclass.Call). It reads the SAME ListMessages page the
+// transcript is built from — no extra RPC, no new poll — and reads only the two fields the counter
+// needs: the name to classify and the issue stamp to place in the window.
+//
+// ORDER DOES NOT MATTER: SummarizeCalls counts buckets and takes the NEWEST stamp, so a page in any
+// order yields the same string. Entries with no stamp (AtMs 0 — a row persisted before child 1
+// added the field) are carried through and SKIPPED by the summarizer, which is what keeps an old
+// conversation from rendering a wrong count.
+func pageToolCalls(msgs []*apiv1.ChatMessage) []toolclass.Call {
+	var out []toolclass.Call
+	for _, m := range msgs {
+		for _, c := range m.GetToolCalls() {
+			if c == nil {
+				continue
+			}
+			out = append(out, toolclass.Call{ToolName: c.GetFunctionName(), AtMs: c.GetIssuedAtUnixMs()})
+		}
+	}
+	return out
 }
 
 // conversationItems converts a ListMessages page into transcript items in
@@ -783,7 +973,49 @@ func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 			// record read as though Orchicon had said it.
 			kind = KindNotice
 		}
+		// THE METADATA ERROR IS CONSULTED BEFORE THE ASSISTANT DEFAULT, and the ORDER is the fix — the SAME
+		// order as the GUI's bubbleKindFor (frontend/src/lib/ask-bubble.ts): the two NAMED speakers first,
+		// then the error, then everything else as the model's reply, which is the correct default here
+		// because every other row this service writes IS the model's reply.
+		//
+		// THE TUI DISPATCHED ON ROLE ALONE and that is why a failed turn was SILENT. The server persists a
+		// failed turn as an assistant row with EMPTY content and metadata.error set (proto: "The message
+		// content is empty in that case; the frontend renders an error bubble with a retry affordance").
+		// `assistant` matched no case, so it fell through to KindText and — with empty content — drew
+		// nothing at all: two failed sends left the transcript reading as a conversation that simply
+		// stopped, the operator's "The TUI just drops with no indication as to why." The GUI decides this
+		// through bubbleKindFor, a pure function written for exactly this miss (its header: "the
+		// fall-through was a lie" — an unnamed role used to land in the assistant's bubble). This is the
+		// same class of miss running the OTHER way: a row that IS an error never reached the error
+		// renderer. Do not "simplify" this back to a role-only switch.
+		text := m.GetContent()
 		at := m.GetCreatedAt().AsTime().UnixMilli()
+		// A FAILED TURN IS TWO ROWS, NOT ONE: the prose the model managed to produce, then the failure.
+		//
+		// The operator, on the shipped shape: "It is showing thinking text after that is also red and on
+		// the same line as the error." The partial reply and the failure had been folded into ONE
+		// KindError item, so `renderBubble` put the `error` label in front of the FIRST LINE OF THE
+		// PROSE and painted the model's own words in the error's red — the label identified the wrong
+		// text and the band said "error" over prose that was merely unfinished.
+		//
+		// THE PROSE IS THE MODEL'S WORDS, so it rides the model's band (KindText) exactly as an ordinary
+		// reply does; the error row then carries ONLY the failure and the model that refused, and its
+		// label labels the thing it names. This is also the GUI's shape (its ErrorBubble draws the error
+		// alone, and the partial reply is separate assistant content).
+		if kind != KindUser && kind != KindNotice {
+			if errText := m.GetMetadata().GetError(); errText != "" {
+				if partial := strings.TrimSpace(m.GetContent()); partial != "" {
+					items = append(items, ChatItem{
+						Kind: KindText,
+						Text: partial,
+						At:   at,
+						Key:  "m-" + m.GetId() + "-partial",
+					})
+				}
+				kind = KindError
+				text = FailedTurnText(errText, m.GetMetadata().GetModelRef())
+			}
+		}
 		for j, part := range m.GetReasoning() {
 			// A blank part is not a reasoning block, and rendering it would put an empty
 			// bubble in the transcript for a turn that had nothing to say there.
@@ -815,7 +1047,7 @@ func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 		// bottom line either way.)
 		items = append(items, ChatItem{
 			Kind: kind,
-			Text: m.GetContent(),
+			Text: text,
 			At:   at,
 			Key:  "m-" + m.GetId(),
 		})
@@ -955,7 +1187,7 @@ func (c *Controller) startStream(convID, full, call string, files []*apiv1.Attac
 		// that reports it up front, which this client's connect stack does not.
 		if err != nil {
 			c.failStream(convID, err)
-			return ErrMsg{Where: call, Err: err}
+			return ErrMsg{Where: call, Err: err, ConvID: convID}
 		}
 		go c.consume(convID, gen, stream)
 		// RE-ARM BOTH, and HERE it is correct to arm after the call returns: this is a RE-DIAL of a turn
@@ -1082,6 +1314,64 @@ func (c *Controller) pollTranscript(convID string) tea.Cmd {
 // Poll is the exported poll hook (shell-side turn resolution).
 func (c *Controller) Poll(convID string) tea.Cmd { return c.pollTranscript(convID) }
 
+// DiscoverPendingAsks asks the SERVER which asks are still open for a conversation and
+// raises a card for each.
+//
+// THE BUG IT FIXES, in the operator's words: "you sent numerous permission card requests
+// and user ask card requests. ALL of them reached the GUI conversation just fine, however,
+// they did not all reach the TUI… it appeared you were stalled. So I went into the GUI and
+// lo and behold, a permissions card was waiting."
+//
+// An ask reached the TUI only through consume(), which runs for a conversation the TUI is
+// ACTIVELY streaming — and the shell only re-attaches to a turn the server's conversation
+// row says is in flight WITH a pending reply id. A turn the TUI never started (or one it
+// stopped tracking) therefore had no path for a card at all, while the SERVER kept the turn
+// parked waiting for an answer that had no card to give it. That is the stall.
+//
+// So this is a QUERY, not another live event: the state has always been on the server
+// (askorchicon.pendingAskRegistry) and was only ever replayed to a late watcher of the
+// stream. Asking for it directly makes a card DISCOVERABLE rather than merely deliverable,
+// which removes the dependency on "is this client streaming right now?" — the variable that
+// has broken this every time it was fixed.
+//
+// It is IDEMPOTENT by construction: the result is fed through the same ShowConsentAsk path
+// the wire arm uses, and the store's drawConsentAsk refuses an ask id it already holds. So a
+// card that arrives twice — once discovered, once streamed — is drawn once, and calling this
+// on every attach, re-attach and poll costs nothing.
+//
+// Best-effort, like every live signal here: a failure returns nil and the next attach or
+// poll tries again. It must never fail a turn.
+func (c *Controller) DiscoverPendingAsks(convID string) tea.Cmd {
+	if convID == "" || c.cl == nil || c.cl.Ask == nil {
+		return nil
+	}
+	cl, store := c.cl, c.store
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		resp, err := cl.Ask.ListPendingAsks(ctx, connect.NewRequest(&apiv1.ListPendingAsksRequest{
+			ConversationId: convID,
+		}))
+		if err != nil || resp == nil {
+			return nil
+		}
+		// Straight to the store, NOT the command channel: the store is an in-process sink
+		// whose delivery cannot fail, which is the lesson the wire arm learned (a 16-slot
+		// channel the turn poll also writes to dropped cards silently). See
+		// EventStore.ShowConsentAsk.
+		if store != nil {
+			for _, p := range resp.Msg.GetAsks() {
+				ask := PermissionAskFromProto(p)
+				if ask.ConvID == "" {
+					ask.ConvID = convID
+				}
+				store.ShowConsentAsk(ask)
+			}
+		}
+		return nil
+	}
+}
+
 // EndStream clears a conversation's stream slot when the server closed
 // the stream cleanly (consume's EOF path pushed StreamDoneMsg). The
 // ListMessages poll that follows is the completion authority.
@@ -1165,6 +1455,22 @@ type EventStore interface {
 	AppendLiveItem(convID string, item ChatItem)
 	// SetReconnecting flips the conversation's reconnecting banner.
 	SetReconnecting(convID string, on bool)
+	// ShowConsentAsk surfaces a pending permission ask (or a clarifying question) as a card.
+	//
+	// IT IS ON THE STORE, NOT THE COMMAND CHANNEL, AND THAT IS THE POINT. A card used to be delivered as a
+	// tea.Cmd through the shell's shared command channel with a NON-BLOCKING send — the buffer is 16 slots
+	// and the 1s turn poll writes to it too — so a card could be DROPPED IN SILENCE, with no error, no
+	// retry, and no way for the operator to know a decision was ever asked for. On a healthy stream nothing
+	// re-dials either, so the loss was permanent for that turn: the pane sat at "orchicon is thinking"
+	// while the turn parked on the server waiting for an answer that had no card to give it. The store is an
+	// in-process sink (the same one AppendLiveItem already uses from this goroutine), so delivery cannot
+	// fail; the repaint is a coalescing wake poke, where DROPPING one is harmless because the next poke
+	// repaints everything.
+	ShowConsentAsk(ask PermissionAsk)
+	// SettleConsentAsk records an ask that was settled SOMEWHERE ELSE — the other client, or the collector
+	// expiring it — so this client's copy of the card stops being a choice. Same reasoning as above: a
+	// resolution that is dropped leaves a live-looking, inert card behind.
+	SettleConsentAsk(convID, askID, outcome, answer string)
 }
 
 // handleEvent applies one ChatStreamResponse to the conversation's slot
@@ -1212,8 +1518,19 @@ func (c *Controller) handleEvent(convID string, ev *apiv1.ChatStreamResponse) {
 		}
 	case *apiv1.ChatStreamResponse_Heartbeat:
 		c.mu.Lock()
-		if st := c.state[convID]; st != nil && st.reconnecting {
-			st.reconnecting = false
+		if st := c.state[convID]; st != nil {
+			if st.reconnecting {
+				st.reconnecting = false
+			}
+			// THE SERVER'S CLOCK, RECORDED WITH THE INSTANT WE HEARD IT. These two lines are the entire
+			// clock of the activity-verb rotation: server_time_unix_ms is already on the wire (chat.go
+			// emits it precisely so "the client [can] measure socket age/skew") and this client used to
+			// throw it away, clearing only the reconnect flag. Guarded on ts > 0 so a server that sends
+			// a zero stamp cannot plant a bogus anchor; the zero anchor stays "no stamp yet".
+			if ts := e.Heartbeat.GetServerTimeUnixMs(); ts > 0 {
+				st.serverTimeMs = ts
+				st.serverRecvMonoMs = now()
+			}
 		}
 		c.mu.Unlock()
 	case *apiv1.ChatStreamResponse_Error:
@@ -1253,20 +1570,11 @@ func (c *Controller) handleEvent(convID string, ev *apiv1.ChatStreamResponse) {
 		// Without this the TUI's card stayed pending until the turn ended (see
 		// settleStaleConsent, which is the convergence path for a client that missed
 		// the message — a decision made before it attached).
-		if r := e.PermissionAskResolved; r != nil && r.GetAskId() != "" {
-			if c.cmds != nil {
-				select {
-				case c.cmds <- func() tea.Msg {
-					return ConsentResolvedMsg{
-						ConvID:  convID,
-						AskID:   r.GetAskId(),
-						Outcome: r.GetOutcome(),
-						Answer:  r.GetAnswer(),
-					}
-				}:
-				default:
-				}
-			}
+		if r := e.PermissionAskResolved; r != nil && r.GetAskId() != "" && c.store != nil {
+			// STRAIGHT TO THE STORE, not through the command channel: a dropped resolution leaves a
+			// live-looking, inert card on screen in whichever client did not answer (see
+			// EventStore.SettleConsentAsk).
+			c.store.SettleConsentAsk(convID, r.GetAskId(), r.GetOutcome(), r.GetAnswer())
 		}
 	case *apiv1.ChatStreamResponse_PermissionAsk:
 		// THE PERMISSION CARD'S WIRE ARM.
@@ -1290,11 +1598,12 @@ func (c *Controller) handleEvent(convID string, ev *apiv1.ChatStreamResponse) {
 		if ask.ConvID == "" {
 			ask.ConvID = convID
 		}
-		if c.cmds != nil {
-			select {
-			case c.cmds <- func() tea.Msg { return ConsentAskMsg{ConvID: convID, Ask: ask} }:
-			default:
-			}
+		// DELIVERED TO THE STORE, NOT THE COMMAND CHANNEL — this was the silent drop. A non-blocking send
+		// onto a 16-slot channel that the 1s turn poll also writes to, with no error and no retry, so a card
+		// could vanish while the turn parked on the server waiting for an answer that had no card to give it.
+		// The store is an in-process sink, so delivery cannot fail. See EventStore.ShowConsentAsk.
+		if c.store != nil {
+			c.store.ShowConsentAsk(ask)
 		}
 	case *apiv1.ChatStreamResponse_Done:
 		// poll finalizes; nothing to append
@@ -1424,7 +1733,7 @@ func (c *Controller) dropStream(convID string, gen uint64, err error) {
 			// send that never went out. ErrMsg is the shell's existing failed-send path: the dock's error
 			// strip, and the draft back in the composer (see App.setChatError / dock.RestoreDraft).
 			if st.attempt.full != "" {
-				report = func() tea.Msg { return ErrMsg{Where: "send", Err: err} }
+				report = func() tea.Msg { return ErrMsg{Where: "send", Err: err, ConvID: convID} }
 			}
 			st.streaming = false
 			st.optimisticUser = ""
@@ -1599,6 +1908,78 @@ func (c *Controller) SilenceSince(convID string) time.Duration {
 		return 0 // a clock that stepped backwards is not a silence
 	}
 	return time.Duration(d) * time.Millisecond
+}
+
+// SetServerTimeForTest plants the server clock the way a Heartbeat does, so a test can assert the word
+// the activity line draws for a KNOWN server time without standing up a stream. It is the same pair of
+// writes handleEvent's Heartbeat arm makes (serverTimeMs + the local receipt instant), so a test cannot
+// exercise a state the wire cannot produce. Production never calls it.
+func (c *Controller) SetServerTimeForTest(convID string, serverTimeUnixMs int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if serverTimeUnixMs <= 0 {
+		return // a zero stamp is not a stamp (see handleEvent's Heartbeat arm)
+	}
+	st := c.seedTurnForTest(convID)
+	st.serverTimeMs = serverTimeUnixMs
+	st.serverRecvMonoMs = now()
+}
+
+// seedTurnForTest materialises the slot a SEND would have made for this conversation — streaming, and with
+// every field the two readers below touch — and returns it with the lock held. It exists so the activity
+// line's clock can be driven without opening a socket: starting a real stream in a test arms the liveness
+// watch and the durable poll, whose background goroutines then fetch the plane and repaint under the
+// assertions. The fields it writes are exactly the ones SendWithAttachments sets, so a test cannot exercise a
+// state the send path cannot produce. Production never calls it.
+func (c *Controller) seedTurnForTest(convID string) *convState {
+	st := c.state[convID]
+	if st == nil {
+		st = &convState{}
+		c.state[convID] = st
+	}
+	st.streaming = true
+	st.reconnecting = false
+	if st.lastActivity == 0 {
+		st.lastActivity = now()
+	}
+	return st
+}
+
+// SetSilenceForTest back-dates the watchdog's clock by d, which is the ONLY way to drive the activity
+// line's silence bands without sleeping 35 seconds. It writes the SAME field every event stamps
+// (lastActivity), so a test exercises the real SilenceSince path rather than a parallel one. Production
+// never calls it.
+func (c *Controller) SetSilenceForTest(convID string, d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	st := c.seedTurnForTest(convID)
+	st.lastActivity = now() - d.Milliseconds()
+}
+
+// ServerTimeSince reports the SERVER's clock, extrapolated to right now — the value the activity verb
+// rotation indexes on. It returns (0, false) when no heartbeat has ever been recorded for the
+// conversation, which is the caller's cue to use the list's first word (VerbAt(0)); a real server stamp is
+// Unix milliseconds and always positive, so 0 is unambiguous.
+//
+// THE LOCAL CLOCK IS A DELTA, NOT THE SOURCE. The returned value is `serverTimeMs + (now() - recvMono)`,
+// where `recvMono` was taken the moment the stamp arrived: only the time since OUR OWN receipt is added,
+// so a client whose wall clock is skewed by hours still sees the SAME word as every other client for the
+// same server time (the skew cancels out of the delta), while the word still advances smoothly between
+// the 15s heartbeats, so it never lags a whole period behind a late heartbeat.
+//
+// IT IS READ UNDER THE SAME MUTEX AS THE WRITE, so a heartbeat landing mid-render cannot tear the pair.
+func (c *Controller) ServerTimeSince(convID string) (int64, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	st := c.state[convID]
+	if st == nil || st.serverTimeMs <= 0 || st.serverRecvMonoMs <= 0 {
+		return 0, false
+	}
+	delta := now() - st.serverRecvMonoMs
+	if delta < 0 {
+		delta = 0 // a clock that stepped backwards is not a negative age
+	}
+	return st.serverTimeMs + delta, true
 }
 
 // errStreamStalled reports a stream that stopped sending anything. It is not a failure the operator

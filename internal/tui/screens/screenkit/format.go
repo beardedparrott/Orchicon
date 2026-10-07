@@ -2,6 +2,7 @@ package screenkit
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -169,4 +170,80 @@ func FmtDuration(seconds int64) string {
 	}
 	d := time.Duration(seconds) * time.Second
 	return d.String()
+}
+
+// --- SPANS (how long something ran) ----------------------------------------
+//
+// The operator: "It would be nice to apply the current running time and finished time onto schedules in
+// the schedules section for both run and history as well as schedule details in the TUI."
+//
+// THE FORMS ARE THE GUI'S, deliberately. The GUI already renders both halves through one component
+// (frontend/src/components/ui/live-duration.tsx), which formats with formatElapsed
+// (frontend/src/lib/format.ts): "<1s", "12.3s", "2m 30s", "3h 15m". Two clients showing the same run
+// as "2m 30s" and "2m30s" is the kind of drift an operator has to stop and interpret, so the shapes
+// here are copied rather than invented. Only the ARGUMENT differs: Go passes a Duration, so callers do
+// not have to convert to seconds and back.
+
+// FmtElapsed renders a span the way the GUI's live-duration chip does.
+//
+// A NEGATIVE span renders as "<1s" rather than as a negative number: a span that ends before it starts
+// is a clock disagreement between this machine and the plane, and the operator wants to know the job is
+// running, not to read the arithmetic. The GUI clamps the same way (LiveDuration's Math.max(0, …)).
+func FmtElapsed(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	secs := d.Seconds()
+	if secs < 1 {
+		return "<1s"
+	}
+	if secs < 60 {
+		return trimZero(float64(int(secs*10+0.5)) / 10)
+	}
+	m := int(secs) / 60
+	s := int(secs+0.5) % 60
+	if m < 60 {
+		return fmt.Sprintf("%dm %ds", m, s)
+	}
+	return fmt.Sprintf("%dh %dm", m/60, m%60)
+}
+
+// trimZero renders a one-decimal second count the way the GUI's template literal does: 12.3 → "12.3s",
+// 12.0 → "12s".
+func trimZero(v float64) string {
+	s := fmt.Sprintf("%.1f", v)
+	s = strings.TrimSuffix(s, ".0")
+	return s + "s"
+}
+
+// ElapsedSince measures a span that is still RUNNING: start → now. It reports false when the start is
+// absent or unusable, so a caller renders nothing rather than a fabricated zero.
+func ElapsedSince(start Timestamp, now time.Time) (time.Duration, bool) {
+	if start == nil || !start.IsValid() {
+		return 0, false
+	}
+	from := start.AsTime()
+	if now.Before(from) {
+		// Same clock disagreement FmtElapsed clamps: the span exists, it just cannot be positive.
+		return 0, true
+	}
+	return now.Sub(from), true
+}
+
+// ElapsedBetween measures a COMPLETED span: start → end, both from the record. An absent end means the
+// span is still running, which is the caller's distinction to make — this reads the record it is given
+// (a run with no ended_at in History is an in-flight run, and its row says so).
+func ElapsedBetween(start, end Timestamp) (time.Duration, bool) {
+	if start == nil || !start.IsValid() {
+		return 0, false
+	}
+	from := start.AsTime()
+	if end == nil || !end.IsValid() {
+		return 0, false
+	}
+	to := end.AsTime()
+	if to.Before(from) {
+		return 0, true
+	}
+	return to.Sub(from), true
 }

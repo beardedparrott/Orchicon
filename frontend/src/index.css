@@ -1335,6 +1335,54 @@
       radial-gradient(circle at 20% 80%, hsla(var(--mesh-glow-3) / var(--mesh-glow-3-a)), transparent 50%),
       hsl(var(--mesh-bg));
   }
+  /* Scoped scrollbar for the diff rail. Wider + higher contrast than the
+     global 4px / 0.15-alpha hairline (index.css:55,1311-1328). Colour comes
+     from the SAME per-theme --scroll-thumb tokens, so no theme can fall back
+     to another palette's thumb colour and no new token needs a 20-theme sweep.
+     This rule lives in @layer utilities, AFTER the @layer base global rule
+     (which closes above), so it wins the cascade.
+
+     TWO render paths, and only ONE is active per engine — do not "fix" one by
+     editing the other:
+       - STANDARD path: `scrollbar-width: auto` widens the lane (Chromium ~15px
+         vs the global `thin` 10px) and `scrollbar-color` at 0.55 alpha (vs the
+         global 0.15) is the contrast. Engines that support the standard
+         properties — Chromium, Firefox, Safari 18.2+ — paint THIS one and
+         ignore the ::-webkit-* rules below (verified: setting a non-auto
+         `scrollbar-color` drops the rendered lane to the `thin` width).
+       - WEBKIT path: for engines without standard support the ::-webkit-*
+         rules give the 12px lane with a 6px visual thumb (3px transparent
+         border + background-clip: padding-box).
+     Because exactly one path renders, the hover state needs a declaration in
+     BOTH: the `::-webkit-scrollbar-thumb:hover` rule below, and
+     `.diff-scroll:hover { scrollbar-color }` for the standard path — the
+     latter's specificity (0,2,0) beats the (0,1,0) `*` base rule at
+     index.css:1325 (a bare `.diff-scroll` hover would lose and leave the
+     thumb un-hoverable). */
+  .diff-scroll {
+    scrollbar-width: auto;
+    scrollbar-color: hsla(var(--scroll-thumb) / 0.55) transparent;
+  }
+  .diff-scroll:hover {
+    scrollbar-color: hsla(var(--scroll-thumb-hover) / 0.75) transparent;
+  }
+  .diff-scroll::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+  }
+  .diff-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .diff-scroll::-webkit-scrollbar-thumb {
+    background: hsla(var(--scroll-thumb) / 0.55);
+    border: 3px solid transparent;
+    background-clip: padding-box;
+    border-radius: 6px;
+  }
+  .diff-scroll::-webkit-scrollbar-thumb:hover {
+    background: hsla(var(--scroll-thumb-hover) / 0.75);
+    background-clip: padding-box;
+  }
   .glass-panel {
     background: hsla(var(--glass-panel-bg) / var(--glass-panel-bg-a));
     backdrop-filter: blur(var(--glass-panel-blur));

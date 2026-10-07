@@ -170,6 +170,23 @@ test: ## Run Go tests
 	@# The package redirects its own config dir too (internal/tui/isolate_test.go); this contains ANY
 	@# package that writes config without asking, now or later. Declared at the command rather than
 	@# exported into each test binary so there is no per-package opt-in to forget.
+	@#
+	@# A TEST MUST ALSO NEVER INHERIT THE OPERATOR'S LIVE PLANE. The same reasoning, one layer up: a
+	@# shell that launched a host plane carries that plane's configuration (scripts/container.sh
+	@# exports ORCHICON_SERVE_STATE_DIR, ORCHICON_GUARD_POLICY, ...), and a test that EXECS a
+	@# subprocess hands the whole ambient environment to it. Four packages failed on the operator's
+	@# machine and none in CI for exactly that reason — cmd/orchicon (the serve state paths resolved
+	@# to the LIVE instance), internal/guard + internal/runtime (the shim ran the interactive profile
+	@# where the tests assert the worker one), internal/claude (Ask's shim refused differently than
+	@# the docs say).
+	@#
+	@# The list is testfixtures.AmbientConfigEnv, and each affected package unsets it in its own
+	@# `init` (so a bare `go test ./...` works too, and a test written later cannot forget). It is
+	@# cleared here as well so anything running under `make` matches CI even in a package that has no
+	@# isolate file yet. It is NOT env -i: the opt-in variables (ORCHICON_TEST_DSN,
+	@# ORCHICON_SKIP_NETWORK_TESTS, ORCHICON_LIVE_*) are deliberately left reachable.
+	@for v in ORCHICON_GUARD_POLICY ORCHICON_GUARD_GRANTS ORCHICON_GUARD_ONCE ORCHICON_GUARD_PROJECT \
+	         ORCHICON_GUARD_FULLSEND ORCHICON_SERVE_STATE_DIR; do unset "$$v"; done; \
 	ORCHICON_CONFIG_DIR="$$(mktemp -d)" $(GO) test ./...
 
 vet: ## Run go vet
@@ -251,7 +268,7 @@ adapter-bake-guard: ## CI gate: adapter CLIs are MOUNTED, never baked into image
 	go test ./internal/runtime/ -run 'TestAdapterCLINeverBaked' -count=1 -v
 
 # --- Frontend --------------------------------------------------------------
-.PHONY: fe-install fe-dev fe-build fe-lint fe-test docs-check
+.PHONY: fe-install fe-dev fe-build fe-lint fe-test docs-check site-check
 fe-install: ## Install frontend dependencies
 	cd frontend && npm install
 
@@ -280,7 +297,15 @@ fe-lint: ## Lint the frontend
 fe-test: ## Run frontend unit/component tests (vitest; Playwright specs live under test:snapshots/test:a11y/test:scope)
 	cd frontend && npm test
 
-docs-check: ## Validate every Mermaid diagram in DOCUMENTATION.md with a real parser
+site-check: ## Assert the landing page's nav and version-stamp invariants
+	@# The landing page is served from a CDN and rendered by a browser, so a CSS or
+	@# markup defect in it has no other detector. This reads the committed page as
+	@# TEXT and asserts the invariants (labels never split or shrunk, nine links not
+	@# all inline, the footer version is a build-time stamp) — deliberately
+	@# dependency-free, because no browser can run in the CI container.
+	bash scripts/tests/site-nav-layout/run.sh
+
+docs-check: ## Validate every Mermaid diagram in the root docs with a real parser
 	@# The prefix is REUSED once installed, so a repeat run is instant rather than re-resolving the
 	@# tree every time; CI passes ORCHICON_MERMAID_PREFIX from its own $RUNNER_TEMP install.
 	@if [ -n "$$ORCHICON_MERMAID_PREFIX" ]; then \
@@ -511,7 +536,7 @@ cross-compile: ## Compile the shipped binaries for every release platform (catch
 	echo "==> all $(words $(CROSS_PLATFORMS)) release platforms compile"
 
 ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
-ci: ci-go fe-lint fe-test ## Run the full CI gate locally (Go + frontend)
+ci: ci-go fe-lint fe-test site-check ## Run the full CI gate locally (Go + frontend + landing page)
 
 .PHONY: tui-pty-gate
 tui-pty-gate: ## Standing real-pty TUI verification gate (smoke + mouse + /connect)

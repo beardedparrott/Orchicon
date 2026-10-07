@@ -3,7 +3,7 @@ import { useMemo } from "react";
 import { useListRoles } from "@/api/auth";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { MCPPicker, type MCPConfig } from "@/components/MCPPicker";
+import type { InlineMCP } from "@/components/MCPServersPanel";
 
 // --- Shared types ---
 
@@ -59,25 +59,56 @@ const AVAILABLE_TOOLS = [
 
 interface PermissionsData {
   tools: string[];
-  mcp_servers: MCPConfig[];
+  mcp_servers: InlineMCP[];
   model_providers: string[];
   context: string[];
   network: string[];
   filesystem: string[];
 }
 
+// PermissionsMCPServers reads the worker version's inline MCP specs out of its
+// permissions JSON. It tolerates the legacy bare-id and {id,command:string}
+// shapes (db.MCPServersFromPermissions shapes 2 and 3): a bare id is kept as a
+// reference so an old version round-trips through the panel without loss.
+export function permissionsMCPServers(raw: string): InlineMCP[] {
+  try {
+    const p = JSON.parse(raw || "{}") as { mcp_servers?: unknown };
+    if (!Array.isArray(p.mcp_servers)) return [];
+    return p.mcp_servers.map((m: unknown): InlineMCP => {
+      if (typeof m === "string") return { id: m };
+      const o = m as Record<string, unknown>;
+      const command = o.command;
+      return {
+        ...(o as unknown as InlineMCP),
+        id: String(o.id ?? ""),
+        // A legacy {id, command:"npx -y x"} string becomes the argv array.
+        command: typeof command === "string" ? command.split(/\s+/).filter(Boolean) : (command as string[] | undefined),
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+// withPermissionsMCPServers returns the permissions JSON with its mcp_servers
+// key replaced by the panel's array — one writer for that key.
+export function withPermissionsMCPServers(raw: string, mcp: InlineMCP[]): string {
+  let p: Record<string, unknown> = {};
+  try {
+    p = JSON.parse(raw || "{}") as Record<string, unknown>;
+  } catch {
+    p = {};
+  }
+  p.mcp_servers = mcp;
+  return JSON.stringify(p, null, 2);
+}
+
 function parsePermissions(raw: string): PermissionsData {
   try {
     const p = JSON.parse(raw);
-    const mcpRaw = Array.isArray(p.mcp_servers) ? p.mcp_servers : [];
-    const mcp_servers: MCPConfig[] = mcpRaw.map((m: unknown) => {
-      if (typeof m === "string") return { id: m, command: "" };
-      const o = m as Record<string, unknown>;
-      return { id: String(o.id ?? ""), command: String(o.command ?? "") };
-    });
     return {
       tools: Array.isArray(p.tools) ? p.tools : [],
-      mcp_servers,
+      mcp_servers: permissionsMCPServers(raw),
       model_providers: Array.isArray(p.model_providers) ? p.model_providers : [],
       context: Array.isArray(p.context) ? p.context : [],
       network: Array.isArray(p.network) ? p.network : [],
@@ -139,18 +170,10 @@ export function PermissionsSection({ value, onChange }: SectionProps) {
       <div className="space-y-1">
         <Label className="text-xs">MCP servers</Label>
         <p className="text-xs text-muted-foreground mb-1">
-          MCP servers the worker may use (references into Settings → Adapters → MCP).
-          Worker selection empty = project defaults.
+          MCP servers this worker version defines INLINE — the specs live on the
+          version itself, so a published version stays immutable. Edit them in
+          the “MCP Servers” card beside the prompt fields.
         </p>
-        <MCPPicker
-          value={data.mcp_servers}
-          onChange={(configs) =>
-            update((d) => {
-              d.mcp_servers = configs;
-              return d;
-            })
-          }
-        />
       </div>
 
       <details className="text-xs">

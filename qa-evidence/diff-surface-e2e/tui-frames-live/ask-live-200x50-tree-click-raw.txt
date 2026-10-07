@@ -1,0 +1,50 @@
+                                                  F1·Ask Orchicon   F2·Overview   F3·Work   F4·Execution   F5·Automation   F6·Enforcement   F7·Control                                                  
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                                                                                                                        
+│  diff   tree   timeline  ✕                                            ┌─ Detail ───────────────────────────────────────────────────────────────────────────────┐┌─ Conversations · All projects (3) ─┐
+│─ old ─────────────────────────── │  new ───────────────────────────   │Conversation: live e2e ask                                                              ││ ▾ Software Development          1  │
+│                                  │ 1    # second                      │  id conv-live-e2e                                                                      ││ diff-e2e-live              0 msgs  │
+│                                  │ 2    alpha                         │  title live e2e ask                                                                    ││ ▾ Uncategorized                 2  │
+│                                  │ 3    beta                          │  model orchicon/e2estub/stub-model                                                     ││ live e2… E2E Diff Project · 2 ms…  │
+│                                  │ 4    MARKER_ASK_B                  │  messages 2                                                                            ││ live as… E2E Diff Project · 1 ms…  │
+                                                                        │  mode conversation_mode_iteration                                                      ││1-5/5                               │
+                                                                        │  created 2026-10-02 08:42 UTC                                                          ││                                    │
+                                                                        │  updated 2026-10-02 08:51 UTC                                                          ││                                    │
+                                                                        │  grants 1 dir(s) — /grants                                                             ││                                    │
+                                                                        │  scroll 1-5/5 · ▼ following                                                            ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │ You ⧉                                                                                  ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │ done editing files                                                                     ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        └────────────────────────────────────────────────────────────────────────────────────────┘│                                    │
+                                                                        ╭────────────────────────────────────────────────────────────────────────────────────────╮│                                    │
+                                                                        │  ❯                                                                                     ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │                                                                                        ││                                    │
+                                                                        │  ctrl+g text · ctrl+d diff · space: mark · ctrl+n: rename · ctrl+t: categorize         ││                                    │
+                                                                        │  · click your message to copy · enter send · alt+enter newline · / commands            ││                                    │
+                                                                        │  orchicon/e2estub/stub-mod…  ctx 10/8K · 90 tok · cache 0% (0) · $0.0000  [iteration]  ││                                    │
+                                                                        ╰────────────────────────────────────────────────────────────────────────────────────────╯└────────────────────────────────────┘
+ ● connected · http://127.0.0.1:8081 · server v0.4.39 · identity: e2eprobe · ctrl+g composer · Mouse Enabled                                                                                            

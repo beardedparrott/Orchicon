@@ -288,6 +288,18 @@ type branchDispatchEnv struct {
 func newBranchDispatchEnv(t *testing.T) *branchDispatchEnv {
 	t.Helper()
 	pool := approvalTestPool(t)
+	// DETERMINISTIC RESIDUE CLEANUP (shared tnt_dev tenant). The
+	// WorktreeReconciler's scan reads a BOUNDED, TENANT-WIDE candidate page
+	// (ListWorktreeStepRunCandidates: non-terminal runs with
+	// worktree_status='pending'), ignoring this fixture's own ids. Leftover
+	// rows from sibling tests accumulate in the shared tenant and starve /
+	// perturb this fixture's dispatch pass — the observed
+	// TestParallelBranchHeldUntilWorktreeReady flake (a SHARED-DB artifact:
+	// it reproduces on a pristine baseline at the same rate and vanishes on a
+	// fresh DB). Mirrors the sibling suites' purgeScanResidue /
+	// purgeWorktreeSweepResidue remedy. Called BEFORE this fixture seeds its
+	// own rows, so it never touches them.
+	purgeBranchDispatchResidue(t, pool)
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	env := &branchDispatchEnv{t: t, pool: pool,
@@ -890,4 +902,28 @@ func TestD4FailedBranchDoesNotSmearRunningSibling(t *testing.T) {
 	if got := getRun().Status; got != domain.WorkflowRunFailed {
 		t.Errorf("run status = %q, want failed once all branches are terminal", got)
 	}
+}
+
+// purgeBranchDispatchResidue clears the shared tenant's workflow state before a
+// branch-dispatch fixture, so the WorktreeReconciler's bounded, tenant-wide
+// candidate scan sees only the rows this fixture owns. See newBranchDispatchEnv.
+func purgeBranchDispatchResidue(t *testing.T, pool *db.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		return
+	}
+	defer ttx.Rollback(ctx)
+	// Terminal + non-terminal workflow runs and their step runs from prior
+	// tests; the fixture recreates everything it needs.
+	for _, q := range []string{
+		`DELETE FROM workflow_step_runs WHERE tenant_id = $1`,
+		`DELETE FROM workflow_runs WHERE tenant_id = $1`,
+	} {
+		if _, err := ttx.Tx.Exec(ctx, q, approvalTestTenant); err != nil {
+			return
+		}
+	}
+	_ = ttx.Commit(ctx)
 }

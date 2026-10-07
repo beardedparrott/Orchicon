@@ -68,6 +68,9 @@ const (
 	// AskOrchiconServiceSetConversationProjectProcedure is the fully-qualified name of the
 	// AskOrchiconService's SetConversationProject RPC.
 	AskOrchiconServiceSetConversationProjectProcedure = "/orchicon.api.v1.AskOrchiconService/SetConversationProject"
+	// AskOrchiconServiceSetConversationSkillFilesProcedure is the fully-qualified name of the
+	// AskOrchiconService's SetConversationSkillFiles RPC.
+	AskOrchiconServiceSetConversationSkillFilesProcedure = "/orchicon.api.v1.AskOrchiconService/SetConversationSkillFiles"
 	// AskOrchiconServiceListMessagesProcedure is the fully-qualified name of the AskOrchiconService's
 	// ListMessages RPC.
 	AskOrchiconServiceListMessagesProcedure = "/orchicon.api.v1.AskOrchiconService/ListMessages"
@@ -89,6 +92,9 @@ const (
 	// AskOrchiconServiceListPermissionGrantsProcedure is the fully-qualified name of the
 	// AskOrchiconService's ListPermissionGrants RPC.
 	AskOrchiconServiceListPermissionGrantsProcedure = "/orchicon.api.v1.AskOrchiconService/ListPermissionGrants"
+	// AskOrchiconServiceListPendingAsksProcedure is the fully-qualified name of the
+	// AskOrchiconService's ListPendingAsks RPC.
+	AskOrchiconServiceListPendingAsksProcedure = "/orchicon.api.v1.AskOrchiconService/ListPendingAsks"
 	// AskOrchiconServiceRevokePermissionGrantProcedure is the fully-qualified name of the
 	// AskOrchiconService's RevokePermissionGrant RPC.
 	AskOrchiconServiceRevokePermissionGrantProcedure = "/orchicon.api.v1.AskOrchiconService/RevokePermissionGrant"
@@ -160,6 +166,19 @@ type AskOrchiconServiceClient interface {
 	// conversation can be unassigned, but it can never point at a project that
 	// does not exist.
 	SetConversationProject(context.Context, *connect.Request[v1.SetConversationProjectRequest]) (*connect.Response[v1.SetConversationProjectResponse], error)
+	// SetConversationSkillFiles REPLACES the conversation's skill_files path array
+	// (an empty list clears it). It is the conversation-level half of the skills
+	// feature: a chat can select extra SKILL artifacts on top of its project's, and
+	// the UNION of the two is what the Ask system prompt renders (via
+	// contextfiles.RenderManifest — one shared renderer, no skills-specific code).
+	//
+	// DISTINCT FROM AgentConfig.skills, which is the tenant-wide free-text `skills`
+	// PROMPT SECTION: that is prose, this is a list of real on-disk paths. Paths are
+	// validated by internal/contextfiles — absolute, no "..", and INSIDE the
+	// conversation's project directory when it has one (a path outside it is
+	// invisible to a container-hosted worker, so it is rejected rather than silently
+	// rendering a "could not read" note).
+	SetConversationSkillFiles(context.Context, *connect.Request[v1.SetConversationSkillFilesRequest]) (*connect.Response[v1.SetConversationSkillFilesResponse], error)
 	// ListMessages returns messages for a conversation, ordered by
 	// created_at ascending (oldest first).
 	ListMessages(context.Context, *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error)
@@ -222,6 +241,28 @@ type AskOrchiconServiceClient interface {
 	// the time each was granted. The client renders them so an operator can see
 	// and revoke what was granted; the store itself is the source of truth.
 	ListPermissionGrants(context.Context, *connect.Request[v1.ListPermissionGrantsRequest]) (*connect.Response[v1.ListPermissionGrantsResponse], error)
+	// ListPendingAsks returns the conversation's still-OPEN asks: a permission
+	// card or a clarifying question the turn is parked on, awaiting a human
+	// decision.
+	//
+	// WHY A QUERY AND NOT ONLY THE STREAM ARM. An ask is delivered on the turn
+	// stream, which means a client learns about it only if it happens to be
+	// WATCHING that turn at that instant. Any interruption — a re-attach, a pane
+	// switch, a socket drop, a turn the client did not itself start — and the card
+	// has no path to the operator, while the SERVER keeps the turn parked waiting
+	// for an answer that has no card to give it. That is the failure the operator
+	// reported: the GUI showed a pending card while the TUI appeared stalled.
+	//
+	// The server has always held this state (askorchicon.pendingAskRegistry) and
+	// replayed it to a LATE WATCHER; this exposes it as a question any client can
+	// ask at any time, so a card becomes DISCOVERABLE from durable state rather
+	// than merely deliverable as a live event. A client that calls this on attach,
+	// re-attach and its turn poll cannot miss a card, and calling it twice is
+	// harmless because both clients dedupe by ask id.
+	//
+	// Decided and finalized asks are NOT returned: their outcome is already in the
+	// transcript, and replaying one would resurrect a card the operator answered.
+	ListPendingAsks(context.Context, *connect.Request[v1.ListPendingAsksRequest]) (*connect.Response[v1.ListPendingAsksResponse], error)
 	// RevokePermissionGrant drops one session grant (by directory) for the
 	// conversation. The next tool call for that directory asks again: the guard
 	// shim reads the same store (internal/askorchicon/ask_guard.go). An unknown
@@ -321,6 +362,12 @@ func NewAskOrchiconServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationProject")),
 			connect.WithClientOptions(opts...),
 		),
+		setConversationSkillFiles: connect.NewClient[v1.SetConversationSkillFilesRequest, v1.SetConversationSkillFilesResponse](
+			httpClient,
+			baseURL+AskOrchiconServiceSetConversationSkillFilesProcedure,
+			connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationSkillFiles")),
+			connect.WithClientOptions(opts...),
+		),
 		listMessages: connect.NewClient[v1.ListMessagesRequest, v1.ListMessagesResponse](
 			httpClient,
 			baseURL+AskOrchiconServiceListMessagesProcedure,
@@ -361,6 +408,12 @@ func NewAskOrchiconServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			httpClient,
 			baseURL+AskOrchiconServiceListPermissionGrantsProcedure,
 			connect.WithSchema(askOrchiconServiceMethods.ByName("ListPermissionGrants")),
+			connect.WithClientOptions(opts...),
+		),
+		listPendingAsks: connect.NewClient[v1.ListPendingAsksRequest, v1.ListPendingAsksResponse](
+			httpClient,
+			baseURL+AskOrchiconServiceListPendingAsksProcedure,
+			connect.WithSchema(askOrchiconServiceMethods.ByName("ListPendingAsks")),
 			connect.WithClientOptions(opts...),
 		),
 		revokePermissionGrant: connect.NewClient[v1.RevokePermissionGrantRequest, v1.RevokePermissionGrantResponse](
@@ -413,6 +466,7 @@ type askOrchiconServiceClient struct {
 	setConversationModel      *connect.Client[v1.SetConversationModelRequest, v1.SetConversationModelResponse]
 	setConversationFullsend   *connect.Client[v1.SetConversationFullsendRequest, v1.SetConversationFullsendResponse]
 	setConversationProject    *connect.Client[v1.SetConversationProjectRequest, v1.SetConversationProjectResponse]
+	setConversationSkillFiles *connect.Client[v1.SetConversationSkillFilesRequest, v1.SetConversationSkillFilesResponse]
 	listMessages              *connect.Client[v1.ListMessagesRequest, v1.ListMessagesResponse]
 	chatStream                *connect.Client[v1.ChatStreamRequest, v1.ChatStreamResponse]
 	abortConversationTurn     *connect.Client[v1.AbortConversationTurnRequest, v1.AbortConversationTurnResponse]
@@ -420,6 +474,7 @@ type askOrchiconServiceClient struct {
 	watchTurnStream           *connect.Client[v1.WatchTurnStreamRequest, v1.ChatStreamResponse]
 	replyPermissionAsk        *connect.Client[v1.ReplyPermissionAskRequest, v1.ReplyPermissionAskResponse]
 	listPermissionGrants      *connect.Client[v1.ListPermissionGrantsRequest, v1.ListPermissionGrantsResponse]
+	listPendingAsks           *connect.Client[v1.ListPendingAsksRequest, v1.ListPendingAsksResponse]
 	revokePermissionGrant     *connect.Client[v1.RevokePermissionGrantRequest, v1.RevokePermissionGrantResponse]
 	compactConversation       *connect.Client[v1.CompactConversationRequest, v1.CompactConversationResponse]
 	uploadAttachment          *connect.Client[v1.UploadAttachmentRequest, v1.UploadAttachmentResponse]
@@ -473,6 +528,11 @@ func (c *askOrchiconServiceClient) SetConversationProject(ctx context.Context, r
 	return c.setConversationProject.CallUnary(ctx, req)
 }
 
+// SetConversationSkillFiles calls orchicon.api.v1.AskOrchiconService.SetConversationSkillFiles.
+func (c *askOrchiconServiceClient) SetConversationSkillFiles(ctx context.Context, req *connect.Request[v1.SetConversationSkillFilesRequest]) (*connect.Response[v1.SetConversationSkillFilesResponse], error) {
+	return c.setConversationSkillFiles.CallUnary(ctx, req)
+}
+
 // ListMessages calls orchicon.api.v1.AskOrchiconService.ListMessages.
 func (c *askOrchiconServiceClient) ListMessages(ctx context.Context, req *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error) {
 	return c.listMessages.CallUnary(ctx, req)
@@ -506,6 +566,11 @@ func (c *askOrchiconServiceClient) ReplyPermissionAsk(ctx context.Context, req *
 // ListPermissionGrants calls orchicon.api.v1.AskOrchiconService.ListPermissionGrants.
 func (c *askOrchiconServiceClient) ListPermissionGrants(ctx context.Context, req *connect.Request[v1.ListPermissionGrantsRequest]) (*connect.Response[v1.ListPermissionGrantsResponse], error) {
 	return c.listPermissionGrants.CallUnary(ctx, req)
+}
+
+// ListPendingAsks calls orchicon.api.v1.AskOrchiconService.ListPendingAsks.
+func (c *askOrchiconServiceClient) ListPendingAsks(ctx context.Context, req *connect.Request[v1.ListPendingAsksRequest]) (*connect.Response[v1.ListPendingAsksResponse], error) {
+	return c.listPendingAsks.CallUnary(ctx, req)
 }
 
 // RevokePermissionGrant calls orchicon.api.v1.AskOrchiconService.RevokePermissionGrant.
@@ -589,6 +654,19 @@ type AskOrchiconServiceHandler interface {
 	// conversation can be unassigned, but it can never point at a project that
 	// does not exist.
 	SetConversationProject(context.Context, *connect.Request[v1.SetConversationProjectRequest]) (*connect.Response[v1.SetConversationProjectResponse], error)
+	// SetConversationSkillFiles REPLACES the conversation's skill_files path array
+	// (an empty list clears it). It is the conversation-level half of the skills
+	// feature: a chat can select extra SKILL artifacts on top of its project's, and
+	// the UNION of the two is what the Ask system prompt renders (via
+	// contextfiles.RenderManifest — one shared renderer, no skills-specific code).
+	//
+	// DISTINCT FROM AgentConfig.skills, which is the tenant-wide free-text `skills`
+	// PROMPT SECTION: that is prose, this is a list of real on-disk paths. Paths are
+	// validated by internal/contextfiles — absolute, no "..", and INSIDE the
+	// conversation's project directory when it has one (a path outside it is
+	// invisible to a container-hosted worker, so it is rejected rather than silently
+	// rendering a "could not read" note).
+	SetConversationSkillFiles(context.Context, *connect.Request[v1.SetConversationSkillFilesRequest]) (*connect.Response[v1.SetConversationSkillFilesResponse], error)
 	// ListMessages returns messages for a conversation, ordered by
 	// created_at ascending (oldest first).
 	ListMessages(context.Context, *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error)
@@ -651,6 +729,28 @@ type AskOrchiconServiceHandler interface {
 	// the time each was granted. The client renders them so an operator can see
 	// and revoke what was granted; the store itself is the source of truth.
 	ListPermissionGrants(context.Context, *connect.Request[v1.ListPermissionGrantsRequest]) (*connect.Response[v1.ListPermissionGrantsResponse], error)
+	// ListPendingAsks returns the conversation's still-OPEN asks: a permission
+	// card or a clarifying question the turn is parked on, awaiting a human
+	// decision.
+	//
+	// WHY A QUERY AND NOT ONLY THE STREAM ARM. An ask is delivered on the turn
+	// stream, which means a client learns about it only if it happens to be
+	// WATCHING that turn at that instant. Any interruption — a re-attach, a pane
+	// switch, a socket drop, a turn the client did not itself start — and the card
+	// has no path to the operator, while the SERVER keeps the turn parked waiting
+	// for an answer that has no card to give it. That is the failure the operator
+	// reported: the GUI showed a pending card while the TUI appeared stalled.
+	//
+	// The server has always held this state (askorchicon.pendingAskRegistry) and
+	// replayed it to a LATE WATCHER; this exposes it as a question any client can
+	// ask at any time, so a card becomes DISCOVERABLE from durable state rather
+	// than merely deliverable as a live event. A client that calls this on attach,
+	// re-attach and its turn poll cannot miss a card, and calling it twice is
+	// harmless because both clients dedupe by ask id.
+	//
+	// Decided and finalized asks are NOT returned: their outcome is already in the
+	// transcript, and replaying one would resurrect a card the operator answered.
+	ListPendingAsks(context.Context, *connect.Request[v1.ListPendingAsksRequest]) (*connect.Response[v1.ListPendingAsksResponse], error)
 	// RevokePermissionGrant drops one session grant (by directory) for the
 	// conversation. The next tool call for that directory asks again: the guard
 	// shim reads the same store (internal/askorchicon/ask_guard.go). An unknown
@@ -746,6 +846,12 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 		connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationProject")),
 		connect.WithHandlerOptions(opts...),
 	)
+	askOrchiconServiceSetConversationSkillFilesHandler := connect.NewUnaryHandler(
+		AskOrchiconServiceSetConversationSkillFilesProcedure,
+		svc.SetConversationSkillFiles,
+		connect.WithSchema(askOrchiconServiceMethods.ByName("SetConversationSkillFiles")),
+		connect.WithHandlerOptions(opts...),
+	)
 	askOrchiconServiceListMessagesHandler := connect.NewUnaryHandler(
 		AskOrchiconServiceListMessagesProcedure,
 		svc.ListMessages,
@@ -786,6 +892,12 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 		AskOrchiconServiceListPermissionGrantsProcedure,
 		svc.ListPermissionGrants,
 		connect.WithSchema(askOrchiconServiceMethods.ByName("ListPermissionGrants")),
+		connect.WithHandlerOptions(opts...),
+	)
+	askOrchiconServiceListPendingAsksHandler := connect.NewUnaryHandler(
+		AskOrchiconServiceListPendingAsksProcedure,
+		svc.ListPendingAsks,
+		connect.WithSchema(askOrchiconServiceMethods.ByName("ListPendingAsks")),
 		connect.WithHandlerOptions(opts...),
 	)
 	askOrchiconServiceRevokePermissionGrantHandler := connect.NewUnaryHandler(
@@ -844,6 +956,8 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 			askOrchiconServiceSetConversationFullsendHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceSetConversationProjectProcedure:
 			askOrchiconServiceSetConversationProjectHandler.ServeHTTP(w, r)
+		case AskOrchiconServiceSetConversationSkillFilesProcedure:
+			askOrchiconServiceSetConversationSkillFilesHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceListMessagesProcedure:
 			askOrchiconServiceListMessagesHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceChatStreamProcedure:
@@ -858,6 +972,8 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 			askOrchiconServiceReplyPermissionAskHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceListPermissionGrantsProcedure:
 			askOrchiconServiceListPermissionGrantsHandler.ServeHTTP(w, r)
+		case AskOrchiconServiceListPendingAsksProcedure:
+			askOrchiconServiceListPendingAsksHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceRevokePermissionGrantProcedure:
 			askOrchiconServiceRevokePermissionGrantHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceCompactConversationProcedure:
@@ -915,6 +1031,10 @@ func (UnimplementedAskOrchiconServiceHandler) SetConversationProject(context.Con
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.SetConversationProject is not implemented"))
 }
 
+func (UnimplementedAskOrchiconServiceHandler) SetConversationSkillFiles(context.Context, *connect.Request[v1.SetConversationSkillFilesRequest]) (*connect.Response[v1.SetConversationSkillFilesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.SetConversationSkillFiles is not implemented"))
+}
+
 func (UnimplementedAskOrchiconServiceHandler) ListMessages(context.Context, *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.ListMessages is not implemented"))
 }
@@ -941,6 +1061,10 @@ func (UnimplementedAskOrchiconServiceHandler) ReplyPermissionAsk(context.Context
 
 func (UnimplementedAskOrchiconServiceHandler) ListPermissionGrants(context.Context, *connect.Request[v1.ListPermissionGrantsRequest]) (*connect.Response[v1.ListPermissionGrantsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.ListPermissionGrants is not implemented"))
+}
+
+func (UnimplementedAskOrchiconServiceHandler) ListPendingAsks(context.Context, *connect.Request[v1.ListPendingAsksRequest]) (*connect.Response[v1.ListPendingAsksResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.ListPendingAsks is not implemented"))
 }
 
 func (UnimplementedAskOrchiconServiceHandler) RevokePermissionGrant(context.Context, *connect.Request[v1.RevokePermissionGrantRequest]) (*connect.Response[v1.RevokePermissionGrantResponse], error) {

@@ -89,6 +89,38 @@ type Config struct {
 	// EXPANDED, which is what a new folder should be. Storing the open set would
 	// make every new grouping silently collapsed until the operator opened it.
 	CollapsedGroups []string
+	// DiffRailWidth is the operator's width for the TUI's left DIFF RAIL, in
+	// cells (0 = auto/proportional). TOP LEVEL, for the same reason Theme and
+	// CollapsedGroups are: it is a DISPLAY preference, not a credential, and it
+	// has to survive a session launched from ORCHICON_URL/ORCHICON_TOKEN — where
+	// the profile is a synthetic "env" that is deliberately never written.
+	//
+	// 0 is written back on a reset-to-auto, so the file never pins a width the
+	// operator has abandoned.
+	DiffRailWidth int
+	// ProjectThemes binds a palette to a PROJECT, keyed by project ID (not name or slug — a slug can
+	// change and a name would churn this file on rename; the id is the stable key). TOP LEVEL, for the
+	// same reason Theme is: a per-operator display preference, not a tenant fact, that has to survive a
+	// session launched from ORCHICON_URL/ORCHICON_TOKEN where the profile is a synthetic "env" that is
+	// deliberately never written.
+	//
+	// This is a CLIENT-SIDE, TUI-ONLY preference, by design, not an oversight: a `theme` field on the
+	// project row was considered and rejected, because it would put a terminal-validated palette name
+	// into platform data the GUI cannot honour — the GUI's theming is CSS tokens with hairline borders
+	// (see Theme's doc above), not this palette set. Putting it there would cost a migration plus proto
+	// plus both clients' forms for a value only one client can ever use. So it lives here, same as Theme.
+	//
+	// Values are stored VERBATIM and resolved at Use() time, same as Theme: a project bound to a palette
+	// this build does not know (a removed palette, a hand-edit) degrades to the default rather than
+	// failing to load or rendering broken.
+	ProjectThemes map[string]string
+	// ListSharePct is the operator's width preference for the TREE/LIST pane of every master-detail screen
+	// (work items, executions, workers …), as a percentage of the content width (0 = the default even split).
+	//
+	// It is a DIFFERENT preference from DiffRailWidth and deliberately so: that one sizes the diff rail
+	// beside the content, this one sizes the list INSIDE a screen. Reading a long work-item name is a
+	// standing preference, not a per-session choice, which is why it persists.
+	ListSharePct int
 }
 
 // FileName / DirName are the fixed locations under the user's home dir.
@@ -197,6 +229,28 @@ func render(cfg *Config) string {
 		sortStrings(keys)
 		fmt.Fprintf(&b, "collapsed_groups = [%s]\n", quoteList(keys))
 	}
+	// The diff rail's width, OMITTED at 0 so "auto" never writes a key that would
+	// pin a value the operator never chose (the same contract collapsed_groups uses).
+	if cfg.DiffRailWidth > 0 {
+		fmt.Fprintf(&b, "diff_rail_width = %d\n", cfg.DiffRailWidth)
+	}
+	// The project→palette bindings, SORTED by project id so an unchanged map rewrites byte-identical —
+	// the same reason collapsed_groups sorts, above.
+	if len(cfg.ProjectThemes) > 0 {
+		ids := make([]string, 0, len(cfg.ProjectThemes))
+		for id := range cfg.ProjectThemes {
+			ids = append(ids, id)
+		}
+		sortStrings(ids)
+		b.WriteString("\n[project_themes]\n")
+		for _, id := range ids {
+			fmt.Fprintf(&b, "%s = %q\n", id, cfg.ProjectThemes[id])
+		}
+	}
+	// The master-detail split, under the same omit-at-zero contract.
+	if cfg.ListSharePct > 0 {
+		fmt.Fprintf(&b, "list_share_pct = %d\n", cfg.ListSharePct)
+	}
 	names := make([]string, 0, len(cfg.Profiles))
 	for name := range cfg.Profiles {
 		names = append(names, name)
@@ -225,6 +279,7 @@ func render(cfg *Config) string {
 func parse(data string) (*Config, error) {
 	cfg := &Config{Profiles: map[string]*Profile{}}
 	var cur *Profile
+	inProjectThemes := false
 	for i, line := range strings.Split(data, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -237,6 +292,33 @@ func parse(data string) (*Config, error) {
 			}
 			cur = &Profile{Name: name}
 			cfg.Profiles[name] = cur
+			inProjectThemes = false
+			continue
+		}
+		// MANDATORY, not optional: render() above writes this section whenever a binding exists, so
+		// without this case the operator's OWN config (the moment they bind one palette) would fail to
+		// load outright — the "default" key below rejects any key it does not recognise.
+		if line == "[project_themes]" {
+			cur = nil
+			inProjectThemes = true
+			continue
+		}
+		if inProjectThemes {
+			id, value, ok := strings.Cut(line, "=")
+			if !ok {
+				// A malformed entry DEGRADES to "no binding for that project" rather than failing the
+				// whole load — same rule parseList follows below: a display preference must never be
+				// able to stop the operator connecting.
+				continue
+			}
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			if cfg.ProjectThemes == nil {
+				cfg.ProjectThemes = map[string]string{}
+			}
+			cfg.ProjectThemes[id] = unquote(strings.TrimSpace(value))
 			continue
 		}
 		key, value, ok := strings.Cut(line, "=")
@@ -287,6 +369,27 @@ func parse(data string) (*Config, error) {
 		case "collapsed_groups":
 			if cur == nil {
 				cfg.CollapsedGroups = parseList(value)
+			}
+		case "diff_rail_width":
+			// MANDATORY, not optional: the `default` below REJECTS an unknown key, so
+			// without this case a file render() wrote would fail to load — a hard
+			// startup error, not a silent default.
+			if cur == nil {
+				n, err := strconv.Atoi(value)
+				if err != nil {
+					return nil, fmt.Errorf("config line %d: %w", i+1, err)
+				}
+				cfg.DiffRailWidth = n
+			}
+		case "list_share_pct":
+			// MANDATORY for the same reason diff_rail_width's case is: render writes it, and the `default`
+			// below rejects an unknown key, so a config this program wrote must load.
+			if cur == nil {
+				n, err := strconv.Atoi(value)
+				if err != nil {
+					return nil, fmt.Errorf("config line %d: %w", i+1, err)
+				}
+				cfg.ListSharePct = n
 			}
 		case "newline":
 			if cur != nil {

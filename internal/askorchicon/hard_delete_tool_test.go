@@ -69,7 +69,7 @@ func TestThePromptAdvertisesTheHardDeleteTool(t *testing.T) {
 	if _, ok := full.Get("hard_delete_work_item"); !ok {
 		t.Fatal("fixture: the full registry does not carry the new tool")
 	}
-	p := BuildSystemPrompt(modeQuickWork, testAgentConfig(), full)
+	p := BuildSystemPrompt(modeQuickWork, testAgentConfig(), full, "")
 	if !strings.Contains(p, "`orchicon_hard_delete_work_item`") {
 		t.Error("the prompt does not advertise `orchicon_hard_delete_work_item`, so the model cannot know the " +
 			"capability exists")

@@ -3,7 +3,7 @@ import { askOrchiconClient } from "@/api/clients";
 import type { Conversation } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 import type { ChatMessage } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 import type { AgentConfig } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
-import type { SessionPermissionGrant } from "@/api/gen/orchicon/api/v1/ask_orchicon_service_pb";
+import type { PermissionAsk, SessionPermissionGrant } from "@/api/gen/orchicon/api/v1/ask_orchicon_service_pb";
 import { ConversationMode } from "@/api/gen/orchicon/api/v1/ask_orchicon_pb";
 
 export const askKeys = {
@@ -90,6 +90,25 @@ export function useSetConversationProject() {
   });
 }
 
+// useSetConversationSkillFiles replaces the conversation's skill_files path
+// list (SetConversationSkillFiles; an empty list clears it) — the
+// conversation-level half of the skills feature, the exact mirror of
+// useSetConversationProject. Rendered by the same contextfiles.RenderManifest
+// as the project's, union-ed with it.
+export function useSetConversationSkillFiles(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (files: string[]) => {
+      const res = await askOrchiconClient.setConversationSkillFiles({ id, files });
+      return res.conversation as Conversation | undefined;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: askKeys.conversations });
+      qc.invalidateQueries({ queryKey: askKeys.conversation(id) });
+    },
+  });
+}
+
 export function useDeleteConversation() {
   const qc = useQueryClient();
   return useMutation({
@@ -130,6 +149,36 @@ export function useCompactConversation() {
       qc.invalidateQueries({ queryKey: askKeys.messages(conversationId) });
       qc.invalidateQueries({ queryKey: askKeys.conversations });
     },
+  });
+}
+
+/**
+ * usePendingAsks asks the SERVER which asks are still open for a conversation.
+ *
+ * WHY A QUERY AND NOT ONLY THE STREAM ARM. An ask arrives on the turn stream, so a
+ * client learns of one only if it is WATCHING that turn at that instant. The GUI
+ * usually is — which is why it appeared to work — but "usually" is not a guarantee:
+ * a dropped socket, a re-dial that has not re-attached, a turn this tab did not
+ * start, or a reload all leave a card with no path to the screen while the server
+ * keeps the turn parked on it.
+ *
+ * The transcript ledger cannot cover this: it records the OUTCOME of a decision
+ * (`permission.<verdict>`), so it can settle a card but can never reveal an open
+ * one — there is nothing in it for an ask nobody has answered yet. That is the gap
+ * this closes, and it is the same one that made the TUI show a stall while the GUI
+ * displayed a waiting card.
+ *
+ * Results are folded in with applyAskChunk, which dedupes by ask id, so calling this
+ * alongside the stream is free: a card delivered both ways is drawn once.
+ */
+export function usePendingAsks(conversationId: string) {
+  return useQuery({
+    queryKey: ["ask", "pendingAsks", conversationId] as const,
+    queryFn: async () => {
+      const res = await askOrchiconClient.listPendingAsks({ conversationId });
+      return res.asks as PermissionAsk[];
+    },
+    enabled: Boolean(conversationId),
   });
 }
 

@@ -43,12 +43,22 @@ import {
   scopeOptions,
 } from "@/lib/conversationProjects";
 import { conversationModeLabel, conversationModeMeta } from "@/lib/conversationModes";
+import { runningConvIds } from "@/lib/ask-running";
+import { extrapolateServerTime } from "@/lib/ask-verbs";
+import {
+  activityLineAnnouncement,
+  activityLineFor,
+  type ActivityLineInput,
+} from "@/lib/ask-activity-notice";
+import { toolCallsFromMessages, type CountableMessage } from "@/lib/ask-tool-summary";
+import { useRailWidth } from "@/lib/diff/useRailWidth";
 import {
   useListConversations,
   useCreateConversation,
   useDeleteConversation,
   useUpdateConversationTitle,
   useListMessages,
+  usePendingAsks,
   useGetConversation,
   useAbortConversationTurn,
   useSetConversationMode,
@@ -85,6 +95,7 @@ import {
   ReasoningBubble,
   NoticeBubble,
   ChatScrollContainer,
+  ActivityLine,
 } from "@/components/chat";
 import { useCategoryPreferences, getItemsForCategory } from "@/lib/category-store";
 import { AskCard, isAskUserToolCall, parseAskUserArgs } from "@/components/ask/AskCard";
@@ -101,9 +112,11 @@ import {
   type AskItem,
 } from "@/lib/ask-consent";
 import { SessionGrants } from "@/components/ask/SessionGrants";
+import { ConversationScopeDisclosure } from "@/components/ask/ConversationScopeDisclosure";
 import { CreateCategoryDialog } from "@/components/CreateCategoryDialog";
 import { DiffSidebar, type DiffTab } from "@/components/diffs/DiffSidebar";
 import { usePersistentState } from "@/lib/diff/usePersistentState";
+import { RAIL_DEFAULT_WIDTH } from "@/lib/diff/railResize";
 import {
   DndContext,
   DragOverlay,
@@ -155,6 +168,17 @@ interface ConvStream {
   // => the turn is stalled/wedged, so show an accurate "stalled" state instead
   // of the misleading "connection lost — still working".
   turnProgressing: boolean;
+  // serverTimeMs is the SERVER's clock as last heard (Heartbeat.server_time_unix_ms), and
+  // serverTimeRecvAt is the LOCAL instant it arrived. Together they index the rotating activity
+  // verb (see @/lib/ask-verbs): the word is a pure function of server time, so two clients draw the
+  // same word with no shared state and no new RPC — and because only the DELTA since our own receipt
+  // is added, a skewed local clock never changes the word. null means "no heartbeat yet": the render
+  // falls back to the list's first word rather than to an empty line.
+  //
+  // BOTH heartbeat arms must feed this — the dispatch stream and the re-dialled watch stream. A
+  // watcher that re-attached mid-turn is the client LEAST likely to be holding a stamp.
+  serverTimeMs: number | null;
+  serverTimeRecvAt: number | null;
   optimisticUserMsg: string | null;
   pendingReplyId: string | null;
   // sentText is the message text captured at send time, held in-memory so the
@@ -189,6 +213,8 @@ const EMPTY_STREAM: ConvStream = {
   isThinking: false,
   reconnecting: false,
   turnProgressing: false,
+  serverTimeMs: null,
+  serverTimeRecvAt: null,
   optimisticUserMsg: null,
   pendingReplyId: null,
   sentText: null,
@@ -338,6 +364,16 @@ function AskOrchiconPage() {
   const [diffOpen, setDiffOpen] = usePersistentState("ask-orchicon:open", false);
   const [diffTab, setDiffTab] = usePersistentState<DiffTab>("ask-orchicon:tab", "diff");
   const [diffPath, setDiffPath] = usePersistentState("ask-orchicon:selectedPath", "");
+  // Rail width — same per-page persistence discipline as open/tab/selectedPath,
+  // under its OWN key so this page and the execution page cannot overwrite each
+  // other's width. `diffRowRef` is the flex row the rail is the first child of;
+  // the rail clamps its width against that row's measured width so the chat
+  // column beside it can never be squeezed out.
+  const [railWidth, setRailWidth] = usePersistentState<number>(
+    "ask-orchicon:railWidth",
+    RAIL_DEFAULT_WIDTH,
+  );
+  const diffRowRef = useRef<HTMLDivElement>(null);
   const toggleDiffSidebar = useCallback(() => {
     setDiffOpen((prev) => !prev);
   }, [setDiffOpen]);
@@ -436,6 +472,29 @@ function AskOrchiconPage() {
     setStream(activeConvId, (prev) => ({ ...prev, asks: settleFromLedger(prev.asks, messages) }));
   }, [activeConvId, messages, streams, setStream]);
 
+  // DISCOVERY, beside the ledger settle above. The ledger can retire a card but can
+  // never reveal an open one (it records outcomes, not open asks), so this asks the
+  // server directly — the same call the TUI makes on attach and re-attach.
+  //
+  // It is the half that makes the GUI robust rather than merely lucky: today it
+  // usually holds a watch socket, so it usually receives the live arm. "Usually" is
+  // what the operator caught, from the other side — the TUI appeared stalled while
+  // this client was quietly displaying the waiting card. Both clients now reconcile
+  // against the server's pending set, so neither depends on having caught an event.
+  const { data: pendingAsks } = usePendingAsks(activeConvId ?? "");
+  useEffect(() => {
+    if (!activeConvId || !pendingAsks || pendingAsks.length === 0) return;
+    // Through the SAME fold the wire arm uses, so a card delivered both ways is drawn
+    // once (applyAskChunk dedupes by ask id) and renders identically either way.
+    for (const ask of pendingAsks) {
+      // The message is the SAME proto type the stream arm delivers, so it is folded in
+      // unchanged — no reshaping, which is what keeps a discovered card identical to a
+      // streamed one. Only a producer that omitted the conversation id is corrected.
+      if (!ask.conversationId) ask.conversationId = activeConvId;
+      applyAsk(activeConvId, ask);
+    }
+  }, [activeConvId, pendingAsks, applyAsk]);
+
   // transcriptBlocks is the message flow the cards are interleaved into. The
   // optimistic echo is only included while the durable view has not caught up
   // with it (the same rule the old inline render used), so it cannot double.
@@ -467,6 +526,16 @@ function AskOrchiconPage() {
   const { data: activeConv } = useGetConversation(activeConvId ?? "");
   const { data: settings } = useGetSettings();
 
+  // THE RAIL'S RUNNING SET IS A UNION OF BOTH HALVES, not the polled field alone. The row used to read
+  // `conv.turnInFlight` by itself, so a conversation THIS client is streaming still read as idle until the
+  // next list poll caught up — the operator's "the 'running' status on the conversation rail list doesn't
+  // always show up on active running conversations." See lib/ask-running.ts for why it is a union (a turn
+  // started in the OTHER client has no local slot and must still mark) and not a local-only check.
+  const runningIds = useMemo(
+    () => runningConvIds(conversations, streams),
+    [conversations, streams],
+  );
+
   // Server-reported turn state for the ACTIVE conversation, freshest source
   // first. The conversations list polls every 3s while any turn is running;
   // GetConversation is fetched once per conversation, so it only fills gaps
@@ -475,15 +544,81 @@ function AskOrchiconPage() {
     conversations?.find((c) => c.id === activeConvId)?.turnInFlight ??
     activeConv?.turnInFlight ??
     false;
+  // A TURN IS IN FLIGHT FOR THIS CONVERSATION — EITHER HALF, and both are load-bearing:
+  // `isStreaming` is this client's own live slot (which supplies the local age), and
+  // `serverTurnInFlight` covers a turn this client is not streaming (started in another tab, or a
+  // slot lost on reload). The same union gates the TUI's status line (internal/tui/app.go
+  // transcriptStatusLine: `IsStreaming(conv) || turnInFlight(conv)`), and keying it to the slot
+  // alone was the contradiction the operator reported: "After the initial 'Orchicon is
+  // thinking...', streaming started and the 'Orchicon is thinking...' went away and never came
+  // back." This is the whole regression fix — the activity line is gated on the TURN, not on
+  // "before the first token".
+  const turnInFlight = isStreaming || serverTurnInFlight;
   const turnLastActivityAt =
     conversations?.find((c) => c.id === activeConvId)?.turnLastActivityAt ??
     activeConv?.turnLastActivityAt ??
     null;
-  // 1s ticker while the reconnecting banner is live so the "last activity"
-  // line updates in place; frozen (no timer) otherwise.
-  const liveNow = useNow(
-    isStreaming && reconnecting && turnProgressing ? 1000 : false,
+  // 1s ticker while the activity verb can advance, the same trick the reconnecting banner uses for
+  // its "last activity" line. THE VERB IS ANIMATION, so it needs a repaint between the 15s heartbeats:
+  // the word itself is computed from SERVER time (see activityVerb), but `liveNow` supplies only the
+  // delta since the last heartbeat, which is what makes it move without a new packet.
+  //
+  // IT NOW RUNS FOR THE WHOLE TURN, not only while reconnecting or before the first token: `liveNow`
+  // is the delta that advances BOTH the rotating verb between the 15s heartbeats AND the line's own
+  // silence age. Freezing it the moment content arrived is exactly the bug this task fixes — the line
+  // would be correct but motionless.
+  const liveNow = useNow(turnInFlight ? 1000 : false);
+
+  // effectiveServerTimeMs is the SERVER's clock, extrapolated to this repaint: the last heartbeat's
+  // server_time_unix_ms plus ONLY the delta since we received it (liveNow - serverTimeRecvAt). The delta
+  // is what keeps the rotating verb advancing between the 15s heartbeats without a new packet, while a
+  // skewed local clock CANCELS OUT of it — only a difference of our own two readings is ever added — so
+  // two clients holding the same stamp draw the same word. 0 is the pre-heartbeat sentinel (no stamp
+  // yet), which activityVerb turns into the list's first word rather than an empty line. The rule lives
+  // in @/lib/ask-verbs so it is unit-testable (both the skew-cancellation and the pre-heartbeat
+  // fallback are asserted there) rather than reachable only through this very large route.
+  const effectiveServerTimeMs = extrapolateServerTime(
+    activeStream?.serverTimeMs ?? null,
+    activeStream?.serverTimeRecvAt ?? null,
+    liveNow,
   );
+
+  // THE COUNTER IS A PURE RENDER OVER DATA ALREADY IN HAND. The durable ledger of this turn's tool
+  // calls arrived on the ListMessages page the transcript was built from — the same page
+  // internal/tui/chat/pageToolCalls reads on the Go side — on the poll that is already running (2s
+  // while streaming). So the summary costs NO fetch of its own, and ConvStream stays free of summary
+  // state. `messages` is used rather than the streamed items on purpose: the stream cannot see a tool
+  // call this client did not witness, and the ledger is the server's record.
+  const activityToolCalls = useMemo(
+    () => toolCallsFromMessages(messages as unknown as CountableMessage[] | undefined),
+    [messages],
+  );
+
+  // The line's own ref, so the pane width is measured rather than assumed (fitActivityNotice drops
+  // the counters before the verb when the pane is narrow). useRailWidth is the repo's one
+  // element-width observer; it returns 0 until measured, which activityLineFor treats as unbounded.
+  const activityLineRef = useRef<HTMLDivElement>(null);
+  const activityLineWidth = useRailWidth(activityLineRef);
+
+  // THE DECISION LIVES IN @/lib/ask-activity-notice, NOT HERE. This route cannot be rendered by the
+  // test setup, so logic left inline is logic nothing can assert. Precedence is the TUI's own
+  // (transcriptStatusLine: reconnecting › disconnected › escalation › count › verb): reconnecting
+  // returns null so the existing connection banner keeps its slot and the counter never claims a
+  // liveness the plane cannot deliver.
+  const activityLineInput: ActivityLineInput = {
+    convId: activeConvId ?? "",
+    turnInFlight,
+    reconnecting,
+    lastActivityMs: turnLastActivityAt ? turnLastActivityAt.toDate().getTime() : null,
+    effectiveServerTimeMs,
+    nowMs: liveNow,
+    toolCalls: activityToolCalls,
+    widthPx: activityLineWidth,
+    cardPending: pendingFor(streams[activeConvId ?? ""]?.asks).length > 0,
+  };
+  const activityLine = activityLineFor(activityLineInput);
+  const activityAnnouncement =
+    activityLine === null ? "" : activityLineAnnouncement(activityLineInput);
 
   // Keep the conversation-list poll live while any conversation is running
   // and stop it once everything settles (see listPollMs above). The condition
@@ -972,10 +1107,18 @@ function AskOrchiconPage() {
                 ],
               }));
             }
-          } else if ((chunk.event.case as string) === "heartbeat") {
-            setStream(convId, (prev) =>
-              prev.reconnecting ? { ...prev, reconnecting: false } : prev,
-            );
+          } else if (chunk.event.case === "heartbeat") {
+            // Server keepalive. Beyond clearing the reconnecting banner, this is where the ROTATING
+            // ACTIVITY VERB gets its clock: server_time_unix_ms is already on the wire (the proto
+            // documents it as the client's means to measure socket age/skew) and this client used to
+            // discard it. Number(...) is required — the generated field is a bigint (protoInt64.zero),
+            // and `bigint % number` throws.
+            const stamp = Number(chunk.event.value.serverTimeUnixMs);
+            setStream(convId, (prev) => ({
+              ...prev,
+              ...(stamp > 0 ? { serverTimeMs: stamp, serverTimeRecvAt: Date.now() } : {}),
+              ...(prev.reconnecting ? { reconnecting: false } : {}),
+            }));
           } else if (chunk.event.case === "permissionAsk") {
             // The ask arm the GUI never read: a pending consent ask arrives on
             // the SAME turn stream (never a second polling loop).
@@ -1099,6 +1242,13 @@ function AskOrchiconPage() {
               reconnecting: false,
             }));
             acked = true;
+            // THE RAIL IS REFRESHED AT ONCE, so the row marks the conversation it just started. The ack is
+            // the FIRST moment the turn provably exists server-side, and the running set already includes
+            // this conversation from the LOCAL half (streams[convId].isStreaming, set by sendStreaming before
+            // the call) — so this invalidate makes the sidebar row catch up without waiting for the 3s/5s list
+            // poll. That is the "a send is reflected promptly" half of "the rail's running marker misses
+            // active turns": before it, a just-sent turn's row could lag by seconds.
+            qc.invalidateQueries({ queryKey: askKeys.conversations });
           } else if (chunk.event.case === "textChunk") {
             const content = chunk.event.value.content;
             if (content) {
@@ -1139,12 +1289,16 @@ function AskOrchiconPage() {
                 ],
               }));
             }
-          } else if ((chunk.event.case as string) === "heartbeat") {
-            // Server keepalive: no rendering, but the socket is live —
-            // clear any reconnecting banner so liveness is visible.
-            setStream(convId, (prev) =>
-              prev.reconnecting ? { ...prev, reconnecting: false } : prev,
-            );
+          } else if (chunk.event.case === "heartbeat") {
+            // Server keepalive. This is the WATCH (re-dial) arm, and it must feed the verb rotation's
+            // clock too — a watcher that re-attached mid-turn is the client least likely to hold a
+            // stamp. Same Number(...) coercion as the dispatch arm: the field is a bigint on the wire.
+            const stamp = Number(chunk.event.value.serverTimeUnixMs);
+            setStream(convId, (prev) => ({
+              ...prev,
+              ...(stamp > 0 ? { serverTimeMs: stamp, serverTimeRecvAt: Date.now() } : {}),
+              ...(prev.reconnecting ? { reconnecting: false } : {}),
+            }));
           } else if (chunk.event.case === "permissionAsk") {
             applyAsk(convId, chunk.event.value);
           } else if (chunk.event.case === "permissionAskResolved") {
@@ -1185,7 +1339,7 @@ function AskOrchiconPage() {
       }
       return acked;
     },
-    [toast, setStream, runWatch, applyAsk],
+    [toast, setStream, runWatch, applyAsk, qc],
   );
 
   // A normal send: starts a fresh turn on the conversation.
@@ -1531,7 +1685,7 @@ function AskOrchiconPage() {
   // gone rather than left as a second, wrong source of truth.)
 
   return (
-    <div className="flex flex-1 min-h-0 h-full gap-0 min-w-0 overflow-hidden">
+    <div ref={diffRowRef} className="flex flex-1 min-h-0 h-full items-stretch gap-0 min-w-0 overflow-hidden">
       {/* Left diff rail — slide-out file-edit + diff side-by-side view.
           First flex child; the chat column is flex-1 min-w-0 so it keeps
           width as the rail opens. Distinct from the right conversation panel. */}
@@ -1546,6 +1700,9 @@ function AskOrchiconPage() {
         onTabChange={setDiffTab}
         selectedPath={diffPath}
         onSelectPath={setDiffPath}
+        containerRef={diffRowRef}
+        width={railWidth}
+        onWidthChange={setRailWidth}
       />
       {/* Main chat area — centered column */}
       <div className="flex flex-1 flex-col min-h-0 min-w-0">
@@ -1697,6 +1854,10 @@ function AskOrchiconPage() {
                     Small and discoverable rather than prominent: it is a short
                     list, and most of the time it is empty. */}
                 <SessionGrants conversationId={activeConvId ?? ""} />
+                {/* This conversation's OWN MCP servers + skill files, the exact
+                    sibling of the Grants disclosure above. One MCP surface for
+                    every scope (MCPServersPanel). */}
+                <ConversationScopeDisclosure conversationId={activeConvId ?? ""} />
                 <Button variant="ghost" size="sm" onClick={handleNewChat}>
                   <Plus aria-hidden="true" className="h-4 w-4" />
                 </Button>
@@ -1827,25 +1988,33 @@ function AskOrchiconPage() {
                     }
                   })}
 
-                {/* Thinking indicator — visible until any streaming content arrives */}
-                {isThinking && groupedStream.length === 0 && (
-                  <div className="flex justify-start">
-                    <div className="max-w-[88%] rounded-2xl rounded-tl-sm border border-sky-300/30 bg-sky-50/20 px-4 py-3 dark:border-sky-950/40 dark:bg-sky-950/10">
-                      <div className="flex items-center gap-2">
-                        <span aria-hidden="true" className="shrink-0 inline-block h-1.5 w-1.5 rounded-full bg-sky-500 animate-pulse" />
-                        <span className="min-w-0 text-sm text-muted-foreground [overflow-wrap:anywhere]">
-                          Orchicon is thinking
-                          {isUsingFallbackModel && (
-                            <span className="text-muted-foreground/70">
-                              {" "}
-                              ({effectiveModel} — free fallback, may be rate-limited)
-                            </span>
-                          )}
-                          …
-                        </span>
-                      </div>
-                    </div>
-                  </div>
+                {/* THE ACTIVITY LINE — for the WHOLE turn, not only before the first token.
+                    The operator, on the old rule: "After the initial 'Orchicon is thinking...',
+                    streaming started and the 'Orchicon is thinking...' went away and never came
+                    back." What they lost was the only signal that the stream is ALIVE, and
+                    mid-reply is exactly when it matters: a long tool call, a slow provider and a
+                    stalled socket look identical from the outside, and with the line gone nothing
+                    on screen changes until the reply finishes.
+
+                    The verb ROTATES, indexed on the SERVER's clock: activityVerb takes the last
+                    heartbeat's server_time_unix_ms plus only the delta since we received it, so two
+                    clients draw the same word for the same server time and a skewed local clock
+                    cannot change it. Before the first heartbeat (serverTimeMs === null) the stamp is
+                    0 and the selector returns the list's first word — the line is never empty.
+
+                    THE DECISION LIVES IN @/lib/ask-activity-notice, NOT HERE. This route cannot be
+                    rendered by the test setup, so logic left inline is logic nothing can assert —
+                    the same reason lib/conversationProjects owns the folder-scope rule. It is
+                    rendered BELOW the transcript and ABOVE the reconnecting banner, which is the
+                    TUI's own order (transcriptStatusLine: reconnecting › disconnected › activity),
+                    and activityLineFor returns null while reconnecting so the banner keeps its slot. */}
+                {activityLine !== null && (
+                  <ActivityLine
+                    text={activityLine}
+                    announcement={activityAnnouncement}
+                    fallbackModel={isUsingFallbackModel ? effectiveModel : null}
+                    containerRef={activityLineRef}
+                  />
                 )}
 
                 {/* Reconnecting notice — the acked turn's socket dropped but
@@ -2039,6 +2208,7 @@ function AskOrchiconPage() {
                     onStopConv={handleStopConversation}
                     activeDragId={activeDragId}
                     renderMoveControl={renderMoveControl}
+                    runningIds={runningIds}
                   />
                 );
               })}
@@ -2063,6 +2233,7 @@ function AskOrchiconPage() {
                 isOver={overFolderId === "__uncategorized__"}
                 hasFolders={visibleCategories.length > 0}
                 renderMoveControl={renderMoveControl}
+                runningIds={runningIds}
               />
             </SortableContext>
             <DragOverlay dropAnimation={null}>
@@ -2118,6 +2289,10 @@ function AskOrchiconPage() {
                   onChange={setProjectScope}
                   label="Project workspace"
                 />
+                {/* Mirrored here so a phone user can reach the open
+                    conversation's MCP servers + skill files too — the desktop
+                    header control is off-screen in the sheet layout. */}
+                <ConversationScopeDisclosure conversationId={activeConvId ?? ""} />
                 <button onClick={() => setFolderDialogOpen(true)} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition" title="New folder" aria-label="New folder"><FolderPlus aria-hidden="true" className="w-4 h-4" /></button>
                 <button onClick={() => { setMobileSheetOpen(false); handleNewChat(); }} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition" title="New Chat" aria-label="New conversation"><Plus aria-hidden="true" className="w-4 h-4" /></button>
                 <button onClick={closeMobileSheet} className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent rounded-md transition" title="Close" aria-label="Close conversations"><PanelRightClose aria-hidden="true" className="w-4 h-4" /></button>
@@ -2134,10 +2309,10 @@ function AskOrchiconPage() {
                     const isOver = overFolderId === category.id;
                     const isRenaming = renamingFolderId === category.id;
                     return (
-                      <FolderItem key={category.id} id={category.id} name={category.name} isCollapsed={isCollapsed} isOver={isOver} isRenaming={isRenaming} renameValue={folderRenameValue} renameInputRef={folderRenameInputRef} onToggle={() => convPrefs.toggleCollapsed(category.id)} onStartRename={() => startRenameFolder(category.id, category.name)} onSaveRename={() => saveRenameFolder(category.id)} onCancelRename={cancelRenameFolder} onRenameChange={setFolderRenameValue} onDelete={() => convPrefs.deleteCategory(category.id)} convIds={folderConvIds} convById={convById} activeConvId={activeConvId} renamingConvId={renamingConvId} convRenameValue={renameValue} convRenameInputRef={renameInputRef} onSelectConv={(id) => { setMobileSheetOpen(false); setActiveConvId(id); }} onStartRenameConv={startRenameConv} onSaveRenameConv={saveRenameConv} onCancelRenameConv={cancelRenameConv} onRenameConvChange={setRenameValue} onDeleteConv={handleDeleteConv} onStopConv={handleStopConversation} activeDragId={activeDragId} renderMoveControl={renderMoveControl} />
+                      <FolderItem key={category.id} id={category.id} name={category.name} isCollapsed={isCollapsed} isOver={isOver} isRenaming={isRenaming} renameValue={folderRenameValue} renameInputRef={folderRenameInputRef} onToggle={() => convPrefs.toggleCollapsed(category.id)} onStartRename={() => startRenameFolder(category.id, category.name)} onSaveRename={() => saveRenameFolder(category.id)} onCancelRename={cancelRenameFolder} onRenameChange={setFolderRenameValue} onDelete={() => convPrefs.deleteCategory(category.id)} convIds={folderConvIds} convById={convById} activeConvId={activeConvId} renamingConvId={renamingConvId} convRenameValue={renameValue} convRenameInputRef={renameInputRef} onSelectConv={(id) => { setMobileSheetOpen(false); setActiveConvId(id); }} onStartRenameConv={startRenameConv} onSaveRenameConv={saveRenameConv} onCancelRenameConv={cancelRenameConv} onRenameConvChange={setRenameValue} onDeleteConv={handleDeleteConv} onStopConv={handleStopConversation} activeDragId={activeDragId} renderMoveControl={renderMoveControl} runningIds={runningIds} />
                     );
                   })}
-                  <UncategorizedDropZone id="__uncategorized__" convIds={categorizedConversations.uncategorized} convById={convById} activeConvId={activeConvId} renamingConvId={renamingConvId} renameValue={renameValue} renameInputRef={renameInputRef} onSelectConv={(id) => { setMobileSheetOpen(false); setActiveConvId(id); }} onStartRenameConv={startRenameConv} onSaveRenameConv={saveRenameConv} onCancelRenameConv={cancelRenameConv} onRenameConvChange={setRenameValue} onDeleteConv={handleDeleteConv} onStopConv={handleStopConversation} activeDragId={activeDragId} isOver={overFolderId === "__uncategorized__"} hasFolders={visibleCategories.length > 0} renderMoveControl={renderMoveControl} />
+                  <UncategorizedDropZone id="__uncategorized__" convIds={categorizedConversations.uncategorized} convById={convById} activeConvId={activeConvId} renamingConvId={renamingConvId} renameValue={renameValue} renameInputRef={renameInputRef} onSelectConv={(id) => { setMobileSheetOpen(false); setActiveConvId(id); }} onStartRenameConv={startRenameConv} onSaveRenameConv={saveRenameConv} onCancelRenameConv={cancelRenameConv} onRenameConvChange={setRenameValue} onDeleteConv={handleDeleteConv} onStopConv={handleStopConversation} activeDragId={activeDragId} isOver={overFolderId === "__uncategorized__"} hasFolders={visibleCategories.length > 0} renderMoveControl={renderMoveControl} runningIds={runningIds} />
                 </SortableContext>
                 <DragOverlay dropAnimation={null}>
                   {activeDragId ? <div className="rounded-md bg-background border shadow-md px-3 py-2 text-sm text-foreground max-w-[200px] truncate">{convById.get(activeDragId)?.title || "New conversation"}</div> : null}
@@ -3282,6 +3457,12 @@ interface FolderItemProps {
   activeDragId: string | null;
   /** Builds each member row's "move to project" control — see ConversationItemProps.renderMoveControl. */
   renderMoveControl?: (convId: string, projectId: string) => React.ReactNode;
+  /**
+   * The conversation ids the rail should show as running — the UNION of the server's polled turnInFlight and
+   * this client's own live stream slots (lib/ask-running.ts). Passed down rather than re-derived per row so
+   * every list (folded, uncategorized, mobile) reads ONE decision.
+   */
+  runningIds: Set<string>;
 }
 
 function FolderItem({
@@ -3313,6 +3494,7 @@ function FolderItem({
   onStopConv,
   activeDragId,
   renderMoveControl,
+  runningIds,
 }: FolderItemProps) {
   const { setNodeRef } = useDroppable({ id });
 
@@ -3386,7 +3568,7 @@ function FolderItem({
                 projectId={conv.projectId ?? ""}
                 renderMoveControl={renderMoveControl}
                 lastMessagePreview={conv.lastMessagePreview}
-                isRunning={conv.turnInFlight ?? false}
+                isRunning={runningIds.has(convId)}
                 onStop={() => onStopConv(convId)}
                 isActive={activeConvId === convId}
                 isRenaming={renamingConvId === convId}
@@ -3428,6 +3610,8 @@ interface UncategorizedDropZoneProps {
   hasFolders: boolean;
   /** Builds each row's "move to project" control — see ConversationItemProps.renderMoveControl. */
   renderMoveControl?: (convId: string, projectId: string) => React.ReactNode;
+  /** See FolderItemProps.runningIds — the union the rail rows read. */
+  runningIds: Set<string>;
 }
 
 function UncategorizedDropZone({
@@ -3449,6 +3633,7 @@ function UncategorizedDropZone({
   isOver,
   hasFolders,
   renderMoveControl,
+  runningIds,
 }: UncategorizedDropZoneProps) {
   const { setNodeRef } = useDroppable({ id });
 
@@ -3479,7 +3664,7 @@ function UncategorizedDropZone({
             projectId={conv.projectId ?? ""}
             renderMoveControl={renderMoveControl}
             lastMessagePreview={conv.lastMessagePreview}
-            isRunning={conv.turnInFlight ?? false}
+            isRunning={runningIds.has(convId)}
             onStop={() => onStopConv(convId)}
             isActive={activeConvId === convId}
             isRenaming={renamingConvId === convId}

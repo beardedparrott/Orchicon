@@ -20,6 +20,7 @@ import (
 
 	"connectrpc.com/connect"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
@@ -51,11 +52,9 @@ type fakePlane struct {
 	execs     []*apiv1.WorkerExecution // newest first, as ListExecutions returns them
 	projects  map[string]*apiv1.Project
 	projOrder []string
-	// projectMCP is each project's MCP selection, as GetProjectMCPServers would report it.
-	projectMCP map[string][]string
-	images     map[string]*apiv1.RuntimeImage
-	imgOrder   []string
-	nextID     int
+	images    map[string]*apiv1.RuntimeImage
+	imgOrder  []string
+	nextID    int
 
 	created     []*apiv1.CreateWorkItemRequest
 	updated     []*apiv1.UpdateWorkItemRequest
@@ -70,11 +69,17 @@ type fakePlane struct {
 	// projActivated records the ids ActivateProject was called with, in order.
 	projActivated []string
 	projDeleted   []string
-	projMCPSet    []*apiv1.ProjectMCPServersSetRequest
 	// mcpServers is what ListMCPServers returns; mcpError, when set, makes it fail —
 	// which is how a test exercises the "the MCP data did not load" path.
 	mcpServers []*apiv1.MCPServer
 	mcpError   error
+	// mcpCreated records the OWNED create requests the project forms issue (the
+	// define path), so a test can prove the definition reaches the API with the
+	// project id set rather than a tenant selection.
+	mcpCreated []*apiv1.MCPServerCreateRequest
+	// mcpListFilter records the scope filter each ListMCPServers call carried, so a
+	// test can prove the detail asks for ONE owner's rows.
+	mcpListFilter []*apiv1.MCPServerListRequest
 	// updateErr, when set, makes UpdateWorkItem fail the way a SERVER-SIDE
 	// rejection does (Task A's workflow-first gate is the reason it exists): the
 	// write never lands, so nothing is recorded and nothing is mutated.
@@ -100,10 +105,9 @@ type fakePlane struct {
 
 func newPlane() *fakePlane {
 	return &fakePlane{
-		items:      map[string]*apiv1.WorkItem{},
-		projects:   map[string]*apiv1.Project{},
-		projectMCP: map[string][]string{},
-		images:     map[string]*apiv1.RuntimeImage{},
+		items:    map[string]*apiv1.WorkItem{},
+		projects: map[string]*apiv1.Project{},
+		images:   map[string]*apiv1.RuntimeImage{},
 	}
 }
 
@@ -435,34 +439,44 @@ func (p *fakePlane) DeleteProject(_ context.Context, req *connect.Request[apiv1.
 // ListMCPServers returns the seeded entries, or the seeded error. The ERROR path is the
 // point: it is how a test proves that a failed MCP load leaves the form without the field
 // rather than with an empty one.
-func (p *fakePlane) ListMCPServers(_ context.Context, _ *connect.Request[apiv1.MCPServerListRequest]) (*connect.Response[apiv1.MCPServerListResponse], error) {
+func (p *fakePlane) ListMCPServers(_ context.Context, req *connect.Request[apiv1.MCPServerListRequest]) (*connect.Response[apiv1.MCPServerListResponse], error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.mcpListFilter = append(p.mcpListFilter, req.Msg)
 	if p.mcpError != nil {
 		return nil, p.mcpError
 	}
-	return connect.NewResponse(&apiv1.MCPServerListResponse{Servers: p.mcpServers}), nil
-}
-
-func (p *fakePlane) GetProjectMCPServers(_ context.Context, req *connect.Request[apiv1.ProjectMCPServersGetRequest]) (*connect.Response[apiv1.ProjectMCPServersGetResponse], error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return connect.NewResponse(&apiv1.ProjectMCPServersGetResponse{McpServerIds: p.projectMCP[req.Msg.GetProjectId()]}), nil
-}
-
-// SetProjectMCPServers records the write AND updates the stored selection, so a read-back
-// sees what a save produced. It does not validate the ids: the server treats them as
-// references, and this fake's job is to record what the TUI sent.
-func (p *fakePlane) SetProjectMCPServers(_ context.Context, req *connect.Request[apiv1.ProjectMCPServersSetRequest]) (*connect.Response[apiv1.ProjectMCPServersSetResponse], error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.projMCPSet = append(p.projMCPSet, req.Msg)
-	if p.projectMCP == nil {
-		p.projectMCP = map[string][]string{}
+	// The owner filter is the INHERITANCE QUERY: a non-empty project_id narrows to
+	// that project's rows, exactly as the server does.
+	var out []*apiv1.MCPServer
+	for _, s := range p.mcpServers {
+		if req.Msg.GetProjectId() != "" && s.GetProjectId() != req.Msg.GetProjectId() {
+			continue
+		}
+		if req.Msg.GetConversationId() != "" && s.GetConversationId() != req.Msg.GetConversationId() {
+			continue
+		}
+		out = append(out, s)
 	}
-	p.projectMCP[req.Msg.GetProjectId()] = req.Msg.GetMcpServerIds()
-	return connect.NewResponse(&apiv1.ProjectMCPServersSetResponse{McpServerIds: req.Msg.GetMcpServerIds()}), nil
+	return connect.NewResponse(&apiv1.MCPServerListResponse{Servers: out}), nil
 }
+
+// CreateMCPServer records the OWNED definition create the project forms issue —
+// the define path (AC 9). It mirrors the server's owner-XOR precondition so a test
+// cannot pass with an ownerless (tenant-level) request.
+func (p *fakePlane) CreateMCPServer(_ context.Context, req *connect.Request[apiv1.MCPServerCreateRequest]) (*connect.Response[apiv1.MCPServerCreateResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.mcpCreated = append(p.mcpCreated, req.Msg)
+	p.nextID++
+	s := &apiv1.MCPServer{Id: req.Msg.GetName(), Name: req.Msg.GetName(),
+		ProjectId: req.Msg.GetProjectId(), ConversationId: req.Msg.GetConversationId()}
+	p.mcpServers = append(p.mcpServers, s)
+	return connect.NewResponse(&apiv1.MCPServerCreateResponse{Server: s}), nil
+}
+
+// NOTE: Get/SetProjectMCPServers are gone with the reference model — a
+// definition is OWNER-SCOPED now, so there is no selection RPC to fake.
 
 // ActivateProject mirrors the SERVER'S PRECONDITION rather than accepting anything:
 // the real UPDATE carries `AND status = 'drafting'`, so activating a non-drafting
@@ -1055,6 +1069,9 @@ func TestTreeViewRendersRealHierarchy(t *testing.T) {
 	if meta := metaOf(itemsOf(m, srcWorkItems), "wi-task"); !strings.HasPrefix(meta, "running") {
 		t.Fatalf("state pill = %q, want running", meta)
 	}
+	// The tree opens COLLAPSED, so expand it before asserting on its levels — the
+	// default is asserted separately (TestTreeOpensCollapsed).
+	expandAll(t, m)
 	view := m.View()
 	for _, want := range []string{"[epic]", "[feature]", "[task]", "[subtask]", "running", "succeeded"} {
 		if !strings.Contains(view, want) {
@@ -1064,8 +1081,14 @@ func TestTreeViewRendersRealHierarchy(t *testing.T) {
 }
 
 // The Board view was REMOVED: a status-grouped Kanban does not read as a list
-// in a single-column terminal pane. The cycle is now tree -> archive, and the
-// retired 'B' chord must do nothing at all.
+// in a single-column terminal pane. The cycle is now tree -> archive.
+//
+// A RETIRED VIEW CHORD MUST BE GONE, NOT MERELY SILENT. 'B' (board) and 'T'/'Z'
+// (direct tree/archive jumps, retired in favour of 'v' alone) must neither change
+// the view NOR answer with an explaining notice: the operator's "I don't want T/Z
+// there at all since we removed it". An explaining stub was the first cut and it
+// was wrong for these keys — they are chords to a VIEW, and 'v' plus the mode
+// label beside the search box already say where you are and how to move.
 func TestBoardViewIsGone(t *testing.T) {
 	p := newPlane()
 	seedHierarchy(p)
@@ -1097,6 +1120,37 @@ func TestBoardViewIsGone(t *testing.T) {
 	press(t, m, "v")
 	if m.ViewMode() != viewTree {
 		t.Fatalf("v must cycle back to tree, got %q", m.ViewMode())
+	}
+
+	// 'T' and 'Z' are GONE, not stubbed and not silent: neither switches the view
+	// nor says anything. Checked in BOTH modes, because the archive view is where a
+	// 'T' press would be most tempting (and where a stub would have been loudest).
+	for _, mode := range []viewMode{viewTree, viewArchive} {
+		m.switchView(mode)
+		load(t, m, srcWorkItems)
+		for _, k := range []string{"T", "Z"} {
+			m.notice = ""
+			press(t, m, k)
+			if got := m.ViewMode(); got != mode {
+				t.Fatalf("%q must not switch views (in %q): got %q", k, mode, got)
+			}
+			if m.notice != "" {
+				t.Fatalf("%q is retired and must say nothing, got %q", k, m.notice)
+			}
+		}
+	}
+
+	// The composer's cheat-sheet advertises 'v' alone, which is the half the
+	// operator asked for explicitly ("the shortcut helper in the composer should be
+	// updated") — and it must not name the retired chords at all.
+	m.switchView(viewTree)
+	load(t, m, srcWorkItems)
+	hint := ansi.Strip(m.HintLine())
+	if strings.Contains(hint, "v/T/Z") || strings.Contains(hint, "T/Z") {
+		t.Fatalf("the hint still names the retired chords: %q", hint)
+	}
+	if !strings.Contains(hint, "v: view") {
+		t.Fatalf("the hint must advertise v for the view, got %q", hint)
 	}
 
 	// Display switch never mutates or writes.
@@ -1141,7 +1195,8 @@ func TestArchiveViewListsArchivedItems(t *testing.T) {
 		}
 	}
 	// …and the Archive view lists it with the status it restores to.
-	press(t, m, "Z")
+	// `v` cycles tree → archive (the T/Z chords are retired — see screen.go).
+	press(t, m, "v")
 	load(t, m, srcWorkItems)
 	rows := itemsOf(m, srcWorkItems)
 	if !hasTitle(rows, "[task] Done thing") {
@@ -1163,6 +1218,10 @@ func TestReorderChildrenPersists(t *testing.T) {
 	p.addItem(&apiv1.WorkItem{Id: "wi-c", Title: "C", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_TASK, ParentId: "wi-epic", ProjectId: "proj-1", Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING, SortOrder: 3})
 	m := newModel(t, p)
 	m.SelectSource(srcWorkItems)
+	load(t, m, srcWorkItems)
+	// The tree opens COLLAPSED now, so expand it: reordering acts on rows, and a
+	// collapsed parent's children are not rows.
+	m.toggleAllTreeNodes()
 	load(t, m, srcWorkItems)
 
 	press(t, m, "down")         // select wi-a (the first step)
@@ -1256,7 +1315,7 @@ func TestArchiveRestoreFromArchiveView(t *testing.T) {
 		t.Fatalf("ArchiveWorkItem calls = %v", p.archived)
 	}
 
-	press(t, m, "Z")
+	press(t, m, "v")
 	load(t, m, srcWorkItems)
 	if !hasTitle(itemsOf(m, srcWorkItems), "[task] Item") {
 		t.Fatalf("the archive view must list the item: %v", titles(itemsOf(m, srcWorkItems)))

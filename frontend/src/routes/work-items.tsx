@@ -16,6 +16,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   useBatchArchiveWorkItems,
   useBatchDeleteWorkItems,
+  useBatchRestoreWorkItems,
   useGetDependencyGraph,
   useListWorkItems,
   useReorderWorkItems,
@@ -36,7 +37,7 @@ import { useBatchMoveWorkItems } from "@/components/work-items/batch-move";
 import { useBatchRunWorkItems } from "@/components/work-items/batch-run";
 import { useBatchSetWorkItems } from "@/components/work-items/batch-set";
 import { BulkSetDialog } from "@/components/work-items/bulk-set-dialog";
-import { computeBlockState, buildTreeData, filterItemsByKindStatus } from "@/components/work-items/dependency-utils";
+import { computeBlockState, buildTreeData, filterItemsByKindStatus, bottomUpOrder } from "@/components/work-items/dependency-utils";
 import {
   KIND_FILTER_OPTIONS,
   STATUS_FILTER_OPTIONS,
@@ -84,6 +85,8 @@ function WorkItemsPage() {
     toggleTreeCollapsed,
     boardCollapsed,
     toggleBoardCollapsed,
+    archiveCollapsed,
+    toggleArchiveCollapsed,
     expandAll,
     collapseAll,
   } = useWorkItemsPreferences(projectId);
@@ -111,6 +114,7 @@ function WorkItemsPage() {
       },
     });
   };
+  const batchRestore = useBatchRestoreWorkItems();
   const handleReorder = (parentId: string, childIds: string[]) => {
     // The RPC requires the siblings' project — derive it from the items
     // themselves so reorder works in the "All projects" view too (the
@@ -150,6 +154,18 @@ function WorkItemsPage() {
     // Idea-state items are automation-produced and hidden from every normal
     // work-item view; exclude them explicitly (AC: no idea leakage).
     ideaScope: IdeaScope.EXCLUDE_IDEA,
+  });
+  // Ghost anchors (archive view only): active items for the same project
+  // scope, used ONLY to resolve an archived item's active ancestors so the
+  // cross-boundary connection renders. Never merged into the archived
+  // list/counts — buildArchiveTreeData keeps them in a separate id set.
+  const { data: activeItemsForArchive } = useListWorkItems(projectId, {
+    sortBy: sortBy || undefined,
+    sortOrder: sortOrder || undefined,
+    includeArchived: false,
+    recurringFilter: RecurringFilter.EXCLUDE_RECURRING,
+    ideaScope: IdeaScope.EXCLUDE_IDEA,
+    enabled: view === "archive",
   });
   const { data: graph } = useGetDependencyGraph(projectId, { refetchInterval: 5_000 });
 
@@ -216,7 +232,11 @@ function WorkItemsPage() {
   // the parent toggle is scoped to the currently-viewable descendants
   // only (visibleIdsSet + hasQuery), so hidden items are never selected.
   // With no filter, the full subtree is used (AC5).
-  const resetKey = [projectId, statuses.join(","), kinds.join(","), debouncedSearch, sortBy, sortOrder].join("|");
+  // `view` is part of the reset key: the Archive view's selectable set is
+  // the archived items, disjoint from the Tree/Board's active items — a
+  // leftover selection from switching views could silently scope "Restore
+  // selected" to ids that no longer resolve to a visible row.
+  const resetKey = [projectId, statuses.join(","), kinds.join(","), debouncedSearch, sortBy, sortOrder, view].join("|");
   const childrenOf = useCallback(
     (parentId: string) => (items ?? []).filter((i) => i.parentId === parentId),
     [items],
@@ -266,6 +286,27 @@ function WorkItemsPage() {
   // multi-move, sharing the exact gates + mutation path with board
   // multi-drag.
   const itemsById = useMemo(() => new Map((items ?? []).map((i) => [i.id, i])), [items]);
+
+  // Bulk "Restore selected" (archive view only): mirrors handleBatchArchive
+  // — the selection is the ONLY scope (no auto-cascade; checking a parent
+  // already auto-selects its archived children via the shared cascade
+  // selection). Ids are ordered child-first (bottomUpOrder) for a clean
+  // sequence, then fan out with Promise.allSettled (useBatchRestoreWorkItems)
+  // and report archived→restored vs skipped honestly, like Bulk Archive.
+  const handleRestoreSelected = () => {
+    if (selected.size === 0) return;
+    const ids = bottomUpOrder(Array.from(selected), itemsById);
+    batchRestore.mutate(ids, {
+      onSuccess: (res) => {
+        setSelected(new Set());
+        if (res.skipped > 0) {
+          toast.success(`Restored ${res.restored}, skipped ${res.skipped}`);
+        } else {
+          toast.success(`Restored ${res.restored}`);
+        }
+      },
+    });
+  };
 
   // Ids that have at least one direct child — used to detect sequence
   // parents (a task/subtask with children runs its children in chain order)
@@ -319,22 +360,32 @@ function WorkItemsPage() {
   // items list (not the filtered set) so collapsing a filtered-out
   // ancestor is harmless. The buttons are disabled when the action is
   // already the default state for the active view.
+  //
+  // THE ARCHIVE VIEW IS INCLUDED HERE, and its slice is the ARCHIVED items —
+  // which is what `items` holds while that view is active (the query opts in to
+  // archived rows for that view only, routes/work-items.tsx). Before this the
+  // disabled-state only knew about tree and board, so in the archive view both
+  // buttons read the TREE's state and could be enabled while doing nothing.
   const parentIDs = useMemo(() => parentIds(items ?? []), [items]);
   const hasParents = parentIDs.length > 0;
   const expandAllDisabled =
     !hasParents ||
     (view === "board"
       ? boardCollapsed.size === 0
-      : hasQuery
-        ? treeCollapsed.size === 0
-        : parentIDs.every((p) => treeExpanded.has(p)));
+      : view === "archive"
+        ? archiveCollapsed.size === 0
+        : hasQuery
+          ? treeCollapsed.size === 0
+          : parentIDs.every((p) => treeExpanded.has(p)));
   const collapseAllDisabled =
     !hasParents ||
     (view === "board"
       ? false
-      : hasQuery
-        ? parentIDs.every((p) => treeCollapsed.has(p))
-        : treeExpanded.size === 0);
+      : view === "archive"
+        ? parentIDs.every((p) => archiveCollapsed.has(p))
+        : hasQuery
+          ? parentIDs.every((p) => treeCollapsed.has(p))
+          : treeExpanded.size === 0);
   const handleExpandAll = () => expandAll(view, hasQuery, parentIDs);
   const handleCollapseAll = () => collapseAll(view, hasQuery, parentIDs);
 
@@ -437,10 +488,17 @@ function WorkItemsPage() {
             {view === "archive" ? (
               <WorkItemsArchiveView
                 items={items}
+                activeItems={activeItemsForArchive}
                 isLoading={isLoading}
                 error={error}
                 onRestore={handleRestore}
                 restorePending={restoreWorkItem.isPending}
+                selected={selected}
+                onToggleSelect={toggle}
+                onRestoreSelected={handleRestoreSelected}
+                restoreSelectedPending={batchRestore.isPending}
+                collapsedIds={archiveCollapsed}
+                onToggleCollapse={toggleArchiveCollapsed}
               />
             ) : view === "tree" ? (
               <WorkItemsTree

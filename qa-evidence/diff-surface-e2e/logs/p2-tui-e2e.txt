@@ -1,0 +1,10 @@
+=== RUN   TestDiffE2EAskMountPTY
+=== RUN   TestDiffE2EAskMountPTY/80x24
+=== RUN   TestDiffE2EAskMountPTY/200x50
+--- PASS: TestDiffE2EAskMountPTY (31.09s)
+=== RUN   TestDiffE2EResizeAndRestartPTY
+=== RUN   TestDiffE2EHonestStatesPTY/failed
+--- PASS: TestDiffE2EHonestStatesPTY (24.07s)
+PASS
+ok  	github.com/beardedparrott/orchicon/internal/tui	92.827s
+gate exit=0

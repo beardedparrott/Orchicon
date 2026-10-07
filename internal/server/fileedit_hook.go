@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/fileedit"
 	"github.com/beardedparrott/orchicon/internal/opencode"
 )
@@ -31,7 +30,16 @@ import (
 // Failed tool calls never reach Record: an error-state output carries no
 // file_edits payload (parsed 0 → observer fallback → empty Entry → dropped),
 // and the adapter gates non-completed statuses before invoking the hook.
-func newFileEditHook(feSvc *fileedit.Service, log *slog.Logger) opencode.FileEditHookFunc {
+//
+// ownerKind is the ledger owner kind every row this hook writes carries, and
+// it is a PARAMETER rather than a constant because the SAME hook serves two
+// populations: worker executions (db.FileEditOwnerExecution, owner id = the
+// execution id) and native Ask conversations (db.FileEditOwnerAskConversation,
+// owner id = the conversation id). Both clients query the Ask pane by
+// (ask_conversation, <conversation id>), so the native Ask funnel must ledger
+// under that exact tuple or its live rows are unqueryable and only the
+// post-turn git sweep shows anything.
+func newFileEditHook(feSvc *fileedit.Service, log *slog.Logger, ownerKind string) opencode.FileEditHookFunc {
 	// Per-execution built-in tool observers: on the first opencode built-in
 	// write/edit for a run, an Observer is created rooted at the run's exec
 	// dir (worktree or project dir); it caches last-seen content per path
@@ -63,7 +71,6 @@ func newFileEditHook(feSvc *fileedit.Service, log *slog.Logger) opencode.FileEdi
 		return ""
 	}
 	return func(ctx context.Context, execID, tenantID, execDir, toolName string, input map[string]any, output string) {
-		const ownerKind = db.FileEditOwnerExecution
 		switch toolName {
 		case "write", "edit":
 			// Engine single-op wrapper output carries the exact in-engine

@@ -65,18 +65,6 @@ const (
 	// MCPServiceClearMCPServerSecretProcedure is the fully-qualified name of the MCPService's
 	// ClearMCPServerSecret RPC.
 	MCPServiceClearMCPServerSecretProcedure = "/orchicon.api.v1.MCPService/ClearMCPServerSecret"
-	// MCPServiceSetProjectMCPServersProcedure is the fully-qualified name of the MCPService's
-	// SetProjectMCPServers RPC.
-	MCPServiceSetProjectMCPServersProcedure = "/orchicon.api.v1.MCPService/SetProjectMCPServers"
-	// MCPServiceGetProjectMCPServersProcedure is the fully-qualified name of the MCPService's
-	// GetProjectMCPServers RPC.
-	MCPServiceGetProjectMCPServersProcedure = "/orchicon.api.v1.MCPService/GetProjectMCPServers"
-	// MCPServiceSetTenantDefaultMCPServersProcedure is the fully-qualified name of the MCPService's
-	// SetTenantDefaultMCPServers RPC.
-	MCPServiceSetTenantDefaultMCPServersProcedure = "/orchicon.api.v1.MCPService/SetTenantDefaultMCPServers"
-	// MCPServiceGetTenantDefaultMCPServersProcedure is the fully-qualified name of the MCPService's
-	// GetTenantDefaultMCPServers RPC.
-	MCPServiceGetTenantDefaultMCPServersProcedure = "/orchicon.api.v1.MCPService/GetTenantDefaultMCPServers"
 )
 
 // MCPServiceClient is a client for the orchicon.api.v1.MCPService service.
@@ -92,10 +80,6 @@ type MCPServiceClient interface {
 	DetectMCPRuntimes(context.Context, *connect.Request[v1.MCPRuntimeDetectRequest]) (*connect.Response[v1.MCPRuntimeDetectResponse], error)
 	SetMCPServerSecret(context.Context, *connect.Request[v1.MCPServerSetSecretRequest]) (*connect.Response[v1.MCPServerSetSecretResponse], error)
 	ClearMCPServerSecret(context.Context, *connect.Request[v1.MCPServerClearSecretRequest]) (*connect.Response[v1.MCPServerClearSecretResponse], error)
-	SetProjectMCPServers(context.Context, *connect.Request[v1.ProjectMCPServersSetRequest]) (*connect.Response[v1.ProjectMCPServersSetResponse], error)
-	GetProjectMCPServers(context.Context, *connect.Request[v1.ProjectMCPServersGetRequest]) (*connect.Response[v1.ProjectMCPServersGetResponse], error)
-	SetTenantDefaultMCPServers(context.Context, *connect.Request[v1.TenantDefaultMCPServersSetRequest]) (*connect.Response[v1.TenantDefaultMCPServersSetResponse], error)
-	GetTenantDefaultMCPServers(context.Context, *connect.Request[v1.TenantDefaultMCPServersGetRequest]) (*connect.Response[v1.TenantDefaultMCPServersGetResponse], error)
 }
 
 // NewMCPServiceClient constructs a client for the orchicon.api.v1.MCPService service. By default,
@@ -175,50 +159,22 @@ func NewMCPServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...
 			connect.WithSchema(mCPServiceMethods.ByName("ClearMCPServerSecret")),
 			connect.WithClientOptions(opts...),
 		),
-		setProjectMCPServers: connect.NewClient[v1.ProjectMCPServersSetRequest, v1.ProjectMCPServersSetResponse](
-			httpClient,
-			baseURL+MCPServiceSetProjectMCPServersProcedure,
-			connect.WithSchema(mCPServiceMethods.ByName("SetProjectMCPServers")),
-			connect.WithClientOptions(opts...),
-		),
-		getProjectMCPServers: connect.NewClient[v1.ProjectMCPServersGetRequest, v1.ProjectMCPServersGetResponse](
-			httpClient,
-			baseURL+MCPServiceGetProjectMCPServersProcedure,
-			connect.WithSchema(mCPServiceMethods.ByName("GetProjectMCPServers")),
-			connect.WithClientOptions(opts...),
-		),
-		setTenantDefaultMCPServers: connect.NewClient[v1.TenantDefaultMCPServersSetRequest, v1.TenantDefaultMCPServersSetResponse](
-			httpClient,
-			baseURL+MCPServiceSetTenantDefaultMCPServersProcedure,
-			connect.WithSchema(mCPServiceMethods.ByName("SetTenantDefaultMCPServers")),
-			connect.WithClientOptions(opts...),
-		),
-		getTenantDefaultMCPServers: connect.NewClient[v1.TenantDefaultMCPServersGetRequest, v1.TenantDefaultMCPServersGetResponse](
-			httpClient,
-			baseURL+MCPServiceGetTenantDefaultMCPServersProcedure,
-			connect.WithSchema(mCPServiceMethods.ByName("GetTenantDefaultMCPServers")),
-			connect.WithClientOptions(opts...),
-		),
 	}
 }
 
 // mCPServiceClient implements MCPServiceClient.
 type mCPServiceClient struct {
-	listMCPServers             *connect.Client[v1.MCPServerListRequest, v1.MCPServerListResponse]
-	getMCPServer               *connect.Client[v1.MCPServerGetRequest, v1.MCPServerGetResponse]
-	createMCPServer            *connect.Client[v1.MCPServerCreateRequest, v1.MCPServerCreateResponse]
-	updateMCPServer            *connect.Client[v1.MCPServerUpdateRequest, v1.MCPServerUpdateResponse]
-	deleteMCPServer            *connect.Client[v1.MCPServerDeleteRequest, v1.MCPServerDeleteResponse]
-	listMCPCatalog             *connect.Client[v1.MCPCatalogListRequest, v1.MCPCatalogListResponse]
-	prefillMCPCatalogEntry     *connect.Client[v1.MCPCatalogPrefillRequest, v1.MCPCatalogPrefillResponse]
-	installMCPRuntime          *connect.Client[v1.MCPServerInstallRequest, v1.MCPServerInstallResponse]
-	detectMCPRuntimes          *connect.Client[v1.MCPRuntimeDetectRequest, v1.MCPRuntimeDetectResponse]
-	setMCPServerSecret         *connect.Client[v1.MCPServerSetSecretRequest, v1.MCPServerSetSecretResponse]
-	clearMCPServerSecret       *connect.Client[v1.MCPServerClearSecretRequest, v1.MCPServerClearSecretResponse]
-	setProjectMCPServers       *connect.Client[v1.ProjectMCPServersSetRequest, v1.ProjectMCPServersSetResponse]
-	getProjectMCPServers       *connect.Client[v1.ProjectMCPServersGetRequest, v1.ProjectMCPServersGetResponse]
-	setTenantDefaultMCPServers *connect.Client[v1.TenantDefaultMCPServersSetRequest, v1.TenantDefaultMCPServersSetResponse]
-	getTenantDefaultMCPServers *connect.Client[v1.TenantDefaultMCPServersGetRequest, v1.TenantDefaultMCPServersGetResponse]
+	listMCPServers         *connect.Client[v1.MCPServerListRequest, v1.MCPServerListResponse]
+	getMCPServer           *connect.Client[v1.MCPServerGetRequest, v1.MCPServerGetResponse]
+	createMCPServer        *connect.Client[v1.MCPServerCreateRequest, v1.MCPServerCreateResponse]
+	updateMCPServer        *connect.Client[v1.MCPServerUpdateRequest, v1.MCPServerUpdateResponse]
+	deleteMCPServer        *connect.Client[v1.MCPServerDeleteRequest, v1.MCPServerDeleteResponse]
+	listMCPCatalog         *connect.Client[v1.MCPCatalogListRequest, v1.MCPCatalogListResponse]
+	prefillMCPCatalogEntry *connect.Client[v1.MCPCatalogPrefillRequest, v1.MCPCatalogPrefillResponse]
+	installMCPRuntime      *connect.Client[v1.MCPServerInstallRequest, v1.MCPServerInstallResponse]
+	detectMCPRuntimes      *connect.Client[v1.MCPRuntimeDetectRequest, v1.MCPRuntimeDetectResponse]
+	setMCPServerSecret     *connect.Client[v1.MCPServerSetSecretRequest, v1.MCPServerSetSecretResponse]
+	clearMCPServerSecret   *connect.Client[v1.MCPServerClearSecretRequest, v1.MCPServerClearSecretResponse]
 }
 
 // ListMCPServers calls orchicon.api.v1.MCPService.ListMCPServers.
@@ -276,26 +232,6 @@ func (c *mCPServiceClient) ClearMCPServerSecret(ctx context.Context, req *connec
 	return c.clearMCPServerSecret.CallUnary(ctx, req)
 }
 
-// SetProjectMCPServers calls orchicon.api.v1.MCPService.SetProjectMCPServers.
-func (c *mCPServiceClient) SetProjectMCPServers(ctx context.Context, req *connect.Request[v1.ProjectMCPServersSetRequest]) (*connect.Response[v1.ProjectMCPServersSetResponse], error) {
-	return c.setProjectMCPServers.CallUnary(ctx, req)
-}
-
-// GetProjectMCPServers calls orchicon.api.v1.MCPService.GetProjectMCPServers.
-func (c *mCPServiceClient) GetProjectMCPServers(ctx context.Context, req *connect.Request[v1.ProjectMCPServersGetRequest]) (*connect.Response[v1.ProjectMCPServersGetResponse], error) {
-	return c.getProjectMCPServers.CallUnary(ctx, req)
-}
-
-// SetTenantDefaultMCPServers calls orchicon.api.v1.MCPService.SetTenantDefaultMCPServers.
-func (c *mCPServiceClient) SetTenantDefaultMCPServers(ctx context.Context, req *connect.Request[v1.TenantDefaultMCPServersSetRequest]) (*connect.Response[v1.TenantDefaultMCPServersSetResponse], error) {
-	return c.setTenantDefaultMCPServers.CallUnary(ctx, req)
-}
-
-// GetTenantDefaultMCPServers calls orchicon.api.v1.MCPService.GetTenantDefaultMCPServers.
-func (c *mCPServiceClient) GetTenantDefaultMCPServers(ctx context.Context, req *connect.Request[v1.TenantDefaultMCPServersGetRequest]) (*connect.Response[v1.TenantDefaultMCPServersGetResponse], error) {
-	return c.getTenantDefaultMCPServers.CallUnary(ctx, req)
-}
-
 // MCPServiceHandler is an implementation of the orchicon.api.v1.MCPService service.
 type MCPServiceHandler interface {
 	ListMCPServers(context.Context, *connect.Request[v1.MCPServerListRequest]) (*connect.Response[v1.MCPServerListResponse], error)
@@ -309,10 +245,6 @@ type MCPServiceHandler interface {
 	DetectMCPRuntimes(context.Context, *connect.Request[v1.MCPRuntimeDetectRequest]) (*connect.Response[v1.MCPRuntimeDetectResponse], error)
 	SetMCPServerSecret(context.Context, *connect.Request[v1.MCPServerSetSecretRequest]) (*connect.Response[v1.MCPServerSetSecretResponse], error)
 	ClearMCPServerSecret(context.Context, *connect.Request[v1.MCPServerClearSecretRequest]) (*connect.Response[v1.MCPServerClearSecretResponse], error)
-	SetProjectMCPServers(context.Context, *connect.Request[v1.ProjectMCPServersSetRequest]) (*connect.Response[v1.ProjectMCPServersSetResponse], error)
-	GetProjectMCPServers(context.Context, *connect.Request[v1.ProjectMCPServersGetRequest]) (*connect.Response[v1.ProjectMCPServersGetResponse], error)
-	SetTenantDefaultMCPServers(context.Context, *connect.Request[v1.TenantDefaultMCPServersSetRequest]) (*connect.Response[v1.TenantDefaultMCPServersSetResponse], error)
-	GetTenantDefaultMCPServers(context.Context, *connect.Request[v1.TenantDefaultMCPServersGetRequest]) (*connect.Response[v1.TenantDefaultMCPServersGetResponse], error)
 }
 
 // NewMCPServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -388,30 +320,6 @@ func NewMCPServiceHandler(svc MCPServiceHandler, opts ...connect.HandlerOption) 
 		connect.WithSchema(mCPServiceMethods.ByName("ClearMCPServerSecret")),
 		connect.WithHandlerOptions(opts...),
 	)
-	mCPServiceSetProjectMCPServersHandler := connect.NewUnaryHandler(
-		MCPServiceSetProjectMCPServersProcedure,
-		svc.SetProjectMCPServers,
-		connect.WithSchema(mCPServiceMethods.ByName("SetProjectMCPServers")),
-		connect.WithHandlerOptions(opts...),
-	)
-	mCPServiceGetProjectMCPServersHandler := connect.NewUnaryHandler(
-		MCPServiceGetProjectMCPServersProcedure,
-		svc.GetProjectMCPServers,
-		connect.WithSchema(mCPServiceMethods.ByName("GetProjectMCPServers")),
-		connect.WithHandlerOptions(opts...),
-	)
-	mCPServiceSetTenantDefaultMCPServersHandler := connect.NewUnaryHandler(
-		MCPServiceSetTenantDefaultMCPServersProcedure,
-		svc.SetTenantDefaultMCPServers,
-		connect.WithSchema(mCPServiceMethods.ByName("SetTenantDefaultMCPServers")),
-		connect.WithHandlerOptions(opts...),
-	)
-	mCPServiceGetTenantDefaultMCPServersHandler := connect.NewUnaryHandler(
-		MCPServiceGetTenantDefaultMCPServersProcedure,
-		svc.GetTenantDefaultMCPServers,
-		connect.WithSchema(mCPServiceMethods.ByName("GetTenantDefaultMCPServers")),
-		connect.WithHandlerOptions(opts...),
-	)
 	return "/orchicon.api.v1.MCPService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case MCPServiceListMCPServersProcedure:
@@ -436,14 +344,6 @@ func NewMCPServiceHandler(svc MCPServiceHandler, opts ...connect.HandlerOption) 
 			mCPServiceSetMCPServerSecretHandler.ServeHTTP(w, r)
 		case MCPServiceClearMCPServerSecretProcedure:
 			mCPServiceClearMCPServerSecretHandler.ServeHTTP(w, r)
-		case MCPServiceSetProjectMCPServersProcedure:
-			mCPServiceSetProjectMCPServersHandler.ServeHTTP(w, r)
-		case MCPServiceGetProjectMCPServersProcedure:
-			mCPServiceGetProjectMCPServersHandler.ServeHTTP(w, r)
-		case MCPServiceSetTenantDefaultMCPServersProcedure:
-			mCPServiceSetTenantDefaultMCPServersHandler.ServeHTTP(w, r)
-		case MCPServiceGetTenantDefaultMCPServersProcedure:
-			mCPServiceGetTenantDefaultMCPServersHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -495,20 +395,4 @@ func (UnimplementedMCPServiceHandler) SetMCPServerSecret(context.Context, *conne
 
 func (UnimplementedMCPServiceHandler) ClearMCPServerSecret(context.Context, *connect.Request[v1.MCPServerClearSecretRequest]) (*connect.Response[v1.MCPServerClearSecretResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.MCPService.ClearMCPServerSecret is not implemented"))
-}
-
-func (UnimplementedMCPServiceHandler) SetProjectMCPServers(context.Context, *connect.Request[v1.ProjectMCPServersSetRequest]) (*connect.Response[v1.ProjectMCPServersSetResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.MCPService.SetProjectMCPServers is not implemented"))
-}
-
-func (UnimplementedMCPServiceHandler) GetProjectMCPServers(context.Context, *connect.Request[v1.ProjectMCPServersGetRequest]) (*connect.Response[v1.ProjectMCPServersGetResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.MCPService.GetProjectMCPServers is not implemented"))
-}
-
-func (UnimplementedMCPServiceHandler) SetTenantDefaultMCPServers(context.Context, *connect.Request[v1.TenantDefaultMCPServersSetRequest]) (*connect.Response[v1.TenantDefaultMCPServersSetResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.MCPService.SetTenantDefaultMCPServers is not implemented"))
-}
-
-func (UnimplementedMCPServiceHandler) GetTenantDefaultMCPServers(context.Context, *connect.Request[v1.TenantDefaultMCPServersGetRequest]) (*connect.Response[v1.TenantDefaultMCPServersGetResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.MCPService.GetTenantDefaultMCPServers is not implemented"))
 }

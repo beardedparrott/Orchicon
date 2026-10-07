@@ -514,6 +514,10 @@ func (m *App) applyConnectResult() tea.Cmd {
 	cl := client.New(opts)
 	m.profile = profile
 	m.clients = cl
+	// The NEW client set needs the same OnRefreshed wiring the old one had — it is a
+	// different object (client.New), so the hook does not carry over. See
+	// wireSessionRecovery.
+	m.wireSessionRecovery(cl)
 	m.diffPane = diffs.NewModel(cl, m.reg)
 	m.chat = chat.NewController(cl)
 	m.chat.Bind(&appEventStore{m: m}, m.chatCmds)

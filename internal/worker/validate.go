@@ -25,7 +25,11 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/beardedparrott/orchicon/internal/adapter"
+	"github.com/beardedparrott/orchicon/internal/contextfiles"
+	"github.com/beardedparrott/orchicon/internal/mcpsettings"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
@@ -291,6 +295,70 @@ func validateJSONField(s, empty, field string, max int) ([]byte, error) {
 		return nil, fmt.Errorf("%s must be valid JSON", field)
 	}
 	return []byte(s), nil
+}
+
+// validateSkillFiles validates a worker version's skill_files field: a JSON
+// array of absolute skill file/directory PATHS.
+//
+// It reuses internal/contextfiles' validator UNCHANGED (AGENTS.md: fix the whole
+// class, not one instance) — no skills-specific validator exists or should exist.
+// The structural rules (absolute, no "..", bounded) apply here; the
+// project-containment rule (ValidateWithin) cannot, because a worker version is
+// project-agnostic by design: the same worker may be bound to workers in many
+// projects, each with a different project_dir. Containment is therefore enforced
+// at the RENDER boundary in the composite-prompt builder, which does know the
+// project dir — see internal/scheduler/workflow_reconciler.go.
+//
+// DISTINCT FROM the free-text `skills` prompt section (validateTextField,
+// maxPromptLen), which is prose: this is a path list.
+func validateSkillFiles(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "[]", nil
+	}
+	if len(s) > maxJSONFieldLen {
+		return "", fmt.Errorf("skill_files must be at most %d bytes", maxJSONFieldLen)
+	}
+	var files []string
+	if err := json.Unmarshal([]byte(s), &files); err != nil {
+		return "", fmt.Errorf("skill_files must be a JSON array of strings: %w", err)
+	}
+	if err := contextfiles.Validate(files); err != nil {
+		// The shared validator's messages say "context_files"; restate them in
+		// this field's own terms so the operator is not sent looking at the
+		// wrong field.
+		return "", fmt.Errorf("skill_files: %s", strings.Replace(err.Error(), "context_files", "skill_files", 1))
+	}
+	out, err := json.Marshal(files)
+	if err != nil {
+		return "", fmt.Errorf("skill_files: %w", err)
+	}
+	return string(out), nil
+}
+
+// validatePermissions validates a worker version's permissions payload — the field that carries the
+// version's MCP servers (permissions.mcp_servers) and its tool policy — and returns the bytes to store.
+//
+// TWO GATES, because the field had one and needed two. It is validated as a JSON field like every other
+// JSON member (valid JSON, bounded — validateJSONField), which the version-update paths did NOT do: they
+// stored whatever string arrived. And the INLINE MCP specs it carries are validated too
+// (mcpsettings.ValidateInlinePermissions), which is the same set of rules an OWNED definition already
+// has applied at create/update: the argv shape, the env/header key grammar, the transport's own
+// requirement, and — the one that only ever surfaced when a worker RAN — that every ${SECRET_NAME} it
+// references actually exists in the tenant secrets store.
+//
+// previous is what the version (or, for a new version, the version it was copied from) already held: the
+// specs that are UNCHANGED are left alone, so stored data can never turn an unrelated edit into a
+// failure. See mcpsettings/validate_inline.go for why that distinction is the contract and not leniency.
+func validatePermissions(ctx context.Context, tx pgx.Tx, tenantID string, previous []byte, raw string) ([]byte, error) {
+	out, err := validateJSONField(raw, "{}", "permissions", maxJSONFieldLen)
+	if err != nil {
+		return nil, err
+	}
+	if err := mcpsettings.ValidateInlinePermissions(ctx, tx, tenantID, previous, out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // validateActor trims and bounds-checks the actor field for edit locks.

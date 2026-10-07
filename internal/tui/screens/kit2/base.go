@@ -44,6 +44,14 @@ type source struct {
 	// rowActions are the CLICKABLE controls rendered on that same top row (the
 	// tree's collapse/expand-all), right-aligned.
 	rowActions []RowAction
+	// caption is a SCREEN-SUPPLIED mode label drawn on that same top row, beside the
+	// search box. It answers "which view am I in?" — the operator's "When in archive
+	// or normal mode in the TUI, it should say so at the top near the search box to
+	// indicate what mode you are in."
+	//
+	// It is a func so the label reports the CURRENT mode at render time, without the
+	// screen re-registering on every switch (the same reason RowAction.Label is one).
+	caption func() string
 	// markable says this source's rows support MULTI-SELECT marks. It defaults to
 	// true, and a screen turns it off for a list it has no bulk operations for.
 	//
@@ -59,7 +67,7 @@ type source struct {
 // topRows is the number of rows this source draws above the table's own rows
 // (the search / controls row).
 func (s *source) topRows() int {
-	if s.filterable || len(s.rowActions) > 0 {
+	if s.filterable || len(s.rowActions) > 0 || s.caption != nil {
 		return 1
 	}
 	return 0
@@ -113,6 +121,19 @@ type Base struct {
 	active  int
 	detail  screenkit.Detail
 	focusD  bool
+
+	// listSharePct is the operator's WIDTH PREFERENCE for the tree/list pane of the master-detail split, as a
+	// percentage of the content width (0 = the default, an even split).
+	//
+	// The operator: "I am talking about every pane in the TUI where there is a tree and detail view. I would
+	// like to be able to expand the tree view to see the full work item names, execution names, etc." Every
+	// such screen renders through SinglePane, and the split used to be a hard 50/50 — so a long work-item
+	// name was truncated in the tree no matter how wide the terminal was, because half the screen was always
+	// given to the detail pane even when it was empty.
+	//
+	// ONE PREFERENCE FOR ALL SCREENS, deliberately: the complaint is about reading names, and a per-screen
+	// width would mean re-adjusting it on every tab. See twoPaneWidths for the single place it is applied.
+	listSharePct int
 
 	// editPanel HOSTS the open inline form and lives as long as the editing
 	// session does. It has to outlive a single frame: Panel.SetContent CLAMPS a
@@ -227,6 +248,19 @@ type Base struct {
 	// The returned cmd is batched with the row's own detail load, so a live preview repaint and the detail
 	// landing cannot arrive out of order.
 	OnHighlight func() tea.Cmd
+
+	// OnItemsLanded, when set, runs after a source's rows are (re)placed by a fetch or a
+	// direct load. A screen uses it to reconcile anything that DEPENDS ON THE ROWS THAT
+	// ARRIVED — the work-items screen rebuilds its collapse/expand-all control here,
+	// because whether that control is worth drawing depends on whether the landed page has
+	// any parent at all.
+	//
+	// It has to be a LANDED-ROWS hook rather than a one-off call at registration: the first
+	// fetch is asynchronous, so at registration time the table is still empty, and a control
+	// gated on "are there parents?" would be dropped for good on a screen that had not
+	// loaded yet. It runs on the UPDATE loop (so it may touch the table), and its command is
+	// batched with the landing's own.
+	OnItemsLanded func() tea.Cmd
 }
 
 // AddSource registers a fetchable list pane.
@@ -309,9 +343,101 @@ func (b *Base) SetStatus(name, st string) {
 func (b *Base) ReportStatus() []StatusMsg { return b.statuses }
 
 // regionWidths splits the content width across the source panes + detail.
+//
+// THE TWO-PANE CASE HONOURS THE OPERATOR'S SHARE; a genuine multi-source grid does not, because "give the
+// list more room" has no single meaning there. The two must agree with twoPaneWidths or the hit-test would
+// disagree with the layout.
 func (b *Base) regionWidths() []int {
 	n := len(b.sources) + 1
+	if n == 2 {
+		lw, dw := b.twoPaneWidths(b.width)
+		return []int{lw, dw}
+	}
 	return SplitWidths(b.width, n, 1)
+}
+
+// The master-detail split's bounds, as percentages of the content width.
+const (
+	defaultListSharePct = 50
+	minListSharePct     = 25
+	maxListSharePct     = 85
+)
+
+// ListSharePct is the share in force (the default when the operator has set none).
+func (b *Base) ListSharePct() int {
+	if b.listSharePct <= 0 {
+		return defaultListSharePct
+	}
+	return b.listSharePct
+}
+
+// SetListSharePct sets the share, clamped to the usable range.
+//
+// THE BOUNDS ARE NOT ARBITRARY. Below min the detail pane's own bordered content becomes unusable; above max
+// the detail pane cannot render a field row without truncating every one of them, which is a worse version
+// of the problem being solved.
+func (b *Base) SetListSharePct(pct int) {
+	if pct <= 0 {
+		// 0 MEANS THE DEFAULT, not the minimum: the App's zero value is "the operator has expressed no
+		// preference", and clamping it to minListSharePct would leave every screen on a split nobody chose.
+		b.listSharePct = 0
+		return
+	}
+	if pct < minListSharePct {
+		pct = minListSharePct
+	}
+	if pct > maxListSharePct {
+		pct = maxListSharePct
+	}
+	b.listSharePct = pct
+}
+
+// SplitAdjustable reports whether this screen HAS a tree/detail split to adjust.
+//
+// IT IS THE SAME CONDITION THE LAYOUT USES to decide between a split and a full-width detail pane (the
+// HideSources / no-sources case), and it exists so the shell can ask ONE question — "is there something here
+// for ctrl+←/→ to resize?" — instead of advertising a chord that would change a number nothing draws. The
+// Ask launch page is exactly that case: it renders the detail pane full width, so a split width there is a
+// value with no visible effect.
+func (b *Base) SplitAdjustable() bool {
+	return !b.HideSources && len(b.sources) > 0
+}
+
+// NudgeListShare moves the share by delta percent, reporting whether it MOVED (so a caller at a bound can tell
+// "nothing happened" from "it changed").
+//
+// Two percent per step rather than one: the split is a reading preference, and one percent per keypress is a
+// lot of presses to cross the range.
+func (b *Base) NudgeListShare(delta int) bool {
+	before := b.ListSharePct()
+	b.SetListSharePct(before + delta*2)
+	return b.ListSharePct() != before
+}
+
+// twoPaneWidths splits the content width between the tree/list pane and the detail pane.
+//
+// IT IS THE ONLY PLACE THE SPLIT IS DECIDED, and that is the point: the layout (SinglePane), the click
+// hit-test (mouseRegion) and the divider a drag grabs must all describe the same boundary, or a click lands
+// in a pane the operator is not looking at. This codebase has been bitten by exactly that before — see
+// mouseRegion's own note about the old all-panes grid.
+//
+// The 1-cell gap is preserved, so the total is unchanged from the even split it replaces.
+func (b *Base) twoPaneWidths(w int) (listW, detailW int) {
+	total := w - 1 // the gap between the panes
+	if total < 2 {
+		total = 2
+	}
+	// ROUNDED UP, so the LIST gets a split's remainder — which is what the even split this replaces did
+	// (SplitWidths gives the extra column to the FIRST pane). Flooring it instead would silently take a
+	// column away from the tree at the default share, which is the opposite of what this change is for.
+	listW = (total*b.ListSharePct() + 99) / 100
+	if listW < 1 {
+		listW = 1
+	}
+	if listW > total-1 {
+		listW = total - 1
+	}
+	return listW, total - listW
 }
 
 // SetSize lays out the panes (equal split + detail).
@@ -725,6 +851,25 @@ func (b *Base) EditingDetail() bool { return b.editForm != nil }
 // DetailForm exposes the open inline editor (nil when not editing).
 func (b *Base) DetailForm() *Form { return b.editForm }
 
+// PasteIntoForm inserts pasted text into the DETAIL-PANE form's focused field, reporting whether it landed.
+//
+// IT LIVES ON THE BASE RATHER THAN ON EACH SCREEN, AND THAT IS THE FIX. Base is EMBEDDED by every screen
+// (control, work, execution, automation, ask, enforcement, overwiew), so ONE method here gives all of them
+// the capability by Go's method promotion — and the shell can ask any screen "can you take this paste?" with
+// a single assertion.
+//
+// THE ENUMERATION IS EXACTLY WHAT WENT WRONG. The shell's paste support listed the forms the SHELL owns
+// (the scope modal, the launch prompt, the grouping forms), so the forms a SCREEN owns were missed — and
+// screen forms are most of them, because they open here in the pane. The operator hit it on the first one
+// they tried: "I can't copy and paste a value into a secret in the TUI under the secrets section when
+// creating a new or editing a secret." A method on the shared host cannot be forgotten the way a list can.
+func (b *Base) PasteIntoForm(text string) bool {
+	if f := b.DetailForm(); f != nil {
+		return f.PasteText(text)
+	}
+	return false
+}
+
 // finishDetailEdit closes the inline editor and reports the outcome once.
 func (b *Base) finishDetailEdit(submitted bool) {
 	b.editForm = nil
@@ -763,6 +908,48 @@ func (b *Base) EnableFilter(src string) {
 	for _, s := range b.sources {
 		if s.name == src {
 			s.filterable = true
+			return
+		}
+	}
+}
+
+// SetCollapsedByDefault makes a source's tree rows start CLOSED the first time they
+// appear (see Table.CollapsedByDefault). It is per-SOURCE because not every tree is
+// the same shape: a work-item hierarchy wants to start collapsed, a category folder
+// grouping does not.
+//
+// It must be set before the source's first load to have any effect on what the
+// operator sees on open; setting it later only changes rows that appear afterwards.
+func (b *Base) SetCollapsedByDefault(src string, on bool) {
+	for _, s := range b.sources {
+		if s.name == src {
+			s.table.CollapsedByDefault = on
+			return
+		}
+	}
+}
+
+// ResetCollapseState re-seats a source's rows to its current collapse default. Call it
+// after changing the default for a view the operator is entering, so rows already built
+// under another view do not keep that view's shape (see Table.ApplyCollapseDefault).
+func (b *Base) ResetCollapseState(src string) {
+	for _, s := range b.sources {
+		if s.name == src {
+			s.table.ApplyCollapseDefault()
+			return
+		}
+	}
+}
+
+// SetCaption installs a mode label drawn on the source's top row, beside the
+// search box. Passing nil removes it.
+//
+// The label is read per render, so a screen whose mode changes (the work-items
+// Tree ⇄ Archive switch) only has to install the reader once.
+func (b *Base) SetCaption(src string, label func() string) {
+	for _, s := range b.sources {
+		if s.name == src {
+			s.caption = label
 			return
 		}
 	}
@@ -905,8 +1092,14 @@ func (b *Base) Update(msg tea.Msg) (bool, tea.Cmd) {
 			// A freshly created entity is focused the moment it appears.
 			b.focusPending(s.name, s.table)
 			s.table.Loading = false
+			// The rows have LANDED: give the screen the chance to reconcile whatever depends
+			// on them, before the detail path returns (see OnItemsLanded).
+			var landed tea.Cmd
+			if b.OnItemsLanded != nil {
+				landed = b.OnItemsLanded()
+			}
 			if b.noAutoDetail {
-				return true, nil
+				return true, landed
 			}
 			// A JUMP owns the pane until its target has actually landed: the detail it asked for
 			// is the one the operator wants, and the row under the cursor is not it when the
@@ -916,9 +1109,9 @@ func (b *Base) Update(msg tea.Msg) (bool, tea.Cmd) {
 			// ownsPending for why consuming it on the first list landing is the bug rather than
 			// the fix.
 			if b.ownsPending(s.name) {
-				return true, nil
+				return true, landed
 			}
-			return true, b.loadDetail()
+			return true, tea.Batch(landed, b.loadDetail())
 		}
 		return true, nil
 
@@ -1572,12 +1765,12 @@ func (b *Base) mouseRegion(x int) (int, bool) {
 	if len(b.sources) == 0 || b.width < 1 {
 		return 0, true
 	}
-	ws := SplitWidths(b.width, 2, 1)
-	if x < ws[0] {
+	lw, _ := b.twoPaneWidths(b.width)
+	if x < lw {
 		return b.active, false // the focused source pane
 	}
-	if x < ws[0]+1 {
-		return -1, false // the gap between the panes
+	if x < lw+1 {
+		return -1, false // the divider between the panes
 	}
 	return -1, true // the detail pane
 }
@@ -1677,8 +1870,8 @@ func (b *Base) SinglePane(w, h int) string {
 	if w < 1 || h < 1 {
 		return ""
 	}
-	ws := SplitWidths(w, 2, 1)
-	return JoinRow(b.focusedPaneView(ws[0], h), b.detailPaneView(ws[1], h))
+	lw, dw := b.twoPaneWidths(w)
+	return JoinRow(b.focusedPaneView(lw, h), b.detailPaneView(dw, h))
 }
 
 // focusedPaneView renders the focused source pane sized to exactly w×h.
@@ -1724,30 +1917,84 @@ func (b *Base) topLine(s *source, w int) string {
 			left += "  " + strconv.Itoa(n) + "/" + strconv.Itoa(total)
 		}
 	}
+	// The MODE caption the screen asked for, if any (see SetCaption).
+	caption := ""
+	if s.caption != nil {
+		caption = s.caption()
+	}
 
-	// Lay the controls out from the right edge, recording each one's columns
-	// (relative to the row's first cell inside the panel border).
+	// ── The top row is laid out as: LEFT text, then the caption, then the CONTROLS
+	// hard against the right edge.
+	//
+	// THE ORDER OF SACRIFICE IS THE WHOLE DESIGN, and it is: a control's room is
+	// reserved FIRST, out of the SEARCH BOX's remainder (never the caption's), so a
+	// caption can never squeeze a control out; the caption then takes only what is
+	// genuinely left over, and is dropped entirely rather than shrunk to a stub. The
+	// controls on the right are CLICKABLE, so losing one costs a gesture, while the
+	// mode label is one word that the switch notice states in full anyway.
+	//
+	// A CONTROL IS DROPPED, NEVER CLIPPED: the recorded hit-box comes from where a
+	// control was DRAWN, so a clipped control still holds a hit-box the operator
+	// cannot read. (The clip was possible before the caption existed — the loop
+	// always advanced `used` regardless of the room left — so this is a fix, not a
+	// precaution.)
+	baseLeft := left
 	b.actionHits = b.actionHits[:0]
 	var labels []string
-	used := 0
 	// A live MULTI-SELECTION is stated on the same row, left of the controls: the operator
 	// needs to know how many rows a bulk action will hit, and how to drop the selection.
 	if n := b.MarkCount(); n > 0 {
 		if n == 1 {
-			left += "  1 marked (space adds, esc clears)"
+			baseLeft += "  1 marked (space adds, esc clears)"
 		} else {
-			left += fmt.Sprintf("  %d marked (esc clears)", n)
+			baseLeft += fmt.Sprintf("  %d marked (esc clears)", n)
 		}
 	}
-	for i := len(s.rowActions) - 1; i >= 0; i-- {
+	// WHICH CONTROLS SURVIVE IS DECIDED IN DECLARATION ORDER, and a screen declares
+	// them most-important-first. The row right-aligns whatever survives, so the set
+	// that fits is the longest PREFIX of the declared list: a control is dropped
+	// because something declared BEFORE it needed the room, never because a
+	// lower-priority control was placed first. (Placing them right-to-left directly
+	// got this backwards — the last-declared control took the space and the pane's
+	// most important one was the first to go.)
+	minLeft := lipgloss.Width(baseLeft) + 2
+	room := inner - minLeft - 1
+	kept := 0
+	need := 0
+	for i := 0; i < len(s.rowActions); i++ {
+		w := lipgloss.Width("[ "+s.rowActions[i].Label()+" ]") + 1 // +1 for the join space
+		if need+w > room {
+			break
+		}
+		need += w
+		kept++
+	}
+	// Lay the survivors out hard against the right edge, recording where each landed.
+	end := inner - 1
+	for i := kept - 1; i >= 0; i-- {
 		label := "[ " + s.rowActions[i].Label() + " ]"
-		end := inner - used - 1
-		start := end - lipgloss.Width(label) + 1
+		labelW := lipgloss.Width(label)
+		start := end - labelW + 1
 		b.actionHits = append(b.actionHits, actionHit{src: s.name, i: i, x0: start, x1: end})
 		labels = append([]string{label}, labels...)
-		used += lipgloss.Width(label) + 1
+		end = start - 2 // one space, then the next control
 	}
 	right := strings.Join(labels, " ")
+
+	// The MODE caption, in whatever the search box and the reserved controls left
+	// over. It answers the operator's "When in archive or normal mode in the TUI, it
+	// should say so at the top near the search box to indicate what mode you are in."
+	left = baseLeft
+	if caption != "" {
+		const gap = 3
+		avail := inner - lipgloss.Width(baseLeft) - lipgloss.Width(right) - gap - 1
+		if avail >= lipgloss.Width(caption)+2 {
+			if left != "" {
+				left += strings.Repeat(" ", gap)
+			}
+			left += caption
+		}
+	}
 
 	pad := inner - lipgloss.Width(left) - lipgloss.Width(right)
 	if pad < 1 {
@@ -1920,6 +2167,12 @@ func (b *Base) LoadItems(source string, items []Item, next string) bool {
 		// is the synchronous load path, so a caller that is not the shell's
 		// fetch command still focuses the new row.
 		b.focusPending(s.name, s.table)
+		// A direct load is a LANDING too, so the same reconciliation the fetch path
+		// gets applies (see OnItemsLanded) — a test or an optimistic refresh that seeds
+		// rows must leave the pane in the same shape a fetch would.
+		if b.OnItemsLanded != nil {
+			b.OnItemsLanded()
+		}
 		return true
 	}
 	return false

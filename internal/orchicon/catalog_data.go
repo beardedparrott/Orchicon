@@ -3,6 +3,7 @@ package orchicon
 import (
 	"encoding/json"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -97,6 +98,24 @@ func GetModelForProvider(provider, id string) (ModelInfo, bool) {
 	return ModelInfo{}, false
 }
 
+// CatalogModelCost resolves the catalog's per-million-token pricing for a
+// provider and a bare model id. It is alias-aware (GetModelForProvider) and is
+// the SINGLE shared catalog-backed cost lookup in the codebase: the server's
+// pricing resolver — which must answer for an anthropic model with NO opencode
+// binary present (Gap 4) — and the model-picker sourcing path both consume
+// it. Do NOT add a second lookup.
+//
+// It returns (nil, false) when the catalog has no entry for the model OR the
+// entry carries no pricing, so callers FAIL CLOSED (the adapter-reported cost
+// stands) — never a fabricated price, never a panic.
+func CatalogModelCost(provider, model string) (*Pricing, bool) {
+	m, ok := GetModelForProvider(provider, model)
+	if !ok || m.Pricing == nil {
+		return nil, false
+	}
+	return m.Pricing, true
+}
+
 // catalogListByProvider returns visible catalog models for one provider.
 func catalogListByProvider(provider string) []ModelInfo {
 	loadCatalog()
@@ -108,6 +127,26 @@ func catalogListByProvider(provider string) []ModelInfo {
 			out = append(out, mc)
 		}
 	}
+	return out
+}
+
+// CatalogModelsForProvider returns the vendored catalog's VISIBLE models for
+// one provider — the OFFLINE model source for a catalog-covered provider such
+// as anthropic, where the live probe may be unreachable (no network, no token)
+// or the plane may not have the provider's CLI installed at all.
+//
+// This is the listing half of the ONE catalog-backed model/cost lookup the
+// pickers and the usage-pricing resolver share; the lookup half is this
+// package's GetModelForProvider (alias-aware, same authored data). It NEVER
+// synthesizes: only authored catalog entries are returned, so a provider the
+// catalog does not cover yields nil and every caller keeps its existing
+// live/probe behaviour unchanged.
+//
+// Sorted by id so a picker list is stable across calls (the underlying store
+// is a map, whose iteration order is deliberately random).
+func CatalogModelsForProvider(provider string) []ModelInfo {
+	out := catalogListByProvider(provider)
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
 }
 

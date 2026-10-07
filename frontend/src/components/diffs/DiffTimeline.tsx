@@ -105,7 +105,7 @@ export function DiffTimeline({ files, onSelect }: DiffTimelineProps) {
   }
 
   return (
-    <div ref={parentRef} className={cn("flex-1 overflow-y-auto", virtual ? "relative" : "")}>
+    <div ref={parentRef} className={cn("diff-scroll flex-1 overflow-y-auto", virtual ? "relative" : "")}>
       {virtual ? (
         <div className="relative" style={{ height: `${virtualizer.getTotalSize()}px` }}>
           {virtualizer.getVirtualItems().map((vi) => {

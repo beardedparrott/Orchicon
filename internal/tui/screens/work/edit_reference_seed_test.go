@@ -29,8 +29,9 @@ package work
 //   - newItemCreateForm (workitems.go): workflow Initial:"" and runtime_image/parent unseeded are
 //     CORRECT — a new item has no reference yet, and empty is what the create request should carry.
 //   - newItemStatusForm: status + priority both seeded.
-//   - projects.go: runtimeImageField seeds Initial: current; ProjectMCPField seeds Initial: the
-//     comma-joined selection; every other project field seeds. project_dir seeds.
+//   - projects.go: runtimeImageField seeds Initial: current; ProjectMCPDefinitionsField (the
+//     owned-definition SEED that replaced ProjectMCPField) is a create-only field with no
+//     Initial to seed; every other project field seeds. project_dir seeds.
 //   - images.go: the edit form seeds every field; the create form is legitimately empty.
 // None of these needed a change, so none was made.
 

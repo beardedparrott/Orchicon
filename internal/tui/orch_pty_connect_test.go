@@ -52,7 +52,18 @@ func connectPlaneFixture(t *testing.T) *httptest.Server {
 		_ = json.NewEncoder(w).Encode(map[string]string{"version": "v9.9.9-pty"})
 	})
 	// The cheap authenticated probe: an in-process fake service.
-	fake := &ptyProjects{}
+	//
+	// THE PROJECT CARRIES A DIRECTORY, and it is the directory orch is launched from
+	// (the package dir — that is what startOrchPtyAt's child inherits). Without it the
+	// plane reports an UNATTACHED launch directory, the launch-time project prompt
+	// fires, and its full-frame question REPLACES the shell — so a pty test waiting for
+	// the composer (❯) never sees one and reads as a dead shell. The fixture says where
+	// the project lives; that is all the prompt needs to stay quiet.
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("resolve cwd: %v", err)
+	}
+	fake := &ptyProjects{dir: cwd}
 	path, handler := apiv1connect.NewProjectServiceHandler(fake)
 	mux.Handle(path, handler)
 	// Ask service: ListConversations (the shell's ask rail + the post-
@@ -83,14 +94,16 @@ func connectPlaneFixture(t *testing.T) *httptest.Server {
 	return srv
 }
 
-// ptyProjects is the minimal fake for the ListProjects auth probe.
+// ptyProjects is the minimal fake for the ListProjects auth probe. dir is the
+// project's project_dir (see connectPlaneFixture).
 type ptyProjects struct {
 	apiv1connect.UnimplementedProjectServiceHandler
+	dir string
 }
 
 func (f *ptyProjects) ListProjects(ctx context.Context, req *connect.Request[v1.ListProjectsRequest]) (*connect.Response[v1.ListProjectsResponse], error) {
 	out := &v1.ListProjectsResponse{}
-	out.Projects = append(out.Projects, &v1.Project{Id: "p1", Name: "pty"})
+	out.Projects = append(out.Projects, &v1.Project{Id: "p1", Name: "pty", ProjectDir: f.dir})
 	return connect.NewResponse(out), nil
 }
 
@@ -199,6 +212,7 @@ func TestPTYConnectOverlayInPlaceReconnect(t *testing.T) {
 	_, _ = s.tty.WriteString("pty-hunter2")
 	// Submit (enter): the probe runs against the fixture, the profile is
 	// saved, and the shell reconnects IN PLACE.
+	preSubmit := len(s.readFor(0))
 	_, _ = s.tty.WriteString("\r")
 	reconnected := s.readFor(5 * time.Second)
 	if pid := s.cmd.Process.Pid; pid != pidBefore {
@@ -211,11 +225,16 @@ func TestPTYConnectOverlayInPlaceReconnect(t *testing.T) {
 	}
 	// The overlay is gone: submit's repaint must not include a NEW overlay
 	// frame. The harness accumulates every painted byte (the overlay's
-	// pre-submit frames stay in the log), so assert on the LAST screen
-	// instead: the reconnect notice painted, and the notice is dock text —
-	// the overlay closing lets the notice through the centered float.
-	if !strings.Contains(tailOf(reconnected, 1200), "reconnected in place") {
-		t.Fatalf("the final repaint lacks the reconnect notice — the overlay may still be up: %s", tailOf(reconnected, 1200))
+	// pre-submit frames stay in the log), so assert on the SUBMIT'S OWN
+	// repaint instead: the reconnect notice painted, and the notice is dock
+	// text — the overlay closing lets the notice through the centered float.
+	//
+	// Use the submit delta, not a fixed tail window: the notice is dock text
+	// BELOW a full frame repaint, so it lands several KB before the end of the
+	// capture and a 1200-byte tail misses it even though it painted (which is
+	// how a WORKING reconnect read as "the overlay may still be up").
+	if !strings.Contains(reconnected[preSubmit:], "reconnected in place") {
+		t.Fatalf("the submit repaint lacks the reconnect notice — the overlay may still be up: %s", tailOfPlain(stripCSI(reconnected[preSubmit:]), 1500))
 	}
 
 	// Close the run for the cancel path (fresh process + fresh HOME so the

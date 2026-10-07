@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
@@ -58,6 +59,28 @@ type Model struct {
 	Err     string
 
 	scroll int
+	// The live scrollbar DRAG's anchor: the terminal row the grab started at and the scroll offset the
+	// content had then. The gesture is relative to these, so the grabbed point of the bar follows the
+	// pointer instead of the content leaping to wherever the pointer is (see ScrollbarDragTo).
+	dragActive bool
+	dragFromY  int
+	dragScroll int
+
+	// renderGen bumps whenever the ROWS change, and renderCache holds the rendered physical lines they
+	// produced at a given width and profile.
+	//
+	// WHY IT EXISTS: rendering the diff is the pane's most expensive operation, and BOTH hot paths used to
+	// do it from scratch — visibleLines() (under every clamp, so under every scroll step) and diffBody() (on
+	// every frame). Dragging the scrollbar emits a motion event per cell of pointer movement, and each one
+	// re-rendered the entire diff several times, so the pane could not keep up with the mouse and the content
+	// visibly lagged behind it — the operator: "the scroll and drag are slow. If I move my mouse it has to
+	// catch up to the mouse position instead of smoothly scrolling and dragging."
+	//
+	// The KEY is everything RenderLines depends on (the rows via renderGen, the width, the profile), so a
+	// stale cache is impossible rather than merely unlikely — and a width or profile change re-renders
+	// without anyone having to remember to invalidate.
+	renderGen   int
+	renderCache renderCache
 
 	// closeReq is set when the user clicks the pane's "✕" close button
 	// (the mouse toggle area). The shell polls it after forwarding a mouse
@@ -87,8 +110,14 @@ func NewModel(cl *client.Clients, reg *subs.Registry) *Model {
 }
 
 // SetSize updates the pane dimensions (content width excludes the border).
+//
+// It re-clamps the scroll: the pane's PHYSICAL line count changes with the body
+// width (a row wraps to more lines when the pane narrows, fewer when it widens)
+// and viewHeight changes with the height, so a scroll that was valid at the old
+// size can sit past the new last rendered page and render a blank body.
 func (m *Model) SetSize(w, h int) {
 	m.Width, m.Height = w, h
+	m.clampScroll()
 }
 
 // Open activates the pane (renders its frame). Does not refetch.
@@ -165,7 +194,7 @@ func (m *Model) armStream() {
 
 func (m *Model) clear() {
 	m.groups = nil
-	m.rows = nil
+	m.setRows(nil)
 	m.maxSeq = 0
 	m.SelectedPath = ""
 	m.Status = "idle"
@@ -192,12 +221,21 @@ func (m *Model) SelectPath(path string) {
 		return
 	}
 	m.SelectedPath = path
-	m.rows = m.rowsForSelected()
+	m.setRows(m.rowsForSelected())
 	m.scroll = 0
 }
 
 // SetTab switches the pane tab.
-func (m *Model) SetTab(t Tab) { m.Tab = t }
+//
+// It re-clamps the scroll: the two list tabs index one line PER GROUP while the
+// Diff tab indexes PHYSICAL rendered lines, so a Diff scroll (potentially
+// hundreds of lines) leaks past the end of a short file list and the viewport
+// slices an empty range — a BLANK body, the failure this pane exists to avoid.
+// clampScroll reads the ACTIVE tab's extent, so it must run after m.Tab is set.
+func (m *Model) SetTab(t Tab) {
+	m.Tab = t
+	m.clampScroll()
+}
 
 // Live returns whether the current owner is live.
 func (m *Model) Live() bool { return m.isLive }
@@ -208,19 +246,208 @@ func (m *Model) Owner() (kind, id string) { return m.ownerKind, m.ownerID }
 // HasOwner reports whether the pane has a diff-relevant owner loaded.
 func (m *Model) HasOwner() bool { return m.ownerID != "" && m.ownerKind != "" }
 
-// Scroll moves the viewport by delta lines.
+// Scroll moves the viewport by delta lines, clamped to the wrapped extent.
 func (m *Model) Scroll(delta int) {
 	m.scroll += delta
+	m.clampScroll()
+}
+
+// clampScroll pins m.scroll into [0, maxScroll] so the viewport can never sit
+// past the last rendered page (the mismatch that let `G`/pgdn/scroll overshoot
+// once wrapping made rendered lines diverge from row count).
+func (m *Model) clampScroll() {
 	if m.scroll < 0 {
 		m.scroll = 0
 	}
-	if total := m.lineCount(); total > 0 && m.scroll > total-1 {
-		m.scroll = total - 1
+	if ms := m.maxScroll(); m.scroll > ms {
+		m.scroll = ms
 	}
 }
 
-// lineCount is the number of rendered diff rows.
-func (m *Model) lineCount() int { return len(m.rows) }
+// maxScroll is the greatest valid scroll offset: the last rendered page's top
+// line. Zero when the content fits the viewport.
+func (m *Model) maxScroll() int {
+	ms := m.visibleLines() - m.viewHeight()
+	if ms < 0 {
+		ms = 0
+	}
+	return ms
+}
+
+// visibleLines is the number of PHYSICAL lines the ACTIVE tab shows at the
+// pane's current body width. It is the ONE scroll truth: both the body viewport
+// and the clamps read it, so they cannot disagree. (They used to: Scroll
+// clamped against len(m.rows) while the body sliced RENDERED lines — identical
+// only while one row == one line, which wrapping destroys.)
+// renderCache is the memoized result of rendering the current rows.
+type renderCache struct {
+	gen     int
+	width   int
+	profile termenv.Profile
+	lines   []string
+}
+
+// setRows is the ONLY way the pane's rows change, so the render cache cannot be left stale by a caller that
+// forgot to invalidate it. Every assignment goes through here.
+func (m *Model) setRows(rows []Row) {
+	m.rows = rows
+	m.renderGen++
+}
+
+// renderedLines renders the rows — or returns what the last render produced, when nothing it depends on has
+// changed. It is the ONE renderer: the scroll extent and the body both read it, so the viewport slices
+// exactly what the count measured (and the pane renders the diff once per change instead of once per frame).
+func (m *Model) renderedLines() []string {
+	width := m.bodyWidth()
+	profile := currentProfile()
+	c := m.renderCache
+	if c.gen == m.renderGen && c.width == width && c.profile == profile && c.lines != nil {
+		return c.lines
+	}
+	lines := RenderLines(m.rows, width, profile)
+	m.renderCache = renderCache{gen: m.renderGen, width: width, profile: profile, lines: lines}
+	return lines
+}
+
+func (m *Model) visibleLines() int {
+	switch m.Tab {
+	case TabDiff:
+		if len(m.rows) == 0 {
+			return 0
+		}
+		return len(m.renderedLines())
+	default:
+		// Tree/Timeline: one rendered line per group (D4 — list rows do not
+		// wrap, so the group<->row click mapping stays 1:1).
+		return len(m.groups)
+	}
+}
+
+// lineCount is the number of rendered lines for the active tab (kept as the
+// scroll-extent accessor the existing tests assert against).
+func (m *Model) lineCount() int { return m.visibleLines() }
+
+// paneInnerWidth is the width of the pane's inner content — the pane's budget
+// minus the DiffPanel's 1-cell LEFT border. The shell sizes the pane to
+// diffPaneWidth() INCLUDING that border, so the content must be one cell
+// narrower or the shell silently truncates the rightmost cell (the "cut off"
+// symptom this work item exists to fix).
+func (m *Model) paneInnerWidth() int {
+	w := m.Width - 1
+	if w < 1 {
+		w = 1
+	}
+	return w
+}
+
+// bodyWidth is the width available to BODY TEXT: the pane's inner content minus the scrollbar's reserved
+// 1-cell column AND the cell the shell's rail-resize handle uses. Every body line is text of exactly this
+// width, then the bar cell, then the divider cell, so the line stays paneInnerWidth cells wide and the pane
+// stays flush with its rail.
+//
+// bodyWidth is the width of the pane's CONTENT — the pane's budget minus the DiffPanel's 1-cell LEFT
+// border, the reserved scrollbar column, and the cell the shell's rail-resize handle uses.
+//
+// THREE CELLS, not two, and the third is the point: the scrollbar used to occupy the pane's LAST cell,
+// which is also where the shell's resize divider lives (diffDividerHit matches x == diffPaneWidth()-1).
+// The shell claims a press there before the pane ever sees it, so the bar's own click-to-jump could not
+// run and dragging the bar RESIZED THE RAIL — the operator: "I can't grab onto the scroll bar and drag it
+// up and down like you can in the GUI". One cell of content is a cheap price for an affordance that
+// works, and it also puts a visible gap between the text and the resize edge.
+func (m *Model) bodyWidth() int {
+	w := m.Width - 3
+	if w < 1 {
+		w = 1
+	}
+	return w
+}
+
+// ScrollbarHit reports whether a terminal (x, y) is on the pane's scrollbar column — the cell the operator
+// grabs to jump or to drag the viewport.
+//
+// It is the pane's own geometry, so the shell can ask rather than re-derive: the column is one cell inside
+// the resize divider, and the band is the pane's BODY (a press on the bar's column up at the tab bar is not
+// a grab).
+func (m *Model) ScrollbarHit(x, y int) bool {
+	if m.Width <= 0 {
+		return false
+	}
+	// contentX is the terminal X minus the panel's left border.
+	if x-1 != m.bodyWidth() {
+		return false
+	}
+	return y >= paneBodyRow && y < paneBodyRow+m.viewHeight()
+}
+
+// ScrollbarJumpTo moves the viewport so the terminal row it is given maps to the same relative position.
+//
+// THIS IS THE TRACK's gesture, not the thumb's: pressing the track is asking to GO somewhere, and the
+// mapping is the bar's own (proportional over the body).
+func (m *Model) ScrollbarJumpTo(termY int) {
+	m.jumpToBodyRow(termY - paneBodyRow)
+}
+
+// ScrollbarThumbAt reports whether a terminal row is on the THUMB rather than the track.
+//
+// The distinction is the whole feel of the drag, and it is what a GUI scrollbar does: grabbing the thumb
+// picks the content up where it is, while grabbing the track asks to go to that spot. Treating both as a
+// jump is what the operator felt as the bar "jumping a bit": pressing the thumb (the obvious place to grab)
+// yanked the content to wherever the pointer happened to be before the drag had even started.
+func (m *Model) ScrollbarThumbAt(termY int) bool {
+	start, length := scrollbarThumb(m.scroll, m.viewHeight(), m.visibleLines())
+	if length == 0 {
+		return false
+	}
+	row := termY - paneBodyRow
+	return row >= start && row < start+length
+}
+
+// ScrollbarDragStart begins a bar gesture, returning whether the grab landed on the THUMB.
+//
+// ON THE THUMB: nothing moves yet — the content is picked up exactly where it is, and the drag tracks the
+// pointer from there (that is what "grabbing" means). ON THE TRACK: the viewport jumps to the pointer
+// first, which is the click-to-jump the bar has always had, and the drag continues from that position.
+func (m *Model) ScrollbarDragStart(termY int) bool {
+	onThumb := m.ScrollbarThumbAt(termY)
+	if !onThumb {
+		m.ScrollbarJumpTo(termY)
+	}
+	m.dragFromY = termY
+	m.dragScroll = m.scroll
+	m.dragActive = true
+	return onThumb
+}
+
+// ScrollbarDragTo moves the viewport with the pointer, so the grabbed point of the bar stays under it.
+//
+// RELATIVE, NOT ABSOLUTE, and that is what makes it smooth. An absolute mapping recomputes the scroll from
+// the pointer's row on every event, so the content leaps to wherever the pointer is and any rounding is
+// re-applied from scratch each time. Tracking the DELTA against the thumb's own travel range moves the
+// content by the same distance the thumb would have moved: one row of pointer movement is one row of thumb
+// movement, which is the ratio a scrollbar is supposed to have.
+func (m *Model) ScrollbarDragTo(termY int) {
+	if !m.dragActive {
+		return
+	}
+	viewH := m.viewHeight()
+	total := m.visibleLines()
+	if viewH < 1 || total <= viewH {
+		return
+	}
+	_, thumbLen := scrollbarThumb(m.scroll, viewH, total)
+	travel := viewH - thumbLen // the thumb's own range: the rows it can move through
+	reach := m.maxScroll()
+	if travel <= 0 || reach <= 0 {
+		return
+	}
+	m.scroll = m.dragScroll + (termY-m.dragFromY)*reach/travel
+	m.clampScroll()
+}
+
+// ScrollbarDragEnd ends the gesture, so the pane stops following a pointer that is no longer held.
+func (m *Model) ScrollbarDragEnd() {
+	m.dragActive = false
+}
 
 // viewHeight is the number of body rows the pane can show (the pane's Height
 // minus the tab-bar row that occupies the first content line). Used for
@@ -272,14 +499,20 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		if snap != nil {
 			m.maxSeq = snap.MaxDurableSeq
 			m.groups = GroupByFile(snap.Edits)
-			m.rows = m.rowsForSelected()
+			m.setRows(m.rowsForSelected())
 			m.Err = ""
 			m.Status = "ready"
 			// Default the tree selection to the first changed file (if any).
 			if m.SelectedPath == "" && len(m.groups) > 0 {
 				m.SelectedPath = m.groups[0].Path
-				m.rows = m.rowsForSelected()
+				m.setRows(m.rowsForSelected())
 			}
+			// The rows (and therefore the rendered line count) just changed
+			// underneath the scroll — a fetch that returns a SHORTER diff (a new
+			// owner, or a file whose latest edit shrank) would leave the viewport
+			// sliced past its end and render a BLANK body. Re-clamp here, at the
+			// one place the rows are replaced.
+			m.clampScroll()
 		}
 		// The durable fetch caches the tenant; if this owner is live, arm the
 		// live stream now (on the tea loop) and park a re-armable event poke.
@@ -328,7 +561,7 @@ func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
 		m.scroll = 0
 		return nil
 	case "G":
-		m.scroll = m.lineCount() - 1
+		m.scroll = m.maxScroll()
 		return nil
 	case "h", "l":
 		// Switch tab: l = next, h = previous (the two directions must be
@@ -353,6 +586,10 @@ func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
 				m.Tab = TabTree
 			}
 		}
+		// The two tabs index DIFFERENT things (physical diff lines vs one line
+		// per group), so a Diff scroll must not leak into a short Tree list
+		// (which would leave scroll past the end and render a blank body).
+		m.clampScroll()
 		return nil
 	case "y":
 		m.CopySelectedDiff()
@@ -417,10 +654,71 @@ func (m *Model) click(x, y int) {
 		return
 	}
 	// Body row: terminal row 4 is body row 0 (after the tab bar at row 3).
-	row := y - paneBodyRow
-	if m.Tab != TabDiff && row >= 0 && row < len(m.groups) {
-		m.SelectPath(m.groups[row].Path)
+	bodyRow := y - paneBodyRow
+	// SCROLLBAR HIT, resolved BEFORE the body hit-test: a press on the reserved
+	// bar column (content X == bodyWidth — one cell INSIDE the panel edge, which the shell keeps for its
+	// rail-resize handle) jumps the viewport proportionally.
+	//
+	// THE DRAG IS THE SHELL'S (dispatchMouse claims the bar's press and its motion), because a left press
+	// in the rail sets a selection region and clipState then consumes the motion — a drag handled here
+	// would win the press and lose every step after it.
+	if contentX >= m.bodyWidth() {
+		// ONE IMPLEMENTATION with the shell's drag: the shell claims the bar's press (so a selection region
+		// is never set over the rail) and calls the same method, and this branch is what a click that reaches
+		// the pane directly — a test, or any future caller — still resolves correctly. Jumping is the right
+		// answer for a click here either way; selecting a file is not.
+		m.ScrollbarJumpTo(y)
+		return
 	}
+	// VIEWPORT-AWARE row: the list is scrolled, so the row under the cursor is
+	// the scroll offset plus the row within the viewport. (Forgetting this made
+	// a click on a scrolled list select the file one page above the cursor.)
+	row := m.scroll + bodyRow
+	if m.Tab != TabDiff && row >= 0 && row < len(m.groups) {
+		// Parity with the GUI mounts (DiffSidebar.tsx:109,112 / :138,141): a
+		// file-row click selects AND focuses the diff, in one event. The tab
+		// switch is deliberately here (the interaction) and not inside
+		// SelectPath (the state setter) — restoreDiffPaneState (app.go) pushes
+		// a persisted tab and then calls SelectPath; a switch inside
+		// SelectPath would discard it on every reopen. Unconditional SetTab:
+		// SelectPath early-returns on the same path, but re-clicking the
+		// selected row must still bounce to Diff.
+		m.SelectPath(m.groups[row].Path)
+		m.SetTab(TabDiff)
+	}
+}
+
+// jumpToBodyRow resolves a click on the scrollbar's reserved column to a
+// proportional scroll offset, so the operator can throw the viewport to where
+// the bar was pressed.
+// jumpToBodyRow maps a grab at body row `bodyRow` onto a scroll offset: the bar's press, and every step of
+// its drag.
+//
+// END-INCLUSIVE, and that is what makes it usable for a DRAG. The mapping is over the reachable range,
+// so the FIRST body row is the top and the LAST is the bottom — dragging the thumb to either end gets the
+// operator there. A plain `bodyRow * total / viewH` (what a click alone could live with) tops out short of
+// the end: at viewH=8 it reached 87 of a 92-line range, which reads as the bar refusing to go all the way
+// down exactly when the operator is holding it there.
+func (m *Model) jumpToBodyRow(bodyRow int) {
+	viewH := m.viewHeight()
+	total := m.visibleLines()
+	if viewH < 1 || total <= viewH {
+		return // everything fits — the bar is inert
+	}
+	if bodyRow < 0 {
+		bodyRow = 0
+	}
+	if bodyRow > viewH-1 {
+		bodyRow = viewH - 1
+	}
+	reach := m.maxScroll()
+	if viewH == 1 || reach <= 0 {
+		m.scroll = 0
+		m.clampScroll()
+		return
+	}
+	m.scroll = bodyRow * reach / (viewH - 1)
+	m.clampScroll()
 }
 
 // clickTab selects the tab under a content-relative X click, reproducing the
@@ -443,7 +741,10 @@ func (m *Model) clickTab(contentX int) {
 		// clickable (the padding cells do not overlap other tabs — separated
 		// by the 1-space separator).
 		if contentX >= textStart-tabPadding && contentX < end+tabPadding {
-			m.Tab = t
+			// SetTab (not a bare m.Tab =) so the stale-scroll clamp runs: a
+			// mouse tab switch out of a scrolled Diff must not leave the list
+			// tabs scrolled past their (much shorter) extent.
+			m.SetTab(t)
 			return
 		}
 		// Advance past: this label's text + right padding (tabPadding) +
@@ -523,7 +824,10 @@ func (m *Model) mergeLive() {
 	durable := flattenGroups(m.groups)
 	merged := MergeEdits(durable, edits)
 	m.groups = GroupByFile(merged)
-	m.rows = m.rowsForSelected()
+	m.setRows(m.rowsForSelected())
+	// Live events rebuild the rows (and so the rendered line count) while the
+	// operator is scrolled: clamp, or a shrinking diff leaves a blank viewport.
+	m.clampScroll()
 }
 
 // flattenGroups collapses the grouped edits back into a flat, seq-ordered
@@ -556,7 +860,7 @@ func (m *Model) rawView() string {
 	b.WriteString(m.tabBar())
 	b.WriteString("\n")
 	if m.Err != "" {
-		b.WriteString(theme.ErrorText.Render("  " + truncate(m.Err, m.Width)))
+		b.WriteString(theme.ErrorText.Render("  " + truncate(m.Err, m.paneInnerWidth()-2)))
 		return b.String()
 	}
 	if m.Loading {
@@ -594,10 +898,16 @@ func (m *Model) tabBar() string {
 	// pane never renders wider than its rail.
 	b.WriteString(" ")
 	b.WriteString(theme.DiffClose.Render("✕"))
-	// The tab bar must not exceed the pane's content width (no horizontal
+	// The tab bar must not exceed the pane's INNER content width (no horizontal
 	// overflow / tearing); pad the remainder so the underline stays flush.
-	if cur := ansi.StringWidth(b.String()); cur < m.Width {
-		b.WriteString(strings.Repeat(" ", m.Width-cur))
+	//
+	// paneInnerWidth(), not m.Width: m.Width is the shell's budget for the whole
+	// pane INCLUDING the DiffPanel left border, so padding the content to m.Width
+	// made the drawn pane one cell too wide and the shell truncated its last
+	// column (the tab bar spans the full inner width including the scrollbar
+	// column, so the pane's right edge stays flush).
+	if cur := ansi.StringWidth(b.String()); cur < m.paneInnerWidth() {
+		b.WriteString(strings.Repeat(" ", m.paneInnerWidth()-cur))
 	}
 	return b.String()
 }
@@ -606,11 +916,10 @@ func (m *Model) diffBody() string {
 	if len(m.rows) == 0 {
 		return theme.HintText.Render("  select a file (tree) to view its diff")
 	}
-	content := RenderPane(m.rows, m.Width, currentProfile())
-	lines := strings.Split(content, "\n")
-	// The pane has Height rows total, but the tab bar (rawView's first row)
-	// consumes one, so the diff body gets Height-1 rows — otherwise the pane
-	// would render Height+1 rows and overflow (tearing / pushing the footer).
+	// The SINGLE renderer the scroll clamps also read: wrapping a row to several
+	// physical lines changes the line count, and the viewport must slice exactly
+	// what visibleLines counted. It is CACHED for the same reason — see renderCache.
+	lines := m.renderedLines()
 	viewH := m.viewHeight()
 	start := m.scroll
 	if start > len(lines) {
@@ -623,51 +932,75 @@ func (m *Model) diffBody() string {
 	if start > end {
 		start = end
 	}
-	visible := lines[start:end]
-	return strings.Join(visible, "\n")
+	return m.withScrollbar(lines[start:end], len(lines))
 }
 
 func (m *Model) treeBody() string {
 	if len(m.groups) == 0 {
 		return theme.HintText.Render("  no changed files yet")
 	}
-	var b strings.Builder
-	for i, g := range m.groups {
-		sel := g.Path == m.SelectedPath
-		line := fmt.Sprintf(" %s +%d −%d", g.Path, g.Adds, g.Dels)
-		if sel {
-			b.WriteString(theme.DiffFileSel.Render(line))
-		} else {
-			// THE ROW MUST CARRY THEME COLOURS. It used to be written RAW — no style at all — so an
-			// unselected file rendered in the TERMINAL's default foreground rather than the theme's
-			// text colour. On a terminal whose default foreground disagrees with the app's palette
-			// that is whatever the terminal happens to use, which is the operator's "green text in
-			// other areas [is] still impossible to read in light mode": nothing here chose green, and
-			// nothing could fix it by choosing a colour, because no colour was applied.
-			b.WriteString(theme.ListItem.Render(line))
+	w := m.bodyWidth()
+	rows := make([]string, 0, len(m.groups))
+	for _, g := range m.groups {
+		// A list ROW is an index entry, not diff content (D4): it is ellipsized
+		// to the body width rather than wrapped, so group<->row stays 1:1 and
+		// the viewport-aware click keeps resolving the row under the cursor.
+		line := truncate(fmt.Sprintf(" %s +%d −%d", g.Path, g.Adds, g.Dels), w)
+		if g.Path == m.SelectedPath {
+			rows = append(rows, theme.DiffFileSel.Render(line))
+			continue
 		}
-		if i < len(m.groups)-1 {
-			b.WriteString("\n")
-		}
+		// THE ROW MUST CARRY THEME COLOURS. It used to be written RAW — no style at all — so an
+		// unselected file rendered in the TERMINAL's default foreground rather than the theme's
+		// text colour. On a terminal whose default foreground disagrees with the app's palette
+		// that is whatever the terminal happens to use, which is the operator's "green text in
+		// other areas [is] still impossible to read in light mode": nothing here chose green, and
+		// nothing could fix it by choosing a colour, because no colour was applied.
+		rows = append(rows, theme.ListItem.Render(line))
 	}
-	return b.String()
+	return m.listViewport(rows)
 }
 
 func (m *Model) timelineBody() string {
 	if len(m.groups) == 0 {
 		return theme.HintText.Render("  no edits yet")
 	}
-	var b strings.Builder
-	for i, g := range m.groups {
-		line := fmt.Sprintf(" %s %s (%s)", g.Path, g.Kind, g.LastTool)
+	w := m.bodyWidth()
+	rows := make([]string, 0, len(m.groups))
+	for _, g := range m.groups {
+		line := truncate(fmt.Sprintf(" %s %s (%s)", g.Path, g.Kind, g.LastTool), w)
+		if g.Path == m.SelectedPath {
+			// Same selected-row treatment as treeBody: without it a Timeline
+			// click changed the shared selection invisibly, which is why
+			// clicking a Timeline row read as doing nothing.
+			rows = append(rows, theme.DiffFileSel.Render(line))
+			continue
+		}
 		// Styled for the same reason as treeBody: a raw row carries no theme colour and renders in
 		// whatever the terminal's default foreground happens to be.
-		b.WriteString(theme.ListItem.Render(line))
-		if i < len(m.groups)-1 {
-			b.WriteString("\n")
-		}
+		rows = append(rows, theme.ListItem.Render(line))
 	}
-	return b.String()
+	return m.listViewport(rows)
+}
+
+// listViewport applies the SAME window as diffBody to a list of rendered rows:
+// [scroll : scroll+viewHeight], then the scrollbar. It is what makes a long
+// file list scroll instead of being silently clipped by the shell's
+// normalizeBlock (the operator's "no scroll bar" / "cut off" symptom).
+func (m *Model) listViewport(rows []string) string {
+	viewH := m.viewHeight()
+	start := m.scroll
+	if start > len(rows) {
+		start = len(rows)
+	}
+	end := start + viewH
+	if end > len(rows) {
+		end = len(rows)
+	}
+	if start > end {
+		start = end
+	}
+	return m.withScrollbar(rows[start:end], len(rows))
 }
 
 // FetchDoneMsg / OwnerSetMsg are the pane's internal async completions

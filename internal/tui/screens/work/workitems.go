@@ -373,44 +373,6 @@ func loadParentOptions(ctx context.Context, cl *client.Clients) ([]kit2.Option, 
 	return opts, kinds, projects
 }
 
-// autoStartUnboundMsg is the refusal the work-item forms share. It names the FIX, not the field: an
-// operator who ticked Auto-start workflow and left Workflow empty needs to be told which of the two
-// to change, not that "validation failed".
-const autoStartUnboundMsg = "auto-start needs a workflow — pick one in the Workflow field, or untick Auto-start workflow"
-
-// autoStartRefusal reports the one combination these forms must not be able to express: a work item
-// with AUTO-START TICKED and NO WORKFLOW BOUND. Task A makes that item permanently unrunnable —
-// every transition to ready/assigned/scheduled/running is rejected — so the client must not offer
-// it, and the refusal has to be visible where the operator is looking.
-//
-// The rule is "auto_start requires a bound workflow" rather than "workflow is required for a leaf"
-// because "leaf" is not statically knowable in a form (the kind is operator-chosen and auto-corrected
-// by the parent rule below) and because a Required workflow would forbid creating an EPIC — the only
-// legal top-level kind — purely for a planning container that is never schedulable.
-//
-// It reads the FORM's value, which is exactly what the submit sends (WorkflowId: v["workflow"]),
-// so "the form cannot express it" and "the request cannot carry it" are the same statement. The
-// status form carries neither field and is therefore inert here.
-func autoStartRefusal(v map[string]string) error {
-	if v["auto_start"] != "true" || strings.TrimSpace(v["workflow"]) != "" {
-		return nil
-	}
-	return fmt.Errorf("%s", autoStartUnboundMsg)
-}
-
-// clearAutoStartWhenUnbound is the coupling half of the rule: an item with no bound workflow cannot
-// HOLD auto-start on. Ticking it and then emptying the workflow (or picking "— none —") clears it,
-// so the value cannot survive in the form and be submitted from a state the operator cannot see.
-//
-// It writes Values DIRECTLY rather than through Form.Set, for the reason the project re-scope above
-// does: Set re-enters OnChange, and a correction that recurses through its own handler is how a
-// derived-field rule turns into a loop. Checkbox values are the strings "true"/"false".
-func clearAutoStartWhenUnbound(f *kit2.Form) {
-	if strings.TrimSpace(f.Values["workflow"]) == "" {
-		f.Values["auto_start"] = "false"
-	}
-}
-
 // newItemCreateForm builds the typed create form.
 func (m *Model) newItemCreateForm() *kit2.Form {
 	projOpts := make([]kit2.Option, 0, len(m.projects))
@@ -453,9 +415,16 @@ func (m *Model) newItemCreateForm() *kit2.Form {
 	//     Any strictly deeper kind is legal, so a deliberate choice survives —
 	//     an epic may parent a feature, a task or a subtask; a FEATURE may
 	//     parent a task or a subtask; a TASK may parent a subtask.
-	//  3. Emptying the WORKFLOW clears auto-start: the two fields are one
-	//     decision, and the combination with no workflow is one the server
-	//     refuses outright (see autoStartRefusal).
+	//
+	// THERE IS NO AUTO-START COUPLING, deliberately. Emptying the workflow must NOT clear
+	// auto-start, because a workflow-less item is exactly how a sequential workflow is kicked
+	// off: the parent carries no binding of its own and its children run in chain order. The
+	// operator: "Workflows need to be empty for a sequential workflow to kick off. We just need
+	// to remove that validation."
+	//
+	// Auto-start with no workflow is legal at every status the operator can save (the server
+	// only gates on ENTERING ready/assigned/scheduled/running, and it exempts a sequence parent
+	// entirely), so the client must not refuse it, warn about it, or clear it.
 	f.OnChange = func(name, value string) {
 		switch name {
 		case "project":
@@ -478,11 +447,6 @@ func (m *Model) newItemCreateForm() *kit2.Form {
 			if k := kindForParent(m.parentKind[value]); k != "" {
 				f.Values["kind"] = k
 			}
-		case "workflow":
-			// Emptying the workflow clears auto-start: the two fields are ONE decision,
-			// and without a workflow the server refuses the combination outright
-			// (see autoStartRefusal).
-			clearAutoStartWhenUnbound(f)
 		}
 	}
 	m.wireItemForm(f, formCreateItem, "")
@@ -544,16 +508,20 @@ func (m *Model) editFormFor(w *apiv1.WorkItem, projOpts []kit2.Option) *kit2.For
 			Initial:  rfc3339OrEmpty(w.GetScheduledStartAt()),
 			Display:  displayScheduledStart,
 			Validate: validateOptionalRFC3339},
-		kit2.FieldSpec{Name: "auto_start", Label: "Auto-start workflow", Kind: kit2.KCheckbox, Initial: boolStr(w.GetAutoStartWorkflow())},
+		// THE BOX OPENS UNCHECKED, ALWAYS — never seeded from the stored flag.
+		//
+		// Auto-start is an ACT on the save, not a state the form reports (the operator's rule: "not fire
+		// anything off that already has auto or schedule set… it must be done as an action when saving
+		// the record only"). Seeding it from auto_start_workflow meant that opening an item whose stored
+		// flag was still true — a legacy row, or one armed by an earlier save — and saving any unrelated
+		// edit (a rename, a kind switch) sent auto=true and LAUNCHED the workflow. The server refuses to
+		// fire on the stored flag alone; the client must not manufacture the explicit gesture either, or
+		// the two halves disagree about what the operator asked for.
+		//
+		// It matches the GUI, which has always reset the box to false when the editor opens, and the
+		// form's own create variant above.
+		kit2.FieldSpec{Name: "auto_start", Label: "Auto-start workflow", Kind: kit2.KCheckbox, Initial: "false"},
 	)
-	// The same auto-start coupling the create form carries, installed HERE rather than only in the
-	// RPC handler so the value cannot be HELD in the form: emptying the workflow clears auto-start
-	// (see clearAutoStartWhenUnbound).
-	f.OnChange = func(name, _ string) {
-		if name == "workflow" {
-			clearAutoStartWhenUnbound(f)
-		}
-	}
 	m.wireItemForm(f, formEditItem, w.GetId())
 	return f
 }
@@ -614,14 +582,6 @@ func (m *Model) wireItemForm(f *kit2.Form, mode, id string) {
 	f.OnOpenDateTimePicker = m.openDateTimePicker
 	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
 		title := strings.TrimSpace(v["title"])
-		// Concern 1: a combination the PLANE will reject is refused here, before a request
-		// exists. Returning the error makes Form.Submit store it in SubmitErr (drawn as "✗ …"
-		// INSIDE the form, which stays open), and the sink puts the same sentence on the
-		// composer's dock — the transport that FitLines never truncates.
-		if err := autoStartRefusal(v); err != nil {
-			workSink{m}.Fail(err.Error())
-			return nil, err
-		}
 		switch mode {
 		case formCreateItem:
 			project := v["project"]
@@ -671,6 +631,16 @@ func (m *Model) wireItemForm(f *kit2.Form, mode, id string) {
 			cw := int32(atoiOr(v["context_window"], 0))
 			kind := kindFromName(v["kind"])
 			status := statusFromName(v["status"])
+			// THE SCHEDULE IS SENT AS EITHER A VALUE OR AN EXPLICIT CLEAR, never silently dropped.
+			//
+			// scheduled_start_at is optional, so an EMPTY field means "unchanged" — which is how the
+			// form could never remove a schedule: it seeded the field from the item, round-tripped the
+			// same value back every save, and an operator who emptied it sent nothing at all. The
+			// request now carries clear_scheduled_start_at when the field reads empty, which is the
+			// operator's "there is no way to clear a schedule on a work item".
+			//
+			// A surviving schedule also suppresses auto-start (an item with a start time waits for it),
+			// so clearing is what lets a pending item start on save — the second half of the report.
 			req := &apiv1.UpdateWorkItemRequest{
 				Id:                 id,
 				Title:              strPtr(title),
@@ -686,6 +656,9 @@ func (m *Model) wireItemForm(f *kit2.Form, mode, id string) {
 				AutoStartWorkflow:  &auto,
 				ContextFiles:       &apiv1.ContextFiles{Files: splitList(v["context_files"])},
 				ScheduledStartAt:   tsOrNil(v["scheduled_start"]),
+			}
+			if req.ScheduledStartAt == nil {
+				req.ClearScheduledStartAt = true
 			}
 			name := "save work item " + strconv.Quote(title)
 			return m.Mutate(mutate.Request{
@@ -728,6 +701,14 @@ func (m *Model) itemActions() []kit2.Action {
 		return nil
 	}
 	if m.ViewMode() == viewArchive {
+		// A GHOST ANCHOR IS NOT ARCHIVED. It is an ACTIVE ancestor rendered only to
+		// keep an archived item's hierarchy connected (see archiveRows), so offering
+		// "restore" on it would send a request the plane refuses — and, worse, the
+		// operator would read the row as an archived item that had failed to restore.
+		// The row carries the marker in its Meta, so the action layer can tell.
+		if strings.HasPrefix(it.Meta, archiveGhostPrefix+" ancestor") {
+			return nil
+		}
 		return []kit2.Action{{
 			Label: "restore", Key: "R", Source: srcWorkItems,
 			Confirm:  "Restore " + title + "?\nIt returns to the active views at the status it was archived from.",

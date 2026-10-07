@@ -660,6 +660,93 @@ export class SetConversationProjectResponse extends Message<SetConversationProje
 }
 
 /**
+ * @generated from message orchicon.api.v1.SetConversationSkillFilesRequest
+ */
+export class SetConversationSkillFilesRequest extends Message<SetConversationSkillFilesRequest> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * files REPLACES the conversation's skill path selection. An empty list CLEARS
+   * it. Each entry must be an absolute path with no ".." that lives inside the
+   * conversation's project directory (when the conversation has one).
+   *
+   * DISTINCT from AgentConfig.skills (free-text prose) — these are real on-disk
+   * paths rendered by contextfiles.RenderManifest.
+   *
+   * @generated from field: repeated string files = 2;
+   */
+  files: string[] = [];
+
+  constructor(data?: PartialMessage<SetConversationSkillFilesRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.SetConversationSkillFilesRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "files", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetConversationSkillFilesRequest {
+    return new SetConversationSkillFilesRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetConversationSkillFilesRequest {
+    return new SetConversationSkillFilesRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetConversationSkillFilesRequest {
+    return new SetConversationSkillFilesRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SetConversationSkillFilesRequest | PlainMessage<SetConversationSkillFilesRequest> | undefined, b: SetConversationSkillFilesRequest | PlainMessage<SetConversationSkillFilesRequest> | undefined): boolean {
+    return proto3.util.equals(SetConversationSkillFilesRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.SetConversationSkillFilesResponse
+ */
+export class SetConversationSkillFilesResponse extends Message<SetConversationSkillFilesResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.Conversation conversation = 1;
+   */
+  conversation?: Conversation;
+
+  constructor(data?: PartialMessage<SetConversationSkillFilesResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.SetConversationSkillFilesResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "conversation", kind: "message", T: Conversation },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetConversationSkillFilesResponse {
+    return new SetConversationSkillFilesResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetConversationSkillFilesResponse {
+    return new SetConversationSkillFilesResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetConversationSkillFilesResponse {
+    return new SetConversationSkillFilesResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SetConversationSkillFilesResponse | PlainMessage<SetConversationSkillFilesResponse> | undefined, b: SetConversationSkillFilesResponse | PlainMessage<SetConversationSkillFilesResponse> | undefined): boolean {
+    return proto3.util.equals(SetConversationSkillFilesResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.DeleteConversationRequest
  */
 export class DeleteConversationRequest extends Message<DeleteConversationRequest> {
@@ -2070,6 +2157,85 @@ export class ListPermissionGrantsResponse extends Message<ListPermissionGrantsRe
 
   static equals(a: ListPermissionGrantsResponse | PlainMessage<ListPermissionGrantsResponse> | undefined, b: ListPermissionGrantsResponse | PlainMessage<ListPermissionGrantsResponse> | undefined): boolean {
     return proto3.util.equals(ListPermissionGrantsResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ListPendingAsksRequest
+ */
+export class ListPendingAsksRequest extends Message<ListPendingAsksRequest> {
+  /**
+   * @generated from field: string conversation_id = 1;
+   */
+  conversationId = "";
+
+  constructor(data?: PartialMessage<ListPendingAsksRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ListPendingAsksRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListPendingAsksRequest {
+    return new ListPendingAsksRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListPendingAsksRequest {
+    return new ListPendingAsksRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListPendingAsksRequest {
+    return new ListPendingAsksRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListPendingAsksRequest | PlainMessage<ListPendingAsksRequest> | undefined, b: ListPendingAsksRequest | PlainMessage<ListPendingAsksRequest> | undefined): boolean {
+    return proto3.util.equals(ListPendingAsksRequest, a, b);
+  }
+}
+
+/**
+ * ListPendingAsksResponse carries the conversation's open asks, in the SAME
+ * PermissionAsk shape the turn stream emits — deliberately the same message, so
+ * a discovered ask and a streamed ask cannot drift into two renderings, and a
+ * client can feed both through one path.
+ *
+ * @generated from message orchicon.api.v1.ListPendingAsksResponse
+ */
+export class ListPendingAsksResponse extends Message<ListPendingAsksResponse> {
+  /**
+   * @generated from field: repeated orchicon.api.v1.PermissionAsk asks = 1;
+   */
+  asks: PermissionAsk[] = [];
+
+  constructor(data?: PartialMessage<ListPendingAsksResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ListPendingAsksResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "asks", kind: "message", T: PermissionAsk, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListPendingAsksResponse {
+    return new ListPendingAsksResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListPendingAsksResponse {
+    return new ListPendingAsksResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListPendingAsksResponse {
+    return new ListPendingAsksResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListPendingAsksResponse | PlainMessage<ListPendingAsksResponse> | undefined, b: ListPendingAsksResponse | PlainMessage<ListPendingAsksResponse> | undefined): boolean {
+    return proto3.util.equals(ListPendingAsksResponse, a, b);
   }
 }
 

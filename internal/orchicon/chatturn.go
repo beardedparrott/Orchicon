@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"os"
 	"path/filepath"
@@ -285,6 +286,135 @@ func askHistoryFilename(sessionID string) string {
 	return sb.String()
 }
 
+// sanitizeHistoryLocked runs the replay-repair sanitize and, when it actually REMOVES something, records that
+// as an intended reduction for the persist that follows.
+//
+// IT EXISTS TO KEEP THE LOSS GUARD HONEST. sanitizeChatHistory deliberately drops an orphaned tool result (a
+// result whose call no preceding assistant message declares) and the messages left empty by that, because a
+// provider rejects the shape. Those drops are a REPAIR, not data loss — but the guard cannot tell the two
+// apart by looking at the count, so without this a legitimate repair would be reported as the data-loss bug,
+// and a guard that cries wolf is a guard nobody reads. The repair is still REPORTED, just as intended, with
+// its own reason.
+func (b *NativeBridge) sanitizeHistoryLocked(sessionID string, h []Message) []Message {
+	out := sanitizeChatHistory(h)
+	if len(out) < len(h) {
+		b.markHistoryReductionLocked(sessionID,
+			fmt.Sprintf("replay repair removed %d unpaired message(s)", len(h)-len(out)))
+	}
+	return out
+}
+
+// markHistoryReductionLocked declares that the NEXT persistence for this session is an INTENTIONAL lossy
+// reduction, so the shrink guard reports it as intended rather than as data loss. Call with b.mu held,
+// immediately before persisting. Both reduction paths (context reduction, compaction) are lossy by design and
+// both tell the operator; this is what keeps that distinction visible in the logs too.
+func (b *NativeBridge) markHistoryReductionLocked(sessionID, reason string) {
+	if b.askHistoryReduceReason == nil {
+		b.askHistoryReduceReason = map[string]string{}
+	}
+	b.askHistoryReduceReason[sessionID] = reason
+}
+
+// checkHistoryLostMessagesLocked reports a session that LOST a message it previously held. Call with b.mu
+// held, from the one choke point every history mutation passes (persistAskHistoryLocked).
+//
+// NO MESSAGE MAY DISAPPEAR FROM A SESSION, except by an announced reduction. That invariant is what the
+// operator's "Orchicon is not usable if you can't have a session that remembers what it's doing" is asking
+// for, and it is exactly what was violated silently for weeks:
+//
+//	commitChatHistory assigned `cur = working` — the committing turn's own snapshot-plus-output — so two
+//	overlapping turns destroyed each other's messages. An interjection SUPERSEDES the running turn, so this
+//	was the operator's normal path, and the damage looked like nothing: a run of consecutive USER messages in
+//	the session file, because a user message rides the next turn's snapshot while a reply exists only in the
+//	turn that produced it. The replies stayed in the transcript and on screen, so reading the session files by
+//	hand was the only way to see it.
+//
+// THE COMPARISON IS BY MESSAGE IDENTITY, NOT BY COUNT, and that is the whole difference between a guard that
+// works and one that does not. The replace SWAPS rather than truncates — H+[userA]+[userB] became
+// H+[userA]+replyA, the same length with one message substituted — and the commit after it grew the history
+// again. Neither a length check nor a per-role count check can see that; the missing fingerprint can.
+//
+// The report is at error level when nothing declared it, names the session and how many messages went, and
+// says what it MEANS — the next person to see this line should not have to reconstruct the diagnosis to know
+// that the model has lost work the operator can still read.
+func (b *NativeBridge) checkHistoryLostMessagesLocked(sessionID string) {
+	cur := b.chatHistory[sessionID]
+	reason, intended := b.askHistoryReduceReason[sessionID]
+	delete(b.askHistoryReduceReason, sessionID)
+
+	now := make(map[uint64]int, len(cur))
+	for _, m := range cur {
+		now[messageFingerprint(m)]++
+	}
+	prev, seen := b.askHistorySeen[sessionID]
+	if b.askHistorySeen == nil {
+		b.askHistorySeen = map[string]map[uint64]int{}
+	}
+	b.askHistorySeen[sessionID] = now
+
+	if intended {
+		if seen {
+			b.log.Info("orchicon: ask session history reduced as intended",
+				"session", sessionID, "from", totalCount(prev), "to", len(cur), "reason", reason)
+		}
+		return
+	}
+	if !seen {
+		return // first observation: nothing to compare against
+	}
+	lost := 0
+	for fp, n := range prev {
+		if now[fp] < n {
+			lost += n - now[fp]
+		}
+	}
+	if lost == 0 {
+		return // the invariant held
+	}
+	b.log.Error("orchicon: ASK SESSION HISTORY LOST MESSAGES WITHOUT AN INTENTIONAL REDUCTION — the model has lost messages that are still in the transcript, so it will repeat work the operator can see it already did. This is the data-loss bug (see commitChatHistory); the session no longer matches the durable record.",
+		"session", sessionID, "lost", lost, "before", totalCount(prev), "after", len(cur))
+}
+
+// totalCount sums a fingerprint multiset.
+func totalCount(m map[uint64]int) int {
+	n := 0
+	for _, c := range m {
+		n += c
+	}
+	return n
+}
+
+// messageFingerprint identifies a message's CONTENT, for the "no message may disappear" invariant above. It
+// covers every field a replayed history carries, so a message that was rewritten rather than removed also
+// reads as gone — which is correct: the model can no longer see what it used to.
+func messageFingerprint(m Message) uint64 {
+	h := fnv.New64a()
+	io.WriteString(h, string(m.Role))
+	for _, c := range m.Content {
+		switch {
+		case c.Text != nil:
+			io.WriteString(h, "\x01")
+			io.WriteString(h, *c.Text)
+		case c.Image != nil:
+			io.WriteString(h, "\x02")
+			io.WriteString(h, *c.Image)
+		case c.ToolUse != nil:
+			io.WriteString(h, "\x03")
+			io.WriteString(h, c.ToolUse.ToolCallID)
+			io.WriteString(h, c.ToolUse.Name)
+			io.WriteString(h, c.ToolUse.ArgsJSON)
+		case c.ToolResult != nil:
+			io.WriteString(h, "\x04")
+			io.WriteString(h, c.ToolResult.ToolCallID)
+			io.WriteString(h, c.ToolResult.Content)
+			if c.ToolResult.IsError {
+				io.WriteString(h, "E")
+			}
+		}
+	}
+	return h.Sum64()
+}
+
 // persistAskHistoryLocked writes the session's history to disk (atomic
 // tmp + rename). Callers must hold b.mu. Best-effort: every failure is a
 // warn + return, never a turn failure.
@@ -302,6 +432,11 @@ func askHistoryFilename(sessionID string) string {
 // compressed form is over the cap. Every reduction is logged, so a persisted file
 // is never a reduced one by silence.
 func (b *NativeBridge) persistAskHistoryLocked(sessionID string) {
+	// THE SHRINK GUARD RUNS FIRST, before the persistence decisions below, because it protects the session
+	// HISTORY rather than the FILE: a history that lost messages has lost them whether or not this call
+	// manages to write. Every mutation of b.chatHistory ends in a call here (dispatch, commit, context
+	// reduction, compaction), so this is the one place that sees all of them.
+	b.checkHistoryLostMessagesLocked(sessionID)
 	dir := b.askHistoryDir
 	if dir == "" {
 		return
@@ -374,7 +509,11 @@ func (b *NativeBridge) marshalAskHistoryForStorage(sessionID string, history []M
 		return nil
 	}
 	if len(gz) > askHistoryMaxBytes {
-		b.log.Warn("orchicon: ask history oversize even after dropping image payloads — staying memory-only",
+		// AN ERROR, NOT A WARNING, and the consequence is spelled out: the file on disk is now STALE by
+		// everything committed since the last successful persist, and the load path only consults the file when
+		// the in-memory history is EMPTY — i.e. exactly after a restart. So this state means "a restart loses
+		// every message since then", silently, which is the failure mode this whole guard exists to stop.
+		b.log.Error("orchicon: ask history is oversize even after dropping image payloads — the FILE ON DISK IS NOW STALE, and a restart will reload it and LOSE every message committed since the last successful persist",
 			"session", sessionID, "gz_bytes", len(gz), "cap", askHistoryMaxBytes, "images_dropped", images)
 		return nil
 	}
@@ -490,6 +629,18 @@ func (b *NativeBridge) askToolsLocked(ctx context.Context) []ToolDef {
 	return b.askTools.AskToolDefs(ctx)
 }
 
+// ToolsRunInProcess implements scheduler.InProcessToolRunner.
+//
+// THE NATIVE BRIDGE RUNS THE MODEL'S TOOLS HERE. The file/shell suite (bash, read, write, batch_*, …) is
+// executed in this process by orchicon.HostTools, and bash carries its own hard deadline
+// (bashTimeoutDefault 120s, bashTimeoutMax 600s) enforced by exec.CommandContext — so a slow shell command is
+// a RUNNING one, not a wedged one, and its tool result always arrives to close the call.
+//
+// Ask Orchicon reads this to stop judging those calls by silence (see scheduler.InProcessToolRunner). It is a
+// declaration about WHERE a call runs, not a promise that a tool can never hang: a call this bridge cannot
+// finish is bounded by the turn's own reply window instead of being healed by a session recycle.
+func (b *NativeBridge) ToolsRunInProcess() bool { return true }
+
 // CreateConversationSession implements scheduler.ChatTurnClient. The native
 // transports are sessionless, so this returns a synthetic session id and
 // initializes an empty in-memory history under it. No server-side session
@@ -533,6 +684,8 @@ func (b *NativeBridge) PurgeConversationHistory(_ context.Context, conversationI
 	}
 	b.mu.Lock()
 	delete(b.chatHistory, sid)
+	delete(b.askHistorySeen, sid)
+	delete(b.askHistoryReduceReason, sid)
 	// The pressure bookkeeping describes a conversation that no longer exists:
 	// drop it with the history so a deleted conversation leaves no memory behind
 	// (nor a stale measurement that could fire a gate on a NEW conversation that
@@ -694,7 +847,7 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 	// the provider is well-formed — and the repair is persisted, so a session
 	// poisoned by a dangling tool call heals permanently instead of 400ing on
 	// every subsequent turn.
-	history = sanitizeChatHistory(history)
+	history = b.sanitizeHistoryLocked(sessionID, history)
 	history = append(history, Message{Role: RoleUser, Content: userContent})
 	b.chatHistory[sessionID] = history
 	b.persistAskHistoryLocked(sessionID)
@@ -760,7 +913,7 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 	bus.adopt()
 	b.mu.Unlock()
 
-	go b.drainChatTurn(turnCtx, prov, bus, stream, req, sessionID, history, b.askUsageSink(tenantID, conversationID, sessionID, modelRef, providerID, model))
+	go b.drainChatTurn(turnCtx, prov, bus, stream, req, conversationID, sessionID, history, b.askUsageSink(tenantID, conversationID, sessionID, modelRef, providerID, model))
 
 	// Return nil (accepted) BEFORE the drain goroutine emits, so the
 	// collector observes every event with sent == true (D4).
@@ -776,7 +929,7 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 // completion the full working history (assistant texts, tool uses and tool
 // results — not just the final text) replaces the session's history so a
 // follow-up re-sends the complete context.
-func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *chatBus, stream TurnStream, req TurnRequest, sessionID string, history []Message, usageSink func(context.Context, Usage)) {
+func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *chatBus, stream TurnStream, req TurnRequest, conversationID, sessionID string, history []Message, usageSink func(context.Context, Usage)) {
 	defer bus.release()
 	defer func() {
 		b.mu.Lock()
@@ -864,6 +1017,39 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 				reply.WriteString(rt)
 			}
 			emitTurnParts()
+			// AND COMMIT IT, so the SESSION agrees with the TRANSCRIPT.
+			//
+			// THIS IS THE SECOND HALF OF THE SAME DATA-LOSS BUG, and it is the one the operator kept
+			// reporting as the model "losing its brain": "The model is constantly losing its brain. It
+			// doesn't know it's already done things and then tries to do them again."
+			//
+			// The publish above fixed the VISIBLE half — an aborted turn hands over the work it produced,
+			// so the collector persists it and every client renders it. But this path then returned
+			// WITHOUT committing, deliberately ("the turn was cancelled — finalize without COMMITTING"),
+			// and that left the two views of the conversation PERMANENTLY DISAGREEING:
+			//
+			//   * the TRANSCRIPT (and therefore the operator, and the GUI, and the TUI) contains the
+			//     aborted reply — it is durable, it is on screen;
+			//   * the SESSION does not. The next turn re-sends b.chatHistory (SendTurnMessage: "the
+			//     accumulated history re-sent as full context"), which was never told about the reply, so
+			//     the model is handed a history in which its own last words were never spoken.
+			//
+			// A model that cannot see what it just said repeats it, re-asks what it just asked, and
+			// re-does work it already did — exactly the reported symptom, and the operator can watch it
+			// happen because they are reading the transcript the session is not.
+			//
+			// WHY ABORT IS THE COMMON CASE HERE, not an edge: the collector aborts on a STALL, on STOP, and
+			// on every SUPERSEDE. Interjecting is the operator's normal way to steer a running turn, and a
+			// prod log shows one interjection superseding a turn every few minutes while this was being
+			// diagnosed.
+			//
+			// Only THIS round's text is appended: earlier rounds are already in `working` via
+			// appendAssistantText on the tool-round path, and re-adding `reply` would duplicate them. A
+			// dangling tool call cannot leak in, because commitChatHistory sanitizes what it stores.
+			if rt := strings.TrimSpace(roundReply.String()); rt != "" {
+				b.appendAssistantText(&working, rt)
+			}
+			b.commitChatHistory(sessionID, history, working)
 			return
 		}
 		roundText := roundReply.String()
@@ -901,14 +1087,35 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 		// turn TTL sweeper (askTurnMaxAge(), default 31m,
 		// ORCHICON_ASK_TURN_MAX_AGE — internal/askorchicon/chat.go), and the
 		// stall monitor (tenant stall settings).
-		b.executeToolCalls(ctx, bus, &working, calls)
+		b.executeToolCalls(ctx, bus, &working, calls, conversationID)
 		req.Messages = append([]Message(nil), working...)
 		next, err := prov.StreamTurn(ctx, req)
 		if err != nil {
+			// COMMIT WHAT THE TURN ALREADY PRODUCED BEFORE LEAVING. This is the abort path's own principle
+			// ("everything the round produced is still in hand here, so it is published") applied to the place
+			// it was still missing. By this point `working` holds every COMPLETED tool round — the assistant's
+			// text, its tool calls and their results — and returning bare DISCARDS all of it, leaving the
+			// session with the operator's message followed by nothing.
+			//
+			// IT IS THE SUPERSEDE PATH, AND IT IS NOT RARE. An interjection cancels the running turn
+			// mid-loop, and the cancellation surfaces HERE — as a context.Canceled from the NEXT round's
+			// StreamTurn — not through drainOneRound's aborted flag. So it bypassed the abort path's commit
+			// entirely, and the abort-path fix (which this file already carried) could not help.
+			//
+			// MEASURED, on the operator's own conversation, on a binary that already had that abort-path fix:
+			// a turn produced 123 chars of text and ran FOUR tools, the operator interjected, and the session
+			// ended up holding two consecutive user messages with no trace of the turn between them — the work
+			// was in the transcript and on the operator's screen, and invisible to the model.
+			//
+			// AND NO GUARD CAN SEE THIS ONE. The loss guard compares the session against what it last held, so
+			// it catches a message that DISAPPEARS. This message never arrived — an omission, not a
+			// disappearance — which is why the guard stayed silent while the work was lost.
 			if errors.Is(err, context.Canceled) {
+				b.commitChatHistory(sessionID, history, working)
 				return
 			}
 			bus.emit(scheduler.SessionEvent{Kind: "error", Type: "error", Text: err.Error()})
+			b.commitChatHistory(sessionID, history, working)
 			return
 		}
 		stream = next
@@ -1004,9 +1211,16 @@ func (b *NativeBridge) askUsageSink(tenantID, conversationID, sessionID, modelRe
 // tools and appends one tool-result message per call to working. Calls are
 // never dropped: with no tool provider injected the result records the
 // misconfiguration as an error so the model can explain instead of
-// hanging. A tool execution failure is recorded as an error result (the
+// hanging. A tool execution failure is recorded as an error tool result (the
 // model sees it and can recover), never as a turn failure.
-func (b *NativeBridge) executeToolCalls(ctx context.Context, bus *chatBus, working *[]Message, calls []ToolCall) {
+//
+// conversationID is the ledger owner id for every row the Ask file-edit hook
+// writes: the server builds that hook with db.FileEditOwnerAskConversation, so
+// a completed mutating call ledgers (ask_conversation, <conversationID>) — the
+// exact tuple both clients' Ask diff panes query. This is what puts LIVE
+// per-edit rows in the pane during the turn; without it the pane only fills
+// after the turn from the git reconciler.
+func (b *NativeBridge) executeToolCalls(ctx context.Context, bus *chatBus, working *[]Message, calls []ToolCall, conversationID string) {
 	b.mu.Lock()
 	tools := b.askTools
 	b.mu.Unlock()
@@ -1041,9 +1255,20 @@ func (b *NativeBridge) executeToolCalls(ctx context.Context, bus *chatBus, worki
 			// chatting should be going on if a question is asked. You should pause
 			// to resume until the user has answered."
 			ans := b.awaitUserAnswer(ctx, bus, c, args)
-			if ans == "" {
+			switch {
+			case ans == "":
 				toolErr = errors.New("ask_user was not answered — the question expired unanswered, so it did not run. Ask it again if it is still needed")
-			} else {
+			case strings.HasPrefix(ans, ConsentRefusedPrefix):
+				// A LAYER REFUSAL, NOT AN ANSWER — the question half of consentDenialError.
+				//
+				// WITHOUT THIS the refusal arrived as `out`, i.e. as a SUCCESSFUL tool result carrying an
+				// internal error sentence, which told the model the operator had said that sentence and told
+				// every client the operator had ANSWERED. Nothing was shown and nobody was asked: the reason
+				// (a malformed call, refused by the tool's own validator before a card existed) is the only thing
+				// the model needs, and it has to arrive as an ERROR or the model treats it as content.
+				reason := strings.TrimPrefix(ans, ConsentRefusedPrefix)
+				toolErr = fmt.Errorf("%s — this question was NOT asked and the operator did NOT answer it, so this result is not their words. Correct the call (the reason above says what was wrong) and ask again", reason)
+			default:
 				out = ans
 			}
 		} else if consentGatedTool(c.Name) {
@@ -1070,6 +1295,29 @@ func (b *NativeBridge) executeToolCalls(ctx context.Context, bus *chatBus, worki
 		*working = append(*working, Message{Role: RoleTool, Content: []Content{{
 			ToolResult: &ContentToolResult{ToolCallID: c.ToolCallID, Content: content, IsError: isErr},
 		}}})
+		// Diff-pipeline ledger hook (native Ask file-edit gap): a COMPLETED
+		// mutating call ledgers its ground-truth engine payload under the Ask
+		// conversation's owner tuple, so the live per-edit rows are queryable
+		// DURING the turn (both clients already query this exact tuple).
+		// Failed calls carry no ground truth and never ledger (parity with the
+		// execution funnel in loop.go, which fires only after a nil error).
+		// The hook owns its own error posture (best-effort); nil = no Ask
+		// ledger. Read under mu because the server may wire it concurrently.
+		if toolErr == nil {
+			b.mu.Lock()
+			hook := b.askFileEditHook
+			b.mu.Unlock()
+			if hook != nil {
+				var inputMap map[string]any
+				if err := json.Unmarshal([]byte(args), &inputMap); err != nil || inputMap == nil {
+					inputMap = map[string]any{}
+				}
+				// Owner id = the conversation id; execDir is "" because the
+				// engine payload is exact and needs no plane-side observer
+				// (which also makes the non-git / no-project-dir case work).
+				hook(ctx, conversationID, tenant.FromContext(ctx), "", c.Name, inputMap, out)
+			}
+		}
 		// Emit the RESOLUTION as an adapter-neutral typed event. Without this the
 		// bus carried only the start (tool_part, name alone), so a consumer could
 		// never learn the call's arguments or its outcome: the Ask tool ledger
@@ -1365,6 +1613,33 @@ var ConsentMutatingTools = []string{
 // permission to ask a question. The classification above covers the host suite,
 // and the cross-package test keeps that boundary honest as the suite grows.
 func consentGatedTool(name string) bool {
+	// AN OPAQUE MCP TOOL IS NOT CONSENT-GATED. This used to gate one in EVERY mode, Iteration
+	// included, on the reasoning that a third-party tool's name reveals nothing about whether it
+	// acts — so the operator approved each call.
+	//
+	// THE OPERATOR OVERRULED THAT, and the product case is the stronger argument: "I didn't even
+	// think MCP was supposed to have a card. If it's added in scope it should just have access tbh.
+	// I don't want cards for that." An MCP server is in scope only because the operator attached it
+	// to this conversation or its project, so the approval ALREADY HAPPENED — at configuration time,
+	// deliberately. Re-asking per call is asking them to re-decide a standing decision, which is the
+	// same noise the policy deny list is exempt from above.
+	//
+	// WHAT STILL GOVERNS AN OPAQUE MCP TOOL, so this is a narrowing of consent and NOT an absence of
+	// governance:
+	//
+	//   - THE MODE BOUNDARY, which is a SEPARATE layer and is untouched here. askmode.MayExecute sends
+	//     an opaque MCP tool to its mode's MayAct, so Brainstorm and Quick Work still refuse it — and
+	//     the refusal is enforced at BOTH ends of the native path (native_tools.go filters what is
+	//     OFFERED, and refuses again at EXECUTE). That boundary never ran through consent, which is
+	//     why removing this arm cannot open it.
+	//   - the platform's own `mcp__orchicon__*` tools remain governed by the mode table alone, exactly
+	//     as before (they were already exempt here).
+	//
+	// The observed symptom this also removes: the operator has never seen an MCP card, while write and
+	// question cards render fine — and one of this session's own GitHub MCP calls came back
+	// "approval for mcp__…__list_pull_requests expired unanswered", i.e. the ask WAS raised and reached
+	// no card, so the call failed for a decision nobody was ever offered. Allowing the class removes
+	// that failure outright rather than leaving it to a rendering path I have not yet proven.
 	for _, n := range ConsentReadOnlyTools {
 		if n == name {
 			return false
@@ -1555,36 +1830,64 @@ func consentDenialError(tool, decision string) error {
 	}
 }
 
-// commitChatHistory replaces the session's in-memory history with the
-// turn's full working history (user message, assistant texts, tool uses
-// and tool results) so a follow-up re-sends the complete context.
-// Best-effort: when the turn produced no new messages the stored history
-// is left untouched; when the stored entry was reset mid-turn (session
-// recreated) the turn's own snapshot seeds it.
+// commitChatHistory APPENDS the turn's own messages to the session's in-memory history (user message,
+// assistant texts, tool uses and tool results), so a follow-up re-sends the complete context.
+// Best-effort: when the turn produced no new messages the stored history is left untouched; when the stored
+// entry was reset mid-turn (session recreated) the turn's snapshot seeds it.
+//
+// IT APPENDS, AND IT MUST NOT REPLACE. It used to assign `cur = working`, i.e. overwrite the session with
+// THIS turn's snapshot-plus-output — and that silently DESTROYED the work of any other turn that had written
+// to the session since this one dispatched. Supersede is exactly that shape, and supersede is how this
+// operator steers a running turn:
+//
+//	step                                        session history
+//	A dispatched, running                       H + [userA]
+//	operator interjects ⇒ B dispatched          H + [userA] + [userB]      (B's snapshot)
+//	A cancelled ⇒ A commits its own working     H + [userA] + replyA        ← [userB] destroyed
+//	B completes ⇒ B commits its own working     H + [userA] + [userB] + replyB   ← replyA destroyed
+//
+// Last writer wins and the loser's messages are gone. The operator's own conversation shows the
+// fingerprint: their four superseded turns left FIVE CONSECUTIVE user messages in the session history with
+// no reply between them, because a user message rides the NEXT turn's snapshot (so it survives) while a
+// reply exists only in the turn that produced it (so it does not). Every one of those turns was in the
+// transcript, on screen, and in the database — and invisible to the model, which is the whole of their
+// "Orchicon is not usable if you can't have a session that remembers what it's doing".
+//
+// The fix is not a merge heuristic: a turn's contribution is exactly the tail it produced past its own
+// snapshot (drainChatTurn seeds `working` from `history` and only ever appends to it), so appending that tail
+// to whatever the session holds NOW preserves both turns' messages whatever order they commit in.
 func (b *NativeBridge) commitChatHistory(sessionID string, history, working []Message) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if len(working) == 0 {
 		return
 	}
+	// THIS TURN'S OWN MESSAGES — everything it produced past the snapshot it dispatched from.
+	tail := turnContribution(history, working)
 	cur := b.chatHistory[sessionID]
 	if len(cur) == 0 && len(history) > 0 {
-		// The entry was reset mid-turn — seed from the turn snapshot so
-		// the user message is not lost, then prefer the working tail.
-		if len(working) >= len(history) {
-			cur = append([]Message(nil), working...)
-		} else {
-			cur = append([]Message(nil), history...)
-			cur = append(cur, working...)
-		}
-	} else {
-		cur = append([]Message(nil), working...)
+		// The entry was reset mid-turn; seed from the turn snapshot so the user message is not lost
+		// before appending what the turn produced.
+		cur = append([]Message(nil), history...)
 	}
-	// Never persist a dangling tool call: a turn that ended between a call and
-	// its result must not poison the session for the next provider.
-	cur = sanitizeChatHistory(cur)
+	cur = append(cur, tail...)
+	// Never persist a dangling tool call: a turn that ended between a call and its result must not poison
+	// the session for the next provider.
+	cur = b.sanitizeHistoryLocked(sessionID, cur)
 	b.chatHistory[sessionID] = cur
 	b.persistAskHistoryLocked(sessionID)
+}
+
+// turnContribution returns the messages a turn ADDED to the snapshot it dispatched from.
+//
+// `working` is `history` plus what the turn produced (drainChatTurn seeds it that way and only appends), so
+// the contribution is the tail. A `working` that is somehow SHORTER than its snapshot is treated as wholly
+// new rather than indexed past its end — that can only ever add messages to the session, never drop one.
+func turnContribution(history, working []Message) []Message {
+	if len(history) == 0 || len(working) < len(history) {
+		return working
+	}
+	return working[len(history):]
 }
 
 // AbortConversationSession implements scheduler.ChatTurnClient: it cancels

@@ -88,6 +88,87 @@ func resolveForPlane(raw string) (string, string, bool) {
 	return resolved, note, true
 }
 
+// ContainerHostAddress is the address a RUNTIME CONTAINER uses to reach a
+// service listening on the HOST's loopback.
+//
+// MEASURED, not assumed, because the two Docker flavours differ:
+//
+//	                       on the HOST        inside a CONTAINER
+//	127.0.0.1:<port>       works              the container's OWN loopback — nothing there
+//	host.docker.internal   DOES NOT RESOLVE   resolves via --add-host (daemon.go)
+//	172.17.0.1:<port>      works (docker0)    works
+//
+// So `host.docker.internal` is a CONTAINER-ONLY name: rewriting a stored host
+// value to it would break the host-plane consumer that works today (verified on
+// this host — `getent hosts host.docker.internal` returns nothing outside a
+// container). The bridge IP is the one value that works from BOTH sides, so it
+// is what a transposition uses. It is still not universally right — a
+// non-default bridge subnet moves it — which is why the operator is warned
+// about the firewall rule and the address is stated in the UI.
+const ContainerHostAddress = "172.17.0.1"
+
+// TransposeForContainer rewrites a provider base URL whose host is the HOST's
+// loopback into the address a runtime container can dial.
+//
+// A runtime container's loopback is its own, so a local model published on the
+// operator's machine is unreachable from a worker at 127.0.0.1 — while the same
+// URL is exactly right for the host-plane consumer that dials it in-process.
+// One stored provider therefore needs two addresses, and this is the container's.
+//
+// 0.0.0.0 and ::1 are rewritten too, for the same reason: none of them name the
+// host from inside a container.
+//
+// The PORT and PATH are preserved (net.JoinHostPort), because a local model's
+// port IS its identity and the version root (…/v1) is part of the endpoint.
+// A URL that is not loopback is returned unchanged: a public endpoint, a LAN
+// address and an already-transposed value are all reachable as they stand.
+func TransposeForContainer(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	u, err := url.Parse(trimmed)
+	if err != nil || u.Hostname() == "" {
+		return trimmed
+	}
+	switch u.Hostname() {
+	case "localhost", "127.0.0.1", "0.0.0.0", "::1":
+	default:
+		return trimmed
+	}
+	if u.Port() == "" {
+		// A portless loopback URL cannot be transposed usefully — the address is
+		// not the problem, the missing port is, and guessing one would point the
+		// worker at a service that is not the model.
+		return trimmed
+	}
+	u.Host = net.JoinHostPort(ContainerHostAddress, u.Port())
+	return u.String()
+}
+
+// mustTryLocalPorts reports whether a host is one where the common
+// local-inference ports are worth trying.
+//
+// TRUE only for an endpoint reachable on this machine or this network: loopback,
+// the container's host gateway, a private range, or a bare hostname with no dots
+// (a docker service name like `ollama`). FALSE for a public host — see the port
+// fallback in repairCandidates for the cost of getting this wrong.
+func mustTryLocalPorts(host string) bool {
+	h := strings.TrimSpace(host)
+	if h == "" {
+		return true // a portless parse: keep the historical behaviour
+	}
+	switch h {
+	case "localhost", "0.0.0.0", "::1", "host.docker.internal", "gateway.docker.internal":
+		return true
+	}
+	// A bare service name (docker compose network) is local by construction.
+	if !strings.Contains(h, ".") && !strings.Contains(h, ":") {
+		return true
+	}
+	if ip := net.ParseIP(h); ip != nil {
+		return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
+	}
+	return false
+}
+
 // repairCandidates lists the most-likely-working base URLs for a custom
 // provider whose stored URL cannot be probed. Dimensions explored:
 //   - host: loopback → plane-reachable host gateway (container mode only;
@@ -122,20 +203,51 @@ func repairCandidates(raw string) []string {
 		hosts = append(hosts, gw)
 	}
 
-	// Ports to try: as entered, else the common local-inference ports.
+	// PORT FALLBACK, LOCAL ENDPOINTS ONLY.
+	//
+	// The common local-inference ports belong to an endpoint on THIS network
+	// (ollama 11434, vLLM 8000, a dev proxy on 8080/8095). Applying them to a
+	// PUBLIC host manufactures addresses that cannot exist: repairing anthropic's
+	// `https://api.anthropic.com/v1` produced api.anthropic.com:11434 and friends,
+	// nine probes of which several hung for 15-30s on the dial — 45 SECONDS IN
+	// TOTAL, which is exactly the model picker's budget, so the picker never got
+	// an answer and the operator saw a list stuck on "loading models…".
+	//
+	// A public host is repaired by a missing version root or nothing at all; it
+	// does not move to another port. `for a custom` in this function's doc is the
+	// intent: a locally-entered endpoint, not a built-in cloud provider.
+	pathNeedsV1 := u.Path == "" || u.Path == "/"
+
 	port := u.Port()
 	ports := []string{port}
 	if port == "" {
-		ports = []string{"8080", "8095", "8000", "11434"}
+		switch {
+		case mustTryLocalPorts(u.Hostname()):
+			ports = []string{"8080", "8095", "8000", "11434"}
+		case !pathNeedsV1:
+			// A PUBLIC host, portless, whose path ALREADY carries the version root.
+			// The URL is well formed and there is nothing to repair: a 401 from it is
+			// a TOKEN problem, not an endpoint one. Returning here is what keeps a
+			// built-in cloud provider out of the sweep entirely.
+			//
+			// This is the case that cost 45 seconds: `https://api.anthropic.com/v1`
+			// reached the port fallback, which invented api.anthropic.com:11434 and
+			// friends, each dial blocking on a timeout.
+			return nil
+		}
 	}
-
-	pathNeedsV1 := u.Path == "" || u.Path == "/"
 
 	seen := map[string]bool{}
 	var out []string
 	add := func(host, port, path string) {
 		c := *u
-		c.Host = net.JoinHostPort(host, port)
+		if port == "" {
+			// JoinHostPort would render "host:" — a malformed URL. A portless
+			// candidate keeps the host verbatim.
+			c.Host = host
+		} else {
+			c.Host = net.JoinHostPort(host, port)
+		}
 		c.Path = path
 		s := c.String()
 		if s != "" && !seen[s] {

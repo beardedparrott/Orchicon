@@ -85,6 +85,7 @@ func (s *Service) CreateWorker(ctx context.Context, req *connect.Request[apiv1.C
 		ModelRef:            msg.ModelRef,
 		Role:                msg.Role,
 		Skills:              msg.Skills,
+		SkillFiles:          msg.GetSkillFiles(),
 		Behavior:            msg.Behavior,
 		AgentsMD:            msg.AgentsMd,
 		SystemPrompt:        msg.SystemPrompt,
@@ -1012,6 +1013,15 @@ func (s *Service) UpdateWorkerVersion(ctx context.Context, req *connect.Request[
 	if msg.Skills != nil {
 		merged.Skills = *msg.Skills
 	}
+	// DISTINCT from Skills above: skill_files is a JSON array of absolute PATHS
+	// (validated by contextfiles), not free-text prompt prose.
+	if msg.SkillFiles != nil {
+		sf, err := validateSkillFiles(*msg.SkillFiles)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		merged.SkillFiles = []byte(sf)
+	}
 	if msg.Behavior != nil {
 		merged.Behavior = *msg.Behavior
 	}
@@ -1033,7 +1043,11 @@ func (s *Service) UpdateWorkerVersion(ctx context.Context, req *connect.Request[
 		merged.ContextSources = []byte(*msg.ContextSources)
 	}
 	if msg.Permissions != nil {
-		merged.Permissions = []byte(*msg.Permissions)
+		perms, err := validatePermissions(ctx, ttx.Tx, tenantID, current.Permissions, *msg.Permissions)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		merged.Permissions = perms
 	}
 	if msg.GatedTools != nil {
 		merged.GatedTools = []byte(*msg.GatedTools)
@@ -1134,6 +1148,7 @@ func (s *Service) CreateWorkerVersion(ctx context.Context, req *connect.Request[
 		SystemPrompt:        source.SystemPrompt,
 		Role:                source.Role,
 		Skills:              source.Skills,
+		SkillFiles:          source.SkillFiles,
 		Behavior:            source.Behavior,
 		AgentsMD:            source.AgentsMD,
 		ContextSources:      source.ContextSources,
@@ -1187,6 +1202,15 @@ func (s *Service) CreateWorkerVersion(ctx context.Context, req *connect.Request[
 	if msg.Skills != nil {
 		newVer.Skills = *msg.Skills
 	}
+	// DISTINCT from Skills above: skill_files is a JSON array of absolute PATHS
+	// (validated by contextfiles), not free-text prompt prose.
+	if msg.SkillFiles != nil {
+		sf, err := validateSkillFiles(*msg.SkillFiles)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		newVer.SkillFiles = []byte(sf)
+	}
 	if msg.Behavior != nil {
 		newVer.Behavior = *msg.Behavior
 	}
@@ -1204,7 +1228,13 @@ func (s *Service) CreateWorkerVersion(ctx context.Context, req *connect.Request[
 		newVer.ContextSources = []byte(*msg.ContextSources)
 	}
 	if msg.Permissions != nil {
-		newVer.Permissions = []byte(*msg.Permissions)
+		// The SOURCE version is the diff base: this new version starts as its copy, so a spec it did
+		// not touch is carried over rather than re-judged (validatePermissions).
+		perms, err := validatePermissions(ctx, ttx.Tx, tenantID, source.Permissions, *msg.Permissions)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		newVer.Permissions = perms
 	}
 	if msg.GatedTools != nil {
 		newVer.GatedTools = []byte(*msg.GatedTools)
@@ -1594,16 +1624,19 @@ func workerRowToProto(w db.WorkerRow) *apiv1.Worker {
 // uses string for JSON-typed fields).
 func versionRowToProto(v db.WorkerVersionRow) *apiv1.WorkerVersion {
 	pv := &apiv1.WorkerVersion{
-		Id:                  v.ID,
-		WorkerId:            v.WorkerID,
-		Version:             int32(v.Version),
-		VersionNote:         v.VersionNote,
-		Status:              workerVersionStatusToProto(v.Status),
-		ModelRef:            v.ModelRef,
-		Adapter:             adapterKindOf(v.ModelRef),
-		SystemPrompt:        composeWorkerPrompt(v),
-		Role:                v.Role,
-		Skills:              v.Skills,
+		Id:           v.ID,
+		WorkerId:     v.WorkerID,
+		Version:      int32(v.Version),
+		VersionNote:  v.VersionNote,
+		Status:       workerVersionStatusToProto(v.Status),
+		ModelRef:     v.ModelRef,
+		Adapter:      adapterKindOf(v.ModelRef),
+		SystemPrompt: composeWorkerPrompt(v),
+		Role:         v.Role,
+		Skills:       v.Skills,
+		// SkillFiles is the SELECTABLE skill path array (real on-disk paths),
+		// DISTINCT from Skills above (free-text prompt prose).
+		SkillFiles:          skillFilesFromJSON(v.SkillFiles),
 		Behavior:            v.Behavior,
 		AgentsMd:            v.AgentsMD,
 		ContextSources:      string(v.ContextSources),
@@ -1620,6 +1653,20 @@ func versionRowToProto(v db.WorkerVersionRow) *apiv1.WorkerVersion {
 		pv.PublishedAt = timestamppb.New(*v.PublishedAt)
 	}
 	return pv
+}
+
+// skillFilesFromJSON best-effort decodes the skill_files JSONB column into the
+// proto's repeated string field. A corrupt payload degrades to empty rather than
+// failing the read (mirrors contextFilesFromJSONOrEmpty in internal/project).
+func skillFilesFromJSON(data []byte) []string {
+	if len(data) == 0 {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 // composeWorkerPrompt builds the system prompt for the proto response

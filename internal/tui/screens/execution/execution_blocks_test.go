@@ -17,11 +17,15 @@ package execution
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
+	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
 // transcriptItems is a realistic transcript: prose, a tool call with a LONG body, thinking, an
@@ -76,12 +80,104 @@ func TestToolAndReasoningBlocksStartCollapsed(t *testing.T) {
 	if got := strings.Count(body, "nested block handling"); got != 1 {
 		t.Errorf("the collapsed tool's output appears %d times, want ONCE (the summary line only — the body must not be drawn)", got)
 	}
-	if strings.Count(body, "\n")+1 > len(blocks)+3 {
-		t.Errorf("a collapsed transcript should be roughly one line per block; got %d lines for %d blocks:\n%s",
-			strings.Count(body, "\n")+1, len(blocks), body)
+	// One row per block PLUS the gap row between them: the gap is blockGap rows per BOUNDARY, so n
+	// blocks occupy n + blockGap*(n-1) rows before slack. (Before the gap existed this was "roughly
+	// one line per block"; the gap is what makes the blocks readable, so the bound moves with it
+	// rather than the gap being dropped to keep a stale number.)
+	budget := len(blocks) + blockGap*(len(blocks)-1) + 3
+	if strings.Count(body, "\n")+1 > budget {
+		t.Errorf("a collapsed transcript should be roughly one line per block plus the gap; got %d lines for %d blocks (budget %d):\n%s",
+			strings.Count(body, "\n")+1, len(blocks), budget, body)
 	}
 	if !strings.Contains(body, "bash") {
 		t.Error("the collapsed tool SUMMARY is missing — a collapsed tool call must say which tool ran")
+	}
+}
+
+// BLOCKS ARE SEPARATED BY A BLANK ROW — the operator's "the text in executions in the TUI are hard to
+// read. They are very scrunched up."
+//
+// The separator was written through the same closure that renders a block's rows, and that closure
+// SKIPS an empty string (which is how a collapsed block contributes nothing) — so the separator was
+// silently dropped and every block's last row ran straight into the next block's header. Measured
+// before the fix, the six-block fixture rendered as six consecutive non-blank rows.
+//
+// The assertion uses the offsets renderBlocks returns, because those are what the pane SCROLLS by:
+// pinning the gap through them covers the layout and the scroll math in one go.
+func TestBlocksAreSeparatedByABlankRow(t *testing.T) {
+	blocks := blocksFromItems(transcriptItems(), 100)
+	body, offsets := renderBlocks(blocks, &blockState{}, 100, transcriptCursor{})
+	rows := strings.Split(body, "\n")
+	if len(offsets) != len(blocks) {
+		t.Fatalf("offsets cover %d blocks, want %d", len(offsets), len(blocks))
+	}
+	for i := 1; i < len(blocks); i++ {
+		at := offsets[i]
+		if at <= 0 || at > len(rows) {
+			t.Fatalf("block %d starts at row %d, outside the %d rendered rows", i, at, len(rows))
+		}
+		// The row ABOVE a block (other than the first) is the gap.
+		if gap := rows[at-1]; strings.TrimSpace(ansi.Strip(gap)) != "" {
+			t.Errorf("block %d starts on row %d with no blank row before it — the block above runs into it:\n%s",
+				i, at, body)
+		}
+	}
+	// And the gap is exactly blockGap rows: a run of blank rows would be dead space (a stray extra
+	// newline is how the gap would silently double if the writer were changed). A run of k blank rows
+	// is k+1 consecutive newlines, so ONE blank row — the expected gap — shows up as "\n\n".
+	if strings.Contains(body, strings.Repeat("\n", blockGap+2)) {
+		t.Errorf("the transcript contains more than %d blank row(s) in a row; the gap is %d", blockGap, blockGap)
+	}
+}
+
+// AN ERROR'S TEXT IS PRINTED ONCE. An error block is never collapsible, so its summary is not a
+// preview — it is the header itself. Keeping the whole text in the body as well printed the same
+// sentence on two consecutive rows ("error boom: index out of range" / "boom: index out of range").
+func TestErrorBlockPrintsItsTextOnce(t *testing.T) {
+	items := []chat.ChatItem{{Kind: chat.KindError, Text: "boom: index out of range", Key: "e1"}}
+	body, _ := renderBlocks(blocksFromItems(items, 100), &blockState{}, 100, transcriptCursor{})
+	if got := strings.Count(body, "boom: index out of range"); got != 1 {
+		t.Errorf("the error text appears %d times, want ONCE:\n%s", got, body)
+	}
+	if !strings.Contains(body, "error") {
+		t.Errorf("the error block lost its label:\n%s", body)
+	}
+
+	// A MULTI-LINE error keeps everything below its first line — the split removes the duplication,
+	// not the diagnostic text (which is what an operator reads an execution for).
+	multi := chat.ChatItem{Kind: chat.KindError, Key: "e2", Text: "boom\n  at parser.go:12\n  at main.go:3"}
+	body, _ = renderBlocks(blocksFromItems([]chat.ChatItem{multi}, 100), &blockState{}, 100, transcriptCursor{})
+	for _, want := range []string{"boom", "at parser.go:12", "at main.go:3"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("a multi-line error dropped %q:\n%s", want, body)
+		}
+	}
+	if got := strings.Count(body, "boom"); got != 1 {
+		t.Errorf("the first line of a multi-line error appears %d times, want ONCE:\n%s", got, body)
+	}
+}
+
+// splitFirstLine is the error-block split as a unit: first non-empty line, then the remainder.
+func TestSplitFirstLine(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		summary string
+		body    string
+	}{
+		{"one line", "boom", "boom", ""},
+		{"two lines", "boom\n  at parser.go:12", "boom", "  at parser.go:12"},
+		{"leading blanks are skipped", "\n\nboom\nrest", "boom", "rest"},
+		{"empty", "", "", ""},
+		{"only blanks", "  \n\t\n", "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gotSummary, gotBody := splitFirstLine(c.in)
+			if gotSummary != c.summary || gotBody != c.body {
+				t.Errorf("splitFirstLine(%q) = (%q, %q), want (%q, %q)", c.in, gotSummary, gotBody, c.summary, c.body)
+			}
+		})
 	}
 }
 
@@ -352,4 +448,122 @@ func modelWithTranscript(t *testing.T) (*Model, []textBlock) {
 	blocks := blocksFromItems(transcriptItems(), 100)
 	m.clampBlockCursor(len(blocks))
 	return m, blocks
+}
+
+// A LIVE BLOCK'S BODY IS BOUNDED, and says so. A live block is drawn expanded without the operator
+// having asked (defaultExpanded), so a long one — streamed reasoning is routinely tens of thousands of
+// characters — buried the rest of the transcript in text nobody chose to open. That is the execution half
+// of the report "tools and thought are not being collapsed": the TOOLS were collapsed and the streamed
+// THINKING was drawn in full, because it was live.
+//
+// The bound is the chat pane's own (reasoningBodyMaxRows), so the two panes show the same amount of the
+// model's thinking, and the elision is EXPLICIT: a silent cut reads as the end of the reasoning.
+//
+// The fixture is a TOOL block on purpose: a tool body is RAW text (ToolCard draws a <pre>), so one source
+// line is one rendered row and the count is exact. A MARKDOWN body is re-flowed — consecutive lines join
+// into a paragraph — so counting occurrences there measures the renderer's wrapping, not the bound.
+func TestLiveBodiesAreBoundedAndSaySo(t *testing.T) {
+	const bodyLines = liveBodyMaxRows * 3
+	var out []string
+	for i := 0; i < bodyLines; i++ {
+		out = append(out, fmt.Sprintf("out-%02d", i))
+	}
+	live := []chat.ChatItem{{Kind: chat.KindTool, Key: "t1", Live: true,
+		Tool: &chat.ParsedTool{ID: "t1", ToolName: "bash", Output: strings.Join(out, "\n")}}}
+	blocks := blocksFromItems(live, 100)
+	if !blocks[0].live || !blocks[0].defaultExpanded() {
+		t.Fatal("fixture: a live block is drawn expanded")
+	}
+	body, _ := renderBlocks(blocks, &blockState{}, 100, transcriptCursor{})
+
+	drawn := 0
+	for i := 0; i < bodyLines; i++ {
+		if strings.Contains(body, fmt.Sprintf("out-%02d", i)) {
+			drawn++
+		}
+	}
+	if drawn != liveBodyMaxRows-1 {
+		t.Errorf("a live block drew %d output lines, want %d — the bound is %d ROWS of the body, and "+
+			"the body's own %q label occupies one of them:\n%s",
+			drawn, liveBodyMaxRows-1, liveBodyMaxRows, "output:", body)
+	}
+	if !strings.Contains(body, "more lines") {
+		t.Errorf("the bound is SILENT — an operator would read it as the end of the thinking:\n%s", body)
+	}
+	if !strings.Contains(body, "expand") {
+		t.Errorf("the elision does not say the rest is reachable:\n%s", body)
+	}
+
+	// A SETTLED block is NOT bounded once the operator expands it: they asked for all of it, and
+	// truncating that would be the same defect in reverse.
+	settled := blocksFromItems([]chat.ChatItem{{Kind: chat.KindTool, Key: "t1",
+		Tool: &chat.ParsedTool{ID: "t1", ToolName: "bash", Output: strings.Join(out, "\n")}}}, 100)
+	state := &blockState{}
+	state.toggle(settled[0]) // tools start collapsed; the operator opens this one
+	if !state.expanded(settled[0]) {
+		t.Fatal("fixture: the operator's expansion was not recorded")
+	}
+	got, _ := renderBlocks(settled, state, 100, transcriptCursor{})
+	all := 0
+	for i := 0; i < bodyLines; i++ {
+		if strings.Contains(got, fmt.Sprintf("out-%02d", i)) {
+			all++
+		}
+	}
+	if all != bodyLines {
+		t.Errorf("an OPERATOR-EXPANDED block drew %d of %d lines — a block they opened must not be cut",
+			all, bodyLines)
+	}
+	if strings.Contains(got, "more lines") {
+		t.Error("an operator-expanded block carries an elision marker")
+	}
+
+	// The MARKDOWN path is bounded too (streamed reasoning is markdown in the GUI), which is the case
+	// the operator actually hit.
+	var think []string
+	for i := 0; i < bodyLines; i++ {
+		think = append(think, fmt.Sprintf("thought %02d about the problem", i))
+	}
+	liveThink := blocksFromItems([]chat.ChatItem{{Kind: chat.KindReasoning, Key: "r1", Live: true,
+		Text: strings.Join(think, "\n\n")}}, 100)
+	got, _ = renderBlocks(liveThink, &blockState{}, 100, transcriptCursor{})
+	if !strings.Contains(got, "more lines") {
+		t.Errorf("a live MARKDOWN body is unbounded — the bound must cover the markdown path, which is "+
+			"where streamed reasoning lands:\n%s", got)
+	}
+}
+
+// THE COLLAPSE DECISION AND THE LAYOUT ARE THEME-INDEPENDENT. The operator narrowed the report to the
+// transparent themes ("I believe it may only be happening in the transparent themes. It looks like tools
+// and thought are not being collapsed"), and that is worth pinning either way: a transparent theme paints
+// no fills, so the ONLY thing separating one block from the next is the layout this renderer emits. If a
+// future change ever made collapsing theme-dependent, the transcript would read as one wall of text on a
+// transparent theme and this test would catch it.
+func TestTranscriptLayoutIsThemeIndependent(t *testing.T) {
+	items := transcriptItems()
+	var first string
+	for _, name := range []string{"obsidian", "obsidian-transparent", "lumen-transparent", "light"} {
+		if !theme.Use(name) {
+			t.Fatalf("theme %q not found — the named transparent variants must exist", name)
+		}
+		blocks := blocksFromItems(items, 100)
+		for _, b := range blocks {
+			// The COLLAPSE decision, which is the operator's actual complaint.
+			if b.kind.collapsible() && b.defaultExpanded() {
+				t.Errorf("theme %s: a %s block is drawn EXPANDED — collapsing must not depend on the theme",
+					name, b.label())
+			}
+		}
+		body, offsets := renderBlocks(blocks, &blockState{}, 100, transcriptCursor{})
+		got := fmt.Sprintf("%v\n%s", offsets, ansi.Strip(body))
+		if first == "" {
+			first = got
+			continue
+		}
+		if got != first {
+			t.Errorf("theme %s renders a DIFFERENT transcript from the first theme — the layout (and so the "+
+				"only separator a transparent theme has) must not vary by palette", name)
+		}
+	}
+	theme.Use("obsidian") // leave the process on the default
 }

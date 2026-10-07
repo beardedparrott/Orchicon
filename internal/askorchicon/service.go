@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -18,7 +19,9 @@ import (
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/blobstore"
+	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/mcpclient"
 	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
@@ -109,6 +112,23 @@ type Service struct {
 	// the conversation's ledger reconciles against the project dir's git
 	// state. Nil = skipped.
 	fileEditReconciler func(ctx context.Context, tenantID, convID string)
+
+	// mcpResolver is the ONE scope-addressed MCP resolver (internal/mcpsettings).
+	// An Ask conversation resolves SCOPE CONVERSATION — project ∪ conversation —
+	// from it, which is the whole of the native Ask MCP surface's input. Nil
+	// (tests / unwired planes) resolves nothing: no MCP tools, never an error.
+	mcpResolver mcpclient.ScopeResolver
+	// kek is the tenant-secrets key used to expand ${SECRET_NAME} references in a
+	// resolved MCP definition's env/headers before connect. Without it an Ask
+	// conversation whose server carries a reference cannot start, while every
+	// other path can — so it is wired from the server's own KEK.
+	kek []byte
+	// askMCP caches one LIVE MCP client per conversation (see ask_mcp.go). Ask
+	// turns are long-lived, so the client is created once and closed only at
+	// conversation teardown or plane shutdown — never per turn (per-turn close
+	// would re-spawn stdio children on every message).
+	askMCP   map[string]*askMCPEntry
+	askMCPMu sync.Mutex
 
 	apiv1connect.UnimplementedAskOrchiconServiceHandler
 }
@@ -207,6 +227,22 @@ func (s *Service) SetUsageRecorder(rec *aigateway.UsageRecorder) {
 func (s *Service) SetRuntimeClient(rt *runtime.Client) {
 	s.runtimeClient = rt
 	toolRuntimeClient = rt
+}
+
+// SetScopeResolver wires the ONE MCP scope resolver (internal/mcpsettings) into
+// the native Ask path. Mirroring the bridges' setter of the same name is
+// deliberate: ONE resolution, one place the platform decides which servers a
+// session gets. Nil resolves nothing (tests / unwired planes).
+func (s *Service) SetScopeResolver(src mcpclient.ScopeResolver) {
+	s.mcpResolver = src
+}
+
+// SetSecretKEK wires the tenant-secrets key the native Ask path uses to expand
+// ${SECRET_NAME} references in a resolved MCP definition. Every other path
+// (worker bridge, claude bridge) already resolves secrets; without this the
+// native path alone would fail on a server that carries a reference.
+func (s *Service) SetSecretKEK(kek []byte) {
+	s.kek = kek
 }
 
 // SetAdapterKinds wires the Dispatcher's registered adapter kinds (ADR-0004
@@ -635,6 +671,10 @@ func (s *Service) DeleteConversation(ctx context.Context, req *connect.Request[a
 	s.grants.ClearConversation(req.Msg.Id)
 	s.once.ClearConversation(req.Msg.Id)
 	s.pending.removeConversation(req.Msg.Id)
+	// And its MCP client (child 6): the conversation's stdio children must not
+	// outlive it. Closed here rather than per turn — an Ask turn is long-lived, so
+	// a per-turn close would re-spawn every server on every message.
+	s.closeAskMCP(req.Msg.Id)
 	return connect.NewResponse(&apiv1.DeleteConversationResponse{}), nil
 }
 
@@ -1048,8 +1088,11 @@ func (s *Service) conversationRowToProto(r db.ConversationRow, messageCount int,
 		// FULLSEND is COMPUTED, never stored: it rides the same read-time seam as
 		// turn_in_flight below, so every list/get answers with the state the plane holds
 		// right now rather than a column someone could forget to update.
-		Fullsend:                  s.fullsend.Enabled(r.ID),
-		ProjectId:                 r.ProjectID,
+		Fullsend:  s.fullsend.Enabled(r.ID),
+		ProjectId: r.ProjectID,
+		// SkillFiles is the SELECTABLE skill path array (real on-disk paths),
+		// DISTINCT from AgentConfig.skills (tenant-wide free-text prompt prose).
+		SkillFiles:                skillFilesFromJSON(r.SkillFiles),
 		MessageCount:              int32(messageCount),
 		LastMessagePreview:        lastPreview,
 		TurnInFlight:              st.inFlight,
@@ -1118,6 +1161,93 @@ func (s *Service) SetConversationProject(ctx context.Context, req *connect.Reque
 	return connect.NewResponse(&apiv1.SetConversationProjectResponse{
 		Conversation: s.conversationRowToProto(row, count, preview, s.turnStatus(row.ID, stallWindow)),
 	}), nil
+}
+
+// SetConversationSkillFiles replaces a conversation's skill_files path array (an empty list clears it). It is
+// the conversation-level half of the skills feature: the UNION of a conversation's skill files and its project's
+// is what the Ask system prompt renders (see skillManifestSection in chat.go), through the ONE shared renderer
+// contextfiles.RenderManifest — no Ask-specific skill code exists.
+//
+// TWO VALIDATION RULES, both reusing internal/contextfiles unchanged:
+//
+//   - STRUCTURAL (Validate): every entry must be absolute, non-empty, bounded, and free of "..".
+//   - CONTAINMENT (ValidateWithin): when the conversation is assigned to a project WITH a project_dir, every
+//     entry must live inside it. The project directory is the only directory mounted into a worker's container,
+//     so a skill outside it is invisible to the worker — rejecting it at save time (with the directory NAMED in
+//     the error) is strictly better than rendering a dead "could not read" note in every turn's prompt.
+//
+// DISTINCT FROM the free-text `skills` PROMPT SECTION on the tenant agent config: that is prose, this is a list
+// of real on-disk paths.
+func (s *Service) SetConversationSkillFiles(ctx context.Context, req *connect.Request[apiv1.SetConversationSkillFilesRequest]) (*connect.Response[apiv1.SetConversationSkillFilesResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	files := req.Msg.Files
+	if err := contextfiles.Validate(files); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+	// Read the conversation first so the containment check runs against the project it is ACTUALLY in, read in
+	// the same transaction as the write — the conversation's project cannot move between the check and the save.
+	current, err := db.GetConversation(ctx, ttx.Tx, tenantID, req.Msg.Id)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("conversation not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if current.ProjectID != "" {
+		if p, err := db.GetProject(ctx, ttx.Tx, tenantID, current.ProjectID); err == nil {
+			if err := contextfiles.ValidateWithin(files, p.ProjectDir); err != nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			}
+		}
+	}
+	filesJSON, err := contextfiles.ToJSON(files)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	row, err := db.SetConversationSkillFiles(ctx, ttx.Tx, tenantID, req.Msg.Id, filesJSON)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("conversation not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.skill_files_changed", "conversation", row.ID,
+		nil, audit.Snapshot(map[string]any{"skill_files": files})); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.skill_files_changed: %w", err))
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	count, _ := db.CountConversationMessages(ctx, ttx.Tx, tenantID, row.ID)
+	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
+	stallWindow := s.chatStallWindow(ctx, ttx.Tx, tenantID)
+	return connect.NewResponse(&apiv1.SetConversationSkillFilesResponse{
+		Conversation: s.conversationRowToProto(row, count, preview, s.turnStatus(row.ID, stallWindow)),
+	}), nil
+}
+
+// skillFilesFromJSON best-effort decodes a conversation's skill_files JSONB column into the proto's repeated
+// string field. A corrupt payload degrades to empty rather than failing the read.
+func skillFilesFromJSON(data []byte) []string {
+	if len(data) == 0 {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 // turnStatusInfo is the server-confirmed snapshot of a conversation's running
@@ -1270,6 +1400,13 @@ func toolCallsFromJSON(raw []byte) []*apiv1.ToolCall {
 		Type         string `json:"type"`
 		FunctionName string `json:"function_name"`
 		Arguments    string `json:"arguments"`
+		// IssuedAtUnixMs is child 1's per-entry issue stamp, written by
+		// toolCallEntry (tool_ledger.go). The field name must match that tag
+		// byte for byte: a drift silently leaves every stamp 0, which the
+		// rolling-window summarizer (internal/toolclass.Summarize) reads as
+		// "unstamped" and skips — the activity line would then count nothing
+		// over a turn that is plainly working, with no error anywhere.
+		IssuedAtUnixMs int64 `json:"issued_at_unix_ms"`
 	}
 	if err := json.Unmarshal(raw, &rows); err != nil || len(rows) == 0 {
 		return nil
@@ -1278,6 +1415,7 @@ func toolCallsFromJSON(raw []byte) []*apiv1.ToolCall {
 	for _, r := range rows {
 		out = append(out, &apiv1.ToolCall{
 			Id: r.ID, Type: r.Type, FunctionName: r.FunctionName, Arguments: r.Arguments,
+			IssuedAtUnixMs: r.IssuedAtUnixMs,
 		})
 	}
 	return out

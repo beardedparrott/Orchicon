@@ -6,7 +6,6 @@
 // It carries the GUI Control surface read-WRITE:
 //
 //	secrets    list (names/metadata ONLY) · create · rotate value · delete
-//	mcp        create · edit · enable/disable · set/clear credential · install
 //	providers  create custom · edit · enable/disable · set/clear token · delete
 //	webhooks   create · edit · enable/disable · test · delete · deliveries view
 //	adapters   list + detail (capabilities) + local enable/disable toggle
@@ -96,10 +95,9 @@ type Model struct {
 	// list-response caches: the list RPCs carry the rich rows and v1 has no
 	// Get-RPC for providers / webhooks / deliveries, so the list hit is the
 	// detail source of truth (same pattern as the enforcement screen).
-	webhooks   map[string]*apiv1.WebhookSubscription
-	providers  map[string]*apiv1.ProviderEntry
-	mcpServers map[string]*apiv1.MCPServer
-	adapters   map[string]*apiv1.RuntimeAdapter
+	webhooks  map[string]*apiv1.WebhookSubscription
+	providers map[string]*apiv1.ProviderEntry
+	adapters  map[string]*apiv1.RuntimeAdapter
 	// secretNames is the set of secret NAMES the tenant holds (never values — the list API does not
 	// return them). The provider forms use it to say whether a token is already stored, which is the
 	// one thing a masked field cannot tell the operator.
@@ -129,12 +127,6 @@ type Model struct {
 	rpcUpdateSettings              func(ctx context.Context, s *apiv1.TenantSettings) error
 	rpcAddPermissionPolicyEntry    func(ctx context.Context, r *apiv1.AddPermissionPolicyEntryRequest) error
 	rpcRemovePermissionPolicyEntry func(ctx context.Context, r *apiv1.RemovePermissionPolicyEntryRequest) error
-	rpcCreateMCP                   func(ctx context.Context, r *apiv1.MCPServerCreateRequest) error
-	rpcUpdateMCP                   func(ctx context.Context, r *apiv1.MCPServerUpdateRequest) error
-	rpcDeleteMCP                   func(ctx context.Context, id string) error
-	rpcInstallMCP                  func(ctx context.Context, id string) error
-	rpcSetMCPSecret                func(ctx context.Context, id, name, value string) error
-	rpcClearMCPSecret              func(ctx context.Context, id, name string) error
 	rpcCreateProvider              func(ctx context.Context, r *apiv1.ProviderCreateCustomRequest) error
 	rpcUpdateProvider              func(ctx context.Context, r *apiv1.ProviderUpdateCustomRequest) error
 	rpcDeleteProvider              func(ctx context.Context, id string) error
@@ -161,7 +153,6 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 		reg:             reg,
 		webhooks:        map[string]*apiv1.WebhookSubscription{},
 		providers:       map[string]*apiv1.ProviderEntry{},
-		mcpServers:      map[string]*apiv1.MCPServer{},
 		adapters:        map[string]*apiv1.RuntimeAdapter{},
 		adapterDisabled: map[string]bool{},
 		secretNames:     map[string]bool{},
@@ -171,7 +162,12 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 	// (both match the GUI nav-config group placement); Control keeps only the
 	// surfaces the GUI files under Control.
 	m.AddSource("secrets", "Secrets (names only)", m.fetchSecrets)
-	m.AddSource("mcp", "MCP Servers", m.fetchMCP)
+	// NO "mcp" SOURCE, DELIBERATELY. A definition is OWNER-SCOPED now (project /
+	// conversation / worker version) and there is no tenant-level MCP pane: the
+	// unscoped ListMCPServers this source used is the whole-tenant view the epic
+	// removed, and the same reasoning deleted the GUI's Settings MCP tab. The
+	// capability did not leave the TUI — it moved to the three scopes through
+	// screens/mcpforms (and the conversation's /mcp slash command).
 	m.AddSource("providers", "Providers", m.fetchProviders)
 	m.AddSource("webhooks", "Webhooks", m.fetchWebhooks)
 	m.AddSource("adapters", "Adapters", m.fetchAdapters)
@@ -216,12 +212,12 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 			// do nothing rather than look like a broken apply.
 			return true, nil
 		}
-		if item.ID == theme.Active().Name {
-			m.Notice("theme " + item.ID + " is already active")
-			return true, nil
-		}
-		m.Notice("theme: " + item.ID)
-		return true, m.applyTheme(item.ID)
+		// THE COMMIT. The cursor has ALREADY previewed this palette (OnHighlight -> previewTheme), so
+		// "it is already the active palette" is the NORMAL state here and must NOT short-circuit: Enter is
+		// the gesture that KEEPS the choice — the shell binds it to the active project, or writes the
+		// default when no project is in scope (see App.SetTheme). The notice comes from that write, so it
+		// can say WHERE the choice landed rather than only that something happened.
+		return true, m.commitTheme(item.ID)
 	}
 
 	// MOVING THROUGH THE THEMES APPLIES THEM. This is the hook that makes the themes list a PREVIEW rather
@@ -312,48 +308,6 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 			return errNoClient("settings")
 		}
 		_, err := m.cl.Settings.RemovePermissionPolicyEntry(ctx, connect.NewRequest(r))
-		return err
-	}
-	m.rpcCreateMCP = func(ctx context.Context, r *apiv1.MCPServerCreateRequest) error {
-		if m.cl == nil || m.cl.MCP == nil {
-			return errNoClient("mcp")
-		}
-		_, err := m.cl.MCP.CreateMCPServer(ctx, connect.NewRequest(r))
-		return err
-	}
-	m.rpcUpdateMCP = func(ctx context.Context, r *apiv1.MCPServerUpdateRequest) error {
-		if m.cl == nil || m.cl.MCP == nil {
-			return errNoClient("mcp")
-		}
-		_, err := m.cl.MCP.UpdateMCPServer(ctx, connect.NewRequest(r))
-		return err
-	}
-	m.rpcDeleteMCP = func(ctx context.Context, id string) error {
-		if m.cl == nil || m.cl.MCP == nil {
-			return errNoClient("mcp")
-		}
-		_, err := m.cl.MCP.DeleteMCPServer(ctx, connect.NewRequest(&apiv1.MCPServerDeleteRequest{Id: id}))
-		return err
-	}
-	m.rpcInstallMCP = func(ctx context.Context, id string) error {
-		if m.cl == nil || m.cl.MCP == nil {
-			return errNoClient("mcp")
-		}
-		_, err := m.cl.MCP.InstallMCPRuntime(ctx, connect.NewRequest(&apiv1.MCPServerInstallRequest{Id: id}))
-		return err
-	}
-	m.rpcSetMCPSecret = func(ctx context.Context, id, name, value string) error {
-		if m.cl == nil || m.cl.MCP == nil {
-			return errNoClient("mcp")
-		}
-		_, err := m.cl.MCP.SetMCPServerSecret(ctx, connect.NewRequest(&apiv1.MCPServerSetSecretRequest{Id: id, Name: name, Value: value}))
-		return err
-	}
-	m.rpcClearMCPSecret = func(ctx context.Context, id, name string) error {
-		if m.cl == nil || m.cl.MCP == nil {
-			return errNoClient("mcp")
-		}
-		_, err := m.cl.MCP.ClearMCPServerSecret(ctx, connect.NewRequest(&apiv1.MCPServerClearSecretRequest{Id: id, Name: name}))
 		return err
 	}
 	m.rpcCreateProvider = func(ctx context.Context, r *apiv1.ProviderCreateCustomRequest) error {
@@ -562,26 +516,6 @@ func (m *Model) fetchSecrets(ctx context.Context, pageToken string) ([]kit2.Item
 	return items, resp.Msg.NextPageToken, nil
 }
 
-func (m *Model) fetchMCP(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
-	resp, err := m.cl.MCP.ListMCPServers(ctx, connect.NewRequest(&apiv1.MCPServerListRequest{}))
-	if err != nil {
-		return nil, "", err
-	}
-	items := make([]kit2.Item, 0, len(resp.Msg.Servers))
-	for _, s := range resp.Msg.Servers {
-		m.mcpServers[s.GetId()] = s
-		meta := "disabled"
-		if s.GetEnabled() {
-			meta = "enabled"
-		}
-		if s.GetHasSecretStored() {
-			meta += " · cred"
-		}
-		items = append(items, kit2.Item{ID: s.GetId(), Title: s.GetName(), Meta: meta})
-	}
-	return items, "", nil
-}
-
 func (m *Model) fetchProviders(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
 	resp, err := m.cl.Providers.ListProviders(ctx, connect.NewRequest(&apiv1.ProviderListRequest{}))
 	if err != nil {
@@ -661,6 +595,13 @@ func (m *Model) fetchThemes(ctx context.Context, pageToken string) ([]kit2.Item,
 	active := theme.Active().Name
 	names := theme.Names()
 
+	// The project this scope names, if any, and what it is bound to — so the row for a bound palette
+	// can say so rather than leaving the binding only discoverable by pressing "bind" on it again.
+	var boundTo string
+	if pt, ok := m.Shell().(projectThemer); ok {
+		_, boundTo, _ = pt.CurrentProjectTheme()
+	}
+
 	var dark, light []string
 	for _, name := range names {
 		if theme.IsDark(name) {
@@ -681,6 +622,9 @@ func (m *Model) fetchThemes(ctx context.Context, pageToken string) ([]kit2.Item,
 			if name == active {
 				meta = "active"
 			}
+			if name == boundTo {
+				meta += " · bound to this project"
+			}
 			items = append(items, kit2.Item{ID: name, Title: name, Meta: meta})
 		}
 	}
@@ -689,9 +633,23 @@ func (m *Model) fetchThemes(ctx context.Context, pageToken string) ([]kit2.Item,
 	return items, "", nil
 }
 
-// applyTheme switches the TUI palette through the shell (the shell owns the
-// profile and the construction-captured styles), then reconciles this pane so
-// the active marker moves.
+// projectThemer is the shell's project-binding surface (see tui.projecttheme.go). A separate interface
+// from applyTheme's local `themer` because binding is a DIFFERENT action from applying: the preview path
+// never touches it (criterion 2).
+type projectThemer interface {
+	BindProjectTheme(name string) (label string, ok bool)
+	UnbindProjectTheme() (label string, ok bool)
+	CurrentProjectTheme() (label, bound string, hasProject bool)
+}
+
+// applyTheme applies the palette under the cursor as a LIVE PREVIEW — what moving through the list does.
+// It goes through the shell (which owns the profile and the construction-captured styles) and reconciles
+// this pane so the active marker moves.
+//
+// IT DELIBERATELY DOES NOT COMMIT. The preview must not persist anything: routing it through SetTheme made
+// merely BROWSING the list rewrite a project's binding, or the shared default, on every cursor move — which
+// is half of the operator's report (a theme "changed" in one project that they had only looked at, and that
+// then followed them into another). commitTheme is the gesture that keeps a choice.
 //
 // IT RETURNS THE RECONCILE COMMAND rather than discarding it. `m.Refresh(name)` only STAGES the reload and
 // hands back the command that performs it, so the previous `m.Refresh("themes")` — whose return value went
@@ -700,8 +658,21 @@ func (m *Model) fetchThemes(ctx context.Context, pageToken string) ([]kit2.Item,
 // now that moving the cursor applies live, where the "active" marker tracking the cursor IS the feedback
 // that the preview took.
 func (m *Model) applyTheme(name string) tea.Cmd {
-	type themer interface{ SetTheme(string) bool }
-	if sh, ok := m.Shell().(themer); ok {
+	type previewer interface{ PreviewTheme(string) bool }
+	if sh, ok := m.Shell().(previewer); ok {
+		sh.PreviewTheme(name)
+	} else if !theme.Use(name) {
+		return nil
+	}
+	return m.Refresh("themes")
+}
+
+// commitTheme KEEPS the highlighted palette: the shell binds it to the active project when there is one, and
+// otherwise writes the persisted default that unbound projects inherit (see App.SetTheme). This is Enter in
+// this pane, and the same write `/theme <name>` performs.
+func (m *Model) commitTheme(name string) tea.Cmd {
+	type committer interface{ SetTheme(string) bool }
+	if sh, ok := m.Shell().(committer); ok {
 		sh.SetTheme(name)
 	} else if !theme.Use(name) {
 		return nil
@@ -896,30 +867,6 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 			{Key: "id", Value: id},
 			{Key: "note", Value: "orch never reads a secret value — write it on create, rotate it blind"},
 			{Key: "actions", Value: "e: rotate value/description · x: delete"},
-		}, "", nil
-
-	case "mcp":
-		s := m.mcpServers[id]
-		if s == nil {
-			resp, err := m.cl.MCP.GetMCPServer(ctx, connect.NewRequest(&apiv1.MCPServerGetRequest{Id: id}))
-			if err != nil {
-				return "", nil, "", err
-			}
-			s = resp.Msg.GetServer()
-		}
-		return "MCP Server: " + s.GetName(), []kit2.Field{
-			{Key: "id", Value: s.GetId()},
-			{Key: "name", Value: s.GetName()},
-			{Key: "transport", Value: strings.ToLower(s.GetTransport().String())},
-			{Key: "command", Value: s.GetCommand()},
-			{Key: "args", Value: strings.Join(s.GetArgs(), " ")},
-			{Key: "url", Value: s.GetUrl()},
-			{Key: "enabled", Value: screenkit.FmtBool(s.GetEnabled())},
-			{Key: "install status", Value: strings.ToLower(s.GetInstallStatus().String())},
-			{Key: "required secrets", Value: strings.Join(s.GetRequiredSecrets(), ", ")},
-			{Key: "credential stored", Value: screenkit.FmtBool(s.GetHasSecretStored())},
-			{Key: "catalog", Value: s.GetCatalogSlug()},
-			{Key: "actions", Value: "e: edit · t: toggle · s: set credential · c: clear credential · i: install · x: delete"},
 		}, "", nil
 
 	case "providers":
@@ -1202,15 +1149,50 @@ func (m *Model) actionsForSelection() []kit2.Action {
 
 	case "themes":
 		id := item.ID
-		if id == theme.Active().Name {
-			return nil // already active: nothing to apply
+		if id == "" {
+			return nil // a section heading (DARK / LIGHT): nothing to act on
 		}
-		return []kit2.Action{{
-			Label: "apply", Key: "a", Source: "themes",
-			Apply: func() { m.applyTheme(id) },
-			// No RPC: applying a palette is local + a profile write.
-			Do: func(ctx context.Context) error { return nil },
-		}}
+		var acts []kit2.Action
+		if id != theme.Active().Name {
+			acts = append(acts, kit2.Action{
+				Label: "apply", Key: "a", Source: "themes",
+				Apply: func() { m.applyTheme(id) },
+				// No RPC: applying a palette is local + a profile write.
+				Do: func(ctx context.Context) error { return nil },
+			})
+		}
+		// BIND/UNBIND are DELIBERATE actions, distinct from the cursor preview above (previewTheme calls
+		// applyTheme, never these) — criterion 2: moving through the list must never silently rebind a
+		// project. Offered only while the scope names a real project (All projects / No project have
+		// nothing to bind to).
+		if pt, ok := m.Shell().(projectThemer); ok {
+			if _, bound, hasProject := pt.CurrentProjectTheme(); hasProject {
+				if bound == id {
+					acts = append(acts, kit2.Action{
+						Label: "unbind", Key: "u", Source: "themes",
+						Apply: func() {
+							if label, ok := pt.UnbindProjectTheme(); ok {
+								m.Notice(id + " unbound from " + label)
+							}
+							m.Refresh("themes")
+						},
+						Do: func(ctx context.Context) error { return nil },
+					})
+				} else {
+					acts = append(acts, kit2.Action{
+						Label: "bind", Key: "b", Source: "themes",
+						Apply: func() {
+							if label, ok := pt.BindProjectTheme(id); ok {
+								m.Notice(id + " bound to " + label)
+							}
+							m.Refresh("themes")
+						},
+						Do: func(ctx context.Context) error { return nil },
+					})
+				}
+			}
+		}
+		return acts
 	case "webhooks":
 		id, name := item.ID, item.Title
 		enabled := true
@@ -1251,61 +1233,6 @@ func (m *Model) actionsForSelection() []kit2.Action {
 				Do:       func(ctx context.Context) error { return m.rpcDeleteWebhook(ctx, id) },
 			},
 		)
-		return acts
-
-	case "mcp":
-		id, name := item.ID, item.Title
-		enabled, hasCred, installable := false, false, false
-		secName := ""
-		if s := m.mcpServers[id]; s != nil {
-			enabled = s.GetEnabled()
-			hasCred = s.GetHasSecretStored()
-			installable = s.GetTransport() == apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STDIO || s.GetCatalogSlug() != ""
-			if len(s.GetRequiredSecrets()) > 0 {
-				secName = s.GetRequiredSecrets()[0]
-			}
-		}
-		acts := []kit2.Action{}
-		if enabled {
-			acts = append(acts, kit2.Action{
-				Label: "disable", Key: "t", Danger: true, Source: "mcp",
-				Confirm:  "Disable " + name + "?\nThe MCP client stops offering its tools at session time.",
-				Apply:    func() { m.setMCPEnabledLocally(id, false) },
-				Rollback: func() { m.setMCPEnabledLocally(id, true) },
-				Do: func(ctx context.Context) error {
-					off := false
-					return m.rpcUpdateMCP(ctx, &apiv1.MCPServerUpdateRequest{Id: id, Enabled: &off})
-				},
-			})
-		} else {
-			acts = append(acts, kit2.Action{
-				Label: "enable", Key: "t", Source: "mcp",
-				Apply:    func() { m.setMCPEnabledLocally(id, true) },
-				Rollback: func() { m.setMCPEnabledLocally(id, false) },
-				Do: func(ctx context.Context) error {
-					on := true
-					return m.rpcUpdateMCP(ctx, &apiv1.MCPServerUpdateRequest{Id: id, Enabled: &on})
-				},
-			})
-		}
-		if installable {
-			acts = append(acts, kit2.Action{Label: "install", Key: "i", Source: "mcp",
-				Do: func(ctx context.Context) error { return m.rpcInstallMCP(ctx, id) }})
-		}
-		if hasCred || secName != "" {
-			acts = append(acts, kit2.Action{
-				Label: "clear credential", Key: "c", Danger: true, Source: "mcp",
-				Confirm: "Clear the stored credential for " + name + "?\nThe MCP client can no longer authenticate.",
-				Do:      func(ctx context.Context) error { return m.rpcClearMCPSecret(ctx, id, secName) },
-			})
-		}
-		acts = append(acts, kit2.Action{
-			Label: "delete", Key: "x", Danger: true, Source: "mcp",
-			Confirm:  "Delete " + name + "?\nThis cannot be undone.",
-			Apply:    func() { m.RemoveRow("mcp", id) },
-			Rollback: func() { m.Refresh("mcp") },
-			Do:       func(ctx context.Context) error { return m.rpcDeleteMCP(ctx, id) },
-		})
 		return acts
 
 	case "providers":
@@ -1404,16 +1331,6 @@ func (m *Model) setWebhookStatus(id, status string) {
 	m.MutateRow("webhooks", id, func(r *kit2.Row) { r.Meta = status })
 }
 
-func (m *Model) setMCPEnabledLocally(id string, enabled bool) {
-	m.MutateRow("mcp", id, func(r *kit2.Row) {
-		if enabled {
-			r.Meta = "enabled"
-		} else {
-			r.Meta = "disabled"
-		}
-	})
-}
-
 func (m *Model) setProviderEnabledLocally(id string, enabled bool) {
 	m.MutateRow("providers", id, func(r *kit2.Row) {
 		prefix, suffix := r.Meta, ""
@@ -1468,8 +1385,6 @@ func (m *Model) newFormForSource() *kit2.Form {
 	switch m.ActiveSourceName() {
 	case "webhooks":
 		return m.newWebhookForm()
-	case "mcp":
-		return m.newMCPForm()
 	case "providers":
 		return m.newProviderForm()
 	case "secrets":
@@ -1494,8 +1409,6 @@ func (m *Model) editFormForSource() *kit2.Form {
 	switch m.ActiveSourceName() {
 	case "webhooks":
 		return m.editWebhookForm(item)
-	case "mcp":
-		return m.editMCPForm(item)
 	case "providers":
 		return m.editProviderForm(item)
 	case "secrets":
@@ -1638,6 +1551,13 @@ func (m *Model) settingsForm() *kit2.Form {
 		kit2.FieldSpec{Name: "stall_repetition_count", Label: "Stall repetition count (blank=def 0=off)", Kind: kit2.KNumber, Initial: stallCountInitial(s.StallRepetitionCount)},
 		kit2.FieldSpec{Name: "stall_repetition_window_seconds", Label: "Stall repetition window (s; blank=def 0=off)", Kind: kit2.KNumber, Initial: stallDimInitial(s.StallRepetitionWindowSeconds)},
 		kit2.FieldSpec{Name: "stall_nudge_max", Label: "Stall nudge max (blank=def 0=off)", Kind: kit2.KNumber, Initial: stallCountInitial(s.StallNudgeMax)},
+		// THE NUDGE TIMERS WERE THE ONLY TWO STALL KNOBS WITH NO FIELD, so they could be neither seen nor set
+		// from the TUI — and, before the settings merge, EVERY TUI save silently blanked them (they are
+		// written verbatim from the submitted row, so a field the form never sent arrived as NULL = "use the
+		// built-in default"). They are liveness-probe timers, not merely cosmetic: how long a probe is
+		// awaited, and how long between probes, decide whether a stalled session is nudged or reaped.
+		kit2.FieldSpec{Name: "stall_nudge_reply_window_seconds", Label: "Stall nudge reply window (s; blank=def 0=off)", Kind: kit2.KNumber, Initial: stallDimInitial(s.StallNudgeReplyWindowSeconds)},
+		kit2.FieldSpec{Name: "stall_nudge_cooldown_seconds", Label: "Stall nudge cooldown (s; blank=def 0=off)", Kind: kit2.KNumber, Initial: stallDimInitial(s.StallNudgeCooldownSeconds)},
 		kit2.FieldSpec{Name: "stall_tool_hang_seconds", Label: "Stall tool-hang window (s; blank=def 0=off)", Kind: kit2.KNumber, Initial: stallDimInitial(s.StallToolHangSeconds)},
 		kit2.FieldSpec{Name: "execution_reap_grace_seconds", Label: "Exec reap grace (s)", Kind: kit2.KNumber, Initial: num(s.GetExecutionReapGraceSeconds())},
 		kit2.FieldSpec{Name: "execution_reap_consecutive_failures", Label: "Exec reap consecutive failures", Kind: kit2.KNumber, Initial: i32(s.GetExecutionReapConsecutiveFailures())},
@@ -1728,6 +1648,8 @@ func (m *Model) settingsForm() *kit2.Form {
 		out.StallRepetitionCount = optI32(v["stall_repetition_count"])
 		out.StallRepetitionWindowSeconds = optI64(v["stall_repetition_window_seconds"])
 		out.StallNudgeMax = optI32(v["stall_nudge_max"])
+		out.StallNudgeReplyWindowSeconds = optI64(v["stall_nudge_reply_window_seconds"])
+		out.StallNudgeCooldownSeconds = optI64(v["stall_nudge_cooldown_seconds"])
 		out.StallToolHangSeconds = optI64(v["stall_tool_hang_seconds"])
 		out.ExecutionReapGraceSeconds = i64Of0(v["execution_reap_grace_seconds"])
 		out.ExecutionReapConsecutiveFailures = int32(i64Of0(v["execution_reap_consecutive_failures"]))
@@ -1753,105 +1675,32 @@ func (m *Model) settingsForm() *kit2.Form {
 	return f
 }
 
-// newMCPForm builds the typed MCP server create form.
-func (m *Model) newMCPForm() *kit2.Form {
-	f := kit2.NewForm("New MCP server",
-		kit2.FieldSpec{Name: "name", Label: "Name", Kind: kit2.KText, Required: true, Placeholder: "github-mcp"},
-		kit2.FieldSpec{Name: "transport", Label: "Transport", Kind: kit2.KSelect, Initial: "stdio", Options: []kit2.Option{
-			{Value: "stdio", Label: "stdio"}, {Value: "streamable-http", Label: "streamable-http"},
-		}},
-		kit2.FieldSpec{Name: "command", Label: "Command (stdio)", Kind: kit2.KText, Placeholder: "npx"},
-		kit2.FieldSpec{Name: "args", Label: "Args (space separated)", Kind: kit2.KText},
-		kit2.FieldSpec{Name: "url", Label: "URL (streamable-http)", Kind: kit2.KText},
-		kit2.FieldSpec{Name: "enabled", Label: "Enabled", Kind: kit2.KCheckbox, Initial: "true"},
-	)
-	f.Focused = true
-	f.Width = 64
-	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
-		req := &apiv1.MCPServerCreateRequest{
-			Name:      v["name"],
-			Transport: mcpTransport(v["transport"]),
-			Command:   v["command"],
-			Args:      strings.Fields(v["args"]),
-			Url:       v["url"],
-			Enabled:   v["enabled"] == "true",
-		}
-		return m.Mutate(mutate.Request{
-			Name: "create MCP server " + v["name"], Source: "mcp",
-			Do: func(ctx context.Context) error { return m.rpcCreateMCP(ctx, req) },
-		}), nil
-	}
-	return f
-}
-
-// editMCPForm edits the mutable MCP server fields (command/args, url, enabled).
-func (m *Model) editMCPForm(item kit2.Item) *kit2.Form {
-	s := m.mcpServers[item.ID]
-	command, args, url, enabled := "", "", "", "true"
-	if s != nil {
-		command = s.GetCommand()
-		args = strings.Join(s.GetArgs(), " ")
-		url = s.GetUrl()
-		if !s.GetEnabled() {
-			enabled = "false"
-		}
-	}
-	f := kit2.NewForm("Edit MCP server: "+item.Title,
-		kit2.FieldSpec{Name: "command", Label: "Command (stdio)", Kind: kit2.KText, Initial: command},
-		kit2.FieldSpec{Name: "args", Label: "Args (space separated)", Kind: kit2.KText, Initial: args},
-		kit2.FieldSpec{Name: "url", Label: "URL (streamable-http)", Kind: kit2.KText, Initial: url},
-		kit2.FieldSpec{Name: "enabled", Label: "Enabled", Kind: kit2.KCheckbox, Initial: enabled},
-	)
-	f.Focused = true
-	f.Width = 64
-	id := item.ID
-	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
-		req := &apiv1.MCPServerUpdateRequest{Id: id}
-		if cmd := strings.TrimSpace(v["command"]); cmd != "" {
-			req.Command = &cmd
-		}
-		if argv := strings.Fields(v["args"]); len(argv) > 0 {
-			req.Args = argv
-			replace := true
-			req.ReplaceArgs = &replace
-		}
-		if u := strings.TrimSpace(v["url"]); u != "" {
-			req.Url = &u
-		}
-		en := v["enabled"] == "true"
-		req.Enabled = &en
-		return m.Mutate(mutate.Request{
-			Name: "edit MCP server " + item.Title, Source: "mcp",
-			Do: func(ctx context.Context) error { return m.rpcUpdateMCP(ctx, req) },
-		}), nil
-	}
-	return f
-}
-
-// mcpSecretForm stores a credential for an MCP server via the secret store.
-// The value field is a KSecret — masked in the view, written once, never read
-// back.
-func (m *Model) mcpSecretForm(item kit2.Item) *kit2.Form {
-	name := ""
-	if s := m.mcpServers[item.ID]; s != nil && len(s.GetRequiredSecrets()) > 0 {
-		name = s.GetRequiredSecrets()[0]
-	}
-	f := kit2.NewForm("Store MCP credential: "+item.Title,
-		kit2.FieldSpec{Name: "name", Label: "Credential key", Kind: kit2.KText, Required: true, Initial: name, Placeholder: "GITHUB_TOKEN"},
-		kit2.FieldSpec{Name: "value", Label: "Value", Kind: kit2.KSecret, Required: true},
-	)
-	f.Focused = true
-	f.Width = 64
-	id := item.ID
-	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
-		key, val := v["name"], v["value"]
-		return m.Mutate(mutate.Request{
-			Name: "store MCP credential " + key, Source: "mcp",
-			Do: func(ctx context.Context) error { return m.rpcSetMCPSecret(ctx, id, key, val) },
-		}), nil
-	}
-	return f
-}
+// providerLocalModelNote is the note both provider forms carry.
+//
+// The operator asked for exactly this: "I also think we need to modify the add and edit
+// provider sections in the GUI and TUI to give a hint that a firewall rule will need to
+// be added for the docker container IP to make their local models work with both claude
+// and opencode. Otherwise users would be lost."
+//
+// It is ONE constant so the add form and the edit form cannot drift — the GUI's two
+// dialogs had already diverged this way, with the create dialog still promising an
+// automatic translation that had been removed.
+//
+// WHAT IT SAYS AND WHY EACH LINE IS TRUE HERE:
+//   - 127.0.0.1 is correct for the control plane, which now runs ON THE HOST. The
+//     native engine dials in-process, so Ask Orchicon works with what the operator types.
+//   - a runtime container's own 127.0.0.1 is the CONTAINER, so a worker arming a run is
+//     handed a transposed address automatically (internal/providers.TransposeForContainer,
+//     applied to the serve config a container boots with). The operator types one URL.
+//   - that transposed address crosses the docker bridge, which a host firewall often
+//     blocks — and when it does, container workers fail while Ask Orchicon keeps working.
+//     Without this sentence that asymmetry is undiagnosable.
+const providerLocalModelNote = "Local models need TWO addresses. 127.0.0.1 is correct for the control plane " +
+	"(it runs on this machine) and Ask Orchicon uses it as typed. A worker in a runtime container cannot: its own " +
+	"localhost is itself, so orchicon hands the container the host's bridge address (172.17.0.1) automatically when " +
+	"a run is armed. That needs a FIREWALL RULE — if your host firewall blocks the docker bridge from reaching your " +
+	"model's port, container workers fail while Ask Orchicon keeps working. Allow the bridge subnet (172.17.0.0/16 " +
+	"on a default docker bridge) to that port."
 
 // newProviderForm builds the custom-provider create form.
 func (m *Model) newProviderForm() *kit2.Form {
@@ -1872,6 +1721,8 @@ func (m *Model) newProviderForm() *kit2.Form {
 		kit2.FieldSpec{Name: "token", Label: "API token (optional)", Kind: kit2.KSecret,
 			Placeholder: "paste the key — stored as CUSTOM_<REF>_API_KEY, never read back"},
 	)
+	// The base-URL consequence, stated where the operator is entering the URL.
+	f.Note = providerLocalModelNote
 	f.Focused = true
 	f.Width = 64
 	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
@@ -1938,6 +1789,7 @@ func (m *Model) editProviderForm(item kit2.Item) *kit2.Form {
 		kit2.FieldSpec{Name: "token", Label: "API token (blank = unchanged)", Kind: kit2.KSecret,
 			Placeholder: m.tokenPlaceholder(item.ID)},
 	)
+	f.Note = providerLocalModelNote
 	f.Focused = true
 	f.Width = 64
 	id := item.ID
@@ -2201,24 +2053,15 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 	return m, nil
 }
 
-// secretFormForSource opens the credential/token entry form for panes that
-// store secrets (MCP "s", Providers "s").
-// --- the `s` chord is GONE for providers -------------------------------------------------------
+// secretFormForSource opens the credential form for panes that store secrets.
 //
-// The operator: "We should get rid of the 's' to set a token on providers and have that as just
-// another inline field in the edit/new." The token is now a field on both provider forms, so there is
-// no separate form to open — and no chord to explain. `secretFormForSource` no longer answers for the
-// providers pane; MCP keeps its own `s` (a credential per MCP SERVER is a genuinely separate object,
-// not a field of the server's own definition).
+// NO PANE ANSWERS ANY MORE, and that is the point rather than a gap. The MCP pane it used to serve
+// is gone (a definition is OWNER-SCOPED — project / conversation / worker version — so there is no
+// tenant-level MCP list to hang a credential off), and the provider token became a field on the
+// provider forms. The method is kept, and kept answering nil for every pane, because the `s` chord
+// is part of the screen's Update loop; a pane that grows a credential surface again re-registers
+// here rather than re-inventing the chord.
 func (m *Model) secretFormForSource() *kit2.Form {
-	item, ok := m.ActiveItem()
-	if !ok {
-		return nil
-	}
-	switch m.ActiveSourceName() {
-	case "mcp":
-		return m.mcpSecretForm(item)
-	}
 	return nil
 }
 
@@ -2283,8 +2126,6 @@ func (m *Model) HintLine() string {
 	switch m.ActiveSourceName() {
 	case "webhooks":
 		hint = "n: new · e: edit · t: enable/disable · T: test · x: delete (deliveries ride the detail)"
-	case "mcp":
-		hint = "n: new · e: edit · t: enabled · s: set credential · c: clear · i: install · x: delete"
 	case "providers":
 		hint = "n: new custom · e: edit (the token is a field) · t: enable/disable · c: clear token · x: delete"
 	case "secrets":
@@ -2363,13 +2204,6 @@ func validURL(v string) error {
 		return errors.New("must start with http:// or https://")
 	}
 	return nil
-}
-
-func mcpTransport(v string) apiv1.MCPServerTransport {
-	if v == "streamable-http" {
-		return apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STREAMABLE_HTTP
-	}
-	return apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STDIO
 }
 
 // buildBudgetJSON composes the individual budget fields back into the transport

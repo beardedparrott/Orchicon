@@ -31,7 +31,7 @@ import (
 // promptFor renders the full per-turn prompt (mode persona + the conversation's project block) for a test.
 func promptFor(t *testing.T, mode, convProject string) string {
 	t.Helper()
-	return buildSystemPrompt(mode, testAgentConfig(), testToolRegistry(), nil, true, nil, "", convProject)
+	return buildSystemPrompt(mode, testAgentConfig(), testToolRegistry(), nil, true, nil, "", convProject, "")
 }
 
 // askRootEnvelope runs the boundary probe and returns its envelope — the tool layer's own answer about scope.
