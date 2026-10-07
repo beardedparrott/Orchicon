@@ -597,6 +597,23 @@ func (m *App) diffRailWidthStep(delta int) bool {
 	return true
 }
 
+// splitAdjustable reports whether there is a split here for the chord to resize: the diff rail when it is
+// open, otherwise the active screen's tree/detail split.
+//
+// ONE QUESTION, TWO READERS — the chord and the composer hint. They must agree, or the hint advertises a key
+// that does nothing (or hides one that works), and "is there a split" is the only thing either needs to know.
+func (m *App) splitAdjustable() bool {
+	if m.diffOpen && m.diffPane != nil {
+		return true
+	}
+	s := m.screens[m.active]
+	if s == nil {
+		return false
+	}
+	sa, ok := s.(interface{ SplitAdjustable() bool })
+	return ok && sa.SplitAdjustable()
+}
+
 // splitWidthStep widens or narrows the split IN FRONT OF THE OPERATOR.
 //
 // ONE CHORD, TWO SPLITS, in precedence order: the diff rail when it is open (it is drawn over everything,
@@ -610,6 +627,12 @@ func (m *App) diffRailWidthStep(delta int) bool {
 func (m *App) splitWidthStep(delta int) bool {
 	if m.diffRailWidthStep(delta) {
 		return true
+	}
+	if !m.splitAdjustable() {
+		// NOTHING TO RESIZE HERE, so the chord is NOT claimed — the rail's own step returns false in the same
+		// situation, and a chord that silently changed a width nobody draws is worse than one that falls
+		// through. (The hint is gated on the same question, so what is advertised is what works.)
+		return false
 	}
 	s := m.screens[m.active]
 	if s == nil {
@@ -636,6 +659,9 @@ func (m *App) splitWidthStep(delta int) bool {
 func (m *App) splitWidthReset() bool {
 	if m.diffRailWidthReset() {
 		return true
+	}
+	if !m.splitAdjustable() {
+		return false
 	}
 	s := m.screens[m.active]
 	if s == nil {
@@ -1756,6 +1782,23 @@ func (m *App) refreshComposerHint() {
 			ctx += " · " + transcriptCopyHint
 		}
 	}
+	// THE WIDTH CHORD, WHEREVER THERE IS A SPLIT TO RESIZE.
+	//
+	// The operator: "You should add the ctrl+left/right shortcut advice to the composer on every screen so
+	// people know they can do it" — asked for after having to be TOLD the chord existed, which is the whole
+	// argument for advertising it.
+	//
+	// ADDED ON EVERY SCREEN WITH A SPLIT, not only on Work: the preference is shared across screens, so an
+	// operator who learned it here should see it everywhere it applies — and NOT on a screen with no split
+	// (the Ask launch page renders its detail pane full width), where it would advertise a key that changes a
+	// width nothing draws. splitAdjustable is the same question the chord itself asks.
+	if m.splitAdjustable() {
+		if ctx == "" {
+			ctx = splitResizeHint
+		} else {
+			ctx += " · " + splitResizeHint
+		}
+	}
 	before := m.dock.Lines()
 	m.dock.SetContext(ctx)
 	// A longer hint can gain a row, which changes the rows the dock leaves for
@@ -1767,6 +1810,10 @@ func (m *App) refreshComposerHint() {
 
 // transcriptCopyHint is the composer's advertisement for the transcript's click gesture.
 const transcriptCopyHint = "click your message to copy"
+
+// splitResizeHint advertises the width chord. Short because the affordance row wraps rather than scrolls, and
+// phrased for what the operator wants ("resize panes") rather than for what the code calls it (a share).
+const splitResizeHint = "ctrl+←/→: resize panes"
 
 // formComposerHint is what the composer advertises while ANY screen has a form open. It names only
 // keys the form actually honours, so the hint is true in that state — see refreshComposerHint.

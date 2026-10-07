@@ -392,6 +392,17 @@ func (b *Base) SetListSharePct(pct int) {
 	b.listSharePct = pct
 }
 
+// SplitAdjustable reports whether this screen HAS a tree/detail split to adjust.
+//
+// IT IS THE SAME CONDITION THE LAYOUT USES to decide between a split and a full-width detail pane (the
+// HideSources / no-sources case), and it exists so the shell can ask ONE question — "is there something here
+// for ctrl+←/→ to resize?" — instead of advertising a chord that would change a number nothing draws. The
+// Ask launch page is exactly that case: it renders the detail pane full width, so a split width there is a
+// value with no visible effect.
+func (b *Base) SplitAdjustable() bool {
+	return !b.HideSources && len(b.sources) > 0
+}
+
 // NudgeListShare moves the share by delta percent, reporting whether it MOVED (so a caller at a bound can tell
 // "nothing happened" from "it changed").
 //

@@ -12,6 +12,7 @@ package tui
 // the active screen's tree/detail split.
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -30,6 +31,13 @@ func (s *splitScreenStub) View() string                               { return "
 func (s *splitScreenStub) Name() string                               { return "split-stub" }
 func (s *splitScreenStub) Close()                                     {}
 
+// giveSources makes the stub a master-detail screen: it HAS a tree/detail split, which is the condition the
+// chord and the hint both ask about (kit2.Base.SplitAdjustable — sources present, not hidden).
+func (s *splitScreenStub) giveSources() { s.AddSource("things", "Things", nil) }
+
+// hideSources reproduces the Ask launch page: the detail pane at full width, so there is no split to resize.
+func (s *splitScreenStub) hideSources() { s.Base.HideSources = true }
+
 func keyCtrl(k tea.KeyType) tea.KeyMsg { return tea.KeyMsg{Type: k} }
 
 // splitApp builds a shell with a Base-embedding screen active and the diff rail CLOSED. The screen is given a
@@ -38,6 +46,7 @@ func splitApp(t *testing.T) (*App, *splitScreenStub) {
 	t.Helper()
 	m := newTestApp()
 	st := &splitScreenStub{}
+	st.giveSources()
 	m.RegisterScreen(TabWork, st)
 	m.dispatch(tea.WindowSizeMsg{Width: 140, Height: 40})
 	m.SwitchTo(TabWork)
@@ -92,6 +101,7 @@ func TestTheSplitIsPushedToALaterBuiltScreen(t *testing.T) {
 
 	// A screen that did not exist when the operator chose the width must still come up with it.
 	fresh := &splitScreenStub{}
+	fresh.giveSources()
 	m.RegisterScreen(TabExecution, fresh)
 	m.SwitchTo(TabExecution)
 	// A SIZE message runs the rebind pass without touching the split (a chord here would nudge the very screen
@@ -130,5 +140,55 @@ func TestTheRailKeepsTheChordWhenItIsOpen(t *testing.T) {
 	if st.ListSharePct() != shareBefore {
 		t.Errorf("the chord moved the SCREEN's split (%d -> %d) while the rail was open", shareBefore,
 			st.ListSharePct())
+	}
+}
+
+// THE CHORD IS ADVERTISED WHEREVER IT WORKS, AND NOT WHERE IT DOES NOT.
+//
+// The operator: "You should add the ctrl+left/right shortcut advice to the composer on every screen so people
+// know they can do it." The condition is therefore the SAME one the chord applies (splitAdjustable), so the
+// hint cannot promise a key that does nothing — which is the failure this file's own composer-hint note
+// records from the providers form ("it advertised six keys that do nothing and hid the one that saves").
+func TestTheSplitChordIsAdvertisedWhereItWorks(t *testing.T) {
+	m, st := splitApp(t)
+	// Give the screen a source, so it genuinely has a tree/detail split.
+	st.giveSources()
+	m.refreshComposerHint()
+	if hint := m.dock.Hint(); !strings.Contains(hint, "ctrl+←/→") {
+		t.Errorf("the composer does not advertise the width chord on a screen with a split:\n%q", hint)
+	}
+
+	// The Ask launch page renders its detail pane FULL WIDTH (HideSources), so there is no split and nothing
+	// for the chord to resize.
+	bare := &splitScreenStub{}
+	bare.hideSources()
+	m.RegisterScreen(TabAsk, bare)
+	m.SwitchTo(TabAsk)
+	m.refreshComposerHint()
+	if hint := m.dock.Hint(); strings.Contains(hint, "ctrl+←/→") {
+		t.Errorf("the composer advertises a pane-resize chord on a screen that draws no split:\n%q", hint)
+	}
+
+	// …and the chord genuinely is not claimed there, which is what makes the omission honest.
+	if m.splitAdjustable() {
+		t.Error("a screen with no split reported itself adjustable")
+	}
+}
+
+// THE RAIL ADVERTISES IT TOO, and for the rail the chord resizes the RAIL — the same key, named once.
+func TestTheChordIsAdvertisedWhileTheRailIsOpen(t *testing.T) {
+	m, _ := splitApp(t)
+	ex := &diffStubOwner{detailID: "exec-1"}
+	m.RegisterScreen(TabExecution, ex)
+	m.setFocus(focusContent)
+	m.SwitchTo(TabExecution)
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	m = nm.(*App)
+	if !m.diffOpen {
+		t.Fatal("the rail did not open")
+	}
+	m.refreshComposerHint()
+	if hint := m.dock.Hint(); !strings.Contains(hint, "ctrl+←/→") {
+		t.Errorf("the composer does not advertise the width chord while the diff rail is open:\n%q", hint)
 	}
 }
