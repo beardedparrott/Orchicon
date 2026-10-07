@@ -13,7 +13,7 @@ both clients — the **web GUI** and the **terminal client (TUI)** — explainin
 each one is for and how to use it.
 
 For how Orchicon is *built* (architecture, data model, development, deployment,
-environment variables, troubleshooting), see [`DOCUMENTATION.md`](./DOCUMENTATION.md).
+environment variables, troubleshooting), see [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
 ---
 
@@ -1955,7 +1955,7 @@ Part II.
 
 ## Where to go next
 
-- **[`DOCUMENTATION.md`](./DOCUMENTATION.md)** — architecture, data model, project
+- **[`ARCHITECTURE.md`](./ARCHITECTURE.md)** — architecture, data model, project
   structure, the Ask Orchicon permission model in full, operator setup, the
   development guide, deployment, the environment-variable reference and
   troubleshooting.

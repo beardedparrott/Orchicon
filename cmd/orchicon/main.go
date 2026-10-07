@@ -275,7 +275,7 @@ Usage:
 
 The binary embeds the single-container runtime configs, migrations, and
 the frontend bundle. Run the full stack with `+"`docker run`"+` (see
-DOCUMENTATION.md §Single-Container Deployment) or `+"`%s container`"+` as
+ARCHITECTURE.md §Single-Container Deployment) or `+"`%s container`"+` as
 the container's PID-1 supervisor.
 `, bin, bin, bin)
 }

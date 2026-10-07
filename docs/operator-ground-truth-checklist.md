@@ -83,6 +83,6 @@ make synth-data = PASS (exit 0)
 
 ## Operator setup reference
 
-See `DOCUMENTATION.md` → `## Operator Setup (Adapters)` for this surface: how
+See `ARCHITECTURE.md` → `## Operator Setup (Adapters)` for this surface: how
 providers/tokens/secrets are added (Settings → Adapters), MCP registration,
 memory scope, and compaction controls.

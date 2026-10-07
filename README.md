@@ -17,7 +17,7 @@ The documentation lives at the project root:
   run, and a screen-by-screen walkthrough of **every screen in both clients** (the
   web GUI and the terminal client), plus accounts, roles and the command-line
   reference. **Start here if you are using Orchicon.**
-- **[`DOCUMENTATION.md`](./DOCUMENTATION.md)** — how Orchicon is built:
+- **[`ARCHITECTURE.md`](./ARCHITECTURE.md)** — how Orchicon is built:
   architecture, project structure, the data model, the Ask Orchicon permission
   model, operator setup, development, deployment, environment variables and
   troubleshooting.
@@ -25,7 +25,7 @@ The documentation lives at the project root:
 ## Technology Stack
 
 - **Control plane**: Go (single binary, k8s-style reconcilers)
-- **Single container**: `orchicon container` runs the whole stack (Postgres, NATS, Tempo/Loki/VictoriaMetrics/Grafana, control plane) as PID 1 — see [DOCUMENTATION.md §Single-Container Deployment](DOCUMENTATION.md)
+- **Single container**: `orchicon container` runs the whole stack (Postgres, NATS, Tempo/Loki/VictoriaMetrics/Grafana, control plane) as PID 1 — see [ARCHITECTURE.md §Single-Container Deployment](ARCHITECTURE.md)
 - **API**: Protobuf + Connect (gRPC + REST + streaming from one schema)
 - **Database**: PostgreSQL 16 with RLS + transactional outbox
 - **Event bus**: NATS JetStream
@@ -72,7 +72,7 @@ The installer downloads the binary, then runs `orchicon install` to set up every
 > curl -fsSL https://opencode.ai/install | bash
 > ```
 >
-> `orchicon install` no longer requires it. A plane whose model refs need no adapter never probes for the binary, never starts a serve, and never mounts it into a container — see [DOCUMENTATION.md](DOCUMENTATION.md).
+> `orchicon install` no longer requires it. A plane whose model refs need no adapter never probes for the binary, never starts a serve, and never mounts it into a container — see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ```powershell
 # Windows (PowerShell) — runs the stack inside WSL2
@@ -87,7 +87,7 @@ The whole Orchicon stack (Postgres, NATS, Tempo/Loki/VictoriaMetrics/Grafana, co
 docker run --rm -p 8080:8080 -p 3002:3000 -v orchicon-data:/var/lib/orchicon ghcr.io/beardedparrott/orchicon
 ```
 
-The `orchicon` binary is the PID-1 supervisor (`orchicon container`). See [DOCUMENTATION.md §Single-Container Deployment](DOCUMENTATION.md) for the lifecycle script, env vars, and data-preservation notes.
+The `orchicon` binary is the PID-1 supervisor (`orchicon container`). See [ARCHITECTURE.md §Single-Container Deployment](ARCHITECTURE.md) for the lifecycle script, env vars, and data-preservation notes.
 
 ### Windows (WSL2)
 
@@ -131,7 +131,7 @@ curl -fsSL https://orchicon.dev/install | bash -s -- --force-clean
 
 After installation, verify with `orchicon version`. The full stack runs
 as a single container — see [Single container](#single-container-docker)
-and [DOCUMENTATION.md §Single-Container Deployment](DOCUMENTATION.md).
+and [ARCHITECTURE.md §Single-Container Deployment](ARCHITECTURE.md).
 
 > **Note:** Pre-built binaries are published to [GitHub
 > Releases](https://github.com/beardedparrott/Orchicon/releases). If no
@@ -212,13 +212,14 @@ clients:
 make gen          # buf generate → api/gen/go + frontend/src/api/gen
 ```
 
-Generated code is committed (see DOCUMENTATION.md §Code Generation).
+Generated code is committed (see ARCHITECTURE.md §Code Generation).
 
 ### Layout
 
 | Path | Concern |
 |---|---|---|
-| `DOCUMENTATION.md` | Comprehensive project documentation |
+| `ARCHITECTURE.md` | Architecture, data model, development, deployment, ops |
+| `USERGUIDE.md` | Operator's guide — installation + every screen in the GUI and TUI |
 | `cmd/orchicon/` | Control-plane binary entry point + `dev` subcommand |
 | `internal/` | api, auth, config, db, domain, eventbus, outbox, reconciler, server, telemetry, migrate, middleware, rbac, tenant, blobstore, webhook, version |
 | `assets.go` | go:embed directives for container configs, migrations, frontend |
@@ -236,7 +237,7 @@ Generated code is committed (see DOCUMENTATION.md §Code Generation).
 make ci          # buf lint + codegen + go vet/test + RLS gate
 ```
 
-The RLS gate (see DOCUMENTATION.md §Key Architecture Invariants) fails if any `tenant_id`-bearing table
+The RLS gate (see ARCHITECTURE.md §Key Architecture Invariants) fails if any `tenant_id`-bearing table
 lacks the `tenant_isolation` policy.
 
 ## License

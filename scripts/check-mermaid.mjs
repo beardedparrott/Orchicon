@@ -1,6 +1,6 @@
 // check-mermaid.mjs — validate every Mermaid diagram in the docs with a REAL parser.
 //
-// WHY THIS EXISTS, and why it is not a hand-written syntax check: `DOCUMENTATION.md` shipped with a
+// WHY THIS EXISTS, and why it is not a hand-written syntax check: `ARCHITECTURE.md` shipped with a
 // domain-model `erDiagram` that did not render on GitHub — eight entities declared `string id ULID`,
 // which is THREE BARE WORDS. Mermaid's grammar wants `type name [PK|FK|UK] ["comment"]`, so the whole
 // block failed and the reader got "Unable to render rich display / Parse error on line 19".
@@ -12,7 +12,7 @@
 // USAGE
 //   node scripts/check-mermaid.mjs [file.md ...]     # defaults to every *.md at the repo root
 //
-// THE DEFAULT IS THE WHOLE ROOT DOC SET, deliberately. It used to be DOCUMENTATION.md alone, which
+// THE DEFAULT IS THE WHOLE ROOT DOC SET, deliberately. It used to default to the architecture doc alone, which
 // meant a diagram added to any other doc was never validated by anything — the same silent-pass
 // failure this file exists to prevent, one directory level up. Every root *.md is a document a reader
 // sees on GitHub, so every root *.md is checked. Naming files on the command line still overrides.

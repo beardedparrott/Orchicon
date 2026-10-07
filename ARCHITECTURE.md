@@ -1,4 +1,4 @@
-# Orchicon — Comprehensive Documentation
+# Orchicon — Architecture & Development
 
 > **Orchicon** is an AI orchestration and operations platform. It coordinates autonomous AI work as reliable, observable, recoverable, and manageable systems by separating **orchestration** from **execution**. The control plane manages projects, workers, scheduling, policies, telemetry, recovery, and governance, while pluggable runtimes execute the actual work.
 
@@ -324,7 +324,7 @@ Orchicon/
 ├── assets.go                    # go:embed: container configs, migrations, frontend
 ├── buf.gen.yaml                 # Buf codegen config (Go + TypeScript)
 ├── buf.yaml                     # Buf lint config
-├── DOCUMENTATION.md             # ← This file: architecture, development, deployment, ops
+├── ARCHITECTURE.md              # ← This file: architecture, development, deployment, ops
 ├── USERGUIDE.md                 # Operator's guide: install + every screen in the GUI and TUI
 ├── LICENSE                      # Custom license (non-commercial)
 ├── Makefile                     # All targets: build, test, gen, container-*, ci
@@ -1507,7 +1507,7 @@ branch off `develop`, PR into `develop`, and merge into `develop` — never
 3. The version tag is bumped automatically on each merge to `develop`
    (`.github/workflows/develop-bump.yml`); `git fetch --tags` before rebuilding
 4. Commit early and often with clear present-tense messages
-5. Before PR: make sure `DOCUMENTATION.md` matches what you changed. (This step used to say "update `UPDATES.md`"; that file is the maintainer's own working inventory and is now **gitignored**, so it is not part of a contribution. Leave README.md's "Last Release Changes" section alone — it only changes when the human cuts a release.)
+5. Before PR: make sure the docs that describe what you changed match it — `ARCHITECTURE.md` for how the system is built, `USERGUIDE.md` for how it is used. (This step used to say "update `UPDATES.md`"; that file is the maintainer's own working inventory and is now **gitignored**, so it is not part of a contribution. Leave README.md's "Last Release Changes" section alone — it only changes when the human cuts a release.)
 6. Ask for approval before creating a PR
 7. PRs target `develop` and must NOT carry the `release` label (that label
    belongs only on the human's `develop` → `main` release PR; merging into

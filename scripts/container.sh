@@ -661,7 +661,7 @@ build_image() {
   [ "$BUILDX" = "1" ] && rm -f "$MAIN_DF"
 
   # Workflow runtime base image (one short-lived container per active
-  # workflow run — see DOCUMENTATION.md §Workflow Runtime Containers).
+  # workflow run — see ARCHITECTURE.md §Workflow Runtime Containers).
   # The orchicon binary is NOT baked into this image anymore — the runtime
   # daemon bind-mounts its own executable into every container it creates,
   # so a rebuilt bin/orchicon is picked up without an image rebuild. The
