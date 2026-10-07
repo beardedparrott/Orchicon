@@ -326,17 +326,41 @@ func BuildSettings(o PermissionOptions) (string, error) {
 		perms["ask"] = append([]string(nil), AskPermissionToolNames...)
 	}
 
+	hooks := map[string]any{
+		"PreToolUse": []map[string]any{{
+			"matcher": HookToolMatcher,
+			"hooks": []map[string]any{{
+				"type":    "command",
+				"command": hookBin + " claude-hook",
+			}},
+		}},
+	}
+	// THE CARD'S ONLY DELIVERY PATH. A `PreToolUse` verdict cannot ask the operator in this launch shape
+	// (a hook's "ask" is a tool error, and the permission system's ask is terminal — both MEASURED against
+	// 2.1.289), but a `PermissionRequest` hook FIRES and its allow/deny IS honoured. So the Ask profile
+	// registers one: it connects to the session's consent socket, raises the card through the ordinary
+	// consent path, blocks until the operator answers, and returns the decision.
+	//
+	// THE TIMEOUT EXCEEDS THE WAIT (consent_hook.go: 960s vs 15m) so OUR side expires first and the hook
+	// still exits cleanly with a deny, rather than being killed mid-write while the operator is reading.
+	//
+	// THE MATCHER IS DERIVED FROM AskPermissionToolNames, so the tools that prompt and the tools that card
+	// cannot diverge: a name in one and not the other is a call the permission system asks about with no
+	// hook to answer it — a terminal denial, which is the whole defect.
+	if o.Profile == ProfileAskEnvValue {
+		hooks["PermissionRequest"] = []map[string]any{{
+			"matcher": askHookToolMatcher(),
+			"hooks": []map[string]any{{
+				"type":    "command",
+				"command": hookBin + " claude-hook",
+				"timeout": AskHookTimeoutSeconds,
+			}},
+		}}
+	}
+
 	settings := map[string]any{
 		"permissions": perms,
-		"hooks": map[string]any{
-			"PreToolUse": []map[string]any{{
-				"matcher": HookToolMatcher,
-				"hooks": []map[string]any{{
-					"type":    "command",
-					"command": hookBin + " claude-hook",
-				}},
-			}},
-		},
+		"hooks":       hooks,
 	}
 
 	b, err := json.Marshal(settings)

@@ -1,12 +1,15 @@
 package claude
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/beardedparrott/orchicon/internal/guard"
 	"github.com/beardedparrott/orchicon/internal/neverallow"
@@ -496,6 +499,77 @@ func decidePathForAsk(tool string, h HookInput, policyPath string) HookVerdict {
 // HookProfileEnv selects the rule set this hook process applies.
 const HookProfileEnv = "ORCHICON_CLAUDE_HOOK_PROFILE"
 
+// runPermissionRequestHook answers a permission prompt by asking the ADAPTER, which raises the card.
+//
+// FAIL CLOSED, ALWAYS: no socket path, a dial failure, a malformed reply, a timeout — every one of them
+// returns DENY. This is the permission interface, and one that could fail OPEN would be worse than having
+// no card at all. The adapter applies the same rule on its side, so a hook and an adapter that cannot
+// reach each other refuse the call rather than allow it.
+//
+// The reply is written even on the failure paths, because a hook that exits with no output leaves the CLI
+// to its own devices on a call the operator may never have seen.
+func runPermissionRequestHook(h HookInput, getenv func(string) string, out io.Writer) int {
+	deny := func(msg string) int {
+		doc := hookOutput{HookSpecificOutput: hookSpecificOutput{
+			HookEventName: "PermissionRequest",
+			Decision:      &hookPermissionDecision{Behavior: "deny", Message: msg},
+		}}
+		_ = json.NewEncoder(out).Encode(doc)
+		return 0
+	}
+
+	sock := strings.TrimSpace(getenv(ConsentSockEnv))
+	if sock == "" {
+		return deny("this call was not approved: the session's consent channel is unavailable, so it did not run. Nothing is permanently denied — retry it and it will ask again.")
+	}
+
+	d := net.Dialer{Timeout: 5 * time.Second}
+	conn, err := d.Dial("unix", sock)
+	if err != nil {
+		return deny("this call was not approved: the session's consent channel could not be reached, so it did not run. Nothing is permanently denied — retry it and it will ask again.")
+	}
+	defer conn.Close()
+
+	inputJSON, _ := json.Marshal(h.ToolInput)
+	req, err := json.Marshal(hookConsentRequest{
+		Tool:  h.ToolName,
+		Input: inputJSON,
+	})
+	if err != nil {
+		return deny("this call was not approved: its arguments could not be sent to the consent channel.")
+	}
+
+	// NO WRITE DEADLINE BEYOND THE DIAL, and NO READ DEADLINE AT ALL: the read IS the operator thinking.
+	// Bounding it here would turn a slow decision into a refusal. The ADAPTER bounds the wait
+	// (hookConsentWait) and the CLI bounds the hook (AskHookTimeoutSeconds, deliberately longer), so both
+	// of those expire BEFORE this read would, and neither is a surprise.
+	if _, err := conn.Write(append(req, '\n')); err != nil {
+		return deny("this call was not approved: the consent channel closed before the request was sent.")
+	}
+
+	line, err := bufio.NewReader(conn).ReadBytes('\n')
+	if err != nil {
+		return deny("this call was not approved: no decision arrived on the consent channel, so it did not run.")
+	}
+	var reply hookConsentReply
+	if err := json.Unmarshal(line, &reply); err != nil {
+		return deny("this call was not approved: the decision on the consent channel could not be read.")
+	}
+	if strings.EqualFold(strings.TrimSpace(reply.Behavior), "allow") {
+		doc := hookOutput{HookSpecificOutput: hookSpecificOutput{
+			HookEventName: "PermissionRequest",
+			Decision:      &hookPermissionDecision{Behavior: "allow"},
+		}}
+		_ = json.NewEncoder(out).Encode(doc)
+		return 0
+	}
+	msg := strings.TrimSpace(reply.Message)
+	if msg == "" {
+		msg = "the operator refused this call, so it did not run."
+	}
+	return deny(msg)
+}
+
 // AskDirEnv is the directory an Ask conversation runs in. It replaces the
 // worker's project boundary: there is no project to stay inside, but the Ask
 // directory itself is still protected from destruction.
@@ -527,6 +601,22 @@ type hookSpecificOutput struct {
 	HookEventName            string `json:"hookEventName"`
 	PermissionDecision       string `json:"permissionDecision"`
 	PermissionDecisionReason string `json:"permissionDecisionReason"`
+	// Decision is the PermissionRequest event's arm (consent_hook.go). It is a POINTER with no omitempty
+	// semantics of its own beyond that, so a PreToolUse verdict never carries it and a PermissionRequest
+	// verdict always does — the two contracts share this envelope without either inventing the other's
+	// fields. A PermissionRequest hook cannot abstain: its decision IS the answer.
+	Decision *hookPermissionDecision `json:"decision,omitempty"`
+}
+
+// hookPermissionDecision is a PermissionRequest hook's answer. `behavior` is "allow" or "deny"; a deny
+// carries the message the MODEL reads, so it says what happened in the same terms the consent core uses
+// elsewhere (nothing is permanently denied; do not retry a refusal).
+//
+// MEASURED against the real CLI (2.1.289): returning `{"behavior":"allow"}` runs the call, so this is the
+// one surface that can gate a tool on a human decision in a `-p` session.
+type hookPermissionDecision struct {
+	Behavior string `json:"behavior"`
+	Message  string `json:"message,omitempty"`
 }
 
 // RunHook is the `orchicon claude-hook` entry point: read ONE PreToolUse JSON
@@ -566,6 +656,24 @@ func RunHook(in io.Reader, out io.Writer, getenv func(string) string) int {
 	// never sets it is unchanged.
 	var v HookVerdict
 	asking := strings.TrimSpace(getenv(HookProfileEnv)) == ProfileAskEnvValue
+
+	// THE PERMISSIONREQUEST EVENT IS A DIFFERENT CONTRACT FROM PreToolUse, and it is the only one that can
+	// put a CARD in front of the operator.
+	//
+	// It fires when the PERMISSION SYSTEM wants a decision — which `permissions.ask` makes it want for the
+	// gated tools — and its output is a real allow/deny, unlike a PreToolUse verdict whose "ask" becomes a
+	// tool error and whose permission-system ask becomes a terminal denial (both MEASURED against 2.1.289).
+	// Since it cannot abstain, the hook has to DECIDE, and a decision that needs a human is a decision that
+	// BLOCKS: this is what the consent socket is for.
+	//
+	// It is handled BEFORE the PreToolUse logic on purpose. That logic is about judging a call from policy
+	// alone (the mode boundary, the never-allow class, the protected roots) and its verdicts are already
+	// applied by the time this event fires — re-judging here would decide twice and could deny a call the
+	// operator had just approved.
+	if asking && h.HookEventName == "PermissionRequest" {
+		return runPermissionRequestHook(h, getenv, out)
+	}
+
 	if asking {
 		askDir := strings.TrimSpace(getenv(AskDirEnv))
 		if askDir == "" {

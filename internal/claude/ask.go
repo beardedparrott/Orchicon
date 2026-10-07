@@ -70,6 +70,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -258,6 +259,18 @@ type askSession struct {
 	// reply that could never come. The operator's symptom was exactly that: a
 	// permanent "thinking…", no child process, and nothing in the log.
 	alive bool
+
+	// --- the consent socket (consent_hook.go) -------------------------------------------------
+	//
+	// hookLn is this session's PermissionRequest-hook listener: the channel a BLOCKING hook uses to raise a
+	// card and wait for the operator's answer. hookWaits holds the asks parked on it, by ask id, so
+	// ReplyPermissionDecision can hand a decision to a HOOK instead of writing a can_use_tool frame for a
+	// request id the CLI never issued. A SEPARATE mutex, because both are touched from the socket's own
+	// goroutines while a turn is running.
+	hookMu     sync.Mutex
+	hookLn     net.Listener
+	hookWaits  map[string]*hookAsk
+	hookAskSeq int64
 }
 
 func newAskSession(b *Bridge, convID, askDir string) *askSession {
@@ -499,6 +512,17 @@ func (b *Bridge) ReplyPermissionDecision(_ context.Context, sessionID, permissio
 		return errors.New("claude ask: an empty permission id cannot be correlated to a pending ask")
 	}
 
+	// A HOOK ASK IS NOT A CONTROL REQUEST. The CLI is not parked on a frame here — it is waiting on the
+	// `PermissionRequest` hook, which is blocked on our socket (consent_hook.go). Writing a control_response
+	// for an id the CLI never issued would answer nothing, and the hook would sit until its timeout with
+	// the operator believing they had approved the call. So a parked hook ask is resolved FIRST, by handing
+	// the decision back down the socket.
+	if w := s.takeHookWait(permissionID); w != nil {
+		// Buffered(1) at the wait, so this never blocks even if the waiter has already given up.
+		w.decision <- decision
+		return nil
+	}
+
 	var frame []byte
 	switch strings.ToLower(strings.TrimSpace(decision)) {
 	case "reject", "deny", "denied":
@@ -604,6 +628,15 @@ func (s *askSession) ensureRunning(_ context.Context) error {
 
 	if err := os.MkdirAll(s.askDir, 0o755); err != nil {
 		return fmt.Errorf("claude ask: create the ask directory: %w", err)
+	}
+
+	// THE CONSENT SOCKET MUST BE LISTENING BEFORE THE CHILD STARTS, because the child's
+	// `PermissionRequest` hook connects to it the moment a gated tool needs an answer. A failure here is
+	// logged and NOT fatal: without the socket the hook fails closed (it denies when it cannot reach us),
+	// so the session still runs with the file/shell suite refusing rather than silently allowing.
+	if err := s.serveConsentSocket(); err != nil {
+		slog.Default().Warn("claude ask: the consent socket could not be served — a gated call will be refused rather than carded",
+			"conversation", s.convID, "error", err)
 	}
 
 	// Build the OS-level guard BEFORE the environment is assembled: the shim dir
@@ -810,6 +843,10 @@ func (s *askSession) childEnv() []string {
 	// The mode boundary (modegate.go): the hook reads this file per tool call, so
 	// a mid-conversation mode switch is enforced on the very next call.
 	env = setEnvVar(env, AskModeFileEnv, s.modeFile)
+	// WHERE THE HOOK ASKS FOR A DECISION (consent_hook.go). The `PermissionRequest` hook is the only
+	// surface that can answer a permission in this launch shape, and it is a SEPARATE PROCESS — so the
+	// socket path travels on the environment exactly as the mode file does.
+	env = setEnvVar(env, ConsentSockEnv, s.consentSockPath())
 
 	// The OS-level guard, exactly as opencode's Ask serve applies it: the shim on
 	// PATH, and NOTHING ELSE. No InteractiveEnviron, so the shim runs its default
@@ -1073,6 +1110,11 @@ func (s *askSession) teardown() {
 		s.guard.Close()
 		s.guard = nil
 	}
+	// AND THE SOCKET GOES WITH THE SESSION. Leaving it would let a later hook find a listener that
+	// answers nothing (this session is retired), and the operator's card would never be raised for a
+	// call they could still be asked about. Closing the listener also unblocks any wait parked on it
+	// (the wait selects on liveCtx, which the lines above just cancelled).
+	s.stopConsentSocket()
 }
 
 // CloseAsk tears down every Ask conversation. It is the shutdown seam the server
