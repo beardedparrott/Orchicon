@@ -213,11 +213,15 @@ func TestAskProfileAllowsOrchiconMCPTools(t *testing.T) {
 	if got := DecideToolForAsk(h, "/tmp/ask", ""); got.Decision() != DecisionAllow {
 		t.Fatalf("an orchicon MCP tool = %s, want allow (the mode gate governs these, not a per-call card)", got.Decision())
 	}
-	// The operator's OWN MCP servers keep the ask-by-default treatment: they are
-	// third-party tools, and consent is the point.
+	// THE OPERATOR'S OWN MCP SERVERS ARE ALLOWED TOO. This used to require `ask`, on the reasoning
+	// that a third-party tool is where consent matters. The operator overruled it — "if it's added in
+	// scope it should just have access; I don't want cards for that" — because attaching the server
+	// IS the approval. The MODE boundary still governs an opaque MCP tool (RunHook checks it before
+	// this function is reached), which is what makes the allowance safe.
 	other := HookInput{ToolName: "mcp__github__create_issue", ToolInput: map[string]any{}}
-	if got := DecideToolForAsk(other, "/tmp/ask", ""); got.Decision() != DecisionAsk {
-		t.Fatalf("a third-party MCP tool = %s, want ask", got.Decision())
+	if got := DecideToolForAsk(other, "/tmp/ask", ""); got.Decision() != DecisionAllow {
+		t.Fatalf("a third-party MCP tool = %s, want allow — an MCP server is in scope because the "+
+			"operator put it there, so a card asks them to re-decide their own standing decision", got.Decision())
 	}
 }
 

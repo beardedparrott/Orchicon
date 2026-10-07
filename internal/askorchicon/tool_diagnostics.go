@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
@@ -255,6 +256,24 @@ func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage
 	settings, err := db.UpdateTenantSettings(ctx, ttx.Tx, tenantID, inRow)
 	if err != nil {
 		return nil, err
+	}
+
+	// THIS WRITE IS AUDITED, AND IT WAS NOT. The tool writes tenant_settings directly rather than through
+	// the SettingsService RPC, and that RPC is where the `settings.updated` audit row lived — so an
+	// agent-driven settings change left NO trail at all, while a human's did. An operator reviewing "who
+	// changed this?" would see their own edits and nothing else, which is the worse half of an audit gap:
+	// the trail looked complete.
+	//
+	// Same action name and the same snapshot shape as the RPC path (db.TenantSettingsRow.AuditFields), so
+	// one query covers both and a reader cannot tell — or needs to care — which path made the change. The
+	// actor comes from the request context (the tool runs on a turn's context), which is what makes an agent
+	// change attributable rather than anonymous.
+	//
+	// Written in the SAME transaction as the mutation, so the two commit together: an audit row for a write
+	// that rolled back would be a false record of a change that never happened.
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "settings.updated", "settings", tenantID,
+		nil, audit.Snapshot(settings.AuditFields())); err != nil {
+		return nil, fmt.Errorf("audit settings.updated: %w", err)
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, err

@@ -1,12 +1,15 @@
 package claude
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/beardedparrott/orchicon/internal/guard"
 	"github.com/beardedparrott/orchicon/internal/neverallow"
@@ -356,15 +359,28 @@ func DecideToolForAsk(h HookInput, askDir, policyPath string) HookVerdict {
 		return denyVerdict(workerrestrict.TaskToolDeny,
 			"the built-in subagent tool is denied in every profile: Orchicon already splits the work into focused steps, and a spawned subagent re-carries the parent's context.")
 	}
-	// THE PLATFORM'S OWN TOOLS ARE ALLOWED, not asked about. `mcp__orchicon__*` is
-	// the surface the MODE GATE governs (create_work_item, schedule_work_item, …),
-	// and RunHook consults the gate BEFORE reaching here — so by this point the
-	// boundary has already had its say. Asking on each one would put a consent
-	// card in front of a session reading its own conversation record.
+	// EVERY MCP TOOL IS ALLOWED — the platform's own AND the operator's.
 	//
-	// The operator's OWN MCP servers are deliberately NOT in this set: they are
-	// third-party tools, so they keep the ask-by-default treatment.
-	if isOrchiconMCPTool(tool) {
+	// WHY THE THIRD-PARTY HALF FLIPPED. It used to allow `mcp__orchicon__*` only and send an
+	// operator's MCP servers to ask-by-default, on the reasoning that an opaque third-party tool is
+	// exactly where a human decision is worth having. The operator overruled it: "I didn't even think
+	// MCP was supposed to have a card. If it's added in scope it should just have access tbh. I don't
+	// want cards for that." An MCP server reaches this session only because they attached it to this
+	// conversation or its project, so the approval already happened — deliberately, at configuration
+	// time. A per-call card asks them to re-decide a standing decision.
+	//
+	// AN EXPLICIT ALLOW, not merely "stop asking", and that distinction is load-bearing. A hook that
+	// returns nothing leaves the call to the permission system, which under `defaultMode: default`
+	// would PROMPT — i.e. the same card by a different route. A hook ALLOW bypasses the permission
+	// system outright (the mechanism `mcp__orchicon__*` already relied on), which is what "just has
+	// access" means. `AskPermissionToolNames` drops its `mcp__*` entry in the same change, so the two
+	// halves cannot disagree.
+	//
+	// THE MODE BOUNDARY IS UNTOUCHED and is still the governor: RunHook consults askModeDenial BEFORE
+	// reaching here, so an opaque MCP tool stays REFUSED in Brainstorm and Quick Work (see
+	// internal/askmode: MayExecute sends it to the mode's MayAct). Allowing it here removes the CARD,
+	// never the boundary.
+	if isMCPTool(tool) {
 		return allowVerdict()
 	}
 
@@ -385,8 +401,19 @@ func DecideToolForAsk(h HookInput, askDir, policyPath string) HookVerdict {
 // provides.
 const orchiconMCPServerName = "orchicon"
 
+// isMCPTool reports whether a claude tool name belongs to ANY MCP server — the platform's own
+// `mcp__orchicon__<tool>`, or an operator's `mcp__<server>__<tool>`. Both take the explicit ALLOW
+// above; see that comment for why the third-party half is not carded.
+func isMCPTool(tool string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(tool)), "mcp__")
+}
+
 // isOrchiconMCPTool reports whether a claude tool name is one of the platform's
 // OWN MCP tools (`mcp__orchicon__<tool>`).
+//
+// KEPT BESIDE isMCPTool because the two answer different questions and one is not a
+// narrowing of the other: this one identifies the PLATFORM's surface (used where a caller needs
+// to know whose data a tool touches), while isMCPTool answers "is this whole class allowed".
 func isOrchiconMCPTool(tool string) bool {
 	t := strings.ToLower(strings.TrimSpace(tool))
 	return strings.HasPrefix(t, "mcp__"+orchiconMCPServerName+"__")
@@ -472,6 +499,77 @@ func decidePathForAsk(tool string, h HookInput, policyPath string) HookVerdict {
 // HookProfileEnv selects the rule set this hook process applies.
 const HookProfileEnv = "ORCHICON_CLAUDE_HOOK_PROFILE"
 
+// runPermissionRequestHook answers a permission prompt by asking the ADAPTER, which raises the card.
+//
+// FAIL CLOSED, ALWAYS: no socket path, a dial failure, a malformed reply, a timeout — every one of them
+// returns DENY. This is the permission interface, and one that could fail OPEN would be worse than having
+// no card at all. The adapter applies the same rule on its side, so a hook and an adapter that cannot
+// reach each other refuse the call rather than allow it.
+//
+// The reply is written even on the failure paths, because a hook that exits with no output leaves the CLI
+// to its own devices on a call the operator may never have seen.
+func runPermissionRequestHook(h HookInput, getenv func(string) string, out io.Writer) int {
+	deny := func(msg string) int {
+		doc := hookOutput{HookSpecificOutput: hookSpecificOutput{
+			HookEventName: "PermissionRequest",
+			Decision:      &hookPermissionDecision{Behavior: "deny", Message: msg},
+		}}
+		_ = json.NewEncoder(out).Encode(doc)
+		return 0
+	}
+
+	sock := strings.TrimSpace(getenv(ConsentSockEnv))
+	if sock == "" {
+		return deny("this call was not approved: the session's consent channel is unavailable, so it did not run. Nothing is permanently denied — retry it and it will ask again.")
+	}
+
+	d := net.Dialer{Timeout: 5 * time.Second}
+	conn, err := d.Dial("unix", sock)
+	if err != nil {
+		return deny("this call was not approved: the session's consent channel could not be reached, so it did not run. Nothing is permanently denied — retry it and it will ask again.")
+	}
+	defer conn.Close()
+
+	inputJSON, _ := json.Marshal(h.ToolInput)
+	req, err := json.Marshal(hookConsentRequest{
+		Tool:  h.ToolName,
+		Input: inputJSON,
+	})
+	if err != nil {
+		return deny("this call was not approved: its arguments could not be sent to the consent channel.")
+	}
+
+	// NO WRITE DEADLINE BEYOND THE DIAL, and NO READ DEADLINE AT ALL: the read IS the operator thinking.
+	// Bounding it here would turn a slow decision into a refusal. The ADAPTER bounds the wait
+	// (hookConsentWait) and the CLI bounds the hook (AskHookTimeoutSeconds, deliberately longer), so both
+	// of those expire BEFORE this read would, and neither is a surprise.
+	if _, err := conn.Write(append(req, '\n')); err != nil {
+		return deny("this call was not approved: the consent channel closed before the request was sent.")
+	}
+
+	line, err := bufio.NewReader(conn).ReadBytes('\n')
+	if err != nil {
+		return deny("this call was not approved: no decision arrived on the consent channel, so it did not run.")
+	}
+	var reply hookConsentReply
+	if err := json.Unmarshal(line, &reply); err != nil {
+		return deny("this call was not approved: the decision on the consent channel could not be read.")
+	}
+	if strings.EqualFold(strings.TrimSpace(reply.Behavior), "allow") {
+		doc := hookOutput{HookSpecificOutput: hookSpecificOutput{
+			HookEventName: "PermissionRequest",
+			Decision:      &hookPermissionDecision{Behavior: "allow"},
+		}}
+		_ = json.NewEncoder(out).Encode(doc)
+		return 0
+	}
+	msg := strings.TrimSpace(reply.Message)
+	if msg == "" {
+		msg = "the operator refused this call, so it did not run."
+	}
+	return deny(msg)
+}
+
 // AskDirEnv is the directory an Ask conversation runs in. It replaces the
 // worker's project boundary: there is no project to stay inside, but the Ask
 // directory itself is still protected from destruction.
@@ -503,6 +601,22 @@ type hookSpecificOutput struct {
 	HookEventName            string `json:"hookEventName"`
 	PermissionDecision       string `json:"permissionDecision"`
 	PermissionDecisionReason string `json:"permissionDecisionReason"`
+	// Decision is the PermissionRequest event's arm (consent_hook.go). It is a POINTER with no omitempty
+	// semantics of its own beyond that, so a PreToolUse verdict never carries it and a PermissionRequest
+	// verdict always does — the two contracts share this envelope without either inventing the other's
+	// fields. A PermissionRequest hook cannot abstain: its decision IS the answer.
+	Decision *hookPermissionDecision `json:"decision,omitempty"`
+}
+
+// hookPermissionDecision is a PermissionRequest hook's answer. `behavior` is "allow" or "deny"; a deny
+// carries the message the MODEL reads, so it says what happened in the same terms the consent core uses
+// elsewhere (nothing is permanently denied; do not retry a refusal).
+//
+// MEASURED against the real CLI (2.1.289): returning `{"behavior":"allow"}` runs the call, so this is the
+// one surface that can gate a tool on a human decision in a `-p` session.
+type hookPermissionDecision struct {
+	Behavior string `json:"behavior"`
+	Message  string `json:"message,omitempty"`
 }
 
 // RunHook is the `orchicon claude-hook` entry point: read ONE PreToolUse JSON
@@ -542,6 +656,24 @@ func RunHook(in io.Reader, out io.Writer, getenv func(string) string) int {
 	// never sets it is unchanged.
 	var v HookVerdict
 	asking := strings.TrimSpace(getenv(HookProfileEnv)) == ProfileAskEnvValue
+
+	// THE PERMISSIONREQUEST EVENT IS A DIFFERENT CONTRACT FROM PreToolUse, and it is the only one that can
+	// put a CARD in front of the operator.
+	//
+	// It fires when the PERMISSION SYSTEM wants a decision — which `permissions.ask` makes it want for the
+	// gated tools — and its output is a real allow/deny, unlike a PreToolUse verdict whose "ask" becomes a
+	// tool error and whose permission-system ask becomes a terminal denial (both MEASURED against 2.1.289).
+	// Since it cannot abstain, the hook has to DECIDE, and a decision that needs a human is a decision that
+	// BLOCKS: this is what the consent socket is for.
+	//
+	// It is handled BEFORE the PreToolUse logic on purpose. That logic is about judging a call from policy
+	// alone (the mode boundary, the never-allow class, the protected roots) and its verdicts are already
+	// applied by the time this event fires — re-judging here would decide twice and could deny a call the
+	// operator had just approved.
+	if asking && h.HookEventName == "PermissionRequest" {
+		return runPermissionRequestHook(h, getenv, out)
+	}
+
 	if asking {
 		askDir := strings.TrimSpace(getenv(AskDirEnv))
 		if askDir == "" {
@@ -573,6 +705,31 @@ func RunHook(in io.Reader, out io.Writer, getenv func(string) string) int {
 
 	decision := v.Decision()
 	reason := v.Reason
+
+	// AN ASK IS DELIVERED BY ABSTAINING, NOT BY SAYING "ask" — and this is the fix for
+	// "claude adapter ask sessions seem blocked by everything".
+	//
+	// MEASURED against the real CLI (2.1.289), on a real Ask session: the hook returned
+	// permissionDecision "ask", exit 0, and the CLI turned it into an immediate TOOL ERROR the model
+	// reads as "this call needs the operator's approval". No `can_use_tool` control_request was ever
+	// raised — 18 asks, 0 control frames, 0 consent cards — so every write, edit and Bash call failed
+	// identically and the model reported being permanently blocked, which is exactly the operator's
+	// report.
+	//
+	// The cause is that `--permission-prompts host` governs the PERMISSION SYSTEM's prompts, not a
+	// hook's verdict. A hook's "ask" has no host arm in a `-p` (headless) session, so it resolves to
+	// a refusal. What DOES reach the host is a tool the permission system wants to prompt for — so
+	// the Ask profile names those tools in `permissions.ask` (see BuildSettings) and the hook stays
+	// SILENT about them.
+	//
+	// ABSTAINING IS NOT ALLOWING. An empty hook output and exit 0 is "no decision", so the call falls
+	// through to the permission system, which is where the consent card comes from. The verdicts this
+	// hook still returns are the ones it alone can make: a DENY (the never-allow class, the protected
+	// roots, the mode boundary, the subagent tool) and the ALLOWS that exist to suppress prompts for
+	// things that are not decisions (reads, the platform's own MCP surface).
+	if asking && decision == DecisionAsk {
+		return 0
+	}
 	if reason == "" {
 		// WORDING IS PER-PROFILE. The worker's string is deliberately the one it
 		// has always been: this file is shared, and a shared file that silently

@@ -105,6 +105,33 @@ var TodoTrackToolNames = []string{
 	"TaskOutput",
 }
 
+// AskPermissionToolNames are the tools the ASK profile must PROMPT about, expressed as
+// `permissions.ask` entries in the settings document.
+//
+// THEY ARE NAMED HERE RATHER THAN ASKED FOR BY THE HOOK, and that distinction is the whole fix. A
+// PreToolUse hook's `permissionDecision: "ask"` is NOT routed to `--permission-prompts host` in a
+// headless session: MEASURED against the real CLI (2.1.289), it becomes an immediate tool ERROR the
+// model reads as "this call needs the operator's approval" — 18 asks produced 0 `can_use_tool`
+// control frames and 0 consent cards, which is the operator's "claude adapter ask sessions seem
+// blocked by everything". Only the PERMISSION SYSTEM's prompt reaches the host, so the tools that
+// need an operator decision belong in this list, and the hook stays silent about them
+// (RunHook abstains on an ask verdict).
+//
+// `mcp__*` USED TO BE THE THIRD-PARTY HALF and has been REMOVED. It read "consent gates each MCP
+// call", which is no longer the rule: the operator's MCP servers are allowed outright —
+// "if it's added in scope it should just have access" — because attaching a server to a
+// conversation or its project IS the approval, made deliberately at configuration time.
+//
+// NO MCP ENTRY BELONGS HERE AT ALL, for the platform's own surface or anyone else's. An entry in
+// this list makes the permission system PROMPT, and a prompt is a card; the hook instead returns an
+// explicit ALLOW for the whole `mcp__` class (isMCPTool), which bypasses the permission system.
+// Leaving `mcp__*` here would re-introduce the card by the other route, so the two halves move
+// together. The MODE boundary remains the governor for an opaque MCP tool — see internal/askmode.
+var AskPermissionToolNames = []string{
+	"Write", "Edit", "MultiEdit", "NotebookEdit",
+	"Bash",
+}
+
 // HookToolMatcher is the PreToolUse matcher: the tools whose input can name a
 // command or a path, plus the built-in subagent tool, plus the todo/task-tracking
 // family (so the hook's catch-all ALLOW verdict also covers them). Claude matches
@@ -272,33 +299,68 @@ func BuildSettings(o PermissionOptions) (string, error) {
 		hookBin = HookBinaryPath()
 	}
 
-	settings := map[string]any{
-		"permissions": map[string]any{
-			// NOT acceptEdits and NOT bypassPermissions: an unanswerable ask in
-			// -p mode is a refusal, which is the honest worker semantic.
-			"defaultMode": "default",
-			"deny":        deny,
-			// The task/todo-tracking family is PRE-APPROVED so it streams at all
-			// in a non-interactive session. This is an explicit opts-in, not a
-			// bypass: every other restriction (the hook authority, the deny list,
-			// the project boundary) stays in force, and these tools only write
-			// the in-session todo list.
-			"allow":                 append([]string(nil), TodoTrackToolNames...),
-			"additionalDirectories": dirs,
-			// Pin the bypass mode OFF at the settings layer too, so a later
-			// `--permission-mode bypassPermissions` on the command line is refused
-			// by claude itself.
-			"disableBypassPermissionsMode": "disable",
-		},
-		"hooks": map[string]any{
-			"PreToolUse": []map[string]any{{
-				"matcher": HookToolMatcher,
-				"hooks": []map[string]any{{
-					"type":    "command",
-					"command": hookBin + " claude-hook",
-				}},
+	// THE ASK PROFILE'S PROMPTS COME FROM THE PERMISSION SYSTEM, NOT FROM THE HOOK.
+	//
+	// Only a permission-system prompt reaches the host (`--permission-prompts host`), and that host
+	// prompt is the `can_use_tool` frame the consent cards answer. A hook verdict of "ask" never gets
+	// there — see AskPermissionToolNames. The worker profile gets NO ask list: it is non-interactive
+	// by design, so a prompt there would be an unanswerable refusal.
+	perms := map[string]any{
+		// NOT acceptEdits and NOT bypassPermissions: an unanswerable ask in
+		// -p mode is a refusal, which is the honest worker semantic.
+		"defaultMode": "default",
+		"deny":        deny,
+		// The task/todo-tracking family is PRE-APPROVED so it streams at all
+		// in a non-interactive session. This is an explicit opts-in, not a
+		// bypass: every other restriction (the hook authority, the deny list,
+		// the project boundary) stays in force, and these tools only write
+		// the in-session todo list.
+		"allow":                 append([]string(nil), TodoTrackToolNames...),
+		"additionalDirectories": dirs,
+		// Pin the bypass mode OFF at the settings layer too, so a later
+		// `--permission-mode bypassPermissions` on the command line is refused
+		// by claude itself.
+		"disableBypassPermissionsMode": "disable",
+	}
+	if o.Profile == ProfileAskEnvValue {
+		perms["ask"] = append([]string(nil), AskPermissionToolNames...)
+	}
+
+	hooks := map[string]any{
+		"PreToolUse": []map[string]any{{
+			"matcher": HookToolMatcher,
+			"hooks": []map[string]any{{
+				"type":    "command",
+				"command": hookBin + " claude-hook",
 			}},
-		},
+		}},
+	}
+	// THE CARD'S ONLY DELIVERY PATH. A `PreToolUse` verdict cannot ask the operator in this launch shape
+	// (a hook's "ask" is a tool error, and the permission system's ask is terminal — both MEASURED against
+	// 2.1.289), but a `PermissionRequest` hook FIRES and its allow/deny IS honoured. So the Ask profile
+	// registers one: it connects to the session's consent socket, raises the card through the ordinary
+	// consent path, blocks until the operator answers, and returns the decision.
+	//
+	// THE TIMEOUT EXCEEDS THE WAIT (consent_hook.go: 960s vs 15m) so OUR side expires first and the hook
+	// still exits cleanly with a deny, rather than being killed mid-write while the operator is reading.
+	//
+	// THE MATCHER IS DERIVED FROM AskPermissionToolNames, so the tools that prompt and the tools that card
+	// cannot diverge: a name in one and not the other is a call the permission system asks about with no
+	// hook to answer it — a terminal denial, which is the whole defect.
+	if o.Profile == ProfileAskEnvValue {
+		hooks["PermissionRequest"] = []map[string]any{{
+			"matcher": askHookToolMatcher(),
+			"hooks": []map[string]any{{
+				"type":    "command",
+				"command": hookBin + " claude-hook",
+				"timeout": AskHookTimeoutSeconds,
+			}},
+		}}
+	}
+
+	settings := map[string]any{
+		"permissions": perms,
+		"hooks":       hooks,
 	}
 
 	b, err := json.Marshal(settings)

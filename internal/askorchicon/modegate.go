@@ -46,6 +46,12 @@ func askModeFromContext(ctx context.Context) string {
 // claude Ask child resolves its `--mcp-config` from the conversation's project and its own id, and it cannot
 // see an unexported key declared here. The two wrappers below keep this package's names and signatures (its
 // tests and native_tools.go call them) while the VALUE is the one every adapter reads.
+//
+// THE STAMP DOES NOT REACH A SIDECAR BY ITSELF. This is a CONTEXT value, so it governs only tools that run
+// IN-PROCESS (the native Ask path). claude's Orchicon tools run in a stdio CHILD, which inherits an
+// environment and not a context: that transport puts the scope in the child's env
+// (claude.MCPConversationEnv) and internal/mcp/server.go stamps it back onto each tool call. The ids are
+// therefore read in three places and all three must agree — here, internal/askmode, and the sidecar.
 
 // withAskConversation stamps a turn's context with its conversation id.
 func withAskConversation(ctx context.Context, convID string) context.Context {

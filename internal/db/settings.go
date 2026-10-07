@@ -395,3 +395,63 @@ func scanTenantSettings(row pgx.Rows) (TenantSettingsRow, error) {
 	}
 	return r, nil
 }
+
+// AuditFields is the audited shape of a settings row: the map an `audit.Snapshot` records for a
+// `settings.updated` entry.
+//
+// IT LIVES ON THE ROW SO BOTH WRITE PATHS RECORD THE SAME THING. There are two: the SettingsService RPC
+// (the GUI form and the TUI's Edit tenant settings) and the agent-facing `update_settings` tool, which
+// writes tenant_settings directly without going through the service. Its snapshot used to name only the
+// default models and the session TTLs — so a stall threshold that had been changed, or blanked, left NO
+// trace, and an operator asking "did my save land?" could not be answered from the audit trail at all.
+// That question was asked for real, and the honest answer was "the trail does not record it".
+//
+// THE POINTERS ARE THE POINT: these columns are NULLABLE, and NULL means "use the built-in default" while
+// 0 means DISABLED. Marshalling them directly preserves that distinction in the snapshot (null vs 0), which
+// is exactly the fact a diagnostic needs — a flattened copy would report a blanked window and a
+// deliberately disabled one identically.
+//
+// The budget ladder and its JSON transport are deliberately EXCLUDED: the ladder carries the full text of
+// every warning message at each tier, so snapshotting it would put multiple KB into every audit row and
+// bury the small scalars. Audit the numbers that decide behaviour; if the ladder's gates need recording,
+// they belong as their own scalar summary rather than as that blob.
+func (r TenantSettingsRow) AuditFields() map[string]any {
+	return map[string]any{
+		"default_worker_model":       r.DefaultWorkerModel,
+		"default_ask_orchicon_model": r.DefaultAskOrchiconModel,
+
+		"session_access_token_ttl_seconds":  r.SessionAccessTokenTtlSeconds,
+		"session_refresh_token_ttl_seconds": r.SessionRefreshTokenTtlSeconds,
+
+		// The stall thresholds — every one of them, so a blanked window is visible as null.
+		"stall_no_progress_window_seconds":  r.StallNoProgressWindowSeconds,
+		"stall_no_file_diff_window_seconds": r.StallNoFileDiffWindowSeconds,
+		"stall_text_loop_window_seconds":    r.StallTextLoopWindowSeconds,
+		"stall_repetition_count":            r.StallRepetitionCount,
+		"stall_repetition_window_seconds":   r.StallRepetitionWindowSeconds,
+		"stall_nudge_max":                   r.StallNudgeMax,
+		"stall_nudge_reply_window_seconds":  r.StallNudgeReplyWindowSeconds,
+		"stall_nudge_cooldown_seconds":      r.StallNudgeCooldownSeconds,
+		"stall_tool_hang_seconds":           r.StallToolHangSeconds,
+
+		"execution_reap_grace_seconds":        r.ExecutionReapGraceSeconds,
+		"execution_reap_consecutive_failures": r.ExecutionReapConsecutiveFailures,
+		"max_concurrent_runs":                 r.MaxConcurrentRuns,
+		"max_concurrent_runs_set":             r.MaxConcurrentRunsSet,
+
+		"context_compaction_enabled":       r.ContextCompactionEnabled,
+		"context_compaction_pressure_frac": r.ContextCompactionPressureFrac,
+		"context_recent_turns":             r.ContextRecentTurns,
+		"memory_enabled":                   r.MemoryEnabled,
+		"memory_digest_entries":            r.MemoryDigestEntries,
+
+		"backup_schedule":         r.BackupSchedule,
+		"backup_retention_days":   r.BackupRetentionDays,
+		"backup_directory":        r.BackupDirectory,
+		"log_directory":           r.LogDirectory,
+		"log_max_size_mb":         r.LogMaxSizeMB,
+		"log_roll_interval_hours": r.LogRollIntervalHours,
+		"log_retention_days":      r.LogRetentionDays,
+		"log_max_files":           r.LogMaxFiles,
+	}
+}

@@ -165,15 +165,26 @@ func ListConversations(ctx context.Context, tx pgx.Tx, tenantID string, limit in
 			(SELECT COUNT(*) FROM ask_orchicon_messages m
 			  WHERE m.tenant_id = c.tenant_id AND m.conversation_id = c.id)
 		FROM ask_orchicon_conversations c`
+	// THE ORDER IS TOTAL, AND THE CURSOR COMPARES THE WHOLE TUPLE. It used to order by
+	// `updated_at DESC` alone and page with a strict `updated_at < cursor.updated_at`, which is
+	// LOSSY: `now()` is the TRANSACTION timestamp, so rows written in one transaction share
+	// `updated_at` exactly, and every row tied with the cursor row failed the strict `<` and was
+	// SKIPPED. A client that pages (the TUI rail now does) would silently lose them.
+	//
+	// `(updated_at, id) < (cursor.updated_at, cursor.id)` with `id DESC` as the tiebreak is the
+	// standard keyset form: it is a total order, so no row can be skipped or repeated.
 	if afterID != "" {
 		q = listCols + `
-			WHERE c.tenant_id = $1 AND c.updated_at < (SELECT p.updated_at FROM ask_orchicon_conversations p WHERE p.tenant_id = $1 AND p.id = $2)
-			ORDER BY c.updated_at DESC LIMIT $3`
+			WHERE c.tenant_id = $1
+			  AND (c.updated_at, c.id) < (
+				SELECT p.updated_at, p.id FROM ask_orchicon_conversations p
+				WHERE p.tenant_id = $1 AND p.id = $2)
+			ORDER BY c.updated_at DESC, c.id DESC LIMIT $3`
 		args = []any{tenantID, afterID, limit}
 	} else {
 		q = listCols + `
 			WHERE c.tenant_id = $1
-			ORDER BY c.updated_at DESC LIMIT $2`
+			ORDER BY c.updated_at DESC, c.id DESC LIMIT $2`
 		args = []any{tenantID, limit}
 	}
 	iter, err := tx.Query(ctx, q, args...)

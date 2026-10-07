@@ -490,4 +490,16 @@ func TestClaudeParityMatrix(t *testing.T) {
 			t.Fatal("claude.Bridge must implement scheduler.ChatTurnClient")
 		}
 	})
+
+	// ask_attachments: the second capability Ask routing hinges on. An Ask turn
+	// carrying an image type-asserts SendTurnMessageWithAttachments off the
+	// bridge and FAILS AT DISPATCH without it, so this is pinned for the same
+	// reason as ask_coupling: an assertion that lives only as a type-assert in
+	// another package can be dropped by a refactor with nothing failing.
+	t.Run("ask_attachments", func(t *testing.T) {
+		b := New(quietLogger())
+		if _, ok := any(b).(scheduler.SendTurnMessageWithAttachments); !ok {
+			t.Fatal("claude.Bridge must implement scheduler.SendTurnMessageWithAttachments — without it an Ask turn with an image fails at dispatch")
+		}
+	})
 }

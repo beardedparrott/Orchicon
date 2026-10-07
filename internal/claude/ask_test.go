@@ -2,6 +2,7 @@ package claude
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -55,6 +56,9 @@ func TestBridgeImplementsAskChatCapability(t *testing.T) {
 	}
 	if _, ok := b.(scheduler.SessionOwnerKind); !ok {
 		t.Fatal("the claude bridge does not implement SessionOwnerKind — a foreign session id could be dispatched to it")
+	}
+	if _, ok := b.(scheduler.SendTurnMessageWithAttachments); !ok {
+		t.Fatal("the claude bridge does not implement SendTurnMessageWithAttachments — an Ask turn with an image would fail at dispatch")
 	}
 }
 
@@ -570,5 +574,210 @@ func TestAskRecreateRetiresThePreviousChild(t *testing.T) {
 	}
 	if !old.isClosed() {
 		t.Fatal("the previous child was not closed on recreate — its stdin and transcript would stay open")
+	}
+}
+
+// An Ask turn's attachments must reach the child as Messages-API content blocks.
+// The assertion is on the FRAME that goes to the child's stdin, not on a helper's
+// return value: the wire is the contract, and a helper that built the right block
+// only to have it dropped on the way out would still be broken.
+func TestAskTurnCarriesAnImageAttachmentAsAnImageBlock(t *testing.T) {
+	h, slot := askHarness(t)
+	ctx := context.Background()
+	sid, err := h.b.CreateConversationSession(ctx, "conv-img", "t")
+	if err != nil {
+		t.Fatalf("CreateConversationSession: %v", err)
+	}
+	png := []byte("\x89PNG\r\n\x1a\nnot-a-real-png-but-the-block-shape-is-what-is-under-test")
+	if err := h.b.SendTurnMessageWithAttachments(ctx, "conv-img", sid, "", "claude/anthropic/claude-sonnet-4", "look at this",
+		[]scheduler.ChatAttachment{{Name: "shot.png", MimeType: "image/png", Data: png}}); err != nil {
+		t.Fatalf("SendTurnMessageWithAttachments: %v", err)
+	}
+	fp := *slot
+	if fp == nil {
+		t.Fatal("no child was spawned for the turn")
+	}
+	turns := fp.turnsSnapshot()
+	if len(turns) != 1 {
+		t.Fatalf("frames written = %d, want 1: %v", len(turns), turns)
+	}
+
+	var frame struct {
+		Type    string `json:"type"`
+		Message struct {
+			Role    string           `json:"role"`
+			Content []map[string]any `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(turns[0]), &frame); err != nil {
+		t.Fatalf("frame is not JSON: %v (%s)", err, turns[0])
+	}
+	if frame.Type != "user" || frame.Message.Role != "user" {
+		t.Fatalf("frame = %s, want a user turn", turns[0])
+	}
+	if len(frame.Message.Content) != 2 {
+		t.Fatalf("content blocks = %d, want 2 (text + image): %s", len(frame.Message.Content), turns[0])
+	}
+	if got := frame.Message.Content[0]; got["type"] != "text" || got["text"] != "look at this" {
+		t.Errorf("block 0 = %+v, want the turn's text", got)
+	}
+	img := frame.Message.Content[1]
+	if img["type"] != "image" {
+		t.Fatalf("block 1 type = %v, want image: %s", img["type"], turns[0])
+	}
+	src, ok := img["source"].(map[string]any)
+	if !ok {
+		t.Fatalf("the image block carries no source object: %+v", img)
+	}
+	if src["type"] != "base64" || src["media_type"] != "image/png" {
+		t.Errorf("image source = %+v, want a base64 block with media_type image/png", src)
+	}
+	data, _ := src["data"].(string)
+	if data != base64.StdEncoding.EncodeToString(png) {
+		t.Errorf("image data is not the base64 of the attachment bytes")
+	}
+	// The CLI separates media_type from data, so `data` must be RAW base64: a
+	// `data:` URL is a different shape and is not a valid block here.
+	if strings.HasPrefix(data, "data:") {
+		t.Error("image data must be raw base64, not a data: URL")
+	}
+}
+
+// The system prompt rides the FIRST turn by folding into its leading text block.
+// That is the pre-existing seeding contract, and a text-only turn must stay
+// byte-identical: splitting it into a second block would be a silent wire change
+// on every conversation that carries no attachment at all.
+func TestAskTextTurnIsUnchangedByTheAttachmentPath(t *testing.T) {
+	h, slot := askHarness(t)
+	ctx := context.Background()
+	sid, _ := h.b.CreateConversationSession(ctx, "conv-text", "t")
+	if err := h.b.SendTurnMessage(ctx, "conv-text", sid, "be terse", "claude/anthropic/claude-sonnet-4", "hi"); err != nil {
+		t.Fatalf("SendTurnMessage: %v", err)
+	}
+	fp := *slot
+	turns := fp.turnsSnapshot()
+	if len(turns) != 1 {
+		t.Fatalf("frames = %d, want 1", len(turns))
+	}
+	var frame struct {
+		Message struct {
+			Content []map[string]any `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(turns[0]), &frame); err != nil {
+		t.Fatalf("frame is not JSON: %v", err)
+	}
+	if len(frame.Message.Content) != 1 {
+		t.Fatalf("blocks = %d, want 1 — a text-only turn must not gain a block: %s", len(frame.Message.Content), turns[0])
+	}
+	if want := "=== SYSTEM ===\nbe terse\n\nhi"; frame.Message.Content[0]["text"] != want {
+		t.Errorf("first-turn text = %q, want %q", frame.Message.Content[0]["text"], want)
+	}
+}
+
+// An image/* media type the CLI does NOT accept must not be sent as an image
+// block. The native transport routes on the `image/` prefix, but the CLI's schema
+// allow-lists jpeg/png/gif/webp and REFUSES anything else — so an SVG emitted as
+// an image block fails the whole turn to deliver nothing. It takes the text path
+// instead, which is also the more useful answer: SVG is markup the model reads.
+func TestAskUnsupportedImageTypeTakesTheTextPath(t *testing.T) {
+	content, err := askUserContent("see", []scheduler.ChatAttachment{
+		{Name: "icon.svg", MimeType: "image/svg+xml", Data: []byte("<svg><rect/></svg>")},
+	})
+	if err != nil {
+		t.Fatalf("askUserContent: %v", err)
+	}
+	if len(content) != 2 {
+		t.Fatalf("blocks = %d, want 2 (text + fenced text): %+v", len(content), content)
+	}
+	if content[1]["type"] != "text" {
+		t.Fatalf("image/svg+xml became a %v block; the CLI rejects image blocks outside its media-type set, which fails the whole turn", content[1]["type"])
+	}
+	s, _ := content[1]["text"].(string)
+	if !strings.Contains(s, "icon.svg") || !strings.Contains(s, "<svg><rect/></svg>") {
+		t.Errorf("fenced text = %q, want the attachment name and its markup", s)
+	}
+}
+
+// A binary document this transport cannot carry is a LOUD error, and the turn must
+// not be sent. The refusal happens BEFORE the session is touched, so no child is
+// spawned and no mode file is rewritten either.
+func TestAskBinaryDocumentIsRefusedLoudlyAndSendsNothing(t *testing.T) {
+	h, slot := askHarness(t)
+	ctx := context.Background()
+	sid, _ := h.b.CreateConversationSession(ctx, "conv-bin", "t")
+	err := h.b.SendTurnMessageWithAttachments(ctx, "conv-bin", sid, "", "claude/anthropic/claude-sonnet-4", "read this",
+		[]scheduler.ChatAttachment{{Name: "blob.bin", MimeType: "application/pdf", Data: []byte{0x00, 0xff, 0xfe, 0x01}}})
+	if err == nil {
+		t.Fatal("a binary document was accepted; want a loud refusal, never a silent drop")
+	}
+	if !strings.Contains(err.Error(), "blob.bin") {
+		t.Errorf("error %q does not name the attachment it refused", err)
+	}
+	if fp := *slot; fp != nil {
+		t.Errorf("a refused turn spawned a child and wrote %d frame(s); it must be rejected before the session is touched", fp.turnCount())
+	}
+}
+
+// The caps are the native Ask transport's numbers (internal/orchicon/chatturn.go)
+// on purpose: two different values would make "is this attachment accepted?"
+// depend on which adapter a conversation happens to be pinned to.
+func TestAskAttachmentCapsMatchTheNativeTransport(t *testing.T) {
+	if claudeAskMaxAttachments != 5 || claudeAskMaxAttachmentBytes != 10*1024*1024 || claudeAskMaxAttachmentsTotalBytes != 20*1024*1024 {
+		t.Fatalf("the Ask attachment caps drifted from the native transport: %d / %d / %d",
+			claudeAskMaxAttachments, claudeAskMaxAttachmentBytes, claudeAskMaxAttachmentsTotalBytes)
+	}
+	tooMany := make([]scheduler.ChatAttachment, 0, claudeAskMaxAttachments+1)
+	for i := 0; i <= claudeAskMaxAttachments; i++ {
+		tooMany = append(tooMany, scheduler.ChatAttachment{Name: "x.png", MimeType: "image/png", Data: []byte{1}})
+	}
+	if _, err := askUserContent("", tooMany); err == nil {
+		t.Error("over the attachment COUNT cap was accepted")
+	}
+	if _, err := askUserContent("", []scheduler.ChatAttachment{
+		{Name: "big.png", MimeType: "image/png", Data: make([]byte, claudeAskMaxAttachmentBytes+1)},
+	}); err == nil {
+		t.Error("over the single-attachment SIZE cap was accepted")
+	}
+}
+
+// The block list is a wire shape, so its edges are part of the contract: a media
+// type carrying parameters still has to match the accepted set, and `content`
+// must never be an empty array (which is not a well-formed turn).
+func TestAskAttachmentBlocksAreWellFormed(t *testing.T) {
+	// Parameters are stripped before matching, or `image/png; charset=binary`
+	// would silently take the text path.
+	content, err := askUserContent("", []scheduler.ChatAttachment{
+		{Name: "p.png", MimeType: "IMAGE/PNG; charset=binary", Data: []byte("\x89PNG")},
+	})
+	if err != nil {
+		t.Fatalf("askUserContent: %v", err)
+	}
+	if len(content) != 1 || content[0]["type"] != "image" {
+		t.Fatalf("a parameterized image media type did not become an image block: %+v", content)
+	}
+	src, _ := content[0]["source"].(map[string]any)
+	if src["media_type"] != "image/png" {
+		t.Errorf("media_type = %v, want the normalized image/png", src["media_type"])
+	}
+
+	// Text-less turns match the native transport: no empty leading text block.
+	content, err = askUserContent("", []scheduler.ChatAttachment{
+		{Name: "q.png", MimeType: "image/png", Data: []byte("\x89PNG")},
+	})
+	if err != nil {
+		t.Fatalf("askUserContent: %v", err)
+	}
+	if len(content) != 1 {
+		t.Fatalf("blocks = %d, want 1 (the image alone, no empty text block): %+v", len(content), content)
+	}
+
+	// And an entirely empty turn still produces a well-formed frame.
+	content, err = askUserContent("", nil)
+	if err != nil {
+		t.Fatalf("askUserContent: %v", err)
+	}
+	if len(content) != 1 || content[0]["type"] != "text" {
+		t.Fatalf("an empty turn produced %+v, want one text block so content is never an empty array", content)
 	}
 }

@@ -31,7 +31,9 @@ const (
 	// MODEL tier: it is a catalog-sourced kind (CatalogSourcedAdapterKinds)
 	// — its models are the anthropic provider catalog's, not opencode's —
 	// so `claude` still lists and dispatches on a plane with no opencode
-	// binary, with no Ask widening (it implements no ChatTurnClient).
+	// binary. This classification is about the MODEL namespace only, and
+	// decides nothing about Ask: that comes from the ChatTurnClient
+	// assertion, which claude satisfies (internal/claude/ask.go).
 	KindClaude = "claude"
 )
 

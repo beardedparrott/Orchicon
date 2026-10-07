@@ -51,13 +51,56 @@ import (
 // runtimeContainerBinaryPath follows.
 const MCPBinaryContainerPath = HookBinaryContainerPath
 
-// MCPTenantEnv / MCPWorkflowRunEnv are read by the `orchicon mcp` sidecar
-// (internal/mcp/server.go): the tenant its DB channel is scoped to, and the
-// workflow run whose run_context it injects into create calls.
+// MCPTenantEnv / MCPWorkflowRunEnv / the conversation pair are read by the
+// `orchicon mcp` sidecar (internal/mcp/server.go): the tenant its DB channel is
+// scoped to, the workflow run whose run_context it injects into create calls,
+// and — for an Ask session — the conversation whose tools it is serving. Each
+// is restored onto the tool call's context by the sidecar, because a child
+// process inherits an ENVIRONMENT, never a Go context.
 const (
 	MCPTenantEnv      = "ORCHICON_MCP_TENANT_ID"
 	MCPWorkflowRunEnv = "ORCHICON_MCP_WORKFLOW_RUN_ID"
+
+	// MCPConversationEnv / MCPConversationProjectEnv carry an Ask session's
+	// conversation scope across the stdio boundary.
+	//
+	// THEY MUST BE SET ONLY BY A TRANSPORT WHOSE MCP CHILD SERVES ONE CONVERSATION.
+	// claude's Ask child qualifies: it is spawned per conversation and its
+	// `--mcp-config` is fixed at spawn, so the scope cannot go stale under it. A
+	// SHARED serve must NOT set them — one process serving several conversations
+	// would stamp whichever conversation happened to launch it onto every other
+	// conversation's tool calls, which is worse than the empty scope it replaces.
+	MCPConversationEnv        = "ORCHICON_MCP_CONVERSATION_ID"
+	MCPConversationProjectEnv = "ORCHICON_MCP_CONVERSATION_PROJECT_ID"
 )
+
+// OrchiconMCPConversationEnv builds the extra environment that carries an Ask
+// conversation's scope into the Orchicon sidecar.
+//
+// WHY THE SIDECAR NEEDS THIS AT ALL. The turn's conversation and project are a
+// CONTEXT value (askmode.ConversationScope), stamped in-process by the transport
+// before it dispatches the turn. That reaches a tool fine when the tools run
+// IN-PROCESS — the native Ask path — and cannot cross into a stdio child, so
+// every Orchicon tool in a claude Ask session saw an unstamped context and
+// get_current_conversation correctly refused to name a model it could not
+// identify: "no conversation is stamped on this turn". The scope rides the
+// environment for the same reason the tenant does.
+//
+// An empty conversation id yields nil (no extra env): a worker or plane sidecar
+// has no conversation, and inventing one would be the confidently-wrong answer
+// that tool exists to refuse. A conversation with no project omits only the
+// project var — the sidecar then stamps the scope's own meaning for "", which is
+// "this conversation is assigned to no project", not "unset".
+func OrchiconMCPConversationEnv(conversationID, projectID string) map[string]string {
+	if strings.TrimSpace(conversationID) == "" {
+		return nil
+	}
+	env := map[string]string{MCPConversationEnv: conversationID}
+	if strings.TrimSpace(projectID) != "" {
+		env[MCPConversationProjectEnv] = projectID
+	}
+	return env
+}
 
 // MCPServer is one entry in claude's `mcpServers` map.
 //

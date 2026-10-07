@@ -375,3 +375,150 @@ type inProcTransport struct {
 func (inProcTransport) ToolsRunInProcess() bool { return true }
 
 type serveTransport struct{ scheduler.ChatTurnClient }
+
+// THE OPERATOR'S REPORT, pinned: "No card ever came to me. That is why you may have been waiting for
+// approval."
+//
+// awaitingConsent gated ONLY the tool-wedge signal. The no-progress clock measures from lastActivity, which
+// an ASK does not advance — so a card sitting unanswered read as "no activity from the model", the turn was
+// aborted at the window, and the abort resolved the outstanding ask as consentCancelled. The model was then
+// told its APPROVAL had been cancelled when the STALL MONITOR had killed the turn: a conversation that died
+// waiting for a card surfaces as a consent error, and from the transcript the two are indistinguishable.
+func TestChatStallNoProgressDoesNotCountConsentTime(t *testing.T) {
+	m := newChatStallMonitor("orchicon/deepseek/deepseek-flash", nil)
+	m.noProgressWindow = 2 * time.Minute
+	m.toolWedgeWindow = time.Hour // isolate the no-progress signal
+	base := time.Now()
+	m.now = func() time.Time { return base }
+
+	// A bash call goes out and the ask is raised. The operator takes five minutes — far past the window,
+	// because a person reading a card is not a stalled model.
+	m.observeToolStart("bash")
+	m.setAwaitingConsent(true)
+	m.now = func() time.Time { return base.Add(5 * time.Minute) }
+	if r := m.stallReason(); r != "" {
+		t.Fatalf("a turn waiting on the operator was declared stalled: %q — the abort then reports an APPROVAL error, which is how a missing card reads as a consent failure", r)
+	}
+
+	// The decision lands. The clock restarts, so the turn is not killed one tick later on a clock that had
+	// been running the whole time the human was reading.
+	m.setAwaitingConsent(false)
+	m.now = func() time.Time { return base.Add(5*time.Minute + 30*time.Second) }
+	if r := m.stallReason(); r != "" {
+		t.Fatalf("the turn was declared stalled 30s after the operator answered, on a clock that ran while they read: %q", r)
+	}
+
+	// A model that THEN genuinely goes quiet is still caught — a full window after the decision, not never.
+	m.now = func() time.Time { return base.Add(5*time.Minute + 2*time.Minute + time.Second) }
+	if r := m.stallReason(); !strings.Contains(r, "no_progress") {
+		t.Fatalf("stallReason = %q, want a no_progress trip once the MODEL has been silent past its window", r)
+	}
+}
+
+// Repetition is about the MODEL looping, which a pending ask neither causes nor excuses — so it stays armed
+// while a consent is outstanding. Gating it too would have been the easy over-correction.
+func TestChatStallRepetitionStillFiresWhileAwaitingConsent(t *testing.T) {
+	m := newChatStallMonitor("orchicon/deepseek/deepseek-flash", nil)
+	m.noProgressWindow = time.Hour
+	m.toolWedgeWindow = time.Hour
+	m.repetitionCount = 2
+	m.repetitionWindow = time.Hour
+	base := time.Now()
+	m.now = func() time.Time { return base }
+
+	m.setAwaitingConsent(true)
+	tool := map[string]any{"type": "tool", "tool": "bash", "input": map[string]any{"command": "ls"}}
+	for i := 0; i < 4; i++ {
+		m.observe("tool_use", tool)
+	}
+	if r := m.stallReason(); !strings.Contains(r, "repetition") {
+		t.Fatalf("stallReason = %q, want a repetition trip — a looping model is a loop whether or not an ask is open", r)
+	}
+}
+
+// THE DEFAULT MUST NOT BE STRICT ENOUGH TO ABORT A HEALTHY SESSION.
+//
+// The operator found this one in live use: "the Orchicon adapter sessions dying. It is the stall no
+// progress protection. It's at 2 minutes right now which is too strict. I set mine to 600 seconds now.
+// I think we should probably default to at least 300 seconds."
+//
+// The assertion is a FLOOR, not the exact value, so tuning it up later is allowed and tuning it back
+// down under the operator's own stated minimum is not.
+func TestAskStallNoProgressDefaultIsNotTooStrict(t *testing.T) {
+	const floor = 300 * time.Second
+	if defaultAskStallNoProgressWindow < floor {
+		t.Errorf("the no-progress default is %s, below the operator's floor of %s.\n"+
+			"This signal measures the ABSENCE of events, and a tool that is legitimately running produces "+
+			"none (the serve emits nothing while a tool runs), so the window is really \"how long may a "+
+			"HEALTHY tool be silent\". At 120s it was set EQUAL to the transport's own bash deadline "+
+			"(bashTimeoutDefault 120s), so a command allowed to run for its full deadline sat exactly ON "+
+			"the threshold and the stall monitor aborted the turn first.",
+			defaultAskStallNoProgressWindow, floor)
+	}
+	// AND IT MUST OUTLAST THE TRANSPORT'S BASH DEADLINE, or the monitor pre-empts a legal call. That
+	// deadline is 120s by default and 600s at most (internal/orchicon/hosttools.go); the max cannot be
+	// covered by any sane window, which is why the signal is SUSPENDED while such a call is open
+	// (TestChatStallNoProgressIsSuspendedWhileALocallyBoundedToolRuns) rather than merely widened.
+	if defaultAskStallNoProgressWindow <= 120*time.Second {
+		t.Errorf("the no-progress default (%s) does not exceed the transport's default bash deadline (120s) — "+
+			"a bash call running for its own full deadline would be aborted by the stall monitor first",
+			defaultAskStallNoProgressWindow)
+	}
+}
+
+// THE REAL FIX: no_progress is SUSPENDED while a locally-bounded tool is running.
+//
+// Widening the window only moves the boundary. A build or a test suite can legitimately outlast ANY
+// fixed window, and during such a call the transport holds the deadline itself (exec.CommandContext) —
+// so this signal is judging a clock it does not own.
+func TestChatStallNoProgressIsSuspendedWhileALocallyBoundedToolRuns(t *testing.T) {
+	m := newChatStallMonitor("orchicon/ollama/deepseek-v4.1-flash", nil)
+	m.noProgressWindow = 30 * time.Second // short, so the test is sharp rather than slow
+	m.setLocallyBoundedTools(hostSuiteToolNames)
+	base := time.Now()
+	m.now = func() time.Time { return base }
+
+	m.observeToolStart("bash")
+	// A build runs for far longer than the window — and longer than bash's own default deadline, i.e.
+	// a call the operator allowed by giving it a bigger timeout.
+	m.now = func() time.Time { return base.Add(5 * time.Minute) }
+	if reason := m.stallReason(); reason != "" {
+		t.Fatalf("stallReason = %q while a locally-bounded bash was still RUNNING — this is the operator's "+
+			"\"sessions dying\": the turn is aborted mid-command and the work in it is gone. The transport "+
+			"owns this call's deadline, so this signal must not judge it.", reason)
+	}
+
+	// AND THE RESOLUTION RESTARTS THE CLOCK. Without this the suspension just moves the death: after the
+	// build returns, lastActivity would still be stamped at the build's START, so the FIRST tick would
+	// measure five minutes of "silence" and abort the turn immediately after it finished.
+	m.now = func() time.Time { return base.Add(5 * time.Minute) }
+	m.closeTool()
+	if reason := m.stallReason(); reason != "" {
+		t.Fatalf("stallReason = %q on the tick right after the tool RESOLVED — a resolved tool is forward "+
+			"motion, and a stale clock here aborts a turn that has just made progress", reason)
+	}
+
+	// ...and the signal is live again from that point, so suspending it was not a permanent hole.
+	m.now = func() time.Time { return base.Add(5*time.Minute + 31*time.Second) }
+	if reason := m.stallReason(); !strings.HasPrefix(reason, "stalled:no_progress") {
+		t.Fatalf("stallReason = %q after the tool resolved and the model then went genuinely silent, want a "+
+			"no_progress trip — the suspension must end when the call does", reason)
+	}
+}
+
+// A NON-LOCAL TOOL IS STILL JUDGED, so the suspension is a targeted exemption rather than a blanket
+// hole: an MCP call leaves this process and can genuinely wedge with nothing to report.
+func TestChatStallNoProgressStillJudgesANonLocalTool(t *testing.T) {
+	m := newChatStallMonitor("orchicon/ollama/deepseek-v4.1-flash", nil)
+	m.noProgressWindow = 30 * time.Second
+	m.setLocallyBoundedTools(hostSuiteToolNames)
+	base := time.Now()
+	m.now = func() time.Time { return base }
+
+	m.observeToolStart("mcp__github__create_issue") // NOT in the host suite
+	m.now = func() time.Time { return base.Add(5 * time.Minute) }
+	if reason := m.stallReason(); !strings.HasPrefix(reason, "stalled:no_progress") {
+		t.Fatalf("stallReason = %q for a silent NON-local tool, want a no_progress trip — the exemption is "+
+			"for calls this process runs under its own deadline, not for every tool", reason)
+	}
+}

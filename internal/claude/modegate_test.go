@@ -166,9 +166,14 @@ func TestRunHookDeniesAModeBlockedToolInTheAskProfile(t *testing.T) {
 	}
 }
 
-// NO MODE FILE = no mode claim, and the Ask profile behaves exactly as it did
-// before this feature: a write is ASKED about. This is the regression guard for
-// the pre-mode behaviour.
+// NO MODE FILE = no mode claim, and a write is still the operator's decision — the regression guard
+// for the pre-mode behaviour.
+//
+// THE VERDICT IS "ASK", AND THE WIRE CARRIES NOTHING: the mode file decides whether the MODE refuses a
+// call; an ask is not a refusal, and the hook delivers an ask by abstaining so the permission system
+// raises the host prompt (see TestRunHookAbstainsSoThePermissionSystemCanAsk). So the assertion is on
+// the DECISION — the mode file was consulted and produced no denial — and on the ABSENCE of any wire
+// verdict, which is the half that was broken.
 func TestRunHookWithoutAModeFileStillAsks(t *testing.T) {
 	env := map[string]string{
 		HookProfileEnv: ProfileAskEnvValue,
@@ -177,15 +182,17 @@ func TestRunHookWithoutAModeFileStillAsks(t *testing.T) {
 	}
 	payload := `{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"/tmp/x"}}`
 
+	// The mode layer itself: no file, no denial.
+	if denied, reason := askModeDenial("", "Write"); denied {
+		t.Fatalf("with no mode file the mode gate denied a write (%q) — there is no mode boundary to enforce", reason)
+	}
+
 	var out bytes.Buffer
 	RunHook(strings.NewReader(payload), &out, func(k string) string { return env[k] })
 
-	var doc hookOutput
-	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
-		t.Fatalf("hook output is not valid JSON: %v", err)
-	}
-	if got := doc.HookSpecificOutput.PermissionDecision; got != DecisionAsk {
-		t.Fatalf("permissionDecision = %q, want ask — with no mode file there is no mode boundary to enforce", got)
+	if got := strings.TrimSpace(out.String()); got != "" {
+		t.Fatalf("the hook emitted %q for an ask, want no output — a write with no mode boundary must reach "+
+			"the operator as a CARD (via permissions.ask), not as a wire verdict the CLI turns into an error", got)
 	}
 }
 
