@@ -266,19 +266,19 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 		// Gate: they return false when the diff pane is CLOSED (diffRailWidthStep / diffRailWidthReset),
 		// so the chord is a no-op there and falls through to whatever else might want it.
 		{
-			Name: "widen diff rail", Keys: "ctrl+right", Scope: "global",
+			Name: "widen the split (diff rail, or the screen's tree/detail)", Keys: "ctrl+right", Scope: "global",
 			Match:  keyMatcher("ctrl+right"),
-			Handle: func(m *App, _ tea.Msg) bool { return m.diffRailWidthStep(+1) },
+			Handle: func(m *App, _ tea.Msg) bool { return m.splitWidthStep(+1) },
 		},
 		{
-			Name: "narrow diff rail", Keys: "ctrl+left", Scope: "global",
+			Name: "narrow the split (diff rail, or the screen's tree/detail)", Keys: "ctrl+left", Scope: "global",
 			Match:  keyMatcher("ctrl+left"),
-			Handle: func(m *App, _ tea.Msg) bool { return m.diffRailWidthStep(-1) },
+			Handle: func(m *App, _ tea.Msg) bool { return m.splitWidthStep(-1) },
 		},
 		{
-			Name: "reset diff rail width (auto)", Keys: "ctrl+down", Scope: "global",
+			Name: "reset the split width", Keys: "ctrl+down", Scope: "global",
 			Match:  keyMatcher("ctrl+down"),
-			Handle: func(m *App, _ tea.Msg) bool { return m.diffRailWidthReset() },
+			Handle: func(m *App, _ tea.Msg) bool { return m.splitWidthReset() },
 		},
 	}
 	// One chord route per tab, in tab order: F1 … F7.

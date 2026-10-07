@@ -197,3 +197,43 @@ func (m *App) persistDiffRailWidth() {
 		m.dock.SetNotice(diffRailPrefNote + " (this run only — cannot write " + path + ": " + err.Error() + ")")
 	}
 }
+
+// listSharePrefNote is the noun the split's load/write failures report under.
+const listSharePrefNote = "list/detail split"
+
+// loadListShare restores the operator's master-detail split from the config file, on the same
+// silent-on-failure rule as the other display preferences: a preference that cannot be read must never stop
+// the operator connecting.
+//
+// It lands on the APP, not on the screens, and rebindScreens pushes it out — screens are created lazily on
+// first visit, so a value applied only to the screens alive at startup would be missing on every tab the
+// operator had not opened yet.
+func (m *App) loadListShare() {
+	path := collapsedPrefsPath()
+	if path == "" {
+		return
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		return
+	}
+	m.listSharePct = cfg.ListSharePct // 0 = the default split
+}
+
+// persistListShare writes the split (0 = default) back to the config file, read-modify-write through the same
+// config.Load/Save the other preferences use so it cannot clobber a credential.
+func (m *App) persistListShare() {
+	path := collapsedPrefsPath()
+	if path == "" {
+		return // no config location (or a test): nothing to write
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		m.dock.SetNotice(listSharePrefNote + " (this run only — cannot read " + path + ")")
+		return
+	}
+	cfg.ListSharePct = m.listSharePct
+	if err := config.Save(path, cfg); err != nil {
+		m.dock.SetNotice(listSharePrefNote + " (this run only — cannot write " + path + ": " + err.Error() + ")")
+	}
+}

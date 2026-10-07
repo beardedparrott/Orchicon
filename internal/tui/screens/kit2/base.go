@@ -122,6 +122,19 @@ type Base struct {
 	detail  screenkit.Detail
 	focusD  bool
 
+	// listSharePct is the operator's WIDTH PREFERENCE for the tree/list pane of the master-detail split, as a
+	// percentage of the content width (0 = the default, an even split).
+	//
+	// The operator: "I am talking about every pane in the TUI where there is a tree and detail view. I would
+	// like to be able to expand the tree view to see the full work item names, execution names, etc." Every
+	// such screen renders through SinglePane, and the split used to be a hard 50/50 — so a long work-item
+	// name was truncated in the tree no matter how wide the terminal was, because half the screen was always
+	// given to the detail pane even when it was empty.
+	//
+	// ONE PREFERENCE FOR ALL SCREENS, deliberately: the complaint is about reading names, and a per-screen
+	// width would mean re-adjusting it on every tab. See twoPaneWidths for the single place it is applied.
+	listSharePct int
+
 	// editPanel HOSTS the open inline form and lives as long as the editing
 	// session does. It has to outlive a single frame: Panel.SetContent CLAMPS a
 	// scroll that starts at 0, so a Panel built fresh on every frame (which is what
@@ -330,9 +343,90 @@ func (b *Base) SetStatus(name, st string) {
 func (b *Base) ReportStatus() []StatusMsg { return b.statuses }
 
 // regionWidths splits the content width across the source panes + detail.
+//
+// THE TWO-PANE CASE HONOURS THE OPERATOR'S SHARE; a genuine multi-source grid does not, because "give the
+// list more room" has no single meaning there. The two must agree with twoPaneWidths or the hit-test would
+// disagree with the layout.
 func (b *Base) regionWidths() []int {
 	n := len(b.sources) + 1
+	if n == 2 {
+		lw, dw := b.twoPaneWidths(b.width)
+		return []int{lw, dw}
+	}
 	return SplitWidths(b.width, n, 1)
+}
+
+// The master-detail split's bounds, as percentages of the content width.
+const (
+	defaultListSharePct = 50
+	minListSharePct     = 25
+	maxListSharePct     = 85
+)
+
+// ListSharePct is the share in force (the default when the operator has set none).
+func (b *Base) ListSharePct() int {
+	if b.listSharePct <= 0 {
+		return defaultListSharePct
+	}
+	return b.listSharePct
+}
+
+// SetListSharePct sets the share, clamped to the usable range.
+//
+// THE BOUNDS ARE NOT ARBITRARY. Below min the detail pane's own bordered content becomes unusable; above max
+// the detail pane cannot render a field row without truncating every one of them, which is a worse version
+// of the problem being solved.
+func (b *Base) SetListSharePct(pct int) {
+	if pct <= 0 {
+		// 0 MEANS THE DEFAULT, not the minimum: the App's zero value is "the operator has expressed no
+		// preference", and clamping it to minListSharePct would leave every screen on a split nobody chose.
+		b.listSharePct = 0
+		return
+	}
+	if pct < minListSharePct {
+		pct = minListSharePct
+	}
+	if pct > maxListSharePct {
+		pct = maxListSharePct
+	}
+	b.listSharePct = pct
+}
+
+// NudgeListShare moves the share by delta percent, reporting whether it MOVED (so a caller at a bound can tell
+// "nothing happened" from "it changed").
+//
+// Two percent per step rather than one: the split is a reading preference, and one percent per keypress is a
+// lot of presses to cross the range.
+func (b *Base) NudgeListShare(delta int) bool {
+	before := b.ListSharePct()
+	b.SetListSharePct(before + delta*2)
+	return b.ListSharePct() != before
+}
+
+// twoPaneWidths splits the content width between the tree/list pane and the detail pane.
+//
+// IT IS THE ONLY PLACE THE SPLIT IS DECIDED, and that is the point: the layout (SinglePane), the click
+// hit-test (mouseRegion) and the divider a drag grabs must all describe the same boundary, or a click lands
+// in a pane the operator is not looking at. This codebase has been bitten by exactly that before — see
+// mouseRegion's own note about the old all-panes grid.
+//
+// The 1-cell gap is preserved, so the total is unchanged from the even split it replaces.
+func (b *Base) twoPaneWidths(w int) (listW, detailW int) {
+	total := w - 1 // the gap between the panes
+	if total < 2 {
+		total = 2
+	}
+	// ROUNDED UP, so the LIST gets a split's remainder — which is what the even split this replaces did
+	// (SplitWidths gives the extra column to the FIRST pane). Flooring it instead would silently take a
+	// column away from the tree at the default share, which is the opposite of what this change is for.
+	listW = (total*b.ListSharePct() + 99) / 100
+	if listW < 1 {
+		listW = 1
+	}
+	if listW > total-1 {
+		listW = total - 1
+	}
+	return listW, total - listW
 }
 
 // SetSize lays out the panes (equal split + detail).
@@ -1660,12 +1754,12 @@ func (b *Base) mouseRegion(x int) (int, bool) {
 	if len(b.sources) == 0 || b.width < 1 {
 		return 0, true
 	}
-	ws := SplitWidths(b.width, 2, 1)
-	if x < ws[0] {
+	lw, _ := b.twoPaneWidths(b.width)
+	if x < lw {
 		return b.active, false // the focused source pane
 	}
-	if x < ws[0]+1 {
-		return -1, false // the gap between the panes
+	if x < lw+1 {
+		return -1, false // the divider between the panes
 	}
 	return -1, true // the detail pane
 }
@@ -1765,8 +1859,8 @@ func (b *Base) SinglePane(w, h int) string {
 	if w < 1 || h < 1 {
 		return ""
 	}
-	ws := SplitWidths(w, 2, 1)
-	return JoinRow(b.focusedPaneView(ws[0], h), b.detailPaneView(ws[1], h))
+	lw, dw := b.twoPaneWidths(w)
+	return JoinRow(b.focusedPaneView(lw, h), b.detailPaneView(dw, h))
 }
 
 // focusedPaneView renders the focused source pane sized to exactly w×h.

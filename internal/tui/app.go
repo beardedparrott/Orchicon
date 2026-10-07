@@ -368,6 +368,10 @@ type App struct {
 	// width: clamping is diffPaneWidth's job alone, so a terminal that grows back
 	// restores what the operator asked for.
 	diffPaneW int
+	// listSharePct is the operator's master-detail split preference for the screens (0 = the default even
+	// split). The APP owns it and rebindScreens pushes it into every screen, because screens are built
+	// lazily: a value applied only at startup would be missing on any tab not yet opened.
+	listSharePct int
 	// diffScrollDragging is a LIVE scrollbar drag on the rail (see dispatchMouse): the press jumped the
 	// viewport and every motion follows the pointer until the release. It is the shell's state for the same
 	// reason diffResizing is — the gesture is claimed above the clipboard layer, so the pane cannot own it.
@@ -593,6 +597,60 @@ func (m *App) diffRailWidthStep(delta int) bool {
 	return true
 }
 
+// splitWidthStep widens or narrows the split IN FRONT OF THE OPERATOR.
+//
+// ONE CHORD, TWO SPLITS, in precedence order: the diff rail when it is open (it is drawn over everything,
+// so it is what the operator is looking at), otherwise the ACTIVE SCREEN's tree/list-versus-detail split.
+//
+// The operator: "I am talking about every pane in the TUI where there is a tree and detail view. I would
+// like to be able to expand the tree view to see the full work item names, execution names, etc." The chord
+// already existed for the rail and explicitly did nothing when the rail was closed (diffRailWidthStep
+// returns false), so it was free to serve the screen split — which is better than inventing a second chord
+// for "make this pane wider".
+func (m *App) splitWidthStep(delta int) bool {
+	if m.diffRailWidthStep(delta) {
+		return true
+	}
+	s := m.screens[m.active]
+	if s == nil {
+		return false
+	}
+	nr, ok := s.(interface{ NudgeListShare(int) bool })
+	if !ok {
+		return false
+	}
+	nr.NudgeListShare(delta)
+	// Read the value back rather than computing it here, so the clamp and the bounds live in ONE place
+	// (kit2.Base) and the App stores exactly what the screen applied.
+	if g, ok := s.(interface{ ListSharePct() int }); ok {
+		m.listSharePct = g.ListSharePct()
+	}
+	m.persistListShare()
+	// CONSUMED EVEN AT A BOUND: the chord belongs to the split, so pressing it when the split cannot move
+	// further must not fall through to a screen and do something unrelated.
+	return true
+}
+
+// splitWidthReset returns the split to its default: the rail to automatic when it is open, otherwise the
+// active screen's tree/detail split to an even share. Same precedence, same reason.
+func (m *App) splitWidthReset() bool {
+	if m.diffRailWidthReset() {
+		return true
+	}
+	s := m.screens[m.active]
+	if s == nil {
+		return false
+	}
+	lr, ok := s.(interface{ SetListSharePct(int) })
+	if !ok {
+		return false
+	}
+	lr.SetListSharePct(0)
+	m.listSharePct = 0
+	m.persistListShare()
+	return true
+}
+
 // diffRailWidthReset returns the rail to the automatic/proportional width and clears the persisted
 // override, so a restart does not resurrect the width the operator just abandoned.
 func (m *App) diffRailWidthReset() bool {
@@ -814,6 +872,8 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string, o
 	// The project→palette bindings are the SAME kind of preference too, loaded now so they are already in
 	// memory by the time applyLaunchDirScope resolves the launch directory's project (see projecttheme.go).
 	m.loadProjectThemes()
+	// The master-detail split is the same kind of preference again (see prefs.go loadListShare).
+	m.loadListShare()
 	// Caller options LAST, so anything they set wins over the defaults above.
 	for _, o := range opts {
 		o(m)
@@ -842,6 +902,12 @@ func (m *App) rebindScreens() {
 	for _, s := range m.screens {
 		if ss, ok := s.(interface{ SetShell(any) }); ok {
 			ss.SetShell(m)
+		}
+		// The split is the App's preference, so every screen is brought to it here — the same pass that fixes
+		// a stale shell reference, for the same reason: a screen built during an earlier Update is not
+		// otherwise reachable, and one built later must not miss the setting.
+		if lr, ok := s.(interface{ SetListSharePct(int) }); ok {
+			lr.SetListSharePct(m.listSharePct)
 		}
 	}
 }
