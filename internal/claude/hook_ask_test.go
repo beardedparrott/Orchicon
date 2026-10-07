@@ -150,11 +150,26 @@ func TestHookVerdictZeroValueIsDeny(t *testing.T) {
 	}
 }
 
-// RunHook must emit the profile's verdict on the wire — "ask" included, since
-// the CLI only consults its permission flow (and therefore raises the
-// can_use_tool frame the cards answer) when the hook says ask rather than
-// allowing the call outright.
-func TestRunHookEmitsAskForAnExecutionInTheAskProfile(t *testing.T) {
+// AN ASK IS DELIVERED BY ABSTAINING — THE HOOK MUST EMIT NOTHING.
+//
+// This test used to require `permissionDecision: "ask"` on the wire, on the belief that "the CLI only
+// consults its permission flow ... when the hook says ask rather than allowing the call outright".
+// THAT BELIEF WAS WRONG, and it is the bug this change fixes: MEASURED against the real CLI
+// (2.1.289) on a real Ask session, a hook's "ask" becomes an immediate TOOL ERROR to the model
+// ("this call needs the operator's approval") and NO `can_use_tool` control frame is ever raised —
+// 18 asks produced 0 control frames and 0 consent cards. The operator: "claude adapter ask sessions
+// seem blocked by everything."
+//
+// `--permission-prompts host` governs the PERMISSION SYSTEM's prompts, not a hook verdict. So the
+// tools that need an operator decision are named in `permissions.ask` (BuildSettings,
+// AskPermissionToolNames) and this hook stays SILENT about them — empty output, exit 0, which the CLI
+// reads as "no decision" and then applies its own permission flow to.
+//
+// THE INVARIANT THIS TEST WAS WRITTEN FOR IS UNCHANGED: a Bash call in the Ask profile must reach the
+// operator as a card rather than being silently allowed or silently refused. What changed is the
+// MECHANISM, and the new assertion is therefore stricter about the failure that actually occurred —
+// any output here at all would re-break the card path.
+func TestRunHookAbstainsSoThePermissionSystemCanAsk(t *testing.T) {
 	env := map[string]string{
 		HookProfileEnv: ProfileAskEnvValue,
 		AskDirEnv:      "/tmp/orchicon-ask-t",
@@ -166,19 +181,39 @@ func TestRunHookEmitsAskForAnExecutionInTheAskProfile(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("RunHook exit = %d, want 0", code)
 	}
+	if got := strings.TrimSpace(out.String()); got != "" {
+		t.Fatalf("the hook emitted %q for an ask, want NO output.\n\nAn ask verdict is NOT routed to "+
+			"--permission-prompts host: the CLI turns it into a tool error the model reads as "+
+			"\"this call needs the operator's approval\" and NO card is raised (measured: 18 asks, 0 "+
+			"can_use_tool frames). The card comes from the permission system, which is why this profile "+
+			"names its prompt-tools in permissions.ask — see permissions.go, AskPermissionToolNames.\n\n"+
+			"Emit a verdict here and the operator is back to a session blocked on every write and every "+
+			"command.", got)
+	}
+}
+
+// AND THE OTHER DIRECTION, so this fix cannot be satisfied by emitting nothing at all: a DENY must
+// still be delivered on the wire. The hook is silent only about ASKS; its refusals are the thing the
+// settings document cannot express, so they must reach the CLI.
+func TestRunHookStillEmitsDenyInTheAskProfile(t *testing.T) {
+	env := map[string]string{HookProfileEnv: ProfileAskEnvValue}
+	payload := `{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"sudo rm -rf /tmp/x"}}`
+
+	var out bytes.Buffer
+	RunHook(strings.NewReader(payload), &out, func(k string) string { return env[k] })
 
 	var doc hookOutput
 	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
-		t.Fatalf("hook output is not valid JSON (%q): %v", out.String(), err)
+		t.Fatalf("a refusal must still be emitted on the wire (abstaining is for asks only): %v (%q)", err, out.String())
 	}
-	if got := doc.HookSpecificOutput.PermissionDecision; got != DecisionAsk {
-		t.Fatalf("permissionDecision = %q, want %q — without it the CLI allows the call outright and no card is ever raised", got, DecisionAsk)
+	if got := doc.HookSpecificOutput.PermissionDecision; got != DecisionDeny {
+		t.Fatalf("permissionDecision = %q, want deny — abstaining must not swallow a refusal", got)
 	}
 	if doc.HookSpecificOutput.HookEventName != "PreToolUse" {
 		t.Errorf("hookEventName = %q, want PreToolUse", doc.HookSpecificOutput.HookEventName)
 	}
 	if doc.HookSpecificOutput.PermissionDecisionReason == "" {
-		t.Error("an ask with no reason gives the card nothing to render")
+		t.Error("a deny with no reason gives the model nothing to act on")
 	}
 }
 
