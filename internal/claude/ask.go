@@ -705,13 +705,23 @@ func (s *askSession) argv() []string {
 	// project could never reach it — under the old model only the tenant default
 	// applied, and there is no tenant tier any more, so the set was empty.
 	s.mu.Lock()
-	projRef := mcpclient.ScopeRef{Kind: mcpclient.ScopeConversation, ProjectID: s.projectID, ConversationID: s.convID}
+	convID, projID := s.convID, s.projectID
+	projRef := mcpclient.ScopeRef{Kind: mcpclient.ScopeConversation, ProjectID: projID, ConversationID: convID}
 	s.mu.Unlock()
+
+	// THE SIDECAR IS A CHILD PROCESS, so the conversation's scope has to travel in
+	// its ENVIRONMENT. askmode.ConversationScope is a CONTEXT value, and a context
+	// does not cross a stdio boundary — that is why an Orchicon tool in this session
+	// used to answer "no conversation is stamped on this turn": get_current_conversation
+	// is the one that fails LOUD on it, and it is the only way Quick Work has to read
+	// the model_ref to offer before it pins one into a worker. The child is per
+	// conversation and this argv is fixed at spawn, so the scope cannot go stale here.
+	builtin := OrchiconMCPServer(HookBinaryPath(), s.tenantID, OrchiconMCPConversationEnv(convID, projID))
 	res, rerr := s.b.resolveMCP(context.Background(), s.tenantID, projRef)
 	var servers []MCPServer
 	err = rerr
 	if rerr == nil {
-		servers, err = s.b.renderMCP(context.Background(), s.tenantID, res, OrchiconMCPServer(HookBinaryPath(), s.tenantID, nil))
+		servers, err = s.b.renderMCP(context.Background(), s.tenantID, res, builtin)
 	}
 	provenance := mcpclient.ProvenanceString(res.Servers)
 	if err != nil {
@@ -720,7 +730,7 @@ func (s *askSession) argv() []string {
 		// its job). argv() cannot return an error, so this is recorded and the
 		// admin sees it; the built-in surface still registers.
 		slog.Default().Warn("claude ask: MCP resolution failed — only the built-in Orchicon server will be registered", "error", err)
-		servers = []MCPServer{OrchiconMCPServer(HookBinaryPath(), s.tenantID, nil)}
+		servers = []MCPServer{builtin}
 		provenance = ""
 	}
 	// THE OFFERED HALF OF THE MODE RULE. An operator's MCP server is OPAQUE to the

@@ -69,19 +69,72 @@ func TestClaudeAskResolvesTheConversationScopeWithRealIDs(t *testing.T) {
 		t.Errorf("resolved ref = %+v, want project p1 conversation c1 — empty ids are the defect this closes", last)
 	}
 
-	var cfg string
-	for i, a := range argv {
-		if a == "--mcp-config" && i+1 < len(argv) {
-			cfg = argv[i+1]
-		}
-	}
-	if cfg == "" {
-		t.Fatal("the Ask argv has no --mcp-config")
-	}
+	cfg := mcpConfigArg(t, argv)
 	for _, want := range []string{`"orchicon"`, `"proj-srv"`, `"conv-srv"`} {
 		if !strings.Contains(cfg, want) {
 			t.Errorf("the rendered config is missing %q: %s", want, cfg)
 		}
+	}
+}
+
+// mcpConfigArg extracts the inline --mcp-config document from an Ask argv.
+func mcpConfigArg(t *testing.T, argv []string) string {
+	t.Helper()
+	for i, a := range argv {
+		if a == "--mcp-config" && i+1 < len(argv) {
+			return argv[i+1]
+		}
+	}
+	t.Fatal("the Ask argv has no --mcp-config")
+	return ""
+}
+
+// THE SIDECAR IS A CHILD PROCESS, SO THE SCOPE MUST RIDE ITS ENVIRONMENT.
+//
+// The turn's conversation and project are stamped on the CONTEXT in-process, which is
+// fine for the native Ask path (its tools run in this process) and impossible to pass to
+// a stdio child. The claude child is per conversation with an argv fixed at spawn, so its
+// environment is the one channel that cannot go stale — and without it every Orchicon
+// tool in a claude Ask turn ran on an unstamped context, which is why the operator saw
+// get_current_conversation fail with "no conversation is stamped on this turn".
+func TestClaudeAskHandsTheConversationScopeToTheSidecar(t *testing.T) {
+	builtinFor(t)
+	b := New(quietLogger())
+	b.SetScopeResolver(&askScopeResolver{})
+
+	s := newAskSession(b, "c-env", filepath.Join(t.TempDir(), "ask"))
+	s.tenantID = "tnt_dev"
+	s.projectID = "p-env"
+
+	cfg := mcpConfigArg(t, s.argv())
+	for _, want := range []string{
+		`"ORCHICON_MCP_CONVERSATION_ID":"c-env"`,
+		`"ORCHICON_MCP_CONVERSATION_PROJECT_ID":"p-env"`,
+		`"ORCHICON_MCP_TENANT_ID":"tnt_dev"`,
+	} {
+		if !strings.Contains(cfg, want) {
+			t.Errorf("the sidecar's environment is missing %s — its tools would answer \"no conversation is stamped on this turn\": %s", want, cfg)
+		}
+	}
+}
+
+// A conversation with NO project still sends the conversation id, and omits only the
+// project var. The sidecar then stamps the scope's own meaning for "" — "assigned to no
+// project" — rather than leaving the whole scope unset, which would make the session
+// look like it had no conversation at all.
+func TestClaudeAskConversationEnvOmitsAnAbsentProject(t *testing.T) {
+	env := OrchiconMCPConversationEnv("c-only", "")
+	if env[MCPConversationEnv] != "c-only" {
+		t.Errorf("env = %+v, want the conversation id", env)
+	}
+	if _, ok := env[MCPConversationProjectEnv]; ok {
+		t.Errorf("env = %+v, want NO project var for an unassigned conversation", env)
+	}
+
+	// And a transport with no conversation (a worker sidecar) sends nothing at all,
+	// so the sidecar leaves the context unstamped instead of inventing one.
+	if got := OrchiconMCPConversationEnv("", "p-worker"); got != nil {
+		t.Errorf("OrchiconMCPConversationEnv(\"\", ...) = %+v, want nil — a worker sidecar must not claim a conversation", got)
 	}
 }
 

@@ -25,9 +25,28 @@ import (
 	"strings"
 
 	"connectrpc.com/connect"
+	"github.com/beardedparrott/orchicon/internal/askmode"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 	"github.com/beardedparrott/orchicon/internal/workitem"
+)
+
+// The env vars this sidecar reads its cross-process facts from. A child process
+// inherits an ENVIRONMENT and never a Go context, so every turn-scoped fact a
+// tool needs has to arrive this way and be restored onto the call's context in
+// handleToolsCall.
+//
+// THE PRODUCER NAMES FOR THESE LIVE IN THE TRANSPORTS (claude's MCPConversationEnv
+// and its siblings in internal/claude/mcpconfig.go). The pairing is deliberate and
+// must be changed in both places.
+const (
+	envTenantID      = "ORCHICON_MCP_TENANT_ID"
+	envWorkflowRunID = "ORCHICON_MCP_WORKFLOW_RUN_ID"
+	// envConversationID / envConversationProject are set ONLY by a transport whose
+	// MCP child serves a single conversation (claude's Ask child). Absent for a
+	// worker or plane sidecar, where "no conversation" is the honest answer.
+	envConversationID      = "ORCHICON_MCP_CONVERSATION_ID"
+	envConversationProject = "ORCHICON_MCP_CONVERSATION_PROJECT_ID"
 )
 
 // JSON-RPC message types.
@@ -121,6 +140,12 @@ type Server struct {
 	// created during a recurring fire's run is stamped with the fire's
 	// provenance (feature 4.1, AC2). Nil for a plain MCP.
 	runContext []byte
+	// conversationID / conversationProject are the ASK session this sidecar serves,
+	// when its transport serves exactly one. Empty for a worker or plane sidecar,
+	// and then the tool context is left UNSTAMPED — a tool that reports facts about
+	// "this session" must fail loud on that rather than be told a guess.
+	conversationID      string
+	conversationProject string
 }
 
 // New creates an MCP server. The tenant is resolved from the
@@ -128,14 +153,22 @@ type Server struct {
 // opencode with the Orchicon MCP registered); falls back to the dev tenant
 // with a warning so a manually-wired `orchicon mcp` still works.
 func New(log *slog.Logger, pool *db.Pool, tools ToolRegistry) *Server {
-	tenantID := os.Getenv("ORCHICON_MCP_TENANT_ID")
+	tenantID := os.Getenv(envTenantID)
 	if tenantID == "" {
 		tenantID = "tnt_dev"
 		if log != nil {
 			log.Warn("ORCHICON_MCP_TENANT_ID unset — MCP server scoped to the dev tenant", "tenant_id", tenantID)
 		}
 	}
-	return &Server{log: log, pool: pool, tools: tools, tenantID: tenantID, runContext: loadRunContext(log, pool, tenantID)}
+	return &Server{
+		log:                 log,
+		pool:                pool,
+		tools:               tools,
+		tenantID:            tenantID,
+		runContext:          loadRunContext(log, pool, tenantID),
+		conversationID:      strings.TrimSpace(os.Getenv(envConversationID)),
+		conversationProject: strings.TrimSpace(os.Getenv(envConversationProject)),
+	}
 }
 
 // loadRunContext resolves the run_context of ORCHICON_MCP_WORKFLOW_RUN_ID (the
@@ -144,7 +177,7 @@ func New(log *slog.Logger, pool *db.Pool, tools ToolRegistry) *Server {
 // the fire's provenance block (feature 4.1, AC2). Best-effort: an unset id, a
 // missing run, or a DB error yields nil, so a plain create is unaffected.
 func loadRunContext(log *slog.Logger, pool *db.Pool, tenantID string) []byte {
-	runID := os.Getenv("ORCHICON_MCP_WORKFLOW_RUN_ID")
+	runID := os.Getenv(envWorkflowRunID)
 	if runID == "" || pool == nil || tenantID == "" {
 		return nil
 	}
@@ -298,6 +331,17 @@ func (s *Server) handleToolsCall(ctx context.Context, req jsonRPCRequest) {
 	// during a recurring fire's run is stamped with automation provenance
 	// (feature 4.1, AC2). No-op (nil) for a plain MCP.
 	ctx = workitem.WithAutomationRunContext(ctx, s.runContext)
+	// Restore the ASK session's conversation scope, so a tool that reports facts
+	// about THIS session reads the same value the in-process transports stamp. An
+	// UNSTAMPED context is left alone rather than filled with an empty scope: the
+	// zero value means "not stamped", and a tool that needs the id fails loud on it
+	// (which is the honest answer for a sidecar that serves no conversation).
+	if s.conversationID != "" {
+		ctx = askmode.WithConversationScope(ctx, askmode.ConversationScope{
+			ConversationID: s.conversationID,
+			ProjectID:      s.conversationProject,
+		})
+	}
 
 	result, err := s.tools.Execute(ctx, s.pool, params.Name, params.Arguments)
 	if err != nil {
