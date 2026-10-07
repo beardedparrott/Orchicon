@@ -664,9 +664,9 @@ func runContextCmd(m *App, args []string) tea.Cmd {
 // switches + persists to the profile). Persisting keeps the selection
 // across launches; the profile is saved best-effort at the config path.
 // runThemeCmd switches the TUI theme. The palette set is TUI-OWNED (see
-// internal/tui/theme) and validated for terminal contrast: dark (default),
-// light, gruvbox-dark, gruvbox-light. "/theme" lists them; "/theme <name>"
-// switches and persists the choice to the profile.
+// internal/tui/theme) and validated for terminal contrast. "/theme" lists them;
+// "/theme <name>" is a COMMIT — it binds the palette to the active PROJECT, or
+// saves it as the shared default when no project is in scope (see SetTheme).
 func runThemeCmd(m *App, args []string) tea.Cmd {
 	if len(args) == 0 {
 		names := make([]string, 0, len(m.themes))
@@ -693,25 +693,54 @@ func runThemeCmd(m *App, args []string) tea.Cmd {
 		m.dock.SetError(fmt.Sprintf("unknown theme %q — available: %s", name, known))
 		return nil
 	}
-	m.dock.SetNotice("theme: " + name)
+	// NO NOTICE HERE: SetTheme writes a complete one that says WHERE the choice was kept — bound to the
+	// active project, or saved as the shared default. A second, vaguer line here would only race it.
 	return nil
 }
 
-// SetTheme applies a TUI palette, re-pins the styles captured at construction,
-// and persists the choice to the profile. Reports false for an unknown name
-// (nothing changes). This is the ONE path for switching themes, shared by the
-// /theme command and the Control screen's Themes pane.
+// SetTheme applies a TUI palette and PERSISTS the choice — the COMMIT. Reports false for an unknown name
+// (nothing changes).
+//
+// IT WRITES TO ONE OF TWO PLACES, AND WHICH ONE IS THE WHOLE POINT:
+//
+//   - A PROJECT IS ACTIVE → the palette is BOUND to that project (project_themes), which is what "different
+//     colours to distinguish different sessions" asked for. The config's DEFAULT is deliberately left alone:
+//     it is the value every project with no palette of its own INHERITS, so writing it here would make one
+//     project's choice follow the operator into every other project. That is the report this fixes — "I
+//     opened orch in the ai-tools directory, changed the theme, then opened orch in the Orchicon directory
+//     and the theme changed. It didn't stay the same."
+//   - NO PROJECT IS ACTIVE (All projects / No project) → the persisted DEFAULT is written, which is the only
+//     palette a scope with no workspace of its own can honestly set. It is also the way to change what every
+//     UNBOUND project starts from.
+//
+// THE LIVE PREVIEW IS PreviewTheme, NOT THIS (see below). Arrowing through the Themes pane must show a
+// palette without committing it: routing the preview through here is what rewrote a project's binding — or
+// the shared default — on every keystroke.
+//
+// This and PreviewTheme are the only two ways a palette changes, shared by /theme and the Control screen's
+// Themes pane, so the two gestures cannot disagree about what committing means.
 //
 // PRECEDENCE AGAINST A PROJECT BINDING (criterion 5, see projecttheme.go): this call PINS the palette for
 // the rest of the current scope — themePinned marks it so. The pin is released the next time the workspace
-// changes (applyScopeTheme), at which point the SCOPE's own palette (a project's binding, or this same
-// persisted default when it has none) takes back over, with a notice saying so. An explicit choice never
-// gets silently overwritten mid-scope, and it never silently survives past a workspace switch either.
+// changes (applyScopeTheme), at which point the SCOPE's own palette takes back over, with a notice saying
+// so. An explicit choice never gets silently overwritten mid-scope, and it never silently survives past a
+// workspace switch either.
 func (m *App) SetTheme(name string) bool {
 	if !m.applyThemeAndRefresh(name) {
 		return false
 	}
 	m.themePinned = true
+
+	// A PROJECT IS ACTIVE: this is THAT PROJECT's palette. The binding IS the write; the shared default is
+	// not touched, because it belongs to every project that has none.
+	if label, ok := m.BindProjectTheme(name); ok {
+		m.dock.SetNotice("theme: " + name + " — this project's palette (" + label +
+			"; kept for it, and the default is left alone — set that from All projects)")
+		m.refreshThemesPane()
+		return true
+	}
+
+	// NO PROJECT: the persisted default, which is what a scope with no workspace of its own can set.
 	if m.profile != nil {
 		m.profile.Theme = name
 	}
@@ -737,16 +766,31 @@ func (m *App) SetTheme(name string) bool {
 		m.dock.SetNotice("theme: " + name + " (this run only — cannot write " + path + ": " + err.Error() + ")")
 		return true
 	}
-	pin := ""
-	if _, _, hasProject := m.CurrentProjectTheme(); hasProject {
-		pin = " — pinned for this workspace; its own palette returns on the next project switch"
-	}
-	m.dock.SetNotice("theme: " + name + " (saved to " + path + ")" + pin)
-	// Reconcile any open Themes pane so its active marker moves.
-	if s := m.screens[TabControl]; s != nil {
-		if r, ok := s.(interface{ Refresh(string) tea.Cmd }); ok {
-			m.pendingScreenCmd = tea.Batch(m.pendingScreenCmd, r.Refresh("themes"))
-		}
-	}
+	m.dock.SetNotice("theme: " + name + " (the default, saved to " + path +
+		"; projects with their own palette keep theirs)")
+	m.refreshThemesPane()
 	return true
+}
+
+// PreviewTheme applies a palette WITHOUT persisting or binding anything: the Themes pane's live preview as
+// the cursor moves (control/screen.go's OnHighlight -> previewTheme -> applyTheme). Reports false for an
+// unknown name.
+//
+// IT IS A SEPARATE ENTRY POINT FROM SetTheme, and that separation is the fix for the other half of the same
+// report. The preview used to go through SetTheme, so merely BROWSING the palette list rewrote the persisted
+// default on every cursor move — leaving the config on whatever row the cursor happened to stop at, which
+// the next launch in ANY unbound project then inherited.
+func (m *App) PreviewTheme(name string) bool {
+	return m.applyThemeAndRefresh(name)
+}
+
+// refreshThemesPane reconciles any open Themes pane so its active/bound markers move after a COMMIT.
+func (m *App) refreshThemesPane() {
+	s := m.screens[TabControl]
+	if s == nil {
+		return
+	}
+	if r, ok := s.(interface{ Refresh(string) tea.Cmd }); ok {
+		m.pendingScreenCmd = tea.Batch(m.pendingScreenCmd, r.Refresh("themes"))
+	}
 }

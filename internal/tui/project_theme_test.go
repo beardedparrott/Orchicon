@@ -34,31 +34,45 @@ func themePlane() *App {
 	return m
 }
 
-// BINDING IS A DELIBERATE ACTION, NEVER A SIDE EFFECT (criterion 2). The Themes pane's cursor preview goes
-// through SetTheme (applies + persists the DEFAULT), exactly like /theme — it must never touch the
-// project->palette map. Only BindProjectTheme does.
-func TestCursorPreviewNeverRebindsAProject(t *testing.T) {
+// THE LIVE PREVIEW NEVER COMMITS ANYTHING — the second half of the operator's report.
+//
+// The Themes pane's OnHighlight calls the shell's PreviewTheme as the cursor moves; that path applies the
+// palette and touches nothing else. Before the split, the preview went through SetTheme, so merely arrowing
+// through the list PERSISTED on every cursor move — leaving the config on whatever row the cursor happened to
+// stop at, which the next launch in any unbound project then inherited.
+func TestCursorPreviewNeverCommitsATheme(t *testing.T) {
 	t.Cleanup(func() { theme.Use(theme.DefaultName) })
 	m := themePlane()
+	m.profile.Theme = "forest" // the shared default, which a preview must not touch
 	m.setProjectScope("p-1")
 
 	// Simulate browsing the Themes pane: the cursor moving applies several palettes in a row, exactly what
-	// previewTheme -> applyTheme -> shell.SetTheme does.
+	// previewTheme -> applyTheme -> shell.PreviewTheme does.
 	for _, name := range []string{"tokyo-night", "catppuccin-latte", "dracula", "forest"} {
-		if !m.SetTheme(name) {
-			t.Fatalf("SetTheme(%q) failed", name)
+		if !m.PreviewTheme(name) {
+			t.Fatalf("PreviewTheme(%q) failed", name)
 		}
 	}
 	if len(m.projectThemes) != 0 {
 		t.Fatalf("browsing palettes wrote a project binding: %v", m.projectThemes)
 	}
+	if m.profile.Theme != "forest" {
+		t.Fatalf("browsing palettes rewrote the shared default (profile.Theme = %q, want forest)", m.profile.Theme)
+	}
+	if m.themePinned {
+		t.Error("a preview pinned the session — only a commit may pin")
+	}
 
-	// The EXPLICIT action is the only thing that writes it.
-	if _, ok := m.BindProjectTheme("dracula"); !ok {
-		t.Fatal("BindProjectTheme refused on a real project scope")
+	// THE COMMIT is what writes, and while a project is active it writes to THAT PROJECT.
+	if !m.SetTheme("dracula") {
+		t.Fatal("SetTheme refused a real palette")
 	}
 	if m.projectThemes["p-1"] != "dracula" {
-		t.Fatalf("explicit bind did not record the binding: %v", m.projectThemes)
+		t.Fatalf("the commit did not bind the palette to the active project: %v", m.projectThemes)
+	}
+	if m.profile.Theme != "forest" {
+		t.Fatalf("the commit rewrote the shared default that unbound projects inherit: profile.Theme = %q, "+
+			"want forest", m.profile.Theme)
 	}
 }
 
@@ -142,12 +156,20 @@ func TestUnknownBoundPaletteDegradesOnce(t *testing.T) {
 	}
 }
 
-// AN EXPLICIT /theme PINS THE SESSION; THE PROJECT'S PALETTE RETURNS ON THE NEXT WORKSPACE CHANGE
-// (criterion 5 — the decided precedence). Neither direction is silent: switching INTO the pin is the
-// operator's own /theme notice (slash.go), and the release below says so too.
-func TestExplicitThemePinsUntilTheNextScopeChange(t *testing.T) {
+// A COMMIT WHILE A PROJECT IS ACTIVE IS KEPT FOR THAT PROJECT — the fixed precedence.
+//
+// The old rule pinned an explicit /theme for the session and let the project's ORIGINAL palette return on the
+// next workspace switch, with the choice surviving only in the SHARED default — which is exactly what carried
+// it into every other project. Committing now records the project's palette, so the choice outlives the scope
+// switch (strictly more than the old pin promised) and touches nothing outside that project.
+//
+// The pin itself is unchanged: it still holds the palette for the rest of the CURRENT scope, and its release
+// at a workspace change is still reported, because a silent release is indistinguishable from a pin that
+// never existed.
+func TestACommitInAProjectIsKeptForThatProject(t *testing.T) {
 	t.Cleanup(func() { theme.Use(theme.DefaultName) })
 	m := themePlane()
+	m.profile.Theme = "forest" // the shared default, which a project commit must NOT touch
 	m.setProjectScope("p-1")
 	if _, ok := m.BindProjectTheme("tokyo-night"); !ok {
 		t.Fatal("bind refused")
@@ -157,26 +179,35 @@ func TestExplicitThemePinsUntilTheNextScopeChange(t *testing.T) {
 		t.Fatalf("setup: scope did not apply its binding, got %q", got)
 	}
 
-	// The operator pins an explicit choice.
+	// The operator commits an explicit choice while working in p-1.
 	if !m.SetTheme("dracula") {
 		t.Fatal("SetTheme failed")
 	}
 	if got := theme.Active().Name; got != "dracula" {
-		t.Fatalf("the explicit choice did not apply: %q", got)
+		t.Fatalf("the commit did not apply: %q", got)
+	}
+	if m.projectThemes["p-1"] != "dracula" {
+		t.Fatalf("the commit did not bind the palette to p-1: %v", m.projectThemes)
+	}
+	if m.profile.Theme != "forest" {
+		t.Fatalf("the commit rewrote the SHARED default (profile.Theme = %q, want forest) — that is the leak "+
+			"that carried one project's choice into every other", m.profile.Theme)
 	}
 
-	// THE FIRST SCOPE CHANGE IS WHERE THE PIN RELEASES — p-2 has no binding, so it resolves to the same
-	// persisted default /theme just set, but the release is still reported: a silent release would be
-	// indistinguishable from the pin simply not existing.
+	// A workspace change releases the pin (reported, never silent), and the OTHER project resolves to the
+	// default the commit left alone.
 	m.setProjectScope("p-2")
 	if !strings.Contains(m.dock.Notice, "pin") {
 		t.Errorf("the pin's release was not reported in the notice: %q", m.dock.Notice)
 	}
+	if got := theme.Active().Name; got != "forest" {
+		t.Fatalf("an untouched project rendered %q after a commit elsewhere, want the shared default forest", got)
+	}
 
-	// And now the project's OWN (different) palette takes back over.
+	// And coming back, the committed project has its own palette — the promise the old pin made, now kept.
 	m.setProjectScope("p-1")
-	if got := theme.Active().Name; got != "tokyo-night" {
-		t.Fatalf("after a workspace change the project's own palette did not return: got %q", got)
+	if got := theme.Active().Name; got != "dracula" {
+		t.Fatalf("the committed project did not get its palette back: got %q, want dracula", got)
 	}
 }
 
