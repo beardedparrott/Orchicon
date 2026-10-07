@@ -32,7 +32,27 @@ import (
 // clear, retryable error. Unlike executions there is no recovery loop: the
 // turn ends, the user retries or interjects.
 const (
-	defaultAskStallNoProgressWindow = 120 * time.Second
+	// 300s, RAISED FROM 120s — 2 minutes aborted live sessions, and the operator found it: "sessions dying.
+	// It is the stall no progress protection. It's at 2 minutes right now which is too strict... we should
+	// probably default to at least 300 seconds."
+	//
+	// WHY 120s WAS WRONG RATHER THAN MERELY TIGHT: this signal measures the ABSENCE of events, and a tool
+	// that is legitimately running produces none — the serve emits nothing while a tool runs (tool_part
+	// fires once at issue, tool_use once at completion). So the window is really "how long may a HEALTHY
+	// tool be silent", and it was set EQUAL to the transport's own bash deadline
+	// (internal/orchicon/hosttools.go: bashTimeoutDefault 120s). A bash call allowed to run for its own
+	// full default deadline therefore sat exactly ON this threshold, so ordinary overhead let the stall
+	// monitor abort the turn FIRST and the transport's deadline was unreachable in practice; a call given
+	// the permitted bashTimeoutMax (600s) had no chance at all.
+	//
+	// 300s gives a slow-but-healthy tool real headroom while staying well inside the 30-minute reply
+	// window. It is a DEFAULT, not a ceiling: a tenant sets stall_no_progress_window_seconds (600s on the
+	// operator's own) and ORCHICON_ASK_STALL_NO_PROGRESS_WINDOW overrides both.
+	//
+	// AND IT IS NOT THE WHOLE FIX — see stallReason, which now suspends this signal entirely while a
+	// locally-bounded tool is open, because for those calls the transport's own deadline is the detector
+	// and any window here is guesswork.
+	defaultAskStallNoProgressWindow = 300 * time.Second
 	defaultAskStallRepetitionCount  = 5
 	defaultAskStallRepetitionWindow = 300 * time.Second
 	// 2026-09-09 (operator: "the conversation session wedged on a tool
@@ -47,10 +67,14 @@ const (
 	// message re-dispatched, the tool re-issued, tripped again, and the
 	// turn FAILED (default reconnect budget 1) — the exact "wedged on a
 	// tool (bash) and could not be recovered after 2 attempt(s)"
-	// self-destruct. 120s still catches a genuinely hung tool (the
-	// no_progress window is also 120s) without killing slow-but-alive
-	// calls, and the recycle budget is raised so one recycle is never a
-	// death sentence.
+	// self-destruct. 120s still catches a genuinely hung tool without
+	// killing slow-but-alive calls, and the recycle budget is raised so one
+	// recycle is never a death sentence.
+	//
+	// IT IS NOW GENUINELY SHORTER THAN THE no_progress WINDOW (300s), which is
+	// the relationship this comment always claimed and which the equal 120s
+	// values did not deliver: a wedged tool is HEALED first, and the coarser
+	// no-progress signal is left to cover the silence a wedge cannot describe.
 	defaultAskMCPToolWedgeWindow   = 120 * time.Second
 	defaultAskMCPReconnectAttempts = 3
 )
@@ -276,6 +300,21 @@ func (m *chatStallMonitor) closeTool() {
 	defer m.mu.Unlock()
 	m.openToolTime = time.Time{}
 	m.openToolName = ""
+	// AND IT IS PROGRESS, so the no-progress clock restarts HERE too — which is what makes suspending
+	// that signal during a locally-bounded call safe (see stallReason).
+	//
+	// WITHOUT THIS THE SUSPENSION WOULD HAND BACK A STALE CLOCK AND FIRE AT ONCE. This field is advanced
+	// by observe(), which the native transport never calls for a resolved tool — it resolves with a typed
+	// tool_result and calls closeTool (see the doc above; that gap is why closeTool exists at all). So
+	// after a five-minute build, lastActivity was still stamped at the build's START, and the first tick
+	// after it returned would have measured five minutes of "silence" against a window of 300s and
+	// aborted the turn — the same death, moved from during the command to immediately after it. The very
+	// thing the operator reported, arriving one step later.
+	//
+	// A RESOLVED TOOL IS FORWARD MOTION, which is exactly what the caller's own comment says it is
+	// (chat.go's tool_result arm). This is the monitor's half of that statement; the registry's half
+	// (markActivity) was already done there.
+	m.lastActivity = m.now()
 }
 
 // newChatStallMonitor builds a stall monitor for one chat turn.
@@ -416,24 +455,53 @@ func (m *chatStallMonitor) stallReason() string {
 		return ""
 	}
 	now := m.now()
+
+	// NO PROGRESS IS NOT JUDGED WHILE THE TRANSPORT IS ALREADY TIMING SOMETHING.
+	//
+	// A locally-bounded tool (see setLocallyBoundedTools) is executed BY THIS PROCESS under its own hard
+	// deadline — for the host suite's bash, bashTimeoutDefault 120s / bashTimeoutMax 600s, enforced by
+	// exec.CommandContext. During such a call there are NO events, so this signal sees silence; but that
+	// silence is a tool AT WORK, and the call ALREADY has a detector. Judging it here means the stall
+	// monitor, not the transport, decides how long a command may run — and it decides with a number
+	// (a no-progress window) that has nothing to do with the tool's own budget.
+	//
+	// THE COST OF GETTING THIS WRONG IS THE WHOLE SESSION: a trip aborts the turn at the model, and the
+	// operator's work in it is gone. The prod log's own numbers, for the wedge half of the same mistake,
+	// were 13 recycled sessions in two days, every one naming bash.
+	//
+	// WHY SUSPENDING IS SAFE RATHER THAN A HOLE: the deadline that takes over is a REAL one — the tool
+	// cannot run forever (exec.CommandContext kills it), so the turn resumes or ends and this signal
+	// resumes with it. Nothing here is unbounded, and a genuinely wedged NON-local tool still trips the
+	// wedge signal, which is the detector built for exactly that.
+	localToolOpen := !m.openToolTime.IsZero() && m.locallyBounded[m.openToolName]
+
 	// Gated on > 0: an explicit 0 in Settings means the operator DISABLED this
 	// check, and without the guard `now.Sub(...) > 0` holds on every tick — a
 	// disabled check would fire instantly on the first tick.
 	//
-	// AND GATED ON awaitingConsent, the arm the wedge signal already had and this clock did not.
+	// AND GATED ON TWO CLOCKS THIS MONITOR DOES NOT OWN. They are separate conditions because they are
+	// separate mistakes, and BOTH are "waiting" rather than "stalled":
 	//
-	// A TURN WAITING ON THE OPERATOR IS NOT A STALLED TURN. `lastActivity` advances on token progress,
-	// and an ASK does not produce any — so an unanswered consent counted as "no activity from the model"
-	// and the turn was ABORTED at the window. Worse, the abort then resolved the outstanding ask as
-	// consentCancelled, so the MODEL was told its approval had been cancelled when in fact the stall
-	// monitor had killed the turn. That is precisely the operator's report: "No card ever came to me. That
-	// is why you may have been waiting for approval" — a conversation that died waiting for a card
-	// surfaces as a consent error, and the two are indistinguishable from the transcript.
+	//   - `localToolOpen`, above: the TRANSPORT is already timing the call, under a hard deadline it
+	//     enforces itself (exec.CommandContext). Judging that silence here would let a no-progress
+	//     window decide how long a command may run — a number with nothing to do with the tool's budget.
 	//
-	// The tool behind the ask is HELD BY THE HUMAN, not silent, and how long a person takes to read a card
-	// is not the model's progress. Repetition stays armed below: it is about the MODEL looping, which a
-	// pending ask neither causes nor excuses.
-	if !m.awaitingConsent && m.noProgressWindow > 0 && now.Sub(m.lastActivity) > m.noProgressWindow {
+	//   - `awaitingConsent`: the OPERATOR holds the call. `lastActivity` advances on token progress, and
+	//     an ASK produces none — so an unanswered consent read as "no activity from the model" and the
+	//     turn was ABORTED at the window. The abort then resolved the outstanding ask as consentCancelled,
+	//     so the MODEL was told its approval had been cancelled when the STALL MONITOR had killed the
+	//     turn. That is the operator's report exactly: "No card ever came to me. That is why you may have
+	//     been waiting for approval" — a turn that died waiting for a card surfaces as a consent error,
+	//     and from the transcript the two are indistinguishable.
+	//
+	// EACH HAND-BACK RESTARTS THIS CLOCK at the point the wait ends (closeTool for a resolved tool,
+	// setAwaitingConsent on disarm). Without that the suspension would merely MOVE the death a step: the
+	// stale lastActivity would be read by the next tick and fire at once, still blaming whatever had just
+	// finished. A resolved tool, and an answered card, are both forward motion.
+	//
+	// Repetition stays armed below: it is about the MODEL looping, which neither a pending ask nor a
+	// running command causes or excuses.
+	if !localToolOpen && !m.awaitingConsent && m.noProgressWindow > 0 && now.Sub(m.lastActivity) > m.noProgressWindow {
 		m.fired = true
 		return fmt.Sprintf("stalled:no_progress (%s with no activity from model %s)", m.noProgressWindow, m.modelRef)
 	}
