@@ -15,6 +15,72 @@
 > tells the tooling which version these highlights describe; update it
 > when you cut.
 
+## v0.5.0
+
+### New: Claude Code is a first-class runtime — the platform runs on more than one engine now
+Orchicon's second adapter lands at the same standard as the first, rather than beside it.
+The Claude worker carries the same permission and sandbox posture — the never-allow class,
+protected paths, the execution guard shim — the same stall, health, liveness and recovery
+behaviour, the same todo-list contract, and the same telemetry and usage capture, so a run on
+Claude is observable, recoverable and contained exactly like a run on the native engine. Its
+stream is normalized onto the same execution callbacks every other runtime already used, which
+is why the tool ledger, the diff surface and the recovery path needed no special case for it.
+Claude's models are sourced from the catalog into the model picker in **both** clients, its
+reasoning is carried through instead of dropped, and compaction runs on the shared budget
+ladder. It is mounted from your own host install — never bundled — with an actionable preflight
+that tells you what to run when the host is not signed in yet.
+
+### New: MCP servers and skill files belong to a scope, not to the tenant
+Every MCP server definition now belongs to exactly one scope.
+A definition is **owner-scoped**: it belongs to one project, one Ask conversation, or one worker
+version, and resolution is **one union** of the project's definitions and the scope's own. There
+is no shared tenant list to inherit from, and no hidden precedence chain. The tenant-level MCP
+surfaces are gone. What you get for that is legibility: what a session can reach is a property of *where
+it runs*, visible on the same page that owns it. Attaching a server **is** the approval, so an
+MCP tool no longer raises a consent card; a credential is **selected** from the store rather
+than pasted into a form; and a run's MCP and skill demand is resolved once, when its container
+is created, so what ran is what was configured. The honest consequence is stated rather than
+hidden — a server can no longer be defined once and inherited by several projects, and the
+catalog's one-click add per scope is the mitigation.
+
+### New: A live activity line that says what a turn is actually doing
+A long turn used to be indistinguishable from a stalled one. Both clients now render the same
+single row from the same rule: an unbroken answer states what the agent is doing with a
+**rotating verb** and a **rolling tool counter** ("3 modifies · 1 read · last 4s"), a dropped
+socket says it is reconnecting, and a turn that has genuinely gone quiet states the watchdog's
+verdict instead of silently spinning. The verb list and the counter are pinned **cross-client**
+against one fixture and indexed on the **same server clock**, so the browser and the terminal
+report the same turn the same way. The line survives the arrival of the first token (it is
+gated on the turn, not on "before any content") and yields to an escalation rather than glowing
+through one — a turn that made five calls and then died escalates, as it must.
+
+### New: The diff surface, finished in both clients
+The diff rail is now a first-class panel rather than a viewer. In the browser it is
+drag-resizable with a **per-page persisted width**, wrapped rather than clipped for long lines,
+and carries a scrollbar you can actually grab; in the terminal it resizes by drag **and** by
+keyboard, wraps, viewports its lists, and measures its own collapse — with its width persisted
+between sessions. Getting there meant fixing the reasons it felt heavy: the terminal diffs to
+the render path once per change rather than once per mouse event, and both clients were
+verified end to end against a live plane, in the GUI and the TUI, on both mounts.
+
+### New: Ask turns stop losing work — and stop blaming the wrong thing
+Most of this cycle is a set of defects that only real use surfaces, and they share one cause.
+A turn holding a consent card is no longer a stalled turn, a shell command the
+plane is *running* is no longer a wedged tool, and a refused clarifying question is no longer
+read as your answer. A turn cancelled between tool rounds keeps the work it produced, an
+aborted or superseded turn's reply is committed to the session so the model can see what it
+just said, and the session history is **appended to** rather than replaced — a supersede used to
+destroy the other turn's messages. A session can no longer lose a message in silence, a failed
+turn says why, and the setting that governs all of it survives a partial save.
+
+### Also in this release
+
+- **Providers and local models:** transposed local-model URLs, discoverable Ask cards, a static Heads-Up grid, and no client-side auto-start gate.
+- **Terminal client:** a list surface is a real modal (bordered, centred, over a darkened backdrop), every screen's tree/detail split is adjustable, themes can be scoped per project, the schedules list shows running and finished times, and the composer advertises `ctrl+←/→` wherever there is a split.
+- **Work items:** the Archive view is a real hierarchical tree, and a one-shot archive can be retried instead of failing silently.
+- **Documentation:** a new `USERGUIDE.md` covers installing Orchicon and using **every screen in both clients**, and the in-app Settings → User Guide tab is gone with it — one guide, in one place, that cannot drift from a second copy of itself.
+- **Fixes:** work-item schedule clearing and auto-start from any status, telemetry, credits and favicon corrections, and the TUI's spacebar behaving itself.
+
 ## v0.4.0
 
 ### New: Ask Orchicon can do the work — and asks before it does
