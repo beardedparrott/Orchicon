@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/toolclass"
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 	"github.com/beardedparrott/orchicon/internal/tui/config"
@@ -408,6 +409,20 @@ type App struct {
 	// railProjectsLoaded records that a project load SUCCEEDED, so a failed one is retried by the next
 	// conversations load rather than leaving an empty picker for the session.
 	railProjectsLoaded bool
+	// projectThemes mirrors the config file's top-level project_themes map: project id -> palette name,
+	// verbatim (see config.Config.ProjectThemes). Loaded once at construction (loadProjectThemes) and
+	// read/written by Bind/UnbindProjectTheme — see projecttheme.go.
+	projectThemes map[string]string
+	// themePinned marks that the ACTIVE palette was chosen by an explicit /theme (or the Themes pane),
+	// not by the project-scope follower. It is the precedence switch for criterion 5: an explicit choice
+	// PINS the session, and the project's own palette (bound or default) returns the next time the
+	// workspace changes — see applyScopeTheme, which clears it. What must never happen is a SILENT
+	// override in either direction, so every place that would flip this also writes a notice saying so.
+	themePinned bool
+	// degradedPaletteWarned dedupes the "this project's palette is unknown to this build" notice per
+	// (project id, palette name) pair, so re-entering the same project does not repeat it on every scope
+	// change — criterion 7's "says so once".
+	degradedPaletteWarned map[string]bool
 	// projectPick is the /project modal (nil = closed). It chooses the scope, or moves one conversation — see
 	// projectpick.go for why the two share the control.
 	projectPick  *projectPicker
@@ -662,9 +677,12 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string, o
 		// View and Update each receive a COPY — only a shared pointer lets the frame the
 		// renderer painted be read back by the mouse handler that arrives after it
 		// (clipboard.go).
-		clip:               &clipState{},
-		screens:            map[TabID]Screen{},
-		chatStore:          &chatStore{items: map[string][]chat.ChatItem{}},
+		clip:    &clipState{},
+		screens: map[TabID]Screen{},
+		chatStore: &chatStore{
+			items:     map[string][]chat.ChatItem{},
+			toolCalls: map[string][]toolclass.Call{},
+		},
 		renderCache:        chat.NewRenderCache(),
 		permGrants:         map[string][]chat.SessionGrant{},
 		permGrantsLoaded:   map[string]bool{},
@@ -789,6 +807,9 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string, o
 	// The diff rail's width is the SAME kind of preference in the SAME file, so it is restored at the SAME
 	// moment and by the same silent-on-failure rule (see prefs.go loadDiffRailWidth).
 	m.loadDiffRailWidth()
+	// The project→palette bindings are the SAME kind of preference too, loaded now so they are already in
+	// memory by the time applyLaunchDirScope resolves the launch directory's project (see projecttheme.go).
+	m.loadProjectThemes()
 	// Caller options LAST, so anything they set wins over the defaults above.
 	for _, o := range opts {
 		o(m)
@@ -3219,6 +3240,14 @@ type chatStore struct {
 	mu           sync.Mutex
 	items        map[string][]chat.ChatItem
 	reconnecting map[string]bool
+	// toolCalls is the DURABLE tool-call ledger of the open conversation's last transcript page, for
+	// the activity line's rolling counter (internal/toolclass.SummarizeCalls). It mirrors
+	// `reconnecting`: one map, mutex-guarded, keyed by conversation.
+	//
+	// WHOLESALE SET, NEVER APPEND. The ledger column is CUMULATIVE for the turn and the 1s
+	// ListMessages poll is its authority, so each landing REPLACES the slice. Appending would
+	// double-count the same call on every tick and the counter would climb forever.
+	toolCalls map[string][]toolclass.Call
 	// orderAt is the ARRIVAL ANCHOR map: convID -> MESSAGE key -> the ordering timestamp every item of that
 	// message must sort by, overriding the timestamp each item was built with.
 	//
@@ -3346,6 +3375,24 @@ func (s *chatStore) setReconnecting(convID string, on bool) {
 		s.reconnecting = map[string]bool{}
 	}
 	s.reconnecting[convID] = on
+	s.mu.Unlock()
+}
+
+// snapshotToolCalls returns the conversation's durable tool calls as of the last transcript page.
+func (s *chatStore) snapshotToolCalls(convID string) []toolclass.Call {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.toolCalls[convID]
+}
+
+// setToolCalls replaces the conversation's durable tool calls with the page just loaded (see the field
+// comment: wholesale, never appended).
+func (s *chatStore) setToolCalls(convID string, calls []toolclass.Call) {
+	s.mu.Lock()
+	if s.toolCalls == nil {
+		s.toolCalls = map[string][]toolclass.Call{}
+	}
+	s.toolCalls[convID] = calls
 	s.mu.Unlock()
 }
 
@@ -3817,6 +3864,12 @@ func (m *App) onTranscript(msg chat.TranscriptMsg) tea.Cmd {
 	// lands here, and its draft was never put back — so the error row's "your message is back in the composer"
 	// line would have been a false claim on exactly the case the operator hit. See restoreDraftForFailedTurn.
 	m.restoreDraftForFailedTurn(msg.ConvID, msg.Items)
+	// THE DURABLE TOOL CALLS LAND WITH THE PAGE THEY CAME ON. The activity line's rolling counter
+	// reads them from the store rather than re-fetching: this is the SAME ListMessages page the
+	// transcript was just built from (chat/pageToolCalls), on the SAME 1s poll, so the counter adds no
+	// RPC of its own. Wholesale set — the ledger column is cumulative for the turn and this page is
+	// its authority.
+	m.chatStore.setToolCalls(msg.ConvID, msg.ToolCalls)
 	// ASK THE SERVER WHAT THIS CONVERSATION IS ALLOWED, once, when its transcript lands — the grants header
 	// makes a claim about exactly that, and the list is the server's to state. Not on every poll: this is a
 	// fetch, not a subscription (a grant can only change from a decision in a client, and every decision
@@ -3902,8 +3955,9 @@ func (m *App) runningFor(convID string) bool {
 // What they lost was the only signal that the stream is ALIVE. Mid-reply is exactly when it matters: a
 // long tool call, a slow provider or a stalled socket look identical from the outside, and with the line
 // gone nothing on screen changes until the reply finishes. So the line tracks the TURN, and the verb
-// follows the PHASE — "thinking" before there is anything to read, "replying" once there is — which keeps
-// the GUI's wording where the GUI uses it and extends the line where the operator asked for it.
+// ROTATES on the SERVER's clock (chat/verbs.go) so a long quiet stretch reads as live activity rather than
+// one frozen phrase. Both clients draw the same word for the same server time — the stronger form of the
+// "thinking"/"replying" parity this comment used to describe, which rotation deliberately retires.
 //
 // The age comes from the watchdog's own clock (lastActivity), so the line cannot claim a liveness the
 // liveness check would contradict.
@@ -3925,9 +3979,37 @@ func (m *App) transcriptStatusLine(items []chat.ChatItem) string {
 		// when reading a transcript, and it is the TRANSCRIPT that looks broken when a reply cannot arrive.
 		return "⚠ disconnected — replies will resume when the plane returns (r retries now)"
 	case m.runningFor(m.chatConvID):
-		return turnActivityNotice(m.chat.SilenceSince(m.chatConvID), awaitingReply(items))
+		// THE SERVER'S CLOCK FEEDS THE ROTATING VERB (see turnActivityNotice). ServerTimeSince returns
+		// (0, false) when no heartbeat has arrived yet, and 0 is the selector's "use the first word"
+		// sentinel — the line stays present from the instant the operator hits send.
+		serverTime, _ := m.chat.ServerTimeSince(m.chatConvID)
+		// THE COUNTER COMES FROM WHAT THE CLIENT ALREADY POLLS. The durable ledger of this turn's tool
+		// calls arrived on the ListMessages page the transcript was built from (chat/pageToolCalls ->
+		// onTranscript -> chatStore), on the same 1s askTurnPollInterval poll. So the summary costs no
+		// fetch of its own — it is a pure render over data already in hand.
+		summary := toolclass.SummarizeCalls(
+			m.chatStore.snapshotToolCalls(m.chatConvID), noticeNow(), toolclass.DefaultWindow)
+		return turnActivityNotice(m.chat.SilenceSince(m.chatConvID), serverTime, summary, m.askWidth())
 	}
 	return ""
+}
+
+// noticeNow is the activity line's clock seam. The line's own age comes from the watchdog
+// (chat.SilenceSince) and is passed in; this is the `now` the ROLLING WINDOW is measured against, so a
+// test can place a known set of tool calls inside or outside the window without sleeping. Production
+// never replaces it.
+var noticeNow = time.Now
+
+// askWidth is the Ask pane's detail render width, read from the same surface askStatusLine reads its
+// footer from. It is what the activity line is fitted to (fitNotice): the pane draws ONE row and clips
+// the tail, so the line has to know how wide that row is.
+func (m *App) askWidth() int {
+	if s := m.screens[TabAsk]; s != nil {
+		if f, ok := s.(interface{ DetailWidth() int }); ok {
+			return f.DetailWidth()
+		}
+	}
+	return 0
 }
 
 // askStatusLine reads the Ask pane's fixed footer — where the activity/status line now lives.
@@ -4271,10 +4353,21 @@ func (m *App) TranscriptStream(convID string) *kit2.Stream { return m.chatStream
 // turnActivityNotice is the transcript's activity line while a turn is streaming: what the turn is doing,
 // plus how long the stream has been quiet.
 //
-// THE VERB FOLLOWS THE PHASE. Before any content, the GUI's own wording applies — "Orchicon is
-// thinking…", which is what the operator sees while their message is being read. Once text has arrived,
-// the turn is no longer thinking, it is REPLYING, and saying "thinking" under a half-written answer would
-// be wrong; "replying" keeps the line honest and keeps it present, which is the point.
+// THE VERB ROTATES, INDEXED ON THE SERVER'S CLOCK. It used to be a fixed pair of literals — "thinking"
+// before the first content, "replying" after — so a long quiet phase looked byte-identical for minutes,
+// which is the operator's complaint this answers: "rotating through a series of words that means 'orchicon
+// is thinking' but variations like 'inquisiting, contemplating, planning, etc.' that changes every few
+// seconds. We should have a ton of them." The word now comes from chat.ActivityVerb over the server stamp
+// (see chat/verbs.go), so the rotation says what the turn is DOING to the problem rather than repeating one
+// fixed phrase — and BOTH phases rotate, because the quiet stretch the operator was staring at is not a
+// phase-specific phenomenon (a long tool call mid-reply looks exactly like a slow first token).
+//
+// THE SERVER'S CLOCK, NOT OURS. effectiveServerTimeMs is the server's server_time_unix_ms extrapolated to
+// now by chat.Controller.ServerTimeSince, which adds only the time since THIS client received the last
+// heartbeat. A client whose wall clock is skewed therefore draws the SAME word as every other client at the
+// same server time; the local clock is a delta, never the source. When no heartbeat has arrived yet — the
+// first second after sending, which is exactly when the operator is looking — the caller passes 0 and the
+// selector returns the list's first word, so the line is never empty.
 //
 // IT REPORTS, IT DOES NOT GUESS. The number is the age of the last event received, so it cannot claim
 // activity that is not happening — and as it grows the operator can see the model is genuinely silent
@@ -4285,7 +4378,7 @@ func (m *App) TranscriptStream(convID string) *kit2.Stream { return m.chatStream
 //
 // silent <= 0 means "no activity recorded" — the moment between sending and the stream's first event — so
 // it shows the bare line rather than an absurd "0s ago".
-func turnActivityNotice(silent time.Duration, beforeContent bool) string {
+func turnActivityNotice(silent time.Duration, effectiveServerTimeMs int64, summary string, width int) string {
 	const (
 		// ONE SECOND, not five. The operator asked for the line to be visible immediately — "we should
 		// print the watchdog line right away so users know it's there" — because a line that only appears
@@ -4299,22 +4392,92 @@ func turnActivityNotice(silent time.Duration, beforeContent bool) string {
 		// unexplained stall into a stated one.
 		reDialAfter = 35 * time.Second
 	)
-	verb := "Orchicon is replying…"
-	if beforeContent {
-		verb = "Orchicon is thinking…"
-	}
-	if silent <= 0 || silent < showAgeAfter {
-		return verb
-	}
+	// ONE WORD, FROM ONE PURE FUNCTION. chat.ActivityVerb holds the reduced-motion off-switch too, so a
+	// rotation the operator turned off and a rotation with no server stamp yet land on the same word
+	// (the list's first) — "the line is present and says something true" either way.
+	verb := "Orchicon is " + chat.ActivityVerb(effectiveServerTimeMs) + "…"
 	secs := int(silent.Round(time.Second) / time.Second)
+	var want string
 	switch {
 	case silent >= reDialAfter:
-		return fmt.Sprintf("%s · no output for %ds — the stream will re-attach if it stays silent", verb, secs)
+		// ESCALATION OUTRANKS THE COUNTER, AND IT IS THE POINT OF THE WHOLE RULE. A turn that made five
+		// calls and then died must escalate, not glow: past 35s the line is the watchdog's verdict, and a
+		// tool tally beside it would read as work still happening. So the summary appears in NO band but
+		// the healthy one — it is not merely outranked here, it is ABSENT.
+		want = fmt.Sprintf("%s · no output for %ds — the stream will re-attach if it stays silent", verb, secs)
 	case silent >= warnAfter:
-		return fmt.Sprintf("%s · no output for %ds", verb, secs)
+		want = fmt.Sprintf("%s · no output for %ds", verb, secs)
+	case summary != "":
+		// THE HEALTHY BAND, AND THE SUMMARY'S OWN TRAILING "newest call Ns ago" IS THE AGE. It therefore REPLACES
+		// "last activity Ns ago" rather than joining it: one age, one phrase, on one row (the work item's
+		// own example string). The summary is "" when nothing was counted — never "0 modifies" — so this
+		// arm only fires on real work, and it fires IMMEDIATELY rather than waiting out showAgeAfter,
+		// because "3 modifies · 1 read · newest call 0s ago" is a true report while "last activity 0s ago" is not.
+		want = verb + " · " + summary
+	case silent <= 0 || silent < showAgeAfter:
+		// No counted work and no age yet — the moment between sending and the stream's first event. The
+		// bare line, rather than an absurd "0s ago".
+		//
+		// IT STILL GOES THROUGH fitNotice, because the one-row budget is a property of the LINE and not of
+		// the bands: a pane narrower than the verb itself would otherwise WRAP, and a wrapped footer is a
+		// SECOND row, which pushes the notice off the pane — the failure fitNotice exists to prevent. There
+		// is nothing left to degrade on this arm (no summary, no band), so it can only ever truncate; but
+		// leaving it out would make "the line never overflows" true of every state EXCEPT the first second
+		// after send, which is exactly when the operator is looking.
+		return fitNotice(verb, verb, width)
 	default:
-		return fmt.Sprintf("%s · last activity %ds ago", verb, secs)
+		want = fmt.Sprintf("%s · last activity %ds ago", verb, secs)
 	}
+	return fitNotice(want, verb, width)
+}
+
+// fitNotice trims ONE row to the pane's width by dropping text in priority order:
+//
+//	summary  <  escalation band  <  verb
+//
+// WHY IT HAS TO EXIST. The footer is a single row (screenkit.Detail.footerRows counts "\n"), and the
+// host Panel CLIPS THE TAIL of an over-wide row. The tail is where the escalation band and the counter
+// live, and the band is the half that carries the watchdog's verdict — so on a narrow terminal a naive
+// append would silently eat the more important text. Degrade, do not clip: the summary goes first, then
+// the band, and the verb is NEVER dropped (the line's oldest invariant: it is present at every stage of
+// the turn, and it says what the turn is doing).
+//
+// It mirrors the composer's own documented precedence (statline_test.go): the load-bearing text outranks
+// the informative text.
+func fitNotice(line, verb string, width int) string {
+	// A zero or negative width means "unbounded" (the caller has no pane to fit), and a line that already
+	// fits is returned as it stands: the function only ever REMOVES text.
+	if width <= 0 || ansi.StringWidth(line) <= width {
+		return line
+	}
+	// STEP 1 — the summary goes first. It is everything the line carries beyond the verb's own segment:
+	// the count phrase and its trailing age. The escalation band is recognisable by its wording, so a line
+	// that carries one is not touched here (the band is step 2, not step 1).
+	if strings.HasPrefix(line, verb) {
+		rest := line[len(verb):]
+		if !strings.Contains(rest, "no output for") {
+			if ansi.StringWidth(verb) <= width {
+				// Dropping the summary leaves the verb and nothing else, because the summary IS everything
+				// after the verb on a healthy line.
+				return verb
+			}
+		}
+	}
+	// STEP 2 — the band goes next, leaving the verb.
+	if ansi.StringWidth(verb) <= width {
+		return verb
+	}
+	// STEP 3 — a terminal narrower than the verb itself. The last resort is the widest RUNE prefix that
+	// fits, because a row that wraps is worse than a row that is short and a byte slice could split the
+	// ellipsis into invalid UTF-8. It is never empty.
+	runes := []rune(verb)
+	if width >= len(runes) {
+		return verb
+	}
+	if width < 1 {
+		width = 1
+	}
+	return string(runes[:width])
 }
 
 // transcriptUserMessageAtFrameRow resolves a click at a FRAME row to the operator's own message text,

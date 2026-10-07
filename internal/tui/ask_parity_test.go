@@ -58,6 +58,12 @@ type stubAskParity struct {
 	// button calls the same RPC).
 	abortedID string
 
+	// listMessagesCalls counts the ListMessages RPCs this plane served. It exists so a test can assert
+	// that the activity line's rolling tool counter adds NO fetch of its own: the counter must render
+	// from the page the transcript poll already carried (AC10). The field is additive — every other
+	// assertion in this file is untouched by it.
+	listMessagesCalls int
+
 	// projectMoveFor records the conversation whose project was changed, and the target — the pair a test needs
 	// to tell "the write happened" from "the rail merely reloaded".
 	//
@@ -161,6 +167,7 @@ func (s *stubAskParity) SetConversationFullsend(_ context.Context, req *connect.
 }
 
 func (s *stubAskParity) ListMessages(context.Context, *connect.Request[apiv1.ListMessagesRequest]) (*connect.Response[apiv1.ListMessagesResponse], error) {
+	s.listMessagesCalls++
 	return connect.NewResponse(&apiv1.ListMessagesResponse{}), nil
 }
 
@@ -520,11 +527,19 @@ func TestUserMessageIsVisibleImmediatelyOnOpenConversation(t *testing.T) {
 	if joined := strings.Join(str.Lines, "\n"); !strings.Contains(joined, "hello there") {
 		t.Errorf("the operator's message is not in the transcript: %q", joined)
 	}
-	// And nothing has replied yet, so the GUI's thinking indicator should be showing. It is the pane's
-	// FOOTER (see App.transcriptStatusLine), so it is read from the surface that draws it.
-	if got := m.askStatusLine(); got != "Orchicon is thinking…" {
-		t.Errorf("status line = %q, want %q — the GUI shows it until the first content arrives",
-			got, "Orchicon is thinking…")
+	// And nothing has replied yet, so the activity line is showing. It is the pane's FOOTER (see
+	// App.transcriptStatusLine), so it is read from the surface that draws it. No heartbeat has arrived in
+	// this fixture, so the server stamp is 0 and the line carries the list's FIRST word — which is the
+	// fallback the operator sees in the first second after sending.
+	//
+	// The assertion is the SHARED property, not the old literal: for a server time, the selector's word.
+	// internal/tui/chat/verbs_test.go and frontend/src/lib/ask-verbs.test.ts pin both lists to one fixture,
+	// so "both clients draw the same word for the same server time" is the promise this now rests on.
+	wantStatus := "Orchicon is " + chat.VerbAt(0) + "…"
+	if got := m.askStatusLine(); got != wantStatus {
+		t.Errorf("status line = %q, want %q — the line must name the word the rotation selects for the "+
+			"server time (here the pre-heartbeat fallback), and it must be present until the first content "+
+			"arrives", got, wantStatus)
 	}
 }
 

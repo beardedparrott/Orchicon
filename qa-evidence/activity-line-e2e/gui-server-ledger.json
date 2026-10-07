@@ -1,0 +1,24 @@
+{
+  "calls": [
+    {
+      "tool_name": "read",
+      "at_ms": 1791326563056
+    },
+    {
+      "tool_name": "batch_grep",
+      "at_ms": 1791326565559
+    },
+    {
+      "tool_name": "bash",
+      "at_ms": 1791326568060
+    },
+    {
+      "tool_name": "write",
+      "at_ms": 1791326570561
+    }
+  ],
+  "counter": "1 modify · 2 reads · 1 bash · newest call 1s ago",
+  "phase": "flight",
+  "stamp": 1699999995000,
+  "streamed": "E2EWITNESSCONTENT Reading the repo layout and the files this change touches. E2EWITNESSFINAL Now running the focused tests."
+}

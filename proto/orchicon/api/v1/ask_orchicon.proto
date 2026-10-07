@@ -157,6 +157,12 @@ message ToolCall {
   string type = 2;           // "function"
   string function_name = 3;
   string arguments = 4;      // JSON
+  // issued_at_unix_ms is when the call was ISSUED, epoch MILLISECONDS — the same
+  // stamp internal/askorchicon/tool_ledger.go writes into the tool_calls column.
+  // It rides the wire so the client can count a ROLLING window (see
+  // internal/toolclass.Summarize); 0 means "not stamped" (a row persisted before
+  // the field existed) and must be treated as unknown, never as the epoch.
+  int64 issued_at_unix_ms = 5;
 }
 
 // ToolResult represents the result of a tool call execution.

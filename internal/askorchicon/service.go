@@ -1400,6 +1400,13 @@ func toolCallsFromJSON(raw []byte) []*apiv1.ToolCall {
 		Type         string `json:"type"`
 		FunctionName string `json:"function_name"`
 		Arguments    string `json:"arguments"`
+		// IssuedAtUnixMs is child 1's per-entry issue stamp, written by
+		// toolCallEntry (tool_ledger.go). The field name must match that tag
+		// byte for byte: a drift silently leaves every stamp 0, which the
+		// rolling-window summarizer (internal/toolclass.Summarize) reads as
+		// "unstamped" and skips — the activity line would then count nothing
+		// over a turn that is plainly working, with no error anywhere.
+		IssuedAtUnixMs int64 `json:"issued_at_unix_ms"`
 	}
 	if err := json.Unmarshal(raw, &rows); err != nil || len(rows) == 0 {
 		return nil
@@ -1408,6 +1415,7 @@ func toolCallsFromJSON(raw []byte) []*apiv1.ToolCall {
 	for _, r := range rows {
 		out = append(out, &apiv1.ToolCall{
 			Id: r.ID, Type: r.Type, FunctionName: r.FunctionName, Arguments: r.Arguments,
+			IssuedAtUnixMs: r.IssuedAtUnixMs,
 		})
 	}
 	return out

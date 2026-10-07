@@ -55,6 +55,12 @@ type askToolCallJSON struct {
 	Type         string `json:"type"`
 	FunctionName string `json:"function_name"`
 	Arguments    string `json:"arguments"`
+	// IssuedAtUnixMs must be carried here even though the repair neither reads
+	// nor writes it: this struct is RE-MARSHALLED (not passed through), so any
+	// field absent from it is silently and permanently stripped from every
+	// tool_calls document that goes through the terminal write or the per-turn
+	// history window.
+	IssuedAtUnixMs int64 `json:"issued_at_unix_ms"`
 }
 
 type askToolResultJSON struct {

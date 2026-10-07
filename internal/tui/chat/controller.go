@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/toolclass"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 )
 
@@ -80,6 +81,20 @@ type convState struct {
 	// runLivenessWatch); without it, a stream whose socket died silently is indistinguishable
 	// from a turn that is simply thinking.
 	lastActivity int64
+	// serverTimeMs and serverRecvMonoMs are the SERVER's clock, and the moment THIS client heard it,
+	// captured together from Heartbeat.server_time_unix_ms — a field the server already emits and both
+	// clients used to discard.
+	//
+	// THEY EXIST FOR THE ACTIVITY VERB ROTATION. The word the line shows is verbAt(server-time), a PURE
+	// function of the server's clock (see verbs.go), so two clients draw the same word with no shared
+	// state and no new RPC. A heartbeat is the only place that clock arrives, so these two numbers are
+	// the whole of the slot's knowledge about it. serverRecvMonoMs is a LOCAL receipt instant used only
+	// as a DELTA — `serverTimeMs + (now() - serverRecvMonoMs)` — which keeps the word advancing between
+	// the 15s heartbeats WITHOUT ever letting the client's own (possibly skewed) wall clock become the
+	// source of the word. serverTimeMs == 0 means "no heartbeat yet": the caller falls back to the
+	// list's first word rather than to an empty line.
+	serverTimeMs     int64
+	serverRecvMonoMs int64
 }
 
 // askStreamStallTimeout is how long a streaming turn may go with NO event at all before the
@@ -238,7 +253,15 @@ type ConversationsMsg struct {
 type TranscriptMsg struct {
 	ConvID string
 	Items  []ChatItem
-	Err    string
+	// ToolCalls are the durable tool-call rows of the page just loaded, in ledger order, for the
+	// activity line's rolling counter (internal/toolclass.SummarizeCalls).
+	//
+	// THEY ARE DELIBERATELY NOT RENDERED. conversationItems emits no KindTool row on purpose: the
+	// GUI's Ask transcript draws no tool bubbles, and ask_parity_test.go pins that TUI<->GUI parity,
+	// so emitting durable tool rows would be a visible, parity-breaking change. The counter needs
+	// only the name and the issue stamp, so it rides this sibling field instead.
+	ToolCalls []toolclass.Call
+	Err       string
 }
 
 // chatEventMsg forwards one ChatStreamResponse oneof event. ConvID tags
@@ -828,8 +851,34 @@ func (c *Controller) OpenConversation(id string) tea.Cmd {
 		}
 		// The page arrives NEWEST-first (see conversationItems) — it is reversed
 		// there, together with the millisecond timestamps.
-		return TranscriptMsg{ConvID: id, Items: GroupByPhase(conversationItems(resp.Msg.GetMessages()))}
+		return TranscriptMsg{
+			ConvID:    id,
+			Items:     GroupByPhase(conversationItems(resp.Msg.GetMessages())),
+			ToolCalls: pageToolCalls(resp.Msg.GetMessages()),
+		}
 	}
+}
+
+// pageToolCalls collects the page's tool calls for the activity line's rolling counter, as the
+// shape the shared summarizer takes (toolclass.Call). It reads the SAME ListMessages page the
+// transcript is built from — no extra RPC, no new poll — and reads only the two fields the counter
+// needs: the name to classify and the issue stamp to place in the window.
+//
+// ORDER DOES NOT MATTER: SummarizeCalls counts buckets and takes the NEWEST stamp, so a page in any
+// order yields the same string. Entries with no stamp (AtMs 0 — a row persisted before child 1
+// added the field) are carried through and SKIPPED by the summarizer, which is what keeps an old
+// conversation from rendering a wrong count.
+func pageToolCalls(msgs []*apiv1.ChatMessage) []toolclass.Call {
+	var out []toolclass.Call
+	for _, m := range msgs {
+		for _, c := range m.GetToolCalls() {
+			if c == nil {
+				continue
+			}
+			out = append(out, toolclass.Call{ToolName: c.GetFunctionName(), AtMs: c.GetIssuedAtUnixMs()})
+		}
+	}
+	return out
 }
 
 // conversationItems converts a ListMessages page into transcript items in
@@ -1412,8 +1461,19 @@ func (c *Controller) handleEvent(convID string, ev *apiv1.ChatStreamResponse) {
 		}
 	case *apiv1.ChatStreamResponse_Heartbeat:
 		c.mu.Lock()
-		if st := c.state[convID]; st != nil && st.reconnecting {
-			st.reconnecting = false
+		if st := c.state[convID]; st != nil {
+			if st.reconnecting {
+				st.reconnecting = false
+			}
+			// THE SERVER'S CLOCK, RECORDED WITH THE INSTANT WE HEARD IT. These two lines are the entire
+			// clock of the activity-verb rotation: server_time_unix_ms is already on the wire (chat.go
+			// emits it precisely so "the client [can] measure socket age/skew") and this client used to
+			// throw it away, clearing only the reconnect flag. Guarded on ts > 0 so a server that sends
+			// a zero stamp cannot plant a bogus anchor; the zero anchor stays "no stamp yet".
+			if ts := e.Heartbeat.GetServerTimeUnixMs(); ts > 0 {
+				st.serverTimeMs = ts
+				st.serverRecvMonoMs = now()
+			}
 		}
 		c.mu.Unlock()
 	case *apiv1.ChatStreamResponse_Error:
@@ -1791,6 +1851,78 @@ func (c *Controller) SilenceSince(convID string) time.Duration {
 		return 0 // a clock that stepped backwards is not a silence
 	}
 	return time.Duration(d) * time.Millisecond
+}
+
+// SetServerTimeForTest plants the server clock the way a Heartbeat does, so a test can assert the word
+// the activity line draws for a KNOWN server time without standing up a stream. It is the same pair of
+// writes handleEvent's Heartbeat arm makes (serverTimeMs + the local receipt instant), so a test cannot
+// exercise a state the wire cannot produce. Production never calls it.
+func (c *Controller) SetServerTimeForTest(convID string, serverTimeUnixMs int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if serverTimeUnixMs <= 0 {
+		return // a zero stamp is not a stamp (see handleEvent's Heartbeat arm)
+	}
+	st := c.seedTurnForTest(convID)
+	st.serverTimeMs = serverTimeUnixMs
+	st.serverRecvMonoMs = now()
+}
+
+// seedTurnForTest materialises the slot a SEND would have made for this conversation — streaming, and with
+// every field the two readers below touch — and returns it with the lock held. It exists so the activity
+// line's clock can be driven without opening a socket: starting a real stream in a test arms the liveness
+// watch and the durable poll, whose background goroutines then fetch the plane and repaint under the
+// assertions. The fields it writes are exactly the ones SendWithAttachments sets, so a test cannot exercise a
+// state the send path cannot produce. Production never calls it.
+func (c *Controller) seedTurnForTest(convID string) *convState {
+	st := c.state[convID]
+	if st == nil {
+		st = &convState{}
+		c.state[convID] = st
+	}
+	st.streaming = true
+	st.reconnecting = false
+	if st.lastActivity == 0 {
+		st.lastActivity = now()
+	}
+	return st
+}
+
+// SetSilenceForTest back-dates the watchdog's clock by d, which is the ONLY way to drive the activity
+// line's silence bands without sleeping 35 seconds. It writes the SAME field every event stamps
+// (lastActivity), so a test exercises the real SilenceSince path rather than a parallel one. Production
+// never calls it.
+func (c *Controller) SetSilenceForTest(convID string, d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	st := c.seedTurnForTest(convID)
+	st.lastActivity = now() - d.Milliseconds()
+}
+
+// ServerTimeSince reports the SERVER's clock, extrapolated to right now — the value the activity verb
+// rotation indexes on. It returns (0, false) when no heartbeat has ever been recorded for the
+// conversation, which is the caller's cue to use the list's first word (VerbAt(0)); a real server stamp is
+// Unix milliseconds and always positive, so 0 is unambiguous.
+//
+// THE LOCAL CLOCK IS A DELTA, NOT THE SOURCE. The returned value is `serverTimeMs + (now() - recvMono)`,
+// where `recvMono` was taken the moment the stamp arrived: only the time since OUR OWN receipt is added,
+// so a client whose wall clock is skewed by hours still sees the SAME word as every other client for the
+// same server time (the skew cancels out of the delta), while the word still advances smoothly between
+// the 15s heartbeats, so it never lags a whole period behind a late heartbeat.
+//
+// IT IS READ UNDER THE SAME MUTEX AS THE WRITE, so a heartbeat landing mid-render cannot tear the pair.
+func (c *Controller) ServerTimeSince(convID string) (int64, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	st := c.state[convID]
+	if st == nil || st.serverTimeMs <= 0 || st.serverRecvMonoMs <= 0 {
+		return 0, false
+	}
+	delta := now() - st.serverRecvMonoMs
+	if delta < 0 {
+		delta = 0 // a clock that stepped backwards is not a negative age
+	}
+	return st.serverTimeMs + delta, true
 }
 
 // errStreamStalled reports a stream that stopped sending anything. It is not a failure the operator
