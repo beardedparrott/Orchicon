@@ -57,7 +57,11 @@ func TestAskProfileNamesTheToolsThatMustPrompt(t *testing.T) {
 	}
 	// Every tool the Ask rule table wants a decision on must be named. A missing entry is a silent
 	// hole: that tool falls to claude's default flow with nothing forcing a prompt.
-	for _, want := range []string{"Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "mcp__*"} {
+	// `mcp__*` is DELIBERATELY ABSENT now, and its absence is what this test is guarding: an entry
+	// here makes the permission system PROMPT, so an MCP entry would put the card back that the
+	// operator asked to remove. MCP is allowed by the HOOK instead (an explicit allow, which bypasses
+	// the permission system) — see TestDecideToolForAskAllowsEveryMCPTool.
+	for _, want := range []string{"Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"} {
 		found := false
 		for _, g := range got {
 			if g == want {

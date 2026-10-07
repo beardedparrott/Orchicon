@@ -18,7 +18,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
-	"github.com/beardedparrott/orchicon/internal/askmode"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
@@ -1614,15 +1613,33 @@ var ConsentMutatingTools = []string{
 // permission to ask a question. The classification above covers the host suite,
 // and the cross-package test keeps that boundary honest as the suite grows.
 func consentGatedTool(name string) bool {
-	// AN OPAQUE MCP TOOL IS CONSENT-GATED IN EVERY MODE, Iteration included. It is a third-party
-	// tool the platform cannot classify: the name reveals nothing about whether it acts, so the
-	// operator approves each call. This is the SECOND half of the mode policy (see internal/askmode):
-	// the mode table decides WHETHER a mode may offer/execute an opaque MCP tool at all, and consent
-	// gates it even where the mode may. The platform's OWN `mcp__orchicon__*` tools are exempt — the
-	// mode table governs them, and they are the platform's own data surface.
-	if askmode.IsOpaqueMCPTool(name) {
-		return true
-	}
+	// AN OPAQUE MCP TOOL IS NOT CONSENT-GATED. This used to gate one in EVERY mode, Iteration
+	// included, on the reasoning that a third-party tool's name reveals nothing about whether it
+	// acts — so the operator approved each call.
+	//
+	// THE OPERATOR OVERRULED THAT, and the product case is the stronger argument: "I didn't even
+	// think MCP was supposed to have a card. If it's added in scope it should just have access tbh.
+	// I don't want cards for that." An MCP server is in scope only because the operator attached it
+	// to this conversation or its project, so the approval ALREADY HAPPENED — at configuration time,
+	// deliberately. Re-asking per call is asking them to re-decide a standing decision, which is the
+	// same noise the policy deny list is exempt from above.
+	//
+	// WHAT STILL GOVERNS AN OPAQUE MCP TOOL, so this is a narrowing of consent and NOT an absence of
+	// governance:
+	//
+	//   - THE MODE BOUNDARY, which is a SEPARATE layer and is untouched here. askmode.MayExecute sends
+	//     an opaque MCP tool to its mode's MayAct, so Brainstorm and Quick Work still refuse it — and
+	//     the refusal is enforced at BOTH ends of the native path (native_tools.go filters what is
+	//     OFFERED, and refuses again at EXECUTE). That boundary never ran through consent, which is
+	//     why removing this arm cannot open it.
+	//   - the platform's own `mcp__orchicon__*` tools remain governed by the mode table alone, exactly
+	//     as before (they were already exempt here).
+	//
+	// The observed symptom this also removes: the operator has never seen an MCP card, while write and
+	// question cards render fine — and one of this session's own GitHub MCP calls came back
+	// "approval for mcp__…__list_pull_requests expired unanswered", i.e. the ask WAS raised and reached
+	// no card, so the call failed for a decision nobody was ever offered. Allowing the class removes
+	// that failure outright rather than leaving it to a rendering path I have not yet proven.
 	for _, n := range ConsentReadOnlyTools {
 		if n == name {
 			return false

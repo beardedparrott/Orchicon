@@ -210,13 +210,24 @@ func TestAskModeDenialClassifiesThePlatformsOwnServer(t *testing.T) {
 	}
 }
 
-// THE ASK-BY-DEFAULT PIN, previously only implied by a doc comment: an OPERATOR's
-// MCP tool is asked about in every mode (including Iteration), while the platform's
-// own is allowed.
-func TestDecideToolForAskAsksForAnOperatorsMCP(t *testing.T) {
+// EVERY MCP TOOL IS ALLOWED BY THE HOOK, the operator's as well as the platform's — and it must be an
+// explicit ALLOW rather than "no verdict", because abstaining would hand the call to the permission
+// system and prompt anyway (the same card by the other route).
+//
+// THE REQUIREMENT FLIPPED. This used to require the opposite for a third-party server, on the
+// reasoning that an opaque tool is where a human decision is worth having. The operator overruled it:
+// "I didn't even think MCP was supposed to have a card. If it's added in scope it should just have
+// access tbh. I don't want cards for that." The server is in this session only because they attached
+// it, so the decision was already made.
+//
+// THE MODE BOUNDARY IS UNAFFECTED and is the reason this is safe: RunHook consults askModeDenial
+// BEFORE DecideToolForAsk, so an opaque MCP tool is still REFUSED in Brainstorm and Quick Work. The
+// next test in this file pins exactly that half.
+func TestDecideToolForAskAllowsEveryMCPTool(t *testing.T) {
 	h := HookInput{ToolName: "mcp__github__create_issue", ToolInput: map[string]any{}}
-	if v := DecideToolForAsk(h, t.TempDir(), ""); !v.Ask {
-		t.Errorf("an operator's opaque MCP tool was not asked about: %+v — it is a third-party action and keeps ask-by-default", v)
+	if v := DecideToolForAsk(h, t.TempDir(), ""); !v.Allow {
+		t.Errorf("an operator's MCP tool was not ALLOWED: %+v — it must not card, and it must not merely "+
+			"abstain either (abstaining leaves the permission system to prompt)", v)
 	}
 	h = HookInput{ToolName: "mcp__orchicon__get_current_conversation", ToolInput: map[string]any{}}
 	if v := DecideToolForAsk(h, t.TempDir(), ""); !v.Allow {

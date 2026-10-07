@@ -117,14 +117,19 @@ var TodoTrackToolNames = []string{
 // need an operator decision belong in this list, and the hook stays silent about them
 // (RunHook abstains on an ask verdict).
 //
-// `mcp__*` is the third-party half: the operator's own MCP servers are OPAQUE, so the Ask profile's
-// rule is "consent gates the action" and each call must card. The PLATFORM's own `mcp__orchicon__*`
-// surface is deliberately NOT carded — the hook returns an explicit ALLOW for it (isOrchiconMCPTool),
-// and a hook allow bypasses the permission system, so the mode gate remains its only governor.
+// `mcp__*` USED TO BE THE THIRD-PARTY HALF and has been REMOVED. It read "consent gates each MCP
+// call", which is no longer the rule: the operator's MCP servers are allowed outright —
+// "if it's added in scope it should just have access" — because attaching a server to a
+// conversation or its project IS the approval, made deliberately at configuration time.
+//
+// NO MCP ENTRY BELONGS HERE AT ALL, for the platform's own surface or anyone else's. An entry in
+// this list makes the permission system PROMPT, and a prompt is a card; the hook instead returns an
+// explicit ALLOW for the whole `mcp__` class (isMCPTool), which bypasses the permission system.
+// Leaving `mcp__*` here would re-introduce the card by the other route, so the two halves move
+// together. The MODE boundary remains the governor for an opaque MCP tool — see internal/askmode.
 var AskPermissionToolNames = []string{
 	"Write", "Edit", "MultiEdit", "NotebookEdit",
 	"Bash",
-	"mcp__*",
 }
 
 // HookToolMatcher is the PreToolUse matcher: the tools whose input can name a

@@ -356,15 +356,28 @@ func DecideToolForAsk(h HookInput, askDir, policyPath string) HookVerdict {
 		return denyVerdict(workerrestrict.TaskToolDeny,
 			"the built-in subagent tool is denied in every profile: Orchicon already splits the work into focused steps, and a spawned subagent re-carries the parent's context.")
 	}
-	// THE PLATFORM'S OWN TOOLS ARE ALLOWED, not asked about. `mcp__orchicon__*` is
-	// the surface the MODE GATE governs (create_work_item, schedule_work_item, …),
-	// and RunHook consults the gate BEFORE reaching here — so by this point the
-	// boundary has already had its say. Asking on each one would put a consent
-	// card in front of a session reading its own conversation record.
+	// EVERY MCP TOOL IS ALLOWED — the platform's own AND the operator's.
 	//
-	// The operator's OWN MCP servers are deliberately NOT in this set: they are
-	// third-party tools, so they keep the ask-by-default treatment.
-	if isOrchiconMCPTool(tool) {
+	// WHY THE THIRD-PARTY HALF FLIPPED. It used to allow `mcp__orchicon__*` only and send an
+	// operator's MCP servers to ask-by-default, on the reasoning that an opaque third-party tool is
+	// exactly where a human decision is worth having. The operator overruled it: "I didn't even think
+	// MCP was supposed to have a card. If it's added in scope it should just have access tbh. I don't
+	// want cards for that." An MCP server reaches this session only because they attached it to this
+	// conversation or its project, so the approval already happened — deliberately, at configuration
+	// time. A per-call card asks them to re-decide a standing decision.
+	//
+	// AN EXPLICIT ALLOW, not merely "stop asking", and that distinction is load-bearing. A hook that
+	// returns nothing leaves the call to the permission system, which under `defaultMode: default`
+	// would PROMPT — i.e. the same card by a different route. A hook ALLOW bypasses the permission
+	// system outright (the mechanism `mcp__orchicon__*` already relied on), which is what "just has
+	// access" means. `AskPermissionToolNames` drops its `mcp__*` entry in the same change, so the two
+	// halves cannot disagree.
+	//
+	// THE MODE BOUNDARY IS UNTOUCHED and is still the governor: RunHook consults askModeDenial BEFORE
+	// reaching here, so an opaque MCP tool stays REFUSED in Brainstorm and Quick Work (see
+	// internal/askmode: MayExecute sends it to the mode's MayAct). Allowing it here removes the CARD,
+	// never the boundary.
+	if isMCPTool(tool) {
 		return allowVerdict()
 	}
 
@@ -385,8 +398,19 @@ func DecideToolForAsk(h HookInput, askDir, policyPath string) HookVerdict {
 // provides.
 const orchiconMCPServerName = "orchicon"
 
+// isMCPTool reports whether a claude tool name belongs to ANY MCP server — the platform's own
+// `mcp__orchicon__<tool>`, or an operator's `mcp__<server>__<tool>`. Both take the explicit ALLOW
+// above; see that comment for why the third-party half is not carded.
+func isMCPTool(tool string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(tool)), "mcp__")
+}
+
 // isOrchiconMCPTool reports whether a claude tool name is one of the platform's
 // OWN MCP tools (`mcp__orchicon__<tool>`).
+//
+// KEPT BESIDE isMCPTool because the two answer different questions and one is not a
+// narrowing of the other: this one identifies the PLATFORM's surface (used where a caller needs
+// to know whose data a tool touches), while isMCPTool answers "is this whole class allowed".
 func isOrchiconMCPTool(tool string) bool {
 	t := strings.ToLower(strings.TrimSpace(tool))
 	return strings.HasPrefix(t, "mcp__"+orchiconMCPServerName+"__")
