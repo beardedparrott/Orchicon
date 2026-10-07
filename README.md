@@ -11,10 +11,16 @@ governance, while pluggable runtimes execute the work.
 
 ## Documentation
 
-The comprehensive project documentation lives in
-[`DOCUMENTATION.md`](./DOCUMENTATION.md) at the project root. It
-covers architecture, project structure, installation, development,
-deployment, troubleshooting, and every subsystem.
+The documentation lives at the project root:
+
+- **[`USERGUIDE.md`](./USERGUIDE.md)** — the operator's guide. Installation, first
+  run, and a screen-by-screen walkthrough of **every screen in both clients** (the
+  web GUI and the terminal client), plus accounts, roles and the command-line
+  reference. **Start here if you are using Orchicon.**
+- **[`DOCUMENTATION.md`](./DOCUMENTATION.md)** — how Orchicon is built:
+  architecture, project structure, the data model, the Ask Orchicon permission
+  model, operator setup, development, deployment, environment variables and
+  troubleshooting.
 
 ## Technology Stack
 
@@ -95,7 +101,7 @@ Prerequisites:
 - **Windows 10 21H2+ / Windows 11**, with WSL2 and a Linux distro (first-time users: run `wsl --install` in an admin shell, then reboot — the installer will guide you).
 - **Docker Desktop** with WSL2 integration enabled for your distro (or Docker Engine installed inside it).
 
-Project directories are entered in the UI as their **WSL path** — a Windows project `C:\Users\you\projects\Foo` is `/mnt/c/Users/you/projects/Foo` inside WSL. See [DOCUMENTATION.md §Installation Guide](DOCUMENTATION.md) for details.
+Project directories are entered in the UI as their **WSL path** — a Windows project `C:\Users\you\projects\Foo` is `/mnt/c/Users/you/projects/Foo` inside WSL. See [USERGUIDE.md §1 — Installation](USERGUIDE.md#1-installation) for details.
 
 ### Options
 
