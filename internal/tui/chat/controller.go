@@ -950,15 +950,33 @@ func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 		// same class of miss running the OTHER way: a row that IS an error never reached the error
 		// renderer. Do not "simplify" this back to a role-only switch.
 		text := m.GetContent()
+		at := m.GetCreatedAt().AsTime().UnixMilli()
+		// A FAILED TURN IS TWO ROWS, NOT ONE: the prose the model managed to produce, then the failure.
+		//
+		// The operator, on the shipped shape: "It is showing thinking text after that is also red and on
+		// the same line as the error." The partial reply and the failure had been folded into ONE
+		// KindError item, so `renderBubble` put the `error` label in front of the FIRST LINE OF THE
+		// PROSE and painted the model's own words in the error's red — the label identified the wrong
+		// text and the band said "error" over prose that was merely unfinished.
+		//
+		// THE PROSE IS THE MODEL'S WORDS, so it rides the model's band (KindText) exactly as an ordinary
+		// reply does; the error row then carries ONLY the failure and the model that refused, and its
+		// label labels the thing it names. This is also the GUI's shape (its ErrorBubble draws the error
+		// alone, and the partial reply is separate assistant content).
 		if kind != KindUser && kind != KindNotice {
 			if errText := m.GetMetadata().GetError(); errText != "" {
+				if partial := strings.TrimSpace(m.GetContent()); partial != "" {
+					items = append(items, ChatItem{
+						Kind: KindText,
+						Text: partial,
+						At:   at,
+						Key:  "m-" + m.GetId() + "-partial",
+					})
+				}
 				kind = KindError
-				// The row is composed, not empty: it names the error, the model that refused (the metadata
-				// already carries model_ref) and the retry affordance. See FailedTurnText.
-				text = FailedTurnText(m.GetContent(), errText, m.GetMetadata().GetModelRef())
+				text = FailedTurnText(errText, m.GetMetadata().GetModelRef())
 			}
 		}
-		at := m.GetCreatedAt().AsTime().UnixMilli()
 		for j, part := range m.GetReasoning() {
 			// A blank part is not a reasoning block, and rendering it would put an empty
 			// bubble in the transcript for a turn that had nothing to say there.

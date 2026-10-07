@@ -35,7 +35,7 @@ const operatorFailedModel = "orchicon/ollama/deepseek-v4.1-flash"
 func failedTurnRows() []chat.ChatItem {
 	return []chat.ChatItem{
 		{Kind: chat.KindUser, Text: "why can't you connect?", Key: "m-m1", At: 1},
-		{Kind: chat.KindError, Text: chat.FailedTurnText("", operatorFailureText, operatorFailedModel), Key: "m-m2", At: 2},
+		{Kind: chat.KindError, Text: chat.FailedTurnText(operatorFailureText, operatorFailedModel), Key: "m-m2", At: 2},
 	}
 }
 
@@ -64,7 +64,7 @@ func TestTheErrorTextIsNotMarkdownMangled(t *testing.T) {
 	raw := "start Ask turn: provider status 401 Unauthorized — see *Settings → Default models*"
 	m, _ := askWithTranscript(t, "c1")
 	m.chatStore.append("c1", chat.ChatItem{
-		Kind: chat.KindError, Text: chat.FailedTurnText("", raw, operatorFailedModel), Key: "m-m2", At: 2,
+		Kind: chat.KindError, Text: chat.FailedTurnText(raw, operatorFailedModel), Key: "m-m2", At: 2,
 	})
 	m.onChatWake()
 
@@ -84,7 +84,7 @@ func TestALongProviderErrorWrapsWithoutClippingTheFooter(t *testing.T) {
 	long := operatorFailureText + " " + strings.Repeat("provider refused the request and named the model ", 6)
 	m, _ := askWithTranscript(t, "c1")
 	m.chatStore.append("c1", chat.ChatItem{
-		Kind: chat.KindError, Text: chat.WithRetryAffordance(chat.FailedTurnText("", long, operatorFailedModel)), Key: "m-m2", At: 2,
+		Kind: chat.KindError, Text: chat.WithRetryAffordance(chat.FailedTurnText(long, operatorFailedModel)), Key: "m-m2", At: 2,
 	})
 	m.onChatWake()
 
@@ -119,7 +119,7 @@ func TestADurableFailedTurnPutsTheDraftBackInTheComposer(t *testing.T) {
 	// The durable transcript lands WITH an error row (the POST-ack failure), via the real onTranscript path.
 	m.onTranscript(chat.TranscriptMsg{ConvID: "c1", Items: []chat.ChatItem{
 		{Kind: chat.KindUser, Text: "why can't you connect?", Key: "m-m1", At: 1},
-		{Kind: chat.KindError, Text: chat.FailedTurnText("", operatorFailureText, operatorFailedModel), Key: "m-m2", At: 2},
+		{Kind: chat.KindError, Text: chat.FailedTurnText(operatorFailureText, operatorFailedModel), Key: "m-m2", At: 2},
 	}})
 
 	if got := m.dock.Value(); got != "why can't you connect?" {
@@ -198,7 +198,7 @@ func TestAnOldFailedTurnDoesNotInjectThisSessionsDraftIntoTheComposer(t *testing
 	// with what this session sent.
 	m.onTranscript(chat.TranscriptMsg{ConvID: "c1", Items: []chat.ChatItem{
 		{Kind: chat.KindUser, Text: "an old question", Key: "m-x1", At: 1},
-		{Kind: chat.KindError, Text: chat.FailedTurnText("", "old failure", "old-model"), Key: "m-x2", At: 2},
+		{Kind: chat.KindError, Text: chat.FailedTurnText("old failure", "old-model"), Key: "m-x2", At: 2},
 	}})
 
 	if got := m.dock.Value(); got != "" {
@@ -217,7 +217,7 @@ func TestTheScopedRestoreSurvivesAPrependedContextPreamble(t *testing.T) {
 
 	m.onTranscript(chat.TranscriptMsg{ConvID: "c1", Items: []chat.ChatItem{
 		{Kind: chat.KindUser, Text: "[context: some worker]\nwhy can't you connect?", Key: "m-u1", At: 1},
-		{Kind: chat.KindError, Text: chat.FailedTurnText("", "401", "m"), Key: "m-e1", At: 2},
+		{Kind: chat.KindError, Text: chat.FailedTurnText("401", "m"), Key: "m-e1", At: 2},
 	}})
 
 	if got := m.dock.Value(); got != "why can't you connect?" {
@@ -266,7 +266,7 @@ func TestAHistoricalFailedTurnMakesNoComposerClaim(t *testing.T) {
 
 	m.onTranscript(chat.TranscriptMsg{ConvID: "c1", Items: []chat.ChatItem{
 		{Kind: chat.KindUser, Text: "an old question", Key: "m-x1", At: 1},
-		{Kind: chat.KindError, Text: chat.FailedTurnText("", "old failure 401", "old-model"), Key: "m-x2", At: 2},
+		{Kind: chat.KindError, Text: chat.FailedTurnText("old failure 401", "old-model"), Key: "m-x2", At: 2},
 	}})
 	m.onChatWake()
 
@@ -292,7 +292,7 @@ func TestOwnFailedTurnStillShowsTheRetryAffordance(t *testing.T) {
 
 	m.onTranscript(chat.TranscriptMsg{ConvID: "c1", Items: []chat.ChatItem{
 		{Kind: chat.KindUser, Text: "why can't you connect?", Key: "m-m1", At: 1},
-		{Kind: chat.KindError, Text: chat.FailedTurnText("", operatorFailureText, operatorFailedModel), Key: "m-m2", At: 2},
+		{Kind: chat.KindError, Text: chat.FailedTurnText(operatorFailureText, operatorFailedModel), Key: "m-m2", At: 2},
 	}})
 	m.onChatWake()
 
