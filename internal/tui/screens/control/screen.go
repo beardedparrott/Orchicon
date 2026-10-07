@@ -1551,6 +1551,13 @@ func (m *Model) settingsForm() *kit2.Form {
 		kit2.FieldSpec{Name: "stall_repetition_count", Label: "Stall repetition count (blank=def 0=off)", Kind: kit2.KNumber, Initial: stallCountInitial(s.StallRepetitionCount)},
 		kit2.FieldSpec{Name: "stall_repetition_window_seconds", Label: "Stall repetition window (s; blank=def 0=off)", Kind: kit2.KNumber, Initial: stallDimInitial(s.StallRepetitionWindowSeconds)},
 		kit2.FieldSpec{Name: "stall_nudge_max", Label: "Stall nudge max (blank=def 0=off)", Kind: kit2.KNumber, Initial: stallCountInitial(s.StallNudgeMax)},
+		// THE NUDGE TIMERS WERE THE ONLY TWO STALL KNOBS WITH NO FIELD, so they could be neither seen nor set
+		// from the TUI — and, before the settings merge, EVERY TUI save silently blanked them (they are
+		// written verbatim from the submitted row, so a field the form never sent arrived as NULL = "use the
+		// built-in default"). They are liveness-probe timers, not merely cosmetic: how long a probe is
+		// awaited, and how long between probes, decide whether a stalled session is nudged or reaped.
+		kit2.FieldSpec{Name: "stall_nudge_reply_window_seconds", Label: "Stall nudge reply window (s; blank=def 0=off)", Kind: kit2.KNumber, Initial: stallDimInitial(s.StallNudgeReplyWindowSeconds)},
+		kit2.FieldSpec{Name: "stall_nudge_cooldown_seconds", Label: "Stall nudge cooldown (s; blank=def 0=off)", Kind: kit2.KNumber, Initial: stallDimInitial(s.StallNudgeCooldownSeconds)},
 		kit2.FieldSpec{Name: "stall_tool_hang_seconds", Label: "Stall tool-hang window (s; blank=def 0=off)", Kind: kit2.KNumber, Initial: stallDimInitial(s.StallToolHangSeconds)},
 		kit2.FieldSpec{Name: "execution_reap_grace_seconds", Label: "Exec reap grace (s)", Kind: kit2.KNumber, Initial: num(s.GetExecutionReapGraceSeconds())},
 		kit2.FieldSpec{Name: "execution_reap_consecutive_failures", Label: "Exec reap consecutive failures", Kind: kit2.KNumber, Initial: i32(s.GetExecutionReapConsecutiveFailures())},
@@ -1641,6 +1648,8 @@ func (m *Model) settingsForm() *kit2.Form {
 		out.StallRepetitionCount = optI32(v["stall_repetition_count"])
 		out.StallRepetitionWindowSeconds = optI64(v["stall_repetition_window_seconds"])
 		out.StallNudgeMax = optI32(v["stall_nudge_max"])
+		out.StallNudgeReplyWindowSeconds = optI64(v["stall_nudge_reply_window_seconds"])
+		out.StallNudgeCooldownSeconds = optI64(v["stall_nudge_cooldown_seconds"])
 		out.StallToolHangSeconds = optI64(v["stall_tool_hang_seconds"])
 		out.ExecutionReapGraceSeconds = i64Of0(v["execution_reap_grace_seconds"])
 		out.ExecutionReapConsecutiveFailures = int32(i64Of0(v["execution_reap_consecutive_failures"]))

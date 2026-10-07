@@ -182,13 +182,12 @@ func (s *Service) UpdateSettings(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	// THE SNAPSHOT IS THE ROW'S OWN SHAPE (db.TenantSettingsRow.AuditFields), so this path and the agent's
+	// `update_settings` tool record the SAME fields and neither can drift from the other. It used to name
+	// only the models and the session TTLs, which is why an operator asking "did my stall window save?"
+	// could not be answered from the audit trail: the trail never recorded it.
 	if err := recordAudit(ctx, ttx.Tx, tenantID, "settings.updated", "settings", tenantID,
-		nil, audit.Snapshot(map[string]any{
-			"default_worker_model":              row.DefaultWorkerModel,
-			"default_ask_orchicon_model":        row.DefaultAskOrchiconModel,
-			"session_access_token_ttl_seconds":  row.SessionAccessTokenTtlSeconds,
-			"session_refresh_token_ttl_seconds": row.SessionRefreshTokenTtlSeconds,
-		})); err != nil {
+		nil, audit.Snapshot(row.AuditFields())); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit settings.updated: %w", err))
 	}
 	if err := ttx.Commit(ctx); err != nil {

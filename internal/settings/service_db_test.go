@@ -46,12 +46,19 @@ func TestUpdateSettingsPartialSaveKeepsStallWindows(t *testing.T) {
 	// A synthetic tenant, so the operator's own settings are never in play.
 	const probeTenant = "tnt_settings_merge_probe"
 	t.Cleanup(func() {
-		ttx, err := pool.BeginTenantTx(context.Background(), probeTenant)
+		cctx := context.Background()
+		ttx, err := pool.BeginTenantTx(cctx, probeTenant)
 		if err != nil {
 			return
 		}
-		_, _ = ttx.Exec(context.Background(), `DELETE FROM tenant_settings WHERE tenant_id=$1`, probeTenant)
-		_ = ttx.Commit(context.Background())
+		// THE AUDIT ROWS GO TOO. UpdateSettings writes a `settings.updated` row in the same transaction as
+		// every save, so this test produced one per call and deleted only the settings row — leaving a
+		// growing pile of orphan audit entries under the probe tenant on every run. Found by auditing the
+		// tenant for leftovers after the audit-path change, i.e. by the same check that caught the mcp
+		// test's leaked conversation.
+		_, _ = ttx.Exec(cctx, `DELETE FROM audit_events WHERE tenant_id=$1`, probeTenant)
+		_, _ = ttx.Exec(cctx, `DELETE FROM tenant_settings WHERE tenant_id=$1`, probeTenant)
+		_ = ttx.Commit(cctx)
 	})
 
 	// Seed the window the operator configured.
