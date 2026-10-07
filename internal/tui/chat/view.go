@@ -712,6 +712,63 @@ func renderBubble(label, text string, style lipgloss.Style, maxWidth int) string
 	return b.String()
 }
 
+// FailedTurnText composes the transcript row for a FAILED turn.
+//
+// THE ROW EXISTS BECAUSE A FAILED TURN IS A MESSAGE, and the TUI never drew it. Two failed sends left the
+// operator's words stacked with NOTHING between them (their report, with the screenshot to match: "The GUI
+// has an actual error message in the conversation that tells you why you couldn't connect or if there was a
+// problem. The TUI just drops with no indication as to why.").
+//
+// IT NAMES THE MODEL, because that is the ACTIONABLE half: the GUI's error bubble names the ref and adds
+// "if this repeats, check Settings → Default models", and the operator's own screenshot shows the model as
+// the thing they needed. The ref is already on the row's metadata (internal/askorchicon/service.go parses
+// model_ref out of the stored JSON), so carrying it here costs no new state and no round trip.
+//
+// THE REASON IS THE ROW'S; THE RETRY CLAIM IS THE SHELL'S — see RetryAffordanceLine. This function composes
+// only what is TRUE OF THE ROW ITSELF: the failure and the model that refused. It deliberately does NOT say
+// the message is back in the composer, because that is a claim about the SHELL's composer and is true only
+// when the shell actually restored the draft — which it does for a turn THIS client sent, and does NOT do for
+// a durable failed turn carried over from another session or the other client (App.restoreDraftForFailedTurn
+// scopes the restore to this client's own send). Composing the line here unconditionally made a HISTORICAL
+// failure assert a composer state that did not exist (measured: an old failed turn's row read "your message
+// is back in the composer" while the composer was empty) — the same class of misreport this change exists to
+// fix, so the reason is claim-free and the shell appends the affordance through WithRetryAffordance.
+func FailedTurnText(partial, errText, modelRef string) string {
+	var b strings.Builder
+	if p := strings.TrimSpace(partial); p != "" {
+		// A turn can fail AFTER it produced prose (a mid-reply provider drop), so keep what was said above
+		// the error rather than discarding it — the same partial content the GUI's bubble renders.
+		b.WriteString(p)
+		b.WriteString("\n")
+	}
+	b.WriteString("turn failed: " + strings.TrimSpace(errText))
+	if ref := strings.TrimSpace(modelRef); ref != "" {
+		b.WriteString("\nmodel: " + ref)
+	}
+	// RAW, not markdown: errors stay unwrapped/unstyled, per the transcript's existing rule for KindError
+	// (renderBubble, which soft-wraps the raw text to the pane width so a long provider error degrades by
+	// wrapping rather than clipping the footer).
+	return b.String()
+}
+
+// RetryAffordanceLine is the TUI's own retry affordance — the equivalent of the GUI's always-present Retry
+// button, phrased as the thing the operator actually does here (Enter on the restored draft).
+//
+// IT IS APPENDED BY THE SHELL (WithRetryAffordance), NOT baked into FailedTurnText, because the statement is
+// about the SHELL's composer: the message is back only when the shell put it back. The GUI's Retry button can
+// ride any error bubble because it re-sends the preceding user message from the transcript; the TUI's
+// equivalent acts on the composer, so it is honest only where the composer was actually restored.
+const RetryAffordanceLine = "your message is back in the composer — press enter to send it again"
+
+// WithRetryAffordance appends the retry line to a failed-turn row's text. Idempotent — a re-stamp on a later
+// poll (the transcript is re-read every second while a turn runs) must not double the line.
+func WithRetryAffordance(text string) string {
+	if text == "" || strings.Contains(text, RetryAffordanceLine) {
+		return text
+	}
+	return text + "\n" + RetryAffordanceLine
+}
+
 // noticeLabel is the band label a platform notice carries. It is deliberately the
 // neutral word rather than "context compacted": the notice's own first sentence says
 // what happened, and a label that repeated it would stutter.

@@ -447,6 +447,11 @@ type App struct {
 	convLoaded  bool   // a successful rail load has landed
 	convLoading bool   // a rail load is in flight
 
+	// failedTurnRestored latches the message id of a durable failed turn whose draft has been put back in the
+	// composer, so the restore happens ONCE per failed row and not on every poll that re-delivers it (the
+	// transcript is re-read each second while a turn runs). See restoreDraftForFailedTurn.
+	failedTurnRestored map[string]bool
+
 	// rightRailOpen records the Ask screen's right-rail visibility; kept so
 	// the renderer knows whether to draw the rail without re-deriving it.
 	rightRailOpen bool
@@ -678,15 +683,16 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string, o
 			items:     map[string][]chat.ChatItem{},
 			toolCalls: map[string][]toolclass.Call{},
 		},
-		renderCache:      chat.NewRenderCache(),
-		permGrants:       map[string][]chat.SessionGrant{},
-		permGrantsLoaded: map[string]bool{},
-		permGrantsErr:    map[string]string{},
-		execSessions:     map[string][]chat.ChatItem{},
-		loaded:           map[TabID]bool{},
-		chatStreams:      map[string]*kit2.Stream{},
-		transcriptLines:  map[string][]string{},
-		reasoningFolded:  map[string]bool{},
+		renderCache:        chat.NewRenderCache(),
+		permGrants:         map[string][]chat.SessionGrant{},
+		permGrantsLoaded:   map[string]bool{},
+		permGrantsErr:      map[string]string{},
+		failedTurnRestored: map[string]bool{},
+		execSessions:       map[string][]chat.ChatItem{},
+		loaded:             map[TabID]bool{},
+		chatStreams:        map[string]*kit2.Stream{},
+		transcriptLines:    map[string][]string{},
+		reasoningFolded:    map[string]bool{},
 		footer: footerModel{
 			URL:           profile.URL,
 			ServerVersion: serverVersion,
@@ -3208,7 +3214,6 @@ func (m *App) reloadConversations() tea.Cmd {
 		return nil
 	}
 	m.convLoading = true
-	m.convLoaded = false
 	return tea.Batch(m.chat.LoadConversations(), m.loadRailProjects())
 }
 
@@ -3839,12 +3844,26 @@ func (m *App) onTranscript(msg chat.TranscriptMsg) tea.Cmd {
 	// BOTH halves — the same either-half rule the activity line uses. The REPLACE is reserved for the state
 	// it was written for: the turn is over, the durable transcript IS the authority, and any surviving live
 	// row would render twice.
-	midTurn := m.chat.IsStreaming(msg.ConvID) || m.turnInFlight(msg.ConvID)
+	// THE RETRY AFFORDANCE IS THE SHELL'S TO CLAIM (see chat.RetryAffordanceLine): the composer it refers to
+	// is THIS shell's, so only a failed turn THIS client sent — its own user row matching the dock's lastSent —
+	// may say the message is back. A HISTORICAL failed turn (another session, the other client) is drawn with
+	// its reason and model but makes NO composer claim, because its draft is deliberately not injected. Done
+	// BEFORE the store so the stamped row is what every later read sees, and repeated on EVERY poll so the
+	// line cannot be dropped when the next durable copy replaces the live one.
+	m.stampRetryAffordance(msg.ConvID, msg.Items)
+	midTurn := m.runningFor(msg.ConvID)
 	if midTurn {
 		m.chatStore.mergeHistory(msg.ConvID, msg.Items)
 	} else {
 		m.chatStore.replace(msg.ConvID, msg.Items)
 	}
+	// A FAILED TURN PUTS THE DRAFT BACK, VISIBLY. The GUI does this in its completion effect (it copies the
+	// sent text to the clipboard AND signals the composer to restore it) so the operator never loses what
+	// they typed and knows it can be re-sent. The TUI restored the draft only on the PRE-ACK path
+	// (setChatError), which is the OTHER failure: a turn that failed AFTER the ack persists an error row and
+	// lands here, and its draft was never put back — so the error row's "your message is back in the composer"
+	// line would have been a false claim on exactly the case the operator hit. See restoreDraftForFailedTurn.
+	m.restoreDraftForFailedTurn(msg.ConvID, msg.Items)
 	// THE DURABLE TOOL CALLS LAND WITH THE PAGE THEY CAME ON. The activity line's rolling counter
 	// reads them from the store rather than re-fetching: this is the SAME ListMessages page the
 	// transcript was just built from (chat/pageToolCalls), on the SAME 1s poll, so the counter adds no
@@ -3902,6 +3921,25 @@ func (m *App) turnInFlight(convID string) bool {
 	return ok && c.TurnInFly
 }
 
+// runningFor reports whether a conversation's turn is LIVE, from EITHER half the shell already holds:
+// this client's own stream slot (chat.IsStreaming) OR the plane's polled row (TurnInFly).
+//
+// IT IS A UNION BECAUSE THE TWO SURFACES DISAGREED. The rail row read the POLLED field ALONE
+// (conversationRow: `if c.TurnInFly`), while the pane's activity line already read the union — so a
+// conversation THIS client was actively streaming (IsStreaming true, the transcript growing) still read
+// "12 msgs" on the row beside it, because TurnInFly is only as fresh as the last list read and a SEND has
+// no immediate rail refresh. The operator: "the 'running' status on the conversation rail list doesn't
+// always show up on active running conversations." That is the INVERSE of the divergence already fixed at
+// the activity line ("the rail said running while the pane was silent") and it survived because the two
+// surfaces read different fields.
+//
+// BOTH VALUES ALREADY EXIST in the shell; this is a union, not a new source of truth. And it is a UNION,
+// not a LOCAL-ONLY check: a turn started in the OTHER client has no local slot, so TurnInFly must still
+// mark the row — see runningFor's callers and the tests that assert both directions.
+func (m *App) runningFor(convID string) bool {
+	return m.chat.IsStreaming(convID) || m.turnInFlight(convID)
+}
+
 // transcriptStatusLine is the Ask pane's fixed footer: the conversation's status line, ONE slot.
 //
 // PRECEDENCE IS THE POINT, and the order is deliberate: a broken CONNECTION outranks a working TURN.
@@ -3940,7 +3978,7 @@ func (m *App) transcriptStatusLine(items []chat.ChatItem) string {
 		// dies, the GUI tells you, but the TUI conversation does not." The shell footer is easy to miss
 		// when reading a transcript, and it is the TRANSCRIPT that looks broken when a reply cannot arrive.
 		return "⚠ disconnected — replies will resume when the plane returns (r retries now)"
-	case m.chat.IsStreaming(m.chatConvID) || m.turnInFlight(m.chatConvID):
+	case m.runningFor(m.chatConvID):
 		// THE SERVER'S CLOCK FEEDS THE ROTATING VERB (see turnActivityNotice). ServerTimeSince returns
 		// (0, false) when no heartbeat has arrived yet, and 0 is the selector's "use the first word"
 		// sentinel — the line stays present from the instant the operator hits send.
@@ -4877,6 +4915,176 @@ func (m *App) onStreamDone(msg chat.StreamDoneMsg) tea.Cmd {
 	// "sending …" on screen for good. Guarded, so a connection banner written before this is not erased.
 	m.dock.SettleSendingAck()
 	return tea.Batch(m.chat.Poll(msg.ConvID), m.refreshMetrics(), m.chat.LoadConversations())
+}
+
+// restoreDraftForFailedTurn puts the operator's message back in the composer when a DURABLE transcript shows a
+// turn FAILED — the POST-ack half of the retry affordance.
+//
+// The pre-ack path (setChatError) already restores the draft, because that is where a failed SEND lands. A
+// turn that failed AFTER the ack is different: it is persisted as an assistant row with metadata.error set and
+// lands on the transcript by a poll, so nothing restored the draft — yet the error row tells the operator
+// their message is back. The GUI does restore it (its completion effect copies the text to the clipboard and
+// signals the composer), so this is the TUI's missing half, and it is what makes the error row's retry line
+// TRUE on the case the operator actually hit rather than only on the pre-ack case.
+//
+// IT IS SCOPED TO THE TURN THIS CLIENT ACTUALLY SENT, and that guard is not optional:
+//
+//	A durable KindError row is HISTORICAL. Opening any conversation whose transcript ends in a turn that
+//	failed — a previous session, the OTHER client, hours ago — delivers exactly that row through this same
+//	path, and an unscoped restore would then dump the text THIS session last sent into the composer of a
+//	chat that never carried it (measured: open a conversation with an old failed turn after sending in
+//	another chat and the composer came back holding the OTHER chat's message). The GUI is immune for the
+//	same reason its completion effect keys on `pendingReplyId`: it only restores for the turn its own
+//	slot was tracking.
+//
+// SO THE RESTORE REQUIRES THAT THE FAILED TURN'S OWN USER MESSAGE IS WHAT THIS CLIENT LAST SENT. The
+//
+//	error row's preceding user row is the turn's message (chronologically ordered), and it is compared with
+//	dock.LastSent() through matchesAny — the SAME suffix rule the transcript merge uses — so a prepended
+//	context preamble does not defeat it. Anything else is a failure that was not this client's send, and it
+//	gets the error ROW (drawn by conversationItems) but not a composer injection.
+//
+// IT IS LATCHED PER ROW: the transcript is re-read every second while a turn runs and again on completion, so
+// the same failed row arrives many times. dock.RestoreDraft already refuses to clobber text typed since, but the
+// latch keeps the restore to the moment the row FIRST appears, so a later poll cannot re-clobber a draft the
+// operator started typing after dismissing the error.
+func (m *App) restoreDraftForFailedTurn(convID string, items []chat.ChatItem) {
+	if convID == "" {
+		return
+	}
+	// The text of the user row the current error row belongs to, tracked as the items are walked (they
+	// are chronologically ordered), so each error row is scoped to its own turn rather than to the shell's
+	// most recent send.
+	turnText := ""
+	for _, it := range items {
+		switch it.Kind {
+		case chat.KindUser:
+			turnText = it.Text
+			continue
+		case chat.KindError:
+		default:
+			continue
+		}
+		if it.Key == "" || m.failedTurnRestored[it.Key] {
+			continue
+		}
+		m.failedTurnRestored[it.Key] = true
+		// Only for the OPEN conversation: a failure in a background chat must not put its text in this one's
+		// composer. The latch is still set, so opening that chat later does not re-restore (the operator has
+		// moved on by then).
+		if convID != m.chatConvID {
+			continue
+		}
+		// AND ONLY FOR THE TURN THIS CLIENT SENT — see the doc above. A historical failure, or one this
+		// client never sent, is drawn (conversationItems) but does not touch the composer.
+		if !m.ownFailedTurn(turnText) {
+			continue
+		}
+		m.restoreAttachments()
+		m.dock.RestoreDraft()
+	}
+}
+
+// ownFailedTurn reports whether a failed turn is the one THIS client sent — i.e. the turn's own user text is
+// what the dock last sent (suffix-matched through matchesAny, so a prepended context preamble does not defeat
+// it). It is the ONE ownership rule the retry surfaces share: the draft restore (restoreDraftForFailedTurn)
+// and the retry claim (stampRetryAffordance) must agree, or the row would promise a composer state that was
+// never produced.
+func (m *App) ownFailedTurn(turnText string) bool {
+	last := m.dock.LastSent()
+	return last != "" && matchesAny([]string{turnText}, last)
+}
+
+// stampRetryAffordance appends the retry line to the failed-turn rows that are THIS client's own send, on the
+// OPEN conversation. The composer the line names belongs to the open conversation, so a failure in a
+// background chat is drawn WITHOUT the claim; and a historical failure (not this client's send) makes no claim
+// either, since its draft was never put back. It runs on every transcript delivery, before the store write, so
+// a later poll's fresh durable copy is re-stamped rather than losing the line.
+func (m *App) stampRetryAffordance(convID string, items []chat.ChatItem) {
+	if convID == "" || convID != m.chatConvID {
+		return
+	}
+	turnText := ""
+	for i := range items {
+		switch items[i].Kind {
+		case chat.KindUser:
+			turnText = items[i].Text
+		case chat.KindError:
+			if m.ownFailedTurn(turnText) {
+				items[i].Text = chat.WithRetryAffordance(items[i].Text)
+			}
+		}
+	}
+}
+
+// modelRefForConv is the model ref the composer's chain would resolve for a SPECIFIC conversation: that
+// conversation's own row from the shell's list, else the pending selection, else the tenant default. It is
+// currentAskModel's chain pointed at a conversation that need not be the open one, so a failure reported for
+// another chat names THAT chat's model rather than the one on screen.
+func (m *App) modelRefForConv(convID string) string {
+	if convID != "" {
+		if c, ok := m.conversationByID(convID); ok && c.ModelRef != "" {
+			return c.ModelRef
+		}
+	}
+	// No row for that conversation (a failed create, or a list that has not landed): fall back to the
+	// composer's own resolution, which is the best available answer for "what would this have been sent to".
+	return m.currentAskModel()
+}
+
+// surfaceTurnFailure puts a PRE-ACK send/turn failure on the TRANSCRIPT, not only on the composer strip.
+//
+// THE ROW-RENDERING FIX COVERS THE FAILED TURN; THIS COVERS THE FAILED SEND. A turn that died AFTER it was
+// acked is persisted as an assistant row with metadata.error set, and conversationItems now draws it as
+// KindError. A failure BEFORE the ack is different and has nothing to draw: the service refuses/aborts
+// before the turn registers, so `startConversationTurn` returns an error and NO durable row is written at
+// all (internal/askorchicon/chat.go's pre-ack path). Left alone, that failure reached only the dock strip —
+// and the operator's report is precisely the transcript reader's view of it: "The TUI just drops with no
+// indication as to why." So the FAILURE IS APPENDED LOCALLY, as a live-only row.
+//
+// ITS SHAPE MIRRORS THE DURABLE ONE (chat.FailedTurnText): the same "turn failed: …", the same model line,
+// the same retry affordance — so a failed send and a failed turn read identically, which is the point. The
+// operator's own message is not repeated here: the shell has already restored the draft into the composer
+// (setChatError → dock.RestoreDraft, plus attachments), and the retry line says so.
+//
+// IT IS LIVE-ONLY BY CONSTRUCTION, and that is correct: there is no server row to reconcile against, and a
+// later successful turn's durable transcript REPLACES the local buffer (chatStore.replace keeps only draft
+// echoes and pending consent cards), so a stale local error cannot linger over a conversation that has
+// since worked.
+func (m *App) surfaceTurnFailure(convID string, err error) tea.Cmd {
+	if convID == "" || m.chatStore == nil {
+		return nil
+	}
+	errText := ""
+	if err != nil {
+		errText = err.Error()
+	}
+	if strings.TrimSpace(errText) == "" {
+		return nil
+	}
+	// The model the FAILING conversation's send was bound for, NOT the open one's: a failure can belong to a
+	// conversation other than the one on screen (the store keeps it for when that chat is opened), and naming
+	// the open chat's ref there would be a claim about the wrong model. See modelRefForConv.
+	// THE RETRY CLAIM IS MADE ONLY FOR THE OPEN CONVERSATION, whose composer setChatError just put the text
+	// back into. The row is still recorded for a background chat (so opening it shows why the send failed),
+	// but without a claim about a composer it does not own. See chat.RetryAffordanceLine.
+	text := chat.FailedTurnText("", errText, m.modelRefForConv(convID))
+	if convID == m.chatConvID {
+		text = chat.WithRetryAffordance(text)
+	}
+	m.chatStore.append(convID, chat.ChatItem{
+		Kind: chat.KindError,
+		Text: text,
+		At:   time.Now().UnixMilli(),
+		Key:  fmt.Sprintf("fail-%d", time.Now().UnixNano()),
+		Live: true,
+	})
+	// REPAINT IF IT IS THE OPEN CONVERSATION. Same guard as the send's own echo: a stale failure for another
+	// conversation must not repaint this one (the store keeps it for when that conversation is opened).
+	if convID == m.chatConvID {
+		return m.onChatWake()
+	}
+	return nil
 }
 
 // setChatError maps a chat failure to the dock error strip (401 gets
