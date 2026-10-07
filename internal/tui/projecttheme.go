@@ -134,7 +134,12 @@ func (m *App) resolveScopeTheme() (name string, reason scopeThemeReason, unknown
 // deliberate operator action and always say which project they landed on, but the launch-directory default
 // is automatic and already silent about the scope itself (applyLaunchDirScope), so it only speaks up here
 // when something a notice actually needs to cover happens — the pin releasing, or a degraded palette.
-func (m *App) applyScopeTheme(announceScope bool) {
+//
+// extra carries notes the CALLER needs in the same notice. A notice is a single line (SetNotice), so a
+// caller that has something of its own to say must contribute it here rather than call SetNotice again and
+// clobber the theme's half — which is exactly what the launch-directory scope needed when it began
+// reporting that it had hidden conversations.
+func (m *App) applyScopeTheme(announceScope bool, extra ...string) {
 	wasPinned := m.themePinned
 	m.themePinned = false
 	name, reason, unknownName := m.resolveScopeTheme()
@@ -176,6 +181,7 @@ func (m *App) applyScopeTheme(announceScope bool) {
 			notes = append(notes, "theme: "+name+" (default palette)")
 		}
 	}
+	notes = append(notes, extra...)
 	if len(notes) == 0 {
 		return
 	}

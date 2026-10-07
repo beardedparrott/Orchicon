@@ -675,33 +675,72 @@ func (c *Controller) SetConversationFullsend(id string, enabled bool) tea.Cmd {
 	}
 }
 
+// convRailPageSize is the page the rail asks for. The server CLAMPS a larger request down to ITS OWN
+// default (askorchicon.Service.ListConversations turns anything over 100 into 50), so 100 is both the
+// ceiling and the only correct ask.
+const convRailPageSize = 100
+
+// convRailMaxPages bounds the paging loop. The rail is a COMPLETE list with no "load more" affordance,
+// so it pages to exhaustion; this cap is the backstop that keeps a pathological tenant from turning the
+// 5s rolling refresh into an unbounded RPC chain.
+const convRailMaxPages = 20
+
 // LoadConversations fetches the conversation rail.
+//
+// IT PAGES TO EXHAUSTION, and that is a defect fix rather than a nicety. This used to ask for ONE page of
+// 100 and DISCARD `next_page_token` — the only conversation loader in the TUI that did (the screenkit
+// screens all page). So the rail was a fixed "newest 100" window over an unlimited table: every
+// conversation past rank 100 became UNREACHABLE, with no affordance saying so, while the same rows stayed
+// visible in the GUI. The operator, on a tenant holding 184 conversations of which 132 were newer test
+// rows: "ALL conversations except this one disappeared from the conversation rail". The conversations were
+// never deleted — the rail could not ask for them.
+//
+// The cost is one RPC per 100 conversations, on the same 5s cadence as before (two for that tenant).
 func (c *Controller) LoadConversations() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		resp, err := c.cl.Ask.ListConversations(ctx, connect.NewRequest(&apiv1.ListConversationsRequest{PageSize: 100}))
-		if err != nil {
-			return ConversationsMsg{Err: err.Error()}
+
+		convs := make([]Conversation, 0, convRailPageSize)
+		var categories []*apiv1.Category
+		var assignments []*apiv1.CategoryAssignment
+		token := ""
+		for page := 0; page < convRailMaxPages; page++ {
+			resp, err := c.cl.Ask.ListConversations(ctx, connect.NewRequest(&apiv1.ListConversationsRequest{
+				PageSize:  convRailPageSize,
+				PageToken: token,
+			}))
+			if err != nil {
+				return ConversationsMsg{Err: err.Error()}
+			}
+			for _, cv := range resp.Msg.GetConversations() {
+				convs = append(convs, Conversation{
+					ID:         cv.GetId(),
+					Title:      cv.GetTitle(),
+					TurnInFly:  cv.GetTurnInFlight(),
+					MessageN:   cv.GetMessageCount(),
+					ModelRef:   cv.GetModelRef(),
+					Mode:       cv.GetMode(),
+					Fullsend:   cv.GetFullsend(),
+					ProjectID:  cv.GetProjectId(),
+					SkillFiles: cv.GetSkillFiles(),
+					// Read at list time, so a conversation the server reports as mid-turn is recognisable as
+					// such the moment the rail loads — which is what the re-attach on open needs.
+					PendingReplyID: cv.GetPendingAssistantMessageId(),
+				})
+			}
+			// The grouping set is the TENANT's and is identical on every page, so it is taken once from
+			// the first — a later page cannot legitimately differ, and reading it per page would let an
+			// empty tail response clobber it.
+			if page == 0 {
+				categories = resp.Msg.GetCategories()
+				assignments = resp.Msg.GetAssignments()
+			}
+			if token = resp.Msg.GetNextPageToken(); token == "" {
+				break
+			}
 		}
-		convs := make([]Conversation, 0, len(resp.Msg.GetConversations()))
-		for _, cv := range resp.Msg.GetConversations() {
-			convs = append(convs, Conversation{
-				ID:         cv.GetId(),
-				Title:      cv.GetTitle(),
-				TurnInFly:  cv.GetTurnInFlight(),
-				MessageN:   cv.GetMessageCount(),
-				ModelRef:   cv.GetModelRef(),
-				Mode:       cv.GetMode(),
-				Fullsend:   cv.GetFullsend(),
-				ProjectID:  cv.GetProjectId(),
-				SkillFiles: cv.GetSkillFiles(),
-				// Read at list time, so a conversation the server reports as mid-turn is recognisable as such
-				// the moment the rail loads — which is what the re-attach on open needs.
-				PendingReplyID: cv.GetPendingAssistantMessageId(),
-			})
-		}
-		return ConversationsMsg{Convs: convs, Categories: resp.Msg.GetCategories(), Assignments: resp.Msg.GetAssignments()}
+		return ConversationsMsg{Convs: convs, Categories: categories, Assignments: assignments}
 	}
 }
 
