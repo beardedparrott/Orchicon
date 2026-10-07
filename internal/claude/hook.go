@@ -573,6 +573,31 @@ func RunHook(in io.Reader, out io.Writer, getenv func(string) string) int {
 
 	decision := v.Decision()
 	reason := v.Reason
+
+	// AN ASK IS DELIVERED BY ABSTAINING, NOT BY SAYING "ask" — and this is the fix for
+	// "claude adapter ask sessions seem blocked by everything".
+	//
+	// MEASURED against the real CLI (2.1.289), on a real Ask session: the hook returned
+	// permissionDecision "ask", exit 0, and the CLI turned it into an immediate TOOL ERROR the model
+	// reads as "this call needs the operator's approval". No `can_use_tool` control_request was ever
+	// raised — 18 asks, 0 control frames, 0 consent cards — so every write, edit and Bash call failed
+	// identically and the model reported being permanently blocked, which is exactly the operator's
+	// report.
+	//
+	// The cause is that `--permission-prompts host` governs the PERMISSION SYSTEM's prompts, not a
+	// hook's verdict. A hook's "ask" has no host arm in a `-p` (headless) session, so it resolves to
+	// a refusal. What DOES reach the host is a tool the permission system wants to prompt for — so
+	// the Ask profile names those tools in `permissions.ask` (see BuildSettings) and the hook stays
+	// SILENT about them.
+	//
+	// ABSTAINING IS NOT ALLOWING. An empty hook output and exit 0 is "no decision", so the call falls
+	// through to the permission system, which is where the consent card comes from. The verdicts this
+	// hook still returns are the ones it alone can make: a DENY (the never-allow class, the protected
+	// roots, the mode boundary, the subagent tool) and the ALLOWS that exist to suppress prompts for
+	// things that are not decisions (reads, the platform's own MCP surface).
+	if asking && decision == DecisionAsk {
+		return 0
+	}
 	if reason == "" {
 		// WORDING IS PER-PROFILE. The worker's string is deliberately the one it
 		// has always been: this file is shared, and a shared file that silently
