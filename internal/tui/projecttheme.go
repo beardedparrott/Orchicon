@@ -4,12 +4,16 @@ package tui
 // projects look different (the operator: "It would be nice to have different colors to distinguish different
 // sessions").
 //
-// THE TRAP THIS FILE GUARDS. App.SetTheme (slash.go) PERSISTS its choice, to both the top-level default and the
-// profile — that is what makes /theme survive a relaunch. Calling it on every scope change would overwrite the
-// operator's saved default with whatever the project happens to be bound to, every time they switched
-// workspace. So this file never calls SetTheme: applyScopeTheme calls applyThemeAndRefresh directly (apply
-// only), and the project binding is persisted through its OWN read-modify-write (persistProjectThemes),
-// completely separate from the default palette's.
+// THE TRAP THIS FILE GUARDS. App.SetTheme (slash.go) is the COMMIT: it persists the operator's choice —
+// BOUND to the active project when there is one, or written as the top-level default when no project is in
+// scope. Calling it on every scope change would overwrite a project's palette with whatever the current scope
+// happens to resolve to, every time the operator switched workspace. So this file never calls SetTheme:
+// applyScopeTheme calls applyThemeAndRefresh directly (apply only), and the project binding is persisted
+// through its OWN read-modify-write (persistProjectThemes), completely separate from the default palette's.
+//
+// SetTheme ROUTES ITS WRITE THROUGH BindProjectTheme for exactly that reason: a palette chosen while working
+// in a project is that project's, and the shared default — which every UNBOUND project inherits — is only
+// written from a scope with no workspace of its own.
 //
 // THE PRECEDENCE DECISION (criterion 5). An explicit /theme PINS the palette for the rest of THIS scope: it
 // stays active across anything that does not change the workspace. The next scope change — the rail, /project,

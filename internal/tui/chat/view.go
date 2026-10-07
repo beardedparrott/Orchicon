@@ -733,14 +733,15 @@ func renderBubble(label, text string, style lipgloss.Style, maxWidth int) string
 // failure assert a composer state that did not exist (measured: an old failed turn's row read "your message
 // is back in the composer" while the composer was empty) — the same class of misreport this change exists to
 // fix, so the reason is claim-free and the shell appends the affordance through WithRetryAffordance.
-func FailedTurnText(partial, errText, modelRef string) string {
+//
+// IT TAKES NO PARTIAL REPLY, AND THAT IS THE POINT. An earlier signature accepted one and prefixed it to the
+// failure, so a mid-reply drop produced ONE KindError row whose text began with the model's prose — and the
+// row's `error` label then labelled the prose, with the whole thing painted in the error's red. The operator:
+// "It is showing thinking text after that is also red and on the same line as the error." The prose is the
+// MODEL's words and belongs on the model's band; the caller emits it as its own KindText row (see
+// conversationItems) and this function composes only what its own label claims.
+func FailedTurnText(errText, modelRef string) string {
 	var b strings.Builder
-	if p := strings.TrimSpace(partial); p != "" {
-		// A turn can fail AFTER it produced prose (a mid-reply provider drop), so keep what was said above
-		// the error rather than discarding it — the same partial content the GUI's bubble renders.
-		b.WriteString(p)
-		b.WriteString("\n")
-	}
 	b.WriteString("turn failed: " + strings.TrimSpace(errText))
 	if ref := strings.TrimSpace(modelRef); ref != "" {
 		b.WriteString("\nmodel: " + ref)

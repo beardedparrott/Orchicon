@@ -212,12 +212,12 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 			// do nothing rather than look like a broken apply.
 			return true, nil
 		}
-		if item.ID == theme.Active().Name {
-			m.Notice("theme " + item.ID + " is already active")
-			return true, nil
-		}
-		m.Notice("theme: " + item.ID)
-		return true, m.applyTheme(item.ID)
+		// THE COMMIT. The cursor has ALREADY previewed this palette (OnHighlight -> previewTheme), so
+		// "it is already the active palette" is the NORMAL state here and must NOT short-circuit: Enter is
+		// the gesture that KEEPS the choice — the shell binds it to the active project, or writes the
+		// default when no project is in scope (see App.SetTheme). The notice comes from that write, so it
+		// can say WHERE the choice landed rather than only that something happened.
+		return true, m.commitTheme(item.ID)
 	}
 
 	// MOVING THROUGH THE THEMES APPLIES THEM. This is the hook that makes the themes list a PREVIEW rather
@@ -642,9 +642,14 @@ type projectThemer interface {
 	CurrentProjectTheme() (label, bound string, hasProject bool)
 }
 
-// applyTheme switches the TUI palette through the shell (the shell owns the
-// profile and the construction-captured styles), then reconciles this pane so
-// the active marker moves.
+// applyTheme applies the palette under the cursor as a LIVE PREVIEW — what moving through the list does.
+// It goes through the shell (which owns the profile and the construction-captured styles) and reconciles
+// this pane so the active marker moves.
+//
+// IT DELIBERATELY DOES NOT COMMIT. The preview must not persist anything: routing it through SetTheme made
+// merely BROWSING the list rewrite a project's binding, or the shared default, on every cursor move — which
+// is half of the operator's report (a theme "changed" in one project that they had only looked at, and that
+// then followed them into another). commitTheme is the gesture that keeps a choice.
 //
 // IT RETURNS THE RECONCILE COMMAND rather than discarding it. `m.Refresh(name)` only STAGES the reload and
 // hands back the command that performs it, so the previous `m.Refresh("themes")` — whose return value went
@@ -653,8 +658,21 @@ type projectThemer interface {
 // now that moving the cursor applies live, where the "active" marker tracking the cursor IS the feedback
 // that the preview took.
 func (m *Model) applyTheme(name string) tea.Cmd {
-	type themer interface{ SetTheme(string) bool }
-	if sh, ok := m.Shell().(themer); ok {
+	type previewer interface{ PreviewTheme(string) bool }
+	if sh, ok := m.Shell().(previewer); ok {
+		sh.PreviewTheme(name)
+	} else if !theme.Use(name) {
+		return nil
+	}
+	return m.Refresh("themes")
+}
+
+// commitTheme KEEPS the highlighted palette: the shell binds it to the active project when there is one, and
+// otherwise writes the persisted default that unbound projects inherit (see App.SetTheme). This is Enter in
+// this pane, and the same write `/theme <name>` performs.
+func (m *Model) commitTheme(name string) tea.Cmd {
+	type committer interface{ SetTheme(string) bool }
+	if sh, ok := m.Shell().(committer); ok {
 		sh.SetTheme(name)
 	} else if !theme.Use(name) {
 		return nil

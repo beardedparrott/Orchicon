@@ -5205,7 +5205,7 @@ func (m *App) surfaceTurnFailure(convID string, err error) tea.Cmd {
 	// THE RETRY CLAIM IS MADE ONLY FOR THE OPEN CONVERSATION, whose composer setChatError just put the text
 	// back into. The row is still recorded for a background chat (so opening it shows why the send failed),
 	// but without a claim about a composer it does not own. See chat.RetryAffordanceLine.
-	text := chat.FailedTurnText("", errText, m.modelRefForConv(convID))
+	text := chat.FailedTurnText(errText, m.modelRefForConv(convID))
 	if convID == m.chatConvID {
 		text = chat.WithRetryAffordance(text)
 	}

@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
@@ -68,7 +70,7 @@ func TestAFailedTurnRoutesToErrorAndNamesTheModel(t *testing.T) {
 // unconditionally made a HISTORICAL failure assert a composer state that did not exist (measured), so the
 // reason is claim-free and every retry surface appends the affordance through WithRetryAffordance.
 func TestTheReasonMakesNoComposerClaimAndTheShellAddsIt(t *testing.T) {
-	reason := FailedTurnText("", "provider status 401", "m")
+	reason := FailedTurnText("provider status 401", "m")
 	if strings.Contains(reason, "back in the composer") {
 		t.Errorf("the row's reason claims a composer state the shell may not have produced: %q", reason)
 	}
@@ -144,19 +146,89 @@ func TestTheOtherRolesStillRouteAsBefore(t *testing.T) {
 	}
 }
 
-// AC 7: the error text stays RAW (no markdown), and a partial reply that preceded the failure is kept above
-// the error rather than discarded.
-func TestFailedTurnTextKeepsTheRawErrorAndAnyPartialReply(t *testing.T) {
+// AC 7: the error text stays RAW (no markdown).
+func TestFailedTurnTextKeepsTheRawError(t *testing.T) {
 	raw := "start Ask turn: provider status 401 Unauthorized — see *Settings → Default models*"
-	out := FailedTurnText("I began to answer", raw, "orchicon/ollama/deepseek-v4.1-flash")
+	out := FailedTurnText(raw, "orchicon/ollama/deepseek-v4.1-flash")
 	if !strings.Contains(out, "*Settings → Default models*") {
 		t.Errorf("the raw error text was mangled (AC 7): %q", out)
 	}
-	if !strings.Contains(out, "I began to answer") {
-		t.Errorf("a partial reply was discarded rather than kept above the error: %q", out)
-	}
 	if !strings.Contains(out, "orchicon/ollama/deepseek-v4.1-flash") {
 		t.Errorf("the model is not named: %q", out)
+	}
+}
+
+// A FAILED TURN IS TWO ROWS: THE MODEL'S PROSE, THEN THE FAILURE — never one row wearing the error's label
+// and colour over prose.
+//
+// THE OPERATOR'S REPORT, on the shipped shape: "It is showing thinking text after that is also red and on
+// the same line as the error." The partial reply had been folded into the KindError item, so renderBubble
+// put the `error` label in front of the first line of the PROSE and painted the model's own words in the
+// error's red. This measures the shape directly: the prose is a KindText row of its own, and it comes
+// BEFORE the error row (it was written before the failure).
+func TestAMidReplyFailureDrawsTheProseOnTheModelBandThenTheError(t *testing.T) {
+	page := []*apiv1.ChatMessage{
+		{Id: "m2", Role: "assistant",
+			Content:   "I began to answer and the provider dropped mid-sentence",
+			Metadata:  &apiv1.MessageMetadata{Error: "stalled:no_progress", ModelRef: "orchicon/ollama/deepseek-v4.1-flash"},
+			CreatedAt: timestamppb.New(time.Unix(1_700_000_000, 0))},
+		{Id: "m1", Role: "user", Content: "why can't you connect?", CreatedAt: timestamppb.New(time.Unix(1_700_000_000, 0))},
+	}
+	items := conversationItems(page)
+
+	var errIdx, proseIdx = -1, -1
+	for i, it := range items {
+		switch it.Kind {
+		case KindError:
+			errIdx = i
+			if strings.Contains(it.Text, "I began to answer") {
+				t.Errorf("the MODEL'S PROSE is inside the error row — that is what puts the `error` label and "+
+					"the error's red over the model's own words (the operator's \"also red and on the same "+
+					"line as the error\"): %q", it.Text)
+			}
+		case KindText:
+			if strings.Contains(it.Text, "I began to answer") {
+				proseIdx = i
+			}
+		}
+	}
+	if errIdx < 0 {
+		t.Fatalf("the failure produced no error row: %+v", items)
+	}
+	if proseIdx < 0 {
+		t.Errorf("the partial reply was DROPPED rather than drawn on the model's band — a failed turn that "+
+			"produced prose must keep it: %+v", items)
+	}
+	if proseIdx >= 0 && proseIdx > errIdx {
+		t.Errorf("the prose is drawn AFTER the failure it preceded (prose=%d error=%d) — the reading order "+
+			"must follow the turn: %+v", proseIdx, errIdx, items)
+	}
+}
+
+// AND THE PAINTED FRAME, which is the layer the operator's report is true at: the `error` label must sit on
+// the FAILURE line, not in front of the model's prose.
+func TestTheErrorLabelSitsOnTheFailureNotTheProse(t *testing.T) {
+	page := []*apiv1.ChatMessage{
+		{Id: "m2", Role: "assistant",
+			Content:   "thinking out loud before the drop",
+			Metadata:  &apiv1.MessageMetadata{Error: "stalled:no_progress", ModelRef: "m"},
+			CreatedAt: timestamppb.New(time.Unix(1_700_000_000, 0))},
+	}
+	rendered := ansi.Strip(RenderItems(conversationItems(page), 100))
+	for _, ln := range strings.Split(rendered, "\n") {
+		trimmed := strings.TrimSpace(ln)
+		if !strings.HasPrefix(trimmed, "error ") {
+			continue
+		}
+		if strings.Contains(trimmed, "thinking out loud") {
+			t.Errorf("the `error` label is in front of the MODEL'S PROSE: %q", trimmed)
+		}
+		if !strings.Contains(trimmed, "turn failed:") {
+			t.Errorf("the `error` label is not on the failure line: %q", trimmed)
+		}
+	}
+	if !strings.Contains(rendered, "thinking out loud") {
+		t.Errorf("the partial prose is gone from the frame:\n%s", rendered)
 	}
 }
 
