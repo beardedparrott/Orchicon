@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
@@ -64,6 +65,22 @@ type Model struct {
 	dragActive bool
 	dragFromY  int
 	dragScroll int
+
+	// renderGen bumps whenever the ROWS change, and renderCache holds the rendered physical lines they
+	// produced at a given width and profile.
+	//
+	// WHY IT EXISTS: rendering the diff is the pane's most expensive operation, and BOTH hot paths used to
+	// do it from scratch — visibleLines() (under every clamp, so under every scroll step) and diffBody() (on
+	// every frame). Dragging the scrollbar emits a motion event per cell of pointer movement, and each one
+	// re-rendered the entire diff several times, so the pane could not keep up with the mouse and the content
+	// visibly lagged behind it — the operator: "the scroll and drag are slow. If I move my mouse it has to
+	// catch up to the mouse position instead of smoothly scrolling and dragging."
+	//
+	// The KEY is everything RenderLines depends on (the rows via renderGen, the width, the profile), so a
+	// stale cache is impossible rather than merely unlikely — and a width or profile change re-renders
+	// without anyone having to remember to invalidate.
+	renderGen   int
+	renderCache renderCache
 
 	// closeReq is set when the user clicks the pane's "✕" close button
 	// (the mouse toggle area). The shell polls it after forwarding a mouse
@@ -177,7 +194,7 @@ func (m *Model) armStream() {
 
 func (m *Model) clear() {
 	m.groups = nil
-	m.rows = nil
+	m.setRows(nil)
 	m.maxSeq = 0
 	m.SelectedPath = ""
 	m.Status = "idle"
@@ -204,7 +221,7 @@ func (m *Model) SelectPath(path string) {
 		return
 	}
 	m.SelectedPath = path
-	m.rows = m.rowsForSelected()
+	m.setRows(m.rowsForSelected())
 	m.scroll = 0
 }
 
@@ -262,13 +279,43 @@ func (m *Model) maxScroll() int {
 // and the clamps read it, so they cannot disagree. (They used to: Scroll
 // clamped against len(m.rows) while the body sliced RENDERED lines — identical
 // only while one row == one line, which wrapping destroys.)
+// renderCache is the memoized result of rendering the current rows.
+type renderCache struct {
+	gen     int
+	width   int
+	profile termenv.Profile
+	lines   []string
+}
+
+// setRows is the ONLY way the pane's rows change, so the render cache cannot be left stale by a caller that
+// forgot to invalidate it. Every assignment goes through here.
+func (m *Model) setRows(rows []Row) {
+	m.rows = rows
+	m.renderGen++
+}
+
+// renderedLines renders the rows — or returns what the last render produced, when nothing it depends on has
+// changed. It is the ONE renderer: the scroll extent and the body both read it, so the viewport slices
+// exactly what the count measured (and the pane renders the diff once per change instead of once per frame).
+func (m *Model) renderedLines() []string {
+	width := m.bodyWidth()
+	profile := currentProfile()
+	c := m.renderCache
+	if c.gen == m.renderGen && c.width == width && c.profile == profile && c.lines != nil {
+		return c.lines
+	}
+	lines := RenderLines(m.rows, width, profile)
+	m.renderCache = renderCache{gen: m.renderGen, width: width, profile: profile, lines: lines}
+	return lines
+}
+
 func (m *Model) visibleLines() int {
 	switch m.Tab {
 	case TabDiff:
 		if len(m.rows) == 0 {
 			return 0
 		}
-		return len(RenderLines(m.rows, m.bodyWidth(), currentProfile()))
+		return len(m.renderedLines())
 	default:
 		// Tree/Timeline: one rendered line per group (D4 — list rows do not
 		// wrap, so the group<->row click mapping stays 1:1).
@@ -452,13 +499,13 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		if snap != nil {
 			m.maxSeq = snap.MaxDurableSeq
 			m.groups = GroupByFile(snap.Edits)
-			m.rows = m.rowsForSelected()
+			m.setRows(m.rowsForSelected())
 			m.Err = ""
 			m.Status = "ready"
 			// Default the tree selection to the first changed file (if any).
 			if m.SelectedPath == "" && len(m.groups) > 0 {
 				m.SelectedPath = m.groups[0].Path
-				m.rows = m.rowsForSelected()
+				m.setRows(m.rowsForSelected())
 			}
 			// The rows (and therefore the rendered line count) just changed
 			// underneath the scroll — a fetch that returns a SHORTER diff (a new
@@ -777,7 +824,7 @@ func (m *Model) mergeLive() {
 	durable := flattenGroups(m.groups)
 	merged := MergeEdits(durable, edits)
 	m.groups = GroupByFile(merged)
-	m.rows = m.rowsForSelected()
+	m.setRows(m.rowsForSelected())
 	// Live events rebuild the rows (and so the rendered line count) while the
 	// operator is scrolled: clamp, or a shrinking diff leaves a blank viewport.
 	m.clampScroll()
@@ -871,8 +918,8 @@ func (m *Model) diffBody() string {
 	}
 	// The SINGLE renderer the scroll clamps also read: wrapping a row to several
 	// physical lines changes the line count, and the viewport must slice exactly
-	// what visibleLines counted.
-	lines := RenderLines(m.rows, m.bodyWidth(), currentProfile())
+	// what visibleLines counted. It is CACHED for the same reason — see renderCache.
+	lines := m.renderedLines()
 	viewH := m.viewHeight()
 	start := m.scroll
 	if start > len(lines) {
