@@ -60,6 +60,31 @@ func TestDecideToolForAsk(t *testing.T) {
 			reason: "external_directory is allowed in the interactive profile — consent gates the ACTION, not the scope",
 		},
 		{
+			// THE TABLE HAD NO Glob/Grep ROW, and that absence is the coverage gap this bug
+			// shipped through: Read has a MANDATORY file_path so it always resolved a target and
+			// always reached the allow, while Glob/Grep name theirs optionally and were never
+			// exercised. Two of the three read-only tools were therefore untested.
+			name:   "a Glob with a relative pattern is ALLOWED — no resolvable target",
+			tool:   "Glob",
+			input:  map[string]any{"pattern": "**/*.go"},
+			want:   DecisionAllow,
+			reason: "a read is not a decision, and this pattern names no absolute path for the policy to judge",
+		},
+		{
+			name:   "a Grep with a bare regex is ALLOWED",
+			tool:   "Grep",
+			input:  map[string]any{"pattern": "func DecideToolForAsk"},
+			want:   DecisionAllow,
+			reason: "the same shape: the search root is the session's own directory",
+		},
+		{
+			name:   "a Grep that names an absolute path is ALLOWED, but takes the policy rung",
+			tool:   "Grep",
+			input:  map[string]any{"pattern": "/tmp/somewhere/else"},
+			want:   DecisionAllow,
+			reason: "external_directory is allowed interactively, and the target IS resolvable so policy/protected-path still run",
+		},
+		{
 			name:   "a write is ASKED about",
 			tool:   "Write",
 			input:  map[string]any{"file_path": "/tmp/somewhere/else.txt"},
@@ -269,6 +294,64 @@ func TestWorkerProfileAllowsMCPTools(t *testing.T) {
 		// no ask arm at all).
 		if got.Ask {
 			t.Errorf("worker profile asked about %s; a worker session cannot answer a prompt", tool)
+		}
+	}
+}
+
+// THE REPORTED BUG: an Ask session was blocked by EVERYTHING, because the two
+// read-only tools an agent uses most — Glob and Grep — raised a consent card on
+// every single call.
+//
+// THE MECHANISM IS AN ORDERING BUG, not a wrong rule. decidePathForAsk returned
+// askVerdict() the moment no target could be resolved, and that guard sat BEFORE
+// the readOnlyToolNames allow — so the allow at the bottom of the function was
+// UNREACHABLE for exactly the tools whose input does not name a path.
+//
+// Glob and Grep take an OPTIONAL `path` plus a `pattern`. The normal call omits
+// the path and passes a RELATIVE pattern (`**/*.go`, `func DecideToolForAsk`),
+// and dirOfPattern returns "" for anything that is not absolute. So the COMMON
+// call was the asking call, and an interactive session became the prompt queue
+// this file's own comment says it must never be.
+//
+// THE DIVERGENCE IS BACKWARDS, which is what makes this a defect rather than a
+// policy choice: the WORKER profile — the sandboxed, non-interactive one —
+// ALLOWS a path tool whose target does not resolve (decidePath: "empty target ->
+// allow"), and its tests pin that shape. The INTERACTIVE profile, whose whole
+// premise is that a read is not a decision the operator needs to make, was
+// therefore STRICTER THAN THE SANDBOX.
+func TestReadOnlyToolsAreAllowedWhenNoTargetResolves(t *testing.T) {
+	const askDir = "/tmp/orchicon-ask-t"
+
+	reads := []struct {
+		name  string
+		tool  string
+		input map[string]any
+	}{
+		{"Glob with a relative pattern (the common call)", "Glob", map[string]any{"pattern": "**/*.go"}},
+		{"Grep with a bare regex", "Grep", map[string]any{"pattern": "func DecideToolForAsk"}},
+		{"Grep relative with a glob filter", "Grep", map[string]any{"pattern": "TODO", "glob": "*.go"}},
+		{"Glob with no input at all", "Glob", map[string]any{}},
+	}
+	for _, tc := range reads {
+		t.Run(tc.name, func(t *testing.T) {
+			got := DecideToolForAsk(HookInput{ToolName: tc.tool, ToolInput: tc.input}, askDir, "")
+			if d := got.Decision(); d != DecisionAllow {
+				t.Errorf("%s %v = %s, want allow.\nA READ CANNOT CHANGE ANYTHING, and this profile's own contract "+
+					"is that reads are not gated (readOnlyToolNames: \"consenting to an assistant and then "+
+					"being asked before every file it reads is not consent, it is a prompt queue\"). Asking here "+
+					"is what blocked an Ask session on every Glob/Grep — the worker profile allows this very "+
+					"shape, so the interactive profile must not be the stricter one.", tc.tool, tc.input, d)
+			}
+		})
+	}
+
+	// THE ACTION RULE IS UNCHANGED. A write with no resolvable target is still the
+	// operator's decision, so the fix cannot have widened into writes — the same
+	// guard, reached with a tool that is NOT read-only.
+	for _, tool := range []string{"Write", "Edit", "MultiEdit", "NotebookEdit"} {
+		if got := DecideToolForAsk(HookInput{ToolName: tool, ToolInput: map[string]any{}}, askDir, ""); got.Decision() != DecisionAsk {
+			t.Errorf("%s with no resolvable target = %s, want ask — the read fix must not turn a write into an allow",
+				tool, got.Decision())
 		}
 	}
 }

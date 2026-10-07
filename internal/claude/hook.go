@@ -426,8 +426,34 @@ func decideBashForAsk(h HookInput, askDir, policyPath string) HookVerdict {
 // decidePathForAsk applies the protected roots and the policy to a path-carrying
 // tool call, allows reads, and asks about writes.
 func decidePathForAsk(tool string, h HookInput, policyPath string) HookVerdict {
+	readOnly := readOnlyToolNames[tool]
 	target := pathInput(tool, h.ToolInput)
 	if strings.TrimSpace(target) == "" {
+		// A READ THAT NAMED NO RESOLVABLE TARGET IS STILL A READ, AND THE ORDER HERE IS THE FIX.
+		//
+		// This guard used to return askVerdict() unconditionally, and it sits BEFORE the
+		// readOnlyToolNames allow at the bottom — so that allow was UNREACHABLE for exactly the
+		// tools whose input does not name a path. Glob and Grep take an OPTIONAL `path` plus a
+		// `pattern`; the normal call omits the path and passes a RELATIVE pattern (`**/*.go`,
+		// `func DecideToolForAsk`), and dirOfPattern answers "" for anything not absolute. So the
+		// COMMON call took this arm, and an interactive session became the prompt queue the
+		// readOnlyToolNames comment says it must never be — every Glob and Grep raised a consent
+		// card, which is the operator's "claude adapter ask sessions seem blocked by everything".
+		//
+		// THE DIVERGENCE WAS BACKWARDS, which is what makes it a defect and not a policy choice:
+		// the WORKER profile — the sandboxed, non-interactive one — ALLOWS a path tool whose target
+		// does not resolve (decidePath, and its own test table pins the shape as "relative
+		// in-project"). The INTERACTIVE profile was therefore STRICTER THAN THE SANDBOX.
+		//
+		// WHY ALLOWING IS SAFE, despite skipping the two rungs below. The tool can only OBSERVE:
+		// it cannot create, modify or delete. And the operator's policy is not bypassed by this
+		// arm — permissions.deny carries the same patterns as Read(...)/Edit(...) rules
+		// (BuildSettings), which is the belt-and-suspenders layer that exists precisely so a path
+		// denied by policy stays denied even when the hook is not the thing enforcing it. An
+		// absolute target still takes the full path below.
+		if readOnly {
+			return allowVerdict()
+		}
 		return askVerdict()
 	}
 	machine, scope := workerrestrict.ProtectedRoots("", nil)
@@ -437,7 +463,7 @@ func decidePathForAsk(tool string, h HookInput, policyPath string) HookVerdict {
 	if v, decided := policyVerdict(target, policyPath); decided {
 		return v
 	}
-	if readOnlyToolNames[tool] {
+	if readOnly {
 		return allowVerdict()
 	}
 	return askVerdict()
