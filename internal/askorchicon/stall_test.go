@@ -375,3 +375,63 @@ type inProcTransport struct {
 func (inProcTransport) ToolsRunInProcess() bool { return true }
 
 type serveTransport struct{ scheduler.ChatTurnClient }
+
+// THE OPERATOR'S REPORT, pinned: "No card ever came to me. That is why you may have been waiting for
+// approval."
+//
+// awaitingConsent gated ONLY the tool-wedge signal. The no-progress clock measures from lastActivity, which
+// an ASK does not advance — so a card sitting unanswered read as "no activity from the model", the turn was
+// aborted at the window, and the abort resolved the outstanding ask as consentCancelled. The model was then
+// told its APPROVAL had been cancelled when the STALL MONITOR had killed the turn: a conversation that died
+// waiting for a card surfaces as a consent error, and from the transcript the two are indistinguishable.
+func TestChatStallNoProgressDoesNotCountConsentTime(t *testing.T) {
+	m := newChatStallMonitor("orchicon/deepseek/deepseek-flash", nil)
+	m.noProgressWindow = 2 * time.Minute
+	m.toolWedgeWindow = time.Hour // isolate the no-progress signal
+	base := time.Now()
+	m.now = func() time.Time { return base }
+
+	// A bash call goes out and the ask is raised. The operator takes five minutes — far past the window,
+	// because a person reading a card is not a stalled model.
+	m.observeToolStart("bash")
+	m.setAwaitingConsent(true)
+	m.now = func() time.Time { return base.Add(5 * time.Minute) }
+	if r := m.stallReason(); r != "" {
+		t.Fatalf("a turn waiting on the operator was declared stalled: %q — the abort then reports an APPROVAL error, which is how a missing card reads as a consent failure", r)
+	}
+
+	// The decision lands. The clock restarts, so the turn is not killed one tick later on a clock that had
+	// been running the whole time the human was reading.
+	m.setAwaitingConsent(false)
+	m.now = func() time.Time { return base.Add(5*time.Minute + 30*time.Second) }
+	if r := m.stallReason(); r != "" {
+		t.Fatalf("the turn was declared stalled 30s after the operator answered, on a clock that ran while they read: %q", r)
+	}
+
+	// A model that THEN genuinely goes quiet is still caught — a full window after the decision, not never.
+	m.now = func() time.Time { return base.Add(5*time.Minute + 2*time.Minute + time.Second) }
+	if r := m.stallReason(); !strings.Contains(r, "no_progress") {
+		t.Fatalf("stallReason = %q, want a no_progress trip once the MODEL has been silent past its window", r)
+	}
+}
+
+// Repetition is about the MODEL looping, which a pending ask neither causes nor excuses — so it stays armed
+// while a consent is outstanding. Gating it too would have been the easy over-correction.
+func TestChatStallRepetitionStillFiresWhileAwaitingConsent(t *testing.T) {
+	m := newChatStallMonitor("orchicon/deepseek/deepseek-flash", nil)
+	m.noProgressWindow = time.Hour
+	m.toolWedgeWindow = time.Hour
+	m.repetitionCount = 2
+	m.repetitionWindow = time.Hour
+	base := time.Now()
+	m.now = func() time.Time { return base }
+
+	m.setAwaitingConsent(true)
+	tool := map[string]any{"type": "tool", "tool": "bash", "input": map[string]any{"command": "ls"}}
+	for i := 0; i < 4; i++ {
+		m.observe("tool_use", tool)
+	}
+	if r := m.stallReason(); !strings.Contains(r, "repetition") {
+		t.Fatalf("stallReason = %q, want a repetition trip — a looping model is a loop whether or not an ask is open", r)
+	}
+}

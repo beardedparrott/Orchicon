@@ -261,3 +261,75 @@ func TestValidateModelRefNilRegistryFallsBack(t *testing.T) {
 		t.Errorf("validateModelRef(builtin claude kind) with nil registry = %v, want nil", err)
 	}
 }
+
+// THE OPERATOR'S SETTING MUST SURVIVE A SAVE THAT DOES NOT MENTION IT.
+//
+// "I have it set to 600seconds" — and still a two-minute stall error. The cause: the Settings page's
+// Backup panel has its OWN Save button that sends only {backup_schedule, backup_retention_days,
+// backup_directory}. db.UpdateTenantSettings writes the stall columns FROM THE ROW IT IS HANDED, so the
+// absent fields arrived as nil, landed as NULL, and the schema reads NULL as "use the built-in default"
+// — reverting 600s to 120s. Saving a backup schedule quietly reconfigured the stall detector.
+func TestStallSettingsSurviveASaveThatDoesNotMentionThem(t *testing.T) {
+	cur := db.TenantSettingsRow{
+		StallNoProgressWindowSeconds: i64p(600),
+		StallNoFileDiffWindowSeconds: i64p(900),
+		StallTextLoopWindowSeconds:   i64p(150),
+		StallRepetitionCount:         i32p(7),
+		StallRepetitionWindowSeconds: i64p(45),
+		StallNudgeMax:                i32p(3),
+		StallNudgeReplyWindowSeconds: i64p(75),
+		StallNudgeCooldownSeconds:    i64p(30),
+		StallToolHangSeconds:         i64p(240),
+	}
+	// The Backup panel's payload: it names no stall field at all.
+	inRow := db.TenantSettingsRow{BackupSchedule: "0 3 * * *"}
+	mergeStallSettingsFromCurrent(&inRow, &apiv1.TenantSettings{}, cur)
+
+	if inRow.StallNoProgressWindowSeconds == nil || *inRow.StallNoProgressWindowSeconds != 600 {
+		t.Fatalf("the 600s no-progress window did not survive a backup save: %v", inRow.StallNoProgressWindowSeconds)
+	}
+	if inRow.StallNoFileDiffWindowSeconds == nil || *inRow.StallNoFileDiffWindowSeconds != 900 {
+		t.Errorf("no-diff window = %v, want 900 preserved", inRow.StallNoFileDiffWindowSeconds)
+	}
+	if inRow.StallRepetitionCount == nil || *inRow.StallRepetitionCount != 7 {
+		t.Errorf("repetition count = %v, want 7 preserved", inRow.StallRepetitionCount)
+	}
+	if inRow.StallToolHangSeconds == nil || *inRow.StallToolHangSeconds != 240 {
+		t.Errorf("tool-hang = %v, want 240 preserved", inRow.StallToolHangSeconds)
+	}
+	if inRow.BackupSchedule != "0 3 * * *" {
+		t.Errorf("the field the client DID send was lost: %q", inRow.BackupSchedule)
+	}
+
+	// A field the client DOES name is applied — including an explicit 0, which means DISABLED here and
+	// must not be confused with "absent, so keep what is stored".
+	//
+	// The row is built the way production builds it (settingsProtoToRow carries what the client sent,
+	// and the merge only fills the gaps), so this also pins that a present 0 survives the round trip.
+	want := &apiv1.TenantSettings{
+		StallNoProgressWindowSeconds: i64p(0),
+		StallNudgeMax:                i32p(9),
+	}
+	explicit := settingsProtoToRow(want)
+	mergeStallSettingsFromCurrent(&explicit, want, cur)
+	if explicit.StallNoProgressWindowSeconds == nil || *explicit.StallNoProgressWindowSeconds != 0 {
+		t.Fatalf("an explicit 0 (DISABLED) was rewritten to %v — the one value that must be applied verbatim", explicit.StallNoProgressWindowSeconds)
+	}
+	if got := explicit.StallNudgeMax; got == nil || *got != 9 {
+		t.Errorf("nudge max = %v, want the sent 9", got)
+	}
+	// ...while the fields it did NOT name still come from the stored row.
+	if explicit.StallTextLoopWindowSeconds == nil || *explicit.StallTextLoopWindowSeconds != 150 {
+		t.Errorf("text-loop = %v, want 150 preserved beside the two fields that were sent", explicit.StallTextLoopWindowSeconds)
+	}
+
+	// A request with NO settings object asserts nothing, so it blanks nothing either.
+	none := db.TenantSettingsRow{}
+	mergeStallSettingsFromCurrent(&none, nil, cur)
+	if none.StallNoProgressWindowSeconds == nil || *none.StallNoProgressWindowSeconds != 600 {
+		t.Errorf("a nil settings object blanked the stall windows: %v", none.StallNoProgressWindowSeconds)
+	}
+}
+
+func i64p(v int64) *int64 { return &v }
+func i32p(v int32) *int32 { return &v }

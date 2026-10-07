@@ -242,8 +242,21 @@ func (m *chatStallMonitor) setAwaitingConsent(v bool) {
 	defer m.mu.Unlock()
 	was := m.awaitingConsent
 	m.awaitingConsent = v
-	if was && !v && !m.openToolTime.IsZero() {
-		m.openToolTime = m.now()
+	if was && !v {
+		if !m.openToolTime.IsZero() {
+			m.openToolTime = m.now()
+		}
+		// AND THE NO-PROGRESS CLOCK, for exactly the reason above — which this reset was MISSING.
+		//
+		// `lastActivity` keeps aging while the ask is open (nothing about an ask advances it), so the
+		// instant the gate lifts an ALREADY-EXPIRED clock is re-read on the next tick and the turn dies
+		// there instead. The death would move one tick, not go away — and it would still be attributed
+		// to a consent the operator had just answered.
+		//
+		// Restarting it is the honest reading: the turn was not idle, it was WAITING, and the model's
+		// own clock starts again from the decision. A model that then genuinely goes quiet is still
+		// caught, a full window later.
+		m.lastActivity = m.now()
 	}
 }
 
@@ -406,7 +419,21 @@ func (m *chatStallMonitor) stallReason() string {
 	// Gated on > 0: an explicit 0 in Settings means the operator DISABLED this
 	// check, and without the guard `now.Sub(...) > 0` holds on every tick — a
 	// disabled check would fire instantly on the first tick.
-	if m.noProgressWindow > 0 && now.Sub(m.lastActivity) > m.noProgressWindow {
+	//
+	// AND GATED ON awaitingConsent, the arm the wedge signal already had and this clock did not.
+	//
+	// A TURN WAITING ON THE OPERATOR IS NOT A STALLED TURN. `lastActivity` advances on token progress,
+	// and an ASK does not produce any — so an unanswered consent counted as "no activity from the model"
+	// and the turn was ABORTED at the window. Worse, the abort then resolved the outstanding ask as
+	// consentCancelled, so the MODEL was told its approval had been cancelled when in fact the stall
+	// monitor had killed the turn. That is precisely the operator's report: "No card ever came to me. That
+	// is why you may have been waiting for approval" — a conversation that died waiting for a card
+	// surfaces as a consent error, and the two are indistinguishable from the transcript.
+	//
+	// The tool behind the ask is HELD BY THE HUMAN, not silent, and how long a person takes to read a card
+	// is not the model's progress. Repetition stays armed below: it is about the MODEL looping, which a
+	// pending ask neither causes nor excuses.
+	if !m.awaitingConsent && m.noProgressWindow > 0 && now.Sub(m.lastActivity) > m.noProgressWindow {
 		m.fired = true
 		return fmt.Sprintf("stalled:no_progress (%s with no activity from model %s)", m.noProgressWindow, m.modelRef)
 	}

@@ -153,6 +153,27 @@ func (s *Service) UpdateSettings(ctx context.Context, req *connect.Request[apiv1
 	inRow.ContextRecentTurns = cur.ContextRecentTurns
 	inRow.MemoryEnabled = cur.MemoryEnabled
 	inRow.MemoryDigestEntries = cur.MemoryDigestEntries
+
+	// THE STALL THRESHOLDS ARE MERGED TOO, and this is the fix for "I have it set to 600 seconds"
+	// still producing a two-minute stall.
+	//
+	// db.UpdateTenantSettings writes these columns FROM THIS ROW, so an absent proto field arrives
+	// here as nil and lands in the database as NULL — which the schema defines as "use the built-in
+	// default". That is only safe if every caller sends the WHOLE form. ONE DOES NOT: the Settings
+	// page's Backup panel has its OWN Save button that sends
+	// {backup_schedule, backup_retention_days, backup_directory} and nothing else. Saving the backup
+	// schedule therefore BLANKED every stall window, and the operator's 600s no-progress window
+	// silently reverted to the 120s built-in default — the window that then killed a turn waiting on
+	// a consent card and reported it as a cancelled APPROVAL.
+	//
+	// The tool layer (askorchicon/tool_diagnostics.go) already guards against exactly this, and its
+	// comment claims verbatim-write is "correct for the Settings form (a full-form save: what you see
+	// is what you send)". That premise is FALSE for this page, which is why the guard belongs HERE,
+	// where every client — GUI, TUI, and the agent tool — is covered at once.
+	//
+	// AN ABSENT FIELD MEANS UNCHANGED; a PRESENT one is applied, including 0, which the stall settings
+	// define as DISABLED. The distinction survives because the proto fields are `optional`.
+	mergeStallSettingsFromCurrent(&inRow, req.Msg.Settings, cur)
 	if err := inRow.ApplyBudgetJSON(inRow.DefaultBudgetOverrides); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("settings: invalid default_budget_overrides: %w", err))
 	}
@@ -266,6 +287,67 @@ func settingsRowToProto(r *db.TenantSettingsRow) *apiv1.TenantSettings {
 		SessionRefreshTokenTtlSeconds:    r.SessionRefreshTokenTtlSeconds,
 		CreatedAt:                        timestamppb.New(r.CreatedAt),
 		UpdatedAt:                        timestamppb.New(r.UpdatedAt),
+	}
+}
+
+// mergeStallSettingsFromCurrent fills every stall column the request OMITTED with the value already
+// stored, and leaves a field the client SENT alone — including an explicit 0, which these settings
+// define as DISABLED rather than "unset".
+//
+// WHY IT EXISTS, precisely: db.UpdateTenantSettings writes these columns FROM THE ROW IT IS HANDED, so
+// an absent proto field becomes nil and lands as NULL, which the schema reads as "use the built-in
+// default". That is only sound when EVERY caller sends the whole form. ONE DOES NOT — the Settings
+// page's Backup panel saves on its own with {backup_schedule, backup_retention_days, backup_directory}
+// — so saving a backup schedule silently reverted the operator's 600s no-progress window to the 120s
+// built-in default. That 120s window then killed a turn that was waiting on a consent card and
+// reported it as a cancelled APPROVAL, which is how "I have it set to 600seconds" and a two-minute
+// stall error appear together.
+//
+// It lives HERE rather than in each client so that the GUI, the TUI and the agent tool are all covered
+// by one rule: none of them can destroy a value another set by not mentioning it. A nil request object
+// asserts nothing about the stall windows and so blanks none of them.
+func mergeStallSettingsFromCurrent(inRow *db.TenantSettingsRow, want *apiv1.TenantSettings, cur db.TenantSettingsRow) {
+	if inRow == nil {
+		return
+	}
+	if want == nil {
+		inRow.StallNoProgressWindowSeconds = cur.StallNoProgressWindowSeconds
+		inRow.StallNoFileDiffWindowSeconds = cur.StallNoFileDiffWindowSeconds
+		inRow.StallTextLoopWindowSeconds = cur.StallTextLoopWindowSeconds
+		inRow.StallRepetitionCount = cur.StallRepetitionCount
+		inRow.StallRepetitionWindowSeconds = cur.StallRepetitionWindowSeconds
+		inRow.StallNudgeMax = cur.StallNudgeMax
+		inRow.StallNudgeReplyWindowSeconds = cur.StallNudgeReplyWindowSeconds
+		inRow.StallNudgeCooldownSeconds = cur.StallNudgeCooldownSeconds
+		inRow.StallToolHangSeconds = cur.StallToolHangSeconds
+		return
+	}
+	if want.StallNoProgressWindowSeconds == nil {
+		inRow.StallNoProgressWindowSeconds = cur.StallNoProgressWindowSeconds
+	}
+	if want.StallNoFileDiffWindowSeconds == nil {
+		inRow.StallNoFileDiffWindowSeconds = cur.StallNoFileDiffWindowSeconds
+	}
+	if want.StallTextLoopWindowSeconds == nil {
+		inRow.StallTextLoopWindowSeconds = cur.StallTextLoopWindowSeconds
+	}
+	if want.StallRepetitionCount == nil {
+		inRow.StallRepetitionCount = cur.StallRepetitionCount
+	}
+	if want.StallRepetitionWindowSeconds == nil {
+		inRow.StallRepetitionWindowSeconds = cur.StallRepetitionWindowSeconds
+	}
+	if want.StallNudgeMax == nil {
+		inRow.StallNudgeMax = cur.StallNudgeMax
+	}
+	if want.StallNudgeReplyWindowSeconds == nil {
+		inRow.StallNudgeReplyWindowSeconds = cur.StallNudgeReplyWindowSeconds
+	}
+	if want.StallNudgeCooldownSeconds == nil {
+		inRow.StallNudgeCooldownSeconds = cur.StallNudgeCooldownSeconds
+	}
+	if want.StallToolHangSeconds == nil {
+		inRow.StallToolHangSeconds = cur.StallToolHangSeconds
 	}
 }
 
