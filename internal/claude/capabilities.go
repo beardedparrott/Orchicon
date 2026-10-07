@@ -44,9 +44,13 @@ func BuildCapabilitiesJSON() string {
 			"cancellation", "resume", "mid_run_injection", "context_compaction",
 		},
 		"telemetry": []string{"tool_calls_streamed", "file_diffs", "transcript_jsonl"},
-		// Ask chat is deliberately absent: this bridge does not implement
-		// ChatTurnClient, so it must not advertise the capability. An adapter row
-		// claiming what the bridge cannot do is worse than one claiming nothing.
+		// NB: these keys are the generic ones the control plane reads uniformly across
+		// kinds. Ask capability is NOT advertised here at all — it is derived from the
+		// live type assertion on the registered chat bridge (Dispatcher.ChatKinds), so
+		// there is nothing to claim in this document and nothing here that can go
+		// stale. The note that used to sit here said claude implemented no
+		// ChatTurnClient and so must not advertise Ask; that was wrong (see
+		// internal/claude/ask.go, which implements it, attachments included).
 	}
 	b, _ := json.Marshal(caps)
 	return string(b)

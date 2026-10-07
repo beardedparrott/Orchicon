@@ -662,13 +662,27 @@ func composeInitialPrompt(m scheduler.ExecutionManifest) string {
 	return b.String()
 }
 
-// userTurnPayload builds one stdin user-turn frame.
+// userTurnPayload builds one stdin user-turn frame carrying a single text block.
 func userTurnPayload(text string) []byte {
+	return userTurnPayloadContent([]map[string]any{{"type": "text", "text": text}})
+}
+
+// userTurnPayloadContent builds one stdin user-turn frame from an explicit
+// content-block list.
+//
+// The frame's `content` has always been an ARRAY of Messages-API blocks — the
+// text-only builder above is just its one-block case — so an attachment is an
+// additional block rather than a different frame shape. The CLI models `text`,
+// `image`, `document`, `tool_result` and `thinking` blocks, and its own
+// user-message schema directs attachments into `message.content` (it documents
+// `pasted_content` as ignoring everything that is not text), so this is the wire
+// the transport was always able to carry.
+func userTurnPayloadContent(content []map[string]any) []byte {
 	body := map[string]any{
 		"type": "user",
 		"message": map[string]any{
 			"role":    "user",
-			"content": []map[string]any{{"type": "text", "text": text}},
+			"content": content,
 		},
 	}
 	out, _ := json.Marshal(body)

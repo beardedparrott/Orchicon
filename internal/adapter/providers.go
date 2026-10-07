@@ -92,9 +92,11 @@ func BuiltinAdapterKinds() map[string]struct{} {
 // path returns Unimplemented, so selecting `claude` would otherwise render an
 // EMPTY model list with no dispatchable ref.
 //
-// This is a MODEL-tier classification only. It never widens Ask capability:
-// AskCapableKinds stays the Dispatcher's ChatKinds (claude implements no
-// ChatTurnClient, so it stays out of Ask).
+// This is a MODEL-tier classification only, and it is not what decides Ask
+// capability. AskCapableKinds stays the Dispatcher's ChatKinds, which reads the
+// ChatTurnClient assertion off each registered bridge; claude satisfies it
+// (internal/claude/ask.go), so it can appear in both sets — by two independent
+// routes that must not be conflated.
 func CatalogSourcedAdapterKinds() []string { return []string{KindOrchicon, KindClaude} }
 
 // ProviderKindExtender is the optional seam for registries that can be

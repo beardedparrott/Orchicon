@@ -24,10 +24,20 @@ package claude
 //     exists to ask about. The authority for this transport is the PreToolUse
 //     hook (allow/deny/ask) plus the settings document's `permissions.deny`,
 //     which is also what opencode's interactive profile relies on.
-//  2. NO `SendTurnMessageWithAttachments`. An Ask turn carrying attachments
-//     fails loudly rather than silently degrading to text-only (the documented
-//     contract for an adapter that lacks the capability). Claude's stream-json
-//     input does support image blocks, so this is a follow-up, not a blocker.
+//  2. `SendTurnMessageWithAttachments` IS implemented — the follow-up this note
+//     used to defer. The CLI's stream-json input takes Messages-API content
+//     blocks, so an attachment is an EXTRA BLOCK ON THE SAME FRAME rather than a
+//     different transport: an `image` block for the media types the CLI's schema
+//     accepts, a fenced text block for anything else that is valid UTF-8, and a
+//     LOUD error for a binary document this transport cannot carry. Never a
+//     silent drop to text-only — a turn that quietly loses an attachment and
+//     reports success is the AC routing landmine.
+//
+//     The MIME routing is deliberately stricter than the native transport's,
+//     which routes on the `image/` PREFIX: the CLI's image block accepts only
+//     image/jpeg, image/png, image/gif and image/webp, so an SVG (or bmp, tiff,
+//     avif) sent as an image block is a frame the CLI REFUSES — failing the whole
+//     turn to deliver nothing. Those take the text path instead.
 //
 // CORRECTION: claim 1 was WRONG and is fixed below. Both other adapters DO shim
 // the Ask path — opencode's host serve applies `guard.NewExecutionGuard("")`
@@ -55,6 +65,7 @@ package claude
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -64,6 +75,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -83,6 +95,11 @@ var (
 	_ scheduler.ChatTurnClient     = (*Bridge)(nil)
 	_ scheduler.SessionOwnerKind   = (*Bridge)(nil)
 	_ scheduler.ChatToolRestrictor = (*Bridge)(nil)
+	// The attachment-aware sender is a SECOND, independent assertion: an Ask turn
+	// carrying an image type-asserts this off the bridge, and without it the turn
+	// fails at dispatch. A compile-time var is what keeps a signature drift from
+	// silently dropping the capability.
+	_ scheduler.SendTurnMessageWithAttachments = (*Bridge)(nil)
 )
 
 // askBusCapacity is the per-conversation event buffer. Sized with headroom: the
@@ -303,8 +320,47 @@ func (b *Bridge) CreateConversationSession(_ context.Context, conversationID, _ 
 // SendTurnMessage implements scheduler.ChatTurnClient: append a user turn to the
 // conversation's live child, spawning it on the first message.
 func (b *Bridge) SendTurnMessage(ctx context.Context, conversationID, sessionID, system, modelRef, text string) error {
+	s, err := b.prepareAskTurn(ctx, conversationID, sessionID, modelRef)
+	if err != nil {
+		return err
+	}
+	return s.writeUserTurn(system, []map[string]any{{"type": "text", "text": text}})
+}
+
+// SendTurnMessageWithAttachments implements
+// scheduler.SendTurnMessageWithAttachments, the OPTIONAL attachment-aware sender
+// for Ask turns: the same turn, with the attachments appended as additional
+// content blocks.
+//
+// It shares prepareAskTurn with SendTurnMessage rather than repeating it, so the
+// two senders cannot drift on the mode boundary, the tenant/project scope or the
+// argv-staleness respawn. A capability that ships while silently skipping one of
+// those is the failure worth engineering against here: the CLI always accepted
+// the image blocks, so the risk was never the wire — it was the second code path.
+//
+// The turn is validated BEFORE the session is touched, so an attachment this
+// transport cannot carry is refused without spawning a child or rewriting the
+// mode file.
+func (b *Bridge) SendTurnMessageWithAttachments(ctx context.Context, conversationID, sessionID, system, modelRef, text string, attachments []scheduler.ChatAttachment) error {
+	content, err := askUserContent(text, attachments)
+	if err != nil {
+		return err
+	}
+	s, err := b.prepareAskTurn(ctx, conversationID, sessionID, modelRef)
+	if err != nil {
+		return err
+	}
+	return s.writeUserTurn(system, content)
+}
+
+// prepareAskTurn is everything the two senders do BEFORE writing the turn:
+// resolve and bind the conversation's session, record the mode boundary, refresh
+// the tenant/project scope, respawn a child whose argv-fixed scope has gone
+// stale, and make sure a child is running. Both senders call it, so both get the
+// same boundaries.
+func (b *Bridge) prepareAskTurn(ctx context.Context, conversationID, sessionID, modelRef string) (*askSession, error) {
 	if strings.TrimSpace(conversationID) == "" {
-		return errors.New("claude ask: SendTurnMessage requires a conversation id")
+		return nil, errors.New("claude ask: SendTurnMessage requires a conversation id")
 	}
 	s := b.ensureAskSession(conversationID)
 
@@ -385,9 +441,9 @@ func (b *Bridge) SendTurnMessage(ctx context.Context, conversationID, sessionID,
 	}
 
 	if err := s.ensureRunning(ctx); err != nil {
-		return err
+		return nil, err
 	}
-	return s.writeUserTurn(system, text)
+	return s, nil
 }
 
 // AbortConversationSession implements scheduler.ChatTurnClient. It is a safe
@@ -786,7 +842,15 @@ func (b *Bridge) spawnAsk(ctx context.Context, spec procSpec) (ProcSession, erro
 // writeUserTurn appends one user turn. The system prompt rides the FIRST turn
 // only: claude's stream-json input carries no separate system field, and a live
 // session already holds the earlier turns (mirroring the worker session).
-func (s *askSession) writeUserTurn(system, text string) error {
+//
+// The turn arrives as content BLOCKS rather than text, so an attachment is an
+// extra block on the same frame (see askUserContent). The system prompt is folded
+// into the turn's leading TEXT block when it has one, which keeps a text-only
+// first turn byte-identical to what this transport wrote before attachments
+// existed; a turn that opens with an attachment block gets the prompt as a
+// prepended block instead, so the boundary is never lost and the attachment is
+// never displaced or reordered.
+func (s *askSession) writeUserTurn(system string, content []map[string]any) error {
 	s.mu.Lock()
 	seeded := s.seeded
 	proc := s.proc
@@ -795,19 +859,137 @@ func (s *askSession) writeUserTurn(system, text string) error {
 		return errors.New("claude ask: no live child to write to")
 	}
 
-	body := text
+	blocks := content
 	if !seeded && strings.TrimSpace(system) != "" {
-		body = "=== SYSTEM ===\n" + strings.TrimSpace(system) + "\n\n" + text
+		blocks = prependSystemPrompt(content, "=== SYSTEM ===\n"+strings.TrimSpace(system)+"\n\n")
 	}
-	if err := proc.WriteTurn(userTurnPayload(body)); err != nil {
+	if err := proc.WriteTurn(userTurnPayloadContent(blocks)); err != nil {
 		slog.Default().Warn("claude ask: could not write the turn to the child", "conversation", s.convID, "error", err)
 		return fmt.Errorf("claude ask: write turn: %w", err)
 	}
-	slog.Default().Info("claude ask: turn written to the child", "conversation", s.convID, "seeded", !seeded, "bytes", len(body))
+	slog.Default().Info("claude ask: turn written to the child", "conversation", s.convID, "seeded", !seeded, "blocks", len(blocks))
 	s.mu.Lock()
 	s.seeded = true
 	s.mu.Unlock()
 	return nil
+}
+
+// prependSystemPrompt folds prefix into the turn's leading text block, or inserts
+// a text block ahead of the turn when it does not open with one.
+func prependSystemPrompt(content []map[string]any, prefix string) []map[string]any {
+	if len(content) > 0 && content[0]["type"] == "text" {
+		if lead, ok := content[0]["text"].(string); ok {
+			merged := make([]map[string]any, len(content))
+			copy(merged, content)
+			merged[0] = map[string]any{"type": "text", "text": prefix + lead}
+			return merged
+		}
+	}
+	out := make([]map[string]any, 0, len(content)+1)
+	out = append(out, map[string]any{"type": "text", "text": prefix})
+	return append(out, content...)
+}
+
+// The attachment caps are the native Ask transport's numbers
+// (internal/orchicon/chatturn.go) — deliberately the SAME ones. The caps are part
+// of one adapter-neutral contract, and two different values would make "is this
+// attachment accepted?" depend on which adapter a conversation happens to be
+// pinned to. (The server also validates at dispatch; this is the adapter's own
+// floor, and it exists so the adapter never silently truncates.)
+const (
+	claudeAskMaxAttachments           = 5
+	claudeAskMaxAttachmentBytes       = 10 * 1024 * 1024
+	claudeAskMaxAttachmentsTotalBytes = 20 * 1024 * 1024
+)
+
+// claudeAskImageMediaTypes is the set of media types the CLI's Messages-API image
+// block accepts, taken from the CLI's OWN schema, which documents the parameter as
+// "image/jpeg, image/png, image/gif or image/webp".
+//
+// This is NOT "any image/*", and the difference is load-bearing. The native Ask
+// transport routes on the `image/` PREFIX; the CLI REFUSES an image block whose
+// media type falls outside this set, so routing `image/svg+xml` (or bmp, tiff,
+// avif) as an image block would hand the CLI a frame it rejects and fail the whole
+// turn. Media types outside the set take the text path instead — which is also the
+// more useful answer for the case that actually occurs, an SVG, whose markup the
+// model can read directly.
+var claudeAskImageMediaTypes = map[string]bool{
+	"image/jpeg": true,
+	"image/png":  true,
+	"image/gif":  true,
+	"image/webp": true,
+}
+
+// askUserContent builds the content-block list for one Ask turn: the text (when
+// non-empty), then one block per attachment — an `image` block for a media type
+// the CLI accepts, a fenced text block for anything else that is valid UTF-8.
+//
+// A binary document this transport cannot carry is a LOUD error, never a silent
+// drop: the caller's contract is that an attachment is either carried or refused,
+// because a turn that quietly loses one and reports success is indistinguishable
+// from one that was never given it.
+func askUserContent(text string, attachments []scheduler.ChatAttachment) ([]map[string]any, error) {
+	var content []map[string]any
+	if text != "" {
+		content = append(content, map[string]any{"type": "text", "text": text})
+	}
+	if len(attachments) > claudeAskMaxAttachments {
+		return nil, fmt.Errorf("claude ask: too many attachments (%d, max %d)", len(attachments), claudeAskMaxAttachments)
+	}
+	total := 0
+	for _, a := range attachments {
+		if len(a.Data) == 0 {
+			continue
+		}
+		if len(a.Data) > claudeAskMaxAttachmentBytes {
+			return nil, fmt.Errorf("claude ask: attachment %q too large (max 10MB)", a.Name)
+		}
+		total += len(a.Data)
+		if total > claudeAskMaxAttachmentsTotalBytes {
+			return nil, fmt.Errorf("claude ask: attachments too large (max 20MB total)")
+		}
+		mime := normalizeMediaType(a.MimeType)
+		if mime == "" {
+			mime = "application/octet-stream"
+		}
+		if claudeAskImageMediaTypes[mime] {
+			// The CLI separates the media type from the bytes, so `data` is RAW
+			// base64 — a `data:` URL here would be a malformed block.
+			content = append(content, map[string]any{
+				"type": "image",
+				"source": map[string]any{
+					"type":       "base64",
+					"media_type": mime,
+					"data":       base64.StdEncoding.EncodeToString(a.Data),
+				},
+			})
+			continue
+		}
+		if utf8.Valid(a.Data) {
+			name := a.Name
+			if name == "" {
+				name = "attachment"
+			}
+			fenced := "--- attachment: " + name + " (" + mime + ") ---\n" + string(a.Data)
+			content = append(content, map[string]any{"type": "text", "text": fenced})
+			continue
+		}
+		return nil, fmt.Errorf("claude ask: attachment %q (%s) is a binary document the claude Ask transport cannot carry — send it as text, or use an opencode-adapter model", a.Name, mime)
+	}
+	if len(content) == 0 {
+		// A frame with an empty content array is not a well-formed turn.
+		content = append(content, map[string]any{"type": "text", "text": text})
+	}
+	return content, nil
+}
+
+// normalizeMediaType lowercases a media type and drops any parameters, so
+// "IMAGE/PNG; charset=binary" still matches the accepted set.
+func normalizeMediaType(mime string) string {
+	if i := strings.IndexByte(mime, ';'); i >= 0 {
+		mime = mime[:i]
+	}
+	return strings.ToLower(strings.TrimSpace(mime))
 }
 
 // writeControl writes one control frame (a verdict for a parked ask).

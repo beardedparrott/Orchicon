@@ -23,10 +23,12 @@ type FileEditHookFunc = func(ctx context.Context, execID, tenantID, execDir, too
 
 // Bridge is the Claude Code adapter. It satisfies scheduler.AdapterBridge
 // (Start) plus the optional capabilities MessageInjector, SessionContinuer,
-// Aborter, LivenessReporter and ContextCompacter. It deliberately does NOT
-// implement ChatTurnClient — Ask chat on claude is out of scope, so
-// Dispatcher.ChatKinds() omits "claude" and the Ask guard surfaces an
-// actionable error (never a panic).
+// Aborter, LivenessReporter and ContextCompacter — and it DOES implement
+// ChatTurnClient (and its attachment-aware sender) in internal/claude/ask.go.
+// Dispatcher.ChatKinds() therefore includes "claude" and an Ask turn can be
+// routed to it. Ask-on-claude was once an explicit non-goal and the note that
+// said so is superseded; the compile-time assertions in ask.go are what define
+// the capable set now, so that is the place to read it from.
 //
 // Context compaction is Claude-NATIVE: claude has no in-container serve
 // (servePortFor("claude") == 0 and it is a MOUNT-only boot-profile entry),

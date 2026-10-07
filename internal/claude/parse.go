@@ -28,8 +28,8 @@ import (
 // callback sequence plus the exact same durable `{"part": …}` transcript
 // envelope opencode emits.
 //
-// Scope note: this is the WORKER-EXECUTION path only. Nothing here touches
-// scheduler.ChatTurnClient — Ask chat on claude is out of scope.
+// Scope note: this is the WORKER-EXECUTION path only. The Ask transport lives in
+// ask.go, which implements scheduler.ChatTurnClient; nothing here touches it.
 
 // MapperDeps is everything the mapper needs that the owning session already
 // holds. Every hook is optional (nil = that side effect is skipped), which
