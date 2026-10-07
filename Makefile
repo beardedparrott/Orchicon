@@ -268,7 +268,7 @@ adapter-bake-guard: ## CI gate: adapter CLIs are MOUNTED, never baked into image
 	go test ./internal/runtime/ -run 'TestAdapterCLINeverBaked' -count=1 -v
 
 # --- Frontend --------------------------------------------------------------
-.PHONY: fe-install fe-dev fe-build fe-lint fe-test docs-check
+.PHONY: fe-install fe-dev fe-build fe-lint fe-test docs-check site-check
 fe-install: ## Install frontend dependencies
 	cd frontend && npm install
 
@@ -297,7 +297,15 @@ fe-lint: ## Lint the frontend
 fe-test: ## Run frontend unit/component tests (vitest; Playwright specs live under test:snapshots/test:a11y/test:scope)
 	cd frontend && npm test
 
-docs-check: ## Validate every Mermaid diagram in DOCUMENTATION.md with a real parser
+site-check: ## Assert the landing page's nav and version-stamp invariants
+	@# The landing page is served from a CDN and rendered by a browser, so a CSS or
+	@# markup defect in it has no other detector. This reads the committed page as
+	@# TEXT and asserts the invariants (labels never split or shrunk, nine links not
+	@# all inline, the footer version is a build-time stamp) — deliberately
+	@# dependency-free, because no browser can run in the CI container.
+	bash scripts/tests/site-nav-layout/run.sh
+
+docs-check: ## Validate every Mermaid diagram in the root docs with a real parser
 	@# The prefix is REUSED once installed, so a repeat run is instant rather than re-resolving the
 	@# tree every time; CI passes ORCHICON_MERMAID_PREFIX from its own $RUNNER_TEMP install.
 	@if [ -n "$$ORCHICON_MERMAID_PREFIX" ]; then \
@@ -528,7 +536,7 @@ cross-compile: ## Compile the shipped binaries for every release platform (catch
 	echo "==> all $(words $(CROSS_PLATFORMS)) release platforms compile"
 
 ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
-ci: ci-go fe-lint fe-test ## Run the full CI gate locally (Go + frontend)
+ci: ci-go fe-lint fe-test site-check ## Run the full CI gate locally (Go + frontend + landing page)
 
 .PHONY: tui-pty-gate
 tui-pty-gate: ## Standing real-pty TUI verification gate (smoke + mouse + /connect)

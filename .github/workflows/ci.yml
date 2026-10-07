@@ -142,3 +142,20 @@ jobs:
       # red parse error on GitHub while looking perfectly fine in the source.
       - name: Validate the Mermaid diagrams
         run: node scripts/check-mermaid.mjs
+
+  site-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # THE LANDING PAGE HAD NO DETECTOR, and that is why its test rotted. The page is served
+      # from a CDN and rendered by a browser: a nav that breaks a label, or a footer version
+      # hardcoded to a release five versions old, is invisible to every other gate — and
+      # scripts/tests/site-nav-layout/run.sh existed the whole time while nothing ran it, so its
+      # assertion went on pinning a nav design that had been deliberately replaced. Running it is
+      # the fix for that, not just for the defect it was reporting.
+      #
+      # Dependency-free on purpose: it reads the committed page as text. No browser can run in this
+      # container anyway (Chromium cannot launch without shared libraries and root).
+      - name: Assert the landing page's nav + version invariants
+        run: bash scripts/tests/site-nav-layout/run.sh
