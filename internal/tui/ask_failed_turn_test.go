@@ -84,7 +84,7 @@ func TestALongProviderErrorWrapsWithoutClippingTheFooter(t *testing.T) {
 	long := operatorFailureText + " " + strings.Repeat("provider refused the request and named the model ", 6)
 	m, _ := askWithTranscript(t, "c1")
 	m.chatStore.append("c1", chat.ChatItem{
-		Kind: chat.KindError, Text: chat.FailedTurnText("", long, operatorFailedModel), Key: "m-m2", At: 2,
+		Kind: chat.KindError, Text: chat.WithRetryAffordance(chat.FailedTurnText("", long, operatorFailedModel)), Key: "m-m2", At: 2,
 	})
 	m.onChatWake()
 
@@ -248,5 +248,58 @@ func TestAPreAckFailureNamesTheFailingConversationsModel(t *testing.T) {
 	}
 	if strings.Contains(body, "model-for-the-open-chat") {
 		t.Errorf("the failure for c2 named the OPEN conversation's model: %q", body)
+	}
+}
+
+// REGRESSION: the retry claim is TRUE only where the draft was actually restored.
+//
+// The claim is about the SHELL's composer, and the shell restores the draft ONLY for a turn THIS client sent
+// (restoreDraftForFailedTurn is scoped to the dock's lastSent). A durable failed turn carried over from
+// another session or the other client is DRAWN (its reason and model) but must NOT tell the operator their
+// message is back, because it is not. Measured against the pre-fix code: a historical row's frame contained
+// "back in the composer" while the composer was empty — the same class of misreport this change exists to fix.
+func TestAHistoricalFailedTurnMakesNoComposerClaim(t *testing.T) {
+	m, _ := askWithTranscript(t, "c1")
+	// This session sent elsewhere; the transcript ends in an OLD failed turn that is not ours.
+	m.dock.SetValue("hello from another chat")
+	m.dock.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	m.onTranscript(chat.TranscriptMsg{ConvID: "c1", Items: []chat.ChatItem{
+		{Kind: chat.KindUser, Text: "an old question", Key: "m-x1", At: 1},
+		{Kind: chat.KindError, Text: chat.FailedTurnText("", "old failure 401", "old-model"), Key: "m-x2", At: 2},
+	}})
+	m.onChatWake()
+
+	if m.dock.Value() != "" {
+		t.Fatalf("fixture: the draft was restored (%q), so this test would measure the wrong case", m.dock.Value())
+	}
+	frame := ansi.Strip(m.View())
+	if strings.Contains(frame, "back in the composer") {
+		t.Errorf("a HISTORICAL failed turn claims the message is back in the composer while it is empty — a "+
+			"false claim about the composer, and the same misreport this change fixes:\n%s", tailOf(frame, 1400))
+	}
+	if !strings.Contains(frame, "old failure 401") {
+		t.Errorf("the historical failure's reason is not drawn at all:\n%s", tailOf(frame, 1400))
+	}
+}
+
+// AND THE OTHER HALF: the operator's OWN failed turn DOES claim it, because that is the one the draft was
+// restored for — so the guard above cannot be satisfied by removing the affordance entirely.
+func TestOwnFailedTurnStillShowsTheRetryAffordance(t *testing.T) {
+	m, _ := askWithTranscript(t, "c1")
+	m.dock.SetValue("why can't you connect?")
+	m.dock.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	m.onTranscript(chat.TranscriptMsg{ConvID: "c1", Items: []chat.ChatItem{
+		{Kind: chat.KindUser, Text: "why can't you connect?", Key: "m-m1", At: 1},
+		{Kind: chat.KindError, Text: chat.FailedTurnText("", operatorFailureText, operatorFailedModel), Key: "m-m2", At: 2},
+	}})
+	m.onChatWake()
+
+	if m.dock.Value() != "why can't you connect?" {
+		t.Fatalf("fixture: the draft was not restored (%q)", m.dock.Value())
+	}
+	if frame := ansi.Strip(m.View()); !strings.Contains(frame, "back in the composer") {
+		t.Errorf("the operator's OWN failed turn does not show the retry affordance:\n%s", tailOf(frame, 1400))
 	}
 }

@@ -3797,6 +3797,13 @@ func (m *App) onTranscript(msg chat.TranscriptMsg) tea.Cmd {
 	// BOTH halves — the same either-half rule the activity line uses. The REPLACE is reserved for the state
 	// it was written for: the turn is over, the durable transcript IS the authority, and any surviving live
 	// row would render twice.
+	// THE RETRY AFFORDANCE IS THE SHELL'S TO CLAIM (see chat.RetryAffordanceLine): the composer it refers to
+	// is THIS shell's, so only a failed turn THIS client sent — its own user row matching the dock's lastSent —
+	// may say the message is back. A HISTORICAL failed turn (another session, the other client) is drawn with
+	// its reason and model but makes NO composer claim, because its draft is deliberately not injected. Done
+	// BEFORE the store so the stamped row is what every later read sees, and repeated on EVERY poll so the
+	// line cannot be dropped when the next durable copy replaces the live one.
+	m.stampRetryAffordance(msg.ConvID, msg.Items)
 	midTurn := m.runningFor(msg.ConvID)
 	if midTurn {
 		m.chatStore.mergeHistory(msg.ConvID, msg.Items)
@@ -4782,7 +4789,6 @@ func (m *App) restoreDraftForFailedTurn(convID string, items []chat.ChatItem) {
 	if convID == "" {
 		return
 	}
-	last := m.dock.LastSent()
 	// The text of the user row the current error row belongs to, tracked as the items are walked (they
 	// are chronologically ordered), so each error row is scoped to its own turn rather than to the shell's
 	// most recent send.
@@ -4808,11 +4814,43 @@ func (m *App) restoreDraftForFailedTurn(convID string, items []chat.ChatItem) {
 		}
 		// AND ONLY FOR THE TURN THIS CLIENT SENT — see the doc above. A historical failure, or one this
 		// client never sent, is drawn (conversationItems) but does not touch the composer.
-		if last == "" || !matchesAny([]string{turnText}, last) {
+		if !m.ownFailedTurn(turnText) {
 			continue
 		}
 		m.restoreAttachments()
 		m.dock.RestoreDraft()
+	}
+}
+
+// ownFailedTurn reports whether a failed turn is the one THIS client sent — i.e. the turn's own user text is
+// what the dock last sent (suffix-matched through matchesAny, so a prepended context preamble does not defeat
+// it). It is the ONE ownership rule the retry surfaces share: the draft restore (restoreDraftForFailedTurn)
+// and the retry claim (stampRetryAffordance) must agree, or the row would promise a composer state that was
+// never produced.
+func (m *App) ownFailedTurn(turnText string) bool {
+	last := m.dock.LastSent()
+	return last != "" && matchesAny([]string{turnText}, last)
+}
+
+// stampRetryAffordance appends the retry line to the failed-turn rows that are THIS client's own send, on the
+// OPEN conversation. The composer the line names belongs to the open conversation, so a failure in a
+// background chat is drawn WITHOUT the claim; and a historical failure (not this client's send) makes no claim
+// either, since its draft was never put back. It runs on every transcript delivery, before the store write, so
+// a later poll's fresh durable copy is re-stamped rather than losing the line.
+func (m *App) stampRetryAffordance(convID string, items []chat.ChatItem) {
+	if convID == "" || convID != m.chatConvID {
+		return
+	}
+	turnText := ""
+	for i := range items {
+		switch items[i].Kind {
+		case chat.KindUser:
+			turnText = items[i].Text
+		case chat.KindError:
+			if m.ownFailedTurn(turnText) {
+				items[i].Text = chat.WithRetryAffordance(items[i].Text)
+			}
+		}
 	}
 }
 
@@ -4864,9 +4902,16 @@ func (m *App) surfaceTurnFailure(convID string, err error) tea.Cmd {
 	// The model the FAILING conversation's send was bound for, NOT the open one's: a failure can belong to a
 	// conversation other than the one on screen (the store keeps it for when that chat is opened), and naming
 	// the open chat's ref there would be a claim about the wrong model. See modelRefForConv.
+	// THE RETRY CLAIM IS MADE ONLY FOR THE OPEN CONVERSATION, whose composer setChatError just put the text
+	// back into. The row is still recorded for a background chat (so opening it shows why the send failed),
+	// but without a claim about a composer it does not own. See chat.RetryAffordanceLine.
+	text := chat.FailedTurnText("", errText, m.modelRefForConv(convID))
+	if convID == m.chatConvID {
+		text = chat.WithRetryAffordance(text)
+	}
 	m.chatStore.append(convID, chat.ChatItem{
 		Kind: chat.KindError,
-		Text: chat.FailedTurnText("", errText, m.modelRefForConv(convID)),
+		Text: text,
 		At:   time.Now().UnixMilli(),
 		Key:  fmt.Sprintf("fail-%d", time.Now().UnixNano()),
 		Live: true,

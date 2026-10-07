@@ -724,11 +724,15 @@ func renderBubble(label, text string, style lipgloss.Style, maxWidth int) string
 // the thing they needed. The ref is already on the row's metadata (internal/askorchicon/service.go parses
 // model_ref out of the stored JSON), so carrying it here costs no new state and no round trip.
 //
-// AND IT MAKES THE RETRY VISIBLE. The shell already puts the draft back in the composer after a failed send
-// (App.setChatError → dock.RestoreDraft, and the attachments with it) — but SILENTLY, so the operator could
-// not know their message was recoverable. The GUI shows an explicit Retry button; the TUI's equivalent is
-// Enter on the restored draft, and this line is how the operator is told. It is a standing affordance, the
-// same way the GUI's Retry button is always present on a durable error bubble.
+// THE REASON IS THE ROW'S; THE RETRY CLAIM IS THE SHELL'S — see RetryAffordanceLine. This function composes
+// only what is TRUE OF THE ROW ITSELF: the failure and the model that refused. It deliberately does NOT say
+// the message is back in the composer, because that is a claim about the SHELL's composer and is true only
+// when the shell actually restored the draft — which it does for a turn THIS client sent, and does NOT do for
+// a durable failed turn carried over from another session or the other client (App.restoreDraftForFailedTurn
+// scopes the restore to this client's own send). Composing the line here unconditionally made a HISTORICAL
+// failure assert a composer state that did not exist (measured: an old failed turn's row read "your message
+// is back in the composer" while the composer was empty) — the same class of misreport this change exists to
+// fix, so the reason is claim-free and the shell appends the affordance through WithRetryAffordance.
 func FailedTurnText(partial, errText, modelRef string) string {
 	var b strings.Builder
 	if p := strings.TrimSpace(partial); p != "" {
@@ -744,13 +748,26 @@ func FailedTurnText(partial, errText, modelRef string) string {
 	// RAW, not markdown: errors stay unwrapped/unstyled, per the transcript's existing rule for KindError
 	// (renderBubble, which soft-wraps the raw text to the pane width so a long provider error degrades by
 	// wrapping rather than clipping the footer).
-	b.WriteString("\n" + failedTurnRetryLine)
 	return b.String()
 }
 
-// failedTurnRetryLine is the TUI's own retry affordance — the equivalent of the GUI's Retry button, phrased
-// as the thing the operator actually does here.
-const failedTurnRetryLine = "your message is back in the composer — press enter to send it again"
+// RetryAffordanceLine is the TUI's own retry affordance — the equivalent of the GUI's always-present Retry
+// button, phrased as the thing the operator actually does here (Enter on the restored draft).
+//
+// IT IS APPENDED BY THE SHELL (WithRetryAffordance), NOT baked into FailedTurnText, because the statement is
+// about the SHELL's composer: the message is back only when the shell put it back. The GUI's Retry button can
+// ride any error bubble because it re-sends the preceding user message from the transcript; the TUI's
+// equivalent acts on the composer, so it is honest only where the composer was actually restored.
+const RetryAffordanceLine = "your message is back in the composer — press enter to send it again"
+
+// WithRetryAffordance appends the retry line to a failed-turn row's text. Idempotent — a re-stamp on a later
+// poll (the transcript is re-read every second while a turn runs) must not double the line.
+func WithRetryAffordance(text string) string {
+	if text == "" || strings.Contains(text, RetryAffordanceLine) {
+		return text
+	}
+	return text + "\n" + RetryAffordanceLine
+}
 
 // noticeLabel is the band label a platform notice carries. It is deliberately the
 // neutral word rather than "context compacted": the notice's own first sentence says

@@ -60,21 +60,25 @@ func TestAFailedTurnRoutesToErrorAndNamesTheModel(t *testing.T) {
 	}
 }
 
-// AC 4: the retry path is VISIBLE in the row — the TUI's equivalent of the GUI's Retry affordance.
-func TestAFailedTurnRowCarriesTheRetryAffordance(t *testing.T) {
-	items := conversationItems(failedTurnPage("provider status 401", "m"))
-	body := ""
-	for _, it := range items {
-		if it.Kind == KindError {
-			body = it.Text
-		}
+// AC 4 (revised): THE ROW'S REASON MAKES NO COMPOSER CLAIM; THE SHELL APPENDS IT WHERE IT RESTORED THE DRAFT.
+//
+// The claim "your message is back in the composer" is about the SHELL's composer and is true only when the
+// shell actually put the text back — which it does for a turn THIS client sent, and does NOT do for a durable
+// failure carried over from another session / the other client. Composing it into the row's reason
+// unconditionally made a HISTORICAL failure assert a composer state that did not exist (measured), so the
+// reason is claim-free and every retry surface appends the affordance through WithRetryAffordance.
+func TestTheReasonMakesNoComposerClaimAndTheShellAddsIt(t *testing.T) {
+	reason := FailedTurnText("", "provider status 401", "m")
+	if strings.Contains(reason, "back in the composer") {
+		t.Errorf("the row's reason claims a composer state the shell may not have produced: %q", reason)
 	}
-	if body == "" {
-		t.Fatalf("fixture: no error row was produced: %+v", items)
-	}
-	low := strings.ToLower(body)
+	withLine := WithRetryAffordance(reason)
+	low := strings.ToLower(withLine)
 	if !strings.Contains(low, "composer") || !strings.Contains(low, "enter") {
-		t.Errorf("the error row does not tell the operator their message is back and re-sendable (AC 4): %q", body)
+		t.Errorf("WithRetryAffordance did not add the retry affordance (AC 4): %q", withLine)
+	}
+	if n := strings.Count(WithRetryAffordance(withLine), RetryAffordanceLine); n != 1 {
+		t.Errorf("WithRetryAffordance is not idempotent — a later re-stamp doubled the line (%d): %q", n, WithRetryAffordance(withLine))
 	}
 }
 
