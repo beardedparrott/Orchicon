@@ -276,6 +276,34 @@ func TestRestoreWorkItem(t *testing.T) {
 	}
 }
 
+// TestArchiveAndRestoreSkippedWorkItem pins AC13: a skipped item stays
+// archivable and restorable, confirming domain.WorkItemIsTerminalArchivable
+// still covers "skipped" now that it is a normal, user-settable status
+// rather than a system-managed one.
+func TestArchiveAndRestoreSkippedWorkItem(t *testing.T) {
+	pool, s, ctx, tenantID, projectID := archiveEnv(t)
+	item := archiveItem(t, pool, tenantID, projectID, domain.WorkItemSkipped)
+
+	archived, err := s.ArchiveWorkItem(ctx, connect.NewRequest(&apiv1.ArchiveWorkItemRequest{Id: item.ID}))
+	if err != nil {
+		t.Fatalf("archive skipped item: %v", err)
+	}
+	if archived.Msg.WorkItem.Status != apiv1.WorkItemStatus_WORK_ITEM_STATUS_ARCHIVED {
+		t.Fatalf("status = %v, want archived", archived.Msg.WorkItem.Status)
+	}
+	if archived.Msg.WorkItem.ArchivedFromStatus != domain.WorkItemSkipped {
+		t.Fatalf("archived_from_status = %q, want skipped", archived.Msg.WorkItem.ArchivedFromStatus)
+	}
+
+	restored, err := s.RestoreWorkItem(ctx, connect.NewRequest(&apiv1.RestoreWorkItemRequest{Id: item.ID}))
+	if err != nil {
+		t.Fatalf("restore skipped item: %v", err)
+	}
+	if restored.Msg.WorkItem.Status != apiv1.WorkItemStatus_WORK_ITEM_STATUS_SKIPPED {
+		t.Fatalf("restored status = %v, want skipped (prior terminal status)", restored.Msg.WorkItem.Status)
+	}
+}
+
 func TestRestoreWorkItemRejectsActive(t *testing.T) {
 	pool, s, ctx, tenantID, projectID := archiveEnv(t)
 	item := archiveItem(t, pool, tenantID, projectID, domain.WorkItemSucceeded)

@@ -430,26 +430,31 @@ export function columnForStatus(status: number): number {
 // Checkpointing and Recovering are transient states within a workflow.
 // Blocked is set by the reconcilers when an upstream dependency is
 // unsatisfied (system-managed — operators can't drag INTO it; it clears
-// automatically). Skipped is set by the reconcilers when a bound run
-// completes with a skipped step (system-managed — operators can't drag
-// into it or out of it).
+// automatically). Skipped is NOT in this set: it is operator-settable like
+// succeeded/cancelled, through the same status control, and the sequence
+// engine consumes it as terminal-success and passes over it when arming
+// the next child. (A skip applied to an item with an active bound run is
+// still reverted when that run completes — the reconciler writes the run
+// outcome unconditionally, same as any other manually-set status.)
 // ---------------------------------------------------------------------------
 export const MANUALLY_UNMOVABLE_STATUSES = new Set<number>([
   WorkItemStatus.RUNNING,
   WorkItemStatus.CHECKPOINTING,
   WorkItemStatus.RECOVERING,
   WorkItemStatus.BLOCKED,
-  WorkItemStatus.SKIPPED,
 ]);
 
 // ---------------------------------------------------------------------------
 // Advisory status-transition matrix (ADR-3 / design §5.4). The server stays
 // authoritative; this only prevents obviously-wrong drops in the UI.
 // Epics/Features accept: pending, ready, assigned, succeeded, cancelled.
-// Tasks/Subtasks (and recovery kinds) accept any board column.
+// Tasks/Subtasks (and recovery kinds) accept any board column, plus
+// Skipped — which has no dedicated board column of its own (it renders in
+// the Succeeded column via columnForStatus) but is still a normal,
+// operator-settable target for the row status menu (MoveToMenu).
 // ---------------------------------------------------------------------------
 
-const ALL_BOARD_STATUSES = BOARD_COLUMNS.map((c) => c.status);
+const ALL_BOARD_STATUSES = [...BOARD_COLUMNS.map((c) => c.status), WorkItemStatus.SKIPPED];
 
 export const ALLOWED_STATUSES_PER_KIND: Record<number, number[]> = {
   [WorkItemKind.EPIC]: [

@@ -81,7 +81,9 @@ func kindOptions() []kit2.Option {
 
 // statusOptions is the user-assignable status vocabulary. The
 // system-managed states (running/blocked/idea/archived/…) are deliberately
-// absent — a human cannot assign them.
+// absent — a human cannot assign them. "skipped" IS user-assignable (the
+// sequence engine consumes it as terminal-success and passes over it),
+// which is why it is included below.
 func statusOptions() []kit2.Option {
 	return []kit2.Option{
 		{Value: "pending", Label: "pending"},
