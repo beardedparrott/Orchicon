@@ -656,13 +656,23 @@ function WorkItemDetailPage() {
             <CardDescription>Status</CardDescription>
             <CardTitle className="text-base">
               {editing ? (
+                // Disabled only while the item is running/checkpointing/
+                // recovering/blocked (MANUALLY_UNMOVABLE_STATUSES) — NOT for
+                // skipped, which is operator-settable and reversible like
+                // succeeded/cancelled (a skip must never be a one-way door).
                 <select
                   value={status}
+                  disabled={MANUALLY_UNMOVABLE_STATUSES.has(item.status)}
                   onChange={(e) => {
                     const next = Number(e.target.value);
                     setStatus(next);
                   }}
-                  className="rounded-xl glass-input px-3 py-1.5 text-sm"
+                  title={
+                    MANUALLY_UNMOVABLE_STATUSES.has(item.status)
+                      ? "Status cannot change while the item is running"
+                      : "Switch to a different status"
+                  }
+                  className="rounded-xl glass-input px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <option value={WorkItemStatus.PENDING}>pending</option>
                   <option value={WorkItemStatus.READY}>ready</option>
@@ -671,6 +681,7 @@ function WorkItemDetailPage() {
                   <option value={WorkItemStatus.SUCCEEDED}>succeeded</option>
                   <option value={WorkItemStatus.FAILED}>failed</option>
                   <option value={WorkItemStatus.CANCELLED}>cancelled</option>
+                  <option value={WorkItemStatus.SKIPPED}>skipped</option>
                   <option value={WorkItemStatus.RECOVERING}>recovering</option>
                   <option value={WorkItemStatus.SCHEDULED}>scheduled</option>
                   <option value={WorkItemStatus.RECURRING}>recurring</option>
@@ -685,6 +696,7 @@ function WorkItemDetailPage() {
                   [WorkItemStatus.SUCCEEDED]: "succeeded",
                   [WorkItemStatus.FAILED]: "failed",
                   [WorkItemStatus.CANCELLED]: "cancelled",
+                  [WorkItemStatus.SKIPPED]: "skipped",
                   [WorkItemStatus.RECOVERING]: "recovering",
                   [WorkItemStatus.RECURRING]: "recurring",
                 } as Record<number, string>)[item.status] ?? "unknown"

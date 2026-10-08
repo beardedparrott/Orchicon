@@ -298,7 +298,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"description":         {Type: "string", Description: "New description (markdown)"},
 				"acceptance_criteria": {Type: "string", Description: "New acceptance criteria (markdown)"},
 				"acceptance_review":   {Type: "string", Description: "New acceptance review (markdown); empty string clears it (auto-populated by the WorkflowReconciler when a bound run completes)"},
-				"status":              {Type: "string", Description: "New status (pending, scheduled, ready, assigned, running, checkpointing, succeeded, failed, cancelled, recovering)"},
+				"status":              {Type: "string", Description: "New status (pending, scheduled, ready, assigned, running, checkpointing, succeeded, failed, cancelled, recovering, skipped). Skipped tells the sequence engine to pass over this item and arm the next sibling."},
 				"priority":            {Type: "number", Description: "New priority (1-5)"},
 				"budgets":             {Type: "string", Description: "Budgets as a JSON object (e.g. {\"tool_call_count\": 100, \"max_cost_usd\": 5})"},
 				"context_window":      {Type: "number", Description: "Context window size for the run"},

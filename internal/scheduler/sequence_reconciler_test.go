@@ -843,6 +843,64 @@ func TestSequenceAdvanceOnSkippedPredecessor(t *testing.T) {
 	}
 }
 
+// TestSequenceManuallySkippedChildPassedOver drives the skip through the
+// user-set path (AC9/AC10) — a direct status write BEFORE the sequence ever
+// starts, not through a completing run (that path is already covered by
+// TestSequenceAdvanceOnSkippedPredecessor). With children C1, C2, C3 in
+// that sort order and C1 manually set to skipped, StartSequence must NOT
+// arm C1 at all: no leaf start recorded for it, armedWorkItems() contains
+// only C2, and C1 stays "skipped". Re-firing the sequence (the reset path)
+// must preserve the manual skip: resetSubtree never resets a skipped child
+// to pending, so the cursor passes over C1 again on every re-fire.
+func TestSequenceManuallySkippedChildPassedOver(t *testing.T) {
+	env := newSequenceTestEnv(t)
+	ctx := context.Background()
+	wf := seedPublishedWorkflow(t, env.pool, env.proj.ID)
+	parent := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindEpic, "Parent", nil, nil)
+	c1 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C1", &parent.ID, &wf)
+	c2 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C2", &parent.ID, &wf)
+	c3 := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "C3", &parent.ID, &wf)
+	reorder(t, env.pool, env.proj.ID, parent.ID, []string{c1.ID, c2.ID, c3.ID})
+
+	// User sets C1 to skipped BEFORE the sequence ever starts — a plain
+	// status write, not a run outcome.
+	setStatus(t, env.pool, c1.ID, domain.WorkItemSkipped)
+
+	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatalf("StartSequence: %v", err)
+	}
+
+	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemSkipped {
+		t.Errorf("C1 status = %q, want %q (manual skip untouched by start)", got.Status, domain.WorkItemSkipped)
+	}
+	if got := mustGet(t, env.pool, c2.ID); got.Status != domain.WorkItemRunning {
+		t.Errorf("C2 status = %q, want running (armed in C1's place)", got.Status)
+	}
+	if got := mustGet(t, env.pool, c3.ID); got.Status != domain.WorkItemPending {
+		t.Errorf("C3 status = %q, want pending (not reached yet)", got.Status)
+	}
+	if armed := env.armedWorkItems(); len(armed) != 1 || armed[0] != c2.ID {
+		t.Fatalf("armed work items = %v, want [c2] (C1 never armed)", armed)
+	}
+
+	// Re-fire the sequence (the reset path). The manual skip on C1 must
+	// survive resetSubtree, and the cursor must pass over it again (C2 is
+	// still in-flight/running, so the arming loop waits on it rather than
+	// re-starting it — no new leaf start is expected here).
+	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
+		t.Fatalf("StartSequence (re-fire): %v", err)
+	}
+	if got := mustGet(t, env.pool, c1.ID); got.Status != domain.WorkItemSkipped {
+		t.Errorf("C1 status after re-fire = %q, want %q (resetSubtree must not reset a manual skip)", got.Status, domain.WorkItemSkipped)
+	}
+	if got := mustGet(t, env.pool, c2.ID); got.Status != domain.WorkItemRunning {
+		t.Errorf("C2 status after re-fire = %q, want still running (untouched in-flight child)", got.Status)
+	}
+	if armed := env.armedWorkItems(); len(armed) != 1 || armed[0] != c2.ID {
+		t.Fatalf("armed work items after re-fire = %v, want still [c2] (C1 passed over again, C2 not re-armed while in flight)", armed)
+	}
+}
+
 // TestSequenceCompletionWithSkippedChild: a sequence whose children are all
 // succeeded or skipped is complete — the parent transitions to succeeded
 // and a skipped child never wedges the chain on itself.

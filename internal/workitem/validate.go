@@ -251,18 +251,23 @@ func validateStatus(status apiv1.WorkItemStatus) string {
 // only by the reconcilers when an upstream dependency is unsatisfied, so
 // user/operator input must never set it directly (mirrors the transition
 // matrix in the frontend — blocked items are not manually movable).
-// "skipped" is likewise system-managed (set only by the reconciler when a
-// bound run completes with a skipped step) and is not user-assignable.
+// "skipped" IS user-assignable through this same generic update path —
+// exactly like succeeded/cancelled: an operator sets it to tell the
+// sequence engine "do not run this child". The sequence engine consumes a
+// skipped item as terminal-success (domain.WorkItemIsTerminalSuccess) and
+// passes over it when deriving the next child to arm. "skipped" is ALSO
+// produced by the reconciler when a bound run completes with at least one
+// skipped step — both origins land on the same status.
 func ValidateStatus(status string) (string, error) {
 	status = strings.ToLower(strings.TrimSpace(status))
 	switch status {
 	case domain.WorkItemPending, domain.WorkItemScheduled, domain.WorkItemReady,
 		domain.WorkItemAssigned, domain.WorkItemRunning, domain.WorkItemCheckpointing,
 		domain.WorkItemSucceeded, domain.WorkItemFailed, domain.WorkItemCancelled,
-		domain.WorkItemRecovering, domain.WorkItemRecurring:
+		domain.WorkItemRecovering, domain.WorkItemRecurring, domain.WorkItemSkipped:
 		return status, nil
 	default:
-		return "", fmt.Errorf("status must be one of pending, scheduled, ready, assigned, running, checkpointing, succeeded, failed, cancelled, recovering, recurring")
+		return "", fmt.Errorf("status must be one of pending, scheduled, ready, assigned, running, checkpointing, succeeded, failed, cancelled, recovering, recurring, skipped")
 	}
 }
 
