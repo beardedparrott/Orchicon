@@ -270,6 +270,27 @@ export function resultSummaryLine(
 }
 
 /**
+ * Attributed reason an upcoming (not-yet-dispatched) step is waiting —
+ * the per-worker concurrency gate's `_dispatch_wait` note. Distinct from
+ * resultSummaryLine (`_summary`, a completed step's narrative) — this is
+ * only meaningful while isUpcoming is true.
+ */
+export function dispatchWaitReason(
+  sr: Pick<WorkflowStepRun, "result"> | null | undefined,
+): string {
+  if (!sr?.result) return "";
+  try {
+    const r = JSON.parse(sr.result) as { _dispatch_wait?: unknown };
+    if (typeof r._dispatch_wait === "string" && r._dispatch_wait) {
+      return r._dispatch_wait;
+    }
+  } catch {
+    /* not JSON — no reason */
+  }
+  return "";
+}
+
+/**
  * HeadsUpTileData — one tile per DAG step.
  *
  * TUI CONTRACT: this is the row model the future TUI default renders.
@@ -295,6 +316,9 @@ export interface HeadsUpTileData {
   isActive: boolean;
   /** No worker execution yet (pending/ready, waiting for dispatch). */
   isUpcoming: boolean;
+  /** Attributed wait reason when isUpcoming (e.g. "worker capacity 2/2 —
+   * waiting for a slot"); empty when the wait is undiagnosed. */
+  upcomingReason: string;
   /** loop_decision outcome tag (mirror of the graph loopTag). */
   loopOutcome?: string;
 }
@@ -352,6 +376,7 @@ export function buildHeadsUpTiles(
       execution,
       isActive: (srun?.status ?? 1) === 3,
       isUpcoming: !srun?.workerExecutionId,
+      upcomingReason: !srun?.workerExecutionId ? dispatchWaitReason(srun) : "",
       loopOutcome: loopOutcomeTag(srun),
     } satisfies HeadsUpTileData;
   });

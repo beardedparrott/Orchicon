@@ -171,7 +171,7 @@ export function HeadsUpTile({ tile, runId }: HeadsUpTileProps) {
       <div className="min-h-[3rem] flex-1">
         {tile.isUpcoming ? (
           <p className="text-xs italic text-muted-foreground">
-            Upcoming — not run yet · #{tile.queueIndex} in DAG
+            {tile.upcomingReason || `Upcoming — not run yet · #${tile.queueIndex} in DAG`}
           </p>
         ) : tile.stepKind === 3 ? (
           <ApprovalTilePanel stepRun={tile.stepRun} runId={runId} summary={summary} />

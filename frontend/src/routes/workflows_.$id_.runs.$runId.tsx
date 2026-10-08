@@ -675,6 +675,7 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
                           const parts: string[] = [];
                           if (r._decision) parts.push(r._decision);
                           if (r._worker) parts.push(`by ${r._worker_name || r._worker}`);
+                          if (r._dispatch_wait) parts.push(r._dispatch_wait);
                           if (r._summary) {
                             const line = r._summary.split("\n")[0].slice(0, 120);
                             parts.push(line);
@@ -724,11 +725,20 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
                   // APPROVAL step — show the approval panel inline.
                   return <ApprovalStepCard key={sr.id} stepRun={sr} runId={runId} />;
                 }
+                let dispatchWait: string | undefined;
+                if (sr.result) {
+                  try {
+                    const r = JSON.parse(sr.result);
+                    if (r._dispatch_wait) dispatchWait = r._dispatch_wait;
+                  } catch { /* ignore malformed result */ }
+                }
                 return (
                   <div key={sr.id} className="flex items-center gap-3 rounded-md border p-2 text-sm text-muted-foreground">
                     <StepStatusPill status={sr.status} />
                     <span className="font-medium">{sr.stepName || sr.stepId.slice(0, 12)}</span>
-                    <span className="text-xs text-muted-foreground/60">waiting for dispatch…</span>
+                    <span className="text-xs text-muted-foreground/60">
+                      {dispatchWait ? dispatchWait : "waiting for dispatch…"}
+                    </span>
                   </div>
                 );
               })}

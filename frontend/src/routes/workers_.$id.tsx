@@ -162,7 +162,7 @@ function WorkerDetailPage() {
       gatedTools: "[]",
       budgetOverrides: DEFAULT_BUDGETS,
       contextSources: "[]",
-      concurrencyLimit: 1,
+      concurrencyLimit: 0,
       versionNote: "",
       skillFiles: "[]",
     },
@@ -179,7 +179,7 @@ function WorkerDetailPage() {
             gatedTools: (selectedVersion ?? latestVersion)!.gatedTools || "[]",
             budgetOverrides: (selectedVersion ?? latestVersion)!.budgetOverrides || DEFAULT_BUDGETS,
             contextSources: (selectedVersion ?? latestVersion)!.contextSources || "[]",
-            concurrencyLimit: (selectedVersion ?? latestVersion)!.concurrencyLimit ?? 1,
+            concurrencyLimit: (selectedVersion ?? latestVersion)!.concurrencyLimit ?? 0,
             versionNote: (selectedVersion ?? latestVersion)!.versionNote ?? "",
             skillFiles: JSON.stringify((selectedVersion ?? latestVersion)!.skillFiles ?? []),
           };
@@ -883,7 +883,9 @@ function VersionDetailPanel({ version }: { version: import("@/api/gen/orchicon/a
       <div className="grid gap-4 md:grid-cols-2 text-sm">
         <div>
           <h4 className="text-xs font-medium uppercase text-muted-foreground">Concurrency limit</h4>
-          <p className="mt-1">{version.concurrencyLimit}</p>
+          <p className="mt-1">
+            {version.concurrencyLimit > 0 ? version.concurrencyLimit : "unlimited"}
+          </p>
         </div>
         <div>
           <h4 className="text-xs font-medium uppercase text-muted-foreground">Execution policy ref</h4>
