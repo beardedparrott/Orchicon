@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildHeadsUpTiles,
   computeQueueOrder,
+  dispatchWaitReason,
   extractLastTextBlock,
   loopOutcomeTag,
   parseSteps,
@@ -155,6 +156,41 @@ describe("resultSummaryLine", () => {
   it("returns empty on missing/bad result", () => {
     expect(resultSummaryLine(srun({ result: "" }))).toBe("");
     expect(resultSummaryLine(null)).toBe("");
+  });
+});
+
+describe("dispatchWaitReason", () => {
+  it("surfaces the deferral note", () => {
+    expect(
+      dispatchWaitReason(
+        srun({ result: JSON.stringify({ _dispatch_wait: "worker capacity 1/1 — waiting for a slot" }) }),
+      ),
+    ).toBe("worker capacity 1/1 — waiting for a slot");
+  });
+  it("returns empty when the step has no deferral note", () => {
+    expect(dispatchWaitReason(srun({ result: "" }))).toBe("");
+    expect(dispatchWaitReason(srun({ result: JSON.stringify({ _summary: "x" }) }))).toBe("");
+    expect(dispatchWaitReason(null)).toBe("");
+  });
+});
+
+describe("buildHeadsUpTiles — upcomingReason", () => {
+  const stepsJson = JSON.stringify([
+    { id: "a", name: "Build", kind: "task", depends_on: [] },
+  ]);
+  it("carries the dispatch-wait note on an upcoming tile", () => {
+    const tiles = buildHeadsUpTiles(
+      stepsJson,
+      [srun({ id: "sr-a", stepId: "a", result: JSON.stringify({ _dispatch_wait: "worker capacity 1/1 — waiting for a slot" }) })],
+      [],
+    );
+    expect(tiles[0].isUpcoming).toBe(true);
+    expect(tiles[0].upcomingReason).toBe("worker capacity 1/1 — waiting for a slot");
+  });
+  it("is empty for a plain not-yet-dispatched step", () => {
+    const tiles = buildHeadsUpTiles(stepsJson, [], []);
+    expect(tiles[0].isUpcoming).toBe(true);
+    expect(tiles[0].upcomingReason).toBe("");
   });
 });
 

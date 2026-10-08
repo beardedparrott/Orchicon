@@ -755,6 +755,37 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 		}
 	}
 
+	// Per-worker concurrency guard. Reads the RESOLVED version (selectWorker
+	// for standalone, workerVersionForStepRun for a step) so one gate covers
+	// both dispatch paths — a worker pinned on a workflow step is resolved
+	// from the step run, never from the ticket's assigned_worker_ref, but
+	// it lands in the same `version` here either way. Same TOCTOU caveat as
+	// the project gate above: count-check-create is not atomic, so a
+	// transient overshoot is possible — that is a resource spike, not a
+	// correctness break, and the item/step run stays put for the next scan
+	// pass to re-evaluate. concurrency_limit <= 0 means unlimited and is
+	// never deferred (worker/create.go clamps negatives to 0 at creation).
+	if version.ConcurrencyLimit > 0 {
+		activeWorker, werr := db.CountActiveExecutionsForWorker(ctx, ttx.Tx, tenantID, version.WorkerID)
+		if werr != nil {
+			return fmt.Errorf("count active worker executions: %w", werr)
+		}
+		if activeWorker >= version.ConcurrencyLimit {
+			r.log.Info("dispatch deferred: worker at concurrency limit",
+				"task", task.ID, "worker", version.WorkerID, "active", activeWorker, "limit", version.ConcurrencyLimit)
+			workerDispatchMetrics.recordDeferred(version.WorkerID)
+			if stepRun != nil {
+				if err := writeDispatchWaitNote(ctx, ttx.Tx, tenantID, *stepRun, version.WorkerID, activeWorker, version.ConcurrencyLimit); err != nil {
+					r.log.Warn("write dispatch wait note", "step_run", stepRun.ID, "error", err)
+				}
+				if err := ttx.Commit(ctx); err != nil {
+					return fmt.Errorf("commit dispatch wait note: %w", err)
+				}
+			}
+			return nil
+		}
+	}
+
 	// Create WorkerExecution (docs/03 §4: createWorkerExecution).
 	// Check if the work item's results indicate this is a follow-up
 	// execution (created by CreateFollowUpExecution).
@@ -886,20 +917,28 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 	// Done inside the same transaction so a worker-step run never
 	// points at an execution that doesn't exist.
 	if stepRun != nil {
-		if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRun.ID, stepRun.Version, db.UpdateWorkflowStepRunFields{
+		fields := db.UpdateWorkflowStepRunFields{
 			WorkerExecutionID: &created.ID,
 			Status:            strPtr(domain.StepRunRunning),
 			StartedAt:         &now,
-		}); err != nil {
+		}
+		if cleared, changed := stripDispatchWait(stepRun.Result); changed {
+			fields.Result = &cleared
+		}
+		if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRun.ID, stepRun.Version, fields); err != nil {
 			return fmt.Errorf("link step run to execution: %w", err)
 		}
 	} else if workflowStepID != "" {
 		if stepRunRow, err := db.GetWorkflowStepRunByStep(ctx, ttx.Tx, tenantID, workflowRunID, workflowStepID); err == nil {
-			if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRunRow.ID, stepRunRow.Version, db.UpdateWorkflowStepRunFields{
+			fields := db.UpdateWorkflowStepRunFields{
 				WorkerExecutionID: &created.ID,
 				Status:            strPtr(domain.StepRunRunning),
 				StartedAt:         &now,
-			}); err != nil {
+			}
+			if cleared, changed := stripDispatchWait(stepRunRow.Result); changed {
+				fields.Result = &cleared
+			}
+			if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRunRow.ID, stepRunRow.Version, fields); err != nil {
 				return fmt.Errorf("link step run to execution: %w", err)
 			}
 		} else if !errors.Is(err, db.ErrNotFound) {
@@ -3097,6 +3136,49 @@ func extractTouchedFiles(output string) []string {
 // Best-effort: a missing step run (e.g. dispatched without a
 // workflow) is logged at debug and skipped. An error is returned only
 // for genuine database errors.
+// stripDispatchWait removes the "_dispatch_wait" deferral note from a step
+// run's result JSON, if present. Called when a step dispatches, so a stale
+// "waiting for a slot" note can never linger alongside a real execution.
+func stripDispatchWait(raw []byte) ([]byte, bool) {
+	if len(raw) == 0 {
+		return raw, false
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return raw, false
+	}
+	if _, ok := m["_dispatch_wait"]; !ok {
+		return raw, false
+	}
+	delete(m, "_dispatch_wait")
+	updated, err := json.Marshal(m)
+	if err != nil {
+		return raw, false
+	}
+	return updated, true
+}
+
+// writeDispatchWaitNote records why a step run's dispatch was deferred by
+// the per-worker concurrency gate, so the run-view UI can attribute the
+// generic "waiting for dispatch…" placeholder to a saturated worker
+// instead of leaving it undiagnostic.
+func writeDispatchWaitNote(ctx context.Context, tx pgx.Tx, tenantID string, stepRun db.WorkflowStepRunRow, workerID string, active, limit int) error {
+	m := map[string]any{}
+	if len(stepRun.Result) > 0 {
+		_ = json.Unmarshal(stepRun.Result, &m)
+	}
+	m["_dispatch_wait"] = fmt.Sprintf("worker capacity %d/%d — waiting for a slot", active, limit)
+	m["_dispatch_wait_worker"] = workerID
+	updated, err := json.Marshal(m)
+	if err != nil {
+		return fmt.Errorf("marshal dispatch wait note: %w", err)
+	}
+	_, err = db.UpdateWorkflowStepRun(ctx, tx, tenantID, stepRun.ID, stepRun.Version, db.UpdateWorkflowStepRunFields{
+		Result: &updated,
+	})
+	return err
+}
+
 // propagateStepRunResults copies execution fields onto the workflow step
 // run that dispatched THIS execution, so the run-view UI can show them
 // without opening each execution. The step run is located by its
@@ -3137,6 +3219,10 @@ func (r *TaskReconciler) propagateStepRunResults(ctx context.Context, tx pgx.Tx,
 			merged[k] = v
 		}
 	}
+	// A dispatched execution means the step is no longer waiting on a
+	// worker slot — clear any stale deferral note so it can never linger
+	// on a running step.
+	delete(merged, "_dispatch_wait")
 	updated, _ := json.Marshal(merged)
 	if _, err := db.UpdateWorkflowStepRun(ctx, tx, "tnt_dev", stepRunID, version, db.UpdateWorkflowStepRunFields{
 		Result: &updated,
