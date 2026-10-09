@@ -75,7 +75,16 @@ describe("ask-orchicon activity line — the route wiring", () => {
 
   it("the counter's data source is the ALREADY-POLLED transcript page", () => {
     expect(SRC).toContain("toolCallsFromMessages(");
-    expect(SRC).toContain("refetchInterval: isStreaming ? 2000 : false");
+    // THE GATE ON THAT POLL CHANGED, and this assertion used to pin the half-turn version
+    // (`isStreaming ? 2000 : false`) — which WAS the bug it now pins the fix for: the counter is a
+    // pure render over this page, so gating the page on this client's own stream slot froze the
+    // ledger for a turn it was not streaming (the TUI's, another tab's, or one lost to a reload)
+    // while the line's ticker kept running. The operator: "the timer that shows when the last call
+    // occurred just continues counting up and never resets on the next newest call." The intent of
+    // this assertion is unchanged and stronger: the counter still costs NO fetch of its own — it
+    // renders over the page the transcript poll fetches, and that poll now follows the TURN.
+    expect(SRC).toContain("refetchInterval: transcriptPollMs(turnInFlight)");
+    expect(SRC).not.toContain("refetchInterval: isStreaming ? 2000 : false");
   });
 
   it("AC8 — the old inline bubble tokens moved into the component, they were not reinvented", () => {
