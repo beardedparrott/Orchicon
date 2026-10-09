@@ -216,6 +216,88 @@ NAV="$(awk '/<nav aria-label="Primary"/{f=1} f; /<\/nav>/{if(f)exit}' "$PAGE")"
 has "primary nav links to the contact section" 'href="#contact"' "$NAV"
 has "the contact target exists to be linked to"  'id="contact"'  "$(cat "$PAGE")"
 
+# ============================================================================
+# THE INSTALL SECTION: three methods, and the handler that switches them must
+# see ONLY them.
+#
+# WHY THIS EXISTS. The Windows and Docker buttons did nothing — clicking either
+# left the macOS/Linux command on screen. The page is a static document, so the
+# cause was in the script, and it was one unscoped selector:
+#
+#   document.querySelectorAll('[role="tab"]')   // EVERY tab on the page
+#
+# There are THIRTEEN role="tab" elements here — five web-app tabs, four terminal
+# tabs and these three — and only the last three carry `aria-controls` (the other
+# two groups switch by data-web / data-tui). So `getAttribute('aria-controls')`
+# returned null for the first tab in the document, getElementById(null) returned
+# null, and `null.hidden = ...` threw. Because those tabs PRECEDE the install ones,
+# the throw landed before the install trio was reached: aria-selected was never
+# updated and the panel never un-hid.
+#
+# NOTHING IN CI RENDERS THIS PAGE (no browser in the container — see the header),
+# so the assertions are made against the source text, the same idiom used above.
+# ============================================================================
+INSTALL="$(awk '/<section class="block" id="install"/{f=1} f; /<\/section>/{if(f)exit}' "$PAGE")"
+
+# THE REGRESSION GUARD, stated POSITIVELY: the tabs are resolved from within their own
+# tablist, so the query cannot reach another group's tabs. Stated positively on purpose —
+# a negative assertion ("the old selector is absent") would be defeated by the selector
+# being quoted in a comment, which is exactly where it is now explained.
+has "install tabs are selected from their own tablist" '#install-tabs [role="tab"]' "$(cat "$PAGE")"
+
+ITABS="$(printf '%s' "$INSTALL" | grep -c 'role="tab"')"
+IPANELS="$(printf '%s' "$INSTALL" | grep -c 'role="tabpanel"')"
+IHIDDEN="$(printf '%s' "$INSTALL" | grep -c 'role="tabpanel"[^>]*hidden')"
+eq "the install section offers three methods" "3" "$ITABS"
+eq "install tabs match install panels" "$ITABS" "$IPANELS"
+
+# ONE VISIBLE AT REST, and this one matters because the SCRIPT does not establish it: unlike
+# the web/terminal groups, select() is never called on load here — the initial state is the
+# markup's own `hidden` attributes. A second un-hidden panel would render two commands on
+# top of each other.
+eq "exactly one install panel is shown at rest" "1" "$((IPANELS - IHIDDEN))"
+
+# EVERY TAB CONTROLS A PANEL THAT EXISTS. A renamed panel id leaves a tab pointing at
+# nothing: clicking it would un-hide null and throw all over again.
+MISSING=""
+for id in $(printf '%s' "$INSTALL" | grep -o 'aria-controls="[^"]*"' | sed 's/.*="//; s/"$//'); do
+  grep -q "id=\"$id\"" "$PAGE" || MISSING="$MISSING $id"
+done
+eq "every install tab controls a panel that exists" "" "$MISSING"
+
+# EVERY TAB HAS A NOTE. The note line is written from a lookup keyed by tab id, so a tab
+# added without an entry renders the literal string "undefined" under the command.
+NOTES="$(awk '/var notes = \{/{f=1} f; f&&/\};/{exit}' "$PAGE")"
+UNNOTED=""
+for id in $(printf '%s' "$INSTALL" | grep -o 'id="t-[^"]*"' | sed 's/^id="//; s/"$//'); do
+  printf '%s' "$NOTES" | grep -q "\"$id\":" || UNNOTED="$UNNOTED $id"
+done
+eq "every install tab has a note (no 'undefined' note line)" "" "$UNNOTED"
+
+# EACH METHOD SHOWS ITS OWN COMMAND — the reporter's actual ask was "show the right copy
+# and paste line for Windows and Docker", and the failure mode that makes this worth
+# asserting is a DUPLICATED panel: copy the macOS/Linux block to save typing and a Windows
+# visitor is handed a bash one-liner. So each command is checked for its own shape, and the
+# three are checked to be DISTINCT — a duplicate cannot pass both.
+# The `id="c-x">` marker is STRIPPED before comparing: left on, the three strings differ
+# by their own id and a duplicated command would still look "distinct" — the assertion
+# would pass while asserting nothing. (Found by mutation-testing this very check.)
+cmd_of() { printf '%s' "$INSTALL" | grep -o "id=\"$1\">[^<]*" | sed "s/^id=\"$1\">//"; }
+CUNIX="$(cmd_of c-unix)"
+CWIN="$(cmd_of c-win)"
+CDOCK="$(cmd_of c-docker)"
+has    "macOS/Linux shows the shell installer"      "install | bash" "$CUNIX"
+has    "Windows shows the PowerShell installer"     "install.ps1"    "$CWIN"
+has    "Docker shows a docker run"                  "docker run"     "$CDOCK"
+absent "the Windows panel does not show the bash one-liner" "bash"    "$CWIN"
+eq "each method shows a distinct command" "3" "$(printf '%s\n%s\n%s\n' "$CUNIX" "$CWIN" "$CDOCK" | sort -u | wc -l | tr -d ' ')"
+
+# --- and the hero must NOT carry a second copy of the command ---
+# The command lives in the install section, where each method gets its own; the hero's copy
+# was a duplicate of the macOS/Linux line only, so it could silently disagree with it, and it
+# invited a Windows visitor to paste a bash command. The hero keeps the two buttons.
+absent "hero carries no competing install command" 'id="cmd-hero"' "$(cat "$PAGE")"
+
 eq "every contact icon is hidden from assistive tech" "6" "$(printf '%s' "$CONTACT" | grep -c 'aria-hidden="true"')"
 eq "every contact link carries a visible name"        "6" "$(printf '%s' "$CONTACT" | grep -c '<b>')"
 
