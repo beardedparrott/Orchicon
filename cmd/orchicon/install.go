@@ -362,6 +362,10 @@ func ensureInstallContainer(instance, residency, name, dataVolume, socketDir, im
 	if residency == residencyHost {
 		args = append(args, "-e", "ORCHICON_CONTAINER_SERVICES_ONLY=1")
 	}
+	// The image's HEALTHCHECK probes the plane, which a host-resident container
+	// does not run — without this override it reports unhealthy forever. See
+	// healthArgs.
+	args = append(args, healthArgs(residency)...)
 	// Publishes come from the RESOLVED set for THIS shape: an override moves the
 	// port, and the shape decides which ports are exposed at all — a host-resident
 	// instance publishes the services so its host plane can reach them over

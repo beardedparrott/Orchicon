@@ -97,6 +97,33 @@ func bridgeIP() (string, error) {
 		"pin it with ORCHICON_DOCKER_BRIDGE_IP=<bridge gateway ip>; refusing to guess or bind 0.0.0.0")
 }
 
+// healthArgs returns the container healthcheck overrides for a residency.
+//
+// THE IMAGE'S HEALTHCHECK PROBES THE PLANE, and in host residency the plane is
+// NOT in the container — nothing listens on :8080 there, so a perfectly healthy
+// services-only container reports UNHEALTHY FOREVER. That is not hypothetical:
+// it was observed on a real instance this installer created (FailingStreak 92,
+// every probe exit 1) before the override was carried over.
+//
+// scripts/container.sh documents exactly this and applies the same override
+// (its instance-scoped HEALTH_ARGS); the installer must agree with it, or an
+// installed host-resident instance looks broken while it is actually working —
+// which is worse than broken, because it teaches the operator to ignore the
+// container's health.
+//
+// Container residency needs NO override: the plane runs inside the container, so
+// the image's own :8080 probe is correct and is left to the image.
+func healthArgs(residency string) []string {
+	if residency != residencyHost {
+		return nil
+	}
+	return []string{
+		"--health-cmd", "pg_isready -h localhost -p 5432 -U orchicon && curl -fs http://localhost:8222/healthz",
+		"--health-interval", "10s", "--health-timeout", "5s",
+		"--health-start-period", "30s", "--health-retries", "20",
+	}
+}
+
 // planeEnv builds the HOST plane's environment for an instance.
 //
 // EVERY value is derived from the RESOLVED ports, so no value can be global: a

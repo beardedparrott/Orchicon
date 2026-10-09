@@ -211,6 +211,56 @@ func TestPlaneEnvRefusesWithoutABridge(t *testing.T) {
 	}
 }
 
+// TestHealthArgsOverrideTheImageProbeForHostResidency is the regression for a
+// bug found by running the installer rather than reading it: a host-resident
+// instance it created reported UNHEALTHY FOREVER (FailingStreak 92), because the
+// image's healthcheck probes the plane's :8080 — which a services-only container
+// does not run.
+//
+// The failure mode is nasty rather than loud: the instance works, so the
+// operator learns to ignore the container's health, which is how a real outage
+// gets missed later.
+func TestHealthArgsOverrideTheImageProbeForHostResidency(t *testing.T) {
+	host := strings.Join(healthArgs(residencyHost), " ")
+	if !strings.Contains(host, "--health-cmd") {
+		t.Fatalf("host residency must override the image healthcheck; got: %q", host)
+	}
+	// It must probe the SERVICES that actually run in the container...
+	if !strings.Contains(host, "pg_isready") || !strings.Contains(host, "8222/healthz") {
+		t.Errorf("the override must probe postgres + nats; got: %q", host)
+	}
+	// ...and must NOT probe the plane port, which the host plane owns.
+	if strings.Contains(host, "8080/healthz") {
+		t.Errorf("the override must not probe the plane's :8080 (it is not in this container); got: %q", host)
+	}
+
+	// Container residency keeps the image's probe — the plane IS in there.
+	if got := healthArgs(residencyContainer); len(got) != 0 {
+		t.Errorf("container residency must leave the image healthcheck alone; got: %v", got)
+	}
+}
+
+// TestHealthArgsMatchContainerScript is the cross-language agreement gate for the
+// healthcheck, mirroring the port table's: the two launchers create the same
+// shape, so they must apply the same override or one of them reports unhealthy
+// for the other's instance. Parsed from container.sh so a change there fails here
+// instead of on a live host.
+func TestHealthArgsMatchContainerScript(t *testing.T) {
+	src, err := os.ReadFile("../../scripts/container.sh")
+	if err != nil {
+		t.Fatalf("read container.sh: %v", err)
+	}
+	script := string(src)
+	want := "pg_isready -h localhost -p 5432 -U orchicon && curl -fs http://localhost:8222/healthz"
+	if !strings.Contains(script, want) {
+		t.Errorf("scripts/container.sh no longer sets the services-only health check %q", want)
+	}
+	// ...and the installer must use the SAME command, not merely one like it.
+	if got := strings.Join(healthArgs(residencyHost), " "); !strings.Contains(got, want) {
+		t.Errorf("the installer's host-residency health check drifted from container.sh; got: %q", got)
+	}
+}
+
 // TestHostDataDirIsPerInstance pins that the state dir is derived from the
 // instance — two instances sharing one data dir would share a KEK and a PID
 // file, so stopping one could kill the other.
