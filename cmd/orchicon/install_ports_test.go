@@ -413,6 +413,57 @@ func TestParseInstancePorts(t *testing.T) {
 	}
 }
 
+// TestParseInstancePortsRealHostResidencyBindings uses the binding set observed
+// on a REAL host-resident instance (captured from `docker inspect` on a live dev
+// instance), because the shape the parser will actually meet is the one worth
+// pinning.
+//
+// The `8080/tcp` entry is `null` — exposed but NOT published, because the host
+// plane owns that port — and the whole point is that it must NOT be read back as
+// a value: reporting it would invent a container-published port that does not
+// exist, and the control port's real value has to come from resolving the
+// override instead.
+func TestParseInstancePortsRealHostResidencyBindings(t *testing.T) {
+	raw := []byte(`{
+		"3000/tcp":[{"HostIp":"127.0.0.1","HostPort":"3002"}],
+		"3100/tcp":[{"HostIp":"127.0.0.1","HostPort":"3100"}],
+		"3200/tcp":[{"HostIp":"127.0.0.1","HostPort":"3200"}],
+		"4222/tcp":[{"HostIp":"127.0.0.1","HostPort":"4222"}],
+		"4317/tcp":[{"HostIp":"127.0.0.1","HostPort":"4317"}],
+		"4318/tcp":[{"HostIp":"127.0.0.1","HostPort":"4318"}],
+		"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"5432"}],
+		"8080/tcp":null,
+		"8222/tcp":[{"HostIp":"127.0.0.1","HostPort":"8222"}],
+		"8428/tcp":[{"HostIp":"127.0.0.1","HostPort":"8428"}]
+	}`)
+	got, ok := parseInstancePorts(raw, activeInstallPorts(residencyHost))
+	if !ok {
+		t.Fatal("the real binding set must parse")
+	}
+
+	// The plane port is exposed-but-null in host residency: not a read-back value.
+	if _, invented := got["ORCHICON_CONTROL_PORT"]; invented {
+		t.Errorf("the plane port is not published in host residency; it must not be read back (got %d)", got["ORCHICON_CONTROL_PORT"])
+	}
+
+	// Every published service port must be read back, keyed by env var.
+	for env, want := range map[string]int{
+		"ORCHICON_GRAFANA_PORT":      3002,
+		"ORCHICON_POSTGRES_PORT":     5432,
+		"ORCHICON_NATS_PORT":         4222,
+		"ORCHICON_NATS_MONITOR_PORT": 8222,
+		"ORCHICON_OTLP_GRPC_PORT":    4317,
+		"ORCHICON_OTLP_HTTP_PORT":    4318,
+		"ORCHICON_TEMPO_PORT":        3200,
+		"ORCHICON_LOKI_PORT":         3100,
+		"ORCHICON_VM_PORT":           8428,
+	} {
+		if got[env] != want {
+			t.Errorf("%s read back as %d, want %d", env, got[env], want)
+		}
+	}
+}
+
 // TestPortFreeSeesAHeldPort is the one test that touches a real socket, because
 // the probe's whole job is to collide with a real listener — and TestNextFree
 // proves the upward walk then steps past it.
