@@ -261,7 +261,28 @@ type TranscriptMsg struct {
 	// so emitting durable tool rows would be a visible, parity-breaking change. The counter needs
 	// only the name and the issue stamp, so it rides this sibling field instead.
 	ToolCalls []toolclass.Call
-	Err       string
+	// SettledAsks are the asks this page records an OUTCOME for: the durable `permission.<outcome>`
+	// rows, paired with the ask id each one settles.
+	//
+	// AN OPEN CARD HAS NO DURABLE ROW, which is why this is the SETTLE half and not the reveal half.
+	// The transcript records the OUTCOME of a decision (permission.allow / .deny / .expired), never
+	// the open ask — see DiscoverPendingAsks for the query that reveals one. Carrying these on the
+	// message lets the shell settle a card from the SAME rows the GUI's settleFromLedger reads,
+	// instead of inferring it from a stream closing.
+	SettledAsks []AskOutcome
+	Err         string
+}
+
+// AskOutcome is one ask the durable transcript has ALREADY settled: the ask's id, and the outcome
+// the server recorded for it.
+//
+// The outcome is carried rather than assumed because it is the operator's own decision
+// (allow_once / allow_session / deny) or one no client can infer from its own state (expired,
+// answered) — see consentDecisionFromOutcome for why an unrecognised value settles the card WITHOUT
+// claiming a decision.
+type AskOutcome struct {
+	AskID   string
+	Outcome string
 }
 
 // chatEventMsg forwards one ChatStreamResponse oneof event. ConvID tags
@@ -891,9 +912,10 @@ func (c *Controller) OpenConversation(id string) tea.Cmd {
 		// The page arrives NEWEST-first (see conversationItems) — it is reversed
 		// there, together with the millisecond timestamps.
 		return TranscriptMsg{
-			ConvID:    id,
-			Items:     GroupByPhase(conversationItems(resp.Msg.GetMessages())),
-			ToolCalls: pageToolCalls(resp.Msg.GetMessages()),
+			ConvID:      id,
+			Items:       GroupByPhase(conversationItems(resp.Msg.GetMessages())),
+			ToolCalls:   pageToolCalls(resp.Msg.GetMessages()),
+			SettledAsks: settledAsksFromPage(resp.Msg.GetMessages()),
 		}
 	}
 }
@@ -915,6 +937,38 @@ func pageToolCalls(msgs []*apiv1.ChatMessage) []toolclass.Call {
 				continue
 			}
 			out = append(out, toolclass.Call{ToolName: c.GetFunctionName(), AtMs: c.GetIssuedAtUnixMs()})
+		}
+	}
+	return out
+}
+
+// settledAsksFromPage reads the asks the page has already RESOLVED, from the `permission.<outcome>`
+// rows in its tool calls — the TUI's half of the rule the GUI's lib/ask-consent.ts settleFromLedger
+// applies to the same page. Both clients settle a card from the SERVER's record of what happened to
+// it, rather than from a guess about why a stream closed.
+//
+// THE FIRST RESOLUTION WINS, mirroring the GUI: a later record for one ask must not overwrite what
+// actually happened to it (a grant is recorded once; a re-issued ask gets a new id). Rows with no id
+// or no outcome settle nothing, so a malformed row can never retire a live card.
+func settledAsksFromPage(msgs []*apiv1.ChatMessage) []AskOutcome {
+	var out []AskOutcome
+	seen := map[string]bool{}
+	for _, m := range msgs {
+		for _, c := range m.GetToolCalls() {
+			if c == nil {
+				continue
+			}
+			name := c.GetFunctionName()
+			if !strings.HasPrefix(name, "permission.") {
+				continue
+			}
+			id := c.GetId()
+			outcome := strings.TrimPrefix(name, "permission.")
+			if id == "" || outcome == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			out = append(out, AskOutcome{AskID: id, Outcome: outcome})
 		}
 	}
 	return out

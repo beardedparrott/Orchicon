@@ -3474,12 +3474,48 @@ func (s *chatStore) drawConsentAsk(convID string, ask chat.PermissionAsk) bool {
 		ask.ID = fmt.Sprintf("ask-%d", time.Now().UnixNano())
 	}
 	if s.hasConsent(convID, ask.ID) {
+		// A HELD ID IS NOT ALWAYS A HELD CHOICE. A card that was settled — by the page's record, by
+		// the other client, or by a local sweep that turned out to be wrong — is a RECORD of an ask,
+		// not a claim on its id. The server is still listing this ask as OPEN (discovery only asks
+		// for open ones, and the wire arm only replays open ones), so the operator must be able to
+		// answer it: the card is re-armed rather than silently refused. Without this, one wrong
+		// settle was PERMANENT for the turn — nothing could ever redraw the card.
+		if s.rearmSettledConsent(convID, ask.ID) {
+			return true
+		}
 		return false
 	}
 	// Stamped NOW, so the card sorts to the END of the transcript and stays there. Without a timestamp it
 	// sorted to the top on the next poll — see ConsentItem.
 	s.append(convID, chat.ConsentItem(ask, time.Now().UnixMilli()))
 	return true
+}
+
+// rearmSettledConsent turns a SETTLED card for this ask back into a pending choice, and reports
+// whether it found one to re-arm. A card already PENDING is reported as NOT re-armed, so the caller's
+// draw stays a no-op and the operator cannot end up with two cards for one ask.
+//
+// The decision is cleared back to "" (ConsentState.Pending's own definition) rather than to any
+// particular choice, because this client is not deciding anything: it is admitting the ask is open
+// again and handing the choice back.
+func (s *chatStore) rearmSettledConsent(convID, askID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.items[convID] {
+		it := &s.items[convID][i]
+		if it.Kind != chat.KindConsent || it.AskID != askID || it.Consent == nil {
+			continue
+		}
+		if it.Consent.Pending() {
+			return false
+		}
+		it.Consent.Decision = ""
+		it.Consent.Choice = ""
+		it.Consent.Note = ""
+		it.Consent.OtherMode = false
+		return true
+	}
+	return false
 }
 
 // hasConsent reports whether this conversation already holds a card for the ask.
@@ -3852,7 +3888,20 @@ func (s *chatStore) beginAskDraft(convID, key string) bool {
 // open on one conversation the other client's card stays visible (and inert) until then.
 // Closing that window needs the server to PUBLISH the resolution to the live turn — the
 // same channel that carried the ask — which is a wire change rather than a client sweep.
-func (s *chatStore) settleStaleConsent(convID string) {
+func (s *chatStore) settleStaleConsent(convID string, turnOver bool) {
+	// THE SERVER'S TURN STATE IS THE GATE, and it must be the SERVER's: a permission ask blocks its
+	// turn, so while the plane still reports that conversation's turn in flight the ask is still
+	// open, whatever this client's own sockets did. Every loss of a live card here has come from
+	// reading a LOCAL event (a close) as proof about the server's turn — see the call site in
+	// onStreamDone for the watch-re-dial close that did it.
+	//
+	// A turn that really did end still settles, by the truth rather than by this sweep: the
+	// collector records the outcome on the turn's ledger, and the next transcript load settles every
+	// ask the page records (TranscriptMsg.SettledAsks). This sweep is only the fallback for a card
+	// whose outcome row never arrives.
+	if !turnOver {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	items := s.items[convID]
@@ -3987,6 +4036,13 @@ func (m *App) onTranscript(msg chat.TranscriptMsg) tea.Cmd {
 	// its reason and model but makes NO composer claim, because its draft is deliberately not injected. Done
 	// BEFORE the store so the stamped row is what every later read sees, and repeated on EVERY poll so the
 	// line cannot be dropped when the next durable copy replaces the live one.
+	// THE DURABLE PAGE SETTLES WHAT IT RECORDS, on every load. An ask settled in the OTHER client (or
+	// expired when its turn finalized) has no other path into this client: the resolution event only
+	// reaches a watcher of that turn, and an unrelated replacement card must not be inferred from a
+	// close. The page is the record, so the record is what settles.
+	for _, sa := range msg.SettledAsks {
+		m.chatStore.settleAsk(msg.ConvID, sa.AskID, sa.Outcome, "")
+	}
 	m.stampRetryAffordance(msg.ConvID, msg.Items)
 	midTurn := m.runningFor(msg.ConvID)
 	if midTurn {
@@ -5028,7 +5084,18 @@ func (m *App) onStreamDone(msg chat.StreamDoneMsg) tea.Cmd {
 		// card here was answered in the OTHER client (or expired there) — see
 		// settleStaleConsent. Guarded by `ended` because a SUPERSEDED stream closes too,
 		// and settling on that close would kill a card belonging to the live turn.
-		m.chatStore.settleStaleConsent(msg.ConvID)
+		//
+		// `ended` IS NOT ENOUGH ON ITS OWN, AND THAT WAS A REAL LOSS. A WATCH RE-DIAL is a
+		// passive follow that runs through the SAME consume(), so a watch socket closing
+		// gracefully also reports `ended` for a turn that is still running — and the settle
+		// below then marked the operator's STILL-OPEN card settled, after which the durable
+		// re-read (a `replace`, now that the slot is gone) dropped it, because replace keeps a
+		// consent card only while PENDING. The operator watched exactly that: "a permissions
+		// card in the TUI get swallowed up", a turn "sitting and waiting" with no model
+		// activity and no card, answered by going into the GUI. The SERVER's own turn state is
+		// the fact that distinguishes the two closes, and the shell already trusts it
+		// elsewhere (the rail marker, re-attach, the activity line), so it is what gates this.
+		m.chatStore.settleStaleConsent(msg.ConvID, !m.runningFor(msg.ConvID))
 	}
 	// A finished turn is when new usage lands, so this is the LIVE update: the
 	// stat strip re-reads the session's tokens / cache / cost and refreshes.
