@@ -10,11 +10,16 @@ import (
 )
 
 // TestInstallPortDefaultsMatchContainerScript is the cross-language agreement
-// gate. The Go installer and scripts/container.sh each carry their own copy of
-// the per-instance port table, and they cannot share a constant — so the
-// agreement has to be ASSERTED. A drift here is the bug where an operator
-// rebuilds an instance with container.sh on one port and installs it with
-// `orchicon install` on another.
+// gate. The Go installer and scripts/container.sh each resolve the per-instance
+// port table, and they cannot share a constant — so the agreement has to be
+// ASSERTED. Two drifts matter, and this checks both:
+//
+//  1. the DEFAULTS, so `orchicon install` and `container.sh up` agree on which
+//     port an instance answers on when nobody overrides anything;
+//  2. the OVERRIDE KNOB NAMES, because an operator setting one must move the
+//     port in BOTH launchers. That is the failure this test is really for: the
+//     Go side honouring ORCHICON_CONTROL_PORT while the bash side silently keeps
+//     8080 would leave the two binding different ports for one instance.
 func TestInstallPortDefaultsMatchContainerScript(t *testing.T) {
 	src, err := os.ReadFile("../../scripts/container.sh")
 	if err != nil {
@@ -22,21 +27,39 @@ func TestInstallPortDefaultsMatchContainerScript(t *testing.T) {
 	}
 	script := string(src)
 
-	// The literals container.sh must still carry for dev and prod.
+	// 1. The per-instance defaults container.sh must still carry.
 	for _, want := range []string{
-		`PORTS="-p 8080:8080 -p 3002:3000"`,
-		`PORTS="-p 8091:8080 -p 3003:3000"`,
 		"PLANE_HTTP_PORT=8080",
 		"PLANE_HTTP_PORT=8091",
 		"GRAFANA_HOST_PORT=3002",
 		"GRAFANA_HOST_PORT=3003",
+		"PG_PORT=5432",
+		"PG_PORT=5433",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("scripts/container.sh no longer contains %q — the per-instance port table drifted", want)
 		}
 	}
 
-	// ...and the Go table must agree with them.
+	// 2. The override knobs must be applied in container.sh under exactly the
+	// names the Go resolver uses, or setting one moves the port in only one
+	// launcher. Asserted as whole shell lines so a rename on either side fails.
+	for _, want := range []string{
+		`PLANE_HTTP_PORT="${ORCHICON_CONTROL_PORT:-$PLANE_HTTP_PORT}"`,
+		`GRAFANA_HOST_PORT="${ORCHICON_GRAFANA_PORT:-$GRAFANA_HOST_PORT}"`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("scripts/container.sh must apply %q so an override moves the port in both launchers", want)
+		}
+	}
+
+	// The publishes must be COMPOSED from those variables: a literal beside them
+	// is how an override silently leaves `up` on the old number.
+	if !strings.Contains(script, `PORTS="-p $PLANE_HTTP_PORT:8080 -p $GRAFANA_HOST_PORT:3000"`) {
+		t.Error("container.sh's PORTS must be composed from PLANE_HTTP_PORT/GRAFANA_HOST_PORT, not written as literals")
+	}
+
+	// ...and the Go table must agree with the defaults above.
 	control, grafana := installerPorts()[0], installerPorts()[1]
 	if control.Dev != 8080 || control.Prod != 8091 {
 		t.Errorf("control defaults = %d/%d, want 8080/8091", control.Dev, control.Prod)
@@ -44,10 +67,16 @@ func TestInstallPortDefaultsMatchContainerScript(t *testing.T) {
 	if grafana.Dev != 3002 || grafana.Prod != 3003 {
 		t.Errorf("grafana defaults = %d/%d, want 3002/3003", grafana.Dev, grafana.Prod)
 	}
-	// The host->container mapping must match the -p pairs above (8080:8080 and
-	// 3002:3000), or the published port would land on the wrong listener.
+	// The host->container mapping must match container.sh's -p pairs
+	// (8080:8080 and 3002:3000), or the published port lands on the wrong
+	// listener.
 	if control.ContainerPort != 8080 || grafana.ContainerPort != 3000 {
 		t.Errorf("container ports = %d/%d, want 8080/3000", control.ContainerPort, grafana.ContainerPort)
+	}
+	// The Env names are the contract with container.sh, so pin them literally:
+	// the shell assertions above hardcode these exact strings.
+	if control.Env != "ORCHICON_CONTROL_PORT" || grafana.Env != "ORCHICON_GRAFANA_PORT" {
+		t.Errorf("env knobs = %q/%q, want ORCHICON_CONTROL_PORT/ORCHICON_GRAFANA_PORT", control.Env, grafana.Env)
 	}
 }
 

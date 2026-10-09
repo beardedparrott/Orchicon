@@ -93,8 +93,6 @@ instance_info() {
       PG_VOLUME="${ORCHICON_PG_VOLUME:-orchicon_postgres-data}"
       COMPOSE_PG="orchicon-postgres"
       COMPOSE_STACK_SCRIPT="dev.sh"
-      PORTS="-p 8080:8080 -p 3002:3000"
-      GRAFANA_URL="http://localhost:8080/grafana"
       PLANE_HTTP_PORT=8080
       # NO PLANE_PUBLIC_URL literal here: the host plane's URL is DERIVED per
       # instance from the resolved docker bridge + PLANE_HTTP_PORT
@@ -119,8 +117,6 @@ instance_info() {
       PG_VOLUME="${ORCHICON_PG_VOLUME:-orchicon-prod_postgres-data}"
       COMPOSE_PG="orchicon-prod-postgres"
       COMPOSE_STACK_SCRIPT="dev-prod.sh"
-      PORTS="-p 8091:8080 -p 3003:3000"
-      GRAFANA_URL="http://localhost:8091/grafana"
       PLANE_HTTP_PORT=8091
       # See dev: the URL is derived per instance (bridge_bind_env), never a
       # literal — and prod's port (8091) is what keeps it apart from dev's.
@@ -140,6 +136,38 @@ instance_info() {
       return 1
       ;;
   esac
+
+  # OPERATOR PORT OVERRIDES — deliberately THE SAME VARIABLES `orchicon install`
+  # resolves (cmd/orchicon/install_ports.go). A user must be able to move an
+  # instance off a port another product already holds, and the two launchers must
+  # not disagree about which port it answers on: `orchicon install` and
+  # `scripts/container.sh up` bind the SAME host port for one instance, so an
+  # override has to be honoured in BOTH or in neither. The knob names are what
+  # tie them together, so they cannot be renamed on one side alone.
+  #
+  # Applied at this ONE choke point, before anything is composed from these
+  # numbers. Every consumer reads these variables — the container publishes
+  # (PORTS / SERVICE_PORTS below), the host plane's environment (plane_env), its
+  # bridge bind and advertised URL (bridge_bind_env), and every /healthz probe —
+  # so no consumer can retain a stale literal.
+  PLANE_HTTP_PORT="${ORCHICON_CONTROL_PORT:-$PLANE_HTTP_PORT}"
+  GRAFANA_HOST_PORT="${ORCHICON_GRAFANA_PORT:-$GRAFANA_HOST_PORT}"
+  PG_PORT="${ORCHICON_POSTGRES_PORT:-$PG_PORT}"
+  NATS_PORT="${ORCHICON_NATS_PORT:-$NATS_PORT}"
+  NATS_MON_PORT="${ORCHICON_NATS_MONITOR_PORT:-$NATS_MON_PORT}"
+  OTLP_GRPC_PORT="${ORCHICON_OTLP_GRPC_PORT:-$OTLP_GRPC_PORT}"
+  OTLP_HTTP_PORT="${ORCHICON_OTLP_HTTP_PORT:-$OTLP_HTTP_PORT}"
+  TEMPO_PORT="${ORCHICON_TEMPO_PORT:-$TEMPO_PORT}"
+  LOKI_PORT="${ORCHICON_LOKI_PORT:-$LOKI_PORT}"
+  VM_PORT="${ORCHICON_VM_PORT:-$VM_PORT}"
+
+  # COMPOSED from the (possibly overridden) ports above, not written as literals
+  # beside them: a literal is how an override silently leaves the publish on the
+  # old number. Grafana's URL is the PLANE origin (it is proxied same-origin
+  # under /grafana), which is why it tracks PLANE_HTTP_PORT and not the Grafana
+  # publish.
+  PORTS="-p $PLANE_HTTP_PORT:8080 -p $GRAFANA_HOST_PORT:3000"
+  GRAFANA_URL="http://localhost:$PLANE_HTTP_PORT/grafana"
 
   # Host-residency publishes (services-only mode). EVERY port is bound to
   # 127.0.0.1 EXPLICITLY: postgres and nats are a database and an internal
