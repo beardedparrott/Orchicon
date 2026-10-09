@@ -1543,6 +1543,26 @@ func (r *pendingAskRegistry) removeConversation(convID string) []*pendingAsk {
 	return out
 }
 
+// hasOpenAsk reports whether a conversation has an ask still waiting on the operator.
+//
+// IT ANSWERS THE ONE QUESTION THE QUIET-TIME DEADLINES MUST ASK. A turn parked on a card
+// is SILENT by definition — the operator is the one being waited on — and both deadlines
+// that bound a turn (the reply window, and the registry's TTL sweep) measure silence.
+// Without this they read an absent operator as a dead model and kill the turn, which
+// FINALIZES the ask: the operator returns to a card that can no longer be clicked or
+// selected, because the tool call it was holding is gone.
+//
+// It is answered from the SAME state the reply path uses (isOpen), so a turn the deadlines
+// are told to spare is exactly a turn a decision can still land on.
+func (r *pendingAskRegistry) hasOpenAsk(convID string) bool {
+	for _, a := range r.list(convID) {
+		if a.isOpen() {
+			return true
+		}
+	}
+	return false
+}
+
 // list returns the conversation's open asks (order not guaranteed).
 func (r *pendingAskRegistry) list(convID string) []*pendingAsk {
 	if r == nil {

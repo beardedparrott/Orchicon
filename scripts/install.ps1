@@ -59,9 +59,15 @@ Orchicon's runtime layer is POSIX-only; on Windows the whole stack runs
 inside a WSL2 Linux distro. This script provisions/detects WSL2, installs
 the Linux binary inside the distro, and runs the one-command setup there.
 WSL2 forwards localhost, so the UIs open from Windows at the same URLs as
-on Linux (http://localhost:8080 control plane, http://localhost:3002 Grafana).
+on Linux. The control plane and Grafana default to http://localhost:8080 and
+http://localhost:3002 (8091/3003 for prod); the installer prints the ports it
+actually bound, which can differ when a default was already in use.
 
 Options:
+  Env: ORCHICON_CONTROL_PORT / ORCHICON_GRAFANA_PORT
+                      Host ports for the control plane and Grafana. Set inside
+                      WSL before installing when another product already holds
+                      a default port. Both launchers honour the same names.
   -Version <tag>      Install a specific version (e.g. v0.1.173). Default: latest.
   -InstallDir <dir>   WSL install directory for the binary (default: ~/.local/bin).
   -NoSetup            Install the binary only — do NOT pull images, start the
@@ -255,18 +261,23 @@ function Ensure-WslDocker {
 # --- Connection info (Windows-visible URLs) ----------------------------------
 function Write-ConnectionInfo {
     $instance = if ($env:ORCHICON_INSTANCE) { $env:ORCHICON_INSTANCE } else { "dev" }
+    # Resolve the ports the SAME way the installer does (cmd/orchicon/install_ports.go
+    # and scripts/container.sh instance_info): the per-instance default, with
+    # ORCHICON_CONTROL_PORT / ORCHICON_GRAFANA_PORT overriding it when set. These
+    # numbers used to be hardcoded right here, which printed a URL pointing at a port
+    # this install never bound as soon as an operator moved off a busy default.
+    if ($instance -eq "prod") { $ctrl = 8091; $graf = 3003 } else { $ctrl = 8080; $graf = 3002 }
+    if ($env:ORCHICON_CONTROL_PORT) { $ctrl = $env:ORCHICON_CONTROL_PORT }
+    if ($env:ORCHICON_GRAFANA_PORT) { $graf = $env:ORCHICON_GRAFANA_PORT }
     Write-Host ""
     Write-Host "Open from Windows (WSL2 forwards localhost):" -ForegroundColor White
-    if ($instance -eq "prod") {
-        Write-Host "  Control plane: http://localhost:8091" -ForegroundColor Cyan
-        Write-Host "  Grafana:       http://localhost:3003" -ForegroundColor Cyan
-    } else {
-        Write-Host "  Control plane: http://localhost:8080" -ForegroundColor Cyan
-        Write-Host "  Grafana:       http://localhost:3002" -ForegroundColor Cyan
-    }
+    Write-Host "  Control plane: http://localhost:$ctrl" -ForegroundColor Cyan
+    Write-Host "  Grafana:       http://localhost:$graf" -ForegroundColor Cyan
+    Write-Host "  (if a default port was already in use, 'orchicon install' suggested the next" -ForegroundColor DarkGray
+    Write-Host "   free one — its own output lists the ports it actually bound)" -ForegroundColor DarkGray
     Write-Host "  Note: if the URLs do not answer, check Windows Defender Firewall,"
-    Write-Host "  or add a port forward: netsh interface portproxy add v4tov4 listenport=8080"
-    Write-Host "  listenaddress=127.0.0.1 connectport=8080 connectaddress=<WSL-IP>" -ForegroundColor DarkGray
+    Write-Host "  or add a port forward: netsh interface portproxy add v4tov4 listenport=$ctrl"
+    Write-Host "  listenaddress=127.0.0.1 connectport=$ctrl connectaddress=<WSL-IP>" -ForegroundColor DarkGray
 }
 
 # --- Defaults ---------------------------------------------------------------
@@ -410,7 +421,8 @@ if ($DryRun) {
     Write-Host "  2. extract + install to $InstallDir/orchicon inside WSL"
     if (-not $NoSetup) {
         Write-Host "  3. run 'orchicon install' inside WSL (pull images, start daemon, launch container)"
-        Write-Host "  4. open http://localhost:8080 (control plane) / http://localhost:3002 (Grafana)"
+        Write-Host "  4. open the control plane / Grafana on the ports the installer prints"
+        Write-Host "     (dev defaults: 8080 / 3002; prod: 8091 / 3003)"
     }
     Write-Ok "dry-run complete — no changes made"
     exit 0

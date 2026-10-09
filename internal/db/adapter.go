@@ -247,6 +247,27 @@ func CountActiveExecutionsForAdapter(ctx context.Context, tx pgx.Tx, tenantID, a
 	return count, nil
 }
 
+// CountActiveExecutionsForWorker mirrors CountActiveExecutionsForAdapter
+// above — same status-exclusion set, same reasoning: a stale terminal row
+// (succeeded/failed/terminated/failed_to_start/unhealthy) must not count
+// against a worker's concurrency budget, or a worker with a long history
+// looks permanently at capacity even with zero live executions.
+func CountActiveExecutionsForWorker(ctx context.Context, tx pgx.Tx, tenantID, workerID string) (int, error) {
+	var count int
+	err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM worker_executions
+		WHERE tenant_id = $1 AND worker_id = $2
+		  AND status NOT IN (
+		    'terminated', 'failed_to_start', 'succeeded', 'failed', 'unhealthy'
+		  )`,
+		tenantID, workerID,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("db: count active executions for worker: %w", err)
+	}
+	return count, nil
+}
+
 func nullableJSON(b []byte) any {
 	if len(b) == 0 {
 		return nil

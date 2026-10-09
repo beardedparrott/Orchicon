@@ -112,8 +112,24 @@ func toolListProjectBranches(ctx context.Context, pool *db.Pool, args json.RawMe
 		remotes = append(remotes, r)
 	}
 
-	// The default branch, most authoritative first: what origin/HEAD points at, else a conventional integration
-	// branch when it exists locally. Never invented — an empty value is reported as empty.
+	// THE DEFAULT BRANCH AND THE INTEGRATION BRANCH ARE TWO DIFFERENT THINGS, and reporting one as both is
+	// what offered `main` as the branch to cut from and merge into.
+	//
+	//   - defaultBranch is the REPOSITORY'S OWN DEFAULT: what origin/HEAD points at, i.e. what you get on
+	//     clone. On this repo that is `main`, and reporting it is simply factual.
+	//   - integrationBranch is WHERE WORK LANDS. On this repo that is `develop`; `main` receives merges FROM
+	//     develop at release time and nothing else. The operator's rule, verbatim: "Everything should be
+	//     worked off of branches from develop. Main branch is only for actual releases from develop."
+	//
+	// THE OLD CODE REPORTED ONE VALUE AS BOTH, so a run was offered `main` as its base AND its merge target —
+	// contradicting the git rules this platform INJECTS into every git-backed worker's prompt, which hardcode
+	// develop: "Work on a branch created off `develop` (the integration branch where all work lands). NEVER
+	// commit to, push to, or open a PR into `main` or `develop` directly" (internal/db/prompt.go). The agent
+	// brief already notes those injected rules win, so the tool was handing the agent an instruction its own
+	// worker would refuse.
+	//
+	// Note the old fallback ALREADY preferred develop (`develop`, `main`, `master`): the intent was right, and
+	// only the origin/HEAD path — which is the path that actually fires on a real clone — bypassed it.
 	defaultBranch := ""
 	if s := run("symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); s != "" {
 		defaultBranch = strings.TrimPrefix(s, "origin/")
@@ -127,19 +143,44 @@ func toolListProjectBranches(ctx context.Context, pool *db.Pool, args json.RawMe
 		}
 	}
 
+	integrationBranch := integrationBranchFor(defaultBranch, locals, remotes)
+
 	out["local_branches"] = locals
 	out["remote_branches"] = remotes
 	out["default_branch"] = defaultBranch
-	if defaultBranch != "" {
-		out["suggested_base_branch"] = defaultBranch
-		out["suggested_merge_branch"] = defaultBranch
+	// Reported explicitly so the distinction is visible to the caller rather than inferable from a name.
+	out["integration_branch"] = integrationBranch
+	if integrationBranch != "" {
+		out["suggested_base_branch"] = integrationBranch
+		out["suggested_merge_branch"] = integrationBranch
 	}
 	out["note"] = "Offer these as the choices instead of asking for blank branch names: confirm WHICH BRANCH TO " +
-		"CLONE OFF (the run's base) and WHICH BRANCH TO MERGE INTO (the PR's target). They are usually the same " +
-		"branch and are not always the default — never assume either, and carry the confirmed pair into the " +
-		"worker's brief, because the git rules injected into a worker's prompt name the integration branch " +
-		"generically and will otherwise win."
+		"CLONE OFF (the run's base) and WHICH BRANCH TO MERGE INTO (the PR's target) — both are the " +
+		"INTEGRATION branch (`suggested_base_branch` / `suggested_merge_branch`), which is normally `develop`. " +
+		"`default_branch` is NOT a merge target: it is only the repository's own default (usually `main`), and " +
+		"main receives merges from develop at release time and nothing else, so never offer it as where a run's " +
+		"work should land. They are usually the same branch — never assume either — and carry the confirmed " +
+		"pair into the worker's brief, because the git rules injected into a worker's prompt name the " +
+		"integration branch generically and will otherwise win."
 	return json.Marshal(out)
+}
+
+// integrationBranchFor picks the branch a run's work should LAND on: the conventional integration branch when
+// it exists (locally or on origin), else the repository's own default, else "" (nothing is invented — a caller
+// receiving "" must ask rather than assume).
+//
+// IT IS PURE, AND SEPARATED FOR THAT REASON: this is the decision the whole suggestion rests on and the one
+// that was wrong, so it is testable without a git binary, a work tree or a database. The execs around it are
+// deliberately narrow and fixed-argv; the JUDGEMENT is what needed a test.
+//
+// ORIGIN IS CHECKED AS WELL AS DISK. A run may cut from a branch that exists only on the remote, and the
+// local-only check is exactly how a repository whose develop has not been fetched yet loses its integration
+// branch. `remotes` carries `origin/<name>` as git reports it.
+func integrationBranchFor(defaultBranch string, locals, remotes []string) string {
+	if branchListContains(locals, "develop") || branchListContains(remotes, "origin/develop") {
+		return "develop"
+	}
+	return defaultBranch
 }
 
 // branchListContains is a tiny membership test for the branch names above (no import for a two-item scan).

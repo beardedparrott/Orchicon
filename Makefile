@@ -43,6 +43,34 @@ export GOTMPDIR
 PATH        := $(DEV_TOOLS)/go/bin:$(PATH)
 export PATH
 endif
+
+# THE LOCAL GATE WALKS ONLY THIS MODULE'S PACKAGES — local scratch is excluded.
+#
+# tmp/ is the repo's gitignored scratch dir (agent worktrees, patch staging,
+# one-off probe programs), and a scratch dir carries NO go.mod. A dir with no
+# go.mod is not a module boundary, so `./...` WALKS STRAIGHT INTO IT and
+# compiles whatever is lying there as part of this module.
+#
+# That is how a stray file broke the whole local gate:
+#
+#	tmp/installer-preserve/install_images_test.go:42:10: undefined: runtimeVariantRef
+#	make: *** [Makefile:193: vet] Error 1
+#
+# The file was a stale copy of a test that had already MOVED into cmd/orchicon —
+# it still called a symbol that moved with it, and there was no implementation
+# beside it, so it could never compile. Nothing was wrong with the module, and
+# `make rebuild-dev` could not run at all: `ci` runs vet and test over `./...`.
+#
+# CI NEVER SEES THIS, which is why it was invisible until a rebuild: the go-ci
+# job checks out a CLEAN tree, and tmp/ is gitignored so it does not exist there.
+# The failure is local-only and looks like a broken merge — so it belongs fixed
+# here, once, rather than diagnosed again on the next rebuild.
+#
+# Stated as ONE variable used by every target that walks the tree, so a target
+# added later cannot forget it. Any dir under tmp/ is skipped, including a
+# worktree (those are skipped for a different reason — they DO have a go.mod).
+PKGS = $(shell $(GO) list ./... 2>/dev/null | grep -v '/tmp/')
+
 BUF         := buf
 ATLAS       := atlas
 NPX         := npx
@@ -160,6 +188,7 @@ run: fetch-tags fe-build ## Run the control plane from source
 	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon
 
 test: ## Run Go tests
+	@test -n "$(PKGS)" || { printf 'ERROR: no packages matched ./... (tmp/ excluded) — refusing to run the gate over nothing\n' >&2; exit 1; }
 	@# A TEST MUST NEVER TOUCH THE DEVELOPER'S REAL CONFIG.
 	@#
 	@# One did: TestThemeCommand drives `/theme light` then `/theme dark`, and SetTheme persists the
@@ -187,10 +216,11 @@ test: ## Run Go tests
 	@# ORCHICON_SKIP_NETWORK_TESTS, ORCHICON_LIVE_*) are deliberately left reachable.
 	@for v in ORCHICON_GUARD_POLICY ORCHICON_GUARD_GRANTS ORCHICON_GUARD_ONCE ORCHICON_GUARD_PROJECT \
 	         ORCHICON_GUARD_FULLSEND ORCHICON_SERVE_STATE_DIR; do unset "$$v"; done; \
-	ORCHICON_CONFIG_DIR="$$(mktemp -d)" $(GO) test ./...
+	ORCHICON_CONFIG_DIR="$$(mktemp -d)" $(GO) test $(PKGS)
 
 vet: ## Run go vet
-	$(GO) vet ./...
+	@test -n "$(PKGS)" || { printf 'ERROR: no packages matched ./... (tmp/ excluded) — refusing to run the gate over nothing\n' >&2; exit 1; }
+	$(GO) vet $(PKGS)
 
 tidy: ## Run go mod tidy
 	$(GO) mod tidy
@@ -330,12 +360,14 @@ docs-check: ## Validate every Mermaid diagram in the root docs with a real parse
 # `container` (the plane runs inside the instance's container, as it did before
 # the host-residency migration).
 #
-# THIS VARIABLE IS NO LONGER THE PRODUCT'S DEFAULT, only this target's. It used
-# to be described as "the launcher's own default stays container", and that
-# stopped being true when the launcher's default moved to host — so
-# `make container-rebuild` is now the one entry point that still produces the
-# OLD shape. rebuild-dev/rebuild-prod override this per target (below).
-residency = container
+# HOST IS THE DEFAULT HERE TOO, matching the launcher and the product:
+# scripts/container.sh residency_for resolves ${...:-host}. This variable used to
+# be `container`, which made this target the ONE entry point still producing the
+# old shape — so `make container-rebuild instance=dev` silently gave a different
+# residency from `make rebuild-dev`, and from every fresh install. Pass
+# `residency=container` explicitly for the self-contained shape; that is the
+# documented rollback.
+residency = host
 container-build: ## Build bin/orchicon + the container image
 	$(MAKE) build
 	scripts/container.sh build
@@ -346,8 +378,8 @@ runtime-daemon: ## Start the host-side workflow runtime daemon
 	scripts/container.sh runtime-daemon
 runtime-stop: ## Stop the host-side workflow runtime daemon
 	scripts/container.sh runtime-stop
-container-rebuild: ## Stop an instance, rebuild the image, start it (usage: make container-rebuild dev|prod [residency=host|container])
-	@test -n "$(instance)" || { echo "usage: make container-rebuild instance=dev|prod"; exit 1; }
+container-rebuild: ## Stop an instance, rebuild the image, start it (usage: make container-rebuild instance=dev|prod|test [residency=host|container])
+	@test -n "$(instance)" || { echo "usage: make container-rebuild instance=dev|prod|test"; exit 1; }
 	# residency is passed down as ENV (per invocation) — never exported globally,
 	# so rebuilding one instance cannot change the other's shape.
 	ORCHICON_PLANE_RESIDENCY="$(residency)" scripts/container.sh down $(instance)
@@ -397,16 +429,16 @@ container-ps: ## List orchicon container instances
 # residency propagates to container-rebuild through the make chain: BOTH
 # rebuild-dev and rebuild-prod pass residency=host explicitly, so each rebuild
 # migrates its OWN instance to a host-resident plane and neither can alter the
-# other's shape (the launcher's own default stays `container` — see
-# residency_for in scripts/container.sh; nothing here is ever exported
-# globally).
+# other's shape. This now MATCHES the launcher's own default, which
+# residency_for in scripts/container.sh resolves as ${...:-host}; nothing here is
+# ever exported globally.
 #
 # `residency=container` on the command line OVERRIDES the target default (a
 # command-line variable beats a target-specific one), which is the documented
 # rollback: `make rebuild-prod residency=container` puts prod's plane back
 # inside its container.
-full-rebuild: ## One command: binary build + all checks/tests + migrate-hash + image build + instance restart (usage: make full-rebuild instance=dev|prod)
-	@test -n "$(instance)" || { echo "usage: make full-rebuild instance=dev|prod"; exit 1; }
+full-rebuild: ## One command: binary build + all checks/tests + migrate-hash + image build + instance restart (usage: make full-rebuild instance=dev|prod|test)
+	@test -n "$(instance)" || { echo "usage: make full-rebuild instance=dev|prod|test"; exit 1; }
 	$(MAKE) build
 	$(MAKE) ci
 	$(MAKE) migrate-hash
@@ -421,6 +453,13 @@ rebuild-prod: residency = host
 rebuild-prod: ## One command: full checks/tests + rebuild + restart the PROD instance (plane residency: host; pass residency=container to keep it in its container)
 	$(MAKE) full-rebuild instance=prod residency=$(residency)
 	$(MAKE) orch-launcher-prod
+
+# rebuild-test mirrors the other two, minus the launcher: a throwaway instance
+# exists to be rebuilt and torn down repeatedly, and it needs no dedicated TUI
+# client. Teardown is `scripts/container.sh uninstall test --yes`.
+rebuild-test: residency = host
+rebuild-test: ## One command: full checks/tests + rebuild + restart the TEST instance (plane residency: host)
+	$(MAKE) full-rebuild instance=test residency=$(residency)
 
 # --- Dual orch launchers ----------------------------------------------------
 # Two orch clients on PATH: `orch` tracks bin/orch (dev vintage) and

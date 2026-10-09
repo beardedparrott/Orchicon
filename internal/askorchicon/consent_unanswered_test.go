@@ -26,8 +26,10 @@ package askorchicon
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
@@ -110,35 +112,77 @@ func TestAQuestionThatRunsOutOfTimeIsUnansweredNotExpired(t *testing.T) {
 	}
 }
 
-// TestAParkedTurnThatRunsOutOfTimeBlamesTheWaitNotTheModel is the other half, end to end: the turn
-// is bounded exactly as before, but the failure says what it was waiting for.
-func TestAParkedTurnThatRunsOutOfTimeBlamesTheWaitNotTheModel(t *testing.T) {
+// TestAParkedTurnOutlivesTheReplyWindowAndStillTakesTheAnswer is the case the operator reported,
+// end to end, and it REVERSES a deliberate decision that this file used to pin.
+//
+// WHAT IT USED TO DO: the parked turn was ended by the reply window on purpose, and the failure was
+// worded to blame the WAIT rather than the model — "this turn was waiting on YOUR answer for 30m0s
+// and has ended ... reply in your own words". That wording fixed the misattribution but left the
+// operator with a DEAD CARD: the expiry runs the turn's finalize, which answers the serve `reject`,
+// so the tool call the card was holding is gone.
+//
+// The operator: "if an ask or permission card has been waiting for awhile (i.e. away from keyboard),
+// I can no longer click into it or use the keyboard to select it." Both gestures need the ask to
+// still be OPEN. So the window now RE-ARMS while the turn is parked (see the window.C arm in chat.go)
+// and the TTL sweep spares it too — the wait belongs to the operator, and a decision, not a timer,
+// is what ends it.
+//
+// THE MODEL'S OWN SILENCE IS UNCHANGED, and pinned separately by TestCollectConversationReplyTimeout:
+// a turn with no card on screen still dies at the window with the model-facing message.
+func TestAParkedTurnOutlivesTheReplyWindowAndStillTakesTheAnswer(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_REPLY_WINDOW", "100ms")
+	t.Setenv("ORCHICON_ASK_REATTACH_BACKOFF", "1ms")
 	svc := testConsentService()
 	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
 	const question = "Which branch should the run clone off?"
-	raiseOpenQuestion(t, ct, "q_1", question)
+	ask := raiseOpenQuestion(t, ct, "q_1", question)
 
 	client := &fakeSessionClient{}
+	s := &Service{log: slog.Default(), turns: newTurnRegistry()}
 	opts := turnCollectOpts{
 		client: client, convID: "conv-1", sessionID: "ses_live", reuseSystem: "REUSE_SYSTEM",
 		modelRef: "opencode/deepseek-v4-flash-free", userMsg: "hello", consent: ct,
 	}
-	// NOTHING FURTHER HAPPENS: this is the operator away from the terminal with a question on
-	// screen, so the deltas that would keep the window open never arrive.
-	_, _, _, err := collectTurn(t, client, opts)
-	if err == nil {
-		t.Fatal("a parked turn must still be bounded — the decision to keep the bound is deliberate")
+	done := make(chan struct{})
+	var err error
+	go func() {
+		defer close(done)
+		_, _, _, err = s.collectConversationReply(context.Background(), opts)
+	}()
+
+	// THE OPERATOR IS AWAY. NOTHING FURTHER HAPPENS — no deltas, no answers — so several reply
+	// windows pass with the turn parked exactly as described.
+	select {
+	case <-done:
+		t.Fatalf("the turn ended while it was parked on the operator (%v) — on returning, the card "+
+			"can no longer be clicked or selected, because the tool call it held is gone", err)
+	case <-time.After(650 * time.Millisecond):
 	}
-	msg := err.Error()
-	if !strings.Contains(msg, question) {
-		t.Errorf("the failure must name the question it was waiting on, so the context survives.\ngot: %s", msg)
+
+	// THE ASK IS STILL OPEN, which is the whole precondition for either gesture working: a click
+	// resolves through pendingConsentItem and the keyboard through the screen's claim, and both
+	// require Pending().
+	if !svc.pending.hasOpenAsk("conv-1") {
+		t.Fatal("the ask must still be open after the window passed — otherwise the operator's click " +
+			"and keys have nothing to land on")
 	}
-	if !strings.Contains(msg, "waiting on YOUR answer") {
-		t.Errorf("the failure must name the OPERATOR as what was being waited on.\ngot: %s", msg)
+	if _, ok := ct.waitingOnOperator(); !ok {
+		t.Fatal("the turn must still report that it is waiting on the operator")
 	}
-	if strings.Contains(msg, "Default models") || strings.Contains(msg, "may be overloaded") {
-		t.Errorf("a turn parked on a question must not be reported as a model fault — that is what "+
-			"sent the operator to fix a model that was fine.\ngot: %s", msg)
+
+	// THE OPERATOR RETURNS AND ANSWERS. It lands — it is not refused as late — and the turn
+	// resumes, which is what makes the wait worth surviving.
+	if !ask.recordClientAnswer("develop") {
+		t.Fatal("the answer was refused as late: the ask had already been settled")
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the turn did not resume after the operator answered")
+	}
+	// The fake produces no further model output, so the resumed turn may end on its own window —
+	// what must NOT appear is the parked-turn message, which no longer exists.
+	if err != nil && (strings.Contains(err.Error(), "waiting on YOUR answer") || strings.Contains(err.Error(), question)) {
+		t.Fatalf("the turn still reports the wait as its failure: %v", err)
 	}
 }

@@ -201,9 +201,13 @@ func (d *Daemon) ListenAndServe(ctx context.Context) error {
 		<-ctx.Done()
 		srv.Close()
 	}()
-	// Warm-pool lifecycle: leases are daemon-resident, so start from a
-	// clean slate (all runtime containers removed — covers plane-down
-	// leaks) then idle-reap clean containers periodically.
+	// Warm-pool lifecycle: leases are daemon-resident, so the pool starts
+	// EMPTY — but it deliberately does NOT remove containers here. A daemon
+	// restart is host-wide while the containers belong to individual instances,
+	// so a wholesale sweep would kill a sibling instance's live run. Pre-restart
+	// containers are reconciled per instance by sweepPreRestartOrphans, triggered
+	// by that instance's own first lease request; idle-reap then keeps the pool
+	// bounded periodically.
 	d.pool = newDaemonPool(d)
 	d.pool.resetPool()
 	go func() {
@@ -251,6 +255,12 @@ func (d *Daemon) handleRuntimes(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		// Reconcile THIS instance's pre-restart containers before leasing, so a
+		// container left by the previous daemon process is neither handed out nor
+		// left leaking. Scoped to the requesting instance (and to the same label
+		// value the create path writes) and claimed once per daemon lifetime; see
+		// sweepPreRestartOrphans for why the trigger is what makes it safe.
+		d.pool.sweepPreRestartOrphans(instanceID(req.InstanceID))
 		resp, err := d.pool.checkout(r.Context(), req.WorkflowID, req)
 		if err != nil {
 			httpError(w, http.StatusInternalServerError, err.Error())

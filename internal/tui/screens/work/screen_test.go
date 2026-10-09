@@ -59,6 +59,11 @@ type fakePlane struct {
 	created     []*apiv1.CreateWorkItemRequest
 	updated     []*apiv1.UpdateWorkItemRequest
 	deleted     []string
+	// hardDeleted records HardDeleteWorkItem calls. It is separate from `deleted`
+	// because the two are DIFFERENT gestures — `deleted` is the soft delete (status →
+	// cancelled), `hardDeleted` is the GUI's permanent Delete, which is what the TUI's
+	// ctrl+x performs. A test that conflated them could not tell which one ran.
+	hardDeleted []string
 	archived    []string
 	restored    []string
 	reorders    []*apiv1.ReorderWorkItemsRequest
@@ -299,6 +304,40 @@ func (p *fakePlane) DeleteWorkItem(_ context.Context, req *connect.Request[apiv1
 	p.deleted = append(p.deleted, req.Msg.GetId())
 	w.Status = apiv1.WorkItemStatus_WORK_ITEM_STATUS_CANCELLED
 	return connect.NewResponse(&apiv1.DeleteWorkItemResponse{WorkItem: w}), nil
+}
+
+// HardDeleteWorkItem permanently removes the item, mirroring the server's two
+// REFUSALS (internal/workitem/service.go): an item with children is not cascaded,
+// and an idea must be dismissed rather than deleted. A fake that cascaded anyway
+// would let a test pass against behaviour the plane does not have — and the
+// refusal is exactly what the operator needs to see reported.
+func (p *fakePlane) HardDeleteWorkItem(_ context.Context, req *connect.Request[apiv1.HardDeleteWorkItemRequest]) (*connect.Response[apiv1.HardDeleteWorkItemResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	w, ok := p.items[req.Msg.GetId()]
+	if !ok {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("work item not found"))
+	}
+	for _, other := range p.items {
+		if other.GetParentId() == w.GetId() && other.GetId() != w.GetId() {
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				errors.New("work item has children; delete them first"))
+		}
+	}
+	if w.GetStatus() == apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+				errors.New("an idea must be dismissed, not deleted"))
+	}
+	p.hardDeleted = append(p.hardDeleted, req.Msg.GetId())
+	delete(p.items, req.Msg.GetId())
+	kept := p.order[:0]
+	for _, id := range p.order {
+		if id != req.Msg.GetId() {
+			kept = append(kept, id)
+		}
+	}
+	p.order = kept
+	return connect.NewResponse(&apiv1.HardDeleteWorkItemResponse{}), nil
 }
 
 func (p *fakePlane) ArchiveWorkItem(_ context.Context, req *connect.Request[apiv1.ArchiveWorkItemRequest]) (*connect.Response[apiv1.ArchiveWorkItemResponse], error) {
@@ -1261,6 +1300,13 @@ func TestReorderChildrenPersists(t *testing.T) {
 
 // ------------- destructive actions -------------
 
+// ctrl+x IS THE GUI'S DELETE: PERMANENT, and the row LEAVES THE LIST.
+//
+// The operator's report was "Deleting work items in the TUI is no longer working", and the
+// reason was that this gesture was the GUI's OTHER one — a soft delete (status → cancelled)
+// that no TUI view filters out, so the row stayed on screen and the delete looked dead. The
+// assertions below are what make the difference observable: the RPC is HardDeleteWorkItem
+// (not DeleteWorkItem), and the row is GONE after the write rather than merely re-pilled.
 func TestDeleteRequiresConfirmThenReconciles(t *testing.T) {
 	p := newPlane()
 	p.seedProject("proj-1", "Orchicon")
@@ -1275,30 +1321,112 @@ func TestDeleteRequiresConfirmThenReconciles(t *testing.T) {
 	if !m.DialogOpen() {
 		t.Fatal("delete must open a Confirm dialog")
 	}
-	if len(p.deleted) != 0 {
+	if len(p.hardDeleted) != 0 || len(p.deleted) != 0 {
 		t.Fatal("no delete may be sent before confirmation")
 	}
 	press(t, m, "esc")
-	if m.DialogOpen() || len(p.deleted) != 0 {
+	if m.DialogOpen() || len(p.hardDeleted) != 0 || len(p.deleted) != 0 {
 		t.Fatal("a dismissed Confirm must not delete")
 	}
 
 	press(t, m, "x")
 	run(t, m, press(t, m, "enter"))
-	if len(p.deleted) != 1 || p.deleted[0] != "wi-1" {
-		t.Fatalf("deleted = %v", p.deleted)
+	if len(p.hardDeleted) != 1 || p.hardDeleted[0] != "wi-1" {
+		t.Fatalf("hardDeleted = %v, want [wi-1]", p.hardDeleted)
 	}
-	// DeleteWorkItem soft-deletes: the item reconciles as cancelled.
+	// THE PERMANENT RPC, not the soft one: this is the whole fix. A regression to
+	// DeleteWorkItem would leave the row on screen and the operator would report the bug again.
+	if len(p.deleted) != 0 {
+		t.Fatalf("ctrl+x called the SOFT delete (%v) — that is the row-that-will-not-leave bug", p.deleted)
+	}
 	p.mu.Lock()
-	st := p.items["wi-1"].GetStatus()
+	_, stillThere := p.items["wi-1"]
 	p.mu.Unlock()
-	if st != apiv1.WorkItemStatus_WORK_ITEM_STATUS_CANCELLED {
-		t.Fatalf("delete must soft-delete to cancelled, got %v", st)
+	if stillThere {
+		t.Fatal("the item must be permanently removed, not re-statused")
 	}
 	load(t, m, srcWorkItems)
-	if meta := metaOf(itemsOf(m, srcWorkItems), "wi-1"); !strings.HasPrefix(meta, "cancelled") {
-		t.Fatalf("the list must reconcile after the delete, meta = %q", meta)
+	for _, it := range itemsOf(m, srcWorkItems) {
+		if it.ID == "wi-1" {
+			t.Fatalf("a deleted item must leave the list, got %v", titles(itemsOf(m, srcWorkItems)))
+		}
 	}
+}
+
+// THE SERVER'S REFUSAL IS SURFACED. A parent with children cannot be permanently deleted (the
+// plane refuses rather than cascading), and that refusal must land in the operator's face — not
+// as a row that quietly stays put, which is exactly the failure this whole fix is about.
+func TestDeletingAParentWithChildrenReportsTheRefusal(t *testing.T) {
+	p := newPlane()
+	p.seedProject("proj-1", "Orchicon")
+	p.addItem(&apiv1.WorkItem{Id: "epic-1", Title: "Epic", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC, ProjectId: "proj-1", Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING})
+	p.addItem(&apiv1.WorkItem{Id: "wi-kid", Title: "Kid", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_TASK, ParentId: "epic-1", ProjectId: "proj-1", Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING})
+	m := newModel(t, p)
+	m.SelectSource(srcWorkItems)
+	load(t, m, srcWorkItems)
+	if !m.SelectItem(srcWorkItems, "epic-1") {
+		t.Fatal("could not select the epic")
+	}
+
+	press(t, m, kit2.DeleteChord)
+	run(t, m, press(t, m, "enter"))
+	if len(p.hardDeleted) != 0 {
+		t.Fatalf("the plane refuses a parent with children; the fake must too, got %v", p.hardDeleted)
+	}
+	if !strings.Contains(m.Notice(), "children") {
+		t.Fatalf("the refusal must be reported, notice = %q", m.Notice())
+	}
+}
+
+// THE REVERSIBLE OPERATION IS NOT LOST. ctrl+x is now permanent, so the soft delete's outcome
+// must still be reachable — it is a STATUS CHANGE, and the status editor performs it.
+func TestCancelledIsStillReachableThroughTheStatusEditor(t *testing.T) {
+	p := newPlane()
+	p.seedProject("proj-1", "Orchicon")
+	p.addItem(&apiv1.WorkItem{Id: "wi-1", Title: "Item", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_TASK, ProjectId: "proj-1", Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING})
+	m := newModel(t, p)
+	m.SelectSource(srcWorkItems)
+	load(t, m, srcWorkItems)
+
+	run(t, m, press(t, m, "s"))
+	f := m.ActiveForm()
+	if f == nil {
+		t.Fatal("'s' must open the status form")
+	}
+	// The OPTION must be offered on the control, not merely accepted on the wire: an operator
+	// looking for the reversible gesture has to be able to find "cancelled" in the list.
+	if !formOffersOption(f, "status", "cancelled") {
+		t.Fatal("the status control no longer offers 'cancelled' — the reversible half of what ctrl+x " +
+			"used to do would be unreachable")
+	}
+	// Choose it, then submit: the same two steps the operator performs.
+	f.Values["status"] = "cancelled"
+	run(t, m, submit(t, m, "priority"))
+	var cancelled bool
+	for _, req := range p.updated {
+		if req.GetStatus() == apiv1.WorkItemStatus_WORK_ITEM_STATUS_CANCELLED {
+			cancelled = true
+		}
+	}
+	if !cancelled {
+		t.Fatal("the status form must still be able to set cancelled — it is the reversible half of " +
+			"what ctrl+x used to do")
+	}
+}
+
+// formOffersOption reports whether the named select/picker field lists a value.
+func formOffersOption(f *kit2.Form, field, value string) bool {
+	for _, spec := range f.Specs {
+		if spec.Name != field {
+			continue
+		}
+		for _, o := range spec.Options {
+			if o.Value == value {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func TestArchiveRestoreFromArchiveView(t *testing.T) {

@@ -230,8 +230,14 @@ func TestBulkDeleteOnWorkItemsStillCallsTheWorkItemRPC(t *testing.T) {
 			if err := a.Do(context.Background()); err != nil {
 				t.Fatalf("work-item bulk delete failed: %v", err)
 			}
-			if len(p.deleted) != 2 {
-				t.Fatalf("DeleteWorkItem calls = %d, want 2", len(p.deleted))
+			// HardDeleteWorkItem, because the Work panes' delete IS the GUI's permanent
+			// Delete (the soft delete is a status change, done in the status editor).
+			if len(p.hardDeleted) != 2 {
+				t.Fatalf("HardDeleteWorkItem calls = %d, want 2", len(p.hardDeleted))
+			}
+			if len(p.deleted) != 0 {
+				t.Errorf("the bulk delete called the SOFT DeleteWorkItem (%v) — that leaves the rows on screen",
+					p.deleted)
 			}
 			if len(p.projDeleted) != 0 {
 				t.Errorf("the WORK ITEM bulk delete called DeleteProject %d time(s)", len(p.projDeleted))

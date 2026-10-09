@@ -60,7 +60,7 @@ code{font-size:.86em; background:var(--paper-2); padding:.1em .35em; border-radi
    operator asked to keep. (It also leaves the underlying text as ordinary spaces, so a copy of it
    pastes as "(ORCA · CON)" rather than with invisible thin-space characters.) */
 .byline{font:500 11px/1 var(--mono); letter-spacing:.09em; word-spacing:-.15em; color:var(--ink-3); white-space:nowrap; margin-left:7px}
-/* Nav row: nine links, never squeezed, and WRAPS rather than breaks.
+/* Nav row: ten links, never squeezed, and WRAPS rather than breaks.
 
    WHY IT BROKE. The row is a flex row, so when its contents exceed the container the
    ITEMS shrink; with no `white-space:nowrap` the label then broke mid-phrase
@@ -76,7 +76,7 @@ code{font-size:.86em; background:var(--paper-2); padding:.1em .35em; border-radi
 
    THE FIX, in two parts, so neither depends on guessing font metrics:
      1. `gap` 22px -> 12px here and 28px -> 20px on the row (a 154px swing), which is
-        what actually makes nine links fit the capped container. `nowrap` + `flex:none`
+        what actually makes ten links fit the capped container. `nowrap` + `flex:none`
         on each link keeps a label whole and un-shrunk.
      2. `flex-wrap:wrap` + `justify-content:flex-end` as a BACKSTOP: if a wider platform
         font still overflows, the links wrap onto a second line (the row grows, because
@@ -134,9 +134,6 @@ h1{font-size:clamp(40px, 6.2vw, 78px); line-height:.98; letter-spacing:-.035em; 
 .lede{font-size:clamp(18px,2vw,21px); color:var(--ink-2); margin:0; max-width:40ch}
 .hero-side p{margin:0 0 18px; color:var(--ink-2); font-size:clamp(17px,1.8vw,19px)}
 .hero-side .meta{font-size:14px; color:var(--ink-3); margin:18px 0 0}
-.install{display:flex; align-items:center; gap:10px; background:var(--console); color:var(--on-console); border-radius:var(--radius-s); padding:14px 14px 14px 16px; font:500 14px/1.4 var(--mono); min-width:0}
-.install .prompt{color:var(--signal); user-select:none}
-.install code{background:none; padding:0; font-size:inherit; white-space:nowrap; flex:1; min-width:0; overflow-x:auto}
 .copy{flex:none; font:600 13px var(--sans); color:var(--on-console); background:transparent; border:1px solid var(--console-rule); border-radius:5px; padding:6px 10px; cursor:pointer}
 .copy:hover{border-color:var(--on-console-2)}
 .hero-actions{display:flex; gap:12px; margin-top:18px; flex-wrap:wrap}
@@ -351,10 +348,7 @@ table.fk tbody th{vertical-align:top}
 .qs b{display:block; margin-bottom:4px}
 .qs span{color:var(--ink-2); font-size:16px}
 
-/* cta + footer */
-.cta{padding:110px 0; text-align:left}
-.cta .slogan{max-width:18ch}
-.cta-mark{width:72px; height:72px; color:var(--ink); margin-bottom:28px}
+/* footer */
 footer{border-top:1px solid var(--rule); padding:36px 0 48px; font-size:14px; color:var(--ink-3)}
 footer .wrap{display:flex; flex-wrap:wrap; gap:14px 28px; justify-content:space-between}
 footer nav{display:flex; gap:20px; flex-wrap:wrap}
@@ -368,6 +362,46 @@ dialog.lb{border:0; padding:0; background:transparent; max-width:96vw; max-heigh
 dialog.lb::backdrop{background:rgba(4,10,8,.88)}
 dialog.lb img{max-width:96vw; max-height:88vh; width:auto; height:auto; border-radius:8px}
 dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); color:#fff; background:transparent; border:1px solid rgba(255,255,255,.3); padding:8px 14px; border-radius:6px; cursor:pointer}
+
+/* contact / community — the outward-facing links.
+   Brand glyphs are INLINED (paths from simple-icons) rather than loaded, because the
+   page is a single self-contained document served from a CDN: an icon font or an
+   external SVG request would add a network dependency and a failure mode to every
+   view for six marks that never change. */
+/* min(300px, 100%) IS LOAD-BEARING, not defensive: a bare 300px track cannot shrink,
+   and the container is min(1200px, 100% - 48px) — which is 272px at a 320px viewport,
+   so the tile would overflow and give the page a horizontal scrollbar on the narrowest
+   phones. Clamping the track to the container keeps one column there and three at
+   desktop width (6 tiles = two tidy rows) with no breakpoint of its own.
+   LEFT-ALIGNED AT REST: the section reads as a list of places, not as a pitch, so it
+   inherits the page's left-aligned rhythm. (It used to say "rather than centring like the
+   CTA above it" — that closing CTA was removed as redundant, so this section is now the
+   last one on the page and there is no CTA to contrast with.) */
+.contact .social{list-style:none; margin:0; padding:0; display:grid; gap:14px;
+  grid-template-columns:repeat(auto-fit, minmax(min(300px, 100%), 1fr))}
+.social a{display:flex; align-items:center; gap:14px; padding:16px; background:var(--paper-2);
+  border:1px solid var(--rule); border-radius:var(--radius-m); text-decoration:none; color:var(--ink);
+  transition:border-color .15s ease, transform .15s ease}
+.social a:hover{border-color:var(--cobalt); transform:translateY(-2px)}
+.social .social-icon{flex:none; width:40px; height:40px; display:grid; place-items:center;
+  border-radius:var(--radius-s); background:var(--paper); color:var(--ink);
+  transition:color .15s ease}
+.social .social-icon svg{width:22px; height:22px; display:block; fill:currentColor}
+/* The mark takes the channel's colour on hover/focus only, so the row stays calm at
+   rest and the target is unambiguous under the cursor. Keyboard focus gets the same
+   treatment as hover (via :focus-visible), not a weaker one. */
+.social a:hover .social-icon,.social a:focus-visible .social-icon{color:var(--brand, var(--cobalt))}
+.social .social-text{display:flex; flex-direction:column; min-width:0}
+.social .social-text b{font-weight:600; font-size:16px}
+.social .social-text span{color:var(--ink-3); font-size:14px; overflow-wrap:anywhere}
+.s-discord{--brand:#5865F2}
+.s-youtube{--brand:#FF0000}
+.s-linkedin{--brand:#0A66C2}
+.s-reddit{--brand:#FF4500}
+/* X and GitHub are both essentially BLACK marks. They follow the theme's ink instead
+   of a brand colour, or they would disappear against the dark background. */
+.s-x,.s-github{--brand:var(--ink)}
+
 </style>
 </head>
 <body>
@@ -406,6 +440,11 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
       </div>
       <a href="#pricing">Pricing</a>
       <a href="#install">Install</a>
+      <!-- Contact sits in the bar because it is the one link a visitor looks for
+           there by reflex. It is a FLAT link (not a group), so it takes the same
+           `.nav nav a` declarations as Pricing and Install — which is what makes it
+           unsplittable and unshrinkable below. -->
+      <a href="#contact">Contact</a>
     </nav>
     <a class="btn btn-quiet" href="https://github.com/beardedparrott/Orchicon">
       <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38v-1.33c-2.23.48-2.7-1.07-2.7-1.07-.36-.92-.89-1.17-.89-1.17-.73-.5.06-.49.06-.49.8.06 1.23.83 1.23.83.71 1.22 1.87.87 2.33.66.07-.52.28-.87.5-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 014 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -427,11 +466,6 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
     </div>
     <div class="hero-side">
       <p>One command installs the whole stack: control plane, web app, terminal client, Postgres, NATS and a Grafana telemetry plane.</p>
-      <div class="install" role="group" aria-label="Install command">
-        <span class="prompt">$</span>
-        <code id="cmd-hero">curl -fsSL https://orchicon.dev/install | bash</code>
-        <button class="copy" data-copy="cmd-hero">Copy</button>
-      </div>
       <div class="hero-actions">
         <a class="btn btn-primary" href="#install">Install Orchicon</a>
         <a class="btn btn-quiet" href="https://github.com/beardedparrott/Orchicon/blob/main/USERGUIDE.md">User Guide</a>
@@ -758,7 +792,7 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
         <div class="chips"><span class="chip">Reconcilers</span><span class="chip">Scheduler</span><span class="chip">Rego policy</span><span class="chip">Budgets</span><span class="chip">Recovery</span><span class="chip">Audit</span></div></div>
       <div class="layer"><b>State and signals</b><span>Postgres with row-level security, NATS, and an OpenTelemetry collector feeding Tempo, Loki and VictoriaMetrics</span></div>
       <div class="layer"><b>Runtimes</b><span>Built-in engine or adapters over <code>orchicon.adapter.v1</code>, each run in its own warm-pool container, run as your user, torn down at completion</span>
-        <div class="chips"><span class="chip">Built-in engine</span><span class="chip">OpenCode</span><span class="chip">Your adapter</span></div></div>
+        <div class="chips"><span class="chip">Native Orchicon</span><span class="chip">OpenCode</span><span class="chip">Claude</span></div></div>
     </div>
   </div>
 </section>
@@ -817,7 +851,7 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
     <div>
       <h2 class="title">Install in one command</h2>
       <p class="intro" style="margin-bottom:28px">The installer downloads the <code>orchicon</code> binary, pulls the images, starts the runtime daemon and launches a single-container instance. Re-run it to update.</p>
-      <div class="tabs" role="tablist" aria-label="Install method">
+      <div class="tabs" role="tablist" aria-label="Install method" id="install-tabs">
         <button role="tab" aria-selected="true" aria-controls="p-unix" id="t-unix">macOS / Linux</button>
         <button role="tab" aria-selected="false" aria-controls="p-win" id="t-win" tabindex="-1">Windows</button>
         <button role="tab" aria-selected="false" aria-controls="p-docker" id="t-docker" tabindex="-1">Docker</button>
@@ -849,19 +883,50 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
   </div>
 </section>
 
-<section class="cta">
+<section class="block contact" id="contact">
   <div class="wrap">
-    <svg viewBox="0 0 100 100" aria-hidden="true" class="mark cta-mark"><path class="arrows" d="M15.94 68.20Q15.27 81.96 15.35 83.18Q15.44 84.40 15.69 85.74L15.94 87.08L16.61 86.91L19.04 83.81L20.13 83.81Q23.32 86.49 24.79 87.54Q26.26 88.59 28.36 89.77Q30.45 90.94 32.84 91.95Q35.23 92.95 37.63 93.67Q40.02 94.38 42.07 94.80Q44.13 95.22 45.85 95.39Q47.57 95.55 49.87 95.55L52.18 95.55L52.18 95.05Q45.97 90.86 45.05 90.06L44.13 89.26L44.13 88.26L49.58 81.46L49.58 80.96Q44.46 80.62 42.83 80.24Q41.19 79.87 39.26 79.11Q37.33 78.36 35.65 77.47Q33.98 76.59 32.34 75.42L30.70 74.24L30.70 73.24Q32.13 72.15 32.84 71.81L33.56 71.48L33.56 70.89Q29.61 69.80 23.78 69.04Q17.95 68.29 16.95 68.25L15.94 68.20Z M90.35 70.72Q89.51 70.81 85.61 72.65Q81.71 74.50 81.21 74.50L80.70 74.50L77.60 65.94L77.10 65.94Q74.83 69.38 73.07 71.27Q71.31 73.15 69.59 74.50Q67.87 75.84 66.69 76.55Q65.52 77.27 64.14 77.94Q62.75 78.61 62.16 78.61L61.58 78.61L61.41 78.44L61.24 74.75L60.65 74.66Q58.14 77.35 54.03 82.55L49.92 87.75L49.92 88.42Q58.05 93.62 60.44 95.30Q62.84 96.98 63.76 97.48Q64.68 97.99 64.97 97.99L65.27 97.99Q65.27 97.40 64.85 96.14Q64.43 94.88 64.43 94.09L64.43 93.29Q68.29 91.69 70.93 90.31Q73.57 88.93 75.34 87.71Q77.10 86.49 78.61 85.28Q80.12 84.06 81.75 82.51Q83.39 80.96 84.77 79.40Q86.16 77.85 87.79 75.46Q89.43 73.07 89.89 72.15Q90.35 71.22 90.35 70.97L90.35 70.72Z M16.36 29.11Q15.77 29.11 13.38 30.33Q10.99 31.54 8.01 32.80Q5.03 34.06 2.52 35.44L0.00 36.83L0.00 37.33Q2.10 37.84 3.23 38.38L4.36 38.93Q4.36 40.10 3.98 41.57Q3.61 43.04 3.36 45.18Q3.10 47.32 3.23 50.29Q3.36 53.27 3.73 55.49Q4.11 57.72 4.74 59.98Q5.37 62.25 6.12 64.26Q6.88 66.28 7.93 68.41Q8.98 70.55 10.07 72.40L11.16 74.24L11.66 74.24Q12.00 64.85 12.12 64.35L12.25 63.84Q15.35 64.01 18.62 64.43L21.90 64.85Q21.90 64.35 20.81 62.29Q19.71 60.23 19.21 58.85Q18.71 57.47 18.33 56.00Q17.95 54.53 17.70 52.56Q17.45 50.59 17.53 47.32L17.62 44.04Q18.79 43.96 20.09 44.55Q21.39 45.13 21.64 45.13L21.90 45.13Q21.90 44.63 21.56 43.41Q21.22 42.20 19.84 38.76Q18.46 35.32 17.41 32.21L16.36 29.11Z M90.10 25.17L89.60 25.17Q88.67 34.40 88.59 34.52L88.51 34.65Q86.33 34.56 82.55 34.02L78.78 33.47Q78.78 33.98 79.45 35.36Q80.12 36.74 80.62 38.13Q81.12 39.51 81.50 40.90Q81.88 42.28 82.17 44.25Q82.47 46.22 82.47 48.41Q82.47 50.59 82.21 52.35L81.96 54.11Q80.29 53.94 79.32 53.40Q78.36 52.85 78.10 52.85L77.85 52.85Q77.85 53.44 78.36 55.41Q78.86 57.38 80.96 63.17L83.05 68.96Q83.64 68.96 89.89 66.11Q96.14 63.26 98.07 62.16L100.00 61.07L100.00 60.49Q96.73 59.73 96.18 59.44L95.64 59.14Q95.64 57.89 96.06 55.70Q96.48 53.52 96.64 51.47Q96.81 49.41 96.77 47.40Q96.73 45.39 96.48 43.46Q96.22 41.53 95.85 39.81Q95.47 38.09 94.71 35.70Q93.96 33.31 93.33 31.80Q92.70 30.29 91.40 27.73L90.10 25.17Z M50.92 11.16Q50.34 11.16 49.75 11.41Q49.16 11.66 48.07 11.91Q46.98 12.16 44.92 12.33Q42.87 12.50 41.99 12.84Q41.11 13.17 40.60 13.55Q40.10 13.93 39.35 14.97Q38.59 16.02 38.34 16.69Q38.09 17.37 38.05 18.46L38.00 19.55Q38.51 19.55 39.89 19.00Q41.28 18.46 43.50 17.28Q45.72 16.11 47.40 14.89Q49.08 13.67 50.00 12.67L50.92 11.66L50.92 11.16Z M50.67 2.01L50.76 2.60Q54.95 5.54 56.46 6.84L57.97 8.14L57.97 9.14Q56.46 11.74 55.24 13.26Q54.03 14.77 53.23 15.52L52.43 16.28L52.52 16.86Q55.45 16.95 57.30 17.32Q59.14 17.70 61.49 18.58Q63.84 19.46 65.94 20.60Q68.04 21.73 69.42 22.82L70.81 23.91L70.81 25.00Q69.80 25.76 68.88 26.22L67.95 26.68L68.04 27.27Q71.73 28.27 77.22 29.15Q82.72 30.03 83.77 30.12L84.82 30.20Q86.33 16.61 86.33 14.30L86.33 12.00L85.82 12.00Q83.47 14.43 83.26 14.56L83.05 14.68L81.96 14.68Q78.69 11.91 77.01 10.70Q75.34 9.48 73.07 8.18Q70.81 6.88 69.13 6.12Q67.45 5.37 65.27 4.61Q63.09 3.86 61.20 3.36Q59.31 2.85 56.80 2.47Q54.28 2.10 52.47 2.06L50.67 2.01Z" fill="currentColor" fill-rule="evenodd"/><path class="whale" d="M51.17 7.21Q49.83 5.96 48.53 5.12Q47.23 4.28 45.47 3.52Q43.71 2.77 42.79 2.64Q41.86 2.52 40.14 2.64Q38.42 2.77 36.33 3.40Q34.23 4.03 32.05 4.87Q29.87 5.70 28.61 6.42Q27.35 7.13 25.76 7.84Q24.16 8.56 23.41 8.52Q22.65 8.47 20.64 7.72Q18.62 6.96 17.58 6.71Q16.53 6.46 15.48 6.42Q14.43 6.38 13.42 6.54Q12.42 6.71 11.83 7.09Q11.24 7.47 11.16 7.72L11.07 7.97Q13.34 9.56 14.39 10.61Q15.44 11.66 15.98 12.58Q16.53 13.51 16.61 14.26Q16.69 15.02 15.02 16.99Q13.34 18.96 12.58 20.01Q11.83 21.06 9.90 24.08Q7.97 27.10 7.84 27.52Q7.72 27.94 7.55 28.10Q7.38 28.27 7.38 28.61L7.38 28.94Q7.72 28.94 12.29 26.59Q16.86 24.24 17.53 24.20L18.20 24.16Q20.22 30.12 20.81 31.59Q21.39 33.05 21.56 33.14Q21.73 33.22 21.77 33.43L21.81 33.64L22.15 33.64Q22.32 33.22 22.48 33.18Q22.65 33.14 23.32 32.09Q23.99 31.04 25.08 29.74Q26.17 28.44 28.06 26.64Q29.95 24.83 30.33 24.83Q30.70 24.83 30.79 24.92Q30.87 25.00 31.00 26.93Q31.12 28.86 31.25 29.32L31.38 29.78Q32.47 29.70 32.89 29.45Q33.31 29.19 34.14 28.36Q34.98 27.52 35.61 26.59Q36.24 25.67 36.58 24.79Q36.91 23.91 37.25 22.11L37.58 20.30Q41.61 18.79 43.62 17.74Q45.64 16.69 49.04 13.26Q52.43 9.82 52.56 9.82L52.68 9.82Q52.77 9.14 52.64 8.81Q52.52 8.47 51.17 7.21Z" fill="#2D8C88" fill-rule="evenodd"/><path class="whale-light" d="M29.07 22.19Q27.60 22.23 26.05 22.65Q24.50 23.07 22.78 23.83Q21.06 24.58 19.88 24.58L18.71 24.58Q18.96 26.59 20.22 29.87L21.48 33.14L22.65 33.14Q23.99 31.04 25.08 29.74Q26.17 28.44 28.44 26.30Q30.70 24.16 30.70 23.24Q30.70 22.32 30.62 22.23Q30.54 22.15 29.07 22.19Z" fill="#5CBFA2" fill-rule="evenodd"/><path class="whale-eye" d="M41.61 8.52Q41.44 8.31 40.56 7.97Q39.68 7.63 39.14 7.59Q38.59 7.55 37.88 7.68Q37.16 7.80 36.45 8.05Q35.74 8.31 34.90 8.81Q34.06 9.31 33.60 9.82Q33.14 10.32 33.10 10.61Q33.05 10.91 33.26 11.12Q33.47 11.33 33.89 11.54Q34.31 11.74 34.82 11.87Q35.32 12.00 36.70 12.00Q38.09 12.00 38.76 11.70Q39.43 11.41 40.56 10.44Q41.69 9.48 41.74 9.10Q41.78 8.72 41.61 8.52Z" fill="#EFF0E0" fill-rule="evenodd"/><path class="whale-jaw" d="M52.52 9.73Q51.85 9.73 50.96 10.19Q50.08 10.65 48.87 11.03Q47.65 11.41 46.52 11.62Q45.39 11.83 43.71 11.95Q42.03 12.08 41.07 12.54Q40.10 13.00 39.47 13.67Q38.84 14.35 38.34 15.23Q37.84 16.11 37.67 16.82Q37.50 17.53 37.50 18.96L37.50 20.39Q38.17 20.39 39.39 19.92Q40.60 19.46 43.20 18.16Q45.81 16.86 49.16 13.51Q52.52 10.15 52.52 9.94L52.52 9.73Z" fill="#5CBFA2" fill-rule="evenodd"/></svg>
-    <p class="slogan">Leave the agents at the prompt. Put Workers on the payroll.</p>
-    <p class="intro" style="margin:-4px 0 28px">Give them a backlog, a process and a budget, and let them ship.</p>
-    <div class="hero-actions">
-      <a class="btn btn-primary" href="#install">Install Orchicon</a>
-      <a class="btn btn-quiet" href="https://github.com/beardedparrott/Orchicon">Star on GitHub</a>
-      <a class="btn btn-quiet" href="https://github.com/beardedparrott/Orchicon/blob/main/USERGUIDE.md">User Guide</a>
-    </div>
+    <h2 class="title">Contact &amp; community</h2>
+    <p class="intro">Follow along, ask a question, or show us what you built. These are the places we post, answer and ship from.</p>
+    <ul class="social">
+      <li>
+        <a class="s-discord" href="https://discord.gg/PYUSGe5REq">
+          <span class="social-icon"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z"/></svg></span>
+          <span class="social-text"><b>Discord</b><span>Join the community server</span></span>
+        </a>
+      </li>
+      <li>
+        <a class="s-youtube" href="https://www.youtube.com/@Orchicon">
+          <span class="social-icon"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg></span>
+          <span class="social-text"><b>YouTube</b><span>Tutorials, demos, deep dives</span></span>
+        </a>
+      </li>
+      <li>
+        <a class="s-linkedin" href="https://www.linkedin.com/company/orchicon">
+          <span class="social-icon"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg></span>
+          <span class="social-text"><b>LinkedIn</b><span>Company updates</span></span>
+        </a>
+      </li>
+      <li>
+        <a class="s-reddit" href="https://www.reddit.com/r/Orchicon">
+          <span class="social-icon"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 0C5.373 0 0 5.373 0 12c0 3.314 1.343 6.314 3.515 8.485l-2.286 2.286C.775 23.225 1.097 24 1.738 24H12c6.627 0 12-5.373 12-12S18.627 0 12 0Zm4.388 3.199c1.104 0 1.999.895 1.999 1.999 0 1.105-.895 2-1.999 2-.946 0-1.739-.657-1.947-1.539v.002c-1.147.162-2.032 1.15-2.032 2.341v.007c1.776.067 3.4.567 4.686 1.363.473-.363 1.064-.58 1.707-.58 1.547 0 2.802 1.254 2.802 2.802 0 1.117-.655 2.081-1.601 2.531-.088 3.256-3.637 5.876-7.997 5.876-4.361 0-7.905-2.617-7.998-5.87-.954-.447-1.614-1.415-1.614-2.538 0-1.548 1.255-2.802 2.803-2.802.645 0 1.239.218 1.712.585 1.275-.79 2.881-1.291 4.64-1.365v-.01c0-1.663 1.263-3.034 2.88-3.207.188-.911.993-1.595 1.959-1.595Zm-8.085 8.376c-.784 0-1.459.78-1.506 1.797-.047 1.016.64 1.429 1.426 1.429.786 0 1.371-.369 1.418-1.385.047-1.017-.553-1.841-1.338-1.841Zm7.406 0c-.786 0-1.385.824-1.338 1.841.047 1.017.634 1.385 1.418 1.385.785 0 1.473-.413 1.426-1.429-.046-1.017-.721-1.797-1.506-1.797Zm-3.703 4.013c-.974 0-1.907.048-2.77.135-.147.015-.241.168-.183.305.483 1.154 1.622 1.964 2.953 1.964 1.33 0 2.47-.81 2.953-1.964.057-.137-.037-.29-.184-.305-.863-.087-1.795-.135-2.769-.135Z"/></svg></span>
+          <span class="social-text"><b>Reddit</b><span>r/Orchicon discussions</span></span>
+        </a>
+      </li>
+      <li>
+        <a class="s-x" href="https://x.com/orchicon">
+          <span class="social-icon"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14.234 10.162 22.977 0h-2.072l-7.591 8.824L7.251 0H.258l9.168 13.343L.258 24H2.33l8.016-9.318L16.749 24h6.993zm-2.837 3.299-.929-1.329L3.076 1.56h3.182l5.965 8.532.929 1.329 7.754 11.09h-3.182z"/></svg></span>
+          <span class="social-text"><b>X</b><span>@orchicon</span></span>
+        </a>
+      </li>
+      <li>
+        <a class="s-github" href="https://github.com/beardedparrott/Orchicon">
+          <span class="social-icon"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg></span>
+          <span class="social-text"><b>GitHub</b><span>Source, issues and releases</span></span>
+        </a>
+      </li>
+    </ul>
   </div>
 </section>
-
 </main>
 
 <footer>
@@ -1048,7 +1113,24 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
     "t-win":"Runs the whole stack inside WSL2. Needs Windows 10 21H2+ or Windows 11 and Docker Desktop with WSL integration.",
     "t-docker":"Web app on port 8080, Grafana on 3002. Your data lives in the <code>orchicon-data</code> volume."
   };
-  var tabs = document.querySelectorAll('[role="tab"]');
+  // SCOPED TO THIS TABLIST, and the scoping IS the fix.
+  //
+  // This was a page-wide query for [role="tab"], which in a static page looks harmless
+  // and is not: it matched EVERY tab on the page — the five web-app tabs and the four
+  // terminal tabs, as well as these three. Those tabs carry no `aria-controls` (they
+  // switch by data-web / data-tui), so `getAttribute` returned null, `getElementById(null)`
+  // returned null, and `null.hidden = ...` threw a TypeError.
+  //
+  // AND THEY PRECEDE THESE IN THE DOCUMENT, so the throw happened on the FIRST iteration —
+  // before these three tabs were reached at all. Clicking Windows or Docker therefore did
+  // nothing whatsoever: `aria-selected` was never updated and the panel never un-hid. The
+  // reporter saw it as "the Windows and Docker buttons are not working. it stays on the
+  // Linux install line", and nothing in this repo renders the page, so no gate saw it.
+  //
+  // The other two tablists select by their own attribute ([data-web] / [data-tui]); this
+  // one selects within its own tablist, which is the same idea expressed for markup that
+  // has no such attribute.
+  var tabs = document.querySelectorAll('#install-tabs [role="tab"]');
   function select(t){
     tabs.forEach(function(x){
       var on = x === t;

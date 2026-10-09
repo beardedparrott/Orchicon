@@ -820,7 +820,7 @@ than discarded:
 | Variable | Default | Purpose |
 |---|---|---|
 | `ORCHICON_PERMISSION_POLICY` | *(per-instance data dir)* | The permission policy file to read |
-| `ORCHICON_ASK_CONSENT_WAIT` | `15m` | How long a permission card waits for an answer before it expires (a timeout is a denial, and the model is told it expired) |
+| `ORCHICON_ASK_CONSENT_WAIT` | *unset — no bound* | Optional **leash** on a permission card. Unset (the default), a card waits for the operator **indefinitely**: answering it, stopping the turn or sending a new message is what ends the wait, because an expiry is what took a card away from an operator who stepped away from their keyboard (their rule: "the cards should just wait for the user no matter what"). Set it to a duration to restore the old fail-closed expiry — a timeout is then a **denial**, and the model is told it expired rather than that the operator refused |
 | `ORCHICON_GUARD_POLICY` / `_PROJECT` / `_GRANTS` / `_ONCE` / `_FULLSEND` | *(set by the plane)* | The interactive guard shim's per-invocation contract. Set by the Ask path; not operator-set |
 
 
@@ -965,15 +965,47 @@ When a `project_dir` sits outside every root the control plane cannot see it, an
 
 #### Host residency: the plane on the host, the services containerized
 
-The control plane can run as a **host process** while the same instance's Postgres, NATS and telemetry plane keep running inside the container. Residency is a **per-instance, opt-in launch setting** read by `scripts/container.sh`, so dev can migrate first while prod stays exactly as it is:
+The control plane runs as a **host process** by default, while the same instance's Postgres, NATS and telemetry plane keep running inside its container. Residency is a **per-instance** setting read by `scripts/container.sh`, by `orchicon install`, and by the Makefile's rebuild targets — so one instance can use either shape while the others stay exactly as they are:
 
 | Setting | Where | Default | Effect |
 |---|---|---|---|
-| `ORCHICON_PLANE_RESIDENCY` | launcher env (`up`/`down`/`rebuild`) | `container` | `host` starts the container in **services-only mode** and the plane as a host process |
+| `ORCHICON_PLANE_RESIDENCY` | launcher env (`up`/`down`/`rebuild`), `orchicon install` | `host` | `host` starts the container in **services-only mode** and the plane as a host process; `container` puts the plane back inside the container. This row read `container` while the prose below it (and the code) defaulted to `host` — a self-contradiction, corrected here |
 | `ORCHICON_CONTAINER_SERVICES_ONLY` | set by the launcher *into the container* | unset | `1` ⇒ `cmd/orchicon/container.go` skips the plane child |
 | `ORCHICON_SERVE_STATE_DIR` | host plane env | `.dev` | per-instance PID/log root for `serve --detach`/`--stop`, so two host planes never share one PID file |
 
 **Host is the default through both entry points that rebuild an instance, and the two differ deliberately.** `scripts/container.sh up|down|rebuild <inst>` resolves `${ORCHICON_PLANE_RESIDENCY:-host}`; `make rebuild-dev` / `make rebuild-prod` pin `residency=host` as a target-specific override; `make container-rebuild <inst>` keeps the Makefile's own `residency = container` variable. So `scripts/orchicon.sh start dev` and `make rebuild-dev` both give a host plane with no setting at all. The rollback is one word — `make rebuild-prod residency=container` puts prod's plane back inside its container — and each instance's shape is independent, so one can migrate while the other does not.
+
+**`orchicon install` resolves the same question, and it can PROMPT.** The one-command installer asks for
+residency before it pulls anything (a pull can take minutes, and no operator should be asked a question
+after waiting for it), then resolves every published port. `ORCHICON_PLANE_RESIDENCY` and
+`ORCHICON_INSTANCE` both apply. The installer and the launcher agree by construction — the port table is
+shared and a test asserts the two agree (`TestInstallPortDefaultsMatchContainerScript`), so an instance's
+ports do not depend on which entry point created it.
+
+**Three instance columns, and a resolved port PER INSTANCE.** `dev`, `prod` and a throwaway **`test`**
+instance each have their own defaults, so a third can run beside the other two without a collision (the
+old shape fell anything that was not literally `prod` into dev's column, which collided silently):
+
+| Port (`Env` pins it) | What | dev | prod | test |
+|---|---|---|---|---|
+| `ORCHICON_CONTROL_PORT` | Control plane (web UI + API) | 8080 | 8091 | 8092 |
+| `ORCHICON_GRAFANA_PORT` | Grafana | 3002 | 3003 | 3004 |
+| `ORCHICON_POSTGRES_PORT` | PostgreSQL | 5432 | 5433 | 5434 |
+| `ORCHICON_NATS_PORT` | NATS event bus | 4222 | 4223 | 4224 |
+| `ORCHICON_NATS_MONITOR_PORT` | NATS monitoring | 8222 | 8223 | 8224 |
+| `ORCHICON_OTLP_GRPC_PORT` | OTLP gRPC (telemetry) | 4317 | 4319 | 4321 |
+| `ORCHICON_OTLP_HTTP_PORT` | OTLP HTTP (telemetry) | 4318 | 4320 | 4322 |
+| `ORCHICON_TEMPO_PORT` | Tempo (traces) | 3200 | 3201 | 3202 |
+| `ORCHICON_LOKI_PORT` | Loki (logs) | 3100 | 3101 | 3102 |
+| `ORCHICON_VM_PORT` | VictoriaMetrics (metrics) | 8428 | 8429 | 8430 |
+
+**Setting any of those variables PINS that port and skips its prompt** — the knobs are the non-interactive
+path, which is what a scripted or headless install needs. Left unset, a port already in use raises a
+**prompt on the controlling terminal** (`/dev/tty`, not stdin, so a piped install can still ask) offering
+the next free port. `ORCHICON_STRICT_PORTS=1` makes a conflict **fatal instead**, for an install that must
+not silently move a port. A container-resident install asks about fewer ports than a host-resident one,
+because a host plane reaches the services over loopback rather than through publishes — the prompt lists
+only what that shape actually binds.
 
 **What is published in host mode** — every service bound to **`127.0.0.1` only** (a database and an internal event bus must never be on the LAN), on ports that are disjoint per instance:
 
@@ -1329,7 +1361,7 @@ therefore kept out of it.
 | `ORCHICON_COMPACT_MIN_TURNS` | `2` | Minimum completed turns before the compact-on-budget-breach gate is armed (prevents compact-at-start and the compact loop) |
 | `ORCHICON_COMPACT_MAX` | `1` | Max compactions per execution. The spend accumulator is cumulative, so once a budget is tripped it stays tripped — capping at 1 prevents re-collapsing the fresh post-compact summary every turn. 0 disables compaction entirely |
 | `ORCHICON_FOLLOWUP_REPLY_WINDOW` | `30m` | Async follow-up reply window; the collected reply is written when it lands within this bound |
-| `ORCHICON_ASK_REPLY_WINDOW` | `30m` | Ask Orchicon detached reply window; a turn that does not complete within this bound is persisted as a timeout error message |
+| `ORCHICON_ASK_REPLY_WINDOW` | `30m` | Ask Orchicon detached reply window; a turn that goes quiet for this bound is persisted as a timeout error message. A turn **parked on a permission/question card is exempt** — the operator is what it is waiting on, so the window re-arms and the registry's TTL sweep spares it (see §Ask Orchicon consent), and the turn ends on a decision or a stop rather than on a timer |
 | `ORCHICON_ASK_TIMEOUT` | `60s` | Ask Orchicon send-accept bound: how long a turn's attempt waits for the serve to accept the sent message once subscribed. A wedged serve fails fast instead of silently queuing |
 | `ORCHICON_ASK_SERVE_DOWN_GRACE` | `15s` | Ask Orchicon serve-down fast-fail: how long a turn whose serve has NEVER accepted a connection keeps retrying before the reply is persisted as a serve-unavailable error (a serve that was live earlier keeps the full reply window for restart recovery) |
 | `ORCHICON_ASK_REATTACH_BACKOFF` | `2s` | Ask Orchicon pause between re-attach attempts after serve loss mid-reply (the collector retries inside the reply window) |
@@ -1339,7 +1371,7 @@ therefore kept out of it.
 | `ORCHICON_ASK_TURN_MAX_AGE` | `31m` | Ask Orchicon turn-registry TTL: a turn older than this is evicted by the background sweeper (collector cancelled, serve session aborted) so no conversation can be blocked forever by a wedged collector |
 | `ORCHICON_ASK_SWEEP_INTERVAL` | `1m` | Ask Orchicon turn-registry sweeper tick interval (dev/test knob) |
 | `ORCHICON_PERMISSION_POLICY` | *(per-instance data dir)* | The Ask permission policy file (`deny`/`accept` lists). Read on **every** gated decision, so an edit takes effect on the next call — no restart |
-| `ORCHICON_ASK_CONSENT_WAIT` | `15m` | How long a permission card waits for an answer before it expires. A timeout is a **denial** (fail closed), and the model is told it *expired* rather than that the operator refused |
+| `ORCHICON_ASK_CONSENT_WAIT` | *unset — no bound* | Optional leash on a permission card; unset means a card waits for the operator indefinitely (a human deciding is not a stall, and no timer ends the wait). When set, a timeout is a **denial** (fail closed) and the model is told it *expired* rather than that the operator refused. `ORCHICON_CLAUDE_CONSENT_WAIT` is the same knob for the claude transport, and the two defaults are kept identical on purpose |
 | `ORCHICON_ASK_MCP_TOOL_WEDGE_WINDOW` | `120s` | A tool call issued but never resolved within this window is treated as a wedged MCP call and the session is recycled (any activity resets it) |
 | `ORCHICON_ASK_MCP_RECONNECT_ATTEMPTS` | `3` | How many times a wedged session is recycled within one turn before the turn is failed with a clear, retryable error |
 | `ORCHICON_MCP_TENANT_ID` | `tnt_dev` | Tenant for the built-in Orchicon MCP registered on the host serve |

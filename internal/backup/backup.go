@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -67,10 +66,14 @@ func expandDir(dir string) (string, error) {
 	return filepath.Clean(dir), nil
 }
 
-// Create dumps the database named by dsn to a timestamped .sql file using
-// the local pg_dump (Postgres runs as a sibling process — in the
-// single-container deployment that is localhost:<port> inside the same
-// container; there is no docker-exec indirection).
+// Create dumps the database named by dsn to a timestamped .sql file.
+//
+// The pg_dump it runs is resolved per RESIDENCY (see pgclient.go): a local
+// binary when this process can reach Postgres directly (a container-resident
+// plane, or a host install with its own server), and `docker exec` into the
+// instance's services container when the plane runs on the HOST and Postgres
+// lives in that container — which is the default shape, and the case that made
+// every backup fail with `exec: "pg_dump": executable file not found in $PATH`.
 func Create(ctx context.Context, dsn, dir string) (*Info, error) {
 	dir, err := expandDir(dir)
 	if err != nil {
@@ -88,12 +91,21 @@ func Create(ctx context.Context, dsn, dir string) (*Info, error) {
 	}
 	defer f.Close()
 
+	client, err := resolvePGClient(dsn)
+	if err != nil {
+		os.Remove(path)
+		return nil, err
+	}
 	// --clean --if-exists emit DROP TABLE IF EXISTS before each CREATE,
 	// so the dump can be restored on top of a live (non-empty) database.
-	cmd := exec.CommandContext(ctx, "pg_dump",
-		"-d", dsn,
+	cmd, err := client.command(ctx, pgToolDump,
+		"-d", client.dsn,
 		"--clean", "--if-exists",
 		"--no-owner", "--no-acl")
+	if err != nil {
+		os.Remove(path)
+		return nil, err
+	}
 	cmd.Stdout = f
 	var stderrBuf strings.Builder
 	cmd.Stderr = &stderrBuf
@@ -129,15 +141,22 @@ func Restore(ctx context.Context, dsn, path string) error {
 	}
 	defer f.Close()
 
-	// Pipe the backup file into psql against the DSN directly (no
-	// docker-exec). -v ON_ERROR_STOP=1 makes psql exit non-zero on the
-	// first SQL error; --single-transaction rolls back the whole restore
-	// if anything fails, so a bad backup cannot leave the database
-	// half-restored.
-	cmd := exec.CommandContext(ctx, "psql",
-		"-d", dsn,
+	// Pipe the backup file into psql against the DSN — through the SAME resolver
+	// Create uses, so a restore can never reach a different Postgres than the dump
+	// came from. -v ON_ERROR_STOP=1 makes psql exit non-zero on the first SQL
+	// error; --single-transaction rolls back the whole restore if anything fails,
+	// so a bad backup cannot leave the database half-restored.
+	client, err := resolvePGClient(dsn)
+	if err != nil {
+		return err
+	}
+	cmd, err := client.command(ctx, pgToolRestore,
+		"-d", client.dsn,
 		"-v", "ON_ERROR_STOP=1",
 		"--single-transaction")
+	if err != nil {
+		return err
+	}
 	cmd.Stdin = f
 	var stderrBuf strings.Builder
 	cmd.Stderr = &stderrBuf

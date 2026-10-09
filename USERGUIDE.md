@@ -179,10 +179,35 @@ curl -fsSL https://orchicon.dev/install | bash -s -- --force-clean
 | `<install-dir>/orchicon` | The `orchicon` binary (control plane + embedded frontend + migrations + container configs). On Windows this lives **inside the WSL2 distro** (`~/.local/bin/orchicon`). |
 | `~/.local/share/orchicon/` | Runtime state, PID files, logs (`.dev/`), blob store (`data/`). On Windows, under the WSL distro's home. |
 
+### Which shape you get
+
+**The plane runs on your host by default**, while the services it needs — Postgres, NATS and the
+telemetry plane — run in the instance's container. That is the supported shape, and it is what lets
+the plane reach your project directories and your user's git identity directly. The whole stack
+**can** also run inside the container instead: set `ORCHICON_PLANE_RESIDENCY=container` (on the
+installer, or the launcher's `up`/`down`/`rebuild`) and nothing else changes. Both shapes are
+per-instance and independently reversible — see ARCHITECTURE → *Host residency*.
+
+### Ports and instances
+
+An install resolves every published port for its instance, and **three instance columns** exist —
+`dev`, `prod` and a throwaway `test` — so several instances can run side by side without colliding:
+
+| Port | dev | prod | test |
+|---|---|---|---|
+| Web UI + API (`ORCHICON_CONTROL_PORT`) | 8080 | 8091 | 8092 |
+| Grafana (`ORCHICON_GRAFANA_PORT`) | 3002 | 3003 | 3004 |
+
+**Setting the variable pins the port and skips the prompt** — the non-interactive path for a scripted
+install. Left unset, a port already in use raises a prompt on your terminal offering the next free one;
+`ORCHICON_STRICT_PORTS=1` makes that conflict **fatal instead**, if you would rather fail than move a
+port. The remaining service ports (Postgres, NATS, OTLP, Tempo, Loki, VictoriaMetrics) follow the same
+pattern with their own per-instance defaults — the full table is in ARCHITECTURE → *Host residency*.
+
 ### Run the container directly
 
-The whole Orchicon stack (Postgres, NATS, Tempo/Loki/VictoriaMetrics/Grafana,
-control plane) runs in one container:
+The whole stack — Postgres, NATS, Tempo/Loki/VictoriaMetrics/Grafana and the
+control plane — can run in one container:
 
 ```bash
 docker run --rm -p 8080:8080 -p 3002:3000 -v orchicon-data:/var/lib/orchicon ghcr.io/beardedparrott/orchicon
@@ -697,6 +722,11 @@ share the same filter bar, selection set and auto-refresh loop.
   once the dependency is met. Only a terminal **success** unblocks: a failed or
   cancelled blocker leaves the dependent blocked and visible for you to resolve.
   Blocked is system-managed — it is not manually movable on the board.
+- **`skipped` is yours to set.** It is a terminal status the sequence engine consumes as
+  *terminal success* and passes over, so setting it is how you tell a chain **"do not run
+  this child"** without cancelling it. It is offered by the status control on the board and
+  the detail page, by the TUI's status editor (`s`), and through the Ask Orchicon tool. Unlike
+  `blocked` and the in-flight states, a human assigns this one deliberately.
 - **Kind switching re-resolves the tree.** Changing an item's kind walks the
   parent up to the nearest shallower ancestor, moves children that can no longer
   sit beneath it under its resolved parent, and — for a non-schedulable kind
@@ -736,7 +766,9 @@ written per step, **two steps bound to the same ticket can run in parallel**.
 
 **Actions.** Create, edit every mutable field, change status and priority,
 schedule, assign/unassign a worker, reorder children, archive/restore, delete
-(→ cancelled). Bulk operations act on the current selection.
+(**permanent** — the same deletion the GUI's Delete performs; an item with children
+is refused. For a reversible change, set the status to **cancelled**). Bulk
+operations act on the current selection.
 
 ### 7.3 Runtime Images
 
@@ -1498,7 +1530,11 @@ advertises the chord whenever there is a split on screen.
   Use it to grab a draft, or to throw one away and start again.
 - **`ctrl+v`** reads the clipboard: an **image** on the clipboard is **attached to
   your next message**, while **text** on the clipboard is **pasted into the
-  composer**. One key, whichever you have.
+  composer**. One key, whichever you have. If a card's free-text row is open — an ask
+  card's **Other**, or an answered question's draft row — the text goes **into that row**
+  instead, so you can paste an error trace or a code block straight into your answer
+  (line breaks are kept; the row holds your words, not a structured field). A row you
+  have handed back to the composer with `ctrl+g` does not take it.
 - **`ctrl+f`** attaches a **file by path**. Both this and a clipboard image land in
   the pending set for the next message, reported in the strip above the composer.
 - **Pasted text never sends until you press Enter.**
@@ -1695,8 +1731,12 @@ The richest surface in the client. Three display groupings over the real fields:
 | `J` / `K` | Reorder children — **the only sequence mutation** |
 | `a` | Archive |
 | `R` | Restore |
-| `x` | Delete (→ cancelled) |
+| `ctrl+x` | Delete — **permanent** (the GUI's Delete; an item with children is refused) |
 | `/` then text | Search |
+
+Search narrows the list **through collapsed nodes**: a query reveals matching items
+even when their parent is collapsed (their ancestors are kept so the result keeps its
+hierarchy), and clearing the query restores the collapse you had.
 
 Every destructive chord is confirm-gated, and the list reconciles after a write.
 
@@ -1709,7 +1749,7 @@ Detail includes tag, status, base, version and built version, apt packages,
 toolchains, environment, and any Dockerfile override, plus the last build log.
 
 **Chords.** `n` create · `e` edit the spec (version-carried) · `b` **build**, with
-logs streaming live into the pane · `x` delete (confirm-gated).
+logs streaming live into the pane · `ctrl+x` delete (confirm-gated).
 
 ---
 

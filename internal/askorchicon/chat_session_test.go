@@ -1399,7 +1399,7 @@ func TestTurnRegistrySweep(t *testing.T) {
 	r.turns["conv_old"] = old
 	r.mu.Unlock()
 
-	evicted := r.sweep(now, 5*time.Minute)
+	evicted := r.sweep(now, 5*time.Minute, nil)
 	if len(evicted) != 1 || evicted[0].convID != "conv_old" || evicted[0].tenant != "tnt_old" {
 		t.Fatalf("evicted = %+v, want [conv_old/tnt_old]", evicted)
 	}
@@ -1436,12 +1436,62 @@ func TestTurnRegistrySweepKeepsAWorkingTurn(t *testing.T) {
 	r.turns["conv_long"] = long
 	r.mu.Unlock()
 
-	evicted := r.sweep(now, 5*time.Minute)
+	evicted := r.sweep(now, 5*time.Minute, nil)
 	if len(evicted) != 0 {
 		t.Fatalf("a turn still producing output was swept: %+v", evicted)
 	}
 	if _, ok := r.turns["conv_long"]; !ok {
 		t.Fatal("a still-productive turn must survive the sweep")
+	}
+}
+
+// TestTurnRegistrySweepSparesATurnParkedOnACard is the SECOND quiet-time deadline, and it is the one
+// that makes the first one's fix hold.
+//
+// The reply window (30m) fires first and, after the fix, re-arms while the turn is parked. The TTL
+// sweep (31m) used to be the backstop half a minute behind it — so fixing only the window would have
+// MOVED the kill rather than removed it: at 31 quiet minutes the sweeper cancelled the turn and the
+// caller aborted its serve session, which finalizes the ask exactly as the window had. The carve-out
+// therefore belongs in both deadlines, and both take it from ONE source (hasOpenAsk), so "spare this
+// turn" and "a decision can still land here" cannot drift apart.
+func TestTurnRegistrySweepSparesATurnParkedOnACard(t *testing.T) {
+	r := newTurnRegistry()
+	_, cancelParked := context.WithCancelCause(context.Background())
+	if _, ok := r.register("conv_parked", "tnt_dev", "msg_parked", cancelParked); !ok {
+		t.Fatal("register conv_parked")
+	}
+	now := time.Now()
+	r.mu.Lock()
+	parked := r.turns["conv_parked"]
+	parked.lastActivity = now.Add(-2 * time.Hour)
+	r.turns["conv_parked"] = parked
+	r.mu.Unlock()
+
+	parkedOnly := func(convID string) bool { return convID == "conv_parked" }
+	if evicted := r.sweep(now, 5*time.Minute, parkedOnly); len(evicted) != 0 {
+		t.Fatalf("a turn parked on the operator was swept: %+v", evicted)
+	}
+	if _, ok := r.turns["conv_parked"]; !ok {
+		t.Fatal("a parked turn must survive the sweep — reaping it finalizes the very ask the operator " +
+			"is being asked to answer")
+	}
+
+	// AND THE CARVE-OUT IS NARROW. A quiet turn that is NOT parked is still reaped, so the backstop
+	// the sweep exists for (a collector that can never finalize) is intact — a change that spared
+	// every quiet turn would have removed the guarantee rather than extended it.
+	_, cancelQuiet := context.WithCancelCause(context.Background())
+	if _, ok := r.register("conv_quiet", "tnt_dev", "msg_quiet", cancelQuiet); !ok {
+		t.Fatal("register conv_quiet")
+	}
+	r.mu.Lock()
+	quiet := r.turns["conv_quiet"]
+	quiet.lastActivity = now.Add(-2 * time.Hour)
+	r.turns["conv_quiet"] = quiet
+	r.mu.Unlock()
+
+	evicted := r.sweep(now, 5*time.Minute, parkedOnly)
+	if len(evicted) != 1 || evicted[0].convID != "conv_quiet" {
+		t.Fatalf("evicted = %+v, want [conv_quiet] — the carve-out must spare only the parked turn", evicted)
 	}
 }
 

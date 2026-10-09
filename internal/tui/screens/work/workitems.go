@@ -11,8 +11,9 @@ package work
 //     auto_start_workflow,
 //   - AssignWorker / UnassignWorker,
 //   - ReorderWorkItems (the ONLY mutation of sequence order),
-//   - DeleteWorkItem (soft delete → cancelled), ArchiveWorkItem /
-//     RestoreWorkItem — the last two Confirm-gated.
+//   - HardDeleteWorkItem (permanent — the GUI's Delete, which the TUI's ctrl+x
+//     now performs; DeleteWorkItem's soft delete is a STATUS CHANGE and lives in
+//     the status editor), ArchiveWorkItem / RestoreWorkItem — all Confirm-gated.
 //
 // Switching kind re-resolves the hierarchy and epic/feature are
 // non-schedulable (worker/schedule cleared) — both are enforced
@@ -81,7 +82,9 @@ func kindOptions() []kit2.Option {
 
 // statusOptions is the user-assignable status vocabulary. The
 // system-managed states (running/blocked/idea/archived/…) are deliberately
-// absent — a human cannot assign them.
+// absent — a human cannot assign them. "skipped" IS user-assignable (the
+// sequence engine consumes it as terminal-success and passes over it),
+// which is why it is included below.
 func statusOptions() []kit2.Option {
 	return []kit2.Option{
 		{Value: "pending", Label: "pending"},
@@ -736,12 +739,28 @@ func (m *Model) itemActions() []kit2.Action {
 			},
 		},
 		{
+			// THE GUI'S DELETE, WHICH IS PERMANENT. The operator: "Deleting work items in the
+			// TUI is no longer working." It was not working because it was the GUI's OTHER
+			// gesture: this called DeleteWorkItem, which soft-deletes (status → cancelled),
+			// while the TUI's tree has no status filter — so the row STAYED IN THE LIST and the
+			// delete looked like a no-op. The prod audit trail has the fingerprint: five
+			// `work_item.deleted` calls on one item in 40 seconds (each with before.status
+			// already cancelled), then a `work_item.hard_deleted` once the operator gave up and
+			// used the GUI. The GUI's own toolbar delete is hard (useBatchDeleteWorkItems →
+			// hardDeleteWorkItem); this is the TUI catching up to it.
+			//
+			// The REVERSIBLE operation is not lost — it is a status change, which the status
+			// editor (`s`, or `e` → status) already performs, and the confirm says so, because
+			// an operator who wants "just cancel it" must not be left guessing.
 			Label: "delete", Key: kit2.DeleteChord, Danger: true, Source: srcWorkItems,
-			Confirm:  "Delete " + title + "?\nThis soft-deletes the item (status → cancelled) and it leaves every active view.",
-			Apply:    func() { m.setRowMeta(srcWorkItems, id, "cancelled") },
+			Confirm: "Permanently delete " + title + "?\n" +
+				"This removes it and its dependencies for good — it cannot be undone.\n" +
+				"An item with children is refused (delete the children first); to MOVE it out of\n" +
+				"the way reversibly instead, set its status to cancelled (s or e).",
+			Apply:    func() { m.RemoveRow(srcWorkItems, id) },
 			Rollback: func() { m.Refresh(srcWorkItems) },
 			Do: func(ctx context.Context) error {
-				_, err := m.cl.WorkItems.DeleteWorkItem(ctx, connect.NewRequest(&apiv1.DeleteWorkItemRequest{Id: id}))
+				_, err := m.cl.WorkItems.HardDeleteWorkItem(ctx, connect.NewRequest(&apiv1.HardDeleteWorkItemRequest{Id: id}))
 				return err
 			},
 		},

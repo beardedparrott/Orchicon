@@ -140,7 +140,22 @@ func TestAPreAckFailureIsSurfacedOnTheTranscript(t *testing.T) {
 	m.chatStore.append("c1", chat.ChatItem{Kind: chat.KindUser, Text: "why can't you connect?", Key: "draft-1", Live: true, At: 1})
 	m.onChatWake()
 
-	if strings.Contains(m.View(), "401") {
+	// GUARD ON THE FAILURE, NOT ON A BARE NUMBER.
+	//
+	// This used to be `strings.Contains(m.View(), "401")`, and the view renders the plane's address
+	// in the status row (`http://127.0.0.1:<port>`). `newAskApp` builds its stub with
+	// httptest.NewServer, which picks a RANDOM ephemeral port — so whenever that port happened to
+	// contain "401" (:40123, :14019, :34011, :24010, …), the guard fired on a URL and failed the
+	// test with "the failure is already on screen" when nothing was on screen at all.
+	//
+	// Measured: ~1.25% of runs (5 failures / 400), and the same rate on `main`, so it is a
+	// pre-existing flake rather than anything a change introduced. It is worth pinning because a
+	// rare, self-explaining-as-a-fixture-error failure is expensive to diagnose: the message blames
+	// the fixture, and the real cause is a port number.
+	//
+	// "401 Unauthorized" is the whole failure signature the assertions below look for, and unlike a
+	// bare "401" it cannot be forged by an address.
+	if strings.Contains(m.View(), "401 Unauthorized") {
 		t.Fatal("fixture: the failure is already on screen, so this test would measure nothing")
 	}
 

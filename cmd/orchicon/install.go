@@ -59,21 +59,51 @@ func runInstall(args []string, log *slog.Logger) error {
 		fmt.Println("orchicon: no external adapter CLI found — the built-in engine will run sessions (nothing to install)")
 	}
 
-	// 2. Ensure the published images are present (skip the pull when the
-	// tag is already local — idempotent re-runs and local dev images).
-	// The :gui and :dev runtime variants ship with the product (work-item
-	// dropdown stock images), so pull them alongside the base.
-	for _, img := range []string{containerImage, runtimeImage,
-		"ghcr.io/beardedparrott/orchicon-runtime:gui-" + imageTag,
-		"ghcr.io/beardedparrott/orchicon-runtime:dev-" + imageTag,
-	} {
-		if imagePresent(img) {
-			fmt.Printf("image %s present\n", img)
-			continue
+	// 1.6. Plane residency, then host-side ports — both resolved BEFORE the image
+	// pull, because the pull can take minutes and an operator must never be asked
+	// a question after waiting for it. The residency comes first because it decides
+	// WHICH ports the instance binds. The terminal is opened and closed here; a nil
+	// tty means "no terminal", which takes the defaults rather than blocking a
+	// headless install.
+	residency, err := residencyForInstall()
+	if err != nil {
+		return err
+	}
+	tty, ttyOwned := promptTerminal()
+	if ttyOwned {
+		defer tty.Close()
+	}
+	ports, err := resolveInstallPorts(instance, residency, os.Stdout, tty)
+	if err != nil {
+		return err
+	}
+
+	// 2. Ensure the published images are present (skip the pull when the tag is
+	// already local — idempotent re-runs and local dev images).
+	//
+	// REQUIRED images: the instance image and the workflow runtime base. Without
+	// these the install cannot produce a working instance, so a failure is fatal.
+	for _, img := range []string{containerImage, runtimeImage} {
+		if err := pullImageIfAbsent(img); err != nil {
+			return err
 		}
-		fmt.Printf("pulling %s …\n", img)
-		if out, err := exec.Command("docker", "pull", img).CombinedOutput(); err != nil {
-			return fmt.Errorf("pull %s: %v: %s", img, err, strings.TrimSpace(string(out)))
+	}
+	// SUPPLEMENTARY images: the :gui and :dev variants are the stock runtime
+	// images a work item can pick, not prerequisites for an install. A missing tag
+	// therefore WARNS rather than failing.
+	//
+	// THIS BEING FATAL IS HOW THE INSTALL BROKE. The refs were built as
+	// "<suffix>-<tag>", so the default "latest" produced "...:gui-latest" — a tag
+	// release.yml NEVER PUBLISHES (it publishes "<suffix>-<version>" plus a
+	// FLOATING ":gui"/":dev"). Every fresh install aborted right here, before
+	// creating anything, with:
+	//   pull ghcr.io/beardedparrott/orchicon-runtime:gui-latest: not found
+	// The ref is built correctly now (runtimeVariantRef), and a supplementary
+	// image can no longer fail an install even if the registry drops a tag again.
+	for _, img := range []string{runtimeVariantRef("gui", imageTag), runtimeVariantRef("dev", imageTag)} {
+		if err := pullImageIfAbsent(img); err != nil {
+			fmt.Printf("warning: %v\n", err)
+			fmt.Println("  (the stock runtime image variants are supplementary — continuing)")
 		}
 	}
 
@@ -84,17 +114,56 @@ func runInstall(args []string, log *slog.Logger) error {
 		return err
 	}
 
-	// 4. Create + start the single-container instance (or report the
-	// existing one).
-	if err := ensureInstallContainer(instance, name, dataVolume, socketDir, containerImage); err != nil {
+	// 4. HOST RESIDENCY: migrate the data dir BEFORE the instance container is
+	// created — and the order is load-bearing in TWO ways.
+	//
+	// FIRST, the KEK. The plane loads <DataDir>/secrets/kek on boot, so migrating
+	// must precede the plane's start or a fresh empty host dir would mint a NEW KEK
+	// and orphan every tenant secret.
+	//
+	// SECOND, and this was wrong before: migrating AFTER ensureInstallContainer
+	// means `docker run` has already auto-created the volume and booted the
+	// services into it, so the "migration" copies the CONTAINER'S OWN fresh boot
+	// state rather than the previous instance's data. Observed on a real install —
+	// "copying volume orchicon-cnt-test-data" moments after that volume was
+	// created: a no-op migration dressed as a real one, which on a genuine
+	// container→host switch would have copied the wrong thing while reporting
+	// success. scripts/container.sh migrates before it brings the instance up; this
+	// now does too.
+	var hostDir string
+	if residency == residencyHost {
+		var err error
+		hostDir, err = hostDataDir(instance)
+		if err != nil {
+			return err
+		}
+		if err := migrateHostDataDir(instance, dataVolume, hostDir, os.Stdout); err != nil {
+			return err
+		}
+	}
+
+	// 4b. Create + start the single-container instance (or report the existing
+	// one).
+	if err := ensureInstallContainer(instance, residency, name, dataVolume, socketDir, containerImage, ports); err != nil {
 		return err
 	}
 
-	// 5. Wait for the control plane to serve health.
-	controlPort := "8080"
-	if instance == "prod" {
-		controlPort = "8091"
+	// 4c. HOST RESIDENCY: the container is up, so wait for its services and then
+	// start the plane on THIS host. Waiting first keeps the plane's migrations from
+	// racing a half-started postgres.
+	if residency == residencyHost {
+		waitServicesReady(name, os.Stdout)
+		if err := startHostPlane(instance, ports, hostDir, filepath.Join(socketDir, "runtime.sock"), os.Stdout); err != nil {
+			return err
+		}
 	}
+
+	// 5. Wait for the control plane to serve health, ON THE PORT THIS INSTALL
+	// PUBLISHED — read back from the resolved set rather than re-derived from
+	// the instance name. Re-deriving is how a moved port gets probed at the old
+	// one, and a neighbouring instance answering there would report a healthy
+	// install that is not this one.
+	controlPort := fmt.Sprintf("%d", ports["ORCHICON_CONTROL_PORT"])
 	healthURL := "http://localhost:" + controlPort + "/healthz"
 	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
@@ -114,7 +183,7 @@ func runInstall(args []string, log *slog.Logger) error {
 	installDir := env("ORCHICON_INSTALL_DIR", defaultInstallDir())
 	installOrchLauncher(installDir)
 
-	printInstallInfo(instance, name, dataVolume, socketDir, healthURL, runtimeImage, installDir)
+	printInstallInfo(instance, residency, name, dataVolume, socketDir, healthURL, runtimeImage, installDir, ports)
 	return nil
 }
 
@@ -162,21 +231,41 @@ func installOrchLauncherFrom(exe, installDir string) {
 	if runtime.GOOS == "windows" {
 		link += ".exe"
 	}
-	// Refresh an owned symlink in place.
-	if st, err := os.Lstat(link); err == nil && st.Mode()&os.ModeSymlink != 0 {
-		if target, err := os.Readlink(link); err == nil && target == sibling {
-			fmt.Printf("orch launcher already installed: %s\n", link)
-			return
+	// An existing path at the launcher location.
+	//
+	// A SYMLINK POINTING ELSEWHERE IS NOT OURS TO REPOINT, and that was a real bug
+	// caught in the wild: `orchicon install` run from a build directory refreshed
+	// the symlink to point at ITS OWN sibling, silently hijacking a launcher that
+	// another install — or a development checkout — had put there. The operator
+	// then ran `orch` and got a binary they never chose, with the thing they DID
+	// choose quietly detached.
+	//
+	// So only a symlink already pointing at OUR sibling is treated as ours, and is
+	// then a no-op. Anything else — a foreign symlink, a regular file — is left
+	// alone with a warning, and ORCHICON_FORCE_LAUNCHER=1 is the explicit opt-in to
+	// replace it. Installing must never relocate someone else's launcher.
+	if st, err := os.Lstat(link); err == nil {
+		if st.Mode()&os.ModeSymlink != 0 {
+			target, _ := os.Readlink(link)
+			if target == sibling {
+				fmt.Printf("orch launcher already installed: %s\n", link)
+				return
+			}
+			if os.Getenv("ORCHICON_FORCE_LAUNCHER") != "1" {
+				fmt.Printf("warning: %s is a symlink to %s, not to this install's %s — leaving it alone (set ORCHICON_FORCE_LAUNCHER=1 to replace)\n", link, target, sibling)
+				return
+			}
+			fmt.Printf("replacing existing %s (ORCHICON_FORCE_LAUNCHER=1)\n", link)
+			_ = os.Remove(link)
+		} else {
+			// A regular file (or other non-symlink) occupies the path.
+			if os.Getenv("ORCHICON_FORCE_LAUNCHER") != "1" {
+				fmt.Printf("warning: %s exists and is not an orch symlink — skipping (set ORCHICON_FORCE_LAUNCHER=1 to replace)\n", link)
+				return
+			}
+			fmt.Printf("replacing existing %s (ORCHICON_FORCE_LAUNCHER=1)\n", link)
+			_ = os.Remove(link)
 		}
-		_ = os.Remove(link)
-	} else if err == nil {
-		// A regular file (or other non-symlink) occupies the path.
-		if os.Getenv("ORCHICON_FORCE_LAUNCHER") != "1" {
-			fmt.Printf("warning: %s exists and is not an orch symlink — skipping (set ORCHICON_FORCE_LAUNCHER=1 to replace)\n", link)
-			return
-		}
-		fmt.Printf("replacing existing %s (ORCHICON_FORCE_LAUNCHER=1)\n", link)
-		_ = os.Remove(link)
 	}
 	if err := os.Symlink(sibling, link); err != nil {
 		fmt.Printf("warning: could not symlink orch launcher: %v\n", err)
@@ -263,11 +352,22 @@ func socketHealthy(socketPath string) bool {
 // socket directory. Project dirs are added later via the UI (the plane
 // writes /var/lib/orchicon/project-mounts; re-running `orchicon install`
 // or using scripts/container.sh sync-mounts applies them).
-func ensureInstallContainer(instance, name, dataVolume, socketDir, image string) error {
+func ensureInstallContainer(instance, residency, name, dataVolume, socketDir, image string, ports map[string]int) error {
 	running, _ := containerRunning(name)
 	if running {
-		fmt.Printf("instance %q already running (%s)\n", name, image)
-		return nil
+		// A running instance is only "already done" when its SHAPE matches. The
+		// residency is recorded at create time and cannot be changed on a live
+		// container, so an instance of the wrong shape has to be RECREATED — the
+		// same thing scripts/container.sh does on a residency mismatch. An
+		// unreadable shape is treated as matching: recreating a live instance on a
+		// transient inspect failure is worse than leaving a wrong-shaped one for
+		// the operator to see.
+		existing, known := containerResidency(name)
+		if !known || existing == residency {
+			fmt.Printf("instance %q already running (%s)\n", name, image)
+			return nil
+		}
+		fmt.Printf("instance %q was created for %s residency but this install wants %s — recreating\n", name, existing, residency)
 	}
 	// A stopped/partial container with the same name blocks recreation.
 	if exists, _ := containerExists(name); exists {
@@ -280,17 +380,14 @@ func ensureInstallContainer(instance, name, dataVolume, socketDir, image string)
 	home, _ := os.UserHomeDir()
 	hostUID := os.Getuid()
 	hostGID := os.Getgid()
-	grafanaPort := "3002"
-	controlPort := "8080"
-	if instance == "prod" {
-		grafanaPort = "3003"
-		controlPort = "8091"
-	}
+	// The Grafana public URL is the PLANE origin (Grafana is proxied same-origin
+	// under /grafana), so it tracks the control port. The publishes themselves are
+	// built by publishArgs below, from the resolved set for THIS shape.
+	controlPort := fmt.Sprintf("%d", ports["ORCHICON_CONTROL_PORT"])
 
 	args := []string{"run", "-d", "--name", name,
 		"--label", "orchicon-instance=" + instance,
 		"--log-driver", "json-file", "--log-opt", "max-size=100m", "--log-opt", "max-file=7",
-		"-p", controlPort + ":8080", "-p", grafanaPort + ":3000",
 		"-v", dataVolume + ":/var/lib/orchicon",
 		"-e", "ORCHICON_GRAFANA_PUBLIC_URL=http://localhost:" + controlPort + "/grafana",
 		"-e", fmt.Sprintf("ORCHICON_HOST_UID=%d", hostUID),
@@ -298,6 +395,20 @@ func ensureInstallContainer(instance, name, dataVolume, socketDir, image string)
 		"-e", "ORCHICON_HOST_HOME=" + home,
 		"-e", "ORCHICON_INSTANCE=" + instance,
 	}
+	// The residency is CREATE-time state: the supervisor reads this flag to decide
+	// whether to boot the plane inside this container or leave it to the host.
+	if residency == residencyHost {
+		args = append(args, "-e", "ORCHICON_CONTAINER_SERVICES_ONLY=1")
+	}
+	// The image's HEALTHCHECK probes the plane, which a host-resident container
+	// does not run — without this override it reports unhealthy forever. See
+	// healthArgs.
+	args = append(args, healthArgs(residency)...)
+	// Publishes come from the RESOLVED set for THIS shape: an override moves the
+	// port, and the shape decides which ports are exposed at all — a host-resident
+	// instance publishes the services so its host plane can reach them over
+	// loopback, and does NOT publish the plane port it owns itself.
+	args = append(args, publishArgs(residency, ports, activeInstallPorts(residency))...)
 	// Scoped host-home mounts (not the whole $HOME).
 	if st, err := os.Stat(filepath.Join(home, ".config/opencode")); err == nil && st.IsDir() {
 		args = append(args, "-v", filepath.Join(home, ".config/opencode")+":"+filepath.Join(home, ".config/opencode")+":ro")
@@ -350,6 +461,42 @@ func imagePresent(img string) bool {
 	return err == nil && strings.TrimSpace(string(out)) != ""
 }
 
+// runtimeVariantRef returns the registry ref for a derived runtime image variant
+// (:gui or :dev) at the requested tag.
+//
+// THE SHAPE MIRRORS THE RELEASE WORKFLOW EXACTLY, and the installer previously
+// got it wrong. release.yml publishes, for a release:
+//
+//	<base>:gui-<version>   and the FLOATING   <base>:gui
+//	<base>:dev-<version>   and the FLOATING   <base>:dev
+//
+// so the floating tag DROPS the version rather than becoming "-latest". The
+// installer built "<suffix>-<tag>", which for the default tag "latest" produced
+// ":gui-latest" — published by nothing, which aborted every fresh install at the
+// image pull. TestRuntimeVariantRefMatchesReleaseWorkflow pins this against
+// release.yml so the two cannot drift again.
+func runtimeVariantRef(suffix, imageTag string) string {
+	const base = "ghcr.io/beardedparrott/orchicon-runtime"
+	if imageTag == "" || imageTag == "latest" {
+		return base + ":" + suffix
+	}
+	return base + ":" + suffix + "-" + imageTag
+}
+
+// pullImageIfAbsent pulls img unless its tag is already local, so an idempotent
+// re-run and a locally-built image cost nothing.
+func pullImageIfAbsent(img string) error {
+	if imagePresent(img) {
+		fmt.Printf("image %s present\n", img)
+		return nil
+	}
+	fmt.Printf("pulling %s …\n", img)
+	if out, err := exec.Command("docker", "pull", img).CombinedOutput(); err != nil {
+		return fmt.Errorf("pull %s: %v: %s", img, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 func containerRunning(name string) (bool, error) {
 	out, err := exec.Command("docker", "inspect", "--format", "{{.State.Running}}", name).Output()
 	if err != nil {
@@ -366,17 +513,27 @@ func containerExists(name string) (bool, error) {
 	return strings.TrimSpace(string(out)) != "", nil
 }
 
-func printInstallInfo(instance, name, dataVolume, socketDir, healthURL, runtimeImage, installDir string) {
-	controlPort := "8080"
-	grafanaPort := "3002"
-	if instance == "prod" {
-		controlPort = "8091"
-		grafanaPort = "3003"
-	}
+func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthURL, runtimeImage, installDir string, ports map[string]int) {
+	// Read back the ports this install actually bound: re-deriving them from the
+	// instance name would print a URL pointing at a port we never bound.
+	controlPort := fmt.Sprintf("%d", ports["ORCHICON_CONTROL_PORT"])
+	grafanaPort := fmt.Sprintf("%d", ports["ORCHICON_GRAFANA_PORT"])
 	fmt.Println()
 	fmt.Println("┌─────────────────────────────────────────────────────────────┐")
 	fmt.Println("│  Orchicon is installed and running.                        │")
 	fmt.Println("└─────────────────────────────────────────────────────────────┘")
+	// State the SHAPE, because it decides where the plane lives and therefore how
+	// the operator restarts it — a host plane is a process on this machine, not
+	// something the container brings back on `docker start`.
+	if residency == residencyHost {
+		fmt.Printf("  Plane residency: host — the services run in %s,\n", name)
+		fmt.Println("                   the control plane runs on this host.")
+		if dataDir, err := hostDataDir(instance); err == nil {
+			fmt.Printf("  Host state:      %s (secrets KEK, blobs, plane PID/logs)\n", dataDir)
+		}
+	} else {
+		fmt.Println("  Plane residency: container — the whole stack runs in the container.")
+	}
 	fmt.Printf("  Control plane:  http://localhost:%s\n", controlPort)
 	fmt.Printf("  Grafana:        http://localhost:%s\n", grafanaPort)
 	fmt.Printf("  Health check:   curl %s\n", healthURL)

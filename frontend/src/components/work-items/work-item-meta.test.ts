@@ -202,6 +202,11 @@ describe("board column mapping and transition matrix (regression guards)", () =>
     expect(task).toContain(WorkItemStatus.FAILED);
   });
 
+  it("tasks/subtasks accept Skipped as a move target (board row status menu)", () => {
+    const task = allowedStatusesForKind(WorkItemKind.TASK);
+    expect(task).toContain(WorkItemStatus.SKIPPED);
+  });
+
   it("terminal statuses are succeeded/skipped/failed/cancelled only", () => {
     expect(isTerminal(WorkItemStatus.SUCCEEDED)).toBe(true);
     expect(isTerminal(WorkItemStatus.SKIPPED)).toBe(true);
@@ -259,8 +264,8 @@ describe("skipped status (terminal-success, skip-status/depends_on interplay)", 
     expect(columnForStatus(WorkItemStatus.SKIPPED)).toBe(WorkItemStatus.SUCCEEDED);
   });
 
-  it("is system-managed (not manually movable) and filterable", () => {
-    expect(MANUALLY_UNMOVABLE_STATUSES.has(WorkItemStatus.SKIPPED)).toBe(true);
+  it("is user-settable (manually movable, like succeeded/cancelled) and filterable", () => {
+    expect(MANUALLY_UNMOVABLE_STATUSES.has(WorkItemStatus.SKIPPED)).toBe(false);
     expect(STATUS_FILTER_OPTIONS.map((o) => o.value)).toContain(WorkItemStatus.SKIPPED);
   });
 });

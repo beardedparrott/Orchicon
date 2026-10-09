@@ -163,7 +163,7 @@ function NewWorkerPage() {
       permissions: DEFAULT_PERMISSIONS,
       gatedTools: "[]",
       budgetOverrides: DEFAULT_BUDGETS,
-      concurrencyLimit: 1,
+      concurrencyLimit: 0,
       versionNote: "",
       skillFiles: "[]",
     },
@@ -481,8 +481,12 @@ function NewWorkerPage() {
                   type="number"
                   min={0}
                   max={1000}
+                  title="0 = unlimited"
                   {...register("concurrencyLimit", { valueAsNumber: true })}
                 />
+                <p className="text-xs text-muted-foreground">
+                  Max concurrent executions against this worker. 0 = unlimited.
+                </p>
                 {errors.concurrencyLimit && (
                   <p className="text-xs text-destructive">
                     {errors.concurrencyLimit.message}

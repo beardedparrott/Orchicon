@@ -156,12 +156,16 @@ const (
 	// dependency (blocks/depends_on edge) is not terminal-success. The
 	// next reconcile pass clears it automatically when the gate satisfies.
 	WorkItemBlocked = "blocked"
-	// WorkItemSkipped is a system-managed terminal-success status set by
-	// the reconcilers when a bound workflow run completes with every
-	// active step terminal-success but at least one step skipped. A
-	// skipped work item satisfies dependency edges exactly like succeeded
-	// and never blocks dependents (docs/02_Domain_Model.md §2.2). Never
-	// user-settable; mirrors WorkItemBlocked's system-managed rule.
+	// WorkItemSkipped is a terminal-success status, user-settable through
+	// the same generic update path as succeeded/cancelled: an operator
+	// marks an item skipped to tell the sequence engine "do not run this
+	// child", and the engine passes over it when deriving the next child
+	// to arm. It is ALSO produced by the reconcilers when a bound workflow
+	// run completes with every active step terminal-success but at least
+	// one step skipped. Either way, a skipped work item satisfies
+	// dependency edges exactly like succeeded and never blocks dependents
+	// (docs/02_Domain_Model.md §2.2). Unlike WorkItemBlocked, it is not
+	// system-managed: a human can set and unset it like any other status.
 	WorkItemSkipped = "skipped"
 	// WorkItemArchived is a user-initiated terminal status set by
 	// ArchiveWorkItem. An archived item is hidden from every normal

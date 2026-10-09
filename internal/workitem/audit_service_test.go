@@ -176,6 +176,81 @@ func TestAuditServiceWorkItemMutations(t *testing.T) {
 	}
 }
 
+// TestUpdateWorkItemAcceptsSkippedStatus pins the Connect UpdateWorkItem
+// contract for the new user-settable "skipped" status (this item's actual
+// remaining work): the generic status write accepts
+// WORK_ITEM_STATUS_SKIPPED exactly like succeeded/cancelled with no new
+// guard, persists "skipped", bumps the version, and emits one
+// work_item.updated audit row + one outbox event in the same transaction.
+// The same test proves the archived/idea guards at service.go:852-863 are
+// untouched: both are still rejected by this path.
+func TestUpdateWorkItemAcceptsSkippedStatus(t *testing.T) {
+	pool, s, ctx, tenantID, _ := auditServiceEnv(t, "tnt_audit_wi_skip")
+	proj := seedAuditProject(t, pool, tenantID)
+
+	created, err := s.CreateWorkItem(ctx, connect.NewRequest(&apiv1.CreateWorkItemRequest{
+		ProjectId: proj,
+		Kind:      apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC,
+		Title:     "Skip target " + strings.ToLower(db.NewID()),
+	}))
+	if err != nil {
+		t.Fatalf("CreateWorkItem: %v", err)
+	}
+	wiID := created.Msg.WorkItem.Id
+	wantVersion := created.Msg.WorkItem.Version + 1
+
+	skipped := apiv1.WorkItemStatus_WORK_ITEM_STATUS_SKIPPED
+	updated, err := s.UpdateWorkItem(ctx, connect.NewRequest(&apiv1.UpdateWorkItemRequest{
+		Id:     wiID,
+		Status: &skipped,
+	}))
+	if err != nil {
+		t.Fatalf("UpdateWorkItem(status=skipped): %v", err)
+	}
+	if updated.Msg.WorkItem.Status != apiv1.WorkItemStatus_WORK_ITEM_STATUS_SKIPPED {
+		t.Fatalf("status = %v, want SKIPPED", updated.Msg.WorkItem.Status)
+	}
+	if updated.Msg.WorkItem.Version != wantVersion {
+		t.Fatalf("version = %d, want %d", updated.Msg.WorkItem.Version, wantVersion)
+	}
+
+	ttx, err := pool.BeginTenantTx(context.Background(), tenantID)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	row, err := db.GetWorkItem(context.Background(), ttx.Tx, tenantID, wiID)
+	ttx.Rollback(context.Background())
+	if err != nil {
+		t.Fatalf("get work item: %v", err)
+	}
+	if row.Status != "skipped" {
+		t.Fatalf("stored status = %q, want \"skipped\"", row.Status)
+	}
+
+	if n := auditEventCount(t, pool, tenantID, "work_item.updated", "work_item", wiID); n != 1 {
+		t.Fatalf("work_item.updated audit rows = %d, want 1", n)
+	}
+	if n := countOutboxEvent(t, pool, ctx, tenantID, "work_item.updated", wiID); n != 1 {
+		t.Fatalf("work_item.updated outbox events = %d, want 1", n)
+	}
+
+	// Pre-existing guards are untouched: archived and idea are still
+	// rejected by this same generic status path — no new skipped guard
+	// was added alongside them.
+	archived := apiv1.WorkItemStatus_WORK_ITEM_STATUS_ARCHIVED
+	if _, err := s.UpdateWorkItem(ctx, connect.NewRequest(&apiv1.UpdateWorkItemRequest{
+		Id: wiID, Status: &archived,
+	})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("status=archived: err = %v, want FailedPrecondition", err)
+	}
+	idea := apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA
+	if _, err := s.UpdateWorkItem(ctx, connect.NewRequest(&apiv1.UpdateWorkItemRequest{
+		Id: wiID, Status: &idea,
+	})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("status=idea: err = %v, want FailedPrecondition", err)
+	}
+}
+
 // TestAuditServiceWorkItemAtomicRollback pins atomicity the other way: a
 // mutation that fails validation must NOT leave an audit row (nothing to
 // record — the row exists iff the mutation committed).
