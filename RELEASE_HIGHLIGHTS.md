@@ -15,6 +15,61 @@
 > tells the tooling which version these highlights describe; update it
 > when you cut.
 
+## v0.5.10
+
+### New: A permission card waits for you, however long you are away
+The card that asks whether a call may proceed used to give up on you. Leave your desk with a question on
+screen and the wait would expire: the call was refused, and the card you came back to could no longer be
+clicked or selected — because every gesture needs the ask to still be **open**. Three separate quiet-time
+deadlines did that, and all three are gone. The reply window now re-arms while a turn is parked on a card;
+the registry sweep skips a conversation with an open ask; and the engine's own per-permission wait no
+longer has a bound at all. A card is bounded by *you* now — you answer it, stop the turn, or send a new
+message — so falling asleep at the keyboard costs you the card no longer. An operator who wants the old
+leash back can set `ORCHICON_ASK_CONSENT_WAIT`, which restores the fail-closed expiry exactly as it was.
+
+### New: Paste into a card's answer
+`ctrl+v` into an ask card's **Other** row works, which it never did. The shell's paste path knew about
+forms but not about a card's free-text row, so the key fell through to the composer and your text landed in
+the message instead of the row you were looking at. Pasting an error trace or a code block straight into an
+answer is the whole point, so **line breaks are preserved** — a card row holds your words, not a structured
+field. The same works for an answered question's draft row.
+
+### New: The installer catches up to host residency — and the ports are yours to pick
+Host residency became the default shape in 0.4; the one-command installer now produces the *same* shape as
+the launcher, so an instance no longer depends on which entry point created it. The installer also asks
+about ports instead of assuming: it resolves every published port per instance, **prompts** on a conflict
+(reading your terminal, so a piped install can still ask), and takes a variable for any port that should be
+pinned and skipped. `ORCHICON_STRICT_PORTS=1` makes a conflict fatal instead of moving a port, for an
+install that must not silently shift. A third **`test`** instance column lets you run a throwaway beside
+`dev` and `prod` without colliding with either.
+
+### New: A safe uninstall, and no more killing by process name
+The uninstall path no longer stops processes by *name* — which could match something that had nothing to do
+with Orchicon — and it will not repoint a launcher it did not create. Migrating an instance's data now
+happens **before** its container exists, so a first switch-over cannot leave a plane booting against an
+empty directory. A host-resident instance also stops reporting itself unhealthy once its services are up.
+
+### Also in this release
+- **Backups work on a host-resident install.** They did not: the dump shelled out to a `pg_dump` that only
+  exists inside the Postgres container, so every backup on a host-resident instance failed with
+  `executable file not found in $PATH`. The tool is now run where it actually lives, with the port
+  translated for the container, and it prefers the container's own client so a version-skewed local one
+  cannot fail the dump.
+- **Work-item search reaches collapsed items.** The tree opens collapsed, and the filter was applied behind
+  the collapse — so no query could reveal a match inside a folded parent, while the search box happily
+  counted it. A query now suspends the collapse, keeps the ancestors of a match so the result holds its
+  shape, and restores your collapse when cleared.
+- **`ctrl+x` on a work item is the real delete.** It was the soft *cancel*, which left the cancelled row on
+  screen — so deleting looked like it did nothing. It now performs the same permanent delete the GUI does,
+  and the reversible status change is still one keystroke away in the status editor.
+- **`skipped` is yours to set.** A terminal status the sequence engine consumes as *success* and passes
+  over, so it is how you tell a chain "do not run this child" without cancelling it.
+- **A runtime-daemon start reaps only its own instance's containers** — a dev start can no longer take
+  prod's containers with it.
+- **The per-worker concurrency limit is enforced**, and a dispatch that waits says why.
+- **The website**: a contact section for every channel, a Contact link in the nav, and the install tabs
+  fixed — clicking Windows or Docker used to change nothing, leaving the macOS/Linux command on screen.
+
 ## v0.5.0
 
 ### New: Claude Code is a first-class runtime — the platform runs on more than one engine now

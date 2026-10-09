@@ -36,15 +36,17 @@ The documentation lives at the project root:
 
 ## Last Release Changes
 
-- **The control plane cannot be taken down by one bad tool call**: Ask Orchicon's `update_work_item` tool dereferenced a workflow id that a scheduled sequence parent holds as NULL **by construction** — a shape the API routes to the sequence chain, but which this path skipped.
-- **A long conversation no longer makes the terminal unresponsive**: Reading a 250-message conversation re-laid out **every** message on **every** frame of **every** pane — markdown, styling and box drawing for each — in order to draw the handful of rows that actually fit on screen.
-- **A timeout measures silence, not age**: Two separate limits measured how **long** a turn had been running, so the more honest work a turn was doing, the more likely it was to be killed at thirty minutes and the failure blamed on the model — naming a model that was perfectly fine.
-- **A compacted conversation says so, and keeps what the work depends on**: A long conversation is periodically summarized so it fits the model's window, and until now that happened **silently**: the only record was a line in the server log, where one conversation collapsed 2,343 messages into a single summary with nothing in the transcript to explain why the assistant no longer remembered what had been said.
-- **The terminal client's ask card offers "Other", the way the browser's does.** The recorded "Orchicon asks" card had no free-text row at all — only a footer pointing at the composer — and clicking the row sent the literal word `Other` as the answer. The row is on the card now, and what you type is sent as your next message.
-- **A path that would destroy the scope can never be approved.** On top of the deny list and the never-allow class: a request whose target is a directory that contains the project you are working in is refused outright, by nobody's approval.
-- **The Windows builds compile, so a release can actually be published.** The 0.4.0 cut could not produce its release assets; the build matrix is green across every platform it ships to.
-- **The build no longer depends on your shell profile.** The makefile resolves its own copy of the schema tooling instead of trusting whatever `PATH` happens to contain at the moment you build.
-- **Docs CI validates Mermaid diagrams**, so a diagram no other check can see cannot silently break in the published documentation.
+- **A permission card waits for you, however long you are away**: The card that asks whether a call may proceed used to give up on you.
+- **Paste into a card's answer**: `ctrl+v` into an ask card's **Other** row works, which it never did.
+- **The installer catches up to host residency**: Host residency became the default shape in 0.4; the one-command installer now produces the *same* shape as
+- **A safe uninstall, and no more killing by process name**: The uninstall path no longer stops processes by *name* — which could match something that had nothing to do
+- **Backups work on a host-resident install.** They did not: the dump shelled out to a `pg_dump` that only
+- **Work-item search reaches collapsed items.** The tree opens collapsed, and the filter was applied behind
+- **`ctrl+x` on a work item is the real delete.** It was the soft *cancel*, which left the cancelled row on
+- **`skipped` is yours to set.** A terminal status the sequence engine consumes as *success* and passes
+- **A runtime-daemon start reaps only its own instance's containers** — a dev start can no longer take
+- **The per-worker concurrency limit is enforced**, and a dispatch that waits says why.
+- **The website**: a contact section for every channel, a Contact link in the nav, and the install tabs
 
 Full details: [release notes on GitHub](https://github.com/beardedparrott/Orchicon/releases).
 
@@ -157,7 +159,7 @@ and [ARCHITECTURE.md §Single-Container Deployment](ARCHITECTURE.md).
 git clone https://github.com/beardedparrott/Orchicon.git
 cd Orchicon
 make build          # → bin/orchicon
-make dev-start      # full dev environment
+scripts/orchicon.sh start dev   # full dev environment (host plane + services)
 ```
 
 ## Development
