@@ -965,15 +965,47 @@ When a `project_dir` sits outside every root the control plane cannot see it, an
 
 #### Host residency: the plane on the host, the services containerized
 
-The control plane can run as a **host process** while the same instance's Postgres, NATS and telemetry plane keep running inside the container. Residency is a **per-instance, opt-in launch setting** read by `scripts/container.sh`, so dev can migrate first while prod stays exactly as it is:
+The control plane runs as a **host process** by default, while the same instance's Postgres, NATS and telemetry plane keep running inside its container. Residency is a **per-instance** setting read by `scripts/container.sh`, by `orchicon install`, and by the Makefile's rebuild targets — so one instance can use either shape while the others stay exactly as they are:
 
 | Setting | Where | Default | Effect |
 |---|---|---|---|
-| `ORCHICON_PLANE_RESIDENCY` | launcher env (`up`/`down`/`rebuild`) | `container` | `host` starts the container in **services-only mode** and the plane as a host process |
+| `ORCHICON_PLANE_RESIDENCY` | launcher env (`up`/`down`/`rebuild`), `orchicon install` | `host` | `host` starts the container in **services-only mode** and the plane as a host process; `container` puts the plane back inside the container. This row read `container` while the prose below it (and the code) defaulted to `host` — a self-contradiction, corrected here |
 | `ORCHICON_CONTAINER_SERVICES_ONLY` | set by the launcher *into the container* | unset | `1` ⇒ `cmd/orchicon/container.go` skips the plane child |
 | `ORCHICON_SERVE_STATE_DIR` | host plane env | `.dev` | per-instance PID/log root for `serve --detach`/`--stop`, so two host planes never share one PID file |
 
 **Host is the default through both entry points that rebuild an instance, and the two differ deliberately.** `scripts/container.sh up|down|rebuild <inst>` resolves `${ORCHICON_PLANE_RESIDENCY:-host}`; `make rebuild-dev` / `make rebuild-prod` pin `residency=host` as a target-specific override; `make container-rebuild <inst>` keeps the Makefile's own `residency = container` variable. So `scripts/orchicon.sh start dev` and `make rebuild-dev` both give a host plane with no setting at all. The rollback is one word — `make rebuild-prod residency=container` puts prod's plane back inside its container — and each instance's shape is independent, so one can migrate while the other does not.
+
+**`orchicon install` resolves the same question, and it can PROMPT.** The one-command installer asks for
+residency before it pulls anything (a pull can take minutes, and no operator should be asked a question
+after waiting for it), then resolves every published port. `ORCHICON_PLANE_RESIDENCY` and
+`ORCHICON_INSTANCE` both apply. The installer and the launcher agree by construction — the port table is
+shared and a test asserts the two agree (`TestInstallPortDefaultsMatchContainerScript`), so an instance's
+ports do not depend on which entry point created it.
+
+**Three instance columns, and a resolved port PER INSTANCE.** `dev`, `prod` and a throwaway **`test`**
+instance each have their own defaults, so a third can run beside the other two without a collision (the
+old shape fell anything that was not literally `prod` into dev's column, which collided silently):
+
+| Port (`Env` pins it) | What | dev | prod | test |
+|---|---|---|---|---|
+| `ORCHICON_CONTROL_PORT` | Control plane (web UI + API) | 8080 | 8091 | 8092 |
+| `ORCHICON_GRAFANA_PORT` | Grafana | 3002 | 3003 | 3004 |
+| `ORCHICON_POSTGRES_PORT` | PostgreSQL | 5432 | 5433 | 5434 |
+| `ORCHICON_NATS_PORT` | NATS event bus | 4222 | 4223 | 4224 |
+| `ORCHICON_NATS_MONITOR_PORT` | NATS monitoring | 8222 | 8223 | 8224 |
+| `ORCHICON_OTLP_GRPC_PORT` | OTLP gRPC (telemetry) | 4317 | 4319 | 4321 |
+| `ORCHICON_OTLP_HTTP_PORT` | OTLP HTTP (telemetry) | 4318 | 4320 | 4322 |
+| `ORCHICON_TEMPO_PORT` | Tempo (traces) | 3200 | 3201 | 3202 |
+| `ORCHICON_LOKI_PORT` | Loki (logs) | 3100 | 3101 | 3102 |
+| `ORCHICON_VM_PORT` | VictoriaMetrics (metrics) | 8428 | 8429 | 8430 |
+
+**Setting any of those variables PINS that port and skips its prompt** — the knobs are the non-interactive
+path, which is what a scripted or headless install needs. Left unset, a port already in use raises a
+**prompt on the controlling terminal** (`/dev/tty`, not stdin, so a piped install can still ask) offering
+the next free port. `ORCHICON_STRICT_PORTS=1` makes a conflict **fatal instead**, for an install that must
+not silently move a port. A container-resident install asks about fewer ports than a host-resident one,
+because a host plane reaches the services over loopback rather than through publishes — the prompt lists
+only what that shape actually binds.
 
 **What is published in host mode** — every service bound to **`127.0.0.1` only** (a database and an internal event bus must never be on the LAN), on ports that are disjoint per instance:
 
