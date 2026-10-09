@@ -340,27 +340,95 @@ func (t *Table) Move(delta int) {
 }
 
 // visibleIndices returns the Rows indices of the visible rows, in order. It is
-// VisibleRows' index twin: the same filter and collapse rules, but it reports
-// positions instead of copies, so a caller can address a SPECIFIC occurrence of a
-// duplicated id.
+// the ONE visibility rule: VisibleRows, the cursor, the click hit-test and the
+// counts all resolve through it, so the drawn list can never disagree with the
+// set the operator can move onto.
 func (t *Table) visibleIndices() []int {
-	open := map[string]bool{}
-	parent := make(map[string]string, len(t.Rows))
+	open, parent := t.collapseState()
+	matching, keep := t.filterSets()
+	out := make([]int, 0, len(t.Rows))
+	for i, r := range t.Rows {
+		if t.filterActive() {
+			// A FILTER SUSPENDS COLLAPSE. The operator: "Searching work items in the TUI
+			// does NOT search items that are collapsed. That is a broken design. The search
+			// should most definitely search through collapsed items as well." A collapsed
+			// node hid every descendant from the list while MatchCount (the "n/m" the search
+			// box itself prints) counted them anyway, so the box claimed matches the list
+			// refused to show — and there was no gesture that could reach them.
+			//
+			// A row survives a query for one of two reasons: it MATCHES (wherever it sits in
+			// the tree), or it is an ANCESTOR of a match and is kept so the result keeps its
+			// hierarchy instead of surfacing as an indented orphan. That ancestor rule is the
+			// GUI's ("filtered results keep their ancestors — file-explorer behavior",
+			// frontend/src/routes/work-items.tsx), so the two clients now narrow the same way.
+			if matching[r.ID] || keep[r.ID] {
+				out = append(out, i)
+			}
+			continue
+		}
+		if hiddenUnderCollapsedAncestor(r, parent, open) {
+			continue
+		}
+		out = append(out, i)
+	}
+	return out
+}
+
+// collapseState snapshots the tree's collapse state: which parents are open, and
+// each row's parent.
+func (t *Table) collapseState() (open map[string]bool, parent map[string]string) {
+	open = make(map[string]bool, len(t.Rows))
+	parent = make(map[string]string, len(t.Rows))
 	for _, r := range t.Rows {
 		if r.Expand {
 			open[r.ID] = r.Open
 		}
 		parent[r.ID] = r.Parent
 	}
-	out := make([]int, 0, len(t.Rows))
-	for i, r := range t.Rows {
-		if hiddenUnderCollapsedAncestor(r, parent, open) {
-			continue
+	return open, parent
+}
+
+// filterActive reports whether a narrowing query is in force. A whitespace-only
+// query is not one — matchesFilter trims, so treating " " as a filter would
+// suspend collapse for a query that hides nothing.
+func (t *Table) filterActive() bool { return strings.TrimSpace(t.Filter) != "" }
+
+// filterSets returns the ids that pass the query and the ids that must remain
+// VISIBLE for structure (the ancestors of matches). Both are empty when no query
+// is active, so the uncollapsed whole-set path costs nothing.
+func (t *Table) filterSets() (matching, keep map[string]bool) {
+	if !t.filterActive() {
+		return nil, nil
+	}
+	matching = make(map[string]bool, len(t.Rows))
+	for _, r := range t.Rows {
+		if t.matchesFilter(r) && r.ID != "" {
+			matching[r.ID] = true
 		}
-		if !t.matchesFilter(r) {
-			continue
+	}
+	_, parent := t.collapseState()
+	keep = make(map[string]bool, len(matching))
+	for id := range matching {
+		seen := 0
+		for p := parent[id]; p != ""; p = parent[p] {
+			keep[p] = true
+			// Bounded like hiddenUnderCollapsedAncestor: a malformed (cyclic) parent
+			// chain must not hang a render.
+			seen++
+			if seen > len(parent) {
+				break
+			}
 		}
-		out = append(out, i)
+	}
+	return matching, keep
+}
+
+// VisibleRows returns the rows currently shown.
+func (t *Table) VisibleRows() []Row {
+	idxs := t.visibleIndices()
+	out := make([]Row, 0, len(idxs))
+	for _, i := range idxs {
+		out = append(out, t.Rows[i])
 	}
 	return out
 }
@@ -595,32 +663,6 @@ func (t *Table) MatchCount() (int, int) {
 		}
 	}
 	return n, len(t.Rows)
-}
-
-// VisibleRows returns the rows currently shown (tree-aware): a row is hidden
-// when ANY ancestor on its parent chain is collapsed — not merely when its
-// direct parent is. The direct-parent-only check left a collapsed node's
-// GRANDCHILDREN on screen, because their own parent was still marked open.
-func (t *Table) VisibleRows() []Row {
-	open := map[string]bool{}
-	parent := make(map[string]string, len(t.Rows))
-	for _, r := range t.Rows {
-		if r.Expand {
-			open[r.ID] = r.Open
-		}
-		parent[r.ID] = r.Parent
-	}
-	out := make([]Row, 0, len(t.Rows))
-	for _, r := range t.Rows {
-		if hiddenUnderCollapsedAncestor(r, parent, open) {
-			continue
-		}
-		if !t.matchesFilter(r) {
-			continue
-		}
-		out = append(out, r)
-	}
-	return out
 }
 
 // hiddenUnderCollapsedAncestor walks a row's parent chain and reports whether
