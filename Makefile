@@ -349,6 +349,26 @@ adapter-bake-guard: ## CI gate: adapter CLIs are MOUNTED, never baked into image
 cache-trim-test: ## CI gate: assert the Go cache trim's eviction semantics and its refusals
 	bash scripts/tests/gocache-trim/run.sh
 
+# disk-report answers a question `df` structurally cannot: how much of the filesystem is held by
+# SNAPSHOTS rather than by live files. The two disagree by design, and the gap is invisible —
+# deleting files frees nothing while a snapshot still references the extents. Measured on this
+# machine: 65.6 GB deleted against 7.0 GB freed, with ~58 GB of it sitting in a snapshot, and
+# 343 GiB (67% of all data in use) pinned in total. That is what this reports.
+#
+# WHY IT NEEDS ITS OWN TARGET. Every other hygiene target here measures FILES. This one measures
+# the space where files are not — which is why `du` and `df` both looked healthy while the disk
+# sat at 93%. It is a HOST DIAGNOSTIC, so it describes the machine it runs on and is deliberately
+# never called from CI. disk-report-test is the part that IS a gate: it fakes the inputs and
+# pins the subtraction, because a report that overstates the pinned figure argues the wrong way
+# at exactly the moment someone is deciding whether to delete a snapshot.
+DISK_REPORT_TARGET ?=
+.PHONY: disk-report disk-report-test
+disk-report: ## Report how much of the filesystem is held by btrfs snapshots, not live files
+	@scripts/disk-report.sh $(DISK_REPORT_TARGET)
+
+disk-report-test: ## CI gate: assert disk-report's subtraction, its bounds, and its exit codes
+	bash scripts/tests/disk-report/run.sh
+
 # --- Frontend --------------------------------------------------------------
 .PHONY: fe-install fe-dev fe-build fe-lint fe-test docs-check site-check
 fe-install: ## Install frontend dependencies
@@ -651,7 +671,7 @@ cross-compile: ## Compile the shipped binaries for every release platform (catch
 	done; \
 	echo "==> all $(words $(CROSS_PLATFORMS)) release platforms compile"
 
-ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard cache-trim-test cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
+ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard cache-trim-test disk-report-test cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
 ci: ci-go fe-lint fe-test site-check ## Run the full CI gate locally (Go + frontend + landing page)
 
 .PHONY: tui-pty-gate

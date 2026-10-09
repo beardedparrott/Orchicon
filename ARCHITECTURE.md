@@ -1183,10 +1183,12 @@ For source-level iteration on the control plane itself, rebuild the image and re
 | `cache-trim` | Bound the Go build cache by **size**, evicting coldest-first, keeping the entries the next build wants. A no-op under the cap (`CACHE_CAP_MB`, default 20 GiB). Preview with `cache-trim cache_dry=1`. Runs automatically at the end of `full-rebuild`. See *The Go build cache* below |
 | `cache-check` | Report the Go build cache size **against the cap**, and whether a trim is due |
 | `cache-trim-test` | CI gate: assert the cache trim's eviction semantics (order, grace window, stop-at-cap, `--dry-run`) and that it refuses to run against a non-cache directory |
+| `disk-report` | Report how much of the filesystem is held by **btrfs snapshots** rather than live files — the number `df` stays silent about. Subtracts `du` of every live file from the filesystem's data in use. Host diagnostic, never called from CI. See *Snapshots, and the space files no longer occupy* below |
+| `disk-report-test` | CI gate: assert disk-report's subtraction (metadata excluded, profiles summed), that partial coverage is labelled an upper bound, and that it degrades rather than dies |
 | `clean-docker` | Prune Orchicon's dangling images + its own stopped containers (`--filter label=orchicon-instance`). **Never volumes**: it used to run `docker volume prune -f` host-wide, which removes other projects' data on any machine with more than Orchicon on it |
 | **CI** | |
 | `cross-compile` | Compile both shipped binaries for every release platform (linux/darwin/windows × amd64/arm64, `CGO_ENABLED=0`). Catches platform-specific breaks — see *Continuous integration* below. Builds into a **throwaway `GOCACHE`**: its six-platform output is worthless to a dev host and would otherwise be unreclaimable, so it must never land in the shared cache (see *The Go build cache*) |
-| `ci-go` | The Go control-plane gate: lint → gen-check → vet → test → synth-data → rls-check → adapter-bake-guard → **cache-trim-test** → **cross-compile**. This is exactly what the `go-ci` workflow job runs |
+| `ci-go` | The Go control-plane gate: lint → gen-check → vet → test → synth-data → rls-check → adapter-bake-guard → **cache-trim-test** → **disk-report-test** → **cross-compile**. This is exactly what the `go-ci` workflow job runs |
 | `ci` | `ci-go` + `fe-lint` + `fe-test` — the full gate |
 
 ### Code Generation
@@ -1243,6 +1245,79 @@ make cache-trim               # enforce the cap
 make cache-trim CACHE_CAP_MB=8192
 make clean                    # the hammer: empty the cache entirely
 ```
+
+### Snapshots, and the space files no longer occupy
+
+Cleaning the build cache reclaimed **65.6 GB and freed 7.0 GB**. Nothing had leaked, nothing was
+held open, and `df` agreed with `du` — because on btrfs those two answer different questions, and
+the gap between them is invisible. Copy-on-write keeps an extent alive until the **last**
+reference to it goes, and a snapshot is a reference. Deleting a file frees nothing while a
+snapshot still points at it.
+
+Measured here by subtracting `du` of every live file from the filesystem's data in use:
+
+| | |
+|---|---|
+| btrfs data in use | 515.0 GiB |
+| live files (Σ `du -sx` over all 7 mounts) | 172.4 GiB |
+| **held by snapshots, in no live file** | **342.6 GiB — 67%** |
+
+**Where it comes from.** `/home` is a subvolume of its own (`@home`), and snapper is configured
+for it *and* for `/`. The `home` config takes **hourly** timeline snapshots: `#1` is Jul 31, the
+latest was `#1591` — ≈1,590 in 70 days — while cleanup keeps only ~17. A snapshot pins the
+pre-change version of every file modified or deleted since it was taken, and a home directory
+that churns build caches, container layers and `node_modules` makes seventeen snapshots worth
+hundreds of gigabytes. The `root` config is *not* a factor: it sets `TIMELINE_CREATE="no"` and
+only fires on package operations. **One config, one subvolume, 343 GiB.**
+
+**Seeing it.** `make disk-report` performs the subtraction and prints the pinned figure, with the
+three places it can mislead stated in the output rather than buried: filesystem **metadata** is
+excluded from both sides (`du` cannot see it, and folding it in would overstate the result by
+~25 GiB); **partial coverage** (`--paths`) makes the figure an *upper* bound, and the report says
+so; and anything **unreadable** makes live data a *lower* bound, which the report lists. The live
+side must walk **every** mount of the device with `du -x` — each btrfs subvolume has its own
+`st_dev`, so `-x` stops at the subvolume boundary, which is what makes a per-mount sum correct
+rather than a double count. One mount measured 42 GiB against a real total of 172 GiB.
+
+```bash
+make disk-report                              # the pinned figure for the current filesystem
+make disk-report DISK_REPORT_TARGET=/mnt/data # some other filesystem
+scripts/disk-report.sh --paths ~/projects     # scoped check (upper bound; labelled as one)
+scripts/disk-report.sh --raw                  # one key=value line, for scripting
+```
+
+**Two levers, and the second is the structural one.**
+
+1. **Bound the retention.** Snapper's timeline limits are the direct control, and the oldest
+   retained snapshot is the one that pins the most — it holds the oldest copy of everything
+   deleted since. Needs root.
+2. **Move regenerable churn off the snapshotted subvolume.** A btrfs snapshot **cannot exclude a
+   path** — it is per-subvolume, which is exactly why `/var/cache`, `/var/tmp` and `/var/log` are
+   separate subvolumes on this machine. So churn that is *regenerable* (build caches, worktrees,
+   container layers) belongs on a subvolume that is not snapshotted, or on another device.
+
+`GOCACHE` and `GOTMPDIR` are already overridable (`?=` at the top of the Makefile), so lever 2
+needs no code change — only a path. Verified end-to-end:
+
+```bash
+GOCACHE=/mnt/storage/orchicon-gocache make test
+```
+
+a real build under that override wrote **430 entries / 34 MB** to the new location and left the
+project cache at **43,403 entries — unchanged**. The override flows through `make`, `cache-check`
+and `cache-trim` alike.
+
+```bash
+# Operator actions — all need root, none are automatable from here.
+sudo snapper list-configs                                     # which configs exist
+sudo snapper -c home list                                     # the snapshots
+sudo btrfs filesystem du -s --raw /home/.snapshots/*/snapshot | sort -k2 -n
+#                                                             ^ bytes EXCLUSIVE per snapshot
+sudo snapper -c home delete <N>                               # then re-check df
+```
+
+Note that freeing extents does not necessarily return chunks to `Device unallocated`; free space
+rises regardless, and a `btrfs balance` (IO-heavy, optional) is only needed to reclaim the chunks.
 
 ### Database Migrations
 
