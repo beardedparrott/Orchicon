@@ -95,6 +95,54 @@ func (m *App) pasteIntoForms(text string) bool {
 	return false
 }
 
+// cardPaster is a screen whose CARD hosts a free-text input row (the ask cards' "Other" row, and the
+// recorded card's draft row).
+//
+// IT EXISTS FOR THE SAME REASON pasteIntoForm DOES, and that reason is the whole shape of this file: the
+// interception is one place ABOVE the surfaces, so every surface that can take a paste must be reachable
+// from it. Cards were not, because a card's row is a plain string on the card's state rather than a
+// kit2.Form — so ctrl+v fell through to the composer and pasted into the message while the row sat there
+// visibly able to accept typing but not a paste.
+//
+// The Ask screen implements it. It is asked for by CAPABILITY rather than by name so a second screen with
+// card inputs needs no change here.
+type cardPaster interface {
+	// CardInputOpen reports a free-text row that is up AND owns the keyboard (a row the operator deferred
+	// with ctrl+g does not, or the paste would land where their typing is not going).
+	CardInputOpen() bool
+	// PasteIntoCardInput inserts the text, reporting whether it landed and the repaint the row needs.
+	PasteIntoCardInput(text string) (bool, tea.Cmd)
+}
+
+// cardPasteScreen is the ACTIVE screen, when it hosts card input rows at all.
+func (m *App) cardPasteScreen() (cardPaster, bool) {
+	s, ok := m.screens[m.active]
+	if !ok || s == nil {
+		return nil, false
+	}
+	p, ok := s.(cardPaster)
+	return p, ok
+}
+
+// cardInputOpen reports whether the active screen has a card free-text row owning the keyboard.
+func (m *App) cardInputOpen() bool {
+	p, ok := m.cardPasteScreen()
+	return ok && p.CardInputOpen()
+}
+
+// pasteIntoCardInput routes text to that row, reporting whether it landed and returning its repaint.
+//
+// IT RETURNS (landed, cmd) IN THE SAME ORDER AS THE CAPABILITY IT DELEGATES TO, so the two signatures
+// cannot be transposed — which is exactly the bug this helper had in its first draft (the compile error
+// was the least bad outcome; the same shape with two bools would have swapped silently).
+func (m *App) pasteIntoCardInput(text string) (bool, tea.Cmd) {
+	p, ok := m.cardPasteScreen()
+	if !ok || !p.CardInputOpen() {
+		return false, nil
+	}
+	return p.PasteIntoCardInput(text)
+}
+
 // pasteScreen is the ACTIVE screen, when it can take a paste at all.
 //
 // The capability is ASKED FOR rather than listed: screens embed kit2.Base, which hosts their forms, so one
@@ -118,6 +166,12 @@ func (m *App) hasPasteTarget() bool {
 	if len(m.formPasteTargets()) > 0 {
 		return true
 	}
+	// A CARD'S FREE-TEXT ROW IS A TARGET TOO. Without this the guard reports "no field to paste into"
+	// while a row is plainly on screen accepting keystrokes, and ctrl+v goes to the composer instead —
+	// the operator's report exactly.
+	if m.cardInputOpen() {
+		return true
+	}
 	s, ok := m.screens[m.active]
 	if !ok || s == nil {
 		return false
@@ -134,9 +188,15 @@ func (m *App) onClipboardText(msg formClipboardTextMsg) tea.Cmd {
 		m.dock.SetError("paste: " + msg.err)
 		return nil
 	}
-	if !m.pasteIntoForms(msg.text) {
-		m.dock.SetError("paste: no open field to paste into")
+	if m.pasteIntoForms(msg.text) {
+		return nil
 	}
+	// FORMS FIRST, CARDS SECOND: the two are never up together (a card row and an open form are different
+	// modes of the same pane), so the order is only about which is reported when neither can take it.
+	if landed, cmd := m.pasteIntoCardInput(msg.text); landed {
+		return cmd
+	}
+	m.dock.SetError("paste: no open field to paste into")
 	return nil
 }
 
@@ -171,8 +231,15 @@ func (m *App) pasteKey(msg tea.Msg) (tea.Cmd, bool) {
 		return pasteFromClipboardCmd(), true
 	}
 	if k.Paste {
-		// It reached a form, so it is not the composer's: insert it the sanitising way and consume it.
-		return nil, m.pasteIntoForms(string(k.Runes))
+		// It reached a form or a card row, so it is not the composer's: insert it and consume it. Routed
+		// the same way ctrl+v is, so the two shapes of paste cannot land in different places.
+		if m.pasteIntoForms(string(k.Runes)) {
+			return nil, true
+		}
+		if landed, cmd := m.pasteIntoCardInput(string(k.Runes)); landed {
+			return cmd, true
+		}
+		return nil, false
 	}
 	return nil, false
 }

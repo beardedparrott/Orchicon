@@ -26,6 +26,18 @@ type stubHost struct {
 	store       chat.PermissionStore
 	storeOK     bool
 	revoked     []string
+	// repaints counts the RepaintTranscript calls the screen made. repaint() returns nil for a host that
+	// does not implement the hook, so WITHOUT this a test cannot tell "the row asked for a repaint" from
+	// "the row forgot to" — and forgetting is the difference between a paste that shows and one that
+	// silently does nothing.
+	repaints int
+}
+
+// RepaintTranscript mirrors the production host: the ask screen asks it to redraw the transcript, which is
+// where the card (and its input row) is drawn.
+func (s *stubHost) RepaintTranscript() tea.Cmd {
+	s.repaints++
+	return func() tea.Msg { return nil }
 }
 
 func (s *stubHost) ConsentResolve(_ string, dec chat.ConsentDecision, choice string) tea.Cmd {
