@@ -348,8 +348,8 @@ runtime-daemon: ## Start the host-side workflow runtime daemon
 	scripts/container.sh runtime-daemon
 runtime-stop: ## Stop the host-side workflow runtime daemon
 	scripts/container.sh runtime-stop
-container-rebuild: ## Stop an instance, rebuild the image, start it (usage: make container-rebuild dev|prod [residency=host|container])
-	@test -n "$(instance)" || { echo "usage: make container-rebuild instance=dev|prod"; exit 1; }
+container-rebuild: ## Stop an instance, rebuild the image, start it (usage: make container-rebuild instance=dev|prod|test [residency=host|container])
+	@test -n "$(instance)" || { echo "usage: make container-rebuild instance=dev|prod|test"; exit 1; }
 	# residency is passed down as ENV (per invocation) — never exported globally,
 	# so rebuilding one instance cannot change the other's shape.
 	ORCHICON_PLANE_RESIDENCY="$(residency)" scripts/container.sh down $(instance)
@@ -407,8 +407,8 @@ container-ps: ## List orchicon container instances
 # command-line variable beats a target-specific one), which is the documented
 # rollback: `make rebuild-prod residency=container` puts prod's plane back
 # inside its container.
-full-rebuild: ## One command: binary build + all checks/tests + migrate-hash + image build + instance restart (usage: make full-rebuild instance=dev|prod)
-	@test -n "$(instance)" || { echo "usage: make full-rebuild instance=dev|prod"; exit 1; }
+full-rebuild: ## One command: binary build + all checks/tests + migrate-hash + image build + instance restart (usage: make full-rebuild instance=dev|prod|test)
+	@test -n "$(instance)" || { echo "usage: make full-rebuild instance=dev|prod|test"; exit 1; }
 	$(MAKE) build
 	$(MAKE) ci
 	$(MAKE) migrate-hash
@@ -423,6 +423,13 @@ rebuild-prod: residency = host
 rebuild-prod: ## One command: full checks/tests + rebuild + restart the PROD instance (plane residency: host; pass residency=container to keep it in its container)
 	$(MAKE) full-rebuild instance=prod residency=$(residency)
 	$(MAKE) orch-launcher-prod
+
+# rebuild-test mirrors the other two, minus the launcher: a throwaway instance
+# exists to be rebuilt and torn down repeatedly, and it needs no dedicated TUI
+# client. Teardown is `scripts/container.sh uninstall test --yes`.
+rebuild-test: residency = host
+rebuild-test: ## One command: full checks/tests + rebuild + restart the TEST instance (plane residency: host)
+	$(MAKE) full-rebuild instance=test residency=$(residency)
 
 # --- Dual orch launchers ----------------------------------------------------
 # Two orch clients on PATH: `orch` tracks bin/orch (dev vintage) and

@@ -31,6 +31,9 @@
 #   scripts/container.sh plane-start [dev|prod]   # start the HOST plane for a host-resident instance
 #   scripts/container.sh plane-stop [dev|prod]    # stop the HOST plane (services container keeps running)
 #   scripts/container.sh plane-status [dev|prod]  # host plane PID + health
+#   scripts/container.sh uninstall [dev|prod|test] [--yes]
+#                                                 # remove ONE instance AND its
+#                                                 # data (destructive; needs --yes)
 #
 # TWO SHAPES (residency, per instance, OPT-IN):
 #   container (default): everything — postgres, nats, telemetry, the control
@@ -48,18 +51,23 @@
 # Instance layout:
 #   dev:  orchicon-cnt-dev   ports 8080:8080, 3002:3000   (plane + Grafana)
 #   prod: orchicon-cnt-prod  ports 8091:8080, 3003:3000
+#   test: orchicon-cnt-test  ports 8092:8080, 3004:3000   — a throwaway instance
+#         for installer/upgrade trials. It gets its own `fresh` Postgres rather
+#         than the legacy compose volumes dev/prod reuse, so a test can never
+#         touch real data.
 #
 # Host-residency port table (loopback-bound publishes, disjoint per instance):
-#   service            dev   prod
-#   postgres           5432  5433
-#   nats / monitoring  4222  4223  /  8222 8223
-#   OTLP gRPC / HTTP   4317  4319  /  4318 4320
-#   tempo / loki       3200  3201  /  3100 3101
-#   victoriametrics    8428  8429
-#   grafana            3002  3003  (→ container 3000)
-#   plane HTTP         8080  8091
+#   service            dev   prod  test
+#   postgres           5432  5433  5434
+#   nats / monitoring  4222  4223  4224  /  8222 8223 8224
+#   OTLP gRPC / HTTP   4317  4319  4321  /  4318 4320 4322
+#   tempo / loki       3200  3201  3202  /  3100 3101 3102
+#   victoriametrics    8428  8429  8430
+#   grafana            3002  3003  3004  (→ container 3000)
+#   plane HTTP         8080  8091  8092
 # No value here may be GLOBAL: a shared port or URL would silently point one
-# instance's workers/plane at the other.
+# instance's workers/plane at the other. Every column must stay disjoint — and a
+# third instance is exactly where that stops being obvious.
 #
 # PLANE_HTTP_PORT IS that "plane HTTP" column, and it is the SAME port the
 # instance publishes — so dev and prod can never disagree about which plane a
@@ -131,8 +139,30 @@ instance_info() {
       GRAFANA_HOST_PORT=3003
       HOST_DATA_DIR="$HOME/.local/share/orchicon-prod"
       ;;
+    test)
+      NAME="orchicon-cnt-test"
+      VOLUME="orchicon-cnt-test-data"
+      # NOT dev/prod's legacy compose volume. They reuse orchicon_postgres-data /
+      # orchicon-prod_postgres-data, which may hold real tenant data; "fresh"
+      # keeps this instance's database inside its OWN data volume, so a test
+      # instance can never read or write a real deployment's rows.
+      PG_VOLUME="${ORCHICON_PG_VOLUME:-fresh}"
+      COMPOSE_PG="orchicon-test-postgres"
+      COMPOSE_STACK_SCRIPT="dev-test.sh"
+      PLANE_HTTP_PORT=8092
+      PG_PORT=5434
+      NATS_PORT=4224
+      NATS_MON_PORT=8224
+      OTLP_GRPC_PORT=4321
+      OTLP_HTTP_PORT=4322
+      TEMPO_PORT=3202
+      LOKI_PORT=3102
+      VM_PORT=8430
+      GRAFANA_HOST_PORT=3004
+      HOST_DATA_DIR="$HOME/.local/share/orchicon-test"
+      ;;
     *)
-      echo "Unknown instance: $inst (use dev|prod)" >&2
+      echo "Unknown instance: $inst (use dev|prod|test)" >&2
       return 1
       ;;
   esac
@@ -1367,6 +1397,81 @@ down_instance() {
   stop_runtime_daemon "$inst"
 }
 
+# uninstall_instance removes ONE instance and everything it owns: its host plane,
+# its container, its data volume, its host data dir, and its runtime containers.
+#
+# DESTRUCTIVE AND NOT REVERSIBLE. The volume holds the instance's database and
+# the host data dir holds the secrets KEK — so removing the data dir makes every
+# secret encrypted with it unrecoverable even if a database backup is restored.
+# It therefore requires an EXPLICIT confirmation (`uninstall <inst> --yes`, or
+# ORCHICON_CONFIRM_DESTROY=1) and prints exactly what it will remove first. A
+# teardown that deletes a database and a KEK on a typo is the same defect class
+# as the unanchored cleanups this repo has had to fix before.
+#
+# INSTANCE-SCOPED, like every other destructive path here: it touches only the
+# named instance's container, volume, data dir and labelled runtime containers.
+# It deliberately does NOT remove PG_VOLUME — for dev and prod that is a LEGACY
+# compose volume predating the single-container layout, which may hold data this
+# instance never owned (and which `down` has always preserved).
+uninstall_instance() {
+  local inst="${1:-dev}"
+  instance_info "$inst" || return 1
+
+  local pg_note="none (its database lives in the instance volume)"
+  if [ "$PG_VOLUME" != "fresh" ]; then
+    pg_note="$PG_VOLUME — legacy volume, NOT removed"
+  fi
+
+  echo ""
+  echo -e "${C_BOLD}Uninstall instance: $inst${C_RESET}"
+  echo -e "  ${C_DIM}plane (host process)${C_RESET}     $inst"
+  echo -e "  ${C_DIM}container${C_RESET}                $NAME"
+  echo -e "  ${C_DIM}volume — DELETED${C_RESET}         $VOLUME"
+  echo -e "  ${C_DIM}host data dir — DELETED${C_RESET}  $HOST_DATA_DIR"
+  echo -e "  ${C_DIM}runtime containers${C_RESET}       label=orchicon.instance=$inst"
+  echo -e "  ${C_DIM}postgres volume${C_RESET}          $pg_note"
+  echo ""
+
+  if [ "${ORCHICON_CONFIRM_DESTROY:-}" != "1" ] && [ "$CONFIRM_DESTROY" != "1" ]; then
+    log_warn "refusing to delete data without confirmation"
+    echo -e "  ${C_DIM}re-run:  $0 uninstall $inst --yes${C_RESET}"
+    echo -e "  ${C_DIM}or set:  ORCHICON_CONFIRM_DESTROY=1${C_RESET}"
+    return 1
+  fi
+
+  # 1. Stop this instance's plane. plane_stop is PID-file scoped per instance, so
+  #    it cannot reach a sibling's plane.
+  plane_stop "$inst"
+
+  # 2. Remove the container (and with it the publishes).
+  if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
+    docker rm -f "$NAME" >/dev/null && log_ok "removed container $NAME"
+  else
+    log_dim "container $NAME not present"
+  fi
+
+  # 3. Reap this instance's runtime containers (instance-scoped; see
+  #    stop_runtime_daemon). Without this they would outlive the instance that
+  #    owns them and never be claimed by anyone.
+  stop_runtime_daemon "$inst"
+
+  # 4. The instance's own volume.
+  if docker volume inspect "$VOLUME" >/dev/null 2>&1; then
+    docker volume rm "$VOLUME" >/dev/null && log_ok "removed volume $VOLUME"
+  else
+    log_dim "volume $VOLUME not present"
+  fi
+
+  # 5. The host state dir (KEK, blobs, plane PID/logs).
+  if [ -d "$HOST_DATA_DIR" ]; then
+    rm -rf "$HOST_DATA_DIR" && log_ok "removed host data dir $HOST_DATA_DIR"
+  else
+    log_dim "host data dir $HOST_DATA_DIR not present"
+  fi
+
+  log_ok "instance $inst uninstalled"
+}
+
 status_instances() {
   local inst="${1:-}"
   echo -e "${C_BOLD}Orchicon container instances${C_RESET}"
@@ -1374,7 +1479,7 @@ status_instances() {
   if [ -n "$inst" ]; then
     instances="$inst"
   else
-    instances="dev prod"
+    instances="dev prod test"
   fi
   for i in $instances; do
     instance_info "$i"
@@ -1407,11 +1512,17 @@ logs_instance() {
 #   scripts/container.sh up dev container
 # host is the default (see residency_for). Recognised only as host|container,
 # so a typo is refused rather than silently ignored.
+# Uninstall's confirmation flag. Kept SEPARATE from the residency positional so
+# that destroying an instance's data is always an explicit act, never a side
+# effect of where a flag happened to sit.
+CONFIRM_DESTROY="${CONFIRM_DESTROY:-0}"
+
 if [ -n "${3:-}" ]; then
   case "${3}" in
     host|container) export ORCHICON_PLANE_RESIDENCY="${3}" ;;
+    --yes|-y) CONFIRM_DESTROY=1 ;;
     *)
-      echo "residency must be 'host' or 'container' (got '${3}')" >&2
+      echo "third argument must be 'host', 'container', or '--yes' (got '${3}')" >&2
       exit 2
       ;;
   esac
@@ -1423,6 +1534,8 @@ case "${1:-}" in
   sync-mounts) sync_mounts "${2:-dev}" ;;
   up) up_instance "${2:-dev}" ;;
   down) down_instance "${2:-dev}" ;;
+  # uninstall removes ONE instance AND its data — destructive, needs --yes.
+  uninstall) uninstall_instance "${2:-dev}" ;;
   # Host-resident plane env for an instance (see bridge_bind_env):
   #   eval "$(scripts/container.sh plane-bind prod)" before starting that
   # instance's host plane, or add the two lines to its own env file.
@@ -1459,9 +1572,10 @@ case "${1:-}" in
     docker ps -a --filter label=orchicon.workflow --format 'table {{.Names}}\t{{.Status}}'
     ;;
   *)
-    echo "Usage: $0 {build|rebuild [dev|prod]|sync-mounts [dev|prod]|up [dev|prod]|down [dev|prod]|status [dev|prod]|logs [dev|prod]|plane-bind [dev|prod]|shape [dev|prod]|verify [dev|prod]|plane-start|plane-stop|plane-status [dev|prod]|ps|runtime-daemon|runtime-stop}"
+    echo "Usage: $0 {build|rebuild [dev|prod|test]|sync-mounts [dev|prod|test]|up [dev|prod|test]|down [dev|prod|test]|uninstall [dev|prod|test] --yes|status [dev|prod|test]|logs [dev|prod|test]|plane-bind [dev|prod|test]|shape [dev|prod|test]|verify [dev|prod|test]|plane-start|plane-stop|plane-status [dev|prod|test]|ps|runtime-daemon|runtime-stop}"
     echo "  ORCHICON_PLANE_RESIDENCY=host|container  (default host) picks the shape per invocation;"
     echo "  a third positional overrides it for one call, e.g. 'up dev container'."
+    echo "  'uninstall <inst> --yes' removes that instance AND its data (irreversible)."
     echo "  plane-bind prints the host plane's PER-INSTANCE bind + URL (ORCHICON_HTTP_EXTRA_BIND, ORCHICON_PLANE_PUBLIC_URL)."
     exit 1
     ;;

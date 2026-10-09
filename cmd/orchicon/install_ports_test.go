@@ -33,28 +33,42 @@ func TestInstallPortDefaultsMatchContainerScript(t *testing.T) {
 	for _, want := range []string{
 		"PLANE_HTTP_PORT=8080",
 		"PLANE_HTTP_PORT=8091",
+		"PLANE_HTTP_PORT=8092",
 		"GRAFANA_HOST_PORT=3002",
 		"GRAFANA_HOST_PORT=3003",
+		"GRAFANA_HOST_PORT=3004",
 		"PG_PORT=5432",
 		"PG_PORT=5433",
+		"PG_PORT=5434",
 		"NATS_PORT=4222",
 		"NATS_PORT=4223",
+		"NATS_PORT=4224",
 		"NATS_MON_PORT=8222",
 		"NATS_MON_PORT=8223",
+		"NATS_MON_PORT=8224",
 		"OTLP_GRPC_PORT=4317",
 		"OTLP_GRPC_PORT=4319",
+		"OTLP_GRPC_PORT=4321",
 		"OTLP_HTTP_PORT=4318",
 		"OTLP_HTTP_PORT=4320",
+		"OTLP_HTTP_PORT=4322",
 		"TEMPO_PORT=3200",
 		"TEMPO_PORT=3201",
+		"TEMPO_PORT=3202",
 		"LOKI_PORT=3100",
 		"LOKI_PORT=3101",
+		"LOKI_PORT=3102",
 		"VM_PORT=8428",
 		"VM_PORT=8429",
+		"VM_PORT=8430",
 		// The host state dir carries the KEK. Two launchers disagreeing about it is
 		// the one disagreement that silently orphans every tenant secret.
 		`HOST_DATA_DIR="$HOME/.local/share/orchicon-dev"`,
 		`HOST_DATA_DIR="$HOME/.local/share/orchicon-prod"`,
+		`HOST_DATA_DIR="$HOME/.local/share/orchicon-test"`,
+		// The third instance must actually exist on the bash side, or the Go table
+		// would define a column the launcher refuses.
+		"    test)",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("scripts/container.sh no longer contains %q — the per-instance port table drifted", want)
@@ -79,18 +93,18 @@ func TestInstallPortDefaultsMatchContainerScript(t *testing.T) {
 	// ...and EVERY entry of the Go table must agree with those defaults. The
 	// expected map is the gate: an entry added to installerPorts without being
 	// listed here fails, so a new port cannot skip the cross-language check.
-	type wantCase struct{ dev, prod, container int }
+	type wantCase struct{ dev, prod, test, container int }
 	wantDefaults := map[string]wantCase{
-		"ORCHICON_CONTROL_PORT":      {8080, 8091, 8080},
-		"ORCHICON_GRAFANA_PORT":      {3002, 3003, 3000},
-		"ORCHICON_POSTGRES_PORT":     {5432, 5433, 5432},
-		"ORCHICON_NATS_PORT":         {4222, 4223, 4222},
-		"ORCHICON_NATS_MONITOR_PORT": {8222, 8223, 8222},
-		"ORCHICON_OTLP_GRPC_PORT":    {4317, 4319, 4317},
-		"ORCHICON_OTLP_HTTP_PORT":    {4318, 4320, 4318},
-		"ORCHICON_TEMPO_PORT":        {3200, 3201, 3200},
-		"ORCHICON_LOKI_PORT":         {3100, 3101, 3100},
-		"ORCHICON_VM_PORT":           {8428, 8429, 8428},
+		"ORCHICON_CONTROL_PORT":      {8080, 8091, 8092, 8080},
+		"ORCHICON_GRAFANA_PORT":      {3002, 3003, 3004, 3000},
+		"ORCHICON_POSTGRES_PORT":     {5432, 5433, 5434, 5432},
+		"ORCHICON_NATS_PORT":         {4222, 4223, 4224, 4222},
+		"ORCHICON_NATS_MONITOR_PORT": {8222, 8223, 8224, 8222},
+		"ORCHICON_OTLP_GRPC_PORT":    {4317, 4319, 4321, 4317},
+		"ORCHICON_OTLP_HTTP_PORT":    {4318, 4320, 4322, 4318},
+		"ORCHICON_TEMPO_PORT":        {3200, 3201, 3202, 3200},
+		"ORCHICON_LOKI_PORT":         {3100, 3101, 3102, 3100},
+		"ORCHICON_VM_PORT":           {8428, 8429, 8430, 8428},
 	}
 	for _, p := range installerPorts() {
 		w, ok := wantDefaults[p.Env]
@@ -98,8 +112,9 @@ func TestInstallPortDefaultsMatchContainerScript(t *testing.T) {
 			t.Errorf("installerPorts() entry %s is not in this test's table — add it so the drift check covers it", p.Env)
 			continue
 		}
-		if p.Dev != w.dev || p.Prod != w.prod {
-			t.Errorf("%s defaults = %d/%d, want %d/%d (container.sh's values)", p.Env, p.Dev, p.Prod, w.dev, w.prod)
+		if p.Defaults["dev"] != w.dev || p.Defaults["prod"] != w.prod || p.Defaults["test"] != w.test {
+			t.Errorf("%s defaults = %d/%d/%d, want %d/%d/%d (container.sh's values)",
+				p.Env, p.Defaults["dev"], p.Defaults["prod"], p.Defaults["test"], w.dev, w.prod, w.test)
 		}
 		if p.ContainerPort != w.container {
 			t.Errorf("%s container port = %d, want %d (container.sh's -p pair)", p.Env, p.ContainerPort, w.container)
@@ -108,6 +123,33 @@ func TestInstallPortDefaultsMatchContainerScript(t *testing.T) {
 	}
 	for env := range wantDefaults {
 		t.Errorf("installerPorts() is missing %s", env)
+	}
+
+	// STRUCTURAL: every row must define EVERY column. This is the check that
+	// catches a row gaining a column on one side only, and it is what a third
+	// instance makes easy to get wrong — a row copied without its new entry looks
+	// complete and resolves to a zero default.
+	for _, p := range installerPorts() {
+		for _, inst := range instanceOrder {
+			if _, ok := p.Defaults[inst]; !ok {
+				t.Errorf("%s has no default for instance %q — every column must be defined", p.Env, inst)
+			}
+		}
+	}
+
+	// DISJOINTNESS: no two instances may share a port on the same row. The whole
+	// point of the table is that one host can run these side by side, and a shared
+	// port is exactly the collision it exists to prevent — easy to introduce by
+	// copying a row and forgetting to increment.
+	for _, p := range installerPorts() {
+		seen := map[int]string{}
+		for _, inst := range instanceOrder {
+			v := p.Defaults[inst]
+			if prev, dup := seen[v]; dup {
+				t.Errorf("%s: instances %s and %s share port %d — the columns must stay disjoint", p.Env, prev, inst, v)
+			}
+			seen[v] = inst
+		}
 	}
 
 	// 2. The override knobs must be applied in container.sh under exactly the
@@ -130,11 +172,11 @@ func TestInstallPortDefaultsMatchContainerScript(t *testing.T) {
 
 	// ...and the Go table must agree with the defaults above.
 	control, grafana := installerPorts()[0], installerPorts()[1]
-	if control.Dev != 8080 || control.Prod != 8091 {
-		t.Errorf("control defaults = %d/%d, want 8080/8091", control.Dev, control.Prod)
+	if control.Defaults["dev"] != 8080 || control.Defaults["prod"] != 8091 || control.Defaults["test"] != 8092 {
+		t.Errorf("control defaults = %v, want dev 8080 / prod 8091 / test 8092", control.Defaults)
 	}
-	if grafana.Dev != 3002 || grafana.Prod != 3003 {
-		t.Errorf("grafana defaults = %d/%d, want 3002/3003", grafana.Dev, grafana.Prod)
+	if grafana.Defaults["dev"] != 3002 || grafana.Defaults["prod"] != 3003 || grafana.Defaults["test"] != 3004 {
+		t.Errorf("grafana defaults = %v, want dev 3002 / prod 3003 / test 3004", grafana.Defaults)
 	}
 	// The host->container mapping must match container.sh's -p pairs
 	// (8080:8080 and 3002:3000), or the published port lands on the wrong
@@ -194,22 +236,45 @@ func TestPlanInstallPortsProdDefaults(t *testing.T) {
 	}
 }
 
-// TestPlanInstallPortsUnknownInstanceIsNotDevsPorts is the regression for the
-// fall-through: an instance that is neither dev nor prod used to be handed dev's
-// 8080, so an install for a THIRD instance was guaranteed to collide with dev.
-// It must resolve deterministically to the dev column (documented behaviour) so
-// the operator can pin it — the point is that nothing silently guesses a
-// DIFFERENT free port, which would be unreviewable.
-func TestPlanInstallPortsUnknownInstanceIsNotDevsPorts(t *testing.T) {
+// TestPlanInstallPortsUnknownInstanceIsRefused replaces the old
+// fall-through-to-dev behaviour — which is precisely the bug the table now
+// prevents. An instance the table does not define was handed dev's 8080, so
+// adding a THIRD instance silently collided with dev on every port. It must now
+// be an explicit refusal that names the knob to set.
+func TestPlanInstallPortsUnknownInstanceIsRefused(t *testing.T) {
 	var out bytes.Buffer
-	got, err := planInstallPorts("staging", installerPorts(), nil, alwaysFree, nil, &out)
-	if err != nil {
-		t.Fatalf("planInstallPorts: %v", err)
+	_, err := planInstallPorts("staging", installerPorts(), nil, alwaysFree, nil, &out)
+	if err == nil {
+		t.Fatal("an unknown instance must be refused, not silently given another instance's ports")
 	}
-	// With the port free, the dev column is used — and it is PRINTED, so a
-	// collision with a real dev instance is visible rather than silent.
-	if got["ORCHICON_CONTROL_PORT"] != 8080 {
-		t.Fatalf("unknown instance control = %d, want 8080", got["ORCHICON_CONTROL_PORT"])
+	if !strings.Contains(err.Error(), "staging") {
+		t.Errorf("the error must name the instance; got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "ORCHICON_CONTROL_PORT") {
+		t.Errorf("the error must name the knob to pin; got: %v", err)
+	}
+}
+
+// TestResolveInstallPortsRefusesUnknownInstance pins the refusal at the resolver,
+// BEFORE anything is probed or asked — so a typo cannot walk the operator through
+// a prompt sequence and then fail.
+func TestResolveInstallPortsRefusesUnknownInstance(t *testing.T) {
+	var out bytes.Buffer
+	if _, err := resolveInstallPorts("staging", residencyHost, &out, nil); err == nil {
+		t.Fatal("resolveInstallPorts must refuse an instance the table does not define")
+	}
+}
+
+// TestValidateInstanceAcceptsExactlyTheTableColumns pins that every documented
+// column resolves and nothing else does.
+func TestValidateInstanceAcceptsExactlyTheTableColumns(t *testing.T) {
+	for _, inst := range instanceOrder {
+		if err := validateInstance(inst); err != nil {
+			t.Errorf("validateInstance(%q): %v", inst, err)
+		}
+	}
+	if err := validateInstance("nope"); err == nil {
+		t.Error("validateInstance must reject an instance outside instanceOrder")
 	}
 }
 

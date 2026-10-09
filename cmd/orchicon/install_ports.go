@@ -107,8 +107,15 @@ type installPort struct {
 	Env string
 	// Label is the name shown in the prompt.
 	Label string
-	// Dev and Prod are the per-instance defaults (the historical literals).
-	Dev, Prod int
+	// Defaults is the per-instance default, keyed by instance name.
+	//
+	// A MAP RATHER THAN Dev/Prod FIELDS, and that is a correctness fix as much as
+	// a convenience: the old shape made anything that was not literally "prod"
+	// fall back to dev's column, so a THIRD instance silently collided with dev on
+	// every port — the collision this table exists to prevent. With a map, an
+	// instance that is not listed is an ERROR (defaultFor reports ok=false) rather
+	// than a silent clash.
+	Defaults map[string]int
 	// ContainerPort is the FIXED in-container port this host port maps to. Only
 	// the host half varies, so this is what identifies the port in a running
 	// container's published bindings.
@@ -133,38 +140,69 @@ type installPort struct {
 	Prompt bool
 }
 
+// instanceOrder is the canonical set of instances this table defines, in the
+// order they are documented and reported. It must match the columns
+// scripts/container.sh's instance_info defines, because the two launchers have
+// to agree on which instances exist — TestInstallPortDefaultsMatchContainerScript
+// asserts that.
+var instanceOrder = []string{"dev", "prod", "test"}
+
+// portDefaults builds one port's per-instance defaults. A helper so every row of
+// the table has the same columns by construction, rather than by remembering to
+// add a third number each time.
+func portDefaults(dev, prod, test int) map[string]int {
+	return map[string]int{"dev": dev, "prod": prod, "test": test}
+}
+
 // installerPorts returns every port an instance can use, in prompt order.
+//
+// The `test` column exists so a throwaway instance can run beside dev and prod
+// without colliding with either — it is the third instance `container.sh` now
+// knows, and its ports mirror that table's.
 func installerPorts() []installPort {
 	return []installPort{
-		{Env: "ORCHICON_CONTROL_PORT", Label: "Control plane (web UI + API)", Dev: 8080, Prod: 8091,
+		{Env: "ORCHICON_CONTROL_PORT", Label: "Control plane (web UI + API)", Defaults: portDefaults(8080, 8091, 8092),
 			ContainerPort: 8080, ContainerBind: bindAny, HostBind: bindNone, HostPlaneBinds: true, Prompt: true},
-		{Env: "ORCHICON_GRAFANA_PORT", Label: "Grafana (dashboards)", Dev: 3002, Prod: 3003,
+		{Env: "ORCHICON_GRAFANA_PORT", Label: "Grafana (dashboards)", Defaults: portDefaults(3002, 3003, 3004),
 			ContainerPort: 3000, ContainerBind: bindAny, HostBind: bindLoopback, Prompt: true},
-		{Env: "ORCHICON_POSTGRES_PORT", Label: "PostgreSQL", Dev: 5432, Prod: 5433,
+		{Env: "ORCHICON_POSTGRES_PORT", Label: "PostgreSQL", Defaults: portDefaults(5432, 5433, 5434),
 			ContainerPort: 5432, ContainerBind: bindNone, HostBind: bindLoopback, Prompt: true},
-		{Env: "ORCHICON_NATS_PORT", Label: "NATS (event bus)", Dev: 4222, Prod: 4223,
+		{Env: "ORCHICON_NATS_PORT", Label: "NATS (event bus)", Defaults: portDefaults(4222, 4223, 4224),
 			ContainerPort: 4222, ContainerBind: bindNone, HostBind: bindLoopback},
-		{Env: "ORCHICON_NATS_MONITOR_PORT", Label: "NATS monitoring", Dev: 8222, Prod: 8223,
+		{Env: "ORCHICON_NATS_MONITOR_PORT", Label: "NATS monitoring", Defaults: portDefaults(8222, 8223, 8224),
 			ContainerPort: 8222, ContainerBind: bindNone, HostBind: bindLoopback},
-		{Env: "ORCHICON_OTLP_GRPC_PORT", Label: "OTLP gRPC (telemetry)", Dev: 4317, Prod: 4319,
+		{Env: "ORCHICON_OTLP_GRPC_PORT", Label: "OTLP gRPC (telemetry)", Defaults: portDefaults(4317, 4319, 4321),
 			ContainerPort: 4317, ContainerBind: bindNone, HostBind: bindLoopback},
-		{Env: "ORCHICON_OTLP_HTTP_PORT", Label: "OTLP HTTP (telemetry)", Dev: 4318, Prod: 4320,
+		{Env: "ORCHICON_OTLP_HTTP_PORT", Label: "OTLP HTTP (telemetry)", Defaults: portDefaults(4318, 4320, 4322),
 			ContainerPort: 4318, ContainerBind: bindNone, HostBind: bindLoopback},
-		{Env: "ORCHICON_TEMPO_PORT", Label: "Tempo (traces)", Dev: 3200, Prod: 3201,
+		{Env: "ORCHICON_TEMPO_PORT", Label: "Tempo (traces)", Defaults: portDefaults(3200, 3201, 3202),
 			ContainerPort: 3200, ContainerBind: bindNone, HostBind: bindLoopback},
-		{Env: "ORCHICON_LOKI_PORT", Label: "Loki (logs)", Dev: 3100, Prod: 3101,
+		{Env: "ORCHICON_LOKI_PORT", Label: "Loki (logs)", Defaults: portDefaults(3100, 3101, 3102),
 			ContainerPort: 3100, ContainerBind: bindNone, HostBind: bindLoopback},
-		{Env: "ORCHICON_VM_PORT", Label: "VictoriaMetrics (metrics)", Dev: 8428, Prod: 8429,
+		{Env: "ORCHICON_VM_PORT", Label: "VictoriaMetrics (metrics)", Defaults: portDefaults(8428, 8429, 8430),
 			ContainerPort: 8428, ContainerBind: bindNone, HostBind: bindLoopback},
 	}
 }
 
-// defaultFor returns the port this instance has always used.
-func (p installPort) defaultFor(instance string) int {
-	if instance == "prod" {
-		return p.Prod
+// defaultFor returns the port this instance uses, and whether the table defines
+// one. ok=false is a REFUSAL, not a fallback: see the Defaults field for why an
+// unknown instance must not inherit another's port.
+func (p installPort) defaultFor(instance string) (int, bool) {
+	v, ok := p.Defaults[instance]
+	return v, ok
+}
+
+// validateInstance reports whether the table defines defaults for every port on
+// this instance. Called once up front so the rest of the resolution can assume a
+// known instance.
+func validateInstance(instance string) error {
+	for _, p := range installerPorts() {
+		if _, ok := p.Defaults[instance]; !ok {
+			return fmt.Errorf("instance %q has no port defaults (known: %s) — pin every port explicitly with ORCHICON_*_PORT, or add the instance to the table",
+				instance, strings.Join(instanceOrder, ", "))
+		}
 	}
-	return p.Dev
+	return nil
 }
 
 // boundIn reports whether this port is exposed at all in a residency. A port
@@ -410,7 +448,11 @@ func planInstallPorts(instance string, specs []installPort, pinned map[string]in
 	}
 
 	for _, p := range pending {
-		def := p.defaultFor(instance)
+		def, ok := p.defaultFor(instance)
+		if !ok {
+			return nil, fmt.Errorf("no default port for %s on instance %q (known: %s) — pin it with %s",
+				p.Label, instance, strings.Join(instanceOrder, ", "), p.Env)
+		}
 		if claimed[def] || !probe(def) {
 			next, ok := nextFreePortFor(def+1, claimed, probe)
 			if !ok {
@@ -474,6 +516,13 @@ func resolveInstallPorts(instance, residency string, out io.Writer, tty *os.File
 	specs := activeInstallPorts(residency)
 	name := "orchicon-cnt-" + instance
 
+	// Refuse an instance the table does not define, BEFORE anything is resolved or
+	// asked. A silent fallback to dev's ports is what made adding an instance
+	// collide with an existing one.
+	if err := validateInstance(instance); err != nil {
+		return nil, err
+	}
+
 	// Rung 0, and it must come FIRST: a running instance of ours owns its ports.
 	// Probing them would report our own listener as a conflict; see
 	// runningInstancePorts for why that would split the instance.
@@ -483,8 +532,11 @@ func resolveInstallPorts(instance, residency string, out io.Writer, tty *os.File
 			for _, p := range specs {
 				if _, ok := live[p.Env]; !ok {
 					// Not published by the container in this shape (the plane port in
-					// host residency): resolve it the way the plane was started.
-					live[p.Env] = p.defaultFor(instance)
+					// host residency): resolve it the way the plane was started. The
+					// instance is already validated above, so a default exists.
+					if d, ok := p.defaultFor(instance); ok {
+						live[p.Env] = d
+					}
 				}
 				fmt.Fprintf(out, "  %s: %d\n", p.Label, live[p.Env])
 			}
