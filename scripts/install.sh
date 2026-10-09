@@ -109,21 +109,65 @@ check_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
 }
 
+# stop_installed_plane stops the control plane that runs the INSTALLED binary,
+# and frees that file so it can be replaced (mv) or removed (rm).
+#
+# IT MUST NEVER KILL BY PROCESS NAME, and that is the whole point of this
+# function existing. It used to run `pkill -9 -x orchicon`, which matches the
+# executable BASENAME — so an uninstall of the INSTALLED copy also killed any
+# other Orchicon plane on the machine, including instances running from a
+# DIFFERENT path (a development checkout's bin/orchicon). On the host this was
+# written for, `scripts/install.sh --uninstall` would have SIGKILLed the dev and
+# prod planes, which run from bin/orchicon, leaving their work items mid-flight.
+#
+# The job is narrower than "stop Orchicon": it is "release THIS file". An old
+# process holding the binary's mmap is what makes the mv/rm fail with "Text file
+# busy". `fuser` targets the FILE, so a plane running from any other path is
+# unreachable by CONSTRUCTION rather than by naming convention — this is the same
+# technique scripts/install-local.sh already uses for exactly this step.
+#
+# When fuser is unavailable it declines to act and says so, rather than falling
+# back to a name match: killing the wrong process is worse than a warning.
+stop_installed_plane() {
+  local bin="$INSTALL_DIR/orchicon"
+  [ -f "$bin" ] || return 0
+
+  # Best effort, and only when the instance's own state dir can be derived: the
+  # PID file is PER INSTANCE (scripts/container.sh passes the state dir as
+  # ORCHICON_SERVE_STATE_DIR), so a bare `serve --stop` would look in the
+  # cwd-relative default `.dev` and miss a host-resident plane.
+  local inst="${ORCHICON_INSTANCE:-dev}"
+  local state_dir="${XDG_DATA_HOME:-${HOME}/.local/share}/orchicon-${inst}/serve"
+  if [ "$DRY_RUN" = false ]; then
+    ORCHICON_SERVE_STATE_DIR="$state_dir" "$bin" serve --stop 2>/dev/null \
+      || warn "serve --stop found no running plane for instance '${inst}' (ignoring)"
+  else
+    echo -e "  ${D}(would run: ORCHICON_SERVE_STATE_DIR=${state_dir} ${bin} serve --stop)${X}"
+  fi
+
+  if ! command -v fuser >/dev/null 2>&1; then
+    warn "fuser not available — cannot tell whether ${bin} is still in use."
+    warn "  Deliberately not falling back to a process-NAME match, which would"
+    warn "  also kill Orchicon instances running from other paths."
+    return 0
+  fi
+  if fuser "$bin" >/dev/null 2>&1; then
+    if [ "$DRY_RUN" = false ]; then
+      fuser -k "$bin" 2>/dev/null && ok "released ${bin} (stopped the process holding it)" || true
+    else
+      echo -e "  ${D}(would run: fuser -k ${bin})${X}"
+    fi
+  fi
+}
+
 # --- Uninstall --------------------------------------------------------------
 do_uninstall() {
   local bin="$INSTALL_DIR/orchicon"
 
-  # Stop the binary cleanly before removing it. The `dev stop`
-  # internally SIGKILLs orphans too, but a defensive pkill covers
-  # the case where the binary was launched manually (no PID file).
-  if [ -f "$bin" ]; then
-    info "stopping dev stack via '${bin} dev stop'…"
-    $DRY_RUN || "$bin" dev stop 2>/dev/null || warn "dev stop failed (ignoring)"
-  fi
-  if command -v pkill >/dev/null 2>&1; then
-    info "killing any leftover orchicon processes…"
-    $DRY_RUN || pkill -9 -x orchicon 2>/dev/null || true
-  fi
+  # Stop the plane that runs the installed binary, and free the file itself.
+  # Scoped to THAT path — see stop_installed_plane for why this must not be a
+  # process-name match.
+  stop_installed_plane
 
   if [ -f "$bin" ]; then
     info "removing $bin"
@@ -148,34 +192,10 @@ do_force_clean() {
 
   local bin="$INSTALL_DIR/orchicon"
 
-  # 1. Stop the detached server via the binary (if available). `serve
-  # --stop` signals the PID-file process; if the binary was started
-  # outside the PID file (no state) the pkill below frees the file lock.
-  if [ -f "$bin" ]; then
-    info "stopping detached server via '${bin} serve --stop'…"
-    if [ "$DRY_RUN" = false ]; then
-      "$bin" serve --stop 2>/dev/null || warn "serve --stop failed (ignoring)"
-    else
-      echo -e "  ${D}(would run: ${bin} serve --stop)${X}"
-    fi
-  fi
-
-  # 1b. Belt-and-suspenders: even if `dev stop` ran (or was skipped
-  # because the binary is gone / corrupt), kill any remaining orchicon
-  # processes by executable name. Without this step an old binary
-  # process holds the mmap on $INSTALL_DIR/orchicon and the `mv` below
-  # fails with "Text file busy". Idempotent and safe — `dev stop`
-  # already filters its own PID, and `pkill -x` matches the executable
-  # basename exactly (so worker subprocesses like `opencode` are
-  # unaffected).
-  if command -v pkill >/dev/null 2>&1; then
-    info "killing any leftover orchicon processes…"
-    if [ "$DRY_RUN" = false ]; then
-      pkill -9 -x orchicon 2>/dev/null && ok "killed leftover orchicon process(es)" || true
-    else
-      echo -e "  ${D}(would run: pkill -9 -x orchicon)${X}"
-    fi
-  fi
+  # 1. Stop the plane that runs the installed binary, and free that file for the
+  # `mv` below. Scoped to the file — see stop_installed_plane for why this must
+  # NOT be a process-name match.
+  stop_installed_plane
 
   # 2. Remove the single-container instances and their data volumes
   # (postgres, nats, tempo, loki, victoriametrics, grafana live under
@@ -249,34 +269,15 @@ do_clean() {
 
   local bin="$INSTALL_DIR/orchicon"
 
-  # 1. Stop the detached server via the binary (if available).
-  if [ -f "$bin" ]; then
-    info "stopping detached server via '${bin} serve --stop'…"
-    if [ "$DRY_RUN" = false ]; then
-      "$bin" serve --stop 2>/dev/null || warn "serve --stop failed (ignoring)"
-    else
-      echo -e "  ${D}(would run: ${bin} serve --stop)${X}"
-    fi
-  else
-    # Fall back to docker if the binary is gone.
-    if command -v docker >/dev/null 2>&1; then
-      info "stopping orchicon container instances…"
-      $DRY_RUN || docker rm -f orchicon-cnt-dev orchicon-cnt-prod 2>/dev/null || true
-    fi
-  fi
+  # 1. Stop the plane that runs the installed binary. Scoped to that file — see
+  # stop_installed_plane for why this must not be a process-name match.
+  stop_installed_plane
 
-  # 1b. Belt-and-suspenders orphan cleanup (same rationale as
-  # do_force_clean step 1b). The `serve --stop` above signals the
-  # PID-file process; this defensive pass catches the case where the
-  # binary itself was running from a different path (so its PID file
-  # was elsewhere) or was launched manually.
-  if command -v pkill >/dev/null 2>&1; then
-    info "killing any leftover orchicon processes…"
-    if [ "$DRY_RUN" = false ]; then
-      pkill -9 -x orchicon 2>/dev/null && ok "killed leftover orchicon process(es)" || true
-    else
-      echo -e "  ${D}(would run: pkill -9 -x orchicon)${X}"
-    fi
+  # 1b. If the binary is already gone, the only thing still holding this
+  # instance's ports is its container — fall back to stopping that.
+  if [ ! -f "$bin" ] && command -v docker >/dev/null 2>&1; then
+    info "stopping orchicon container instances…"
+    $DRY_RUN || docker rm -f orchicon-cnt-dev orchicon-cnt-prod 2>/dev/null || true
   fi
 
   # 2. Remove the old binary.

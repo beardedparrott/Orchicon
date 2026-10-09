@@ -60,6 +60,53 @@ func TestInstallOrchLauncherSymlinkBranches(t *testing.T) {
 	}
 }
 
+// TestInstallOrchLauncherLeavesAForeignSymlinkAlone is the regression for a bug
+// caught in the wild: an install run from a build directory repointed an
+// existing ~/.local/bin/orch symlink at the BUILD directory's sibling, hijacking
+// a launcher another install owned. The operator then ran `orch` and got a binary
+// they never chose.
+func TestInstallOrchLauncherLeavesAForeignSymlinkAlone(t *testing.T) {
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "build")   // THIS install's sibling
+	otherDir := filepath.Join(dir, "other") // someone else's orch
+	installDir := filepath.Join(dir, "install")
+	for _, d := range []string{binDir, otherDir, installDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exe := filepath.Join(binDir, "orchicon")
+	ourSibling := filepath.Join(binDir, "orch")
+	otherOrch := filepath.Join(otherDir, "orch")
+	for _, p := range []string{ourSibling, otherOrch} {
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	link := filepath.Join(installDir, "orch")
+	if err := os.Symlink(otherOrch, link); err != nil {
+		t.Fatal(err)
+	}
+
+	installOrchLauncherFrom(exe, installDir)
+
+	target, err := os.Readlink(link)
+	if err != nil {
+		t.Fatalf("the pre-existing symlink must survive, not be removed: %v", err)
+	}
+	if target != otherOrch {
+		t.Fatalf("a symlink this install does not own was REPOINTED: %s -> %s (want it left at %s)", link, target, otherOrch)
+	}
+
+	// Explicit opt-in still replaces it — the escape hatch must keep working.
+	t.Setenv("ORCHICON_FORCE_LAUNCHER", "1")
+	installOrchLauncherFrom(exe, installDir)
+	if target, _ := os.Readlink(link); target != ourSibling {
+		t.Fatalf("ORCHICON_FORCE_LAUNCHER=1 must replace it: got %q want %q", target, ourSibling)
+	}
+}
+
 // TestInstallOrchLauncherMissingSiblingWarnsNonFatal verifies a missing
 // sibling binary produces a warning and no launcher, without erroring.
 func TestInstallOrchLauncherMissingSiblingWarnsNonFatal(t *testing.T) {
