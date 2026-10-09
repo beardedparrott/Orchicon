@@ -1179,12 +1179,14 @@ For source-level iteration on the control plane itself, rebuild the image and re
 | `install-dry-run` | Dry-run the install script (no changes made) |
 | `install-uninstall` | Uninstall Orchicon via the install script |
 | **Hygiene** | |
-| `clean` | Clear the Go build cache (`go clean -cache -testcache -modcache`) + `bin/` |
-| `cache-check` | Report the current Go build cache size |
+| `clean` | Clear the Go build cache (`go clean -cache -testcache -modcache`) + `bin/`. The HAMMER — empties the whole cache, so the next build recompiles everything. Use `cache-trim` for routine hygiene |
+| `cache-trim` | Bound the Go build cache by **size**, evicting coldest-first, keeping the entries the next build wants. A no-op under the cap (`CACHE_CAP_MB`, default 20 GiB). Preview with `cache-trim cache_dry=1`. Runs automatically at the end of `full-rebuild`. See *The Go build cache* below |
+| `cache-check` | Report the Go build cache size **against the cap**, and whether a trim is due |
+| `cache-trim-test` | CI gate: assert the cache trim's eviction semantics (order, grace window, stop-at-cap, `--dry-run`) and that it refuses to run against a non-cache directory |
 | `clean-docker` | Prune Orchicon's dangling images + its own stopped containers (`--filter label=orchicon-instance`). **Never volumes**: it used to run `docker volume prune -f` host-wide, which removes other projects' data on any machine with more than Orchicon on it |
 | **CI** | |
-| `cross-compile` | Compile both shipped binaries for every release platform (linux/darwin/windows × amd64/arm64, `CGO_ENABLED=0`). Catches platform-specific breaks — see *Continuous integration* below |
-| `ci-go` | The Go control-plane gate: lint → gen-check → vet → test → synth-data → rls-check → adapter-bake-guard → **cross-compile**. This is exactly what the `go-ci` workflow job runs |
+| `cross-compile` | Compile both shipped binaries for every release platform (linux/darwin/windows × amd64/arm64, `CGO_ENABLED=0`). Catches platform-specific breaks — see *Continuous integration* below. Builds into a **throwaway `GOCACHE`**: its six-platform output is worthless to a dev host and would otherwise be unreclaimable, so it must never land in the shared cache (see *The Go build cache*) |
+| `ci-go` | The Go control-plane gate: lint → gen-check → vet → test → synth-data → rls-check → adapter-bake-guard → **cache-trim-test** → **cross-compile**. This is exactly what the `go-ci` workflow job runs |
 | `ci` | `ci-go` + `fe-lint` + `fe-test` — the full gate |
 
 ### Code Generation
@@ -1196,6 +1198,51 @@ make gen    # buf generate → api/gen/go + frontend/src/api/gen
 ```
 
 This generates Go handlers and TypeScript Connect-ES clients. Generated code is committed to the repo.
+
+### The Go build cache
+
+The dev build cache (`.dev/tools/gocache`, exported as `GOCACHE` by the Makefile) is what makes
+incremental builds fast, and it is also the largest single thing on a development disk. It reached
+**71.6 GB** once. Two facts explain that, and both had to be fixed:
+
+**Go's own trim cannot bound this cache.** The toolchain's policy
+(`src/cmd/go/internal/cache/cache.go`) is age-based with a hard five-day floor:
+
+```go
+trimInterval = 24 * time.Hour
+trimLimit    = 5 * 24 * time.Hour
+cutoff := now.Add(-trimLimit - mtimeInterval)
+```
+
+At its worst the cache held 99,869 entries and **not one was older than that cutoff**, so a trim
+that had completed 50 minutes earlier reclaimed nothing. An age rule with a five-day floor cannot
+bound a cache that grows ~30 GB in a day. `go clean -cache` is not the answer either — it is
+all-or-nothing, and throws away the hot entries with the cold.
+
+**A six-platform compile gate was feeding it.** `make cross-compile` (run by `ci-go`, and therefore
+by every `full-rebuild`) builds both shipped binaries for linux/darwin/windows on amd64+arm64. The
+per-platform package archives are ~130 MB each, and all of them landed in the shared cache:
+**31.6 GB, 44% of it, was non-native** — artifacts nothing on an amd64 dev host ever links. It is
+now built into a **throwaway `GOCACHE`**, removed by an `EXIT` trap. Measured: the shared cache is
+**byte-identical** across a full `make cross-compile`, at a cost of ~2m16s of CPU per gate run
+(one platform cold-compiles in ~21s / ~1.1 GB from a clean cache).
+
+**What is left is bounded by size.** `make cache-trim` (`scripts/gocache-trim.sh`) evicts
+coldest-mtime-first until the cache fits `CACHE_CAP_MB` (default 20 GiB), never touching anything
+used inside a grace window (default 1h — Go's own `mtimeInterval`, so a build running concurrently
+with the trim cannot have a just-written artifact deleted). It is a no-op under the cap, and it
+runs at the end of `full-rebuild`, so the run that lays down a day of artifacts also bounds them.
+Only `<xx>/<hex>-{a,d}` files are ever candidates — the same set the toolchain's `trimSubdir`
+walks, so `trim.txt`, `README` and any stray file are never touched. It refuses outright to run
+against `/`, `$HOME`, a git repo root, or a non-empty directory that does not look like a cache.
+
+```bash
+make cache-check              # size against the cap, and whether a trim is due
+make cache-trim cache_dry=1   # preview the eviction
+make cache-trim               # enforce the cap
+make cache-trim CACHE_CAP_MB=8192
+make clean                    # the hammer: empty the cache entirely
+```
 
 ### Database Migrations
 
