@@ -199,8 +199,11 @@ path):
    exec-scoped and cause-less.
 6. **Longer-lived conversations**: sweeper TTL (31 min) + reply window
    (30 min) + re-attach backoff govern turn lifetime — not execution
-   health/stall-recovery. The turn-level stall monitor is Ask's own (not the
-   reconciler's `OnStall`).
+   health/stall-recovery. Both of those quiet-time deadlines **spare a turn
+   parked on a card** (an open ask is the operator's to answer, not a stall), so
+   turn lifetime for a parked turn is bounded by a decision or a stop. The
+   turn-level stall monitor is Ask's own (not the reconciler's `OnStall`), and
+   it takes the same carve-out (`awaitingConsent`).
 
 What the shared (Dispatcher-routed, chat-session) path must simply **accommodate**:
 the conversation object (not execution), the typed stream + hubs, cause-aware
