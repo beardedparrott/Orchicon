@@ -330,12 +330,14 @@ docs-check: ## Validate every Mermaid diagram in the root docs with a real parse
 # `container` (the plane runs inside the instance's container, as it did before
 # the host-residency migration).
 #
-# THIS VARIABLE IS NO LONGER THE PRODUCT'S DEFAULT, only this target's. It used
-# to be described as "the launcher's own default stays container", and that
-# stopped being true when the launcher's default moved to host — so
-# `make container-rebuild` is now the one entry point that still produces the
-# OLD shape. rebuild-dev/rebuild-prod override this per target (below).
-residency = container
+# HOST IS THE DEFAULT HERE TOO, matching the launcher and the product:
+# scripts/container.sh residency_for resolves ${...:-host}. This variable used to
+# be `container`, which made this target the ONE entry point still producing the
+# old shape — so `make container-rebuild instance=dev` silently gave a different
+# residency from `make rebuild-dev`, and from every fresh install. Pass
+# `residency=container` explicitly for the self-contained shape; that is the
+# documented rollback.
+residency = host
 container-build: ## Build bin/orchicon + the container image
 	$(MAKE) build
 	scripts/container.sh build
@@ -397,9 +399,9 @@ container-ps: ## List orchicon container instances
 # residency propagates to container-rebuild through the make chain: BOTH
 # rebuild-dev and rebuild-prod pass residency=host explicitly, so each rebuild
 # migrates its OWN instance to a host-resident plane and neither can alter the
-# other's shape (the launcher's own default stays `container` — see
-# residency_for in scripts/container.sh; nothing here is ever exported
-# globally).
+# other's shape. This now MATCHES the launcher's own default, which
+# residency_for in scripts/container.sh resolves as ${...:-host}; nothing here is
+# ever exported globally.
 #
 # `residency=container` on the command line OVERRIDES the target default (a
 # command-line variable beats a target-specific one), which is the documented
