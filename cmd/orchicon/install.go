@@ -59,21 +59,32 @@ func runInstall(args []string, log *slog.Logger) error {
 		fmt.Println("orchicon: no external adapter CLI found — the built-in engine will run sessions (nothing to install)")
 	}
 
-	// 2. Ensure the published images are present (skip the pull when the
-	// tag is already local — idempotent re-runs and local dev images).
-	// The :gui and :dev runtime variants ship with the product (work-item
-	// dropdown stock images), so pull them alongside the base.
-	for _, img := range []string{containerImage, runtimeImage,
-		"ghcr.io/beardedparrott/orchicon-runtime:gui-" + imageTag,
-		"ghcr.io/beardedparrott/orchicon-runtime:dev-" + imageTag,
-	} {
-		if imagePresent(img) {
-			fmt.Printf("image %s present\n", img)
-			continue
+	// 2. Ensure the published images are present (skip the pull when the tag is
+	// already local — idempotent re-runs and local dev images).
+	//
+	// REQUIRED images: the instance image and the workflow runtime base. Without
+	// these the install cannot produce a working instance, so a failure is fatal.
+	for _, img := range []string{containerImage, runtimeImage} {
+		if err := pullImageIfAbsent(img); err != nil {
+			return err
 		}
-		fmt.Printf("pulling %s …\n", img)
-		if out, err := exec.Command("docker", "pull", img).CombinedOutput(); err != nil {
-			return fmt.Errorf("pull %s: %v: %s", img, err, strings.TrimSpace(string(out)))
+	}
+	// SUPPLEMENTARY images: the :gui and :dev variants are the stock runtime
+	// images a work item can pick, not prerequisites for an install. A missing tag
+	// therefore WARNS rather than failing.
+	//
+	// THIS BEING FATAL IS HOW THE INSTALL BROKE. The refs were built as
+	// "<suffix>-<tag>", so the default "latest" produced "...:gui-latest" — a tag
+	// release.yml NEVER PUBLISHES (it publishes "<suffix>-<version>" plus a
+	// FLOATING ":gui"/":dev"). Every fresh install aborted right here, before
+	// creating anything, with:
+	//   pull ghcr.io/beardedparrott/orchicon-runtime:gui-latest: not found
+	// The ref is built correctly now (runtimeVariantRef), and a supplementary
+	// image can no longer fail an install even if the registry drops a tag again.
+	for _, img := range []string{runtimeVariantRef("gui", imageTag), runtimeVariantRef("dev", imageTag)} {
+		if err := pullImageIfAbsent(img); err != nil {
+			fmt.Printf("warning: %v\n", err)
+			fmt.Println("  (the stock runtime image variants are supplementary — continuing)")
 		}
 	}
 
@@ -348,6 +359,42 @@ func dirOnPath(dir string) bool {
 func imagePresent(img string) bool {
 	out, err := exec.Command("docker", "image", "inspect", img).CombinedOutput()
 	return err == nil && strings.TrimSpace(string(out)) != ""
+}
+
+// runtimeVariantRef returns the registry ref for a derived runtime image variant
+// (:gui or :dev) at the requested tag.
+//
+// THE SHAPE MIRRORS THE RELEASE WORKFLOW EXACTLY, and the installer previously
+// got it wrong. release.yml publishes, for a release:
+//
+//	<base>:gui-<version>   and the FLOATING   <base>:gui
+//	<base>:dev-<version>   and the FLOATING   <base>:dev
+//
+// so the floating tag DROPS the version rather than becoming "-latest". The
+// installer built "<suffix>-<tag>", which for the default tag "latest" produced
+// ":gui-latest" — published by nothing, which aborted every fresh install at the
+// image pull. TestRuntimeVariantRefMatchesReleaseWorkflow pins this against
+// release.yml so the two cannot drift again.
+func runtimeVariantRef(suffix, imageTag string) string {
+	const base = "ghcr.io/beardedparrott/orchicon-runtime"
+	if imageTag == "" || imageTag == "latest" {
+		return base + ":" + suffix
+	}
+	return base + ":" + suffix + "-" + imageTag
+}
+
+// pullImageIfAbsent pulls img unless its tag is already local, so an idempotent
+// re-run and a locally-built image cost nothing.
+func pullImageIfAbsent(img string) error {
+	if imagePresent(img) {
+		fmt.Printf("image %s present\n", img)
+		return nil
+	}
+	fmt.Printf("pulling %s …\n", img)
+	if out, err := exec.Command("docker", "pull", img).CombinedOutput(); err != nil {
+		return fmt.Errorf("pull %s: %v: %s", img, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func containerRunning(name string) (bool, error) {
