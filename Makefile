@@ -273,13 +273,22 @@ CACHE_CAP_MB ?= 20480
 
 # cache-check reports the cache size AGAINST THE CAP, so the number that decides whether to trim is
 # one command away. `make cache-trim cache_dry=1` previews the eviction without deleting anything.
+#
+# IT MEASURES WHAT THE TRIM BOUNDS — the ENTRY bytes — not `du -sb` of the whole tree. The two are
+# close but not equal (du also counts the 256 subdirectories' metadata, trim.txt, and README), and
+# that gap made this report "OVER CAP" immediately after a trim had converged: the trim had done its
+# job and the check still demanded another run, forever. A gate that can never be satisfied is worse
+# than no gate, so both sides now count the same bytes. Disk usage is still shown, because it is the
+# number that matters for free space — it is just not the number the cap is expressed in.
 cache-check: ## Show the Go build cache size against the trim cap
 	@echo "GOCACHE: $(shell $(GO) env GOCACHE)"
-	@sz="$$(du -sb "$$($(GO) env GOCACHE)" 2>/dev/null | cut -f1)"; \
-	hr="$$(du -sh "$$($(GO) env GOCACHE)" 2>/dev/null | cut -f1)"; \
+	@cache="$$($(GO) env GOCACHE)"; \
+	sz="$$(find "$$cache" -mindepth 2 -maxdepth 2 -type f \( -name '*-a' -o -name '*-d' \) -printf '%s\n' 2>/dev/null \
+	      | awk '{t+=$$1} END{print t+0}')"; \
+	on_disk="$$(du -sh "$$cache" 2>/dev/null | cut -f1)"; \
 	cap="$(CACHE_CAP_MB)"; \
-	echo "size:    $${hr:-0B}   cap: $${cap} MiB"; \
-	if [ -n "$$sz" ] && [ "$$sz" -gt "$$((cap * 1024 * 1024))" ]; then \
+	echo "entries: $$(awk -v b="$$sz" 'BEGIN{split("B KiB MiB GiB TiB",u," "); i=1; while (b>=1024 && i<5){b/=1024;i++} printf (i==1?"%.0f %s":"%.1f %s"), b, u[i]}')   on disk: $${on_disk:-0B}   cap: $${cap} MiB"; \
+	if [ "$$sz" -gt "$$((cap * 1024 * 1024))" ]; then \
 	  echo "OVER CAP - run 'make cache-trim' (preview: make cache-trim cache_dry=1)"; \
 	else \
 	  echo "within cap"; \

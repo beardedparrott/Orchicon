@@ -229,6 +229,27 @@ before9="$(cache_bytes "$C9")"
 bash "$TRIM_SH" "$C9" --cap-mb 25 --grace 1h >/dev/null 2>&1
 check "a cache exactly at cap is left alone" "$before9" "$(cache_bytes "$C9")"
 
+# --- (vii-c) CONVERGENCE: a trimmed cache is STABLE -------------------------
+# The trim must actually reach the cap it enforces, so that running it again is
+# a no-op. This caught a real bug one layer up: `make cache-check` measured the
+# whole tree with `du -sb` while the trim bounded only ENTRY bytes, so the check
+# reported "OVER CAP" immediately after a converged trim and demanded another
+# run forever. A gate that can never be satisfied is worse than no gate. Both
+# sides now count entry bytes; this asserts the property directly.
+C10="$WORK/c10"; new_cache "$C10"
+for i in $(seq 1 8); do
+  entry "$C10" $((i * 86400)) $((5 * 1024 * 1024)) "$(entry_name "c10-$i")"
+done
+bash "$TRIM_SH" "$C10" --cap-mb 20 --grace 1h >/dev/null 2>&1
+after_first="$(cache_bytes "$C10")"
+out10="$(bash "$TRIM_SH" "$C10" --cap-mb 20 --grace 1h 2>&1)"
+check "after one trim the cache fits the cap" "$((20 * 1024 * 1024))" "$after_first"
+case "$out10" in
+  *"already under cap"*) check "a converged trim reports nothing to evict" "under cap" "under cap" ;;
+  *)                     check "a converged trim reports nothing to evict" "under cap" "STILL TRIMMING: $out10" ;;
+esac
+check "a second trim deletes nothing (stable)" "$after_first" "$(cache_bytes "$C10")"
+
 # --- (viii) an EMPTY cache is fine, not an error ----------------------------
 C8="$WORK/c8"; mkdir -p "$C8"
 if bash "$TRIM_SH" "$C8" --cap-mb 1 >/dev/null 2>&1; then
