@@ -225,13 +225,14 @@ vet: ## Run go vet
 tidy: ## Run go mod tidy
 	$(GO) mod tidy
 
-# clean removes local build artifacts + the Go build cache. The Go cache
-# grows to tens of GB during heavy dev (the compiler keeps every
-# intermediate build artifact); Go auto-trims it lazily but rarely down to
-# a small size. Run this when disk is tight — it does NOT touch the DB,
-# container images, or any runtime data.
-.PHONY: clean cache-check
-clean: ## Remove local build artifacts and the Go build cache (dev hygiene)
+# clean removes local build artifacts + the Go build cache. This is the HAMMER:
+# `go clean -cache` empties the WHOLE cache, so the next build recompiles everything.
+# For routine disk hygiene use `make cache-trim`, which bounds the cache by SIZE and keeps
+# the entries the next build actually wants. Run `clean` when the cache is corrupt, or when
+# you want a guaranteed-cold build (timings, or a suspected bad cache entry). It does NOT
+# touch the DB, container images, or any runtime data.
+.PHONY: clean cache-check cache-trim cache-trim-test
+clean: ## Remove local build artifacts and the ENTIRE Go build cache (dev hygiene; see cache-trim)
 	$(GO) clean -cache -testcache
 	@command -v $(GO) >/dev/null 2>&1 && go clean -modcache 2>/dev/null || true
 	@rm -f $(BIN_DIR)/orchicon
@@ -239,15 +240,50 @@ clean: ## Remove local build artifacts and the Go build cache (dev hygiene)
 	# Stale copies of the binary dropped into the container/runtime build
 	# contexts by older scripts. The runtime image no longer bakes the
 	# binary (the daemon bind-mounts its own executable), so a leftover
-	# deploy/runtime/orchicon would only bloat the build context — remove
+	# deploy/runtime/orchicon would only bloat the build context -- remove
 	# both here so a heavy dev session never leaves them behind.
 	@rm -f deploy/container/orchicon deploy/runtime/orchicon
 
-# cache-check reports the current Go build cache size so devs can decide
-# whether to run `make clean` before a heavy session (AGENTS.md disk hygiene).
-cache-check: ## Show the Go build cache size
+# cache-trim bounds the Go build cache by SIZE, evicting the coldest entries first.
+#
+# WHY NOT JUST RELY ON GO. The compiler keeps every intermediate artifact, so the cache grows
+# to tens of GB during heavy dev — and Go's OWN trim cannot bring it back down. Its policy
+# (cmd/go/internal/cache/cache.go) is age-based with a hard five-day floor:
+#
+#     trimLimit = 5 * 24 * time.Hour
+#     cutoff := now.Add(-trimLimit - mtimeInterval)
+#
+# This repo's cache is never five days old. Measured at its worst: 71.6 GB across 99,869 entries
+# with ZERO older than that cutoff, and a trim that had completed 50 minutes earlier reclaimed
+# nothing at all. The comment that used to sit here said Go "auto-trims it lazily but rarely down
+# to a small size" — true in form, false in effect: an age rule with a five-day floor cannot bound
+# a cache that grows ~30 GB in a day.
+#
+# A SIZE cap is the only policy that bounds growth at any arrival rate. See
+# scripts/gocache-trim.sh for the eviction semantics: coldest-first by mtime (which is what Go
+# updates on reuse), with a grace window so a build running concurrently is never truncated.
+cache-trim: ## Bound the Go build cache by size, evicting coldest-first (a no-op when under cap)
+	@scripts/gocache-trim.sh "$(GOCACHE)" --cap-mb "$(CACHE_CAP_MB)" $(if $(filter 1,$(cache_dry)),--dry-run,)
+
+# CACHE_CAP_MB is the ceiling `make cache-trim` enforces. 20 GiB is a little over the working set of
+# an active dev loop on this repo (its hot native entries measured ~17 GB over 30h), so a healthy
+# cache sits under it and a runaway one is pulled straight back down. Override per invocation:
+#   make cache-trim CACHE_CAP_MB=8192
+CACHE_CAP_MB ?= 20480
+
+# cache-check reports the cache size AGAINST THE CAP, so the number that decides whether to trim is
+# one command away. `make cache-trim cache_dry=1` previews the eviction without deleting anything.
+cache-check: ## Show the Go build cache size against the trim cap
 	@echo "GOCACHE: $(shell $(GO) env GOCACHE)"
-	@du -sh "$$($(GO) env GOCACHE)" 2>/dev/null | cut -f1 || echo "0B"
+	@sz="$$(du -sb "$$($(GO) env GOCACHE)" 2>/dev/null | cut -f1)"; \
+	hr="$$(du -sh "$$($(GO) env GOCACHE)" 2>/dev/null | cut -f1)"; \
+	cap="$(CACHE_CAP_MB)"; \
+	echo "size:    $${hr:-0B}   cap: $${cap} MiB"; \
+	if [ -n "$$sz" ] && [ "$$sz" -gt "$$((cap * 1024 * 1024))" ]; then \
+	  echo "OVER CAP - run 'make cache-trim' (preview: make cache-trim cache_dry=1)"; \
+	else \
+	  echo "within cap"; \
+	fi
 
 # clean-docker reclaims disk from ORCHICON's own Docker build leftovers, and nothing else.
 #
@@ -296,6 +332,13 @@ synth-data: ## CI gate: no synthesized data planes in non-test source (ADR-0010)
 
 adapter-bake-guard: ## CI gate: adapter CLIs are MOUNTED, never baked into image layers (ADR-0003/0005)
 	go test ./internal/runtime/ -run 'TestAdapterCLINeverBaked' -count=1 -v
+
+# cache-trim-test pins the invariants of scripts/gocache-trim.sh. It belongs in ci-go because that
+# script DELETES FILES: its failure mode is silent and destructive (the wrong entries go, the
+# machine is mysteriously slow afterwards), and it runs UNATTENDED inside `make full-rebuild`. The
+# harness fakes the cache, so it needs no real one and touches none.
+cache-trim-test: ## CI gate: assert the Go cache trim's eviction semantics and its refusals
+	bash scripts/tests/gocache-trim/run.sh
 
 # --- Frontend --------------------------------------------------------------
 .PHONY: fe-install fe-dev fe-build fe-lint fe-test docs-check site-check
@@ -437,12 +480,19 @@ container-ps: ## List orchicon container instances
 # command-line variable beats a target-specific one), which is the documented
 # rollback: `make rebuild-prod residency=container` puts prod's plane back
 # inside its container.
+#   6. cache hygiene            (make cache-trim — placed AFTER the gate that grows the cache, so
+#                                 the run that just laid down a day of build artifacts also bounds
+#                                 them. It is a NO-OP when the cache is under CACHE_CAP_MB, so a
+#                                 healthy dev loop pays nothing for it. This is the "regularly"
+#                                 half of the fix: cross-compile no longer dumps foreign-platform
+#                                 artifacts into the shared cache, and this keeps the rest honest)
 full-rebuild: ## One command: binary build + all checks/tests + migrate-hash + image build + instance restart (usage: make full-rebuild instance=dev|prod|test)
 	@test -n "$(instance)" || { echo "usage: make full-rebuild instance=dev|prod|test"; exit 1; }
 	$(MAKE) build
 	$(MAKE) ci
 	$(MAKE) migrate-hash
 	$(MAKE) container-rebuild instance=$(instance)
+	$(MAKE) cache-trim
 
 rebuild-dev: residency = host
 rebuild-dev: ## One command: full checks/tests + rebuild + restart the DEV instance (plane residency: host)
@@ -563,18 +613,36 @@ install-uninstall: ## Uninstall Orchicon via the install script
 #
 # Output goes to a temp directory: this is a COMPILE check, not a build, and dropping six pairs of
 # binaries into the repo root would leave them behind.
+#
+# THE CACHE GOES THE SAME WAY AS THE BINARIES — and its absence is why the dev cache reached 71 GB.
+# This gate compiles SIX platforms, and each platform's package archives are ~130 MB, so ONE
+# `make ci-go` (and therefore one `make rebuild-dev`) wrote TENS OF GB into the shared dev GOCACHE.
+# Those artifacts are worthless to the dev loop — nothing on an amd64 dev host ever links a
+# windows/arm64 archive — but they are not free: they are what filled the disk.
+#
+# Go's own trim could not reclaim them either, because its policy is age-based with a five-day floor
+# (trimLimit in cmd/go/internal/cache/cache.go) and a day's cross-compile output is all younger than
+# that. The growth was therefore unbounded AND unreclaimable. Isolating it here fixes the growth AT
+# THE SOURCE; `make cache-trim` bounds whatever is left.
+#
+# The cost is measured, not assumed: a COLD cross-compile of the two shipped binaries for one
+# platform takes ~21s and writes ~1.1 GB, so all six from a clean cache is a couple of minutes of
+# CPU — paid once per gate run, in exchange for a shared cache that no longer carries ~44% foreign
+# bytes.
 CROSS_PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 .PHONY: cross-compile
 cross-compile: ## Compile the shipped binaries for every release platform (catches platform-specific breaks)
-	@set -e; tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
+	@set -e; tmp="$$(mktemp -d)"; xcache="$$(mktemp -d)"; \
+	trap 'rm -rf "$$tmp" "$$xcache"' EXIT; \
+	echo "==> cross-compile cache: $$xcache (throwaway — never pollutes $(GOCACHE))"; \
 	for t in $(CROSS_PLATFORMS); do \
 	  os="$${t%%/*}"; arch="$${t##*/}"; \
 	  echo "==> $$os/$$arch"; \
-	  GOOS="$$os" GOARCH="$$arch" CGO_ENABLED=0 $(GO) build -o "$$tmp/" ./cmd/orchicon ./cmd/orch; \
+	  GOCACHE="$$xcache" GOOS="$$os" GOARCH="$$arch" CGO_ENABLED=0 $(GO) build -o "$$tmp/" ./cmd/orchicon ./cmd/orch; \
 	done; \
 	echo "==> all $(words $(CROSS_PLATFORMS)) release platforms compile"
 
-ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
+ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard cache-trim-test cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
 ci: ci-go fe-lint fe-test site-check ## Run the full CI gate locally (Go + frontend + landing page)
 
 .PHONY: tui-pty-gate
