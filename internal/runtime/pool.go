@@ -43,6 +43,11 @@ type daemonPool struct {
 	clean map[string][]string
 	// leased maps an active run id to its container name.
 	leased map[string]string
+	// swept records the instances whose pre-restart containers have already been
+	// reconciled since this daemon started, so that costs one listing per
+	// instance per daemon lifetime rather than one per lease. See
+	// sweepPreRestartOrphans.
+	swept map[string]bool
 }
 
 // poolEntry is the pool's bookkeeping for one container.
@@ -75,6 +80,7 @@ func newDaemonPool(d *Daemon) *daemonPool {
 		entries: make(map[string]*poolEntry),
 		clean:   make(map[string][]string),
 		leased:  make(map[string]string),
+		swept:   make(map[string]bool),
 	}
 }
 
@@ -390,25 +396,104 @@ func (p *daemonPool) idleReap() {
 	p.reapStaleLeases()
 }
 
-// resetPool removes EVERY runtime container at daemon start. The pool is
-// memory-only (leases live in the daemon process), so after a restart the
-// plane's run-start gate and adopt pass re-lease for active runs; stale
-// containers from before the restart (plane-down leaks included) are gone.
+// resetPool clears the in-memory pool at daemon start.
+//
+// IT DELIBERATELY TOUCHES NO CONTAINER, and that is the fix for a real
+// cross-instance hazard. It used to call listRuntimes("") and `rm -f` every
+// orchicon.workflow container on the host — so starting the daemon for ONE
+// instance destroyed EVERY instance's containers, including a sibling's live
+// one mid-run.
+//
+// The launcher is careful to be instance-scoped for exactly this reason
+// (scripts/container.sh stop_runtime_daemon: "a dev rebuild must never
+// hard-kill a live prod fire's container mid-run") — and the wholesale
+// start-time sweep defeated that protection, because up_instance starts the
+// daemon right after the instance-scoped reap.
+//
+// Leases live in this process, so a restart loses them and every container from
+// before is untracked. But untracked is NOT dead: a container can be running a
+// session this daemon can no longer route to. Removal is therefore deferred to
+// sweepPreRestartOrphans, which is scoped to one instance and only runs once
+// that instance's own plane proves it is alive. Without a scoped trigger the
+// only options are a blind sweep (the hazard) or no sweep at all (a leak).
 func (p *daemonPool) resetPool() {
-	names, err := p.d.listRuntimes("")
-	if err != nil {
-		p.d.Log.Warn("pool reset: list runtimes", "error", err)
-		return
-	}
-	for _, n := range names {
-		p.d.Log.Info("pool reset: removing pre-restart container", "container", n)
-		_, _ = p.d.docker("rm", "-f", n)
-	}
 	p.mu.Lock()
 	p.entries = make(map[string]*poolEntry)
 	p.clean = make(map[string][]string)
 	p.leased = make(map[string]string)
+	p.swept = make(map[string]bool)
 	p.mu.Unlock()
+}
+
+// sweepPreRestartOrphans removes the containers `instance` owned BEFORE this
+// daemon started — the ones whose leases died with the previous process.
+//
+// INSTANCE-SCOPED, and that is the whole point: a daemon restart is a host-wide
+// event, but the containers it leaves behind belong to individual instances, and
+// another instance's plane may be mid-run. Sweeping only the instance that is
+// asking cannot reach across that boundary — the label the sweep filters on is
+// the same one the create path wrote (daemon.go's instanceID), so "whose
+// containers are these?" is answered by the label rather than guessed.
+//
+// THE TRIGGER IS WHAT MAKES THE REMOVAL SAFE rather than merely cautious. It
+// runs on this instance's own first lease request, which proves that plane is
+// alive; and because the daemon lost the lease map, any container of its own the
+// pool does not track can no longer be serving a run this daemon can route to —
+// the run re-leases onto a fresh container. So the untracked ones are genuinely
+// this instance's orphans, and they are removed instead of leaking until the
+// next restart.
+//
+// ONCE PER INSTANCE per daemon lifetime: the claim is taken before the docker
+// calls so two concurrent first requests cannot both sweep, and released again
+// if the listing fails so a transient docker error defers cleanup to the next
+// lease rather than losing it for the daemon's lifetime.
+//
+// An empty instance is REFUSED rather than read as "all": listRuntimes("") means
+// every instance on the host, which is precisely the behaviour being removed.
+// The create path normalises through instanceID before calling, so an empty
+// value cannot legitimately arrive here.
+func (p *daemonPool) sweepPreRestartOrphans(instance string) {
+	if instance == "" {
+		return
+	}
+	p.mu.Lock()
+	if p.swept[instance] {
+		p.mu.Unlock()
+		return
+	}
+	p.swept[instance] = true
+	p.mu.Unlock()
+
+	names, err := p.d.listRuntimes(instance)
+	if err != nil {
+		// Do not spend the one claim on a failed listing.
+		p.mu.Lock()
+		delete(p.swept, instance)
+		p.mu.Unlock()
+		p.d.Log.Warn("pre-restart sweep: list runtimes", "instance", instance, "error", err)
+		return
+	}
+	for _, n := range names {
+		// Re-check under the lock immediately before removing: a container the
+		// pool has since tracked belongs to a live lease and must survive.
+		//
+		// A NARROW WINDOW REMAINS between this check and the `rm` below, and it is
+		// stated rather than glossed: a container created AND tracked inside those
+		// microseconds by a concurrent first request for the same instance would be
+		// removed despite being tracked. Closing it fully would mean either a docker
+		// call under the pool lock (which this file forbids) or comparing each
+		// candidate's creation time against the daemon's start. The window costs at
+		// most one run's container on an instance that is restarting its runtime
+		// anyway — recoverable, unlike the host-wide sweep this replaced.
+		p.mu.Lock()
+		_, tracked := p.entries[n]
+		p.mu.Unlock()
+		if tracked {
+			continue
+		}
+		p.d.Log.Info("pre-restart sweep: removing untracked container", "instance", instance, "container", n)
+		_, _ = p.d.docker("rm", "-f", n)
+	}
 }
 
 // poolIdleWindow resolves ORCHICON_RUNTIME_POOL_IDLE (default 10m).
