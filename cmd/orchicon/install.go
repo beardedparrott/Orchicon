@@ -114,28 +114,46 @@ func runInstall(args []string, log *slog.Logger) error {
 		return err
 	}
 
-	// 4. Create + start the single-container instance (or report the
-	// existing one).
+	// 4. HOST RESIDENCY: migrate the data dir BEFORE the instance container is
+	// created — and the order is load-bearing in TWO ways.
+	//
+	// FIRST, the KEK. The plane loads <DataDir>/secrets/kek on boot, so migrating
+	// must precede the plane's start or a fresh empty host dir would mint a NEW KEK
+	// and orphan every tenant secret.
+	//
+	// SECOND, and this was wrong before: migrating AFTER ensureInstallContainer
+	// means `docker run` has already auto-created the volume and booted the
+	// services into it, so the "migration" copies the CONTAINER'S OWN fresh boot
+	// state rather than the previous instance's data. Observed on a real install —
+	// "copying volume orchicon-cnt-test-data" moments after that volume was
+	// created: a no-op migration dressed as a real one, which on a genuine
+	// container→host switch would have copied the wrong thing while reporting
+	// success. scripts/container.sh migrates before it brings the instance up; this
+	// now does too.
+	var hostDir string
+	if residency == residencyHost {
+		var err error
+		hostDir, err = hostDataDir(instance)
+		if err != nil {
+			return err
+		}
+		if err := migrateHostDataDir(instance, dataVolume, hostDir, os.Stdout); err != nil {
+			return err
+		}
+	}
+
+	// 4b. Create + start the single-container instance (or report the existing
+	// one).
 	if err := ensureInstallContainer(instance, residency, name, dataVolume, socketDir, containerImage, ports); err != nil {
 		return err
 	}
 
-	// 4.5. HOST RESIDENCY (the product's default): the container runs the SERVICES
-	// only, so the control plane is a process on THIS host. The order is
-	// load-bearing and mirrors scripts/container.sh — migrate the data dir FIRST,
-	// because the plane loads the secrets KEK from it on boot and a plane started
-	// against a fresh empty dir would mint a NEW KEK and orphan every tenant
-	// secret; then wait for the backend; then start the plane.
+	// 4c. HOST RESIDENCY: the container is up, so wait for its services and then
+	// start the plane on THIS host. Waiting first keeps the plane's migrations from
+	// racing a half-started postgres.
 	if residency == residencyHost {
-		dataDir, err := hostDataDir(instance)
-		if err != nil {
-			return err
-		}
-		if err := migrateHostDataDir(instance, dataVolume, dataDir, os.Stdout); err != nil {
-			return err
-		}
 		waitServicesReady(name, os.Stdout)
-		if err := startHostPlane(instance, ports, dataDir, filepath.Join(socketDir, "runtime.sock"), os.Stdout); err != nil {
+		if err := startHostPlane(instance, ports, hostDir, filepath.Join(socketDir, "runtime.sock"), os.Stdout); err != nil {
 			return err
 		}
 	}
@@ -213,21 +231,41 @@ func installOrchLauncherFrom(exe, installDir string) {
 	if runtime.GOOS == "windows" {
 		link += ".exe"
 	}
-	// Refresh an owned symlink in place.
-	if st, err := os.Lstat(link); err == nil && st.Mode()&os.ModeSymlink != 0 {
-		if target, err := os.Readlink(link); err == nil && target == sibling {
-			fmt.Printf("orch launcher already installed: %s\n", link)
-			return
+	// An existing path at the launcher location.
+	//
+	// A SYMLINK POINTING ELSEWHERE IS NOT OURS TO REPOINT, and that was a real bug
+	// caught in the wild: `orchicon install` run from a build directory refreshed
+	// the symlink to point at ITS OWN sibling, silently hijacking a launcher that
+	// another install — or a development checkout — had put there. The operator
+	// then ran `orch` and got a binary they never chose, with the thing they DID
+	// choose quietly detached.
+	//
+	// So only a symlink already pointing at OUR sibling is treated as ours, and is
+	// then a no-op. Anything else — a foreign symlink, a regular file — is left
+	// alone with a warning, and ORCHICON_FORCE_LAUNCHER=1 is the explicit opt-in to
+	// replace it. Installing must never relocate someone else's launcher.
+	if st, err := os.Lstat(link); err == nil {
+		if st.Mode()&os.ModeSymlink != 0 {
+			target, _ := os.Readlink(link)
+			if target == sibling {
+				fmt.Printf("orch launcher already installed: %s\n", link)
+				return
+			}
+			if os.Getenv("ORCHICON_FORCE_LAUNCHER") != "1" {
+				fmt.Printf("warning: %s is a symlink to %s, not to this install's %s — leaving it alone (set ORCHICON_FORCE_LAUNCHER=1 to replace)\n", link, target, sibling)
+				return
+			}
+			fmt.Printf("replacing existing %s (ORCHICON_FORCE_LAUNCHER=1)\n", link)
+			_ = os.Remove(link)
+		} else {
+			// A regular file (or other non-symlink) occupies the path.
+			if os.Getenv("ORCHICON_FORCE_LAUNCHER") != "1" {
+				fmt.Printf("warning: %s exists and is not an orch symlink — skipping (set ORCHICON_FORCE_LAUNCHER=1 to replace)\n", link)
+				return
+			}
+			fmt.Printf("replacing existing %s (ORCHICON_FORCE_LAUNCHER=1)\n", link)
+			_ = os.Remove(link)
 		}
-		_ = os.Remove(link)
-	} else if err == nil {
-		// A regular file (or other non-symlink) occupies the path.
-		if os.Getenv("ORCHICON_FORCE_LAUNCHER") != "1" {
-			fmt.Printf("warning: %s exists and is not an orch symlink — skipping (set ORCHICON_FORCE_LAUNCHER=1 to replace)\n", link)
-			return
-		}
-		fmt.Printf("replacing existing %s (ORCHICON_FORCE_LAUNCHER=1)\n", link)
-		_ = os.Remove(link)
 	}
 	if err := os.Symlink(sibling, link); err != nil {
 		fmt.Printf("warning: could not symlink orch launcher: %v\n", err)
