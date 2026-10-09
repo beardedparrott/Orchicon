@@ -155,9 +155,16 @@ func TestAwaitConsentPermissionProceedsOnOnce(t *testing.T) {
 	}
 }
 
-// TestAwaitConsentPermissionDeniesOnSilence is the operator's choice, as a test:
-// an unanswered ask must FAIL CLOSED. Without the bound, a session nobody is
-// watching holds a turn and its runtime container forever.
+// TestAwaitConsentPermissionDeniesOnSilence pins the CONFIGURED leash: an operator who
+// sets ORCHICON_ASK_CONSENT_WAIT gets the old fail-closed expiry, and silence still
+// resolves the call as "expired" rather than as an approval.
+//
+// IT IS NO LONGER THE DEFAULT. The default is now no bound at all (see
+// nativeConsentWaitDefault): the operator, away from the keyboard, was losing cards to
+// exactly this expiry — "if an ask or permission card has been waiting for awhile (i.e.
+// away from keyboard), I can no longer click into it or use the keyboard to select it" —
+// and decided that a card waits for the user no matter what. This test therefore guards
+// the SETTING rather than the behaviour every card now gets.
 func TestAwaitConsentPermissionDeniesOnSilence(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_CONSENT_WAIT", "80ms")
 	b, bus, cancel := newConsentTestBridge(t)
@@ -181,6 +188,65 @@ func TestAwaitConsentPermissionDeniesOnSilence(t *testing.T) {
 	if ids := pendingPermIDs(b); len(ids) != 0 {
 		t.Fatalf("the timed-out ask is still parked: %v", ids)
 	}
+}
+
+// TestAwaitConsentPermissionWaitsIndefinitelyByDefault is the operator's rule as a test: with
+// nothing configured, a card is NEVER taken away from them.
+//
+// The whole bug was the expiry: when the wait ran out the call was refused, the ask was settled,
+// and the card the operator came back to could no longer be clicked or selected. So the
+// assertions here are (1) there is no bound to run out, (2) an absent operator leaves the ask
+// PARKED, and (3) their eventual answer still lands and releases the call.
+func TestAwaitConsentPermissionWaitsIndefinitelyByDefault(t *testing.T) {
+	t.Setenv("ORCHICON_ASK_CONSENT_WAIT", "") // the default: unset
+	if got := nativeConsentWait(); got != 0 {
+		t.Fatalf("nativeConsentWait() = %s with nothing configured, want no bound — a card must not "+
+			"expire on an operator who has stepped away", got)
+	}
+	b, bus, cancel := newConsentTestBridge(t)
+	defer cancel()
+
+	type result struct{ decision string }
+	done := make(chan result, 1)
+	go func() {
+		done <- result{b.awaitConsentPermission(context.Background(), bus,
+			ToolCall{ToolCallID: "tc-1", Name: "write", ArgsJSON: `{"filePath":"/tmp/x"}`}, `{"filePath":"/tmp/x"}`)}
+	}()
+
+	id := waitForAsk(t, b)
+	// THE OPERATOR IS AWAY. Nothing is answered, and the wait must simply hold — well past any
+	// configured test-scale bound, so a timer that existed would have fired.
+	select {
+	case r := <-done:
+		t.Fatalf("the parked call resolved as %q while nobody had answered — the operator's card is "+
+			"being taken away again", r.decision)
+	case <-time.After(600 * time.Millisecond):
+	}
+	if !askStillParked(b, id) {
+		t.Fatal("the ask is no longer parked: the card would be settled and unanswerable")
+	}
+
+	// THEY RETURN AND ANSWER. It lands — not refused as late, which was the other half of the
+	// report — and the call is released with their decision.
+	if err := b.ReplyPermissionDecision(context.Background(), "sess", id, "once"); err != nil {
+		t.Fatalf("reply: %v", err)
+	}
+	select {
+	case r := <-done:
+		if r.decision != "once" {
+			t.Fatalf("decision = %q, want \"once\" — a late answer must still be the operator's answer", r.decision)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("a delivered decision did not release the call — the wait outlived its own ask")
+	}
+}
+
+// askStillParked reports whether the named ask is still in the bridge's wait registry.
+func askStillParked(b *NativeBridge, id string) bool {
+	b.permMu.Lock()
+	defer b.permMu.Unlock()
+	_, ok := b.permWaits[id]
+	return ok
 }
 
 // TestAwaitConsentPermissionDeniesOnCancelledTurn: a Stop / supersede must
