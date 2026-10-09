@@ -50,19 +50,31 @@ import (
 // mode file, because both are per-conversation facts the hook cannot otherwise discover.
 const ConsentSockEnv = "ORCHICON_CLAUDE_CONSENT_SOCK"
 
-// hookConsentWaitDefault bounds how long an ask may sit before it is DENIED.
+// hookConsentWaitDefault bounds how long an ask may sit before it is DENIED, and it is
+// NO BOUND — the same default, for the same human decision, as the native adapter's
+// nativeConsentWaitDefault (internal/orchicon). The two are one decision: a shorter leash
+// here would make the claude transport refuse calls the native one still allows, which is
+// exactly the divergence those two constants exist to prevent.
 //
-// THE SAME 15 MINUTES THE NATIVE ADAPTER WAITS (internal/orchicon: nativeConsentWaitDefault), because
-// the two are the same human decision and a shorter leash here would make the claude transport refuse
-// calls the native one still allows. The hook's own `timeout` in the settings document is set ABOVE this
-// (see AskHookTimeoutSeconds) so this side expires first and the hook still exits cleanly with a deny,
-// rather than being killed mid-write.
-const hookConsentWaitDefault = 15 * time.Minute
+// See the native constant for the whole argument. In short: an expiry is what took the
+// card away from an operator who stepped away from their keyboard, and their rule is that
+// a card waits for the user no matter what. Set ORCHICON_CLAUDE_CONSENT_WAIT to reinstate
+// a fail-closed bound.
+const hookConsentWaitDefault = time.Duration(0)
 
-// AskHookTimeoutSeconds is the `PermissionRequest` hook's timeout in the settings document. It must
-// EXCEED hookConsentWaitDefault, or the CLI kills the hook before this side can answer and the operator
-// loses the card they were reading.
-const AskHookTimeoutSeconds = 960 // 16 minutes
+// AskHookTimeoutSeconds is the `PermissionRequest` hook's timeout in the settings document:
+// the CLI's OWN bound on the hook process.
+//
+// IT USED TO BE 16 MINUTES, one minute above a 15-minute consent wait, so that this side
+// expired FIRST and the hook exited cleanly with a deny instead of being killed mid-write.
+// With this side unbounded, that margin is inverted: it would make the CLI the thing that
+// takes the card away, at sixteen minutes instead of fifteen — the same cliff, moved.
+//
+// So it is now a BACKSTOP rather than a leash: long enough that a human's absence is never
+// what ends the wait, short enough that a stranded hook cannot sit connected to the consent
+// socket forever. The operator's own bound, when set, still expires first because it is
+// minutes, not hours.
+const AskHookTimeoutSeconds = 24 * 60 * 60 // 24 hours
 
 // askHookToolMatcher matches the tools the Ask profile sends to a card. It is DERIVED from
 // AskPermissionToolNames — the same list the permission system prompts on — so the hooks cannot fire for
@@ -276,13 +288,21 @@ func (s *askSession) awaitHookConsent(req hookConsentRequest) (string, bool) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	timer := time.NewTimer(hookConsentWait())
-	defer timer.Stop()
+	// ONLY A CONFIGURED bound can time this out. With none the channel stays nil and the select
+	// never takes that arm, so the wait ends on the operator's decision or on the session ending —
+	// which is the whole point: an absent operator must not lose the card they are being asked to
+	// answer. See hookConsentWaitDefault.
+	var expired <-chan time.Time
+	if d := hookConsentWait(); d > 0 {
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+		expired = timer.C
+	}
 
 	select {
 	case d := <-w.decision:
 		return d, true
-	case <-timer.C:
+	case <-expired:
 		return "", false
 	case <-ctx.Done():
 		return "", false

@@ -1526,32 +1526,40 @@ func sanitizeChatHistory(messages []Message) []Message {
 
 // --- consent: the native half of the permission card ---
 
-// nativeConsentWaitDefault bounds how long an Ask turn waits for a permission
-// decision before treating silence as a DENIAL.
+// nativeConsentWaitDefault is the DEFAULT wait for a permission decision, and it is
+// NO BOUND: with nothing configured, a card waits for the operator until they answer
+// it or the turn ends.
 //
-// DENY, NOT PROCEED: the operator chose fail-closed, and an unanswered ask must
-// never become an approval.
+// THIS REVERSES WHAT THE CONSTANT USED TO SAY, and the operator made the call. It was
+// fifteen minutes, on the reasoning that "nobody is watching" must not hold a turn
+// forever — a reasoning that was itself a lesson (it had once been cut to two minutes,
+// and accepts then arrived after the wait had given up and were silently dropped).
 //
-// FIFTEEN MINUTES, and the number is a lesson rather than a guess. It was ten, and
-// this adapter's first version cut it to TWO on the reasoning that "a missed card
-// should cost little". That was wrong in a way that made the feature unusable: a
-// human has to NOTICE the card, click into it, arrow to a row and press Enter, and
-// every one of those steps is slower than two minutes — so accepts arrived after
-// the wait had already given up and were silently dropped, while the server's own
-// registry still held the ask and answered the click `applied: true`. The operator
-// saw "accepted" and the call stayed denied.
+// The operator met that cliff from the other side: "if an ask or permission card has
+// been waiting for awhile (i.e. away from keyboard), I can no longer click into it or
+// use the keyboard to select it." The EXPIRY is what did it. When the wait ran out the
+// call was refused, the ask was settled, and the card they came back to could no longer
+// be answered — every gesture needs the ask to still be OPEN. Their rule: "If someone
+// falls asleep or something, why would we cancel it on them. The cards should just wait
+// for the user no matter what."
 //
-// The cliff is a workaround for "nobody is watching", and the PAUSE (ask_user
-// blocking, so the card is the end of the turn rather than a side channel) is the
-// real answer: a turn that waits for a human is waiting legitimately. Until then
-// this stays generous, because a long wait costs nothing while the turn is open
-// and a short one costs the whole feature.
-const nativeConsentWaitDefault = 15 * time.Minute
+// WHAT BOUNDS A PARKED TURN NOW? The OPERATOR: they answer the card (the turn resumes),
+// stop the turn, or send a new message (which supersedes it). That is the same posture
+// the turn's other quiet-time deadlines now take — the reply window and the registry TTL
+// sweep each spare a turn parked on an open ask (internal/askorchicon) — so a card
+// outlives every timer in the system instead of outliving none of them.
+//
+// A LEASH IS STILL AVAILABLE, and it is deliberate rather than dead config: an operator
+// who wants a bounded hold sets ORCHICON_ASK_CONSENT_WAIT. The fail-closed behaviour it
+// produces is UNCHANGED (silence then resolves the call as expired, never as an
+// approval), so the setting is how one trades card durability for a bound.
+const nativeConsentWaitDefault = time.Duration(0)
 
-// nativeConsentWait resolves the wait, with an env override for testing and for
-// an operator who wants a shorter leash.
+// nativeConsentWait resolves the wait. Unset (the default) means NO BOUND; a configured
+// duration restores the fail-closed expiry, for testing and for an operator who wants a
+// leash.
 func nativeConsentWait() time.Duration {
-	if v := os.Getenv("ORCHICON_ASK_CONSENT_WAIT"); v != "" {
+	if v := strings.TrimSpace(os.Getenv("ORCHICON_ASK_CONSENT_WAIT")); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			return d
 		}
@@ -1700,12 +1708,20 @@ func (b *NativeBridge) awaitConsentPermission(ctx context.Context, bus *chatBus,
 		})
 	}
 
-	timer := time.NewTimer(nativeConsentWait())
-	defer timer.Stop()
+	// A configured bound is the ONLY thing that can expire this wait. With none, the channel
+	// stays nil and the select never takes that arm: the wait ends on a decision, or on the
+	// turn ending (ctx) — a human deciding is not a stall, and nobody's absence decides
+	// anything.
+	var expired <-chan time.Time
+	if d := nativeConsentWait(); d > 0 {
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+		expired = timer.C
+	}
 	select {
 	case d := <-w.decision:
 		return d
-	case <-timer.C:
+	case <-expired:
 		// Silence is a DENIAL for this call (fail closed) — never an approval.
 		//
 		// "expired" rather than "reject" so the caller can say something USEFUL: the
@@ -1769,12 +1785,18 @@ func (b *NativeBridge) awaitUserAnswer(ctx context.Context, bus *chatBus, c Tool
 		})
 	}
 
-	timer := time.NewTimer(nativeConsentWait())
-	defer timer.Stop()
+	// Same rule as the permission wait above: only a CONFIGURED bound can time a question
+	// out, and with none the arm is never taken — the answer is awaited for as long as it takes.
+	var expired <-chan time.Time
+	if d := nativeConsentWait(); d > 0 {
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+		expired = timer.C
+	}
 	select {
 	case ans := <-w.decision:
 		return ans
-	case <-timer.C:
+	case <-expired:
 		return ""
 	case <-ctx.Done():
 		return ""
