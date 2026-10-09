@@ -218,6 +218,16 @@ plane_env() {
     log_err "  ORCHICON_DOCKER_BRIDGE_IP=<bridge gateway ip> $0 plane-start $inst"
   fi
   echo "ORCHICON_POSTGRES_DSN=postgres://orchicon:orchicon@localhost:$PG_PORT/orchicon?sslmode=disable"
+  # THE CONTAINER THAT CARRIES POSTGRES, named for the plane. Backup/restore shell
+  # out to pg_dump/psql, and a HOST-resident plane has no such binaries on the
+  # host — the host has docker, not postgresql-client. Without this the plane
+  # execs a missing binary and every backup fails with
+  # `exec: "pg_dump": executable file not found in $PATH`. Naming the container
+  # lets internal/backup run the tools INSIDE it, at the exact server version,
+  # against the loopback port this DSN publishes. (internal/backup also discovers
+  # this container on its own, verified against the port mapping, so a hand-typed
+  # `orchicon db backup` works too — this is the explicit half.)
+  echo "ORCHICON_PG_CONTAINER=$NAME"
   echo "ORCHICON_NATS_URL=nats://localhost:$NATS_PORT"
   echo "ORCHICON_OTEL_ENDPOINT=localhost:$OTLP_GRPC_PORT"
   echo "ORCHICON_GRAFANA_URL=http://localhost:$GRAFANA_HOST_PORT"
