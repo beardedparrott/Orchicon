@@ -173,6 +173,32 @@ num_le "inline items fewer than links (not all nine inline)" "$TOP" "$((COUNT - 
 #     marker build-site.sh rewrites is present. ---
 has "footer version is a build-time stamp, not a literal" 'id="site-version"' "$(cat "$PAGE")"
 
+# --- THE CONTACT SECTION must keep every channel it advertises, and keep each one
+#     labelled. This is the page's only outward-facing contact surface, and nothing
+#     else in CI can detect a channel going missing: the page is a CDN-served
+#     document that no gate renders, so the assertion is made against its source
+#     text — the same idiom as the footer stamp above.
+#
+#     THE ACCESSIBILITY HALF IS NOT DECORATION. Each tile's glyph is aria-hidden
+#     (a brand mark conveys nothing a screen reader should read out), so the link's
+#     accessible name comes ENTIRELY from its visible text. Drop the text and the
+#     link silently becomes an unlabelled target — invisible to a keyboard-only or
+#     screen-reader visitor, and invisible to every other check here.
+CONTACT="$(awk '/<section class="block contact"/{f=1} f; /<\/section>/{if(f)exit}' "$PAGE")"
+has "contact section is present" 'id="contact"' "$(cat "$PAGE")"
+eq  "contact section links every channel" "6" "$(printf '%s' "$CONTACT" | grep -c '<a ')"
+for u in \
+  "https://discord.gg/PYUSGe5REq" \
+  "https://www.youtube.com/@Orchicon" \
+  "https://www.linkedin.com/company/orchicon" \
+  "https://www.reddit.com/r/Orchicon" \
+  "https://x.com/orchicon" \
+  "https://github.com/beardedparrott/Orchicon" ; do
+  has "contact link: ${u}" "$u" "$CONTACT"
+done
+eq "every contact icon is hidden from assistive tech" "6" "$(printf '%s' "$CONTACT" | grep -c 'aria-hidden="true"')"
+eq "every contact link carries a visible name"        "6" "$(printf '%s' "$CONTACT" | grep -c '<b>')"
+
 echo
 if [ "$FAILED" -eq 0 ]; then
   echo "RESULT: all ${PASSED} assertions passed"
