@@ -134,9 +134,6 @@ h1{font-size:clamp(40px, 6.2vw, 78px); line-height:.98; letter-spacing:-.035em; 
 .lede{font-size:clamp(18px,2vw,21px); color:var(--ink-2); margin:0; max-width:40ch}
 .hero-side p{margin:0 0 18px; color:var(--ink-2); font-size:clamp(17px,1.8vw,19px)}
 .hero-side .meta{font-size:14px; color:var(--ink-3); margin:18px 0 0}
-.install{display:flex; align-items:center; gap:10px; background:var(--console); color:var(--on-console); border-radius:var(--radius-s); padding:14px 14px 14px 16px; font:500 14px/1.4 var(--mono); min-width:0}
-.install .prompt{color:var(--signal); user-select:none}
-.install code{background:none; padding:0; font-size:inherit; white-space:nowrap; flex:1; min-width:0; overflow-x:auto}
 .copy{flex:none; font:600 13px var(--sans); color:var(--on-console); background:transparent; border:1px solid var(--console-rule); border-radius:5px; padding:6px 10px; cursor:pointer}
 .copy:hover{border-color:var(--on-console-2)}
 .hero-actions{display:flex; gap:12px; margin-top:18px; flex-wrap:wrap}
@@ -470,11 +467,6 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
     </div>
     <div class="hero-side">
       <p>One command installs the whole stack: control plane, web app, terminal client, Postgres, NATS and a Grafana telemetry plane.</p>
-      <div class="install" role="group" aria-label="Install command">
-        <span class="prompt">$</span>
-        <code id="cmd-hero">curl -fsSL https://orchicon.dev/install | bash</code>
-        <button class="copy" data-copy="cmd-hero">Copy</button>
-      </div>
       <div class="hero-actions">
         <a class="btn btn-primary" href="#install">Install Orchicon</a>
         <a class="btn btn-quiet" href="https://github.com/beardedparrott/Orchicon/blob/main/USERGUIDE.md">User Guide</a>
@@ -860,7 +852,7 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
     <div>
       <h2 class="title">Install in one command</h2>
       <p class="intro" style="margin-bottom:28px">The installer downloads the <code>orchicon</code> binary, pulls the images, starts the runtime daemon and launches a single-container instance. Re-run it to update.</p>
-      <div class="tabs" role="tablist" aria-label="Install method">
+      <div class="tabs" role="tablist" aria-label="Install method" id="install-tabs">
         <button role="tab" aria-selected="true" aria-controls="p-unix" id="t-unix">macOS / Linux</button>
         <button role="tab" aria-selected="false" aria-controls="p-win" id="t-win" tabindex="-1">Windows</button>
         <button role="tab" aria-selected="false" aria-controls="p-docker" id="t-docker" tabindex="-1">Docker</button>
@@ -1135,7 +1127,24 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
     "t-win":"Runs the whole stack inside WSL2. Needs Windows 10 21H2+ or Windows 11 and Docker Desktop with WSL integration.",
     "t-docker":"Web app on port 8080, Grafana on 3002. Your data lives in the <code>orchicon-data</code> volume."
   };
-  var tabs = document.querySelectorAll('[role="tab"]');
+  // SCOPED TO THIS TABLIST, and the scoping IS the fix.
+  //
+  // This was a page-wide query for [role="tab"], which in a static page looks harmless
+  // and is not: it matched EVERY tab on the page — the five web-app tabs and the four
+  // terminal tabs, as well as these three. Those tabs carry no `aria-controls` (they
+  // switch by data-web / data-tui), so `getAttribute` returned null, `getElementById(null)`
+  // returned null, and `null.hidden = ...` threw a TypeError.
+  //
+  // AND THEY PRECEDE THESE IN THE DOCUMENT, so the throw happened on the FIRST iteration —
+  // before these three tabs were reached at all. Clicking Windows or Docker therefore did
+  // nothing whatsoever: `aria-selected` was never updated and the panel never un-hid. The
+  // reporter saw it as "the Windows and Docker buttons are not working. it stays on the
+  // Linux install line", and nothing in this repo renders the page, so no gate saw it.
+  //
+  // The other two tablists select by their own attribute ([data-web] / [data-tui]); this
+  // one selects within its own tablist, which is the same idea expressed for markup that
+  // has no such attribute.
+  var tabs = document.querySelectorAll('#install-tabs [role="tab"]');
   function select(t){
     tabs.forEach(function(x){
       var on = x === t;
