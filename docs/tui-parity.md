@@ -40,12 +40,12 @@ whole areas to "use the web GUI".
 | `/projects` | Projects | **exists** (read-write) | Work | `Projects` source + detail. **Read-write:** `n` create (`CreateProject` with name/slug/goals/default runtime image) · `e` edit title/goals/project_dir (`UpdateProject`) · `d` set + create the project directory (`UpdateProject` + the `ListProjectFiles` probe that materializes/validates it). **Reached by `/projects` (the PLURAL).** `/project` (singular) is the Ask tab's workspace scope, not this pane. |
 | `/projects/$id` | Project detail | **exists** | Work | Detail fields + goals + project dir + default image. |
 | `/projects/new` | Create project | **exists** | Work | The `n` chord on Projects: the validated create form → `CreateProject`. |
-| `/work-items` | Work Items | **exists** (read-write) | Work | `Work Items` source rendered through three DISPLAY groupings — **Tree** (real Epic→Feature→Task→Subtask DAG from `parent_id`), **Board** (grouped by real status, empty columns kept), **Archive** (`include_archived` — archived items + the status they restore to). `v` cycles; `T`/`B`/`Z` select. Kind badges + state pills render from real fields. **Read-write:** `n` create (`CreateWorkItem` with title/kind/parent/description/acceptance/priority/budgets JSON/context window/workflow/runtime image/context files/auto-start), `e` edit every mutable field (`UpdateWorkItem`), `s` status+priority, `t` schedule (`scheduled_start_at` + auto-start), `w`/`W` assign/unassign worker, `J`/`K` reorder children (`ReorderWorkItems` — the ONLY sequence mutation; display groupings never renumber), `a` archive / `R` restore / `x` delete → cancelled, each Confirm-gated. |
+| `/work-items` | Work Items | **exists** (read-write) | Work | `Work Items` source rendered through three DISPLAY groupings — **Tree** (real Epic→Feature→Task→Subtask DAG from `parent_id`), **Board** (grouped by real status, empty columns kept), **Archive** (`include_archived` — archived items + the status they restore to). `v` cycles; `T`/`B`/`Z` select. Kind badges + state pills render from real fields. **Read-write:** `n` create (`CreateWorkItem` with title/kind/parent/description/acceptance/priority/budgets JSON/context window/workflow/runtime image/context files/auto-start), `e` edit every mutable field (`UpdateWorkItem`), `s` status+priority, `t` schedule (`scheduled_start_at` + auto-start), `w`/`W` assign/unassign worker, `J`/`K` reorder children (`ReorderWorkItems` — the ONLY sequence mutation; display groupings never renumber), `a` archive / `R` restore / `ctrl+x` delete (`HardDeleteWorkItem`, PERMANENT — see below), each Confirm-gated. |
 | `/work-items/$id` | Work Item detail | **exists** | Work | Detail fields (kind badge, state pill, parent, priority, budgets, context window, runtime image, worker, workflow, schedule, sort order, archived-from) + the description / acceptance-criteria body; diff pane opens for the work item's execution. |
 | `/work-items/new` | Create work item | **exists** | Work | The `n` chord on Work Items: the typed create form (JSON budgets/context-window validation inline) → `CreateWorkItem`. |
 | `/runtime-images` | Runtime Images | **exists** (read-write) | Work | `Runtime Images` source + detail (tag, status, base, version/built version, apt packages, toolchains, env, Dockerfile override). |
 | `/runtime-images/$id` | Runtime Image detail | **exists** (read-write) | Work | Detail fields incl. apt packages/toolchains/env/Dockerfile override + the last build log. |
-| `/runtime-images/new` | Create runtime image | **exists** | Work | The `n` chord on Runtime Images: the spec form (apt packages / toolchains / env as JSON, Dockerfile override) → `CreateRuntimeImage`; `e` edits the spec (`UpdateRuntimeImage`, version-carried), `b` builds with live streamed logs (`BuildRuntimeImage` → the kit2 `Stream` widget), `x` deletes (Confirm). |
+| `/runtime-images/new` | Create runtime image | **exists** | Work | The `n` chord on Runtime Images: the spec form (apt packages / toolchains / env as JSON, Dockerfile override) → `CreateRuntimeImage`; `e` edits the spec (`UpdateRuntimeImage`, version-carried), `b` builds with live streamed logs (`BuildRuntimeImage` → the kit2 `Stream` widget), `ctrl+x` deletes (Confirm). |
 
 ## Execution
 
@@ -129,8 +129,12 @@ The Work tab is now read-WRITE for every Work surface the GUI mutates:
 
 - **Work Items** — create from a typed `Form` (`CreateWorkItem`), edit every mutable field
   (`UpdateWorkItem`), change status/priority, schedule, assign/unassign a worker, reorder children
-  (`ReorderWorkItems`), archive/restore and delete (→ cancelled). Destructive actions are
-  Confirm-gated and the list reconciles after the write.
+  (`ReorderWorkItems`), archive/restore and delete (`HardDeleteWorkItem` — **permanent**, the same
+  deletion the GUI performs; the reversible equivalent is a status change to `cancelled`, which the
+  status editor performs and the server applies through the soft `DeleteWorkItem` path).
+  Destructive actions are Confirm-gated and the list reconciles after the write. Search narrows
+  **through collapsed nodes**: a query reveals matches under a collapsed parent
+  (keeping their ancestors so the hierarchy survives) and clearing it restores the collapse.
 - **Tree / Board / Archive** — display groupings over the real fields: the Tree walks the actual
   `parent_id` DAG (max 4 levels), the Board groups by status (a display sort never touches
   `sort_order` — only `ReorderWorkItems` does), the Archive reads `include_archived`.

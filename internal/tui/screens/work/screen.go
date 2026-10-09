@@ -795,9 +795,11 @@ func (m *Model) actionsForSelection() []kit2.Action {
 // bulkItemActions are the operations that make sense on a whole selection.
 //
 // Deliberately only the ones the server can do per item and that an operator plausibly wants
-// in bulk: ARCHIVE and DELETE. A bulk status change or reassignment would need a form per
-// item (each carries its own acceptance review and worker binding), so it is not offered
-// rather than offered misleadingly.
+// in bulk: ARCHIVE and DELETE (delete being the GUI's PERMANENT delete — see itemActions;
+// the reversible status → cancelled change is a per-item status edit, not a bulk gesture).
+// A bulk status change or reassignment would need a form per item (each carries its own
+// acceptance review and worker binding), so it is not offered rather than offered
+// misleadingly.
 //
 // One action, one confirm, and the confirm NAMES THE COUNT: a destructive operation on ten
 // rows must not look like one on a single row. The writes are sequential and the FIRST
@@ -842,17 +844,19 @@ func (m *Model) bulkItemActions(ids []string) []kit2.Action {
 	}
 	del := kit2.Action{
 		Label: label("delete"), Key: kit2.DeleteChord, Danger: true, Source: srcWorkItems,
-		Confirm: "Delete " + count + " items?\n" +
-			"This soft-deletes each (status → cancelled) and they leave every active view.",
+		Confirm: "Permanently delete " + count + " items and all their dependencies?\n" +
+			"This cannot be undone. An item with children is refused rather than cascaded, and is\n" +
+			"reported below.",
 		Do: func(ctx context.Context) error {
 			failed := 0
 			for _, id := range ids {
-				if _, err := client.DeleteWorkItem(ctx, connect.NewRequest(&apiv1.DeleteWorkItemRequest{Id: id})); err != nil {
+				if _, err := client.HardDeleteWorkItem(ctx, connect.NewRequest(&apiv1.HardDeleteWorkItemRequest{Id: id})); err != nil {
 					failed++
 				}
 			}
 			if failed > 0 {
-				return fmt.Errorf("deleted %d of %d — %d failed", n-failed, n, failed)
+				return fmt.Errorf("deleted %d of %d — %d refused (an item with children must be emptied or archived first)",
+					n-failed, n, failed)
 			}
 			return nil
 		},
@@ -1591,7 +1595,8 @@ func (m *Model) HintLine() string {
 		return theme.HintText.Render("n: new project · e: edit · d: set+create dir · " +
 			"m: MCP + skills (add, or add from catalog) · enter: detail · ←/→: pane")
 	case srcImages:
-		return theme.HintText.Render("n: new image · e: edit spec · b: build (live logs) · x: delete · enter: detail")
+		return theme.HintText.Render("n: new image · e: edit spec · b: build (live logs) · " +
+			kit2.DeleteChord + ": delete · enter: detail")
 	default:
 		// THE BULK SET IS NAMED HERE, AND IT WAS NAMED NOWHERE. Its chord (keyBulkSet) existed, and the action
 		// bar offered it once a selection existed — but a chord that is only ever discoverable by already
@@ -1628,7 +1633,7 @@ func (m *Model) HintLine() string {
 				"v: view (archive ⇄ tree) · o/O: collapse · ↑↓: move")
 		}
 		return theme.HintText.Render("n: new · /: search · e: edit · s: status · y: auto-start · +/-: move step · " +
-			"a: archive · x: delete · " + keyBulkSet + ": set workflow & image (space marks 2+) · " +
+			"a: archive · " + kit2.DeleteChord + ": delete · " + keyBulkSet + ": set workflow & image (space marks 2+) · " +
 			"v: view (tree ⇄ archive) · o/O: collapse · enter: detail")
 	}
 }
