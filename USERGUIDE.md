@@ -736,7 +736,9 @@ written per step, **two steps bound to the same ticket can run in parallel**.
 
 **Actions.** Create, edit every mutable field, change status and priority,
 schedule, assign/unassign a worker, reorder children, archive/restore, delete
-(→ cancelled). Bulk operations act on the current selection.
+(**permanent** — the same deletion the GUI's Delete performs; an item with children
+is refused. For a reversible change, set the status to **cancelled**). Bulk
+operations act on the current selection.
 
 ### 7.3 Runtime Images
 
@@ -1695,8 +1697,12 @@ The richest surface in the client. Three display groupings over the real fields:
 | `J` / `K` | Reorder children — **the only sequence mutation** |
 | `a` | Archive |
 | `R` | Restore |
-| `x` | Delete (→ cancelled) |
+| `ctrl+x` | Delete — **permanent** (the GUI's Delete; an item with children is refused) |
 | `/` then text | Search |
+
+Search narrows the list **through collapsed nodes**: a query reveals matching items
+even when their parent is collapsed (their ancestors are kept so the result keeps its
+hierarchy), and clearing the query restores the collapse you had.
 
 Every destructive chord is confirm-gated, and the list reconciles after a write.
 
@@ -1709,7 +1715,7 @@ Detail includes tag, status, base, version and built version, apt packages,
 toolchains, environment, and any Dockerfile override, plus the last build log.
 
 **Chords.** `n` create · `e` edit the spec (version-carried) · `b` **build**, with
-logs streaming live into the pane · `x` delete (confirm-gated).
+logs streaming live into the pane · `ctrl+x` delete (confirm-gated).
 
 ---
 
