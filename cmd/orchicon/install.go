@@ -59,6 +59,19 @@ func runInstall(args []string, log *slog.Logger) error {
 		fmt.Println("orchicon: no external adapter CLI found — the built-in engine will run sessions (nothing to install)")
 	}
 
+	// 1.6. Host-side ports, resolved BEFORE the image pull: the pull can take
+	// minutes, and an operator must never be asked a question after waiting for
+	// it. The terminal is opened and closed here; a nil tty means "no terminal",
+	// which takes the defaults rather than blocking a headless install.
+	tty, ttyOwned := promptTerminal()
+	if ttyOwned {
+		defer tty.Close()
+	}
+	ports, err := resolveInstallPorts(instance, os.Stdout, tty)
+	if err != nil {
+		return err
+	}
+
 	// 2. Ensure the published images are present (skip the pull when the
 	// tag is already local — idempotent re-runs and local dev images).
 	// The :gui and :dev runtime variants ship with the product (work-item
@@ -86,15 +99,16 @@ func runInstall(args []string, log *slog.Logger) error {
 
 	// 4. Create + start the single-container instance (or report the
 	// existing one).
-	if err := ensureInstallContainer(instance, name, dataVolume, socketDir, containerImage); err != nil {
+	if err := ensureInstallContainer(instance, name, dataVolume, socketDir, containerImage, ports); err != nil {
 		return err
 	}
 
-	// 5. Wait for the control plane to serve health.
-	controlPort := "8080"
-	if instance == "prod" {
-		controlPort = "8091"
-	}
+	// 5. Wait for the control plane to serve health, ON THE PORT THIS INSTALL
+	// PUBLISHED — read back from the resolved set rather than re-derived from
+	// the instance name. Re-deriving is how a moved port gets probed at the old
+	// one, and a neighbouring instance answering there would report a healthy
+	// install that is not this one.
+	controlPort := fmt.Sprintf("%d", ports["ORCHICON_CONTROL_PORT"])
 	healthURL := "http://localhost:" + controlPort + "/healthz"
 	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
@@ -114,7 +128,7 @@ func runInstall(args []string, log *slog.Logger) error {
 	installDir := env("ORCHICON_INSTALL_DIR", defaultInstallDir())
 	installOrchLauncher(installDir)
 
-	printInstallInfo(instance, name, dataVolume, socketDir, healthURL, runtimeImage, installDir)
+	printInstallInfo(name, dataVolume, socketDir, healthURL, runtimeImage, installDir, ports)
 	return nil
 }
 
@@ -263,7 +277,7 @@ func socketHealthy(socketPath string) bool {
 // socket directory. Project dirs are added later via the UI (the plane
 // writes /var/lib/orchicon/project-mounts; re-running `orchicon install`
 // or using scripts/container.sh sync-mounts applies them).
-func ensureInstallContainer(instance, name, dataVolume, socketDir, image string) error {
+func ensureInstallContainer(instance, name, dataVolume, socketDir, image string, ports map[string]int) error {
 	running, _ := containerRunning(name)
 	if running {
 		fmt.Printf("instance %q already running (%s)\n", name, image)
@@ -280,12 +294,11 @@ func ensureInstallContainer(instance, name, dataVolume, socketDir, image string)
 	home, _ := os.UserHomeDir()
 	hostUID := os.Getuid()
 	hostGID := os.Getgid()
-	grafanaPort := "3002"
-	controlPort := "8080"
-	if instance == "prod" {
-		grafanaPort = "3003"
-		controlPort = "8091"
-	}
+	// Host ports come from the RESOLVED set (see resolveInstallPorts), never
+	// from the instance name. The in-container ports are fixed — the supervisor
+	// listens on :8080 and Grafana on :3000 — so only the host half varies.
+	controlPort := fmt.Sprintf("%d", ports["ORCHICON_CONTROL_PORT"])
+	grafanaPort := fmt.Sprintf("%d", ports["ORCHICON_GRAFANA_PORT"])
 
 	args := []string{"run", "-d", "--name", name,
 		"--label", "orchicon-instance=" + instance,
@@ -366,13 +379,11 @@ func containerExists(name string) (bool, error) {
 	return strings.TrimSpace(string(out)) != "", nil
 }
 
-func printInstallInfo(instance, name, dataVolume, socketDir, healthURL, runtimeImage, installDir string) {
-	controlPort := "8080"
-	grafanaPort := "3002"
-	if instance == "prod" {
-		controlPort = "8091"
-		grafanaPort = "3003"
-	}
+func printInstallInfo(name, dataVolume, socketDir, healthURL, runtimeImage, installDir string, ports map[string]int) {
+	// Read back the ports this install actually bound: re-deriving them from the
+	// instance name would print a URL pointing at a port we never bound.
+	controlPort := fmt.Sprintf("%d", ports["ORCHICON_CONTROL_PORT"])
+	grafanaPort := fmt.Sprintf("%d", ports["ORCHICON_GRAFANA_PORT"])
 	fmt.Println()
 	fmt.Println("┌─────────────────────────────────────────────────────────────┐")
 	fmt.Println("│  Orchicon is installed and running.                        │")
