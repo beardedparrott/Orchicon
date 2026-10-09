@@ -1,10 +1,12 @@
 package work
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 )
 
 func searchPlane(t *testing.T) *Model {
@@ -100,36 +102,153 @@ func TestWorkItemsSearchFiltersTheList(t *testing.T) {
 	}
 }
 
-// A filter must not corrupt the tree: collapsing still hides descendants, and
-// the cursor still steps over hidden rows.
-func TestSearchAndTreeInteract(t *testing.T) {
+// collapsedTreePlane is the fixture that exposed the report: an EPIC whose child
+// matches, an epic that does not, and an unrelated root. The Tree view opens
+// COLLAPSED, so this is exactly what the operator was looking at.
+func collapsedTreePlane(t *testing.T) *Model {
+	t.Helper()
 	p := newPlane()
 	p.seedProject("proj-1", "Orchicon")
 	p.addItem(&apiv1.WorkItem{Id: "e", Title: "Epic alpha", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC, Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING, ProjectId: "proj-1"})
 	p.addItem(&apiv1.WorkItem{Id: "k", Title: "kid alpha", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_TASK, Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING, ProjectId: "proj-1", ParentId: "e"})
-	p.addItem(&apiv1.WorkItem{Id: "z", Title: "other beta", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_TASK, Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING, ProjectId: "proj-1"})
+	p.addItem(&apiv1.WorkItem{Id: "b", Title: "Epic beta", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC, Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING, ProjectId: "proj-1"})
+	p.addItem(&apiv1.WorkItem{Id: "g", Title: "grandkid gamma", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_SUBTASK, Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING, ProjectId: "proj-1", ParentId: "b"})
 	m := newModel(t, p)
 	m.SelectSource(srcWorkItems)
 	load(t, m, srcWorkItems)
-	// The tree opens collapsed, so expand it: this test is about the filter's
-	// interaction with the tree, and a collapsed epic has no visible child to filter.
-	expandAll(t, m)
+	return m
+}
+
+// idsOf is the visible row ids in draw order.
+func idsOf(tbl *kit2.Table) []string {
+	out := make([]string, 0)
+	for _, r := range tbl.VisibleRows() {
+		out = append(out, r.ID)
+	}
+	return out
+}
+
+// THE REPORT: "Searching work items in the TUI does NOT search items that are
+// collapsed. That is a broken design. The search should most definitely search
+// through collapsed items as well."
+//
+// The Tree view opens collapsed, so a collapsed epic's children were unreachable
+// by search: no query could reveal them, and there was no key that could select
+// what the list refused to draw.
+func TestFilterReachesMatchesInsideCollapsedNodes(t *testing.T) {
+	m := collapsedTreePlane(t)
+	tbl := m.Base.ActiveTable()
+
+	// Before: collapsed, so each epic's subtree is hidden.
+	if got := idsOf(tbl); strings.Join(got, ",") != "e,b" {
+		t.Fatalf("collapsed tree shows %v, want [e b]", got)
+	}
+
+	// Query a title that exists ONLY inside the collapsed epics.
+	tbl.SetFilter("gamma")
+
+	// The match two levels down is on screen despite BOTH its ancestors being
+	// collapsed, and so is the chain that places it (the ancestor rule: a filtered
+	// result keeps its hierarchy rather than surfacing as an indented orphan).
+	got := idsOf(tbl)
+	if strings.Join(got, ",") != "b,g" {
+		t.Fatalf("filtered collapsed tree shows %v, want [b g] (the match and its collapsed ancestor)", got)
+	}
+
+	// Clearing the query restores the collapse — the query SUSPENDED it, it did not
+	// rewrite the operator's tree.
+	tbl.SetFilter("")
+	if got := idsOf(tbl); strings.Join(got, ",") != "e,b" {
+		t.Fatalf("after clearing the query the tree shows %v, want [e b] back", got)
+	}
+}
+
+// The keyboard must be able to REACH what the query reveals — a match the list
+// draws but the cursor steps over is not searchable either.
+func TestFilterMakesCollapsedMatchesReachableByKeyboard(t *testing.T) {
+	m := collapsedTreePlane(t)
+
+	// Type the query as the operator does ('/'), then leave the box with enter
+	// (StopFilter KEEPS the query), which is what hands the arrows back to the list.
+	press(t, m, "/")
+	for _, ch := range "alpha" {
+		press(t, m, string(ch))
+	}
+	press(t, m, "enter")
+	if m.Base.Filtering() {
+		t.Fatal("enter must leave the search box")
+	}
 
 	tbl := m.Base.ActiveTable()
-	// Filter to "alpha": the epic and its kid survive, the unrelated root drops.
-	tbl.SetFilter("alpha")
-	if got := len(tbl.VisibleRows()); got != 2 {
-		t.Fatalf("filtered rows = %d, want 2", got)
+	if got := strings.Join(idsOf(tbl), ","); got != "e,k" {
+		t.Fatalf("visible after searching alpha = %q, want \"e,k\"", got)
 	}
-	// Collapsing the epic still hides its child, filter or not.
-	if !m.SelectItem(srcWorkItems, "e") {
+	// The arrow keys step onto the collapsed epic's child, which is the row the
+	// operator could not select before this fix.
+	tbl.ResetCursor()
+	tbl.Move(1)
+	if got := tbl.SelectedID(); got != "e" {
+		t.Fatalf("first step = %q, want the epic", got)
+	}
+	tbl.Move(1)
+	if got := tbl.SelectedID(); got != "k" {
+		t.Fatalf("the cursor cannot reach the match inside the collapsed epic: landed on %q, want \"k\"", got)
+	}
+}
+
+// The count the search box prints must agree with what the list draws. Before
+// this fix MatchCount counted matches the renderer refused to show ("3/40" with
+// two rows on screen), which is how the defect was visible without being
+// explicable.
+func TestFilterCountAgreesWithTheList(t *testing.T) {
+	m := collapsedTreePlane(t)
+	tbl := m.Base.ActiveTable()
+	tbl.SetFilter("alpha")
+
+	matches, total := tbl.MatchCount()
+	if matches != 2 {
+		t.Fatalf("match count = %d, want 2 (Epic alpha, kid alpha)", matches)
+	}
+	if total != 4 {
+		t.Fatalf("total = %d, want 4 rows", total)
+	}
+	// Every match is ON SCREEN: the count is a promise about the list.
+	vis := idsOf(tbl)
+	for _, id := range []string{"e", "k"} {
+		if !slices.Contains(vis, id) {
+			t.Fatalf("the box says %d matches but %q is not drawn (visible: %v)", matches, id, vis)
+		}
+	}
+}
+
+// NON-REGRESSION: with NO query the collapse is untouched. Collapsing must still
+// hide a subtree — the fix suspends collapse for a QUERY, not permanently.
+func TestCollapseStillHidesDescendantsWithoutAQuery(t *testing.T) {
+	m := collapsedTreePlane(t)
+	tbl := m.Base.ActiveTable()
+	expandAll(t, m)
+	if got := len(tbl.VisibleRows()); got != 4 {
+		t.Fatalf("expanded rows = %d, want 4", got)
+	}
+	if !m.SelectItem(srcWorkItems, "b") {
 		t.Fatal("could not select the epic")
 	}
 	if !tbl.Toggle() {
 		t.Fatal("the epic must be toggleable")
 	}
-	if got := len(tbl.VisibleRows()); got != 1 {
-		t.Fatalf("collapsed+filtered rows = %d, want 1", got)
+	if got := strings.Join(idsOf(tbl), ","); got != "e,k,b" {
+		t.Fatalf("collapsing beta shows %q, want \"e,k,b\" (gamma hidden)", got)
+	}
+}
+
+// A whitespace-only query is NOT a filter: it narrows nothing (matchesFilter
+// trims), so it must not suspend the collapse either.
+func TestWhitespaceQueryDoesNotSuspendCollapse(t *testing.T) {
+	m := collapsedTreePlane(t)
+	tbl := m.Base.ActiveTable()
+	tbl.SetFilter("   ")
+	if got := strings.Join(idsOf(tbl), ","); got != "e,b" {
+		t.Fatalf("a blank query shows %q, want the collapsed tree [e b] untouched", got)
 	}
 }
 

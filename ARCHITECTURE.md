@@ -820,7 +820,7 @@ than discarded:
 | Variable | Default | Purpose |
 |---|---|---|
 | `ORCHICON_PERMISSION_POLICY` | *(per-instance data dir)* | The permission policy file to read |
-| `ORCHICON_ASK_CONSENT_WAIT` | `15m` | How long a permission card waits for an answer before it expires (a timeout is a denial, and the model is told it expired) |
+| `ORCHICON_ASK_CONSENT_WAIT` | *unset — no bound* | Optional **leash** on a permission card. Unset (the default), a card waits for the operator **indefinitely**: answering it, stopping the turn or sending a new message is what ends the wait, because an expiry is what took a card away from an operator who stepped away from their keyboard (their rule: "the cards should just wait for the user no matter what"). Set it to a duration to restore the old fail-closed expiry — a timeout is then a **denial**, and the model is told it expired rather than that the operator refused |
 | `ORCHICON_GUARD_POLICY` / `_PROJECT` / `_GRANTS` / `_ONCE` / `_FULLSEND` | *(set by the plane)* | The interactive guard shim's per-invocation contract. Set by the Ask path; not operator-set |
 
 
@@ -1329,7 +1329,7 @@ therefore kept out of it.
 | `ORCHICON_COMPACT_MIN_TURNS` | `2` | Minimum completed turns before the compact-on-budget-breach gate is armed (prevents compact-at-start and the compact loop) |
 | `ORCHICON_COMPACT_MAX` | `1` | Max compactions per execution. The spend accumulator is cumulative, so once a budget is tripped it stays tripped — capping at 1 prevents re-collapsing the fresh post-compact summary every turn. 0 disables compaction entirely |
 | `ORCHICON_FOLLOWUP_REPLY_WINDOW` | `30m` | Async follow-up reply window; the collected reply is written when it lands within this bound |
-| `ORCHICON_ASK_REPLY_WINDOW` | `30m` | Ask Orchicon detached reply window; a turn that does not complete within this bound is persisted as a timeout error message |
+| `ORCHICON_ASK_REPLY_WINDOW` | `30m` | Ask Orchicon detached reply window; a turn that goes quiet for this bound is persisted as a timeout error message. A turn **parked on a permission/question card is exempt** — the operator is what it is waiting on, so the window re-arms and the registry's TTL sweep spares it (see §Ask Orchicon consent), and the turn ends on a decision or a stop rather than on a timer |
 | `ORCHICON_ASK_TIMEOUT` | `60s` | Ask Orchicon send-accept bound: how long a turn's attempt waits for the serve to accept the sent message once subscribed. A wedged serve fails fast instead of silently queuing |
 | `ORCHICON_ASK_SERVE_DOWN_GRACE` | `15s` | Ask Orchicon serve-down fast-fail: how long a turn whose serve has NEVER accepted a connection keeps retrying before the reply is persisted as a serve-unavailable error (a serve that was live earlier keeps the full reply window for restart recovery) |
 | `ORCHICON_ASK_REATTACH_BACKOFF` | `2s` | Ask Orchicon pause between re-attach attempts after serve loss mid-reply (the collector retries inside the reply window) |
@@ -1339,7 +1339,7 @@ therefore kept out of it.
 | `ORCHICON_ASK_TURN_MAX_AGE` | `31m` | Ask Orchicon turn-registry TTL: a turn older than this is evicted by the background sweeper (collector cancelled, serve session aborted) so no conversation can be blocked forever by a wedged collector |
 | `ORCHICON_ASK_SWEEP_INTERVAL` | `1m` | Ask Orchicon turn-registry sweeper tick interval (dev/test knob) |
 | `ORCHICON_PERMISSION_POLICY` | *(per-instance data dir)* | The Ask permission policy file (`deny`/`accept` lists). Read on **every** gated decision, so an edit takes effect on the next call — no restart |
-| `ORCHICON_ASK_CONSENT_WAIT` | `15m` | How long a permission card waits for an answer before it expires. A timeout is a **denial** (fail closed), and the model is told it *expired* rather than that the operator refused |
+| `ORCHICON_ASK_CONSENT_WAIT` | *unset — no bound* | Optional leash on a permission card; unset means a card waits for the operator indefinitely (a human deciding is not a stall, and no timer ends the wait). When set, a timeout is a **denial** (fail closed) and the model is told it *expired* rather than that the operator refused. `ORCHICON_CLAUDE_CONSENT_WAIT` is the same knob for the claude transport, and the two defaults are kept identical on purpose |
 | `ORCHICON_ASK_MCP_TOOL_WEDGE_WINDOW` | `120s` | A tool call issued but never resolved within this window is treated as a wedged MCP call and the session is recycled (any activity resets it) |
 | `ORCHICON_ASK_MCP_RECONNECT_ATTEMPTS` | `3` | How many times a wedged session is recycled within one turn before the turn is failed with a clear, retryable error |
 | `ORCHICON_MCP_TENANT_ID` | `tnt_dev` | Tenant for the built-in Orchicon MCP registered on the host serve |

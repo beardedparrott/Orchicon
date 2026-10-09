@@ -161,12 +161,21 @@ func New(pool *db.Pool, log *slog.Logger, blobStore blobstore.Store, modelDisc *
 // is the "every turn has a hard backstop" guarantee: a collector that can
 // never finalize is reaped in bounded time instead of blocking the
 // conversation forever (the reported server-restart-required behaviour).
+//
+// A TURN PARKED ON A CARD IS NOT REAPED. It is quiet because the OPERATOR has
+// the call, not because the collector is wedged — and reaping it finalizes the
+// ask, so the operator returns to a card that can no longer be answered (their
+// report: "if an ask or permission card has been waiting for awhile (i.e. away
+// from keyboard), I can no longer click into it or use the keyboard to select
+// it"). The backstop for that turn is the operator's own decision or stop, which
+// is the posture the stall monitor already takes for the same state — see
+// turnRegistry.sweep and the reply window in chat.go.
 func (s *Service) startSweeper() {
 	go func() {
 		ticker := time.NewTicker(askSweepInterval())
 		defer ticker.Stop()
 		for range ticker.C {
-			for _, ev := range s.turns.sweep(time.Now(), askTurnMaxAge()) {
+			for _, ev := range s.turns.sweep(time.Now(), askTurnMaxAge(), s.pending.hasOpenAsk) {
 				s.log.Warn("conversation turn expired — aborting serve session", "conversation", ev.convID)
 				if s.pool == nil {
 					continue

@@ -43,6 +43,34 @@ export GOTMPDIR
 PATH        := $(DEV_TOOLS)/go/bin:$(PATH)
 export PATH
 endif
+
+# THE LOCAL GATE WALKS ONLY THIS MODULE'S PACKAGES — local scratch is excluded.
+#
+# tmp/ is the repo's gitignored scratch dir (agent worktrees, patch staging,
+# one-off probe programs), and a scratch dir carries NO go.mod. A dir with no
+# go.mod is not a module boundary, so `./...` WALKS STRAIGHT INTO IT and
+# compiles whatever is lying there as part of this module.
+#
+# That is how a stray file broke the whole local gate:
+#
+#	tmp/installer-preserve/install_images_test.go:42:10: undefined: runtimeVariantRef
+#	make: *** [Makefile:193: vet] Error 1
+#
+# The file was a stale copy of a test that had already MOVED into cmd/orchicon —
+# it still called a symbol that moved with it, and there was no implementation
+# beside it, so it could never compile. Nothing was wrong with the module, and
+# `make rebuild-dev` could not run at all: `ci` runs vet and test over `./...`.
+#
+# CI NEVER SEES THIS, which is why it was invisible until a rebuild: the go-ci
+# job checks out a CLEAN tree, and tmp/ is gitignored so it does not exist there.
+# The failure is local-only and looks like a broken merge — so it belongs fixed
+# here, once, rather than diagnosed again on the next rebuild.
+#
+# Stated as ONE variable used by every target that walks the tree, so a target
+# added later cannot forget it. Any dir under tmp/ is skipped, including a
+# worktree (those are skipped for a different reason — they DO have a go.mod).
+PKGS = $(shell $(GO) list ./... 2>/dev/null | grep -v '/tmp/')
+
 BUF         := buf
 ATLAS       := atlas
 NPX         := npx
@@ -160,6 +188,7 @@ run: fetch-tags fe-build ## Run the control plane from source
 	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon
 
 test: ## Run Go tests
+	@test -n "$(PKGS)" || { printf 'ERROR: no packages matched ./... (tmp/ excluded) — refusing to run the gate over nothing\n' >&2; exit 1; }
 	@# A TEST MUST NEVER TOUCH THE DEVELOPER'S REAL CONFIG.
 	@#
 	@# One did: TestThemeCommand drives `/theme light` then `/theme dark`, and SetTheme persists the
@@ -187,10 +216,11 @@ test: ## Run Go tests
 	@# ORCHICON_SKIP_NETWORK_TESTS, ORCHICON_LIVE_*) are deliberately left reachable.
 	@for v in ORCHICON_GUARD_POLICY ORCHICON_GUARD_GRANTS ORCHICON_GUARD_ONCE ORCHICON_GUARD_PROJECT \
 	         ORCHICON_GUARD_FULLSEND ORCHICON_SERVE_STATE_DIR; do unset "$$v"; done; \
-	ORCHICON_CONFIG_DIR="$$(mktemp -d)" $(GO) test ./...
+	ORCHICON_CONFIG_DIR="$$(mktemp -d)" $(GO) test $(PKGS)
 
 vet: ## Run go vet
-	$(GO) vet ./...
+	@test -n "$(PKGS)" || { printf 'ERROR: no packages matched ./... (tmp/ excluded) — refusing to run the gate over nothing\n' >&2; exit 1; }
+	$(GO) vet $(PKGS)
 
 tidy: ## Run go mod tidy
 	$(GO) mod tidy

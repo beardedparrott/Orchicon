@@ -419,16 +419,48 @@ type turnEviction struct {
 // turn that had been working for an hour was reaped as though it were wedged. A
 // collector that genuinely cannot finalize produces no activity either, so it is
 // still reaped; it is now reaped on the evidence that actually describes it.
-func (r *turnRegistry) sweep(now time.Time, maxAge time.Duration) []turnEviction {
+//
+// parked IS THE OPERATOR'S CARVE-OUT, and it is the same carve-out the reply
+// window takes: a turn waiting on a human is QUIET BY DEFINITION, so reaping it
+// on quiet time kills the very card the operator is being asked to answer. The
+// caller supplies it from the pending-ask registry (hasOpenAsk), so "spare this
+// turn" and "a decision can still land here" are the same condition.
+//
+// THE PREDICATE IS EVALUATED WITH NO TURN LOCK HELD, and that is deliberate: it
+// takes the pending-ask registry's lock, and the decision path takes that lock
+// (per ask) before it reports progress — which takes this one. Reading the
+// candidates under this lock and then asking is the order that cannot deadlock;
+// the token re-check below is what keeps the release safe.
+func (r *turnRegistry) sweep(now time.Time, maxAge time.Duration, parked func(convID string) bool) []turnEviction {
+	type candidate struct {
+		convID string
+		tenant string
+		token  uint64
+	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	var evicted []turnEviction
+	var cands []candidate
 	for id, entry := range r.turns {
 		if now.Sub(entry.lastActivity) > maxAge {
-			entry.cancel(errTurnExpired)
-			delete(r.turns, id)
-			evicted = append(evicted, turnEviction{convID: id, tenant: entry.tenant})
+			cands = append(cands, candidate{convID: id, tenant: entry.tenant, token: entry.token})
 		}
+	}
+	r.mu.Unlock()
+
+	var evicted []turnEviction
+	for _, cd := range cands {
+		if parked != nil && parked(cd.convID) {
+			continue
+		}
+		r.mu.Lock()
+		// TOKEN-GUARDED on the way back in: the lock was released, so the entry may have
+		// been replaced by a newer turn (which must not be cancelled for the old one's
+		// silence) or removed entirely.
+		if entry, ok := r.turns[cd.convID]; ok && entry.token == cd.token {
+			entry.cancel(errTurnExpired)
+			delete(r.turns, cd.convID)
+			evicted = append(evicted, turnEviction{convID: cd.convID, tenant: cd.tenant})
+		}
+		r.mu.Unlock()
 	}
 	return evicted
 }
@@ -1973,23 +2005,40 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *turnReplyWindow
 			finalText, finalReasoning := settleAttempt()
 			return turnAttemptResult{kind: turnFailed, text: finalText, reasoning: finalReasoning, err: context.Cause(subCtx)}
 		case <-window.C():
-			finalText, finalReasoning := settleAttempt()
-			// A TURN PARKED ON A CARD WAS NOT WAITING ON THE MODEL. This window measures
-			// SILENCE, and a turn whose operator has stepped away is silent by definition
-			// (see turnReplyWindow) — so the one cause the old message could not describe is
-			// the one that brought the operator here: "reply timed out after 30m0s … the model
-			// may be overloaded or unavailable. Check the Ask Orchicon model in Settings →
-			// Default models, then retry", which names a model that is fine and omits the
-			// question that was actually being waited on. That omission is the operator's
-			// "timeouts are losing context in the conversation".
+			// A TURN WAITING ON A HUMAN IS NOT A STALL, SO THIS WINDOW DOES NOT APPLY TO IT: it
+			// RE-ARMS instead of ending anything.
 			//
-			// THE BOUND IS UNCHANGED: a parked turn still ends, deliberately, and the
-			// question stays answerable afterwards (the answer goes out as the next message).
+			// This window measures SILENCE, and every other silent-turn diagnosis in this file is
+			// careful to exempt the case where the OPERATOR holds the call — the stall monitor
+			// suspends its no-progress check while `awaitingConsent` for exactly this reason. The
+			// reply window did not, so an operator who stepped away from a waiting card came back to
+			// a card that could no longer be clicked or selected: the expiry ended the turn, the
+			// turn's finalize answered the serve `reject`, and the tool call the card was holding
+			// was gone. Their report: "if an ask or permission card has been waiting for awhile
+			// (i.e. away from keyboard), I can no longer click into it or use the keyboard to
+			// select it."
+			//
+			// WHAT STILL BOUNDS THIS TURN, now that the timer does not: the OPERATOR. They can
+			// answer the card (which resumes the turn), stop the turn, or send a new message to
+			// supersede it — and the registry's TTL sweep, which used to be the backstop half a
+			// minute behind this window, now spares a parked turn for the same reason (see
+			// turnRegistry.sweep). A parked turn is therefore bounded by a decision rather than by
+			// a timer, which is the same posture the stall monitor already takes.
+			//
+			// THE MODEL'S OWN SILENCE IS STILL BOUNDED, unchanged: this window fires exactly as
+			// before for a turn that is NOT parked, and now reports nothing but the model as the
+			// cause — because that is the only cause left that reaches it.
 			if c.consent != nil {
 				if asking, ok := c.consent.waitingOnOperator(); ok {
-					return turnAttemptResult{kind: turnFailed, text: finalText, reasoning: finalReasoning, err: fmt.Errorf("this turn was waiting on YOUR answer for %s and has ended — the model was not the problem. Nothing was answered for you: reply in your own words and it will be sent as your next message. (Waiting on: %s)", askReplyWindow(), oneLine(asking, 120))}
+					s.log.Info("ask orchicon: reply window reached while the turn waits on the operator — re-arming, the model is not the one being waited on",
+						"conversation", c.convID, "waiting_on", oneLine(asking, 120))
+					// Touch, NOT progress(): the turn did nothing, so it must not claim
+					// activity — only its own deadline is restarted, from this moment.
+					window.Touch()
+					continue
 				}
 			}
+			finalText, finalReasoning := settleAttempt()
 			return turnAttemptResult{kind: turnFailed, text: finalText, reasoning: finalReasoning, err: fmt.Errorf("reply timed out after %s on model %s — the model may be overloaded or unavailable. Check the Ask Orchicon model in Settings → Default models, then retry.", askReplyWindow(), c.modelRef)}
 		case <-handshake.C:
 			if !sent {

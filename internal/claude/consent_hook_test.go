@@ -161,6 +161,28 @@ func TestConsentSocketDeniesWhenNobodyAnswers(t *testing.T) {
 	}
 }
 
+// NO BOUND BY DEFAULT, and the CLI's own timeout must not become the new cliff.
+//
+// The two halves of this are one decision: this side waits for the operator indefinitely (the same
+// default as the native adapter — a card must not be taken from someone who stepped away), and the
+// `timeout` written into the settings document is a BACKSTOP rather than a leash. It used to be 16
+// minutes — one minute above a 15-minute consent wait — which, with the wait unbounded, would make the
+// CLI the thing that kills the hook at sixteen minutes instead of fifteen: the same cliff, moved.
+func TestConsentWaitIsUnboundedByDefaultAndTheHookTimeoutIsNotACliff(t *testing.T) {
+	t.Setenv("ORCHICON_CLAUDE_CONSENT_WAIT", "") // the default: unset
+	if got := hookConsentWait(); got != 0 {
+		t.Fatalf("hookConsentWait() = %s with nothing configured, want no bound — the claude transport "+
+			"would refuse calls the native one still allows, which is the divergence these two "+
+			"constants exist to prevent", got)
+	}
+	// The settings-document timeout must leave room for an operator's absence, not for a minute more
+	// than a timer that no longer exists.
+	if AskHookTimeoutSeconds/3600 < 24 {
+		t.Fatalf("the PermissionRequest hook timeout is %ds — with the adapter-side wait unbounded, a "+
+			"short CLI timeout simply RELOCATES the expiry that took the card away", AskHookTimeoutSeconds)
+	}
+}
+
 // THE HOOK FAILS CLOSED when it cannot reach the adapter at all: no channel, a dead socket, or a malformed
 // reply must each DENY, and must still write a decision so the CLI is not left to its own devices.
 func TestPermissionRequestHookFailsClosed(t *testing.T) {
