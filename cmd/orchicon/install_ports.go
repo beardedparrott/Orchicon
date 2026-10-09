@@ -1,6 +1,6 @@
 package main
 
-// Host-side port selection for `orchicon install`.
+// Host-side port selection and plane residency for `orchicon install`.
 //
 // THE PROBLEM THIS SOLVES. Every port the installer published was a literal
 // chosen by instance name: dev got 8080/3002, prod got 8091/3003, and anything
@@ -31,11 +31,70 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
 
-// installPort is one host-side port the installer publishes for an instance.
+// Plane residency: WHERE the control plane process runs. `host` is the
+// product's default (scripts/container.sh residency_for resolves ${...:-host}):
+// the container runs the SERVICES only and the plane runs on the host as its
+// own `orchicon serve` process. `container` is the self-contained shape, with
+// the whole stack — plane included — inside the instance container.
+const (
+	residencyHost      = "host"
+	residencyContainer = "container"
+)
+
+// residencyForInstall resolves the plane residency for this install.
+//
+// IT MIRRORS container.sh's residency_for, including the default, because the
+// two launchers must produce the SAME shape for one instance: the residency is
+// recorded on the container at CREATE time (the ORCHICON_CONTAINER_SERVICES_ONLY
+// flag) and cannot be changed on a running container, so a disagreement here is
+// a disagreement about what the instance IS.
+func residencyForInstall() (string, error) {
+	v := strings.TrimSpace(os.Getenv("ORCHICON_PLANE_RESIDENCY"))
+	if v == "" {
+		return residencyHost, nil
+	}
+	if v != residencyHost && v != residencyContainer {
+		return "", fmt.Errorf("ORCHICON_PLANE_RESIDENCY must be %q or %q (got %q)", residencyHost, residencyContainer, v)
+	}
+	return v, nil
+}
+
+// hostDataDir is the per-instance host state directory — where the secrets KEK,
+// the blob store, the ask history and the detached plane's PID file live.
+//
+// IT IS DERIVED FROM THE INSTANCE, exactly as container.sh's instance_info does,
+// and ORCHICON_DATA_DIR is deliberately NOT read here. That is not an oversight:
+// container.sh's plane_env SETS ORCHICON_DATA_DIR for the host plane, so an
+// operator-exported value is overwritten there — and the KEK lives at
+// <DataDir>/secrets/kek. Two launchers disagreeing about the data dir is the one
+// disagreement that silently orphans every tenant secret, so this follows the
+// launcher rather than inventing a knob.
+func hostDataDir(instance string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory for the instance data dir: %w", err)
+	}
+	return filepath.Join(home, ".local", "share", "orchicon-"+instance), nil
+}
+
+// portBinding says how a port is exposed to the host in a given residency.
+type portBinding string
+
+const (
+	// bindNone: not exposed by the instance CONTAINER in this shape.
+	bindNone portBinding = "none"
+	// bindLoopback: published on 127.0.0.1 only.
+	bindLoopback portBinding = "loopback"
+	// bindAny: published on every interface.
+	bindAny portBinding = "any"
+)
+
+// installPort is one host-side port an instance uses.
 //
 // THE DEFAULTS ARE NOT ARBITRARY. "dev" and "prod" are two instances on ONE
 // host (scripts/container.sh instance_info), so their ports must be disjoint or
@@ -50,18 +109,53 @@ type installPort struct {
 	Label string
 	// Dev and Prod are the per-instance defaults (the historical literals).
 	Dev, Prod int
-	// ContainerPort is the FIXED in-container port this host port maps to: the
-	// supervisor listens on :8080 and Grafana on :3000. Only the host half
-	// varies, so this is what identifies the port in a running container's
-	// published bindings.
+	// ContainerPort is the FIXED in-container port this host port maps to. Only
+	// the host half varies, so this is what identifies the port in a running
+	// container's published bindings.
 	ContainerPort int
+	// ContainerBind / HostBind: what the instance CONTAINER publishes in each
+	// residency. They differ because the shapes expose different things — a
+	// container-resident plane needs its own port published, while a
+	// host-resident one takes the plane port for itself and publishes the
+	// services the host plane reaches over loopback instead.
+	ContainerBind portBinding
+	HostBind      portBinding
+	// HostPlaneBinds marks the port the HOST PLANE listens on in host residency
+	// (the control port). The container does NOT publish it in that shape —
+	// docker reports it as exposed-but-null — so unlike every other port it
+	// cannot be read back from the container's bindings, and the plane's own
+	// invocation must be the source of truth for it.
+	HostPlaneBinds bool
+	// Prompt marks the ports an operator is asked about. All bound ports are
+	// still probed and pinnable; this only decides which are offered
+	// interactively, because the telemetry-internal ports are derived plumbing
+	// rather than decisions. Add the field to widen the prompt.
+	Prompt bool
 }
 
-// installerPorts returns the ports the installer publishes, in prompt order.
+// installerPorts returns every port an instance can use, in prompt order.
 func installerPorts() []installPort {
 	return []installPort{
-		{Env: "ORCHICON_CONTROL_PORT", Label: "Control plane (web UI + API)", Dev: 8080, Prod: 8091, ContainerPort: 8080},
-		{Env: "ORCHICON_GRAFANA_PORT", Label: "Grafana (dashboards)", Dev: 3002, Prod: 3003, ContainerPort: 3000},
+		{Env: "ORCHICON_CONTROL_PORT", Label: "Control plane (web UI + API)", Dev: 8080, Prod: 8091,
+			ContainerPort: 8080, ContainerBind: bindAny, HostBind: bindNone, HostPlaneBinds: true, Prompt: true},
+		{Env: "ORCHICON_GRAFANA_PORT", Label: "Grafana (dashboards)", Dev: 3002, Prod: 3003,
+			ContainerPort: 3000, ContainerBind: bindAny, HostBind: bindLoopback, Prompt: true},
+		{Env: "ORCHICON_POSTGRES_PORT", Label: "PostgreSQL", Dev: 5432, Prod: 5433,
+			ContainerPort: 5432, ContainerBind: bindNone, HostBind: bindLoopback, Prompt: true},
+		{Env: "ORCHICON_NATS_PORT", Label: "NATS (event bus)", Dev: 4222, Prod: 4223,
+			ContainerPort: 4222, ContainerBind: bindNone, HostBind: bindLoopback},
+		{Env: "ORCHICON_NATS_MONITOR_PORT", Label: "NATS monitoring", Dev: 8222, Prod: 8223,
+			ContainerPort: 8222, ContainerBind: bindNone, HostBind: bindLoopback},
+		{Env: "ORCHICON_OTLP_GRPC_PORT", Label: "OTLP gRPC (telemetry)", Dev: 4317, Prod: 4319,
+			ContainerPort: 4317, ContainerBind: bindNone, HostBind: bindLoopback},
+		{Env: "ORCHICON_OTLP_HTTP_PORT", Label: "OTLP HTTP (telemetry)", Dev: 4318, Prod: 4320,
+			ContainerPort: 4318, ContainerBind: bindNone, HostBind: bindLoopback},
+		{Env: "ORCHICON_TEMPO_PORT", Label: "Tempo (traces)", Dev: 3200, Prod: 3201,
+			ContainerPort: 3200, ContainerBind: bindNone, HostBind: bindLoopback},
+		{Env: "ORCHICON_LOKI_PORT", Label: "Loki (logs)", Dev: 3100, Prod: 3101,
+			ContainerPort: 3100, ContainerBind: bindNone, HostBind: bindLoopback},
+		{Env: "ORCHICON_VM_PORT", Label: "VictoriaMetrics (metrics)", Dev: 8428, Prod: 8429,
+			ContainerPort: 8428, ContainerBind: bindNone, HostBind: bindLoopback},
 	}
 }
 
@@ -73,14 +167,60 @@ func (p installPort) defaultFor(instance string) int {
 	return p.Dev
 }
 
+// boundIn reports whether this port is exposed at all in a residency. A port
+// that is not bound in a shape cannot collide there, so it is neither probed nor
+// prompted for that shape — which is why a container-resident install asks about
+// two ports and a host-resident one about the services too.
+func (p installPort) boundIn(residency string) bool {
+	if residency == residencyHost {
+		return p.HostBind != bindNone || p.HostPlaneBinds
+	}
+	return p.ContainerBind != bindNone
+}
+
+// activeInstallPorts filters the table to the ports a residency actually binds.
+func activeInstallPorts(residency string) []installPort {
+	var out []installPort
+	for _, p := range installerPorts() {
+		if p.boundIn(residency) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// publishArgs builds the instance container's -p arguments for a residency.
+//
+// EVERY service publish is LOOPBACK-BOUND, and that is the security boundary:
+// postgres is a database and NATS is an internal event bus, and neither may be
+// reachable from the LAN. The supervisor's pg_hba trust rules depend on it.
+func publishArgs(residency string, ports map[string]int, specs []installPort) []string {
+	var args []string
+	for _, p := range specs {
+		bind := p.ContainerBind
+		if residency == residencyHost {
+			bind = p.HostBind
+		}
+		if bind == bindNone {
+			continue
+		}
+		host := ""
+		if bind == bindLoopback {
+			host = "127.0.0.1:"
+		}
+		args = append(args, "-p", fmt.Sprintf("%s%d:%d", host, ports[p.Env], p.ContainerPort))
+	}
+	return args
+}
+
 // portFree reports whether the loopback address at port can be bound.
 //
-// LOOPBACK IS THE CORRECT SCOPE: every published port is bound to 127.0.0.1
-// (that loopback publish is the security boundary the supervisor's pg_hba trust
-// rules depend on). A bind attempt also catches a holder on 0.0.0.0:port,
-// because a wildcard listener overlaps the loopback address rather than sitting
-// beside it — so the overlap shows up here as a failed bind, which is exactly
-// the collision the caller needs to know about.
+// LOOPBACK IS THE CORRECT SCOPE: every service publish is bound to 127.0.0.1,
+// and the plane binds loopback plus the docker bridge. A bind attempt also
+// catches a holder on 0.0.0.0:port, because a wildcard listener overlaps the
+// loopback address rather than sitting beside it — so the overlap shows up here
+// as a failed bind, which is exactly the collision the caller needs to know
+// about.
 //
 // The probe is inherently a moment in time: it closes the listener and docker
 // binds later. That race is accepted deliberately — the alternative is no
@@ -98,6 +238,11 @@ func portFree(port int) bool {
 // parseInstancePorts reads `docker inspect` port bindings and maps them back to
 // the ORCHICON_<X>_PORT keys. Split from runningInstancePorts so the parsing is
 // testable without a docker daemon.
+//
+// A port the container EXPOSES but does not PUBLISH parses as docker's `null`
+// binding and is deliberately skipped: in host residency the control port looks
+// exactly like that (the host plane owns it), and reporting it as a read-back
+// value would invent a port nothing is listening on.
 func parseInstancePorts(raw []byte, specs []installPort) (map[string]int, bool) {
 	var bindings map[string][]struct {
 		HostPort string `json:"HostPort"`
@@ -138,6 +283,13 @@ func parseInstancePorts(raw []byte, specs []installPort) (map[string]int, bool) 
 // the running instance untouched and put a second one beside it. Reading back
 // the real bindings is what keeps a re-run a no-op — and it is why this rung
 // sits ABOVE the prompt rather than inside it.
+//
+// THE PLANE PORT IS NOT RECOVERABLE THIS WAY in host residency, and that is a
+// documented limit rather than a bug: the container does not publish it, so its
+// value comes from resolving the override again. An override must therefore be
+// STABLE across invocations (a shell profile or a unit file) — the same
+// constraint container.sh's plane_status already has, since it too probes the
+// port it just resolved.
 func runningInstancePorts(name string, specs []installPort) (map[string]int, bool) {
 	out, err := exec.Command("docker", "inspect",
 		"--format", "{{json .NetworkSettings.Ports}}", name).Output()
@@ -222,6 +374,9 @@ func askInstallPort(r *bufio.Reader, out io.Writer, label string, def int) int {
 // makes the install's shape depend on host state, which is not reproducible and
 // cannot be reviewed. ORCHICON_STRICT_PORTS=1 makes the conflict fatal instead,
 // for automated installs where a moved port would be worse than a failed one.
+//
+// EVERY bound port is probed, prompted or not: the telemetry-internal ports are
+// not worth a question, but they must not collide unhandled either.
 func planInstallPorts(instance string, specs []installPort, pinned map[string]int, probe func(int) bool, r *bufio.Reader, out io.Writer) (map[string]int, error) {
 	ports := map[string]int{}
 	claimed := map[int]bool{}
@@ -265,17 +420,11 @@ func planInstallPorts(instance string, specs []installPort, pinned map[string]in
 				return nil, fmt.Errorf("%s default port %d is in use — set %s (ORCHICON_STRICT_PORTS=1)", p.Label, def, p.Env)
 			}
 			fmt.Fprintf(out, "%s: port %d is in use — suggesting %d\n", p.Label, def, next)
-			if r != nil {
-				def = next
-			} else {
-				// No terminal to confirm with: take the suggestion, and say so
-				// below, because the install's shape now depends on host state.
-				ports[p.Env] = next
-				claimed[next] = true
-				continue
-			}
+			def = next
 		}
-		if r == nil {
+		// Only the operator-facing ports are asked about; the rest resolve to
+		// their default here, having still been probed and conflict-resolved.
+		if r == nil || !p.Prompt {
 			ports[p.Env] = def
 			claimed[def] = true
 			continue
@@ -289,8 +438,8 @@ func planInstallPorts(instance string, specs []installPort, pinned map[string]in
 		claimed[chosen] = true
 	}
 
-	// Without a terminal nothing echoed the choices, so state them once: an
-	// operator should never have to infer which ports a headless install bound.
+	// Without an interactive echo the choices would otherwise be invisible, and
+	// an operator should never have to infer which ports an install bound.
 	if r == nil {
 		for _, p := range specs {
 			fmt.Fprintf(out, "  %s: %d\n", p.Label, ports[p.Env])
@@ -317,12 +466,12 @@ func nextFreePortFor(from int, claimed map[int]bool, probe func(int) bool) (int,
 	return 0, false
 }
 
-// resolveInstallPorts decides the host-side ports this install publishes: the
+// resolveInstallPorts decides the host-side ports this install uses: the
 // running-instance rung, then the environment pins, then planInstallPorts.
 //
 // tty may be nil, meaning no terminal: the defaults are taken without blocking.
-func resolveInstallPorts(instance string, out io.Writer, tty *os.File) (map[string]int, error) {
-	specs := installerPorts()
+func resolveInstallPorts(instance, residency string, out io.Writer, tty *os.File) (map[string]int, error) {
+	specs := activeInstallPorts(residency)
 	name := "orchicon-cnt-" + instance
 
 	// Rung 0, and it must come FIRST: a running instance of ours owns its ports.
@@ -333,6 +482,8 @@ func resolveInstallPorts(instance string, out io.Writer, tty *os.File) (map[stri
 			fmt.Fprintf(out, "instance %q is already running — keeping its ports\n", name)
 			for _, p := range specs {
 				if _, ok := live[p.Env]; !ok {
+					// Not published by the container in this shape (the plane port in
+					// host residency): resolve it the way the plane was started.
 					live[p.Env] = p.defaultFor(instance)
 				}
 				fmt.Fprintf(out, "  %s: %d\n", p.Label, live[p.Env])

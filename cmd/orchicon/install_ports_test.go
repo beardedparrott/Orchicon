@@ -27,7 +27,9 @@ func TestInstallPortDefaultsMatchContainerScript(t *testing.T) {
 	}
 	script := string(src)
 
-	// 1. The per-instance defaults container.sh must still carry.
+	// 1. The per-instance defaults container.sh must still carry. The service
+	// entries matter as much as the plane ones now: host residency PUBLISHES them,
+	// so a drift there means the two launchers bind different loopback ports.
 	for _, want := range []string{
 		"PLANE_HTTP_PORT=8080",
 		"PLANE_HTTP_PORT=8091",
@@ -35,10 +37,77 @@ func TestInstallPortDefaultsMatchContainerScript(t *testing.T) {
 		"GRAFANA_HOST_PORT=3003",
 		"PG_PORT=5432",
 		"PG_PORT=5433",
+		"NATS_PORT=4222",
+		"NATS_PORT=4223",
+		"NATS_MON_PORT=8222",
+		"NATS_MON_PORT=8223",
+		"OTLP_GRPC_PORT=4317",
+		"OTLP_GRPC_PORT=4319",
+		"OTLP_HTTP_PORT=4318",
+		"OTLP_HTTP_PORT=4320",
+		"TEMPO_PORT=3200",
+		"TEMPO_PORT=3201",
+		"LOKI_PORT=3100",
+		"LOKI_PORT=3101",
+		"VM_PORT=8428",
+		"VM_PORT=8429",
+		// The host state dir carries the KEK. Two launchers disagreeing about it is
+		// the one disagreement that silently orphans every tenant secret.
+		`HOST_DATA_DIR="$HOME/.local/share/orchicon-dev"`,
+		`HOST_DATA_DIR="$HOME/.local/share/orchicon-prod"`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("scripts/container.sh no longer contains %q — the per-instance port table drifted", want)
 		}
+	}
+
+	// The container-side ports this table mirrors must match container.sh's
+	// SERVICE_PORTS composition: these are the in-container listeners a host
+	// publish maps ONTO, so a wrong pair sends a host port to the wrong service.
+	for _, want := range []string{
+		`SERVICE_PORTS="-p 127.0.0.1:$PG_PORT:5432"`,
+		`-p 127.0.0.1:$NATS_PORT:4222 -p 127.0.0.1:$NATS_MON_PORT:8222`,
+		`-p 127.0.0.1:$OTLP_GRPC_PORT:4317 -p 127.0.0.1:$OTLP_HTTP_PORT:4318`,
+		`-p 127.0.0.1:$TEMPO_PORT:3200 -p 127.0.0.1:$LOKI_PORT:3100`,
+		`-p 127.0.0.1:$VM_PORT:8428 -p 127.0.0.1:$GRAFANA_HOST_PORT:3000`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("scripts/container.sh's SERVICE_PORTS no longer contains %q — the host→container mapping drifted", want)
+		}
+	}
+
+	// ...and EVERY entry of the Go table must agree with those defaults. The
+	// expected map is the gate: an entry added to installerPorts without being
+	// listed here fails, so a new port cannot skip the cross-language check.
+	type wantCase struct{ dev, prod, container int }
+	wantDefaults := map[string]wantCase{
+		"ORCHICON_CONTROL_PORT":      {8080, 8091, 8080},
+		"ORCHICON_GRAFANA_PORT":      {3002, 3003, 3000},
+		"ORCHICON_POSTGRES_PORT":     {5432, 5433, 5432},
+		"ORCHICON_NATS_PORT":         {4222, 4223, 4222},
+		"ORCHICON_NATS_MONITOR_PORT": {8222, 8223, 8222},
+		"ORCHICON_OTLP_GRPC_PORT":    {4317, 4319, 4317},
+		"ORCHICON_OTLP_HTTP_PORT":    {4318, 4320, 4318},
+		"ORCHICON_TEMPO_PORT":        {3200, 3201, 3200},
+		"ORCHICON_LOKI_PORT":         {3100, 3101, 3100},
+		"ORCHICON_VM_PORT":           {8428, 8429, 8428},
+	}
+	for _, p := range installerPorts() {
+		w, ok := wantDefaults[p.Env]
+		if !ok {
+			t.Errorf("installerPorts() entry %s is not in this test's table — add it so the drift check covers it", p.Env)
+			continue
+		}
+		if p.Dev != w.dev || p.Prod != w.prod {
+			t.Errorf("%s defaults = %d/%d, want %d/%d (container.sh's values)", p.Env, p.Dev, p.Prod, w.dev, w.prod)
+		}
+		if p.ContainerPort != w.container {
+			t.Errorf("%s container port = %d, want %d (container.sh's -p pair)", p.Env, p.ContainerPort, w.container)
+		}
+		delete(wantDefaults, p.Env)
+	}
+	for env := range wantDefaults {
+		t.Errorf("installerPorts() is missing %s", env)
 	}
 
 	// 2. The override knobs must be applied in container.sh under exactly the
@@ -190,23 +259,28 @@ func TestPlanInstallPortsStrictRefuses(t *testing.T) {
 }
 
 // TestPlanInstallPortsPinWinsAndIsNotPrompted pins automation: an explicit pin
-// is used as-is and skips the prompt entirely. BOTH ports are pinned here,
-// because pinning one still legitimately prompts for the other — the reader
-// fails the test if it is consulted at all, which is what proves the pins
-// bypassed the prompt rather than merely being overridden by it.
+// is used as-is and skips the prompt entirely. EVERY active port is pinned here,
+// because a pin covers one port and the others would still legitimately prompt —
+// the reader fails the test if it is consulted at all, which is what proves the
+// pins bypassed the prompt rather than merely being overridden by it.
 func TestPlanInstallPortsPinWinsAndIsNotPrompted(t *testing.T) {
+	specs := activeInstallPorts(residencyHost)
 	var out bytes.Buffer
-	pinned := map[string]int{
-		"ORCHICON_CONTROL_PORT": 9080,
-		"ORCHICON_GRAFANA_PORT": 9081,
+	pinned := map[string]int{}
+	want := 9080
+	for _, p := range specs {
+		pinned[p.Env] = want
+		want++
 	}
 	r := bufio.NewReader(&failReader{t: t})
-	got, err := planInstallPorts("dev", installerPorts(), pinned, alwaysFree, r, &out)
+	got, err := planInstallPorts("dev", specs, pinned, alwaysFree, r, &out)
 	if err != nil {
 		t.Fatalf("planInstallPorts: %v", err)
 	}
-	if got["ORCHICON_CONTROL_PORT"] != 9080 || got["ORCHICON_GRAFANA_PORT"] != 9081 {
-		t.Fatalf("pinned ports = %v, want 9080/9081", got)
+	for _, p := range specs {
+		if got[p.Env] != pinned[p.Env] {
+			t.Fatalf("%s = %d, want the pinned %d", p.Env, got[p.Env], pinned[p.Env])
+		}
 	}
 	if !strings.Contains(out.String(), "ORCHICON_CONTROL_PORT") {
 		t.Errorf("the pin must be reported; got:\n%s", out.String())
