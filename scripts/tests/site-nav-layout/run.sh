@@ -217,6 +217,23 @@ has "primary nav links to the contact section" 'href="#contact"' "$NAV"
 has "the contact target exists to be linked to"  'id="contact"'  "$(cat "$PAGE")"
 
 # ============================================================================
+# THE PAGE KEEPS A PRIMARY CALL TO ACTION.
+#
+# WHY THIS EXISTS. The closing CTA section (logo + "Leave the agents at the prompt.
+# Put Workers on the payroll." + three buttons) was removed as redundant — the operator:
+# "that whole section at the bottom … is redundant and unnecessary. We already have the
+# github page link in contacts now and the slogan is unnecessary anyway."
+#
+# That was correct for two of its three buttons (Install and User Guide are in the hero)
+# and for the GitHub link (the contact section carries a tile). But it means the page's
+# REMAINING install path is the hero's, so the deletion is asserted not to have taken that
+# with it. A landing page whose fold lost its Install button is the failure this guards.
+# ============================================================================
+HERO="$(awk '/<section class="hero"/{f=1} f; /<\/section>/{if(f)exit}' "$PAGE")"
+has "hero keeps an install call to action"      'href="#install"'   "$HERO"
+has "hero keeps the user-guide link"            'USERGUIDE.md'      "$HERO"
+
+# ============================================================================
 # THE INSTALL SECTION: three methods, and the handler that switches them must
 # see ONLY them.
 #
