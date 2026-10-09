@@ -99,9 +99,16 @@ all_decls() {
 echo "page under test: ${PAGE}"
 echo
 
-# --- the nav must have exactly nine primary links (the count is the trigger) ---
+# --- the nav must have exactly TEN primary links (the count is the trigger) ---
+#
+# IT WAS NINE. Contact is the tenth: the operator asked for a contact link in the bar,
+# and it earns its place there because it is the one link a visitor looks for by reflex.
+# The count is asserted AT ALL because it is the trigger for the layout invariant below
+# — a link added without checking the row's budget is exactly how this header broke
+# twice. Note the added link is FLAT, so it takes `.nav nav a` in full: unsplittable and
+# unshrinkable, and it lands in the gap budget rather than beside it.
 COUNT="$(awk '/<nav aria-label="Primary"/{f=1} f; /<\/nav>/{if(f)exit}' "$PAGE" | grep -c '<a href')"
-eq "primary nav link count" "9" "$COUNT"
+eq "primary nav link count" "10" "$COUNT"
 
 # --- LINK INVARIANT: a label is never split and never shrunk below its text ---
 LINK_DECLS="$(all_decls '\.nav nav a')"
@@ -125,7 +132,7 @@ absent "header box is not a fixed height" "height:64px" "$(printf '%s' "$BOX_DEC
 #     `row-gap` also matches 'gap:', so the row-gap is excluded explicitly; the
 #     LARGEST remaining value is the base (narrower tiers only ever reduce it).
 GAPS="$(printf '%s' "$ROW_DECLS" | grep -o 'gap:[0-9]*px' | grep -v 'row-gap' | tr -dc '0-9\n' | sort -n | tail -1)"
-num_le "base row gap fits nine in the capped container" "$GAPS" "14"
+num_le "base row gap fits the capped container" "$GAPS" "14"
 
 # --- THE TIERS must stay inside the range where the container is still
 #     SHRINKING. Above ~1248px the container is capped, so a max-width tier
@@ -137,15 +144,20 @@ eq "no tier above the container cap (dead tier)" "" "$DEAD"
 HIDE="$(printf '%s' "$CSS" | tr -d ' ')"
 has "narrow-screen nav-hide intact" "@media(max-width:860px){.navnav{display:none}}" "$HIDE"
 
-# --- every tier that hides a link must name a real nth-child within 1..9 ---
+# --- every tier that hides a link must name a real nth-child within 1..10 ---
+#
+# THE BOUND IS THE LINK COUNT, so it moved with it (nine -> ten): a tier naming an index
+# no link can occupy is dead code, and the bound is what detects it. There are no
+# nth-child tiers on the nav today — it GROUPS links rather than hiding them by index —
+# so this guards a mechanism that a future edit might reintroduce.
 BAD=""
 for n in $(printf '%s' "$CSS" | grep -o 'nth-child([0-9]*)' | tr -dc '0-9\n'); do
-  [ "$n" -ge 1 ] && [ "$n" -le 9 ] || BAD="$BAD $n"
+  [ "$n" -ge 1 ] && [ "$n" -le 10 ] || BAD="$BAD $n"
 done
-eq "every nth-child tier is within 1..9" "" "$BAD"
+eq "every nth-child tier is within 1..10" "" "$BAD"
 
-# --- and the anti-regression that matters most: nine links must never all be
-#     asked to fit at once.
+# --- and the anti-regression that matters most: the nav's links must never all
+#     be asked to fit at once.
 #
 #     THE MECHANISM CHANGED, SO THIS ASSERTION HAD TO. The nav used to HIDE
 #     links by nth-child as the viewport narrowed; it now GROUPS them behind
@@ -165,7 +177,7 @@ TOP="$(awk '/<nav aria-label="Primary"/{f=1} f; /<\/nav>/{if(f)exit}' "$PAGE" | 
   /<div class="navmenu"/ { inmenu = 1; depth = gsub(/<div/,"&",$0) - gsub(/<\/div>/,"&",$0); next }
   /<(a href|button)/ { top++ }
   END { print top+0 }')"
-num_le "inline items fewer than links (not all nine inline)" "$TOP" "$((COUNT - 1))"
+num_le "inline items fewer than links (not all links inline)" "$TOP" "$((COUNT - 1))"
 
 # --- the footer version must be STAMPED at build time, never hardcoded. A
 #     literal here goes stale in silence: it read v0.4.0 while releases had
@@ -196,6 +208,14 @@ for u in \
   "https://github.com/beardedparrott/Orchicon" ; do
   has "contact link: ${u}" "$u" "$CONTACT"
 done
+# --- THE NAV's Contact LINK is asserted separately from the SECTION, because the two
+#     can drift: the section is the content and this is the entry point. A nav link that
+#     points at an anchor nothing defines scrolls nowhere and reads as a broken link, so
+#     the target is checked against the section's own id rather than merely present.
+NAV="$(awk '/<nav aria-label="Primary"/{f=1} f; /<\/nav>/{if(f)exit}' "$PAGE")"
+has "primary nav links to the contact section" 'href="#contact"' "$NAV"
+has "the contact target exists to be linked to"  'id="contact"'  "$(cat "$PAGE")"
+
 eq "every contact icon is hidden from assistive tech" "6" "$(printf '%s' "$CONTACT" | grep -c 'aria-hidden="true"')"
 eq "every contact link carries a visible name"        "6" "$(printf '%s' "$CONTACT" | grep -c '<b>')"
 
