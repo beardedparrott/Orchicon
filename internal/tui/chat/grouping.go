@@ -433,6 +433,56 @@ func MergeSessionItems(history, live []ChatItem) []ChatItem {
 // live buffer — and concatenating them puts every live row at the END, which
 // renders a just-sent user message BELOW the model's reply. Sorting the
 // combined list restores true chronological order whatever the source.
+// PendingCardsLast moves every PENDING consent card to the end of the list, preserving the order of
+// everything else and of the cards among themselves.
+//
+// A PENDING CARD IS NOT A TRANSCRIPT ROW — IT IS A PROMPT, and a prompt that is not on screen is a
+// prompt the operator cannot answer. Everything else in this list is history: what happened, in the
+// order it happened. A card awaiting an answer has no place in that history yet — it is the thing the
+// turn is BLOCKED on, and the transcript's own follow-to-bottom behaviour is what will keep it visible.
+//
+// THE REPORTED FAILURE, which is why this exists. The turn's reply is anchored to its LATEST arrival so
+// that it sinks below the cards raised during it (see App.anchorGrowingMessages) — a card therefore
+// moves UP as the reply streams in. That is tolerable while the reply is a paragraph, and fails
+// completely when the reply is 29,528 characters of reasoning: the card travelled off the top of the
+// pane, and the operator could see only the card's own hint row ("↑/↓ select · enter confirm · esc
+// denies") stranded at the very top while the pane footer named an approval whose question was nowhere
+// on screen.
+//
+// SETTLED CARDS ARE LEFT ALONE. A settled card is the record that a permission was asked for and what
+// it covered, which belongs in its own place in the transcript — the same distinction the store already
+// draws everywhere else (keep a card only while Pending).
+//
+// A no-op — returning the SAME slice — when nothing is pending, so the common path allocates nothing.
+func PendingCardsLast(items []ChatItem) []ChatItem {
+	cards := 0
+	for _, it := range items {
+		if pendingCard(it) {
+			cards++
+		}
+	}
+	if cards == 0 {
+		return items
+	}
+	rest := make([]ChatItem, 0, len(items))
+	tail := make([]ChatItem, 0, cards)
+	for _, it := range items {
+		if pendingCard(it) {
+			tail = append(tail, it)
+			continue
+		}
+		rest = append(rest, it)
+	}
+	return append(rest, tail...)
+}
+
+// pendingCard reports whether this item is an ask still waiting on the operator: a consent card whose
+// decision has not been made. It is the ONE definition the ordering rule and the store's keep-alive rule
+// both read, so "is this card still answerable?" cannot be answered two ways.
+func pendingCard(it ChatItem) bool {
+	return it.Kind == KindConsent && it.Consent != nil && it.Consent.Pending()
+}
+
 func SortChronologically(items []ChatItem) {
 	sort.SliceStable(items, func(a, b int) bool {
 		return itemAt(items[a]) < itemAt(items[b])

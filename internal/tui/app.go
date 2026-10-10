@@ -3688,6 +3688,9 @@ func (s *chatStore) mergeHistory(convID string, history []chat.ChatItem) {
 	merged := append(append([]chat.ChatItem{}, history...), kept...)
 	s.applyOrderAnchors(convID, merged)
 	chat.SortChronologically(merged)
+	// AND LAST, THE PROMPT. A pending card is moved after its own history so it cannot be pushed off the
+	// top of the pane by a growing reply — see chat.PendingCardsLast for the reported failure.
+	merged = chat.PendingCardsLast(merged)
 	s.items[convID] = merged
 	s.mu.Unlock()
 }
@@ -3759,6 +3762,9 @@ func (s *chatStore) replace(convID string, items []chat.ChatItem) {
 	if len(out) != len(items) || len(s.orderAt[convID]) > 0 {
 		chat.SortChronologically(out)
 	}
+	// The same rule on the completion path, or a card that survived the replace would be ordered back
+	// above the reply the moment the turn's poll landed.
+	out = chat.PendingCardsLast(out)
 	s.items[convID] = out
 	s.mu.Unlock()
 }
