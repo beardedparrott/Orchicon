@@ -210,6 +210,17 @@ run --paths "$FIX/sub" "$FIX"
 check "human report warns of the upper bound" "0" "$RC"
 check_contains "says UPPER BOUND" "$OUT" "UPPER BOUND"
 
+# The runbook is the deliverable here: an operator copy-pastes it. This one shipped broken —
+# `sudo btrfs ... .snapshots/*/snapshot` expands the glob in the OPERATOR's shell, which cannot
+# read a root-only directory, so the pattern reached btrfs literally and it reported "No such
+# file or directory" for a path that exists. Pin the fix: the expansion must live inside a
+# root shell.
+check_contains "runbook expands the glob as root" "$OUT" "sudo sh -c"
+case "$OUT" in
+  *"sudo btrfs filesystem du"*) check "runbook has no unprivileged glob" "no-bare-glob" "bare-glob-present" ;;
+  *) check "runbook has no unprivileged glob" "no-bare-glob" "no-bare-glob" ;;
+esac
+
 # --- 5. an unreadable path is reported, and does not become live data --------
 echo "--- unreadable path: warned about, exits 0 ---"
 if [ "$(id -u)" = "0" ]; then

@@ -1311,9 +1311,24 @@ and `cache-trim` alike.
 # Operator actions — all need root, none are automatable from here.
 sudo snapper list-configs                                     # which configs exist
 sudo snapper -c home list                                     # the snapshots
-sudo btrfs filesystem du -s --raw /home/.snapshots/*/snapshot | sort -k2 -n
-#                                                             ^ bytes EXCLUSIVE per snapshot
+
+# Bytes EXCLUSIVE to each snapshot = what deleting that snapshot actually frees.
+sudo sh -c 'btrfs filesystem du -s --raw /home/.snapshots/*/snapshot' \
+  | tail -n +2 | sort -k2 -n
+
 sudo snapper -c home delete <N>                               # then re-check df
+```
+
+**The glob has to expand as root**, and that is easy to get wrong: `/home/.snapshots` is
+`drwxr-x--- root:root`, so an unprivileged shell cannot list it and passes the pattern through
+literally, and `btrfs` then reports `No such file or directory` for a path that plainly exists.
+`sudo` does not fix it on its own — `sudo btrfs ... .snapshots/*/snapshot` expands the glob in
+**your** shell before `sudo` runs. Wrapping the whole command in `sh -c` puts the expansion
+inside the root shell. For a glob-free equivalent:
+
+```bash
+sudo find /home/.snapshots -mindepth 2 -maxdepth 2 -name snapshot \
+  -exec btrfs filesystem du -s --raw {} + | tail -n +2 | sort -k2 -n
 ```
 
 Note that freeing extents does not necessarily return chunks to `Device unallocated`; free space

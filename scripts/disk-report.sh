@@ -308,7 +308,12 @@ if [ "$pinned" -gt 0 ]; then
 	  confirm / act (root):
 	    sudo snapper list-configs
 	    sudo snapper -c <cfg> list
-	    sudo btrfs filesystem du -s --raw ${MNT%/}/.snapshots/*/snapshot | sort -k2 -n
+	    # Bytes EXCLUSIVE to each snapshot = what deleting it actually frees.
+	    # The glob MUST expand as ROOT: /home/.snapshots is drwxr-x--- root:root, so an
+	    # unprivileged shell passes the pattern through literally and btrfs then reports
+	    # "No such file or directory". `sudo` does not help — it runs the command, but the
+	    # glob was already expanded by YOUR shell before sudo started.
+	    sudo sh -c 'btrfs filesystem du -s --raw ${MNT%/}/.snapshots/*/snapshot' | tail -n +2 | sort -k2 -n
 	    sudo snapper -c <cfg> delete <N>        # then re-check df
 
 	  STOP IT RECURRING. A btrfs snapshot cannot exclude a path — it is
