@@ -15,7 +15,7 @@
 > tells the tooling which version these highlights describe; update it
 > when you cut.
 
-## v0.5.13
+## v0.5.16
 
 ### New: a permission card you can finally answer
 The card that asks whether a call may proceed had three ways of failing you, and all three are closed. A
