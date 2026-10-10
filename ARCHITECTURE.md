@@ -492,7 +492,7 @@ Orchicon/
     ├── CODEOWNERS               # @beardedparrott owns everything
     └── workflows/
         ├── auto-release.yml     # Auto-bumps version when release-labeled PR merges
-        └── release.yml          # Builds binaries for 6 platforms, creates GitHub Release
+        └── release.yml          # Builds binaries for 4 platforms, creates GitHub Release
 ```
 
 ### Where to Find Key Things
@@ -1221,11 +1221,13 @@ that had completed 50 minutes earlier reclaimed nothing. An age rule with a five
 bound a cache that grows ~30 GB in a day. `go clean -cache` is not the answer either — it is
 all-or-nothing, and throws away the hot entries with the cold.
 
-**A six-platform compile gate was feeding it.** `make cross-compile` (run by `ci-go`, and therefore
-by every `full-rebuild`) builds both shipped binaries for linux/darwin/windows on amd64+arm64. The
-per-platform package archives are ~130 MB each, and all of them landed in the shared cache:
-**31.6 GB, 44% of it, was non-native** — artifacts nothing on an amd64 dev host ever links. It is
-now built into a **throwaway `GOCACHE`**, removed by an `EXIT` trap. Measured: the shared cache is
+**A cross-platform compile gate was feeding it.** `make cross-compile` (run by `ci-go`, and therefore
+by every `full-rebuild`) builds both shipped binaries for every release platform. The per-platform
+package archives are ~130 MB each, and all of them landed in the shared cache: measured while the
+matrix still carried SIX platforms, **31.6 GB, 44% of it, was non-native** — artifacts nothing on an
+amd64 dev host ever links. (The matrix is four platforms now; Windows was dropped because no Windows
+artifact ships. The mechanism and the fix below are unchanged.) It is now built into a **throwaway
+`GOCACHE`**, removed by an `EXIT` trap. Measured: the shared cache is
 **byte-identical** across a full `make cross-compile`, at a cost of ~2m16s of CPU per gate run
 (one platform cold-compiles in ~21s / ~1.1 GB from a clean cache).
 
@@ -1481,7 +1483,8 @@ therefore kept out of it.
 ### GitHub Releases (Binary Distribution)
 
 1. Tag push matching `v*.*.*` triggers `release.yml`
-2. Builds binaries for 6 platforms: linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64, windows/arm64
+2. Builds binaries for 4 platforms: linux/amd64, linux/arm64, darwin/amd64, darwin/arm64
+   (no Windows target: the stack runs inside WSL2 there, so the Linux binary is what an install uses)
 3. Creates a GitHub Release with platform-specific archives
 4. The install scripts download from the latest release
 

@@ -115,8 +115,8 @@ stack therefore runs inside **WSL2**, and the installer orchestrates it:
    WSL integration off for this distro — and quotes what the distro itself reported.
 3. **Linux binary** — it downloads the **Linux** release asset
    (`orchicon_<ver>_linux_<arch>.tar.gz`, arch mapped from the Windows processor)
-   and installs it inside the distro (default `~/.local/bin`); it never downloads
-   the Windows binary.
+     and installs it inside the distro (default `~/.local/bin`). There is no Windows
+     binary to download: releases publish linux and darwin only.
 4. **One-command setup** — it runs `orchicon install` inside WSL: pull the
    published images, start the runtime daemon, launch the single-container
    instance, wait for health. This is the slow part (minutes on a first install), so
@@ -156,21 +156,25 @@ whatever path the plane's filesystem (WSL) can resolve.
 container instances and removes the binary; the WSL distro is left intact),
 `-Clean`, `-ForceClean`, `-DryRun`.
 
-> **Not verified on real Windows** — a full install has not been run end to end on
-> Windows. Its control flow and its failure paths ARE covered by an offline harness
-> (`scripts/tests/install-ps1-wsl-encoding/`, run in CI as the `windows-installer`
-> job): the installer's own functions are exercised against a `wsl.exe` double, and
-> its halts and streamed steps are exercised inside a child PowerShell. Two boundaries
-> stay unverified: Windows PowerShell 5.1 (the harness is pwsh 7 — the one place the
-> two differ is avoided in the source rather than tested) and the happy path after
-> Docker is confirmed. The underlying flow (`orchicon install`) is the identical Linux
-> code path exercised on Linux hosts.
+  > **Windows is covered by an offline harness, not by a full install.** A harness
+  > (`scripts/tests/install-ps1-wsl-encoding/`, run in CI as the `windows-installer` job)
+  > exercises the installer's own functions against a `wsl.exe` double and runs its failure
+  > paths inside a child PowerShell.
+  >
+  > What it CANNOT see is a Windows PowerShell 5.1 quoting fault — and one shipped: scripts
+  > were handed to `wsl.exe` as inline arguments, 5.1 stripped every embedded double quote
+  > before bash saw them, and the install died on a mangled script while the same scripts
+  > worked on Linux. The transport is now **base64** (an alphabet containing no quote, so
+  > there is nothing to strip) and the harness asserts both the round trip and the absence of
+  > the hazard. A real end-to-end run still needs a Windows machine; the happy path after
+  > Docker is confirmed is the identical Linux code path exercised on Linux hosts.
 
 ### Install options
 
 | Flag | Description |
 |---|---|
 | `--version <tag>` | Install a specific version (e.g. `v0.4.0`). Default: latest. |
+| `ORCHICON_INSTALL_BASE_URL` | **Environment.** Where release assets are fetched from. Defaults to the published GitHub release. Set it to install from a mirror, or to point an install at a pre-release channel. It is also what makes the install path testable: `scripts/tests/install-path` serves a locally-built artifact and runs this very installer against it (`make install-path-test`). |
 | `--install-dir <dir>` | Installation directory (default: `~/.local/bin`). |
 | `--uninstall` | Remove Orchicon from the install directory. |
 | `--dry-run` | Print what would happen without making changes. |

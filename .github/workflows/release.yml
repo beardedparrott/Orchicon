@@ -85,12 +85,12 @@ jobs:
           - os: darwin
             arch: arm64
             archive: tar.gz
-          - os: windows
-            arch: amd64
-            archive: zip
-          - os: windows
-            arch: arm64
-            archive: zip
+          # NO WINDOWS TARGETS, deliberately — nothing consumes them. On Windows the whole stack
+          # runs inside WSL2 (the runtime layer is POSIX-only; see ARCHITECTURE.md's platform note)
+          # and scripts/install.ps1 installs the LINUX binary into the distro, so a Windows zip was
+          # ~60 MB built, uploaded and published for nobody — and it is the first thing a Windows user
+          # is *not* supposed to download. The `EXT=".exe"` branches below are kept inert so that
+          # re-adding a target is a one-line change rather than a rediscovery of what it needs.
     steps:
       - uses: actions/checkout@v4
 

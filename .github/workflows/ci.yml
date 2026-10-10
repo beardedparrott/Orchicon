@@ -42,7 +42,7 @@ on:
     # release at all. Every gate was green; the artefact could not be built.
     #
     # The gate that catches it is `make cross-compile` (now part of `ci-go`), which compiles the exact
-    # release matrix — linux/darwin/windows on amd64+arm64, CGO_ENABLED=0, both binaries. That check is
+    # release matrix — linux/darwin on amd64+arm64, CGO_ENABLED=0, both binaries. That check is
     # pointless if the PR it guards never triggers this workflow, so both halves of the fix are here:
     # the check, and the trigger that runs it.
     branches: [develop, main]
@@ -178,6 +178,28 @@ jobs:
   # It is pwsh 7, NOT Windows PowerShell 5.1: the one place the two differ here (5.1 turns a
   # redirected native command's stderr into terminating ErrorRecords) is avoided in the
   # installer's source rather than asserted here — see the 2>&1 note on Invoke-WslBashLive.
+  # install-path — the REAL installer, against a REAL artifact.
+  #
+  # THE INSTALL PATH HAD NO TEST ANYWHERE NEAR IT, which is how a broken installer reached two published
+  # releases in a row: every other gate covers code, and the one thing a user actually runs was exercised
+  # only by that user. This job packages a build in the release's exact asset shape, serves it over HTTP,
+  # and runs scripts/install.sh against it end to end — download, extract, install, verify — with no
+  # network, no Docker and no release involved. Seconds to run, so it belongs on every PR.
+  #
+  # It covers the POSIX installer (install.sh, Linux and macOS). install.ps1's WSL path cannot be
+  # exercised here; that is the windows-installer job's offline harness, plus the caveat recorded there.
+  install-path:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install the real installer against a local artifact
+        run: bash scripts/tests/install-path/run.sh
+
   windows-installer:
     runs-on: ubuntu-latest
     steps:

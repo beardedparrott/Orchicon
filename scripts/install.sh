@@ -23,6 +23,14 @@ set -euo pipefail
 # --- Defaults ---------------------------------------------------------------
 GITHUB_OWNER="beardedparrott"
 GITHUB_REPO="Orchicon"
+# WHERE THE RELEASE ASSETS COME FROM, overridable on purpose.
+#
+# The default is the published release, which is what an operator gets. The override is what makes the
+# install path TESTABLE: scripts/tests/install-path serves a locally-built artifact and runs this very
+# script against it, end to end — download, extract, install, verify — with no release, no network and no
+# Docker involved. It is also the hook for a mirror, or for pointing an install at a pre-release channel
+# (`--version edge`, whose assets the default base already serves).
+ASSET_BASE_URL="${ORCHICON_INSTALL_BASE_URL:-https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/download}"
 INSTALL_DIR="${ORCHICON_INSTALL_DIR:-${HOME}/.local/bin}"
 VERSION=""
 UNINSTALL=false
@@ -325,7 +333,7 @@ main() {
   # Build download URL. Release assets follow the naming convention:
   #   orchicon_<version>_<os>_<arch>.tar.gz
   local asset="orchicon_${VERSION#v}_${os}_${arch}.tar.gz"
-  local url="https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/download/${VERSION}/${asset}"
+  local url="${ASSET_BASE_URL}/${VERSION}/${asset}"
 
   # Download to a temp file
   local tmpdir; tmpdir="$(mktemp -d)"
