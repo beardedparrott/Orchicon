@@ -50,6 +50,7 @@ import {
   activityLineFor,
   type ActivityLineInput,
 } from "@/lib/ask-activity-notice";
+import { transcriptPollMs } from "@/lib/ask-transcript-poll";
 import { toolCallsFromMessages, type CountableMessage } from "@/lib/ask-tool-summary";
 import { useRailWidth } from "@/lib/diff/useRailWidth";
 import {
@@ -442,13 +443,54 @@ function AskOrchiconPage() {
   const pendingReplyId = activeStream?.pendingReplyId ?? null;
   const streamItems = activeStream?.items ?? [];
 
+  // THE TURN'S IN-FLIGHT UNION IS DECLARED HERE, ABOVE ITS FIRST CONSUMER, and the move is a
+  // pure reordering: `listPollMs` is already in scope (state, declared with the other list-poll
+  // state), and nothing between here and their old site read `conversations`/`activeConv`. TWO
+  // consumers now need it — the transcript's refetch cadence immediately below, and the activity
+  // line's ticker further down — and this file's own rule is that a `const` used above its
+  // declaration is a TDZ error the production build rejects (see the note on `messages`).
+  const { data: conversations, isLoading: convsLoading } =
+    useListConversations({
+      // Poll while ANY conversation has a running turn so the sidebar's
+      // running indicators + Stop buttons stay live across tabs and devices
+      // (a turn started elsewhere appears within a few seconds), and stop
+      // polling once everything settles — no idle network churn.
+      refetchInterval: listPollMs,
+    });
+  const { data: activeConv } = useGetConversation(activeConvId ?? "");
+
+  // Server-reported turn state for the ACTIVE conversation, freshest source
+  // first. The conversations list polls every 3s while any turn is running;
+  // GetConversation is fetched once per conversation, so it only fills gaps
+  // before the first poll lands.
+  const serverTurnInFlight =
+    conversations?.find((c) => c.id === activeConvId)?.turnInFlight ??
+    activeConv?.turnInFlight ??
+    false;
+  // A TURN IS IN FLIGHT FOR THIS CONVERSATION — EITHER HALF, and both are load-bearing:
+  // `isStreaming` is this client's own live slot (which supplies the local age), and
+  // `serverTurnInFlight` covers a turn this client is not streaming (started in another tab, or a
+  // slot lost on reload). The same union gates the TUI's status line (internal/tui/app.go
+  // transcriptStatusLine: `IsStreaming(conv) || turnInFlight(conv)`), and keying it to the slot
+  // alone was the contradiction the operator reported: "After the initial 'Orchicon is
+  // thinking...', streaming started and the 'Orchicon is thinking...' went away and never came
+  // back." This is the whole regression fix — the activity line is gated on the TURN, not on
+  // "before the first token".
+  const turnInFlight = isStreaming || serverTurnInFlight;
+
   // MESSAGES IS DECLARED BEFORE ITS CONSUMERS. `transcriptBlocks` below reads it,
   // and a `const` used above its declaration is a TDZ error the production build
   // (`tsc -b`) rejects even though a loose `--noEmit` pass did not — which is how
   // it reached a release build.
   const { data: messages, isLoading: msgsLoading } = useListMessages(
     activeConvId ?? "",
-    { refetchInterval: isStreaming ? 2000 : false },
+    // THE CADENCE FOLLOWS THE TURN, NOT THIS CLIENT'S STREAM SLOT. Gated on `isStreaming`
+    // alone, a turn this client is not streaming — started in the TUI or another tab, or lost to
+    // a reload — left this page frozen at whatever it held on load while the line's ticker kept
+    // running: "the timer that shows when the last call occurred just continues counting up and
+    // never resets on the next newest call". The ledger cannot refresh itself; the poll is the
+    // whole mechanism. See lib/ask-transcript-poll.ts.
+    { refetchInterval: transcriptPollMs(turnInFlight) },
   );
 
   // THE SERVER'S TRUTH SETTLES THE CARD, not only the live stream event.
@@ -515,15 +557,6 @@ function AskOrchiconPage() {
     transcriptBlocks.push({ kind: "optimistic", at: Date.now(), text: optimisticUserMsg! });
   }
 
-  const { data: conversations, isLoading: convsLoading } =
-    useListConversations({
-      // Poll while ANY conversation has a running turn so the sidebar's
-      // running indicators + Stop buttons stay live across tabs and devices
-      // (a turn started elsewhere appears within a few seconds), and stop
-      // polling once everything settles — no idle network churn.
-      refetchInterval: listPollMs,
-    });
-  const { data: activeConv } = useGetConversation(activeConvId ?? "");
   const { data: settings } = useGetSettings();
 
   // THE RAIL'S RUNNING SET IS A UNION OF BOTH HALVES, not the polled field alone. The row used to read
@@ -536,24 +569,6 @@ function AskOrchiconPage() {
     [conversations, streams],
   );
 
-  // Server-reported turn state for the ACTIVE conversation, freshest source
-  // first. The conversations list polls every 3s while any turn is running;
-  // GetConversation is fetched once per conversation, so it only fills gaps
-  // before the first poll lands.
-  const serverTurnInFlight =
-    conversations?.find((c) => c.id === activeConvId)?.turnInFlight ??
-    activeConv?.turnInFlight ??
-    false;
-  // A TURN IS IN FLIGHT FOR THIS CONVERSATION — EITHER HALF, and both are load-bearing:
-  // `isStreaming` is this client's own live slot (which supplies the local age), and
-  // `serverTurnInFlight` covers a turn this client is not streaming (started in another tab, or a
-  // slot lost on reload). The same union gates the TUI's status line (internal/tui/app.go
-  // transcriptStatusLine: `IsStreaming(conv) || turnInFlight(conv)`), and keying it to the slot
-  // alone was the contradiction the operator reported: "After the initial 'Orchicon is
-  // thinking...', streaming started and the 'Orchicon is thinking...' went away and never came
-  // back." This is the whole regression fix — the activity line is gated on the TURN, not on
-  // "before the first token".
-  const turnInFlight = isStreaming || serverTurnInFlight;
   const turnLastActivityAt =
     conversations?.find((c) => c.id === activeConvId)?.turnLastActivityAt ??
     activeConv?.turnLastActivityAt ??
@@ -1325,8 +1340,8 @@ function AskOrchiconPage() {
         //
         // The turn's tool calls land on the message row at FINALIZE — after the
         // last chunk — and this stream's poll stops the moment streaming ends
-        // (`refetchInterval: isStreaming ? 2000 : false`). So without this the
-        // newest durable content is NEVER fetched, and a recorded ask_user call
+        // (`transcriptPollMs(turnInFlight)`). So without this the newest durable
+        // content can go unfetched, and a recorded ask_user call
         // does not appear in the GUI at all. The operator: "it never popped up in
         // the GUI but was in the TUI" — the TUI happened to re-read, the GUI had
         // no reason to. The same race hid the tool calls of a just-finished reply

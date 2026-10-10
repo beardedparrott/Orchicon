@@ -261,7 +261,28 @@ type TranscriptMsg struct {
 	// so emitting durable tool rows would be a visible, parity-breaking change. The counter needs
 	// only the name and the issue stamp, so it rides this sibling field instead.
 	ToolCalls []toolclass.Call
-	Err       string
+	// SettledAsks are the asks this page records an OUTCOME for: the durable `permission.<outcome>`
+	// rows, paired with the ask id each one settles.
+	//
+	// AN OPEN CARD HAS NO DURABLE ROW, which is why this is the SETTLE half and not the reveal half.
+	// The transcript records the OUTCOME of a decision (permission.allow / .deny / .expired), never
+	// the open ask — see DiscoverPendingAsks for the query that reveals one. Carrying these on the
+	// message lets the shell settle a card from the SAME rows the GUI's settleFromLedger reads,
+	// instead of inferring it from a stream closing.
+	SettledAsks []AskOutcome
+	Err         string
+}
+
+// AskOutcome is one ask the durable transcript has ALREADY settled: the ask's id, and the outcome
+// the server recorded for it.
+//
+// The outcome is carried rather than assumed because it is the operator's own decision
+// (allow_once / allow_session / deny) or one no client can infer from its own state (expired,
+// answered) — see consentDecisionFromOutcome for why an unrecognised value settles the card WITHOUT
+// claiming a decision.
+type AskOutcome struct {
+	AskID   string
+	Outcome string
 }
 
 // chatEventMsg forwards one ChatStreamResponse oneof event. ConvID tags
@@ -891,9 +912,10 @@ func (c *Controller) OpenConversation(id string) tea.Cmd {
 		// The page arrives NEWEST-first (see conversationItems) — it is reversed
 		// there, together with the millisecond timestamps.
 		return TranscriptMsg{
-			ConvID:    id,
-			Items:     GroupByPhase(conversationItems(resp.Msg.GetMessages())),
-			ToolCalls: pageToolCalls(resp.Msg.GetMessages()),
+			ConvID:      id,
+			Items:       GroupByPhase(conversationItems(resp.Msg.GetMessages())),
+			ToolCalls:   pageToolCalls(resp.Msg.GetMessages()),
+			SettledAsks: settledAsksFromPage(resp.Msg.GetMessages()),
 		}
 	}
 }
@@ -915,6 +937,78 @@ func pageToolCalls(msgs []*apiv1.ChatMessage) []toolclass.Call {
 				continue
 			}
 			out = append(out, toolclass.Call{ToolName: c.GetFunctionName(), AtMs: c.GetIssuedAtUnixMs()})
+		}
+	}
+	return out
+}
+
+// askOutcomeFromLedgerRow maps one ledger row's function name to the outcome it settles, or ("", false)
+// when the row is not a resolution at all.
+//
+// IT IS AN ALLOWLIST, AND THAT IS THE ENTIRE POINT — the first version of this was a PREFIX MATCH, and
+// that shipped a worse bug than the one it was written to fix. The ledger carries rows that are NOT
+// outcomes: an ask being RAISED is recorded as `permission.ask` (and a question as
+// `permission.question`) BY the very code that raises the card, carrying the card's own ask id — see
+// consentTurn.record, called with verdict "ask"/"question" at the raise sites. A prefix match reads a
+// raise as a resolution, so the next transcript load settled the card the instant it was drawn, `replace`
+// then dropped the settled card, and the 5s discovery re-armed it — a card that appeared and vanished on
+// a ~2s cycle, impossible to click. The operator: "permission cards are popping up and then going away
+// almost immediately before I can click on them and it seems to rotate every few seconds."
+//
+// The GUI's lib/ask-consent.ts outcomeFromRecord has ALWAYS been an allowlist for exactly this reason;
+// this is a deliberate port of that list rather than a re-derivation, because the deviation is what
+// broke it. Anything not named here settles NOTHING, which is the safe direction: an unsettled card can
+// still be answered, while a wrongly-settled one is a click the operator cannot make.
+func askOutcomeFromLedgerRow(functionName string) (string, bool) {
+	switch functionName {
+	// An approval. `user_PERMISSION_CHOICE_ALLOW_ONCE` is the enum spelling the operator's own click
+	// records; `fullsend_approved` is a card the operator cleared by waiving prompts; `answered` is a
+	// QUESTION's answer, which is content rather than a permission outcome but settles the card the same
+	// way (there is no choice text on this path, and the card must not stay live).
+	case "permission.user_PERMISSION_CHOICE_ALLOW_ONCE", "permission.fullsend_approved", "permission.fullsend", "permission.answered":
+		return "allow_once", true
+	case "permission.user_PERMISSION_CHOICE_ALLOW_SESSION":
+		return "allow_session", true
+	// A refusal: the operator's click, a bare deny, a never-allow binary class, and a protected path the
+	// policy refuses. All four mean the call did not proceed.
+	case "permission.user_PERMISSION_CHOICE_DENY", "permission.deny", "permission.never_allow", "permission.protected_path":
+		return "deny", true
+	// No decision was made: the ask expired at finalize, or the policy could not be read. Settled, but
+	// NOT as a denial the operator never made (see consentDecisionFromOutcome).
+	case "permission.expired", "permission.policy_error":
+		return "expired", true
+	}
+	// NOT A RESOLUTION — including `permission.ask` and `permission.question`, which are the RAISE
+	// records. Ignoring them is the fix.
+	return "", false
+}
+
+// settledAsksFromPage reads the asks the page has already RESOLVED, from its ledger rows — the TUI's half
+// of the rule the GUI's lib/ask-consent.ts settleFromLedger applies to the same page. Both clients settle
+// a card from the SERVER's record of what happened to it, rather than from a guess about why a stream
+// closed.
+//
+// THE FIRST RESOLUTION WINS, mirroring the GUI: a later record for one ask must not overwrite what
+// actually happened to it (a grant is recorded once; a re-issued ask gets a new id). Rows with no id, or
+// that are not resolutions, settle nothing.
+func settledAsksFromPage(msgs []*apiv1.ChatMessage) []AskOutcome {
+	var out []AskOutcome
+	seen := map[string]bool{}
+	for _, m := range msgs {
+		for _, c := range m.GetToolCalls() {
+			if c == nil {
+				continue
+			}
+			outcome, ok := askOutcomeFromLedgerRow(c.GetFunctionName())
+			if !ok {
+				continue
+			}
+			id := c.GetId()
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			out = append(out, AskOutcome{AskID: id, Outcome: outcome})
 		}
 	}
 	return out

@@ -16,6 +16,17 @@ import (
 	"time"
 )
 
+// installPhase prints a phase banner for `orchicon install`.
+//
+// It exists because the one-command install is minutes long and largely unattended:
+// with no spine through its output, the operator's only evidence that it is working
+// is that nothing has failed yet, and the only way to describe a failure is "during
+// install". Naming each phase as it starts makes progress visible, and puts a failure
+// under the step that caused it.
+func installPhase(msg string) {
+	fmt.Printf("== %s\n", msg)
+}
+
 // runInstall implements `orchicon install` — the one-command setup for a
 // fresh machine. It pulls the published images, starts the host-side
 // runtime daemon, creates + starts the single-container instance, and
@@ -38,6 +49,7 @@ func runInstall(args []string, log *slog.Logger) error {
 	socketDir := env("ORCHICON_RUNTIME_SOCKET_DIR", filepath.Join(os.TempDir(), "orchicon-runtime"))
 
 	// 1. Docker must be present and running.
+	installPhase("checking Docker")
 	if out, err := exec.Command("docker", "version", "--format", "{{.Server.Version}}").CombinedOutput(); err != nil {
 		return fmt.Errorf("docker is required (start Docker first): %v: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -65,6 +77,7 @@ func runInstall(args []string, log *slog.Logger) error {
 	// WHICH ports the instance binds. The terminal is opened and closed here; a nil
 	// tty means "no terminal", which takes the defaults rather than blocking a
 	// headless install.
+	installPhase("resolving the plane residency and host ports")
 	residency, err := residencyForInstall()
 	if err != nil {
 		return err
@@ -73,7 +86,19 @@ func runInstall(args []string, log *slog.Logger) error {
 	if ttyOwned {
 		defer tty.Close()
 	}
-	ports, err := resolveInstallPorts(instance, residency, os.Stdout, tty)
+	// THE PROMPT GOES TO THE TERMINAL, NOT TO STDOUT, whenever there is a terminal.
+	// In every normal run those are the same place. They are NOT the same place when
+	// something wraps this installer and captures its stdout — which is exactly what
+	// the Windows one-liner does — and written to a captured stdout the question is
+	// invisible while resolveInstallPorts blocks reading the terminal: an install that
+	// hangs, for ever, with nothing on screen. That is the report this answers.
+	// (The resolved ports are also listed in the summary, which is the record a
+	// captured log keeps.)
+	promptOut := io.Writer(os.Stdout)
+	if tty != nil {
+		promptOut = tty
+	}
+	ports, err := resolveInstallPorts(instance, residency, promptOut, tty)
 	if err != nil {
 		return err
 	}
@@ -83,6 +108,7 @@ func runInstall(args []string, log *slog.Logger) error {
 	//
 	// REQUIRED images: the instance image and the workflow runtime base. Without
 	// these the install cannot produce a working instance, so a failure is fatal.
+	installPhase("pulling the published images — this is the slow part")
 	for _, img := range []string{containerImage, runtimeImage} {
 		if err := pullImageIfAbsent(img); err != nil {
 			return err
@@ -110,6 +136,7 @@ func runInstall(args []string, log *slog.Logger) error {
 	// 3. Ensure the host-side runtime daemon is running (the container
 	// mounts its socket directory; per-workflow runtime containers spawn
 	// from the runtime image above).
+	installPhase("starting the runtime daemon")
 	if err := ensureInstallDaemon(socketDir); err != nil {
 		return err
 	}
@@ -144,6 +171,7 @@ func runInstall(args []string, log *slog.Logger) error {
 
 	// 4b. Create + start the single-container instance (or report the existing
 	// one).
+	installPhase("creating the instance container")
 	if err := ensureInstallContainer(instance, residency, name, dataVolume, socketDir, containerImage, ports); err != nil {
 		return err
 	}
@@ -165,16 +193,31 @@ func runInstall(args []string, log *slog.Logger) error {
 	// install that is not this one.
 	controlPort := fmt.Sprintf("%d", ports["ORCHICON_CONTROL_PORT"])
 	healthURL := "http://localhost:" + controlPort + "/healthz"
-	deadline := time.Now().Add(90 * time.Second)
+	healthWait := 90 * time.Second
+	installPhase("waiting for the control plane")
+	fmt.Printf("waiting for %s (up to %s) …\n", healthURL, healthWait)
+	healthy := false
+	deadline := time.Now().Add(healthWait)
 	for time.Now().Before(deadline) {
 		if resp, err := http.Get(healthURL); err == nil {
 			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 			if resp.StatusCode == 200 {
+				healthy = true
 				break
 			}
 		}
 		time.Sleep(2 * time.Second)
+	}
+	// A TIMEOUT IS NOT SUCCESS, and reporting one as success is the worst outcome
+	// available: the operator is told the install is running, opens a URL that does
+	// not answer, and is given nothing to go on. Say what happened, say where the
+	// reason is, and let the summary describe the install honestly — see
+	// printInstallInfo's healthy flag.
+	if !healthy {
+		fmt.Printf("warning: the control plane did not answer %s within %s\n", healthURL, healthWait)
+		fmt.Printf("  the instance itself is up. find out why the plane is not:\n    docker logs --tail 50 %s\n", name)
+		fmt.Println("  then re-run `orchicon install` — it is idempotent")
 	}
 
 	// 6. Install/refresh the `orch` companion launcher on PATH (the thin
@@ -183,7 +226,7 @@ func runInstall(args []string, log *slog.Logger) error {
 	installDir := env("ORCHICON_INSTALL_DIR", defaultInstallDir())
 	installOrchLauncher(installDir)
 
-	printInstallInfo(instance, residency, name, dataVolume, socketDir, healthURL, runtimeImage, installDir, ports)
+	printInstallInfo(instance, residency, name, dataVolume, socketDir, healthURL, runtimeImage, installDir, ports, healthy)
 	return nil
 }
 
@@ -315,7 +358,10 @@ func ensureInstallDaemon(socketDir string) error {
 	if err := startDetachedDaemon(self, []string{"runtime-daemon"}, filepath.Join(socketDir, "runtime-daemon.log")); err != nil {
 		return fmt.Errorf("start runtime daemon: %w", err)
 	}
-	// Wait for the daemon to answer /v1/health.
+	// Wait for the daemon to answer /v1/health. Said out loud, because ten silent
+	// seconds is indistinguishable from a hang — the same reason every other wait in
+	// this command now announces itself.
+	fmt.Println("waiting for the runtime daemon to answer /v1/health …")
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if socketHealthy(socketPath) {
@@ -491,11 +537,39 @@ func pullImageIfAbsent(img string) error {
 		return nil
 	}
 	fmt.Printf("pulling %s …\n", img)
-	if out, err := exec.Command("docker", "pull", img).CombinedOutput(); err != nil {
-		return fmt.Errorf("pull %s: %v: %s", img, err, strings.TrimSpace(string(out)))
+	// THE PULL'S OUTPUT IS STREAMED, NOT CAPTURED. This is the longest stretch of a
+	// first install — four images, hundreds of megabytes — and it used to be
+	// swallowed: CombinedOutput held docker's progress until the command finished, so
+	// a working install was indistinguishable from a hung one until it was over.
+	// docker's progress now goes to this process's stdout as docker writes it, and a
+	// bounded tail is kept so a failure can still say WHY.
+	cmd := exec.Command("docker", "pull", img)
+	tail := &tailWriter{limit: 4096}
+	cmd.Stdout = io.MultiWriter(os.Stdout, tail)
+	cmd.Stderr = io.MultiWriter(os.Stderr, tail)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("pull %s: %v: %s", img, err, strings.TrimSpace(tail.String()))
 	}
+	fmt.Printf("pulled %s\n", img)
 	return nil
 }
+
+// tailWriter keeps only the LAST `limit` bytes written to it, so a failed command can
+// still report why without holding an unbounded amount of progress output in memory.
+type tailWriter struct {
+	buf   []byte
+	limit int
+}
+
+func (w *tailWriter) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	if len(w.buf) > w.limit {
+		w.buf = w.buf[len(w.buf)-w.limit:]
+	}
+	return len(p), nil
+}
+
+func (w *tailWriter) String() string { return string(w.buf) }
 
 func containerRunning(name string) (bool, error) {
 	out, err := exec.Command("docker", "inspect", "--format", "{{.State.Running}}", name).Output()
@@ -513,15 +587,22 @@ func containerExists(name string) (bool, error) {
 	return strings.TrimSpace(string(out)) != "", nil
 }
 
-func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthURL, runtimeImage, installDir string, ports map[string]int) {
+func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthURL, runtimeImage, installDir string, ports map[string]int, healthy bool) {
 	// Read back the ports this install actually bound: re-deriving them from the
 	// instance name would print a URL pointing at a port we never bound.
 	controlPort := fmt.Sprintf("%d", ports["ORCHICON_CONTROL_PORT"])
 	grafanaPort := fmt.Sprintf("%d", ports["ORCHICON_GRAFANA_PORT"])
 	fmt.Println()
-	fmt.Println("┌─────────────────────────────────────────────────────────────┐")
-	fmt.Println("│  Orchicon is installed and running.                        │")
-	fmt.Println("└─────────────────────────────────────────────────────────────┘")
+	if healthy {
+		fmt.Println("┌─────────────────────────────────────────────────────────────┐")
+		fmt.Println("│  Orchicon is installed and running.                         │")
+		fmt.Println("└─────────────────────────────────────────────────────────────┘")
+	} else {
+		fmt.Println("┌─────────────────────────────────────────────────────────────┐")
+		fmt.Println("│  Orchicon is installed, but its control plane is not        │")
+		fmt.Println("│  answering yet — the URLs below will fail until then.       │")
+		fmt.Println("└─────────────────────────────────────────────────────────────┘")
+	}
 	// State the SHAPE, because it decides where the plane lives and therefore how
 	// the operator restarts it — a host plane is a process on this machine, not
 	// something the container brings back on `docker start`.

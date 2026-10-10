@@ -261,6 +261,9 @@ func migrateHostDataDir(instance, volume, hostDataDir string, out io.Writer) err
 // should not abort an install that is otherwise complete, and the plane's own
 // retries cover a backend that comes up late.
 func waitServicesReady(name string, out io.Writer) {
+	// Announced before the wait: this can sit here for a minute, and a silent minute
+	// reads as a hang.
+	fmt.Fprintf(out, "waiting for %s services (postgres 5432, nats monitor 8222) …\n", name)
 	for i := 0; i < 60; i++ {
 		pg := exec.Command("docker", "exec", name, "pg_isready", "-h", "localhost", "-p", "5432", "-U", "orchicon")
 		nats := exec.Command("docker", "exec", name, "curl", "-fs", "http://localhost:8222/healthz")

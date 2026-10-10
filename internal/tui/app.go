@@ -3474,12 +3474,48 @@ func (s *chatStore) drawConsentAsk(convID string, ask chat.PermissionAsk) bool {
 		ask.ID = fmt.Sprintf("ask-%d", time.Now().UnixNano())
 	}
 	if s.hasConsent(convID, ask.ID) {
+		// A HELD ID IS NOT ALWAYS A HELD CHOICE. A card that was settled — by the page's record, by
+		// the other client, or by a local sweep that turned out to be wrong — is a RECORD of an ask,
+		// not a claim on its id. The server is still listing this ask as OPEN (discovery only asks
+		// for open ones, and the wire arm only replays open ones), so the operator must be able to
+		// answer it: the card is re-armed rather than silently refused. Without this, one wrong
+		// settle was PERMANENT for the turn — nothing could ever redraw the card.
+		if s.rearmSettledConsent(convID, ask.ID) {
+			return true
+		}
 		return false
 	}
 	// Stamped NOW, so the card sorts to the END of the transcript and stays there. Without a timestamp it
 	// sorted to the top on the next poll — see ConsentItem.
 	s.append(convID, chat.ConsentItem(ask, time.Now().UnixMilli()))
 	return true
+}
+
+// rearmSettledConsent turns a SETTLED card for this ask back into a pending choice, and reports
+// whether it found one to re-arm. A card already PENDING is reported as NOT re-armed, so the caller's
+// draw stays a no-op and the operator cannot end up with two cards for one ask.
+//
+// The decision is cleared back to "" (ConsentState.Pending's own definition) rather than to any
+// particular choice, because this client is not deciding anything: it is admitting the ask is open
+// again and handing the choice back.
+func (s *chatStore) rearmSettledConsent(convID, askID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.items[convID] {
+		it := &s.items[convID][i]
+		if it.Kind != chat.KindConsent || it.AskID != askID || it.Consent == nil {
+			continue
+		}
+		if it.Consent.Pending() {
+			return false
+		}
+		it.Consent.Decision = ""
+		it.Consent.Choice = ""
+		it.Consent.Note = ""
+		it.Consent.OtherMode = false
+		return true
+	}
+	return false
 }
 
 // hasConsent reports whether this conversation already holds a card for the ask.
@@ -3652,6 +3688,9 @@ func (s *chatStore) mergeHistory(convID string, history []chat.ChatItem) {
 	merged := append(append([]chat.ChatItem{}, history...), kept...)
 	s.applyOrderAnchors(convID, merged)
 	chat.SortChronologically(merged)
+	// AND LAST, THE PROMPT. A pending card is moved after its own history so it cannot be pushed off the
+	// top of the pane by a growing reply — see chat.PendingCardsLast for the reported failure.
+	merged = chat.PendingCardsLast(merged)
 	s.items[convID] = merged
 	s.mu.Unlock()
 }
@@ -3723,6 +3762,9 @@ func (s *chatStore) replace(convID string, items []chat.ChatItem) {
 	if len(out) != len(items) || len(s.orderAt[convID]) > 0 {
 		chat.SortChronologically(out)
 	}
+	// The same rule on the completion path, or a card that survived the replace would be ordered back
+	// above the reply the moment the turn's poll landed.
+	out = chat.PendingCardsLast(out)
 	s.items[convID] = out
 	s.mu.Unlock()
 }
@@ -3852,7 +3894,20 @@ func (s *chatStore) beginAskDraft(convID, key string) bool {
 // open on one conversation the other client's card stays visible (and inert) until then.
 // Closing that window needs the server to PUBLISH the resolution to the live turn — the
 // same channel that carried the ask — which is a wire change rather than a client sweep.
-func (s *chatStore) settleStaleConsent(convID string) {
+func (s *chatStore) settleStaleConsent(convID string, turnOver bool) {
+	// THE SERVER'S TURN STATE IS THE GATE, and it must be the SERVER's: a permission ask blocks its
+	// turn, so while the plane still reports that conversation's turn in flight the ask is still
+	// open, whatever this client's own sockets did. Every loss of a live card here has come from
+	// reading a LOCAL event (a close) as proof about the server's turn — see the call site in
+	// onStreamDone for the watch-re-dial close that did it.
+	//
+	// A turn that really did end still settles, by the truth rather than by this sweep: the
+	// collector records the outcome on the turn's ledger, and the next transcript load settles every
+	// ask the page records (TranscriptMsg.SettledAsks). This sweep is only the fallback for a card
+	// whose outcome row never arrives.
+	if !turnOver {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	items := s.items[convID]
@@ -3987,6 +4042,13 @@ func (m *App) onTranscript(msg chat.TranscriptMsg) tea.Cmd {
 	// its reason and model but makes NO composer claim, because its draft is deliberately not injected. Done
 	// BEFORE the store so the stamped row is what every later read sees, and repeated on EVERY poll so the
 	// line cannot be dropped when the next durable copy replaces the live one.
+	// THE DURABLE PAGE SETTLES WHAT IT RECORDS, on every load. An ask settled in the OTHER client (or
+	// expired when its turn finalized) has no other path into this client: the resolution event only
+	// reaches a watcher of that turn, and an unrelated replacement card must not be inferred from a
+	// close. The page is the record, so the record is what settles.
+	for _, sa := range msg.SettledAsks {
+		m.chatStore.settleAsk(msg.ConvID, sa.AskID, sa.Outcome, "")
+	}
 	m.stampRetryAffordance(msg.ConvID, msg.Items)
 	midTurn := m.runningFor(msg.ConvID)
 	if midTurn {
@@ -4115,6 +4177,22 @@ func (m *App) transcriptStatusLine(items []chat.ChatItem) string {
 		// dies, the GUI tells you, but the TUI conversation does not." The shell footer is easy to miss
 		// when reading a transcript, and it is the TRANSCRIPT that looks broken when a reply cannot arrive.
 		return "⚠ disconnected — replies will resume when the plane returns (r retries now)"
+	case m.chatStore.hasPendingConsent(m.chatConvID):
+		// THE CARD IS THE REASON NOTHING IS HAPPENING, AND THE FOOTER MUST SAY SO.
+		//
+		// The activity line below reads the STREAM's silence, so a turn parked on a permission ask rendered as
+		// "Orchicon is contemplating… · no output for 40s — the stream will re-attach if it stays silent": it
+		// blamed the stream and promised a re-attach while the stream was perfectly healthy and the turn was
+		// waiting on the OPERATOR. That is the operator's report, exactly: "I will notice no progress being
+		// made for a long time and if I exit the TUI and relaunch orch, a permissions card is sitting waiting
+		// for me when I relaunch it." The footer never named the card, so there was nothing on the always-
+		// visible row to act on — and the only path that reliably re-presented the card was a fresh attach.
+		//
+		// PRECEDENCE: the CONNECTION still outranks it (a card cannot be answered across a dead plane, which
+		// is what the reconnecting/disconnected arms above are for), and the card outranks the activity line,
+		// whose entire subject is the turn's progress TOWARDS an answer — progress that cannot happen until
+		// the operator answers.
+		return m.cardWaitingLine()
 	case m.runningFor(m.chatConvID):
 		// THE SERVER'S CLOCK FEEDS THE ROTATING VERB (see turnActivityNotice). ServerTimeSince returns
 		// (0, false) when no heartbeat has arrived yet, and 0 is the selector's "use the first word"
@@ -4136,6 +4214,66 @@ func (m *App) transcriptStatusLine(items []chat.ChatItem) string {
 // test can place a known set of tool calls inside or outside the window without sleeping. Production
 // never replaces it.
 var noticeNow = time.Now
+
+// cardWaitingLine is the pane footer while a card is waiting for the operator: WHAT is being asked, in one
+// row, and the fact that the turn cannot move until it is answered.
+//
+// THE SUBJECT COMES FROM chat.ConsentSubject — the same rule the card's own record line uses — so the footer
+// and the card cannot describe one ask two ways.
+//
+// IT GETS ITS OWN FIT RATHER THAN fitNotice, because the priority order differs. fitNotice exists for the
+// activity line, where everything after the verb is the disposable counter, so its first step drops the whole
+// tail. Here the tail is the POINT: an operator looking at a stalled turn needs to know what is being asked
+// about, and "waiting for your approval" with no subject sends them hunting through a transcript for the ask
+// the footer declined to name. So the order is: the whole line, then the subject without the explanation,
+// then the subject TRUNCATED to whatever room is left, and only then the bare label.
+func (m *App) cardWaitingLine() string {
+	_, st, ok := m.pendingConsentItem()
+	if !ok {
+		// Raced away between the case test and here (answered, or settled): say nothing rather than claim a
+		// card the store no longer holds. The next repaint takes the ordinary arms.
+		return ""
+	}
+	label := "approval"
+	if st.Ask.Kind == chat.AskQuestion {
+		label = "answer"
+	}
+	head := "⏸ waiting for your " + label
+	subject := chat.ConsentSubject(st.Ask)
+	const hint = " — Orchicon is paused until you answer"
+	width := m.askWidth()
+	// Unbounded (no measured pane): say everything rather than guess a width.
+	if width <= 0 {
+		if subject == "" {
+			return head + hint
+		}
+		return head + " · " + subject + hint
+	}
+	if subject == "" {
+		if ansi.StringWidth(head+hint) <= width {
+			return head + hint
+		}
+		return truncateSingle(head, width)
+	}
+	full := head + " · " + subject + hint
+	if ansi.StringWidth(full) <= width {
+		return full
+	}
+	named := head + " · " + subject
+	if ansi.StringWidth(named) <= width {
+		return named
+	}
+	// The subject still has to share the row with the label, so give it what is left — and only if what is
+	// left is worth reading (a two-character stub of a path names nothing).
+	if room := width - ansi.StringWidth(head) - 3; room >= minSubjectCells {
+		return head + " · " + truncateSingle(subject, room)
+	}
+	return truncateSingle(head, width)
+}
+
+// minSubjectCells is the fewest cells of a subject worth drawing beside the label. Below it the row is the
+// label alone: a path cut to "wr…" is noise dressed as information.
+const minSubjectCells = 12
 
 // askWidth is the Ask pane's detail render width, read from the same surface askStatusLine reads its
 // footer from. It is what the activity line is fitted to (fitNotice): the pane draws ONE row and clips
@@ -5028,7 +5166,18 @@ func (m *App) onStreamDone(msg chat.StreamDoneMsg) tea.Cmd {
 		// card here was answered in the OTHER client (or expired there) — see
 		// settleStaleConsent. Guarded by `ended` because a SUPERSEDED stream closes too,
 		// and settling on that close would kill a card belonging to the live turn.
-		m.chatStore.settleStaleConsent(msg.ConvID)
+		//
+		// `ended` IS NOT ENOUGH ON ITS OWN, AND THAT WAS A REAL LOSS. A WATCH RE-DIAL is a
+		// passive follow that runs through the SAME consume(), so a watch socket closing
+		// gracefully also reports `ended` for a turn that is still running — and the settle
+		// below then marked the operator's STILL-OPEN card settled, after which the durable
+		// re-read (a `replace`, now that the slot is gone) dropped it, because replace keeps a
+		// consent card only while PENDING. The operator watched exactly that: "a permissions
+		// card in the TUI get swallowed up", a turn "sitting and waiting" with no model
+		// activity and no card, answered by going into the GUI. The SERVER's own turn state is
+		// the fact that distinguishes the two closes, and the shell already trusts it
+		// elsewhere (the rail marker, re-attach, the activity line), so it is what gates this.
+		m.chatStore.settleStaleConsent(msg.ConvID, !m.runningFor(msg.ConvID))
 	}
 	// A finished turn is when new usage lands, so this is the LIVE update: the
 	// stat strip re-reads the session's tokens / cache / cost and refreshes.

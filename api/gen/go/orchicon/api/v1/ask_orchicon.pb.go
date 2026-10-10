@@ -43,10 +43,10 @@ const (
 	// the Orchicon MCP tool surface is shared with ORCHICON mode.
 	ConversationMode_CONVERSATION_MODE_BRAINSTORM ConversationMode = 1
 	// ITERATION is the standard agent: it works on the project directly with
-	// the operator, cutting a local branch and iterating. It deliberately NEVER
-	// suggests creating work items and NEVER suggests firing workflows or
-	// schedules — those are the other two modes' jobs. It commits early and
-	// often and runs the project's full available test suite.
+	// the operator, in its own git worktree on the session's branch, and iterates.
+	// It deliberately NEVER suggests creating work items and NEVER suggests
+	// firing workflows or schedules — those are the other two modes' jobs. It
+	// commits early and often and runs the project's full available test suite.
 	ConversationMode_CONVERSATION_MODE_ITERATION ConversationMode = 2
 	// QUICK_WORK reaches the same outcome as Iteration by a different route: it
 	// does not do the work itself, it dispatches it. It creates an EPHEMERAL

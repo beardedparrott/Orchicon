@@ -107,6 +107,23 @@ if [ -n "$execmode" ]; then
     emit "$(printf "$LOCALIZED_NO_SUCH" "$distro")" >&2
     exit 1
   fi
+  # EMU_NO_DOCKER / EMU_NO_DAEMON model the two shapes the installer has to tell
+  # apart, AT THE INTERFACE IT ACTUALLY USES: it asks `docker version --format`
+  # for a daemon and `command -v docker` for a CLI. Emulating here rather than by
+  # hiding a real docker on PATH keeps the guest's coreutils intact.
+  guest="${@:$skip}"
+  case "$guest" in
+    *"command -v docker"*)
+      if [ "${EMU_NO_DOCKER:-}" = "1" ]; then exit 1; fi
+      echo "/usr/bin/docker"; exit 0;;
+    *"docker version"*)
+      if [ "${EMU_NO_DOCKER:-}" = "1" ]; then echo "bash: line 1: docker: command not found" >&2; exit 127; fi
+      if [ "${EMU_NO_DAEMON:-}" = "1" ]; then
+        case "$guest" in *--format*) exit 1;; esac
+        echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" >&2
+        exit 1
+      fi;;
+  esac
   # `bash -lc` re-sources /etc/profile and resets PATH, so a docker stand-in
   # travels as an exported function (a child bash imports it from the env).
   docker() { case "$*" in *--format*) echo "29.8.0";; *) echo "Docker version 29.8.0";; esac; }

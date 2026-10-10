@@ -58,10 +58,26 @@ func consentLineSpans(it ChatItem, width int) (string, []AskOptionSpan) {
 	return b.String(), opts
 }
 
+// ConsentSubject names what an ask is ABOUT, in one line: the tool and its target for a permission ask,
+// the QUESTION for a clarifying one.
+//
+// IT IS EXPORTED SO THE FOOTER AND THE CARD CANNOT DESCRIBE THE SAME ASK DIFFERENTLY. The shell's status
+// line names the ask the turn is parked on (App.transcriptStatusLine -> cardWaitingLine) while the card
+// itself is rendered from the same PermissionAsk, and two locally-derived subjects would be two answers to
+// "what am I being asked about" — the drift this package's one-adapter comment exists to prevent.
+func ConsentSubject(a PermissionAsk) string {
+	if a.Kind == AskQuestion {
+		if q := strings.TrimSpace(a.Question); q != "" {
+			return q
+		}
+	}
+	return strings.TrimSpace(a.Tool + " " + a.Target)
+}
+
 // consentRecord is the settled form: what was decided, about what.
 func consentRecord(st *ConsentState) string {
 	a := st.Ask
-	subject := strings.TrimSpace(a.Tool + " " + a.Target)
+	subject := ConsentSubject(a)
 	switch st.Decision {
 	case DecisionAllowSession:
 		scope := a.Directory
