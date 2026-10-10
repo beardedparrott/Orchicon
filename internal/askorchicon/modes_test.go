@@ -137,10 +137,56 @@ func TestIterationNeverProposesWorkItemsOrWorkflows(t *testing.T) {
 		t.Error("iteration carries brainstorm's work-item-first principle — the two modes' dispositions " +
 			"must not blur")
 	}
-	// The branch-and-test discipline IS its job, so that must be present.
-	for _, want := range []string{"Cut a local branch", "COMMIT EARLY AND OFTEN", "RUN THE TESTS"} {
+	// The worktree-and-test discipline IS its job, so that must be present.
+	for _, want := range []string{
+		// ITS OWN WORKSPACE, and never the user's checkout.
+		"## Your worktree, and nobody else's",
+		"YOUR FIRST ACT ON ANY CHANGE IS TO CREATE YOUR OWN WORKTREE",
+		"git worktree add .orchicon-worktrees/<conversation-id> -b <branch> <base>",
+		// ONE BRANCH PER CONVERSATION — the operator's rule, stated so a later edit cannot quietly
+		// turn it back into branch-per-topic.
+		"ONE BRANCH PER CONVERSATION",
+		"a new topic or a second bug is not a new branch",
+		// The resume shape, which is what makes a re-entry into the conversation work at all.
+		"ATTACH instead of creating",
+		// A backtick needs no escaping here: this is a plain quoted Go string, not the raw literal
+		// the prompt itself is built with.
+		"`-b` FAILS on an existing branch",
+		// The tool-root trap: the file/shell suite does NOT follow you into the worktree, so an
+		// agent that creates one and keeps editing the project dir would believe it was isolated.
+		"CHECK WHERE YOUR TOOLS LAND",
+		// NEVER ANOTHER AGENT'S BRANCH: the rule, the protected set, and how to find out whose
+		// a branch is before touching git.
+		"NEVER WORK ON ANOTHER AGENT'S BRANCH",
+		"`main`, `develop` and `master` are protected",
+		"`git worktree list`",
+		"never adopt its branch, commit to it, or remove it",
+		// ALWAYS CLEAN UP — while never destroying unlanded work, which is the whole reason this
+		// is stated as two rules rather than one.
+		"ALWAYS CLEAN UP WHEN YOU ARE DONE",
+		"NEVER remove a worktree holding uncommitted or unpushed work",
+		"`git worktree prune`",
+		// The hands-on discipline it always had.
+		"COMMIT EARLY AND OFTEN",
+		"RUN THE TESTS",
+	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("iteration is missing its hands-on discipline %q", want)
+		}
+	}
+	// THE RULE THIS REPLACED MUST BE GONE. "Cut a local branch" told the agent the user's checkout
+	// was a fine place to work, which is the exact belief that lost a commit onto another branch.
+	if strings.Contains(p, "Cut a local branch") {
+		t.Error("iteration still carries the branch-only workspace rule — a branch in the user's own " +
+			"checkout is not an isolated workspace")
+	}
+	// AND IT STAYS ITERATION'S. The other two modes write nothing (their write tools are refused), so
+	// a workspace rule there would be advice about a working tree they never get. Asserted so the
+	// block cannot be "shared" later by reflex and turn into noise in two prompts.
+	for _, other := range []string{modeBrainstorm, modeQuickWork} {
+		if q := BuildSystemPrompt(other, testAgentConfig(), testToolRegistry(), ""); strings.Contains(q, "## Your worktree, and nobody else's") {
+			t.Errorf("%s carries Iteration's worktree block — only the mode that edits code needs a "+
+				"workspace rule", other)
 		}
 	}
 }
