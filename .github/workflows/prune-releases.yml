@@ -39,8 +39,13 @@ jobs:
           # `gh release list` sorts newest-first; keep the first MAX_RELEASES,
           # delete the rest. --yes skips confirmation; no --cleanup-tag so the
           # git tag (and the version `git describe` reports) survives.
+          # THE CANARY IS EXCLUDED FROM THE COUNT, and it has to be: it is a prerelease REBUILT on every
+          # merge to develop, so it always sits near the top of this list. Left in, it would consume one
+          # of the capped slots and evict a real release — the cap bounds RELEASES, and the develop
+          # canary is not one.
           gh release list --limit 100 \
             | awk '{print $1}' \
+            | grep -vx canary \
             | tail -n +$((MAX_RELEASES + 1)) \
             | while read -r tag; do
                 if [ -n "$tag" ] && gh release view "$tag" >/dev/null 2>&1; then

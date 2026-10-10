@@ -261,6 +261,40 @@ curl http://localhost:8080/healthz   # {"status":"ok"}
 
 ---
 
+### Testing an installer change (canary)
+
+The installers are the one artifact a user runs **before** we do, so an installer fault is discovered by
+whoever happens to install next. That has happened twice, which is what this is for.
+
+Every merge to `develop` publishes a **canary**: the current develop code, built into the release's exact
+asset shape, on a prerelease. The installer you run is always develop's; the artifacts are the current
+build. Asset names are stable, so the command does not change between merges.
+
+**Windows (PowerShell):**
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/beardedparrott/Orchicon/develop/scripts/install.ps1))) -Version canary
+```
+
+**Linux / macOS:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/beardedparrott/Orchicon/develop/scripts/install.sh | bash -s -- --version canary
+```
+
+**To test the installer script alone**, against the last released version, drop the version flag:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/beardedparrott/Orchicon/develop/scripts/install.ps1)))
+```
+
+That is the shorter loop and the one that matters most, because the script — not the artifact — is what
+has broken each time.
+
+**It is not a release.** The canary is a *prerelease*, so `releases/latest` (which both installers resolve
+when no version is given) never sees it, and no published release is affected. The version a canary
+installs reports `vcanary`; check the tag's commit to see which develop state it carries.
+
 ## 2. First run
 
 A fresh Orchicon plane has **no accounts**. Authentication is real from the first
