@@ -4171,6 +4171,22 @@ func (m *App) transcriptStatusLine(items []chat.ChatItem) string {
 		// dies, the GUI tells you, but the TUI conversation does not." The shell footer is easy to miss
 		// when reading a transcript, and it is the TRANSCRIPT that looks broken when a reply cannot arrive.
 		return "⚠ disconnected — replies will resume when the plane returns (r retries now)"
+	case m.chatStore.hasPendingConsent(m.chatConvID):
+		// THE CARD IS THE REASON NOTHING IS HAPPENING, AND THE FOOTER MUST SAY SO.
+		//
+		// The activity line below reads the STREAM's silence, so a turn parked on a permission ask rendered as
+		// "Orchicon is contemplating… · no output for 40s — the stream will re-attach if it stays silent": it
+		// blamed the stream and promised a re-attach while the stream was perfectly healthy and the turn was
+		// waiting on the OPERATOR. That is the operator's report, exactly: "I will notice no progress being
+		// made for a long time and if I exit the TUI and relaunch orch, a permissions card is sitting waiting
+		// for me when I relaunch it." The footer never named the card, so there was nothing on the always-
+		// visible row to act on — and the only path that reliably re-presented the card was a fresh attach.
+		//
+		// PRECEDENCE: the CONNECTION still outranks it (a card cannot be answered across a dead plane, which
+		// is what the reconnecting/disconnected arms above are for), and the card outranks the activity line,
+		// whose entire subject is the turn's progress TOWARDS an answer — progress that cannot happen until
+		// the operator answers.
+		return m.cardWaitingLine()
 	case m.runningFor(m.chatConvID):
 		// THE SERVER'S CLOCK FEEDS THE ROTATING VERB (see turnActivityNotice). ServerTimeSince returns
 		// (0, false) when no heartbeat has arrived yet, and 0 is the selector's "use the first word"
@@ -4192,6 +4208,66 @@ func (m *App) transcriptStatusLine(items []chat.ChatItem) string {
 // test can place a known set of tool calls inside or outside the window without sleeping. Production
 // never replaces it.
 var noticeNow = time.Now
+
+// cardWaitingLine is the pane footer while a card is waiting for the operator: WHAT is being asked, in one
+// row, and the fact that the turn cannot move until it is answered.
+//
+// THE SUBJECT COMES FROM chat.ConsentSubject — the same rule the card's own record line uses — so the footer
+// and the card cannot describe one ask two ways.
+//
+// IT GETS ITS OWN FIT RATHER THAN fitNotice, because the priority order differs. fitNotice exists for the
+// activity line, where everything after the verb is the disposable counter, so its first step drops the whole
+// tail. Here the tail is the POINT: an operator looking at a stalled turn needs to know what is being asked
+// about, and "waiting for your approval" with no subject sends them hunting through a transcript for the ask
+// the footer declined to name. So the order is: the whole line, then the subject without the explanation,
+// then the subject TRUNCATED to whatever room is left, and only then the bare label.
+func (m *App) cardWaitingLine() string {
+	_, st, ok := m.pendingConsentItem()
+	if !ok {
+		// Raced away between the case test and here (answered, or settled): say nothing rather than claim a
+		// card the store no longer holds. The next repaint takes the ordinary arms.
+		return ""
+	}
+	label := "approval"
+	if st.Ask.Kind == chat.AskQuestion {
+		label = "answer"
+	}
+	head := "⏸ waiting for your " + label
+	subject := chat.ConsentSubject(st.Ask)
+	const hint = " — Orchicon is paused until you answer"
+	width := m.askWidth()
+	// Unbounded (no measured pane): say everything rather than guess a width.
+	if width <= 0 {
+		if subject == "" {
+			return head + hint
+		}
+		return head + " · " + subject + hint
+	}
+	if subject == "" {
+		if ansi.StringWidth(head+hint) <= width {
+			return head + hint
+		}
+		return truncateSingle(head, width)
+	}
+	full := head + " · " + subject + hint
+	if ansi.StringWidth(full) <= width {
+		return full
+	}
+	named := head + " · " + subject
+	if ansi.StringWidth(named) <= width {
+		return named
+	}
+	// The subject still has to share the row with the label, so give it what is left — and only if what is
+	// left is worth reading (a two-character stub of a path names nothing).
+	if room := width - ansi.StringWidth(head) - 3; room >= minSubjectCells {
+		return head + " · " + truncateSingle(subject, room)
+	}
+	return truncateSingle(head, width)
+}
+
+// minSubjectCells is the fewest cells of a subject worth drawing beside the label. Below it the row is the
+// label alone: a path cut to "wr…" is noise dressed as information.
+const minSubjectCells = 12
 
 // askWidth is the Ask pane's detail render width, read from the same surface askStatusLine reads its
 // footer from. It is what the activity line is fitted to (fitNotice): the pane draws ONE row and clips
