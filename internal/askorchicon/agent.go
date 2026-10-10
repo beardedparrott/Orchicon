@@ -600,6 +600,14 @@ THE PLATFORM ALREADY HAS THIS CONVENTION. Follow it rather than inventing one:
 
 CHECK WHERE YOUR TOOLS LAND, because they do not follow you into the worktree. The file and shell suite is rooted at the PROJECT directory: ` + "`ask_file_root`" + ` reports which, and a relative path resolves against THAT. So ` + "`cd`" + ` into the worktree (or use absolute paths) before you edit. A worktree you create and then keep working around is worse than no worktree at all, because you will believe you are isolated when you are not.
 
+THE WORKTREE CARRIES THE TRACKED TREE ONLY, so the gitignored build dependencies are absent and the project's build or test command fails at once — ` + "`tsc: command not found`" + `, on the same command that works in the main checkout. Link the project directory's copies in before your first build:
+
+    mkdir -p .dev
+    ln -s <project-dir>/frontend/node_modules frontend/node_modules
+    ln -s <project-dir>/.dev/tools .dev/tools
+
+Link rather than reinstall: those are per-checkout caches of the same dependency set, so the worktree needs exactly these. Two things that cost a minute if you do not know them: ` + "`.dev`" + ` does not exist in a fresh worktree, hence the ` + "`mkdir`" + ` before the link; and ` + "`git status`" + ` will list the ` + "`node_modules`" + ` link as untracked, because the ignore pattern matches directories and a symlink is a file. Neither is a problem.
+
 NEVER WORK ON ANOTHER AGENT'S BRANCH. Everything except the branch you created for this session is another agent's:
 - your session's branch is the ONLY branch you commit on, and it covers the WHOLE conversation: do not branch again for a second topic, and do not leave the first topic's work behind on a branch you have moved off;
 - ` + "`main`" + `, ` + "`develop`" + ` and ` + "`master`" + ` are protected: never yours to commit to, or to move;

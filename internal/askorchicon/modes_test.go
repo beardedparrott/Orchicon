@@ -166,6 +166,14 @@ func TestIterationNeverProposesWorkItemsOrWorkflows(t *testing.T) {
 		"ALWAYS CLEAN UP WHEN YOU ARE DONE",
 		"NEVER remove a worktree holding uncommitted or unpushed work",
 		"`git worktree prune`",
+		// A FRESH WORKTREE CANNOT BUILD UNTIL THE DEPENDENCIES ARE LINKED, which is the one thing the
+		// worktree rule costs if it is not said: the build fails with a confusing tool error and the
+		// agent concludes the worktree is broken. Asserted with the symptom it actually prints.
+		"THE WORKTREE CARRIES THE TRACKED TREE ONLY",
+		"`tsc: command not found`",
+		"ln -s <project-dir>/frontend/node_modules frontend/node_modules",
+		"ln -s <project-dir>/.dev/tools .dev/tools",
+		"mkdir -p .dev",
 		// The hands-on discipline it always had.
 		"COMMIT EARLY AND OFTEN",
 		"RUN THE TESTS",
