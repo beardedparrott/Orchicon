@@ -129,6 +129,15 @@ if [ -n "$execmode" ]; then
   docker() { case "$*" in *--format*) echo "29.8.0";; *) echo "Docker version 29.8.0";; esac; }
   export -f docker
   cmd=("${@:$skip}")
+  # RECORD WHAT THE GUEST WAS HANDED, when asked. The install scripts are multi-line bash with double
+  # quotes in them, and a caller that mangles them (Windows PowerShell 5.1 quoting an inline native
+  # argument) sends a script that parses to something else entirely — which is exactly the failure this
+  # records: the operator's install died on `TMP="$(mktemp -d)"` arriving as `-d)`. Recording the text
+  # makes that contract assertable rather than assumed.
+  if [ -n "${EMU_RECORD:-}" ]; then
+    printf '%s' "${cmd[$(( ${#cmd[@]} - 1 ))]}" > "$EMU_RECORD"
+    exit 0
+  fi
   if [ "$execmode" = "argv" ]; then
     "${cmd[@]}"
   else
