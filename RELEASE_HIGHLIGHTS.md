@@ -57,10 +57,23 @@ your checkout — so your working state, your uncommitted edits and your current
 agent's half-finished change lands. It cleans up after itself once the work has landed, and never touches
 another session's branch. Sharing your checkout stays possible; this is the default.
 
+### New: work items you can skip on purpose
+`skipped` was already a real status — the sequence engine consumed it, and it carried the meaning
+"deliberately not doing this" — but nothing could ever set it: the update validator rejected it, and the
+board and detail controls treated it as immovable. So the honest expression of that decision had to be a
+*cancellation*, which reads like an accident and loses the distinction entirely. It is now settable by
+hand, on both surfaces, through the same generic update path as every other status.
+
 ### Also in this release
 - Paste into a permission card's free-text row works again.
 - `ctrl+x` on a work item is the GUI's DELETE, not a soft cancel.
 - A work-item search reaches matches inside collapsed nodes.
+- A worker version's `concurrency_limit` is enforced. It was stored, plumbed and displayed everywhere and
+  read on no dispatch path, so a limit of 1 still ran several at once; a dispatch that queues behind the
+  limit now says why it is waiting instead of looking stuck.
+- Backups work on a host-resident instance — the configuration a fresh install now produces. `pg_dump` was
+  being looked up on the host rather than in the container that has it, so *every* backup on such an install
+  failed with `executable file not found in $PATH`.
 - The transcript's activity line stays in step with the turn: its "newest call Ns ago" age no longer counts
   up forever after a refresh, and the tool tally no longer freezes for a turn this client is not streaming.
 

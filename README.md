@@ -41,9 +41,12 @@ The documentation lives at the project root:
 - **a Windows installer that reports itself**: On Windows the stack runs inside WSL2, and the installer had two ways of leaving you with nothing to go
 - **choose your ports, and uninstall safely**: Installing alongside something that already holds a default port no longer means a raw bind error: the
 - **Iteration works in its own worktree**: Iteration mode now does its work in its own git worktree, on one branch per conversation, rather than in
+- **work items you can skip on purpose**: `skipped` was already a real status — the sequence engine consumed it, and it carried the meaning
 - Paste into a permission card's free-text row works again.
 - `ctrl+x` on a work item is the GUI's DELETE, not a soft cancel.
 - A work-item search reaches matches inside collapsed nodes.
+- A worker version's `concurrency_limit` is enforced. It was stored, plumbed and displayed everywhere and
+- Backups work on a host-resident instance — the configuration a fresh install now produces. `pg_dump` was
 - The transcript's activity line stays in step with the turn: its "newest call Ns ago" age no longer counts
 
 Full details: [release notes on GitHub](https://github.com/beardedparrott/Orchicon/releases).
