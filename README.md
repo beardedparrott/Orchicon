@@ -36,17 +36,15 @@ The documentation lives at the project root:
 
 ## Last Release Changes
 
-- **A permission card waits for you, however long you are away**: The card that asks whether a call may proceed used to give up on you.
-- **Paste into a card's answer**: `ctrl+v` into an ask card's **Other** row works, which it never did.
-- **The installer catches up to host residency**: Host residency became the default shape in 0.4; the one-command installer now produces the *same* shape as
-- **A safe uninstall, and no more killing by process name**: The uninstall path no longer stops processes by *name* — which could match something that had nothing to do
-- **Backups work on a host-resident install.** They did not: the dump shelled out to a `pg_dump` that only
-- **Work-item search reaches collapsed items.** The tree opens collapsed, and the filter was applied behind
-- **`ctrl+x` on a work item is the real delete.** It was the soft *cancel*, which left the cancelled row on
-- **`skipped` is yours to set.** A terminal status the sequence engine consumes as *success* and passes
-- **A runtime-daemon start reaps only its own instance's containers** — a dev start can no longer take
-- **The per-worker concurrency limit is enforced**, and a dispatch that waits says why.
-- **The website**: a contact section for every channel, a Contact link in the nav, and the install tabs
+- **a permission card you can finally answer**: The card that asks whether a call may proceed had three ways of failing you, and all three are closed.
+- **the pane says what it is waiting for**: The conversation's status line no longer reads the stream's silence while a card is waiting on you.
+- **a Windows installer that reports itself**: On Windows the stack runs inside WSL2, and the installer had two ways of leaving you with nothing to go
+- **choose your ports, and uninstall safely**: Installing alongside something that already holds a default port no longer means a raw bind error: the
+- **Iteration works in its own worktree**: Iteration mode now does its work in its own git worktree, on one branch per conversation, rather than in
+- Paste into a permission card's free-text row works again.
+- `ctrl+x` on a work item is the GUI's DELETE, not a soft cancel.
+- A work-item search reaches matches inside collapsed nodes.
+- The transcript's activity line stays in step with the turn: its "newest call Ns ago" age no longer counts
 
 Full details: [release notes on GitHub](https://github.com/beardedparrott/Orchicon/releases).
 

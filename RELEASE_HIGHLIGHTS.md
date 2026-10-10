@@ -15,6 +15,55 @@
 > tells the tooling which version these highlights describe; update it
 > when you cut.
 
+## v0.5.13
+
+### New: a permission card you can finally answer
+The card that asks whether a call may proceed had three ways of failing you, and all three are closed. A
+card could vanish about two seconds after it appeared — drawn, instantly read as *settled*, dropped, then
+re-drawn on a loop, so your click never landed. A card could be retired by a **connection event** rather
+than by a decision: when the client's watch socket closed cleanly the turn looked finished, and every open
+card was swept to "settled" while the plane still held the ask open. And a card could be pushed off the
+**top** of the pane — the reply is anchored so it sinks below cards raised during it, which with a long
+reasoning block walked the card out of view entirely, leaving just its hint row at the top. A card waiting
+on you is now treated as a **prompt** rather than a transcript row: it stays pinned to the bottom of the
+pane, and it is settled only by what the server records — your decision, an expiry, or a denial — never by
+a guess about why a stream closed.
+
+### New: the pane says what it is waiting for
+The conversation's status line no longer reads the stream's silence while a card is waiting on you. It
+used to say "no output for 40s — the stream will re-attach if it stays silent", which blamed the
+connection and promised a re-attach while the stream was healthy and the turn was parked on **you**. It
+now names the ask: `⏸ waiting for your approval · write src/main.go — Orchicon is paused until you answer`.
+
+### New: a Windows installer that reports itself
+On Windows the stack runs inside WSL2, and the installer had two ways of leaving you with nothing to go
+on. It called `exit` — and under its own documented invocation (`irm … | iex`) that does not end the
+script, it ends **your PowerShell session**, closing the window with the reason still unread. Its long
+setup step also captured the output, so a working install was indistinguishable from a hung one; worse, a
+captured *question* was a permanent hang, because the port prompt blocked on a terminal nobody had been
+told to touch. The window is never closed now, the long steps stream as they run, the Docker check names
+which of the three causes you have and quotes what the distro reported, and a failed setup tells you the
+exit code, where to look, and the exact command that resumes it.
+
+### New: choose your ports, and uninstall safely
+Installing alongside something that already holds a default port no longer means a raw bind error: the
+installer offers the next free port, and you can pin any of them. Uninstall is safe — it stops what it
+started and never kills processes by name. A host-resident instance no longer reports unhealthy forever,
+and a runtime daemon restart reaps only its own instance's containers.
+
+### New: Iteration works in its own worktree
+Iteration mode now does its work in its own git worktree, on one branch per conversation, rather than in
+your checkout — so your working state, your uncommitted edits and your current branch are never where an
+agent's half-finished change lands. It cleans up after itself once the work has landed, and never touches
+another session's branch. Sharing your checkout stays possible; this is the default.
+
+### Also in this release
+- Paste into a permission card's free-text row works again.
+- `ctrl+x` on a work item is the GUI's DELETE, not a soft cancel.
+- A work-item search reaches matches inside collapsed nodes.
+- The transcript's activity line stays in step with the turn: its "newest call Ns ago" age no longer counts
+  up forever after a refresh, and the tool tally no longer freezes for a turn this client is not streaming.
+
 ## v0.5.10
 
 ### New: A permission card waits for you, however long you are away
