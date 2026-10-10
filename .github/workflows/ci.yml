@@ -159,3 +159,43 @@ jobs:
       # container anyway (Chromium cannot launch without shared libraries and root).
       - name: Assert the landing page's nav + version invariants
         run: bash scripts/tests/site-nav-layout/run.sh
+
+  # windows-installer — the Windows (WSL2) installer's invariants.
+  #
+  # THE WINDOWS INSTALLER HAD NO DETECTOR EITHER, and its two worst defects were silent on
+  # every other gate: `exit` in a script run as `irm … | iex` closes the operator's OWN
+  # PowerShell session, so a failure takes its diagnosis with it (reported as "it just closes
+  # the powershell session"), and a captured long/interactive step is indistinguishable from a
+  # hang (reported as "just hanging … with no progress") — `orchicon install` asks about host
+  # ports and blocks reading the terminal the whole time, so the question buffered on stdout
+  # never appears.
+  #
+  # Neither needs Windows to detect. The harness runs the installer's OWN functions against a
+  # wsl.exe double that carries the contract, runs its failure paths inside a child pwsh exactly
+  # as documented, and watches a child to prove the live path streams while the capturing one
+  # does not. pwsh is preinstalled on the ubuntu runner, which is why this can be a job at all.
+  #
+  # It is pwsh 7, NOT Windows PowerShell 5.1: the one place the two differ here (5.1 turns a
+  # redirected native command's stderr into terminating ErrorRecords) is avoided in the
+  # installer's source rather than asserted here — see the 2>&1 note on Invoke-WslBashLive.
+  windows-installer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert the installer's halt and progress invariants
+        run: bash scripts/tests/install-ps1-wsl-encoding/run.sh
+
+      # A DETECTOR THAT STOPPED DETECTING IS WORSE THAN NO DETECTOR, so prove this one still
+      # bites: re-introduce the defect into a copy — the sentinel `throw` that unwinds safely
+      # becomes the `exit` that closes the session — and require the suite to fail.
+      # run.sh --baseline does the same against any file you name.
+      - name: Assert the suite still detects the defect it exists for
+        run: |
+          broken="$RUNNER_TEMP/install-exit.ps1"
+          cp scripts/install.ps1 "$broken"
+          perl -0pi -e 's/throw "OrchiconInstallHalt"/exit 1/' "$broken"
+          if bash scripts/tests/install-ps1-wsl-encoding/run.sh "$broken"; then
+            echo "::error::the harness passed an installer whose halt closes the operator's session"
+            exit 1
+          fi

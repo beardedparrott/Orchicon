@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
@@ -83,7 +84,18 @@ func mergeTexts(items []chat.ChatItem) []string {
 // beats every item raised inside it for the whole turn, so it stayed pinned above them and they sat at the
 // bottom of the screen. A reply that is still growing must sort by its LAST ARRIVAL instead, so the items
 // raised while it was being written float above it.
-func TestGrowingReplySinksBelowTheCardsRaisedDuringIt(t *testing.T) {
+// THE RULE THIS PINS WAS REVERSED, deliberately, on the operator's report.
+//
+// It used to assert that a growing reply SINKS BELOW the card raised during it — so the card moved up as
+// text streamed in, which read as "the card moves out of the way of the reply". The operator's
+// screenshot killed that: with a 29,528-character reasoning block the card travelled off the TOP of the
+// pane, and the only part left on screen was the card's own hint row ("↑/↓ select · enter confirm · esc
+// denies") while the question it belonged to was nowhere visible. Their instruction: "The cards need to
+// be placed at the bottom of the screen so it is apparent what is asked of the user."
+//
+// So the assertion is inverted, and the inversion is the point: the card is the PROMPT, the reply is
+// HISTORY, and while the turn is blocked on an answer the prompt outranks it for the bottom of the pane.
+func TestAPendingCardStaysAtTheBottomWhileTheReplyGrows(t *testing.T) {
 	s := &chatStore{items: map[string][]chat.ChatItem{}}
 	// A permission card raised mid-turn (arrived at 2000ms) and the acked reply row as the server stores it
 	// (created at 1500ms — the turn's start, i.e. BEFORE the card).
@@ -112,18 +124,49 @@ func TestGrowingReplySinksBelowTheCardsRaisedDuringIt(t *testing.T) {
 	if got[0].Kind != chat.KindUser {
 		t.Fatalf("the operator's own message must stay first: %v", mergeTexts(got))
 	}
-	if got[1].Kind != chat.KindConsent {
-		t.Fatalf("a card raised during the turn must move ABOVE the reply that is still growing, not sit at the bottom of the screen: %v", mergeTexts(got))
+	if got[1].Key != "m-2" {
+		t.Fatalf("the growing reply must sit above the card once the card is pinned to the bottom: %v", mergeTexts(got))
 	}
-	if got[2].Key != "m-2" {
-		t.Fatalf("the growing reply must be the newest row: %v", mergeTexts(got))
+	if got[2].Kind != chat.KindConsent {
+		t.Fatalf("a PENDING card must stay at the BOTTOM while the reply grows — every row that moves above "+
+			"it pushes it further up, and a card off the top of the pane cannot be answered: %v", mergeTexts(got))
+	}
+}
+
+// THE REPORTED CASE, at its actual scale: a 29,528-character reasoning block and a pending card. The card
+// must be the last row — that is what keeps it inside the pane, because the transcript follows the bottom
+// (kit2.Stream.AtBottom) and no amount of growth above it can then push it off.
+func TestAPendingCardSurvivesAHugeGrowingReply(t *testing.T) {
+	s := &chatStore{items: map[string][]chat.ChatItem{}}
+	s.items["c1"] = []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{ID: "a1"}, 2000)}
+	header := []chat.ChatItem{{Kind: chat.KindUser, Text: "go", At: 1000, Key: "m-1"}}
+	reasoning := chat.ChatItem{Kind: chat.KindReasoning, Text: strings.Repeat("thinking. ", 1000), At: 1500, Key: "m-2-r0"}
+	s.mergeHistory("c1", append(append([]chat.ChatItem{}, header...), reasoning))
+
+	// And it keeps growing, poll after poll, which is what used to walk the card off the screen.
+	for i := 0; i < 3; i++ {
+		reasoning.Text += strings.Repeat("more. ", 1000)
+		s.mergeHistory("c1", append(append([]chat.ChatItem{}, header...), reasoning))
+	}
+
+	got := s.snapshot("c1")
+	if len(got) != 3 {
+		t.Fatalf("want user, reasoning, card — got %v", mergeTexts(got))
+	}
+	if got[2].Kind != chat.KindConsent {
+		t.Fatalf("the pending card must be the LAST row however long the reply grows: %v", mergeTexts(got))
 	}
 }
 
 // A message's rows are one UNIT: its text, each reasoning part and its recorded ask card were written
 // together, so they move together and keep the order they were emitted in (which is what keeps a recorded
-// question card at the bottom of its own turn — the layout the operator asked for when the card was landing
-// above the prose that followed it).
+// question card at the bottom of its own turn).
+//
+// THE CARD'S OWN POSITION IS NOT PART OF THAT UNIT, and the distinction is what this asserts after the
+// operator's reversal. A message's rows describe something that ALREADY HAPPENED, so their internal order
+// is fixed. A pending card is a PROMPT — it has not happened yet — so it is moved out of the message and
+// pinned to the bottom of the pane (see chat.PendingCardsLast), which is the reported fix. The message
+// keeps its order; the card leaves its slot for the bottom.
 func TestAnchoredMessageKeepsItsInternalOrder(t *testing.T) {
 	s := &chatStore{items: map[string][]chat.ChatItem{}}
 	s.items["c1"] = []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{ID: "a1"}, 9000)}
@@ -142,13 +185,16 @@ func TestAnchoredMessageKeepsItsInternalOrder(t *testing.T) {
 	for _, it := range got {
 		order = append(order, it.Key)
 	}
-	want := []string{"consent-a1", "m-2-r0", "m-2", "m-2-ask"}
+	// The message keeps its own order (reasoning, text, its recorded ask) — the guarantee this test has
+	// always protected — and the PENDING card is moved to the end of the list.
+	want := []string{"m-2-r0", "m-2", "m-2-ask", "consent-a1"}
 	if len(order) != len(want) {
 		t.Fatalf("order = %v, want %v", order, want)
 	}
 	for i := range want {
 		if order[i] != want[i] {
-			t.Fatalf("order = %v, want %v (the card floats above the whole message; the message keeps its own order)", order, want)
+			t.Fatalf("order = %v, want %v (the message keeps its own order; the pending card is pinned "+
+				"to the bottom of the pane)", order, want)
 		}
 	}
 }
@@ -173,8 +219,14 @@ func TestOpeningAnOldConversationIsNotAnchored(t *testing.T) {
 	}
 }
 
-// The anchor survives the completion replace: the in-flight reply jump back up to its row-creation time at
-// the exact moment the operator starts reading the finished reply.
+// The anchor survives the completion replace: the in-flight reply must not jump back up to its
+// row-creation time at the exact moment the operator starts reading the finished reply.
+//
+// THE GUARANTEE IS STABILITY, NOT A PARTICULAR POSITION, and it is asserted that way here: the order is
+// captured BEFORE the completion replace and required to be identical after it. Previously that order had
+// the pending card above the reply; now it has the card at the bottom — and because the rule is the same on
+// both sides of the boundary, the transition is still a non-event for the operator. What this test will not
+// tolerate is the card appearing to move as the turn ends.
 func TestCompletionReplaceKeepsTheAnchor(t *testing.T) {
 	s := &chatStore{items: map[string][]chat.ChatItem{}}
 	s.items["c1"] = []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{ID: "a1"}, 2000)}
@@ -184,14 +236,27 @@ func TestCompletionReplaceKeepsTheAnchor(t *testing.T) {
 	s.mergeHistory("c1", append(append([]chat.ChatItem{}, header...),
 		chat.ChatItem{Kind: chat.KindText, Text: "working steadily", At: 1500, Key: "m-2"}))
 
-	// Turn over: the poll REPLACES the buffer with the durable transcript (the completion authority). The
-	// settled reply must not jump back above the card it arrived after.
+	before := keysOf(s.snapshot("c1"))
+
+	// Turn over: the poll REPLACES the buffer with the durable transcript (the completion authority).
 	s.replace("c1", []chat.ChatItem{
 		{Kind: chat.KindUser, Text: "go", At: 1000, Key: "m-1"},
 		{Kind: chat.KindText, Text: "working steadily", At: 1500, Key: "m-2"},
 	})
 	got := s.snapshot("c1")
-	if len(got) != 3 || got[1].Kind != chat.KindConsent {
-		t.Fatalf("the card must not jump back below the reply when the turn ends: %v", mergeTexts(got))
+	if len(got) != 3 {
+		t.Fatalf("want user, reply, card — got %v", mergeTexts(got))
+	}
+	// The pending card is at the bottom on BOTH sides of the boundary...
+	if got[2].Kind != chat.KindConsent {
+		t.Fatalf("the pending card must be the last row, got %v", mergeTexts(got))
+	}
+	// ...so nothing moved as the turn ended.
+	after := keysOf(got)
+	for i := range before {
+		if before[i] != after[i] {
+			t.Fatalf("the order changed at the turn boundary: %v -> %v (the operator watches the card "+
+				"move as the reply completes)", before, after)
+		}
 	}
 }

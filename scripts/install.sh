@@ -417,6 +417,11 @@ main() {
     fi
     echo ""
     echo -e "${B}Setting up the full stack (one-command install)…${X}"
+    # SAY THAT IT ASKS QUESTIONS. `orchicon install` prompts for the host ports, so an
+    # operator who does not expect a question sits at a still screen while it waits.
+    # Windows had the same omission in a worse form: the prompt was CAPTURED there, so
+    # the question was never visible AND the install blocked on it — see install.ps1.
+    echo -e "  ${D}it asks about host ports — press ENTER to accept each default${X}"
     if "$bin" install; then
       echo ""
       ok "Install complete — Orchicon is running."
