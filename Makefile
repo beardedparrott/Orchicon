@@ -383,6 +383,15 @@ install-ps1-test: ## CI gate: the Windows installer never closes the session, an
 	PWSH="$${PWSH:-$$(command -v pwsh || ls -d .dev/tools/pwsh/*/pwsh 2>/dev/null | head -1)}" \
 		bash scripts/tests/install-ps1-wsl-encoding/run.sh
 
+# install-path-test RUNS THE REAL INSTALLER against a real artifact: scripts/tests/install-path
+# packages a build in the release's exact asset shape, serves it over HTTP, and runs scripts/install.sh
+# against it end to end. It needs no network, no Docker and no release — which is the point, because the
+# install path was previously exercised only by a user, and a broken installer reached two published
+# releases that way. It covers the POSIX installer; install.ps1's WSL path needs a Windows runner (its
+# offline behaviour is covered by install-ps1-test).
+install-path-test: ## Run the real installer against a locally-served artifact (no network, no Docker)
+	bash scripts/tests/install-path/run.sh
+
 # --- Frontend --------------------------------------------------------------
 .PHONY: fe-install fe-dev fe-build fe-lint fe-test docs-check site-check
 fe-install: ## Install frontend dependencies
@@ -642,7 +651,7 @@ install-uninstall: ## Uninstall Orchicon via the install script
 # gate and run in the fe CI job. `ci` is the local convenience union.
 .PHONY: ci ci-go
 # CROSS-PLATFORM COMPILE GATE. The platforms and flags are EXACTLY the release matrix's
-# (release.yml: linux/darwin/windows on amd64+arm64, CGO_ENABLED=0, the two shipped binaries), because
+# (release.yml: linux/darwin on amd64+arm64, CGO_ENABLED=0, the two shipped binaries), because
 # a gate that compiles a different set from the one shipped is a gate that can pass while the release
 # fails — which is precisely what happened.
 #
@@ -654,11 +663,11 @@ install-uninstall: ## Uninstall Orchicon via the install script
 # Windows, so no amount of running them would have caught it. Compiling for the shipped platforms is
 # the only check that does.
 #
-# Output goes to a temp directory: this is a COMPILE check, not a build, and dropping six pairs of
+# Output goes to a temp directory: this is a COMPILE check, not a build, and dropping four pairs of
 # binaries into the repo root would leave them behind.
 #
 # THE CACHE GOES THE SAME WAY AS THE BINARIES — and its absence is why the dev cache reached 71 GB.
-# This gate compiles SIX platforms, and each platform's package archives are ~130 MB, so ONE
+# This gate compiles FOUR platforms, and each platform's package archives are ~130 MB, so ONE
 # `make ci-go` (and therefore one `make rebuild-dev`) wrote TENS OF GB into the shared dev GOCACHE.
 # Those artifacts are worthless to the dev loop — nothing on an amd64 dev host ever links a
 # windows/arm64 archive — but they are not free: they are what filled the disk.
@@ -669,10 +678,14 @@ install-uninstall: ## Uninstall Orchicon via the install script
 # THE SOURCE; `make cache-trim` bounds whatever is left.
 #
 # The cost is measured, not assumed: a COLD cross-compile of the two shipped binaries for one
-# platform takes ~21s and writes ~1.1 GB, so all six from a clean cache is a couple of minutes of
-# CPU — paid once per gate run, in exchange for a shared cache that no longer carries ~44% foreign
-# bytes.
-CROSS_PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
+  # platform takes ~21s and writes ~1.1 GB, so all four from a clean cache is a couple of minutes of
+  # CPU — paid once per gate run, in exchange for a shared cache that no longer carries foreign bytes.
+  #
+  # WINDOWS IS NOT HERE, deliberately: no Windows artifact ships any more (nothing consumed one — see
+  # release.yml), so there is nothing for a Windows compile to protect. The incident below is still
+  # worth reading, because it is why this list is derived from the RELEASE MATRIX rather than picked
+  # by hand.
+  CROSS_PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 .PHONY: cross-compile
 cross-compile: ## Compile the shipped binaries for every release platform (catches platform-specific breaks)
 	@set -e; tmp="$$(mktemp -d)"; xcache="$$(mktemp -d)"; \
@@ -689,7 +702,7 @@ cross-compile: ## Compile the shipped binaries for every release platform (catch
 # two script gates (cache-trim-test, disk-report-test) and develop added install-ps1-test. They
 # are independent, so the union is the correct resolution — dropping either side would silently
 # retire a gate that other work depends on.
-ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test cache-trim-test disk-report-test cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
+ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test cache-trim-test disk-report-test cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
 ci: ci-go fe-lint fe-test site-check ## Run the full CI gate locally (Go + frontend + landing page)
 
 .PHONY: tui-pty-gate
