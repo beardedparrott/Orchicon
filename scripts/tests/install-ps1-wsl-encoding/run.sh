@@ -111,7 +111,17 @@ if [ -n "$execmode" ]; then
   # apart, AT THE INTERFACE IT ACTUALLY USES: it asks `docker version --format`
   # for a daemon and `command -v docker` for a CLI. Emulating here rather than by
   # hiding a real docker on PATH keeps the guest's coreutils intact.
-  guest="${@:$skip}"
+  # The program is the LAST argument (`wsl -e bash -lc <program>`); `"${@:$skip}"` would also carry the
+  # `-lc` and defeat an anchored match.
+  guest="${!#}"
+  # THE GUEST PROGRAM MAY TRAVEL BASE64-ENCODED (`printf %s <payload> | base64 -d | bash`), so decode it
+  # before matching: the emulation below is about the SCRIPT the installer wrote, not about the wrapper
+  # that carries it. Matching the wrapper is how this emulation silently stopped applying when the
+  # transport changed — the "no docker" cases reverted to the real docker stand-in and two assertions
+  # failed for a reason that had nothing to do with docker.
+  if [[ "$guest" =~ ^printf\ %s\ ([A-Za-z0-9+/=]+)\ \|\ base64\ -d\ \|\ bash$ ]]; then
+    guest="$(printf '%s' "${BASH_REMATCH[1]}" | base64 -d)"
+  fi
   case "$guest" in
     *"command -v docker"*)
       if [ "${EMU_NO_DOCKER:-}" = "1" ]; then exit 1; fi
@@ -135,7 +145,14 @@ if [ -n "$execmode" ]; then
   # records: the operator's install died on `TMP="$(mktemp -d)"` arriving as `-d)`. Recording the text
   # makes that contract assertable rather than assumed.
   if [ -n "${EMU_RECORD:-}" ]; then
-    printf '%s' "${cmd[$(( ${#cmd[@]} - 1 ))]}" > "$EMU_RECORD"
+    last="${cmd[$(( ${#cmd[@]} - 1 ))]}"
+    # The guest program travels base64-encoded (`printf %s <payload> | base64 -d | bash`), so record the
+    # DECODED script — that is the text the script-writing caller is asserting about.
+    if [[ "$last" =~ ^printf\ %s\ ([A-Za-z0-9+/=]+)\ \|\ base64\ -d\ \|\ bash$ ]]; then
+      printf '%s' "${BASH_REMATCH[1]}" | base64 -d > "$EMU_RECORD"
+    else
+      printf '%s' "$last" > "$EMU_RECORD"
+    fi
     exit 0
   fi
   if [ "$execmode" = "argv" ]; then

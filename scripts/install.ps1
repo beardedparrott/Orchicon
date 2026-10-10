@@ -227,19 +227,59 @@ function Invoke-WslCapture {
 
 # --- WSL helpers ------------------------------------------------------------
 
+# --- Script transport -------------------------------------------------------
+#
+# ConvertTo-BashPayload encodes a script for the trip into the distro.
+#
+# THIS IS THE FIX FOR A BUG THAT SURVIVED TWO WRONG DIAGNOSES, so the mechanism is worth stating exactly.
+# Windows PowerShell 5.1 does NOT escape embedded double quotes when it flattens an argument into a
+# native command line, so wsl.exe consumed every quote in a script as an ARGUMENT DELIMITER and dropped it
+# before bash saw anything. The guest then ran a different program from the one we wrote - measured on a
+# real Windows box, a TMP assignment with a quoted command substitution arrived as a bare `-d)` and the
+# install died with "unexpected EOF while looking for matching )".
+#
+# THE PATHS THAT WORKED HAD NO DOUBLE QUOTES IN THEIR COMMAND, which is what made this look like a
+# difference between the two helpers: the Docker check is single-quoted (`--format '{{...}}'`), so it
+# never touched the hazard. EVERY script-carrying path here has quotes in it - install, uninstall, clean,
+# force-clean, verify, the PATH probe - and every one of them was broken on 5.1, whichever helper ran it.
+#
+# Base64's alphabet (A-Za-z0-9+/=) contains no quote, no backslash, no space and no shell metacharacter,
+# so the payload cannot be mangled in transit and needs no escaping at either end. Line endings are
+# normalised to LF first: these scripts are authored on Windows, and a carriage return on every line
+# would reach bash as a literal CR inside commands.
+function ConvertTo-BashPayload {
+    param([string]$Script)
+    $lf = $Script -replace "`r`n", "`n" -replace "`r", "`n"
+    return [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($lf))
+}
+
+# WslBashArgs builds the wsl argv that runs $Script inside the target distro.
+#
+# ONE PLACE BUILDS IT, so the capturing and streaming helpers cannot drift in how they hand the guest its
+# program - which is exactly the divergence that hid the real bug for two rounds.
+#
+# `-e` IS STILL REQUIRED, for the other half of the same problem: without it wsl re-parses the command
+# through the distro's default shell, which expands $ARCHIVE/$TMP as empty before the target bash sees
+# them (tar got an empty path). `-e` protects the command from the DISTRO's shell; the encoding protects
+# the script from WINDOWS POWERSHELL. Both are needed.
+#
+# THE EXIT CODE SURVIVES THE PIPE: without `pipefail` a pipeline reports its LAST command's status, and
+# `bash` is last, so the script's own exit code is what reaches $LASTEXITCODE.
+function WslBashArgs {
+    param([string]$Script)
+    $guest = "printf %s " + (ConvertTo-BashPayload $Script) + " | base64 -d | bash"
+    if ($script:Distro) {
+        return @("-d", $script:Distro, "-e", "bash", "-lc", $guest)
+    }
+    return @("-e", "bash", "-lc", $guest)
+}
+
 # Run a bash script inside the target WSL distro. The script's output is the
 # function's output; $LASTEXITCODE carries its exit code (PowerShell sets it
 # automatically after the native `wsl` call, so callers read it afterwards).
 function Invoke-WslBash {
     param([string]$Script)
-    # `-e` is required: without it wsl re-parses the command through the
-    # distro's default shell, which expands $ARCHIVE/$TMP/$# as empty before
-    # the target bash sees them (tar got an empty path). `-e` execs with argv
-    # preserved.
-    if ($script:Distro) {
-        return (Invoke-WslCapture -WslArgs @("-d", $script:Distro, "-e", "bash", "-lc", $Script))
-    }
-    return (Invoke-WslCapture -WslArgs @("-e", "bash", "-lc", $Script))
+    return (Invoke-WslCapture -WslArgs (WslBashArgs $Script))
 }
 
 # Run a bash script inside the target WSL distro with its output STREAMED to this
@@ -280,34 +320,9 @@ function Invoke-WslBashLive {
     $env:WSL_UTF8 = "1"
     try {
         try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
-        # THE SAME SPLATTED-ARRAY CALL THE CAPTURING PATH USES, and that is the fix rather than a style
-        # choice. This function originally wrote the arguments INLINE (`& wsl -d $Distro -e bash -lc
-        # $Script`) and it broke every script containing double quotes — which is every real script here.
-        #
-        # WHAT THE OPERATOR SAW, on Windows PowerShell 5.1:
-        #
-        #   -d)
-        #   trap 'rm -rf $TMP' EXIT
-        #   tar -xzf $ARCHIVE -C $TMP
-        #   BIN=$(find: -c: line 5: unexpected EOF while looking for matching `)'
-        #   install inside WSL failed (exit 2)
-        #
-        # Every `"` had been stripped from the script before bash saw it — `TMP="$(mktemp -d)"` arrived
-        # as `-d)`, `"$TMP"` as `$TMP` — so the guest parsed a script that was no longer the one we sent.
-        # `Invoke-WslBash` hands the SAME scripts to the SAME distro through a splatted array and has
-        # never done this, which is why the capture path kept working while this one failed on the first
-        # complex script. The difference is the argument form, so the form is unified.
-        #
-        # IT IS TESTED AS A WIRING INVARIANT, because this harness cannot reproduce the fault: it runs
-        # pwsh 7 on Linux, where both forms deliver the text intact (verified — the two forms produce
-        # byte-identical argv there). Windows PowerShell 5.1's native-argument quoting is the difference,
-        # so what a test CAN pin is that both functions keep using the form that is proven in the field.
-        # See scripts/tests/install-ps1-wsl-encoding/harness.ps1 [12].
-        if ($script:Distro) {
-            $WslArgs = @("-d", $script:Distro, "-e", "bash", "-lc", $Script)
-        } else {
-            $WslArgs = @("-e", "bash", "-lc", $Script)
-        }
+        # SPLAT A VARIABLE: PowerShell cannot splat an inline expression, and `& wsl $WslArgs` would
+        # hand wsl the whole ARRAY as a single argument.
+        $WslArgs = WslBashArgs $Script
         & wsl @WslArgs
     } finally {
         try { [Console]::OutputEncoding = $prevEncoding } catch { }
@@ -665,7 +680,12 @@ true
     # --- Build download URL -----------------------------------------------------
     # Windows runs the LINUX binary inside WSL2 — never the Windows asset.
     $asset = "orchicon_$($Version -replace '^v','')_linux_$arch.tar.gz"
-    $url = "https://github.com/$GitHubOwner/$GitHubRepo/releases/download/$Version/$asset"
+    # WHERE THE ASSETS COME FROM, overridable on purpose and for the same reason the shell installer's is:
+    # it is what lets the install path be exercised against a locally-served artifact (a test) or a
+    # pre-release channel (`-Version edge`, which the default base already serves), rather than only the
+    # published release.
+    $baseUrl = if ($env:ORCHICON_INSTALL_BASE_URL) { $env:ORCHICON_INSTALL_BASE_URL } else { "https://github.com/$GitHubOwner/$GitHubRepo/releases/download" }
+    $url = "$baseUrl/$Version/$asset"
 
     # --- Download (Windows side; WSL sees it via /mnt/<drive>) -------------------
     if ($DryRun) {

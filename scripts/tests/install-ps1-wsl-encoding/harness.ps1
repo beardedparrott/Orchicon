@@ -253,21 +253,20 @@ $src = Get-Content -Raw $Installer
 Check "the halt sentinel is still a throw/catch PAIR" ((($src -split "OrchiconInstallHalt").Count - 1) -eq 2) "occurrences: $(($src -split 'OrchiconInstallHalt').Count - 1)"
 
 # --- 12. THE SCRIPT MUST REACH THE GUEST AS WRITTEN -------------------------
-# The install scripts are multi-line bash WITH DOUBLE QUOTES, and a caller that mangles them sends a
-# script that parses to something else. That shipped: Invoke-WslBashLive wrote its arguments INLINE
-# (`& wsl -d $D -e bash -lc $Script`) and on Windows PowerShell 5.1 every `"` was stripped, so
-# `TMP="$(mktemp -d)"` arrived as `-d)` and the operator's install died with
-# `unexpected EOF while looking for matching ')'`. Invoke-WslBash hands the SAME scripts to the SAME
-# distro through a SPLATTED ARRAY and never did it.
+# The install and uninstall scripts are multi-line bash WITH DOUBLE QUOTES, and Windows PowerShell 5.1
+# does not escape embedded quotes when it builds a native command line — so wsl.exe ate every quote as an
+# argument delimiter and the guest ran a DIFFERENT PROGRAM. Measured on a real Windows box, a quoted
+# `mktemp` assignment arrived as a bare `-d)` and the install died with "unexpected EOF while looking for
+# matching )" — while the Docker check (single-quoted, so quote-free) kept working. That asymmetry sent
+# two rounds of diagnosis down the wrong path (capture-vs-live, then splat-vs-inline); the real variable
+# is whether the script contains a quote. The transport is now base64, whose alphabet has no quote.
 #
-# TWO ASSERTIONS, because the fault is platform-specific and this harness is pwsh 7 on Linux:
-#   * (a) THE CONTRACT — the text the guest receives still contains its quotes. This fails on any
-#     platform where mangling happens (a Windows CI runner, if one is ever added).
-#   * (b) THE WIRING — both functions keep using the splatted-array form. THIS is the one that catches
-#     the regression TODAY, because Linux pwsh delivers both forms intact (measured: byte-identical
-#     argv), so (a) alone would pass on the broken code. It is a source assertion for the same reason
-#     the other wiring checks in this repo are: the property is in HOW the call is made, and no
-#     behavioural test available on this host can see the difference.
+# TWO ASSERTIONS, and they cover what can and cannot be seen from this host:
+#   * THE CONTRACT — the script the guest RECEIVES is byte-identical to what the caller wrote. This is a
+#     real round trip through the encoding, decodable here, so it is a genuine behavioural test.
+#   * THE HAZARD IS ABSENT — the command handed to wsl contains no double quote at all. If someone
+#     "simplifies" the transport back to an inline script, this fails even though the round trip above
+#     would still pass (pwsh 7 on Linux delivers both forms intact — measured; only 5.1 mangles).
 Say ""
 Say "[12] the script reaches the guest as written"
 
@@ -275,41 +274,48 @@ $record = Join-Path $Work "received-script.txt"
 $prevRecord = $env:EMU_RECORD
 $env:EMU_RECORD = $record
 try {
-  $quoted = @'
+  # Quotes, command substitution, a quoted pipeline, a SIGKILL builtin, an apostrophe — the shapes that
+  # the real scripts use and that a quote-eating transport destroys.
+  $original = @'
 set -euo pipefail
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-BIN="$(find "$TMP" -type f -name orchicon | head -1)"
+BIN="$(find "$TMP" -type f -name orchicon -perm -u+x 2>/dev/null | head -1)"
+echo "found: $BIN" | grep -q . || true
 '@
   $script:Distro = "Ubuntu"
-  Invoke-WslBashLive $quoted | Out-Null
+  Invoke-WslBashLive $original | Out-Null
 } finally {
   if ($null -eq $prevRecord) { Remove-Item Env:EMU_RECORD -ErrorAction SilentlyContinue }
   else { $env:EMU_RECORD = $prevRecord }
 }
+# LF-normalised on the way in, so the expected text is the original with CRLF folded away.
+$expected = $original -replace "`r`n", "`n"
 $received = if (Test-Path $record) { [System.IO.File]::ReadAllText($record) } else { "" }
-Check "the guest receives the script's double quotes intact" ($received -match [regex]::Escape('TMP="$(mktemp -d)"')) `
-  ("got: " + (($received -split "`n" | Select-Object -First 3) -join " / "))
-Check "and the quoted command substitution survives whole" ($received -match [regex]::Escape('"$(find "$TMP" -type f -name orchicon | head -1)"'))
+Check "the guest receives the script BYTE-IDENTICAL to what was written" `
+  ([string]::Equals($received, $expected, [System.StringComparison]::Ordinal)) `
+  ("received " + $received.Length + " chars, expected " + $expected.Length +
+   "; first diff at " + $(if ($received -eq $expected) { "none" } else {
+     $n = 0; while ($n -lt [Math]::Min($received.Length, $expected.Length) -and $received[$n] -eq $expected[$n]) { $n++ }
+     "index $n" }))
+Check "its double quotes survive (the exact thing 5.1 stripped)" `
+  ($received -match [regex]::Escape('TMP="$(mktemp -d)"'))
 
-# (b) The wiring. Both helpers must go through an argument ARRAY, which is the form proven against
-# Windows PowerShell 5.1's native-argument quoting; an inline `bash -lc $Script` is the shape that broke.
-$liveSrc = ($funcs | Where-Object Name -eq "Invoke-WslBashLive").Extent.Text
-$capSrc = ($funcs | Where-Object Name -eq "Invoke-WslBash").Extent.Text
-# COMMENTS ARE STRIPPED FIRST. The function's own note QUOTES the inline form it replaced (that is the
-# point of the note), so a naive source match would find the regression described in prose and fail on
-# the documentation rather than on the code.
-$liveCode = (($liveSrc -split "`n") | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
-$capCode = (($capSrc -split "`n") | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
-Check 'Invoke-WslBashLive passes the script via an argument ARRAY, not inline' `
-  (($liveCode -match '\$WslArgs\s*=\s*@\(') -and ($liveCode -match '@WslArgs')) `
-  'the splatted form is the one proven in the field; an inline argument list strips quotes under PS 5.1'
-Check 'Invoke-WslBashLive does not build an inline wsl command line (comments excluded)' `
-  ($liveCode -notmatch '&\s*wsl\s+-\S') `
-  'an inline argument list is the regression'
-Check 'Invoke-WslBash still uses the array form (both paths agree)' `
-  ($capCode -match '@\("\-d"') `
-  'the two helpers must hand the guest its argv the same way' 
+# The hazard check: what is handed to wsl must contain no double quote, wherever the script came from.
+$liveCode = (($funcs | Where-Object Name -eq "Invoke-WslBashLive").Extent.Text -split "`n" |
+  Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+$capCode = (($funcs | Where-Object Name -eq "Invoke-WslBash").Extent.Text -split "`n" |
+  Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+$builder = ($funcs | Where-Object Name -eq "WslBashArgs").Extent.Text
+Check 'both helpers build their argv through the ONE builder (WslBashArgs)' `
+  (($liveCode -match 'WslBashArgs \$Script') -and ($capCode -match 'WslBashArgs \$Script')) `
+  'a second, hand-built argv is how the transport drifted before'
+Check 'neither helper passes the script inline as an argument' `
+  (($liveCode -notmatch '"\s*,\s*\$Script') -and ($capCode -notmatch '"\s*,\s*\$Script')) `
+  'an inline `bash -lc $Script` puts the quotes back on the command line'
+Check 'the builder encodes the script (base64) rather than passing it raw' `
+  ($builder -match 'ConvertTo-BashPayload' -and $builder -match 'base64 -d') `
+  'the payload alphabet is the reason nothing can be mangled in transit'
 
 Say ""
 if ($Fail.Count -eq 0) { Say "RESULT: all assertions passed" }
