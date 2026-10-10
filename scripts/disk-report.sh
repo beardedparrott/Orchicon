@@ -19,7 +19,27 @@
 #
 # METHOD — and it is a subtraction, so it is worth being exact about:
 #
-#     pinned  ~=  btrfs "Data used"  -  du(allocated) of every live file
+#     pinned  ~=  btrfs "Data used"  -  du of every live file
+#
+# AND THAT SECOND TERM IS APPARENT SIZE, NOT ALLOCATED — which on a compressing
+# filesystem makes the subtraction one-sided. btrfs reports st_blocks as the file's
+# APPARENT size, so `du`, `ls -ls` AND `btrfs filesystem du` all agree on a number
+# that is not what the file occupies. Measured here, 1 GiB of zeros against
+# compress=zstd:3:
+#
+#     du -s --block-size=1   1073741824   <- apparent
+#     ls -ls  (st_blocks)     1048576 KiB <- apparent
+#     btrfs filesystem du    1073741824   <- apparent
+#     df delta                  18.7 MiB  <- the truth
+#
+# Every one of the first three is 57x the real allocation. So `live` OVERSTATES
+# physical live data wherever compression bites, and `pinned` is therefore a LOWER
+# bound — the snapshots hold at least that much. This is detected (a compress=
+# mount option) and stated in the report rather than silently understating.
+#
+# There is no unprivileged way to measure live physical bytes: `compsize` is the
+# exact tool and it needs root. The trustworthy figure is therefore a DELTA — what
+# `df` does after one snapshot is deleted — and that is what the runbook asks for.
 #
 # The live side walks EVERY mount of the device with `du -x`, and both halves of
 # that matter. On btrfs each subvolume gets its own anonymous st_dev, so -x stops
@@ -30,12 +50,16 @@
 # live or snapshot. `du` counts only what live files reference. The difference
 # is data that exists solely because a snapshot holds it. Three honest limits:
 #
-#   * Filesystem METADATA (inodes, b-tree nodes) is invisible to `du`, so it is
-#     excluded from BOTH sides and reported separately. Folding it in would
-#     overstate the pinned figure by the whole metadata size.
+#   * COMPRESSION, as above: `live` overstates, so `pinned` comes out LOW.
 #   * COVERAGE. If the path set does not span the filesystem, `du` undercounts
 #     live data and the pinned figure is an UPPER bound. The report says which
 #     case it is rather than presenting a bound as a measurement.
+#   * UNREADABLE paths. `du` cannot read them, so `live` again undercounts and
+#     `pinned` comes out HIGH. This pushes the opposite way to compression, so
+#     the two can partially cancel and the figure is an ESTIMATE, not a bound.
+#   * Filesystem METADATA (inodes, b-tree nodes) is invisible to `du`, so it is
+#     excluded from BOTH sides and reported separately. Folding it in would
+#     overstate the pinned figure by the whole metadata size.
 #   * DELETED-BUT-OPEN files also pin extents, and this cannot see them. If the
 #     numbers look wrong, check the space against `lsof +L1` before trusting the
 #     subtraction.
@@ -103,11 +127,17 @@ fi
 fstype=""
 src=""
 MNT="$TARGET"
+COMPRESSED=0
 if command -v findmnt >/dev/null 2>&1; then
 	fstype=$(findmnt -no FSTYPE --target "$TARGET" 2>/dev/null || true)
 	src=$(findmnt -no SOURCE --target "$TARGET" 2>/dev/null || true)
 	m=$(findmnt -no TARGET --target "$TARGET" 2>/dev/null || true)
 	[ -n "$m" ] && MNT="$m"
+	# A compress= mount option means du is reporting apparent, not allocated, for
+	# everything that compresses — see the header. `compress-force=` matches too.
+	case "$(findmnt -no OPTIONS --target "$TARGET" 2>/dev/null || true)" in
+	*compress*) COMPRESSED=1 ;;
+	esac
 fi
 
 # --- capacity ---------------------------------------------------------------
@@ -233,8 +263,10 @@ if [ -n "$data_used" ]; then
 fi
 
 if [ "$RAW" = 1 ]; then
-	printf 'fstype=%s data_used=%s metadata_used=%s live=%s pinned=%s coverage=%s\n' \
-		"${fstype:-unknown}" "${data_used:-}" "${meta_used:-}" "$live" "${pinned:-}" "$coverage"
+	printf 'fstype=%s compressed=%s data_used=%s metadata_used=%s live=%s pinned=%s is_lower_bound=%s coverage=%s\n' \
+		"${fstype:-unknown}" "$([ "$COMPRESSED" = 1 ] && echo yes || echo no)" \
+		"${data_used:-}" "${meta_used:-}" "$live" "${pinned:-}" \
+		"$([ "$COMPRESSED" = 1 ] && echo yes || echo no)" "$coverage"
 	exit 0
 fi
 
@@ -274,11 +306,32 @@ fi
 
 echo "  ----------------------------------------------"
 if [ "$pinned" -gt 0 ]; then
-	row "pinned ~" "$(human "$pinned")   $(pct "$pinned" "$data_used")% of data used"
+	if [ "$COMPRESSED" = 1 ]; then
+		# One-sided error, so say which side. Never print a bare number the reader
+		# will take for the whole story on a filesystem that compresses.
+		row "pinned ~" ">= $(human "$pinned")   $(pct "$pinned" "$data_used")% of data used, AT LEAST"
+	else
+		row "pinned ~" "$(human "$pinned")   $(pct "$pinned" "$data_used")% of data used"
+	fi
 else
 	row "pinned ~" "0 B   no snapshot overhead detected"
 fi
 echo
+
+if [ "$COMPRESSED" = 1 ]; then
+	cat <<-EOF
+	  ⚠ This filesystem mounts with compression, so the figure above is a
+	    LOWER BOUND: the snapshots hold at least that much.
+	    btrfs reports st_blocks as a file's apparent size, so du — and ls -ls,
+	    and btrfs filesystem du — all overstate anything that compresses.
+	    Measured here: 1 GiB of zeros reads as 1 GiB from all three while
+	    occupying 18.7 MiB on disk (compress=zstd:3). Live data is therefore
+	    overstated, so pinned comes out low.
+	    The exact tool is compsize, which needs root. Short of that, the
+	    trustworthy number is a DELTA: delete one snapshot and watch df.
+	EOF
+	echo
+fi
 
 if [ "$coverage" = "partial" ]; then
 	echo "  ⚠ The path set does not span the filesystem, so live data is"
@@ -290,10 +343,20 @@ fi
 if [ -n "$unreadable" ]; then
 	# Cap the detail. Every walk has its own unreadable corners on a real machine (mode-000
 	# dirs, root-owned snapshot dirs, container overlay layers), and a wall of paths buries
-	# the one line that matters: pinned is an upper bound, not a measurement.
+	# Cap the detail. Every walk has its own unreadable corners on a real machine (mode-000
+	# dirs, root-owned snapshot dirs, container overlay layers), and a wall of paths buries
+	# the one line that matters.
+	#
+	# WORDING MATTERS HERE. This error and the compression one push in OPPOSITE
+	# directions, and an earlier version of this block called live data "a LOWER
+	# BOUND" directly beneath a block saying compression makes it an OVERSTATEMENT.
+	# Both statements were true and the report read as self-contradictory. Say which
+	# way each pushes, and name the net effect: an estimate.
 	n_bad=$(printf '%s\n' $unreadable | grep -c . || true)
-	echo "  ⚠ Not everything was readable, so LIVE DATA IS A LOWER BOUND and PINNED"
-	echo "    is an upper bound. du could not read ${n_bad} path(s), including:"
+	echo "  ⚠ Not everything was readable (${n_bad} path(s)) — this pushes the OTHER way:"
+	echo "    du undercounts live data, so pinned is OVERSTATED. With compression also in"
+	echo "    play the two errors partially cancel, so read the figure as an ESTIMATE and"
+	echo "    act on the df delta. du could not read, for example:"
 	printf '%s\n' $unreadable | head -4 | sed 's/^/      /' || true
 	echo "    Re-run with privileges (sudo) for the exact figure."
 	echo

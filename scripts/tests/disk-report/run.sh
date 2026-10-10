@@ -23,7 +23,14 @@
 #   4. Unreadable paths swallowed. A `du` that fails on a subdirectory still
 #      prints a total. Keeping that total silently reports live data that does
 #      not exist — inflating pinned exactly when permissions are the cause.
-#   5. Exit codes lost. A missing target or a bad flag must not exit 0.
+#   5. Compression mistaken for ordinary data. btrfs reports st_blocks as the
+#      APPARENT size, so du (and ls -ls, and btrfs filesystem du) overstate every
+#      file that compresses — 1 GiB of zeros reads as 1 GiB while occupying
+#      18.7 MiB. The subtraction's second term is therefore too big and `pinned`
+#      comes out LOW: it is a LOWER bound, and a report that prints it as a plain
+#      figure argues there is less snapshot overhead than there is. This is the
+#      one error that made the tool understate the very thing it exists to show.
+#   6. Exit codes lost. A missing target or a bad flag must not exit 0.
 #
 # The INPUTS are faked — `findmnt`, `df` and `btrfs` shimmed on PATH — so the
 # assertions are exact and no real filesystem accounting is read. `du` is the
@@ -96,6 +103,7 @@ cat > "$FAKEBIN/findmnt" <<'FAKE'
 args="$*"
 case "$args" in
   *FSTYPE*) echo "${FAKE_FSTYPE:-btrfs}"; exit 0 ;;
+  *OPTIONS*) echo "${FAKE_OPTIONS:-rw,noatime}"; exit 0 ;;
   *SOURCE*) echo "${FAKE_SOURCE:-/dev/fake0[/@fake]}"; exit 0 ;;
 esac
 # the `-no TARGET --target <path>` call: report the mountpoint
@@ -199,6 +207,37 @@ run --raw "$FIX"
 check "live sums every mount df names" "$((LIVE_EXP + SECOND_EXP))" "$(kv "$OUT" live)"
 check "coverage still complete" "complete" "$(kv "$OUT" coverage)"
 unset FAKE_NESTED_MOUNT
+
+# --- 3c. compression makes `pinned` a LOWER bound, and must be labelled ------ 
+# A compress= mount option means du is reporting apparent bytes, so the live side
+# is too big and pinned is at least the value printed. Printing it bare is how the
+# tool understates the thing it exists to measure.
+echo "--- compression: pinned is a lower bound ---"
+FAKE_OPTIONS="rw,noatime,compress=zstd:3"
+export FAKE_OPTIONS
+run --raw "$FIX"
+check "compression detected from mount options" "yes" "$(kv "$OUT" compressed)"
+check "pinned is flagged a lower bound" "yes" "$(kv "$OUT" is_lower_bound)"
+run "$FIX"
+check "human report says LOWER BOUND" "0" "$RC"
+check_contains "names it a lower bound" "$OUT" "LOWER BOUND"
+check_contains "shows it as a lower bound, not a bare figure" "$OUT" "AT LEAST"
+check_contains "explains apparent vs allocated" "$OUT" "apparent size"
+
+# compress-force= must be caught too, and a NON-compressing mount must not be
+# labelled — a false lower-bound claim would under-sell a real figure.
+FAKE_OPTIONS="rw,noatime,compress-force=zstd:9"
+export FAKE_OPTIONS
+run --raw "$FIX"
+check "compress-force is detected too" "yes" "$(kv "$OUT" compressed)"
+
+FAKE_OPTIONS="rw,noatime,ssd"
+export FAKE_OPTIONS
+run --raw "$FIX"
+check "no compress option -> not flagged" "no" "$(kv "$OUT" compressed)"
+run "$FIX"
+# grep -c prints 0 on no match; asserting "" would be asserting the wrong thing.
+check "no false lower-bound claim" "0" "$(grep -c 'LOWER BOUND' <<< "$OUT" || true)"
 
 # --- 4. partial coverage must be marked an upper bound ----------------------
 echo "--- partial coverage is labelled, not presented as fact ---"

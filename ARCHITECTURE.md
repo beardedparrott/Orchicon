@@ -1183,7 +1183,7 @@ For source-level iteration on the control plane itself, rebuild the image and re
 | `cache-trim` | Bound the Go build cache by **size**, evicting coldest-first, keeping the entries the next build wants. A no-op under the cap (`CACHE_CAP_MB`, default 20 GiB). Preview with `cache-trim cache_dry=1`. Runs automatically at the end of `full-rebuild`. See *The Go build cache* below |
 | `cache-check` | Report the Go build cache size **against the cap**, and whether a trim is due |
 | `cache-trim-test` | CI gate: assert the cache trim's eviction semantics (order, grace window, stop-at-cap, `--dry-run`) and that it refuses to run against a non-cache directory |
-| `disk-report` | Report how much of the filesystem is held by **btrfs snapshots** rather than live files — the number `df` stays silent about. Subtracts `du` of every live file from the filesystem's data in use. Host diagnostic, never called from CI. See *Snapshots, and the space files no longer occupy* below |
+| `disk-report` | Report how much of the filesystem is held by **btrfs snapshots** rather than live files — the number `df` stays silent about. Subtracts `du` of every live file from the filesystem's data in use; on a **compressing** filesystem that second term is apparent size, so the result is a **lower bound** and is labelled one. Host diagnostic, never called from CI. See *Snapshots, and the space files no longer occupy* below |
 | `disk-report-test` | CI gate: assert disk-report's subtraction (metadata excluded, profiles summed), that partial coverage is labelled an upper bound, and that it degrades rather than dies |
 | `clean-docker` | Prune Orchicon's dangling images + its own stopped containers (`--filter label=orchicon-instance`). **Never volumes**: it used to run `docker volume prune -f` host-wide, which removes other projects' data on any machine with more than Orchicon on it |
 | **CI** | |
@@ -1258,9 +1258,16 @@ Measured here by subtracting `du` of every live file from the filesystem's data 
 
 | | |
 |---|---|
-| btrfs data in use | 515.0 GiB |
-| live files (Σ `du -sx` over all 7 mounts) | 172.4 GiB |
-| **held by snapshots, in no live file** | **342.6 GiB — 67%** |
+| btrfs data in use | 422.4 GiB |
+| live files (Σ `du -sx` over all 7 mounts) | 175.1 GiB |
+| **held by snapshots, in no live file** | **≥ 247.9 GiB — 59%** |
+
+**And the decisive experiment, which beats any estimate.** One snapshot was deleted —
+`sudo snapper -c home delete 1`, the Jul 31 one. Free space went **38 GiB → 127 GiB**, and btrfs
+data went **514.5 → 425.6 GiB**: **+89 GiB freed, −88.9 GiB of data extents**. Those agree to the
+byte. That 89 GiB was in no live file — one snapshot was pinning it, and removing the pin
+released it immediately. Anything described on this page as a *theory* about pinned space should
+be read against that measurement.
 
 **Where it comes from.** `/home` is a subvolume of its own (`@home`), and snapper is configured
 for it *and* for `/`. The `home` config takes **hourly** timeline snapshots: `#1` is Jul 31, the
@@ -1271,13 +1278,30 @@ hundreds of gigabytes. The `root` config is *not* a factor: it sets `TIMELINE_CR
 only fires on package operations. **One config, one subvolume, 343 GiB.**
 
 **Seeing it.** `make disk-report` performs the subtraction and prints the pinned figure, with the
-three places it can mislead stated in the output rather than buried: filesystem **metadata** is
-excluded from both sides (`du` cannot see it, and folding it in would overstate the result by
-~25 GiB); **partial coverage** (`--paths`) makes the figure an *upper* bound, and the report says
-so; and anything **unreadable** makes live data a *lower* bound, which the report lists. The live
-side must walk **every** mount of the device with `du -x` — each btrfs subvolume has its own
-`st_dev`, so `-x` stops at the subvolume boundary, which is what makes a per-mount sum correct
-rather than a double count. One mount measured 42 GiB against a real total of 172 GiB.
+places it can mislead stated in the output rather than buried: filesystem **metadata** is excluded
+from both sides (`du` cannot see it, and folding it in would overstate the result by ~10 GiB);
+**partial coverage** (`--paths`) undercounts live data and so overstates the result; anything
+**unreadable** does the same, and is listed. The live side must walk **every** mount of the
+device with `du -x` — each btrfs subvolume has its own `st_dev`, so `-x` stops at the subvolume
+boundary, which is what makes a per-mount sum correct rather than a double count. One mount
+measured 42 GiB against a real total of 172 GiB.
+
+**Compression is the subtlety that bites.** `/home` mounts `compress=zstd:3`, and btrfs reports
+`st_blocks` as a file's **apparent** size — so `du`, `ls -ls` **and** `btrfs filesystem du` all
+overstate anything that compresses. Measured, 1 GiB of zeros against that mount:
+
+| tool | reports | truth |
+|---|---|---|
+| `du -s --block-size=1` | 1 GiB | |
+| `ls -ls` (`st_blocks`) | 1 GiB | |
+| `btrfs filesystem du` | 1 GiB | |
+| `df` delta | | **18.7 MiB** |
+
+That is a 57× overstatement, and it means the subtraction's second term is too large, so `pinned`
+comes out LOW — it is a **lower bound**, and the report labels it as one. There is no
+unprivileged way to measure live physical bytes (`compsize` is the exact tool and needs root), so
+**the number to act on is a DELTA**: delete one snapshot and watch `df`. Every per-snapshot
+"exclusive bytes" figure you can get without root is an upper bound for the same reason.
 
 ```bash
 make disk-report                              # the pinned figure for the current filesystem
@@ -1290,7 +1314,10 @@ scripts/disk-report.sh --raw                  # one key=value line, for scriptin
 
 1. **Bound the retention.** Snapper's timeline limits are the direct control, and the oldest
    retained snapshot is the one that pins the most — it holds the oldest copy of everything
-   deleted since. Needs root.
+   deleted since. Needs root. `~/ai-tools/snapper-prune.sh` does this in one step: it keeps the
+   newest N and deletes the rest oldest-first, dry-run by default, reporting the `df` delta per
+   snapshot so the reclaim is measured rather than predicted. It never touches `#0`, and it
+   refuses `--keep 0`.
 2. **Move regenerable churn off the snapshotted subvolume.** A btrfs snapshot **cannot exclude a
    path** — it is per-subvolume, which is exactly why `/var/cache`, `/var/tmp` and `/var/log` are
    separate subvolumes on this machine. So churn that is *regenerable* (build caches, worktrees,
@@ -1317,6 +1344,10 @@ sudo sh -c 'btrfs filesystem du -s --raw /home/.snapshots/*/snapshot' \
   | tail -n +2 | sort -k2 -n
 
 sudo snapper -c home delete <N>                               # then re-check df
+
+# One shot: keep the newest 3, delete the rest, measuring as it goes.
+~/ai-tools/snapper-prune.sh --keep 3            # dry run (default)
+~/ai-tools/snapper-prune.sh --keep 3 --yes      # do it
 ```
 
 **The glob has to expand as root**, and that is easy to get wrong: `/home/.snapshots` is
