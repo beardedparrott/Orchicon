@@ -1179,12 +1179,16 @@ For source-level iteration on the control plane itself, rebuild the image and re
 | `install-dry-run` | Dry-run the install script (no changes made) |
 | `install-uninstall` | Uninstall Orchicon via the install script |
 | **Hygiene** | |
-| `clean` | Clear the Go build cache (`go clean -cache -testcache -modcache`) + `bin/` |
-| `cache-check` | Report the current Go build cache size |
+| `clean` | Clear the Go build cache (`go clean -cache -testcache -modcache`) + `bin/`. The HAMMER — empties the whole cache, so the next build recompiles everything. Use `cache-trim` for routine hygiene |
+| `cache-trim` | Bound the Go build cache by **size**, evicting coldest-first, keeping the entries the next build wants. A no-op under the cap (`CACHE_CAP_MB`, default 20 GiB). Preview with `cache-trim cache_dry=1`. Runs automatically at the end of `full-rebuild`. See *The Go build cache* below |
+| `cache-check` | Report the Go build cache size **against the cap**, and whether a trim is due |
+| `cache-trim-test` | CI gate: assert the cache trim's eviction semantics (order, grace window, stop-at-cap, `--dry-run`) and that it refuses to run against a non-cache directory |
+| `disk-report` | Report how much of the filesystem is held by **btrfs snapshots** rather than live files — the number `df` stays silent about. Subtracts `du` of every live file from the filesystem's data in use; on a **compressing** filesystem that second term is apparent size, so the result is a **lower bound** and is labelled one. Host diagnostic, never called from CI. See *Snapshots, and the space files no longer occupy* below |
+| `disk-report-test` | CI gate: assert disk-report's subtraction (metadata excluded, profiles summed), that partial coverage is labelled an upper bound, and that it degrades rather than dies |
 | `clean-docker` | Prune Orchicon's dangling images + its own stopped containers (`--filter label=orchicon-instance`). **Never volumes**: it used to run `docker volume prune -f` host-wide, which removes other projects' data on any machine with more than Orchicon on it |
 | **CI** | |
-| `cross-compile` | Compile both shipped binaries for every release platform (linux/darwin/windows × amd64/arm64, `CGO_ENABLED=0`). Catches platform-specific breaks — see *Continuous integration* below |
-| `ci-go` | The Go control-plane gate: lint → gen-check → vet → test → synth-data → rls-check → adapter-bake-guard → **cross-compile**. This is exactly what the `go-ci` workflow job runs |
+| `cross-compile` | Compile both shipped binaries for every release platform (linux/darwin/windows × amd64/arm64, `CGO_ENABLED=0`). Catches platform-specific breaks — see *Continuous integration* below. Builds into a **throwaway `GOCACHE`**: its six-platform output is worthless to a dev host and would otherwise be unreclaimable, so it must never land in the shared cache (see *The Go build cache*) |
+| `ci-go` | The Go control-plane gate: lint → gen-check → vet → test → synth-data → rls-check → adapter-bake-guard → **cache-trim-test** → **disk-report-test** → **cross-compile**. This is exactly what the `go-ci` workflow job runs |
 | `ci` | `ci-go` + `fe-lint` + `fe-test` — the full gate |
 
 ### Code Generation
@@ -1196,6 +1200,170 @@ make gen    # buf generate → api/gen/go + frontend/src/api/gen
 ```
 
 This generates Go handlers and TypeScript Connect-ES clients. Generated code is committed to the repo.
+
+### The Go build cache
+
+The dev build cache (`.dev/tools/gocache`, exported as `GOCACHE` by the Makefile) is what makes
+incremental builds fast, and it is also the largest single thing on a development disk. It reached
+**71.6 GB** once. Two facts explain that, and both had to be fixed:
+
+**Go's own trim cannot bound this cache.** The toolchain's policy
+(`src/cmd/go/internal/cache/cache.go`) is age-based with a hard five-day floor:
+
+```go
+trimInterval = 24 * time.Hour
+trimLimit    = 5 * 24 * time.Hour
+cutoff := now.Add(-trimLimit - mtimeInterval)
+```
+
+At its worst the cache held 99,869 entries and **not one was older than that cutoff**, so a trim
+that had completed 50 minutes earlier reclaimed nothing. An age rule with a five-day floor cannot
+bound a cache that grows ~30 GB in a day. `go clean -cache` is not the answer either — it is
+all-or-nothing, and throws away the hot entries with the cold.
+
+**A six-platform compile gate was feeding it.** `make cross-compile` (run by `ci-go`, and therefore
+by every `full-rebuild`) builds both shipped binaries for linux/darwin/windows on amd64+arm64. The
+per-platform package archives are ~130 MB each, and all of them landed in the shared cache:
+**31.6 GB, 44% of it, was non-native** — artifacts nothing on an amd64 dev host ever links. It is
+now built into a **throwaway `GOCACHE`**, removed by an `EXIT` trap. Measured: the shared cache is
+**byte-identical** across a full `make cross-compile`, at a cost of ~2m16s of CPU per gate run
+(one platform cold-compiles in ~21s / ~1.1 GB from a clean cache).
+
+**What is left is bounded by size.** `make cache-trim` (`scripts/gocache-trim.sh`) evicts
+coldest-mtime-first until the cache fits `CACHE_CAP_MB` (default 20 GiB), never touching anything
+used inside a grace window (default 1h — Go's own `mtimeInterval`, so a build running concurrently
+with the trim cannot have a just-written artifact deleted). It is a no-op under the cap, and it
+runs at the end of `full-rebuild`, so the run that lays down a day of artifacts also bounds them.
+Only `<xx>/<hex>-{a,d}` files are ever candidates — the same set the toolchain's `trimSubdir`
+walks, so `trim.txt`, `README` and any stray file are never touched. It refuses outright to run
+against `/`, `$HOME`, a git repo root, or a non-empty directory that does not look like a cache.
+
+```bash
+make cache-check              # size against the cap, and whether a trim is due
+make cache-trim cache_dry=1   # preview the eviction
+make cache-trim               # enforce the cap
+make cache-trim CACHE_CAP_MB=8192
+make clean                    # the hammer: empty the cache entirely
+```
+
+### Snapshots, and the space files no longer occupy
+
+Cleaning the build cache reclaimed **65.6 GB and freed 7.0 GB**. Nothing had leaked, nothing was
+held open, and `df` agreed with `du` — because on btrfs those two answer different questions, and
+the gap between them is invisible. Copy-on-write keeps an extent alive until the **last**
+reference to it goes, and a snapshot is a reference. Deleting a file frees nothing while a
+snapshot still points at it.
+
+Measured here by subtracting `du` of every live file from the filesystem's data in use:
+
+| | |
+|---|---|
+| btrfs data in use | 422.4 GiB |
+| live files (Σ `du -sx` over all 7 mounts) | 175.1 GiB |
+| **held by snapshots, in no live file** | **≥ 247.9 GiB — 59%** |
+
+**And the decisive experiment, which beats any estimate.** One snapshot was deleted —
+`sudo snapper -c home delete 1`, the Jul 31 one. Free space went **38 GiB → 127 GiB**, and btrfs
+data went **514.5 → 425.6 GiB**: **+89 GiB freed, −88.9 GiB of data extents**. Those agree to the
+byte. That 89 GiB was in no live file — one snapshot was pinning it, and removing the pin
+released it immediately. Anything described on this page as a *theory* about pinned space should
+be read against that measurement.
+
+**Where it comes from.** `/home` is a subvolume of its own (`@home`), and snapper is configured
+for it *and* for `/`. The `home` config takes **hourly** timeline snapshots: `#1` is Jul 31, the
+latest was `#1591` — ≈1,590 in 70 days — while cleanup keeps only ~17. A snapshot pins the
+pre-change version of every file modified or deleted since it was taken, and a home directory
+that churns build caches, container layers and `node_modules` makes seventeen snapshots worth
+hundreds of gigabytes. The `root` config is *not* a factor: it sets `TIMELINE_CREATE="no"` and
+only fires on package operations. **One config, one subvolume, 343 GiB.**
+
+**Seeing it.** `make disk-report` performs the subtraction and prints the pinned figure, with the
+places it can mislead stated in the output rather than buried: filesystem **metadata** is excluded
+from both sides (`du` cannot see it, and folding it in would overstate the result by ~10 GiB);
+**partial coverage** (`--paths`) undercounts live data and so overstates the result; anything
+**unreadable** does the same, and is listed. The live side must walk **every** mount of the
+device with `du -x` — each btrfs subvolume has its own `st_dev`, so `-x` stops at the subvolume
+boundary, which is what makes a per-mount sum correct rather than a double count. One mount
+measured 42 GiB against a real total of 172 GiB.
+
+**Compression is the subtlety that bites.** `/home` mounts `compress=zstd:3`, and btrfs reports
+`st_blocks` as a file's **apparent** size — so `du`, `ls -ls` **and** `btrfs filesystem du` all
+overstate anything that compresses. Measured, 1 GiB of zeros against that mount:
+
+| tool | reports | truth |
+|---|---|---|
+| `du -s --block-size=1` | 1 GiB | |
+| `ls -ls` (`st_blocks`) | 1 GiB | |
+| `btrfs filesystem du` | 1 GiB | |
+| `df` delta | | **18.7 MiB** |
+
+That is a 57× overstatement, and it means the subtraction's second term is too large, so `pinned`
+comes out LOW — it is a **lower bound**, and the report labels it as one. There is no
+unprivileged way to measure live physical bytes (`compsize` is the exact tool and needs root), so
+**the number to act on is a DELTA**: delete one snapshot and watch `df`. Every per-snapshot
+"exclusive bytes" figure you can get without root is an upper bound for the same reason.
+
+```bash
+make disk-report                              # the pinned figure for the current filesystem
+make disk-report DISK_REPORT_TARGET=/mnt/data # some other filesystem
+scripts/disk-report.sh --paths ~/projects     # scoped check (upper bound; labelled as one)
+scripts/disk-report.sh --raw                  # one key=value line, for scripting
+```
+
+**Two levers, and the second is the structural one.**
+
+1. **Bound the retention.** Snapper's timeline limits are the direct control, and the oldest
+   retained snapshot is the one that pins the most — it holds the oldest copy of everything
+   deleted since. Needs root. `~/ai-tools/snapper-prune.sh` does this in one step: it keeps the
+   newest N and deletes the rest oldest-first, dry-run by default, reporting the `df` delta per
+   snapshot so the reclaim is measured rather than predicted. It never touches `#0`, and it
+   refuses `--keep 0`.
+2. **Move regenerable churn off the snapshotted subvolume.** A btrfs snapshot **cannot exclude a
+   path** — it is per-subvolume, which is exactly why `/var/cache`, `/var/tmp` and `/var/log` are
+   separate subvolumes on this machine. So churn that is *regenerable* (build caches, worktrees,
+   container layers) belongs on a subvolume that is not snapshotted, or on another device.
+
+`GOCACHE` and `GOTMPDIR` are already overridable (`?=` at the top of the Makefile), so lever 2
+needs no code change — only a path. Verified end-to-end:
+
+```bash
+GOCACHE=/mnt/storage/orchicon-gocache make test
+```
+
+a real build under that override wrote **430 entries / 34 MB** to the new location and left the
+project cache at **43,403 entries — unchanged**. The override flows through `make`, `cache-check`
+and `cache-trim` alike.
+
+```bash
+# Operator actions — all need root, none are automatable from here.
+sudo snapper list-configs                                     # which configs exist
+sudo snapper -c home list                                     # the snapshots
+
+# Bytes EXCLUSIVE to each snapshot = what deleting that snapshot actually frees.
+sudo sh -c 'btrfs filesystem du -s --raw /home/.snapshots/*/snapshot' \
+  | tail -n +2 | sort -k2 -n
+
+sudo snapper -c home delete <N>                               # then re-check df
+
+# One shot: keep the newest 3, delete the rest, measuring as it goes.
+~/ai-tools/snapper-prune.sh --keep 3            # dry run (default)
+~/ai-tools/snapper-prune.sh --keep 3 --yes      # do it
+```
+
+**The glob has to expand as root**, and that is easy to get wrong: `/home/.snapshots` is
+`drwxr-x--- root:root`, so an unprivileged shell cannot list it and passes the pattern through
+literally, and `btrfs` then reports `No such file or directory` for a path that plainly exists.
+`sudo` does not fix it on its own — `sudo btrfs ... .snapshots/*/snapshot` expands the glob in
+**your** shell before `sudo` runs. Wrapping the whole command in `sh -c` puts the expansion
+inside the root shell. For a glob-free equivalent:
+
+```bash
+sudo find /home/.snapshots -mindepth 2 -maxdepth 2 -name snapshot \
+  -exec btrfs filesystem du -s --raw {} + | tail -n +2 | sort -k2 -n
+```
+
+Note that freeing extents does not necessarily return chunks to `Device unallocated`; free space
+rises regardless, and a `btrfs balance` (IO-heavy, optional) is only needed to reclaim the chunks.
 
 ### Database Migrations
 
