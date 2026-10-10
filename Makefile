@@ -297,6 +297,21 @@ synth-data: ## CI gate: no synthesized data planes in non-test source (ADR-0010)
 adapter-bake-guard: ## CI gate: adapter CLIs are MOUNTED, never baked into image layers (ADR-0003/0005)
 	go test ./internal/runtime/ -run 'TestAdapterCLINeverBaked' -count=1 -v
 
+# install-ps1-test pins the Windows installer's two invisibles, both of which are silent
+# by construction: it must never call `exit` (under `irm … | iex` the file's text runs in
+# the operator's OWN session, so an exit closes the window and takes the diagnosis with
+# it) and its long or interactive steps must STREAM rather than capture (a captured step
+# is indistinguishable from a hang, and a captured PROMPT blocks for ever).
+#
+# It needs pwsh + iconv and no Windows at all: a wsl.exe double carries the contract, and
+# the failure paths are run inside a child pwsh. PWSH=/path/to/pwsh overrides the lookup.
+# This is pwsh 7, NOT Windows PowerShell 5.1 — the 5.1-only behaviours it must avoid (the
+# `2>&1` ErrorRecord trap) are documented in the installer's source instead.
+.PHONY: install-ps1-test
+install-ps1-test: ## CI gate: the Windows installer never closes the session, and streams
+	PWSH="$${PWSH:-$$(command -v pwsh || ls -d .dev/tools/pwsh/*/pwsh 2>/dev/null | head -1)}" \
+		bash scripts/tests/install-ps1-wsl-encoding/run.sh
+
 # --- Frontend --------------------------------------------------------------
 .PHONY: fe-install fe-dev fe-build fe-lint fe-test docs-check site-check
 fe-install: ## Install frontend dependencies
@@ -574,7 +589,7 @@ cross-compile: ## Compile the shipped binaries for every release platform (catch
 	done; \
 	echo "==> all $(words $(CROSS_PLATFORMS)) release platforms compile"
 
-ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
+ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
 ci: ci-go fe-lint fe-test site-check ## Run the full CI gate locally (Go + frontend + landing page)
 
 .PHONY: tui-pty-gate

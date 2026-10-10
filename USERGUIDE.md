@@ -109,19 +109,32 @@ stack therefore runs inside **WSL2**, and the installer orchestrates it:
    missing (Windows 10 21H2+ / Windows 11: run `wsl --install` in an admin shell
    and reboot).
 2. **Docker check inside WSL** — confirms `docker version` works inside the distro
-   (Docker Desktop with WSL2 integration, or Docker Engine installed in the
-   distro) and prints setup steps if not.
+   (Docker Desktop with WSL2 integration, or Docker Engine installed in the distro).
+   When it does not, it says **which** of the three causes you have — no docker CLI in
+   the distro at all, a CLI with no daemon running, or Docker Desktop running with the
+   WSL integration off for this distro — and quotes what the distro itself reported.
 3. **Linux binary** — it downloads the **Linux** release asset
    (`orchicon_<ver>_linux_<arch>.tar.gz`, arch mapped from the Windows processor)
    and installs it inside the distro (default `~/.local/bin`); it never downloads
    the Windows binary.
 4. **One-command setup** — it runs `orchicon install` inside WSL: pull the
    published images, start the runtime daemon, launch the single-container
-   instance, wait for health.
+   instance, wait for health. This is the slow part (minutes on a first install), so
+   every step is named as it starts and the output is **streamed live** rather than
+   replayed at the end. It also asks about the host ports — press ENTER to accept
+   each default.
 5. **Connection info** — WSL2 forwards `localhost`, so it prints the
    Windows-visible URLs: `http://localhost:8080` (control plane) and
    `http://localhost:3002` (Grafana). If the URLs do not answer, check Windows
    Defender Firewall or add a `netsh interface portproxy` port forward.
+
+**The installer never closes your PowerShell window.** Whatever goes wrong it prints
+what failed and the next steps, then returns to the prompt with your session intact —
+a failing install is not a window that vanishes. The whole run is transcribed to
+`%TEMP%\orchicon-install-<timestamp>.log` and that path is printed when the run starts
+(and again if anything halts); `ORCHICON_INSTALL_LOG` picks the file, or `off` disables
+it. If the stack setup fails, the **binary is still installed** and the installer
+prints the exact command that resumes it — a re-run is idempotent.
 
 **Prerequisites:**
 
@@ -143,9 +156,15 @@ whatever path the plane's filesystem (WSL) can resolve.
 container instances and removes the binary; the WSL distro is left intact),
 `-Clean`, `-ForceClean`, `-DryRun`.
 
-> **Not verified on real Windows** — the WSL2 installer ships as-is for testing.
-> The underlying flow (`orchicon install`) is the identical Linux code path
-> exercised on Linux hosts.
+> **Not verified on real Windows** — a full install has not been run end to end on
+> Windows. Its control flow and its failure paths ARE covered by an offline harness
+> (`scripts/tests/install-ps1-wsl-encoding/`, run in CI as the `windows-installer`
+> job): the installer's own functions are exercised against a `wsl.exe` double, and
+> its halts and streamed steps are exercised inside a child PowerShell. Two boundaries
+> stay unverified: Windows PowerShell 5.1 (the harness is pwsh 7 — the one place the
+> two differ is avoided in the source rather than tested) and the happy path after
+> Docker is confirmed. The underlying flow (`orchicon install`) is the identical Linux
+> code path exercised on Linux hosts.
 
 ### Install options
 
