@@ -1,0 +1,154 @@
+name: Canary
+
+# CANARY — THE DEVELOP INSTALL PATH.
+#
+# WHY THIS EXISTS. The installers are the one artifact a USER exercises before we do, and that has cost us
+# twice: a broken installer reached two published releases in a row, and the first detector was an operator
+# running one by hand. `install-path` (see ci.yml) now drives the POSIX installer end to end against a real
+# artifact, but it is deliberately offline and has no WSL2 — so it cannot cover the WINDOWS path, which is
+# exactly where both faults were.
+#
+# SO THIS PUBLISHES WHAT A DEVELOP TEST NEEDS: the current develop code, built into the release's EXACT
+# asset shape, on a moving `canary` PRERELEASE. An operator can then run the REAL installer from develop
+# against REAL artifacts, on their own machine, before anything is released.
+#
+# IT IS NOT A RELEASE, and being a prerelease is what makes that true mechanically: `releases/latest` —
+# which both installers resolve when no version is given — never sees a prerelease, so the normal install
+# path is untouched. release.yml is unaffected too: it triggers on `v*.*.*` tags reachable from main, and
+# `canary` is neither.
+#
+# THE ASSET NAMES ARE STABLE — `orchicon_canary_<os>_<arch>.tar.gz`, no version number — so the command
+# below is a fixed string rather than something to look up after every merge. `canary` IS the version:
+# both installers build `<base>/<version>/orchicon_<version>_<os>_<arch>.tar.gz` and strip a leading `v`,
+# so `canary` resolves to exactly these names.
+#
+#   Windows (PowerShell):
+#     $env:ORCHICON_INSTALL_BASE_URL = "https://github.com/beardedparrott/Orchicon/releases/download"
+#     & ([scriptblock]::Create((irm https://raw.githubusercontent.com/beardedparrott/Orchicon/develop/scripts/install.ps1))) -Version canary
+#
+#   Linux / macOS:
+#     ORCHICON_INSTALL_BASE_URL="https://github.com/beardedparrott/Orchicon/releases/download" \
+#       bash -c "$(curl -fsSL https://raw.githubusercontent.com/beardedparrott/Orchicon/develop/scripts/install.sh)" -- --version canary
+#
+# (The base URL is already the default, so setting it is belt-and-braces — it is named here so the command
+# keeps working if that default ever moves.)
+#
+# TO TEST THE INSTALLER SCRIPT AGAINST A RELEASED VERSION, drop the version flag: the script still comes
+# from develop — which is the point, since the script is what has broken — and the artifacts come from the
+# latest release. That covers changes to the script without needing a canary at all.
+#
+# KEEP THE MATRIX AND THE PACKAGING IN STEP WITH release.yml. They are duplicated rather than shared
+# because release.yml IS the release path and a reusable-workflow refactor of it is a poor trade for four
+# lines; TestCanaryMatchesReleaseMatrix (cmd/orchicon) fails if the platform sets drift apart.
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# One at a time, newest wins: a canary is a moving pointer at develop's tip, so an older run finishing
+# later would overwrite it with older code.
+concurrency:
+  group: canary
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+          - os: linux
+            arch: arm64
+          - os: darwin
+            arch: amd64
+          - os: darwin
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # The SAME build and package shape as release.yml's Package step, with the version replaced by the
+      # literal `canary` — a canary whose archive is shaped differently from a release would test a
+      # different extraction path than the one that ships, which is how a test stops meaning anything.
+      - name: Build and package
+        run: |
+          set -euo pipefail
+          LDFLAGS="-X github.com/beardedparrott/orchicon/internal/version.gitCommit=$(git rev-parse --short HEAD) \
+                   -X github.com/beardedparrott/orchicon/internal/version.gitTag=canary \
+                   -X github.com/beardedparrott/orchicon/internal/version.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          export CGO_ENABLED=0
+          GOOS="${{ matrix.os }}" GOARCH="${{ matrix.arch }}" go build -ldflags "$LDFLAGS" -o orchicon ./cmd/orchicon
+          GOOS="${{ matrix.os }}" GOARCH="${{ matrix.arch }}" go build -ldflags "$LDFLAGS" -o orch ./cmd/orch
+          ASSET="orchicon_canary_${{ matrix.os }}_${{ matrix.arch }}"
+          mkdir -p "$ASSET"
+          cp orchicon orch "$ASSET/"
+          cp README.md LICENSE "$ASSET/" 2>/dev/null || true
+          tar -czf "${ASSET}.tar.gz" "$ASSET"
+          ls -l "${ASSET}.tar.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: canary-${{ matrix.os }}-${{ matrix.arch }}
+          path: orchicon_*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: canary-*
+          merge-multiple: true
+          path: dist
+
+      - name: Publish the canary prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ls -l dist
+          # Move the tag onto the commit being published, so the prerelease provably points at the code it
+          # carries, and `git describe` on that commit names it.
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -f canary "$GITHUB_SHA"
+          git push -f origin canary
+
+          NOTES=$(cat <<'EOF'
+          The current state of **develop**, built into the release asset shape so the REAL installer can be
+          exercised before anything is released. **Not a release** — a prerelease, so `releases/latest`
+          never resolves to it.
+
+          Assets are rebuilt on every merge to develop, and their names are stable, so this command does
+          not change:
+
+          ```
+          Windows:  & ([scriptblock]::Create((irm https://raw.githubusercontent.com/beardedparrott/Orchicon/develop/scripts/install.ps1))) -Version canary
+          POSIX:    curl -fsSL https://raw.githubusercontent.com/beardedparrott/Orchicon/develop/scripts/install.sh | bash -s -- --version canary
+          ```
+
+          The version of the code inside is whatever develop was at the tag — check the commit on this
+          release's tag.
+          EOF
+          )
+
+          if gh release view canary >/dev/null 2>&1; then
+            gh release upload canary dist/*.tar.gz --clobber
+            gh release edit canary --prerelease --title "canary (develop)" --notes "$NOTES"
+          else
+            gh release create canary --prerelease --title "canary (develop)" --notes "$NOTES" dist/*.tar.gz
+          fi
+          gh release view canary --json tagName,isPrerelease -q '"published " + .tagName + " prerelease=" + (.isPrerelease|tostring)'
