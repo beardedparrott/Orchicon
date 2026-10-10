@@ -4177,23 +4177,39 @@ func (m *App) transcriptStatusLine(items []chat.ChatItem) string {
 		// dies, the GUI tells you, but the TUI conversation does not." The shell footer is easy to miss
 		// when reading a transcript, and it is the TRANSCRIPT that looks broken when a reply cannot arrive.
 		return "⚠ disconnected — replies will resume when the plane returns (r retries now)"
-	case m.chatStore.hasPendingConsent(m.chatConvID):
-		// THE CARD IS THE REASON NOTHING IS HAPPENING, AND THE FOOTER MUST SAY SO.
-		//
-		// The activity line below reads the STREAM's silence, so a turn parked on a permission ask rendered as
-		// "Orchicon is contemplating… · no output for 40s — the stream will re-attach if it stays silent": it
-		// blamed the stream and promised a re-attach while the stream was perfectly healthy and the turn was
-		// waiting on the OPERATOR. That is the operator's report, exactly: "I will notice no progress being
-		// made for a long time and if I exit the TUI and relaunch orch, a permissions card is sitting waiting
-		// for me when I relaunch it." The footer never named the card, so there was nothing on the always-
-		// visible row to act on — and the only path that reliably re-presented the card was a fresh attach.
-		//
-		// PRECEDENCE: the CONNECTION still outranks it (a card cannot be answered across a dead plane, which
-		// is what the reconnecting/disconnected arms above are for), and the card outranks the activity line,
-		// whose entire subject is the turn's progress TOWARDS an answer — progress that cannot happen until
-		// the operator answers.
-		return m.cardWaitingLine()
-	case m.runningFor(m.chatConvID):
+	}
+	// THE CARD IS THE REASON NOTHING IS HAPPENING, AND THE FOOTER MUST SAY SO.
+	//
+	// The activity line below reads the STREAM's silence, so a turn parked on a permission ask rendered as
+	// "Orchicon is contemplating… · no output for 40s — the stream will re-attach if it stays silent": it
+	// blamed the stream and promised a re-attach while the stream was perfectly healthy and the turn was
+	// waiting on the OPERATOR. That is the operator's report, exactly: "I will notice no progress being made
+	// for a long time and if I exit the TUI and relaunch orch, a permissions card is sitting waiting for me
+	// when I relaunch it." The footer never named the card, so there was nothing on the always-visible row
+	// to act on — and the only path that reliably re-presented the card was a fresh attach.
+	//
+	// PRECEDENCE: the CONNECTION still outranks it (a card cannot be answered across a dead plane, which is
+	// why the reconnecting/disconnected arms are settled above), and the card outranks the activity line,
+	// whose entire subject is the turn's progress TOWARDS an answer — progress that cannot happen until the
+	// operator answers.
+	//
+	// IT IS AN `if` AND NOT A `case`, AND THAT IS THE WHOLE POINT: A FOOTER IS NOT TEXT, IT IS A BAND.
+	// `cardWaitingLine` can legitimately come back empty — the ask can be answered or settled on the stream
+	// goroutine between the pending test and the line being built — and returning "" here does NOT mean "say
+	// nothing". `screenkit.Detail.footerRows()` turns "" into ZERO rows and any text into TWO, and
+	// `BodyHeightFor` sizes the scrolling body from it, so an empty return RESIZES THE PANE BY TWO ROWS.
+	// The transcript is then re-clamped against a different height, which is a visible jump up or down — and
+	// when the race lands on alternate repaints it is an oscillation, not a one-off. The operator: "the
+	// screen is jumping up and down very fast and it's very disorienting."
+	//
+	// So an empty card line FALLS THROUGH to the ordinary arms below, which yields the same string they
+	// would have produced anyway. The band keeps its shape unless there is genuinely nothing to say.
+	if m.chatStore.hasPendingConsent(m.chatConvID) {
+		if line := m.cardWaitingLine(); line != "" {
+			return line
+		}
+	}
+	if m.runningFor(m.chatConvID) {
 		// THE SERVER'S CLOCK FEEDS THE ROTATING VERB (see turnActivityNotice). ServerTimeSince returns
 		// (0, false) when no heartbeat has arrived yet, and 0 is the selector's "use the first word"
 		// sentinel — the line stays present from the instant the operator hits send.
