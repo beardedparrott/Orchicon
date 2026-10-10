@@ -252,6 +252,65 @@ Check "exactly the two long/interactive steps stream (extract + setup)" ($liveCa
 $src = Get-Content -Raw $Installer
 Check "the halt sentinel is still a throw/catch PAIR" ((($src -split "OrchiconInstallHalt").Count - 1) -eq 2) "occurrences: $(($src -split 'OrchiconInstallHalt').Count - 1)"
 
+# --- 12. THE SCRIPT MUST REACH THE GUEST AS WRITTEN -------------------------
+# The install scripts are multi-line bash WITH DOUBLE QUOTES, and a caller that mangles them sends a
+# script that parses to something else. That shipped: Invoke-WslBashLive wrote its arguments INLINE
+# (`& wsl -d $D -e bash -lc $Script`) and on Windows PowerShell 5.1 every `"` was stripped, so
+# `TMP="$(mktemp -d)"` arrived as `-d)` and the operator's install died with
+# `unexpected EOF while looking for matching ')'`. Invoke-WslBash hands the SAME scripts to the SAME
+# distro through a SPLATTED ARRAY and never did it.
+#
+# TWO ASSERTIONS, because the fault is platform-specific and this harness is pwsh 7 on Linux:
+#   * (a) THE CONTRACT — the text the guest receives still contains its quotes. This fails on any
+#     platform where mangling happens (a Windows CI runner, if one is ever added).
+#   * (b) THE WIRING — both functions keep using the splatted-array form. THIS is the one that catches
+#     the regression TODAY, because Linux pwsh delivers both forms intact (measured: byte-identical
+#     argv), so (a) alone would pass on the broken code. It is a source assertion for the same reason
+#     the other wiring checks in this repo are: the property is in HOW the call is made, and no
+#     behavioural test available on this host can see the difference.
+Say ""
+Say "[12] the script reaches the guest as written"
+
+$record = Join-Path $Work "received-script.txt"
+$prevRecord = $env:EMU_RECORD
+$env:EMU_RECORD = $record
+try {
+  $quoted = @'
+set -euo pipefail
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+BIN="$(find "$TMP" -type f -name orchicon | head -1)"
+'@
+  $script:Distro = "Ubuntu"
+  Invoke-WslBashLive $quoted | Out-Null
+} finally {
+  if ($null -eq $prevRecord) { Remove-Item Env:EMU_RECORD -ErrorAction SilentlyContinue }
+  else { $env:EMU_RECORD = $prevRecord }
+}
+$received = if (Test-Path $record) { [System.IO.File]::ReadAllText($record) } else { "" }
+Check "the guest receives the script's double quotes intact" ($received -match [regex]::Escape('TMP="$(mktemp -d)"')) `
+  ("got: " + (($received -split "`n" | Select-Object -First 3) -join " / "))
+Check "and the quoted command substitution survives whole" ($received -match [regex]::Escape('"$(find "$TMP" -type f -name orchicon | head -1)"'))
+
+# (b) The wiring. Both helpers must go through an argument ARRAY, which is the form proven against
+# Windows PowerShell 5.1's native-argument quoting; an inline `bash -lc $Script` is the shape that broke.
+$liveSrc = ($funcs | Where-Object Name -eq "Invoke-WslBashLive").Extent.Text
+$capSrc = ($funcs | Where-Object Name -eq "Invoke-WslBash").Extent.Text
+# COMMENTS ARE STRIPPED FIRST. The function's own note QUOTES the inline form it replaced (that is the
+# point of the note), so a naive source match would find the regression described in prose and fail on
+# the documentation rather than on the code.
+$liveCode = (($liveSrc -split "`n") | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+$capCode = (($capSrc -split "`n") | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+Check 'Invoke-WslBashLive passes the script via an argument ARRAY, not inline' `
+  (($liveCode -match '\$WslArgs\s*=\s*@\(') -and ($liveCode -match '@WslArgs')) `
+  'the splatted form is the one proven in the field; an inline argument list strips quotes under PS 5.1'
+Check 'Invoke-WslBashLive does not build an inline wsl command line (comments excluded)' `
+  ($liveCode -notmatch '&\s*wsl\s+-\S') `
+  'an inline argument list is the regression'
+Check 'Invoke-WslBash still uses the array form (both paths agree)' `
+  ($capCode -match '@\("\-d"') `
+  'the two helpers must hand the guest its argv the same way' 
+
 Say ""
 if ($Fail.Count -eq 0) { Say "RESULT: all assertions passed" }
 else { Say ("RESULT: {0} assertion(s) FAILED: {1}" -f $Fail.Count, ($Fail -join '; ')) }

@@ -280,11 +280,35 @@ function Invoke-WslBashLive {
     $env:WSL_UTF8 = "1"
     try {
         try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+        # THE SAME SPLATTED-ARRAY CALL THE CAPTURING PATH USES, and that is the fix rather than a style
+        # choice. This function originally wrote the arguments INLINE (`& wsl -d $Distro -e bash -lc
+        # $Script`) and it broke every script containing double quotes — which is every real script here.
+        #
+        # WHAT THE OPERATOR SAW, on Windows PowerShell 5.1:
+        #
+        #   -d)
+        #   trap 'rm -rf $TMP' EXIT
+        #   tar -xzf $ARCHIVE -C $TMP
+        #   BIN=$(find: -c: line 5: unexpected EOF while looking for matching `)'
+        #   install inside WSL failed (exit 2)
+        #
+        # Every `"` had been stripped from the script before bash saw it — `TMP="$(mktemp -d)"` arrived
+        # as `-d)`, `"$TMP"` as `$TMP` — so the guest parsed a script that was no longer the one we sent.
+        # `Invoke-WslBash` hands the SAME scripts to the SAME distro through a splatted array and has
+        # never done this, which is why the capture path kept working while this one failed on the first
+        # complex script. The difference is the argument form, so the form is unified.
+        #
+        # IT IS TESTED AS A WIRING INVARIANT, because this harness cannot reproduce the fault: it runs
+        # pwsh 7 on Linux, where both forms deliver the text intact (verified — the two forms produce
+        # byte-identical argv there). Windows PowerShell 5.1's native-argument quoting is the difference,
+        # so what a test CAN pin is that both functions keep using the form that is proven in the field.
+        # See scripts/tests/install-ps1-wsl-encoding/harness.ps1 [12].
         if ($script:Distro) {
-            & wsl -d $script:Distro -e bash -lc $Script
+            $WslArgs = @("-d", $script:Distro, "-e", "bash", "-lc", $Script)
         } else {
-            & wsl -e bash -lc $Script
+            $WslArgs = @("-e", "bash", "-lc", $Script)
         }
+        & wsl @WslArgs
     } finally {
         try { [Console]::OutputEncoding = $prevEncoding } catch { }
         $env:WSL_UTF8 = $prevUtf8
