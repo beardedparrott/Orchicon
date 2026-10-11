@@ -60,6 +60,12 @@ else
   B=''; C=''; G=''; Y=''; R=''; D=''; X=''
 fi
 
+# ok_dry "<done>" "<would>": report what HAPPENED, or what WOULD have happened under --dry-run.
+#
+# A dry run that says "container removed" is worse than no dry run: the whole point is to be told what
+# would change, and a destructive command reporting completed work it did not do is the message an
+# operator is most likely to act on. Found by running it.
+ok_dry() { if [ "$DRY_RUN" = true ]; then ok "would $2"; else ok "$1"; fi }
 info()  { echo -e "${C}▸${X} $*"; }
 ok()    { echo -e "${G}✓${X} $*"; }
 warn()  { echo -e "${Y}!${X} $*"; }
@@ -215,8 +221,21 @@ instance_state() {
 # plane INHERITS that plane's value. So the three destructive verbs ask. `--instance` skips the
 # question; with no terminal and no flag it refuses rather than guessing.
 ask_instance() {
+  # ASK_INSTANCE_FALLBACK: WHAT AN EMPTY ANSWER MEANS.
+  #
+  # It differs BY VERB, and the difference is the point. For the DESTRUCTIVE verbs (uninstall, purge,
+  # remove-binary) there is NO fallback: an empty answer refuses, because a reflexive Enter must never
+  # select a stack to destroy. The PowerShell side already refused, so the two disagreed (measured: a bare
+  # Enter in the shell picked dev and acted on it). For INSTALL there IS one, because installing to the
+  # documented default is not destructive and a first run should not demand a decision it does not need.
+  local fallback="${1:-}"
   if [ "$INSTANCE_EXPLICIT" = true ]; then validate_instance; export ORCHICON_INSTANCE="$INSTANCE"; return 0; fi
   if ! have_tty; then
+    if [ -n "$fallback" ]; then
+      INSTANCE="$fallback"; validate_instance; export ORCHICON_INSTANCE="$INSTANCE"
+      info "no terminal to ask on — using '${INSTANCE}'"
+      return 0
+    fi
     die "which instance? pass --instance dev|test|prod (there is no terminal to ask on)"
   fi
   echo "" >&2
@@ -227,14 +246,17 @@ ask_instance() {
     echo -e "    ${C}${n}${X}) ${B}${inst}${X}  ${D}($(instance_state "$inst"))${X}" >&2
     n=$((n + 1))
   done
+  local hint; hint="${fallback:+ [${fallback}]}"
   local a
-  if ! a="$(prompt_tty "  choose 1-3 or a name [dev]: ")"; then
+  if ! a="$(prompt_tty "  choose 1-3 or a name${hint}: ")"; then
+    if [ -n "$fallback" ]; then INSTANCE="$fallback"; validate_instance; export ORCHICON_INSTANCE="$INSTANCE"; return 0; fi
     die "no terminal to ask on — pass --instance dev|test|prod"
   fi
   case "$a" in
-    ""|1|dev)   INSTANCE=dev ;;
-    2|test)     INSTANCE=test ;;
-    3|prod)     INSTANCE=prod ;;
+    "")     if [ -n "$fallback" ]; then INSTANCE="$fallback"; else die "no instance chosen — pass --instance dev|test|prod"; fi ;;
+    1|dev)  INSTANCE=dev ;;
+    2|test) INSTANCE=test ;;
+    3|prod) INSTANCE=prod ;;
     *) die "not an instance: '$a' (known: dev, test, prod)" ;;
   esac
   validate_instance
@@ -277,9 +299,15 @@ all_binary_users() {
 
 # instance_exists <name> — a container or host state means the instance is real.
 instance_exists() {
-  local inst="$1"
+  local inst="$1" dir
   if command -v docker >/dev/null 2>&1 && docker inspect "orchicon-cnt-$inst" >/dev/null 2>&1; then return 0; fi
-  [ -d "${XDG_DATA_HOME:-${HOME}/.local/share}/orchicon-$inst" ]
+  dir="${XDG_DATA_HOME:-${HOME}/.local/share}/orchicon-$inst"
+  [ -d "$dir" ] || return 1
+  # A STATE DIR CONTAINING ONLY `ports.json` IS NOT AN INSTANCE. The installer records the ports it bound
+  # there (cmd/orchicon writeResolvedPorts), and that record alone must not make an instance look present:
+  # if it did, --uninstall would conclude another instance still needs the executables and leave them
+  # behind for ever. Anything ELSE in the directory is the instance's own state and does count.
+  [ -n "$(find "$dir" -mindepth 1 -maxdepth 1 ! -name ports.json -print -quit 2>/dev/null)" ]
 }
 
 # other_instances_remain — is any instance other than this one still present?
@@ -301,7 +329,11 @@ stop_service_for() {
     if [ "$DRY_RUN" = false ]; then ORCHICON_SERVE_STATE_DIR="$sd" "$bin" serve --stop >/dev/null 2>&1 || true; else printf '  (would stop the %s plane)\n' "$inst"; fi
   fi
   if command -v docker >/dev/null 2>&1; then
-    if [ "$DRY_RUN" = false ]; then docker rm -f "orchicon-cnt-$inst" >/dev/null 2>&1 && printf 'removed container orchicon-cnt-%s\n' "$inst" || true; else printf '  (would remove container orchicon-cnt-%s)\n' "$inst"; fi
+    if [ "$DRY_RUN" = false ]; then
+      docker rm -f "orchicon-cnt-$inst" >/dev/null 2>&1 && printf 'removed container orchicon-cnt-%s\n' "$inst" || true
+    else
+      printf '  (would remove container orchicon-cnt-%s)\n' "$inst"
+    fi
   fi
 }
 
@@ -313,7 +345,7 @@ remove_binaries() {
     if [ -f "$bin" ]; then
       info "removing $bin"
       $DRY_RUN || rm -f "$bin"
-      ok "${bin##*/} removed"
+      ok_dry "${bin##*/} removed" "${bin##*/} be removed"
     else
       warn "not found: $bin (nothing to remove)"
     fi
@@ -431,7 +463,7 @@ do_uninstall() {
   if command -v docker >/dev/null 2>&1; then
     info "removing the ${INSTANCE} container…"
     $DRY_RUN || docker rm -f "$(cnt_name)" >/dev/null 2>&1 || true
-    ok "${INSTANCE} container removed ($(cnt_name))"
+    ok_dry "${INSTANCE} container removed ($(cnt_name))" "remove the ${INSTANCE} container ($(cnt_name))"
   fi
 
   # 3. DATA, only when asked. Destroying a database is not something "remove the software" may imply, so
@@ -440,13 +472,13 @@ do_uninstall() {
     if command -v docker >/dev/null 2>&1; then
       info "removing the ${INSTANCE} data volume…"
       $DRY_RUN || docker volume rm "$(vol_name)" >/dev/null 2>&1 || true
-      ok "data volume removed ($(vol_name))"
+      ok_dry "data volume removed ($(vol_name))" "remove the data volume ($(vol_name))"
     fi
     local sd; sd="$(inst_state_dir)"
     if [ -d "$sd" ]; then
       info "removing host state ${sd}…"
       $DRY_RUN || rm -rf "$sd"
-      ok "host state removed ($sd)"
+      ok_dry "host state removed ($sd)" "remove the host state ($sd)"
     fi
   else
     echo ""
@@ -512,7 +544,7 @@ do_remove_binary() {
     [ -n "$pid" ] || continue
     $DRY_RUN || kill "$pid" 2>/dev/null || true
   done
-  ok "services stopped"
+  ok_dry "services stopped" "stop the services"
   remove_binaries
   exit 0
 }
@@ -647,6 +679,10 @@ do_clean() {
 
 # --- Main install -----------------------------------------------------------
 main() {
+  # ASK WHICH INSTANCE BEFORE INSTALLING, so the operator knows which stack they are creating. `dev` is
+  # the fallback — pass --instance to skip the question, and it is used automatically with no terminal.
+  ask_instance dev
+
   check_cmd curl
   check_cmd tar
 
