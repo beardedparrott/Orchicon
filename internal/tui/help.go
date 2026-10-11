@@ -48,9 +48,12 @@ func helpLines(routes []KeyRoute) []string {
 	// background cannot be tinted AT ANY LIGHTNESS, and the palette is not what to change.
 	//
 	// Windows Terminal supports true colour; what it does not always do is ADVERTISE it to a WSL shell, and
-	// termenv reads the advertisement. So the fix is one variable, and it is a fix rather than a preference
-	// because the app cannot know otherwise.
-	out = append(out, theme.HintText.Render("Colour: theme backgrounds need TRUE COLOUR. A 256-colour terminal cannot tint a dark ground at all — the xterm-256 cube's only dark entries are greys, so every dark theme's background renders grey/black (this is what the operator sees as 'the background is black instead of the teal'). It is not the theme: set COLORTERM=truecolor in the shell that runs orch (Windows Terminal supports it; it does not always advertise it to WSL) and the palette's own tint comes back."))
+	// termenv reads the advertisement. orch now SUPPLIES that advertisement itself when it detects WSL (see
+	// cmd/orch/colorprofile.go), so on a Windows terminal the tint comes back with nothing to set — which is
+	// why the wording below is no longer an instruction. It stays as a note because the same symptom has a
+	// second cause on terminals that genuinely cannot do 24-bit, and there the operator needs to know the
+	// cause is the terminal rather than the palette.
+	out = append(out, theme.HintText.Render("Colour: theme backgrounds need TRUE COLOUR. A 256-colour terminal cannot tint a dark ground at all — the xterm-256 cube's only dark entries are greys, so every dark theme's background renders grey/black. It is not the theme. Under WSL this is handled for you; elsewhere, if a dark background looks grey or black, the terminal is not reporting 24-bit colour: set COLORTERM=truecolor in the shell that runs orch and the palette's own tint comes back (COLORTERM=yes forces 256-colour, and ORCHICON_TRUECOLOR=0 turns the WSL default off)."))
 	return out
 }
 
