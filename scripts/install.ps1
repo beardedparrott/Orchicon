@@ -518,16 +518,41 @@ function Get-InstanceName {
     return "dev"
 }
 
+# READ THE PORTS BACK, DO NOT RE-DERIVE THEM.
+#
+# This used to compute the URLs from the per-instance defaults plus the environment, and that is a guess:
+# `orchicon install` PROMPTS for the host ports, and a prompt is exactly the thing a wrapper cannot
+# predict. Reported from a real Windows install — the operator answered 3001 for Grafana, the installer
+# printed 3001, and this block then printed 3002, so the two halves of one run disagreed and the second
+# URL was one this install never bound. (The same class of defect the port table was introduced to fix.)
+#
+# So the installer's own record is the source: `orchicon install` writes the ports it bound to the
+# instance's state dir (cmd/orchicon writeResolvedPorts) and this reads it back. The defaults below are
+# only a fallback for an older install with no record.
+function Get-ResolvedPorts {
+    $readScript = @'
+cat "${XDG_DATA_HOME:-$HOME/.local/share}/orchicon-__INSTANCE__/ports.json" 2>/dev/null
+'@
+    $readScript = $readScript.Replace('__INSTANCE__', (Get-InstanceName))
+    $raw = $null
+    try { $raw = (Invoke-WslBash $readScript | Out-String).Trim() } catch { $raw = $null }
+    if (-not $raw) { return $null }
+    try { return $raw | ConvertFrom-Json } catch { return $null }
+}
+
 function Write-ConnectionInfo {
     $instance = Get-InstanceName
-    # Resolve the ports the SAME way the installer does (cmd/orchicon/install_ports.go
-    # and scripts/container.sh instance_info): the per-instance default, with
-    # ORCHICON_CONTROL_PORT / ORCHICON_GRAFANA_PORT overriding it when set. These
-    # numbers used to be hardcoded right here, which printed a URL pointing at a port
-    # this install never bound as soon as an operator moved off a busy default.
+    # The record first, then the per-instance default, then the environment. Each rung is a real case:
+    # the record is what was actually bound, the default covers an install from before the record existed,
+    # and the environment covers an operator who pinned a port without going through the prompt.
+    $resolved = Get-ResolvedPorts
     if ($instance -eq "prod") { $ctrl = 8091; $graf = 3003 } else { $ctrl = 8080; $graf = 3002 }
     if ($env:ORCHICON_CONTROL_PORT) { $ctrl = $env:ORCHICON_CONTROL_PORT }
     if ($env:ORCHICON_GRAFANA_PORT) { $graf = $env:ORCHICON_GRAFANA_PORT }
+    if ($resolved) {
+        if ($resolved.ORCHICON_CONTROL_PORT) { $ctrl = $resolved.ORCHICON_CONTROL_PORT }
+        if ($resolved.ORCHICON_GRAFANA_PORT) { $graf = $resolved.ORCHICON_GRAFANA_PORT }
+    }
     Write-Host ""
     Write-Host "Open from Windows (WSL2 forwards localhost):" -ForegroundColor White
     Write-Host "  Control plane: http://localhost:$ctrl" -ForegroundColor Cyan
@@ -599,29 +624,38 @@ if ($script:Instance -notin @("dev", "test", "prod")) {
 # deliberately conservative: an empty or failed read is treated as NO ANSWER and the command stops, rather
 # than falling through to a default. For unattended use, pass -Instance.
 function Ask-Instance {
+    # -Fallback IS WHAT AN EMPTY ANSWER MEANS, and it differs BY VERB, exactly as the shell installer's
+    # does. INSTALL passes "dev": installing to the documented default is not destructive, and a first run
+    # should not demand a decision it does not need. The DESTRUCTIVE verbs pass nothing, so an empty
+    # answer refuses — a reflexive Enter must never select a stack to destroy.
+    param([string]$Fallback = "")
     if ($script:InstanceGiven) { return }
     if ($env:ORCHICON_INSTANCE) { return }
     Write-Host ""
     Write-Host "  Which instance?" -ForegroundColor White
     Write-Host "  An instance is a whole stack: its own container, ports, data volume and host state." -ForegroundColor DarkGray
     Write-Host "    1) dev      2) test      3) prod"
+    $hint = if ($Fallback) { " [${Fallback}]" } else { " (empty cancels)" }
     $answer = $null
-    try { $answer = Read-Host "  choose 1-3 or a name (empty cancels)" } catch { $answer = $null }
+    try { $answer = Read-Host "  choose 1-3 or a name${hint}" } catch { $answer = $null }
     # TESTED BEFORE THE SWITCH, DELIBERATELY. In PowerShell `switch ($null)` fires NO branch at all —
     # not even `default`, because the switch enumerates its value and $null yields nothing. So a
     # `default` clause cannot catch a missing answer: it silently did nothing, left $script:Instance at
     # its earlier value, and ACTED ON dev WITH NO ANSWER GIVEN. Measured on this host.
     if ([string]::IsNullOrWhiteSpace($answer)) {
-        Stop-Install "no instance chosen - pass -Instance dev|test|prod"
+        if ($Fallback) { $script:Instance = $Fallback }
+        else { Stop-Install "no instance chosen - pass -Instance dev|test|prod" }
     }
-    switch ($answer) {
-        "1" { $script:Instance = "dev" }
-        "2" { $script:Instance = "test" }
-        "3" { $script:Instance = "prod" }
-        "dev" { $script:Instance = "dev" }
-        "test" { $script:Instance = "test" }
-        "prod" { $script:Instance = "prod" }
-        default { Stop-Install "no instance chosen - pass -Instance dev|test|prod" }
+    else {
+        switch ($answer) {
+            "1" { $script:Instance = "dev" }
+            "2" { $script:Instance = "test" }
+            "3" { $script:Instance = "prod" }
+            "dev" { $script:Instance = "dev" }
+            "test" { $script:Instance = "test" }
+            "prod" { $script:Instance = "prod" }
+            default { Stop-Install "not an instance: '$answer' (known: dev, test, prod)" }
+        }
     }
     $script:ContainerName = "orchicon-cnt-$script:Instance"
     $script:VolumeName = "orchicon-cnt-$script:Instance-data"
@@ -631,6 +665,12 @@ function Ask-Instance {
 # DERIVED, in one place, so nothing below spells the names out again.
 $script:ContainerName = "orchicon-cnt-$script:Instance"
 $script:VolumeName = "orchicon-cnt-$script:Instance-data"
+
+# A PLAIN INSTALL ASKS TOO, so the operator knows which stack they are creating. It is the only path that
+# gets a fallback: see Ask-Instance. The destructive verbs below call it with none.
+if (-not ($Uninstall -or $RemoveBinary -or $Clean -or $ForceClean)) {
+    Ask-Instance -Fallback "dev"
+}
 
 # --- Uninstall --------------------------------------------------------------
     if ($RemoveBinary) {

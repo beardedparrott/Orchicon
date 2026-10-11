@@ -126,8 +126,10 @@ say "[3] running the real installer against it"
 DEST="${WORK}/bin"
 LOG="${WORK}/install.log"
 set +e
+# --instance test, because the installer now ASKS which instance (it has a tty here, so an unattended run
+# would otherwise block on the question). Passing it is the documented way to skip the prompt.
 ORCHICON_INSTALL_BASE_URL="${BASE}" bash "${INSTALLER}" \
-  --version "${VERSION}" --install-dir "${DEST}" --no-setup >"${LOG}" 2>&1
+  --version "${VERSION}" --install-dir "${DEST}" --instance test --no-setup >"${LOG}" 2>&1
 RC=$?
 set -e
 if [ "${RC}" -eq 0 ]; then
@@ -207,6 +209,43 @@ if printf '%s' "${OUT}" | grep -q "orchicon-cnt-test" && ! printf '%s' "${OUT}" 
   ok "--instance test scopes the acting to the test container alone"
 else
   bad "--instance test scopes the acting (named: $(printf '%s' "${OUT}" | grep -o 'orchicon-cnt-[a-z]*' | sort -u | tr '\n' ' '))"
+fi
+
+# --- 6. INSTALL ASKS WHICH INSTANCE (detached, so the no-terminal path is the one exercised)
+say ""
+say "[6] the installer asks which instance"
+
+# DETACHED: `setsid` gives the child no controlling terminal, which is the state the no-terminal path is
+# written for. With a terminal present the installer correctly WAITS at the prompt — a plain run here would
+# hang the harness (measured), which is why the main invocation above passes --instance.
+detached() {
+  # ORCHICON_INSTALL_BASE_URL, or the installer resolves "latest" from the real GitHub API and downloads
+  # from the internet — which is both slow and not what this harness is for.
+  env -u ORCHICON_INSTANCE ORCHICON_INSTALL_BASE_URL="${BASE}" setsid bash "${INSTALLER}" \
+    --version "${VERSION}" --install-dir "${DEST}-d" "$@" < /dev/null 2>&1
+}
+OUT="$(detached --no-setup)"
+if printf '%s' "${OUT}" | grep -q "using 'dev'"; then
+  ok "with no terminal it takes the documented default (dev) rather than blocking"
+else
+  bad "with no terminal it takes the documented default — got: $(printf '%s' "${OUT}" | head -2 | tr '\n' ' ')"
+fi
+OUT="$(detached --instance test --no-setup)"
+if printf '%s' "${OUT}" | grep -q "Installed"; then
+  ok "--instance test is honoured without a prompt"
+else
+  bad "--instance test is honoured (got: $(printf '%s' "${OUT}" | head -2 | tr '\n' ' '))"
+fi
+if printf '%s' "${OUT}" | grep -qi "Which instance"; then
+  bad "--instance test still prompted — the flag must skip the question"
+else
+  ok "and it does not prompt when the instance is given"
+fi
+# The destructive verbs must NOT have a fallback: verified in the uninstall harness, which owns them.
+if bash "${INSTALLER}" --help 2>&1 | grep -q -- "--instance"; then
+  ok "--help documents --instance"
+else
+  bad "--help documents --instance"
 fi
 
 say ""
