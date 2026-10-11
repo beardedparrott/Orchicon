@@ -289,6 +289,11 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			log.Warn("opencode binary not found — model/MCP discovery disabled (set ORCHICON_OPENCODE_BIN or install opencode on PATH)", "error", binErr)
 		} else {
 			modelDiscoverer = aigateway.NewModelDiscoverer(log, opencodeBin)
+			// THE ARGV COMES FROM THE DETECTED API SURFACE, because the two versions need different
+			// forms of the same command: opencode 2.x starts a background server unless it is asked
+			// for --standalone, and 1.x needs --verbose for its model metadata. The rule lives with
+			// the surface table (internal/opencode) so it cannot be re-derived here and drift.
+			modelDiscoverer.SetModelsArgs(opencode.ModelsArgs(context.Background(), log, opencodeBin))
 			mcpDiscoverer = aigateway.NewMCPDiscoverer(log, opencodeBin)
 			// PRESENT IS NOT THE SAME AS USABLE, and this is the half nothing checked.
 			// The plane runs on the host and spawns opencode with the host PATH, but a

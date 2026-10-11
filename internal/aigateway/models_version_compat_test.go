@@ -195,6 +195,84 @@ func TestAFailedProbeIsNotRemembered(t *testing.T) {
 	_ = atomic.AddInt64
 }
 
+func TestSetModelsArgsOverridesAndDefaults(t *testing.T) {
+	// The plane hands in the argv its detected surface requires; the DEFAULT must stay the v1 form so
+	// a caller that never sets one behaves exactly as before.
+	d := NewModelDiscoverer(discardLog(), "/nonexistent")
+	if got := strings.Join(d.modelsArgsOverride, " "); got != "models --verbose" {
+		t.Errorf("default models argv = %q, want the v1 form", got)
+	}
+	d.SetModelsArgs([]string{"models", "--standalone"})
+	argv, preferred := d.modelsArgv()
+	if got := strings.Join(argv, " "); got != "models --standalone" {
+		t.Errorf("after SetModelsArgs the argv = %q, want \"models --standalone\"", got)
+	}
+	if !preferred {
+		t.Error("before any rejection the preferred form must still be reported as such, or the " +
+			"success path will never record that it was accepted")
+	}
+	// Empty restores the default rather than leaving an EMPTY argv, which would run bare `opencode`.
+	d.SetModelsArgs(nil)
+	argv, _ = d.modelsArgv()
+	if got := strings.Join(argv, " "); got != "models --verbose" {
+		t.Errorf("SetModelsArgs(nil) left %q, want the v1 default — an empty argv would invoke "+
+			"opencode with no subcommand at all", got)
+	}
+}
+
+func TestTheModelsArgvOverrideReachesTheSubprocess(t *testing.T) {
+	// THE ASSERTION THAT MATTERS MOST for the v2 hang: an override that never reaches the child
+	// process is a constant, not a behaviour. A stub CLI records exactly what it was invoked with,
+	// so this reads the argv off the wire rather than trusting the setter.
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"the v1 default", nil, "--verbose"},
+		{"the v2 form", []string{"models", "--standalone"}, "--standalone"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := filepath.Join(t.TempDir(), "calls.txt")
+			bin := modelsStub(t, true, calls) // accepts anything, so the preferred form succeeds
+			d := NewModelDiscoverer(discardLog(), bin)
+			if tc.args != nil {
+				d.SetModelsArgs(tc.args)
+			}
+			if _, err := d.fetchModels(context.Background()); err != nil {
+				t.Fatalf("fetch: %v", err)
+			}
+			got := strings.Join(callsTo(t, calls), " | ")
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("the child was invoked as %q, which does not carry %q — the override did not "+
+					"reach the subprocess, so on opencode 2.x the command would still start a "+
+					"background server and hang", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAnEmptyModelListNamesTheLikelyCause(t *testing.T) {
+	// opencode 2.x reports an empty model list by printing NOTHING and exiting 0 (its handler ends
+	// with `if (models.length > 0) process.stdout.write(...)`). So this error is reached by a CLI
+	// that SUCCEEDED, and "no models found" reads like a parse failure when the real cause is almost
+	// always "no provider is authenticated".
+	bin := stubCLI(t, "", "", 0) // exits 0, prints nothing — exactly the 2.x empty case
+	d := NewModelDiscoverer(discardLog(), bin)
+
+	_, err := d.fetchModels(context.Background())
+	if err == nil {
+		t.Fatal("an empty list must be an error: a picker with no models is not a successful load")
+	}
+	msg := err.Error()
+	for _, want := range []string{"no models", "auth list", "opencode models"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("the error must mention %q so the operator can act on it; got: %v", want, msg)
+		}
+	}
+}
+
 func readFile(t *testing.T, path string) string {
 	t.Helper()
 	b, err := os.ReadFile(path)

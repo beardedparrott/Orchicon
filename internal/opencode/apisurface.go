@@ -63,6 +63,27 @@ type apiShape struct {
 	//
 	// ⚠ UNVERIFIED beyond the audit's note — see the file comment.
 	permissionReplyField string
+
+	// modelsArgs is the argv used to LIST MODELS on this surface, and on v2 the difference is not
+	// cosmetic — it is the difference between working and hanging.
+	//
+	// v1: `models --verbose` — the metadata form, the only one that carries cost and limits.
+	// v2: `models --standalone`.
+	//
+	// WHY --standalone ON v2, from the CLI's own source rather than from the docs. The v2 `models`
+	// handler resolves a server first (services/server-connection.ts):
+	//
+	//	if (args.standalone || (yield* ServiceConfig.read()).disabled === true) {
+	//	  return { endpoint: yield* Standalone.start() }     // a private, ephemeral server
+	//	}
+	//	return { endpoint: yield* resolveManaged(options) }  // Service.ensure — A MANAGED BACKGROUND
+	//	                                                     // DAEMON, started and kept alive
+	//
+	// So WITHOUT the flag, a one-shot model listing starts (or waits for) a persistent background
+	// service. That is the reported hang: choosing the opencode adapter sat on "loading models…",
+	// and a second attempt came back with an error once the service state had settled. --standalone
+	// asks for a private server for this command only, which is what a listing wants.
+	modelsArgs []string
 }
 
 // shapeV1 is the surface the adapter was written against, and the DEFAULT. It is default because it
@@ -77,6 +98,7 @@ var shapeV1 = apiShape{
 	compactSuffix:         "summarize",
 	permissionReplyNested: true,
 	permissionReplyField:  "response",
+	modelsArgs:            []string{"models", "--verbose"},
 }
 
 // shapeV2 is opencode 2.x. Every path here is quoted from V2_HTTP_API_AUDIT.md's endpoint table:
@@ -99,6 +121,7 @@ var shapeV2 = apiShape{
 	compactSuffix:         "compact",
 	permissionReplyNested: false,
 	permissionReplyField:  "decision",
+	modelsArgs:            []string{"models", "--standalone"},
 }
 
 // Path builders. The client calls these and never concatenates a route itself — that is what keeps a
@@ -131,8 +154,10 @@ func (s apiShape) permissionReplyPath(sessionID, permissionID string) string {
 
 func (s apiShape) eventPath() string { return s.prefix + "/event" }
 
-// apiShapeForVersion maps an opencode version string to the API surface that version serves.
-//
+// modelsFallbackArgs is the plainest invocation, used when the surface's own form is rejected. It
+// carries no flag at all, so it is the one thing every version must accept.
+func modelsFallbackArgs() []string { return []string{"models"} }
+
 // THE MAJOR IS THE ONLY THING THAT DECIDES. The audit is titled "V2", the two command trees agree
 // that the break is at 2.0, and reading a minor or patch would invent precision this project does not
 // have — there is no changelog entry that pins the switch to a patch release.
@@ -185,7 +210,17 @@ func detectAPIShape(ctx context.Context, binary string) (shape apiShape, version
 	return shapeV1, version, false
 }
 
-// shapeDetection is one cached verdict about a binary.
+// ModelsArgs returns the argv for LISTING MODELS with the opencode binary at path, in the form that
+// binary's API surface requires.
+//
+// EXPORTED BECAUSE THE RULE MUST NOT BE RE-DERIVED. The discoverer lives in another package and needs
+// the argv, and the version rule behind it lives here — v2 needs `--standalone` or the command starts
+// a background daemon (see apiShape.modelsArgs). A second copy of that rule in the caller is how the
+// two drift, and the symptom would be a hang that comes back.
+func ModelsArgs(ctx context.Context, log *slog.Logger, binary string) []string {
+	return shapeForBinary(ctx, log, binary).modelsArgs
+}
+
 type shapeDetection struct {
 	shape   apiShape
 	version string

@@ -54,8 +54,13 @@ type ModelDiscoverer struct {
 	// but only remember on SUCCESS, so a transient failure cannot permanently downgrade a v1 CLI
 	// to the metadata-free form.
 	cliMu       sync.Mutex
-	verboseOK   bool
+	cliOK       bool
 	cliResolved bool
+
+	// modelsArgsOverride is the surface's preferred models argv, set from the DETECTED API shape so
+	// this file needs no knowledge of versions. v2 needs `--standalone` and v1 needs `--verbose`;
+	// which one applies is a property of the shape, not of the parser.
+	modelsArgsOverride []string
 }
 
 // modelsArgv returns the argument list to list models with.
@@ -70,25 +75,26 @@ type ModelDiscoverer struct {
 // The first call always tries the metadata form, because that is the richer one and the only one
 // that works on 1.x; the fallback is recorded so a 2.x install pays for the failed attempt once
 // rather than on every refresh.
-func (d *ModelDiscoverer) modelsArgv() (argv []string, verbose bool) {
+func (d *ModelDiscoverer) modelsArgv() (argv []string, preferred bool) {
 	d.cliMu.Lock()
 	defer d.cliMu.Unlock()
-	if d.cliResolved && !d.verboseOK {
+	if d.cliResolved && !d.cliOK {
 		return []string{"models"}, false
 	}
-	return []string{"models", "--verbose"}, true
+	return append([]string(nil), d.modelsArgsOverride...), true
 }
 
-// rememberModelsForm records that the CLI accepted (or did not accept) `--verbose`. ONLY A SUCCESS
-// IS REMEMBERED: caching a failure would turn one transient error into a permanent downgrade, and
-// on a 1.x install that means silently losing every model's cost and context-window metadata.
-func (d *ModelDiscoverer) rememberModelsForm(verboseOK bool) {
+// rememberModelsForm records whether the surface's PREFERRED models form was accepted. ONLY A
+// SUCCESS IS REMEMBERED: caching a failure would turn one transient error into a permanent downgrade
+// — on v1 that silently loses every model's cost and context window, and on v2 it drops the
+// --standalone flag that keeps the command from starting a background daemon.
+func (d *ModelDiscoverer) rememberModelsForm(preferredOK bool) {
 	d.cliMu.Lock()
 	defer d.cliMu.Unlock()
-	if !verboseOK && d.cliResolved {
+	if !preferredOK && d.cliResolved {
 		return // already downgraded; nothing to change
 	}
-	d.verboseOK = verboseOK
+	d.cliOK = preferredOK
 	d.cliResolved = true
 }
 
@@ -102,10 +108,24 @@ func NewModelDiscoverer(log *slog.Logger, binary string) *ModelDiscoverer {
 		log:    log.With("component", "model_discoverer"),
 		binary: binary,
 		ttl:    5 * time.Minute,
+		// The DEFAULT is the v1 form, so a caller that never sets one behaves exactly as before.
+		modelsArgsOverride: []string{"models", "--verbose"},
 	}
 }
 
-// ListModels returns all models from opencode, using a cached result if
+// SetModelsArgs overrides the argv used to list models, so the caller can hand in the form the
+// DETECTED api surface requires (opencode.ModelsArgs). Empty restores the v1 default. It exists
+// because the version rule belongs to the adapter package and this one must not re-derive it.
+func (d *ModelDiscoverer) SetModelsArgs(args []string) {
+	d.cliMu.Lock()
+	defer d.cliMu.Unlock()
+	if len(args) == 0 {
+		d.modelsArgsOverride = []string{"models", "--verbose"}
+		return
+	}
+	d.modelsArgsOverride = append([]string(nil), args...)
+}
+
 // fresh. Provider filter narrows results to a single provider.
 func (d *ModelDiscoverer) ListModels(ctx context.Context, provider string) ([]*apiv1.OpenCodeModel, error) {
 	models, err := d.fetchOrCache(ctx)
@@ -272,30 +292,34 @@ func (d *ModelDiscoverer) fetchModels(ctx context.Context) ([]*apiv1.OpenCodeMod
 	// unpinned means the model list could depend on where someone stood when they installed.
 	//
 	// The home dir is the right pin because it is where opencode's own config and auth live.
-	argv, triedVerbose := d.modelsArgv()
+	argv, preferred := d.modelsArgv()
 	out, err := runOpencodeCLI(ctx, d.binary, homeDir(), argv...)
 	if err == nil {
 		// RECORD ONLY WHAT WE ACTUALLY TRIED. An earlier version recorded `true` on any success,
-		// so once the form had been downgraded the NEXT plain success re-enabled --verbose and the
-		// choice OSCILLATED — measured as `--verbose` attempted twice across three fetches, i.e. a
-		// 2.x install paying for a rejection it had already seen, forever.
-		if triedVerbose {
+		// so once the form had been downgraded the NEXT plain success re-enabled it and the choice
+		// OSCILLATED — measured as the preferred form attempted twice across three fetches, i.e. a
+		// 2.x install paying forever for a rejection it had already seen.
+		if preferred {
 			d.rememberModelsForm(true)
 		}
 		return parseModelOutput(out)
 	}
 
-	// The flag may simply not exist on this CLI (see modelsArgv). Retry with the minimum
-	// invocation; the metadata-free format is still a usable model list, and parseModelOutput
-	// reads it (it emits a bare ref as a model with no cost/limits rather than dropping it).
-	if plainOut, plainErr := runOpencodeCLI(ctx, d.binary, homeDir(), "models"); plainErr == nil {
+	// The preferred form may simply not exist on this CLI. Retry with the plainest one, which every
+	// version accepts; the metadata-free format is still a usable model list, because
+	// parseModelOutput emits a bare ref as a model rather than dropping it.
+	//
+	// THE FALLBACK RUNS EXACTLY ONCE. The first version of this called it a second time purely to
+	// obtain the error, which on opencode 2.x is not merely wasteful: each invocation can start a
+	// server (see the --standalone note on apiShape), so the retry path paid for two.
+	plainOut, plainErr := runOpencodeCLI(ctx, d.binary, homeDir(), "models")
+	if plainErr == nil {
 		d.rememberModelsForm(false)
 		return parseModelOutput(plainOut)
 	}
 
-	// BOTH FAILED, so this is not the flag: report the MINIMUM invocation's failure, because
-	// `models` alone is the thing that cannot work. Its error carries the CLI's own words.
-	_, plainErr := runOpencodeCLI(ctx, d.binary, homeDir(), "models")
+	// BOTH FAILED, so this is not the form: report the PLAIN invocation's failure, because `models`
+	// alone is the thing that cannot work, and its error carries the CLI's own words.
 	return nil, fmt.Errorf("list opencode models: %w", plainErr)
 }
 
@@ -408,7 +432,17 @@ func parseModelOutput(data []byte) ([]*apiv1.OpenCodeModel, error) {
 	}
 
 	if len(models) == 0 {
-		return nil, fmt.Errorf("no models found in opencode output")
+		// AN EMPTY LIST IS A REAL ANSWER, AND opencode 2.x SAYS IT BY PRINTING NOTHING. Its `models`
+		// handler ends with `if (models.length > 0) process.stdout.write(...)` — a zero-model
+		// response is a silent exit 0. So this message is reached by a CLI that SUCCEEDED, and
+		// "no models found in opencode output" reads like a parse failure when it is not one.
+		//
+		// The overwhelmingly likely cause is that no provider is authenticated: a model list is
+		// built from configured providers, so none configured means none listed. The remedy is
+		// named, because an operator cannot act on "no models found".
+		return nil, fmt.Errorf("opencode listed no models — the command succeeded and printed nothing, " +
+			"which is how it reports an empty model list. Check that a provider is authenticated " +
+			"(`opencode auth list`), and try the command by hand to confirm: `opencode models`")
 	}
 	return models, nil
 }
