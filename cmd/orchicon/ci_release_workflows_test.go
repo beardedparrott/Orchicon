@@ -135,3 +135,89 @@ func TestCanaryPublishesAnImageThatIsNotLatest(t *testing.T) {
 		t.Error("canary.yml references orchicon:latest — that tag belongs to the published release, and pointing it at develop would change what every existing install pulls")
 	}
 }
+
+// TestEveryJobThatBuildsTheBinaryBuildsTheFrontendFirst — the silent-embed trap.
+//
+// THE FRONTEND IS EMBEDDED WITH `//go:embed all:frontend/dist`, and `frontend/dist/.gitkeep` is tracked
+// EXACTLY SO THE EMBED ALWAYS HAS A TARGET. The consequence is brutal: a job that skips the frontend build
+// COMPILES PERFECTLY and produces a valid archive whose binary serves NO UI — the embed matched the
+// placeholder and nothing else. Nothing fails anywhere. The defect is visible only to whoever installs it
+// and opens the URL.
+//
+// That is exactly what the canary did: its binary job packaged a frontend-less binary, a canary install
+// replaced the operator's working host plane with it, and the browser got `{"error":"missing credentials"}`
+// — the request fell through to the auth-guarded catch-all, because there was no static asset to serve.
+//
+// So the rule is asserted over EVERY job in BOTH workflows rather than for the one that broke: a job that
+// builds ./cmd/orchicon must build the frontend earlier in the same job. The set is enumerated by scanning
+// the files, so a job added later is covered the moment it exists.
+func TestEveryJobThatBuildsTheBinaryBuildsTheFrontendFirst(t *testing.T) {
+	for _, wf := range []string{"../../.github/workflows/release.yml", "../../.github/workflows/canary.yml"} {
+		b, err := os.ReadFile(wf)
+		if err != nil {
+			t.Fatalf("read %s: %v", wf, err)
+		}
+		for _, job := range jobsIn(string(b)) {
+			if !strings.Contains(job.body, "./cmd/orchicon") {
+				continue // does not build the binary: not this rule's business
+			}
+			if !strings.Contains(job.body, "go build") {
+				continue
+			}
+			frontend := strings.Index(job.body, "npm run build")
+			binary := strings.Index(job.body, "go build")
+			if frontend < 0 {
+				t.Errorf("%s job %q builds ./cmd/orchicon without building the frontend — it will compile and "+
+					"package a binary with NO UI, because go:embed matches the tracked frontend/dist/.gitkeep "+
+					"and nothing else. Nothing else in the pipeline will notice.", wf, job.name)
+				continue
+			}
+			if frontend > binary {
+				t.Errorf("%s job %q builds the binary BEFORE the frontend, so the embed cannot see it", wf, job.name)
+			}
+		}
+	}
+}
+
+// job is one workflow job, kept as its raw block so the ORDER of its steps can be inspected — which is the
+// property that matters here, not merely presence.
+type job struct {
+	name string
+	body string
+}
+
+// jobsIn splits a workflow's `jobs:` mapping into its top-level jobs by indentation (a job name sits at two
+// spaces, which is how these files are written and why a line scan is honest here).
+func jobsIn(src string) []job {
+	lines := strings.Split(src, "\n")
+	start := -1
+	for i, l := range lines {
+		if strings.TrimSpace(l) == "jobs:" {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return nil
+	}
+	var out []job
+	cur := -1
+	for i := start + 1; i < len(lines); i++ {
+		l := lines[i]
+		if l != "" && !strings.HasPrefix(l, " ") {
+			break // left the jobs mapping
+		}
+		if strings.HasPrefix(l, "  ") && !strings.HasPrefix(l, "    ") && strings.HasSuffix(l, ":") {
+			if cur >= 0 {
+				out = append(out, job{name: strings.TrimSuffix(strings.TrimSpace(lines[cur]), ":"),
+					body: strings.Join(lines[cur+1:i], "\n")})
+			}
+			cur = i
+		}
+	}
+	if cur >= 0 {
+		out = append(out, job{name: strings.TrimSuffix(strings.TrimSpace(lines[cur]), ":"),
+			body: strings.Join(lines[cur+1:], "\n")})
+	}
+	return out
+}
