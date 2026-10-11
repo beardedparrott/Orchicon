@@ -793,9 +793,48 @@ func (c *SessionClient) doJSON(ctx context.Context, method, path string, body, o
 		return fmt.Errorf("opencode serve %s %s: http %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 	if out != nil {
-		if err := json.NewDecoder(resp.Body).Decode(out); err != nil && !errors.Is(err, io.EOF) {
-			return err
-		}
+		return c.decodeBody(resp.Body, out)
 	}
 	return nil
 }
+
+// decodeBody decodes a response body into out, unwrapping the surface's response envelope WHEN IT IS
+// PRESENT and passing the body through when it is not.
+//
+// WHY THE "WHEN PRESENT" PART MATTERS, rather than unwrapping unconditionally on v2: the envelope is
+// per-endpoint. Measured on 2.0.26, the session endpoints wrap ({"data":{…}}) while /api/info does not
+// ({"version":…}). A decoder that assumed the wrapper would read nothing from the endpoints that omit
+// it, and the failure would look exactly like the one this fixes — an empty field, no error.
+//
+// An absent envelope key is therefore not an error: it means this endpoint answers bare, which the
+// same decoder handles. Only a body that fails BOTH readings is reported, and it is reported with the
+// bytes, because a shape mismatch is not something a caller can guess at.
+func (c *SessionClient) decodeBody(r io.Reader, out any) error {
+	raw, err := io.ReadAll(io.LimitReader(r, maxResponseBytes))
+	if err != nil {
+		return err
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil // an empty body is a valid answer for a status-only endpoint
+	}
+	body := raw
+	if env := c.shape.responseEnvelope; env != "" {
+		var wrapper map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &wrapper); err == nil {
+			if inner, ok := wrapper[env]; ok {
+				body = inner
+			}
+		}
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		// Report the shape we actually got, truncated, rather than a bare unmarshal error: on a new
+		// API generation the useful question is "what does it return?", and that cannot be guessed.
+		return fmt.Errorf("decode %s response: %w (first %d bytes: %s)",
+			c.shape.name, err, min(300, len(raw)), strings.TrimSpace(string(raw[:min(300, len(raw))])))
+	}
+	return nil
+}
+
+// maxResponseBytes bounds a response we will read before deciding its shape. Generous for a session
+// JSON document, and small enough that a wrong endpoint cannot make us buffer something enormous.
+const maxResponseBytes = 8 << 20

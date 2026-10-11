@@ -64,6 +64,18 @@ type apiShape struct {
 	// ⚠ UNVERIFIED beyond the audit's note — see the file comment.
 	permissionReplyField string
 
+	// responseEnvelope is the key v2 wraps SESSION responses in, or "" when responses are bare.
+	//
+	// MEASURED against opencode 2.0.26 — and the envelope is PER-ENDPOINT, not universal, which is why
+	// this is a key name and the decoder tolerates its absence:
+	//
+	//	POST /api/session          -> {"data":{"id":"ses_…","projectID":…,"title":…}}
+	//	GET  /api/session/{id}     -> {"data":{"id":"ses_…",…}}
+	//	GET  /api/info             -> {"version":"2.0.26","pid":…,"urls":[…]}      <- NO envelope
+	//
+	// Decoding the envelope blindly would therefore break the endpoints that do not use it, so the
+	// decoder unwraps WHEN THE KEY IS PRESENT and passes the body through when it is not.
+	responseEnvelope string
 	// modelsArgs is the argv used to LIST MODELS on this surface.
 	//
 	// v1: `models --verbose` — the metadata form, the only one that carries cost and limits.
@@ -104,6 +116,7 @@ var shapeV1 = apiShape{
 	compactSuffix:         "summarize",
 	permissionReplyNested: true,
 	permissionReplyField:  "response",
+	responseEnvelope:      "",
 	modelsArgs:            []string{"models", "--verbose"},
 }
 
@@ -127,6 +140,7 @@ var shapeV2 = apiShape{
 	compactSuffix:         "compact",
 	permissionReplyNested: false,
 	permissionReplyField:  "decision",
+	responseEnvelope:      "data",
 	modelsArgs:            []string{"models"},
 }
 
