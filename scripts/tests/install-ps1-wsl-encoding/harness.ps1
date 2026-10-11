@@ -134,17 +134,46 @@ if (-not (Test-Path $PwshExe)) { $PwshExe = (Get-Command pwsh).Source }
 $Work = Split-Path $StubBin -Parent
 
 function Invoke-ChildInstaller {
-  param([hashtable]$Env, [string]$Command)
+  param([hashtable]$Env, [string]$Command, [string]$Stdin = "")
   $prev = @{}
   foreach ($k in $Env.Keys) {
     $prev[$k] = [Environment]::GetEnvironmentVariable($k)
     [Environment]::SetEnvironmentVariable($k, $Env[$k])
   }
   try {
+    # THE CHILD'S STDIN IS PINNED, AND THAT IS THE WHOLE POINT OF THIS SHAPE.
+    #
+    # The installer ASKS for an instance (Read-Host). Run from a terminal — which is exactly how
+    # `make rebuild-dev` runs this harness — Read-Host BLOCKS, and the suite hangs with no output until
+    # something kills it. That is what happened: `make rebuild-dev` sat on this step indefinitely.
+    #
+    # Feeding the child a file (empty unless a test supplies an answer) makes Read-Host return
+    # immediately, so the suite behaves identically with or without a terminal. Deterministic in both
+    # contexts, which is what a test must be.
+    $work = Join-Path $Work ("child-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $work | Out-Null
+    $inFile = Join-Path $work "in.txt"
+    $outFile = Join-Path $work "out.txt"
+    $errFile = Join-Path $work "err.txt"
+    $scriptFile = Join-Path $work "child.ps1"
+    [System.IO.File]::WriteAllText($inFile, $Stdin)
     # A fresh session's own preference, so what the child does is the installer's
     # doing and not a harness setting leaking in.
-    $full = "`$ErrorActionPreference = 'Continue'; $Command"
-    return (& $PwshExe -NoProfile -Command $full 2>&1 | Out-String)
+    #
+    # THE COMMAND IS WRITTEN TO A FILE AND RUN WITH -File, not passed as -Command. `Start-Process
+    # -ArgumentList` re-quotes the argument for the child, and the embedded double quotes come out of it
+    # MANGLED — measured: an inner `WriteLine("x")` reached the child as `WriteLine(x)`, a parse error. A
+    # file carries the text exactly, and as a bonus it is inspectable while debugging a failing run.
+    [System.IO.File]::WriteAllText($scriptFile, "`$ErrorActionPreference = 'Continue'" + [Environment]::NewLine + $Command)
+    Start-Process -FilePath $PwshExe -ArgumentList @("-NoProfile", "-File", $scriptFile) `
+      -RedirectStandardInput $inFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile `
+      -Wait | Out-Null
+    # BOTH STREAMS, concatenated: the harness asserts about stderr text too ("no raw exception is dumped"),
+    # and the previous shape merged them with 2>&1.
+    $text = ""
+    if (Test-Path $outFile) { $text += [System.IO.File]::ReadAllText($outFile) }
+    if (Test-Path $errFile) { $text += [System.IO.File]::ReadAllText($errFile) }
+    return $text
   } finally {
     foreach ($k in $prev.Keys) { [Environment]::SetEnvironmentVariable($k, $prev[$k]) }
   }
@@ -173,7 +202,7 @@ Check "-Help returns to the prompt (it closed the window too)" ($help -match $ma
 Check "-Help still prints the usage" ($help -match "Usage: install.ps1")
 
 $dry = Invoke-ChildInstaller -Env @{ PROCESSOR_ARCHITECTURE = "AMD64" } `
-  -Command "& ([scriptblock]::Create((Get-Content -Raw '$quoted'))) -Version v0.0.0 -DryRun; '$marker'"
+  -Command "& ([scriptblock]::Create((Get-Content -Raw '$quoted'))) -Version v0.0.0 -Instance dev -DryRun; '$marker'"
 Check "-DryRun returns to the prompt" ($dry -match $marker)
 Check "-DryRun still prints its plan" ($dry -match "dry-run complete")
 Check "-DryRun starts no transcript (it changes nothing)" ($dry -notmatch "full log of this install")
@@ -557,6 +586,33 @@ foreach ($flag in @('$RemoveBinary', '$Uninstall', '$Clean', '$ForceClean')) {
 Check "install is the only flag with a fallback" `
   (($ps1c -match 'Ask-Instance -Fallback "dev"')) `
   "installing to the documented default is safe; destroying a volume on a default is not"
+
+# --- 20. THE HARNESS MUST NOT BE ABLE TO BLOCK, AND THE PROMPT MUST COME LAST ------
+# Reported: "I am rebuilding dev and it keeps hanging on this step" — and this step WAS this harness. The
+# installer asks for an instance with Read-Host; run from a terminal (which is exactly how `make rebuild-dev`
+# runs it) Read-Host BLOCKS, so the suite sat there with no output until something killed it. CI never saw
+# it because CI has no terminal: the failure existed only for the person running the build.
+#
+# A HANG IS A WIRING PROPERTY, so it is asserted as one — there is nothing to observe at runtime that would
+# have caught it here, since the bug is precisely that nothing happens.
+Say ""
+Say "[20] the harness cannot block, and the prompt comes after the prerequisites"
+
+$harnessSrc = Get-Content -Raw $PSCommandPath
+Check "the child's stdin is PINNED (so a prompt returns instead of blocking)" `
+  (($harnessSrc -match 'RedirectStandardInput') -and ($harnessSrc -match '\[System.IO.File\]::WriteAllText\(\$inFile')) `
+  "without this, Read-Host waits for a keystroke that a test will never type"
+Check "the child command is passed by FILE, not inline" `
+  ($harnessSrc -match '"-NoProfile", "-File", \$scriptFile') `
+  "Start-Process mangles embedded quotes in an inline -Command (measured: WriteLine(`"x`") arrived as WriteLine(x))"
+
+# And the installer itself must ask for an instance only once the prerequisites are known good.
+$code20 = (($ps1Src -split "`n") | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+$dock = $code20.IndexOf("Ensure-WslDocker")
+$ask = $code20.IndexOf('Ask-Instance -Fallback "dev"')
+Check "the instance prompt comes AFTER the Docker check" `
+  (($dock -ge 0) -and ($ask -gt $dock)) `
+  "asking first makes the operator answer a question about a stack that cannot be created, and buries the real problem under the answer"
 
 Say ""
 if ($Fail.Count -eq 0) { Say "RESULT: all assertions passed" }
