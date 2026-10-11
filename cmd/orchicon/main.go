@@ -72,6 +72,8 @@ func main() {
 			os.Exit(exitOnErr(runRuntimeClient(os.Args[2:], log)))
 		case "install":
 			os.Exit(exitOnErr(runInstall(os.Args[2:], log)))
+		case "restart":
+			os.Exit(exitOnErr(runRestart(os.Args[2:], log)))
 		case "version", "--version", "-v":
 			fmt.Println(version.Current().String())
 			return
@@ -251,33 +253,91 @@ func exitOnErr(err error) int {
 
 func printHelp() {
 	bin := filepath.Base(os.Args[0])
-	fmt.Printf(`%s %s — Orchicon control plane
 
-Usage:
-  %s                Run the control plane (API + relay + reconcilers)
-  %s serve          Run the control plane with embedded frontend (headless)
-  %s serve --detach Fork the server into the background (PID file + /healthz)
-  %s serve --stop   Stop a detached server
-  %s container      Run the whole stack as PID 1 inside the single-container image
-  %s mcp            Start the MCP stdio server (for opencode tool integration)
-  %s db backup      Create a database snapshot
-  %s db list        List available backups
-  %s db restore     Restore from a backup
-  %s db prune       Remove backups older than N days
-  %s backfill-pr    Backfill real PR URLs for completed git-backed runs
-  %s run-context    Print a run's .orchicon archive (steps/summary) for context-by-reference
-  %s claude-hook    Run the PreToolUse permission hook for a claude worker session
-`, bin, version.Current().Tag, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin, bin)
+	// THE ROWS ARE DATA, AND THE COMMAND COLUMN IS MEASURED FROM THEM.
+	//
+	// Both halves of that matter, and the first version of this function had neither. The list was
+	// a Printf with one positional argument per line (fifteen of them), maintained by hand — which
+	// is how `install` came to be absent from the help entirely. And the gap after each command was
+	// literal spaces, so the columns only lined up for a binary whose name happened to fit: with a
+	// longer name (a test binary, or `/usr/local/bin/orchicon` → still `orchicon`) the longest rows
+	// lost their gap and the line read as one run-on sentence.
+	//
+	// So: rows first, then the width is the longest command plus a gap. The rendered help is
+	// correct for ANY binary name.
+	type row struct {
+		section string // non-empty starts a new section
+		cmd     string
+		desc    []string
+	}
 
-	fmt.Printf(`
-  %s version       Print version info
-  %s notices       Print third-party license + notice text
+	rows := []row{
+		{section: "Setting up and driving an instance:"},
+		{cmd: bin + " install", desc: []string{
+			"Set up this machine: pull the images, create the instance, start the plane.",
+			"IDEMPOTENT — re-running converges an existing instance and upgrades a superseded",
+			"plane. It does NOT restart a plane that is already healthy on the installed binary,",
+			"which is why it is not the way to pick up an environment change."}},
+		{cmd: bin + " restart", desc: []string{
+			"Restart the instance so its components re-read their environment.",
+			"Use this after installing an adapter CLI or changing PATH: a plane inherits its",
+			"environment when it STARTS, so `install` alone will not refresh it."}},
+		{cmd: bin + " version", desc: []string{"Print version info"}},
+		{cmd: bin + " notices", desc: []string{"Print third-party license + notice text"}},
 
-The binary embeds the single-container runtime configs, migrations, and
-the frontend bundle. Run the full stack with `+"`docker run`"+` (see
-ARCHITECTURE.md §Single-Container Deployment) or `+"`%s container`"+` as
-the container's PID-1 supervisor.
-`, bin, bin, bin)
+		{section: "Running the control plane directly:"},
+		{cmd: bin, desc: []string{"Run the control plane (API + relay + reconcilers)"}},
+		{cmd: bin + " serve", desc: []string{"Run the control plane with embedded frontend (headless)"}},
+		{cmd: bin + " serve --detach", desc: []string{"Fork the server into the background (PID file + /healthz)"}},
+		{cmd: bin + " serve --status", desc: []string{"Report whether a detached server is running"}},
+		{cmd: bin + " serve --stop", desc: []string{"Stop a detached server"}},
+		{cmd: bin + " container", desc: []string{"Run the whole stack as PID 1 inside the single-container image"}},
+
+		{section: "Operating an instance:"},
+		{cmd: bin + " db", desc: []string{"Database snapshots: backup | list | restore | prune"}},
+		{cmd: bin + " backfill-pr", desc: []string{"Backfill real PR URLs for completed git-backed runs"}},
+		{cmd: bin + " run-context", desc: []string{"Print a run's .orchicon archive (steps/summary) for context-by-reference"}},
+
+		{section: "Integration helpers (invoked by the runtime, not usually by hand):"},
+		{cmd: bin + " mcp", desc: []string{"Run the MCP stdio server (for opencode tool integration)"}},
+		{cmd: bin + " claude-hook", desc: []string{"Run the PreToolUse permission hook for a claude worker session"}},
+
+		// INTERNAL COMMANDS ARE LISTED TOO. They are dispatched and they are real, so an operator can
+		// reach them; hiding them would recreate exactly the gap this help had (a command that exists
+		// and runs, absent from the list). The heading is what says "not for hand use".
+		{section: "Internal (started by the installer and the daemon; not for hand use):"},
+		{cmd: bin + " runtime-daemon", desc: []string{"Run the runtime daemon (owns the Docker socket)"}},
+		{cmd: bin + " runtime-supervisor", desc: []string{"Run a workflow container's supervisor"}},
+		{cmd: bin + " runtime-client", desc: []string{"Talk to the runtime daemon over its socket"}},
+	}
+
+	width := 0
+	for _, r := range rows {
+		if len(r.cmd) > width {
+			width = len(r.cmd)
+		}
+	}
+	col := width + 2
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s %s — Orchicon control plane\n", bin, version.Current().Tag)
+	for _, r := range rows {
+		if r.section != "" {
+			fmt.Fprintf(&b, "\n%s\n", r.section)
+			continue
+		}
+		fmt.Fprintf(&b, "  %-*s%s\n", col, r.cmd, r.desc[0])
+		for _, extra := range r.desc[1:] {
+			fmt.Fprintf(&b, "  %-*s%s\n", col, "", extra)
+		}
+	}
+
+	fmt.Fprintf(&b, "\nAlmost every command reads ORCHICON_INSTANCE to choose the instance (default: dev).\n")
+	fmt.Fprintf(&b, "\nThe binary embeds the single-container runtime configs, migrations, and the frontend\n"+
+		"bundle. Run the full stack with `docker run` (see ARCHITECTURE.md §Single-Container\n"+
+		"Deployment) or `%s container` as the container's PID-1 supervisor.\n", bin)
+
+	fmt.Print(b.String())
 }
 
 func runMCP(ctx context.Context, args []string, log *slog.Logger) int {
