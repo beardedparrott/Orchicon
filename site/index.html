@@ -342,6 +342,15 @@ table.fk tbody th{vertical-align:top}
 .panel .c{color:var(--on-console-2)}
 .panel .p{color:var(--signal); user-select:none}
 .panel-note{font-size:15px; color:var(--ink-2); margin:14px 0 0}
+/* The installer's common commands. It is a LIST OF WHAT EACH FLAG DOES, because the panel above shows only
+   the bare command and the one-line pointer to the README left the reader with nowhere to look. Same tokens
+   as everything else on the page (--rule, --ink-2/3, --mono) so it cannot drift from the rest of the type. */
+.cmds{margin:26px 0 0}
+.cmds-title{font:500 12px var(--mono); letter-spacing:.06em; text-transform:uppercase; color:var(--ink-3); margin:0 0 10px}
+.cmds ul{list-style:none; margin:0; padding:0; border-top:1px solid var(--rule)}
+.cmds li{padding:9px 0; border-bottom:1px solid var(--rule); font-size:15px; color:var(--ink-2)}
+.cmds li:last-child{border-bottom:0}
+.cmds li code{font-weight:500; color:var(--ink)}
 .qs{list-style:none; margin:0; padding:0; border-top:2px solid var(--ink)}
 .qs li{display:grid; grid-template-columns:36px 1fr; padding:18px 0; border-bottom:1px solid var(--rule)}
 .qs .n{font:500 14px var(--mono); color:var(--ink-3); padding-top:3px}
@@ -870,10 +879,24 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
         <button class="copy" data-copy="c-docker">Copy</button>
       </div>
       <p class="panel-note" id="install-note">Requires <code>curl</code>, <code>tar</code> and Docker.</p>
+      <div class="cmds">
+        <p class="cmds-title">Common commands — add them to the line above</p>
+        <ul>
+          <li><code>--instance &lt;dev|test|prod&gt;</code> — which stack to act on: each has its own container, ports, data volume and host state. Every command that changes something asks unless you pass this.</li>
+          <li><code>--version &lt;tag&gt;</code> — a specific released version instead of the latest.</li>
+          <li><code>--dry-run</code> — show what would happen. Changes nothing.</li>
+          <li><code>--no-setup</code> — the binary only: no images, no daemon, no container.</li>
+          <li><code>--uninstall</code> — stop this instance and remove the binaries. Your data is kept.</li>
+          <li><code>--purge</code> — uninstall and destroy this instance's data. Irreversible.</li>
+          <li><code>--remove-binary</code> — just the <code>orchicon</code> and <code>orch</code> executables; containers, volumes and state are untouched.</li>
+          <li><code>--clean</code> — upgrade: stop, remove the old binary, install the latest. Data kept.</li>
+          <li><code>--force-clean</code> — rebuild from scratch for this instance. All of its data is lost.</li>
+        </ul>
+      </div>
     </div>
     <div>
       <ol class="qs">
-        <li><span class="n">1</span><div><b>Install</b><span>Run the command for your platform. Flags like <code>--version</code>, <code>--no-setup</code> and <code>--uninstall</code> are in the <a href="https://github.com/beardedparrott/Orchicon">README</a>.</span></div></li>
+        <li><span class="n">1</span><div><b>Install</b><span>Run the command for your platform, then add the flags you want — the common ones are listed beside it.</span></div></li>
         <li><span class="n">2</span><div><b>Open the app</b><span>The control plane and web app come up on <code>localhost:8080</code>. Sign in with the built-in dev identity provider.</span></div></li>
         <li><span class="n">3</span><div><b>Create a project</b><span>Point it at a repository. Every Worker is scoped to that directory.</span></div></li>
         <li><span class="n">4</span><div><b>Ask, then dispatch</b><span>Brainstorm in Ask Orchicon, turn the result into a work item, bind a workflow and start it. Watch it in the browser or in <code>orch</code>.</span></div></li>
