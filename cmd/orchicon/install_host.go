@@ -25,7 +25,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -260,20 +262,147 @@ func migrateHostDataDir(instance, volume, hostDataDir string, out io.Writer) err
 // A timeout WARNS rather than failing, mirroring the launcher: a slow first boot
 // should not abort an install that is otherwise complete, and the plane's own
 // retries cover a backend that comes up late.
-func waitServicesReady(name string, out io.Writer) {
+// waitServicesReady waits for an instance's services and REPORTS whether they came up. It used to return
+// nothing, so a caller could not act on "the stack is not ready" — which is one of the states the install's
+// repair pass exists to fix.
+func waitServicesReady(name string, out io.Writer) bool {
 	// Announced before the wait: this can sit here for a minute, and a silent minute
 	// reads as a hang.
 	fmt.Fprintf(out, "waiting for %s services (postgres 5432, nats monitor 8222) …\n", name)
 	for i := 0; i < 60; i++ {
-		pg := exec.Command("docker", "exec", name, "pg_isready", "-h", "localhost", "-p", "5432", "-U", "orchicon")
-		nats := exec.Command("docker", "exec", name, "curl", "-fs", "http://localhost:8222/healthz")
-		if pg.Run() == nil && nats.Run() == nil {
+		if servicesReady(name) {
 			fmt.Fprintf(out, "%s services ready (postgres 5432, nats monitor 8222)\n", name)
-			return
+			return true
 		}
 		time.Sleep(time.Second)
 	}
 	fmt.Fprintf(out, "warning: %s services were not confirmed ready within 60s — continuing\n", name)
+	return false
+}
+
+// servicesReady asks the instance's services the same two questions the waiting loop does, as a boolean: is
+// Postgres accepting connections, and is the NATS monitor healthy.
+func servicesReady(name string) bool {
+	pg := exec.Command("docker", "exec", name, "pg_isready", "-h", "localhost", "-p", "5432", "-U", "orchicon")
+	nats := exec.Command("docker", "exec", name, "curl", "-fs", "http://localhost:8222/healthz")
+	return pg.Run() == nil && nats.Run() == nil
+}
+
+// planeDrift says whether the host plane now serving matches the binary this install put in place.
+type planeDriftState int
+
+const (
+	// planeUnknown: the serving process could not be identified. Treat as "leave it alone".
+	planeUnknown planeDriftState = iota
+	// planeCurrent: the plane is running the installed binary.
+	planeCurrent
+	// planeDrifted: the plane is running a superseded binary and should be restarted.
+	planeDrifted
+)
+
+// planeDrift identifies the serving plane from the instance's PID file and compares its executable with
+// this one.
+//
+// WHY THE PID FILE AND /proc: they are the only truthful source. A version endpoint would answer with
+// whatever the OLD process believes about itself, and a timestamp comparison cannot see a rebuilt binary of
+// the same version. `/proc/<pid>/exe` shows the APEX of the running process, and a replaced path reports
+// `(deleted)` — the exact fingerprint of "the installer overwrote the binary under a live plane".
+func planeDrift(instance string, out io.Writer) planeDriftState {
+	self, err := os.Executable()
+	if err != nil {
+		return planeUnknown
+	}
+	self, err = filepath.EvalSymlinks(self)
+	if err != nil {
+		return planeUnknown
+	}
+	pid, ok := servingPlanePID(instance)
+	if !ok {
+		return planeUnknown
+	}
+	exe, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+	if err != nil {
+		return planeUnknown
+	}
+	// A path is `(deleted)`-suffixed once the file it names has been replaced. Anything else is compared
+	// against the binary we are running from.
+	if strings.HasSuffix(exe, " (deleted)") {
+		return planeDrifted
+	}
+	if exe != self {
+		// Serving from a DIFFERENT path than the binary this install just placed in the install dir. It may
+		// be a dev checkout serving deliberately; only a plane the INSTALLER started is ours to restart, and
+		// the PID file is what distinguishes them.
+		fmt.Fprintf(out, "  (plane runs from %s, not %s — leaving it)\n", exe, self)
+		return planeUnknown
+	}
+	return planeCurrent
+}
+
+// servingPlanePID reads the instance's detached-plane PID file and reports whether that process is alive.
+func servingPlanePID(instance string) (int, bool) {
+	dataDir, err := hostDataDir(instance)
+	if err != nil {
+		return 0, false
+	}
+	stateDir := filepath.Join(dataDir, "serve")
+	b, err := os.ReadFile(filepath.Join(stateDir, "pids", "orchicon.pid"))
+	if err != nil {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pid <= 0 {
+		return 0, false
+	}
+	// The PID file outlives the process; /proc is what says whether it is still that process.
+	if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); err != nil {
+		return 0, false
+	}
+	return pid, true
+}
+
+// stopHostPlane stops the instance's detached host plane, so the caller can start it on the installed
+// binary.
+//
+// THE INSTALLER HAD NO WAY TO DO THIS AT ALL — `serve --stop` appears nowhere in it — which is why a stale
+// plane could never be corrected. It re-execs THIS binary (the newly installed one) with the instance's
+// state dir, exactly as the shell launcher does, because `serve --stop` resolves its PID file from
+// ORCHICON_SERVE_STATE_DIR and a bare call would look in the wrong place.
+func stopHostPlane(instance string, out io.Writer) error {
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate this binary to stop the host plane: %w", err)
+	}
+	dataDir, derr := hostDataDir(instance)
+	if derr != nil {
+		return fmt.Errorf("resolve the host plane state dir for %s: %w", instance, derr)
+	}
+	cmd := exec.Command(self, "serve", "--stop")
+	cmd.Env = append(envWithout(os.Environ(), "ORCHICON_CONTAINER_MODE"),
+		serveStateDirEnv+"="+filepath.Join(dataDir, "serve"))
+	cmd.Stdout = out
+	cmd.Stderr = out
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("stop the existing host plane for %s: %w", instance, err)
+	}
+	// The socket has to be free before the new plane binds it. Bounded, and a failure here is reported
+	// rather than slept through: an address still in use is the one reason the start below would fail.
+	for i := 0; i < 20; i++ {
+		if !servingPlaneAlive(instance) {
+			return nil
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return fmt.Errorf("the host plane for %s did not stop — it may still be shutting down", instance)
+}
+
+// servingPlaneAlive reports whether the instance's PID-file process is still running.
+func servingPlaneAlive(instance string) bool {
+	pid, ok := servingPlanePID(instance)
+	if !ok {
+		return false
+	}
+	return syscall.Kill(pid, 0) == nil
 }
 
 // startHostPlane launches the HOST plane for an instance, detached, and waits
@@ -289,9 +418,37 @@ func waitServicesReady(name string, out io.Writer) {
 // correct on the host.
 func startHostPlane(instance string, ports map[string]int, hostDataDir, runtimeSocket string, out io.Writer) error {
 	healthURL := fmt.Sprintf("http://localhost:%d/healthz", ports["ORCHICON_CONTROL_PORT"])
+
+	// A PLANE THAT ANSWERS IS NOT NECESSARILY THE PLANE WE JUST INSTALLED.
+	//
+	// This used to be `if httpHealthy(...) { "already serving"; return nil }`, which asks whether SOMETHING
+	// is listening — not whether the listening process is the binary in hand. An install replaces that
+	// binary, so the old process keeps serving revised code from a replaced (unlinked) executable, and the
+	// installer reports success over an instance that was never upgraded. Reported: "said it was complete
+	// but no auth works and the previous dev container has been up for two hours".
+	//
+	// So the SERVING PROCESS is asked what it is running: the instance's own PID file names it, and
+	// /proc/<pid>/exe answers with the path — or with a `(deleted)` suffix once that path has been replaced
+	// underneath it, which is precisely the state an install creates.
 	if httpHealthy(healthURL, 2*time.Second) {
-		fmt.Fprintf(out, "host plane already serving %s\n", healthURL)
-		return nil
+		switch planeDrift(instance, out) {
+		case planeCurrent:
+			fmt.Fprintf(out, "host plane already serving %s (running the installed binary)\n", healthURL)
+			return nil
+		case planeDrifted:
+			// AN INSTALL IS AN UPGRADE, so replacing the running plane is what the operator asked for by
+			// running it. Stopping it here lets the start below bring up the NEW binary.
+			fmt.Fprintf(out, "host plane at %s is running a superseded binary — restarting it on the installed one\n", healthURL)
+			if err := stopHostPlane(instance, out); err != nil {
+				return err
+			}
+		default:
+			// The serving process cannot be identified (no PID file, unreadable /proc — another OS, a
+			// container-resident plane). Leave it ALONE: a restart we cannot justify is a blip on a working
+			// instance, and the health check a few lines below still reports whether it is serving.
+			fmt.Fprintf(out, "host plane already serving %s (could not identify the process; leaving it)\n", healthURL)
+			return nil
+		}
 	}
 	// A host plane its own workers cannot reach is worse than one that refuses to
 	// start: every plane-channel MCP call in every dispatched run would time out.
