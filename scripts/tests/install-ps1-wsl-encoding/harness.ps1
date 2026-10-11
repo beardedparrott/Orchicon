@@ -332,17 +332,24 @@ Say "[13] -Instance scoping"
 $scoped = Invoke-ChildInstaller -Env @{ ORCHICON_INSTANCE = ""; ORCHICON_INSTALL_LOG = "off" } `
   -Command "& ([scriptblock]::Create((Get-Content -Raw '$quoted'))) -Uninstall -Instance test -DryRun"
 Check "-Instance test names ONLY the test container" `
-  (($scoped -match 'docker stop orchicon-cnt-test') -and ($scoped -notmatch 'orchicon-cnt-prod') -and ($scoped -notmatch 'orchicon-cnt-dev')) `
-  "an unscoped cleanup would stop dev and prod too"
+  (($scoped -match 'orchicon-cnt-test') -and ($scoped -notmatch 'orchicon-cnt-prod') -and ($scoped -notmatch 'orchicon-cnt-dev')) `
+  "an unscoped cleanup would touch dev and prod too"
 
+# NOT `dev` ANY MORE, and that is deliberate: the verb ASKS for the instance, and with no terminal it
+# refuses rather than picking one. Inferring `dev` was how an operator could clean the wrong stack.
 $def = Invoke-ChildInstaller -Env @{ ORCHICON_INSTANCE = ""; ORCHICON_INSTALL_LOG = "off" } `
   -Command "& ([scriptblock]::Create((Get-Content -Raw '$quoted'))) -Uninstall -DryRun"
-Check "with no flag and no environment, the default is dev" ($def -match 'docker stop orchicon-cnt-dev') `
-  ("got: " + (($def -split "`n" | Where-Object { $_ -match 'docker stop' }) -join ' / '))
+Check "with no flag, no environment and no terminal it REFUSES" `
+  (($def -match 'no instance chosen') -and ($def -notmatch 'orchicon-cnt-dev')) `
+  ("got: " + (($def -split "`n" | Where-Object { $_ -match 'instance|orchicon-cnt' }) -join ' / '))
+$explicit = Invoke-ChildInstaller -Env @{ ORCHICON_INSTANCE = ""; ORCHICON_INSTALL_LOG = "off" } `
+  -Command "& ([scriptblock]::Create((Get-Content -Raw '$quoted'))) -Uninstall -Instance dev -DryRun"
+Check "and -Instance dev is still honoured without any prompt" ($explicit -match 'orchicon-cnt-dev')`
+  ("got: " + (($explicit -split "`n" | Where-Object { $_ -match 'orchicon-cnt' }) -join ' / '))
 
 $fromEnv = Invoke-ChildInstaller -Env @{ ORCHICON_INSTANCE = "test"; ORCHICON_INSTALL_LOG = "off" } `
   -Command "& ([scriptblock]::Create((Get-Content -Raw '$quoted'))) -Uninstall -DryRun"
-Check "the environment is still honoured when no flag is given" ($fromEnv -match 'docker stop orchicon-cnt-test')
+Check "the environment is still honoured when no flag is given" ($fromEnv -match 'orchicon-cnt-test')
 
 $bad = Invoke-ChildInstaller -Env @{ ORCHICON_INSTANCE = ""; ORCHICON_INSTALL_LOG = "off" } `
   -Command "& ([scriptblock]::Create((Get-Content -Raw '$quoted'))) -Uninstall -Instance production -DryRun; '$marker'"
@@ -356,6 +363,82 @@ $help2 = Invoke-ChildInstaller -Env @{ ORCHICON_INSTANCE = ""; ORCHICON_INSTALL_
 Check "-Help documents -Instance" ($help2 -match '-Instance <name>')
 Check "and -Help mentions dev, test and prod" `
   (($help2 -match 'dev \(default\)') -and ($help2 -match 'test') -and ($help2 -match 'prod'))
+
+# --- 14. UNINSTALL MUST ACTUALLY STOP THINGS, AND MUST NOT TAKE DATA UNASKED -------
+# The operator ran -Uninstall on Windows and found "the web server is still running broken": the binary
+# was gone and the plane was not. The cause was the trap the SHELL installer already documents and fixes —
+# `serve --stop` resolves its PID file from ORCHICON_SERVE_STATE_DIR, so a bare call looks in the
+# CWD-relative default, MISSES a host-resident plane, reports success, and then deletes the binary out
+# from under it. The container was only ever `docker stop`ped, so it survived an "uninstall" too.
+#
+# These are SOURCE assertions because the uninstall is a script the installer BUILDS and hands to wsl
+# (not a function this harness can call), so the property is in the generated text — the same reason the
+# other wiring checks in this repo read source.
+Say ""
+Say "[14] uninstall stops what it says it stops"
+
+$ps1Src = Get-Content -Raw $Installer
+Check "the uninstall script passes the instance's state dir to serve --stop" `
+  ($ps1Src -match 'ORCHICON_SERVE_STATE_DIR=\"\$STATE_DIR\" \"\$BIN\" serve --stop') `
+  "a bare serve --stop misses the host-resident plane and leaves a web server running with no binary"
+Check "and it derives that state dir from the INSTANCE, not a fixed path" `
+  ($ps1Src -match 'orchicon-\$\{INSTANCE\}/serve') `
+  "the state dir is per instance; a fixed one would stop the wrong plane"
+Check "it REMOVES the container rather than only stopping it" `
+  ($ps1Src -match 'docker rm -f \"\$CONTAINER\"') `
+  "docker stop left the services stack running after an uninstall"
+Check "data is preserved unless -Purge is given" `
+  ($ps1Src -match 'Re-run with -Purge to remove both' -and $ps1Src -match '\$PURGE\" = \"1\"') `
+  "destroying a database is not something an uninstall may infer from 'remove the software'"
+# SCOPED TO THE UNINSTALL SCRIPT: there is a second `rm -f "$BIN"` in the remove-binary script, and an
+# unscoped IndexOf was comparing against that one instead — an assertion about the wrong text.
+$a1 = $ps1Src.IndexOf("$uninstallScript = @'")
+$a2 = $ps1Src.IndexOf("'@", $a1)
+$uninstallOnly = $ps1Src.Substring($a1, $a2 - $a1)
+Check "the binary is removed LAST, after the plane that runs from it is stopped" `
+  ($uninstallOnly.IndexOf('ORCHICON_SERVE_STATE_DIR="$STATE_DIR"') -lt $uninstallOnly.IndexOf('rm -f "$BIN"')) `
+  "deleting the executable first is what produced the broken server"
+
+$purgeHelp = Invoke-ChildInstaller -Env @{ ORCHICON_INSTANCE = ""; ORCHICON_INSTALL_LOG = "off" } `
+  -Command "& ([scriptblock]::Create((Get-Content -Raw '$quoted'))) -Help; '$marker'"
+Check "-Help documents -Purge" ($purgeHelp -match '-Purge')
+Check "and says the uninstall preserves data" ($purgeHelp -match 'DATA IS PRESERVED')
+
+# --- 15. THE WINDOWS UNINSTALL VERBS ------------------------------------------
+# The posix side of this is behaviourally tested (scripts/tests/install-path/uninstall.sh, with docker
+# stubbed so nothing real can be touched). Windows cannot be: the uninstall runs INSIDE WSL, and this host
+# has none. So these are SOURCE assertions about the script the installer BUILDS — the same approach the
+# other wiring checks here take, and honest about what it does and does not prove.
+Say ""
+Say "[15] -Uninstall / -RemoveBinary / -Purge"
+
+$ps1 = Get-Content -Raw $Installer
+$ps1Code = (($ps1 -split "`n") | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+
+Check "the instance is ASKED FOR, not inferred" ($ps1Code -match 'function Ask-Instance') `
+  "inferring it from the environment with a dev default is how the wrong stack gets cleaned"
+Check "and both destructive verbs call it" `
+  (([regex]::Matches($ps1Code, 'Ask-Instance\s*$', 'Multiline')).Count -ge 2) `
+  "-Uninstall and -RemoveBinary must each ask"
+# `switch ($null)` fires NO branch in PowerShell — not even `default` — so a missing answer needs an
+# explicit test or it silently keeps the instance already set (measured: it acted on dev with no answer).
+Check "a missing answer REFUSES (no reliance on switch default)" `
+  ($ps1Code -match 'IsNullOrWhiteSpace\(\$answer\)') `
+  "switch (`$null) fires no branch at all, so a default clause cannot catch a missing answer"
+Check "whether -Instance was given is recorded at SCRIPT scope" `
+  ($ps1Code -match '\$script:InstanceGiven = \$PSBoundParameters\.ContainsKey') `
+  "inside a function `$PSBoundParameters describes the FUNCTION, so the check there never fired"
+Check "the remove-binary script gates the stop on CONSENT" `
+  ($ps1Code -match 'CONSENT="1"' -and $ps1Code -match 'nothing stopped, nothing removed') `
+  "removing a binary a plane runs from is what leaves a server answering with no binary"
+Check "and gates the removal itself on DRYRUN" `
+  ($ps1Code -match 'DRYRUN="1"') `
+  "a dry run that removes something is worse than no dry run"
+Check "-Help documents -RemoveBinary" ($ps1 -match '-RemoveBinary')
+Check "-Help documents -Purge" ($ps1 -match '-Purge')
+Check "the uninstall summary distinguishes preserved from destroyed data" `
+  (($ps1 -match 'DATA PRESERVED') -and ($ps1 -match 'volume and host state removed')) `
+  "an uninstall must not be ambiguous about whether the database survived"
 
 Say ""
 if ($Fail.Count -eq 0) { Say "RESULT: all assertions passed" }

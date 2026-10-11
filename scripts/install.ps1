@@ -59,6 +59,9 @@ param(
     [switch]$ForceClean,
     [switch]$DryRun,
     [switch]$NoSetup,
+    [switch]$RemoveBinary,
+    [switch]$Yes,
+    [switch]$Purge,
     [switch]$Help,
     [string]$Instance = ""
 )
@@ -97,8 +100,15 @@ Options:
   -InstallDir <dir>   WSL install directory for the binary (default: ~/.local/bin).
   -NoSetup            Install the binary only — do NOT pull images, start the
                       runtime daemon, or launch the container.
-  -Uninstall          Stop the WSL container instances, remove the WSL-installed
-                      binary. The WSL distro itself is left intact.
+  -Uninstall          Stop everything THIS instance runs - its plane and its container - and
+                      remove the Orchicon binary. DATA IS PRESERVED (the Docker volume and the
+                      instance's host state), and the summary says where each is.
+  -Purge              With -Uninstall: ALSO destroy the data - the instance's Docker volume and
+                      host state directory. Irreversible. Without -Uninstall this does nothing.
+  -RemoveBinary       Remove just the orchicon and orch executables. Every container, volume and
+                      instance's state is left alone. If something is running off them it asks
+                      before stopping it, and declining changes nothing.
+  -Yes                Answer the prompts affirmatively, for non-interactive use.
   -Clean              Stop the container instances, remove the old binary, then
                       install the latest version — one-shot upgrade. All user
                       data is preserved (Docker volumes, BlobStore files,
@@ -571,37 +581,164 @@ try {
 # wrong stack: `-Instance production` quietly becoming dev would clean up dev while the operator
 # watched prod. The set matches the installer port table (cmd/orchicon/install_ports.go).
 $script:Instance = if ($Instance) { $Instance } elseif ($env:ORCHICON_INSTANCE) { $env:ORCHICON_INSTANCE } else { "dev" }
+  # RECORDED AT SCRIPT SCOPE, deliberately: inside a function $PSBoundParameters describes the
+  # FUNCTION's parameters, so Ask-Instance could never see whether -Instance was supplied from there.
+  # Measured: `-RemoveBinary -Instance test` prompted anyway, because that check never fired.
+  $script:InstanceGiven = $PSBoundParameters.ContainsKey('Instance')
 if ($script:Instance -notin @("dev", "test", "prod")) {
     Stop-Install "unknown instance: '$script:Instance' (known: dev, test, prod)"
 }
+
+# ASK WHICH INSTANCE, AT THE MOMENT OF THE DESTRUCTIVE ACTION.
+#
+# Same reasoning as the shell installer's: inferring it from the environment with a `dev` default is how an
+# operator cleans the wrong stack, because the variable is invisible and a shell started from inside a
+# running plane inherits that plane's value. `-Instance` skips the question.
+#
+# READ-HOST IS NOT THE IDEAL READER - PowerShell offers no equivalent of opening /dev/tty - so this is
+# deliberately conservative: an empty or failed read is treated as NO ANSWER and the command stops, rather
+# than falling through to a default. For unattended use, pass -Instance.
+function Ask-Instance {
+    if ($script:InstanceGiven) { return }
+    if ($env:ORCHICON_INSTANCE) { return }
+    Write-Host ""
+    Write-Host "  Which instance?" -ForegroundColor White
+    Write-Host "  An instance is a whole stack: its own container, ports, data volume and host state." -ForegroundColor DarkGray
+    Write-Host "    1) dev      2) test      3) prod"
+    $answer = $null
+    try { $answer = Read-Host "  choose 1-3 or a name (empty cancels)" } catch { $answer = $null }
+    # TESTED BEFORE THE SWITCH, DELIBERATELY. In PowerShell `switch ($null)` fires NO branch at all —
+    # not even `default`, because the switch enumerates its value and $null yields nothing. So a
+    # `default` clause cannot catch a missing answer: it silently did nothing, left $script:Instance at
+    # its earlier value, and ACTED ON dev WITH NO ANSWER GIVEN. Measured on this host.
+    if ([string]::IsNullOrWhiteSpace($answer)) {
+        Stop-Install "no instance chosen - pass -Instance dev|test|prod"
+    }
+    switch ($answer) {
+        "1" { $script:Instance = "dev" }
+        "2" { $script:Instance = "test" }
+        "3" { $script:Instance = "prod" }
+        "dev" { $script:Instance = "dev" }
+        "test" { $script:Instance = "test" }
+        "prod" { $script:Instance = "prod" }
+        default { Stop-Install "no instance chosen - pass -Instance dev|test|prod" }
+    }
+    $script:ContainerName = "orchicon-cnt-$script:Instance"
+    $script:VolumeName = "orchicon-cnt-$script:Instance-data"
+    Write-Info "acting on instance: $script:Instance"
+}
+
 # DERIVED, in one place, so nothing below spells the names out again.
 $script:ContainerName = "orchicon-cnt-$script:Instance"
 $script:VolumeName = "orchicon-cnt-$script:Instance-data"
 
 # --- Uninstall --------------------------------------------------------------
+    if ($RemoveBinary) {
+        if (-not (Ensure-Wsl -Soft)) {
+            Write-Warn "WSL not found or no distro - nothing to remove"
+            return
+        }
+        Ask-Instance
+        $bin = Join-Path $InstallDir "orchicon"
+$removeBinaryScript = @'
+set +e
+BIN="__INSTALL_DIR__"
+BIN="${BIN/#\~/$HOME}/orchicon"
+ORCH="__INSTALL_DIR__"
+ORCH="${ORCH/#\~/$HOME}/orch"
+CONTAINER="__CONTAINER__"
+
+# ASK BEFORE TAKING ANYTHING DOWN. Removing a binary that a plane runs from is what produces a server
+# that answers and cannot work, so consent decides and declining changes nothing.
+HOLDER=$(fuser "$BIN" 2>/dev/null | tr -s ' ')
+if [ -n "$HOLDER" ]; then
+  echo "a process is running off $BIN (pids: $HOLDER)"
+  if [ "$CONSENT" = "1" ]; then
+    ORCHICON_SERVE_STATE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/orchicon-__INSTANCE__/serve" "$BIN" serve --stop >/dev/null 2>&1 || true
+    [ "$DRYRUN" = "1" ] || docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+  else
+    echo "nothing stopped, nothing removed"
+    exit 0
+  fi
+fi
+
+if [ "$DRYRUN" = "1" ]; then
+  echo "  (would remove $BIN)"
+  echo "  (would remove $ORCH)"
+else
+  [ -f "$BIN" ] && rm -f "$BIN" && echo "removed $BIN"
+  [ -f "$ORCH" ] && rm -f "$ORCH" && echo "removed $ORCH"
+fi
+true
+'@
+        $removeBinaryScript = $removeBinaryScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__CONTAINER__', $script:ContainerName).Replace('__INSTANCE__', $script:Instance)
+        $removeBinaryScript = $removeBinaryScript.Replace('CONSENT="1"', $(if ($Yes) { 'CONSENT="1"' } else { 'CONSENT=""' }))
+        $removeBinaryScript = $removeBinaryScript.Replace('DRYRUN="1"', $(if ($DryRun) { 'DRYRUN="1"' } else { 'DRYRUN=""' }))
+        if ($DryRun) {
+            Write-Info "would run in WSL: stop the $script:Instance plane/container if the binaries are in use, then remove orchicon and orch"
+        } else {
+            Invoke-WslBash $removeBinaryScript
+            Write-Ok "binaries removed for '$script:Instance' - containers, volumes and instance state untouched"
+        }
+        return
+    }
+
     if ($Uninstall) {
         if (-not (Ensure-Wsl -Soft)) {
             Write-Warn "WSL not found or no distro — nothing to uninstall"
             return
         }
+        Ask-Instance
         $bin = Join-Path $InstallDir "orchicon"
-        $uninstallScript = @'
+$uninstallScript = @'
 set +e
 BIN="__INSTALL_DIR__"
 BIN="${BIN/#\~/$HOME}/orchicon"
-if [ -x "$BIN" ]; then "$BIN" serve --stop >/dev/null 2>&1; fi
-docker stop __CONTAINER__ >/dev/null 2>&1
-if [ -f "$BIN" ]; then rm -f "$BIN" && echo "removed $BIN"; else echo "orchicon not found in $BIN — nothing to remove"; fi
+CONTAINER="__CONTAINER__"
+VOLUME="__VOLUME__"
+INSTANCE="__INSTANCE__"
+
+# THE PLANE IS STOPPED THROUGH ITS OWN STATE DIRECTORY, and this is the bug the operator hit: a bare
+# `serve --stop` resolves its PID file from ORCHICON_SERVE_STATE_DIR, so it looked in the CWD-relative
+# default, MISSED the host-resident plane, reported success, and then deleted the binary - leaving a web
+# server that answers and cannot work. The shell installer has passed the state dir since it learned the
+# same lesson; this is that fix.
+STATE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/orchicon-${INSTANCE}/serve"
+if [ -x "$BIN" ]; then
+  ORCHICON_SERVE_STATE_DIR="$STATE_DIR" "$BIN" serve --stop >/dev/null 2>&1 ||
+    echo "note: no running plane found for instance '${INSTANCE}'"
+fi
+
+# THE CONTAINER, which the old uninstall only STOPPED (leaving it behind) - or, when the binary was
+# already gone, never touched at all.
+docker rm -f "$CONTAINER" >/dev/null 2>&1 && echo "removed container $CONTAINER"
+
+if [ "$PURGE" = "1" ]; then
+  docker volume rm "$VOLUME" >/dev/null 2>&1 && echo "removed volume $VOLUME"
+  rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/orchicon-${INSTANCE}" && echo "removed host state for instance '${INSTANCE}'"
+else
+  echo ""
+  echo "  Data preserved:"
+  echo "    instance volume:  $VOLUME"
+  echo "    instance state:   ${XDG_DATA_HOME:-$HOME/.local/share}/orchicon-${INSTANCE}"
+  echo "  Re-run with -Purge to remove both (irreversible)."
+fi
+
+if [ -f "$BIN" ]; then rm -f "$BIN" && echo "removed $BIN"; else echo "orchicon not found in $BIN - nothing to remove"; fi
 true
 '@
-        $uninstallScript = $uninstallScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__CONTAINER__', $script:ContainerName).Replace('__VOLUME__', $script:VolumeName)
+        $uninstallScript = $uninstallScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__CONTAINER__', $script:ContainerName).Replace('__VOLUME__', $script:VolumeName).Replace('__INSTANCE__', $script:Instance)
+          $uninstallScript = $uninstallScript.Replace('PURGE="1"', $(if ($Purge) { 'PURGE="1"' } else { 'PURGE=""' }))
         if ($DryRun) {
-            Write-Info "would run inside WSL:"
-            Write-Host "  wsl -d $script:Distro -e bash -lc 'docker stop $script:ContainerName'"
-            Write-Host "  wsl -d $script:Distro -e bash -lc 'rm -f $bin'"
+              Write-Info "would run inside WSL:"
+              Write-Host "  stop the ${script:Instance} plane (via its own state dir) and remove its container"
+              Write-Host "  wsl -d $script:Distro -e bash -lc 'docker rm -f $script:ContainerName'"
+              if ($Purge) { Write-Host "  wsl -d $script:Distro -e bash -lc 'docker volume rm $script:VolumeName'" }
+              Write-Host "  wsl -d $script:Distro -e bash -lc 'rm -f $bin'"
         } else {
             Invoke-WslBash $uninstallScript
-            Write-Ok "Orchicon uninstalled — the WSL distro is left intact"
+              if ($Purge) { Write-Ok "Orchicon uninstalled for '$script:Instance' — binary, container, volume and host state removed" }
+              else { Write-Ok "Orchicon uninstalled for '$script:Instance' — binary and container removed; DATA PRESERVED (re-run with -Purge to destroy it)" }
         }
         # `return`, not `exit`: this path SUCCEEDS, and it used to close the window on
         # the way out (see HALT SEMANTICS).
