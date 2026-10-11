@@ -63,11 +63,13 @@ The installer downloads the binary, then runs `orchicon install` to set up every
 
 > **Adapters are optional — the native engine needs nothing installed.** Orchicon ships its own runtime engine and runs sessions inside the control plane, so a fresh install is complete on its own: no adapter CLI, no binary probe, no serve. Install an external adapter (OpenCode, and future ones like Claude Code / Codex) only if you want to run work on that runtime. Orchicon **never bundles or ships** an adapter CLI — your own host install is bind-mounted into the containers at runtime, which keeps the product redistributable regardless of an adapter's licence (Claude Code's terms prohibit bundling).
 >
-> To use OpenCode as a runtime:
+> To use OpenCode as a runtime, **install it as your own user — never with `sudo`**:
 >
 > ```bash
 > curl -fsSL https://opencode.ai/install | bash
 > ```
+>
+> That writes `~/.opencode/bin/opencode`, the one location both the plane and its runtime containers can use. `sudo npm i -g` writes to `/usr/local/bin`, which no container mounts — the binary works in your shell and every execution fails to find it. **On Windows, install it inside WSL**, not on the Windows side: the stack runs in a WSL2 distro and a Windows `opencode.exe` is reachable through interop but unusable by the plane. See [USERGUIDE.md §1](USERGUIDE.md#installing-an-adapter-cli) for the full rules.
 >
 > `orchicon install` no longer requires it. A plane whose model refs need no adapter never probes for the binary, never starts a serve, and never mounts it into a container — see [ARCHITECTURE.md](ARCHITECTURE.md).
 

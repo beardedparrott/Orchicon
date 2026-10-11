@@ -75,12 +75,85 @@ environment variables, troubleshooting), see [`ARCHITECTURE.md`](./ARCHITECTURE.
 > engine runs sessions inside the control plane, so a fresh install is complete
 > with **no adapter CLI present** — nothing is probed for, and nothing fails. If
 > you want to run work on OpenCode — or on the **Claude** adapter (provider
-> `anthropic`), which authenticates with your own host claude.ai login — install
-> it **on the host** and, for Claude, sign in there once. The CLI is bind-mounted
-> into the containers at runtime and resolved from `PATH` (`~/.opencode/bin` for
-> OpenCode, `~/.local/bin` for Claude). The images contain no adapter binary,
-> which keeps the product redistributable regardless of an adapter's licence
-> (Claude Code's terms, for example, prohibit bundling it with a product).
+> `anthropic`), which authenticates with your own claude.ai login — you install it
+> yourself, and **where you install it matters**: see
+> [Installing an adapter CLI](#installing-an-adapter-cli) below. The images contain
+> no adapter binary, which keeps the product redistributable regardless of an
+> adapter's licence (Claude Code's terms, for example, prohibit bundling it with a
+> product).
+
+### Installing an adapter CLI
+
+**Install it as your own user — never with `sudo`, and on Windows not on the
+Windows side.** Both rules come from one fact: Orchicon runs work in **two
+places**. A standalone dispatch runs on the **plane**, which sees your `PATH`. A
+**workflow run** is executed in its own **runtime container**, which sees only what
+Orchicon bind-mounts into it — the adapter paths under your home directory listed
+below. So an install outside your home works in your shell, and for standalone
+dispatches, and **fails for every workflow run**.
+
+| How you installed it | Your shell | The plane | Workflow-run containers |
+|---|---|---|---|
+| Official installer → `~/.opencode/bin` | ✅ | ✅ | ✅ **use this** |
+| `npm`/`bun` global **in your home** (`~/.npm-global/bin`, `~/.bun/bin`, an `nvm` prefix under `~/.nvm`) | ✅ | ✅ | ❌ |
+| `sudo npm i -g` → `/usr/local/bin` | ✅ | ⚠️ if the plane's `PATH` reaches it | ❌ |
+| A Windows install (`opencode.exe`) | ⚠️ through WSL interop | ❌ | ❌ |
+
+Orchicon resolves the binary in this order: `ORCHICON_OPENCODE_BIN`, then `PATH`,
+then `~/.opencode/bin`, `~/.local/bin`, `~/.npm-global/bin`, `~/.bun/bin`. **Only
+the first of those home locations is mounted into workflow-run containers**, which
+is why it is the one to use.
+
+#### OpenCode
+
+```bash
+curl -fsSL https://opencode.ai/install | bash
+```
+
+That writes `~/.opencode/bin/opencode` — the one location that both the plane *and*
+its runtime containers can use.
+
+**Do not install it with `sudo`.** `sudo npm i -g opencode` writes to root's npm
+prefix, normally `/usr/local/bin`, and no container mounts that path. The binary
+then sits on your `PATH` in the shell while every workflow run fails to find it.
+The plane warns about exactly this at startup:
+
+```
+opencode resolves to a path the runtime containers cannot see — workflow-run executions will not find it
+```
+
+**On Windows, install it inside WSL.** The whole stack runs in a WSL2 distro (see
+[One-line install (Windows PowerShell)](#one-line-install-windows-powershell--via-wsl2)),
+so the CLI has to be in that same distro. A Windows `opencode.exe` is reachable
+from a WSL shell through interop, which makes it look installed — it is not usable
+by the plane or its containers. Inside the distro, run the command above as your
+own user.
+
+**If you install it while the plane is already running**, note that the discovery
+of OpenCode's models and MCP servers happens **at plane startup**. A plane that
+booted before the CLI existed keeps reporting `model discovery is not configured`,
+so install the CLI and then **restart the plane** — the model picker's adapter tier
+will then list the OpenCode models. *Dispatched work* does not need the restart:
+the adapter resolves the binary when it dispatches.
+
+**Escape hatch.** If the CLI lives somewhere unusual, point Orchicon at it rather
+than moving it:
+
+```bash
+export ORCHICON_OPENCODE_BIN=/path/to/opencode     # must be an existing file
+export ORCHICON_CLAUDE_BIN=/path/to/claude
+```
+
+A value that does not exist is reported as a **wrong variable**, not as a missing
+CLI — a typo in the path says so instead of sending you off to install something
+you already have.
+
+#### Claude
+
+The **Claude** adapter (provider `anthropic`) resolves from `~/.local/bin/claude`,
+with its install at `~/.local/share/claude`; both are mounted into runtime
+containers, and the same *as-your-user, never-`sudo`* rule applies. Sign in on the
+host once so the CLI carries your own login.
 
 ### One-line install (Linux / macOS)
 
@@ -144,6 +217,17 @@ prints the exact command that resumes it — a re-run is idempotent.
 - **Docker Desktop** with the **WSL integration** enabled for your distro
   (Settings → Resources → WSL Integration), or Docker Engine running inside the
   distro.
+- *(optional)* an adapter CLI such as OpenCode, installed **inside WSL** as your
+  own user — see [Adapter CLIs go in WSL](#installing-an-adapter-cli) and the note
+  below on the Windows/WSL boundary.
+
+**Adapter CLIs go in WSL.** If you use the OpenCode or Claude adapter, install that
+CLI **inside the distro** with the commands in
+[Installing an adapter CLI](#installing-an-adapter-cli) — not on the Windows side.
+WSL reaches Windows executables through interop, so a Windows `opencode.exe`
+appears to run in a WSL shell, but neither the plane nor its runtime containers
+can use it. The same `sudo` rule applies: install as your own user, because only
+your home directory is mounted into the containers the work runs in.
 
 **Project directories are WSL paths.** The UI's `project_dir` is a host path.
 Inside WSL2 a Windows project `C:\Users\you\projects\Foo` is mounted by Docker
@@ -1715,6 +1799,16 @@ terminal's own background.
 
 Chords and mouse work in Windows Terminal. Legacy conhost may degrade mouse
 handling.
+
+**Colour.** Theme backgrounds need **true colour**, and a 256-colour terminal
+cannot tint a dark ground at all: the xterm-256 cube's only dark entries are
+greys, so every dark theme's background renders grey or black and looks like the
+theme is broken. Windows Terminal supports true colour but does not always tell a
+WSL shell so, which used to require setting `COLORTERM=truecolor` by hand — **the
+TUI now does this for you** when it detects WSL. If a dark background still looks
+grey, the terminal genuinely is not reporting 24-bit colour: set
+`COLORTERM=truecolor` in the shell that runs `orch`, or `COLORTERM=yes` to force
+256-colour. `ORCHICON_TRUECOLOR=0` turns the automatic default off.
 
 ---
 
