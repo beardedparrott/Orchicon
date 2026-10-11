@@ -176,7 +176,7 @@ container instances and removes the binary; the WSL distro is left intact),
 | `--version <tag>` | Install a specific version (e.g. `v0.4.0`). Default: latest. |
 | `ORCHICON_INSTALL_BASE_URL` | **Environment.** Where release assets are fetched from. Defaults to the published GitHub release. Set it to install from a mirror, or to point an install at a pre-release channel. It is also what makes the install path testable: `scripts/tests/install-path` serves a locally-built artifact and runs this very installer against it (`make install-path-test`). |
 | `--install-dir <dir>` | Installation directory (default: `~/.local/bin`). |
-| `--instance <name>` | Which instance to act on: `dev` (default), `test`, or `prod`. Each has its own container, ports, data volume and host state. **`install` asks, and so do `--uninstall`/`--purge`/`--remove-binary`** — with `dev` as the fallback for an install, and no fallback for the destructive verbs (an empty answer refuses there, so a stray Enter cannot select a stack to destroy). Passing `--instance` skips the question on every one. Also settable as `ORCHICON_INSTANCE`. |
+| `--instance <name>` | Which instance to act on: `dev` (default), `test`, or `prod`. Each has its own container, ports, data volume and host state. **`install` asks, and so does every destructive verb — `--uninstall`, `--purge`, `--remove-binary`, `--clean` and `--force-clean`** — with `dev` as the fallback for an install, and no fallback for the destructive verbs (an empty answer refuses there, so a stray Enter cannot select a stack to destroy). Passing `--instance` skips the question on every one. Also settable as `ORCHICON_INSTANCE`. |
 | `--uninstall` | Stop everything **this instance** runs — its plane and its container. The executables are removed **only when no other instance still needs them**, because one install directory serves every instance. **Data preserved** (and it says where). Asks which instance unless `--instance` is given. |
 | `--purge` | The same, and also destroy this instance's data — its Docker volume and host state directory. Irreversible. |
 | `--remove-binary` | Remove just the `orchicon` and `orch` executables. Every container, volume and instance's state is left alone. If something is running off them it **asks** before stopping it, and declining changes nothing. |
@@ -268,9 +268,12 @@ curl http://localhost:8080/healthz   # {"status":"ok"}
 separate ports, separate data volume, separate host state.
 
 > **Every verb that changes something asks which instance** unless `--instance` is given. `install` asks
-> with `dev` as the fallback; `--uninstall`/`--purge`/`--remove-binary` ask with **no** fallback, because a
-> stray Enter must not select a stack to destroy. With no terminal at all, an install takes `dev` and a
-> destructive verb refuses.
+> with `dev` as the fallback; every destructive verb — `--uninstall`, `--purge`, `--remove-binary`, `--clean`
+> and `--force-clean` — asks with **no** fallback, because a stray Enter must not select a stack to destroy.
+> With no terminal at all, an install takes `dev` and a destructive verb refuses.
+>
+> That includes `--force-clean`, which destroys a data volume: it is the most dangerous verb here and it was
+> the last one to become instance-bound.
 
 **The ports are recorded, not re-derived.** `install` prompts for the host ports and writes what it bound
 to the instance's state dir (`ports.json`). Anything that prints connection info reads that record, so a

@@ -244,6 +244,37 @@ else
   bad "real dev state did not protect the binaries"
 fi
 
+# --- 10. EVERY DESTRUCTIVE VERB IS INSTANCE-BOUND ---------------------------
+# The operator: "EVERY option should be instance bound and operate as such." It was not: --force-clean and
+# --clean took whatever ORCHICON_INSTANCE held (or `dev`) without asking, so the ONE verb that DESTROYS A
+# DATA VOLUME was also the one that could act on an instance nobody chose. Reported after a -ForceClean went
+# ahead on its own.
+#
+# THE VERB LIST IS ENUMERATED HERE ON PURPOSE: a new destructive verb that forgets to ask must be added to
+# this list to be covered, which makes the omission visible in review rather than discoverable in production.
+echo ""
+echo "[10] every destructive verb asks, and refuses without an answer"
+
+for verb in --uninstall --purge --remove-binary --clean --force-clean; do
+  # Detached, so there is no terminal to answer on: the verb must REFUSE rather than default.
+  OUT="$(env -u ORCHICON_INSTANCE setsid bash "${INSTALLER}" --install-dir "${INSTALL_DIR}" "${verb}" < /dev/null 2>&1)"
+  if printf '%s' "${OUT}" | grep -qE "no instance chosen|which instance\? pass"; then
+    ok "${verb} refuses with no instance and no terminal"
+  else
+    bad "${verb} did NOT refuse — it acted on an instance nobody chose (said: $(printf '%s' "${OUT}" | grep -aE 'acting on|instance' | head -1))"
+  fi
+done
+
+# And install is the ONE verb that may default, because installing to the documented default is not
+# destructive. If install ever stops defaulting, that is a deliberate change, not a silent one.
+OUT="$(env -u ORCHICON_INSTANCE ORCHICON_INSTALL_BASE_URL="http://127.0.0.1:1" setsid bash "${INSTALLER}" \
+  --install-dir "${INSTALL_DIR}-d" --no-setup < /dev/null 2>&1)"
+if printf '%s' "${OUT}" | grep -q "using 'dev'"; then
+  ok "install still takes the documented default (it is the only verb that may)"
+else
+  bad "install no longer defaults to dev (got: $(printf '%s' "${OUT}" | head -2 | tr '\n' ' '))"
+fi
+
 echo ""
 if [ "${FAIL}" -eq 0 ]; then
   echo "RESULT: all ${PASS} assertion(s) passed"

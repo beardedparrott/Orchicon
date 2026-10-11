@@ -561,6 +561,14 @@ do_force_clean() {
   echo -e "${B}Orchicon — force-clean (NUKE)${X}"
   echo ""
 
+  # WHICH INSTANCE, ASKED LIKE EVERY OTHER DESTRUCTIVE VERB.
+  #
+  # -ForceClean DESTROYS a data volume, so a default here is the most dangerous of all — and it was the one
+  # verb that neither asked nor was scoped: it took whatever ORCHICON_INSTANCE held (or `dev`), which on a
+  # host with prod data is a data-loss path an operator never chose. Reported: "I just did a -ForceClean on
+  # my windows host and it just started working and didn't ask me which instance I wanted to do it on. EVERY
+  # option should be instance bound and operate as such."
+  ask_instance
   local bin="$INSTALL_DIR/orchicon"
 
   # 1. Stop the plane that runs the installed binary, and free that file for the
@@ -640,6 +648,14 @@ do_clean() {
   echo -e "${B}Orchicon — clean${X}"
   echo ""
 
+  # WHICH INSTANCE, ASKED LIKE EVERY OTHER DESTRUCTIVE VERB.
+  #
+  # -ForceClean DESTROYS a data volume, so a default here is the most dangerous of all — and it was the one
+  # verb that neither asked nor was scoped: it took whatever ORCHICON_INSTANCE held (or `dev`), which on a
+  # host with prod data is a data-loss path an operator never chose. Reported: "I just did a -ForceClean on
+  # my windows host and it just started working and didn't ask me which instance I wanted to do it on. EVERY
+  # option should be instance bound and operate as such."
+  ask_instance
   local bin="$INSTALL_DIR/orchicon"
 
   # 1. Stop the plane that runs the installed binary. Scoped to that file — see
