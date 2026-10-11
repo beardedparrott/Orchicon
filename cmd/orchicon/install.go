@@ -226,6 +226,53 @@ func runInstall(args []string, log *slog.Logger) error {
 	// not answer, and is given nothing to go on. Say what happened, say where the
 	// reason is, and let the summary describe the install honestly — see
 	// printInstallInfo's healthy flag.
+	// ONE REPAIR ATTEMPT. An install that leaves a broken instance without trying to fix it is what the
+	// operator hit — "said it was complete but no auth works" — so a plane that does not answer, or a
+	// services stack that is not ready, gets one bounded restart before the install reports honestly.
+	//
+	// ONE, not a loop: a plane that cannot come up twice is a defect to report, not to retry, and an
+	// installer that keeps bouncing an instance is worse than one that says what it found.
+	if !healthy || !servicesReady(name) {
+		if !healthy {
+			fmt.Printf("warning: the control plane did not answer %s within %s\n", healthURL, healthWait)
+		} else {
+			fmt.Printf("warning: the %s services are not ready\n", name)
+		}
+		fmt.Println("attempting one repair: restarting the instance's services and plane …")
+
+		// The container first — the plane talks to its Postgres and NATS.
+		if out, err := exec.Command("docker", "restart", name).CombinedOutput(); err != nil {
+			fmt.Printf("  could not restart %s: %v: %s\n", name, err, strings.TrimSpace(string(out)))
+		} else if waitServicesReady(name, os.Stdout) {
+			fmt.Printf("  %s services are ready after the restart\n", name)
+		}
+		// Then the plane, so it reconnects to a stack that has settled rather than racing its boot.
+		if residency == residencyHost {
+			if err := stopHostPlane(instance, os.Stdout); err == nil {
+				if err := startHostPlane(instance, ports, hostDataDirFor(instance), filepath.Join(socketDir, "runtime.sock"), os.Stdout); err != nil {
+					fmt.Printf("  could not restart the plane: %v\n", err)
+				}
+			}
+		}
+		deadline = time.Now().Add(healthWait)
+		for time.Now().Before(deadline) {
+			if resp, err := http.Get(healthURL); err == nil {
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+				if resp.StatusCode == 200 {
+					healthy = true
+					break
+				}
+			}
+			time.Sleep(2 * time.Second)
+		}
+		if healthy {
+			fmt.Printf("  %s is answering after the repair\n", healthURL)
+		} else {
+			fmt.Println("  the repair did not bring it up")
+		}
+	}
+
 	if !healthy {
 		fmt.Printf("warning: the control plane did not answer %s within %s\n", healthURL, healthWait)
 		fmt.Printf("  the instance itself is up. find out why the plane is not:\n    docker logs --tail 50 %s\n", name)
@@ -281,6 +328,16 @@ func writeResolvedPorts(instance string, ports map[string]int) {
 	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
 		fmt.Printf("warning: could not record the resolved ports: %v\n", err)
 	}
+}
+
+// hostDataDirFor is hostDataDir for callers that cannot fail usefully: it returns a best-effort path when
+// the home directory cannot be resolved, which happens only where the repair is moot.
+func hostDataDirFor(instance string) string {
+	d, err := hostDataDir(instance)
+	if err != nil {
+		return filepath.Join(os.TempDir(), "orchicon-"+instance)
+	}
+	return d
 }
 
 // defaultInstallDir returns the default launcher install directory
@@ -462,11 +519,28 @@ func ensureInstallContainer(instance, residency, name, dataVolume, socketDir, im
 		// transient inspect failure is worse than leaving a wrong-shaped one for
 		// the operator to see.
 		existing, known := containerResidency(name)
+		// RUNNING IS NOT THE SAME AS CURRENT. A container keeps the image it was CREATED from, so an
+		// install that pulls a new one and then leaves the old container alone has installed nothing —
+		// reported from a real install: "said it was complete but no auth works and the previous dev
+		// container has been up for two hours". That is this branch doing nothing.
+		//
+		// So the running container must MATCH THE TARGET IMAGE, not merely exist. The image is compared
+		// by ID, not by tag: a tag like `:latest` can be repointed at a new build, which is exactly how a
+		// stale container hides.
+		//
+		// RECREATING PRESERVES THE DATA VOLUME — `docker rm -f` does not touch named volumes, and this
+		// container mounts the instance's volume by name. It is an upgrade, not a reset: an install is a
+		// deliberate act, so replacing the container is within what the operator asked for, and NOTHING
+		// here removes data.
 		if !known || existing == residency {
-			fmt.Printf("instance %q already running (%s)\n", name, image)
-			return nil
+			if containerImageCurrent(name, image) {
+				fmt.Printf("instance %q already running on the current image (%s)\n", name, image)
+				return nil
+			}
+			fmt.Printf("instance %q is running an OLDER image — recreating it on %s (the data volume is preserved)\n", name, image)
+		} else {
+			fmt.Printf("instance %q was created for %s residency but this install wants %s — recreating\n", name, existing, residency)
 		}
-		fmt.Printf("instance %q was created for %s residency but this install wants %s — recreating\n", name, existing, residency)
 	}
 	// A stopped/partial container with the same name blocks recreation.
 	if exists, _ := containerExists(name); exists {
@@ -623,6 +697,30 @@ func (w *tailWriter) Write(p []byte) (int, error) {
 }
 
 func (w *tailWriter) String() string { return string(w.buf) }
+
+// containerImageCurrent reports whether the running container's image IS the target image, compared by
+// IMAGE ID rather than by tag.
+//
+// A tag is a movable pointer: `:latest` (and every version tag this project publishes) can be repointed at
+// a new build while a container created from the previous one keeps running the old layers. Comparing IDs is
+// what makes "is this instance up to date?" a fact rather than a guess.
+//
+// An unreadable state answers TRUE — "leave it alone" — deliberately: recreating a live instance because a
+// docker inspect failed transiently is worse than leaving a stale one for the operator to see, which is the
+// same call containerResidency makes.
+func containerImageCurrent(name, target string) bool {
+	cur, err := exec.Command("docker", "inspect", "--format", "{{.Image}}", name).Output()
+	if err != nil {
+		return true
+	}
+	want, err := exec.Command("docker", "image", "inspect", "--format", "{{.Id}}", target).Output()
+	if err != nil {
+		// The target is not local. It has just been pulled, so this should not happen; if it does, the
+		// container cannot be compared and is left alone rather than guessed at.
+		return true
+	}
+	return strings.TrimSpace(string(cur)) == strings.TrimSpace(string(want))
+}
 
 func containerRunning(name string) (bool, error) {
 	out, err := exec.Command("docker", "inspect", "--format", "{{.State.Running}}", name).Output()
