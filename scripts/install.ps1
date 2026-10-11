@@ -1028,9 +1028,18 @@ if command -v opencode >/dev/null 2>&1 || [ -x "$HOME/.opencode/bin/opencode" ];
   echo "  runtime when a model ref asks for it." >&2
   echo "" >&2
 fi
-ORCHICON_INSTANCE="__INSTANCE__" "$INSTALL_DIR/orchicon" install
+ORCHICON_INSTANCE="__INSTANCE__" ORCHICON_CONTAINER_IMAGE="__IMAGE_REF__" "$INSTALL_DIR/orchicon" install
 '@
-        $setupScript = $setupScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__INSTANCE__', $script:Instance)
+        # THE CONTAINER IMAGE FOLLOWS THE VERSION BEING INSTALLED, so an install of X runs X — the same rule
+        # the shell installer applies. Without it the stack came from whatever `:latest` the host already had:
+        # a canary install put a canary BINARY over the last RELEASED image, and a host that already held
+        # `:latest` could never be brought forward, because the installer skipped the pull.
+        #
+        # ONLY THIS IMAGE IS NAMED. The runtime base and its variants keep the default tag, because a version
+        # has one instance image and the runtime engine is not versioned with it — naming a tag here would
+        # send those refs looking for `orchicon-runtime:<version>`, which nothing publishes.
+        $imageRepo = "ghcr.io/" + ($GitHubOwner.ToLower()) + "/" + ($GitHubRepo.ToLower())
+        $setupScript = $setupScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__INSTANCE__', $script:Instance).Replace('__IMAGE_REF__', "${imageRepo}:$Version")
         # LIVE, not captured. This is THE step that takes minutes and asks questions:
         # capturing it is what made a working install look hung, and an invisible port
         # prompt look like a dead terminal. See Invoke-WslBashLive.

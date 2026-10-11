@@ -268,6 +268,32 @@ else
   bad "git records scripts/install.sh as non-executable — a fresh clone would break the make targets"
 fi
 
+# --- 8. THE STACK MUST COME FROM THE VERSION BEING INSTALLED -----------------
+# Without this the instance ran whatever `:latest` the host already had, so a canary install put a canary
+# BINARY over the last RELEASED image — and a host that already held `:latest` could never be brought
+# forward. Asserted at the source because the assertion is about WHICH REF IS NAMED, and no amount of
+# running the installer against a local artifact can observe that.
+say ""
+say "[8] the install names the version's container image"
+
+INSTALLER_SRC="$(cat "${INSTALLER}")"
+if printf '%s' "${INSTALLER_SRC}" | grep -q 'ORCHICON_CONTAINER_IMAGE="\$image_ref"'; then
+  ok "the setup step passes ORCHICON_CONTAINER_IMAGE"
+else
+  bad "the setup step does not name the container image — the stack would come from whatever :latest the host has"
+fi
+if printf '%s' "${INSTALLER_SRC}" | grep -q 'image_ref="ghcr.io/'; then
+  ok "and the ref is derived from the version, not hardcoded"
+else
+  bad "the image ref is not derived from the version"
+fi
+# ghcr requires a lowercase repository name, and GITHUB_REPO is "Orchicon".
+if printf '%s' "${INSTALLER_SRC}" | grep -q 'tr "\[:upper:\]" "\[:lower:\]"'; then
+  ok "and it is lowercased (ghcr rejects uppercase)"
+else
+  bad "the image ref is not lowercased — ghcr would reject 'Orchicon'"
+fi
+
 say ""
 if [ "${FAIL}" -eq 0 ]; then
   say "RESULT: all ${PASS} assertion(s) passed"

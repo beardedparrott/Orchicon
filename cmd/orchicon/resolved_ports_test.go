@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -97,4 +98,35 @@ func TestWriteResolvedPortsIsBestEffort(t *testing.T) {
 
 	// Must not panic and must not fail: it returns nothing, and prints a warning.
 	writeResolvedPorts("dev", map[string]int{"ORCHICON_CONTROL_PORT": 8080})
+}
+
+// TestTheInstallerNeverTreatsAPresentTagAsCurrent — the regression that made an instance un-upgradable.
+//
+// `pullImageIfAbsent` skipped the pull whenever the tag existed locally, and `:latest` is a MOVABLE pointer:
+// the host kept the layers it first downloaded for ever, the install compared the container against that
+// same stale local image, found them equal, and reported success. The operator's evidence was a container
+// "Up 6 seconds" with "CREATED 11 hours ago" — restarted, never recreated, because nothing newer was ever
+// fetched.
+//
+// It is asserted as an ABSENCE, because that is the shape of the defect: no code path in the installer may
+// decide that a present tag means a current one.
+func TestTheInstallerNeverTreatsAPresentTagAsCurrent(t *testing.T) {
+	b, err := os.ReadFile("install.go")
+	if err != nil {
+		t.Fatalf("read install.go: %v", err)
+	}
+	src := string(b)
+	if strings.Contains(src, "func pullImageIfAbsent(") {
+		t.Error("the installer has a pullImageIfAbsent again — a present tag is not evidence of currency, so the registry must be asked")
+	}
+	for _, want := range []string{"func ensureImage(", "func pullImage("} {
+		if !strings.Contains(src, want) {
+			t.Errorf("install.go is missing %q — the replace-or-refresh path is what keeps an instance upgradeable", want)
+		}
+	}
+	// And the fallback must never be silent: an install that runs a different image than the one asked for
+	// has to say so.
+	if !strings.Contains(src, "falling back to") {
+		t.Error("the image fallback is not announced; running a different image than the operator asked for must never be silent")
+	}
 }

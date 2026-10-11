@@ -121,10 +121,31 @@ func runInstall(args []string, log *slog.Logger) error {
 	// REQUIRED images: the instance image and the workflow runtime base. Without
 	// these the install cannot produce a working instance, so a failure is fatal.
 	installPhase("pulling the published images — this is the slow part")
-	for _, img := range []string{containerImage, runtimeImage} {
-		if err := pullImageIfAbsent(img); err != nil {
+	// THE INSTANCE IMAGE: if the exact version's image cannot be fetched, fall back to the floating ref rather
+	// than failing an install that could otherwise succeed — a version pinned before container images were
+	// published has no tag of its own, and refusing to install it would be a regression. The fallback is
+	// LOUD, because "continuing on a different image than you asked for" must never be silent.
+	if err := ensureImage(containerImage); err != nil {
+		const fallback = "ghcr.io/beardedparrott/orchicon:latest"
+		if containerImage == fallback {
+			// Nothing to fall back to, so the failure is the install's failure.
 			return err
 		}
+		// A VERSION WITH NO CONTAINER IMAGE OF ITS OWN must not fail an install that could succeed: the
+		// engine falls back to the floating ref, which always exists. It is LOUD, because "you are running a
+		// different image than you asked for" is exactly the kind of thing that must never be silent.
+		//
+		// This is why the image is passed as ORCHICON_CONTAINER_IMAGE rather than by moving IMAGE_TAG: the
+		// tag also picks the runtime base and its variants, and only the instance image should ever move.
+		fmt.Printf("warning: %v\n", err)
+		fmt.Printf("  falling back to %s — this install will run THAT image, not the %s one\n", fallback, containerImage)
+		if ferr := ensureImage(fallback); ferr != nil {
+			return ferr
+		}
+		containerImage = fallback
+	}
+	if err := ensureImage(runtimeImage); err != nil {
+		return err
 	}
 	// SUPPLEMENTARY images: the :gui and :dev variants are the stock runtime
 	// images a work item can pick, not prerequisites for an install. A missing tag
@@ -139,7 +160,7 @@ func runInstall(args []string, log *slog.Logger) error {
 	// The ref is built correctly now (runtimeVariantRef), and a supplementary
 	// image can no longer fail an install even if the registry drops a tag again.
 	for _, img := range []string{runtimeVariantRef("gui", imageTag), runtimeVariantRef("dev", imageTag)} {
-		if err := pullImageIfAbsent(img); err != nil {
+		if err := ensureImage(img); err != nil {
 			fmt.Printf("warning: %v\n", err)
 			fmt.Println("  (the stock runtime image variants are supplementary — continuing)")
 		}
@@ -656,13 +677,36 @@ func runtimeVariantRef(suffix, imageTag string) string {
 	return base + ":" + suffix + "-" + imageTag
 }
 
-// pullImageIfAbsent pulls img unless its tag is already local, so an idempotent
-// re-run and a locally-built image cost nothing.
-func pullImageIfAbsent(img string) error {
-	if imagePresent(img) {
-		fmt.Printf("image %s present\n", img)
-		return nil
+// ensureImage makes the local copy of ref CURRENT, pulling it.
+//
+// A LOCAL TAG IS NOT EVIDENCE OF CURRENCY, and assuming it was is what shipped a container that could never
+// be upgraded. `pullImageIfAbsent` skipped the pull whenever the tag existed locally, so `:latest` — a
+// MOVABLE pointer — stayed at whatever the host first downloaded, for ever. An install then pulled nothing,
+// compared the container against that same stale local image, found them equal, and correctly concluded
+// there was no drift: the instance kept running 11-hour-old layers across any number of installs, which is
+// exactly the report ("the container was restarted but the created date still has 11 hours ago").
+//
+// SO THE RULE IS: ASK THE REGISTRY. A tag can be repointed at any time; only a DIGEST is immutable, and only
+// a digest may be trusted from the local cache. There is no tag-name heuristic here (not "latest is
+// floating, vX.Y.Z is pinned") on purpose: a release tag can be re-pushed too, and a rule that guesses
+// which tags move is a rule that is wrong silently. A pull of an unchanged image is a manifest check.
+//
+// It is safe to insist on the pull because nothing else calls this installer with a locally-built image:
+// `scripts/container.sh` builds and runs its own containers for dev and never invokes `orchicon install`.
+func ensureImage(ref string) error {
+	if strings.Contains(ref, "@sha256:") {
+		if imagePresent(ref) {
+			fmt.Printf("image %s present (pinned by digest, cannot move)\n", ref)
+			return nil
+		}
+		return pullImage(ref)
 	}
+	fmt.Printf("refreshing %s …\n", ref)
+	return pullImage(ref)
+}
+
+// pullImage runs `docker pull` for ref, streaming its progress.
+func pullImage(img string) error {
 	fmt.Printf("pulling %s …\n", img)
 	// THE PULL'S OUTPUT IS STREAMED, NOT CAPTURED. This is the longest stretch of a
 	// first install — four images, hundreds of megabytes — and it used to be

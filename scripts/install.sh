@@ -799,7 +799,17 @@ main() {
     # Windows had the same omission in a worse form: the prompt was CAPTURED there, so
     # the question was never visible AND the install blocked on it — see install.ps1.
     echo -e "  ${D}it asks about host ports — press ENTER to accept each default${X}"
-    if "$bin" install; then
+    # THE CONTAINER IMAGE FOLLOWS THE VERSION BEING INSTALLED, so an install of X runs X. Without this the
+    # stack came from whatever `:latest` happened to be on the host — which is how a canary install ended
+    # up with a canary binary over the last RELEASED image, and how a host that already had `:latest` could
+    # never be brought forward (the installer skipped the pull: see ensureImage in cmd/orchicon).
+    #
+    # ONLY THE INSTANCE IMAGE IS NAMED. The runtime base and its variants keep following IMAGE_TAG,
+    # because a version has one instance image and the runtime engine is not versioned with it — naming a
+    # tag here would send those refs looking for `orchicon-runtime:<version>`, which no release publishes.
+    local image_ref="ghcr.io/$(printf %s "${GITHUB_OWNER}" | tr "[:upper:]" "[:lower:]")/$(printf %s "${GITHUB_REPO}" | tr "[:upper:]" "[:lower:]"):${VERSION}"
+    # A version with no image of its own falls back to the floating ref, loudly, inside the installer.
+    if ORCHICON_CONTAINER_IMAGE="$image_ref" "$bin" install; then
       echo ""
       ok "Install complete — Orchicon is running."
     else
