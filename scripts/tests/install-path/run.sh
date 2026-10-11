@@ -256,17 +256,25 @@ fi
 say ""
 say "[7] the installer is executable"
 
-if [ -x "${INSTALLER}" ]; then
-  ok "scripts/install.sh is executable (the make targets run it directly)"
-else
-  bad "scripts/install.sh lost its executable bit — 'make install-dry-run' will fail with Permission denied"
-fi
-# And git must AGREE, or a fresh clone is broken even where this working tree is fine.
-if git -C "${REPO_ROOT}" ls-files -s scripts/install.sh 2>/dev/null | grep -q '^100755'; then
-  ok "and git records it as 100755 (so a fresh clone is correct too)"
-else
-  bad "git records scripts/install.sh as non-executable — a fresh clone would break the make targets"
-fi
+# THE WHOLE CLASS, NOT ONE FILE. Every scripts/tests/*/run.sh is executable by convention, plus
+# scripts/install.sh — and a scripted edit that rewrites a file through a temp one silently drops the mode,
+# which is invisible in a diff of the content. That happened twice: to install.sh (breaking `make
+# install-dry-run`), and then to this harness's own run.sh. So the check ENUMERATES the set: a new harness is
+# covered the moment it exists, and a script outside the convention is a deliberate choice rather than drift.
+mode_suspects="scripts/install.sh"
+for d in "${REPO_ROOT}"/scripts/tests/*/run.sh; do
+  [ -f "$d" ] || continue
+  mode_suspects="$mode_suspects ${d#"${REPO_ROOT}/"}"
+done
+for f in $mode_suspects; do
+  if [ ! -x "${REPO_ROOT}/$f" ]; then
+    bad "$f is not executable — the convention is +x for every harness and the installer"
+  elif ! git -C "${REPO_ROOT}" ls-files -s "$f" 2>/dev/null | grep -q '^100755'; then
+    bad "git records $f as non-executable — a fresh clone would differ from this working tree"
+  else
+    ok "$f is executable, and git agrees"
+  fi
+done
 
 # --- 8. THE STACK MUST COME FROM THE VERSION BEING INSTALLED -----------------
 # Without this the instance ran whatever `:latest` the host already had, so a canary install put a canary
