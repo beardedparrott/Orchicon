@@ -58,6 +58,10 @@ func main() {
 	//      wrap-pending state, and the renderer's next line feed scrolls
 	//      the whole frame up by one row — leaving an unpainted hairline
 	//      along the bottom (the operator's persistent "sliver").
+	// 1a. Supply the true-colour advertisement under WSL, where the terminal has
+	// it and does not relay it into the distro. Before the profile is resolved,
+	// because termenv reads the environment when it resolves.
+	applyWSLTrueColorDefault()
 	applyTerminalColorProfile()
 	restoreWrap := disableAutoWrap()
 	defer restoreWrap()
