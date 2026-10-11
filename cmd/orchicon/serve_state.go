@@ -87,6 +87,21 @@ func withFrontend(apiHandler http.Handler, log *slog.Logger) http.Handler {
 	}
 	fileServer := http.StripPrefix("/", http.FileServer(http.FS(spaFS)))
 	indexHTML, _ := fs.ReadFile(spaFS, "index.html")
+	// A BINARY WITH NO FRONTEND MUST SAY SO, because the symptom points nowhere near the cause.
+	//
+	// `frontend/dist/.gitkeep` is tracked precisely so `go:embed all:frontend/dist` always has a target, which
+	// means a build that skipped `npm run build` compiles PERFECTLY and embeds only the placeholder. Every UI
+	// request then falls through the `len(indexHTML) > 0` branch below to the API handler, where the auth
+	// middleware answers `{"error":"missing credentials"}`.
+	//
+	// OBSERVED EXACTLY THAT: a canary install replaced a working host plane with such a binary, and the
+	// operator's browser reported "missing credentials" — a credentials-shaped message for a build problem,
+	// with a server that was entirely healthy. This line makes the next occurrence a one-line answer.
+	if len(indexHTML) == 0 {
+		log.Warn("THIS BINARY EMBEDS NO FRONTEND — only the API is served, so the UI at / will report an " +
+			"auth error instead of loading. It was built without `cd frontend && npm run build`; the release " +
+			"and canary workflows both do that (pinned by TestEveryJobThatBuildsTheBinaryBuildsTheFrontendFirst).")
+	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
