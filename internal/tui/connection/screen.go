@@ -107,7 +107,19 @@ func (m *Model) SetReason(s string) { m.reason = s }
 // New creates the connection screen. profile may be nil (first run) or a
 // partially-filled profile (e.g. env URL without token).
 func New(profile *config.Profile, probes ProbeFuncs) Model {
-	m := Model{probes: probes, profile: profile, authAPI: true}
+	// THE LANDING MODE IS USERNAME+PASSWORD, and this was the OTHER way round for the whole
+	// life of the screen (authAPI: true, never changed since the file was introduced). The
+	// rationale for API-first was that an API key never expires while password mode's access
+	// token does — a real trade-off, and the reason it was written that way. It is reversed
+	// deliberately: a first-run operator has just created an account with a username and a
+	// password (§2 "First run" of the USERGUIDE), so the screen they meet must ask for what
+	// they already have. An API key has to be minted in the GUI first, which is not something
+	// the login screen can walk them through.
+	//
+	// THIS ONLY SETS THE LANDING MODE. API-key login is a toggle away and is still selected
+	// automatically for a profile that says so, so nothing is lost — the expiring-token cost
+	// is paid only by an operator who leaves it here, and they can type a username.
+	m := Model{probes: probes, profile: profile, authAPI: false}
 	for i := range m.inputs {
 		m.inputs[i] = textinput.New()
 		m.inputs[i].CharLimit = 512
@@ -130,18 +142,25 @@ func New(profile *config.Profile, probes ProbeFuncs) Model {
 		if profile.Username != "" {
 			m.inputs[fieldUsername].SetValue(profile.Username)
 		}
-		if profile.AuthMethod == config.AuthPassword {
-			// PASSWORD MODE: the profile's Token is the previous session's minted
-			// ACCESS TOKEN. It is not a password, and showing it in the password
-			// field meant the field arrived pre-satisfied — so submit sent the stale
-			// token as the password, the plane answered HTTP 401, and there was no
-			// way to type the real one over it. Leave the field EMPTY (a password is
-			// never stored) and let the operator type it.
-			m.authAPI = false
-		} else if profile.Token != "" {
-			// API-KEY MODE: the Token IS the key. Park it so a mode switch can
-			// restore it; applyCredentialMode puts it in the field.
+		// THE MODE COMES FROM THE PROFILE WHEN IT SAYS, and only then. This has to be
+		// explicit in BOTH directions now that the default is password: leaving it implicit
+		// (the old shape only ever cleared the flag) would silently drop an API-key profile
+		// into password mode.
+		switch {
+		case profile.AuthMethod == config.AuthAPIKey, profile.AuthMethod == "" && profile.Token != "":
+			// API-KEY MODE: the Token IS the key. Park it so a mode switch can restore it;
+			// applyCredentialMode puts it in the field. The second arm covers a profile that
+			// predates the AuthMethod field or never wrote one: a stored token is a key.
+			m.authAPI = true
 			m.storedToken = profile.Token
+		default:
+			// PASSWORD MODE (the default): the profile's Token is the previous session's
+			// minted ACCESS TOKEN. It is not a password, and showing it in the password
+			// field meant the field arrived pre-satisfied — so submit sent the stale token
+			// as the password, the plane answered HTTP 401, and there was no way to type the
+			// real one over it. The field is therefore left EMPTY (a password is never
+			// stored) and the operator types it.
+			m.authAPI = false
 		}
 		// Carry the stored refresh token through an edit — a re-connect of the
 		// same password profile keeps auto-refresh (API-key mode ignores it).

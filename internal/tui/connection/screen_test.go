@@ -60,6 +60,21 @@ func submit(t *testing.T, m Model) (Model, []tea.Msg) {
 	return m, msgs
 }
 
+// apiKeyMode pins the connection screen to API-KEY auth.
+//
+// THE LANDING MODE IS USERNAME+PASSWORD, so a test about the API-key path has to SAY which
+// mode it drives instead of inheriting one. Inheriting is exactly how these tests changed
+// meaning when the default flipped: they set an `oc_…` value into what is now the PASSWORD
+// field, and the ones that submit then failed — correctly — because a password-mode form
+// with no username refuses to submit. This mirrors the password-mode tests further down,
+// which already pin the mode the other way with `m.authAPI = false`; the flag is what gates
+// validation and the visible field set.
+func apiKeyMode(m Model) Model {
+	m.authAPI = true
+	m.applyCredentialMode()
+	return m
+}
+
 func TestValidateURLAndCredential(t *testing.T) {
 	m := New(nil, fakeProbes(nil, nil, nil, "v1"))
 	if msg := m.validate(); msg != "server URL is required" {
@@ -69,7 +84,7 @@ func TestValidateURLAndCredential(t *testing.T) {
 	if msg := m.validate(); msg == "" {
 		t.Fatal("bare host without scheme must fail")
 	}
-	m2 := New(nil, fakeProbes(nil, nil, nil, "v1"))
+	m2 := apiKeyMode(New(nil, fakeProbes(nil, nil, nil, "v1")))
 	m2 = typeInto(m2, "https://orch.example.com")
 	if msg := m2.validate(); msg == "" {
 		t.Fatal("missing API key must fail")
@@ -78,6 +93,7 @@ func TestValidateURLAndCredential(t *testing.T) {
 
 func TestProbeSuccessAPIKey(t *testing.T) {
 	m := New(nil, fakeProbes(nil, nil, nil, "v9.0.1"))
+	m = apiKeyMode(m)
 	m.inputs[fieldURL].SetValue("https://orch.example.com/")
 	m.inputs[fieldCredential].SetValue("oc_k")
 	res, err := m.probe(context.Background())
@@ -98,6 +114,7 @@ func TestProbeSuccessAPIKey(t *testing.T) {
 
 func TestProbeBadKeySurfacesScopeGuidance(t *testing.T) {
 	m := New(nil, fakeProbes(nil, errors.New("insufficient entitlement: execution:read"), nil, "v1"))
+	m = apiKeyMode(m)
 	m.inputs[fieldURL].SetValue("https://orch.example.com")
 	m.inputs[fieldCredential].SetValue("oc_bad")
 	_, err := m.probe(context.Background())
@@ -111,6 +128,7 @@ func TestProbeBadKeySurfacesScopeGuidance(t *testing.T) {
 
 func TestProbeUnreachableVersionz(t *testing.T) {
 	m := New(nil, fakeProbes(errors.New("connection refused"), nil, nil, ""))
+	m = apiKeyMode(m)
 	m.inputs[fieldURL].SetValue("https://orch.example.com")
 	m.inputs[fieldCredential].SetValue("oc_k")
 	_, err := m.probe(context.Background())
@@ -142,6 +160,7 @@ func TestProbePasswordModeMintsTokenNotPassword(t *testing.T) {
 
 func TestSubmitFlowEmitsProbeMessages(t *testing.T) {
 	m := New(nil, fakeProbes(nil, nil, nil, "v1"))
+	m = apiKeyMode(m)
 	m.inputs[fieldURL].SetValue("https://orch.example.com")
 	m.inputs[fieldCredential].SetValue("oc_k")
 	m, msgs := submit(t, m)
@@ -160,21 +179,14 @@ func TestSubmitFlowEmitsProbeMessages(t *testing.T) {
 // mode (regression for the bug where password mode rendered "API key >").
 func TestCredentialFieldIsModeAware(t *testing.T) {
 	m := New(nil, fakeProbes(nil, nil, nil, "v1"))
-	if !m.authAPI {
-		t.Fatal("default auth mode must be API key")
-	}
-	if got := m.inputs[fieldCredential].Prompt; got != "API key > " {
-		t.Fatalf("API-key prompt = %q, want %q", got, "API key > ")
-	}
-	if got := m.inputs[fieldCredential].Placeholder; !strings.Contains(got, "oc_") {
-		t.Fatalf("API-key placeholder must mention oc_…, got %q", got)
-	}
-
-	// Toggle to username+password.
-	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
-	m = nm.(Model)
+	// THE LANDING MODE IS USERNAME+PASSWORD. This assertion used to read "default auth
+	// mode must be API key", and it was inverted deliberately rather than deleted: it is
+	// the pin on which mode the operator meets, so the pin has to name the current intent.
+	// A first-run operator has just created an account with a username and a password
+	// (USERGUIDE §2), and an API key cannot be obtained until they have logged in to the
+	// GUI to mint one — so asking for a key first is asking for something they cannot have.
 	if m.authAPI {
-		t.Fatal("ctrl+a must toggle to username+password")
+		t.Fatal("default auth mode must be username+password")
 	}
 	if got := m.inputs[fieldCredential].Prompt; got != "Password > " {
 		t.Fatalf("password prompt = %q, want %q", got, "Password > ")
@@ -183,14 +195,69 @@ func TestCredentialFieldIsModeAware(t *testing.T) {
 		t.Fatalf("password placeholder = %q, want %q", got, "password")
 	}
 	if strings.Contains(m.inputs[fieldCredential].Prompt, "API key") {
-		t.Fatal("password mode must never show 'API key' prompt")
+		t.Fatal("the default mode must never show an 'API key' prompt")
 	}
 
-	// Toggle back to API key.
+	// Toggle to API key.
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	m = nm.(Model)
+	if !m.authAPI {
+		t.Fatal("ctrl+a must toggle to API key")
+	}
+	if got := m.inputs[fieldCredential].Prompt; got != "API key > " {
+		t.Fatalf("API-key prompt = %q, want %q", got, "API key > ")
+	}
+	if got := m.inputs[fieldCredential].Placeholder; !strings.Contains(got, "oc_") {
+		t.Fatalf("API-key placeholder must mention oc_…, got %q", got)
+	}
+
+	// Toggle back to username+password.
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
 	m = nm.(Model)
-	if got := m.inputs[fieldCredential].Prompt; got != "API key > " {
-		t.Fatalf("back to API-key prompt = %q, want %q", got, "API key > ")
+	if got := m.inputs[fieldCredential].Prompt; got != "Password > " {
+		t.Fatalf("back to password prompt = %q, want %q", got, "Password > ")
+	}
+}
+
+// TestProfileAuthMethodSelectsTheLandingMode covers the branch that makes the new default
+// safe. With the landing mode now defaulting to password, deriving it from the profile has
+// to be explicit in BOTH directions: a profile that names an API key must still open in
+// API-key mode. A default-only change would have silently dropped every stored API-key
+// profile into password mode — where the operator's key is not shown and, if they did not
+// remember a password, they could not get in at all.
+func TestProfileAuthMethodSelectsTheLandingMode(t *testing.T) {
+	cases := []struct {
+		name string
+		p    *config.Profile
+		want bool // true = API-key mode
+		why  string
+	}{
+		{"an explicit apikey profile", &config.Profile{URL: "https://x", AuthMethod: config.AuthAPIKey, Token: "oc_k"}, true,
+			"the profile says so, and its key is what the field must be primed with"},
+		{"an explicit password profile", &config.Profile{URL: "https://x", AuthMethod: config.AuthPassword, Token: "access-token"}, false,
+			"password mode never shows the previous session's minted ACCESS TOKEN in the password field"},
+		{"a legacy profile with a token and no method", &config.Profile{URL: "https://x", Token: "oc_legacy"}, true,
+			"a stored token IS a key; a profile written before AuthMethod existed must not degrade"},
+		{"a bare profile", &config.Profile{URL: "https://x"}, false,
+			"nothing says otherwise, so the operator gets the default they can actually satisfy"},
+		{"no profile at all (first run)", nil, false,
+			"first run is the case the default exists for"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := New(tc.p, fakeProbes(nil, nil, nil, "v1"))
+			if m.authAPI != tc.want {
+				t.Errorf("authAPI = %v, want %v — %s", m.authAPI, tc.want, tc.why)
+			}
+			if tc.want && m.storedToken == "" {
+				t.Error("an API-key mode profile must park its token so a mode switch can restore it")
+			}
+			if !tc.want && m.inputs[fieldCredential].Value() != "" {
+				t.Errorf("password mode must leave the credential field EMPTY, got %q — "+
+					"a pre-filled field sends a stale token as the password and the operator "+
+					"cannot type over it", m.inputs[fieldCredential].Value())
+			}
+		})
 	}
 }
 
@@ -235,7 +302,7 @@ func TestViewShowsAuthToggleHint(t *testing.T) {
 // sending chat messages / interjecting into live executions needs write),
 // pointing at Settings → API keys.
 func TestViewGuidanceNamesReadAndWrite(t *testing.T) {
-	m := New(nil, fakeProbes(nil, nil, nil, "v1"))
+	m := apiKeyMode(New(nil, fakeProbes(nil, nil, nil, "v1")))
 	view := m.View()
 	if !strings.Contains(view, "Read scopes cover browsing") {
 		t.Fatalf("hint must say read scopes cover browsing")
@@ -249,6 +316,7 @@ func TestViewGuidanceNamesReadAndWrite(t *testing.T) {
 
 	// The rejection error must carry the same read+write guidance.
 	m2 := New(nil, fakeProbes(nil, errors.New("insufficient entitlement: execution:read"), nil, "v1"))
+	m2 = apiKeyMode(m2)
 	m2.inputs[fieldURL].SetValue("https://orch.example.com")
 	m2.inputs[fieldCredential].SetValue("oc_bad")
 	_, err := m2.probe(context.Background())
@@ -295,6 +363,7 @@ func TestSaveProfilePersists0600AndActivates(t *testing.T) {
 // "no connection established").
 func TestConnectedMsgCompletesFlow(t *testing.T) {
 	m := New(nil, fakeProbes(nil, nil, nil, "v9.0.1"))
+	m = apiKeyMode(m)
 	m.inputs[fieldURL].SetValue("https://orch.example.com")
 	m.inputs[fieldCredential].SetValue("oc_k")
 
@@ -352,6 +421,7 @@ func TestConnectedMsgCompletesFlow(t *testing.T) {
 // emitting tea.Quit, and the shell reads the result via Result()/Connected().
 func TestEmbeddedOverlayNeverQuits(t *testing.T) {
 	m := New(nil, fakeProbes(nil, nil, nil, "v9.0.1"))
+	m = apiKeyMode(m)
 	m.SetEmbedded()
 	m.inputs[fieldURL].SetValue("https://orch.example.com")
 	m.inputs[fieldCredential].SetValue("oc_k")
