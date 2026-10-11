@@ -317,6 +317,46 @@ Check 'the builder encodes the script (base64) rather than passing it raw' `
   ($builder -match 'ConvertTo-BashPayload' -and $builder -match 'base64 -d') `
   'the payload alphabet is the reason nothing can be mangled in transit'
 
+# --- 13. -Instance MUST SCOPE EVERYTHING, AND REFUSE AN UNKNOWN NAME --------
+# dev / test / prod are three INSTANCES on one host, and the container names used to be spelled out as
+# `orchicon-cnt-dev orchicon-cnt-prod` — so -Uninstall stopped BOTH stacks and -ForceClean destroyed BOTH
+# data volumes, while the help text claimed the flags were about dev. On a host with prod data that is a
+# data-loss bug, and an operator testing a canary would have been the one to find it.
+#
+# Every assertion CLEARS ORCHICON_INSTANCE first: the variable is inherited from whatever plane is running
+# the session (this harness was written inside the prod plane's environment, where it is `prod`), so
+# without clearing, "the default" would be testing the ambient environment rather than the default.
+Say ""
+Say "[13] -Instance scoping"
+
+$scoped = Invoke-ChildInstaller -Env @{ ORCHICON_INSTANCE = ""; ORCHICON_INSTALL_LOG = "off" } `
+  -Command "& ([scriptblock]::Create((Get-Content -Raw '$quoted'))) -Uninstall -Instance test -DryRun"
+Check "-Instance test names ONLY the test container" `
+  (($scoped -match 'docker stop orchicon-cnt-test') -and ($scoped -notmatch 'orchicon-cnt-prod') -and ($scoped -notmatch 'orchicon-cnt-dev')) `
+  "an unscoped cleanup would stop dev and prod too"
+
+$def = Invoke-ChildInstaller -Env @{ ORCHICON_INSTANCE = ""; ORCHICON_INSTALL_LOG = "off" } `
+  -Command "& ([scriptblock]::Create((Get-Content -Raw '$quoted'))) -Uninstall -DryRun"
+Check "with no flag and no environment, the default is dev" ($def -match 'docker stop orchicon-cnt-dev') `
+  ("got: " + (($def -split "`n" | Where-Object { $_ -match 'docker stop' }) -join ' / '))
+
+$fromEnv = Invoke-ChildInstaller -Env @{ ORCHICON_INSTANCE = "test"; ORCHICON_INSTALL_LOG = "off" } `
+  -Command "& ([scriptblock]::Create((Get-Content -Raw '$quoted'))) -Uninstall -DryRun"
+Check "the environment is still honoured when no flag is given" ($fromEnv -match 'docker stop orchicon-cnt-test')
+
+$bad = Invoke-ChildInstaller -Env @{ ORCHICON_INSTANCE = ""; ORCHICON_INSTALL_LOG = "off" } `
+  -Command "& ([scriptblock]::Create((Get-Content -Raw '$quoted'))) -Uninstall -Instance production -DryRun; '$marker'"
+Check "an unknown instance is REFUSED, naming the known set" `
+  ($bad -match "unknown instance: 'production'" -and $bad -match 'dev, test, prod') `
+  "defaulting to dev would clean up the wrong stack while the operator watched prod"
+Check "and it returns to the prompt rather than acting" ($bad -match $marker)
+
+$help2 = Invoke-ChildInstaller -Env @{ ORCHICON_INSTANCE = ""; ORCHICON_INSTALL_LOG = "off" } `
+  -Command "& ([scriptblock]::Create((Get-Content -Raw '$quoted'))) -Help; '$marker'"
+Check "-Help documents -Instance" ($help2 -match '-Instance <name>')
+Check "and -Help mentions dev, test and prod" `
+  (($help2 -match 'dev \(default\)') -and ($help2 -match 'test') -and ($help2 -match 'prod'))
+
 Say ""
 if ($Fail.Count -eq 0) { Say "RESULT: all assertions passed" }
 else { Say ("RESULT: {0} assertion(s) FAILED: {1}" -f $Fail.Count, ($Fail -join '; ')) }

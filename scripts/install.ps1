@@ -59,7 +59,8 @@ param(
     [switch]$ForceClean,
     [switch]$DryRun,
     [switch]$NoSetup,
-    [switch]$Help
+    [switch]$Help,
+    [string]$Instance = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -89,6 +90,10 @@ Options:
                       WSL before installing when another product already holds
                       a default port. Both launchers honour the same names.
   -Version <tag>      Install a specific version (e.g. v0.1.173). Default: latest.
+  -Instance <name>    Which instance to act on: dev (default), test, or prod. Each has its
+                      own container, ports, data volume and host state, so -Instance test
+                      cannot disturb dev or prod. Applies to install AND to
+                      -Clean/-ForceClean/-Uninstall.
   -InstallDir <dir>   WSL install directory for the binary (default: ~/.local/bin).
   -NoSetup            Install the binary only — do NOT pull images, start the
                       runtime daemon, or launch the container.
@@ -498,6 +503,7 @@ function Test-DockerDesktopRunning {
 # ONCE, so the connection info and the setup-failure hints cannot disagree about
 # which instance this is.
 function Get-InstanceName {
+    if ($script:Instance) { return $script:Instance }
     if ($env:ORCHICON_INSTANCE) { return $env:ORCHICON_INSTANCE }
     return "dev"
 }
@@ -554,7 +560,25 @@ try {
         $InstallDir = "~/.local/bin"
     }
 
-    # --- Uninstall --------------------------------------------------------------
+# --- Instance scoping -------------------------------------------------------
+#
+# ONE INSTANCE, NAMED ONCE, USED EVERYWHERE. The container names used to be spelled out as
+# `orchicon-cnt-dev orchicon-cnt-prod` in four places, so -Uninstall stopped BOTH stacks and
+# -ForceClean destroyed BOTH data volumes. On a host with prod data that is a data-loss bug
+# rather than an inconvenience.
+#
+# An unknown instance is REFUSED rather than defaulted, because the alternative is acting on the
+# wrong stack: `-Instance production` quietly becoming dev would clean up dev while the operator
+# watched prod. The set matches the installer port table (cmd/orchicon/install_ports.go).
+$script:Instance = if ($Instance) { $Instance } elseif ($env:ORCHICON_INSTANCE) { $env:ORCHICON_INSTANCE } else { "dev" }
+if ($script:Instance -notin @("dev", "test", "prod")) {
+    Stop-Install "unknown instance: '$script:Instance' (known: dev, test, prod)"
+}
+# DERIVED, in one place, so nothing below spells the names out again.
+$script:ContainerName = "orchicon-cnt-$script:Instance"
+$script:VolumeName = "orchicon-cnt-$script:Instance-data"
+
+# --- Uninstall --------------------------------------------------------------
     if ($Uninstall) {
         if (-not (Ensure-Wsl -Soft)) {
             Write-Warn "WSL not found or no distro — nothing to uninstall"
@@ -566,14 +590,14 @@ set +e
 BIN="__INSTALL_DIR__"
 BIN="${BIN/#\~/$HOME}/orchicon"
 if [ -x "$BIN" ]; then "$BIN" serve --stop >/dev/null 2>&1; fi
-docker stop orchicon-cnt-dev orchicon-cnt-prod >/dev/null 2>&1
+docker stop __CONTAINER__ >/dev/null 2>&1
 if [ -f "$BIN" ]; then rm -f "$BIN" && echo "removed $BIN"; else echo "orchicon not found in $BIN — nothing to remove"; fi
 true
 '@
-        $uninstallScript = $uninstallScript.Replace('__INSTALL_DIR__', $InstallDir)
+        $uninstallScript = $uninstallScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__CONTAINER__', $script:ContainerName).Replace('__VOLUME__', $script:VolumeName)
         if ($DryRun) {
             Write-Info "would run inside WSL:"
-            Write-Host "  wsl -d $script:Distro -e bash -lc 'docker stop orchicon-cnt-dev orchicon-cnt-prod'"
+            Write-Host "  wsl -d $script:Distro -e bash -lc 'docker stop $script:ContainerName'"
             Write-Host "  wsl -d $script:Distro -e bash -lc 'rm -f $bin'"
         } else {
             Invoke-WslBash $uninstallScript
@@ -596,11 +620,11 @@ BIN="__INSTALL_DIR__"
 BIN="${BIN/#\~/$HOME}/orchicon"
 if [ -x "$BIN" ]; then "$BIN" serve --stop >/dev/null 2>&1; fi
 pkill -9 -x orchicon 2>/dev/null
-docker rm -f orchicon-cnt-dev orchicon-cnt-prod >/dev/null 2>&1
+docker rm -f __CONTAINER__ >/dev/null 2>&1
 rm -f "$BIN"
 true
 '@
-        $cleanScript = $cleanScript.Replace('__INSTALL_DIR__', $InstallDir)
+        $cleanScript = $cleanScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__CONTAINER__', $script:ContainerName).Replace('__VOLUME__', $script:VolumeName)
         if ($DryRun) {
             Write-Info "would run inside WSL: stop the container instances, remove the old binary (data preserved)"
         } else {
@@ -624,8 +648,8 @@ BIN="__INSTALL_DIR__"
 BIN="${BIN/#\~/$HOME}/orchicon"
 if [ -x "$BIN" ]; then "$BIN" serve --stop >/dev/null 2>&1; fi
 pkill -9 -x orchicon 2>/dev/null
-docker rm -f orchicon-cnt-dev orchicon-cnt-prod >/dev/null 2>&1
-docker volume rm orchicon-cnt-dev-data orchicon-cnt-prod-data >/dev/null 2>&1
+docker rm -f __CONTAINER__ >/dev/null 2>&1
+docker volume rm __VOLUME__ >/dev/null 2>&1
 # ANCHORED TO THE STATE DIRECTORY, NEVER A RELATIVE NAME. This read
 # `cd "$HOME"; rm -rf data .dev bin .local/share/orchicon`, which deleted
 # `$HOME/bin`, `$HOME/data` and `$HOME/.dev` — directories Orchicon does not own,
@@ -635,7 +659,7 @@ rm -rf "$HOME/.local/share/orchicon"
 rm -f "$BIN"
 true
 '@
-        $forceCleanScript = $forceCleanScript.Replace('__INSTALL_DIR__', $InstallDir)
+        $forceCleanScript = $forceCleanScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__CONTAINER__', $script:ContainerName).Replace('__VOLUME__', $script:VolumeName)
         if ($DryRun) {
             Write-Info "would run inside WSL: stop the stack, destroy instance data volumes, remove local state (ALL DATA LOST)"
         } else {
@@ -827,9 +851,9 @@ if command -v opencode >/dev/null 2>&1 || [ -x "$HOME/.opencode/bin/opencode" ];
   echo "  runtime when a model ref asks for it." >&2
   echo "" >&2
 fi
-"$INSTALL_DIR/orchicon" install
+ORCHICON_INSTANCE="__INSTANCE__" "$INSTALL_DIR/orchicon" install
 '@
-        $setupScript = $setupScript.Replace('__INSTALL_DIR__', $InstallDir)
+        $setupScript = $setupScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__INSTANCE__', $script:Instance)
         # LIVE, not captured. This is THE step that takes minutes and asks questions:
         # capturing it is what made a working install look hung, and an invisible port
         # prompt look like a dead terminal. See Invoke-WslBashLive.
