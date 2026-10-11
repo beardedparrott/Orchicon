@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"os/user"
 	"strings"
 	"sync"
@@ -85,11 +84,9 @@ func (d *MCPDiscoverer) fetchMCPs(ctx context.Context) ([]*apiv1.OpenCodeMCP, er
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, d.binary, "debug", "config")
-	cmd.Dir = homeDir()
-	out, err := cmd.Output()
+	out, err := runOpencodeCLI(ctx, d.binary, homeDir(), "debug", "config")
 	if err != nil {
-		return nil, fmt.Errorf("opencode debug config: %w", err)
+		return nil, fmt.Errorf("list opencode MCP servers: %w", err)
 	}
 
 	var cfg resolvedConfig

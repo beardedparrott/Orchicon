@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -221,10 +220,17 @@ func (d *ModelDiscoverer) fetchModels(ctx context.Context) ([]*apiv1.OpenCodeMod
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, d.binary, "models", "--verbose")
-	out, err := cmd.Output()
+	// THE WORKING DIRECTORY IS PINNED, and that is a determinism fix rather than a guess about the
+	// reported failure. This call used to set no Dir at all, so the CLI ran in whatever directory the
+	// PLANE inherited — which is the directory the operator happened to run the installer from (a
+	// /mnt/c Windows path is a real case on WSL). The MCP discoverer beside this one has always
+	// pinned it to the home dir, and an opencode invocation can be project-sensitive, so leaving it
+	// unpinned means the model list could depend on where someone stood when they installed.
+	//
+	// The home dir is the right pin because it is where opencode's own config and auth live.
+	out, err := runOpencodeCLI(ctx, d.binary, homeDir(), "models", "--verbose")
 	if err != nil {
-		return nil, fmt.Errorf("opencode models: %w", err)
+		return nil, fmt.Errorf("list opencode models: %w", err)
 	}
 	return parseModelOutput(out)
 }
