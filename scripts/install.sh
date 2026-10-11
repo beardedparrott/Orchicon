@@ -41,7 +41,12 @@ INSTALL_DIR="${ORCHICON_INSTALL_DIR:-${HOME}/.local/bin}"
 # ORCHICON_INSTANCE=test for the shell side means rewriting the whole one-liner.
 INSTANCE="${ORCHICON_INSTANCE:-dev}"
 VERSION=""
+PURGE=false   # --uninstall --purge: also destroy the data
 UNINSTALL=false
+REMOVE_BINARY=false      # --remove-binary: the executables only, and they are MACHINE-WIDE
+ASSUME_YES=false         # --yes: answer the prompts affirmatively (non-interactive use)
+INSTANCE_EXPLICIT=false  # set when --instance was passed, which SKIPS the instance prompt
+BINARY_HELD_ELSEWHERE=false  # set when a kill declined to touch another instance's process
 CLEAN=false
 FORCE_CLEAN=false
 DRY_RUN=false
@@ -66,8 +71,11 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --version|-v)      VERSION="$2"; shift 2 ;;
     --install-dir|-d)  INSTALL_DIR="$2"; shift 2 ;;
-    --instance|-i)     INSTANCE="$2"; shift 2 ;;
+    --instance|-i)     INSTANCE="$2"; INSTANCE_EXPLICIT=true; shift 2 ;;
     --uninstall)       UNINSTALL=true; shift ;;
+    --remove-binary)   REMOVE_BINARY=true; shift ;;
+    --purge)           PURGE=true; UNINSTALL=true; shift ;;  # purge IS an uninstall that destroys data
+    --yes|-y)          ASSUME_YES=true; shift ;;
     --clean)           CLEAN=true; shift ;;
     --force-clean|--nuke|-f) FORCE_CLEAN=true; shift ;;
     --dry-run)         DRY_RUN=true; shift ;;
@@ -90,8 +98,17 @@ Options:
                        its own container, ports, data volume and host state, so
                        `--instance test` cannot disturb dev or prod. Applies to install AND
                        to --clean/--force-clean/--uninstall.
-  --uninstall          Stop THIS instance and remove Orchicon from the install directory. The
-                       data volume is left in place, and the command says where it is.
+    --uninstall          Stop everything THIS instance runs - its plane and its container. The
+                         executables are removed ONLY when no other instance still needs them,
+                         because one install directory serves every instance. DATA PRESERVED.
+                         ASKS WHICH INSTANCE unless --instance is given.
+    --purge              The same, and ALSO destroy this instance's data: its Docker volume and
+                         its host state directory. Irreversible. ASKS WHICH INSTANCE.
+    --remove-binary      Just the orchicon and orch executables. Every container, volume and
+                         instance's state is left alone. If something is running off them it
+                         ASKS before stopping it, and declining changes nothing. ASKS WHICH
+                         INSTANCE.
+    --yes, -y            Answer the prompts affirmatively, for non-interactive use.
     --clean              Stop THIS instance's container, remove the old Orchicon
                          binary, then install the latest version — one-shot upgrade. Data is
                          preserved (Docker volume, BlobStore files, runtime state).
@@ -140,7 +157,170 @@ validate_instance() {
 validate_instance
 export ORCHICON_INSTANCE="$INSTANCE"
 
-# --- Helpers ----------------------------------------------------------------
+# --- Prompts, and what each instance currently has --------------------------
+#
+# PROMPTS READ THE CONTROLLING TERMINAL, NEVER STDIN. The documented invocation is
+# `curl … | bash -s -- …`, so BASH'S STDIN IS THE SCRIPT ITSELF — a read from stdin would consume the
+# rest of the installer instead of an answer. The Go port prompt learned this the hard way
+# (cmd/orchicon/install_ports.go); this is the same rule, for the same reason.
+prompt_tty() {
+  { printf %s "$1" > /dev/tty; } 2>/dev/null || printf %s "$1"
+  local line=""
+  if [ -r /dev/tty ]; then
+    # A FAILED READ MUST BE DISTINGUISHABLE FROM AN EMPTY ANSWER. "No terminal" and "the operator pressed
+    # Enter" both produce an empty string, and conflating them is how the instance prompt silently chose
+    # dev with no terminal attached — measured, before this returned a status. The caller refuses on
+    # failure and takes the default only on a real, empty answer.
+    IFS= read -r line < /dev/tty 2>/dev/null || return 1
+  elif [ -t 0 ]; then
+    IFS= read -r line || return 1
+  else
+    return 1
+  fi
+  printf '%s' "$line"
+  return 0
+}
+
+have_tty() { (exec 3<>/dev/tty) 2>/dev/null; }   # OPEN it: `-r` says yes where opening fails
+
+ask_yes_no() {   # ask_yes_no "<question>" -> 0 yes, 1 no
+  if [ "$ASSUME_YES" = true ]; then info "$1 — yes (--yes)"; return 0; fi
+  if ! have_tty; then
+    warn "cannot ask (no terminal): $1"
+    warn "  re-run with --yes to answer affirmatively, or --instance to skip the instance prompt"
+    return 1
+  fi
+  local a
+  if ! a="$(prompt_tty "  $1 [y/N] ")"; then
+    warn "cannot ask (no terminal answered): $1"
+    return 1
+  fi
+  case "$a" in [yY]|[yY][eE][sS]) return 0 ;; *) return 1 ;; esac
+}
+
+# WHAT AN INSTANCE CURRENTLY HAS, so the choice below is informed rather than blind.
+instance_state() {
+  local inst="$1" out=""
+  if command -v docker >/dev/null 2>&1 && docker inspect "orchicon-cnt-$inst" >/dev/null 2>&1; then
+    out="container"
+  fi
+  if [ -d "${XDG_DATA_HOME:-${HOME}/.local/share}/orchicon-$inst" ]; then out="${out:+$out + }state"; fi
+  printf '%s' "${out:-nothing}"
+}
+
+# ASK WHICH INSTANCE, AT THE MOMENT OF THE DESTRUCTIVE ACTION.
+#
+# The alternative — inferring it from ORCHICON_INSTANCE with a `dev` default — is how an operator ends
+# up cleaning the wrong stack: the variable is invisible, and a shell started from inside a running
+# plane INHERITS that plane's value. So the three destructive verbs ask. `--instance` skips the
+# question; with no terminal and no flag it refuses rather than guessing.
+ask_instance() {
+  if [ "$INSTANCE_EXPLICIT" = true ]; then validate_instance; export ORCHICON_INSTANCE="$INSTANCE"; return 0; fi
+  if ! have_tty; then
+    die "which instance? pass --instance dev|test|prod (there is no terminal to ask on)"
+  fi
+  echo "" >&2
+  echo -e "  ${B}Which instance?${X}" >&2
+  echo -e "  ${D}An instance is a whole stack: its own container, ports, data volume and host state.${X}" >&2
+  local n=1 inst
+  for inst in dev test prod; do
+    echo -e "    ${C}${n}${X}) ${B}${inst}${X}  ${D}($(instance_state "$inst"))${X}" >&2
+    n=$((n + 1))
+  done
+  local a
+  if ! a="$(prompt_tty "  choose 1-3 or a name [dev]: ")"; then
+    die "no terminal to ask on — pass --instance dev|test|prod"
+  fi
+  case "$a" in
+    ""|1|dev)   INSTANCE=dev ;;
+    2|test)     INSTANCE=test ;;
+    3|prod)     INSTANCE=prod ;;
+    *) die "not an instance: '$a' (known: dev, test, prod)" ;;
+  esac
+  validate_instance
+  export ORCHICON_INSTANCE="$INSTANCE"
+  echo "" >&2
+  info "acting on instance: ${INSTANCE}  ($(instance_state "$INSTANCE"))"
+}
+
+# --- The binaries, and why they are machine-wide ----------------------------
+#
+# ONE INSTALL DIRECTORY SERVES EVERY INSTANCE. The executables are not per-instance, so removing them
+# while another instance's plane — or the SHARED runtime daemon, which serves all of them — is running
+# from that path leaves a process on a deleted inode: a server that answers and cannot work. That is the
+# bug the operator reported, and it is why nothing here removes a binary without first establishing who
+# is using it.
+binary_paths() {
+  printf '%s\n%s\n' "$INSTALL_DIR/orchicon" "$INSTALL_DIR/orch"
+}
+
+# binary_users <bin> prints "pid:instance" for every process holding it. The instance field is EMPTY for
+# a process that carries none, which is the case for the shared runtime daemon.
+binary_users() {
+  local bin="$1" pid inst
+  command -v fuser >/dev/null 2>&1 || return 0
+  [ -e "$bin" ] || return 0
+  for pid in $(fuser "$bin" 2>/dev/null); do
+    inst="$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^ORCHICON_INSTANCE=//p' | head -1)"
+    printf '%s:%s\n' "$pid" "$inst"
+  done
+}
+
+# all_binary_users aggregates both executables, deduped.
+all_binary_users() {
+  local bin out=""
+  for bin in $(binary_paths); do
+    out="$out$(binary_users "$bin")"$'\n'
+  done
+  printf '%s' "$out" | sed '/^$/d' | sort -u
+}
+
+# instance_exists <name> — a container or host state means the instance is real.
+instance_exists() {
+  local inst="$1"
+  if command -v docker >/dev/null 2>&1 && docker inspect "orchicon-cnt-$inst" >/dev/null 2>&1; then return 0; fi
+  [ -d "${XDG_DATA_HOME:-${HOME}/.local/share}/orchicon-$inst" ]
+}
+
+# other_instances_remain — is any instance other than this one still present?
+other_instances_remain() {
+  local inst
+  for inst in dev test prod; do
+    [ "$inst" = "$INSTANCE" ] && continue
+    instance_exists "$inst" && return 0
+  done
+  return 1
+}
+
+# stop_service_for <instance> stops ONE instance's plane and container. Used only after the operator has
+# explicitly agreed to stop services.
+stop_service_for() {
+  local inst="$1" bin="$INSTALL_DIR/orchicon"
+  local sd="${XDG_DATA_HOME:-${HOME}/.local/share}/orchicon-$inst/serve"
+  if [ -f "$bin" ]; then
+    if [ "$DRY_RUN" = false ]; then ORCHICON_SERVE_STATE_DIR="$sd" "$bin" serve --stop >/dev/null 2>&1 || true; else printf '  (would stop the %s plane)\n' "$inst"; fi
+  fi
+  if command -v docker >/dev/null 2>&1; then
+    if [ "$DRY_RUN" = false ]; then docker rm -f "orchicon-cnt-$inst" >/dev/null 2>&1 && printf 'removed container orchicon-cnt-%s\n' "$inst" || true; else printf '  (would remove container orchicon-cnt-%s)\n' "$inst"; fi
+  fi
+}
+
+# remove_binaries removes both executables. It does NOT stop anything: the caller must have settled who
+# is using them first, because that is the part that can break a running system.
+remove_binaries() {
+  local bin
+  for bin in $(binary_paths); do
+    if [ -f "$bin" ]; then
+      info "removing $bin"
+      $DRY_RUN || rm -f "$bin"
+      ok "${bin##*/} removed"
+    else
+      warn "not found: $bin (nothing to remove)"
+    fi
+  done
+}
+
+# --- Helpers ---
 detect_os() {
   local os; os="$(uname -s)"
   case "$os" in
@@ -199,39 +379,144 @@ stop_installed_plane() {
     echo -e "  ${D}(would run: ORCHICON_SERVE_STATE_DIR=${state_dir} ${bin} serve --stop)${X}"
   fi
 
-  if ! command -v fuser >/dev/null 2>&1; then
-    warn "fuser not available — cannot tell whether ${bin} is still in use."
-    warn "  Deliberately not falling back to a process-NAME match, which would"
-    warn "  also kill Orchicon instances running from other paths."
-    return 0
-  fi
-  if fuser "$bin" >/dev/null 2>&1; then
+  # KILL ONLY THIS INSTANCE'S PROCESSES, NEVER THE FILE'S OTHER USERS.
+  #
+  # This used to be `fuser -k "$bin"`, which kills EVERY process holding the executable regardless of
+  # which instance it belongs to. With two instances running from one installed path, `--instance test
+  # --uninstall` therefore took dev and prod's planes down with it — an instance-scoped command with a
+  # machine-wide effect. (It was not firing only because the layouts happened to differ.)
+  #
+  # The instance is in each process's environment, so the decision reads it instead of guessing: ours are
+  # killed, and anything else is NAMED AND LEFT ALONE. The shared runtime daemon carries no instance — it
+  # serves all of them — so it is left too, and the caller is told the binaries may still be in use.
+  binary_users "$bin" || true
+  local ours="" others=""
+  while IFS=: read -r _pid _inst; do
+    [ -n "$_pid" ] || continue
+    if [ -z "$_inst" ] || [ "$_inst" = "$inst" ]; then ours="$ours $_pid"; else others="$others $_pid($_inst)"; fi
+  done <<EOF
+$(binary_users "$bin")
+EOF
+  if [ -n "${ours# }" ]; then
     if [ "$DRY_RUN" = false ]; then
-      fuser -k "$bin" 2>/dev/null && ok "released ${bin} (stopped the process holding it)" || true
+      # shellcheck disable=SC2086
+      kill $ours 2>/dev/null && ok "stopped this instance's process(es) holding ${bin}" || true
     else
-      echo -e "  ${D}(would run: fuser -k ${bin})${X}"
+      echo -e "  ${D}(would kill${ours})${X}"
     fi
+  fi
+  if [ -n "${others# }" ]; then
+    warn "other processes are still holding ${bin}:${others}"
+    warn "  left running on purpose — they belong to other instances, and stopping them is not this"
+    warn "  command's to do. The binary will be left in place while they need it."
+    BINARY_HELD_ELSEWHERE=true
   fi
 }
 
 # --- Uninstall --------------------------------------------------------------
 do_uninstall() {
+  # WHICH INSTANCE, ASKED AT THE MOMENT OF THE DESTRUCTIVE ACTION. Inferring it from ORCHICON_INSTANCE
+  # with a `dev` default is how an operator cleans the wrong stack: the variable is invisible, and a
+  # shell started from inside a running plane inherits that plane's value. --instance skips the question.
+  ask_instance
+
   local bin="$INSTALL_DIR/orchicon"
 
-  # Stop the plane that runs the installed binary, and free the file itself.
-  # Scoped to THAT path — see stop_installed_plane for why this must not be a
-  # process-name match.
+  # 1. THIS INSTANCE'S PLANE, through its own state dir (and only its own processes — see
+  #    stop_installed_plane).
   stop_installed_plane
 
-  if [ -f "$bin" ]; then
-    info "removing $bin"
-    $DRY_RUN || rm -f "$bin"
-    ok "Orchicon uninstalled"
+  # 2. THIS INSTANCE'S CONTAINER. The old uninstall never touched it, so the services stack kept running
+  #    after an "uninstall".
+  if command -v docker >/dev/null 2>&1; then
+    info "removing the ${INSTANCE} container…"
+    $DRY_RUN || docker rm -f "$(cnt_name)" >/dev/null 2>&1 || true
+    ok "${INSTANCE} container removed ($(cnt_name))"
+  fi
+
+  # 3. DATA, only when asked. Destroying a database is not something "remove the software" may imply, so
+  #    the destructive half is --purge and it says so plainly.
+  if [ "$PURGE" = true ]; then
+    if command -v docker >/dev/null 2>&1; then
+      info "removing the ${INSTANCE} data volume…"
+      $DRY_RUN || docker volume rm "$(vol_name)" >/dev/null 2>&1 || true
+      ok "data volume removed ($(vol_name))"
+    fi
+    local sd; sd="$(inst_state_dir)"
+    if [ -d "$sd" ]; then
+      info "removing host state ${sd}…"
+      $DRY_RUN || rm -rf "$sd"
+      ok "host state removed ($sd)"
+    fi
   else
-    warn "orchicon not found in $INSTALL_DIR — nothing to remove"
+    echo ""
+    echo -e "  ${D}Data preserved:${X}"
+    echo -e "  ${D}• instance volume:  $(vol_name)${X}"
+    echo -e "  ${D}• instance state:   $(inst_state_dir)${X}"
+    echo -e "  ${D}Re-run with --purge to remove both (irreversible).${X}"
+  fi
+
+  # 4. THE BINARIES LAST, AND ONLY IF NOTHING ELSE NEEDS THEM. They are machine-wide: one install serves
+  #    every instance, so removing them while dev or prod still runs from them would leave those planes
+  #    on a deleted inode — the very bug this command exists to stop causing.
+  if [ "$BINARY_HELD_ELSEWHERE" = true ] || other_instances_remain; then
+    warn "leaving the binaries in place: other instances still use them"
+    warn "  orchicon: $INSTALL_DIR/orchicon"
+    [ "$PURGE" = true ] || warn "  every container, volume and state for '${INSTANCE}' is gone, so uninstalling it"
+    warn "  the executables is a machine-wide action — use --remove-binary once no instance needs them."
+  else
+    info "no other instance remains — removing the binaries"
+    remove_binaries
   fi
   exit 0
 }
+
+# --- Remove the binaries only ------------------------------------------------
+#
+# THE EXPLICIT MACHINE-WIDE ACTION. It touches no container, volume or instance state — only the two
+# executables — and it ASKS before taking anything down, because removing a binary that a plane or the
+# shared runtime daemon is running from is what produces a server that answers and cannot work.
+do_remove_binary() {
+  ask_instance
+
+  local users; users="$(all_binary_users)"
+  if [ -z "$users" ]; then
+    info "nothing is running off the binaries"
+    remove_binaries
+    exit 0
+  fi
+
+  echo ""
+  warn "a process is running off these binaries:"
+  printf '%s\n' "$users" | while IFS=: read -r pid inst; do
+    [ -n "$pid" ] || continue
+    printf '    pid %-8s instance %s\n' "$pid" "${inst:-<none — the shared runtime daemon>}"
+  done
+
+  if ! ask_yes_no "There is a plane running off this binary. Would you like to stop all services first before removing?"; then
+    info "nothing stopped, nothing removed"
+    exit 0
+  fi
+
+  # Stop each instance that appears in the user list (plane + container), then anything still holding the
+  # file — which is how the shared runtime daemon is reached, since it carries no instance.
+  local seen="" inst
+  for inst in $(printf '%s\n' "$users" | cut -d: -f2 | sort -u); do
+    [ -n "$inst" ] && seen="$seen $inst"
+  done
+  for inst in dev test prod; do
+    case " $seen " in *" $inst "*) stop_service_for "$inst" ;; esac
+  done
+  local pid
+  for pid in $(printf '%s\n' "$users" | cut -d: -f1); do
+    [ -n "$pid" ] || continue
+    $DRY_RUN || kill "$pid" 2>/dev/null || true
+  done
+  ok "services stopped"
+  remove_binaries
+  exit 0
+}
+
 
 # --- Force-clean then install -----------------------------------------------
 #
@@ -496,7 +781,9 @@ main() {
 }
 
 # --- Run --------------------------------------------------------------------
-if [ "$UNINSTALL" = true ]; then
+if [ "$REMOVE_BINARY" = true ]; then
+  do_remove_binary
+elif [ "$UNINSTALL" = true ]; then
   do_uninstall
 elif [ "$FORCE_CLEAN" = true ]; then
   do_force_clean
