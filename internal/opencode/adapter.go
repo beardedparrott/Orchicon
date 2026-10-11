@@ -353,7 +353,10 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 		if baseURL == "" {
 			baseURL = fmt.Sprintf("http://127.0.0.1:%d", resp.ServePort)
 		}
-		return NewSessionClient(baseURL, resp.ServePassword, executionDir(manifest))
+		client := NewSessionClient(baseURL, resp.ServePassword, executionDir(manifest))
+		// The container serve runs the SAME binary this adapter resolves, so it speaks the same API.
+		client.setAPIShape(a.apiShape())
+		return client
 	}
 	if a.host != nil {
 		// Lazy host serve (AC 2): the in-process serve starts on FIRST
@@ -736,6 +739,27 @@ const sessionToolShell = "File access tools:\n" +
 // The sandbox Orchicon MCP sidecar spawns there, never at the plane's
 // (host) executable path.
 const runtimeContainerBinaryPath = "/usr/local/bin/orchicon"
+
+// apiShape resolves the API surface of this adapter's opencode binary, once.
+//
+// It goes through a.resolveBinary — the SAME seam the spawn path uses — so a test that stubs the
+// binary also stubs the version, and a plane cannot detect one opencode while spawning another. A
+// resolver failure is not an error here: it means the spawn path will fail loudly on its own, and
+// this only needs to pick a shape, so v1 (the installed-base default) is the answer.
+func (a *Adapter) apiShape() apiShape {
+	// THE RESOLVER IS AN OPTIONAL SEAM, so a nil one is not an error to report — it is an adapter that
+	// has not been wired for spawning, and it will fail loudly on its own when it tries. Guarding here
+	// rather than relying on every construction path to call New() is what keeps this from turning a
+	// detection detail into a panic in an unrelated test.
+	if a.resolveBinary == nil {
+		return shapeV1
+	}
+	binary, err := a.resolveBinary()
+	if err != nil || strings.TrimSpace(binary) == "" {
+		return shapeV1
+	}
+	return shapeForBinary(context.Background(), a.log, binary)
+}
 
 // New creates an OpenCode adapter bridge.
 // SetBinaryResolver overrides the adapter-CLI resolver (test seam —

@@ -106,7 +106,21 @@ type SessionClient struct {
 	// separate keep-alive-disabled transport so a parked stream never occupies
 	// the API idle pool (D5).
 	sseHC *http.Client
+
+	// shape is WHICH API this serve speaks (see apisurface.go). Every route below is asked of it
+	// rather than written as a literal, because opencode 2.x moved them all under /api and renamed
+	// several. It defaults to v1 — the surface the installed base runs — so a client that never
+	// detects anything behaves exactly as it did before.
+	shape apiShape
 }
+
+// SetAPIShape selects the API surface this client talks to. It is the seam the plane uses after
+// detecting the served version, and it exists as a method rather than a constructor argument so the
+// many existing NewSessionClient call sites (and every test) keep compiling and keep working.
+func (c *SessionClient) setAPIShape(shape apiShape) { c.shape = shape }
+
+// APIShapeName reports the selected surface, for logs and for the assertions that pin wiring.
+func (c *SessionClient) APIShapeName() string { return c.shape.name }
 
 // ErrSessionNotFound marks a 404 from the serve for a session-scoped
 // request: the session id is no longer valid on that serve (its data dir
@@ -157,6 +171,7 @@ func NewSessionClient(baseURL, password, directory string) *SessionClient {
 		directory: directory,
 		hc:        &http.Client{Transport: transport},
 		sseHC:     &http.Client{Transport: sseTransport},
+		shape:     shapeV1,
 	}
 }
 
@@ -167,7 +182,7 @@ func (c *SessionClient) BaseURL() string { return c.baseURL }
 func (c *SessionClient) Healthy(ctx context.Context) bool {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	req, err := c.newRequest(ctx, http.MethodGet, "/global/health", nil, nil)
+	req, err := c.newRequest(ctx, http.MethodGet, c.shape.healthPath, nil, nil)
 	if err != nil {
 		return false
 	}
@@ -196,7 +211,7 @@ func (c *SessionClient) SessionExists(ctx context.Context, sessionID string) boo
 	var out struct {
 		ID string `json:"id"`
 	}
-	if err := c.doJSON(ctx, http.MethodGet, "/session/"+url.PathEscape(sessionID), nil, &out); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, c.shape.sessionPath(url.PathEscape(sessionID)), nil, &out); err != nil {
 		return false
 	}
 	return true
@@ -266,7 +281,7 @@ func (c *SessionClient) CreateSession(ctx context.Context, title string) (string
 	var out struct {
 		ID string `json:"id"`
 	}
-	if err := c.doJSON(ctx, http.MethodPost, "/session", body, &out); err != nil {
+	if err := c.doJSON(ctx, http.MethodPost, c.shape.sessionsPath(), body, &out); err != nil {
 		return "", err
 	}
 	if out.ID == "" {
@@ -338,7 +353,7 @@ func (c *SessionClient) SendMessageWithAttachments(ctx context.Context, sessionI
 			body["model"] = map[string]any{"providerID": provider, "modelID": model}
 		}
 	}
-	if err := c.do(ctx, http.MethodPost, "/session/"+sessionID+"/prompt_async", body); err != nil {
+	if err := c.do(ctx, http.MethodPost, c.shape.promptPath(sessionID), body); err != nil {
 		return fmt.Errorf("opencode session send: %w", err)
 	}
 	return nil
@@ -356,7 +371,7 @@ type AttachmentPart struct {
 func (c *SessionClient) Abort(ctx context.Context, sessionID string) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := c.do(ctx, http.MethodPost, "/session/"+sessionID+"/abort", map[string]any{}); err != nil {
+	if err := c.do(ctx, http.MethodPost, c.shape.abortPath(sessionID), map[string]any{}); err != nil {
 		return fmt.Errorf("opencode session abort: %w", err)
 	}
 	return nil
@@ -379,7 +394,7 @@ func (c *SessionClient) Compact(ctx context.Context, sessionID, providerID, mode
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	body := map[string]any{"providerID": providerID, "modelID": modelID}
-	if err := c.do(ctx, http.MethodPost, "/session/"+sessionID+"/summarize", body); err != nil {
+	if err := c.do(ctx, http.MethodPost, c.shape.compactPath(sessionID), body); err != nil {
 		return fmt.Errorf("opencode session compact: %w", err)
 	}
 	return nil
@@ -403,8 +418,8 @@ func (c *SessionClient) ReplyPermission(ctx context.Context, sessionID, permissi
 func (c *SessionClient) ReplyPermissionDecision(ctx context.Context, sessionID, permissionID, decision string) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := c.do(ctx, http.MethodPost, "/session/"+sessionID+"/permissions/"+permissionID,
-		map[string]any{"response": decision}); err != nil {
+	if err := c.do(ctx, http.MethodPost, c.shape.permissionReplyPath(sessionID, permissionID),
+		map[string]any{c.shape.permissionReplyField: decision}); err != nil {
 		return fmt.Errorf("opencode session permission reply: %w", err)
 	}
 	return nil
@@ -414,7 +429,7 @@ func (c *SessionClient) ReplyPermissionDecision(ctx context.Context, sessionID, 
 // yields bus events (for ALL sessions — callers filter by session id).
 // The stream blocks until ctx is cancelled or the connection drops.
 func (c *SessionClient) Subscribe(ctx context.Context) (BusSub, error) {
-	req, err := c.newRequest(ctx, http.MethodGet, "/event", nil, nil)
+	req, err := c.newRequest(ctx, http.MethodGet, c.shape.eventPath(), nil, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -433,6 +433,10 @@ func (h *HostServe) startOnce(ctx context.Context) error {
 	h.port = port
 	h.guard = g
 	h.client = NewSessionClient(fmt.Sprintf("http://127.0.0.1:%d", port), password, "")
+	// WHICH API THIS SERVE SPEAKS, asked of the binary that IS the serve. opencode 2.x moved every
+	// session endpoint under /api (apisurface.go); a client that assumed v1 against a 2.x serve
+	// would fail every turn on a 404 and name no endpoint.
+	h.client.setAPIShape(shapeForBinary(ctx, h.log, binary))
 	h.started = true
 	h.mu.Unlock()
 
