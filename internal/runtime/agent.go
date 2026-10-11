@@ -241,6 +241,12 @@ type execSession struct {
 	exitCode int
 	exitErr  error
 	done     chan struct{}
+
+	// pumpsDone is closed once the stdio pumps have drained their pipes. watchExec
+	// waits on it before calling cmd.Wait(), because Wait closes the pipe read ends
+	// (see the measurement in watchExec). nil for children with no pumps — the serve
+	// and sandbox paths do not set it, and their behaviour is unchanged.
+	pumpsDone chan struct{}
 }
 
 func newExecSession(id string) *execSession {
@@ -528,6 +534,20 @@ func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
 // bash/sh (same gate family as the serve's runtimeBinAllowlist) and the
 // execution-guard shim applies, so a worker subprocess cannot run
 // destructive commands even inside the container.
+// BOUNDS ON REAPING, declared once. Both exist because cmd.Wait() closes the
+// pipe read ends: a child that exits fast leaves its output in the KERNEL buffer
+// until a pump reads it, so reaping first DISCARDS it.
+const (
+	// stdioDrainKillTimeout bounds the wait for the pumps after stdin closes. A child
+	// that will not exit is killed, and killing it is what closes the write ends.
+	stdioDrainKillTimeout = 15 * time.Second
+
+	// stdioPumpDrainGrace bounds the wait for the pumps BEFORE reaping. It is
+	// deliberately LONGER than the kill timeout above, so that for a wedged child it is
+	// the kill — not this bound — that resolves the wait.
+	stdioPumpDrainGrace = 20 * time.Second
+)
+
 func (h *childRegistry) runExec(enc *json.Encoder, req AgentRequest) {
 	base := ""
 	if len(req.Argv) > 0 {
@@ -589,8 +609,22 @@ func (h *childRegistry) runExec(enc *json.Encoder, req AgentRequest) {
 	wg.Add(2)
 	go pump("stdout", stdout)
 	go pump("stderr", stderr)
+	// DRAIN BEFORE REAPING — the same hazard as watchExec, and the same measurement:
+	// reaping closes the read ends, so a fast child's output is gone before a pump that
+	// is only scheduled can read it. runExec is a one-shot container command, and a
+	// refusal through it is just as fast, so it needs the same ordering.
+	//
+	// Bounded, so a grandchild inheriting the write end cannot turn a lost message into a
+	// wedged exec: after the bound we reap anyway, and Wait closing the read ends is what
+	// releases the pumps — so the receive below cannot block.
+	drained := make(chan struct{})
+	go func() { wg.Wait(); close(drained) }()
+	select {
+	case <-drained:
+	case <-time.After(stdioPumpDrainGrace):
+	}
 	werr := cmd.Wait()
-	wg.Wait()
+	<-drained
 	code := 0
 	emsg := ""
 	if werr != nil {
@@ -682,10 +716,14 @@ func (h *childRegistry) runStdio(dec *json.Decoder, enc *json.Encoder, req Agent
 	s := newExecSession(req.ExecID)
 	s.cmd = cmd
 	s.guardDir = guardDir
+	// The reaper is NOT started here. It calls cmd.Wait(), which closes the pipes, so it
+	// must be started only once the pumps exist AND gated on them draining — see below
+	// and watchExec.
+	pumpsDone := make(chan struct{})
+	s.pumpsDone = pumpsDone
 	h.mu.Lock()
 	h.cmd[req.ExecID] = s
 	h.mu.Unlock()
-	go h.watchExec(s)
 
 	// json.Encoder is not safe for concurrent use: serialize the pumps.
 	var wmu sync.Mutex
@@ -710,6 +748,12 @@ func (h *childRegistry) runStdio(dec *json.Decoder, enc *json.Encoder, req Agent
 	wg.Add(2)
 	go pump("stdout", stdout)
 	go pump("stderr", stderr)
+	// NOW the reaper may start, and it waits for these pumps before reaping. Starting it
+	// before them — as this did — let cmd.Wait() close the pipe read ends while the pumps
+	// were still only SCHEDULED, and a guard refusal is exactly the fast child that loses
+	// the race.
+	go func() { wg.Wait(); close(pumpsDone) }()
+	go h.watchExec(s)
 
 	// Control loop: read follow-up frames off the SAME connection until the
 	// plane closes its request body (dec.Err on EOF) or sends "close".
@@ -735,15 +779,15 @@ drain:
 	_ = stdin.Close()
 	// The child should now see EOF and exit. Bound the wait so a stubborn
 	// child cannot wedge the connection forever.
-	pumped := make(chan struct{})
-	go func() { wg.Wait(); close(pumped) }()
+	// pumpsDone, not a second waiter: the same signal both releases the reaper and ends
+	// this wait, so the two can never disagree about whether the pipes were drained.
 	select {
-	case <-pumped:
-	case <-time.After(15 * time.Second):
+	case <-pumpsDone:
+	case <-time.After(stdioDrainKillTimeout):
 		if cmd.Process != nil {
 			_ = cmd.Process.Kill()
 		}
-		<-pumped
+		<-pumpsDone
 	}
 	select {
 	case <-s.done:
@@ -1325,6 +1369,30 @@ func (h *childRegistry) stopSandboxPlane() {
 // so there is nothing to broadcast to — the terminal state is what a
 // later liveness-gated runServe / the watchdog uses to decide a restart.
 func (h *childRegistry) watchExec(s *execSession) {
+	// DRAIN BEFORE REAPING, and this ordering is load-bearing rather than tidy.
+	//
+	// cmd.Wait() closes the pipe READ ends. A child that exits fast — an execution-guard
+	// refusal exits in about a millisecond — leaves its message in the kernel buffer
+	// until a pump reads it, so reaping first THROWS IT AWAY. The child still reports a
+	// non-zero exit, the command still did nothing, and the reason is simply gone: a
+	// failed command with no explanation, which a model cannot course-correct from and
+	// an operator cannot see.
+	//
+	// MEASURED, on this repo's own shape (a child that writes one line then exits 1):
+	// with the pump scheduled 0ms after Wait the message survived 50/50; at 1ms it was
+	// lost in 26/50; at 5ms, 50/50. The window is just the scheduling gap, which is
+	// negligible on an idle machine and easily exceeded under a loaded one — which is
+	// why this presented as an intermittent test failure rather than a bug report.
+	//
+	// The bound is a wedge guard, not the normal path: for a child that exits on its own
+	// the pumps hit EOF immediately, and for a child that will not exit, the drain's kill
+	// closes the write ends, which is what releases them.
+	if s.pumpsDone != nil {
+		select {
+		case <-s.pumpsDone:
+		case <-time.After(stdioPumpDrainGrace):
+		}
+	}
 	waitErr := s.cmd.Wait()
 	code := 1
 	if s.cmd.ProcessState != nil {
