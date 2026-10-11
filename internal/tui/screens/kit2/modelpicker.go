@@ -661,9 +661,16 @@ func (mp *ModelPicker) layout(innerW, innerH int) ([]string, pickerHits) {
 	// The search box (the model tier's filter).
 	rows = append(rows, mp.searchLine(innerW))
 
-	// Reserved bottom rows: status + hints.
-	const bottomRows = 2
-	listRows := innerH - len(rows) - bottomRows
+	// Reserved bottom rows: the status area plus the hint line.
+	//
+	// THE STATUS AREA IS NOT A FIXED TWO ROWS ANY MORE, and that is the fix for a real report: the
+	// error line was rendered as ONE padded row, so a message longer than the box was silently CUT at
+	// the edge. The operator saw "internal: list opencode models: opencode listed no models — the
+	// command" and could not read the remedy — while the remedy was the entire point of the message.
+	// A single-row status area cannot hold an actionable error, so the area now takes as many rows as
+	// the error needs (capped) and the model list yields the space.
+	statusRows := mp.statusLines(innerW)
+	listRows := innerH - len(rows) - len(statusRows) - 1 // -1: the hint line
 	if listRows < 1 {
 		listRows = 1
 	}
@@ -695,7 +702,8 @@ func (mp *ModelPicker) layout(innerW, innerH int) ([]string, pickerHits) {
 		rows = append(rows, "")
 	}
 
-	rows = append(rows, mp.statusLine(innerW), hintLine(innerW))
+	rows = append(rows, statusRows...)
+	rows = append(rows, hintLine(innerW))
 	// Clip to the interior height.
 	if len(rows) > innerH {
 		rows = rows[:innerH]
@@ -763,12 +771,41 @@ func (mp *ModelPicker) modelRow(o PickerOption, cursored, focused bool, innerW i
 	return theme.ListItem.Render(Pad(line, innerW))
 }
 
-// statusLine reports the load state or the current selection summary.
-func (mp *ModelPicker) statusLine(innerW int) string {
+// maxErrorRows caps how much of the box an error may take, so a pathological message cannot consume
+// the list and leave the picker unusable.
+//
+// SIX, BECAUSE FOUR WAS MEASURABLY TOO TIGHT. A realistic error — the "listed no models, check
+// `opencode auth list`" one that prompted this — needs four rows at the picker's maximum width and
+// FIVE at 64 columns, where the box narrows to 60. At four, the last two words were dropped at that
+// width, which is the truncation this change exists to remove; the test caught it by asserting on
+// every word rather than on the length.
+const maxErrorRows = 6
+
+// statusLines reports the load state or the current selection summary, as one or more rows.
+//
+// IT WRAPS AN ERROR AND PADS A SUMMARY. The distinction is deliberate: a summary is a fixed short
+// phrase that fits or can be cut harmlessly, whereas an error is the operator's only clue and must be
+// readable. Returns the styled rows so the caller sizes the list around them.
+func (mp *ModelPicker) statusLines(innerW int) []string {
+	if mp.err != "" {
+		wrapped := wrapCells(mp.err, innerW, "  ⚠ ", "    ")
+		if len(wrapped) > maxErrorRows {
+			wrapped = wrapped[:maxErrorRows]
+			wrapped[len(wrapped)-1] += " …"
+		}
+		out := make([]string, 0, len(wrapped))
+		for _, r := range wrapped {
+			out = append(out, theme.ErrorText.Render(r))
+		}
+		return out
+	}
+	return []string{mp.summaryLine(innerW)}
+}
+
+// summaryLine is the non-error status: padded to the box so the row paints fully.
+func (mp *ModelPicker) summaryLine(innerW int) string {
 	var s string
 	switch {
-	case mp.err != "":
-		s = "⚠ " + mp.err
 	case mp.loading:
 		s = "loading…"
 	case mp.tier == TierModel && mp.provider != "":
@@ -785,11 +822,7 @@ func (mp *ModelPicker) statusLine(innerW int) string {
 	default:
 		s = "select a " + tierName(mp.tier)
 	}
-	style := theme.HintText
-	if mp.err != "" {
-		style = theme.ErrorText
-	}
-	return style.Render(Pad("  "+s, innerW))
+	return theme.HintText.Render(Pad("  "+s, innerW))
 }
 
 func hintLine(innerW int) string {

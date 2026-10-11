@@ -432,17 +432,29 @@ func parseModelOutput(data []byte) ([]*apiv1.OpenCodeModel, error) {
 	}
 
 	if len(models) == 0 {
-		// AN EMPTY LIST IS A REAL ANSWER, AND opencode 2.x SAYS IT BY PRINTING NOTHING. Its `models`
-		// handler ends with `if (models.length > 0) process.stdout.write(...)` — a zero-model
-		// response is a silent exit 0. So this message is reached by a CLI that SUCCEEDED, and
-		// "no models found in opencode output" reads like a parse failure when it is not one.
+		// TWO VERY DIFFERENT SITUATIONS REACH HERE, and telling them apart is the whole value of the
+		// message. opencode 2.x reports an empty model list by printing NOTHING and exiting 0 (its
+		// handler ends with `if (models.length > 0) process.stdout.write(...)`), so "no models found"
+		// was being reported for a command that SUCCEEDED — and it reads like a parse failure, which
+		// sends the operator to the wrong place entirely.
 		//
-		// The overwhelmingly likely cause is that no provider is authenticated: a model list is
-		// built from configured providers, so none configured means none listed. The remedy is
-		// named, because an operator cannot act on "no models found".
-		return nil, fmt.Errorf("opencode listed no models — the command succeeded and printed nothing, " +
-			"which is how it reports an empty model list. Check that a provider is authenticated " +
-			"(`opencode auth list`), and try the command by hand to confirm: `opencode models`")
+		// So the RAW OUTPUT is examined rather than assumed about:
+		//   * nothing printed  -> a genuinely empty list, which in practice means no provider is
+		//     authenticated for the environment this command ran in.
+		//   * something printed -> the build emits a format this parser does not understand, and the
+		//     snippet is included so that is visible without reproducing it by hand.
+		//
+		// The second case is the one no amount of guessing can resolve, so it carries its evidence.
+		if printed := bytes.TrimSpace(data); len(printed) == 0 {
+			return nil, fmt.Errorf("opencode listed no models: the command succeeded and printed " +
+				"NOTHING, which is how it reports an empty list. In practice that means no provider " +
+				"is authenticated for the environment the plane runs in — check `opencode auth list` " +
+				"and run `opencode models` by hand in the same shell")
+		} else {
+			return nil, fmt.Errorf("opencode printed %d bytes but no models could be read from them — "+
+				"this build's output format is not one this version understands. First %d bytes, "+
+				"verbatim: %s", len(printed), min(300, len(printed)), excerpt(printed))
+		}
 	}
 	return models, nil
 }
