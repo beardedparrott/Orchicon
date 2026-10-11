@@ -507,8 +507,8 @@ publishing, approving, cancelling, retrying and bulk operations are all availabl
 from either. A change made in one is a change made in the other, because both read
 and write the same plane API.
 
-**They share one default look.** The GUI's default dark theme is **Teal Depths**
-and the TUI's launch default is the matching **`teal`** palette, so a fresh GUI and
+**They share one default look.** The GUI's default dark theme is **Forest Night**
+and the TUI's launch default is the matching **`forest`** palette, so a fresh GUI and
 a fresh TUI open in the same colours. Each is a *default, not a pin* — a stored
 preference always wins.
 
@@ -1790,7 +1790,7 @@ deleting a group moves its items to Uncategorized.
 ### Themes
 
 Choose one in *Control → Themes* (press the action key on a row to apply and
-persist it), or `/theme`. The launch default is the **`teal`** palette, matching
+persist it), or `/theme`. The launch default is the **`forest`** palette, matching
 the GUI's default. There are 43 themes across light and dark, including **true
 transparency**, where the terminal shows through and the text adapts to your
 terminal's own background.
