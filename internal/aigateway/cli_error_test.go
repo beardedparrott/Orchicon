@@ -70,8 +70,20 @@ func TestModelDiscoverySurfacesTheCLIsOwnError(t *testing.T) {
 		t.Errorf("the CLI's own explanation must be IN the error — it is the only thing that says "+
 			"WHY. Before this was fixed the error was just \"exit status 1\".\n  got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "opencode models --verbose") {
-		t.Errorf("the error must name the invocation that failed, got: %v", err)
+	// THE MINIMUM INVOCATION IS WHAT GETS NAMED, not the --verbose one. fetchModels now tries
+	// `models --verbose` and falls back to `models`, and when both fail it reports the second: a
+	// bare `models` is the invocation that cannot work at all, so naming the flag would point at
+	// the wrong thing. Asserting the ABSENCE of --verbose is what keeps this meaningful — a plain
+	// `strings.Contains(err, "opencode models")` would also pass for the old behaviour.
+	if !strings.Contains(err.Error(), "opencode models:") {
+		t.Errorf("the error must name the minimum invocation that failed, got: %v", err)
+	}
+	// THE INVOCATION PREFIX IS WHAT MUST BE FREE OF THE FLAG — not the whole message. The CLI's own
+	// stderr is appended verbatim and may mention `--verbose` (an unknown-option complaint does
+	// exactly that), so asserting its absence anywhere would fail on a CORRECT message. Measured:
+	// the first version of this check failed against a message that was right.
+	if strings.Contains(err.Error(), "opencode models --verbose") {
+		t.Errorf("the invocation reported must be the minimum one, not the --verbose form, got: %v", err)
 	}
 }
 
@@ -116,7 +128,7 @@ func TestDiscoveryStillFailsWhenTheCLISaysNothingAtAll(t *testing.T) {
 	if err == nil {
 		t.Fatal("a silent non-zero exit must still be an error — silence is not success")
 	}
-	if !strings.Contains(err.Error(), "opencode models --verbose") {
+	if !strings.Contains(err.Error(), "opencode models:") {
 		t.Errorf("the error must name the invocation, got: %v", err)
 	}
 }

@@ -46,6 +46,50 @@ type ModelDiscoverer struct {
 	refreshing  bool
 	refreshDone chan struct{}
 	ttl         time.Duration
+
+	// cliMu guards the resolved MODEL-LIST ARGV, which is a VERSION question. `models --verbose`
+	// is what produces the metadata this package parses, and opencode 2.x REMOVED the flag: on
+	// 2.0.26 the command accepts only `--standalone`/`--server` (packages/cli/src/commands/
+	// commands.ts), so the flag is an unknown option and the CLI exits 1. Probe, then remember —
+	// but only remember on SUCCESS, so a transient failure cannot permanently downgrade a v1 CLI
+	// to the metadata-free form.
+	cliMu       sync.Mutex
+	verboseOK   bool
+	cliResolved bool
+}
+
+// modelsArgv returns the argument list to list models with.
+//
+// IT IS RESOLVED ONCE, and the reason is a real version difference rather than tidiness. opencode
+// 1.x lists models as `opencode models [provider] [--refresh] [--verbose]`, and `--verbose` is what
+// emits the per-model metadata blocks this package parses. opencode 2.x kept the command but dropped
+// the flag — 2.0.26's CLI declares `models` with only the server params — so on a 2.x install the
+// documented invocation is an UNKNOWN OPTION and the CLI exits 1. Reported against WSL opencode
+// 2.0.26 as: `internal: list opencode models: opencode models: exit status 1`.
+//
+// The first call always tries the metadata form, because that is the richer one and the only one
+// that works on 1.x; the fallback is recorded so a 2.x install pays for the failed attempt once
+// rather than on every refresh.
+func (d *ModelDiscoverer) modelsArgv() (argv []string, verbose bool) {
+	d.cliMu.Lock()
+	defer d.cliMu.Unlock()
+	if d.cliResolved && !d.verboseOK {
+		return []string{"models"}, false
+	}
+	return []string{"models", "--verbose"}, true
+}
+
+// rememberModelsForm records that the CLI accepted (or did not accept) `--verbose`. ONLY A SUCCESS
+// IS REMEMBERED: caching a failure would turn one transient error into a permanent downgrade, and
+// on a 1.x install that means silently losing every model's cost and context-window metadata.
+func (d *ModelDiscoverer) rememberModelsForm(verboseOK bool) {
+	d.cliMu.Lock()
+	defer d.cliMu.Unlock()
+	if !verboseOK && d.cliResolved {
+		return // already downgraded; nothing to change
+	}
+	d.verboseOK = verboseOK
+	d.cliResolved = true
 }
 
 // NewModelDiscoverer creates a discoverer that shells out to the opencode
@@ -228,11 +272,31 @@ func (d *ModelDiscoverer) fetchModels(ctx context.Context) ([]*apiv1.OpenCodeMod
 	// unpinned means the model list could depend on where someone stood when they installed.
 	//
 	// The home dir is the right pin because it is where opencode's own config and auth live.
-	out, err := runOpencodeCLI(ctx, d.binary, homeDir(), "models", "--verbose")
-	if err != nil {
-		return nil, fmt.Errorf("list opencode models: %w", err)
+	argv, triedVerbose := d.modelsArgv()
+	out, err := runOpencodeCLI(ctx, d.binary, homeDir(), argv...)
+	if err == nil {
+		// RECORD ONLY WHAT WE ACTUALLY TRIED. An earlier version recorded `true` on any success,
+		// so once the form had been downgraded the NEXT plain success re-enabled --verbose and the
+		// choice OSCILLATED — measured as `--verbose` attempted twice across three fetches, i.e. a
+		// 2.x install paying for a rejection it had already seen, forever.
+		if triedVerbose {
+			d.rememberModelsForm(true)
+		}
+		return parseModelOutput(out)
 	}
-	return parseModelOutput(out)
+
+	// The flag may simply not exist on this CLI (see modelsArgv). Retry with the minimum
+	// invocation; the metadata-free format is still a usable model list, and parseModelOutput
+	// reads it (it emits a bare ref as a model with no cost/limits rather than dropping it).
+	if plainOut, plainErr := runOpencodeCLI(ctx, d.binary, homeDir(), "models"); plainErr == nil {
+		d.rememberModelsForm(false)
+		return parseModelOutput(plainOut)
+	}
+
+	// BOTH FAILED, so this is not the flag: report the MINIMUM invocation's failure, because
+	// `models` alone is the thing that cannot work. Its error carries the CLI's own words.
+	_, plainErr := runOpencodeCLI(ctx, d.binary, homeDir(), "models")
+	return nil, fmt.Errorf("list opencode models: %w", plainErr)
 }
 
 // parseModelOutput parses the output of `opencode models --verbose`.
@@ -256,7 +320,20 @@ func parseModelOutput(data []byte) ([]*apiv1.OpenCodeModel, error) {
 	bracing := -1 // brace depth; -1 = not in JSON
 
 	flush := func() error {
-		if currentRef == "" || jsonBuf.Len() == 0 {
+		if currentRef == "" {
+			return nil
+		}
+		if jsonBuf.Len() == 0 {
+			// A REF WITH NO METADATA IS STILL A MODEL.
+			//
+			// This used to discard it, which made the metadata-free output — the ONLY output
+			// opencode 2.x can produce, since it removed `--verbose` — parse to zero models and
+			// then fail with "no models found in opencode output". The refs are the whole point
+			// of the list; what is missing is cost/limits, and a model the operator can select
+			// without seeing its price is much better than a picker with no models in it.
+			models = append(models, modelFromRef(currentRef))
+			currentRef = ""
+			bracing = -1
 			return nil
 		}
 		m, err := parseModelJSON(currentRef, jsonBuf.Bytes())
@@ -385,6 +462,24 @@ type rawIO struct {
 	Image bool `json:"image"`
 	Video bool `json:"video"`
 	PDF   bool `json:"pdf"`
+}
+
+// modelFromRef builds a model from a bare `provider/model` reference, which is all the
+// metadata-free form of `opencode models` provides. Id and ProviderId are split on the first "/",
+// matching how opencode names its refs; Name falls back to the id so a picker has something to
+// show. Cost, Limits and Capabilities stay nil, which callers must already tolerate — they do,
+// because parseModelJSON leaves them nil whenever the CLI omits them.
+func modelFromRef(ref string) *apiv1.OpenCodeModel {
+	id, provider := ref, ""
+	if i := strings.Index(ref, "/"); i > 0 {
+		provider, id = ref[:i], ref[i+1:]
+	}
+	return &apiv1.OpenCodeModel{
+		Id:         id,
+		ProviderId: provider,
+		Name:       id,
+		ModelRef:   ref,
+	}
 }
 
 func parseModelJSON(ref string, data []byte) (*apiv1.OpenCodeModel, error) {
