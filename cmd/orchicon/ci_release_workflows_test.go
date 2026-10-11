@@ -100,3 +100,38 @@ func TestCanaryAssetsUseTheStableName(t *testing.T) {
 		}
 	}
 }
+
+// TestCanaryPublishesAnImageThatIsNotLatest — the canary must ship a CONTAINER IMAGE, and must never touch
+// the floating release tag.
+//
+// WHY IT NEEDS ONE AT ALL: with binaries only, `-Version canary` installed a canary BINARY into a stack
+// running the last RELEASED image, so a test of "does re-installing converge the container?" had nothing
+// newer to converge to — which is exactly how the operator's Windows test came back inconclusive.
+//
+// AND WHY NOT :latest: that tag is the published release's, and repointing it at develop would change what
+// every existing install pulls on its next start. The canary is additive or it is a liability.
+func TestCanaryPublishesAnImageThatIsNotLatest(t *testing.T) {
+	b, err := os.ReadFile("../../.github/workflows/canary.yml")
+	if err != nil {
+		t.Fatalf("read canary.yml: %v", err)
+	}
+	src := string(b)
+
+	for _, want := range []string{
+		// The image is built from the same Dockerfile and pushed under a canary-only tag.
+		"deploy/container/Dockerfile",
+		"ghcr.io/beardedparrott/orchicon:canary",
+		"docker push ghcr.io/beardedparrott/orchicon:canary",
+		// Pushing to GHCR needs the scope; without it the job 403s and the canary silently ships binaries
+		// with no image.
+		"packages: write",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("canary.yml no longer %q — a canary without its own image cannot exercise the container half of an install", want)
+		}
+	}
+	// NEVER the floating release tag.
+	if strings.Contains(src, "orchicon:latest") {
+		t.Error("canary.yml references orchicon:latest — that tag belongs to the published release, and pointing it at develop would change what every existing install pulls")
+	}
+}

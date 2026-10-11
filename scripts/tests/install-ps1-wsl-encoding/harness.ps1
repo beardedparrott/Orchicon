@@ -511,6 +511,53 @@ Check "and an empty answer refuses without a fallback" `
   ($code -match 'no instance chosen - pass -Instance') `
   "the refusal is what makes Enter safe for the destructive verbs"
 
+# --- 18. THE WINDOWS SETUP NAMES THE VERSION'S IMAGE --------------------------
+# The same rule as the shell installer's, and the same failure it prevents: with binaries only, a canary
+# install put a canary BINARY over the last RELEASED image, so a test of "does re-installing converge the
+# container?" had nothing newer to converge to.
+Say ""
+Say "[18] the Windows setup names the version's image"
+
+$ps1c = Get-Content -Raw $Installer
+Check "the setup script passes ORCHICON_CONTAINER_IMAGE" `
+  ($ps1c -match 'ORCHICON_CONTAINER_IMAGE="__IMAGE_REF__"') `
+  "without it the stack comes from whatever :latest the host already has"
+Check "and the ref is built from the version, lowercased for ghcr" `
+  (($ps1c -match '\$imageRepo = "ghcr.io/"') -and ($ps1c -match '\.ToLower\(\)')) `
+  "ghcr rejects an uppercase repository name, and GITHUB_REPO is 'Orchicon'"
+Check "the placeholder is substituted, not shipped literally" `
+  ($ps1c -match "\.Replace\('__IMAGE_REF__'") `
+  "a literal __IMAGE_REF__ would be an invalid image ref at install time"
+# The RUNTIME images must NOT move with the version: nothing publishes orchicon-runtime:<version>, so
+# tagging them would make an install fail on a ref that does not exist.
+Check "the runtime images are left on their default tag" `
+  (-not ($ps1c -match 'ORCHICON_RUNTIME_IMAGE="__')) `
+  "only the instance image is versioned; the runtime engine is not"
+
+# --- 19. EVERY DESTRUCTIVE FLAG IS INSTANCE-BOUND ---------------------------
+# The operator: "EVERY option should be instance bound and operate as such." -Clean and -ForceClean were the
+# exception: neither asked, so the verb that DESTROYS A DATA VOLUME took whatever ORCHICON_INSTANCE held (or
+# `dev`). Reported after a -ForceClean went ahead on its own on a Windows host.
+#
+# ENUMERATED ON PURPOSE: the flag list is the assertion's input, so a new destructive flag that forgets to
+# ask must be added here to be covered — which surfaces the omission in review.
+Say ""
+Say "[19] every destructive flag asks for an instance"
+
+$ps1c = (($ps1Src -split "`n") | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+foreach ($flag in @('$RemoveBinary', '$Uninstall', '$Clean', '$ForceClean')) {
+  # The flag's block, from its `if (` to the next flag's, so the assertion is about THAT verb.
+  $start = $ps1c.IndexOf("if (" + $flag + ") {")
+  if ($start -lt 0) { bad "$flag not found in install.ps1"; continue }
+  $block = $ps1c.Substring($start, [Math]::Min(1800, $ps1c.Length - $start))
+  Check "$flag asks which instance" ($block -match 'Ask-Instance') `
+    "without it the verb acts on whatever instance the environment names — which is how -ForceClean could destroy a volume nobody chose"
+}
+# And install is the ONE flag that may default (with a fallback), because it is the only non-destructive one.
+Check "install is the only flag with a fallback" `
+  (($ps1c -match 'Ask-Instance -Fallback "dev"')) `
+  "installing to the documented default is safe; destroying a volume on a default is not"
+
 Say ""
 if ($Fail.Count -eq 0) { Say "RESULT: all assertions passed" }
 else { Say ("RESULT: {0} assertion(s) FAILED: {1}" -f $Fail.Count, ($Fail -join '; ')) }
