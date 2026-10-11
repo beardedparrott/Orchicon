@@ -177,10 +177,10 @@ container instances and removes the binary; the WSL distro is left intact),
 | `ORCHICON_INSTALL_BASE_URL` | **Environment.** Where release assets are fetched from. Defaults to the published GitHub release. Set it to install from a mirror, or to point an install at a pre-release channel. It is also what makes the install path testable: `scripts/tests/install-path` serves a locally-built artifact and runs this very installer against it (`make install-path-test`). |
 | `--install-dir <dir>` | Installation directory (default: `~/.local/bin`). |
 | `--instance <name>` | Which instance to act on: `dev` (default), `test`, or `prod`. Each has its own container, ports, data volume and host state. Applies to install **and** to `--clean` / `--force-clean` `/ --uninstall`, so `--instance test` cannot touch dev or prod. Also settable as `ORCHICON_INSTANCE` — which is how the installed binary chooses its own instance at runtime — but a FLAG is the practical form, because an environment variable cannot be passed through the documented `curl … | bash -s --` one-liner (it would reach `curl`, not `bash`). |
-| `--uninstall` | Remove Orchicon from the install directory. |
-| `--dry-run` | Print what would happen without making changes. |
-| `--clean` | Stop any running instance, remove old binary, then install latest. Preserves all data. |
-| `--force-clean` / `--nuke` | Remove container instances + data volumes, blob store, runtime state, then install latest. **All data lost.** |
+| `--uninstall` | Stop everything **this instance** runs — its plane and its container. The executables are removed **only when no other instance still needs them**, because one install directory serves every instance. **Data preserved** (and it says where). Asks which instance unless `--instance` is given. |
+| `--purge` | The same, and also destroy this instance's data — its Docker volume and host state directory. Irreversible. |
+| `--remove-binary` | Remove just the `orchicon` and `orch` executables. Every container, volume and instance's state is left alone. If something is running off them it **asks** before stopping it, and declining changes nothing. |
+| `--yes` | Answer the prompts affirmatively, for non-interactive use. |
 
 ```bash
 # Install a specific version
@@ -265,31 +265,33 @@ curl http://localhost:8080/healthz   # {"status":"ok"}
 ### Instances, and removing one cleanly
 
 `dev`, `test` and `prod` are three **instances** of the same product on one host: separate container,
-separate ports, separate data volume, separate host state. `--instance` (or `-Instance` on Windows)
-scopes every action to one of them, and **the same flag is what `--uninstall` uses** — so the stack you
-remove is the stack you named:
+separate ports, separate data volume, separate host state.
+
+**The destructive verbs ask which instance.** `--uninstall`, `--purge` and `--remove-binary` prompt for
+`dev`/`test`/`prod` — showing what each currently has — unless `--instance` is given, which skips the
+question. With no terminal and no `--instance` they **refuse** rather than defaulting, because a wrong
+guess here cleans the wrong stack.
 
 ```bash
-# install a canary as an isolated `test` instance, touching neither dev nor prod
-curl -fsSL https://raw.githubusercontent.com/beardedparrott/Orchicon/develop/scripts/install.sh \
-  | bash -s -- --version canary --instance test --install-dir ~/.local/bin-canary
+# remove the test instance: its plane and container. Data preserved; binaries left, since dev/prod need them.
+curl -fsSL https://orchicon.dev/install | bash -s -- --uninstall --instance test
 
-# remove exactly that: stops the test plane, removes that binary, leaves user data in place
-curl -fsSL https://raw.githubusercontent.com/beardedparrott/Orchicon/develop/scripts/install.sh \
-  | bash -s -- --instance test --uninstall --install-dir ~/.local/bin-canary
+# the same, and destroy test's data too.
+curl -fsSL https://orchicon.dev/install | bash -s -- --purge --instance test
+
+# the executables only — nothing else is touched.
+curl -fsSL https://orchicon.dev/install | bash -s -- --remove-binary
 ```
 
-`--uninstall` stops the instance's plane and removes the binary; it **leaves the data volume** and says
-where it is. Removing data is `--clean` (stop the stack, keep the volume) or `--force-clean` (destroy
-that instance's volume — and, since `--instance` was added, only that instance's).
+**Two layers, and they are not the same scope.** Everything above the executables is **per instance**. The
+`orchicon`/`orch` binaries and the runtime daemon are **machine-wide**: one install directory serves every
+instance, which is why `--uninstall` removes the binaries only once no other instance remains, and says so
+when it leaves them. Removing a binary that another instance is running from is what leaves a server that
+answers and cannot work — so `--remove-binary` asks first when anything is running off them.
 
-An unknown name is **refused** with the valid set, not defaulted: `--instance production` becoming `dev`
-would clean up the wrong stack while you watched prod.
-
-> **If `ORCHICON_INSTANCE` is set in your shell, it wins over the default.** A shell started from inside a
-> running plane inherits that plane's environment — including its instance — so pass `--instance`
-> explicitly when it matters, and the flag always beats the environment.
-
+> **If `ORCHICON_INSTANCE` is set in your shell, the prompts are skipped for
+> `--clean`/`--force-clean` and that value is used.** A shell started from inside a running plane inherits
+> that plane's environment — including its instance. Pass `--instance` explicitly when it matters.
 
 ### Testing an installer change (canary)
 
