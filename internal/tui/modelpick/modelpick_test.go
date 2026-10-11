@@ -197,6 +197,27 @@ func TestFriendlyErrExplainsAnUnconfiguredDiscoverer(t *testing.T) {
 	if got := FriendlyErr(errText("rpc error: code = Unimplemented desc = boom")); !strings.Contains(got, "not configured") {
 		t.Errorf("FriendlyErr(unimplemented) = %q, want a configuration hint", got)
 	}
+	// THE PLANE'S OWN REMEDY MUST SURVIVE. The plane names the fix in a parenthetical, and this client used to
+	// replace the whole message with a dead end — reported verbatim by the operator selecting the opencode
+	// adapter: "it says 'model discovery is not configured on this plane'". The hint and the restart are both
+	// part of the answer: the discoverer is built at BOOT, so installing opencode while the plane runs changes
+	// nothing until it restarts, and without that sentence the operator concludes the message is wrong.
+	plane := errText("rpc error: code = Unimplemented desc = model discovery is not configured (set ORCHICON_OPENCODE_BIN or install opencode on PATH)")
+	got := FriendlyErr(plane)
+	if !strings.Contains(got, "ORCHICON_OPENCODE_BIN") || !strings.Contains(got, "install opencode on PATH") {
+		t.Errorf("FriendlyErr dropped the plane's remedy (got %q) — that parenthetical is the only actionable part", got)
+	}
+	if !strings.Contains(got, "restart") {
+		t.Errorf("FriendlyErr does not say the plane must restart (got %q) — the discoverer is built at boot, so that is the step the operator cannot guess", got)
+	}
+	if strings.Contains(got, "not configured (") {
+		t.Errorf("the plane's parentheses leaked through unfinished (got %q)", got)
+	}
+	// A message with no parenthetical still gets a floor, so the operator is never left without a next step.
+	bare := FriendlyErr(errText("unimplemented: boom"))
+	if !strings.Contains(bare, "ORCHICON_OPENCODE_BIN") {
+		t.Errorf("with no hint from the plane, FriendlyErr must name the fix itself (got %q)", bare)
+	}
 	if got := FriendlyErr(errText("connection refused")); got != "connection refused" {
 		t.Errorf("FriendlyErr(other) = %q, want the raw text passed through", got)
 	}
