@@ -248,6 +248,26 @@ else
   bad "--help documents --instance"
 fi
 
+# --- 7. THE INSTALLER MUST STAY EXECUTABLE -----------------------------------
+# Not cosmetic: `make install-dry-run` and `make install-uninstall` run `scripts/install.sh` directly, so a
+# lost executable bit breaks them with "Permission denied" (exit 126) — which is exactly what happened when
+# a scripted edit rewrote the file through a temporary one and the mode went with it. A git mode change is
+# invisible in a diff of the CONTENT, so it needs its own detector.
+say ""
+say "[7] the installer is executable"
+
+if [ -x "${INSTALLER}" ]; then
+  ok "scripts/install.sh is executable (the make targets run it directly)"
+else
+  bad "scripts/install.sh lost its executable bit — 'make install-dry-run' will fail with Permission denied"
+fi
+# And git must AGREE, or a fresh clone is broken even where this working tree is fine.
+if git -C "${REPO_ROOT}" ls-files -s scripts/install.sh 2>/dev/null | grep -q '^100755'; then
+  ok "and git records it as 100755 (so a fresh clone is correct too)"
+else
+  bad "git records scripts/install.sh as non-executable — a fresh clone would break the make targets"
+fi
+
 say ""
 if [ "${FAIL}" -eq 0 ]; then
   say "RESULT: all ${PASS} assertion(s) passed"
