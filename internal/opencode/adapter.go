@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -750,22 +749,16 @@ func (a *Adapter) SetBinaryResolver(f func() (string, error)) {
 	a.resolveBinary = f
 }
 
-// resolveOpenCodeBinary is the production resolver: probe PATH, then the
-// operator's host install at $HOME/.opencode/bin (the runtime daemon and
-// scripts/container.sh mount it there — Orchicon never ships the binary).
-func resolveOpenCodeBinary() (string, error) {
-	binary, err := exec.LookPath("opencode")
-	if err != nil {
-		if home, herr := os.UserHomeDir(); herr == nil {
-			cand := filepath.Join(home, ".opencode", "bin", "opencode")
-			if st, serr := os.Stat(cand); serr == nil && !st.IsDir() {
-				return cand, nil
-			}
-		}
-		return "", fmt.Errorf("opencode binary not found on PATH or ~/.opencode/bin (install it on the host: curl -fsSL https://opencode.ai/install | bash; set ORCHICON_SIMULATE_ADAPTER=1 only for offline dev): %w", err)
-	}
-	return binary, nil
-}
+// resolveOpenCodeBinary is the production resolver. It LIVES IN binary.go now —
+// the adapter, the host serve and the plane's discovery wiring had one copy each
+// and they disagreed about ORCHICON_OPENCODE_BIN (only discovery read it), which
+// is the variable the plane's own error message tells the operator to set. See
+// binary.go for the candidate list and why every candidate is one a runtime
+// container can actually reach.
+//
+// It stays declared here as a package-level name because it is the adapter's
+// DEFAULT for the resolveBinary seam (SetBinaryResolver(nil) restores it) and the
+// fail-fast tests call it directly.
 
 func New(log *slog.Logger) *Adapter {
 	return &Adapter{

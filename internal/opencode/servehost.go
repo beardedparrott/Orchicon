@@ -397,19 +397,13 @@ func (h *HostServe) startOnce(ctx context.Context) error {
 		return fmt.Errorf("host serve guard: %w", err)
 	}
 
-	binary, err := exec.LookPath("opencode")
+	// The SAME resolver the adapter spawns through, so the host serve and the
+	// in-container spawn can never disagree about which opencode is 'the' one.
+	// This used to be a second copy of the probe that ignored ORCHICON_OPENCODE_BIN.
+	binary, err := resolveOpenCodeBinary()
 	if err != nil {
 		g.Close()
-		if home, herr := os.UserHomeDir(); herr == nil {
-			cand := filepath.Join(home, ".opencode", "bin", "opencode")
-			if st, serr := os.Stat(cand); serr == nil && !st.IsDir() {
-				binary = cand
-			}
-		}
-	}
-	if binary == "" {
-		g.Close()
-		return fmt.Errorf("opencode binary not found (host serve disabled; executions fail fast — no one-shot fallback)")
+		return fmt.Errorf("host serve disabled; executions fail fast — no one-shot fallback: %w", err)
 	}
 
 	env := append(os.Environ(),

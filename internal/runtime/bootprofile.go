@@ -306,6 +306,46 @@ func adapterInstallPaths(home, kind string) ([]string, bool) {
 	return out, true
 }
 
+// AdapterHostMountRoots returns the host paths a demanded kind's installs are
+// mounted FROM — the roots a resolved adapter CLI must sit under to be reachable
+// from inside a runtime container.
+//
+// THE DECLARATION, NOT THE RUNTIME SET: existence is deliberately NOT checked.
+// adapterHostMounts does check it, because a `-v` must point at something real;
+// this answers a question about the RULE — "would a binary placed here be
+// visible to a worker?" — and a caller that stat'd would get a different answer
+// depending on whether the operator has installed anything yet.
+//
+// The consumer is internal/opencode's ContainerVisible, which pairs with the
+// binary resolver: 'opencode is installed' is a HOST fact, and on its own it says
+// nothing about whether the runtime containers can execute it. Deriving both from
+// this one declaration is what keeps the two answers from disagreeing.
+func AdapterHostMountRoots(home string, kinds ...string) []string {
+	if home == "" {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var out []string
+	for _, kind := range kinds {
+		installs, declared := adapterInstalls(home, kind)
+		if !declared {
+			continue
+		}
+		for _, in := range installs {
+			root := in.mount
+			if root == "" {
+				root = in.probe
+			}
+			if _, ok := seen[root]; ok {
+				continue
+			}
+			seen[root] = struct{}{}
+			out = append(out, root)
+		}
+	}
+	return out
+}
+
 // adapterHostMounts returns the daemon -v args for the adapter installs a
 // demanded kind contributes, emitting only installs whose probe exists with
 // the required file/dir shape (mirroring the original inline os.Stat gate).
