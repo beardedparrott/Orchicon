@@ -1015,36 +1015,61 @@ func (d *Daemon) startServe(name, kind string, req CreateRequest) (int, string, 
 // plane's lifecycle gate uses the same probe via the same helper.
 func serveUsableAt(baseURL, password string) bool {
 	client := &http.Client{Timeout: 3 * time.Second}
-	req, err := http.NewRequest(http.MethodGet, baseURL+"/global/health", nil)
-	if err != nil {
+
+	// EACH STEP TRIES EVERY PATH A SERVE MAY EXPOSE (see opencodeapi.go). ONE serve answers one of
+	// them, so this asks the gate's real question — "is this serve usable?" — without a version probe
+	// (a `docker exec` per run start) and without a cached verdict that can go stale when the
+	// container's binary is replaced.
+	//
+	// THE HARDCODED v1 PAIR IS WHAT BROKE EXECUTIONS ON 2.x: `POST /session` is answered with 405 by
+	// the newer surface, so the require-200 below never passed and this returned false for ever —
+	// reported to the operator as "serve did not become usable within 30s" on every dispatch. Ask
+	// Orchicon kept working because it uses the session client, which was fixed; this gate does not.
+	if !anyPathOK(client, baseURL, password, http.MethodGet, OpenCodeHealthPaths(), nil, func(code int) bool {
+		return code == http.StatusOK
+	}) {
 		return false
 	}
-	req.SetBasicAuth("opencode", password)
-	resp, err := client.Do(req)
-	if err != nil {
-		return false
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return false
-	}
+
 	// The serve is healthy; confirm it can actually create a session (the
 	// cold-start window answers health before the session machinery is up).
 	body := `{"title":"orchicon-serve-probe"}`
-	cReq, _ := http.NewRequest(http.MethodPost, baseURL+"/session", bytes.NewBufferString(body))
-	cReq.Header.Set("Content-Type", "application/json")
-	cReq.SetBasicAuth("opencode", password)
-	cResp, err := client.Do(cReq)
-	if err != nil {
-		return false
+	return anyPathOK(client, baseURL, password, http.MethodPost,
+		OpenCodeSessionCreatePaths(), []byte(body), opencodeAcceptableCreateStatus)
+}
+
+// anyPathOK issues the request against each candidate path until one answers acceptably, and reports
+// whether any did. A path that errors, 404s or answers with the wrong surface's status is simply the
+// next candidate's turn — which is what makes this tolerant of BOTH api generations without needing
+// to know which one it is talking to.
+func anyPathOK(client *http.Client, baseURL, password, method string, paths []string, body []byte, accept func(int) bool) bool {
+	for _, path := range paths {
+		var rdr io.Reader
+		if body != nil {
+			rdr = bytes.NewReader(body)
+		}
+		req, err := http.NewRequest(method, baseURL+path, rdr)
+		if err != nil {
+			continue
+		}
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		req.SetBasicAuth("opencode", password)
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		ok := accept(resp.StatusCode)
+		// Drain before closing so the connection can be reused, and so the probe session's body does
+		// not hold the socket open.
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if ok {
+			return true
+		}
 	}
-	defer cResp.Body.Close()
-	if cResp.StatusCode != http.StatusOK {
-		return false
-	}
-	// Clean up the probe session.
-	io.Copy(io.Discard, cResp.Body)
-	return true
+	return false
 }
 
 // containerIP resolves a container's bridge IP.
