@@ -200,6 +200,13 @@ jobs:
       - name: Install the real installer against a local artifact
         run: bash scripts/tests/install-path/run.sh
 
+      # The uninstall verbs DELETE things, so their harness stubs `docker` and keeps XDG_DATA_HOME and
+      # --install-dir in scratch directories: every container, volume and binary operation is recorded and
+      # none is performed. The assertions are then about the log — the only safe place to observe a
+      # destructive command — and the central one is that no other instance is ever named.
+      - name: Uninstall verbs, with docker stubbed so nothing real is touched
+        run: bash scripts/tests/install-path/uninstall.sh
+
   windows-installer:
     runs-on: ubuntu-latest
     steps:

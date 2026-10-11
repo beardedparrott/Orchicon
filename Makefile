@@ -389,8 +389,9 @@ install-ps1-test: ## CI gate: the Windows installer never closes the session, an
 # install path was previously exercised only by a user, and a broken installer reached two published
 # releases that way. It covers the POSIX installer; install.ps1's WSL path needs a Windows runner (its
 # offline behaviour is covered by install-ps1-test).
-install-path-test: ## Run the real installer against a locally-served artifact (no network, no Docker)
+install-path-test: ## Run the real installer against a locally-served artifact, and the uninstall verbs against a stubbed docker
 	bash scripts/tests/install-path/run.sh
+	bash scripts/tests/install-path/uninstall.sh
 
 # --- Frontend --------------------------------------------------------------
 .PHONY: fe-install fe-dev fe-build fe-lint fe-test docs-check site-check
