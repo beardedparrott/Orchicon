@@ -638,12 +638,17 @@ orch-launcher-prod: ## Refresh the prod orch launcher snapshot after a prod rebu
 	fi
 
 # --- Install ---------------------------------------------------------------
+#
+# BOTH PASS --instance, because the installer now ASKS which instance and a make target that blocks on a
+# question is a make target you cannot run in a script. `install-uninstall` is the destructive one, so its
+# instance is stated explicitly rather than left to a prompt or to whatever ORCHICON_INSTANCE is exported
+# in the caller's shell — a reflexive Enter on that verb must never choose a stack to destroy.
 .PHONY: install-dry-run install-uninstall
-install-dry-run: ## Dry-run the install script (no changes made)
-	scripts/install.sh --dry-run
+install-dry-run: ## Dry-run the install script for the dev instance (no changes made)
+	scripts/install.sh --dry-run --instance dev
 
-install-uninstall: ## Uninstall Orchicon via the install script
-	scripts/install.sh --uninstall
+install-uninstall: ## Uninstall the dev instance via the install script (data preserved; pass instance=test|prod to change)
+	scripts/install.sh --uninstall --instance $(if $(instance),$(instance),dev)
 
 # --- CI --------------------------------------------------------------------
 # The CI gate, split the same way .github/workflows/ci.yml splits it:
