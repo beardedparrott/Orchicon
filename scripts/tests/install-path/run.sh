@@ -165,6 +165,50 @@ else
   bad "the orch companion client was installed alongside it"
 fi
 
+# --- 5. --instance must scope the acting, and refuse an unknown name --------------
+# The shell installer had no instance flag at all, so `--clean` and `--force-clean` spelled the names out
+# as `orchicon-cnt-dev orchicon-cnt-prod` — they removed BOTH containers and destroyed BOTH data volumes
+# while the help text said they were about dev. `ORCHICON_INSTANCE` existed but cannot be used with the
+# documented `curl … | bash -s --` form at all: an exported variable reaches CURL, not BASH.
+say ""
+say "[5] --instance scoping"
+
+if bash "${INSTALLER}" --help 2>&1 | grep -q -- "--instance"; then
+  ok "--help documents --instance"
+else
+  bad "--help documents --instance"
+fi
+if bash "${INSTALLER}" --help 2>&1 | grep -q 'orchicon install'; then
+  ok "--help prints its text literally (backticks are not executed)"
+else
+  bad "--help prints its text literally — an unquoted heredoc would run backticked help as commands"
+fi
+
+# An unknown instance must be REFUSED, not defaulted: silently becoming dev would clean up dev while
+# the operator watched prod.
+set +e
+OUT="$(bash "${INSTALLER}" --instance production --no-setup --dry-run 2>&1)"
+RC=$?
+set -e
+if [ "${RC}" -ne 0 ] && printf '%s' "${OUT}" | grep -q "unknown instance"; then
+  ok "an unknown instance is refused, naming the known set"
+else
+  bad "an unknown instance is refused (rc=${RC}, said: $(printf '%s' "${OUT}" | head -1))"
+fi
+if printf '%s' "${OUT}" | grep -q "dev, test, prod"; then
+  ok "the refusal names the valid choices"
+else
+  bad "the refusal names the valid choices"
+fi
+
+# And the instance must actually scope the acting: a dry-run force-clean for `test` may name ONLY test.
+OUT="$(bash "${INSTALLER}" --force-clean --instance test --dry-run 2>&1 || true)"
+if printf '%s' "${OUT}" | grep -q "orchicon-cnt-test" && ! printf '%s' "${OUT}" | grep -qE "orchicon-cnt-(dev|prod)"; then
+  ok "--instance test scopes the acting to the test container alone"
+else
+  bad "--instance test scopes the acting (named: $(printf '%s' "${OUT}" | grep -o 'orchicon-cnt-[a-z]*' | sort -u | tr '\n' ' '))"
+fi
+
 say ""
 if [ "${FAIL}" -eq 0 ]; then
   say "RESULT: all ${PASS} assertion(s) passed"

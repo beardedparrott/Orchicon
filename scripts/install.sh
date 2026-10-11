@@ -32,6 +32,14 @@ GITHUB_REPO="Orchicon"
 # (`--version edge`, whose assets the default base already serves).
 ASSET_BASE_URL="${ORCHICON_INSTALL_BASE_URL:-https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/download}"
 INSTALL_DIR="${ORCHICON_INSTALL_DIR:-${HOME}/.local/bin}"
+# WHICH STACK THIS ACTS ON. dev / test / prod are three INSTANCES of the same product on one host:
+# separate container, separate ports, separate data volume, separate host state. Every instance-scoped
+# action below — install, clean, force-clean, uninstall — is scoped to THIS one, and nothing else.
+#
+# IT IS A FLAG AND NOT ONLY THE ENV VAR, which is not sugar: the documented invocation is
+# `curl … | bash -s -- …`, where an exported variable reaches CURL rather than BASH. Passing
+# ORCHICON_INSTANCE=test for the shell side means rewriting the whole one-liner.
+INSTANCE="${ORCHICON_INSTANCE:-dev}"
 VERSION=""
 UNINSTALL=false
 CLEAN=false
@@ -58,6 +66,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --version|-v)      VERSION="$2"; shift 2 ;;
     --install-dir|-d)  INSTALL_DIR="$2"; shift 2 ;;
+    --instance|-i)     INSTANCE="$2"; shift 2 ;;
     --uninstall)       UNINSTALL=true; shift ;;
     --clean)           CLEAN=true; shift ;;
     --force-clean|--nuke|-f) FORCE_CLEAN=true; shift ;;
@@ -65,7 +74,11 @@ while [ $# -gt 0 ]; do
     --no-setup)        SETUP=false; shift ;;
     --no-orch)         INSTALL_ORCH=false; shift ;;
     --help|-h)
-      cat <<EOF
+      # QUOTED DELIMITER: this is a usage TEXT, so nothing in it may be expanded or EXECUTED. It was
+      # `<<EOF`, and the backticked phrases in it were therefore COMMAND SUBSTITUTIONS — so
+      # `install.sh --help` ran `` `orchicon install` `` for real on any host that has one on PATH,
+      # inlining that output into the usage. Printing help must not install anything.
+      cat <<'EOF'
 Orchicon installer
 
 Usage: install.sh [options]
@@ -73,16 +86,20 @@ Usage: install.sh [options]
 Options:
   --version <tag>      Install a specific version (e.g. v0.2.0). Default: latest.
   --install-dir <dir>  Installation directory (default: ~/.local/bin).
-  --uninstall          Remove Orchicon from the install directory.
-   --clean              Stop dev containers, remove the old Orchicon binary, then
-                        install the latest version — one-shot upgrade. All user
-                        data is preserved (Docker volumes, BlobStore files,
-                        runtime state).
-   --force-clean, --nuke
-                        Wipe everything and start fresh: stop the dev stack,
-                        destroy Docker volumes (database, NATS, Tempo, Loki,
-                        remove blob store data and runtime state, then install
-                        the latest version. WARNING: all data is lost.
+  --instance <name>    Which instance to act on: dev (default), test, or prod. Each has
+                       its own container, ports, data volume and host state, so
+                       `--instance test` cannot disturb dev or prod. Applies to install AND
+                       to --clean/--force-clean/--uninstall.
+  --uninstall          Stop THIS instance and remove Orchicon from the install directory. The
+                       data volume is left in place, and the command says where it is.
+    --clean              Stop THIS instance's container, remove the old Orchicon
+                         binary, then install the latest version — one-shot upgrade. Data is
+                         preserved (Docker volume, BlobStore files, runtime state).
+    --force-clean, --nuke
+                         Wipe and start fresh for THIS instance: stop it, destroy its Docker
+                         volume (database, NATS, Tempo, Loki, VictoriaMetrics, Grafana), remove
+                         blob store data and runtime state, then install the latest version.
+                         WARNING: all data for THIS instance is lost.
    --dry-run            Print what would happen without making changes.
    --no-setup           Install the binary only — do NOT pull images, start the
                         runtime daemon, or launch the container (default: full
@@ -93,6 +110,35 @@ EOF
     *) die "unknown option: $1" ;;
   esac
 done
+
+# --- Instance scoping -------------------------------------------------------
+#
+# ONE INSTANCE, NAMED ONCE, USED EVERYWHERE. The instance was already honoured by the Go installer
+# and by stop_installed_plane, but three cleanup sites spelled the names out as
+# `orchicon-cnt-dev orchicon-cnt-prod` — so `--clean` removed BOTH containers and `--force-clean`
+# destroyed BOTH data volumes. The help text already said those flags were about "dev containers" and
+# "the dev stack"; the code was the part that was wrong, and on a host with prod data that is a
+# data-loss bug rather than an inconvenience.
+#
+# So the names are DERIVED here, once, and nothing below spells them out again.
+cnt_name() { echo "orchicon-cnt-${INSTANCE}"; }
+vol_name() { echo "orchicon-cnt-${INSTANCE}-data"; }
+# The host-side state dir for this instance (secrets KEK, blob store, plane PID and logs).
+inst_state_dir() { echo "${XDG_DATA_HOME:-${HOME}/.local/share}/orchicon-${INSTANCE}"; }
+
+# AN UNKNOWN INSTANCE IS REFUSED RATHER THAN DEFAULTED, because the alternative is acting on the wrong
+# stack: `--instance production` silently becoming `dev` would clean up dev while the operator watched
+# prod. The set is the one the installer port table defines (cmd/orchicon/install_ports.go).
+validate_instance() {
+  case "$INSTANCE" in
+    dev|test|prod) ;;
+    *) die "unknown instance: '$INSTANCE' (known: dev, test, prod)" ;;
+  esac
+}
+# Validate, and PUBLISH THE CHOICE so the installer this script calls picks the same instance instead
+# of defaulting to dev. This is the coupling that makes `--instance test` mean one thing end to end.
+validate_instance
+export ORCHICON_INSTANCE="$INSTANCE"
 
 # --- Helpers ----------------------------------------------------------------
 detect_os() {
@@ -209,13 +255,13 @@ do_force_clean() {
   # (postgres, nats, tempo, loki, victoriametrics, grafana live under
   # /var/lib/orchicon in the instance volumes).
   if command -v docker >/dev/null 2>&1; then
-    info "removing orchicon container instances + volumes…"
+      info "removing the ${INSTANCE} instance and its data volume…"
     if [ "$DRY_RUN" = false ]; then
-      docker rm -f orchicon-cnt-dev orchicon-cnt-prod 2>/dev/null || true
-      docker volume rm orchicon-cnt-dev-data orchicon-cnt-prod-data 2>/dev/null || true
-      ok "container instances + volumes removed"
+        docker rm -f "$(cnt_name)" 2>/dev/null || true
+        docker volume rm "$(vol_name)" 2>/dev/null || true
+        ok "${INSTANCE} instance + volume removed ($(cnt_name), $(vol_name))"
     else
-      echo -e "  ${D}(would run: docker rm -f orchicon-cnt-dev orchicon-cnt-prod; docker volume rm …)${X}"
+        echo -e "  ${D}(would run: docker rm -f $(cnt_name); docker volume rm $(vol_name))${X}"
     fi
   else
     warn "docker not found — skipping container cleanup"
@@ -236,8 +282,10 @@ do_force_clean() {
   #
   # `bin` IS DELIBERATELY NOT IN THE LIST. The binary is `$INSTALL_DIR/orchicon` and step 4
   # removes it by ABSOLUTE path; nothing of ours has ever lived in a cwd-relative `bin`.
-  local state_dir="${XDG_DATA_HOME:-${HOME}/.local/share}/orchicon"
-  for d in "$state_dir/data" "$state_dir/.dev"; do
+    local state_dir; state_dir="$(inst_state_dir)"
+    # `data` is this instance-owned state. The old list also removed a CWD-RELATIVE `.dev`, which is
+    # not an Orchicon-owned path at all — the same mistake the Windows installer made with $HOME/.dev.
+    for d in "$state_dir/data"; do
     if [ -d "$d" ]; then
       info "removing ${d}"
       $DRY_RUN || rm -rf "$d"
@@ -255,9 +303,9 @@ do_force_clean() {
   # 5. Summary.
   echo ""
   echo -e "${G}All data wiped — ready for a fresh start${X}"
-  echo -e "  ${D}• Docker volumes destroyed${X}"
+echo -e "  ${D}• The ${INSTANCE} data volume destroyed ($(vol_name))${X}"
   echo -e "  ${D}• BlobStore files removed${X}"
-  echo -e "  ${D}• Runtime state (.dev/) removed${X}"
+echo -e "  ${D}• Host state removed ($(inst_state_dir))${X}"
   echo -e "  ${D}• Old binary removed${X}"
   echo ""
   echo -e "${B}Now installing latest version…${X}"
@@ -285,7 +333,7 @@ do_clean() {
   # instance's ports is its container — fall back to stopping that.
   if [ ! -f "$bin" ] && command -v docker >/dev/null 2>&1; then
     info "stopping orchicon container instances…"
-    $DRY_RUN || docker rm -f orchicon-cnt-dev orchicon-cnt-prod 2>/dev/null || true
+      $DRY_RUN || docker rm -f "$(cnt_name)" 2>/dev/null || true
   fi
 
   # 2. Remove the old binary.

@@ -176,6 +176,7 @@ container instances and removes the binary; the WSL distro is left intact),
 | `--version <tag>` | Install a specific version (e.g. `v0.4.0`). Default: latest. |
 | `ORCHICON_INSTALL_BASE_URL` | **Environment.** Where release assets are fetched from. Defaults to the published GitHub release. Set it to install from a mirror, or to point an install at a pre-release channel. It is also what makes the install path testable: `scripts/tests/install-path` serves a locally-built artifact and runs this very installer against it (`make install-path-test`). |
 | `--install-dir <dir>` | Installation directory (default: `~/.local/bin`). |
+| `--instance <name>` | Which instance to act on: `dev` (default), `test`, or `prod`. Each has its own container, ports, data volume and host state. Applies to install **and** to `--clean` / `--force-clean` `/ --uninstall`, so `--instance test` cannot touch dev or prod. Also settable as `ORCHICON_INSTANCE` — which is how the installed binary chooses its own instance at runtime — but a FLAG is the practical form, because an environment variable cannot be passed through the documented `curl … | bash -s --` one-liner (it would reach `curl`, not `bash`). |
 | `--uninstall` | Remove Orchicon from the install directory. |
 | `--dry-run` | Print what would happen without making changes. |
 | `--clean` | Stop any running instance, remove old binary, then install latest. Preserves all data. |
@@ -260,6 +261,35 @@ curl http://localhost:8080/healthz   # {"status":"ok"}
 ```
 
 ---
+
+### Instances, and removing one cleanly
+
+`dev`, `test` and `prod` are three **instances** of the same product on one host: separate container,
+separate ports, separate data volume, separate host state. `--instance` (or `-Instance` on Windows)
+scopes every action to one of them, and **the same flag is what `--uninstall` uses** — so the stack you
+remove is the stack you named:
+
+```bash
+# install a canary as an isolated `test` instance, touching neither dev nor prod
+curl -fsSL https://raw.githubusercontent.com/beardedparrott/Orchicon/develop/scripts/install.sh \
+  | bash -s -- --version canary --instance test --install-dir ~/.local/bin-canary
+
+# remove exactly that: stops the test plane, removes that binary, leaves user data in place
+curl -fsSL https://raw.githubusercontent.com/beardedparrott/Orchicon/develop/scripts/install.sh \
+  | bash -s -- --instance test --uninstall --install-dir ~/.local/bin-canary
+```
+
+`--uninstall` stops the instance's plane and removes the binary; it **leaves the data volume** and says
+where it is. Removing data is `--clean` (stop the stack, keep the volume) or `--force-clean` (destroy
+that instance's volume — and, since `--instance` was added, only that instance's).
+
+An unknown name is **refused** with the valid set, not defaulted: `--instance production` becoming `dev`
+would clean up the wrong stack while you watched prod.
+
+> **If `ORCHICON_INSTANCE` is set in your shell, it wins over the default.** A shell started from inside a
+> running plane inherits that plane's environment — including its instance — so pass `--instance`
+> explicitly when it matters, and the flag always beats the environment.
+
 
 ### Testing an installer change (canary)
 
