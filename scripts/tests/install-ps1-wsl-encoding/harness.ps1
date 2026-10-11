@@ -392,7 +392,10 @@ Check "data is preserved unless -Purge is given" `
   "destroying a database is not something an uninstall may infer from 'remove the software'"
 # SCOPED TO THE UNINSTALL SCRIPT: there is a second `rm -f "$BIN"` in the remove-binary script, and an
 # unscoped IndexOf was comparing against that one instead — an assertion about the wrong text.
-$a1 = $ps1Src.IndexOf("$uninstallScript = @'")
+# `$uninstallScript` MUST BE ESCAPED: unescaped it interpolates to empty in this scope (the harness never
+# runs the installer), so the search string became " = @'" and matched the remove-binary script instead —
+# an assertion about the wrong block, which is how it reported a failure that was not there.
+$a1 = $ps1Src.IndexOf("`$uninstallScript = @'")
 $a2 = $ps1Src.IndexOf("'@", $a1)
 $uninstallOnly = $ps1Src.Substring($a1, $a2 - $a1)
 Check "the binary is removed LAST, after the plane that runs from it is stopped" `
@@ -439,6 +442,74 @@ Check "-Help documents -Purge" ($ps1 -match '-Purge')
 Check "the uninstall summary distinguishes preserved from destroyed data" `
   (($ps1 -match 'DATA PRESERVED') -and ($ps1 -match 'volume and host state removed')) `
   "an uninstall must not be ambiguous about whether the database survived"
+
+# --- 16. THE CONNECTION INFO READS THE BOUND PORTS, IT DOES NOT GUESS --------
+# Reported from a real Windows install: the operator answered 3001 for Grafana, `orchicon install` printed
+# 3001, and then Write-ConnectionInfo printed 3002 — one run, two contradicting numbers, the second being a
+# port nothing had bound. A PROMPT cannot be predicted by a wrapper, so the installer now RECORDS what it
+# bound and this reads it back. Behavioural where it can be: the function is extracted from the installer
+# (this harness already Invoke-Expressions every function from it) and called against a scratch record.
+Say ""
+Say "[16] the Windows connection info reads the ports that were bound"
+
+$inst = Join-Path $Work "inststate"
+New-Item -ItemType Directory -Force -Path (Join-Path $inst "orchicon-test") | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $inst "orchicon-test/ports.json"),
+  '{"ORCHICON_CONTROL_PORT":8092,"ORCHICON_GRAFANA_PORT":3001}')
+
+$prevXdg = $env:XDG_DATA_HOME
+$prevInstance = $script:Instance
+$prevDistro = $script:Distro
+$env:XDG_DATA_HOME = $inst
+$script:Distro = "Ubuntu"
+$script:Instance = "test"
+try {
+  $resolved = Get-ResolvedPorts
+  Check "the record is read back" ($null -ne $resolved) "the wrapper must read, not re-derive"
+  Check "and it carries the port the operator actually chose" `
+    ($resolved -and $resolved.ORCHICON_GRAFANA_PORT -eq 3001) `
+    ("got grafana=" + $(if ($resolved) { $resolved.ORCHICON_GRAFANA_PORT } else { "<none>" }))
+
+  # What the operator actually SEES, which is the thing that was wrong.
+  $sb = [System.Text.StringBuilder]::new()
+  function Write-Host { param([Parameter(ValueFromRemainingArguments=$true)]$Object) [void]$sb.AppendLine(($Object -join " ")) }
+  Write-ConnectionInfo
+  $shown = $sb.ToString()
+  Check "and the printed Grafana URL is that port, not the default" ($shown -match "localhost:3001") `
+    ("printed: " + (($shown -split "`n" | Where-Object { $_ -match 'Grafana' }) -join ' / '))
+  Check "and the printed control URL is the recorded one too" ($shown -match "localhost:8092")
+
+  # The fallback still exists for an install from before the record did, and must not be the ONLY source.
+  Remove-Item (Join-Path $inst "orchicon-test/ports.json") -Force
+  Check "with no record it falls back to the per-instance default" ($null -eq (Get-ResolvedPorts))
+} finally {
+  $env:XDG_DATA_HOME = $prevXdg
+  $script:Instance = $prevInstance
+  $script:Distro = $prevDistro
+  Remove-Item Function:\Write-Host -ErrorAction SilentlyContinue
+}
+
+# The wiring: Write-ConnectionInfo must consult the record, not just the defaults.
+$ps1b = Get-Content -Raw $Installer
+Check "Write-ConnectionInfo consults the recorded ports" `
+  (($ps1b -match 'Get-ResolvedPorts') -and ($ps1b -match 'resolved\.ORCHICON_GRAFANA_PORT')) `
+  "the defaults are a fallback for an older install, not the source of truth"
+
+# --- 17. A PLAIN INSTALL ASKS FOR AN INSTANCE; THE DESTRUCTIVE VERBS REFUSE ---
+# The two disagreeing was itself the bug (a bare Enter picked dev in PowerShell's sibling, the shell
+# installer). Now: INSTALL passes a fallback, the destructive verbs pass none.
+Say ""
+Say "[17] install asks with a fallback; destructive verbs refuse"
+
+$code = (($ps1b -split "`n") | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+Check "a plain install asks, with dev as the fallback" ($code -match 'Ask-Instance -Fallback "dev"') `
+  "installing to the documented default is not destructive, so it may default"
+Check "the destructive verbs ask with NO fallback" `
+  (-not ($code -match 'Ask-Instance -Fallback' -and $code -match '\$Uninstall\) \{\s*\n\s*Ask-Instance -Fallback')) `
+  "a reflexive Enter must never select a stack to destroy"
+Check "and an empty answer refuses without a fallback" `
+  ($code -match 'no instance chosen - pass -Instance') `
+  "the refusal is what makes Enter safe for the destructive verbs"
 
 Say ""
 if ($Fail.Count -eq 0) { Say "RESULT: all assertions passed" }

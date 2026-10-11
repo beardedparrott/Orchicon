@@ -117,10 +117,14 @@ echo
 
 # --- 1. --instance test touches ONLY test ------------------------------------
 echo "[1] --instance test is scoped to test"
-# `dev` IS FAKED, not touched: with its state dir present the installer must conclude another instance
-# still needs the executables and leave them alone. This is the assertion that encodes the operator's
+# `dev` IS FAKED, not touched: with real state present the installer must conclude another instance still
+# needs the executables and leave them alone. This is the assertion that encodes the operator's
 # requirement, and it works only because XDG_DATA_HOME is scratch.
-mkdir -p "${XDG}/orchicon-test" "${XDG}/orchicon-dev"
+#
+# REAL STATE, NOT AN EMPTY DIRECTORY: an instance is something that exists, and a directory holding only
+# the install's own ports record (or nothing at all) is not one — see section [9].
+mkdir -p "${XDG}/orchicon-test" "${XDG}/orchicon-dev/real-state"
+printf 'x' > "${XDG}/orchicon-dev/real-state/marker"
 OUT="$(run "${WORK}/l1.log" --uninstall --instance test)"
 if grep -q "orchicon-cnt-test" "${WORK}/l1.log"; then ok "the test container is the one acted on"; else bad "the test container is acted on"; fi
 if only_instance "${WORK}/l1.log" test; then ok "NO dev or prod container appears in the docker log"; else bad "another instance leaked into the docker log"; fi
@@ -198,6 +202,47 @@ else
   ok "and the stub log records NO container mutation at all"
 fi
 kill "${HOLDER}" 2>/dev/null || true
+
+# --- 8. DRY RUN MUST NOT CLAIM IT DID ANYTHING ------------------------------
+# A dry run that reports "container removed" is worse than no dry run: the operator is told work happened
+# that did not, on the one command whose whole purpose is to say what WOULD change.
+echo ""
+echo "[8] --dry-run says what it would do, never what it did"
+rm -rf "${XDG}/orchicon-test" && mkdir -p "${XDG}/orchicon-test"
+OUT="$(run "${WORK}/l8.log" --uninstall --instance test --dry-run)"
+if printf '%s' "${OUT}" | grep -q "would remove the test container"; then ok "reports the container as a WOULD"; else bad "reports the container as a would"; fi
+if printf '%s' "${OUT}" | grep -qE "✓ *test container removed|✓ *[a-z]+ removed"; then
+  bad "AND IT ALSO CLAIMS A COMPLETED REMOVAL"
+else
+  ok "and never claims a completed removal"
+fi
+if grep -q . <(mutations "${WORK}/l8.log"); then bad "dry run issued a docker mutation"; else ok "and issued no docker mutation"; fi
+
+# --- 9. A LONE ports.json IS NOT AN INSTANCE --------------------------------
+# `orchicon install` records the ports it bound in the instance state dir, and that record must not make a
+# scratch install look like a live instance: if it did, --uninstall would conclude another instance still
+# needs the executables and would leave them behind for ever.
+echo ""
+echo "[9] an install's ports record alone does not count as an instance"
+rm -rf "${XDG}/orchicon-test" "${XDG}/orchicon-dev"
+mkdir -p "${XDG}/orchicon-dev" && printf '{"ORCHICON_CONTROL_PORT":8080}\n' > "${XDG}/orchicon-dev/ports.json"
+mkdir -p "${XDG}/orchicon-test" && printf '{"ORCHICON_CONTROL_PORT":8092}\n' > "${XDG}/orchicon-test/ports.json"
+for b in orchicon orch; do printf '#!/bin/sh\necho fake\n' > "${INSTALL_DIR}/${b}"; chmod +x "${INSTALL_DIR}/${b}"; done
+OUT="$(run "${WORK}/l9.log" --uninstall --instance test)"
+if [ ! -e "${INSTALL_DIR}/orchicon" ]; then
+  ok "the binaries were removed (dev's ports record is not an instance)"
+else
+  bad "the binaries were LEFT because a ports.json looked like an instance"
+fi
+# ...but real state still counts, so a genuine dev instance protects the binaries.
+mkdir -p "${XDG}/orchicon-dev/real-state" && printf 'x' > "${XDG}/orchicon-dev/real-state/marker"
+for b in orchicon orch; do printf '#!/bin/sh\necho fake\n' > "${INSTALL_DIR}/${b}"; chmod +x "${INSTALL_DIR}/${b}"; done
+OUT="$(run "${WORK}/l9b.log" --uninstall --instance test)"
+if [ -f "${INSTALL_DIR}/orchicon" ]; then
+  ok "and real dev state DOES protect them (the other half of the rule)"
+else
+  bad "real dev state did not protect the binaries"
+fi
 
 echo ""
 if [ "${FAIL}" -eq 0 ]; then

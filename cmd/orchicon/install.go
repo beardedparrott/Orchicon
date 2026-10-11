@@ -102,6 +102,18 @@ func runInstall(args []string, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// WRITE THE PORTS DOWN, because the operator can CHANGE them and a wrapper that re-prints them has
+	// nothing to read. This is the bug it fixes, seen on Windows: the operator answered 3001 for Grafana,
+	// this installer printed 3001, and then scripts/install.ps1 — which re-prints the URLs after the setup
+	// step — printed a hardcoded 3002, because the resolved values existed only as output on a stream it
+	// had already consumed. It is the same class of defect the port table itself was introduced to fix
+	// ("a URL pointing at a port this install never bound"): every port the operator is PROMPTED for is a
+	// port a wrapper cannot guess.
+	//
+	// The instance's own state dir is the right home for it — it is the record of what THIS instance
+	// bound. Failure is a warning rather than fatal: an unwritable home directory must not fail an install
+	// that has already resolved everything, and the wrapper's fallback is the documented default.
+	writeResolvedPorts(instance, ports)
 
 	// 2. Ensure the published images are present (skip the pull when the tag is
 	// already local — idempotent re-runs and local dev images).
@@ -228,6 +240,47 @@ func runInstall(args []string, log *slog.Logger) error {
 
 	printInstallInfo(instance, residency, name, dataVolume, socketDir, healthURL, runtimeImage, installDir, ports, healthy)
 	return nil
+}
+
+// resolvedPortsFile is where an install records the host ports it actually bound, as JSON keyed by the
+// ORCHICON_*_PORT names. Read back by wrappers that print connection info (scripts/install.ps1) and by
+// anything else that needs "what did this instance end up on" without re-deriving it.
+//
+// IT IS NAMED "ports.json" AND LIVES IN THE INSTANCE STATE DIR, which matters to uninstall: a state dir
+// containing ONLY this file is not an instance, and the shell installer's instance_exists must not treat
+// it as one — otherwise installing to a scratch dir would look like another instance still needed the
+// binaries. See scripts/install.sh.
+func resolvedPortsFile(instance string) (string, error) {
+	dir, err := hostDataDir(instance)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "ports.json"), nil
+}
+
+// writeResolvedPorts records the ports this install bound. Best-effort: it returns nothing and a failure
+// is a warning, because the install has already succeeded by this point and losing the record costs the
+// operator only a stale URL in a wrapper's summary.
+func writeResolvedPorts(instance string, ports map[string]int) {
+	path, err := resolvedPortsFile(instance)
+	if err != nil {
+		fmt.Printf("warning: could not locate the instance state dir to record the ports: %v\n", err)
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		fmt.Printf("warning: could not record the resolved ports: %v\n", err)
+		return
+	}
+	// SORTED, STABLE OUTPUT: a map marshals in key order, and the file is read by humans and by a shell
+	// one-liner, so a jumbled line would be needlessly hard to read.
+	b, err := json.MarshalIndent(ports, "", "  ")
+	if err != nil {
+		fmt.Printf("warning: could not record the resolved ports: %v\n", err)
+		return
+	}
+	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
+		fmt.Printf("warning: could not record the resolved ports: %v\n", err)
+	}
 }
 
 // defaultInstallDir returns the default launcher install directory
