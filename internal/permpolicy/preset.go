@@ -57,7 +57,11 @@ func WriteFile(path string, p Policy) error {
 	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("permission policy: mkdir %s: %w", dir, err)
+		// NOT "mkdir %s", which read as `permission policy: mkdir /var/lib/orchicon: mkdir
+		// /var/lib/orchicon: permission denied` — twice, because *os.PathError already spells
+		// out the failing syscall and its path. Naming the OPERATION we performed and letting
+		// the wrapped error name the syscall reads as one sentence.
+		return fmt.Errorf("permission policy: cannot create %s: %w", dir, err)
 	}
 	tmp, err := os.CreateTemp(dir, ".permission-policy-*.tmp")
 	if err != nil {
