@@ -787,6 +787,9 @@ true
 
     # --- Clean (stop stack, remove binary, then install latest; data kept) ------
     if ($Clean) {
+        # ASKED LIKE EVERY OTHER DESTRUCTIVE VERB. -ForceClean DESTROYS a data volume, so defaulting here is
+        # the most dangerous of all, and it was the one verb that neither asked nor was scoped.
+        Ask-Instance
         Write-Host ""
         Write-Host "Orchicon — clean" -ForegroundColor White
         Write-Host ""
@@ -815,6 +818,9 @@ true
 
     # --- Force-clean (nuke volumes + state, then install latest) ----------------
     if ($ForceClean) {
+        # ASKED LIKE EVERY OTHER DESTRUCTIVE VERB. -ForceClean DESTROYS a data volume, so defaulting here is
+        # the most dangerous of all, and it was the one verb that neither asked nor was scoped.
+        Ask-Instance
         Write-Host ""
         Write-Host "Orchicon — force-clean (NUKE)" -ForegroundColor White
         Write-Host ""

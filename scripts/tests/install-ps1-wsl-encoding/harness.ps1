@@ -534,6 +534,30 @@ Check "the runtime images are left on their default tag" `
   (-not ($ps1c -match 'ORCHICON_RUNTIME_IMAGE="__')) `
   "only the instance image is versioned; the runtime engine is not"
 
+# --- 19. EVERY DESTRUCTIVE FLAG IS INSTANCE-BOUND ---------------------------
+# The operator: "EVERY option should be instance bound and operate as such." -Clean and -ForceClean were the
+# exception: neither asked, so the verb that DESTROYS A DATA VOLUME took whatever ORCHICON_INSTANCE held (or
+# `dev`). Reported after a -ForceClean went ahead on its own on a Windows host.
+#
+# ENUMERATED ON PURPOSE: the flag list is the assertion's input, so a new destructive flag that forgets to
+# ask must be added here to be covered — which surfaces the omission in review.
+Say ""
+Say "[19] every destructive flag asks for an instance"
+
+$ps1c = (($ps1Src -split "`n") | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+foreach ($flag in @('$RemoveBinary', '$Uninstall', '$Clean', '$ForceClean')) {
+  # The flag's block, from its `if (` to the next flag's, so the assertion is about THAT verb.
+  $start = $ps1c.IndexOf("if (" + $flag + ") {")
+  if ($start -lt 0) { bad "$flag not found in install.ps1"; continue }
+  $block = $ps1c.Substring($start, [Math]::Min(1800, $ps1c.Length - $start))
+  Check "$flag asks which instance" ($block -match 'Ask-Instance') `
+    "without it the verb acts on whatever instance the environment names — which is how -ForceClean could destroy a volume nobody chose"
+}
+# And install is the ONE flag that may default (with a fallback), because it is the only non-destructive one.
+Check "install is the only flag with a fallback" `
+  (($ps1c -match 'Ask-Instance -Fallback "dev"')) `
+  "installing to the documented default is safe; destroying a volume on a default is not"
+
 Say ""
 if ($Fail.Count -eq 0) { Say "RESULT: all assertions passed" }
 else { Say ("RESULT: {0} assertion(s) FAILED: {1}" -f $Fail.Count, ($Fail -join '; ')) }
