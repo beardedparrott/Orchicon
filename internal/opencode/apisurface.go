@@ -64,25 +64,31 @@ type apiShape struct {
 	// ⚠ UNVERIFIED beyond the audit's note — see the file comment.
 	permissionReplyField string
 
-	// modelsArgs is the argv used to LIST MODELS on this surface, and on v2 the difference is not
-	// cosmetic — it is the difference between working and hanging.
+	// modelsArgs is the argv used to LIST MODELS on this surface.
 	//
 	// v1: `models --verbose` — the metadata form, the only one that carries cost and limits.
-	// v2: `models --standalone`.
+	// v2: `models` — NO FLAG.
 	//
-	// WHY --standalone ON v2, from the CLI's own source rather than from the docs. The v2 `models`
-	// handler resolves a server first (services/server-connection.ts):
+	// --standalone WAS TRIED ON v2 AND IT IS WRONG, which is worth recording because it looks right
+	// on paper. The v2 handler resolves a server before listing (services/server-connection.ts):
 	//
 	//	if (args.standalone || (yield* ServiceConfig.read()).disabled === true) {
 	//	  return { endpoint: yield* Standalone.start() }     // a private, ephemeral server
 	//	}
-	//	return { endpoint: yield* resolveManaged(options) }  // Service.ensure — A MANAGED BACKGROUND
-	//	                                                     // DAEMON, started and kept alive
+	//	return { endpoint: yield* resolveManaged(options) }  // Service.ensure — the MANAGED service
 	//
-	// So WITHOUT the flag, a one-shot model listing starts (or waits for) a persistent background
-	// service. That is the reported hang: choosing the opencode adapter sat on "loading models…",
-	// and a second attempt came back with an error once the service state had settled. --standalone
-	// asks for a private server for this command only, which is what a listing wants.
+	// so --standalone avoids starting the managed service, which was the reported HANG. But MEASURED
+	// against opencode 2.0.26 on the operator's own machine, with the same binary:
+	//
+	//	opencode models              -> 70 ms, 548 lines, 18,648 bytes, all 11 providers
+	//	opencode models --standalone -> 0 bytes
+	//
+	// The ephemeral server serves an EMPTY model catalog (it is fresh, it did not fetch models.dev,
+	// and `--refresh` — which would force that — is rejected by 2.0.26 as an unrecognized flag). So
+	// --standalone trades the hang for an empty list, which is a worse failure: the picker silently
+	// has nothing to offer. The managed service is the only path with models, so it is the one we
+	// use, and the cold-start cost of reaching it is handled by the caller's timeout rather than by
+	// avoiding it.
 	modelsArgs []string
 }
 
@@ -121,7 +127,7 @@ var shapeV2 = apiShape{
 	compactSuffix:         "compact",
 	permissionReplyNested: false,
 	permissionReplyField:  "decision",
-	modelsArgs:            []string{"models", "--standalone"},
+	modelsArgs:            []string{"models"},
 }
 
 // Path builders. The client calls these and never concatenates a route itself — that is what keeps a

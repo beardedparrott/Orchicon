@@ -71,31 +71,37 @@ func TestV2PathsMatchTheAudit(t *testing.T) {
 
 // TestV1PathsAreUnchanged is the other half: supporting v2 must not move a single v1 route, because
 // every install in the field runs v1 and a moved route is a broken worker.
-// TestModelsArgsAreVersionCorrect pins the TWO different invocations, and on v2 this is not a
-// preference — it is the difference between working and hanging.
+// TestModelsArgsAreVersionCorrect pins the TWO different invocations.
 //
-// From opencode's own server-connection.ts, the v2 `models` handler resolves a server before listing:
+// v2 MUST CARRY NO FLAG, and that is a MEASURED finding rather than a preference. --standalone looks
+// right on paper — it avoids the managed-service start that was the reported hang — and it is wrong:
 //
-//	if (args.standalone || (yield* ServiceConfig.read()).disabled === true) {
-//	  return { endpoint: yield* Standalone.start() }     // private, ephemeral
-//	}
-//	return { endpoint: yield* resolveManaged(options) }  // Service.ensure — a MANAGED BACKGROUND DAEMON
+//	opencode models              -> 70 ms, 548 lines, 18,648 bytes, all 11 providers
+//	opencode models --standalone -> 0 bytes
 //
-// Without --standalone a one-shot listing starts (or waits for) a persistent background service,
-// which is the reported "choosing the opencode adapter just hangs". v1 has no such flag; it needs
-// --verbose instead, for the model metadata.
+// The ephemeral server serves an empty catalog, so --standalone trades a hang for an empty picker.
+// Asserting the ABSENCE of a flag is therefore the point of this case, not an incidental detail: a
+// well-meaning future edit that re-adds it would silently empty model discovery again.
 func TestModelsArgsAreVersionCorrect(t *testing.T) {
 	if got := strings.Join(shapeV1.modelsArgs, " "); got != "models --verbose" {
 		t.Errorf("v1 models argv = %q, want \"models --verbose\" — the metadata form is why v1 works", got)
 	}
-	if got := strings.Join(shapeV2.modelsArgs, " "); got != "models --standalone" {
-		t.Errorf("v2 models argv = %q, want \"models --standalone\" — without --standalone the command "+
-			"starts a managed background server, which is the reported hang", got)
+	if got := strings.Join(shapeV2.modelsArgs, " "); got != "models" {
+		t.Errorf("v2 models argv = %q, want exactly \"models\" with NO flag. --standalone (and "+
+			"--verbose, --refresh) all fail or return an EMPTY list on 2.0.26 — measured: the plain "+
+			"form returned 548 models in 70 ms while --standalone returned nothing", got)
 	}
-	// The fallback must carry NO flag: it is the one form every version accepts.
+	for _, forbidden := range []string{"--verbose", "--standalone", "--refresh"} {
+		for _, a := range shapeV2.modelsArgs {
+			if a == forbidden {
+				t.Errorf("v2 models argv contains %s, which 2.0.26 rejects or which empties the list", forbidden)
+			}
+		}
+	}
+	// The fallback must carry NO flag either: it is the form every version accepts, and on v2 it is
+	// the SAME as the preferred form (hence the caller skips a duplicate run).
 	if got := strings.Join(modelsFallbackArgs(), " "); got != "models" {
-		t.Errorf("fallback argv = %q, want \"models\" — a flagged fallback could fail on the same "+
-			"version that rejected the preferred form", got)
+		t.Errorf("fallback argv = %q, want \"models\"", got)
 	}
 }
 
@@ -106,10 +112,10 @@ func TestModelsArgsForBinaryFollowsDetection(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	got := strings.Join(ModelsArgs(context.Background(), nil, bin), " ")
-	if got != "models --standalone" {
-		t.Errorf("ModelsArgs for a 2.x binary = %q, want \"models --standalone\" — this is the "+
-			"exported seam the plane's discoverer uses, so a wrong answer here is a hang in "+
-			"production", got)
+	if got != "models" {
+		t.Errorf("ModelsArgs for a 2.x binary = %q, want \"models\" — this is the exported seam the "+
+			"plane's discoverer uses, and on 2.0.26 a flag here either errors or returns an empty "+
+			"list, so a wrong answer here empties the picker in production", got)
 	}
 }
 

@@ -281,7 +281,17 @@ func (d *ModelDiscoverer) refresh(ctx context.Context) ([]*apiv1.OpenCodeModel, 
 // fetchModels shells out to `opencode models --verbose` and parses the
 // output into structured proto messages.
 func (d *ModelDiscoverer) fetchModels(ctx context.Context) ([]*apiv1.OpenCodeModel, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// A GENEROUS TIMEOUT, because on opencode 2.x this command may have to REACH A BACKGROUND SERVICE
+	// that is not running yet. The first call after a boot can spend real time getting that service
+	// up, and that cost is not a failure — it is the price of the only path that has a model list
+	// (see apiShape.modelsArgs: the --standalone alternative is fast and EMPTY). The earlier 30s was
+	// chosen before that was understood, and would report a spurious discovery failure on exactly the
+	// first, cold call.
+	//
+	// It stays BOUNDED rather than unlimited: a wedged service must produce an error the operator can
+	// read, not a picker that says "loading…" forever. And the result is cached (5 min TTL), so the
+	// cost is paid once rather than per read.
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
 	// THE WORKING DIRECTORY IS PINNED, and that is a determinism fix rather than a guess about the
@@ -309,13 +319,22 @@ func (d *ModelDiscoverer) fetchModels(ctx context.Context) ([]*apiv1.OpenCodeMod
 	// version accepts; the metadata-free format is still a usable model list, because
 	// parseModelOutput emits a bare ref as a model rather than dropping it.
 	//
-	// THE FALLBACK RUNS EXACTLY ONCE. The first version of this called it a second time purely to
-	// obtain the error, which on opencode 2.x is not merely wasteful: each invocation can start a
-	// server (see the --standalone note on apiShape), so the retry path paid for two.
-	plainOut, plainErr := runOpencodeCLI(ctx, d.binary, homeDir(), "models")
-	if plainErr == nil {
-		d.rememberModelsForm(false)
-		return parseModelOutput(plainOut)
+	// The fallback is only worth running when it DIFFERS from what just failed: on opencode 2.x the
+	// preferred form IS `models`, so retrying it would run the same command twice — and each run can
+	// reach the background service. Nothing is lost by skipping it, because the failure we already
+	// hold is the one from that exact invocation.
+	// The plainest form, spelled here rather than shared: it carries no flag BY DEFINITION, so it is
+	// not a version fact and does not belong in the shape table. This package also deliberately does
+	// not import internal/opencode — the plane wires the two together (SetModelsArgs) so the version
+	// rule stays in one place.
+	fallback := []string{"models"}
+	plainOut, plainErr := out, err
+	if strings.Join(fallback, " ") != strings.Join(argv, " ") {
+		plainOut, plainErr = runOpencodeCLI(ctx, d.binary, homeDir(), fallback...)
+		if plainErr == nil {
+			d.rememberModelsForm(false)
+			return parseModelOutput(plainOut)
+		}
 	}
 
 	// BOTH FAILED, so this is not the form: report the PLAIN invocation's failure, because `models`

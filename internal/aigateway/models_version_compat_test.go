@@ -202,10 +202,10 @@ func TestSetModelsArgsOverridesAndDefaults(t *testing.T) {
 	if got := strings.Join(d.modelsArgsOverride, " "); got != "models --verbose" {
 		t.Errorf("default models argv = %q, want the v1 form", got)
 	}
-	d.SetModelsArgs([]string{"models", "--standalone"})
+	d.SetModelsArgs([]string{"models", "--some-other-form"})
 	argv, preferred := d.modelsArgv()
-	if got := strings.Join(argv, " "); got != "models --standalone" {
-		t.Errorf("after SetModelsArgs the argv = %q, want \"models --standalone\"", got)
+	if got := strings.Join(argv, " "); got != "models --some-other-form" {
+		t.Errorf("after SetModelsArgs the argv = %q, want the value that was set", got)
 	}
 	if !preferred {
 		t.Error("before any rejection the preferred form must still be reported as such, or the " +
@@ -230,7 +230,7 @@ func TestTheModelsArgvOverrideReachesTheSubprocess(t *testing.T) {
 		want string
 	}{
 		{"the v1 default", nil, "--verbose"},
-		{"the v2 form", []string{"models", "--standalone"}, "--standalone"},
+		{"an explicit form", []string{"models", "--some-other-form"}, "--some-other-form"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
