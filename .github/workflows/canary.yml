@@ -79,6 +79,24 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # THE FRONTEND MUST BE BUILT BEFORE THE BINARY, and this is not tidiness.
+      #
+      # The frontend is embedded with `//go:embed all:frontend/dist`, and `frontend/dist/.gitkeep` is tracked
+      # EXACTLY SO THE EMBED ALWAYS HAS A TARGET. So a job that skips the frontend build COMPILES PERFECTLY
+      # and produces a valid archive whose binary serves NO UI AT ALL — the embed matched .gitkeep and
+      # nothing else. Nothing fails; the defect is only visible to whoever installs it and opens the URL.
+      #
+      # That is what happened: a canary install replaced a working host plane with a binary that had no
+      # frontend, and the browser got `{"error":"missing credentials"}` — the request fell through to the
+      # auth-guarded catch-all because there was no static asset to serve. release.yml builds the frontend
+      # here, and this is the same shape.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build frontend
+        run: cd frontend && npm ci && npm run build
+
       # The SAME build and package shape as release.yml's Package step, with the version replaced by the
       # literal `canary` — a canary whose archive is shaped differently from a release would test a
       # different extraction path than the one that ships, which is how a test stops meaning anything.
