@@ -534,6 +534,12 @@ type ConfigOptions struct {
 	// because we learned about 2.x.
 	Shape ConfigShape
 
+	// Workers are the RUN's step workers, each registered as an agent whose
+	// `system` carries that worker's real prompt (see WorkerAgent). V2 ONLY, and
+	// empty for a v1 serve — on 1.x the same prompt rides the prompt body's
+	// `system` field per message, which is why this list has no v1 meaning.
+	Workers []WorkerAgent
+
 	// RunMCP is the RUN's MCP union (project-owned ∪ every step worker
 	// version's inline specs), resolved ONCE from the run and with
 	// ${SECRET_NAME} expanded at build time. A step sees servers ANOTHER
@@ -571,13 +577,24 @@ func BuildConfigContent(o ConfigOptions) string {
 
 	if o.AgentPrompt != "" {
 		if o.Shape.isV2() {
-			// V2 reads `agents` and its prompt field is `system`. This is not
-			// cosmetic: a V1-shaped `agent`/`prompt` is not registered under that
-			// name (V2 lists "Agent name inside V1 JSON configuration" as accepted
-			// but UNSUPPORTED), so `default_agent` has nothing to bind to, V2 falls
-			// back to its built-in `build` agent, and the worker runs under
-			// opencode's large default prompt AS WELL AS its own.
-			cfg["agents"] = map[string]any{o.AgentName: v2AgentEntry(o.AgentPrompt, o.ModelRef)}
+			// V2 reads `agents` and its prompt field is `system`; a non-empty
+			// `system` is what REPLACES the provider's base prompt, which is how a
+			// worker avoids running under opencode's own `build` prompt.
+			agents := map[string]any{o.AgentName: v2AgentEntry(o.AgentPrompt, o.ModelRef)}
+			// Plus one agent per step worker, each carrying that worker's REAL
+			// prompt. They are ADDITIONAL to the shell above, which stays the
+			// default_agent: a session that never gets switched still runs a real
+			// worker with a thin prompt rather than opencode's `build` agent.
+			for _, w := range o.Workers {
+				if w.Name == "" || w.Prompt == "" {
+					continue
+				}
+				if _, dup := agents[w.Name]; dup {
+					continue
+				}
+				agents[w.Name] = v2AgentEntry(w.Prompt, w.Model)
+			}
+			cfg["agents"] = agents
 		} else {
 			cfg["agent"] = map[string]any{
 				o.AgentName: map[string]any{
