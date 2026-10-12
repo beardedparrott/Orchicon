@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -126,21 +127,44 @@ func (p *HostServePool) DefaultServe() *HostServe {
 // silent fallback to a serve carrying the wrong config, and never an eviction
 // of a live serve out from under a running session.
 //
-// WORKERS ARE PART OF THE KEY TOO, and for the same correctness reason rather than a
-// performance one. Since a serve registers one agent per step worker (the only channel
-// that delivers a per-execution prompt on 2.x — see adapter.WorkerAgent), a serve built
-// WITHOUT a given worker's agent cannot serve that worker's session: the session would
-// have to run on the default agent and lose its prompt. So the pair (resolved MCP set,
-// worker set) is the serve's identity, and only an exact match is reused.
+// WORKERS ARE PART OF THE KEY TOO, and for a correctness reason rather than a
+// performance one. Since a serve registers one agent per step worker (the only
+// channel that delivers a per-execution prompt on 2.x — see adapter.WorkerAgent), a
+// serve built WITHOUT a given worker's agent cannot carry that worker's prompt. So
+// the pair (resolved MCP set, worker set) is the serve's identity.
 //
-// THE PRACTICAL CONSEQUENCE, stated plainly because it is an operator-visible trade:
-// a HOST serve is shared, so this means ONE POOLED SERVE PER DISTINCT WORKER for the
-// in-process population (local-mode runs, standalone dispatches, follow-ups). The pool
-// cap therefore also bounds distinct workers, and a plane exceeding it refuses LOUDLY
-// (naming both the set and the workers) rather than serving a session without its
-// prompt. The container path is unaffected: it gets one serve PER RUN with that run's
-// workers baked, which is where workflow executions actually run.
+// WORKER EXHAUSTION DEGRADES; MCP-SET EXHAUSTION STILL REFUSES. The two dimensions
+// are NOT equally severe, so they do not get the same answer:
+//
+//   - A serve with the WRONG MCP set leaks one project's servers into another
+//     session. That is a correctness violation and must refuse.
+//   - A serve missing a worker's AGENT is a DEGRADATION: agent selection fails, so
+//     the adapter skips the message trim and the worker gets its full prompt on the
+//     message instead — correct, merely untrimmed. Failing the run here would turn a
+//     working execution into a broken one, which is exactly what an in-process run on
+//     a plane with no runtime daemon (or a local-mode project) would have hit.
+//
+// So a capacity refusal driven by WORKERS retries the SAME MCP set without them, and
+// only a refusal the MCP set itself causes is fatal.
 func (p *HostServePool) ServeFor(ctx context.Context, set mcpclient.Resolution, workers []adapter.WorkerAgent) (*HostServe, error) {
+	hs, err := p.serveForSet(set, workers)
+	if err == nil {
+		return hs, nil
+	}
+	if len(workers) > 0 && errors.Is(err, errPoolAtCapacity) {
+		p.log.Warn("host serve pool at capacity for this worker set — serving the MCP set WITHOUT worker agents; "+
+			"sessions keep their FULL prompt on the message rather than having the run-level prefix carried by an agent",
+			"workers", len(workers), "servers", describeSet(set))
+		return p.serveForSet(set, nil)
+	}
+	return nil, err
+}
+
+// errPoolAtCapacity marks the LOUD refusal, so ServeFor can tell a capacity refusal
+// apart from a start failure and choose whether a degradation is safe.
+var errPoolAtCapacity = errors.New("host serve pool is at capacity")
+
+func (p *HostServePool) serveForSet(set mcpclient.Resolution, workers []adapter.WorkerAgent) (*HostServe, error) {
 	if len(set.Servers) == 0 && len(set.Skills) == 0 && len(workers) == 0 {
 		return p.DefaultServe(), nil
 	}
@@ -153,8 +177,8 @@ func (p *HostServePool) ServeFor(ctx context.Context, set mcpclient.Resolution, 
 	}
 	if len(p.entries) >= p.cap {
 		return nil, fmt.Errorf(
-			"host serve pool is at capacity (%d): no serve can be started for MCP set [%s] with %d worker agent(s) — raise ORCHICON_HOST_SERVE_POOL_CAP or reduce the number of distinct (project MCP set, worker) pairs",
-			p.cap, describeSet(set), len(workers))
+			"%w (%d): no serve can be started for MCP set [%s] with %d worker agent(s) — raise ORCHICON_HOST_SERVE_POOL_CAP or reduce the number of distinct (project MCP set, worker) pairs",
+			errPoolAtCapacity, p.cap, describeSet(set), len(workers))
 	}
 	hs := p.newServe(filepath.Join(p.baseDataDir, "serve-"+key[:16]), set, workers)
 	p.entries[key] = hs

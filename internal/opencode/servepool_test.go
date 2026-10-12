@@ -275,3 +275,66 @@ func TestHostServeConfigCarriesItsWorkerAgents(t *testing.T) {
 		}
 	})
 }
+
+// TestPoolCapDegradesForWorkersButRefusesForMCPSets pins the asymmetry that the
+// two dimensions justify — and it is the fix for a REGRESSION the worker keying
+// would otherwise have introduced.
+//
+// An in-process population (a plane with no runtime daemon, or a local-mode
+// project) previously shared served by MCP set. Keying on workers meant the 5th
+// distinct worker would hit the cap and FAIL a run that used to work. That failure
+// is unnecessary: a serve without the worker's agent only costs the message trim
+// (agent selection fails, so the adapter sends the full prompt), whereas a serve
+// with the WRONG MCP set would leak one project's servers into another session.
+//
+// So worker exhaustion must degrade, and MCP-set exhaustion must still refuse.
+func TestPoolCapDegradesForWorkersButRefusesForMCPSets(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("a worker that cannot fit degrades to the MCP set's serve", func(t *testing.T) {
+		t.Setenv("ORCHICON_HOST_SERVE_POOL_CAP", "2")
+		p := NewHostServePool(slog.Default(), t.TempDir(), "", ProfileWorker)
+		// Fill the pool with distinct MCP sets — the dimension that must stay fatal.
+		for _, s := range []string{"one", "two"} {
+			if _, err := p.ServeFor(ctx, testResolution(s), nil); err != nil {
+				t.Fatalf("filling the pool: %v", err)
+			}
+		}
+		// Give one of those sets a worker that cannot fit — the pool is at its cap
+		// of 2, so this key is new.
+		workers := []adapter.WorkerAgent{{Name: "orchicon-worker-x", Prompt: "p"}}
+		hs, err := p.ServeFor(ctx, testResolution("one"), workers)
+		if err != nil {
+			t.Fatalf("a worker that cannot fit must DEGRADE, not fail the run: %v", err)
+		}
+		if hs == nil {
+			t.Fatal("degradation returned no serve at all")
+		}
+		// It must be the SAME MCP set's serve (no leak), just without agents — and
+		// that is exactly what makes the degradation safe, so it is asserted.
+		bare, err := p.ServeFor(ctx, testResolution("one"), nil)
+		if err != nil {
+			t.Fatalf("re-resolving the same set: %v", err)
+		}
+		if hs != bare {
+			t.Error("the degraded serve must be the SAME MCP set's serve — a different set would leak its servers into this session")
+		}
+	})
+
+	t.Run("a new MCP set that cannot fit still refuses loudly", func(t *testing.T) {
+		t.Setenv("ORCHICON_HOST_SERVE_POOL_CAP", "2")
+		p := NewHostServePool(slog.Default(), t.TempDir(), "", ProfileWorker)
+		for _, s := range []string{"one", "two"} {
+			if _, err := p.ServeFor(ctx, testResolution(s), nil); err != nil {
+				t.Fatalf("filling the pool: %v", err)
+			}
+		}
+		_, err := p.ServeFor(ctx, testResolution("three"), nil)
+		if err == nil {
+			t.Fatal("a wrong MCP set is a correctness violation and must refuse, not degrade")
+		}
+		if !strings.Contains(err.Error(), "at capacity") {
+			t.Errorf("the refusal must name the condition: %v", err)
+		}
+	})
+}
