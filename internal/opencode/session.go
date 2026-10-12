@@ -37,11 +37,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
@@ -112,6 +114,12 @@ type SessionClient struct {
 	// several. It defaults to v1 — the surface the installed base runs — so a client that never
 	// detects anything behaves exactly as it did before.
 	shape apiShape
+
+	// log, when set, reports conditions that are otherwise invisible — currently the v2 surface's
+	// missing per-message system prompt. Nil is fine: the condition simply goes unreported.
+	log *slog.Logger
+	// missingSystemWarned keeps that report to once per client.
+	missingSystemWarned atomic.Bool
 }
 
 // SetAPIShape selects the API surface this client talks to. It is the seam the plane uses after
@@ -339,24 +347,87 @@ func (c *SessionClient) SendMessageWithAttachments(ctx context.Context, sessionI
 	if len(parts) == 0 {
 		parts = append(parts, map[string]any{"type": "text", "text": text})
 	}
-	body := map[string]any{
-		"parts": parts,
+	// THE BODY IS BUILT FOR THE SURFACE, because the two are not interchangeable (see
+	// apiShape.promptStyle). v1 takes a `parts` array plus `system` and `model`; v2 takes a
+	// top-level `text` (REQUIRED) and `files`, and has no field for either of the others.
+	var body map[string]any
+	switch c.shape.promptStyle {
+	case "text":
+		body = map[string]any{"text": text}
+		var files []map[string]any
+		for _, a := range attachments {
+			if a.MimeType == "" {
+				a.MimeType = "application/octet-stream"
+			}
+			if len(a.Data) == 0 {
+				continue
+			}
+			// FileAttachment = {uri (required), name?, description?, mention?}. v1 carried the bytes
+			// as a data: URL inside a `parts` entry; v2 takes a uri, and a data: URL is a uri — so
+			// the same encoding travels, under a different key and with `name` instead of `filename`.
+			f := map[string]any{
+				"uri": "data:" + a.MimeType + ";base64," + base64.StdEncoding.EncodeToString(a.Data),
+			}
+			if a.Name != "" {
+				f["name"] = a.Name
+			}
+			files = append(files, f)
+		}
+		if len(files) > 0 {
+			body["files"] = files
+		}
+		// `system` IS NOT DELIVERABLE ON THIS SURFACE and is dropped deliberately rather than
+		// silently: v2 has no such field on the prompt (or on any other request body — checked
+		// across all 118 paths), so the prompt belongs in the AGENT the session runs under. The
+		// plane already configures one, but its prompt is the MINIMAL tool shell, not the worker's
+		// real system prompt — so this is a KNOWN GAP, logged once, not a silent loss.
+		if system != "" {
+			c.warnOnce(&c.missingSystemWarned, "opencode v2 prompt body has no `system` field — the "+
+				"per-message system prompt is NOT being delivered on this surface. The session runs "+
+				"under the configured agent's prompt. This is a known gap needing a decision (see "+
+				"apisurface.go); it is logged once per client.")
+		}
+	default:
+		body = map[string]any{"parts": parts}
+		if system != "" {
+			body["system"] = system
+		}
 	}
-	if system != "" {
-		body["system"] = system
-	}
+
 	if modelRef != "" {
 		// Left-greedy split: segment 1 = adapter (consumed by the control
 		// plane, dropped before the serve call), segment 2 = provider,
 		// remainder = model verbatim (slashes preserved — ADR-0003).
 		if provider, model, ok := adapter.SplitForServe(modelRef); ok {
-			body["model"] = map[string]any{"providerID": provider, "modelID": model}
+			if c.shape.setModelPath != nil {
+				// A surface whose prompt body cannot carry the model sets it on the SESSION. Done
+				// before the prompt so this turn runs on the chosen model rather than the serve's
+				// default; idempotent, so re-sending for a later turn is harmless.
+				if err := c.do(ctx, http.MethodPost, c.shape.setModelPath(sessionID),
+					map[string]any{"model": map[string]any{
+						"providerID":           provider,
+						c.shape.modelFieldName: model,
+					}}); err != nil {
+					return fmt.Errorf("opencode session set model: %w", err)
+				}
+			} else {
+				body["model"] = map[string]any{"providerID": provider, "modelID": model}
+			}
 		}
 	}
 	if err := c.do(ctx, http.MethodPost, c.shape.promptPath(sessionID), body); err != nil {
 		return fmt.Errorf("opencode session send: %w", err)
 	}
 	return nil
+}
+
+// warnOnce logs a message the first time only, so a per-turn condition does not flood the log.
+func (c *SessionClient) warnOnce(flag *atomic.Bool, msg string) {
+	if flag.CompareAndSwap(false, true) {
+		if c.log != nil {
+			c.log.Warn(msg)
+		}
+	}
 }
 
 // AttachmentPart is a single attachment forwarded to the session.

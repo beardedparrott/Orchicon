@@ -64,6 +64,29 @@ type apiShape struct {
 	// ⚠ UNVERIFIED beyond the audit's note — see the file comment.
 	permissionReplyField string
 
+	// promptStyle selects how a message is expressed, and the two are NOT interchangeable.
+	//
+	// v1: {"parts":[{"type":"text","text":…}], "system":…, "model":{"providerID":…,"modelID":…}}
+	// v2: {"text":…, "files":[{"uri":…}]}          — text is REQUIRED and the other keys do not exist
+	//
+	// MEASURED against 2.0.26, from the OpenAPI spec the v2 audit names as its source
+	// (packages/protocol/openapi.json, POST /api/session/{id}/prompt):
+	//
+	//	{"text": string, "files": [FileAttachment], "agents": […], "skills": […],
+	//	 "metadata": {}, "delivery": "steer"|"queue", "resume": bool}
+	//	required: ["text"], additionalProperties: false
+	//
+	// There is NO `system`, NO `model` and NO `parts` on v2 — so a v1 body is rejected with
+	// `Missing key at ["text"]` (the operator's error, reproduced) and, worse, the parts an
+	// unknown key would carry are silently DROPPED (verified: a bogus key is accepted without
+	// complaint, so "accepted" does not mean "used").
+	promptStyle string
+	// modelFieldName is the field carrying the model id inside the model object: v1 `modelID`,
+	// v2 `id` (Model.Ref = {id, providerID, variant?}).
+	modelFieldName string
+	// setModelPath builds the route that sets a session's model, for surfaces whose PROMPT body
+	// cannot carry it. Empty on v1, where the model rides each prompt.
+	setModelPath func(sessionID string) string
 	// responseEnvelope is the key v2 wraps SESSION responses in, or "" when responses are bare.
 	//
 	// MEASURED against opencode 2.0.26 — and the envelope is PER-ENDPOINT, not universal, which is why
@@ -118,6 +141,8 @@ var shapeV1 = apiShape{
 	permissionReplyField:  "response",
 	responseEnvelope:      "",
 	modelsArgs:            []string{"models", "--verbose"},
+	promptStyle:           "parts",
+	modelFieldName:        "modelID",
 }
 
 // shapeV2 is opencode 2.x. Every path here is quoted from V2_HTTP_API_AUDIT.md's endpoint table:
@@ -142,6 +167,11 @@ var shapeV2 = apiShape{
 	permissionReplyField:  "decision",
 	responseEnvelope:      "data",
 	modelsArgs:            []string{"models"},
+	promptStyle:           "text",
+	modelFieldName:        "id",
+	// v2's prompt body has no model field, so the model is set on the SESSION first
+	// (session.switchModel, audit 055: POST /api/session/{sessionID}/model, body {model: Model.Ref}).
+	setModelPath: func(id string) string { return "/api/session/" + id + "/model" },
 }
 
 // Path builders. The client calls these and never concatenates a route itself — that is what keeps a
