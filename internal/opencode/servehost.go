@@ -197,7 +197,25 @@ func (h *HostServe) Watch(ctx context.Context) {
 		case <-time.After(15 * time.Second):
 		}
 		client := h.Client()
-		if client == nil || client.MCPHealthy(ctx) {
+		// LIVENESS, NOT DISPATCH-READINESS. This asked MCPHealthy — which CREATES A REAL SESSION every
+		// 15 seconds — and that conflated two different questions with a measurable cost:
+		//
+		//   * creating a session on opencode 2.x can have to BOOT the managed service for the location
+		//     (the same eviction/re-boot race that makes `opencode models` intermittently empty), so a
+		//     probe that is merely SLOW reads as DEAD;
+		//   * the watchdog then restarts a serve that was healthy, which KILLS IN-FLIGHT TURNS and
+		//     leaves a refused-connection window until the replacement listens — reported as a turn
+		//     that spun on "thinking" without ever returning, followed by "connection refused" on the
+		//     retry;
+		//   * and it leaked a session into the store every 15 seconds (aborted, never deleted).
+		//
+		// Measured on the operator's prod plane: "host opencode serve ready" followed by "unhealthy —
+		// restarting" three times in one evening, on a serve that was answering the whole time.
+		//
+		// The watchdog's only question is "is the process still answering?" — Healthy answers that,
+		// cheaply and definitively, and a genuinely wedged or dead serve fails it. WHETHER a serve can
+		// accept work is asked where it matters, at dispatch, by ProbeUsable (the run-start gate).
+		if client == nil || client.Healthy(ctx) {
 			backoff = 5 * time.Second
 			continue
 		}

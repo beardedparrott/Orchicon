@@ -459,6 +459,21 @@ func (mp *ModelPicker) prevTier() { mp.tier = (mp.tier + 2) % 3 }
 // HandleKey drives the picker. handled=false falls through to the host (so a
 // key the picker does not use can never be swallowed by a modal it owns).
 func (mp *ModelPicker) HandleKey(k keyMsg) (bool, tea.Cmd) {
+	// 'r' RETRIES ONLY WHEN THERE IS NOTHING TO TYPE INTO, and this check is OUTSIDE the switch.
+	//
+	// The model tier is a TYPE-TO-SEARCH box, so a bare letter is TEXT FIRST. The switch below used to
+	// carry a `case "r"` that either retried (when mp.err was set) or returned false — and returning
+	// early from the function means the typing branch at the bottom is never reached either way. So
+	// `r` could not be typed AT ALL: it retried, or it vanished. Reported as "the 'r' key is being
+	// swallowed ... most likely by that 'r' refresh key".
+	//
+	// The two conditions that make retry unambiguous: the load FAILED (so there is a reason to retry)
+	// and the query is EMPTY (so the operator has not started typing). That second condition is not
+	// defensive padding — it is what keeps the key working as text the moment they have, and it is
+	// also exactly when the on-screen hint offers it.
+	if k.String() == "r" && mp.err != "" && mp.query == "" {
+		return true, mp.Retry()
+	}
 	switch k.String() {
 	case "esc":
 		mp.done = true
@@ -478,12 +493,6 @@ func (mp *ModelPicker) HandleKey(k keyMsg) (bool, tea.Cmd) {
 		return true, nil
 	case "enter", " ", "space":
 		return true, mp.choose()
-	case "r":
-		// Retry a failed load without losing the selection.
-		if mp.err != "" {
-			return true, mp.Retry()
-		}
-		return false, nil
 	case "backspace":
 		if mp.tier == TierModel {
 			q := []rune(mp.query)
