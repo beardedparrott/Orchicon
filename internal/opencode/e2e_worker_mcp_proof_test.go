@@ -135,11 +135,11 @@ func TestE2EOpenCodeHostServePoolKeysByResolvedSet(t *testing.T) {
 	p := NewHostServePool(quietTestLogger(), t.TempDir(), "", ProfileWorker)
 	ctx := context.Background()
 
-	withSet, err := p.ServeFor(ctx, res)
+	withSet, err := p.ServeFor(ctx, res, nil)
 	if err != nil {
 		t.Fatalf("ServeFor(project set): %v", err)
 	}
-	empty, err := p.ServeFor(ctx, mcpclient.Resolution{})
+	empty, err := p.ServeFor(ctx, mcpclient.Resolution{}, nil)
 	if err != nil {
 		t.Fatalf("ServeFor(empty): %v", err)
 	}

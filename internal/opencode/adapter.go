@@ -378,7 +378,7 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 		h := a.host
 		if a.hostPool != nil {
 			set := a.hostResolvedSet(ctx, manifest, tenantID)
-			pooled, perr := a.hostPool.ServeFor(ctx, set)
+			pooled, perr := a.hostPool.ServeFor(ctx, set, manifestWorkerAgents(manifest))
 			if perr != nil {
 				a.log.Warn("session transport: host serve pool has no serve for this MCP set — failing execution",
 					"execution", manifest.ExecutionID, "servers", mcpclient.ProvenanceString(set.Servers), "error", perr)
@@ -2058,4 +2058,31 @@ func projectMount(projectDir string) []runtime.MountSpec {
 		return nil
 	}
 	return []runtime.MountSpec{{Source: projectDir, Dest: projectDir}}
+}
+
+// manifestWorkerAgents derives the host serve's agent entry for this execution from
+// the manifest alone.
+//
+// The run-level prompt is ALREADY IN THE MANIFEST: it is the composite's opening,
+// and the scheduler recorded exactly how long that opening is. So the host path
+// needs no new plumbing, no DB access and no second resolution — it takes the bytes
+// the agent should carry straight off the manifest, which is also why it cannot
+// disagree with what the container path bakes for the same worker.
+//
+// Returns nil for the cases where there is nothing to carry (no worker, no recorded
+// length, or a length that does not fit the prompt). Nil is the SAFE answer: a
+// session then runs on the serve's default agent and keeps its full prompt on the
+// message, which is correct, just not trimmed.
+func manifestWorkerAgents(m scheduler.ExecutionManifest) []adapter.WorkerAgent {
+	if m.AgentPromptLen <= 0 || m.AgentPromptLen >= len(m.SystemPrompt) {
+		return nil
+	}
+	if strings.TrimSpace(m.WorkerID) == "" {
+		return nil
+	}
+	return []adapter.WorkerAgent{{
+		Name:   adapter.WorkerAgentName(m.WorkerID),
+		Prompt: m.SystemPrompt[:m.AgentPromptLen],
+		Model:  m.ModelRef,
+	}}
 }

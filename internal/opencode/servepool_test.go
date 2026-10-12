@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/mcpclient"
 )
 
@@ -26,15 +27,15 @@ func TestHostServePoolDisjointSetsGetDistinctServesAndDataDirs(t *testing.T) {
 	base := t.TempDir()
 	p := NewHostServePool(slog.Default(), base, "", ProfileWorker)
 
-	def, err := p.ServeFor(context.Background(), mcpclient.Resolution{})
+	def, err := p.ServeFor(context.Background(), mcpclient.Resolution{}, nil)
 	if err != nil {
 		t.Fatalf("empty set: %v", err)
 	}
-	a, err := p.ServeFor(context.Background(), testResolution("alpha"))
+	a, err := p.ServeFor(context.Background(), testResolution("alpha"), nil)
 	if err != nil {
 		t.Fatalf("set alpha: %v", err)
 	}
-	b, err := p.ServeFor(context.Background(), testResolution("beta"))
+	b, err := p.ServeFor(context.Background(), testResolution("beta"), nil)
 	if err != nil {
 		t.Fatalf("set beta: %v", err)
 	}
@@ -70,11 +71,11 @@ func TestHostServePoolSameSetReusesServe(t *testing.T) {
 	two := mcpclient.Resolution{Servers: []mcpclient.ScopedServer{
 		{Spec: mcpclient.ServerSpec{ID: "b"}}, {Spec: mcpclient.ServerSpec{ID: "a"}},
 	}}
-	first, err := p.ServeFor(ctx, one)
+	first, err := p.ServeFor(ctx, one, nil)
 	if err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	second, err := p.ServeFor(ctx, two)
+	second, err := p.ServeFor(ctx, two, nil)
 	if err != nil {
 		t.Fatalf("second: %v", err)
 	}
@@ -97,11 +98,11 @@ func TestHostServePoolCredentialsDistinguishServes(t *testing.T) {
 			{Spec: mcpclient.ServerSpec{ID: "shared", URL: "https://x", Headers: map[string]string{"Authorization": tok}}},
 		}}
 	}
-	a, err := p.ServeFor(ctx, mk("Bearer token-A"))
+	a, err := p.ServeFor(ctx, mk("Bearer token-A"), nil)
 	if err != nil {
 		t.Fatalf("a: %v", err)
 	}
-	b, err := p.ServeFor(ctx, mk("Bearer token-B"))
+	b, err := p.ServeFor(ctx, mk("Bearer token-B"), nil)
 	if err != nil {
 		t.Fatalf("b: %v", err)
 	}
@@ -116,13 +117,13 @@ func TestHostServePoolCapRefusesLoudly(t *testing.T) {
 	t.Setenv("ORCHICON_HOST_SERVE_POOL_CAP", "2")
 	p := NewHostServePool(slog.Default(), t.TempDir(), "", ProfileWorker)
 	ctx := context.Background()
-	if _, err := p.ServeFor(ctx, testResolution("one")); err != nil {
+	if _, err := p.ServeFor(ctx, testResolution("one"), nil); err != nil {
 		t.Fatalf("one: %v", err)
 	}
-	if _, err := p.ServeFor(ctx, testResolution("two")); err != nil {
+	if _, err := p.ServeFor(ctx, testResolution("two"), nil); err != nil {
 		t.Fatalf("two: %v", err)
 	}
-	_, err := p.ServeFor(ctx, testResolution("three"))
+	_, err := p.ServeFor(ctx, testResolution("three"), nil)
 	if err == nil {
 		t.Fatalf("expected a loud refusal beyond the cap")
 	}
@@ -134,7 +135,7 @@ func TestHostServePoolCapRefusesLoudly(t *testing.T) {
 		t.Fatalf("expected the live serves to survive, got %d", p.Size())
 	}
 	// An ALREADY-KEYED set still resolves at the cap.
-	if _, err := p.ServeFor(ctx, testResolution("one")); err != nil {
+	if _, err := p.ServeFor(ctx, testResolution("one"), nil); err != nil {
 		t.Fatalf("an existing key must still resolve at the cap: %v", err)
 	}
 }
@@ -147,7 +148,7 @@ func TestHostServePoolAdoptsDefaultServe(t *testing.T) {
 	def := NewHostServe(slog.Default(), base, "")
 	p := NewHostServePool(slog.Default(), base, "", ProfileWorker)
 	p.SetDefaultServe(def)
-	got, err := p.ServeFor(context.Background(), mcpclient.Resolution{})
+	got, err := p.ServeFor(context.Background(), mcpclient.Resolution{}, nil)
 	if err != nil {
 		t.Fatalf("empty set: %v", err)
 	}
@@ -164,7 +165,7 @@ func TestHostServePoolAdoptsDefaultServe(t *testing.T) {
 // worker-profile serve, so Ask's config can never ride a worker serve.
 func TestHostServePoolInteractiveProfileKeepsItsOwnServes(t *testing.T) {
 	p := NewHostServePool(slog.Default(), t.TempDir(), "", ProfileInteractive)
-	hs, err := p.ServeFor(context.Background(), testResolution("alpha"))
+	hs, err := p.ServeFor(context.Background(), testResolution("alpha"), nil)
 	if err != nil {
 		t.Fatalf("interactive set: %v", err)
 	}
@@ -173,9 +174,104 @@ func TestHostServePoolInteractiveProfileKeepsItsOwnServes(t *testing.T) {
 	}
 	// The same set in the worker profile keys DIFFERENTLY (a distinct serve).
 	worker := NewHostServePool(slog.Default(), t.TempDir(), "", ProfileWorker)
-	if hostServeSetKey(ProfileInteractive, testResolution("alpha")) ==
-		hostServeSetKey(ProfileWorker, testResolution("alpha")) {
+	if hostServeSetKey(ProfileInteractive, testResolution("alpha"), nil) ==
+		hostServeSetKey(ProfileWorker, testResolution("alpha"), nil) {
 		t.Fatalf("the permission profile must be part of the pool key")
 	}
 	_ = worker
+}
+
+// TestHostServePoolKeysOnTheWorkerSet is step 5's correctness property, not a
+// performance one: a host serve registers one agent per step worker, so a serve
+// built WITHOUT a worker's agent cannot serve that worker's session — the session
+// would fall back to the default agent and lose its prompt. The pair (resolved MCP
+// set, worker set) is therefore the serve's identity.
+func TestHostServePoolKeysOnTheWorkerSet(t *testing.T) {
+	ctx := context.Background()
+	p := NewHostServePool(slog.Default(), t.TempDir(), "", ProfileWorker)
+	set := testResolution("alpha")
+	wa := []adapter.WorkerAgent{{Name: "orchicon-worker-a", Prompt: "prompt A"}}
+	wb := []adapter.WorkerAgent{{Name: "orchicon-worker-b", Prompt: "prompt B"}}
+
+	a, err := p.ServeFor(ctx, set, wa)
+	if err != nil {
+		t.Fatalf("ServeFor(worker a): %v", err)
+	}
+	b, err := p.ServeFor(ctx, set, wb)
+	if err != nil {
+		t.Fatalf("ServeFor(worker b): %v", err)
+	}
+	if a == b {
+		t.Fatal("two DIFFERENT workers on one MCP set share a serve — the second session would run without its agent")
+	}
+
+	// The SAME worker set is reused, or every execution would start a process.
+	a2, err := p.ServeFor(ctx, set, wa)
+	if err != nil {
+		t.Fatalf("ServeFor(worker a again): %v", err)
+	}
+	if a2 != a {
+		t.Error("an identical (set, worker) pair must reuse its serve")
+	}
+
+	// A byte-identical agent under a different SLICE is the same identity: the key
+	// hashes content, not slice identity.
+	a3, err := p.ServeFor(ctx, set, []adapter.WorkerAgent{{Name: "orchicon-worker-a", Prompt: "prompt A"}})
+	if err != nil {
+		t.Fatalf("ServeFor(worker a copy): %v", err)
+	}
+	if a3 != a {
+		t.Error("the key must hash agent CONTENT, so an equal agent set reuses the serve")
+	}
+}
+
+// TestHostServePoolWorkerOnlySetIsItsOwnServe pins the behaviour change that worker
+// keying introduces, because it has an operator-visible consequence: a session with
+// NO project MCP servers but WITH a worker agent can no longer use the shared
+// default serve (that serve carries no agents), so it gets its own pooled serve.
+//
+// That is deliberate — correctness over topology — and it is why the pool cap now
+// also bounds distinct workers. A plane that exceeds it refuses LOUDLY rather than
+// serving a session without its prompt.
+func TestHostServePoolWorkerOnlySetIsItsOwnServe(t *testing.T) {
+	ctx := context.Background()
+	p := NewHostServePool(slog.Default(), t.TempDir(), "", ProfileWorker)
+
+	bare, err := p.ServeFor(ctx, mcpclient.Resolution{}, nil)
+	if err != nil {
+		t.Fatalf("ServeFor(empty, no workers): %v", err)
+	}
+	if bare != p.DefaultServe() {
+		t.Error("the empty set with NO workers must still be the shared default serve — an unconfigured plane keeps today's topology")
+	}
+
+	withWorker, err := p.ServeFor(ctx, mcpclient.Resolution{}, []adapter.WorkerAgent{{Name: "orchicon-worker-a", Prompt: "p"}})
+	if err != nil {
+		t.Fatalf("ServeFor(empty, one worker): %v", err)
+	}
+	if withWorker == bare {
+		t.Error("a worker needs its own serve even with no MCP servers: the default serve carries no agents")
+	}
+}
+
+// TestHostServeConfigCarriesItsWorkerAgents pins the wiring from the pool's worker
+// set into the document the serve actually bakes: pool keying is pointless if the
+// agents never reach the config.
+func TestHostServeConfigCarriesItsWorkerAgents(t *testing.T) {
+	withShape(t, ConfigShapeV2, func() {
+		hs := NewHostServe(slog.Default(), t.TempDir(), "")
+		hs.SetWorkers([]adapter.WorkerAgent{{Name: "orchicon-worker-a", Prompt: "THE WORKER PROMPT"}})
+		doc := decodeDoc(t, hs.serveConfig())
+		agents, ok := doc["agents"].(map[string]any)
+		if !ok {
+			t.Fatalf("the host serve config carries no agents: %v", doc)
+		}
+		e, ok := agents["orchicon-worker-a"].(map[string]any)
+		if !ok {
+			t.Fatalf("the pooled worker agent is missing from %v", agents)
+		}
+		if sys, _ := e["system"].(string); sys != "THE WORKER PROMPT" {
+			t.Errorf("agent system = %q, want the worker's prompt", sys)
+		}
+	})
 }

@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/mcpclient"
 )
 
@@ -110,7 +111,7 @@ func (p *HostServePool) DefaultServe() *HostServe {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.defaultServe == nil {
-		p.defaultServe = p.newServe(p.baseDataDir, mcpclient.Resolution{})
+		p.defaultServe = p.newServe(p.baseDataDir, mcpclient.Resolution{}, nil)
 	}
 	return p.defaultServe
 }
@@ -124,11 +125,26 @@ func (p *HostServePool) DefaultServe() *HostServe {
 // At the cap, a NEW key is refused with a LOUD error NAMING the set — never a
 // silent fallback to a serve carrying the wrong config, and never an eviction
 // of a live serve out from under a running session.
-func (p *HostServePool) ServeFor(ctx context.Context, set mcpclient.Resolution) (*HostServe, error) {
-	if len(set.Servers) == 0 && len(set.Skills) == 0 {
+//
+// WORKERS ARE PART OF THE KEY TOO, and for the same correctness reason rather than a
+// performance one. Since a serve registers one agent per step worker (the only channel
+// that delivers a per-execution prompt on 2.x — see adapter.WorkerAgent), a serve built
+// WITHOUT a given worker's agent cannot serve that worker's session: the session would
+// have to run on the default agent and lose its prompt. So the pair (resolved MCP set,
+// worker set) is the serve's identity, and only an exact match is reused.
+//
+// THE PRACTICAL CONSEQUENCE, stated plainly because it is an operator-visible trade:
+// a HOST serve is shared, so this means ONE POOLED SERVE PER DISTINCT WORKER for the
+// in-process population (local-mode runs, standalone dispatches, follow-ups). The pool
+// cap therefore also bounds distinct workers, and a plane exceeding it refuses LOUDLY
+// (naming both the set and the workers) rather than serving a session without its
+// prompt. The container path is unaffected: it gets one serve PER RUN with that run's
+// workers baked, which is where workflow executions actually run.
+func (p *HostServePool) ServeFor(ctx context.Context, set mcpclient.Resolution, workers []adapter.WorkerAgent) (*HostServe, error) {
+	if len(set.Servers) == 0 && len(set.Skills) == 0 && len(workers) == 0 {
 		return p.DefaultServe(), nil
 	}
-	key := hostServeSetKey(p.profile, set)
+	key := hostServeSetKey(p.profile, set, workers)
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -137,13 +153,13 @@ func (p *HostServePool) ServeFor(ctx context.Context, set mcpclient.Resolution) 
 	}
 	if len(p.entries) >= p.cap {
 		return nil, fmt.Errorf(
-			"host serve pool is at capacity (%d): no serve can be started for MCP set [%s] — raise ORCHICON_HOST_SERVE_POOL_CAP or reduce the number of distinct project MCP sets",
-			p.cap, describeSet(set))
+			"host serve pool is at capacity (%d): no serve can be started for MCP set [%s] with %d worker agent(s) — raise ORCHICON_HOST_SERVE_POOL_CAP or reduce the number of distinct (project MCP set, worker) pairs",
+			p.cap, describeSet(set), len(workers))
 	}
-	hs := p.newServe(filepath.Join(p.baseDataDir, "serve-"+key[:16]), set)
+	hs := p.newServe(filepath.Join(p.baseDataDir, "serve-"+key[:16]), set, workers)
 	p.entries[key] = hs
-	p.log.Info("host serve pool: added serve for MCP set",
-		"key", key[:16], "data_dir", hs.dataDir, "servers", describeSet(set))
+	p.log.Info("host serve pool: added serve",
+		"key", key[:16], "data_dir", hs.dataDir, "servers", describeSet(set), "worker_agents", len(workers))
 	return hs, nil
 }
 
@@ -175,7 +191,7 @@ func (p *HostServePool) Stop() {
 
 // newServe builds one pooled serve with its OWN data dir. dataDir is created
 // by HostServe.Start/seedAuth; the pool only names it.
-func (p *HostServePool) newServe(dataDir string, set mcpclient.Resolution) *HostServe {
+func (p *HostServePool) newServe(dataDir string, set mcpclient.Resolution, workers []adapter.WorkerAgent) *HostServe {
 	var hs *HostServe
 	if p.profile == ProfileInteractive {
 		hs = NewAskHostServe(p.log, dataDir, p.home)
@@ -183,6 +199,8 @@ func (p *HostServePool) newServe(dataDir string, set mcpclient.Resolution) *Host
 		hs = NewHostServe(p.log, dataDir, p.home)
 	}
 	hs.SetMCPSet(set)
+	// Set BEFORE the serve starts: the worker agents ride the serve's baked config.
+	hs.SetWorkers(workers)
 	return hs
 }
 
@@ -192,7 +210,7 @@ func (p *HostServePool) newServe(dataDir string, set mcpclient.Resolution) *Host
 // projects with the same ids but different credentials get different keys),
 // and every skill's path + content hash. Server and skill lines are sorted so
 // two resolutions that differ only in ORDER share one serve.
-func hostServeSetKey(profile PermissionProfile, set mcpclient.Resolution) string {
+func hostServeSetKey(profile PermissionProfile, set mcpclient.Resolution, workers []adapter.WorkerAgent) string {
 	srv := make([]string, 0, len(set.Servers))
 	for _, s := range set.Servers {
 		srv = append(srv, serverFingerprint(s.Spec))
@@ -203,6 +221,14 @@ func hostServeSetKey(profile PermissionProfile, set mcpclient.Resolution) string
 		skill = append(skill, s.Path+"\x00"+sha256Hex(s.Content))
 	}
 	sort.Strings(skill)
+	// Workers are hashed by name + prompt CONTENT (not identity): two resolutions
+	// whose agents are byte-identical share one serve, which is what keeps the
+	// container path's per-run key stable across identical runs.
+	wrk := make([]string, 0, len(workers))
+	for _, w := range workers {
+		wrk = append(wrk, w.Name+"\x00"+sha256Hex(w.Prompt)+"\x00"+w.Model)
+	}
+	sort.Strings(wrk)
 
 	h := sha256.New()
 	_, _ = io.WriteString(h, "profile="+string(profile)+"\n")
@@ -211,6 +237,9 @@ func hostServeSetKey(profile PermissionProfile, set mcpclient.Resolution) string
 	}
 	for _, l := range skill {
 		_, _ = io.WriteString(h, "skill="+l+"\n")
+	}
+	for _, l := range wrk {
+		_, _ = io.WriteString(h, "worker="+l+"\n")
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
