@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/beardedparrott/orchicon/internal/adapter"
 )
 
 // TestV2RegistersOneAgentPerWorker pins the mechanism the per-execution prompt
-// now depends on: each step worker becomes an agent whose `system` is that
-// worker's REAL prompt, while the constant tool shell remains the default.
+// depends on: each step worker becomes an agent whose `system` is that worker's
+// REAL prompt, while the constant tool shell remains the default.
 //
 // The default matters as much as the per-worker entries: a session that never
 // gets switched must still land on a worker agent, because the alternative is
@@ -19,9 +21,9 @@ func TestV2RegistersOneAgentPerWorker(t *testing.T) {
 			AgentName:    workerAgent,
 			AgentPrompt:  sessionToolShell,
 			DefaultAgent: workerAgent,
-			Workers: []WorkerAgent{
-				{Name: WorkerAgentName("01M1ERH9921YS9S1QWGZV8D1VM"), Prompt: "REAL WORKER PROMPT A"},
-				{Name: WorkerAgentName("01M13DYHKHEF71MVGY07GMGMJ6"), Prompt: "REAL WORKER PROMPT B", Model: "opencode/some-model"},
+			Workers: []adapter.WorkerAgent{
+				{Name: adapter.WorkerAgentName("01M1ERH9921YS9S1QWGZV8D1VM"), Prompt: "REAL WORKER PROMPT A"},
+				{Name: adapter.WorkerAgentName("01M13DYHKHEF71MVGY07GMGMJ6"), Prompt: "REAL WORKER PROMPT B", Model: "opencode/some-model"},
 			},
 		})
 		doc := decodeDoc(t, out)
@@ -66,33 +68,13 @@ func TestV2WorkerAgentsAreV2Only(t *testing.T) {
 		AgentName:    workerAgent,
 		AgentPrompt:  sessionToolShell,
 		DefaultAgent: workerAgent,
-		Workers:      []WorkerAgent{{Name: WorkerAgentName("01M1ERH9921YS9S1QWGZV8D1VM"), Prompt: "REAL WORKER PROMPT A"}},
+		Workers:      []adapter.WorkerAgent{{Name: adapter.WorkerAgentName("01M1ERH9921YS9S1QWGZV8D1VM"), Prompt: "REAL WORKER PROMPT A"}},
 	}))
 	if _, ok := doc["agents"]; ok {
 		t.Error("a v1 document must not carry the `agents` block")
 	}
 	if _, ok := doc["agent"]; !ok {
 		t.Error("a v1 document must carry the v1 `agent` block")
-	}
-}
-
-// TestWorkerAgentNameIsDerivedAndStable pins the contract the plane and the
-// execution both depend on: the name is COMPUTED from the worker id, so the
-// writer and the selector agree without transmitting it.
-func TestWorkerAgentNameIsDerivedAndStable(t *testing.T) {
-	const id = "01M1ERH9921YS9S1QWGZV8D1VM"
-	got := WorkerAgentName(id)
-	if got != WorkerAgentName(id) {
-		t.Error("WorkerAgentName must be deterministic")
-	}
-	if got != "orchicon-worker-01m1erh9921ys9s1qwgzv8d1vm" {
-		t.Errorf("WorkerAgentName(%q) = %q", id, got)
-	}
-	if r := WorkerAgentName("Weird/ID With Spaces"); strings.ContainsAny(r, "/ ") {
-		t.Errorf("an agent id must survive a lookup key: %q", r)
-	}
-	if r := WorkerAgentName(""); r != "orchicon-worker-" {
-		t.Logf("empty worker id yields %q (the caller skips an empty name)", r)
 	}
 }
 

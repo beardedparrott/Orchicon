@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/mcpclient"
 	"github.com/beardedparrott/orchicon/internal/neverallow"
 	"github.com/beardedparrott/orchicon/internal/workerrestrict"
@@ -535,10 +536,11 @@ type ConfigOptions struct {
 	Shape ConfigShape
 
 	// Workers are the RUN's step workers, each registered as an agent whose
-	// `system` carries that worker's real prompt (see WorkerAgent). V2 ONLY, and
-	// empty for a v1 serve — on 1.x the same prompt rides the prompt body's
-	// `system` field per message, which is why this list has no v1 meaning.
-	Workers []WorkerAgent
+	// `system` carries that worker's real prompt (see adapter.WorkerAgent). V2
+	// ONLY, and empty for a v1 serve — on 1.x the same prompt rides the prompt
+	// body's `system` field per message, which is why this list has no v1
+	// meaning.
+	Workers []adapter.WorkerAgent
 
 	// RunMCP is the RUN's MCP union (project-owned ∪ every step worker
 	// version's inline specs), resolved ONCE from the run and with
