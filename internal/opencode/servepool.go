@@ -59,6 +59,17 @@ type HostServePool struct {
 
 	mu      sync.Mutex
 	entries map[string]*HostServe
+	// setIndex maps the profile+MCP-set identity (WORKERS EXCLUDED) to the first
+	// serve created for that set, whatever workers it carries. It exists ONLY for
+	// the degradation path in ServeFor: when a worker-carrying key cannot fit, the
+	// session must land on A serve for its OWN MCP set — any one — because the set is
+	// what must not leak, and a serve carrying other workers' agents is inert for a
+	// session whose own agent is absent (selection fails, so the trim is skipped and
+	// the full prompt rides the message).
+	//
+	// It is deliberately a SEPARATE index rather than a second key in entries: exact
+	// reuse must still be exact, and only the fallback is allowed to be approximate.
+	setIndex map[string]*HostServe
 	// defaultServe is the EMPTY-set serve: today's single host serve, on the
 	// base data dir. It is what an unconfigured plane (and every session with
 	// no project) gets, so nothing changes for those deployments.
@@ -90,6 +101,7 @@ func NewHostServePool(log *slog.Logger, baseDataDir, home string, profile Permis
 		profile:     profile,
 		cap:         limit,
 		entries:     map[string]*HostServe{},
+		setIndex:    map[string]*HostServe{},
 	}
 }
 
@@ -152,10 +164,21 @@ func (p *HostServePool) ServeFor(ctx context.Context, set mcpclient.Resolution, 
 		return hs, nil
 	}
 	if len(workers) > 0 && errors.Is(err, errPoolAtCapacity) {
-		p.log.Warn("host serve pool at capacity for this worker set — serving the MCP set WITHOUT worker agents; "+
-			"sessions keep their FULL prompt on the message rather than having the run-level prefix carried by an agent",
-			"workers", len(workers), "servers", describeSet(set))
-		return p.serveForSet(set, nil)
+		// Land on ANY serve for this MCP set — not specifically a worker-free one.
+		// The SET is what must not leak; a serve already serving this set carries
+		// the right servers, and the absence of THIS session's agent is a bounded
+		// degradation (agent selection fails, so the adapter sends the full prompt
+		// on the message). Requiring a worker-FREE serve instead was a HOLE: a pool
+		// filled up with (set, otherWorker) entries refused a new worker on the SAME
+		// set, even though reusing one of them leaks nothing.
+		if hs := p.serveForSetIndexed(set); hs != nil {
+			p.log.Warn("host serve pool at capacity for this worker set — reusing the serve already holding this MCP set; "+
+				"the session keeps its FULL prompt on the message instead of having the run-level prefix carried by an agent",
+				"workers", len(workers), "servers", describeSet(set))
+			return hs, nil
+		}
+		// Nothing is pooled for this set at all, so this is a genuine SET addition
+		// that the cap refuses — the case that must stay fatal.
 	}
 	return nil, err
 }
@@ -163,6 +186,21 @@ func (p *HostServePool) ServeFor(ctx context.Context, set mcpclient.Resolution, 
 // errPoolAtCapacity marks the LOUD refusal, so ServeFor can tell a capacity refusal
 // apart from a start failure and choose whether a degradation is safe.
 var errPoolAtCapacity = errors.New("host serve pool is at capacity")
+
+// serveForSetIndexed returns an ALREADY-POOLED serve for this MCP set, ignoring which
+// workers it carries, or nil when the set has no serve yet. It never creates anything
+// and never consults the cap, so it cannot fail.
+//
+// The empty set maps to the default serve: an unconfigured plane already serves it,
+// and there are no servers to leak.
+func (p *HostServePool) serveForSetIndexed(set mcpclient.Resolution) *HostServe {
+	if len(set.Servers) == 0 && len(set.Skills) == 0 {
+		return p.DefaultServe()
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.setIndex[hostServeSetKey(p.profile, set, nil)]
+}
 
 func (p *HostServePool) serveForSet(set mcpclient.Resolution, workers []adapter.WorkerAgent) (*HostServe, error) {
 	if len(set.Servers) == 0 && len(set.Skills) == 0 && len(workers) == 0 {
@@ -182,6 +220,11 @@ func (p *HostServePool) serveForSet(set mcpclient.Resolution, workers []adapter.
 	}
 	hs := p.newServe(filepath.Join(p.baseDataDir, "serve-"+key[:16]), set, workers)
 	p.entries[key] = hs
+	// Index by the set ALONE (workers excluded) if this is the set's first serve:
+	// it is the fallback target for a later worker that does not fit.
+	if sk := hostServeSetKey(p.profile, set, nil); p.setIndex[sk] == nil {
+		p.setIndex[sk] = hs
+	}
 	p.log.Info("host serve pool: added serve",
 		"key", key[:16], "data_dir", hs.dataDir, "servers", describeSet(set), "worker_agents", len(workers))
 	return hs, nil
@@ -206,6 +249,7 @@ func (p *HostServePool) Stop() {
 		serves = append(serves, p.defaultServe)
 	}
 	p.entries = map[string]*HostServe{}
+	p.setIndex = map[string]*HostServe{}
 	p.defaultServe = nil
 	p.mu.Unlock()
 	for _, hs := range serves {

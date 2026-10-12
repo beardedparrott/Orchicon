@@ -337,4 +337,44 @@ func TestPoolCapDegradesForWorkersButRefusesForMCPSets(t *testing.T) {
 			t.Errorf("the refusal must name the condition: %v", err)
 		}
 	})
+
+	// REGRESSION GUARD for a hole in the first version of this degradation: it fell
+	// back to a worker-FREE serve for the set, which does not exist when the pool
+	// filled up with (set, otherWorker) entries — so a second, third, ... worker on
+	// the SAME set still failed, even though reusing one of those serves leaks
+	// nothing. The fallback must accept ANY serve for the set.
+	t.Run("a second worker on the SAME set still fits on a full pool", func(t *testing.T) {
+		t.Setenv("ORCHICON_HOST_SERVE_POOL_CAP", "2")
+		p := NewHostServePool(slog.Default(), t.TempDir(), "", ProfileWorker)
+		set := testResolution("alpha")
+		w1, err := p.ServeFor(ctx, set, []adapter.WorkerAgent{{Name: "w1", Prompt: "p1"}})
+		if err != nil {
+			t.Fatalf("w1: %v", err)
+		}
+		if _, err := p.ServeFor(ctx, set, []adapter.WorkerAgent{{Name: "w2", Prompt: "p2"}}); err != nil {
+			t.Fatalf("w2: %v", err)
+		}
+		// The pool is now full of (alpha, w1) and (alpha, w2) — there is NO worker-free
+		// serve for alpha, which is exactly what defeated the first fallback.
+		w3, err := p.ServeFor(ctx, set, []adapter.WorkerAgent{{Name: "w3", Prompt: "p3"}})
+		if err != nil {
+			t.Fatalf("a same-set worker must degrade to a serve for its OWN set, not fail: %v", err)
+		}
+		if w3 != w1 {
+			t.Error("the degraded serve must be one ALREADY holding this MCP set")
+		}
+	})
+
+	t.Run("a set with no serve at all is still refused, never invented", func(t *testing.T) {
+		t.Setenv("ORCHICON_HOST_SERVE_POOL_CAP", "1")
+		p := NewHostServePool(slog.Default(), t.TempDir(), "", ProfileWorker)
+		if _, err := p.ServeFor(ctx, testResolution("alpha"), nil); err != nil {
+			t.Fatalf("filling the pool: %v", err)
+		}
+		// beta is a DIFFERENT set: degrading here would hand the session alpha's
+		// servers, which is the leak the pool exists to prevent.
+		if _, err := p.ServeFor(ctx, testResolution("beta"), []adapter.WorkerAgent{{Name: "w1", Prompt: "p"}}); err == nil {
+			t.Fatal("a worker must NOT be smuggled onto an unrelated set's serve")
+		}
+	})
 }
