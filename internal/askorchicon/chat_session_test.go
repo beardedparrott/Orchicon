@@ -1776,3 +1776,74 @@ func TestCollectConversationReplyFoldedThinkNoDedupe(t *testing.T) {
 		}
 	}
 }
+
+// closeLiveSub closes the currently-cached subscription, which the fake treats as "the serve dropped
+// the connection" (its Subscribe hands back a FRESH stream next time — see its own comment). It exists
+// so a test can simulate a serve that keeps dying mid-turn.
+func (f *fakeSessionClient) closeLiveSub() {
+	f.mu.Lock()
+	s := f.sub
+	f.mu.Unlock()
+	if s != nil {
+		s.Close()
+	}
+}
+
+// TestCollectConversationReplyReattachIsBounded pins the bound on re-attaching after a serve restart.
+//
+// THE REPORTED HANG, and why the bound is the fix rather than a tidy-up. The turnReattach path used to
+// retry inside the FULL reply window — 30 minutes, every 2s — justified by a comment assuming "the
+// watchdog brings the serve back and THE SESSION ID SURVIVES".
+//
+// MEASURED on a live conversation that hung: the session did NOT survive. The watchdog restarted the
+// serve, and the conversation's session was absent from the serve's own store (a direct row count
+// against its sqlite DB returned 0) while the conversation still referenced it — so the turn could
+// never complete, had nothing to react to, and retried for half an hour while the client kept drawing
+// a live activity line. The operator reported it as "just seems to be hanging".
+//
+// The test drives the case directly: the serve keeps dropping the connection, so the turn re-attaches
+// until the budget is spent and then fails with something the operator can act on.
+func TestCollectConversationReplyReattachIsBounded(t *testing.T) {
+	t.Setenv("ORCHICON_ASK_REATTACH_ATTEMPT_BUDGET", "3")
+	// collectTurn already pins the reattach backoff to 1ms, so the budget is reached quickly.
+
+	client := &fakeSessionClient{}
+	opts := turnCollectOpts{
+		client: client, sessionID: "ses_live", reuseSystem: "REUSE_SYSTEM",
+		modelRef: "opencode/deepseek-v4-flash-free", userMsg: "hello",
+	}
+
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		waitForSend(t, client, 1)
+		// A serve that comes back but keeps dropping the connection: every re-attach loses it again.
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			client.closeLiveSub()
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	start := time.Now()
+	_, _, _, err := collectTurn(t, client, opts)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("a turn whose serve keeps dropping must FAIL, not retry until the 30-minute window")
+	}
+	if !strings.Contains(err.Error(), "could not be re-established") {
+		t.Errorf("the error must say the session could not be re-established so the operator knows to "+
+			"resend; got: %v", err)
+	}
+	// The point of the budget: a bounded failure well inside the reply window. The window is 30m, so
+	// anything near it means the budget did not apply.
+	if elapsed > 20*time.Second {
+		t.Errorf("the turn took %v to give up; the budget is 3 attempts at a 1ms backoff, so it must "+
+			"fail almost immediately — %v means the re-attach loop is still unbounded", elapsed, elapsed)
+	}
+}
