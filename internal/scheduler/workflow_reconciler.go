@@ -1631,6 +1631,33 @@ func (r *WorkflowReconciler) dispatchInlineLimit(n int) int {
 	return limit
 }
 
+// containerFailureReason formats the diagnostic recorded when a run's container could not be created.
+//
+// THE TWO ERRORS ARE THE POINT. This message is the operator's only evidence, and the shape it replaced
+// discarded both of them in favour of a placeholder — so it read "could not be created (image X, then
+// base Y): arm-site container ensure failed", naming neither the Docker error nor which attempt
+// produced it. Reported as "failed immediately complaining about the runtime image", and un-diagnosable
+// from the outside for exactly that reason.
+//
+// The arm-site attempt ran in AUTOCOMMIT before the failover path was entered, so its error genuinely
+// is not available here; that is stated rather than stood in for.
+func containerFailureReason(img string, retryErr, baseErr error) string {
+	const armNote = "the arm-site ensure attempt (autocommit) had already failed"
+	return fmt.Sprintf("runtime container could not be created: image %q -> %v; base %q -> %v (%s)",
+		img, retryErr, db.BaseRuntimeImage, errorOrNone(baseErr), armNote)
+}
+
+// errorOrNone renders an error for a diagnostic string, or a plain word when there was none. The
+// distinction matters in the container-failure message: "the base attempt was never made" (the image
+// WAS the base image) reads differently from "the base attempt failed", and a bare %v prints "<nil>"
+// for both.
+func errorOrNone(err error) string {
+	if err == nil {
+		return "not attempted"
+	}
+	return err.Error()
+}
+
 // failRunAtStart fails a workflow run before it can execute — a structural
 // or configuration error (unresolvable runtime image, empty step DAG,
 // missing workflow version). The run can never progress, and without this
@@ -1708,18 +1735,38 @@ func (r *WorkflowReconciler) ensureRunContainerFailover(ctx context.Context, ten
 	// The arm site already attempted EnsureForRun once (in autocommit);
 	// entry here means that attempt failed. Retry the resolved tag once
 	// (transient daemon/pool miss), then fall back to the base image.
-	firstErr := fmt.Errorf("arm-site container ensure failed")
-	if rerr := r.runtime.EnsureForRun(ctx, try); rerr == nil {
+	// CAPTURE THE ACTUAL ERRORS, because the failure message is the operator's ONLY evidence and this
+	// used to discard all of it.
+	//
+	// The old shape held a PLACEHOLDER here — fmt.Errorf("arm-site container ensure failed") — and
+	// DISCARDED the errors returned by both EnsureForRun attempts below (they were bound inside the
+	// `if` statements and went out of scope). So a run that could not get a container reported:
+	//
+	//	runtime container could not be created (image "X", then base "orchicon-runtime:base"):
+	//	  arm-site container ensure failed
+	//
+	// which names neither the Docker error nor which attempt produced it. Reported by an operator as
+	// "failed immediately complaining about the runtime image", and it is un-diagnosable from the
+	// outside for exactly that reason: the sentence says a container could not be created and refuses
+	// to say why.
+	//
+	// The arm-site attempt happened in AUTOCOMMIT before this function was entered, so its error is
+	// genuinely unavailable here — the note stays, but it no longer stands in for the two that ARE
+	// available, and both are now reported with the image each was tried with.
+	retryErr := r.runtime.EnsureForRun(ctx, try)
+	if retryErr == nil {
 		return nil
 	}
+	var baseErr error
 	if img != db.BaseRuntimeImage {
 		try.RuntimeImage = db.BaseRuntimeImage
-		if berr := r.runtime.EnsureForRun(ctx, try); berr == nil {
-			r.log.Warn("workflow runtime fell back to base image", "run", cur.ID, "resolved", img, "error", firstErr)
+		baseErr = r.runtime.EnsureForRun(ctx, try)
+		if baseErr == nil {
+			r.log.Warn("workflow runtime fell back to base image", "run", cur.ID, "resolved", img, "error", retryErr)
 			return nil
 		}
 	}
-	reason := fmt.Sprintf("runtime container could not be created (image %q, then base %q): %v", img, db.BaseRuntimeImage, firstErr)
+	reason := containerFailureReason(img, retryErr, baseErr)
 	if ferr := r.failRunAtStart(ctx, ftx.Tx, tenantID, cur, reason); ferr != nil {
 		return ferr
 	}
