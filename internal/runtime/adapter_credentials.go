@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
+	_ "modernc.org/sqlite"
 )
 
 // openCodeAuthPath is the operator's opencode credential store, relative to the
@@ -45,6 +47,11 @@ var providerAPIKeyEnv = map[string]string{
 	"opencode":     "OPENCODE_API_KEY",
 	"opencode-go":  "OPENCODE_API_KEY",
 	"commandcode":  "COMMANDCODE_API_KEY",
+	// The hyphenated spelling appears in the operator store as a DUPLICATE of
+	// `commandcode` (same value, both ids present) and is not a models.dev entry
+	// either — mapped to the same variable so the duplicate is not reported as an
+	// undeliverable provider every run.
+	"command-code": "COMMANDCODE_API_KEY",
 }
 
 // openCodeAuthEntry is one credential in the operator's store. Only the api-key
@@ -96,25 +103,112 @@ func adapterCredentialEnv(home string, kinds ...string) (env []string, unusable 
 	if !demanded {
 		return nil, nil
 	}
-	b, err := os.ReadFile(openCodeAuthPath(home))
-	if err != nil {
-		return nil, nil
+	// BOTH STORES, MERGED WITH THE DATABASE WINNING — see openCodeDBPath for why
+	// auth.json alone is not enough on a 2.x install.
+	keys := map[string]string{}
+	bad := map[string]struct{}{}
+	if b, err := os.ReadFile(openCodeAuthPath(home)); err == nil {
+		var entries map[string]openCodeAuthEntry
+		if json.Unmarshal(b, &entries) == nil {
+			for id, e := range entries {
+				norm := strings.ToLower(strings.TrimSpace(id))
+				if !strings.EqualFold(strings.TrimSpace(e.Type), "api") || strings.TrimSpace(e.Key) == "" {
+					bad[norm] = struct{}{}
+					continue
+				}
+				keys[norm] = e.Key
+			}
+		}
 	}
-	var entries map[string]openCodeAuthEntry
-	if err := json.Unmarshal(b, &entries); err != nil {
-		return nil, nil
-	}
-	for id, e := range entries {
-		name, known := providerAPIKeyEnv[strings.ToLower(strings.TrimSpace(id))]
-		if !known || !strings.EqualFold(strings.TrimSpace(e.Type), "api") || strings.TrimSpace(e.Key) == "" {
-			unusable = append(unusable, id)
+	for id, key := range credentialTableKeys(openCodeDBPath(home)) {
+		norm := strings.ToLower(strings.TrimSpace(id))
+		if strings.TrimSpace(key) == "" {
 			continue
 		}
-		env = append(env, name+"="+e.Key)
+		keys[norm] = key
+		delete(bad, norm)
 	}
-	// SORTED so the emitted argv is deterministic: the pool key and any test
-	// asserting the create arguments must not depend on Go's map order.
+	for id, key := range keys {
+		name, known := providerAPIKeyEnv[id]
+		if !known {
+			// A credential we cannot DELIVER: opencode would be handed a variable it
+			// does not read, which fails exactly like no credential at all — so it is
+			// reported rather than passed off as handled.
+			bad[id] = struct{}{}
+			continue
+		}
+		env = append(env, name+"="+key)
+	}
+	// `bad` is exactly the right set by now: an auth.json entry that was unusable
+	// (removed above when the database superseded it), plus any id carrying a
+	// credential with no environment variable to put it in.
+	for id := range bad {
+		unusable = append(unusable, id)
+	}
 	sort.Strings(env)
 	sort.Strings(unusable)
 	return env, unusable
+}
+
+// openCodeDBPath is opencode 2.x's own credential store: a SQLite database, whose
+// `credential` table holds the integrations the operator signed in to.
+//
+// WHY IT IS READ AT ALL, GIVEN auth.json ALREADY IS. On 1.x auth.json IS the
+// credential store. 2.x imports it ONCE (a migration) and keeps credentials in
+// this database thereafter — so on a 2.x install auth.json is a STALE COPY of
+// whatever was imported, and any provider signed in or rotated AFTER the upgrade
+// differs between the two. Measured on the development host, where one provider
+// had been re-authenticated under 2.x:
+//
+//	ollama-cloud   auth.json sha8=d354ab9e  !=  db sha8=b66edf7e   (DIFFERENT)
+//	openrouter     auth.json sha8=98cd644b  ==  db sha8=98cd644b   (identical)
+//	deepseek       auth.json sha8=7ad66b9e  ==  db sha8=7ad66b9e   (identical)
+//
+// Reading only auth.json therefore hands a worker a DEAD CREDENTIAL for exactly
+// the providers the operator most recently configured — and it fails at the model
+// call as an Unauthorized, far from the cause. Hence: read both, and let the
+// database win, because where the two disagree the database is the live store.
+func openCodeDBPath(home string) string {
+	return filepath.Join(home, ".local", "share", "opencode", "opencode.db")
+}
+
+// credentialTableKeys reads the 2.x credential store as integration id -> secret.
+//
+// BEST-EFFORT BY CONTRACT: every failure (no database, an unexpected schema, a
+// locked or mid-write file, an unparseable value) returns what it has and no
+// error, because the caller has a working fallback in auth.json and container
+// creation must never fail over credentials it can read another way.
+//
+// Opened read-only and WITHOUT `immutable`, which matters: this is a live
+// database with a write-ahead log, so `immutable` would let it read a torn state
+// and a plain open could take a write lock on someone else's store.
+func credentialTableKeys(dbPath string) map[string]string {
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil
+	}
+	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
+	if err != nil {
+		return nil
+	}
+	defer db.Close()
+	rows, err := db.Query(`SELECT integration_id, value FROM credential`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var id, raw string
+		if err := rows.Scan(&id, &raw); err != nil {
+			continue
+		}
+		var v struct {
+			Key string `json:"key"`
+		}
+		if json.Unmarshal([]byte(raw), &v) != nil || strings.TrimSpace(v.Key) == "" {
+			continue
+		}
+		out[id] = v.Key
+	}
+	return out
 }
