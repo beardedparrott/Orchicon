@@ -746,8 +746,11 @@ func (r *sessionRun) run() error {
 
 	r.callbacks.OnStarted(r.parentCtx, r.execRow.ID)
 
-	// The goal is the first user message of the session.
-	if err := client.SendMessage(r.parentCtx, sid, r.system, r.modelRef, r.manifest.Goal); err != nil {
+	// The goal is the first user message of the session — AND ON A SURFACE WITH NO `system` FIELD IT
+	// IS ALSO WHERE THE SYSTEM PROMPT IS DELIVERED. A session is always CREATED immediately above, so
+	// this is genuinely the first message and the prompt cannot already be present (unlike the
+	// follow-up path, which attaches to an existing session and must not re-send it).
+	if err := client.SendMessageCarryingSystem(r.parentCtx, sid, r.system, r.modelRef, r.manifest.Goal); err != nil {
 		_ = client.Abort(r.parentCtx, sid)
 		return fmt.Errorf("send goal: %w", err)
 	}
@@ -1528,7 +1531,11 @@ func (r *sessionRun) doCompact(steps int, reason string) {
 // sendAfterCompactReminder re-states the summary contract + todowrite
 // obligation after a lossy compact so the resumed turns finish correctly.
 func (r *sessionRun) sendAfterCompactReminder(steps int) {
-	if err := r.client.SendMessage(r.parentCtx, r.sessionID, r.system, r.modelRef, afterCompactReminderText); err != nil {
+	// CARRIES THE SYSTEM PROMPT, and after a compact that is the point of it. A compact summarizes the
+	// conversation away — including the first message the prompt travelled in on — so without
+	// re-stating it the resumed turns run with no standing instructions while appearing to continue
+	// normally. One extra copy per compact is the accepted cost; a silently un-prompted worker is not.
+	if err := r.client.SendMessageCarryingSystem(r.parentCtx, r.sessionID, r.system, r.modelRef, afterCompactReminderText); err != nil {
 		r.a.log.Warn("post-compact reminder send failed (best-effort)",
 			"execution", r.execRow.ID, "error", err)
 		return

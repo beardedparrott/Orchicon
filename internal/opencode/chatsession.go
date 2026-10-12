@@ -110,7 +110,10 @@ func (a *Adapter) SendTurnMessageWithAttachments(ctx context.Context, conversati
 			parts = append(parts, AttachmentPart{Name: at.Name, MimeType: at.MimeType, Data: at.Data})
 		}
 	}
-	err = c.SendMessageWithAttachments(ctx, sessionID, system, modelRef, text, parts)
+	// ASK: the prompt is delivered on the turn that follows CREATION, and only there. This client
+	// marked the session when it created it (promptPending), which is the one signal that separates
+	// the seeded first prompt from the non-empty reuse prompt sent on every later turn.
+	err = c.sendMessage(ctx, sessionID, system, modelRef, text, parts, c.consumePromptPending(sessionID))
 	if err != nil && errors.Is(err, ErrSessionNotFound) {
 		return scheduler.ErrSessionNotFound
 	}
@@ -243,7 +246,7 @@ func (a *ClientSessionAdapter) SendTurnMessageWithAttachments(ctx context.Contex
 			parts = append(parts, AttachmentPart{Name: at.Name, MimeType: at.MimeType, Data: at.Data})
 		}
 	}
-	err := a.sc.SendMessageWithAttachments(ctx, sessionID, system, modelRef, text, parts)
+	err := a.sc.sendMessage(ctx, sessionID, system, modelRef, text, parts, a.sc.consumePromptPending(sessionID))
 	if err != nil && errors.Is(err, ErrSessionNotFound) {
 		return scheduler.ErrSessionNotFound
 	}

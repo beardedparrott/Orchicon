@@ -43,6 +43,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -118,8 +119,19 @@ type SessionClient struct {
 	// log, when set, reports conditions that are otherwise invisible — currently the v2 surface's
 	// missing per-message system prompt. Nil is fine: the condition simply goes unreported.
 	log *slog.Logger
-	// missingSystemWarned keeps that report to once per client.
-	missingSystemWarned atomic.Bool
+	// systemDroppedNoted reports ONCE that a send did not carry the prompt, at debug: on v2 that is
+	// the normal case for every turn after the first.
+	systemDroppedNoted atomic.Bool
+
+	// promptPending holds the sessions THIS CLIENT CREATED and has not yet delivered a system prompt
+	// to. It is the honest answer to "is this session new?", and the reason it is needed rather than
+	// inferred: on the Ask path both the seeded (first) and the reuse (later) prompts are non-empty,
+	// so `system != ""` cannot distinguish "deliver this now" from "the session already has it".
+	//
+	// ONLY SESSIONS THIS CLIENT CREATED ARE IN HERE, which is what makes it safe for the paths that
+	// must NOT re-inject: a follow-up ATTACHES to an existing session it did not create, so it is never
+	// pending and never re-states the prompt.
+	promptPending sync.Map
 }
 
 // SetAPIShape selects the API surface this client talks to. It is the seam the plane uses after
@@ -295,6 +307,10 @@ func (c *SessionClient) CreateSession(ctx context.Context, title string) (string
 	if out.ID == "" {
 		return "", fmt.Errorf("opencode session create: empty session id")
 	}
+	// A session this client just created has never been told the system prompt, so it is marked.
+	// See promptPending: the mark is what lets a surface with no `system` field deliver the prompt
+	// exactly once, without every later turn re-stating it.
+	c.promptPending.Store(out.ID, struct{}{})
 	return out.ID, nil
 }
 
@@ -307,7 +323,38 @@ func (c *SessionClient) CreateSession(ctx context.Context, title string) (string
 // must be sent with every message). modelRef is "provider/model" (empty =
 // the session's current model).
 func (c *SessionClient) SendMessage(ctx context.Context, sessionID, system, modelRef, text string) error {
-	return c.SendMessageWithAttachments(ctx, sessionID, system, modelRef, text, nil)
+	return c.sendMessage(ctx, sessionID, system, modelRef, text, nil, false)
+}
+
+// SendMessageCarryingSystem sends a message that must DELIVER the session's system prompt on surfaces
+// whose prompt body has no `system` field.
+//
+// THIS IS THE ONE PLACE THE DISTINCTION LIVES, and it is a distinction the v2 surface forces. On v1
+// every send carries `system` and the serve applies it per turn, so all callers pass it and none of
+// them care. On v2 there is no such field, so the prompt has to travel as CONTENT — which means it
+// must go in exactly ONCE per session, not on every turn, or the context grows by a full prompt copy
+// per message.
+//
+// So callers that must deliver it say so, and every other caller keeps the old behaviour:
+//   - the GOAL (the first message of a freshly created session) — carries it;
+//   - the AFTER-COMPACT reminder — carries it again, because a compact summarizes the conversation
+//     away and would otherwise take the prompt with it;
+//   - follow-ups, redirects, retries, probes, compaction notes — do NOT, because the session already
+//     holds it. The follow-up path is the one that matters: it ATTACHES to an existing session, so
+//     re-sending there would add a second copy of the prompt to a conversation that already has one.
+func (c *SessionClient) SendMessageCarryingSystem(ctx context.Context, sessionID, system, modelRef, text string) error {
+	return c.sendMessage(ctx, sessionID, system, modelRef, text, nil, true)
+}
+
+// consumePromptPending reports whether sessionID is awaiting its system prompt, and clears the mark so
+// ONE send carries it and later sends do not.
+//
+// This is for callers that cannot tell a first turn from a later one — the Ask path, where the seeded
+// and reuse prompts are both non-empty. Callers that DO know (a session just created, an explicit
+// re-statement after a compact) use SendMessageCarryingSystem and skip the bookkeeping.
+func (c *SessionClient) consumePromptPending(sessionID string) bool {
+	_, pending := c.promptPending.LoadAndDelete(sessionID)
+	return pending
 }
 
 // SendMessageWithAttachments appends a user message with optional file
@@ -321,6 +368,13 @@ func (c *SessionClient) SendMessage(ctx context.Context, sessionID, system, mode
 // (.md/.txt) inline as data: URLs so the send is one POST with no
 // upload-path dependency (UploadAttachment untouched).
 func (c *SessionClient) SendMessageWithAttachments(ctx context.Context, sessionID, system, modelRef, text string, attachments []AttachmentPart) error {
+	return c.sendMessage(ctx, sessionID, system, modelRef, text, attachments, false)
+}
+
+// sendMessage is the ONE implementation. carrySystem is meaningful only on a surface with no `system`
+// field (see SendMessageCarryingSystem); on v1 it changes nothing, which is what keeps the field-based
+// path byte-identical to before.
+func (c *SessionClient) sendMessage(ctx context.Context, sessionID, system, modelRef, text string, attachments []AttachmentPart, carrySystem bool) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	parts := []map[string]any{}
@@ -353,7 +407,18 @@ func (c *SessionClient) SendMessageWithAttachments(ctx context.Context, sessionI
 	var body map[string]any
 	switch c.shape.promptStyle {
 	case "text":
-		body = map[string]any{"text": text}
+		// THE PROMPT TRAVELS AS CONTENT HERE, because this surface has no field for it (see
+		// apiShape.promptStyle). Prepended rather than sent separately in two requests: one request is
+		// atomic, so the model cannot receive the task without the instructions that frame it.
+		//
+		// ONLY WHEN ASKED, and that is not an optimisation — it is the correctness condition. This
+		// branch is reached by EVERY send, including follow-ups onto a session that is already
+		// carrying the prompt, and prepending there would append another full copy each time.
+		bodyText := text
+		if carrySystem && strings.TrimSpace(system) != "" {
+			bodyText = system + "\n\n" + text
+		}
+		body = map[string]any{"text": bodyText}
 		var files []map[string]any
 		for _, a := range attachments {
 			if a.MimeType == "" {
@@ -376,16 +441,15 @@ func (c *SessionClient) SendMessageWithAttachments(ctx context.Context, sessionI
 		if len(files) > 0 {
 			body["files"] = files
 		}
-		// `system` IS NOT DELIVERABLE ON THIS SURFACE and is dropped deliberately rather than
-		// silently: v2 has no such field on the prompt (or on any other request body — checked
-		// across all 118 paths), so the prompt belongs in the AGENT the session runs under. The
-		// plane already configures one, but its prompt is the MINIMAL tool shell, not the worker's
-		// real system prompt — so this is a KNOWN GAP, logged once, not a silent loss.
-		if system != "" {
-			c.warnOnce(&c.missingSystemWarned, "opencode v2 prompt body has no `system` field — the "+
-				"per-message system prompt is NOT being delivered on this surface. The session runs "+
-				"under the configured agent's prompt. This is a known gap needing a decision (see "+
-				"apisurface.go); it is logged once per client.")
+		// A caller that did NOT ask to carry the prompt is not losing it: on this surface the prompt
+		// reaches the model as the first message's content (SendMessageCarryingSystem) and again after
+		// a compact. This is the expected case for every turn after the first, so it is not warned
+		// about. It IS noted once per client at debug level, because "why is this turn's send smaller
+		// than the first" is otherwise invisible.
+		if system != "" && !carrySystem {
+			c.noteOnce(&c.systemDroppedNoted, "opencode v2: this send does not carry the system "+
+				"prompt; it is delivered with the session's first message and re-stated after a compact "+
+				"(the surface has no `system` field)")
 		}
 	default:
 		body = map[string]any{"parts": parts}
@@ -421,11 +485,22 @@ func (c *SessionClient) SendMessageWithAttachments(ctx context.Context, sessionI
 	return nil
 }
 
-// warnOnce logs a message the first time only, so a per-turn condition does not flood the log.
+// warnOnce logs a message at WARN the first time only, so a per-turn condition does not flood the log.
 func (c *SessionClient) warnOnce(flag *atomic.Bool, msg string) {
 	if flag.CompareAndSwap(false, true) {
 		if c.log != nil {
 			c.log.Warn(msg)
+		}
+	}
+}
+
+// noteOnce is warnOnce at DEBUG, for a condition that is EXPECTED rather than a problem. The v2
+// surface legitimately does not carry the prompt on most sends, so warning about it would train the
+// operator to ignore the log line that matters.
+func (c *SessionClient) noteOnce(flag *atomic.Bool, msg string) {
+	if flag.CompareAndSwap(false, true) {
+		if c.log != nil {
+			c.log.Debug(msg)
 		}
 	}
 }
