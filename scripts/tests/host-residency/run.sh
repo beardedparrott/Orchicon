@@ -50,6 +50,7 @@ unset ORCHICON_CONTAINER_SERVICES_ONLY 2>/dev/null || true
 
 PASSED=0
 FAILED=0
+  SKIPPED=0
 
 check() { # <label> <expected> <actual>
   if [ "$2" = "$3" ]; then
@@ -284,6 +285,97 @@ if grep -qF 'migrate_host_data_dir "$inst" || return 1' "$CONTAINER_SH"; then
 else
   printf '  \033[31mFAIL\033[0m  %-52s %s\n' "host switch-over migrates the data dir (KEK)" "MISSING"
   FAILED=$((FAILED + 1))
+fi
+
+# --- plane_start must not leave a SUPERSEDED plane running --------------------
+#
+# A rebuild REPLACES the binary while the running process keeps executing the old inode. The plane
+# answers health perfectly, so a bare health check concluded "already serving" and returned success —
+# leaving the stale process in place indefinitely, serving code the operator had just replaced. The
+# Go installer learned this (planeDrift reads /proc/<pid>/exe); the launcher had not.
+#
+# THE MECHANISM IS TESTED, NOT THE PROSE, and it is testable without Docker: run a process from a
+# path, replace that path, and /proc/<pid>/exe reports the " (deleted)" suffix. That is exactly the
+# signal plane_start now looks for, so this drives the real filesystem state rather than grepping for
+# a string that might be spelled right and wired wrong.
+echo
+echo "  -- a stale plane is detected and replaced --"
+
+if grep -qF 'A PLANE THAT ANSWERS IS NOT NECESSARILY THE PLANE WE JUST BUILT' "$CONTAINER_SH"; then
+  printf '  \033[32mPASS\033[0m  %-52s %s\n' "plane_start checks for a stale plane" "present"
+  PASSED=$((PASSED + 1))
+else
+  printf '  \033[31mFAIL\033[0m  %-52s %s\n' "plane_start checks for a stale plane" "MISSING"
+  FAILED=$((FAILED + 1))
+fi
+
+# The detection must be on the " (deleted)" SUFFIX, not on a path mismatch: a dev checkout
+# legitimately serves from bin/orchicon, and a mismatch test would restart a plane the operator
+# chose to keep.
+if grep -qF '*" (deleted)")' "$CONTAINER_SH"; then
+  printf '  \033[32mPASS\033[0m  %-52s %s\n' "detection keys on the deleted-exe suffix" "present"
+  PASSED=$((PASSED + 1))
+else
+  printf '  \033[31mFAIL\033[0m  %-52s %s\n' "detection keys on the deleted-exe suffix" "MISSING"
+  FAILED=$((FAILED + 1))
+fi
+
+# ...and it must RESTART rather than merely warn, so the plane ends up on the current binary.
+if grep -qF 'plane_stop "$inst" || log_warn' "$CONTAINER_SH"; then
+  printf '  \033[32mPASS\033[0m  %-52s %s\n' "a stale plane is stopped, then started" "wired"
+  PASSED=$((PASSED + 1))
+else
+  printf '  \033[31mFAIL\033[0m  %-52s %s\n' "a stale plane is stopped, then started" "MISSING"
+  FAILED=$((FAILED + 1))
+fi
+
+# THE BEHAVIOURAL HALF: reproduce the state and prove the detector reads it correctly. A shell
+# function is not needed — the check is a readlink on /proc, and that is what is exercised.
+TMP_PROBE="$(mktemp -d "${REPO_ROOT}/tmp/stale-probe.XXXXXX")"
+trap 'rm -rf "$TMP_PROBE"' EXIT
+
+# THE PROBE MUST BE A REAL BINARY, NOT A SCRIPT. A `#!/bin/sh` file's /proc/<pid>/exe is the
+# INTERPRETER (/usr/bin/bash), so replacing the script deletes nothing and the test measures its own
+# construction instead of the detector. Measured: the script version reported "no" for a process whose
+# binary had just been replaced. /bin/sleep is a real ELF and is never a script.
+#
+# The scratch dir lives under the repo's gitignored tmp/ so the copy is project-scoped; a copy into a
+# scratch path outside the tree is refused by the execution guard in a guarded environment, which
+# would make this test pass or fail depending on who ran it.
+if cp /bin/sleep "$TMP_PROBE/plane" 2>/dev/null; then
+  # A SIMPLE background command, deliberately not part of an &&-chain: `a && b &` backgrounds the
+  # whole chain, so $! is the subshell rather than the binary. That is how the first version of this
+  # test "measured" /usr/bin/bash.
+  "$TMP_PROBE/plane" 20 &
+  PROBE_PID=$!
+  sleep 1
+  BEFORE="$(readlink "/proc/$PROBE_PID/exe" 2>/dev/null || echo '')"
+
+  # Replace the file the process was launched from — exactly what a rebuild does to bin/orchicon.
+  cp /bin/sleep "$TMP_PROBE/plane.new" && mv "$TMP_PROBE/plane.new" "$TMP_PROBE/plane"
+  AFTER="$(readlink "/proc/$PROBE_PID/exe" 2>/dev/null || echo '')"
+
+  kill "$PROBE_PID" 2>/dev/null || true
+  wait "$PROBE_PID" 2>/dev/null || true
+
+  case "$BEFORE" in
+    *" (deleted)") BEFORE_STALE=yes ;;
+    *)             BEFORE_STALE=no ;;
+  esac
+  case "$AFTER" in
+    *" (deleted)") AFTER_STALE=yes ;;
+    *)             AFTER_STALE=no ;;
+  esac
+
+  check "a running process is NOT stale before its binary is replaced" "no" "$BEFORE_STALE"
+  check "the SAME process IS stale once its binary is replaced" "yes" "$AFTER_STALE"
+else
+  # AN INVISIBLE SKIP IS THE FAILURE MODE THIS WHOLE SESSION HAS BEEN REMOVING, so it is reported
+  # loudly and counted as a skip rather than passing quietly. A pass here would claim the detection
+  # works without having exercised it.
+  printf '  \033[33mSKIP\033[0m  %-52s %s\n' "the deleted-exe detector" \
+    "could not copy a real binary into ${TMP_PROBE} (read-only or guarded environment)"
+  SKIPPED=$((SKIPPED + 1))
 fi
 
 echo

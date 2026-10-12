@@ -143,6 +143,23 @@ func NewModelPicker(title string) *ModelPicker {
 	if title == "" {
 		title = "Select model"
 	}
+	// A FRESH PICKER CARRIES NO ERROR, AND THAT IS ALREADY THE BEHAVIOUR — this comment records it so
+	// the next reader does not "fix" it.
+	//
+	// mp.err is LOAD state, and a picker that has loaded nothing cannot have failed to load. The hosts
+	// construct one per open (internal/tui/screens/control/model_picker.go openModelPicker builds a new
+	// one, and finishModelPicker nils it), so re-opening the picker always re-queries.
+	//
+	// I INVESTIGATED THIS AS A SUSPECTED BUG AND FOUND IT WAS NOT ONE. The report was that an old
+	// "models unavailable" verdict survived a rebuild; the cause was NOT retained picker state, because
+	// there is none to retain. The two real explanations are both elsewhere:
+	//
+	//   * a picker that is STILL OPEN keeps its error, and `r` is the retry (mp.Retry clears mp.err
+	//     and re-syncs) — the on-screen hint says so; and
+	//   * the PLANE it asks was STALE, running a binary a rebuild had replaced underneath it — which
+	//     scripts/container.sh plane_start now detects and replaces (the " (deleted)" check).
+	//
+	// Left as a comment rather than a code change because there was no defect to change.
 	return &ModelPicker{title: title, askCapable: map[string]bool{}}
 }
 
