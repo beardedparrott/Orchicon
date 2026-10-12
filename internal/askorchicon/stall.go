@@ -53,8 +53,30 @@ const (
 	// locally-bounded tool is open, because for those calls the transport's own deadline is the detector
 	// and any window here is guesswork.
 	defaultAskStallNoProgressWindow = 300 * time.Second
-	defaultAskStallRepetitionCount  = 5
-	defaultAskStallRepetitionWindow = 300 * time.Second
+
+	// defaultAskStallNoToolNoProgressWindow is the window used when NO TOOL IS OPEN.
+	//
+	// THE LONG WINDOW EXISTS FOR ONE REASON: a tool that is legitimately running emits NO events, so
+	// silence during a tool is expected and must not be read as a stall. That reasoning is why it was
+	// raised to 300s, and it is sound — for a turn that has a tool open.
+	//
+	// IT DOES NOT APPLY TO A TURN WITH NOTHING OPEN, and applying it there is what the operator
+	// experienced as a hang. MEASURED, from the plane's own record of a turn they reported as hanging:
+	//
+	//	stalled:no_progress (6m40s with no activity from model opencode/opencode/big-pickle)
+	//
+	// 6m40s is 400s — their tenant's stall_no_progress_window_seconds — and the turn had NO tool open
+	// and no model output at all. Nothing was running that could be silent, so the long window bought
+	// nothing except six and a half minutes of an operator watching an activity line that stays alive
+	// because it is fed by PLANE heartbeats, not by the model.
+	//
+	// So when nothing is open, the question stops being "might a tool be quietly working?" and becomes
+	// "is this provider answering at all?" — and that deserves a much shorter leash. 120s, the value
+	// this signal used before tools forced it up: the objection to 120s was specifically that a tool
+	// could be silent for longer, and with no tool open that objection does not exist.
+	defaultAskStallNoToolNoProgressWindow = 120 * time.Second
+	defaultAskStallRepetitionCount        = 5
+	defaultAskStallRepetitionWindow       = 300 * time.Second
 	// 2026-09-09 (operator: "the conversation session wedged on a tool
 	// (bash) and could not be recovered after 2 attempt(s) — please
 	// retry" killed live Ask sessions): the wedge detector fires when a
@@ -103,6 +125,17 @@ func resolveChatStallNoProgressWindow(settingsSeconds *int64) time.Duration {
 		return time.Duration(*settingsSeconds) * time.Second
 	}
 	return askStallNoProgressWindow()
+}
+
+// askStallNoToolNoProgressWindow is the effective no-tool window. Env override
+// ORCHICON_ASK_STALL_NO_TOOL_NO_PROGRESS_WINDOW is a dev/test knob.
+func askStallNoToolNoProgressWindow() time.Duration {
+	if v := os.Getenv("ORCHICON_ASK_STALL_NO_TOOL_NO_PROGRESS_WINDOW"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultAskStallNoToolNoProgressWindow
 }
 
 func askStallRepetitionCount() int {
@@ -501,9 +534,19 @@ func (m *chatStallMonitor) stallReason() string {
 	//
 	// Repetition stays armed below: it is about the MODEL looping, which neither a pending ask nor a
 	// running command causes or excuses.
-	if !localToolOpen && !m.awaitingConsent && m.noProgressWindow > 0 && now.Sub(m.lastActivity) > m.noProgressWindow {
+	// THE WINDOW IS SHORTER WHEN NOTHING IS OPEN. `localToolOpen` covers only tools THIS PROCESS
+	// times; a tool the serve runs is silent too, but the wedge signal is its detector. Either way, an
+	// OPEN tool is a reason to wait, and NO open tool is not — see
+	// defaultAskStallNoToolNoProgressWindow for the measured six-and-a-half minutes this cost.
+	window := m.noProgressWindow
+	if m.openToolTime.IsZero() {
+		if short := askStallNoToolNoProgressWindow(); short < window {
+			window = short
+		}
+	}
+	if !localToolOpen && !m.awaitingConsent && window > 0 && now.Sub(m.lastActivity) > window {
 		m.fired = true
-		return fmt.Sprintf("stalled:no_progress (%s with no activity from model %s)", m.noProgressWindow, m.modelRef)
+		return fmt.Sprintf("stalled:no_progress (%s with no activity from model %s)", window, m.modelRef)
 	}
 	if m.repetitionCount > 0 {
 		cutoff := now.Add(-m.repetitionWindow)

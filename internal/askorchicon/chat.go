@@ -2121,7 +2121,17 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *turnReplyWindow
 				// turn will ever hand over. Folding them here is what makes a stalled turn
 				// leave its work visible instead of an error bubble over an empty row.
 				finalText, finalReasoning := settleAttempt()
-				return turnAttemptResult{kind: turnFailed, text: finalText, reasoning: finalReasoning, err: fmt.Errorf("The model (%s) stopped responding (%s). This is often a provider/model issue (rate limit, quota, or an unavailable model). Check the Ask Orchicon model in Settings → Default models, then retry.", c.modelRef, reason)}
+				// NAME THE LIKELIEST CAUSE FIRST, and it is not the model: a model whose PROVIDER has
+				// no credentials for this plane produces NO TOKENS AT ALL, which is exactly what this
+				// stall measures. Measured on the operator's own plane — the selected model was
+				// opencode/opencode/big-pickle, whose provider `opencode` was absent from the ask
+				// serve's auth.json (it held command-code, commandcode, deepseek, ollama-cloud,
+				// opencode-go, openrouter). That turn could never have answered.
+				//
+				// The old wording blamed the model's availability and sent the operator to Settings to
+				// pick a different one, which is a coin-flip when the real question is whether the
+				// provider is authenticated at all.
+				return turnAttemptResult{kind: turnFailed, text: finalText, reasoning: finalReasoning, err: fmt.Errorf("The model (%s) produced no output (%s). The most common cause is that its PROVIDER IS NOT AUTHENTICATED for this plane — a model can be listed by `opencode models` and still have no credentials, in which case every turn is silent. Check the provider with `opencode auth list`, sign it in with `opencode auth login`, or choose a model whose provider is already authenticated. A rate-limited or unavailable provider looks the same.", c.modelRef, reason)}
 			}
 		case <-flushTick.C:
 			// Trailing mirror flush: the throttle window elapsed with an

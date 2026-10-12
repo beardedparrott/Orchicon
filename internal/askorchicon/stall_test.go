@@ -522,3 +522,73 @@ func TestChatStallNoProgressStillJudgesANonLocalTool(t *testing.T) {
 			"for calls this process runs under its own deadline, not for every tool", reason)
 	}
 }
+
+// TestChatStallNoToolSilenceTripsOnTheShortWindow pins the two SILENCES apart.
+//
+// THE MEASUREMENT THIS COMES FROM, taken from the plane's own record of a turn the operator reported as
+// hanging:
+//
+//	stalled:no_progress (6m40s with no activity from model opencode/opencode/big-pickle)
+//
+// 6m40s is 400s — their tenant's stall_no_progress_window_seconds — and the turn had NO TOOL OPEN and
+// NO model output. The long window exists for exactly one reason: a tool that is running emits no
+// events, so its silence must not read as a stall. With nothing open there is no such tool, so the long
+// window bought nothing but six and a half minutes of watching an activity line that stays alive
+// because PLANE heartbeats feed it, not the model.
+//
+// (The turn itself could never have answered: its provider `opencode` was absent from the ask serve's
+// auth.json. The window is what made that take seven minutes to say.)
+func TestChatStallNoToolSilenceTripsOnTheShortWindow(t *testing.T) {
+	longWindow := int64(400) // the operator's tenant setting
+	base := time.Now()
+
+	t.Run("no tool open: the short window applies", func(t *testing.T) {
+		m := newChatStallMonitor("opencode/opencode/big-pickle", &longWindow)
+		m.now = func() time.Time { return base }
+		m.lastActivity = base
+
+		// Just past the SHORT window but far inside the configured one.
+		m.now = func() time.Time { return base.Add(defaultAskStallNoToolNoProgressWindow + time.Second) }
+		r := m.stallReason()
+		if !strings.Contains(r, "no_progress") {
+			t.Fatalf("stallReason = %q, want a no_progress trip past the short window — with nothing open "+
+				"there is no tool that could be silently working, so waiting the tool window only delays "+
+				"an unavoidable failure by minutes", r)
+		}
+	})
+
+	t.Run("a tool open: the configured window still applies", func(t *testing.T) {
+		m := newChatStallMonitor("opencode/opencode/big-pickle", &longWindow)
+		m.now = func() time.Time { return base }
+		m.lastActivity = base
+		// An open tool that this process does NOT time itself — the serve is running it, which is
+		// silent by design and detected by the wedge signal, not by this one.
+		m.observeToolStart("some_mcp_tool")
+
+		m.now = func() time.Time { return base.Add(defaultAskStallNoToolNoProgressWindow + time.Second) }
+		if r := m.stallReason(); r != "" {
+			t.Fatalf("a turn with a TOOL OPEN was declared stalled at the short window: %q — the long "+
+				"window exists precisely so a slow tool is not mistaken for a dead model", r)
+		}
+
+		// Past the configured window it still trips, so the protection is not disabled.
+		m.now = func() time.Time { return base.Add(time.Duration(longWindow)*time.Second + time.Second) }
+		if r := m.stallReason(); !strings.Contains(r, "no_progress") {
+			t.Fatalf("stallReason = %q, want a trip past the CONFIGURED window", r)
+		}
+	})
+
+	t.Run("the short window never exceeds the configured one", func(t *testing.T) {
+		// An operator who sets a window SHORTER than the default must keep it: the no-tool window is a
+		// ceiling on patience, not a floor.
+		tiny := int64(30)
+		m := newChatStallMonitor("opencode/opencode/big-pickle", &tiny)
+		m.now = func() time.Time { return base }
+		m.lastActivity = base
+		m.now = func() time.Time { return base.Add(31 * time.Second) }
+		if r := m.stallReason(); !strings.Contains(r, "no_progress") {
+			t.Fatalf("stallReason = %q — a 30s configured window must still trip at 31s; the no-tool "+
+				"ceiling must not RAISE an operator's own shorter setting", r)
+		}
+	})
+}
