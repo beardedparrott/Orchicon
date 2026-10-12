@@ -818,7 +818,12 @@ func (r *sessionRun) run() error {
 
 // handleEvent routes one SSE bus event for this session.
 func (r *sessionRun) handleEvent(evt BusEvent) {
-	if sid, _ := evt.Properties["sessionID"].(string); sid != "" && sid != r.sessionID {
+	// Props(), NOT Properties: the props live under `properties` on v1 and under `data` on v2, and
+	// reading the wrong one yields an EMPTY map rather than an error. On the session filter that is
+	// the difference between "ignore another session's events" and "process them", so it is a
+	// correctness matter, not a tidiness one.
+	props := evt.Props()
+	if sid, _ := props["sessionID"].(string); sid != "" && sid != r.sessionID {
 		return
 	}
 	r.mu.Lock()
@@ -828,29 +833,32 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 	case "permission.asked":
 		// Auto-approve (the server-side --auto equivalent) so tool calls
 		// never block an unattended execution.
-		if pid, _ := evt.Properties["id"].(string); pid != "" {
+		if pid, _ := props["id"].(string); pid != "" {
 			go func() { _ = r.client.ReplyPermission(r.parentCtx, r.sessionID, pid) }()
 		}
 		return
-	case "session.idle":
-		// The server emits idle only when its per-session queue has fully
-		// drained — EVERY message we sent (goal, nudges, human) has been
-		// answered. This is the completion signal (a single user message
-		// can span multiple steps/tool loops, so step-finish alone is not
-		// a turn boundary).
-		r.mu.Lock()
-		r.lastIdleAt = time.Now()
-		r.mu.Unlock()
-		r.resolveProbe()
-		if r.maybeProbeCompletion() {
-			return
-		}
-		r.allTurnsDone()
-		return
 	case "session.status":
-		// Lifecycle signal; completion is tracked via session.idle.
+		// Lifecycle signal. The turn's END is a terminal event, not this.
 		return
-	case "session.error":
+	}
+	// THE TURN'S TERMINAL EVENTS, ON EITHER SURFACE — and the vocabulary lives in ONE
+	// place (terminalTurnKind) rather than in these arms, because that is what makes it
+	// checkable. A turn ends when the serve's per-session queue has fully drained, so
+	// EVERY message we sent (goal, nudges, human) has been answered.
+	//
+	// v1 says so with `session.idle` and reports a failure with `session.error`; v2 says
+	// so with `session.execution.succeeded` and reports a failure with
+	// `session.execution.failed` / `session.step.failed`, and NEVER emits a bare
+	// `session.idle` (measured on 2.0.26). Knowing only the v1 verbs is what hung a 2.x
+	// execution: the turn ended, nothing here recognised it, and the run waited for a
+	// signal that surface does not send — for a SUCCESSFUL turn as much as a failed one.
+	// Its text and tool parts still arrived through LegacyEventFromBus, which is why such
+	// a run looks alive and productive in its transcript while never finishing.
+	switch terminalTurnKind(evt.Type) {
+	case turnEnd:
+		r.turnEnded()
+		return
+	case turnFailure:
 		r.recordStreamError(evt)
 		return
 	}
@@ -1138,7 +1146,11 @@ func (r *sessionRun) settleFinish() {
 // top-level error.message is absent so the failure reason is diagnosable
 // instead of a generic "opencode session error".
 func sessionErrorMessage(evt BusEvent) string {
-	if errObj, ok := evt.Properties["error"].(map[string]any); ok {
+	// Props(), NOT Properties — see handleEvent: on v2 the props live under `data`, so reading
+	// Properties here would lose the reason and report a generic "opencode session error" for
+	// exactly the failures an operator most needs named.
+	props := evt.Props()
+	if errObj, ok := props["error"].(map[string]any); ok {
 		if m, ok2 := errObj["message"].(string); ok2 && m != "" {
 			return m
 		}
@@ -2153,4 +2165,47 @@ func trimCarriedAgentPrompt(log *slog.Logger, execID, system string, n int) stri
 		return system
 	}
 	return rest
+}
+
+// turnEnd and turnFailure are the two terminal classes an opencode stream can end on,
+// and terminalTurnKind is the ONE table mapping a raw event type to them.
+//
+// WHY A TABLE RATHER THAN SWITCH ARMS. The bug this was written for was a terminal event
+// that every consumer needed and one consumer's switch silently lacked: v1 ends a turn
+// with `session.idle` and reports a failure with `session.error`, v2 ends one with
+// `session.execution.succeeded` and reports a failure with `session.execution.failed` or
+// `session.step.failed` — and the runner knew only the v1 verbs. A 2.x execution therefore
+// never learned its turn had ended, for a successful turn as much as a failed one, and the
+// visible symptom was a run that looked productive (its text and tool parts flowed) and
+// never finished. A missing switch arm is invisible; a missing table row is a failing test
+// (TestTerminalEventsAreClassified).
+//
+// MEASURED against 2.0.26 and 1.18.34. Adding a surface's verb HERE is what makes it work:
+// the runner consumes this function, so there is no second place to remember.
+const (
+	turnEnd     = "end"
+	turnFailure = "failure"
+)
+
+func terminalTurnKind(evtType string) string {
+	switch evtType {
+	case "session.idle", "session.execution.succeeded":
+		return turnEnd
+	case "session.error", "session.execution.failed", "session.step.failed":
+		return turnFailure
+	}
+	return ""
+}
+
+// turnEnded is the shared handling for a turn-end signal, so the arm that acts on it has
+// exactly one implementation.
+func (r *sessionRun) turnEnded() {
+	r.mu.Lock()
+	r.lastIdleAt = time.Now()
+	r.mu.Unlock()
+	r.resolveProbe()
+	if r.maybeProbeCompletion() {
+		return
+	}
+	r.allTurnsDone()
 }
