@@ -385,6 +385,10 @@ func (h *HostServe) serveConfig() string {
 		PermissionProfile: h.profile,
 		RunMCP:            set.Servers,
 		RunSkills:         set.Skills,
+		// Shape is deliberately NOT set: BuildConfigContent resolves it from the
+		// same version probe the session client uses (setAPIShape, in startOnce),
+		// so the routes and the injected config cannot disagree about which
+		// opencode this is.
 	})
 	return cfg
 }

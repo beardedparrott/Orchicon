@@ -504,6 +504,9 @@ func RuntimeServeConfig(imageTag, projectDir, workflowRunID string, planeEnv map
 		SkipUserMCP:  true,
 		RunMCP:       union.Servers,
 		RunSkills:    union.Skills,
+		// Shape is deliberately NOT set: BuildConfigContent resolves it from the
+		// host's version probe, and the container's serve runs the SAME opencode
+		// install bind-mounted from this host, so the host's answer is its answer.
 		// Providers are the tenant's local-model endpoints, TRANSPOSED for this
 		// container by the run-level resolver (providers.TransposeForContainer). A
 		// container's own 127.0.0.1 is itself, so the host's loopback is unreachable

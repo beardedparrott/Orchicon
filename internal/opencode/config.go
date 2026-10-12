@@ -528,6 +528,12 @@ type ConfigOptions struct {
 	// byte-identically; only the Ask serve opts into ProfileInteractive.
 	PermissionProfile PermissionProfile
 
+	// Shape selects the config DOCUMENT shape (see configshape.go). Its ZERO
+	// VALUE is ConfigShapeV1, so every caller that does not set it emits the v1
+	// document byte-identically — a 1.x installation must not change behaviour
+	// because we learned about 2.x.
+	Shape ConfigShape
+
 	// RunMCP is the RUN's MCP union (project-owned ∪ every step worker
 	// version's inline specs), resolved ONCE from the run and with
 	// ${SECRET_NAME} expanded at build time. A step sees servers ANOTHER
@@ -551,17 +557,35 @@ type ConfigOptions struct {
 // injected through the server's `environment` map — proper MCP, no
 // text-protocol tool emulation.
 func BuildConfigContent(o ConfigOptions) string {
+	// The document's SHAPE follows the opencode this config will run under,
+	// unless the caller states one outright. Resolving here rather than at each
+	// call site makes it ONE rule: a builder call is correct by default, and a
+	// caller with a specific requirement (a test, or a config built for a
+	// different install) sets ConfigOptions.Shape to override it.
+	if o.Shape == "" {
+		o.Shape = configShapeResolver(slog.Default())
+	}
 	cfg := map[string]any{
 		"$schema": "https://opencode.ai/config.json",
 	}
 
 	if o.AgentPrompt != "" {
-		cfg["agent"] = map[string]any{
-			o.AgentName: map[string]any{
-				"prompt": o.AgentPrompt,
-				"mode":   "primary",
-				"model":  o.ModelRef,
-			},
+		if o.Shape.isV2() {
+			// V2 reads `agents` and its prompt field is `system`. This is not
+			// cosmetic: a V1-shaped `agent`/`prompt` is not registered under that
+			// name (V2 lists "Agent name inside V1 JSON configuration" as accepted
+			// but UNSUPPORTED), so `default_agent` has nothing to bind to, V2 falls
+			// back to its built-in `build` agent, and the worker runs under
+			// opencode's large default prompt AS WELL AS its own.
+			cfg["agents"] = map[string]any{o.AgentName: v2AgentEntry(o.AgentPrompt, o.ModelRef)}
+		} else {
+			cfg["agent"] = map[string]any{
+				o.AgentName: map[string]any{
+					"prompt": o.AgentPrompt,
+					"mode":   "primary",
+					"model":  o.ModelRef,
+				},
+			}
 		}
 	}
 	// Default the session to the registered agent (e.g. orchicon-worker) so
@@ -641,7 +665,12 @@ func BuildConfigContent(o ConfigOptions) string {
 		mcp[ss.Spec.ID] = mcpEntryFromSpec(ss.Spec)
 	}
 	if len(mcp) > 0 {
-		cfg["mcp"] = mcp
+		if o.Shape.isV2() {
+			// V2 groups servers under mcp.servers and inverts `enabled`.
+			cfg["mcp"] = v2MCPBlock(mcp)
+		} else {
+			cfg["mcp"] = mcp
+		}
 	}
 
 	// Inject the hard permission deny rules so every worker execution is
@@ -651,7 +680,15 @@ func BuildConfigContent(o ConfigOptions) string {
 	// batch_read/batch_grep. The WorktreeDir guard guarantees the deny is
 	// only applied alongside a registered worktree MCP — so a worker never
 	// loses file access with no batch tool to fall back on.
-	cfg["permission"] = permissionRules(o.PermissionProfile, o.CompositeTools && o.WorktreeDir != "")
+	compositeTools := o.CompositeTools && o.WorktreeDir != ""
+	if o.Shape.isV2() {
+		// V2 is an ordered `permissions` ARRAY with renamed actions; the V1 map
+		// would leave the sandbox unenforced, and it would fail in the permissive
+		// direction (wider tool access than intended) rather than loudly.
+		cfg["permissions"] = v2PermissionRules(o.PermissionProfile, compositeTools)
+	} else {
+		cfg["permission"] = permissionRules(o.PermissionProfile, compositeTools)
+	}
 
 	// Enable context compaction pruning for every worker session. `prune`
 	// trims OLD tool outputs (accumulating command/file-read results) from
@@ -671,7 +708,17 @@ func BuildConfigContent(o ConfigOptions) string {
 	// turn-count hygiene gate). Enabling `prune` directly cuts the
 	// accumulated-output token cost across a step; `auto: false` guarantees
 	// opencode does not independently collapse the session.
-	cfg["compaction"] = map[string]any{"prune": true, "auto": false}
+	if o.Shape.isV2() {
+		// `auto: false` is the load-bearing half on both versions: it is what stops
+		// opencode running its OWN lossy compaction alongside Orchicon's budget
+		// ladder. `prune` has no V2 equivalent — V2 retains recent context by token
+		// budget (compaction.keep.tokens) plus checkpoints, and `prune` is on the
+		// accepted-but-IGNORED list, so emitting it would produce a warning while
+		// doing nothing.
+		cfg["compaction"] = map[string]any{"auto": false}
+	} else {
+		cfg["compaction"] = map[string]any{"prune": true, "auto": false}
+	}
 
 	// Let a worker ingest a large file in ONE `read` instead of being forced
 	// to chunk it across many small calls. opencode's default tool-output cap
@@ -712,7 +759,12 @@ func BuildConfigContent(o ConfigOptions) string {
 			providers[p.ID] = entry
 		}
 		if len(providers) > 0 {
-			cfg["provider"] = providers
+			if o.Shape.isV2() {
+				// V2 renames the map and moves the endpoint under settings.
+				cfg["providers"] = v2ProviderBlock(providers)
+			} else {
+				cfg["provider"] = providers
+			}
 		}
 	}
 
@@ -722,7 +774,14 @@ func BuildConfigContent(o ConfigOptions) string {
 	// round-trips, which is the main per-turn cost lever for a context-heavy
 	// task. Experimental in opencode; harmless if the provider/model cannot
 	// batch (it falls back to sequential calls).
-	cfg["experimental"] = map[string]any{"batch_tool": true}
+	// `batch_tool` is on V2's accepted-but-IGNORED list, so on V2 the key is
+	// omitted rather than emitted to be discarded with a warning. The batching it
+	// asked for is not lost: the composite worktree MCP tools (batch_read /
+	// batch_grep / batch_write) are the mechanism that collapses turns, and they
+	// are MCP tools on BOTH versions.
+	if !o.Shape.isV2() {
+		cfg["experimental"] = map[string]any{"batch_tool": true}
+	}
 
 	b, err := json.Marshal(cfg)
 	if err != nil {
@@ -732,18 +791,30 @@ func BuildConfigContent(o ConfigOptions) string {
 			"$schema": "https://opencode.ai/config.json",
 		}
 		if o.AgentPrompt != "" {
-			fallback["agent"] = map[string]any{
-				o.AgentName: map[string]any{
-					"prompt": o.AgentPrompt,
-					"mode":   "primary",
-					"model":  o.ModelRef,
-				},
+			if o.Shape.isV2() {
+				fallback["agents"] = map[string]any{o.AgentName: v2AgentEntry(o.AgentPrompt, o.ModelRef)}
+			} else {
+				fallback["agent"] = map[string]any{
+					o.AgentName: map[string]any{
+						"prompt": o.AgentPrompt,
+						"mode":   "primary",
+						"model":  o.ModelRef,
+					},
+				}
 			}
 		}
 		if len(mcp) > 0 {
-			fallback["mcp"] = mcp
+			if o.Shape.isV2() {
+				fallback["mcp"] = v2MCPBlock(mcp)
+			} else {
+				fallback["mcp"] = mcp
+			}
 		}
-		fallback["permission"] = permissionRules(o.PermissionProfile, o.CompositeTools && o.WorktreeDir != "")
+		if o.Shape.isV2() {
+			fallback["permissions"] = v2PermissionRules(o.PermissionProfile, o.CompositeTools && o.WorktreeDir != "")
+		} else {
+			fallback["permission"] = permissionRules(o.PermissionProfile, o.CompositeTools && o.WorktreeDir != "")
+		}
 		b, _ = json.Marshal(fallback)
 	}
 	return string(b)
