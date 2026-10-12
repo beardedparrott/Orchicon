@@ -1669,11 +1669,38 @@ func errorOrNone(err error) string {
 // killed.
 func (r *WorkflowReconciler) failRunAtStart(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, reason string) error {
 	now := time.Now().UTC()
+
+	// LOG THE REASON BEFORE ANYTHING THAT CAN FAIL, because THIS FUNCTION'S OWN FAILURE IS WHAT THE
+	// OPERATOR SEES AND IT USED TO HIDE THE REASON COMPLETELY.
+	//
+	// The shape was: attempt the status update; if IT fails, return its error. The `reason` — the only
+	// statement of WHY the run could not start — was discarded on that path, so the reconcile pass
+	// logged nothing but a failure of the failure handler:
+	//
+	//	WARN workflow run reconcile failed ... error="fail run at start: db: not found"
+	//
+	// That is a sentence about the UPDATE, not about the run, and it cost the operator and me several
+	// rounds of archaeology: the real cause (a container that could not be created, whose Docker error
+	// had only just been made available) was computed on the line before and thrown away here. Reported
+	// as "it failed immediately complaining about the runtime image" — with the image error never
+	// reaching a log.
+	//
+	// ONE PLACE FIXES ALL FIVE CALLERS: the image resolve, an empty step DAG, a missing workflow
+	// version, the container-create failover and the serve gate all report their reason through here.
+	// The transient version-race that makes the update itself fail remains (a later pass re-fails the
+	// run with a fresh snapshot, which is why the run does end up terminal) — but it can no longer
+	// erase the cause.
+	r.log.Warn("workflow run failed at start", "run", run.ID, "tenant", tenantID,
+		"work_item", run.WorkItemID, "workflow", run.WorkflowID, "reason", reason)
+
 	if _, err := db.UpdateWorkflowRun(ctx, tx, tenantID, run.ID, run.Version, db.UpdateWorkflowRunFields{
 		Status:  strPtr(domain.WorkflowRunFailed),
 		EndedAt: &now,
 	}); err != nil {
-		return fmt.Errorf("fail run at start: %w", err)
+		// The reason is carried in the error too, so a caller that propagates it (rather than logging
+		// its own line) still states what happened. Without this the pass reports the update's failure
+		// and nothing else.
+		return fmt.Errorf("fail run at start (%s): %w", reason, err)
 	}
 	// Mark the bound work item failed too.
 	if run.WorkItemID != "" {
