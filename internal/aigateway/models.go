@@ -46,7 +46,28 @@ type ModelDiscoverer struct {
 	// time; concurrent cold loads WAIT on the channel instead of erroring.
 	refreshing  bool
 	refreshDone chan struct{}
-	ttl         time.Duration
+
+	// successTTL is how long a SUCCESSFUL list is trusted.
+	//
+	// A LIST IS A FACT: the model catalog changes when the operator installs a provider or edits
+	// opencode's config, which is rare, and re-running the CLI costs a subprocess plus a service round
+	// trip. Caching it amortises that across the many reads a picker makes.
+	successTTL time.Duration
+
+	// failureBackoff is how long a FAILURE is remembered before another attempt is allowed.
+	//
+	// A FAILURE IS A CONDITION, NOT A FACT — which is the whole reason this is separate from
+	// successTTL. It exists to stop a subprocess being spawned on every call during a genuine outage;
+	// it is not a claim about the world. Reusing the success TTL here was a defect with a measured
+	// cost: opencode's managed service evicts and lazily re-boots a location, and a listing that lands
+	// in that window returns an empty list. That blip was then served as the answer for FIVE MINUTES,
+	// on a cold cache (which every rebuild creates) with no prior list to fall back on — and the
+	// picker's retry key re-read the same cached error, so it could not retry. Reported as "I rebuilt
+	// and it's still saying no models".
+	//
+	// Seconds rather than minutes: long enough to absorb a retry storm, short enough that the next
+	// attempt — or the operator pressing `r` — is answered by a real probe.
+	failureBackoff time.Duration
 
 	// cliMu guards the resolved MODEL-LIST ARGV, which is a VERSION question. `models --verbose`
 	// is what produces the metadata this package parses, and opencode 2.x REMOVED the flag: on
@@ -106,9 +127,10 @@ func NewModelDiscoverer(log *slog.Logger, binary string) *ModelDiscoverer {
 		binary = "opencode"
 	}
 	return &ModelDiscoverer{
-		log:    log.With("component", "model_discoverer"),
-		binary: binary,
-		ttl:    5 * time.Minute,
+		log:            log.With("component", "model_discoverer"),
+		binary:         binary,
+		successTTL:     5 * time.Minute,
+		failureBackoff: 10 * time.Second,
 		// The DEFAULT is the v1 form, so a caller that never sets one behaves exactly as before.
 		modelsArgsOverride: []string{"models", "--verbose"},
 	}
@@ -162,7 +184,7 @@ func (d *ModelDiscoverer) Invalidate() {
 // request).
 func (d *ModelDiscoverer) fetchOrCache(ctx context.Context) ([]*apiv1.OpenCodeModel, error) {
 	d.mu.Lock()
-	if d.cache != nil && time.Since(d.cached) < d.ttl {
+	if d.cache != nil && time.Since(d.cached) < d.successTTL {
 		models := d.cache
 		d.mu.Unlock()
 		return models, nil
@@ -197,9 +219,10 @@ func (d *ModelDiscoverer) fetchOrCache(ctx context.Context) ([]*apiv1.OpenCodeMo
 	}
 	// Cold cache with no probe in flight: the first load is synchronous
 	// (callers need real rows; a picker must not show nothing).
-	if d.failedAt.After(time.Time{}) && d.lastErr != nil && time.Since(d.failedAt) < d.ttl {
-		// Failure backoff: a recent refresh failed; surface the error
-		// without re-spawning the subprocess on every call.
+	if d.failedAt.After(time.Time{}) && d.lastErr != nil && time.Since(d.failedAt) < d.failureBackoff {
+		// Failure backoff: a recent refresh failed; surface the error without re-spawning the
+		// subprocess on every call. SECONDS, not the success TTL — see failureBackoff for the measured
+		// cost of conflating the two.
 		err := d.lastErr
 		d.mu.Unlock()
 		return nil, err
