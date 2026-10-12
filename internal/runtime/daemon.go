@@ -865,6 +865,19 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 		// so a CHILD process gets the same bin dirs prepended.
 		args = append(args, "-e", "ORCHICON_ADAPTER_KINDS="+strings.Join(kinds, ","))
 	}
+	// Provider credentials for a demanded adapter, as ENVIRONMENT. This is the
+	// only channel opencode 1.x and 2.x BOTH honour — 2.x does not read
+	// auth.json at all — so no version branch is needed (adapterCredentialEnv).
+	if pairs, unusable := adapterCredentialEnv(d.HostHome, kinds...); len(pairs) > 0 {
+		for _, p := range pairs {
+			args = append(args, "-e", p)
+		}
+		if len(unusable) > 0 && d.Log != nil {
+			d.Log.Info("adapter credentials: providers are signed in on the host but cannot be "+
+				"delivered through the environment (an oauth entry, or an id with no known env "+
+				"variable) — a container session cannot use them", "providers", unusable)
+		}
+	}
 	return args
 }
 

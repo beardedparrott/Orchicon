@@ -226,11 +226,11 @@ func classifyAdapter(home, kind string) (adapterClass, bool) {
 			installs: []adapterInstall{
 				{probe: join(".config", "opencode"), dir: true},
 				// The data home is PRIVATE (see adapterInstall.private): the CLI must
-			// WRITE here, but the operator's credential and session store must
-			// not become writable from a worker — so the container gets its own
-			// uid-owned directory and only auth.json, read-only, from the host.
-			{probe: join(".local", "share", "opencode"), dir: true,
-				private: true, authFile: "auth.json"},
+				// WRITE here, but the operator's credential and session store must
+				// not become writable from a worker — so the container gets its own
+				// uid-owned directory and only auth.json, read-only, from the host.
+				{probe: join(".local", "share", "opencode"), dir: true,
+					private: true, authFile: "auth.json"},
 				{probe: join(".opencode", "bin", "opencode"), mount: join(".opencode"),
 					fingerprint: []string{join(".opencode", "bin"), join(".opencode", "node_modules")}},
 			},
