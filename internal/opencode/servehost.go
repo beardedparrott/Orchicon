@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/guard"
 	"github.com/beardedparrott/orchicon/internal/mcpclient"
 )
@@ -86,13 +85,7 @@ type HostServe struct {
 	// serve are entitled to and nothing else — a cross-project UNION here
 	// would leak one project's servers into another project's session. The
 	// empty set (the default serve) means today's config, unchanged.
-	// mcpSet is exactly ONE resolved set (empty = the default), set by the
-	// pool before the serve starts.
 	mcpSet mcpclient.Resolution
-	// workers are the agent definitions this serve carries: one per step worker
-	// whose session may land here. Baked into the config at start, like mcpSet —
-	// which is why they are part of the pool's key (see HostServePool.ServeFor).
-	workers []adapter.WorkerAgent
 }
 
 // NewHostServe constructs the host-serve manager. dataDir is the
@@ -130,14 +123,6 @@ func (h *HostServe) SetMCPSet(set mcpclient.Resolution) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.mcpSet = set
-}
-
-// SetWorkers sets the worker agents this serve carries. Like SetMCPSet it must be
-// called BEFORE the serve starts: the agents ride the config the serve bakes once.
-func (h *HostServe) SetWorkers(workers []adapter.WorkerAgent) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.workers = workers
 }
 
 // Enabled reports whether the host serve is configured for this plane.
@@ -389,7 +374,6 @@ func (h *HostServe) kill() {
 func (h *HostServe) serveConfig() string {
 	h.mu.Lock()
 	set := h.mcpSet
-	workers := h.workers
 	h.mu.Unlock()
 	cfg := BuildConfigContent(ConfigOptions{
 		AgentName:         workerAgent,
@@ -401,7 +385,6 @@ func (h *HostServe) serveConfig() string {
 		PermissionProfile: h.profile,
 		RunMCP:            set.Servers,
 		RunSkills:         set.Skills,
-		Workers:           workers,
 		// Shape is deliberately NOT set: BuildConfigContent resolves it from the
 		// same version probe the session client uses (setAPIShape, in startOnce),
 		// so the routes and the injected config cannot disagree about which

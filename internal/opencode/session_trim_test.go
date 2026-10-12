@@ -52,19 +52,35 @@ func TestTrimCarriedAgentPrompt(t *testing.T) {
 	})
 }
 
-// TestAgentSelectionSupportedIsSurfaceSpecific pins the gate the trim depends on:
-// a surface that delivers the prompt through an agent reports true, and v1 — where
-// the message is the ONLY carrier — must report false, or the trim would delete a
-// prompt nothing else sends.
-func TestAgentSelectionSupportedIsSurfaceSpecific(t *testing.T) {
-	v1 := NewSessionClient("http://127.0.0.1:1", "pw", "")
-	v1.shape = shapeV1
-	if v1.AgentSelectionSupported() {
-		t.Error("v1 has no agent: the message is the only carrier and must not be trimmed")
+// TestAgentSelectionSupportedIsTheCompositeGate pins the gate the trim depends on.
+//
+// It is BOTH conditions, and combining them is the safety property rather than tidiness:
+//
+//   - the surface must have the agent route (v1 has no agent at all), and
+//   - the serve must actually carry THIS execution's agent, which is only true of a
+//     serve built per RUN — the container path. A HOST serve is shared and bakes none.
+//
+// If either were checked separately at the call site, a session on a host serve would
+// select an agent that cannot exist and then TRIM the run-level prompt off the message
+// — deleting it, since no agent holds it.
+func TestAgentSelectionSupportedIsTheCompositeGate(t *testing.T) {
+	mk := func(s apiShape, agents bool) *SessionClient {
+		c := NewSessionClient("http://127.0.0.1:1", "pw", "")
+		c.shape = s
+		c.SetAgentsAvailable(agents)
+		return c
 	}
-	v2 := NewSessionClient("http://127.0.0.1:1", "pw", "")
-	v2.shape = shapeV2
-	if !v2.AgentSelectionSupported() {
-		t.Error("v2 delivers the prompt through the agent, so the trim applies there")
+	if mk(shapeV1, true).AgentSelectionSupported() {
+		t.Error("v1 has no agent route, so nothing may be selected or trimmed")
+	}
+	if mk(shapeV2, false).AgentSelectionSupported() {
+		t.Error("a serve with no agents (the host path) must keep the full prompt on the message")
+	}
+	if !mk(shapeV2, true).AgentSelectionSupported() {
+		t.Error("a per-run container serve with agents is exactly the case this enables")
+	}
+	// The default is the SAFE answer: a client nobody configured must not trim.
+	if NewSessionClient("http://127.0.0.1:1", "pw", "").AgentSelectionSupported() {
+		t.Error("agentsAvailable must default false — an unconfigured client keeps the full prompt")
 	}
 }

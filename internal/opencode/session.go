@@ -140,6 +140,17 @@ type SessionClient struct {
 	// detects anything behaves exactly as it did before.
 	shape apiShape
 
+	// agentsAvailable reports whether THIS serve was configured for THIS execution, and so carries
+	// the agent that holds the run-level prompt.
+	//
+	// IT DEFAULTS FALSE, which is the safe direction. A CONTAINER serve is built per RUN with exactly
+	// that run's step workers baked in (see adapter.WorkerAgent), so the execution selects its own
+	// agent there. A HOST serve is shared across projects and runs and therefore bakes NO agents —
+	// its prompt travels on the message, as it always did — so selecting one would be a request for
+	// an agent that cannot exist. Treating "unknown" as false keeps the host path quiet and leaves
+	// the full prompt in place.
+	agentsAvailable bool
+
 	// log, when set, reports conditions that are otherwise invisible — currently the v2 surface's
 	// missing per-message system prompt. Nil is fine: the condition simply goes unreported.
 	log *slog.Logger
@@ -362,12 +373,24 @@ func (c *SessionClient) SelectAgent(ctx context.Context, sessionID, agentName st
 	return nil
 }
 
-// AgentSelectionSupported reports whether this surface delivers a per-execution
-// system prompt through an AGENT rather than through the message.
+// SetAgentsAvailable records that this serve was configured for this execution and so carries
+// the agent holding the run-level prompt. Called by the CONTAINER path, which builds the serve per
+// run; the host path leaves it false (see the field).
+func (c *SessionClient) SetAgentsAvailable(v bool) { c.agentsAvailable = v }
+
+// AgentSelectionSupported reports whether this client can deliver a per-execution system prompt
+// through an AGENT rather than through the message — BOTH conditions, not either:
 //
-// It is the gate for the message trim: on v1 there is no agent, so the message is
-// the only carrier and nothing may be removed from it.
-func (c *SessionClient) AgentSelectionSupported() bool { return c.shape.setAgentPath != nil }
+//   - the surface must HAVE the route (v2 does; v1 has no agent at all, and there the message is
+//     the only carrier), and
+//   - the serve must actually carry this execution's agent (see agentsAvailable).
+//
+// It is the gate for the message trim, so a false answer keeps the full prompt in place. That is
+// why the two conditions are combined rather than checked separately at the call site: trimming on
+// a serve that has no agent would DELETE the run-level prompt instead of moving it.
+func (c *SessionClient) AgentSelectionSupported() bool {
+	return c.shape.setAgentPath != nil && c.agentsAvailable
+}
 
 // SendMessage appends a user message to the session via prompt_async
 // (fire-and-forget: 204, the reply arrives on the SSE bus). The server
