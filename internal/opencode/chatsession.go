@@ -376,7 +376,7 @@ func (x *toolCallIndex) observe(evt BusEvent) {
 	if x == nil || evt.Type != "message.part.updated" {
 		return
 	}
-	part, _ := evt.Properties["part"].(map[string]any)
+	part, _ := evt.Props()["part"].(map[string]any)
 	if part == nil {
 		return
 	}
@@ -450,6 +450,24 @@ func permissionDetailWithToolInput(props, args map[string]any) map[string]any {
 	return out
 }
 
+// busErrorMessage extracts the human-readable reason from an error-bearing bus event, whichever
+// surface shaped it. v1 put a string under `error`; v2 nests an object with `type` and `message`
+// (measured: {"type":"provider.invalid-request","message":"…insufficient credits…"}). Falls back to a
+// named default so a caller never renders an empty reason.
+func busErrorMessage(props map[string]any) string {
+	switch e := props["error"].(type) {
+	case map[string]any:
+		if m, _ := e["message"].(string); m != "" {
+			return m
+		}
+	case string:
+		if e != "" {
+			return e
+		}
+	}
+	return "opencode session error"
+}
+
 // classifyBusEvent maps one raw opencode bus event onto a SessionEvent, or
 // nil when the event carries no turn-visible signal. No tool-call correlation
 // (see classifyBusEventIndexed for the adapter's stateful entry point).
@@ -462,7 +480,7 @@ func classifyBusEvent(evt BusEvent) *scheduler.SessionEvent {
 // ask is annotated with the args of the call it belongs to.
 func classifyBusEventIndexed(evt BusEvent, calls *toolCallIndex) *scheduler.SessionEvent {
 	calls.observe(evt)
-	sid, _ := evt.Properties["sessionID"].(string)
+	sid, _ := evt.Props()["sessionID"].(string)
 	base := func(kind, typ string) *scheduler.SessionEvent {
 		if sid == "" {
 			// Events without a session id are global (permission, error)
@@ -474,8 +492,29 @@ func classifyBusEventIndexed(evt BusEvent, calls *toolCallIndex) *scheduler.Sess
 	switch evt.Type {
 	case "session.idle":
 		return base("idle", "")
+	// ---- v2 terminal events -------------------------------------------------
+	//
+	// MEASURED against 2.0.26: a v1 stream ends with `session.idle` and reports failures with
+	// `session.error`; a v2 stream ends with `session.execution.succeeded` / `.failed` and reports a
+	// failed step with `session.step.failed`. Without these arms a v2 turn's completion and its
+	// failure both classified as NOTHING, so the collector never learned the turn had ended — it sat
+	// until its window expired while the model's reply sat in the session, which is the reported hang.
+	case "session.execution.succeeded":
+		// The turn's terminal event on v2 — the same signal `session.idle` is on v1.
+		return base("idle", "")
+	case "session.execution.failed":
+		e := base("error", "")
+		e.Text = busErrorMessage(evt.Props())
+		return e
+	case "session.step.failed":
+		// A step failing is how v2 reports a provider/model error. The execution-level failure that
+		// follows carries the same error; classifying the STEP one as well means the turn sees it
+		// even if the execution event is missed (a late subscription, a dropped frame).
+		e := base("error", "")
+		e.Text = busErrorMessage(evt.Props())
+		return e
 	case "permission.asked":
-		pid, _ := evt.Properties["id"].(string)
+		pid, _ := evt.Props()["id"].(string)
 		e := base("permission", "")
 		e.PermissionID = pid
 		// Carry the raw ask through verbatim (opencode emits `permission`/
@@ -483,17 +522,17 @@ func classifyBusEventIndexed(evt BusEvent, calls *toolCallIndex) *scheduler.Sess
 		// `id`). The consent layer answers the ask from THIS detail, so
 		// dropping it here would turn a real ask back into a blind
 		// auto-approve.
-		e.Detail = evt.Properties
+		e.Detail = evt.Props()
 		// An MCP/host-suite ask carries NO detail of its own (patterns ["*"],
 		// metadata {}), so the args of the call it gates are the only thing to
 		// key and show. Attach them when the call was observed.
-		if args := calls.argsForPermission(evt.Properties); args != nil {
-			e.Detail = permissionDetailWithToolInput(evt.Properties, args)
+		if args := calls.argsForPermission(evt.Props()); args != nil {
+			e.Detail = permissionDetailWithToolInput(evt.Props(), args)
 		}
 		return e
 	case "session.error":
 		msg := "opencode session error"
-		if errObj, ok := evt.Properties["error"].(map[string]any); ok {
+		if errObj, ok := evt.Props()["error"].(map[string]any); ok {
 			if m, ok2 := errObj["message"].(string); ok2 && m != "" {
 				msg = m
 			}

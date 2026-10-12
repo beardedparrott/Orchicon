@@ -89,9 +89,33 @@ func askMCPProbeTimeout() time.Duration {
 // BusEvent is one event from the opencode server's /event SSE stream.
 // The shape matches the SDK's event objects ({id, type, properties}).
 type BusEvent struct {
-	ID         string         `json:"id"`
-	Type       string         `json:"type"`
+	ID   string `json:"id"`
+	Type string `json:"type"`
+	// Properties is the v1 envelope key. v2 renamed it to Data (see Props): MEASURED against 2.0.26,
+	// every event is {"id":…,"created":…,"type":…,"location":…,"data":{…},"durable":{…}}.
 	Properties map[string]any `json:"properties"`
+	// Data is the v2 envelope key. Both are parsed so one client reads either surface.
+	Data map[string]any `json:"data"`
+}
+
+// Props returns the event's payload whichever envelope the surface used.
+//
+// THIS ONE METHOD IS WHY THE ASK TRANSPORT WORKS AT ALL ON v2. Every consumer read `Properties`, which
+// is EMPTY on a v2 stream — so `sessionID` came back as "" for every event and each event was filtered
+// out or classified as nothing. The observable effect was a turn that received no deltas, showed no
+// progress, and was eventually killed by the stall monitor while the model had in fact replied and the
+// reply sat in the session.
+//
+// v1 is preferred when both are present so a v1 serve's behaviour is byte-identical; a v2 event simply
+// has no `properties` key, so the fallback is unambiguous rather than a guess.
+func (e BusEvent) Props() map[string]any {
+	if e.Properties != nil {
+		return e.Properties
+	}
+	if e.Data != nil {
+		return e.Data
+	}
+	return nil
 }
 
 // SessionClient is an HTTP+SSE client for one opencode serve instance.
@@ -643,7 +667,11 @@ func (s *Subscription) read(ctx context.Context, body io.ReadCloser) {
 		}
 		var evt BusEvent
 		if err := json.Unmarshal(data.Bytes(), &evt); err == nil && evt.Type != "" {
-			if evt.Type == "session.idle" {
+			// THE COMPLETION SIGNAL IS NEVER DROPPED, AND v2 HAS A DIFFERENT NAME FOR IT. This guard
+			// exists so a full event buffer cannot discard the one event that ends a turn (see below);
+			// v2 ends with session.execution.succeeded / .failed, so omitting them would reintroduce
+			// exactly the failure the guard prevents — a completed turn waiting out its window.
+			if evt.Type == "session.idle" || evt.Type == "session.execution.succeeded" || evt.Type == "session.execution.failed" {
 				// session.idle is the SOLE completion signal for a turn — the event
 				// a collector uses to mark a reply complete. Dropping it on a full
 				// buffer would make a completed turn appear timed out (ADR-0002 D6
@@ -711,8 +739,17 @@ func (s *Subscription) read(ctx context.Context, body io.ReadCloser) {
 // Exported so the Ask Orchicon chat turn consumes the SAME mapping
 // execution sessions use — one source of truth.
 func LegacyEventFromBus(evt BusEvent) (map[string]any, bool) {
-	props := evt.Properties
+	props := evt.Props()
 	switch evt.Type {
+	case "session.text.ended":
+		// v2's completed text block: {"data":{…,"ordinal":0,"text":"Hi! …"}}. Shaped into the SAME
+		// {"type":"text","part":{…}} the v1 arm produces, so every consumer downstream — the stall
+		// monitor's observe, the collector's text case, the partial mirror — works unchanged.
+		d := evt.Props()
+		if t, _ := d["text"].(string); t != "" {
+			return map[string]any{"type": "text", "part": map[string]any{"type": "text", "text": t}}, true
+		}
+		return nil, false
 	case "message.part.updated":
 		part, _ := props["part"].(map[string]any)
 		if part == nil {
@@ -763,7 +800,7 @@ func LegacyEventFromBus(evt BusEvent) (map[string]any, bool) {
 // Returns ("", false) when the event is not a tool-start (non-tool parts,
 // tool parts already resolved, or events that carry no tool name).
 func ToolStartFromBus(evt BusEvent) (tool string, ok bool) {
-	props := evt.Properties
+	props := evt.Props()
 	if evt.Type != "message.part.updated" {
 		return "", false
 	}
@@ -804,8 +841,19 @@ func ToolStartFromBus(evt BusEvent) (tool string, ok bool) {
 // turn's finalize overwrites the partial row with the authoritative reply (a
 // generation would otherwise create thousands of tiny transcript rows).
 func TokenDeltaInfoFromBus(evt BusEvent) (deltaText, kind string, ok bool) {
-	props := evt.Properties
+	props := evt.Props()
 	switch evt.Type {
+	case "session.text.delta":
+		// v2's streaming text. MEASURED shape:
+		//   {"type":"session.text.delta","data":{"sessionID":…,"assistantMessageID":…,
+		//                                         "ordinal":0,"delta":"Hi! …"}}
+		// The delta is a TOP-LEVEL `delta` string (v1 nested it in {field, delta}), and v2 does not
+		// distinguish text from reasoning on this event, so the kind is best-effort like v1's.
+		delta, _ := evt.Props()["delta"].(string)
+		if delta == "" {
+			return "", "", false
+		}
+		return delta, "text", true
 	case "message.part.delta":
 		// Modern shape: {sessionID, messageID, partID, field, delta}. The
 		// serve streams text and reasoning through the SAME field "text"
