@@ -2320,6 +2320,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		var primaryWID string
 		var composite string
 		var promptFP string // context-file fingerprint (ADR-0009 D5)
+		var agentPromptLen int
 		for _, wid := range upstream {
 			wi, err := db.GetWorkItem(ctx, tx, tenantID, wid)
 			if err != nil {
@@ -2339,6 +2340,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 				promptFP = fp
 			}
 			primaryWID = wid
+			agentPromptLen = len(r.agentPromptFor(ctx, tx, tenantID, wi, workerVer))
 		}
 		// Record the primary work item id + the composite prompt + the
 		// step's worker on the STEP RUN (per-step, not on the shared
@@ -2349,8 +2351,11 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			"_work_item_id":       primaryWID,
 			"_prompt":             composite,
 			"_prompt_fingerprint": promptFP,
-			"_worker_id":          step.Ref,
-			"_worker_version":     step.WorkerVersion,
+			// The RUN-LEVEL prefix length: the adapter trims exactly this
+			// many bytes off the message on 2.x, where the agent carries them.
+			"_agent_prompt_len": agentPromptLen,
+			"_worker_id":        step.Ref,
+			"_worker_version":   step.WorkerVersion,
 		})
 		// Preserve the recovery narrative across a re-dispatch so the run
 		// view keeps showing it after the step runs again. Carries ALL
@@ -2840,6 +2845,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			var primaryWID string
 			var composite string
 			var promptFP string
+			var agentPromptLen int
 			for _, wid := range upstream {
 				wi, err := db.GetWorkItem(ctx, tx, tenantID, wid)
 				if err != nil {
@@ -2859,6 +2865,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 					promptFP = fp
 				}
 				primaryWID = wid
+				agentPromptLen = len(r.agentPromptFor(ctx, tx, tenantID, wi, workerVer))
 			}
 			// Record the ticket + composite prompt + the approver worker
 			// pin on the STEP RUN (exactly the TASK-step shape). The
@@ -2866,7 +2873,8 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			// _worker_version from the step run to build the execution
 			// manifest; the ticket stays untouched.
 			stepResult := buildApprovalStepResult(primaryWID, composite, promptFP, workerRefStr, workerVer.Version,
-				upstreamWorker, upstreamSummary, upstreamFiles, ac, sr.Result)
+				upstreamWorker, upstreamSummary, upstreamFiles, ac, sr.Result,
+				agentPromptLen)
 			// Clear any stale worker_execution_id (a recovering step
 			// re-dispatched here still references its FAILED execution):
 			// pollTaskStep would otherwise see the old failed execution
@@ -3043,7 +3051,7 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	// into the worker's agent on 2.x and then trims them back off the message, so
 	// a drift between the two would silently duplicate or drop prompt text.
 	// TestCompositePromptBeginsWithAgentSystemPrompt pins the relationship.
-	sb.WriteString(db.AgentSystemPrompt(worker, runEffectiveImage(ctx, tx, tenantID, wi), projectExecutionModeForPrompt(ctx, tx, tenantID, wi)))
+	sb.WriteString(r.agentPromptFor(ctx, tx, tenantID, wi, worker))
 
 	// 1. Task.
 	sb.WriteString("# Task\n\n")
@@ -3569,6 +3577,21 @@ func runExecutionMode(ctx context.Context, tx pgx.Tx, tenantID string, run db.Wo
 		return db.ExecutionModeLocal
 	}
 	return db.ExecutionModeRuntime
+}
+
+// agentPromptFor is the RUN-LEVEL part of a worker's prompt: the stable prefix
+// plus the worker's identity block. It is the composite's opening, and it is what
+// an opencode agent's `system` carries on 2.x.
+//
+// IT EXISTS SO THE TWO CONSUMERS CANNOT DRIFT. The composite builder writes it as
+// its first block, and the step-result writers record its LENGTH so the adapter can
+// trim it back off the message. If those two ever computed it differently, the trim
+// point would be wrong — which is why both call THIS, and why the adapter also
+// verifies the remainder before trimming (see session_run.go).
+func (r *WorkflowReconciler) agentPromptFor(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow, worker db.WorkerVersionRow) string {
+	return db.AgentSystemPrompt(worker,
+		runEffectiveImage(ctx, tx, tenantID, wi),
+		projectExecutionModeForPrompt(ctx, tx, tenantID, wi))
 }
 
 // runEffectiveImage returns the run row's RuntimeImage for workflow-bound
@@ -4247,18 +4270,20 @@ func resolveApprovalWorkItems(sr db.WorkflowStepRunRow, step workflow.StepWire, 
 // review context, and the pending decision marker. When re-dispatching a
 // recovering step, the previous _recovery_* keys are preserved so the
 // recovery-resumed dispatch keeps its seed.
-func buildApprovalStepResult(primaryWID, composite, fingerprint, workerRefStr string, workerVersion int, upstreamWorker, upstreamSummary string, upstreamFiles []string, ac string, prevResult []byte) []byte {
+func buildApprovalStepResult(primaryWID, composite, fingerprint, workerRefStr string, workerVersion int, upstreamWorker, upstreamSummary string, upstreamFiles []string, ac string, prevResult []byte, agentPromptLen int) []byte {
 	stepResult, _ := json.Marshal(map[string]any{
 		"_work_item_id":       primaryWID,
 		"_prompt":             composite,
 		"_prompt_fingerprint": fingerprint,
-		"_worker_id":          workerRefStr,
-		"_worker_version":     workerVersion,
-		"_upstream_worker":    upstreamWorker,
-		"_upstream_summary":   upstreamSummary,
-		"_upstream_files":     upstreamFiles,
-		"_ac":                 ac,
-		"_decision":           "pending",
+		// The RUN-LEVEL prefix length — see the task step's writer for why.
+		"_agent_prompt_len": agentPromptLen,
+		"_worker_id":        workerRefStr,
+		"_worker_version":   workerVersion,
+		"_upstream_worker":  upstreamWorker,
+		"_upstream_summary": upstreamSummary,
+		"_upstream_files":   upstreamFiles,
+		"_ac":               ac,
+		"_decision":         "pending",
 	})
 	var prev map[string]any
 	_ = json.Unmarshal(prevResult, &prev)

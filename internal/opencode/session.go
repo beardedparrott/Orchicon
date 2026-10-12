@@ -362,6 +362,13 @@ func (c *SessionClient) SelectAgent(ctx context.Context, sessionID, agentName st
 	return nil
 }
 
+// AgentSelectionSupported reports whether this surface delivers a per-execution
+// system prompt through an AGENT rather than through the message.
+//
+// It is the gate for the message trim: on v1 there is no agent, so the message is
+// the only carrier and nothing may be removed from it.
+func (c *SessionClient) AgentSelectionSupported() bool { return c.shape.setAgentPath != nil }
+
 // SendMessage appends a user message to the session via prompt_async
 // (fire-and-forget: 204, the reply arrives on the SSE bus). The server
 // serializes prompts per session, so a message sent while a turn is in

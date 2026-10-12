@@ -3,6 +3,7 @@ package opencode
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -670,16 +671,22 @@ func (r *sessionRun) run() error {
 	r.a.log.Info("opencode session created", "execution", r.execRow.ID, "session", sid, "serve", client.BaseURL())
 	// Switch the session to THIS execution's worker agent. On 2.x that is what carries the
 	// worker's run-level prompt (see adapter.WorkerAgent); on v1 it is a no-op and the prompt
-	// travels in the goal message below instead.
+	// travels in the goal message instead.
 	//
-	// BEST-EFFORT ON PURPOSE, and the degradation is bounded: the serve's `default_agent` is the
-	// worker tool shell, so a failure here leaves a working worker with a thinner prompt rather
-	// than a broken execution. Logged, never swallowed — a silent fallback to the shell is
-	// exactly the kind of "looks fine, means less" outcome this whole change is about.
-	agentName := adapter.WorkerAgentName(r.manifest.WorkerID)
-	if aerr := client.SelectAgent(r.parentCtx, sid, agentName); aerr != nil {
-		r.a.log.Warn("opencode session agent select failed — the worker runs on the serve's default agent",
-			"execution", r.execRow.ID, "session", sid, "agent", agentName, "error", aerr)
+	// THE RESULT GATES THE MESSAGE TRIM BELOW, and that coupling is the safety property here: the
+	// prefix may only be removed from the message when the agent that carries it is actually in
+	// force. A failed selection falls back to the serve's default agent — the tool shell, which
+	// does NOT carry the worker's identity — so trimming there would DELETE those instructions
+	// rather than move them. Logged rather than swallowed for the same reason.
+	agentPromptCarried := false
+	if client.AgentSelectionSupported() {
+		agentName := adapter.WorkerAgentName(r.manifest.WorkerID)
+		if aerr := client.SelectAgent(r.parentCtx, sid, agentName); aerr != nil {
+			r.a.log.Warn("opencode session agent select failed — the worker runs on the serve's default agent and the message keeps the full prompt",
+				"execution", r.execRow.ID, "session", sid, "agent", agentName, "error", aerr)
+		} else if agentName != "" {
+			agentPromptCarried = true
+		}
 	}
 	// Persist the opencode session identity so the UI can show which
 	// serve/session a worker ran on (troubleshooting + follow-up seed).
@@ -763,7 +770,14 @@ func (r *sessionRun) run() error {
 	// IS ALSO WHERE THE SYSTEM PROMPT IS DELIVERED. A session is always CREATED immediately above, so
 	// this is genuinely the first message and the prompt cannot already be present (unlike the
 	// follow-up path, which attaches to an existing session and must not re-send it).
-	if err := client.SendMessageCarryingSystem(r.parentCtx, sid, r.system, r.modelRef, r.manifest.Goal); err != nil {
+	//
+	// The RUN-LEVEL prefix travels here ONLY when the agent selected above did not take it: if the
+	// agent carries it, it is trimmed off so the same text is not sent twice.
+	goalSystem := r.system
+	if agentPromptCarried {
+		goalSystem = trimCarriedAgentPrompt(r.a.log, r.execRow.ID, goalSystem, r.manifest.AgentPromptLen)
+	}
+	if err := client.SendMessageCarryingSystem(r.parentCtx, sid, goalSystem, r.modelRef, r.manifest.Goal); err != nil {
 		_ = client.Abort(r.parentCtx, sid)
 		return fmt.Errorf("send goal: %w", err)
 	}
@@ -2117,4 +2131,26 @@ func (r *sessionRun) finish(ok bool, errMsg string) {
 		r.subCancel()
 	}
 	close(r.done)
+}
+
+// trimCarriedAgentPrompt removes the run-level prompt prefix from the message when
+// the selected agent already carries it.
+//
+// THE LENGTH IS EXACT FOR A COMPOSITE THIS PLANE BUILT — it is recorded by the very
+// builder that assembled the prompt — and it is still VERIFIED here, because a trim
+// that lands in the wrong place silently deletes the beginning of the task. The
+// remainder must begin with the task section the builder always writes next; on any
+// mismatch the FULL prompt is sent. The two failures are not equivalent: a
+// duplicated prefix costs tokens, a truncated one costs the worker its instructions.
+func trimCarriedAgentPrompt(log *slog.Logger, execID, system string, n int) string {
+	if n <= 0 || n >= len(system) {
+		return system
+	}
+	rest := system[n:]
+	if !strings.HasPrefix(rest, "# Task") {
+		log.Warn("agent prompt length did not line up with the composite — sending the full prompt",
+			"execution", execID, "agent_prompt_len", n)
+		return system
+	}
+	return rest
 }
