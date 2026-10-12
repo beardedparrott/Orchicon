@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -280,6 +281,40 @@ func (d *ModelDiscoverer) refresh(ctx context.Context) ([]*apiv1.OpenCodeModel, 
 
 // fetchModels shells out to `opencode models --verbose` and parses the
 // output into structured proto messages.
+// errNoModels marks the ONE discovery failure that is worth RETRYING: the command SUCCEEDED and
+// printed nothing.
+//
+// WHY IT IS RETRIABLE, measured rather than assumed. opencode's managed service EVICTS and lazily
+// re-boots a location, and `opencode models` short-circuits to an empty list when its request lands in
+// that window. opencode's own log shows the eviction and the re-boot:
+//
+//	"location services evicted"   directory=/home/beardedparrott
+//	"location services booted"    durationMs=23
+//
+// and the CLI is otherwise perfectly reliable: 20 consecutive runs returned 18,648 bytes in ~65ms
+// each, while ONE run taken inside the boot window returned nothing. So an empty list is NOT a
+// statement about the providers — it is a RACE, and treating it as definitive is what turned a
+// sub-second window into a five-minute outage.
+//
+// WHY THAT MATTERS MORE THAN IT SOUNDS: the failure is cached (fetchOrCache's backoff), and a plane
+// restart — which every rebuild does — starts from a COLD cache. So the first picker open after a
+// rebuild is the most likely one to land in the window, and it then sticks for the full TTL with no
+// prior list to fall back on, while pressing the retry key re-reads the same cached error. Reported as
+// "I rebuilt and it's still saying no models", having worked minutes earlier.
+//
+// A "printed something unparseable" failure is deliberately NOT this: that is deterministic, so
+// retrying it only delays a real diagnosis.
+var errNoModels = errors.New("opencode listed no models")
+
+// emptyRetryAttempts and emptyRetryDelay bound the retry. Five attempts spread over ~4s: the boot
+// window measured in tens of milliseconds, so this is generous, and it is paid only when the command
+// actually returns empty — a normal discovery never enters the loop twice.
+const (
+	emptyRetryAttempts = 5
+	emptyRetryDelay    = 900 * time.Millisecond
+)
+
+// fetchModels runs the model listing for this surface, RETRYING the transient empty result.
 func (d *ModelDiscoverer) fetchModels(ctx context.Context) ([]*apiv1.OpenCodeModel, error) {
 	// A GENEROUS TIMEOUT, because on opencode 2.x this command may have to REACH A BACKGROUND SERVICE
 	// that is not running yet. The first call after a boot can spend real time getting that service
@@ -303,6 +338,39 @@ func (d *ModelDiscoverer) fetchModels(ctx context.Context) ([]*apiv1.OpenCodeMod
 	//
 	// The home dir is the right pin because it is where opencode's own config and auth live.
 	argv, preferred := d.modelsArgv()
+
+	// RETRY THE TRANSIENT EMPTY, and nothing else. See errNoModels for why an empty list is a race
+	// rather than an answer.
+	var lastErr error
+	for attempt := 1; attempt <= emptyRetryAttempts; attempt++ {
+		models, err := d.fetchModelsOnce(ctx, argv, preferred)
+		if err == nil {
+			if attempt > 1 {
+				d.log.Info("opencode models returned an empty list and succeeded on retry",
+					"attempt", attempt, "note", "the managed service evicts and lazily re-boots a "+
+						"location; a request landing in that window sees an empty catalog")
+			}
+			return models, nil
+		}
+		lastErr = err
+		if !errors.Is(err, errNoModels) {
+			return nil, err // deterministic: retrying only delays the diagnosis
+		}
+		if attempt < emptyRetryAttempts {
+			select {
+			case <-time.After(emptyRetryDelay):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+	}
+	return nil, lastErr
+}
+
+// fetchModelsOnce is one attempt: the surface's preferred form, then the plainest one if the preferred
+// was rejected outright (a version that lacks the flag). An EMPTY list is not a rejection and does not
+// reach the fallback — it is returned for the caller to retry.
+func (d *ModelDiscoverer) fetchModelsOnce(ctx context.Context, argv []string, preferred bool) ([]*apiv1.OpenCodeModel, error) {
 	out, err := runOpencodeCLI(ctx, d.binary, homeDir(), argv...)
 	if err == nil {
 		// RECORD ONLY WHAT WE ACTUALLY TRIED. An earlier version recorded `true` on any success,
@@ -323,23 +391,25 @@ func (d *ModelDiscoverer) fetchModels(ctx context.Context) ([]*apiv1.OpenCodeMod
 	// preferred form IS `models`, so retrying it would run the same command twice — and each run can
 	// reach the background service. Nothing is lost by skipping it, because the failure we already
 	// hold is the one from that exact invocation.
-	// The plainest form, spelled here rather than shared: it carries no flag BY DEFINITION, so it is
+	//
+	// The plainest form is spelled here rather than shared: it carries no flag BY DEFINITION, so it is
 	// not a version fact and does not belong in the shape table. This package also deliberately does
 	// not import internal/opencode — the plane wires the two together (SetModelsArgs) so the version
 	// rule stays in one place.
 	fallback := []string{"models"}
-	plainOut, plainErr := out, err
 	if strings.Join(fallback, " ") != strings.Join(argv, " ") {
-		plainOut, plainErr = runOpencodeCLI(ctx, d.binary, homeDir(), fallback...)
+		plainOut, plainErr := runOpencodeCLI(ctx, d.binary, homeDir(), fallback...)
 		if plainErr == nil {
 			d.rememberModelsForm(false)
 			return parseModelOutput(plainOut)
 		}
+		err = plainErr
 	}
 
-	// BOTH FAILED, so this is not the form: report the PLAIN invocation's failure, because `models`
-	// alone is the thing that cannot work, and its error carries the CLI's own words.
-	return nil, fmt.Errorf("list opencode models: %w", plainErr)
+	// The form was rejected outright, so this is not a transient empty: report the PLAIN invocation's
+	// failure, because `models` alone is the thing that cannot work, and its error carries the CLI's
+	// own words.
+	return nil, fmt.Errorf("list opencode models: %w", err)
 }
 
 // parseModelOutput parses the output of `opencode models --verbose`.
@@ -465,10 +535,15 @@ func parseModelOutput(data []byte) ([]*apiv1.OpenCodeModel, error) {
 		//
 		// The second case is the one no amount of guessing can resolve, so it carries its evidence.
 		if printed := bytes.TrimSpace(data); len(printed) == 0 {
-			return nil, fmt.Errorf("opencode listed no models: the command succeeded and printed " +
-				"NOTHING, which is how it reports an empty list. In practice that means no provider " +
-				"is authenticated for the environment the plane runs in — check `opencode auth list` " +
-				"and run `opencode models` by hand in the same shell")
+			// WRAPS errNoModels so the caller retries it: measured to be a TRANSIENT service-race
+			// result far more often than a real absence of providers. The message still names the
+			// non-transient possibility, because after the retries are exhausted that is what it means.
+			return nil, fmt.Errorf("%w: the command succeeded and printed NOTHING, which is how it "+
+				"reports an empty list — and which it does TRANSIENTLY when the managed service is "+
+				"evicting or re-booting the location. Retried %d times without seeing a list, so the "+
+				"remaining explanation is that no provider is authenticated for the environment the "+
+				"plane runs in — check `opencode auth list` and run `opencode models` by hand in the "+
+				"same shell", errNoModels, emptyRetryAttempts)
 		} else {
 			return nil, fmt.Errorf("opencode printed %d bytes but no models could be read from them — "+
 				"this build's output format is not one this version understands. First %d bytes, "+
