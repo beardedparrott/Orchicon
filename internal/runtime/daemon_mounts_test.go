@@ -33,6 +33,9 @@ func bootProfileTestHome(t *testing.T) (string, *Daemon) {
 	}
 	mkdir(".config", "opencode")
 	mkdir(".local", "share", "opencode")
+	// The credential file inside the data home: shared READ-ONLY into the
+	// container's private copy of it (never the directory itself).
+	mkfile(".local", "share", "opencode", "auth.json")
 	mkfile(".opencode", "bin", "opencode")
 	mkfile(".gitconfig")
 	mkfile(".git-credentials")
@@ -56,17 +59,37 @@ func envValue(args []string, key, value string) bool {
 	return argValue(args, "-e", key+"="+value)
 }
 
-// opencodeAdapterMounts are the three conditional adapter mounts under home.
+// opencodeAdapterMounts are the conditional HOST BINDS under home. The data
+// home is deliberately absent: it is not bind-mounted at all, it is a private
+// uid-owned directory (opencodePrivateDataHome).
 func opencodeAdapterMounts(home string) []string {
-	out := make([]string, 0, 3)
+	out := make([]string, 0, 2)
 	for _, p := range []string{
 		filepath.Join(home, ".config", "opencode"),
-		filepath.Join(home, ".local", "share", "opencode"),
 		filepath.Join(home, ".opencode"),
 	} {
 		out = append(out, p+":"+p+":ro")
 	}
 	return out
+}
+
+// opencodePrivateDataHome is the uid-owned PRIVATE data home an
+// opencode-demanding run gets: the same path inside and out, as every mount is,
+// but a tmpfs owned by the runtime uid rather than the operator's directory.
+func opencodePrivateDataHome(home string) string {
+	return filepath.Join(home, ".local", "share", "opencode") + ":rw,uid=0,gid=0,mode=0755"
+}
+
+// homeOwnedTmpfsOpts are the three uid-owned tmpfs entries that make $HOME —
+// and the `.local` and `.config` a bind inside it forces Docker to create as
+// root — writable by the runtime uid. Without them the adapter CLI exits 1 at
+// boot (`EACCES mkdir $HOME/.cache` on 1.x, `mkdir $HOME/.local/state` on 2.x).
+func homeOwnedTmpfsOpts(home string) []string {
+	return []string{
+		home + ":rw,uid=0,gid=0,mode=0755",
+		filepath.Join(home, ".local") + ":rw,uid=0,gid=0,mode=0755",
+		filepath.Join(home, ".config") + ":rw,uid=0,gid=0,mode=0755",
+	}
 }
 
 // TestStandardHostMountArgsConditionalOpencode is AC 1/AC 3/AC 5: a
@@ -116,10 +139,54 @@ func TestStandardHostMountArgsConditionalOpencode(t *testing.T) {
 					t.Errorf("adapter mount %s present=%v, want %v (args %v)", m, got, c.wantAdapter, args)
 				}
 			}
+			// The private data home follows the adapter demand like the host
+			// binds do; the uid-owned HOME trio does NOT (it is what makes the
+			// runtime's home writable at all, adapter or not).
+			if got := argValue(args, "--tmpfs", opencodePrivateDataHome(home)); got != c.wantAdapter {
+				t.Errorf("private data home present=%v, want %v (args %v)", got, c.wantAdapter, args)
+			}
+			for _, opt := range homeOwnedTmpfsOpts(home) {
+				if !argValue(args, "--tmpfs", opt) {
+					t.Errorf("missing uid-owned home tmpfs %s: %v", opt, args)
+				}
+			}
 			if got := envValue(args, "PATH", adapterPATH); got != c.wantAdapter {
 				t.Errorf("adapter PATH prefix present=%v, want %v (args %v)", got, c.wantAdapter, args)
 			}
 		})
+	}
+}
+
+// TestStandardHostMountArgsOpencodePrivateDataHome pins the two halves of the
+// fix for `serve handshake: exit status 1`: the CLI needs a WRITABLE data home
+// (2.x writes log/ and its SQLite DB there, and a read-only mount fails the
+// boot outright), and it needs one it OWNS, which is why the operator's
+// directory is never bind-mounted — not read-only, and not read-write either,
+// since that would hand a worker write access to the operator's credential
+// store. Both opencode 1.x and 2.x boot against this shape; only the credential
+// source differs by version (1.x reads auth.json, 2.x needs env).
+func TestStandardHostMountArgsOpencodePrivateDataHome(t *testing.T) {
+	home, d := bootProfileTestHome(t)
+	args := d.standardHostMountArgs(CreateRequest{AdapterKinds: []string{"opencode"}, GitStrategy: "local"})
+
+	data := filepath.Join(home, ".local", "share", "opencode")
+	if argValue(args, "-v", data+":"+data+":ro") {
+		t.Errorf("the operator's data dir must not be bind-mounted read-only — that is the EROFS that killed the boot: %v", args)
+	}
+	if argValue(args, "-v", data+":"+data+":rw") {
+		t.Errorf("the operator's data dir must not be bind-mounted read-write — a worker would get write access to the credential store and session DB: %v", args)
+	}
+	if !argValue(args, "--tmpfs", opencodePrivateDataHome(home)) {
+		t.Errorf("missing the private uid-owned data home: %v", args)
+	}
+	auth := filepath.Join(data, "auth.json")
+	if got, want := auth+":"+auth+":ro", true; argValue(args, "-v", got) != want {
+		t.Errorf("the credential file must be shared read-only into the private home: %v", args)
+	}
+	for _, opt := range homeOwnedTmpfsOpts(home) {
+		if !argValue(args, "--tmpfs", opt) {
+			t.Errorf("missing uid-owned home tmpfs %s: %v", opt, args)
+		}
 	}
 }
 

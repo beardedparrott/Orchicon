@@ -53,6 +53,10 @@ type Daemon struct {
 	CPUs      string
 	Memory    string
 	TmpfsSize string
+	// HomeTmpfsSize sizes the uid-owned tmpfs mounted at the runtime uid's
+	// $HOME, and at a private adapter data home. $HOME cannot be left to
+	// Docker's default root:0755 creation — see standardHostMountArgs.
+	HomeTmpfsSize string
 	// MaxAge / SweepInterval are retained for config compatibility; the
 	// warm pool's idle-reap now owns container cleanup (the pool is reset
 	// wholesale at daemon start, which covers the plane-down leak case).
@@ -785,6 +789,15 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 	// the kind. A native-only run gets none: the host's model config and
 	// provider auth never leak into a container that cannot use them.
 	args = append(args, adapterHostMounts(d.HostHome, requestedKinds(req)...)...)
+	// PRIVATE adapter directories: a demand whose install is declared private
+	// gets a writable, runtime-uid-owned directory at the same path instead of
+	// a host bind, plus its declared credential file read-only inside it.
+	for _, ph := range adapterPrivateHomes(d.HostHome, requestedKinds(req)...) {
+		args = append(args, "--tmpfs", tmpfsOwned(ph.dir, d.UserID, d.GroupID, d.HomeTmpfsSize))
+		if ph.authFile != "" {
+			args = append(args, "-v", ph.authFile+":"+filepath.Join(ph.dir, filepath.Base(ph.authFile))+":ro")
+		}
+	}
 	// Git identity/credential + push-capable GH_TOKEN are gated on the run's
 	// effective git strategy: a "none" (ephemeral detached-HEAD) run must
 	// never be able to create or push a branch, so it gets NO
@@ -819,6 +832,26 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 			args = append(args, "-e", "GH_TOKEN="+tok)
 		}
 	}
+	// $HOME ITSELF MUST BE OWNED BY THE RUNTIME UID. Docker creates a bind
+	// destination's missing parents — $HOME included — as root:0755, so the
+	// runtime uid could not create ANYTHING under its own home: the adapter CLI
+	// exits 1 at boot on `EACCES mkdir $HOME/.local/state`, and ensureHomeDirs
+	// (cmd/orchicon/runtime.go), which creates all six of the standard
+	// directories best-effort, was failing on every one of them behind a WARN
+	// nobody read. `.local` and `.config` need their OWN entry because a bind's
+	// intermediate parent is created root-owned even INSIDE a uid-owned $HOME —
+	// mounting $HOME alone was measured NOT to fix it.
+	homeDirs := []struct {
+		path string
+		size string
+	}{
+		{d.HostHome, d.HomeTmpfsSize},
+		{filepath.Join(d.HostHome, ".local"), ""},
+		{filepath.Join(d.HostHome, ".config"), ""},
+	}
+	for _, hd := range homeDirs {
+		args = append(args, "--tmpfs", tmpfsOwned(hd.path, d.UserID, d.GroupID, hd.size))
+	}
 	args = append(args, "-e", "HOME="+d.HostHome)
 	// Put every MOUNTED adapter CLI on PATH so the supervisor's
 	// exec.Command("opencode", ...) / exec.Command("claude", ...) resolves
@@ -833,6 +866,19 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 		args = append(args, "-e", "ORCHICON_ADAPTER_KINDS="+strings.Join(kinds, ","))
 	}
 	return args
+}
+
+// tmpfsOwned renders the --tmpfs option string for a private, runtime-uid-owned
+// mount at path. uid/gid are explicit because OWNERSHIP IS THE POINT: a tmpfs
+// without them is root-owned, the runtime uid cannot write it, and that is
+// precisely the failure this exists to prevent. size == "" omits the limit,
+// which is right for the mount points that never hold file data.
+func tmpfsOwned(path string, uid, gid int, size string) string {
+	opt := fmt.Sprintf("%s:rw,uid=%d,gid=%d,mode=0755", path, uid, gid)
+	if size != "" {
+		opt += ",size=" + size
+	}
+	return opt
 }
 
 // claudeAuthAvailable reports whether the host has a usable Claude credential,
