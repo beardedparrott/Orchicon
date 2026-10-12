@@ -21,7 +21,7 @@ func TestTheContainerServeConfigCarriesTransposedProviders(t *testing.T) {
 	cfg := RuntimeServeConfig("orchicon:base", "/proj", "run-1", nil, mcpclient.Resolution{}, []runtime.ProviderConfig{
 		{ID: "local-gufo", NPM: "@ai-sdk/openai-compatible", BaseURL: "http://172.17.0.1:8741/v1"},
 		{ID: "halogen", NPM: "@ai-sdk/openai-compatible", BaseURL: "http://172.17.0.1:8731/v1"},
-	})
+	}, nil)
 	var m map[string]any
 	if err := json.Unmarshal([]byte(cfg), &m); err != nil {
 		t.Fatalf("config is not valid JSON: %v", err)

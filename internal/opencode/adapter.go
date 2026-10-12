@@ -495,7 +495,7 @@ func runtimeContainerRouteEnabled(hasClient bool, m scheduler.ExecutionManifest)
 // (ORCHICON_POSTGRES_DSN), so workers get the `orchicon_*` tools natively
 // against their own sandbox — never the host plane's DB. Base/gui images
 // get no MCP (no sandbox plane), behavior identical to today.
-func RuntimeServeConfig(imageTag, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution, providers []runtime.ProviderConfig) string {
+func RuntimeServeConfig(imageTag, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution, providers []runtime.ProviderConfig, workers []adapter.WorkerAgent) string {
 	opts := ConfigOptions{
 		AgentName:    workerAgent,
 		AgentPrompt:  sessionToolShell,
@@ -504,6 +504,12 @@ func RuntimeServeConfig(imageTag, projectDir, workflowRunID string, planeEnv map
 		SkipUserMCP:  true,
 		RunMCP:       union.Servers,
 		RunSkills:    union.Skills,
+		// Workers are the RUN's step workers as agents, each carrying the run-level
+		// part of that worker's prompt. They matter on 2.x, where a prompt can only
+		// reach the model through the agent (see adapter.WorkerAgent); on a v1
+		// serve the builder ignores them and the prompt rides the per-message
+		// `system` field as it always did.
+		Workers: workers,
 		// Shape is deliberately NOT set: BuildConfigContent resolves it from the
 		// host's version probe, and the container's serve runs the SAME opencode
 		// install bind-mounted from this host, so the host's answer is its answer.
