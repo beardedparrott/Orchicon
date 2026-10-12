@@ -87,6 +87,14 @@ type apiShape struct {
 	// setModelPath builds the route that sets a session's model, for surfaces whose PROMPT body
 	// cannot carry it. Empty on v1, where the model rides each prompt.
 	setModelPath func(sessionID string) string
+	// setAgentPath builds the route that switches a session's AGENT, or is nil on a surface with
+	// no such route (v1).
+	//
+	// It is how a per-execution system prompt reaches the model on v2. An agent's `system` is the
+	// only channel that actually governs the model there (see adapter.WorkerAgent for the
+	// measurement), and it is fixed when the serve is configured — so the serve registers one
+	// agent per step worker and the execution selects its own HERE.
+	setAgentPath func(sessionID string) string
 	// responseEnvelope is the key v2 wraps SESSION responses in, or "" when responses are bare.
 	//
 	// MEASURED against opencode 2.0.26 — and the envelope is PER-ENDPOINT, not universal, which is why
@@ -172,6 +180,10 @@ var shapeV2 = apiShape{
 	// v2's prompt body has no model field, so the model is set on the SESSION first
 	// (session.switchModel, audit 055: POST /api/session/{sessionID}/model, body {model: Model.Ref}).
 	setModelPath: func(id string) string { return "/api/session/" + id + "/model" },
+	// session.switchAgent (audit 054: POST /api/session/{sessionID}/agent, body {agent: Agent.ID}).
+	// Present for the same reason setModelPath is — v2's prompt body cannot carry it — and it is
+	// what delivers the worker's prompt on 2.x.
+	setAgentPath: func(id string) string { return "/api/session/" + id + "/agent" },
 }
 
 // Path builders. The client calls these and never concatenates a route itself — that is what keeps a

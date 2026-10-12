@@ -668,6 +668,19 @@ func (r *sessionRun) run() error {
 	}
 	r.sessionID = sid
 	r.a.log.Info("opencode session created", "execution", r.execRow.ID, "session", sid, "serve", client.BaseURL())
+	// Switch the session to THIS execution's worker agent. On 2.x that is what carries the
+	// worker's run-level prompt (see adapter.WorkerAgent); on v1 it is a no-op and the prompt
+	// travels in the goal message below instead.
+	//
+	// BEST-EFFORT ON PURPOSE, and the degradation is bounded: the serve's `default_agent` is the
+	// worker tool shell, so a failure here leaves a working worker with a thinner prompt rather
+	// than a broken execution. Logged, never swallowed — a silent fallback to the shell is
+	// exactly the kind of "looks fine, means less" outcome this whole change is about.
+	agentName := adapter.WorkerAgentName(r.manifest.WorkerID)
+	if aerr := client.SelectAgent(r.parentCtx, sid, agentName); aerr != nil {
+		r.a.log.Warn("opencode session agent select failed — the worker runs on the serve's default agent",
+			"execution", r.execRow.ID, "session", sid, "agent", agentName, "error", aerr)
+	}
 	// Persist the opencode session identity so the UI can show which
 	// serve/session a worker ran on (troubleshooting + follow-up seed).
 	// adapter_kind records WHICH ADAPTER the session belongs to, so a

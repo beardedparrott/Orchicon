@@ -338,6 +338,30 @@ func (c *SessionClient) CreateSession(ctx context.Context, title string) (string
 	return out.ID, nil
 }
 
+// SelectAgent switches the session to a named agent.
+//
+// A NO-OP on a surface with no agent route (v1): there the worker's prompt rides
+// the per-message `system` field and no agent is involved. On v2 it is load
+// bearing — the agent's `system` is the only channel that governs the model, so
+// without this the session runs on the serve's default agent (the worker tool
+// shell) and the worker's real prompt never arrives.
+//
+// An empty name is a no-op rather than an error: the caller derives the name from
+// a worker id it may not have, and a session left on the default agent is a
+// working worker with a thinner prompt — a degraded run, not a broken one.
+func (c *SessionClient) SelectAgent(ctx context.Context, sessionID, agentName string) error {
+	if c.shape.setAgentPath == nil || strings.TrimSpace(agentName) == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := c.do(ctx, http.MethodPost, c.shape.setAgentPath(sessionID),
+		map[string]any{"agent": agentName}); err != nil {
+		return fmt.Errorf("opencode session select agent: %w", err)
+	}
+	return nil
+}
+
 // SendMessage appends a user message to the session via prompt_async
 // (fire-and-forget: 204, the reply arrives on the SSE bus). The server
 // serializes prompts per session, so a message sent while a turn is in
