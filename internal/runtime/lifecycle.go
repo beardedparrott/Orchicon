@@ -328,7 +328,7 @@ func (l *Lifecycle) resolveRunWorkers(ctx context.Context, run db.WorkflowRunRow
 			continue
 		}
 		seen[name] = struct{}{}
-		out = append(out, adapter.WorkerAgent{Name: name, Prompt: prompt, Model: r.ModelRef})
+		out = append(out, adapter.WorkerAgent{Name: name, Prompt: prompt, Model: agentModelForServe(r.ModelRef)})
 	}
 	// Step order is the workflow's own order, so the result is already
 	// deterministic — it feeds the config bytes and therefore the pool key.
@@ -1103,4 +1103,27 @@ func (l *Lifecycle) Adopt(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// agentModelForServe renders a worker's model ref in the `provider/model` form an
+// opencode CONFIG takes, or "" when it cannot be rendered.
+//
+// THE ADAPTER SEGMENT MUST BE STRIPPED. A worker's model_ref is adapter/provider/model
+// (`opencode/opencode/muse-spark-1.3-contributor-free`) — the control plane's grammar,
+// not opencode's. Every other consumer converts it with adapter.SplitForServe before it
+// crosses that boundary, and a config's model field is exactly such a boundary. Passing
+// the raw ref put a THREE-segment string in an agent's `model`, which opencode cannot
+// parse as provider/model.
+//
+// EMPTY IS THE HONEST ANSWER for a ref that does not split, and it is safe: a session's
+// model is set separately on the SESSION (the prompt body on v1, session.switchModel on
+// v2), so an agent with no model inherits the session's — which is what a worker wants.
+// Omission is also what the v2 schema prefers: its model reference is pattern-validated,
+// so a malformed string is worse than an absent field.
+func agentModelForServe(modelRef string) string {
+	provider, model, ok := adapter.SplitForServe(modelRef)
+	if !ok || provider == "" || model == "" {
+		return ""
+	}
+	return provider + "/" + model
 }
