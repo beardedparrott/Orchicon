@@ -1988,6 +1988,13 @@ func isInfraModelTurnError(msg string) bool {
 	for _, term := range []string{
 		"http 4", "http 5",
 		"401", "403", "unauthorized", "forbidden",
+		// The AUTH/ACCESS class BY NAME, not only by status code — and this is load-bearing
+		// since v2 failures gained a path into here. opencode's refusal to serve a free-tier
+		// model unattended is `AI.Error.Authentication: OpenCode's free tier can only be used
+		// from within OpenCode`: no 401, no "unauthorized". Without these terms it fell
+		// through to the socket check, where an infrastructure MISCLASSIFICATION recycles the
+		// container instead of telling the operator that the MODEL is the problem.
+		"authentication", "unauthenticated", "free tier",
 		"rate limit", "429",
 		"insufficient", "quota", "policy",
 	} {

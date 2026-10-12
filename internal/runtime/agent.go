@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -483,6 +484,20 @@ func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
 		env = prependGuard(env, guardDir)
 		s.guardDir = guardDir
 	}
+	// DIAGNOSTIC: record WHAT this serve was given, by NAME.
+	//
+	// A 2.x execution failed with a model-provider rejection that nothing in the platform
+	// could explain, and the inputs that differed from a WORKING path were not recoverable
+	// afterwards: the config rides the serve PROCESS's environment rather than the
+	// container's, so it is invisible to `docker inspect` and dies with the process. This
+	// line makes the next such failure self-describing.
+	//
+	// NAMES AND DIGESTS ONLY. The environment carries provider credentials, and this line is
+	// permanent, so no value is ever rendered — the config is reduced to a digest and a
+	// length, which is enough to tell two different configs apart without logging either.
+	h.log.Info("supervisor: starting in-container serve",
+		"exec", execID, "kind", kind, "argv", strings.Join(req.Argv, " "),
+		"cwd", cmd.Dir, "env", serveEnvSummary(env))
 	cmd.Env = env
 	cmd.Stdout = os.Stderr // serve logs go to the supervisor log, not telemetry
 	cmd.Stderr = os.Stderr
@@ -1639,4 +1654,33 @@ func RunClient(socketPath string, in io.Reader, out io.Writer) (int, error) {
 			return 1, nil
 		}
 	}
+}
+
+// serveEnvSummary renders an environment as the NAMES it sets, for the serve-start
+// diagnostic. It exists so a failing serve's inputs are recoverable after the fact —
+// the config rides the serve PROCESS's environment rather than the container's, so
+// `docker inspect` never shows it and it dies with the process.
+//
+// VALUES ARE NEVER RENDERED, and that is a hard rule rather than a caution: this
+// environment carries provider credentials (the daemon injects OLLAMA_API_KEY and
+// friends), and the line is permanent, so a value leaking here would be a credential
+// leak into the logs. The one name whose VALUE matters for diagnosis is the serve
+// config, and it is reduced to a digest plus a length — enough to tell two different
+// configs apart, which is what the comparison needs, without reproducing either.
+func serveEnvSummary(env []string) string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		if k == "" {
+			continue
+		}
+		if k == "OPENCODE_CONFIG_CONTENT" {
+			sum := sha256.Sum256([]byte(v))
+			out = append(out, fmt.Sprintf("%s(sha:%s,len:%d)", k, hex.EncodeToString(sum[:])[:12], len(v)))
+			continue
+		}
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return strings.Join(out, " ")
 }
