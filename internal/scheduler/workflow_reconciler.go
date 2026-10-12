@@ -3036,21 +3036,14 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	// instructions, execution history — follows AFTER the prefix.
 	// Prompt truth: the RUN-effective image (run row, not the wi request)
 	// and the project execution mode (runtime vs local honest block).
-	sb.WriteString(db.StablePromptPrefix(runEffectiveImage(ctx, tx, tenantID, wi), projectExecutionModeForPrompt(ctx, tx, tenantID, wi)))
-
-	// 0. Worker identity — role, skills, behavior, and AGENTS.md.
-	if r := strings.TrimSpace(worker.Role); r != "" {
-		fmt.Fprintf(&sb, "# Role\n\n%s\n\n", r)
-	}
-	if s := strings.TrimSpace(worker.Skills); s != "" {
-		fmt.Fprintf(&sb, "## Skills\n\n%s\n\n", s)
-	}
-	if b := strings.TrimSpace(worker.Behavior); b != "" {
-		fmt.Fprintf(&sb, "## Behavior\n\n%s\n\n", b)
-	}
-	if a := strings.TrimSpace(worker.AgentsMD); a != "" {
-		fmt.Fprintf(&sb, "## AGENTS.md\n\n%s\n\n", a)
-	}
+	// The RUN-LEVEL part of the prompt — the shared stable prefix AND the
+	// worker's identity block — comes from ONE function (db.AgentSystemPrompt)
+	// rather than being spelled out here, because it must stay a byte-identical
+	// PREFIX of this composite: the opencode adapter bakes exactly these bytes
+	// into the worker's agent on 2.x and then trims them back off the message, so
+	// a drift between the two would silently duplicate or drop prompt text.
+	// TestCompositePromptBeginsWithAgentSystemPrompt pins the relationship.
+	sb.WriteString(db.AgentSystemPrompt(worker, runEffectiveImage(ctx, tx, tenantID, wi), projectExecutionModeForPrompt(ctx, tx, tenantID, wi)))
 
 	// 1. Task.
 	sb.WriteString("# Task\n\n")
