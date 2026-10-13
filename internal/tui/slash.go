@@ -319,6 +319,33 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		},
 	})
 	add(SlashCommand{
+		Name: "/find", Usage: "/find <text>",
+		Desc: "search the open transcript — filters matching messages (case-insensitive); n/N step, esc clears",
+		Run: func(m *App, args []string) tea.Cmd {
+			if m.chatConvID == "" {
+				m.dock.SetError("no conversation open — nothing to search")
+				return nil
+			}
+			q := strings.Join(args, " ")
+			if strings.TrimSpace(q) == "" {
+				if m.clearAskSearch() {
+					m.dock.SetNotice("transcript search cleared")
+				} else {
+					m.dock.SetNotice("usage: /find <text>")
+				}
+				return nil
+			}
+			m.setAskSearch(q)
+			matches, total := transcriptSearchCount(m.chatStore.snapshot(m.chatConvID), q)
+			if matches == 0 {
+				m.dock.SetNotice(fmt.Sprintf("search %q — no matches", strings.TrimSpace(q)))
+			} else {
+				m.dock.SetNotice(fmt.Sprintf("search %q — %d/%d matches (n/N step, esc clears)", strings.TrimSpace(q), matches, total))
+			}
+			return nil
+		},
+	})
+	add(SlashCommand{
 		Name: "/delete", Usage: "/delete",
 		Desc: "delete the open conversation (DeleteConversation)",
 		Run: func(m *App, _ []string) tea.Cmd {

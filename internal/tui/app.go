@@ -393,6 +393,11 @@ type App struct {
 	// via ctrl+r toggle and a mouse click on the rail header. State persists
 	// for the session. The diff pane is the LEFT rail; this is the RIGHT rail.
 	askMode askMode // Ask's presentation: launch page vs conversations
+	// askSearch is the OPEN transcript search query for the Ask pane
+	// (transcript_search.go). Empty = no filter. askMatchIdx is the current match
+	// (0-based) that n/N navigate.
+	askSearch   string
+	askMatchIdx int
 	// Slide-out conversation strip (chatpanel.go): open when the operator
 	// engages the composer on a screen other than Ask, so a send is VISIBLE.
 	// panelScroll is in lines up from the transcript tail (0 = following).
@@ -4178,6 +4183,14 @@ func (m *App) transcriptStatusLine(items []chat.ChatItem) string {
 		// when reading a transcript, and it is the TRANSCRIPT that looks broken when a reply cannot arrive.
 		return "⚠ disconnected — replies will resume when the plane returns (r retries now)"
 	}
+	// AN ACTIVE SEARCH OWNS THE FOOTER, once the CONNECTION arms above are settled:
+	// it is a deliberate operator mode, and the match count IS the status they asked
+	// for. It outranks the card/activity arms, whose subject (a turn in progress) is
+	// not what the operator is looking at while searching.
+	if strings.TrimSpace(m.askSearch) != "" {
+		matches, total := transcriptSearchCount(items, m.askSearch)
+		return transcriptSearchStatus(m.askSearch, matches, total)
+	}
 	// THE CARD IS THE REASON NOTHING IS HAPPENING, AND THE FOOTER MUST SAY SO.
 	//
 	// The activity line below reads the STREAM's silence, so a turn parked on a permission ask rendered as
@@ -4397,6 +4410,11 @@ func (m *App) onChatWake() tea.Cmd {
 		RenderTranscript([]chat.ChatItem, chat.Conversation, bool) (title string, fields []screenkit.Field)
 	}); ok {
 		items := m.chatStore.snapshot(m.chatConvID)
+		// AN ACTIVE SEARCH FILTERS WHAT IS RENDERED, not what is COUNTED: the header
+		// and the footer still describe the whole conversation, while the body shows
+		// only the matching items (consent cards are always kept — see
+		// searchVisibleItems).
+		visibleItems := m.searchVisibleItems(items)
 		// The rail's row for this conversation is the freshest header data the
 		// shell holds: it is reloaded after every send, and it carries the title
 		// and the message count, which the screen's cached GetConversation can
@@ -4474,7 +4492,7 @@ func (m *App) onChatWake() tea.Cmd {
 			strH = bh.DetailBodyHeight(fieldRows, true)
 		}
 		str := m.newTranscriptStream(m.chatConvID, w, strH)
-		m.syncTranscript(m.chatConvID, str, items, w)
+		m.syncTranscript(m.chatConvID, str, visibleItems, w)
 		// Surface the scroll position when the transcript is taller than the pane.
 		//
 		// The transcript follows the TAIL, so a reply longer than the pane scrolls
