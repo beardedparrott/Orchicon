@@ -403,18 +403,23 @@ func TestModeSetRPC(t *testing.T) {
 	}
 }
 
-// Attachments: an attachment input is explicitly refused (no silent drop).
-func TestAttachmentInputIsExplicitlyRefused(t *testing.T) {
+// Attachments: /attach ATTEMPTS a real attach instead of refusing. The full success
+// path — the pending strip and the next-message contract — is pinned in
+// attachments_test.go's TestSlashAttachAttachesTheFile.
+func TestAttachmentInputIsNoLongerRefused(t *testing.T) {
 	m, _ := newAskApp(t)
 	handled, cmd := m.dispatchSlash("/attach /tmp/report.pdf")
 	if !handled {
 		t.Fatal("/attach must be handled — an attachment path is never silently dropped")
 	}
-	if cmd != nil {
-		t.Fatal("the refusal must not produce a send")
+	if cmd == nil {
+		t.Fatal("/attach must now ATTEMPT the attach (it returns a command), not refuse")
 	}
-	if !strings.Contains(m.dock.View(), "not supported") {
-		t.Fatalf("refusal not user-visible: %q", m.dock.View())
+	if strings.Contains(m.dock.View(), "not supported") {
+		t.Fatalf("the old refusal must be gone: %q", m.dock.View())
+	}
+	if _, ok := cmd().(attachResultMsg); !ok {
+		t.Fatalf("/attach must produce an attachResultMsg, got %T", cmd())
 	}
 }
 
