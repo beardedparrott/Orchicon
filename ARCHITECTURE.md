@@ -982,6 +982,15 @@ after waiting for it), then resolves every published port. `ORCHICON_PLANE_RESID
 shared and a test asserts the two agree (`TestInstallPortDefaultsMatchContainerScript`), so an instance's
 ports do not depend on which entry point created it.
 
+**`orchicon restart` is the other half of the install question, and it exists because of a property of the
+shape rather than a missing convenience.** A plane **inherits its environment when it STARTS** (`startHostPlane`
+passes `os.Environ()` on, and `serve --detach` does the same), so `PATH` is fixed at start time and nothing
+refreshes it. An adapter CLI installed *after* the plane booted is therefore invisible to it, while
+`orchicon install` — correctly — declines to restart a plane that is already healthy on the installed binary.
+The only remaining route was `serve --stop` followed by an install: a restart in disguise, under a verb about
+serving. `orchicon restart` restarts the instance so its components re-read their environment, and is what the
+guide and the model-picker remedy now point at.
+
 **Three instance columns, and a resolved port PER INSTANCE.** `dev`, `prod` and a throwaway **`test`**
 instance each have their own defaults, so a third can run beside the other two without a collision (the
 old shape fell anything that was not literally `prod` into dev's column, which collided silently):
@@ -1109,6 +1118,19 @@ The native adapter runs worker executions in-process against the tenant's config
 Worker executions run through a **persistent opencode session** — the ONLY execution transport (the legacy one-shot `opencode run` subprocess path was removed: a run that cannot get a session fails fast, `failed_to_start` → workflow recovery, instead of silently degrading to a second, inferior transport). One `opencode serve` instance owns each execution's session and its agent loop; the goal is the first user message, and liveness nudges + mid-run human messages join the session's per-session prompt queue (serialized by the server, so an injected message lands at the next turn boundary).
 
 **Serve topology** (two populations, one `SessionClient` — `internal/opencode/session.go`):
+- **The API shape is chosen per serve** (`internal/opencode/apisurface.go`), because opencode 2.x is a
+  **different wire protocol** from 1.x rather than a set of options on one. The adapter speaks **both**, and
+  the version comes from the serve's own reported value — so an existing 1.x install keeps working and a
+  fresh 2.x install is not held back. Four surfaces differ: the **prompt body** (`{text, files}` vs
+  `{text}`), **session creation and its response envelope**, the **models listing** (`--standalone` is a 2.x
+  flag), and the **event vocabulary**. The vocabulary is the one that fails silently, and it is why this is
+  called out here rather than left to the adapter: a client reading 1.x part names against a 2.x serve sees a
+  stream whose events it does not recognise — including the one that ends a turn — so **the end of a turn is
+  indistinguishable from the middle of one** and a run never completes. Unknown event shapes are therefore
+  **passed through rather than dropped**, so the next protocol change degrades into visible unrecognised
+  events instead of a hang. 2.x also brings **Code Mode**: MCP tools are reachable **only** inside `execute`
+  as `tools["<server>"].<tool>`, which the worker prompt teaches, and the composite-tools `read`/`grep` deny
+  is gated on the version that needs it.
 - **Always-on host serve** (`internal/opencode/servehost.go`) for the in-process population — standalone dispatches, follow-ups, Ask Orchicon later, and any execution not bound to a workflow run. Spawned by the control plane at boot, supervised by a health watchdog with restart + backoff, against a **dedicated** persistent data dir (`~/.local/share/orchicon/opencode`, seeded with the operator's model auth — never shares an `opencode.db` with the operator's own opencode). Sessions survive serve restarts. The operator's MCP servers are merged in, plus the built-in Orchicon MCP (tenant-scoped).
 - **Per-workflow-run container serve** for workflow executions. The supervisor starts `opencode serve` as a detached child (0.0.0.0, fixed port 4096, same guard + **stable** XDG data dir `/tmp/orchicon-serve-data`), owns the serve password (idempotent handshake), and the daemon returns the plane-reachable base URL (`http://<container-ip>:4096`) in `CreateResponse.ServeURL`. The serve is **warmed at container-create time** (the run-start gate passes `ServeConfig` to the daemon's checkout), so dispatch never cold-starts it. The plane reaches the serve **directly on the docker bridge** — no published port, no docker-proxy (a containerized plane cannot reach the host loopback, and published-port forwarding to a serve that starts lazily races). The serve config omits the operator's MCP servers (`SkipUserMCP`): a serve eagerly connects to every configured MCP server at startup, and the `orchicon`/`orchicon-dev` entries (which `docker exec` into containers) would hang it.
  - **Serve watchdog** (`internal/runtime/agent.go` `watchServe`): the supervisor polls the container serve every 10s and restarts it (in place, same port + password + stable XDG data dir, so sessions survive and the SSE client re-attaches by id) when it stops answering `/global/health` — covering a serve that WEDGES (alive but hung), which `watchExec` (process-exit only) never sees. The `runServe` idempotent handshake is liveness-gated: a registered-but-unhealthy serve is reported as DOWN (and restarted) rather than "up", so a dispatch never burns its 30s readiness probe against a dead serve.
@@ -1185,10 +1207,11 @@ For source-level iteration on the control plane itself, rebuild the image and re
 | `cache-trim-test` | CI gate: assert the cache trim's eviction semantics (order, grace window, stop-at-cap, `--dry-run`) and that it refuses to run against a non-cache directory |
 | `disk-report` | Report how much of the filesystem is held by **btrfs snapshots** rather than live files — the number `df` stays silent about. Subtracts `du` of every live file from the filesystem's data in use; on a **compressing** filesystem that second term is apparent size, so the result is a **lower bound** and is labelled one. Host diagnostic, never called from CI. See *Snapshots, and the space files no longer occupy* below |
 | `disk-report-test` | CI gate: assert disk-report's subtraction (metadata excluded, profiles summed), that partial coverage is labelled an upper bound, and that it degrades rather than dies |
+| `host-residency-test` | CI gate: the instance **launch shape** — that a plain `up` produces the default residency, that every per-instance value (ports, plane URL, data dir) is its OWN rather than shared with another instance, and that the host plane's two listeners are concrete addresses that cannot collide. Docker-free: it resolves shapes through `container.sh`'s own functions |
 | `clean-docker` | Prune Orchicon's dangling images + its own stopped containers (`--filter label=orchicon-instance`). **Never volumes**: it used to run `docker volume prune -f` host-wide, which removes other projects' data on any machine with more than Orchicon on it |
 | **CI** | |
 | `cross-compile` | Compile both shipped binaries for every release platform (linux/darwin/windows × amd64/arm64, `CGO_ENABLED=0`). Catches platform-specific breaks — see *Continuous integration* below. Builds into a **throwaway `GOCACHE`**: its six-platform output is worthless to a dev host and would otherwise be unreclaimable, so it must never land in the shared cache (see *The Go build cache*) |
-| `ci-go` | The Go control-plane gate: lint → gen-check → vet → test → synth-data → rls-check → adapter-bake-guard → **cache-trim-test** → **disk-report-test** → **cross-compile**. This is exactly what the `go-ci` workflow job runs |
+| `ci-go` | The Go control-plane gate: lint → gen-check → vet → test → synth-data → rls-check → adapter-bake-guard → **install-ps1-test** → **install-path-test** → **host-residency-test** → **cache-trim-test** → **disk-report-test** → **cross-compile**. This is exactly what the `go-ci` workflow job runs. The four `*-test` harnesses in the middle are the SHELL gates — they guard the installers, the launch shape and the host diagnostics, none of which Go tests can reach |
 | `ci` | `ci-go` + `fe-lint` + `fe-test` — the full gate |
 
 ### Code Generation
@@ -1683,7 +1706,8 @@ tenant admin (via the embedded IdP). The local-mode bootstrap is **opt-in**
 
 | Symptom | Likely Cause | Fix |
 |---|---|---|
-| Worker execution never starts | `opencode` not in PATH | Install opencode CLI: `curl -fsSL https://opencode.ai/install | bash` |
+| Worker execution never starts | `opencode` not installed, or installed where the runtime containers cannot see it | Install it **as your own user**: `curl -fsSL https://opencode.ai/install \| bash` (writes `~/.opencode/bin/opencode`, the one location the plane and its containers share). **Not with `sudo`** — `sudo npm i -g` writes to `/usr/local/bin` and no container mounts it. **On Windows, install it inside WSL**, not on the Windows side. See [USERGUIDE.md §1](USERGUIDE.md#installing-an-adapter-cli). |
+| The plane logs that opencode resolves outside what the containers can see, and workflow runs fail to find it | A system-wide install — normally `sudo npm i -g opencode` writing to `/usr/local/bin`, or a Windows install reached through WSL interop | The plane runs on the host and resolves `PATH`, but a runtime container sees only the adapter paths the daemon bind-mounts under `$HOME` (`internal/runtime` `classifyAdapter`). Re-install as your user, or set `ORCHICON_OPENCODE_BIN` to a path under `$HOME`. The startup warning names the resolved path. |
 | System prompt not sent to worker | Wrong env var | Must use `OPENCODE_CONFIG_CONTENT` with custom agent, not `OPENCODE_SYSTEM_PROMPT` |
 | Execution page shows the wrong system prompt (e.g. every worker looks like the first step's role) | Page read the shared work item's `prompt_context` | The work item is a shared input reference whose `prompt_context` carries the FIRST step's composite and never changes. Since v0.1.187 the execution page shows `WorkerExecution.system_prompt`, resolved from the linked workflow step run's `_prompt` (the actual per-step composite the model received). |
 | Loop decision stuck | Superseded step run conflict | Workflow reconciler must skip `SupersededBy != ""` runs |

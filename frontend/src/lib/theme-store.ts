@@ -7,16 +7,18 @@ const STORAGE_MODE_KEY = "orchicon_mode";
 const STORAGE_THEME_LEGACY_KEY = "orchicon_theme";
 
 const DEFAULT_LIGHT_THEME = "orchicon-light";
-// TEAL DEPTHS IS THE DEFAULT DARK THEME, at the operator's request: "Teal Depths as the default theme in
-// the GUI". It is the same family the TUI now defaults to (internal/tui/theme.DefaultName = "teal"), so a
-// fresh GUI and a fresh TUI open in the same colours instead of two different ones.
+// FOREST NIGHT IS THE DEFAULT DARK THEME, tracking the TUI: the operator asked for the default TUI theme
+// to be forest, and internal/tui/theme.DefaultName now names `forest`. It is the SAME FAMILY that default
+// belongs to, so a fresh GUI and a fresh TUI still open in the same colours instead of two different
+// ones — which is the property being preserved here, and the reason this constant moves WITH that one
+// rather than independently.
 //
 // It is a DEFAULT, not a pin: a stored preference still wins (loadThemeSlots reads
 // orchicon_theme_dark first), exactly as the TUI's explicit config theme wins over DefaultName. Only an
 // operator who has never chosen gets this — which is why changing it here does NOT change the colours of
 // anyone who has already picked a theme, including the operator testing this. Clear the
 // `orchicon_theme_dark` key (or pick Teal Depths in Settings) to see it.
-const DEFAULT_DARK_THEME = "orchicon-dark-teal";
+const DEFAULT_DARK_THEME = "orchicon-dark-forest";
 
 function loadMode(): "light" | "dark" {
   try {

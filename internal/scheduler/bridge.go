@@ -19,7 +19,15 @@ type ExecutionManifest struct {
 	ProjectID     string
 	WorkerID      string
 	WorkerVersion int
-	SystemPrompt  string
+	// AgentPromptLen is the BYTE LENGTH of the run-level prefix of SystemPrompt — the
+	// shared stable prefix plus the worker's identity block (db.AgentSystemPrompt).
+	//
+	// On 2.x that prefix travels as the opencode agent's `system`, so the adapter
+	// trims it off the message it sends; on 1.x it is 0 and the whole composite rides
+	// the per-message `system` field as it always did. 0 therefore means "do not
+	// trim", which is also the safe default for a manifest built by an older plane.
+	AgentPromptLen int
+	SystemPrompt   string
 	// PromptFingerprint is the sha256 over the project + work-item
 	// context-file stamps that produced this manifest's composite prompt
 	// (ADR-0009 D5). Unchanged fingerprint ⇒ the static prefix is

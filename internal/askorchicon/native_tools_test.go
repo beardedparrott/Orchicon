@@ -347,13 +347,26 @@ func TestNativeAskBashGuardBlocksDestructive(t *testing.T) {
 	if !strings.Contains(out, "ORCHICON GUARD") {
 		t.Fatalf("bash `sudo` was not guard-refused: out=%q", out)
 	}
-	// rm scoped: a target OUTSIDE the project dir is refused.
-	out, err = p.ExecuteAskTool(context.Background(), "bash", `{"command":"rm /etc/passwd"}`)
+	// rm scoped: a target OUTSIDE the project dir is refused. THE TARGET IS TEMP
+	// SPACE THIS TEST OWNS, never a system path: a guard test's real failure mode
+	// is what happens when a verdict REGRESSES, and asserting the refusal of
+	// `rm /etc/passwd` means a regression tries to delete /etc/passwd — which
+	// SUCCEEDS when the suite runs as root, as it does inside the runtime
+	// container. internal/guard's own tests state this rule; this one now obeys it.
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "victim.txt")
+	if err := os.WriteFile(victim, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err = p.ExecuteAskTool(context.Background(), "bash", `{"command":"rm `+victim+`"}`)
 	if err != nil {
 		t.Fatalf("rm probe returned transport error (want refusal as result): %v", err)
 	}
 	if !strings.Contains(out, "ORCHICON GUARD") {
-		t.Fatalf("bash `rm /etc/passwd` was not guard-refused: out=%q", out)
+		t.Fatalf("bash `rm %s` was not guard-refused: out=%q", victim, out)
+	}
+	if _, err := os.Stat(victim); err != nil {
+		t.Fatalf("an out-of-scope rm was ALLOWED — the target is gone: %v", err)
 	}
 	// And the guard dir is genuinely FIRST on PATH for Ask bash.
 	out, err = p.ExecuteAskTool(context.Background(), "bash", `{"command":"echo $PATH"}`)

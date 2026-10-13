@@ -666,12 +666,6 @@ function Ask-Instance {
 $script:ContainerName = "orchicon-cnt-$script:Instance"
 $script:VolumeName = "orchicon-cnt-$script:Instance-data"
 
-# A PLAIN INSTALL ASKS TOO, so the operator knows which stack they are creating. It is the only path that
-# gets a fallback: see Ask-Instance. The destructive verbs below call it with none.
-if (-not ($Uninstall -or $RemoveBinary -or $Clean -or $ForceClean)) {
-    Ask-Instance -Fallback "dev"
-}
-
 # --- Uninstall --------------------------------------------------------------
     if ($RemoveBinary) {
         if (-not (Ensure-Wsl -Soft)) {
@@ -869,6 +863,16 @@ true
     if (-not $DryRun) {
         Ensure-WslDocker
     }
+
+    # A PLAIN INSTALL ASKS WHICH INSTANCE — and it asks HERE, after the prerequisites, not before them.
+    #
+    # It used to ask at the top of the script, so the operator chose a stack and was THEN told that WSL or
+    # Docker was missing. A question about which stack to create is only answerable if the stack can be
+    # created, and asking first wastes the answer and buries the real problem under it.
+    #
+    # It is the only verb that gets a fallback (see Ask-Instance): installing to the documented default is
+    # not destructive. The destructive verbs pass none.
+    Ask-Instance -Fallback "dev"
 
     # --- Resolve version --------------------------------------------------------
     if (-not $Version -or $Version -eq "latest") {

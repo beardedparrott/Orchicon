@@ -128,7 +128,7 @@ export const DARK_THEMES: Theme[] = [
     // The preview strip follows index.css: the first two are the real --background and --card, the third
     // the real --primary. They read #0f1c1c / #1a2e2e / #2dd4bf while index.css said otherwise — the
     // same mismatch the Ember note above describes, one layer up — so they are read from the tokens now.
-    swatches: ["#152322", "#1e2f2d", "#24dbc6", "#22d3ee", "#34d399"],
+    swatches: ["#1b2b2c", "#243638", "#24dbc6", "#22d3ee", "#34d399"],
   },
   {
     id: "orchicon-dark-crimson",

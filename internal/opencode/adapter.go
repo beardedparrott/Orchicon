@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -354,7 +353,14 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 		if baseURL == "" {
 			baseURL = fmt.Sprintf("http://127.0.0.1:%d", resp.ServePort)
 		}
-		return NewSessionClient(baseURL, resp.ServePassword, executionDir(manifest))
+		client := NewSessionClient(baseURL, resp.ServePassword, executionDir(manifest))
+		// The container serve runs the SAME binary this adapter resolves, so it speaks the same API.
+		client.setAPIShape(a.apiShape())
+		// This serve was built for THIS run (see RunServeConfig), so it carries the run's step-worker
+		// agents and the session can be switched to its own. The HOST path below deliberately does not
+		// set this: a host serve is shared and bakes no agents.
+		client.SetAgentsAvailable(true)
+		return client
 	}
 	if a.host != nil {
 		// Lazy host serve (AC 2): the in-process serve starts on FIRST
@@ -493,7 +499,7 @@ func runtimeContainerRouteEnabled(hasClient bool, m scheduler.ExecutionManifest)
 // (ORCHICON_POSTGRES_DSN), so workers get the `orchicon_*` tools natively
 // against their own sandbox — never the host plane's DB. Base/gui images
 // get no MCP (no sandbox plane), behavior identical to today.
-func RuntimeServeConfig(imageTag, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution, providers []runtime.ProviderConfig) string {
+func RuntimeServeConfig(imageTag, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution, providers []runtime.ProviderConfig, workers []adapter.WorkerAgent) string {
 	opts := ConfigOptions{
 		AgentName:    workerAgent,
 		AgentPrompt:  sessionToolShell,
@@ -502,6 +508,20 @@ func RuntimeServeConfig(imageTag, projectDir, workflowRunID string, planeEnv map
 		SkipUserMCP:  true,
 		RunMCP:       union.Servers,
 		RunSkills:    union.Skills,
+		// Workers are the RUN's step workers as agents, each carrying the run-level
+		// part of that worker's prompt. They matter on 2.x, where a prompt can only
+		// reach the model through the agent (see adapter.WorkerAgent); on a v1
+		// serve the builder ignores them and the prompt rides the per-message
+		// `system` field as it always did.
+		Workers: workers,
+		// WorkflowRunID reaches the worktree MCP sidecar, which needs it to derive
+		// the run-state directory its todo snapshot is written into (see
+		// worktreeMCPServer). Without it the sidecar still serves every tool, but
+		// `todowrite` has nowhere the PLANE can read and the todo panel stays empty.
+		WorkflowRunID: workflowRunID,
+		// Shape is deliberately NOT set: BuildConfigContent resolves it from the
+		// host's version probe, and the container's serve runs the SAME opencode
+		// install bind-mounted from this host, so the host's answer is its answer.
 		// Providers are the tenant's local-model endpoints, TRANSPOSED for this
 		// container by the run-level resolver (providers.TransposeForContainer). A
 		// container's own 127.0.0.1 is itself, so the host's loopback is unreachable
@@ -591,7 +611,7 @@ func (a *Adapter) startViaSession(ctx context.Context, procCtx context.Context, 
 		callbacks: callbacks,
 		client:    client,
 		modelRef:  modelRef,
-		system:    executionSystemPrompt(manifest),
+		system:    executionSystemPrompt(manifest, client.shape),
 		done:      make(chan struct{}),
 		stats:     &execStreamState{},
 		// Unified warn→escalate→abort ladder. The spend accumulator starts
@@ -611,16 +631,48 @@ func (a *Adapter) startViaSession(ctx context.Context, procCtx context.Context, 
 // built-in tools — the whole point of the composite-tools feature (fewer
 // turns, less re-sent context). Host-serve executions (RuntimeWorkflowID
 // empty) have no composite tools and get the bare worker system prompt.
-func executionSystemPrompt(manifest scheduler.ExecutionManifest) string {
+func executionSystemPrompt(manifest scheduler.ExecutionManifest, shape apiShape) string {
 	sp := manifest.SystemPrompt
 	if manifest.WorktreePath != "" {
 		sp += worktreePathDiscipline
 	}
 	if manifest.RuntimeWorkflowID != "" && manifest.ProjectDir != "" {
-		sp += batchToolsDiscipline
+		// WHICH DISCIPLINE DEPENDS ON WHETHER THE TOOLS CAN BE CALLED AT ALL, and the two are not
+		// interchangeable. batchToolsDiscipline tells the worker to reach for `batch_read` directly;
+		// on a Code Mode surface that instruction is UNSATISFIABLE — MCP tools are callable only
+		// from inside `execute` — and a worker given it reports the tools as missing from its
+		// catalog and falls back to `shell` (observed on a real 2.x run). One of these is always
+		// emitted for a composite-tools run; neither is emitted for a run without them.
+		if shape.codeMode {
+			sp += codeModeDiscipline
+		} else {
+			sp += batchToolsDiscipline
+		}
 	}
 	return sp
 }
+
+// codeModeDiscipline steers a composite-tools worker on an opencode 2.x serve, where MCP tools
+// CANNOT be called directly (see apiShape.codeMode).
+//
+// It names the exact call form rather than describing it, because the namespace is the one thing
+// the model cannot infer: our server is registered as `orchicon-worktree`, so the tools are reached
+// as `tools["orchicon-worktree"].<name>(...)` inside an `execute` call and never by a bare name.
+// The model discovered this form by searching, unaided — this just saves it the detour.
+const codeModeDiscipline = "\n\n# Tool discipline (Code Mode)\n" +
+	"THIS SERVES OPENCODE 2.x, WHOSE CODE MODE FORBIDS CALLING MCP TOOLS DIRECTLY. " +
+	"You have an `execute` tool that runs JavaScript, and our file/todo tools are MCP tools — " +
+	"they are reachable ONLY from inside `execute`, never as a top-level tool call:\n" +
+	"- Read: `return await tools[\"orchicon-worktree\"].batch_read({ paths: [\"a.go\", \"b.go\"] })`\n" +
+	"- Search: `return await tools[\"orchicon-worktree\"].batch_grep({ patterns: [\"foo\", \"bar\"] })`\n" +
+	"- Write: `return await tools[\"orchicon-worktree\"].batch_write({ writes: [...] })`\n" +
+	"- Todos: `return await tools[\"orchicon-worktree\"].todowrite({ todos: [{content,status,priority}] })`\n" +
+	"If unsure of a name, find it first: `return search({ query: \"batch\" })`. Do NOT guess tool names.\n" +
+	"`shell` / `edit` / `write` / `read` / `grep` ARE directly callable and fine for a single quick " +
+	"operation. But BATCH your file access through `execute`: one `batch_read` carrying many paths is " +
+	"one turn, where several `shell` calls are several.\n" +
+	"Never re-read a file whose content is already in context — every extra call re-sends the whole " +
+	"conversation.\n"
 
 // batchToolsDiscipline steers the worker to the composite context-efficient
 // file tools. It is phrased defensively ("if available") so a worker whose
@@ -738,6 +790,27 @@ const sessionToolShell = "File access tools:\n" +
 // (host) executable path.
 const runtimeContainerBinaryPath = "/usr/local/bin/orchicon"
 
+// apiShape resolves the API surface of this adapter's opencode binary, once.
+//
+// It goes through a.resolveBinary — the SAME seam the spawn path uses — so a test that stubs the
+// binary also stubs the version, and a plane cannot detect one opencode while spawning another. A
+// resolver failure is not an error here: it means the spawn path will fail loudly on its own, and
+// this only needs to pick a shape, so v1 (the installed-base default) is the answer.
+func (a *Adapter) apiShape() apiShape {
+	// THE RESOLVER IS AN OPTIONAL SEAM, so a nil one is not an error to report — it is an adapter that
+	// has not been wired for spawning, and it will fail loudly on its own when it tries. Guarding here
+	// rather than relying on every construction path to call New() is what keeps this from turning a
+	// detection detail into a panic in an unrelated test.
+	if a.resolveBinary == nil {
+		return shapeV1
+	}
+	binary, err := a.resolveBinary()
+	if err != nil || strings.TrimSpace(binary) == "" {
+		return shapeV1
+	}
+	return shapeForBinary(context.Background(), a.log, binary)
+}
+
 // New creates an OpenCode adapter bridge.
 // SetBinaryResolver overrides the adapter-CLI resolver (test seam —
 // hermetic CI: bare runners never install adapter CLIs, so tests stub
@@ -750,22 +823,16 @@ func (a *Adapter) SetBinaryResolver(f func() (string, error)) {
 	a.resolveBinary = f
 }
 
-// resolveOpenCodeBinary is the production resolver: probe PATH, then the
-// operator's host install at $HOME/.opencode/bin (the runtime daemon and
-// scripts/container.sh mount it there — Orchicon never ships the binary).
-func resolveOpenCodeBinary() (string, error) {
-	binary, err := exec.LookPath("opencode")
-	if err != nil {
-		if home, herr := os.UserHomeDir(); herr == nil {
-			cand := filepath.Join(home, ".opencode", "bin", "opencode")
-			if st, serr := os.Stat(cand); serr == nil && !st.IsDir() {
-				return cand, nil
-			}
-		}
-		return "", fmt.Errorf("opencode binary not found on PATH or ~/.opencode/bin (install it on the host: curl -fsSL https://opencode.ai/install | bash; set ORCHICON_SIMULATE_ADAPTER=1 only for offline dev): %w", err)
-	}
-	return binary, nil
-}
+// resolveOpenCodeBinary is the production resolver. It LIVES IN binary.go now —
+// the adapter, the host serve and the plane's discovery wiring had one copy each
+// and they disagreed about ORCHICON_OPENCODE_BIN (only discovery read it), which
+// is the variable the plane's own error message tells the operator to set. See
+// binary.go for the candidate list and why every candidate is one a runtime
+// container can actually reach.
+//
+// It stays declared here as a package-level name because it is the adapter's
+// DEFAULT for the resolveBinary seam (SetBinaryResolver(nil) restores it) and the
+// fail-fast tests call it directly.
 
 func New(log *slog.Logger) *Adapter {
 	return &Adapter{
@@ -1243,6 +1310,23 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 		if toolName == "todowrite" {
 			items := parseTodoItems(inRaw)
 			worktree.SaveTodoSnapshot(worktree.BaseFor(executionDir(manifest)), items)
+			// AND THE RUN-STATE COPY, which is the one the todo PANEL reads.
+			//
+			// On 2.x this mirror never fires at all — our tools are MCP tools and
+			// opencode routes them through `execute`, so the transcript names the
+			// tool `execute`, not `todowrite`. That is exactly why the MCP SIDECAR
+			// writes the run-state file too (internal/mcp/worktree.go). This path
+			// covers a v1 serve, where `todowrite` can be opencode's OWN native tool
+			// and so never reaches our MCP handler.
+			//
+			// Reported rather than swallowed: a silently missing snapshot is how the
+			// panel came to show nothing while every layer believed it had succeeded.
+			if rs := worktree.RunStateDir(manifest.ProjectDir, manifest.RuntimeWorkflowID); rs != "" {
+				if err := worktree.SaveRunTodoSnapshot(rs, items); err != nil {
+					a.log.Warn("todowrite run-state snapshot not written — the todo panel will not update",
+						"execution", execID, "run", manifest.RuntimeWorkflowID, "error", err)
+				}
+			}
 		}
 
 		// Detect `write` tool calls (opencode built-in file writer)
@@ -1353,6 +1437,34 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 		// unpacking recordUsage just used — no second pricing formula).
 		if budget != nil {
 			budget.add(tokens, cost)
+		}
+		// PER-STEP FILE ATTRIBUTION, and on 2.x the only LIVE capture there is.
+		//
+		// `session.step.ended.files` is opencode's own list of the paths the step
+		// changed. It matters because every other capture in this file keys on a
+		// TOOL NAME — and on a Code Mode serve no MCP tool is ever a tool name:
+		// `batch_write` arrives as `execute`. So the live hook above matches
+		// nothing, and the end-of-run git reconcile is defeated separately by the
+		// worker COMMITTING its work (its brief orders a clean `git status`). This
+		// is what remains: a signal the agent surface emits about its own edit,
+		// independent of how it was invoked.
+		//
+		// Fed through the SAME "file_diff" hook the diff-event path uses, so the
+		// observer's before/after reading and its no-op suppression are shared
+		// rather than reimplemented — and an engine-covered path is skipped, since
+		// its exact diff is already recorded.
+		if a.fileEdits != nil {
+			files, _ := part["files"].([]any)
+			for _, f := range files {
+				fp, _ := f.(string)
+				if fp == "" {
+					continue
+				}
+				if stats != nil && stats.engineEditedPaths[fp] {
+					continue
+				}
+				a.fileEdits(ctx, execID, execRow.TenantID, executionDir(manifest), "file_diff", map[string]any{"path": fp}, "")
+			}
 		}
 	case evtFileDiff:
 		// A file_diff event carries the path of a file the session wrote
@@ -1958,6 +2070,13 @@ func isInfraModelTurnError(msg string) bool {
 	for _, term := range []string{
 		"http 4", "http 5",
 		"401", "403", "unauthorized", "forbidden",
+		// The AUTH/ACCESS class BY NAME, not only by status code — and this is load-bearing
+		// since v2 failures gained a path into here. opencode's refusal to serve a free-tier
+		// model unattended is `AI.Error.Authentication: OpenCode's free tier can only be used
+		// from within OpenCode`: no 401, no "unauthorized". Without these terms it fell
+		// through to the socket check, where an infrastructure MISCLASSIFICATION recycles the
+		// container instead of telling the operator that the MODEL is the problem.
+		"authentication", "unauthenticated", "free tier",
 		"rate limit", "429",
 		"insufficient", "quota", "policy",
 	} {

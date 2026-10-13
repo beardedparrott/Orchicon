@@ -48,6 +48,7 @@ import (
 	"time"
 
 	assets "github.com/beardedparrott/orchicon"
+	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/version"
 )
 
@@ -839,12 +840,27 @@ func (s *supervisor) planeProc() *managedProc {
 		// HOME must point at the host user's home so opencode finds its
 		// config/auth and git picks up the user's identity.
 		childEnv = append(childEnv, "HOME="+s.hostHome)
-		// The mounted adapter CLI (opencode) lives at $HOME/.opencode/bin
-		// (the image never ships it) — prepend it to the plane's PATH so
-		// the adapter's LookPath resolves it without disturbing the rest
-		// of the container's PATH (e.g. postgres's own bin dir).
-		if st, err := os.Stat(filepath.Join(s.hostHome, ".opencode", "bin", "opencode")); err == nil && !st.IsDir() {
-			childEnv = append(childEnv, "PATH="+filepath.Join(s.hostHome, ".opencode", "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+		// The mounted adapter CLI (opencode) lives under $HOME (the image never
+		// ships it) — prepend every directory the RESOLVER probes to the plane's
+		// PATH so its LookPath resolves the same binary the adapter will spawn,
+		// without disturbing the rest of the container's PATH (e.g. postgres's own
+		// bin dir).
+		//
+		// IT READS THE RESOLVER'S LIST rather than naming ~/.opencode/bin a second
+		// time. A hand-written copy is how the prefix and the resolution drift: the
+		// plane prepends a directory it believes holds opencode while the resolver
+		// looks somewhere else, and the symptom is a serve reporting 'not found'
+		// with the binary sitting on the PATH it was handed. Only dirs that EXIST
+		// in this container are prepended, so the prefix never points at a mount
+		// that was not made.
+		var binDirs []string
+		for _, dir := range opencode.OpenCodeBinDirs(s.hostHome) {
+			if st, err := os.Stat(dir); err == nil && st.IsDir() {
+				binDirs = append(binDirs, dir)
+			}
+		}
+		if len(binDirs) > 0 {
+			childEnv = append(childEnv, "PATH="+strings.Join(binDirs, string(os.PathListSeparator))+string(os.PathListSeparator)+os.Getenv("PATH"))
 		}
 		// gh CLI auth from the mounted git credential store (PR/merge
 		// workers), unless the operator set GH_TOKEN explicitly.

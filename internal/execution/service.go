@@ -30,6 +30,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 	"github.com/beardedparrott/orchicon/internal/transcript"
+	"github.com/beardedparrott/orchicon/internal/worktree"
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -1345,11 +1346,23 @@ func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Req
 }
 
 // GetExecutionTodos returns the worker's most recent todo list for an
-// execution, parsed from the session transcript's latest todowrite tool
-// call. It is display-only data: the todos live in the durable transcript
-// (execution_session_parts) and are the source of truth. Returns an empty
-// list when the worker never recorded a todowrite call (or the transcript is
-// empty).
+// execution.
+//
+// TWO SOURCES, IN PRIORITY ORDER, because neither alone is sufficient:
+//
+//  1. THE RUN-STATE SNAPSHOT (<projectDir>/.orchicon/<runID>/todos.json) is
+//     AUTHORITATIVE. It is written by the `todowrite` TOOL itself, so it is the
+//     only record that survives opencode 2.x routing every MCP call through
+//     `execute` — on that surface the transcript names the tool `execute` and a
+//     parser matching the tool NAME finds nothing at all, even though the tool
+//     ran and reported success. It also outlives the worktree, so a finished
+//     run's plan stays readable.
+//  2. THE TRANSCRIPT PARSE is the fallback, for a run whose tool never wrote the
+//     snapshot: pre-existing runs, a sidecar not told its run id, or the
+//     DB-backed path where opencode's OWN native todowrite (v1) was used.
+//
+// Falls through to an empty list when neither has anything — a run that never
+// wrote todos is not an error.
 func (s *Service) GetExecutionTodos(ctx context.Context, req *connect.Request[apiv1.GetExecutionTodosRequest]) (*connect.Response[apiv1.GetExecutionTodosResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -1364,6 +1377,14 @@ func (s *Service) GetExecutionTodos(ctx context.Context, req *connect.Request[ap
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	defer ttx.Rollback(ctx)
+
+	if items, ok := runStateTodos(ctx, ttx.Tx, tenantID, msg.ExecutionId); ok {
+		if err := ttx.Commit(ctx); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		return connect.NewResponse(&apiv1.GetExecutionTodosResponse{Todos: todosFromSnapshot(items)}), nil
+	}
+
 	parts, err := db.LatestToolUseParts(ctx, ttx.Tx, tenantID, msg.ExecutionId, 1000)
 	if err != nil {
 		return nil, mapDBError(err)
@@ -1372,6 +1393,27 @@ func (s *Service) GetExecutionTodos(ctx context.Context, req *connect.Request[ap
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	return connect.NewResponse(&apiv1.GetExecutionTodosResponse{Todos: latestTodos(parts)}), nil
+}
+
+// runStateTodos resolves an execution to its run's run-state todo snapshot.
+// ok=false covers every "no snapshot here" case — an unknown execution, a run
+// with no project, a project with no dir on this host, or simply a run whose
+// tool never wrote one. None of those is an error; each means the caller falls
+// back to the transcript.
+func runStateTodos(ctx context.Context, tx pgx.Tx, tenantID, execID string) ([]worktree.TodoItem, bool) {
+	exec, err := db.GetExecution(ctx, tx, tenantID, execID)
+	if err != nil || exec.WorkflowRunID == "" {
+		return nil, false
+	}
+	run, err := db.GetWorkflowRun(ctx, tx, tenantID, exec.WorkflowRunID)
+	if err != nil || run.ProjectID == "" {
+		return nil, false
+	}
+	proj, err := db.GetProject(ctx, tx, tenantID, run.ProjectID)
+	if err != nil || proj.ProjectDir == "" {
+		return nil, false
+	}
+	return worktree.ReadRunTodoSnapshot(worktree.RunStateDir(proj.ProjectDir, run.ID))
 }
 
 // composeFollowUpPrompt rebuilds the worker's composed system prompt for a

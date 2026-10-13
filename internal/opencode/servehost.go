@@ -197,7 +197,25 @@ func (h *HostServe) Watch(ctx context.Context) {
 		case <-time.After(15 * time.Second):
 		}
 		client := h.Client()
-		if client == nil || client.MCPHealthy(ctx) {
+		// LIVENESS, NOT DISPATCH-READINESS. This asked MCPHealthy — which CREATES A REAL SESSION every
+		// 15 seconds — and that conflated two different questions with a measurable cost:
+		//
+		//   * creating a session on opencode 2.x can have to BOOT the managed service for the location
+		//     (the same eviction/re-boot race that makes `opencode models` intermittently empty), so a
+		//     probe that is merely SLOW reads as DEAD;
+		//   * the watchdog then restarts a serve that was healthy, which KILLS IN-FLIGHT TURNS and
+		//     leaves a refused-connection window until the replacement listens — reported as a turn
+		//     that spun on "thinking" without ever returning, followed by "connection refused" on the
+		//     retry;
+		//   * and it leaked a session into the store every 15 seconds (aborted, never deleted).
+		//
+		// Measured on the operator's prod plane: "host opencode serve ready" followed by "unhealthy —
+		// restarting" three times in one evening, on a serve that was answering the whole time.
+		//
+		// The watchdog's only question is "is the process still answering?" — Healthy answers that,
+		// cheaply and definitively, and a genuinely wedged or dead serve fails it. WHETHER a serve can
+		// accept work is asked where it matters, at dispatch, by ProbeUsable (the run-start gate).
+		if client == nil || client.Healthy(ctx) {
 			backoff = 5 * time.Second
 			continue
 		}
@@ -367,6 +385,10 @@ func (h *HostServe) serveConfig() string {
 		PermissionProfile: h.profile,
 		RunMCP:            set.Servers,
 		RunSkills:         set.Skills,
+		// Shape is deliberately NOT set: BuildConfigContent resolves it from the
+		// same version probe the session client uses (setAPIShape, in startOnce),
+		// so the routes and the injected config cannot disagree about which
+		// opencode this is.
 	})
 	return cfg
 }
@@ -397,19 +419,13 @@ func (h *HostServe) startOnce(ctx context.Context) error {
 		return fmt.Errorf("host serve guard: %w", err)
 	}
 
-	binary, err := exec.LookPath("opencode")
+	// The SAME resolver the adapter spawns through, so the host serve and the
+	// in-container spawn can never disagree about which opencode is 'the' one.
+	// This used to be a second copy of the probe that ignored ORCHICON_OPENCODE_BIN.
+	binary, err := resolveOpenCodeBinary()
 	if err != nil {
 		g.Close()
-		if home, herr := os.UserHomeDir(); herr == nil {
-			cand := filepath.Join(home, ".opencode", "bin", "opencode")
-			if st, serr := os.Stat(cand); serr == nil && !st.IsDir() {
-				binary = cand
-			}
-		}
-	}
-	if binary == "" {
-		g.Close()
-		return fmt.Errorf("opencode binary not found (host serve disabled; executions fail fast — no one-shot fallback)")
+		return fmt.Errorf("host serve disabled; executions fail fast — no one-shot fallback: %w", err)
 	}
 
 	env := append(os.Environ(),
@@ -439,6 +455,10 @@ func (h *HostServe) startOnce(ctx context.Context) error {
 	h.port = port
 	h.guard = g
 	h.client = NewSessionClient(fmt.Sprintf("http://127.0.0.1:%d", port), password, "")
+	// WHICH API THIS SERVE SPEAKS, asked of the binary that IS the serve. opencode 2.x moved every
+	// session endpoint under /api (apisurface.go); a client that assumed v1 against a 2.x serve
+	// would fail every turn on a 404 and name no endpoint.
+	h.client.setAPIShape(shapeForBinary(ctx, h.log, binary))
 	h.started = true
 	h.mu.Unlock()
 

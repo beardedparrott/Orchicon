@@ -111,7 +111,7 @@ func TestBuildConfigContentDoesNotDenyReadGrepByDefault(t *testing.T) {
 // image (or an unresolved project dir) must NOT emit the deny, so a worker is
 // never locked out of file access with no batch tool to fall back on.
 func TestRuntimeServeConfigCompositeToolsLiveOnDev(t *testing.T) {
-	dev := RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "", nil, mcpclient.Resolution{}, nil)
+	dev := RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "", nil, mcpclient.Resolution{}, nil, nil)
 	var devCfg map[string]any
 	if err := json.Unmarshal([]byte(dev), &devCfg); err != nil {
 		t.Fatalf("dev config not valid JSON: %v", err)
@@ -137,7 +137,7 @@ func TestRuntimeServeConfigCompositeToolsLiveOnDev(t *testing.T) {
 	// Composite tools are LIVE on base/gui images too: the worktree sidecar is
 	// DB-less and runs from the daemon's bind-mounted binary. Only the sandbox
 	// DB MCP (`orchicon`) stays dev-only.
-	base := RuntimeServeConfig("orchicon-runtime:local", "/worktree", "", nil, mcpclient.Resolution{}, nil)
+	base := RuntimeServeConfig("orchicon-runtime:local", "/worktree", "", nil, mcpclient.Resolution{}, nil, nil)
 	var bcfg map[string]any
 	if err := json.Unmarshal([]byte(base), &bcfg); err != nil {
 		t.Fatalf("base config not valid JSON: %v", err)
@@ -232,7 +232,7 @@ func TestRuntimeServeConfigPlaneChannelOnEveryImage(t *testing.T) {
 		"orchicon-runtime:web-research",
 		"orchicon-runtime:orchicon-dev",
 	} {
-		out := RuntimeServeConfig(tag, "/worktree", "run-123", planeEnv, mcpclient.Resolution{}, nil)
+		out := RuntimeServeConfig(tag, "/worktree", "run-123", planeEnv, mcpclient.Resolution{}, nil, nil)
 		var cfg map[string]any
 		if err := json.Unmarshal([]byte(out), &cfg); err != nil {
 			t.Fatalf("%s config not valid JSON: %v", tag, err)
@@ -258,7 +258,7 @@ func TestRuntimeServeConfigPlaneChannelOnEveryImage(t *testing.T) {
 	// Deny-by-default is preserved: no planeEnv → no plane channel on any
 	// image (a worker whose role grants nothing gets no plane tools).
 	for _, tag := range []string{"orchicon-runtime:orchicon-dev", "orchicon-runtime:web-research"} {
-		out := RuntimeServeConfig(tag, "/worktree", "run-123", nil, mcpclient.Resolution{}, nil)
+		out := RuntimeServeConfig(tag, "/worktree", "run-123", nil, mcpclient.Resolution{}, nil, nil)
 		var cfg map[string]any
 		if err := json.Unmarshal([]byte(out), &cfg); err != nil {
 			t.Fatalf("%s config not valid JSON: %v", tag, err)
@@ -274,7 +274,7 @@ func TestRuntimeServeConfigPlaneChannelOnEveryImage(t *testing.T) {
 func TestRuntimeServeConfigSandboxMCPOnlyOnDevImages(t *testing.T) {
 	// Dev image: the container serve must register the Orchicon MCP against
 	// the sandbox Postgres (workers get orchicon_* tools in-sandbox).
-	dev := RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "", nil, mcpclient.Resolution{}, nil)
+	dev := RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "", nil, mcpclient.Resolution{}, nil, nil)
 	var devCfg map[string]any
 	if err := json.Unmarshal([]byte(dev), &devCfg); err != nil {
 		t.Fatalf("dev config not valid JSON: %v", err)
@@ -298,7 +298,7 @@ func TestRuntimeServeConfigSandboxMCPOnlyOnDevImages(t *testing.T) {
 
 	// Base/gui image: no sandbox plane, no MCP — behavior identical to today.
 	for _, tag := range []string{"ghcr.io/beardedparrott/orchicon-runtime:latest", "orchicon-runtime:gui-latest"} {
-		base := RuntimeServeConfig(tag, "", "", nil, mcpclient.Resolution{}, nil)
+		base := RuntimeServeConfig(tag, "", "", nil, mcpclient.Resolution{}, nil, nil)
 		var baseCfg map[string]any
 		if err := json.Unmarshal([]byte(base), &baseCfg); err != nil {
 			t.Fatalf("base config not valid JSON: %v", err)
@@ -341,7 +341,7 @@ func TestBuildConfigContentCompactionPruneEnabled(t *testing.T) {
 
 	// Runtime-container serve (dev image, the SDLC runs) + base image.
 	for _, tag := range []string{"orchicon-runtime:orchicon-dev", "ghcr.io/beardedparrott/orchicon-runtime:latest"} {
-		out := RuntimeServeConfig(tag, "/worktree", "", nil, mcpclient.Resolution{}, nil)
+		out := RuntimeServeConfig(tag, "/worktree", "", nil, mcpclient.Resolution{}, nil, nil)
 		var cfg map[string]any
 		if err := json.Unmarshal([]byte(out), &cfg); err != nil {
 			t.Fatalf("runtime config not valid JSON: %v", err)
@@ -362,7 +362,7 @@ func TestBuildConfigContentCompactionPruneEnabled(t *testing.T) {
 // is the per-turn token win: Orchicon's real system prompt still rides the
 // per-message `system` field; the agent prompt is just a tool-guideline shell.
 func TestBuildConfigContentWorkerDefaultAgent(t *testing.T) {
-	out := RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "", nil, mcpclient.Resolution{}, nil)
+	out := RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "", nil, mcpclient.Resolution{}, nil, nil)
 	var cfg map[string]any
 	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
 		t.Fatalf("runtime config not valid JSON: %v", err)
@@ -401,7 +401,7 @@ func TestBuildConfigContentWorkerDefaultAgent(t *testing.T) {
 func TestBuildConfigContentToolOutputAndBatchTool(t *testing.T) {
 	for name, out := range map[string]string{
 		"host serve":  BuildConfigContent(ConfigOptions{AgentName: workerAgent}),
-		"runtime dev": RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "", nil, mcpclient.Resolution{}, nil),
+		"runtime dev": RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "", nil, mcpclient.Resolution{}, nil, nil),
 	} {
 		var cfg map[string]any
 		if err := json.Unmarshal([]byte(out), &cfg); err != nil {
@@ -482,7 +482,7 @@ func TestRuntimeServeConfigCarriesRunUnion(t *testing.T) {
 				From: mcpclient.ScopeProject, FromID: "project:prj_1"},
 		},
 	}
-	out := RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "run-1", nil, union, nil)
+	out := RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "run-1", nil, union, nil, nil)
 
 	var cfg map[string]any
 	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
@@ -533,8 +533,8 @@ func TestRunUnionDeterministic(t *testing.T) {
 		},
 		Skills: []mcpclient.InlineSkillFile{{Path: "skills/x.md"}},
 	}
-	first := RuntimeServeConfig("orchicon-runtime:local", "/worktree", "run-9", map[string]string{"A": "1"}, union, nil)
-	second := RuntimeServeConfig("orchicon-runtime:local", "/worktree", "run-9", map[string]string{"A": "1"}, union, nil)
+	first := RuntimeServeConfig("orchicon-runtime:local", "/worktree", "run-9", map[string]string{"A": "1"}, union, nil, nil)
+	second := RuntimeServeConfig("orchicon-runtime:local", "/worktree", "run-9", map[string]string{"A": "1"}, union, nil, nil)
 	if first != second {
 		t.Fatalf("the config is not deterministic for a run:\n%s\n---\n%s", first, second)
 	}
@@ -550,7 +550,7 @@ func TestRuntimeServeConfigEmitsRunSkills(t *testing.T) {
 			{Path: "/abs/skill/from-store.md"},
 			{Path: "inline/Deploy Helper", Content: "# Deploy\nstep 1"},
 		},
-	}, nil)
+	}, nil, nil)
 	var cfg map[string]any
 	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
 		t.Fatalf("config is not valid JSON: %v", err)
@@ -587,7 +587,7 @@ func TestProvenanceOfServeConfigNamesOnly(t *testing.T) {
 			{Spec: mcpclient.ServerSpec{ID: "b-secret", URL: "https://x", Headers: map[string]string{"Authorization": "Bearer TOPSECRET"}}},
 			{Spec: mcpclient.ServerSpec{ID: "a-server", Command: []string{"/bin/a"}}},
 		},
-	}, nil)
+	}, nil, nil)
 	got := provenanceOfServeConfig(cfg)
 	if !strings.Contains(got, "a-server") || !strings.Contains(got, "b-secret") {
 		t.Fatalf("provenance did not name the servers: %q", got)
@@ -597,5 +597,57 @@ func TestProvenanceOfServeConfigNamesOnly(t *testing.T) {
 	}
 	if got != "a-server,b-secret,orchicon-worktree" {
 		t.Fatalf("provenance is not the sorted name set: %q", got)
+	}
+}
+
+// TestBuildConfigContentCodeModeDoesNotDenyReadGrep is the regression pin for the 2.x gate.
+//
+// THE DENY AND THE SURFACE MUST AGREE. Denying the built-in read/grep exists for exactly one reason:
+// to push the worker onto batch_read/batch_grep. That reasoning needs the worker to be ABLE to call
+// them, and on a Code Mode serve it cannot — every MCP tool is reachable only from inside `execute`
+// (opencode's own prompt: "They cannot be called directly"). So the deny stops redirecting anything
+// and instead deletes the worker's file-reading tools, leaving it with `shell` alone. Measured on a
+// verified 2.x run before this gate: 63 `shell` calls, zero `batch_*`.
+//
+// The other half matters as much: the worktree MCP server must STAY REGISTERED. The tools are not
+// broken on 2.x, only differently reached, so dropping the deny must not drop the server.
+func TestBuildConfigContentCodeModeDoesNotDenyReadGrep(t *testing.T) {
+	out := BuildConfigContent(ConfigOptions{
+		AgentName:      workerAgent,
+		AgentPrompt:    sessionToolShell,
+		DefaultAgent:   workerAgent,
+		Shape:          ConfigShapeV2,
+		CompositeTools: true,
+		WorktreeDir:    "/worktree",
+	})
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("config content is not valid JSON: %v", err)
+	}
+
+	// The server stays: on 2.x the tools work, through `execute`.
+	mcp, ok := cfg["mcp"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected an mcp block, got %#v", cfg["mcp"])
+	}
+	servers, _ := mcp["servers"].(map[string]any)
+	if _, ok := servers["orchicon-worktree"]; !ok {
+		t.Fatalf("the worktree MCP server must stay registered on a Code Mode serve, got %#v", mcp)
+	}
+
+	// The v2 permission document is an ordered ARRAY (see configshape.go).
+	perms, ok := cfg["permissions"].([]any)
+	if !ok {
+		t.Fatalf("expected a v2 `permissions` array, got %#v", cfg["permissions"])
+	}
+	for _, e := range perms {
+		m, _ := e.(map[string]any)
+		if m == nil {
+			continue
+		}
+		if act, _ := m["action"].(string); act == readToolDeny || act == grepToolDeny {
+			t.Errorf("a Code Mode serve denies %q — those tools cannot be called directly there, so this "+
+				"removes the worker's file-reading path and leaves it with shell alone: %#v", act, m)
+		}
 	}
 }

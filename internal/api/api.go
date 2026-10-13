@@ -490,7 +490,7 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 			if dir == "" {
 				return
 			}
-			if err := fileedit.ReconcileGit(ctx, fileedit.NewPGStore(deps.Pool), dir, tenantID, db.FileEditOwnerAskConversation, convID, deps.Log); err != nil {
+			if err := fileedit.ReconcileGit(ctx, fileedit.NewPGStore(deps.Pool), dir, tenantID, db.FileEditOwnerAskConversation, convID, "", deps.Log); err != nil {
 				deps.Log.Warn("ask file edit ledger git reconciliation failed", "conversation", convID, "dir", dir, "error", err)
 			}
 		})

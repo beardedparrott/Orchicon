@@ -185,7 +185,7 @@ var paletteSpecs = []paletteSpec{
 	{name: "violet", dark: true, bgH: 270, bgS: 25, bgL: 8, accentH: 263, accentS: 70, accentL: 62, textH: 265, textS: 25, textL: 96},
 	{name: "amber", dark: true, bgH: 38, bgS: 25, bgL: 8, accentH: 38, accentS: 92, accentL: 58, textH: 40, textS: 25, textL: 96},
 	{name: "rose", dark: true, bgH: 350, bgS: 25, bgL: 8, accentH: 346, accentS: 77, accentL: 60, textH: 350, textS: 25, textL: 96},
-	{name: "teal", dark: true, bgH: 175, bgS: 25, bgL: 8, accentH: 173, accentS: 80, accentL: 48, textH: 173, textS: 25, textL: 96},
+	{name: "teal", dark: true, bgH: 175, bgS: 25, bgL: 11, accentH: 173, accentS: 80, accentL: 48, textH: 173, textS: 25, textL: 96},
 	{name: "crimson", dark: true, bgH: 0, bgS: 25, bgL: 8, accentH: 0, accentS: 75, accentL: 58, textH: 0, textS: 20, textL: 96},
 	{name: "slate", dark: true, bgH: 215, bgS: 12, bgL: 10, accentH: 215, accentS: 25, accentL: 62, textH: 215, textS: 15, textL: 95},
 

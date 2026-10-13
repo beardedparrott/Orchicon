@@ -727,26 +727,26 @@ func GetWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string) (Workfl
 	return r, nil
 }
 
-// ListWorkflowRunsFilter scopes a list query by tenant and any combination
-// of workflow / project / work item (empty = no filter on that axis),
-// optionally filtered by status. SortBy/SortOrder control ordering; the
-// default is id DESC (kept for backward-compat with the run view and the
-// AskOrchicon tool). When SortBy=started_at the runs order by their real
-// start time (NULLS LAST so created-but-never-started runs sort last).
-type ListWorkflowRunsFilter struct {
-	TenantID   string
-	WorkflowID string
-	ProjectID  string
-	WorkItemID string
-	Status     string
-	PageSize   int
-	AfterID    string
-	SortBy     string
-	SortOrder  string
-}
-
-// ListWorkflowRuns returns a page of workflow runs matching the filter.
-func ListWorkflowRuns(ctx context.Context, tx pgx.Tx, f ListWorkflowRunsFilter) ([]WorkflowRunRow, error) {
+// listWorkflowRunsQuery builds the SQL + args for ListWorkflowRuns.
+//
+// IT IS A SEPARATE FUNCTION SO THE CLAUSE ORDER CAN BE ASSERTED WITHOUT A
+// DATABASE, and that is not decoration: the bug this replaces was a clause-order
+// bug, and clause order is exactly the class of defect that a DB-backed test
+// misses when the database is unavailable while still being trivially capturable
+// from the string.
+//
+// THE WHERE CLAUSE MUST BE COMPLETE BEFORE ORDER BY IS EMITTED. Both pagination
+// branches used to append their keyset cursor predicate AFTER the ORDER BY, which
+// is not valid SQL at all: with a page token the statement read
+//
+//	WHERE tenant_id = $1 ORDER BY id DESC AND id < $2 LIMIT $3
+//
+// and PostgreSQL rejected it with `syntax error at or near "AND"`. The effect was
+// that EVERY paginated call failed — the runs view's second page, and any client
+// following next_page_token — while page one kept working, so it looked like a UI
+// glitch rather than a broken query. Observed in the plane log as a repeating
+// syntax error against this exact statement.
+func listWorkflowRunsQuery(f ListWorkflowRunsFilter) (string, []any) {
 	if f.PageSize <= 0 || f.PageSize > 1000 {
 		f.PageSize = 100
 	}
@@ -784,7 +784,9 @@ func ListWorkflowRuns(ctx context.Context, tx pgx.Tx, f ListWorkflowRunsFilter) 
 		// within the trailing NULL block (id order), while a non-NULL cursor
 		// also admits the NULL block that sorts after it. RLS scopes the
 		// cursor subqueries inside the tenant tx.
-		q += ` ORDER BY started_at ` + order + ` NULLS LAST, id ` + order
+		//
+		// THE CURSOR PREDICATE BELONGS TO THE WHERE CLAUSE, so it is emitted
+		// BEFORE the ORDER BY (see listWorkflowRunsQuery).
 		if f.AfterID != "" {
 			n := len(args) + 1 // the cursor id param
 			q += fmt.Sprintf(` AND (
@@ -795,24 +797,52 @@ func ListWorkflowRuns(ctx context.Context, tx pgx.Tx, f ListWorkflowRunsFilter) 
 			)`, n, cmp, n, n, cmp, n)
 			args = append(args, f.AfterID)
 		}
+		q += ` ORDER BY started_at ` + order + ` NULLS LAST, id ` + order
 		q += ` LIMIT $` + fmt.Sprint(len(args)+1)
 		args = append(args, f.PageSize)
-	} else {
-		order := "DESC"
-		cmp := "<"
-		if f.SortOrder == "asc" {
-			order, cmp = "ASC", ">"
-		}
-		// id-keyset pagination composes exactly with an id sort. (The old
-		// `id > $2` cursor with a DESC default re-returned page 1.)
-		q += ` ORDER BY id ` + order
-		if f.AfterID != "" {
-			q += fmt.Sprintf(` AND id %s $%d`, cmp, len(args)+1)
-			args = append(args, f.AfterID)
-		}
-		q += ` LIMIT $` + fmt.Sprint(len(args)+1)
-		args = append(args, f.PageSize)
+		return q, args
 	}
+	order := "DESC"
+	cmp := "<"
+	if f.SortOrder == "asc" {
+		order, cmp = "ASC", ">"
+	}
+	// id-keyset pagination composes exactly with an id sort. (The old
+	// `id > $2` cursor with a DESC default re-returned page 1.)
+	//
+	// Same clause order as the tuple branch above: the cursor predicate is part
+	// of the WHERE clause and is emitted BEFORE the ORDER BY.
+	if f.AfterID != "" {
+		q += fmt.Sprintf(` AND id %s $%d`, cmp, len(args)+1)
+		args = append(args, f.AfterID)
+	}
+	q += ` ORDER BY id ` + order
+	q += ` LIMIT $` + fmt.Sprint(len(args)+1)
+	args = append(args, f.PageSize)
+	return q, args
+}
+
+// ListWorkflowRunsFilter scopes a list query by tenant and any combination
+// of workflow / project / work item (empty = no filter on that axis),
+// optionally filtered by status. SortBy/SortOrder control ordering; the
+// default is id DESC (kept for backward-compat with the run view and the
+// AskOrchicon tool). When SortBy=started_at the runs order by their real
+// start time (NULLS LAST so created-but-never-started runs sort last).
+type ListWorkflowRunsFilter struct {
+	TenantID   string
+	WorkflowID string
+	ProjectID  string
+	WorkItemID string
+	Status     string
+	PageSize   int
+	AfterID    string
+	SortBy     string
+	SortOrder  string
+}
+
+// ListWorkflowRuns returns a page of workflow runs matching the filter.
+func ListWorkflowRuns(ctx context.Context, tx pgx.Tx, f ListWorkflowRunsFilter) ([]WorkflowRunRow, error) {
+	q, args := listWorkflowRunsQuery(f)
 	rows, err := tx.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("db: list workflow runs: %w", err)

@@ -7,10 +7,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"sync"
 
 	"github.com/beardedparrott/orchicon/internal/mcpclient"
@@ -48,12 +46,14 @@ import (
 // EACH ENTRY OWNS ITS OWN DATA DIR. Two opencode serve processes must not
 // share one sqlite data dir (see NewAskHostServe's warning); the pool derives
 // a per-key dir so they never do.
+//
+// THE KEY IS THE MCP SET ALONE, AND THERE IS NO CAP — see ServeFor for why both
+// are deliberate rather than an omission.
 type HostServePool struct {
 	log         *slog.Logger
 	baseDataDir string
 	home        string
 	profile     PermissionProfile
-	cap         int
 
 	mu      sync.Mutex
 	entries map[string]*HostServe
@@ -63,30 +63,17 @@ type HostServePool struct {
 	defaultServe *HostServe
 }
 
-// DefaultHostServePoolCap bounds how many pooled serve PROCESSES (each with
-// its own sqlite data dir) a plane may hold. An unbounded pool multiplies
-// processes and data dirs, so a NEW key beyond the cap is REFUSED LOUDLY
-// (naming the set) rather than evicting a live serve under a running session.
-const DefaultHostServePoolCap = 4
-
 // NewHostServePool constructs the pool. baseDataDir is the same dedicated
 // opencode data dir the single host serve uses (the empty-set default serve
 // lives there, exactly as before); home overrides the operator home used to
 // seed model auth. profile selects the permission profile each pooled serve
 // is built with (the worker serve vs the Ask serve).
 func NewHostServePool(log *slog.Logger, baseDataDir, home string, profile PermissionProfile) *HostServePool {
-	limit := DefaultHostServePoolCap
-	if v := os.Getenv("ORCHICON_HOST_SERVE_POOL_CAP"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
 	return &HostServePool{
 		log:         log,
 		baseDataDir: baseDataDir,
 		home:        home,
 		profile:     profile,
-		cap:         limit,
 		entries:     map[string]*HostServe{},
 	}
 }
@@ -121,9 +108,34 @@ func (p *HostServePool) DefaultServe() *HostServe {
 // sets never share a serve and two sets differing only in credentials land on
 // different serves (a token is never shared across projects).
 //
-// At the cap, a NEW key is refused with a LOUD error NAMING the set — never a
-// silent fallback to a serve carrying the wrong config, and never an eviction
-// of a live serve out from under a running session.
+// THE KEY IS THE MCP SET ALONE, AND THERE IS NO CAP. Both are deliberate.
+//
+// No cap. The pool used to refuse a new key beyond a fixed capacity (default 4),
+// which is a band-aid for the absence of eviction: entries live for the plane's
+// life, so an unbounded pool multiplies serve PROCESSES and their private sqlite
+// data dirs. But the cap was the wrong instrument, because its key space is the
+// tenant's DISTINCT PROJECT MCP SETS — a normal, slowly-changing number. The
+// development tenant holds eighteen MCP definitions across seventeen projects, so
+// a cap of four refused ordinary work rather than guarding against a pathological
+// case. A loud refusal that legitimate configuration trips is worse than the
+// resource it was bounding.
+//
+// No workers in the key. They briefly were, so that each worker's AGENT could be
+// baked into the serve — but a worker's agent carries a prompt that embeds the
+// RUN's image (db.StablePromptPrefix(image, mode)), while a host serve is per SET
+// and long-lived. The key therefore multiplied to (set x worker x image) — on the
+// development tenant's numbers, seventeen sets against 122 published workers —
+// in exchange for a token saving on the in-process path only. The container path
+// needs none of it: there a serve is built PER RUN with exactly that run's agents,
+// which is where a prompt-carrying agent belongs. On the host path the full prompt
+// travels on the message, as it always did.
+//
+// WHAT THIS COSTS, stated rather than implied: a tenant with many distinct project
+// MCP sets holds one serve process and one data dir per set for the plane's life.
+// The principled bound is EVICTION — stopping a serve that has no active session,
+// whose sessions reattach from the persisted data dir on restart — and that is NOT
+// implemented here. Until it is, the pool is bounded by the tenant's set count
+// rather than by a constant.
 func (p *HostServePool) ServeFor(ctx context.Context, set mcpclient.Resolution) (*HostServe, error) {
 	if len(set.Servers) == 0 && len(set.Skills) == 0 {
 		return p.DefaultServe(), nil
@@ -134,11 +146,6 @@ func (p *HostServePool) ServeFor(ctx context.Context, set mcpclient.Resolution) 
 	defer p.mu.Unlock()
 	if hs, ok := p.entries[key]; ok {
 		return hs, nil
-	}
-	if len(p.entries) >= p.cap {
-		return nil, fmt.Errorf(
-			"host serve pool is at capacity (%d): no serve can be started for MCP set [%s] — raise ORCHICON_HOST_SERVE_POOL_CAP or reduce the number of distinct project MCP sets",
-			p.cap, describeSet(set))
 	}
 	hs := p.newServe(filepath.Join(p.baseDataDir, "serve-"+key[:16]), set)
 	p.entries[key] = hs

@@ -176,6 +176,36 @@ func askSweepInterval() time.Duration {
 // override ORCHICON_ASK_REATTACH_BACKOFF is a dev/test knob.
 const defaultReattachBackoff = 2 * time.Second
 
+// defaultReattachAttemptBudget bounds how many times a turn re-attaches after the bus closes with a
+// LIVE connection, before it gives up with a retryable error.
+//
+// WHY A BUDGET, and the measurement behind it. The turnReattach path used to loop until the REPLY
+// WINDOW expired — 30 minutes — retrying every 2s. That is ~900 attempts, and the comment there
+// justified it by assuming "the watchdog brings the serve back and THE SESSION ID SURVIVES".
+//
+// MEASURED, on a live conversation that hung: THE SESSION DID NOT SURVIVE. After the watchdog
+// restarted the serve, the conversation's session was absent from the serve's own store (a direct
+// row count against its sqlite DB returned 0) while the conversation still referenced it. The
+// operator saw "Orchicon is thinking" with the activity line still counting, for as long as the
+// window allowed — the turn could not complete, had nothing to react to, and had no way to notice.
+//
+// 15 × 2s = ~30s, which is GENEROUS FOR A LEGITIMATE RESTART: measured on this host, the watchdog's
+// restart completes in about 5 seconds (5s backoff, then the serve reports ready). A serve restart
+// that PRESERVES the session therefore still recovers inside the budget, because re-attaching simply
+// succeeds; only a turn whose session is really gone exhausts it — and that turn is unrecoverable,
+// so failing it in 30s instead of 30 minutes is strictly better and gives the operator a message
+// they can act on. Env override ORCHICON_ASK_REATTACH_ATTEMPT_BUDGET is a dev/test knob.
+const defaultReattachAttemptBudget = 15
+
+func askReattachAttemptBudget() int {
+	if v := os.Getenv("ORCHICON_ASK_REATTACH_ATTEMPT_BUDGET"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultReattachAttemptBudget
+}
+
 func askReattachBackoff() time.Duration {
 	if v := os.Getenv("ORCHICON_ASK_REATTACH_BACKOFF"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
@@ -1636,6 +1666,10 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 	// serve answered a send with 404), so only the never-live case is bounded
 	// by the short serve-down grace.
 	everLive := false
+	// reattaches counts how many times this turn has re-attached after losing a LIVE connection. It is
+	// bounded by askReattachAttemptBudget so a session that did not survive a serve restart fails in
+	// ~30s rather than retrying silently for the whole reply window. See the budget's own comment.
+	reattaches := 0
 
 	for {
 		res := s.runOneTurnAttempt(ctx, window, c, sid, system, recreated)
@@ -1715,9 +1749,26 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 			s.persistConversationSessionID(ctx, c.tenantID, c.convID, sid)
 		case turnReattach:
 			// Bus closed after a live connection — the serve died mid-reply.
-			// Keep retrying inside the reply window (the watchdog brings the
-			// serve back and the session id survives).
+			//
+			// THIS USED TO ASSUME THE SESSION SURVIVES THE RESTART, and that assumption is what made a
+			// dead turn indistinguishable from a slow one. Measured: after the watchdog restarted the
+			// serve, the conversation's session was GONE from the serve's store, so the turn could
+			// never complete — while retrying every 2s for the full 30-minute reply window, with the
+			// client still showing a live activity line. The operator reported it as hanging.
+			//
+			// The budget is generous for a restart that DOES preserve the session (measured ~5s), so
+			// recovery is unchanged in that case; only a genuinely lost session exhausts it, and that
+			// turn is unrecoverable, so failing it promptly with something actionable is the right
+			// answer instead of waiting out a window that cannot end well.
 			everLive = true
+			reattaches++
+			if reattaches > askReattachAttemptBudget() {
+				s.log.Warn("ask orchicon turn could not re-attach after the serve restarted — failing the turn",
+					"conversation", c.convID, "session", sid, "attempts", reattaches)
+				return res.text, reasoning, sid, errors.New(
+					"the opencode serve restarted mid-reply and this conversation's session could not be " +
+						"re-established — please send your message again")
+			}
 			select {
 			case <-ctx.Done():
 				return res.text, reasoning, sid, context.Cause(ctx)
@@ -2070,7 +2121,17 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *turnReplyWindow
 				// turn will ever hand over. Folding them here is what makes a stalled turn
 				// leave its work visible instead of an error bubble over an empty row.
 				finalText, finalReasoning := settleAttempt()
-				return turnAttemptResult{kind: turnFailed, text: finalText, reasoning: finalReasoning, err: fmt.Errorf("The model (%s) stopped responding (%s). This is often a provider/model issue (rate limit, quota, or an unavailable model). Check the Ask Orchicon model in Settings → Default models, then retry.", c.modelRef, reason)}
+				// NAME THE LIKELIEST CAUSE FIRST, and it is not the model: a model whose PROVIDER has
+				// no credentials for this plane produces NO TOKENS AT ALL, which is exactly what this
+				// stall measures. Measured on the operator's own plane — the selected model was
+				// opencode/opencode/big-pickle, whose provider `opencode` was absent from the ask
+				// serve's auth.json (it held command-code, commandcode, deepseek, ollama-cloud,
+				// opencode-go, openrouter). That turn could never have answered.
+				//
+				// The old wording blamed the model's availability and sent the operator to Settings to
+				// pick a different one, which is a coin-flip when the real question is whether the
+				// provider is authenticated at all.
+				return turnAttemptResult{kind: turnFailed, text: finalText, reasoning: finalReasoning, err: fmt.Errorf("The model (%s) produced no output (%s). The most common cause is that its PROVIDER IS NOT AUTHENTICATED for this plane — a model can be listed by `opencode models` and still have no credentials, in which case every turn is silent. Check the provider with `opencode auth list`, sign it in with `opencode auth login`, or choose a model whose provider is already authenticated. A rate-limited or unavailable provider looks the same.", c.modelRef, reason)}
 			}
 		case <-flushTick.C:
 			// Trailing mirror flush: the throttle window elapsed with an

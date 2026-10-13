@@ -28,8 +28,14 @@ type VersionzResponse struct {
 
 // LoginRequest / LoginResponse mirror POST /auth/local-login
 // (internal/auth/handlers.go tokenResponse: snake_case JSON). The refresh
-// token is an HttpOnly browser cookie — a non-browser client only gets the
-// access token, which is why password mode is secondary to API keys.
+// token arrives only as the HttpOnly orchicon_refresh cookie, and this client
+// CAPTURES it from the response (see the LoginResponse handling below) and
+// replays it on POST /auth/refresh — so a password session refreshes in place
+// and is not the poorer of the two modes. The old wording here ("a non-browser
+// client only gets the access token, which is why password mode is secondary to
+// API keys") was the stated reason for opening the connection screen in
+// API-key mode; it is corrected because it is not what the code does, and the
+// landing mode is now username+password (internal/tui/connection/screen.go).
 type LoginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`

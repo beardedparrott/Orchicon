@@ -121,7 +121,7 @@ func TestGuardShimAndConsentCoreReadTheSamePolicy(t *testing.T) {
 //
 // The existing TestNativeAskBashGuardBlocksDestructive cannot assert this: it
 // runs with no policy file at permpolicy.DefaultPath(), so the shim fails CLOSED
-// (AC-4, correct) and its `rm /etc/passwd` case would pass without the scope
+// (AC-4, correct) and its out-of-project rm case would pass without the scope
 // check ever firing. This test pins the policy file first, so the scope rule is
 // the thing under test — and then removes it again to pin the failing-closed
 // behaviour on the same plumbing.
@@ -154,12 +154,20 @@ func TestAskBashInteractiveProfileThroughTheRealPlumbing(t *testing.T) {
 	}
 
 	// Readable policy + out-of-project target: refused, naming the path, and the
-	// refusal is the scope rule — not the fail-closed message.
-	out, err = p.ExecuteAskTool(context.Background(), "bash", `{"command":"rm /etc/passwd"}`)
+	// refusal is the scope rule — not the fail-closed message. The target is TEMP
+	// SPACE this test owns: the failure mode of a regressed verdict must be a
+	// directory the test created, never a system file the refusal was standing in
+	// front of.
+	outside := t.TempDir()
+	outsideVictim := filepath.Join(outside, "victim.txt")
+	if err := os.WriteFile(outsideVictim, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err = p.ExecuteAskTool(context.Background(), "bash", `{"command":"rm `+outsideVictim+`"}`)
 	if err != nil {
 		t.Fatalf("out-of-project rm returned a transport error (want refusal as result): %v", err)
 	}
-	if !strings.Contains(out, "ORCHICON GUARD") || !strings.Contains(out, "/etc/passwd") {
+	if !strings.Contains(out, "ORCHICON GUARD") || !strings.Contains(out, outsideVictim) {
 		t.Fatalf("the out-of-project refusal must name the path: %s", out)
 	}
 	if strings.Contains(out, "fail-closed") {

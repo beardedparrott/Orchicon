@@ -83,6 +83,7 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 		CPUs:          env("ORCHICON_RUNTIME_CPUS", "4"),
 		Memory:        env("ORCHICON_RUNTIME_MEMORY", "4g"),
 		TmpfsSize:     env("ORCHICON_RUNTIME_TMPFS", "2g"),
+		HomeTmpfsSize: env("ORCHICON_RUNTIME_HOME_TMPFS", "2g"),
 		MaxAge:        envDur("ORCHICON_RUNTIME_MAX_AGE", 24*time.Hour),
 		SweepInterval: envDur("ORCHICON_RUNTIME_SWEEP_INTERVAL", 5*time.Minute),
 		Log:           log,

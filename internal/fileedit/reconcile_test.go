@@ -3,7 +3,6 @@ package fileedit
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -36,28 +35,6 @@ func (f *fakeReconcileStore) KnownPaths(ctx context.Context, tenantID, ownerKind
 	return f.known, nil
 }
 
-// gitRepo creates a temp git repo with an initial tracked file so the
-// "changed" state is observable via `git status`.
-func gitRepo(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	run := func(args ...string) {
-		t.Helper()
-		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v failed: %v: %s", args, err, out)
-		}
-	}
-	run("init", "-q")
-	run("config", "user.email", "t@t")
-	run("config", "user.name", "t")
-	os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("orig\n"), 0o644)
-	run("add", "tracked.txt")
-	run("commit", "-qm", "init")
-	return dir
-}
-
 // TestReconcileGitConfirmedAndCorrective covers the two AC4 behaviours:
 //  1. a ledger-known path changed in git → marked git_confirmed;
 //  2. a git-changed path the ledger never saw → a corrective (reconcile:git)
@@ -76,7 +53,7 @@ func TestReconcileGitConfirmedAndCorrective(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := ReconcileGit(ctx, store, dir, "tnt", db.FileEditOwnerExecution, "exec-1", nil); err != nil {
+	if err := ReconcileGit(ctx, store, dir, "tnt", db.FileEditOwnerExecution, "exec-1", "", nil); err != nil {
 		t.Fatalf("ReconcileGit: %v", err)
 	}
 
@@ -134,7 +111,7 @@ func TestReconcileGitNonRepoNoOp(t *testing.T) {
 	// ceiling=dir's parent reports "not a git repository".
 	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(dir))
 	store := &fakeReconcileStore{}
-	if err := ReconcileGit(context.Background(), store, dir, "tnt", db.FileEditOwnerExecution, "exec-1", nil); err != nil {
+	if err := ReconcileGit(context.Background(), store, dir, "tnt", db.FileEditOwnerExecution, "exec-1", "", nil); err != nil {
 		t.Fatalf("non-repo reconcile should be a no-op, got %v", err)
 	}
 	if store.appendedOK || len(store.marked) != 0 {

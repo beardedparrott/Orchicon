@@ -37,11 +37,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
@@ -86,9 +89,33 @@ func askMCPProbeTimeout() time.Duration {
 // BusEvent is one event from the opencode server's /event SSE stream.
 // The shape matches the SDK's event objects ({id, type, properties}).
 type BusEvent struct {
-	ID         string         `json:"id"`
-	Type       string         `json:"type"`
+	ID   string `json:"id"`
+	Type string `json:"type"`
+	// Properties is the v1 envelope key. v2 renamed it to Data (see Props): MEASURED against 2.0.26,
+	// every event is {"id":…,"created":…,"type":…,"location":…,"data":{…},"durable":{…}}.
 	Properties map[string]any `json:"properties"`
+	// Data is the v2 envelope key. Both are parsed so one client reads either surface.
+	Data map[string]any `json:"data"`
+}
+
+// Props returns the event's payload whichever envelope the surface used.
+//
+// THIS ONE METHOD IS WHY THE ASK TRANSPORT WORKS AT ALL ON v2. Every consumer read `Properties`, which
+// is EMPTY on a v2 stream — so `sessionID` came back as "" for every event and each event was filtered
+// out or classified as nothing. The observable effect was a turn that received no deltas, showed no
+// progress, and was eventually killed by the stall monitor while the model had in fact replied and the
+// reply sat in the session.
+//
+// v1 is preferred when both are present so a v1 serve's behaviour is byte-identical; a v2 event simply
+// has no `properties` key, so the fallback is unambiguous rather than a guess.
+func (e BusEvent) Props() map[string]any {
+	if e.Properties != nil {
+		return e.Properties
+	}
+	if e.Data != nil {
+		return e.Data
+	}
+	return nil
 }
 
 // SessionClient is an HTTP+SSE client for one opencode serve instance.
@@ -106,7 +133,49 @@ type SessionClient struct {
 	// separate keep-alive-disabled transport so a parked stream never occupies
 	// the API idle pool (D5).
 	sseHC *http.Client
+
+	// shape is WHICH API this serve speaks (see apisurface.go). Every route below is asked of it
+	// rather than written as a literal, because opencode 2.x moved them all under /api and renamed
+	// several. It defaults to v1 — the surface the installed base runs — so a client that never
+	// detects anything behaves exactly as it did before.
+	shape apiShape
+
+	// agentsAvailable reports whether THIS serve was configured for THIS execution, and so carries
+	// the agent that holds the run-level prompt.
+	//
+	// IT DEFAULTS FALSE, which is the safe direction. A CONTAINER serve is built per RUN with exactly
+	// that run's step workers baked in (see adapter.WorkerAgent), so the execution selects its own
+	// agent there. A HOST serve is shared across projects and runs and therefore bakes NO agents —
+	// its prompt travels on the message, as it always did — so selecting one would be a request for
+	// an agent that cannot exist. Treating "unknown" as false keeps the host path quiet and leaves
+	// the full prompt in place.
+	agentsAvailable bool
+
+	// log, when set, reports conditions that are otherwise invisible — currently the v2 surface's
+	// missing per-message system prompt. Nil is fine: the condition simply goes unreported.
+	log *slog.Logger
+	// systemDroppedNoted reports ONCE that a send did not carry the prompt, at debug: on v2 that is
+	// the normal case for every turn after the first.
+	systemDroppedNoted atomic.Bool
+
+	// promptPending holds the sessions THIS CLIENT CREATED and has not yet delivered a system prompt
+	// to. It is the honest answer to "is this session new?", and the reason it is needed rather than
+	// inferred: on the Ask path both the seeded (first) and the reuse (later) prompts are non-empty,
+	// so `system != ""` cannot distinguish "deliver this now" from "the session already has it".
+	//
+	// ONLY SESSIONS THIS CLIENT CREATED ARE IN HERE, which is what makes it safe for the paths that
+	// must NOT re-inject: a follow-up ATTACHES to an existing session it did not create, so it is never
+	// pending and never re-states the prompt.
+	promptPending sync.Map
 }
+
+// SetAPIShape selects the API surface this client talks to. It is the seam the plane uses after
+// detecting the served version, and it exists as a method rather than a constructor argument so the
+// many existing NewSessionClient call sites (and every test) keep compiling and keep working.
+func (c *SessionClient) setAPIShape(shape apiShape) { c.shape = shape }
+
+// APIShapeName reports the selected surface, for logs and for the assertions that pin wiring.
+func (c *SessionClient) APIShapeName() string { return c.shape.name }
 
 // ErrSessionNotFound marks a 404 from the serve for a session-scoped
 // request: the session id is no longer valid on that serve (its data dir
@@ -157,6 +226,7 @@ func NewSessionClient(baseURL, password, directory string) *SessionClient {
 		directory: directory,
 		hc:        &http.Client{Transport: transport},
 		sseHC:     &http.Client{Transport: sseTransport},
+		shape:     shapeV1,
 	}
 }
 
@@ -167,7 +237,7 @@ func (c *SessionClient) BaseURL() string { return c.baseURL }
 func (c *SessionClient) Healthy(ctx context.Context) bool {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	req, err := c.newRequest(ctx, http.MethodGet, "/global/health", nil, nil)
+	req, err := c.newRequest(ctx, http.MethodGet, c.shape.healthPath, nil, nil)
 	if err != nil {
 		return false
 	}
@@ -196,7 +266,7 @@ func (c *SessionClient) SessionExists(ctx context.Context, sessionID string) boo
 	var out struct {
 		ID string `json:"id"`
 	}
-	if err := c.doJSON(ctx, http.MethodGet, "/session/"+url.PathEscape(sessionID), nil, &out); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, c.shape.sessionPath(url.PathEscape(sessionID)), nil, &out); err != nil {
 		return false
 	}
 	return true
@@ -266,13 +336,60 @@ func (c *SessionClient) CreateSession(ctx context.Context, title string) (string
 	var out struct {
 		ID string `json:"id"`
 	}
-	if err := c.doJSON(ctx, http.MethodPost, "/session", body, &out); err != nil {
+	if err := c.doJSON(ctx, http.MethodPost, c.shape.sessionsPath(), body, &out); err != nil {
 		return "", err
 	}
 	if out.ID == "" {
 		return "", fmt.Errorf("opencode session create: empty session id")
 	}
+	// A session this client just created has never been told the system prompt, so it is marked.
+	// See promptPending: the mark is what lets a surface with no `system` field deliver the prompt
+	// exactly once, without every later turn re-stating it.
+	c.promptPending.Store(out.ID, struct{}{})
 	return out.ID, nil
+}
+
+// SelectAgent switches the session to a named agent.
+//
+// A NO-OP on a surface with no agent route (v1): there the worker's prompt rides
+// the per-message `system` field and no agent is involved. On v2 it is load
+// bearing — the agent's `system` is the only channel that governs the model, so
+// without this the session runs on the serve's default agent (the worker tool
+// shell) and the worker's real prompt never arrives.
+//
+// An empty name is a no-op rather than an error: the caller derives the name from
+// a worker id it may not have, and a session left on the default agent is a
+// working worker with a thinner prompt — a degraded run, not a broken one.
+func (c *SessionClient) SelectAgent(ctx context.Context, sessionID, agentName string) error {
+	if c.shape.setAgentPath == nil || strings.TrimSpace(agentName) == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := c.do(ctx, http.MethodPost, c.shape.setAgentPath(sessionID),
+		map[string]any{"agent": agentName}); err != nil {
+		return fmt.Errorf("opencode session select agent: %w", err)
+	}
+	return nil
+}
+
+// SetAgentsAvailable records that this serve was configured for this execution and so carries
+// the agent holding the run-level prompt. Called by the CONTAINER path, which builds the serve per
+// run; the host path leaves it false (see the field).
+func (c *SessionClient) SetAgentsAvailable(v bool) { c.agentsAvailable = v }
+
+// AgentSelectionSupported reports whether this client can deliver a per-execution system prompt
+// through an AGENT rather than through the message — BOTH conditions, not either:
+//
+//   - the surface must HAVE the route (v2 does; v1 has no agent at all, and there the message is
+//     the only carrier), and
+//   - the serve must actually carry this execution's agent (see agentsAvailable).
+//
+// It is the gate for the message trim, so a false answer keeps the full prompt in place. That is
+// why the two conditions are combined rather than checked separately at the call site: trimming on
+// a serve that has no agent would DELETE the run-level prompt instead of moving it.
+func (c *SessionClient) AgentSelectionSupported() bool {
+	return c.shape.setAgentPath != nil && c.agentsAvailable
 }
 
 // SendMessage appends a user message to the session via prompt_async
@@ -284,7 +401,38 @@ func (c *SessionClient) CreateSession(ctx context.Context, title string) (string
 // must be sent with every message). modelRef is "provider/model" (empty =
 // the session's current model).
 func (c *SessionClient) SendMessage(ctx context.Context, sessionID, system, modelRef, text string) error {
-	return c.SendMessageWithAttachments(ctx, sessionID, system, modelRef, text, nil)
+	return c.sendMessage(ctx, sessionID, system, modelRef, text, nil, false)
+}
+
+// SendMessageCarryingSystem sends a message that must DELIVER the session's system prompt on surfaces
+// whose prompt body has no `system` field.
+//
+// THIS IS THE ONE PLACE THE DISTINCTION LIVES, and it is a distinction the v2 surface forces. On v1
+// every send carries `system` and the serve applies it per turn, so all callers pass it and none of
+// them care. On v2 there is no such field, so the prompt has to travel as CONTENT — which means it
+// must go in exactly ONCE per session, not on every turn, or the context grows by a full prompt copy
+// per message.
+//
+// So callers that must deliver it say so, and every other caller keeps the old behaviour:
+//   - the GOAL (the first message of a freshly created session) — carries it;
+//   - the AFTER-COMPACT reminder — carries it again, because a compact summarizes the conversation
+//     away and would otherwise take the prompt with it;
+//   - follow-ups, redirects, retries, probes, compaction notes — do NOT, because the session already
+//     holds it. The follow-up path is the one that matters: it ATTACHES to an existing session, so
+//     re-sending there would add a second copy of the prompt to a conversation that already has one.
+func (c *SessionClient) SendMessageCarryingSystem(ctx context.Context, sessionID, system, modelRef, text string) error {
+	return c.sendMessage(ctx, sessionID, system, modelRef, text, nil, true)
+}
+
+// consumePromptPending reports whether sessionID is awaiting its system prompt, and clears the mark so
+// ONE send carries it and later sends do not.
+//
+// This is for callers that cannot tell a first turn from a later one — the Ask path, where the seeded
+// and reuse prompts are both non-empty. Callers that DO know (a session just created, an explicit
+// re-statement after a compact) use SendMessageCarryingSystem and skip the bookkeeping.
+func (c *SessionClient) consumePromptPending(sessionID string) bool {
+	_, pending := c.promptPending.LoadAndDelete(sessionID)
+	return pending
 }
 
 // SendMessageWithAttachments appends a user message with optional file
@@ -298,6 +446,13 @@ func (c *SessionClient) SendMessage(ctx context.Context, sessionID, system, mode
 // (.md/.txt) inline as data: URLs so the send is one POST with no
 // upload-path dependency (UploadAttachment untouched).
 func (c *SessionClient) SendMessageWithAttachments(ctx context.Context, sessionID, system, modelRef, text string, attachments []AttachmentPart) error {
+	return c.sendMessage(ctx, sessionID, system, modelRef, text, attachments, false)
+}
+
+// sendMessage is the ONE implementation. carrySystem is meaningful only on a surface with no `system`
+// field (see SendMessageCarryingSystem); on v1 it changes nothing, which is what keeps the field-based
+// path byte-identical to before.
+func (c *SessionClient) sendMessage(ctx context.Context, sessionID, system, modelRef, text string, attachments []AttachmentPart, carrySystem bool) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	parts := []map[string]any{}
@@ -324,24 +479,108 @@ func (c *SessionClient) SendMessageWithAttachments(ctx context.Context, sessionI
 	if len(parts) == 0 {
 		parts = append(parts, map[string]any{"type": "text", "text": text})
 	}
-	body := map[string]any{
-		"parts": parts,
+	// THE BODY IS BUILT FOR THE SURFACE, because the two are not interchangeable (see
+	// apiShape.promptStyle). v1 takes a `parts` array plus `system` and `model`; v2 takes a
+	// top-level `text` (REQUIRED) and `files`, and has no field for either of the others.
+	var body map[string]any
+	switch c.shape.promptStyle {
+	case "text":
+		// THE PROMPT TRAVELS AS CONTENT HERE, because this surface has no field for it (see
+		// apiShape.promptStyle). Prepended rather than sent separately in two requests: one request is
+		// atomic, so the model cannot receive the task without the instructions that frame it.
+		//
+		// ONLY WHEN ASKED, and that is not an optimisation — it is the correctness condition. This
+		// branch is reached by EVERY send, including follow-ups onto a session that is already
+		// carrying the prompt, and prepending there would append another full copy each time.
+		bodyText := text
+		if carrySystem && strings.TrimSpace(system) != "" {
+			bodyText = system + "\n\n" + text
+		}
+		body = map[string]any{"text": bodyText}
+		var files []map[string]any
+		for _, a := range attachments {
+			if a.MimeType == "" {
+				a.MimeType = "application/octet-stream"
+			}
+			if len(a.Data) == 0 {
+				continue
+			}
+			// FileAttachment = {uri (required), name?, description?, mention?}. v1 carried the bytes
+			// as a data: URL inside a `parts` entry; v2 takes a uri, and a data: URL is a uri — so
+			// the same encoding travels, under a different key and with `name` instead of `filename`.
+			f := map[string]any{
+				"uri": "data:" + a.MimeType + ";base64," + base64.StdEncoding.EncodeToString(a.Data),
+			}
+			if a.Name != "" {
+				f["name"] = a.Name
+			}
+			files = append(files, f)
+		}
+		if len(files) > 0 {
+			body["files"] = files
+		}
+		// A caller that did NOT ask to carry the prompt is not losing it: on this surface the prompt
+		// reaches the model as the first message's content (SendMessageCarryingSystem) and again after
+		// a compact. This is the expected case for every turn after the first, so it is not warned
+		// about. It IS noted once per client at debug level, because "why is this turn's send smaller
+		// than the first" is otherwise invisible.
+		if system != "" && !carrySystem {
+			c.noteOnce(&c.systemDroppedNoted, "opencode v2: this send does not carry the system "+
+				"prompt; it is delivered with the session's first message and re-stated after a compact "+
+				"(the surface has no `system` field)")
+		}
+	default:
+		body = map[string]any{"parts": parts}
+		if system != "" {
+			body["system"] = system
+		}
 	}
-	if system != "" {
-		body["system"] = system
-	}
+
 	if modelRef != "" {
 		// Left-greedy split: segment 1 = adapter (consumed by the control
 		// plane, dropped before the serve call), segment 2 = provider,
 		// remainder = model verbatim (slashes preserved — ADR-0003).
 		if provider, model, ok := adapter.SplitForServe(modelRef); ok {
-			body["model"] = map[string]any{"providerID": provider, "modelID": model}
+			if c.shape.setModelPath != nil {
+				// A surface whose prompt body cannot carry the model sets it on the SESSION. Done
+				// before the prompt so this turn runs on the chosen model rather than the serve's
+				// default; idempotent, so re-sending for a later turn is harmless.
+				if err := c.do(ctx, http.MethodPost, c.shape.setModelPath(sessionID),
+					map[string]any{"model": map[string]any{
+						"providerID":           provider,
+						c.shape.modelFieldName: model,
+					}}); err != nil {
+					return fmt.Errorf("opencode session set model: %w", err)
+				}
+			} else {
+				body["model"] = map[string]any{"providerID": provider, "modelID": model}
+			}
 		}
 	}
-	if err := c.do(ctx, http.MethodPost, "/session/"+sessionID+"/prompt_async", body); err != nil {
+	if err := c.do(ctx, http.MethodPost, c.shape.promptPath(sessionID), body); err != nil {
 		return fmt.Errorf("opencode session send: %w", err)
 	}
 	return nil
+}
+
+// warnOnce logs a message at WARN the first time only, so a per-turn condition does not flood the log.
+func (c *SessionClient) warnOnce(flag *atomic.Bool, msg string) {
+	if flag.CompareAndSwap(false, true) {
+		if c.log != nil {
+			c.log.Warn(msg)
+		}
+	}
+}
+
+// noteOnce is warnOnce at DEBUG, for a condition that is EXPECTED rather than a problem. The v2
+// surface legitimately does not carry the prompt on most sends, so warning about it would train the
+// operator to ignore the log line that matters.
+func (c *SessionClient) noteOnce(flag *atomic.Bool, msg string) {
+	if flag.CompareAndSwap(false, true) {
+		if c.log != nil {
+			c.log.Debug(msg)
+		}
+	}
 }
 
 // AttachmentPart is a single attachment forwarded to the session.
@@ -356,7 +595,7 @@ type AttachmentPart struct {
 func (c *SessionClient) Abort(ctx context.Context, sessionID string) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := c.do(ctx, http.MethodPost, "/session/"+sessionID+"/abort", map[string]any{}); err != nil {
+	if err := c.do(ctx, http.MethodPost, c.shape.abortPath(sessionID), map[string]any{}); err != nil {
 		return fmt.Errorf("opencode session abort: %w", err)
 	}
 	return nil
@@ -379,7 +618,7 @@ func (c *SessionClient) Compact(ctx context.Context, sessionID, providerID, mode
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	body := map[string]any{"providerID": providerID, "modelID": modelID}
-	if err := c.do(ctx, http.MethodPost, "/session/"+sessionID+"/summarize", body); err != nil {
+	if err := c.do(ctx, http.MethodPost, c.shape.compactPath(sessionID), body); err != nil {
 		return fmt.Errorf("opencode session compact: %w", err)
 	}
 	return nil
@@ -403,8 +642,8 @@ func (c *SessionClient) ReplyPermission(ctx context.Context, sessionID, permissi
 func (c *SessionClient) ReplyPermissionDecision(ctx context.Context, sessionID, permissionID, decision string) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := c.do(ctx, http.MethodPost, "/session/"+sessionID+"/permissions/"+permissionID,
-		map[string]any{"response": decision}); err != nil {
+	if err := c.do(ctx, http.MethodPost, c.shape.permissionReplyPath(sessionID, permissionID),
+		map[string]any{c.shape.permissionReplyField: decision}); err != nil {
 		return fmt.Errorf("opencode session permission reply: %w", err)
 	}
 	return nil
@@ -414,7 +653,7 @@ func (c *SessionClient) ReplyPermissionDecision(ctx context.Context, sessionID, 
 // yields bus events (for ALL sessions — callers filter by session id).
 // The stream blocks until ctx is cancelled or the connection drops.
 func (c *SessionClient) Subscribe(ctx context.Context) (BusSub, error) {
-	req, err := c.newRequest(ctx, http.MethodGet, "/event", nil, nil)
+	req, err := c.newRequest(ctx, http.MethodGet, c.shape.eventPath(), nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -482,7 +721,11 @@ func (s *Subscription) read(ctx context.Context, body io.ReadCloser) {
 		}
 		var evt BusEvent
 		if err := json.Unmarshal(data.Bytes(), &evt); err == nil && evt.Type != "" {
-			if evt.Type == "session.idle" {
+			// THE COMPLETION SIGNAL IS NEVER DROPPED, AND v2 HAS A DIFFERENT NAME FOR IT. This guard
+			// exists so a full event buffer cannot discard the one event that ends a turn (see below);
+			// v2 ends with session.execution.succeeded / .failed, so omitting them would reintroduce
+			// exactly the failure the guard prevents — a completed turn waiting out its window.
+			if evt.Type == "session.idle" || evt.Type == "session.execution.succeeded" || evt.Type == "session.execution.failed" {
 				// session.idle is the SOLE completion signal for a turn — the event
 				// a collector uses to mark a reply complete. Dropping it on a full
 				// buffer would make a completed turn appear timed out (ADR-0002 D6
@@ -550,8 +793,17 @@ func (s *Subscription) read(ctx context.Context, body io.ReadCloser) {
 // Exported so the Ask Orchicon chat turn consumes the SAME mapping
 // execution sessions use — one source of truth.
 func LegacyEventFromBus(evt BusEvent) (map[string]any, bool) {
-	props := evt.Properties
+	props := evt.Props()
 	switch evt.Type {
+	case "session.text.ended":
+		// v2's completed text block: {"data":{…,"ordinal":0,"text":"Hi! …"}}. Shaped into the SAME
+		// {"type":"text","part":{…}} the v1 arm produces, so every consumer downstream — the stall
+		// monitor's observe, the collector's text case, the partial mirror — works unchanged.
+		d := evt.Props()
+		if t, _ := d["text"].(string); t != "" {
+			return map[string]any{"type": "text", "part": map[string]any{"type": "text", "text": t}}, true
+		}
+		return nil, false
 	case "message.part.updated":
 		part, _ := props["part"].(map[string]any)
 		if part == nil {
@@ -579,10 +831,193 @@ func LegacyEventFromBus(evt BusEvent) (map[string]any, bool) {
 			}
 			return map[string]any{"type": ptype, "part": part}, true
 		}
+	// ---- v2 TELEMETRY (opencode 2.x) ---------------------------------------
+	//
+	// THIS BLOCK IS THE FIX for a 2.x execution being killed as `text_loop` at
+	// exactly its 10-minute window while it was working. 2.x moved tools, steps,
+	// reasoning and diffs OUT of `message.part.updated` and into their own event
+	// family, emitted under `data`. Because none of them were classified, the
+	// progress monitor's lastMeaningfulAction — advanced ONLY by tool_use,
+	// step_finish and file_diff — could never advance on a 2.x serve, while text
+	// deltas kept no_progress fresh. A healthy worker was therefore
+	// indistinguishable from a model talking in circles, and the difference was
+	// invisible because the text parts arriving made the run LOOK productive.
+	//
+	// Measured on execution 01M4SEJ37CZZ700HRQEPEVGV7C: three text parts reporting
+	// files written and a commit pending, ZERO recorded tokens, zero tool rows in
+	// the transcript, and the stall kill at 10:00.0 after dispatch.
+	//
+	// The names and payloads below come from the 2.x binary's own event schema
+	// (session.step.*, session.tool.*, session.reasoning.*, session.diff).
+	case "session.step.started":
+		// A model turn beginning. v1 expressed this as a step-start PART.
+		return map[string]any{"type": "step_start", "part": map[string]any{"type": "step-start"}}, true
+	case "session.step.ended":
+		// The turn's completion, and the ONLY carrier of token usage and cost on
+		// 2.x — which is why every 2.x execution recorded 0 tokens and $0.
+		return map[string]any{"type": "step_finish", "part": v2StepFinishPart(props)}, true
+	case "session.step.failed":
+		// A failed step is how 2.x reports a provider/model error, carrying the
+		// same error the execution-level failure does.
+		return map[string]any{"type": "error", "error": props["error"]}, true
+	case "session.reasoning.ended":
+		// The completed reasoning block. 2.x streams reasoning as its own family;
+		// the deltas arrive as session.reasoning.delta (TokenDeltaInfoFromBus).
+		if t, _ := props["text"].(string); t != "" {
+			return map[string]any{"type": "reasoning", "part": map[string]any{"type": "reasoning", "text": t}}, true
+		}
+		return nil, false
+	case "session.tool.success", "session.tool.failed":
+		// A resolved tool call. `session.tool.called` is deliberately NOT mapped
+		// here: it is the START, ToolStartFromBus owns it, and emitting a legacy
+		// event for it as well would put two rows in the transcript per call.
+		return v2ToolLegacyEvent(evt.Type, props), true
+	case "session.diff":
+		// 2.x's structured per-file diff for a turn. One bus event cannot carry
+		// several legacy events, so this takes the FIRST changed path — enough for
+		// the signal it feeds (lastFileDiff, the no_file_progress advisory).
+		if p := v2FirstDiffPath(props); p != "" {
+			return map[string]any{"type": "file_diff", "part": map[string]any{"type": "file_diff", "path": p}}, true
+		}
+		return nil, false
 	case "session.error":
 		return map[string]any{"type": "error", "error": props["error"]}, true
 	}
 	return nil, false
+}
+
+// v2StepFinishPart shapes a 2.x `session.step.ended` payload into the v1
+// step-finish part the usage recorder and the budget ladder read
+// (part.tokens / part.cost / part.reason).
+func v2StepFinishPart(props map[string]any) map[string]any {
+	part := map[string]any{"type": "step-finish"}
+	if tokens, ok := props["tokens"]; ok && tokens != nil {
+		part["tokens"] = normalizeV2StepTokens(tokens)
+	}
+	if cost, ok := props["cost"].(float64); ok {
+		part["cost"] = cost
+	}
+	if finish, ok := props["finish"].(string); ok {
+		part["reason"] = finish
+	}
+	// FILES: the paths this STEP changed, and on a Code Mode serve the ONLY
+	// per-step attribution that exists. Every other file-edit capture keys on a
+	// TOOL NAME (write/edit/batch_write), and on 2.x every MCP tool is invoked
+	// through `execute` — so the transcript names the tool `execute` and those
+	// captures match nothing. `session.step.ended.files` is opencode's own record
+	// of what the step touched, so it survives however the tool was reached.
+	//
+	// Carried through the part (rather than consumed here) so the transcript keeps
+	// it and the adapter's ledger hook can read it off the same event.
+	if files, ok := props["files"]; ok && files != nil {
+		part["files"] = files
+	}
+	return part
+}
+
+// normalizeV2StepTokens reshapes 2.x's step token sample into the keys the
+// consumers actually read — input / output / reasoning / cache{read,write} (see
+// recordUsage, cacheToken and allTokensZero) — accepting the flat spellings 2.x
+// also uses.
+//
+// An UNRECOGNISED shape is returned UNCHANGED rather than emptied: a future
+// rename should degrade to "the numbers are still visible to allTokensZero"
+// rather than "tokens silently read as zero", which is the failure this whole
+// change exists to undo.
+func normalizeV2StepTokens(raw any) map[string]any {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := map[string]any{}
+	pick := func(dst string, keys ...string) {
+		for _, k := range keys {
+			if v, ok := m[k]; ok {
+				out[dst] = v
+				return
+			}
+		}
+	}
+	pick("input", "input", "tokens_input", "prompt")
+	pick("output", "output", "tokens_output", "completion")
+	pick("reasoning", "reasoning", "tokens_reasoning")
+	if v, ok := m["cache"]; ok {
+		out["cache"] = v
+	} else {
+		read, hasRead := m["cache_read"]
+		if !hasRead {
+			read, hasRead = m["tokens_cache_read"]
+		}
+		write, hasWrite := m["cache_write"]
+		if !hasWrite {
+			write, hasWrite = m["tokens_cache_write"]
+		}
+		if hasRead || hasWrite {
+			c := map[string]any{}
+			if hasRead {
+				c["read"] = read
+			}
+			if hasWrite {
+				c["write"] = write
+			}
+			out["cache"] = c
+		}
+	}
+	if len(out) == 0 {
+		return m
+	}
+	return out
+}
+
+// v2ToolLegacyEvent shapes a resolved 2.x tool call into the v1
+// {"type":"tool_use","part":…} the transcript, the progress monitor and the
+// repetition signature all consume.
+//
+// THE NAME AND THE INPUT ARE NOT ON THIS EVENT. 2.x carries the name on
+// session.tool.input.started and the input on session.tool.called, and only the
+// call id when it resolves — so the read path remembers both by id and fills them
+// in (session_run.rememberV2Tool). The callID is therefore always set, and it is
+// load-bearing rather than cosmetic: with no input, EVERY call of a tool would
+// share one repetition signature, and a busy worker would trip the repetition
+// stall instead of the text_loop one this change is meant to stop.
+func v2ToolLegacyEvent(evtType string, props map[string]any) map[string]any {
+	status := "completed"
+	if evtType == "session.tool.failed" {
+		status = "error"
+	}
+	state := map[string]any{"status": status}
+	if in, ok := props["input"]; ok && in != nil {
+		state["input"] = in
+	}
+	if c, ok := props["content"]; ok && c != nil {
+		state["output"] = c
+	}
+	part := map[string]any{"type": "tool_use", "callID": "", "state": state}
+	if id, _ := props["id"].(string); id != "" {
+		part["callID"] = id
+	}
+	if name, _ := props["name"].(string); name != "" {
+		part["tool"] = name
+	}
+	return map[string]any{"type": "tool_use", "part": part}
+}
+
+// v2FirstDiffPath returns the first changed path in a 2.x `session.diff`
+// payload, accepting the several field names a per-file diff may use.
+func v2FirstDiffPath(props map[string]any) string {
+	files, _ := props["diff"].([]any)
+	for _, f := range files {
+		m, _ := f.(map[string]any)
+		if m == nil {
+			continue
+		}
+		for _, k := range []string{"path", "file", "filename"} {
+			if p, _ := m[k].(string); p != "" {
+				return p
+			}
+		}
+	}
+	return ""
 }
 
 // ToolStartFromBus reports the tool name when a bus event is the START of a
@@ -602,7 +1037,22 @@ func LegacyEventFromBus(evt BusEvent) (map[string]any, bool) {
 // Returns ("", false) when the event is not a tool-start (non-tool parts,
 // tool parts already resolved, or events that carry no tool name).
 func ToolStartFromBus(evt BusEvent) (tool string, ok bool) {
-	props := evt.Properties
+	props := evt.Props()
+	// ---- v2 (opencode 2.x) --------------------------------------------------
+	// 2.x moved tool calls to their own event family. `session.tool.input.started`
+	// carries the call's NAME and id; `session.tool.called` carries the id and the
+	// resolved input but NOT the name. Either means the call is in flight, so
+	// either arms the hang window — the name is only the refusal message's noun,
+	// and an empty one is honest (the read path fills it in when it is known).
+	if evt.Type == "session.tool.called" || evt.Type == "session.tool.input.started" {
+		if name, _ := props["name"].(string); name != "" {
+			return name, true
+		}
+		if id, _ := props["id"].(string); id != "" {
+			return "", true
+		}
+		return "", false
+	}
 	if evt.Type != "message.part.updated" {
 		return "", false
 	}
@@ -643,8 +1093,29 @@ func ToolStartFromBus(evt BusEvent) (tool string, ok bool) {
 // turn's finalize overwrites the partial row with the authoritative reply (a
 // generation would otherwise create thousands of tiny transcript rows).
 func TokenDeltaInfoFromBus(evt BusEvent) (deltaText, kind string, ok bool) {
-	props := evt.Properties
+	props := evt.Props()
 	switch evt.Type {
+	case "session.reasoning.delta":
+		// 2.x streams reasoning under its OWN family (v1 folded it into
+		// message.part.delta). Without this arm a reasoning-heavy turn has no
+		// liveness evidence of its own, which is one of the ways a busy 2.x
+		// session read as idle.
+		delta, _ := props["delta"].(string)
+		if delta == "" {
+			return "", "", false
+		}
+		return delta, "reasoning", true
+	case "session.text.delta":
+		// v2's streaming text. MEASURED shape:
+		//   {"type":"session.text.delta","data":{"sessionID":…,"assistantMessageID":…,
+		//                                         "ordinal":0,"delta":"Hi! …"}}
+		// The delta is a TOP-LEVEL `delta` string (v1 nested it in {field, delta}), and v2 does not
+		// distinguish text from reasoning on this event, so the kind is best-effort like v1's.
+		delta, _ := evt.Props()["delta"].(string)
+		if delta == "" {
+			return "", "", false
+		}
+		return delta, "text", true
 	case "message.part.delta":
 		// Modern shape: {sessionID, messageID, partID, field, delta}. The
 		// serve streams text and reasoning through the SAME field "text"
@@ -778,9 +1249,48 @@ func (c *SessionClient) doJSON(ctx context.Context, method, path string, body, o
 		return fmt.Errorf("opencode serve %s %s: http %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 	if out != nil {
-		if err := json.NewDecoder(resp.Body).Decode(out); err != nil && !errors.Is(err, io.EOF) {
-			return err
-		}
+		return c.decodeBody(resp.Body, out)
 	}
 	return nil
 }
+
+// decodeBody decodes a response body into out, unwrapping the surface's response envelope WHEN IT IS
+// PRESENT and passing the body through when it is not.
+//
+// WHY THE "WHEN PRESENT" PART MATTERS, rather than unwrapping unconditionally on v2: the envelope is
+// per-endpoint. Measured on 2.0.26, the session endpoints wrap ({"data":{…}}) while /api/info does not
+// ({"version":…}). A decoder that assumed the wrapper would read nothing from the endpoints that omit
+// it, and the failure would look exactly like the one this fixes — an empty field, no error.
+//
+// An absent envelope key is therefore not an error: it means this endpoint answers bare, which the
+// same decoder handles. Only a body that fails BOTH readings is reported, and it is reported with the
+// bytes, because a shape mismatch is not something a caller can guess at.
+func (c *SessionClient) decodeBody(r io.Reader, out any) error {
+	raw, err := io.ReadAll(io.LimitReader(r, maxResponseBytes))
+	if err != nil {
+		return err
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil // an empty body is a valid answer for a status-only endpoint
+	}
+	body := raw
+	if env := c.shape.responseEnvelope; env != "" {
+		var wrapper map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &wrapper); err == nil {
+			if inner, ok := wrapper[env]; ok {
+				body = inner
+			}
+		}
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		// Report the shape we actually got, truncated, rather than a bare unmarshal error: on a new
+		// API generation the useful question is "what does it return?", and that cannot be guessed.
+		return fmt.Errorf("decode %s response: %w (first %d bytes: %s)",
+			c.shape.name, err, min(300, len(raw)), strings.TrimSpace(string(raw[:min(300, len(raw))])))
+	}
+	return nil
+}
+
+// maxResponseBytes bounds a response we will read before deciding its shape. Generous for a session
+// JSON document, and small enough that a wrong endpoint cannot make us buffer something enormous.
+const maxResponseBytes = 8 << 20

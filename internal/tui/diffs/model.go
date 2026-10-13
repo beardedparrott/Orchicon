@@ -132,6 +132,11 @@ func (m *Model) Close() {
 	m.streamArmed = false
 }
 
+// StreamArmed reports whether the live StreamFileEdits subscription is up for
+// the current owner. The shell uses it to decide whether the pane still needs
+// arming as the owner's session becomes live — see App.ensureDiffStreamArmed.
+func (m *Model) StreamArmed() bool { return m.streamArmed }
+
 // SetOwner points the pane at a session's ledger. When ownerID changes it
 // re-fetches the durable ledger and (re)arms the live StreamFileEdits stream
 // only when the owner is live (a running execution / open Ask conversation).

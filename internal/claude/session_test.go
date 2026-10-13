@@ -166,6 +166,15 @@ func newHarness(t *testing.T, factory func() *fakeProc) *harness {
 		h.argv = spec.Argv
 		return factory(), nil
 	})
+	// EVERY SESSION THIS HARNESS BUILDS IS RETIRED WHEN THE TEST ENDS. A live Ask
+	// session owns an OS-level guard shim — a temp dir built by ensureGuard() — and
+	// only teardown() removes it, so a test that drives a session and then abandons
+	// it leaves that directory in $TMPDIR for the life of the host while every
+	// assertion still passes. Measured before this line existed: 11 tests in this
+	// package leaked one shim dir each, on EVERY run, silently. Retiring here means
+	// no test has to remember; guard_leak_test.go fails the suite if one ever does
+	// anyway.
+	t.Cleanup(h.b.CloseAsk)
 	return h
 }
 

@@ -264,3 +264,54 @@ func WorkItemAttachmentsManifest(attachments []WorkItemAttachmentRow, workItemID
 	b.WriteString("\n")
 	return b.String()
 }
+
+// WorkerIdentityBlock emits the worker's identity sections — role, skills,
+// behavior, AGENTS.md — EXACTLY as the composite prompt writes them: same
+// headings, same heading LEVELS, same trailing blank lines.
+//
+// THE EXACT BYTES ARE THE CONTRACT. AgentSystemPrompt is used as a PREFIX of the
+// composite: the composite builder starts from it, and the opencode adapter
+// trims it back off for the message it sends on 2.x. That only works while the
+// two agree byte-for-byte, which is why this and the composite builder are one
+// source of truth rather than two similar-looking blocks — and why
+// TestCompositePromptBeginsWithAgentSystemPrompt asserts the relationship rather
+// than trusting it.
+//
+// NOTE the heading levels differ from scheduler.composeSystemPrompt (which emits
+// `# Skills` for the worker's own standalone prompt). They are DIFFERENT
+// artifacts with different consumers, and unifying them would change one of the
+// two prompts — a prompt change is a behaviour change for every running worker,
+// so it is deliberately not done here.
+func WorkerIdentityBlock(v WorkerVersionRow) string {
+	var sb strings.Builder
+	if r := strings.TrimSpace(v.Role); r != "" {
+		fmt.Fprintf(&sb, "# Role\n\n%s\n\n", r)
+	}
+	if s := strings.TrimSpace(v.Skills); s != "" {
+		fmt.Fprintf(&sb, "## Skills\n\n%s\n\n", s)
+	}
+	if b := strings.TrimSpace(v.Behavior); b != "" {
+		fmt.Fprintf(&sb, "## Behavior\n\n%s\n\n", b)
+	}
+	if a := strings.TrimSpace(v.AgentsMD); a != "" {
+		fmt.Fprintf(&sb, "## AGENTS.md\n\n%s\n\n", a)
+	}
+	return sb.String()
+}
+
+// AgentSystemPrompt is the RUN-LEVEL part of a worker's prompt: the shared
+// stable prefix plus that worker's identity block.
+//
+// WHY IT IS EXTRACTED. It is the ONLY part of a worker's prompt that is
+// identical for every execution of a run, which makes it the only part that can
+// be BAKED into an opencode agent — an agent's `system` is fixed when the serve
+// is configured, and a serve hosts a whole run. Everything after it varies per
+// execution (the task, the context files, the execution history) and therefore
+// stays on the per-execution message.
+//
+// On 1.x the whole composite still rides the prompt body's `system` field per
+// message and this function is not consulted at all; on 2.x — which has no such
+// field — the agent carries this and the message carries the remainder.
+func AgentSystemPrompt(v WorkerVersionRow, runtimeImage, mode string) string {
+	return StablePromptPrefix(runtimeImage, mode) + WorkerIdentityBlock(v)
+}

@@ -205,31 +205,35 @@ func TestEscClearsTranscriptSearch(t *testing.T) {
 	}
 }
 
-// CTRL+F IS FIND (acceptance 1). The universal chord must ACTIVATE the transcript
-// search on the composer's text, through the REAL key dispatch, and it must do so
-// from EITHER focus: from the content pane AND while the composer holds focus (the
-// route is global AND a composer bypass). It delegates to the same /find path — no
-// duplicate search UI.
-func TestCtrlFActivatesTranscriptSearchFromEitherFocus(t *testing.T) {
+// CTRL+F IS FIND (acceptance 1) — AND IT NOW OPENS A BOX RATHER THAN SEARCHING THE COMPOSER'S TEXT.
+//
+// That is a deliberate contract change, not a drift: the operator reported the old shape as
+// unintuitive ("you have to first type what you want then hit ctrl+f") and asked for the box. The
+// behaviour is asserted in findbox_test.go, where the box lives; what is pinned HERE is the part that
+// did NOT change — the chord must reach the search from EITHER focus, from the content pane AND while
+// the composer holds focus (the route is global AND a composer bypass), and what is typed must filter
+// through the same path /find uses. No duplicate search UI.
+func TestCtrlFReachesTheFindBoxFromEitherFocus(t *testing.T) {
 	for _, focus := range []focusMode{focusContent, focusComposer} {
 		focus := focus
 		t.Run(map[focusMode]string{focusContent: "content-focus", focusComposer: "composer-focus"}[focus], func(t *testing.T) {
 			m := askRelaunched(t, "c1")
 			m.chatStore.append("c1", chat.ChatItem{Kind: chat.KindText, Text: "the needle is here", Key: "t1", At: 1})
 			m.chatStore.append("c1", chat.ChatItem{Kind: chat.KindText, Text: "unrelated", Key: "t2", At: 2})
-			m.dock.SetValue("needle")
 			m.active = TabAsk
 			m.chatFocus = focus
 
 			m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
 			got := m2.(*App)
-			if got.askSearch != "needle" {
-				t.Fatalf("ctrl+f from %v must activate the transcript search on the composer's text, got %q",
-					focus, got.askSearch)
+			if got.findBox == nil {
+				t.Fatalf("ctrl+f from %v must open the find box", focus)
 			}
+
+			got = typeInto(t, got, "needle")
 			matches, total := transcriptSearchCount(got.chatStore.snapshot("c1"), "needle")
 			if matches != 1 || total != 2 {
-				t.Fatalf("the ctrl+f search must filter the transcript: got %d/%d, want 1/2", matches, total)
+				t.Fatalf("what is typed into the box must filter the transcript: got %d/%d, want 1/2",
+					matches, total)
 			}
 		})
 	}

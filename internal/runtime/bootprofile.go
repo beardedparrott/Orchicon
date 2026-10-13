@@ -125,6 +125,24 @@ type adapterInstall struct {
 	// transcript into ~/.claude/projects/<encoded-cwd>/ at run time, so a
 	// read-only mount would break the session outright.
 	rw bool
+	// private marks an install whose HOST directory must NOT be bind-mounted.
+	// The container instead gets a PRIVATE, writable, runtime-uid-owned
+	// directory at the same container path, plus — when authFile is set — that
+	// one file bound READ-ONLY inside it.
+	//
+	// opencode's data home is the case this exists for. opencode 2.x writes its
+	// log, its repos and its session DB under ~/.local/share/opencode at run
+	// time, so a read-only mount breaks the boot outright
+	// (EROFS .../opencode/log/opencode.log → `serve handshake: exit status 1`);
+	// but mounting the operator's directory read-write would hand every worker
+	// write access to the operator's credential AND to a session store it has
+	// no business touching. Private + auth-only is the mount that lets the CLI
+	// run without either failure.
+	private bool
+	// authFile is the file inside a PRIVATE install's host directory that is
+	// bind-mounted read-only into the container's private copy of it. Empty
+	// means no file is shared (the container's copy is entirely its own).
+	authFile string
 	// fingerprint lists the sub-trees of this install whose change must
 	// invalidate a WARM pooled container. Empty = not fingerprinted
 	// (config/transcript homes change every session and must never churn
@@ -207,7 +225,12 @@ func classifyAdapter(home, kind string) (adapterClass, bool) {
 		return adapterClass{
 			installs: []adapterInstall{
 				{probe: join(".config", "opencode"), dir: true},
-				{probe: join(".local", "share", "opencode"), dir: true},
+				// The data home is PRIVATE (see adapterInstall.private): the CLI must
+				// WRITE here, but the operator's credential and session store must
+				// not become writable from a worker — so the container gets its own
+				// uid-owned directory and only auth.json, read-only, from the host.
+				{probe: join(".local", "share", "opencode"), dir: true,
+					private: true, authFile: "auth.json"},
 				{probe: join(".opencode", "bin", "opencode"), mount: join(".opencode"),
 					fingerprint: []string{join(".opencode", "bin"), join(".opencode", "node_modules")}},
 			},
@@ -306,6 +329,46 @@ func adapterInstallPaths(home, kind string) ([]string, bool) {
 	return out, true
 }
 
+// AdapterHostMountRoots returns the host paths a demanded kind's installs are
+// mounted FROM — the roots a resolved adapter CLI must sit under to be reachable
+// from inside a runtime container.
+//
+// THE DECLARATION, NOT THE RUNTIME SET: existence is deliberately NOT checked.
+// adapterHostMounts does check it, because a `-v` must point at something real;
+// this answers a question about the RULE — "would a binary placed here be
+// visible to a worker?" — and a caller that stat'd would get a different answer
+// depending on whether the operator has installed anything yet.
+//
+// The consumer is internal/opencode's ContainerVisible, which pairs with the
+// binary resolver: 'opencode is installed' is a HOST fact, and on its own it says
+// nothing about whether the runtime containers can execute it. Deriving both from
+// this one declaration is what keeps the two answers from disagreeing.
+func AdapterHostMountRoots(home string, kinds ...string) []string {
+	if home == "" {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var out []string
+	for _, kind := range kinds {
+		installs, declared := adapterInstalls(home, kind)
+		if !declared {
+			continue
+		}
+		for _, in := range installs {
+			root := in.mount
+			if root == "" {
+				root = in.probe
+			}
+			if _, ok := seen[root]; ok {
+				continue
+			}
+			seen[root] = struct{}{}
+			out = append(out, root)
+		}
+	}
+	return out
+}
+
 // adapterHostMounts returns the daemon -v args for the adapter installs a
 // demanded kind contributes, emitting only installs whose probe exists with
 // the required file/dir shape (mirroring the original inline os.Stat gate).
@@ -321,6 +384,11 @@ func adapterHostMounts(home string, kinds ...string) []string {
 			continue
 		}
 		for _, in := range installs {
+			if in.private {
+				// Not a host bind at all: standardHostMountArgs gives the
+				// container a private writable copy (adapterPrivateHomes).
+				continue
+			}
 			src := in.mount
 			if src == "" {
 				src = in.probe
@@ -343,6 +411,51 @@ func adapterHostMounts(home string, kinds ...string) []string {
 		}
 	}
 	return args
+}
+
+// privateHome is one adapter install's PRIVATE, writable container directory:
+// the path to give the container (identical inside and out, as every other
+// mount is) and, when the operator has one to share, the credential file to
+// bind read-only into it.
+type privateHome struct {
+	dir      string
+	authFile string
+}
+
+// adapterPrivateHomes returns the private homes a demanded kind contributes,
+// in declaration order. Probe-gated like every other install, and for good
+// reason: with no host directory to mount from there is nothing to share, and
+// the container's own copy is then created by the CLI itself under a $HOME
+// that standardHostMountArgs has already made writable by the runtime uid.
+func adapterPrivateHomes(home string, kinds ...string) []privateHome {
+	if home == "" {
+		return nil
+	}
+	var out []privateHome
+	for _, kind := range kinds {
+		installs, declared := adapterInstalls(home, kind)
+		if !declared {
+			continue
+		}
+		for _, in := range installs {
+			if !in.private {
+				continue
+			}
+			st, err := os.Stat(in.probe)
+			if err != nil || !st.IsDir() {
+				continue
+			}
+			ph := privateHome{dir: in.probe}
+			if in.authFile != "" {
+				af := filepath.Join(in.probe, in.authFile)
+				if ast, aerr := os.Stat(af); aerr == nil && !ast.IsDir() {
+					ph.authFile = af
+				}
+			}
+			out = append(out, ph)
+		}
+	}
+	return out
 }
 
 // adapterBinDirs returns the container PATH dirs a demanded kind's mounted

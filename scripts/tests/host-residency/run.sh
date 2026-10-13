@@ -5,10 +5,14 @@
 # WHY THIS EXISTS: host residency is a PER-INSTANCE, OPT-IN launch setting. Two
 # failure modes are silent and expensive, and neither needs Docker to detect:
 #
-#   1. A non-default default. If the residency switch ever flips to `host`,
-#      every un-migrated instance changes shape on its next `up` — the plane
-#      silently leaves its container. The opt-in (default `container`) is the
-#      whole safety property of the migration, so it is asserted here.
+#   1. THE DEFAULT SHAPE. It was `container`, meaning the self-contained shape
+#      was what a plain `up` produced while the HOST plane — the supported one,
+#      where operators actually run — needed an explicit opt-in. 5cc8039c
+#      ("host is the default shape, and the card states intent") reversed that on
+#      purpose, so `host` is now asserted as the default and `container` as the
+#      explicit parameter. The PRECEDENCE is asserted too (argument >
+#      ORCHICON_PLANE_RESIDENCY > host, with a typo refused), because that is
+#      what makes `container` still reachable rather than merely still present.
 #   2. A GLOBAL value. One shared HTTP port / plane URL / service port between
 #      dev and prod points one instance's workers at the other's services and
 #      database. Every per-instance value is therefore asserted to differ AND
@@ -50,6 +54,7 @@ unset ORCHICON_CONTAINER_SERVICES_ONLY 2>/dev/null || true
 
 PASSED=0
 FAILED=0
+  SKIPPED=0
 
 check() { # <label> <expected> <actual>
   if [ "$2" = "$3" ]; then
@@ -127,13 +132,35 @@ field() { # <shape> <key>
   printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -1
 }
 
-# --- (i) OPT-IN: no setting at all means today's behaviour ------------------
+# --- (i) THE DEFAULT SHAPE IS HOST -----------------------------------------
+#
+# REWRITTEN, NOT RELAXED, and the difference matters for a harness that guards a shape. Until
+# 5cc8039c this block asserted that the default was `container` and that a plain `up` therefore
+# published the plane on the wildcard. Both of those are now FALSE ON PURPOSE: the default moved to
+# `host`, so a plain `up` produces the host shape — the container services-only, every service
+# published on loopback, and no plane port published by the container at all (the plane is a HOST
+# process that owns it).
+#
+# So the assertions below are the SAME PROPERTIES, restated for the shape that is now the default,
+# rather than the weaker "it no longer matches container". A harness gutted to match new behaviour
+# would stop guarding anything.
 DEF_DEV="$(shape dev)"
-check "default residency (unset) is container" "container" "$(field "$DEF_DEV" residency)"
-check "default dev publishes the plane 8080:8080" "-p 8080:8080 -p 3002:3000" "$(field "$DEF_DEV" publish_ports)"
-check_lacks "default dev sets no services-only env" "SERVICES_ONLY" "$DEF_DEV"
-check_lacks "default dev publishes no loopback-bound port" "127.0.0.1:" "$(field "$DEF_DEV" publish_ports)"
-check "explicit container == default" "$DEF_DEV" "$(shape dev container)"
+check "default residency (unset) is host" "host" "$(field "$DEF_DEV" residency)"
+check_contains "default dev marks the container services-only" \
+  "container_env=ORCHICON_CONTAINER_SERVICES_ONLY=1" "$DEF_DEV"
+check_contains "default dev publishes services on loopback" \
+  "127.0.0.1:5432:" "$(field "$DEF_DEV" service_ports)"
+check_lacks "default dev publishes nothing on a wildcard address" "0.0.0.0:" "$(field "$DEF_DEV" service_ports)"
+# The plane port is NOT published by the container in the host shape — the plane is a host process and
+# owns the port. Asserting its absence is the property that makes host residency host residency.
+check_lacks "default dev does NOT publish the plane port (it is a host process)" \
+  "8080:8080" "$(field "$DEF_DEV" publish_ports)"
+
+# AND THE OPT-IN STILL WORKS, which is the other half of the change rather than a leftover.
+check "explicit container is container" "container" "$(field "$(shape dev container)" residency)"
+check "explicit container publishes the plane 8080:8080" "-p 8080:8080 -p 3002:3000" \
+  "$(field "$(shape dev container)" publish_ports)"
+check_lacks "explicit container sets no services-only env" "SERVICES_ONLY" "$(shape dev container)"
 
 # --- (ii) HOST SHAPE: dev ------------------------------------------------
 HOST_DEV="$(shape dev host)"
@@ -216,10 +243,18 @@ check_lacks "host prod plane does NOT bind the bridge at dev's port" \
   || check "service publish set is per instance" "distinct" "IDENTICAL"
 
 # --- (iv) prod does NOT follow dev by default ----------------------------
-check "prod stays containerized by default (dev's residency is not global)" \
-  "container" "$(field "$(shape prod)" residency)"
-check "prod default still publishes its plane port" \
-  "-p 8091:8080 -p 3003:3000" "$(field "$(shape prod)" publish_ports)"
+#
+# THE POINT OF THIS BLOCK SURVIVES THE DEFAULT CHANGE, and it is easy to lose while updating it: the
+# property is that dev's residency is not GLOBAL, i.e. prod resolves to the same shape dev does for
+# the same (absent) input, from prod's own instance entry rather than from anything dev set. Both are
+# now `host`, so the label says that rather than "stays containerized" — and prod's ports must still
+# be PROD's, which is what catches a table row that fell back to dev's values.
+check "prod follows the same default as dev (dev's residency is not global)" \
+  "host" "$(field "$(shape prod)" residency)"
+check_contains "prod default publishes prod's own postgres port" \
+  "127.0.0.1:5433:" "$(field "$(shape prod)" service_ports)"
+check_lacks "prod default does NOT publish dev's postgres port" \
+  "127.0.0.1:5432:" "$(field "$(shape prod)" service_ports)"
 
 # --- (v) an invalid residency is refused, not guessed --------------------
 if (ORCHICON_PLANE_RESIDENCY=both; export ORCHICON_PLANE_RESIDENCY; residency_for >/dev/null 2>&1); then
@@ -284,6 +319,97 @@ if grep -qF 'migrate_host_data_dir "$inst" || return 1' "$CONTAINER_SH"; then
 else
   printf '  \033[31mFAIL\033[0m  %-52s %s\n' "host switch-over migrates the data dir (KEK)" "MISSING"
   FAILED=$((FAILED + 1))
+fi
+
+# --- plane_start must not leave a SUPERSEDED plane running --------------------
+#
+# A rebuild REPLACES the binary while the running process keeps executing the old inode. The plane
+# answers health perfectly, so a bare health check concluded "already serving" and returned success —
+# leaving the stale process in place indefinitely, serving code the operator had just replaced. The
+# Go installer learned this (planeDrift reads /proc/<pid>/exe); the launcher had not.
+#
+# THE MECHANISM IS TESTED, NOT THE PROSE, and it is testable without Docker: run a process from a
+# path, replace that path, and /proc/<pid>/exe reports the " (deleted)" suffix. That is exactly the
+# signal plane_start now looks for, so this drives the real filesystem state rather than grepping for
+# a string that might be spelled right and wired wrong.
+echo
+echo "  -- a stale plane is detected and replaced --"
+
+if grep -qF 'A PLANE THAT ANSWERS IS NOT NECESSARILY THE PLANE WE JUST BUILT' "$CONTAINER_SH"; then
+  printf '  \033[32mPASS\033[0m  %-52s %s\n' "plane_start checks for a stale plane" "present"
+  PASSED=$((PASSED + 1))
+else
+  printf '  \033[31mFAIL\033[0m  %-52s %s\n' "plane_start checks for a stale plane" "MISSING"
+  FAILED=$((FAILED + 1))
+fi
+
+# The detection must be on the " (deleted)" SUFFIX, not on a path mismatch: a dev checkout
+# legitimately serves from bin/orchicon, and a mismatch test would restart a plane the operator
+# chose to keep.
+if grep -qF '*" (deleted)")' "$CONTAINER_SH"; then
+  printf '  \033[32mPASS\033[0m  %-52s %s\n' "detection keys on the deleted-exe suffix" "present"
+  PASSED=$((PASSED + 1))
+else
+  printf '  \033[31mFAIL\033[0m  %-52s %s\n' "detection keys on the deleted-exe suffix" "MISSING"
+  FAILED=$((FAILED + 1))
+fi
+
+# ...and it must RESTART rather than merely warn, so the plane ends up on the current binary.
+if grep -qF 'plane_stop "$inst" || log_warn' "$CONTAINER_SH"; then
+  printf '  \033[32mPASS\033[0m  %-52s %s\n' "a stale plane is stopped, then started" "wired"
+  PASSED=$((PASSED + 1))
+else
+  printf '  \033[31mFAIL\033[0m  %-52s %s\n' "a stale plane is stopped, then started" "MISSING"
+  FAILED=$((FAILED + 1))
+fi
+
+# THE BEHAVIOURAL HALF: reproduce the state and prove the detector reads it correctly. A shell
+# function is not needed — the check is a readlink on /proc, and that is what is exercised.
+TMP_PROBE="$(mktemp -d "${REPO_ROOT}/tmp/stale-probe.XXXXXX")"
+trap 'rm -rf "$TMP_PROBE"' EXIT
+
+# THE PROBE MUST BE A REAL BINARY, NOT A SCRIPT. A `#!/bin/sh` file's /proc/<pid>/exe is the
+# INTERPRETER (/usr/bin/bash), so replacing the script deletes nothing and the test measures its own
+# construction instead of the detector. Measured: the script version reported "no" for a process whose
+# binary had just been replaced. /bin/sleep is a real ELF and is never a script.
+#
+# The scratch dir lives under the repo's gitignored tmp/ so the copy is project-scoped; a copy into a
+# scratch path outside the tree is refused by the execution guard in a guarded environment, which
+# would make this test pass or fail depending on who ran it.
+if cp /bin/sleep "$TMP_PROBE/plane" 2>/dev/null; then
+  # A SIMPLE background command, deliberately not part of an &&-chain: `a && b &` backgrounds the
+  # whole chain, so $! is the subshell rather than the binary. That is how the first version of this
+  # test "measured" /usr/bin/bash.
+  "$TMP_PROBE/plane" 20 &
+  PROBE_PID=$!
+  sleep 1
+  BEFORE="$(readlink "/proc/$PROBE_PID/exe" 2>/dev/null || echo '')"
+
+  # Replace the file the process was launched from — exactly what a rebuild does to bin/orchicon.
+  cp /bin/sleep "$TMP_PROBE/plane.new" && mv "$TMP_PROBE/plane.new" "$TMP_PROBE/plane"
+  AFTER="$(readlink "/proc/$PROBE_PID/exe" 2>/dev/null || echo '')"
+
+  kill "$PROBE_PID" 2>/dev/null || true
+  wait "$PROBE_PID" 2>/dev/null || true
+
+  case "$BEFORE" in
+    *" (deleted)") BEFORE_STALE=yes ;;
+    *)             BEFORE_STALE=no ;;
+  esac
+  case "$AFTER" in
+    *" (deleted)") AFTER_STALE=yes ;;
+    *)             AFTER_STALE=no ;;
+  esac
+
+  check "a running process is NOT stale before its binary is replaced" "no" "$BEFORE_STALE"
+  check "the SAME process IS stale once its binary is replaced" "yes" "$AFTER_STALE"
+else
+  # AN INVISIBLE SKIP IS THE FAILURE MODE THIS WHOLE SESSION HAS BEEN REMOVING, so it is reported
+  # loudly and counted as a skip rather than passing quietly. A pass here would claim the detection
+  # works without having exercised it.
+  printf '  \033[33mSKIP\033[0m  %-52s %s\n' "the deleted-exe detector" \
+    "could not copy a real binary into ${TMP_PROBE} (read-only or guarded environment)"
+  SKIPPED=$((SKIPPED + 1))
 fi
 
 echo

@@ -208,22 +208,48 @@ func (r *WorktreeReconciler) scan(ctx context.Context, tenantID string) reconcil
 	}
 	fastElapsed := time.Since(scanStart)
 	if !r.slowPassDue() {
-		r.log.Info("worktree: scan",
-			"fast_ms", fastElapsed.Milliseconds(),
-			"slow_ms", int64(0),
-			"slow_skipped", true,
-			"provisions", provisions)
+		r.logScanTick(provisions, fastElapsed.Milliseconds(), 0, true)
 		return reconciler.Result{}
 	}
 	slowStart := time.Now()
 	res = r.scanSlow(ctx, tenantID)
 	r.lastSlowPass = time.Now()
-	r.log.Info("worktree: scan",
-		"fast_ms", fastElapsed.Milliseconds(),
-		"slow_ms", time.Since(slowStart).Milliseconds(),
-		"slow_skipped", false,
-		"provisions", provisions)
+	r.logScanTick(provisions, fastElapsed.Milliseconds(), time.Since(slowStart).Milliseconds(), false)
 	return res
+}
+
+// logScanTick emits the scan summary at a level that reflects whether the tick
+// actually DID anything.
+//
+// THE LEVEL IS THE POINT, and it is not a detail. scan() runs on the
+// reconciler's heartbeat, so an unconditional Info line here is FIVE LINES A
+// SECOND — of a line whose own fields read `provisions=0, slow_skipped=true`,
+// i.e. "nothing happened". Measured on a live plane: 1196 of these against ~25
+// real lines in the same window, so ~98% of the log volume was this one
+// statement. That is not merely untidy: it is the reason `grep -i error` over
+// the plane's log returns page after page of scan summaries, which is how a
+// real failure gets missed.
+//
+// A QUIET TICK IS NOT WORTH AN INFO LINE; A BUSY ONE IS. `provisions > 0` means
+// the tick reconciled something — exactly the event a slow-dispatch
+// investigation needs to attribute, which was this log's original intent. The
+// quiet case keeps the line at DEBUG, so the same attribution stays available
+// on demand (raise the level) without costing every operator hundreds of
+// thousands of lines a day to reach it.
+//
+// The slow pass needs no Info arm of its own: its OWN lines already announce
+// real work (orphan sweep budget expiry, each reclaimed branch), so a slow pass
+// that does nothing — the common case — stays quiet with the rest.
+func (r *WorktreeReconciler) logScanTick(provisions int, fastMS, slowMS int64, slowSkipped bool) {
+	level := slog.LevelDebug
+	if provisions > 0 {
+		level = slog.LevelInfo
+	}
+	r.log.Log(context.Background(), level, "worktree: scan",
+		"fast_ms", fastMS,
+		"slow_ms", slowMS,
+		"slow_skipped", slowSkipped,
+		"provisions", provisions)
 }
 
 // scanFast provisions pending runs and pending parallel-branch child step
