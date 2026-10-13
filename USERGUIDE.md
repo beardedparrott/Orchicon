@@ -1715,14 +1715,34 @@ advertises the chord whenever there is a split on screen.
   instead, so you can paste an error trace or a code block straight into your answer
   (line breaks are kept; the row holds your words, not a structured field). A row you
   have handed back to the composer with `ctrl+g` does not take it.
-- **`ctrl+f`** attaches a **file by path**. Both this and a clipboard image land in
-  the pending set for the next message, reported in the strip above the composer.
+- **`ctrl+f`** opens the **find box** — a search over the conversation you are
+  reading. Type the term in the box: the transcript filters **as you type** and the
+  box reports the match count. **Enter** keeps the search and hands the keyboard to
+  the transcript; **esc** cancels and puts back the transcript you had.
 - **Pasted text never sends until you press Enter.**
 - **`ctrl+y`** stops an in-flight reply (the GUI's Stop button). The affordance row
   offers it while a reply streams.
 - **Sending while a reply streams interjects** — it supersedes the turn rather than
   queueing behind it.
 - **`ctrl+g` / `esc`** toggle between content focus and the composer.
+
+### Reading a long conversation
+
+The transcript's navigation keys work from **the content pane** always, and from **the
+composer** whenever the box is empty — while you are drafting a message they are your
+message's keys instead (home/end move within your draft, the arrows move the cursor).
+
+- **`home`** / **`end`** — jump to the **first** / **latest** message. `end` also
+  resumes following the live tail.
+- **`↑` / `↓`** and **`PgUp` / `PgDn`** — scroll the conversation.
+- **`ctrl+f`** — the find box (see the composer list above). While a search is
+  running, **`n`** / **`N`** step to the next / previous match and **`esc`** clears it.
+- **`esc`** — from the composer, hands the keyboard to the transcript. The footer
+  always says which side holds it.
+
+From the content pane, **`←` / `→`** choose whether the arrows drive the conversations
+rail or the conversation itself. The composer advertises all of these chords while a
+conversation is open, so you do not have to remember them.
 
 ### Slash commands
 
@@ -1750,7 +1770,8 @@ Type `/` to open the palette, or `/help` to list every command with its usage.
 | `/skills` | This conversation's skill files; paths or `clear` write directly |
 | `/fullsend` | Toggle FULLSEND for this conversation |
 | `/compact` | Summarize the conversation to free context |
-| `/attach` | Attach a file (not supported in the TUI — use `ctrl+v`/`ctrl+f`) |
+| `/attach` | Attach a file by path (pasting a path into the composer does the same) |
+| `/find <text>` | Search the open conversation. The one-shot form of the find box — `ctrl+f` opens the box itself, where you type the term |
 
 **Two names that must not be confused.** `/project` (**singular**) sets the Ask
 tab's **workspace scope**. `/projects` (**plural**) is the generated navigation

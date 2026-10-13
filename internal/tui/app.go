@@ -404,6 +404,10 @@ type App struct {
 	// (0-based) that n/N navigate.
 	askSearch   string
 	askMatchIdx int
+	// findBox is the FIND MODAL (nil = closed) — the box ctrl+f opens and the field the query is typed
+	// into (findbox.go). It lives beside the search state it drives because it IS a view of askSearch:
+	// kept apart, the transcript would have two queries that can disagree.
+	findBox *findBox
 	// Slide-out conversation strip (chatpanel.go): open when the operator
 	// engages the composer on a screen other than Ask, so a send is VISIBLE.
 	// panelScroll is in lines up from the transcript tail (0 = following).
@@ -485,6 +489,9 @@ type App struct {
 	// KeyRoute.Handle returns only a bool, so it cannot return a Cmd directly (same
 	// constraint as pendingDiffCmd/pendingRailCmd; drainStaged re-emits it).
 	pendingStopCmd tea.Cmd
+	// pendingFindCmd carries the find box's caret-blink cmd out of the ctrl+f route — the same constraint
+	// as pendingStopCmd (a route Handle returns only a bool); drainStaged re-emits it.
+	pendingFindCmd tea.Cmd
 	// pendingAttachCmd carries an ATTACHMENT read out of its global key route (ctrl+v pastes a clipboard
 	// image). It does real I/O — a screenshot can be megabytes — so it runs as a command and never on the
 	// tea loop, and the route stages the command for drainStaged to re-emit. (/attach does NOT use this
@@ -1081,6 +1088,10 @@ func (m *App) drainStaged() tea.Cmd {
 	if m.pendingStopCmd != nil {
 		cmds = append(cmds, m.pendingStopCmd)
 		m.pendingStopCmd = nil
+	}
+	if m.pendingFindCmd != nil {
+		cmds = append(cmds, m.pendingFindCmd)
+		m.pendingFindCmd = nil
 	}
 	if m.pendingAttachCmd != nil {
 		cmds = append(cmds, m.pendingAttachCmd)
@@ -1795,7 +1806,13 @@ func (m *App) refreshComposerHint() {
 	// AN APP-LEVEL MODAL OWNS THE KEYBOARD TOO, so it must win over the screen's hint for the same
 	// reason an in-screen form does — and it is checked FIRST, because while the modal is up the screen
 	// underneath is not the thing reading the operator's keystrokes.
-	if m.renameConv != nil || m.assignForm != nil || m.bulkConfirm != nil || m.catForm != nil {
+	if m.findBox != nil {
+		// THE FIND BOX OWNS THE KEYBOARD TOO, and it is checked FIRST because it is claimed FIRST in
+		// dispatch: whatever takes the keys is what the row has to describe. The box is not a form, so
+		// it does not get formComposerHint — those chords (ctrl+s, tab between fields) do not exist
+		// here, and the row would be advertising keys that do nothing.
+		ctx = findComposerHint
+	} else if m.renameConv != nil || m.assignForm != nil || m.bulkConfirm != nil || m.catForm != nil {
 		ctx = formComposerHint
 	} else if s := m.screens[m.active]; s != nil {
 		// AN OPEN FORM OWNS THE KEYBOARD, SO THE HINT MUST DESCRIBE THE FORM.
@@ -1839,11 +1856,28 @@ func (m *App) refreshComposerHint() {
 	// Named for the OPERATOR'S OWN messages rather than "a message", because that is what the gesture does
 	// — a click on the model's reply is deliberately inert (see transcriptUserMessageAtFrameRow) — and a
 	// hint that promised more than the code delivers would be the interface lying.
-	if m.active == TabAsk && m.chatConvID != "" {
-		if ctx == "" {
-			ctx = transcriptCopyHint
-		} else {
-			ctx += " · " + transcriptCopyHint
+	// NOT WHILE THE FIND BOX IS UP: the box owns the keyboard there, so these chords are inert and
+	// naming them would be the row lying about the state the operator is in — the exact failure
+	// formComposerHint exists to avoid, one surface along.
+	if m.active == TabAsk && m.chatConvID != "" && m.findBox == nil {
+		// THE TRANSCRIPT'S FIND + JUMP KEYS, ADVERTISED — because a chord nobody can see is a chord
+		// nobody has. The operator asked for exactly this: "no note in the composer about search or
+		// jumping to beginning to end is there so no one would know they exist." They are named HERE,
+		// on the composer's affordance row, because that is where this client advertises what the
+		// keyboard can do (the click-to-copy gesture and the width chord are named here for the same
+		// reason) — and not only in the `?` overlay, which you have to already know about.
+		//
+		// home/end ARE ADVERTISED UNCONDITIONALLY, which is the same bar the arrow keys are already held
+		// to: they jump the transcript whenever the composer is NOT holding text, and while the operator
+		// IS drafting a message they are the textarea's line-start/line-end. Both are true, and the row
+		// describes what the keys mean on this SURFACE — exactly what every other screen's hint does
+		// with its own contextual keys.
+		for _, seg := range []string{transcriptFindHint, transcriptCopyHint} {
+			if ctx == "" {
+				ctx = seg
+			} else {
+				ctx += " · " + seg
+			}
 		}
 	}
 	// THE WIDTH CHORD, WHEREVER THERE IS A SPLIT TO RESIZE.
@@ -1874,6 +1908,14 @@ func (m *App) refreshComposerHint() {
 
 // transcriptCopyHint is the composer's advertisement for the transcript's click gesture.
 const transcriptCopyHint = "click your message to copy"
+
+// transcriptFindHint is the composer's advertisement for the transcript's find + jump chords. It names
+// the two entry points and what they DO, rather than the reason they exist.
+const transcriptFindHint = "ctrl+f: find in the transcript · home/end: first·latest message"
+
+// findComposerHint is what the composer advertises while the FIND BOX is up. It names only keys the box
+// honours, so the row is true in that state — the rule formComposerHint follows.
+const findComposerHint = "find: type the term · ↑/↓: step matches · enter: keep searching · esc: cancel"
 
 // splitResizeHint advertises the width chord. Short because the affordance row wraps rather than scrolls, and
 // phrased for what the operator wants ("resize panes") rather than for what the code calls it (a share).
@@ -2679,6 +2721,16 @@ func (m App) viewFrame() string {
 	// is opened from a category row in whichever pane is showing it.
 	if m.catForm != nil {
 		base = m.catAdminView(base, w, h)
+	}
+	// THE FIND BOX IS COMPOSED LAST — over every other modal — because it is CLAIMED FIRST in dispatch.
+	//
+	// THE INVARIANT IS "WHATEVER TAKES THE KEYS IS WHAT THE OPERATOR SEES": the box answers every
+	// keystroke and the mouse while it is up, so drawing it under a sibling would put the keyboard on a
+	// surface the operator cannot read. (This is the ordering the conversation-scope modal got wrong
+	// once — the form was raised from it and composited BENEATH it, which is why none of its buttons
+	// appeared to work.)
+	if m.findBox != nil {
+		base = m.findBoxView(base, w, h)
 	}
 	return fillView(base, w, h)
 }

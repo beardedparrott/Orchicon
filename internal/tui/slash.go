@@ -617,10 +617,10 @@ func (m *App) slashHelpText() string {
 	return strings.Join(m.slash.helpLines(), " · ")
 }
 
-// findInTranscript is the SHARED transcript-search entry point: /find <text> and
-// the ctrl+f chord both call it, so the two surfaces can never drift (ctrl+f
-// passes the composer's text as the query). It is the behaviour /find has always
-// had, lifted out of the command so a chord can reach it. See transcript_search.go.
+// findInTranscript is the SHARED transcript-search entry point for the TERM-AT-HAND case:
+// /find <text> and the find box both land here, so the two surfaces can never drift. The box
+// (findbox.go) calls this on every keystroke and on commit, which is what makes /find, the box and
+// the n/N chords one search with one definition of a match.
 func (m *App) findInTranscript(q string) {
 	if m.chatConvID == "" {
 		m.dock.SetError("no conversation open — nothing to search")
@@ -631,7 +631,7 @@ func (m *App) findInTranscript(q string) {
 		if m.clearAskSearch() {
 			m.dock.SetNotice("transcript search cleared")
 		} else {
-			m.dock.SetNotice("usage: /find <text> (or type the term and press ctrl+f)")
+			m.dock.SetNotice("usage: /find <text> (or press ctrl+f to search from a find box)")
 		}
 		return
 	}

@@ -208,3 +208,86 @@ func (m *App) jumpTranscriptBottom() {
 func (m *App) askTranscriptContentFocus() bool {
 	return m.active == TabAsk && m.chatFocus == focusContent && m.chatConvID != ""
 }
+
+// dockEmpty reports whether the composer holds no text. Whitespace-only counts as empty — the rule the
+// slash palette, the rail's chords and the transcript's navigation keys all share.
+func (m *App) dockEmpty() bool { return strings.TrimSpace(m.dock.Value()) == "" }
+
+// transcriptJumpKeysActive reports whether the transcript's JUMP keys (home/end) own the keystroke right
+// now.
+//
+// IT IS DELIBERATELY WIDER THAN THE SCROLL RULE. Nothing else on the Ask tab has a meaning for home/end,
+// so the rail's selection does not take them — which is why this predicate does NOT test askPane, while
+// transcriptScrollKeysActive does (the rail DOES compete for the arrows).
+//
+// IT IS ALSO WIDER THAN IT WAS. It used to be askTranscriptContentFocus for these two routes, i.e.
+// content focus only — and content focus is not where the operator is. The composer is, because NewApp
+// makes it the launch focus (that is where you type). Home/End in an EMPTY textarea are pure no-ops, so
+// yielding them there costs nothing and is what makes the chord reachable at all. That gap is the
+// operator's report: "In the TUI the new home/end keys are not jumping to the top or bottom of a
+// conversation."
+func (m *App) transcriptJumpKeysActive() bool {
+	if m.active != TabAsk || m.chatConvID == "" {
+		return false
+	}
+	return m.chatFocus == focusContent || (m.chatFocus == focusComposer && m.dockEmpty())
+}
+
+// transcriptScrollKeysActive reports whether the transcript owns the VERTICAL SCROLL keys.
+//
+// THE RAIL COMPETES FOR THESE — an empty composer with the rail selected makes the arrows move the rail's
+// selection — so this one DOES test the pane selection: it is the same question railOwnsVerticalKey asks
+// from the other side, which is why the two are read together and must keep agreeing.
+func (m *App) transcriptScrollKeysActive() bool {
+	if m.active != TabAsk || m.chatConvID == "" || m.askPane != askPaneConversation {
+		return false
+	}
+	return m.chatFocus == focusContent || (m.chatFocus == focusComposer && m.dockEmpty())
+}
+
+// scrollTranscriptKey applies a vertical SCROLL key to the Ask transcript, reporting whether it owned the
+// key.
+//
+// ONE MAPPING, TWO CALLERS: the composer branch (which asks because the composer is empty) and the
+// content-focus branch. They cannot disagree about what "down" does, and a key added here is a key added
+// to both — which is what the two copies this replaced could not promise.
+func (m *App) scrollTranscriptKey(key string) bool {
+	d := scrollKeyDelta(key)
+	if d == 0 || !m.transcriptScrollKeysActive() {
+		return false
+	}
+	m.ScrollTranscript(d)
+	m.onChatWake() // keep the scroll indicator honest (the content path always did this)
+	return true
+}
+
+// jumpTranscriptKey applies home/end to the Ask transcript, reporting whether it owned the key.
+//
+// It is what the two REGISTERED ROUTES call, and that is on purpose: the routes are how the `?` overlay
+// learns these chords exist, so routing their behaviour through the same helper as the composer path is
+// what keeps the overlay's promise and the key's behaviour one implementation.
+func (m *App) jumpTranscriptKey(key string) bool {
+	if !m.transcriptJumpKeysActive() {
+		return false
+	}
+	switch key {
+	case "home":
+		m.jumpTranscriptTop()
+	case "end":
+		m.jumpTranscriptBottom()
+	default:
+		return false
+	}
+	m.onChatWake() // the pane's own status line is derived at repaint
+	return true
+}
+
+// transcriptNavKey applies EITHER kind of navigation key — the vertical scroll keys or home/end — to the
+// Ask transcript when it is the surface the operator means, reporting whether it owned the key.
+//
+// It is the single entry point the COMPOSER branch uses, so "which keys does the transcript get while I
+// am sitting in the composer?" is answered in exactly one place rather than wherever someone remembered
+// to add a case.
+func (m *App) transcriptNavKey(key string) bool {
+	return m.scrollTranscriptKey(key) || m.jumpTranscriptKey(key)
+}
