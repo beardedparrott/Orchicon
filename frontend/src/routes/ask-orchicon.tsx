@@ -1,5 +1,5 @@
 import { createRoute, useNavigate } from "@tanstack/react-router";
-import { useState, useCallback, useRef, useEffect, useMemo } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo, type MutableRefObject } from "react";
 import {
   Plus,
   Trash2,
@@ -612,6 +612,28 @@ function AskOrchiconPage() {
       block: "center",
     });
   }, [activeMatch, searchActive, searchMatchCount, searchQuery]);
+
+  // The search field and the composer, so Cmd/Ctrl+F can focus the first and the
+  // search's Escape can hand focus back to the second.
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // CMD/CTRL+F IS FIND, NOT THE BROWSER'S. The universal search chord opens THIS
+  // conversation's transcript search instead of the browser's native find (the
+  // Slack / VS Code convention): preventDefault suppresses the native dialog and we
+  // focus the field. This is the route's FIRST modifier chord, so it is handled
+  // inline rather than in a chord table. The document Escape listener below returns
+  // early on metaKey/ctrlKey, so the two never fight over the chord.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "f" || e.altKey || !(e.metaKey || e.ctrlKey)) return;
+      e.preventDefault();
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   const { data: settings } = useGetSettings();
 
@@ -1963,6 +1985,7 @@ function AskOrchiconPage() {
               }}
               matchCount={searchMatchCount}
               total={transcriptSlots.length}
+              inputRef={searchInputRef}
               onNext={() =>
                 setActiveMatch((i) => (searchMatchCount ? (i + 1) % searchMatchCount : 0))
               }
@@ -1974,6 +1997,13 @@ function AskOrchiconPage() {
               onClear={() => {
                 setSearchQuery("");
                 setActiveMatch(0);
+              }}
+              // Escape clears the query and hands the keyboard back to the composer,
+              // so abandoning a search puts the cursor where the operator types next.
+              onEscape={() => {
+                setSearchQuery("");
+                setActiveMatch(0);
+                composerInputRef.current?.focus();
               }}
             />
 
@@ -2183,6 +2213,7 @@ function AskOrchiconPage() {
                 onSend={handleSendMessage}
                 onStop={handleStopStreaming}
                 isStreaming={isStreaming}
+                textareaRef={composerInputRef}
                 placeholder="Ask Orchicon Anything..."
                 mode={localMode}
                 onModeChange={handleModeChange}
@@ -2615,6 +2646,7 @@ function ChatInputField({
   restoreDraft,
   onCompact,
   compacting = false,
+  textareaRef,
 }: {
   onSend: (text: string, attachments?: AttachmentInput[]) => Promise<boolean>;
   onStop: () => void;
@@ -2650,6 +2682,9 @@ function ChatInputField({
   // derives it from the mutation's OWN lifecycle (isPending), which settles
   // with the request, rather than a flag this component must remember to clear.
   compacting?: boolean;
+  // textareaRef exposes the composer's textarea to the page, so the transcript
+  // search's Escape can return focus here. Optional: the hero composer passes none.
+  textareaRef?: MutableRefObject<HTMLTextAreaElement | null>;
 }) {
   // The input stays ENABLED while streaming: sending mid-reply is the
   // interject path (interrupt + redirect), not a rejected "already
@@ -2657,7 +2692,7 @@ function ChatInputField({
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<AttachmentInput[]>([]);
   const [sending, setSending] = useState(false);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // The session stat strip (ask model · context · tokens · cache · cost). It
@@ -3206,7 +3241,10 @@ function ChatInputField({
             <Paperclip aria-hidden="true" className="h-4 w-4" />
           </button>
           <textarea
-            ref={inputRef}
+            ref={(el) => {
+              inputRef.current = el;
+              if (textareaRef) textareaRef.current = el;
+            }}
             value={text}
             onChange={handleTextChange}
             onKeyDown={handleKeyDown}

@@ -1,3 +1,4 @@
+import type { RefObject } from "react";
 import { ChevronDown, ChevronUp, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,6 +16,38 @@ interface TranscriptSearchBarProps {
   onNext: () => void;
   onPrev: () => void;
   onClear: () => void;
+  /**
+   * Escape clears the query and hands focus back to the composer. Falls back to
+   * onClear when absent (a caller that does not own a composer to focus).
+   */
+  onEscape?: () => void;
+  /**
+   * Ref to the field, so the route's document-level Cmd/Ctrl+F chord can focus it.
+   */
+  inputRef?: RefObject<HTMLInputElement>;
+}
+
+/**
+ * transcriptSearchKey maps a keypress in the search field to its action. It is PURE
+ * so the keyboard contract is testable without a DOM (this repo has no jsdom or
+ * @testing-library — component tests render server-side), and it is the single
+ * source of truth for which keys the field consumes.
+ *
+ * BOTH STEP KEYS ARE NO-OPS WHEN NOTHING MATCHES: that is the exact state the
+ * prev/next buttons are disabled on, so the keyboard respects it rather than
+ * stepping an empty match set.
+ */
+export function transcriptSearchKey(
+  key: string,
+  shiftKey: boolean,
+  matchCount: number,
+): "clear" | "next" | "prev" | null {
+  if (key === "Escape") return "clear";
+  if (key === "Enter") {
+    if (matchCount === 0) return null;
+    return shiftKey ? "prev" : "next";
+  }
+  return null;
 }
 
 /**
@@ -35,6 +68,8 @@ export function TranscriptSearchBar({
   onNext,
   onPrev,
   onClear,
+  onEscape,
+  inputRef,
 }: TranscriptSearchBarProps) {
   const status = searchStatusLabel(query, matchCount, total);
   const active = query.trim() !== "";
@@ -55,6 +90,15 @@ export function TranscriptSearchBar({
           placeholder="Search this conversation…"
           value={query}
           onChange={(e) => onQueryChange(e.target.value)}
+          ref={inputRef}
+          onKeyDown={(e) => {
+            const action = transcriptSearchKey(e.key, e.shiftKey, matchCount);
+            if (!action) return;
+            e.preventDefault();
+            if (action === "clear") (onEscape ?? onClear)();
+            else if (action === "next") onNext();
+            else onPrev();
+          }}
           className="h-8 pl-8"
         />
       </div>

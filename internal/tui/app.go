@@ -480,8 +480,10 @@ type App struct {
 	// constraint as pendingDiffCmd/pendingRailCmd; drainStaged re-emits it).
 	pendingStopCmd tea.Cmd
 	// pendingAttachCmd carries an ATTACHMENT read out of its global key route (ctrl+v pastes a clipboard
-	// image, ctrl+f reads a file by path). Both do real I/O — a screenshot can be megabytes — so they run as
-	// commands and never on the tea loop, and the route stages the command for drainStaged to re-emit.
+	// image). It does real I/O — a screenshot can be megabytes — so it runs as a command and never on the
+	// tea loop, and the route stages the command for drainStaged to re-emit. (/attach does NOT use this
+	// field: a SlashCommand.Run RETURNS its tea.Cmd, so dispatchSlash re-emits it directly. ctrl+f no
+	// longer attaches at all — it is find-in-transcript now.)
 	pendingAttachCmd tea.Cmd
 	// pendingClipCmd carries the OSC 52 WRITE for ctrl+a's copy. The route cannot run it itself (routes
 	// return only a bool), and the clipboard belongs to the shell rather than to the dock — see the
