@@ -294,13 +294,27 @@ const researchHygieneBlock = "## Worktree hygiene\n" +
 // worker step (step-quick → step-end, no separate DevOps step in
 // wfv_quick_work_v1), so this worker is the all-in-one: it implements,
 // verifies green, commits to the run branch, pushes, AND opens + merges the
-// PR into develop itself (git_strategy pr). The previous marker generations
-// ("single-step implementer", then the incorrect "hand off PR to a DevOps
-// Engineer step" wording that had no following step) must roll the live
-// worker forward; this fragment is present in the new all-in-one AgentsMD
-// and absent from the current published content, so exactly the Quick
-// worker re-rolls on next boot.
-const quickWorkerMarker = "no separate DevOps Engineer step"
+// PR into develop itself (git_strategy pr).
+//
+// MARKER GENERATIONS (each must be present in the new AgentsMD and ABSENT from
+// the published content it supersedes, or the stale worker never re-rolls):
+//  1. "single-step implementer" — the first all-in-one wording.
+//  2. "no separate DevOps Engineer step" — replaced wording that wrongly handed
+//     the PR to a DevOps step that does not exist in the workflow.
+//  3. "SHIPPING IS IDEMPOTENT" (current) — the ship step now checks for an
+//     existing PR before creating one.
+//
+// WHY GENERATION 3 EXISTS: shipping was not idempotent, and a recovery RESUME
+// re-enters the ship step against the same run branch. Observed live: PRs #703
+// and #704 shared one branch AND one head commit (f9b3c408), and #704's merge
+// (49b89b72, tagged v0.5.32) changed ZERO files — an empty merge commit on
+// develop, making v0.5.32 content-identical to v0.5.31.
+//
+// Bumping is load-bearing, not bookkeeping. Generation 2's fragment is still
+// present in the generation-3 text (the workflow really does have no separate
+// DevOps step), so leaving the marker unchanged would leave the roll-forward
+// test SATISFIED and the fix would never reach the live worker.
+const quickWorkerMarker = "SHIPPING IS IDEMPOTENT"
 
 var cannedWorkers = []cannedWorker{
 	{
