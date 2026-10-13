@@ -664,9 +664,17 @@ var cannedWorkers = []cannedWorker{
 			"## Branch discipline\n" +
 			"The platform creates the branch and checks out your worktree before you start — you are already on your branch. **Never create a branch** and never switch branches. `main` is release-only and human-managed — never target it.\n\n" +
 			"## Pull request (owned by you — there is no DevOps step)\n" +
-			"Implement, verify the build and tests are green, commit to the run branch, and push to origin. Then open a pull request against `develop` and merge it yourself — the Quick Work workflow is a SINGLE worker step (step-quick → step-end), so you are the whole pipeline; there is no separate DevOps Engineer step. Create with `gh pr create --base develop` (head is your pushed branch), then merge with `gh pr merge --squash --admin`. Emit PR_URL: and PR_STATE: in your summary. If the merge conflicts, resolve it on the branch (merge `develop` into your branch, fix, add/commit/push) and re-attempt.\n\n" +
+			"Implement, verify the build and tests are green, commit to the run branch, and push to origin. Then ship it — the Quick Work workflow is a SINGLE worker step (step-quick → step-end), so you are the whole pipeline; there is no separate DevOps Engineer step.\n\n" +
+			"**SHIPPING IS IDEMPOTENT — CHECK BEFORE YOU CREATE.** This step can run more than once for the same branch: a recovery resume re-enters it, and the run branch is reused. A second `gh pr create` against an already-merged branch opens a DUPLICATE pull request and lands an EMPTY merge commit on `develop` — observed in practice, two PRs sharing one branch and one head commit, the second changing zero files. So ALWAYS, as your first shipping action:\n" +
+			"```\n" +
+			"gh pr list --head <your-branch> --state all --json number,url,state,mergedAt\n" +
+			"```\n" +
+			"- **A MERGED PR** — the work is already shipped. Emit that PR's real `PR_URL:` and `PR_STATE: merged` from the list output and STOP: do not create, re-open, or re-merge anything, and do not run the merge command again.\n" +
+			"- **An OPEN PR** — reuse it: push your commits and merge THAT one; never open a second.\n" +
+			"- **Nothing** — only then `gh pr create --base develop` (head is your pushed branch), then merge with `gh pr merge --squash --admin`.\n\n" +
+			"Take `PR_URL:` / `PR_STATE:` in your summary from the PR you actually verified above, never from what you intended to create. If the merge conflicts, resolve it on the branch (merge `develop` into your branch, fix, add/commit/push) and re-attempt the MERGE only — never open a second PR.\n\n" +
 			"## Completion\n" +
-			"**Never report success with failing build, failing tests, or unpushed work.** End with `ORCHICON WORKER SUMMARY: success` when the change is implemented, green, committed, pushed, and its PR into `develop` is created and merged (the PR is yours to open and merge); `failure` only if the task proved unimplementable (say exactly where it broke down).",
+			"**Never report success with failing build, failing tests, or unpushed work.** End with `ORCHICON WORKER SUMMARY: success` when the change is implemented, green, committed, pushed, and its PR into `develop` is merged — either created and merged by you, OR already merged by an earlier attempt of this same run (the idempotency check above; a resume that re-enters shipping and finds the PR merged is a SUCCESS, not a reason to re-ship). `failure` only if the task proved unimplementable (say exactly where it broke down).",
 		BudgetOverrides:  []byte(`{"wall_clock_seconds":2400}`),
 		RollMarker:       quickWorkerMarker,
 		ConcurrencyLimit: 0,

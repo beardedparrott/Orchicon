@@ -13,7 +13,7 @@ import (
 // (batch_read / batch_grep / batch_write) over MCP so a worker calls them
 // exactly like any other opencode tool, plus the single-op wrappers
 // (read/write/edit/grep), the `list` directory-listing tool, and the
-// `todoread` todo read-back. The registry is selected instead of the
+// `todowrite`/`todoread` todo pair. The registry is selected instead of the
 // askorchicon (DB) registry when the server is spawned with
 // ORCHICON_MCP_WORKTREE_DIR set; it operates purely on the filesystem within
 // that base directory and needs no Postgres connection.
@@ -119,6 +119,29 @@ func (r *worktreeRegistry) List() []ToolDef {
 			},
 		},
 		{
+			// ORCHICON OWNS `todowrite` NOW, and that is a deliberate move onto
+			// ground the AGENT SURFACE controls. opencode 1.x shipped a NATIVE
+			// todowrite and this registry exposed only the `todoread` half of the
+			// pair. 2.x DELETED that tool outright — its own migration notice reads
+			// "The `todowrite` tool is no longer available and must not be called" —
+			// and the public session-event schema (packages/schema/src/
+			// session-event.ts) has no todo event and no todo route to replace it.
+			//
+			// So a worker prompt that orders todowrite (ours does, every turn) was
+			// asking 2.x for a tool that does not exist: the model's calls came back
+			// as errors, and REPEATED ERROR-STATUS CALLS ARE EXACTLY WHAT THE
+			// REPETITION STALL COUNTS — the prompt was not merely inert on 2.x, it
+			// fed the stall detector. Supplying the tool here fixes that at the root
+			// and makes the todo list work on BOTH surfaces, because it no longer
+			// depends on which tools the agent under us happens to ship.
+			Name:        "todowrite",
+			Description: "Replace your live todo list with this FULL array (not a patch). Emit a fresh complete array at every turn boundary so your plan stays visible to the operator in the execution view; `todoread` re-reads it cheaply. status is one of pending|in_progress|completed|cancelled.",
+			Properties: map[string]propertySchema{
+				"todos": {Type: "array", Description: "[{content, status, priority}] — the COMPLETE list, replacing any previous one. status: pending|in_progress|completed|cancelled."},
+			},
+			Required: []string{"todos"},
+		},
+		{
 			Name:        "todoread",
 			Description: "Read back the worker's LATEST todo list (the same list the execution UI renders from your todowrite calls). One cheap call to re-sync your plan mid-run — never re-derive it from memory. Returns each item with its status and priority.",
 			Properties:  map[string]propertySchema{},
@@ -213,6 +236,26 @@ func (r *worktreeRegistry) Execute(_ context.Context, _ *db.Pool, name string, a
 		out, err := worktree.List(b, a)
 		if err != nil {
 			return nil, fmt.Errorf("list: %w", err)
+		}
+		return json.RawMessage(out), nil
+	case "todowrite":
+		var a struct {
+			Todos []worktree.TodoItem `json:"todos"`
+		}
+		if err := worktree.MarshalArgs(args, &a); err != nil {
+			return nil, fmt.Errorf("todowrite: %w", err)
+		}
+		// The snapshot write is authoritative for `todoread` (and the execution
+		// UI's DB-less path); it is idempotent, so a re-emitted identical array
+		// costs nothing.
+		worktree.SaveTodoSnapshot(b, a.Todos)
+		out, err := json.Marshal(map[string]any{
+			"ok":      true,
+			"count":   len(a.Todos),
+			"message": fmt.Sprintf("todo list updated: %d item(s)", len(a.Todos)),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("todowrite: %w", err)
 		}
 		return json.RawMessage(out), nil
 	case "todoread":

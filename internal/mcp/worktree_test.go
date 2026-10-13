@@ -12,11 +12,16 @@ import (
 )
 
 // allToolNames is the full worktree tool suite: 3 batch tools, 4 single-op
-// wrappers, `list`, and `todoread` (D1/D2).
+// wrappers, `list`, and the `todowrite`/`todoread` todo pair (D1/D2).
+//
+// `todowrite` is OURS as of the 2.x work: opencode 1.x had it natively and this
+// registry exposed only the read half, but 2.x deleted the tool outright, so a
+// prompt that orders it every turn (ours does) was ordering a tool that does not
+// exist. See the tool's comment in worktree.go.
 var allToolNames = []string{
 	"batch_read", "batch_grep", "batch_write",
 	"read", "grep", "write", "edit",
-	"list", "todoread",
+	"list", "todowrite", "todoread",
 }
 
 func TestWorktreeRegistryExposesFullToolSuite(t *testing.T) {
@@ -36,6 +41,13 @@ func TestWorktreeRegistryExposesFullToolSuite(t *testing.T) {
 	}
 	// The batch tools must be present in the registry; the single-op
 	// wrappers must be Mutating=false/true as appropriate.
+	//
+	// todowrite is deliberately NOT in this map: it writes only the ephemeral
+	// todo sidecar under .orchicon/, never project content — the same
+	// bookkeeping class as todoread's sibling state. "Mutating" describes a
+	// change to the worker's deliverable, and marking the todo list as one would
+	// be a false claim about it (and a gate-tripping lie if a caller ever
+	// enforces the field).
 	mutating := map[string]bool{"batch_write": true, "write": true, "edit": true}
 	for _, d := range defs {
 		if d.Mutating != mutating[d.Name] {
@@ -232,5 +244,53 @@ func TestWorktreeRegistryExecuteScratchWrite(t *testing.T) {
 	got, rerr := os.ReadFile(target)
 	if rerr != nil || string(got) != "scratch-ok" {
 		t.Fatalf("scratch write did not persist: %q err=%v", got, rerr)
+	}
+}
+
+// TestWorktreeTodowriteTodoreadRoundTrip proves the todo pair works end to end
+// over MCP: a worker writes its list and reads the SAME list back.
+//
+// This is the regression guard for opencode 2.x having REMOVED the native
+// `todowrite`. Our composite prompt orders a todowrite at every turn boundary,
+// so on 2.x that obligation had no tool to satisfy it: the model's calls came
+// back as errors, and repeated error-status calls are exactly what the
+// repetition stall counts. Owning the tool here makes the todo list independent
+// of which tools the agent surface happens to ship.
+func TestWorktreeTodowriteTodoreadRoundTrip(t *testing.T) {
+	base := t.TempDir()
+	r := NewWorktreeRegistry(base, "")
+
+	args, _ := json.Marshal(map[string]any{"todos": []map[string]any{
+		{"content": "wire the search bar", "status": "completed", "priority": "high"},
+		{"content": "add jump-to-top", "status": "in_progress", "priority": "medium"},
+	}})
+	out, err := r.Execute(context.Background(), nil, "todowrite", args)
+	if err != nil {
+		t.Fatalf("todowrite: %v", err)
+	}
+	if !strings.Contains(string(out), `"count":2`) {
+		t.Fatalf("todowrite did not report the 2 items it stored: %s", out)
+	}
+
+	// The read half must return what the write half stored — this is the
+	// property the execution UI and the DB-less sidecar both depend on.
+	read, err := r.Execute(context.Background(), nil, "todoread", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("todoread: %v", err)
+	}
+	for _, want := range []string{"wire the search bar", "add jump-to-top", "in_progress"} {
+		if !strings.Contains(string(read), want) {
+			t.Fatalf("todoread did not return %q after a todowrite:\n%s", want, read)
+		}
+	}
+}
+
+// TestWorktreeTodowriteRejectsMalformedArgs pins the failure mode: bad args are
+// a tool error the model can read and correct, not a silent no-op. A todowrite
+// that quietly did nothing would leave the operator staring at a stale plan.
+func TestWorktreeTodowriteRejectsMalformedArgs(t *testing.T) {
+	r := NewWorktreeRegistry(t.TempDir(), "")
+	if _, err := r.Execute(context.Background(), nil, "todowrite", json.RawMessage(`{"todos":"not-an-array"}`)); err == nil {
+		t.Fatal("a malformed todos payload must fail the call, not be silently ignored")
 	}
 }
