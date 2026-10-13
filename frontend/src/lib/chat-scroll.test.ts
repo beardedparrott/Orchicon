@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  DOWNWARD_KEYS,
+  UPWARD_KEYS,
   bottomScrollTop,
   distanceFromBottom,
+  hasArrived,
   isNearBottom,
   isNearTop,
+  keyReleasesStick,
   topScrollTop,
+  wheelReleasesStick,
 } from "./chat-scroll";
 
 // The transcript's top/bottom controls are the deliverable; the DECISION each one
@@ -39,5 +44,76 @@ describe("chat-scroll", () => {
   it("points the two controls at the two ends", () => {
     expect(topScrollTop()).toBe(0);
     expect(bottomScrollTop(atBottom)).toBe(1000);
+  });
+});
+
+// ---------------------------------------------------------------- the live stick
+//
+// THE OPERATOR: "When you scroll up or hit home to go to the top, the auto refresh of the
+// live conversations brings you right back down. This should only do this if you are
+// actively at the bottom."
+//
+// The container made that decision by TIMING — it ignored any scroll event arriving within
+// 200ms of its own auto-scroll. Two consequences, and these tests pin both: an event it
+// ignored was an event whose operator intent it never recorded, so the stick stayed ON; and
+// a smooth scroll away from the tail passes back THROUGH the near-bottom margin, so its
+// in-flight positions read as "at the bottom" and re-armed the stick the gesture had just
+// released. A ScrollDrive replaces the window: a scroll is attributed by WHERE it is.
+
+describe("chat-scroll — the live stick", () => {
+  // A conversation longer than its viewport, resting at the tail.
+  const tail = { scrollTop: 600, scrollHeight: 1000, clientHeight: 400 };
+  // Parked in the middle: reading history, NOT at the bottom.
+  const reading = { scrollTop: 300, scrollHeight: 1000, clientHeight: 400 };
+  // A position that is still inside the 80px margin — the band a jump passes through.
+  const nearTail = { scrollTop: 550, scrollHeight: 1000, clientHeight: 400 };
+
+  it("releases the stick at a position away from the bottom", () => {
+    expect(isNearBottom(reading)).toBe(false);
+  });
+
+  it("keeps the stick at the bottom, and in the margin", () => {
+    expect(isNearBottom(tail)).toBe(true);
+    expect(isNearBottom(nearTail)).toBe(true); // 50px from the bottom
+  });
+
+  it("treats a scroll at the end we drove to as OURS, arrived", () => {
+    expect(hasArrived(tail, "bottom")).toBe(true);
+    expect(hasArrived({ ...tail, scrollTop: 0 }, "top")).toBe(true);
+  });
+
+  it("treats a scroll short of the end we drove to as still OURS — an animation in flight", () => {
+    // THIS IS THE "JUMP TO TOP" CASE. The operator jumped to the top; the animation is
+    // passing back through the near-bottom margin. Reading `isNearBottom` here would say
+    // "the operator is at the bottom" and re-arm the stick, and the next streamed chunk
+    // would drag them back down. The drive says: that position is not where I sent it,
+    // so it is not the operator's to change anything.
+    expect(hasArrived(nearTail, "top")).toBe(false);
+    expect(hasArrived(reading, "top")).toBe(false);
+    expect(isNearBottom(nearTail)).toBe(true); // ...which is exactly why it must be ignored
+  });
+
+  it("drives toward an END, not a pixel — so content arriving cannot stale it", () => {
+    // The content grew while the jump was in flight. A recorded position would now be
+    // unreachable and the drive would never complete; an end is still true.
+    const grown = { scrollTop: 1000, scrollHeight: 1400, clientHeight: 400 };
+    expect(hasArrived(grown, "bottom")).toBe(true);
+    // ...and the same for a top drive on a conversation that shrank.
+    const shrunk = { scrollTop: 0, scrollHeight: 200, clientHeight: 400 };
+    expect(hasArrived(shrunk, "top")).toBe(true);
+  });
+
+  it("reads an upward gesture as intent, whether it is a wheel or a key", () => {
+    expect(wheelReleasesStick(-1)).toBe(true);
+    expect(wheelReleasesStick(-120)).toBe(true);
+    expect(wheelReleasesStick(120)).toBe(false); // downward: the position decides
+    expect(keyReleasesStick("PageUp")).toBe(true);
+    expect(keyReleasesStick("Home")).toBe(true);
+    expect(keyReleasesStick("ArrowUp")).toBe(true);
+    expect(keyReleasesStick("End")).toBe(false);
+    expect(keyReleasesStick("ArrowDown")).toBe(false);
+    // The two directions are named in one place each, so neither can drift.
+    for (const k of UPWARD_KEYS) expect(keyReleasesStick(k)).toBe(true);
+    for (const k of DOWNWARD_KEYS) expect(keyReleasesStick(k)).toBe(false);
   });
 });
