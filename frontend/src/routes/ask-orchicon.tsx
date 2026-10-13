@@ -44,6 +44,7 @@ import {
 } from "@/lib/conversationProjects";
 import { conversationModeLabel, conversationModeMeta } from "@/lib/conversationModes";
 import { runningConvIds } from "@/lib/ask-running";
+import { filterByQuery } from "@/lib/transcript-search";
 import { extrapolateServerTime } from "@/lib/ask-verbs";
 import {
   activityLineAnnouncement,
@@ -97,6 +98,7 @@ import {
   NoticeBubble,
   ChatScrollContainer,
   ActivityLine,
+  TranscriptSearchBar,
 } from "@/components/chat";
 import { useCategoryPreferences, getItemsForCategory } from "@/lib/category-store";
 import { AskCard, isAskUserToolCall, parseAskUserArgs } from "@/components/ask/AskCard";
@@ -209,6 +211,29 @@ interface ConvStream {
 type TranscriptBlock =
   | { kind: "message"; at: number; message: ChatMessage }
   | { kind: "optimistic"; at: number; text: string };
+
+/**
+ * One slot in the interleaved transcript: a message/echo block or a consent card.
+ * It mirrors the element type interleave returns.
+ */
+type TranscriptSlot = {
+  seq: number;
+  at: number;
+  block: TranscriptBlock | AskItem;
+  isAsk: boolean;
+};
+
+/**
+ * slotSearchText is the text an interleaved slot is searched over. A consent card
+ * is not a message, so it carries no searchable text — such slots are RETAINED by
+ * the filter's keep predicate (below) rather than matched, so a search can never
+ * hide a pending approval.
+ */
+function slotSearchText(slot: TranscriptSlot): string {
+  if (slot.isAsk) return "";
+  const block = slot.block as TranscriptBlock;
+  return block.kind === "optimistic" ? block.text : block.message.content;
+}
 const EMPTY_STREAM: ConvStream = {
   isStreaming: false,
   isThinking: false,
@@ -556,6 +581,37 @@ function AskOrchiconPage() {
     // where a just-sent message belongs.
     transcriptBlocks.push({ kind: "optimistic", at: Date.now(), text: optimisticUserMsg! });
   }
+
+  // IN-TRANSCRIPT SEARCH (acceptance: filter matching messages case-insensitively,
+  // show a match count, step with prev/next, an explicit no-match state, and clearing
+  // restores the full transcript). The query is local UI state and the filtering is
+  // the unit-tested helpers in @/lib/transcript-search — client-side over the
+  // already-loaded messages only (no server search, no regex, no persisted history:
+  // all out of scope). The interleaved transcript is built ONCE here so the filter
+  // and the render cannot disagree about slot order.
+  const [searchQuery, setSearchQuery] = useState("");
+  const [activeMatch, setActiveMatch] = useState(0);
+  const transcriptSlots: TranscriptSlot[] = interleave(transcriptBlocks, activeStream?.asks);
+  const searchActive = searchQuery.trim() !== "";
+  const visibleSlots = filterByQuery(
+    transcriptSlots,
+    searchQuery,
+    slotSearchText,
+    (slot) => slot.isAsk,
+  );
+  const searchMatchCount = searchActive
+    ? visibleSlots.filter((slot) => !slot.isAsk).length
+    : 0;
+  // Refs to the rendered match wrappers, so next/prev can bring the current match
+  // into the middle of the viewport.
+  const searchMatchRefs = useRef<(HTMLDivElement | null)[]>([]);
+  useEffect(() => {
+    if (!searchActive || searchMatchCount === 0) return;
+    searchMatchRefs.current[activeMatch]?.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
+  }, [activeMatch, searchActive, searchMatchCount, searchQuery]);
 
   const { data: settings } = useGetSettings();
 
@@ -1896,6 +1952,31 @@ function AskOrchiconPage() {
               </div>
             )}
 
+            {/* Transcript search: filter the conversation's messages and step the
+                matches. The status/steppers stay hidden until a query is typed
+                (see TranscriptSearchBar). */}
+            <TranscriptSearchBar
+              query={searchQuery}
+              onQueryChange={(q) => {
+                setSearchQuery(q);
+                setActiveMatch(0);
+              }}
+              matchCount={searchMatchCount}
+              total={transcriptSlots.length}
+              onNext={() =>
+                setActiveMatch((i) => (searchMatchCount ? (i + 1) % searchMatchCount : 0))
+              }
+              onPrev={() =>
+                setActiveMatch((i) =>
+                  searchMatchCount ? (i - 1 + searchMatchCount) % searchMatchCount : 0,
+                )
+              }
+              onClear={() => {
+                setSearchQuery("");
+                setActiveMatch(0);
+              }}
+            />
+
             {/* Messages — auto-stick scroll */}
             <ChatScrollContainer
               items={[displayMessages, isThinking, optimisticUserMsg]}
@@ -1926,57 +2007,83 @@ function AskOrchiconPage() {
                     sequence and rendered together: a card sits between the
                     messages it happened between, and moves up as the conversation
                     grows, exactly like anything else. */}
-                {interleave(transcriptBlocks, activeStream?.asks).map((slot) => {
-                  if (slot.isAsk) {
-                    const item = slot.block as AskItem;
+                {/* NO MATCHES: an explicit empty state, so a filter that finds
+                    nothing cannot read as a broken or empty conversation. */}
+                {searchActive && searchMatchCount === 0 && (
+                  <div
+                    data-testid="transcript-search-empty"
+                    className="py-8 text-center text-sm text-muted-foreground"
+                  >
+                    No matches
+                  </div>
+                )}
+                {(!searchActive || searchMatchCount > 0) &&
+                  visibleSlots.map((slot, matchIdx) => {
+                    const block = slot.block as TranscriptBlock;
+                    const key = slot.isAsk
+                      ? `ask:${(slot.block as AskItem).key}`
+                      : block.kind === "optimistic"
+                        ? "optimistic"
+                        : `msg:${(slot.block as { kind: "message"; message: { id: string } }).message.id}`;
                     return (
-                      <ConsentAskCard
-                        key={item.key}
-                        ask={item.ask}
-                        outcome={item.outcome}
-                        busy={!!askInFlight[item.ask.askId]}
-                        onDecide={(choice) =>
-                          void handleAskDecision(activeConvId!, item.ask.askId, choice)
-                        }
-                        // A QUESTION's answer is CONTENT (see ConsentAskCard): it becomes
-                        // the ask_user tool result and resumes the PAUSED turn, so it goes
-                        // as `answer` with no permission choice.
-                        onAnswer={(text) =>
-                          void handleAskDecision(
-                            activeConvId!,
-                            item.ask.askId,
-                            PermissionChoice.UNSPECIFIED,
-                            text,
-                          )
-                        }
-                        onEscape={() =>
-                          void handleAskDecision(
-                            activeConvId!,
-                            item.ask.askId,
-                            PermissionChoice.DENY,
-                          )
-                        }
-                      />
+                      // The wrapper carries the match ref/geometry so next/prev can
+                      // scroll to THIS match (and it keeps the bubbles' own layout,
+                      // which the space-y-4 parent provides per direct child).
+                      <div
+                        key={key}
+                        ref={(el) => {
+                          searchMatchRefs.current[matchIdx] = el;
+                        }}
+                        data-transcript-match={matchIdx}
+                      >
+                        {slot.isAsk ? (
+                          <ConsentAskCard
+                            ask={(slot.block as AskItem).ask}
+                            outcome={(slot.block as AskItem).outcome}
+                            busy={!!askInFlight[(slot.block as AskItem).ask.askId]}
+                            onDecide={(choice) =>
+                              void handleAskDecision(
+                                activeConvId!,
+                                (slot.block as AskItem).ask.askId,
+                                choice,
+                              )
+                            }
+                            // A QUESTION's answer is CONTENT (see ConsentAskCard): it becomes
+                            // the ask_user tool result and resumes the PAUSED turn, so it goes
+                            // as `answer` with no permission choice.
+                            onAnswer={(text) =>
+                              void handleAskDecision(
+                                activeConvId!,
+                                (slot.block as AskItem).ask.askId,
+                                PermissionChoice.UNSPECIFIED,
+                                text,
+                              )
+                            }
+                            onEscape={() =>
+                              void handleAskDecision(
+                                activeConvId!,
+                                (slot.block as AskItem).ask.askId,
+                                PermissionChoice.DENY,
+                              )
+                            }
+                          />
+                        ) : block.kind === "optimistic" ? (
+                          <UserBubble text={block.text} source="you" />
+                        ) : (
+                          <MessageBubble
+                            message={block.message}
+                            onRetry={handleRetry}
+                            onSelectOption={handleSendMessage}
+                          />
+                        )}
+                      </div>
                     );
-                  }
-                  const block = slot.block as TranscriptBlock;
-                  if (block.kind === "optimistic") {
-                    return (
-                      <UserBubble key="optimistic" text={block.text} source="you" />
-                    );
-                  }
-                  return (
-                    <MessageBubble
-                      key={block.message.id}
-                      message={block.message}
-                      onRetry={handleRetry}
-                      onSelectOption={handleSendMessage}
-                    />
-                  );
-                })}
+                  })}
 
-                {/* Live streaming items (text + reasoning chunks) */}
-                {isStreaming &&
+                {/* Live streaming items (text + reasoning chunks) — hidden while a
+                    search filter is active, so the view shows only matches. */}
+                {!searchActive &&
+                  isStreaming &&
                   groupedStream.map((item) => {
                     switch (item.kind) {
                       case "text":

@@ -280,6 +280,56 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 			Match:  keyMatcher("ctrl+down"),
 			Handle: func(m *App, _ tea.Msg) bool { return m.splitWidthReset() },
 		},
+		// THE ASK TRANSCRIPT'S SEARCH + JUMP KEYS, registered here so the `?` overlay
+		// names them (help renders FROM this registry; app_test asserts the parity).
+		// Each Handle is GATED on Ask-transcript CONTENT focus, so the binding is inert
+		// on every other screen and can never reach the composer — which consumes plain
+		// letters and Home/End as editing keys, so the gate is what keeps a search key
+		// from stealing a keystroke from typing. See transcript_search.go.
+		{
+			Name: "Ask transcript: next search match", Keys: "n", Scope: "global",
+			Match: keyMatcher("n"),
+			Handle: func(m *App, _ tea.Msg) bool {
+				if !m.askTranscriptContentFocus() || strings.TrimSpace(m.askSearch) == "" {
+					return false
+				}
+				m.askSearchStep(1)
+				return true
+			},
+		},
+		{
+			Name: "Ask transcript: previous search match", Keys: "N", Scope: "global",
+			Match: keyMatcher("N"),
+			Handle: func(m *App, _ tea.Msg) bool {
+				if !m.askTranscriptContentFocus() || strings.TrimSpace(m.askSearch) == "" {
+					return false
+				}
+				m.askSearchStep(-1)
+				return true
+			},
+		},
+		{
+			Name: "Ask transcript: jump to the first message", Keys: "home", Scope: "global",
+			Match: keyMatcher("home"),
+			Handle: func(m *App, _ tea.Msg) bool {
+				if !m.askTranscriptContentFocus() {
+					return false
+				}
+				m.jumpTranscriptTop()
+				return true
+			},
+		},
+		{
+			Name: "Ask transcript: jump to the latest message", Keys: "end", Scope: "global",
+			Match: keyMatcher("end"),
+			Handle: func(m *App, _ tea.Msg) bool {
+				if !m.askTranscriptContentFocus() {
+					return false
+				}
+				m.jumpTranscriptBottom()
+				return true
+			},
+		},
 	}
 	// One chord route per tab, in tab order: F1 … F7.
 	//
@@ -1071,6 +1121,13 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		}
 		if k.String() == "esc" && m.clearConvMarks() {
 			m.refreshStreamStatus()
+			return m, nil
+		}
+		// ESC CLEARS AN ACTIVE TRANSCRIPT SEARCH before its other meanings: the search
+		// is a mode the operator entered deliberately, and esc is how they leave it
+		// (acceptance: "Esc clears back to the unfiltered transcript"). It sits AFTER
+		// the mark-clear, which keeps esc's existing "drop the selection first" rule.
+		if k.String() == "esc" && m.clearAskSearch() {
 			return m, nil
 		}
 		if m.railOwnsVerticalKey(k.String()) {
