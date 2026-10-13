@@ -45,7 +45,7 @@ func TestPTYFindBoxOverARealConversation(t *testing.T) {
 	// "no note in the composer about search or jumping to beginning to end is there so no one would
 	// know they exist."
 	shell := screenText(scr)
-	for _, want := range []string{"ctrl+f: find in the transcript", "home/end: first·latest message"} {
+	for _, want := range []string{"ctrl+f: find", "home/end: top·bottom"} {
 		if !strings.Contains(shell, want) {
 			t.Fatalf("the composer's affordance row never advertised %q — the keys exist but nothing "+
 				"says so, which is the report.\n---\n%s\n---", want, tailOfPlain(shell, 2500))
@@ -86,7 +86,7 @@ func TestPTYFindBoxOverARealConversation(t *testing.T) {
 
 	// (4) ESC CANCELS: the box closes and the transcript's own advertisement comes back.
 	_, _ = s.tty.WriteString("\x1b")
-	after := waitForFrame(t, s, cols, rows, 6*time.Second, "ctrl+f: find in the transcript")
+	after := waitForFrame(t, s, cols, rows, 6*time.Second, "home/end: top·bottom")
 	if strings.Contains(screenText(after), "find in transcript") {
 		t.Errorf("esc must close the box.\n%s", tailOfPlain(screenText(after), 2000))
 	}

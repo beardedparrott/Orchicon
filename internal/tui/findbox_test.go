@@ -383,7 +383,7 @@ func TestTheComposerAdvertisesTheTranscriptFindAndJumpKeys(t *testing.T) {
 	if !strings.Contains(hint, "enter: keep searching") {
 		t.Errorf("while the box is up the row must describe the BOX's keys, got %q", hint)
 	}
-	if strings.Contains(hint, "home/end: first·latest") {
+	if strings.Contains(hint, "home/end: top·bottom") {
 		t.Errorf("the transcript's keys are inert while the box holds the keyboard, so the row must not "+
 			"advertise them, got %q", hint)
 	}

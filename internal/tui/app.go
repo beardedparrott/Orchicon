@@ -1911,7 +1911,20 @@ const transcriptCopyHint = "click your message to copy"
 
 // transcriptFindHint is the composer's advertisement for the transcript's find + jump chords. It names
 // the two entry points and what they DO, rather than the reason they exist.
-const transcriptFindHint = "ctrl+f: find in the transcript · home/end: first·latest message"
+//
+// IT IS DELIBERATELY TERSE, AND THE LENGTH IS THE CONSTRAINT. The affordance area has a hard budget of
+// maxHintRows (3) at the width the composer actually gets, and past that the last row is ellipsized —
+// measured at the diff E2E gate's geometry (200 columns with both rails AND the diff pane open, which
+// leaves the box 88 cells inside): the first wording of this constant, "ctrl+f: find in the transcript ·
+// home/end: first·latest message", packed into FOUR rows and lost the tail of the row, which the gate
+// caught as its forbidden truncation signature. This form packs into three in both the idle and the
+// reply-in-flight states (the latter adds "ctrl+y stop").
+//
+// SO: MEASURE A NEW SEGMENT AGAINST THE WRAPPER BEFORE ADDING IT. The `?` overlay carries the full
+// descriptions; this row is a reminder, and a reminder that is cut off is worse than a shorter one that
+// is read. TestDiffE2EAskMountPTY fails on any ellipsis in the frame, which is what makes this checkable
+// rather than a matter of taste.
+const transcriptFindHint = "ctrl+f: find · home/end: top·bottom"
 
 // findComposerHint is what the composer advertises while the FIND BOX is up. It names only keys the box
 // honours, so the row is true in that state — the rule formComposerHint follows.
