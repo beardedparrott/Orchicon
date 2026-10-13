@@ -18,6 +18,38 @@ Remove-Item Env:EMU_NO_DEFAULT -ErrorAction SilentlyContinue
 
 $Report = [System.Collections.Generic.List[string]]::new()
 $Fail = [System.Collections.Generic.List[string]]::new()
+
+# BOUNDED WAITS. Reaching a verdict by waiting for ever is not a verdict, and this harness has two
+# places that used to do exactly that (`Start-Process -Wait`, and a bare `$p.WaitForExit()`).
+#
+# WHY IT MATTERS MORE HERE THAN ELSEWHERE: the harness's console output is WITHHELD until it finishes
+# (run.sh shows it only from the report file), so a blocked child produces no output at all — the
+# operator sees the banner and then silence, which is indistinguishable from a broken suite, and in CI
+# it burns the runner's whole budget before anyone learns why. So every child gets a deadline, and
+# expiry KILLS it and records a FAIL that names what was blocked.
+#
+# Two minutes is ~10x the normal child cost (these children only parse the installer's functions and run
+# them against the wsl double), so it does not make a slow machine flaky. Override for a genuinely slow
+# host: ORCHICON_HARNESS_CHILD_TIMEOUT_MS.
+$script:ChildTimeoutMs = 120000
+if ($env:ORCHICON_HARNESS_CHILD_TIMEOUT_MS) {
+  $parsed = 0
+  if ([int]::TryParse($env:ORCHICON_HARNESS_CHILD_TIMEOUT_MS, [ref]$parsed) -and $parsed -gt 0) {
+    $script:ChildTimeoutMs = $parsed
+  }
+}
+
+# Wait-ProcessBounded waits for a started process, kills it on expiry, and returns whether it exited in
+# time. The tree is killed, not just the process: a pwsh child can spawn the wsl double, and an orphan
+# left holding the stub directory is how a later assertion fails for an unrelated reason.
+function Wait-ProcessBounded {
+  param([System.Diagnostics.Process]$Process, [string]$What)
+  if ($Process.WaitForExit($script:ChildTimeoutMs)) { return $true }
+  try { $Process.Kill($true) } catch { try { $Process.Kill() } catch { } }
+  Check ("{0} terminates (bounded wait)" -f $What) $false `
+    ("it did not exit within {0} ms and was KILLED — it is blocked, not slow. Raise ORCHICON_HARNESS_CHILD_TIMEOUT_MS if this host is genuinely slower than that." -f $script:ChildTimeoutMs)
+  return $false
+}
 function Say($m) { $Report.Add([string]$m) }
 function Check($name, $ok, $detail) {
   if ($ok) { Say ("  PASS  {0}{1}" -f $name, $(if ($detail) { " — $detail" } else { "" })) }
@@ -134,17 +166,47 @@ if (-not (Test-Path $PwshExe)) { $PwshExe = (Get-Command pwsh).Source }
 $Work = Split-Path $StubBin -Parent
 
 function Invoke-ChildInstaller {
-  param([hashtable]$Env, [string]$Command)
+  param([hashtable]$Env, [string]$Command, [string]$Stdin = "")
   $prev = @{}
   foreach ($k in $Env.Keys) {
     $prev[$k] = [Environment]::GetEnvironmentVariable($k)
     [Environment]::SetEnvironmentVariable($k, $Env[$k])
   }
   try {
+    # THE CHILD'S STDIN IS PINNED, AND THAT IS THE WHOLE POINT OF THIS SHAPE.
+    #
+    # The installer ASKS for an instance (Read-Host). Run from a terminal — which is exactly how
+    # `make rebuild-dev` runs this harness — Read-Host BLOCKS, and the suite hangs with no output until
+    # something kills it. That is what happened: `make rebuild-dev` sat on this step indefinitely.
+    #
+    # Feeding the child a file (empty unless a test supplies an answer) makes Read-Host return
+    # immediately, so the suite behaves identically with or without a terminal. Deterministic in both
+    # contexts, which is what a test must be.
+    $work = Join-Path $Work ("child-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $work | Out-Null
+    $inFile = Join-Path $work "in.txt"
+    $outFile = Join-Path $work "out.txt"
+    $errFile = Join-Path $work "err.txt"
+    $scriptFile = Join-Path $work "child.ps1"
+    [System.IO.File]::WriteAllText($inFile, $Stdin)
     # A fresh session's own preference, so what the child does is the installer's
     # doing and not a harness setting leaking in.
-    $full = "`$ErrorActionPreference = 'Continue'; $Command"
-    return (& $PwshExe -NoProfile -Command $full 2>&1 | Out-String)
+    #
+    # THE COMMAND IS WRITTEN TO A FILE AND RUN WITH -File, not passed as -Command. `Start-Process
+    # -ArgumentList` re-quotes the argument for the child, and the embedded double quotes come out of it
+    # MANGLED — measured: an inner `WriteLine("x")` reached the child as `WriteLine(x)`, a parse error. A
+    # file carries the text exactly, and as a bonus it is inspectable while debugging a failing run.
+    [System.IO.File]::WriteAllText($scriptFile, "`$ErrorActionPreference = 'Continue'" + [Environment]::NewLine + $Command)
+    $proc = Start-Process -FilePath $PwshExe -ArgumentList @("-NoProfile", "-File", $scriptFile) `
+      -RedirectStandardInput $inFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile `
+      -PassThru
+    [void](Wait-ProcessBounded -Process $proc -What "a child installer run")
+    # BOTH STREAMS, concatenated: the harness asserts about stderr text too ("no raw exception is dumped"),
+    # and the previous shape merged them with 2>&1.
+    $text = ""
+    if (Test-Path $outFile) { $text += [System.IO.File]::ReadAllText($outFile) }
+    if (Test-Path $errFile) { $text += [System.IO.File]::ReadAllText($errFile) }
+    return $text
   } finally {
     foreach ($k in $prev.Keys) { [Environment]::SetEnvironmentVariable($k, $prev[$k]) }
   }
@@ -173,7 +235,7 @@ Check "-Help returns to the prompt (it closed the window too)" ($help -match $ma
 Check "-Help still prints the usage" ($help -match "Usage: install.ps1")
 
 $dry = Invoke-ChildInstaller -Env @{ PROCESSOR_ARCHITECTURE = "AMD64" } `
-  -Command "& ([scriptblock]::Create((Get-Content -Raw '$quoted'))) -Version v0.0.0 -DryRun; '$marker'"
+  -Command "& ([scriptblock]::Create((Get-Content -Raw '$quoted'))) -Version v0.0.0 -Instance dev -DryRun; '$marker'"
 Check "-DryRun returns to the prompt" ($dry -match $marker)
 Check "-DryRun still prints its plan" ($dry -match "dry-run complete")
 Check "-DryRun starts no transcript (it changes nothing)" ($dry -notmatch "full log of this install")
@@ -208,7 +270,12 @@ function Measure-Streaming {
   param([string]$Mode)
   $out = Join-Path $Work "stream-$Mode.out"
   Remove-Item $out -ErrorAction SilentlyContinue
-  $p = Start-Process -FilePath $PwshExe -PassThru -RedirectStandardOutput $out `
+  # Its stdin is PINNED for the same reason the installer child's is: a child that inherits a terminal
+  # and then reads it blocks for ever, and the operator sees silence. This driver only runs the wsl
+  # double, which reads the guest payload off stdin — so it is fed an empty file and never the terminal.
+  $inFile = Join-Path $Work "stream-in.txt"
+  [System.IO.File]::WriteAllText($inFile, "")
+  $p = Start-Process -FilePath $PwshExe -PassThru -RedirectStandardOutput $out -RedirectStandardInput $inFile `
     -ArgumentList @("-NoProfile", "-File", $driver, "-Installer", $Installer, "-Mode", $Mode)
   $early = $false
   $deadline = (Get-Date).AddSeconds(25)
@@ -219,7 +286,7 @@ function Measure-Streaming {
     if ($txt -match "STREAM-MARKER") { $early = -not $p.HasExited; break }
     if ($p.HasExited) { break }
   }
-  $p.WaitForExit()
+  [void](Wait-ProcessBounded -Process $p -What "the streaming child")
   # The child has exited, but its redirected output is copied by a helper, so a read
   # taken the instant WaitForExit returns can miss the last lines. Wait for the
   # driver's own final line rather than sleeping a guessed amount.
@@ -557,6 +624,97 @@ foreach ($flag in @('$RemoveBinary', '$Uninstall', '$Clean', '$ForceClean')) {
 Check "install is the only flag with a fallback" `
   (($ps1c -match 'Ask-Instance -Fallback "dev"')) `
   "installing to the documented default is safe; destroying a volume on a default is not"
+
+# --- 20. THE HARNESS MUST NOT BE ABLE TO BLOCK, AND THE PROMPT MUST COME LAST ------
+# Reported: "I am rebuilding dev and it keeps hanging on this step" — and this step WAS this harness. The
+# installer asks for an instance with Read-Host; run from a terminal (which is exactly how `make rebuild-dev`
+# runs it) Read-Host BLOCKS, so the suite sat there with no output until something killed it. CI never saw
+# it because CI has no terminal: the failure existed only for the person running the build.
+#
+# A HANG IS A WIRING PROPERTY, so it is asserted as one — there is nothing to observe at runtime that would
+# have caught it here, since the bug is precisely that nothing happens.
+Say ""
+Say "[20] the harness cannot block, and the prompt comes after the prerequisites"
+
+$harnessSrc = Get-Content -Raw $PSCommandPath
+Check "the child's stdin is PINNED (so a prompt returns instead of blocking)" `
+  (($harnessSrc -match 'RedirectStandardInput') -and ($harnessSrc -match '\[System.IO.File\]::WriteAllText\(\$inFile')) `
+  "without this, Read-Host waits for a keystroke that a test will never type"
+Check "the child command is passed by FILE, not inline" `
+  ($harnessSrc -match '"-NoProfile", "-File", \$scriptFile') `
+  "Start-Process mangles embedded quotes in an inline -Command (measured: WriteLine(`"x`") arrived as WriteLine(x))"
+
+# And the installer itself must ask for an instance only once the prerequisites are known good.
+$code20 = (($ps1Src -split "`n") | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+$dock = $code20.IndexOf("Ensure-WslDocker")
+$ask = $code20.IndexOf('Ask-Instance -Fallback "dev"')
+Check "the instance prompt comes AFTER the Docker check" `
+  (($dock -ge 0) -and ($ask -gt $dock)) `
+  "asking first makes the operator answer a question about a stack that cannot be created, and buries the real problem under the answer"
+
+# --- 21. THE DOUBLE MUST NOT BE ABLE TO CHANGE THE OPERATOR'S MACHINE ------------
+# The double RUNS guest scripts on the host — that is how it emulates WSL without Windows — and its docker
+# stand-in is an EXPORTED BASH FUNCTION. A bash child imports that function; a GO child (the orchicon/orch
+# binaries) calls exec.Command("docker") and gets the REAL engine. And a stubbed `docker run` PRINTS a
+# version string and reports success without doing anything.
+#
+# So a guest that reaches an install path can install FOR REAL — pulling images and re-creating the
+# operator's containers — while this suite reports "all assertions passed". That is the shape of the
+# reported "prod dropped and had to be restarted". A real install also looks exactly like a hang.
+#
+# THESE CASES ARE BEHAVIOURAL, which is the only kind of assertion that would have caught it: the gate is
+# in the double, so it is tested by calling the double. Each case states a guest and the outcome required.
+Say ""
+Say "[21] the wsl double cannot change the operator's machine"
+
+$doublePath = Join-Path $StubBin "wsl"
+function Invoke-DoubleExit {
+  param([string]$Guest)
+  $o = Join-Path $Work ("dbl-" + [guid]::NewGuid().ToString("N"))
+  $inFile = "$o.in"; $outFile = "$o.out"; $errFile = "$o.err"
+  [System.IO.File]::WriteAllText($inFile, "")
+  # THE GUEST IS QUOTED, and that is not cosmetic. `Start-Process -ArgumentList` joins its array and
+  # RE-SPLITS on whitespace, so an unquoted multi-word guest arrives as several arguments and the double's
+  # `guest="${!#}"` sees only the LAST WORD — measured: "orchicon install" arrived as `install`, slipped
+  # the gate, and the real `/usr/local/bin/orchicon serve` case actually STARTED a plane here for 120s
+  # before the watchdog killed it. Quotes make it one argument, which is what `wsl -e bash -lc <one arg>`
+  # means. (Same re-quoting hazard the -Command assertions exist for.)
+  $quoted = '"' + $Guest + '"'
+  $p = Start-Process -FilePath $doublePath -PassThru `
+    -ArgumentList @("-e", "bash", "-lc", $quoted) `
+    -RedirectStandardInput $inFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+  [void](Wait-ProcessBounded -Process $p -What "the double under test")
+  return $p.ExitCode
+}
+
+# EVERY DANGEROUS CASE IS MADE HARMLESS, so a regression here cannot execute the product: the binary is
+# reached through a DEAD PATH (so a lookup fails) and the absolute form names a path that does not exist.
+# A test that asserts "this must not run" must not be able to run it in order to find out.
+foreach ($dangerous in @("PATH=/nonexistent orchicon install", "/nonexistent/bin/orchicon serve",
+                         "PATH=/nonexistent orch up",
+                         "docker run -d --name probe alpine true", "docker pull alpine:latest",
+                         "docker volume rm orchicon-cnt-dev-data")) {
+  $rc = Invoke-DoubleExit -Guest $dangerous
+  # The detail is built in a VARIABLE: a parenthesized expression cannot START a continuation line in
+  # PowerShell ("Unexpected token"), which is a parse error in the whole harness, not just this case.
+  $detail = "exit=$rc (90 = refused; anything else means a guest could mutate the operator's machine)"
+  Check "the double REFUSES '$dangerous'" ($rc -eq 90) $detail
+}
+
+# AND THE GATE MUST NOT OVER-REACH. A substring test for `orchicon` refuses the legitimate guest that reads
+# the instance's bound ports, because its path contains `orchicon-test/ports.json` — measured: it broke four
+# [16] assertions. The gate is on INVOCATIONS, so a path that merely contains the name must still run.
+foreach ($benign in @("echo hello", "cat /var/lib/orchicon/orchicon-prod/ports.json",
+                      "mktemp -d", "docker version --format {{.Server.Version}}")) {
+  $rc = Invoke-DoubleExit -Guest $benign
+  $detail2 = "exit=$rc — the gate must catch command words, not paths that contain the product's name"
+  Check "the double still RUNS '$benign'" ($rc -ne 90) $detail2
+}
+
+$runShSrc = Get-Content -Raw (Join-Path (Split-Path $PSCommandPath -Parent) "run.sh")
+Check "the gate is present in the double (a wiring property)" `
+  ($runShSrc -match 'SAFETY GATE' -and $runShSrc -match 'exit 90') `
+  "without it a guest reaching an install path installs for real, silently"
 
 Say ""
 if ($Fail.Count -eq 0) { Say "RESULT: all assertions passed" }

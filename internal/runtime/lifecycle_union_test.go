@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	assets "github.com/beardedparrott/orchicon"
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/mcpclient"
@@ -152,7 +153,7 @@ func TestBuildCreateRequestBakesRunUnionForTwoSteps(t *testing.T) {
 	var got mcpclient.Resolution
 	var called bool
 	lc := NewLifecycle(nil, pool, slog.Default(),
-		func(image, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution, _ []ProviderConfig) string {
+		func(image, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution, _ []ProviderConfig, _ []adapter.WorkerAgent) string {
 			called = true
 			got = union
 			return "{}"
@@ -284,7 +285,7 @@ func TestRunServeConfigProviderIsDeterministicForARun(t *testing.T) {
 	}
 
 	lc := NewLifecycle(nil, pool, slog.Default(),
-		func(image, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution, _ []ProviderConfig) string {
+		func(image, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution, _ []ProviderConfig, _ []adapter.WorkerAgent) string {
 			return `{"tag":"` + image + `"}`
 		}, nil)
 	lc.SetScopeResolver(mcpsettings.NewResolver(pool))

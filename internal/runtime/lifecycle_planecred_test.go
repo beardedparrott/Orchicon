@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	assets "github.com/beardedparrott/orchicon"
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/mcpclient"
@@ -121,7 +122,7 @@ func TestRunServeConfigDeterministicWithPlaneCredential(t *testing.T) {
 	// The builder returns the PLANE TOKEN, so a fresh mint on any call makes the
 	// two values differ — exactly the AC 3 violation this test pins.
 	lc := NewLifecycle(nil, pool, slog.Default(),
-		func(image, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution, _ []ProviderConfig) string {
+		func(image, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution, _ []ProviderConfig, _ []adapter.WorkerAgent) string {
 			if planeEnv == nil {
 				return "NO-PLANE-CHANNEL"
 			}

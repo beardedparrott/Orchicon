@@ -12,7 +12,7 @@ import (
 // warmedDiscoverer returns a discoverer whose cache is already fresh, so
 // ListModels answers in-process with no subprocess probe (see fetchOrCache).
 func warmedDiscoverer(providerIDs ...string) *ModelDiscoverer {
-	d := &ModelDiscoverer{ttl: time.Hour}
+	d := &ModelDiscoverer{successTTL: time.Hour}
 	d.cached = time.Now()
 	for _, id := range providerIDs {
 		d.cache = append(d.cache, &apiv1.OpenCodeModel{ProviderId: id, Id: id + "-some-model"})

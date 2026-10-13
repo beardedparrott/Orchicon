@@ -409,8 +409,39 @@ plane_start() {
     return 1
   fi
   if curl -fs "http://localhost:$PLANE_HTTP_PORT/healthz" >/dev/null 2>&1; then
-    log_ok "$inst host plane already serving http://localhost:$PLANE_HTTP_PORT"
-    return 0
+    # A PLANE THAT ANSWERS IS NOT NECESSARILY THE PLANE WE JUST BUILT.
+    #
+    # This used to be a bare health check: anything answering on the port counted as this instance's
+    # current plane. But a rebuild REPLACES the binary while the running process keeps executing the
+    # old inode, so the plane answers health perfectly while serving superseded code — and this
+    # function returned success, leaving it that way indefinitely. The Go installer learned this
+    # (planeDrift, cmd/orchicon/install_host.go); the launcher had not.
+    #
+    # The stale process reports itself: its PID file names it, and /proc/<pid>/exe ends in
+    # " (deleted)" once the path it was launched from has been replaced underneath it — precisely the
+    # state a rebuild creates. THAT is the signal used here, and deliberately not "the executable
+    # differs from the built binary": a dev checkout legitimately serves from bin/orchicon, and a
+    # mismatch test would restart a plane the operator chose to keep. A non-matching PATH is left
+    # alone for the same reason planeDrift leaves it alone.
+    local stale_pid="" pidfile="$HOST_DATA_DIR/serve/pids/orchicon.pid"
+    if [ -f "$pidfile" ]; then
+      local pid exe
+      pid=$(tr -d '[:space:]' < "$pidfile" 2>/dev/null || true)
+      if [ -n "$pid" ] && [ -e "/proc/$pid/exe" ]; then
+        exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
+        case "$exe" in
+          *" (deleted)") stale_pid="$pid" ;;
+        esac
+      fi
+    fi
+    if [ -z "$stale_pid" ]; then
+      log_ok "$inst host plane already serving http://localhost:$PLANE_HTTP_PORT"
+      return 0
+    fi
+    log_warn "$inst host plane (pid $stale_pid) is STALE — its binary was replaced (rebuilt) under it. Restarting it on the current binary."
+    plane_stop "$inst" || log_warn "  could not stop the stale plane cleanly; attempting a start anyway"
+    # Fall through to the start below, which is the whole point: the operator asked for this plane
+    # to be running, and it now will be running the binary they just built.
   fi
   # A host plane its own workers cannot reach is worse than one that refuses
   # to start: every orchicon-plane MCP call in every dispatched run would time

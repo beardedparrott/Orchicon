@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -358,6 +359,11 @@ type App struct {
 	diffPane *diffs.Model
 	diffTab  diffs.Tab
 	diffPath string
+	// diffArmedFor is the owner+liveness the pane's live stream was last SETTLED
+	// for, as "kind|id|live". The wake path re-evaluates the pane's owner on every
+	// event, so without this it would re-fetch the ledger per event — see
+	// ensureDiffStreamArmed.
+	diffArmedFor string
 	// diffPaneW is the operator's OVERRIDE for the left rail's width in cells
 	// (0 = auto). It is the ONLY extra input to diffPaneWidth, so every consumer
 	// of the width — contentWidth, refreshLayout, both SetSize calls, the mouse
@@ -398,6 +404,10 @@ type App struct {
 	// (0-based) that n/N navigate.
 	askSearch   string
 	askMatchIdx int
+	// findBox is the FIND MODAL (nil = closed) — the box ctrl+f opens and the field the query is typed
+	// into (findbox.go). It lives beside the search state it drives because it IS a view of askSearch:
+	// kept apart, the transcript would have two queries that can disagree.
+	findBox *findBox
 	// Slide-out conversation strip (chatpanel.go): open when the operator
 	// engages the composer on a screen other than Ask, so a send is VISIBLE.
 	// panelScroll is in lines up from the transcript tail (0 = following).
@@ -479,6 +489,9 @@ type App struct {
 	// KeyRoute.Handle returns only a bool, so it cannot return a Cmd directly (same
 	// constraint as pendingDiffCmd/pendingRailCmd; drainStaged re-emits it).
 	pendingStopCmd tea.Cmd
+	// pendingFindCmd carries the find box's caret-blink cmd out of the ctrl+f route — the same constraint
+	// as pendingStopCmd (a route Handle returns only a bool); drainStaged re-emits it.
+	pendingFindCmd tea.Cmd
 	// pendingAttachCmd carries an ATTACHMENT read out of its global key route (ctrl+v pastes a clipboard
 	// image). It does real I/O — a screenshot can be megabytes — so it runs as a command and never on the
 	// tea loop, and the route stages the command for drainStaged to re-emit. (/attach does NOT use this
@@ -1076,6 +1089,10 @@ func (m *App) drainStaged() tea.Cmd {
 		cmds = append(cmds, m.pendingStopCmd)
 		m.pendingStopCmd = nil
 	}
+	if m.pendingFindCmd != nil {
+		cmds = append(cmds, m.pendingFindCmd)
+		m.pendingFindCmd = nil
+	}
 	if m.pendingAttachCmd != nil {
 		cmds = append(cmds, m.pendingAttachCmd)
 		m.pendingAttachCmd = nil
@@ -1481,6 +1498,57 @@ func (m *App) diffOwner() (kind, id string) {
 	return diffs.NoneOwner, diffs.NoneOwner
 }
 
+// ensureDiffStreamArmed arms an ALREADY-OPEN pane's live stream once its owner
+// becomes live, and does nothing otherwise.
+//
+// THE BUG THIS FIXES, in the operator's words: "In the TUI it worked but not
+// while I was actively watching it. I had to hit ctrl+d again to refresh the
+// screen." The pane was armed EXACTLY ONCE, when it was opened — and at that
+// moment the turn had not started, so `diffOwnerLive` said false and no stream
+// was ever subscribed. Nothing re-evaluated it: `refreshDiffOwner` runs on a
+// tab switch and on conversation selection, NOT on the wake path, and it also
+// refuses while the COMPOSER holds focus — which is where the operator is
+// sitting while watching a turn run. So the pane's data was whatever the
+// open-time fetch saw, and only closing/reopening it (ctrl+d twice) re-armed the
+// stream and showed the files.
+//
+// TWO PROPERTIES MAKE THIS THE RIGHT SEAM. It is IDEMPOTENT — it acts only when
+// the pane is open and UNARMED with a LIVE owner, so it costs one call at a turn
+// start and nothing thereafter. And it is about DATA PLUMBING, not input
+// routing: which surface owns the keystrokes has no bearing on whether the pane
+// subscribes to its owner's ledger, so the focus gate that guarded the re-point
+// path does not belong here.
+//
+// A pane whose owner is NOT live is deliberately left alone: a finished
+// execution or an idle conversation has a durable, git-reconciled ledger and no
+// live stream to subscribe to.
+func (m *App) ensureDiffStreamArmed() tea.Cmd {
+	if !m.diffOpen || m.diffPane == nil {
+		return nil
+	}
+	kind, id := m.diffOwner()
+	if kind == diffs.NoneOwner || id == diffs.NoneOwner {
+		m.diffArmedFor = ""
+		return nil
+	}
+	// THE KEY IS WHAT KEEPS THIS CHEAP. The wake path runs on every chat event,
+	// so acting unconditionally would re-fetch the ledger continuously — SetOwner
+	// fetches. Only a CHANGE of owner or of liveness is worth acting on, which is
+	// also exactly when the answer differs.
+	live := m.diffOwnerLive(kind, id)
+	key := kind + "|" + id + "|" + strconv.FormatBool(live)
+	if key == m.diffArmedFor {
+		return nil
+	}
+	m.diffArmedFor = key
+	if m.diffPane.StreamArmed() || !live {
+		// Already subscribed, or nothing live to subscribe to (a finished run /
+		// idle conversation has a durable ledger and no stream).
+		return nil
+	}
+	return m.diffPane.SetOwner(kind, id, true)
+}
+
 // diffOwnerLive reports whether the owner's session is live (a running
 // execution or an open ask conversation). A completed owner is not live —
 // its diff is the durable, git-reconciled ledger only.
@@ -1738,7 +1806,13 @@ func (m *App) refreshComposerHint() {
 	// AN APP-LEVEL MODAL OWNS THE KEYBOARD TOO, so it must win over the screen's hint for the same
 	// reason an in-screen form does — and it is checked FIRST, because while the modal is up the screen
 	// underneath is not the thing reading the operator's keystrokes.
-	if m.renameConv != nil || m.assignForm != nil || m.bulkConfirm != nil || m.catForm != nil {
+	if m.findBox != nil {
+		// THE FIND BOX OWNS THE KEYBOARD TOO, and it is checked FIRST because it is claimed FIRST in
+		// dispatch: whatever takes the keys is what the row has to describe. The box is not a form, so
+		// it does not get formComposerHint — those chords (ctrl+s, tab between fields) do not exist
+		// here, and the row would be advertising keys that do nothing.
+		ctx = findComposerHint
+	} else if m.renameConv != nil || m.assignForm != nil || m.bulkConfirm != nil || m.catForm != nil {
 		ctx = formComposerHint
 	} else if s := m.screens[m.active]; s != nil {
 		// AN OPEN FORM OWNS THE KEYBOARD, SO THE HINT MUST DESCRIBE THE FORM.
@@ -1782,11 +1856,28 @@ func (m *App) refreshComposerHint() {
 	// Named for the OPERATOR'S OWN messages rather than "a message", because that is what the gesture does
 	// — a click on the model's reply is deliberately inert (see transcriptUserMessageAtFrameRow) — and a
 	// hint that promised more than the code delivers would be the interface lying.
-	if m.active == TabAsk && m.chatConvID != "" {
-		if ctx == "" {
-			ctx = transcriptCopyHint
-		} else {
-			ctx += " · " + transcriptCopyHint
+	// NOT WHILE THE FIND BOX IS UP: the box owns the keyboard there, so these chords are inert and
+	// naming them would be the row lying about the state the operator is in — the exact failure
+	// formComposerHint exists to avoid, one surface along.
+	if m.active == TabAsk && m.chatConvID != "" && m.findBox == nil {
+		// THE TRANSCRIPT'S FIND + JUMP KEYS, ADVERTISED — because a chord nobody can see is a chord
+		// nobody has. The operator asked for exactly this: "no note in the composer about search or
+		// jumping to beginning to end is there so no one would know they exist." They are named HERE,
+		// on the composer's affordance row, because that is where this client advertises what the
+		// keyboard can do (the click-to-copy gesture and the width chord are named here for the same
+		// reason) — and not only in the `?` overlay, which you have to already know about.
+		//
+		// home/end ARE ADVERTISED UNCONDITIONALLY, which is the same bar the arrow keys are already held
+		// to: they jump the transcript whenever the composer is NOT holding text, and while the operator
+		// IS drafting a message they are the textarea's line-start/line-end. Both are true, and the row
+		// describes what the keys mean on this SURFACE — exactly what every other screen's hint does
+		// with its own contextual keys.
+		for _, seg := range []string{transcriptFindHint, transcriptCopyHint} {
+			if ctx == "" {
+				ctx = seg
+			} else {
+				ctx += " · " + seg
+			}
 		}
 	}
 	// THE WIDTH CHORD, WHEREVER THERE IS A SPLIT TO RESIZE.
@@ -1817,6 +1908,27 @@ func (m *App) refreshComposerHint() {
 
 // transcriptCopyHint is the composer's advertisement for the transcript's click gesture.
 const transcriptCopyHint = "click your message to copy"
+
+// transcriptFindHint is the composer's advertisement for the transcript's find + jump chords. It names
+// the two entry points and what they DO, rather than the reason they exist.
+//
+// IT IS DELIBERATELY TERSE, AND THE LENGTH IS THE CONSTRAINT. The affordance area has a hard budget of
+// maxHintRows (3) at the width the composer actually gets, and past that the last row is ellipsized —
+// measured at the diff E2E gate's geometry (200 columns with both rails AND the diff pane open, which
+// leaves the box 88 cells inside): the first wording of this constant, "ctrl+f: find in the transcript ·
+// home/end: first·latest message", packed into FOUR rows and lost the tail of the row, which the gate
+// caught as its forbidden truncation signature. This form packs into three in both the idle and the
+// reply-in-flight states (the latter adds "ctrl+y stop").
+//
+// SO: MEASURE A NEW SEGMENT AGAINST THE WRAPPER BEFORE ADDING IT. The `?` overlay carries the full
+// descriptions; this row is a reminder, and a reminder that is cut off is worse than a shorter one that
+// is read. TestDiffE2EAskMountPTY fails on any ellipsis in the frame, which is what makes this checkable
+// rather than a matter of taste.
+const transcriptFindHint = "ctrl+f: find · home/end: top·bottom"
+
+// findComposerHint is what the composer advertises while the FIND BOX is up. It names only keys the box
+// honours, so the row is true in that state — the rule formComposerHint follows.
+const findComposerHint = "find: type the term · ↑/↓: step matches · enter: keep searching · esc: cancel"
 
 // splitResizeHint advertises the width chord. Short because the affordance row wraps rather than scrolls, and
 // phrased for what the operator wants ("resize panes") rather than for what the code calls it (a share).
@@ -2622,6 +2734,16 @@ func (m App) viewFrame() string {
 	// is opened from a category row in whichever pane is showing it.
 	if m.catForm != nil {
 		base = m.catAdminView(base, w, h)
+	}
+	// THE FIND BOX IS COMPOSED LAST — over every other modal — because it is CLAIMED FIRST in dispatch.
+	//
+	// THE INVARIANT IS "WHATEVER TAKES THE KEYS IS WHAT THE OPERATOR SEES": the box answers every
+	// keystroke and the mouse while it is up, so drawing it under a sibling would put the keyboard on a
+	// surface the operator cannot read. (This is the ordering the conversation-scope modal got wrong
+	// once — the form was raised from it and composited BENEATH it, which is why none of its buttons
+	// appeared to work.)
+	if m.findBox != nil {
+		base = m.findBoxView(base, w, h)
 	}
 	return fillView(base, w, h)
 }
@@ -4568,7 +4690,10 @@ func (m *App) onChatWake() tea.Cmd {
 		fields[len(fields)-1].Value = str.ScrollLabel()
 		st.SetDetailContentLaidOut(title, fields, str.View())
 	}
-	return nil
+	// THE PANE RE-EVALUATES ITS OWNER'S LIVENESS ON EVERY WAKE, which is what
+	// makes it follow a turn that starts AFTER it was opened — see
+	// ensureDiffStreamArmed for the operator report this closes.
+	return m.ensureDiffStreamArmed()
 }
 
 // planeUnreachable reports whether the PLANE itself is not answering — as opposed to one turn having lost

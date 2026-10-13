@@ -393,6 +393,24 @@ install-path-test: ## Run the real installer against a locally-served artifact, 
 	bash scripts/tests/install-path/run.sh
 	bash scripts/tests/install-path/uninstall.sh
 
+# host-residency-test guards the LAUNCH SHAPE of an instance: which of the two residencies a plain
+# `up` produces, that each instance's ports and plane URL are its own (a shared value points one
+# instance's workers at another's database), and that the host plane's two listeners cannot collide.
+#
+# IT IS DOCKER-FREE, which is why it belongs in this gate rather than behind a container job: it
+# resolves shapes through container.sh's own functions with a stubbed log and no engine.
+#
+# IT IS ALSO THE HARNESS THAT WOULD HAVE CAUGHT 5cc8039c'S FALLOUT. That commit deliberately changed
+# the default residency and did not update this harness, which then failed for weeks — unnoticed,
+# because nothing ran it. A harness that is never run is a comment with a PASS line in it.
+#
+# The one thing it cannot check is the deleted-exe detector's behaviour unless it can copy a real
+# binary into the repo's gitignored tmp/, so a restricted environment SKIPS that case LOUDLY and
+# counts it in the summary rather than passing quietly.
+.PHONY: host-residency-test
+host-residency-test: ## CI gate: the instance launch shape (residency default, per-instance ports, plane binds)
+	bash scripts/tests/host-residency/run.sh
+
 # --- Frontend --------------------------------------------------------------
 .PHONY: fe-install fe-dev fe-build fe-lint fe-test docs-check site-check
 fe-install: ## Install frontend dependencies
@@ -708,7 +726,7 @@ cross-compile: ## Compile the shipped binaries for every release platform (catch
 # two script gates (cache-trim-test, disk-report-test) and develop added install-ps1-test. They
 # are independent, so the union is the correct resolution — dropping either side would silently
 # retire a gate that other work depends on.
-ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test cache-trim-test disk-report-test cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
+ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test cache-trim-test disk-report-test cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
 ci: ci-go fe-lint fe-test site-check ## Run the full CI gate locally (Go + frontend + landing page)
 
 .PHONY: tui-pty-gate

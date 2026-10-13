@@ -5,6 +5,7 @@ import (
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/worktree"
 )
 
 // latestTodos returns the worker's most recent todo list for an execution by
@@ -41,6 +42,24 @@ func latestTodos(parts []db.SessionPart) []*apiv1.TodoItem {
 		return out
 	}
 	return nil
+}
+
+// todosFromSnapshot maps the run-state snapshot's items to the proto shape the
+// RPC returns. Shared with the transcript parser's mapping so the two sources
+// cannot render the same list differently.
+func todosFromSnapshot(items []worktree.TodoItem) []*apiv1.TodoItem {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]*apiv1.TodoItem, 0, len(items))
+	for _, t := range items {
+		out = append(out, &apiv1.TodoItem{
+			Content:  t.Content,
+			Status:   todoStatusFromString(t.Status),
+			Priority: todoPriorityFromString(t.Priority),
+		})
+	}
+	return out
 }
 
 // rawTodo is the minimal shape of one todowrite todo entry. The parser keeps

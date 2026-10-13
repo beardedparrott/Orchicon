@@ -402,16 +402,17 @@ func transparentCopy(base *Theme, name string) *Theme {
 // the fallback, so changing it changes how orch looks out of the box and nothing at all for an
 // operator who has already chosen a palette.
 //
-// TEAL, at the operator's request: "I would also like to make teal the default theme in the TUI now."
-// It is the `teal` palette from theme_palettes.go and NOT "teal-light" beside it, which is the same family
-// in light mode. Lookup matches the name exactly, so a typo here would fall back to the base dark palette
-// without an error; theme_test.go asserts this name resolves, and that it is a DARK palette.
+// FOREST, at the operator's request: "The default TUI theme should be forest." It is the `forest` palette
+// from theme_palettes.go and NOT "forest-light" beside it, which is the same family in light mode. Lookup
+// matches the name exactly, so a typo here would fall back to the base dark palette without an error;
+// theme_test.go asserts this name resolves, and that it is a DARK palette.
 //
-// (It previously named `slate`, and before that `forest`, both at the operator's request. Neither is
-// changed and both remain selectable — only the out-of-the-box default moved. This one is also chosen to
-// MATCH THE GUI, whose default dark slot now names the teal family too, so a fresh TUI and a fresh GUI
-// open in the same colours rather than two different ones.)
-const DefaultName = "teal"
+// (This one comes BACK: the operator has moved this default more than once — ember, then `forest`, then
+// `slate`, then `teal`, and now `forest` again. Every previous name remains selectable; only the
+// out-of-the-box default moves. It is chosen to MATCH THE GUI, whose default dark slot names the forest
+// family too, so a fresh TUI and a fresh GUI still open in the same colours — see
+// frontend/src/lib/theme-store.ts, which is changed with this and not independently.)
+const DefaultName = "forest"
 
 // Resolved active colors, re-pointed by Use. Render paths read these via
 // the styles; direct color reads stay possible for layout math.

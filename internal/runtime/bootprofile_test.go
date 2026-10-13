@@ -153,7 +153,6 @@ func TestAdapterHostMountsConditional(t *testing.T) {
 
 	want := []string{
 		"-v", filepath.Join(home, ".config", "opencode") + ":" + filepath.Join(home, ".config", "opencode") + ":ro",
-		"-v", filepath.Join(home, ".local", "share", "opencode") + ":" + filepath.Join(home, ".local", "share", "opencode") + ":ro",
 		"-v", filepath.Join(home, ".opencode") + ":" + filepath.Join(home, ".opencode") + ":ro",
 	}
 	if got := adapterHostMounts(home, "opencode"); !reflect.DeepEqual(got, want) {

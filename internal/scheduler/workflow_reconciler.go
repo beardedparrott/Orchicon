@@ -1631,6 +1631,33 @@ func (r *WorkflowReconciler) dispatchInlineLimit(n int) int {
 	return limit
 }
 
+// containerFailureReason formats the diagnostic recorded when a run's container could not be created.
+//
+// THE TWO ERRORS ARE THE POINT. This message is the operator's only evidence, and the shape it replaced
+// discarded both of them in favour of a placeholder — so it read "could not be created (image X, then
+// base Y): arm-site container ensure failed", naming neither the Docker error nor which attempt
+// produced it. Reported as "failed immediately complaining about the runtime image", and un-diagnosable
+// from the outside for exactly that reason.
+//
+// The arm-site attempt ran in AUTOCOMMIT before the failover path was entered, so its error genuinely
+// is not available here; that is stated rather than stood in for.
+func containerFailureReason(img string, retryErr, baseErr error) string {
+	const armNote = "the arm-site ensure attempt (autocommit) had already failed"
+	return fmt.Sprintf("runtime container could not be created: image %q -> %v; base %q -> %v (%s)",
+		img, retryErr, db.BaseRuntimeImage, errorOrNone(baseErr), armNote)
+}
+
+// errorOrNone renders an error for a diagnostic string, or a plain word when there was none. The
+// distinction matters in the container-failure message: "the base attempt was never made" (the image
+// WAS the base image) reads differently from "the base attempt failed", and a bare %v prints "<nil>"
+// for both.
+func errorOrNone(err error) string {
+	if err == nil {
+		return "not attempted"
+	}
+	return err.Error()
+}
+
 // failRunAtStart fails a workflow run before it can execute — a structural
 // or configuration error (unresolvable runtime image, empty step DAG,
 // missing workflow version). The run can never progress, and without this
@@ -1642,11 +1669,38 @@ func (r *WorkflowReconciler) dispatchInlineLimit(n int) int {
 // killed.
 func (r *WorkflowReconciler) failRunAtStart(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, reason string) error {
 	now := time.Now().UTC()
+
+	// LOG THE REASON BEFORE ANYTHING THAT CAN FAIL, because THIS FUNCTION'S OWN FAILURE IS WHAT THE
+	// OPERATOR SEES AND IT USED TO HIDE THE REASON COMPLETELY.
+	//
+	// The shape was: attempt the status update; if IT fails, return its error. The `reason` — the only
+	// statement of WHY the run could not start — was discarded on that path, so the reconcile pass
+	// logged nothing but a failure of the failure handler:
+	//
+	//	WARN workflow run reconcile failed ... error="fail run at start: db: not found"
+	//
+	// That is a sentence about the UPDATE, not about the run, and it cost the operator and me several
+	// rounds of archaeology: the real cause (a container that could not be created, whose Docker error
+	// had only just been made available) was computed on the line before and thrown away here. Reported
+	// as "it failed immediately complaining about the runtime image" — with the image error never
+	// reaching a log.
+	//
+	// ONE PLACE FIXES ALL FIVE CALLERS: the image resolve, an empty step DAG, a missing workflow
+	// version, the container-create failover and the serve gate all report their reason through here.
+	// The transient version-race that makes the update itself fail remains (a later pass re-fails the
+	// run with a fresh snapshot, which is why the run does end up terminal) — but it can no longer
+	// erase the cause.
+	r.log.Warn("workflow run failed at start", "run", run.ID, "tenant", tenantID,
+		"work_item", run.WorkItemID, "workflow", run.WorkflowID, "reason", reason)
+
 	if _, err := db.UpdateWorkflowRun(ctx, tx, tenantID, run.ID, run.Version, db.UpdateWorkflowRunFields{
 		Status:  strPtr(domain.WorkflowRunFailed),
 		EndedAt: &now,
 	}); err != nil {
-		return fmt.Errorf("fail run at start: %w", err)
+		// The reason is carried in the error too, so a caller that propagates it (rather than logging
+		// its own line) still states what happened. Without this the pass reports the update's failure
+		// and nothing else.
+		return fmt.Errorf("fail run at start (%s): %w", reason, err)
 	}
 	// Mark the bound work item failed too.
 	if run.WorkItemID != "" {
@@ -1708,18 +1762,38 @@ func (r *WorkflowReconciler) ensureRunContainerFailover(ctx context.Context, ten
 	// The arm site already attempted EnsureForRun once (in autocommit);
 	// entry here means that attempt failed. Retry the resolved tag once
 	// (transient daemon/pool miss), then fall back to the base image.
-	firstErr := fmt.Errorf("arm-site container ensure failed")
-	if rerr := r.runtime.EnsureForRun(ctx, try); rerr == nil {
+	// CAPTURE THE ACTUAL ERRORS, because the failure message is the operator's ONLY evidence and this
+	// used to discard all of it.
+	//
+	// The old shape held a PLACEHOLDER here — fmt.Errorf("arm-site container ensure failed") — and
+	// DISCARDED the errors returned by both EnsureForRun attempts below (they were bound inside the
+	// `if` statements and went out of scope). So a run that could not get a container reported:
+	//
+	//	runtime container could not be created (image "X", then base "orchicon-runtime:base"):
+	//	  arm-site container ensure failed
+	//
+	// which names neither the Docker error nor which attempt produced it. Reported by an operator as
+	// "failed immediately complaining about the runtime image", and it is un-diagnosable from the
+	// outside for exactly that reason: the sentence says a container could not be created and refuses
+	// to say why.
+	//
+	// The arm-site attempt happened in AUTOCOMMIT before this function was entered, so its error is
+	// genuinely unavailable here — the note stays, but it no longer stands in for the two that ARE
+	// available, and both are now reported with the image each was tried with.
+	retryErr := r.runtime.EnsureForRun(ctx, try)
+	if retryErr == nil {
 		return nil
 	}
+	var baseErr error
 	if img != db.BaseRuntimeImage {
 		try.RuntimeImage = db.BaseRuntimeImage
-		if berr := r.runtime.EnsureForRun(ctx, try); berr == nil {
-			r.log.Warn("workflow runtime fell back to base image", "run", cur.ID, "resolved", img, "error", firstErr)
+		baseErr = r.runtime.EnsureForRun(ctx, try)
+		if baseErr == nil {
+			r.log.Warn("workflow runtime fell back to base image", "run", cur.ID, "resolved", img, "error", retryErr)
 			return nil
 		}
 	}
-	reason := fmt.Sprintf("runtime container could not be created (image %q, then base %q): %v", img, db.BaseRuntimeImage, firstErr)
+	reason := containerFailureReason(img, retryErr, baseErr)
 	if ferr := r.failRunAtStart(ctx, ftx.Tx, tenantID, cur, reason); ferr != nil {
 		return ferr
 	}
@@ -2246,6 +2320,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		var primaryWID string
 		var composite string
 		var promptFP string // context-file fingerprint (ADR-0009 D5)
+		var agentPromptLen int
 		for _, wid := range upstream {
 			wi, err := db.GetWorkItem(ctx, tx, tenantID, wid)
 			if err != nil {
@@ -2265,6 +2340,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 				promptFP = fp
 			}
 			primaryWID = wid
+			agentPromptLen = len(r.agentPromptFor(ctx, tx, tenantID, wi, workerVer))
 		}
 		// Record the primary work item id + the composite prompt + the
 		// step's worker on the STEP RUN (per-step, not on the shared
@@ -2275,8 +2351,11 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			"_work_item_id":       primaryWID,
 			"_prompt":             composite,
 			"_prompt_fingerprint": promptFP,
-			"_worker_id":          step.Ref,
-			"_worker_version":     step.WorkerVersion,
+			// The RUN-LEVEL prefix length: the adapter trims exactly this
+			// many bytes off the message on 2.x, where the agent carries them.
+			"_agent_prompt_len": agentPromptLen,
+			"_worker_id":        step.Ref,
+			"_worker_version":   step.WorkerVersion,
 		})
 		// Preserve the recovery narrative across a re-dispatch so the run
 		// view keeps showing it after the step runs again. Carries ALL
@@ -2766,6 +2845,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			var primaryWID string
 			var composite string
 			var promptFP string
+			var agentPromptLen int
 			for _, wid := range upstream {
 				wi, err := db.GetWorkItem(ctx, tx, tenantID, wid)
 				if err != nil {
@@ -2785,6 +2865,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 					promptFP = fp
 				}
 				primaryWID = wid
+				agentPromptLen = len(r.agentPromptFor(ctx, tx, tenantID, wi, workerVer))
 			}
 			// Record the ticket + composite prompt + the approver worker
 			// pin on the STEP RUN (exactly the TASK-step shape). The
@@ -2792,7 +2873,8 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			// _worker_version from the step run to build the execution
 			// manifest; the ticket stays untouched.
 			stepResult := buildApprovalStepResult(primaryWID, composite, promptFP, workerRefStr, workerVer.Version,
-				upstreamWorker, upstreamSummary, upstreamFiles, ac, sr.Result)
+				upstreamWorker, upstreamSummary, upstreamFiles, ac, sr.Result,
+				agentPromptLen)
 			// Clear any stale worker_execution_id (a recovering step
 			// re-dispatched here still references its FAILED execution):
 			// pollTaskStep would otherwise see the old failed execution
@@ -2962,21 +3044,14 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	// instructions, execution history — follows AFTER the prefix.
 	// Prompt truth: the RUN-effective image (run row, not the wi request)
 	// and the project execution mode (runtime vs local honest block).
-	sb.WriteString(db.StablePromptPrefix(runEffectiveImage(ctx, tx, tenantID, wi), projectExecutionModeForPrompt(ctx, tx, tenantID, wi)))
-
-	// 0. Worker identity — role, skills, behavior, and AGENTS.md.
-	if r := strings.TrimSpace(worker.Role); r != "" {
-		fmt.Fprintf(&sb, "# Role\n\n%s\n\n", r)
-	}
-	if s := strings.TrimSpace(worker.Skills); s != "" {
-		fmt.Fprintf(&sb, "## Skills\n\n%s\n\n", s)
-	}
-	if b := strings.TrimSpace(worker.Behavior); b != "" {
-		fmt.Fprintf(&sb, "## Behavior\n\n%s\n\n", b)
-	}
-	if a := strings.TrimSpace(worker.AgentsMD); a != "" {
-		fmt.Fprintf(&sb, "## AGENTS.md\n\n%s\n\n", a)
-	}
+	// The RUN-LEVEL part of the prompt — the shared stable prefix AND the
+	// worker's identity block — comes from ONE function (db.AgentSystemPrompt)
+	// rather than being spelled out here, because it must stay a byte-identical
+	// PREFIX of this composite: the opencode adapter bakes exactly these bytes
+	// into the worker's agent on 2.x and then trims them back off the message, so
+	// a drift between the two would silently duplicate or drop prompt text.
+	// TestCompositePromptBeginsWithAgentSystemPrompt pins the relationship.
+	sb.WriteString(r.agentPromptFor(ctx, tx, tenantID, wi, worker))
 
 	// 1. Task.
 	sb.WriteString("# Task\n\n")
@@ -3502,6 +3577,21 @@ func runExecutionMode(ctx context.Context, tx pgx.Tx, tenantID string, run db.Wo
 		return db.ExecutionModeLocal
 	}
 	return db.ExecutionModeRuntime
+}
+
+// agentPromptFor is the RUN-LEVEL part of a worker's prompt: the stable prefix
+// plus the worker's identity block. It is the composite's opening, and it is what
+// an opencode agent's `system` carries on 2.x.
+//
+// IT EXISTS SO THE TWO CONSUMERS CANNOT DRIFT. The composite builder writes it as
+// its first block, and the step-result writers record its LENGTH so the adapter can
+// trim it back off the message. If those two ever computed it differently, the trim
+// point would be wrong — which is why both call THIS, and why the adapter also
+// verifies the remainder before trimming (see session_run.go).
+func (r *WorkflowReconciler) agentPromptFor(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow, worker db.WorkerVersionRow) string {
+	return db.AgentSystemPrompt(worker,
+		runEffectiveImage(ctx, tx, tenantID, wi),
+		projectExecutionModeForPrompt(ctx, tx, tenantID, wi))
 }
 
 // runEffectiveImage returns the run row's RuntimeImage for workflow-bound
@@ -4180,18 +4270,20 @@ func resolveApprovalWorkItems(sr db.WorkflowStepRunRow, step workflow.StepWire, 
 // review context, and the pending decision marker. When re-dispatching a
 // recovering step, the previous _recovery_* keys are preserved so the
 // recovery-resumed dispatch keeps its seed.
-func buildApprovalStepResult(primaryWID, composite, fingerprint, workerRefStr string, workerVersion int, upstreamWorker, upstreamSummary string, upstreamFiles []string, ac string, prevResult []byte) []byte {
+func buildApprovalStepResult(primaryWID, composite, fingerprint, workerRefStr string, workerVersion int, upstreamWorker, upstreamSummary string, upstreamFiles []string, ac string, prevResult []byte, agentPromptLen int) []byte {
 	stepResult, _ := json.Marshal(map[string]any{
 		"_work_item_id":       primaryWID,
 		"_prompt":             composite,
 		"_prompt_fingerprint": fingerprint,
-		"_worker_id":          workerRefStr,
-		"_worker_version":     workerVersion,
-		"_upstream_worker":    upstreamWorker,
-		"_upstream_summary":   upstreamSummary,
-		"_upstream_files":     upstreamFiles,
-		"_ac":                 ac,
-		"_decision":           "pending",
+		// The RUN-LEVEL prefix length — see the task step's writer for why.
+		"_agent_prompt_len": agentPromptLen,
+		"_worker_id":        workerRefStr,
+		"_worker_version":   workerVersion,
+		"_upstream_worker":  upstreamWorker,
+		"_upstream_summary": upstreamSummary,
+		"_upstream_files":   upstreamFiles,
+		"_ac":               ac,
+		"_decision":         "pending",
 	})
 	var prev map[string]any
 	_ = json.Unmarshal(prevResult, &prev)

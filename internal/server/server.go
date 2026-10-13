@@ -15,7 +15,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -280,38 +279,34 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	var modelDiscoverer *aigateway.ModelDiscoverer
 	var mcpDiscoverer *aigateway.MCPDiscoverer
 	if opencodeInDemand {
-		var opencodeBin string
-		if override := os.Getenv("ORCHICON_OPENCODE_BIN"); override != "" {
-			opencodeBin = override
-		}
-		if opencodeBin == "" {
-			if p, err := exec.LookPath("opencode"); err == nil {
-				opencodeBin = p
-			}
-		}
-		if opencodeBin != "" {
-			if _, err := os.Stat(opencodeBin); err == nil {
-				modelDiscoverer = aigateway.NewModelDiscoverer(log, opencodeBin)
-			} else {
-				log.Warn("ORCHICON_OPENCODE_BIN set but not found, ignoring", "path", opencodeBin, "error", err)
-			}
-		}
-		if modelDiscoverer == nil {
-			log.Warn("opencode binary not found — model discovery disabled (set ORCHICON_OPENCODE_BIN or install opencode on PATH)")
-		}
-
-		// MCP discoverer: shells out to opencode CLI to list MCP servers.
-		// NO mock fallback (same directive as the model discoverer): without
-		// the binary the discoverer stays nil and ListOpenCodeMCPs returns
-		// the actionable Unimplemented error. Well-known MCP servers are a
-		// curated picker convenience in the LIVE discoverer's output, not a
-		// mock plane — they merge into real CLI results (configured wins).
-		if bin := opencodeBin; bin != "" {
-			mcpDiscoverer = aigateway.NewMCPDiscoverer(log, bin)
-		} else if p, err := exec.LookPath("opencode"); err == nil {
-			mcpDiscoverer = aigateway.NewMCPDiscoverer(log, p)
+		// ONE resolver, shared with the adapter's spawn path and the host serve
+		// (internal/opencode/binary.go). The inline probe that used to live here was
+		// the only one of the three that honoured ORCHICON_OPENCODE_BIN, so the
+		// plane's own 'set ORCHICON_OPENCODE_BIN' advice fixed DISCOVERY and left
+		// EXECUTION on a different binary — or on none at all.
+		opencodeBin, binErr := opencode.ResolveBinaryPath()
+		if binErr != nil {
+			log.Warn("opencode binary not found — model/MCP discovery disabled (set ORCHICON_OPENCODE_BIN or install opencode on PATH)", "error", binErr)
 		} else {
-			log.Warn("opencode binary not found — MCP discovery disabled (set ORCHICON_OPENCODE_BIN or install opencode on PATH)")
+			modelDiscoverer = aigateway.NewModelDiscoverer(log, opencodeBin)
+			// THE ARGV COMES FROM THE DETECTED API SURFACE, because the two versions need different
+			// forms of the same command: opencode 2.x starts a background server unless it is asked
+			// for --standalone, and 1.x needs --verbose for its model metadata. The rule lives with
+			// the surface table (internal/opencode) so it cannot be re-derived here and drift.
+			modelDiscoverer.SetModelsArgs(opencode.ModelsArgs(context.Background(), log, opencodeBin))
+			mcpDiscoverer = aigateway.NewMCPDiscoverer(log, opencodeBin)
+			// PRESENT IS NOT THE SAME AS USABLE, and this is the half nothing checked.
+			// The plane runs on the host and spawns opencode with the host PATH, but a
+			// workflow execution runs in a runtime container that sees ONLY the adapter
+			// paths the runtime daemon bind-mounts — nothing outside $HOME. So a
+			// system-wide install (the npm prefix under sudo, i.e. /usr/local/bin) is
+			// resolvable here and ABSENT from every worker: the picker lists models and
+			// then every dispatch fails to find its binary.
+			if !opencode.ContainerVisible(opencodeBin) {
+				log.Warn("opencode resolves to a path the runtime containers cannot see — workflow-run executions will not find it",
+					"path", opencodeBin,
+					"fix", "install opencode under $HOME as your user, never with sudo: curl -fsSL https://opencode.ai/install | bash")
+			}
 		}
 	} else {
 		log.Info("opencode model/MCP discovery disabled — the adapter demand set contains no opencode")
@@ -1198,6 +1193,21 @@ func (s *Server) Run(ctx context.Context) error {
 		if s.askService != nil {
 			s.askService.CloseAskMCP()
 		}
+		// AND THE ASK GUARD BELONGS BESIDE THEM, for the same reason. The Ask path
+		// applies the OS-level execution guard as a shim DIRECTORY, and a temp
+		// directory is not a child process: nothing reaps it when this one exits, so
+		// every plane start left one /tmp/orchicon-guard-* behind FOREVER — a
+		// slow, invisible accumulation that no restart ever cleaned up. It was the
+		// only host-side thing this seam did not hand back: CloseAskGuard's own doc
+		// already claimed to run "at daemon shutdown", and until this call nothing
+		// in the product invoked it (measured: its only caller was a test).
+		//
+		// Called unconditionally rather than behind the askService check above: the
+		// guard is a PACKAGE-level singleton, reachable from AskGuardEnvironFor as
+		// well as through the Service, so the Service being nil does not mean no
+		// guard was built. It is a no-op when none ever was, and safe on a second
+		// call.
+		askorchicon.CloseAskGuard()
 		s.pool.Close()
 		s.shutdownOTel()
 		return nil
@@ -1212,6 +1222,21 @@ func (s *Server) Run(ctx context.Context) error {
 		if s.askService != nil {
 			s.askService.CloseAskMCP()
 		}
+		// AND THE ASK GUARD BELONGS BESIDE THEM, for the same reason. The Ask path
+		// applies the OS-level execution guard as a shim DIRECTORY, and a temp
+		// directory is not a child process: nothing reaps it when this one exits, so
+		// every plane start left one /tmp/orchicon-guard-* behind FOREVER — a
+		// slow, invisible accumulation that no restart ever cleaned up. It was the
+		// only host-side thing this seam did not hand back: CloseAskGuard's own doc
+		// already claimed to run "at daemon shutdown", and until this call nothing
+		// in the product invoked it (measured: its only caller was a test).
+		//
+		// Called unconditionally rather than behind the askService check above: the
+		// guard is a PACKAGE-level singleton, reachable from AskGuardEnvironFor as
+		// well as through the Service, so the Service being nil does not mean no
+		// guard was built. It is a no-op when none ever was, and safe on a second
+		// call.
+		askorchicon.CloseAskGuard()
 		s.pool.Close()
 		s.shutdownOTel()
 		if errors.Is(err, http.ErrServerClosed) {

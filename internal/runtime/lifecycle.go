@@ -126,7 +126,7 @@ type Lifecycle struct {
 	// daemon applies ServeConfig only at container creation, so a config that
 	// varied per execution would make "whichever step created the container
 	// first" decide what every step sees.
-	serveConfigFor func(image, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution, providers []ProviderConfig) string
+	serveConfigFor func(image, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution, providers []ProviderConfig, workers []adapter.WorkerAgent) string
 	// secretsKEK is the plane-resolved 32-byte KEK for tenant secrets
 	// (resolved at server construction; nil disables secret injection).
 	secretsKEK []byte
@@ -177,7 +177,7 @@ type Lifecycle struct {
 // sandbox-scoped Orchicon MCP for dev images, and the plane-channel
 // Orchicon MCP on any image when the run's worker role grants it — built
 // by the opencode package).
-func NewLifecycle(client *Client, pool *db.Pool, log *slog.Logger, serveConfigFor func(image, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution, providers []ProviderConfig) string, secretsKEK []byte) *Lifecycle {
+func NewLifecycle(client *Client, pool *db.Pool, log *slog.Logger, serveConfigFor func(image, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution, providers []ProviderConfig, workers []adapter.WorkerAgent) string, secretsKEK []byte) *Lifecycle {
 	return &Lifecycle{client: client, pool: pool, log: log, serveConfigFor: serveConfigFor, secretsKEK: secretsKEK}
 }
 
@@ -252,6 +252,90 @@ func (l *Lifecycle) resolveRunUnion(ctx context.Context, run db.WorkflowRunRow) 
 	l.log.Info("run MCP union resolved", "run", run.ID,
 		"servers", mcpclient.ProvenanceString(res.Servers), "skills", len(res.Skills))
 	return res
+}
+
+// resolveRunWorkers returns the run's step workers as opencode agent definitions:
+// one per DISTINCT worker, each carrying the RUN-LEVEL part of that worker's
+// prompt (db.AgentSystemPrompt).
+//
+// WHY IT EXISTS. opencode 2.x has no per-message `system` field, so a worker's
+// prompt has to arrive through something opencode treats as a system prompt, and
+// measurement leaves exactly one candidate: the agent's `system` (see
+// adapter.WorkerAgent for the four channels tried). An agent's `system` is fixed
+// when the serve is configured and a serve hosts a whole RUN — so only the
+// run-level layers of the prompt (the shared stable prefix and the worker's own
+// identity block) belong here. The task, the context files and the execution
+// history vary per execution and stay on the per-execution message.
+//
+// COMPUTED FROM THE RUN, NEVER THE EXECUTING STEP — the same rule the MCP union
+// follows, for the same reason: the config is applied ONCE at container
+// creation, so a per-execution input would let whichever step created the
+// container decide what every step sees.
+//
+// Uses the SAME traversal as the adapter demand set (adapter.ResolveRunSteps), so
+// the agents and the boot profile cannot disagree about which workers a run has.
+//
+// A worker that resolves to nothing contributes NO agent, with a log line. An
+// agent entry with an empty prompt would be worse than absent: `system` REPLACES
+// opencode's base prompt, so an empty one would strip the worker's instructions
+// rather than fall back.
+func (l *Lifecycle) resolveRunWorkers(ctx context.Context, run db.WorkflowRunRow) []adapter.WorkerAgent {
+	if run.WorkflowID == "" {
+		return nil
+	}
+	ttx, err := l.pool.BeginTenantTx(ctx, run.TenantID)
+	if err != nil {
+		l.log.Warn("run agent workers: begin tx failed — the serve will carry no per-worker agents", "run", run.ID, "error", err)
+		return nil
+	}
+	defer func() { _ = ttx.Rollback(ctx) }()
+	wv, err := db.GetWorkflowVersion(ctx, ttx.Tx, run.TenantID, run.WorkflowID, run.WorkflowVersion)
+	if err != nil {
+		l.log.Warn("run agent workers: workflow version lookup failed", "run", run.ID, "error", err)
+		return nil
+	}
+	steps, err := workflow.ParseSteps(wv.Steps)
+	if err != nil {
+		l.log.Warn("run agent workers: workflow steps parse failed", "run", run.ID, "error", err)
+		return nil
+	}
+	resolved := adapter.ResolveRunSteps(ctx, ttx.Tx, run.TenantID, steps)
+
+	// The prompt's runtime-environment block is built from the RUN's image and the
+	// runtime mode, mirroring the composite: scheduler.runEffectiveImage resolves
+	// the same value for a run-driven composite, and a container implies runtime
+	// mode by construction (a local-mode project gets no container at all).
+	image := strings.TrimSpace(run.RuntimeImage)
+	if image == "" {
+		image = db.BaseRuntimeImage
+	}
+	mode := db.ExecutionModeRuntime
+
+	seen := make(map[string]struct{}, len(resolved))
+	out := make([]adapter.WorkerAgent, 0, len(resolved))
+	for _, r := range resolved {
+		if strings.TrimSpace(r.WorkerID) == "" {
+			continue
+		}
+		name := adapter.WorkerAgentName(r.WorkerID)
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		prompt := db.AgentSystemPrompt(r.Version, image, mode)
+		if strings.TrimSpace(prompt) == "" {
+			l.log.Warn("run agent workers: worker resolved to an empty prompt — omitted rather than emitted empty",
+				"run", run.ID, "worker", r.WorkerID)
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, adapter.WorkerAgent{Name: name, Prompt: prompt, Model: agentModelForServe(r.ModelRef)})
+	}
+	// Step order is the workflow's own order, so the result is already
+	// deterministic — it feeds the config bytes and therefore the pool key.
+	if len(out) > 0 {
+		l.log.Info("run agent workers resolved", "run", run.ID, "agents", len(out))
+	}
+	return out
 }
 
 // RunServeConfig implements opencode.RunServeConfigProvider: the RUN-LEVEL
@@ -388,7 +472,7 @@ func (l *Lifecycle) buildCreateRequest(ctx context.Context, run db.WorkflowRunRo
 	req.AdapterKinds = demand.Kinds()
 	if demand.Has(opencodeAdapterKind) {
 		req.ServeConfig = l.serveConfigFor(run.RuntimeImage, runWorktreeBase(ctx, projectDir, run.ID), run.ID, planeEnv,
-			l.resolveRunUnion(ctx, run), l.runContainerProviders(ctx, run.TenantID))
+			l.resolveRunUnion(ctx, run), l.runContainerProviders(ctx, run.TenantID), l.resolveRunWorkers(ctx, run))
 	}
 	// Secrets: decrypt per-work-item selection and inject as container env.
 	// KEK is plane-only — resolved once at server construction (env override
@@ -1019,4 +1103,27 @@ func (l *Lifecycle) Adopt(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// agentModelForServe renders a worker's model ref in the `provider/model` form an
+// opencode CONFIG takes, or "" when it cannot be rendered.
+//
+// THE ADAPTER SEGMENT MUST BE STRIPPED. A worker's model_ref is adapter/provider/model
+// (`opencode/opencode/muse-spark-1.3-contributor-free`) — the control plane's grammar,
+// not opencode's. Every other consumer converts it with adapter.SplitForServe before it
+// crosses that boundary, and a config's model field is exactly such a boundary. Passing
+// the raw ref put a THREE-segment string in an agent's `model`, which opencode cannot
+// parse as provider/model.
+//
+// EMPTY IS THE HONEST ANSWER for a ref that does not split, and it is safe: a session's
+// model is set separately on the SESSION (the prompt body on v1, session.switchModel on
+// v2), so an agent with no model inherits the session's — which is what a worker wants.
+// Omission is also what the v2 schema prefers: its model reference is pattern-validated,
+// so a malformed string is worse than an absent field.
+func agentModelForServe(modelRef string) string {
+	provider, model, ok := adapter.SplitForServe(modelRef)
+	if !ok || provider == "" || model == "" {
+		return ""
+	}
+	return provider + "/" + model
 }

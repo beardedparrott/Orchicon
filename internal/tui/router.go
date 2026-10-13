@@ -140,20 +140,25 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 		},
 		{
 			Name: "Ask transcript: find (search the transcript)", Keys: "ctrl+f", Scope: "global",
-			// CTRL+F IS FIND, THE UNIVERSAL CHORD — not attach. It searches the OPEN TRANSCRIPT, and it
-			// delegates to the SAME path /find uses (findInTranscript) so the two surfaces cannot drift;
-			// there is no new search UI here, only a chord onto the existing one (transcript_search.go).
+			// CTRL+F IS FIND, THE UNIVERSAL CHORD — not attach. It OPENS THE FIND BOX (findbox.go): the
+			// modal the operator types the term INTO. There is no second search implementation here, only a
+			// chord onto the one the box and /find <text> share.
 			//
-			// THE QUERY COMES FROM THE COMPOSER'S TEXT, because a terminal cannot open a search box: the
-			// operator types or pastes the term then presses ctrl+f, exactly the idiom the old attach route
-			// used for a path. A file is attached from the slash idiom the TUI already has — /attach <path>.
+			// IT USED TO TAKE ITS QUERY FROM THE COMPOSER, and that is the operator's report verbatim:
+			// "ctrl+f works odd. You have to first type what you want then hit ctrl+f. That's not very
+			// intuitive. I would prefer a modal pop up that you can type in your search." A terminal cannot
+			// open a dialog by itself, which is why it was shaped that way — but the two consequences were
+			// a find chord that did NOTHING from an empty composer (the state you are in while reading a
+			// transcript, and the only state a find is for) and a silently reused half-written message
+			// from a full one. The box answers both; /find <text> stays as the one-shot spelling for a term
+			// you already know, and a file is attached with /attach <path>.
 			//
 			// IT IS GLOBAL AND A COMPOSER BYPASS (see composerBypassKeys): it must fire from the content
 			// pane AND while the composer holds focus. The textarea's own ctrl+f (forward-char) would
 			// otherwise eat the key, which is why the bypass entry stays.
 			Match: keyMatcher("ctrl+f"),
 			Handle: func(m *App, _ tea.Msg) bool {
-				m.findInTranscript(m.dock.Value())
+				m.openFindBox()
 				return true
 			},
 		},
@@ -283,10 +288,22 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 		},
 		// THE ASK TRANSCRIPT'S SEARCH + JUMP KEYS, registered here so the `?` overlay
 		// names them (help renders FROM this registry; app_test asserts the parity).
-		// Each Handle is GATED on Ask-transcript CONTENT focus, so the binding is inert
-		// on every other screen and can never reach the composer — which consumes plain
-		// letters and Home/End as editing keys, so the gate is what keeps a search key
-		// from stealing a keystroke from typing. See transcript_search.go.
+		//
+		// THE GATE IS THE WHOLE DESIGN, AND IT IS NOT ONE GATE:
+		//
+		//   - n/N need a SEARCH to step and a keyboard that can spare a bare LETTER, so they
+		//     stay gated on Ask-transcript CONTENT focus. A letter in the composer is the
+		//     operator's message — the rule composerBypassKeys exists for — so a search key
+		//     must never reach it.
+		//   - home/end are NOT letters and have no other meaning on this pane, so they follow
+		//     transcriptJumpKeysActive: the transcript owns them from the content pane AND
+		//     while the COMPOSER is empty — where Home/End are no-ops in the textarea and
+		//     were being swallowed there. That is the operator's "the new home/end keys are
+		//     not jumping to the top or bottom of a conversation".
+		//
+		// Every one of them acts through the same helpers (jumpTranscriptKey /
+		// scrollTranscriptKey), so the chords, the find box and /find cannot drift. See
+		// transcript_search.go.
 		{
 			Name: "Ask transcript: next search match", Keys: "n", Scope: "global",
 			Match: keyMatcher("n"),
@@ -313,22 +330,14 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 			Name: "Ask transcript: jump to the first message", Keys: "home", Scope: "global",
 			Match: keyMatcher("home"),
 			Handle: func(m *App, _ tea.Msg) bool {
-				if !m.askTranscriptContentFocus() {
-					return false
-				}
-				m.jumpTranscriptTop()
-				return true
+				return m.jumpTranscriptKey("home")
 			},
 		},
 		{
 			Name: "Ask transcript: jump to the latest message", Keys: "end", Scope: "global",
 			Match: keyMatcher("end"),
 			Handle: func(m *App, _ tea.Msg) bool {
-				if !m.askTranscriptContentFocus() {
-					return false
-				}
-				m.jumpTranscriptBottom()
-				return true
+				return m.jumpTranscriptKey("end")
 			},
 		},
 	}
@@ -406,8 +415,8 @@ var composerBypassKeys = map[string]bool{
 	// without the bypass the find route would never receive the key.
 	//
 	//	ctrl+v — paste an image from the SYSTEM CLIPBOARD (a screenshot has no path to type)
-	//	ctrl+f — FIND IN TRANSCRIPT (the universal chord; it searches the open transcript for the
-	//	         composer's text — see the route above). A FILE is attached with the /attach <path>
+	//	ctrl+f — FIND IN TRANSCRIPT (the universal chord; it opens a find box over the open
+	//	         transcript — see the route above). A FILE is attached with the /attach <path>
 	//	         slash command, or by pasting a path.
 	"ctrl+v": true, "ctrl+f": true,
 	// ctrl+a selects the whole composer (see its route). It has to bypass the textarea for the same reason:
@@ -544,6 +553,30 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			m.help.open = false
 		}
 		return m, nil // overlay swallows keys
+	}
+	// THE FIND BOX OWNS THE KEYBOARD AND THE MOUSE WHILE IT IS UP — AND NOTHING ELSE.
+	//
+	// IT IS CLAIMED HERE, ahead of every other modal, every screen claim and every route, because its
+	// whole surface is a text field: a bare letter in a find term is a CHARACTER, and the letters that
+	// are chords everywhere else ('q' quits, 'n' steps through matches, '/' opens the slash palette)
+	// must land in the box. A modal that could be pre-empted would be a find box that sometimes types
+	// and sometimes does something else — and searching for "query" would quit the shell.
+	//
+	// IT DOES NOT SWALLOW ASYNC MESSAGES, and that asymmetry is deliberate: a turn can be streaming
+	// behind the box, and a modal that ate the chat waiter's messages would freeze the transcript —
+	// including the box's own match count — for the rest of the session. See the conversation-scope
+	// modal's note: a modal must hide a surface, not suspend the shell.
+	if m.findBox != nil {
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			if handled, cmd := m.findBoxKey(msg); handled {
+				return m, cmd
+			}
+			// The keys the box does NOT take are the shell's hard escapes (ctrl+c quits, ctrl+g returns
+			// to the composer), left to the chain below on purpose — see findBoxKey.
+		case tea.MouseMsg:
+			return m, nil
+		}
 	}
 	// The /models picker overlay owns EVERY key and the mouse while it is open:
 	// it is layered above the composer, so a keystroke aimed at the picker can
@@ -1023,6 +1056,27 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 						return m.passToScreen(msg)
 					}
 				}
+				// THE TRANSCRIPT'S NAVIGATION KEYS, FROM THE COMPOSER.
+				//
+				// The operator: "In the TUI the new home/end keys are not jumping to the top or bottom of a
+				// conversation." The chords WERE registered and they DID work — from CONTENT focus, which is
+				// not where the operator is. The launch focus is the COMPOSER (NewApp), because that is where
+				// you type; an empty composer's Home/End/arrows are pure no-ops in the textarea, yet the
+				// textarea consumes EVERY key it is handed, so the routes never saw them at all. Measured
+				// with a parked 80-line transcript: from the composer, home, end, up, down, pgup and pgdown
+				// all left the offset at 35; from the content, home->0, end->70, up/down +/-3, pgup/pgdown
+				// +/-12.
+				//
+				// So an EMPTY COMPOSER yields them now — which is the rule this branch ALREADY applies to the
+				// rail's arrows ("Empty composer: the vertical keys drive the conversation list ... otherwise
+				// they scroll the active pane's detail"); that rule was simply never finished for the
+				// conversation, so an empty composer with the conversation selected was a dead keyboard for
+				// every navigation key. With a DRAFT the textarea keeps them, because there they are real
+				// editing keys: home is the only line-start chord left on a draft (ctrl+a is the shell's
+				// select-all). See transcriptNavKey.
+				if m.transcriptNavKey(k.String()) {
+					return m, nil
+				}
 			}
 			if composerBypassKeys[k.String()] {
 				// structural chord: skip the composer, the routes below
@@ -1154,12 +1208,8 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		// transcript had no keyboard scroll at all: the rail claimed these keys whenever it
 		// was visible — which is whenever a conversation is open — so the operator's only way
 		// to read back through a long reply was the mouse wheel.
-		if m.active == TabAsk && m.askPane == askPaneConversation && m.chatConvID != "" {
-			if d := scrollKeyDelta(k.String()); d != 0 {
-				m.ScrollTranscript(d)
-				m.onChatWake() // keep the scroll indicator honest
-				return m, nil
-			}
+		if m.scrollTranscriptKey(k.String()) {
+			return m, nil
 		}
 	}
 	// Defer to the active screen — but ONLY once the content actually holds focus.

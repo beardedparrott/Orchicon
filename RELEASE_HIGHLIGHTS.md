@@ -15,6 +15,88 @@
 > tells the tooling which version these highlights describe; update it
 > when you cut.
 
+## v0.5.37
+
+### New: OpenCode 2.x
+Orchicon runs on the current opencode, and on the previous one. The version is chosen automatically from
+the serve's own reported version, so an install you already have keeps working and a fresh one is not held
+back. The two are **different wire protocols**, not two settings on one, and what that cost was almost
+entirely invisible: a run against 2.x could **not finish at all**, because the vocabulary its event stream
+uses is not the one the platform was reading, so the end of a turn looked exactly like the middle of one.
+Nothing errored — the turn simply never completed. Alongside it, the telemetry classifiers were reading 1.x
+part names, which meant a **working** 2.x run could be killed as a stalled one: real work, stopped for the
+wrong reason. Both are fixed, unknown event shapes are passed through rather than dropped, and a worker's
+model reference now reaches the runtime in the form it expects.
+
+### New: a runtime container that can start an adapter
+`serve handshake: exit status 1`, on every workflow execution using the opencode adapter. The runtime was
+never the problem: Docker creates a bind mount's missing parents **as root**, `$HOME` among them, so the
+container's own home directory was root-owned and the adapter could not create anything under it. That broke
+**both** opencode versions, with a different error each (`EACCES` on `.cache` for 1.x, an unwritable data
+home for 2.x), and neither appeared in the daemon's own logs. The mount shape is fixed, and the failure that
+had been reporting itself as a warning nobody read is now impossible.
+
+### New: install and WSL, finished
+The adapter CLI has to be installed as your own user, and inside WSL on Windows. That is not a preference:
+a standalone dispatch runs on the plane and sees your `PATH`, while a workflow run executes in its own
+container that sees only the adapter paths mounted under your home directory. A system-wide `sudo npm i -g`
+is invisible to every workflow run, and a Windows-side install is reachable through WSL interop — which is
+what makes it *look* installed while nothing can use it. The guide now states the rule, the reason, and a
+per-install-method table of what each one can actually reach.
+
+Related: "where opencode lives" was resolved in six places and they disagreed. Only model *discovery*
+honoured `ORCHICON_OPENCODE_BIN`, the very variable the plane's error message tells you to set — so an
+operator who **followed the instruction** fixed discovery and left execution pointing at a different binary
+or none, with the failure surfacing somewhere else entirely. There is now one resolver, and an override that
+names nothing is refused rather than silently ignored.
+
+### New: `orchicon restart`
+There is now a command that restarts a plane, and it says so. A plane captures its environment **when it
+starts**, so installing an adapter CLI afterwards changed nothing until it restarted — and `orchicon install`
+deliberately does not restart a plane that is already healthy on the installed binary. The only way to
+refresh it was `serve --stop` followed by an install: a restart in disguise, nested under a command about
+serving, named as neither, and absent from `--help` altogether.
+
+### New: WSL renders the themes' real colour
+Every dark theme showed **black** instead of its tint, and the palette was never the problem. The 256-colour
+cube's first non-zero level is 95/255, so its **only** dark entries are greys — every dark ground in every
+theme quantises to black, and no amount of lightening fixes it. Windows Terminal does 24-bit colour but does
+not reliably **advertise** it into a WSL shell, and rendering follows the advertisement. Orchicon now
+supplies it, in-process, where it can reach the TUI. `COLORTERM=yes` still pins 256-colour and
+`ORCHICON_TRUECOLOR=0` turns it off.
+
+### New: the execution diff shows your work
+The diff panel for a workflow execution had recorded **nothing, ever**. Across two thousand executions, not
+one row — for two independent reasons, both invisible. The reconciler read the **working tree** while the
+worker is instructed to commit everything (so a tidy tree read as "no changes"), and each file's "before"
+side was read from `HEAD` — which for a committed run *is* the change you are trying to see. Committed
+changes are now reconciled from the run's fork point, and the panel stopped hiding the tail of a long line
+behind an ellipsis.
+
+### New: find, and navigate, from where you actually are
+`ctrl+f` in the TUI opens a search box you type into, filtering the conversation as you go. The match count
+is in front of you, `enter` keeps the search and hands the keyboard to the transcript, and `esc` puts back
+the view you had. The old shape asked you to type the term in the message box and *then* press `ctrl+f`,
+which did nothing at all from an empty composer — the state you are in while reading — and silently turned a
+half-written message into a search term. The transcript's navigation keys (`home`, `end`, arrows,
+`PgUp`/`PgDn`) now work from the composer too, which is where you are; before, they only worked after you
+had clicked into the conversation, and an empty box swallowed them.
+
+On a keyboard whose `home` and `end` are `fn`+arrow, those keys used to type the literal text **"OH"**. The
+sequence such a keyboard sends is one the terminal library does not decode, so it arrived as two ordinary
+characters. Fixed, and proven in a real terminal.
+
+### Also in this release
+- **The transcript stops yanking you back to the bottom.** Scrolling up, or jumping to the top, held: live replies no longer snap the view down.
+- **Page 2 of every runs list works.** The pagination cursor sat in the wrong position, so a list's second page failed to parse while the first looked fine.
+- **One log line per 200ms tick was 99.5% of all log volume.** It is a debug line now.
+- **`orchicon serve` names the directory it cannot write**, instead of calling a fine policy file invalid.
+- **The connection screen opens on username and password.** An API key cannot be had until you have logged in, so the TUI stopped asking for one.
+- **The default theme is Forest in both clients**, and Teal Depths is three points lighter — a dark ground should read as tinted, not black.
+- **A rejected tool call keeps its reason.** The refusal was discarded before anyone read it, leaving a failed command with nothing to act on.
+- **Rebuilt code can no longer be left serving.** A rebuild replaces the binary; a launcher that took "something answers on the port" as current left the old process running the superseded build.
+- **A workspace's todo list survives the run**, and the transcript's changed-file list stops going blank mid-turn.
+
 ## v0.5.16
 
 ### New: a permission card you can finally answer

@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -110,35 +111,6 @@ func TestHostServePoolCredentialsDistinguishServes(t *testing.T) {
 	}
 }
 
-// TestHostServePoolCapRefusesLoudly proves the cap: a NEW key beyond the cap
-// is refused with an error NAMING the set, and a LIVE serve is never evicted.
-func TestHostServePoolCapRefusesLoudly(t *testing.T) {
-	t.Setenv("ORCHICON_HOST_SERVE_POOL_CAP", "2")
-	p := NewHostServePool(slog.Default(), t.TempDir(), "", ProfileWorker)
-	ctx := context.Background()
-	if _, err := p.ServeFor(ctx, testResolution("one")); err != nil {
-		t.Fatalf("one: %v", err)
-	}
-	if _, err := p.ServeFor(ctx, testResolution("two")); err != nil {
-		t.Fatalf("two: %v", err)
-	}
-	_, err := p.ServeFor(ctx, testResolution("three"))
-	if err == nil {
-		t.Fatalf("expected a loud refusal beyond the cap")
-	}
-	if !strings.Contains(err.Error(), "three") {
-		t.Fatalf("the refusal must NAME the set that could not be served: %v", err)
-	}
-	// The existing serves are untouched (no eviction mid-session).
-	if p.Size() != 2 {
-		t.Fatalf("expected the live serves to survive, got %d", p.Size())
-	}
-	// An ALREADY-KEYED set still resolves at the cap.
-	if _, err := p.ServeFor(ctx, testResolution("one")); err != nil {
-		t.Fatalf("an existing key must still resolve at the cap: %v", err)
-	}
-}
-
 // TestHostServePoolAdoptsDefaultServe proves the empty set reuses the
 // ALREADY-CONSTRUCTED default serve the plane holds — not a second manager
 // over the same data dir.
@@ -178,4 +150,45 @@ func TestHostServePoolInteractiveProfileKeepsItsOwnServes(t *testing.T) {
 		t.Fatalf("the permission profile must be part of the pool key")
 	}
 	_ = worker
+}
+
+// TestHostServePoolHasNoCap is the assertion for the REMOVED cap, and it exists so a
+// future reader does not re-add one without reading why it went.
+//
+// The cap refused a NEW key beyond a fixed capacity (default 4). Its key space is the
+// tenant's DISTINCT PROJECT MCP SETS — a normal, slowly-changing number — and the
+// development tenant holds eighteen MCP definitions across seventeen projects, so the
+// cap refused ordinary work rather than guarding a pathological case. A bound that
+// legitimate configuration trips is worse than the resource it was bounding.
+//
+// So the pool now serves EVERY distinct set, and the number below (well past any
+// former cap) must all be served. If someone reintroduces a cap, this fails and points
+// them at the reasoning; if they reintroduce one deliberately, the honest thing is to
+// bound the LIVE serve count by EVICTION rather than by refusing new sets.
+func TestHostServePoolHasNoCap(t *testing.T) {
+	p := NewHostServePool(slog.Default(), t.TempDir(), "", ProfileWorker)
+	ctx := context.Background()
+	const sets = 24 // comfortably past the old default of 4, and past the tenant's 17
+	for i := 0; i < sets; i++ {
+		set := testResolution(fmt.Sprintf("set-%02d", i))
+		if _, err := p.ServeFor(ctx, set); err != nil {
+			t.Fatalf("set %d of %d was refused — there must be no cap: %v", i+1, sets, err)
+		}
+	}
+	if p.Size() != sets {
+		t.Errorf("pool holds %d serves, want one per distinct set (%d)", p.Size(), sets)
+	}
+}
+
+// TestHostServePoolKeyIsTheSetAlone pins that WORKERS are not part of the key. They
+// briefly were, so each worker's agent could be baked into a host serve — but a
+// worker's agent prompt embeds the RUN's image while a host serve is per SET and
+// long-lived, so the key multiplied to (set x worker x image) for a token saving on the
+// in-process path only. The container path builds a serve per RUN instead, which is
+// where a prompt-carrying agent belongs.
+func TestHostServePoolKeyIsTheSetAlone(t *testing.T) {
+	// The key's signature IS the assertion: it takes no workers, so there is nothing
+	// for a caller to vary. A compile-time property, deliberately — it cannot regress
+	// by someone forgetting to pass them.
+	var _ func(PermissionProfile, mcpclient.Resolution) string = hostServeSetKey
 }

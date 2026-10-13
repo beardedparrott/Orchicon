@@ -160,6 +160,9 @@ func (a *Adapter) followUpSession(ctx context.Context, opts ContinueSessionOpts)
 		// resolving without pretending the URL identifies the transport.
 		if opts.ServeURL != "" && opts.SessionID != "" {
 			orig := NewSessionClient(opts.ServeURL, opts.ServePassword, opts.ProjectDir)
+			// This client reaches a serve that recorded only a URL, but it is still THIS plane's
+			// opencode, so the adapter's resolved shape applies.
+			orig.setAPIShape(a.apiShape())
 			if orig.Healthy(ctx) {
 				return orig, opts.SessionID, true, nil
 			}

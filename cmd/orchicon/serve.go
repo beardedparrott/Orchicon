@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -332,6 +333,27 @@ func serveForeground() int {
 	// than no file at all, because the operator believes the exclusions are
 	// in force. Failing loud is the only safe reading.
 	if err := permpolicy.Boot(cfg.PermissionPolicyPath); err != nil {
+		// TWO DIFFERENT FAILURES REACH HERE, and conflating them sends the operator to the wrong
+		// place. A MALFORMED file is a policy problem — "invalid permission policy" plus the path
+		// and the parse error, which is the loud failure the comment above is about, and which a
+		// malformed-policy boot test pins. An UNWRITABLE DATA DIRECTORY is an environment problem:
+		// the policy is not at fault and may not even exist yet, so reporting it this way sent an
+		// operator to inspect a file that was fine.
+		//
+		// THE REPORTED CASE: `orchicon serve` run by hand in WSL. DataDir then defaults to
+		// /var/lib/orchicon, which is right INSIDE the container image and needs root on the host —
+		// where the installer supplies a per-instance directory instead. The message below names
+		// the directory that is actually wrong, because that is the thing to change.
+		if errors.Is(err, fs.ErrPermission) {
+			log.Error("the data directory is not writable, so the permission policy cannot be stored",
+				"data_dir", cfg.DataDir,
+				"path", cfg.PermissionPolicyPath,
+				"error", err,
+				"fix", "set ORCHICON_DATA_DIR to a writable directory, or start the plane the way the "+
+					"installer does (`orchicon install` sets it per instance). Running `serve` by hand "+
+					"on the host falls back to a root-only data directory.")
+			return 1
+		}
 		log.Error("invalid permission policy", "path", cfg.PermissionPolicyPath, "error", err)
 		return 1
 	}

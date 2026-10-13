@@ -3,6 +3,7 @@ package opencode
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -91,6 +92,15 @@ type sessionRun struct {
 	toolTrackName   string
 	toolTrackAt     time.Time
 	toolInFlightNow bool
+	// v2Tools remembers what 2.x announces in SEPARATE events from the one that
+	// resolves a call: the tool NAME (session.tool.input.started) and its INPUT
+	// (session.tool.called). The resolution carries only the call id, so this map is
+	// what lets a 2.x tool card show its name and, more importantly, keeps the
+	// repetition signature per-CALL rather than per-tool (with no input, every call
+	// of one tool shares a signature and a busy worker trips the repetition stall).
+	// Entries are consumed and deleted on resolution, so it holds only in-flight
+	// calls. Guarded by hangMu.
+	v2Tools map[string]v2ToolAnnounce
 	// workStarted (probe-startup guard, 2026-09-09): set true the first
 	// time the session produces WORK evidence — a tool call or any
 	// substantive text output (a non-empty completed text part beyond a
@@ -370,7 +380,12 @@ func (r *sessionRun) actuateToolHang(tool string) {
 // previous slot — only the longest/single in-flight call is tracked.
 func (r *sessionRun) observeToolStart(name string) {
 	r.hangMu.Lock()
-	r.toolTrackName = name
+	// A v2 `session.tool.called` start carries NO name (2.x puts it on
+	// input.started), so an empty one must not erase a name already remembered —
+	// the eventual hang/redirect message would lose its noun.
+	if name != "" {
+		r.toolTrackName = name
+	}
 	r.toolTrackAt = time.Now()
 	r.toolInFlightNow = true
 	// First tool call = the session has demonstrably begun its work. The
@@ -430,6 +445,70 @@ func (r *sessionRun) lastToolName() string {
 		return "unknown"
 	}
 	return r.toolTrackName
+}
+
+// v2ToolAnnounce is what 2.x tells us about a tool call BEFORE it resolves: the
+// name (from session.tool.input.started) and the input (from session.tool.called).
+type v2ToolAnnounce struct {
+	name  string
+	input any
+}
+
+// rememberV2Tool records what a 2.x tool event announced, ignoring absent fields
+// so the separate events ACCUMULATE rather than overwrite one another.
+func (r *sessionRun) rememberV2Tool(id, name, input any) {
+	sid, _ := id.(string)
+	if sid == "" {
+		return
+	}
+	r.hangMu.Lock()
+	defer r.hangMu.Unlock()
+	if r.v2Tools == nil {
+		r.v2Tools = map[string]v2ToolAnnounce{}
+	}
+	cur := r.v2Tools[sid]
+	if n, _ := name.(string); n != "" {
+		cur.name = n
+	}
+	if input != nil {
+		cur.input = input
+	}
+	r.v2Tools[sid] = cur
+}
+
+// fillV2Tool applies the remembered name and input to a resolved 2.x tool_use part
+// and forgets the entry (so the map holds only in-flight calls). A no-op for
+// anything that is not a tool_use, and for a v1 tool part that already carries
+// both.
+func (r *sessionRun) fillV2Tool(legacy map[string]any) {
+	if t, _ := legacy["type"].(string); t != evtToolUse {
+		return
+	}
+	part, _ := legacy["part"].(map[string]any)
+	if part == nil {
+		return
+	}
+	sid, _ := part["callID"].(string)
+	if sid == "" {
+		return
+	}
+	r.hangMu.Lock()
+	ann, ok := r.v2Tools[sid]
+	if ok {
+		delete(r.v2Tools, sid)
+	}
+	r.hangMu.Unlock()
+	if !ok {
+		return
+	}
+	if _, has := part["tool"]; !has && ann.name != "" {
+		part["tool"] = ann.name
+	}
+	if state, _ := part["state"].(map[string]any); state != nil {
+		if _, has := state["input"]; !has && ann.input != nil {
+			state["input"] = ann.input
+		}
+	}
 }
 
 // toolHangRedirectMessage builds the course-correcting redirect injected
@@ -668,6 +747,25 @@ func (r *sessionRun) run() error {
 	}
 	r.sessionID = sid
 	r.a.log.Info("opencode session created", "execution", r.execRow.ID, "session", sid, "serve", client.BaseURL())
+	// Switch the session to THIS execution's worker agent. On 2.x that is what carries the
+	// worker's run-level prompt (see adapter.WorkerAgent); on v1 it is a no-op and the prompt
+	// travels in the goal message instead.
+	//
+	// THE RESULT GATES THE MESSAGE TRIM BELOW, and that coupling is the safety property here: the
+	// prefix may only be removed from the message when the agent that carries it is actually in
+	// force. A failed selection falls back to the serve's default agent — the tool shell, which
+	// does NOT carry the worker's identity — so trimming there would DELETE those instructions
+	// rather than move them. Logged rather than swallowed for the same reason.
+	agentPromptCarried := false
+	if client.AgentSelectionSupported() {
+		agentName := adapter.WorkerAgentName(r.manifest.WorkerID)
+		if aerr := client.SelectAgent(r.parentCtx, sid, agentName); aerr != nil {
+			r.a.log.Warn("opencode session agent select failed — the worker runs on the serve's default agent and the message keeps the full prompt",
+				"execution", r.execRow.ID, "session", sid, "agent", agentName, "error", aerr)
+		} else if agentName != "" {
+			agentPromptCarried = true
+		}
+	}
 	// Persist the opencode session identity so the UI can show which
 	// serve/session a worker ran on (troubleshooting + follow-up seed).
 	// adapter_kind records WHICH ADAPTER the session belongs to, so a
@@ -746,8 +844,18 @@ func (r *sessionRun) run() error {
 
 	r.callbacks.OnStarted(r.parentCtx, r.execRow.ID)
 
-	// The goal is the first user message of the session.
-	if err := client.SendMessage(r.parentCtx, sid, r.system, r.modelRef, r.manifest.Goal); err != nil {
+	// The goal is the first user message of the session — AND ON A SURFACE WITH NO `system` FIELD IT
+	// IS ALSO WHERE THE SYSTEM PROMPT IS DELIVERED. A session is always CREATED immediately above, so
+	// this is genuinely the first message and the prompt cannot already be present (unlike the
+	// follow-up path, which attaches to an existing session and must not re-send it).
+	//
+	// The RUN-LEVEL prefix travels here ONLY when the agent selected above did not take it: if the
+	// agent carries it, it is trimmed off so the same text is not sent twice.
+	goalSystem := r.system
+	if agentPromptCarried {
+		goalSystem = trimCarriedAgentPrompt(r.a.log, r.execRow.ID, goalSystem, r.manifest.AgentPromptLen)
+	}
+	if err := client.SendMessageCarryingSystem(r.parentCtx, sid, goalSystem, r.modelRef, r.manifest.Goal); err != nil {
 		_ = client.Abort(r.parentCtx, sid)
 		return fmt.Errorf("send goal: %w", err)
 	}
@@ -788,7 +896,12 @@ func (r *sessionRun) run() error {
 
 // handleEvent routes one SSE bus event for this session.
 func (r *sessionRun) handleEvent(evt BusEvent) {
-	if sid, _ := evt.Properties["sessionID"].(string); sid != "" && sid != r.sessionID {
+	// Props(), NOT Properties: the props live under `properties` on v1 and under `data` on v2, and
+	// reading the wrong one yields an EMPTY map rather than an error. On the session filter that is
+	// the difference between "ignore another session's events" and "process them", so it is a
+	// correctness matter, not a tidiness one.
+	props := evt.Props()
+	if sid, _ := props["sessionID"].(string); sid != "" && sid != r.sessionID {
 		return
 	}
 	r.mu.Lock()
@@ -798,29 +911,32 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 	case "permission.asked":
 		// Auto-approve (the server-side --auto equivalent) so tool calls
 		// never block an unattended execution.
-		if pid, _ := evt.Properties["id"].(string); pid != "" {
+		if pid, _ := props["id"].(string); pid != "" {
 			go func() { _ = r.client.ReplyPermission(r.parentCtx, r.sessionID, pid) }()
 		}
 		return
-	case "session.idle":
-		// The server emits idle only when its per-session queue has fully
-		// drained — EVERY message we sent (goal, nudges, human) has been
-		// answered. This is the completion signal (a single user message
-		// can span multiple steps/tool loops, so step-finish alone is not
-		// a turn boundary).
-		r.mu.Lock()
-		r.lastIdleAt = time.Now()
-		r.mu.Unlock()
-		r.resolveProbe()
-		if r.maybeProbeCompletion() {
-			return
-		}
-		r.allTurnsDone()
-		return
 	case "session.status":
-		// Lifecycle signal; completion is tracked via session.idle.
+		// Lifecycle signal. The turn's END is a terminal event, not this.
 		return
-	case "session.error":
+	}
+	// THE TURN'S TERMINAL EVENTS, ON EITHER SURFACE — and the vocabulary lives in ONE
+	// place (terminalTurnKind) rather than in these arms, because that is what makes it
+	// checkable. A turn ends when the serve's per-session queue has fully drained, so
+	// EVERY message we sent (goal, nudges, human) has been answered.
+	//
+	// v1 says so with `session.idle` and reports a failure with `session.error`; v2 says
+	// so with `session.execution.succeeded` and reports a failure with
+	// `session.execution.failed` / `session.step.failed`, and NEVER emits a bare
+	// `session.idle` (measured on 2.0.26). Knowing only the v1 verbs is what hung a 2.x
+	// execution: the turn ended, nothing here recognised it, and the run waited for a
+	// signal that surface does not send — for a SUCCESSFUL turn as much as a failed one.
+	// Its text and tool parts still arrived through LegacyEventFromBus, which is why such
+	// a run looks alive and productive in its transcript while never finishing.
+	switch terminalTurnKind(evt.Type) {
+	case turnEnd:
+		r.turnEnded()
+		return
+	case turnFailure:
 		r.recordStreamError(evt)
 		return
 	}
@@ -861,10 +977,21 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 	// the watchdog that exists to interrupt exactly that hang (D6 review
 	// finding). The resolution — the completed/error legacy event — disarms
 	// it below.
+	// 2.x announces a tool call across THREE events: its NAME on
+	// session.tool.input.started, its INPUT on session.tool.called, and only its id
+	// when it resolves. Remember whatever arrived so the resolved tool_use can carry
+	// a name and an input (see v2ToolLegacyEvent / fillV2Tool).
+	switch evt.Type {
+	case "session.tool.input.started":
+		r.rememberV2Tool(props["id"], props["name"], nil)
+	case "session.tool.called":
+		r.rememberV2Tool(props["id"], nil, props["input"])
+	}
 	if tool, isStart := ToolStartFromBus(evt); isStart {
 		r.observeToolStart(tool)
 	}
 	if legacy, ok := LegacyEventFromBus(evt); ok {
+		r.fillV2Tool(legacy)
 		// ANY telemetry activity (text/tool/step/reasoning) after a probe
 		// is evidence the worker is alive — resolve the probe and revive
 		// without waiting for a full turn (the false-positive case: an
@@ -1108,7 +1235,11 @@ func (r *sessionRun) settleFinish() {
 // top-level error.message is absent so the failure reason is diagnosable
 // instead of a generic "opencode session error".
 func sessionErrorMessage(evt BusEvent) string {
-	if errObj, ok := evt.Properties["error"].(map[string]any); ok {
+	// Props(), NOT Properties — see handleEvent: on v2 the props live under `data`, so reading
+	// Properties here would lose the reason and report a generic "opencode session error" for
+	// exactly the failures an operator most needs named.
+	props := evt.Props()
+	if errObj, ok := props["error"].(map[string]any); ok {
 		if m, ok2 := errObj["message"].(string); ok2 && m != "" {
 			return m
 		}
@@ -1528,7 +1659,11 @@ func (r *sessionRun) doCompact(steps int, reason string) {
 // sendAfterCompactReminder re-states the summary contract + todowrite
 // obligation after a lossy compact so the resumed turns finish correctly.
 func (r *sessionRun) sendAfterCompactReminder(steps int) {
-	if err := r.client.SendMessage(r.parentCtx, r.sessionID, r.system, r.modelRef, afterCompactReminderText); err != nil {
+	// CARRIES THE SYSTEM PROMPT, and after a compact that is the point of it. A compact summarizes the
+	// conversation away — including the first message the prompt travelled in on — so without
+	// re-stating it the resumed turns run with no standing instructions while appearing to continue
+	// normally. One extra copy per compact is the accepted cost; a silently un-prompted worker is not.
+	if err := r.client.SendMessageCarryingSystem(r.parentCtx, r.sessionID, r.system, r.modelRef, afterCompactReminderText); err != nil {
 		r.a.log.Warn("post-compact reminder send failed (best-effort)",
 			"execution", r.execRow.ID, "error", err)
 		return
@@ -2097,4 +2232,69 @@ func (r *sessionRun) finish(ok bool, errMsg string) {
 		r.subCancel()
 	}
 	close(r.done)
+}
+
+// trimCarriedAgentPrompt removes the run-level prompt prefix from the message when
+// the selected agent already carries it.
+//
+// THE LENGTH IS EXACT FOR A COMPOSITE THIS PLANE BUILT — it is recorded by the very
+// builder that assembled the prompt — and it is still VERIFIED here, because a trim
+// that lands in the wrong place silently deletes the beginning of the task. The
+// remainder must begin with the task section the builder always writes next; on any
+// mismatch the FULL prompt is sent. The two failures are not equivalent: a
+// duplicated prefix costs tokens, a truncated one costs the worker its instructions.
+func trimCarriedAgentPrompt(log *slog.Logger, execID, system string, n int) string {
+	if n <= 0 || n >= len(system) {
+		return system
+	}
+	rest := system[n:]
+	if !strings.HasPrefix(rest, "# Task") {
+		log.Warn("agent prompt length did not line up with the composite — sending the full prompt",
+			"execution", execID, "agent_prompt_len", n)
+		return system
+	}
+	return rest
+}
+
+// turnEnd and turnFailure are the two terminal classes an opencode stream can end on,
+// and terminalTurnKind is the ONE table mapping a raw event type to them.
+//
+// WHY A TABLE RATHER THAN SWITCH ARMS. The bug this was written for was a terminal event
+// that every consumer needed and one consumer's switch silently lacked: v1 ends a turn
+// with `session.idle` and reports a failure with `session.error`, v2 ends one with
+// `session.execution.succeeded` and reports a failure with `session.execution.failed` or
+// `session.step.failed` — and the runner knew only the v1 verbs. A 2.x execution therefore
+// never learned its turn had ended, for a successful turn as much as a failed one, and the
+// visible symptom was a run that looked productive (its text and tool parts flowed) and
+// never finished. A missing switch arm is invisible; a missing table row is a failing test
+// (TestTerminalEventsAreClassified).
+//
+// MEASURED against 2.0.26 and 1.18.34. Adding a surface's verb HERE is what makes it work:
+// the runner consumes this function, so there is no second place to remember.
+const (
+	turnEnd     = "end"
+	turnFailure = "failure"
+)
+
+func terminalTurnKind(evtType string) string {
+	switch evtType {
+	case "session.idle", "session.execution.succeeded":
+		return turnEnd
+	case "session.error", "session.execution.failed", "session.step.failed":
+		return turnFailure
+	}
+	return ""
+}
+
+// turnEnded is the shared handling for a turn-end signal, so the arm that acts on it has
+// exactly one implementation.
+func (r *sessionRun) turnEnded() {
+	r.mu.Lock()
+	r.lastIdleAt = time.Now()
+	r.mu.Unlock()
+	r.resolveProbe()
+	if r.maybeProbeCompletion() {
+		return
+	}
+	r.allTurnsDone()
 }

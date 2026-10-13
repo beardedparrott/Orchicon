@@ -75,12 +75,87 @@ environment variables, troubleshooting), see [`ARCHITECTURE.md`](./ARCHITECTURE.
 > engine runs sessions inside the control plane, so a fresh install is complete
 > with **no adapter CLI present** — nothing is probed for, and nothing fails. If
 > you want to run work on OpenCode — or on the **Claude** adapter (provider
-> `anthropic`), which authenticates with your own host claude.ai login — install
-> it **on the host** and, for Claude, sign in there once. The CLI is bind-mounted
-> into the containers at runtime and resolved from `PATH` (`~/.opencode/bin` for
-> OpenCode, `~/.local/bin` for Claude). The images contain no adapter binary,
-> which keeps the product redistributable regardless of an adapter's licence
-> (Claude Code's terms, for example, prohibit bundling it with a product).
+> `anthropic`), which authenticates with your own claude.ai login — you install it
+> yourself, and **where you install it matters**: see
+> [Installing an adapter CLI](#installing-an-adapter-cli) below. The images contain
+> no adapter binary, which keeps the product redistributable regardless of an
+> adapter's licence (Claude Code's terms, for example, prohibit bundling it with a
+> product).
+
+### Installing an adapter CLI
+
+**Install it as your own user — never with `sudo`, and on Windows not on the
+Windows side.** Both rules come from one fact: Orchicon runs work in **two
+places**. A standalone dispatch runs on the **plane**, which sees your `PATH`. A
+**workflow run** is executed in its own **runtime container**, which sees only what
+Orchicon bind-mounts into it — the adapter paths under your home directory listed
+below. So an install outside your home works in your shell, and for standalone
+dispatches, and **fails for every workflow run**.
+
+| How you installed it | Your shell | The plane | Workflow-run containers |
+|---|---|---|---|
+| Official installer → `~/.opencode/bin` | ✅ | ✅ | ✅ **use this** |
+| `npm`/`bun` global **in your home** (`~/.npm-global/bin`, `~/.bun/bin`, an `nvm` prefix under `~/.nvm`) | ✅ | ✅ | ❌ |
+| `sudo npm i -g` → `/usr/local/bin` | ✅ | ⚠️ if the plane's `PATH` reaches it | ❌ |
+| A Windows install (`opencode.exe`) | ⚠️ through WSL interop | ❌ | ❌ |
+
+Orchicon resolves the binary in this order: `ORCHICON_OPENCODE_BIN`, then `PATH`,
+then `~/.opencode/bin`, `~/.local/bin`, `~/.npm-global/bin`, `~/.bun/bin`. **Only
+the first of those home locations is mounted into workflow-run containers**, which
+is why it is the one to use.
+
+#### OpenCode
+
+```bash
+curl -fsSL https://opencode.ai/install | bash
+```
+
+That writes `~/.opencode/bin/opencode` — the one location that both the plane *and*
+its runtime containers can use.
+
+**Do not install it with `sudo`.** `sudo npm i -g opencode` writes to root's npm
+prefix, normally `/usr/local/bin`, and no container mounts that path. The binary
+then sits on your `PATH` in the shell while every workflow run fails to find it.
+The plane warns about exactly this at startup:
+
+```
+opencode resolves to a path the runtime containers cannot see — workflow-run executions will not find it
+```
+
+**On Windows, install it inside WSL.** The whole stack runs in a WSL2 distro (see
+[One-line install (Windows PowerShell)](#one-line-install-windows-powershell--via-wsl2)),
+so the CLI has to be in that same distro. A Windows `opencode.exe` is reachable
+from a WSL shell through interop, which makes it look installed — it is not usable
+by the plane or its containers. Inside the distro, run the command above as your
+own user.
+
+**If you install it while the plane is already running**, note that the discovery
+of OpenCode's models and MCP servers happens **at plane startup**. A plane that
+booted before the CLI existed keeps reporting `model discovery is not configured`,
+so install the CLI and then **restart the plane** with `orchicon restart` — the
+model picker's adapter tier will then list the OpenCode models. (`orchicon install`
+will *not* do it: it is idempotent and deliberately leaves a healthy plane alone, so
+the only other way was `serve --stop` and an install.) *Dispatched work* does not need
+the restart: the adapter resolves the binary when it dispatches.
+
+**Escape hatch.** If the CLI lives somewhere unusual, point Orchicon at it rather
+than moving it:
+
+```bash
+export ORCHICON_OPENCODE_BIN=/path/to/opencode     # must be an existing file
+export ORCHICON_CLAUDE_BIN=/path/to/claude
+```
+
+A value that does not exist is reported as a **wrong variable**, not as a missing
+CLI — a typo in the path says so instead of sending you off to install something
+you already have.
+
+#### Claude
+
+The **Claude** adapter (provider `anthropic`) resolves from `~/.local/bin/claude`,
+with its install at `~/.local/share/claude`; both are mounted into runtime
+containers, and the same *as-your-user, never-`sudo`* rule applies. Sign in on the
+host once so the CLI carries your own login.
 
 ### One-line install (Linux / macOS)
 
@@ -144,6 +219,17 @@ prints the exact command that resumes it — a re-run is idempotent.
 - **Docker Desktop** with the **WSL integration** enabled for your distro
   (Settings → Resources → WSL Integration), or Docker Engine running inside the
   distro.
+- *(optional)* an adapter CLI such as OpenCode, installed **inside WSL** as your
+  own user — see [Adapter CLIs go in WSL](#installing-an-adapter-cli) and the note
+  below on the Windows/WSL boundary.
+
+**Adapter CLIs go in WSL.** If you use the OpenCode or Claude adapter, install that
+CLI **inside the distro** with the commands in
+[Installing an adapter CLI](#installing-an-adapter-cli) — not on the Windows side.
+WSL reaches Windows executables through interop, so a Windows `opencode.exe`
+appears to run in a WSL shell, but neither the plane nor its runtime containers
+can use it. The same `sudo` rule applies: install as your own user, because only
+your home directory is mounted into the containers the work runs in.
 
 **Project directories are WSL paths.** The UI's `project_dir` is a host path.
 Inside WSL2 a Windows project `C:\Users\you\projects\Foo` is mounted by Docker
@@ -423,8 +509,8 @@ publishing, approving, cancelling, retrying and bulk operations are all availabl
 from either. A change made in one is a change made in the other, because both read
 and write the same plane API.
 
-**They share one default look.** The GUI's default dark theme is **Teal Depths**
-and the TUI's launch default is the matching **`teal`** palette, so a fresh GUI and
+**They share one default look.** The GUI's default dark theme is **Forest Night**
+and the TUI's launch default is the matching **`forest`** palette, so a fresh GUI and
 a fresh TUI open in the same colours. Each is a *default, not a pin* — a stored
 preference always wins.
 
@@ -1631,14 +1717,34 @@ advertises the chord whenever there is a split on screen.
   instead, so you can paste an error trace or a code block straight into your answer
   (line breaks are kept; the row holds your words, not a structured field). A row you
   have handed back to the composer with `ctrl+g` does not take it.
-- **`ctrl+f`** attaches a **file by path**. Both this and a clipboard image land in
-  the pending set for the next message, reported in the strip above the composer.
+- **`ctrl+f`** opens the **find box** — a search over the conversation you are
+  reading. Type the term in the box: the transcript filters **as you type** and the
+  box reports the match count. **Enter** keeps the search and hands the keyboard to
+  the transcript; **esc** cancels and puts back the transcript you had.
 - **Pasted text never sends until you press Enter.**
 - **`ctrl+y`** stops an in-flight reply (the GUI's Stop button). The affordance row
   offers it while a reply streams.
 - **Sending while a reply streams interjects** — it supersedes the turn rather than
   queueing behind it.
 - **`ctrl+g` / `esc`** toggle between content focus and the composer.
+
+### Reading a long conversation
+
+The transcript's navigation keys work from **the content pane** always, and from **the
+composer** whenever the box is empty — while you are drafting a message they are your
+message's keys instead (home/end move within your draft, the arrows move the cursor).
+
+- **`home`** / **`end`** — jump to the **first** / **latest** message. `end` also
+  resumes following the live tail.
+- **`↑` / `↓`** and **`PgUp` / `PgDn`** — scroll the conversation.
+- **`ctrl+f`** — the find box (see the composer list above). While a search is
+  running, **`n`** / **`N`** step to the next / previous match and **`esc`** clears it.
+- **`esc`** — from the composer, hands the keyboard to the transcript. The footer
+  always says which side holds it.
+
+From the content pane, **`←` / `→`** choose whether the arrows drive the conversations
+rail or the conversation itself. The composer advertises all of these chords while a
+conversation is open, so you do not have to remember them.
 
 ### Slash commands
 
@@ -1666,7 +1772,8 @@ Type `/` to open the palette, or `/help` to list every command with its usage.
 | `/skills` | This conversation's skill files; paths or `clear` write directly |
 | `/fullsend` | Toggle FULLSEND for this conversation |
 | `/compact` | Summarize the conversation to free context |
-| `/attach` | Attach a file (not supported in the TUI — use `ctrl+v`/`ctrl+f`) |
+| `/attach` | Attach a file by path (pasting a path into the composer does the same) |
+| `/find <text>` | Search the open conversation. The one-shot form of the find box — `ctrl+f` opens the box itself, where you type the term |
 
 **Two names that must not be confused.** `/project` (**singular**) sets the Ask
 tab's **workspace scope**. `/projects` (**plural**) is the generated navigation
@@ -1706,7 +1813,7 @@ deleting a group moves its items to Uncategorized.
 ### Themes
 
 Choose one in *Control → Themes* (press the action key on a row to apply and
-persist it), or `/theme`. The launch default is the **`teal`** palette, matching
+persist it), or `/theme`. The launch default is the **`forest`** palette, matching
 the GUI's default. There are 43 themes across light and dark, including **true
 transparency**, where the terminal shows through and the text adapts to your
 terminal's own background.
@@ -1715,6 +1822,16 @@ terminal's own background.
 
 Chords and mouse work in Windows Terminal. Legacy conhost may degrade mouse
 handling.
+
+**Colour.** Theme backgrounds need **true colour**, and a 256-colour terminal
+cannot tint a dark ground at all: the xterm-256 cube's only dark entries are
+greys, so every dark theme's background renders grey or black and looks like the
+theme is broken. Windows Terminal supports true colour but does not always tell a
+WSL shell so, which used to require setting `COLORTERM=truecolor` by hand — **the
+TUI now does this for you** when it detects WSL. If a dark background still looks
+grey, the terminal genuinely is not reporting 24-bit colour: set
+`COLORTERM=truecolor` in the shell that runs `orch`, or `COLORTERM=yes` to force
+256-colour. `ORCHICON_TRUECOLOR=0` turns the automatic default off.
 
 ---
 
@@ -2170,7 +2287,8 @@ The `orchicon` binary runs the plane and its supporting services.
 | `orchicon serve` | Run the control plane with the embedded frontend (headless, migrations on boot) |
 | `orchicon serve --detach` / `--stop` | Manage a background `serve` instance (PID file; logs in `.dev/logs/`) |
 | `orchicon container` | Run the whole stack as PID 1 (the single-container image) |
-| `orchicon install` | One-command setup: pull images, start the runtime daemon, launch the container, print connection info |
+| `orchicon install` | One-command setup: pull images, start the runtime daemon, launch the container, print connection info. **Idempotent** — re-running converges an existing instance and upgrades a superseded plane. It deliberately does **not** restart a plane that is already healthy on the installed binary |
+| `orchicon restart` | Restart this instance so its components re-read their environment (`--instance <dev\|test\|prod>` to choose which). Use it after installing an adapter CLI or changing `PATH` — see below |
 | `orchicon runtime-daemon` | Host process owning the Docker socket; spawns per-workflow runtime containers |
 | `orchicon runtime-supervisor` | Runtime container PID 1 |
 | `orchicon runtime-client` | Forwards dispatches into the runtime container |

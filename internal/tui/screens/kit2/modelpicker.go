@@ -143,6 +143,23 @@ func NewModelPicker(title string) *ModelPicker {
 	if title == "" {
 		title = "Select model"
 	}
+	// A FRESH PICKER CARRIES NO ERROR, AND THAT IS ALREADY THE BEHAVIOUR — this comment records it so
+	// the next reader does not "fix" it.
+	//
+	// mp.err is LOAD state, and a picker that has loaded nothing cannot have failed to load. The hosts
+	// construct one per open (internal/tui/screens/control/model_picker.go openModelPicker builds a new
+	// one, and finishModelPicker nils it), so re-opening the picker always re-queries.
+	//
+	// I INVESTIGATED THIS AS A SUSPECTED BUG AND FOUND IT WAS NOT ONE. The report was that an old
+	// "models unavailable" verdict survived a rebuild; the cause was NOT retained picker state, because
+	// there is none to retain. The two real explanations are both elsewhere:
+	//
+	//   * a picker that is STILL OPEN keeps its error, and `r` is the retry (mp.Retry clears mp.err
+	//     and re-syncs) — the on-screen hint says so; and
+	//   * the PLANE it asks was STALE, running a binary a rebuild had replaced underneath it — which
+	//     scripts/container.sh plane_start now detects and replaces (the " (deleted)" check).
+	//
+	// Left as a comment rather than a code change because there was no defect to change.
 	return &ModelPicker{title: title, askCapable: map[string]bool{}}
 }
 
@@ -442,6 +459,21 @@ func (mp *ModelPicker) prevTier() { mp.tier = (mp.tier + 2) % 3 }
 // HandleKey drives the picker. handled=false falls through to the host (so a
 // key the picker does not use can never be swallowed by a modal it owns).
 func (mp *ModelPicker) HandleKey(k keyMsg) (bool, tea.Cmd) {
+	// 'r' RETRIES ONLY WHEN THERE IS NOTHING TO TYPE INTO, and this check is OUTSIDE the switch.
+	//
+	// The model tier is a TYPE-TO-SEARCH box, so a bare letter is TEXT FIRST. The switch below used to
+	// carry a `case "r"` that either retried (when mp.err was set) or returned false — and returning
+	// early from the function means the typing branch at the bottom is never reached either way. So
+	// `r` could not be typed AT ALL: it retried, or it vanished. Reported as "the 'r' key is being
+	// swallowed ... most likely by that 'r' refresh key".
+	//
+	// The two conditions that make retry unambiguous: the load FAILED (so there is a reason to retry)
+	// and the query is EMPTY (so the operator has not started typing). That second condition is not
+	// defensive padding — it is what keeps the key working as text the moment they have, and it is
+	// also exactly when the on-screen hint offers it.
+	if k.String() == "r" && mp.err != "" && mp.query == "" {
+		return true, mp.Retry()
+	}
 	switch k.String() {
 	case "esc":
 		mp.done = true
@@ -461,12 +493,6 @@ func (mp *ModelPicker) HandleKey(k keyMsg) (bool, tea.Cmd) {
 		return true, nil
 	case "enter", " ", "space":
 		return true, mp.choose()
-	case "r":
-		// Retry a failed load without losing the selection.
-		if mp.err != "" {
-			return true, mp.Retry()
-		}
-		return false, nil
 	case "backspace":
 		if mp.tier == TierModel {
 			q := []rune(mp.query)
@@ -661,9 +687,16 @@ func (mp *ModelPicker) layout(innerW, innerH int) ([]string, pickerHits) {
 	// The search box (the model tier's filter).
 	rows = append(rows, mp.searchLine(innerW))
 
-	// Reserved bottom rows: status + hints.
-	const bottomRows = 2
-	listRows := innerH - len(rows) - bottomRows
+	// Reserved bottom rows: the status area plus the hint line.
+	//
+	// THE STATUS AREA IS NOT A FIXED TWO ROWS ANY MORE, and that is the fix for a real report: the
+	// error line was rendered as ONE padded row, so a message longer than the box was silently CUT at
+	// the edge. The operator saw "internal: list opencode models: opencode listed no models — the
+	// command" and could not read the remedy — while the remedy was the entire point of the message.
+	// A single-row status area cannot hold an actionable error, so the area now takes as many rows as
+	// the error needs (capped) and the model list yields the space.
+	statusRows := mp.statusLines(innerW)
+	listRows := innerH - len(rows) - len(statusRows) - 1 // -1: the hint line
 	if listRows < 1 {
 		listRows = 1
 	}
@@ -695,7 +728,8 @@ func (mp *ModelPicker) layout(innerW, innerH int) ([]string, pickerHits) {
 		rows = append(rows, "")
 	}
 
-	rows = append(rows, mp.statusLine(innerW), hintLine(innerW))
+	rows = append(rows, statusRows...)
+	rows = append(rows, hintLine(innerW))
 	// Clip to the interior height.
 	if len(rows) > innerH {
 		rows = rows[:innerH]
@@ -763,12 +797,41 @@ func (mp *ModelPicker) modelRow(o PickerOption, cursored, focused bool, innerW i
 	return theme.ListItem.Render(Pad(line, innerW))
 }
 
-// statusLine reports the load state or the current selection summary.
-func (mp *ModelPicker) statusLine(innerW int) string {
+// maxErrorRows caps how much of the box an error may take, so a pathological message cannot consume
+// the list and leave the picker unusable.
+//
+// SIX, BECAUSE FOUR WAS MEASURABLY TOO TIGHT. A realistic error — the "listed no models, check
+// `opencode auth list`" one that prompted this — needs four rows at the picker's maximum width and
+// FIVE at 64 columns, where the box narrows to 60. At four, the last two words were dropped at that
+// width, which is the truncation this change exists to remove; the test caught it by asserting on
+// every word rather than on the length.
+const maxErrorRows = 6
+
+// statusLines reports the load state or the current selection summary, as one or more rows.
+//
+// IT WRAPS AN ERROR AND PADS A SUMMARY. The distinction is deliberate: a summary is a fixed short
+// phrase that fits or can be cut harmlessly, whereas an error is the operator's only clue and must be
+// readable. Returns the styled rows so the caller sizes the list around them.
+func (mp *ModelPicker) statusLines(innerW int) []string {
+	if mp.err != "" {
+		wrapped := wrapCells(mp.err, innerW, "  ⚠ ", "    ")
+		if len(wrapped) > maxErrorRows {
+			wrapped = wrapped[:maxErrorRows]
+			wrapped[len(wrapped)-1] += " …"
+		}
+		out := make([]string, 0, len(wrapped))
+		for _, r := range wrapped {
+			out = append(out, theme.ErrorText.Render(r))
+		}
+		return out
+	}
+	return []string{mp.summaryLine(innerW)}
+}
+
+// summaryLine is the non-error status: padded to the box so the row paints fully.
+func (mp *ModelPicker) summaryLine(innerW int) string {
 	var s string
 	switch {
-	case mp.err != "":
-		s = "⚠ " + mp.err
 	case mp.loading:
 		s = "loading…"
 	case mp.tier == TierModel && mp.provider != "":
@@ -785,11 +848,7 @@ func (mp *ModelPicker) statusLine(innerW int) string {
 	default:
 		s = "select a " + tierName(mp.tier)
 	}
-	style := theme.HintText
-	if mp.err != "" {
-		style = theme.ErrorText
-	}
-	return style.Render(Pad("  "+s, innerW))
+	return theme.HintText.Render(Pad("  "+s, innerW))
 }
 
 func hintLine(innerW int) string {

@@ -392,7 +392,34 @@ func FriendlyErr(err error) string {
 	txt := err.Error()
 	low := strings.ToLower(txt)
 	if strings.Contains(low, "unimplemented") || strings.Contains(low, "not configured") {
-		return "model discovery is not configured on this plane"
+		// THE PLANE'S OWN HINT IS THE ACTIONABLE PART, and this used to THROW IT AWAY.
+		//
+		// The plane answers with the remedy in a parenthetical: `model discovery is not configured (set
+		// ORCHICON_OPENCODE_BIN or install opencode on PATH)`. This returned "model discovery is not
+		// configured on this plane" instead, which is a DEAD END — reported verbatim by the operator
+		// selecting the opencode adapter: "it says 'model discovery is not configured on this plane'".
+		//
+		// THE RESTART IS PART OF THE ANSWER, not padding. The discoverer is built at BOOT from what the plane
+		// could find (see internal/server), so installing opencode while the plane runs does not enable
+		// discovery until it restarts. Without that sentence the operator installs opencode, retries, sees the
+		// same message, and concludes the message is wrong.
+		hint := planeHint(txt)
+		if hint == "" {
+			hint = "install opencode on the plane's PATH, or set ORCHICON_OPENCODE_BIN"
+		}
+		return "model discovery is not configured on this plane — " + hint + " — then restart the plane"
 	}
 	return txt
+}
+
+// planeHint extracts the trailing parenthetical from a plane error, which is where every not-configured
+// message this client shows puts its remedy. The parentheses are stripped so the result reads as a sentence.
+// Returns "" when the message carries no hint.
+func planeHint(txt string) string {
+	i := strings.LastIndex(txt, "(")
+	j := strings.LastIndex(txt, ")")
+	if i < 0 || j < i {
+		return ""
+	}
+	return strings.TrimSpace(strings.Trim(txt[i:j+1], "()"))
 }

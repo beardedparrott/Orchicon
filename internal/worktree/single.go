@@ -135,7 +135,112 @@ type TodoItem struct {
 // transcript's latest todowrite payload for DB-backed sessions). The
 // .orchicon/ directory is gitignored, so the snapshot never lands in the
 // repo; it is pruned with the worktree.
+//
+// IT IS NOT THE AUTHORITATIVE COPY — see TodoSnapshotName. This one is
+// worktree-scoped and therefore dies with the worktree, so it serves only
+// `todoread` inside the same live session.
 const todoSnapshotFile = ".orchicon/todos.json"
+
+// TodoSnapshotName is the RUN-STATE todo snapshot's file name, written under
+// <projectDir>/.orchicon/<runID>/ — the same run-state directory the plane
+// already writes `facts_learned`, `status` and `summary` into.
+//
+// WHY IT LIVES THERE AND NOT IN THE WORKTREE. Three independent reasons, each
+// of which on its own breaks a worktree-scoped file:
+//
+//  1. THE WORKTREE IS PRUNED. A snapshot inside it is deleted when the run
+//     ends, so the operator cannot look at the plan of a finished run — and the
+//     plane cannot read it to serve the todo panel.
+//  2. THE PLANE MUST READ IT, AND THE PLANE IS NOT THE TOOL. The tool runs in
+//     the MCP sidecar process; the panel is served by the control plane. A file
+//     only the sidecar can see is not a channel between them.
+//  3. THE TRANSCRIPT CANNOT SUBSTITUTE FOR IT ON 2.x. Our tools are MCP tools,
+//     and opencode 2.x only calls MCP tools from inside `execute` — so the
+//     transcript records the call as tool `execute`, never as `todowrite`, and
+//     any parser matching the tool NAME finds nothing. The file is the only
+//     record that survives however the tool was invoked.
+const TodoSnapshotName = "todos.json"
+
+// RunStateDir returns the run-state directory for a run: <projectDir>/.orchicon/<runID>.
+// Empty when either input is empty — the caller then has no run-state channel
+// and must fall back.
+func RunStateDir(projectDir, runID string) string {
+	if projectDir == "" || runID == "" {
+		return ""
+	}
+	return filepath.Join(projectDir, ".orchicon", runID)
+}
+
+// SaveRunTodoSnapshot writes the worker's latest todo list into the RUN-STATE
+// directory, which is the authoritative copy the todo panel reads.
+//
+// Unlike SaveTodoSnapshot it RETURNS an error rather than swallowing it. The
+// silent version is exactly how the panel came to show nothing while the tool
+// reported success: the write failed, nothing said so, and the caller had no
+// way to know. An empty list is skipped rather than written, matching
+// replacement semantics — a malformed payload must not clobber a good list
+// (parseTodoItems yields nil for malformed input).
+func SaveRunTodoSnapshot(runStateDir string, items []TodoItem) error {
+	if runStateDir == "" {
+		return fmt.Errorf("no run-state directory: the tool was not told its run")
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	data, err := json.Marshal(items)
+	if err != nil {
+		return fmt.Errorf("marshal todos: %w", err)
+	}
+	if err := os.MkdirAll(runStateDir, 0o755); err != nil {
+		return fmt.Errorf("create run-state dir: %w", err)
+	}
+	abs := filepath.Join(runStateDir, TodoSnapshotName)
+	tmp := abs + ".tmp." + fmt.Sprintf("%d", time.Now().UnixNano())
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return fmt.Errorf("write todos: %w", err)
+	}
+	if err := os.Rename(tmp, abs); err != nil {
+		return fmt.Errorf("commit todos: %w", err)
+	}
+	return nil
+}
+
+// ReadRunTodoSnapshot reads the run-state todo snapshot. ok=false means there
+// is none (the worker never wrote one, or the run predates this file) — which
+// is not an error and not a failure, so the caller falls back.
+func ReadRunTodoSnapshot(runStateDir string) ([]TodoItem, bool) {
+	if runStateDir == "" {
+		return nil, false
+	}
+	data, err := os.ReadFile(filepath.Join(runStateDir, TodoSnapshotName))
+	if err != nil {
+		return nil, false
+	}
+	var items []TodoItem
+	if err := json.Unmarshal(data, &items); err != nil {
+		return nil, false
+	}
+	return items, true
+}
+
+// RenderTodoList renders a todo list as the human-readable text `todoread`
+// returns. Shared so the worktree-scoped and run-state reads cannot drift.
+func RenderTodoList(items []TodoItem) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("todoread: %d todo item(s):\n", len(items)))
+	for i, t := range items {
+		status := t.Status
+		if status == "" {
+			status = "pending"
+		}
+		pri := t.Priority
+		if pri == "" {
+			pri = "-"
+		}
+		sb.WriteString(fmt.Sprintf("  %d. [%s] (priority: %s) %s\n", i+1, status, pri, t.Content))
+	}
+	return sb.String()
+}
 
 // SaveTodoSnapshot persists the worker's latest todo list to the sidecar
 // file so `todoread` can read it back without a Postgres transcript. The
@@ -191,18 +296,7 @@ func TodoRead(b Base, _ TodoReadArgs) (string, error) {
 		return "", fmt.Errorf("todoread: malformed snapshot: %w", err)
 	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("todoread: %d todo item(s):\n", len(items)))
-	for i, t := range items {
-		status := t.Status
-		if status == "" {
-			status = "pending"
-		}
-		pri := t.Priority
-		if pri == "" {
-			pri = "-"
-		}
-		sb.WriteString(fmt.Sprintf("  %d. [%s] (priority: %s) %s\n", i+1, status, pri, t.Content))
-	}
+	sb.WriteString(RenderTodoList(items))
 	sb.WriteString("\nraw:\n" + string(data))
 	return sb.String(), nil
 }

@@ -53,6 +53,10 @@ type Daemon struct {
 	CPUs      string
 	Memory    string
 	TmpfsSize string
+	// HomeTmpfsSize sizes the uid-owned tmpfs mounted at the runtime uid's
+	// $HOME, and at a private adapter data home. $HOME cannot be left to
+	// Docker's default root:0755 creation — see standardHostMountArgs.
+	HomeTmpfsSize string
 	// MaxAge / SweepInterval are retained for config compatibility; the
 	// warm pool's idle-reap now owns container cleanup (the pool is reset
 	// wholesale at daemon start, which covers the plane-down leak case).
@@ -785,6 +789,15 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 	// the kind. A native-only run gets none: the host's model config and
 	// provider auth never leak into a container that cannot use them.
 	args = append(args, adapterHostMounts(d.HostHome, requestedKinds(req)...)...)
+	// PRIVATE adapter directories: a demand whose install is declared private
+	// gets a writable, runtime-uid-owned directory at the same path instead of
+	// a host bind, plus its declared credential file read-only inside it.
+	for _, ph := range adapterPrivateHomes(d.HostHome, requestedKinds(req)...) {
+		args = append(args, "--tmpfs", tmpfsOwned(ph.dir, d.UserID, d.GroupID, d.HomeTmpfsSize))
+		if ph.authFile != "" {
+			args = append(args, "-v", ph.authFile+":"+filepath.Join(ph.dir, filepath.Base(ph.authFile))+":ro")
+		}
+	}
 	// Git identity/credential + push-capable GH_TOKEN are gated on the run's
 	// effective git strategy: a "none" (ephemeral detached-HEAD) run must
 	// never be able to create or push a branch, so it gets NO
@@ -819,6 +832,26 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 			args = append(args, "-e", "GH_TOKEN="+tok)
 		}
 	}
+	// $HOME ITSELF MUST BE OWNED BY THE RUNTIME UID. Docker creates a bind
+	// destination's missing parents — $HOME included — as root:0755, so the
+	// runtime uid could not create ANYTHING under its own home: the adapter CLI
+	// exits 1 at boot on `EACCES mkdir $HOME/.local/state`, and ensureHomeDirs
+	// (cmd/orchicon/runtime.go), which creates all six of the standard
+	// directories best-effort, was failing on every one of them behind a WARN
+	// nobody read. `.local` and `.config` need their OWN entry because a bind's
+	// intermediate parent is created root-owned even INSIDE a uid-owned $HOME —
+	// mounting $HOME alone was measured NOT to fix it.
+	homeDirs := []struct {
+		path string
+		size string
+	}{
+		{d.HostHome, d.HomeTmpfsSize},
+		{filepath.Join(d.HostHome, ".local"), ""},
+		{filepath.Join(d.HostHome, ".config"), ""},
+	}
+	for _, hd := range homeDirs {
+		args = append(args, "--tmpfs", tmpfsOwned(hd.path, d.UserID, d.GroupID, hd.size))
+	}
 	args = append(args, "-e", "HOME="+d.HostHome)
 	// Put every MOUNTED adapter CLI on PATH so the supervisor's
 	// exec.Command("opencode", ...) / exec.Command("claude", ...) resolves
@@ -832,7 +865,33 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 		// so a CHILD process gets the same bin dirs prepended.
 		args = append(args, "-e", "ORCHICON_ADAPTER_KINDS="+strings.Join(kinds, ","))
 	}
+	// Provider credentials for a demanded adapter, as ENVIRONMENT. This is the
+	// only channel opencode 1.x and 2.x BOTH honour — 2.x does not read
+	// auth.json at all — so no version branch is needed (adapterCredentialEnv).
+	if pairs, unusable := adapterCredentialEnv(d.HostHome, kinds...); len(pairs) > 0 {
+		for _, p := range pairs {
+			args = append(args, "-e", p)
+		}
+		if len(unusable) > 0 && d.Log != nil {
+			d.Log.Info("adapter credentials: providers are signed in on the host but cannot be "+
+				"delivered through the environment (an oauth entry, or an id with no known env "+
+				"variable) — a container session cannot use them", "providers", unusable)
+		}
+	}
 	return args
+}
+
+// tmpfsOwned renders the --tmpfs option string for a private, runtime-uid-owned
+// mount at path. uid/gid are explicit because OWNERSHIP IS THE POINT: a tmpfs
+// without them is root-owned, the runtime uid cannot write it, and that is
+// precisely the failure this exists to prevent. size == "" omits the limit,
+// which is right for the mount points that never hold file data.
+func tmpfsOwned(path string, uid, gid int, size string) string {
+	opt := fmt.Sprintf("%s:rw,uid=%d,gid=%d,mode=0755", path, uid, gid)
+	if size != "" {
+		opt += ",size=" + size
+	}
+	return opt
 }
 
 // claudeAuthAvailable reports whether the host has a usable Claude credential,
@@ -1015,36 +1074,61 @@ func (d *Daemon) startServe(name, kind string, req CreateRequest) (int, string, 
 // plane's lifecycle gate uses the same probe via the same helper.
 func serveUsableAt(baseURL, password string) bool {
 	client := &http.Client{Timeout: 3 * time.Second}
-	req, err := http.NewRequest(http.MethodGet, baseURL+"/global/health", nil)
-	if err != nil {
+
+	// EACH STEP TRIES EVERY PATH A SERVE MAY EXPOSE (see opencodeapi.go). ONE serve answers one of
+	// them, so this asks the gate's real question — "is this serve usable?" — without a version probe
+	// (a `docker exec` per run start) and without a cached verdict that can go stale when the
+	// container's binary is replaced.
+	//
+	// THE HARDCODED v1 PAIR IS WHAT BROKE EXECUTIONS ON 2.x: `POST /session` is answered with 405 by
+	// the newer surface, so the require-200 below never passed and this returned false for ever —
+	// reported to the operator as "serve did not become usable within 30s" on every dispatch. Ask
+	// Orchicon kept working because it uses the session client, which was fixed; this gate does not.
+	if !anyPathOK(client, baseURL, password, http.MethodGet, OpenCodeHealthPaths(), nil, func(code int) bool {
+		return code == http.StatusOK
+	}) {
 		return false
 	}
-	req.SetBasicAuth("opencode", password)
-	resp, err := client.Do(req)
-	if err != nil {
-		return false
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return false
-	}
+
 	// The serve is healthy; confirm it can actually create a session (the
 	// cold-start window answers health before the session machinery is up).
 	body := `{"title":"orchicon-serve-probe"}`
-	cReq, _ := http.NewRequest(http.MethodPost, baseURL+"/session", bytes.NewBufferString(body))
-	cReq.Header.Set("Content-Type", "application/json")
-	cReq.SetBasicAuth("opencode", password)
-	cResp, err := client.Do(cReq)
-	if err != nil {
-		return false
+	return anyPathOK(client, baseURL, password, http.MethodPost,
+		OpenCodeSessionCreatePaths(), []byte(body), opencodeAcceptableCreateStatus)
+}
+
+// anyPathOK issues the request against each candidate path until one answers acceptably, and reports
+// whether any did. A path that errors, 404s or answers with the wrong surface's status is simply the
+// next candidate's turn — which is what makes this tolerant of BOTH api generations without needing
+// to know which one it is talking to.
+func anyPathOK(client *http.Client, baseURL, password, method string, paths []string, body []byte, accept func(int) bool) bool {
+	for _, path := range paths {
+		var rdr io.Reader
+		if body != nil {
+			rdr = bytes.NewReader(body)
+		}
+		req, err := http.NewRequest(method, baseURL+path, rdr)
+		if err != nil {
+			continue
+		}
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		req.SetBasicAuth("opencode", password)
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		ok := accept(resp.StatusCode)
+		// Drain before closing so the connection can be reused, and so the probe session's body does
+		// not hold the socket open.
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if ok {
+			return true
+		}
 	}
-	defer cResp.Body.Close()
-	if cResp.StatusCode != http.StatusOK {
-		return false
-	}
-	// Clean up the probe session.
-	io.Copy(io.Discard, cResp.Body)
-	return true
+	return false
 }
 
 // containerIP resolves a container's bridge IP.

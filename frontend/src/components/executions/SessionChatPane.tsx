@@ -32,6 +32,16 @@ import { ReasoningBubble } from "@/components/chat";
 import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import {
+  bottomScrollTop,
+  hasArrived,
+  isNearBottom,
+  keyReleasesStick,
+  metricsOf,
+  nextStick,
+  wheelReleasesStick,
+  type ScrollEnd,
+} from "@/lib/chat-scroll";
 
 import { groupByPhase, mergeSessionItems, sessionMeta, type ChatItem, type ParsedTool } from "./sessionItems";
 
@@ -654,35 +664,87 @@ export function SessionChatPane({
     return live;
   }, [isRunning, history, live, storedOutput]);
 
-  // Auto-stick scroll: track whether the user is near the bottom; if so,
-  // keep it pinned on new items. The stick flag must only clear on a REAL
-  // manual scroll — the auto-scroll's own scroll event (and the smooth
-  // "jump to latest" animation) would otherwise reset it mid-stream and
-  // stop the view from following the conversation.
-  const lastAutoScrollRef = useRef(0);
+  // AUTO-STICK SCROLL: follow the tail while the operator is at the tail.
+  //
+  // THE DECISIONS COME FROM THE SHARED MODULE. This surface used to carry its own copy of
+  // them — the near-bottom arithmetic with its own magic 80, and a 200ms window to
+  // "ignore our own scroll events" — which is how it inherited the same bug the transcript
+  // container had: a suppressed event is an event whose OPERATOR INTENT is never recorded,
+  // so a wheel-up landing inside the window left the stick ON and the next flush dragged
+  // the operator back down. During a live session the flush is every ~2s, so the window was
+  // open a meaningful share of the time.
+  //
+  // A drive (see ScrollEnd) attributes a scroll by WHICH END we sent it to rather than by
+  // when it arrived, so the smooth "jump to latest" animation — whose in-flight positions
+  // are away from the tail — can no longer release the stick mid-flight.
+  const driveRef = useRef<ScrollEnd | null>(null);
   const onScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    if (Date.now() - lastAutoScrollRef.current < 200) return; // our own scroll
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-    stickRef.current = nearBottom;
+    const metrics = metricsOf(el);
+    if (driveRef.current !== null) {
+      if (!hasArrived(metrics, driveRef.current)) return;
+      driveRef.current = null;
+    }
+    // THE TWO HALVES OF THE RULE — see the same note in ChatScrollContainer and atBottom's
+    // own comment. Re-acquiring needs the ACTUAL tail: a deliberate wheel-up leaves the view
+    // inside the near-bottom margin, and a position test there would re-arm the stick on the
+    // very scroll the gesture caused, pinning the operator to the tail.
+    const nearBottom = isNearBottom(metrics);
+    stickRef.current = nextStick(metrics, stickRef.current);
     setShowJump(!nearBottom);
   }, []);
 
+  // OPERATOR GESTURES OUTRANK OUR SENSE OF POSITION, for the reason the shared helpers
+  // document: an upward wheel can produce no scroll event at all (already at the top, or
+  // landing in the same tick as a flush), and a release that waits for one never happens.
   useEffect(() => {
-    if (stickRef.current && scrollRef.current) {
-      // Instant jump (not smooth) so rapid updates always land exactly at
-      // the bottom; mark the timestamp so onScroll ignores this event.
-      lastAutoScrollRef.current = Date.now();
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
+    const el = scrollRef.current;
+    if (!el) return;
+    const handOver = () => {
+      driveRef.current = null;
+    };
+    const release = () => {
+      driveRef.current = null;
+      stickRef.current = false;
+      setShowJump(true);
+    };
+    const onWheel = (e: WheelEvent) => {
+      if (wheelReleasesStick(e.deltaY)) release();
+      else handOver();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (keyReleasesStick(e.key)) release();
+      else handOver();
+    };
+    el.addEventListener("wheel", onWheel, { passive: true });
+    el.addEventListener("touchstart", handOver, { passive: true });
+    el.addEventListener("mousedown", handOver);
+    el.addEventListener("keydown", onKeyDown);
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("touchstart", handOver);
+      el.removeEventListener("mousedown", handOver);
+      el.removeEventListener("keydown", onKeyDown);
+    };
+  }, []);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!stickRef.current || !el) return;
+    // Instant, not smooth: rapid updates must always land exactly at the bottom. No drive
+    // is recorded — the event it produces lands at the tail, which is the same answer the
+    // stick already holds.
+    el.scrollTop = bottomScrollTop(el);
   }, [items, live, pendingItems]);
 
   const jumpToBottom = useCallback(() => {
     stickRef.current = true;
     setShowJump(false);
-    lastAutoScrollRef.current = Date.now();
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+    const el = scrollRef.current;
+    if (!el) return;
+    driveRef.current = "bottom";
+    el.scrollTo({ top: bottomScrollTop(el), behavior: "smooth" });
   }, []);
 
   const handleSend = useCallback(

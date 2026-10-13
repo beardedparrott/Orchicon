@@ -1129,6 +1129,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	// conversation turn carries the same context.
 	composite, _ := extractComposite(task.PromptContext)
 	var promptFP string      // context-file fingerprint (ADR-0009 D5)
+	var agentPromptLen int   // run-level prefix length, for the 2.x message trim
 	var stepRunResult []byte // step run's full result — carries the _recovery_* seed keys
 	if exec.WorkflowRunID != "" && exec.WorkflowStepID != "" {
 		if stx, err := r.pool.BeginTenantTx(context.Background(), exec.TenantID); err == nil {
@@ -1137,6 +1138,8 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 				var srMeta struct {
 					Prompt      string `json:"_prompt"`
 					Fingerprint string `json:"_prompt_fingerprint"`
+					// The run-level prefix length, recorded by the composite writers.
+					AgentPromptLen int `json:"_agent_prompt_len"`
 				}
 				_ = json.Unmarshal(sr.Result, &srMeta)
 				if srMeta.Prompt != "" {
@@ -1145,6 +1148,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 				if srMeta.Fingerprint != "" {
 					promptFP = srMeta.Fingerprint
 				}
+				agentPromptLen = srMeta.AgentPromptLen
 			}
 			_ = stx.Rollback(context.Background())
 		}
@@ -1232,6 +1236,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		WorkerID:                     version.WorkerID,
 		WorkerVersion:                version.Version,
 		SystemPrompt:                 systemPrompt,
+		AgentPromptLen:               agentPromptLen,
 		PromptFingerprint:            promptFP,
 		Goal:                         task.Title,
 		AcceptanceCriteria:           task.AcceptanceCriteria,

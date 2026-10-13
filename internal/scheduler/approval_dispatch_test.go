@@ -112,6 +112,7 @@ func TestBuildApprovalStepResult(t *testing.T) {
 		"ticket-01", "composite prompt", "fp1234", "w_se_code_approver", 7,
 		"Senior SWE", "the upstream summary", []string{"a.go", "b.go"}, "the AC",
 		prev,
+		0,
 	)
 	var m map[string]any
 	if err := json.Unmarshal(got, &m); err != nil {
@@ -140,7 +141,7 @@ func TestBuildApprovalStepResult(t *testing.T) {
 	}
 
 	// A fresh dispatch (no prior result) must NOT carry a recovery summary.
-	fresh := buildApprovalStepResult("ticket-01", "p", "fp", "w_se_code_approver", 7, "", "", nil, "", nil)
+	fresh := buildApprovalStepResult("ticket-01", "p", "fp", "w_se_code_approver", 7, "", "", nil, "", nil, 0)
 	var fm map[string]any
 	_ = json.Unmarshal(fresh, &fm)
 	if _, ok := fm["_recovery_summary"]; ok {
@@ -206,5 +207,22 @@ func TestRuntimeEnabledNilGuard(t *testing.T) {
 	r.runtime = typedNilLifecycle()
 	if r.runtimeEnabled() {
 		t.Error("typed-nil runtime must be disabled (this crashed the plane on headless serve)")
+	}
+}
+
+// TestApprovalStepResultCarriesTheAgentPromptLength pins the key the 2.x message
+// trim depends on. Without it the manifest's AgentPromptLen stays 0, the adapter
+// never trims, and the run-level prefix is sent twice on every turn — silently,
+// because a duplicate prompt is not an error.
+func TestApprovalStepResultCarriesTheAgentPromptLength(t *testing.T) {
+	raw := buildApprovalStepResult("t1", "composite", "fp", "w1", 1, "", "", nil, "", nil, 4242)
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	got, ok := m["_agent_prompt_len"].(float64)
+	if !ok || int(got) != 4242 {
+		t.Errorf("_agent_prompt_len = %v (%T), want 4242 — without it the adapter cannot trim",
+			m["_agent_prompt_len"], m["_agent_prompt_len"])
 	}
 }

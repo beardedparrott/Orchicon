@@ -12,15 +12,20 @@ import (
 )
 
 // allToolNames is the full worktree tool suite: 3 batch tools, 4 single-op
-// wrappers, `list`, and `todoread` (D1/D2).
+// wrappers, `list`, and the `todowrite`/`todoread` todo pair (D1/D2).
+//
+// `todowrite` is OURS as of the 2.x work: opencode 1.x had it natively and this
+// registry exposed only the read half, but 2.x deleted the tool outright, so a
+// prompt that orders it every turn (ours does) was ordering a tool that does not
+// exist. See the tool's comment in worktree.go.
 var allToolNames = []string{
 	"batch_read", "batch_grep", "batch_write",
 	"read", "grep", "write", "edit",
-	"list", "todoread",
+	"list", "todowrite", "todoread",
 }
 
 func TestWorktreeRegistryExposesFullToolSuite(t *testing.T) {
-	r := NewWorktreeRegistry(t.TempDir(), "")
+	r := NewWorktreeRegistry(t.TempDir(), "", "")
 	defs := r.List()
 	if len(defs) != len(allToolNames) {
 		t.Fatalf("expected %d tools, got %d", len(allToolNames), len(defs))
@@ -36,6 +41,13 @@ func TestWorktreeRegistryExposesFullToolSuite(t *testing.T) {
 	}
 	// The batch tools must be present in the registry; the single-op
 	// wrappers must be Mutating=false/true as appropriate.
+	//
+	// todowrite is deliberately NOT in this map: it writes only the ephemeral
+	// todo sidecar under .orchicon/, never project content — the same
+	// bookkeeping class as todoread's sibling state. "Mutating" describes a
+	// change to the worker's deliverable, and marking the todo list as one would
+	// be a false claim about it (and a gate-tripping lie if a caller ever
+	// enforces the field).
 	mutating := map[string]bool{"batch_write": true, "write": true, "edit": true}
 	for _, d := range defs {
 		if d.Mutating != mutating[d.Name] {
@@ -49,7 +61,7 @@ func TestWorktreeRegistryExecuteBatchRead(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(base, "a.txt"), []byte("hello"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := NewWorktreeRegistry(base, "")
+	r := NewWorktreeRegistry(base, "", "")
 	args, _ := json.Marshal(map[string]any{"paths": []string{"a.txt"}})
 	res, err := r.Execute(context.Background(), nil, "batch_read", args)
 	if err != nil {
@@ -65,7 +77,7 @@ func TestWorktreeRegistrySingleOpWrappers(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(base, "a.txt"), []byte("hello world"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := NewWorktreeRegistry(base, "")
+	r := NewWorktreeRegistry(base, "", "")
 	ctx := context.Background()
 
 	// read wrapper
@@ -105,7 +117,7 @@ func TestWorktreeRegistryList(t *testing.T) {
 	}
 	os.WriteFile(filepath.Join(base, "a.txt"), []byte("hi"), 0o644)
 	os.WriteFile(filepath.Join(base, "sub", "b.txt"), []byte("hi"), 0o644)
-	r := NewWorktreeRegistry(base, "")
+	r := NewWorktreeRegistry(base, "", "")
 	args, _ := json.Marshal(map[string]any{})
 	res, err := r.Execute(context.Background(), nil, "list", args)
 	if err != nil {
@@ -119,7 +131,7 @@ func TestWorktreeRegistryList(t *testing.T) {
 
 func TestWorktreeRegistryTodoRead(t *testing.T) {
 	base := t.TempDir()
-	r := NewWorktreeRegistry(base, "")
+	r := NewWorktreeRegistry(base, "", "")
 	// No snapshot yet — must return a graceful empty message, not an error.
 	res, err := r.Execute(context.Background(), nil, "todoread", nil)
 	if err != nil {
@@ -147,7 +159,7 @@ func TestWorktreeRegistryTodoRead(t *testing.T) {
 
 func TestWorktreeRegistryExecuteRejectsTraversal(t *testing.T) {
 	base := t.TempDir()
-	r := NewWorktreeRegistry(base, "")
+	r := NewWorktreeRegistry(base, "", "")
 	args, _ := json.Marshal(map[string]any{"paths": []string{"../etc/passwd"}})
 	if _, err := r.Execute(context.Background(), nil, "batch_read", args); err == nil {
 		t.Fatal("expected a path-traversal error")
@@ -160,7 +172,7 @@ func TestWorktreeRegistryExecuteRejectsTraversal(t *testing.T) {
 }
 
 func TestWorktreeRegistryExecuteUnknownTool(t *testing.T) {
-	r := NewWorktreeRegistry(t.TempDir(), "")
+	r := NewWorktreeRegistry(t.TempDir(), "", "")
 	if _, err := r.Execute(context.Background(), nil, "nope", nil); err == nil {
 		t.Fatal("expected an unknown-tool error")
 	}
@@ -188,7 +200,7 @@ func TestWorktreeRegistryExecuteProjectRootRead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := NewWorktreeRegistry(wt, proj)
+	r := NewWorktreeRegistry(wt, proj, "")
 	ctx := context.Background()
 
 	// `..`-relative project-root path.
@@ -221,7 +233,7 @@ func TestWorktreeRegistryExecuteScratchWrite(t *testing.T) {
 		t.Skipf("cannot create scratch dir %s: %v", worktree.DefaultScratchDir, err)
 	}
 	base := t.TempDir()
-	r := NewWorktreeRegistry(base, "")
+	r := NewWorktreeRegistry(base, "", "")
 	target := filepath.Join(worktree.DefaultScratchDir, "reg-scratch-"+filepath.Base(t.TempDir())+".txt")
 	defer os.Remove(target)
 
@@ -232,5 +244,136 @@ func TestWorktreeRegistryExecuteScratchWrite(t *testing.T) {
 	got, rerr := os.ReadFile(target)
 	if rerr != nil || string(got) != "scratch-ok" {
 		t.Fatalf("scratch write did not persist: %q err=%v", got, rerr)
+	}
+}
+
+// TestWorktreeTodowriteTodoreadRoundTrip proves the todo pair works end to end
+// over MCP: a worker writes its list and reads the SAME list back.
+//
+// This is the regression guard for opencode 2.x having REMOVED the native
+// `todowrite`. Our composite prompt orders a todowrite at every turn boundary,
+// so on 2.x that obligation had no tool to satisfy it: the model's calls came
+// back as errors, and repeated error-status calls are exactly what the
+// repetition stall counts. Owning the tool here makes the todo list independent
+// of which tools the agent surface happens to ship.
+func TestWorktreeTodowriteTodoreadRoundTrip(t *testing.T) {
+	base := t.TempDir()
+	r := NewWorktreeRegistry(base, "", "")
+
+	args, _ := json.Marshal(map[string]any{"todos": []map[string]any{
+		{"content": "wire the search bar", "status": "completed", "priority": "high"},
+		{"content": "add jump-to-top", "status": "in_progress", "priority": "medium"},
+	}})
+	out, err := r.Execute(context.Background(), nil, "todowrite", args)
+	if err != nil {
+		t.Fatalf("todowrite: %v", err)
+	}
+	if !strings.Contains(string(out), `"count":2`) {
+		t.Fatalf("todowrite did not report the 2 items it stored: %s", out)
+	}
+
+	// The read half must return what the write half stored — this is the
+	// property the execution UI and the DB-less sidecar both depend on.
+	read, err := r.Execute(context.Background(), nil, "todoread", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("todoread: %v", err)
+	}
+	for _, want := range []string{"wire the search bar", "add jump-to-top", "in_progress"} {
+		if !strings.Contains(string(read), want) {
+			t.Fatalf("todoread did not return %q after a todowrite:\n%s", want, read)
+		}
+	}
+}
+
+// TestWorktreeTodowriteRejectsMalformedArgs pins the failure mode: bad args are
+// a tool error the model can read and correct, not a silent no-op. A todowrite
+// that quietly did nothing would leave the operator staring at a stale plan.
+func TestWorktreeTodowriteRejectsMalformedArgs(t *testing.T) {
+	r := NewWorktreeRegistry(t.TempDir(), "", "")
+	if _, err := r.Execute(context.Background(), nil, "todowrite", json.RawMessage(`{"todos":"not-an-array"}`)); err == nil {
+		t.Fatal("a malformed todos payload must fail the call, not be silently ignored")
+	}
+}
+
+// TestTodowriteWritesTheRunStateSnapshotAndTodoreadSeesIt is the round trip
+// through the RUN-STATE file — the copy the execution view's todo panel reads.
+//
+// It has to be this file and not the worktree one: the worktree is PRUNED when
+// the run ends, so a worktree-scoped snapshot is unreadable by the time anyone
+// looks at the run's plan. The run-state dir (<project>/.orchicon/<runID>/) is
+// where the plane already keeps facts_learned/status/summary, and it survives.
+func TestTodowriteWritesTheRunStateSnapshotAndTodoreadSeesIt(t *testing.T) {
+	project := t.TempDir()
+	runState := worktree.RunStateDir(project, "01RUN")
+	if runState == "" {
+		t.Fatal("RunStateDir returned empty for a project dir + run id")
+	}
+	r := NewWorktreeRegistry(t.TempDir(), project, runState)
+
+	args, _ := json.Marshal(map[string]any{"todos": []map[string]any{
+		{"content": "wire the panel", "status": "in_progress", "priority": "high"},
+	}})
+	if _, err := r.Execute(context.Background(), nil, "todowrite", args); err != nil {
+		t.Fatalf("todowrite: %v", err)
+	}
+
+	// THE FILE ITSELF, at the path the plane derives — not merely "something was
+	// written somewhere". The reader and the writer must agree by construction, so
+	// this asserts the plane's own resolution, not a copy of it.
+	path := filepath.Join(runState, worktree.TodoSnapshotName)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the run-state snapshot is missing at %s: %v", path, err)
+	}
+	if !strings.Contains(string(raw), "wire the panel") {
+		t.Fatalf("the run-state snapshot does not carry the item: %s", raw)
+	}
+	// And the plane's OWN reader resolves the same content.
+	items, ok := worktree.ReadRunTodoSnapshot(runState)
+	if !ok || len(items) != 1 || items[0].Content != "wire the panel" {
+		t.Fatalf("ReadRunTodoSnapshot = %+v ok=%v, want the one item", items, ok)
+	}
+
+	// todoread must prefer the run-state copy.
+	out, err := r.Execute(context.Background(), nil, "todoread", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("todoread: %v", err)
+	}
+	if !strings.Contains(string(out), "wire the panel") {
+		t.Fatalf("todoread did not surface the run-state list:\n%s", out)
+	}
+}
+
+// TestTodowriteSaysSoWhenTheRunStateChannelIsMissing pins the failure mode that
+// made this invisible.
+//
+// When the sidecar is not told its run, the run-state write cannot happen. The
+// tool must STILL succeed (the worktree copy is a legitimate fallback for
+// todoread, and the worker's next move must not be blocked), but it must SAY the
+// panel will not update. The previous behaviour returned `ok:true` and nothing
+// else, which is exactly how an empty panel coexisted with a successful tool call
+// for as long as it did.
+func TestTodowriteSaysSoWhenTheRunStateChannelIsMissing(t *testing.T) {
+	r := NewWorktreeRegistry(t.TempDir(), "", "")
+	args, _ := json.Marshal(map[string]any{"todos": []map[string]any{
+		{"content": "something", "status": "pending"},
+	}})
+	out, err := r.Execute(context.Background(), nil, "todowrite", args)
+	if err != nil {
+		t.Fatalf("todowrite must not fail when the run-state channel is absent: %v", err)
+	}
+	var res map[string]any
+	if err := json.Unmarshal(out, &res); err != nil {
+		t.Fatalf("todowrite result is not JSON: %s", out)
+	}
+	if res["ok"] != true {
+		t.Errorf("ok = %v, want true — the worktree copy still landed", res["ok"])
+	}
+	warn, _ := res["warning"].(string)
+	if warn == "" {
+		t.Fatalf("a missing run-state channel reported NO warning, so the empty panel is unexplainable: %s", out)
+	}
+	if !strings.Contains(warn, "panel") {
+		t.Errorf("the warning does not name the consequence for the operator: %q", warn)
 	}
 }
