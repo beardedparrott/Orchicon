@@ -1433,6 +1433,13 @@ func (c *Controller) Poll(convID string) tea.Cmd { return c.pollTranscript(convI
 // card that arrives twice — once discovered, once streamed — is drawn once, and calling this
 // on every attach, re-attach and poll costs nothing.
 //
+// IT IS ALSO THE SETTLE AUTHORITY. The list it just fetched is the SERVER's answer to "which asks are
+// still open", so it is the evidence a card is settled on — every pending card whose id is NOT in the list
+// is reconciled away (store.ReconcilePendingAsks), BEFORE the open ones are drawn. That is what replaced
+// the old sweep that fired on a client-side guess about the turn (see chatStore.settleStaleConsent): an
+// ask this client wrongly retired is recovered here the moment the server still lists it. A FAILED query
+// settles nothing — absence of evidence is not evidence of absence.
+//
 // Best-effort, like every live signal here: a failure returns nil and the next attach or
 // poll tries again. It must never fail a turn.
 func (c *Controller) DiscoverPendingAsks(convID string) tea.Cmd {
@@ -1454,6 +1461,13 @@ func (c *Controller) DiscoverPendingAsks(convID string) tea.Cmd {
 		// channel the turn poll also writes to dropped cards silently). See
 		// EventStore.ShowConsentAsk.
 		if store != nil {
+			// THE SERVER'S LIST SETTLES WHAT IT NO LONGER CONTAINS. Done BEFORE the draws so a card the
+			// server still lists is never touched, and a card it has dropped is settled exactly once.
+			openIDs := make([]string, 0, len(resp.Msg.GetAsks()))
+			for _, p := range resp.Msg.GetAsks() {
+				openIDs = append(openIDs, p.GetAskId())
+			}
+			store.ReconcilePendingAsks(convID, openIDs)
 			for _, p := range resp.Msg.GetAsks() {
 				ask := PermissionAskFromProto(p)
 				if ask.ConvID == "" {
@@ -1565,6 +1579,14 @@ type EventStore interface {
 	// expiring it — so this client's copy of the card stops being a choice. Same reasoning as above: a
 	// resolution that is dropped leaves a live-looking, inert card behind.
 	SettleConsentAsk(convID, askID, outcome, answer string)
+	// ReconcilePendingAsks settles every still-PENDING consent card for a conversation that the server's
+	// authoritative open-ask list does NOT contain — the EVIDENCE rule that replaces the old
+	// settle-on-inferred-turn-state sweep (see chatStore.settleStaleConsent).
+	//
+	// AN EMPTY (non-nil) list means the server reports nothing open, so every pending card settles. A
+	// query FAILURE never reaches here (DiscoverPendingAsks returns before it), so absence of evidence is
+	// never mistaken for evidence of absence — the direction that leaves a live card answerable.
+	ReconcilePendingAsks(convID string, openIDs []string)
 }
 
 // handleEvent applies one ChatStreamResponse to the conversation's slot
@@ -1661,9 +1683,11 @@ func (c *Controller) handleEvent(convID string, ev *apiv1.ChatStreamResponse) {
 		// transcript records the outcome, not the open ask). The collector publishes
 		// this the moment it APPLIES a decision, so every watcher can settle.
 		//
-		// Without this the TUI's card stayed pending until the turn ended (see
-		// settleStaleConsent, which is the convergence path for a client that missed
-		// the message — a decision made before it attached).
+		// Without this the TUI's card stayed pending until the turn ended. Now the
+		// convergence path for a client that missed the message is the SERVER's own
+		// answers rather than a turn-end sweep: DiscoverPendingAsks/ReconcilePendingAsks
+		// settles any ask the open-ask list no longer contains, and the durable page's
+		// recorded outcome settles the rest.
 		if r := e.PermissionAskResolved; r != nil && r.GetAskId() != "" && c.store != nil {
 			// STRAIGHT TO THE STORE, not through the command channel: a dropped resolution leaves a
 			// live-looking, inert card on screen in whichever client did not answer (see
