@@ -21,12 +21,13 @@ import (
 // only while PENDING — so the card was dropped, with nothing left to rediscover it (no live slot, no
 // poll) while the plane still held the ask open.
 //
-// These pin the two halves of the fix: the sweep is gated on the SERVER's turn state, and a card that
-// was settled anyway is re-armed rather than refused when the server still lists its ask as open.
+// These pin the two halves of the fix: the sweep is gated on the SERVER's authoritative OPEN-ASK LIST
+// (ListPendingAsks) rather than on any client-side guess about the turn, and a card that was settled
+// anyway is re-armed rather than refused when the server still lists its ask as open.
 
-// THE REGRESSION. While the plane still reports the turn in flight, the turn is NOT over and no
-// sweep may touch its card — whatever this client's own sockets just did.
-func TestAParkedTurnsCardIsNotSweptAway(t *testing.T) {
+// THE REGRESSION. While the SERVER still lists the ask as open, no sweep may touch its card — whatever
+// this client's own sockets or conversation row just did.
+func TestACardTheServerStillListsIsNotSweptAway(t *testing.T) {
 	m, _ := consentApp(t)
 	m.ShowConsentAsk(chat.PermissionAsk{
 		ID: "ask-1", Kind: chat.AskTool, Tool: "write",
@@ -36,29 +37,48 @@ func TestAParkedTurnsCardIsNotSweptAway(t *testing.T) {
 		t.Fatal("precondition: the card must be pending after it is raised")
 	}
 
-	m.chatStore.settleStaleConsent("c1", false)
+	// The server's open-ask list still contains the ask.
+	m.chatStore.settleStaleConsent("c1", map[string]bool{"ask-1": true})
 
 	if !m.chatStore.hasPendingConsent("c1") {
-		t.Fatal("a turn the SERVER still reports in flight had its card settled — this is the " +
-			"reported swallow: the operator is left with a parked turn and nothing to answer")
+		t.Fatal("the server still lists the ask as open, so its card must stay a choice — this is the " +
+			"reported ghost: a settle here drops a card the operator had to answer")
 	}
 	if st := m.chatStore.consentState("c1", "ask-1"); st == nil || !st.Pending() {
 		t.Fatalf("the card must still be a choice, got %+v", st)
 	}
 }
 
-// The sweep still does its job when the turn really is over — it is a gate, not a removal.
-func TestAFinishedTurnsCardIsSwept(t *testing.T) {
+// AND NO EVIDENCE SETTLES NOTHING: a failed or never-run query hands the store nil, and a nil list must
+// never be read as "the server lists nothing" — that is the bug this whole file guards, in one line.
+func TestNoEvidenceSettlesNothing(t *testing.T) {
 	m, _ := consentApp(t)
 	m.ShowConsentAsk(chat.PermissionAsk{
 		ID: "ask-1", Kind: chat.AskTool, Tool: "write",
 		Target: "/home/ops/project/main.go", Directory: "/home/ops/project",
 	})
 
-	m.chatStore.settleStaleConsent("c1", true)
+	m.chatStore.settleStaleConsent("c1", nil)
+
+	if !m.chatStore.hasPendingConsent("c1") {
+		t.Fatal("a nil open-list is NO evidence, so the card must stay a choice — settling on absence " +
+			"is exactly the inference bug this replaces")
+	}
+}
+
+// The sweep still does its job when the server's list no longer carries the ask — it is a gate, not a
+// removal (an EMPTY, non-nil list is the server saying "nothing is open").
+func TestAnAskTheServerNoLongerListsIsSwept(t *testing.T) {
+	m, _ := consentApp(t)
+	m.ShowConsentAsk(chat.PermissionAsk{
+		ID: "ask-1", Kind: chat.AskTool, Tool: "write",
+		Target: "/home/ops/project/main.go", Directory: "/home/ops/project",
+	})
+
+	m.chatStore.settleStaleConsent("c1", map[string]bool{})
 
 	if m.chatStore.hasPendingConsent("c1") {
-		t.Fatal("a finished turn's card must stop being a choice")
+		t.Fatal("the server no longer lists the ask, so its card must stop being a choice")
 	}
 }
 
@@ -83,17 +103,16 @@ func TestAPageRecordedOutcomeSettlesTheCard(t *testing.T) {
 	if m.chatStore.hasPendingConsent("c1") {
 		t.Fatal("the page records this ask as expired — the card must not still be a choice")
 	}
-	// AND THE CARD IS GONE, not merely inert. The same load passes through onTranscript's durable
-	// re-read, which is a `replace` here (the turn is over), and replace keeps a consent card only
-	// while PENDING — so a settled card leaves the TUI's transcript. That is this client's existing
-	// choice, and it is why the TUI draws no settled record where the GUI draws one (the TUI renders
-	// no durable tool rows at all — see TranscriptMsg.ToolCalls). Asserted so the asymmetry is
-	// deliberate rather than discovered later.
-	if st := m.chatStore.consentState("c1", "ask-1"); st != nil && st.Pending() {
-		t.Fatalf("the card must not survive as a live choice, got %+v", st)
+	// AND THE CARD STAYS AS A RECORD, not as a live choice — "SETTLED, NOT REMOVED". The same load passes
+	// through onTranscript's durable re-read, which is a `replace` here (the turn is over); replace now
+	// KEEPS a settled card so the operator can see what was asked, and every choice path gates on
+	// Pending() so the retained record is inert (see replace's retention rule, and
+	// TestASettledCardStaysAsARecordAndNeverDoubles for the de-dupe against a durable twin).
+	if st := m.chatStore.consentState("c1", "ask-1"); st == nil || st.Pending() {
+		t.Fatalf("the card must survive as a settled RECORD, not a live choice, got %+v", st)
 	}
-	if items := m.chatStore.snapshot("c1"); len(items) != 0 {
-		t.Fatalf("a settled card is dropped by the durable re-read, got %d item(s)", len(items))
+	if items := m.chatStore.snapshot("c1"); len(items) != 1 {
+		t.Fatalf("a settled card stays on screen as its record, got %d item(s)", len(items))
 	}
 }
 

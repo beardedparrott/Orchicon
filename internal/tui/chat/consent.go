@@ -189,11 +189,12 @@ const (
 	// ConsentState.Choice and is sent as the next user message.
 	DecisionAnswer ConsentDecision = "answer"
 	// DecisionSettled is NOT a decision the operator made — it is this client
-	// admitting it no longer knows the outcome. See chatStore.settleStaleConsent:
-	// a permission ask BLOCKS its turn, and the collector expires anything still
-	// open when the turn finalizes, so a card still pending at turn end was answered
-	// in the OTHER client or expired there. This client cannot tell which, so it
-	// records only what it knows rather than inventing an allow or a denial.
+	// admitting it no longer knows the outcome. See chatStore.settleStaleConsent: the
+	// server's authoritative open-ask list (ListPendingAsks) no longer contains the ask
+	// — it was answered in the OTHER client, or expired when its turn finalized — so
+	// this client records only what it knows, that the card is no longer open, rather
+	// than inventing an allow or a denial. It is set ONLY on server evidence, never on
+	// an inferred turn state.
 	DecisionSettled ConsentDecision = "settled"
 	// DecisionUnanswered is a QUESTION the turn ended while it was still waiting on.
 	//
