@@ -831,10 +831,181 @@ func LegacyEventFromBus(evt BusEvent) (map[string]any, bool) {
 			}
 			return map[string]any{"type": ptype, "part": part}, true
 		}
+	// ---- v2 TELEMETRY (opencode 2.x) ---------------------------------------
+	//
+	// THIS BLOCK IS THE FIX for a 2.x execution being killed as `text_loop` at
+	// exactly its 10-minute window while it was working. 2.x moved tools, steps,
+	// reasoning and diffs OUT of `message.part.updated` and into their own event
+	// family, emitted under `data`. Because none of them were classified, the
+	// progress monitor's lastMeaningfulAction — advanced ONLY by tool_use,
+	// step_finish and file_diff — could never advance on a 2.x serve, while text
+	// deltas kept no_progress fresh. A healthy worker was therefore
+	// indistinguishable from a model talking in circles, and the difference was
+	// invisible because the text parts arriving made the run LOOK productive.
+	//
+	// Measured on execution 01M4SEJ37CZZ700HRQEPEVGV7C: three text parts reporting
+	// files written and a commit pending, ZERO recorded tokens, zero tool rows in
+	// the transcript, and the stall kill at 10:00.0 after dispatch.
+	//
+	// The names and payloads below come from the 2.x binary's own event schema
+	// (session.step.*, session.tool.*, session.reasoning.*, session.diff).
+	case "session.step.started":
+		// A model turn beginning. v1 expressed this as a step-start PART.
+		return map[string]any{"type": "step_start", "part": map[string]any{"type": "step-start"}}, true
+	case "session.step.ended":
+		// The turn's completion, and the ONLY carrier of token usage and cost on
+		// 2.x — which is why every 2.x execution recorded 0 tokens and $0.
+		return map[string]any{"type": "step_finish", "part": v2StepFinishPart(props)}, true
+	case "session.step.failed":
+		// A failed step is how 2.x reports a provider/model error, carrying the
+		// same error the execution-level failure does.
+		return map[string]any{"type": "error", "error": props["error"]}, true
+	case "session.reasoning.ended":
+		// The completed reasoning block. 2.x streams reasoning as its own family;
+		// the deltas arrive as session.reasoning.delta (TokenDeltaInfoFromBus).
+		if t, _ := props["text"].(string); t != "" {
+			return map[string]any{"type": "reasoning", "part": map[string]any{"type": "reasoning", "text": t}}, true
+		}
+		return nil, false
+	case "session.tool.success", "session.tool.failed":
+		// A resolved tool call. `session.tool.called` is deliberately NOT mapped
+		// here: it is the START, ToolStartFromBus owns it, and emitting a legacy
+		// event for it as well would put two rows in the transcript per call.
+		return v2ToolLegacyEvent(evt.Type, props), true
+	case "session.diff":
+		// 2.x's structured per-file diff for a turn. One bus event cannot carry
+		// several legacy events, so this takes the FIRST changed path — enough for
+		// the signal it feeds (lastFileDiff, the no_file_progress advisory).
+		if p := v2FirstDiffPath(props); p != "" {
+			return map[string]any{"type": "file_diff", "part": map[string]any{"type": "file_diff", "path": p}}, true
+		}
+		return nil, false
 	case "session.error":
 		return map[string]any{"type": "error", "error": props["error"]}, true
 	}
 	return nil, false
+}
+
+// v2StepFinishPart shapes a 2.x `session.step.ended` payload into the v1
+// step-finish part the usage recorder and the budget ladder read
+// (part.tokens / part.cost / part.reason).
+func v2StepFinishPart(props map[string]any) map[string]any {
+	part := map[string]any{"type": "step-finish"}
+	if tokens, ok := props["tokens"]; ok && tokens != nil {
+		part["tokens"] = normalizeV2StepTokens(tokens)
+	}
+	if cost, ok := props["cost"].(float64); ok {
+		part["cost"] = cost
+	}
+	if finish, ok := props["finish"].(string); ok {
+		part["reason"] = finish
+	}
+	return part
+}
+
+// normalizeV2StepTokens reshapes 2.x's step token sample into the keys the
+// consumers actually read — input / output / reasoning / cache{read,write} (see
+// recordUsage, cacheToken and allTokensZero) — accepting the flat spellings 2.x
+// also uses.
+//
+// An UNRECOGNISED shape is returned UNCHANGED rather than emptied: a future
+// rename should degrade to "the numbers are still visible to allTokensZero"
+// rather than "tokens silently read as zero", which is the failure this whole
+// change exists to undo.
+func normalizeV2StepTokens(raw any) map[string]any {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := map[string]any{}
+	pick := func(dst string, keys ...string) {
+		for _, k := range keys {
+			if v, ok := m[k]; ok {
+				out[dst] = v
+				return
+			}
+		}
+	}
+	pick("input", "input", "tokens_input", "prompt")
+	pick("output", "output", "tokens_output", "completion")
+	pick("reasoning", "reasoning", "tokens_reasoning")
+	if v, ok := m["cache"]; ok {
+		out["cache"] = v
+	} else {
+		read, hasRead := m["cache_read"]
+		if !hasRead {
+			read, hasRead = m["tokens_cache_read"]
+		}
+		write, hasWrite := m["cache_write"]
+		if !hasWrite {
+			write, hasWrite = m["tokens_cache_write"]
+		}
+		if hasRead || hasWrite {
+			c := map[string]any{}
+			if hasRead {
+				c["read"] = read
+			}
+			if hasWrite {
+				c["write"] = write
+			}
+			out["cache"] = c
+		}
+	}
+	if len(out) == 0 {
+		return m
+	}
+	return out
+}
+
+// v2ToolLegacyEvent shapes a resolved 2.x tool call into the v1
+// {"type":"tool_use","part":…} the transcript, the progress monitor and the
+// repetition signature all consume.
+//
+// THE NAME AND THE INPUT ARE NOT ON THIS EVENT. 2.x carries the name on
+// session.tool.input.started and the input on session.tool.called, and only the
+// call id when it resolves — so the read path remembers both by id and fills them
+// in (session_run.rememberV2Tool). The callID is therefore always set, and it is
+// load-bearing rather than cosmetic: with no input, EVERY call of a tool would
+// share one repetition signature, and a busy worker would trip the repetition
+// stall instead of the text_loop one this change is meant to stop.
+func v2ToolLegacyEvent(evtType string, props map[string]any) map[string]any {
+	status := "completed"
+	if evtType == "session.tool.failed" {
+		status = "error"
+	}
+	state := map[string]any{"status": status}
+	if in, ok := props["input"]; ok && in != nil {
+		state["input"] = in
+	}
+	if c, ok := props["content"]; ok && c != nil {
+		state["output"] = c
+	}
+	part := map[string]any{"type": "tool_use", "callID": "", "state": state}
+	if id, _ := props["id"].(string); id != "" {
+		part["callID"] = id
+	}
+	if name, _ := props["name"].(string); name != "" {
+		part["tool"] = name
+	}
+	return map[string]any{"type": "tool_use", "part": part}
+}
+
+// v2FirstDiffPath returns the first changed path in a 2.x `session.diff`
+// payload, accepting the several field names a per-file diff may use.
+func v2FirstDiffPath(props map[string]any) string {
+	files, _ := props["diff"].([]any)
+	for _, f := range files {
+		m, _ := f.(map[string]any)
+		if m == nil {
+			continue
+		}
+		for _, k := range []string{"path", "file", "filename"} {
+			if p, _ := m[k].(string); p != "" {
+				return p
+			}
+		}
+	}
+	return ""
 }
 
 // ToolStartFromBus reports the tool name when a bus event is the START of a
@@ -855,6 +1026,21 @@ func LegacyEventFromBus(evt BusEvent) (map[string]any, bool) {
 // tool parts already resolved, or events that carry no tool name).
 func ToolStartFromBus(evt BusEvent) (tool string, ok bool) {
 	props := evt.Props()
+	// ---- v2 (opencode 2.x) --------------------------------------------------
+	// 2.x moved tool calls to their own event family. `session.tool.input.started`
+	// carries the call's NAME and id; `session.tool.called` carries the id and the
+	// resolved input but NOT the name. Either means the call is in flight, so
+	// either arms the hang window — the name is only the refusal message's noun,
+	// and an empty one is honest (the read path fills it in when it is known).
+	if evt.Type == "session.tool.called" || evt.Type == "session.tool.input.started" {
+		if name, _ := props["name"].(string); name != "" {
+			return name, true
+		}
+		if id, _ := props["id"].(string); id != "" {
+			return "", true
+		}
+		return "", false
+	}
 	if evt.Type != "message.part.updated" {
 		return "", false
 	}
@@ -897,6 +1083,16 @@ func ToolStartFromBus(evt BusEvent) (tool string, ok bool) {
 func TokenDeltaInfoFromBus(evt BusEvent) (deltaText, kind string, ok bool) {
 	props := evt.Props()
 	switch evt.Type {
+	case "session.reasoning.delta":
+		// 2.x streams reasoning under its OWN family (v1 folded it into
+		// message.part.delta). Without this arm a reasoning-heavy turn has no
+		// liveness evidence of its own, which is one of the ways a busy 2.x
+		// session read as idle.
+		delta, _ := props["delta"].(string)
+		if delta == "" {
+			return "", "", false
+		}
+		return delta, "reasoning", true
 	case "session.text.delta":
 		// v2's streaming text. MEASURED shape:
 		//   {"type":"session.text.delta","data":{"sessionID":…,"assistantMessageID":…,

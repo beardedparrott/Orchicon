@@ -92,6 +92,15 @@ type sessionRun struct {
 	toolTrackName   string
 	toolTrackAt     time.Time
 	toolInFlightNow bool
+	// v2Tools remembers what 2.x announces in SEPARATE events from the one that
+	// resolves a call: the tool NAME (session.tool.input.started) and its INPUT
+	// (session.tool.called). The resolution carries only the call id, so this map is
+	// what lets a 2.x tool card show its name and, more importantly, keeps the
+	// repetition signature per-CALL rather than per-tool (with no input, every call
+	// of one tool shares a signature and a busy worker trips the repetition stall).
+	// Entries are consumed and deleted on resolution, so it holds only in-flight
+	// calls. Guarded by hangMu.
+	v2Tools map[string]v2ToolAnnounce
 	// workStarted (probe-startup guard, 2026-09-09): set true the first
 	// time the session produces WORK evidence — a tool call or any
 	// substantive text output (a non-empty completed text part beyond a
@@ -371,7 +380,12 @@ func (r *sessionRun) actuateToolHang(tool string) {
 // previous slot — only the longest/single in-flight call is tracked.
 func (r *sessionRun) observeToolStart(name string) {
 	r.hangMu.Lock()
-	r.toolTrackName = name
+	// A v2 `session.tool.called` start carries NO name (2.x puts it on
+	// input.started), so an empty one must not erase a name already remembered —
+	// the eventual hang/redirect message would lose its noun.
+	if name != "" {
+		r.toolTrackName = name
+	}
 	r.toolTrackAt = time.Now()
 	r.toolInFlightNow = true
 	// First tool call = the session has demonstrably begun its work. The
@@ -431,6 +445,70 @@ func (r *sessionRun) lastToolName() string {
 		return "unknown"
 	}
 	return r.toolTrackName
+}
+
+// v2ToolAnnounce is what 2.x tells us about a tool call BEFORE it resolves: the
+// name (from session.tool.input.started) and the input (from session.tool.called).
+type v2ToolAnnounce struct {
+	name  string
+	input any
+}
+
+// rememberV2Tool records what a 2.x tool event announced, ignoring absent fields
+// so the separate events ACCUMULATE rather than overwrite one another.
+func (r *sessionRun) rememberV2Tool(id, name, input any) {
+	sid, _ := id.(string)
+	if sid == "" {
+		return
+	}
+	r.hangMu.Lock()
+	defer r.hangMu.Unlock()
+	if r.v2Tools == nil {
+		r.v2Tools = map[string]v2ToolAnnounce{}
+	}
+	cur := r.v2Tools[sid]
+	if n, _ := name.(string); n != "" {
+		cur.name = n
+	}
+	if input != nil {
+		cur.input = input
+	}
+	r.v2Tools[sid] = cur
+}
+
+// fillV2Tool applies the remembered name and input to a resolved 2.x tool_use part
+// and forgets the entry (so the map holds only in-flight calls). A no-op for
+// anything that is not a tool_use, and for a v1 tool part that already carries
+// both.
+func (r *sessionRun) fillV2Tool(legacy map[string]any) {
+	if t, _ := legacy["type"].(string); t != evtToolUse {
+		return
+	}
+	part, _ := legacy["part"].(map[string]any)
+	if part == nil {
+		return
+	}
+	sid, _ := part["callID"].(string)
+	if sid == "" {
+		return
+	}
+	r.hangMu.Lock()
+	ann, ok := r.v2Tools[sid]
+	if ok {
+		delete(r.v2Tools, sid)
+	}
+	r.hangMu.Unlock()
+	if !ok {
+		return
+	}
+	if _, has := part["tool"]; !has && ann.name != "" {
+		part["tool"] = ann.name
+	}
+	if state, _ := part["state"].(map[string]any); state != nil {
+		if _, has := state["input"]; !has && ann.input != nil {
+			state["input"] = ann.input
+		}
+	}
 }
 
 // toolHangRedirectMessage builds the course-correcting redirect injected
@@ -899,10 +977,21 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 	// the watchdog that exists to interrupt exactly that hang (D6 review
 	// finding). The resolution — the completed/error legacy event — disarms
 	// it below.
+	// 2.x announces a tool call across THREE events: its NAME on
+	// session.tool.input.started, its INPUT on session.tool.called, and only its id
+	// when it resolves. Remember whatever arrived so the resolved tool_use can carry
+	// a name and an input (see v2ToolLegacyEvent / fillV2Tool).
+	switch evt.Type {
+	case "session.tool.input.started":
+		r.rememberV2Tool(props["id"], props["name"], nil)
+	case "session.tool.called":
+		r.rememberV2Tool(props["id"], nil, props["input"])
+	}
 	if tool, isStart := ToolStartFromBus(evt); isStart {
 		r.observeToolStart(tool)
 	}
 	if legacy, ok := LegacyEventFromBus(evt); ok {
+		r.fillV2Tool(legacy)
 		// ANY telemetry activity (text/tool/step/reasoning) after a probe
 		// is evidence the worker is alive — resolve the probe and revive
 		// without waiting for a full turn (the false-positive case: an
