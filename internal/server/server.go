@@ -1193,6 +1193,21 @@ func (s *Server) Run(ctx context.Context) error {
 		if s.askService != nil {
 			s.askService.CloseAskMCP()
 		}
+		// AND THE ASK GUARD BELONGS BESIDE THEM, for the same reason. The Ask path
+		// applies the OS-level execution guard as a shim DIRECTORY, and a temp
+		// directory is not a child process: nothing reaps it when this one exits, so
+		// every plane start left one /tmp/orchicon-guard-* behind FOREVER — a
+		// slow, invisible accumulation that no restart ever cleaned up. It was the
+		// only host-side thing this seam did not hand back: CloseAskGuard's own doc
+		// already claimed to run "at daemon shutdown", and until this call nothing
+		// in the product invoked it (measured: its only caller was a test).
+		//
+		// Called unconditionally rather than behind the askService check above: the
+		// guard is a PACKAGE-level singleton, reachable from AskGuardEnvironFor as
+		// well as through the Service, so the Service being nil does not mean no
+		// guard was built. It is a no-op when none ever was, and safe on a second
+		// call.
+		askorchicon.CloseAskGuard()
 		s.pool.Close()
 		s.shutdownOTel()
 		return nil
@@ -1207,6 +1222,21 @@ func (s *Server) Run(ctx context.Context) error {
 		if s.askService != nil {
 			s.askService.CloseAskMCP()
 		}
+		// AND THE ASK GUARD BELONGS BESIDE THEM, for the same reason. The Ask path
+		// applies the OS-level execution guard as a shim DIRECTORY, and a temp
+		// directory is not a child process: nothing reaps it when this one exits, so
+		// every plane start left one /tmp/orchicon-guard-* behind FOREVER — a
+		// slow, invisible accumulation that no restart ever cleaned up. It was the
+		// only host-side thing this seam did not hand back: CloseAskGuard's own doc
+		// already claimed to run "at daemon shutdown", and until this call nothing
+		// in the product invoked it (measured: its only caller was a test).
+		//
+		// Called unconditionally rather than behind the askService check above: the
+		// guard is a PACKAGE-level singleton, reachable from AskGuardEnvironFor as
+		// well as through the Service, so the Service being nil does not mean no
+		// guard was built. It is a no-op when none ever was, and safe on a second
+		// call.
+		askorchicon.CloseAskGuard()
 		s.pool.Close()
 		s.shutdownOTel()
 		if errors.Is(err, http.ErrServerClosed) {
