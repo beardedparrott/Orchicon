@@ -107,10 +107,13 @@ func TestReplaceKeepsAPendingConsentCard(t *testing.T) {
 	}
 }
 
-// TestReplaceDropsASettledConsentCard is the CONTROL for the rule above: only a
-// PENDING card is kept. A settled one is recorded durably (or about to be), so
-// keeping it would render the decision twice.
-func TestReplaceDropsASettledConsentCard(t *testing.T) {
+// TestReplaceKeepsASettledConsentCardAsARecord is the RECORD rule: a card that settles with no durable
+// rendering row stays on screen as a settled record rather than vanishing — "SETTLED, NOT REMOVED", which
+// is what settleStaleConsent's own doc claims. It must also stop being a CHOICE.
+//
+// (The de-dupe against a durable TWIN — a question's recorded ask_user card — is asserted in
+// ask_ghost_card_test.go, so a retained record never draws twice.)
+func TestReplaceKeepsASettledConsentCardAsARecord(t *testing.T) {
 	s := newTestChatStore()
 	item := pendingConsentItem("ask-1")
 	// Settle it: a decision means it is no longer awaiting anyone.
@@ -119,10 +122,20 @@ func TestReplaceDropsASettledConsentCard(t *testing.T) {
 
 	s.replace("c1", []chat.ChatItem{{Kind: chat.KindText, Text: "hello", Key: "m-1"}})
 
+	var kept int
 	for _, it := range s.snapshot("c1") {
 		if it.Kind == chat.KindConsent {
-			t.Fatalf("a SETTLED consent card was kept by the replace: %+v", it)
+			kept++
+			if it.Consent == nil || it.Consent.Pending() {
+				t.Fatalf("a settled record must not be a live choice: %+v", it.Consent)
+			}
 		}
+	}
+	if kept != 1 {
+		t.Fatalf("a settled card must persist as a record through the replace, kept %d", kept)
+	}
+	if s.hasPendingConsent("c1") {
+		t.Fatal("a settled record must not still be pending")
 	}
 }
 

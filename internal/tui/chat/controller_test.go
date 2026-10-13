@@ -66,11 +66,12 @@ func (s *stubAsk) WatchTurnStream(ctx context.Context, req *connect.Request[apiv
 }
 
 type recorder struct {
-	mu     sync.Mutex
-	items  []ChatItem
-	conn   map[string]bool
-	asks   []PermissionAsk
-	settle []string
+	mu        sync.Mutex
+	items     []ChatItem
+	conn      map[string]bool
+	asks      []PermissionAsk
+	settle    []string
+	reconcile []string
 }
 
 func (r *recorder) ShowConsentAsk(ask PermissionAsk) {
@@ -82,6 +83,12 @@ func (r *recorder) ShowConsentAsk(ask PermissionAsk) {
 func (r *recorder) SettleConsentAsk(convID, askID, outcome, answer string) {
 	r.mu.Lock()
 	r.settle = append(r.settle, convID+"|"+askID+"|"+outcome+"|"+answer)
+	r.mu.Unlock()
+}
+
+func (r *recorder) ReconcilePendingAsks(convID string, openIDs []string) {
+	r.mu.Lock()
+	r.reconcile = append(r.reconcile, convID+"|"+strings.Join(openIDs, ","))
 	r.mu.Unlock()
 }
 
