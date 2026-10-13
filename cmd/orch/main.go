@@ -364,10 +364,14 @@ func runShell(profile *config.Profile, opts ...tui.AppOption) (bool, error) {
 	app.SwitchTo(tui.TabAsk)
 	prog := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion(),
 		tea.WithReportFocus(),
-		// Shift+Enter arrives as the legacy keypad-Enter sequence, which bubbletea
-		// decodes as alt+O then M (the composer then types "OM"). Rewrite it to the
-		// newline chord the composer already understands. See internal/tui/input.
-		tea.WithInput(input.ShiftEnterToNewline(os.Stdin)))
+		// THE TERMINAL'S KEY VOCABULARY IS WIDER THAN THE LIBRARY'S, and the failure is
+		// silent: a sequence bubbletea cannot decode is not rejected, it is read as ordinary
+		// characters, so the symptom is litter typed into whatever field has focus. Two
+		// spellings are adapted here — Shift+Enter (which bubbletea splits into alt+O then M,
+		// making the composer type "OM") and the SS3 form of Home/End, which a laptop's
+		// fn+Left/Right emits and which bubbletea splits into alt+O then the letter, making
+		// the composer type "OH" and "OF". See internal/tui/input.
+		tea.WithInput(input.TranslateTerminalKeys(os.Stdin)))
 	_, err = prog.Run()
 	if err != nil {
 		return false, err
