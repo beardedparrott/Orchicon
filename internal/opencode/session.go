@@ -900,6 +900,18 @@ func v2StepFinishPart(props map[string]any) map[string]any {
 	if finish, ok := props["finish"].(string); ok {
 		part["reason"] = finish
 	}
+	// FILES: the paths this STEP changed, and on a Code Mode serve the ONLY
+	// per-step attribution that exists. Every other file-edit capture keys on a
+	// TOOL NAME (write/edit/batch_write), and on 2.x every MCP tool is invoked
+	// through `execute` — so the transcript names the tool `execute` and those
+	// captures match nothing. `session.step.ended.files` is opencode's own record
+	// of what the step touched, so it survives however the tool was reached.
+	//
+	// Carried through the part (rather than consumed here) so the transcript keeps
+	// it and the adapter's ledger hook can read it off the same event.
+	if files, ok := props["files"]; ok && files != nil {
+		part["files"] = files
+	}
 	return part
 }
 

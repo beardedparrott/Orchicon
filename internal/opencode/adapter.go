@@ -1438,6 +1438,34 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 		if budget != nil {
 			budget.add(tokens, cost)
 		}
+		// PER-STEP FILE ATTRIBUTION, and on 2.x the only LIVE capture there is.
+		//
+		// `session.step.ended.files` is opencode's own list of the paths the step
+		// changed. It matters because every other capture in this file keys on a
+		// TOOL NAME — and on a Code Mode serve no MCP tool is ever a tool name:
+		// `batch_write` arrives as `execute`. So the live hook above matches
+		// nothing, and the end-of-run git reconcile is defeated separately by the
+		// worker COMMITTING its work (its brief orders a clean `git status`). This
+		// is what remains: a signal the agent surface emits about its own edit,
+		// independent of how it was invoked.
+		//
+		// Fed through the SAME "file_diff" hook the diff-event path uses, so the
+		// observer's before/after reading and its no-op suppression are shared
+		// rather than reimplemented — and an engine-covered path is skipped, since
+		// its exact diff is already recorded.
+		if a.fileEdits != nil {
+			files, _ := part["files"].([]any)
+			for _, f := range files {
+				fp, _ := f.(string)
+				if fp == "" {
+					continue
+				}
+				if stats != nil && stats.engineEditedPaths[fp] {
+					continue
+				}
+				a.fileEdits(ctx, execID, execRow.TenantID, executionDir(manifest), "file_diff", map[string]any{"path": fp}, "")
+			}
+		}
 	case evtFileDiff:
 		// A file_diff event carries the path of a file the session wrote
 		// or edited (part["path"]). Capture it so the worker's written

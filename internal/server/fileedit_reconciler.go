@@ -33,7 +33,7 @@ func (f *fileEditReconciler) ReconcileExecutionGit(ctx context.Context, tenantID
 		return // no worktree / no project dir: nothing to reconcile against
 	}
 	store := fileedit.NewPGStore(f.pool)
-	if err := fileedit.ReconcileGit(ctx, store, dir, tenantID, db.FileEditOwnerExecution, execID, f.log); err != nil {
+	if err := fileedit.ReconcileGit(ctx, store, dir, tenantID, db.FileEditOwnerExecution, execID, fileedit.BaseRefFor(dir), f.log); err != nil {
 		f.log.Warn("file edit ledger git reconciliation failed", "execution", execID, "dir", dir, "error", err)
 	}
 }

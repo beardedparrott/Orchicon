@@ -76,7 +76,7 @@ func TestReconcileGitConfirmedAndCorrective(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := ReconcileGit(ctx, store, dir, "tnt", db.FileEditOwnerExecution, "exec-1", nil); err != nil {
+	if err := ReconcileGit(ctx, store, dir, "tnt", db.FileEditOwnerExecution, "exec-1", "", nil); err != nil {
 		t.Fatalf("ReconcileGit: %v", err)
 	}
 
@@ -134,7 +134,7 @@ func TestReconcileGitNonRepoNoOp(t *testing.T) {
 	// ceiling=dir's parent reports "not a git repository".
 	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(dir))
 	store := &fakeReconcileStore{}
-	if err := ReconcileGit(context.Background(), store, dir, "tnt", db.FileEditOwnerExecution, "exec-1", nil); err != nil {
+	if err := ReconcileGit(context.Background(), store, dir, "tnt", db.FileEditOwnerExecution, "exec-1", "", nil); err != nil {
 		t.Fatalf("non-repo reconcile should be a no-op, got %v", err)
 	}
 	if store.appendedOK || len(store.marked) != 0 {
